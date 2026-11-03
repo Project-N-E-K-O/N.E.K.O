@@ -37,12 +37,12 @@ def test_preview_reports_two_fusion_calls_for_soul_and_user():
     })
 
     assert result["success"] is True
-    # persona 融合按 entity 分组：USER.md→master + SOUL.md→neko = 2 次 LLM 往返。
+    # Group persona fusion by entity: USER.md->master + SOUL.md->neko = two LLM round trips.
     assert result["persona_fusion_calls"] == 2
-    # persona 候选（不含 MEMORY.md 的 facts）总 token 为正，供前端估时。
+    # Persona candidates (excluding MEMORY.md facts) have positive total tokens for frontend timing estimates.
     assert result["persona_candidate_tokens"] > 0
     assert result["counts"]["facts"] >= 1
-    # 无 daily 文件 → daily 抽取 0 次调用。
+    # No daily files -> zero daily extraction calls.
     assert result["daily_extraction_calls"] == 0
     assert result["daily_candidate_tokens"] == 0
 
@@ -57,7 +57,7 @@ def test_preview_reports_one_fusion_call_for_user_only():
     })
 
     assert result["success"] is True
-    # 只有 USER.md → 单一 entity(master) → 1 次融合调用。
+    # Only USER.md -> one entity (master) -> one fusion call.
     assert result["persona_fusion_calls"] == 1
     assert result["persona_candidate_tokens"] > 0
 
@@ -72,7 +72,7 @@ def test_preview_reports_zero_fusion_calls_for_facts_only():
     })
 
     assert result["success"] is True
-    # 纯 facts 导入不调 LLM → 0 次调用、0 token（前端回退到无预估文案）。
+    # Pure fact import makes no LLM calls -> zero calls/tokens (frontend falls back to no-estimate text).
     assert result["persona_fusion_calls"] == 0
     assert result["persona_candidate_tokens"] == 0
     assert result["counts"]["persona"] == 0
@@ -91,7 +91,7 @@ def test_preview_counts_daily_extraction_calls_per_day():
     })
 
     assert result["success"] is True
-    # daily 抽取按天（=source_file）各一次 LLM 调用；token 供前端保守 sum 估时。
+    # Daily extraction makes one LLM call per day (=source_file); frontend conservatively sums tokens to estimate time.
     assert result["daily_extraction_calls"] == 2
     assert result["daily_candidate_tokens"] > 0
     assert result["persona_fusion_calls"] == 0

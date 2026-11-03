@@ -52,6 +52,23 @@ afterEach(async () => {
 })
 
 describe('market install task store — tracking', () => {
+  it('preserves structured size failure metadata and known total without reporting a completed download', async () => {
+    const details = { actual_bytes: 629145600, maximum_bytes: 524288000, size_source: 'content_length' }
+    vi.mocked(fetchBridge).mockResolvedValueOnce(task({
+      task_id: 't', status: 'failed', stage: 'download', progress: 0.1,
+      downloaded_bytes: 0, total_bytes: 629145600,
+      error_code: 'package_size_exceeded', error_details: details, retryable: false,
+    }) as never)
+    const store = useMarketInstallTaskStore()
+    const pending = store.track('t', context(), 'panel')
+    await tick()
+    await expect(pending).resolves.toEqual({ ok: false, errorKey: 'market.packageSizeExceeded' })
+    expect(store.task?.error_details).toEqual(details)
+    expect(store.task?.retryable).toBe(false)
+    expect(store.transferText).toBe('0 B / 600.0 MiB')
+    expect(store.steps.find(step => step.id === 'download')?.state).toBe('failed')
+  })
+
   it('polls to completion and exposes the final state', async () => {
     vi.mocked(fetchBridge)
       .mockResolvedValueOnce(task({ task_id: 't', status: 'downloading', stage: 'download', progress: 0.2, downloaded_bytes: 100, total_bytes: 1000 }) as never)
@@ -302,8 +319,8 @@ describe('market install task store — download speed', () => {
     expect(store.speed).toBeCloseTo(1_000_000, -3)
     expect(store.eta).toBe(6) // (8MB - 1.6MB) / 1MB/s
 
-    expect(store.transferText).toContain('1.5 MB / 7.6 MB')
-    expect(store.transferText).toContain('976.6 KB/s')
+    expect(store.transferText).toContain('1.5 MiB / 7.6 MiB')
+    expect(store.transferText).toContain('976.6 KiB/s')
     expect(store.transferText).toContain('6s')
     store.dismiss()
   })
@@ -354,7 +371,7 @@ describe('market install task store — download speed', () => {
 
     expect(store.speed).toBeCloseTo(500_000, -3)
     expect(store.eta).toBeNull()
-    expect(store.transferText).toBe('390.6 KB · 488.3 KB/s')
+    expect(store.transferText).toBe('390.6 KiB · 488.3 KiB/s')
     store.dismiss()
   })
 })

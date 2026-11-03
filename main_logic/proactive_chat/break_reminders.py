@@ -266,6 +266,7 @@ async def _deliver_break_reminder_via_llm(
     channel: str,  # 'work_break' | 'anti_slack' | 'work_break_game_invite'
     lang: str,
     timeout_seconds: float = 25.0,
+    round_id: str | None = None,
 ) -> BreakReminderDeliveryResult:
     """Minimal Phase 2 LLM stream delivery for break reminders.
 
@@ -313,8 +314,20 @@ async def _deliver_break_reminder_via_llm(
 
     # Idle gate (10s) — same threshold mini-game invite uses. If the user just
     # typed/spoke, don't interrupt.
-    if not await mgr.prepare_proactive_delivery(min_idle_secs=10.0):
+    # Same round ownership as the main Phase 2 path: a retired HTTP task must
+    # not claim or advance a replacement round.
+    round_payload = {"round_id": round_id} if round_id is not None else {}
+    delivery_round = {"expected_round_id": round_id} if round_id is not None else {}
+    if not await mgr.prepare_proactive_delivery(min_idle_secs=10.0, **round_payload):
         return BreakReminderDeliveryResult()
+    # Snapshot the claimed SID before any await: after a session restart a
+    # replacement round may claim a new SID while this task is still running.
+    proactive_sid = mgr.current_speech_id
+
+    def _round_retired() -> bool:
+        # A restart resets the state machine, so the SID checks below cannot see
+        # it; the old reminder must not speak into or commit to the new round.
+        return round_id is not None and mgr.state.proactive_round_id != round_id
 
     try:
         await get_anti_repeat_corpus().apreload(lanlan_name)
@@ -322,10 +335,11 @@ async def _deliver_break_reminder_via_llm(
         logger.debug("[AntiRepeat] break-reminder preload skipped: %s", exc)
 
     silence_since_before_generation = _break_reminder_silence_since(mgr)
-    proactive_sid = mgr.current_speech_id
     from main_logic.session_state import SessionEvent as _SE
 
-    await mgr.state.fire(_SE.PROACTIVE_PHASE2)
+    await mgr.state.fire(_SE.PROACTIVE_PHASE2, **round_payload)
+    if _round_retired():
+        return BreakReminderDeliveryResult()
 
     # Minimal HumanMessage — just ask the model to begin. The localized
     # ``BEGIN_GENERATE`` matches what normal Phase 2 uses, so the model
@@ -563,6 +577,8 @@ async def _deliver_break_reminder_via_llm(
 
     # Withhold TTS until all repeat checks finish; otherwise a rejected initial
     # draft can already be audible while the long-window guard is still running.
+    if _round_retired():
+        return BreakReminderDeliveryResult()
     try:
         expected_user_engagement_time = getattr(
             mgr,
@@ -573,6 +589,7 @@ async def _deliver_break_reminder_via_llm(
             text,
             expected_speech_id=proactive_sid,
             expected_user_engagement_time=expected_user_engagement_time,
+            **delivery_round,
         )
     except Exception as exc:
         logger.warning(
@@ -602,10 +619,13 @@ async def _deliver_break_reminder_via_llm(
             "[%s] break reminder TTS enqueue failed; committing text without audio",
             lanlan_name,
         )
+    if _round_retired():
+        return BreakReminderDeliveryResult()
     committed = await mgr.finish_proactive_delivery(
         text,
         expected_speech_id=proactive_sid,
         expected_user_engagement_time=expected_user_engagement_time,
+        **delivery_round,
     )
     if not committed:
         if _proactive_turn_still_owned(mgr, proactive_sid):

@@ -47,79 +47,79 @@ from types import MappingProxyType
 from typing import Any, Callable, Mapping
 
 from utils.config_manager import get_config_manager
-# 模块级 import（本文件其他 file_utils 用法是函数内 import）：atomic_write_json 会在
-# _maint_state_lock 临界区内被调，函数内 import 会把一次 import machinery 关进临界区。
-# utils/file_utils 只依赖标准库，且 utils.config_manager 已经在模块级导入它，没有环。
+# Module-level import, unlike other file_utils uses here: atomic_write_json runs inside
+# _maint_state_lock, so local imports would put import machinery inside the critical section.
+# file_utils is standard-library-only and config_manager already imports it globally, avoiding cycles.
 from utils.file_utils import atomic_write_json
 
 from ._shared import logger
 
 _config_manager = get_config_manager()
 
-# ── 空闲维护相关 ────────────────────────────────────────────────────
-_last_activity_time: datetime = datetime.now()            # 最后一次对话活动时间
-IDLE_CHECK_INTERVAL = 40             # 空闲检查轮询间隔（秒）
-IDLE_THRESHOLD = 10                  # 多少秒无活动视为空闲（匹配最低 proactive 间隔）
-REVIEW_MIN_INTERVAL = 60             # review 最短间隔（秒）。配合消息门双重限流
-REVIEW_SKIP_HISTORY_LEN = 8          # 历史不足此数的角色跳过 review
-MIN_NEW_MSGS_FOR_REVIEW = 5          # 自上次 review cutoff 起累积 ≥ N 条 user msg 才允许触发新一轮
-LONG_IDLE_REVIEW_BYPASS_SECONDS = 1800  # 距上次活动 ≥ 30 min 且有未 review 的新消息 → 绕过新消息门，
-                                        # 把"差几条不够批量"的尾巴也整理掉
+# -- Idle maintenance --
+_last_activity_time: datetime = datetime.now()            # Last conversation activity time.
+IDLE_CHECK_INTERVAL = 40             # Idle-check polling interval in seconds.
+IDLE_THRESHOLD = 10                  # Inactivity threshold matching the minimum proactive interval.
+REVIEW_MIN_INTERVAL = 60             # Minimum review interval in seconds, combined with message gating.
+REVIEW_SKIP_HISTORY_LEN = 8          # Skip reviews below this history count.
+MIN_NEW_MSGS_FOR_REVIEW = 5          # Require at least N user messages since the last review cutoff before another round.
+LONG_IDLE_REVIEW_BYPASS_SECONDS = 1800  # With at least 30 min inactivity and unreviewed messages, bypass message gating
+                                        # to organize tails too short for ordinary batches.
 
-# ── 启动错峰 initial_delay（避免首轮全部撞 startup + interval 同一时刻） ──
-# 每个循环首次执行时间 = startup + 该 delay；之后按各自 INTERVAL 周期跑。
-# 设计原则：archive sweep 用最长 INTERVAL (3600s) 但很多用户不到 1h 就退出，
-# 必须显著前移；rebuttal/auto_promote 同 300s 间隔但不能同时跑，错开 60s；
-# IdleMaint/Signal 已经间隔短，仅给 startup tasks (cloudsave / outbox replay /
-# migration) 一点喘息空间。EmbeddingWarmupWorker 自带 30s warmup gate，不在此处。
-_INITIAL_DELAY_IDLE_MAINT = 20       # IdleMaint 首次 (原 10s startup 高频已废)
-_INITIAL_DELAY_SIGNAL = 60           # Signal extraction 首次 (原 40s)
-_INITIAL_DELAY_REBUTTAL = 100        # Rebuttal 首次 (原 300s)
-_INITIAL_DELAY_AUTO_PROMOTE = 150    # Auto-promote 首次 (原 300s, 错开 rebuttal 50s)
-_INITIAL_DELAY_ARCHIVE = 250         # Archive sweep 首次 (原 3600s, 大幅前移确保短会话用户也能跑到)
-_INITIAL_DELAY_PERSONA_REFINE = 400  # PERSONA_REFINE 首次（与 reflection refine 错峰 100s）
-_INITIAL_DELAY_REFLECTION_REFINE = 500  # REFLECTION_REFINE 首次
-_INITIAL_DELAY_SCOPED_REFINE = 600   # SCOPED_REFINE 首次（群记忆轻量 refine，续接错峰梯队）
-_INITIAL_DELAY_REFLECTION_SYNTHESIS = 200  # REFLECTION_SYNTHESIS 首次（错过 AUTO_PROMOTE 150 与 ARCHIVE 250，给 SignalLoop 60s + 一两次实际 fact 产出留余地）
+# -- Stagger initial_delay to avoid simultaneous startup/interval work --
+# Each loop first runs at startup plus its delay, then on its own interval.
+# Archive sweeps have the longest 3600 s interval, but many users exit within an hour,
+# requiring a much earlier first run. Rebuttal/auto-promote share 300 s intervals but stagger by 60 s.
+# Short IdleMaint/Signal intervals need only startup cloudsave/outbox/migration breathing room.
+# EmbeddingWarmupWorker has its own 30 s gate, outside this table.
+_INITIAL_DELAY_IDLE_MAINT = 20       # First IdleMaint; old frequent 10 s startup is retired.
+_INITIAL_DELAY_SIGNAL = 60           # First Signal extraction, formerly 40 s.
+_INITIAL_DELAY_REBUTTAL = 100        # First Rebuttal, formerly 300 s.
+_INITIAL_DELAY_AUTO_PROMOTE = 150    # First Auto-promote, formerly 300 s, staggered 50 s from rebuttal.
+_INITIAL_DELAY_ARCHIVE = 250         # First archive sweep, advanced greatly from 3600 s for short-session users.
+_INITIAL_DELAY_PERSONA_REFINE = 400  # First PERSONA_REFINE, staggered 100 s from reflection refinement.
+_INITIAL_DELAY_REFLECTION_REFINE = 500  # First REFLECTION_REFINE.
+_INITIAL_DELAY_SCOPED_REFINE = 600   # First SCOPED_REFINE, lightweight group-memory refinement extending the staggered schedule.
+_INITIAL_DELAY_REFLECTION_SYNTHESIS = 200  # First REFLECTION_SYNTHESIS, avoiding AUTO_PROMOTE 150 / ARCHIVE 250 while allowing SignalLoop 60 s and one or two actual fact extractions.
 
-# ── 持久化维护状态（跨重启保留 review_clean 标记） ──────────────────
-_maint_state: dict[str, dict] = {}   # {角色名: {"review_clean": bool, "last_review_ts": str}}
+# -- Persistent maintenance state retains review_clean across restarts --
+_maint_state: dict[str, dict] = {}   # {character_name: {"review_clean": bool, "last_review_ts": str}}.
 
-# ── 维护状态的唯一加锁写入口 ────────────────────────────────────────
-# 这个文件是本包唯一一个不分角色的进程级文件，写点横跨 /cache /process /renew
-# /settle 四个 handler、review 后台 task 和 compress 兜底 task。重构前每个写点都是
-# 「裸读模块级 dict → 改字段 → 整体覆盖落盘」且全程无锁，两层后果：
-#   (a) 两个协程各自 to_thread → 两个 worker 线程同时 os.replace 同一个文件，
-#       Windows 上直接 PermissionError(WinError 5)；
-#   (b) 更重的一层：各自的 json.dumps 发生在不同时刻，而 os.replace 的落地顺序可以
-#       和 dumps 顺序反过来 → 后落地的内容更旧，把对方刚写的退避计数 /
-#       review_clean 标记抹掉。
+# -- Sole locked mutation entry for maintenance state --
+# This package's only process-wide, non-character-partitioned file has writers across /cache /process /renew
+# /settle handlers, background review tasks, and compression fallbacks. Previously all performed unlocked
+# read-module-dict -> mutate -> overwrite persistence, causing two failures:
+#   (a) Concurrent coroutine to_thread calls make workers os.replace the same file simultaneously,
+#       directly causing PermissionError/WinError 5 on Windows.
+#   (b) More seriously, json.dumps times differ and os.replace completion can reverse their
+#       order, letting stale content overwrite just-written backoff counters
+#       or review_clean flags.
 #
-# 为什么是 threading.Lock + 整段临界区丢进一个 to_thread，而不是 asyncio.Lock：
-# 1) 这是本仓库写盘的既有正确范式 —— memory/event_log.py 的 record_and_save 明写
-#    「五步放进一个 per-character threading.Lock，整体包进一个 asyncio.to_thread，
-#    绝不跨 await 持锁」。本包里那些 asyncio.Lock（_settle_locks /
-#    _review_spawn_locks）保的是 loop 内的编排不变量，不是文件。
-# 2) 模块级 asyncio.Lock 一旦真发生争用就绑定当时的 event loop；本仓库 pytest 是
-#    asyncio_mode=auto + function-scope loop，第二个有争用的用例会直接
-#    RuntimeError（绑到了别的 loop），而且失败后锁的内部状态还残留成已持有。
-# 3) threading.Lock 把 json.dumps 也关进临界区（atomic_write_json 是先 dumps 再
-#    写）。asyncio.Lock 的版本 dumps 跑在 worker 线程里，任何残留的锁外 mutation
-#    都可能撞出 "dictionary changed size during iteration"。
+# Why threading.Lock with the whole critical section in one to_thread, not asyncio.Lock:
+# 1) Existing correct disk-write pattern: memory/event_log.py record_and_save explicitly places
+#    five steps under one per-character threading.Lock and one asyncio.to_thread,
+#    never holding locks across awaits. This package's asyncio locks, _settle_locks /
+#    _review_spawn_locks, protect in-loop orchestration, not files.
+# 2) Module-level asyncio.Lock binds to the contended event loop; pytest uses
+#    asyncio_mode=auto with function-scoped loops, so a second contended case raises
+#    RuntimeError for another loop and leaves internal lock state held after failure.
+# 3) threading.Lock also protects json.dumps (atomic_write_json serializes before
+#    writing). With asyncio.Lock, worker-side dumps can still race residual unlocked
+#    mutations and raise dictionary-changed-size-during-iteration errors.
 #
-# 取消安全：整段临界区在**一个** asyncio.to_thread 里跑完，锁的 acquire/release 都
-# 发生在 worker 线程内部。asyncio.to_thread 交出去就取消不掉——等它的协程被 cancel
-# 时线程照样跑完、照样释放锁，所以既不会漏掉落盘、也不会把锁泄漏成永久持有。正因如此
-# 这里不需要 shield + 等收尾：本模块任何地方都没有「持锁跨 await」。
+# Cancellation safety: the whole section runs inside one asyncio.to_thread, with acquire/release
+# entirely within the worker. Canceling the awaiting coroutine cannot stop an already dispatched thread;
+# it completes persistence and releases locks, preventing lost writes/permanently held locks.
+# Thus no shield/cleanup wait is needed: this module never holds locks across await.
 _maint_state_lock = threading.Lock()
 
-# mutator 契约：**同步**函数，入参是本角色的可变 sub-dict，返回 (dirty, value)。
-#   - dirty=False → 跳过落盘（调用方本来就不该无脑写；_aclear_review_clean 每轮
-#     /cache、/process 都调，标记本来是 False 时不该白付一次 fsync+replace）。
-#   - value 原样回传给调用方，用来把「锁内做出的判定」带出来（如 dead-letter）。
-# 故意要求同步：这样「锁内 await」「锁内再取别的锁」在语法上就写不出来，
-# 临界区结构性地只剩纯 CPU + 一次落盘。
-# 故意不用 RLock：RLock 会让嵌套 RMW 的内层落盘把外层改了一半的状态写进磁盘。
+# Mutator contract: synchronous function receiving this character's mutable subdict and returning (dirty, value).
+#   - dirty=False skips persistence; callers should not blindly write, because _aclear_review_clean runs every
+#     /cache /process and unchanged False flags should not pay fsync/replace costs.
+#   - Return value unchanged to expose decisions made under lock, e.g. dead-letter.
+# Deliberate synchrony makes await or async lock acquisition inside mutation impossible,
+# structurally limiting critical sections to pure CPU plus one persistence operation.
+# Avoid RLock: nested inner RMW could persist outer transactions' partially modified state.
 MaintStateMutator = Callable[[dict], tuple[bool, Any]]
 
 _EMPTY_MAINT_VIEW: Mapping[str, Any] = MappingProxyType({})
@@ -168,9 +168,9 @@ def _rebind_maint_state_locked(data: dict[str, dict]) -> None:
 def _mutate_maint_state_locked(lanlan_name: str, mutator: MaintStateMutator) -> Any:
     """Read → mutate → persist as one critical section. Run me inside a worker thread."""
     with _maint_state_lock:
-        # sub-dict 必须在锁内取：_aload_maint_state 会 global 重绑定 _maint_state，
-        # 锁外取到的 sub-dict 可能已经从新 dict 上掉下来变成孤儿——改了它既不会被
-        # 落盘、也不会被后续的读看到。
+        # Fetch subdicts under lock: _aload_maint_state globally rebinds _maint_state,
+        # orphaning references fetched outside; mutating them neither persists
+        # nor appears in subsequent reads.
         state = _maint_state.setdefault(lanlan_name, {})
         dirty, value = mutator(state)
         if not dirty:
@@ -178,10 +178,10 @@ def _mutate_maint_state_locked(lanlan_name: str, mutator: MaintStateMutator) -> 
         try:
             _persist_maint_state_locked()
         except Exception as e:
-            # 与重构前的 _asave_maint_state 一致：落盘失败只告警，内存态保留、不往
-            # 上抛。/cache /process /renew /settle 四个 handler 都在 try 里调
-            # _aclear_review_clean，让写盘抖动冒出去会把整轮请求变成
-            # {"status": "error"}，进而卡住 cross_server 的 last_synced_index。
+            # Preserve old _asave_maint_state behavior: warn on persistence failures, retain memory state, never
+            # raise. /cache /process /renew /settle invoke _aclear_review_clean inside
+            # try blocks; exposing disk glitches turns whole requests into
+            # {"status":"error"}, stalling cross_server.last_synced_index.
             logger.warning(f"[IdleMaint] 维护状态保存失败: {e}")
         return value
 
@@ -211,11 +211,11 @@ async def _aload_maint_state() -> None:
             logger.debug(f"[IdleMaint] 已加载维护状态: {len(data)} 个角色")
             return
     except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
-        # UnicodeDecodeError 必须单列：read_json 是 open(encoding='utf-8') + json.load，
-        # 文件被外部工具按 GBK/UTF-16 写过、或断电写了半截多字节序列时抛的是它，
-        # 而它是 ValueError 的子类——既不是 JSONDecodeError 也不是 OSError。漏掉就会
-        # 从这里冒到唯一的调用点 ensure_memory_server_runtime_initialized（那次 await
-        # 没有 try），把整个 memory_server 的 runtime 初始化打断。
+        # Catch UnicodeDecodeError separately: read_json uses UTF-8 open plus json.load;
+        # external GBK/UTF-16 writes or interrupted multibyte sequences raise it,
+        # a ValueError subtype neither JSONDecodeError nor OSError. Otherwise it escapes
+        # to ensure_memory_server_runtime_initialized's sole unguarded await,
+        # aborting all memory_server runtime initialization.
         logger.warning(f"[IdleMaint] 维护状态文件加载失败: {e}")
     await asyncio.to_thread(_rebind_maint_state_locked, {})
 
@@ -235,10 +235,10 @@ def _mutate_clear_review_clean(state: dict) -> tuple[bool, None]:
 
 async def _aclear_review_clean(lanlan_name: str) -> None:
     """Clear the review_clean flag when a new human message arrives."""
-    # 锁外快筛：/cache 和 /process 每轮都调这里，而标记绝大多数时候本来就是 False。
-    # 没有这一层，热路径上每条 user 消息都要白切一次线程。快筛读到的值可能过期，
-    # 但无害——真正的判定在 _mutate_clear_review_clean 里锁内又做了一次，所以
-    # 「假阴性」只会让本轮少写一次（下一条消息立刻会补上），不会写坏状态。
+    # Unlocked fast filter: /cache and /process call each turn while flags usually remain False.
+    # Without this, every user message needlessly switches threads. Stale fast reads are
+    # harmless because _mutate_clear_review_clean rechecks under lock;
+    # false negatives merely skip this write, corrected by the next message, without corrupting state.
     if not _is_review_clean(lanlan_name):
         return
     await _amutate_maint_state(lanlan_name, _mutate_clear_review_clean)

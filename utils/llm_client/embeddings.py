@@ -33,11 +33,11 @@ class OpenAIEmbeddings:
 
         self.model = model
         _api_key = api_key or "sk-placeholder"
-        # 注入 neko/<版本号> User-Agent 覆盖 SDK 自带 UA，防止自定义 embedding
-        # 端点的 Cloudflare "Manage AI bots" 规则拦截。
-        # 显式提取 _kwargs 中的 default_headers，合并后再传给客户端，避免丢失调用方自定义 headers。
-        # 仅提取 default_headers 合并，不转发其他 _kwargs：sync/async 客户端对
-        # http_client 等参数有不同的类型校验，一律转发会导致初始化失败。
+        # Override the SDK UA with neko/<version> to prevent custom embedding endpoints' Cloudflare
+        # "Manage AI bots" rules from blocking requests.
+        # Extract and merge _kwargs default_headers explicitly before client construction to preserve caller headers.
+        # Extract only default_headers; do not forward other _kwargs: sync/async clients validate
+        # parameters such as http_client differently, so forwarding everything can break initialization.
         from utils.http_client import ensure_user_agent
         _caller_headers = _kwargs.get("default_headers")
         _headers = ensure_user_agent(_caller_headers)

@@ -41,7 +41,7 @@ def test_source_narration_rejects_non_text(invalid):
 
 
 def test_live_actor_rejects_stored_segment_shape():
-    # 存档读取走 Runtime/Store，模型入口只能交付当前文本合同。
+    # Load archives through Runtime/Store; model entry points may deliver only the current text contract.
     candidate = {
         'segments': [
             {'phase': 'source_response', 'performance': '（点头）记住了。'},

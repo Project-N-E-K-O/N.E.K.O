@@ -757,13 +757,13 @@ class IndependentAsrRuntime:
         self._asr_pending_speech_onset_at = None
         self._asr_pending_detector_candidate = None
         self._asr_overlap_onset_token: VoiceIngressToken | None = None
-        # 重叠发声的真实开口时刻。重放发生在「上一轮延迟 final 到达」之后，比用户
-        # 实际开口晚得多；不把这一刻带过去，重放时取到的 onset 会把中间那段全算成
-        # 「开口之后」，后继发声在重放前拍的帧就全被排除了。
+        # Actual onset of overlapping speech. Replay follows prior delayed final, much later than real user
+        # onset; without passing timestamp, replay-time onset misclassifies the intervening interval
+        # and excludes successor-speech frames captured before replay.
         self._asr_overlap_onset_at: float | None = None
         self._asr_overlap_completed_token: VoiceIngressToken | None = None
-        # 每张 credit 一个开口时刻：多个 onset+pause 周期可以在同一条延迟 final
-        # 后面排队，用单个槽位会让所有重放共用最后那个时刻。
+        # One onset per credit: multiple onset/pause cycles can queue behind one delayed final;
+        # a single slot would make every replay share the last timestamp.
         self._asr_overlap_completed_onsets: deque[float] = deque()
         self._asr_overlap_completed_turns = 0
         self._asr_sealed_turn_token: VoiceTransportToken | None = None
@@ -803,29 +803,29 @@ class IndependentAsrRuntime:
         )
         self._asr_last_provider_wire_audio_ms = 0
         self._asr_turn_audio_started_at: float | None = None
-        # 语义上的「用户开口时刻」。与上面那个的区别是**打点位置**：这个钉在
-        # SPEECH_CONFIRMED 转换那一行，不跨 _send_asr_lifecycle_state() 的投递
-        # await；上面那个在两条路径上是投递完成之后才打的，喂延迟指标够用，但拿
-        # 来当视觉所有权的起点会把投递窗口里拍的帧判成"不属于这段发声"。
+        # Semantic user-onset timestamp, distinguished by measurement point: taken at
+        # SPEECH_CONFIRMED transition, before _send_asr_lifecycle_state() delivery
+        # awaits. Earlier field is stamped after delivery in two paths, sufficient for latency metrics,
+        # but as visual-ownership start would reject frames captured during delivery.
         self._asr_turn_onset_at: float | None = None
-        # 语音已经检测到、但 ASR session 还没就绪（要等重连）时先把这一刻记下来。
-        # 真正 SPEECH_CONFIRMED 要等 connect() 成功之后才发得出去，用那时的时钟
-        # 当"用户开口时刻"会把整段重连等待算进去，重连期间拍的帧全被判成不属于
-        # 这段发声。
+        # Record detected speech immediately if ASR session unready awaiting reconnect.
+        # SPEECH_CONFIRMED cannot send before connect() succeeds; using that later
+        # clock as onset misclassifies reconnect wait and rejects all frames captured
+        # then as unrelated to this utterance.
         self._asr_pending_speech_onset_at: float | None = None
-        # 上一回合还在排空（DRAINING）时用户就接着说了：pending turn 的真实开口时刻
-        # 是 mark_pending_turn_speech() 那一刻，不是后面 begin_pending_turn() 激活的
-        # 时刻。lifecycle 硬要求 DRAINING 才能标记，所以这个值必然晚于上一轮封口。
+        # User continues while previous turn DRAINING: pending turn actual onset
+        # is mark_pending_turn_speech(), not later begin_pending_turn() activation.
+        # Lifecycle requires DRAINING for marking, so timestamp necessarily follows prior sealing.
         self._asr_pending_turn_onset_at: float | None = None
         self._asr_turn_endpointed_at: float | None = None
-        # 与上面那个一样在封口时刻打点，但**不在 PROVIDER_FINAL 时清掉**。Core 要
-        # 到 transcript 派发之后才冻结多模态回合，那时上面那个已经是 None 了；
-        # 消费方靠"这个时刻是否晚于本回合起点"排除上一轮的残值。
+        # Same sealing timestamp as above, retained through PROVIDER_FINAL. Core freezes
+        # multimodal turn only after transcript dispatch, when earlier field is already None;
+        # consumers reject prior-turn residue by requiring later than current turn start.
         self._asr_last_turn_endpointed_at: float | None = None
-        # 上面那个保留副本**属于哪一轮**。时间戳分不清"上一轮的封口"和"本轮的封
-        # 口"：monotonic 在 Windows 上是 ~15ms 粒度，两者都可能与后继 record 的注
-        # 册时刻相等，往任一个方向猜都会错（猜"归上一轮"会丢掉本轮自己的截止点，
-        # 猜"归本轮"会把上一轮的封口盖到后继头上）。带上身份就不用猜。
+        # Turn identity for retained sealing timestamp. Time alone cannot distinguish prior/current
+        # sealing: Windows monotonic granularity ~15ms can make both equal successor-record
+        # registration. Guessing prior loses current cutoff; guessing current applies prior cutoff
+        # to successor. Carry identity instead.
         self._asr_last_turn_endpointed_key: str | None = None
         self._asr_first_partial_recorded = False
         self._voice_input_resource_optimization_enabled = True
@@ -1269,9 +1269,9 @@ class IndependentAsrRuntime:
         if getattr(detector, "admission_enabled", False) and event.kind == "continuous":
             return
 
-        # 用户开口的时刻是**进这个处理函数**的时刻，不是底下 prewarm / transport
-        # gather 跑完的时刻。视觉所有权拿 onset 当下界，晚打点会把整段 prewarm+
-        # 重连等待算成「用户开口之后」，期间拍的帧全被判成不属于这段发声。
+        # User onset is handler entry, never completion of prewarm/transport
+        # gather below. Visual ownership uses onset lower bound; later stamping misclassifies
+        # prewarm/reconnect frames as outside this utterance.
         detected_at = time.monotonic()
 
         def event_is_current() -> bool:
@@ -1364,17 +1364,17 @@ class IndependentAsrRuntime:
                 self._asr_pending_speech_onset_at = detected_at
             return
         lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
-        # session 先未就绪、随后又 ready 时，真实开口时刻是当初记下的那个
-        # pending onset —— 直接用当前时钟会把整段重连等待算成「开口之后」，
-        # 期间拍的帧全被排除在本回合外（CodeRabbit Major）。
+        # If session was unready then ready, actual onset is previously recorded timestamp.
+        # pending onset; using current time misclassifies reconnect wait,
+        # excluding every frame captured during it from this turn (CodeRabbit Major).
         self._asr_turn_onset_at = (
             self._asr_pending_speech_onset_at
             if self._asr_pending_speech_onset_at is not None
             else detected_at
         )
-        # 直接确认这一路同样要把待确认状态清干净：session 在标记 pending 之后
-        # 才 ready 时，直接路径可能先完成确认，旧 flag / 旧 onset 会留到下一轮
-        # 被复用（CodeRabbit Major）。
+        # Direct confirmation also clears pending state: if session becomes ready after pending marking,
+        # direct path may confirm first, leaving old flag/onset for next turn
+        # to reuse (CodeRabbit Major).
         self._asr_pending_speech_confirmed = False
         self._asr_pending_speech_onset_at = None
         active_identity = self._capture_runtime_identity(
@@ -1461,8 +1461,8 @@ class IndependentAsrRuntime:
     ) -> bool:
         """Open a provider-owned streaming turn without fabricating VAD activity."""
 
-        # 同 _handle_detector_prewarm_event：onset 取进函数的时刻，不取底下各段
-        # await 跑完的时刻。
+        # As _handle_detector_prewarm_event, onset is function entry, not completion
+        # of awaits below.
         detected_at = time.monotonic()
         detector = self._asr_detector
         ingress_token = self._asr_current_ingress_token
@@ -1532,9 +1532,9 @@ class IndependentAsrRuntime:
             )
             return False
         lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
-        # session 先未就绪、随后又 ready 时，真实开口时刻是当初记下的那个
-        # pending onset —— 直接用当前时钟会把整段重连等待算成「开口之后」，
-        # 期间拍的帧全被排除在本回合外（CodeRabbit Major）。
+        # After initially unready session becomes ready, actual onset remains recorded
+        # pending onset; current clock misclassifies reconnect wait,
+        # excluding captured frames from turn (CodeRabbit Major).
         self._asr_turn_onset_at = (
             self._asr_pending_speech_onset_at
             if self._asr_pending_speech_onset_at is not None
@@ -4690,7 +4690,7 @@ class IndependentAsrRuntime:
         audio_start_sample: int | None = None,
         audio_already_sent: bool = False,
     ) -> None:
-        # 同上：onset 是收到这个语音活动事件的时刻。
+        # As above: onset is receipt of this speech-activity event.
         detected_at = time.monotonic()
         if epoch != self._asr_session_epoch:
             return
@@ -4809,9 +4809,9 @@ class IndependentAsrRuntime:
                 asr_session = self._asr_session
                 if asr_session is not None and getattr(asr_session, "is_ready", True):
                     lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
-                    # session 先未就绪、随后又 ready 时，真实开口时刻是当初记下的那个
-                    # pending onset —— 直接用当前时钟会把整段重连等待算成「开口之后」，
-                    # 期间拍的帧全被排除在本回合外（CodeRabbit Major）。
+                    # After initially unready session becomes ready, actual onset remains recorded
+                    # pending onset; current clock misclassifies reconnect wait,
+                    # excluding captured frames from turn (CodeRabbit Major).
                     self._asr_turn_onset_at = (
                         self._asr_pending_speech_onset_at
                         if self._asr_pending_speech_onset_at is not None
@@ -4863,7 +4863,7 @@ class IndependentAsrRuntime:
                 self._asr_overlap_onset_at = None
                 if onset_token is not None:
                     self._asr_overlap_completed_proofs.append(onset_proof)
-                    # 一张 credit 配一个时刻，按兑付顺序排队。
+                    # One timestamp per credit, queued in redemption order.
                     self._asr_overlap_completed_onsets.append(
                         onset_at if onset_at is not None else detected_at
                     )
@@ -4873,7 +4873,7 @@ class IndependentAsrRuntime:
                         # endpoint/final pair, so count credits per cycle.
                         self._asr_overlap_completed_turns += 1
                     else:
-                        # 换了 ingress 身份：旧队列作废，只留这一张。
+                        # Ingress identity changed: invalidate old queue, retain this credit only.
                         last = self._asr_overlap_completed_onsets.pop()
                         self._asr_overlap_completed_onsets.clear()
                         self._asr_overlap_completed_onsets.append(last)
@@ -5030,17 +5030,17 @@ class IndependentAsrRuntime:
             # credit: replay the onset so the lifecycle is ACTIVE and prepared,
             # then fall through to seal immediately, letting the queued final
             # right behind this endpoint find a DRAINING turn.
-            # ⚠️ 先重放、确认真的醒过来了，**再**记账。重放可能唤不醒这一轮
-            # （会话暂时不可用时停在 PREWARMING）；此时若 credit 已经扣掉，这张
-            # credit 对应的 endpoint 就再也封不了口，紧随其后的 final 会被整条
-            # 丢弃，而被弹出的 onset 还会被更晚的回合继承（拿错视觉窗口）。
+            # ⚠️ Replay, verify actual wake, then account. Replay may fail waking turn
+            # (session unavailable, stuck PREWARMING); consuming credit then prevents its
+            # endpoint sealing, discards following final entirely,
+            # and passes popped onset to later unrelated turns with wrong visual window.
             replay_onset_at = (
                 self._asr_overlap_completed_onsets[0]
                 if self._asr_overlap_completed_onsets
                 else None
             )
-            # 把真实开口时刻交给重放：直接确认分支会优先取 pending onset，于是
-            # SPEECH_CONFIRMED 打上的是用户当初开口的时刻，而不是这次重放的时刻。
+            # Pass real onset into replay: direct confirmation prefers pending onset,
+            # stamping SPEECH_CONFIRMED at original speech time, never replay time.
             _lent_pending_onset = False
             if (
                 replay_onset_at is not None
@@ -5068,53 +5068,53 @@ class IndependentAsrRuntime:
                 and self._asr_pending_speech_confirmed
                 and lifecycle.snapshot.state is VoiceLifecycleState.PREWARMING
             ):
-                # 重放被"传输未就绪"挡住了，停在 PREWARMING 并挂起了确认。
-                # （provider 权威下 SOFT_WAKE→PREWARMING 之后拦路的就是
-                # asr_session.is_ready —— _ensure_smart_turn_ready 在 provider
-                # 权威下无 await 直接返回 True；PREWARMING 的 lifecycle 广播没送达
-                # 是同态的另一种成因。别在注释里写死"唯一成因"。）
+                # Transport-unready blocks replay at PREWARMING with pending confirmation.
+                # (Under provider authority, after SOFT_WAKE→PREWARMING the blocker is
+                # asr_session.is_ready; _ensure_smart_turn_ready returns True without await
+                # there. Undelivered PREWARMING lifecycle broadcast is another cause of same state,
+                # so never claim only one cause in comments.)
                 #
-                # 但这一轮**不需要**传输：它的音频早在上一轮还 ACTIVE 时就已经过
-                # 线，endpoint 和它自己的 final 已经排在有序 FIFO 里、正要到达。
-                # 而且能走到这里就说明老 session 还被认领着——_restart_transport
-                # 和 _close_transport_only 都是先把 _asr_session 置 None 再 close，
-                # 之后 is_adopted_candidate() 会丢掉它的全部回调——也就是说重连
-                # **还没开始**，那条 final 就排在后面。等重连救不回它：重连会换新
-                # session，老队列里那条 final 必定在 is_adopted_candidate() 上被
-                # 丢掉。就地补完确认，让紧随其后的 final 找到一个 DRAINING 的回合。
+                # This turn needs no transport: audio crossed wire while preceding turn was ACTIVE;
+                # endpoint/own final already await delivery in ordered FIFO.
+                # Reaching here also proves old session still adopted: _restart_transport
+                # and _close_transport_only set _asr_session=None before closing,
+                # after which is_adopted_candidate() discards callbacks. Thus reconnect
+                # has not started; final is queued behind. Waiting reconnect cannot save it:
+                # reconnect replaces session, causing old queued final rejection by
+                # is_adopted_candidate(). Complete confirmation locally so following final finds DRAINING turn.
                 #
-                # 这里刻意**不**走 _handle_independent_asr_error：那条出口会 bump
-                # epoch、拆掉整个 session、cancel 掉正在跑的重连任务，并把语音路由
-                # fail-closed 到本次会话结束——为一句其实救得回来的话把整场语音判
-                # 死，违反"绝不丢用户的句子"。真丢的情况（final 始终不来）由下面封
-                # 口时装上的 provider-final watchdog 兜底：10s 硬顶，且不受
-                # _voice_input_resource_optimization_enabled 开关影响（那个开关会
-                # 让 _schedule_transport_warm_expiry 直接 return，所以不能靠它）。
+                # Deliberately avoid _handle_independent_asr_error: it bumps epoch,
+                # destroys session, cancels reconnect and fails voice routing closed
+                # until session end. Killing whole voice session for recoverable utterance
+                # violates never-lose-user-sentences. True missing finals use provider-final watchdog
+                # installed at seal below, hard 10s cap independent of
+                # _voice_input_resource_optimization_enabled, which makes
+                # _schedule_transport_warm_expiry return early, unsuitable here.
                 #
-                # 门里 not pending_before 是刻意的：只补偿**这次重放自己造出来的**
-                # 那笔挂起确认，不吞别人的。
+                # not pending_before deliberately compensates only confirmation suspended by this replay,
+                # never another operation's pending state.
                 #
-                # 刻意不做的两件事：不调 _activate_asr_audio_dispatcher /
-                # drain_active_start_audio（重连确认分支有，但这一轮的音频早已过
-                # 线，本地没有待发缓冲）；不武装 _schedule_transport_warm_expiry
-                # （忙窗口的界由上面那个 watchdog 提供）。将来若有人让这条路承接
-                # 未发出的 PCM，必须回来补第一条。
+                # Deliberately omit _activate_asr_audio_dispatcher /
+                # drain_active_start_audio (reconnect confirmation uses them, but this turn audio already
+                # crossed wire, no local pending buffer); omit _schedule_transport_warm_expiry
+                # (watchdog above bounds busy window). If this path later handles unsent PCM,
+                # restore first operation.
                 lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
                 self._asr_turn_onset_at = (
                     self._asr_pending_speech_onset_at
                     if self._asr_pending_speech_onset_at is not None
                     else time.monotonic()
                 )
-                # 与 _restart_transport 的补确认块同序：确认一落地就把挂起状态
-                # 清掉。真实开口时刻已经装进 _asr_turn_onset_at，下面那个 await
-                # 无论怎么返回都不会把它丢掉。
+                # Same order as _restart_transport confirmation repair: clear pending state immediately
+                # after confirmation. Real onset is already in _asr_turn_onset_at,
+                # unaffected by await outcome below.
                 self._asr_pending_speech_confirmed = False
                 self._asr_pending_speech_onset_at = None
-                # 这张 credit 就是被这次确认兑走的，账要跟着确认一起落。留到
-                # 下面记的话，身份漂移那条 return 会把它跳过：这一轮照常在替换后的
-                # 传输上封口，而陈旧的 credit 与 onset 还压在队列里 —— 后面真实的
-                # overlap 排在它后面，兑付时拿到错的 onset，多出来的那张还会让某个
-                # endpoint 重放到不属于它的回合上，把一条 final 丢掉。
+                # This confirmation redeems this credit; accounting must happen together. Delaying
+                # until below lets identity-drift return skip it: turn seals on replacement
+                # transport while stale credit/onset remain queued. Later genuine
+                # overlap receives wrong onset, and excess credit replays an endpoint
+                # into unrelated turn, losing a final.
                 self._consume_overlap_completed_credit()
                 credit_consumed = True
                 self._asr_turn_audio_started_at = time.monotonic()
@@ -5133,23 +5133,23 @@ class IndependentAsrRuntime:
                     or epoch != self._asr_session_epoch
                     or self._asr_lifecycle is not lifecycle
                 ):
-                    # delivered 为假只可能是运行时身份漂移：_send_asr_lifecycle_state
-                    # 吞掉回调异常之后，返回的就是 _runtime_identity_matches。而
-                    # _restart_transport / _close_transport_only 换掉 _asr_session 与
-                    # transport_generation 时都不走 _reset_asr_turn_state，所以这里留下
-                    # 的挂起状态没人回收：上面 transition(SPEECH_CONFIRMED) 已经把它兑付
-                    # 进 _asr_turn_onset_at，两个兑付点又都以 PREWARMING 为闸、ACTIVE 下
-                    # 一律跳过。残留下去会被后面某个不相干的回合当成自己的开口时刻，还会
-                    # 把补偿门 not pending_before 恒假化，让重叠补偿此后静默失效。
+                    # delivered=False can only mean runtime identity drift: _send_asr_lifecycle_state
+                    # swallows callback errors then returns _runtime_identity_matches.
+                    # _restart_transport / _close_transport_only replace _asr_session and
+                    # transport_generation without _reset_asr_turn_state, leaving pending state
+                    # uncollected. transition(SPEECH_CONFIRMED) already redeemed it into
+                    # _asr_turn_onset_at; both redemption sites gate PREWARMING and skip
+                    # ACTIVE. Residue supplies later unrelated turns stale onset and makes
+                    # not pending_before permanently false, silently disabling future overlap compensation.
                     return
             if lifecycle.snapshot.state is not VoiceLifecycleState.ACTIVE:
-                # 没唤醒。credit 原样留着等下一次兑付；借出去的 onset 也要收回，
-                # 免得它被后面某个不相干的回合当成自己的起点。
-                # ⚠️ 只有在**没有**挂起的确认时才收回。session 未就绪时
-                # _handle_independent_asr_activity 会停在 PREWARMING、置上
-                # _asr_pending_speech_confirmed 并**特意留着**这个 onset 等重连后
-                # 的确认去取；此时收回等于让那次确认退回用新的 detected_at，把用户
-                # 真实开口以来的帧全排除掉。
+                # Did not wake: retain credit for next redemption, reclaim borrowed onset,
+                # preventing unrelated later turns taking it as their own start.
+                # ⚠️ Reclaim only without pending confirmation. Unready sessions make
+                # _handle_independent_asr_activity stay PREWARMING, set
+                # _asr_pending_speech_confirmed and deliberately retain onset for post-reconnect
+                # confirmation. Reclaiming then forces new detected_at,
+                # excluding all frames since actual user onset.
                 if (
                     _lent_pending_onset
                     and not self._asr_pending_speech_confirmed
@@ -5157,7 +5157,7 @@ class IndependentAsrRuntime:
                 ):
                     self._asr_pending_speech_onset_at = None
                 return
-            # 确认 ACTIVE 之后才记账（补确认那条路已经在上面记过了）。
+            # Account only after confirming ACTIVE (repair path already accounted above).
             if not credit_consumed:
                 self._consume_overlap_completed_credit()
         if lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE:
@@ -5249,9 +5249,9 @@ class IndependentAsrRuntime:
             self._asr_sealed_turn_token = self._capture_transport_token(lifecycle)
             self._asr_turn_endpointed_at = time.monotonic()
             self._asr_last_turn_endpointed_at = self._asr_turn_endpointed_at
-            # 与 Core 侧 record.turn_id 同构（asr_runtime.py 的
+            # Same shape as Core record.turn_id (asr_runtime.py's
             # external_turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"），
-            # 好让冻结时能直接判"这个封口是不是这条 record 的"。
+            # allowing freeze to test whether sealing belongs to this record directly.
             self._asr_last_turn_endpointed_key = (
                 f"asr-{turn_token.ingress.session_epoch}-{turn_token.turn_id}"
             )
@@ -5284,9 +5284,9 @@ class IndependentAsrRuntime:
             return
         lifecycle = self._asr_lifecycle
         if lifecycle is None or not lifecycle.has_pending_turn:
-            # has_pending_turn 还要求 pending buffer 里真有音频：speech 先到、或者
-            # 对应 PCM 被丢弃时会走到这里。不清的话这个 onset 会被**下一个**真实
-            # pending turn 复用，把那一轮的起点提前到上一轮，视觉帧绑错回合。
+            # has_pending_turn also requires actual pending audio; speech arriving first or
+            # discarded PCM reaches here. Clear onset or next real pending turn reuses it,
+            # shifting start to prior turn and misbinding visual frames.
             self._asr_pending_turn_onset_at = None
             if lifecycle is not None:
                 lifecycle.discard_unconfirmed_pending_audio()
@@ -5301,12 +5301,12 @@ class IndependentAsrRuntime:
         payload = lifecycle.begin_pending_turn()
         if payload:
             self._asr_pending_activation_turn = self._capture_turn_token(lifecycle)
-        # begin_pending_turn() 内部完成 SPEECH_CONFIRMED 迁移（lifecycle.py），是第
-        # 五个迁移点 —— 之前给另外四处补 onset 打点时漏了它，因为守卫只扫本模块的
-        # 字面量。不补的话 _asr_turn_onset_at 还留着**上一轮**的值（它只在
-        # close/abort/error 才清），Core 会拿上一轮的 onset 当本回合 started_at，于是
-        # 上一轮保留的封口时刻反过来成了本回合的截止点，本回合之后拍的每一帧都被
-        # accepts() 拒掉 —— 整轮退化成纯文本。
+        # begin_pending_turn() transitions SPEECH_CONFIRMED internally (lifecycle.py), fifth
+        # transition site missed when stamping other four because guard scanned only local
+        # literals. Without it, _asr_turn_onset_at retains previous turn's value
+        # (cleared only on close/abort/error); Core uses prior onset as current started_at,
+        # making retained prior sealing current cutoff, rejecting every current frame
+        # via accepts() and degrading whole turn to text-only.
         self._asr_turn_onset_at = (
             self._asr_pending_turn_onset_at
             if self._asr_pending_turn_onset_at is not None
@@ -5658,16 +5658,16 @@ class IndependentAsrRuntime:
         overlap_proof = self._asr_overlap_onset_proof or (None, None)
         overlap_onset_at = self._asr_overlap_onset_at
         if overlap_token is not None and self._asr_overlap_completed_turns > 0:
-            # 单槽 onset 和已兑换成 credit 的旧周期同时存在时，credit 排在前面。
-            # provider 的 FIFO 会先送那些周期的 endpoint/final，再轮到这个还活着的
-            # onset。此刻**直接**重放的话，先到的那个 endpoint 会把这条 onset 建出
-            # 来的记录封掉 —— 旧那轮的 transcript 配上新那轮的视觉窗口；而新那轮的
-            # endpoint 再没有 credit 可兑，它的 final 会被整条丢掉。
+            # Single-slot onset coexisting with completed credits: credits go first.
+            # Provider FIFO delivers those cycles' endpoints/finals before current live
+            # onset. Direct replay now lets earlier endpoint seal record made from this onset,
+            # pairing old transcript with new visual window; new endpoint then has
+            # no credit left and loses its entire final.
             #
-            # 所以两边都不动：onset 留在单槽里，credit 留在队列里各自按 FIFO 兑付。
-            # credit 兑完之后，那条 final 走到这里时 _asr_overlap_completed_turns
-            # 已经归零，重放才轮到这个 onset。身份轮换（硬静音 / 中止 / 路由切换）
-            # 会由 _reset_asr_turn_state 把单槽和队列一起清掉，不会留下半边。
+            # Leave both untouched: onset in slot, credits in queue, each redeemed FIFO.
+            # After credits exhausted, final reaching here sees _asr_overlap_completed_turns
+            # zero and can replay this onset. Identity rotation (hard mute/abort/route change)
+            # clears both via _reset_asr_turn_state, never leaving one half.
             overlap_token = None
         else:
             self._asr_overlap_onset_token = None
@@ -5709,9 +5709,9 @@ class IndependentAsrRuntime:
         # reached WARM_IDLE so the next turn's ordered endpoint and final find
         # an ACTIVE, prepared turn instead of discarding the utterance.
         #
-        # 把真实开口时刻交给重放 —— 和 credit 兑付那条路一样。少了这一步，这条
-        # **直接**重放会用当前时钟当后继发声的起点，把「上一轮排空 + 延迟 final」
-        # 整段算进「开口之后」，用户重新开口以来拍的帧全被排除。
+        # Pass true onset into replay as credit path does; otherwise direct replay uses
+        # current clock as successor start, misclassifying prior drain/delayed-final interval
+        # and excluding every frame since user resumed speech.
         _lent_pending_onset = False
         if (
             overlap_onset_at is not None
@@ -5736,26 +5736,26 @@ class IndependentAsrRuntime:
             and self._asr_pending_speech_confirmed
             and lifecycle_ref.snapshot.state is VoiceLifecycleState.PREWARMING
         ):
-            # 与 credit 兑付那条路同一处置（见 _handle_independent_asr_endpoint）：
-            # 重放被"传输未就绪"挡住停在 PREWARMING 时，就地补完确认。
+            # Same handling as credit redemption (_handle_independent_asr_endpoint):
+            # transport-unready replay stuck PREWARMING gets confirmation completed locally.
             #
-            # 光留住 onset 不够。这一轮的 provider endpoint / final 已经排在有序
-            # FIFO 里正要到达，而 PREWARMING 封不了口、_handle_independent_asr_final
-            # 又要求 DRAINING —— 那条 final 会被整条丢弃，且没有任何 watchdog 兜底。
-            # 等重连也救不回来：重连换新 session，老队列里的回调全被
-            # is_adopted_candidate() 丢掉（_restart_transport / _close_transport_only
-            # 都是先把 _asr_session 置 None 再 close）。能走到这里说明老 session
-            # 还被认领着，也就是重连还没开始。
+            # Retaining onset alone insufficient: provider endpoint/final already queued FIFO,
+            # but PREWARMING cannot seal and _handle_independent_asr_final requires
+            # DRAINING, discarding final entirely with no watchdog.
+            # Reconnect cannot rescue: replacing session makes is_adopted_candidate()
+            # discard all old callbacks (_restart_transport / _close_transport_only
+            # first set _asr_session=None, then close). Reaching here proves old session
+            # remains adopted, so reconnect has not begun.
             #
-            # 这一轮不需要传输：它的音频早在上一轮 ACTIVE 时就已经过线。
+            # This turn needs no transport: audio crossed wire while prior turn ACTIVE.
             lifecycle_ref.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
             self._asr_turn_onset_at = (
                 self._asr_pending_speech_onset_at
                 if self._asr_pending_speech_onset_at is not None
                 else time.monotonic()
             )
-            # 与 credit 兑付那条路同序（见 _handle_independent_asr_endpoint）：
-            # 确认一落地就清挂起状态，真实开口时刻已经装进 _asr_turn_onset_at。
+            # Same order as credit path (_handle_independent_asr_endpoint):
+            # clear pending immediately on confirmation; real onset already lives in _asr_turn_onset_at.
             self._asr_pending_speech_confirmed = False
             self._asr_pending_speech_onset_at = None
             self._asr_turn_audio_started_at = time.monotonic()
@@ -5774,26 +5774,26 @@ class IndependentAsrRuntime:
                 or epoch != self._asr_session_epoch
                 or self._asr_lifecycle is not lifecycle_ref
             ):
-                # delivered 为假只可能是运行时身份漂移：_send_asr_lifecycle_state
-                # 吞掉回调异常之后，返回的就是 _runtime_identity_matches。而
-                # _restart_transport / _close_transport_only 换掉 _asr_session 与
-                # transport_generation 时都不走 _reset_asr_turn_state，所以这里留下
-                # 的挂起状态没人回收：上面 transition(SPEECH_CONFIRMED) 已经把它兑付
-                # 进 _asr_turn_onset_at，两个兑付点又都以 PREWARMING 为闸、ACTIVE 下
-                # 一律跳过。残留下去会被后面某个不相干的回合当成自己的开口时刻，还会
-                # 把补偿门 not pending_before 恒假化，让重叠补偿此后静默失效。
+                # delivered=False can only mean runtime identity drift: _send_asr_lifecycle_state
+                # swallows callback errors then returns _runtime_identity_matches.
+                # _restart_transport / _close_transport_only replace _asr_session and
+                # transport_generation without _reset_asr_turn_state; leftover pending state
+                # remains uncollected. transition(SPEECH_CONFIRMED) already redeemed into
+                # _asr_turn_onset_at, while both redemption sites require PREWARMING,
+                # skipping ACTIVE. Residue becomes unrelated later onset and
+                # makes not pending_before permanently false, silently disabling overlap repair.
                 return
         if lifecycle_ref.snapshot.state is not VoiceLifecycleState.ACTIVE:
-            # 没醒起来（Smart Turn 租约没就绪，或 lifecycle 广播没送达）。借出去的
-            # onset 必须收回：留着的话，后面某个**不相干**的发声会把这个陈旧时刻
-            # 当成自己的起点，视觉所有权窗口整个错位——要么把无关的帧折进来，要么
-            # 把本轮真正的帧判成过期。
+            # Failed wake (Smart Turn lease unready / lifecycle undelivered): reclaim borrowed
+            # onset, or later unrelated speech takes stale start,
+            # shifting visual ownership window to include unrelated frames or
+            # reject genuine current frames as expired.
             #
-            # ⚠️ 只有在**没有**挂起确认时才收回，判据与 credit 兑付那条路一字不差：
-            # session 未就绪时 _handle_independent_asr_activity 会停在 PREWARMING、
-            # 置上 _asr_pending_speech_confirmed 并**特意留着**这个 onset 等后续的
-            # 确认去取；此时收回等于让那次确认退回用新的 detected_at，把用户真实
-            # 开口以来的帧全排除掉。
+            # ⚠️ Reclaim only without pending confirmation, identical criterion to credit redemption:
+            # unready sessions make _handle_independent_asr_activity stay PREWARMING,
+            # set _asr_pending_speech_confirmed, deliberately retaining onset for later
+            # confirmation. Reclaiming forces new detected_at, excluding frames since actual
+            # user onset.
             if (
                 _lent_pending_onset
                 and not self._asr_pending_speech_confirmed

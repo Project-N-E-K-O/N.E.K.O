@@ -1212,7 +1212,8 @@
                     || this.resolveAvatarFloatingSelector('chat-tools');
             }
             if (selector === 'chat-choice-slot') {
-                return this.resolveElement('#react-chat-window-root .composer-choice-slot')
+                return this.resolveElement('.mini-game-invite')
+                    || this.resolveElement('#react-chat-window-root .composer-choice-slot')
                     || this.resolveElement('#react-chat-window-root .composer-galgame-slot')
                     || this.resolveAvatarFloatingSelector('chat-tools');
             }
@@ -1224,13 +1225,13 @@
             if (maxTargets <= 0) {
                 return [];
             }
-            const choiceSlot = this.resolveElement(
+            const choiceSlot = this.resolveElement('.mini-game-invite') || this.resolveElement(
                 '#react-chat-window-root .composer-choice-slot[data-choice-source="mini_game_invite"]'
             );
             if (!choiceSlot || !this.isElementVisible(choiceSlot)) {
                 return [];
             }
-            return Array.from(choiceSlot.querySelectorAll('.composer-choice-option, .composer-galgame-option'))
+            return Array.from(choiceSlot.querySelectorAll('.mini-game-invite-action, .composer-choice-option, .composer-galgame-option'))
                 .filter((element, index, array) => element && array.indexOf(element) === index)
                 .filter((element) => this.isElementVisible(element))
                 .slice(0, maxTargets);

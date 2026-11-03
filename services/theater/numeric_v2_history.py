@@ -73,7 +73,7 @@ async def lookup_history(config_manager: Any, session: Any, query: str) -> dict[
         semaphore = asyncio.Semaphore(2)
 
         async def read_page(rows: list[dict[str, Any]]) -> None:
-            # 每页只接受该页实际编号，拒绝模型抄写或补造所谓原文；先收全来源和更正再按时间排列。
+            # Accept only IDs actually present on each page; reject model-transcribed or fabricated source text. Collect all sources and corrections before chronological sorting.
             async with semaphore:
                 result["calls"] += 1
                 set_call_type("theater_numeric_v2_history_lookup")
@@ -94,7 +94,7 @@ async def lookup_history(config_manager: Any, session: Any, query: str) -> dict[
                     selected.update(ids)
                     result["pages_read"] += 1
                 except Exception as exc:
-                    # 查记录失败不能伪装为没有历史；下游仍回应当前输入，但不得猜测缺失往事。
+                    # Record lookup failures must not masquerade as absent history; downstream may answer current input but must not invent missing past events.
                     errors.append(type(exc).__name__)
 
         await asyncio.wait_for(asyncio.gather(*(read_page(page) for page in pages)), timeout=_LOOKUP_TIMEOUT_SECONDS)

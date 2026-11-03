@@ -1,8 +1,9 @@
-import { useRef, useEffect, useMemo, useState } from 'react';
+import { useRef, useEffect, useMemo, useState, type ReactNode } from 'react';
 import MessageBubble from './MessageBubble';
+import ScreenObservationExposure, { getScreenObservationAnchorIds } from './ScreenObservationExposure';
 import ThinkingDots from './ThinkingDots';
 import { i18n } from './i18n';
-import { type ChatMessage, type MessageAction } from './message-schema';
+import { hasVisibleMessageContent, type ChatMessage, type MessageAction } from './message-schema';
 
 const MAX_DISPLAY_MESSAGES = 50;
 
@@ -12,6 +13,8 @@ type MessageListProps = {
   failedStatusLabel?: string;
   thinking?: boolean;
   onAction?: (message: ChatMessage, action: MessageAction) => void;
+  footer?: ReactNode;
+  footerKey?: string;
 };
 
 function shouldGroupWithPrevious(current: ChatMessage, previous?: ChatMessage) {
@@ -33,6 +36,8 @@ export default function MessageList({
   failedStatusLabel = i18n('chat.messageFailed', 'Failed'),
   thinking = false,
   onAction,
+  footer,
+  footerKey,
 }: MessageListProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const shouldScrollRef = useRef(true);
@@ -45,10 +50,13 @@ export default function MessageList({
   });
 
   const displayMessages = useMemo(
-    () => messages.length > MAX_DISPLAY_MESSAGES
-      ? messages.slice(-MAX_DISPLAY_MESSAGES)
-      : messages,
+    () => messages.filter(hasVisibleMessageContent).slice(-MAX_DISPLAY_MESSAGES),
     [messages],
+  );
+
+  const exposureAnchorIds = useMemo(
+    () => getScreenObservationAnchorIds(displayMessages, messages),
+    [displayMessages, messages],
   );
 
   const observedMessageKey = useMemo(
@@ -63,7 +71,7 @@ export default function MessageList({
     const container = containerRef.current;
     if (!container || !shouldScrollRef.current) return;
     container.scrollTop = container.scrollHeight;
-  }, [displayMessages, thinking]);
+  }, [displayMessages, thinking, footerKey]);
 
   function clearScrollbarTimer() {
     if (scrollbarTimerRef.current === null) return;
@@ -128,7 +136,7 @@ export default function MessageList({
     }
 
     return () => observer.disconnect();
-  }, [observedMessageKey]);
+  }, [observedMessageKey, footerKey]);
 
   useEffect(() => {
     updateFloatingScrollbar(false);
@@ -153,7 +161,7 @@ export default function MessageList({
     transform: `translateY(${scrollbarState.top}px)`,
   };
 
-  if (displayMessages.length === 0 && !thinking) {
+  if (displayMessages.length === 0 && !thinking && !footer) {
     return (
       <div className="message-list-shell">
         <div className="message-list" ref={containerRef} aria-label={ariaLabel}>
@@ -180,8 +188,12 @@ export default function MessageList({
             isGroupedWithPrevious={shouldGroupWithPrevious(message, displayMessages[index - 1])}
             failedStatusLabel={failedStatusLabel}
             onAction={onAction}
+            exposure={exposureAnchorIds.has(message.id)
+              ? <ScreenObservationExposure messages={messages} turnId={message.turnId} onAction={onAction} />
+              : undefined}
           />
         ))}
+        {footer}
         {thinking ? (
           <article className="message-row message-row-assistant focus-thinking-row" data-focus-thinking="true">
             <div className="avatar avatar-placeholder" aria-hidden="true" />

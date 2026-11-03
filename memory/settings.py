@@ -56,7 +56,7 @@ class ImportantSettingsManager:
 
         for i in self.settings_file:
             try:
-                # 角色档案保留字段不参与记忆提取
+                # Reserved character-profile fields are excluded from memory extraction
                 for reserved_field in self._excluded_profile_fields:
                     self.lanlan_basic_config[i].pop(reserved_field, None)
                 with open(self.settings_file[i], 'r', encoding='utf-8') as f:

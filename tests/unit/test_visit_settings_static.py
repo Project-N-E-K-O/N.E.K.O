@@ -14,9 +14,9 @@
 
 """The settings popup's visit group (design §5 PR-13, §3.7.6; OD-09 v3).
 
-* the group renders exactly two visit switches, ``visitEnabled`` (default
-  off) and ``visitVoiceEnabled`` (default on), both persisted through the
-  conversation-settings whitelist;
+* the main settings menu renders the ``visitEnabled`` master switch (default
+  off), while the visit side panel renders only ``visitVoiceEnabled``
+  (default on); both persist through the conversation-settings whitelist;
 * ``visitMemoryEnabled`` is a hidden setting: no settings script mentions it;
 * the group entry starts hidden and is only shown when ``GET /api/visit/state``
   reports the ``NEKO_VISIT_ENABLED`` switch on; the tier is read-only from
@@ -61,10 +61,44 @@ def _visit_panel_source() -> str:
     return src[start:src.index("\n}\n", start)]
 
 
-def test_visit_panel_renders_exactly_the_two_visit_switches():
+def test_visit_master_switch_is_in_main_menu_and_not_repeated_in_side_panel():
+    src = _read(POPUP)
+    main_start = src.index("const visitSettingsToggle = ")
+    main = src[main_start:src.index("const settingsToggles = ", main_start)]
+    assert "id: 'visit-enabled'" in main
+    assert "storageKey: 'visitEnabled'" in main
+    assert "controlStyle: 'slider'" in main
+    assert "data-neko-visit-settings-entry" in main
+    assert "_attachSidePanelHover(visitSettingsToggle, visitSidePanel)" in main
+
     panel = _visit_panel_source()
-    assert re.findall(r"id: '(visit-[\w-]+)'", panel) == ["visit-enabled", "visit-voice"]
-    assert re.findall(r"storageKey: '(\w+)'", panel) == ["visitEnabled", "visitVoiceEnabled"]
+    assert re.findall(r"id: '(visit-[\w-]+)'", panel) == ["visit-voice"]
+    assert re.findall(r"storageKey: '(\w+)'", panel) == ["visitVoiceEnabled"]
+    assert "visit-enabled" not in panel
+
+
+def test_three_main_menu_sliders_are_consecutive_after_cat_settings():
+    src = _read(POPUP)
+    cat = src.index("const catSettingsBtn = ")
+    visit = src.index("const visitSettingsToggle = ", cat)
+    toggles = src.index("const settingsToggles = ", visit)
+    assert cat < visit < toggles
+    between = src[visit:toggles]
+    assert "_createSettingsMenuButton" not in between
+
+
+def test_visit_persona_entry_reuses_the_theater_side_panel_item_and_icon():
+    src = _read(VISIT_SETTINGS)
+    start = src.index("function buildPersonaRow(manager)")
+    block = src[start:src.index("function appendPanelExtras", start)]
+    assert "data-neko-visit-persona-button" in block
+    assert "item.id === 'theater'" in block
+    assert "manager._createSidePanelMenuItem" in block
+    assert "icon: theaterItem.icon" in block
+    assert "'/static/icons/star.png'" not in block
+
+    popup = _read(POPUP)
+    assert "window.nekoVisitSettings.appendPanelExtras(container, manager);" in popup
 
 
 def test_both_switches_are_whitelisted_conversation_settings():
@@ -96,8 +130,9 @@ def test_visit_memory_switch_is_not_on_the_settings_page():
 
 def test_group_entry_starts_hidden_and_follows_the_release_switch():
     src = _read(POPUP)
-    block = src[src.index("const visitSettingsBtn = "):src.index("// 3. 角色设置按钮已移至分隔线下方")]
-    assert "visitSettingsBtn.style.display = 'none';" in block
+    start = src.index("const visitSettingsToggle = ")
+    block = src[start:src.index("const settingsToggles = ", start)]
+    assert "visitSettingsToggle.style.display = 'none';" in block
     assert "data-neko-visit-settings-entry" in block
     visit = _read(VISIT_SETTINGS)
     assert "var url = '/api/visit/state?catgirl=' + encodeURIComponent(catgirl);" in visit
@@ -116,7 +151,7 @@ def test_locales_have_the_same_visit_settings_keys():
         assert isinstance(data["visit"]["stream"]["ttsFallback"], str), lang
     assert all(keys == key_sets["zh-CN"] for keys in key_sets.values()), key_sets
     assert REQUIRED_KEYS <= key_sets["zh-CN"]
-    # 「本地静音但保留 RMS」开关已删除（OD-15 v3）
+    # The 'mute locally but retain RMS' switch was removed (OD-15 v3)
     assert not any(re.search(r"mute|silent|silence", k, re.I) for k in key_sets["zh-CN"])
 
 
@@ -236,10 +271,10 @@ def test_release_switch_probe_and_first_enable_persona_prompt():
     assert out["url"] == "/api/visit/state?catgirl=%E5%B0%8F%E5%85%AB"
     assert out["csrf"] == "tok"
     assert out["opened_on_disable"] == 0
-    # 只在首次打开时弹一次，且要求确认
+    # Prompt only on the first opening and require confirmation
     assert out["opened"] == [["小八", {"requireConfirm": True}]]
-    assert out["crop_default"] == "upper" and out["crop_after"] == "full"
-    # 后端重启后缓存的 CSRF token 失效：刷新一次再探，不把 403 当成总闸关（Codex P2）
+    assert out["crop_default"] == "full" and out["crop_after"] == "full"
+    # A backend restart invalidates cached CSRF tokens: refresh once and retry instead of treating 403 as the master switch being off (Codex P2)
     assert out["stale_display"] == ["", ""]
     assert out["stale_refreshed"] == 1 and out["stale_fetches"] == 2
     assert out["flip_first"] == ["", ""] and out["flip_second"] == ["none", "none"]

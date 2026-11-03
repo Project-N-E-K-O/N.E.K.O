@@ -160,7 +160,7 @@ def test_reflection_state_changed_dispatches_by_to(tmp_path, fixed_now, wide_win
 
 
 def test_reflection_state_changed_unknown_to_silently_ignored(tmp_path, fixed_now, wide_window):
-    """`to` 值不是 RFC §3.10.2 enumerate 的终态（pending / promote_blocked / 未来扩展）→ 不计数。"""
+    """The `to` value is not a terminal state enumerated in RFC §3.10.2 (pending / promote_blocked / future extensions) → do not count it."""
     _write_events(str(tmp_path), [
         {
             "type": "reflection.state_changed",

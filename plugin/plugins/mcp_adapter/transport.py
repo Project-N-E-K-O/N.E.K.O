@@ -1,4 +1,4 @@
-"""MCP 协议传输层适配器。"""
+"""MCP protocol transport adapter."""
 
 from __future__ import annotations
 
@@ -17,12 +17,12 @@ if TYPE_CHECKING:
 @dataclass(slots=True)
 class MCPTransportAdapter:
     """
-    MCP 协议传输层适配器。
+    MCP protocol transport adapter.
     
-    实现 TransportAdapter 协议，封装 MCPClient 的连接管理。
+    Implements TransportAdapter and encapsulates MCPClient connection management.
     
-    注意：MCP 是被动模式（由外部调用 tool），因此 recv() 从内部队列获取请求，
-    请求由 on_tool_call() 方法推入队列。
+    MCP is passive (tools are called externally), so recv() pulls requests from an internal queue,
+    populated by on_tool_call().
     """
 
     client: "MCPClient"
@@ -34,7 +34,7 @@ class MCPTransportAdapter:
     _running: bool = False
 
     async def start(self) -> Result[None, TransportError]:
-        """启动传输层（连接 MCP Server）。"""
+        """Start the transport and connect to the MCP server."""
         if self._running:
             self.logger.warning("MCPTransportAdapter already started")
             return Ok(None)
@@ -59,7 +59,7 @@ class MCPTransportAdapter:
         return Ok(None)
 
     async def stop(self) -> Result[None, TransportError]:
-        """停止传输层。"""
+        """Stop the transport."""
         if not self._running:
             return Ok(None)
 
@@ -70,9 +70,9 @@ class MCPTransportAdapter:
 
     async def recv(self) -> Result[ExternalRequest, TransportError]:
         """
-        接收外部请求。
+        Receive external requests.
         
-        MCP 是被动模式，请求由 enqueue_request() 推入队列。
+        MCP is passive; enqueue_request() adds requests to the queue.
         """
         if not self._running:
             return Err(TransportError("MCPTransportAdapter is not running", op_name="mcp.transport.recv"))
@@ -81,9 +81,9 @@ class MCPTransportAdapter:
 
     async def send(self, response: GatewayResponse) -> Result[None, TransportError]:
         """
-        发送响应。
+        Send a response.
         
-        MCP 模式下响应直接返回给调用方，这里主要用于日志记录。
+        MCP responses return directly to callers; this method primarily logs them.
         """
         if response.success:
             self.logger.debug(
@@ -103,10 +103,10 @@ class MCPTransportAdapter:
 
     def enqueue_request(self, envelope: ExternalRequest) -> bool:
         """
-        将请求推入队列（供外部调用）。
+        Enqueue a request for external callers.
         
         Returns:
-            True 如果成功入队，False 如果队列已满
+            True on successful enqueue, False when the queue is full.
         """
         try:
             self._request_queue.put_nowait(envelope)
@@ -120,10 +120,10 @@ class MCPTransportAdapter:
 
     @property
     def is_running(self) -> bool:
-        """检查传输层是否运行中。"""
+        """Check whether the transport is running."""
         return self._running
 
     @property
     def queue_size(self) -> int:
-        """当前队列大小。"""
+        """Current queue size."""
         return self._request_queue.qsize()

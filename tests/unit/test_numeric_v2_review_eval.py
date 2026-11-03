@@ -1,4 +1,4 @@
-"""普通正文复核固定评测器的冻结样本与计分测试。"""  # noqa: DOCSTRING_CJK
+"""Frozen samples and scoring tests for the ordinary-narrative review evaluator."""  # noqa: DOCSTRING_CJK
 
 from scripts.evaluate_numeric_v2_review import (
     FIXED_CASES,
@@ -10,7 +10,7 @@ from services.theater.numeric_v2_runtime import NumericV2Engine
 
 
 def test_review_eval_fixture_is_frozen_balanced_and_compiles():
-    """固定集同时覆盖合法正文、三类正文拒绝、邀请和推荐安全。"""  # noqa: DOCSTRING_CJK
+    """The fixed set covers valid narrative, three narrative rejection categories, invitations, and recommendation safety."""  # noqa: DOCSTRING_CJK
 
     assert FIXTURE_VERSION == "ordinary_review_zh_cn_v2"
     assert len(FIXED_CASES) == 14
@@ -29,7 +29,7 @@ def test_review_eval_fixture_is_frozen_balanced_and_compiles():
 
 
 def test_review_eval_reports_false_reject_false_accept_and_effective_result():
-    """原始与框架有效结果必须分开统计，并列出误杀与漏放样本。"""  # noqa: DOCSTRING_CJK
+    """Report raw and framework-effective results separately, listing false rejections and false acceptances."""  # noqa: DOCSTRING_CJK
 
     rows = [
         {

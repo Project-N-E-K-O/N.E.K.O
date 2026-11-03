@@ -1,18 +1,20 @@
-"""``SessionStateMachine`` 的单元测试。
+"""SessionStateMachine unit tests.
 
-覆盖点：
-1. 初始态 / 正常 proactive 生命周期转移
-2. USER_INPUT 在 phase1 / phase2 / committing 的 sticky preempt 行为
-3. ``is_proactive_preempted`` 的零成本读（sticky flag + claim_token 兜底）
-4. ``can_start_proactive`` 在各状态下的返回
-5. ``PROACTIVE_DONE`` 的 owner 复位规则（被抢占时不误覆盖 USER）
-6. 订阅者的派发顺序与状态一致性
-7. 并发 fire 的最终态不依赖调度顺序
+Coverage:
+1. Initial state and normal proactive lifecycle transitions.
+2. USER_INPUT sticky preemption during phase1/phase2/committing.
+3. Zero-cost is_proactive_preempted reads using sticky flags and claim-token fallback.
+4. can_start_proactive results across states.
+5. PROACTIVE_DONE ownership reset without overwriting USER after preemption.
+6. Subscriber ordering/state consistency.
+7. Concurrent-fire consistency independent of scheduling order.
 """
 
 from __future__ import annotations
 
 import asyncio
+
+import pytest
 
 from main_logic.session_state import (
     ProactivePhase,
@@ -27,7 +29,7 @@ def _sm() -> SessionStateMachine:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 初始态 & 正常 proactive 生命周期
+# Initial state and normal proactive lifecycle.
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def test_initial_state_is_idle():
@@ -85,8 +87,8 @@ async def test_user_input_during_phase2_marks_preempted():
 
 
 async def test_user_input_during_committing_marks_preempted():
-    """Commit 极短窗口内也得标 preempted —— 后续 _record_proactive_chat 等
-    副作用仍会走 committed=False 路径跳过，但 SM 要如实反映真相。"""
+    """Mark preemption even in tiny commit windows. Later effects such as _record_proactive_chat
+    still skip via committed=False, but the state machine must reflect reality."""
     sm = _sm()
     await sm.fire(SessionEvent.PROACTIVE_START)
     await sm.fire(SessionEvent.PROACTIVE_CLAIM, sid="sid_3")
@@ -105,22 +107,22 @@ async def test_user_input_when_idle_does_not_flip_preempted():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# is_proactive_preempted 的 claim_token 兜底
+# is_proactive_preempted claim_token fallback.
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def test_is_proactive_preempted_sticky_after_user_input():
     sm = _sm()
     await sm.fire(SessionEvent.PROACTIVE_START)
     await sm.fire(SessionEvent.PROACTIVE_CLAIM, sid="sid_x")
-    # 即使 sid 还没动，sticky flag 已经是 True
+    # Sticky flag is already True even before sid changes.
     await sm.fire(SessionEvent.USER_INPUT, sid="u")
-    # claim_token 与 proactive_sid 其实一致，但 sticky 仍然返回 True
+    # Matching claim_token/proactive_sid still returns True through sticky state.
     assert sm.is_proactive_preempted(claim_token="sid_x") is True
 
 
 async def test_is_proactive_preempted_claim_token_mismatch_fallback():
-    """proactive_sid 不等于 claim_token 时也应返回 True —— 防御性兜底，
-    正常情况 sticky flag 已先触发，这里是双保险。"""
+    """Different proactive_sid/claim_token also returns True as defensive fallback;
+    sticky normally triggers first, providing two layers."""
     sm = _sm()
     await sm.fire(SessionEvent.PROACTIVE_START)
     await sm.fire(SessionEvent.PROACTIVE_CLAIM, sid="sid_current")
@@ -135,18 +137,18 @@ async def test_is_proactive_preempted_claim_token_matches_not_preempted():
 
 
 async def test_is_proactive_preempted_phase1_none_token_ok():
-    """phase1 尚未 claim 时 claim_token=None，只看 sticky flag。"""
+    """Before phase1 claims, claim_token=None uses sticky state only."""
     sm = _sm()
     await sm.fire(SessionEvent.PROACTIVE_START)
     assert sm.is_proactive_preempted(claim_token=None) is False
 
 
 async def test_mark_user_input_preempt_sync_flips_flag_during_active_phase():
-    """``mark_user_input_preempt`` 是 sid 轮换路径在 ``self.lock`` 内同步调用的
-    helper，保证 sid 写入 + preempt 翻起原子可见。活动阶段必须翻，idle 阶段不翻。
+    """sid rotation synchronously calls mark_user_input_preempt under self.lock,
+    atomically exposing sid writes/preemption. Active phases set it; idle does not.
     """
     sm = _sm()
-    # idle 时 no-op
+    # No-op while idle.
     sm.mark_user_input_preempt()
     assert sm._preempted is False
 
@@ -155,7 +157,7 @@ async def test_mark_user_input_preempt_sync_flips_flag_during_active_phase():
     sm.mark_user_input_preempt()
     assert sm._preempted is True
 
-    # PHASE2 / COMMITTING 同样覆盖
+    # Cover PHASE2 / COMMITTING too.
     sm._preempted = False
     await sm.fire(SessionEvent.PROACTIVE_PHASE2)
     sm.mark_user_input_preempt()
@@ -168,24 +170,24 @@ async def test_mark_user_input_preempt_sync_flips_flag_during_active_phase():
 
 
 async def test_mark_user_input_preempt_atomically_visible_before_full_fire():
-    """回归 race：prepare_proactive_delivery 必须在 ``mark_user_input_preempt``
-    之后、``fire(USER_INPUT)`` 之前，也能从 ``is_proactive_preempted()`` 看到 True。
-    这模拟 core.py 里 sid 轮换的临界区语义。
+    """Race regression: prepare_proactive_delivery must observe preemption after
+    mark_user_input_preempt but before fire(USER_INPUT) through is_proactive_preempted().
+    Model core.py's sid-rotation critical-section semantics.
     """
     sm = _sm()
     await sm.fire(SessionEvent.PROACTIVE_START)
     await sm.fire(SessionEvent.PROACTIVE_CLAIM, sid="claim_sid")
 
-    # 模拟 handle_new_message 持 self.lock 写新 sid + mark 翻 flag 的片段
+    # Simulate handle_new_message writing sid and marking preemption under self.lock.
     sm.mark_user_input_preempt()
-    # 此刻 fire(USER_INPUT) 还没调用；但并发的 prepare_proactive_delivery 在
-    # 其 lock-held 复查点已能看到抢占，绝不会再误写 current_speech_id。
+    # fire(USER_INPUT) has not run, but prepare_proactive_delivery's concurrent
+    # locked recheck already sees preemption and cannot overwrite current_speech_id.
     assert sm.is_proactive_preempted(claim_token="claim_sid") is True
 
 
 async def test_proactive_claim_dropped_if_preempted():
-    """用户在 phase1 抢占后，即使 prepare_proactive_delivery 还是 fire 了
-    CLAIM，proactive_sid 不应被填上 —— 否则 phase2 会误以为自己仍然持有 turn。"""
+    """After phase1 user preemption, a later prepare_proactive_delivery CLAIM must not
+    populate proactive_sid, or phase2 falsely believes it still owns the turn."""
     sm = _sm()
     await sm.fire(SessionEvent.PROACTIVE_START)
     await sm.fire(SessionEvent.USER_INPUT, sid="u")
@@ -205,18 +207,18 @@ async def test_can_start_proactive_false_when_phase1():
 
 
 async def test_can_start_proactive_true_after_user_turn_completes():
-    """Regression: owner == USER 不能永久阻塞 proactive。
+    """Regression: owner==USER cannot permanently block proactive chat.
 
-    USER_INPUT 会把 owner 翻到 USER，但没有 AI_RESPONSE_END 事件将其复位
-    （Stage 2 未做该项迁移）。can_start_proactive 若卡 owner == USER，用户
-    发第一条消息后所有后续 proactive 都会被永久 409 掉 —— 这是 Codex review
-    发现的 P1 bug。正确语义：只看 phase 和 session._is_responding。
+    USER_INPUT sets USER without AI_RESPONSE_END reset, not migrated in Stage 2.
+    Gating can_start_proactive on USER permanently rejects all proactive calls after
+    the first user message, a Codex-review P1. Check only phase
+    and session._is_responding.
     """
     sm = _sm()
     await sm.fire(SessionEvent.USER_INPUT, sid="u")
-    # 用户发完了，AI 也不在响应（session=None），proactive 必须能起
+    # User finished and AI is not responding, session=None; proactive work may start.
     assert sm.can_start_proactive(session=None) is True
-    # 即使传 session，只要 _is_responding=False 就能起
+    # A present session with _is_responding=False also permits startup.
     assert sm.can_start_proactive(session=_FakeSession(is_responding=False)) is True
 
 
@@ -228,16 +230,16 @@ async def test_can_start_proactive_true_after_done():
 
 
 class _FakeSession:
-    """只暴露 `_is_responding` 的最小 session stub。"""
+    """Minimal session stub exposing only _is_responding."""
 
     def __init__(self, is_responding: bool) -> None:
         self._is_responding = is_responding
 
 
 async def test_can_start_proactive_false_when_session_is_responding():
-    """AI 正在为用户回复 —— 即使 SM 自己看起来 IDLE，也不能起 proactive。
+    """While AI replies to users, proactive cannot start even if the state machine is IDLE.
 
-    这一步把原来 router 里直读 session._is_responding 的检查收拢到 SM。
+    Centralize the router's previous direct session._is_responding check into the state machine.
     """
     sm = _sm()
     assert sm.phase is ProactivePhase.IDLE
@@ -252,7 +254,7 @@ async def test_can_start_proactive_true_with_idle_session():
 
 
 async def test_can_start_proactive_none_session_falls_back_to_sm_only():
-    """session=None 时只看 SM 自己的字段，向后兼容单元测试。"""
+    """session=None checks only state-machine fields, retaining unit-test compatibility."""
     sm = _sm()
     assert sm.can_start_proactive(session=None) is True
     await sm.fire(SessionEvent.PROACTIVE_START)
@@ -260,7 +262,7 @@ async def test_can_start_proactive_none_session_falls_back_to_sm_only():
 
 
 async def test_can_start_proactive_session_without_is_responding_attr():
-    """session 没有 `_is_responding` 字段时（老 session 类型）不该抛，当作 False 处理。"""
+    """Legacy sessions missing _is_responding must not raise; treat as False."""
     sm = _sm()
 
     class _BareSession:
@@ -270,19 +272,19 @@ async def test_can_start_proactive_session_without_is_responding_attr():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PROACTIVE_DONE 对 owner 的处理
+# PROACTIVE_DONE ownership handling.
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def test_proactive_done_preserves_user_ownership_after_preempt():
-    """抢占路径下，proactive 最后 fire DONE 时 owner 已经是 USER，
-    DONE 不该把 owner 改成 NONE —— 用户仍然持有 turn。"""
+    """After preemption owner is already USER when proactive fires DONE;
+    preserve USER rather than NONE because users still own the turn."""
     sm = _sm()
     await sm.fire(SessionEvent.PROACTIVE_START)
     await sm.fire(SessionEvent.USER_INPUT, sid="u")
     assert sm.owner is TurnOwner.USER
     await sm.fire(SessionEvent.PROACTIVE_DONE)
     assert sm.owner is TurnOwner.USER
-    # 但 phase 和 sticky flag 确实复位
+    # Phase and sticky flag really reset.
     assert sm.phase is ProactivePhase.IDLE
     assert sm._preempted is False
 
@@ -298,12 +300,12 @@ async def test_proactive_done_flips_owner_to_none_on_clean_exit():
 
 
 async def test_second_proactive_after_done_starts_fresh():
-    """一轮抢占结束后，下一轮 proactive 应重新归 IDLE → PHASE1，sticky 清零。"""
+    """After preemption, new proactive rounds transition IDLE -> PHASE1 with sticky cleared."""
     sm = _sm()
     await sm.fire(SessionEvent.PROACTIVE_START)
     await sm.fire(SessionEvent.USER_INPUT, sid="u1")
     await sm.fire(SessionEvent.PROACTIVE_DONE)
-    # USER_INPUT 让 owner 变 USER；下一轮 START 要能重新 claim
+    # USER_INPUT makes owner USER; next START must reclaim ownership.
     await sm.fire(SessionEvent.PROACTIVE_START)
     assert sm._preempted is False
     assert sm.phase is ProactivePhase.PHASE1
@@ -312,11 +314,11 @@ async def test_second_proactive_after_done_starts_fresh():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 订阅
+# Subscribe.
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def test_subscriber_sees_post_apply_state():
-    """订阅者在回调触发时观察到的状态必然是"事件 apply 后"的状态。"""
+    """Subscriber callbacks always observe post-apply event state."""
     sm = _sm()
     observed: list[tuple[ProactivePhase, TurnOwner]] = []
 
@@ -325,7 +327,7 @@ async def test_subscriber_sees_post_apply_state():
 
     sm.subscribe(SessionEvent.PROACTIVE_START, cb)
     await sm.fire(SessionEvent.PROACTIVE_START)
-    # 订阅者回调是异步 schedule，让一次事件循环
+    # Subscriber callbacks schedule asynchronously; yield one loop turn.
     await asyncio.sleep(0)
     assert observed == [(ProactivePhase.PHASE1, TurnOwner.PROACTIVE)]
 
@@ -337,7 +339,7 @@ async def test_subscriber_exception_does_not_break_event_flow():
         raise RuntimeError("subscriber should not break caller")
 
     sm.subscribe(SessionEvent.PROACTIVE_START, bad)
-    # fire 不应该抛
+    # fire must not raise.
     await sm.fire(SessionEvent.PROACTIVE_START)
     assert sm.phase is ProactivePhase.PHASE1
 
@@ -370,8 +372,8 @@ async def test_async_subscriber_coroutine_is_scheduled():
 
 
 async def test_async_subscriber_returning_task_is_also_awaited():
-    """订阅者若返回已创建的 Task（而非 coroutine），派发路径也要能接管它，
-    异常/取消才不会绕过 ``_swallow_subscriber_exc`` 泄漏到事件循环。
+    """Dispatch must own precreated Task returns as well as coroutines,
+    preventing exceptions/cancellation bypassing _swallow_subscriber_exc into the loop.
     """
     sm = _sm()
     inner_fired = asyncio.Event()
@@ -380,7 +382,7 @@ async def test_async_subscriber_returning_task_is_also_awaited():
         inner_fired.set()
 
     def cb(event, payload):
-        # 返回 Task 而非 coroutine；早先的 iscoroutine 分支会把它漏过去
+        # Return Task rather than coroutine; earlier iscoroutine handling missed it.
         return asyncio.create_task(inner())
 
     sm.subscribe(SessionEvent.PROACTIVE_START, cb)
@@ -389,8 +391,8 @@ async def test_async_subscriber_returning_task_is_also_awaited():
 
 
 async def test_async_subscriber_returning_task_with_exception_is_swallowed():
-    """返回 Task 的订阅者，其任务抛异常不应产生 "Task exception was never
-    retrieved" warning（由 done-callback 静默吞下）。
+    """Task-returning subscribers must not emit Task-exception-was-never-retrieved
+    warnings; done callbacks consume failures silently.
     """
     sm = _sm()
 
@@ -402,27 +404,27 @@ async def test_async_subscriber_returning_task_with_exception_is_swallowed():
 
     sm.subscribe(SessionEvent.PROACTIVE_START, cb)
     await sm.fire(SessionEvent.PROACTIVE_START)
-    # 让 inner_raises 任务运行并被 done-callback 吞掉
+    # Let inner_raises run and be consumed by its done callback.
     await asyncio.sleep(0)
     await asyncio.sleep(0)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 并发
+# Concurrency.
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def test_interleaved_user_input_and_proactive_start_converges():
-    """USER_INPUT 和 PROACTIVE_START 两种交错顺序：无论谁先 fire，终态都自洽。
+    """Both USER_INPUT/PROACTIVE_START interleavings must end consistently.
 
-    - USER_INPUT 先：owner=USER，PROACTIVE_START 后 owner 被改成 PROACTIVE，
-      phase=PHASE1，此时 is_proactive_preempted=False（因为 sticky 在 START
-      时被清零 —— 这是故意的：START 表示一轮新 proactive，上一轮遗留的
-      sticky flag 不该影响新轮次）。
-    - PROACTIVE_START 先：phase=PHASE1，USER_INPUT 后 _preempted=True、
-      owner=USER，sticky 翻起。
-    这两条路径终态不同是意料之中的 —— 我们只验证各自都"自洽"。
+    - USER_INPUT first: owner=USER; PROACTIVE_START sets PROACTIVE,
+      phase=PHASE1, and is_proactive_preempted=False because START
+      deliberately clears sticky for a new round, preventing prior
+      preemption leaking into it.
+    - PROACTIVE_START first: phase=PHASE1; USER_INPUT sets _preempted=True,
+      owner=USER, and sticky preemption.
+    Different final states are expected; verify each is internally consistent.
     """
-    # Case A: USER_INPUT 先
+    # Case A: USER_INPUT first.
     sm_a = _sm()
     await sm_a.fire(SessionEvent.USER_INPUT, sid="u")
     await sm_a.fire(SessionEvent.PROACTIVE_START)
@@ -430,21 +432,21 @@ async def test_interleaved_user_input_and_proactive_start_converges():
     assert sm_a.owner is TurnOwner.PROACTIVE
     assert sm_a._preempted is False
 
-    # Case B: PROACTIVE_START 先
+    # Case B: PROACTIVE_START first.
     sm_b = _sm()
     await sm_b.fire(SessionEvent.PROACTIVE_START)
     await sm_b.fire(SessionEvent.USER_INPUT, sid="u")
-    assert sm_b.phase is ProactivePhase.PHASE1  # phase 自己不动，由 DONE 清
+    assert sm_b.phase is ProactivePhase.PHASE1  # Phase remains unchanged until DONE clears it.
     assert sm_b.owner is TurnOwner.USER
     assert sm_b._preempted is True
 
 
 async def test_try_start_proactive_atomic_only_one_winner():
-    """并发 try_start_proactive：只有一路拿到 turn 所有权，其余都返回 False。
+    """Concurrent try_start_proactive grants ownership to one caller; all others return False.
 
-    这是"检查 + 占坑"合成原子操作的核心保证：若分裂为 can_start_proactive +
-    fire(PROACTIVE_START) 两步，两个请求都能在 IDLE 时通过 can_start，进而各自
-    fire 进 PHASE1，claim/commit 互相踩 turn。
+    Atomic checking/reservation is essential: splitting can_start_proactive and
+    fire(PROACTIVE_START) lets both requests pass IDLE checks and enter
+    PHASE1, overwriting each other's claim/commit ownership.
     """
     sm = _sm()
 
@@ -460,8 +462,8 @@ async def test_try_start_proactive_atomic_only_one_winner():
 
 
 async def test_try_start_proactive_refuses_when_session_is_responding():
-    """AI 正在为用户回复时（session._is_responding=True），即使 SM phase=IDLE，
-    try_start_proactive 也必须返回 False（与 can_start_proactive 语义对齐）。
+    """While session._is_responding=True, try_start_proactive returns False despite IDLE,
+    matching can_start_proactive semantics.
     """
     sm = _sm()
 
@@ -475,8 +477,8 @@ async def test_try_start_proactive_refuses_when_session_is_responding():
 
 
 async def test_try_start_proactive_dispatches_subscribers():
-    """try_start_proactive 抢到所有权时也要派发 PROACTIVE_START 订阅者，
-    与直接 fire(PROACTIVE_START) 行为一致。
+    """Winning try_start_proactive dispatches PROACTIVE_START subscribers,
+    matching direct fire(PROACTIVE_START).
     """
     sm = _sm()
     hits: list[SessionEvent] = []
@@ -492,11 +494,11 @@ async def test_try_start_proactive_dispatches_subscribers():
 
 
 async def test_try_start_proactive_false_does_not_dispatch():
-    """try_start_proactive 败者（第二名）不应误触发 PROACTIVE_START 订阅者，
-    否则订阅者会以为有两轮 proactive 在跑。
+    """Losing second try_start_proactive must not dispatch PROACTIVE_START subscribers,
+    falsely implying two active proactive rounds.
     """
     sm = _sm()
-    await sm.fire(SessionEvent.PROACTIVE_START)  # 先占坑
+    await sm.fire(SessionEvent.PROACTIVE_START)  # Reserve first.
     hits: list[SessionEvent] = []
 
     def cb(event, payload):
@@ -510,8 +512,8 @@ async def test_try_start_proactive_false_does_not_dispatch():
 
 
 async def test_swallow_subscriber_cancelled_error():
-    """异步订阅者被取消时，done-callback 必须吞掉 CancelledError，
-    否则 "Task exception was never retrieved" warning 会刷屏。
+    """Canceled async subscribers' done callbacks consume CancelledError,
+    preventing repeated Task-exception-was-never-retrieved warnings.
     """
     from main_logic.session_state import _swallow_subscriber_exc
 
@@ -523,14 +525,14 @@ async def test_swallow_subscriber_cancelled_error():
     try:
         await task
     except asyncio.CancelledError:
-        # 故意吞：这里只是把 task 驱动到 done 态供下面 _swallow_subscriber_exc
-        # 调用，CancelledError 本身就是测试期望的结果。
+        # Deliberately swallow: drive the task to done for _swallow_subscriber_exc below;
+        # CancelledError itself is the expected test outcome.
         pass
     _swallow_subscriber_exc(task)
 
 
 async def test_fire_is_serialized_by_write_lock():
-    """并发 fire 应被 write_lock 串行化，内部状态永远一致。"""
+    """write_lock serializes concurrent fire calls, preserving consistent internal state."""
     sm = _sm()
 
     async def burst():
@@ -541,12 +543,12 @@ async def test_fire_is_serialized_by_write_lock():
         await sm.fire(SessionEvent.PROACTIVE_DONE)
 
     await asyncio.gather(burst(), burst(), burst())
-    # 三轮完整生命周期之后终态必然是 IDLE
+    # Three complete lifecycles necessarily end IDLE.
     assert sm.phase is ProactivePhase.IDLE
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# USER_ACTIVITY（静默信号，不轮换 sid/owner）
+# USER_ACTIVITY is silent, without sid/owner rotation.
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def test_user_activity_updates_timestamp_without_owner_flip():
@@ -555,9 +557,9 @@ async def test_user_activity_updates_timestamp_without_owner_flip():
     before_activity = sm.last_user_activity
     await sm.fire(SessionEvent.USER_ACTIVITY)
     assert sm.last_user_activity > before_activity
-    # owner 未被改动
+    # Owner unchanged.
     assert sm.owner is TurnOwner.PROACTIVE
-    # sticky 未被翻（USER_ACTIVITY 不表示抢占）
+    # Sticky unchanged; USER_ACTIVITY does not mean preemption.
     assert sm._preempted is False
 
 
@@ -566,18 +568,18 @@ async def test_user_activity_updates_timestamp_without_owner_flip():
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ─────────────────────────────────────────────────────────────────────────────
-# reset() —— teardown hook，防止跨 session 状态泄漏
+# reset() teardown prevents cross-session state leakage.
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def test_reset_clears_state_after_proactive_done():
-    """PROACTIVE_DONE fire 后，reset 应把所有 per-session 字段回零。"""
+    """After PROACTIVE_DONE, reset clears all per-session fields."""
     sm = _sm()
     await sm.fire(SessionEvent.PROACTIVE_START)
     await sm.fire(SessionEvent.PROACTIVE_CLAIM, sid="sid_x")
     await sm.fire(SessionEvent.USER_INPUT, sid="u")
     await sm.fire(SessionEvent.PROACTIVE_DONE)
 
-    # 此刻 owner=USER（被抢占后的正常状态），phase=IDLE
+    # owner=USER after normal preemption, phase=IDLE.
     assert sm.phase is ProactivePhase.IDLE
     assert sm.owner is TurnOwner.USER
 
@@ -592,10 +594,10 @@ async def test_reset_clears_state_after_proactive_done():
 
 
 async def test_reset_is_noop_during_active_proactive_phase():
-    """reset 在 PROACTIVE_ACTIVE 阶段必须 no-op：若 ``prepare_proactive_delivery``
-    的 auto-start 子路径通过 ``start_session → end_session → _init_renew_status``
-    间接触发 reset，不能把当前正在跑的 proactive 状态（phase/_preempted）一并吹掉，
-    否则后续 phase1/phase2 的抢占检测会失效。
+    """reset must no-op during PROACTIVE_ACTIVE: prepare_proactive_delivery's auto-start
+    may indirectly invoke it through start_session -> end_session -> _init_renew_status.
+    Preserve active phase/preemption state or later phase1/phase2
+    checks lose preemption visibility.
     """
     sm = _sm()
     await sm.fire(SessionEvent.PROACTIVE_START)
@@ -605,7 +607,7 @@ async def test_reset_is_noop_during_active_proactive_phase():
 
     await sm.reset()
 
-    # 活动阶段 reset 不生效，phase/_preempted/sids 保持不变
+    # Active-phase reset has no effect on phase/_preempted/sids.
     assert sm.phase is ProactivePhase.PHASE1
     assert sm._preempted is True
     assert sm.proactive_sid == "live_sid"
@@ -613,9 +615,9 @@ async def test_reset_is_noop_during_active_proactive_phase():
 
 
 async def test_reset_force_clears_state_even_during_active_proactive():
-    """reset(force=True) 是真正的 teardown（WS 断开 / end_session）：即便 proactive
-    还卡在 PHASE1/PHASE2，也必须强制清场，否则 phase/_preempted 会泄漏到下一轮
-    session，彻底堵死 can_start_proactive 的 IDLE 判定。
+    """reset(force=True) is real WS-disconnect/end_session teardown, forcing cleanup
+    even during stuck PHASE1/PHASE2, or phase/_preempted leaks into later
+    sessions and permanently blocks IDLE admission.
     """
     sm = _sm()
     await sm.fire(SessionEvent.PROACTIVE_START)
@@ -626,7 +628,7 @@ async def test_reset_force_clears_state_even_during_active_proactive():
 
     await sm.reset(force=True)
 
-    # force=True 绕过活动 phase 保护，全部字段复位
+    # force=True bypasses active-phase protection and clears all fields.
     assert sm.phase is ProactivePhase.IDLE
     assert sm._preempted is False
     assert sm.proactive_sid is None
@@ -636,7 +638,7 @@ async def test_reset_force_clears_state_even_during_active_proactive():
 
 
 async def test_reset_preserves_subscribers():
-    """reset 是 teardown hook，不该把应用层注册的订阅钩子吹掉。"""
+    """reset teardown must preserve application-registered subscribers."""
     sm = _sm()
     hits: list[SessionEvent] = []
 
@@ -648,12 +650,12 @@ async def test_reset_preserves_subscribers():
     await sm.reset()
     await sm.fire(SessionEvent.PROACTIVE_START)
     await asyncio.sleep(0)
-    # 两次 START 都触发了订阅者
+    # Both START calls dispatched subscribers.
     assert hits == [SessionEvent.PROACTIVE_START, SessionEvent.PROACTIVE_START]
 
 
 async def test_reset_preserves_last_user_activity():
-    """reset 不该把 last_user_activity 吹回 0：跨 session 的活跃度追踪还要用。"""
+    """reset must retain last_user_activity for cross-session tracking."""
     sm = _sm()
     await sm.fire(SessionEvent.USER_INPUT, sid="u")
     activity = sm.last_user_activity
@@ -672,3 +674,46 @@ async def test_snapshot_fields():
     assert snap["phase"] == ProactivePhase.PHASE1.value
     assert snap["proactive_sid"] == "sid_snap"
     assert snap["preempted"] is False
+@pytest.mark.asyncio
+@pytest.mark.parametrize('event', [
+    SessionEvent.PROACTIVE_CLAIM, SessionEvent.PROACTIVE_PHASE2,
+    SessionEvent.PROACTIVE_COMMITTING, SessionEvent.PROACTIVE_DONE,
+])
+async def test_retired_round_cannot_transition_replacement(event):
+    sm = SessionStateMachine('test')
+    assert await sm.try_start_proactive(round_id='old')
+    await sm.reset(force=True)
+    assert sm.proactive_round_id is None
+    assert await sm.try_start_proactive(round_id='new')
+    await sm.fire(event, round_id='old', sid='old-sid')
+    assert sm.proactive_round_id == 'new'
+    assert sm.phase is ProactivePhase.PHASE1
+    assert sm.proactive_sid is None
+
+
+@pytest.mark.asyncio
+async def test_done_ownership_is_rechecked_after_waiting_for_state_lock():
+    from types import SimpleNamespace
+    from main_logic.proactive_chat.delivery import ProactiveLifecycle
+
+    sm = SessionStateMachine('test')
+    assert await sm.try_start_proactive(round_id='old')
+    manager = SimpleNamespace(state=sm, _proactive_screenshot_request_id='old')
+    lifecycle = ProactiveLifecycle(manager, SessionEvent.PROACTIVE_DONE, 'test', screenshot_request_id='old')
+
+    async def replacement():
+        assert await sm.try_start_proactive(round_id='new')
+        manager._proactive_screenshot_request_id = 'new'
+
+    async with sm._write_lock:
+        reset = asyncio.create_task(sm.reset(force=True))
+        await asyncio.sleep(0)
+        start = asyncio.create_task(replacement())
+        await asyncio.sleep(0)
+        finish = asyncio.create_task(lifecycle.safe_done())
+        await asyncio.sleep(0)
+    await asyncio.gather(reset, start, finish)
+    lifecycle.clear_screenshot_request()
+    assert sm.phase is ProactivePhase.PHASE1
+    assert sm.proactive_round_id == 'new'
+    assert manager._proactive_screenshot_request_id == 'new'

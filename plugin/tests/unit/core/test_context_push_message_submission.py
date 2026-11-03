@@ -276,8 +276,8 @@ def test_oversized_inline_push_is_rejected_before_the_transport(
     # The author has to be able to act on the log line alone.
     reported = repr(logger.records)
     assert "payload_too_large" in reported
-    # 报给作者的是**有效**上限（配置值减去宿主规范化的余量），因为那才是他
-    # 必须待在下面的那个数。写死 4096 会让这条断言在余量存在时反而是错的。
+    # Report the **effective** limit (configured value minus the host normalization margin) to the author, since that is the value
+    # they must stay below. Hardcoding 4096 makes this assertion wrong when a margin is reserved.
     assert str(4096 - _host_headroom()) in reported
     # 1.33x, not 2.34x: an inline payload travels base64 and nothing else.
     assert "1.33" in reported

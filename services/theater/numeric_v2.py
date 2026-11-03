@@ -1,7 +1,7 @@
-"""Numeric v2 Story Package 的确定性编译边界。
+"""Deterministic compilation boundary for Numeric v2 Story Packages.
 
-本模块只负责作者包合同、规范化字节和静态可达性，不实现 Actor、Session、
-Ledger 或回合数值判定。InkAI 发布前会调用这里进行第二次独立复验。
+This module handles only author-package contracts, canonical bytes, and static reachability, not Actor, Session,
+Ledger, or turn-value evaluation. InkAI invokes it for a second independent validation before publication.
 """  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
@@ -26,17 +26,17 @@ _COMPARATORS = frozenset({"==", "!=", ">", "<", ">=", "<="})
 _VISIBILITIES = frozenset({"hidden"})
 _NODE_TYPES = frozenset({"start", "scene", "ending"})
 MAX_RECOMMENDED_TURNS = 40
-# Actor 的固定输入预算是 4800 tokens；单个作者字段必须有硬上限，避免导入后才发现剧本永远无法开场。
+# Actor's fixed input budget is 4800 tokens; cap each author field to avoid discovering only after import that a script can never open.
 MAX_ACTOR_PROMPT_FIELD_TOKENS = 384
 _ACTING_CONTRACT_COGNITION_STATES = frozenset({"fresh_boot", "limited", "normal"})
 _ACTING_CONTRACT_MEMORY_STATES = frozenset({"empty", "partial", "available"})
 _ACTING_CONTRACT_SELF_REFERENCE_MODES = frozenset({"system_neutral", "persona_allowed"})
 _ACTING_CONTRACT_PERSONA_SCOPES = frozenset({"style_only", "full"})
-# Story beat 使用有限枚举表达关系和可选创作素材。
+# Story beats use finite enums for relationships and optional creative material.
 _RELATIONSHIP_CEILINGS = frozenset({"stranger", "guarded", "cooperative", "trusted", "intimate"})
 _GOAL_OWNERS = frozenset({"catgirl", "player", "shared", "environment"})
 _GOAL_EVIDENCE_MODES = frozenset({"semantic", "exact"})
-# 运行时只接受新合同；旧包必须在作者侧升级后才能导入或运行。
+# Runtime accepts only the new contract; authors must upgrade old packages before import or execution.
 _NUMERIC_CONTRACT_VERSIONS = frozenset({"v2.2"})
 _GOAL_DELIVERY_TIMINGS = frozenset({"opening", "turn"})
 _DIALOGUE_POLICIES = frozenset({"required", "optional", "forbidden"})
@@ -45,7 +45,7 @@ _FACT_CONTRACT_VISIBILITIES = frozenset({"public", "story"})
 _FACT_CONTRACT_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
 _FACT_CONTRACT_MAX_KEYS = 64
 _COMPLETION_CONTRACT_MAX_FACTS = 16
-# v2.2 只允许有限交付类型，避免 Runtime 再从目标描述中猜“谁在什么位置完成了什么”。
+# v2.2 allows only finite delivery types so Runtime no longer guesses who completes what at which output position from target descriptions.
 _GOAL_DELIVERY_OUTPUTS = {
     "catgirl_dialogue": "performance_dialogue",
     "catgirl_action": "performance_action",
@@ -76,7 +76,7 @@ _NEGATIVE_STATE_BOUNDARY_PREFIXES = ("不得", "禁止", "不能")
 
 @dataclass(frozen=True)
 class NumericV2Issue:
-    """一次返回给作者的稳定合同问题。"""  # noqa: DOCSTRING_CJK
+    """A stable contract issue returned to the author."""  # noqa: DOCSTRING_CJK
 
     code: str
     path: str
@@ -85,7 +85,7 @@ class NumericV2Issue:
 
 @dataclass(frozen=True)
 class NumericV2Warning:
-    """不阻止包复验的静态质量提示。"""  # noqa: DOCSTRING_CJK
+    """A static quality hint that does not block package validation."""  # noqa: DOCSTRING_CJK
 
     code: str
     path: str
@@ -93,7 +93,7 @@ class NumericV2Warning:
 
 
 class NumericV2CompileError(ValueError):
-    """Numeric v2 包含一个或多个硬合同问题。"""  # noqa: DOCSTRING_CJK
+    """The Numeric v2 package has one or more hard contract issues."""  # noqa: DOCSTRING_CJK
 
     def __init__(self, issues: list[NumericV2Issue]):
         super().__init__("numeric_v2_compile_failed")
@@ -102,7 +102,7 @@ class NumericV2CompileError(ValueError):
 
 @dataclass(frozen=True)
 class CompiledNumericV2Package:
-    """已通过 N.E.K.O 复验的 canonical Story Package。"""  # noqa: DOCSTRING_CJK
+    """Canonical Story Package validated by N.E.K.O."""  # noqa: DOCSTRING_CJK
 
     story: dict[str, Any]
     json_bytes: bytes
@@ -381,7 +381,7 @@ def _conditions_overlap(
 
 
 class _Collector:
-    """集中收集问题，避免遇到第一个错误就中断作者定位。"""  # noqa: DOCSTRING_CJK
+    """Collect issues centrally rather than stopping author diagnostics at the first error."""  # noqa: DOCSTRING_CJK
 
     def __init__(self) -> None:
         self.issues: list[NumericV2Issue] = []
@@ -454,7 +454,7 @@ class _Collector:
 
 
 class NumericV2Compiler:
-    """只编译 Numeric v2 作者包，不提供旧协议兼容或迁移。"""  # noqa: DOCSTRING_CJK
+    """Compile only Numeric v2 author packages, without legacy protocol compatibility or migration."""  # noqa: DOCSTRING_CJK
 
     def compile(self, payload: Mapping[str, Any]) -> CompiledNumericV2Package:
         """Compile a package, reporting any malformed shape as a structured contract error."""
@@ -533,7 +533,7 @@ class NumericV2Compiler:
         )
 
     def compile_v2_1(self, payload: Mapping[str, Any]) -> CompiledNumericV2Package:
-        """旧版编译入口已停用；作者必须重新导出 v2.2 包。"""  # noqa: DOCSTRING_CJK
+        """The legacy compiler entry is disabled; authors must reexport v2.2 packages."""  # noqa: DOCSTRING_CJK
 
         raise NumericV2CompileError([
             NumericV2Issue(
@@ -544,9 +544,9 @@ class NumericV2Compiler:
         ])
 
     def compile_v2_2(self, payload: Mapping[str, Any]) -> CompiledNumericV2Package:
-        """只接受显式声明 v2.2 的新包，并执行不依赖旧证据链的数值限幅门禁。"""  # noqa: DOCSTRING_CJK
+        """Accept only packages explicitly declaring v2.2 and apply numeric limits independently of legacy evidence chains."""  # noqa: DOCSTRING_CJK
 
-        # 先做版本门禁，确保 CLI、注册表和直接编译入口对旧包返回同一个升级提示。
+        # Apply the version gate first, giving CLI, registry, and direct compilation the same old-package upgrade message.
         meta = payload.get("meta") if isinstance(payload, Mapping) else None
         if not isinstance(meta, Mapping) or meta.get("contract_version") != "v2.2":
             raise NumericV2CompileError([
@@ -558,7 +558,7 @@ class NumericV2Compiler:
             ])
         compiled = self.compile(payload)
         issues: list[NumericV2Issue] = []
-        # v2.2 的目标字段只作为创作素材；数值限幅与版本门禁独立校验。
+        # v2.2 target fields are creative material only; numeric limits and version gates validate independently.
         for metric_id, metric in (compiled.story.get("metric_schema") or {}).items():
             if not isinstance(metric, Mapping):
                 continue
@@ -598,7 +598,7 @@ class NumericV2Compiler:
         intro = c.obj(value, "intro")
         for field in ("background", "player_identity", "catgirl_identity"):
             c.require_text(intro.get(field), f"intro.{field}")
-        # 真实昵称可以含逗号或超过旧首段长度；新工坊声明成对姓名，避免运行时猜截点。
+        # Real nicknames may contain commas or exceed the old first-segment limit; new Workshop packages declare paired names to avoid runtime split-point guessing.
         if "player_name" in intro or "catgirl_name" in intro:
             for role in ("player", "catgirl"):
                 name = intro.get(f"{role}_name")
@@ -703,7 +703,7 @@ class NumericV2Compiler:
 
     @staticmethod
     def _validate_fact_contract(c: _Collector, value: Any) -> None:
-        """校验作者显式声明的事实白名单；没有声明时运行端不会接受模型事实候选。"""  # noqa: DOCSTRING_CJK
+        """Validate author-declared fact allowlists; absent declarations, Runtime accepts no model fact candidates."""  # noqa: DOCSTRING_CJK
 
         contract = c.obj(value, "fact_contract")
         if set(contract).difference({"facts"}):
@@ -838,11 +838,11 @@ class NumericV2Compiler:
     def _validate_character_state(
         c: _Collector, value: Any, path: str, *, cast_names: Mapping[str, Any] | None = None,
     ) -> None:
-        """校验作者写定的三方入幕状态；它只约束演绎，不进入 Session 数值。"""  # noqa: DOCSTRING_CJK
+        """Validate author-written three-party act-entry state, constraining enactment without entering Session values."""  # noqa: DOCSTRING_CJK
 
         state = c.obj(value, path)
         for field, subject in _CHARACTER_STATE_SUBJECTS.items():
-            # 旧包保留固定主体前缀；新包用 intro 中已验证的姓名明确状态归属。
+            # Legacy packages retain fixed subject prefixes; new ones use intro-validated names for explicit state ownership.
             name = (cast_names or {}).get(field.replace("_state", "_name"))
             if field != "environment_state" and _text(name):
                 subject = name
@@ -885,7 +885,7 @@ class NumericV2Compiler:
 
     @staticmethod
     def _validate_structured_goals(c: _Collector, value: Any, path: str) -> None:
-        """校验作者显式目标，避免 Runtime、Evaluator 和 Actor 再从描述中猜职责。"""  # noqa: DOCSTRING_CJK
+        """Validate explicit author targets so Runtime, Evaluator, and Actor need not infer responsibilities from descriptions."""  # noqa: DOCSTRING_CJK
 
         goals = c.array(value, path)
         if not goals:
@@ -958,7 +958,7 @@ class NumericV2Compiler:
         evidence_anchors: list[str],
         evidence_path: str,
     ) -> None:
-        """校验 v2.1 原子交付；旧目标未声明 delivery 时继续走兼容投影。"""  # noqa: DOCSTRING_CJK
+        """Validate v2.1 atomic delivery; legacy targets without delivery retain compatibility projection."""  # noqa: DOCSTRING_CJK
 
         delivery = c.obj(value, path)
         delivery_type = delivery.get("type")
@@ -990,14 +990,14 @@ class NumericV2Compiler:
                 f"{path}.type",
                 "semantic_state 只能交给 Evaluator 做语义判断。",
             )
-        # typed delivery 只声明“谁在什么输出位置完成目标”，不等同于要求逐字复述。
-        # 自然对白、动作和环境变化可以交给 Evaluator 做 semantic 取证；只有作者确实
-        # 需要保留口令、编号或界面原文时才使用 exact anchors。
+        # Typed delivery declares who completes a target at which output position, without requiring verbatim repetition.
+        # Let Evaluator gather semantic evidence from natural dialogue, actions, and environmental changes; use exact anchors only when authors
+        # actually require commands, IDs, or original UI text to be retained.
         if delivery_type == "catgirl_action":
             for index, anchor in enumerate(evidence_anchors):
                 if anchor.strip().startswith(("她", "女主", "猫娘")):
-                    # 动作锚点会原样写进括号微动作；第三人称主语属于旁白，进入该字段后会破坏
-                    # “括号内不朗读”的表现协议，也会诱导模型在括号外复述同一句。
+                    # Action anchors enter parenthesized micro-actions verbatim; third-person subjects are narration and would break
+                    # the protocol that parentheses are not read aloud, also encouraging repetition outside them.
                     c.add(
                         "catgirl_action_anchor_third_person",
                         f"{evidence_path}.anchors[{index}]",
@@ -1198,8 +1198,8 @@ class NumericV2Compiler:
             if any(field in node for field in ("choices", "available_interaction_ids", "edges")):
                 c.add("legacy_node_field_forbidden", path, "Numeric v2 节点不能包含旧 Choice、interaction 或 Edge 字段。")
             routes = c.array(node.get("route_gates"), f"{path}.route_gates")
-            # 单出口表示确定性的顺序推进，不要求作者为了主线编译虚构数值条件；
-            # 同一节点出现多个出口时，所有路线仍必须用作者配置的数值明确区分。
+            # One exit denotes deterministic sequential progression without forcing invented numeric conditions for the main route;
+            # multiple exits from one node must still be distinguished by author-configured values.
             allow_empty_conditions = len(routes) == 1
             targets: list[str] = []
             priorities: dict[int, list[tuple[str, dict[str, Any], str]]] = {}
@@ -1267,7 +1267,7 @@ class NumericV2Compiler:
         fact_definitions: Mapping[str, Any],
         fixed_narrations: list[dict[str, Any]] | None = None,
     ) -> None:
-        """校验幕完成条件只引用已声明的事实或本幕固定旁白。"""  # noqa: DOCSTRING_CJK
+        """Ensure act completion conditions reference only declared facts or the act's fixed narration."""  # noqa: DOCSTRING_CJK
 
         contract = c.obj(value, path)
         if set(contract) != {"all"}:
@@ -1527,7 +1527,7 @@ class NumericV2Compiler:
         for ending_id in sorted(ending_ids.difference(reached_endings)):
             c.add("unreachable_ending", f"endings.{ending_id}", "结局从开场不可达。")
 
-        # 完成后仍可发声的普通幕提供作者写定的备用邀请；禁言结果不能靠追加台词兜底。
+        # Normal acts allowed to speak after completion provide author-written fallback invitations; silent outcomes cannot fall back to extra dialogue.
         for source_id, node in nodes.items():
             if "completion_contract" not in node:
                 continue
@@ -1558,7 +1558,7 @@ class NumericV2Compiler:
                     f"nodes.{source_id}.route_gates[{route_index}].transition_contract.accept_input",
                 )
 
-        # 从所有结局反向遍历，保证每条可达支线都能收束到结局，而不是停在幕节点或循环中。
+        # Traverse backward from all endings so every reachable branch converges to an ending instead of stopping at an act or cycle.
         reverse_routes: dict[str, set[str]] = {node_id: set() for node_id in nodes}
         for source, targets in route_targets.items():
             for target in targets:

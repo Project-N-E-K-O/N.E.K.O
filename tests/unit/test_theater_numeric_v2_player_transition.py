@@ -73,7 +73,7 @@ def test_plain_accept_without_offer_still_stays(intent):
 def test_initiation_uses_updated_metrics_and_does_not_offer_unavailable_route():
     """Initiation still selects routes using updated metrics; unreachable exits cannot masquerade as a public invitation."""
     c = initiation_case(); engine = c['engine']; session = replace(c['session'],metrics={'trust':69})
-    # 使用与普通接受相同的数值边界，避免新增另一套锁路状态。
+    # Use the same numeric boundaries as normal acceptance to avoid another set of route-lock states.
     change = MetricChangeV2('trust',2,'玩家兑现承诺','已按约完成。')
     result = engine.resolve_turn(session,TurnRequestV2('go',0,c['message']),(change,),transition_intent='initiate')
     assert result.session.current_node_id == 'ending_stay'

@@ -25,9 +25,9 @@ def test_backend_greeting_check_no_longer_depends_on_tutorial_state():
         1,
     )[0]
 
-    # greeting_check 必须发布 agent-intent restore 信号（首个「用户实际进入会话」
-    # 信号）。#2289 起该调用加了 new_session=budget_new_session kwarg，故只断言
-    # 「以 lanlan_name 为首参调用了该函数」，不锁死尾随参数列表。
+    # greeting_check must publish the agent-intent restore signal (the first signal that the user
+    # actually entered the session). Since #2289 this call adds new_session=budget_new_session, so assert only
+    # that the function is called with lanlan_name first, without fixing the trailing arguments.
     assert "_publish_agent_intent_restore_signal(lanlan_name" in greeting_block
     assert "_is_home_tutorial_blocking_greeting" not in greeting_block
     assert "is_switch = message.get(\"is_switch\", False)" in greeting_block

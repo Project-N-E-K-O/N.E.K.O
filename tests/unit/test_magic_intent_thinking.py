@@ -36,12 +36,12 @@ class _FakeConfigManager:
 @pytest.mark.parametrize(
     "model, api_base, expected",
     [
-        # thinking.type 方言（GLM / Kimi / Doubao；官方 DeepSeek V4 登记后同此列）
+        # thinking.type dialect (GLM / Kimi / Doubao; official DeepSeek V4 joins this category once registered).
         ("glm-5.2", "https://open.bigmodel.cn/api/paas/v4", {"thinking": {"type": "disabled"}}),
         ("kimi-k3", "https://api.moonshot.cn/v1", {"thinking": {"type": "disabled"}}),
-        # enable_thinking 方言（DashScope / SiliconFlow）
+        # enable_thinking dialect (DashScope / SiliconFlow).
         ("qwen3.7-flash", "https://dashscope.aliyuncs.com/compatible-mode/v1", {"enable_thinking": False}),
-        # 未登记的模型：没有可下发的方言，保持空（不能瞎猜一个形状发过去）
+        # Unregistered model: no supported dialect, so leave it empty rather than guessing a payload shape.
         ("some-unregistered-model", "https://example.com/v1", {}),
     ],
 )

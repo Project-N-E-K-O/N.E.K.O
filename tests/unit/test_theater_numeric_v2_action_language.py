@@ -59,26 +59,26 @@ def test_action_language_rule_reaches_actor_evaluator_and_guard():
             actor_performance={"performance": "（抬眼）收到。", "suggested_inputs": []})[0],
     ]
     assert all(group[0].content.count(PLAYER_ACTION_LANGUAGE_RULE) == 1 for group in groups)
-    # 演员、判定和复核采用同一状态时点，同时保留未来目标幕与已提交历史的区别。
+    # Actor, evaluator, and reviewer share the same state instant while distinguishing future target scenes from committed history.
     assert all("作者角色状态记录开场演完后的起点" in group[0].content for group in groups)
     assert all("目标幕尚未播放时" in group[0].content for group in groups)
-    # 连续动作不因分节点而失效；三类消费者仍须保留普通换幕的公开接受流程。
+    # Splitting nodes must not invalidate continuous actions; all three consumers must preserve the public acceptance flow for ordinary scene changes.
     assert all("不能仅因作者把该动作安排在下一节点" in group[0].content for group in groups)
     assert all("或玩家明确要求前往已公开的下一地点" in group[0].content for group in groups)
-    # 输入与事实矛盾时须提醒；不能把正常的新动作和事后改写历史混淆。
+    # Warn when input contradicts facts; do not confuse normal new actions with retroactive history changes.
     assert all("角色自然提醒实际情况" in group[0].content for group in groups)
     assert all("不为顺从输入倒退物件状态或补造前置动作" in group[0].content for group in groups)
     assert all(message in group[1].content for group in groups)
-    # 语义说明不改变输入、Session 或路线状态，也不根据关键词自行提交动作。
+    # Semantic guidance does not modify input, Session, or route state, nor commit actions from keywords alone.
     assert session.revision == 0
     assert not session.transition_offered
-    # 复核的违规标准也必须采用授权语义，避免共享说明被旧的“未写完动作”定义抵消。
+    # Review violations must use authorization semantics too, so the old unfinished-action definition cannot override shared guidance.
     assert "正文替玩家新增未获授权的行动、决定或回应" in groups[2][0].content
     assert "不要求玩家先复述动作已完成" in groups[2][0].content
 
 
 def test_post_opening_state_rule_reaches_formal_transition_actor_and_guard():
-    # 正式转场使用独立 Prompt，目标状态只能在目标段成立，不能漏用共享时点合同。
+    # Formal transitions use a separate prompt; target state applies only in the target segment, following the shared timing contract.
     from services.theater.numeric_v2_context import SCENE_ENTRY_STATE_RULE
     from tests.unit.test_theater_numeric_v2_transition_history import _engine, _opening, _candidate
     from tests.unit.test_theater_numeric_v2_runtime import _binding
@@ -94,7 +94,7 @@ def test_post_opening_state_rule_reaches_formal_transition_actor_and_guard():
             actor_performance=candidate, route_changed=True, transition_outcome=outcome)[0],
     ]
     assert all(group[0].content.count(SCENE_ENTRY_STATE_RULE) == 1 for group in groups)
-    # 已完成的连续动作进入下一幕后只承接结果，不能按作者默认未完成状态回退。
+    # Completed continuous actions carry their results into the next scene and must not revert to the author's default unfinished state.
     assert all("不再次要求执行，也不把物件退回操作前" in group[0].content for group in groups)
     assert all("角色自然提醒实际情况" in group[0].content for group in groups)
     assert session.revision == 0

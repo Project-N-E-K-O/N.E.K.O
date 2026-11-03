@@ -26,6 +26,7 @@ function createSettingsPopupShowSync(prefix) {
         syncCheckbox(document.querySelector(`#${prefix}-focus-mode`), window.focusModeEnabled, true);
         syncCheckbox(document.querySelector(`#${prefix}-avatar-reaction-bubble`), window.avatarReactionBubbleEnabled);
         syncCheckbox(document.querySelector(`#${prefix}-focus-cognition`), window.focusCognitionEnabled);
+        syncCheckbox(document.querySelector(`#${prefix}-auto-memory-recall`), window.autoMemoryRecallEnabled);
         syncCheckbox(document.querySelector(`#${prefix}-slop-filter`), window.slopFilterEnabled);
         syncCheckbox(document.querySelector(`#${prefix}-visit-enabled`), window.visitEnabled);
         syncCheckbox(document.querySelector(`#${prefix}-visit-voice`), window.visitVoiceEnabled);

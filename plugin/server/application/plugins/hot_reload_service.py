@@ -1,36 +1,36 @@
-"""插件源码热重载：监视插件目录变更并自动 reload。
+"""Plugin-source hot reload: watch directory changes and reload automatically.
 
-实现方式是 stdlib 轮询（``Path.stat`` 的 mtime_ns + size 签名），不引入
-watchdog 之类的第三方依赖，也不依赖平台文件系统通知。每轮扫描：
+Use standard-library polling of Path.stat mtime_ns/size signatures without third-party
+watchdog dependencies or platform filesystem notifications. Each scan:
 
-1. 目标集合 = 注册表插件的 config 目录（``PLUGIN_CONFIG_ROOTS`` 下）+
-   开发模式注册的 ``source_dir``；
-2. 对每个目录收集 ``*.py`` / ``plugin.toml`` 的签名，与上一轮比较；
-3. 有变化的插件进入 pending，等防抖窗口（变更静默
-   ``PLUGIN_HOT_RELOAD_DEBOUNCE`` 秒）后 reload。
+1. Target registered plugin config directories under PLUGIN_CONFIG_ROOTS plus
+   source_dir from development registrations.
+2. Collect *.py/plugin.toml signatures per directory and compare with the previous round.
+3. Mark changed plugins pending and reload after changes remain quiet for
+   PLUGIN_HOT_RELOAD_DEBOUNCE seconds.
 
-reload 复用 ``PluginLifecycleService.reload_plugin``（stop + start，杀进程
-重启），因此自动触发与手动点按钮走完全相同的加锁与事务路径。
+Reuse PluginLifecycleService.reload_plugin, stopping and restarting processes,
+so automatic and manual reload share identical locking/transaction paths.
 
-安全边界（与手动 reload 的差异全部在触发侧收口）：
+Safety differences from manual reload are confined to triggering:
 
-- reload **正在运行**或上次自动重载启动失败的插件。失败仅在下一次源码
-  变更后重试；任何显式 start/stop 都会在操作锁内撤销恢复许可。
-  用户手动停下的插件不会因为一次文件
-  变更被拉起来——那是把"改了代码"偷换成"改变了我的启动意图"。锁外先
-  查一次做快速路径，拿到操作锁后 ``reload_plugin(only_if_running=True)``
-  还会复查，兜住两次检查之间用户 Stop 的竞态。
-- reload 前先做 preflight（复用开发插件的 manifest/entry/依赖验证与 ``.py`` 编译），
-  语法坏掉的编辑直接跳过这一轮，保住旧实例；下次变更再试。开发模式
-  插件在 ``reload_plugin`` 内部另有完整 preflight，这里对普通（内置/安装）
-  插件补上同等的保护。
-- 与用户操作撞车时，抢锁最多等一个防抖窗口，仍等不到
-  （``PluginOperationBusy``）就顺延一个防抖窗口重试，不插队。
-- 监视面假设插件运行时不会向自己的 config 目录写 ``*.py`` /
-  ``plugin.toml``（2026-09 普查 ``plugin/plugins``：插件运行期写的都是
-  json/媒体/模型文件，``plugin.toml`` 的写入点全部在测试里，均不在签名
-  范围内）。若未来某插件需要在运行期生成源码文件，必须写进已被排除的
-  子目录（如 ``vendor``），否则会形成 reload 回环。
+- Reload running plugins or those whose last automatic reload failed startup. Retry failure only
+  after another source change; explicit start/stop revokes recovery permission under operation locks.
+  A user's manually stopped plugin must not restart merely because a file
+  changed, confusing code edits with startup intent. Check once outside locks
+  for speed, then recheck through reload_plugin(only_if_running=True) under
+  operation locks, covering intervening Stop races.
+- Preflight before reload reuses development manifest/entry/dependency validation and .py compilation.
+  Broken syntax skips this attempt, preserving old instances until the next change. Development
+  plugins already have full reload_plugin preflight; provide equivalent protection here
+  for ordinary built-in/installed plugins.
+- When user operations contend, wait at most one debounce window for locks;
+  PluginOperationBusy defers another window rather than jumping the queue.
+- Watching assumes plugins do not write *.py/plugin.toml into their own config directories
+  during execution. The 2026-09 plugin/plugins audit found runtime writes only to
+  JSON/media/model files, with all plugin.toml writes confined to tests, outside watched
+  signatures. Future runtime source generation must use excluded
+  subdirectories such as vendor to avoid reload loops.
 """
 
 from __future__ import annotations
@@ -80,12 +80,12 @@ from plugin.utils.time_utils import now_iso
 
 logger = get_logger("server.application.plugins.hot_reload")
 
-# 防抖到期后的最小检查间隔。有 pending 时轮询间隔会收缩到接近这个值，
-# 让"静默结束 → reload"的延迟不受整秒级轮询间隔拖累。
+# Minimum postdebounce check interval: pending work shrinks polling toward this value,
+# avoiding whole-second polling delays between quiet completion and reload.
 _MIN_TICK_SECONDS = PLUGIN_HOT_RELOAD_MIN_INTERVAL_SECONDS
-# stop() 等待 watcher 退出的上限。in-flight reload 被 operation lock 屏蔽
-# 取消时，超时说明它还在跑完最后一步。服务器关停另传 0.05s，
-# 为 host teardown 保留总预算；注册门闩拒绝迟到的 host。
+# stop() watcher-exit limit. Timeout during operation-lock-shielded in-flight reload
+# means its final step still runs. Server shutdown passes 0.05 s instead,
+# preserving host-teardown budget while registration latches reject late hosts.
 _STOP_TIMEOUT_SECONDS = 1.5
 # Restart has a different budget from shutdown: a healthy in-flight reload may
 # still consume the host start/stop and isolated metadata scan limits.
@@ -98,7 +98,7 @@ _RESTART_DRAIN_SECONDS = PLUGIN_STARTUP_TIMEOUT + _RESTART_DRAIN_OVERHEAD_SECOND
 # timeout start_plugin records once it has read the config is picked up.
 _DRAIN_RECHECK_SECONDS = 1.0
 _BUSY_RETRY_SECONDS = 1.0
-# 与 dev preflight 共用的目录排除表：这些目录里的 .py 不是插件源码。
+# Share development-preflight directory exclusions; their .py files are not plugin source.
 _EXCLUDED_DIR_NAMES = development_store.SOURCE_EXCLUDED_DIR_NAMES
 
 
@@ -112,8 +112,8 @@ class _WatchTarget:
 def _signature_sync(root: Path) -> dict[str, tuple[int, int]]:
     """Collect ``{relative_path: (mtime_ns, size)}`` for watched files.
 
-    只看 ``*.py`` 和 ``plugin.toml``：资源文件变更不影响已加载数据的
-    正确性，而 reload 的代价是整个进程重启，不值得为一张图片付。
+    Watch only *.py/plugin.toml: resource changes do not invalidate already-loaded
+    data, and restarting a whole process for one image is not worthwhile.
     """
     signature: dict[str, tuple[int, int]] = {}
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
@@ -132,8 +132,8 @@ def _signature_sync(root: Path) -> dict[str, tuple[int, int]]:
             try:
                 stat = path.stat()
             except OSError:
-                # 文件在 walk 和 stat 之间被删掉：这一轮当作没看见，
-                # 下一轮签名里少了它自然会触发 diff。
+                # Deleted between walk and stat: ignore this round;
+                # absence in the next signature naturally triggers a diff.
                 continue
             signature[path.relative_to(root).as_posix()] = (
                 stat.st_mtime_ns,
@@ -145,9 +145,9 @@ def _signature_sync(root: Path) -> dict[str, tuple[int, int]]:
 def _preflight_compile_sync(root: Path) -> str | None:
     """Validate a plugin source tree without importing it.
 
-    返回错误消息（或 ``None`` 表示通过）。stop 一个健康进程之前先确认
-    manifest/entry/依赖有效、插件自有 ``.py`` 都能编译——坏掉的编辑不应该
-    杀死正在运行的旧实例。
+    Return an error message or None for success. Before stopping a healthy process, verify
+    manifest/entry/dependencies and compile plugin-owned .py files; broken edits must not
+    kill the running old instance.
     """
     manifest_path = root / "plugin.toml"
     try:
@@ -178,8 +178,8 @@ def _preflight_compile_sync(root: Path) -> str | None:
 class PluginHotReloadService:
     """Watch plugin source directories and reload running plugins on change.
 
-    单实例跨 ``start``/``stop`` 复用：stop 后再次 start 会重建签名基线，
-    避免把停机窗口里的变更误报成新一轮 reload。
+    Reuse one instance across start/stop; restarting rebuilds signature baselines,
+    avoiding false reloads for changes made while stopped.
     """
 
     def __init__(self, lifecycle_service: PluginLifecycleService | None = None) -> None:
@@ -187,11 +187,11 @@ class PluginHotReloadService:
         self._task: asyncio.Task[None] | None = None
         self._stop_event: asyncio.Event | None = None
         self._restart_requested = False
-        # 正在进行 reload 的目标；重启排空预算按它的启动超时计算。
+        # Current reload target, whose startup timeout determines restart-drain budget.
         self._inflight_target: _WatchTarget | None = None
-        # plugin_id -> 上一次看到的签名。None 值表示"目录本轮不可见"。
+        # plugin_id -> last observed signature; None means directory invisible this round.
         self._signatures: dict[str, dict[str, tuple[int, int]]] = {}
-        # plugin_id -> 防抖截止时刻（monotonic）。
+        # plugin_id -> monotonic debounce deadline.
         self._pending: dict[str, float] = {}
 
     # ---------- lifecycle ----------
@@ -199,8 +199,8 @@ class PluginHotReloadService:
     def start(self) -> bool:
         """Start the watcher task on the running loop. Idempotent.
 
-        返回是否真的启动了。``PLUGIN_HOT_RELOAD`` 关闭时是 no-op，让
-        ``startup()`` 可以无条件调用而不必各自记忆配置。
+        Return whether it actually started. Disabled PLUGIN_HOT_RELOAD is a no-op, allowing
+        startup() to call unconditionally without duplicating configuration checks.
         """
         if not PLUGIN_HOT_RELOAD:
             logger.debug(
@@ -213,8 +213,8 @@ class PluginHotReloadService:
                 # shared signatures; never run two generations concurrently.
                 self._restart_requested = True
             return True
-        # 重启场景：上一轮的 pending/签名描述的是上一个进程世代的磁盘，
-        # 保留只会产生一次假 reload。
+        # On restart, old pending/signatures describe the previous process generation's disk;
+        # retaining them would cause a false reload.
         self._signatures.clear()
         self._pending.clear()
         self._stop_event = asyncio.Event()
@@ -237,14 +237,14 @@ class PluginHotReloadService:
         if task is None:
             return
         task.cancel()
-        # 不 await task 本身：被取消时它会向外抛 CancelledError，而这里要
-        # 的语义是"等它退出，超时就报告并继续关停"。
+        # Do not await the task directly, which propagates CancelledError. We need
+        # to await exit, report timeout, and continue shutdown.
         done, _pending_tasks = await asyncio.wait({task}, timeout=timeout)
         if not done:
-            # 超时：in-flight reload 还在跑。必须保留 task 引用，否则
-            # start() 会看不到存活中的 watcher 而另起一个，两个 watcher
-            # 短暂并发写 _signatures。orphan 的 stop_event 已置位，跑完
-            # 当前一步会自行退出；期间 start() 会预约退出后的 replacement。
+            # In-flight reload still running after timeout: retain the task reference or
+            # start() misses the live watcher and creates another, allowing both
+            # to write _signatures briefly. The orphan's stop_event is set and it exits
+            # after its current step; meanwhile start() reserves a postexit replacement.
             self._task = task
             logger.warning(
                 "plugin hot-reload watcher did not stop within {}s; "
@@ -343,9 +343,9 @@ class PluginHotReloadService:
     # ---------- watcher loop ----------
 
     async def _run(self) -> None:
-        # 局部捕获而不是 assert：``_run`` 只能由 ``start()`` 里的 create_task
-        # 启动（先设置 event 再建 task），但 ``python -O`` 会剥离 assert，
-        # 防御性检查不能依赖它。
+        # Capture locally instead of assert: _run starts only through start()'s create_task,
+        # after setting the event, but python -O strips assertions,
+        # so defensive checks cannot depend on them.
         stop_event = self._stop_event
         if stop_event is None:
             logger.warning("plugin hot-reload watcher started without a stop event")
@@ -356,8 +356,8 @@ class PluginHotReloadService:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                # 一次磁盘毛刺不能杀掉整个 watcher；签名部分更新没关系，
-                # 下一轮会基于新状态继续 diff。
+                # One disk glitch must not kill the watcher; partial signature updates are fine,
+                # since next round compares from the new state.
                 logger.warning(
                     "plugin hot-reload tick failed: err_type={}, err={}",
                     type(exc).__name__,
@@ -391,12 +391,12 @@ class PluginHotReloadService:
             previous = self._signatures.get(target.plugin_id)
             self._signatures[target.plugin_id] = signature
             if previous is None:
-                # 首次基线（或目录重新可见）：只记录，不触发。
+                # First baseline or newly visible directory: record without triggering reload.
                 continue
             if signature != previous:
                 self._pending[target.plugin_id] = now + PLUGIN_HOT_RELOAD_DEBOUNCE
 
-        # 目标消失（卸载/解绑）：清掉对应状态。
+        # Removed/unbound target: clear its state.
         for plugin_id in list(self._signatures.keys() - visible_ids):
             self._signatures.pop(plugin_id, None)
             self._pending.pop(plugin_id, None)
@@ -483,10 +483,10 @@ class PluginHotReloadService:
         plugin_id = target.plugin_id
         is_running = await asyncio.to_thread(plugin_is_running_sync, plugin_id)
         if not is_running and not plugin_needs_hot_reload_recovery(plugin_id):
-            # 停着的插件不自动拉起。这是锁外的快速路径；拿到锁之后
-            # reload_plugin(only_if_running=True) 还会复查一次，兜住
-            # "这里查完、用户 Stop 落进窗口"的竞态。下次手动 start 时
-            # start_plugin 自己会从磁盘刷新注册表条目，新代码不会漏掉。
+            # Never autostart stopped plugins. This unlocked fast path is followed by
+            # reload_plugin(only_if_running=True)'s locked recheck, covering
+            # a user Stop between checks. A later manual start refreshes
+            # registry entries from disk itself, preserving new code.
             logger.debug(
                 "hot-reload skipped (plugin not running): plugin_id={}", plugin_id
             )
@@ -497,8 +497,8 @@ class PluginHotReloadService:
             return
 
         if not target.is_development:
-            # dev 插件在 reload_plugin 内部有完整 preflight；普通插件
-            # 在这里补一道语法检查，坏编辑不杀健康进程。
+            # Development reload already has full internal preflight; add syntax checks here
+            # for ordinary plugins so broken edits cannot kill healthy processes.
             error = await asyncio.to_thread(_preflight_compile_sync, target.root)
             if error is not None:
                 logger.warning(
@@ -517,9 +517,9 @@ class PluginHotReloadService:
         logger.info("hot-reload triggered: plugin_id={}", plugin_id)
         self._emit_event("plugin_hot_reload_triggered", plugin_id)
         try:
-            # 给等锁一个截止期：没有预算的话 reload_plugin 内部的
-            # serialized_plugin_operation 会无界等待，busy 永远抛不出来，
-            # 下面的 except 分支就是死路径。预算取防抖窗口——和顺延窗口一致。
+            # Give lock waiting a deadline; without a budget, reload_plugin's
+            # serialized_plugin_operation waits forever, never raising busy and making
+            # the except below unreachable. Use one debounce window, matching deferral.
             with bounded_operation_wait(PLUGIN_HOT_RELOAD_DEBOUNCE):
                 result = await self._lifecycle_service.reload_plugin(
                     plugin_id, only_if_running=True
@@ -532,7 +532,7 @@ class PluginHotReloadService:
                 return
             logger.info("hot-reload completed: plugin_id={}", plugin_id)
         except PluginOperationBusy:
-            # 用户操作正在持有锁：顺延一个防抖窗口再试，不报错误。
+            # User operation holds the lock: defer one debounce window without errors.
             self._pending[plugin_id] = (
                 time_module.monotonic()
                 + max(PLUGIN_HOT_RELOAD_DEBOUNCE, _BUSY_RETRY_SECONDS)
@@ -541,8 +541,8 @@ class PluginHotReloadService:
                 "hot-reload deferred (operation busy): plugin_id={}", plugin_id
             )
         except ServerDomainError as exc:
-            # reload_plugin 自己的 preflight/启动失败等：放弃这一轮，
-            # 等下一次文件变更再触发（签名已经同步，不会自动重燃）。
+            # reload_plugin preflight/startup failures abandon this attempt until
+            # another file change; synchronized signatures prevent automatic retriggering.
             logger.warning(
                 "hot-reload failed: plugin_id={}, code={}, message={}",
                 plugin_id,
@@ -577,8 +577,8 @@ class PluginHotReloadService:
             "time": now_iso(),
         }
         if reason is not None:
-            # 前端靠它区分 preflight 拒绝 / 域错误 / 意外异常，
-            # 不用去日志里对时间戳。
+            # Frontends distinguish preflight rejection/domain errors/unexpected exceptions through this,
+            # without correlating log timestamps.
             payload["reason"] = reason
         try:
             emit_lifecycle_event(payload)
@@ -586,5 +586,5 @@ class PluginHotReloadService:
             logger.debug("failed to emit {} event: {}", event_type, exc)
 
 
-# 模块级单例，与 lifecycle.py 的其它服务用法保持一致。
+# Module singleton, matching lifecycle.py's other services.
 hot_reload_service = PluginHotReloadService()

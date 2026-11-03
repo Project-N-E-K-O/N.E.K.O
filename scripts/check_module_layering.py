@@ -24,11 +24,11 @@ stays acyclic). The hierarchy:
 
     L0  config, steamworks                   ← foundation (data + vendored SDK)
     L1  utils
-    L2  knowledge, memory, main_logic
-    L3  main_routers
+    L2  knowledge, memory, main_logic, services
+    L3  main_routers, theater_workshop
     L4  plugin                                ← high-level extension surface
     L5  brain                                 ← top-of-stack agent orchestration
-    L6  app, local_server, launcher.py        ← entrypoints
+    L6  app, local_server, launcher.py, launcher_core  ← entrypoints
 
 Violations are split into two categories, both forbidden:
 
@@ -45,6 +45,14 @@ A third category pins boundaries that layers alone cannot express:
                       must never depend on (see ``FORBIDDEN_EDGES``), even when
                       the layers would allow it.
 
+The rules above only see packages listed in ``LAYERS``; imports of and from
+any other top-level directory are skipped. So one more check keeps that list
+complete:
+
+    UNREGISTERED_PACKAGE — a top-level directory holds Python files git
+                           tracks, yet it is in no layer, not covered by
+                           ``EXCLUDE_DIRS`` and not in ``UNLAYERED_TOP_LEVEL``.
+
 What it flags
 -------------
 The walker descends into every node in every .py — module-top imports,
@@ -53,6 +61,11 @@ and string-form dynamic imports (``importlib.import_module("foo.bar")`` /
 ``__import__("foo.bar")``). Per the project convention "even dynamic
 references are forbidden", a deferred import inside a function body counts
 the same as a module-top one.
+
+A new top-level package fails the gate until it is placed in ``LAYERS``.
+Its files are listed with ``git ls-files`` so untracked local scratch
+directories never trip the check; without git (e.g. an exported source
+tree) the filesystem is walked instead.
 
 Suppression
 -----------
@@ -67,6 +80,7 @@ Output
 Every violation prints as:
     path:line:col  LAYER_INVERSION  src→dst (Lx → Ly): <import>
     path:line:col  LAYER_CYCLE      src↔dst: <import>  [other half: …]
+    dir/  UNREGISTERED_PACKAGE  <example file>: <how to register it>
 
 Exit status is 1 when any violation is found, 0 otherwise.
 
@@ -77,6 +91,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import subprocess
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -93,15 +108,20 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # any package whose layer index is strictly less, or from a same-layer peer
 # provided no cycle results. ``launcher`` is the launcher.py top-level
 # script (no package); we treat it specially in PACKAGE_OF_FILE.
+#
+# ``services`` holds Main-side domain services (chat sync, theater runtime)
+# used by main_logic, main_routers and app. ``theater_workshop`` is the
+# author-side theater host (not shipped) built on services. ``launcher_core``
+# is launcher.py's bootstrap and imports app directly.
 
 LAYERS: List[Tuple[int, Set[str]]] = [
     (0, {"config", "steamworks"}),
     (1, {"utils"}),
-    (2, {"knowledge", "memory", "main_logic"}),
-    (3, {"main_routers"}),
+    (2, {"knowledge", "memory", "main_logic", "services"}),
+    (3, {"main_routers", "theater_workshop"}),
     (4, {"plugin"}),
     (5, {"brain"}),
-    (6, {"app", "local_server", "launcher"}),
+    (6, {"app", "local_server", "launcher", "launcher_core"}),
 ]
 
 PACKAGE_TO_LAYER: Dict[str, int] = {
@@ -109,10 +129,18 @@ PACKAGE_TO_LAYER: Dict[str, int] = {
 }
 KNOWN_PACKAGES: Set[str] = set(PACKAGE_TO_LAYER.keys())
 
+# Top-level directories that hold Python code but stay outside the layering
+# on purpose. ``scripts`` is CI / developer tooling: not a package, imported
+# by no production code, and free to reach into every layer. Directories
+# already skipped through ``EXCLUDE_DIRS`` (tests, docs, deps, ...) need no
+# entry here.
+UNLAYERED_TOP_LEVEL: Set[str] = {"scripts"}
+
 
 CODE_INVERSION = "LAYER_INVERSION"
 CODE_CYCLE = "LAYER_CYCLE"
 CODE_FORBIDDEN = "FORBIDDEN_EDGE"
+CODE_UNREGISTERED = "UNREGISTERED_PACKAGE"
 
 # (path prefix relative to the repo root, forbidden package, why).
 #
@@ -121,12 +149,24 @@ CODE_FORBIDDEN = "FORBIDDEN_EDGE"
 # server entrypoint talk to it only through that API, and the plugin server
 # only through Main's proxy. The knowledge package itself never depends on
 # memory: it shares the Memory Server process, not memory's data.
+#
+# ``services`` is Main-side code too, so the same knowledge rule applies; the
+# rule matches path prefixes, not transitive imports, so without it
+# main_logic -> services -> knowledge would slip past. services shares L2
+# with main_logic, which imports it (``services.chat_sync.source``), so the
+# reverse edge is pinned here rather than left to cycle detection: a cycle is
+# reported once per component and can hide individual edges, and it would
+# vanish entirely if main_logic stopped importing services. Capabilities that
+# services needs from higher layers are registered into
+# ``services/chat_sync/host.py`` by their owners.
 FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
     ("main_logic/", "knowledge", "Main reaches public knowledge over HTTP only"),
     ("main_routers/", "knowledge", "Main reaches public knowledge over HTTP only"),
     ("app/main_server/", "knowledge", "Main reaches public knowledge over HTTP only"),
+    ("services/", "knowledge", "Main reaches public knowledge over HTTP only"),
     ("plugin/", "knowledge", "the plugin server goes through Main's proxy"),
     ("knowledge/", "memory", "knowledge never reads or writes memory data"),
+    ("services/", "main_logic", "main_logic depends on services; services never imports it back"),
 ]
 
 
@@ -318,20 +358,27 @@ def _arg_repr(node: Optional[ast.AST]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _is_excluded(path: Path) -> bool:
-    parts = set(path.parts)
-    if parts & EXCLUDE_DIRS:
+def _is_excluded_rel(rel: str) -> bool:
+    """``_is_excluded`` for a repo-relative POSIX path, without touching the
+    filesystem."""
+    if set(rel.split("/")) & EXCLUDE_DIRS:
         return True
-    try:
-        rel = path.relative_to(REPO_ROOT).as_posix()
-    except ValueError:
-        rel = path.as_posix()
     if rel in EXCLUDE_FILES:
         return True
     for ex in EXCLUDE_DIRS:
         if "/" in ex and (rel == ex or rel.startswith(ex + "/")):
             return True
     return False
+
+
+def _is_excluded(path: Path) -> bool:
+    if set(path.parts) & EXCLUDE_DIRS:
+        return True
+    try:
+        rel = path.relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        rel = path.as_posix()
+    return _is_excluded_rel(rel)
 
 
 def _iter_python_files(paths: Iterable[Path]) -> Iterator[Path]:
@@ -356,6 +403,87 @@ def _parse_file(path: Path) -> ast.Module | None:
     except SyntaxError as e:
         print(f"{path}:{e.lineno}: syntax error — {e.msg}", file=sys.stderr)
         return None
+
+
+# ---------------------------------------------------------------------------
+# Registration completeness: every top-level Python package has a layer
+# ---------------------------------------------------------------------------
+
+
+def _tracked_python_files(root: Path) -> Optional[List[str]]:
+    """Return the ``root``-relative POSIX paths of the .py files git tracks
+    under ``root``, or ``None`` when git is missing or ``root`` is not the top
+    of its own work tree.
+    """
+    # An exported tree unpacked inside some other checkout would otherwise get
+    # that outer repository's (empty) listing and silently skip the check.
+    try:
+        toplevel = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=str(root),
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if toplevel.returncode != 0:
+        return None
+    top = toplevel.stdout.decode("utf-8", errors="surrogateescape").strip()
+    if not top or Path(top).resolve() != root.resolve():
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "-z", "--", "*.py"],
+            cwd=str(root),
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    output = result.stdout.decode("utf-8", errors="surrogateescape")
+    return [rel for rel in output.split("\0") if rel]
+
+
+def find_unregistered_packages(root: Path, known: Set[str]) -> List[Tuple[str, str]]:
+    """Return ``(directory, example file)`` for each top-level directory of
+    ``root`` that holds Python code but whose name is not in ``known``.
+
+    Dot-directories, ``UNLAYERED_TOP_LEVEL`` and anything ``EXCLUDE_DIRS``
+    skips are ignored. Files come from ``git ls-files`` so untracked local
+    scratch directories cannot fail the gate; when git is unavailable the
+    filesystem is walked instead.
+    """
+
+    def is_candidate(name: str) -> bool:
+        return not (
+            name.startswith(".")
+            or name in known
+            or name in UNLAYERED_TOP_LEVEL
+            or name in EXCLUDE_DIRS
+        )
+
+    files = _tracked_python_files(root)
+    if files is None:
+        files = [
+            path.relative_to(root).as_posix()
+            for child in sorted(root.iterdir())
+            if child.is_dir() and is_candidate(child.name)
+            for path in sorted(child.rglob("*.py"))
+        ]
+    found: Dict[str, str] = {}
+    for rel in files:
+        head, sep, _ = rel.partition("/")
+        # Root-level modules (launcher.py) are not directories; skip them.
+        if not sep or not is_candidate(head) or _is_excluded_rel(rel):
+            continue
+        # A tracked file deleted from the working tree is no longer code.
+        if (root / rel).is_file():
+            found.setdefault(head, rel)
+    return sorted(found.items())
 
 
 # ---------------------------------------------------------------------------
@@ -597,6 +725,16 @@ def main(argv: list[str] | None = None) -> int:
     inversions, cycles = find_violations(edges)
 
     total = 0
+    for directory, example in find_unregistered_packages(REPO_ROOT, KNOWN_PACKAGES):
+        print(
+            f"{directory}/  {CODE_UNREGISTERED}  {example}: top-level directory "
+            "with Python code is in no layer, so none of its imports are "
+            f"checked. Add {directory!r} to LAYERS in "
+            "scripts/check_module_layering.py, no lower than anything it "
+            "imports and no higher than anything that imports it (or to "
+            "UNLAYERED_TOP_LEVEL if it is tooling nothing imports)."
+        )
+        total += 1
     for (path, lineno, col, src, dst, repr_), reason in find_forbidden_edges(edges):
         print(
             f"{_format_path(path)}:{lineno}:{col}  {CODE_FORBIDDEN}  "
@@ -642,7 +780,8 @@ def main(argv: list[str] | None = None) -> int:
             "the same as module-top imports — there is no per-line "
             "suppression. To add a legitimate new edge, move the package "
             "in `LAYERS` and re-run; if that creates a violation elsewhere, "
-            "that's the actual problem to solve.",
+            "that's the actual problem to solve. A new top-level package "
+            "must be added to `LAYERS` before any of this can see it.",
             file=sys.stderr,
         )
         return 1

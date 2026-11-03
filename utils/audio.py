@@ -23,29 +23,29 @@ def make_wav_header(data_length, sample_rate, num_channels, sample_width):
         wf.setnchannels(num_channels)
         wf.setsampwidth(sample_width)
         wf.setframerate(sample_rate)
-        wf.writeframes(b'\x00' * data_length)  # 只写长度
-    return buffer.getvalue()[:44]  # 只取header
+        wf.writeframes(b'\x00' * data_length)  # Write only the length.
+    return buffer.getvalue()[:44]  # Read only the header.
 
 def wav_to_base64(wav_file_path):
-    # 以二进制模式打开WAV文件
+    # Open the WAV file in binary mode.
     with open(wav_file_path, "rb") as wav_file:
-        # 读取文件内容
+        # Read the file contents.
         wav_data = wav_file.read()
-        # 将二进制数据编码为base64
+        # Encode binary data as base64.
         base64_encoded = base64.b64encode(wav_data)
-        # 将bytes转换为字符串
+        # Convert bytes to a string.
         base64_string = base64_encoded.decode('utf-8')
         return base64_string
 
 def pcm_to_wav(pcm_data, sample_rate=16000, channels=1, sample_width=2):
     wav_buffer = io.BytesIO()
     with wave.open(wav_buffer, 'wb') as wav_file:
-        wav_file.setnchannels(channels)  # 单声道
-        wav_file.setsampwidth(sample_width)  # 16位音频
-        wav_file.setframerate(sample_rate)  # 采样率
+        wav_file.setnchannels(channels)  # Mono.
+        wav_file.setsampwidth(sample_width)  # 16-bit audio.
+        wav_file.setframerate(sample_rate)  # Sample rate.
         wav_file.writeframes(pcm_data)
 
-    wav_buffer.seek(0)  # 重要：将指针重置到开始位置
+    wav_buffer.seek(0)  # Important: reset the pointer to the beginning.
     return wav_buffer.getvalue(), wav_buffer
 
 
@@ -74,7 +74,7 @@ def select_voice_clone_sample_rate(sample_rate: int) -> int:
     for allowed_rate in reversed(allowed_sample_rates):
         if sample_rate >= allowed_rate:
             return allowed_rate
-    return 16000  # 保底，理论上不会走到这里
+    return 16000  # Fallback; theoretically unreachable.
 
 
 def normalize_voice_clone_api_audio(
@@ -109,10 +109,10 @@ def normalize_voice_clone_api_audio(
     file_buffer.seek(0)
 
     try:
-        # 使用 pyav 打开音频文件
+        # Open the audio file with PyAV.
         with av.open(file_buffer, mode="r") as container:
 
-            # 获取音频流
+            # Get the audio stream.
             audio_streams = [s for s in container.streams if s.type == 'audio']
             if not audio_streams:
                 raise ValueError('文件中没有音频流')
@@ -121,13 +121,13 @@ def normalize_voice_clone_api_audio(
             original_sample_rate = stream.sample_rate
             original_channels = stream.channels
 
-            # 采样率按允许值集合向下匹配
+            # Round the sample rate down to an allowed value.
             target_sample_rate = select_voice_clone_sample_rate(original_sample_rate)
 
             original_info = {
                 'sample_rate': original_sample_rate,
                 'channels': original_channels,
-                'sample_width': 2,  # pyav 默认使用 16-bit
+                'sample_width': 2,  # PyAV uses 16-bit by default.
                 'duration_ms': 0,
             }
 
@@ -166,7 +166,7 @@ def normalize_voice_clone_api_audio(
             audio_array = np.concatenate(audio_chunks).astype(np.int16, copy=False)
             original_info['duration_ms'] = int(total_input_samples / original_sample_rate * 1000)
 
-            # 直接写出标准 PCM WAV，避免 PyAV 在 WAV 编码参数上的兼容性问题
+            # Write standard PCM WAV directly, avoiding PyAV compatibility issues with WAV encoding parameters.
             output_buffer = io.BytesIO()
             mono_audio = np.ascontiguousarray(audio_array.reshape(-1))
             with wave.open(output_buffer, 'wb') as wav_file:
@@ -213,11 +213,11 @@ def validate_audio_file(file_buffer: io.BytesIO, filename: str) -> tuple[str, st
     file_path_obj = pathlib.Path(filename)
     file_extension = file_path_obj.suffix.lower()
 
-    # 检查文件扩展名
+    # Check the file extension.
     if file_extension not in ['.wav', '.mp3', '.m4a']:
         return "", f"不支持的文件格式: {file_extension}。仅支持 WAV、MP3 和 M4A 格式。"
 
-    # 根据扩展名确定MIME类型
+    # Determine MIME type from the extension.
     if file_extension == '.wav':
         mime_type = "audio/wav"
         try:

@@ -24,6 +24,13 @@ from launcher_core.bootstrap import _ensure_utf8_filesystem_encoding, _pin_proje
 
 
 if __name__ == "__main__":
+    # Local development overrides live in the git-ignored project .env.  Load
+    # them before any config module is imported so a normal manual launch uses
+    # the same settings as every spawned backend process.
+    from pathlib import Path as _Path
+    from dotenv import load_dotenv as _load_dotenv
+
+    _load_dotenv(_Path(__file__).resolve().with_name(".env"), override=False)
     _ensure_utf8_filesystem_encoding()
     if os.environ.get("NEKO_WAKE_WORD_RELEASE_SMOKE") == "1":
         from multiprocessing import freeze_support as _wake_freeze_support

@@ -36,8 +36,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-# 与写入侧同一个量级：撞上的是毫秒级窗口，不是长期占用。总预算保持在亚秒级，
-# 免得一个真的写不出来的用例要靠超时才失败。
+# Match the write-side scale: contention lasts milliseconds, not indefinitely. Keep the total budget subsecond,
+# so a genuinely unwritable case does not need to time out to fail.
 _RETRY_ATTEMPTS = 6
 _RETRY_BACKOFF_S = 0.005
 

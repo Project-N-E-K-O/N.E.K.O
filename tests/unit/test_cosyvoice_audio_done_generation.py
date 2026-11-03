@@ -40,7 +40,7 @@ from main_logic.tts_client._infra import (
 )
 
 
-# synthesizer 只在缓冲攒够 TTS_LANG_DETECT_MIN_CHARS 才建，测试文本要够长。
+# Create the synthesizer only after TTS_LANG_DETECT_MIN_CHARS accumulates; test text must be long enough.
 _LONG_ENOUGH = "这是一段足够长的测试文本用来触发合成器创建" * 2
 
 
@@ -66,10 +66,10 @@ class _FakeSynthesizer:
     """Records its callback so the test can fire completions out of order."""
 
     instances = []
-    # 每次 streaming_call 依次消费一个脚本项（拿到 synth 实例）；空了就走默认。
+    # Each streaming_call consumes one script entry to obtain a synthesizer; use the default when exhausted.
     script = []
-    # True 时 ws.send(FINISH) 会同步打回 on_complete —— 模拟 SDK 接收线程
-    # 抢在 send 返回前就完成的那一瞬。
+    # When True, ws.send(FINISH) synchronously invokes on_complete, simulating the SDK receiver thread
+    # completing before send returns.
     complete_on_finish = False
 
     def __init__(self, **kwargs):
@@ -89,8 +89,8 @@ class _FakeSynthesizer:
         if _FakeSynthesizer.script:
             _FakeSynthesizer.script.pop(0)(self)
             return
-        # 一次给够 bootstrap 阈值（1024B），逼 worker 立刻把音频投出去，
-        # 这样 _active_sid 会被置上 —— 与真实链路一致。
+        # Supply the entire 1024-byte bootstrap threshold at once, forcing immediate audio delivery
+        # and setting _active_sid as on the real path.
         self.callback.on_data(b"\x00" * 2048)
 
     def close(self):
@@ -270,20 +270,20 @@ def test_superseded_synthesizer_completion_does_not_close_the_current_turn(worke
     first = _FakeSynthesizer.instances[0]
     _wait_for(lambda: first.finish_payloads, "FINISH for the first turn")
 
-    # 第二轮：sid 切换会关掉旧 synthesizer 并建新的
+    # Second round: sid change closes the old synthesizer and creates a new one.
     request_queue.put(("speech-b", _LONG_ENOUGH + "第二轮。"))
     _wait_for(lambda: len(_FakeSynthesizer.instances) == 2, "second synthesizer")
     second = _FakeSynthesizer.instances[1]
     request_queue.put((None, None))
     _wait_for(lambda: second.finish_payloads, "FINISH for the second turn")
 
-    # 第一代 synthesizer 的完成通知迟到了：此刻回调里的共享状态描述的是第二轮。
+    # A late first-generation synthesizer completion arrives while shared callback state describes round two.
     first.callback.on_complete()
     assert _audio_done_ids(_drain(response_queue)) == [], (
         "a superseded synthesizer's completion must not close the current turn"
     )
 
-    # 本轮自己的完成通知才算数
+    # Only this round's own completion notification counts.
     second.callback.on_complete()
     assert _audio_done_ids(_drain(response_queue)) == ["speech-b"]
 
@@ -296,7 +296,7 @@ def test_reconnect_within_a_turn_does_not_close_the_stream(worker):
     _wait_for(lambda: len(_FakeSynthesizer.instances) == 1, "first synthesizer")
     first = _FakeSynthesizer.instances[0]
 
-    # 本轮还没发过 FINISH：任何完成通知都不该被当成收尾
+    # No FINISH sent yet this round: no completion notification may finalize it.
     first.callback.on_complete()
     assert _audio_done_ids(_drain(response_queue)) == []
 
@@ -316,7 +316,7 @@ def test_idle_keepalive_finish_does_not_close_the_stream(fake_dashscope, monkeyp
     import main_logic.tts_client as pkg
     monkeypatch.setattr(pkg, "_get_voice_meta", lambda _vid: {}, raising=False)
 
-    # 假时钟：只把 time() 往前推，sleep 仍走真的，别把 worker 的轮询变成忙等。
+    # Fake clock: advance only time(); keep real sleep so worker polling cannot become a busy-wait.
     real_time = time.time
     offset = {"seconds": 0.0}
     monkeypatch.setattr(mod, "time", types.SimpleNamespace(
@@ -338,7 +338,7 @@ def test_idle_keepalive_finish_does_not_close_the_stream(fake_dashscope, monkeyp
         _wait_for(lambda: len(_FakeSynthesizer.instances) == 1, "synthesizer")
         synth = _FakeSynthesizer.instances[0]
 
-        # 越过空闲阈值：worker 会主动发一次 FINISH 保活
+        # Cross the idle threshold: worker proactively sends FINISH as keepalive.
         offset["seconds"] = 60.0
         _wait_for(lambda: synth.finish_payloads, "keep-alive FINISH")
 
@@ -376,7 +376,7 @@ def test_reconnect_does_not_splice_stale_buffer_into_the_new_stream(worker):
     request_queue, response_queue, _thread = worker
 
     def _half_packet(synth):
-        synth.callback.on_data(b"A" * 500)   # 低于 1024 的 bootstrap 阈值，留在缓冲里
+        synth.callback.on_data(b"A" * 500)   # Below the 1024-byte bootstrap threshold: retain in the buffer.
 
     def _boom(_synth):
         raise RuntimeError("stream broke")

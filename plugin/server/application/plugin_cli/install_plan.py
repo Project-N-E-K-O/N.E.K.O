@@ -43,9 +43,9 @@ class PluginInstallPlan:
     reason: str
     legacy_plugin_ids: tuple[str, ...]
     installed_package_id: str = ""
-    # bundle 里每个插件自己的 manifest id。plugin_id 对 bundle 来说是**包** id，
-    # 而注册表按插件各自的 manifest id 记批准状态，所以只有这份清单能在提升之前
-    # 把整组都拦住（coderabbit）。
+    # Each plugin's own manifest id in the bundle. For a bundle, plugin_id identifies the package,
+    # whereas the registry records approval by each plugin's manifest id. Only this list can block
+    # the whole group before promotion (coderabbit).
     bundle_plugin_ids: tuple[str, ...] = ()
     manifestless_state: bool = False
     current_source: str = ""

@@ -491,10 +491,10 @@ async def _preview_recent_compress(
     messages_text = _messages_to_wire_lines(to_compress, mapping_for_prompt)
 
     lang = get_global_language()
-    # 与生产 ``memory.recent.compress_history`` 保持一致：先把 ``{MASTER_NAME}``
-    # 字面占位符（"保留负面反馈"clause 用的）替成 master 实名，再做 ``%s`` 替换。
+    # Match production ``memory.recent.compress_history``: first replace the literal ``{MASTER_NAME}``
+    # placeholder from the 'preserve negative feedback' clause with the real master name, then substitute ``%s``.
     master_name = name_mapping.get('human', '')
-    # codex P2：master_name 替换最后做（与 memory.recent.compress_history 一致）
+    # codex P2: replace master_name last, matching memory.recent.compress_history
     if detailed:
         prompt = (
             (get_detailed_recent_history_manager_prompt(lang) % messages_text)
@@ -1447,7 +1447,7 @@ def _session_messages_to_langchain(session: Session) -> list[Any]:
         # ``extract_facts`` / ``compress_history`` — banners are visual-
         # only timeline markers and would otherwise enter the LangChain
         # wire as a SystemMessage, contaminating fact extraction with
-        # the literal "[测试事件]" string and biasing recent-history
+        # the literal "[测试事件]" ('test event') string and biasing recent-history
         # compression. ``prompt_builder`` already filters them on the
         # /chat/send wire path; this is the symmetric read-side filter
         # for the LangChain memory ops (GH AI-review issue #9; same
@@ -1554,22 +1554,22 @@ def discard_op(session: Session, op: str) -> bool:
     return session.memory_previews.pop(op, None) is not None
 
 
-# ── P25 r7: Prompt-only preview (不调 LLM, 不 stamp) ────────────────
+# ── P25 r7: Prompt-only preview (no LLM call, no stamp) ────────────────
 #
-# 设计背景
+# Design background
 # --------
-# r7 把 Chat 页 Preview Panel 改成只显示对话 AI 的 wire. 记忆域
-# (``memory.llm``) 的 wire 被移到 Memory 各子页 Dry-run 按钮旁的 [预
-# 览 prompt] 按钮. 但那个按钮**不应真跑 LLM** — tester 只想看"这个
-# op 会发什么 prompt", 不想每次点都耗 2-10 s + token 额度.
+# r7 changes the Chat page Preview Panel to show only the conversation AI's wire. Memory-domain
+# (``memory.llm``) wire moves to the [Preview prompt] button beside Dry-run on each Memory
+# subpage. That button **must not actually call the LLM**: testers only want to see 'what prompt this
+# operation would send', without spending 2–10 s and tokens on every click.
 #
-# 实现选择
+# Implementation choice
 # --------
-# 复制每个 LLM-using handler 的 "prompt 拼装" 部分到独立函数, 不调
-# LLM 也不 stamp (避免污染 ``session.last_llm_wire``). 代码重复但每
-# 段都 < 30 行且一目了然, 而在 handler 内部加 ``preview_wire_only``
-# 分支反而让主流程变得难读. ``persona.add_fact`` 的 preview 本身不调
-# LLM (只做 contradiction 评估), 所以它不参与这个路径.
+# Copy each LLM-using handler's prompt assembly into an independent function, without calling
+# the LLM or stamping (which would pollute ``session.last_llm_wire``). This duplicates code, but each
+# section is < 30 lines and clear, whereas adding ``preview_wire_only``
+# branches to handlers would obscure the main flow. ``persona.add_fact`` preview itself makes no
+# LLM call (only contradiction evaluation), so it does not use this path.
 
 
 @dataclass
@@ -1635,10 +1635,10 @@ async def _build_recent_compress_wire(
     messages_text = _messages_to_wire_lines(to_compress, mapping_for_prompt)
 
     lang = get_global_language()
-    # 同 _run_memory_compress 的 master_name 替换路径，preview 也得复刻避免
-    # 原始 ``{MASTER_NAME}`` 字面流到调试输出。
+    # Reproduce _run_memory_compress's master_name replacement in preview too, preventing
+    # raw ``{MASTER_NAME}`` placeholders from reaching debug output.
     master_name = name_mapping.get('human', '')
-    # codex P2：master_name 替换最后做（与 memory.recent.compress_history 一致）
+    # codex P2: replace master_name last, matching memory.recent.compress_history
     if detailed:
         prompt = (
             (get_detailed_recent_history_manager_prompt(lang) % messages_text)
@@ -1835,7 +1835,7 @@ async def build_memory_prompt_preview(
 
     Does **not** call the LLM, does **not** stamp ``session.last_llm_wire``,
     does **not** cache anything. Pure function over (session snapshot,
-    params). Intended for the Memory sub-page [预览 prompt] buttons that
+    params). Intended for the Memory sub-page [Preview prompt] buttons that
     appear next to the Dry-run triggers in r7.
 
     Raises:

@@ -314,7 +314,7 @@ def test_gather_threshold_gates_eligibility():
 def test_gather_excludes_legacy_protected_idless_and_dead_letter():
     ok = [_r_entry(f"a{i}", f"t{i}", GROUP_A) for i in range(8)]
     legacy = _r_entry("leg", "legacy 行", None)
-    partial = {'id': 'p1', 'text': 't', 'subject_kind': 'group_chat'}  # 孤儿
+    partial = {'id': 'p1', 'text': 't', 'subject_kind': 'group_chat'}  # Orphans
     protected = _r_entry("prot", "t", GROUP_A, protected=True)
     idless = {k: v for k, v in _r_entry("x", "t", GROUP_A).items() if k != 'id'}
     dead = _r_entry("dead", "t", GROUP_A, refine_attempts=5,
@@ -362,7 +362,7 @@ def test_gather_persona_entries_from_sections_by_entry_stamp():
     assert buckets[0].subject.key == GROUP_A.key
 
 
-# ── engine refine_pass：成本契约与隔离 ───────────────────────────────
+# ── engine refine_pass: cost contract and isolation ─────────────────────────
 
 
 def _vec_pair(base: float = 1.0):
@@ -397,11 +397,11 @@ async def test_refine_pass_single_llm_call_and_no_cross_bucket_text():
         result = await engine.refine_pass(
             buckets, apply_fn=_apply, scope_label='scoped/t',
         )
-    # 单 pass 只打一次 LLM。
+    # Only one LLM call per pass.
     assert create.await_count == 1
     assert result['resolved'] == 1
     assert len(applied) == 1
-    # prompt 里只出现被服务 bucket 的文本，绝无另一群的文本。
+    # The prompt contains only text from the bucket being processed; it never contains text from another group.
     prompt = llm.ainvoke.await_args.args[0]
     served_marker, _ = applied[0]
     if served_marker[0] == GROUP_A.key:
@@ -584,7 +584,7 @@ async def test_refine_pass_cursor_rotates_between_buckets():
         )
         served.append(r2['served'])
     assert served[0] is not None and served[1] is not None
-    assert served[0][:2] != served[1][:2]  # 两个不同 subject 轮流被服务
+    assert served[0][:2] != served[1][:2]  # Process two different subjects in turn
 
 
 @pytest.mark.asyncio
@@ -595,7 +595,7 @@ async def test_refine_pass_hash_fresh_cluster_skipped_without_llm():
         _r_entry(f"a{i}", f"文本{i}", GROUP_A, va if i % 2 else vb)
         for i in range(8)
     ]
-    # 先跑一遍拿到 cluster_hash，再给全员盖新鲜 stamp。
+    # Run once to obtain the cluster_hash, then stamp everyone with the new value.
     captured = {}
 
     async def _apply(bucket, cluster, actions, cluster_hash):
@@ -621,7 +621,7 @@ async def test_refine_pass_hash_fresh_cluster_skipped_without_llm():
             apply_fn=_apply, scope_label='t',
         )
     assert result['clusters_skipped'] >= 1
-    assert create.await_count == 0  # 新鲜 hash → 零 LLM 成本
+    assert create.await_count == 0  # Fresh hash → zero LLM cost
 
 
 @pytest.mark.asyncio
@@ -754,7 +754,7 @@ async def test_refine_pass_all_rejected_actions_count_as_failure():
     failures = []
 
     async def _apply(bucket, cluster, actions, cluster_hash):
-        return 0  # apply 层拒绝了全部 action
+        return 0  # The apply layer rejected all actions
 
     async def _failure(bucket, cluster, cluster_hash):
         failures.append(cluster_hash)
@@ -770,7 +770,7 @@ async def test_refine_pass_all_rejected_actions_count_as_failure():
     assert result['resolved'] == 0
     assert len(failures) == 1
 
-    # 对照：空数组 = 明确 no-op，按成功计，不触发 failure_fn。
+    # Control case: an empty array is an explicit no-op, counts as success, and does not trigger failure_fn.
     failures.clear()
     with patch('utils.llm_client.create_chat_llm_async',
                AsyncMock(return_value=_make_llm([]))):
@@ -799,7 +799,7 @@ def test_render_cluster_trust_annotation_hook():
     assert "(id=a2)" in annotated
 
 
-# ── apply：真实存储栈 ────────────────────────────────────────────────
+# ── apply: real storage stack ───────────────────────────────────────────────
 
 
 def _mock_cm_files(tmpdir: str):
@@ -866,18 +866,18 @@ async def test_apply_persona_merge_stamps_subject_and_consumes_sources(tmp_path)
     by_id = {e['id']: e for e in facts}
     assert 'p0' not in by_id and 'p1' not in by_id
     merged = next(e for e in facts if e.get('merged_from_ids'))
-    # subject 戳齐全——这是 fail-closed 渲染路径上的生死线。
+    # All subject stamps are present — this is a critical requirement for the fail-closed rendering path.
     assert merged['subject_kind'] == GROUP_A.kind
     assert merged['subject_id'] == GROUP_A.subject_id
     assert merged['scope'] == GROUP_A.scope
-    # scoped 渲染视角能看到 merged 条目（等价于「没有静默蒸发」）。
+    # The scoped rendering view can see merged entries (equivalent to "nothing silently disappearing").
     visible = filter_entries_for_subjects(facts, [GROUP_A])
     assert merged['id'] in {e['id'] for e in visible}
-    # 源文本进 version_history（数据不丢）。
+    # Source text goes into version_history (no data loss).
     history_texts = {h['text'] for h in merged['version_history']}
     assert "群友们喜欢周五联机打游戏（表述0）" in history_texts
     assert merged['merged_from_ids'] == ['p0', 'p1']
-    # 幸存者 p2 盖了 stamp。
+    # Survivor p2 receives the stamp.
     assert by_id['p2']['last_refine_cluster_hash'] == "hash123"
 
 
@@ -1477,7 +1477,7 @@ async def test_apply_persona_merge_cannot_touch_other_scope_rows(tmp_path):
     section.append(foreign)
     await pm.asave_persona("小天", persona)
 
-    cluster = [dict(e) for e in section]  # 假设引擎泄漏了他域条目进 cluster
+    cluster = [dict(e) for e in section]  # Assume the engine leaked an item from another domain into the cluster
     actions = [{
         'action': 'merge', 'source_ids': ['p0', 'foreign1'],
         'produce': {'text': '跨域合并产物'},
@@ -1485,7 +1485,7 @@ async def test_apply_persona_merge_cannot_touch_other_scope_rows(tmp_path):
     applied = await apply_scoped_persona_merge(
         pm, "小天", GROUP_A, cluster, actions, "h",
     )
-    assert applied == 0  # foreign1 不可寻址 → 有效源 <2 → 拒绝
+    assert applied == 0  # foreign1 cannot be addressed → fewer than 2 valid sources → reject
     persona = await pm.aensure_persona("小天")
     facts = persona[GROUP_A.persona_section_key]['facts']
     assert {e['id'] for e in facts} == {'p0', 'p1', 'foreign1'}
@@ -1545,13 +1545,13 @@ async def test_apply_reflection_merge_full_contract(tmp_path):
 
     full = await re._aload_reflections_full("小天")
     by_id = {r['id']: r for r in full}
-    # 源条目保留在盘上但转终态 merged（归档不是删除的对偶语义）。
+    # Source entries remain on disk but transition to terminal merged state (archiving is the dual of deletion semantics).
     assert by_id['r0']['status'] == 'merged'
     assert by_id['r1']['status'] == 'merged'
     merged_id = by_id['r0']['absorbed_into']
     assert merged_id and by_id['r1']['absorbed_into'] == merged_id
     merged = by_id[merged_id]
-    # subject 戳 + confirmed 生命周期 + 渲染门最小正种子。
+    # Minimal positive seed for subject stamps + confirmed lifecycle + rendering gate.
     assert merged['subject_kind'] == GROUP_A.kind
     assert merged['subject_id'] == GROUP_A.subject_id
     assert merged['scope'] == GROUP_A.scope
@@ -1559,14 +1559,14 @@ async def test_apply_reflection_merge_full_contract(tmp_path):
     assert merged['auto_confirmed'] is True
     assert merged['reinforcement'] >= 0.1
     assert merged['entity'] == GROUP_A.kind
-    # source_fact_ids 并集（幂等/溯源都靠它）。
+    # Union of source_fact_ids (required for both idempotency and provenance).
     assert set(merged['source_fact_ids']) == {"fact_r0", "fact_r1"}
-    # 活跃读视角：merged 源不可见，产物可见。
+    # Active read view: merged sources are hidden; the result is visible.
     active_now = await re.aload_reflections("小天")
     active_ids = {r['id'] for r in active_now}
     assert 'r0' not in active_ids and 'r1' not in active_ids
     assert merged_id in active_ids
-    # 幸存者 r2 盖 stamp。
+    # Survivor r2 receives the stamp.
     assert by_id['r2']['last_refine_cluster_hash'] == "hashR"
 
 
@@ -1583,9 +1583,9 @@ async def test_apply_rejects_source_whose_text_changed_since_cluster(tmp_path):
     ]
     await re.asave_reflections("小天", refls)
     active = await re.aload_reflections("小天")
-    cluster = [dict(r) for r in active]  # LLM 看到的快照
+    cluster = [dict(r) for r in active]  # Snapshot seen by the LLM
 
-    # LLM 调用窗口内并发写者改了 r1 的文本。
+    # A concurrent writer changes r1 text during the LLM call.
     live = await re.aload_reflections("小天")
     next(r for r in live if r['id'] == "r1")['text'] = "被并发改写的文本"
     await re.asave_reflections("小天", live)
@@ -1819,7 +1819,7 @@ async def test_apply_rejects_source_suppressed_since_cluster(tmp_path):
     active = await re.aload_reflections("小天")
     cluster = [dict(r) for r in active]
 
-    # LLM 窗口内 r1 被标记 suppress（文本未变）。
+    # r1 is marked suppress during the LLM call (text unchanged).
     live = await re.aload_reflections("小天")
     next(r for r in live if r['id'] == "r1")['suppress'] = True
     await re.asave_reflections("小天", live)
@@ -1836,7 +1836,7 @@ async def test_apply_rejects_source_suppressed_since_cluster(tmp_path):
     by_id = {r['id']: r for r in full}
     assert set(by_id) == {"r0", "r1"}
     assert by_id['r1']['suppress'] is True
-    assert by_id['r1']['status'] == 'confirmed'  # 未被消费
+    assert by_id['r1']['status'] == 'confirmed'  # Not consumed
 
 
 @pytest.mark.asyncio
@@ -1867,7 +1867,7 @@ async def test_reflection_merge_unions_event_window(tmp_path):
     assert merged['event_start_at'] == "2026-01-01T00:00:00"
     assert merged['event_end_at'] == "2026-06-01T00:00:00"
 
-    # 任一源无结束点（pattern/进行中）→ 并集也无结束点。
+    # If any source has no end point (pattern / in progress), the union also has no end point.
     ongoing = _r_entry("r2", "持续在群里活跃", GROUP_A,
                        event_start_at="2026-03-01T00:00:00",
                        event_end_at=None)
@@ -1962,7 +1962,7 @@ async def test_persona_merge_preserves_all_upstream_source_ids(tmp_path):
     )
     assert set(merged['merged_source_ids']) == {"ref_aaa", "ref_bbb"}
 
-    # 幂等检查对两个上游 reflection id 都能找到载体。
+    # Idempotency checks can find a carrier for both upstream reflection IDs.
     assert await re._ascoped_promotion_already_applied(
         "小天", "ref_aaa", GROUP_A,
     ) is True
@@ -1990,7 +1990,7 @@ async def test_apply_rejects_whole_action_when_one_of_many_sources_invalidated(t
     active = await re.aload_reflections("小天")
     cluster = [dict(r) for r in active]
 
-    # LLM 窗口内第三个源被 suppress（文本未变）。
+    # A third source is suppressed during the LLM call (text unchanged).
     live = await re.aload_reflections("小天")
     next(r for r in live if r['id'] == "r2")['suppress'] = True
     await re.asave_reflections("小天", live)
@@ -2002,8 +2002,8 @@ async def test_apply_rejects_whole_action_when_one_of_many_sources_invalidated(t
     applied = await apply_scoped_reflection_merge(
         re, "小天", GROUP_A, cluster, actions, "hashAON",
     )
-    # 整条 action 拒绝——绝不「剔除 r2、合并 r0+r1」把 r2 的内容经结论
-    # 文本洗出来。
+    # Reject the entire action — never "drop r2, merge r0+r1" and launder r2 content through the conclusion
+    # text.
     assert applied == 0
     full = await re._aload_reflections_full("小天")
     by_id = {r['id']: r for r in full}
@@ -2028,7 +2028,7 @@ async def test_apply_skips_stamp_for_survivor_whose_text_drifted(tmp_path):
     active = await re.aload_reflections("小天")
     cluster = [dict(r) for r in active]
 
-    # LLM 窗口内幸存者 r2 被并发改写。
+    # Survivor r2 is rewritten concurrently during the LLM call.
     live = await re.aload_reflections("小天")
     next(r for r in live if r['id'] == "r2")['text'] = "幸存者被改写"
     await re.asave_reflections("小天", live)
@@ -2040,11 +2040,11 @@ async def test_apply_skips_stamp_for_survivor_whose_text_drifted(tmp_path):
     applied = await apply_scoped_reflection_merge(
         re, "小天", GROUP_A, cluster, actions, "hashD",
     )
-    assert applied == 1  # merge 本身照常应用
+    assert applied == 1  # The merge itself is still applied
     full = await re._aload_reflections_full("小天")
     by_id = {r['id']: r for r in full}
     assert by_id['r0']['status'] == 'merged'
-    # 文本漂移的幸存者不 stamp。
+    # Do not stamp a survivor whose text drifted.
     assert not by_id['r2'].get('last_refine_cluster_hash')
 
 
@@ -2129,7 +2129,7 @@ async def test_apply_skips_action_on_produced_id_collision(tmp_path):
     assert applied == 1
     full = await re._aload_reflections_full("小天")
     by_id = {r['id']: r for r in full}
-    # 第一条应用、第二条撞车跳过：r2/r3 未被消费。
+    # First action applies; second collides and is skipped: r2/r3 remain unconsumed.
     assert by_id['r0']['status'] == 'merged'
     assert by_id['r2']['status'] == 'confirmed'
     assert by_id['r3']['status'] == 'confirmed'
@@ -2145,10 +2145,10 @@ async def test_apply_rejects_garbage_actions_without_stamping(tmp_path):
     cluster = [dict(r) for r in active]
 
     garbage = [
-        {'action': 'discard', 'source_id': 'r0'},          # 非法 action
-        {'action': 'merge', 'source_ids': ['r0']},          # <2 源
+        {'action': 'discard', 'source_id': 'r0'},          # Invalid action
+        {'action': 'merge', 'source_ids': ['r0']},          # Fewer than 2 sources
         {'action': 'merge', 'source_ids': ['r0', 'r1'],
-         'produce': {'text': '   '}},                       # 空文本
+         'produce': {'text': '   '}},                       # Empty text
     ]
     applied = await apply_scoped_reflection_merge(
         re, "小天", GROUP_A, cluster, garbage, "hashG",
@@ -2156,7 +2156,7 @@ async def test_apply_rejects_garbage_actions_without_stamping(tmp_path):
     assert applied == 0
     full = await re._aload_reflections_full("小天")
     assert {r['id'] for r in full} == {"r0", "r1", "r2"}
-    # 垃圾输出不 stamp——下轮重试而不是 30 天静默跳过。
+    # Do not stamp garbage output — retry next time instead of silently skipping it for 30 days.
     assert all(not r.get('last_refine_cluster_hash') for r in full)
 
 
@@ -2190,7 +2190,7 @@ async def test_bump_helpers_persist_and_never_create_bogus_section(tmp_path):
         pm, "小天", GROUP_A, [dict(e)], "h",
     )
     persona = await pm.aensure_persona("小天")
-    # 共享 bump 的 bug 形态：按 entity 名建出顶层 'group_chat' section。
+    # Shared-bump bug shape: create a top-level 'group_chat' section based on the entity name.
     assert 'group_chat' not in persona
     bumped = persona[GROUP_A.persona_section_key]['facts'][0]
     assert bumped['refine_attempts'] == 1
@@ -2206,7 +2206,7 @@ async def test_bump_helpers_persist_and_never_create_bogus_section(tmp_path):
     assert full[0]['refine_attempts'] == 1
 
 
-# ── prompt 与接线 ────────────────────────────────────────────────────
+# ── prompt and wiring ──────────────────────────────────────────────────
 
 
 def test_scoped_refine_prompt_locales_and_placeholders():
@@ -2225,10 +2225,10 @@ def test_scoped_refine_prompt_locales_and_placeholders():
         )
         assert "{CLUSTER}" not in rendered, lang
         assert "{COUNT}" not in rendered, lang
-        # 水印分隔符全 locale 保持简体（既有约定）。
+        # The watermark separator remains Simplified Chinese in every locale (existing convention).
         assert "======以下为记忆群组======" in tmpl, lang
         assert "======以上为记忆群组======" in tmpl, lang
-        # merge 单件套：本体四件套的其他 action 不得进 lite prompt。
+        # Merge-only lite prompt: other actions from the four core actions must not appear in the lite prompt.
         assert '"action": "merge"' in tmpl, lang
         assert '"split"' not in tmpl, lang
 

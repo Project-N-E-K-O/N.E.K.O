@@ -24,7 +24,7 @@ Handles agent-related endpoints including:
 
 URL convention: routes declared WITHOUT trailing slash (no ``@router.get('/')``).
 See ``main_routers/characters_router.py`` docstring or
-``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
+``.agent/rules/neko-guide.md`` (§\"API URLs have no trailing slash\") for the rationale;
 enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
@@ -129,7 +129,7 @@ async def force_disable_agent_for_character_switch(current_lanlan: str, previous
             "enabled": False,
             "lanlan_name": current_lanlan,
         }
-        # 工具服务会先落关闭状态再收尾任务，短超时避免角色切换被长任务清理拖住。
+        # Tool services mark themselves closed before finalizing tasks; a short timeout keeps long-task cleanup from delaying character switching.
         response = await client.post(f"{TOOL_SERVER_BASE}/agent/command", json=payload, timeout=1.2)
         if response.is_success:
             return True
@@ -239,10 +239,10 @@ def _get_http_client() -> httpx.AsyncClient:
 async def _close_http_client():
     global _HTTP_CLIENT
     if _HTTP_CLIENT is not None:
-        # 关连接失败不许拖垮整个 shutdown：这个 handler 挂在合并 lifespan 链上，
-        # 抛出去会中断后面所有 router 的收尾。最典型的触发是 client 建在另一个
-        # 已经关掉的事件循环上（aclose 走 call_soon 撞上 closed loop）。无论成败
-        # 都把引用清掉，下次 startup 在当前循环上重建。
+        # Connection-close failures must not abort shutdown: this handler participates in the merged lifespan chain,
+        # so propagating an exception would skip every later router's cleanup. A common cause is a client created on another
+        # already-closed event loop (aclose calls call_soon on that loop). Regardless of outcome,
+        # clear the reference so the next startup recreates it on the current loop.
         try:
             await _HTTP_CLIENT.aclose()
         except Exception as exc:
@@ -470,8 +470,8 @@ async def proxy_mcp_availability():
 
 @router.get('/user_plugin/dashboard')
 async def redirect_plugin_dashboard(request: Request):
-    # Docker 部署（位于 Nginx 反向代理后方）：使用相对路径 /ui，
-    # 由 Nginx 代理到插件服务（48916），避免返回容器内部 127.0.0.1
+    # Docker deployment behind an Nginx reverse proxy: use relative path /ui,
+    # proxied by Nginx to the plugin service (48916), avoiding the container's internal 127.0.0.1
     behind_proxy = os.environ.get("NEKO_BEHIND_PROXY", "").strip().lower() in ("1", "true", "yes")
     if behind_proxy:
         target_url = "/ui"

@@ -78,6 +78,9 @@ router = APIRouter(
 
 # The same limits the browser-facing proxies apply.
 _JSON_BODY_MAX_BYTES = JSON_BODY_MAX_BYTES
+# Cards one session can still carry (the resident knowledge budget holds far
+# fewer); the rest of an oversized list is ignored.
+_TURN_CONTEXT_MAX_EXCLUDED = 256
 _PACK_BODY_MAX_BYTES = PACK_BODY_MAX_BYTES
 _service: KnowledgeService | None = None
 # Import requests allowed to read their body at once (see knowledge_import_pack).
@@ -275,6 +278,34 @@ async def query_knowledge(request: Request):
             mode=str(payload.get("mode") or "lookup"),
             material_type=str(payload.get("material_type") or "auto"),
             limit=limit,
+            budget_ms=budget_ms,
+            language=language if isinstance(language, str) else None,
+        )
+    )
+
+
+@router.post("/turn_context")
+async def knowledge_turn_context(request: Request):
+    payload = await _json_object(request)
+    if payload is None:
+        return _failure("invalid_request", 400)
+    text = payload.get("text")
+    if not isinstance(text, str):
+        return _failure("invalid_request", 400)
+    budget_ms = payload.get("budget_ms", 1_000)
+    if not isinstance(budget_ms, int) or isinstance(budget_ms, bool):
+        budget_ms = 1_000
+    excluded = payload.get("exclude_card_ids")
+    exclude_card_ids = (
+        [card_id for card_id in excluded if isinstance(card_id, str)][:_TURN_CONTEXT_MAX_EXCLUDED]
+        if isinstance(excluded, list)
+        else []
+    )
+    language = payload.get("language")
+    return await _call(
+        lambda service: service.turn_context(
+            text=text,
+            exclude_card_ids=exclude_card_ids,
             budget_ms=budget_ms,
             language=language if isinstance(language, str) else None,
         )

@@ -1,7 +1,7 @@
 """
-插件运行时状态模块
+Plugin runtime-state module
 
-提供插件系统的全局运行时状态管理。
+Manage global runtime state for the plugin system.
 """
 import asyncio
 import itertools
@@ -9,7 +9,6 @@ import threading
 import time
 import uuid
 from collections import deque
-import multiprocessing
 from typing import Any, Callable, Deque, Dict, List, Optional, Set
 
 from plugin._types.events import EventHandler
@@ -17,8 +16,8 @@ from plugin.logging_config import get_logger
 from plugin.settings import (
     EVENT_QUEUE_MAX,
     LIFECYCLE_QUEUE_MAX,
-    resolve_message_plane_rpc_endpoint,
     MESSAGE_QUEUE_MAX,
+    resolve_message_plane_rpc_endpoint,
 )
 
 try:
@@ -31,13 +30,13 @@ try:
 except Exception:  # pragma: no cover
     ormsgpack = None
 
-from plugin.core.message_plane_transport import format_rpc_error
 from contextlib import contextmanager
 
+from plugin.core.message_plane_transport import format_rpc_error
 
 MAX_DELETED_BUS_IDS = 20000
 
-# 默认锁超时时间（秒）
+# Default lock timeout in seconds.
 DEFAULT_LOCK_TIMEOUT = 10.0
 
 logger = get_logger("core.state")
@@ -45,10 +44,10 @@ logger = get_logger("core.state")
 
 class RWLock:
     """
-    读写锁实现
+    Reader/writer lock implementation.
     
-    允许多个读操作并发执行，但写操作是互斥的。
-    写操作会等待所有读操作完成，读操作会等待写操作完成。
+    Allow concurrent reads but exclusive writes.
+    Writers wait for all readers; readers wait for writers.
     """
     
     def __init__(self):
@@ -58,7 +57,7 @@ class RWLock:
         self._writer_active = False
     
     def acquire_read(self, timeout: float = DEFAULT_LOCK_TIMEOUT) -> bool:
-        """获取读锁"""
+        """Acquire a read lock."""
         deadline = time.time() + timeout
         with self._read_ready:
             while self._writer_active or self._writers_waiting > 0:
@@ -71,14 +70,14 @@ class RWLock:
         return True
     
     def release_read(self):
-        """释放读锁"""
+        """Release a read lock."""
         with self._read_ready:
             self._readers -= 1
             if self._readers == 0:
                 self._read_ready.notify_all()
     
     def acquire_write(self, timeout: float = DEFAULT_LOCK_TIMEOUT) -> bool:
-        """获取写锁"""
+        """Acquire a write lock."""
         deadline = time.time() + timeout
         with self._read_ready:
             self._writers_waiting += 1
@@ -95,14 +94,14 @@ class RWLock:
         return True
     
     def release_write(self):
-        """释放写锁"""
+        """Release a write lock."""
         with self._read_ready:
             self._writer_active = False
             self._read_ready.notify_all()
     
     @contextmanager
     def read_lock(self, timeout: float = DEFAULT_LOCK_TIMEOUT, name: str = "unknown"):
-        """读锁上下文管理器"""
+        """Read-lock context manager."""
         if not self.acquire_read(timeout):
             logger.error(f"Failed to acquire read lock '{name}' within {timeout}s")
             raise TimeoutError(f"Failed to acquire read lock '{name}' within {timeout}s")
@@ -113,7 +112,7 @@ class RWLock:
     
     @contextmanager
     def write_lock(self, timeout: float = DEFAULT_LOCK_TIMEOUT, name: str = "unknown"):
-        """写锁上下文管理器"""
+        """Write-lock context manager."""
         if not self.acquire_write(timeout):
             logger.error(f"Failed to acquire write lock '{name}' within {timeout}s")
             raise TimeoutError(f"Failed to acquire write lock '{name}' within {timeout}s")
@@ -126,15 +125,15 @@ class RWLock:
 @contextmanager
 def timed_lock(lock: threading.Lock, timeout: float = DEFAULT_LOCK_TIMEOUT, name: str = "unknown"):
     """
-    带超时的锁获取上下文管理器
+    Context manager for timed lock acquisition.
     
     Args:
-        lock: 要获取的锁
-        timeout: 超时时间（秒）
-        name: 锁名称（用于日志）
+        lock: Lock to acquire.
+        timeout: Timeout in seconds.
+        name: Lock name for logging.
     
     Raises:
-        TimeoutError: 如果在超时时间内无法获取锁
+        TimeoutError: If acquisition exceeds timeout.
     """
     acquired = lock.acquire(timeout=timeout)
     if not acquired:
@@ -196,29 +195,16 @@ class BusChangeHub:
                 continue
 
 
-def _start_method_inherits_manager_proxies() -> bool:
-    """Whether children inherit this process's global response-map proxies.
-
-    Spawn and forkserver start from fresh module state, and PluginHost does
-    not pass these proxies as launch arguments. Fork retains the existing
-    shared-map behavior. An unknown context keeps the conservative fallback.
-    """
-    try:
-        return multiprocessing.get_start_method() == "fork"
-    except (RuntimeError, ValueError):
-        return True
-
-
 class GlobalState:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._next_id = 1
         
-        # 内存 freeze 存储
+        # In-memory freeze storage.
         self._frozen_states: Dict[str, bytes] = {}  # plugin_id -> serialized state
         self._frozen_states_lock = threading.Lock()
         
-        # 冻结插件跟踪（记录哪些插件处于冻结状态）
+        # Track frozen plugins.
         self._frozen_plugins: Set[str] = set()  # plugin_id set
         self._frozen_plugins_lock = threading.Lock()
         
@@ -237,24 +223,14 @@ class GlobalState:
         self.plugin_hosts: Dict[str, Any] = {}
         self.plugin_status_lock = threading.Lock()
         
-        # 使用读写锁替代互斥锁，允许多个读操作并发
+        # Replace mutexes with reader/writer locks for concurrent reads.
         self._plugins_rwlock = RWLock()
         self._plugin_hosts_rwlock = RWLock()
         self._event_handlers_rwlock = RWLock()
 
         self._event_queue: Optional[asyncio.Queue] = None
         self._lifecycle_queue: Optional[asyncio.Queue] = None
-        self._message_queue: Optional[asyncio.Queue] = None
         self._plugin_comm_queue: Optional[asyncio.Queue] = None
-        self._plugin_response_map: Optional[Any] = None
-        self._plugin_response_map_manager: Optional[Any] = None
-        self._plugin_response_event_map: Optional[Any] = None
-        self._plugin_response_notify_event: Optional[Any] = None
-        self._is_plugin_child_process = False
-        # True 表示响应表/事件表是本进程的普通 dict（没有 Manager）。此时
-        # _get_or_create_response_event 必须造 threading.Event 而不是 mgr.Event()，
-        # 否则它会因为拿不到 manager 而返回 None，把"事件唤醒"退化成纯短轮询。
-        self._response_maps_are_local = False
         self._plugin_comm_lock = threading.Lock()
 
         # Per-plugin downlink senders for routing plugin-to-plugin responses
@@ -301,67 +277,67 @@ class GlobalState:
         self._message_plane_rpc_lock = threading.Lock()
         self._message_plane_rpc: Optional[Any] = None
         
-        # 快照缓存机制（减少锁竞争）
+        # Snapshot caching reduces lock contention.
         self._snapshot_cache_lock = threading.Lock()
         self._snapshot_cache: Dict[str, Dict[str, Any]] = {
             "plugins": {"data": None, "timestamp": 0.0},
             "hosts": {"data": None, "timestamp": 0.0},
             "handlers": {"data": None, "timestamp": 0.0},
         }
-        self._snapshot_cache_ttl: float = 0.5  # 500ms缓存TTL
-        # 每次 invalidate 递增；读者在取快照前记录代数，写回缓存时代数已变
-        # 说明取快照期间有写入失效了缓存，旧快照不得覆盖并标记为新鲜。
+        self._snapshot_cache_ttl: float = 0.5  # 500 ms cache TTL.
+        # Increment generation on invalidation; readers capture it before snapshotting and refuse stale
+        # cache writes if intervening mutation changed generations.
         self._snapshot_cache_gen: Dict[str, int] = {key: 0 for key in self._snapshot_cache}
 
-    # RWLock 写锁上下文管理器（用于修改操作）
+    # RWLock write context for mutations.
     @contextmanager
     def acquire_plugins_write_lock(self, timeout: float = DEFAULT_LOCK_TIMEOUT):
-        """获取 plugins 写锁（用于修改操作）"""
+        """Acquire plugins write lock for mutations."""
         with self._plugins_rwlock.write_lock(timeout, "plugins_write"):
             yield
     
     @contextmanager
     def acquire_plugin_hosts_write_lock(self, timeout: float = DEFAULT_LOCK_TIMEOUT):
-        """获取 plugin_hosts 写锁（用于修改操作）"""
+        """Acquire plugin_hosts write lock for mutations."""
         with self._plugin_hosts_rwlock.write_lock(timeout, "plugin_hosts_write"):
             yield
     
     @contextmanager
     def acquire_event_handlers_write_lock(self, timeout: float = DEFAULT_LOCK_TIMEOUT):
-        """获取 event_handlers 写锁（用于修改操作）"""
+        """Acquire event_handlers write lock for mutations."""
         with self._event_handlers_rwlock.write_lock(timeout, "event_handlers_write"):
             yield
     
-    # RWLock 读锁上下文管理器（用于读取操作）
+    # RWLock read context for reads.
     @contextmanager
     def acquire_plugins_read_lock(self, timeout: float = DEFAULT_LOCK_TIMEOUT):
-        """获取 plugins 读锁（用于读取操作，允许并发）"""
+        """Acquire plugins read lock for concurrent reads."""
         with self._plugins_rwlock.read_lock(timeout, "plugins_read"):
             yield
     
     @contextmanager
     def acquire_plugin_hosts_read_lock(self, timeout: float = DEFAULT_LOCK_TIMEOUT):
-        """获取 plugin_hosts 读锁（用于读取操作，允许并发）"""
+        """Acquire plugin_hosts read lock for concurrent reads."""
         with self._plugin_hosts_rwlock.read_lock(timeout, "plugin_hosts_read"):
             yield
     
     @contextmanager
     def acquire_event_handlers_read_lock(self, timeout: float = DEFAULT_LOCK_TIMEOUT):
-        """获取 event_handlers 读锁（用于读取操作，允许并发）"""
+        """Acquire event_handlers read lock for concurrent reads."""
         with self._event_handlers_rwlock.read_lock(timeout, "event_handlers_read"):
             yield
 
     def get_plugins_snapshot(self, timeout: float = 2.0) -> Dict[str, Dict[str, Any]]:
-        """获取 plugins 的快照（使用读写锁的读锁，允许并发读取）
+        """Snapshot plugins using reader/writer read locks, allowing concurrent reads.
         
         Args:
-            timeout: 锁获取超时时间（秒），默认2秒
+            timeout: Acquisition timeout in seconds, default 2.
             
         Returns:
-            plugins 字典的浅拷贝
+            Shallow copy of the plugins dict.
             
         Note:
-            超时会返回空字典而非抛异常
+            Timeout returns an empty dict rather than raising.
         """
         if not self._plugins_rwlock.acquire_read(timeout=timeout):
             logger.warning("Failed to acquire plugins read lock within {}s, returning empty snapshot", timeout)
@@ -372,16 +348,16 @@ class GlobalState:
             self._plugins_rwlock.release_read()
 
     def get_plugin_hosts_snapshot(self, timeout: float = 2.0) -> Dict[str, Any]:
-        """获取 plugin_hosts 的快照（使用读写锁的读锁，允许并发读取）
+        """Snapshot plugin_hosts using reader/writer read locks, allowing concurrent reads.
         
         Args:
-            timeout: 锁获取超时时间（秒），默认2秒
+            timeout: Acquisition timeout in seconds, default 2.
             
         Returns:
-            plugin_hosts 字典的浅拷贝
+            Shallow copy of the plugin_hosts dict.
             
         Note:
-            超时会返回空字典而非抛异常
+            Timeout returns an empty dict rather than raising.
         """
         if not self._plugin_hosts_rwlock.acquire_read(timeout=timeout):
             logger.warning("Failed to acquire plugin_hosts read lock within {}s, returning empty snapshot", timeout)
@@ -392,16 +368,16 @@ class GlobalState:
             self._plugin_hosts_rwlock.release_read()
 
     def get_event_handlers_snapshot(self, timeout: float = 2.0) -> Dict[str, EventHandler]:
-        """获取 event_handlers 的快照（使用读写锁的读锁，允许并发读取）
+        """Snapshot event_handlers using reader/writer read locks, allowing concurrent reads.
         
         Args:
-            timeout: 锁获取超时时间（秒），默认2秒
+            timeout: Acquisition timeout in seconds, default 2.
             
         Returns:
-            event_handlers 字典的浅拷贝
+            Shallow copy of the event_handlers dict.
             
         Note:
-            超时会返回空字典而非抛异常
+            Timeout returns an empty dict rather than raising.
         """
         if not self._event_handlers_rwlock.acquire_read(timeout=timeout):
             logger.warning("Failed to acquire event_handlers read lock within {}s, returning empty snapshot", timeout)
@@ -416,14 +392,14 @@ class GlobalState:
             return self._snapshot_cache_gen[cache_type]
 
     def get_event_handlers_revision(self) -> int:
-        """entry 注册/注销（含动态 entry 启停）时递增；执行 entry 不变。
+        """Increment on entry registration/removal, including dynamic enablement, not execution.
 
-        只拿短的快照缓存锁、不碰 handlers 读写锁，可在事件循环上同步调用。
+        Acquire only the short snapshot-cache lock, never handler RWLocks; safe synchronously on event loops.
         """
         return self._snapshot_cache_generation("handlers")
 
     def _store_snapshot_cache(self, cache_type: str, snapshot: Dict[str, Any], now: float, generation: int) -> None:
-        """仅当取快照期间缓存未被失效时写回缓存。"""
+        """Cache snapshots only if no invalidation occurred while collecting them."""
         with self._snapshot_cache_lock:
             if self._snapshot_cache_gen[cache_type] != generation:
                 return
@@ -431,11 +407,11 @@ class GlobalState:
             self._snapshot_cache[cache_type]["timestamp"] = now
 
     def _get_snapshot_nowait(self, cache_type: str, rwlock: "RWLock", source: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """带缓存的快照，绝不等待读写锁（可在事件循环线程上调用）。
+        """Cached snapshots never wait for RWLocks and are safe on event-loop threads.
 
-        缓存新鲜时直接返回缓存；否则只尝试一次非阻塞读锁，成功则刷新缓存。
-        拿不到读锁（写者持有/排队）时返回上一次缓存的快照（可能过期），
-        从未缓存过则返回 None。锁竞争不会把空字典写入共享缓存。
+        Return fresh cache immediately; otherwise try a nonblocking read lock once and refresh on success.
+        If writers hold/queue the lock, return prior possibly stale snapshots,
+        or None if never cached. Contention never stores empty dictionaries in shared caches.
         """
         now = time.time()
         with self._snapshot_cache_lock:
@@ -454,95 +430,95 @@ class GlobalState:
         return dict(snapshot)
 
     def get_plugins_snapshot_nowait(self) -> Optional[Dict[str, Dict[str, Any]]]:
-        """plugins 快照，绝不等待读写锁；语义见 _get_snapshot_nowait。"""
+        """Nonwaiting plugins snapshot; see _get_snapshot_nowait semantics."""
         return self._get_snapshot_nowait("plugins", self._plugins_rwlock, self.plugins)
 
     def get_plugins_snapshot_cached(self, timeout: float = 2.0, force: bool = False) -> Dict[str, Dict[str, Any]]:
-        """获取 plugins 的快照（带缓存，减少锁竞争）
+        """Cached plugins snapshot reducing contention.
         
         Args:
-            timeout: 锁获取超时时间（秒），默认2秒
-            force: 是否强制刷新缓存
+            timeout: Lock-acquisition timeout in seconds, default 2.
+            force: Force cache refresh.
             
         Returns:
-            plugins 字典的浅拷贝
+            Shallow copy of plugins.
         """
         import time
         now = time.time()
         
-        # 检查缓存
+        # Check the cache
         if not force:
             with self._snapshot_cache_lock:
                 cache = self._snapshot_cache["plugins"]
                 if cache["data"] is not None and (now - cache["timestamp"]) < self._snapshot_cache_ttl:
                     return dict(cache["data"])
         
-        # 缓存失效或强制刷新，获取新快照
+        # Cache invalid/force refresh: obtain a fresh snapshot.
         generation = self._snapshot_cache_generation("plugins")
         snapshot = self.get_plugins_snapshot(timeout=timeout)
         
-        # 更新缓存（取快照期间被失效则不写回）
+        # Update cache unless invalidated while snapshotting.
         self._store_snapshot_cache("plugins", snapshot, now, generation)
         
         return snapshot
     
     def get_plugin_hosts_snapshot_cached(self, timeout: float = 2.0, force: bool = False) -> Dict[str, Any]:
-        """获取 plugin_hosts 的快照（带缓存，减少锁竞争）
+        """Cached plugin_hosts snapshot reducing contention.
         
         Args:
-            timeout: 锁获取超时时间（秒），默认2秒
-            force: 是否强制刷新缓存
+            timeout: Lock-acquisition timeout in seconds, default 2.
+            force: Force cache refresh.
             
         Returns:
-            plugin_hosts 字典的浅拷贝
+            Shallow copy of plugin_hosts.
         """
         import time
         now = time.time()
         
-        # 检查缓存
+        # Check the cache
         if not force:
             with self._snapshot_cache_lock:
                 cache = self._snapshot_cache["hosts"]
                 if cache["data"] is not None and (now - cache["timestamp"]) < self._snapshot_cache_ttl:
                     return dict(cache["data"])
         
-        # 缓存失效或强制刷新，获取新快照
+        # Cache invalid/force refresh: obtain a fresh snapshot.
         generation = self._snapshot_cache_generation("hosts")
         snapshot = self.get_plugin_hosts_snapshot(timeout=timeout)
         
-        # 更新缓存（取快照期间被失效则不写回）
+        # Update cache unless invalidated while snapshotting.
         self._store_snapshot_cache("hosts", snapshot, now, generation)
         
         return snapshot
     
     def get_plugin_hosts_snapshot_nowait(self) -> Optional[Dict[str, Any]]:
-        """plugin_hosts 快照，绝不等待读写锁；语义见 _get_snapshot_nowait。"""
+        """Nonwaiting plugin_hosts snapshot; see _get_snapshot_nowait semantics."""
         return self._get_snapshot_nowait("hosts", self._plugin_hosts_rwlock, self.plugin_hosts)
 
     def get_event_handlers_snapshot_cached(self, timeout: float = 2.0, force: bool = False) -> Dict[str, EventHandler]:
-        """获取 event_handlers 的快照（带缓存，减少锁竞争）
+        """Cached event_handlers snapshot reducing contention.
         
         Args:
-            timeout: 锁获取超时时间（秒），默认2秒
-            force: 是否强制刷新缓存
+            timeout: Lock-acquisition timeout in seconds, default 2.
+            force: Force cache refresh.
             
         Returns:
-            event_handlers 字典的浅拷贝
+            Shallow copy of event_handlers.
         """
         import time
         now = time.time()
         
-        # 检查缓存
+        # Check the cache
         if not force:
             with self._snapshot_cache_lock:
                 cache = self._snapshot_cache["handlers"]
                 if cache["data"] is not None and (now - cache["timestamp"]) < self._snapshot_cache_ttl:
                     return dict(cache["data"])
         
-        # 缓存失效或强制刷新，获取新快照
+        # Cache invalid/force refresh: obtain a fresh snapshot.
         snapshot = self.get_event_handlers_snapshot(timeout=timeout)
         
-        # 更新缓存
+        # Update cache.
         with self._snapshot_cache_lock:
             self._snapshot_cache["handlers"]["data"] = snapshot
             self._snapshot_cache["handlers"]["timestamp"] = now
@@ -550,19 +526,19 @@ class GlobalState:
         return snapshot
     
     def invalidate_snapshot_cache(self, cache_type: Optional[str] = None) -> None:
-        """使快照缓存失效
+        """Invalidate snapshot caches.
         
         Args:
-            cache_type: 要失效的缓存类型 ('plugins', 'hosts', 'handlers')，None表示全部失效
+            cache_type: plugins/hosts/handlers, or None for all.
         """
         with self._snapshot_cache_lock:
             if cache_type is None:
-                # 全部失效
+                # Invalidate everything.
                 for key in self._snapshot_cache:
                     self._snapshot_cache[key]["timestamp"] = 0.0
                     self._snapshot_cache_gen[key] += 1
             elif cache_type in self._snapshot_cache:
-                # 指定类型失效
+                # Invalidate a specified type.
                 self._snapshot_cache[cache_type]["timestamp"] = 0.0
                 self._snapshot_cache_gen[cache_type] += 1
 
@@ -599,15 +575,15 @@ class GlobalState:
     
     @contextmanager
     def acquire_locks_in_order(self, *lock_names: str, timeout: float = DEFAULT_LOCK_TIMEOUT):
-        """按顺序获取多个锁，防止死锁
+        """Acquire multiple locks in order to prevent deadlocks.
         
         Args:
-            lock_names: 锁名称列表，必须按照规范顺序：'plugins', 'hosts', 'handlers'
-            timeout: 每个锁的获取超时时间
+            lock_names: Names in required plugins/hosts/handlers order.
+            timeout: Acquisition timeout per lock.
             
         Example:
             with state.acquire_locks_in_order('plugins', 'hosts'):
-                # 安全地访问 plugins 和 plugin_hosts
+                # Safely access plugins and plugin_hosts.
                 ...
         """
         lock_order = {'plugins': 1, 'hosts': 2, 'handlers': 3}
@@ -617,12 +593,12 @@ class GlobalState:
             'handlers': self._event_handlers_rwlock,
         }
         
-        # 验证锁名称和顺序
+        # Validate lock names/order.
         for name in lock_names:
             if name not in lock_order:
                 raise ValueError(f"Unknown lock name: {name}")
         
-        # 检查顺序是否正确
+        # Check correct ordering.
         sorted_names = sorted(lock_names, key=lambda n: lock_order[n])
         if list(lock_names) != sorted_names:
             logger.warning(
@@ -631,7 +607,7 @@ class GlobalState:
             )
             raise RuntimeError(f"Lock order violation: {list(lock_names)} should be {sorted_names}")
         
-        # 按顺序获取锁
+        # Acquire locks in order.
         acquired_locks = []
         try:
             for name in lock_names:
@@ -642,7 +618,7 @@ class GlobalState:
                 acquired_locks.append(rwlock)
             yield
         finally:
-            # 释放所有已获取的锁（逆序释放）
+            # Release acquired locks in reverse order.
             for rwlock in reversed(acquired_locks):
                 try:
                     rwlock.release_write()
@@ -674,12 +650,6 @@ class GlobalState:
             self._lifecycle_queue = asyncio.Queue(maxsize=LIFECYCLE_QUEUE_MAX)
         return self._lifecycle_queue
 
-    @property
-    def message_queue(self) -> asyncio.Queue:
-        if self._message_queue is None:
-            self._message_queue = asyncio.Queue(maxsize=MESSAGE_QUEUE_MAX)
-        return self._message_queue
-    
     @property
     def plugin_comm_queue(self) -> asyncio.Queue:
         """Central in-process queue for plugin-to-plugin requests (asyncio.Queue)."""
@@ -716,105 +686,7 @@ class GlobalState:
             return
         with self._plugin_downlink_senders_lock:
             self._plugin_downlink_senders.pop(pid, None)
-    
-    def _initialize_response_maps(self) -> None:
-        if self._is_plugin_child_process or not _start_method_inherits_manager_proxies():
-            self._plugin_response_map = {}
-            self._response_maps_are_local = True
-            if self._plugin_response_event_map is None:
-                self._plugin_response_event_map = {}
-        else:
-            if self._plugin_response_map_manager is None:
-                self._plugin_response_map_manager = multiprocessing.Manager()
-            self._plugin_response_map = self._plugin_response_map_manager.dict()
-            if self._plugin_response_event_map is None:
-                self._plugin_response_event_map = self._plugin_response_map_manager.dict()
 
-    @property
-    def plugin_response_map(self) -> Any:
-        """Shared response maps under fork, otherwise process-local maps."""
-        if self._plugin_response_map is None:
-            with self._plugin_comm_lock:
-                if self._plugin_response_map is None:
-                    self._initialize_response_maps()
-        return self._plugin_response_map
-
-    def mark_plugin_child_process(self) -> None:
-        """Mark this process as a plugin child so it never starts its own Manager."""
-        self._is_plugin_child_process = True
-
-    @property
-    def plugin_response_event_map(self) -> Any:
-        """跨进程响应通知映射 request_id -> Event."""
-        if self._plugin_response_event_map is None:
-            # Prefer reusing the existing Manager created for plugin_response_map.
-            _ = self.plugin_response_map
-        return self._plugin_response_event_map
-
-    @property
-    def plugin_response_notify_event(self) -> Any:
-        """Single cross-process event used to wake waiters when any response arrives.
-
-        This avoids per-request Event creation which is expensive and can diverge across processes.
-        Important: on Linux (fork), this must be created in the parent before plugin processes start.
-        """
-        if self._plugin_response_notify_event is None:
-            with self._plugin_comm_lock:
-                if self._plugin_response_notify_event is None:
-                    # multiprocessing.Event is backed by a shared semaphore/pipe and works across fork.
-                    self._plugin_response_notify_event = multiprocessing.Event()
-        return self._plugin_response_notify_event
-
-    def _get_or_create_response_event(self, request_id: str):
-        rid = str(request_id)
-        # Force init of shared manager + maps (important: do not create a new Manager per process)
-        _ = self.plugin_response_map
-        try:
-            event_map = self.plugin_response_event_map
-            ev = event_map.get(rid)
-        except Exception:
-            ev = None
-        if ev is not None:
-            return ev
-        try:
-            mgr = self._plugin_response_map_manager
-            if mgr is None and not self._response_maps_are_local:
-                _ = self.plugin_response_map
-                mgr = self._plugin_response_map_manager
-            if mgr is None:
-                if self._is_plugin_child_process or not self._response_maps_are_local:
-                    # 插件子进程：没人会 set 这个事件（回应走 ZMQ），交给调用方的短轮询
-                    # 后备——这是既有行为，保持不变。
-                    return None
-                # 服务器进程 + 本地表（spawn 平台，没有 Manager）：用 threading.Event。
-                # API 与 mgr.Event() 一致（set / wait / clear），而所有等待都发生在本
-                # 进程的线程池里（调用点注释原文："使用线程事件等待(在线程池中执行)"），
-                # 所以线程事件语义足够；顺带省掉每次 wait/set 到 manager 进程的往返。
-                ev = threading.Event()
-            else:
-                ev = mgr.Event()
-            try:
-                event_map = self.plugin_response_event_map
-                try:
-                    stored = event_map.setdefault(rid, ev)
-                    ev = stored if stored is not None else ev
-                except Exception:
-                    event_map[rid] = ev
-                try:
-                    existing = event_map.get(rid)
-                    if existing is not None:
-                        ev = existing
-                except Exception:
-                    logger.bind(component="server").debug(
-                        f"Failed to retrieve response event for request_id={rid}", exc_info=True
-                    )
-            except Exception:
-                logger.bind(component="server").debug(
-                    f"Failed to store response event for request_id={rid}", exc_info=True
-                )
-            return ev
-        except Exception:
-            return None
 
     def append_message_record(self, record: Dict[str, Any]) -> None:
         if not isinstance(record, dict):
@@ -1150,8 +1022,8 @@ class GlobalState:
         except Exception:
             pass
         try:
-            # env 优先：端口冲突时 runner 会把 plane 挪到备用端口，
-            # 而模块常量是 import 期冻结的。见
+            # Prefer environment ports: runners relocate planes on conflicts,
+            # while module constants freeze at import time. See
             # settings.resolve_message_plane_rpc_endpoint。
             sock.connect(resolve_message_plane_rpc_endpoint())
         except Exception as e:
@@ -1382,7 +1254,7 @@ class GlobalState:
                 while len(self._deleted_message_ids) > MAX_DELETED_BUS_IDS:
                     old = self._deleted_message_ids_order.popleft()
                     self._deleted_message_ids.discard(old)
-            # 重建 deque，排除要删除的记录
+            # Rebuild deque excluding deleted records.
             new_store = deque(maxlen=self._message_store.maxlen)
             for rec in self._message_store:
                 if isinstance(rec, dict) and rec.get("message_id") == message_id:
@@ -1477,356 +1349,53 @@ class GlobalState:
             except Exception:
                 pass
         return removed
-    
-    def set_plugin_response(self, request_id: str, response: Dict[str, Any], timeout: float = 10.0) -> None:
-        """
-        设置插件响应（主进程调用）
-        
-        Args:
-            request_id: 请求ID
-            response: 响应数据
-            timeout: 超时时间（秒），用于计算过期时间
-        """
-        rid = str(request_id).strip()
-        if not rid:
-            return
-        # 存储响应和过期时间（当前时间 + timeout + 缓冲时间）
-        # 缓冲时间用于处理网络延迟等情况
-        expire_time = time.time() + timeout + 1.0  # 额外1秒缓冲
-        resp_map = self.plugin_response_map
-        resp_map[rid] = {
-            "response": response,
-            "expire_time": expire_time
-        }
 
-        try:
-            ev = self._get_or_create_response_event(rid)
-            if ev is not None:
-                ev.set()
-        except Exception:
-            pass
 
-        try:
-            self.plugin_response_notify_event.set()
-        except Exception:
-            pass
-    
-    def get_plugin_response(self, request_id: str) -> Optional[Dict[str, Any]]:
-        """
-        获取并删除插件响应（插件进程调用）
-        
-        如果响应已过期，会自动清理并返回 None。
-        
-        Returns:
-            响应数据，如果不存在或已过期则返回 None
-        """
-        current_time = time.time()
-
-        rid = str(request_id).strip()
-        if not rid:
-            return None
-
-        resp_map = self.plugin_response_map
-        response_data = resp_map.pop(rid, None)
-
-        if response_data is None:
-            return None
-
-        expire_time = response_data.get("expire_time", 0)
-        if current_time > expire_time:
-            try:
-                event_map = self.plugin_response_event_map
-                event_map.pop(rid, None)
-                # 同时清理原始 request_id 的事件（如果不同）
-                if request_id != rid:
-                    event_map.pop(request_id, None)
-            except Exception:
-                logger.bind(component="server").debug(
-                    f"Failed to remove response event for request_id={request_id}", exc_info=True
-                )
-            return None
-        try:
-            event_map = self.plugin_response_event_map
-            event_map.pop(rid, None)
-            # 同时清理原始 request_id 的事件（如果不同）
-            if request_id != rid:
-                event_map.pop(request_id, None)
-        except Exception:
-            logger.bind(component="server").debug(
-                f"Failed to remove response event for request_id={request_id}", exc_info=True
-            )
-        # 返回实际的响应数据
-        return response_data.get("response")
-
-    async def wait_for_plugin_response_async(self, request_id: str, timeout: float) -> Optional[Dict[str, Any]]:
-        """异步版本:等待响应到达,完全消除轮询,使用纯事件驱动
-        
-        相比同步版本,异步版本完全避免了 time.sleep 轮询,
-        使用 asyncio.Event 实现零延迟响应。
-        """
-        rid = str(request_id).strip()
-        if not rid:
-            return None
-        
-        # 快速路径:先检查响应是否已到达
-        got = self.get_plugin_response(rid)
-        if got is not None:
-            return got
-        
-        # 创建异步事件用于等待
-        async_event = asyncio.Event()
-        
-        # 注册回调:响应到达时立即通知
-        def check_and_notify():
-            response = self.get_plugin_response(rid)
-            if response is not None:
-                async_event.set()
-                return response
-            return None
-        
-        # 使用 asyncio.wait_for 实现超时
-        try:
-            # 启动后台任务轮询(但使用很短的间隔)
-            async def wait_with_polling():
-                # 先检查一次
-                result = check_and_notify()
-                if result is not None:
-                    return result
-                
-                # 等待事件或使用短轮询作为后备
-                while True:
-                    # 尝试等待同步事件(如果可用)
-                    per_req_ev = None
-                    try:
-                        per_req_ev = self._get_or_create_response_event(rid)
-                    except Exception:
-                        pass
-                    
-                    if per_req_ev is not None:
-                        # 使用线程事件等待(在线程池中执行)
-                        loop = asyncio.get_running_loop()
-                        ev = per_req_ev  # 捕获变量避免 None 类型问题
-                        await loop.run_in_executor(
-                            None,
-                            lambda ev=ev: ev.wait(timeout=0.01)
-                        )
-                    else:
-                        # 后备:短暂休眠
-                        await asyncio.sleep(0.001)  # 1ms,比同步版本的 10ms 快 10 倍
-                    
-                    # 检查响应
-                    result = check_and_notify()
-                    if result is not None:
-                        return result
-                    
-                    # 避免事件已被消费但仍保持 set 导致的空转
-                    await asyncio.sleep(0.005)
-            
-            return await asyncio.wait_for(wait_with_polling(), timeout=timeout)
-        except asyncio.TimeoutError:
-            return None
-    
-    def wait_for_plugin_response(self, request_id: str, timeout: float) -> Optional[Dict[str, Any]]:
-        """同步版本:Block until response arrives or timeout, then pop and return it.
-
-        This avoids client-side polling loops.
-        """
-        rid = str(request_id).strip()
-        if not rid:
-            return None
-        deadline = time.time() + max(0.0, float(timeout))
-        per_req_ev = None
-        try:
-            per_req_ev = self._get_or_create_response_event(rid)
-        except Exception:
-            per_req_ev = None
-
-        # Fast path: check once before waiting.
-        got = self.get_plugin_response(rid)
-        if got is not None:
-            return got
-
-        while True:
-            # Fast path: check again before waiting.
-            got = self.get_plugin_response(rid)
-            if got is not None:
-                return got
-
-            remaining = deadline - time.time()
-            if remaining <= 0:
-                return None
-            if per_req_ev is None:
-                # Fallback to short sleep if per-request event is unavailable.
-                time.sleep(min(0.01, remaining))
-            else:
-                try:
-                    per_req_ev.wait(timeout=min(0.1, remaining))
-
-                    got = self.get_plugin_response(rid)
-                    if got is not None:
-                        return got
-
-                    # If the event is left in a signaled state (e.g. another waiter consumed the response),
-                    # wait() would return immediately and cause a tight loop. Back off briefly.
-                    time.sleep(min(0.01, remaining))
-                except Exception:
-                    time.sleep(min(0.01, remaining))
-
-            got = self.get_plugin_response(rid)
-            if got is not None:
-                return got
-
-    async def peek_plugin_response_async(self, request_id: str) -> Optional[Dict[str, Any]]:
-        """异步版本:获取但不删除插件响应"""
-        # peek 操作不涉及等待,直接调用同步版本即可
-        return self.peek_plugin_response(request_id)
-    
-    def peek_plugin_response(self, request_id: str) -> Optional[Dict[str, Any]]:
-        """获取但不删除插件响应（插件进程调用）
-
-        与 get_plugin_response() 类似，但不会 pop。
-        主要用于超时场景下判断响应是否已经到达（孤儿响应检测）。
-
-        注意：如果响应已过期，会自动清理该响应条目。
-
-        Returns:
-            响应数据，如果不存在或已过期则返回 None
-        """
-        current_time = time.time()
-
-        rid = str(request_id).strip()
-        if not rid:
-            return None
-
-        response_data = self.plugin_response_map.get(rid, None)
-        if response_data is None:
-            return None
-
-        expire_time = response_data.get("expire_time", 0)
-        if current_time > expire_time:
-            self.plugin_response_map.pop(rid, None)
-            if request_id != rid:
-                self.plugin_response_map.pop(request_id, None)
-            try:
-                event_map = self.plugin_response_event_map
-                event_map.pop(rid, None)
-                # 同时清理原始 request_id 的事件（如果不同）
-                if request_id != rid:
-                    event_map.pop(request_id, None)
-            except Exception:
-                logger.bind(component="server").debug(
-                    f"Failed to remove response event for request_id={request_id}", exc_info=True
-                )
-            return None
-
-        return response_data.get("response")
-    
-    def cleanup_expired_responses(self) -> int:
-        """
-        清理过期的响应（主进程定期调用）
-        
-        Returns:
-            清理的响应数量
-        """
-        current_time = time.time()
-        expired_ids = []
-        
-        # 找出所有过期的响应
-        try:
-            # 使用快照避免迭代时字典被修改导致 RuntimeError
-            resp_map = self.plugin_response_map
-            for request_id, response_data in list(resp_map.items()):
-                expire_time = response_data.get("expire_time", 0)
-                if current_time > expire_time:
-                    expired_ids.append(request_id)
-        except Exception as e:
-            # 如果迭代失败，返回已找到的过期ID数量
-            logger.bind(component="server").debug(f"Error iterating expired responses: {e}")
-        
-        # 删除过期的响应
-        resp_map = self.plugin_response_map
-        for request_id in expired_ids:
-            resp_map.pop(request_id, None)
-            try:
-                event_map = self.plugin_response_event_map
-                rid = str(request_id).strip()
-                if rid:
-                    event_map.pop(rid, None)
-                if request_id != rid:
-                    event_map.pop(request_id, None)
-            except Exception:
-                pass
-        
-        return len(expired_ids)
-    
     def close_plugin_resources(self) -> None:
-        """
-        清理插件间通信资源（主进程关闭时调用）
-        
-        包括：
-        - 关闭插件间通信队列
-        - 清理响应映射
-        - 关闭 Manager（如果存在）
-        """
-        # Reset the in-process comm queue
+        """Drop run-owned routing references after the router has stopped."""
         self._plugin_comm_queue = None
         with self._plugin_downlink_senders_lock:
             self._plugin_downlink_senders.clear()
-        
-        # Both local maps and Manager proxies belong to this server run.
-        with self._plugin_comm_lock:
-            try:
-                if self._plugin_response_map_manager is not None:
-                    self._plugin_response_map_manager.shutdown()
-                    logger.bind(component="server").debug("Plugin response map manager shut down")
-            except Exception as e:
-                logger.bind(component="server").debug(f"Error shutting down plugin response map manager: {e}")
-            finally:
-                self._plugin_response_map = None
-                self._plugin_response_event_map = None
-                self._plugin_response_notify_event = None
-                self._plugin_response_map_manager = None
-                self._response_maps_are_local = False
 
     def save_frozen_state_memory(self, plugin_id: str, state_data: bytes) -> None:
-        """保存插件的冻结状态到内存"""
+        """Store plugin frozen state in memory."""
         with self._frozen_states_lock:
             self._frozen_states[plugin_id] = state_data
     
     def get_frozen_state_memory(self, plugin_id: str) -> Optional[bytes]:
-        """从内存获取插件的冻结状态"""
+        """Get plugin frozen state from memory."""
         with self._frozen_states_lock:
             return self._frozen_states.get(plugin_id)
     
     def clear_frozen_state_memory(self, plugin_id: str) -> None:
-        """清除插件的内存冻结状态"""
+        """Clear plugin frozen state from memory."""
         with self._frozen_states_lock:
             self._frozen_states.pop(plugin_id, None)
     
     def has_frozen_state_memory(self, plugin_id: str) -> bool:
-        """检查插件是否有内存冻结状态"""
+        """Check whether plugin frozen state exists in memory."""
         with self._frozen_states_lock:
             return plugin_id in self._frozen_states
     
-    # ========== 冻结插件状态跟踪 ==========
+    # -- Frozen-plugin tracking --
     
     def mark_plugin_frozen(self, plugin_id: str) -> None:
-        """标记插件为冻结状态"""
+        """Mark plugins frozen."""
         with self._frozen_plugins_lock:
             self._frozen_plugins.add(plugin_id)
     
     def unmark_plugin_frozen(self, plugin_id: str) -> None:
-        """取消插件的冻结状态标记"""
+        """Unmark plugins frozen."""
         with self._frozen_plugins_lock:
             self._frozen_plugins.discard(plugin_id)
     
     def is_plugin_frozen(self, plugin_id: str) -> bool:
-        """检查插件是否处于冻结状态"""
+        """Check whether plugins are frozen."""
         with self._frozen_plugins_lock:
             return plugin_id in self._frozen_plugins
     
     def get_frozen_plugins(self) -> List[str]:
-        """获取所有冻结的插件ID列表"""
+        """List all frozen plugin IDs."""
         with self._frozen_plugins_lock:
             return list(self._frozen_plugins)
 
@@ -1874,7 +1443,7 @@ class GlobalState:
             items = list(dq)[-n:]
             return [dict(x) for x in items if isinstance(x, dict)]
 
-# 全局状态实例
+# Global state instance.
 state = GlobalState()
 
 
@@ -1898,7 +1467,9 @@ state = GlobalState()
 # isn't reachable and we silently skip — matching the historical
 # "main_logic-less" plugin runtime contract.
 try:
-    from main_logic.agent_event_bus import register_user_utterance_sink as _register_sink
+    from main_logic.agent_event_bus import (
+        register_user_utterance_sink as _register_sink,
+    )
     _register_sink(state.add_user_context_event)
 except Exception as _exc:
     # Distinguish expected partial-env from real regression:

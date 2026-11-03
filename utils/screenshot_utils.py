@@ -28,29 +28,29 @@ from utils.llm_client import create_chat_llm_async
 
 logger = get_module_logger(__name__)
 
-# 安全限制：最大图片大小 (10MB，base64编码后约13.3MB)
+# Security limit: maximum image size (10MB; about 13.3MB after base64 encoding)
 MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024
 MAX_BASE64_SIZE = MAX_IMAGE_SIZE_BYTES * 4 // 3 + 100
 
-# 截图压缩默认参数：与前端手动截图 / 屏幕分享口径对齐（720p, JPEG quality 80）。
-# 前端已统一把发给后端的画面压到 720p，这里的 vision 分析、后端 pyautogui 兜底
-# 等再压也保持同一档位，避免一边 720 一边 1080 的不一致。
+# Default screenshot compression settings: aligned with frontend manual screenshots / screen sharing (720p, JPEG quality 80).
+# The frontend already reduces frames sent to the backend to 720p. Keep vision analysis and backend pyautogui fallback
+# at the same setting if they compress again, avoiding a 720p-versus-1080p mismatch.
 COMPRESS_TARGET_HEIGHT = 720
 COMPRESS_JPEG_QUALITY = 80
 
-# 送进模型的图片宽度上限。1280 不是新拍的数：static/app/app-state.js 里前端截图
-# 用的就是 MAX_SCREENSHOT_WIDTH: 1280，所以后端归一化到同一个数，等于让两端讲
-# 同一套口径，而不是前端 1280 / 后端不限宽地各走各的。
-# 只约束高度是不够的：compress_screenshot 的高度闸对 16000x400 这种超宽图完全
-# 不触发（高度本来就合规），5120x1440 也只压到 2560x720——宽度仍是 2560。宽高
-# 两个上限一起给，才真的是「一个尺寸档位」。
+# Maximum width of images sent to the model. 1280 is not a new number: frontend screenshots in static/app/app-state.js
+# already use MAX_SCREENSHOT_WIDTH: 1280, so normalize the backend to the same value and keep both ends
+# on the same convention instead of allowing 1280 on the frontend and unlimited width on the backend.
+# Limiting height alone is insufficient: compress_screenshot's height gate does not trigger for a very wide image such as 16000x400
+# (its height already complies); 5120x1440 would only shrink to 2560x720, leaving the width at 2560. Set both width and height
+# limits to enforce a single size tier.
 MODEL_IMAGE_MAX_WIDTH = 1280
 
-# 只探测图片头部所需的 base64 前缀长度。PNG / JPEG 的尺寸字段都在流的最前面，
-# 64 KiB 绰绰有余；Pillow 无法从截断流里解析的格式（WebP）会回落到整段解码。
-# 同一手法在 app/main_server/character_runtime.py 的 _inline_image_data_url_mime
-# 里已经用过——那里量到的是 ~0.1 ms 固定开销，而整段解码一张 8 MiB 的图只为读
-# 一个头部要 ~14 ms。
+# Base64 prefix length needed only to inspect the image header. PNG / JPEG dimensions are at the beginning of the stream,
+# so 64 KiB is ample; formats Pillow cannot parse from a truncated stream (WebP) fall back to full decoding.
+# The same approach is already used by _inline_image_data_url_mime in app/main_server/character_runtime.py;
+# it measured ~0.1 ms fixed overhead, while decoding an 8 MiB image just to read the header took ~14 ms.
+#
 _MODEL_PROFILE_HEADER_PREFIX_B64_CHARS = 64 * 1024
 
 _LANCZOS = getattr(Image, 'LANCZOS', getattr(Image, 'ANTIALIAS', 1))
@@ -65,14 +65,14 @@ def _validate_image_data(image_bytes: bytes) -> Optional[Image.Image]:
     Image object after verify cannot be reused).
     """
     try:
-        # 第一遍: 轻量格式校验
+        # First pass: lightweight format validation
         probe = Image.open(BytesIO(image_bytes))
-        probe.verify()  # verify 后此对象不可再用
+        probe.verify()  # This object cannot be reused after verify
 
-        # 第二遍: 完整解码像素, 保证数据可用
+        # Second pass: fully decode pixels to ensure the data is usable
         image = Image.open(BytesIO(image_bytes))
 
-        # 像素数安全检查 (防止超大图片耗尽内存)
+        # Pixel-count safety check (prevents huge images from exhausting memory)
         max_pixels = min(Image.MAX_IMAGE_PIXELS or LOCAL_MAX_PIXELS, LOCAL_MAX_PIXELS)
         w, h = image.size
         if w * h > max_pixels:
@@ -80,7 +80,7 @@ def _validate_image_data(image_bytes: bytes) -> Optional[Image.Image]:
                 f"Image too large: {w}x{h} = {w * h} pixels, limit {max_pixels}"
             )
 
-        image.load()  # 强制解码, 提前暴露截断/损坏问题
+        image.load()  # Force decoding to expose truncation/corruption early
         return image
     except Exception as e:
         logger.warning(f"图片验证失败: {e}")
@@ -122,17 +122,17 @@ def compress_screenshot(
     w, h = img.size
     new_w, new_h = w, h
     if h > target_h:
-        # 与旧实现逐字节一致的写法（先算 ratio 再乘），别改成 int(w * target_h / h)
-        # ——两者的浮点求值顺序不同，个别尺寸会差 1 像素，而这条路上所有既有调用
-        # 方都要求结果不变。
+        # Keep the byte-for-byte equivalent of the old implementation (calculate ratio first, then multiply); do not change it to int(w * target_h / h)
+        # — the floating-point evaluation order differs, so some dimensions can shift by one pixel, and all existing callers here
+        # require the result to remain unchanged.
         ratio = target_h / h
         new_w, new_h = int(w * ratio), target_h
     if max_w is not None and max_w > 0 and new_w > max_w:
         ratio = max_w / new_w
         new_w, new_h = max_w, int(new_h * ratio)
     if (new_w, new_h) != (w, h):
-        # 夹到 >=1：极端长条（比如 1x1000）按比例算出来会是 0 宽，PIL 存不了。
-        # 旧实现在这种输入上本来就会炸，所以这层保护不改变任何原本能出图的用例。
+        # Clamp to >=1: an extreme strip (such as 1x1000) can produce a width of 0 when scaled proportionally, which PIL cannot save.
+        # The old implementation already failed on this input, so this guard does not change any case that previously produced an image.
         img = img.resize((max(1, new_w), max(1, new_h)), _LANCZOS)
     buf = BytesIO()
     if img.mode == "RGBA":
@@ -172,7 +172,7 @@ def _probe_image_profile(b64: str) -> Optional[tuple]:
     the header should treat the payload as "unknown", never as "already fine".
     """
     head = b64[:_MODEL_PROFILE_HEADER_PREFIX_B64_CHARS]
-    # base64 解码要求 4 的整数倍，截断出来的前缀先对齐再喂给 b64decode。
+    # Base64 decoding requires a multiple of 4; align the truncated prefix before passing it to b64decode.
     head = head[: len(head) - (len(head) % 4)]
     candidates = [head] if head and head != b64 else []
     candidates.append(b64)
@@ -187,14 +187,14 @@ def _probe_image_profile(b64: str) -> Optional[tuple]:
             with Image.open(BytesIO(raw)) as image:
                 w, h = image.size
                 fmt = str(image.format or "").upper()
-                # 报的是**显示**尺寸，不是存储尺寸。带 EXIF orientation 5-8 的
-                # 照片，存储矩阵与显示方向差一个 90 度：一张显示为 1000x3000 的
-                # 竖图，存储的是 3000x1000。拿存储尺寸去判「已经在档位内了吗」，
-                # 判的是一个用户和模型都看不到的形状——横竖一颠倒，宽高各自对
-                # 哪条边界也就跟着错了。
+                # Report **display** dimensions, not stored dimensions. For photos with EXIF orientation 5–8,
+                # the stored matrix and display orientation differ by 90 degrees: a portrait image displayed as 1000x3000
+                # may be stored as 3000x1000. If we use stored dimensions to decide "already within the target size,"
+                # we measure a shape neither the user nor the model sees — rotating portrait and landscape reverses which edge
+                # is compared to each limit.
                 #
-                # getexif() 读的是文件头，和 size 一样不需要解码像素，所以这里
-                # 仍然是 O(1)，前缀探测的成本优势没有丢。
+                # getexif() reads the file header and, like size, does not decode pixels, so this remains
+                # O(1) and preserves the cost advantage of prefix probing.
                 try:
                     orientation = image.getexif().get(0x0112)
                 except Exception:
@@ -202,7 +202,7 @@ def _probe_image_profile(b64: str) -> Optional[tuple]:
                 if orientation in (5, 6, 7, 8):
                     w, h = h, w
         except Exception:
-            # 前缀不够这个格式开头（WebP 之类）——落到下一个候选，也就是整段。
+            # The prefix is not long enough for this format header (such as WebP) — try the next candidate, the full payload.
             continue
         if w > 0 and h > 0:
             return fmt, (w, h)
@@ -252,14 +252,14 @@ def normalize_image_for_model(b64: str) -> str:
 
     try:
         img = Image.open(BytesIO(base64.b64decode(b64)))
-        # 先按 EXIF 摆正，再谈缩放。顺序不能反：resize 之后像素矩阵变了、
-        # 而 compress_screenshot 存 JPEG 时不写 EXIF，orientation 标记就此丢失
-        # ——模型拿到的是一张躺倒 90 度的照片，而且它没有任何线索能看出来。
-        # 实测：3000x1000 + orientation=6（显示应为 1000x3000 竖图）经这里出来
-        # 是 1280x426 的横图、EXIF 为 None。
+        # Apply EXIF orientation before resizing. The order matters: resize changes the pixel matrix,
+        # and compress_screenshot does not write EXIF when saving JPEG, so the orientation marker is lost
+        # — the model would receive a photo rotated 90 degrees with no way to tell.
+        # In practice, 3000x1000 + orientation=6 (displayed as 1000x3000 portrait) becomes
+        # a 1280x426 landscape image here, with EXIF=None.
         #
-        # exif_transpose 把方向烘进像素并去掉该标记，所以输出天然是「无 EXIF
-        # 且已摆正」，再喂回本函数时探测读到的就是它的真实形状，不动点不受影响。
+        # exif_transpose bakes orientation into the pixels and removes the marker, so the output is naturally "without EXIF
+        # and correctly oriented"; probing it again reads its true shape, so fixed points are preserved.
         img = ImageOps.exif_transpose(img) or img
         if img.mode in ("RGBA", "LA", "P"):
             img = img.convert("RGB")
@@ -449,7 +449,7 @@ async def analyze_screenshot_from_data_url(data_url: str, window_title: str = ''
             logger.error(f"截图数据过大: {len(base64_data)} 字节")
             return None
         
-        # 验证图片有效性并转换为JPEG
+        # Validate the image and convert it to JPEG
         try:
             image_bytes = base64.b64decode(base64_data)
             image = await asyncio.to_thread(_validate_image_data, image_bytes)
@@ -457,7 +457,7 @@ async def analyze_screenshot_from_data_url(data_url: str, window_title: str = ''
                 logger.error("无效的图片数据")
                 return None
 
-            # 统一压缩为 JPEG（含 resize）
+            # Compress to JPEG consistently (including resize)
             if image.mode in ('RGBA', 'LA', 'P'):
                 image = image.convert('RGB')
             orig_w, orig_h = image.size
@@ -474,11 +474,11 @@ async def analyze_screenshot_from_data_url(data_url: str, window_title: str = ''
             logger.error(f"图片数据解码/验证失败: {e}")
             return None
         
-        # 调用视觉模型分析（只使用JPEG）
+        # Call the vision model (JPEG only)
         description = await analyze_image_with_vision_model(base64_data, window_title=window_title)
         
         if description:
-            # AI 截图分析结果（描述用户屏幕内容）不写 logger
+            # Do not log AI screenshot analysis results (descriptions of user screen contents)
             logger.info(f"AI截图分析成功 (description_len={len(description)})")
             print(f"AI截图分析: {description[:100]}...")
         else:
@@ -494,7 +494,7 @@ async def analyze_screenshot_from_data_url(data_url: str, window_title: str = ''
 
 
 # ============================================================================
-# Avatar annotation overlay — 在截图上叠加 Avatar 文字注解
+# Avatar annotation overlay — draw Avatar text annotations over the screenshot
 # ============================================================================
 
 from config.prompts.prompts_sys import AVATAR_ANNOTATION_TEXT as _AVATAR_ANNOTATION_I18N
@@ -589,7 +589,7 @@ def overlay_avatar_annotation(
     if cx is None or cy is None:
         return image_b64
 
-    # 归一化坐标校验：超出 [0,1] 说明 Avatar 不在截图可见区域
+    # Validate normalized coordinates: values outside [0,1] mean Avatar is outside the visible screenshot area
     try:
         cx = float(cx)
         cy = float(cy)
@@ -605,21 +605,21 @@ def overlay_avatar_annotation(
             img = img.convert('RGB')
         iw, ih = img.size
 
-        # 计算 Avatar 中心点在图片上的像素坐标
+        # Calculate Avatar center coordinates in image pixels
         px = int(cx * iw)
         py = int(cy * ih)
 
-        # 自适应字号：基于图片高度，但限制范围
+        # Adaptive font size based on image height, with bounds
         font_size = max(12, min(28, int(ih * 0.022)))
         font = _get_avatar_font(font_size)
 
-        # 获取 i18n 文字
+        # Get i18n text
         tpl = _AVATAR_ANNOTATION_I18N.get(language) or _AVATAR_ANNOTATION_I18N.get(language.split('-')[0]) or _AVATAR_ANNOTATION_I18N['en']
         lines = [t.format(name=lanlan_name) for t in tpl]
 
         draw = ImageDraw.Draw(img)
 
-        # 测量每行文字尺寸
+        # Measure each line of text
         line_gap = max(2, font_size // 4)
         line_metrics = []
         for line in lines:
@@ -628,11 +628,11 @@ def overlay_avatar_annotation(
         total_tw = max(m[0] for m in line_metrics)
         total_th = sum(m[1] for m in line_metrics) + line_gap * (len(lines) - 1)
 
-        # 文字放在 Avatar 中心（不再向下偏移到身体区域，否则显得太靠下）
+        # Place text at Avatar center (do not offset downward into the body area, which looks too low)
         text_cx = px
         text_cy = py
 
-        # 背景矩形（半透明）
+        # Background rectangle (semi-transparent)
         pad_x = max(6, font_size // 2)
         pad_y = max(3, font_size // 4)
         bg_x1 = text_cx - total_tw // 2 - pad_x
@@ -662,7 +662,7 @@ def overlay_avatar_annotation(
             bg_y2 -= shift
             text_cy -= shift
 
-        # 绘制半透明背景
+        # Draw semi-transparent background
         overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
         overlay_draw = ImageDraw.Draw(overlay)
         overlay_draw.rounded_rectangle(
@@ -674,7 +674,7 @@ def overlay_avatar_annotation(
         img = Image.alpha_composite(img, overlay)
         img = img.convert('RGB')
 
-        # 绘制文字（白色）
+        # Draw text (white)
         draw = ImageDraw.Draw(img)
         y_cur = text_cy - total_th // 2
         for i, line in enumerate(lines):
@@ -682,7 +682,7 @@ def overlay_avatar_annotation(
             draw.text((text_cx - tw // 2, y_cur), line, fill=(255, 255, 255), font=font)
             y_cur += th + line_gap
 
-        # 编码回 JPEG base64
+        # Encode back to JPEG base64
         buf = BytesIO()
         img.save(buf, format='JPEG', quality=COMPRESS_JPEG_QUALITY, optimize=True)
         result_b64 = base64.b64encode(buf.getvalue()).decode('utf-8')

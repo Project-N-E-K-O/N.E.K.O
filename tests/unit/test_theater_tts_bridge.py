@@ -1,4 +1,4 @@
-"""验证 Numeric v2 逐块朗读复用 Project TTS。"""  # noqa: DOCSTRING_CJK
+"""Verify Numeric v2 block-by-block narration reuses Project TTS."""  # noqa: DOCSTRING_CJK
 
 import pytest
 from starlette.websockets import WebSocketState

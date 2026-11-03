@@ -36,13 +36,13 @@ WORKSHOP_MANAGED_REFERENCE_AUDIO_KEY = '_neko_managed_reference_audio'
 WORKSHOP_REFERENCE_AUDIO_EXTENSIONS = {'.mp3', '.wav'}
 
 
-# 冻结的存量兼容集：marker 出现之前，upload 写的参考音频是固定名 voice_sample<ext>，
-# 这两个字面量是旧代码**唯一**写过的名字。存量用户盘上的 manifest 没有 marker，不认
-# 它们就会在升级后第一次换/移除参考语音时把自己生成的录音永远留在内容目录里（publish
-# 是把整个目录交给 SetItemContent 的，它会跟着发出去）。
-# ⚠️ 这是「保持改动前已有的删除行为」，不是「按名字形状猜所有权」。永远不要把它放宽成
-# 前缀或通配（voice_sample*）—— 内容目录是用户自己的目录，那样他放进去的同前缀文件就会
-# 被静默删掉，而那正是 marker 要终结的东西。
+# Frozen legacy-compatibility set: before markers, upload used fixed reference-audio names voice_sample<ext>,
+# and these two literals are the **only** names old code wrote. Existing manifests have no marker; failing to recognize
+# them would permanently leave generated recordings in content folders on the first post-upgrade reference replacement/removal (publish
+# passes the whole directory to SetItemContent, so those files would be published too).
+# ⚠️ This preserves pre-change deletion behavior, not ownership guesses from filename patterns. Never broaden it to
+# prefixes or wildcards (voice_sample*): content folders belong to users, and their own same-prefix files would
+# be silently deleted, precisely the problem markers eliminate.
 WORKSHOP_LEGACY_MANAGED_REFERENCE_NAMES = frozenset(
     f'voice_sample{ext}' for ext in WORKSHOP_REFERENCE_AUDIO_EXTENSIONS
 )
@@ -153,25 +153,25 @@ def _normalize_workshop_voice_manifest(raw_manifest: dict, *, default_prefix: st
     return normalized
 
 
-# 按内容目录串行化「整对替换」与「读取整对」。写侧两次上传的 swap 跑在不同 worker
-# 上，OS 层面会真交错（A 写音频、B 写音频、A 写 manifest → 盘上是 B 的音频配 A 的
-# manifest）；读侧同理，发布流程可能正好读在「旧的已删、新的还没写」的中间。改动前
-# 这些步骤都在事件循环线程上、彼此之间没有 await，物理上碰不到一起；挪进线程之后
-# 就得自己补上这个序列化。
+# Serialize whole-pair replacement and reads by content directory. Two upload swaps run in different workers
+# and can genuinely interleave at OS level (A audio, B audio, A manifest → disk holds B audio with A
+# manifest). Likewise, publishing may read between old-file deletion and new-file creation. Previously
+# all steps ran on the event-loop thread without intervening awaits and could not overlap; after moving to threads,
+# explicitly supply this serialization.
 #
-# 锁只在 worker 线程里被持有：写侧走 asyncio.to_thread，读侧的 publish 调用点本来
-# 就是 await asyncio.to_thread(...)。事件循环从不去抢它，所以不会有「worker 持锁、
-# 循环等锁」那类传导。
+# Only workers hold the lock: writes use asyncio.to_thread, and publish's read call site already uses
+# await asyncio.to_thread(...). The event loop never acquires it, avoiding propagation from workers holding locks
+# to the event loop waiting for them.
 _VOICE_REFERENCE_LOCKS: dict[str, threading.Lock] = {}
 _VOICE_REFERENCE_LOCKS_GUARD = threading.Lock()
 
 
 def voice_reference_lock(content_folder: str) -> threading.Lock:
-    # realpath 而不是 abspath：abspath 只做词法规范化，不解析 symlink / junction。
-    # 写侧的 content_folder 来自 _assert_under_base 规范过的路径，读侧的
-    # install_folder 直接来自 Steam 的订阅项元数据 —— 同一个目录经由不同路径进来时
-    # 会各拿一把锁，串行化**静默**失效，而且不报任何错。Windows 上 Steam 库跨盘常用
-    # junction，这不是假想。realpath 对不存在的路径退化成词法规范化，不会抛。
+    # Use realpath, not abspath: abspath normalizes lexically without resolving symlinks/junctions.
+    # Write-side content_folder is normalized by _assert_under_base, while read-side
+    # install_folder comes directly from Steam subscription metadata. Different paths to the same directory
+    # would otherwise acquire separate locks, **silently** breaking serialization without errors. Cross-drive Steam libraries commonly use
+    # junctions on Windows, so this is real. For nonexistent paths, realpath falls back to lexical normalization without raising.
     key = os.path.normcase(os.path.realpath(content_folder))
     with _VOICE_REFERENCE_LOCKS_GUARD:
         lock = _VOICE_REFERENCE_LOCKS.get(key)
@@ -253,8 +253,8 @@ def _cleanup_workshop_voice_reference(content_folder: str) -> None:
 
 def _build_workshop_voice_reference_summary(install_folder: str) -> dict | None:
     try:
-        # 走串行化读：见 resolve_voice_reference_serialized 的注释。这个函数只从
-        # ugc.py 的列表流程调用（已在 to_thread 里），不在锁内，不存在重入问题。
+        # Use serialized reads; see resolve_voice_reference_serialized notes. This function is called only by
+        # ugc.py's listing flow, already inside to_thread and outside the lock, so there is no reentrancy issue.
         voice_ref = resolve_voice_reference_serialized(install_folder)
     except FileNotFoundError:
         return None

@@ -1,4 +1,4 @@
-"""Numeric v2 固定上下文预算与旧存档别名。"""  # noqa: DOCSTRING_CJK
+"""Numeric v2 fixed context budget and legacy save aliases."""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ from typing import Final
 
 
 NUMERIC_V2_DEFAULT_ACTOR_BUDGET_PROFILE: Final = "balanced"
-# 用户取消档位选择，所有调用固定使用已确认的标准预算。
-# 旧存档/旧客户端名称只作兼容别名，不改写存档，也不继续采用旧档的不同容量。
+# The user removed tier selection; all calls use the confirmed fixed standard budget.
+# Old save/client names are compatibility aliases only; do not rewrite saves or retain old tiers' different capacities.
 NUMERIC_V2_ACTOR_BUDGET_PROFILES: Final = {
     name: {
         "input_max_tokens": 10000,
@@ -26,7 +26,7 @@ NUMERIC_V2_ACTOR_BUDGET_PROFILES: Final = {
 
 
 def numeric_v2_actor_budget(profile: object) -> dict[str, int]:
-    """旧名称统一返回固定预算；调用方仍须显式处理非法值。"""  # noqa: DOCSTRING_CJK
+    """Return the fixed budget for every legacy name; callers must still handle invalid values explicitly."""  # noqa: DOCSTRING_CJK
 
     selected = NUMERIC_V2_ACTOR_BUDGET_PROFILES.get(str(profile or ""))
     if selected is None:

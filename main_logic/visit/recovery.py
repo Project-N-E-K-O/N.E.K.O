@@ -65,8 +65,8 @@ from main_logic.visit.char_lifecycle import (
     replay_retires,
 )
 from main_logic.visit.forget_runner import LifecycleGuard, VoidPending, replay_forgets
-# 与 identity 票据核验认的传输方式同一个常量：那边加了新传输方式，这里自动认得，不会把
-# 只剩上传文件的场次当损坏删掉
+# Share the transport constant used by identity ticket validation; newly added transport types are recognized automatically,
+# avoiding deletion of upload-only visits as corrupt.
 from main_logic.visit.identity import _TRANSPORTS as _UPLOAD_TRANSPORTS
 from main_logic.visit.memory_commit import (
     ResolveCharName,
@@ -145,19 +145,19 @@ class RecoveryReport:
 
     forgets_clean: bool = True
     renamed: bool = False
-    # 删除退役（pending_retire）全部补完；False：标记留到下次启动
+    # Deletion retirement (pending_retire) fully completed; False retains marker until next startup.
     retired: bool = True
     crashed: list[str] = field(default_factory=list)
     chips: list[str] = field(default_factory=list)
     digests: dict[str, bool] = field(default_factory=dict)
     summaries: dict[str, bool] = field(default_factory=dict)
-    # True：转录已到 Servers（受理 / duplicate）；False：留着下次重试。终态拒收不记在这里
+    # True: transcript reached Servers (accepted / duplicate); False: retain for retry. Do not count terminal rejection here.
     uploads: dict[str, bool] = field(default_factory=dict)
-    # 终态拒收的转录及拒收原因：本地文件可以删，但转录再也到不了 Servers
+    # Terminally rejected transcripts and reasons: local files may be deleted, but transcripts can never reach Servers.
     rejected: dict[str, str] = field(default_factory=dict)
     reports: dict[str, bool] = field(default_factory=dict)
     swept: int = 0
-    # 本轮判定为不可用的转录及原因：举报文件写不进标记时，提交的那份照样带上
+    # Transcripts found unavailable this pass and reasons: include in submission even if report-file marker persistence fails.
     transcript_unavailable: dict[str, str] = field(default_factory=dict)
     unavailable_owner: dict[str, str] = field(default_factory=dict)
     """visit_id -> ``own_visit_uid`` of the transcript a ``transcript_unavailable`` reason belongs to.
@@ -167,7 +167,7 @@ class RecoveryReport:
     """
 
 
-# ── 上传流水 → 上传文件 ───────────────────────────────────────────────
+# ── Upload log → upload file ───────────────────────────────────────────────
 
 
 def _read_stream(path: Path) -> list[dict]:
@@ -209,8 +209,8 @@ def _number(value: Any) -> float | None:
 
 
 def _valid_line(record: dict) -> bool:
-    # 能解析成对象但字段坏了的行（lp 为 null、side 不认识……）按损坏丢掉：
-    # 它们会让排序抛错，整轮补录随之中断
+    # Rows parse as objects but contain invalid fields (null lp, unknown side, etc.): discard as corrupt,
+    # since they make sorting raise and abort the entire recovery pass.
     lp = record.get("lp")
     return (
         all(name in record for name in _LINE_FIELDS)
@@ -224,7 +224,7 @@ def _valid_line(record: dict) -> bool:
 
 
 def _utf8_ok(text: str) -> bool:
-    # JSON 里转义的孤立代理字符解析得出字符串，却编不成 UTF-8：上传时编码失败、被当成本地错误一直重试
+    # Escaped lone surrogates decode into strings but cannot encode as UTF-8: upload encoding would fail and retry forever as a local error.
     try:
         text.encode("utf-8")
     except UnicodeEncodeError:
@@ -266,8 +266,8 @@ def build_upload_doc(
     if (
         header.get("visit_id") != visit_id or started_at is None
         or header.get("role") not in ("host", "guest")
-        # 传输方式没有别的地方记着、补不回来：缺失 / 类型不对按流水损坏，在写文件之前判定。
-        # 没见过的非空值照常封存（新版本的传输方式），由上传文件那一侧留着待处理
+        # Transport is recorded nowhere else and cannot be recovered: missing/wrong type means corrupt log, checked before file writing.
+        # Still seal unknown nonempty values (new-version transport), leaving upload-file handling to retain them for later.
         or not isinstance(transport, str) or not transport
     ):
         return None
@@ -289,18 +289,18 @@ def build_upload_doc(
                     value = delta.get(key)
                     if isinstance(value, int) and not isinstance(value, bool) and value > 0:
                         usage[key] += value
-                        # 至少有一项被计入才算采纳：全是坏值的用量记录不能拿它的时间戳拉长时长
+                        # Adopt usage records only if at least one value counts; wholly invalid usage must not extend duration through its timestamp.
                         accepted = True
         elif kind == "anomaly":
             anomalies += 1
             accepted = True
-        # 只认采纳了的记录的时间：被丢弃的坏行 / 未知记录带的时间戳不能挪动结束时间与时长
+        # Use timestamps only from adopted records; discarded corrupt rows / unknown records must not alter end time or duration.
         ts = _number(record.get("ts")) if accepted else None
         if ts is not None:
             ended_at = ts
     lines.sort(key=line_order_key)
-    # 两个时间戳各自有限，差值仍可能溢出成 inf（-1.7e308 与 1.7e308）：int(inf) 会抛
-    # OverflowError、中断整轮补传。算不出的时长记 0
+    # Two finite timestamps can still yield an infinite difference (-1.7e308 and 1.7e308); int(inf) raises
+    # OverflowError and aborts recovery uploads. Record 0 for uncomputable duration.
     duration = _number(ended_at - started_at)
     request = {
         "visit_id": visit_id,
@@ -315,12 +315,12 @@ def build_upload_doc(
     }
     return {
         "v": UPLOAD_DOC_VERSION,
-        # 设计稿较早的上传头定义没有这个字段：缺失或类型不对时改用同场 state.json /
-        # 转录头行记的占房账号（上传只在登录账号与它一致时进行，记 None 就谁都传不了）；
-        # 两处都没有才记 None，照样封存，不删唯一的流水副本
+        # Earlier upload-header designs omitted this field: on missing/wrong type use this visit's state.json /
+        # transcript header room-owning account (upload requires matching login, so None would prevent every account from uploading);
+        # record None only if both lack it; still seal, retaining the only log copy.
         "own_visit_uid": _owner_or_none(header.get("own_visit_uid")) or _owner_or_none(fallback_own_visit_uid),
-        # 同理：较早的头行可以没有角色 id，改用同场 state.json / 转录头行记的；都没有就是
-        # None，由封存方在写文件前挡下（封出来也会被当成坏文件删掉）
+        # Likewise older headers may lack character id: use this visit's state.json / transcript header; if neither has it,
+        # return None and let sealing reject before writing (otherwise the sealed file would be deleted as corrupt).
         "own_char_uid": _owner_or_none(header.get("own_char_uid")) or _owner_or_none(fallback_own_char_uid),
         "transport": transport,
         "request": request,
@@ -328,7 +328,7 @@ def build_upload_doc(
 
 
 def _envelope_valid(own_char_uid: Any, transport: Any) -> bool:
-    # 先判类型：对象 / 数组不可哈希，直接做集合成员判断会抛 TypeError、中断整轮补传
+    # Check type first: objects / arrays are unhashable, so direct set membership raises TypeError and aborts all recovery uploads.
     return (
         isinstance(own_char_uid, str) and bool(own_char_uid)
         and isinstance(transport, str) and transport in _UPLOAD_TRANSPORTS
@@ -346,7 +346,7 @@ def _spool_header_ids_sync(spool_dir: Path, visit_id: str) -> tuple[str | None, 
     except (OSError, ValueError):
         return None, None
     if not header or header.get("visit_id") != visit_id:
-        # 被换过 / 复制过的头行：别的场次的账号与角色不能套到这一场的上传上
+        # Replaced/copied header: another visit's account and character must not be applied to this upload.
         return None, None
     return _owner_or_none(header.get("own_uid")), _owner_or_none(header.get("own_char_uid"))
 
@@ -354,7 +354,7 @@ def _spool_header_ids_sync(spool_dir: Path, visit_id: str) -> tuple[str | None, 
 def _with_header_fallback(
     spool_dir: Path, visit_id: str, owner: str | None, char_uid: str | None,
 ) -> tuple[str | None, str | None]:
-    # state.json 读不出时才看记忆 spool 的头行（只在缺的那项上补）
+    # Consult memory spool header only if state.json is unreadable, filling only missing fields.
     if owner is None or char_uid is None:
         header_owner, header_char = _spool_header_ids_sync(spool_dir, visit_id)
         owner = owner if owner is not None else header_owner
@@ -377,11 +377,11 @@ def _sealed_doc_belongs(doc: Any, visit_id: str) -> bool:
         return False
     owner = doc.get("own_visit_uid")
     if owner is not None and (not isinstance(owner, str) or not owner):
-        # 上传只在登录账号与它一致时进行：坏值会让这份文件永远传不出去
+        # Upload requires matching login account; invalid values make this file permanently unuploadable.
         return False
     if not _envelope_valid(doc.get("own_char_uid"), doc.get("transport")):
-        # 只剩上传文件时没有流水可比：角色 id 与传输方式也要在这里核对，坏信封交给上传回调
-        # 只会每次启动都失败到过期
+        # With only upload file remaining, no log comparison is possible; verify character id and transport here too, or passing bad envelopes to upload callback
+        # would fail on every startup until expiry.
         return False
     request = doc.get("request")
     usage = request.get("usage") if isinstance(request, dict) else None
@@ -394,13 +394,13 @@ def _sealed_doc_belongs(doc: Any, visit_id: str) -> bool:
         and isinstance(request.get("finalized_reason"), str) and bool(request["finalized_reason"])
         and _count(request.get("anomalies"))
         and isinstance(request.get("app_version"), str)
-        # 与 build_upload_doc 产出的完整结构同口径：用量各计数都得是非负整数
+        # Match build_upload_doc's complete structure: every usage counter must be a nonnegative integer.
         and isinstance(usage, dict)
         and all(_count(usage.get(key)) for key in ("duration_s", *_USAGE_KEYS))
         and isinstance(request.get("lines"), list)
-        # 逐行核对：转录行坏了的上传文件同样不能顶替完整的流水
+        # Validate each row: upload files with corrupt transcript rows cannot replace complete logs either.
         and all(isinstance(line, dict) and _valid_line(line) for line in request["lines"])
-        # 顺序也要与 build_upload_doc 排出来的一致：乱序的文件替掉流水会把乱序当成正本上传
+        # Ordering must also match build_upload_doc; replacing a log with out-of-order file would upload that order as authoritative.
         and request["lines"] == sorted(request["lines"], key=line_order_key)
     )
 
@@ -434,7 +434,7 @@ def _sealed_doc_unrecognized(doc: Any, visit_id: str) -> bool:
         return False
     version = doc.get("v")
     if isinstance(version, int) and not isinstance(version, bool) and version > UPLOAD_DOC_VERSION:
-        # 更新版本的结构这里核对不了：只排除明确写着别的场次的
+        # Cannot validate newer-version structure: exclude only files explicitly identifying another visit.
         request = doc.get("request")
         return not (isinstance(request, dict) and "visit_id" in request and request["visit_id"] != visit_id)
     transport = doc.get("transport")
@@ -514,7 +514,7 @@ def _write_private_json(path: Path, doc: dict) -> None:
     try:
         os.chmod(path, 0o600)
     except OSError as exc:
-        # 与凭证文件同一立场：权限位尽力而为（Windows 上本就无效），设不上不影响上传
+        # Same policy as credential files: permissions are best effort (ineffective on Windows); failure to set does not block uploads.
         logger.debug("visit recovery: chmod 0600 failed for %s: %s", path.name, exc)
 
 
@@ -539,27 +539,27 @@ def _seal_stream_sync(
         return None
     dropped += _dropped_line_records(records, doc)
     if dropped:
-        # 封存后流水就删了：丢掉多少条要随文件留下，导出时才知道这份不完整（上传只发 request，不受影响）；
-        # 上传成功后文件也删了，本机日志里留一条诊断
+        # Sealing deletes the log: preserve discarded-row count in file so export recognizes incompleteness (upload sends only request, unaffected);
+        # upload success also deletes file, so leave one local diagnostic log.
         doc[DROPPED_RECORDS_KEY] = dropped
         memory_bridge.diag("upload_stream_dropped_records", visit_id=visit_id, count=dropped)
     if doc["own_char_uid"] is None:
-        # 角色 id 哪儿都补不回来（多半是 state.json 一时读不出）：封出来的文件会被当成坏文件
-        # 删掉，连同刚删的流水一起丢掉整份转录。不写文件、留着流水，下次启动再封
+        # Unrecoverable character id (usually temporarily unreadable state.json): sealed file would be deleted as corrupt,
+        # losing the whole transcript alongside the just-deleted log. Do not write; retain log to seal next startup.
         raise _EnvelopeIncomplete(f"no own_char_uid for the upload stream of {visit_id}")
-    # 与 finalize 同一顺序：先原子写 .upload.json，再删流水
+    # Same order as finalize: atomically write .upload.json before deleting log.
     _write_private_json(sealed, doc)
     try:
-        # 封出来的文件接着流水的年龄算 7 天：按新文件的 mtime 算，已存在多日的转录会再多留 7 天，
-        # 排队的举报一直被挡着
+        # Sealed file's 7-day retention inherits log age; using fresh mtime gives an old transcript another 7 days,
+        # keeping queued reports blocked.
         os.utime(sealed, ns=(stream_mtime_ns, stream_mtime_ns))
     except OSError as exc:
         logger.warning("visit recovery: cannot carry the stream age over to %s: %s", sealed.name, exc)
     try:
         stream.unlink(missing_ok=True)
     except OSError as exc:
-        # 上传文件已经封好：流水删不掉也照常上传与提交举报（Servers 按 visit_id + role
-        # 幂等，下次再封只会得到 duplicate），不能让一个删不掉的文件卡住这场
+        # Upload file already sealed: still upload and submit report if log deletion fails (Servers idempotency by visit_id + role
+        # makes subsequent resealed uploads duplicate); an undeletable file must not block this visit.
         logger.warning("visit recovery: sealed %s but cannot delete its stream: %s", sealed.name, exc)
     return doc
 
@@ -596,7 +596,7 @@ async def reseal_orphan_stream(config_dir: Path, visit_id: str) -> tuple[str, st
     return "sealed", doc.get("own_visit_uid") or header_owner
 
 
-# ── 主流程 ────────────────────────────────────────────────────────────
+# ── Main flow ────────────────────────────────────────────────────────────
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -632,8 +632,8 @@ async def _reconcile_rename_guarded(
         if not uids:
             return await _reconcile_rename(config_dir, names, uid_of)
         async with lifecycle_guard(sorted(uids)):
-            # 等守卫期间标记可能已被另一个角色的改名换掉：守卫是按旧标记拿的，锁的不是
-            # 新标记的角色。标记变了就放开，按新标记重新拿守卫
+            # Another character's rename may replace the marker while waiting for guard: guard was acquired for old marker,
+            # not new marker's character. Release on change and reacquire for new marker.
             try:
                 current = await read_roster_marker(config_dir, "pending_rename")
             except RosterCorruptError:
@@ -642,10 +642,10 @@ async def _reconcile_rename_guarded(
                 if reload is not None:
                     names, uid_of = await reload()
                 continue
-            # 守卫内重读名单：等守卫期间角色可能又被改名或删除，拿守卫之前的快照会算错方向
+            # Reread roster under guard: character may rename/delete while waiting; a pre-guard snapshot can infer wrong direction.
             if reload is not None:
                 names, uid_of = await reload()
-            # 对账时再按拿守卫时的那份标记核一次（重读名单期间标记也可能被换掉）
+            # Recheck against the guard-acquisition marker during reconciliation too (marker may change while rereading roster).
             result = await _reconcile_rename(config_dir, names, uid_of, expected=marker)
             if result is _MARKER_CHANGED:
                 continue
@@ -707,17 +707,17 @@ async def _recover_visit(
         return
     own_char = await resolve_char_name(state["own_char_uid"])
     if not own_char:
-        # 角色已删：退役流程负责这场的文件，这里不出芯片、不写任何东西
+        # Character deleted: retirement owns these visit files; show no chip and write nothing here.
         return
     if own_char in skip_names or state["own_char"] in skip_names:
-        # 这个角色的改名还没对账清楚：按名字找名册条目可能找错，留到下次启动
+        # Character rename remains unreconciled: name-based roster lookup may misidentify entries; retain until next startup.
         return
     choice = state["debrief_choice"]
     status = None
     show_chip = False
     if state["finalized"] is None:
-        # 只在有可 digest 句时出芯片（记忆关的场次没有 .jsonl）；不写任何私聊记忆。
-        # 崩溃标记与芯片标记同一次原子写：两步之间被杀，下次就再也判不出要弹芯片
+        # Show chip only with digestible utterances (memory-disabled visits have no .jsonl); write no private-chat memories.
+        # Crash marker and chip marker share one atomic write; a kill between separate steps would prevent future chip detection.
         show_chip = choice in (None, "ask_later") and await _has_digestable_lines(spool, state)
         changes: dict[str, Any] = {"finalized": "crash"}
         if show_chip:
@@ -726,23 +726,23 @@ async def _recover_visit(
         report.crashed.append(visit_id)
         status = "interrupted"
     elif state["finalized"] == "shutdown" and choice is None:
-        # 兜底：老版本关机没写 ask_later，或写之前就被杀
+        # Fallback: old version omitted ask_later on shutdown or was killed before writing it.
         if await _has_digestable_lines(spool, state):
             state = await spool.update_state(debrief_choice="ask_later")
             show_chip = True
     elif choice is None:
-        # 已收口、用户还没决定：芯片标记在就每次启动都重弹（与 ask_later 一致，崩溃场次
-        # 不只弹第一次）；标记不在——任何收口原因（wrap_up / peer_left …）写完 finalized、
-        # 还没来得及记芯片就被杀，或旧版本留下的崩溃场次——有可 digest 句就补记并弹出
+        # Finalized but user undecided: existing chip marker reappears every startup (like ask_later; crashed visits
+        # do not show only once). Without marker, any end reason (wrap_up / peer_left, etc.) may have written finalized
+        # before a kill or come from an older crashed visit; record and show if digestible utterances exist.
         show_chip = state["debrief_chip_pending"] or await _has_digestable_lines(spool, state)
     elif choice == "ask_later":
         show_chip = True
     if choice in ("generating:diary", "preview:diary", "committing:diary", "commit_failed:diary"):
-        # 生成预览时崩溃 / 已落盘的预览待确认 / 两步写入进行中（可能还在退避等待）/ 永久性
-        # 写入失败：零 LLM、零写入，经 bind 重放对应的块（committing 显示「写入中」）
+        # Crash during preview generation / persisted preview awaiting confirmation / two-step commit underway (possibly backing off) / permanent
+        # write failure: no LLM calls or writes; replay corresponding block via bind (committing shows 'writing').
         show_chip = True
     if show_chip and state["finalized"] == "crash":
-        # 崩溃场次每次重放都带上「意外中断」，不只在第一次标崩溃时
+        # Every replay of a crashed visit includes 'unexpected interruption', not only initial crash marking.
         status = "interrupted"
     if show_chip:
         if not state["debrief_chip_pending"]:
@@ -750,7 +750,7 @@ async def _recover_visit(
         report.chips.append(visit_id)
         try:
             await render_chips(visit_id, own_char=own_char, status=status)
-        except Exception as exc:  # noqa: BLE001 - 发不出去就等 bind 重放
+        except Exception as exc:  # noqa: BLE001 - If undeliverable, wait for bind replay.
             logger.warning("visit recovery: render_chips failed for %s: %r", visit_id, exc)
     if choice == "committing:diary" and resume_diary_commit is not None:
         await _maybe_await(resume_diary_commit(spool, state))
@@ -762,7 +762,7 @@ async def _recover_visit(
         )
 
     async def summary() -> Any:
-        # 登记成这场在跑的摘要：同一对的新一场开场时，交接等这个任务，不再另起一次 LLM 调用
+        # Register as this visit's running summary: new visits for the same pair wait for this task during handover instead of launching another LLM call.
         return await track_last_summary(visit_id, commit_last_summary(
             spool, llm=summary_llm, resolve_char_name=resolve_char_name, family_names=family_names,
         ))
@@ -799,7 +799,7 @@ async def _upload_pending(
     spool_dir = config_dir / VISIT_SPOOL_DIRNAME
     pending: set[str] = set()
     sealed = set(await VisitSpool.list_visit_ids(config_dir, (UPLOAD_JSON_SUFFIX,)))
-    # 本轮与流水核对过（重封出来的 / 与流水比对一致的）上传文件：信封已以流水为准
+    # Upload file verified against log this pass (resealed / matching log): envelope already follows log authority.
     stream_checked: set[str] = set()
     for visit_id in await VisitSpool.list_visit_ids(config_dir, (UPLOAD_JSONL_SUFFIX,)):
         if live(visit_id):
@@ -815,9 +815,9 @@ async def _upload_pending(
         char_uid = _owner_or_none(state.get("own_char_uid")) if state else None
         reseal_reason = reason
         if visit_id in sealed:
-            # 封存时「已写 .upload.json、还没删流水」就崩了：上传文件才是这场的那份，
-            # 留着流水会在上传成功后被再封一次、重复上传。先确认上传文件读得出来再删流水；
-            # 上传文件坏了就从流水重新封存（覆盖坏文件），流水是这时唯一完整的副本
+            # Crash after writing .upload.json but before deleting log: upload file is the visit's actual sealed copy;
+            # retaining log causes resealing and duplicate upload after success. Verify upload readability before deleting log;
+            # if upload file corrupt, reseal from log (overwrite corruption), currently the only complete copy.
             try:
                 sealed_doc = await asyncio.to_thread(
                     _load_json, visit_path(spool_dir, visit_id, UPLOAD_JSON_SUFFIX),
@@ -826,24 +826,24 @@ async def _upload_pending(
                 sealed_doc = None
             belongs = _sealed_doc_belongs(sealed_doc, visit_id)
             if belongs:
-                # 重封会产出的每个字段都要与文件一致（信封、转录行、用量、时间戳）：缺行 / 改过的
-                # 文件替掉完整的流水，删了流水就再也重封不回来。上传回调额外写进文件的分片进度
-                # 不在比较之列，否则删不掉流水时每次补录都会重封、把进度清零。
-                # 结束原因：state 记的是确定的原因时必须一致；state 读不出、或是 crash（正常收口
-                # 写完上传文件后、写 state.finalized 前崩溃，本轮补录先把它标成了 crash）时
-                # 沿用文件里记的，不把正常结束的场次重封成 crash
+                # Every resealable field must match file (envelope, transcript rows, usage, timestamps): missing-row / edited
+                # files must not replace complete logs, which cannot be recovered after deletion. Exclude chunk progress added by
+                # upload callbacks, or failed log deletion would trigger resealing and reset progress on every recovery pass.
+                # End reason must match a definite reason in state; if state unreadable or crash (normal finalization crashed after
+                # upload write but before state.finalized, and this recovery pass initially marked crash),
+                # retain file's reason instead of resealing normally ended visits as crash.
                 sealed_reason = sealed_doc["request"]["finalized_reason"]
-                # 比对不一致要重封时也用同一个原因：文件格式合法、只是别的字段对不上，
-                # 正常结束的场次同样不能被重封成 crash
+                # Use the same reason when resealing mismatched files too: valid file format with other field mismatches
+                # must not change normally ended visits to crash either.
                 reseal_reason = sealed_reason if reason in (None, "crash") else reason
                 try:
                     expected = await asyncio.to_thread(
                         _stream_doc_sync, spool_dir, visit_id, reseal_reason, owner, char_uid,
                     )
                 except (OSError, ValueError, TypeError, OverflowError) as exc:
-                    # 流水还在却一时读不出（权限、被占用）、或重建时出错（与下面封存同一组异常）：
-                    # 比对做不了，两份都不动、这轮不上传。不能当成「流水没了」放行——删掉完整的
-                    # 流水、传上去的可能是缺行的文件；也不能让异常冒出去中断整轮补传与举报
+                    # Log exists but temporarily unreadable (permissions / locked), or rebuilding fails (same exceptions as sealing below):
+                    # cannot compare; leave both unchanged and skip upload this pass. Do not assume log absence and proceed,
+                    # risking deletion of complete log and upload of missing-row files; do not let exceptions abort all uploads/reports either.
                     logger.warning("visit recovery: stream of %s unreadable, upload deferred: %s", visit_id, exc)
                     sealed.discard(visit_id)
                     pending.add(visit_id)
@@ -855,44 +855,44 @@ async def _upload_pending(
                 try:
                     await asyncio.to_thread(stream.unlink, True)
                 except OSError as exc:
-                    # 删不掉就照常上传：Servers 按 visit_id + role 幂等，下次再从残留流水
-                    # 封存上传只会得到 duplicate；若因此挡住上传，一个长期删不掉的文件
-                    # 就让这场的转录与排队举报永远交不上去
+                    # Still upload on deletion failure: Servers is idempotent by visit_id + role, so resealing residual logs
+                    # and uploading next time only yields duplicate. Blocking upload would let a permanently undeletable file
+                    # prevent this visit's transcript and queued report from ever being submitted.
                     logger.warning("visit recovery: cannot delete stale stream %s: %s", stream.name, exc)
                 continue
-            # 先从待上传集合里拿掉：重封失败时不能把这份坏的 / 别场的文件交给上传回调
+            # Remove from pending uploads first: failed resealing must not pass corrupt / wrong-visit files to upload callback.
             sealed.discard(visit_id)
             logger.warning("visit recovery: sealed upload of %s unreadable or not this visit's, resealing from its stream",
                            visit_id)
-        # 转录补传与 finalized 无关：流水还在、上传文件没写成，就从流水构建
+        # Transcript recovery uploads do not depend on finalized: if log exists and upload file was not written, build from log.
         try:
-            # 封存失败时流水会被当坏文件删掉：先从流水头取占房账号，state.json 读不到时原因按它记
+            # Failed sealing may delete corrupt logs; first capture room account from log header for reasons if state.json unreadable.
             stream_owner = await asyncio.to_thread(_upload_stream_owner_sync, spool_dir, visit_id)
             doc = await asyncio.to_thread(_seal_stream_sync, spool_dir, visit_id, reseal_reason, owner, char_uid)
         except (OSError, ValueError, TypeError, OverflowError) as exc:
-            # 一份流水读写不了只跳过它自己，不能挡住其余场次的补传与举报
+            # Skip only an unreadable/unwritable log, without blocking other visits' uploads and reports.
             logger.warning("visit recovery: cannot seal %s: %s", stream.name, exc)
             pending.add(visit_id)
             if (retry_later is not None and isinstance(exc, OSError)
                     and not await asyncio.to_thread(visit_path(spool_dir, visit_id, UPLOAD_JSON_SUFFIX).exists)):
-                # 只剩流水时交给后台：它会从流水重封。旁边还有坏的封存文件时后台不重封（遇到不可用的
-                # 封存文件就退出），留给下次启动的补录
+                # If only log remains, background can reseal it. If a corrupt sealed file also remains, background exits
+                # on that unusable file instead of resealing; leave for next startup recovery.
                 retry_later(visit_id)
             continue
         if doc is not None:
             sealed.add(visit_id)
             stream_checked.add(visit_id)
         elif not await _drop_corrupt_sealed(spool_dir, visit_id):
-            # 流水坏了、旁边那份上传文件也不是本场的有效文件：它删不掉就先挡住举报
+            # Corrupt log and no valid upload file for this visit: block report if that file cannot be deleted yet.
             pending.add(visit_id)
         else:
-            # 流水坏了、也没有有效的封存文件：这场转录再也传不上去，排队的举报记下原因
-            # （归属取 state.json 记的账号：共用电脑上另一账号的举报不记）
+            # Corrupt log with no valid sealed file: transcript can never upload; record reason on queued report.
+            # (Take ownership from state.json account; do not affect another account's report on shared computers.)
             await _mark_report_transcript_unavailable(
                 config_dir, visit_id, "corrupt", report, owner=_owner_or_none(owner) or stream_owner)
     for visit_id in sorted(sealed):
         if live(visit_id):
-            # 在飞场次的转录还没传：它排队的举报也不能先交
+            # In-flight visit's transcript not yet uploaded: its queued report must also wait.
             pending.add(visit_id)
             continue
         path = visit_path(spool_dir, visit_id, UPLOAD_JSON_SUFFIX)
@@ -902,7 +902,7 @@ async def _upload_pending(
             logger.warning("visit recovery: pending upload %s unreadable: %s", path.name, exc)
             pending.add(visit_id)
             if retry_later is not None:
-                # 一时读不了（Windows 共享冲突）：本轮的 pending 随返回丢掉，不交给后台就要等下次启动
+                # Temporarily unreadable (Windows sharing violation): this pass's pending state disappears on return, so hand off to background instead of waiting for restart.
                 retry_later(visit_id)
             continue
         except ValueError:
@@ -911,13 +911,13 @@ async def _upload_pending(
             continue
         if not _sealed_doc_belongs(doc, visit_id):
             if _sealed_doc_unrecognized(doc, visit_id):
-                # 更高的版本号 / 没见过的传输方式：多半是新版本写的完好文件（装过新版本又降级），
-                # 换回新版本就能传。与读不懂的 state.json 同一立场：不当损坏删，留着待处理
+                # Higher version / unknown transport probably means intact newer-version file after downgrade;
+                # upgrading can upload it. Like unrecognized state.json, retain for later instead of deleting as corruption.
                 logger.warning("visit recovery: pending upload %s was written by another version, kept", path.name)
                 pending.add(visit_id)
                 continue
-            # 没有流水可重封的坏 / 别场上传文件：与损坏流水同一处理，转录已无法恢复，
-            # 删掉它（不交给上传回调），排队的举报随后照常提交
+            # Corrupt / wrong-visit upload file without recoverable log: transcript unrecoverable like corrupt logs,
+            # so delete without passing to upload callback, then submit queued reports normally.
             if not await _drop_corrupt_sealed(spool_dir, visit_id):
                 pending.add(visit_id)
             else:
@@ -927,8 +927,8 @@ async def _upload_pending(
         if visit_id not in stream_checked:
             matches, state_owner = await _sealed_matches_state(config_dir, visit_id, doc)
             if not matches:
-                # 只剩上传文件、没有流水可比：角色 id 或占房账号与本场 state.json 记的不一致（别的角色 /
-                # 别的账号的文件），交上去就是拿错的身份上传。按别场文件处理
+                # Only upload file remains: character id or room account disagrees with this visit's state.json (another character /
+                # account's file). Submission would use wrong identity; treat as wrong-visit file.
                 if not await _drop_corrupt_sealed(spool_dir, visit_id):
                     pending.add(visit_id)
                 else:
@@ -936,8 +936,8 @@ async def _upload_pending(
                         config_dir, visit_id, "corrupt", report, owner=state_owner)
                 continue
             if doc.get("own_visit_uid") is None and state_owner is not None:
-                # 旧版本封出来的无主文件：用本场 state.json 记的账号补上，否则只认账号的上传回调
-                # 永远选不中登录账号
+                # Legacy ownerless sealed file: supplement from this visit's state.json account, or account-only upload callback
+                # can never match a logged-in account.
                 doc = {**doc, "own_visit_uid": state_owner}
         try:
             before = await asyncio.to_thread(path.stat)
@@ -946,7 +946,7 @@ async def _upload_pending(
         rejected = doc.get("rejected")
         terminal_reason: str | None = None
         if isinstance(rejected, str) and rejected:
-            # 上一轮已被终态拒收、只是本地文件没删掉：不再整份重传，接着删文件、交举报
+            # Previous terminal rejection with local deletion failure: no full reupload; continue deleting and submitting reports.
             terminal_reason = rejected
         else:
             if upload_transcript is None:
@@ -956,46 +956,46 @@ async def _upload_pending(
                 outcome = await upload_transcript(visit_id, doc)
                 ok = bool(outcome)
                 if isinstance(outcome, str) and outcome:
-                    # 终态拒收：本地文件照样可以删，但这场的转录再也到不了 Servers
+                    # Terminal rejection: local file may be deleted, but this transcript can never reach Servers.
                     terminal_reason = outcome
-            except Exception as exc:  # noqa: BLE001 - 任何失败都留文件下次再试
+            except Exception as exc:  # noqa: BLE001 - Retain files on any failure and retry later.
                 logger.warning("visit recovery: upload of %s failed: %r", visit_id, exc)
                 ok = False
                 if retry_later is not None:
-                    # 回调在自己排后台重试之前就出错（本地准备时一时读写不了）：补录只跑一轮，交给后台
+                    # Callback failed before scheduling its own background retry (temporary local preparation read/write error): recovery runs once, so hand off to background.
                     retry_later(visit_id)
             if terminal_reason is None:
-                # 终态拒收不记成上传成功：uploads 的 True 只表示转录到了 Servers
+                # Terminal rejection is not upload success: uploads True means only that transcript reached Servers.
                 report.uploads[visit_id] = ok
             if not ok:
                 if before is not None:
-                    # 分片上传可以把进度写回这份文件再回 False：保留期按 mtime 算，不能让每次重试
-                    # 把 7 天的期限往后推，否则失败的上传永远不过期、排队的举报一直等着
+                    # Chunk upload may persist progress then return False; retention uses mtime, so retries must not
+                    # extend 7-day expiry indefinitely, keeping failed uploads alive and queued reports waiting forever.
                     await asyncio.to_thread(_restore_mtime, path, before)
                 pending.add(visit_id)
                 continue
         if terminal_reason is not None:
             report.rejected[visit_id] = terminal_reason
-            # 先在排队的举报里记下转录为何不可用（设计 §4.7），再删上传文件：上传文件是这场
-            # 「终态拒收」唯一持久的记录，先删了、标记又没写进举报（或进程在两步之间退出），
-            # 下次启动举报就不带原因交上去了。记不进举报时留着上传文件（记上 rejected），下次再记
+            # Record transcript unavailability on queued report first (design §4.7), then delete upload file: this file is the sole
+            # durable terminal-rejection record. Deleting first without report marking (or exiting between steps)
+            # would submit the report without its reason on next startup. Retain upload file marked rejected if marking fails and retry later.
             if not await _mark_report_transcript_unavailable(
                     config_dir, visit_id, terminal_reason, report, owner=_owner_or_none(doc.get("own_visit_uid"))):
                 if terminal_reason != rejected:
                     await asyncio.to_thread(_mark_sealed_rejected, path, terminal_reason, before)
-                # 本轮提交的那份由 report 上的原因补上
+                # Supplement this pass's submission with report's reason.
                 await _submit_report(config_dir, visit_id, submit_report, report)
                 continue
         try:
             await asyncio.to_thread(path.unlink, True)
         except OSError as exc:
-            # 已传上去但本地删不掉：不挡其余场次，也不算「转录未上传」——Servers 已受理，
-            # 排队的举报照常提交；文件留到下次（届时 duplicate 后再删）
+            # Uploaded but locally undeletable: do not block other visits or classify as unuploaded; Servers accepted it,
+            # so submit queued report normally, retaining file until later duplicate receipt and deletion.
             logger.warning("visit recovery: uploaded %s but cannot delete it: %s", path.name, exc)
             if terminal_reason is not None and terminal_reason != rejected:
-                # 终态拒收后删不掉：在文件里记下拒收，下次启动直接跳过，不再整份重传、再被拒一次
+                # Undeletable after terminal rejection: mark rejection in file so next startup skips full reupload and repeat rejection.
                 await asyncio.to_thread(_mark_sealed_rejected, path, terminal_reason, before)
-        # 该场转录上传成功（或终态拒收、原因已记进举报）后，接着提交它排队的举报
+        # After successful transcript upload (or terminal rejection with reason recorded), submit this visit's queued report.
         await _submit_report(config_dir, visit_id, submit_report, report)
     return pending
 
@@ -1012,8 +1012,8 @@ async def _pending_upload_owner(config_dir: Path, visit_id: str) -> str | None:
             _load_json, visit_path(config_dir / VISIT_SPOOL_DIRNAME, visit_id, UPLOAD_JSON_SUFFIX))
     except (OSError, ValueError):
         doc = None
-    # 只信属于本场的文件：别场 / 坏掉而一时删不掉的文件里写的账号不算。本版本的文件还要与 state.json
-    # 核对（角色 / 账号对不上的是被拒的文件，按 state 记的账号算）；新版本文件本版本核对不了，信它自己写的
+    # Trust only files belonging to this visit, not wrong-visit / corrupt temporarily undeletable files' accounts. Current-version files must also match state.json
+    # (character/account mismatch means rejected file; use state's account). This version cannot validate newer files, so trust their own account.
     if isinstance(doc, dict) and _sealed_doc_belongs(doc, visit_id):
         matches, state_owner = await _sealed_matches_state(config_dir, visit_id, doc)
         owner = _owner_or_none(doc.get("own_visit_uid")) if matches else state_owner
@@ -1024,7 +1024,7 @@ async def _pending_upload_owner(config_dir: Path, visit_id: str) -> str | None:
     if owner is None:
         owner = await _state_owner(config_dir, visit_id)
     if owner is None:
-        # 没有可信的封存文件、state.json 也读不到：本场上传流水的头行记着占房账号
+        # No trusted sealed file and unreadable state.json: this visit's upload-log header records the room account.
         owner = await asyncio.to_thread(_upload_stream_owner_sync, config_dir / VISIT_SPOOL_DIRNAME, visit_id)
     return owner
 
@@ -1135,7 +1135,7 @@ def _mark_sealed_rejected(path: Path, reason: str, before: os.stat_result | None
         logger.warning("visit recovery: cannot mark %s rejected: %s", path.name, exc)
         return
     if before is not None:
-        # 记标记不是一次重试：保留期照旧按原来的 mtime 算
+        # Recording a marker is not a retry: calculate retention from original mtime.
         _restore_mtime(path, before)
 
 
@@ -1170,20 +1170,20 @@ async def _submit_report(
     except (OSError, ValueError) as exc:
         logger.warning("visit recovery: queued report %s unreadable: %s", path.name, exc)
         if retry_later is not None and isinstance(exc, OSError):
-            # 一时读不了（被占用）：只交举报的场次没有上传任务会再来，交给后台等能读了再交
+            # Temporarily unreadable (locked): report-only visits have no upload task to retry, so hand off to background until readable.
             retry_later(visit_id)
         return
     if doc is None:
         return
     if not isinstance(doc, dict) or doc.get("visit_id") != visit_id:
-        # 内容与文件名不是同一场（被复制 / 改过）：交上去会举报错的场次，受理后还会删掉这份
-        # 原本要交的举报。不交也不删，改名隔离：留在原位会让这场之后的举报一直被「已排队」挡住，
-        # 每次启动还要再告警一遍
+        # Contents and filename identify different visits (copied / edited): submission reports the wrong visit and deletes this file after acceptance.
+        # originally intended report. Neither submit nor delete; rename into quarantine. Leaving it here blocks later reports as already queued
+        # and warns again every startup.
         await asyncio.to_thread(_quarantine_report, path, visit_id)
         return
     if transcript_gated and doc.get("include_transcript") is not False:
-        # 转录还没传上去：附转录的举报等它；明确不附转录的举报不受转录上传的闸。待传的转录属于另一个
-        # 已知账号时（共用电脑）不是这份举报那一侧的转录，不等它
+        # Transcript not uploaded: reports attaching it wait; explicitly unattached reports bypass the transcript gate. If pending transcript belongs to another
+        # known account on a shared computer, it is not this report's side and need not be awaited.
         transcript_owner = await _pending_upload_owner(config_dir, visit_id)
         report_owner = doc.get("own_visit_uid")
         if not (transcript_owner and report_owner and report_owner != transcript_owner):
@@ -1191,10 +1191,10 @@ async def _submit_report(
     unavailable = report.transcript_unavailable.get(visit_id)
     unavailable_owner = report.unavailable_owner.get(visit_id)
     if unavailable_owner and doc.get("own_visit_uid") and doc["own_visit_uid"] != unavailable_owner:
-        # 原因属于另一账号那一侧的转录（共用电脑）：不带进这份举报
+        # Reason belongs to another account's transcript side on a shared computer; exclude from this report.
         unavailable = None
     if unavailable and doc.get("include_transcript") is not False and not doc.get("transcript_unavailable"):
-        # 举报文件没写进不可用标记（磁盘满 / 权限）：提交的那份照样带上，Servers 才知道转录已经没了
+        # Report-file unavailability marker write failed (full disk / permissions): still include in submission so Servers knows transcript is gone.
         doc = {**doc, "transcript_unavailable": unavailable}
     try:
         ok = bool(await submit_report(visit_id, doc))
@@ -1203,8 +1203,8 @@ async def _submit_report(
         ok = False
     report.reports[visit_id] = ok
     if ok:
-        # 举报文件只在 Servers 受理后删（与改写它的各方同一把逐路径锁）；只删交上去的那一份——
-        # 提交期间文件可能已被换成另一份尚未送达的举报
+        # Delete report only after Servers acceptance, under the per-path lock shared by rewriters; delete only the submitted copy,
+        # since another undelivered report may replace it during submission.
         try:
             await asyncio.to_thread(_unlink_same_report_locked, path, doc)
         except OSError as exc:
@@ -1231,7 +1231,7 @@ def _report_belongs(doc: Any, visit_id: str) -> bool:
 
 def _quarantine_report(path: Path, visit_id: str) -> None:
     with path_lock(path):
-        # 锁内重读：读完到拿锁之间文件可能已被换成这场自己的举报
+        # Reread under lock: between initial read and lock acquisition, file may become this visit's own report.
         try:
             doc = _load_json(path)
         except (OSError, ValueError):
@@ -1241,7 +1241,7 @@ def _quarantine_report(path: Path, visit_id: str) -> None:
         target = path.with_name(f"{path.name}.mismatch")
         n = 1
         while target.exists():
-            # 不覆盖更早隔离的那份：里面同样是一份没交出去的举报
+            # Do not overwrite earlier quarantine copies; those are also undelivered reports.
             target = path.with_name(f"{path.name}.{n}.mismatch")
             n += 1
         memory_bridge.diag("report_visit_mismatch", visit_id=visit_id)
@@ -1282,7 +1282,7 @@ async def _mark_report_transcript_unavailable(
     try:
         applies = await asyncio.to_thread(_mark_report_sync, path, visit_id, reason, owner)
     except (OSError, ValueError) as exc:
-        # 文件里记不上：本轮提交时由 report 上的那份补上。归属这时没核对过：一并记下，提交前再比
+        # Cannot persist: supplement this pass's submission from report. Ownership not yet verified; record together and compare before submission.
         report.transcript_unavailable.setdefault(visit_id, reason)
         if owner is not None:
             report.unavailable_owner.setdefault(visit_id, owner)
@@ -1295,22 +1295,22 @@ async def _mark_report_transcript_unavailable(
 
 def _mark_report_sync(path: Path, visit_id: str, reason: str, owner: str | None = None) -> bool:
     """Write the reason into the queued report; False when that report is another known account's."""
-    # 读与写在同一把逐路径锁里：读完、写之前举报被受理删除或被用户放弃，原子写会把它重新建出来，
-    # 随后又被再交一次
+    # Read/write share one per-path lock; if report is accepted/deleted or abandoned between reading and writing, atomic write would recreate it,
+    # causing another submission.
     with path_lock(path):
         doc = _load_json(path)
         if isinstance(doc, dict) and owner is not None and doc.get("own_visit_uid") \
                 and doc["own_visit_uid"] != owner:
-            # 共用电脑上另一账号排的举报：这份转录不是它那一侧的，不替它记原因（归属未知时照记）
+            # Another account's queued report on shared computer: this transcript is not its side; do not record its reason (record if ownership unknown).
             return False
         if isinstance(doc, dict) and doc.get("include_transcript") is False:
-            # 不附转录的举报不记转录的原因（也不在本轮提交时补带）
+            # Unattached reports do not record transcript reasons or supplement them at submission.
             return False
         if not _report_belongs(doc, visit_id) or doc.get("transcript_unavailable"):
-            # 别场的举报（文件被复制 / 改过）不能盖上这场转录的原因
+            # Wrong-visit report (copied / edited file) must not receive this transcript's reason.
             return True
         if not path.exists():
-            # 不走这把锁的删除方：写之前再确认一次文件还在
+            # Deleters bypassing this lock: recheck existence immediately before writing.
             return True
         _write_private_json(path, {**doc, "transcript_unavailable": reason})
     return True
@@ -1388,12 +1388,12 @@ async def visit_spool_recovery(
 
     def in_flight(visit_id: str) -> bool:
         return _in_flight(config_dir, visit_id, is_live)
-    # 改名对账先于清除重放：清除按角色当前名字找名册条目，改名迁移没做完时条目还在
-    # 旧名字下，remove_char 会「成功」地什么都没删，随后迁移又把条目连同摘要搬到新名字
+    # Reconcile rename before erasure replay: erasure looks up roster by current name; incomplete migration leaves entries
+    # under old name, so remove_char 'succeeds' without deleting anything, then migration moves entries and summaries to new name.
     try:
-        # 不论名单从哪来都先严格检查角色配置：常规加载会静默滤掉坏条目、返回部分名单，
-        # 改名对账会据此误判方向，下面的清除重放也会把「解析不出名字」当成「角色已删」。
-        # 配置读不出 / 条目坏了就整段推迟（抛错走下面的分支）
+        # Strictly validate character config regardless of roster source: ordinary loading silently drops invalid entries and returns a partial roster,
+        # misleading rename direction and causing erasure replay below to mistake unparseable names for deleted characters.
+        # Unreadable config / invalid entries defer this entire section (raise into the branch below).
         async def load_names() -> tuple[set[str], dict[str, str] | None]:
             await local_chars.ensure_characters_readable()
             uid_of = None if list_char_names is not None else await local_chars.load_local_characters()
@@ -1401,16 +1401,16 @@ async def visit_spool_recovery(
             return names, uid_of
 
         names, uid_of = await load_names()
-        # 本机其他猫的名字同样受保护：对端把自己叫成「本机的另一只猫」时不能顶替成说话人标签
+        # Protect other local cats' names too: peers naming themselves after another local cat must not replace speaker labels.
         local_names = frozenset(names)
-    except Exception as exc:  # noqa: BLE001 - 补录各段互不连累
+    except Exception as exc:  # noqa: BLE001 - Recovery sections fail independently.
         logger.error("visit recovery: character config unreadable, rename / retirement deferred: %r", exc)
         load_names = None
     if load_names is not None:
         try:
-            # 删除提交后退役没做完（失败 / 崩溃）的角色：补完它的场次、名册条目与串门人设，
-            # 否则同名新角色会收到旧芯片、名字一直被占着。先于改名对账：改名（含云快照导入
-            # 带来的改名）可能把别的角色的条目迁进这个名字，之后再按名字退役会把它们一起删掉
+            # Character deletion committed but retirement incomplete (failure / crash): complete visit, roster, and visit-persona retirement,
+            # or a new same-name character gets old chips and the name stays reserved. Before rename reconciliation, since renames (including cloud imports)
+            # may migrate another character's entries into this name, which later name-based retirement would delete too.
             report.retired = await replay_retires(
                 config_dir, load_names, retire_persona=retire_persona, config_lock=config_lock,
             )
@@ -1418,8 +1418,8 @@ async def visit_spool_recovery(
             logger.error("visit recovery: retirement replay failed: %r", exc)
             report.retired = False
         try:
-            # 退役重放按项拿放角色配置锁、可能耗时：期间云下载可能把某个角色以第三个名字恢复回来。
-            # 锁内重读名单再判断哪些排队改名属于已删除的角色，旧快照会把它的改名当成「已删」丢掉
+            # Retirement replay takes/releases config lock per entry and may be slow; cloud downloads can restore a character under a third name meanwhile.
+            # Reread roster under lock before deciding which queued renames belong to deleted characters; stale snapshots would discard restored renames as deleted.
             if config_lock is not None:
                 async with config_lock():
                     names, uid_of = await load_names()
@@ -1427,22 +1427,22 @@ async def visit_spool_recovery(
             else:
                 names, uid_of = await load_names()
                 await drop_deleted_queued_renames(config_dir, uid_of)
-            # 云快照一次改了几个角色的名字：其余的排在队列里依次轮到（同一套规则，每笔在各自角色的守卫下对账）
+            # Cloud snapshot renames several characters: queue the rest for sequential reconciliation under each character's guard with the same rules.
             unsettled = await reconcile_renames(
                 config_dir, names, uid_of,
                 reconcile=lambda: _reconcile_rename_guarded(config_dir, names, uid_of, lifecycle_guard, load_names),
-                # 上面已在锁内按重读的名单撤过；锁外再按同一份名单撤一次，会把锁释放后新记下的排队改名当成已删除
+                # Already removed under lock using refreshed roster; repeating outside lock with that roster would treat newly recorded queued renames as deleted.
                 drop_deleted=False,
             )
-        except Exception as exc:  # noqa: BLE001 - 补录各段互不连累
+        except Exception as exc:  # noqa: BLE001 - Recovery sections fail independently.
             logger.error("visit recovery: rename reconciliation failed: %r", exc)
             unsettled = _ALL_NAMES
     else:
         report.retired = False
         unsettled = _ALL_NAMES
     if unsettled is not _ALL_NAMES:
-        # 位置上那笔对不完账时，后面排队的改名也还没轮到：它们的名字同样没对完账，清除重放与
-        # 逐场补录都得跳过（按新名找不到还在旧名下的条目，会「成功」地什么都没做）
+        # If active-slot rename cannot reconcile, queued renames have not run either; their names are unreconciled too, so erasure replay and
+        # per-visit recovery must skip them (new-name lookup misses old-name entries and 'succeeds' doing nothing).
         try:
             held = pending_rename_names(*await read_roster_markers(
                 config_dir, "pending_rename", "pending_rename_queue"))
@@ -1453,26 +1453,26 @@ async def visit_spool_recovery(
     report.renamed = unsettled == frozenset()
     if names_settled:
         try:
-            # 还没对账清楚的改名只涉及它的两个名字：清除重放对这两个名字自己会推迟
+            # An unreconciled rename concerns its two names only; erasure replay defers those itself.
             report.forgets_clean = await replay_forgets(
                 config_dir, resolve_char_name=resolve, client=client, void_pending=void_pending,
                 lifecycle_guard=lifecycle_guard,
-                # 走到这里时角色配置已确认读得出（上面的严格检查），解析不出名字就是已删除
+                # Character config was confirmed readable above; an unresolved name here means deleted.
                 drop_deleted_chars=True,
             ) and report.renamed
         except Exception as exc:  # noqa: BLE001
             logger.error("visit recovery: forget replay failed: %r", exc)
             report.forgets_clean = False
     else:
-        # 改名还没对账清楚：清除与逐场补录都按角色当前名字找名册条目，此时条目可能还
-        # 在旧名下，清除会「成功」地什么都没删。留到下次启动（转录补传与举报不依赖名字）
+        # Rename unreconciled: erasure and per-visit recovery find roster entries by current name, while entries may remain
+        # under old name, making erasure 'succeed' without deleting anything. Defer until next startup (transcript upload/reporting do not depend on names).
         logger.warning("visit recovery: pending rename unresolved, forget replay and visit recovery deferred")
         report.forgets_clean = False
     await _cleanup_outboxes(config_dir, in_flight)
     sweep_now = time.time() if now is None else now
     try:
-        # 待传转录先不按龄回收：「自结束起 7 天仍失败则放弃」（设计 §4.7）——放弃之前本次启动
-        # 至少再传一次，很久没开 app 的用户不能一次补传都没试就丢掉转录
+        # Do not reclaim pending transcripts by age yet: 'abandon after 7 days of failed upload since ending' (design §4.7); this startup must
+        # try at least once before abandonment, so long-absent users do not lose transcripts without any recovery upload attempt.
         swept = await VisitSpool.sweep(config_dir, sweep_now, is_live=live, uploads="defer")
         report.swept = len(swept)
     except Exception as exc:  # noqa: BLE001
@@ -1488,41 +1488,41 @@ async def visit_spool_recovery(
                 resume_diary_commit=resume_diary_commit, client=client, report=report,
                 local_char_names=local_names,
             )
-        except Exception as exc:  # noqa: BLE001 - 一场坏了不挡其余场次
+        except Exception as exc:  # noqa: BLE001 - one broken session must not block the rest
             logger.warning("visit recovery: visit %s skipped: %r", visit_id, exc)
     pending = await _upload_pending(
         config_dir, live=in_flight, upload_transcript=upload_transcript,
         submit_report=submit_report, report=report, retry_later=retry_later,
     )
     try:
-        # 补传试过之后，仍没传上去、已过 7 天的待传转录才放弃。没有上传回调时一份都没试过：
-        # 不能没试就放弃，但也不能让敏感转录无限期留着、附转录的举报永远等下去——最多再留一个
-        # 保留期（按原来的年龄算，共 2 倍），之后同样按到期放弃
+        # Abandon still-unuploaded transcripts older than 7 days only after trying recovery upload. Without an upload callback none were tried:
+        # do not abandon untried, but sensitive transcripts cannot remain indefinitely or block attached reports forever; retain at most one extra
+        # retention period (twice original age in total), then abandon on expiry too.
         expiry_now = sweep_now if upload_transcript is not None else sweep_now - VISIT_SPOOL_RETENTION_DAYS * 86400
-        # 归属在删之前取：自带归属的封存文件一删，state.json 又读不到时就无从得知是哪个账号的
+        # Capture ownership before deletion: deleting the self-identifying sealed file with unreadable state.json loses account identity.
         upload_owners = {
             visit_id: await _pending_upload_owner(config_dir, visit_id)
             for visit_id in await VisitSpool.list_visit_ids(config_dir, (UPLOAD_JSON_SUFFIX, UPLOAD_JSONL_SUFFIX))
         }
         swept = await VisitSpool.sweep(config_dir, expiry_now, is_live=live, uploads="only")
         report.swept += len(swept)
-        # 放弃的待传转录：它排队的举报随后照常提交（设计 §4.7），先在举报文件里记下
-        # transcript_unavailable，不能当作从没有过待传转录
+        # Abandoned pending transcript: submit its queued report normally afterward (design §4.7), first marking
+        # transcript_unavailable in report file instead of treating it as though no transcript ever existed.
         spool_dir = config_dir / VISIT_SPOOL_DIRNAME
         for visit_id in sorted(_expired_upload_visits(swept)):
-            # 流水与封存文件按各自的 mtime 到期：只删掉其中一份时另一份下次仍可能传上去，
-            # 两份都没了才算这场转录不可用
+            # Log and sealed file expire by their own mtimes: if one remains, it may still upload next time;
+            # transcript becomes unavailable only once both are gone.
             remaining = [visit_path(spool_dir, visit_id, suffix) for suffix in (UPLOAD_JSON_SUFFIX, UPLOAD_JSONL_SUFFIX)]
             if await asyncio.to_thread(lambda paths=remaining: any(path.exists() for path in paths)):
                 continue
-            # 归属取删之前从封存文件 / state.json 记下的（共用电脑上另一账号的举报不记）
+            # Use ownership captured from sealed file / state.json before deletion (exclude other accounts' reports on shared computers).
             owner = upload_owners.get(visit_id) or await _state_owner(config_dir, visit_id)
             await _mark_report_transcript_unavailable(config_dir, visit_id, "expired", report, owner=owner)
-            # 这场的转录不会再来了：排队的举报本轮就交，不再等它
+            # Transcript will never arrive: submit queued report this pass without waiting.
             pending.discard(visit_id)
     except Exception as exc:  # noqa: BLE001
         logger.error("visit recovery: upload expiry failed: %r", exc)
-    # 另外独立扫描举报队列：转录已上传（.upload.json 已删）而举报还没提交的也继续提交
+    # Independently scan report queue too: continue reports whose transcript already uploaded (.upload.json deleted) but report remains pending.
     streams = set(await VisitSpool.list_visit_ids(config_dir, (UPLOAD_JSONL_SUFFIX,)))
     await _submit_reports(config_dir, skip=pending | streams, submit_report=submit_report, report=report,
                           retry_later=retry_later)

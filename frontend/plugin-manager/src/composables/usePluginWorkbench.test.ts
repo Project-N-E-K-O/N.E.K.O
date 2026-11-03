@@ -27,6 +27,25 @@ const plugins: PluginMeta[] = [
   },
 ]
 
+describe('usePluginWorkbench auto-start filters', () => {
+  it.each([
+    { query: 'is:manual', expected: ['omitted', 'disabled'] },
+    { query: 'is:manual_start', expected: ['omitted', 'disabled'] },
+    { query: 'is:auto', expected: ['enabled'] },
+    { query: 'is:auto_start', expected: ['enabled'] },
+  ])('matches $query only to the corresponding saved preferences', ({ query, expected }) => {
+    const workbench = usePluginWorkbench([
+      { ...plugins[0]!, id: 'omitted' },
+      { ...plugins[0]!, id: 'disabled', autoStart: false },
+      { ...plugins[0]!, id: 'enabled', autoStart: true },
+    ], { scope: `plugin-workbench-auto-start-filter-${query}` })
+
+    workbench.filterText.value = query
+
+    expect(workbench.filteredItems.value.map(item => item.id)).toEqual(expected)
+  })
+})
+
 describe('usePluginWorkbench scoped selection state', () => {
   it('reuses normalized and indexed item objects while query state changes', () => {
     const workbench = usePluginWorkbench(plugins, { scope: 'plugin-workbench-index-reuse-test' })

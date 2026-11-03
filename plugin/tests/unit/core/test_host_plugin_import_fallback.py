@@ -1,6 +1,6 @@
-"""覆盖 host 的用户插件安全导入兜底（_import_current_plugin_from_config / _import_plugin_module）。
+"""Cover the host's safe user-plugin import fallbacks (_import_current_plugin_from_config / _import_plugin_module).
 
-重点：缺失/拼错的子模块不能被插件包的 __init__.py 静默顶替成功。
+Missing or misspelled submodules must not silently succeed by substituting the plugin package's __init__.py.
 """
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ class _StubLogger:
 
 @pytest.fixture
 def _isolate_plugins_namespace():
-    """隔离兜底导入会修改的两个插件命名空间。"""
+    """Isolate the two plugin namespaces modified by fallback imports."""
     saved_path = sys.path[:]
     saved_modules = {
         key: value
@@ -141,7 +141,7 @@ def test_import_current_plugin_does_not_mask_missing_submodule(
     _isolate_plugins_namespace, tmp_path: Path
 ) -> None:
     config_path = _make_user_plugin(tmp_path)
-    # plugins.myplug.missing 不存在：兜底必须返回 None，而不是拿 __init__.py 顶替成功。
+    # plugins.myplug.missing does not exist: fallback must return None rather than falsely succeeding with __init__.py.
     mod = host_module._import_current_plugin_from_config("plugins.myplug.missing", config_path, _StubLogger())
     assert mod is None
     assert "plugins.myplug.missing" not in sys.modules

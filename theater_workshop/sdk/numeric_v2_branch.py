@@ -46,7 +46,7 @@ BRANCH_INPUT_TARGET_TOKENS = 12_000
 BRANCH_INPUT_HARD_LIMIT = 16_000
 _AUTHOR_INPUT_RESERVE_TOKENS = 4_000
 _CONTINUITY_ITEMS_PER_SCENE = 2
-# D7 的作者侧估算参数：正常一轮按约 2 点推进，单条入口最多允许额外 8 轮。
+# Author-side estimate for D7: assume normal progress of about 2 points per turn, with at most 8 additional turns per entry point.
 _NORMAL_METRIC_DELTA = 2
 _MAX_EXTRA_TURNS = 8
 _MAX_ENTRY_SCENARIOS = 64
@@ -115,12 +115,12 @@ def condition_and_complement(
         return {"type": "metric_compare", "metric": metric_id, "op": op, "value": value}
 
     if band_min > initial:
-        # 从较低初始状态向上推进时，更深的关系也应继续满足支线，不能因越过
-        # 中间 band 上界而回到原主线。
+        # When progressing upward from a lower initial state, deeper relationships should also continue to satisfy the branch, rather than returning to
+        # the main story after crossing an intermediate band's upper bound.
         branch = {"all": [compare(">=", band_min)]}
         complement = {"all": [compare("<", band_min)]}
     elif band_max < initial:
-        # 反向恶化路线同理：下降到目标状态后，继续下降仍属于该方向。
+        # The reverse deterioration route follows the same rule: continued decline after reaching the target state remains in that direction.
         branch = {"all": [compare("<=", band_max)]}
         complement = {"all": [compare(">", band_max)]}
     elif band_min == minimum:
@@ -178,7 +178,7 @@ class NumericV2BranchService:
             "eligible": not source_reasons,
             "blocking_reasons": list(dict.fromkeys(source_reasons)),
             "condition_candidates": [self._public_candidate(candidate) for candidate in candidates],
-            # 诊断只服务作者侧向导，不写入 Story Package，也不传给 Runtime/Evaluator。
+            # Diagnostics are only for the author-side wizard; they are not written to the Story Package or passed to Runtime/Evaluator.
             "pacing_diagnostics": [
                 self._public_pacing_diagnostic(candidate)
                 for candidate in candidates
@@ -380,8 +380,8 @@ class NumericV2BranchService:
             else:
                 if (item.get("contract") or {}).get("owner") == "player":
                     raise NumericV2BranchError("branch_continuity_placement_invalid")
-                # 连续性桥段由 Runtime 原文交付；这里直接合并作者事实，避免再把它
-                # 伪装成旧 must_deliver 或让 Actor 临场补写。
+                # The Runtime delivers continuity passages verbatim; merge the author's facts directly here to avoid
+                # disguising them as legacy must_deliver items or having the Actor write them on the fly.
                 bridge = transitions[index]["bridge_scene_narration"]
                 if item["text"] not in bridge:
                     transitions[index]["bridge_scene_narration"] = f"{bridge}{item['text']}"
@@ -420,7 +420,7 @@ class NumericV2BranchService:
             "original_conditions": complement,
             "scenes": scenes,
             "transitions": transitions,
-            # 支线节奏诊断只服务作者预览，不写入 Story Package。
+            # Branch pacing diagnostics are only for the author preview and are not written to the Story Package.
             "pacing_diagnostics": self._pacing_diagnostics(scenes),
             "continuity_items": deepcopy(plan["continuity_items"]),
             "continuity_handling": continuity,
@@ -534,7 +534,7 @@ class NumericV2BranchService:
             "transition_contract": self._transition_contract(
                 first_transition,
                 source_ids=[self._last_goal_fact_id(source)],
-                # 完成后禁言可以不拼接邀请，但普通出口仍保留对应接受输入。
+                # After completion, muting need not append an invitation, but ordinary exits still retain the corresponding acceptance input.
                 fallback_offer=(
                     str(first_transition.get("fallback_offer") or "").strip() or None
                 ),
@@ -546,8 +546,8 @@ class NumericV2BranchService:
         for index, scene in enumerate(scenes):
             target_id = scene_ids[index + 1] if index + 1 < len(scene_ids) else endpoint_node_id
             projected_goals = self._project_goals(scene_ids[index], scene["ordered_goals"])
-            # 支线模型没有单独输出 completion_facts。最后一个原子目标只能在前序目标
-            # 已经交付后成立，因此用它生成一项稳定完成事实，避免支线幕永远停在 playing。
+            # The branch model does not emit a separate completion_facts field. The final atomic objective is therefore satisfied only after the preceding objectives
+            # have been delivered; use it to generate a stable completion fact so the branch act does not remain stuck in playing forever.
             completion_fact_key = f"scene:{scene_ids[index]}:branch_complete"
             story.setdefault("fact_contract", {}).setdefault("facts", {})[
                 completion_fact_key
@@ -556,13 +556,13 @@ class NumericV2BranchService:
                 "visibility": "public",
                 "description": str(scene["ordered_goals"][-1]["description"]).strip(),
             }
-            # 分支的 expected_turns 同样只保留在作者诊断中，Runtime 推荐值固定为 3。
+            # The branch's expected_turns is likewise kept only in author diagnostics; the Runtime recommendation is fixed at 3.
             min_turns, recommended_turns = scene_turn_budget(scene["ordered_goals"])
             scene_context = self._character_scene_context(
                 scene["character_state"],
                 scene["catgirl_situation"],
             )
-            # 与主线一致：旧台账不覆盖本幕开场后的显式持物状态；出幕变化仍写入台账与转场。
+            # As in the main story: the old ledger does not override explicit item possession at the start of this act; changes on exit are still recorded in the ledger and transition.
             scene_prop_facts = [
                 f"关键道具“{str(prop.get('name') or '').strip()}”[{str(prop.get('id') or '').strip()}]："
                 f"用途为{str(prop.get('purpose') or '').strip()}。"
@@ -758,7 +758,7 @@ class NumericV2BranchService:
                     "behavior_hint": behavior,
                     "state_hint": state_hint,
                     "reachability": reachability["status"],
-                    # D7 以入口情景的 8 回合限制为准；旧 reachability 仅保留作兼容展示。
+                    # D7 follows the entry scenario's 8-turn limit; legacy reachability remains only for compatibility display.
                     "available": pacing_diagnostic["status"] != "blocked",
                     "pacing_status": pacing_diagnostic["status"],
                     "estimated_extra_turns": pacing_diagnostic.get("estimated_extra_turns"),
@@ -782,7 +782,7 @@ class NumericV2BranchService:
 
         entry = self._entry_scenarios(project, source_node_id, metric_id)
         if entry["unknown_reasons"]:
-            # 任一前序无法可靠还原就阻断，避免用猜测覆盖真实路线差异。
+            # Block if any preceding step cannot be reliably reconstructed, rather than guessing and overwriting real route differences.
             scenarios = [
                 {
                     "path": list(item["path"]),
@@ -823,7 +823,7 @@ class NumericV2BranchService:
             try:
                 turns = self._extra_turns_to_band(metric, band, item["value"])
             except (KeyError, TypeError, ValueError):
-                # 未通过 v2.2 限幅校验的草稿不能被作者侧估算器默认为可达。
+                # A draft that has not passed the v2.2 clamping validation must not be assumed reachable by the author-side estimator.
                 return {
                     "status": "blocked",
                     "warning_codes": ["branch_pacing_entry_unknown"],
@@ -1079,7 +1079,7 @@ class NumericV2BranchService:
                 not NumericV2BranchService._condition_holds(value, op, threshold)
                 for op, threshold in checks
             ):
-                # 当前 any 分支的这一项不可满足时，只淘汰该项，不影响其他入口项。
+                # If this item in the current any-branch cannot be satisfied, discard only this item; do not affect other entry items.
                 continue
             definition = metric_schema.get(metric_id) or {}
             try:
@@ -1088,7 +1088,7 @@ class NumericV2BranchService:
             except (KeyError, TypeError, ValueError):
                 return None
             if not minimum <= value <= maximum:
-                # 条件本身数学上不可能满足，只淘汰这条前序路线，不把它误报成未知。
+                # If the condition is mathematically impossible, discard only this preceding route; do not misreport it as unknown.
                 continue
             values.append(value)
         return values
@@ -1159,7 +1159,7 @@ class NumericV2BranchService:
             minimum = int(node.get("min_turns", 1))
             recommended_turns += max(minimum, int(node.get("recommended_turns", minimum)))
         return {
-            # 路线在来源幕完成后判定，因此来源幕本身也属于可积累数值的剧情机会。
+            # The route is evaluated after the source act is completed, so the source act itself is also a story opportunity in which numeric values can accumulate.
             "scene_count": len(prefix),
             "recommended_turns": recommended_turns,
         }
@@ -1182,12 +1182,12 @@ class NumericV2BranchService:
             increase = max(0, int(limits.get("increase", 0)))
             decrease = max(0, int(limits.get("decrease", 0)))
         except (TypeError, ValueError):
-            # 草稿尚未通过 v2.2 限幅校验时，只能显示未知，不擅自推导可达性。
+            # Until the draft passes the v2.2 clamping validation, show only unknown; do not infer reachability on your own.
             return {"status": "unknown", "scene_count": int((pacing or {}).get("scene_count", 0))}
         scene_count = int(pacing["scene_count"])
         recommended_turns = int(pacing["recommended_turns"])
 
-        # 正常节奏按每幕一次有效数值变化估算；理论范围才假设每回合都达到最大变化。
+        # Estimate normal pacing as one effective numeric change per act; the theoretical range assumes the maximum change is reached every turn.
         practical_min = max(minimum, initial - scene_count * decrease)
         practical_max = min(maximum, initial + scene_count * increase)
         theoretical_min = max(minimum, initial - recommended_turns * decrease)
@@ -1258,7 +1258,7 @@ class NumericV2BranchService:
                 raise NumericV2BranchError("branch_condition_unreachable")
             return {"mode": "fixed", "key": key}, [selected]
         if mode == "recommend" and candidates:
-            # 自动推荐只看正常节奏可达的 band；作者仍可明确选择“理论可达”的困难条件。
+            # Automatic recommendations consider only bands reachable at a normal pace; authors can still explicitly choose a difficult condition that is theoretically reachable.
             recommended = [
                 candidate
                 for candidate in candidates
@@ -1385,8 +1385,8 @@ class NumericV2BranchService:
                         },
                     )
             else:
-                # 旧作者草稿仍可被读取；新支线会把它显式投影成环境目标，
-                # 不再把 must_happen 写回新节点。
+                # Legacy author drafts can still be read; a new branch explicitly projects this into an environment objective,
+                # and no longer writes must_happen back to the new node.
                 for index, text in enumerate(beat.get("must_happen") or []):
                     self._append_continuity(continuity, seen, node_id, "legacy_goal", index, text)
             next_index = order.index(node_id) + 1
@@ -1551,14 +1551,14 @@ class NumericV2BranchService:
         public_candidates = [self._public_candidate(candidate) for candidate in condition_candidates]
         target = _nodes(story).get(str(original_route.get("target_node_id"))) or {}
         state_arc = deepcopy((project.get("authoring") or {}).get("character_state_arc") or {})
-        # 原普通结局的规划不是新支线的上游事实；已选终点的状态由 endpoint 单独提供。
+        # The original ordinary ending plan is not an upstream fact for the new branch; the selected endpoint's state is supplied separately by endpoint.
         state_arc.pop("ending_stage", None)
         upstream_ids = self._upstream_node_ids(project, str(source.get("id") or ""))
         state_arc["stages"] = [
             stage for stage in state_arc.get("stages") or []
             if isinstance(stage, Mapping) and stage.get("node_id") in upstream_ids
         ]
-        # 节点完善／修订更新的是 Story；旧大纲不能把已修正的状态重新注入支线。
+        # Improving/revising a node updates the Story; an old outline must not inject the corrected state back into the branch.
         nodes = _nodes(story)
         for stage in state_arc["stages"]:
             beat = (nodes.get(stage.get("node_id")) or {}).get("story_beat") or {}
@@ -1570,7 +1570,7 @@ class NumericV2BranchService:
                 "intro": deepcopy(story.get("intro") or {}),
                 "catgirl_binding": deepcopy(story.get("catgirl_binding") or {}),
                 "content_boundaries": deepcopy((project.get("setup") or {}).get("content_boundaries") or []),
-                # 关系弧只约束支线的关系上限和认知连续性，不进入正式 Story Package。
+                # The relationship arc constrains only the branch's relationship ceiling and continuity of knowledge; it does not enter the official Story Package.
                 "relationship_arc": deepcopy((project.get("authoring") or {}).get("relationship_arc") or {}),
                 "character_state_arc": state_arc,
                 "key_props": self._active_key_props(project, str(source.get("id") or "")),
@@ -1586,7 +1586,7 @@ class NumericV2BranchService:
             "skipped_mainline": deepcopy(skipped_nodes),
             "continuity_items": deepcopy(continuity_items),
             "condition_candidates": public_candidates,
-            # 把 8 回合作为作者侧软节奏目标传给支线模型，仍不改变运行时门槛。
+            # Pass 8 turns to the branch model as an author-side soft pacing target; this still does not change the runtime threshold.
             "author_intent": {
                 "direction": direction,
                 "scene_count": length,
@@ -1709,7 +1709,7 @@ class NumericV2BranchService:
             scene = deepcopy(dict(raw))
             for field in ("title", "summary", "opening_scene", "catgirl_situation", "transition_goal"):
                 scene[field] = self._required_text(scene.get(field), f"scenes[{index}].{field}")
-            # 新输出可显式提供叙事重心；旧草稿缺少时用已有过渡目标回填，保持同一运行时字段。
+            # New output can explicitly provide a narrative focus; if a legacy draft lacks one, fill it from the existing transition objective to keep the same runtime field.
             scene["narrative_focus"] = self._required_text(
                 scene.get("narrative_focus") or scene["transition_goal"],
                 f"scenes[{index}].narrative_focus",
@@ -1894,12 +1894,12 @@ class NumericV2BranchService:
             scene_warnings: list[str] = []
             if not has_player_exit:
                 if player_exit_goals:
-                    # 填了 player 目标但只写观察/等待时，单独提示作者补成可提交动作。
+                    # If a player objective is provided but only observation/waiting is specified, separately prompt the author to replace it with an actionable move.
                     scene_warnings.append("branch_natural_exit_player_action_not_actionable")
                 else:
                     scene_warnings.append("branch_natural_exit_player_action_missing")
             if not isinstance(declared_turns, int) or isinstance(declared_turns, bool):
-                # 旧支线草稿没有声明值时仍可预览，但不把结构下限伪装成模型估计。
+                # Legacy branch drafts without a declared value can still be previewed, but do not present the structural minimum as a model estimate.
                 scene_warnings.append("branch_expected_turns_unknown")
             if estimated_turns > 8:
                 scene_warnings.append("branch_expected_turns_exceed_8")
@@ -1970,7 +1970,7 @@ class NumericV2BranchService:
             state[field] = cls._text_list(
                 state.get(field),
                 f"{path}.{field}",
-                # 连续事实仍必填；没有额外状态限制时允许空边界，避免支线回填凑禁令。
+                # Continuity facts are still required; allow an empty boundary when there are no additional state constraints, avoiding branch backfill that invents prohibitions.
                 required=field == "continuity_from_previous",
             )
             if len(state[field]) > 4:
@@ -2021,7 +2021,7 @@ class NumericV2BranchService:
             if part
         )
         context = str(existing or "").strip()
-        # 与主线组装一致：仅移除完全相同的状态前缀，保留支线的独立补充和引用。
+        # As in main-story assembly: remove only identical state prefixes, preserving the branch's independent additions and references.
         while state_context and context.startswith(state_context):
             context = context[len(state_context):].lstrip()
         if context and context[-1:] not in "。！？":
@@ -2079,12 +2079,12 @@ class NumericV2BranchService:
             "tone": transition["tone"],
         }
         if trigger_fact_ids is not None:
-            # 支线幕的完成合同由构建器生成；路线必须绑定同一幕的事实，不能只靠文字原因猜测是否可离幕。
+            # The completion contract for a branch act is generated by the builder; the route must bind facts from that same act, and must not guess whether it can exit based only on a textual reason.
             contract["trigger_fact_ids"] = list(dict.fromkeys(
                 str(item).strip() for item in trigger_fact_ids if str(item).strip()
             ))
-        # 普通幕出口的邀请由作者侧合同负责，不能等 Runtime 临时拼接；终点为结局
-        # 的路线不传这两个字段，继续遵守“进入结局即结束”的合同。
+        # Invitations at ordinary-act exits are handled by the author-side contract and must not be assembled ad hoc by Runtime; routes whose endpoint is an ending
+        # omit these two fields and continue to follow the contract that entering an ending concludes the story.
         if fallback_offer:
             contract["fallback_offer"] = str(fallback_offer).strip()
         if accept_input is not None:

@@ -72,8 +72,11 @@ class VisitSocket:
         return [f for f in self.sent if str(f.get("type", "")).startswith("visit_") or f.get("type") == "chat_blocks"]
 
 
-def bind(token=TOKEN):
-    return {"action": "visit_bind", "csrf_token": token}
+def bind(token=TOKEN, *, desktop_run_id=None):
+    message = {"action": "visit_bind", "csrf_token": token}
+    if desktop_run_id is not None:
+        message["desktop_run_id"] = desktop_run_id
+    return message
 
 
 class FakeRuntime:
@@ -87,7 +90,7 @@ class FakeRuntime:
         return [dict(f) for f in self.frames]
 
     def replay_for_bind(self):
-        # 真运行时排进有序显示队列（见 test_bind_replay_rides_the_ordered_display_queue）
+        # Actual runtime enqueues ordered display (see test_bind_replay_rides_the_ordered_display_queue).
         self.replayed.append(self.bind_replay_frames())
 
     def request_finalize(self, reason):
@@ -167,7 +170,7 @@ async def run(socket, manager):
         await asyncio.gather(*list(display_socket._replays), return_exceptions=True)
 
 
-# ── 鉴权 ──────────────────────────────────────────────────────────────
+# ── Authentication ─────────────────────────────────────────────────────
 
 
 async def test_valid_bind_marks_the_connection_and_replays_the_invite(monkeypatch):
@@ -190,14 +193,14 @@ async def test_proxy_header_refuses_bind_even_from_loopback(monkeypatch, header)
     await run(socket, manager)
     assert not display_socket.is_bound(socket)
     assert socket.statuses() == ["VISIT_E_UNAUTHORIZED"] and socket.visit_frames() == []
-    # bind 自己被拒带 reason：页面只对它刷新 token 重发
+    # Bind rejection carries reason: page refreshes token/retries only that action.
     details = [json.loads(f["message"])["details"] for f in socket.sent if f.get("type") == "status"]
     assert details == [{"reason": "bind_refused"}]
     assert rt.replayed == []
 
 
 async def test_behind_proxy_refuses_a_rewritten_loopback_peer(monkeypatch):
-    # uvicorn proxy_headers 已把 client.host 改写成 127.0.0.1：只看 client.host 会放行
+    # uvicorn proxy_headers rewrote client.host to 127.0.0.1; checking client.host alone would permit it.
     monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
     manager = _ProtocolManager()
     rt = FakeRuntime([INVITE])
@@ -257,7 +260,239 @@ async def test_rebinding_after_reconnect_replays_the_invite_again(monkeypatch):
     assert rt.replayed == [[INVITE], [INVITE]]
 
 
-# ── 未绑定连接的输入 ───────────────────────────────────────────────────
+async def test_new_desktop_process_resets_pending_invite_but_renderer_reconnect_does_not(monkeypatch):
+    from main_routers.visit_router import credentials
+
+    manager = _ProtocolManager()
+    rt = FakeRuntime([INVITE])
+    install(monkeypatch, manager, visit_active=True, rt=rt)
+    resets = []
+    remote_cancels = []
+
+    async def reset_pending():
+        resets.append(True)
+        rt.frames = []
+        return 1
+
+    async def cancel_pending():
+        remote_cancels.append(True)
+        return 1
+
+    monkeypatch.setattr(runtime, "reset_pending_host_invites_for_desktop_restart", reset_pending)
+    monkeypatch.setattr(credentials, "cancel_pending_host_invites", cancel_pending)
+
+    await run(VisitSocket([bind(desktop_run_id="desktop-a")]), manager)
+    await run(VisitSocket([bind(desktop_run_id="desktop-a")]), manager)
+    assert len(rt.replayed) == 2
+    assert resets == [] and remote_cancels == []
+
+    await run(VisitSocket([bind(desktop_run_id="desktop-b")]), manager)
+    assert resets == [True]
+    assert rt.replayed[-1] == []
+    assert await display_socket.wait_desktop_restart_reset() is None
+    assert remote_cancels == [True]
+
+
+async def test_new_desktop_bind_does_not_wait_for_the_remote_cancel(monkeypatch):
+    from main_routers.visit_router import credentials
+
+    manager = _ProtocolManager()
+    rt = FakeRuntime([INVITE])
+    install(monkeypatch, manager, visit_active=True, rt=rt)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def reset_pending():
+        rt.frames = []
+        return 1
+
+    async def cancel_pending():
+        entered.set()
+        await release.wait()
+        return 1
+
+    monkeypatch.setattr(runtime, "reset_pending_host_invites_for_desktop_restart", reset_pending)
+    monkeypatch.setattr(credentials, "cancel_pending_host_invites", cancel_pending)
+
+    await run(VisitSocket([bind(desktop_run_id="desktop-a")]), manager)
+    socket = VisitSocket([bind(desktop_run_id="desktop-b")])
+    # The remote cancel is still in flight: the receive loop finishes the bind anyway,
+    # after the local reset (the old invitation is not replayed to the new page).
+    await asyncio.wait_for(run(socket, manager), 1.0)
+    await asyncio.wait_for(entered.wait(), 1.0)
+    assert getattr(socket, VISIT_SOCKET_BOUND_ATTR) is True
+    assert rt.replayed[-1] == []
+    # Room admission is what waits for the remote cancel.
+    admission = asyncio.create_task(display_socket.wait_desktop_restart_reset())
+    await asyncio.sleep(0.05)
+    assert not admission.done()
+    release.set()
+    assert await asyncio.wait_for(admission, 1.0) is None
+
+
+async def test_desktop_restart_cleanup_releases_lock_and_preserves_run_order(monkeypatch):
+    from main_routers.visit_router import credentials
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    order = []
+
+    async def reset_pending():
+        order.append("local")
+        return 0
+
+    async def cancel_pending():
+        order.append("remote:start")
+        if len([item for item in order if item == "remote:start"]) == 1:
+            entered.set()
+            await release.wait()
+        order.append("remote:end")
+        return 0
+
+    monkeypatch.setattr(runtime, "reset_pending_host_invites_for_desktop_restart", reset_pending)
+    monkeypatch.setattr(credentials, "cancel_pending_host_invites", cancel_pending)
+
+    await display_socket._reset_for_new_desktop_run(bind(desktop_run_id="desktop-a"))
+    # wait_for: a bind that waited for the blocked remote cancel would hang here instead of failing.
+    await asyncio.wait_for(display_socket._reset_for_new_desktop_run(bind(desktop_run_id="desktop-b")), 1.0)
+    await entered.wait()
+    assert not display_socket._desktop_lock().locked()
+    # The next run's bind only waits for its own local reset; its remote cancel queues behind the previous one.
+    await asyncio.wait_for(display_socket._reset_for_new_desktop_run(bind(desktop_run_id="desktop-c")), 1.0)
+    admission = asyncio.create_task(display_socket.wait_desktop_restart_reset())
+    # Give C's chain ample time: a remote cancel that did not queue behind B's would start here.
+    await asyncio.sleep(0.05)
+    assert order == ["local", "remote:start", "local"]
+    assert not admission.done()
+    release.set()
+    assert await admission is None
+    assert order == ["local", "remote:start", "local", "remote:end", "remote:start", "remote:end"]
+
+
+async def test_failed_desktop_restart_cleanup_retries_for_the_same_run(monkeypatch):
+    from main_routers.visit_router import credentials
+
+    attempts = 0
+
+    async def reset_pending():
+        return 0
+
+    async def cancel_pending():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("offline")
+        return 0
+
+    monkeypatch.setattr(runtime, "reset_pending_host_invites_for_desktop_restart", reset_pending)
+    monkeypatch.setattr(credentials, "cancel_pending_host_invites", cancel_pending)
+
+    await display_socket._reset_for_new_desktop_run(bind(desktop_run_id="desktop-a"))
+    await display_socket._reset_for_new_desktop_run(bind(desktop_run_id="desktop-b"))
+    assert await display_socket.wait_desktop_restart_reset() is None
+    await display_socket._reset_for_new_desktop_run(bind(desktop_run_id="desktop-b"))
+    assert attempts == 2
+
+
+async def test_failed_local_reset_keeps_the_display_socket_and_is_retried_by_admission(monkeypatch):
+    from main_routers.visit_router import credentials
+
+    manager = _ProtocolManager()
+    rt = FakeRuntime([INVITE])
+    install(monkeypatch, manager, visit_active=True, rt=rt)
+    local_attempts = []
+    remote_cancels = []
+
+    async def reset_pending():
+        local_attempts.append(True)
+        raise RuntimeError("local reset bug")
+
+    async def cancel_pending():
+        remote_cancels.append(True)
+        return 0
+
+    monkeypatch.setattr(runtime, "reset_pending_host_invites_for_desktop_restart", reset_pending)
+    monkeypatch.setattr(credentials, "cancel_pending_host_invites", cancel_pending)
+
+    await run(VisitSocket([bind(desktop_run_id="desktop-a")]), manager)
+    socket = VisitSocket([bind(desktop_run_id="desktop-b"), {"action": "visit_bind_probe"}])
+    await asyncio.wait_for(run(socket, manager), 1.0)
+    # The failure never escapes into the receive loop (that would end the whole chat socket with
+    # SERVER_ERROR): the bind completes and shows the visit that is in fact still live.
+    codes = [status.get("code") for status in manager.statuses]
+    assert getattr(socket, VISIT_SOCKET_BOUND_ATTR) is True
+    assert "SERVER_ERROR" not in codes and "SERVER_ERROR" not in socket.statuses()
+    assert "UNKNOWN_ACTION" in codes  # The next frame after the bind was still received.
+    assert rt.replayed[-1] == [INVITE]
+    # Room admission reruns the whole cleanup once and refuses while it keeps failing.
+    failure = await display_socket.wait_desktop_restart_reset()
+    assert isinstance(failure, credentials.VisitServersUnreachable)
+    assert failure.reason == "desktop_restart_reset"
+    assert len(local_attempts) == 2 and remote_cancels == []
+
+
+@pytest.mark.parametrize("raised, expected, reason", [
+    ("login", "VisitLoginRequired", None),
+    ("banned", "VisitBanned", "banned"),
+    ("offline", "VisitServersUnreachable", "network"),
+    ("bug", "VisitServersUnreachable", "desktop_restart_reset"),
+])
+async def test_desktop_restart_cleanup_returns_the_servers_error(monkeypatch, raised, expected, reason):
+    from main_routers.visit_router import credentials
+
+    attempts = 0
+
+    async def reset_pending():
+        return 0
+
+    async def cancel_pending():
+        nonlocal attempts
+        attempts += 1
+        if raised == "login":
+            raise credentials.VisitLoginRequired()
+        if raised == "banned":
+            raise credentials.VisitBanned("banned")
+        if raised == "offline":
+            raise credentials.VisitServersUnreachable("network")
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(runtime, "reset_pending_host_invites_for_desktop_restart", reset_pending)
+    monkeypatch.setattr(credentials, "cancel_pending_host_invites", cancel_pending)
+
+    await display_socket._reset_for_new_desktop_run(bind(desktop_run_id="desktop-a"))
+    await display_socket._reset_for_new_desktop_run(bind(desktop_run_id="desktop-b"))
+    failure = await display_socket.wait_desktop_restart_reset()
+    # Same contract as the startup reset: Servers errors reach the room endpoint as raised, anything else is
+    # an unfinished reset; one admission retries once.
+    assert type(failure).__name__ == expected
+    assert failure.reason == reason
+    assert attempts == 2
+
+
+async def test_desktop_restart_runtime_reset_only_ends_unused_host_invitations(monkeypatch):
+    def fake(side, phase, peer=None):
+        item = SimpleNamespace(side=side, phase=phase, peer=peer, exit_task=None, reasons=[])
+
+        def finalize(reason):
+            item.reasons.append(reason)
+            item.exit_task = asyncio.create_task(asyncio.sleep(0))
+            return True
+
+        item.request_finalize = finalize
+        return item
+
+    pending = fake("host", "pending")
+    ready = fake("host", "invite_ready")
+    consumed = fake("host", "joining", peer=object())
+    guest = fake("guest", "invite_ready")
+    monkeypatch.setattr(runtime, "live_runtimes", lambda: [pending, ready, consumed, guest])
+
+    assert await runtime.reset_pending_host_invites_for_desktop_restart() == 2
+    assert pending.reasons == ["route_end"] and ready.reasons == ["route_end"]
+    assert consumed.reasons == [] and guest.reasons == []
+
+
+# ── Input on unbound connections ────────────────────────────────────────
 
 
 async def test_unbound_text_while_visiting_is_refused_and_reaches_nobody(monkeypatch):
@@ -282,7 +517,7 @@ async def test_bound_text_while_visiting_goes_to_the_visit_only(monkeypatch):
 
 
 async def test_unbound_text_without_a_visit_is_ordinary_chat(monkeypatch):
-    # 串门不在飞：未 bind 的连接照常走普通聊天，不回任何串门状态
+    # No visit in flight: unbound connections use ordinary chat, returning no visit state.
     manager = _ProtocolManager()
     calls = install(monkeypatch, manager, visit_active=False)
     socket = VisitSocket([{"action": "stream_data", "input_type": "text", "data": "hi"}])
@@ -294,7 +529,7 @@ async def test_unbound_text_without_a_visit_is_ordinary_chat(monkeypatch):
 
 
 async def test_visit_line_after_the_route_released_is_refused_not_chatted(monkeypatch):
-    # 路由在 ending 放手、页面还没收到那一帧时发出的串门句：不漏进普通聊天，按「正在道别」拒掉
+    # Visit utterance sent after ending released route but before page receives frame: reject as saying goodbye, never leak into normal chat.
     manager = _ProtocolManager()
     calls = install(monkeypatch, manager, visit_active=False)
     socket = VisitSocket([bind(), {"action": "stream_data", "input_type": "text", "data": "hi",
@@ -308,7 +543,7 @@ async def test_visit_line_after_the_route_released_is_refused_not_chatted(monkey
 
 
 async def test_visit_line_is_refused_before_another_route_can_claim_it(monkeypatch):
-    # 页面漏了串门结束、别的路由（如游戏）已接管：写给串门的句子不能被它认领
+    # Page missed visit end and another route (e.g. game) took over; it must not claim visit-targeted utterances.
     manager = _ProtocolManager()
     install(monkeypatch, manager, visit_active=False)
     game_calls = []
@@ -337,7 +572,7 @@ async def test_visit_line_is_refused_before_another_route_can_claim_it(monkeypat
     assert status == [{"code": "VISIT_INPUT_REFUSED_WRAPUP", "details": {"request_id": "r10"}}]
 
 
-# ── 下行只发给已绑定的连接 ─────────────────────────────────────────────
+# ── Downstream delivery to bound connections only ────────────────────────
 
 
 class DownlinkManager:
@@ -350,8 +585,8 @@ class DownlinkManager:
         self.blocks.append(request_id)
         return True
 
-    async def mirror_assistant_output(self, text, *, metadata, request_id):
-        self.outputs.append(text)
+    async def mirror_assistant_output(self, text, *, metadata, request_id, finalize_turn=False):
+        self.outputs.append((text, finalize_turn))
 
 
 async def test_unbound_socket_gets_no_visit_downlink_until_it_binds(monkeypatch):
@@ -363,17 +598,17 @@ async def test_unbound_socket_gets_no_visit_downlink_until_it_binds(monkeypatch)
     assert await host.send_frame(INVITE) is True
     assert await host.render_chat_blocks([{"type": "text", "text": "x"}], request_id="q", source_name=NAME)
     await host.mirror_assistant_output("简述", metadata={}, request_id="s")
-    # 新窗口接走 display socket、还没 bind：邀请码、芯片、简述一律不发
+    # New window took display socket but not bound; send no invite code/chips/brief.
     mgr.websocket = b
     assert await host.send_frame(INVITE) is False
     assert await host.render_chat_blocks([{"type": "text", "text": "x"}], request_id="q2", source_name=NAME) is False
     await host.mirror_assistant_output("简述2", metadata={}, request_id="s2")
     chips = {"type": "chat_blocks", "blocks": [{"type": "text", "text": "x"}], "request_id": "q",
              "metadata": {"source": "system", "source_name": NAME, "passthrough": True}}
-    # 芯片直接写给校验过的那个连接（同 render_chat_blocks 的帧形状），不经管理器重读 websocket
+    # Write chip to exact validated connection (render_chat_blocks frame shape), never reread websocket via manager.
     assert a.sent == [INVITE, chips] and b.sent == []
-    # 回家简述是猫娘的普通发言（同一句也念出声、进 sync 流），§4.5 不要求按 bind 过滤
-    assert mgr.blocks == [] and mgr.outputs == ["简述", "简述2"]
+    # Return-home brief is ordinary neko speech (spoken and synced too); §4.5 requires no bind filter.
+    assert mgr.blocks == [] and mgr.outputs == [("简述", False), ("简述2", False)]
 
 
 class SwappingManager(DownlinkManager):
@@ -396,7 +631,7 @@ async def test_frames_are_checked_and_written_on_the_same_connection():
     unbound = VisitSocket([])
     bound = VisitSocket([])
     setattr(bound, VISIT_SOCKET_BOUND_ATTR, True)
-    # 第一次读到未 bind 的新连接、第二次读到已 bind 的旧连接：不能拿旧连接的校验结果写给新连接
+    # First read sees unbound new connection, second bound old connection; never authorize new using old connection validation.
     host = host_port.ManagerHost(NAME, SwappingManager(unbound, bound))
     assert await host.send_frame(INVITE) is False
     host = host_port.ManagerHost(NAME, SwappingManager(unbound, bound))
@@ -404,7 +639,7 @@ async def test_frames_are_checked_and_written_on_the_same_connection():
     assert unbound.sent == [] and bound.sent == []
 
 
-# ── debrief 芯片重放 ──────────────────────────────────────────────────
+# ── Debrief chip replay ─────────────────────────────────────────────────
 
 
 async def _pending(tmp_path, n, *, own_char_uid="uid-a", **changes):
@@ -427,7 +662,7 @@ async def test_bind_replays_owed_chips_of_this_character_only(monkeypatch, tmp_p
     socket = VisitSocket([bind()])
     await run(socket, manager)
     assert _chip_ids(socket) == [chips_request_id(vid(1)), chips_request_id(vid(2))]
-    # 崩溃场次先带「意外中断」
+    # Crashed visits first carry unexpected-interruption notice.
     assert socket.statuses() == ["VISIT_INTERRUPTED_LAST_TIME"]
     chips = [f for f in socket.sent if f.get("type") == "chat_blocks"][0]
     assert chips["metadata"] == {"source": "system", "source_name": NAME, "passthrough": True}
@@ -462,10 +697,10 @@ async def test_bind_replays_the_block_the_current_choice_owes(monkeypatch, tmp_p
     assert _chip_ids(socket) == [preview_request_id(vid(6)), preview_request_id(vid(10)),
                                  failed_request_id(vid(11), 2)]
     blocks = {f["request_id"]: f["blocks"] for f in socket.sent if f.get("type") == "chat_blocks"}
-    # 预览正文逐字放在 plain_text 块里（换行原样保留），零 LLM
+    # Preview body goes verbatim into plain_text, preserving newlines, no LLM.
     plain = [b["text"] for b in blocks[preview_request_id(vid(6))] if b.get("plain_text")]
     assert plain == [diary, "去了邻居家"]
-    # 写入中：「不记」置灰、「写入」可点，后面紧跟 committing 状态帧
+    # Committing: disable discard, allow write; committing-state frame follows immediately.
     buttons = {b["id"]: b for b in blocks[preview_request_id(vid(10))][-2]["buttons"]}
     assert buttons["forget"].get("disabled") is True and not buttons["confirm"].get("disabled")
     frames = [(f["visit_id"], f["phase"]) for f in socket.sent if f.get("type") == "visit_debrief"]
@@ -482,7 +717,7 @@ async def test_ack_is_per_connection_and_never_clears_the_flag(monkeypatch, tmp_
     first = VisitSocket([bind()])
     await run(first, manager)
     assert _chip_ids(first) == [rid]
-    # 页面渲染后回 ack；不对应当前该投递那一块的 ack（例如预览块的）不记
+    # Page acks after rendering; ignore acks not for current intended delivery block, e.g. preview blocks.
     await display_socket.handle_chip_ack(first, NAME, {"action": "visit_debrief_chip_ack", "visit_id": vid(7),
                                                        "request_id": "visit-debrief-preview:" + vid(7)})
     assert getattr(first, "neko_visit_delivered_debrief") == set()
@@ -490,10 +725,10 @@ async def test_ack_is_per_connection_and_never_clears_the_flag(monkeypatch, tmp_
                                                        "request_id": rid})
     assert getattr(first, "neko_visit_delivered_debrief") == {rid}
     assert (await spool.read_state())["debrief_chip_pending"] is True
-    # 同一条连接再 bind：已送达的不重推
+    # Rebind same connection: never resend acknowledged deliveries.
     await display_socket.replay_chips(first, NAME)
     assert _chip_ids(first) == [rid]
-    # 新连接（刷新 / 新窗口）首次 bind 照常重放
+    # First bind on new connection (refresh/new window) replays normally.
     second = VisitSocket([bind()])
     await run(second, manager)
     assert _chip_ids(second) == [rid]
@@ -507,11 +742,11 @@ async def test_ack_from_an_unbound_connection_is_ignored(monkeypatch, tmp_path):
                            "request_id": chips_request_id(vid(8))}])
     await run(socket, manager)
     assert getattr(socket, "neko_visit_delivered_debrief", set()) == set()
-    assert manager.statuses == []      # 不再当未知 action
+    assert manager.statuses == []      # No longer treated as unknown action.
 
 
 async def test_chips_of_a_visit_still_in_its_exit_flow_are_replayed(monkeypatch, tmp_path):
-    # 收尾时页面恰好重连没 bind：芯片标记已落盘、运行时还登记着，bind 时照样重放
+    # Page reconnects unbound during finalization: chip marker persisted and runtime registered; replay on bind normally.
     await _pending(tmp_path, 9, debrief_choice="ask_later")
     monkeypatch.setattr(runtime, "is_visit_live", lambda visit_id: True)
     manager = _ProtocolManager()
@@ -533,7 +768,7 @@ async def test_bind_replay_rides_the_ordered_display_queue(tmp_path, monkeypatch
         assert hrt.phase == "awaiting_accept"
         await settle()
         before = len(host.host.frames)
-        # 绑定那一刻同步排队：之后的阶段帧排在快照后面，旧快照不会落在新阶段之后
+        # Synchronously enqueue at bind, so later phase frames follow snapshot; old snapshots never arrive after newer phases.
         hrt.replay_for_bind()
         hrt._post_display({"type": "visit_later", "visit_id": hrt.visit_id})
         await settle()
@@ -547,7 +782,7 @@ async def test_bind_replay_rides_the_ordered_display_queue(tmp_path, monkeypatch
 
 
 async def test_ack_before_the_chip_reached_this_connection_is_ignored(monkeypatch, tmp_path):
-    # ack 先于重放到达：不能让这条连接跳过还没发给它的芯片
+    # Ack before replay cannot let connection skip an unsent chip.
     await _pending(tmp_path, 10, debrief_choice="ask_later")
     rid = chips_request_id(vid(10))
     socket = VisitSocket([])
@@ -571,7 +806,7 @@ async def test_chips_written_by_the_runtime_count_as_sent(tmp_path):
     assert getattr(socket, "neko_visit_sent_debrief") == {"visit-debrief:q"}
 
 
-# ── 评审第 3 轮：分派途中路由换成串门 ───────────────────────────────────
+# ── Review round 3: route switches to visit during dispatch ───────────────
 
 
 async def test_dispatch_carries_whether_the_connection_is_bound(monkeypatch):
@@ -598,7 +833,7 @@ async def test_dispatch_carries_whether_the_connection_is_bound(monkeypatch):
     await run(b, manager)
     assert seen[0] is a and seen[1] is b
     assert not display_socket.is_bound(seen[0]) and display_socket.is_bound(seen[1])
-    assert DISPLAY_SOCKET_CONNECTION.get() is None        # 分派之后复位
+    assert DISPLAY_SOCKET_CONNECTION.get() is None        # Reset after dispatch.
 
 
 async def test_visit_refuses_input_dispatched_from_an_unbound_connection():
@@ -628,11 +863,11 @@ async def test_visit_refuses_input_dispatched_from_an_unbound_connection():
             assert await runtime.route_stream_message(NAME, {"data": "x", "request_id": "r9"}) is True
         finally:
             DISPLAY_SOCKET_CONNECTION.reset(token)
-        # 未授权提示发回发起输入的那条连接，不经运行时（mgr.websocket）
+        # Unauthorized notice goes to initiating input connection, bypassing runtime mgr.websocket.
         assert rt.accepted == [] and rt.statuses == []
         status = [json.loads(f["message"]) for f in unbound.sent if f.get("type") == "status"]
         assert status == [{"code": "VISIT_E_UNAUTHORIZED", "details": {"request_id": "r9"}}]
-        # 没经 display socket 分派（变量未设置）或已绑定：照常交给串门
+        # Not dispatched via display socket (variable unset) or already bound: route to visit normally.
         assert await runtime.route_stream_message(NAME, {"data": "y"}) is True
         bound = VisitSocket([])
         setattr(bound, VISIT_SOCKET_BOUND_ATTR, True)
@@ -646,14 +881,14 @@ async def test_visit_refuses_input_dispatched_from_an_unbound_connection():
         runtime._runtimes.pop(NAME, None)
 
 
-# ── 评审第 4 轮：按社区账号分区 ─────────────────────────────────────────
+# ── Review round 4: partition by community account ────────────────────────
 
 
 async def test_chips_of_another_account_or_without_login_are_not_replayed(monkeypatch, tmp_path):
     from main_routers.visit_router import accounts
 
-    await _pending(tmp_path, 11, debrief_choice="ask_later")                     # OWN_A 的场次
-    await _pending(tmp_path, 12, debrief_choice="ask_later", own_uid=OWN_B)      # 另一账号的场次
+    await _pending(tmp_path, 11, debrief_choice="ask_later")                     # OWN_A's visit.
+    await _pending(tmp_path, 12, debrief_choice="ask_later", own_uid=OWN_B)      # Another account's visit.
     manager = _ProtocolManager()
     install(monkeypatch, manager)
     socket = VisitSocket([bind()])
@@ -663,14 +898,14 @@ async def test_chips_of_another_account_or_without_login_are_not_replayed(monkey
     async def nobody():
         return None
 
-    monkeypatch.setattr(accounts, "own_visit_uid", nobody)                       # 已登出
+    monkeypatch.setattr(accounts, "own_visit_uid", nobody)                       # Logged out.
     logged_out = VisitSocket([bind()])
     await run(logged_out, manager)
     assert _chip_ids(logged_out) == []
 
 
 async def test_replay_stops_when_the_account_changes_midway(monkeypatch, tmp_path):
-    # 扫描 / 发送途中登出或换账号：不再把上一个账号的芯片发给这一页
+    # Logout/account switch during scan/send: stop sending prior account's chips to this page.
     from main_routers.visit_router import accounts
 
     await _pending(tmp_path, 13, debrief_choice="ask_later")
@@ -679,7 +914,7 @@ async def test_replay_stops_when_the_account_changes_midway(monkeypatch, tmp_pat
 
     async def switching():
         calls["n"] += 1
-        return OWN_A if calls["n"] <= 3 else OWN_B      # 扫描时、逐场检查、拿锁后复查仍是 A，之后换成 B
+        return OWN_A if calls["n"] <= 3 else OWN_B      # Still A during scan/per-visit/locked recheck, then switches to B.
 
     monkeypatch.setattr(accounts, "own_visit_uid", switching)
     socket = VisitSocket([])
@@ -702,21 +937,21 @@ async def test_recovery_interrupted_status_is_pinned_to_the_bound_connection(mon
         @property
         def websocket(self):
             Swapping.reads += 1
-            return bound if Swapping.reads == 1 else unbound      # 校验时是已 bind 的，之后被换掉
+            return bound if Swapping.reads == 1 else unbound      # Bound during validation, replaced afterward.
 
         @websocket.setter
         def websocket(self, _v):
             pass
 
         async def send_status(self, message):
-            unbound.sent.append({"type": "status", "message": message})   # 走管理器会写到新连接上
+            unbound.sent.append({"type": "status", "message": message})   # Manager would write to new connection.
             return True
 
     mgr = Swapping(bound)
     monkeypatch.setattr(host_port.ManagerHost, "for_character",
                         classmethod(lambda cls, name: host_port.ManagerHost(name, mgr)))
     assert await debrief.render_chips(vid(19), own_char=NAME, status="interrupted") is False
-    assert Swapping.reads >= 2                     # 过了 bind 与账号核对、确实走到了写入
+    assert Swapping.reads >= 2                     # Passed bind/account checks and actually reached writing.
     assert all(f.get("type") != "status" for f in unbound.sent)
 
 
@@ -736,7 +971,7 @@ async def test_recovery_sends_no_chips_when_the_interrupted_notice_failed(monkey
     assert fake.blocks == []
 
 
-# ── 评审第 9 轮 ───────────────────────────────────────────────────────
+# ── Review round 9 ──────────────────────────────────────────────────────
 
 
 async def test_repeated_bind_on_the_same_connection_replays_once(monkeypatch):
@@ -756,7 +991,7 @@ async def test_crash_notice_then_account_change_sends_no_chip(monkeypatch, tmp_p
 
     async def switching():
         calls["n"] += 1
-        return OWN_A if calls["n"] <= 3 else OWN_B      # 扫描、逐场检查、拿锁后复查是 A，写完提示后换成 B
+        return OWN_A if calls["n"] <= 3 else OWN_B      # A during scan/per-visit/locked checks, switches B after notice write.
 
     monkeypatch.setattr(accounts, "own_visit_uid", switching)
     socket = VisitSocket([])
@@ -778,7 +1013,7 @@ async def test_runtime_statuses_only_reach_a_bound_connection():
     assert bound.statuses() == ["VISIT_VOICE_UNAVAILABLE"]
 
 
-# ── 评审第 10 轮 ──────────────────────────────────────────────────────
+# ── Review round 10 ─────────────────────────────────────────────────────
 
 
 class _StatusStuckSocket(VisitSocket):
@@ -803,7 +1038,7 @@ async def test_crash_notice_not_written_sends_no_chip(monkeypatch, tmp_path):
     socket = _StatusStuckSocket([])
     setattr(socket, VISIT_SOCKET_BOUND_ATTR, True)
     await display_socket.replay_chips(socket, NAME)
-    assert _chip_ids(socket) == []          # 提示与芯片都留给下次 visit_bind
+    assert _chip_ids(socket) == []          # Leave notice/chip for next visit_bind.
 
 
 async def test_crash_notice_written_still_sends_its_chip(monkeypatch, tmp_path):
@@ -831,7 +1066,7 @@ async def _recovery_host(monkeypatch):
 
 
 async def test_recovery_skips_a_visit_of_another_account(monkeypatch, tmp_path):
-    # 启动补录逐场回调、不分账号：B 账号的页面已 bind 时，A 的中断提示与芯片都不发给它
+    # Startup backfill callbacks span accounts: bound B page receives neither A's interruption notice nor chips.
     from main_routers.visit_router import debrief
 
     await _pending(tmp_path, 21, finalized="crash", own_uid=OWN_B)
@@ -865,7 +1100,7 @@ async def test_recovery_account_change_during_the_notice_sends_no_chip(monkeypat
 
     async def switching():
         calls["n"] += 1
-        return OWN_A if calls["n"] == 1 else OWN_B      # 核对时是 A，写完提示后换成 B
+        return OWN_A if calls["n"] == 1 else OWN_B      # A at validation, B after notice write.
 
     monkeypatch.setattr(accounts, "own_visit_uid", switching)
     fake = await _recovery_host(monkeypatch)
@@ -875,7 +1110,7 @@ async def test_recovery_account_change_during_the_notice_sends_no_chip(monkeypat
 
 
 async def test_crashed_generation_replays_chips_with_the_interrupted_notice(monkeypatch, tmp_path):
-    # generating:diary 投递的也是芯片：崩溃场次照样先发「意外中断」，与启动补录同一口径
+    # generating:diary also delivers chips; crashed visits first send unexpected interruption, matching startup backfill.
     await _pending(tmp_path, 21, finalized="crash", debrief_choice="generating:diary")
     manager = _ProtocolManager()
     install(monkeypatch, manager)

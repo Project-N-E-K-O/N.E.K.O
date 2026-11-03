@@ -54,7 +54,7 @@ def removed_characters_recorder(
     ) -> int:
         replaced = list(replaced)
         if not removed and not renamed and not replaced and not (config_dir / "visit_peers.json").exists():
-            # 只带来了新角色、这台机器又没有串门名册：没有要标的改名，不加载串门模块
+            # If only new characters arrived and this machine has no visit roster, there are no renames to mark; do not load the visit module
             return 0
         from main_logic.visit.char_lifecycle import (
             record_handed_over_names_sync,
@@ -62,8 +62,8 @@ def removed_characters_recorder(
             record_renamed_characters_sync,
         )
 
-        # 先记删除：它要读当前的改名标记，判断被删角色的另一个名字。两步互不连累：
-        # 一步写盘失败（文件被短暂占住）不能让另一步也不记，失败最后再交给导入方记日志
+        # Record deletions first: read the current rename markers to determine the deleted character's other name. Keep the steps independent:
+        # a failed disk write (brief file contention) must not prevent the other record; let the importer log failures at the end
         recorded = 0
         failure: Exception | None = None
         try:
@@ -75,7 +75,7 @@ def removed_characters_recorder(
         except Exception as exc:  # noqa: BLE001
             failure = failure or exc
         try:
-            # 最后标交出去的名字：刚写下的改名标记与之前没对完账的都要看
+            # Finally mark transferred names, checking both newly written rename markers and earlier unreconciled ones
             recorded += record_handed_over_names_sync(config_dir, fresh_names, [*removed, *replaced])
         except Exception as exc:  # noqa: BLE001
             failure = failure or exc

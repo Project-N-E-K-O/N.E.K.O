@@ -76,8 +76,8 @@ async def test_summary_reads_both_sides_from_memory_even_with_memory_off(tmp_pat
         prompt = host.clients[0].prompts[-1]
         assert "主人家开场。" in prompt and "客人开场，我带了小鱼干。" in prompt
         assert prompt.index("主人家开场。") < prompt.index("客人开场")
-        assert "======以下为" in prompt                        # 对端句在数据块里
-        assert not [p for p in opened if p.endswith(".jsonl")]   # 简述不读 spool
+        assert "======以下为" in prompt                        # The peer's sentence is inside the data block
+        assert not [p for p in opened if p.endswith(".jsonl")]   # The summary does not read spool
         assert "今天和客人聊了小鱼干。" in host.host.outputs
         assert not [e for e in host.host.events if e.startswith("blocks:")]
     finally:
@@ -115,7 +115,7 @@ async def test_chips_and_ask_later_only_with_memory_on(tmp_path, monkeypatch):
         assert buttons[1]["variant"] == "danger" and all(b["action"] == "visit_debrief_choice" for b in buttons)
         state = await host.rt.spool.read_state()
         assert state["debrief_choice"] == "ask_later" and state["debrief_chip_pending"] is True
-        # 简述与芯片都不写私聊记忆：mirror 元数据显式关掉记忆
+        # Neither summaries nor chips write private-chat memory: mirror metadata explicitly disables memory
         assert host.host.user_inputs == []
     finally:
         for g in gates:
@@ -132,14 +132,14 @@ async def test_a_stalled_debrief_state_write_does_not_hold_the_exit(tmp_path, mo
     real_mark = rt.spool.mark_debrief_pending
 
     async def stalled_mark():
-        await stuck.wait()                                    # 写 state.json 卡在磁盘上
+        await stuck.wait()                                    # Writing state.json is blocked on disk
         return await real_mark()
 
     rt.spool.mark_debrief_pending = stalled_mark
     try:
         rt.request_finalize("route_end")
-        await asyncio.wait_for(finish(rt, clock), 15)         # 退出流程照常走完（交还、teardown）
-        assert [b for b in host.host.blocks if b[1] == f"visit-debrief:{rt.visit_id}"]  # 芯片照常出
+        await asyncio.wait_for(finish(rt, clock), 15)         # Exit proceeds normally (handoff, teardown)
+        assert [b for b in host.host.blocks if b[1] == f"visit-debrief:{rt.visit_id}"]  # The chip still appears normally
         assert not rtm.is_visit_route_active("Host")
     finally:
         stuck.set()
@@ -180,15 +180,15 @@ async def test_render_chips_recovery_callback(monkeypatch):
     from main_logic.visit import local_chars
 
     monkeypatch.setattr(local_chars, "resolve_char_name", resolve)
-    # 场次归属的真实读盘见 test_visit_socket_bind 的补录用例
+    # Actual disk reads for session ownership are covered by test_visit_socket_bind recovery cases
     monkeypatch.setattr(debrief, "_visit_owner", owner)
-    # 投递哪一块按 state.json 的当前选择定（芯片 / 预览块 / 失败块，见 test_visit_debrief_choice）
+    # Choose the delivered block from state.json's current selection (chip / preview / failure; see test_visit_debrief_choice)
     monkeypatch.setattr(debrief, "_spool", lambda _visit_id: _Spool())
     monkeypatch.setattr(accounts, "own_visit_uid", own_uid)
     fake = FakeHost("Host")
     monkeypatch.setattr(host_port.ManagerHost, "for_character", classmethod(lambda cls, name: fake))
     assert await debrief.render_chips("v" * 22, own_char="Host", status="interrupted") is True
-    # 「意外中断」与芯片走同一个锁定连接的出口（send_frame），不经会重读 mgr.websocket 的 send_status
+    # 'Unexpected interruption' and chips share the pinned-connection output (send_frame), bypassing send_status, which rereads mgr.websocket
     status = [json.loads(f["message"])["code"] for f in fake.frames if f.get("type") == "status"]
     assert status == ["VISIT_INTERRUPTED_LAST_TIME"] and fake.status_codes() == []
     assert fake.blocks[0][1] == "visit-debrief:" + "v" * 22
@@ -199,7 +199,7 @@ async def test_render_chips_recovery_callback(monkeypatch):
 async def test_render_chips_waits_for_a_bound_display(monkeypatch):
     from main_routers.visit_router import host_port
 
-    # 启动补录通常早于页面连上并 visit_bind：芯片与「意外中断」都留给 bind 重放，不先发半套
+    # Startup recovery usually precedes page connection and visit_bind: leave both chips and 'unexpected interruption' for bind replay rather than sending half early
     fake = FakeHost("Host")
     fake.bound = False
     monkeypatch.setattr(host_port.ManagerHost, "for_character", classmethod(lambda cls, name: fake))
@@ -238,7 +238,7 @@ async def test_a_failed_roster_write_keeps_the_visit_memory(tmp_path, monkeypatc
     host, guest, wire, clock, gates = await _visit_with_lines(tmp_path, monkeypatch)
     try:
         assert host.rt.memory_enabled is True and host.rt.spool.is_open
-        await wait_for(lambda: host.rt.spool_lines >= 2)   # 名册写不进，转录照样逐句落盘
+        await wait_for(lambda: host.rt.spool_lines >= 2)   # Even if roster writes fail, transcripts still persist sentence by sentence
     finally:
         for g in gates:
             g.set()
@@ -258,7 +258,7 @@ async def test_no_diary_chip_when_nothing_reached_the_spool(tmp_path, monkeypatc
         assert host.rt.journal.lines() and host.rt.spool_lines == 0
         host.rt.request_finalize("route_end")
         await finish(host.rt, clock)
-        # 上传流水有句子，但日记读的 spool 一句没有：不出芯片
+        # The upload log contains sentences but the diary's spool is empty: produce no chip
         assert not [b for b in host.host.blocks if b[1] == f"visit-debrief:{host.rt.visit_id}"]
     finally:
         for g in gates:
@@ -273,7 +273,7 @@ async def test_the_debrief_reads_lines_still_buffered_before_the_header(tmp_path
     real_open = transcript_upload.UploadJournal.open
 
     async def slow_open(self, **kw):
-        await gate.wait()                                     # 上传头一直写不完（磁盘卡住）
+        await gate.wait()                                     # The upload header never finishes writing (blocked disk)
         await real_open(self, **kw)
 
     monkeypatch.setattr(transcript_upload.UploadJournal, "open", slow_open)
@@ -289,10 +289,10 @@ async def test_the_debrief_reads_lines_still_buffered_before_the_header(tmp_path
     rt = host.rt
     try:
         await wait_for(lambda: len([r for r in rt._journal_backlog if r.get("kind") == "line"]) >= 2)
-        assert not rt.journal.lines()                         # 台词都还在积压里
+        assert not rt.journal.lines()                         # All dialogue remains in the backlog
         rt.request_finalize("route_end")
         await finish(rt, clock)
-        assert any("小鱼干" in p for p in host.clients[0].prompts)  # 简述照样看得到这场的话，不退成通用文案
+        assert any("小鱼干" in p for p in host.clients[0].prompts)  # The summary still sees this session's speech rather than falling back to generic wording
     finally:
         gate.set()
         hgate.set()
@@ -318,7 +318,7 @@ async def test_the_debrief_state_write_is_registered_as_soon_as_it_starts(tmp_pa
         rt.request_finalize("route_end")
         await asyncio.wait_for(reached.wait(), 15)
         await asyncio.sleep(0)
-        # 还在等它（没到 5 s 的上限）时就已登记：退出流程此刻被取消也不会漏掉它
+        # Register while still waiting, before the 5 s limit: cancellation of exit now must not lose this task
         assert [t for t in rtm._detached if not t.done()
                 and getattr(t.get_coro(), "__qualname__", "").endswith("stalled_mark")]
     finally:
@@ -339,37 +339,37 @@ async def test_chips_are_offered_when_a_slow_spool_append_lands(tmp_path, monkey
 
     async def append(self, line):
         if line.get("from") != "own_human":
-            raise OSError("disk full")                        # 猫的句子没写进 spool：spool 里原本一句没有
+            raise OSError("disk full")                        # The cat's sentence never reached spool, which was initially empty
         return await real_append(self, line)
 
     def append_sync(self, data):
-        release.wait(10)                                      # 亲人那句已提交到写盘线程，磁盘卡着
+        release.wait(10)                                      # The user's sentence was submitted to the disk-writing thread, but disk is blocked
         return real_append_sync(self, data)
 
     monkeypatch.setattr(VisitSpool, "append", append)
     monkeypatch.setattr(VisitSpool, "_append_sync", append_sync)
-    monkeypatch.setattr(rtm, "_CLOSE_WAIT_S", 0.2)           # 这句持有预留：关闭通道别等满上限
+    monkeypatch.setattr(rtm, "_CLOSE_WAIT_S", 0.2)           # This sentence holds a reservation: channel closing must not wait for the full limit
     monkeypatch.setattr(rtm, "_RESERVED_SEND_MAX_S", 0.2)
-    monkeypatch.setattr(rtm, "_SEAL_MAX_S", 0.3)             # spool 收尾排在这句后面：到点转后台
+    monkeypatch.setattr(rtm, "_SEAL_MAX_S", 0.3)             # Spool finalization follows this sentence: move to background at the deadline
     host, guest, wire, clock, gates = await _visit_with_lines(tmp_path, monkeypatch)
     host.replies.queue = [["我回来啦。"], ["聊得很开心。"]]
     rt = host.rt
     real_settle = rt.settle_spool_appends
 
     async def settle_then_release(timeout):
-        asyncio.get_running_loop().call_later(0.1, release.set)  # 简述开始等的时候它才写完
+        asyncio.get_running_loop().call_later(0.1, release.set)  # It finishes writing only when the summary starts waiting
         return await real_settle(timeout)
 
     rt.settle_spool_appends = settle_then_release
     try:
-        sending = asyncio.ensure_future(rtm.route_stream_message("Host", {   # 它在等这句的 spool 写入
+        sending = asyncio.ensure_future(rtm.route_stream_message("Host", {   # It is waiting for this sentence's spool write
             "input_type": "text", "data": "亲人说一句", "source": "neko_visit:guest_cat"}))
         await wait_for(lambda: any(r["from"] == "own_human" for r in rt.journal.lines()))
         assert rt.spool_lines == 0
         rt.request_finalize("route_end")
         await finish(rt, clock)
         assert rt.spool_lines == 1
-        assert [b for b in host.host.blocks if b[1] == f"visit-debrief:{rt.visit_id}"]  # 等它落定再判断：芯片照出
+        assert [b for b in host.host.blocks if b[1] == f"visit-debrief:{rt.visit_id}"]  # Wait for settlement before deciding: still produce the chip
         await asyncio.gather(sending, return_exceptions=True)
     finally:
         release.set()
@@ -383,16 +383,16 @@ async def test_the_debrief_turn_sees_only_its_bounded_record(tmp_path, monkeypat
     host.replies.queue = [["我回来啦。"], ["聊得很开心。"]]
     client = host.clients[0]
     try:
-        host.rt.request_finalize("recall")                   # 自然收尾：仪式句也走一轮 LLM
+        host.rt.request_finalize("recall")                   # Natural ending: the ceremonial sentence also uses one LLM turn
         await finish(host.rt, clock)
         system = client._conversation_history[0].content
-        debrief_seen = client.seen[-1]                       # 最后一轮 = 简述
-        assert debrief_seen == [system]                      # 不带近期历史，只有指令 + 有预算的记录块
+        debrief_seen = client.seen[-1]                       # Last turn = summary
+        assert debrief_seen == [system]                      # No recent history, only instructions + budgeted record block
         ritual_seen = client.seen[-2]
-        assert ritual_seen == [system]                       # 仪式句同样不带这场的历史（对端原话无从复述）
+        assert ritual_seen == [system]                       # The ceremonial sentence also omits session history, preventing repetition of the peer's exact words
         left = [getattr(m, "content", "") for m in client._conversation_history]
-        assert "我回来啦。" not in left and "聊得很开心。" not in left        # 两轮都不留在历史里
-        assert left[0] == system and len(left) >= len(ritual_seen)            # 简述轮把原历史原样放回
+        assert "我回来啦。" not in left and "聊得很开心。" not in left        # Neither turn remains in history
+        assert left[0] == system and len(left) >= len(ritual_seen)            # The summary turn restores the original history unchanged
     finally:
         for g in gates:
             g.set()
@@ -420,7 +420,7 @@ async def test_startup_replay_rechecks_the_account_before_rendering(monkeypatch)
 
     class _Spool:
         async def read_state(self):
-            account["uid"] = "uid-other"  # 读 state 的这段 await 里换了账号
+            account["uid"] = "uid-other"  # The account changes during this state-reading await
             return {"visit_id": "v" * 22, "debrief_choice": "ask_later", "own_uid": "uid-own",
                     "own_char_uid": "char-host"}
 

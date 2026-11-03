@@ -1,4 +1,4 @@
-"""出行规划 router — 路线 + 天气综合建议。"""
+"""Trip-planning router: routes and combined weather advice."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from .._routing import RoutingService, format_distance, format_duration
 
 
 class TripRouter(PluginRouter):
-    """trip_advice entry：路线规划 + 天气综合出行建议。"""
+    """trip_advice entry: route planning and combined weather-based travel advice."""
 
     def __init__(self):
         super().__init__(name="trip")
@@ -56,7 +56,7 @@ class TripRouter(PluginRouter):
         if not destination.strip():
             return location_unavailable_result("error.no_location", i18n)
 
-        # 起终点彼此独立，并发解析，避免把两段 geocoding 延迟串起来。
+        # Resolve origin and destination independently and concurrently to avoid serial geocoding delays.
         (origin_loc, origin_err), (dest_loc, dest_err) = await asyncio.gather(
             plugin._resolve_location(
                 origin or None,
@@ -72,10 +72,10 @@ class TripRouter(PluginRouter):
         if not dest_loc:
             return location_unavailable_result(dest_err, i18n)
 
-        # 直线距离
+        # Straight-line distance.
         dist_km = haversine_km(origin_loc["lat"], origin_loc["lon"], dest_loc["lat"], dest_loc["lon"])
 
-        # 路线规划
+        # Route planning.
         svc = RoutingService(plugin._cfg)
         mode_raw = mode.strip().lower() if mode else ""
         _VALID_MODES = {"transit", "walking", "bicycling", "driving"}
@@ -123,7 +123,7 @@ class TripRouter(PluginRouter):
                 location=dest_loc,
             )
 
-        # 构建路线摘要
+        # Build the route summary.
         route_summaries: List[Dict[str, Any]] = []
         for route in routing.routes:
             entry: Dict[str, Any] = {
@@ -145,13 +145,13 @@ class TripRouter(PluginRouter):
                 ]
             route_summaries.append(entry)
 
-        # 天气综合建议
+        # Combined weather advice.
         weather_tips = _build_weather_tips(origin_weather, dest_weather, origin_loc, dest_loc, i18n, plugin)
 
-        # 出行方式建议
+        # Transport mode advice.
         mode_advice = _build_mode_advice(dist_km, origin_weather, dest_weather, i18n)
 
-        # 总结
+        # Summary.
         summary_parts = [
             f"{origin_loc['city']} → {dest_loc['city']}",
             f"{i18n.t('trip.distance')}: {dist_km:.1f}km",
@@ -165,7 +165,7 @@ class TripRouter(PluginRouter):
             summary_parts.append(mode_assumption)
         summary_parts.extend(weather_tips)
 
-        # 推送出行规划卡片到聊天框
+        # Push the trip-planning card to chat.
         card_lines = [f"📍 {origin_loc['city']} → {dest_loc['city']}  ({dist_km:.1f}km)"]
         for r in route_summaries[:3]:
             card_lines.append(f"{_mode_label(r['mode'], i18n)}  {r['distance']}  ⏱{r['duration']}")
@@ -237,11 +237,11 @@ def _build_weather_tips(
     o_temp = o_cur.get("apparent_temperature")
     d_temp = d_cur.get("apparent_temperature")
 
-    # 任一地有雨 → 带伞
+    # Rain at either location -> bring an umbrella.
     if o_code in RAIN_CODES or d_code in RAIN_CODES:
         tips.append("🌂 " + i18n.t("advice.rain"))
 
-    # 温差大 → 提醒
+    # Large temperature difference -> remind the user.
     if o_temp is not None and d_temp is not None:
         diff = abs(o_temp - d_temp)
         if diff >= DEFAULT_ADVICE_POLICY.notable_temperature_difference_c:
@@ -256,7 +256,7 @@ def _build_mode_advice(
     dest_data: Any,
     i18n: Any,
 ) -> str:
-    """根据距离和天气给出出行方式建议。"""
+    """Suggest a transport mode based on distance and weather."""
     has_rain = False
     if origin_data:
         code = origin_data.get("current", {}).get("weather_code", -1)

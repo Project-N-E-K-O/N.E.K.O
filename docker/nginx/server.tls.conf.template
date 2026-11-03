@@ -1,0 +1,21 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# L1a —— 监听器层（HTTP + HTTPS）
+#
+# 渲染目标：/etc/nginx/neko/listener.conf
+# 被 include 进 neko-proxy.conf.template 的 server 块。
+#
+# 同一个 server 同时监听明文端口与 TLS 端口；SSL 相关指令只对 TLS 端口生效，
+# 因此证书、协议与 HSTS 全部收敛在这里，路由表对此一无所知。
+# ─────────────────────────────────────────────────────────────────────────────
+listen @@NGINX_PORT@@;
+listen @@NGINX_SSL_PORT@@ ssl http2;
+
+# SSL 证书配置（仅对 TLS 端口生效）
+ssl_certificate @@NGINX_SSL_CERT@@;
+ssl_certificate_key @@NGINX_SSL_KEY@@;
+ssl_protocols TLSv1.2 TLSv1.3;
+ssl_prefer_server_ciphers on;
+ssl_ciphers ECDHE-RSA-AES256-GCM-SHA512:DHE-RSA-AES256-GCM-SHA512:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-GCM-SHA384;
+
+# 设置 HSTS 头（增强安全性）
+add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;

@@ -1,11 +1,11 @@
 """
-网络搜索插件 (Web Search)
+Web Search plugin
 
-根据用户真实 IP 自动选择搜索引擎：
-- 中国大陆 → Baidu
-- 海外 → DuckDuckGo HTML 抓取
-全部基于 httpx + BeautifulSoup，不依赖任何第三方搜索库。
-解析与文本清洗逻辑在 _parsing.py（纯函数，可单测）。
+Automatically select the search engine from the user's actual IP:
+- Mainland China -> Baidu
+- Elsewhere -> DuckDuckGo HTML scraping
+Uses only httpx + BeautifulSoup, without third-party search libraries.
+Parsing and text cleaning live in _parsing.py (pure, unit-testable functions).
 """
 
 from __future__ import annotations
@@ -351,13 +351,13 @@ async def _search_baidu(
     }
     params = {"wd": query, "rn": str(min(max_results, 50)), "ie": "utf-8"}
 
-    # 无 BAIDUID Cookie 的裸请求几乎必中"百度安全验证"页，先访问首页领 Cookie
+    # Bare requests without a BAIDUID cookie almost always hit Baidu's security-verification page; first visit the homepage for a cookie.
     if not any(c.name == "BAIDUID" for c in client.cookies.jar):
         try:
             await client.get(_BAIDU_HOME_URL, headers=headers, timeout=timeout)
         except httpx.HTTPError:
-            # Cookie 预热失败不阻断搜索本身：没拿到 Cookie 时大概率命中
-            # 安全验证页，由下方 is_baidu_blocked 显式报错，无需在此处理
+            # Cookie warmup failure must not block search itself; missing cookies likely reach the
+            # security-verification page, where is_baidu_blocked below reports the error explicitly, requiring no handling here.
             pass
 
     try:
@@ -377,8 +377,8 @@ async def _search_baidu(
         raise
 
     html = decode_html(resp.content, resp.headers.get("content-type", ""))
-    # 桌面端风控比移动 SSR 入口更敏感。桌面端返回验证码或 JavaScript
-    # 跳转壳时仍留在百度体系内降级，不直接切换搜索引擎。
+    # Desktop risk controls are stricter than the mobile SSR endpoint. When desktop returns CAPTCHA or a JavaScript
+    # redirect shell, fall back within Baidu rather than switching search engines directly.
     desktop_blocked = "wappass.baidu.com" in str(resp.url) or is_baidu_blocked(html)
     results = parse_baidu_html(html, max_results)
     if not desktop_blocked and (results or is_baidu_no_results(html)):
@@ -711,8 +711,8 @@ class WebSearchPlugin(NekoPluginBase):
             try:
                 await client.aclose()
             except Exception:
-                # shutdown 运行在新的事件循环里，跨循环关闭旧连接池可能报错；
-                # 进程即将退出，尽力关闭即可
+                # shutdown runs in a new event loop; closing the old connection pool across loops may fail.
+                # The process is exiting, so close on a best-effort basis.
                 pass
         self.logger.info("WebSearch shutdown")
         return Ok({"status": "shutdown"})
@@ -987,8 +987,8 @@ class WebSearchPlugin(NekoPluginBase):
         max_r = max(3, max_r)
         timeout = defs["timeout"]
 
-        # query / titles / snippets / summary 含外部网页内容 + 用户搜索词，
-        # 任何输出渠道（logger/stdout）都只记录长度与条数
+        # query / titles / snippets / summary contain external page content and user search terms;
+        # all output channels (logger/stdout) record only lengths and counts.
         self.logger.info(
             "Searching: query_len={} max={} engine={}",
             len(query), max_r, self._backend,
@@ -1005,8 +1005,8 @@ class WebSearchPlugin(NekoPluginBase):
         except (SearchBlockedError, SearchBusyError, SearchCooldownError) as e:
             return Err(_search_sdk_error(e))
         except Exception as e:
-            # 异常文本可能带完整请求 URL（含 wd= 查询词），只回传类型名，
-            # 细节留在本地文件日志里
+            # Exception text may contain the complete request URL, including wd= search terms; return only its type name,
+            # keeping details in local file logs.
             self.logger.exception("Search failed (query_len={})", len(query))
             return Err(SdkError(f"搜索失败: {type(e).__name__}"))
 

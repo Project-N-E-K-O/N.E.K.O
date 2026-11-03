@@ -852,7 +852,7 @@ class OneBotClient(NapCatActionsMixin, ConnectionBase):
                     or interaction_context["mentions_all"]
                 )
                 # Store is_reply_to_bot separately, not merged into is_at_bot:
-                #   - replying to the catgirl should not skip the buffer (only a direct @ does)
+                #   - replying to the neko should not skip the buffer (only a direct @ does)
                 #   - Attention Gate distinguishes @ vs. reply via is_direct_at
                 result["is_reply_to_bot"] = is_reply_to_bot
 

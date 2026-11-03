@@ -1,4 +1,4 @@
-"""Conversation Bus SDK - 独立的对话上下文存储"""
+"""Conversation Bus SDK - independent conversation context storage"""
 from __future__ import annotations
 
 import asyncio
@@ -106,7 +106,7 @@ class ConversationList(BusList[ConversationRecord]):
 
 
 class ConversationClient:
-    """对话 Bus 客户端"""
+    """Conversation Bus client"""
     def __init__(self, ctx: "PluginContext"):
         self.ctx = ctx
 

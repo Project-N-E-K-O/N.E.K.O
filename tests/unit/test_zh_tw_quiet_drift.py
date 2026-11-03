@@ -22,8 +22,8 @@ import pytest
 # ---------------------------------------------------------------------------
 
 # Function words that must never survive into the similarity units, paired.
-# ⚠️ ("着", "著") 不在这里：「著」在**两种字形里都是词汇用字**（著名 / 著作），
-# 只有简体的「着」是纯体标记。收「著」会削掉真实内容，见下面那条用例。
+# ⚠ Exclude ("着", "著"): 著 is **lexical in both scripts** (著名 / 著作),
+# while only Simplified 着 is purely aspectual. Including 著 removes real content; see the case below.
 STOP_CHAR_PAIRS = [("与", "與"), ("吗", "嗎"), ("还", "還"), ("这", "這")]
 
 
@@ -65,8 +65,8 @@ def test_traditional_topic_does_not_carry_function_word_units():
     assert len(traditional) == len(simplified), (
         f"繁体切出 {len(traditional)} 个单元、简体 {len(simplified)} 个：{sorted(traditional)}"
     )
-    # ⚠️ 不断言 個：个/個 在**两侧都不是**停用字（既有取舍，对称），拿它做判据
-    # 会把一个非 zh-TW 问题记到本批头上。
+    # ⚠ Do not assert 個: 个/個 are stop characters in **neither script** (existing symmetric choice),
+    # or an unrelated zh-TW issue gets attributed to this batch.
     for junk in ("這", "嗎", "還", "與"):
         assert junk not in topic_units(f"聊聊{junk}這件事"), f"虚词 {junk!r} 混进了相似度单元"
 
@@ -147,8 +147,8 @@ def test_the_simplified_me_particle_is_a_known_pre_existing_false_positive():
     """  # noqa: DOCSTRING_CJK
     from main_logic.activity.state_machine import _text_has_open_question
 
-    assert _text_has_open_question("我不知道该说什么") is True   # 既有假阳性
-    assert _text_has_open_question("我不知道該說什麼") is False  # 繁体侧正确
+    assert _text_has_open_question("我不知道该说什么") is True   # Existing false positive.
+    assert _text_has_open_question("我不知道該說什麼") is False  # Traditional side correct.
 
 
 def test_the_particle_table_does_not_include_the_trailing_me_character():
@@ -182,7 +182,7 @@ def _needs_context(latest: str) -> bool:
 
     Driven through the real entry point rather than the marker tuple, so the
     length-threshold fallback (short CJK turns are vague regardless) is part of
-    what is being asserted — a marker-only check would pass on短 inputs that
+    what is being asserted — a marker-only check would pass on short inputs that
     never consult the table.
     """  # noqa: DOCSTRING_CJK
     from brain.task_executor import DirectTaskExecutor

@@ -6,7 +6,7 @@ Coverage:
 - Decay math snapshots (effective_reinforcement / effective_disputation
   parametrized over age × value × half-life)
 - Sub-zero accumulation: never resets when score recovers (§3.5.3
-  "归档更积极")
+  \"Archive more aggressively\")
 - protected=True exemption: never accumulates / never archives
 - Sharded append: > ARCHIVE_FILE_MAX_ENTRIES rolls a new shard
 - Legacy flat reflections_archive.json migration: per-day bucketing,
@@ -123,7 +123,7 @@ def test_effective_value_decay_snapshots(func, age_days, value, half_life, expec
 
 
 def test_sub_zero_persists_through_score_oscillation():
-    """RFC §3.5.3 "归档更积极": sub_zero_days never resets even when
+    """RFC §3.5.3 \"Archive more aggressively\": sub_zero_days never resets even when
     score climbs back to >= 0. Exhaustively walks negative→positive→
     negative to lock the invariant."""
     from memory.evidence import maybe_mark_sub_zero
@@ -402,7 +402,7 @@ def test_append_to_shard_sync_stamper_uses_correct_path_per_chunk_on_overflow(
     tmp_path,
 ):
     """Sync twin of the async overflow-stamper test — keeps the symmetry
-    invariant (CLAUDE.md "对偶性是硬性要求")."""
+    invariant (CLAUDE.md \"duality is a hard requirement\")."""
     from memory.archive_shards import _list_shard_files, append_to_shard_sync
 
     archive_dir = str(tmp_path / "ref_arc")
@@ -469,7 +469,7 @@ async def test_age_based_archival_records_have_metadata_on_disk(tmp_path):
 
 def test_age_based_archival_records_have_metadata_on_disk_sync(tmp_path):
     """Sync twin — keeps symmetry between save_reflections /
-    asave_reflections (CLAUDE.md 对偶性)."""
+    asave_reflections (CLAUDE.md duality)."""
     from memory.reflection import _REFLECTION_ARCHIVE_DAYS
 
     _ev, _fs, _pm, re, _rec, _cm = _install(str(tmp_path))
@@ -1906,8 +1906,8 @@ def test_archive_does_not_touch_cache_until_facts_json_is_durable(tmp_path):
 
     disk = _read_json(fs._facts_path(name))
     assert _ids(disk) == ["old1", "old2", "live"]
-    # 缓存不能领先耐久文件：save_facts 的 evict 兜底只覆盖前一个 try，
-    # 这里分叉后会一直活到重启，重启后就读成重复。
+    # The cache must not move ahead of the durable file: the save_facts eviction fallback covers only the previous try block,
+    # so a fork here would remain alive until restart, then be read as a duplicate.
     assert _ids(fs._facts[name]) == _ids(disk)
     assert _ids(_read_json(fs._facts_archive_path(name))) == ["old1", "old2"]
 
@@ -1927,18 +1927,18 @@ def test_archive_keeps_a_fact_appended_during_the_two_file_commit(tmp_path):
         if text.endswith("facts_archive.json"):
             state["archive_written"] = True
         elif state["archive_written"] and text.endswith("facts.json"):
-            # add_facts 走 aload_facts 后直接 append，全程不持 _get_lock（仓库
-            # 既有约定），所以它能落在归档这两次写盘中间。
+            # add_facts calls aload_facts and appends directly without holding _get_lock (existing repository convention),
+            # so it can land between these two archive writes.
             fs._facts[name].append(newcomer)
         return real(path, data, **kw)
 
     with patch("memory.facts.atomic_write_json", side_effect=_guard):
         fs.save_facts(name)
 
-    # 拿函数开头算的 active 快照整体替换缓存，会把这条新 fact 一起抹掉；
-    # 按身份剔除已归档行则只动该动的那几条。
+    # Replacing the cache with the active snapshot taken at function entry would erase this new fact too;
+    # filter archived rows by identity to change only the rows that need changing.
     assert _ids(fs._facts[name]) == ["live", "concurrent"], _ids(fs._facts[name])
-    # 磁盘上这轮只写快照（新 fact 由下一次 save 落盘），归档照常。
+    # This run writes only the snapshot to disk (the new fact is persisted by the next save); archive normally.
     assert _ids(_read_json(fs._facts_path(name))) == ["live"]
     assert _ids(_read_json(fs._facts_archive_path(name))) == ["old1"]
 
@@ -1957,7 +1957,7 @@ def test_archive_retry_is_idempotent_by_id(tmp_path):
     os.utime(archive_path, (stale, stale))
     os.utime(archive_path + ".last_attempt", (stale, stale))
 
-    # 换新 store = 重启：磁盘是唯一真相。
+    # Replace with a fresh store = restart: disk is the sole source of truth.
     fs2 = _archive_fact_store(str(tmp_path))
     fs2.load_facts(name)
     fs2.save_facts(name)
@@ -1979,8 +1979,8 @@ def test_archive_heals_duplicates_already_on_disk(tmp_path):
     fs._facts[name] = [_old_absorbed_fact("old2"), _live_fact()]
     fs.save_facts(name)
 
-    # 盯「防新不治旧」的半吊子实现：只拿 existing 的 id 过滤 incoming 会留下
-    # 盘上已有的那对重复。
+    # Catch the incomplete "prevents new duplicates but does not fix existing ones" implementation: filtering incoming IDs against existing ones leaves
+    # the duplicate pair already on disk untouched.
     assert _ids(_read_json(archive_path)) == ["old1", "old2"]
 
 
@@ -1996,9 +1996,9 @@ def test_archive_replay_keeps_the_incoming_copy_of_a_duplicate(tmp_path):
     stale = (datetime.now() - timedelta(hours=48)).timestamp()
     os.utime(archive_path, (stale, stale))
 
-    # 重放那份带着旧副本没有的 flag 更新：半提交之后活跃那份很可能已经被
-    # mark_absorbed / mark_signal_processed 改过。方向反成 first-wins 就是把
-    # 新 flag 写回旧值（两行内容完全相同的用例测不出方向）。
+    # Replay that update with a flag absent from the old copy: after a partial commit, the active copy may already have been changed by
+    # If direction reverses to first-wins, the new flag would be written back to its old value (a test with identical row contents cannot detect the direction).
+    #
     fs._facts[name] = [
         _old_absorbed_fact("old1", signal_processed=True, note="live"),
         _live_fact(),
@@ -2045,12 +2045,12 @@ def test_archive_failure_warns_and_touches_the_marker(tmp_path):
 
     with _capture_logger(_FACTS_LOGGER) as sink:
         with patch("memory.facts.atomic_write_json", side_effect=_guard):
-            fs.save_facts(name)  # 不许连坐：facts.json 本身已经落盘成功
+            fs.save_facts(name)  # Do not roll back unrelated data: facts.json was already persisted successfully
 
     warnings = sink.at_least(logging.WARNING)
     assert any("归档失败" in m and name in m for m in warnings), warnings
-    # archive 写就失败时 archive 的 mtime 没动，不 touch marker 的话每次 save
-    # 都会重跑一遍必然失败的归档。
+    # If archive writing fails, archive mtime is unchanged; without touching the marker, every save would retry the guaranteed-to-fail archive.
+    #
     assert os.path.exists(fs._facts_archive_path(name) + ".last_attempt")
     assert _ids(_read_json(fs._facts_path(name))) == ["old1", "live"]
 
@@ -2072,8 +2072,8 @@ def test_maintenance_mode_archive_skip_is_not_warned(tmp_path):
 
     warnings = sink.at_least(logging.WARNING)
     assert warnings == [], f"maintenance skip is an expected path: {warnings}"
-    # 维护态也不该消耗归档窗口：在这里 touch marker 等于每次 save 都把 24h
-    # 冷却续一次，维护结束后要再等一整天才归档。
+    # Maintenance mode should not consume the archive window either: touching the marker here would extend the 24h
+    # cooldown on every save, forcing another full day of waiting after maintenance ends.
     assert not os.path.exists(fs._facts_archive_path(name) + ".last_attempt")
 
 

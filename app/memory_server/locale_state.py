@@ -697,8 +697,8 @@ def reserve_subject_prompt_locale_orders(
         for key, selected_order in zip(keys, selected_orders):
             cutoff = _subject_locale_forget_cutoffs.get((name, key))
             if cutoff is not None and selected_order <= cutoff:
-                # 这次预留早于该 subject 的一次清除：写入时必被拒，不能借预留把已被清除的
-                # subject 重新写回语言存储
+                # This reservation predates a clear of this subject: writes must be rejected; the reservation cannot
+                # restore a cleared subject to the language store.
                 continue
             language, order, reserved_order = states.get(
                 key,

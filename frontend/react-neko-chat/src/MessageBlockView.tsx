@@ -1,4 +1,6 @@
 import HtmlCardBlock from './HtmlCardBlock';
+import MusicRecommendationBlock from './MusicRecommendationBlock';
+import ProactiveRecommendationBlock from './ProactiveRecommendationBlock';
 import type { SyntheticEvent } from 'react';
 import SmartTextBlock from './SmartTextBlock';
 import MessageImageBlock from './MessageImageBlock';
@@ -14,6 +16,7 @@ type MessageBlockViewProps = {
   message: ChatMessage;
   isStreaming?: boolean;
   interactive?: boolean;
+  presentation?: 'card' | 'bubble';
   onAction?: (message: ChatMessage, action: MessageAction) => void;
 };
 
@@ -41,7 +44,14 @@ export default function MessageBlockView({
   isStreaming,
   onAction,
   interactive = true,
+  presentation = 'card',
 }: MessageBlockViewProps) {
+  if (block.type === 'proactive_recommendation') {
+    return <ProactiveRecommendationBlock block={block} message={message} interactive={interactive} onAction={onAction} presentation={presentation} />;
+  }
+  if (block.type === 'music_recommendation') {
+    return <MusicRecommendationBlock block={block} message={message} interactive={interactive} onAction={onAction} presentation={presentation} />;
+  }
   if (block.type === 'html_card') {
     return interactive ? <HtmlCardBlock block={block} /> : <div className="message-block message-block-text">{block.summary}</div>;
   }
@@ -111,8 +121,14 @@ export default function MessageBlockView({
             key={action.id}
             className={`message-action-button variant-${action.variant || 'secondary'}`}
             type="button"
-            disabled={action.disabled}
-            onClick={() => onAction?.(message, action)}
+            disabled={action.disabled || !interactive}
+            data-compact-hit-region={presentation === 'bubble' ? 'true' : undefined}
+            data-compact-hit-region-id={presentation === 'bubble'
+              ? `history:message-action:${message.id}:${action.id}`
+              : undefined}
+            data-compact-hit-region-kind={presentation === 'bubble' ? 'message-action' : undefined}
+            data-compact-no-drag={presentation === 'bubble' ? 'true' : undefined}
+            onClick={interactive ? () => onAction?.(message, action) : undefined}
           >
             {action.label}
           </button>

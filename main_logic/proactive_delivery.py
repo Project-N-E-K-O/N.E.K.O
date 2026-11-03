@@ -69,17 +69,17 @@ DELIVERY_RETRACTED_KEY = "_proactive_delivery_retracted"
 CALLBACK_EXPIRES_AT_KEY = "_expires_at_monotonic"
 VOICE_DELIVERY_COMMITTED_KEY = "_voice_delivery_committed"
 SWAP_PRIME_DELIVERY_CLAIM_KEY = "_swap_prime_delivery_claimed"
-# 最近一次挂图失败是**瞬时**的（网络抖动 / provider 临时拒绝），不是终局的
-# （格式不支持之类）。终局失败再试也没用，瞬时的下一轮大概率能成 —— 所以只有
-# 瞬时失败值得为它把这条通知多留一轮。
+# The latest image attachment failure was **transient** (network glitch / temporary provider rejection), not terminal
+# (unsupported format, etc.). Retrying terminal failures is useless; transient failures likely recover next round, so only
+# transient failures justify retaining this notification for another round.
 PASSIVE_MEDIA_TRANSIENT_KEY = "_passive_media_transient_failure"
-# 已经为此多留过几轮。上限 1：留两轮以上就等于回到「扣住不放」，那是这条判据
-# 一开始要避免的。
+# How many extra rounds it has already been retained. Cap at one: keeping it for two or more returns to holding it indefinitely,
+# exactly what this criterion originally sought to avoid.
 PASSIVE_MEDIA_RETRY_KEY = "_passive_media_retries"
 PASSIVE_MEDIA_MAX_RETRIES = 1
-# 这一轮的图片预算装不下它，被推到下一轮。与「瞬时失败」是两回事：那是尝试过
-# 失败了，这是**根本没轮到它尝试**，所以既不该套重试上限，也不该退化成 text-only
-# ——退化就等于把它的图永久丢掉，而这恰恰是预算延后想避免的。
+# This round's image budget cannot fit it, deferring it. Unlike transient failure, where an attempt
+# failed, this image **never got an attempt**, so neither apply the retry cap nor degrade to text-only;
+# degradation permanently loses its image, precisely what budget deferral prevents.
 PASSIVE_MEDIA_BUDGET_DEFERRED_KEY = "_passive_media_budget_deferred"
 
 # Image budget for ONE model turn. A trigger drains every pending proactive
@@ -255,8 +255,8 @@ def split_callbacks_by_image_budget(callbacks: list) -> tuple[list, list]:
     return taken, overflow
 
 
-# 单轮图片超预算时保留的张数：开头 / 中间 / 结尾。与独立 ASR 的抽样判据同源
-# ——一段视觉材料最有信息量的是它的两端和中点。
+# Images retained when a round exceeds budget: beginning / middle / end, sharing the independent-ASR sampling criterion;
+# a visual sequence's endpoints and midpoint carry the most information.
 TURN_IMAGE_SAMPLE_KEEP = 3
 
 
@@ -326,7 +326,7 @@ async def fit_images_to_turn_budget(
     original_count = len(kept)
     original_bytes = sum(approx_base64_decoded_bytes(img) for img in kept)
 
-    # ── Rung 0：归一化到模型档位。跑在预算判断之前，所以这条保证与图片大小无关。
+    # ── Rung 0: normalize to the model tier before checking budgets, making this guarantee independent of image size.
     from utils.screenshot_utils import normalize_image_for_model
 
     def _normalize_all(payloads: list) -> list:
@@ -335,7 +335,7 @@ async def fit_images_to_turn_budget(
             try:
                 out.append(normalize_image_for_model(payload))
             except Exception:
-                # 单张失败不该拖累整轮：原样留着，下面的阶梯照旧管它的字节数。
+                # A single-image failure must not derail the round: retain it unchanged; the later ladder still manages its bytes.
                 out.append(payload)
         return out
 
@@ -343,8 +343,8 @@ async def fit_images_to_turn_budget(
         normalized = await asyncio.to_thread(_normalize_all, kept)
     except Exception:
         normalized = kept
-    # 归一化器对「已经合规」的图返回**同一个字符串对象**，所以身份比较正好是
-    # 「这张图真被重编码了吗」的精确判据，不用再去比内容或长度。
+    # The normalizer returns **the same string object** for compliant images, so identity comparison precisely
+    # detects actual re-encoding without comparing contents or length.
     was_normalized = any(new is not old for new, old in zip(normalized, kept))
     kept = normalized
     total = sum(approx_base64_decoded_bytes(img) for img in kept)
@@ -361,7 +361,7 @@ async def fit_images_to_turn_budget(
 
     if total <= max_total_bytes:
         if not was_normalized:
-            # 图片本来就在档位内、也在预算内：什么都没发生，连日志都不必打扰。
+            # Already within tier and budget: nothing happened, so avoid even a log entry.
             return kept, None
         notice["final_count"] = len(kept)
         notice["final_bytes"] = total
@@ -384,7 +384,7 @@ async def fit_images_to_turn_budget(
                 except Exception:
                     out.append(payload)
                     continue
-                # 压缩反而变大就保留原图（已经是小图/已压过的会这样）。
+                # Keep the original when compression enlarges it (possible for small/already-compressed images).
                 out.append(shrunk if len(shrunk) < len(payload) else payload)
             return out
 
@@ -397,8 +397,8 @@ async def fit_images_to_turn_budget(
             notice["compressed"] = True
             total = sum(approx_base64_decoded_bytes(img) for img in kept)
 
-    # 兜底：压完仍超限，才轮到丢内容。复用既有的 trim —— 它的判据（从最旧丢、
-    # 无条件保住最后一张）正是这一步要的。
+    # Fallback: discard content only if compression still exceeds the limit. Reuse existing trim, whose rule
+    # (discard oldest, always preserve the last image) exactly matches this step.
     if total > max_total_bytes:
         kept, dropped = trim_images_to_turn_budget(kept, max_total_bytes)
         notice["dropped"] = dropped
@@ -406,10 +406,10 @@ async def fit_images_to_turn_budget(
 
     notice["final_count"] = len(kept)
     notice["final_bytes"] = total
-    # 判据是「读者少了一张图吗」，不是「哪一级跑了」。抽样排在丢弃前面、名字也
-    # 温和，但 _sample_head_middle_tail 只留开头/中间/结尾三张，其余是整张扔掉的，
-    # 从读者那一侧看跟 trim 掉的没有任何分别。归一化 / 重压则相反：每一帧都还在，
-    # 只是小一点，而且 rung 0 几乎每个带图回合都会跑，弹了就是刷屏。
+    # The criterion is whether the reader lost an image, not which rung ran. Sampling precedes trimming and sounds
+    # gentler, but _sample_head_middle_tail keeps only three endpoint/midpoint images, discarding the others entirely;
+    # to the reader this is identical to trimming. Normalization / recompression retain every frame,
+    # only smaller; rung 0 runs in almost every image-bearing turn, so notifications would spam users.
     notice["user_visible"] = notice["dropped"] > 0 or notice["sampled"]
     return kept, notice
 

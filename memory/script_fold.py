@@ -65,10 +65,10 @@ from __future__ import annotations
 # target. Regenerate with:
 #   uv run --with opencc-python-reimplemented python scripts/gen_memory_fold_map.py
 #
-# ⚠️ 目标字必须留在 URO 内，这不是保守起见，是硬约束：`_tokenize` 的 CJK
-# 占比判定只数 U+4E00-9FFF，折出这个区间的段会从「CJK，切 2/3-gram」翻成
-# 「拉丁，整段一个 token」——substring 召回反而被折没了。生成脚本里筛掉了
-# 这类（710 对，两端都是罕用字）。
+# ⚠️ The target characters must remain inside URO; this is a hard constraint, not merely conservative: `_tokenize`'s CJK
+# ratio check counts only U+4E00-9FFF. Characters folded outside this range stop being treated as "CJK, split into 2/3-grams" and become
+# "Latin, one token for the whole string" — which destroys substring recall. The generation script filters out
+# these cases (710 pairs, rare characters on both sides).
 _TRAD_FOLD_SOURCE = (
     '丟並乾亂亙亞佇佈佔併來侖侶侷俁係俔俠俥俬倀倆倈倉個們倖倫偉側偵偽傑傖傘備傢傭傯傳傴債傷傾僂僅僉僑'
     '僕僞僥僨僱價儀儁儂億儈儉儎儐儔儕儘償優儲儷儺儻儼兇兌兒兗內兩冊冑冪凈凍凜凱別刪剄則剋剎剗剛剝剮剴'

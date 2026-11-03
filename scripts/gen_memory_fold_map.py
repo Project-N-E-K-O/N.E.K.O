@@ -101,8 +101,8 @@ def main() -> int:
         ('_TRAD_FOLD_SOURCE', wrap(trad)),
         ('_SIMP_FOLD_TARGET', wrap(simp)),
     ):
-        # ⚠️ re.sub 不匹配时**静默**返回原文本：常量的书写格式一变，生成器就会
-        # 保留旧表却照常打印成功。同 gen_activity_fold_map.py，卡死替换次数。
+        # re.sub silently returns its input when nothing matches; changing the constant's formatting would make the generator
+        # retain the old table while reporting success. Assert the replacement count, as in gen_activity_fold_map.py.
         src, replaced = re.subn(
             rf'{name} = \(\n(?:.*\n)*?\)',
             f'{name} = (\n{value}\n)',

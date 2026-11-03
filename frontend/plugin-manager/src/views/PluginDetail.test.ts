@@ -6,6 +6,9 @@ import { createPinia, setActivePinia } from 'pinia'
 import PluginDetail from './PluginDetail.vue'
 import type { PluginUiSurface } from '@/types/api'
 import { usePluginStore } from '@/stores/plugin'
+import { useWorkspaceFocus } from '@/composables/useWorkspaceFocus'
+
+const workspaceFocus = useWorkspaceFocus()
 
 const apiMocks = vi.hoisted(() => ({
   getPluginUiSurfaceInfo: vi.fn(),
@@ -200,6 +203,7 @@ describe('PluginDetail surface selection', () => {
     hostedFrameMocks.refreshContext.mockReset()
     configEditorMocks.mounts = 0
     localeRef.value = 'en-US'
+    routerMocks.route.query = {}
   })
 
   it('falls back to the not-found state without an unhandled rejection when the detail fails to load', async () => {
@@ -289,6 +293,52 @@ describe('PluginDetail surface selection', () => {
 
     expect(mounted.container.querySelector('[data-surface-id="practice"]')?.getAttribute('data-active')).toBe('true')
     expect(mounted.container.querySelector('[data-surface-id="practice"]')?.getAttribute('data-activation-revision')).toBe('0')
+    mounted.unmount()
+  })
+
+  it('enters focus mode from the panel tab and leaves it with the exit button or Esc', async () => {
+    routerMocks.route.query = { tab: 'panel' }
+    const mounted = await mountDetail([surface({ id: 'main' })])
+    const root = mounted.container.querySelector('.plugin-detail') as HTMLElement
+    const enter = () => (mounted.container.querySelector('[data-testid="focus-enter"]') as HTMLElement).click()
+
+    expect(root.classList.contains('plugin-detail--focus')).toBe(false)
+    expect(mounted.container.querySelector('[data-testid="focus-bar"]')).toBeNull()
+
+    enter()
+    await nextTick()
+    expect(root.classList.contains('plugin-detail--focus')).toBe(true)
+    expect(workspaceFocus.focused.value).toBe(true)
+
+    ;(mounted.container.querySelector('[data-testid="focus-exit"]') as HTMLElement).click()
+    await nextTick()
+    expect(root.classList.contains('plugin-detail--focus')).toBe(false)
+    expect(workspaceFocus.focused.value).toBe(false)
+
+    enter()
+    await nextTick()
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await nextTick()
+    expect(root.classList.contains('plugin-detail--focus')).toBe(false)
+    mounted.unmount()
+  })
+
+  it('releases workspace focus when the detail page unmounts', async () => {
+    routerMocks.route.query = { tab: 'panel' }
+    const mounted = await mountDetail([surface({ id: 'main' })])
+    ;(mounted.container.querySelector('[data-testid="focus-enter"]') as HTMLElement).click()
+    await nextTick()
+    expect(workspaceFocus.focused.value).toBe(true)
+
+    mounted.unmount()
+    expect(workspaceFocus.focused.value).toBe(false)
+  })
+
+  it('offers no focus button when the plugin has no panel', async () => {
+    routerMocks.route.query = { tab: 'panel' }
+    const mounted = await mountDetail([])
+
+    expect(mounted.container.querySelector('[data-testid="focus-enter"]')).toBeNull()
     mounted.unmount()
   })
 

@@ -10,7 +10,14 @@
           <el-tag v-if="plugin.is_recommended" size="small" type="warning" effect="plain" class="type-tag">
             {{ t('market.recommended') }}
           </el-tag>
-          <h3 class="plugin-name">{{ plugin.name }}</h3>
+          <h3 class="plugin-name">
+            <button
+              type="button"
+              class="plugin-name__button"
+              data-testid="plugin-details-button"
+              @click.stop="$emit('click')"
+            >{{ plugin.name }}</button>
+          </h3>
           <el-tag v-if="effectiveAction.installed" size="small" type="success">
             {{ effectiveAction.effectiveSource === 'builtin' ? t('market.usingBuiltin') : t('market.installed') }}
           </el-tag>
@@ -33,9 +40,9 @@
         {{ plugin.short_description || plugin.description || t('market.noDescription') }}
       </p>
 
-      <div v-if="plugin.tags?.length" class="plugin-tags">
+      <div class="plugin-tags">
         <el-tag
-          v-for="tag in plugin.tags.slice(0, 4)"
+          v-for="tag in plugin.tags?.slice(0, 4)"
           :key="tag"
           size="small"
           type="info"
@@ -44,7 +51,7 @@
         >
           {{ tag }}
         </el-tag>
-        <span v-if="plugin.tags.length > 4" class="plugin-tags__more">
+        <span v-if="plugin.tags && plugin.tags.length > 4" class="plugin-tags__more">
           +{{ plugin.tags.length - 4 }}
         </span>
       </div>
@@ -214,17 +221,29 @@ function formatCount(count: number): string {
 
 <style scoped>
 .plugin-card {
+  display: flex;
+  flex-direction: column;
   cursor: pointer;
-  border-radius: var(--plugin-entry-radius, 16px);
+  border-radius: var(--plugin-entry-radius, var(--radius-card));
+  background: var(--surface-card);
+  border-color: var(--surface-border);
+  box-shadow: var(--surface-shadow);
   transition:
-    transform 0.24s ease,
-    box-shadow 0.24s ease,
-    border-color 0.24s ease;
+    transform var(--motion-duration-normal) var(--motion-ease-standard),
+    box-shadow var(--motion-duration-normal) var(--motion-ease-standard),
+    border-color var(--motion-duration-normal) var(--motion-ease-standard);
+}
+
+.plugin-card :deep(> .el-card__body) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
 }
 
 .plugin-card:hover {
   transform: translateY(-2px);
-  box-shadow: var(--el-box-shadow);
+  border-color: color-mix(in srgb, var(--el-color-primary) 36%, var(--surface-border));
+  box-shadow: var(--surface-shadow-hover);
 }
 
 .market-plugin-card--installed {
@@ -236,6 +255,7 @@ function formatCount(count: number): string {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
+  min-height: 72px;
 }
 
 .plugin-info {
@@ -256,6 +276,30 @@ function formatCount(count: number): string {
   word-break: break-word;
 }
 
+.plugin-name__button {
+  display: block;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.plugin-name__button:focus-visible,
+.plugin-card-actions :deep(.el-button:focus-visible) {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 3px;
+}
+
+.plugin-card:focus-within {
+  border-color: color-mix(in srgb, var(--el-color-primary) 36%, var(--surface-border));
+}
+
 .yank-badge {
   /* el-tag type="danger" 已经是红色，加点描边强化"危险"语义 */
   border-color: var(--el-color-danger);
@@ -269,6 +313,7 @@ function formatCount(count: number): string {
 
 .plugin-description {
   margin: 0;
+  min-height: 3em;
   color: var(--el-text-color-regular);
   font-size: 14px;
   line-height: 1.5;
@@ -284,6 +329,7 @@ function formatCount(count: number): string {
   align-items: center;
   gap: 4px;
   margin-top: 10px;
+  min-height: 20px;
 }
 
 .plugin-tag {
@@ -304,7 +350,7 @@ function formatCount(count: number): string {
   gap: 12px;
   font-size: 12px;
   color: var(--el-text-color-secondary);
-  margin-top: 10px;
+  margin-top: auto;
   padding-top: 10px;
   flex-wrap: wrap;
 }
@@ -320,7 +366,7 @@ function formatCount(count: number): string {
   display: flex;
   justify-content: flex-end;
   padding-top: 12px;
-  margin-top: auto;
+  margin-top: 0;
 }
 
 .plugin-card-action-button--disabled {
@@ -333,5 +379,15 @@ function formatCount(count: number): string {
 
 .type-tag {
   flex-shrink: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .plugin-card {
+    transition: none;
+  }
+
+  .plugin-card:hover {
+    transform: none;
+  }
 }
 </style>

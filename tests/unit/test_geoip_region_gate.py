@@ -32,8 +32,8 @@ import pytest
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 
-# 只用一种导入形式：既要 monkeypatch 包属性（is_livestream_active），又要拿到
-# ConfigManager / core_config，混用 import 与 from-import 会被静态检查判为风格问题。
+# Use one import form: monkeypatch package attributes such as is_livestream_active while accessing
+# ConfigManager/core_config; mixing import and from-import triggers static style checks.
 import utils.config_manager as config_manager_pkg  # noqa: E402
 
 from tests.repo_ast_cache import parse_source_file
@@ -89,8 +89,8 @@ def reset_geo_state(monkeypatch):
     monkeypatch.setattr(ConfigManager, '_ip_probe_wake', threading.Event())
     monkeypatch.setattr(ConfigManager, '_ip_probe_in_flight', threading.Event())
     monkeypatch.setattr(ConfigManager, '_ip_probe_stopping', False)
-    # 默认「仍在免费路由」，否则探测循环每轮都会去读真实配置并提前收工。
-    # 专测「切走免费路由」的用例自行覆盖它。
+    # Default to still using free routing, or each probe-loop iteration reads real configuration and exits early.
+    # Tests specifically exercising departure from free routing override it.
     monkeypatch.setattr(
         ConfigManager, '_free_route_still_needs_region', staticmethod(lambda: True))
     for name, value in (
@@ -103,9 +103,9 @@ def reset_geo_state(monkeypatch):
     ):
         monkeypatch.setattr(ConfigManager, name, value)
     yield
-    # 背景探测线程是无限重试循环（永不放弃），必须主动终止再 join，否则泄漏的线程
-    # 会带着真实网络污染后续用例。写 cache 打破 while、set wake 唤醒退避 sleep。
-    # 本 fixture 声明了 monkeypatch，故先于它 teardown：断言/桩仍在位。
+    # Background probes retry forever, so explicitly stop and join them; leaked threads otherwise perform
+    # real network calls in later tests. Write cache to break while, then set wake to interrupt backoff.
+    # This fixture declares monkeypatch and tears down before it, keeping assertions/stubs active.
     thread = ConfigManager._ip_probe_thread
     if thread is not None:
         if ConfigManager._ip_check_cache is None:
@@ -119,7 +119,7 @@ def reset_geo_state(monkeypatch):
 def _probe(ip, steam):
     """A carrier whose sub-checks return fixed values (no real network/Steam)."""
     p = _Probe()
-    # 实例属性 → 无描述符协议，调用时不多传 self
+    # Instance attributes have no descriptor behavior, avoiding an extra self argument.
     p._ensure_ip_probe_started = lambda: None
     p._check_ip_non_mainland_http = staticmethod(lambda: ip)
     p._check_steam_non_mainland = lambda: steam
@@ -180,7 +180,7 @@ def test_steam_fallback_never_latches(steam):
     """Latching Steam would freeze out the IP takeover — it must stay provisional."""
     assert _probe(ip=None, steam=steam)._check_non_mainland() is steam
     assert ConfigManager._region_cache is None
-    # IP 稍后落地、即便方向相反，也立刻接管
+    # Late IP results immediately take precedence even when pointing the opposite way.
     assert _probe(ip=not steam, steam=steam)._check_non_mainland() is (not steam)
     assert ConfigManager._region_cache is (not steam)
 
@@ -189,7 +189,7 @@ def test_steam_fallback_never_latches(steam):
 def test_both_indeterminate_defaults_mainland_without_caching():
     assert _probe(ip=None, steam=None)._check_non_mainland() is False
     assert ConfigManager._region_cache is None
-    # 网络稍后就绪 → 无需重启即可翻成海外
+    # Network recovers later: switch overseas without restarting.
     assert _probe(ip=True, steam=None)._check_non_mainland() is True
 
 
@@ -216,7 +216,7 @@ def test_probe_loop_never_gives_up(monkeypatch):
     """Connectivity can arrive tens of minutes in; the loop must still be trying."""
     monkeypatch.setattr(ConfigManager, '_IP_CHECK_RETRY_BASE_S', 0.0)
     monkeypatch.setattr(ConfigManager, '_IP_CHECK_RETRY_MAX_S', 0.0)
-    # 长时间只失败，然后成功——中途从不写永久放弃标记
+    # Repeated failure followed by success: never write a permanent-abandon marker in between.
     calls = _patch_probe_once(monkeypatch, [OSError('down')] * 50 + ['JP'])
 
     _Probe()._ensure_ip_probe_started()
@@ -389,8 +389,8 @@ def test_startup_warmup_waits_for_the_verdict(monkeypatch):
 
     probe = _Probe()
     probe.aget_core_config = _async_return(
-        # 真实的免费路由形态：空真判定按「free provider + 区域敏感 URL」合取，
-        # None/空配置会被判成无需区域而跳过等待，测不到等待路径
+        # Real free-route shape requires free provider AND region-sensitive URL; None/empty
+        # configuration skips waiting as region-independent, failing to test the wait path.
         {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.tech/core'})
 
     ConfigManager._ensure_ip_probe_started()
@@ -415,8 +415,8 @@ def test_startup_warmup_does_not_block_the_event_loop(monkeypatch):
 
     probe = _Probe()
     probe.aget_core_config = _async_return(
-        # 真实的免费路由形态：空真判定按「free provider + 区域敏感 URL」合取，
-        # None/空配置会被判成无需区域而跳过等待，测不到等待路径
+        # Real free-route shape requires free provider AND region-sensitive URL; None/empty
+        # configuration skips waiting as region-independent, failing to test the wait path.
         {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.tech/core'})
     ConfigManager._ensure_ip_probe_started()
 
@@ -464,8 +464,8 @@ def test_session_start_waits_out_a_probe_still_in_flight(monkeypatch):
 
     probe = _Probe()
     probe.aget_core_config = _async_return(
-        # 真实的免费路由形态：空真判定按「free provider + 区域敏感 URL」合取，
-        # None/空配置会被判成无需区域而跳过等待，测不到等待路径
+        # Real free-route shape requires free provider AND region-sensitive URL; None/empty
+        # configuration skips waiting as region-independent, failing to test the wait path.
         {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.tech/core'})
     ConfigManager._ensure_ip_probe_started()
     assert ConfigManager._ip_check_cache is None
@@ -483,8 +483,8 @@ def test_session_start_is_free_when_already_resolved(monkeypatch):
         raise AssertionError('已落定时不应等待探测')
 
     probe = _Probe()
-    # 桩在实例上：_Probe 不经过 ConfigManager，patch 类属性是死桩（见
-    # test_custom_route_settle_is_vacuously_true 的同款说明）。
+    # Stub the instance: _Probe bypasses ConfigManager, so patching class attributes is ineffective
+    # (same explanation in test_custom_route_settle_is_vacuously_true).
     probe.join_ip_probe = _boom
     started = real_time.monotonic()
     assert asyncio.run(probe.aensure_region_resolved()) is True
@@ -517,8 +517,8 @@ def test_session_start_logs_when_the_wait_expires(monkeypatch):
 
     probe = _Probe()
     probe.aget_core_config = _async_return(
-        # 真实的免费路由形态：空真判定按「free provider + 区域敏感 URL」合取，
-        # None/空配置会被判成无需区域而跳过等待，测不到等待路径
+        # Real free-route shape requires free provider AND region-sensitive URL; None/empty
+        # configuration skips waiting as region-independent, failing to test the wait path.
         {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.tech/core'})
     ConfigManager._ensure_ip_probe_started()
     try:
@@ -565,8 +565,8 @@ def test_skipping_the_wait_does_not_promote_steam():
     probe = _Probe()
     probe._check_steam_non_mainland = lambda: True
     probe.aget_core_config = _async_return(
-        # 真实的免费路由形态：空真判定按「free provider + 区域敏感 URL」合取，
-        # None/空配置会被判成无需区域而跳过等待，测不到等待路径
+        # Real free-route shape requires free provider AND region-sensitive URL; None/empty
+        # configuration skips waiting as region-independent, failing to test the wait path.
         {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.tech/core'})
 
     assert asyncio.run(probe.aensure_region_resolved(timeout=5)) is True
@@ -661,7 +661,7 @@ def test_game_session_pool_settles_the_region():
 @pytest.mark.parametrize('country, expect_cache', [
     ('US', True),
     ('CN', False),
-    ('', None),      # 拿不到国家码 = 暂时不知道，不是"海外"
+    ('', None),      # Missing country code means temporarily unknown, not overseas.
     (None, None),
 ])
 def test_steam_country_writeback_only_on_real_data(monkeypatch, country, expect_cache):
@@ -706,9 +706,9 @@ def test_dns_wedged_iteration_recovers_without_a_replacement_thread(monkeypatch)
         calls['n'] += 1
         if calls['n'] == 1:
             wedged_entered.set()
-            unwedge.wait(10)          # 模拟卡在 getaddrinfo 里
+            unwedge.wait(10)          # Simulate blocked getaddrinfo.
             raise OSError('resolver timed out')
-        return True                    # 网络恢复
+        return True                    # Network recovery.
 
     monkeypatch.setattr(ConfigManager, '_ip_probe_once', staticmethod(_once))
 
@@ -716,13 +716,13 @@ def test_dns_wedged_iteration_recovers_without_a_replacement_thread(monkeypatch)
     thread = ConfigManager._ip_probe_thread
     assert wedged_entered.wait(5), '第一次探测未进入卡死状态'
 
-    # 卡死期间反复触发启动：不得另起线程（活着 == 重试计划在跑）
+    # Repeated startup during a hung probe must not create threads: alive means the retry plan is running.
     for _ in range(5):
         _Probe()._ensure_ip_probe_started()
         assert ConfigManager._ip_probe_thread is thread, '卡死期间不应另起替代探测'
     assert ConfigManager._ip_check_cache is None
 
-    # 解析超时返回后，同一个循环自行重试并拿到结论——无需任何外部干预
+    # After DNS timeout, the same loop retries and reaches a conclusion without external intervention.
     unwedge.set()
     thread.join(5)
     assert ConfigManager._ip_check_cache is True, '卡死迭代后循环应自行恢复'
@@ -761,7 +761,7 @@ def test_probe_stops_when_user_leaves_the_free_route_mid_backoff(monkeypatch):
     thread = ConfigManager._ip_probe_thread
     assert probed.wait(5), '首次探测未发生'
 
-    # 等它真正进入退避 sleep，再模拟用户切走免费线路
+    # Wait until actual backoff sleep, then simulate the user leaving the free route.
     for _ in range(200):
         if not ConfigManager._ip_probe_in_flight.is_set():
             break
@@ -770,7 +770,7 @@ def test_probe_stops_when_user_leaves_the_free_route_mid_backoff(monkeypatch):
     assert thread.is_alive(), '前置条件：循环仍在退避中'
     eligible['v'] = False
 
-    # 退避自然到期后循环回到顶部，应当据资格判定收工——而不是再敲一次
+    # On natural backoff expiry, eligibility at the loop top must stop probing rather than issue another request.
     thread.join(5)
     assert not thread.is_alive(), '切走免费线路后循环应收工'
     assert calls['n'] == 1, f'退避到期后不应再探测，实际探了 {calls["n"]} 次'
@@ -795,7 +795,7 @@ def test_waiters_skip_a_probe_that_is_only_backing_off(monkeypatch):
 
     _Probe()._ensure_ip_probe_started()
     assert backing_off.wait(5)
-    # 等它进入退避 sleep（in_flight 被清掉）
+    # Wait for backoff sleep with in_flight cleared.
     for _ in range(200):
         if not ConfigManager._ip_probe_in_flight.is_set():
             break
@@ -823,8 +823,8 @@ def test_ip_verdict_landing_during_the_steam_check_still_wins():
         lambda: ConfigManager._ip_check_cache)
 
     def _steam_then_verdict_lands():
-        ConfigManager._ip_check_cache = True     # 探测恰在此刻落地
-        return False                             # Steam 说大陆（代理出口）
+        ConfigManager._ip_check_cache = True     # The probe resolves at this moment.
+        return False                             # Steam says mainland through the proxy exit.
 
     probe._check_steam_non_mainland = _steam_then_verdict_lands
     assert probe._check_non_mainland() is True, 'IP 权威结论应压过 Steam 兜底票'
@@ -850,7 +850,7 @@ def test_livestream_derived_urls_do_not_trigger_the_probe(monkeypatch):
         lambda: {'server_prefix': 'https://live.example/tok'})
     assert ConfigManager._config_needs_region(cfg) is False
 
-    # 非派生路径仍然需要判定（livestream 只接管那三个端点）
+    # Nonderived routes still need regional classification; livestream owns only those three endpoints.
     cfg['OTHER_URL'] = 'https://www.lanlan.tech/something-else'
     assert ConfigManager._config_needs_region(cfg) is True
 
@@ -881,8 +881,8 @@ def test_startup_warmup_runs_after_runtime_config_is_finalized():
     else:
         pytest.fail('未找到 _ensure_main_server_runtime_initialized，断言失效')
 
-    # 只断言「在这个函数里」是不够的：预热被挪到 Cloud Save 导入或 Steamworks
-    # 初始化之前时那样仍会通过，而那正是本 PR 要防的时序回归。比行号。
+    # Asserting presence in the function is insufficient: warmup moved before Cloud Save imports or Steamworks
+    # initialization would still pass, exactly the timing regression this PR prevents. Compare line numbers.
     seen = {}
     for call in ast.walk(node):
         if not isinstance(call, ast.Call):
@@ -900,8 +900,8 @@ def test_startup_warmup_runs_after_runtime_config_is_finalized():
         assert seen['awarmup_region_check'] > seen[anchor], \
             f'GeoIP 预热必须晚于{what}，否则可能读到成型前的配置'
 
-    # 另一侧的边界：也不能晚于「放开会话准入」。那之后请求就能进来，若预热尚未
-    # 落地，首个会话会整场钉在兜底线路——预热必须夹在「配置成型」与「准入」之间。
+    # Also enforce the other boundary, before session admission opens: requests can then arrive, and an
+    # unfinished warmup pins the first whole session to fallback. Warmup belongs between final config and admission.
     assert '_disable_main_storage_limited_mode' in seen, '准入锚点不见了，本断言已失效'
     assert seen['awarmup_region_check'] < seen['_disable_main_storage_limited_mode'], \
         'GeoIP 预热必须早于解除 limited mode，否则会话可在区域未落定时进来'
@@ -936,9 +936,9 @@ def test_every_plugin_offline_client_settles_the_region():
 
     files = _plugin_files_constructing_offline_clients()
     if not files:
-        # 本 PR 删掉了 qq_auto_reply、main 又移出了 bilibili_danmaku，仓库里已没有构造
-        # OmniOfflineClient 的插件，发现集为空时这条守卫没有标的。跳过而不是断言失败：
-        # 将来再有插件用这个模式，守卫会自动重新生效（这正是"发现式"而非硬编码清单的意义）。
+        # This PR removed qq_auto_reply and main moved out bilibili_danmaku; no repository plugin constructs
+        # OmniOfflineClient, leaving discovery empty with nothing to guard. Skip rather than fail;
+        # the guard automatically reactivates if another plugin adopts the pattern, the purpose of discovery over hardcoded lists.
         pytest.skip('仓库内已无构造 OmniOfflineClient 的插件文件，本守卫暂时无标的')
 
     problems = []
@@ -1008,10 +1008,10 @@ def test_raw_config_gate_ignores_an_explicit_lanlan_app_endpoint():
     which is why the two questions now take different host sets.
     """
     cfg = {'CORE_URL': 'wss://www.lanlan.app/core'}
-    assert ConfigManager._config_needs_region(cfg) is False              # 默认 = RAW
+    assert ConfigManager._config_needs_region(cfg) is False              # Default = RAW.
     assert ConfigManager._config_needs_region(
         cfg, ConfigManager._REGION_HOSTS_RAW) is False
-    # 免费路由本身不受影响
+    # Free routing itself is unaffected.
     assert ConfigManager._config_needs_region(
         {'CORE_URL': 'wss://www.lanlan.tech/core'}) is True
 
@@ -1033,7 +1033,7 @@ def test_waiter_stops_when_the_attempt_fails_mid_wait(monkeypatch):
 
     def _once():
         entered.set()
-        fail_now.wait(10)          # 等测试发话再失败
+        fail_now.wait(10)          # Wait for the test signal before failing.
         raise OSError('down')
 
     monkeypatch.setattr(ConfigManager, '_ip_probe_once', staticmethod(_once))
@@ -1042,7 +1042,7 @@ def test_waiter_stops_when_the_attempt_fails_mid_wait(monkeypatch):
     assert entered.wait(5), '探测未进入请求阶段'
     assert ConfigManager._ip_probe_in_flight.is_set()
 
-    # 在等待过程中让本次尝试失败：循环转入长退避但线程仍 alive
+    # Fail this attempt while waiting: the loop enters long backoff but the thread remains alive.
     def _fail_soon():
         real_time.sleep(0.15)
         fail_now.set()
@@ -1067,18 +1067,18 @@ def test_malformed_livestream_prefix_still_needs_the_region(monkeypatch):
     cfg = {'CORE_URL': 'wss://www.lanlan.tech/core'}
     monkeypatch.setattr(config_manager_pkg, 'is_livestream_active', lambda: True)
 
-    # 畸形 prefix（缺 scheme）：派生会失败 → 仍然需要区域判定
+    # Malformed prefix without scheme: derivation fails, so regional classification is still needed.
     monkeypatch.setattr(
         config_manager_pkg, 'get_livestream_config',
         lambda: {'server_prefix': 'localhost:8080/tok'})
     assert ConfigManager._config_needs_region(cfg) is True
 
-    # 空 prefix 同理
+    # Empty prefix behaves likewise.
     monkeypatch.setattr(
         config_manager_pkg, 'get_livestream_config', lambda: {'server_prefix': ''})
     assert ConfigManager._config_needs_region(cfg) is True
 
-    # 合法 prefix：派生成功 → 用不到区域判定
+    # Valid prefix derives successfully, eliminating regional classification.
     monkeypatch.setattr(
         config_manager_pkg, 'get_livestream_config',
         lambda: {'server_prefix': 'https://live.example/tok'})
@@ -1119,7 +1119,7 @@ def test_plugin_geoip_fallback_logging_uses_a_real_facility():
             expr = line.strip()
             if 'self.plugin.' in expr:
                 attr = expr.split('self.plugin.')[1].split('(')[0]
-                # 同类里别处也这么用 → 是该插件的既有惯例
+                # Other code in the same class uses this too: it is an existing plugin convention.
                 ok = sum(1 for x in body if f'self.plugin.{attr}' in x) > 1
                 what = f'self.plugin.{attr}'
             elif 'self.logger' in expr:
@@ -1154,7 +1154,7 @@ def test_loop_eligibility_reads_the_rewritten_snapshot_correctly(monkeypatch):
         def get_core_config():
             return {'CORE_URL': 'wss://www.lanlan.app/core', 'coreApi': 'free'}
 
-    # autouse fixture 把这个方法桩成了恒 True（供其它用例用），本用例要测真实实现
+    # Autouse fixtures stub this method True for other cases; this case tests the actual implementation.
     monkeypatch.setattr(
         ConfigManager, '_free_route_still_needs_region',
         core_config_mod.CoreConfigMixin.__dict__['_free_route_still_needs_region'])
@@ -1164,7 +1164,7 @@ def test_loop_eligibility_reads_the_rewritten_snapshot_correctly(monkeypatch):
     assert ConfigManager._free_route_still_needs_region() is True, \
         '海外改写后的快照仍属免费路由，探测不应因此收工'
 
-    # 真正切走免费线路时才该收工
+    # Exit only after truly leaving free routing.
     class _CustomCM:
         @staticmethod
         def get_core_config():
@@ -1173,8 +1173,8 @@ def test_loop_eligibility_reads_the_rewritten_snapshot_correctly(monkeypatch):
     monkeypatch.setattr(config_manager_pkg, 'get_config_manager', lambda *a, **kw: _CustomCM())
     assert ConfigManager._free_route_still_needs_region() is False
 
-    # 自配端点恰好也在 lanlan.app：只看 host 分不清它和「被改写的免费 URL」，
-    # 会让切走免费线路的用户继续被探测。路由选择字段不受改写影响，能区分。
+    # Custom endpoints may also use lanlan.app; hostname alone cannot distinguish them from rewritten free URLs,
+    # causing probes after users leave free routing. Route-selection fields remain unchanged and distinguish them.
     class _CustomAppCM:
         @staticmethod
         def get_core_config():
@@ -1219,17 +1219,17 @@ def test_voice_cleanup_is_skipped_while_the_region_is_provisional(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.parametrize('region, cfg, provisional', [
-    # 已落定 → 可清理
+    # Settled: cleanup allowed.
     (True, {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.tech/core'}, False),
     (False, {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.tech/core'}, False),
-    # 自配线路与区域无关 → 可清理（否则它们的区域永不落定，清理会被永久禁用）
+    # Custom region-independent route: cleanup allowed, otherwise its region never settles and cleanup remains disabled forever.
     (None, {'coreApi': 'openai', 'CORE_URL': 'https://api.openai.com/v1'}, False),
     (None, {'coreApi': 'openai', 'CORE_URL': 'wss://www.lanlan.app/core'}, False),
-    # 免费 + 未落定 → 跳过。第二格是关键：Steam 临时判海外时快照已被改写成
-    # lanlan.app，按 URL host 判会误判成自配线路而放行清理。
+    # Free + unsettled: skip. The second cell matters: Steam's temporary overseas result rewrites the snapshot
+    # to lanlan.app; URL-host checks misclassify it as custom and wrongly permit cleanup.
     (None, {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.tech/core'}, True),
     (None, {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.app/core'}, True),
-    # 配置残缺读不到路由选择 → 保守不删
+    # Incomplete configuration without route selection: conservatively retain data.
     (None, {'CORE_URL': 'wss://www.lanlan.tech/core'}, True),
 ])
 def test_provisional_region_predicate(monkeypatch, region, cfg, provisional):
@@ -1269,8 +1269,8 @@ def test_this_file_has_no_duplicate_test_names():
 @pytest.mark.parametrize('cfg, expected', [
     ({'coreApi': 'free'}, True),
     ({'CORE_API_TYPE': 'free'}, True),
-    # 付费 core + 免费 assist：assist 的 lanlan.tech URL 同样要区域改写，
-    # 只看 core 会让这些用户的探测提前收工、assist 线路停在国内。
+    # Paid core + free assist: assist lanlan.tech URLs also need regional rewriting;
+    # core-only checks stop probing early and strand assist on domestic routing.
     ({'coreApi': 'openai', 'assistApi': 'free'}, True),
     ({'coreApi': 'openai', 'assistApi': 'qwen'}, False),
     ({}, False),
@@ -1304,7 +1304,7 @@ def test_livestream_derived_route_is_not_provisional_forever(monkeypatch):
     assert cm._region_verdict_is_provisional() is False, \
         'livestream 已派生掉全部免费端点，不该被永远判成未落定'
 
-    # 而 livestream 没接管的路径仍然需要判定
+    # Routes not owned by livestream still need classification.
     monkeypatch.setattr(
         config_manager_pkg, 'get_livestream_config', lambda: {'server_prefix': ''})
     assert cm._region_verdict_is_provisional() is True
@@ -1325,11 +1325,11 @@ def test_startup_warmup_retries_a_backed_off_probe(monkeypatch):
 
     probe = _Probe()
     probe.aget_core_config = _async_return(
-        # 真实的免费路由形态：空真判定按「free provider + 区域敏感 URL」合取，
-        # None/空配置会被判成无需区域而跳过等待，测不到等待路径
+        # Real free-route shape requires free provider AND region-sensitive URL; None/empty
+        # configuration skips waiting as region-independent, failing to test the wait path.
         {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.tech/core'})
 
-    # 首探失败并进入 30 秒退避（远长于预热愿意等的时间）
+    # First probe fails into 30s backoff, much longer than warmup waits.
     ConfigManager._ensure_ip_probe_started()
     for _ in range(500):
         if calls['n'] >= 1 and not ConfigManager._ip_probe_in_flight.is_set():
@@ -1424,7 +1424,7 @@ def test_every_voice_cleanup_path_also_retries_the_deferred_binding():
             continue
         calls = set()
         for call in (c for c in ast.walk(node) if isinstance(c, ast.Call)):
-            # 清理走 to_thread(方法引用)，绑定是直接函数调用——两种形态都要收
+            # Cleanup passes a method reference to to_thread; binding calls directly. Recognize both forms.
             for sub in ast.walk(call):
                 if isinstance(sub, ast.Attribute):
                     calls.add(sub.attr)
@@ -1479,7 +1479,7 @@ def test_region_sensitive_voice_endpoints_settle_first():
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        # 只管 HTTP 端点：helper 由端点调用，落定在端点入口做一次即可
+        # Govern HTTP endpoints only: helpers are called by endpoints, so settle once at endpoint entry.
         is_endpoint = any(
             isinstance(d, ast.Call) and getattr(d.func, 'attr', None) in {'get', 'post'}
             and getattr(getattr(d.func, 'value', None), 'id', None) == 'router'
@@ -1489,7 +1489,7 @@ def test_region_sensitive_voice_endpoints_settle_first():
             continue
         calls = {getattr(c.func, 'attr', None) or getattr(c.func, 'id', None)
                  for c in ast.walk(node) if isinstance(c, ast.Call)}
-        # 标准线程卸载仍是目录读取；仅识别 asyncio.to_thread 的直接首参。
+        # Standard thread offload is still catalog reading; recognize only asyncio.to_thread's direct first argument.
         calls.update(
             getattr(c.args[0], 'attr', None) or getattr(c.args[0], 'id', None)
             for c in ast.walk(node)
@@ -1529,7 +1529,7 @@ def _yui_binding_manager(authoritative_cfg, saved, probe_calls=None, non_mainlan
 
     class _CM:
         def __init__(self):
-            # 生产签名带可选 cfg 快照参数，替身要兼容两种调用形态
+            # Production signatures accept optional cfg snapshots; substitutes must support both invocation forms.
             self._region_verdict_is_provisional = lambda *_a: False
 
         async def aget_core_config(self):
@@ -1543,7 +1543,7 @@ def _yui_binding_manager(authoritative_cfg, saved, probe_calls=None, non_mainlan
             }
 
         async def asave_characters(self, characters):
-            # set_reserved 写的是 reserved 结构，不是扁平键——按生产的读法取回
+            # set_reserved writes the reserved structure, not flat keys; retrieve using production semantics.
             from utils.config_manager.reserved_schema import get_reserved
             from utils.voice_config import read_legacy_voice_id
             saved['voice_id'] = read_legacy_voice_id(get_reserved(
@@ -1551,8 +1551,8 @@ def _yui_binding_manager(authoritative_cfg, saved, probe_calls=None, non_mainlan
             ))
 
         def _check_non_mainland(self):
-            # 计数而不是抛：helper 把这里的异常吞成 overseas=False，与「压根没调用」
-            # 结果完全一样——抛异常的断言测不出差别（变异实测漏过）。
+            # Count instead of raising: helpers swallow exceptions as overseas=False, identical to never being called;
+            # raising assertions cannot distinguish these cases, confirmed by mutation testing.
             if probe_calls is not None:
                 probe_calls['n'] += 1
             return non_mainland
@@ -1572,7 +1572,7 @@ def test_yui_binding_ignores_a_stale_caller_snapshot(monkeypatch):
     no later session could correct it. The two free catalogs are disjoint, so
     that card would simply never get its voice.
     """
-    monkeypatch.setattr(ConfigManager, '_region_cache', False)      # 权威结论：大陆
+    monkeypatch.setattr(ConfigManager, '_region_cache', False)      # Authoritative result: mainland.
     saved = {}
     stale = {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.app/core'}
     authoritative = {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.tech/core'}
@@ -1659,7 +1659,7 @@ def test_yui_binding_survives_a_raw_config_without_urls():
     since a nonempty voice is never overwritten.
     """
     saved = {}
-    raw = {'coreApi': 'free', 'assistApi': 'free'}       # 持久化形态：一个 URL 都没有
+    raw = {'coreApi': 'free', 'assistApi': 'free'}       # Persisted shape: no URLs at all.
     assembled = {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.app/core'}
     cm = _yui_binding_manager(assembled, saved, non_mainland=True)
 
@@ -1693,8 +1693,8 @@ def test_paths_that_pick_a_voice_and_build_a_tts_url_settle_first():
             for node in ast.walk(tree):
                 if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     continue
-                # 留行号，别压成集合：只断言「调用存在」的话，落定被挪到两个读取
-                # **之后**测试照样绿——那正是这道护栏要防的东西。
+                # Keep line numbers, not just sets: checking call existence still passes if settling moves after
+                # both reads, the regression this guard prevents.
                 lines = {}
                 for c in ast.walk(node):
                     if not isinstance(c, ast.Call):
@@ -1719,10 +1719,10 @@ def test_paths_that_pick_a_voice_and_build_a_tts_url_settle_first():
                     )
 
     if not checked:
-        # 唯一符合条件的样本（plugin/plugins/qq_auto_reply/voice_reply_service.py 的
-        # synthesize_reply_voice_audio）随市场插件一起被 gitignore，CI 检出里不存在，
-        # 于是扫描为空。此时跳过而非断言失败——测试只对「仓库内确实存在该模式」时生效，
-        # 避免护栏在无样本的检出里因空集而阻塞 CI。
+        # The sole matching sample, plugin/plugins/qq_auto_reply/voice_reply_service.py's
+        # synthesize_reply_voice_audio, is gitignored with marketplace plugins and absent from CI checkout,
+        # leaving scans empty. Skip rather than fail; activate this test only when the pattern actually exists
+        # in repository code, avoiding CI failures from sample-free checkouts.
         pytest.skip('未找到任何「挑音色 + 拼 TTS 端点」的路径（样本在 gitignore 的市场插件中），跳过')
     assert not missing, f'这些路径在一次操作里两次读区域却未先落定: {missing}'
 
@@ -1746,9 +1746,9 @@ def test_agent_deduper_is_built_after_the_region_settles():
     for node in ast.walk(tree):
         if not isinstance(node, ast.AsyncFunctionDef) or node.name != 'startup':
             continue
-        # 必须是启动预热原语，会话级 aensure 不够：上游 ComputerUseAdapter 构造时
-        # 已读配置起了探测，首探在网络未就绪时快速失败进 30s 退避——aensure 不
-        # kick、不穿退避，撞上退避就放弃，本进程照旧按大陆兜底构造 deduper。
+        # Require the startup warmup primitive; session-level aensure is insufficient. Upstream ComputerUseAdapter
+        # construction already starts probing; failed early networking enters 30s backoff. aensure neither
+        # kicks nor bypasses backoff, leaving this process's deduper built with mainland fallback.
         settles = [c.lineno for c in ast.walk(node)
                    if isinstance(c, ast.Call)
                    and getattr(c.func, 'attr', None) == 'awarmup_region_check']
@@ -1821,8 +1821,8 @@ def test_custom_route_settle_is_vacuously_true(monkeypatch):
         raise AssertionError('自配 API 不该为落定发起任何等待')
 
     probe = _Probe()
-    # 桩在实例上而不是 ConfigManager 上：_Probe 只继承 CoreConfigMixin，
-    # self.join_ip_probe 解析不到 ConfigManager 的类属性，patch 那边是死桩。
+    # Stub the instance rather than ConfigManager: _Probe inherits only CoreConfigMixin,
+    # so self.join_ip_probe cannot resolve ConfigManager class attributes; patching them is ineffective.
     probe.join_ip_probe = _boom
     probe._check_steam_non_mainland = lambda: None
     probe.aget_core_config = _async_return(
@@ -1902,21 +1902,21 @@ def test_probe_restart_clears_a_leftover_stop_signal(monkeypatch):
     """
     monkeypatch.setattr(ConfigManager, '_IP_CHECK_RETRY_BASE_S', 30.0)
     monkeypatch.setattr(ConfigManager, '_IP_CHECK_RETRY_MAX_S', 30.0)
-    monkeypatch.setattr(ConfigManager, '_ip_probe_stopping', True)   # 上一轮的残留
+    monkeypatch.setattr(ConfigManager, '_ip_probe_stopping', True)   # Leftover from the previous round.
     calls = _patch_probe_once(monkeypatch, [OSError('down'), 'US'])
 
     _Probe()._ensure_ip_probe_started()
     assert ConfigManager._ip_probe_stopping is False, '重启探测必须复位停止位'
 
-    # 等首探失败、进入 30s 退避
+    # Wait for first-probe failure and 30s backoff.
     for _ in range(500):
         if calls['n'] >= 1 and not ConfigManager._ip_probe_in_flight.is_set():
             break
         real_time.sleep(0.01)
     assert calls['n'] == 1 and ConfigManager._ip_check_cache is None
 
-    # 停止位已清 → kick 必须能催醒退避中的循环并让它重试成功，
-    # 而不是被拒绝（kick 检查 stopping）或把循环误杀（循环唤醒时检查 stopping）
+    # Stop flag cleared: kick must wake backoff and retry successfully,
+    # rather than being rejected by kick's stopping check or killing the loop via its stopping check on wake.
     ConfigManager._kick_ip_probe()
     thread = ConfigManager._ip_probe_thread
     thread.join(5)
@@ -1996,27 +1996,27 @@ def test_deduper_concurrent_refresh_never_mismatches_route_and_client(monkeypatc
             self.built_for = base_url
 
     def _fake_create(model, base_url, api_key, **kwargs):
-        real_time.sleep(0.0005)      # 拉开「构建」窗口，让并发刷新真正重叠
+        real_time.sleep(0.0005)      # Widen the build window to make concurrent refreshes overlap.
         return _Client(base_url)
 
     monkeypatch.setattr(deduper_mod, 'create_chat_llm', _fake_create)
     d = deduper_mod.TaskDeduper()
 
     old_interval = sys.getswitchinterval()
-    sys.setswitchinterval(1e-6)      # 放大线程抢占，让相邻两次属性写之间可被插队
+    sys.setswitchinterval(1e-6)      # Increase preemption opportunities between adjacent property assignments.
     stop = threading.Event()
     seen_mismatch = []
     worker_errors = []
 
     def _hammer():
-        # 异常必须收集：worker 静默死掉的话 seen_mismatch 恒空、终态断言又被
-        # __init__ 的首次发布兜住，测试会假绿。
+        # Collect exceptions: silently failed workers leave seen_mismatch empty, while __init__'s initial
+        # publication satisfies final-state assertions, falsely passing.
         try:
             while not stop.is_set():
                 d._get_llm()
                 cached = d._llm_cache
-                # 不变量：任何时刻读到的缓存对都必须自洽（client 按 route 构建）。
-                # 分离写的实现在两次赋值之间必然暴露不自洽窗口，高频读能撞到。
+                # Invariant: every observed cache pair is coherent, with client built for route.
+                # Separate assignments necessarily expose an inconsistent window; frequent reads can catch it.
                 if cached is not None and cached[1].built_for != cached[0][0]:
                     seen_mismatch.append((cached[1].built_for, cached[0][0]))
         except Exception as e:      # noqa: BLE001
@@ -2070,8 +2070,8 @@ def test_deduper_cache_is_published_atomically():
 
     assigns = {}
     for n in ast.walk(cls):
-        # AnnAssign（self.x: T = ...）也要收：分离属性用带类型注解的赋值形式
-        # 写，只遍历 ast.Assign 的话会漏检。
+        # Include AnnAssign (self.x: T = ...): separate properties can use annotated assignments,
+        # missed by traversing ast.Assign alone.
         if isinstance(n, ast.Assign):
             targets = n.targets
         elif isinstance(n, ast.AnnAssign):
@@ -2087,18 +2087,18 @@ def test_deduper_cache_is_published_atomically():
     assert not banned, \
         f'route 与 client 必须收在一个元组属性里原子发布，发现分离属性: {sorted(banned)}'
 
-    # AnnAssign 允许无值的纯声明（self.x: T），那不是一次发布，发布形态检查
-    # 只看带值的赋值；banned 检查在上面，声明形式的分离属性照拦。
+    # AnnAssign permits valueless declarations (self.x:T), which publish nothing; publication-shape checks
+    # inspect valued assignments only, while banned checks above still reject separated-property declarations.
     cache_writes = [n for n in assigns.get('_llm_cache', []) if n.value is not None]
     assert cache_writes, '未找到 _llm_cache 发布点，断言失效'
     for n in cache_writes:
         v = n.value
-        # 合法发布只有两种形态：None 初始化，或两个**裸局部名**组成的二元组
-        # （route, llm）。收得比「不含 self.xxx」更紧：旧缓存分量可以先存进局部
-        # （cached = self._llm_cache）再以 cached[1] / cached[1].x 之类的表达式
-        # 混进元组，属性检查拦不住——裸 Name 白名单把下标/属性/调用/条件表达式
-        # 一律拒绝。启发式护栏：Name 的**数据流**来源不做深度分析（x = cached[1]
-        # 再放 x 仍可绕过），那一步交给 review；这里挡住所有直接形态。
+        # Only two publication forms are legal: None initialization or a pair of bare local names
+        # (route,llm). Stricter than excluding self.xxx: stale cache components could first enter a local
+        # cached=self._llm_cache, then leak through cached[1] / cached[1].x expressions.
+        # Attribute checks cannot stop this; a bare-Name whitelist rejects subscripts, attributes, calls, and conditional
+        # expressions. This heuristic does not deeply analyze Name data flow (x=cached[1]
+        # then publishing x still bypasses it); review covers that. Guard every direct shape here.
         whole = (isinstance(v, ast.Constant) and v.value is None) or (
             isinstance(v, ast.Tuple) and len(v.elts) == 2
             and all(isinstance(e, ast.Name) for e in v.elts)
@@ -2164,7 +2164,7 @@ def test_kicked_probe_counts_as_in_flight_immediately(monkeypatch):
     assert calls['n'] == 1 and not ConfigManager._ip_probe_in_flight.is_set(), \
         '前置条件：首探已失败并进入退避'
 
-    # kick 后立刻 join——不给被唤醒的线程任何调度先机
+    # Join immediately after kick, giving the awakened thread no scheduling head start.
     ConfigManager._kick_ip_probe()
     assert ConfigManager._ip_probe_in_flight.is_set(), 'kick 必须同步预置 in-flight'
     assert ConfigManager.join_ip_probe(timeout=5) is True, \
@@ -2234,8 +2234,8 @@ def test_provisional_predicate_with_snapshot_does_not_reread_config(monkeypatch)
 
     class _CM(config_manager_pkg.voice_storage.VoiceStorageMixin):
         def get_core_config(self):
-            # 计数而不是抛：谓词整体包在 try/except 里，抛异常会被吞成
-            # 「保守 True」，与正确行为在断言上无差别（变异实测漏过）。
+            # Count rather than raise: the predicate catches exceptions and returns conservative True,
+            # indistinguishable from correct behavior in assertions, confirmed by mutation testing.
             reads['n'] += 1
             return {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.tech/core'}
 
@@ -2246,7 +2246,7 @@ def test_provisional_predicate_with_snapshot_does_not_reread_config(monkeypatch)
     cfg = {'coreApi': 'free', 'CORE_URL': 'wss://www.lanlan.tech/core'}
     assert cm._region_verdict_is_provisional(cfg) is True
     assert reads['n'] == 0, '传入快照时不应再自读配置（同步读会跑在事件循环上）'
-    # 不传快照的自读分支仍然可用
+    # Self-reading without a supplied snapshot remains supported.
     assert cm._region_verdict_is_provisional() is True
     assert reads['n'] == 1
 
@@ -2268,13 +2268,13 @@ def test_deprecated_voice_migration_respects_the_privacy_gate(monkeypatch):
 
     class _CM(config_manager_pkg.voice_storage.VoiceStorageMixin):
         def get_core_config(self):
-            # livestream 全派生形态：free 路由但没有任何 lanlan 官方 host
+            # Fully derived livestream configuration: free routing without any official lanlan hosts.
             return {'coreApi': 'free', 'CORE_API_TYPE': 'free',
                     'CORE_URL': 'ws://192.168.1.9:8000/tok/core'}
 
         def _check_non_mainland(self):
-            # 计数而不是抛：remap 的兜底把异常吞成 overseas=False，抛异常的
-            # 断言与「压根没调用」结果相同，测不出差别（变异实测漏过）。
+            # Count rather than raise: remap swallows exceptions as overseas=False, making raising assertions
+            # indistinguishable from no invocation, as mutation testing showed.
             geo_calls['n'] += 1
             return False
 
@@ -2350,8 +2350,8 @@ def test_awakened_retry_stays_in_flight_across_rollover(monkeypatch):
 
     monkeypatch.setattr(ConfigManager, '_ip_probe_once', staticmethod(_once))
 
-    # 拉宽滚动窗口：下一轮尝试置位前的资格复查改成慢读，确定性地暴露
-    # 「失败 finally 清位 → 复查 → 再置位」之间的间隙
+    # Widen the rollover window by slowing eligibility rereads before setting the next attempt,
+    # deterministically exposing the failure-finally-clear -> recheck -> set gap.
     def _slow_eligibility():
         real_time.sleep(0.2)
         return True
@@ -2362,8 +2362,8 @@ def test_awakened_retry_stays_in_flight_across_rollover(monkeypatch):
     _Probe()._ensure_ip_probe_started()
     assert entered.wait(5), '首次尝试未开始'
 
-    ConfigManager._kick_ip_probe()      # kick 恰落在在飞尝试期间
-    fail_gate.set()                     # 让该尝试立刻失败，进入滚动
+    ConfigManager._kick_ip_probe()      # kick arrives during an in-flight attempt.
+    fail_gate.set()                     # Fail that attempt immediately to start rollover.
     assert ConfigManager.join_ip_probe(timeout=5) is True, \
         '滚动窗口（失败 finally → 资格复查 → 下一轮置位）里 join 不该把被唤醒的重试当成退避放弃'
     assert ConfigManager._ip_check_cache is True
@@ -2405,7 +2405,7 @@ def test_kick_racing_the_attempt_finally_keeps_the_marker(monkeypatch):
     calls = _patch_probe_once(monkeypatch, [OSError('down'), 'US'])
 
     def _slow_eligibility():
-        real_time.sleep(0.2)        # 拉宽滚动窗口，让误清必然被 join 采样到
+        real_time.sleep(0.2)        # Widen rollover so join necessarily samples incorrect clearing.
         return True
 
     monkeypatch.setattr(ConfigManager, '_free_route_still_needs_region',
@@ -2414,8 +2414,8 @@ def test_kick_racing_the_attempt_finally_keeps_the_marker(monkeypatch):
     _Probe()._ensure_ip_probe_started()
     assert entered_clear.wait(5), '首次失败未进入 finally 清位'
 
-    # kick 在「finally 已判定要清、尚未清完」的窗口里到达——锁实现把它挡在临界区
-    # 外直到清位完成，随后整体置位；无锁实现的两步会被这次 clear 抹掉
+    # kick arrives after finally decided to clear but before clearing completes; locking keeps it outside
+    # until clearing finishes, then sets all flags. Unlocked two-step updates are erased by that clear.
     kicker = threading.Thread(target=ConfigManager._kick_ip_probe, daemon=True)
     kicker.start()
     real_time.sleep(0.1)
@@ -2440,7 +2440,7 @@ def test_agent_url_alone_never_triggers_the_probe():
     assert ConfigManager._config_needs_region(
         {'AGENT_MODEL_URL': 'https://www.lanlan.tech/text/v1',
          'CORE_URL': 'https://api.openai.com/v1'}) is False
-    # 其它免费 URL 照常触发——排除只针对 Agent 槽
+    # Other free URLs still trigger; exclusion applies only to the Agent slot.
     assert ConfigManager._config_needs_region(
         {'AGENT_MODEL_URL': 'https://www.lanlan.tech/text/v1',
          'CORE_URL': 'wss://www.lanlan.tech/core'}) is True
@@ -2482,7 +2482,7 @@ def test_leaving_the_free_route_bypasses_a_wedged_probe(monkeypatch):
 
     def _once():
         wedged.set()
-        release.wait(10)          # 模拟卡在 getaddrinfo
+        release.wait(10)          # Simulate blocked getaddrinfo.
         raise OSError('resolver timed out')
 
     monkeypatch.setattr(ConfigManager, '_ip_probe_once', staticmethod(_once))

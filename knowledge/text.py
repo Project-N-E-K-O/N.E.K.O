@@ -32,31 +32,12 @@ from __future__ import annotations
 import re
 import unicodedata
 
+from utils.prompt_fence import neutralize_fence, strip_chat_markup  # noqa: F401 - re-exported
+
 
 # Control characters, plus lone UTF-16 surrogates: JSON can carry "\ud800",
 # but such a string cannot be encoded as UTF-8 again.
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ud800-\udfff]")
-_CHAT_TOKEN_RE = re.compile(
-    r"<\|\s*(?:im_start|im_end|im_sep|endoftext|system|user|assistant|"
-    r"start_header_id|end_header_id|eot_id|begin_of_text)\s*\|>",
-    re.IGNORECASE,
-)
-# Unicode default-ignorable code points, rendered as nothing: C1 controls
-# (NEL becomes a line break before these are removed), soft hyphen, combining
-# grapheme joiner, zero-width spaces/joiners, bidi controls, BOM, Hangul
-# fillers, variation selectors, tags. They are removed from pack text, and the
-# role-marker pattern also tolerates them, so an invisible prefix cannot hide
-# a line-leading role.
-_INVISIBLE = (
-    "\x80-\x9f\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f"
-    "\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0"
-    "\U0001d173-\U0001d17a\U000e0000-\U000e0fff"
-)
-_INVISIBLE_RE = re.compile(f"[{_INVISIBLE}]")
-_ROLE_MARKER_RE = re.compile(
-    rf"(?im)^[ \t{_INVISIBLE}]*(?:system|developer|assistant|user|human)[ \t{_INVISIBLE}]*[:：]"
-)
-_FENCE_RUN_RE = re.compile(r"={3,}")
 _HORIZONTAL_SPACE_RE = re.compile(r"[ \t]+")
 _BLANK_LINES_RE = re.compile(r"\n{3,}")
 _TITLE_SPACE_RE = re.compile(r"\s+")
@@ -74,53 +55,6 @@ _CJK_RANGES = (
 _TOKEN_RE = re.compile(rf"[{_CJK_RANGES}]+|[^\W_{_CJK_RANGES}]+")
 _CJK_RUN_RE = re.compile(rf"^[{_CJK_RANGES}]+$")
 MAX_QUERY_TOKENS = 128
-
-
-_MAX_MARKUP_PASSES = 16
-_UNICODE_LINE_BREAKS = str.maketrans({"\u0085": "\n", "\u2028": "\n", "\u2029": "\n"})
-
-
-def _drop_orphan_marks(text: str) -> str:
-    """Remove combining marks that start a line: they attach to nothing and
-    would otherwise sit, invisible, in front of a role marker."""
-    if not any(unicodedata.category(ch).startswith("M") for ch in text):
-        return text
-    lines = text.split("\n")
-    for index, line in enumerate(lines):
-        start = 0
-        while start < len(line) and (
-            unicodedata.category(line[start]).startswith("M") or line[start] in " \t"
-        ):
-            start += 1
-        if start and any(unicodedata.category(ch).startswith("M") for ch in line[:start]):
-            lines[index] = line[start:]
-    return "\n".join(lines)
-
-
-def strip_chat_markup(value: str) -> str:
-    """Remove chat-control tokens and role markers until a fixed point.
-
-    Unicode line breaks (NEL, LS, PS) become ``\n`` first: a role marker after
-    one of them starts a line for a reader, but not for ``^`` in a regex.
-    """
-    text = _INVISIBLE_RE.sub("", str(value or "").translate(_UNICODE_LINE_BREAKS))
-    for _ in range(_MAX_MARKUP_PASSES):
-        cleaned = _CHAT_TOKEN_RE.sub("", text)
-        cleaned = _drop_orphan_marks(cleaned)
-        cleaned = _ROLE_MARKER_RE.sub("", cleaned)
-        if cleaned == text:
-            return cleaned
-        text = cleaned
-    # Deliberately nested markup: stop rescanning (each pass is linear, an
-    # unbounded loop is not) and defuse what is left in one pass, without
-    # deleting anything that could expose yet another marker.
-    text = text.replace("<", "\u2039").replace(">", "\u203a")
-    return _ROLE_MARKER_RE.sub(lambda match: match.group(0)[:-1] + "\u2236", text)
-
-
-def neutralize_fence(value: str) -> str:
-    """Shorten ``=`` runs so content can never reproduce a fence line."""
-    return _FENCE_RUN_RE.sub("==", str(value or ""))
 
 
 def sanitize_external_text(value: object, *, max_chars: int) -> str:

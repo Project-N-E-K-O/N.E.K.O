@@ -300,8 +300,8 @@ def _apply_bundle_to_local_cloudsave(
     managed_relative_paths = {"manifest.json", *(str(path) for path in manifest_files.keys())}
     payload_relative_paths = sorted(path for path in managed_relative_paths if path != "manifest.json")
 
-    # manifest 里的 files key 与 zip 条目名同属不可信输入，staging 内的读写
-    # 拼接统一走 _resolve_safe_archive_target 约束在各自 stage 根内。
+    # Both manifest file keys and ZIP entry names are untrusted input; resolve all staging read/write
+    # paths through _resolve_safe_archive_target to keep them inside their respective stage roots.
     staged_source_paths: dict[str, Path] = {}
     for relative_path in managed_relative_paths:
         staged_file = _resolve_safe_archive_target(stage_cloudsave_root, relative_path)

@@ -198,7 +198,7 @@ def test_real_plugin_host_lists_actions_without_running_context(tmp_path):
             entry_point="tests.fixtures.plugin_test_ui_context_fixture:HangingUiContextFixturePlugin",
             config_path=config)
         try:
-            await host.start(message_target_queue=asyncio.Queue())
+            await host.start()
             context = await host.get_ui_context("__chat_card__", timeout=5)
             assert [a["id"] for a in context["actions"]] == ["ping"]
             assert not context.get("context_error")

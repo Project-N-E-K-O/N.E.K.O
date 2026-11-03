@@ -30,7 +30,7 @@ def normalize_watch_live_locale(lang: str | None) -> str:
 # a short response to plugin messages in a reaction gap, and an intermission
 # (one-line summary plus replies) after a video in automatic mode.
 # Placeholders are substituted with str.replace, so JSON braces stay literal.
-# {character} = catgirl name; {master} = the user's display name.
+# {character} = neko name; {master} = the user's display name.
 WATCH_LIVE_SYSTEM_PROMPT = {
     'zh': """你是{character}，正在和{master}一起看视频，画面和声音都在这个观看窗口里。
 ======以下为角色设定======

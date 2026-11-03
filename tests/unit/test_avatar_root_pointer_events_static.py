@@ -62,6 +62,28 @@ def test_live2d_return_keeps_floating_toolbar_drag_passthrough():
     assert toolbar_children_selector_index < passthrough_declaration_index
 
 
+def test_model_drag_suppression_covers_pngtuber_toolbar_and_closes_its_popups():
+    drag_source = AVATAR_DRAG_PATH.read_text(encoding="utf-8")
+    drag_rule_block = drag_source[
+        drag_source.index("style.textContent = ["):
+        drag_source.index("].join('\\n');")
+    ]
+    helper_block = drag_source[
+        drag_source.index("function disableButtonPointerEvents() {"):
+        drag_source.index("function restoreButtonPointerEvents() {")
+    ]
+
+    for selector in (
+        "'body.' + DRAGGING_CLASS + ' .pngtuber-floating-btn,'",
+        "'body.' + DRAGGING_CLASS + ' .pngtuber-trigger-btn,'",
+        "'body.' + DRAGGING_CLASS + ' [id^=\"pngtuber-btn-\"],'",
+        "'body.' + DRAGGING_CLASS + ' #pngtuber-floating-buttons,'",
+        "'body.' + DRAGGING_CLASS + ' #pngtuber-floating-buttons *,',",
+    ):
+        assert selector in drag_rule_block
+    assert "window.pngtuberManager" in helper_block
+
+
 def test_model_reload_live2d_restore_keeps_root_container_passthrough():
     source = read_js_parts(APP_INTERPAGE_PATH)
     reload_block = source[

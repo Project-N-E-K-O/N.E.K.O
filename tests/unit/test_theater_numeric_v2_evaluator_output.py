@@ -79,7 +79,7 @@ def test_fence_does_not_authorize_unverified_destination(engine):
 
 @pytest.mark.parametrize('active', [False, True])
 def test_stale_invitation_requires_reply_target_binding(engine, active):
-    """邀请隔过一轮后，含糊同意必须明确指向原邀请，不能抢走最近互动的回复。"""  # noqa: DOCSTRING_CJK
+    """After an intervening turn, ambiguous assent must explicitly reference the original invitation, not steal the latest interaction's reply."""  # noqa: DOCSTRING_CJK
 
     session = engine.create_session(
         session_id="reply_target",
@@ -111,7 +111,7 @@ def test_stale_invitation_requires_reply_target_binding(engine, active):
     payload = {
         **json.loads(RESPONSE),
         "transition_intent": "accept",
-        # 即使模型声称指向旧邀请，确定性校验仍须找到旧邀请独有的逐字证据。
+        # Even if the model claims to reference an old invitation, deterministic validation must find verbatim evidence unique to it.
         "transition_reply_target": "pending_transition",
     }
     ambiguous = _parse_output(json.dumps(payload), engine, "放心交给我，你去吧。", session)
@@ -134,7 +134,7 @@ def test_stale_invitation_requires_reply_target_binding(engine, active):
 @pytest.mark.parametrize('destination', ['长街寻找旧信', '轨道站核对星图'])
 @pytest.mark.parametrize('boundary', ['withdrawn', 'invalidated', 'revisited', 'missing'])
 def test_withdrawn_acceptance_requires_a_current_valid_origin(engine, destination, boundary):
-    """明确重新接受可保留模型判定，但不能跨越错误邀请或场景访问边界。"""  # noqa: DOCSTRING_CJK
+    """Explicit renewed acceptance may preserve the model decision, but cannot cross wrong-invitation or scene-visit boundaries."""  # noqa: DOCSTRING_CJK
 
     session = engine.create_session(
         session_id='withdrawn_parser', catgirl_binding={'catgirl_name': '测试猫娘'},
@@ -160,13 +160,13 @@ def test_withdrawn_acceptance_requires_a_current_valid_origin(engine, destinatio
                'transition_reply_target': 'pending_transition'}
     parsed = _parse_output(json.dumps(payload), engine, f'我改主意了，我们去{destination}。', session)
     assert parsed.transition_intent == ('accept' if boundary == 'withdrawn' else 'unclear')
-    # 没有新的模型接受判断时，仅出现目的地或历史邀请不会恢复授权。
+    # Without a new model acceptance decision, a destination or historical invitation alone cannot restore authorization.
     payload['transition_intent'] = 'unclear'
     assert _parse_output(json.dumps(payload), engine, f'去{destination}的事再说吧。', session).transition_intent == 'unclear'
 
 
 def test_represented_invitation_refreshes_reply_binding(engine):
-    """正文在上一轮重新公开有效邀请时，玩家可用自然的“带路吧”直接接受。"""  # noqa: DOCSTRING_CJK
+    """When the previous turn publicly restates a valid invitation, the player can accept naturally with "带路吧"."""  # noqa: DOCSTRING_CJK
 
     session = engine.create_session(
         session_id="refreshed_reply_target",
@@ -208,7 +208,7 @@ def test_represented_invitation_refreshes_reply_binding(engine):
 
 
 def test_latest_visible_acceptance_button_can_bind_repeated_invitation(engine):
-    """旧邀请被最新正文重述后，用户点击最新接受按钮仍应正常换幕。"""  # noqa: DOCSTRING_CJK
+    """After the latest body restates an old invitation, clicking its latest accept button must still switch scenes normally."""  # noqa: DOCSTRING_CJK
 
     session = engine.create_session(
         session_id="repeated_offer_button",
@@ -253,7 +253,7 @@ def test_latest_visible_acceptance_button_can_bind_repeated_invitation(engine):
 
 
 def test_latest_button_does_not_bind_unrelated_stale_invitation(engine):
-    """最新互动没有重述旧邀请时，其按钮不能误接受旧邀请。"""  # noqa: DOCSTRING_CJK
+    """Without restating the old invitation in the latest interaction, its button must not accidentally accept that invitation."""  # noqa: DOCSTRING_CJK
 
     session = engine.create_session(
         session_id="unrelated_latest_button",
@@ -297,7 +297,7 @@ def test_latest_button_does_not_bind_unrelated_stale_invitation(engine):
 
 
 def test_evaluator_rejects_target_scene_fact_before_entering_target(engine):
-    """出口预览不能让判定器提前完成尚未进入的目标幕。"""  # noqa: DOCSTRING_CJK
+    """Exit previews must not let the judge prematurely finish a destination scene not yet entered."""  # noqa: DOCSTRING_CJK
 
     engine.fact_contract["scene:next:life_established"] = {
         "value_type": "bool",
@@ -333,7 +333,7 @@ def test_evaluator_rejects_target_scene_fact_before_entering_target(engine):
 
 
 def test_evaluator_accepts_only_evidenced_fact_candidates():
-    """判定器只把剧本合同内、能从玩家原话逐字核对的候选交给 Runtime。"""  # noqa: DOCSTRING_CJK
+    """The judge passes Runtime only candidates within the script contract, verifiable verbatim against the player's original words."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     story["fact_contract"] = {
@@ -371,7 +371,7 @@ def test_evaluator_accepts_only_evidenced_fact_candidates():
 
 
 def test_evaluator_drops_fact_candidates_without_contract_or_verifiable_quote(engine):
-    """脏事实候选不能阻断合法回合，也不能绕过剧本白名单。"""  # noqa: DOCSTRING_CJK
+    """Dirty fact candidates must neither block valid turns nor bypass the script allowlist."""  # noqa: DOCSTRING_CJK
 
     payload = json.loads(RESPONSE)
     payload["fact_candidates"] = [{

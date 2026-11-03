@@ -1,12 +1,12 @@
-"""web_search 插件解析层测试。
+"""web_search plugin parser tests.
 
-覆盖用户报告的三类问题：
-1. 非法字符——Baidu 页面里的 iconfont 私有区字符、编码错位产生的 U+FFFD、
-   零宽/bidi 控制符进入 LLM/TTS 被读出乱码；
-2. 解析瑕疵——容器里第一个 <a> 是卡片子链接/相关搜索词，被当成结果标题；
-3. 不安全——javascript:/相对链接原样返回、反爬验证页被静默解析成 0 条。
+Cover three user-reported problem classes:
+1. Invalid characters: Baidu iconfont PUA, U+FFFD from encoding mismatch,
+   and zero-width/bidi controls entering LLM/TTS and spoken as gibberish;
+2. Parsing defects: a container's first <a> is a card sublink/related search, mistaken for a result title;
+3. Unsafe output: javascript:/relative links returned unchanged, anti-bot challenge pages silently parsed as zero results.
 
-不可见/私有区字符一律用 \\u 转义书写，避免源码里出现肉眼不可见的字面量。
+Write invisible/private-use characters with \\u escapes, avoiding invisible source literals.
 """
 from __future__ import annotations
 
@@ -16,9 +16,9 @@ from plugin.plugins.web_search import _parsing as p
 
 pytestmark = pytest.mark.plugin_unit
 
-_PUA = "\ue687"      # Baidu iconfont 私有区字符（实测页面中出现）
-_ZWSP = "\u200b"     # 零宽空格
-_RLO = "\u202e"      # bidi 右到左覆盖符
+_PUA = "\ue687"      # Baidu iconfont private-use characters (observed on actual pages).
+_ZWSP = "\u200b"     # Zero-width space.
+_RLO = "\u202e"      # Bidi right-to-left override character.
 _REPL = "\ufffd"     # U+FFFD replacement character
 
 
@@ -48,8 +48,8 @@ def test_sanitize_empty() -> None:
 # ---------------------------------------------------------------------------
 
 def test_decode_gbk_bytes_mislabeled_as_utf8_header() -> None:
-    # 实测过 Baidu 会用 charset=utf-8 的响应头下发 GBK 字节，
-    # 严格解码失败后应回退 gb18030 而不是产出一串 U+FFFD
+    # Baidu has been observed sending GBK bytes under charset=utf-8 response headers;
+    # strict decoding failure should fall back to gb18030 rather than producing U+FFFD sequences.
     raw = "<html><body>查看40天预报</body></html>".encode("gbk")
     text = p.decode_html(raw, "text/html;charset=utf-8")
     assert "查看40天预报" in text
@@ -84,14 +84,14 @@ def test_is_http_url_accepts_http_absolute(url: str) -> None:
 
 
 @pytest.mark.parametrize("url", [
-    "/s?wd=%E4%BB%8A%E5%A4%A9&rn=8",   # 相关搜索的站内相对链接
+    "/s?wd=%E4%BB%8A%E5%A4%A9&rn=8",   # Site-relative related-search links.
     "javascript:void(0)",
     "ftp://example.com/x",
     "",
-    "http://",                          # 无 netloc
-    "https://@",                        # netloc 非空但 hostname 为 None
-    "http://:80",                       # 同上，只有端口
-    "http://[",                         # 非法 IPv6，urlparse 抛 ValueError
+    "http://",                          # Missing netloc.
+    "https://@",                        # Nonempty netloc but hostname=None.
+    "http://:80",                       # Same, with only a port.
+    "http://[",                         # Invalid IPv6: urlparse raises ValueError.
 ])
 def test_is_http_url_rejects_unsafe(url: str) -> None:
     assert not p.is_http_url(url)
@@ -154,10 +154,10 @@ def test_parse_baidu_picks_h3_titles_only() -> None:
 
 def test_parse_baidu_sanitizes_title_and_snippet() -> None:
     results = p.parse_baidu_html(_BAIDU_HTML, max_results=10)
-    # PUA 字符被清掉、零宽空格被清掉、&nbsp; 归一为普通空格
+    # Remove PUA/zero-width characters; normalize &nbsp; to ordinary spaces.
     assert results[0]["title"] == "上海天气预报"
     assert results[0]["snippet"] == "今日多云 33/28℃"
-    # content-right 哈希类名命中且清洗生效
+    # content-right hashed class matches and cleaning applies.
     assert results[1]["snippet"] == "权威发布上海天气预警"
 
 
@@ -166,9 +166,9 @@ def test_parse_baidu_urls_are_absolute_http() -> None:
     assert all(r["url"].startswith(("http://", "https://")) for r in results)
     joined = " ".join(r["title"] + r["url"] for r in results)
     assert "javascript" not in joined
-    assert "查看40天预报" not in joined       # 卡片子链接没被当成结果
-    assert "今天上海的气温是多少" not in joined  # 相关搜索词没被当成结果
-    assert "XX商城" not in joined             # 推广容器被跳过
+    assert "查看40天预报" not in joined       # Card sublinks were not treated as results.
+    assert "今天上海的气温是多少" not in joined  # Related-search terms were not treated as results.
+    assert "XX商城" not in joined             # Skip promotional containers.
 
 
 def test_parse_baidu_respects_max_results() -> None:
@@ -236,7 +236,7 @@ def test_parse_ddg_html_decodes_uddg_and_sanitizes() -> None:
 def test_ddg_ad_filter_only_matches_yjs_wrapper() -> None:
     assert p.is_ddg_ad_url("https://duckduckgo.com/y.js?ad_provider=bing&u3=x")
     assert p.is_ddg_ad_url("//duckduckgo.com/y.js?ad_provider=x")
-    # 目标 URL 带同名参数、或路径里碰巧含 y.js 字样的，都不是广告
+    # Target URLs with same-name parameters or y.js incidentally in paths are not ads.
     assert not p.is_ddg_ad_url("https://shop.example.com/p?ad_provider=bing")
     assert not p.is_ddg_ad_url("https://example.com/duckduckgo.com/y.js")
 
@@ -294,7 +294,7 @@ _DDG_LITE_HTML = f"""
 
 def test_parse_ddg_lite_sanitizes_and_skips_relative() -> None:
     results = p.parse_ddg_lite_html(_DDG_LITE_HTML, max_results=10)
-    # 协议相对（//duckduckgo.com/...）与绝对跳转链接都被解包，站内相对链接被拒
+    # Unwrap both protocol-relative (//duckduckgo.com/...) and absolute redirect links; reject site-relative links.
     assert [(r["title"], r["url"]) for r in results] == [
         ("Result One", "https://example.com/a"),
         ("Result Two", "https://example.com/b"),

@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""best-effort 后台压缩（主路径压缩失败时兜底）回归测试。
+"""Regression tests for best-effort background compression after main-path failure.
 
-主路径 update_history 压缩失败（如 RPM 限流连续失败）→ _on_compress_done(ok=False)
-起一个受保护的一次性后台压缩；主路径某轮成功 → ok=True cancel 在跑的后台。失败退避
-（复用 review 的 Gate 6 模式）防 summary 模型持续故障时每轮起注定失败的任务空烧。
+Main-path update_history compression fails (e.g. repeated RPM limits) -> _on_compress_done(ok=False)
+starts one shielded background compression; a successful main-path round -> ok=True cancels running background work. Failure backoff
+(reusing review's Gate 6 pattern) avoids futile tasks every round during sustained summary-model failure.
 """
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ async def _cleanup_task(task):
         try:
             await task
         except (asyncio.CancelledError, Exception):
-            # cleanup-only：吞掉 cancel 抛出的 CancelledError 及 task 内部任何异常
+            # Cleanup only: swallow CancelledError from cancel and any task-internal exceptions.
             pass
 
 
@@ -290,7 +290,7 @@ async def test_publication_guard_covers_group_memory_scoped_writes():
         _call_next,
     )
     assert admitted.status_code == 200
-    # 排空账本必须看得见它，否则 release 会在它写到一半时 dispose。
+    # The drain ledger must see it, or release disposes it mid-write.
     assert observed_active == [1]
     assert memory_server.runtime._active_character_requests.get(name, 0) == 0
 
@@ -304,7 +304,7 @@ async def test_publication_guard_covers_group_memory_scoped_writes():
         assert response.status_code == 409
         blocked.assert_not_awaited()
 
-        # 只读的 scoped_context 不进围栏（读路径由引擎准入检查兜底）。
+        # Read-only scoped_context bypasses the fence (engine admission checks protect reads).
         read_next = AsyncMock(return_value=StarletteJSONResponse({"status": "ok"}))
         read_response = await memory_server.runtime.character_publication_guard(
             _memory_server_request(f"/internal/memory/{name}/scoped_context"),
@@ -344,7 +344,7 @@ async def test_admission_lease_survives_a_hold_flip_through_the_real_middleware(
         observed["admitted"] = memory_server.runtime._is_character_engine_admitted(
             lanlan_name
         )
-        # release 在这个请求准入之后才设 hold：已准入的写入必须能写完。
+        # release sets hold only after this request enters: admitted writes must finish.
         memory_server.review._publication_held_derived_task_names.add(lanlan_name)
         observed["admitted_after_hold"] = (
             memory_server.runtime._is_character_engine_admitted(lanlan_name)
@@ -360,7 +360,7 @@ async def test_admission_lease_survives_a_hold_flip_through_the_real_middleware(
             response = await client.post(f"/process/{name}")
             assert response.status_code == 200
 
-            # hold 已生效：下一个请求必须被拒。
+            # Hold is active: reject the next request.
             blocked = await client.post(f"/process/{name}")
             assert blocked.status_code == 409
             assert blocked.json()["status"] == "cancelled"
@@ -370,7 +370,7 @@ async def test_admission_lease_survives_a_hold_flip_through_the_real_middleware(
     assert observed["active"] == 1
     assert observed["admitted"] is True
     assert observed["admitted_after_hold"] is True
-    # 请求结束后账本必须归零，否则 release 会永远排空不掉。
+    # Ledger must return to zero after the request, or release can never drain.
     assert memory_server.runtime._active_character_requests.get(name, 0) == 0
 
 
@@ -386,16 +386,18 @@ def test_every_character_scoped_route_is_classified_for_the_fence():
 
     runtime = memory_server.runtime
     unfenced_by_design = {
-        # 只读：读路径由引擎准入检查兜底，围栏住只会白白打断读取。
+        # Read-only: engine admission checks protect reads; fencing only interrupts them unnecessarily.
         ("/query_memory/{lanlan_name}", "POST"),
         ("/internal/memory/{lanlan_name}/scoped_context", "POST"),
-        # 串门记忆浏览器的只读枚举（OD-18）：不写盘，设计稿明确「不进围栏」。
+        # Passively injected memory recall: read-only recall pool + pure computation, no character-file writes.
+        ("/internal/memory/{lanlan_name}/turn_context", "POST"),
+        # Read-only visit-memory browser enumeration (OD-18): no disk writes, explicitly unfenced by design.
         ("/internal/memory/{lanlan_name}/scoped_subjects", "GET"),
-        # 带键写入的清除代数只读查询：只读墓碑文件，不写盘
+        # Read-only clear-generation query for keyed writes: reads tombstone files without writes.
         ("/internal/memory/{lanlan_name}/forget_epochs", "GET"),
-        # 用户主动触发的本机重复表达分析：只读历史 + 纯计算，不写任何角色
-        # 文件。角色正在删除/改名时，只读引擎准入检查已经会拒绝，围栏住只会
-        # 让一次用户点击白白失败。
+        # User-triggered local repetition analysis: read-only history + pure computation, no character
+        # files written. Engine read admission already rejects deleting/renaming characters; fencing only
+        # needlessly fails a user click.
         ("/internal/memory/{lanlan_name}/repetition_insights", "POST"),
         ("/followup_topics/{lanlan_name}", "GET"),
         ("/get_recent_history/{lanlan_name}", "GET"),
@@ -406,17 +408,17 @@ def test_every_character_scoped_route_is_classified_for_the_fence():
         ("/api/memory/funnel/{lanlan_name}", "GET"),
         ("/prompt-locale/{lanlan_name}", "GET"),
         ("/last_conversation_gap/{lanlan_name}", "GET"),
-        # 渲染型读取；顺带刷新 suppress 冷却是 best-effort，而且它本身对
-        # 「角色已不在配置中」有短路分支，不值得为它换来发布窗口里的 409。
+        # Rendering read; refreshing suppress cooldown is best-effort and already short-circuits
+        # characters absent from config, not worth a 409 during publishing.
         ("/get_settings/{lanlan_name}", "GET"),
-        # 会话开场读取。三个调用方（lifecycle 起会话、lifecycle 热切换、
-        # 主动搭话）都把非 2xx 直接变成 ConnectionError 让会话启动失败，
-        # 而它那点 locale 落盘本来就有 outbox durable 重试兜底——为可延迟的
-        # 写去换用户可见的启动硬失败不划算。归入 JSON 侧写入那条 follow-up。
+        # Session-opening read. All three callers (lifecycle session start, hot switch,
+        # proactive chat) turn non-2xx into ConnectionError and fail startup; its minor locale
+        # persistence already has durable outbox retries. A deferrable write is not worth a visible
+        # hard session-start failure. Include in the JSON-side-write follow-up.
         ("/new_dialog/{lanlan_name}", "GET"),
-        # 只取消任务，不写角色文件——删除期间恰恰需要它还能用。
+        # Cancels tasks without writing character files, particularly needed during deletion.
         ("/cancel_correction/{lanlan_name}", "POST"),
-        # 围栏本身就是它设的，自己不能被自己拦。
+        # It establishes the fence itself and cannot be blocked by its own fence.
         ("/release_character/{lanlan_name}", "POST"),
     }
     probe_name = "围栏探针角色"
@@ -517,8 +519,8 @@ async def test_deferred_new_dialog_locale_retry_joins_the_registry():
         ), patch.object(
             memory_server.runtime, "_config_manager", fake_config,
         ):
-            # 端点后半段要整套 memory 组件；这里只关心「延迟重试有没有被登记」，
-            # 而登记只发生在这条异常分支里，所以断言 registry 有 1 条不会空过。
+            # The endpoint's later half needs all memory components; here only verify delayed-retry registration,
+            # which occurs solely in this exception branch, making the registry-size-one assertion substantive.
             with contextlib.suppress(Exception):
                 await routes_module._new_dialog(name, "zh-TW", None)
             await asyncio.wait_for(started.wait(), timeout=1)
@@ -550,10 +552,10 @@ def test_every_memory_server_background_spawn_is_drainable():
     import app.memory_server as memory_server_package
 
     covered_elsewhere = {
-        # 进程级常驻循环 + embedding bootstrap：不属于任何角色，
-        # release 不该、也不能取消它们。
+        # Process-lifetime loops + embedding bootstrap belong to no character;
+        # release must not and cannot cancel them.
         ("runtime.py", "ensure_memory_server_runtime_initialized"),
-        # 按角色登记进 compress_backup_tasks，由 cancel_character_derived_tasks 排空。
+        # Register by character in compress_backup_tasks for cancel_character_derived_tasks to drain.
         ("review.py", "_on_compress_done"),
     }
 
@@ -684,14 +686,14 @@ def test_dispose_engine_keeps_the_cached_pool_when_its_disposal_fails(tmp_path):
     cache = SQLChatMessageHistory._engine_cache
     saved = {key: cache[key] for key in (readonly_key, writable_key) if key in cache}
     try:
-        # 只挂 writable 这一个键：一次调用对同一个池只该释放一次。
+        # Include only the writable key: release a given pool only once per invocation.
         cache[writable_key] = cached_engine
 
         with pytest.raises(OSError):
             manager.dispose_engine(name, retain_on_failure=True)
 
         assert cached_engine.dispose.call_count == 1
-        # 缓存条目必须还在，否则重试再也够不到这个 pool。
+        # Cache entries must remain, or retries cannot reach this pool again.
         assert cache.get(writable_key) is cached_engine
         assert manager.db_paths[name] == str(db_path)
 
@@ -728,7 +730,7 @@ def test_dispose_engine_keeps_the_cache_entry_when_the_primary_engine_fails(tmp_
         with pytest.raises(OSError):
             manager.dispose_engine(name, retain_on_failure=True)
 
-        # 同一个对象在一次调用里只 dispose 一次，且失败后缓存条目要留住。
+        # Dispose each object only once per invocation, retaining cache entries after failure.
         assert engine.dispose.call_count == 1
         assert cache.get(readonly_key) is engine
         assert manager.engines[name] is engine
@@ -810,7 +812,7 @@ async def test_publication_guard_releases_the_slot_when_the_endpoint_raises():
 
     assert memory_server.runtime._active_character_requests.get(name, 0) == 0
     assert name not in memory_server.runtime._admitted_character_context.get()
-    # 账本干净 → 后续 release 能立刻排空。
+    # Clean ledger -> subsequent release drains immediately.
     assert await memory_server.runtime._wait_for_character_requests(name, 0.05) is True
 
 
@@ -853,7 +855,7 @@ async def test_release_gives_up_when_the_settle_lock_is_held_too_long():
 
     assert result.status_code == 503
     fake_time_manager.dispose_engine.assert_not_called()
-    # 声明已归还，主进程补偿后新写入能重新准入。
+    # Declare returned; main-process compensation allows new writes to enter again.
     assert memory_server.runtime._is_character_publication_admitted(name)
     memory_server.review._retired_derived_task_names.discard(name)
 
@@ -927,11 +929,11 @@ def test_engine_repair_branch_self_heals_after_a_failed_disposal(tmp_path):
         with pytest.raises(OSError):
             manager._ensure_engine_exists(name)
 
-        # 簿记必须全清：下一次调用要能走到重建分支，而不是又撞同一个 dispose。
+        # Clear all bookkeeping so the next call reaches reconstruction rather than the same dispose again.
         assert name not in manager.engines
         assert name not in manager.db_paths
-        # 这一场景里失败的是 manager 自己那个 engine、缓存里没有对应条目，
-        # 所以不留账（留了也够不到）。缓存里真有失败 pool 的情形见
+        # This scenario fails the manager's own engine with no corresponding cache entry,
+        # so retain no ledger entry (it cannot reach it anyway). For an actual failed cached pool, see
         # test_release_reaches_a_failed_pool_after_a_path_drift_rebuild。
         assert name not in manager._undisposed_pools
 
@@ -939,10 +941,10 @@ def test_engine_repair_branch_self_heals_after_a_failed_disposal(tmp_path):
         with patch.object(
             manager, "_create_engine_for", create=True, return_value=created,
         ):
-            # 重建分支的细节各版本不同，这里只断言「不再重复抛同一个 dispose 错误」。
+            # Reconstruction details vary by version; assert only that the same dispose error no longer repeats.
             try:
                 manager._ensure_engine_exists(name, expected)
-            except OSError as exc:  # pragma: no cover - 只在回归时触发
+            except OSError as exc:  # pragma: no cover - Triggered only on regression.
                 pytest.fail(f"repair branch did not self-heal: {exc}")
             except Exception:
                 pass
@@ -980,7 +982,7 @@ def test_release_reaches_a_failed_pool_after_a_path_drift_rebuild(tmp_path):
             manager.dispose_engine(name)
         assert old_writable in manager._undisposed_pools[name]
 
-        # 路径漂移重建：db_path 被换成新路径，旧路径再也推不出来。
+        # Rebuild after path drift: db_path changed, so the old path can no longer be derived.
         manager.db_paths[name] = str(new_db_path)
         manager.engines[name] = MagicMock()
         stuck_pool.dispose.side_effect = None
@@ -1063,7 +1065,7 @@ async def test_release_cancels_post_turn_tasks_before_draining_requests():
                     await asyncio.sleep(0)
 
             await asyncio.wait_for(_wait_for_post_turn_cancel(), timeout=1)
-            # 后台任务已经死了，但前台写入还在跑、引擎也还没释放。
+            # Background tasks are dead, but foreground writes still run and the engine is unreleased.
             assert memory_server.runtime._active_character_requests.get(name) == 1
             fake_time_manager.dispose_engine.assert_not_called()
 
@@ -1121,7 +1123,7 @@ async def test_release_gives_up_instead_of_disposing_after_the_caller_timeout():
 
     assert result.status_code == 503
     fake_time_manager.dispose_engine.assert_not_called()
-    # 声明已归还：主进程补偿后新写入必须能重新准入。
+    # Declare returned: after main-process compensation, new writes must enter again.
     assert not memory_server.review.is_character_derived_task_claim_active(
         name, claim_token,
     )
@@ -1145,7 +1147,7 @@ async def test_release_without_a_publication_hold_never_waits_for_new_writes():
     fake_time_manager = MagicMock()
     fake_time_manager.dispose_engine.return_value = True
 
-    # 一个永不结束的在途写入：真去排空就一定超时。
+    # An in-flight write that never ends: actual draining must time out.
     context_token = memory_server.runtime._begin_character_request(name)
     assert context_token is not None
     try:
@@ -1208,7 +1210,7 @@ async def test_release_skips_dispose_when_claim_withdrawn_while_draining():
                     await asyncio.sleep(0)
 
             await asyncio.wait_for(_wait_for_hold(), timeout=1)
-            # 主进程 5s 超时后的补偿：撤回声明并重新开放准入。
+            # Compensation after main-process 5s timeout: retract the declaration and reopen admission.
             await memory_server.review.release_character_derived_task_admission_claim(
                 name, claim_token,
             )
@@ -1555,7 +1557,7 @@ async def test_on_compress_done_failure_spawns_backup():
          patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()):
         await memory_server._on_compress_done(name, snapshot, ok=False, detailed=False)
         task = memory_server.compress_backup_tasks.get(name)
-        assert task is not None and not task.done()  # 起了后台兜底
+        assert task is not None and not task.done()  # Background fallback started.
         await _cleanup_task(task)
 
     memory_server.compress_backup_tasks.pop(name, None)
@@ -1574,7 +1576,7 @@ async def test_on_compress_done_success_cancels_backup():
     with patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()):
         await memory_server._on_compress_done(name, [], ok=True, detailed=False)
 
-    task.cancel.assert_called_once()  # 主路径成功 → cancel 在跑的后台
+    task.cancel.assert_called_once()  # Main-path success cancels running background work.
     memory_server.compress_backup_tasks.pop(name, None)
     memory_server.gates._maint_state.pop(name, None)
 
@@ -1596,7 +1598,7 @@ async def test_on_compress_done_in_flight_guard():
          patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()):
         await memory_server._on_compress_done(name, _history(6), ok=False, detailed=False)
 
-    # 同角色已有后台在跑 → 不重复起，仍是原 task
+    # Existing same-character background task -> do not duplicate; retain the original task.
     assert memory_server.compress_backup_tasks[name] is existing
     memory_server.compress_backup_tasks.pop(name, None)
     memory_server.gates._maint_state.pop(name, None)
@@ -1622,7 +1624,7 @@ async def test_on_compress_done_deadletter_skips_spawn():
          patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()):
         await memory_server._on_compress_done(name, snapshot, ok=False, detailed=False)
 
-    # 连续失败 ≥ N 且输入未变 → dead-letter，不再起后台；但仍裁剪兜底
+    # Consecutive failures >=N with unchanged input -> dead-letter, no background restart; trimming still provides fallback.
     assert name not in memory_server.compress_backup_tasks
     fake_mgr.enforce_hard_cap.assert_awaited_once()
     memory_server.gates._maint_state.pop(name, None)
@@ -1636,12 +1638,12 @@ async def test_on_compress_done_deadletter_resets_when_input_changed():
     from config import MEMORY_LIVENESS_MAX_ATTEMPTS
     name = "测试角色C"
     memory_server.compress_backup_tasks.pop(name, None)
-    # 退避计数已满，但记录的是「旧输入」的 fingerprint
+    # Backoff exhausted, but its fingerprint belongs to old input.
     memory_server.gates._maint_state[name] = {
         "compress_backup_fail_attempts": MEMORY_LIVENESS_MAX_ATTEMPTS,
         "compress_backup_fail_fp": build_review_fingerprint(_history(4)),
     }
-    new_snapshot = _history(8)  # 输入变了
+    new_snapshot = _history(8)  # Input changed.
 
     async def _slow_compress(*a, **k):
         await asyncio.sleep(30)
@@ -1651,7 +1653,7 @@ async def test_on_compress_done_deadletter_resets_when_input_changed():
     with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
          patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()):
         await memory_server._on_compress_done(name, new_snapshot, ok=False, detailed=False)
-        # 输入变了 → 复位放行，起了后台
+        # Changed input resets admission and starts background work.
         task = memory_server.compress_backup_tasks.get(name)
         assert task is not None
         await _cleanup_task(task)
@@ -1730,7 +1732,7 @@ async def test_run_backup_compress_failure_bumps_backoff():
     state = memory_server.gates._maint_state[name]
     assert state["compress_backup_fail_attempts"] == 1
     assert state["compress_backup_fail_fp"] == build_review_fingerprint(snapshot)
-    fake_mgr.enforce_hard_cap.assert_awaited_once()  # 后台也压不成 → 裁剪兜底
+    fake_mgr.enforce_hard_cap.assert_awaited_once()  # Background compression also fails -> trimming fallback.
     memory_server.gates._maint_state.pop(name, None)
 
 
@@ -1761,7 +1763,7 @@ async def test_run_backup_compress_merges_and_clears_backoff(tmp_path):
         SystemMessage(content="memo"),
         expected_generation=admission_generation,
     )
-    assert not memory_server.gates._maint_state[name].get("compress_backup_fail_attempts")  # 退避清零
+    assert not memory_server.gates._maint_state[name].get("compress_backup_fail_attempts")  # Reset backoff.
     memory_server.gates._maint_state.pop(name, None)
 
 

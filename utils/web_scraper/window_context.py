@@ -27,8 +27,8 @@ from urllib.parse import quote
 from utils.token_tracker import set_call_type
 from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm_async
 
-# bs4 惰性 import（各解析函数内首用加载，utils.module_warmup 后台预热兜底）：本模块被
-# system_router 顶层引用、坐在 main_server 启动 import 链上，顶层 bs4 会拖慢端口就绪。
+# Import bs4 lazily on first use inside parsers, with utils.module_warmup background warmup; system_router imports this module
+# at top level during main_server startup, so eager bs4 delays port readiness.
 if TYPE_CHECKING:
     pass
 
@@ -61,12 +61,12 @@ def get_active_window_title(include_raw: bool = False) -> Optional[Union[str, Di
         active_window = gw.getActiveWindow()
         if active_window:
             raw_title = active_window.title
-            # 截断标题以避免记录敏感信息
+            # Truncate titles to avoid logging sensitive information.
             if len(raw_title) > 30:
                 sanitized_title = raw_title[:30] + '...'
             else:
                 sanitized_title = raw_title
-            # 窗口标题是用户面对的内容，不写 logger
+            # Window titles are user-facing content; never write them through logger.
             logger.info(f"获取到活跃窗口标题 (len={len(raw_title)})")
             print(f"获取到活跃窗口标题: {sanitized_title}")
             
@@ -103,11 +103,11 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
         to avoid sending file paths, accounts and other sensitive info to the LLM API
     """
     try:
-        # 导入配置管理器
+        # Import the configuration manager.
         from utils.config_manager import ConfigManager
         config_manager = ConfigManager()
         
-        # 使用summary模型配置
+        # Use summary-model configuration.
         summary_config = await config_manager.aget_model_api_config('summary')
         
         from config import LLM_OUTPUT_GUARD_MAX_TOKENS
@@ -119,14 +119,14 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
             provider_type=summary_config.get('provider_type'),
         )
         
-        # 清理/脱敏窗口标题用于日志显示
+        # Clean/redact window titles for log display.
         if len(window_title) > 30:
             sanitized_title = window_title[:30] + '...'
         else:
             sanitized_title = window_title
         
-        # 检测区域并使用适当的提示词
-        # china_region → 'zh'（百度），否则按用户语言选择（Google）
+        # Detect region and select the appropriate prompt.
+        # china_region -> 'zh' (Baidu); otherwise select by user language (Google).
         from config.prompts.prompts_sys import _loc, SEARCH_KEYWORD_SYSTEM, SEARCH_KEYWORD_USER
         from utils.language_utils import get_global_language
         china_region = is_china_region()
@@ -134,8 +134,8 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
         system_prompt = _loc(SEARCH_KEYWORD_SYSTEM, keyword_lang)
         user_prompt = _loc(SEARCH_KEYWORD_USER, keyword_lang).format(window_title=window_title)
 
-        # Gemini 的 OpenAI 兼容接口需要实际的 user content；
-        # 仅发送 system message 可能被底层适配为空 contents。
+        # Gemini's OpenAI-compatible API requires actual user content;
+        # sending only system messages may become empty contents in underlying adapters.
         set_call_type("web_scraper")
         async with llm:  # ensure the per-call client is closed (no connection leak on repeated calls)
             response = await llm.ainvoke([  # noqa: LLM_INPUT_BUDGET  # input is the OS window title (uncapped by design, cf. llm-prompt-budget.md §6).
@@ -144,18 +144,18 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
             ])
         response_text = _extract_llm_text_content(getattr(response, 'content', None))
         if not response_text:
-            # 窗口标题不写 logger，但记下长度元数据便于调试
+            # Never log window titles through logger; retain length metadata for debugging.
             logger.warning(f"为窗口标题生成搜索关键词时收到空包 (title_len={len(window_title)})")
             print(f"为窗口标题「{sanitized_title}」生成搜索关键词时收到空包")
             clean_title = clean_window_title(window_title)
             return [clean_title, clean_title, clean_title] if clean_title else []
 
-        # 解析响应，提取3个关键词
+        # Parse the response and extract three keywords.
         queries = []
         lines = response_text.split('\n')
         for line in lines:
             line = line.strip()
-            # 移除可能的序号、标点等
+            # Remove possible numbering, punctuation, etc.
             line = re.sub(r'^[\d\.\-\*\)\]】]+\s*', '', line)
             line = line.strip('.,;:，。；：')
             if line and len(line) >= 2:
@@ -163,26 +163,26 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
                 if len(queries) >= 3:
                     break
         
-        # 如果生成的查询不足3个，用原始标题填充
+        # Fill missing queries with the original title if fewer than three were generated.
         if len(queries) < 3:
             clean_title = clean_window_title(window_title)
             while len(queries) < 3 and clean_title:
                 queries.append(clean_title)
         
-        # 窗口标题 + AI 生成的查询关键词都不写 logger
+        # Never write window titles or generated query keywords through logger.
         logger.info(f"窗口标题→查询关键词生成完成 (queries_count={len(queries[:3])})")
         print(f"为窗口标题「{sanitized_title}」生成的查询关键词: {queries}")
         return queries[:3]
         
     except Exception as e:
-        # 异常日志中也使用脱敏标题
+        # Use redacted titles in exception logs too.
         if len(window_title) > 30:
             sanitized_title = window_title[:30] + '...'
         else:
             sanitized_title = window_title
         logger.warning(f"窗口标题→多样化查询生成失败，回退默认清理方法: {e}")
         print(f"为窗口标题「{sanitized_title}」生成多样化查询失败: {e}")
-        # 回退到原始清理方法
+        # Fall back to the original cleaning method.
         clean_title = clean_window_title(window_title)
         return [clean_title, clean_title, clean_title]
 
@@ -199,7 +199,7 @@ def clean_window_title(title: str) -> str:
     if not title:
         return ""
     
-    # 移除常见的应用程序后缀和无意义内容
+    # Remove common application suffixes and meaningless content.
     patterns_to_remove = [
         r'\s*[-–—]\s*(Google Chrome|Mozilla Firefox|Microsoft Edge|Opera|Safari|Brave).*$',
         r'\s*[-–—]\s*(Visual Studio Code|VS Code|VSCode).*$',
@@ -207,36 +207,36 @@ def clean_window_title(title: str) -> str:
         r'\s*[-–—]\s*(Microsoft Word|Excel|PowerPoint).*$',
         r'\s*[-–—]\s*(QQ音乐|网易云音乐|酷狗音乐|Spotify).*$',
         r'\s*[-–—]\s*(哔哩哔哩|bilibili|YouTube|优酷|爱奇艺|腾讯视频).*$',
-        r'\s*[-–—]\s*\d+\s*$',  # 移除末尾的数字（如页码）
-        r'^\*\s*',  # 移除开头的星号（未保存标记）
-        r'\s*\[.*?\]\s*$',  # 移除方括号内容
-        r'\s*\(.*?\)\s*$',  # 移除圆括号内容
-        r'https?://\S+',  # 移除URL
-        r'www\.\S+',  # 移除www开头的网址
-        r'\.py\s*$',  # 移除.py后缀
-        r'\.js\s*$',  # 移除.js后缀
-        r'\.html?\s*$',  # 移除.html后缀
-        r'\.css\s*$',  # 移除.css后缀
-        r'\.md\s*$',  # 移除.md后缀
-        r'\.txt\s*$',  # 移除.txt后缀
-        r'\.json\s*$',  # 移除.json后缀
+        r'\s*[-–—]\s*\d+\s*$',  # Remove trailing numbers such as page numbers.
+        r'^\*\s*',  # Remove leading asterisks marking unsaved changes.
+        r'\s*\[.*?\]\s*$',  # Remove square-bracketed content.
+        r'\s*\(.*?\)\s*$',  # Remove parenthesized content.
+        r'https?://\S+',  # Remove URLs.
+        r'www\.\S+',  # Remove www-prefixed addresses.
+        r'\.py\s*$',  # Remove .py suffixes.
+        r'\.js\s*$',  # Remove .js suffixes.
+        r'\.html?\s*$',  # Remove .html suffixes.
+        r'\.css\s*$',  # Remove .css suffixes.
+        r'\.md\s*$',  # Remove .md suffixes.
+        r'\.txt\s*$',  # Remove .txt suffixes.
+        r'\.json\s*$',  # Remove .json suffixes.
     ]
     
     cleaned = title
     for pattern in patterns_to_remove:
         cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
     
-    # 移除多余空格
+    # Remove excess spaces.
     cleaned = ' '.join(cleaned.split())
     
-    # 如果清理后太短或为空，返回原标题的一部分
+    # If cleaning leaves an empty/short title, return part of the original.
     if len(cleaned) < 3:
-        # 尝试提取原标题中的第一个有意义的部分
+        # Try extracting the original title's first meaningful section.
         parts = re.split(r'\s*[-–—|]\s*', title)
         if parts and len(parts[0]) >= 3:
             cleaned = parts[0].strip()
     
-    return cleaned[:100]  # 限制长度
+    return cleaned[:100]  # Limit length.
 
 async def search_google(query: str, limit: int = 10) -> Dict[str, Any]:
     """
@@ -256,11 +256,11 @@ async def search_google(query: str, limit: int = 10) -> Dict[str, Any]:
                 'error': '搜索关键词太短'
             }
         
-        # 清理查询词
+        # Clean search terms.
         query = query.strip()
         encoded_query = quote(query)
         
-        # Google搜索URL
+        # Google search URL.
         url = f"https://www.google.com/search?q={encoded_query}&hl=en"
         
         headers = {
@@ -272,7 +272,7 @@ async def search_google(query: str, limit: int = 10) -> Dict[str, Any]:
             'Cache-Control': 'no-cache',
         }
         
-        # 添加随机延迟
+        # Add a random delay.
         await asyncio.sleep(random.uniform(0.2, 0.5))
         
         client = get_external_http_client()
@@ -280,7 +280,7 @@ async def search_google(query: str, limit: int = 10) -> Dict[str, Any]:
         response.raise_for_status()
         html_content = response.text
 
-        # 解析搜索结果（BS4 大 HTML 同步解析放线程池，避免阻塞 event loop）
+        # Parse search results; offload synchronous BS4 parsing of large HTML to avoid blocking the event loop.
         results = await asyncio.to_thread(parse_google_results, html_content, limit)
 
         if results:
@@ -327,15 +327,15 @@ def parse_google_results(html_content: str, limit: int = 5) -> List[Dict[str, st
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(html_content, 'lxml')
 
-        # 查找搜索结果容器
-        # Google使用各种类名，尝试多个选择器
+        # Find search-result containers.
+        # Google uses varied class names; try multiple selectors.
         result_divs = soup.find_all('div', class_='g')
         
         for div in result_divs[:limit * 2]:
-            # 提取标题和链接
+            # Extract titles and links.
             link = div.find('a')
             if link:
-                # 获取h3标签作为标题
+                # Use h3 as the title.
                 h3 = div.find('h3')
                 if h3:
                     title = h3.get_text(strip=True)
@@ -343,10 +343,10 @@ def parse_google_results(html_content: str, limit: int = 5) -> List[Dict[str, st
                     title = link.get_text(strip=True)
                 
                 if title and 3 < len(title) < 200:
-                    # 提取URL
+                    # Extract URL.
                     href = link.get('href', '')
                     if href:
-                        # Google有时会包装URL
+                        # Google sometimes wraps URLs.
                         if href.startswith('/url?'):
                             parsed = urlparse(href)
                             qs = parse_qs(parsed.query)
@@ -358,14 +358,14 @@ def parse_google_results(html_content: str, limit: int = 5) -> List[Dict[str, st
                     else:
                         url = ''
                     
-                    # 提取摘要/片段
+                    # Extract snippets.
                     abstract = ""
-                    # 查找片段文本
+                    # Find snippet text.
                     snippet_div = div.find('div', class_=lambda x: x and ('VwiC3b' in x if x else False))
                     if snippet_div:
                         abstract = snippet_div.get_text(strip=True)[:200]
                     else:
-                        # 尝试其他常见的片段选择器
+                        # Try other common snippet selectors.
                         spans = div.find_all('span')
                         for span in spans:
                             text = span.get_text(strip=True)
@@ -373,7 +373,7 @@ def parse_google_results(html_content: str, limit: int = 5) -> List[Dict[str, st
                                 abstract = text[:200]
                                 break
                     
-                    # 跳过广告和不需要的结果
+                    # Skip ads and unwanted results.
                     if not any(skip in title.lower() for skip in ['ad', 'sponsored', 'javascript']):
                         results.append({
                             'title': title,
@@ -445,12 +445,12 @@ def parse_duckduckgo_results(html_content: str, limit: int = 5) -> List[Dict[str
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(html_content, 'lxml')
 
-        # html.duckduckgo.com 每条结果是 div.result（正常结果还带 web-result）。
-        # 不预截断：广告/无效 URL 的条目可能排在前面，靠下方攒够 limit 提前退出
+        # html.duckduckgo.com represents results with div.result; normal ones also have web-result.
+        # Do not pretruncate: ads/invalid URLs may come first; stop below once limit valid results accumulate.
         result_divs = soup.find_all('div', class_='result')
 
         for div in result_divs:
-            # 跳过广告（class 含 result--ad / results_links_deep 之外的 ad 变体）
+            # Skip ads identified by result--ad classes or ad variants outside results_links_deep.
             cls = div.get('class') or []
             if any('ad' in c for c in cls):
                 continue
@@ -463,21 +463,21 @@ def parse_duckduckgo_results(html_content: str, limit: int = 5) -> List[Dict[str
             if not title or not (3 < len(title) < 200):
                 continue
 
-            # DDG 用跳转链接包裹真实地址：//duckduckgo.com/l/?uddg=<urlencoded>&rut=...
+            # DDG wraps actual URLs in redirects: //duckduckgo.com/l/?uddg=<urlencoded>&rut=...
             href = link.get('href', '')
             url = ''
             if href:
                 if 'uddg=' in href:
                     # //duckduckgo.com/l/?uddg=<urlencoded>&rut=... ——
-                    # parse_qs 已对 uddg 值做一次百分号解码，得到的就是真实地址，
-                    # 不要再 unquote（否则真实 URL 里的字面 % 会被二次解码损坏）。
+                    # parse_qs already percent-decodes uddg once, yielding the actual URL;
+                    # do not unquote again, which would corrupt literal percent encodings in the real URL.
                     parsed = urlparse(href if href.startswith('http') else 'https:' + href)
                     qs = parse_qs(parsed.query)
                     url = qs.get('uddg', [''])[0]
                 elif href.startswith('http'):
                     url = href
-            # 只接受带真实主机名的 http(s) 绝对地址（uddg 里可能包着
-            # javascript: 或 "https://" 这种残缺目标），无效的整条跳过
+            # Accept only absolute HTTP(S) URLs with actual hostnames; uddg can wrap
+            # javascript: or incomplete targets such as "https://". Skip invalid results entirely.
             try:
                 parsed_target = urlparse(url)
                 url_ok = parsed_target.scheme in ('http', 'https') and bool(parsed_target.hostname)
@@ -486,7 +486,7 @@ def parse_duckduckgo_results(html_content: str, limit: int = 5) -> List[Dict[str
             if not url_ok:
                 continue
 
-            # 摘要片段
+            # Snippet.
             abstract = ''
             snippet = div.find(class_='result__snippet')
             if snippet:
@@ -538,19 +538,19 @@ def parse_baidu_results(html_content: str, limit: int = 5) -> List[Dict[str, str
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(html_content, 'lxml')
 
-        # 提取搜索结果容器。不预截断列表：相关搜索/卡片等会被拒绝的容器可能
-        # 排在有效结果前面，靠下方 len(results) >= limit 提前退出即可
+        # Extract result containers without pretruncation; rejected related searches/cards may
+        # precede valid results. Stop below at len(results) >= limit.
         containers = soup.find_all('div', class_=lambda x: x and 'c-container' in x)
         
         for container in containers:
-            # 标题只认 h3 下的链接：容器里第一个 <a> 可能是卡片子链接
-            # （如天气卡的"查看40天预报"）或相关搜索词，不是结果标题
+            # Accept titles only from h3 links; a container's first <a> may be a card sublink,
+            # e.g. a 40-day forecast, or a related search term rather than the result title.
             link = container.select_one('h3 a[href]')
             if link:
                 title = _sanitize_search_text(link.get_text(strip=True))
                 if title and 5 < len(title) < 200:
-                    # 只接受 http(s) 绝对地址：相关搜索等站内相对链接（/s?wd=...）
-                    # 和 javascript: 伪协议都不是搜索结果，不能 urljoin 洗白
+                    # Accept only absolute HTTP(S) URLs: relative site links such as /s?wd=...
+                    # and javascript: pseudoprotocols are not search results; do not legitimize them with urljoin.
                     href = link.get('href', '')
                     if not href.startswith(('http://', 'https://')):
                         continue
@@ -558,7 +558,7 @@ def parse_baidu_results(html_content: str, limit: int = 5) -> List[Dict[str, str
                     if url in seen_urls:
                         continue
 
-                    # 提取摘要
+                    # Extract snippets.
                     abstract = ""
                     content_span = container.find('span', class_=lambda x: x and 'content-right' in x)
                     if content_span:
@@ -574,15 +574,15 @@ def parse_baidu_results(html_content: str, limit: int = 5) -> List[Dict[str, str
                         if len(results) >= limit:
                             break
         
-        # 如果没找到结果，尝试提取 h3 标题。同样不预截断：被拒绝的
-        # 相关搜索类 h3 可能排在前面，攒够 limit 条再退出
+        # If no results were found, try h3 titles, also without pretruncation; rejected related-search
+        # h3 elements may lead the list. Stop after limit valid entries.
         if not results:
             for h3 in soup.find_all('h3'):
                 link = h3.find('a')
                 if link:
                     title = _sanitize_search_text(link.get_text(strip=True))
                     if title and 5 < len(title) < 200:
-                        # 与主循环同口径：http(s) 校验、广告关键词过滤、URL 去重
+                        # Match the main loop: HTTP(S) validation, advertising-keyword filtering, and URL deduplication.
                         href = link.get('href', '')
                         if not href.startswith(('http://', 'https://')):
                             continue
@@ -634,7 +634,7 @@ def format_baidu_search_results(search_result: Dict[str, Any]) -> str:
         
         output_lines.append(f"{i}. {title}")
         if abstract:
-            # 限制摘要长度
+            # Limit snippet length.
             if len(abstract) > 150:
                 abstract = abstract[:150] + '...'
             output_lines.append(f"   {abstract}")
@@ -707,10 +707,10 @@ async def fetch_window_context_content(limit: int = 5) -> Dict[str, Any]:
         Note: window_title is the sanitized version to protect privacy
     """
     try:
-        # 检测区域
+        # Detect region.
         china_region = is_china_region()
         
-        # 获取活跃窗口标题（同时获取原始和脱敏版本）
+        # Get active window titles in both raw and redacted forms.
         title_result = get_active_window_title(include_raw=True)
         
         if not title_result:
@@ -728,11 +728,11 @@ async def fetch_window_context_content(limit: int = 5) -> Dict[str, Any]:
         sanitized_title = title_result['sanitized']
         raw_title = title_result['raw']
         
-        # 清理窗口标题以移除敏感信息，避免发送给LLM
+        # Clean window titles to remove sensitive information before sending to the LLM.
         cleaned_title = clean_window_title(raw_title)
         
-        # 只提交一个稳定、清理后的查询。搜索插件负责缓存、限流、冷却和
-        # 后端回退，避免每轮主动上下文刷新放大成三次公网请求。
+        # Submit one stable cleaned query. The search plugin owns caching, throttling, cooldowns, and
+        # backend fallback, preventing each proactive-context refresh from becoming three public-network requests.
         search_queries = [cleaned_title] if cleaned_title else []
         
         if not search_queries or all(not q or len(q) < 2 for q in search_queries):
@@ -749,10 +749,10 @@ async def fetch_window_context_content(limit: int = 5) -> Dict[str, Any]:
                     'window_title': sanitized_title
                 }
         
-        # 窗口标题 + 查询都不写 logger
+        # Never write window titles or queries through logger.
         logger.info("窗口标题已生成受控查询 (queries_count=1)")
         
-        # 执行搜索并合并结果
+        # Search and merge results.
         all_results = []
         successful_queries = []
         
@@ -766,14 +766,14 @@ async def fetch_window_context_content(limit: int = 5) -> Dict[str, Any]:
             all_results.extend(search_result['results'])
             successful_queries.append(query)
         
-        # 去重结果（优先使用URL，如果URL缺失则使用title）
+        # Deduplicate by URL, falling back to title when missing.
         seen_keys = set()
         unique_results = []
         for result in all_results:
             url = result.get('url', '')
             title = result.get('title', '')
             
-            # 优先使用URL进行去重，回退到title
+            # Prefer URL-based deduplication, falling back to title.
             if url:
                 dedup_key = url
             else:
@@ -783,7 +783,7 @@ async def fetch_window_context_content(limit: int = 5) -> Dict[str, Any]:
                 seen_keys.add(dedup_key)
                 unique_results.append(result)
         
-        # 限制总结果数量
+        # Limit total result count.
         unique_results = unique_results[:limit * 2]
         
         if not unique_results:

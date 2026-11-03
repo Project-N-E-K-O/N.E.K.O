@@ -150,16 +150,16 @@ UNFINISHED_THREAD_WINDOW_SECONDS = 5 * 60
 UNFINISHED_THREAD_MAX_FOLLOWUPS = 1
 
 # Question-detection heuristic: only the last N chars of the AI message
-# are scanned. Mid-sentence question marks (e.g. "你说『你好吗』我没听清")
+# are scanned. Mid-sentence question marks (e.g. "你说『你好吗』我没听清", an embedded "how are you" quote)
 # don't count as the message itself ending with a question.
 _QUESTION_TAIL_LEN = 60
 _QUESTION_MARKS: tuple[str, ...] = ('?', '？')
 # Sentence-final particles in CJK that imply a question even without a
 # punctuation mark. Checked against the trailing few chars (after
 # stripping trailing whitespace and one optional punctuation).
-# ⚠️ 只补「嗎」。呢/吧 简繁同形，所以繁中侧原本只漏这一个。
-# **不要**顺手补「麼」：判据是 trail[-1]（末位字符），而「什麼 / 怎麼」是极常见
-# 的非句末用法，收了会把「我不知道該說什麼」误判成问句。
+# Add only "嗎" (question particle). The other particles 呢/吧 have identical simplified/traditional forms, so this was the only omission.
+# Do NOT add "麼": the check uses trail[-1] (the final character), while "什麼 / 怎麼" (what/how) are very common
+# away from sentence endings; including them would misclassify "我不知道該說什麼" (I do not know what to say) as a question.
 _CN_QUESTION_PARTICLES: tuple[str, ...] = ('吗', '嗎', '呢', '么', '吧')
 
 
@@ -496,10 +496,10 @@ class ActivityStateMachine:
         # detects the 5-minute window has expired.
         self._unfinished_thread: dict | None = None
 
-        # Own-app dwell freeze. When the catgirl app is in the foreground,
+        # Own-app dwell freeze. When the neko app is in the foreground,
         # ``update_window`` early-returns so the previous app stays the
         # active window — but the previous app's dwell timer would
-        # otherwise keep ticking, so a brief glance at the catgirl could
+        # otherwise keep ticking, so a brief glance at the neko could
         # artificially push the prior window past dwell thresholds (e.g.
         # focused_work's 90s). On entering own_app we record the freeze
         # start; on the next non-own-app observation we advance
@@ -517,10 +517,10 @@ class ActivityStateMachine:
         work → entertainment) starts a fresh dwell timer.
 
         Special handling:
-          * ``own_app`` (catgirl app itself in foreground) — observation
+          * ``own_app`` (neko app itself in foreground) — observation
             is discarded entirely. Window tracking pretends nothing
             happened so dwell on the previous app keeps accumulating
-            and GPU fallback gaming doesn't trip on the catgirl's own
+            and GPU fallback gaming doesn't trip on the neko's own
             Live2D / VRM rendering.
           * ``private`` — observation IS recorded (state classifier
             needs to see it to emit state='private'), but title /
@@ -895,7 +895,7 @@ class ActivityStateMachine:
         #     high GPU is usually background rendering or AFK farming, not
         #     active engagement we should hesitate to interrupt.
         # Own-app foreground was already filtered upstream in update_window
-        # (no observation recorded), so the catgirl's own GPU usage doesn't
+        # (no observation recorded), so the neko's own GPU usage doesn't
         # reach this branch.
         if (
             win is not None and win.category == 'unknown'

@@ -25,6 +25,24 @@
     let memorySaveStatusTimer = 0;
     let memorySaveStatusHideTimer = 0;
     let memoryHasUnsavedChanges = false;
+    try {
+        if (typeof BroadcastChannel !== 'undefined') {
+            const recentMemoryChannel = new BroadcastChannel('neko_page_channel');
+            recentMemoryChannel.onmessage = function (event) {
+                const data = event.data;
+                if (data && data.action === 'recent_memory_changed' && data.catgirl_name === currentCatName
+                        && !memoryHasUnsavedChanges && !memorySaveInFlight && !memoryRowExitInProgress
+                        && !window._memoryImportInProgress) {
+                    refreshImportedMemoryView(currentCatName).catch(function () {});
+                }
+            };
+            window.addEventListener('pagehide', function (event) {
+                if (!event.persisted) recentMemoryChannel.close();
+            });
+        }
+    } catch (error) {
+        console.warn('[MemoryBrowser] Recent-memory refresh channel unavailable', error);
+    }
     let pendingMemorySelection = null;
     let pendingMemoryClose = false;
     let memoryUnsavedSwitchRestoreFocus = null;
@@ -4293,7 +4311,8 @@
     const MEMORY_ROLE_ORIGIN_KEYS = {
         self: 'character.cardOriginSelf',
         imported: 'character.cardOriginImported',
-        steam: 'character.cardOriginSteam'
+        steam: 'character.cardOriginSteam',
+        molili: 'character.cardOriginMolili'
     };
 
     function syncMemoryRoleNameOverflow(button) {
@@ -4339,6 +4358,12 @@
                 ['circle', { cx: '17', cy: '15.5', r: '1' }]
             ],
             imported: [
+                ['path', { d: 'M12 3v12' }],
+                ['path', { d: 'm7 10 5 5 5-5' }],
+                ['path', { d: 'M5 18v2h14v-2' }]
+            ],
+            // Molili 导入与通用导入共用同一下载箭头图形（提示文案已区分来源）
+            molili: [
                 ['path', { d: 'M12 3v12' }],
                 ['path', { d: 'm7 10 5 5 5-5' }],
                 ['path', { d: 'M5 18v2h14v-2' }]
@@ -4527,7 +4552,7 @@
         if (valueEl) {
             valueEl.textContent = selectedValue === 'auto'
                 ? translate('memory.externalImportAuto', 'Auto detect')
-                : (selectedValue === 'openclaw' ? 'OpenClaw' : 'Hermes');
+                : (selectedValue === 'openclaw' ? 'OpenClaw' : selectedValue === 'molili' ? 'Molili' : 'Hermes');
         }
         cascader.querySelectorAll('[data-external-memory-format]').forEach(function (option) {
             const selected = option.dataset.externalMemoryFormat === selectedValue;
@@ -4590,7 +4615,13 @@
             if (selected.length !== 1) {
                 throw new Error(translate('memory.externalImportZipOnly', 'Choose one ZIP archive, or one or more Markdown files.'));
             }
-            if (zipFiles[0].size > 8 * 1024 * 1024) {
+            // 上限与后端 _decode_external_archive 的 archive_cap 对齐：auto/molili
+            // 放行到 MAX_ZIP_BYTES（64 MiB，Molili 导出本体就带几 MB 图片附件），
+            // 其余格式仍按 Markdown 预算 8 MiB。
+            const formatValue = format ? String(format.value || 'auto') : 'auto';
+            const zipCapBytes = (formatValue === 'molili' || formatValue === 'auto')
+                ? 64 * 1024 * 1024 : 8 * 1024 * 1024;
+            if (zipFiles[0].size > zipCapBytes) {
                 throw new Error(translate('memory.externalImportTooLarge', 'The selected archive is too large.'));
             }
             const payload = {
@@ -4623,6 +4654,23 @@
         return payload;
     }
 
+    function externalImportDayNotes(partial) {
+        const notes = [];
+        const failedDays = Number(partial && partial.failed_days) || 0;
+        const oversizedDays = Number(partial && partial.oversized_days) || 0;
+        if (failedDays > 0) {
+            notes.push(translate('memory.externalImportFailedDaysNote',
+                '{{count}} of those journal days failed extraction and will be retried on the next import.',
+                { count: failedDays }));
+        }
+        if (oversizedDays > 0) {
+            notes.push(translate('memory.externalImportOversizedDaysNote',
+                '{{count}} more journal days each exceed the single-import limit; split those days first.',
+                { count: oversizedDays }));
+        }
+        return notes.length ? ' ' + notes.join(' ') : '';
+    }
+
     function broadcastExternalMemoryEdited(characterName) {
         if (typeof BroadcastChannel !== 'undefined') {
             let channel = null;
@@ -4644,6 +4692,7 @@
     async function refreshImportedMemoryView(characterName) {
         if (!characterName || characterName !== currentCatName) return;
         await loadMemoryFileList();
+        if (characterName !== currentCatName) return;
         const button = Array.from(document.querySelectorAll('#memory-file-list .cat-btn')).find(
             item => item.dataset.catname === characterName
         );
@@ -4749,7 +4798,7 @@
             // daily 日记每天一次 LLM 抽取；MEMORY.md facts 不调 LLM。
             // ⚠️ 后端两类调用都已并发执行（persona gather、daily 有界并发），但这里
             // 刻意按「全部串行」sum 估算——保守高估是产品决策（宁可提前完成也不要
-            // 卡超预估），改并发系数前先确认这一点。固定标注 240s 后端上限；
+            // 卡超预估），改并发系数前先确认这一点。固定标注 8 分钟后端上限；
             // 0 次 LLM 调用（纯 MEMORY.md 导入）不显示预估。
             const fusionCalls = Number(preview.persona_fusion_calls) || 0;
             const personaTokens = Number(preview.persona_candidate_tokens) || 0;
@@ -4758,7 +4807,7 @@
             const llmCalls = fusionCalls + dailyCalls;
             const llmTokens = personaTokens + dailyTokens;
             const etaSeconds = llmCalls > 0
-                ? Math.min(230, Math.max(8, Math.round(llmCalls * 10 + llmTokens / 300)))
+                ? Math.min(470, Math.max(8, Math.round(llmCalls * 10 + llmTokens / 300)))
                 : 0;
             const workingStartedAt = Date.now();
             // 状态区追加「勿关闭」提示——现代 Chromium 会忽略 beforeunload 的自定义
@@ -4774,7 +4823,7 @@
                     const elapsed = Math.round((Date.now() - workingStartedAt) / 1000);
                     etaText = ' ' + translate(
                         'memory.externalImportEta',
-                        'Estimated ~{{est}}s (up to 4 min) · {{elapsed}}s elapsed.',
+                        'Estimated ~{{est}}s (up to 8 min) · {{elapsed}}s elapsed.',
                         { est: etaSeconds, elapsed }
                     );
                 }
@@ -4784,7 +4833,7 @@
             if (etaSeconds > 0) {
                 etaTimer = window.setInterval(renderWorkingStatus, 1000);
             }
-            // 前端超时略大于后端 commit 转发窗口（memory_router timeout=240s），
+            // 前端超时略大于后端 commit 转发窗口（memory_router timeout=480s），
             // 覆盖 persona 融合的整段耗时。
             // The UI locale is only a render fallback. Read it at commit time so a
             // language switch made while reviewing the preview is not stale, and
@@ -4799,7 +4848,7 @@
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
-            }, 270000);
+            }, 540000);
             // 融合网络返回即停表（成功/失败/太大都已无意义再计时）；finally 兜底覆盖
             // commit fetch 抛错（超时/网络）根本没走到这行的情况。
             if (etaTimer) { window.clearInterval(etaTimer); etaTimer = null; }
@@ -4814,11 +4863,22 @@
                         persistedCharacterName = partial.character_name;
                         broadcastExternalMemoryEdited(partial.character_name);
                     }
+                    // 分段续导：超过单次调用上限的日记天顺延到下次，提示用户再导一次接着导
+                    const remainingDays = Number(partial.remaining_days) || 0;
+                    // 抽取失败的天 / 单独超上限的天：后端都有计数，一并告诉用户
+                    const dayNotes = externalImportDayNotes(partial);
+                    if (remainingDays > 0) {
+                        throw new Error(translate(
+                            'memory.externalImportContinue',
+                            'Part of the import is done: {{persona}} persona entries and {{facts}} facts were saved, and {{days}} journal days are left for the next run. Import again to continue; imported content is skipped.',
+                            { persona: partial.added_persona || 0, facts: partial.added_facts || 0, days: remainingDays }
+                        ) + dayNotes);
+                    }
                     throw new Error(translate(
                         'memory.externalImportPartial',
                         'The import stopped after {{persona}} persona entries and {{facts}} facts were saved. Retry to finish; duplicates will be skipped.',
                         { persona: partial.added_persona || 0, facts: partial.added_facts || 0 }
-                    ));
+                    ) + dayNotes);
                 }
                 if (result.error_code === 'external_import_too_large') {
                     // 确定性「太大」失败：重试无益，提示拆分 workspace（Codex P2）。
@@ -4827,10 +4887,11 @@
                         persistedCharacterName = big.character_name;
                         broadcastExternalMemoryEdited(big.character_name);
                     }
+                    // 与 partial 分支、Molili 向导对称：带上单独超上限的天数说明
                     throw new Error(translate(
                         'memory.externalImportTooLargeToFuse',
                         'This import has too many memories to fuse in one pass. Split the workspace into smaller files and import them separately.'
-                    ));
+                    ) + externalImportDayNotes(big));
                 }
                 throw new Error(result.error || translate('memory.externalImportFailed', 'Import failed.'));
             }

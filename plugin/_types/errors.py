@@ -1,20 +1,20 @@
 """
-统一错误码定义
+Unified error-code definitions.
 
-合并了 sdk/errors.py 和 typedefs/result.py 中的错误码定义。
-提供 IntEnum 错误码（与 HTTP 状态码对齐）和字符串别名。
+Combines sdk/errors.py and typedefs/result.py definitions.
+Provides HTTP-aligned IntEnum error codes and string aliases.
 
 Usage:
     from plugin._types import ErrorCode, ERROR_NAMES
     
-    # 使用错误码
+    # Use an error code.
     code = ErrorCode.VALIDATION_ERROR  # 400
     
-    # 获取错误名称
-    name = ERROR_NAMES[code]  # "VALIDATION_ERROR"
+    # Get its name.
+    name = ERROR_NAMES[code]  # \"VALIDATION_ERROR\"
     
-    # 在响应中使用
-    return fail(ErrorCode.NOT_FOUND, "资源不存在")
+    # Use in a response.
+    return fail(ErrorCode.NOT_FOUND, \"资源不存在\")
 """
 from __future__ import annotations
 
@@ -23,39 +23,39 @@ from typing import Dict
 
 
 class ErrorCode(IntEnum):
-    """统一错误码枚举
+    """Unified error-code enumeration.
     
-    与 HTTP 状态码对齐，便于 API 响应。
+    Aligned with HTTP status codes for API responses.
     
-    分类：
-    - 0: 成功
-    - 4xx: 客户端错误
-    - 5xx: 服务端错误
-    - 1xxx: 插件特定错误
+    Categories:
+    - 0: Success
+    - 4xx: Client errors
+    - 5xx: Server errors
+    - 1xxx: Plugin-specific errors
     
     Attributes:
-        SUCCESS: 成功 (0)
-        VALIDATION_ERROR: 参数验证失败 (400)
-        UNAUTHORIZED: 未授权 (401)
-        FORBIDDEN: 禁止访问 (403)
-        NOT_FOUND: 资源不存在 (404)
-        CONFLICT: 资源冲突 (409)
-        RATE_LIMITED: 频率限制 (429)
-        INTERNAL: 内部错误 (500)
-        NOT_IMPLEMENTED: 未实现 (501)
-        DEPENDENCY_MISSING: 依赖缺失 (502)
-        NOT_READY: 服务未就绪 (503)
-        TIMEOUT: 超时 (504)
-        INVALID_RESPONSE: 响应格式无效 (422)
-        PLUGIN_NOT_RUNNING: 插件未运行 (1001)
-        PLUGIN_CRASHED: 插件崩溃 (1002)
-        CIRCULAR_CALL: 循环调用 (1003)
-        PLUGIN_RATE_LIMITED: 插件频率限制 (1004)
+        SUCCESS: Success (0)
+        VALIDATION_ERROR: Parameter validation failed (400)
+        UNAUTHORIZED: Unauthorized (401)
+        FORBIDDEN: Forbidden (403)
+        NOT_FOUND: Resource not found (404)
+        CONFLICT: Resource conflict (409)
+        RATE_LIMITED: Rate limited (429)
+        INTERNAL: Internal error (500)
+        NOT_IMPLEMENTED: Not implemented (501)
+        DEPENDENCY_MISSING: Missing dependency (502)
+        NOT_READY: Service not ready (503)
+        TIMEOUT: Timeout (504)
+        INVALID_RESPONSE: Invalid response format (422)
+        PLUGIN_NOT_RUNNING: Plugin not running (1001)
+        PLUGIN_CRASHED: Plugin crashed (1002)
+        CIRCULAR_CALL: Circular call (1003)
+        PLUGIN_RATE_LIMITED: Plugin rate limited (1004)
     """
-    # 成功
+    # Success.
     SUCCESS = 0
     
-    # 客户端错误 (4xx)
+    # Client errors (4xx).
     VALIDATION_ERROR = 400
     UNAUTHORIZED = 401
     FORBIDDEN = 403
@@ -64,14 +64,14 @@ class ErrorCode(IntEnum):
     INVALID_RESPONSE = 422
     RATE_LIMITED = 429
 
-    # 服务端错误 (5xx)
+    # Server errors (5xx).
     INTERNAL = 500
     NOT_IMPLEMENTED = 501
     DEPENDENCY_MISSING = 502
     NOT_READY = 503
     TIMEOUT = 504
     
-    # 插件特定错误 (1xxx)
+    # Plugin-specific errors (1xxx).
     PLUGIN_NOT_RUNNING = 1001
     PLUGIN_CRASHED = 1002
     CIRCULAR_CALL = 1003
@@ -79,16 +79,16 @@ class ErrorCode(IntEnum):
     
     @classmethod
     def from_string(cls, name: str) -> "ErrorCode":
-        """从字符串名称获取错误码
+        """Get error code from string name.
         
         Args:
-            name: 错误码名称（如 "VALIDATION_ERROR"）
+            name: Error-code name (e.g. \"VALIDATION_ERROR\")
         
         Returns:
-            对应的 ErrorCode
+            Corresponding ErrorCode
         
         Raises:
-            ValueError: 如果名称无效
+            ValueError: Invalid name
         """
         name_upper = name.upper()
         try:
@@ -97,19 +97,19 @@ class ErrorCode(IntEnum):
             raise ValueError(f"Unknown error code: {name}") from err
 
 
-# 错误码名称映射（用于序列化）
+# Error-code name map for serialization.
 ERROR_NAMES: Dict[ErrorCode, str] = {member: member.name for member in ErrorCode}
 
 
 def get_error_name(code: ErrorCode) -> str:
-    """获取错误码的字符串名称"""
+    """Get string name for an error code."""
     return ERROR_NAMES.get(code, code.name)
 
 
 def get_http_status(code: ErrorCode) -> int:
-    """获取错误码对应的 HTTP 状态码
+    """Get HTTP status corresponding to error code.
     
-    对于插件特定错误 (1xxx)，返回 500。
+    Plugin-specific errors (1xxx) return 500.
     """
     if code.value >= 1000:
         return 500

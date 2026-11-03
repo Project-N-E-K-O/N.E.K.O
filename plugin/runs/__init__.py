@@ -1,7 +1,7 @@
 """
-Run Protocol 模块
+Run Protocol module
 
-提供 Run 协议的实现,包括 Run 管理、WebSocket 和 Blob 存储。
+Implements the Run protocol, including Run management, WebSocket, and Blob storage.
 """
 from plugin.runs.manager import (
     RunCancelRequest,

@@ -128,24 +128,24 @@ class MemoryRecallReranker:
         directly.
         """
         if not observations:
-            # 即使空召回也算一次 invoke，差值 = "想 recall 但没素材"，对
-            # 评估 memory pipeline 健康度有意义。
+            # Empty recall still counts as invocation; the difference represents attempted recalls without material,
+            # useful when assessing memory-pipeline health.
             try:
                 from utils.instrument import counter as _instr_counter
                 _instr_counter("memory_recall_invoke", returned_empty=True)
             except Exception:
-                # 埋点失败不能让 recall 路径报错 —— memory pipeline 是
-                # response 关键路径，宁可少一条统计也不让它 crash。
+                # Telemetry failure must not fail recall, part of the critical response path;
+                # prefer missing statistics to crashes.
                 pass
             return []
-        # Telemetry：每次 recall 算一次 invoke，无论后续是 coarse-only 还是
-        # 走 LLM rerank。histogram 记返回 fact 数量分布；对比 invoke 次数和
-        # 返回 0 的比例可看 memory pipeline 是否在"起作用"。
+        # Telemetry counts each recall regardless of coarse-only or LLM reranking.
+        # Histograms record returned fact counts; compare invocations and zero-return
+        # ratios to assess whether memory pipelines work.
         try:
             from utils.instrument import counter as _instr_counter
             _instr_counter("memory_recall_invoke", returned_empty=False)
         except Exception:
-            # 同上：埋点失败静默，不影响 recall 主路径。
+            # Likewise silently ignore telemetry failure without affecting recall.
             pass
 
         # Normalise query_texts up-front so phase 2 (coarse) and phase 3
@@ -285,9 +285,9 @@ class MemoryRecallReranker:
                 if not text or not text.strip():
                     continue
             except (TypeError, AttributeError) as exc:
-                # 单条 entry 字段类型不对（list/int/etc.）→ skip 这一行，
-                # 继续过滤其余。仅 log 到 DEBUG 不刷屏（malformed 通常会
-                # 连续命中很多条）。
+                # Skip malformed entry fields, e.g. list/int types, while
+                # filtering remaining rows. DEBUG-only logging prevents flooding from
+                # consecutive malformed entries.
                 logger.debug(
                     "MemoryRecallReranker._hard_filter: skipping malformed "
                     "entry id=%r: %s: %s",
@@ -453,7 +453,7 @@ class MemoryRecallReranker:
             result.extend(tail)
         return result[:k]
 
-    # ── per-query top-K recall（reflection synthesis 用） ────────────────
+    # -- Per-query top-K recall for reflection synthesis --
 
     async def aretrieve_per_query_topk(
         self,
@@ -560,30 +560,30 @@ class MemoryRecallReranker:
         if effective_k == 0 or total_cap <= 0:
             return []
 
-        # Stage A：先把每条 query 的 top-K 候选 doc index 列表算出来——只算不截断，
-        # 不参与 cap 决策（cap 留给 stage B round-robin 时统一执行）。
-        per_query_picks: list[list[int]] = []  # 每元素是 list[survivor_idx]
+        # Stage A computes each query's top-K candidate document indexes without truncating
+        # or deciding global caps, deferred to stage B round-robin.
+        per_query_picks: list[list[int]] = []  # Each element is list[survivor_idx].
         for q_idx in range(scores_mat.shape[1]):
             col = scores_mat[:, q_idx]
             if effective_k >= n_candidates:
                 top_idx = np.argsort(-col)
             else:
-                # argpartition O(N) 拿无序 top-K，再对这 K 个 argsort
+                # argpartition selects unordered top-K in O(N), then argsort only those K.
                 unsorted_top = np.argpartition(-col, effective_k - 1)[:effective_k]
                 top_idx = unsorted_top[np.argsort(-col[unsorted_top])]
             per_query_picks.append([cand_survivor_indices[int(i)] for i in top_idx])
 
-        # Stage B：round-robin 取每轮每个 query 的第 r 名 → dedup 入池 → 满 cap
-        # 退出。fairness 关键点：cap 截断**只能发生在 round-robin 之后**，绝不
-        # 在 per-query 内部 early-return——否则前几个 query 会吃光全部 slot、
-        # 后面 query 一条 anchor 都拿不到，退化成 max-pool 那种 cold-topic
-        # 饥饿（PR #1401 thread 用户原话："必须最后统一去 cap，不然便宜了先
-        # 判定的 fact"）。
+        # Stage B takes each query's rank r in round-robin, deduplicates into the pool, and exits at cap.
+        # Fairness requires applying cap only after round-robin, never
+        # returning early within queries; otherwise earlier queries consume all slots,
+        # starving later cold-topic anchors like max-pooling.
+        # PR #1401's user explicitly required capping globally at the end to avoid favoring
+        # facts assessed first.
         #
-        # round-robin 之后 dedup 入池的 ordering（query 内 #1 → query 间 #1 →
-        # query 内 #2 → ...）也跟"first-seen = query 顺序 × within-query rank"
-        # 的老语义不一样：现在的 ordering 是 "每条 query 的 #1 先于任何 query
-        # 的 #2"，更贴近 prompt 里"每条 unabsorbed 平等享有 anchor"的设计意图。
+        # Post-round-robin deduplication order, each query's #1 before each query's #2,
+        # differs from old first-seen query-order-times-within-query-rank semantics.
+        # Every query's #1 now precedes any query's #2,
+        # matching prompt intent that each unabsorbed item has equal access to anchors.
         seen_ids: set[str] = set()
         result: list[dict] = []
         for rank in range(effective_k):
@@ -644,14 +644,14 @@ class MemoryRecallReranker:
                 continue
             id_to_obs[cid] = c
             score = c.get('score', 0.0)
-            # 单条 candidate text 截断到 RECALL_PER_CANDIDATE_MAX_TOKENS
+            # Truncate each candidate text to RECALL_PER_CANDIDATE_MAX_TOKENS.
             txt = truncate_to_tokens(c.get('text', '') or '', RECALL_PER_CANDIDATE_MAX_TOKENS)
             cand_lines.append(f"[{cid}] (score={score:.2f}) {txt}")
         if not cand_lines:
             return []
 
         query_text = "\n".join(f"- {q}" for q in query_texts if q)
-        # 兜底总和截断（候选已 ranked，截尾的是低 score 的）
+        # Bound the total too; already-ranked candidates lose only low-score tail entries.
         candidates_text = truncate_to_tokens(
             "\n".join(cand_lines), RECALL_CANDIDATES_TOTAL_MAX_TOKENS
         )
@@ -664,10 +664,10 @@ class MemoryRecallReranker:
 
         set_call_type("memory_recall_rerank")
         api_config = await config_manager.aget_model_api_config('summary')
-        # timeout=8: recall 在 query_memory 请求路径上，上游 plugin/core/context.py
-        # 默认 5s 截断；本地 8s 给 connect + 一次失败裕度。超时即抛
-        # APITimeoutError，外层 try/except 已会降级到 coarse rank。
-        # max_retries=0: 禁 SDK 自动重试，超时直接降级。
+        # timeout=8: recall runs in query_memory, whose upstream plugin/core/context.py
+        # defaults to 5 s. Local 8 s allows connection/one failure; timeout raises
+        # APITimeoutError, with outer handlers already falling back to coarse ranks.
+        # max_retries=0 disables SDK automatic retries and falls back immediately on timeout.
         from config import LLM_OUTPUT_GUARD_MAX_TOKENS
         llm = await create_chat_llm_async(
             api_config['model'],

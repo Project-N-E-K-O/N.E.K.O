@@ -30,10 +30,10 @@ from collections import defaultdict
 from threading import Lock
 
 # ---------------------------------------------------------------------------
-# ★ 与客户端 token_tracker.py 中的 _TELEMETRY_HMAC_SECRET 保持一致。
-# 这是防君子不防小人的软签名：密钥必然内嵌在分发的客户端里、无法对抗逆向，
-# 仅用于挡掉顺手的伪造与脏数据。因此保留与客户端匹配的硬编码默认值（开箱即用），
-# 同时允许运维用环境变量 NEKO_TELEMETRY_HMAC_SECRET 覆盖以轮换密钥。
+# ★ Keep consistent with _TELEMETRY_HMAC_SECRET in client token_tracker.py.
+# This soft signature deters casual spoofing, not determined attackers: the key is necessarily embedded in distributed clients
+# and cannot resist reverse engineering. It only blocks easy forgery and dirty data, so retain the matching hardcoded
+# default for immediate usability, allowing operators to rotate via NEKO_TELEMETRY_HMAC_SECRET.
 # ---------------------------------------------------------------------------
 DEFAULT_HMAC_SECRET = os.environ.get("NEKO_TELEMETRY_HMAC_SECRET") or "neko-v1-a3f8b2c1d4e5f6789012345678abcdef"
 
@@ -73,10 +73,10 @@ def verify_signature(
 
 
 # ---------------------------------------------------------------------------
-# 时间戳窗口
+# Timestamp window.
 # ---------------------------------------------------------------------------
 
-TIMESTAMP_TOLERANCE = 300  # ±5 分钟
+TIMESTAMP_TOLERANCE = 300  # ±5 minutes.
 
 
 def verify_timestamp(timestamp: float, tolerance: float = TIMESTAMP_TOLERANCE) -> bool:
@@ -85,7 +85,7 @@ def verify_timestamp(timestamp: float, tolerance: float = TIMESTAMP_TOLERANCE) -
 
 
 # ---------------------------------------------------------------------------
-# 速率限制（滑动窗口，per-device，内存存储）
+# Rate limiting (sliding window, per device, in-memory storage).
 # ---------------------------------------------------------------------------
 
 class RateLimiter:

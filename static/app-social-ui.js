@@ -151,6 +151,8 @@
     // unread_count 由 sse-client.js handleEvent 'notify' 分支派生为独立的 NOTIFY_UNREAD
     // broadcast，所以这里只负责 toast 提示。
     if (!notif) return;
+    // 好友状态事件由 social-hub 就地更新，不属于需要打扰用户的普通通知。
+    if (notif.kind === 'presence_changed') return;
     const title = notif.title || (notif.kind === 'reward' ? '获得奖励' : '新消息');
     try {
       if (typeof window.electronToast === 'function') {

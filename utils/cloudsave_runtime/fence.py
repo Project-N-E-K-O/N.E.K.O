@@ -75,8 +75,8 @@ def should_write_root_mode_normal_after_startup(root_state: dict[str, Any] | Non
 
 
 def set_root_mode(config_manager, mode: str, **updates: Any) -> dict[str, Any]:
-    # 读—改—写整段进锁：只让最后那次 save 原子是不够的，两个写者各自读到同一份
-    # pre-image 时，后写的那个会把先写的字段整份盖掉。
+    # Lock the complete read-modify-write: atomic final saves alone are insufficient; two writers reading the same
+    # preimage let the later writer overwrite all of the earlier writer's fields.
     with root_state_transaction():
         state = get_root_state(config_manager)
         state["mode"] = str(mode or ROOT_MODE_NORMAL)
@@ -252,9 +252,9 @@ def release_cloud_apply_lock(config_manager) -> None:
     except Exception:
         pass
     _cloud_apply_lock_file = None
-    # 刻意不 unlink 锁文件：unlock→unlink 窗口内其他进程可能 flock 旧 inode，
-    # 随后路径被换成新 inode 会出现双持有者。锁文件长期保留（local_state_dir
-    # 不进云存档，残留无害），acquire 每次 open("w") 复用同一路径即可。
+    # Deliberately retain lock files: another process could flock the old inode between unlock and unlink,
+    # then replacing the path with a new inode creates two holders. Retain the file permanently
+    # (local_state_dir is excluded from cloud saves, so harmless); each acquire reopens the same path with open("w").
 
 
 def _process_holds_cloud_apply_lock() -> bool:
@@ -264,19 +264,19 @@ def _process_holds_cloud_apply_lock() -> bool:
 def _should_preserve_write_blocking_mode(config_manager, root_state: dict[str, Any]) -> bool:
     current_mode = str(root_state.get("mode") or ROOT_MODE_NORMAL)
     if current_mode == ROOT_MODE_DEFERRED_INIT:
-        # 恢复态必须显式交给存储引导流程处理，不能在启动 bootstrap 里静默放行为 normal。
+        # Recovery states must explicitly enter storage guidance, never silently become normal during startup bootstrap.
         return True
 
     if current_mode != ROOT_MODE_MAINTENANCE_READONLY:
         return False
 
-    # 真相源是 storage_migration.json 的 pending 状态：迁移真在跑就保留 readonly，
-    # 否则视为孤儿态自愈。``last_migration_result`` 字段（含 ``restart_pending:``
-    # 前缀）只是描述上一次操作意图，不该被当作"还在进行中"的硬证据——marker
-    # 在 launcher 接力跑完迁移时才会被覆盖，任何让 launcher 跑不到那一步的事件
-    # （shutdown fire-and-forget 后 launcher 被绕过 / 半途强杀 / 迁移文件已被
-    # 善后删除）都会让 marker 残留，配合旧逻辑就把进程永久钉在 readonly 上、
-    # memory server 所有写盘静默失败。
+    # storage_migration.json pending state is authoritative: keep readonly if migration really runs;
+    # otherwise self-heal an orphan state. ``last_migration_result`` (including ``restart_pending:``)
+    # describes the previous operation's intent, not hard proof of ongoing activity. The marker
+    # changes only after the launcher completes migration; any event preventing that step
+    # (bypassing the launcher after fire-and-forget shutdown / force-killing midway / already cleaning up
+    # the migration file) leaves a stale marker, formerly pinning the process to readonly forever
+    # and silently failing every memory-server disk write.
     try:
         from utils.storage_migration import is_storage_migration_pending, load_storage_migration
 
@@ -303,20 +303,20 @@ def _recover_stale_write_blocking_mode(config_manager, root_state: dict[str, Any
         return root_state, False
 
     try:
-        # 与 set_root_mode 同一把锁：这里也是读—改—写，而且 root_state 是**调用方在
-        # 锁外**读的。跨进程那把 cloud apply 锁挡不住同进程内的另一个写者，所以必须
-        # 锁内重读——直接 dict(root_state) 回写会把这期间别人提交的 mode /
-        # current_root / last_known_good_root 整份盖掉（Greptile P1）。
+        # Share set_root_mode's lock: this is read-modify-write too, but **the caller read root_state
+        # outside the lock**. Cross-process cloud-apply locking cannot block another writer in this process, so
+        # reread while locked; writing dict(root_state) directly overwrites mode /
+        # current_root / last_known_good_root committed by others meanwhile (Greptile P1).
         #
-        # 锁序固定为 cloud_apply_lock → root_state_transaction，与 cloud_apply_fence
-        # 一致；任何地方都不许反过来。
+        # Lock order is always cloud_apply_lock -> root_state_transaction, matching cloud_apply_fence;
+        # never reverse it anywhere.
         with root_state_transaction():
             latest_state = config_manager.load_root_state()
             if not isinstance(latest_state, dict):
                 latest_state = root_state
 
-            # 判定"该不该自愈"也要按锁内这份重来：锁外那次判断到这里之间，别人可能
-            # 已经把它恢复了，或者刚建了一个真的 pending 迁移。
+            # Reevaluate self-healing from this locked state too: since the caller's outside-lock check, someone may
+            # already have recovered it or created a real pending migration.
             latest_mode = str(latest_state.get("mode") or ROOT_MODE_NORMAL)
             if latest_mode not in WRITE_BLOCKING_MODES:
                 return latest_state, False

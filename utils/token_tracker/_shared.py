@@ -66,7 +66,7 @@ def _file_lock(lock_path: Path, timeout: float = 10.0):
     while True:
         try:
             fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
-            # 写入 PID 便于调试
+            # Write the PID for debugging.
             os.write(fd, f"{os.getpid()},{time.time()}".encode())
             break
         except (FileExistsError, PermissionError, OSError):
@@ -82,7 +82,7 @@ def _file_lock(lock_path: Path, timeout: float = 10.0):
                 except OSError:
                     # Another process may already have removed the partial lock.
                     pass
-            # 检测过期锁（持有超过 30 秒视为进程崩溃后的残留）
+            # Detect stale locks (held over 30 seconds, treated as crash residue).
             try:
                 lock_age = time.time() - os.path.getmtime(str(lock_path))
                 if lock_age > 30:

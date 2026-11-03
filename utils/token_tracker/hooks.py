@@ -32,7 +32,7 @@ _hooks_install_lock = threading.Lock()
 def _get_base_url(self_obj) -> str:
     """Extract base_url from an OpenAI client instance."""
     try:
-        # self_obj 是 Completions / AsyncCompletions，其 _client 是 OpenAI / AsyncOpenAI
+        # self_obj is Completions / AsyncCompletions; its _client is OpenAI / AsyncOpenAI.
         client = getattr(self_obj, '_client', None)
         if client is None:
             return ""
@@ -82,13 +82,13 @@ def _usage_to_dict(usage) -> dict:
 
     d = {}
 
-    # Pydantic v2: model_dump() 不含 extra fields，需要合并 model_extra
+    # Pydantic v2: model_dump() omits extra fields, so merge model_extra.
     if hasattr(usage, 'model_dump'):
         try:
             d = usage.model_dump()
         except Exception:
             d = {}
-        # model_extra 包含 Pydantic model 不认识的额外字段（如 Step 的 cached_tokens）
+        # model_extra contains fields unknown to the Pydantic model (e.g. Step cached_tokens).
         extra = getattr(usage, 'model_extra', None)
         if extra and isinstance(extra, dict):
             d.update(extra)
@@ -99,7 +99,7 @@ def _usage_to_dict(usage) -> dict:
         except Exception:
             d = {}
 
-    # 兜底：__dict__ 可能包含更多字段
+    # Fallback: __dict__ may contain more fields.
     if hasattr(usage, '__dict__'):
         for k, v in usage.__dict__.items():
             if not k.startswith('_') and k not in d:
@@ -108,18 +108,18 @@ def _usage_to_dict(usage) -> dict:
     return d
 
 _CACHED_TOKEN_FIELDS = (
-    'cached_tokens',                # Step（阶跃星辰）: usage.cached_tokens
+    'cached_tokens',                # Step (StepFun): usage.cached_tokens.
     'cache_read_input_tokens',      # Anthropic Claude
-    'prompt_cache_hit_tokens',      # 部分国产 provider
-    'cached_content_token_count',   # Google PaLM/旧版 Gemini
-    'cache_tokens',                 # 其他变体
+    'prompt_cache_hit_tokens',      # Some Chinese providers.
+    'cached_content_token_count',   # Google PaLM / older Gemini.
+    'cache_tokens',                 # Other variants.
 )
 
 _NESTED_DETAIL_FIELDS = (
-    'prompt_tokens_details',        # OpenAI 官方
-    'details',                      # 通用
-    'token_details',                # 通用
-    'prompt_details',               # 通用
+    'prompt_tokens_details',        # Official OpenAI.
+    'details',                      # Generic.
+    'token_details',                # Generic.
+    'prompt_details',               # Generic.
 )
 
 def _extract_cached_tokens(usage_dict: dict) -> int:
@@ -130,12 +130,12 @@ def _extract_cached_tokens(usage_dict: dict) -> int:
     2. StepFun: usage.cached_tokens (top level)
     3. Gemini/others: possibly in nested structures
     """
-    # 1) 检查嵌套结构（如 OpenAI 的 prompt_tokens_details.cached_tokens）
+    # 1) Check nested structures (e.g. OpenAI prompt_tokens_details.cached_tokens).
     for nested_key in _NESTED_DETAIL_FIELDS:
         nested = usage_dict.get(nested_key)
         if not nested:
             continue
-        # 可能是 Pydantic 对象或 dict
+        # May be a Pydantic object or dict.
         if not isinstance(nested, dict):
             nested = _usage_to_dict(nested)
         for field in _CACHED_TOKEN_FIELDS:
@@ -143,7 +143,7 @@ def _extract_cached_tokens(usage_dict: dict) -> int:
             if val:
                 return int(val)
 
-    # 2) 顶层直接有 cached_tokens（如阶跃星辰）
+    # 2) Top-level cached_tokens (e.g. StepFun).
     for field in _CACHED_TOKEN_FIELDS:
         val = usage_dict.get(field)
         if val:
@@ -186,10 +186,10 @@ def _record_usage_from_response(response, call_type: str):
         usage = response.usage
         model = getattr(response, 'model', None) or "unknown"
 
-        # 把 usage 转成 dict，统一后续查找（兼容 Pydantic v1/v2 和原生 dict）
+        # Convert usage to dict for consistent lookup (supports Pydantic v1/v2 and native dict).
         usage_dict = _usage_to_dict(usage)
 
-        # 调试：记录完整 usage 结构
+        # Debug: record the full usage structure.
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(f"Token tracker: usage for model={model}: {usage_dict}")
 
@@ -275,31 +275,31 @@ def _install_crash_excepthook():
 
     def _crash_excepthook(exc_type, exc_value, exc_tb):
         try:
-            # KeyboardInterrupt 是用户主动 ctrl-c，不算 crash
+            # KeyboardInterrupt is intentional user Ctrl-C, not a crash.
             if not issubclass(exc_type, KeyboardInterrupt):
                 import traceback as _tb
                 import hashlib as _hl
                 from utils.instrument import event as _e, counter as _c
                 tb_text = "".join(_tb.format_exception(exc_type, exc_value, exc_tb))
-                # traceback_hash 是 12 字符摘要：足以 dedupe 同源 crash，不
-                # 反向还原 stack（隐私）。dashboard 看哪个 hash 最频繁即可。
+                # traceback_hash is a 12-character digest: sufficient to deduplicate crashes with the same origin,
+                # without reconstructing the stack (privacy). Dashboard only needs the most frequent hashes.
                 tb_hash = _hl.sha256(tb_text.encode("utf-8", errors="replace")).hexdigest()[:12]
                 _e("crash", error_class=exc_type.__name__, traceback_hash=tb_hash)
                 _c("crash", error_class=exc_type.__name__)
-                # 强制 flush event_logger —— 进程接下来可能立刻 die，不 flush
-                # 就丢了。flush 自身有 try/except 不会再抛。
+                # Force event_logger flush: the process may die immediately afterward, losing unflushed events.
+                # Flush itself catches exceptions and does not raise.
                 from utils.event_logger import EventLogger
                 EventLogger.get_instance().flush()
         except Exception:
-            # crash hook 自己绝不能 raise —— 否则原始 traceback 被它的异常
-            # 替换，用户看不到真正 crash 在哪。telemetry 失败相比之下不值一提。
+            # The crash hook must never raise, or its exception replaces the original traceback,
+            # hiding the actual crash. Telemetry failure is insignificant by comparison.
             pass
-        # 让默认 hook 继续打 stack —— 不打断现有行为
+        # Let the default hook print the stack, preserving existing behavior.
         try:
             _orig_excepthook(exc_type, exc_value, exc_tb)
         except Exception:
-            # 原 hook 自己崩了（罕见，比如 sys.stderr 已经被关）—— 这种情况
-            # 我们没什么能做的，最多让进程退出，原 traceback 已经丢了。
+            # If the original hook itself crashes (rare, e.g. sys.stderr already closed),
+            # little can be done beyond letting the process exit; the original traceback is already lost.
             pass
 
     sys.excepthook = _crash_excepthook
@@ -324,7 +324,7 @@ def install_hooks():
     bypass the hook and are unaffected; app_start is held by the
     ``_has_recorded_app_start`` singleton lock — this guard is its dual on the hook side.
     """
-    # crash hook 跟 openai 库无关，独立装；幂等。
+    # Install the crash hook independently of openai, idempotently.
     _install_crash_excepthook()
 
     try:
@@ -333,7 +333,7 @@ def install_hooks():
         logger.warning("Token tracker: openai package not found, hooks not installed")
         return
 
-    # 已装则直接返回（cheap path），避免叠加 wrapper。真正的安装走下面的双检锁。
+    # Return immediately if installed (cheap path), avoiding stacked wrappers. Actual installation uses double-checked locking below.
     if getattr(Completions.create, "_neko_token_tracker_hooked", False):
         return
 
@@ -384,14 +384,14 @@ def install_hooks():
             )
             raise
 
-    # 标记 wrapper，供幂等守卫识别"已装"。functools.wraps 不会复制这个自定义属性，
-    # 所以原始 SDK 方法上不会有它，只有我们包过的才有。
+    # Mark wrappers so the idempotence guard recognizes installation. functools.wraps does not copy this custom attribute,
+    # so only our wrapped methods carry it, never the original SDK methods.
     patched_create._neko_token_tracker_hooked = True
     patched_async_create._neko_token_tracker_hooked = True
 
-    # 双检锁：合并模式下三个 startup 协程在同一 event loop 串行跑，cheap path 已能
-    # 挡住；锁是为多线程初始化路径（agent / memory watchdog 线程）兜底，确保
-    # "检测已装 → 赋值"这段不被并发穿插成叠加安装。
+    # Double-checked locking: merged mode's three startup coroutines run serially on one event loop, handled by
+    # the cheap path. The lock protects multithreaded initialization (agent / memory watchdog threads), ensuring
+    # check-installed → assign cannot interleave into stacked installation.
     with _hooks_install_lock:
         if getattr(Completions.create, "_neko_token_tracker_hooked", False):
             return
@@ -404,7 +404,7 @@ def _handle_sync_stream(self_obj, original_fn, args, kwargs, call_type):
     base_url = _get_base_url(self_obj)
     injected = False
 
-    # 尝试注入 stream_options
+    # Try injecting stream_options.
     if _should_inject_stream_options(base_url) and 'stream_options' not in kwargs:
         kwargs['stream_options'] = {"include_usage": True}
         injected = True
@@ -414,7 +414,7 @@ def _handle_sync_stream(self_obj, original_fn, args, kwargs, call_type):
         return _SyncStreamWrapper(result, call_type)
     except Exception as e:
         if injected:
-            # stream_options 导致报错，去掉后重试
+            # If stream_options causes an error, remove it and retry.
             _add_to_blocklist(base_url)
             kwargs.pop('stream_options', None)
             try:
@@ -485,7 +485,7 @@ class _SyncStreamWrapper:
             if hasattr(chunk, 'usage') and chunk.usage is not None:
                 last_usage_chunk = chunk
             yield chunk
-        # 流结束后，只记录最后一个带 usage 的 chunk
+        # After the stream ends, record only the final chunk containing usage.
         if last_usage_chunk is not None:
             _record_usage_from_response(last_usage_chunk, self._call_type)
 
@@ -521,7 +521,7 @@ class _AsyncStreamWrapper:
             if hasattr(chunk, 'usage') and chunk.usage is not None:
                 last_usage_chunk = chunk
             yield chunk
-        # 流结束后，只记录最后一个带 usage 的 chunk
+        # After the stream ends, record only the final chunk containing usage.
         if last_usage_chunk is not None:
             _record_usage_from_response(last_usage_chunk, self._call_type)
 

@@ -55,6 +55,15 @@
             panel.hidden = !activation || S.isRecording !== true || ['disabled', 'closed'].includes(activation.state);
             if (!activation) return;
             label.textContent = t('voiceIdentity.activation_' + activation.state, activation.state);
+            if (activation.state === 'waiting') {
+                const waitingHints = {
+                    speech_too_short: ['voiceIdentity.activationHint_speech_too_short', 'Not enough speech. Say a longer, complete sentence.'],
+                    owner_not_confirmed: ['voiceIdentity.activationHint_owner_not_confirmed', 'Voice did not match. Keep speaking naturally; verification will continue.'],
+                    verification_insufficient: ['voiceIdentity.activationHint_verification_insufficient', 'This audio could not be verified. Keep speaking naturally to try again.']
+                };
+                const hint = Object.prototype.hasOwnProperty.call(waitingHints, activation.reason) && waitingHints[activation.reason];
+                if (hint) label.textContent = t(hint[0], hint[1]);
+            }
             if (activation.reason && activation.state === 'unavailable') label.textContent += ' — ' + t('voiceIdentity.activationReason_' + activation.reason, t('voiceIdentity.activationRepair', 'Check resources and retry voice activation.'));
             if (restartRequired) label.textContent = t('voiceIdentity.activationRestartRequired', 'Close and reopen the microphone to start a new voice session.');
             retry.hidden = restartRequired || activation.state !== 'unavailable';
@@ -115,12 +124,19 @@
         }
         function controlResult(details, sourceSocket) {
             const pending = details && waiting.get(details.request_id);
-            if (!pending && details && details.event === 'preview_begin' && details.ok === true && details.token && sourceSocket === S.socket) {
+            // Electron fans a server acknowledgement out to multiple windows.
+            // Only the window still waiting for its own late begin may release
+            // that ticket. Unrelated or already-accepted replies are not orphans.
+            if (!pending && details && details.event === 'preview_begin' && details.ok === true && details.token && sourceSocket === S.socket
+                && isolation && isolation.operationId === details.request_id && isolation.token === null) {
                 compensatePreview(details);
                 return;
             }
             if (!pending || pending.socket !== sourceSocket || sourceSocket !== S.socket || pending.event !== details.event) return;
             waiting.delete(details.request_id); root.clearTimeout(pending.timeout);
+            // Claim before resolving: duplicate replies may arrive before the
+            // awaiting prepare continuation has had a chance to store its token.
+            if (details.ok === true && details.event === 'preview_begin' && isolation && isolation.operationId === details.request_id) isolation.token = details.token || null;
             if (details.ok === true) pending.resolve(details); else {
                 const error = new Error(details.reason || 'voice_control_failed');
                 error.voiceControlConfirmed = true;

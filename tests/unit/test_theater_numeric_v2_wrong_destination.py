@@ -61,7 +61,7 @@ async def test_wrong_destination_reuses_rewrite_and_commits_only_current_scene(t
     if intent == 'accept':
         current = await _commit_invitation(runtime, current, '（收好工具）咱们去街市看看，好吗？')
     actor_nodes = []; review_modes = []; evaluation_calls = []
-    # 复现真实压测：交付合同先占用一次改写后，去向复核仍必须有权取消错误换幕。
+    # Reproduce the real stress test: after the delivery contract consumes one rewrite, destination review must still be able to cancel an incorrect scene transition.
     pre_review_rewrite = (
         intent == 'accept' and dispute == 'timeout'
         and ordinary_result == 'pass' and invalid_invitation
@@ -88,7 +88,7 @@ async def test_wrong_destination_reuses_rewrite_and_commits_only_current_scene(t
         outcome = kwargs['outcome']; actor_nodes.append(outcome.session.current_node_id)
         assert outcome.session.metrics['trust'] == current.session.metrics['trust'] + 2
         if outcome.session.current_node_id == 'start':
-            # 取消去向后不能把复核中的“玩家想去别处”当成执行另一场景的命令。
+            # After cancelling a destination, do not treat the review's 'player wants to go elsewhere' as an instruction to execute another scene.
             assert '留幕不代表改去另一个跨幕地点' in kwargs['retry_hint']
             assert '承认自己先前邀约有误' in kwargs['retry_hint']
             assert '已获准的幕内行动照常回应' in kwargs['retry_hint']

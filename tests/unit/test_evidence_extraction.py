@@ -68,12 +68,12 @@ def test_negative_keywords_english():
 
 
 def test_negative_keywords_region_locale():
-    """带 region 后缀的 locale（``en-US`` / ``pt-BR``）必须能命中——之前
-    没归一化，会回退到 zh 词表，扫错语言（CodeRabbit Major / 5b42273）。
+    """Regional locales (``en-US`` / ``pt-BR``) must match; previously, missing
+    normalization fell back to the zh vocabulary and scanned the wrong language (CodeRabbit Major / 5b42273).
 
-    繁体 zh-Hant 输入虽然归一化到 zh，但 keyword 词表是简体（"换个话题"
-    vs "換個話題"是不同 Unicode 字符），需要的话另起 OpenCC 转换路径，
-    本测试不涵盖。"""
+    Traditional zh-Hant input normalizes to zh, but the keyword vocabulary is simplified ("换个话题"
+    and "換個話題" use different Unicode characters). Add a separate OpenCC conversion path if needed;
+    this test does not cover it."""  # noqa: DOCSTRING_CJK
     from config.prompts.prompts_directives import scan_negative_keywords
     assert scan_negative_keywords("please stop talking about this", "en-US") is True
     assert scan_negative_keywords("não fale disso", "pt-BR") is True
@@ -110,10 +110,10 @@ async def test_stage1_prompt_has_no_existing_observation_section(tmp_path):
 @pytest.mark.asyncio
 async def test_stage1_non_array_payload_strict_vs_lenient(tmp_path):
     """treat_malformed_as_failure branches of the REAL method body."""
-    # daily 导入的 harness 复刻了这段分支逻辑，只能钉住调用点传 flag 那一半；
-    # 这里必须打在真实方法体上——若分支被重构回退成无条件 []，畸形
-    # {"facts": [...]} 会被当确认空抽取 checkpoint 进 sidecar、该天永久 skip
-    # LLM 静默丢 facts（本测试即防此假绿）。
+    # The daily-import harness reproduces this branch, testing only flag passing at the call site;
+    # this must exercise the real method body. If refactoring restores an unconditional [], malformed
+    # {"facts": [...]} is checkpointed in the sidecar as confirmed empty extraction, permanently skipping that day's
+    # LLM and silently losing facts (this test prevents that false pass).
     fs, _cm = _install_factstore(str(tmp_path))
 
     with patch.object(fs, '_allm_call_with_retries',
@@ -123,9 +123,9 @@ async def test_stage1_non_array_payload_strict_vs_lenient(tmp_path):
             treat_malformed_as_failure=True,
         )
         lenient = await fs._allm_extract_facts("小天", [_FakeMessage("今天没啥事")])
-    # strict（daily 导入）：畸形 = 失败天，可重试、不 checkpoint。
+    # strict (daily import): malformed means a failed, retryable day without checkpointing.
     assert strict is None
-    # 非 strict（对话路径）：容忍为 []，行为与 pre-#2394 逐字节一致。
+    # Non-strict (conversation path): tolerate as [], byte-for-byte matching pre-#2394 behavior.
     assert lenient == []
 
 

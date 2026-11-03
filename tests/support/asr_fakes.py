@@ -98,6 +98,12 @@ class _Runtime(AsrRuntimeMixin):
     _interrupt_offline_reply = _TurnMixin._interrupt_offline_reply
     _close_taken_over_offline_reply = _TurnMixin._close_taken_over_offline_reply
     del _TurnMixin
+    # Passive turn context, as the manager composes it: a non-offline session
+    # starts no provider, so dispatch goes on exactly as before.
+    from main_logic.core.turn_context import TurnContextMixin as _TurnContextMixin
+    _start_turn_context = _TurnContextMixin._start_turn_context
+    _collect_turn_context = _TurnContextMixin._collect_turn_context
+    del _TurnContextMixin
 
     def __init__(self) -> None:
         self._init_asr_runtime_state()

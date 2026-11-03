@@ -33,6 +33,7 @@ from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from main_logic import client_registration
+from services.chat_sync import host as _chat_sync_host
 
 logger = logging.getLogger("neko.card_drop")
 
@@ -62,9 +63,9 @@ _SUPPORTED_AUTH_SOURCES = frozenset({"legacy", "oauth"})
 _native_sync_tickets: dict[str, dict] = {}
 # digest -> {expires_at, scopes, local_user_id, audience, session_fingerprint}
 _native_delegates: dict[str, dict] = {}
-# /sync-ticket 在事件循环线程签发，social-session-init 经 asyncio.to_thread 在
-# worker 线程消费（_clear_auth 也可能在线程里清 delegates）；两条线程都会迭代并
-# 修改这两张表，整段持锁，否则并发增删会让迭代抛 RuntimeError 把请求变成 500。
+# /sync-ticket issues on the event-loop thread, while social-session-init consumes via asyncio.to_thread on
+# a worker thread (_clear_auth may also clear delegates in a thread); both threads iterate and
+# modify these two tables, so hold the lock for the whole operation or concurrent changes can raise RuntimeError and return 500.
 _native_sync_tickets_lock = threading.Lock()
 _native_delegates_lock = threading.Lock()
 _session_path_warning_lock = threading.Lock()
@@ -552,7 +553,7 @@ def _credit_cors_headers(request: Request) -> dict[str, str] | None:
     return headers
 
 
-# ---- 社区账号登录：JWT 存本地 community_auth.json；draw 时带 Authorization ----
+# ---- Community account login: JWT is stored locally in community_auth.json; draw requests include Authorization ----
 _AUTH_FILENAME = "community_auth.json"
 
 
@@ -751,6 +752,15 @@ def _social_session_locks(paths: list[Path]):
         yield
 
 
+# Chat sync (services layer) observes the saved session and fences its local
+# commits with the same locks the logout/refresh/login writers hold. The lambdas
+# look up this module's attributes on every call, so patches here reach it too.
+_chat_sync_host.install_saved_session_store(
+    saved_session_snapshot=lambda: _desktop_session_snapshot(),
+    saved_session_writer_fence=lambda: _social_session_locks(_social_session_paths()),
+)
+
+
 def _save_auth_unlocked(data: dict) -> bool:
     """Write community_auth.json without locking; caller must hold the lock."""
     p = _auth_path()
@@ -793,10 +803,10 @@ def _persist_repaired_bind(access_token: str, bind: dict) -> None:
             if not current:
                 return
             if str(current.get("access_token") or "").strip() != access_token:
-                # 镜像 token 与本次 bind 的 token 不一致有两种含义：更新的登录或
-                # 刷新赢了（不该动），或者 refresh 已写入权威 social_session.json
-                # 而 community_auth.json 镜像那次 best-effort 写失败（该记，否则
-                # /auth-status 永远停在旧的瞬时错误上）。以权威快照裁决。
+                # A mirror token that differs from this bind's token can mean either a newer login or
+                # refresh won (do not touch it), or refresh wrote the authoritative social_session.json
+                # while the best-effort write to the community_auth.json mirror failed (record the failure, or
+                # /auth-status will remain stuck on an old transient error). Decide from the authoritative snapshot.
                 social = _desktop_session_snapshot()
                 authoritative = str((social or {}).get("access_token") or "").strip()
                 if authoritative != access_token:
@@ -1018,9 +1028,9 @@ def _clear_auth() -> bool:
     if auth_path is None:
         logger.warning("card_drop: cannot resolve auth path while clearing credentials")
     success = auth_path is not None
-    # community_auth.json 的删除也必须在 social-session 锁内：否则
-    # _persist_repaired_bind 可在锁内读到旧记录、在本次删除之后把它写回去，
-    # 登出只清掉 social 文件而镜像复活，clear 还会误报失败。
+    # Deleting community_auth.json must also happen under the social-session lock: otherwise
+    # _persist_repaired_bind could read the old record under the lock and write it back after this deletion;
+    # logout would clear only the social file while the mirror returns, and clear would incorrectly report failure.
     try:
         with _social_session_locks(_social_session_paths()):
             success = _unlink_credentials(paths) and success
@@ -1259,12 +1269,12 @@ async def _finish_login(base: str, login_out: dict) -> tuple[dict, dict]:
     return user, bind
 
 
-# ---- Steam 登录：开浏览器到云端 OpenID → 云端验完重定向回本地 /steam-callback ----
-# CSRF/会话固定防护：/steam-callback 用 access_token query 参数落地，是个本机端点，恶意网页
-# 可能跨源 GET 它塞入攻击者 token（把用户游客卡 bind 到攻击者账号）。用一次性 pending 标记
-# 把回调限定在「用户刚点过 Steam 登录」的短窗口内，挡掉无端调用。
+# ---- Steam login: open browser to cloud OpenID → cloud validates and redirects to local /steam-callback ----
+# CSRF/session-fixation protection: /steam-callback accepts access_token in the query string and is a local endpoint; a malicious website
+# could make a cross-origin GET with an attacker token (binding the user's guest card to the attacker's account). Use a one-time pending marker
+# to limit callbacks to a short window after the user explicitly clicked Steam login, blocking unsolicited calls.
 _STEAM_PENDING_FILENAME = "community_steam_pending.json"
-_STEAM_PENDING_TTL_SEC = 600  # 点登录后 10 分钟内必须完成回调
+_STEAM_PENDING_TTL_SEC = 600  # Callback must complete within 10 minutes after clicking login
 
 
 def _steam_pending_path() -> Path | None:
@@ -1353,10 +1363,10 @@ def _consume_steam_pending(state: str) -> tuple[bool, str | None]:
         _drop()
         return False, None
     if not (bool(ts) and (time.time() - ts) <= _STEAM_PENDING_TTL_SEC):
-        _drop()  # 过期：清掉
+        _drop()  # Expired: clear it
         return False, None
     if not secrets.compare_digest(str(stored_state), state):
-        return False, None  # state 不匹配：保留标记，合法回调仍可在 TTL 内成功
+        return False, None  # State mismatch: retain the marker so a valid callback can still succeed within TTL.
     try:
         p.unlink()
     except OSError as exc:
@@ -1383,15 +1393,15 @@ async def auth_status_endpoint(request: Request):
     if status["logged_in"]:
         a = status["auth"]
         u = a.get("user") if isinstance(a.get("user"), dict) else {}
-        # 老会话没存 bind 字段 → 视为已绑（向后兼容，正常单账号场景成立）
+        # Older sessions have no bind field → treat them as bound (backward compatible; valid for the normal single-account case)
         bind = a.get("bind") or {"bound": True, "error": None}
         return {
             "logged_in": True,
             "user": community_oauth._public_user_profile(u),
             "bind": bind,
         }
-    # 云端暂时校验不了时本地会话仍在，前端据此区分“明确登出”和“状态未知”，
-    # 不能把后者提示成去登录。
+    # If cloud validation is temporarily unavailable, the local session still exists; the frontend uses this to distinguish "explicitly logged out" from "status unknown",
+    # so do not tell the user to log in for the latter.
     return {
         "logged_in": False,
         "user": None,
@@ -1575,6 +1585,14 @@ async def native_delegate_endpoint(request: Request):
             status_code=403,
             headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
         )
+    if not client_registration.proof_transport_allowed(_social_base_url()):
+        # The delegate rides in the community URL fragment; never hand it to a
+        # plaintext page off loopback, same rule as /social-session-init.
+        return JSONResponse(
+            {"detail": "insecure_transport"},
+            status_code=403,
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+        )
     snapshot, failure = await _native_delegate_session_snapshot()
     local_user_id = (snapshot or {}).get("local_user_id") or ""
     session_fingerprint = _desktop_session_fingerprint(snapshot)
@@ -1629,6 +1647,12 @@ async def native_delegate_handoff_endpoint(
         return JSONResponse(
             {"detail": "return_to_not_allowed"},
             status_code=400,
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+        )
+    if not client_registration.proof_transport_allowed(audience):
+        return JSONResponse(
+            {"detail": "insecure_transport"},
+            status_code=403,
             headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
         )
     # A top-level navigation cannot retry a busy 503 by itself: validate a
@@ -1795,9 +1819,9 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
             # every later handoff repeats the bind round trip.
             await asyncio.to_thread(_persist_repaired_bind, access_token, bind)
     if bind_retried:
-        # bind 可能包含多个最长 30 秒的云端往返；期间 token 可能已被云端撤销而
-        # 本地文件未变，锁内复读只比本地 token 发现不了。重跑一次带云端校验的
-        # 复查（仅 bind 分支付出这个延迟），拒绝就 409 并保留票据给用户重试。
+        # Binding may involve multiple cloud round trips, each up to 30 seconds; the token may be revoked in the cloud
+        # while the local file remains unchanged, which a lock-held reread of the local token cannot detect. Run another
+        # cloud-validated check (only the bind branch pays this latency); reject with 409 and keep the ticket for retry if it fails.
         post_bind_snapshot, _ = await _native_delegate_session_snapshot()
         post_bind_token = (
             str(post_bind_snapshot.get("access_token") or "").strip()
@@ -1808,11 +1832,11 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
             return JSONResponse(
                 {"detail": "desktop_login_required"}, status_code=409, headers=cors
             )
-    # 「复查 → 消费」在 _social_session_lock 里执行：Electron 侧的登出/切号/刷新
-    # 写 social_session.json 时持有同一把锁（见 social-session-refresh.js 的
-    # .lock 协议），所以那次写入要么发生在进锁之前（锁内复读磁盘发现 token 已变，
-    # 返回 409），要么被挡到 ticket 消费完成之后。bind 重试本身仍是 await 点，
-    # 没法放进同步锁作用域；残余窗口只剩「出锁 → 响应送达」这段本地回环时间。
+    # Run "recheck → consume" inside _social_session_lock: Electron logout/account-switch/refresh
+    # holds the same lock when writing social_session.json (see the .lock protocol in social-session-refresh.js),
+    # so the write either happens before lock acquisition (the locked disk reread sees the changed token
+    # and returns 409) or waits until ticket consumption finishes. The bind retry itself still has an await point,
+    # This cannot be included in the synchronized lock scope; the only remaining window is the local loopback time from "unlock → response delivered."
     consume_outcome = await asyncio.to_thread(
         _consume_sync_ticket_for_verified_session, sync_ticket, access_token
     )
@@ -2009,9 +2033,9 @@ async def sync_session_endpoint(request: Request, payload: dict = Body(...)):
             )
         from main_routers import community_oauth
 
-        # 在飞的串门先收尾、封存上传文件，清登录态期间不准入新串门
+        # Finish active peer sessions and archive uploaded files; do not admit new sessions while clearing login state
         async with community_oauth.visit_account_change():
-            # 等收尾期间别的登录可能已换成另一个账号：清除之前按同一口径再核对一次
+            # Another login may have switched to a different account while shutdown was in progress: check again using the same criteria before clearing
             current_access = await asyncio.to_thread(_access_token) or ""
             if current_access and not secrets.compare_digest(current_access, requested_access):
                 return JSONResponse(
@@ -2068,7 +2092,7 @@ async def sync_session_endpoint(request: Request, payload: dict = Body(...)):
     from main_routers import community_oauth
 
     try:
-        # 换成另一个社区账号时：在飞的串门先收尾、封存上传文件，写入期间不准入新串门
+        # When switching to another community account, finish active peer sessions and archive uploaded files; do not admit new sessions while writing
         async with community_oauth.visit_account_change(_normalize_local_user_id(user.get("id"))):
             bind = await _store_session(
                 base,
@@ -2448,7 +2472,7 @@ async def logout_endpoint(request: Request, payload: dict | None = Body(default=
     _require_local_mutation_ticket(request, payload)
     from main_routers import community_oauth
 
-    # 在飞的串门先收尾、封存上传文件，清登录态期间不准入新串门
+    # Finish active peer sessions and archive uploaded files; do not admit new sessions while clearing login state
     async with community_oauth.visit_account_change():
         cleared = await asyncio.to_thread(_clear_auth)
     if not cleared:

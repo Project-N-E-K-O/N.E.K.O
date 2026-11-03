@@ -646,8 +646,8 @@ class _LifecycleMixin:
             except Exception as exc:  # pragma: no cover - best-effort cache
                 logger.debug("[AntiRepeat] response preload skipped: %s", exc)
 
-        # 临时注入：instruction 已由调用方用 ======== 格式封装，作为 HumanMessage 发送，
-        # 不持久化到 _conversation_history，避免污染长期上下文。
+        # Temporary injection: caller already wraps instruction in ======== delimiters and sends as HumanMessage,
+        # never persisting to _conversation_history to avoid long-term context pollution.
         # Proactive media is passed EXPLICITLY via ``images`` (per-callback,
         # carried on cb.media_images by the caller) — it is NOT pulled from
         # self._pending_images. _pending_images is the USER's screen/camera
@@ -655,19 +655,19 @@ class _LifecycleMixin:
         # the user's pending frame into this proactive/greeting turn and rob the
         # user's next message of its visual context (Codex P2). When proactive
         # images are present we switch to the vision model exactly like
-        # stream_text does (一旦带图就永久切 vision — 既定设计；vision model 也能跑
-        # 后续纯文本轮). The instruction itself stays ephemeral (not persisted).
-        # 在 `if images:` 之外初始化：纯文本的主动轮根本不进这个分支，而下面
-        # 的 emit 点无条件要读它。放在分支里的后果不是函数直接报错，而是文本已经发给
-        # 用户了、函数却因 UnboundLocalError 走到失败分支返回 False，主动
-        # 调度状态跟着被污染（CodeRabbit）。
+        # stream_text does (images permanently switch to vision by design; vision models can handle
+        # later text-only turns). The instruction itself stays ephemeral (not persisted).
+        # Initialize outside if images: text-only proactive turns never enter that branch, while the
+        # emit point below unconditionally reads it. Branch-only initialization does not immediately fail; text already reaches
+        # users before UnboundLocalError makes the function report False through failure handling, polluting proactive
+        # scheduling state (CodeRabbit).
         _pending_budget_notice = None
-        # 这一轮的身份。帧记录的 turn_id 和两条对话记录的 conversation_id 用**同
-        # 一个值**，插件才能把「模型看到的那几张图」和「她因此说了什么」拼回同一
-        # 轮。主动轮没有外部 turn id（那是独立 ASR 那条路才有的），只能现铸一个。
+        # Turn identity: frame-record turn_id and both conversation-record conversation_id share **one
+        # value**, letting plugins reconnect images seen by the model with the resulting speech in one
+        # turn. Proactive turns lack external IDs, exclusive to independent ASR, so mint one now.
         _bus_turn_id = uuid.uuid4().hex
-        # 阶梯之后真正附上的那批帧。在 `if images:` 之外初始化 —— 纯文本的主动轮
-        # 根本不进那个分支，而下面的发布点无条件要读它。
+        # Frames actually attached after budget reduction. Initialize outside if images: text-only proactive
+        # turns skip that branch while publishing below unconditionally reads it.
         _bus_frames: list = []
 
         async def _emit_pending_budget_notice() -> None:
@@ -702,10 +702,10 @@ class _LifecycleMixin:
                 )
 
         if images:
-            # 一旦带图就永久切到 vision model（既定设计，见上）。vision model 也能
-            # 跑后续纯文本轮，且凝神不再因 vision 而关闭思考。
-            # 不要求 vision_model != model：同一个模型 id 配了不同的视觉 URL / Key
-            # 也要切；id 和端点都相同时 switch_model 自己会直接返回。
+            # Images permanently switch to vision models by existing design (above). Vision also handles
+            # later text-only turns, and Focus no longer disables thinking for vision.
+            # Do not require vision_model != model: identical IDs with different vision URL/key still switch;
+            # identical IDs/endpoints make switch_model return directly itself.
             if self.vision_model:
                 # The preload above can have let a reply begin: check again
                 # with no await before the switch. The switch also drops
@@ -727,34 +727,34 @@ class _LifecycleMixin:
                         completion_mode,
                     )
                     return False
-            # 走和 stream_text 同一条预算阶梯：归一化到模型档位 → 抽样 → 重压 →
-            # 最后才丢。这条路以前是仓库里**唯一**一个带图却完全没有预算闸的模型
-            # 调用——images 里的每一张都逐条原样贴成 data URL 就发出去了。
-            # 而它恰恰是最容易堆量的一条：调用方（core/proactive.py）把这一批
-            # 里**所有** callback 的 media_images 拼在一起传进来，每个 callback
-            # 自己已经能带到 8 张，合批之后没有任何人再看总量。它和用户轮共用同
-            # 一个 provider、同一个单请求上限，超了是整条请求被拒——只是这里被拒
-            # 的后果更隐蔽：用户根本不知道刚才有一轮主动搭话没发出去。
+            # Use stream_text's budget ladder: normalize to model tier -> sample -> recompress ->
+            # discard last. Previously the **only** image-bearing model call without any budget gate:
+            # every image became an unchanged data URL and was sent.
+            # Also the easiest place to accumulate volume: core/proactive.py combines media_images
+            # from **all** callbacks, each already permitting eight,
+            # with nobody checking totals after batching. Same provider/request limits as user turns;
+            # exceeding them rejects the whole request, with subtler consequences here:
+            # users never know proactive dialogue failed to arrive.
             try:
                 _budget_images, _budget_notice = await fit_images_to_turn_budget(
                     images,
                     TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
                 )
             except Exception as _fit_error:
-                # 阶梯内部已经逐张兜底（单张失败就原样留着），能漏到这里的只剩
-                # 编程错误。这种情况下按原样送出，而不是让异常炸穿 prompt_ephemeral
-                # ——最坏是 provider 拒一条主动搭话，正好落在下面那条「失败就静默
-                # 放弃」的既定语义里；而炸穿会连带把调用方的 proactive 状态机
-                # 一起掀了。
+                # The ladder already catches individual-image failures, retaining originals; only programming
+                # errors reach here. Send unchanged rather than exploding prompt_ephemeral:
+                # worst case provider rejects one proactive turn, matching silent-abandonment
+                # semantics below; uncaught exceptions would also disrupt callers' proactive
+                # state machines.
                 logger.warning(
                     "prompt_ephemeral: 图片预算阶梯异常，按原样附图: %s",
                     _fit_error,
                 )
                 _budget_images, _budget_notice = list(images), None
             if _budget_notice:
-                # 与 _streaming.py 同一判据：真丢了东西才 warning，纯归一化走
-                # info。rung 0 无条件执行，主动轮又是自发的，全按 warning 打等于
-                # 让「图小了一点」和「有几张没送出去」在日志里长得一模一样。
+                # Match _streaming.py: warning only when content is actually lost, info for pure
+                # normalization. Rung zero always runs and proactive turns are self-initiated; warning for everything makes
+                # slightly smaller images indistinguishable in logs from missing images.
                 _budget_log = (
                     logger.warning
                     if _budget_notice.get("user_visible")
@@ -771,25 +771,25 @@ class _LifecycleMixin:
                     _budget_notice["compressed"],
                     _budget_notice["dropped"],
                 )
-                # 这里确实向前端弹了一条 —— 和下面「主动搭话失败静默吞掉」的立场
-                # 不冲突，因为两者说的不是一回事：
-                #   * 那条立场管的是**这一轮没能发生**。用户没在等回复，也从不知道
-                #     本来会有这么一轮，告诉他「刚才有句话没说出来」只是制造焦虑。
-                #   * 这里管的是**这一轮发生了，但内容缺了一块**。角色接下来会围着
-                #     她看到的图讲话，而被丢掉的那几张用户很可能还看得见——插件推
-                #     的图只要带 visibility=["chat"] 就同时渲染进了聊天气泡。不说，
-                #     用户面对的就是「她怎么对着这张图答非所问」，一个他无从解释、
-                #     只会归因于模型变笨的现象。
-                # 判据本身仍然是全仓统一的那条：只有**整张图被丢掉**才打扰用户，
-                # 归一化 / 抽样 / 重压一律只进日志（见 fit_images_to_turn_budget）。
+                # This does show a frontend message, consistent with silent proactive-failure
+                # policy below because they concern different situations:
+                #   * That policy covers **turns never happening**. Users expect no response and never knew
+                #     a turn was planned; announcing an unspoken message only creates anxiety.
+                #   * Here the **turn happens with missing content**. Characters discuss images
+                #     they saw while users likely still see dropped images: plugin images with
+                #     visibility=["chat"] render in chat bubbles too. Silence leaves users
+                #     wondering why she responds irrelevantly to images, an inexplicable phenomenon
+                #     attributed only to reduced model intelligence.
+                # Same repository-wide criterion: disturb users only when **entire images are discarded**;
+                # normalization/sampling/recompression only log (see fit_images_to_turn_budget).
                 #
-                # 但**暂存**，不在这里发。上面那段论证有个它自己没写出来的前提：
-                # 「这一轮发生了」。主动轮可能被取消、也可能 retry 用尽后按既定
-                # 立场静默放弃，这时先发出去的裁剪提示就成了「为一次从未发生的
-                # 回复报告它缺了什么」—— 用户看到一条孤零零的「图片已调整」，
-                # 而屏幕上根本没有与之相关的发言，比不提示更费解（Codex）。
-                # 改为挂起，等真正 emit 出第一段可见文本时再补发；那一刻
-                # 「这一轮发生了」才第一次成立。
+                # **Stage**, never send here. The preceding argument implicitly assumes
+                # the turn actually happened. Proactive turns can cancel or exhaust retries and silently
+                # abandon; earlier crop notices would report missing content for replies that never
+                # occurred, leaving isolated image-adjusted messages visible to users,
+                # with no related speech, more confusing than no notice (Codex).
+                # Suspend it until the first visible-text emission, when
+                # this turn has actually happened for the first time.
                 _pending_budget_notice = (
                     _budget_notice if _budget_notice.get("user_visible") else None
                 )
@@ -805,16 +805,16 @@ class _LifecycleMixin:
                     f"prompt_ephemeral: attaching {len(_budget_images)} proactive image(s)"
                 )
                 _ephemeral_msg = HumanMessage(content=_ephemeral_content)
-                # 只**存**，不发。存的是阶梯之后的字节（不是调用方给的原图）：
-                # 归一化几乎每轮都会重编码，总线上必须是模型真正看到的那一张。
-                # 发布点在下面「第一个 chunk 到达」处 —— 与 stream_text 同一条
-                # 判据。这里发布就是在赌：本函数往下还有 retry 阶梯、取消检查、
-                # 三次 attempt 全失败的静默放弃，每一条都能让这一轮一个字节都没
-                # 到过 provider。
+                # Only **store**, never publish. Store post-ladder bytes, not caller originals:
+                # normalization reencodes almost every turn, and buses must show what models actually saw.
+                # Publish below on first chunk arrival, matching stream_text.
+                # Publishing here gambles against later retries, cancellation checks,
+                # and silent abandonment after three failed attempts, any of which can leave this turn never sending
+                # a byte to providers.
                 _bus_frames = list(_budget_images)
             else:
-                # 阶梯永远至少保住最后一张，所以走到这里只可能是调用方传了一串空
-                # 字符串。退回纯文本消息，别发一条只有 text block 的多模态壳子。
+                # The ladder always preserves the final image, so reaching here means callers supplied empty
+                # strings only. Fall back to text, never send multimodal shells containing text blocks alone.
                 _ephemeral_msg = HumanMessage(content=instruction)
         else:
             _ephemeral_msg = HumanMessage(content=instruction)
@@ -837,17 +837,17 @@ class _LifecycleMixin:
             None,
         )
         _turn_history = self._conversation_history
-        # 送达之后要抄给插件总线的东西：这一轮的指令，以及（若有）真正附上的那批
-        # 图。一个槽装两样，是为了让「一轮只发一次」只有一处清标记 —— 两个槽两处
-        # 清，就是下一次有人只清了其中一个的地方。None = 已经发过了。
+        # Copy to plugin buses after delivery: this turn's instruction and actually attached images,
+        # if any. One slot for both centralizes once-per-turn clearing, avoiding two slots
+        # whose flags someone later clears only partly. None means already published.
         _pending_bus_delivery = (instruction, _bus_frames)
-        # 指令那条抄送的任务句柄。回复在 finally 末尾发布，两条属于同一轮，
-        # 插件读到的顺序必须是「指令、回复」——发布一旦离开回合的返回路径，
-        # 这个顺序就只剩调度保证，而调度不保证任何事。
+        # Task handle for instruction copies. Replies publish at finally's end, belonging to the same turn;
+        # plugins must read instruction before reply. Once publishing leaves the turn-return path,
+        # scheduling alone would control order, which guarantees nothing.
         _bus_instruction_task = None
-        # 这一轮的工具图槽位，跨 attempt 存活（见 _astream_visible_with_tools）。
+        # This turn's tool-image slot survives attempts (see _astream_visible_with_tools).
         _turn_tool_image_slots: list = []
-        # 同上：跨 attempt 存活的待抄送工具帧。
+        # Likewise pending copied tool frames survive attempts.
         _turn_tool_bus_frames: list = []
         # The tool rounds this turn appended, across attempts: they place the
         # instruction in the request view, and a cancelled turn trims only its
@@ -866,19 +866,19 @@ class _LifecycleMixin:
         if self._declines_over_another_reply(completion_mode):
             return False
 
-        # Retry 策略与 stream_text 对偶（max_retries=3, [1, 2]s 间隔）。
-        # 但主动搭话语义不同：用户没在等回复，retry 用尽时**静默吞掉**，
-        # 不发任何 status_message 给前端 —— 失败 = 这一轮 AI 根本没想说话。
-        # 唯一例外：欠费 / API Key / 配额这类账户级错误必须上报，否则用户
-        # 永远不知道为什么主动搭话不工作。
+        # Retry policy mirrors stream_text: max_retries=3, delays [1,2] seconds.
+        # Proactive semantics differ: users await no reply, so **silently swallow** exhausted retries,
+        # sending no frontend status_message; failure means AI never intended speech this turn.
+        # Exception: account-level unpaid/API-key/quota errors must surface, or users never
+        # know why proactive dialogue fails.
         max_retries = 3
         retry_delays = [1, 2]
-        # 与 stream_text 同：assistant_message 只装最后一段（上一个工具轮之后）
-        # 的可见文本，落进历史的就是它；工具轮之前的那段已经随工具轮写进历史。
-        # 整轮判定（提交了没有、提交了什么）看 assistant_message_total。
+        # Like stream_text, assistant_message contains only final visible text after the previous tool turn,
+        # which persists; pre-tool text already persisted with that tool turn.
+        # Use assistant_message_total for whole-turn commitment and content decisions.
         assistant_message = ""
         assistant_message_total = ""
-        # Empty-completion 诊断重置：与 stream_text 对偶。
+        # Reset empty-completion diagnostics, mirroring stream_text.
         self._last_finish_reason = None
         self._last_block_reason = None
         self._last_prompt_tokens = None
@@ -936,8 +936,8 @@ class _LifecycleMixin:
                     await self.on_text_delta(flush_text, is_first_chunk)
                 is_first_chunk = False
                 emitted_any = True
-                # 短于前缀缓冲阈值的回复整段走这条路，chunk 分支一次都不进
-                # —— 少了这一行，那类回合会照常提交却永远不报裁剪。
+                # Replies shorter than prefix-buffer thresholds entirely use this path without entering chunk handling;
+                # without this line, they commit normally but never report image reduction.
                 await _emit_pending_budget_notice()
 
         # Streaming state the flush reads; every attempt resets it.
@@ -951,21 +951,21 @@ class _LifecycleMixin:
             await self._run_displaced_followup()
             set_call_type("proactive")
             for attempt in range(max_retries):
-                # 每次 attempt 重置流式状态（assistant_message / prefix /
-                # is_first_chunk 全部归零）。
+                # Reset streaming state on every attempt: assistant_message / prefix /
+                # is_first_chunk all reset.
                 assistant_message = ""
                 assistant_message_total = ""
                 is_first_chunk = True
                 prefix_buffer = ""
                 prefix_checked = not bool(self._prefix_buffer_size)
-                emitted_any = False  # 本 attempt 是否已经向前端 emit 过文本
+                emitted_any = False  # Whether this attempt already emitted frontend text.
 
-                # close() 是唯一会把 self.llm 设为 None 的路径。它若在前一次
-                # APIConnectionError 后的 retry sleep 期间触发（用户切模式 /
-                # 断连 / session 熔断），不再做这次 attempt —— 否则会对 None
-                # 调 .astream 触发 AttributeError，且就算重试 client 也已不在。
-                # 用 hasattr 守卫：单元测试用 __new__ 绕过 __init__ 不会设这个
-                # 属性，但真实代码 __init__ 必设。
+                # close() alone sets self.llm to None. If it occurs during retry sleep after
+                # APIConnectionError (mode switch / disconnection / session circuit breaking),
+                # abandon this attempt rather than invoking None.astream and raising AttributeError,
+                # with no client remaining even for retry.
+                # Guard with hasattr: tests using __new__ bypass __init__ and may lack the
+                # attribute; actual __init__ always defines it.
                 if (
                     (hasattr(self, "llm") and self.llm is None)
                     or not self._response_generation_is_active(response_generation)
@@ -973,35 +973,35 @@ class _LifecycleMixin:
                     break
 
                 try:
-                    # 主动搭话同样走 tool-aware streaming —— agent 注入的 stage
-                    # direction 也可能让模型决定调用工具（比如 "讲一下今天天气"）。
+                    # Proactive dialogue also uses tool-aware streaming: agent-injected stage
+                    # directions may induce tools, e.g. discussing today's weather.
                     async for chunk in self._astream_visible_with_tools(
                         _turn_messages,
                         _instruction=_ephemeral_msg,
                         _tool_rounds=_turn_tool_rounds,
-                        # 与 stream_text 同：跨 attempt 存活，由下面的 finally
-                        # 统一释放。
+                        # Like stream_text, survive across attempts and release centrally in finally
+                        # below.
                         _tool_image_slots=_turn_tool_image_slots,
                         _tool_bus_frames=_turn_tool_bus_frames,
-                        # 这一轮里工具返回的图也归这一轮：没有它，主动搭话轮
-                        # 里的工具图会以 turn_id=None 上总线，插件没法把它和
-                        # 同一轮的指令/回复对上——而那正是 turn_id 存在的理由。
+                        # Tool-returned images belong to this turn too; otherwise proactive tool images
+                        # publish with turn_id=None, preventing plugins matching them to same-turn
+                        # instructions/replies, defeating turn_id's purpose.
                         _tool_frames_turn_id=_bus_turn_id,
                         _response_generation=response_generation,
                     ):
-                        # 插件总线：provider 已经吐出东西了 —— 这一轮的指令连同那
-                        # 批图确凿地被它收下了。这是本函数里最早能这么断言的地方，
-                        # astream 是惰性的，请求要到第一次 __anext__ 才真正发出去。
-                        # 清标记在 await 之前：一轮只发一次，三次 attempt 的重试不
-                        # 会把同一批图、同一条指令再抄一遍。
+                        # Plugin bus: provider emitted something, proving this turn's instruction and
+                        # images were accepted. Earliest place this is certain:
+                        # astream is lazy, sending only on the first __anext__.
+                        # Clear flags before awaiting: publish once per turn, never duplicating the same
+                        # images/instruction across three retry attempts.
                         #
-                        # 刻意在下面那句 `_response_generation_is_active` 之前：那
-                        # 是**本地**取消，与 provider 收没收到无关。它已经收到了。
+                        # Deliberately before _response_generation_is_active below: that is **local**
+                        # cancellation, independent of provider acceptance, which already happened.
                         if _pending_bus_delivery is not None:
                             _bus_instruction, _bus_frames_to_send = _pending_bus_delivery
                             _pending_bus_delivery = None
-                            # 与 stream_text 同一判据：抄送不占用回复的返回
-                            # 路径。两者都在上面冻结过了，任务里不读活状态。
+                            # Like stream_text, copying leaves the reply-return path.
+                            # Both payloads were frozen above; tasks never read live state.
                             if _bus_frames_to_send:
                                 self._fire_bus_task(
                                     self._publish_provider_frames(
@@ -1025,13 +1025,13 @@ class _LifecycleMixin:
                             if 'token_usage' in chunk.response_metadata or 'usage' in chunk.response_metadata:
                                 logger.debug(f"🔍 [Meta-Proactive] {chunk.response_metadata}")
 
-                        # tool 轮 sentinel：与 stream_text 同一契约，工具轮之前的
-                        # 文本已经随 tool_calls 写进历史，最后一段要从头攒，否则
-                        # 收尾的 AIMessage 会把它再写一遍。
+                        # Tool-turn sentinel matches stream_text: preceding text already persisted with
+                        # tool_calls. Accumulate the final segment anew, or final
+                        # AIMessage duplicates it.
                         if getattr(chunk, "tool_round_persisted", False):
                             if self._response_generation_is_active(response_generation):
-                                # 还压在名字前缀缓冲里的工具前文本已经在工具轮
-                                # 里了，现在补发给用户。
+                                # Pre-tool text still in name-prefix buffers already belongs to tool-turn history;
+                                # emit it to users now.
                                 await _flush_prefix_buffer()
                             # The round keeps what was shown: the speaker
                             # prefix stripped from it, nor (once cancelled)
@@ -1042,7 +1042,7 @@ class _LifecycleMixin:
                             )
                             assistant_message = ""
                             segment_round = self._last_tool_round_of(_turn_tool_rounds)
-                            # 下一段是新的语义单元，名字前缀重新检测。
+                            # Next segment is a new semantic unit; detect name prefixes again.
                             prefix_buffer = ""
                             prefix_checked = not bool(self._prefix_buffer_size)
                             continue
@@ -1052,7 +1052,7 @@ class _LifecycleMixin:
                         if content and content.strip():
                             emit_content = content
 
-                            # ── 前缀检测阶段：缓冲初始输出，剥离角色名前缀 ──
+                            # ── Prefix detection: buffer initial output and strip character-name prefixes ──
                             if not prefix_checked:
                                 prefix_buffer += emit_content
                                 if len(prefix_buffer) >= self._prefix_buffer_size:
@@ -1070,7 +1070,7 @@ class _LifecycleMixin:
                                     if not (emit_content and emit_content.strip()):
                                         continue
                                 else:
-                                    continue  # 缓冲区未满，等更多 chunk
+                                    continue  # Buffer not full; await more chunks.
 
                             assistant_message += emit_content
                             assistant_message_total += emit_content
@@ -1078,22 +1078,22 @@ class _LifecycleMixin:
                                 await self.on_text_delta(emit_content, is_first_chunk)
                             is_first_chunk = False
                             emitted_any = True
-                            # 这一轮确实开口了，挂起的裁剪提示现在才该出现。
+                            # This turn actually spoke; show suspended image-reduction notices now.
                             await _emit_pending_budget_notice()
 
-                    # ── flush 前缀缓冲区（流提前结束时） ──
+                    # ── Flush prefix buffers when streams end early ──
                     if self._response_generation_is_active(response_generation):
                         await _flush_prefix_buffer()
 
-                    break  # 流正常结束，跳出 retry 循环
+                    break  # Stream ended normally; leave retry loop.
 
                 except _llm_retry_error_types() as e:
                     error_type = type(e).__name__
                     error_str_lower = str(e).lower()
                     logger.info(f"ℹ️ prompt_ephemeral 捕获到 {error_type} 错误")
 
-                    # 账户级错误必须上报：欠费 / API Key 直接放弃 retry，
-                    # 配额错误上报后继续 retry（与 stream_text 对偶）。
+                    # Account errors must surface: unpaid/API-key errors abandon retries immediately;
+                    # quota errors report then retry, matching stream_text.
                     if '欠费' in error_str_lower or 'standing' in error_str_lower:
                         logger.error(f"prompt_ephemeral: 检测到欠费错误，直接上报: {e}")
                         if self.on_status_message:
@@ -1113,8 +1113,8 @@ class _LifecycleMixin:
                         if self.on_status_message:
                             await self.on_status_message(json.dumps({"code": "API_QUOTA_TIME"}))
 
-                    # 已经吐过文本就不能再 retry —— 否则前端会拼出"半截 + 重新生成"
-                    # 的怪异回复。直接 break 让半截文本走 finally 的 persist 路径。
+                    # Never retry after emitting text, or frontend combines partial output with regenerated
+                    # text. Break directly, allowing partial text through finally persistence.
                     if emitted_any:
                         logger.info(
                             "prompt_ephemeral: %s 发生时已 emit 文本，放弃 retry",
@@ -1131,9 +1131,9 @@ class _LifecycleMixin:
                         await asyncio.sleep(wait_time)
                         continue
 
-                    # Retry 用尽：B 部分语义 —— 静默放弃。主动搭话失败用户
-                    # 不需要知道，只 log 一条 warning（截断 str(e) 防 HTML
-                    # 错误页淹没日志）。
+                    # Exhausted retries follow part-B semantics: silent abandonment. Users need not
+                    # know proactive failure; log a warning only, truncating str(e) to prevent HTML
+                    # error pages flooding logs.
                     logger.warning(
                         "prompt_ephemeral: %s 重试 %d 次后仍失败，静默放弃: %s",
                         error_type, max_retries, str(e)[:200],
@@ -1149,9 +1149,9 @@ class _LifecycleMixin:
                 assistant_message = ""
                 assistant_message_total = ""
             else:
-                # 兜底：非 API 错误（编程错误 / 数据异常）静默吞掉，截断错误文本
-                # 防 HTML 错误页之类淹没日志。和上方 (APIConnectionError 等) 分支
-                # 语义对偶 —— 都不向前端发 status_message。
+                # Fallback: silently swallow non-API programming/data errors, truncating text
+                # against HTML error-page floods. Mirror the APIConnectionError-style branch above:
+                # neither sends frontend status_message.
                 logger.error(
                     "OmniOfflineClient.prompt_ephemeral 未分类异常 %s: %s",
                     type(e).__name__, str(e)[:200],
@@ -1166,8 +1166,8 @@ class _LifecycleMixin:
             task_cancelled = True
             raise
         finally:
-            # 先于其它收尾：把 base64 从历史里摘掉。跨 attempt 存活的代价
-            # 就是必须由这里统一释放，否则它会跟着这一轮之后的每次请求走。
+            # Before other finalization, detach base64 from history. Cross-attempt lifetime
+            # requires centralized release here, or images accompany every later request.
             response_cancelled = not self._response_generation_is_active(response_generation)
             interrupter_owned = self._take_interrupter_ownership(response_generation)
             self._release_tool_image_slots(_turn_tool_image_slots)
@@ -1178,8 +1178,8 @@ class _LifecycleMixin:
                     entry for entry in getattr(self, "_proactive_turn_rounds", ())
                     if entry[1] is not _turn_tool_rounds
                 ]
-            # Token usage 由 _AsyncStreamWrapper hook 在流结束时自动记录，
-            # 此处不再手动调用 TokenTracker.record() 避免双重计数。
+            # _AsyncStreamWrapper hooks automatically record usage at stream end;
+            # avoid manual TokenTracker.record() and double counting.
             committed_text = _strip_nonverbal_directives(assistant_message_total).strip()
             content_committed = bool(committed_text)
             # A call that ran had its side effect and its round stays in the
@@ -1190,21 +1190,21 @@ class _LifecycleMixin:
                 _find_by_identity(_turn_messages, -1, round_) >= 0
                 for round_ in _turn_tool_rounds
             )
-            # 一条可见的 ephemeral 回复（greeting / agent 回调 / 戳头像的 quip）是
-            # 用户接下来要回应的「新一条 AI 轮」，它让之前为「下一条用户回复」暂存的
-            # 屏幕截图过时——清掉它。persist_response=False 的回复（如头像 quip）不进
-            # 历史、历史长度不变，stream_text 的 history-len marker 看不到，必须在这条
-            # ephemeral 回复的 choke point 清（Codex P2）。只在真吐了可见文本时清，
-            # 半途 abort / 无文本的尝试不丢一张仍有效的暂存屏。
+            # Visible ephemeral replies (greeting / agent callbacks / avatar quips) constitute
+            # new AI turns users answer next, invalidating screenshots staged for the prior next-user
+            # reply. Clear them. persist_response=False replies, e.g. avatar quips, never enter
+            # history or change its length, escaping stream_text's history-length marker. Clear at this
+            # ephemeral choke point (Codex P2) only after visible text actually appears;
+            # aborted/textless attempts retain valid staged screens.
             if content_committed:
                 self._proactive_image_to_inject = None
                 self._proactive_image_staged_at = 0.0
                 self._proactive_image_history_len = 0
-            # Empty-completion 诊断：和 stream_text 的兜底 warning 对偶。
-            # 主动搭话语义上是"静默放弃"，所以不发 status_message，但 INFO
-            # 一行 finish_reason 让日志能复盘——上次出问题就是因为没法区分
-            # "trigger_greeting 静默失败 = LLM 被 safety 拦" vs "LLM 真的觉得
-            # 这一轮不该说话"。
+            # Empty-completion diagnostics mirror stream_text's fallback warning.
+            # Proactive failures silently abandon without status_message, but one INFO
+            # finish_reason line permits diagnosis. Previous incidents could not distinguish
+            # trigger_greeting silently failing because LLM safety blocked output from the LLM
+            # actually choosing silence this turn.
             if not content_committed:
                 logger.info(
                     "OmniOfflineClient.prompt_ephemeral: 无可提交文本 "
@@ -1258,11 +1258,11 @@ class _LifecycleMixin:
                     # Only the segment after the last tool round: the text
                     # before it is saved with that round.
                     self._conversation_history.append(reply)
-            # 防复读 corpus 拆成两半：内存更新在收尾信号**之前**（同步，不含 await，
-            # 所以不是取消点），落盘在**之后**。客户端看到 turn end 就可能立刻发下一
-            # 条，那一轮的打分必须已经看得到刚提交的这句；而落盘那个 await 一旦被取消
-            # 就会跳过 on_response_done 里的 TTS 收尾 / turn 结束 / request-id 清理。
-            # 两个要求方向相反，只有拆开才能同时满足。
+            # Split anti-repeat corpus handling: update memory **before** finalization signals synchronously, without awaits/cancellation,
+            # then persist **afterward**. Clients may immediately send next messages after turn end,
+            # whose scoring must see committed text; cancellation at persistence awaits must not skip
+            # on_response_done's TTS finalization / turn end / request-ID cleanup.
+            # Opposing requirements can coexist only after splitting.
             staged_anti_repeat = None
             if completion_mode == "response" and content_committed and persist_response:
                 try:
@@ -1314,11 +1314,11 @@ class _LifecycleMixin:
                 done_callback = response_done_callback or self.on_response_done
                 if not completion_taken_over and done_callback:
                     await done_callback()
-                # 只录常规 reply（completion_mode == "response"）。proactive 路径
-                # 已经在 ``core.finish_proactive_delivery`` 上录，这里再录会双写。
-                # 与 core.finish_proactive_delivery 同因同治：摘下来不 await。下面的
-                # `return reported_committed` 是调用方判断这轮有没有提交的依据，在它
-                # 之前留一个取消点，就会让一次已经发出去的回复被记成没发。
+                # Record normal replies only (completion_mode == "response"). Proactive paths already
+                # record through core.finish_proactive_delivery; doing so again duplicates writes.
+                # Same reason/fix as core.finish_proactive_delivery: detach without awaiting. Callers use
+                # return reported_committed below to determine whether this turn committed;
+                # a cancellation point before it would classify sent replies as unsent.
                 if staged_anti_repeat is not None:
                     try:
                         from memory.anti_repeat import get_anti_repeat_corpus
@@ -1333,39 +1333,39 @@ class _LifecycleMixin:
                     await proactive_done_cb(content_committed)
                 elif not completion_taken_over and self.on_response_done:
                     await self.on_response_done()
-            # 对话总线的第二条：她真正说出口的那句。判据和上面那条指令不同 ——
-            # 指令问的是「provider 收到了吗」（第一个 chunk），这条问的是「她说了
-            # 吗」（提交）。开始 streaming 不算数：只吐了非语言指令、或者半截被
-            # 丢弃的那种回合，committed_text 是空的，插件此时该读到的是「没有回
-            # 复」，而不是一条空记录或一句从未被承认的话。发的是 committed_text
-            # ——剥掉 [play_music:] 之后的那份，与 on_committed_text / 防复读
-            # corpus 拿到的是同一个字符串。
+            # Conversation bus's second record: actual spoken text. Unlike instructions, which ask whether
+            # providers received it at first chunk, this asks whether she **spoke**
+            # through commitment. Streaming alone is insufficient: non-language-only or discarded
+            # partial turns have empty committed_text. Plugins should observe no reply,
+            # never empty records or unacknowledged speech. Publish committed_text,
+            # after stripping [play_music:], identical to on_committed_text and anti-repeat
+            # corpus strings.
             #
-            # 位置在整个 finally 的**最后**，收尾回调之后：这是一次礼节性抄送，
-            # 不能在任何用户看得见的东西（TTS 收尾、轮次结束、request-id 清理）
-            # 前面新开一个取消点。
+            # At the **end** of finally after finalization callbacks: courtesy copies cannot
+            # introduce cancellation before user-visible TTS cleanup, turn end, or request-ID
+            # cleanup.
             if content_committed and _bus_instruction_task is not None:
-                # 顺序靠**串联**，不靠等待。指令和回复是同一轮，插件必须按这个
-                # 顺序读到；但在 finally 里 await 那条任务，会让一个卡住的
-                # bridge 直接挂住主动搭话的收尾——这正是上一轮把发布挪出返回
-                # 路径要避免的事，在这里又长回来了。
+                # Preserve order by **chaining**, not waiting. Instructions/replies share a turn and
+                # plugins require that sequence, but awaiting instruction tasks inside finally
+                # lets stalled bridges hang proactive finalization, recreating what moving publishing
+                # outside return paths was meant to avoid.
                 #
-                # 所以把回复的抄送挂在指令那条任务**后面**，整串一起 fire：
-                # 顺序保住了，回合一步都不用等，也不用为此发明一个超时。
+                # Chain reply copying **after** instruction tasks and fire together,
+                # preserving order without waiting or inventing timeouts.
                 #
-                # 任务为 None 时**整条回复都不发**（上面的判据）。None 有两种来
-                # 源，而两种的结论一样：要么这一轮压根没走到指令发布点，要么在
-                # 途抄送已经到顶、指令被拒——两种情况下总线上都没有那条指令，
-                # 而带着 message_count=2 的回复会告诉插件「你手上是完整的一轮」。
-                # 那是一句撒谎的记录，比少一条记录糟得多。
+                # Task None suppresses **the entire reply** under the above criterion. Either
+                # this turn never reached instruction publishing, or in-flight copies reached
+                # capacity and rejected the instruction; neither leaves instructions on buses,
+                # while message_count=2 replies falsely promise complete turns to plugins.
+                # Such dishonest records are worse than missing records.
                 self._fire_bus_task(
                     self._publish_reply_after_instruction(
                         _bus_instruction_task,
                         committed_text,
                         turn_type=_BUS_TURN_TYPE_REPLY,
                         conversation_id=_bus_turn_id,
-                        # 这一轮到此为止总共两条：指令 + 这句回复。读到这条的
-                        # 插件因此知道自己手上的是完整的一轮。
+                        # Two records total so far: instruction + this reply. Receiving
+                        # plugins therefore know they hold the complete turn.
                         message_count=2,
                     )
                 )
@@ -1544,8 +1544,8 @@ class _LifecycleMixin:
             except Exception as e:
                 logger.warning(f"OmniOfflineClient.close: aclose failed: {e}")
             self.llm = None
-        # 同 switch_model：genai.Client 的同步、异步两半各持有一个 httpx
-        # 连接池，两个都关（_close_genai_client）。
+        # Like switch_model, genai.Client's synchronous/asynchronous halves own separate httpx
+        # pools; close both via _close_genai_client.
         if self._genai_client is not None:
             try:
                 await _close_genai_client(self._genai_client)

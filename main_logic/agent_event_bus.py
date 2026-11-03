@@ -41,8 +41,8 @@ except Exception:  # pragma: no cover - optional dependency at runtime
 
 logger = get_module_logger(__name__, "Main")
 
-# ZMQ 地址：支持环境变量覆盖，便于 launcher 在默认端口落入
-# Hyper-V 保留区时进行迁移。
+# ZMQ addresses support environment overrides so launchers can migrate defaults
+# falling within Hyper-V reserved port ranges.
 def _zmq_addr(env_key: str, default_port: int) -> str:
     raw = os.getenv(env_key, "").strip()
     if raw:
@@ -56,7 +56,7 @@ def _zmq_addr(env_key: str, default_port: int) -> str:
 
 SESSION_PUB_ADDR  = _zmq_addr("NEKO_ZMQ_SESSION_PUB_PORT", 48961)   # main -> agent（PUB/SUB）
 AGENT_PUSH_ADDR   = _zmq_addr("NEKO_ZMQ_AGENT_PUSH_PORT", 48962)    # agent -> main（PUSH/PULL）
-ANALYZE_PUSH_ADDR = _zmq_addr("NEKO_ZMQ_ANALYZE_PUSH_PORT", 48963)  # main -> agent（PUSH/PULL，可靠分析队列）
+ANALYZE_PUSH_ADDR = _zmq_addr("NEKO_ZMQ_ANALYZE_PUSH_PORT", 48963)  # main -> agent (PUSH/PULL, reliable analysis queue).
 
 # Declared here rather than beside its publisher below because the agent-side
 # receive thread needs it to tell a frame apart from every other session event.
@@ -91,34 +91,34 @@ def _int_env(env_key: str, default: int, *, minimum: int) -> int:
 # nothing else. The value is not derived from that setting: main_logic sits
 # below ``plugin`` in the layering and cannot read it.
 # Env: NEKO_AGENT_FRAME_HANDOFF_MAX_IN_FLIGHT, default=8
-# 单张帧允许进 session PUB 的最大 base64 体积。
+# Maximum base64 size of one frame allowed into session PUB.
 #
-# 这条 socket 是**会话事件共用**的，所以不能靠压 SNDHWM 来约束帧——那会连
-# 文本事件一起提前丢。而 PUB 的默认 SNDHWM 是 1000 条：订阅方一停，多兆的帧
-# 能在 socket 里堆成几百 MB，而在途任务上限（下面那个）拦不住，因为每个任务
-# 在 send(NOBLOCK) 入队的瞬间就结束了。
+# This socket is **shared by session events**, so lowering SNDHWM to constrain frames also
+# drops text prematurely. PUB defaults to 1000 messages; stopped subscribers let multi-megabyte
+# frames pile into hundreds of MB, beyond the in-flight task cap below because every task
+# finishes as soon as send(NOBLOCK) enqueues its message.
 #
-# 所以闸放在**入队之前**。这不损失任何行为：超过 message plane 记录上限的帧
-# 到了远端本来就会被 bridge 拒收，早拒只是省掉一次穿越和一段驻留。取值与
-# 工具图的投递上限一致（见 tool_calling._TOOL_IMAGE_DELIVER_MAX_B64_BYTES，
-# 那边有一条用例钉住两者相等），并留在 plane 的 512 KiB 之下——那个界按整条
-# 打包记录算，像素旁边还有 mime / turn_id / metadata。
-# 图片自己的预算，也就是对外文档承诺的那个 500 KiB。
+# Gate **before enqueueing**. No behavior is lost: remote bridges already reject frames above the
+# message-plane record cap; early rejection saves transport and residency. Match
+# tool-image delivery limits (tool_calling._TOOL_IMAGE_DELIVER_MAX_B64_BYTES,
+# pinned equal by a test there), staying below the plane's 512KiB limit, which measures whole
+# packed records with mime / turn_id / metadata alongside pixels.
+# The image's own budget, the externally promised 500KiB.
 PROVIDER_FRAME_MAX_IMAGE_B64_BYTES = 500 * 1024
 
-# 事件里除了像素还有 event_id / source / mime / turn_id / generation /
-# metadata / lanlan_name。实测今天是 264 字节；留 1 KiB 给更长的 turn_id 与
+# Events also contain event_id / source / mime / turn_id / generation /
+# metadata / lanlan_name. Measured today at 264 bytes; reserve 1KiB for longer turn_id and
 # metadata。
 PROVIDER_FRAME_ENVELOPE_HEADROOM_BYTES = 1024
 
-# 整条事件的上限 = 图片预算 + 信封。**方向别记反**：信封不从图片预算里扣，
-# 而是加在事件这一侧——因为「图片 500 KiB vs plane 记录 512 KiB」之间那 12 KB
-# 差额本来就是为它留的（见 tool_calling 里投递上限的说明）。从图片预算里扣等
-# 于把同一笔钱付两遍，还会让对外承诺的 500 KiB 悄悄缩水成 499 KiB。
+# Whole-event limit = image budget + envelope. **Keep the direction straight**: do not deduct the envelope
+# from image budget; add it to event budget. The 12KB gap between image 500KiB and plane record 512KiB
+# already reserves it (see tool_calling's delivery-limit explanation). Deducting it from image budget
+# pays twice and silently shrinks the promised 500KiB to 499KiB.
 #
-# 这一条踩过两次：先是两个常量都写 500 KiB、一个量图片一个量整条事件，于是
-# 阶梯刚好压到上限的图在发布处被静默丢掉；改对之后又把信封记错了侧。守卫因此
-# 是**造一条满额事件再量**、并且一路量到 plane 记录，而不是比常量。
+# This failed twice: initially both constants were 500KiB, one measuring images and the other entire events,
+# silently dropping images compressed exactly to the cap. After that fix, envelope accounting used the wrong side. The guard
+# therefore **constructs and measures a full-budget event**, through the plane record, rather than comparing constants.
 PROVIDER_FRAME_MAX_B64_BYTES = (
     PROVIDER_FRAME_MAX_IMAGE_B64_BYTES + PROVIDER_FRAME_ENVELOPE_HEADROOM_BYTES
 )
@@ -142,7 +142,7 @@ _ack_waiters_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
-#  main_server 侧桥接器
+# main_server-side bridge.
 # ---------------------------------------------------------------------------
 
 class MainServerAgentBridge:
@@ -190,7 +190,7 @@ class MainServerAgentBridge:
         self._recv_thread.start()
         logger.info("[EventBus] Main bridge started (pid=%s)", os.getpid())
 
-    # -- 后台接收（agent → main） -------------------------------------------
+    # -- Background reception (agent -> main) -------------------------------------------
 
     def _recv_thread_fn(self) -> None:
         while not self._stop.is_set():
@@ -207,7 +207,7 @@ class MainServerAgentBridge:
                     logger.debug("[EventBus] main recv thread error: %s", e)
                     time.sleep(0.05)
 
-    # -- 发送辅助函数（在 asyncio 线程中调用） -------------------------------
+    # -- Sending helpers (called in the asyncio thread) -------------------------------
 
     async def publish_session_event(self, event: Dict[str, Any]) -> bool:
         if not self.ready or self.pub is None:
@@ -263,7 +263,7 @@ class MainServerAgentBridge:
 
 
 # ---------------------------------------------------------------------------
-#  agent_server 侧桥接器
+# agent_server-side bridge.
 # ---------------------------------------------------------------------------
 
 class AgentServerEventBridge:
@@ -370,7 +370,7 @@ class AgentServerEventBridge:
             self._inflight_frames.clear()
         logger.debug("[EventBus] Agent bridge stopped")
 
-    # -- 跨线程投递（接收线程 -> agent 事件循环） ---------------------------
+    # -- Cross-thread delivery (receive thread -> agent event loop) ---------------------------
 
     def _discard_inflight_frame(
         self, fut: "concurrent.futures.Future[Any]",
@@ -441,7 +441,7 @@ class AgentServerEventBridge:
             )
         return False
 
-    # -- 后台接收线程 -------------------------------------------------------
+    # -- Background receive thread -------------------------------------------------------
 
     def _recv_sub_fn(self) -> None:
         while not self._stop.is_set():
@@ -476,7 +476,7 @@ class AgentServerEventBridge:
                     logger.debug("[EventBus] agent analyze recv thread error: %s", e)
                     time.sleep(0.05)
 
-    # -- 发送辅助函数（在 asyncio 线程中调用） -------------------------------
+    # -- Sending helpers (called in the asyncio thread) -------------------------------
 
     async def emit_to_main(self, event: Dict[str, Any]) -> bool:
         if not self.ready or self.push is None:
@@ -489,7 +489,7 @@ class AgentServerEventBridge:
 
 
 # ---------------------------------------------------------------------------
-#  模块级辅助函数（API 保持不变）
+# Module-level helpers (unchanged API).
 # ---------------------------------------------------------------------------
 
 def set_main_bridge(bridge: Optional[MainServerAgentBridge]) -> None:
@@ -826,9 +826,9 @@ async def publish_provider_frame_observed_best_effort(
     if not b64:
         return False
     if len(b64) > PROVIDER_FRAME_MAX_B64_BYTES:
-        # 拒在入队之前，理由见 PROVIDER_FRAME_MAX_B64_BYTES 的说明：这条 PUB
-        # 是共用的，靠 SNDHWM 约束帧会牵连文本事件；而这么大的帧到了远端也是
-        # 被拒。debug 而不是 warning：调用方全是 best-effort 抄送，用户看不见。
+        # Reject before enqueueing; see PROVIDER_FRAME_MAX_B64_BYTES: this shared PUB cannot constrain frames
+        # via SNDHWM without affecting text; remote recipients reject such oversized frames anyway.
+        # Use debug, not warning: all callers perform best-effort copies, invisible to users.
         logger.debug(
             "[EventBus] provider frame too large for the session channel: "
             "%d > %d (source=%s)",
@@ -853,18 +853,18 @@ async def publish_provider_frame_observed_best_effort(
     if metadata:
         event["metadata"] = dict(metadata)
 
-    # 上面那道闸只量了像素，而 metadata 是调用方给的、会被原样拷进同一条事件
-    # ——一张 400 KiB 的图配 1 MiB 的 metadata 就能绕过它，把超限记录塞进共用
-    # 的 PUB 路径。真正的判据是**整条事件**序列化之后的字节，也就是这条 socket
-    # 实际要装的东西。
+    # The preceding gate measures only pixels, while caller-supplied metadata is copied unchanged into the same event;
+    # a 400KiB image plus 1MiB metadata bypasses it, injecting an oversized record into the shared
+    # PUB path. The true criterion is serialized bytes of the **whole event**, exactly what this socket
+    # must hold.
     #
-    # 这里多做一次 dumps。代价可接受：这条路是 best-effort 抄送、在途还封在
-    # AGENT_FRAME_HANDOFF_MAX_IN_FLIGHT 之内；而换成「按别的口径估算整条事件」
-    # 只会再引入一个会漂的数字。
+    # Serialize once more here. Cost is acceptable: this best-effort copy path is bounded by
+    # AGENT_FRAME_HANDOFF_MAX_IN_FLIGHT; estimating the whole event using another measure
+    # merely introduces another drifting number.
     try:
         event_size = len(orjson.dumps(event))
     except Exception:
-        # 序列化不了的东西发出去也是对面报错，就地丢掉。
+        # Unserializable content would fail remotely anyway; discard locally.
         return False
     if event_size > PROVIDER_FRAME_MAX_B64_BYTES:
         logger.debug(

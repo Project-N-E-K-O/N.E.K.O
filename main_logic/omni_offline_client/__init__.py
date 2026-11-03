@@ -94,6 +94,7 @@ from ._lifecycle import (  # noqa: F401 - preserve the legacy module namespace
 )
 
 from ._client import OmniOfflineClient  # noqa: F401
+from ._turn_context import TurnContext  # noqa: F401
 
 __import__(
     "main_logic._module_state_proxy",

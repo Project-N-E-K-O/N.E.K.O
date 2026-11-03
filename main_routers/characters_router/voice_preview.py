@@ -145,8 +145,8 @@ def _is_unpreviewable_selected_preset_voice(config_manager, core_config, voice_i
         selected_provider = tts_provider_registry.get(selected_preset_key)
         if selected_provider and selected_provider.configured_preset_voice:
             # The exact configured preset owns preview routing over a stale clone.
-            # 配置框中的精确 Voice ID 归当前 Custom API 所有；即使存储里有同名
-            # 克隆，也不能借旧克隆的 preview 路径制造预览/运行时身份分裂。
+            # Exact configured Voice IDs belong to the current Custom API. Even same-name stored
+            # clones cannot use legacy preview paths to split preview/runtime identity.
             return True
     except Exception:
         logger.debug("configured preset preview 归属判定失败，按普通冲突规则继续", exc_info=True)
@@ -157,8 +157,8 @@ def _is_unpreviewable_selected_preset_voice(config_manager, core_config, voice_i
         if config_manager.voice_id_exists_in_any_storage(voice_id):
             return False
     except Exception:
-        # 存储桶查询异常（极少见的 IO 错误）：按「无法确认是克隆」继续走下方预制判定，
-        # 不因一次查询失败改变结论；留一条带堆栈的 debug 便于排查（同 _grok 撞名查模式）。
+        # Rare bucket-query I/O errors mean clone ownership is unconfirmed; continue preset checks below
+        # without changing conclusions from one failed query. Debug-log traceback as in _grok collision lookup.
         logger.debug("voice_id_exists_in_any_storage 查询失败，按非克隆继续判定", exc_info=True)
     return tts_provider_registry.is_selected_preset_voice(core_config or {}, config_manager, voice_id)
 
@@ -357,11 +357,11 @@ def _build_free_intl_voice_pins(native_catalog: dict, voice_id_exists=None) -> l
 async def get_voices():
     """Get all registered voices for the current API key."""
     _config_manager = get_config_manager()
-    # 与 /voice_preview 同理：本请求内区域判定会被读三次（get_voices_for_current_api、
-    # 下面的 aget_core_config、以及 get_active_realtime_native_provider_for_ui）。判定
-    # 尚未落定时那几次可能拿到不同结果，一份响应就会把海外 free_intl 原生目录和大陆
-    # free_voices 拼在一起（或反过来）——两者不相交，用户选中的音色到运行时必被拒。
-    # 先落定，让整个目录出自同一结论。已落定时零开销；自配 API 用户不会因此发起探测。
+    # Like /voice_preview, this request reads regional classification three times: get_voices_for_current_api,
+    # aget_core_config below, and get_active_realtime_native_provider_for_ui. Unsettled
+    # readings may disagree, combining overseas free_intl native catalogs with mainland free_voices
+    # or vice versa. They are disjoint, so selected voices will fail at runtime.
+    # Settle first so the whole catalog shares one result. Already settled costs nothing; custom-API users trigger no probe.
     try:
         if not await _config_manager.aensure_region_resolved():
             logger.warning(
@@ -379,21 +379,21 @@ async def get_voices():
     }}
 
     core_config = await _config_manager.aget_core_config()
-    # 先看有没有自带静态预制目录的 provider 被选中（如 MiMo，hosted）。与 dispatch
-    # 同一优先级判定：选中的 provider 若有 preset_catalog 就用它，并压过 core-native
-    # （assistApi=mimo 在 dispatch 里 priority 60 也先于 native 命中）；GPT-SoVITS /
-    # vLLM 这类先命中、无静态目录的 provider 则不出目录（preset 为 None）。复用
-    # native_voices 通道——前端 source-first 选声器按 entry 的 provider/provider_label
-    # 自动分组成「<Provider> · 预制」，无需新增来源通道。
-    # 选声目录与 dispatch 同一优先级：先看哪个注册表 provider 赢得当前配置。
-    #  - 赢家有静态预制目录（如 MiMo）→ 出该目录，压过 core-native（用 is not None，
-    #    空目录也算命中，不误回退）。
-    #  - 赢家无静态目录（vLLM-Omni / GPT-SoVITS，用户自填/自部署音色）→ 既不出目录、
-    #    也不回退 core-native：dispatch 会路由到该赢家，露出 gemini 等原生音色会让用户
-    #    选中后被误传给赢家触发 unsupported-voice（PR #1848 Codex review）。
-    #  - 无注册表 provider 赢 → 回退 core-native（gemini/step/...）。
-    # 复用 native_voices 通道——前端 source-first 选声器按 entry 的 provider/provider_label
-    # 自动分组成「<Provider> · 预制」，无需新增来源通道。
+    # First inspect selected providers with static preset catalogs, e.g. hosted MiMo, following dispatch
+    # priority. Selected preset_catalog providers override core-native
+    # (assistApi=mimo has dispatch priority 60 before native). Earlier-selected providers without
+    # static catalogs, such as GPT-SoVITS/vLLM, expose none (preset=None). Reuse
+    # native_voices: frontend source-first selection automatically groups entries by provider/provider_label
+    # as <Provider> presets without adding source channels.
+    # Catalog and dispatch share priorities: determine the registry provider winning current configuration first.
+    # - Winner has a static preset catalog, e.g. MiMo: expose it over core-native. Use is not None
+    #   so empty catalogs still count as matches and do not wrongly fall back.
+    # - Winner lacks a static catalog, e.g. self-configured vLLM-Omni/GPT-SoVITS: expose neither a catalog
+    #   nor core-native fallback. Dispatch targets that winner; showing Gemini/native voices would
+    #   pass unsupported IDs to it (PR #1848 Codex review).
+    # - No registry provider wins: fall back to core-native Gemini/Step/etc.
+    # Reuse native_voices; frontend source-first selection groups entries by provider/provider_label.
+    # as <Provider> presets without adding source channels.
     winning_provider_key = tts_provider_registry.selected_provider_key(
         core_config or {}, _config_manager
     )
@@ -409,10 +409,10 @@ async def get_voices():
         selected_provider = tts_provider_registry.get(winning_provider_key)
         if selected_provider and selected_provider.configured_preset_voice:
             # Remove colliding clone rows so every frontend keeps the winning owner.
-            # 配置型 preset 对精确 Voice ID 拥有显式所有权。目录中移除同名历史
-            # 克隆，避免前端去重逻辑把真正会命中的 Custom API 条目隐藏掉。
+            # Configuration presets explicitly own exact Voice IDs. Remove same-name historical
+            # clones from catalogs so frontend deduplication cannot hide the Custom API entry that actually wins.
             # Runtime configured-preset ownership is exact and case-sensitive.
-            # 目录去重必须与运行时精确 ID 语义一致；大小写不同的克隆仍可选择。
+            # Catalog deduplication must match runtime exact-ID semantics; differently cased clones remain selectable.
             configured_ids = {str(voice_id) for voice_id in selected_preset_catalog}
             result["voices"] = {
                 voice_id: voice_data
@@ -423,19 +423,19 @@ async def get_voices():
     elif active_native_provider:
         native_catalog = get_native_voice_catalog_for_ui(active_native_provider) or {}
         if active_native_provider == 'free_intl':
-            # 海外免费（lanlan.app/Gemini）：yui + default(=Leda) 两个置顶 pin，
-            # 其后是 Gemini 全量目录。yui 从长列表里挪到 pin（不重复展示）；
-            # Leda 不去重，仍作为普通条目留在长列表里（= default pin 的目标）。
-            # pin 的展示名由前端按 i18n_key 本地化。
+            # Overseas free lanlan.app/Gemini: pin yui and default (=Leda) first,
+            # followed by the full Gemini catalog. Move yui into pins without duplication;
+            # retain Leda as an ordinary long-list entry, the default pin's target.
+            # Frontend localizes pin labels through i18n_key.
             voice_exists = getattr(_config_manager, "voice_id_exists_in_any_storage", None)
             result["pinned_voices"] = _build_free_intl_voice_pins(
                 native_catalog,
                 voice_id_exists=voice_exists,
             )
-            # 撞名（跨 api-key 桶存在同名克隆/自定义音色）的条目也从长列表里去掉：
-            # runtime 路由/preview 用 any-storage 撞名判定会拒绝当 native，展示了
-            # 点选也到不了 Gemini（与 pin 的撞名隐藏对偶）。前端只按当前 api 的
-            # voices 去重，跨桶撞名漏网，故在后端按同一谓词收口。
+            # Remove cross-API-key-bucket clone/custom-name collisions from the long list too:
+            # runtime routing/preview rejects them as native through any-storage collision checks,
+            # so selecting them cannot reach Gemini, symmetric with pin hiding. Frontend deduplicates
+            # only current-API voices and misses cross-bucket collisions; enforce the same predicate server-side.
             def _free_intl_keep(voice_id: str) -> bool:
                 if voice_id == 'yui':
                     return False
@@ -449,18 +449,18 @@ async def get_voices():
             }
         result["native_voices"] = native_catalog
 
-    # 免费预设音色只在 core=free 运行时可用（与 assist 无关）；core_url 仍须指向
-    # lanlan.tech 免费端点，海外 lanlan.app 路由由 should_block_free_voice_for_route 兜底。
-    # 此处已持有 core_config，直接读 CORE_API_TYPE（等价 is_free_voice()），省一次读取。
-    # CORE_URL 用 `or ''` 归一化：key 存在但值为 None 时 `.get(k, '')` 仍返回 None，
-    # `in None` 会抛 TypeError 让 /voices 500。
+    # Free preset voices work only with core=free, independent of assist; core_url must still target
+    # lanlan.tech free. should_block_free_voice_for_route handles overseas lanlan.app fallback.
+    # core_config is already available; read CORE_API_TYPE directly, equivalent to is_free_voice(), avoiding another read.
+    # Normalize CORE_URL with or '': .get(k,'') still returns None for present null values,
+    # and `in None` would raise TypeError and return /voices 500.
     if core_config.get('CORE_API_TYPE') == 'free' and 'lanlan.tech' in (core_config.get('CORE_URL') or ''):
         from utils.api_config_loader import get_free_voices
         free_voices = get_free_voices()
         if free_voices:
             result["free_voices"] = free_voices
 
-    # 构建 voice_id → 使用该音色的角色名列表，用于前端显示
+    # Build voice_id -> character-name lists for frontend display.
     characters = await _config_manager.aload_characters()
     voice_owners = {}
     for catgirl_name, catgirl_config in characters.get('猫娘', {}).items():
@@ -485,14 +485,14 @@ async def get_voice_preview(
     """Get the voice preview audio."""
     try:
         _config_manager = get_config_manager()
-        # 本请求内区域判定会被读两次（先选 provider 目录，后拼 TTS URL）。判定尚未
-        # 落定时那两次可能拿到不同结果——按大陆 free 归一化的音色被发去 lanlan.app，
-        # 而 free_intl 目录与之不相交，预览直接失败。先落定，让整个请求用同一结论。
-        # 已落定时零开销；自配 API 用户不会因此发起探测。
-        # 等满仍未落定时残留一个窗口：结论恰在本请求中途到达，则 provider 目录与
-        # TTS URL 分属两个区域，预览失败。不做「把判定结果一路传参」的彻底修复——
-        # 那要穿透 native voice registry 的多个 cross-cutting 函数，而代价只是一次
-        # 预览失败、重试即好（届时判定已落定）。这里记 warning 让它可诊断。
+        # This request reads regional classification twice, selecting catalogs then constructing TTS URLs. Unsettled
+        # results can disagree, sending mainland-free-normalized voices to lanlan.app's disjoint
+        # free_intl catalog and immediately failing preview. Settle first for one request-wide result.
+        # Already settled costs nothing; custom-API users trigger no probe.
+        # A window remains if waiting expires and classification arrives midrequest: catalogs and
+        # TTS URLs may belong to different regions. Avoid threading results through every
+        # cross-cutting native-registry function for a complete fix because the cost is one failed
+        # preview, fixed by retry once settled. Warn for diagnosis here.
         try:
             if not await _config_manager.aensure_region_resolved():
                 logger.warning(
@@ -532,16 +532,16 @@ async def get_voice_preview(
             voice_id = voice_data['remote_voice_id']
             is_free_preset_voice = False
 
-        # 优先尝试从 tts_custom 获取 API Key
+        # Prefer API keys from tts_custom.
         try:
             tts_custom_config = await _config_manager.aget_model_api_config('tts_custom')
             audio_api_key = tts_custom_config.get('api_key', '')
         except Exception:
             audio_api_key = ''
 
-        # 如果没有，则回退到核心配置
-        # Codex review: 原先这里顶上还有一个 `core_config = ...`，从未被读取（死代码）。
-        # 全仓 async 化时把死读也改成了 await，反而白跑一次 IO，删。
+        # Otherwise fall back to core configuration.
+        # Codex review: an earlier unused core_config read above was dead code.
+        # Repository-wide async migration added await to it, wasting I/O; remove it.
         if not audio_api_key:
             core_config = await _config_manager.aget_core_config()
             audio_api_key = core_config.get('AUDIO_API_KEY', '')
@@ -556,9 +556,9 @@ async def get_voice_preview(
             if runtime_key:
                 audio_api_key = runtime_key
             elif provider == 'cosyvoice_intl':
-                # intl key 缺失时不要继续用顶上从 tts_custom/AUDIO_API_KEY 拿到的
-                # 国内 key 去打 intl DashScope 端点，必然 401，错误现象比明确缺 key
-                # 难排查。和 minimax/native step/gemini 分支一致显式返回缺 key。
+                # Missing international keys must not reuse domestic keys from tts_custom/AUDIO_API_KEY
+                # against international DashScope endpoints: guaranteed 401 obscures the actual missing-key issue.
+                # Explicitly report missing keys, matching minimax/native Step/Gemini branches.
                 return JSONResponse({
                     'success': False,
                     'error': 'TTS_AUDIO_API_KEY_MISSING',
@@ -574,11 +574,11 @@ async def get_voice_preview(
         preview_language = _get_voice_preview_language(request, language, i18n_language)
         text = _loc(VOICE_PREVIEW_TEXTS, preview_language)
 
-        # hosted/local provider 的预制音色（如选中 MiMo 时的预制声线）经 native_voices
-        # 通道露给前端会渲染试听按钮，但其试听需走该 provider 自己的合成路径（尚未接）。
-        # 在此显式拦下返回「暂不支持试听」，避免落到下方 DashScope/CosyVoice 通用分支拿着
-        # 该 provider 的 key/voice_id 误合成（PR #1848 Codex review；真试听留作后续）。
-        # 与预制同名的克隆音色不拦（dispatch 克隆 provider 先于 MiMo 命中），仍走克隆试听。
+        # Hosted/local presets such as MiMo surface through native_voices and receive frontend preview buttons,
+        # but preview requires their own synthesis path, not yet integrated.
+        # Explicitly return unsupported-preview here instead of mistakenly passing provider-specific keys/IDs
+        # into generic DashScope/CosyVoice below (PR #1848 Codex review; actual preview is future work).
+        # Same-name clones remain allowed: clone providers precede MiMo in dispatch, so clone preview still applies.
         preview_core_config = await _config_manager.aget_core_config()
         if imported_preview and not await imported_preview.is_current():
             return JSONResponse({
@@ -594,9 +594,9 @@ async def get_voice_preview(
                 'code': 'PRESET_VOICE_PREVIEW_UNSUPPORTED',
             }, status_code=400)
 
-        # MiMo 克隆音色（provider=='mimo'）试听：读 voice_meta 里的参考样本 base64，用
-        # voiceclone 模型一次性合成预览句（对偶 MiniMax 的克隆试听；避免落到下方
-        # CosyVoice/DashScope 通用分支拿着 mimo-clone-* 的 id 误合成）。
+        # MiMo clone preview (provider=='mimo'): read base64 samples from voice_meta and synthesize
+        # one preview sentence with voiceclone, symmetric with MiniMax clone preview; avoid the generic
+        # CosyVoice/DashScope branch misusing mimo-clone-* IDs.
         if provider == 'mimo':
             if (voice_data or {}).get('source') == 'design':
                 design_prompt = str((voice_data or {}).get('design_prompt') or '').strip()
@@ -654,15 +654,15 @@ async def get_voice_preview(
                     'error': 'MIMO_API_KEY_MISSING',
                     'code': 'MIMO_API_KEY_MISSING',
                 }, status_code=400)
-            # base_url 与 dispatch 同源：assistApi=mimo（Token Plan 唯一场景）用 OPENROUTER_URL，
-            # 否则用 voice_meta 存的 mimo_base_url，缺省默认端点。
+            # Match dispatch base_url: assistApi=mimo, the only Token Plan case, uses OPENROUTER_URL;
+            # otherwise use voice_meta.mimo_base_url or the default endpoint.
             if str(preview_core_config.get('assistApi') or '').strip().lower() == 'mimo':
                 mimo_base_url = (preview_core_config.get('OPENROUTER_URL') or '').strip()
             else:
                 mimo_base_url = str((voice_data or {}).get('mimo_base_url') or '').strip()
             try:
                 sample_bytes = base64.b64decode(sample_b64)
-            except ValueError:  # binascii.Error 是 ValueError 子类
+            except ValueError:  # binascii.Error subclasses ValueError.
                 return JSONResponse({
                     'success': False,
                     'error': f'MiMo 克隆音色样本损坏，无法试听: {voice_id}',
@@ -750,9 +750,9 @@ async def get_voice_preview(
                     'error': f'豆包语音预览失败: {str(e)}',
                 }, status_code=500)
 
-        # GLM 克隆音色（provider=='glm_tts'）试听：远端复刻音色直接作为 /audio/speech
-        # 的 voice 参数合成预览句（对偶 doubao_tts 的注册型克隆试听；避免落到下方
-        # CosyVoice/DashScope 通用分支拿着无效 API key 误合成报 401）。
+        # GLM clone preview (provider=='glm_tts'): synthesize with the registered remote clone as /audio/speech
+        # voice, symmetric with doubao_tts registration-based previews; avoid generic
+        # CosyVoice/DashScope synthesis with invalid API keys returning 401.
         if provider == 'glm_tts':
             glm_api_key = _config_manager.get_tts_api_key('glm_tts')
             if not glm_api_key:
@@ -786,9 +786,9 @@ async def get_voice_preview(
                     'code': 'GLM_TTS_PREVIEW_FAILED',
                 }, status_code=500)
 
-        # vLLM-Omni 克隆音色（provider=='vllm_omni'）试听：读 voice_meta 里的参考样本
-        # base64，通过 vLLM-Omni WebSocket 合成预览句（对偶 MiMo 的克隆试听；避免落到
-        # 下方 CosyVoice/DashScope 通用分支拿着无效 API key 误合成报 401）。
+        # vLLM-Omni clone preview (provider=='vllm_omni'): read voice_meta reference audio
+        # base64 and synthesize through its WebSocket, symmetric with MiMo; avoid generic
+        # CosyVoice/DashScope synthesis with invalid API keys returning 401.
         if provider == 'vllm_omni':
             import numpy as np
             import soxr
@@ -800,15 +800,15 @@ async def get_voice_preview(
                     'error': f'vLLM-Omni 克隆音色缺少参考样本，无法试听: {voice_id}',
                     'code': 'VLLM_OMNI_VOICE_SAMPLE_MISSING',
                 }, status_code=400)
-            # 构建 data: URI：复用 worker 的 _build_vllm_omni_clone_data_uri，
-            # 与 dispatch 路径同一封装（含 MIME 默认值 audio/wav 与空 b64 保护），
-            # 避免预览/dispatch 两处独立维护拼接逻辑时悄悄产生行为差异。
+            # Build data: URIs with worker _build_vllm_omni_clone_data_uri,
+            # sharing dispatch packaging, default audio/wav MIME, and empty-base64 guards,
+            # avoiding subtle preview/dispatch differences from duplicated construction.
             from main_logic.tts_client.workers.vllm_omni import _build_vllm_omni_clone_data_uri
             from main_logic.tts_client._infra import _resample_audio
             clone_data_uri = _build_vllm_omni_clone_data_uri(voice_data)
             ref_text = str((voice_data or {}).get('clone_ref_text') or '').strip()
-            # 配置优先级：先用 preview_core_config 的 ttsModelUrl，再 fallback 到
-            # voice_data 里持久化的 vllm_omni_base_url，避免历史“固定内网地址”回退。
+            # Prefer preview_core_config ttsModelUrl, then persisted voice_data
+            # vllm_omni_base_url, avoiding legacy fixed-private-address fallback.
             base_url = str(
                 (preview_core_config or {}).get('ttsModelUrl')
                 or (preview_core_config or {}).get('TTS_MODEL_URL')
@@ -822,41 +822,41 @@ async def get_voice_preview(
                     'error': 'vLLM-Omni 服务地址未配置，请先在 TTS 设置中填写端点 URL',
                     'code': 'VLLM_OMNI_URL_MISSING',
                 }, status_code=400)
-            # model：从 preview_core_config 的 ttsModelId 或默认 Qwen3-TTS
+            # Model comes from preview_core_config ttsModelId or default Qwen3-TTS.
             model = str((preview_core_config or {}).get('ttsModelId') or '').strip() or 'Qwen3-TTS'
-            # URL 规整复用 worker 的 _vllm_omni_normalize_ws_endpoint（http→ws / 补 /v1 /
-            # 幂等 endpoint 拼接）——避免 preview 复制粘贴时漏掉协议转换导致用户配 http://
-            # 端点必失败（dual to vllm_omni_tts_worker 的 URL 规整）。
+            # Normalize URLs through worker _vllm_omni_normalize_ws_endpoint: http->ws, /v1 completion,
+            # and idempotent endpoint joining. Avoid copied preview code missing protocol conversion and
+            # always failing user-configured http:// endpoints, symmetric with vllm_omni_tts_worker.
             from main_logic.tts_client import _vllm_omni_normalize_ws_endpoint
             ws_endpoint = _vllm_omni_normalize_ws_endpoint(base_url)
-            # API key 鉴权（对齐 worker 的 _connect_and_config 双路径：WS handshake
-            # Authorization header + session.config.api_key）。有认证的 vLLM 端点克隆
-            # 预览也需要传 key，否则 401 失败（C6 fix）。
+            # API-key authentication matches worker _connect_and_config's two paths: handshake
+            # Authorization and session.config.api_key. Authenticated vLLM clone previews
+            # require keys too, otherwise 401 (C6 fix).
             vllm_api_key = str((preview_core_config or {}).get('ttsModelApiKey') or '').strip()
             ws_kwargs = {"max_size": None, "open_timeout": 10, "close_timeout": 5}
             if vllm_api_key:
-                # 兼容旧版本 websockets：用 inspect 探测参数名，避免 try/except TypeError
-                # 过宽吞掉 WS 通信中的合法 TypeError，也避免 await connect() + async with ws:
-                # 导致 websockets 16.0 的 connect.__aenter__ 再次 await self 重连（C6-1 fix）。
-                # NOTE: preview 用 inspect 探测参数名，worker 仍用 try/except TypeError。
-                # 两条路径策略不同是因为 preview 是短连接（async with 自动管理），
-                # worker 是长连接（手动管理）。worker 的 try/except TypeError 在
-                # connect() 阶段执行，send/recv 在块外，吞没风险较低。
+                # Support old websockets by inspecting parameter names, avoiding broad TypeError catches
+                # that swallow genuine communication errors, and avoiding await connect() + async with ws,
+                # which reconnects by awaiting self again in websockets 16.0 connect.__aenter__ (C6-1 fix).
+                # NOTE: preview inspects parameter names; workers still use try/except TypeError.
+                # Strategies differ because preview uses short context-managed connections,
+                # while workers manually manage long connections. Worker catches run only around
+                # connect(), with send/recv outside, reducing swallowed-error risk.
                 try:
                     _ws_sig = inspect.signature(websockets.connect)
                     _header_key = "additional_headers" if "additional_headers" in _ws_sig.parameters else "extra_headers"
                 except (ValueError, TypeError):
-                    _header_key = "additional_headers"  # 新版本优先
+                    _header_key = "additional_headers"  # Prefer newer versions.
                 ws_kwargs[_header_key] = [
                     ("Authorization", f"Bearer {vllm_api_key}"),
                 ]
             try:
-                # 整体超时 30s：vLLM-Omni 预览无服务端超时，若服务端接受连接但不发
-                # session.done（半开/挂起），async for 会永久阻塞占用 worker。open_timeout/
-                # close_timeout 与 worker 的 _connect_and_config 对齐。
+                # Overall 30s timeout: vLLM-Omni preview has no server timeout, so accepted connections without
+                # session.done (half-open/hung) leave async for blocked forever, occupying a worker. Match
+                # worker _connect_and_config open_timeout/close_timeout.
                 async with asyncio.timeout(30):
                     async with websockets.connect(ws_endpoint, **ws_kwargs) as ws:
-                        # 发送 session.config
+                        # Send session.config.
                         config_msg = {
                             "type": "session.config",
                             "model": model,
@@ -869,17 +869,17 @@ async def get_voice_preview(
                         }
                         if ref_text:
                             config_msg["ref_text"] = ref_text
-                        # session 层鉴权（部分自建服务端从 config 读 api_key）
+                        # Session authentication: some self-hosted servers read api_key from config.
                         if vllm_api_key:
                             config_msg["api_key"] = vllm_api_key
                         await ws.send(json.dumps(config_msg))
-                        # 发送预览文本
+                        # Send preview text.
                         await ws.send(json.dumps({"type": "input.text", "text": text}))
                         await ws.send(json.dumps({"type": "input.done"}))
-                        # 接收 PCM 二进制帧（24kHz/16bit/mono）和 JSON 事件
+                        # Receive PCM binary frames (24kHz/16bit/mono) and JSON events.
                         pcm_chunks: list[bytes] = []
-                        # 流式重采样器：维护 chunk 边界滤波器状态，避免无状态 soxr.resample()
-                        # 在每个分片边界重置导致杂音（与 worker 路径的 ResampleStream 一致）。
+                        # Streaming resampling preserves filter state across chunks, avoiding boundary noise from stateless
+                        # soxr.resample() resets, matching the worker's ResampleStream.
                         resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
                         async for message in ws:
                             if isinstance(message, bytes):
@@ -903,12 +903,12 @@ async def get_voice_preview(
                                         'error': f'vLLM-Omni 预览生成失败: {error_msg}',
                                         'code': 'VLLM_OMNI_VOICE_PREVIEW_FAILED',
                                     }, status_code=502)
-                # 空帧守卫：vLLM-Omni 在显式送入 response_format: pcm 时，返回的是
-                # 裸 PCM 流（本身不含 44 字节 WAV 头，由下面 _build_wav_payload 补头）。
-                # 若 session.done 后没收到任何 PCM 帧（服务端合成失败却没发 error 事件，
-                # 或帧长 < 2 被全部跳过），_build_wav_payload([]) 只会产出一个仅含 44 字节
-                # WAV 头的空文件。直接以 success:True 回前端会让用户点试听毫无声音、无任何
-                # 错误提示（哑弹）。正常路径下 error 事件已能拦住多数失败，此处是额外兜底。
+                # Empty-frame guard: explicit response_format:pcm returns raw PCM without a 44-byte WAV header,
+                # added below by _build_wav_payload. If session.done arrives without any PCM frames
+                # (server synthesis failure without error events, or all frames shorter than two bytes),
+                # _build_wav_payload([]) produces a header-only 44-byte empty WAV.
+                # Returning success:True makes preview silently inaudible without error. Ordinary error events
+                # catch most failures; this is extra protection.
                 if not pcm_chunks:
                     logger.error(f"vLLM-Omni 克隆音色 {voice_id} 预览未返回任何音频帧")
                     return JSONResponse({
@@ -916,7 +916,7 @@ async def get_voice_preview(
                         'error': 'vLLM-Omni 预览未返回任何音频帧',
                         'code': 'VLLM_OMNI_VOICE_PREVIEW_NO_AUDIO',
                     }, status_code=502)
-                # 封装 WAV（给裸 PCM 补 44 字节头）
+                # Package WAV by adding a 44-byte header to raw PCM.
                 audio_data = _build_wav_payload(pcm_chunks, 1, 2, 48000)
                 audio_base64 = base64.b64encode(audio_data).decode('utf-8')
                 logger.info(f"vLLM-Omni 克隆音色 {voice_id} 预览音频生成成功，大小: {len(audio_data)} 字节")
@@ -954,12 +954,12 @@ async def get_voice_preview(
             native_voice_id, _ = normalize_native_voice(native_preview_provider, voice_id)
             try:
                 if native_preview_provider in ('step', 'free', 'free_intl'):
-                    # 只读 tts_default.api_key —— 跟 step_realtime_tts_worker 走的 key 对偶；
-                    # 不能回退到 audio_api_key（顶上从 tts_custom / AUDIO_API_KEY 取的，都是
-                    # GPT-SoVITS / CosyVoice 这种别家 provider 的 bearer，把它透给
-                    # api.stepfun.com 一律 401，错误现象比明确缺 key 难排查。
-                    # free_intl（海外免费 Gemini 代理）预览同 free，走 www.lanlan.app/tts
-                    # 流式合成（StepFun-shape，proxy 把 voice_id 透传给 Gemini）。
+                    # Read only tts_default.api_key, matching step_realtime_tts_worker;
+                    # never fall back to audio_api_key from tts_custom/AUDIO_API_KEY above, which carries
+                    # GPT-SoVITS/CosyVoice or another provider's bearer. Sending it to
+                    # api.stepfun.com always returns 401, obscuring explicit missing-key errors.
+                    # free_intl overseas Gemini-proxy previews follow free via www.lanlan.app/tts
+                    # streaming synthesis, StepFun-shaped with voice_id forwarded to Gemini.
                     try:
                         native_tts_config = await _config_manager.aget_model_api_config('tts_default')
                         native_audio_api_key = native_tts_config.get('api_key', '') or ''
@@ -1014,7 +1014,7 @@ async def get_voice_preview(
 
         if provider == 'elevenlabs' or voice_id.startswith(ELEVENLABS_TTS_VOICE_PREFIX):
             try:
-                # 从 voice_data 中提取克隆时持久化的 base_url 传给 helper
+                # Extract clone-persisted base_url from voice_data for the helper.
                 audio_data, error_code = await _elevenlabs_synthesize_preview(
                     _config_manager,
                     voice_id,
@@ -1042,7 +1042,7 @@ async def get_voice_preview(
                     'code': 'ELEVENLABS_UPSTREAM_ERROR'
                 }, status_code=502)
             except ValueError as e:
-                # 新增专门的客户端错误 4xx 捕获分支
+                # Add a dedicated 4xx client-error catch.
                 logger.error(f"ElevenLabs 预览请求失败 (4xx): {e}")
                 return JSONResponse({
                     'success': False,
@@ -1109,7 +1109,7 @@ async def get_voice_preview(
         if not audio_api_key:
             return JSONResponse({'success': False, 'error': 'TTS_AUDIO_API_KEY_MISSING', 'code': 'TTS_AUDIO_API_KEY_MISSING'}, status_code=400)
 
-        # 生成音频
+        # Generate audio.
         try:
             tts_api_config = await _config_manager.aget_model_api_config('tts_custom')
         except Exception as e:
@@ -1147,11 +1147,11 @@ async def get_voice_preview(
         def _do_preview_synthesize():
             import dashscope
             from dashscope.audio.tts_v2 import SpeechSynthesizer
-            # 写 module-global + 构造 SpeechSynthesizer + synthesizer.call 全程
-            # 拿 DASHSCOPE_GLOBAL_LOCK：dashscope.api_key / base_*_api_url 是
-            # 同进程多流程共享的写点，并发跑会互相覆盖、拿别人的 key/地域请求。
-            # 这里把整个 call 都圈进锁，因为 SpeechSynthesizer.call 是同步的
-            # 一次性请求，锁持续时间 ~ 几秒，不会卡 event loop（在 to_thread 里跑）。
+            # Hold DASHSCOPE_GLOBAL_LOCK across module-global writes, SpeechSynthesizer construction,
+            # and synthesizer.call: dashscope.api_key/base_*_api_url are shared mutable state
+            # across in-process flows; concurrent calls overwrite keys/regions.
+            # Lock the whole call because SpeechSynthesizer.call is synchronous and one-shot;
+            # the few-second lock does not block the event loop because execution uses to_thread.
             with DASHSCOPE_GLOBAL_LOCK, prefer_dashscope_websocket_ipv4():
                 dashscope.api_key = audio_api_key
                 try:
@@ -1179,7 +1179,7 @@ async def get_voice_preview(
 
             logger.info(f"音色 {voice_id} 预览音频生成成功，大小: {len(audio_data)} 字节")
 
-            # 将音频数据转换为 Base64 字符串
+            # Convert audio bytes to base64 text.
             audio_base64 = base64.b64encode(audio_data).decode('utf-8')
 
             return await preview_response(imported_preview, {

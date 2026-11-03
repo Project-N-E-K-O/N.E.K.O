@@ -1239,6 +1239,9 @@
                     }));
                     this.markSettled();
                     this.hideOverlay();
+                    // Preset saves have their own persistence endpoint and need
+                    // the same explicit upload choice as ordinary card edits.
+                    if (window.nekoCharacterProfileSync) await window.nekoCharacterProfileSync.afterSave(currentCharacterName, false);
                 } catch (error) {
                     confirmButton.disabled = false;
                     confirmButton.classList.remove('success');

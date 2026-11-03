@@ -20,7 +20,7 @@ Handles music search / playback / lyric proxy endpoints.
 
 URL convention: routes declared WITHOUT trailing slash (no ``@router.get('/')``).
 See ``main_routers/characters_router.py`` docstring or
-``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
+``.agent/rules/neko-guide.md`` (§\"API URLs have no trailing slash\") for the rationale;
 enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
@@ -37,7 +37,8 @@ from utils.music_crawlers import (
 )
 from utils.cookies_login import load_cookies_from_file
 from utils.logger_config import get_module_logger
-from urllib.parse import urlparse, urljoin
+from utils.music_audio import is_allowed_audio_url, is_audio_content_type, is_netease_candidate_url, mark_audio_unavailable, probe_audio_url, send_audio_request
+from urllib.parse import urlparse, urljoin, quote
 
 router = APIRouter()
 
@@ -86,20 +87,20 @@ def _patch_pyncm_async() -> None:
             logger.error("[Music] Failed to patch pyncm_async: %s", exc)
             return
 
-# pyncm_async 仅用于网易云 VIP 直链播放，import 偏重（~0.15s）且不在启动/greeting
-# 链上，改成首次播放时再 import（含 <3.12 兼容补丁），由 module_warmup 预热。
+# pyncm_async is used only for NetEase VIP direct-link playback; its import is heavy (~0.15s) and outside startup/greeting
+# paths, so import on first playback (including the <3.12 compatibility patch), warmed by module_warmup.
 pyncm_async = None  # type: ignore[assignment]
 GetTrackAudio = None  # type: ignore[assignment,misc]
-_PYNCM_AVAILABLE: bool | None = None  # None = 尚未尝试导入
+_PYNCM_AVAILABLE: bool | None = None  # None = import not yet attempted
 
 
 def _ensure_pyncm() -> bool:
     """On first call, apply the patch and import pyncm_async, caching the result. Returns availability."""
     global pyncm_async, GetTrackAudio, _PYNCM_AVAILABLE
-    # 显式强制不可用优先 → 降级。
+    # Explicitly forced unavailability takes precedence → downgrade.
     if _PYNCM_AVAILABLE is False:
         return False
-    # 对象已就位（真 import 过 / 测试注入了 mock）→ 直接信任，不重导入。
+    # An existing object (real import or test-injected mock) is trusted directly without reimporting.
     if pyncm_async is not None and GetTrackAudio is not None:
         _PYNCM_AVAILABLE = True
         return True
@@ -107,7 +108,7 @@ def _ensure_pyncm() -> bool:
     try:
         import pyncm_async as _pyncm
         from pyncm_async.apis.track import GetTrackAudio as _GetTrackAudio
-        # 只补缺失的，保住测试可能注入的 mock。
+        # Fill only missing values to preserve mocks injected by tests.
         if pyncm_async is None:
             pyncm_async = _pyncm
         if GetTrackAudio is None:
@@ -121,15 +122,15 @@ def _ensure_pyncm() -> bool:
     return _PYNCM_AVAILABLE
 
 
-# ==================== 音乐代理缓存 ====================
-# 仅缓存小文件（<10MB），大文件流式传输
+# ==================== Music-proxy cache ====================
+# Cache only small files (<10MB); stream larger files
 MUSIC_PROXY_CACHE = TTLCache(
-    maxsize=100 * 1024 * 1024,  # 100MB 内存预算（减小）
+    maxsize=100 * 1024 * 1024,  # 100MB memory budget (reduced)
     ttl=3600 * 6,
     getsizeof=lambda item: len(item.get('body', b''))
 )
 
-STREAMING_SIZE_THRESHOLD = 10 * 1024 * 1024  # 10MB 以上流式传输
+STREAMING_SIZE_THRESHOLD = 10 * 1024 * 1024  # Stream files above 10MB
 MAX_MUSIC_SIZE = 50 * 1024 * 1024
 PLAYABLE_BINARY_CONTENT_TYPES = {'application/octet-stream', 'binary/octet-stream'}
 
@@ -139,68 +140,28 @@ class _MusicStreamLimitExceeded(RuntimeError):
 
 
 def _is_playable_audio_content_type(content_type: str) -> bool:
-    normalized = (content_type or '').split(';', 1)[0].strip().lower()
-    return (
-        normalized.startswith('audio/')
-        or normalized.startswith('video/')
-        or normalized in PLAYABLE_BINARY_CONTENT_TYPES
-    )
+    return is_audio_content_type(content_type)
 
 
 def _is_allowed_music_url(url: str) -> bool:
-    parsed = urlparse(url)
-    hostname = (parsed.hostname or '').lower()
-    return parsed.scheme == 'https' and any(
-        hostname == domain or hostname.endswith('.' + domain)
-        for domain in MUSIC_SOURCE_DOMAINS
-    )
+    return is_allowed_audio_url(url)
 
 
-async def _probe_audio_url(url: str) -> bool:
+async def _probe_audio_url(url: str) -> bool | None:
     """Verify that a fallback URL resolves to an allowed, playable audio response."""
-    if not _is_allowed_music_url(url):
-        return False
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122 Safari/537.36',
-        'Referer': 'https://music.163.com/',
-        'Accept': 'audio/*,*/*;q=0.8',
-        'Accept-Encoding': 'identity',
-        'Range': 'bytes=0-0',
-    }
-    try:
-        async with httpx.AsyncClient(timeout=12.0, follow_redirects=False) as client:
-            current_url = url
-            for _ in range(10):
-                if not _is_allowed_music_url(current_url):
-                    return False
-                req = client.build_request('GET', current_url, headers=headers)
-                response = await client.send(req, stream=True)
-                if response.status_code in (301, 302, 303, 307, 308):
-                    location = response.headers.get('location')
-                    await response.aclose()
-                    if not location:
-                        return False
-                    current_url = urljoin(current_url, location)
-                    continue
-                if response.status_code not in (200, 206):
-                    await response.aclose()
-                    return False
-                content_type = response.headers.get('content-type', '')
-                playable = _is_playable_audio_content_type(content_type)
-                await response.aclose()
-                return playable
-    except (httpx.HTTPError, ValueError):
-        return False
-    return False
+    return await probe_audio_url(url, referer='https://music.163.com/')
 
 @router.get("/api/music/proxy")
-async def proxy_music(url: str, request: Request):
+async def proxy_music(url: str, request: Request, netease_id: str = ''):
     """
     Generic music proxy that works around CORS and Referer restrictions.
     Cache misses are streamed immediately. Complete non-range responses up to
     10MB are cached while they are forwarded.
     """
     range_header = request.headers.get('range')
+    candidate_url = '/api/music/play/netease/' + netease_id
+    if not is_netease_candidate_url(candidate_url):
+        candidate_url = None
     cache_key = url
     if not range_header and cache_key in MUSIC_PROXY_CACHE:
         cached = MUSIC_PROXY_CACHE[cache_key]
@@ -247,28 +208,31 @@ async def proxy_music(url: str, request: Request):
         if if_range:
             request_headers['If-Range'] = if_range
 
-        client = httpx.AsyncClient(timeout=60.0, follow_redirects=False)
+        client = await asyncio.to_thread(httpx.AsyncClient, timeout=httpx.Timeout(60.0, connect=5.0), follow_redirects=False)
         current_url = upstream_url
         for _ in range(10):
             if not _is_allowed_music_url(current_url):
+                mark_audio_unavailable(url, candidate_url=candidate_url)
                 hostname = (urlparse(current_url).hostname or '').lower()
                 logger.warning(f"[Music Proxy] 重定向目标域名不在白名单: {hostname}")
                 await client.aclose()
                 client = None
                 return JSONResponse(content={"success": False, "error": "重定向目标域名不在白名单"}, status_code=403)
             req = client.build_request("GET", current_url, headers=request_headers)
-            resp = await client.send(req, stream=True)
+            resp = await send_audio_request(client, req)
             if resp.status_code not in (301, 302, 303, 307, 308):
                 break
             location = resp.headers.get('location')
             await resp.aclose()
             resp = None
             if not location:
+                mark_audio_unavailable(url, candidate_url=candidate_url)
                 await client.aclose()
                 client = None
                 return JSONResponse(content={"success": False, "error": "重定向响应缺少 Location 头"}, status_code=502)
             current_url = urljoin(current_url, location)
         else:
+            mark_audio_unavailable(url, candidate_url=candidate_url)
             await client.aclose()
             client = None
             return JSONResponse(content={"success": False, "error": "重定向次数过多"}, status_code=502)
@@ -276,6 +240,7 @@ async def proxy_music(url: str, request: Request):
         resp.raise_for_status()
         content_type = resp.headers.get('Content-Type', 'audio/mpeg').split(';', 1)[0].strip()
         if not _is_playable_audio_content_type(content_type):
+            mark_audio_unavailable(url, candidate_url=candidate_url)
             logger.warning(f"[Music Proxy] 非音频内容类型: {content_type}")
             await resp.aclose()
             await client.aclose()
@@ -299,6 +264,7 @@ async def proxy_music(url: str, request: Request):
         if (declared_size is not None and declared_size > MAX_MUSIC_SIZE) or (
             total_size is not None and total_size > MAX_MUSIC_SIZE
         ):
+            mark_audio_unavailable(url, candidate_url=candidate_url)
             logger.warning(f"[Music Proxy] 音乐文件过大: {total_size or declared_size}")
             await resp.aclose()
             await client.aclose()
@@ -322,6 +288,8 @@ async def proxy_music(url: str, request: Request):
                 resp,
                 cache_key=cache_key if not range_header and resp.status_code == 200 else None,
                 content_type=content_type,
+                source_url=url,
+                candidate_url=candidate_url,
             ),
             media_type=content_type,
             headers=response_headers,
@@ -333,6 +301,7 @@ async def proxy_music(url: str, request: Request):
         return response
 
     except httpx.HTTPStatusError as e:
+        mark_audio_unavailable(url, candidate_url=candidate_url)
         if resp is not None:
             await resp.aclose()
         if client is not None:
@@ -340,21 +309,30 @@ async def proxy_music(url: str, request: Request):
         logger.error(f"[Music Proxy] HTTP错误: {e.response.status_code}")
         return JSONResponse(content={"success": False, "error": f"请求失败: {e.response.status_code}"}, status_code=e.response.status_code)
     except httpx.TimeoutException:
+        mark_audio_unavailable(url, connection_failure=True, candidate_url=candidate_url)
         if resp is not None:
             await resp.aclose()
         if client is not None:
             await client.aclose()
         return JSONResponse(content={"success": False, "error": "请求超时"}, status_code=504)
+    except httpx.RequestError as e:
+        mark_audio_unavailable(url, connection_failure=True, candidate_url=candidate_url)
+        if resp is not None:
+            await resp.aclose()
+        if client is not None:
+            await client.aclose()
+        logger.warning('[Music Proxy] 音源连接失败 (%s)', type(e).__name__, exc_info=True)
+        return JSONResponse(content={"success": False, "error": "音源连接失败"}, status_code=502)
     except Exception as e:
         if resp is not None:
             await resp.aclose()
         if client is not None:
             await client.aclose()
-        logger.error(f"[Music Proxy] 代理失败: {str(e)}")
+        logger.error('[Music Proxy] 代理失败 (%s)', type(e).__name__, exc_info=True)
         return JSONResponse(content={"success": False, "error": "请求处理失败"}, status_code=500)
 
 
-async def _stream_music_response(client, response, cache_key, content_type):
+async def _stream_music_response(client, response, cache_key, content_type, source_url=None, candidate_url=None):
     """Forward one open upstream response and tee complete small bodies to cache."""
     total = 0
     cache_body = bytearray() if cache_key else None
@@ -379,8 +357,12 @@ async def _stream_music_response(client, response, cache_key, content_type):
             }
     # Headers are committed here, so re-raising is how clients learn the body is incomplete.
     except _MusicStreamLimitExceeded:
+        if source_url:
+            mark_audio_unavailable(source_url, candidate_url=candidate_url)
         raise
     except Exception as exc:
+        if source_url:
+            mark_audio_unavailable(source_url, connection_failure=isinstance(exc, httpx.RequestError), candidate_url=candidate_url)
         logger.error(f"[Music Proxy] 流式传输错误: {exc}")
         raise
     finally:
@@ -413,19 +395,19 @@ async def search_music(
     
     logger.info(f"[音乐API] 收到搜索请求: '{query}'")
     
-    # 空白输入校验
+    # Validate blank input
     if not query:
         logger.warning("[音乐API] 搜索关键词为空,返回失败结果")
         return {
-            "success": False,  # 【核心修复】标记为失败
+            "success": False,  # [Core fix] Mark as failed
             "data": [],
-            "error": "EMPTY_QUERY",  # 填入 error 字段方便前端捕获
+            "error": "EMPTY_QUERY",  # Fill the error field for frontend handling
             "message": "搜索关键词不能为空"
         }
     
-    # 异常保护
+    # Exception protection
     try:
-        # 确保至少返回 5 个候选项供前端智能匹配，同时尊重用户传入的 limit
+        # Ensure at least 5 candidates for frontend intelligent matching while respecting the supplied limit
         effective_limit = max(limit, 5)
         results = await fetch_music_content(keyword=query, limit=effective_limit)
         
@@ -435,7 +417,7 @@ async def search_music(
         else:
             error = results.get('error', '未知错误')
             logger.warning(f"[音乐API] 搜索失败: {error}")
-            # 统一失败返回结构
+            # Consistent failure response structure
             return {
                 "success": False,
                 "data": [],
@@ -443,6 +425,14 @@ async def search_music(
                 "message": results.get("message") or error or "音乐搜索失败"
             }
         
+        # Short-lived authenticated audio URLs stay inside recommendation checks.
+        def public_track(track):
+            return {key: value for key, value in track.items() if key != '_audio_url'}
+
+        results = {**results, 'data': [public_track(track) for track in results.get('data', [])]}
+        best_match = results.get('best_match')
+        if best_match and isinstance(best_match.get('resource'), dict):
+            results['best_match'] = {**best_match, 'resource': public_track(best_match['resource'])}
         return results
         
     except Exception as e:
@@ -454,48 +444,69 @@ async def search_music(
             "message": "音乐搜索服务异常，请稍后重试"
         }
 
+def _netease_proxy_redirect(url, song_id):
+    # Upgrade only the scheme, retaining signed path/query bytes unchanged.
+    if url.startswith('http://'):
+        url = 'https://' + url[7:]
+    if not is_allowed_audio_url(url):
+        return None
+    return RedirectResponse(url=f'/api/music/proxy?url={quote(url, safe="")}&netease_id={song_id}')
+
+
 @router.get("/api/music/play/netease/{song_id}")
 async def play_netease_music(song_id: str):
     """
     NetEase Cloud Music VIP smart-redirect route:
-    uses the backend MUSIC_U cookie to obtain the real high-quality / authenticated direct link, then 307-redirects the frontend to play it.
+    resolves authorized audio, then redirects through the shared playback proxy
+    so actual playback failures invalidate the stable recommendation candidate.
     """
-    if not (song_id.isascii() and song_id.isdecimal()):
+    if not (0 < len(song_id) <= 20 and song_id.isascii() and song_id.isdecimal()):
         return JSONResponse(content={"success": False, "error": "invalid song_id"}, status_code=400)
     song_id_int = int(song_id)
 
     if not _ensure_pyncm():
         fallback_url = f"https://music.163.com/song/media/outer/url?id={song_id_int}.mp3"
-        if await _probe_audio_url(fallback_url):
+        probed = await _probe_audio_url(fallback_url)
+        if probed:
             logger.warning("[音乐播放] pyncm_async 不可用，使用已验证的公开外链")
-            return RedirectResponse(url=fallback_url)
+            return _netease_proxy_redirect(fallback_url, song_id_int)
+        if probed is None:
+            return JSONResponse(content={"success": False, "error": "AUDIO_CHECK_BUSY"}, status_code=503)
+        mark_audio_unavailable(fallback_url, candidate_url=f'/api/music/play/netease/{song_id_int}')
         return JSONResponse(content={"success": False, "error": "歌曲没有可用音源"}, status_code=502)
 
     try:
-        # 加载 Cookie 并同步到 pyncm_async 会话
+        # Load cookies and synchronize them to the pyncm_async session
         cookies = await asyncio.to_thread(load_cookies_from_file, 'netease')
         session = pyncm_async.GetCurrentSession()
         _sync_pyncm_session_cookies(session, cookies)
 
-        # 获取真实播放地址 (IDs 接受列表)
-        # 默认获取 standard 标准音质，VIP 账户通常可获得更多 Token 授权
+        # Get real playback URLs (IDs accepts a list)
+        # Request standard audio quality by default; VIP accounts usually receive additional token authorization
         res = await GetTrackAudio([song_id_int])
 
         if res and res.get('data') and len(res['data']) > 0:
             track_info = res['data'][0]
             real_url = track_info.get('url')
 
-            if real_url:
+            if real_url and not track_info.get('freeTrialInfo'):
+                response = _netease_proxy_redirect(real_url, song_id_int)
+                if response is None:
+                    raise ValueError('Unsafe playback URL')
                 logger.info(f"[音乐播放] 成功解析歌曲 {song_id_int} 的 VIP/鉴权直链")
-                return RedirectResponse(url=real_url)
+                return response
 
     except Exception as e:
         logger.error(f"[音乐播放] 解析歌曲 {song_id_int} 真实地址时发生异常: {e}")
 
-    # Fallback: 如果解析失败或无 Cookie，降级使用免登录的 outer/url 外链
+    # Fallback: if parsing fails or cookies are absent, use login-free outer/url external links
     fallback_url = f"https://music.163.com/song/media/outer/url?id={song_id_int}.mp3"
-    if await _probe_audio_url(fallback_url):
+    probed = await _probe_audio_url(fallback_url)
+    if probed:
         logger.warning(f"[音乐播放] 无法获取歌曲 {song_id_int} 的真实链接，使用已验证的公开外链")
-        return RedirectResponse(url=fallback_url)
+        return _netease_proxy_redirect(fallback_url, song_id_int)
+    if probed is None:
+        return JSONResponse(content={"success": False, "error": "AUDIO_CHECK_BUSY"}, status_code=503)
+    mark_audio_unavailable(fallback_url, candidate_url=f'/api/music/play/netease/{song_id_int}')
     logger.warning(f"[音乐播放] 歌曲 {song_id_int} 没有可用音源")
     return JSONResponse(content={"success": False, "error": "歌曲没有可用音源"}, status_code=502)

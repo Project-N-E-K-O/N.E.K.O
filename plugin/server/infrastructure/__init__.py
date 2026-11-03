@@ -1,7 +1,7 @@
 """
-基础设施模块
+Infrastructure module
 
-提供共享的基础设施组件:异常处理、认证等。
+Provides shared infrastructure components: exception handling, authentication, etc.
 """
 from importlib import import_module
 

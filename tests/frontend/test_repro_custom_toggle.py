@@ -1,13 +1,13 @@
-"""回归：自定义 API 开关 / 加载竞态不能把免费版悄悄切成付费阿里。
+"""Regression: custom-API toggling/loading races must not silently switch free service to paid Alibaba.
 
-历史 bug：loadCurrentApiKey 起手把服务商下拉清成 ''，再异步回填。在这个窗口内
-开着自定义 API 点保存时，空 coreApi 绕过了空 Key 校验被写盘，后端把空值兜底成
-付费的 qwen(阿里 dashscope)，残留的 free-access 被发给阿里 → 「API key 无效」。
+Historical bug: loadCurrentApiKey initially cleared the provider selector to '' before asynchronous refill. Saving
+with custom API enabled during that window let empty coreApi bypass empty-key validation and persist. The backend
+fell back to paid qwen (Alibaba DashScope), sending residual free-access to Alibaba and producing an invalid-key error.
 
-修复两层：
-  A1 前端 save_button_down：coreApi 为空时中止保存（提示稍候重试）。
-  A2 后端 update_core_config：空 coreApi/assistApi 不覆盖已存的有效值。
-全局解析兜底仍是默认 qwen；这里保护的是已存 free 配置不能被空提交污染。
+Two-layer fix:
+  A1 Frontend save_button_down: abort saving when coreApi is empty, prompting retry later.
+  A2 Backend update_core_config: empty coreApi/assistApi must not overwrite valid stored values.
+Global resolution still defaults to qwen; this protects stored free configuration from empty submissions.
 """
 
 import pytest
@@ -15,7 +15,7 @@ from playwright.sync_api import Page, expect
 
 
 def _establish_free_config(page: Page):
-    """直接 POST 一个干净的免费版配置作为基线。"""
+    """POST a clean free-service configuration directly as the baseline."""
     result = page.evaluate(
         """async () => {
             const r = await fetch('/api/config/core_api', {
@@ -45,7 +45,7 @@ def _open_free_settings(page: Page, server: str):
 
 @pytest.mark.frontend
 def test_pure_free_toggle_preserves_free(mock_page: Page, running_server: str):
-    """场景：纯免费版老老实实开自定义API再关掉 → coreApi/assistApi 仍是 free。"""
+    """Scenario: enabling then disabling custom API in a free-service configuration leaves coreApi/assistApi as free."""
     _open_free_settings(mock_page, running_server)
 
     mock_page.evaluate(
@@ -73,8 +73,8 @@ def test_pure_free_toggle_preserves_free(mock_page: Page, running_server: str):
 
 @pytest.mark.frontend
 def test_empty_dropdown_save_is_blocked(mock_page: Page, running_server: str):
-    """A1 回归：下拉为空（加载竞态）+ 开着自定义API 点保存 → 必须被前端拦截，
-    不产生任何写盘 payload。"""
+    """A1 regression: empty selector during loading + save with custom API enabled must be blocked by the frontend,
+    producing no persistence payload."""
     _open_free_settings(mock_page, running_server)
 
     blocked = mock_page.evaluate(
@@ -96,7 +96,7 @@ def test_empty_dropdown_save_is_blocked(mock_page: Page, running_server: str):
     )
     assert blocked, "空 coreApi 仍被写盘——A1 守卫失效，会被后端兜底成阿里"
 
-    # 基线未被污染：后端仍是 free
+    # The baseline is unmodified: backend remains free.
     readback = mock_page.evaluate("async () => await (await fetch('/api/config/core_api')).json()")
     assert readback["coreApi"] == "free"
     assert readback["assistApi"] == "free"
@@ -104,8 +104,8 @@ def test_empty_dropdown_save_is_blocked(mock_page: Page, running_server: str):
 
 @pytest.mark.frontend
 def test_backend_ignores_empty_core_api_on_save(mock_page: Page, running_server: str):
-    """A2 回归：即使前端被绕过、直接 POST 空 coreApi，后端也不能用空值覆盖已存的 free，
-    重新读取必须仍是 free（绝不变成 qwen）。"""
+    """A2 regression: even if the frontend is bypassed and empty coreApi is POSTed directly, the backend must not overwrite stored free;
+    rereading must still return free, never qwen."""
     _open_free_settings(mock_page, running_server)
 
     result = mock_page.evaluate(

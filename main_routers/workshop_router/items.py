@@ -117,7 +117,7 @@ async def trigger_workshop_item_download(item_id: str, request: Request):
             "state": item_state,
         }, status_code=409)
 
-    # 已安装且不需要更新 → 直接返回成功，避免误导前端"正在下载"。
+    # Already installed without an update -> return success directly instead of misleading the frontend with downloading status.
     folder = _safe_get_workshop_install_folder(steamworks, item_id_int)
     if _is_workshop_item_install_complete(item_state, folder):
         return {
@@ -139,8 +139,8 @@ async def trigger_workshop_item_download(item_id: str, request: Request):
     )
 
     if not accepted and not (item_state & (_ITEM_STATE_DOWNLOADING | _ITEM_STATE_DOWNLOAD_PENDING)):
-        # 重新读一次状态，可能在 _is_workshop_item_install_complete 之后被
-        # 其他流程拉起来了。仅当确实既没被接受也没在排队时才报错。
+        # Reread state; another flow may have started it after
+        # _is_workshop_item_install_complete. Report failure only when genuinely neither accepted nor queued.
         try:
             item_state = int(steamworks.Workshop.GetItemState(item_id_int))
         except Exception:
@@ -154,7 +154,7 @@ async def trigger_workshop_item_download(item_id: str, request: Request):
             }, status_code=502)
 
     if not should_wait:
-        # 立即返回最新进度
+        # Immediately return the latest progress.
         try:
             download_info = steamworks.Workshop.GetItemDownloadInfo(item_id_int) or {}
         except Exception:
@@ -171,7 +171,7 @@ async def trigger_workshop_item_download(item_id: str, request: Request):
             "bytesTotal": total,
         }
 
-    # wait=True：轮询直到安装完成或超时。
+    # wait=True: poll until installation completes or times out.
     start_time = time.monotonic()
     poll_interval = 0.5
     last_state = item_state
@@ -198,7 +198,7 @@ async def trigger_workshop_item_download(item_id: str, request: Request):
             }
         await asyncio.sleep(poll_interval)
 
-    # 超时：返回 202 + 当前进度，让前端继续轮询。
+    # Timeout: return 202 with current progress so the frontend keeps polling.
     try:
         dinfo = steamworks.Workshop.GetItemDownloadInfo(item_id_int) or {}
     except Exception:
@@ -413,7 +413,7 @@ def get_workshop_item_path(item_id: str):
     """
     steamworks = get_steamworks()
     
-    # 检查Steamworks是否初始化成功
+    # Check Steamworks initialization.
     if steamworks is None:
         return JSONResponse({
             "success": False,
@@ -422,10 +422,10 @@ def get_workshop_item_path(item_id: str):
         }, status_code=503)
     
     try:
-        # 转换item_id为整数
+        # Convert item_id to an integer.
         item_id_int = int(item_id)
         
-        # 获取物品安装信息
+        # Get item installation information.
         install_info = steamworks.Workshop.GetItemInstallInfo(item_id_int)
         
         if not install_info:
@@ -435,7 +435,7 @@ def get_workshop_item_path(item_id: str):
                 "message": f"物品 {item_id} 尚未安装或安装信息不可用"
             }, status_code=404)
         
-        # 提取安装路径，兼容字典和元组两种返回格式
+        # Extract the installation path, supporting both dict and tuple return formats.
         folder_path = ''
         size_on_disk: int | None = None
         
@@ -451,16 +451,16 @@ def get_workshop_item_path(item_id: str):
             if isinstance(disk_size, (int, float)):
                 size_on_disk = int(disk_size)
         
-        # 构建响应
+        # Build the response.
         response = {
             "success": True,
             "item_id": item_id,
             "installed": True,
             "path": folder_path,
-            "full_path": folder_path  # 完整路径，与path保持一致
+            "full_path": folder_path  # Full path, consistent with path.
         }
         
-        # 如果有磁盘大小信息，也一并返回
+        # Include disk-size information if available.
         if size_on_disk is not None:
             response['size_on_disk'] = size_on_disk
         
@@ -488,7 +488,7 @@ async def get_workshop_item_details(item_id: str):
     """
     steamworks = get_steamworks()
     
-    # 检查Steamworks是否初始化成功
+    # Check Steamworks initialization.
     if steamworks is None:
         return JSONResponse({
             "success": False,
@@ -497,13 +497,13 @@ async def get_workshop_item_details(item_id: str):
         }, status_code=503)
     
     try:
-        # 转换item_id为整数
+        # Convert item_id to an integer.
         item_id_int = int(item_id)
         
-        # 获取物品状态
+        # Get item state.
         item_state = steamworks.Workshop.GetItemState(item_id_int)
         
-        # 使用统一的批量查询辅助函数（带重试）查询单个物品
+        # Query one item using the shared batch-query helper with retries.
         try:
             ugc_results = await _query_ugc_details_batch(steamworks, [item_id_int], max_retries=2)
         except UnsupportedUGCDetailsError:
@@ -517,16 +517,16 @@ async def get_workshop_item_details(item_id: str):
             return _build_ugc_details_unsupported_item_response(steamworks, item_id_int, item_state)
         result = ugc_results.get(item_id_int)
         
-        # 如果查询失败，尝试使用缓存（按条目粒度检查 TTL）
+        # On query failure, try cached data with per-entry TTL checks.
         if not result and _is_item_cache_valid(item_id_int):
             cached = _ugc_details_cache[item_id_int]
-            # 使用缓存数据构建响应
+            # Build the response from cached data.
             use_cache = True
         else:
             use_cache = False
             
         if result or use_cache:
-            # 获取物品安装信息 - 兼容字典/元组/None 三种返回格式
+            # Get installation information, supporting dict/tuple/None returns.
             install_info = steamworks.Workshop.GetItemInstallInfo(item_id_int)
             installed = False
             folder = ''
@@ -549,13 +549,13 @@ async def get_workshop_item_details(item_id: str):
             elif install_info:
                 installed = True
             
-            # 获取物品下载信息
+            # Get item download information.
             download_info = steamworks.Workshop.GetItemDownloadInfo(item_id_int)
             downloading = False
             bytes_downloaded = 0
             bytes_total = 0
             
-            # 处理下载信息（使用正确的键名：downloaded和total）
+            # Process download information using the correct downloaded and total keys.
             if download_info:
                 if isinstance(download_info, dict):
                     downloaded = int(download_info.get("downloaded", 0) or 0)
@@ -564,11 +564,11 @@ async def get_workshop_item_details(item_id: str):
                     bytes_downloaded = downloaded
                     bytes_total = total
                 elif isinstance(download_info, tuple) and len(download_info) >= 3:
-                    # 兼容元组格式
+                    # Support tuple format.
                     downloading, bytes_downloaded, bytes_total = download_info
             
             if use_cache:
-                # 从缓存构建结果
+                # Build results from cache.
                 title = cached.get('title', f'未知物品_{item_id}')
                 description = cached.get('description', '')
                 owner_id_str = cached.get('steamIDOwner', '')
@@ -583,11 +583,11 @@ async def get_workshop_item_details(item_id: str):
                 preview_file_id = 0
                 tags = cached.get('tags', [])
             else:
-                # 解码bytes类型的字段为字符串，避免JSON序列化错误
+                # Decode bytes fields to strings to avoid JSON serialization errors.
                 title = result.title.decode('utf-8', errors='replace') if hasattr(result, 'title') and isinstance(result.title, bytes) else getattr(result, 'title', '')
                 description = result.description.decode('utf-8', errors='replace') if hasattr(result, 'description') and isinstance(result.description, bytes) else getattr(result, 'description', '')
                 
-                # 将 steamIDOwner 解析为实际用户名
+                # Resolve steamIDOwner to the actual username.
                 owner_id = int(result.steamIDOwner) if hasattr(result, 'steamIDOwner') and result.steamIDOwner else 0
                 owner_id_str = str(owner_id) if owner_id else ''
                 author_name = _resolve_author_name(steamworks, owner_id) if owner_id else None
@@ -595,12 +595,12 @@ async def get_workshop_item_details(item_id: str):
                 time_updated = getattr(result, 'timeUpdated', 0)
                 file_size = getattr(result, 'fileSize', 0)
                 preview_url = getattr(result, 'previewImageUrl', '') or ''
-                # 解码关联网页 URL 供客户端可选使用
+                # Decode the associated webpage URL for optional client use.
                 raw_url = getattr(result, 'URL', b'')
                 if isinstance(raw_url, bytes):
                     raw_url = raw_url.decode('utf-8', errors='replace')
                 associated_url = raw_url.strip('\x00').strip() if raw_url else ''
-                # file handle 和 preview file handle 是 UGC 文件句柄，不是下载 URL
+                # file handle and preview file handle are UGC file handles, not download URLs.
                 file_url = ''
                 file_id = getattr(result, 'file', 0)
                 preview_file_id = getattr(result, 'previewFile', 0)
@@ -613,13 +613,13 @@ async def get_workshop_item_details(item_id: str):
                     except Exception as e:
                         logger.debug(f"解析物品 {item_id} 标签失败: {e}")
                 
-                # 更新缓存
+                # Update cache.
                 _extract_ugc_item_details(steamworks, item_id_int, result, {
                     "publishedFileId": str(item_id_int),
                     "title": f"未知物品_{item_id}", "description": ""
                 })
             
-            # 构建详细的物品信息
+            # Build detailed item information.
             item_info = {
                 "publishedFileId": item_id_int,
                 "title": title,
@@ -653,7 +653,7 @@ async def get_workshop_item_details(item_id: str):
                 }
             }
 
-            # 走 Web API 兜底补全 authorName（Friends API 在非好友 owner 上常返回伪造值）
+            # Use the Web API fallback to complete authorName; Friends API often returns fabricated values for nonfriend owners.
             try:
                 await _resolve_missing_author_names([item_info])
             except Exception as fallback_err:
@@ -665,7 +665,7 @@ async def get_workshop_item_details(item_id: str):
             }
 
         else:
-            # 注意：SteamWorkshop类中不存在ReleaseQueryUGCRequest方法
+            # Note: SteamWorkshop has no ReleaseQueryUGCRequest method.
             return JSONResponse({
                 "success": False,
                 "error": "获取物品详情失败，未找到物品"

@@ -42,9 +42,9 @@ T = TypeVar("T")
 
 _LOCKS: dict[str, threading.Lock] = {}
 _LOCKS_GUARD = threading.Lock()
-# 记录当前线程正在改写的文件名：mutator 里再对同一文件发起 update 会在
-# 非重入锁上自锁死；而换成 RLock 又会让内层写入被外层的旧快照覆盖（正是本模块
-# 要消除的丢失更新），所以直接报错。
+# Track which file the current thread is mutating: recursively updating the same file inside a mutator
+# deadlocks on the nonreentrant lock. RLock would instead let the outer stale snapshot overwrite the inner write
+# (the lost update this module prevents), so raise immediately.
 _held = threading.local()
 
 
@@ -166,13 +166,13 @@ async def aupdate_json_config(manager: Any, filename: str, mutator: Callable[[di
     try:
         return await asyncio.shield(worker)
     except asyncio.CancelledError:
-        # 取消只停得掉这层 await，线程里的读改写照样会落盘；等它真正结束再把取消往上抛，
-        # 否则调用方的请求级锁会在写盘前放掉，下一个请求就会读到还没落盘前的快照。
+        # Cancellation stops only this await; the thread still persists its read-modify-write. Wait for completion before propagating cancellation,
+        # or the caller's request lock is released before persistence, letting the next request read a stale snapshot.
         while not worker.done():
             try:
                 await asyncio.wait({worker})
             except asyncio.CancelledError:
                 continue
         if not worker.cancelled():
-            worker.exception()  # 取走结果，免得事件循环报 "exception was never retrieved"
+            worker.exception()  # Retrieve the result to avoid "exception was never retrieved" from the event loop.
         raise

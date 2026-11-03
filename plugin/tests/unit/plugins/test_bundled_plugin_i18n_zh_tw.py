@@ -19,7 +19,7 @@ _PLUGINS_DIR = Path(__file__).resolve().parents[3] / "plugins"
 
 # Simplified-only forms; each is the Simplified counterpart of a character the
 # Traditional bundles actually use. Characters identical in both orthographies
-# are deliberately absent — 回 返 插 件 里 制 端 都 是 —— they would flag
+# are deliberately absent -- 回 返 插 件 里 制 端 都 是 -- they would flag
 # perfectly correct Traditional strings.
 _SIMPLIFIED_ONLY = (
     "运态设备录网页节点开关闭时间处发讯问题终调试复载键号选项确认执业务"
@@ -27,7 +27,7 @@ _SIMPLIFIED_ONLY = (
 )
 
 # Language endonyms are written in their own script by convention: a Traditional
-# UI still labels the Simplified option 「简体中文」. Skipped by value, not by
+# UI still labels the Simplified option "简体中文". Skipped by value, not by
 # key, so the exemption cannot quietly widen to a neighbouring string.
 _ENDONYMS = frozenset({"简体中文", "繁體中文", "日本語", "English", "한국어", "Русский"})
 

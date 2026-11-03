@@ -55,25 +55,25 @@ _source_history: dict[str, dict[str, Any]] = {}
 _source_history_lock = asyncio.Lock()
 _source_history_loaded = False
 _source_history_loaded_path: Path | None = None
-# 内存里那份能不能被**读路径**当权威。跟 _source_history_loaded 不是一回事：
-# 后者说的是「内存代表 _source_history_loaded_path 那个根」，而这个说的是「内存代表
-# 刚才那次请求要的那个根」。两者只在「换了根、而新根读失败」时分叉——那时内存里装的
-# 还是上一个根的历史，写侧靠返回值挡住了，读侧（_should_skip_source）却会拿 A 的
-# 历史去压 B 的候选，表现为她对这个角色明明没聊过的素材闭口不谈。
-# 读侧宁可漏抑制（顶多把某个素材再聊一遍）也不能跨根抑制，所以这里 fail-open。
+# Whether **read paths** may treat memory as authoritative. Distinct from _source_history_loaded:
+# that says memory represents the root at _source_history_loaded_path, while this says memory represents
+# the root requested just now. They diverge only after switching roots when the new root fails to load; memory
+# still contains the previous root's history. The write path checks the return value, but _should_skip_source would use A's
+# history to suppress B's candidates, making her avoid material never discussed with this character.
+# Reads prefer missed suppression (at worst repeat material) over cross-root suppression, so fail open here.
 _source_history_authoritative = False
-# 连续失败计数，只用于给日志降频。一次性的读失败和「永久停摆」在单条 warning 里
-# 长得一模一样，靠的就是这两个累计数把它们区分开。任何一次成功都清零。
+# Consecutive-failure counts only throttle logs. A transient read failure and permanent stoppage look identical
+# in one warning; these two accumulated counts distinguish them. Reset after any success.
 _source_history_read_failures = 0
 _source_history_skipped_records = 0
 
 
 def _should_log_repeated_failure(count: int) -> bool:
     """Report the first few consecutive failures, then back off to every 50th."""
-    # 永久性读失败（比如文件的读 ACL 坏了但目录仍可写，os.replace 照样成功）会让每
-    # 一次记录都走到失败/跳过分支。每次刷一条 warning 只会变成噪音，把「她已经不再
-    # 记录用过的素材了」这件事本身淹掉。前几次照报（偶发时看得见），之后按 50 次一报
-    # 并带上累计数——一条日志就能分辨这是抖了一下还是彻底停摆。
+    # Permanent read failure (e.g. broken file read ACL but writable directory, so os.replace still works) sends every
+    # record through failure/skip. Warning every time becomes noise, hiding that she no longer records
+    # used material. Report initial attempts for visibility, then every 50 failures
+    # with cumulative counts, letting one log distinguish a hiccup from total stoppage.
     return count <= 3 or count % 50 == 0
 
 
@@ -118,10 +118,10 @@ def _get_source_history_entry(url_hash: str) -> dict[str, Any] | None:
     if not url_hash:
         return None
     if not _source_history_authoritative:
-        # 上一次加载失败过，内存里可能装着**别的根**的历史。签名里没有 memory_dir，
-        # 加一个要串 _should_skip_source → candidate_selection / decisions /
-        # service 两处 / system_router 再导出，共五个调用点，为一条 fail-open 的
-        # 判据不值得。改成让加载侧把结论落在这个标记上，读侧只查标记。
+        # A previous load failed; memory may contain **another root's** history. memory_dir is absent from the signature;
+        # adding it requires threading through _should_skip_source → candidate_selection / decisions /
+        # two service sites / system_router re-export, five call sites, excessive for a fail-open
+        # criterion. Have the loader record its conclusion in this flag, and reads check only the flag.
         return None
     return _source_history.get(url_hash)
 
@@ -134,10 +134,10 @@ async def _ensure_source_history_loaded(
     Returns whether the in-memory history is authoritative for *memory_dir*.
     A false return means the read failed and nothing may be overwritten yet.
     """
-    # 返回值不是装饰：_record_source_used 是**全量覆盖写**（entries 就是整个
-    # _source_history）。读盘失败时内存里要么是空的、要么装着上一个 root 的东西，
-    # 无论哪种，被当成「已加载」都会让下一次记录把盘上整段历史截掉或换掉。所以
-    # 「内存现在能不能代表 memory_dir 那份」必须是这个函数说了算，而不是让调用方去猜。
+    # The return value matters: _record_source_used **overwrites all data** (entries is the entire
+    # _source_history). On read failure, memory is either empty or contains the prior root's data;
+    # treating either as loaded would truncate or replace all disk history at the next recording. Thus
+    # this function must determine whether memory currently represents memory_dir, rather than leaving callers to guess.
     global _source_history_loaded, _source_history_loaded_path
     global _source_history_read_failures, _source_history_authoritative
     path = _source_history_path(memory_dir=memory_dir)
@@ -148,30 +148,30 @@ async def _ensure_source_history_loaded(
         if _source_history_loaded and _source_history_loaded_path == path:
             _source_history_authoritative = True
             return True
-        # 全程解析进这个局部 dict，只有走到函数末尾才整体换入 _source_history。
-        # 这样「异常 / 取消」与「全局状态」彻底解耦：
-        #   * 取消（唯一挂起点是下面那次 to_thread，CancelledError 是 BaseException，
-        #     两个 except 都接不住）不再留下「flag=True、path=旧 root、内存空」——
-        #     那正是这次要消灭的状态，之后一次完全正常的记录就会拿空内存全量覆盖写。
-        #   * 读失败时旧 root 的内存原样保留，仍然与 flag/path 自洽，不用清标记。
-        # 换句话说：全局三件套（flag / path / 内存）要么一起前进，要么一动不动。
+        # Parse into this local dict throughout; replace _source_history only at the end of the function.
+        # This decouples exceptions/cancellation from global state:
+        #   * Cancellation (the only suspension is to_thread below; CancelledError inherits BaseException,
+        #     caught by neither except) no longer leaves flag=True, path=old root, memory empty;
+        #     exactly the state being eliminated, where the next normal record overwrites everything with empty memory.
+        #   * Read failure retains old-root memory unchanged and consistent with flag/path, requiring no flag clearing.
+        # In other words, global flag / path / memory advance together or remain entirely unchanged.
         loaded: dict[str, dict[str, Any]] = {}
         try:
             data = await asyncio.to_thread(read_json, path)
         except FileNotFoundError:
-            # 文件本来就不存在（首启 / 被清理过）= 正常的空历史，不是失败。
-            # 照旧标记已加载，下一次记录会把文件创建出来。
+            # Missing file (first startup / previously cleaned) means normal empty history, not failure.
+            # Mark loaded normally; the next recording creates the file.
             data = None
         except (ValueError, TypeError, RecursionError) as exc:
-            # 整个文件读不成结构（JSONDecodeError / UnicodeDecodeError 都是 ValueError
-            # 子类）：盘上那份已经不是可用的历史了，没有值得保护的东西，而且重试永远
-            # 失败。按空历史起步、让后续覆盖写自愈——否则一个坏文件会让「我用过这个
-            # 素材」永久停止记录。
+            # Entire file cannot be parsed structurally (JSONDecodeError / UnicodeDecodeError subclass ValueError):
+            # disk content is already unusable history with nothing worth protecting, and every retry
+            # would fail. Start empty and let later overwrites repair it, or one corrupt file would permanently
+            # stop recording used material.
             #
-            # RecursionError 也归这里：json 解码器对足够深的嵌套（`[[[[...]]]]`）抛的
-            # 是它，而它既不是 ValueError 也不是 OSError。落到下面那个「瞬时失败」分支
-            # 就成了最坏的组合——由内容导致、因而**永远**失败的东西被当成「下次重试」，
-            # 于是记录永久停摆，而这正是自愈路径本来要消灭的状态。
+            # RecursionError belongs here too: sufficiently deep JSON nesting (`[[[[...]]]]`) raises it,
+            # and it inherits neither ValueError nor OSError. Falling into the transient-failure branch below
+            # creates the worst combination: content that **always** fails is treated as retryable,
+            # permanently stopping recording, precisely what recovery is meant to prevent.
             logger.warning(
                 "%s 内容损坏，按空历史起步并等待覆盖重建: %s: %s",
                 _SOURCE_HISTORY_FILENAME,
@@ -180,11 +180,11 @@ async def _ensure_source_history_loaded(
             )
             data = None
         except Exception as exc:
-            # 真正的读失败（IO / 权限 / 文件被杀软或索引器短暂占住）：盘上那份大概率
-            # 还是完整的，只是这一刻读不到。绝不能标记「已加载」——那会让空内存冒充
-            # 权威，下一次全量覆盖写直接把整段历史截掉。什么都不动，让下次调用重试。
+            # Real read failure (IO / permissions / temporary antivirus or indexer file lock): disk content is probably
+            # intact but temporarily unreadable. Never mark loaded, which would make empty memory falsely authoritative
+            # and let the next full overwrite truncate all history. Leave everything untouched and retry next call.
             #
-            # 每次调用都会重来一遍，所以永久性失败在这里同样会刷屏，跟着连续计数降频。
+            # Every call retries, so permanent failures would spam here too; throttle using consecutive counts.
             _source_history_read_failures += 1
             if _should_log_repeated_failure(_source_history_read_failures):
                 logger.warning(
@@ -194,9 +194,9 @@ async def _ensure_source_history_loaded(
                     exc,
                     _source_history_read_failures,
                 )
-            # 内存原样保留（清掉会让「flag=已加载 / path=旧根 / 内存空」这个状态复活，
-            # 下一次针对旧根的记录就会拿空内存全量覆盖写），但读侧从这一刻起不许再用它，
-            # 否则旧根的历史会去压新根的候选。
+            # Retain memory unchanged (clearing revives loaded flag / old-root path / empty-memory state,
+            # causing the next old-root recording to overwrite everything with empty memory), but prohibit reads from using it
+            # from now on, or old-root history would suppress new-root candidates.
             _source_history_authoritative = False
             return False
         entries = data.get("entries") if isinstance(data, dict) else None
@@ -213,18 +213,18 @@ async def _ensure_source_history_loaded(
                         _half_life_for(entry.get("kind", "web")),
                     )
                 except (ValueError, TypeError, OverflowError):
-                    # 逐条跳过而不是整份作废：ts 是字符串抛 ValueError、kind 不可 hash
-                    # 抛 TypeError、ts 是个几百位的大整数 float() 抛 OverflowError
-                    # （它是 ArithmeticError 而不是 ValueError 的子类，漏掉就会一路
-                    # 逃出本函数，让每一次主动搭话都炸），都只说明**这一条**坏了。半损坏（几百条里坏一条）
-                    # 比整份 JSON 坏掉常见得多，把其余合法条目一起丢掉就是白白让她把
-                    # 那些素材再聊一遍。坏的那条本来就该被遗忘，丢掉它没有代价。
+                    # Skip individual entries rather than invalidating everything: string ts raises ValueError, unhashable kind
+                    # raises TypeError, float() of a hundreds-digit integer ts raises OverflowError
+                    # (an ArithmeticError rather than ValueError subclass; missing it lets it escape
+                    # this function and break every proactive attempt). Each means only **one row** is broken. Partial corruption
+                    # (one out of hundreds) is far more common than invalid JSON; discarding valid entries needlessly makes her
+                    # repeat all that material. The broken row should be forgotten anyway, so dropping it costs nothing.
                     damaged += 1
                     continue
                 if probability >= PROACTIVE_SOURCE_FORGET_P:
                     loaded[source_hash] = entry
             if damaged:
-                # 一次加载只汇总一条，别按条刷屏。
+                # Summarize once per load instead of logging every row.
                 logger.warning(
                     "%s 有 %d 条记录无法解析，已跳过（其余 %d 条正常载入）",
                     _SOURCE_HISTORY_FILENAME,
@@ -244,10 +244,10 @@ async def _persist_source_history_unlocked(
     *, memory_dir: str | Path | None = None
 ) -> None:
     """Persist the in-memory source history. The caller must hold _source_history_lock."""
-    # 快照故意在这里、在锁内自己取，而不是由调用方传进来：调用方取完快照再到锁外落盘，
-    # 两次投递抵达 os.replace 的顺序可以和取快照的顺序反过来，把新历史写回旧值；
-    # Windows 上两个并发 os.replace 打同一个目标还会互相 PermissionError(WinError 5)。
-    # 不接 snapshot 参数，这个反转窗口就从代码里消失，而不是靠调用约定维持。
+    # Intentionally take the snapshot here under lock, not from callers: a caller snapshot followed by unlocked persistence
+    # lets two submissions reach os.replace in reverse snapshot order, overwriting newer history with older values;
+    # concurrent os.replace to one Windows target also causes PermissionError(WinError 5).
+    # Accepting no snapshot parameter structurally removes that reversal window rather than relying on calling conventions.
     try:
         await atomic_write_json_async(
             _source_history_path(memory_dir=memory_dir),
@@ -277,29 +277,29 @@ async def _record_source_used(
     source_hash = _source_hash(url, title)
     if not source_hash:
         return
-    # 加载放在进锁之前：_ensure_source_history_loaded 自己要取同一把
-    # _source_history_lock，锁内再调必定自锁。已加载时它只是一次 flag+path 比较，
-    # 代价可忽略。
+    # Load before locking: _ensure_source_history_loaded acquires the same
+    # _source_history_lock, so calling under lock self-deadlocks. Already-loaded checks compare only flag + path,
+    # at negligible cost.
     #
-    # 为什么要在这里再加载一次：「记录之前一定先加载过」此前只由
-    # handle_proactive_chat 里的语句顺序维持——加载在 try-body 第 53 条，两处记录在
-    # 第 115/170 条，中间隔着上千行和几十个 await。谁把某个投递分支提前一点，就会
-    # 拿空内存做全量覆盖写、静默抹掉整段历史，而且没有任何测试会红。把不变量收进
-    # 函数自己，行号就不再是它的唯一保障。
-    # memory_dir 原样往下传，加载与落盘都经 _source_history_path(memory_dir=...)
-    # 解析，两边用的一定是同一个根。
+    # Load again here because 'always load before recording' previously relied only on
+    # handle_proactive_chat statement order: load was try-body statement 53, recordings at
+    # 115/170, separated by thousands of lines and dozens of awaits. Moving a delivery branch earlier could
+    # overwrite all history from empty memory silently without a failing test. Enforce the invariant within
+    # this function so line ordering is no longer its only guarantee.
+    # Pass memory_dir unchanged; loading and persistence both resolve through _source_history_path(memory_dir=...),
+    # guaranteeing the same root on both sides.
     if not await _ensure_source_history_loaded(memory_dir=memory_dir):
-        # 读不出来就不写。本函数是全量覆盖写，拿一份空内存去写等于把盘上整段历史
-        # 截成 1 条。丢这一次记录的代价是这条素材以后可能被再聊一遍；截库的代价是
-        # 所有素材都可能被再聊一遍——量级差着整个清单。
+        # Do not write if unreadable. This function overwrites everything; empty-memory writing would truncate disk history
+        # to one entry. Missing this recording may repeat this material later, whereas truncating the database
+        # can repeat every item: the impact differs by the entire inventory.
         #
-        # 这不会变成「读不出来就再也不记录了」：加载在每次调用时都重试，盘一恢复
-        # 就继续记；而「内容坏掉」那类永久性失败已经在加载侧按空历史放行，由覆盖
-        # 写自愈，不会落到这个分支里。
+        # This does not stop recording forever on read failure: every call retries loading, resuming as soon as disk
+        # recovers. Permanent content corruption already loads as empty history and heals through overwriting,
+        # never reaching this branch.
         #
-        # 但「盘永远读不回来」这种情况确实存在（读 ACL 坏了而目录可写），那时记录就
-        # 永久停摆，而且对用户只表现为她反复聊同一个东西。日志是这件事唯一的出口，
-        # 所以带上累计次数并降频——既不刷屏，也不让停摆无声无息。
+        # Permanently unreadable disk is possible (broken read ACL, writable directory); recording then
+        # stops forever and users see repeated material. Logs are the only visibility,
+        # so include cumulative counts and throttle, avoiding spam without hiding stoppage.
         _source_history_skipped_records += 1
         if _should_log_repeated_failure(_source_history_skipped_records):
             logger.warning(
@@ -310,16 +310,16 @@ async def _record_source_used(
                 _source_history_skipped_records,
             )
         return
-    # 加载成功就把连跳计数清零：降频只针对「连续失败」，偶发的一两次不该攒起来
-    # 把后面真正的停摆推到 50 次之后才第一次报出来。
+    # Reset consecutive skips after successful loading: isolated failures must not accumulate
+    # and delay the first report of a later true stoppage until attempt 50.
     _source_history_skipped_records = 0
     async with _source_history_lock:
-        # 护栏判定在锁外（_ensure 自己要取这把锁，锁内再调必定自锁），覆盖写在锁内，
-        # 中间隔着一个窗口：_ensure 走 IO 分支时是持锁 await 的，它放锁之后、本协程
-        # 拿到锁之前，另一个 root 的 _ensure 能插进来把内存整个换掉。这里再做一次纯
-        # 内存复核——不调 _ensure（不会自锁、不产生额外 IO），只确认此刻内存仍然代表
-        # 本次要写的那个 root。不等就什么都不写：拿 root_b 的内容去全量覆盖 root_a 的
-        # 文件，比漏记一条严重得多。
+        # Guard checks run outside the lock (_ensure acquires it and would self-deadlock); full writes run inside,
+        # leaving a window: _ensure awaits IO while locked; after it releases and before this coroutine
+        # acquires the lock, another root's _ensure can replace all memory. Recheck memory only here,
+        # without calling _ensure (no deadlock or extra IO), confirming it still represents
+        # the root being written. On mismatch, write nothing: overwriting root_a's file with root_b's contents
+        # is far worse than missing one record.
         if not (
             _source_history_loaded
             and _source_history_loaded_path
@@ -348,63 +348,63 @@ async def _record_source_used(
         ]
         for existing_hash in forgotten:
             _source_history.pop(existing_hash, None)
-        # 落盘也在锁内，对偶于 _increment_proactive_chat_total 调 _persist_totals_unlocked：
-        # 这是个跨角色的单文件，多个投递并发时锁只盖内存不盖落盘等于没盖。
-        # 写本身仍在 to_thread 里跑（atomic_write_json_async 内部），持的是 asyncio.Lock
-        # 不是 threading.Lock，所以事件循环在等待期间照样服务别的请求。
+        # Persist under lock too, symmetric with _increment_proactive_chat_total calling _persist_totals_unlocked:
+        # this is one shared cross-character file; locking only memory during concurrent deliveries is ineffective.
+        # Writing still runs via to_thread (inside atomic_write_json_async); the lock is asyncio.Lock,
+        # not threading.Lock, so the event loop continues serving other requests while waiting.
         #
-        # to_thread 一旦交出去就取消不掉 —— 线程会一直跑到 os.replace 结束。所以不能直接
-        # await：这里被 cancel（退出时最常见）时 async with 会在 CancelledError 穿过的
-        # 一刻就把锁放掉，而那次 os.replace 还在飞，「写在锁内」的不变量就破了。shield 让
-        # 取消落在外层、写盘任务照跑；再显式等它收尾之后才让 CancelledError 继续往上走。
+        # Once submitted, to_thread cannot be cancelled; it runs through os.replace. A direct
+        # await is unsafe: cancellation (especially during shutdown) makes async with release the lock as
+        # CancelledError passes through while os.replace remains in flight, breaking locked-write invariance. shield keeps
+        # cancellation outside and the write running; explicitly await completion before propagating CancelledError.
         writer = asyncio.ensure_future(
             _persist_source_history_unlocked(memory_dir=memory_dir)
         )
         try:
             await asyncio.shield(writer)
         except asyncio.CancelledError:
-            # 循环而不是等一次：第二次取消（退出时最常见）会把这次 asyncio.wait 本身也
-            # 打断，锁又提前放了。writer 是 to_thread，线程一定会跑完，循环必然终止。
+            # Loop rather than wait once: a second cancellation (common at shutdown) interrupts asyncio.wait itself,
+            # again releasing the lock early. The to_thread writer necessarily finishes, so the loop terminates.
             while not writer.done():
                 with suppress(asyncio.CancelledError):
                     await asyncio.wait({writer})
             raise
 
 
-# --- 主动搭话近期记录暂存区 ---
+# --- Recent proactive-chat records buffer ---
 # {lanlan_name: deque([(timestamp, message), ...], maxlen=10)}
 _proactive_chat_history: dict[str, deque] = {}
 
 
-# --- 主动搭话"素材标识"近期去重暂存区（ANTI_REPEAT_EXEMPT_SOURCE_TAGS 用）---
+# --- Recent proactive material-identifier deduplication buffer (for ANTI_REPEAT_EXEMPT_SOURCE_TAGS) ---
 # {lanlan_name: {source_tag: deque([(timestamp, material_key), ...], maxlen=N)}}
-# 素材推送类 channel（MUSIC/MEME）豁免台词级复读判定，改按"素材本身"去重：
-# MUSIC 看曲目（title|artist），MEME 看搜索关键词。本轮素材与近期不雷同就放行；
-# 雷同才回落到台词判定（MEME 素材新鲜时仍拦逐字复读，见
-# ANTI_REPEAT_VERBATIM_GUARD_SOURCE_TAGS）。进程内、重启清零——短期复读保护，
-# 与 _proactive_chat_history / _mini_game_invite_state 同样是内存态即可。
+# Material-push channels (MUSIC/MEME) bypass dialogue-level repetition checks and deduplicate the material itself:
+# MUSIC checks track (title|artist), MEME search keywords. Allow when current material differs from recent material;
+# only similar material falls back to dialogue checks (MEME still blocks verbatim repetition with fresh material; see
+# ANTI_REPEAT_VERBATIM_GUARD_SOURCE_TAGS). Process-local, reset on restart: short-term repetition protection,
+# like _proactive_chat_history / _mini_game_invite_state, needs only memory state.
 _proactive_material_history: dict[str, dict[str, deque]] = {}
 
 
 _PROACTIVE_MATERIAL_HISTORY_MAX = 10
 
 
-# --- 持久化"该角色累计成功投递的主动搭话次数 + 是否曾被邀请过"---
-# 单文件 schema：
+# --- Persist per-character successful proactive delivery count + whether ever invited ---
+# Single-file schema:
 #   {"version": 2,
 #    "totals": {<lanlan_name>: <int>, ...},
 #    "ever_delivered": {<lanlan_name>: true, ...}}
-# 跨进程重启保留。两份数据合一个文件方便维护。
+# Retain across restarts; one file for both data sets simplifies maintenance.
 #
-# - totals: 「新用户第 N 次主动搭话强制走 mini-game 邀请」(N=NEW_USER_FORCE_AT)
-#   必须依赖跨重启的累计计数——否则用户每次重启 app，force-trigger 会反复触发，
-#   体感邀请密度抖。计数语义与 _record_proactive_chat 对齐：仅在「成功投递给
-#   用户」时 +1，PASS 不算（spec 上"第 N 次主动搭话"指用户实际收到的）。
-# - ever_delivered: 「该角色是否曾经被发过 mini-game 邀请」一次性 true 标记，
-#   force-first 的 "is new user" 判定基础。和 in-memory 的 ``state.delivered_at``
-#   不同：后者跟随 PR-B 的 D2「回头再说」会被 reset，但 ever_delivered 一旦置
-#   True 就不再翻——「曾经被邀请过」是历史事实，不能被反悔。codex review (P1)
-#   指出，没这条 force-first 在重启后会把已邀请过的用户当新用户重新强制邀请。
+# - totals: force mini-game invitation on a new user's Nth proactive delivery (N=NEW_USER_FORCE_AT)
+#   requires a count surviving restarts, or each app restart repeatedly forces invitations,
+#   making invitation frequency inconsistent. Match _record_proactive_chat semantics: increment only on successful
+#   user delivery, excluding PASS (the spec's Nth proactive message means actually received).
+# - ever_delivered: one-way true flag indicating whether this character ever received a mini-game invitation,
+#   used by force-first's new-user check. Unlike in-memory ``state.delivered_at``,
+#   which PR-B's D2 'later' choice resets, ever_delivered never reverts after
+#   True: a prior invitation is historical fact. Codex P1 review
+#   noted that without it, force-first treats previously invited users as new after restarting and forces another invitation.
 _PROACTIVE_CHAT_TOTALS_FILENAME = "proactive_chat_totals.json"
 
 
@@ -424,10 +424,10 @@ _proactive_chat_totals_loaded = False
 _proactive_chat_totals_loaded_path: Path | None = None
 
 
-_RECENT_CHAT_MAX_AGE_SECONDS = 3600  # 1小时内的搭话记录
+_RECENT_CHAT_MAX_AGE_SECONDS = 3600  # Proactive records within one hour.
 
 
-_PROACTIVE_SIMILARITY_THRESHOLD = 0.90  # 保守硬拦截阈值：90% 以上重复直接放弃本轮
+_PROACTIVE_SIMILARITY_THRESHOLD = 0.90  # Conservative hard-block threshold: abandon this attempt above 90% repetition.
 
 
 def _recent_proactive_chat_entries(lanlan_name: str) -> tuple[tuple, ...]:
@@ -482,7 +482,7 @@ def _format_recent_proactive_chats(lanlan_name: str, lang: str = "zh") -> str:
     for entry in recent:
         ts, msg = entry[0], entry[1]
         ch = entry[2] if len(entry) > 2 else ""
-        # 过滤掉 vision 通道的记录，避免 AI 引用已过期的屏幕内容产生幻觉
+        # Filter vision-channel records to avoid hallucinations from citing expired screen content.
         if ch == "vision":
             continue
         tag = _rel(ts)
@@ -552,19 +552,19 @@ def _record_proactive_chat(lanlan_name: str, message: str, channel: str = ""):
         _proactive_chat_history[lanlan_name] = deque(maxlen=PROACTIVE_CHAT_HISTORY_MAX)
     _proactive_chat_history[lanlan_name].append((time.time(), message, channel))
 
-    # Telemetry：主动搭话实际投递。channel 是低基数 enum（vision/news/video/
-    # personal/music/meme/mini_game/...），截断防意外高基数。配合 settings_state
-    # 的 proactive 配置档，能看深度用户每天实际被主动搭话几次。
+    # Telemetry: actual proactive delivery. channel is a low-cardinality enum (vision/news/video/
+    # personal/music/meme/mini_game/...), truncated to prevent accidental high cardinality. Combined with settings_state's
+    # proactive configuration, this reveals heavy users' actual daily proactive-delivery frequency.
     #
-    # 不在这里做 responded 回应率配对：这会要求 core turn 与主动搭话状态共享
-    # “上次投递时刻”，扩大两个生命周期之间的耦合。回应率先由 server 端使用
-    # proactive_fired 时刻与用户消息活动 timestamp 关联粗估；精确配对另行设计。
+    # Do not pair responded rates here: that would require core turns and proactive state to share
+    # last-delivery time, increasing lifecycle coupling. Initially estimate response rates server-side by correlating
+    # proactive_fired times with user-message activity timestamps; design exact pairing separately.
     try:
         from utils.instrument import counter as _instr_counter
 
         _instr_counter("proactive_fired", channel=(str(channel) or "default")[:24])
     except Exception:
-        # 埋点失败不能影响主动搭话投递
+        # Telemetry failure must not affect proactive delivery.
         pass
 
 
@@ -625,6 +625,7 @@ def _proactive_turn_still_owned(mgr: Any, proactive_sid: Any) -> bool:
     """Whether cleanup may still target the rejected proactive turn safely."""
     return (
         mgr.current_speech_id == proactive_sid
+        and getattr(mgr.state, "proactive_sid", proactive_sid) == proactive_sid
         and not mgr.state.is_proactive_preempted(proactive_sid)
     )
 
@@ -634,6 +635,7 @@ async def _enter_proactive_phase2(
     proactive_sid: Any,
     *,
     log: Any = None,
+    round_id: str | None = None,
 ) -> bool:
     """Enter Phase 2 only if user engagement stays unchanged across the await."""
     from main_logic.session_state import SessionEvent
@@ -644,9 +646,11 @@ async def _enter_proactive_phase2(
         "last_user_engagement_time",
         None,
     )
-    await mgr.state.fire(SessionEvent.PROACTIVE_PHASE2)
+    round_payload = {"round_id": round_id} if round_id is not None else {}
+    await mgr.state.fire(SessionEvent.PROACTIVE_PHASE2, **round_payload)
     if (
-        mgr.state.is_proactive_preempted(proactive_sid)
+        (round_id is not None and mgr.state.proactive_round_id != round_id)
+        or mgr.state.is_proactive_preempted(proactive_sid)
         or getattr(mgr, "last_user_engagement_time", None)
         != expected_user_engagement_time
     ):
@@ -713,8 +717,8 @@ async def _ensure_proactive_chat_totals_loaded(
                     if isinstance(k, str) and bool(v):
                         _invite_ever_delivered[k] = True
         except FileNotFoundError:
-            # 首次启动 / cleanup 后没文件——按全空起步，下次 increment 会创建。
-            # 不是异常，不打 warning。
+            # No file on first startup / after cleanup: start entirely empty; the next increment creates it.
+            # This is normal; do not warn.
             pass
         except Exception as exc:
             logger.warning("proactive_chat_totals load failed: %s", exc)

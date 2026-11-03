@@ -1,4 +1,4 @@
-"""MCP 插件调用器。"""
+"""MCP plugin invoker."""
 
 from __future__ import annotations
 
@@ -20,12 +20,12 @@ if TYPE_CHECKING:
 
 class MCPPluginInvoker:
     """
-    MCP 插件调用器。
+    MCP plugin invoker.
     
-    根据路由决策调用目标：
-    - SELF: 调用本地 MCP tool
-    - PLUGIN: 调用 NEKO 插件 entry
-    - DROP: 抛出错误
+    Invoke the target selected by routing:
+    - SELF: call a local MCP tool.
+    - PLUGIN: call a NEKO plugin entry.
+    - DROP: raise an error.
     """
 
     def __init__(
@@ -35,12 +35,12 @@ class MCPPluginInvoker:
         logger: LoggerLike,
     ):
         """
-        初始化调用器。
+        Initialize the invoker.
         
         Args:
-            mcp_clients: MCP 客户端映射 {server_name: client}
-            plugin_call_fn: NEKO 插件调用函数 (plugin_id, entry_id, params) -> result
-            logger: 日志记录器
+            mcp_clients: MCP client mapping {server_name: client}.
+            plugin_call_fn: NEKO plugin invocation function (plugin_id, entry_id, params) -> result.
+            logger: Logger.
         """
         self._mcp_clients = mcp_clients
         self._plugin_call_fn = plugin_call_fn
@@ -54,9 +54,9 @@ class MCPPluginInvoker:
         timeout_s: float,
     ) -> Any:
         """
-        调用注入的插件调用函数，兼容旧签名：
-        - 新签名: fn(plugin_id, entry_id, params, timeout_s)
-        - 旧签名: fn(plugin_id, entry_id, params)
+        Invoke the injected plugin callable with legacy-signature compatibility:
+        - New signature: fn(plugin_id, entry_id, params, timeout_s).
+        - Old signature: fn(plugin_id, entry_id, params).
         """
         fn = self._plugin_call_fn
         if fn is None:
@@ -71,7 +71,7 @@ class MCPPluginInvoker:
                 if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
             ]
         except Exception:
-            # 反射失败时回退旧签名，避免影响现有调用
+            # If reflection fails, fall back to the legacy signature to preserve existing callers.
             has_varargs = False
             positional_or_kw = []
 
@@ -82,12 +82,12 @@ class MCPPluginInvoker:
 
     def _resolve_tool_identity(self, entry_id: str) -> tuple[str | None, str]:
         """
-        解析 tool 标识：
+        Parse the tool identifier:
         - canonical: mcp_{server_name}_{tool_name} -> (server_name, tool_name)
         - raw: tool_name -> (None, tool_name)
         """
         if entry_id.startswith("mcp_"):
-            # 按已连接 server 前缀匹配，避免 server_name 含 "_" 时 split 误判
+            # Match connected-server prefixes rather than splitting server_name containing underscores.
             for server_name in sorted(self._mcp_clients.keys(), key=len, reverse=True):
                 prefix = f"mcp_{server_name}_"
                 if entry_id.startswith(prefix):
@@ -102,14 +102,14 @@ class MCPPluginInvoker:
         decision: RouteDecision,
     ) -> object:
         """
-        执行调用。
+        Execute the invocation.
         
         Args:
-            request: Gateway 请求
-            decision: 路由决策
+            request: Gateway request.
+            decision: Routing decision.
             
         Returns:
-            调用结果
+            Invocation result.
         """
         if decision.mode == RouteMode.DROP:
             return Err(
@@ -127,7 +127,7 @@ class MCPPluginInvoker:
             return await self._invoke_neko_plugin(request, decision)
 
         if decision.mode == RouteMode.BROADCAST:
-            # 暂不支持广播模式
+            # Broadcast mode is not supported yet.
             return Err(
                 TransportError(
                     "broadcast mode not supported yet",
@@ -149,7 +149,7 @@ class MCPPluginInvoker:
         request: GatewayRequest,
         decision: RouteDecision,
     ) -> Result[object, TransportError]:
-        """调用 MCP tool。"""
+        """Call an MCP tool."""
         entry_id = decision.entry_id or request.target_entry_id
         if entry_id is None:
             return Err(
@@ -174,7 +174,7 @@ class MCPPluginInvoker:
                     )
                 )
         else:
-            # raw tool_name: 在所有已连接 server 中查找
+            # Raw tool_name: search all connected servers.
             candidates: list[MCPClient] = []
             for client in self._mcp_clients.values():
                 for tool in client.tools:
@@ -210,7 +210,7 @@ class MCPPluginInvoker:
             request.request_id,
         )
 
-        # 调用 MCP tool
+        # Call the MCP tool.
         result = await target_client.call_tool(
             tool_name,
             dict(request.params),
@@ -233,7 +233,7 @@ class MCPPluginInvoker:
         request: GatewayRequest,
         decision: RouteDecision,
     ) -> Result[object, TransportError]:
-        """调用 NEKO 插件 entry。"""
+        """Call a NEKO plugin entry."""
         plugin_id = decision.plugin_id
         entry_id = decision.entry_id or request.target_entry_id
 
@@ -269,7 +269,7 @@ class MCPPluginInvoker:
                 dict(request.params),
                 float(request.timeout_s),
             )
-            # 如果是协程，等待它
+            # Await it if it is a coroutine.
             if asyncio.iscoroutine(result):
                 result = await result
             return Ok(result)

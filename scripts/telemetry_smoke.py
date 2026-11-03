@@ -49,7 +49,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 # ---------------------------------------------------------------------------
 
 HMAC_SECRET = "neko-v1-a3f8b2c1d4e5f6789012345678abcdef"
-PORT = 18099  # 临时端口，避开生产 8099
+PORT = 18099  # Temporary port avoids production 8099.
 SERVER_URL = f"http://127.0.0.1:{PORT}"
 
 
@@ -98,8 +98,8 @@ def _wait_for_health(timeout: float = 10.0) -> bool:
             if status == 200:
                 return True
         except Exception:
-            # health probe 在 server 启动期会反复抛连接拒绝，这是预期 —— 继续
-            # poll 直到 deadline。
+            # Health probes normally get connection-refused during startup; keep
+            # polling until deadline.
             pass
         time.sleep(0.2)
     return False
@@ -135,25 +135,25 @@ def main():
     try:
         if not _wait_for_health():
             print("FAIL: server did not become healthy in 10s")
-            # 顺手 dump output
+            # Also dump output.
             try:
                 proc.terminate()
                 out, _ = proc.communicate(timeout=2)
                 print("--- server output ---")
                 print(out[-4000:])
             except Exception:
-                # 终止 server 进程或读它的 output 本身失败：我们正要 return 1
-                # 退出 smoke，再 raise 没意义。
+                # Terminating server processes/reading output failed, but smoke already returns 1;
+                # raising again adds no value.
                 pass
             return 1
         print("✓ server healthy")
 
         # --------------------------------------------------------------
-        # [2/5] 通过 utils/instrument 在 smoke 进程灌埋点，触发上报
+        # [2/5] Feed telemetry through utils/instrument in the smoke process and trigger reports.
         # --------------------------------------------------------------
         print("\n[2/5] Generating instrument data via SDK...")
 
-        # 让 TokenTracker 上报到本地 server
+        # Point TokenTracker at the local server.
         import utils.token_tracker as tt_mod
         tt_mod._TELEMETRY_SERVER_URL = SERVER_URL
         tt_mod._TELEMETRY_HMAC_SECRET = HMAC_SECRET
@@ -162,12 +162,12 @@ def main():
         from utils.instrument import counter, histogram, event, Instrument
         from utils.event_logger import EventLogger
 
-        # 重置单例确保隔离
+        # Reset singletons for isolation.
         TokenTracker._instance = None
         Instrument._instance = None
         EventLogger._instance = None
 
-        # 模拟一些埋点
+        # Simulate telemetry.
         for _ in range(5):
             counter("user_message_sent", 1, surface="pet_widget")
         for _ in range(3):
@@ -178,8 +178,8 @@ def main():
         histogram("ttft_ms", 234)
         histogram("ttft_ms", 412)
         histogram("ttft_ms", 156)
-        # 用 surface dim 而不是 lanlan_name —— 后者是用户自定义 character
-        # 名（PII + 高基数），生产代码已经不传，smoke 也不该示范坏 pattern。
+        # Use surface dimensions, not lanlan_name, a user-defined character
+        # name with PII/high cardinality, already removed in production; smoke must not teach bad patterns.
         histogram("ws_session_sec", 850.5, surface="pet_widget")
 
         event("session_start", process="main_server")
@@ -187,25 +187,25 @@ def main():
         event("onboarding_step", status="persona_chosen")
 
         tracker = TokenTracker.get_instance()
-        # 也加一点 LLM token 数据
+        # Add LLM token data too.
         tracker.record(model="gpt-4o-mini", prompt_tokens=100, completion_tokens=50,
                        total_tokens=150, cached_tokens=20, call_type="conversation")
         tracker.record(model="gpt-4o-mini", prompt_tokens=200, completion_tokens=80,
                        total_tokens=280, cached_tokens=50, call_type="conversation")
 
-        # 强制上报：清掉 _last_report_time 节流
+        # Force reports by clearing _last_report_time throttling.
         tracker._last_report_time = 0
-        tracker.save()  # 触发 _report_to_server
+        tracker.save()  # Trigger _report_to_server.
         print("✓ SDK report attempted")
 
         # --------------------------------------------------------------
-        # [3/5] 模拟"前端 WS 转发上来的 telemetry"—— 直接构造另一份 payload
+        # [3/5] Simulate frontend-WS-forwarded telemetry by manually building another payload.
         # --------------------------------------------------------------
         print("\n[3/5] Simulating frontend-originated counter via additional payload...")
 
-        # 这里其实跟 SDK 内部走的是同一路径，只是构造手工，验证 server 在
-        # 老客户端 (无 instruments) / 新客户端 (有 instruments) 两种 payload
-        # 上都能工作。
+        # This shares SDK internal paths, merely with manual construction, testing server
+        # handling for old clients without instruments and new clients with
+        # instruments alike.
         old_payload = {
             "device_id": "b" * 64,
             "app_version": "1.0.0",
@@ -261,13 +261,13 @@ def main():
         print(f"  new client (gzip + instruments): HTTP {status} {resp[:100]!r}")
         assert status == 200, f"new payload submit failed: {status}"
 
-        # 同一 batch_id 重发 —— 应该 dedupe
+        # Resend the same batch_id; deduplicate it.
         status, resp = _sign_and_submit(new_payload, gzip_it=True, batch_id="smoke-new-1")
         print(f"  same batch_id replay: HTTP {status} {resp[:120]!r}")
         assert status == 200
 
         # --------------------------------------------------------------
-        # [4/5] 直查 SQLite 看数据落了
+        # [4/5] Query SQLite directly to verify persistence.
         # --------------------------------------------------------------
         print("\n[4/5] Inspecting SQLite directly...")
         import sqlite3
@@ -291,7 +291,7 @@ def main():
         assert counters_n >= 2, f"expected counters table populated, got {counters_n}"
         assert hist_n >= 1, f"expected histogram table populated, got {hist_n}"
 
-        # 打印 sample 数据
+        # Print sample data.
         print("\n  --- sample counters ---")
         for r in conn.execute(
             "SELECT stat_date, metric_key, value FROM instrument_counters "
@@ -306,7 +306,7 @@ def main():
             print(f"    {r['stat_date']} {r['metric_key']:30s} count={r['count']} sum={r['sum']}")
             print(f"      buckets={r['buckets']}")
 
-        # 验证去重 —— same batch_id 没让 counter 双倍
+        # Verify same-batch deduplication avoids doubled counters.
         new_dev_counter = conn.execute(
             "SELECT value FROM instrument_counters "
             "WHERE device_id = ? AND metric_key = 'live2d_touched'",
@@ -320,24 +320,24 @@ def main():
         conn.close()
 
         # --------------------------------------------------------------
-        # [4b] Regression: Codex P1 — instrument-only 上报 batch_id 必须不同
+        # [4b] Codex P1 regression: instrument-only reports require different batch_ids.
         # --------------------------------------------------------------
         print("\n[4b] Regression: instrument-only batch_id uniqueness...")
-        # 重置单例确保是干净的 instrument 累积
+        # Reset singleton for clean instrument accumulation.
         Instrument._instance = None
         TokenTracker._instance = None
-        # 设备 D：只灌前端 counter，不动 LLM token（daily_stats / recent_records
-        # 都将为空）。如果 batch_id 不含 instruments，两次 snapshot 算出同一
-        # hash → 第二次会被 seen_batches dedupe，server 端只看到第一次的数据。
+        # Device D receives only frontend counters, no LLM tokens, leaving daily_stats/recent_records
+        # empty. Without instruments in batch_id, two snapshots hash identically,
+        # so seen_batches drops the second and servers see only the first.
         tracker_d = TokenTracker.get_instance()
         for batch_n in range(2):
             counter("window_only_counter", 1, surface="index_wide", batch_n=batch_n)
-            # 强行触发上报：把节流计时重置
+            # Force reports by resetting throttle timers.
             tracker_d._last_report_time = 0
             tracker_d.save()
             time.sleep(0.5)
 
-        # 直查 SQLite：window_only_counter 必须是 2（两次窗口都被入库）
+        # Query SQLite: window_only_counter must equal 2, persisting both windows.
         conn2 = sqlite3.connect(db_path)
         rows = conn2.execute(
             "SELECT metric_key, value FROM instrument_counters "
@@ -349,7 +349,7 @@ def main():
         vals = [r[1] for r in rows]
         print(f"  metric_keys seen: {keys}")
         print(f"  values:           {vals}")
-        # batch_n=0 和 batch_n=1 各 1 次 → 两个独立 key
+        # One each for batch_n=0/1 yields two independent keys.
         assert len(rows) == 2, (
             f"P1 regression: expected 2 distinct metric_keys (one per window), "
             f"got {len(rows)} — second instrument-only batch likely dedupe-dropped"
@@ -361,20 +361,20 @@ def main():
         print("  ✓ both instrument-only windows landed (batch_id includes instruments)")
 
         # --------------------------------------------------------------
-        # [4c] Regression: Codex P2 — _atexit_save 顺序，session_end 必须上报
+        # [4c] Codex P2 regression: _atexit_save must report session_end in correct order.
         # --------------------------------------------------------------
         print("\n[4c] Regression: _atexit_save emits session_end before save()...")
-        # 新设备 E + record_app_start → 模拟 atexit
+        # New device E and record_app_start, then simulate atexit.
         Instrument._instance = None
         TokenTracker._instance = None
-        # device_id 在 TokenTracker 是 OS-derived，多次实例共享；只能靠 process
-        # 维度区分 session_end 的 emitter。换一个 process 名让 instrument key 唯一。
+        # TokenTracker device_id is OS-derived and shared across instances; distinguish session_end
+        # emitters by process dimensions, choosing a new process name for unique keys.
         tracker_e = TokenTracker.get_instance()
         tracker_e.record_app_start(process="smoke_atexit_test")
-        # 让 session_duration > 0 以触发 histogram
+        # Ensure session_duration>0 to trigger histograms.
         tracker_e._session_start_ts = time.time() - 5.0
-        # _atexit_save 内部调 save() → _report_to_server → instrument snapshot →
-        # 远程上报。session_end emit 在 save 之前，所以应该被带上。
+        # _atexit_save calls save -> _report_to_server -> instrument snapshot ->
+        # remote reporting. session_end emitted before save must be included.
         tracker_e._atexit_save()
         time.sleep(0.5)
 
@@ -397,23 +397,23 @@ def main():
         assert len(session_dur_rows) >= 1, (
             "P2 regression: session_duration_sec histogram missing"
         )
-        # 把 URL 重新启用，下面的 [5/5] dashboard 测试还要用
+        # Reenable the URL for [5/5] dashboard testing below.
         tt_mod._TELEMETRY_SERVER_URL = SERVER_URL
         print("  ✓ session_end counter + duration histogram both reached server")
 
         # --------------------------------------------------------------
-        # [4d] Regression: Codex P1 round-2 — daily 重传幂等
+        # [4d] Codex P1 round-two regression: daily retransmission idempotence.
         #
-        # 网络 timeout（server commit 了 client 没收到 200）场景：client 用
-        # 同一个 batch_seq 重传，server seen_batches 必须 dedupe，daily 不能
-        # 被双倍计数。手动构造两份 batch_id 完全相同的 payload 验证 server
-        # 行为；同时单独检查 client 在失败时 _pending_batch_seq 不被清空。
+        # On network timeout after server commit without client 200, clients retransmit
+        # the same batch_seq; seen_batches must deduplicate without doubling daily counts.
+        # Manually submit identical batch_id payloads to verify servers,
+        # separately checking client failure retains _pending_batch_seq.
         # --------------------------------------------------------------
         print("\n[4d] Regression: daily retry idempotency (batch_seq stability)...")
         Instrument._instance = None
         TokenTracker._instance = None
         tracker_f = TokenTracker.get_instance()
-        # Step A: 用 bad URL 让首次上报失败，验证 _pending_batch_seq 保留
+        # Step A: fail initial reporting through bad URLs; retain _pending_batch_seq.
         good_url = tt_mod._TELEMETRY_SERVER_URL
         tt_mod._TELEMETRY_SERVER_URL = "http://127.0.0.1:1"
         tracker_f.record(model="gpt-4o-mini", prompt_tokens=111,
@@ -427,7 +427,7 @@ def main():
             "P1 round-2 regression: _pending_batch_seq must persist after failure"
         )
         print(f"  ✓ failure preserved batch_seq = {seq_after_fail[:12]}...")
-        # Step B: 恢复 URL，重传应成功并清 batch_seq
+        # Step B: restore URLs; successful retries clear batch_seq.
         tt_mod._TELEMETRY_SERVER_URL = good_url
         tracker_f._last_report_time = 0
         tracker_f.save()
@@ -437,8 +437,8 @@ def main():
         )
         print("  ✓ success cleared batch_seq")
 
-        # Step C: 模拟"server commit 但 client 没收到 200，client 重发"。
-        # 手动 POST 两次 batch_id 完全相同的 payload，验证 server dedupe 工作。
+        # Step C: simulate committed reports whose client missed 200 and retries.
+        # POST identical batch_id payloads twice to verify server deduplication.
         dev_f = "f" * 64
         seq_test = "deadbeef12345678"
         bc = {"device_id": dev_f, "app_version": "retry-test", "batch_seq": seq_test}
@@ -489,15 +489,15 @@ def main():
         TokenTracker._instance = None
         tracker_g = TokenTracker.get_instance()
         tracker_g.record_app_start(process="smoke_short_session")
-        tracker_g._session_start_ts = time.time() - 2.0  # 2s 短 session
-        # 先一次成功上报，让 _last_report_time = now（throttle 窗口刚开始）
+        tracker_g._session_start_ts = time.time() - 2.0  # Short 2 s session.
+        # First report succeeds, setting _last_report_time=now at throttle-window start.
         counter("short_session_anchor", 1)
         tracker_g._last_report_time = 0
         tracker_g.save()
         time.sleep(0.3)
         assert tracker_g._last_report_time > 0, "anchor save should set _last_report_time"
-        # 此刻距下次允许还差 60s。如果 _atexit_save 不 bypass throttle，
-        # session_end emit 之后的 save() 会被 throttle gate 挡掉。
+        # Next allowed report is 60 s away; without atexit throttle bypass,
+        # post-session_end save is blocked.
         tracker_g._atexit_save()
         time.sleep(0.3)
         conn_g = sqlite3.connect(db_path)
@@ -511,42 +511,42 @@ def main():
             "— throttle bypass not working"
         )
         print(f"  ✓ short-session session_end reached server: {rows_g}")
-        # 恢复 URL 给后续 [5/5] 用
+        # Restore URLs for later [5/5] tests.
         tt_mod._TELEMETRY_SERVER_URL = SERVER_URL
 
         # --------------------------------------------------------------
-        # [4f] Regression: Codex P1 round-3 — instrument-only 失败清 stale seq
+        # [4f] Codex P1 round-three regression: clear stale seq after instrument-only failures.
         #
-        # 场景：instrument-only payload server commit 了但 client timeout。
-        # instruments 已 clear-on-read 没东西放回。如果失败时不清 batch_seq，
-        # 下一个新窗口（不同数据）会复用 stale seq → server seen_batches
-        # 命中旧 commit → 返回 "duplicate, skipped" → 新数据被静默丢弃。
+        # Server commits instrument-only data but clients time out.
+        # Instruments clear on read and cannot restore; retaining batch_seq makes
+        # fresh later-window data reuse stale IDs, hitting server seen_batches,
+        # returning duplicate/skipped and silently losing new data.
         # --------------------------------------------------------------
         print("\n[4f] Regression: instrument-only failure clears stale batch_seq...")
         Instrument._instance = None
         TokenTracker._instance = None
         tracker_h = TokenTracker.get_instance()
-        # Step A: instrument-only 失败
+        # Step A: instrument-only failure.
         counter("h_only_counter_A", 1, surface="index_wide")
         good_url = tt_mod._TELEMETRY_SERVER_URL
         tt_mod._TELEMETRY_SERVER_URL = "http://127.0.0.1:1"
         tracker_h._last_report_time = 0
         tracker_h.save()
         time.sleep(0.3)
-        # 关键断言：instrument-only 失败必须清 batch_seq（had_unsent_payload=False）
+        # Key assertion: instrument-only failure clears batch_seq, had_unsent_payload=False.
         assert tracker_h._pending_batch_seq is None, (
             "P1 round-3 regression: instrument-only failure left stale "
             f"_pending_batch_seq = {tracker_h._pending_batch_seq!r}"
         )
         print("  ✓ instrument-only failure cleared batch_seq")
 
-        # Step B: 恢复 URL，发新 counter（B），应该用全新 seq 成功上报
+        # Step B: restore URLs, send fresh counter B using a new successful seq.
         tt_mod._TELEMETRY_SERVER_URL = good_url
         counter("h_only_counter_B", 1, surface="index_wide")
         tracker_h._last_report_time = 0
         tracker_h.save()
         time.sleep(0.5)
-        # 直查 server: h_only_counter_B 必须在库（说明不被 stale seq 误伤）
+        # Query server: h_only_counter_B must persist without stale-seq loss.
         conn_h = sqlite3.connect(db_path)
         rows_h = conn_h.execute(
             "SELECT metric_key, value FROM instrument_counters "
@@ -562,9 +562,9 @@ def main():
         # --------------------------------------------------------------
         # [4g] Regression: Codex P2 round-4 — periodic loop wakes for instrument-only
         #
-        # 纯前端互动用户 _dirty 永远是 False。如果 _periodic_save_loop 只在
-        # _dirty=True 时调 save()，instrument 数据只能等 atexit 才发，不是
-        # 设计的 60s 节奏。loop 必须同时检查 instrument.has_data。
+        # Pure frontend interaction leaves _dirty=False. If periodic save checks
+        # only _dirty, instruments wait until atexit rather than
+        # reporting every 60 s. Also check instrument.has_data.
         # --------------------------------------------------------------
         print("\n[4g] Regression: periodic loop wakes for instrument-only data...")
         import asyncio as _asyncio
@@ -574,25 +574,25 @@ def main():
             TokenTracker._instance = None
             tt_mod._TELEMETRY_SERVER_URL = SERVER_URL
             tracker_i = TokenTracker.get_instance()
-            # 加速 loop：500ms 一个 tick 让 smoke 不用等 60s
+            # Accelerate smoke loops to 500 ms ticks instead of waiting 60 s.
             tracker_i._save_interval = 0.5
             tracker_i._last_report_time = 0
             tracker_i.start_periodic_save()
 
-            # 只灌 counter（不触发 _dirty） —— 模拟纯前端互动
+            # Feed counters only without _dirty, simulating frontend-only interaction.
             counter("periodic_wake_test", 1, scenario="instrument_only")
 
-            # 等够 2 个 tick 让 loop 至少跑一次
+            # Wait two ticks to ensure at least one loop round.
             await _asyncio.sleep(1.3)
 
-            # 停 task 防泄漏（smoke 进程下来还要做后续步骤）
+            # Stop tasks against leaks; smoke continues with later steps.
             task = tracker_i._save_task
             if task and not task.done():
                 task.cancel()
                 try:
                     await task
                 except _asyncio.CancelledError:
-                    # 期望路径 —— cancel 主动制造的 CancelledError，吞掉是 idiomatic
+                    # Expected cancellation explicitly issues CancelledError; swallowing it is idiomatic.
                     pass
 
         _asyncio.run(_periodic_wake_test())
@@ -611,20 +611,20 @@ def main():
         print(f"  ✓ periodic loop picked up instrument-only: {rows_i}")
 
         # --------------------------------------------------------------
-        # [4h] Regression: Codex P2 round-5 — retry 不能拖走新 instrument
+        # [4h] Codex P2 round-five regression: retries must not consume new instruments.
         #
-        # 场景：daily-bearing payload server commit 但 client timeout
-        # → _pending_batch_seq=A 保留供 retry。期间新 counter 累积 (Y2)。
-        # 如果 retry 把 Y2 一起塞进 payload，batch_id=A 已经在 server
-        # seen_batches，整个 batch 被 dedupe，Y2 跟着丢（已 clear-on-read）。
-        # 修复：retry 不 snapshot instrument，Y2 留在 buffer 等下窗口。
+        # Daily-bearing payload commits but client times out,
+        # retaining _pending_batch_seq=A. Fresh Y2 counters accumulate meanwhile.
+        # If retries include Y2, server seen_batches already contains A,
+        # deduplicating the whole batch and losing clear-on-read Y2.
+        # Fix: retries do not snapshot instruments; retain Y2 for the next window.
         # --------------------------------------------------------------
         print("\n[4h] Regression: retry doesn't drag fresh instruments...")
         Instrument._instance = None
         TokenTracker._instance = None
         tracker_j = TokenTracker.get_instance()
 
-        # Step A: daily-bearing 失败 → batch_seq 保留
+        # Step A: daily-bearing failure retains batch_seq.
         tt_mod._TELEMETRY_SERVER_URL = "http://127.0.0.1:1"
         tracker_j.record(model="gpt-4o-mini", prompt_tokens=222,
                          completion_tokens=33, total_tokens=255,
@@ -636,32 +636,32 @@ def main():
         assert retained_seq is not None, "daily failure must preserve batch_seq"
         print(f"  daily failed, batch_seq retained = {retained_seq[:12]}...")
 
-        # Step B: 灌新 counter 到 buffer
+        # Step B: feed fresh counters to buffers.
         counter("fresh_after_retry", 1, surface="index_wide")
         inst_j = Instrument.get_instance()
         assert inst_j.has_data(), "fresh counter should be in buffer"
 
-        # Step C: 恢复 URL，触发 retry（buffer 里有 fresh counter）
+        # Step C: restore URLs and retry while fresh counters remain buffered.
         tt_mod._TELEMETRY_SERVER_URL = SERVER_URL
         tracker_j._last_report_time = 0
         tracker_j.save()
         time.sleep(0.5)
 
-        # 关键断言：retry 跑完后 fresh counter **必须仍在 buffer**
-        # 如果 retry 把它 snapshot 拿走，server dedupe 返 duplicate，fresh
-        # counter 永远不会到 server。
+        # Key assertion: fresh counters must remain buffered after retry.
+        # Snapshotting during retry would let server deduplication discard fresh
+        # counters permanently.
         assert inst_j.has_data(), (
             "P2 round-5 regression: fresh counter consumed by retry snapshot. "
             "Retry must skip instrument snapshot to avoid dedupe-induced loss."
         )
-        # 而且 batch_seq 应该被清了（retry 成功）
+        # Retry success must also clear batch_seq.
         assert tracker_j._pending_batch_seq is None, (
             "retry should succeed (server hasn't actually seen this batch_id "
             "in our test setup) and clear batch_seq"
         )
         print("  ✓ retry kept fresh counter in buffer")
 
-        # Step D: 下一窗口（新 batch_seq）发 fresh counter
+        # Step D: send fresh counters next window under a new batch_seq.
         tracker_j._last_report_time = 0
         tracker_j.save()
         time.sleep(0.5)
@@ -678,10 +678,10 @@ def main():
         print(f"  ✓ fresh counter landed in next window: {rows_j}")
 
         # --------------------------------------------------------------
-        # [4i] 新增业务埋点端到端：D1 信号 + settings_state + proactive_fired
+        # [4i] End-to-end new business telemetry: D1 signals/settings_state/proactive_fired.
         #
-        # 验证 note_first_user_message / note_core_loop_completed /
-        # record_settings_state 产出的 counter/histogram 走完整通道到 server。
+        # Verify note_first_user_message / note_core_loop_completed /
+        # record_settings_state counters/histograms traverse the full server channel.
         # --------------------------------------------------------------
         print("\n[4i] New telemetry: D1 signals + settings_state...")
         Instrument._instance = None
@@ -689,14 +689,14 @@ def main():
         tt_mod._TELEMETRY_SERVER_URL = SERVER_URL
         tracker_k = TokenTracker.get_instance()
         tracker_k._session_start_ts = time.time() - 8.0
-        # D1 漏斗
+        # D1 funnel.
         tracker_k.note_first_user_message("text")
         tracker_k.note_core_loop_completed()
-        # settings_state 走**真正的** record_settings_state（读 preferences +
-        # 分桶 + privacy 取反逻辑），而不是手写 counter——否则分桶/取反/读盘
-        # 逻辑坏了 smoke 也发现不了（CodeRabbit 指出）。
+        # settings_state uses real record_settings_state, reading preferences,
+        # bucketing, and inverting privacy rather than handwritten counters; otherwise broken bucket/inversion/read
+        # logic would escape smoke coverage, as CodeRabbit noted.
         tt_mod.record_settings_state()
-        # proactive + D1 错误（直接走 instrument，模拟各 hook 点）
+        # Proactive/D1 errors go directly through instrument, simulating hook sites.
         counter("proactive_fired", 1, channel="vision")
         counter("llm_error", 1, error_class="TimeoutError")
         counter("api_key_invalid", 1)
@@ -731,11 +731,11 @@ def main():
         print("  ✓ all new D1 + settings + proactive telemetry reached server")
 
         # --------------------------------------------------------------
-        # [4j] Regression: Codex P2 — 伪造坏 stat_date 不能落成垃圾分区
+        # [4j] Codex P2 regression: forged invalid stat_date must not create garbage partitions.
         #
-        # HMAC 密钥在开源客户端可读，伪造 payload 能塞 "9999-99-99" 这类长度
-        # 和 dash 位置都过、但非法的日期。server 必须 date.fromisoformat 校验，
-        # 坏值回退到 window_end/今天，否则字典序 retention 永远 prune 不掉。
+        # Open-source clients expose HMAC secrets; forged payloads can supply "9999-99-99", satisfying length/dash
+        # checks but not calendar validity. Server date.fromisoformat must validate,
+        # falling back to window_end/today or lexical retention can never prune it.
         # --------------------------------------------------------------
         print("\n[4j] Regression: malformed stat_date rejected...")
         bad_payload = {
@@ -744,7 +744,7 @@ def main():
             "steam_user_id": "", "daily_stats": {}, "recent_records": [],
             "instruments": {
                 "window_start": time.time() - 60, "window_end": time.time(),
-                "stat_date": "9999-99-99",  # 伪造的非法日期
+                "stat_date": "9999-99-99",  # Forged invalid date.
                 "bounds": [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
                 "counters": {"forged_stat_date_counter": 1},
                 "histograms": {},
@@ -768,16 +768,16 @@ def main():
         )
         print("  ✓ malformed stat_date rejected, fell back to a valid date")
 
-        # 第二个 case：parse-pass 但越界的未来日期（9999-12-31）。fromisoformat
-        # 接受它，但 ±2 天范围约束必须拦下，否则字典序 retention 永远 prune
-        # 不掉（CodeRabbit）。
+        # Second case: parseable but out-of-range future 9999-12-31. fromisoformat
+        # accepts it, but +/-2-day checks must reject or lexical retention never prunes
+        # it, per CodeRabbit.
         oor_payload = {
             "device_id": "k" * 64, "app_version": "2.0.0", "branch": "main",
             "locale": "en-US", "timezone": "UTC", "distribution": "source",
             "steam_user_id": "", "daily_stats": {}, "recent_records": [],
             "instruments": {
                 "window_start": time.time() - 60, "window_end": time.time(),
-                "stat_date": "9999-12-31",  # 可解析但越界的未来日期
+                "stat_date": "9999-12-31",  # Parseable out-of-range future date.
                 "bounds": [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
                 "counters": {"oor_stat_date_counter": 1},
                 "histograms": {},
@@ -801,17 +801,17 @@ def main():
         )
         print("  ✓ out-of-range stat_date rejected, fell back to a valid date")
 
-        # 第三个 case：client_date 无效（走 window_end fallback）但 window_end
-        # 是远期时间戳。fallback 路径也必须过同一 recency 校验，否则偏斜时钟/
-        # 伪造 window_end 能造远期分区逃过 retention（Codex P2）。
+        # Third case: invalid client_date triggers window_end fallback, but window_end
+        # is far future. Apply the same recency check to fallback, preventing skewed clocks/
+        # forged timestamps from creating retention-exempt future partitions (Codex P2).
         we_payload = {
             "device_id": "p" * 64, "app_version": "2.0.0", "branch": "main",
             "locale": "en-US", "timezone": "UTC", "distribution": "source",
             "steam_user_id": "", "daily_stats": {}, "recent_records": [],
             "instruments": {
                 "window_start": time.time(),
-                "window_end": time.time() + 5 * 365 * 86400,  # ~5 年后
-                "stat_date": "not-a-valid-date",  # len!=10 → 跳过 client_date，走 window_end
+                "window_end": time.time() + 5 * 365 * 86400,  # About 5 years ahead.
+                "stat_date": "not-a-valid-date",  # len!=10 skips client_date and uses window_end.
                 "bounds": [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
                 "counters": {"we_fallback_counter": 1},
                 "histograms": {},
@@ -833,8 +833,8 @@ def main():
         )
         print("  ✓ far-future window_end fallback rejected, fell back to today")
 
-        # NaN counter 不能炸整批：含 NaN 的 payload 仍 200，NaN 样本被跳过，
-        # 同批的合法 counter 照常入库（Codex P2）。
+        # NaN counters must not abort whole batches; return 200 and skip bad samples,
+        # retaining valid same-batch counters (Codex P2).
         nan_payload = {
             "device_id": "m" * 64, "app_version": "2.0.0", "branch": "main",
             "locale": "en-US", "timezone": "UTC", "distribution": "source",
@@ -843,13 +843,13 @@ def main():
                 "window_start": time.time() - 60, "window_end": time.time(),
                 "stat_date": time.strftime("%Y-%m-%d"),
                 "bounds": [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
-                # NaN 通过 JSON 'NaN' token 传入（Python json 默认接受）
+                # Supply JSON NaN tokens, accepted by default Python JSON parsing.
                 "counters": {"nan_counter": float("nan"), "good_counter_beside_nan": 7},
                 "histograms": {},
             },
         }
-        # _sign_and_submit 内部 json.dumps（默认 allow_nan=True）会把 NaN 序列化
-        # 成 'NaN' token，server json.loads 默认接受 → 进 storage 被 isfinite 拦下。
+        # _sign_and_submit uses default allow_nan=True, serializing NaN
+        # tokens that server json.loads accepts before storage.isfinite rejects them.
         s_nan, _ = _sign_and_submit(nan_payload, gzip_it=False, batch_id="smoke-nan-1")
         assert s_nan == 200, f"NaN payload should be accepted, bad sample skipped (HTTP {s_nan})"
         time.sleep(0.3)
@@ -868,8 +868,8 @@ def main():
         assert nan_landed == 0, "NaN counter should have been skipped, not stored"
         print("  ✓ NaN counter skipped, valid counter in same batch survived")
 
-        # 形状不自洽的 histogram（count=100 但 sum(buckets)=2）必须被跳过，
-        # 否则 dashboard 的 avg(用 count) 与 p50/p95(用 buckets) 打架（CodeRabbit）。
+        # Skip inconsistent histograms, e.g. count=100 but sum(buckets)=2,
+        # or dashboard count-based averages conflict with bucket-based p50/p95 (CodeRabbit).
         shape_payload = {
             "device_id": "n" * 64, "app_version": "2.0.0", "branch": "main",
             "locale": "en-US", "timezone": "UTC", "distribution": "source",
@@ -879,16 +879,16 @@ def main():
                 "stat_date": time.strftime("%Y-%m-%d"),
                 "bounds": [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
                 "counters": {},
-                # 注：fractional count/bucket（如 0.5）在 Pydantic HistogramStat
-                # (count:int, buckets:List[int]) 层就被拒成 400，到不了 storage；
-                # storage 的整数归一化是 defense-in-depth。所以这里只用整数值的
-                # 形状不自洽 case 测 storage 跳过逻辑。
+                # Fractional counts/buckets such as 0.5 are already rejected as 400 by
+                # Pydantic HistogramStat count:int/buckets:List[int], never reaching storage.
+                # Integer normalization there is defense in depth; use inconsistent integer
+                # shapes here to exercise storage skipping.
                 "histograms": {
-                    "bad_shape_hist": {  # count=100 但 buckets 只加起来 =2
+                    "bad_shape_hist": {  # count=100 but bucket sum=2.
                         "count": 100, "sum": 50.0,
                         "buckets": [0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
                     },
-                    "good_shape_hist": {  # 自洽：sum(buckets)=3=count
+                    "good_shape_hist": {  # Consistent: sum(buckets)=3=count.
                         "count": 3, "sum": 18.0,
                         "buckets": [0, 0, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
                     },
@@ -916,7 +916,7 @@ def main():
         print("  ✓ inconsistent histogram skipped, consistent one in same batch stored")
 
         # --------------------------------------------------------------
-        # [5/5] dashboard 能返回 + 含 instrument 表
+        # [5/5] Dashboard responds and includes instrument tables.
         # --------------------------------------------------------------
         print("\n[5/5] Fetching dashboard HTML...")
         status, body = _http(
@@ -924,19 +924,19 @@ def main():
         )
         assert status == 200, f"dashboard HTTP {status}"
         text = body.decode("utf-8", errors="replace")
-        # 关键标记
+        # Key markers.
         for marker in (
             "N.E.K.O Telemetry Dashboard",
             "DAU (Today)",
             "Top Counters",
             "Histograms",
-            "live2d_touched",  # 我们存的 counter key 应在 HTML 里
+            "live2d_touched",  # Stored counter keys must appear in HTML.
             "client_render_ms",  # histogram key
         ):
             assert marker in text, f"dashboard missing marker: {marker!r}"
         print(f"  ✓ dashboard returned {len(text)} bytes with all expected markers")
 
-        # 测试 health / global stats
+        # Test health/global stats.
         status, body = _http("GET", "/api/v1/admin/stats?days=30&token=smoke-test-admin")
         assert status == 200
         stats = json.loads(body)
@@ -956,7 +956,7 @@ def main():
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
-        # 临时目录留在磁盘上方便事后查（不删）
+        # Retain temporary directories on disk for later inspection.
         print(f"(Leftover temp dir for inspection: {tmpdir})")
 
 

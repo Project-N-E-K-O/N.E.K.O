@@ -1,14 +1,14 @@
-"""result_parser 对"配额耗尽"任务结果的本地化回归测试。
+"""Regression tests for localized quota-exhausted task results in result_parser.
 
-背景：ComputerUse 撞配额时走 terminate(status="failure", answer="AGENT_QUOTA_EXCEEDED")，
-其 run_instruction 返回 {"success": False, "result": "AGENT_QUOTA_EXCEEDED", "steps": ...}——
-失败原因落在 ``result`` 而非 ``error``。旧 _parse_tool_result 失败分支只看 ``error``，
-导致 CU 配额退化成通用「执行未成功」，丢了真实原因。本测试锁住修复后的行为：
+Background: ComputerUse quota exhaustion calls terminate(status=\"failure\", answer=\"AGENT_QUOTA_EXCEEDED\");
+run_instruction returns {\"success\": False, \"result\": \"AGENT_QUOTA_EXCEEDED\", \"steps\": ...},
+putting the failure reason in result rather than error. The old _parse_tool_result failure branch inspected only error,
+reducing CU quota failures to generic execution failure and losing the cause. These tests preserve the corrected behavior:
 
-  - CU 配额：result 里的已知错误码被翻成本地化人话「配额已用完」（i18n），不再是通用失败、也不外泄生 code。
-  - 普通自由文本失败：仍走通用「执行未成功」，不把任意 result 文本灌进提示（守住修复的窄范围）。
-  - BrowserUse 配额（error 里带 JSON code）：本来就正常，一并守住。
-  - i18n：英文同样翻成 "Quota exceeded"。
+  - CU quota: known result codes become localized quota-exhausted text (i18n), without generic failure or raw-code exposure.
+  - Ordinary free-text failures retain generic execution-failure text, never arbitrary result text (keeping the fix narrow).
+  - BrowserUse quota (JSON code in error) already works and remains guarded.
+  - English i18n similarly renders \"Quota exceeded\".
 """
 
 import json
@@ -17,7 +17,7 @@ from utils.result_parser import parse_browser_use_result, parse_computer_use_res
 
 
 def test_cu_quota_in_result_is_localized_not_generic():
-    """CU 配额（code 在 result）→「失败: 配额已用完」，不是「执行未成功」，也无生 code。"""
+    """CU quota codes in result produce localized quota-exhausted failures, without generic failure or raw codes."""
     res = {"success": False, "result": "AGENT_QUOTA_EXCEEDED", "steps": 1}
     ok, summary = parse_computer_use_result(res, lang="zh")
     assert ok is False
@@ -27,7 +27,7 @@ def test_cu_quota_in_result_is_localized_not_generic():
 
 
 def test_cu_generic_failure_stays_generic():
-    """普通自由文本失败（result 非已知错误码）仍走通用「执行未成功」，不灌入原始文本。"""
+    """Ordinary free-text failures with unknown result codes retain generic execution-failure text without raw content."""
     res = {"success": False, "result": "the page did not load in time", "steps": 5}
     ok, summary = parse_computer_use_result(res, lang="zh")
     assert ok is False
@@ -36,7 +36,7 @@ def test_cu_generic_failure_stays_generic():
 
 
 def test_cu_quota_localized_in_english():
-    """英文同样本地化（i18n 覆盖）。"""
+    """English is localized too (i18n coverage)."""
     res = {"success": False, "result": "AGENT_QUOTA_EXCEEDED", "steps": 1}
     ok, summary = parse_computer_use_result(res, lang="en")
     assert ok is False
@@ -44,7 +44,7 @@ def test_cu_quota_localized_in_english():
 
 
 def test_bu_quota_in_error_json_is_localized():
-    """BrowserUse 配额（code 在 error 的 JSON 里）→ 本地化「配额已用完」。"""
+    """BrowserUse quota with a JSON code in error produces localized quota-exhausted text."""
     res = {
         "success": False,
         "error": json.dumps({"code": "AGENT_QUOTA_EXCEEDED", "details": {"used": 300, "limit": 300}}),
@@ -56,7 +56,7 @@ def test_bu_quota_in_error_json_is_localized():
 
 
 def test_cu_success_unaffected():
-    """成功路径不受影响。"""
+    """The success path is unaffected."""
     res = {"success": True, "result": "done", "steps": 3}
     ok, summary = parse_computer_use_result(res, lang="zh")
     assert ok is True

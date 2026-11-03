@@ -53,7 +53,7 @@ def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
             limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
         )
 
-        # TLS 连接预热
+        # Warm up TLS connections.
         try:
             logger.info("Gemini TTS TLS 预热中...")
             await client.get(
@@ -122,7 +122,7 @@ def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
 
     _run_sentence_tts_worker(request_queue, response_queue, setup, label="Gemini TTS")
 
-# Gemini 内置音色和 realtime/LLM endpoint 共用 CORE_API_KEY，不走自定义 TTS slot。
+# Gemini built-in voices share CORE_API_KEY with realtime/LLM endpoints; they do not use custom TTS slots.
 register_tts_worker_resolver(
     'gemini',
     make_native_tts_resolver(gemini_tts_worker, 'core_api_key'),

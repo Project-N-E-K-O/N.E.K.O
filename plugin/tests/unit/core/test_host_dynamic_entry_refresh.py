@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
 from plugin._types.exceptions import PluginExecutionError
@@ -25,7 +23,7 @@ async def test_host_initializes_and_persists_from_startup_config(tmp_path, mode,
         config_path=config_path,
     )
     try:
-        await host.start(message_target_queue=asyncio.Queue(), startup_timeout=10.0)
+        await host.start(startup_timeout=10.0)
         first = await host.trigger("touch", {}, timeout=2.0)
         second = await host.trigger("touch", {}, timeout=2.0)
         assert first["store_enabled"] is True
@@ -48,7 +46,7 @@ async def test_host_rebuilds_entry_map_for_dynamic_entry(tmp_path) -> None:
     )
 
     try:
-        await host.start(message_target_queue=asyncio.Queue())
+        await host.start()
         result = await host.trigger("late_entry", {}, timeout=2.0)
         assert result == {"ok": True, "source": "dynamic"}
     finally:
@@ -67,7 +65,7 @@ async def test_host_prefers_dynamic_entry_timeout_metadata(tmp_path) -> None:
     )
 
     try:
-        await host.start(message_target_queue=asyncio.Queue())
+        await host.start()
         # The caller budget is also the parent IPC deadline. It stays above
         # the entry's 0.05s timeout, and long enough for a busy runner to
         # deliver that shorter timeout instead of aborting at the deadline.

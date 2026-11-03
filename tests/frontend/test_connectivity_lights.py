@@ -1,8 +1,8 @@
 """
-前端集成测试：连通性指示灯、错误信息展示、级联重置、服务商切换、自定义 API 测试按钮。
+Frontend integration tests: connectivity indicators, error display, cascading resets, provider switching, and custom API test buttons.
 
-使用 mock_page.route() 拦截后端 /api/config/test_connectivity 请求，
-返回受控响应，避免依赖外部 API 可用性。
+Use mock_page.route() to intercept backend /api/config/test_connectivity requests,
+returning controlled responses without depending on external API availability.
 
 Requirements: 2.6, 3.6, 5.4, 5.6, 6.1-6.6, 8.1-8.6
 """

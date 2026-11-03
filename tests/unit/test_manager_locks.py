@@ -79,7 +79,7 @@ async def test_persona_arecord_mentions_serializes(tmp_path):
     and must not corrupt persona.json."""
     pm, _ = _install_persona(str(tmp_path))
 
-    # Seed a persona with a protected-false entry that will match mentions of "喝咖啡"
+    # Seed a persona with a protected-false entry matching "喝咖啡" (drink coffee).
     async def _seed():
         persona = await pm.aensure_persona("小天")
         persona.setdefault("master", {}).setdefault("facts", []).append({
@@ -91,7 +91,7 @@ async def test_persona_arecord_mentions_serializes(tmp_path):
 
     await _seed()
 
-    # Fire 10 record_mentions concurrently — all mention "喝咖啡"
+    # Fire 10 record_mentions concurrently, all mentioning "喝咖啡" (drink coffee).
     await asyncio.gather(*(
         pm.arecord_mentions("小天", "我听主人说要去喝咖啡")
         for _ in range(10)

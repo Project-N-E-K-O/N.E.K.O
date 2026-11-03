@@ -26,6 +26,7 @@
             '/static/vrm/vrm-expression.js',
             '/static/vrm/vrm-lipsync-formant.js',
             '/static/vrm/vrm-animation.js',
+            '/static/vrm/vrm-physics-profile.js',
             ...(!lightweightEmbed ? [
                 '/static/avatar/avatar-touch-gestures.js',
                 '/static/vrm/vrm-interaction.js',
@@ -361,6 +362,10 @@ function applyVRMOutlineWidth(scale, vrmManager) {
         scale = parsedScale;
     }
 
+    if (vrmManager?.core?.applyOutlineWidth) {
+        vrmManager.core.applyOutlineWidth(scale);
+        return;
+    }
     if (!vrmManager?.currentModel?.vrm?.scene) return;
     vrmManager.currentModel.vrm.scene.traverse((object) => {
         if (!object.isMesh && !object.isSkinnedMesh) return;

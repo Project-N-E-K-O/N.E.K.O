@@ -233,7 +233,7 @@ def _no_params_meta() -> EventMeta:
 
 @pytest.mark.parametrize("meta_factory", [lambda: None, _no_params_meta], ids=["no_meta", "no_params_model"])
 def test_prepare_entry_kwargs_drops_host_ctx_for_handlers_that_cannot_take_it(meta_factory) -> None:
-    """宿主给每次调用都塞 `_ctx`，没声明它的 handler 不该因此 TypeError。"""
+    """The host supplies `_ctx` on every call; handlers that do not declare it must not raise TypeError."""
 
     async def handler(danmaku_texts: list[str]) -> list[str]:
         return danmaku_texts
@@ -247,13 +247,13 @@ def test_prepare_entry_kwargs_drops_host_ctx_for_handlers_that_cannot_take_it(me
     )
 
     assert kwargs == {"danmaku_texts": ["hi"]}
-    # 真正的判据是调用点：过滤后的 kwargs 必须能直接展开给 handler。
+    # The actual criterion is the call site: filtered kwargs must unpack directly into the handler.
     handler(**kwargs).close()
 
 
 @pytest.mark.parametrize("meta_factory", [lambda: None, _no_params_meta], ids=["no_meta", "no_params_model"])
 def test_prepare_entry_kwargs_keeps_host_ctx_for_handlers_that_opt_in(meta_factory) -> None:
-    """显式声明 `_ctx` 或 `**kwargs` 的 handler 仍然收得到。"""
+    """Handlers explicitly declaring `_ctx` or `**kwargs` still receive it."""
 
     async def named(name: str, _ctx: dict | None = None) -> str:
         return name
@@ -276,7 +276,7 @@ def test_prepare_entry_kwargs_keeps_host_ctx_for_handlers_that_opt_in(meta_facto
 
 @pytest.mark.parametrize("meta_factory", [lambda: None, _no_params_meta], ids=["no_meta", "no_params_model"])
 def test_prepare_entry_kwargs_drops_host_ctx_for_positional_only_parameter(meta_factory) -> None:
-    """宿主永远按关键字传 `_ctx`，positional-only 的同名形参接不住。"""
+    """The host always passes `_ctx` by keyword; a same-named positional-only parameter cannot receive it."""
 
     async def positional_only(_ctx, /) -> object:
         return _ctx
@@ -289,13 +289,13 @@ def test_prepare_entry_kwargs_drops_host_ctx_for_positional_only_parameter(meta_
         args={"_ctx": {"run_id": "r1"}},
     )
 
-    # 与旁边既有的 _filter_supported_kwargs 判据保持一致：只认
-    # POSITIONAL_OR_KEYWORD / KEYWORD_ONLY，否则 method(**call_args) 照样 TypeError。
+    # Match the existing adjacent _filter_supported_kwargs criterion: accept only
+    # POSITIONAL_OR_KEYWORD / KEYWORD_ONLY, or method(**call_args) still raises TypeError.
     assert kwargs == {}
 
 
 def test_prepare_entry_kwargs_keeps_host_ctx_when_signature_is_unavailable() -> None:
-    """拿不到签名时保持旧行为，不要凭猜测删参数。"""
+    """Preserve old behavior when signatures are unavailable; do not remove arguments by guessing."""
 
     class _NoSignature:
         __call__ = None

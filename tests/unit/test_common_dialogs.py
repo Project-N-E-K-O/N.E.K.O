@@ -463,6 +463,30 @@ def test_decision_prompt_lifecycle_events_do_not_fire_for_alerts():
 
 
 @pytest.mark.unit
+def test_dialogs_only_keeps_page_shortcuts_and_still_allows_escape_cancellation():
+    result = _run_common_dialogs_node_scenario(
+        """
+    let prevented = 0;
+    const shortcut = { type: 'keydown', key: 'w', metaKey: true,
+      preventDefault() { prevented++; } };
+    document.dispatchEvent(shortcut);
+    assert.strictEqual(prevented, 1, 'Existing consumers retain their shortcut policy');
+    document._listeners.clear();
+    document.currentScript = { dataset: { dialogsOnly: 'true' } };
+    vm.runInThisContext(source);
+    document.dispatchEvent(shortcut);
+    assert.strictEqual(prevented, 1, 'Dialog reuse must not take over page shortcuts');
+    const pending = window.showConfirm('Delete across devices?', 'Delete', { danger: true });
+    document.dispatchEvent({ type: 'keydown', key: 'Escape' });
+    const cancelled = await pending;
+    assert.strictEqual(cancelled, false);
+    assert.strictEqual(overlayCount(), 0);
+    return { prevented, cancelled };
+        """
+    )
+    assert result == {'prevented': 1, 'cancelled': False}
+
+
 def test_show_confirm_implicit_dismiss_returns_false():
     result = _run_common_dialogs_node_scenario(
         """
@@ -516,6 +540,31 @@ def test_show_confirm_implicit_dismiss_returns_false():
 def test_theater_confirm_registers_compact_hit_island_and_refreshes_geometry():
     result = _run_common_dialogs_node_scenario(
         """
+    // Keep the 320ms fallback separate from the 200ms close animation even
+    // when a busy runner cannot resume a real 10ms wait before that fallback.
+    let clock = 0;
+    let nextTimerId = 1;
+    const timers = new Map();
+    global.setTimeout = function (callback, delay = 0, ...args) {
+      const id = nextTimerId++;
+      timers.set(id, { at: clock + Number(delay), callback, args });
+      return id;
+    };
+    global.clearTimeout = function (id) { timers.delete(id); };
+    function advanceTime(milliseconds) {
+      const end = clock + milliseconds;
+      while (true) {
+        const due = [...timers.entries()]
+          .filter(([, timer]) => timer.at <= end)
+          .sort(([leftId, left], [rightId, right]) => left.at - right.at || leftId - rightId)[0];
+        if (!due) break;
+        const [id, timer] = due;
+        timers.delete(id);
+        clock = timer.at;
+        timer.callback(...timer.args);
+      }
+      clock = end;
+    }
     const state = {
       geometryRefreshes: 0,
       resolved: [],
@@ -542,7 +591,7 @@ def test_theater_confirm_registers_compact_hit_island_and_refreshes_geometry():
       state.resolved.push(value);
     });
 
-    await wait(10);
+    advanceTime(10);
     const overlay = document.querySelectorAll('.modal-overlay')[0];
     const dialog = overlay.querySelector('.modal-dialog');
     state.overlayClasses = overlay.className;
@@ -553,12 +602,16 @@ def test_theater_confirm_registers_compact_hit_island_and_refreshes_geometry():
 
     const buttons = overlay.querySelectorAll('.modal-btn');
     buttons[0].onclick();
-    await wait(250);
+    advanceTime(250);
+    await Promise.resolve();
 
     assert.strictEqual(overlayCount(), 0);
     assert.deepStrictEqual(state.resolved, [false]);
     assert.strictEqual(state.geometryRefreshes, 2);
     assert.deepStrictEqual(state.resolveCallbacks, [false]);
+    state.geometryRefreshesAfterClose = state.geometryRefreshes;
+    advanceTime(60);
+    assert.strictEqual(state.geometryRefreshes, 3);
     return state;
         """
     )
@@ -568,7 +621,8 @@ def test_theater_confirm_registers_compact_hit_island_and_refreshes_geometry():
     assert result["geometryOwner"] == "surface"
     assert result["geometryItem"] == "theaterModal"
     assert result["dialogTabIndex"] == -1
-    assert result["geometryRefreshes"] == 2
+    assert result["geometryRefreshesAfterClose"] == 2
+    assert result["geometryRefreshes"] == 3
     assert result["resolveCallbacks"] == [False]
     assert result["resolved"] == [False]
 

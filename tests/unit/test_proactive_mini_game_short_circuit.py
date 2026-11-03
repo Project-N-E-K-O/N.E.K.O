@@ -364,7 +364,9 @@ async def test_router_short_circuit_returns_chat_and_pushes_options_once(
             "Yui",
             send_error,
         )
-    state.fire.assert_awaited_once_with(SessionEvent.PROACTIVE_DONE)
+    round_id = state.try_start_proactive.await_args.kwargs["round_id"]
+    assert invite_runner.await_args.kwargs["round_id"] == round_id
+    state.fire.assert_awaited_once_with(SessionEvent.PROACTIVE_DONE, round_id=round_id)
     assert mgr.bool_reads == 1
     assert mgr.active_reads == 1
     assert mgr.session_reads == 0

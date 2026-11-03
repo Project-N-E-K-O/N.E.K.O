@@ -27,12 +27,12 @@ from app.agent_server import app
 
 if __name__ == "__main__":
     import uvicorn
-    import logging  # 仍需要用于uvicorn的过滤器
+    import logging  # A filter is still needed for uvicorn
     
-    # 使用统一的速率限制日志过滤器
+    # Use the shared rate-limited log filter
     from utils.logger_config import create_agent_server_filter
     
-    # Add filter to uvicorn access logger (uvicorn仍使用标准logging)
+    # Add the filter to the uvicorn access logger (uvicorn still uses standard logging)
     logging.getLogger("uvicorn.access").addFilter(create_agent_server_filter())
     
     uvicorn.run(

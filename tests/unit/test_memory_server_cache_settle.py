@@ -65,10 +65,10 @@ async def test_cache_assigns_locale_order_before_thread_offload():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_cache_endpoint_writes_time_indexed_db():
-    """/cache 端点必须把消息落到 ``time_indexed.db``（通过 astore_conversation）。
+    """/cache must persist messages to ``time_indexed.db`` through astore_conversation.
 
-    Regression: commit cba377c5 之后 cache 只 update_history，store 全靠
-    /settle——而 cross_server 标准节奏让 settle 永远拿 msgs=0，db 永不被建。
+    Regression after cba377c5: cache only called update_history, delegating storage to
+    /settle, while cross_server's standard cadence always supplied msgs=0, never creating the database.
     """
     from app import memory_server
 
@@ -104,7 +104,7 @@ async def test_cache_endpoint_writes_time_indexed_db():
     assert events == ["allocate", "recent", "time-indexed"]
     fake_time_manager.astore_conversation.assert_awaited_once()
     awaited_args = fake_time_manager.astore_conversation.await_args
-    # astore_conversation(uid, messages, lanlan_name) — 顺序由 store_conversation 签名定
+    # astore_conversation(uid, messages, lanlan_name): argument order follows store_conversation's signature.
     assert awaited_args.args[2] == "测试角色"
     assert len(awaited_args.args[1]) == 2
     assert fake_spawn_outbox.await_args.kwargs["locale_admission_order"] == 314
@@ -113,7 +113,7 @@ async def test_cache_endpoint_writes_time_indexed_db():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_cache_preserves_theater_metadata_in_recent_and_time_index():
-    """剧场来源与片段类型必须同时进入近期记忆和时间索引。"""  # noqa: DOCSTRING_CJK
+    """Theater provenance and segment type must enter both recent memory and the time index."""  # noqa: DOCSTRING_CJK
     from app import memory_server
     from memory.message_sources import is_theater_memory_message
 
@@ -151,14 +151,14 @@ async def test_cache_preserves_theater_metadata_in_recent_and_time_index():
     assert all(is_theater_memory_message(message) for message in recent_messages)
     assert all(is_theater_memory_message(message) for message in indexed_messages)
     assert recent_messages[0].metadata["parts"][0]["kind"] == "scene_narration"
-    # 虚构玩家发言不应让普通对话 review 重新进入待审状态。
+    # Fictional player speech must not return ordinary conversation review to pending state.
     clear_review.assert_not_awaited()
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_cache_upserts_theater_episode_summary_instead_of_appending():
-    """剧场单集胶囊必须走 Session upsert，并把周目元数据同步进时间索引。"""  # noqa: DOCSTRING_CJK
+    """Episode capsules must use Session upsert and sync playthrough metadata into the time index."""  # noqa: DOCSTRING_CJK
 
     from app import memory_server
     from utils.llm_client import SystemMessage
@@ -215,7 +215,7 @@ async def test_cache_upserts_theater_episode_summary_instead_of_appending():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_cache_reports_theater_episode_persist_failure():
-    """剧场摘要未写盘时不能继续更新时间索引或返回 cached。"""  # noqa: DOCSTRING_CJK
+    """Failed theater-summary persistence must prevent time-index updates and cached responses."""  # noqa: DOCSTRING_CJK
 
     from app import memory_server
 
@@ -302,7 +302,7 @@ async def test_cache_restores_recent_when_theater_index_update_fails():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_forget_theater_memory_rebuilds_remaining_story_index():
-    """忘记一个剧本后，其他剧本的新胶囊和旧正文索引都必须保留。"""  # noqa: DOCSTRING_CJK
+    """Forgetting one script must retain other scripts' new capsules and legacy body indexes."""  # noqa: DOCSTRING_CJK
 
     from app import memory_server
     from utils.llm_client import AIMessage, HumanMessage, SystemMessage
@@ -596,7 +596,7 @@ async def test_cache_reports_error_when_theater_index_and_rollback_both_fail():
 
 @pytest.mark.unit
 def test_theater_episode_upsert_merges_session_and_caps_story_runs():
-    """同 Session 只留一份，重复游玩只保留同剧本最近三个周目胶囊。"""  # noqa: DOCSTRING_CJK
+    """Keep one entry per Session and only the latest three playthrough capsules per replayed script."""  # noqa: DOCSTRING_CJK
 
     from memory.recent import _merge_theater_episode_summary
     from utils.llm_client import AIMessage, SystemMessage, message_metadata
@@ -634,7 +634,7 @@ def test_theater_episode_upsert_merges_session_and_caps_story_runs():
         "结局4",
     ]
 
-    # 兼容迁移：同一 Session 的旧版多条正文会被一条最新完成胶囊替换，且不增加周目数。
+    # Compatibility migration: replace legacy same-Session body entries with one latest completed capsule, without increasing playthrough count.
     legacy = [
         AIMessage(content="旧开场", metadata={
             "source": "theater_numeric_v2",
@@ -672,7 +672,7 @@ def test_theater_episode_upsert_merges_session_and_caps_story_runs():
 
 @pytest.mark.unit
 def test_theater_episode_upsert_caps_all_stories_to_thirty():
-    """剧本数量增长时，剧场胶囊不能无上限挤压普通对话。"""  # noqa: DOCSTRING_CJK
+    """As script count grows, theater capsules must not squeeze ordinary conversation without bounds."""  # noqa: DOCSTRING_CJK
 
     from memory.recent import _merge_theater_episode_summary
     from utils.llm_client import HumanMessage, SystemMessage, message_metadata
@@ -797,7 +797,7 @@ def test_theater_upsert_retry_keeps_slot_and_changed_capsule_moves_last():
 
 @pytest.mark.unit
 def test_time_index_reconcile_migrates_legacy_theater_rows_atomically(tmp_path, monkeypatch):
-    """时间索引重建应删除旧剧场全文，同时保留普通对话。"""  # noqa: DOCSTRING_CJK
+    """Time-index rebuilds remove legacy theater full text while retaining ordinary conversation."""  # noqa: DOCSTRING_CJK
 
     from datetime import datetime
 
@@ -1078,16 +1078,16 @@ async def test_stale_recent_identity_aborts_downstream_persistence(endpoint_name
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_cache_endpoint_spawns_outbox_post_turn_signals():
-    """/cache 端点必须登记 outbox op，让 events.ndjson / outbox.ndjson 这条
-    链能动起来——op handler 跑 counter bump + 复读嗅探 + check_feedback。
+    """/cache must register outbox ops to activate the events.ndjson / outbox.ndjson
+    chain, whose handler bumps counters, sniffs repetition, and checks feedback.
 
-    注：``OP_POST_TURN_SIGNALS`` 的字符串值仍是 ``"extract_facts"``——
-    outbox.ndjson wire-format 不可变（见 memory/outbox.py 注释）。Stage-1
-    per-turn 抽取已按 RFC §3.4.3 迁到 ``_periodic_signal_extraction_loop``，
-    ON-mode 不再 per-turn 跑——见
-    ``test_run_post_turn_signals_skips_stage1_when_powerful_memory_on``。
+    ``OP_POST_TURN_SIGNALS`` still has the string value ``"extract_facts"`` because
+    outbox.ndjson wire format is immutable; see memory/outbox.py. Per-turn Stage-1
+    extraction moved to _periodic_signal_extraction_loop under RFC section 3.4.3;
+    ON mode no longer executes it per turn; see
+    test_run_post_turn_signals_skips_stage1_when_powerful_memory_on.
 
-    Regression: 旧 cache 完全跳过 outbox，evidence-RFC 链路全空转。
+    Regression: old cache skipped outbox entirely, leaving the evidence-RFC chain idle.
     """  # noqa: DOCSTRING_CJK
     from app import memory_server
 
@@ -1119,17 +1119,17 @@ async def test_cache_endpoint_spawns_outbox_post_turn_signals():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_run_post_turn_signals_skips_stage1_when_powerful_memory_on():
-    """powerful_memory ON 模式：Stage-1 per-turn fact_extract 已按 RFC §3.4.3  # noqa: DOCSTRING_CJK
-    迁到 ``_periodic_signal_extraction_loop`` 做 batch 抽取，per-turn 主路径
-    不应再调 ``fact_store.extract_facts``。
+    """powerful_memory ON: per-turn Stage-1 fact_extract moved under RFC section 3.4.3.  # noqa: DOCSTRING_CJK
+    _periodic_signal_extraction_loop handles batch extraction; the per-turn main path
+    must no longer call fact_store.extract_facts.
 
-    Pin 这条不变量：任何后续 refactor 把 ON-mode 的 Stage-1 加回 per-turn
-    主路径（出于"保留 PR-1 时 facts.json 每轮及时更新"理由），都会被这个用例
-    抓到——每 turn 浪费一次 yield 极低、无上下文的 LLM 抽取（详见 RFC
-    §3.4.3 + 3.4.5 cost 估算）。
+    Pin this invariant: refactoring Stage-1 back into the ON-mode per-turn path
+    to retain PR-1's promptly updated facts.json must fail this test, preventing
+    one low-yield, context-free LLM extraction per turn; see RFC
+    sections 3.4.3 / 3.4.5 for cost estimates.
 
-    本用例仍允许 counter bump + 复读嗅探 + check_feedback——它们是 RFC
-    设计内明确保留的 per-turn 操作。
+    Counter bumps, repetition sniffing, and check_feedback remain allowed as
+    explicitly retained per-turn operations in the RFC.
     """
     from app import memory_server
 
@@ -1139,7 +1139,7 @@ async def test_run_post_turn_signals_skips_stage1_when_powerful_memory_on():
     fake_persona_manager.arecord_mentions = AsyncMock(return_value=None)
     fake_reflection_engine = MagicMock()
     fake_reflection_engine.arecord_mentions = AsyncMock(return_value=None)
-    fake_reflection_engine.aload_surfaced = AsyncMock(return_value=[])  # no pending → check_feedback 跳过
+    fake_reflection_engine.aload_surfaced = AsyncMock(return_value=[])  # No pending work -> skip check_feedback.
 
     from utils.llm_client import HumanMessage, AIMessage
     payload_messages = [
@@ -1154,9 +1154,9 @@ async def test_run_post_turn_signals_skips_stage1_when_powerful_memory_on():
          patch.object(memory_server.gates, "_ais_powerful_memory_enabled", AsyncMock(return_value=True)):
         await memory_server._run_post_turn_signals(payload_messages, "测试角色")
 
-    # ON-mode 下 Stage-1 per-turn fact_extract 一定不能被调（交给 batch loop）
+    # ON mode must not call per-turn Stage-1 fact_extract; delegate to the batch loop.
     fake_fact_store.extract_facts.assert_not_awaited()
-    # 但复读嗅探 + surfaced 检查仍必须 per-turn 跑
+    # Repetition sniffing and surfaced checks must still run per turn.
     fake_persona_manager.arecord_mentions.assert_awaited()
     fake_reflection_engine.arecord_mentions.assert_awaited()
     fake_reflection_engine.aload_surfaced.assert_awaited_once_with("测试角色")
@@ -1165,12 +1165,12 @@ async def test_run_post_turn_signals_skips_stage1_when_powerful_memory_on():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_run_post_turn_signals_keeps_stage1_when_powerful_memory_off():
-    """powerful_memory OFF 模式：``_periodic_signal_extraction_loop`` 整段停  # noqa: DOCSTRING_CJK
-    （见 ``if not powerful_enabled: continue``），per-turn Stage-1 是 fact
-    extraction 的唯一兜底路径，必须保留——否则 OFF 模式用户的 facts.json
-    完全停止更新（chatgpt-codex-connector PR #1346 抓到的 regression）。
+    """powerful_memory OFF: _periodic_signal_extraction_loop is entirely disabled  # noqa: DOCSTRING_CJK
+    through ``if not powerful_enabled: continue``, making per-turn Stage-1 the only
+    extraction fallback. Preserve it or OFF users' facts.json stops updating
+    entirely (chatgpt-codex-connector PR #1346 regression).
 
-    本用例钉住 ON/OFF 不对称：ON 委托给 batch loop，OFF 跑 legacy per-turn。
+    Pin ON/OFF asymmetry: ON delegates to batching; OFF retains legacy per-turn extraction.
     """
     from app import memory_server
 
@@ -1195,9 +1195,9 @@ async def test_run_post_turn_signals_keeps_stage1_when_powerful_memory_off():
          patch.object(memory_server.gates, "_ais_powerful_memory_enabled", AsyncMock(return_value=False)):
         await memory_server._run_post_turn_signals(payload_messages, "测试角色")
 
-    # OFF-mode 下 batch loop 不跑——per-turn Stage-1 必须 fallback
+    # OFF mode disables the batch loop, so retain per-turn Stage-1 fallback.
     fake_fact_store.extract_facts.assert_awaited_once()
-    # 复读嗅探仍 per-turn 跑（与 ON-mode 同款）
+    # Repetition sniffing still runs per turn, matching ON mode.
     fake_persona_manager.arecord_mentions.assert_awaited()
     fake_reflection_engine.arecord_mentions.assert_awaited()
 
@@ -1205,7 +1205,7 @@ async def test_run_post_turn_signals_keeps_stage1_when_powerful_memory_off():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_run_post_turn_signals_excludes_theater_from_reality_signals():
-    """剧场批次只做持久化，不参与事实、反馈、复读或人格信号。"""  # noqa: DOCSTRING_CJK
+    """Theater batches persist only, without fact/feedback/repetition/persona signals."""  # noqa: DOCSTRING_CJK
     from app import memory_server
     from utils.llm_client import AIMessage, HumanMessage
 
@@ -1278,7 +1278,7 @@ async def test_run_post_turn_signals_off_mode_keeps_stage1_for_ai_only_ordinary_
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_cache_endpoint_empty_payload_short_circuits():
-    """空 payload 直接返回，不调任何 persistence 路径——避免空 outbox op 污染。"""
+    """Empty payloads return without persistence, preventing empty outbox pollution."""
     from app import memory_server
 
     fake_time_manager = MagicMock()
@@ -1303,14 +1303,14 @@ async def test_cache_endpoint_empty_payload_short_circuits():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_cache_endpoint_serialises_recent_and_store_under_settle_lock():
-    """``update_history`` 和 ``astore_conversation`` 必须在 ``_get_settle_lock``
-    持锁内串行——和 /process / /renew / /settle 对偶，避免并发 cache 把
-    db 写顺序打乱（同时也防止 cache 和 settle 抢着写同一份 recent.json）。
+    """Serialize update_history and astore_conversation under _get_settle_lock,
+    symmetric with /process /renew /settle, preventing concurrent cache from reordering
+    database writes or competing with settle for recent.json.
 
-    显式校验 lock observability：patch ``_get_settle_lock`` 成可观测的 async
-    context manager，断言 lock-enter 在 update_history / astore_conversation
-    之前发生、lock-exit 在它们之后但在 spawn_outbox 之前发生。否则未来如果
-    有人把前两步移到 ``async with`` 外面但保留顺序，纯顺序断言会漏检。
+    Explicitly observe locks: patch _get_settle_lock with an observable async
+    context manager, asserting lock-enter precedes update_history/astore_conversation
+    and lock-exit follows them but precedes spawn_outbox. Mere ordering assertions miss
+    refactors moving both operations outside async with while retaining their order.
     """
     from app import memory_server
 
@@ -1354,8 +1354,8 @@ async def test_cache_endpoint_serialises_recent_and_store_under_settle_lock():
          patch.object(memory_server.runtime, "_get_settle_lock", MagicMock(return_value=observable_lock)):
         await memory_server.cache_conversation(request, "测试角色")
 
-    # 严格契约：lock-enter → update_history → astore_conversation → lock-exit → spawn_outbox
-    # 前 4 步必须夹在 enter/exit 之间（串行 + lock 内），spawn_outbox 在 lock 外。
+    # Strict contract: lock-enter -> update_history -> astore_conversation -> lock-exit -> spawn_outbox.
+    # The first four steps bracket serialized locked work; spawn_outbox runs outside.
     assert order == [
         "lock_enter",
         "update_history",
@@ -1368,10 +1368,10 @@ async def test_cache_endpoint_serialises_recent_and_store_under_settle_lock():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_settle_endpoint_msgs_zero_still_runs_review():
-    """/settle msgs=0 时仍需触发 ``update_history([], detailed=True)`` 跑 review
-    LLM——这是 /settle 在新分工下的剩余职责（cache 已经负责 store + outbox）。
+    """/settle with msgs=0 must still call update_history([], detailed=True) for review
+    LLM, its remaining duty now cache owns store/outbox.
 
-    不变量：不管 msgs 是否为空，settle 必须调一次 update_history([], detailed=True)。
+    Invariant: regardless of empty msgs, settle calls update_history([], detailed=True) once.
     """  # noqa: DOCSTRING_CJK
     from app import memory_server
 
@@ -1392,7 +1392,7 @@ async def test_settle_endpoint_msgs_zero_still_runs_review():
         result = await memory_server.settle_conversation(request, "测试角色")
 
     assert result["status"] == "settled"
-    # msgs=0：review LLM 仍跑，但 store / outbox 不重复跑（因为 cache 已经做了）
+    # msgs=0 still runs review LLM, without repeating store/outbox already handled by cache.
     fake_recent_history_manager.update_history.assert_awaited_once()
     call = fake_recent_history_manager.update_history.await_args
     assert call.args[0] == []

@@ -19,18 +19,18 @@ logger = get_logger("sdk.plugin.settings")
 
 
 class PluginSettings(BaseModel):
-    """插件业务配置基类。
+    """Base class for plugin business configuration.
 
-    插件开发者继承此类声明配置字段，框架自动从 effective_config 中
-    提取对应 toml_section 的数据并创建实例。
+    Plugin developers subclass it to declare configuration fields; the framework extracts
+    the matching toml_section from effective_config and constructs an instance automatically.
 
     Example::
 
         class MySettings(PluginSettings):
             model_config = ConfigDict(toml_section="settings")
 
-            timeout: int = SettingsField(default=30, hot=True, description="请求超时(秒)")
-            api_key: str = SettingsField(default="", description="API 密钥")
+            timeout: int = SettingsField(default=30, hot=True, description=\"Request timeout (seconds)\")
+            api_key: str = SettingsField(default=\"\", description=\"API key\")
     """
 
     model_config = ConfigDict(

@@ -29,6 +29,9 @@
             'body.' + DRAGGING_CLASS + ' [id^="vrm-btn-"],',
             'body.' + DRAGGING_CLASS + ' .mmd-floating-btn,',
             'body.' + DRAGGING_CLASS + ' [id^="mmd-btn-"],',
+            'body.' + DRAGGING_CLASS + ' .pngtuber-floating-btn,',
+            'body.' + DRAGGING_CLASS + ' .pngtuber-trigger-btn,',
+            'body.' + DRAGGING_CLASS + ' [id^="pngtuber-btn-"],',
             // 四种模型的锁图标统一按 id 后缀匹配（含 pngtuber-lock-icon），与
             // index.css 的 [id$="-lock-icon"]{pointer-events:auto} 兜底对偶；少一个 prefix
             // 就会让该模型拖拽时锁仍可点而粘手。
@@ -39,6 +42,8 @@
             'body.' + DRAGGING_CLASS + ' #vrm-floating-buttons *,',
             'body.' + DRAGGING_CLASS + ' #mmd-floating-buttons,',
             'body.' + DRAGGING_CLASS + ' #mmd-floating-buttons *,',
+            'body.' + DRAGGING_CLASS + ' #pngtuber-floating-buttons,',
+            'body.' + DRAGGING_CLASS + ' #pngtuber-floating-buttons *,',
             'body.' + DRAGGING_CLASS + ' .live2d-popup,',
             'body.' + DRAGGING_CLASS + ' .live2d-popup *,',
             'body.' + DRAGGING_CLASS + ' [id^="live2d-popup-"],',
@@ -72,7 +77,7 @@
     function disableButtonPointerEvents() {
         document.body.classList.add(DRAGGING_CLASS);
         // 拖动开始时关闭所有已展开的弹窗
-        [window.live2dManager, window.vrmManager, window.mmdManager].forEach(function(m) {
+        [window.live2dManager, window.vrmManager, window.mmdManager, window.pngtuberManager].forEach(function(m) {
             if (m && typeof m.closeAllPopups === 'function') m.closeAllPopups();
         });
     }

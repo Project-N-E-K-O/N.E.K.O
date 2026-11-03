@@ -59,6 +59,40 @@ def _entry_id_for_tool(tool_name: str) -> str:
     return f"__llm_tool__{tool_name}"
 
 
+@router.post("/reply-completed/{plugin_id}/{entry_id}")
+async def reply_completed_callback(
+    plugin_id: str, entry_id: str, body: Dict[str, Any] = Body(...),
+) -> Dict[str, Any]:
+    """Notify an explicitly subscribed entry without a model tool call."""
+    context = body.get("host_reply")
+    if (
+        not isinstance(context, dict) or context.get("source") != "plugin:" + plugin_id
+        or context.get("call_id") != "reply_completed:" + entry_id
+        or not isinstance(body.get("text"), str) or not isinstance(body.get("user_text"), str)
+    ):
+        raise HTTPException(status_code=400, detail="invalid reply completion context")
+    timeout = body.get("timeout_seconds", 15.0)
+    if type(timeout) not in (int, float) or not 0 < timeout <= 15.0:
+        raise HTTPException(status_code=400, detail="invalid reply completion timeout")
+    with state.acquire_plugin_hosts_read_lock():
+        host = state.plugin_hosts.get(plugin_id)
+    if host is None or not host.is_alive():
+        raise HTTPException(status_code=404, detail={"code": "PLUGIN_NOT_RUNNING"})
+    # Callback return values are deliberately not fed into the conversation.
+    # Images go through reply_tail.register with the host-issued context.
+    try:
+        await host.trigger(entry_id, {
+            "text": body["text"], "user_text": body["user_text"],
+            "has_attachments": body.get("has_attachments") is True,
+            "_ctx": {"host_reply": dict(context), "lanlan_name": context.get("role")},
+        }, float(timeout))
+    except Exception:
+        if not host.is_alive():
+            raise HTTPException(status_code=404, detail={"code": "PLUGIN_NOT_RUNNING"}) from None
+        raise
+    return {"ok": True}
+
+
 @router.post("/callback/{plugin_id}/{tool_name}")
 async def llm_tool_callback(
     plugin_id: str,
@@ -200,10 +234,10 @@ async def llm_tool_callback(
     # remain inside the model-visible output. A bare dict carrying only
     # ``output`` also stays data for backward compatibility.
     #
-    # 刻意和 main_routers/tool_router.py 的 looks_like_tool_envelope 不同，别
-    # 顺手合并：那条路的 wire shape 文档写死了 {"output": ..., "is_error": ...}，
-    # 单独一个 ``output`` 就是信封；这里收的是插件 handler 的返回值，
-    # ``output`` 单独出现是普通数据。
+    # Deliberately differs from looks_like_tool_envelope in main_routers/tool_router.py; do not
+    # merge them. That path's documented wire shape is {"output": ..., "is_error": ...},
+    # and output alone is an envelope. Here values come from plugin handlers,
+    # where output alone is ordinary data.
     if isinstance(result, dict) and (
         "is_error" in result or ("output" in result and "images" in result)
     ):

@@ -31,7 +31,7 @@ def test_trailing_comma():
 
 @pytest.mark.unit
 def test_galgame_korean_char_pollution():
-    """实测案例：GalGame LLM 在数组分隔符位置吐出韩文字符 `결`。"""
+    """Observed case: the GalGame LLM emitted Korean character `결` at an array delimiter."""  # noqa: DOCSTRING_CJK
     raw = (
         '{"options":[{"label":"A","text":"你想要什么口味的奶昔？"},'
         '결{"label":"B","text":"当然买，只要你开心。"},'
@@ -47,15 +47,15 @@ def test_galgame_korean_char_pollution():
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        # CJK 污染 + 各种合法值起始
+        # CJK contamination + various valid value starts.
         ('[결{"x":1}]', [{"x": 1}]),
         ('[1,2,결[3,4]]', [1, 2, [3, 4]]),
         ('[1,결2]', [1, 2]),
         ('["a",결"b"]', ["a", "b"]),
         ('{"a":1,결"b":2}', {"a": 1, "b": 2}),
-        # 上限 2 字符
+        # Limit: 2 characters.
         ('[1,결결2]', [1, 2]),
-        # emoji 也是非 ASCII，同样应剥离
+        # Emoji are non-ASCII too and should also be stripped.
         ('[1,🚀2]', [1, 2]),
     ],
 )
@@ -65,7 +65,7 @@ def test_non_ascii_pollution_stripped(raw, expected):
 
 @pytest.mark.unit
 def test_pollution_run_over_2_chars_not_stripped():
-    """超过 2 个连续污染字符不剥 —— scanner 上限是 1–2，避免破坏太多结构。"""
+    """Do not strip more than 2 consecutive contamination characters; the scanner limit is 1–2 to avoid excessive structural damage."""
     with pytest.raises(json.JSONDecodeError):
         robust_json_loads('[1,결결결2]')
 
@@ -78,18 +78,18 @@ def test_pollution_run_over_2_chars_not_stripped():
         ('[1,❤️2]', [1, 2]),
         # `🧑‍💻` = U+1F9D1 + U+200D (ZWJ, Cf) + U+1F4BB —— 3 codepoint 1 cluster
         ('[1,\U0001F9D1‍\U0001F4BB2]', [1, 2]),
-        # 上限 2 cluster：两个 ❤️ 连一起也行
+        # Limit: 2 clusters; two adjacent ❤️ also work.
         ('[1,❤️❤️2]', [1, 2]),
-        # 上限 2 cluster：两个 ZWJ 复合 emoji（每个 1 cluster）
+        # Limit: 2 clusters; two ZWJ composite emoji (1 cluster each).
         ('[1,\U0001F9D1‍\U0001F4BB\U0001F9D1‍\U0001F4BB2]', [1, 2]),
     ],
 )
 def test_multi_codepoint_emoji_clusters_treated_as_single(raw, expected):
-    """`❤️` / `🧑‍💻` 等 multi-codepoint emoji 算 1 个 grapheme cluster。
+    """Multi-codepoint emoji such as `❤️` / `🧑‍💻` count as one grapheme cluster.
 
-    base (Lo/So) 后的 combining marks (Mn/Me/Mc) 和 ZWJ (Cf) 一并视为 cluster
-    的扩展；ZWJ 后跟新的 pollution base 也并入同一 cluster。scanner 上限保持
-    2 cluster。
+    Combining marks (Mn/Me/Mc) and ZWJ (Cf) following a base (Lo/So) extend the cluster;
+    a new contamination base after ZWJ also joins the same cluster. The scanner limit remains
+    2 clusters.
     """
     assert robust_json_loads(raw) == expected
 
@@ -98,19 +98,19 @@ def test_multi_codepoint_emoji_clusters_treated_as_single(raw, expected):
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        # 关键回归：含 Python 字面量子串的标识符不应被改
+        # Critical regression: do not change identifiers containing Python literal substrings.
         ('{TrueValue: 1}', {"TrueValue": 1}),
         ('{NoneType: "x"}', {"NoneType": "x"}),
         ('{IsFalse: 0}', {"IsFalse": 0}),
-        # 但单独的 Python 字面量仍然要转
+        # Standalone Python literals must still be converted.
         ('{"flag": True, "n": None, "off": False}', {"flag": True, "n": None, "off": False}),
         ('[True, None, False]', [True, None, False]),
     ],
 )
 def test_python_literal_replacement_uses_word_boundary(raw, expected):
-    """关键回归：`{TrueValue: 1}` 旧版会被改成 `{trueValue: 1}` 然后 unquoted-key
-    包成 `{"trueValue": 1}` 静默返回 —— key 名被篡改成完全不同字符串。
-    新实现用 word-boundary regex，仅替换独立的 True/False/None。
+    """Critical regression: the old version changed `{TrueValue: 1}` to `{trueValue: 1}`, then unquoted-key
+    repair produced `{\"trueValue\": 1}` and silently returned it, corrupting the key into a different string.
+    The new word-boundary regex replaces only standalone True/False/None.
     """
     assert robust_json_loads(raw) == expected
 
@@ -119,22 +119,22 @@ def test_python_literal_replacement_uses_word_boundary(raw, expected):
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        # LLM pretty-printed 输出常见：污染字符后接空格 / 换行
+        # Common in LLM pretty-printed output: contamination followed by whitespace / newline.
         ('[1,결 {"x":1}]', [1, {"x": 1}]),
         ('{"a":1,결\n  "b":2}', {"a": 1, "b": 2}),
         ('[1,결결 [2,3]]', [1, [2, 3]]),
     ],
 )
 def test_whitespace_after_pollution_still_strippable(raw, expected):
-    """污染段后接空白 + 合法值起始也算可恢复（pretty-printed 输出场景）。"""
+    """Whitespace + a valid value start after contamination is recoverable too (pretty-printed output)."""
     assert robust_json_loads(raw) == expected
 
 
 @pytest.mark.unit
 def test_minimum_strip_when_already_parseable_after_earlier_transform():
-    """关键回归（"原本能 parse 就用原本"）：
-    fallback pipeline 每步 transform 后应立刻 try parse，能 parse 立即停。
-    `{a: 1}`（无引号 key）经 unquoted-key 修补后已是合法 JSON，scanner 不应再动手。
+    """Critical regression ('use the original if it parses'):
+    Try parsing immediately after every fallback transform and stop as soon as it succeeds.
+    `{a: 1}` becomes valid JSON after unquoted-key repair; the scanner must not modify it afterward.
     """
     raw = "{a: 1}"
     assert robust_json_loads(raw) == {"a": 1}
@@ -144,52 +144,52 @@ def test_minimum_strip_when_already_parseable_after_earlier_transform():
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        # 字符串内的 Python 字面量不应被替换
+        # Do not replace Python literals inside strings.
         ("{'text': 'True'}", {"text": "True"}),
         ("{'a': 'False', 'b': 'None'}", {"a": "False", "b": "None"}),
-        # 字符串内的 `{{`/`}}` 不应被改
+        # Do not change `{{`/`}}` inside strings.
         ("{'tpl': 'hello {{name}}'}", {"tpl": "hello {{name}}"}),
-        # 字符串内的 `,]` `,}` pattern 不应被去尾逗号
+        # Do not remove trailing commas from `,]` / `,}` patterns inside strings.
         ("{'pat': 'foo,]bar'}", {"pat": "foo,]bar"}),
-        # 字符串内含像 unquoted key 的 pattern 不应被加引号
+        # Do not quote patterns resembling unquoted keys inside strings.
         ("{'sql': 'SELECT a: 1 FROM t'}", {"sql": "SELECT a: 1 FROM t"}),
-        # 上述全部综合 + 双引号字符串内含相同 pattern
+        # Combine all the above, including identical patterns inside double-quoted strings.
         ('{"text": "True", "tpl": "{{x}}"}', {"text": "True", "tpl": "{{x}}"}),
     ],
 )
 def test_string_content_protected_from_text_transforms(raw, expected):
-    """关键回归：fallback pipeline 里所有纯文本 transform 都段感知。
+    """Critical regression: every plain-text transform in the fallback pipeline is segment-aware.
 
-    旧版会在 step 2 先把字符串内的 `True` 替换成 `true`，最终静默篡改字符串值。
+    The old version replaced `True` inside strings with `true` in step 2, silently corrupting string values.
     """
     assert robust_json_loads(raw) == expected
 
 
 @pytest.mark.unit
 def test_strict_json_with_cjk_not_touched_at_all():
-    """关键回归：raw 能直接 parse，原值无条件返回，scanner 完全不介入。
+    """Critical regression: if raw parses directly, return it unconditionally without invoking the scanner.
 
-    （即使 CJK 出现在数组分隔符位置 —— 因为是合法 string 内容。）
+    (Even if CJK appears at an array delimiter position, because it is valid string content.)
     """
-    raw = '["你好",결]'  # 这条本身非法，作为反例：scanner 会动
+    raw = '["你好",결]'  # This is itself invalid: a counterexample the scanner will modify.
     with pytest.raises(json.JSONDecodeError):
         robust_json_loads(raw)
-    # 而合法的就直接通过：
+    # Valid input passes directly:
     assert robust_json_loads('["你好","결"]') == ["你好", "결"]
 
 
 @pytest.mark.unit
 def test_legitimate_string_with_cjk_not_corrupted():
-    """合法 JSON 内字符串里有 CJK 不应触发清洗（json.loads 直接成功）。"""
+    """CJK inside strings in valid JSON must not trigger cleanup (json.loads succeeds directly)."""
     raw = '{"text": "结果是 {x}, 不要乱搞"}'
     assert robust_json_loads(raw) == {"text": "结果是 {x}, 不要乱搞"}
 
 
 @pytest.mark.unit
 def test_string_content_preserved_through_fallback_path():
-    """关键回归：fallback 路径触发时（无引号 key），string 内的 `,abc{` 不应被误清洗。
+    """Critical regression: on fallback (unquoted keys), do not strip `,abc{` inside strings.
 
-    旧版（无状态 regex）会把 `"x,abc{y"` 静默改成 `"x,{y"`，破坏数据。
+    The old stateless regex silently changed `\"x,abc{y\"` to `\"x,{y\"`, corrupting data.
     """
     raw = "{a: 'x,abc{y', b: 1}"
     assert robust_json_loads(raw) == {"a": "x,abc{y", "b": 1}
@@ -197,7 +197,7 @@ def test_string_content_preserved_through_fallback_path():
 
 @pytest.mark.unit
 def test_string_with_escaped_quote_not_breaking_scanner():
-    """字符串内含转义引号时，扫描器应正确识别字符串边界。"""
+    """The scanner must identify string boundaries correctly when strings contain escaped quotes."""
     raw = '{a: "say \\"x,bc{y\\" loud", b: 2}'
     assert robust_json_loads(raw) == {"a": 'say "x,bc{y" loud', "b": 2}
 
@@ -206,18 +206,18 @@ def test_string_with_escaped_quote_not_breaking_scanner():
 @pytest.mark.parametrize(
     "raw",
     [
-        '[1,.5]',   # `.5` 非合法 JSON number；旧实现会删 `.` → 5
-        '[1,+5]',   # `+5` 非合法 JSON number；旧实现会删 `+` → 5
-        '[1,e3]',   # `e3` 非合法；旧实现会删 `e` → 3
-        '[1,X{"y":2}]',  # ASCII 字母也不剥
+        '[1,.5]',   # `.5` is not a valid JSON number; the old implementation removed `.` → 5.
+        '[1,+5]',   # `+5` is not a valid JSON number; the old implementation removed `+` → 5.
+        '[1,e3]',   # `e3` is invalid; the old implementation removed `e` → 3.
+        '[1,X{"y":2}]',  # Do not strip ASCII letters either.
     ],
 )
 def test_ascii_chars_not_stripped_to_avoid_silent_numeric_corruption(raw):
-    """关键安全保证：ASCII 字符（包括 `+`、`.`、`e`、字母）一律不剥。
+    """Critical safety guarantee: never strip ASCII characters (including `+`, `.`, `e`, letters).
 
-    LLM 实测的污染基本都是非 ASCII（CJK / emoji）；ASCII 多半是某种半合法值的
-    一部分（malformed number、unquoted literal 等），剥掉会把数值/语义静默改坏。
-    宁可让 json.loads 自己抛错走 fallback，也不能 silent corruption。
+    Observed LLM contamination is mostly non-ASCII (CJK / emoji); ASCII is usually part of a
+    partly valid value (malformed number, unquoted literal, etc.); stripping silently corrupts values/semantics.
+    Prefer letting json.loads raise and fall back over silent corruption.
     """
     with pytest.raises(json.JSONDecodeError):
         robust_json_loads(raw)
@@ -227,7 +227,7 @@ def test_ascii_chars_not_stripped_to_avoid_silent_numeric_corruption(raw):
 @pytest.mark.parametrize(
     "raw",
     [
-        '[1,−2]',  # U+2212 MINUS SIGN（数学减号）；category=Sm
+        '[1,−2]',  # U+2212 MINUS SIGN (mathematical minus); category=Sm.
         '[1,＋5]',  # U+FF0B FULLWIDTH PLUS SIGN；category=Sm
         '[1,－2]',  # U+FF0D FULLWIDTH HYPHEN-MINUS；category=Pd
         '[1,０]',   # U+FF10 FULLWIDTH DIGIT ZERO；category=Nd
@@ -235,27 +235,27 @@ def test_ascii_chars_not_stripped_to_avoid_silent_numeric_corruption(raw):
     ],
 )
 def test_unicode_numeric_prefixes_not_stripped(raw):
-    """Unicode 数字符号（math symbol / dash / 全角数字 / Arabic-Indic digits）
-    不能被当 CJK 污染删掉，否则 `[1,−2]` → `[1,2]` 之类 silent numeric corruption。
+    """Unicode numeric symbols (math symbols / dashes / full-width digits / Arabic-Indic digits)
+    must not be stripped as CJK contamination, causing silent numeric corruption such as `[1,−2]` → `[1,2]`.
 
-    只剥 Unicode category Lo (Other Letter，CJK/韩文/etc.) 和 So (Other Symbol，emoji)；
-    Sm / Pd / Nd 等数字相关类别一律放行。
+    Strip only Unicode categories Lo (Other Letter, CJK/Korean/etc.) and So (Other Symbol, emoji);
+    always preserve numeric categories such as Sm / Pd / Nd.
     """
     with pytest.raises(json.JSONDecodeError):
         robust_json_loads(raw)
 
 
 # ── over-escaped `---` divider normalization (region-scoped) ───────────
-# 触发：字符串里出现 1+ 字面量换行类 escape (``\n`` / ``\r\n`` / ``\r``)
-# 紧贴 ``---`` 行。匹配到时只把这一段 divider 区域换成规范 ``\n\n---\n\n``——
-# **同字符串里其它位置的字面量 escape 一律不动**，避免误伤 Windows 路径 /
-# regex / code 片段等合法场景。
+# Trigger: one or more literal newline escapes (``\n`` / ``\r\n`` / ``\r``) inside a string
+# adjacent to a ``---`` line. Replace only this divider region with canonical ``\n\n---\n\n``;
+# **leave literal escapes elsewhere in the same string untouched** to preserve valid Windows paths /
+# regex / code snippets, etc.
 
 
 @pytest.mark.unit
 def test_overescaped_divider_replaced_with_canonical_form():
-    """LLM 把 divider 整体 over-escape：``body\\n\\n---\\n\\nolder`` 全字面量
-    → divider 区域归一化成真 ``\\n\\n---\\n\\n``。"""
+    """LLM over-escapes the entire divider: ``body\\n\\n---\\n\\nolder`` is entirely literal
+    → normalize the divider region into actual ``\\n\\n---\\n\\n``."""
     raw = '{"summary": "body\\\\n\\\\n---\\\\n\\\\nolder"}'
     parsed = robust_json_loads(raw)
     assert parsed["summary"] == "body\n\n---\n\nolder"
@@ -263,46 +263,46 @@ def test_overescaped_divider_replaced_with_canonical_form():
 
 @pytest.mark.unit
 def test_overescaped_divider_crlf_form():
-    """CRLF over-escape：``\\r\\n\\r\\n---\\r\\n\\r\\n`` 也走通。"""
+    """CRLF over-escape: ``\\r\\n\\r\\n---\\r\\n\\r\\n`` works too."""
     raw = '{"summary": "body\\\\r\\\\n\\\\r\\\\n---\\\\r\\\\n\\\\r\\\\nolder"}'
     parsed = robust_json_loads(raw)
-    # divider 区域归一为规范形态
+    # Normalize the divider region to canonical form.
     assert "\n\n---\n\n" in parsed["summary"]
-    # 整段没有残留任何字面量 escape，因为本 case 字符串里只有 divider 区域含 escape
+    # No literal escapes remain anywhere because only the divider region contains escapes in this case.
     assert "\\r" not in parsed["summary"]
     assert "\\n" not in parsed["summary"]
 
 
 @pytest.mark.unit
 def test_divider_normalized_but_unrelated_literals_preserved():
-    """关键 P2 反向 case（codex / coderabbit）：同字段里既有 over-escape divider
-    又有合法字面量 escape（Windows 路径里的 ``\\new``）——只动 divider 区域，
-    路径完整保留。"""
+    """Critical P2 counterexample (codex / coderabbit): the same field contains an over-escaped divider
+    and valid literal escapes (``\\new`` in Windows paths); modify only the divider region,
+    preserving the entire path."""
     raw = (
         '{"summary": "see C:\\\\new_folder for context'
         '\\\\n\\\\n---\\\\n\\\\nolder content"}'
     )
     parsed = robust_json_loads(raw)
-    # divider 部分被规范化
+    # Divider portion normalized.
     assert "\n\n---\n\n" in parsed["summary"]
-    # Windows 路径里的 `\new_folder` 字面量原样保留，**不能**变成 `[NL]ew_folder`
+    # Preserve the literal `\new_folder` in Windows paths; it **must not** become `[NL]ew_folder`.
     assert r"C:\new_folder" in parsed["summary"]
 
 
 @pytest.mark.unit
 def test_divider_normalized_but_tab_literal_preserved():
-    """同字段里既有 divider 又有合法 ``\\t`` 字面量——``\\t`` 保留。"""
+    """The same field contains a divider and a valid literal ``\\t``; preserve ``\\t``."""
     raw = '{"summary": "header\\\\tdata\\\\n\\\\n---\\\\n\\\\nolder"}'
     parsed = robust_json_loads(raw)
-    # divider 区域归一化
+    # Normalize divider region.
     assert "\n\n---\n\n" in parsed["summary"]
-    # `\t` 字面量不被波及
+    # Leave the literal `\t` unaffected.
     assert r"header\tdata" in parsed["summary"]
 
 
 @pytest.mark.unit
 def test_windows_path_with_literal_backslash_n_preserved():
-    """字符串无 divider 指纹：Windows 路径 ``C:\\new_folder`` 完整透传。"""
+    """No divider signature: pass the Windows path ``C:\\new_folder`` through intact."""
     raw = r'{"path": "C:\\new_folder\\notes.txt"}'
     parsed = robust_json_loads(raw)
     assert parsed["path"] == r"C:\new_folder\notes.txt"
@@ -311,8 +311,8 @@ def test_windows_path_with_literal_backslash_n_preserved():
 
 @pytest.mark.unit
 def test_regex_with_literal_backslash_n_preserved():
-    """regex 模式 ``\\n+`` 在 JSON 源里 ``"\\\\n+"`` → 解析后字面量 ``\\n+``。
-    无 divider 指纹，不动。"""
+    """Regex ``\\n+`` appears as ``\"\\\\n+\"`` in JSON source → literal ``\\n+`` after parsing.
+    No divider signature; leave unchanged."""
     raw = r'{"pattern": "\\n+"}'
     parsed = robust_json_loads(raw)
     assert parsed["pattern"] == r"\n+"
@@ -320,7 +320,7 @@ def test_regex_with_literal_backslash_n_preserved():
 
 @pytest.mark.unit
 def test_isolated_literal_backslash_n_outside_divider_preserved():
-    """无 divider 指纹时 ``\\n`` 字面量一律保留——常见于代码片段、日志、文档。"""
+    """Preserve literal ``\\n`` without a divider signature, as commonly found in code snippets, logs, and docs."""
     raw = '{"code": "print(\\"hello\\\\nworld\\")"}'
     parsed = robust_json_loads(raw)
     assert parsed["code"] == 'print("hello\\nworld")'
@@ -329,7 +329,7 @@ def test_isolated_literal_backslash_n_outside_divider_preserved():
 
 @pytest.mark.unit
 def test_isolated_literal_backslash_t_preserved():
-    """单独 ``\\t``（无 divider 指纹）不动。"""
+    """Leave standalone ``\\t`` unchanged without a divider signature."""
     raw = '{"code": "say\\\\thi"}'
     parsed = robust_json_loads(raw)
     assert parsed["code"] == "say\\thi"
@@ -337,7 +337,7 @@ def test_isolated_literal_backslash_t_preserved():
 
 @pytest.mark.unit
 def test_nested_structures_walked_only_when_fingerprint_matches():
-    """递归 dict / list；每个 string 单独看自己的指纹，互不影响。"""
+    """Recurse through dict / list; check each string's own signature independently."""
     raw = (
         '{"summary": "body\\\\n\\\\n---\\\\n\\\\nolder", '
         '"path": "C:\\\\new"}'
@@ -349,7 +349,7 @@ def test_nested_structures_walked_only_when_fingerprint_matches():
 
 @pytest.mark.unit
 def test_non_string_values_unchanged():
-    """non-str value 不动（int/bool/None/float）。"""
+    """Leave non-str values unchanged (int/bool/None/float)."""
     raw = '{"n": 1, "b": true, "x": null, "f": 1.5}'
     parsed = robust_json_loads(raw)
     assert parsed == {"n": 1, "b": True, "x": None, "f": 1.5}
@@ -357,19 +357,19 @@ def test_non_string_values_unchanged():
 
 @pytest.mark.unit
 def test_clean_string_passes_through_unchanged():
-    """没字面量 escape 的普通字符串完全不动。"""
+    """Leave ordinary strings without literal escapes entirely unchanged."""
     raw = '{"s": "hello world"}'
     parsed = robust_json_loads(raw)
     assert parsed["s"] == "hello world"
 
 
-# ── 字符串值内未转义英文双引号（qwen 等快模型常犯） ──────────────────────
+# ── Unescaped ASCII double quotes inside string values (common with fast models such as qwen) ──────────────────────
 
 
 @pytest.mark.unit
 def test_unescaped_inner_quotes_in_value():
-    """实测案例：qwen 在中文里塞未转义的英文引号。
-    内层 `"晚安"` 应被当内容转义，结尾 `"` 后接 `}` 才闭合。"""  # noqa: DOCSTRING_CJK
+    """Observed case: qwen inserts unescaped ASCII quotes into Chinese text.
+    Escape inner `\"晚安\"` as content; close only at the final `\"` followed by `}`."""  # noqa: DOCSTRING_CJK
     raw = '{"content": "他对我说"晚安"然后走了"}'
     parsed = robust_json_loads(raw)
     assert parsed == {"content": '他对我说"晚安"然后走了'}
@@ -379,14 +379,14 @@ def test_unescaped_inner_quotes_in_value():
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        # 结尾 `"` 后接 `,` 且 `,` 后是合法下一个 key → 真分隔符 → 闭合
+        # Closing `"` followed by `,` and a valid next key → actual delimiter → close.
         ('{"a": "他说"好"了", "b": 1}', {"a": '他说"好"了', "b": 1}),
-        # 数组里：内层引号转义，逗号后是合法 value 起始 → 闭合
+        # In arrays: escape inner quotes; a valid value start after the comma → close.
         ('["他说"好"了", "ok"]', ['他说"好"了', "ok"]),
-        # 关键反例：`"` 后是 `,` 但逗号后 ` bob"` 不是合法 token 起始 →
-        # 当内容转义，不误闭合（避免静默截断 `, bob`）
+        # Critical counterexample: `"` is followed by `,`, but ` bob"` after the comma is not a valid token start →
+        # escape as content without premature closure (avoiding silent truncation of `, bob`).
         ('{"a": "he said "hi", bob"}', {"a": 'he said "hi", bob'}),
-        # 多字段、多处内层引号
+        # Multiple fields and multiple inner quotes.
         (
             '{"x": "说"A"完", "y": "再说"B""}',
             {"x": '说"A"完', "y": '再说"B"'},
@@ -399,18 +399,18 @@ def test_unescaped_inner_quotes_various(raw, expected):
 
 @pytest.mark.unit
 def test_inner_quotes_transform_is_noop_on_valid_json():
-    """已合法的 JSON（含已转义引号）不应被这步动到。"""  # noqa: DOCSTRING_CJK
+    """This step must not modify already-valid JSON (including escaped quotes)."""  # noqa: DOCSTRING_CJK
     raw = '{"a": "say \\"hi\\" loud", "b": ["x", "y"]}'
     assert robust_json_loads(raw) == {"a": 'say "hi" loud', "b": ["x", "y"]}
 
 
-# ── 容器元素间缺逗号 `}{`→`},{`（记忆审阅 correction 模型最高频失败） ────────
+# ── Missing commas between container elements `}{`→`},{` (most frequent memory-review correction model failure) ────────
 
 
 @pytest.mark.unit
 def test_missing_comma_between_array_objects():
-    """实测案例：记忆审阅模型在 corrected_dialogue 两个对象间漏逗号。
-    `} {` 在合法 JSON 中永不出现 → 补 `},{` 零歧义。"""  # noqa: DOCSTRING_CJK
+    """Observed case: the memory-review model omits a comma between two corrected_dialogue objects.
+    `} {` never appears structurally in valid JSON → inserting `},{` is unambiguous."""  # noqa: DOCSTRING_CJK
     raw = (
         '{"explanation": "去重",'
         ' "corrected_dialogue": ['
@@ -426,13 +426,13 @@ def test_missing_comma_between_array_objects():
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        # 对象数组缺逗号（含换行 / 缩进，pretty-printed 场景）
+        # Missing commas in object arrays (including newline / indentation in pretty-printed output).
         ('[{"a":1}\n{"b":2}]', [{"a": 1}, {"b": 2}]),
-        # 数组套数组缺逗号
+        # Missing commas in nested arrays.
         ('[[1]\n[2]]', [[1], [2]]),
         ('[{"a":1} [2]]', [{"a": 1}, [2]]),
         ('[[1] {"b":2}]', [[1], {"b": 2}]),
-        # 连续多个缺口
+        # Multiple consecutive gaps.
         ('[{"a":1} {"b":2} {"c":3}]', [{"a": 1}, {"b": 2}, {"c": 3}]),
     ],
 )
@@ -444,24 +444,24 @@ def test_missing_structural_comma_various(raw, expected):
 @pytest.mark.parametrize(
     "raw",
     [
-        # 嵌套闭合后立刻开新容器是合法的（中间有逗号）→ 不应再插
+        # Opening a new container immediately after nested closure is valid with a comma between them; do not insert another.
         '{"a": {"b": 1}, "c": [1, 2]}',
         '[[1], [2]]',
-        # 字符串值里的 `}{` 不是结构 token → 不许动
+        # `}{` inside string values is not structural; leave it untouched.
         '{"s": "code: }{ here", "t": "arr ][ x"}',
     ],
 )
 def test_missing_structural_comma_noop_on_valid(raw):
-    """补逗号 transform 在合法 JSON（含字符串内的 `}{`）上必须是 no-op。"""  # noqa: DOCSTRING_CJK
+    """Comma-insertion transforms must be a no-op for valid JSON (including `}{` inside strings)."""  # noqa: DOCSTRING_CJK
     assert robust_json_loads(raw) == json.loads(raw)
 
 
 @pytest.mark.unit
 def test_missing_comma_repair_runs_after_inner_quote_escape():
-    """关键回归（Codex P2）：补逗号必须排在内引号转义之后。
+    """Critical regression (Codex P2): insert commas only after escaping inner quotes.
 
-    内容里有未转义英文引号（奇数个）会翻转串解析奇偶，使字面 `}{` 落在
-    “串外”。若补逗号先跑，会把内容里的 `{a}{b}` 误判为结构边界插逗号，
-    静默篡改成 `{a},{b}`。先转义内引号、串边界稳了，才不会误插。"""  # noqa: DOCSTRING_CJK
+    An odd number of unescaped ASCII quotes in content flips string parsing parity, putting literal `}{`
+    'outside the string'. Inserting commas first would misidentify `{a}{b}` in content as structural boundaries
+    and silently change it to `{a},{b}`. Escape inner quotes first to stabilize boundaries and avoid false insertion."""  # noqa: DOCSTRING_CJK
     raw = '{"c": "他说"后写 {a}{b}"}'
     assert robust_json_loads(raw) == {"c": '他说"后写 {a}{b}'}

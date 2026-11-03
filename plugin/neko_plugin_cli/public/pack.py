@@ -186,9 +186,9 @@ class PluginPacker:
             plugin_payload_dir,
             rules=pack_rules,
         )
-        # 这条向后兼容的打包 API 有自己的 payload 构建，不经过 core.build
-        # （codex）。不在这里写的话，走它打出来的包在用户机器上没有元数据，
-        # 入口 schema 会一路退化成占位。
+        # This backward-compatible packaging API builds its own payload without going through core.build
+        # (codex). If metadata is not written here, packages built through this API lack it on user machines,
+        # leaving entry schemas to degrade into placeholders.
         _settle_staged_metadata(
             staged_files,
             plugin_payload_dir,

@@ -28,7 +28,7 @@ def encode_url_path(path: str) -> str:
     return '/'.join(encoded_parts)
 
 
-# 该 scheme 下可以省略的默认端口：写与不写是同一个端点。
+# The scheme's optional default port: specifying or omitting it identifies the same endpoint.
 _DEFAULT_PORTS = {'http': '80', 'https': '443', 'ws': '80', 'wss': '443'}
 
 
@@ -49,22 +49,22 @@ def _canonical_host(host: str) -> str:
     still compares equal to an identically-written one.
     """
     if not (host.startswith('[') and host.endswith(']')):
-        # DNS 名大小写无关；尾点是 DNS 根，`api.example.com.` 与
-        # `api.example.com` 是同一台主机。只去一个尾点，与 path 尾斜杠同一条
-        # 规则：`example.com..` 不是合法域名，保持它与单点形式不同——宁可判成
-        # 不同端点，也不越权归一。
+        # DNS names are case-insensitive; the trailing dot denotes the DNS root, so `api.example.com.` and
+        # `api.example.com` are the same host. Remove only one trailing dot, matching the rule for trailing path slashes:
+        # `example.com..` is invalid and must remain distinct from its single-dot form. Prefer treating them as
+        # different endpoints to over-normalizing beyond our authority.
         return host.lower().removesuffix('.')
     import ipaddress
 
-    # scoped IPv6 的 zone id（%eth0）是**接口名**，在 Unix 上大小写敏感，
-    # 不能跟着地址一起折叠——那会把两个不同接口判成同一个端点，凭证就送错了。
+    # A scoped IPv6 zone ID (%eth0) is an **interface name**, case-sensitive on Unix,
+    # and must not be case-folded with the address; that could merge distinct interfaces and send credentials to the wrong endpoint.
     inner = host[1:-1]
     addr, sep, zone = inner.partition('%')
     try:
         canonical = ipaddress.IPv6Address(addr).compressed
     except ValueError:
-        # 解析不了就原样保留（含大小写）：判据保持 total，且两个写法不同的
-        # 坏地址仍算不同端点。
+        # Preserve unparsable input verbatim, including case, keeping this criterion total and treating differently written
+        # invalid addresses as distinct endpoints.
         return host
     return f'[{canonical}{sep}{zone}]'
 
@@ -97,16 +97,16 @@ def endpoint_identity(raw: str | None):
     try:
         parts = urlsplit(text)
     except ValueError:
-        # 两个分支返回**同样长度**的元组，首位是「解析成功与否」：长度不同的
-        # 元组比起来虽然也恒不相等，但那是靠巧合而不是靠判据。
+        # Both branches return tuples of **equal length**, beginning with parsing success: unequal-length
+        # tuples also always compare unequal, but only coincidentally, rather than by the intended criterion.
         return (False, text, '', '', '', '', '')
 
-    # netloc 整体转小写是错的：它还装着 userinfo（user:pass@）。拆开 userinfo
-    # 与 host:port，只折叠后者。刻意不碰 parts.port —— 它对非法端口会抛。
+    # Lowercasing all of netloc is incorrect because it contains userinfo (user:pass@). Separate userinfo
+    # from host:port and case-fold only the latter. Intentionally avoid parts.port, which raises on invalid ports.
     userinfo, _, hostinfo = (parts.netloc or '').rpartition('@')
     scheme = (parts.scheme or '').lower()
-    # 不在这里整体转小写：hostinfo 里可能带 scoped IPv6 的 zone id，那是接口名、
-    # 大小写敏感。大小写归一交给 _canonical_host 分部位处理。
+    # Do not lowercase all hostinfo here: it may include an IPv6 zone ID, a case-sensitive interface name.
+    # Let _canonical_host normalize case component by component.
     host, port = _split_hostinfo(hostinfo)
     host = _canonical_host(host)
     if port.isdigit():

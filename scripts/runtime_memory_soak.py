@@ -236,7 +236,6 @@ async def _plugin_cycle(args: argparse.Namespace, cycle: int) -> dict[str, Any]:
     triggered = False
     try:
         await host.start(
-            message_target_queue=asyncio.Queue(),
             startup_timeout=args.plugin_timeout,
             startup_failure="fail",
         )

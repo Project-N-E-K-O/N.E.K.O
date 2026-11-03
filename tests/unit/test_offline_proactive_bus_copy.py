@@ -965,17 +965,17 @@ def test_close_cancels_and_collects_the_in_flight_bus_copies():
         assert task is not None
         await asyncio.wait_for(started.wait(), timeout=5)
 
-        # 直接 await，不在这里包 wait_for：包一层会白送一次调度让出，
-        # 于是「取消了但不收集」也能让下面的 done() 通过——变异验证抓到过。
-        # deadline 挪到整个 _check() 外面，没有 cancel 的版本仍然会失败而不
-        # 是把跑测进程连同脚本一起挂死。
+        # Await directly without wrapping wait_for here: wrapping yields an extra scheduling turn,
+        # allowing cancellation without collection to pass the done() check below; mutation testing caught this.
+        # Put the deadline around the whole _check(), so the version without cancellation still fails
+        # instead of hanging the test process and script.
         await client._cancel_bus_copies()
 
         assert task.done(), "close 返回时抄送还在跑"
         assert task.cancelled()
         assert not client._bus_bg_tasks, "集合没被清空"
 
-    # deadline 在最外层：守卫的失败形态必须是「失败」，不是「挂起」。
+    # Keep the deadline outermost: the guard must fail rather than hang.
     asyncio.run(asyncio.wait_for(_check(), timeout=5))
 
 
@@ -1029,10 +1029,10 @@ def test_a_refused_instruction_copy_takes_the_reply_with_it(monkeypatch):
     spies = _spies()
     frames, turns = spies
 
-    # 只拒掉**指令**那一次 fire。用 cap=1 复现的话，回复的抄送会被同一个 cap
-    # 一起挡住，于是把判据放松也照样是空的——那条守卫就一直在为错误的理由
-    # 变绿（变异验证抓到的正是这一点）。这里精确模拟意见描述的形态：指令被
-    # 拒，而回复到得了发布点（真实时序里，占着名额的帧抄送此时已经跑完）。
+    # Reject only the instruction fire. Reproducing with cap=1 also blocks reply forwarding under that cap,
+    # so loosening the criterion still leaves no output and the guard keeps passing for the wrong reason,
+    # exactly as mutation testing found. Reproduce the reported shape precisely: reject the instruction
+    # while letting the reply reach publication (in real timing, frame forwarding occupying the slot has finished by then).
     real_fire = client._fire_bus_task
     fired: list = []
 
@@ -1097,8 +1097,8 @@ def test_a_proactive_tool_image_carries_the_turn_id():
     _run(client, spies)
 
     assert seen and seen[0], "工具帧的 turn_id 没被传进 tool loop"
-    # 与同一轮的对话记录同一个 id，而不是另外生成的某个值——否则「传了个
-    # turn_id」和「传了这一轮的 turn_id」这两件事分不开。
+    # Use the same ID as this turn's conversation record, not an independently generated value, or passing any
+    # turn_id cannot be distinguished from passing this turn's turn_id.
     assert turns.calls, "前提没成立：这一轮没有对话记录可比对"
     assert seen[0] == turns.calls[0]["conversation_id"]
 
@@ -1150,7 +1150,7 @@ def test_a_reply_is_dropped_when_the_instruction_publish_failed():
 
     async def _refuse_the_instruction(lanlan_name, **kwargs):
         published.append(kwargs["turn_type"])
-        # 指令被 bridge 拒收（返回 False，不是抛异常——两条路都得覆盖）。
+        # The bridge rejects the instruction by returning False, not raising; cover both paths.
         return kwargs["turn_type"] != _BUS_TURN_TYPE_INSTRUCTION
 
     with patch(_FRAME_PUBLISHER, frames), patch(_TURN_PUBLISHER, _refuse_the_instruction):

@@ -156,7 +156,7 @@ class RefinementMixin:
                     logger.warning(f"[Refine apply] reflection: 非法 action {act!r}")
                     continue
 
-                # fact 不可作 split / discard / modify 的 source_id —— 代码层硬拦
+                # Facts cannot be source_id for split / discard / modify; enforce this in code
                 if act in ('split', 'discard', 'modify'):
                     sid = act_obj.get('source_id')
                     if sid in cluster_fact_ids:
@@ -175,7 +175,7 @@ class RefinementMixin:
                     produce = act_obj.get('produce')
                     if not isinstance(produce, list) or len(produce) < 2:
                         continue
-                    # 先过滤出有效 produce items，再以实际数量作 split_count
+                    # Filter valid produced items first, then use their actual count as split_count
                     valid_produce = [
                         p for p in produce
                         if isinstance(p, dict) and str(p.get('text', '')).strip()
@@ -196,7 +196,7 @@ class RefinementMixin:
                     src_ids_raw = act_obj.get('source_ids') or []
                     if not isinstance(src_ids_raw, list):
                         continue
-                    # source_ids 必须全是 reflection；含 fact id → 拒绝整个 action
+                    # Every source_id must identify a reflection; a fact ID rejects the entire action
                     if any(sid in cluster_fact_ids for sid in src_ids_raw):
                         logger.warning(
                             "[Refine apply] reflection: merge source_ids 含 fact，拒绝"
@@ -264,7 +264,7 @@ class RefinementMixin:
                         'absorbed_fact_ids': valid_fact_sources,
                     })
                     src['modification_history'] = mod_history
-                    # 文本变 → embedding 失效（下次 worker 扫描重 embed）
+                    # Changed text invalidates embeddings; re-embed on the next worker scan
                     src['embedding'] = None
                     src['embedding_text_sha256'] = None
                     src['embedding_model_id'] = None
@@ -277,12 +277,12 @@ class RefinementMixin:
                     consumed.add(src_id)
                     applied += 1
 
-            # Stamp 决策（Codex P1 + P2 #1392 合并语义）：
-            # - applied > 0：有变化，必 stamp + save
-            # - applied == 0 + actions 为空：LLM 明确 no-op，stamp 防
-            #   cluster_hash skip 失效（Codex P1）
-            # - applied == 0 + actions 非空：所有 action 全 reject = LLM
-            #   语义垃圾，不 stamp 等下轮重试（Codex P2）
+            # Stamp decisions (combined Codex P1 + P2 #1392 semantics):
+            # - applied > 0: changes occurred; always stamp + save
+            # - applied == 0 with empty actions: explicit LLM no-op; stamp to prevent
+            #   cluster_hash skip failure (Codex P1)
+            # - applied == 0 with nonempty actions: every action rejected as LLM
+            #   semantic garbage; do not stamp, allowing retry next round (Codex P2)
             if applied == 0 and actions:
                 return 0
 
@@ -300,7 +300,7 @@ class RefinementMixin:
                 if rid in cluster_refl_ids and rid not in consumed:
                     r['last_refine_cluster_hash'] = cluster_hash
                     r['last_refine_at'] = now_iso
-                    # 成功 stamp → 清 Site 4 liveness 计数器（对偶
+                    # Successful stamping clears Site 4 liveness counters (symmetric with
                     # PersonaManager.apply_refine_actions）
                     if r.get('refine_attempts'):
                         r['refine_attempts'] = 0
@@ -332,9 +332,9 @@ class RefinementMixin:
         from memory.facts import safe_int_field
         from memory.refine import REFINE_TYPE_KEY
 
-        # fact 不计 attempts（fact 是 readonly 信息源，refine 永远不改它）；
-        # 只 bump reflection 成员。reflection 不分 entity section 单独存（全
-        # 在一个 list 里按 entity 字段区分），所以收集 set[rid] 即可。
+        # Facts do not count attempts: they are read-only information sources that refine never changes;
+        # bump only reflection members. Reflections are not stored in separate entity sections, but together in one
+        # list distinguished by entity fields, so collecting set[rid] suffices.
         member_rids: set[str] = set()
         for e in cluster:
             if not isinstance(e, dict):
@@ -355,8 +355,8 @@ class RefinementMixin:
                     continue
                 new_attempts = safe_int_field(r, 'refine_attempts') + 1
                 r['refine_attempts'] = new_attempts
-                # 戳失败时刻供 dead-letter 时间自愈（cooldown_elapsed），对偶
-                # persona 侧——一次性宕机顶到 MAX 后过 5h 冷却重新 probe。
+                # Stamp failure time for dead-letter time-based recovery (cooldown_elapsed), symmetric with
+                # persona: after a one-off outage reaches MAX, probe again after a 5h cooldown.
                 r['last_refine_attempt_at'] = datetime.now().isoformat()
                 modified = True
                 if new_attempts == MEMORY_LIVENESS_MAX_ATTEMPTS:
@@ -368,12 +368,12 @@ class RefinementMixin:
                         f"不再选入，避免毒 cluster 占用名额。"
                     )
             if modified:
-                # CodeRabbit: 传 active-only 给 ``asave_reflections``。
-                # ``_prepare_save_reflections`` 把 input 当 "想要存活的 active 集",
-                # all_on_disk 里 id 在 input set 中的会跳过归档判断。如果传
-                # full list（含 terminal），``to_archive`` 永远是空，老 promoted/
-                # denied 永远 archive 不掉，跟 arecord_mentions / aupdate_suppressions
-                # 走同一约定保证归档流程正常推进。
+                # CodeRabbit: pass active-only entries to ``asave_reflections``.
+                # ``_prepare_save_reflections`` treats input as the desired surviving active set;
+                # all_on_disk IDs present in input skip archival checks. Passing
+                # the full list (including terminal entries) leaves ``to_archive`` permanently empty, so old promoted/
+                # denied entries never archive. Follow the same convention as arecord_mentions / aupdate_suppressions
+                # to let archival proceed normally.
                 active = [
                     r for r in reflections
                     if r.get('status') not in REFLECTION_TERMINAL_STATUSES

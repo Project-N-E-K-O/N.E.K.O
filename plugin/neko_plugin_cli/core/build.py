@@ -67,8 +67,8 @@ def _discard_probe_bytecode(plugin_payload_dir: Path) -> None:
     tree. ``export_package`` archives the staging tree as-is, without the
     copy-pass rules, so anything left here would ship in the package.
     """
-    # source_only 只管插件自己的包；vendor/ 下的依赖按设计仍走普通导入，照样会
-    # 写 __pycache__。直接用 PluginBuilder() 的调用方则整棵树都走普通导入。
+    # source_only applies only to the plugin's own package; dependencies under vendor/ still use normal imports by design and write
+    # __pycache__. Direct PluginBuilder() callers use normal imports throughout the tree.
     for cache_dir in sorted(plugin_payload_dir.rglob("__pycache__"), reverse=True):
         if cache_dir.is_dir() and not cache_dir.is_symlink():
             shutil.rmtree(cache_dir)
@@ -276,18 +276,18 @@ class PluginBuilder:
             plugin_payload_dir,
             rules=build_rules,
         )
-        # 在算 payload_hash 之前写：plugin.meta.json 是包内容的一部分，不能游离在
-        # 完整性校验之外。导不进来的插件拿到 None，包照常出，只是不带元数据。
+        # Write before calculating payload_hash: plugin.meta.json is package content and must participate in
+        # integrity checks. Plugins that cannot be imported yield None; packaging continues without metadata.
         staged_metadata = write_packaged_metadata(
             source_dir=source.plugin_dir,
             target_dir=plugin_payload_dir,
             **self._source_import_options(source),
         )
         _discard_probe_bytecode(plugin_payload_dir)
-        # 仓库里的插件目录已经带着 plugin.meta.json，copy_plugin_runtime_files 会
-        # 把它复制过去并记进 staged_files；这里覆盖的是同一个路径，再 append 一次就
-        # 会让 staged_file_count 多算、--keep-staging 重复列出同一个文件（coderabbit）。
-        # 探测失败时那份旧的会被删掉，清单也要跟着少一条（codex）。
+        # Repository plugin directories already contain plugin.meta.json, copied and added to staged_files by copy_plugin_runtime_files.
+        # This overwrites the same path; appending it again would
+        # overcount staged_file_count and list the same file twice with --keep-staging (coderabbit).
+        # Failed probing removes the old file, so remove its manifest entry as well (codex).
         _settle_staged_metadata(staged_files, plugin_payload_dir, staged_metadata)
         profile_files = write_default_profile(source, paths.profiles_dir)
         write_dependency_manifest([source], paths.payload_dir)

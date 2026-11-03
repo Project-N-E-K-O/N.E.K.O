@@ -34,8 +34,8 @@ Policy:
 Prerequisites (returned as HTTP 4xx when unmet):
     * No active session → 404 (same convention as Persona / Time).
     * Active session but ``session.persona.character_name`` empty → 409
-      ``NoCharacterSelected`` so the UI can prompt: "先在 Persona 或 Import
-      子页选一个角色".
+      ``NoCharacterSelected`` so the UI can prompt: "First select a character in the Persona or Import
+      sub-page".
 """
 from __future__ import annotations
 
@@ -418,7 +418,7 @@ async def attribute_memory_lineage_all() -> dict[str, Any]:
 
 @router.get("/embedding/space")
 async def get_embedding_space(reducer: str = "pca") -> dict[str, Any]:
-    """P28.1 — embedding 向量空间 2D 散点 + 体检 (①+②).
+    """P28.1 — embedding-space 2D scatter plot + health check (①+②).
 
     Read-only: reads the active character's facts/reflections/persona vectors
     from disk and returns ``{points, meta}`` (PCA 2D coords + health counts).
@@ -432,13 +432,13 @@ async def get_embedding_space(reducer: str = "pca") -> dict[str, Any]:
     character = _require_character(session)
     # CPU-bound (PCA/UMAP/numpy over up to thousands of vectors). Run off the
     # event loop so a slow reduction can't freeze every other HTTP request
-    # (other sub-pages / workspaces would otherwise all hang on "加载中").
+    # (other sub-pages / workspaces would otherwise all hang on "加载中", loading).
     return await asyncio.to_thread(build_space_view, character, reducer=reducer)
 
 
 @router.get("/embedding/neighbors")
 async def get_embedding_neighbors(id: str, k: int = 10) -> dict[str, Any]:
-    """P28.1 — cosine top-k nearest memories for one entry (③最近邻)."""  # noqa: DOCSTRING_CJK
+    """P28.1 — cosine top-k nearest memories for one entry (③ nearest neighbors)."""  # noqa: DOCSTRING_CJK
     session = _require_session()
     character = _require_character(session)
     return await asyncio.to_thread(build_neighbors, character, id, k=k)
@@ -446,7 +446,7 @@ async def get_embedding_neighbors(id: str, k: int = 10) -> dict[str, Any]:
 
 @router.get("/embedding/bridges")
 async def get_embedding_bridges(top_k: int = 3) -> dict[str, Any]:
-    """P28.1 — 语义源 vs 结构源 (⑥, 与 P27 联动).
+    """P28.1 — semantic vs structural sources (⑥, linked to P27).
 
     Per reflection: semantic-nearest facts (cosine) vs declared
     ``source_fact_ids``. Read-only.
@@ -458,7 +458,7 @@ async def get_embedding_bridges(top_k: int = 3) -> dict[str, Any]:
 
 @router.get("/embedding/duplicates")
 async def get_embedding_duplicates(threshold: float = 0.95) -> dict[str, Any]:
-    """P28.2 — 近重复对 (④): cosine ≥ threshold 的条目两两 (跨类型)。Read-only."""  # noqa: DOCSTRING_CJK
+    """P28.2 — near-duplicate pairs (④): entry pairs with cosine ≥ threshold (across types). Read-only."""  # noqa: DOCSTRING_CJK
     session = _require_session()
     character = _require_character(session)
     return await asyncio.to_thread(build_duplicates, character, threshold=threshold)
@@ -466,7 +466,7 @@ async def get_embedding_duplicates(threshold: float = 0.95) -> dict[str, Any]:
 
 @router.get("/embedding/matrix")
 async def get_embedding_matrix(ids: str = "") -> dict[str, Any]:
-    """P28.3 — 相似度矩阵 (⑤, 子集下钻).
+    """P28.3 — similarity matrix (⑤, subset drilldown).
 
     ``ids`` is a comma-separated subset (empty → whole primary space, clipped
     to MATRIX_MAX_N). Returns an NxN cosine matrix reordered by seriation.
@@ -480,7 +480,7 @@ async def get_embedding_matrix(ids: str = "") -> dict[str, Any]:
 
 @router.post("/embedding/enable_umap")
 async def post_enable_umap() -> dict[str, Any]:
-    """P28.4 — on-demand online install of ``umap-learn`` (降维升级).
+    """P28.4 — on-demand online install of ``umap-learn`` (dimensionality-reduction upgrade).
 
     Environment-level capability toggle (not character-specific), so it does
     NOT require a session. Runs ``pip install`` off the event loop so the
@@ -506,7 +506,7 @@ async def get_embedding_clusters() -> dict[str, Any]:
 
 @router.post("/embedding/cluster_labels")
 async def post_embedding_cluster_labels() -> dict[str, Any]:
-    """P28.5 — LLM-name each cluster (按需精炼簇标签).
+    """P28.5 — LLM-name each cluster (refine cluster labels on demand).
 
     Runs under ``session_operation`` (stamps ``memory.llm`` wire + calls the
     memory model). Degrades to medoid labels on any LLM failure — never 500s.
@@ -522,11 +522,11 @@ async def post_embedding_cluster_labels() -> dict[str, Any]:
 
 @router.get("/overview")
 async def get_memory_overview() -> dict[str, Any]:
-    """P29.1 — read-only 记忆系统概况 (cards + findings + 需关注项 + 结论可信度).
+    """P29.1 — read-only memory-system overview (cards + findings + attention items + conclusion confidence).
 
     Aggregates the P27 lineage snapshot and the P28 embedding space **once each**
     into a dashboard payload. Read-only; CPU-bound (it reuses the vector views),
-    so it runs off the event loop (P28.5 阻塞教训).
+    so it runs off the event loop (P28.5 blocking lesson).
     """  # noqa: DOCSTRING_CJK
     session = _require_session()
     character = _require_character(session)
@@ -535,7 +535,7 @@ async def get_memory_overview() -> dict[str, Any]:
 
 @router.get("/code_leads")
 async def get_memory_code_leads() -> dict[str, Any]:
-    """P32 — read-only 代码线索 (开发者): 把机械不变量类发现反推成主程序记忆代码排查线索.
+    """P32 — read-only code leads (developers): map mechanical-invariant findings back to investigation hints in the main application's memory code.
 
     Mirrors ``/overview``: reuses ``build_overview`` once + two deterministic
     file scans (ID-DUP / EVT-DUP). Read-only, no LLM, takes NO session lock
@@ -549,7 +549,7 @@ async def get_memory_code_leads() -> dict[str, Any]:
 
 @router.post("/overview/ai_report")
 async def post_memory_overview_ai_report() -> dict[str, Any]:
-    """P29.2 — LLM 健康体检报告 (按需). Runs under ``session_operation`` (stamps
+    """P29.2 — LLM health-check report (on demand). Runs under ``session_operation`` (stamps
     ``memory.llm`` wire). Degrades to ``method='unavailable'`` + actionable
     reason on any LLM/config failure — never 500s."""  # noqa: DOCSTRING_CJK
     store = get_session_store()
@@ -563,7 +563,7 @@ async def post_memory_overview_ai_report() -> dict[str, Any]:
 
 @router.post("/overview/contradictions")
 async def post_memory_overview_contradictions() -> dict[str, Any]:
-    """P29.2 — L2 矛盾 NLI 裁决 (按需, 对 L1 候选). Runs under ``session_operation``
+    """P29.2 — L2 contradiction NLI adjudication (on demand, for L1 candidates). Runs under ``session_operation``
     (stamps ``memory.llm`` wire). Degrades to candidates-only on failure."""  # noqa: DOCSTRING_CJK
     store = get_session_store()
     try:
@@ -597,12 +597,12 @@ async def export_memory_analysis_zip(
     redaction: str = MEMORY_EXPORT_DEFAULT_TIER,
     include_corpus: bool = True,
 ) -> Response:
-    """P30 — one-click 脱敏记忆分析导出 (可分享 ZIP).
+    """P30 — one-click redacted memory-analysis export (shareable ZIP).
 
     Packs the character's redacted raw memory (``raw_data/``) plus the derived
     analysis conclusions (``analysis/``) into a single ZIP. Read-only, no LLM,
     no temp file on disk. CPU-bound (reuses the vector views) so it runs off
-    the event loop (P28.5 阻塞教训). Declared before ``/{kind}`` so the static
+    the event loop (P28.5 blocking lesson). Declared before ``/{kind}`` so the static
     path wins route resolution.
 
     Query:
@@ -705,45 +705,45 @@ async def write_memory(kind: str, body: MemoryWritePayload) -> dict[str, Any]:
 
 # ── recent.json shortcut: import current session.messages ────────────
 #
-# P25 Day 2 polish r6 (2026-04-23): tester 反馈 "把测试区现有对话一键
-# 落盘到最近对话记忆" 是高频操作 — 之前需要手动把 session.messages 转
-# LangChain 规范 ({type:human|ai|system, data:{content}}) 再走
-# PUT /api/memory/recent. 每次都要开 DevTools 拼 JSON 太硬核.
+# P25 Day 2 polish r6 (2026-04-23): testers frequently need one-click persistence of existing testbench
+# conversations into recent memory. Previously they manually converted session.messages to
+# LangChain format ({type:human|ai|system, data:{content}}), then invoked
+# PUT /api/memory/recent. Opening DevTools to assemble JSON each time was too technical.
 #
-# 本端点是 **raw dump** 通道 (不跑 LLM 压缩, 也不抽事实), 和
-# `memory.trigger/recent.compress` 平行共存:
-#     * /memory/recent/import_from_session  →  直接落 session.messages
-#       (user/assistant/system 三类, 按时间顺序, 不走 LLM).
-#     * /memory/trigger/recent.compress     →  跑 LLM 压缩旧记录, 再写
-#       (preview-then-commit 两阶段).
+# This endpoint is a **raw dump** channel, without LLM compression or fact extraction, coexisting with
+# `memory.trigger/recent.compress`:
+#     * /memory/recent/import_from_session -> persist session.messages directly
+#       (user/assistant/system, in chronological order, without LLM calls).
+#     * /memory/trigger/recent.compress -> compress old records through the LLM, then write
+#       (two phases: preview-then-commit).
 #
-# 过滤规则:
-#     * ``source == external_event_banner`` 跳过 — banner 是 UI-only
-#       视觉标记, 不是真实对话 (prompt_builder 在发送 LLM 前也会过滤,
-#       见 chat_messages.py L52-L54); 塞进 recent.json 会让下一次
-#       /chat/send 把 banner 再注回 wire, 造成语义污染.
-#     * role ∉ {user, assistant, system} 跳过 — LangChain
-#       messages_to_dict 只认这三类; 预留的 simuser/script/auto 是
-#       source 标签, role 本身必然是 user/assistant, 不会命中这条.
-#     * content 为空字符串跳过 — recent.json 里的空 content 毫无记忆
-#       价值, 反而会让 compress 阶段误把它当作 "用户沉默一拍".
+# Filtering rules:
+#     * Skip ``source == external_event_banner``: banners are UI-only
+#       visual markers, not actual conversation (prompt_builder also filters them before sending to the LLM;
+#       see chat_messages.py L52-L54). Writing them into recent.json would reinject them into wire on the next
+#       /chat/send, polluting semantics.
+#     * Skip role outside {user, assistant, system}: LangChain
+#       messages_to_dict recognizes only these three. Reserved simuser/script/auto values are
+#       source labels whose roles are necessarily user/assistant, so this rule does not catch them.
+#     * Skip empty-string content: empty content in recent.json has no memory
+#       value and could make compression mistake it for a moment of user silence.
 #
-# 写策略 (body.mode):
-#     * "append" (默认) — 读 existing recent.json, 新消息追加到尾部,
-#       然后整体原子写回; 不去重 (简单对话重复导入就是 tester 自己
-#       的意图).
-#     * "replace" — 不读 existing, 直接用本轮消息覆盖整个文件.
+# Write policy (body.mode):
+#     * "append" (default): read existing recent.json, append new messages,
+#       then atomically write the whole file; no deduplication (reimporting simple conversations is the tester's
+#       own intent).
+#     * "replace": overwrite the whole file with this pass's messages without reading existing data.
 #
-# 单写 choke-point: 走 ``session_operation`` 锁, 同 write_memory.
+# Single write choke point: use the ``session_operation`` lock, as write_memory does.
 
 
 class RecentImportFromSessionPayload(BaseModel):
     """Body for ``POST /api/memory/recent/import_from_session``.
 
     ``mode``:
-        * ``"append"`` (default) — 原子读 + 合并 + 写回; 旧条目保留, 新
-          条目追加到尾部.
-        * ``"replace"`` — 直接用本轮 session.messages 覆盖整个文件.
+        * ``"append"`` (default) — atomic read + merge + write-back; retain old entries, append new
+          entries to the end.
+        * ``"replace"`` — overwrite the whole file directly with this pass's session.messages.
     """
 
     mode: str = "append"
@@ -800,7 +800,7 @@ async def import_recent_from_session(
 ) -> dict[str, Any]:
     """One-click dump ``session.messages`` into ``recent.json``.
 
-    Shortcut for the Chat workspace "把当前对话内容添加到最近对话记忆"
+    Shortcut for the Chat workspace "Add the current conversation to recent conversation memory"
     button. See module-level comment "recent.json shortcut" for the full
     policy (filtering rules, append vs replace semantics).
 
@@ -815,7 +815,7 @@ async def import_recent_from_session(
     Error mapping:
         * 400 ``InvalidMode``        — ``mode`` ∉ {append, replace}.
         * 404 ``NoActiveSession``    — no session (standard).
-        * 409 ``NoCharacterSelected``— character_name 为空.
+        * 409 ``NoCharacterSelected``— character_name is empty.
         * 409 ``NoMessagesToImport`` — filtered list is empty (tester
           pressed button with empty chat, or only banners).
         * 409 ``SessionBusy``        — another op holds the session lock.
@@ -834,7 +834,7 @@ async def import_recent_from_session(
 
     # Pre-flight: no session → clean 404 instead of letting session_operation
     # raise raw LookupError (which the global handler maps to opaque 500).
-    # UI toast for this path is "先创建会话", so keeping the error actionable
+    # UI toast for this path is "先创建会话" (create a session first), so keeping the error actionable
     # matters; the server's existing memory.trigger handlers accept a 500
     # here for historical reasons (see PROGRESS.md L406), but new endpoints
     # should be crisp.
@@ -1027,7 +1027,7 @@ async def prompt_preview_memory_op(
     """Show what wire ``op`` would send to the memory LLM, without calling it.
 
     P25 r7 — the Chat page's Preview Panel is now chat-only; memory LLM
-    wires are exposed here so the Memory sub-page [预览 prompt] button
+    wires are exposed here so the Memory sub-page [Preview prompt] button
     can fetch the wire without paying the 2-10 s LLM round trip.
 
     Behavior:

@@ -80,28 +80,28 @@ def test_vrm_reset_uses_the_same_desktop_framing_ratio_as_initial_load():
 
 
 def test_vrm_load_model_uses_entry_token_without_blocking_queue():
-    # 设计：token-only「后到者胜」，无串行队列（与 mmd-manager 对偶）。
-    # 队列会让新加载 await 一个已被自己取代的旧加载 → 慢/挂死的 GLTF（无超时）
-    # 无限期阻塞 VRM→VRM 切换（Codex P2）。并发正确性由 vrm-core 的 token 守卫兜底。
+    # Design: token-only "latest request wins," with no serialized queue (symmetric with mmd-manager).
+    # A queue would make a new load await an old load that it has already replaced → a slow/hung GLTF (no timeout)
+    # could block VRM→VRM switching indefinitely (Codex P2). Concurrency correctness is covered by the token guard in vrm-core.
     source = (PROJECT_ROOT / "static/vrm/vrm-manager.js").read_text(encoding="utf-8")
 
-    # token 在入口同步分配（后到者胜），直接调用加载体，不经 promise 队列。
-    # round-2 起挂 .catch 收尾（非 await，遵守本契约）：失败路径复位 _loadState，
-    # 防止空闲 governor 把卡在 'preparing' 的状态当作永久活动（节流失效）。
+    # Allocate the token synchronously at the entry point (latest request wins) and call the loader directly, without a promise queue.
+    # Starting in round 2, attach .catch cleanup (not await, per this contract): on failure, reset _loadState
+    # so an idle governor does not treat a stuck 'preparing' state as permanently active (breaking throttling).
     assert "const loadToken = ++this._activeLoadToken;" in source
     assert "return this._loadModelInternal(modelUrl, options, loadToken).catch((e) => {" in source
     assert "if (this._isLoadTokenActive(loadToken)) this._loadState = 'idle';" in source
     assert "async _loadModelInternal(modelUrl, options, loadToken)" in source
 
-    # 串行队列必须彻底移除：不得残留 _loadModelChain / previousLoad / 旧方法名
+    # Remove serialized queues completely: no _loadModelChain / previousLoad / legacy method names may remain
     assert "_loadModelChain" not in source, "串行队列指针应已移除（会阻塞 VRM→VRM 切换）"
     assert "previousLoad" not in source
     assert "_loadModelExclusive" not in source
 
-    # loadModel 包装体必须极薄：bump token → 直接委派，中间不 await 任何前序加载。
-    # #2253 之后 loadModel 与 token 分配之间多了一层只记在飞计数的薄包装
-    # (_loadModelImplementation)，所以两段分开断言——包装层唯一允许的 await 就是
-    # 那一次委派，token 分配层仍然一个 await 都不许有。
+    # Keep the loadModel wrapper extremely thin: bump the token → delegate directly, without awaiting any earlier load.
+    # Since #2253, a thin wrapper that only tracks in-flight counts (_loadModelImplementation) sits between loadModel and token allocation,
+    # so assert the two layers separately: the wrapper's only permitted await is that one delegation,
+    # while the token-allocation layer must not contain any await.
     outer = source.split("async loadModel(modelUrl, options = {})", 1)[1]
     outer = outer.split("async _loadModelImplementation", 1)[0]
     assert "return await this._loadModelImplementation(modelUrl, options);" in outer, (
@@ -118,11 +118,11 @@ def test_vrm_load_model_uses_entry_token_without_blocking_queue():
     assert "await this." not in wrapper, "loadModel 不得 await 前序加载（否则重现阻塞）"
     assert ".then(" not in wrapper, "loadModel 不得挂 promise 链（否则重现阻塞队列）"
 
-    # 加载体内不得再自行分配 token（token 由入口分配后传入，用于守卫比对）
+    # The loader must not allocate its own token (the entry point allocates and passes it in for guard checks)
     body = source.split("async _loadModelInternal", 1)[1].split("async dispose()", 1)[0]
     assert "++this._activeLoadToken" not in body
 
-    # 被取代的实例在 core 返回后直接早退，不写 _loadState（避免 clobber 并发胜出者）
+    # A superseded instance returns immediately after core returns, without writing _loadState (avoids clobbering the concurrent winner)
     post_core = body.split(
         "const result = await this.core.loadModel(modelUrl, options, loadToken);", 1
     )[1]
@@ -130,13 +130,13 @@ def test_vrm_load_model_uses_entry_token_without_blocking_queue():
         "if (!this._isLoadTokenActive(loadToken)) {", 1
     )[1].split("}", 1)[0]
     assert "return result;" in superseded_branch
-    # 真实写入才有 this. 前缀（注释里提到 _loadState 不算）
+    # Real writes have the this. prefix (_loadState mentioned in a comment does not count)
     assert "this._loadState" not in superseded_branch, "被取代分支不得写 _loadState（会 clobber 胜出者）"
 
 
 def test_vrm_dispose_invalidates_without_blocking_queue():
-    # 无队列后 dispose 只需 bump token 使在途加载失效（旧 load 在 core 守卫处 bail），
-    # 不得引入任何会阻塞后续加载的队列指针。
+    # Without a queue, dispose only needs to bump the token to invalidate in-flight loads (the old load bails at the core guard);
+    # do not introduce a queue pointer that could block subsequent loads.
     source = (PROJECT_ROOT / "static/vrm/vrm-manager.js").read_text(encoding="utf-8")
 
     dispose_body = source.split("async dispose()", 1)[1].split("\n    }\n", 1)[0]
@@ -145,28 +145,28 @@ def test_vrm_dispose_invalidates_without_blocking_queue():
 
 
 def test_vrm_core_load_is_token_guarded_across_dispose():
-    # 清链修活性会重新引入并发损坏：慢的旧 load A 恢复后 core.loadModel 无 token 守卫
-    # 会 remove/dispose/覆写新会话 B 的模型。core.loadModel 必须自带 token 守卫
-    # （与 mmd-core 对偶），manager 必须把 loadToken 传进去。
+    # Clearing the chain for liveness would reintroduce concurrency corruption: when slow old load A resumes, core.loadModel without a token guard
+    # could remove/dispose/overwrite the new session B model. core.loadModel must have its own token guard
+    # (matching mmd-core), and the manager must pass loadToken in.
     core_source = (PROJECT_ROOT / "static/vrm/vrm-core.js").read_text(encoding="utf-8")
     manager_source = (PROJECT_ROOT / "static/vrm/vrm-manager.js").read_text(encoding="utf-8")
 
-    # core 接收 manager 分配的 token
+    # Core accepts a token allocated by the manager
     assert "async loadModel(modelUrl, options = {}, managerLoadToken = null)" in core_source
     assert "const loadToken = managerLoadToken !== null ? managerLoadToken : this.manager._activeLoadToken;" in core_source
 
     load_section = core_source.split("async loadModel(modelUrl, options = {}, managerLoadToken = null)", 1)[1]
     load_section = load_section.split("async disposeVRM(", 1)[0]
 
-    # 两道守卫：GLTF 加载后（触碰共享 scene/currentModel 前）与 3 帧等待后（共享相机写入前）
+    # Two guards: after GLTF loading (before touching shared scene/currentModel) and after the 3-frame wait (before writing shared camera state)
     guard_count = load_section.count("this.manager._activeLoadToken !== loadToken")
     assert guard_count >= 2, f"expected >=2 token guards in vrm-core.loadModel, found {guard_count}"
 
-    # 守卫必须在触碰共享状态之前：
-    #   一道在 disposeVRM(old) 之前；
-    #   二道在「最后一个 await（3 帧等待）之后、任何共享 manager 写入之前」——
-    #   关键是必须先于共享相机/interaction 写入（Codex P2：否则被取代的旧加载会用自己的
-    #   存档相机覆写共享相机把可见的新模型顶到屏外），scene.add 随后无 await 一并覆盖。
+    # Guards must run before touching shared state:
+    #   first before disposeVRM(old);
+    #   second after the "last await (3-frame wait) and before any shared manager write" —
+    #   crucially, before writing shared camera/interaction state (Codex P2: otherwise a superseded old load could use its own
+    #   saved camera to overwrite the shared camera and push the visible new model off-screen); scene.add follows without an await.
     first_guard = load_section.index("this.manager._activeLoadToken !== loadToken")
     old_remove = load_section.index("await this.disposeVRM();")
     frame_wait = load_section.index("await new Promise(resolve => {")
@@ -180,17 +180,17 @@ def test_vrm_core_load_is_token_guarded_across_dispose():
     assert second_guard < camera_write, "second guard must precede shared camera.position write (Codex P2)"
     assert second_guard < scene_add, "second guard must precede scene.add of new model"
 
-    # 二道守卫之后到 scene.add 之间不得再插入 await（否则又暴露一个未守卫窗口）
+    # Do not add an await between the second guard and scene.add (that would expose another unguarded window)
     between = load_section[second_guard:scene_add]
     assert "await " not in between.replace("await this._disposeAbandonedVRM(vrm);", ""), (
         "二道守卫与 scene.add 之间不应有额外 await（会重现未守卫的共享写入窗口）"
     )
 
-    # 早退释放被取代的 VRM 资源（避免显存泄漏）
+    # Early return must release superseded VRM resources (avoid a GPU memory leak)
     assert "async _disposeAbandonedVRM(vrm)" in core_source
     assert load_section.count("this._disposeAbandonedVRM(") >= 2
 
-    # manager 把 loadToken 传进 core.loadModel
+    # Manager passes loadToken to core.loadModel
     assert "const result = await this.core.loadModel(modelUrl, options, loadToken);" in manager_source
 
 
@@ -198,17 +198,17 @@ def test_vrm_cleanup_ui_is_restored_and_delegates_to_mixin():
     ui_source = (PROJECT_ROOT / "static/vrm/vrm-ui-buttons.js").read_text(encoding="utf-8")
     manager_source = (PROJECT_ROOT / "static/vrm/vrm-manager.js").read_text(encoding="utf-8")
 
-    # cleanupUI 必须存在并委托 mixin 的 cleanupFloatingButtons
-    # （后者负责 _returnButtonDragHandlers / _uiWindowHandlers / RAF / DOM 的完整清理）
+    # cleanupUI must exist and delegate to the mixin's cleanupFloatingButtons
+    # (which performs complete cleanup of _returnButtonDragHandlers / _uiWindowHandlers / RAF / DOM)
     assert "VRMManager.prototype.cleanupUI = function () {" in ui_source
     cleanup_body = ui_source.split("VRMManager.prototype.cleanupUI = function () {", 1)[1]
     cleanup_body = cleanup_body.split("};", 1)[0]
     assert "this.cleanupFloatingButtons();" in cleanup_body
 
-    # dispose() 侧的调用点保持存在（cleanupUI 恢复后不再是 dead call）
+    # Keep the call site in dispose() (after cleanupUI is restored, it must not remain dead code)
     assert "this.cleanupUI();" in manager_source
 
-    # mixin 的 cleanupFloatingButtons 必须清理 return 按钮的 document 级拖拽监听
+    # The mixin's cleanupFloatingButtons must remove the return button's document-level drag listeners
     mixin_source = read_avatar_ui_buttons_source()
     cleanup_section = mixin_source.split("ManagerPrototype.cleanupFloatingButtons = function() {", 1)[1]
     assert "this._returnButtonDragHandlers = null;" in cleanup_section
@@ -218,18 +218,18 @@ def test_mmd_load_token_captured_before_first_await_and_passed_from_manager():
     core_source = (PROJECT_ROOT / "static/mmd/mmd-core.js").read_text(encoding="utf-8")
     manager_source = (PROJECT_ROOT / "static/mmd/mmd-manager.js").read_text(encoding="utf-8")
 
-    # core 接收 manager 分配的 token，且在首个 await（模块导入）之前捕获
+    # Core accepts the manager-assigned token and captures it before the first await (module import)
     assert "async loadModel(modelUrl, options = {}, managerLoadToken = null)" in core_source
     load_section = core_source.split("async loadModel(modelUrl, options = {}, managerLoadToken = null)", 1)[1]
     token_capture = load_section.index("const loadToken = managerLoadToken !== null")
     module_await = load_section.index("await this._getMMDModule()")
     assert token_capture < module_await
 
-    # 取代检查必须先于 _clearModel，避免迟到的回退加载清掉新模型
+    # Check for supersession before _clearModel so a late fallback load cannot clear the new model
     clear_model = load_section.index("this._clearModel();")
     assert load_section.index("this.manager._activeLoadToken !== loadToken") < clear_model
 
-    # manager 两条加载路径都要把 loadToken 传给 core，且失败回退前先检查是否已被取代
+    # Both manager load paths must pass loadToken to core and check supersession before falling back after failure
     assert "await this.core.loadModel(modelPath, options, loadToken);" in manager_source
     assert "await this.core.loadModel(defaultModelPath, options, loadToken);" in manager_source
     fallback_guard = manager_source.index("跳过回退")

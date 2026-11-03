@@ -405,3 +405,258 @@ async def test_initial_phase2_generation_aborts_after_ui_engagement(
         output.result.body["reason_code"]
         == contracts.PROACTIVE_REASON_DELIVERY_PREEMPTED
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('use_vision', 'settings', 'expected_error'),
+    [
+        (True, {'proactiveVisionEnabled': True}, None),
+        (True, {}, None),
+        (True, {'proactiveVisionEnabled': False}, PermissionError),
+        (True, OSError('synthetic preference failure'), OSError),
+        (False, {'proactiveVisionEnabled': False}, None),
+        (False, OSError('synthetic preference failure'), None),
+    ],
+)
+async def test_model_factory_rechecks_vision_consent_without_blocking_text(
+    monkeypatch, use_vision, settings, expected_error,
+):
+    from utils import preferences
+
+    read = AsyncMock()
+    if isinstance(settings, Exception):
+        read.side_effect = settings
+    else:
+        read.return_value = settings
+    create = AsyncMock(return_value=object())
+    monkeypatch.setattr(preferences, 'aload_global_conversation_settings', read)
+    monkeypatch.setattr(generation, 'create_chat_llm_async', create)
+    config = generation.ProactiveModelConfig(
+        conversation_model='text-test', conversation_base_url=None,
+        conversation_api_key='synthetic', conversation_provider_type=None,
+        vision_model='vision-test', vision_api_key='synthetic',
+    )
+    if expected_error is not None:
+        with pytest.raises(expected_error):
+            await generation._make_proactive_llm(config, use_vision=use_vision)
+        create.assert_not_awaited()
+    else:
+        await generation._make_proactive_llm(config, use_vision=use_vision)
+        assert create.await_args.args[0] == ('vision-test' if use_vision else 'text-test')
+    if use_vision:
+        assert read.await_count == (1 if expected_error else 2)
+        assert all(call.kwargs == {"strict": True} for call in read.await_args_list)
+    else:
+        read.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['revoke', 'read_error', 'cancel', 'close_error', 'allowed', 'text'])
+async def test_client_creation_wait_rechecks_consent_and_closes_declined_client(monkeypatch, change):
+    import asyncio
+    from utils import preferences
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    llm = SimpleNamespace(aclose=AsyncMock())
+    if change == 'close_error':
+        llm.aclose.side_effect = OSError('synthetic close failure')
+    allowed = True
+
+    async def read(*, strict):
+        assert strict is True
+        if not allowed and change == 'read_error':
+            raise OSError('synthetic preference failure after creation')
+        if not allowed and change == 'cancel':
+            raise asyncio.CancelledError()
+        return {'proactiveVisionEnabled': allowed}
+
+    async def create(*_args, **_kwargs):
+        started.set()
+        await release.wait()
+        return llm
+
+    read_mock = AsyncMock(side_effect=read)
+    monkeypatch.setattr(preferences, 'aload_global_conversation_settings', read_mock)
+    monkeypatch.setattr(generation, 'create_chat_llm_async', create)
+    config = generation.ProactiveModelConfig(
+        conversation_model='text-test', conversation_base_url=None,
+        conversation_api_key='synthetic', conversation_provider_type=None,
+        vision_model='vision-test', vision_api_key='synthetic',
+    )
+    task = asyncio.create_task(generation._make_proactive_llm(config, use_vision=change != 'text'))
+    await asyncio.wait_for(started.wait(), 1)
+    allowed = change == 'allowed'
+    release.set()
+    if change in ('allowed', 'text'):
+        assert await task is llm
+        llm.aclose.assert_not_awaited()
+    else:
+        error = (OSError if change == 'read_error' else
+                 asyncio.CancelledError if change == 'cancel' else PermissionError)
+        with pytest.raises(error):
+            await task
+        llm.aclose.assert_awaited_once_with()
+    if change == 'text':
+        read_mock.assert_not_awaited()
+    else:
+        assert read_mock.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('when', ['creation', 'read', 'reenable'])
+@pytest.mark.parametrize('use_vision', [True, False])
+async def test_live_revocation_is_sticky_for_vision_but_does_not_block_text(monkeypatch, when, use_vision):
+    import asyncio
+    from utils import preferences
+
+    manager = SimpleNamespace(enabled=True, epoch=0)
+    started, release = asyncio.Event(), asyncio.Event()
+    llm = SimpleNamespace(aclose=AsyncMock())
+    reads = 0
+
+    def revoke():
+        manager.enabled = when == 'reenable'
+        manager.epoch += 1
+
+    def live_consent_check():
+        return manager.enabled and manager.epoch == 0
+
+    async def read(*, strict):
+        nonlocal reads
+        assert strict is True
+        reads += 1
+        if when == 'read' and reads == 2:
+            revoke()
+        # The settings POST has not persisted yet.
+        return {'proactiveVisionEnabled': True}
+
+    async def create(*_args, **_kwargs):
+        started.set()
+        await release.wait()
+        return llm
+
+    monkeypatch.setattr(preferences, 'aload_global_conversation_settings', read)
+    monkeypatch.setattr(generation, 'create_chat_llm_async', create)
+    config = generation.ProactiveModelConfig(
+        conversation_model='text-test', conversation_base_url=None,
+        conversation_api_key='synthetic', conversation_provider_type=None,
+        vision_model='vision-test', vision_api_key='synthetic',
+    )
+    task = asyncio.create_task(generation._make_proactive_llm(
+        config, use_vision=use_vision, live_consent_check=live_consent_check,
+    ))
+    await asyncio.wait_for(started.wait(), 1)
+    if when != 'read':
+        revoke()
+    release.set()
+    if use_vision:
+        with pytest.raises(PermissionError):
+            await task
+        llm.aclose.assert_awaited_once_with()
+    else:
+        assert await task is llm
+        assert reads == 0
+        llm.aclose.assert_not_awaited()
+@pytest.mark.asyncio
+@pytest.mark.parametrize('use_vision,when', [
+    (True, 'before'), (False, 'before'), (True, 'read'),
+    (True, 'creation'), (False, 'creation'),
+])
+async def test_retired_round_cannot_send_vision_or_text_after_model_creation(monkeypatch, use_vision, when):
+    from utils import preferences
+
+    current = when != 'before'
+    client = SimpleNamespace(aclose=AsyncMock())
+
+    async def read(**_kwargs):
+        nonlocal current
+        if when == 'read':
+            current = False
+        return {'proactiveVisionEnabled': True}
+
+    async def create(*_args, **_kwargs):
+        nonlocal current
+        current = False
+        return client
+
+    factory = AsyncMock(side_effect=create)
+    monkeypatch.setattr(preferences, 'aload_global_conversation_settings', AsyncMock(side_effect=read))
+    monkeypatch.setattr(generation, 'create_chat_llm_async', factory)
+    config = generation.ProactiveModelConfig(
+        conversation_model='text-test', conversation_base_url=None,
+        conversation_api_key='synthetic', conversation_provider_type=None,
+        vision_model='vision-test', vision_api_key='synthetic',
+    )
+    with pytest.raises(PermissionError):
+        await generation._make_proactive_llm(
+            config, use_vision=use_vision, round_is_current=lambda: current,
+        )
+    assert factory.await_count == int(when == 'creation')
+    assert client.aclose.await_count == int(when == 'creation')
+
+
+def test_retired_stream_cleanup_does_not_target_replacement_before_it_has_a_speech_id():
+    from main_logic.session_state import SessionStateMachine
+    from main_logic.proactive_chat.state import _proactive_turn_still_owned
+
+    manager = SimpleNamespace(current_speech_id='old-speech', state=SessionStateMachine('test'))
+    assert not _proactive_turn_still_owned(manager, 'old-speech')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('consent', ['granted', 'live-revoked', 'persisted-off'])
+async def test_text_call_carrying_screen_material_requires_vision_consent(monkeypatch, consent):
+    """Window-derived text sent to a text model needs the same consent as an image."""
+    from utils import preferences
+
+    read = AsyncMock(return_value={'proactiveVisionEnabled': consent != 'persisted-off'})
+    create = AsyncMock(return_value=SimpleNamespace(aclose=AsyncMock()))
+    monkeypatch.setattr(preferences, 'aload_global_conversation_settings', read)
+    monkeypatch.setattr(generation, 'create_chat_llm_async', create)
+    config = generation.ProactiveModelConfig(
+        conversation_model='text-test', conversation_base_url=None,
+        conversation_api_key='synthetic', conversation_provider_type=None,
+        vision_model='vision-test', vision_api_key='synthetic',
+    )
+    live = lambda: consent != 'live-revoked'  # noqa: E731
+
+    if consent == 'granted':
+        await generation._make_proactive_llm(
+            config, live_consent_check=live, vision_consent_required=True,
+        )
+        assert create.await_args.args[0] == 'text-test'
+        assert read.await_count == 2, 'checked before and after client creation'
+    else:
+        with pytest.raises(PermissionError):
+            await generation._make_proactive_llm(
+                config, live_consent_check=live, vision_consent_required=True,
+            )
+        create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unified_phase1_withholds_window_text_after_revocation(monkeypatch):
+    from utils import preferences
+
+    monkeypatch.setattr(
+        preferences, 'aload_global_conversation_settings',
+        AsyncMock(return_value={'proactiveVisionEnabled': True}),
+    )
+    create = AsyncMock()
+    monkeypatch.setattr(generation, 'create_chat_llm_async', create)
+    config = generation.ProactiveModelConfig(
+        conversation_model='text-test', conversation_base_url=None,
+        conversation_api_key='synthetic', conversation_provider_type=None,
+    )
+
+    parsed = await generation._run_unified_phase1(
+        model_config=config, proactive_lang='zh', lanlan_name='Yui', master_name='博士',
+        merged_web_content='--- 窗口 ---\nEditor', memory_context='', recent_chats_section='',
+        has_music_task=False, has_meme_task=False,
+        live_consent_check=lambda: False, vision_consent_required=True,
+    )
+
+    assert parsed == {'web': None, 'music_keyword': None, 'meme_keyword': None}
+    create.assert_not_awaited()

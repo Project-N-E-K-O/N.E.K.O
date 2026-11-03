@@ -86,15 +86,15 @@ from ._embeddings.schema import (
     stamp_embedding_fields as _stamp_embedding_fields_impl,
 )
 
-# 走 get_module_logger(..., "Memory") 把本模块日志归到 N.E.K.O.Memory.*，
-# 否则 ``logging.getLogger(__name__)`` 产生的 ``memory.embeddings`` logger
-# 落在 N.E.K.O 命名空间之外，向上只能传到无 handler 的 root，导致
-# "EmbeddingService: ready / vectors disabled (reason)" 这类关键状态行
-# 永远不进 Memory 日志文件——线上排"为啥向量召回是空的"时根本看不到原因。
+# Use get_module_logger(..., "Memory") to route this module's logs under N.E.K.O.Memory.*;
+# otherwise the ``logging.getLogger(__name__)`` call creates a ``memory.embeddings`` logger
+# outside the N.E.K.O namespace, which propagates only to the handler-free root and causes
+# key status lines such as "EmbeddingService: ready / vectors disabled (reason)"
+# never to reach the Memory log file — making production diagnosis of "why vector retrieval is empty" impossible.
 try:
     from utils.logger_config import get_module_logger
     logger = get_module_logger(__name__, "Memory")
-except Exception:  # noqa: BLE001 — 极早期/裸测试环境拿不到 config，退回裸 logger
+except Exception:  # noqa: BLE001 — config may be unavailable in very early startup or bare test environments; fall back to a plain logger
     logger = logging.getLogger(__name__)
 
 
@@ -137,16 +137,16 @@ DEFAULT_VECTORS_MIN_RAM_GB = 4.0
 DEFAULT_VECTORS_MODEL_DIR_NAME = "embedding_models"
 DEFAULT_VECTORS_MAX_LENGTH = 1024
 
-# 推理峰值上限。激活内存近似 ``batch × seq × hidden × layers``;固定
-# batch + pad-to-longest 让一条长文本就能把激活顶到上百 GB(实测:
-# 用户粘贴一段长 recent 进记忆,凛天上线那个 sweep 把 RSS 从 1.1 GB
-# 顶到 12.4 GB)。改成 token 预算 ``batch × max_len ≤ _INFER_BATCH_MAX_TOKENS``,
-# 长文本时 batch 自动缩到 1~2 条,峰值有硬上界。
+# Inference peak memory is approximately ``batch × seq × hidden × layers``; fixed
+# batch + pad-to-longest lets a single long text push activations into the hundreds of GB (observed:
+# a user pasted a long recent conversation into memory, and the sweep pushed RSS from 1.1 GB
+# to 12.4 GB). Use a token budget ``batch × max_len ≤ _INFER_BATCH_MAX_TOKENS``;
+# for long texts, batch automatically shrinks to 1–2 items, giving a hard upper bound on peak usage.
 #
-# 选 16384:在新 max_length=1024 下,一桶能放下 16 条满长(等同
-# worker BATCH_SIZE=16 的原行为),正常路径吞吐零损失;当历史数据 /
-# 测试 / 自定义 profile 把 max_length 顶到旧 8192 时也只允许 2 条
-# 一桶,峰值仍可控。"""
+# Chosen value: 16384. With the new max_length=1024, one batch fits 16 full-length items (same as
+# the previous worker BATCH_SIZE=16), so normal throughput is unchanged. If historical data /
+# tests / custom profiles raise max_length to the old 8192, only two items fit per
+# batch, keeping peak usage controllable."""
 _INFER_BATCH_MAX_TOKENS = 16384
 
 # Non-sticky (borrowed-model) inference failures log at most this often.
@@ -179,12 +179,12 @@ class _DisableReason(enum.Enum):
     # the install commands diverge.
     NO_TOKENIZERS = "tokenizers_not_importable"
     NO_MODEL_FILE = "model_file_missing"
-    # ``enable_truncation`` 失败 = tokenizer 实例存在但截断契约没能建立。
-    # 必须当成 load 失败(Codex / CodeRabbit 在 PR #1585 联合指出 P2):
-    # ``model_id`` 现在把 max_length 编进 cache id,如果继续 ready,长文本
-    # 会被「未截断」地编码、却 stamp 成 ``-mlen1024``,跟未来真的 1024 截
-    # 断的 vector 在同一 id 下混存,is_cached_embedding_valid 会判它们「同
-    # 一空间」做 cosine,召回质量静默漂移。宁可 disable 也不能错配 cache。
+    # ``enable_truncation`` failing means the tokenizer exists but its truncation contract was not established.
+    # Treat this as a load failure (Codex / CodeRabbit jointly identified P2 in PR #1585):
+    # ``model_id`` now includes max_length in the cache ID; if this still reports ready, long text
+    # will be encoded without truncation but stamped ``-mlen1024``. It would then coexist under the same ID as vectors genuinely truncated at 1024,
+    # and is_cached_embedding_valid would treat them as the "same space" for cosine similarity,
+    # silently drifting retrieval quality. Disabling is safer than a cache mismatch.
     TRUNCATION_SETUP_FAILED = "tokenizer_truncation_setup_failed"
     # Default bundle is INT8. ``auto`` picks INT8 when *any* usable SIMD int8
     # path exists: AVX-VNNI (fast) OR plain AVX2 (slower but fine for our nano
@@ -1351,43 +1351,43 @@ class EmbeddingService:
             raise _DisabledError(_DisableReason.NO_TOKENIZERS) from e
 
         sess_opts = ort.SessionOptions()
-        # intra-op 线程数:backfill 是后台补向量的任务,在小核机上占掉一半核心
-        # 已经可感(4 核 → 2 线程 = 50%,与前端渲染 / LLM 客户端 / TTS 抢核)。
-        # ≤4 核降到单线程,把余下的核留给交互路径;>4 核维持「一半核心」的老
-        # 策略——大核机吞吐优先,头部余量仍然够。
+        # Intra-op thread count: backfill is a background embedding task, and on low-core machines using half the cores
+        # is already noticeable (4 cores → 2 threads = 50%, competing with frontend rendering / LLM client / TTS).
+        # Use one thread on ≤4 cores to leave capacity for interactive work; keep the old "half the cores" policy above 4
+        # cores, favoring throughput on larger machines while leaving headroom.
         #
-        # 「小核机」阈值按*物理*核判,不用 os.cpu_count():4 核 + 超线程的 CPU
-        # (i3/i5 常见)逻辑核报 8,按逻辑核判会漏掉这类机器走 >4 分支给 4 线程
-        # ——而这恰是要压占用的目标硬件。psutil 已是本模块依赖(detect_total_ram_gb),
-        # 物理核拿不到(平台不支持 / 无 psutil)再退回逻辑核。>4 分支仍按逻辑核
-        # 折半,与本改动前的行为逐字一致,不动大核机。
+        # Classify "low-core machines" by *physical* cores, not os.cpu_count(): a 4-core CPU with hyperthreading
+        # (common i3/i5) reports 8 logical cores, so checking logical cores would miss these machines and enter the >4 branch with 4 threads
+        # — exactly the hardware we want to limit. psutil is already a dependency of this module (detect_total_ram_gb);
+        # if physical-core count is unavailable (unsupported platform / no psutil), fall back to logical cores. The >4 branch still halves logical-core count,
+        # byte-for-byte preserving previous behavior on larger machines.
         logical = os.cpu_count() or 2
         try:
             import psutil
             physical = psutil.cpu_count(logical=False)
-        except Exception:  # noqa: BLE001 — 无 psutil / 平台不支持 → 退回逻辑核
+        except Exception:  # noqa: BLE001 — no psutil / unsupported platform → fall back to logical cores
             physical = None
         cores = physical or logical
         sess_opts.intra_op_num_threads = 1 if cores <= 4 else max(1, logical // 2)
         sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        # Arena 默认 True(BFCArena 只涨不还):一次性大分配后 RSS 永久
-        # 钉在高水位,把瞬时尖峰变成永久占用。我们的输入有 _INFER_BATCH_MAX_TOKENS
-        # 兜底,峰值已可控;关掉 arena 让分配器跟实际需求走,RSS 能跌回,
-        # 也避免冷路径偶发长批次永久污染基线。代价:每次 run 重新 malloc,
-        # CPU 推理本来就 100ms+ 级,malloc 几 μs 可忽略。
+        # Arena defaults to True (BFCArena only grows): after one large allocation, RSS stays
+        # permanently at its high-water mark, turning a temporary spike into permanent usage. Our input has the _INFER_BATCH_MAX_TOKENS
+        # safeguard and peak usage is already bounded; disabling the arena lets the allocator follow actual demand so RSS can fall,
+        # and prevents occasional long batches on the cold path from permanently polluting the baseline. Cost: malloc runs again each run;
+        # CPU inference already takes 100ms+, so a few microseconds for malloc are negligible.
         sess_opts.enable_cpu_mem_arena = False
-        # 关掉 intra-op 线程池的 spin-wait。ORT 默认在每次 run 结束后让 worker
-        # 线程忙等(busy-spin)一小段以抢下一批活;而 backfill 是「一连串小 run,
-        # 中间夹着 Python 侧 tokenize / numpy 预处理」的突发型负载,spin 会在这些
-        # 间隙把核心持续顶高。改成阻塞等待后,下次 run 唤醒线程多花几 μs——对
-        # 100ms+ 级的 CPU 推理可忽略——却能显著压低 backfill / 召回期间的占用。
-        # add_session_config_entry 在旧版本 ORT 上可能缺失,失败只是回到默认
-        # spin 行为(功能不受影响),所以吞掉异常不当作 load 失败。
+        # Disable spin-wait in the intra-op thread pool. ORT normally makes workers
+        # busy-spin briefly after each run to grab the next batch; backfill is a bursty workload — "many small runs,
+        # with Python-side tokenization / numpy preprocessing between them" — so spinning keeps cores elevated during those
+        # gaps. Blocking instead adds a few microseconds to wake threads for the next run — negligible for
+        # 100ms+ CPU inference — while substantially reducing usage during backfill / retrieval.
+        # add_session_config_entry may be absent in older ORT versions; failure simply restores the default
+        # spin behavior (no functional impact), so swallowing the exception is not a load failure.
         try:
             sess_opts.add_session_config_entry(
                 "session.intra_op.allow_spinning", "0",
             )
-        except Exception as e:  # noqa: BLE001 — 老 ORT 无此键 → 保持默认 spin
+        except Exception as e:  # noqa: BLE001 — older ORT lacks this key → keep default spin behavior
             logger.debug(
                 "EmbeddingService: allow_spinning=0 not applied (%s: %s)",
                 type(e).__name__, e,
@@ -1399,10 +1399,10 @@ class EmbeddingService:
         try:
             self._tokenizer.enable_truncation(max_length=DEFAULT_VECTORS_MAX_LENGTH)
         except Exception as e:  # noqa: BLE001
-            # 不能继续 ready —— 见 _DisableReason.TRUNCATION_SETUP_FAILED 注释:
-            # model_id 把 max_length 编进 cache id,truncation 没生效时长文本
-            # 会被未截断地编码、却 stamp 成 mlen1024,污染 cache 语义。让 load
-            # 失败走 disable 路径,fallback service 接管,比错配 cache 安全得多。
+            # Must not report ready — see the comment for _DisableReason.TRUNCATION_SETUP_FAILED:
+            # model_id includes max_length in the cache ID; if truncation did not take effect, long text
+            # would be encoded without truncation but stamped as mlen1024, corrupting cache semantics. Make load
+            # fail and use the disable path so fallback service takes over; a cache mismatch is worse.
             logger.warning(
                 "EmbeddingService: tokenizer truncation setup failed (max_length=%d): %s",
                 DEFAULT_VECTORS_MAX_LENGTH, e,
@@ -1433,8 +1433,8 @@ class EmbeddingService:
         import numpy as np
 
         input_names = {i.name for i in self._session.get_inputs()}
-        # 按长度升序桶装。排序的目的是让相近长度凑一起,避免「一条短一条长」
-        # 浪费 padding 预算。每条出桶时记录 original index,run 完按原顺序填回。
+        # Bucket by ascending length. Sorting groups similar lengths to avoid wasting padding budget on "one short + one long";
+        # record each item's original index when adding it, then restore original order after run.
         order = sorted(range(len(encoded)), key=lambda i: len(encoded[i].ids))
         out: list[list[float] | None] = [None] * len(texts)
 
@@ -1443,8 +1443,8 @@ class EmbeddingService:
         for orig_i in order:
             n = len(encoded[orig_i].ids)
             new_max = max(bucket_max_len, n)
-            # 空桶必接受(哪怕单条 > budget),否则极端 max_length 配置会死锁;
-            # 非空桶按预算 flush。
+            # Always accept an empty bucket (even if one item exceeds budget) or an extreme max_length setting could deadlock;
+            # flush non-empty buckets when they exceed budget.
             if bucket_idx and new_max * (len(bucket_idx) + 1) > _INFER_BATCH_MAX_TOKENS:
                 self._run_bucket(bucket_idx, encoded, input_names, out, np)
                 bucket_idx = [orig_i]
@@ -1455,9 +1455,9 @@ class EmbeddingService:
         if bucket_idx:
             self._run_bucket(bucket_idx, encoded, input_names, out, np)
 
-        # 桶分配按 range(len(encoded)) 全覆盖 — 任何 None 残留都是 bug
-        # 而不是「正常但失败」,所以这里 assert 而不是静默过滤(过滤会改长度,
-        # 把 zip(texts, vectors) 错位)。
+        # Bucket assignment must cover all indices in range(len(encoded)) — any remaining None is a bug,
+        # not a "normal failure," so assert instead of silently filtering (filtering changes lengths
+        # and misaligns zip(texts, vectors)).
         assert all(v is not None for v in out), "bucket coverage gap"
         return out  # type: ignore[return-value]
 

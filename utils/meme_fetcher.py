@@ -23,9 +23,9 @@ import os
 import jmespath
 from urllib.parse import quote, quote_plus, urljoin, urlparse
 
-# 全局的表情包图源白名单注册表，由爬虫层维护并供其他模块引用
+# Global meme-image source allowlist registry, maintained by scrapers and referenced by other modules
 MEME_ALLOWED_HOSTS = [
-    # 2026-04-16: doutub.com 域名易主挂黑产博彩页，已停用
+    # 2026-04-16: disable doutub.com after ownership changed and malicious gambling content appeared
     # 'qn.doutub.com',
     # 'doutub.com',
     'img.soutula.com', 'i.imgflip.com',
@@ -47,15 +47,15 @@ except ImportError:
     def is_china_region() -> bool:
         import locale
         try:
-            # 优先尝试现代 API (Python 3.11+)
+            # Try modern APIs first (Python 3.11+)
             try:
-                # getlocale() 可能在某些环境下返回 (None, None) 且不报错
+                # getlocale() may return (None, None) without raising in some environments
                 res = locale.getlocale()
                 current_locale = res[0] if res else None
             except Exception:
                 current_locale = None
 
-            # 如果 getlocale() 失败或返回空，尝试 getdefaultlocale() 或环境变量
+            # If getlocale() fails or returns empty, try getdefaultlocale() or environment variables
             if not current_locale:
                 try:
                     current_locale = locale.getdefaultlocale()[0]
@@ -74,7 +74,7 @@ except ImportError:
     def source_region_from_locale(source_locale: str | None) -> str | None:
         return None
 
-# 更广泛且现代的 User-Agent 池
+# Broader modern User-Agent pool
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
@@ -102,24 +102,24 @@ def _clean_imgflip_title(raw: str) -> str:
     Cleaning strategy: strip the metadata, keeping only the parts meaningful to users.
     """
     s = raw.strip()
-    # 去掉 "| image tagged in ..." 及其后所有内容
+    # Remove "| image tagged in ..." and everything afterward
     s = re.split(r'\s*\|\s*image tagged\b', s, maxsplit=1, flags=re.I)[0]
-    # 去掉 "| made w/ Imgflip ..."
+    # Remove "| made w/ Imgflip ..."
     s = re.split(r'\s*\|\s*made w/', s, maxsplit=1, flags=re.I)[0]
-    # 去掉 "user-captioned meme" / "user-generated gif" 及可能跟的 ", N views"
+    # Remove "user-captioned meme" / "user-generated gif" and optional following ", N views"
     s = re.sub(
         r',?\s*\(?\buser-(?:captioned meme|generated gif)\)?,?\s*(?:\d[\d,]*\s*views?\b)?',
         '', s, flags=re.I,
     )
-    # 去掉独立的 "N views"
+    # Remove standalone "N views"
     s = re.sub(r',?\s*\b\d[\d,]*\s+views?\b', '', s, flags=re.I)
-    # 去掉形如 "(Template Name Meme)" 的模板名括号段（仅当剩余还有实质内容时才移除）
+    # Remove parenthesized template names such as "(Template Name Meme)" only when substantive content remains
     candidate = re.sub(r'\([^)]{1,60}\b[Mm]eme\)\s*', '', s).strip()
     if candidate:
         s = candidate
-    # 如果整个结果被括号包裹 "(Some Name)"，脱壳
+    # Unwrap results wholly enclosed in parentheses, such as "(Some Name)"
     s = re.sub(r'^\(([^)]+)\)$', r'\1', s.strip())
-    # 合并多余空白、去除首尾管道/逗号
+    # Collapse whitespace and trim leading/trailing pipes/commas
     s = re.sub(r'\s+', ' ', s).strip().strip('|,').strip()
     return s
 
@@ -183,24 +183,24 @@ class MemeFetcher:
         """Fetch HTML content asynchronously, with exponential-backoff retries and random jitter. Supports reusing self._session"""
         for attempt in range(max_retries):
             try:
-                # 指数退避 (Exponential Backoff): 1s, 2s, 4s...
-                # 加上随机抖动 (Jitter)
+                # Exponential backoff: 1s, 2s, 4s...
+                # Add random jitter
                 if attempt > 0:
                     delay = random.uniform(1.0, 2.0) * (2 ** attempt)
                     logger.info(f"第 {attempt + 1} 次重试中，延迟 {delay:.2f}s...")
                     await asyncio.sleep(delay)
                 else:
-                    # 正常请求之间的随机间隔
+                    # Random delay between normal requests
                     await asyncio.sleep(random.uniform(0.5, 1.5))
 
                 headers = self._get_random_headers()
                 session = self._session
                 
                 if session:
-                    # 使用持久化 Session
+                    # Use a persistent Session
                     response = await session.get(url, params=params, headers=headers)
                 else:
-                    # fallback：复用外部共享 client（未 open 实例时）
+                    # Fallback: reuse the external shared client when this instance was not opened
                     from utils.external_http_client import get_external_http_client
                     client = get_external_http_client()
                     response = await client.get(url, params=params, headers=headers, timeout=10.0)
@@ -243,11 +243,11 @@ class MemeFetcher:
             if not html:
                 return []
 
-            # BS4 解析放线程池，避免阻塞 event loop
+            # Parse BS4 in a thread pool to avoid blocking the event loop
             from bs4 import BeautifulSoup
             soup = await asyncio.to_thread(BeautifulSoup, html, 'lxml')
 
-            # Imgflip 的搜索结果
+            # Imgflip search results
             target_links = soup.find_all('a', href=re.compile(r'^/(i|gif)/[a-zA-Z0-9]+$'))
             
             results = []
@@ -269,7 +269,7 @@ class MemeFetcher:
                     continue
                 seen_ids.add(item_id)
                 
-                # 提取标题：优先 img alt -> 链接 title -> get_text (带空格分隔)
+                # Extract title in priority order: img alt -> link title -> get_text with spaces
                 img = link.find('img')
                 title = ""
                 used_get_text = False
@@ -380,9 +380,9 @@ def _is_valid_meme_url(url: str) -> bool:
             return False
     return True
 
-# ⚠️ 2026-04-16: doutub.com 域名易主（RDAP last changed 同日），真实 IP 挂博彩黑产页，
-# 官方无新域名公告。该抓取类已在调度层停用（见 CN_FETCHERS 和 main）。保留类定义仅供参考，
-# 如斗图吧启用新域名再行恢复，务必同步更新 MEME_ALLOWED_HOSTS 和 referer_map。
+# ⚠️ 2026-04-16: doutub.com changed owners (RDAP last changed that day), and its actual IP serves malicious gambling pages;
+# no official replacement domain was announced. Scheduling disables this scraper (see CN_FETCHERS/main); retain its definition only for reference.
+# Restore if Doutub adopts a new domain, updating MEME_ALLOWED_HOSTS and referer_map together.
 class DoutubFetcher:
     """
     Doutuba (doutub.com) meme crawler class
@@ -472,7 +472,7 @@ class DoutubFetcher:
                 
                 headers = self._get_headers()
                 
-                # 默认 TLS 尝试
+                # Default TLS attempt
                 try:
                     if self._session:
                         response = await self._session.get(url, headers=headers)
@@ -484,7 +484,7 @@ class DoutubFetcher:
                 except ssl.SSLError as e:
                     logger.warning(f"斗图吧 HTTPS SSL握手失败，尝试降低安全级别重试 (第{attempt+1}次): {e}")
                     try:
-                        # 仅在 SSL 错误时执行降级 TLS 尝试
+                        # Attempt downgraded TLS only after SSL errors
                         if self._session:
                             await self.close()
                             self._session = self._create_client(seclevel1=True)
@@ -497,9 +497,9 @@ class DoutubFetcher:
                     except Exception as inner_e:
                         logger.warning(f"斗图吧降级请求依然失败 (第{attempt+1}次): {inner_e}")
                         last_exception = inner_e
-                        # 允许进入下方的 sleep 并开始下一轮 attempt
+                        # Continue to the sleep below and begin the next attempt
                 except (httpx.TransportError, httpx.ConnectError) as e:
-                    # 检查是否由于底层 SSL 握手失败引起 (可能被 httpx 包装)
+                    # Check for underlying SSL handshake failure, possibly wrapped by httpx
                     is_ssl_error = isinstance(e.__cause__, ssl.SSLError) or "SSL" in str(e) or "handshake" in str(e).lower()
                     if is_ssl_error:
                         logger.warning(f"检测到可能的 TLS 握手异常，尝试降级重试 (第{attempt+1}次): {e}")
@@ -526,9 +526,9 @@ class DoutubFetcher:
             except httpx.HTTPStatusError as e:
                 logger.error(f"斗图吧HTTP错误 (状态码 {e.response.status_code}): {e}")
                 last_exception = e
-                # 对于某些 HTTP 错误（如 404），重试可能无意义，但此处遵循全局重试逻辑
+                # Retrying some HTTP errors such as 404 may be pointless, but follow the global retry policy here
             
-            # 指数退避休眠
+            # Exponential-backoff sleep
             if attempt < max_retries - 1:
                 delay = backoff_factor * (2 ** attempt)
                 await asyncio.sleep(delay)
@@ -548,14 +548,14 @@ class DoutubFetcher:
             import re
             import json
 
-            # BS4 + DOTALL 正则 + JSON 解析整体放线程池，full HTML 上的 .*?
-            # 全文扫描在 event loop 里能阻塞百毫秒级。
+            # Offload BS4 + DOTALL regex + JSON parsing together; full-HTML .*? scans
+            # can block the event loop for hundreds of milliseconds.
             def _parse_html_blob(_html: str) -> tuple:
                 from bs4 import BeautifulSoup
                 _soup = BeautifulSoup(_html, 'lxml')
-                # 三种框架的 SSR 注入格式按优先级尝试：Next.js → Nuxt.js → 通用 INITIAL_STATE。
-                # 任一格式 JSON 解析失败都静默吞异常（页面脚本可能被压缩/截断/混淆），
-                # _ssr 保持 None，调用方会回退到下方 XHR API 抓取，无需中断流程。
+                # Try framework SSR formats in priority order: Next.js → Nuxt.js → generic INITIAL_STATE.
+                # Silently catch JSON parsing errors for every format, since page scripts may be minified/truncated/obfuscated;
+                # leave _ssr=None so callers fall back to XHR API scraping below without interrupting flow.
                 _ssr = None
                 _nuxt = re.search(r'window\.__NUXT__\s*=\s*({.*?});', _html, re.DOTALL)
                 _next = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', _html, re.DOTALL)
@@ -564,17 +564,17 @@ class DoutubFetcher:
                     try:
                         _ssr = json.loads(_next.group(1))
                     except json.JSONDecodeError:
-                        pass  # 见上方 SSR 降级注释
+                        pass  # See SSR fallback notes above
                 elif _nuxt:
                     try:
                         _ssr = json.loads(_nuxt.group(1))
                     except json.JSONDecodeError:
-                        pass  # 见上方 SSR 降级注释
+                        pass  # See SSR fallback notes above
                 elif _init:
                     try:
                         _ssr = json.loads(_init.group(1))
                     except json.JSONDecodeError:
-                        pass  # 见上方 SSR 降级注释
+                        pass  # See SSR fallback notes above
                 return _soup, _ssr
 
             soup, ssr_data = await asyncio.to_thread(_parse_html_blob, html)
@@ -582,7 +582,7 @@ class DoutubFetcher:
 
             found_urls = set()
             
-            # 尝试精准提取框架数据结构，摈弃全局散弹枪递归
+            # Extract specific framework structures instead of recursively searching everything indiscriminately
             if ssr_data:
                 possible_paths = [
                     "props.pageProps.data.rows",
@@ -609,7 +609,7 @@ class DoutubFetcher:
                     id_raw = item.get('id', '')
                     self._add_meme_item(results, found_urls, url, title_raw, id_raw, search_url)
 
-            # 若 SSR 内未提取到，且 results 依然为空，则尝试直接抓取 XHR 内部 API
+            # If SSR extraction leaves results empty, try the internal XHR API directly
             if not results:
                 api_url = f"{self.base_url}/api/search/emotion/list"
                 api_params = {"keyword": keyword, "page": 1}
@@ -617,7 +617,7 @@ class DoutubFetcher:
                     if self._session:
                         api_resp = await self._session.get(api_url, params=api_params, headers=self._get_headers())
                     else:
-                        # fallback：复用外部共享 client
+                        # Fallback: reuse the external shared client
                         from utils.external_http_client import get_external_http_client
                         client = get_external_http_client()
                         api_resp = await client.get(api_url, params=api_params, headers=self._get_headers(), timeout=10.0)
@@ -636,7 +636,7 @@ class DoutubFetcher:
                 except Exception as e:
                     logger.debug(f"尝试抓取 XHR API 失败: {e}")
 
-            # 最后的退路：仅使用健壮的通用选择器，拒绝使用前端哈希类名 (如 sc-fHeRUl)
+            # Last resort: robust generic selectors only; avoid frontend hashed class names such as sc-fHeRUl
             if not results:
                 image_selectors = [
                     'div.cell a img',
@@ -791,29 +791,29 @@ class DoutupkFetcher:
             if not html:
                 return []
 
-            # BS4 解析放线程池
+            # Parse BS4 in a thread pool
             from bs4 import BeautifulSoup
             soup = await asyncio.to_thread(BeautifulSoup, html, 'lxml')
             results: List[Dict[str, Any]] = []
 
-            # 懒加载结构：img.image_dtb[data-original=真实URL]，src 是 loader 占位图
+            # Lazy-loading structure: img.image_dtb[data-original=actual URL], with src containing a loader placeholder
             for img in soup.select('img.image_dtb'):
                 if len(results) >= limit:
                     break
 
                 src = img.get('data-original') or img.get('data-backup') or ''
-                # 过滤占位图（loader.gif / gif.png 等都属 static.doutupk.com 装饰性资源）
+                # Filter placeholders such as loader.gif/gif.png, decorative assets from static.doutupk.com
                 if not src or 'static.doutupk.com' in src or not _is_valid_meme_url(src):
                     continue
 
-                # 若站点偶发出根相对路径 /uploads/...，urljoin 会拼成绝对 URL；
-                # 已是绝对 URL 则原样返回。否则前端 safeUrl 会丢弃并让竞速假阳性。
+                # If the site returns a root-relative /uploads/... path, urljoin makes it absolute;
+                # existing absolute URLs pass through unchanged. Otherwise frontend safeUrl rejects it and creates a false-positive race winner.
                 src = urljoin(self.base_url + '/', src)
-                # 统一升级为 https，避免 mixed content 与部分 client 强校验
+                # Upgrade consistently to https, avoiding mixed content and strict validation in some clients
                 if src.startswith('http://'):
                     src = 'https://' + src[len('http://'):]
 
-                # 详情页 URL 可做点击跳转的 page_url
+                # Detail-page URLs can serve as click-through page_url
                 parent_a = img.find_parent('a')
                 page_url = parent_a.get('href') if parent_a and parent_a.get('href') else search_url
 
@@ -853,7 +853,7 @@ class FabiaoqingFetcher:
 
     async def __aenter__(self) -> "FabiaoqingFetcher":
         if self._session is None:
-            # 采用渐进式 TLS 策略：默认使用系统最强加密，若失败则降级到 SECLEVEL=1
+            # Progressive TLS strategy: system's strongest encryption first, downgrading to SECLEVEL=1 on failure
             self._session = httpx.AsyncClient(
                 timeout=10.0, 
                 follow_redirects=True, 
@@ -882,8 +882,8 @@ class FabiaoqingFetcher:
     def _create_client(self, seclevel1: bool = False) -> httpx.AsyncClient:
         """Create an AsyncClient on demand, supporting SECLEVEL=1 downgrade"""
         if seclevel1:
-            # 针对国内某些旧 SSL 协议站点，强制降级到 SECLEVEL=1 
-            # 这里的 verify=False 虽然不安全，但对于表情包爬取这种公开非敏感数据是必要的折中
+            # Force SECLEVEL=1 for certain mainland sites using old SSL protocols
+            # Although verify=False is insecure, it is a necessary compromise for scraping public, nonsensitive memes here
             context = ssl.create_default_context()
             try:
                 context.set_ciphers('DEFAULT@SECLEVEL=1')
@@ -914,7 +914,7 @@ class FabiaoqingFetcher:
                 
                 headers = self._get_headers()
                 
-                # 默认 TLS 尝试
+                # Default TLS attempt
                 try:
                     if self._session:
                         response = await self._session.get(url, headers=headers)
@@ -926,7 +926,7 @@ class FabiaoqingFetcher:
                 except ssl.SSLError as e:
                     logger.warning(f"发表情 HTTPS SSL握手失败，尝试降低安全级别重试 (第{attempt+1}次): {e}")
                     try:
-                        # 仅在 SSL 错误时执行降级 TLS 尝试
+                        # Attempt downgraded TLS only after SSL errors
                         if self._session:
                             await self.close()
                             self._session = self._create_client(seclevel1=True)
@@ -939,9 +939,9 @@ class FabiaoqingFetcher:
                     except Exception as inner_e:
                         logger.warning(f"发表情降级请求依然失败 (第{attempt+1}次): {inner_e}")
                         last_exception = inner_e
-                        # 允许进入下方的 sleep 并开始下一轮 attempt
+                        # Continue to the sleep below and begin the next attempt
                 except (httpx.TransportError, httpx.ConnectError) as e:
-                    # 检查是否由于底层 SSL 握手失败引起 (可能被 httpx 包装)
+                    # Check for underlying SSL handshake failure, possibly wrapped by httpx
                     is_ssl_error = isinstance(e.__cause__, ssl.SSLError) or "SSL" in str(e) or "handshake" in str(e).lower()
                     if is_ssl_error:
                         logger.warning(f"检测到可能的 TLS 握手异常，尝试降级重试 (第{attempt+1}次): {e}")
@@ -972,7 +972,7 @@ class FabiaoqingFetcher:
                 logger.error(f"发表情发生非预期异常: {e}")
                 last_exception = e
             
-            # 指数退避休眠
+            # Exponential-backoff sleep
             if attempt < max_retries - 1:
                 delay = backoff_factor * (2 ** attempt)
                 await asyncio.sleep(delay)
@@ -989,7 +989,7 @@ class FabiaoqingFetcher:
             if not html:
                 return []
 
-            # BS4 解析放线程池
+            # Parse BS4 in a thread pool
             from bs4 import BeautifulSoup
             soup = await asyncio.to_thread(BeautifulSoup, html, 'lxml')
             results = []
@@ -1069,8 +1069,8 @@ async def fetch_meme_content(keyword: str = '', limit: int = 5, source_locale: s
     source_name = ""
     
     CN_FETCHERS = [
-        # 2026-04-16: doutub.com 域名易主挂黑产，停用斗图吧源，改用 doutupk.com（斗图啦）
-        # (DoutubFetcher, "斗图吧"),
+        # 2026-04-16: doutub.com changed owners and became malicious; disable Doutub and use doutupk.com (Doutula)
+        # (DoutubFetcher, "斗图吧"),  # Doutub source
         (DoutupkFetcher, "斗图啦"),
         (FabiaoqingFetcher, "发表情"),
     ]
@@ -1087,21 +1087,21 @@ async def fetch_meme_content(keyword: str = '', limit: int = 5, source_locale: s
                 except Exception as e:
                     logger.warning(f"{nm}并发探测失败: {e}")
                     return None, nm
-            # 必须显式 create_task 才能管理任务生命周期
+            # Explicit create_task is required to manage task lifetime
             tasks.append(asyncio.create_task(wrap()))
         
         try:
-            # 使用 as_completed 只要一个成功就立刻返回
+            # Return immediately on the first success through as_completed
             for coro in asyncio.as_completed(tasks):
                 res, nm = await coro
                 if res:
                     return res, nm
         finally:
-            # 找到结果或异常退出时，必须显式取消其他还在跑的任务
+            # On finding results or exiting with errors, explicitly cancel every other running task
             for task in tasks:
                 if not task.done():
                     task.cancel()
-            # 给取消的任务一个收尾的机会
+            # Give cancelled tasks an opportunity to finalize
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
                 
@@ -1148,18 +1148,18 @@ async def fetch_meme_content(keyword: str = '', limit: int = 5, source_locale: s
     }
 
 # ==========================================
-# 测试模块
+# Test module
 # ==========================================
 
 async def main():
     """Unit-test functionality"""
     test_keywords_cn = ["搞笑", "猫", "熊猫头"]
     
-    # 2026-04-16: doutub.com 域名易主挂黑产，注释掉斗图吧测试
-    # print("=== 斗图吧 Meme Fetcher Test ===")
+    # 2026-04-16: doutub.com changed owners and became malicious; disable its tests
+    # print("=== Doutub Meme Fetcher Test ===")
     # async with DoutubFetcher() as fetcher:
     #     for kw in test_keywords_cn[:2]:
-    #         print(f"\nSearching 斗图吧 for '{kw}'...")
+    #         print(f"\nSearching Doutub for '{kw}'...")
     #         results = await fetcher.search(kw, limit=2)
     #         print(f"Total results: {len(results)}")
     #         for r in results:

@@ -364,8 +364,8 @@ def test_context_prompt_is_skipped_while_internal_game_route_is_active(
 def test_context_prompt_defers_while_home_tutorial_suppresses_and_replays_after(
     mock_page: Page,
 ):
-    # 教程抑制期间不弹情境弹窗（modal 会压在导览上、且此时的功能开关状态
-    # 属于教程接管面）：信号暂存不标已弹，收口（active:false 事件）后重放。
+    # During tutorial suppression, do not show contextual modals over the tour; feature-switch state
+    # belongs to the tutorial. Buffer signals without marking shown, and replay after active:false.
     _bootstrap_page(
         mock_page,
         setup_js="""
@@ -411,8 +411,8 @@ def test_context_prompt_defers_while_home_tutorial_suppresses_and_replays_after(
 def test_context_prompt_defers_on_suppression_event_without_feature_controller(
     mock_page: Page,
 ):
-    # director fallback 环境（feature controller 缺失、头像层无 hold）：
-    # 仅凭抑制事件的跟踪标志也必须拦住弹窗，释放事件后重放。
+    # Director fallback (no feature controller or avatar-layer hold):
+    # suppression-event tracking alone must block modals, replaying after release.
     _bootstrap_page(
         mock_page,
         setup_js="""
@@ -1526,10 +1526,10 @@ def test_home_tutorial_feature_controller_enforce_stops_runtime_without_rewritin
 
     assert result["active"] is True
     assert result["galgame"] is False
-    # 纯运行时抑制（与小剧场约定一致）：设置内存镜像从不被改写——它们由
-    # saveSettings 持久化并跨窗口同步，临时改写会在抑制期的任意一次保存里
-    # 被固化成用户设置。抑制只体现为 stop 调用与 isHomeTutorialFeatureSuppressed
-    # 触发闸门；即便有外部代码把内存翻回 true，enforce 也只重复 stop、不回写。
+    # Runtime-only suppression, consistent with theater: never rewrite in-memory settings mirrors,
+    # which saveSettings persists and synchronizes across windows. Temporary mutations would be
+    # saved as user preferences by any save during suppression. Suppress through stop calls and
+    # isHomeTutorialFeatureSuppressed gates only; even if external code restores true, enforce repeats stop without writes.
     assert result["proactiveChatEnabled"] is True
     assert result["proactiveVisionEnabled"] is True
     assert result["appStateProactiveChatEnabled"] is True
@@ -3914,8 +3914,8 @@ def test_avatar_floating_director_fallback_enforcement_stops_runtime_without_rew
         }
     ]
     assert result["proactiveStops"] == ["chat", "vision", "stream"]
-    # fallback 同样只做运行时抑制：停调度/视觉 + 派发事件，不改写设置内存
-    # （旧实现此处还漏写了 proactiveCommunityChatEnabled——键列表已整体移除）。
+    # Fallback also suppresses only runtime scheduling/visuals and dispatches events, without changing settings memory
+    # (the old implementation also missed proactiveCommunityChatEnabled here; the entire key list is removed).
     assert result["proactiveChatEnabled"] is True
     assert result["proactiveVisionEnabled"] is True
     assert result["appStateProactiveChatEnabled"] is True

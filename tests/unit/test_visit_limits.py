@@ -132,7 +132,7 @@ def test_rejected_frame_does_not_charge_the_other_bucket():
     clock = FakeClock()
     lim = PeerRateLimiter(clock=clock)
     assert not lim.admit_frame("g_a", 10 ** 6).allowed
-    # 字节桶拒了，条数桶不应被扣。
+    # Rejection by the byte bucket must not debit the item-count bucket.
     assert sum(lim.admit_frame("g_a", 1).allowed for _ in range(VISIT_PEER_RECV_MSGS_PER_S)) \
         == VISIT_PEER_RECV_MSGS_PER_S
 
@@ -235,7 +235,7 @@ async def test_failed_write_keeps_memory_consistent(tmp_path, monkeypatch):
 
 
 async def test_corrupt_file_fails_closed_and_is_left_in_place(tmp_path):
-    # 读不出来不能当空表：那会把被拉黑的人放进来；原文件留在原处待修复
+    # Unreadable data must not become an empty table, allowing blocked users through; leave the original file in place for repair
     from main_logic.visit.limits import BlocklistUnavailable
 
     path = tmp_path / VISIT_BLOCKLIST_FILENAME
@@ -259,7 +259,7 @@ async def test_async_unreadable_file_fails_closed_then_recovers(tmp_path):
     assert bl.available is False
     with pytest.raises(BlocklistUnavailable):
         await bl.ablock(UID, display_name_at_block="Mimi")
-    # 修好后重新加载即恢复
+    # Reload after repair restores operation
     path.write_text('{"blocked": []}', encoding="utf-8")
     assert (await Blocklist.aload(tmp_path)).available is True
 
@@ -276,7 +276,7 @@ def test_duplicate_rows_are_merged(tmp_path):
 @pytest.mark.parametrize("bad_row", [{"visit_uid": ""}, "junk", {"display_name_at_block": "x"},
                                      {"visit_uid": 123}])
 def test_any_malformed_row_makes_the_list_unavailable(tmp_path, bad_row):
-    # 丢掉坏行恰好会放进被拉黑的那个人：任一行坏就整体 fail closed
+    # Dropping an invalid row would admit that blocked person: any invalid row makes the entire list fail closed
     (tmp_path / VISIT_BLOCKLIST_FILENAME).write_text(json.dumps({"blocked": [
         {"visit_uid": UID, "display_name_at_block": "a", "blocked_at": 1}, bad_row,
     ]}), encoding="utf-8")
@@ -301,7 +301,7 @@ def test_missing_file_is_an_empty_available_list(tmp_path):
 
 
 async def test_permission_error_fails_closed_instead_of_empty(tmp_path, monkeypatch):
-    # 读不了（被杀毒 / 备份锁住）≠ 不存在：只有 FileNotFoundError 才是空表
+    # Unreadable (antivirus/backup locking) is not absent; only FileNotFoundError means an empty table
     from main_logic.visit import limits
 
     (tmp_path / VISIT_BLOCKLIST_FILENAME).write_text('{"blocked": []}', encoding="utf-8")
@@ -315,7 +315,7 @@ async def test_permission_error_fails_closed_instead_of_empty(tmp_path, monkeypa
 
 
 async def test_cancelled_ablock_still_lands_in_memory_and_on_disk(tmp_path, monkeypatch):
-    # 写盘途中调用方被取消：事务照常做完，内存与磁盘一致
+    # Caller cancelled during disk writing: complete the transaction normally, keeping memory and disk consistent
     import asyncio
     import threading
 
@@ -345,7 +345,7 @@ async def test_cancelled_ablock_still_lands_in_memory_and_on_disk(tmp_path, monk
 
 
 def test_token_bucket_caps_an_oversized_cost_only_when_asked():
-    # outbox 的字节桶容量可能小于单条大消息：按容量封顶扣，否则它永远攒不够
+    # Outbox byte-bucket capacity may be smaller than a large message: cap debit at capacity, or it can never accumulate enough
     from main_logic.visit.limits import TokenBucket
 
     capped = TokenBucket.full(10.0, 10.0, 0.0, cap_cost=True)
@@ -360,12 +360,12 @@ def test_token_bucket_caps_an_oversized_cost_only_when_asked():
 
 
 def test_there_is_no_unlocked_sync_mutation_path():
-    # 同步 block / unblock 不拿锁，和 ablock 交错会互相冲掉：只留串行化的异步版
+    # Unlocked synchronous block/unblock can overwrite interleaved ablock changes; retain only serialized asynchronous versions
     assert not hasattr(Blocklist, "block") and not hasattr(Blocklist, "unblock")
 
 
 async def test_two_instances_on_one_file_keep_each_others_rows(tmp_path):
-    # 两个实例各自一把锁、各自旧视图时，后写的整表会冲掉先写的拉黑记录
+    # Two instances with separate locks and old views would overwrite earlier block records when the later full table is saved
     a = Blocklist.load(tmp_path)
     b = Blocklist.load(tmp_path)
     other = "f" * 24
@@ -373,8 +373,8 @@ async def test_two_instances_on_one_file_keep_each_others_rows(tmp_path):
     assert await b.ablock(other, display_name_at_block="B", now=2.0)
     on_disk = Blocklist.load(tmp_path)
     assert on_disk.is_blocked(UID) and on_disk.is_blocked(other)
-    assert b.is_blocked(UID)                      # 写入时顺带刷新到最新
-    assert await a.aunblock(other)                # a 手里原本没有这条，也能解除
+    assert b.is_blocked(UID)                      # Refresh to the latest state while writing
+    assert await a.aunblock(other)                # a can unblock an entry absent from its previous view
     assert not Blocklist.load(tmp_path).is_blocked(other)
 
 
@@ -402,9 +402,9 @@ async def test_concurrent_writes_from_two_instances_are_serialised(tmp_path, mon
 
 
 def test_instances_on_different_event_loops_and_threads_do_not_lose_rows(tmp_path, monkeypatch):
-    # 两个线程、各自的事件循环、各自的实例：A 在事务里读完盘后停住，此时启动 B。
-    # 有按路径登记的线程锁时 B 进不了读盘这一步；没有锁时 B 会读到同一份旧表、
-    # 两边互相冲掉。用握手而不是计时屏障，结论不依赖 CI 调度快慢
+    # Two threads, separate event loops and instances: pause A after its transactional disk read, then start B.
+    # A path-registered thread lock prevents B reaching its disk read; without it, B reads the same old table and
+    # their writes overwrite each other. Use handshakes, not timing barriers, so conclusions do not depend on CI scheduling
     import asyncio
     import contextvars
     import threading
@@ -418,7 +418,7 @@ def test_instances_on_different_event_loops_and_threads_do_not_lose_rows(tmp_pat
     real_read = limits.read_json
 
     def read_hook(path):
-        # 先读（文件还不存在时是 FileNotFoundError），记下结果再打信号 / 停住，最后原样交回
+        # Read first (FileNotFoundError if absent), retain the result, signal/pause, then return it unchanged
         try:
             result: object = real_read(path)
         except FileNotFoundError as exc:
@@ -438,11 +438,11 @@ def test_instances_on_different_event_loops_and_threads_do_not_lose_rows(tmp_pat
     def worker(bl, uid):
         try:
             asyncio.run(bl.ablock(uid, display_name_at_block="x"))
-        except Exception as exc:          # noqa: BLE001 - 收集后在主线程断言
+        except Exception as exc:          # noqa: BLE001 - collect exceptions and assert them on the main thread
             errors.append(exc)
 
-    # 事务跑在 asyncio.to_thread 的工作线程里，靠 contextvars（to_thread 会复制过去）
-    # 区分是谁在读盘
+    # Transactions run in asyncio.to_thread workers; distinguish disk readers using contextvars,
+    # which to_thread copies into the worker
     def run_a():
         who.set("a")
         worker(bl_a, uid_a)
@@ -453,10 +453,10 @@ def test_instances_on_different_event_loops_and_threads_do_not_lose_rows(tmp_pat
 
     ta = threading.Thread(target=run_a)
     ta.start()
-    assert a_read.wait(5)                  # A 已在事务内读完盘、持锁停住
+    assert a_read.wait(5)                  # A completed its transactional read and pauses while holding the lock
     tb = threading.Thread(target=run_b)
     tb.start()
-    entered = b_read.wait(1.0)             # 有锁：B 进不来
+    entered = b_read.wait(1.0)             # With the lock, B cannot enter
     release_a.set()
     ta.join(10)
     tb.join(10)
@@ -468,7 +468,7 @@ def test_instances_on_different_event_loops_and_threads_do_not_lose_rows(tmp_pat
 
 
 async def test_a_block_through_one_instance_is_seen_by_every_live_instance(tmp_path):
-    # 身份核验手里的实例（启动时加载）要立刻看到别处刚拉黑的人
+    # The identity verifier's startup-loaded instance must immediately see users newly blocked elsewhere
     verifier = Blocklist.load(tmp_path)
     panel = Blocklist.load(tmp_path)
     assert not verifier.is_blocked(UID)
@@ -476,15 +476,15 @@ async def test_a_block_through_one_instance_is_seen_by_every_live_instance(tmp_p
     assert verifier.is_blocked(UID)
     assert await panel.aunblock(UID)
     assert not verifier.is_blocked(UID)
-    # 不带 entries 直接构造的实例不能清空别人看到的表
+    # Constructing an instance without entries must not clear the table seen by others
     await panel.ablock(UID, display_name_at_block="Mimi")
     Blocklist(tmp_path)
     assert verifier.is_blocked(UID)
 
 
 def test_a_stale_load_cannot_overwrite_a_concurrent_block(tmp_path, monkeypatch):
-    # load 读到旧文件后停住，此时另一个实例拉黑：有锁时拉黑要等 load 刷完快照，
-    # 不会被旧内容覆盖；没锁时 load 随后用旧表冲掉共享快照，核验放行刚拉黑的人
+    # Pause load after reading the old file, then block through another instance: with locking, block waits until load refreshes the snapshot,
+    # avoiding overwrite; without locking, load later replaces the shared snapshot with the old table and verification admits the newly blocked user
     import asyncio
     import threading
 
@@ -503,7 +503,7 @@ def test_a_stale_load_cannot_overwrite_a_concurrent_block(tmp_path, monkeypatch)
             result: object = real_read(path)
         except FileNotFoundError as exc:
             result = exc
-        if first:                                 # 第一次是 load：读完停住
+        if first:                                 # The first call is load: pause after reading
             load_read.set()
             release_load.wait(5)
         if isinstance(result, FileNotFoundError):
@@ -520,14 +520,14 @@ def test_a_stale_load_cannot_overwrite_a_concurrent_block(tmp_path, monkeypatch)
         asyncio.run(writer.ablock(UID, display_name_at_block="Mimi"))
         blocked.set()
 
-    # load 停在读盘之后时是否持有这把逐路径锁：这正是被测的性质，判定不依赖计时
+    # Whether load holds this per-path lock after reading is precisely the tested property, independent of timing
     from main_logic.visit.subjects import path_lock
 
     held = path_lock(verifier.path).locked()
     blocker = threading.Thread(target=block)
     blocker.start()
     if not held:
-        # 锁失效时确定地复现「拉黑先完成、旧表随后覆盖」：等拉黑做完再放行 load
+        # Deterministically reproduce 'block finishes before old-table overwrite' when locking fails: release load only after block completes
         assert blocked.wait(5)
     release_load.set()
     loader.join(10)
@@ -538,7 +538,7 @@ def test_a_stale_load_cannot_overwrite_a_concurrent_block(tmp_path, monkeypatch)
 
 
 async def test_a_failed_read_fails_every_live_instance_closed(tmp_path):
-    # 任一实例发现文件坏了：身份核验手里的长期实例也要一起 fail closed
+    # If any instance detects corruption, the verifier's long-lived instance must also fail closed
     from main_logic.visit.limits import BlocklistUnavailable
 
     verifier = Blocklist.load(tmp_path)
@@ -550,11 +550,11 @@ async def test_a_failed_read_fails_every_live_instance_closed(tmp_path):
     assert verifier.available is False
     with pytest.raises(BlocklistUnavailable):
         verifier.is_blocked("e" * 24)
-    # 文件修好、重新加载成功后所有实例一起恢复
+    # After repair and successful reload, every instance recovers together
     (tmp_path / VISIT_BLOCKLIST_FILENAME).write_text('{"blocked": []}', encoding="utf-8")
     Blocklist.load(tmp_path)
     assert verifier.available is True and not verifier.is_blocked(UID)
-    # 不带 entries 直接构造的实例不能把共享的「不可用」翻回可用
+    # Constructing without entries must not reset shared unavailability to available
     (tmp_path / VISIT_BLOCKLIST_FILENAME).write_text("{broken", encoding="utf-8")
     Blocklist.load(tmp_path)
     Blocklist(tmp_path)
@@ -562,7 +562,7 @@ async def test_a_failed_read_fails_every_live_instance_closed(tmp_path):
 
 
 async def test_a_deeply_nested_blocklist_fails_closed(tmp_path):
-    # json 解析深层嵌套抛 RecursionError：和其他读不出的情况一样 fail closed，不冲出加载 / 拉黑
+    # Deep JSON nesting raises RecursionError: fail closed like other unreadable cases instead of escaping load/block
     from main_logic.visit.limits import BlocklistUnavailable
 
     writer = Blocklist.load(tmp_path)
@@ -575,8 +575,8 @@ async def test_a_deeply_nested_blocklist_fails_closed(tmp_path):
 
 
 async def test_a_mutation_recovers_from_a_transient_read_failure(tmp_path, monkeypatch):
-    # 一次临时读盘失败把共享状态标成不可用后，文件恢复时下一次拉黑的重读成功即全部恢复，
-    # 不必等调用方另外 load
+    # After a transient read failure marks shared state unavailable, a successful reread on the next block restores all instances once disk recovers,
+    # without requiring callers to load separately
     from main_logic.visit import limits
     from main_logic.visit.limits import BlocklistUnavailable
 
@@ -594,7 +594,7 @@ async def test_a_mutation_recovers_from_a_transient_read_failure(tmp_path, monke
     monkeypatch.setattr(limits, "read_json", real_read)
     assert await writer.ablock(UID, display_name_at_block="Mimi") is True
     assert verifier.available is True and verifier.is_blocked(UID)
-    # 文件已存在时同样恢复（走解析成功的分支）
+    # Recover with an existing file too, through the successful-parse branch
     monkeypatch.setattr(limits, "read_json", locked)
     with pytest.raises(BlocklistUnavailable):
         await writer.aunblock(UID)

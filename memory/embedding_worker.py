@@ -80,13 +80,13 @@ except ImportError:
 # unresolved at runtime. Static analyzers that need the resolved types
 # can import the modules themselves; we don't pay an extra import here.
 
-# 同 embeddings.py：归到 N.E.K.O.Memory.* 才能进 Memory 日志文件，否则
+# As in embeddings.py, use N.E.K.O.Memory.* so these messages reach the Memory log file; otherwise
 # "[EmbeddingWorker] service disabled at construction (reason); worker exiting"
-# 这类退出原因落在 root（无 handler）上，线上不可见。
+# these exit reasons go to root (which has no handler) and are invisible in production.
 try:
     from utils.logger_config import get_module_logger
     logger = get_module_logger(__name__, "Memory")
-except Exception:  # noqa: BLE001 — 退回裸 logger，保持 worker 可导入
+except Exception:  # noqa: BLE001 — fall back to the bare logger to keep the worker importable.
     logger = logging.getLogger(__name__)
 
 

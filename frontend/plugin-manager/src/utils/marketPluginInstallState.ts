@@ -44,7 +44,14 @@ export async function fetchInstalledProjection<T extends MarketInstalledState>(
     const response = await fetcher()
     if (!response?.ok) return null
     const data = await response.json()
-    return Array.isArray(data?.installed) ? (data.installed as T[]) : []
+    // Only an explicit array is a snapshot; a malformed success response must
+    // not erase the last known installed state as if every plugin was removed.
+    const installed: unknown = data?.installed
+    if (!Array.isArray(installed) || !installed.every((item) => (
+      item !== null && typeof item === 'object'
+      && typeof item.plugin_id === 'string' && item.plugin_id.trim().length > 0
+    ))) return null
+    return installed as T[]
   } catch {
     return null
   }

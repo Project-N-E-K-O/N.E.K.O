@@ -16,7 +16,7 @@ import pytest
     ],
 )
 def test_theater_memory_title_marks_are_idempotent(title, expected):
-    """无书名号时自动补齐，已有成对标题符号时不能再套一层。"""  # noqa: DOCSTRING_CJK
+    """Add book-title brackets when missing; do not wrap an already paired title a second time."""  # noqa: DOCSTRING_CJK
     from config.prompts.prompts_memory import get_theater_memory_context
 
     rendered = get_theater_memory_context(
@@ -157,7 +157,7 @@ async def test_get_recent_history_uses_type_as_unknown_speaker():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_get_recent_history_renders_one_theater_episode_context():
-    """日常上下文只渲染单集摘要，不展开完整剧场正文。"""  # noqa: DOCSTRING_CJK
+    """Render only episode summaries in everyday context, without expanding the full theater body."""  # noqa: DOCSTRING_CJK
     from app import memory_server
     from utils.llm_client import AIMessage, HumanMessage
 
@@ -216,7 +216,7 @@ async def test_get_recent_history_renders_one_theater_episode_context():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_get_recent_history_merges_incremental_theater_archives_by_session():
-    """同 Session 的暂停与完成批次只显示一次，并采用最新完成状态。"""  # noqa: DOCSTRING_CJK
+    """Show paused and completed batches for the same Session once, using the latest completion status."""  # noqa: DOCSTRING_CJK
 
     from app import memory_server
     from utils.llm_client import AIMessage, SystemMessage

@@ -54,7 +54,7 @@ def _extract_i18n_keys() -> set[str]:
     )
     for path in paths:
         keys.update(pattern.findall(path.read_text(encoding="utf-8")))
-    # 过滤掉以点结尾的动态键前缀（如 'character.field.' + key）
+    # Exclude dynamic key prefixes ending in a dot (e.g. 'character.field.' + key).
     keys = {k for k in keys if not k.endswith('.')}
     return keys
 

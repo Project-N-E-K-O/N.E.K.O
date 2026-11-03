@@ -104,7 +104,7 @@ async def get_steam_language():
         steamworks = ensure_steamworks()
         
         if steamworks is None:
-            # 没有 Steam 环境，默认为非大陆用户
+            # Without Steam, default to a non-mainland user.
             return {
                 "success": False,
                 "error": "Steamworks 未初始化",
@@ -112,40 +112,40 @@ async def get_steam_language():
                 "steam_language": None,
                 "i18n_language": None,
                 "ip_country": None,
-                "is_mainland_china": False  # 无 Steam 环境，默认非大陆
+                "is_mainland_china": False  # No Steam environment: default non-mainland.
             }
         
-        # 获取 Steam 当前游戏语言
+        # Get Steam's current game language.
         steam_language = steamworks.Apps.GetCurrentGameLanguage()
-        # Steam API 可能返回 bytes，需要解码为字符串
+        # Steam API may return bytes; decode to a string.
         if isinstance(steam_language, bytes):
             steam_language = steam_language.decode('utf-8')
         
-        # 使用 language_utils 的归一化函数，统一映射逻辑
-        # format='full' 返回 'zh-CN', 'zh-TW', 'en', 'ja', 'ko' 格式（用于前端 i18n）
+        # Use language_utils normalization for consistent mappings.
+        # format='full' returns 'zh-CN', 'zh-TW', 'en', 'ja', 'ko' (frontend i18n).
         i18n_language = normalize_language_code(steam_language, format='full')
 
-        # 把这一次 Steam 真值回写到进程全局缓存：``initialize_global_language`` 在启动
-        # 时只读一次 Steam SDK，race 失败就锁死系统 locale；前端 bootstrap 这次能拿到
-        # 对的 schinese → zh-CN，把它顺手塞回缓存，下游 ``get_global_language()``
-        # 全部受益（mini-game prompt / memory / reflection / tts ...）。函数自己有
-        # "无变化即 no-op" 的守卫，前端反复刷新也不会刷屏。
-        # 注意校验**原始 steam_language**而非 normalize 后的 i18n_language——后者对空 /
-        # 未知输入会默认回退 'en'，那是一个合法值能通过 refresh 内部白名单，会把已经
-        # 正确的全局缓存（来自 startup init / 上一次有效刷新）误覆盖成 en；前端 i18n
-        # 兜底用 'en' 不受影响（i18n_language 仍正常返回）。
+        # Write this Steam ground truth back to process-global cache: initialize_global_language reads Steam SDK only once
+        # at startup, locking in the system locale if it loses a race. If frontend bootstrap now gets
+        # the correct schinese -> zh-CN, cache it too so every downstream get_global_language()
+        # benefits (mini-game prompts / memory / reflection / tts...). The function's unchanged-is-noop
+        # guard prevents repeated frontend refreshes from spamming.
+        # Validate **raw steam_language**, not normalized i18n_language: normalization defaults empty/unknown
+        # input to 'en', which passes refresh's allowlist and wrongly overwrites an already
+        # correct global cache (from startup / prior valid refresh). Frontend i18n's English fallback
+        # is unaffected (i18n_language still returns normally).
         if is_supported_language_code(steam_language):
             try:
                 refresh_global_language(steam_language)
             except Exception:
                 logger.debug("refresh_global_language 失败", exc_info=True)
 
-        # 获取用户 IP 所在国家（用于判断是否为中国大陆用户）
+        # Get the user's IP country to identify mainland China users.
         ip_country = None
         is_mainland_china = False
         
         try:
-            # 使用 Steam Utils API 获取用户 IP 所在国家
+            # Use Steam Utils API to retrieve the IP country.
             raw_ip_country = steamworks.Utils.GetIPCountry()
             
             if isinstance(raw_ip_country, bytes):
@@ -161,19 +161,19 @@ async def get_steam_language():
                 get_steam_language._logged = True
                 logger.info(f"[GeoIP] 用户 IP 地区: {ip_country}, 是否大陆: {is_mainland_china}")
             # Write Steam result to ConfigManager's steam-specific cache.
-            # 仅在真的拿到国家码时回写：GetIPCountry() 返回空是"暂时不知道"（Steam
-            # 刚起来还没连上网络时就会这样），而 is_mainland_china 此时保持 False，
-            # 直接回写等于用 not False 断言"海外"——凭无数据把线路推向海外节点。
+            # Write back only a real country code: empty GetIPCountry() means temporarily unknown (Steam
+            # may just have started without networking), while is_mainland_china remains False;
+            # writing directly asserts overseas from not False without data, incorrectly routing to overseas nodes.
             if ip_country:
                 try:
                     from utils.config_manager import ConfigManager
                     ConfigManager._steam_check_cache = not is_mainland_china
-                    # 清合并缓存触发重算。注意 Steam 只是兜底票：重算时如果 IP 探测
-                    # 已有结论，仍按 IP 走，这次回写只在 IP 始终无结论时才决定线路。
+                    # Clear the merged cache to trigger recalculation. Steam is only a fallback signal: if IP probing
+                    # already resolved, retain its decision; this update decides routing only while IP remains unresolved.
                     ConfigManager._region_cache = None
                 except Exception:
-                    # 回写只是给区域判定提供一票兜底信号，失败不该影响本接口的主职
-                    # 责（返回 Steam 语言）。IP 探测仍会按自己的节奏得出结论。
+                    # Writeback only supplies a regional fallback signal; failure must not affect this endpoint's main
+                    # job of returning Steam language. IP probing still resolves on its own schedule.
                     logger.debug("[GeoIP] Steam 区域回写失败，忽略", exc_info=True)
         except Exception as geo_error:
             get_steam_language._logged = False
@@ -199,7 +199,7 @@ async def get_steam_language():
             "steam_language": None,
             "i18n_language": None,
             "ip_country": None,
-            "is_mainland_china": False  # 发生错误时，默认非大陆
+            "is_mainland_china": False  # On errors, default non-mainland.
         }
 
 
@@ -214,11 +214,11 @@ async def get_user_language_api():
     from utils.language_utils import get_global_language
 
     try:
-        # 使用 language_utils 的全局语言管理，自动处理 Steam/系统语言优先级
-        # ⚠️ 这里刻意保持短码（#2500 第 2 步复核结论）：本端点的返回值是对前端
-        # 的 API 契约，上面的 docstring 写死了 'zh' / 'en' / 'ja' 这套短码，消费
-        # 方可能按短码分支。改成全码属于改契约，要先普查全部前端调用方，不在
-        # locale 迁移这一批的范围内。
+        # Use language_utils global language management to handle Steam/system priority automatically.
+        # ⚠ Deliberately keep short codes (#2500 step 2 review): this endpoint's return value is a frontend
+        # API contract; the docstring above specifies 'zh' / 'en' / 'ja', and callers may branch
+        # on those codes. Full codes change the contract and require auditing all frontend callers,
+        # outside this locale-migration batch.
         language = get_global_language()
         
         return {
@@ -231,7 +231,7 @@ async def get_user_language_api():
         return {
             "success": False,
             "error": str(e),
-            "language": "zh"  # 默认中文
+            "language": "zh"  # Default Chinese.
         }
 
 

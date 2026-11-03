@@ -32,7 +32,7 @@ from utils.logger_config import get_module_logger
 logger = get_module_logger(__name__)
 
 # ---------------------------------------------------------------------------
-#  N.E.K.O. 健康指纹
+#  N.E.K.O. health fingerprint
 # ---------------------------------------------------------------------------
 
 HEALTH_APP_SIGNATURE = "N.E.K.O"
@@ -79,7 +79,7 @@ def build_health_response(
     if version:
         resp["version"] = version
     if extra:
-        # 合并附加字段，但禁止覆盖核心签名键
+        # Merge extra fields without allowing core signature keys to be overwritten
         _reserved = {"app", "service", "status", "instance_id"}
         resp.update({k: v for k, v in extra.items() if k not in _reserved})
     return resp
@@ -112,7 +112,7 @@ def probe_neko_health(
         )
         sock.sendall(request_line.encode("utf-8"))
 
-        # 读取响应（兼容 chunked，直到连接关闭）
+        # Read the response until connection closure (supports chunked encoding)
         chunks: list[bytes] = []
         while True:
             try:
@@ -124,23 +124,23 @@ def probe_neko_health(
                 break
 
         raw = b"".join(chunks).decode("utf-8", errors="replace")
-        # 分离响应头与响应体
+        # Separate response headers and body
         if "\r\n\r\n" not in raw:
             return None
         _, body = raw.split("\r\n\r\n", 1)
 
-        # 处理 chunked 传输编码（常见单块场景）
+        # Handle chunked transfer encoding (common single-chunk case)
         body = body.strip()
         if body and "\r\n" in body:
             _size_line, rest = body.split("\r\n", 1)
-            # chunk-size 可能带扩展（分号后），取纯十六进制部分
+            # Chunk sizes may have extensions after a semicolon; take only the hexadecimal portion
             _size_hex = _size_line.split(";", 1)[0].strip()
             try:
                 int(_size_hex, 16)
-                # 确认是 chunked 分块格式，去掉末尾 "0" 结束块
+                # Confirm chunked format and remove the trailing "0" terminating chunk
                 body = rest.rsplit("\r\n0", 1)[0] if "\r\n0" in rest else rest
             except ValueError:
-                pass  # 非 chunked，保持 body 不变
+                pass  # Not chunked: leave the body unchanged
 
         payload = json.loads(body)
         if isinstance(payload, dict) and payload.get("app") == HEALTH_APP_SIGNATURE:
@@ -157,7 +157,7 @@ def probe_neko_health(
 
 
 # ---------------------------------------------------------------------------
-#  Hyper-V 保留端口范围检测（仅 Windows）
+#  Hyper-V reserved-port range detection (Windows only)
 # ---------------------------------------------------------------------------
 
 def get_hyperv_excluded_ranges() -> list[tuple[int, int]]:
@@ -171,7 +171,7 @@ def get_hyperv_excluded_ranges() -> list[tuple[int, int]]:
         import shutil
         import subprocess
 
-        # 优先通过 PATH 查找 netsh，找不到则回退到 System32 绝对路径
+        # Find netsh through PATH first, falling back to its absolute System32 path
         resolved_netsh = shutil.which("netsh")
         if resolved_netsh is None:
             system_root = os.environ.get("SystemRoot", r"C:\Windows")

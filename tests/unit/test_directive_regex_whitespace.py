@@ -35,7 +35,7 @@ _ATOMIC_WS = r"(?>\s*)"
 _ATOMIC_WS_PLUS = r"(?>\s+)"
 _END_GUARD = r"(?<!\s)"
 _BARE_CAPTURE = re.compile(r"\(\.\{1,\d+\}\?\)")
-# 捕获末尾可以带 ``(?<!\s)``（en 模板 2：以空白结尾的捕获是白试，见那里的注释）
+# Capture may end in ``(?<!\s)`` (en template 2: whitespace-ending captures are futile; see its comment).
 _GUARDED_CAPTURE = re.compile(r"\(\(\?!\\s\)\.\{1,\d+\}\?(?:\(\?<!\\s\))?\)")
 
 
@@ -52,8 +52,8 @@ def _templates() -> list[tuple[str, str, re.Pattern[str]]]:
 
 _ALL = _templates()
 _NON_ZH = [t for t in _ALL if not t[0].startswith("zh")]
-# 自动发现，不是手点清单：含原子空白（``(?>\s*)`` / ``(?>\s+)``）或捕获末尾守卫
-# ``(?<!\s)`` 的模板都要过等价性比较——这几样都只是剪枝，不许改变命中
+# Discover automatically, no manual list: every template with atomic whitespace (``(?>\s*)`` / ``(?>\s+)``)
+# or capture-ending ``(?<!\s)`` must pass equivalence comparison: pruning must not change matches.
 _ATOMIZED = [t for t in _ALL if any(u in t[1] for u in (_ATOMIC_WS, _ATOMIC_WS_PLUS, _END_GUARD))]
 
 
@@ -61,25 +61,25 @@ def _ids(templates):
     return [label for label, _raw, _pat in templates]
 
 
-# ── 计时：逐条模板，只计时这一条编译后的正则 ──
-# ⚠️ 不计时整个 extract_directives：21 条模板的和里，单条回退会被淹掉。
-# 每种输入各管一件事，阈值按「修好一侧的最慢值」和「回退一侧的最快值」各自定，两侧都留
-# 约 4 倍以上余量（数字是本机 fastest-of-5）：
-#   · 纯空白 3000：话题不许空白起头。任何一条回退到「空白里的每个位置都是起点」，
-#     这里就是 75ms（zh 模板 3 的前导空白）到 1 秒（en 模板 2）。
-#   · ``"もうx" + 空白 300 + "y"``：ja 模板 2 捕获后的原子组。去原子化时 1.5 秒。
-#   · ``"x" + 空白 1000 + "y"``：ko 模板 3 的两个原子组。去原子化时约 0.1 秒。
-#   这三种修好之后每条都在 0.25ms 以内，阈值 15ms。
-#   · 触发词 + 长空白：触发词**之后、捕获之前**的空白。起点只有一个，但话题不许空白
-#     起头之后，空白话题这条快速出口没了，前面的量词会把同一串空白的切法全试一遍：
-#     es/pt 模板 1 的 ``\s+(?:de|…)?\s*`` 去原子化时 0.33 秒；zh 模板 3 / 模板 1 的
-#     ``(?!\s)`` 去掉或排到无宾语前视后面时约 0.3 秒（前视每个位置都先扫完空白）。
-#     纯空白输入进不了这条路径——触发词没有出现，模板在第一个字上就失败。
-#   这四种里最慢的修好一侧是 zh 模板 2（``"no hables"`` 那条 14ms）：它以 lazy 话题开头，
-#   前缀里每个非空白字都是起点，每个起点把话题从 2 扩到 30 个单位、每扩一次扫一遍空白，
-#   是线性的，但常数大。它的话题至少 2 个单位，不能像 en 模板 2 那样在末尾加
-#   ``(?<!\s)``（以空白结尾的 2 单位话题是合法的最短切法），所以阈值给 60ms。
-# 其余模板的原子组去掉之后代价小到计时分不出来，由下面的结构判据兜住。
+# ── Timing: individual compiled regexes only ──
+# ⚠️ Never time all extract_directives: summed 21-template costs hide individual regressions.
+# Each input tests one behavior; thresholds separate slowest fixed and fastest regressed cases,
+# leaving >4× margin both sides (local fastest-of-five measurements):
+#   · 3000 whitespace: topics cannot begin with whitespace. Regressing to every whitespace position as start
+#     costs 75ms (zh template 3 leading whitespace) to one second (en template 2).
+#   · ``"もうx" + 300 spaces + "y"``: ja template 2 postcapture atomic group; removing atomicity costs 1.5s.
+#   · ``"x" + 1000 spaces + "y"``: ko template 3's two atomic groups; non-atomic costs ~0.1s.
+#   Fixed versions all below 0.25ms; threshold 15ms.
+#   · Trigger + long whitespace: between trigger and capture. Only one start, but forbidding whitespace-starting
+#     topics removes whitespace-topic fast exit; earlier quantifiers try every split of the same whitespace:
+#     es/pt template 1's ``\s+(?:de|…)?\s*`` without atomicity costs 0.33s; zh templates 3/1
+#     without ``(?!\s)`` or moving it after objectless lookahead cost ~0.3s (lookahead rescans all spaces at each position).
+#     Pure whitespace cannot enter this path: trigger absent, first literal already fails.
+#   Slowest fixed case among these four: zh template 2 (``"no hables"`` input 14ms), starting with lazy topic;
+#   each nonspace prefix character starts another 2-to-30-unit topic search, rescanning whitespace each expansion,
+#   linear but high constant. Minimum two-unit topic forbids en-template-2-style trailing
+#   ``(?<!\s)`` (two-unit whitespace-ending topic is valid shortest split), so threshold 60ms.
+# Other templates' atomicity costs are too small to distinguish by timing; structural checks below cover them.
 _TIMING_INPUTS = {
     "spaces": (" " * 3000, 0.015),
     "mou-x-spaces-y": ("もうx" + " " * 300 + "y", 0.015),
@@ -89,7 +89,7 @@ _TIMING_INPUTS = {
     "zh-reluctance-spaces-x": ("我不想聊" + " " * 12000 + "x", 0.06),
     "zh-negation-spaces-x": ("别提" + " " * 16000 + "x", 0.06),
 }
-# 第一次采样超过这么多秒就不重试：调度噪声到不了，真回退（0.3 秒到两分钟）里慢的那些省掉重试
+# Skip retries if first sample exceeds these seconds: far beyond scheduling noise, saving repeats of true 0.3s–2min regressions.
 _NO_RETRY_ABOVE = 5.0
 
 
@@ -98,18 +98,18 @@ _NO_RETRY_ABOVE = 5.0
 def test_no_template_backtracks_over_long_whitespace(input_name, label, raw, pat):
     """Each template alone stays well below its input's limit on long whitespace runs."""
     text, limit = _TIMING_INPUTS[input_name]
-    # 取多次里最快的一次滤掉调度噪声。⚠️ 第一次超过 _NO_RETRY_ABOVE 才不再重试：有些回退
-    # 单次就要两分钟（ko 模板 3 去原子化后在触发词输入上 130 秒），重试三次只会把一个明确的
-    # 失败拖成 CI 超时。这条线必须是**绝对秒数**、远高于调度噪声——按阈值的倍数算的话，
-    # 15ms 的 10 倍只有 150ms，共享 runner 上一次抢占就够得着（tests/wall_clock.py 的说明里
-    # 记的是几百毫秒），修好的正则也会被单个坏样本判红（greptile P1）。
+    # Take fastest sample to filter scheduling noise. Retry unless first exceeds _NO_RETRY_ABOVE: some regressions
+    # take two minutes (ko template 3 non-atomic trigger input 130s); tripling retries turns definite
+    # failure into CI timeout. Use absolute seconds far above scheduler noise, not threshold multiples:
+    # 10 × 15ms = 150ms, reachable by one shared-runner preemption (tests/wall_clock.py documents
+    # hundreds of ms), falsely failing fixed regexes on one bad sample (Greptile P1).
     elapsed = fastest_run(lambda: list(pat.finditer(text)), repeat=1)
     if limit <= elapsed < _NO_RETRY_ABOVE:
         elapsed = min(elapsed, fastest_run(lambda: list(pat.finditer(text)), repeat=2, stop_below=limit))
     assert elapsed < limit, f"{label} 在 {input_name} 上最快也要 {elapsed:.3f}s（线 {limit}s），空白回溯又回来了"
 
 
-# ── 结构 ──
+# ── Structure ──
 
 
 @pytest.mark.parametrize("label,raw,pat", _NON_ZH, ids=_ids(_NON_ZH))
@@ -141,8 +141,8 @@ def test_every_zh_objectless_lookahead_is_guarded(label, raw, pat):
     assert raw.count(r"(?!\s)" + D._ZH_OBJECTLESS_AHEAD) == count, (label, count)
 
 
-# 两个裸空白量词中间只隔着可选组：``\s+(?:de|sobre)?\s*``。可选组缺席时，同一串空白
-# 在两个量词之间有 n 种切法，后继失败时每一种都会试到。
+# Two bare whitespace quantifiers separated by optional group: ``\s+(?:de|sobre)?\s*``. Absent group lets same whitespace
+# split n ways between quantifiers, all tried on later failure.
 _WS_SANDWICH = re.compile(r"\\s[*+](?:\(\?:[^()]*\)\?)+\\s[*+]")
 
 
@@ -158,12 +158,12 @@ def test_whitespace_after_the_capture_is_atomic(label, raw, pat):
     capture = _GUARDED_CAPTURE.search(raw)
     assert capture, raw
     rest = raw[capture.end():].replace(_ATOMIC_WS, "")
-    # 剩下的 ``\s*`` 只允许夹在两个字面字之间（``에\s*대해`` / ``하지\s*마`` / ``듣기\s*싫``），
-    # 那里没有可选组，不存在瓜分。挨着组边界的（``)\s*`` / ``)?\s*`` / ``\s*(``）就是隐患。
+    # Remaining ``\s*`` only between literals (``에\s*대해`` / ``하지\s*마`` / ``듣기\s*싫``),
+    # with no optional groups/split ambiguity. Group-adjacent forms (``)\s*`` / ``)?\s*`` / ``\s*(``) are risky.
     assert not re.search(r"\)\??\\s\*|\\s\*\(", rest), (label, rest)
 
 
-# ── 原子化不改变命中 ──
+# ── Atomicity preserves matches ──
 
 _TOKENS = (
     [" "] * 6
@@ -207,7 +207,7 @@ def test_atomizing_does_not_change_what_the_template_matches(label, raw, pat):
     Atomic ``(?>\\s*)`` is only safe while nothing that follows it can start with
     whitespace; an optional group that could would silently change matches.
     """
-    # 用真实模板自己的 flags 编译对照版，不抄一份常量——模块哪天加了 flag，两边仍同一套规则
+    # Compile comparison with actual template flags, not copied constants; future flags remain identical on both sides.
     twin = re.compile(
         raw.replace(_ATOMIC_WS, r"\s*").replace(_ATOMIC_WS_PLUS, r"\s+").replace(_END_GUARD, ""),
         pat.flags,
@@ -223,13 +223,13 @@ def test_atomizing_does_not_change_what_the_template_matches(label, raw, pat):
             expected = _match_signature(twin.search(text, pos))
             assert _match_signature(pat.search(text, pos)) == expected, (text, pos)
             hits += expected is not None
-    # 防空转：语料里真有足够多的命中，比较才有意义（seed 固定，最少的 ja#1 是 325 次）
+    # Prevent vacuous tests: enough real matches required (fixed seed, lowest ja#1 has 325 matches).
     assert hits > 100, (label, hits)
 
 
-# ── 「不许空白起头」带来的有意的行为变化 ──
-# 以前一段**全是空白**的话题会占住整段命中，term 剥成空串再丢掉，于是首尾多一个空格
-# 就改了结果；zh 模板 2 的 ``关于`` temper 也能被前导空格绕过。现在补空白不改结果。
+# ── Intentional behavior change from forbidding whitespace starts ──
+# Previously all-whitespace topics consumed matches, then stripped empty and discarded, so added surrounding spaces
+# changed results; zh template 2's ``关于`` temper could be bypassed with leading space. Added spaces no longer change results.
 
 
 @pytest.mark.parametrize("text", [
@@ -249,5 +249,5 @@ def test_padding_a_message_with_whitespace_does_not_change_the_result(text, pad)
 
 
 def test_a_leading_space_no_longer_slips_guanyu_past_the_preposed_template():
-    """``" 关于工作别提了"`` used to also store ``关于工作``; the bare form never did."""  # noqa: DOCSTRING_CJK
+    """``\" 关于工作别提了\"`` used to also store ``关于工作``; the bare form never did."""  # noqa: DOCSTRING_CJK
     assert {term for _l, _k, term in extract_directives(" 关于工作别提了")} == {"工作"}

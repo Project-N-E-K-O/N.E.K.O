@@ -588,8 +588,8 @@ def test_youtube_cookie_i18n_contract_is_complete_for_all_locales():
         assert cookies_login_i18n["fields"]["youtubeCookie"]["label"]
         assert cookies_login_i18n["fields"]["youtubeCookie"]["desc"]
 
-        # 结构化步骤是语言无关的契约：只钉死 zh-CN 的话，别的语言包
-        # 悄悄退回旧的纯文本格式这条用例照样绿。
+        # Structured steps form a language-independent contract: asserting only zh-CN would let this test pass
+        # even if other language packs silently reverted to the old plain-text format.
         youtube_instruction = cookies_login_i18n["instructions"]["youtube"]
         for marker in (
             '<ol class="instruction-steps">',

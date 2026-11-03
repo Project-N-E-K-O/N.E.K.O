@@ -45,7 +45,7 @@ async def test_ownership_lost_between_the_freeze_check_and_the_provider_call(
     )
 
     def _take_ownership_then_report_delivery():
-        # 这一步排在冻结后那次检查**之后**、真正调 provider 之前。
+        # This step comes **after** the post-freeze check and before the actual provider call.
         successor = VoiceTurnToken(
             ingress=runtime._capture_ingress_token(),
             turn_id=token.turn_id + 1,

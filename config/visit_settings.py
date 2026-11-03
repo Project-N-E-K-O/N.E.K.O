@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Catgirl visit (cross-machine visiting) constants.
+"""Neko visit (cross-machine visiting) constants.
 
 Single source of truth for every number of the visit infrastructure
 (``docs/design/visit-infrastructure.md`` §4.8). Grouped by axis; each
@@ -29,15 +29,16 @@ from __future__ import annotations
 
 from .network import _read_bool_env, _read_str_env
 
-# ── 发布总闸与开发环回 ─────────────────────────────────────────────────
+# -- Release master gate and development loopback --
 
-VISIT_ENABLED = _read_bool_env("VISIT_ENABLED", False)
-"""Release gate, read from ``NEKO_VISIT_ENABLED`` (default off).
+VISIT_ENABLED = _read_bool_env("VISIT_ENABLED", True)
+"""Release gate, read from ``NEKO_VISIT_ENABLED`` (default on).
 
 When off only the entry points that start or join a visit return 404 and the
 settings page hides the visit group; data management endpoints and background
 tasks (upload retry, crash recovery, forget replay) keep running. Python code
-must reference this constant, never the env var name."""
+must reference this constant, never the env var name. Operators can still set
+``NEKO_VISIT_ENABLED=0`` for an emergency rollback."""
 
 NEKO_VISIT_ALLOW_NONLOCAL = _read_bool_env("VISIT_ALLOW_NONLOCAL", False)
 """Escape hatch for non-loopback / reverse-proxy deployments (default off).
@@ -61,7 +62,7 @@ NEKO_VISIT_DEV_LIVEKIT_API_KEY = _read_str_env("VISIT_DEV_LIVEKIT_API_KEY", "")
 NEKO_VISIT_DEV_LIVEKIT_SECRET = _read_str_env("VISIT_DEV_LIVEKIT_SECRET", "")
 """Local LiveKit API secret for the dev loopback (empty = unused)."""
 
-# ── 用户设置默认值（ALLOWED_CONVERSATION_SETTINGS 三键）──────────────────
+# -- User-setting defaults (three ALLOWED_CONVERSATION_SETTINGS keys) --
 
 VISIT_ENABLED_DEFAULT = False
 """Default of the ``visitEnabled`` conversation setting (off)."""
@@ -75,7 +76,7 @@ Read once per visit when it activates and frozen into
 VISIT_VOICE_DEFAULT = True
 """Default of the ``visitVoiceEnabled`` conversation setting (on)."""
 
-# ── 生命周期（OD-11 v2）────────────────────────────────────────────────
+# -- Lifecycle (OD-11 v2) --
 
 VISIT_HEARTBEAT_S = 5
 """Interval of the ``hb`` data-channel message."""
@@ -181,7 +182,7 @@ to TTS; extended while either is still reporting playback."""
 VISIT_INBOX_HANDOFF_ABS_MAX_S = 120
 """Absolute ceiling of the ``VisitInbox`` hand-back deadline."""
 
-# ── 数据通道、可靠层与限速（OD-30）──────────────────────────────────────
+# -- Data channels, reliability, and rate limits (OD-30) --
 
 VISIT_WIRE_PROTO = 1
 """Wire protocol major version (``hello.caps.proto``); mismatch → ``proto_mismatch``."""
@@ -327,7 +328,7 @@ VISIT_LINE_STALL_S = 20
 VISIT_TYPING_CLEAR_S = 8
 """Typing indicator clears itself when no first piece arrives within this long."""
 
-# ── 身份与凭证（OD-01 v2）──────────────────────────────────────────────
+# -- Identity and credentials (OD-01 v2) --
 
 VISIT_TICKET_VERSION = 1
 """Required ``v`` claim of the identity ticket."""
@@ -387,7 +388,7 @@ VISIT_FREE_MINUTES_PER_DAY = 120
 VISIT_MAX_CONCURRENT_ROOMS_PER_ACCOUNT = 2
 """Servers-side concurrent room limit per account (documentation only)."""
 
-# ── 视觉通道（OD-06 v2）────────────────────────────────────────────────
+# -- Visual channel (OD-06 v2) --
 
 VISIT_TIERS: dict[str, dict] = {
     "sd600": {
@@ -397,7 +398,7 @@ VISIT_TIERS: dict[str, dict] = {
         "pack_upper": (320, 896),
         "pack_full": (256, 1120),
         "fps": 30,
-        "video_kbps": 560,
+        "video_kbps": 528,
         "data_kbps_max": 40,
         "trtc_tier": "sd",
     },
@@ -430,8 +431,21 @@ VISIT_TIERS: dict[str, dict] = {
 VISIT_VIDEO_TIER_DEFAULT = "sd600"
 """The only published tier."""
 
-VISIT_VIDEO_KBPS = 560
-"""Video bitrate cap."""
+VISIT_VIDEO_KBPS = 528
+"""Video bitrate cap (560 before OD-15 v4; 32 kbps moved to the voice track)."""
+
+VISIT_AUDIO_KBPS = 32
+"""Voice track bitrate cap (mono 48 kHz Opus, OD-15 v4): video 528 + voice 32 + data <= 40 stays within 600."""
+
+VISIT_RX_GUARD_RATIO = 1.5
+"""Receiver-side bitrate guard (LiveKit has no server-side per-track cap): inbound video above
+``video_kbps`` x this, or voice above ``VISIT_AUDIO_KBPS`` x this, counts as over the tier.
+Mirrored by ``RX_GUARD_RATIO`` in ``static/visit/transport/loader.js``."""
+
+VISIT_RX_GUARD_WINDOW_S = 10
+"""Seconds the inbound bitrate must stay over the guard before the receiver unsubscribes that
+track and ends the visit with ``peer_protocol_violation`` (local self-protection only, never
+grounds for a ban). Mirrored by ``RX_GUARD_WINDOW_MS`` in ``loader.js``."""
 
 VISIT_DATA_KBPS_MAX = 40
 """Data channel budget (= 5 KB/s)."""
@@ -439,8 +453,8 @@ VISIT_DATA_KBPS_MAX = 40
 VISIT_CAPTURE_FPS = 30
 """Target of the fractional frame accumulator; 30 is a hard floor."""
 
-VISIT_CROP_DEFAULT = "upper"
-"""Default framing (upper body); ``'full'`` is 256×560."""
+VISIT_CROP_DEFAULT = "full"
+"""Default framing; full body avoids clipping the visitor on first use."""
 
 VISIT_CROP_REFRESH_MS = (300, 1000)
 """Refresh interval range of the crop box."""
@@ -449,8 +463,8 @@ VISIT_CROP_HYSTERESIS = {"center_pct": 4, "size_pct": 8, "transition_ms": 300}
 """Crop hysteresis: center 4 %, size 8 %, 300 ms transition."""
 
 VISIT_CONGESTION_LADDER = {
-    "upper": ((320, 448, 560), (256, 352, 400), (192, 272, 300)),
-    "full": ((256, 560, 560), (208, 448, 400), (160, 352, 300)),
+    "upper": ((320, 448, 528), (256, 352, 400), (192, 272, 300)),
+    "full": ((256, 560, 528), (208, 448, 400), (160, 352, 300)),
 }
 """Congestion ladder per framing: ``(w, h, kbps)``; only resolution drops, never fps."""
 
@@ -470,7 +484,7 @@ VISIT_LIVEKIT_PUBLISH = {
     "videoCodec": "vp9",
     "simulcast": False,
     "scalabilityMode": "L1T1",
-    "maxBitrate": 560000,
+    "maxBitrate": 528000,
     "maxFramerate": 30,
     "degradationPreference": "maintain-framerate",
 }
@@ -485,7 +499,7 @@ VISIT_VP9_CPU_FALLBACK = (VISIT_VP9_SOFTENC_MIN_FPS, 10)
 VISIT_FRAME_STARVATION_S = 1.0
 """No successful ``onFrame`` for this long → ``hidden{on:true}``."""
 
-# ── 对话（OD-08 v2 / OD-15 v3 / OD-21 v3）──────────────────────────────
+# -- Conversation (OD-08 v2 / OD-15 v3 / OD-21 v3) --
 
 VISIT_MAX_CAT_TURNS_WITHOUT_HUMAN = 6
 """Six cat lines in a row without any human line → wrap up."""
@@ -498,6 +512,12 @@ VISIT_OWN_LINES_PER_MINUTE = 6
 
 VISIT_REPLY_GAP_S = (1.0, 2.5)
 """Uniform random reply gap added after the peer's ``tail_ms``."""
+
+VISIT_HUMAN_REPLY_GRACE_S = 5.0
+"""Extra wait before this side's cat picks up a peer cat line that answered a human.
+
+The human gets this long to answer first; any human line cancels the pick-up.
+"""
 
 VISIT_WRAP_UP_STEP_S = 15
 """From ``begin`` until the peer's goodbye starts (first ``wu`` delta or ``wrap_up{speaking}``)."""
@@ -548,7 +568,10 @@ VISIT_RECALL_TOOL_ENABLED = False
 """Whether the isolated session gets a recall tool (off)."""
 
 VISIT_TTS_START_TIMEOUT_S = 4
-"""No first ``visit_speech_progress`` this long after the first push → estimate fallback."""
+"""No first ``visit_speech_progress`` this long after the first push → this line paces by estimate."""
+
+VISIT_TTS_START_FAILURES_LATCH = 2
+"""Start failures with no line playing in between before the visit stops using TTS (one-way)."""
 
 VISIT_SPEECH_PROGRESS_STALL_S = 3
 """Playback started but no progress for this long → abort the line, finish by estimate."""
@@ -571,7 +594,7 @@ VISIT_CLAUSE_MIN_MS = 400
 VISIT_CLAUSE_MAX_MS = 12000
 """Upper clamp of ``estimate_speech_ms``; also the receiver bound of ``text.tail_ms``."""
 
-# ── 记忆 / spool / debrief（OD-16 v4 / OD-17 v2）────────────────────────
+# -- Memory / spool / debrief (OD-16 v4 / OD-17 v2) --
 
 VISIT_SPOOL_DIRNAME = "visit_spool"
 """Spool directory under ``config_dir`` (``.jsonl`` + ``.state.json`` + ``.outbox.jsonl``).

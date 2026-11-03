@@ -1,4 +1,4 @@
-"""TheMealDB API 封装 — 免费菜谱数据源，无需 key。
+"""TheMealDB API wrapper: free recipe data, no key required.
 
 https://www.themealdb.com/api.php
 """
@@ -50,21 +50,21 @@ async def _request_json(path: str, *, params: dict[str, str] | None = None) -> d
 
 @dataclass
 class Recipe:
-    """一条菜谱。"""
+    """A recipe."""
     id: str
     name: str
     category: str = ""
-    area: str = ""          # 菜系 (Chinese, Japanese, Italian, ...)
+    area: str = ""          # Cuisine (Chinese, Japanese, Italian, ...).
     instructions: str = ""
     thumbnail: str = ""
     tags: List[str] = field(default_factory=list)
-    ingredients: List[Dict[str, str]] = field(default_factory=list)  # [{"name": "鸡蛋", "measure": "2个"}]
-    source: str = ""        # 原始来源 URL
+    ingredients: List[Dict[str, str]] = field(default_factory=list)  # [{"name": "鸡蛋", "measure": "2个"}] (example: eggs, quantity 2).
+    source: str = ""        # Original source URL.
     youtube: str = ""
 
 
 def _parse_meal(meal: Dict[str, Any]) -> Recipe:
-    """从 TheMealDB JSON 解析一条菜谱。"""
+    """Parse a recipe from TheMealDB JSON."""
     ingredients: List[Dict[str, str]] = []
     for i in range(1, 21):
         name = _text(meal.get(f"strIngredient{i}"))
@@ -90,7 +90,7 @@ def _parse_meal(meal: Dict[str, Any]) -> Recipe:
 
 
 async def search_by_name(query: str) -> List[Recipe]:
-    """按菜名搜索。"""
+    """Search by dish name."""
     data = await _request_json("search.php", params={"s": query})
     meals = data.get("meals")
     if not isinstance(meals, list):
@@ -99,7 +99,7 @@ async def search_by_name(query: str) -> List[Recipe]:
 
 
 async def search_by_ingredient(ingredient: str) -> List[Recipe]:
-    """按食材搜索（返回简要列表，无详细步骤）。"""
+    """Search by ingredient, returning a brief list without detailed steps."""
     data = await _request_json("filter.php", params={"i": ingredient})
     meals = data.get("meals")
     if not isinstance(meals, list):
@@ -116,7 +116,7 @@ async def search_by_ingredient(ingredient: str) -> List[Recipe]:
 
 
 async def get_by_id(meal_id: str) -> Optional[Recipe]:
-    """按 ID 获取完整菜谱。"""
+    """Get a complete recipe by ID."""
     data = await _request_json("lookup.php", params={"i": meal_id})
     meals = data.get("meals")
     if not isinstance(meals, list) or not meals or not isinstance(meals[0], dict):
@@ -125,7 +125,7 @@ async def get_by_id(meal_id: str) -> Optional[Recipe]:
 
 
 async def random_meal() -> Optional[Recipe]:
-    """随机获取一道菜。"""
+    """Get a random dish."""
     data = await _request_json("random.php")
     meals = data.get("meals")
     if not isinstance(meals, list) or not meals or not isinstance(meals[0], dict):

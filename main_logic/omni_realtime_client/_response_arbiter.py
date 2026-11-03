@@ -219,10 +219,10 @@ class _QueuedResponse:
     # A completed external user turn may pass a later speech pause. This is
     # local to its existing ticket; connection/admission/idle gates still apply.
     dispatch_while_paused: bool = field(default=False, compare=False)
-    # 提交前的最后一次就地改写机会。admission_check 只能答"发不发"，而有些判据
-    # （比如视觉所有权）的正确处置是"降级这条 item 再发"，不是整条拒——拒是**提交
-    # 之后**才发生的，要付一次补偿删除并等 provider 确认。回调在 _worker_send 之前、
-    # admission 复查之后逐事件调用，就地改 event。
+    # Last chance to rewrite in place before committing. admission_check only answers whether to send, but some criteria
+    # (such as vision ownership) require downgrading an item before sending rather than rejecting it entirely. Rejection happens **after
+    # commit**, requiring a compensating delete and provider confirmation. Invoke the callback per event before _worker_send,
+    # after the admission recheck, to mutate the event in place.
     pre_commit: Callable[[dict[str, Any]], None] | None = field(
         default=None, compare=False
     )
@@ -3270,10 +3270,10 @@ class RealtimeResponseArbiter:
                         await self._compensate_rejected_commit(queued)
                     raise RuntimeError("response dispatch interrupted")
                 if queued.pre_commit is not None:
-                    # 提交前的最后一刻，让调用方按自己的判据就地降级这条 event。
-                    # 位置在 admission 复查之后、_worker_send 之前：arbiter 在
-                    # enqueue 与这里之间还有等活跃响应、等发送信号量等多段等待，
-                    # 调用方在 enqueue 前做的检查覆盖不到那段窗口。
+                    # At the last moment before commit, let callers downgrade this event in place using their own criteria.
+                    # This occurs after admission rechecking and before _worker_send: between
+                    # enqueue and here, the arbiter waits for active responses, send semaphores, and other conditions,
+                    # leaving a window that caller checks before enqueue cannot cover.
                     queued.pre_commit(event)
                 queued.item_committed = True
                 if item_driven and queued.terminal is None:
@@ -3286,8 +3286,8 @@ class RealtimeResponseArbiter:
                     queued.terminal = loop.create_future()
                     self._response_owner = queued
                     queued.response_send_started = True
-                # main(#2837) 起 _worker_send 按 ticket 路由（queued.event_sender），
-                # 多一个 queued 形参；本轮的提交记账仍留在调用点两侧。
+                # Since main(#2837), _worker_send routes by ticket (queued.event_sender),
+                # taking an additional queued parameter; round commit accounting remains around the call site.
                 if item_driven:
                     queued.submitted_item_event_ids.append(str(event["event_id"]))
                 await self._worker_send(queued, event)

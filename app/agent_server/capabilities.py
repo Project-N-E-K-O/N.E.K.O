@@ -354,7 +354,7 @@ def _collect_agent_status_snapshot() -> Dict[str, Any]:
 
 async def _emit_agent_status_update(lanlan_name: Optional[str] = None) -> None:
     try:
-        # 先检查超时的 deferred 任务并发送 task_update 通知
+        # First check for timed-out deferred tasks and send task_update notifications
         timed_out = _cleanup_task_registry()
         for task_info in timed_out:
             try:

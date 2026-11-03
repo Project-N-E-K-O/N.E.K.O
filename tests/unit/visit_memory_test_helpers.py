@@ -151,12 +151,12 @@ class FakeMemoryServer:
         self.context_text = "SCOPED CONTEXT"
         self.subjects: list[dict] = []
         self.completed_at: dict[str, float] = {}
-        # 服务端墓碑代数（subject key -> forget_epoch），由带代数的 scoped_forget 抬高
+        # Server tombstone generation (subject key -> forget_epoch), raised by generation-bearing scoped_forget.
         self.tombstones: dict[str, int] = {}
-        # 开轮 / 清除前的只读代数查询单独记，不混进 requests（各测试按 requests 数写入请求）
+        # Track read-only generation queries before turn start / clearing separately from requests (tests use request counts).
         self.epoch_reads: list[list[str]] = []
         self.epoch_reads_fail = False
-        # 幂等键 -> 首次请求体指纹：同键不同请求体一律 422（与服务端 keyed request hash 同口径）
+        # Idempotency key -> initial body fingerprint: a changed body with the same key always yields 422, matching server hashes.
         self.key_fingerprints: dict[str, str] = {}
 
     @staticmethod

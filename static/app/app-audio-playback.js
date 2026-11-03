@@ -2321,6 +2321,60 @@
         return S.speakerVolume;
     };
 
+    // ======================== External voice taps (visit voice relay) ========================
+
+    /**
+     * Mono MediaStream of the assistant TTS output, taken right after the
+     * analyser: per-speech playback gain applies, the user's speaker volume /
+     * spatial panning do not (they shape what this machine hears, not what is
+     * sent). Resolves null when the analyser chain cannot be built. The caller
+     * owns the returned handle and must close() it.
+     */
+    async function openAssistantVoiceTap() {
+        var context = await ensureAudioPlayerContext();
+        initializeGlobalAnalyser();
+        var analyser = S.globalAnalyser;
+        if (!context || !analyser || typeof context.createMediaStreamDestination !== 'function') return null;
+        var destination = context.createMediaStreamDestination();
+        destination.channelCount = 1;
+        analyser.connect(destination);
+        return {
+            stream: destination.stream,
+            close: function () {
+                try {
+                    analyser.disconnect(destination);
+                } catch (_) {
+                    // Already disconnected.
+                }
+                destination.stream.getTracks().forEach(function (track) { track.stop(); });
+            }
+        };
+    }
+
+    /**
+     * Play an external audio track (a visit peer's voice) through the speaker
+     * gain, so the speaker volume, mute and output device apply. It joins after
+     * the analyser: it never drives this model's lip sync and never reaches
+     * openAssistantVoiceTap (no echo back to the peer). Resolves a handle with
+     * stop(), or null when it cannot be routed.
+     */
+    async function playExternalVoiceTrack(track) {
+        var context = await ensureAudioPlayerContext();
+        initializeGlobalAnalyser();
+        if (!context || !track || typeof window.MediaStream !== 'function') return null;
+        var source = context.createMediaStreamSource(new window.MediaStream([track]));
+        source.connect(S.speakerGainNode || context.destination);
+        return {
+            stop: function () {
+                try {
+                    source.disconnect();
+                } catch (_) {
+                    // Already disconnected.
+                }
+            }
+        };
+    }
+
     // ======================== Module exports ========================
 
     mod.clearAudioQueue = clearAudioQueue;
@@ -2329,6 +2383,8 @@
     mod.isAssistantSpeechInterrupted = isAssistantSpeechInterrupted;
     mod.clearLocalAssistantSpeechInterruptions = clearLocalAssistantSpeechInterruptions;
     mod.initializeGlobalAnalyser = initializeGlobalAnalyser;
+    mod.openAssistantVoiceTap = openAssistantVoiceTap;
+    mod.playExternalVoiceTrack = playExternalVoiceTrack;
     mod.startLipSync = startLipSync;
     mod.stopLipSync = stopLipSync;
     mod.scheduleAudioChunks = scheduleAudioChunks;

@@ -188,7 +188,7 @@ def test_stale_neutral_emotion_does_not_dilute_keyword():
 
 def test_cadence_alone_does_not_trigger():
     # cadence amplifies distress evidence, not a trigger: a built baseline + a
-    # short neutral reply ("嗯。") with no keyword/emotion must gate cadence out
+    # short neutral reply ("嗯。", 'Mm.') with no keyword/emotion must gate cadence out
     # and score 0, not renormalise cadence to a full 1.0.
     s = FocusScorer("t")
     for _ in range(4):

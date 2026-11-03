@@ -1,4 +1,4 @@
-"""单位换算 router — 纯计算，零依赖。"""
+"""Unit-conversion router: pure computation, no dependencies."""
 
 from __future__ import annotations
 
@@ -11,10 +11,10 @@ from .._chat import push_lifekit_content
 from .._coerce import finite_float
 from .._contracts import UnitConvertParams, UnitConvertResult
 
-# 换算表: (from_unit, to_unit) → (multiplier, from_label, to_label)
+# Conversion table: (from_unit, to_unit) -> (multiplier, from_label, to_label).
 # value_to = value_from * multiplier
 _CONVERSIONS: Dict[Tuple[str, str], Tuple[float, str, str]] = {
-    # 长度
+    # Length.
     ("cm", "inch"):    (0.393701, "厘米", "英寸"),
     ("inch", "cm"):    (2.54,     "英寸", "厘米"),
     ("m", "ft"):       (3.28084,  "米", "英尺"),
@@ -23,17 +23,17 @@ _CONVERSIONS: Dict[Tuple[str, str], Tuple[float, str, str]] = {
     ("mile", "km"):    (1.60934,  "英里", "公里"),
     ("cm", "ft"):      (0.0328084, "厘米", "英尺"),
     ("ft", "cm"):      (30.48,    "英尺", "厘米"),
-    # 重量
+    # Weight.
     ("kg", "lb"):      (2.20462,  "公斤", "磅"),
     ("lb", "kg"):      (0.453592, "磅", "公斤"),
     ("g", "oz"):       (0.035274, "克", "盎司"),
     ("oz", "g"):       (28.3495,  "盎司", "克"),
     ("kg", "oz"):      (35.274,   "公斤", "盎司"),
     ("oz", "kg"):      (0.0283495, "盎司", "公斤"),
-    # 温度 (特殊处理)
+    # Temperature (special handling).
     ("c", "f"):        (0, "°C", "°F"),
     ("f", "c"):        (0, "°F", "°C"),
-    # 体积
+    # Volume.
     ("l", "gal"):      (0.264172, "升", "加仑"),
     ("gal", "l"):      (3.78541,  "加仑", "升"),
     ("ml", "oz_fl"):   (0.033814, "毫升", "液体盎司"),
@@ -44,10 +44,10 @@ _CONVERSIONS: Dict[Tuple[str, str], Tuple[float, str, str]] = {
     ("tbsp", "ml"):    (14.7868,  "汤匙", "毫升"),
     ("ml", "tsp"):     (0.202884, "毫升", "茶匙"),
     ("tsp", "ml"):     (4.92892,  "茶匙", "毫升"),
-    # 面积
+    # Area.
     ("sqm", "sqft"):   (10.7639,  "平方米", "平方英尺"),
     ("sqft", "sqm"):   (0.092903, "平方英尺", "平方米"),
-    # 速度
+    # Speed.
     ("kmh", "mph"):    (0.621371, "km/h", "mph"),
     ("mph", "kmh"):    (1.60934,  "mph", "km/h"),
 }
@@ -78,7 +78,7 @@ _UNIT_LABELS: Dict[str, str] = {
     "mph": "mph",
 }
 
-# 单位别名 → 标准 key
+# Unit alias -> canonical key.
 _ALIASES: Dict[str, str] = {
     "厘米": "cm", "cm": "cm", "centimeter": "cm",
     "英寸": "inch", "inch": "inch", "in": "inch", "inches": "inch",
@@ -111,8 +111,8 @@ def _resolve_unit(raw: str) -> Optional[str]:
 
 
 def _convert(value: float, from_key: str, to_key: str) -> Optional[Tuple[float, str, str]]:
-    """执行换算。返回 (result, from_label, to_label) 或 None。"""
-    # 温度特殊处理
+    """Convert units. Return (result, from_label, to_label) or None."""
+    # Special temperature handling.
     if from_key == "c" and to_key == "f":
         return (value * 9 / 5 + 32, "°C", "°F")
     if from_key == "f" and to_key == "c":
@@ -126,7 +126,7 @@ def _convert(value: float, from_key: str, to_key: str) -> Optional[Tuple[float, 
 
 
 class UnitConvertRouter(PluginRouter):
-    """unit_convert entry：单位换算。"""
+    """unit_convert entry: unit conversion."""
 
     def __init__(self):
         super().__init__(name="unit_convert")

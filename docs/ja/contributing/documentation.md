@@ -46,7 +46,7 @@ Project N.E.K.O. のドキュメントはプロダクト契約の一部です。
 
 ランタイム UI の 8 locale 同期規則は別の必須要件です。
 
-`docs/README_en.md`、`docs/README_ja.md`、`docs/README_ru.md` は root README からリンクされるリポジトリ README の翻訳です。VitePress build から意図的に除外されており、サイト navigation page として使用しません。
+Root の `README.MD` は英語版リポジトリ README です。`docs/README_zh-CN.md`、`docs/README_ja.md`、`docs/README_ru.md` はその翻訳で、`docs/README_en.md` は旧リンクを root README へ案内するだけです。Root README を変更するときは同じ変更ですべての翻訳を更新します。VitePress build から意図的に除外されており、サイト navigation page として使用しません。
 
 `docs/zh-CN/guide/openclaw_guide*.md` と隣接 asset は、アプリが直接配信する多言語 runtime guide です。path を安定させ、VitePress から除外し続けてください。公開 integration contract は Agent／plugin documentation で保守します。
 

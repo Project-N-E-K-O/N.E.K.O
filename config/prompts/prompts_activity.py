@@ -905,21 +905,21 @@ ACTIVITY_STATE_LABELS: dict[str, dict[str, str]] = {
 # source* the AI may draw from, tone decides *how to deliver it*. The
 # Phase 2 prompt renders tone as a short bullet menu, e.g.:
 #
-#     口吻:
-#     - 反射式实况反应：跟着当下操作节奏即时短回应，看见什么反应什么
-#     - 起哄吐槽：拉开距离调侃用户当下的走位/选择/抉择，嘴贱但别戳痛处
-#     - 短战术建议：基于眼前局面递一句短建议，要符合用户在玩的这款游戏
+#     Tone:
+#     - Reflexive live reactions: brief immediate responses following current play, reacting to what is visible.
+#     - Playful teasing: detached banter about positioning/choices/decisions, sharp-tongued without hitting sore spots.
+#     - Brief tactical advice: one short suggestion grounded in the current situation and the game being played.
 #
 # Each bullet is a *direction* (what to do), NEVER a *line* (what
 # to say). No literal phrasing — neither sample words like
-# "稳/神/clutch/うまっ" nor sample sentences in quotes. The model
+# "稳/神/clutch/うまっ" (steady/amazing/clutch/nice) nor sample sentences in quotes. The model
 # must ground every reply in the live context (current screen,
 # recent dialogue, user mood) and generate fresh wording each time.
 #
 # Why no literal examples: any concrete phrase shipped here will
 # be overfit by the model — across users and weeks the same canned
 # line surfaces over and over and breaks immersion. The whole
-# point of the tone layer is the catgirl sounding fresh each round,
+# point of the tone layer is the neko sounding fresh each round,
 # which only works if we describe the *angle* and let the in-prompt
 # screen / dialogue / state context fill in the words.
 #
@@ -953,9 +953,9 @@ ACTIVITY_STATE_LABELS: dict[str, dict[str, str]] = {
 #
 # Why we render even on ``concise`` (the default): the previous design
 # skipped rendering for concise, which left focused_work prompts with
-# no style guidance — combined with the propensity directive ("只就
-# 屏幕内容轻聊一句") this nudged the model toward [PASS]. Surfacing
-# the three angles abstractly keeps the catgirl present without
+# no style guidance — combined with the propensity directive (briefly chat about
+# only the screen content), this nudged the model toward [PASS]. Surfacing
+# the three angles abstractly keeps the neko present without
 # changing source filtering and without leaking canned phrasing.
 #
 # Inner keys MUST stay in sync with the ``ActivityTone`` Literal in
@@ -1267,7 +1267,7 @@ ACTIVITY_TONE_HINTS: dict[str, dict[str, list[str]]] = {
 # Most tones don't ship a quality bar — they always have *something*
 # worth saying (a screen detail, a care line, an atmosphere beat). The
 # exception is ``witty``: entertainment (watching anime / video / a
-# stream) is only worth interrupting for when the catgirl actually has a
+# stream) is only worth interrupting for when the neko actually has a
 # funny take. A flat, unfunny line there is worse than silence, so
 # ``witty`` ships one extra rendered line telling the model to reply
 # ``[PASS]`` (the Phase 2 skip sentinel, see prompts_proactive.py) rather
@@ -1366,7 +1366,7 @@ _ACTIVITY_ENUM_COMMON_WORDS = frozenset({
 _ACTIVITY_RENDERED_COMMON_LABELS_BY_LANG: dict[str, frozenset[str]] = {
     # Short/common rendered activity labels and plain section headings are more
     # likely to be natural reply openers than safe-to-drop scaffolding. Known
-    # observed CJK source-prefix leaks such as ``聊天中/`` are handled by the
+    # observed CJK source-prefix leaks such as ``聊天中/`` (chatting/) are handled by the
     # explicit source-prefix allowlist in proactive_parsing.py.
     "zh": frozenset({
         "离开", "刚回来", "游戏中", "聊天中", "空闲", "切换状态中",
@@ -1446,8 +1446,8 @@ def get_proactive_intent_leak_labels() -> frozenset[str]:
             labels.add(label)
 
     # Activity state / propensity enum literals + rendered state labels.
-    # The activity-state section may render localized labels ("聊天中",
-    # "未收尾话题", etc.), and weak models can echo them as reply headings.
+    # The activity-state section may render localized labels ("聊天中", chatting;
+    # "未收尾话题", unfinished topic; etc.), and weak models can echo them as reply headings.
     # Exclude ordinary rendered words per locale where the label is more likely
     # to be natural speech than a safe-to-drop heading.
     for state_key, en_label in ACTIVITY_STATE_LABELS['en'].items():

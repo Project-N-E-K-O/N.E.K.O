@@ -104,8 +104,8 @@ def _write_runtime_state(cm, *, character_name="小满"):
     set_reserved(characters["猫娘"][character_name], "avatar", "asset_source", "steam_workshop")
     set_reserved(characters["猫娘"][character_name], "avatar", "asset_source_id", "123456")
     set_reserved(characters["猫娘"][character_name], "avatar", "live2d", "model_path", "example/example.model3.json")
-    # 模拟真实保存链路（新建/导入角色时即持久化 character_id），否则之后任何一次重新读盘都会补发新 ID，
-    # 使「读回内容 == 写入内容」类断言失效。跨设备指纹比较不依赖这里，见
+    # Simulate the real save path (persist character_id when creating/importing a character); otherwise any later disk read would generate another ID,
+    # breaking assertions such as "read-back content == written content". Cross-device fingerprint comparison does not depend on this; see
     # test_cloudsave_summary_matches_identical_content_despite_device_local_character_ids。
     ensure_catgirl_character_id(characters["猫娘"][character_name])
     cm.save_characters(characters, bypass_write_fence=True)
@@ -908,7 +908,7 @@ def test_fresh_install_has_no_user_content_after_plain_character_load(tmp_path):
     cm.get_character_data()
     cm.load_characters()
 
-    # 普通读取会为默认角色生成并写回 character_id，但这不算用户内容。
+    # A normal read generates and writes character_id for the default character, but that is not user content.
     characters_path = Path(cm.get_runtime_config_path("characters.json"))
     persisted = json.loads(characters_path.read_text(encoding="utf-8"))
     assert persisted["猫娘"]
@@ -929,7 +929,7 @@ def test_characters_seeded_from_another_language_default_still_count_as_pristine
     from config import get_localized_default_characters
     from utils.cloudsave_runtime import runtime_root_has_user_content
 
-    # 写入时的 Steam 语言可能与判定时不同。
+    # The Steam language at write time may differ from the one at decision time.
     with patch.object(cm, "get_default_characters", return_value=get_localized_default_characters("ru")):
         cm.load_characters()
 
@@ -1029,14 +1029,14 @@ def test_write_blocking_recovery_fails_closed_when_migration_checkpoint_cannot_l
 
 @pytest.mark.unit
 def test_bootstrap_heals_orphan_restart_pending_marker(tmp_path):
-    """``restart_pending:`` marker 残留 + 没有真 pending 的 storage_migration.json
-    时，bootstrap 必须把 mode 自愈回 normal——否则用户撞到 fire-and-forget
-    shutdown / launcher 接力失败 / 强杀 等任一场景就会被永久钉在 readonly，
-    memory server 所有写盘静默失败（见 time_indexed.db 不更新导致 gap 永远算成
-    3 天以上的 bug 报告）。
+    """When a ``restart_pending:`` marker remains without a genuinely pending storage_migration.json,
+    bootstrap must heal mode back to normal; otherwise fire-and-forget
+    shutdown, failed launcher handoff, or forced termination can permanently pin users in readonly,
+    silently failing every memory-server write (see the bug report where unchanged time_indexed.db makes the gap always
+    exceed 3 days).
 
-    与 ``test_bootstrap_preserves_restart_pending_maintenance_mode`` 对偶：那个
-    用例创建了真 pending 的 migration checkpoint，本用例只留 marker。
+    Symmetric with ``test_bootstrap_preserves_restart_pending_maintenance_mode``: that
+    test creates a genuinely pending migration checkpoint, while this one retains only the marker.
     """
     cm = _make_config_manager(tmp_path)
     anchor_base = tmp_path / "anchor-base"
@@ -1060,7 +1060,7 @@ def test_bootstrap_heals_orphan_restart_pending_marker(tmp_path):
     result = bootstrap_local_cloudsave_environment(cm)
 
     assert result["root_state"]["mode"] == ROOT_MODE_NORMAL
-    # _recover_stale_write_blocking_mode 写入的标记，方便运维从日志/state 追溯
+    # Marker written by _recover_stale_write_blocking_mode, useful for operations to trace through logs/state
     assert result["root_state"]["last_migration_result"].startswith("recovered_stale_mode:")
 
 
@@ -1648,8 +1648,8 @@ def _tamper_manifest_with_memory_key(cm, hostile_key: str, placement_relative_pa
     manifest_path = Path(cm.cloudsave_manifest_path)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["files"][hostile_key] = {"sha256": "0" * 64, "size": 2}
-    # 攻击场景里 manifest 由存档作者产出，fingerprint 留空即可跳过一致性校验，
-    # 因此旧版路径约束不能依赖 fingerprint 这道闸。
+    # In the attack scenario, the save author controls the manifest and can leave fingerprint empty to skip consistency checks,
+    # so the legacy path constraint must not rely on the fingerprint gate.
     manifest["schema_version"] = 1
     manifest["min_reader_schema_version"] = 1
     manifest["fingerprint"] = ""
@@ -1660,12 +1660,12 @@ def _tamper_manifest_with_memory_key(cm, hostile_key: str, placement_relative_pa
 @pytest.mark.parametrize(
     ("hostile_key", "placement_relative_path", "error_match"),
     [
-        # parts 恰好三段的 '..' 穿越：character_name 解析成 '..'，
-        # runtime 目标会落到 memory_dir 的上一级
+        # A '..' traversal with exactly three parts: character_name parses as '..',
+        # so the runtime target lands in the parent of memory_dir
         ("memory/../escape.json", "escape.json", "unsupported cloudsave memory path"),
-        # 白名单外的叶子文件名
+        # A leaf filename outside the allowlist
         ("memory/小满/evil.bin", "memory/小满/evil.bin", "unsupported cloudsave memory path"),
-        # 角色名过不了 audit（前导空格）
+        # Character name fails audit because of leading whitespace
         ("memory/ 小满/recent.json", "memory/ 小满/recent.json", "character name audit failed"),
     ],
 )
@@ -1798,7 +1798,7 @@ def test_cloudsave_summary_matches_identical_content_despite_device_local_charac
 
     _write_runtime_state(source_cm, character_name="共同角色")
     _write_runtime_state(target_cm, character_name="共同角色")
-    # 两台设备各自从无 ID 的旧数据升级，由 load_characters 独立补发 ID。
+    # Two devices independently upgrade legacy data without IDs; load_characters assigns IDs on each.
     _drop_persisted_character_ids(source_cm)
     _drop_persisted_character_ids(target_cm)
     source_id = get_reserved(_load_characters_from_disk(source_cm)["猫娘"]["共同角色"], "character_id")
@@ -1826,7 +1826,7 @@ def test_character_payload_fingerprint_ignores_only_character_id():
             memory_hashes={},
         )
 
-    # 升级前的云端快照没有 character_id，必须与升级后本地（已补身份）的指纹一致。
+    # Pre-upgrade cloud snapshots lack character_id and must fingerprint identically to upgraded local data with assigned identities.
     pre_upgrade = {"昵称": "小满", "_reserved": {"voice_id": "v1"}}
     upgraded = {"昵称": "小满", "_reserved": {"voice_id": "v1", "character_id": "character_" + "a" * 32}}
     assert fingerprint(upgraded) == fingerprint(pre_upgrade)
@@ -2443,9 +2443,9 @@ def test_export_snapshot_emits_single_character_shards_and_meta(tmp_path):
 
 @pytest.mark.unit
 def test_export_snapshot_includes_external_import_state_sidecar(tmp_path):
-    # external_import_state sidecar（空/全去重天的逐日幂等账本）必须随 facts 一起
-    # 进快照，否则 cloudsave 用户换机/恢复后这些天丢指纹、重跑 LLM（修复对跨设备
-    # 场景不完整）。加入 MANAGED_MEMORY_FILENAMES 后应被采集。
+    # The external_import_state sidecar (daily idempotency ledger for empty/fully deduplicated days) must enter
+    # snapshots with facts, or device changes/restoration lose those days' fingerprints and rerun the LLM, leaving cross-device
+    # coverage incomplete. Adding it to MANAGED_MEMORY_FILENAMES must include it in collection.
     cm = _make_config_manager(tmp_path)
 
     from utils.cloudsave_runtime import export_local_cloudsave_snapshot
@@ -2951,7 +2951,7 @@ def test_cloud_download_keeps_local_character_id_and_adopts_cloud_id_only_for_ne
     _write_runtime_state(target_cm, character_name="共同角色")
     _add_runtime_character(target_cm, "本地角色", recent_text="local-only")
     target_characters = _load_characters_from_disk(target_cm)
-    # 本机另一个角色恰好占用了某个云端角色的身份。
+    # Another local character happens to occupy a cloud character's identity.
     set_reserved(target_characters["猫娘"]["本地角色"], "character_id", source_ids["云端撞号角色"])
     target_cm.save_characters(target_characters, bypass_write_fence=True)
     target_common_id = get_reserved(target_characters["猫娘"]["共同角色"], "character_id")
@@ -3374,7 +3374,7 @@ def test_cross_device_import_overwrites_existing_runtime_without_duplicates_or_p
     assert import_result["applied_character_count"] == 1
     imported_characters = target_cm.load_characters()
     source_characters = source_cm.load_characters()
-    # 已存在于本机的角色保留本机 character_id，其余内容与云端一致。
+    # Existing local characters retain their local character_id; all other content matches the cloud.
     assert get_reserved(imported_characters["猫娘"][character_name], "character_id") == target_character_id
     assert get_reserved(source_characters["猫娘"][character_name], "character_id") != target_character_id
     for characters_payload in (imported_characters, source_characters):
@@ -4526,8 +4526,8 @@ def test_runtime_root_counts_an_interrupted_avatar_transaction_as_content(tmp_pa
 
     assert _runtime_root_has_user_content(Path(cm.app_docs_dir)) is True
 
-    # 判据不能放宽成「任何点开头的都算内容」：放宽了会把无关隐藏条目当成用户
-    # 内容，从而拦下本该发生的迁移。名字必须逐字命中该模块的事务命名。
+    # Do not broaden the criterion to 'anything starting with a dot is content': unrelated hidden entries would count as user
+    # content and block required migration. Names must exactly match this module's transaction naming.
     shutil.rmtree(backup)
     for noise in (".DS_Store", ".cache.backup", ".local-not-a-uuid.updating"):
         entry = avatar_tools / noise
@@ -4572,7 +4572,7 @@ def test_transactional_entry_pattern_tracks_the_avatar_tool_store_naming():
     pattern = TRANSACTIONAL_RUNTIME_ENTRY_PATTERNS["avatar_tools"]
     tool_id = "local-12345678-1234-4123-8123-123456789abc"
 
-    # 被打断的更新：这两个可能是仅存副本，收紧到认不出就是静默删除。
+    # Interrupted update: these two may be the only surviving copies; failing to recognize them would silently delete data.
     for suffix, owner in (
         (".backup", LOCAL_AVATAR_TOOL_BACKUP_PATTERN),
         (".updating", LOCAL_AVATAR_TOOL_UPDATE_PATTERN),
@@ -4583,7 +4583,7 @@ def test_transactional_entry_pattern_tracks_the_avatar_tool_store_naming():
         )
         assert pattern.fullmatch(name) is not None, suffix
 
-    # 创建暂存和删除暂存都不是仅存副本：用户要么还没创建成功，要么就是要删掉它。
+    # Creation/deletion staging is not the only surviving copy: creation either never succeeded or the user intended deletion.
     for suffix, owner in (
         (".uploading", LOCAL_AVATAR_TOOL_UPLOAD_PATTERN),
         (".deleting", LOCAL_AVATAR_TOOL_DELETING_PATTERN),
@@ -5655,7 +5655,7 @@ def _seed_keyed_bookkeeping(character_dir: Path) -> list[Path]:
 
 
 def _assert_tombstones_kept_without_completion(character_dir: Path) -> None:
-    # 围栏留着（清除前的旧请求仍要被挡），只去掉「已擦完」标记（重放的清除要真的再擦）
+    # Retain fences to block old pre-clear requests; remove only the 'already erased' marker so replayed clears actually erase again
     data = json.loads((character_dir / "scoped_tombstones.json").read_text(encoding="utf-8"))
     assert data == {"participant:neko_visit:u1": {"forget_epoch": 5, "forgotten_at": 1.0}}
 
@@ -5678,10 +5678,10 @@ def test_character_download_clears_keyed_write_bookkeeping(tmp_path):
 
     import_cloudsave_character_unit(target_cm, "云端角色")
 
-    # 被改写记忆的角色：带键写入簿记一并清掉，否则会把被回滚的写入当成已完成 / 已暂存
+    # For characters whose memory was replaced, clear keyed-write bookkeeping too, or rolled-back writes appear completed/staged
     assert not any(path.exists() for path in downloaded)
     _assert_tombstones_kept_without_completion(Path(target_cm.memory_dir) / "云端角色")
-    # 别的角色不动
+    # Leave other characters unchanged
     assert all(path.exists() for path in untouched)
     untouched_tombstones = json.loads(
         (Path(target_cm.memory_dir) / "本地角色" / "scoped_tombstones.json").read_text(encoding="utf-8")
@@ -5716,7 +5716,7 @@ def test_keyed_write_bookkeeping_names_match_the_memory_server():
         KEYED_WRITE_TOMBSTONES_FILENAME,
     )
 
-    # utils 不能 import app（分层）：名字在两边各写一份，这里钉住它们一致
+    # utils cannot import app due to layering; both sides define these names independently, and this test enforces agreement
     assert set(KEYED_WRITE_BOOKKEEPING_FILENAMES) == {idempotency.IDEMPOTENCY_KEYS_FILENAME}
     assert KEYED_WRITE_TOMBSTONES_FILENAME == idempotency.TOMBSTONES_FILENAME
     assert KEYED_WRITE_STAGING_DIRNAME == idempotency.STAGING_DIRNAME

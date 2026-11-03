@@ -16,7 +16,7 @@ from tests.unit.test_theater_numeric_v2_player_transition import initiation_case
     '（关上抽屉）温室入口在花园东侧，但今天尚未开放。',
 ])
 def test_mixed_quote_matches_the_exact_history_given_to_model(text):
-    # 完整混合字段和拆分内容块必须认作同一出处；出处有效不代表语义已经授权。
+    # Complete mixed fields and split content blocks must count as the same source; a valid source does not imply semantic authorization.
     case = initiation_case()
     session = replace(case['session'], opening_performance={'performance': text, 'suggested_inputs': []})
     assert ev._has_public_transition_quote(text, session)
@@ -51,7 +51,7 @@ def test_old_scene_quote_and_source_response_cannot_authorize_current_visit():
 
 @pytest.mark.asyncio
 async def test_formal_output_has_room_without_changing_ordinary_or_dispute(monkeypatch):
-    # 正式检查要输出三段冲突依据和公开引文，输出容量独立；不扩大普通快检或超时。
+    # Formal checks output three conflict justifications and public quotations with an independent output budget; do not expand normal quick checks or timeouts.
     options = []
     class Client:
         async def __aenter__(self): return self

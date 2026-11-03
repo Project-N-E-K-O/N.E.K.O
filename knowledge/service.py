@@ -78,7 +78,8 @@ from .registry import (
 )
 from .chunking import chunk_bodies
 from .subscriptions import KnowledgeSubscription, Release, identity_conflict
-from .render import RenderCard, render_reference_block
+from .passive import PASSIVE_SEMANTIC_CANDIDATES, Calibration, PassiveHit, select_hits, thresholds_for
+from .render import RenderCard, render_reference_block, render_turn_cards
 from .retrieval import (
     LEXICAL_CANDIDATES,
     RankedHit,
@@ -99,6 +100,11 @@ from .store import (
 )
 from .text import title_key
 
+from config.turn_context_settings import (
+    TURN_CONTEXT_ITEM_MAX_TOKENS,
+    TURN_CONTEXT_QUERY_MAX_CHARS,
+)
+
 
 logger = logging.getLogger("N.E.K.O.Knowledge")
 _T = TypeVar("_T")
@@ -117,6 +123,7 @@ DETACHED_WRITE_WAIT_SECONDS = 10.0
 MAX_QUERY_EMBEDDINGS = 2
 MAX_QUERY_CHARS = 2_000
 MAX_QUERY_LIMIT = 10
+PASSIVE_DIAGNOSTIC_RESULTS = frozenset({"matched", "timeout", "busy", "error"})
 MAX_TRACKED_JOBS = 50
 MAX_PENDING_IMPORTS = 3
 # Packs are listed whole on the management page; keep that list small.
@@ -291,6 +298,8 @@ class KnowledgeService:
         self._vectors_dirty = False
         self._index_model_id: str | None = None
         self._query_embeddings: set[asyncio.Task[Any]] = set()
+        # Passive turn context: probe vectors and backgrounds per model.
+        self._calibration = Calibration()
         self._admitting: dict[str, int] = {}
         # Request order: imports and removals each take the next number when
         # the request arrives (before parsing or waiting for the lock). An
@@ -359,6 +368,7 @@ class KnowledgeService:
         if startup is not None and not startup.done():
             await asyncio.wait({startup}, timeout=DETACHED_WRITE_WAIT_SECONDS)
         self._index_wakeup.set()
+        self._calibration.cancel()
         tasks = [task for task in (*self._tasks, self._vector_task) if task is not None]
         for task in tasks:
             task.cancel()
@@ -1719,6 +1729,304 @@ class KnowledgeService:
         if not hits:
             return finish("miss", retrieval_mode=retrieval_mode)
         return finish("matched", hits=hits, context=context, retrieval_mode=retrieval_mode)
+
+    async def turn_context(
+        self,
+        *,
+        text: str,
+        exclude_card_ids: Sequence[str] = (),
+        budget_ms: int = DEFAULT_QUERY_BUDGET_MS,
+        language: str | None = None,
+    ) -> dict[str, Any]:
+        """Cards a chat message brings in unasked (passive turn context).
+
+        Only packs whose ``auto_context`` is on take part, under the global
+        switch. Knowledge and corpus are chosen separately (``passive``) and
+        returned as two sections of bare cards for Main to wrap:
+        ``{"knowledge": {"context", "card_ids", "tokens"}, "corpus": {...}}``.
+        ``exclude_card_ids`` are cards the session still carries; they are
+        left out before anything is ranked. Nothing about the session is kept
+        here. The result never raises.
+        """
+        started = time.monotonic()
+        text = str(text or "").strip()[:TURN_CONTEXT_QUERY_MAX_CHARS]
+        budget = min(max(int(budget_ms or DEFAULT_QUERY_BUDGET_MS), 50), MAX_QUERY_BUDGET_MS) / 1000
+        excluded = {str(card_id) for card_id in exclude_card_ids or ()}
+
+        def finish(result: str, **extra: Any) -> dict[str, Any]:
+            elapsed = int((time.monotonic() - started) * 1000)
+            sections = {
+                kind: extra.get(kind) or {"context": "", "card_ids": [], "tokens": 0}
+                for kind in MATERIAL_TYPES
+            }
+            hits = sum(len(section["card_ids"]) for section in sections.values())
+            # Runs on every text turn: only outcomes worth a look are kept,
+            # so routine misses do not push tool lookups out of the log.
+            if result in PASSIVE_DIAGNOSTIC_RESULTS:
+                self.diagnostics.record_query(
+                    mode="passive",
+                    result=result,
+                    retrieval_mode=extra.get("retrieval_mode", ""),
+                    hits=hits,
+                    entry_title="",
+                    pack_id="",
+                    elapsed_ms=elapsed,
+                    error_type=extra.get("error_type", ""),
+                )
+            return {
+                "ok": True,
+                "result": result,
+                **sections,
+                "retrieval_mode": extra.get("retrieval_mode", ""),
+                "elapsed_ms": elapsed,
+            }
+
+        if self._state != "ready":
+            return finish("unavailable")
+        if not self._registry.enabled:
+            return finish("disabled")
+        if not text:
+            return finish("miss")
+        registry = self._registry
+        allowed = [
+            pack_id
+            for pack_id in self._allowed_pack_ids(registry, "auto")
+            if (record := registry.packs.get(pack_id)) is not None and record.auto_context
+        ]
+        if not allowed:
+            return finish("off")
+        if self._query_slots.locked():
+            return finish("busy")
+        async with self._query_lease():
+            deadline = started + budget
+            try:
+                async with asyncio.timeout(max(deadline - time.monotonic(), 0.01)):
+                    current = await self._query_thread(self._current_packs, allowed, registry)
+                    allowed = [pack_id for pack_id in allowed if pack_id in current]
+                    if not allowed:
+                        return finish("miss")
+                    picked, retrieval_mode = await self._passive_pick(
+                        text, allowed, deadline, registry, excluded
+                    )
+                    if not any(picked.values()):
+                        return finish("miss", retrieval_mode=retrieval_mode)
+                    sections = await self._query_thread(
+                        self._render_turn_sections, picked, text, language, registry
+                    )
+            except TimeoutError:
+                return finish("timeout")
+            except Exception as exc:
+                logger.warning("[Knowledge] turn context failed: %s", type(exc).__name__, exc_info=True)
+                return finish("error", error_type=type(exc).__name__)
+        if not any(section["card_ids"] for section in sections.values()):
+            return finish("miss", retrieval_mode=retrieval_mode)
+        return finish("matched", retrieval_mode=retrieval_mode, **sections)
+
+    async def _passive_pick(
+        self,
+        text: str,
+        allowed: list[str],
+        deadline: float,
+        registry: Registry,
+        excluded: set[str],
+    ) -> tuple[dict[str, list[PassiveHit]], str]:
+        """Candidates from all three signals, judged per material type."""
+        model_id = self._current_model_id()
+        # Read together, with no await between: the generation names this
+        # very snapshot in the calibration cache.
+        snapshot = self._vectors
+        snapshot_key = self._vectors_built_for
+        vector_packs = [
+            pack_id
+            for pack_id in allowed
+            if (record := registry.packs.get(pack_id)) is not None
+            and record.local_embedding
+            and (
+                snapshot is None
+                or snapshot.pack_versions is None
+                or snapshot.pack_versions.get(pack_id, record.pack_sha256) == record.pack_sha256
+            )
+        ]
+        type_packs = {
+            material_type: [
+                pack_id
+                for pack_id in allowed
+                if registry.packs[pack_id].effective_material_type == material_type
+            ]
+            for material_type in MATERIAL_TYPES
+        }
+        embed_task: asyncio.Task[Any] | None = None
+        if (
+            model_id is not None
+            and snapshot is not None
+            and snapshot.model_id == model_id
+            and set(vector_packs) & set(snapshot.pack_ids)
+            and len(self._query_embeddings) < MAX_QUERY_EMBEDDINGS
+            and self.embedder is not None
+        ):
+            self._calibration.ensure_probes(model_id, self.embedder.embed_batch)
+            embed_task = asyncio.create_task(self.embedder.embed(text))
+            embed_task.add_done_callback(_consume)
+            self._query_embeddings.add(embed_task)
+            embed_task.add_done_callback(self._query_embeddings.discard)
+        # Cards the session still carries are left out before any cut, so
+        # they cannot take the slots of the next-best cards. Disabled cards
+        # stay out of the vector cut and the calibration background too.
+        excluded_ids, disabled_ids, exact_ids, lexical_ids, named_ids = await self._query_thread(
+            self._passive_lexical_search, text, allowed, registry, excluded
+        )
+        query_vector: np.ndarray | None = None
+        if embed_task is not None:
+            remaining = deadline - time.monotonic()
+            done, _pending = await asyncio.wait(
+                {embed_task}, timeout=max(remaining - QUERY_RENDER_RESERVE_SECONDS, 0)
+            )
+            if embed_task in done and embed_task.exception() is None and embed_task.result():
+                blob = normalize_vector(embed_task.result())
+                if blob is not None:
+                    query_vector = np.frombuffer(blob, dtype="<f4")
+        # Each material type gets its own candidate cut, so many close cards
+        # of one type never push the other type's leader out.
+        semantic_by_type: dict[str, list[SemanticMatch]] = {}
+        if query_vector is not None:
+            vector_excluded = excluded_ids | disabled_ids
+            # One hop per type: a query cancelled or timed out between them
+            # does not go on scanning the other type while holding its slot.
+            for material_type, packs in type_packs.items():
+                type_vector_packs = [pack_id for pack_id in vector_packs if pack_id in packs]
+                if type_vector_packs:
+                    semantic_by_type[material_type] = await self._query_thread(
+                        self._passive_semantic_search, snapshot, query_vector,
+                        type_vector_packs, vector_excluded,
+                    )
+        semantic = [match for matches in semantic_by_type.values() for match in matches]
+        candidate_ids = list(dict.fromkeys(
+            [*exact_ids, *named_ids, *lexical_ids, *(m.entry_id for m in semantic)]
+        ))
+        entries = await self._query_thread(self._store.fetch_entries, candidate_ids)
+        allowed_set = await self._query_thread(self._current_packs, allowed, registry)
+        picked: dict[str, list[PassiveHit]] = {}
+        for material_type in MATERIAL_TYPES:
+            type_set = {pack_id for pack_id in type_packs[material_type] if pack_id in allowed_set}
+            if not type_set:
+                picked[material_type] = []
+                continue
+            usable = {
+                entry_id
+                for entry_id, entry in entries.items()
+                if entry.pack_id in type_set
+                and not _disabled_in(entry, registry)
+                and f"{entry.pack_id}/{title_key(entry.title)}" not in excluded
+            }
+            type_vector_packs = [pack_id for pack_id in vector_packs if pack_id in type_set]
+            background = (
+                self._calibration.background(
+                    snapshot, snapshot_key, type_vector_packs, material_type, self._thread,
+                    excluded_entry_ids=disabled_ids,
+                )
+                if query_vector is not None and type_vector_packs
+                else None
+            )
+            picked[material_type] = select_hits(
+                text,
+                entries=entries,
+                usable=usable,
+                exact_ids=[entry_id for entry_id in exact_ids if entry_id in usable],
+                named_ids=[entry_id for entry_id in named_ids if entry_id in usable],
+                lexical_ids=[entry_id for entry_id in lexical_ids if entry_id in usable],
+                semantic=[
+                    match for match in semantic_by_type.get(material_type, ())
+                    if match.entry_id in usable
+                ],
+                thresholds=thresholds_for(material_type, background),
+            )
+        return picked, ("hybrid" if query_vector is not None else "bm25")
+
+    def _excluded_entry_ids(self, card_ids: set[str]) -> set[int]:
+        """Entry ids of ``pack_id/title_key`` card ids."""
+        titles: dict[str, list[str]] = {}
+        for card_id in card_ids:
+            pack_id, _, key = card_id.partition("/")
+            if pack_id and key:
+                titles.setdefault(pack_id, []).append(key)
+        return self._store.entry_ids_by_title(titles) if titles else set()
+
+    def _passive_lexical_search(
+        self, text: str, pack_ids: list[str], registry: Registry, excluded_cards: set[str]
+    ) -> tuple[set[int], set[int], list[int], list[int], list[int]]:
+        """Exclusions and keyword candidates in one worker-thread hop.
+
+        Returns the entry ids of ``excluded_cards``, the disabled entry ids of
+        ``pack_ids`` (index and registry snapshot), then the exact, keyword
+        and named candidates.
+        """
+        excluded_ids = self._excluded_entry_ids(excluded_cards)
+        snapshot_disabled = self._snapshot_only_disabled(pack_ids, registry)
+        disabled_ids = self._store.disabled_entry_ids(pack_ids) | snapshot_disabled
+        # Disabled index rows are filtered in SQL already.
+        excluded = excluded_ids | snapshot_disabled
+        exact_ids, lexical_ids = self._store.lexical_candidates(
+            text, pack_ids=pack_ids, limit=LEXICAL_CANDIDATES, exclude_ids=excluded,
+        )
+        named_ids = self._store.named_candidates(text, pack_ids=pack_ids, exclude_ids=excluded)
+        return excluded_ids, disabled_ids, exact_ids, lexical_ids, named_ids
+
+    def _passive_semantic_search(
+        self,
+        snapshot: VectorSnapshot | None,
+        query_vector: np.ndarray,
+        pack_ids: list[str],
+        excluded_ids: set[int],
+    ) -> list[SemanticMatch]:
+        """Vector candidates of one material type, with its own cut so many
+        close cards of one type never push the other type's leader out."""
+        return semantic_candidates(
+            snapshot,
+            query_vector,
+            allowed_pack_ids=pack_ids,
+            exclude_entry_ids=excluded_ids,
+            limit=PASSIVE_SEMANTIC_CANDIDATES,
+            threshold=-1.0,
+        )
+
+    def _render_turn_sections(
+        self,
+        picked: dict[str, list[PassiveHit]],
+        text: str,
+        language: str | None,
+        registry: Registry,
+    ) -> dict[str, dict[str, Any]]:
+        ids = [hit.entry_id for hits in picked.values() for hit in hits]
+        entries = self._store.fetch_entries(ids)
+        current = self._current_packs([entry.pack_id for entry in entries.values()], registry)
+        sections: dict[str, dict[str, Any]] = {}
+        for material_type in MATERIAL_TYPES:
+            cards: list[RenderCard] = []
+            card_ids: list[str] = []
+            for hit in picked.get(material_type, ()):
+                entry = entries.get(hit.entry_id)
+                record = registry.packs.get(entry.pack_id) if entry is not None else None
+                if entry is None or record is None or _disabled_in(entry, registry) or entry.pack_id not in current:
+                    continue
+                bodies = chunk_bodies(entry.content) or [entry.content]
+                index = best_excerpt_index(text, bodies, hit.semantic_chunk)
+                excerpt = bodies[index] if index == 0 else f"... {bodies[index]}"
+                cards.append(
+                    RenderCard(
+                        title=entry.title,
+                        material_type=material_type,
+                        summary=entry.summary,
+                        content=excerpt,
+                        source_name=record.source.name,
+                        source_license=record.source.license,
+                    )
+                )
+                card_ids.append(f"{entry.pack_id}/{title_key(entry.title)}")
+            context, tokens = render_turn_cards(
+                cards, language=language, max_tokens_per_card=TURN_CONTEXT_ITEM_MAX_TOKENS
+            )
+            sections[material_type] = {"context": context, "card_ids": card_ids, "tokens": tokens}
+        return sections
 
     @contextlib.asynccontextmanager
     async def _query_lease(self) -> AsyncIterator[None]:

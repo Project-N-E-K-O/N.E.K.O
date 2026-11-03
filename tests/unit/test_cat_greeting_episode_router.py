@@ -16,7 +16,7 @@ from tests.fake_clock import patch_module_clock
 
 
 def test_text_ingress_is_stamped_before_async_dispatch(monkeypatch):
-    # 打点的 time.time() 就在 websocket_router._stamp_user_input_ingress 里读。
+    # The telemetry time.time() is read inside websocket_router._stamp_user_input_ingress.
     patch_module_clock(monkeypatch, websocket_router, time=lambda: 123.5)
     original = {"input_type": "text", "data": "hello"}
 

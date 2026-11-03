@@ -1,17 +1,17 @@
 # -*- coding: utf-8 -*-
-"""Unit tests for memory.user_directives — user ban-topic 抽取 + 持久化 +
-prompt 注入。
+"""Unit tests for memory.user_directives: banned-topic extraction, persistence, and
+prompt injection.
 
-四类合同：
+Four contract groups:
 
-1. ``extract_directives`` 对 7 个 locale 的 ban-topic 模板都能抽到 term，
-   且并行匹配（中英混说也能命中），非 ban-topic 文本不误触发。
-2. ``UserDirectivesManager.record`` 命中 ``(kind, term.casefold())`` 时刷新
-   last_seen + expire_at + hit_count，而不是新加一条。
-3. TTL：``USER_DIRECTIVE_TTL_SECONDS`` 之后过期不再出现在 ``get_active``；
-   ``purge_expired`` 删除过期条目并落盘。
-4. ``render_prompt_block`` 把活跃 term 拼成 system prompt 片段，对应 lang
-   的 header 必须出现；空列表返回 ""。
+1. extract_directives extracts terms from banned-topic templates in seven locales,
+   with parallel matching for mixed Chinese/English and no false positives on unrelated text.
+2. UserDirectivesManager.record refreshes last_seen + expire_at + hit_count
+   on matching (kind,term.casefold()), rather than inserting another entry.
+3. TTL: entries disappear from get_active after USER_DIRECTIVE_TTL_SECONDS;
+   purge_expired deletes and persists expired entries.
+4. render_prompt_block joins active terms into a system-prompt segment with the correct
+   language header; empty lists return \"\".
 """
 from __future__ import annotations
 
@@ -55,15 +55,15 @@ def _read_file(tmp_path, name) -> dict:
         return json.load(f)
 
 
-# ── 1. extraction: 7 locale 全覆盖 + 并行匹配 ──────────────────────
+# -- 1. Extraction: all seven locales and parallel matching. --
 
 
 @pytest.mark.parametrize("text,expected_term", [
-    # zh: 别再提 / 不要再说 / 不想聊 / 关于
+    # Chinese: 别再提 / 不要再说 / 不想聊 / 关于.
     ("别再提小明了", "小明"),
     ("不要再说工作的事了！", "工作"),
-    # "的事" 是 zh pattern 的可选词尾抑止后缀，被剥掉后留下 "昨天发生"——
-    # 语义还原度对 LLM 注入足够（含 token-level "昨天" 与 "发生"）。
+    # 的事 is an optional Chinese-pattern trailing suppression suffix; removing it leaves 昨天发生,
+    # semantically sufficient for LLM injection, retaining 昨天 and 发生 tokens.
     ("我不想聊昨天发生的事", "昨天发生"),
     ("关于股票就别再讲了", "股票"),
     # en: stop / don't / I don't want
@@ -86,7 +86,7 @@ def _read_file(tmp_path, name) -> dict:
     ("não mencione minha ex nunca mais", "minha ex"),
 ])
 def test_extract_directives_per_locale(text, expected_term):
-    """7 个 locale 的核心模板都能抽到 term。"""
+    """Core templates in all seven locales extract terms."""
     hits = extract_directives(text)
     assert hits, f"no hit for {text!r}"
     terms = {term for _loc, _kind, term in hits}
@@ -96,7 +96,7 @@ def test_extract_directives_per_locale(text, expected_term):
 
 
 def test_extract_directives_mixed_language():
-    """中英混说也能命中（patterns 并行跑，不依赖语言检测）。"""
+    """Mixed Chinese/English also matches: patterns run in parallel without language detection."""
     text = "拜托 stop saying 加班 already"
     hits = extract_directives(text)
     terms = {t for _loc, _kind, t in hits}
@@ -104,12 +104,12 @@ def test_extract_directives_mixed_language():
 
 
 def test_extract_directives_negative_no_directive():
-    """普通陈述、问候、提问不应触发。"""
+    """Ordinary statements, greetings, and questions must not trigger."""
     for text in [
         "",
         "今天天气真好。",
         "What time is it?",
-        "我喜欢吃西瓜。",  # 偏好陈述，不是显式 ban
+        "我喜欢吃西瓜。",  # Preference statement, not an explicit ban.
         "Hello there.",
         "그냥 안녕하세요",
     ]:
@@ -117,49 +117,49 @@ def test_extract_directives_negative_no_directive():
 
 
 def test_extract_directives_term_length_bounds():
-    """term <2 或 >40 字符的命中被丢弃（防御性裁剪）。"""
-    # 过短：捕获到单字符 "a"，应丢弃
+    """Discard terms shorter than two or longer than forty characters defensively."""
+    # Too short: discard the captured single character a.
     assert extract_directives("don't say a please") == []
-    # 过长：构造一个 50 字符的伪 term
+    # Too long: construct a 50-character fake term.
     long_term = "x" * 50
     text = f"stop talking about {long_term}."
     hits = extract_directives(text)
-    # 可能完全丢弃，或抓到截断到 40 字以内的子串——任何 term 都必须 <= 40
+    # May discard entirely or capture a <=40-character substring; every term must be <=40.
     for _loc, _kind, term in hits:
         assert len(term) <= 40
 
 
 def test_extract_directives_dedup_same_term():
-    """一句话里同一 (kind, term) 在不同 locale pattern 都命中，结果去重。"""
-    # "stop talking about" en pattern + ja pattern 不会同时命中同一英文 term，
-    # 但我们可以用一个中英都覆盖的 setup 验证去重逻辑本身
+    """Deduplicate one sentence's identical (kind,term) matches across locale patterns."""
+    # English stop talking about and Japanese patterns cannot capture the same English term simultaneously,
+    # but a Chinese/English-overlap setup can test deduplication itself.
     text = "别再提小明了，don't mention 小明 again"
     hits = extract_directives(text)
-    # "小明" 既被 zh 抓到，又被 en 抓到——结果去重后只剩一条
+    # Both Chinese and English capture 小明; deduplication leaves one result.
     term_lower_kind = {(k, t.casefold()) for _l, k, t in hits}
     assert ("ban_topic", "小明") in term_lower_kind
-    # 同 (kind, term.casefold()) 只出现一次
+    # Each (kind, term.casefold()) occurs once.
     flat = [(k, t.casefold()) for _l, k, t in hits]
     assert len(flat) == len(set(flat)), f"dups in {hits!r}"
 
 
 def test_directive_patterns_have_capture_group():
-    """所有 pattern 都必须有一个 capture group 给 term。"""
+    """Every pattern must have a term capture group."""
     for locale, kind, pat in DIRECTIVE_PATTERNS:
         assert pat.groups >= 1, (
             f"{locale}/{kind} pattern {pat.pattern!r} 缺少 capture group"
         )
 
 
-# ── 1b. ko 模板的空白不能被任意瓜分（ReDoS） ─────────────────────
+# -- 1b. Korean template whitespace cannot be partitioned arbitrarily (ReDoS). --
 
 
 @pytest.mark.parametrize("text,expected_term", [
-    # 模板 1：话题 / 触发词 / 助词之间多打的空白（含 tab）照样认
+    # Template 1: extra whitespace, including tabs, between topic / trigger / particle remains recognized.
     ("그 일   에 대해서는   그만 얘기해줘", "그 일"),
     ("회사  얘기   는   그만해", "회사"),
     ("시험 얘기\t그만", "시험"),
-    # 模板 3：可选的 이/가 两侧都有空白
+    # Template 3: whitespace on both sides of optional 이/가.
     ("숙제  가   듣기 싫어", "숙제"),
     ("야근   짜증나", "야근"),
 ])
@@ -172,7 +172,7 @@ def test_extract_directives_ko_whitespace_runs(text, expected_term):
     assert terms == {expected_term}, terms
 
 
-# 绝对天花板只兜底；主判据是下面的增长倍率，不受 runner 快慢影响
+# Absolute ceiling is fallback only; growth ratios below are the primary criterion, independent of runner speed.
 _WHITESPACE_CEILING_S = 3.0
 
 
@@ -189,10 +189,10 @@ def _best_time(text: str, runs: int = 3) -> float:
 
 
 @pytest.mark.parametrize("make", [
-    # 模板 3：``(.{1,30}?)\s*(?:이|가)?\s*`` 在纯空白上是三次方，未原子化时 480 要 5~7 秒、800 要 19 秒
+    # Template 3: ``(.{1,30}?)\s*(?:이|가)?\s*`` is cubic on whitespace; without atomic grouping, 480 takes 5-7s and 800 takes 19s.
     lambda n: " " * n,
-    # 模板 1：触发词后的 ``\s*(?:는|은)?\s*`` 同形，前面垫一段空白让话题有很多种
-    # 切法走到 ``말``，未原子化时模板 1 单独 1.6 秒（模板 3 同一输入 8 秒）
+    # Template 1 has the same ``\s*(?:는|은)?\s*`` after triggers. Prefix whitespace allows many topic
+    # splits reaching 말; without atomic grouping template 1 alone takes 1.6s, template 3 eight seconds on the same input.
     lambda n: " " * 39 + "말" + " " * n,
 ], ids=["spaces", "padded_keyword"])
 def test_extract_directives_whitespace_does_not_blow_up(make):
@@ -208,16 +208,16 @@ def test_extract_directives_whitespace_does_not_blow_up(make):
     and quadratic. The absolute ceiling is only a loose backstop for shared CI
     runners.
     """
-    # 预热：别把首次正则编译算进去
+    # Warm up to exclude initial regex compilation.
     extract_directives(" ")
     short = _best_time(make(200))
     long = _best_time(make(800))
     assert long < _WHITESPACE_CEILING_S, f"{long:.3f}s"
-    # ⚠️ 倍率线在线性（约 3.5 倍）和二次方（约 12~13 倍）之间取 7 倍：原先的 35 倍只拦三次方，
-    # 二次方回退（话题又能从空白起头）照样通过。规模从 120/480 放到 200/800，是因为太短时
-    # 二次方项还没压过常数项、实测只有 10~12 倍，离线太近；再放大的话三次方回退单次就要
-    # 上分钟。实测：修好时 800 个字符 0.2~0.6ms；二次方回退 109 / 174ms，对应的线是
-    # 59 / 101ms。绝对余量 2ms 只给修好那一侧兜计时抖动——它远小于二次方回退的绝对值。
+    # Use a 7x growth threshold between linear (~3.5x) and quadratic (~12-13x); the previous 35x caught only cubic behavior,
+    # letting quadratic regression (topics starting in whitespace again) pass. Increase sizes from 120/480 to 200/800 because
+    # smaller quadratic terms do not dominate constants and measure only 10-12x, too near the threshold; larger sizes make
+    # cubic regressions take minutes. Measurements: corrected 800-character inputs take 0.2-0.6ms; quadratic regressions 109/174ms,
+    # against 59/101ms thresholds. The absolute 2ms allowance covers corrected timing noise only, far below quadratic costs.
     assert long < short * 7 + 0.002, f"200: {short:.4f}s, 800: {long:.4f}s"
 
 
@@ -225,7 +225,7 @@ def test_extract_directives_whitespace_does_not_blow_up(make):
 
 
 def test_record_dedup_refreshes_existing(tmp_path):
-    """同 (kind, term.casefold()) 二次命中 → hit_count++ + last_seen 刷新。"""
+    """Second match of (kind,term.casefold()) increments hit_count and refreshes last_seen."""
     mgr = _build_manager(tmp_path)
     name = "Neko"
     first = mgr.record(name, locale="zh", kind="ban_topic", term="加班", now=1000.0)
@@ -236,37 +236,37 @@ def test_record_dedup_refreshes_existing(tmp_path):
     second = mgr.record(name, locale="en", kind="ban_topic", term="加班", now=2000.0)
     assert second["hit_count"] == 2
     assert second["last_seen_at"] == 2000.0
-    # 续期用的是**递增之后**的次数：这一次重复本身就是"用户又说了一遍"的
-    # 证据，该立刻算进本次续期，而不是等下一次命中才生效。
+    # Renewal uses the incremented count: this repetition itself proves the user repeated
+    # the instruction, so count it immediately rather than waiting for another hit.
     assert second["expire_at"] == 2000.0 + _effective_ttl(2)
-    # 首次 locale 不被覆盖（保留诊断信号）
+    # Preserve the initial locale as a diagnostic signal.
     assert second["locale"] == "zh"
 
-    # 磁盘上只有一条
+    # Only one disk entry.
     data = _read_file(tmp_path, name)
     assert len(data["directives"]) == 1
 
 
-# ── 2b. TTL 随重复次数递增 + 封顶 ─────────────────────────────────
+# -- 2b. TTL increases with repetition and is capped. --
 
 
 def test_effective_ttl_grows_with_hits_and_caps():
     """Repeats buy a longer window, and the growth must be capped."""
-    # ⚠️ 不把实现公式抄进断言（那样改常量=改测试，变异永远见不了红）。这里
-    # 钉的是三条**性质**：起点等于基础 TTL、严格单调增到封顶、封顶后不再涨。
+    # Do not copy implementation formulas into assertions, making constant changes automatically pass mutation tests.
+    # Pin three properties: initial TTL equals base, increases strictly to the cap, and stops there.
     assert _effective_ttl(1) == USER_DIRECTIVE_TTL_SECONDS
-    # 严格单调，直到撞上封顶
+    # Strictly increasing until the cap.
     growing = [_effective_ttl(h) for h in range(1, 12)]
     assert growing == sorted(growing)
     assert growing[1] > growing[0], "重复一次必须比只说一次记得久"
-    # 封顶：任意大的次数都不越过上限，且确实**能**达到上限
+    # Arbitrarily large counts never exceed the cap and can actually reach it.
     assert _effective_ttl(10_000) == USER_DIRECTIVE_TTL_MAX_SECONDS
     assert max(growing) == USER_DIRECTIVE_TTL_MAX_SECONDS, (
         "递增必须能在合理次数内达到封顶，否则封顶常量形同虚设"
     )
-    # 常量本身的关系（防止有人把 MAX 调到比基础值还小）
+    # Constant relationship guards MAX below the base value.
     assert USER_DIRECTIVE_TTL_MAX_SECONDS > USER_DIRECTIVE_TTL_SECONDS
-    # 脏输入不炸、退回基础窗口
+    # Dirty input does not crash; fall back to the base window.
     assert _effective_ttl(None) == USER_DIRECTIVE_TTL_SECONDS
     assert _effective_ttl("abc") == USER_DIRECTIVE_TTL_SECONDS
     assert _effective_ttl(0) == USER_DIRECTIVE_TTL_SECONDS
@@ -279,10 +279,10 @@ def test_repeated_directive_outlives_a_one_off(tmp_path):
     name = "Neko"
     mgr.record(name, locale="zh", kind="ban_topic", term="加班", now=0.0)
     mgr.record(name, locale="zh", kind="ban_topic", term="股票", now=0.0)
-    # "加班" 被再说一遍
+    # Repeat the overtime topic.
     mgr.record(name, locale="zh", kind="ban_topic", term="加班", now=1.0)
 
-    # 基础窗口刚过：只说过一次的 "股票" 没了，说过两次的 "加班" 还在
+    # Just beyond base TTL, once-mentioned stocks expire while twice-mentioned overtime remains.
     later = USER_DIRECTIVE_TTL_SECONDS + 100.0
     terms = {e["term"] for e in mgr.get_active(name, now=later)}
     assert terms == {"加班"}
@@ -290,8 +290,8 @@ def test_repeated_directive_outlives_a_one_off(tmp_path):
 
 def test_normalize_entry_backfills_ttl_from_hit_count(tmp_path):
     """Backfilled expire_at must use the row's own hit_count, not the base TTL."""
-    # 历史文件没有 expire_at 字段；若回填时把说过 N 次的指令当成说过一次，
-    # 续期长度会在一次重启后当场退化。
+    # Legacy files lack expire_at; backfilling N-hit instructions as single-hit ones
+    # would immediately reduce renewal duration after restart.
     from memory.user_directives import _normalize_entry
 
     entry = _normalize_entry({
@@ -303,7 +303,7 @@ def test_normalize_entry_backfills_ttl_from_hit_count(tmp_path):
     assert entry["expire_at"] > 100.0 + USER_DIRECTIVE_TTL_SECONDS
 
 
-# ── 2c. 落盘条数上限 + 从旧到新 rotate ────────────────────────────
+# -- 2c. Persisted-entry cap with oldest-first rotation. --
 
 
 def test_stored_cap_rotates_oldest_first(tmp_path):
@@ -312,15 +312,15 @@ def test_stored_cap_rotates_oldest_first(tmp_path):
     name = "Neko"
     total = USER_DIRECTIVE_MAX_STORED + 10
     for i in range(total):
-        # last_seen 递增：t0 最旧
+        # Increasing last_seen: t0 is oldest.
         mgr.record(name, locale="zh", kind="ban_topic", term=f"t{i:03d}", now=float(i))
     data = _read_file(tmp_path, name)
     stored = [e["term"] for e in data["directives"]]
     assert len(stored) == USER_DIRECTIVE_MAX_STORED
-    # 最新的留下、最旧的走人
+    # Keep newest, evict oldest.
     assert f"t{total - 1:03d}" in stored
     assert "t000" not in stored
-    # 留下来的正好是 last_seen 最新的那批（与 get_active 的排序同一个键）
+    # Retain exactly the newest last_seen entries, matching get_active sorting.
     assert set(stored) == {
         f"t{i:03d}" for i in range(total - USER_DIRECTIVE_MAX_STORED, total)
     }
@@ -328,22 +328,22 @@ def test_stored_cap_rotates_oldest_first(tmp_path):
 
 def test_refresh_branch_also_rotates(tmp_path):
     """An over-cap store must come back under cap even with no new terms."""
-    # 存量文件是在有 cap 之前长起来的（老用户可能几百行），而一个只会重复既有
-    # 指令的用户永远走不到新增分支。不在刷新分支也 rotate 的话，那份文件永远
-    # 收不回 cap——而每次 record 都要全量读+全量写，还跑在用户每条消息的同步链上。
+    # Existing files may have hundreds of entries from before caps. Users repeating only existing
+    # instructions never enter insertion, so rotation on refresh is needed to shrink these files
+    # to cap. Every record synchronously reads/writes the whole file on each user-message path.
     mgr = _build_manager(tmp_path)
     name = "Neko"
     over = USER_DIRECTIVE_MAX_STORED + 20
     for i in range(over):
         mgr.record(name, locale="zh", kind="ban_topic", term=f"t{i:03d}", now=float(i))
-    # 直接把超限状态灌进 cache，模拟"升级前就已超限"的存量文件
+    # Inject over-cap cache state to simulate files already oversized before upgrade.
     mgr._cache[name] = [
         {"term": f"old{i:03d}", "kind": "ban_topic", "locale": "zh",
          "created_at": 0.0, "last_seen_at": float(i),
          "expire_at": 1e12, "hit_count": 1, "source": "regex"}
         for i in range(over)
     ]
-    # 只刷新一条**已存在**的指令（不新增）
+    # Refresh one existing instruction without insertion.
     mgr.record(name, locale="zh", kind="ban_topic", term="old000", now=1e6)
     stored = _read_file(tmp_path, name)["directives"]
     assert len(stored) == USER_DIRECTIVE_MAX_STORED
@@ -351,11 +351,11 @@ def test_refresh_branch_also_rotates(tmp_path):
 
 def test_new_entry_rotated_out_immediately_is_not_reported_as_recorded(tmp_path):
     """record() must not claim success for a row rotate just evicted."""
-    # 触发条件：已有 cap 条活条目、且它们的 last_seen 都 >= 本次 ts —— 系统时钟
-    # 回拨（NTP 校正 / 休眠恢复 / 双系统时区，这是个 Windows 桌面应用）或同一
-    # 毫秒并列都够。稳定排序下并列组保持原序，而新条目 append 在末尾，切片正好
-    # 从尾部切掉它。无条件报成功的话，调用方会据此置待注入标记、去渲染一个根本
-    # 不存在的 term。
+    # Trigger: cap active entries all have last_seen >= this timestamp. Clock rollback
+    # (NTP correction / resume / dual-boot timezone on this Windows desktop app) or same-millisecond
+    # ties suffice. Stable sorting preserves ties, leaving newly appended entries at the tail where slicing
+    # removes them. Unconditional success would make callers mark a nonexistent
+    # term for prompt injection.
     mgr = _build_manager(tmp_path)
     name = "Neko"
     mgr._cache[name] = [
@@ -364,7 +364,7 @@ def test_new_entry_rotated_out_immediately_is_not_reported_as_recorded(tmp_path)
          "expire_at": 1e12, "hit_count": 1, "source": "regex"}
         for i in range(USER_DIRECTIVE_MAX_STORED)
     ]
-    # 时钟回拨：新条目的 ts 比在库的每一条都旧
+    # Clock rollback makes the new timestamp older than every stored entry.
     result = mgr.record(name, locale="zh", kind="ban_topic", term="加班", now=1000.0)
     stored = {e["term"] for e in _read_file(tmp_path, name)["directives"]}
     assert "加班" not in stored, "前提：这条确实被 rotate 挤掉了"
@@ -373,10 +373,10 @@ def test_new_entry_rotated_out_immediately_is_not_reported_as_recorded(tmp_path)
 
 def test_refreshed_entry_rotated_out_is_not_reported_as_recorded(tmp_path):
     """The refresh branch needs the same eviction guard as the insert branch."""
-    # ⚠️ 对偶漏洞：刷新分支的 rotate 是后加的（修"存量超限收不回 cap"），加的
-    # 时候没回头看它的返回值仍是无条件 `return dict(e)` —— greptile P1 抓到。
-    # 触发：时钟回拨使刷新后的 last_seen 比在库每一条都旧，rotate 把它挤掉，
-    # 而调用方据此置待注入标记，去渲染一个盘上根本不存在的 term。
+    # Symmetric bug: refresh rotation was added to fix preexisting oversized files,
+    # without revisiting unconditional return dict(e); greptile P1 caught it.
+    # Rollback makes refreshed last_seen oldest, so rotation evicts it,
+    # but the caller marks a term absent from disk for injection.
     mgr = _build_manager(tmp_path)
     name = "Neko"
     mgr._cache[name] = [
@@ -388,7 +388,7 @@ def test_refreshed_entry_rotated_out_is_not_reported_as_recorded(tmp_path):
          "source": "regex"}
         for i in range(USER_DIRECTIVE_MAX_STORED)
     ]
-    # 时钟回拨：刷新 "加班" 时 ts 比在库每一条都旧
+    # Clock rollback: overtime refresh timestamp predates every stored entry.
     result = mgr.record(name, locale="zh", kind="ban_topic", term="加班", now=1000.0)
 
     stored = {e["term"] for e in mgr._cache[name]}
@@ -400,21 +400,21 @@ def test_rotate_drops_expired_before_live_entries(tmp_path):
     """Expired rows go first — dead data must not evict a live directive."""
     mgr = _build_manager(tmp_path)
     name = "Neko"
-    # 先塞满 cap 条早已过期的
+    # Fill cap slots with already expired entries.
     for i in range(USER_DIRECTIVE_MAX_STORED):
         mgr.record(name, locale="zh", kind="ban_topic", term=f"old{i:03d}", now=float(i))
-    # 时间推到全部过期之后，再写一条新的
+    # Advance beyond all expiries, then insert a new entry.
     fresh_at = USER_DIRECTIVE_TTL_SECONDS + 10_000.0
     mgr.record(name, locale="zh", kind="ban_topic", term="新话题", now=fresh_at)
 
     stored = {e["term"] for e in _read_file(tmp_path, name)["directives"]}
     assert "新话题" in stored
-    # 过期的那批被整体清掉，而不是只挤掉一条来给新条目腾位
+    # Remove the entire expired group, not just one entry to make room.
     assert not any(t.startswith("old") for t in stored)
 
 
 def test_record_case_insensitive_dedup(tmp_path):
-    """大小写不影响 dedup 键（"Work" 与 "work" 合并）。"""
+    """Case does not affect deduplication: Work and work merge."""
     mgr = _build_manager(tmp_path)
     name = "Neko"
     mgr.record(name, locale="en", kind="ban_topic", term="Work", now=1000.0)
@@ -435,7 +435,7 @@ def test_record_different_terms_keep_separate(tmp_path):
 
 
 def test_record_from_text_end_to_end(tmp_path):
-    """record_from_text 跑完整流水线：抽取 → 落盘。"""
+    """record_from_text exercises the complete extraction-to-persistence pipeline."""
     mgr = _build_manager(tmp_path)
     name = "Neko"
     written = mgr.record_from_text(name, "别再提小明了，stop saying work please")
@@ -449,13 +449,13 @@ def test_record_from_text_end_to_end(tmp_path):
 
 
 def test_ttl_expires_after_window(tmp_path):
-    """3 天后的 get_active 不再包含该条。"""
+    """After three days, get_active excludes the entry."""
     mgr = _build_manager(tmp_path)
     name = "Neko"
     mgr.record(name, locale="zh", kind="ban_topic", term="加班", now=0.0)
-    # 边界内
+    # Inside the boundary.
     assert mgr.get_active(name, now=USER_DIRECTIVE_TTL_SECONDS - 1)
-    # 边界外
+    # Outside the boundary.
     assert mgr.get_active(name, now=USER_DIRECTIVE_TTL_SECONDS + 1) == []
 
 
@@ -464,8 +464,8 @@ def test_purge_expired_drops_entries(tmp_path):
     name = "Neko"
     mgr.record(name, locale="zh", kind="ban_topic", term="加班", now=0.0)
     mgr.record(name, locale="zh", kind="ban_topic", term="股票", now=1000.0)
-    # 推进时间到 加班 过期、股票 还活的瞬间
-    # （加班.expire = USER_DIRECTIVE_TTL_SECONDS；股票.expire = 1000 + USER_DIRECTIVE_TTL_SECONDS）
+    # Advance to overtime expiry while stocks remains active.
+    # Overtime expires at USER_DIRECTIVE_TTL_SECONDS; stocks at 1000 + USER_DIRECTIVE_TTL_SECONDS.
     purge_at = USER_DIRECTIVE_TTL_SECONDS + 500.0
     removed = mgr.purge_expired(name, now=purge_at)
     assert removed == 1
@@ -476,7 +476,7 @@ def test_purge_expired_drops_entries(tmp_path):
 def test_get_active_sorted_by_last_seen(tmp_path):
     mgr = _build_manager(tmp_path)
     name = "Neko"
-    # term 必须 ≥ 2 字符（record 边界校验，CodeRabbit Minor）。
+    # Terms must have at least two characters, validated at record boundary (CodeRabbit Minor).
     mgr.record(name, locale="zh", kind="ban_topic", term="aa", now=100.0)
     mgr.record(name, locale="zh", kind="ban_topic", term="bbb", now=200.0)
     mgr.record(name, locale="zh", kind="ban_topic", term="cccc", now=150.0)
@@ -485,21 +485,21 @@ def test_get_active_sorted_by_last_seen(tmp_path):
 
 
 def test_record_rejects_invalid_term(tmp_path):
-    """``record()`` boundary 拒绝空白 / 过长 / 非 str term。"""
+    """record() rejects whitespace / oversized / non-string terms at its boundary."""
     mgr = _build_manager(tmp_path)
     name = "Neko"
-    # 空白
+    # Whitespace.
     assert mgr.record(name, locale="zh", kind="ban_topic", term="") == {}
     assert mgr.record(name, locale="zh", kind="ban_topic", term="   ") == {}
-    # 单字符
+    # Single character.
     assert mgr.record(name, locale="zh", kind="ban_topic", term="X") == {}
-    # 超长（> 40）
+    # Too long (>40).
     assert mgr.record(name, locale="zh", kind="ban_topic", term="x" * 41) == {}
-    # 非 str
+    # Non-string.
     assert mgr.record(name, locale="zh", kind="ban_topic", term=None) == {}  # type: ignore[arg-type]
-    # 合法
+    # Valid
     assert mgr.record(name, locale="zh", kind="ban_topic", term="OK")
-    # 两端 trim 后落库
+    # Trim both ends before persistence.
     e = mgr.record(name, locale="zh", kind="ban_topic", term="  ban-me  ")
     assert e["term"] == "ban-me"
 
@@ -514,20 +514,20 @@ def test_get_active_respects_limit(tmp_path):
         )
     active = mgr.get_active(name, now=100.0, limit=5)
     assert len(active) == 5
-    # 取的是 last_seen 最大的 5 个
+    # Take the five greatest last_seen values.
     assert [e["term"] for e in active] == [
         "term-29", "term-28", "term-27", "term-26", "term-25"
     ]
 
 
-# ── 3b. 会话中途注入的待办标记 ───────────────────────────────────
+# -- 3b. Pending injection flags during sessions. --
 
 
 def test_record_from_text_marks_pending_injection(tmp_path):
     """A extracted directive raises the flag main_logic consumes to inject."""
     mgr = _build_manager(tmp_path)
     name = "Neko"
-    assert mgr.take_pending_injection(name) is False  # 起始干净
+    assert mgr.take_pending_injection(name) is False  # Initially clean.
     written = mgr.record_from_text(name, "别再提小明了")
     assert written and any(written)
     assert mgr.take_pending_injection(name) is True
@@ -554,7 +554,7 @@ def test_out_of_range_term_leaves_no_pending_flag(tmp_path):
     """A term rejected by the length check must not leave an empty-injection flag."""
     mgr = _build_manager(tmp_path)
     name = "Neko"
-    # record 直接被边界校验拒绝 → 返回 {}
+    # record rejects at boundary validation and returns {}.
     assert mgr.record(name, locale="zh", kind="ban_topic", term="x") == {}
     assert mgr.take_pending_injection(name) is False
 
@@ -600,13 +600,13 @@ def test_render_prompt_block_empty_returns_empty_string():
 def test_manager_render_prompt_block_integration(tmp_path):
     mgr = _build_manager(tmp_path)
     name = "Neko"
-    # 空时返回 ""
+    # Return "" when empty.
     assert mgr.render_prompt_block(name, "zh") == ""
-    # 有 active 时拼成完整 block
+    # Active entries form a complete block.
     mgr.record(name, locale="zh", kind="ban_topic", term="加班", now=1000.0)
     block = mgr.render_prompt_block(name, "zh", now=1000.0)
     assert "加班" in block
-    assert block.startswith("\n")  # leading newline 方便 concat
+    assert block.startswith("\n")  # Leading newline facilitates concatenation.
 
 
 def test_manager_render_skips_expired(tmp_path):
@@ -619,11 +619,11 @@ def test_manager_render_skips_expired(tmp_path):
     assert block == ""
 
 
-# ── 5. 持久化往返 ────────────────────────────────────────────────
+# -- 5. Persistence roundtrip. --
 
 
 def test_load_round_trip_from_disk(tmp_path):
-    """先 record → 重建 manager → load 后字段一致。"""
+    """Record, rebuild the manager, and load: fields remain identical."""
     name = "Neko"
     mgr1 = _build_manager(tmp_path)
     mgr1.record(name, locale="zh", kind="ban_topic", term="加班", now=1000.0)
@@ -636,7 +636,7 @@ def test_load_round_trip_from_disk(tmp_path):
 
 
 def test_corrupt_file_starts_empty(tmp_path):
-    """文件被外部破坏 → 重建后从空开始（非致命）。"""
+    """Externally corrupt files restart empty after reconstruction, nonfatally."""
     name = "Neko"
     char_dir = os.path.join(str(tmp_path), name)
     os.makedirs(char_dir, exist_ok=True)
@@ -663,15 +663,15 @@ def test_clear_removes_all(tmp_path):
 
 
 def test_user_utterance_sink_records(tmp_path, monkeypatch):
-    """模拟 dispatch_user_utterance → 入库。验证 sink 已被注册并能正确处理事件。"""
+    """Simulate dispatch_user_utterance through storage; verify sink registration and event processing."""
     from memory import user_directives as ud_module
 
-    # 把单例的 _config_manager 临时指到 tmp_path
+    # Temporarily point singleton _config_manager to tmp_path.
     mgr = ud_module.get_user_directives_manager()
     cm = MagicMock()
     cm.memory_dir = str(tmp_path)
     monkeypatch.setattr(mgr, "_config_manager", cm)
-    # 清空 cache，避免被其他测试污染
+    # Clear cache to prevent contamination from other tests.
     monkeypatch.setattr(mgr, "_cache", {})
 
     name = "Neko"
@@ -686,9 +686,9 @@ def test_user_utterance_sink_records(tmp_path, monkeypatch):
 
 
 def test_user_utterance_sink_skips_default_bucket(tmp_path, monkeypatch):
-    """``"default"`` bucket 在同一次 dispatch 里也会派；当 event["lanlan"]
-    指向真角色时，"default" 视为重复，skip。否则（lanlan 为空 / 缺失 /
-    literal "default"）必须落地，避免整段消息漏抽（codex P1）。"""
+    """The same dispatch also sends a default bucket. When event[\"lanlan\"]
+    identifies a real character, default is duplicate and skipped. Otherwise empty/missing/
+    literal default lanlan must persist, avoiding complete extraction loss (Codex P1)."""
     from memory import user_directives as ud_module
     mgr = ud_module.get_user_directives_manager()
     cm = MagicMock()
@@ -696,20 +696,20 @@ def test_user_utterance_sink_skips_default_bucket(tmp_path, monkeypatch):
     monkeypatch.setattr(mgr, "_config_manager", cm)
     monkeypatch.setattr(mgr, "_cache", {})
 
-    # 真角色场景：event["lanlan"] = "Neko"，bucket="default" 被 skip
+    # Real-character event: event["lanlan"]="Neko", so skip the default bucket.
     ud_module._on_user_utterance("default", {
         "type": "user_message",
         "content": "别再提小明了",
         "lanlan": "Neko",
     })
-    # 不应该有任何目录被建（Neko bucket 由另一次 dispatch 投递，本测试不触发）
+    # Create no directories; another dispatch handles Neko, not triggered by this test.
     assert not os.listdir(str(tmp_path))
 
 
 def test_user_utterance_sink_records_default_when_no_character(tmp_path, monkeypatch):
-    """character 未配置 / lanlan_name == "default" / lanlan 字段缺失时，
-    dispatch 只会派 "default" 一份；sink 必须处理它，否则用户的 ban-topic
-    会整段丢失（codex P1）。"""
+    """With unconfigured character / lanlan_name default / missing lanlan,
+    dispatch sends only default; the sink must handle it or lose all user
+    banned-topic instructions (Codex P1)."""
     from memory import user_directives as ud_module
     mgr = ud_module.get_user_directives_manager()
     cm = MagicMock()
@@ -717,7 +717,7 @@ def test_user_utterance_sink_records_default_when_no_character(tmp_path, monkeyp
     monkeypatch.setattr(mgr, "_config_manager", cm)
     monkeypatch.setattr(mgr, "_cache", {})
 
-    # 场景 1：缺失 lanlan 字段
+    # Scenario 1: missing lanlan field.
     ud_module._on_user_utterance("default", {
         "type": "user_message",
         "content": "别再提小明了",
@@ -727,7 +727,7 @@ def test_user_utterance_sink_records_default_when_no_character(tmp_path, monkeyp
 
     monkeypatch.setattr(mgr, "_cache", {})
 
-    # 场景 2：lanlan == "default" literal
+    # Scenario 2: literal lanlan == "default".
     ud_module._on_user_utterance("default", {
         "type": "user_message",
         "content": "别再提股票了",
@@ -738,7 +738,7 @@ def test_user_utterance_sink_records_default_when_no_character(tmp_path, monkeyp
 
 
 def test_user_utterance_sink_handles_multimodal_content(tmp_path, monkeypatch):
-    """content 是 list（multimodal）时拼出 text 后跑抽取。"""
+    """For multimodal list content, join text before extraction."""
     from memory import user_directives as ud_module
     mgr = ud_module.get_user_directives_manager()
     cm = MagicMock()
@@ -760,13 +760,13 @@ def test_user_utterance_sink_handles_multimodal_content(tmp_path, monkeypatch):
 
 
 def test_sink_registered_after_install_runtime_bindings():
-    """``app.runtime_bindings.install_runtime_bindings`` 装载后，sink 应已
-    挂到 ``main_logic.agent_event_bus._user_utterance_sinks``。
+    """After app.runtime_bindings.install_runtime_bindings, the sink must already
+    appear in main_logic.agent_event_bus._user_utterance_sinks.
 
-    注意：``memory.user_directives`` 自身**不**做 self-registration——它在
-    ``main_logic`` 之下，向上 import 会触发 LAYER_CYCLE。注册由 L6 app 层
-    的 ``runtime_bindings`` 接线（register 函数 dedupe-on-identity，重复
-    install 安全）。
+    memory.user_directives does not self-register: it lives below main_logic,
+    so upward imports cause LAYER_CYCLE. L6 app-layer runtime_bindings
+    wires registration; identity-deduplicated register functions make repeated
+    installation safe.
     """
     from app.runtime_bindings import install_runtime_bindings
     install_runtime_bindings()

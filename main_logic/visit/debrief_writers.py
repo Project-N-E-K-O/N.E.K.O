@@ -148,12 +148,12 @@ def _clean(text: str, *, family_names: Iterable[str], neutral_term: str) -> str:
     names = tuple(family_names)
     if names:
         text = redact_outbound(text, family_names=names, replacement=neutral_term)
-    # 进记忆的文字以后会被拼进提示词：不能带能冒充数据块收尾的分隔符
+    # Memory text later enters prompts: forbid delimiters that could impersonate the end of a data block.
     return escape_visit_block_text(text).strip()
 
 
 def _first_json_object(text: str) -> Any:
-    # 从每个 "{" 起试着解析一个完整对象：模型在 JSON 前后多说了带花括号的话也不会把整段吞进去
+    # Try parsing a complete object from each "{" so surrounding model prose containing braces cannot swallow the response.
     decoder = json.JSONDecoder()
     start = text.find("{")
     while start != -1:
@@ -237,7 +237,7 @@ async def generate_diary_preview(
     prompt = build_visit_diary_prompt(own_char, block, lang)
     try:
         raw = await asyncio.wait_for(llm(prompt), VISIT_LLM_TIMEOUT_S)
-    except Exception as exc:  # noqa: BLE001 - 任何失败都只是这次没生成，用户可以再点
+    except Exception as exc:  # noqa: BLE001 - Any failure means this generation failed; the user can retry.
         logger.warning("visit %s: diary generation failed: %s", spool.visit_id[:6], type(exc).__name__)
         raise DiaryGenerationFailed(type(exc).__name__) from None
     peer_lines = [str(line.get("text") or "") for line in lines if line.get("from") in _PEER_SPEAKERS]
@@ -277,7 +277,7 @@ def classify_write_failure(resp_or_exc: Any, step: str) -> WriteOutcome:
     if status == 200:
         try:
             body = resp.json()
-        except Exception:  # noqa: BLE001 - 解析不了：结果不明
+        except Exception:  # noqa: BLE001 - Unparseable: result unknown.
             body = None
         if _confirms(step, body):
             written = body.get("written") if step == STEP_FACTS else 0
@@ -312,7 +312,7 @@ def facts_request(visit_id: str, facts: Iterable[str]) -> dict:
 async def _post(http: httpx.AsyncClient, url: str, body: dict, step: str) -> WriteOutcome:
     try:
         resp = await http.post(url, json=body, timeout=_WRITE_TIMEOUT_S)
-    except Exception as exc:  # noqa: BLE001 - 分类决定重试与否
+    except Exception as exc:  # noqa: BLE001 - Classification determines whether to retry.
         return classify_write_failure(exc, step)
     return classify_write_failure(resp, step)
 
@@ -345,12 +345,12 @@ async def commit_diary(
         if facts:
             steps.append((STEP_FACTS, f"{base}/internal/memory/{name}/visit_facts", facts_request(visit_id, facts)))
         else:
-            # 没有事实就不发这一步：直接记为完成，日记照常写
+            # With no facts, skip sending this step and mark it complete; write the diary normally.
             await on_transition(STEP_FACTS, "confirmed", {"facts_written": 0})
     if not writes.get("cache"):
         steps.append((STEP_CACHE, f"{base}/cache/{name}", cache_request(visit_id, str(pending.get("diary") or ""))))
     for step, url, body in steps:
-        # 先记后发：请求发出后、结果记下前崩溃，「可能已写」的证据也在
+        # Record before sending: a crash after sending but before recording results still leaves evidence of a possible write.
         await on_transition(step, "inflight", {})
         outcome = await _post(http, url, body, step)
         if outcome.kind == "ok":

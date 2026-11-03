@@ -14,31 +14,31 @@
 
 """TTS provider architectural metadata registry (documentation/lookup)."""
 
-# ─── TTS Provider 元数据注册表 ─────────────────────────────────────────────
+# ─── TTS Provider Metadata Registry ─────────────────────────────────────────
 #
-# 所有 TTS provider 按架构分为三类，差异如下：
+# TTS providers fall into three architectural categories:
 #
 # ┌─────────────┬──────────────┬──────────────┬──────────────────────────────┐
-# │ 类别         │ 输入方式      │ 输出方式      │ 成员                          │
+# │ Category      │ Input method      │ Output method      │ Members                       │
 # ├─────────────┼──────────────┼──────────────┼──────────────────────────────┤
-# │ ws_bistream │ WS 流式推送   │ WS 流式回传   │ step, qwen, cosyvoice       │
-# │ http_sentence│ HTTP 按句请求 │ SSE/JSON 流式 │ cogtts, gemini, openai,     │
-# │             │              │ 或一次性返回   │ custom, minimax             │
-# │ local       │ 各自实现      │ 各自实现      │ gptsovits, local_cosyvoice  │
+# │ ws_bistream   │ WS streaming push │ WS streaming reply │ step, qwen, cosyvoice         │
+# │ http_sentence │ HTTP per sentence │ SSE/JSON streaming │ cogtts, gemini, openai,       │
+# │               │                   │ or one-shot        │ custom, minimax               │
+# │ local         │ Provider-specific │ Provider-specific  │ gptsovits, local_cosyvoice    │
 # └─────────────┴──────────────┴──────────────┴──────────────────────────────┘
 #
-# ws_bistream:  文本碎片到达即发给服务端，服务端负责拼接和合成调度。
-#               客户端不做句子分割。首音频延迟最低。
-#               每个 provider 的 WS 协议差异较大（事件名、握手流程、
-#               完成信号），因此各自独立实现，不共享主循环。
+# ws_bistream: Send text fragments as they arrive; the server handles concatenation and synthesis scheduling.
+#               The client does not split sentences. This gives the lowest first-audio latency.
+#               WS protocols differ substantially by provider (event names, handshake flow,
+#               completion signals), so each has an independent implementation and main loop.
 #
-# http_sentence: 客户端用 SentenceBuffer 按标点切句，凑够一句后发一次
-#               HTTP 请求。共享 _non_bistream_tts_main_loop 主循环和
-#               _run_sentence_tts_worker 骨架，各 provider 只需提供
+# http_sentence: The client uses SentenceBuffer to split text at punctuation and sends a request once a sentence is ready.
+#                It shares the _non_bistream_tts_main_loop main loop and
+#                _run_sentence_tts_worker skeleton; each provider only needs to supply
 #               async setup() -> (synthesize_fn, cleanup_fn)。
 #
-# local:        连接本地服务（GPT-SoVITS / 本地 CosyVoice），协议和
-#               部署方式特殊，独立实现。
+# local:         Connects to a local service (GPT-SoVITS / local CosyVoice); protocols and
+#                deployment are specialized, so each has an independent implementation.
 
 from dataclasses import dataclass
 from typing import Literal
@@ -48,14 +48,14 @@ class TTSProviderMeta:
     """Architectural metadata of a TTS provider, for documentation and unified lookups."""
     name: str
     category: Literal["ws_bistream", "http_sentence", "local"]
-    protocol: str                   # 如 "WebSocket", "HTTP POST + SSE", "HTTP POST + JSON"
-    input_streaming: bool           # 输入是否流式（文本碎片逐个发送）
-    output_streaming: bool          # 输出是否流式（音频分块返回）
-    client_sentence_split: bool     # 客户端是否做句子分割
-    audio_format: str               # 原始音频格式，如 "PCM 24kHz", "OGG OPUS 48kHz"
-    notes: str = ""                 # 特殊说明
-    # worker 认 TTS_SOFT_FLUSH_SENTINEL：文本空闲时先把攒着的尾句合成出来，
-    # 之后同一 speech_id 还能继续说。core 只对 True 的 provider 发这个哨兵。
+    protocol: str                   # For example: "WebSocket", "HTTP POST + SSE", "HTTP POST + JSON"
+    input_streaming: bool           # Whether input is streamed (text fragments sent individually)
+    output_streaming: bool          # Whether output is streamed (audio returned in chunks)
+    client_sentence_split: bool     # Whether the client splits sentences
+    audio_format: str               # Raw audio format, e.g. "PCM 24kHz", "OGG OPUS 48kHz"
+    notes: str = ""                 # Special notes
+    # Workers recognize TTS_SOFT_FLUSH_SENTINEL: when text is idle, synthesize the buffered trailing sentence first,
+    # then continue speaking under the same speech_id. Core sends this sentinel only to providers marked True.
     soft_flush: bool = False
 
 TTS_PROVIDER_REGISTRY: dict[str, TTSProviderMeta] = {

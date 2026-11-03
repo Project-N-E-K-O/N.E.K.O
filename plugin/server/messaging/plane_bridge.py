@@ -86,7 +86,7 @@ def _scrub_inherited_plane_credentials() -> None:
         held = []
     for value in held:
         _blank(value)
-    # 顺手把引用本身摘掉：子进程永远不该操作这个 plane。
+    # Remove reference too: child processes must never operate this plane.
     try:
         service._message_plane_runner = None
     except Exception:
@@ -100,10 +100,10 @@ def _remint_ingest_token_in_child() -> None:
     _scrub_inherited_plane_credentials()
 
 
-# 注册这件事本身要可观测。本仓两个 pytest job 都跑 windows-latest，而 Windows
-# 走 spawn——子进程无论如何都会自己重铸，于是"钩子根本没注册"这个变异在
-# Windows 上完全测不出来。把注册结果记成模块状态，守卫就能在任何平台断言它，
-# 哪怕真正的 fork 行为只有 POSIX 上跑得到。
+# Registration itself must be observable. Both pytest jobs use windows-latest; Windows
+# uses spawn, so children recreate their own plane regardless, making missing-hook-registration
+# mutations undetectable there. Record module registration state so guards can assert it on any platform,
+# even though actual fork behavior only runs on POSIX.
 _FORK_HOOK_REGISTERED = False
 
 if hasattr(os, "register_at_fork"):

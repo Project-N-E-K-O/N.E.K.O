@@ -334,6 +334,8 @@ async def test_main_server_manual_startup_performs_fallback_import_and_continues
             await bridge_start()
 
     with contextlib.ExitStack() as stack:
+        # This storage test does not own optional sync work on its temporary loop.
+        stack.enter_context(patch("services.chat_sync.runtime.schedule_desktop_chat_sync_start"))
         stack.enter_context(patch.object(main_server, "_IS_MAIN_PROCESS", True))
         stack.enter_context(patch.object(main_server, "_runtime_startup_init_completed", False))
         stack.enter_context(patch.object(main_server, "_preload_task", None))
@@ -829,7 +831,10 @@ async def test_release_storage_startup_barrier_starts_integration_workers_after_
         main_server,
         "_start_neko_servers_integration_workers",
         Mock(),
-    ) as mock_start_workers:
+    ) as mock_start_workers, patch(
+        # Sync startup and shutdown have their own lifecycle regression coverage.
+        "services.chat_sync.runtime.schedule_desktop_chat_sync_start",
+    ):
         result = await main_server.release_storage_startup_barrier(reason="unit_test")
 
     assert result == {"ok": True, "initialized": True}
@@ -1247,9 +1252,9 @@ async def test_main_server_cancel_workshop_background_tasks_uses_public_api():
 
 @pytest.mark.unit
 def test_main_server_resets_sync_shutdown_events_after_startup_rollback():
-    """``_reset_sync_connector_shutdown_events`` 现在是 no-op：cross_server 改成
-    主 loop 上的 asyncio.Task 后，没有 ThreadEvent 可以 reset。函数保留是为了
-    避免改动文件内众多调用点，本测试只验证它仍可调用且不会抛异常。
+    """``_reset_sync_connector_shutdown_events`` is now a no-op: after cross_server became
+    an asyncio.Task on the main loop, no ThreadEvent remains to reset. Retain the function
+    to avoid changing its many call sites in this file; verify only that it remains callable without raising.
     """
     from app import main_server
     from app.main_server import _SyncMessageQueue
@@ -1262,8 +1267,8 @@ def test_main_server_resets_sync_shutdown_events_after_startup_rollback():
     }
 
     with patch.object(main_server.character_runtime, "role_state", role_state):
-        # 不抛异常即视为通过；旧版会清 threading.Event，新版无状态可清。
-        # 显式断言返回值为 None，未来若改成有副作用返回时能更早暴露。
+        # Passing means no exception: the old version cleared threading.Event, while the new one has no state to clear.
+        # Explicitly assert a None return so future changes to a side-effect-bearing return surface earlier.
         assert main_server._reset_sync_connector_shutdown_events() is None
 
 

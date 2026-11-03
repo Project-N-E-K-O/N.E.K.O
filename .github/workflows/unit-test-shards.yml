@@ -90,6 +90,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          # No filter: blob:none here. A partial clone lazily fetches any
+          # missing commit too, so the audit would also reach revisions the
+          # step below never fetched — tests that skip today would start running.
           fetch-depth: 0
 
       - name: Set up Python 3.11
@@ -115,7 +118,7 @@ jobs:
         run: |
           $revisions = @(
             '16a48f711f6842e3fbd181c41675459bb3c025bc',
-            '299c0b4b8c14eb386c645ad180241c6756e0b5c1'
+            '52556bde9a824ad25354ad15ab3ffbff4b1ed9c4'
           )
           foreach ($revision in $revisions) {
             git fetch --no-tags origin $revision
@@ -133,7 +136,16 @@ jobs:
         run: New-Item -ItemType Directory -Force ".codex-tmp\historical-review-audit" | Out-Null
 
       - name: Run historical review evidence
-        run: uv run pytest tests/unit/test_pr3078_review_evidence.py -q --basetemp ".codex-tmp\historical-review-audit"
+        shell: pwsh
+        run: |
+          $report = ".codex-tmp\historical-review-audit-report.xml"
+          uv run pytest tests/unit/test_pr3078_review_evidence.py -q -rs --basetemp ".codex-tmp\historical-review-audit" --junitxml $report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # 本 job 已拉取全部历史提交，任何 skip 都意味着审计静默失效。
+          $suite = ([xml](Get-Content $report)).testsuites.testsuite
+          if ([int]$suite.tests -eq 0 -or [int]$suite.skipped -ne 0) {
+            throw "Historical review audit must run every case: tests=$($suite.tests) skipped=$($suite.skipped)."
+          }
 
   frontend-node:
     name: frontend-contract (Node)
@@ -152,6 +164,7 @@ jobs:
           node --test tests/frontend/asr_input_delivery_status.test.cjs
           node --test tests/frontend/mic_recovery_route.test.cjs
           node --test tests/frontend/voice_preparing_toast.test.cjs
+          node --test tests/frontend/feedback_devices.test.cjs tests/frontend/feedback_information.test.cjs
           node --test tests/frontend/remote_voice_manager.test.cjs tests/frontend/voice_manager_review.test.cjs tests/frontend/api_key_secret_masking.test.cjs tests/frontend/remote_voice_page_diagnostics.test.cjs
           node --test tests/frontend/voice_preview.test.cjs
           node --test tests/frontend/voice_recovery.test.cjs
@@ -162,10 +175,32 @@ jobs:
           node --test tests/frontend/vrm_guided_lifecycle.test.cjs
           node --test tests/frontend/vrm_animation_translation.test.cjs
           node --test tests/frontend/vrm_preferences_persistence.test.cjs
+          node --test tests/frontend/vrm_shadow_bounds.test.cjs
           node --test tests/frontend/live2d_lipsync_ownership.test.cjs tests/frontend/live2d_expression_lipsync.test.cjs tests/frontend/live2d_audio_ownership.test.cjs tests/frontend/live2d_guide_lipsync.test.cjs
           # tests/unit/*.test.js 是 pytest 永不收集的 node:test 文件；用 glob
           # 而非手列清单，新增文件无法再静默绕过 CI。
           node --test tests/unit/*.test.js
+
+  social-hub-presence-browser:
+    name: social hub presence (Chromium actual page)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Playwright and Chromium
+        run: |
+          python -m pip install playwright==1.63.0
+          python -m playwright install --with-deps chromium
+
+      - name: Run social hub presence menu browser regressions
+        run: python tests/frontend/test_social_hub_presence_browser.py -v
 
   remote-voice-chromium:
     name: remote voice manager (Chromium actual page)

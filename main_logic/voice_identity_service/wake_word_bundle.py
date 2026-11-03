@@ -198,6 +198,7 @@ def install_bundle(
     validate=None,
     commit_lock: threading.Lock | None = None,
     publish: bool = True,
+    on_progress=None,
 ) -> Path:
     """Authenticate, stage, validate, then publish the complete fixed bundle."""
     cancel = cancel or threading.Event()
@@ -234,15 +235,32 @@ def install_bundle(
             source = archive or stage / "archive.tar.bz2"
             if archive is None:
                 request = urllib.request.Request(MODEL_URL, headers={"User-Agent": "NEKO-model-provisioner"})
+                if on_progress is not None:
+                    on_progress({"phase": "downloading", "resource": "wake_model", "downloaded_bytes": 0, "total_bytes": None, "attempt": 1})
                 with urllib.request.urlopen(request, timeout=10) as response, source.open("wb") as out:
                     count = 0
+                    total = None
+                    if on_progress is not None:
+                        try:
+                            declared = int(response.headers.get("Content-Length", ""))
+                        except (ValueError, TypeError):
+                            declared = 0
+                        if 0 < declared <= MAX_ARCHIVE_BYTES:
+                            total = declared
+                        on_progress({"phase": "downloading", "resource": "wake_model", "downloaded_bytes": 0, "total_bytes": total, "attempt": 1})
                     while block := response.read(1024 * 1024):
                         _check_cancel(cancel)
                         count += len(block)
                         if count > MAX_ARCHIVE_BYTES:
                             raise WakeWordBundleError("resource_download_too_large")
                         out.write(block)
+                        if on_progress is not None:
+                            if total is not None and count > total:
+                                total = None
+                            on_progress({"phase": "downloading", "resource": "wake_model", "downloaded_bytes": count, "total_bytes": total, "attempt": 1})
             _check_cancel(cancel)
+            if on_progress is not None:
+                on_progress({"phase": "verifying", "resource": "wake_model"})
             if source.stat().st_size > MAX_ARCHIVE_BYTES or _hash(source) != MODEL_SHA256:
                 raise WakeWordBundleError("resource_archive_invalid")
             bundle_dir = stage / "bundle"
@@ -266,6 +284,8 @@ def install_bundle(
                 os.fsync(out.fileno())
             _check_cancel(cancel)
             if validate is not None:
+                if on_progress is not None:
+                    on_progress({"phase": "loading", "resource": "wake_model"})
                 validate(bundle_dir)
             _check_cancel(cancel)
             reusable = next((directory for directory in existing if _valid_version_name(directory.name)

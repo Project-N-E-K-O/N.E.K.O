@@ -144,10 +144,25 @@ startup_failure = "warn"
 ```
 
 - `enabled` — `false` にすると、ファイルを削除せず一時的に無効化できます
-- `auto_start` — `true` なら N.E.K.O 起動時に自動開始、そうでなければパネルから手動開始します
+- `auto_start` — 省略時は `false`。保存済みのユーザー設定が manifest の値より優先され、自動起動にはユーザーの承認も必要です
 - `priority` — optional integer runtime ordering hint
 - `timeout` — startup readiness を待つ秒数。`0 < timeout <= 300` が必要で、省略時は system default
 - `startup_failure` — `startup` hook failure の扱い。`warn`（default、process を残して degraded）、`fail`（startup abort）、`ignore`（log only）
+
+プラグインセンターの独立した自動起動スイッチで、ユーザー設定を保存します。
+初めてローカルにインストールするときは、パッケージに `auto_start = true` とあっても
+設定を `false` として保存し、スイッチをオフで表示します。通常の更新や再インストールでは
+保存済みの選択を維持します。既存のインストールで明示された manifest の値は、
+ユーザー設定による上書きがなければ引き続き適用されます。
+
+既定では、手動の起動・停止・再読み込みで自動起動設定は変わりません。
+新規インストールは承認待ちとなり、独立した自動起動スイッチをオンにすると承認されます。
+手動の起動や再読み込みでは、以後の自動起動は承認されません。
+
+`NEKO_PLUGIN_SYNC_AUTO_START_ON_TOGGLE=1` を設定すると、従来の設定同期を有効にできます。
+手動の起動・再読み込みは `auto_start=true`、停止は `auto_start=false` を保存します。
+「手動の起動・停止ではこの設定は変わらない」というスイッチの説明は既定の動作を示します。
+従来の同期を有効にしても、承認待ちのプラグインには独立したスイッチによる明示的な承認が必要です。
 
 ---
 

@@ -1,4 +1,5 @@
 @import url('base.css');
+@import url('chat_sync.css');
 /* Frozen legacy `full` minimized breathing-light orb — isolated, gated on
    .is-legacy-full-ball; never affects the compact yarn ball. */
 @import url('full-chat-minimize.css');
@@ -1861,6 +1862,31 @@ body.galgame-mode-enabled #react-chat-window-shell:not(.is-minimized):not(.is-co
     pointer-events: auto;
 }
 
+/* Keep opt-in sync reachable in both full and compact current-chat surfaces. */
+#chatSyncButton {
+    width: 32px;
+    height: 32px;
+    border: 0;
+    border-radius: 8px;
+    color: #5f6c82;
+    background: transparent;
+    cursor: pointer;
+    pointer-events: auto;
+    flex: 0 0 auto;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"] #chatSyncButton {
+    position: absolute;
+    top: -36px;
+    right: 40px;
+}
+
+/* Only sync modals opt in to clicks; the transparent chat/body remains pass-through. */
+#chat-sync-dialog,
+#character-profile-sync-dialog {
+    pointer-events: auto;
+}
+
 #reactChatWindowMinimizeButton,
 #reactChatWindowCloseButton {
     width: 32px;
@@ -2006,7 +2032,7 @@ body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-compac
 }
 
 body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {
-    max-height: 240px;
+    max-height: min(240px, var(--compact-choice-available-block-size, 240px));
 }
 
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .chat-window,
@@ -2151,6 +2177,10 @@ body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"
 /* 轮盘容器本身是透明的；保留按钮和圆形旋转区的交互，其余区域（特别是与紧凑播放器
    重叠的左上控制带）必须点击穿透。这里覆盖上面的宿主通用 pointer-events 规则。 */
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] {
+    pointer-events: none !important;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .compact-input-tool-fan .compact-input-tool-tooltip {
     pointer-events: none !important;
 }
 
@@ -4733,22 +4763,23 @@ body.chat-export-modal-open {
 
 /* ---------- 串门（docs/design/visit-infrastructure.md §3.6.6 / OD-19） ---------- */
 
-/* 访客猫娘与对方家里人的台词复用 role 'tool'：暖色气泡与头像，与她自己的气泡一眼分开 */
+/* 访客猫娘与对方家里人的台词复用 role 'tool'：用紫色底色与头像区分身份，
+   气泡轮廓仍与其他聊天消息一致，不额外描边。 */
 #react-chat-window-root .message-bubble-tool {
-    background: linear-gradient(180deg, #fff8ee 0%, #fdeedc 100%);
-    color: #47331d;
-    border: 1px solid rgba(232, 170, 96, 0.35);
+    background: linear-gradient(135deg, #f3edff 0%, #e6dcff 100%);
+    color: #352557;
+    box-shadow: 0 5px 14px rgba(99, 68, 158, 0.12);
 }
 
 #react-chat-window-root .avatar-tool {
     color: #fff;
-    background: linear-gradient(135deg, #ffb86b 0%, #f08a3c 100%);
+    background: linear-gradient(135deg, #a584e8 0%, #7951c9 100%);
 }
 
 [data-theme="dark"] #react-chat-window-root .message-bubble-tool {
-    background: linear-gradient(180deg, #3a2f24 0%, #33281d 100%);
-    color: #f3e3cf;
-    border-color: rgba(232, 170, 96, 0.28);
+    background: linear-gradient(135deg, #392d50 0%, #2d2342 100%);
+    color: #f0e9ff;
+    box-shadow: 0 5px 14px rgba(16, 10, 26, 0.28);
 }
 
 /* 串门对话框（出门确认、接待确认、邀请码、查看详情、举报、串门人设）：宿主页 DOM，文字一律 textContent */
@@ -4760,7 +4791,10 @@ body.chat-export-modal-open {
     align-items: center;
     justify-content: center;
     padding: 16px;
-    background: rgba(20, 28, 40, 0.32);
+    /* 桌面透明窗口里不铺整屏灰幕；只显示中间的白色串门卡片。 */
+    background: transparent;
+    /* 桌面聊天页的 html/body 默认穿透；透明背景继续不拦截，只让卡片本身接管输入。 */
+    pointer-events: none;
 }
 
 .visit-dialog {
@@ -4775,6 +4809,51 @@ body.chat-export-modal-open {
     box-shadow: 0 12px 36px rgba(30, 50, 80, 0.22);
     font-size: 14px;
     line-height: 1.55;
+    /* 覆盖 html/body 的 pointer-events:none，让输入框与按钮真正收到鼠标事件。 */
+    pointer-events: auto;
+    -webkit-app-region: no-drag;
+}
+
+/* 自我介绍复用 N.E.K.O 通用 modal 骨架；私人段落可能很长，只滚动正文，
+   标题与确认按钮始终留在可见区域。 */
+.modal-dialog.visit-persona {
+    min-width: 0;
+    width: min(500px, calc(100vw - 32px));
+    max-width: min(500px, calc(100vw - 32px));
+    max-height: min(82vh, 760px);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    -webkit-app-region: no-drag;
+}
+
+/* Electron 透明桌面窗不铺整屏灰幕；保留通用 modal 布局，只让卡片接管输入。 */
+.modal-overlay.visit-persona-overlay {
+    box-sizing: border-box;
+    padding: 16px;
+    background: transparent;
+    pointer-events: none !important;
+}
+
+.visit-persona-overlay .visit-persona {
+    pointer-events: auto !important;
+}
+
+.visit-persona-body {
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding-right: 4px;
+}
+
+.modal-dialog.visit-persona .visit-dialog-actions {
+    flex: 0 0 auto;
+    margin-top: 0;
+}
+
+.modal-dialog.visit-persona .modal-btn:disabled {
+    cursor: default;
+    opacity: 0.5;
 }
 
 .visit-dialog-title {
@@ -4842,6 +4921,10 @@ body.chat-export-modal-open {
 .visit-persona-text {
     min-height: 96px;
     resize: vertical;
+}
+
+.modal-dialog.visit-persona .visit-persona-text {
+    margin-top: 10px;
 }
 
 .visit-report-include {

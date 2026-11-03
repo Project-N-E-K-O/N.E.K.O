@@ -1,23 +1,23 @@
 # -*- coding: utf-8 -*-
 """
-智能静音移除功能 — 集成测试
+Smart silence removal feature — integration tests
 
-10+ 条不同格式与静音分布的音频用例，端到端验证 API 行为。
+Audio cases covering 10+ formats and silence distributions, validating API behavior end to end.
 
-覆盖场景:
- 1. 纯正弦波 (无静音)
- 2. 全静音 WAV
- 3. 开头静音 + 语音
- 4. 语音 + 末尾静音
- 5. 语音 - 静音 - 语音
- 6. 多段间隔静音
- 7. 短于阈值的静音 (不应被移除)
- 8. 低噪声作为静音
- 9. 立体声音频
-10. 不同采样率 (8 kHz / 44.1 kHz / 48 kHz)
-11. 不同位深度 (8-bit / 16-bit / 32-bit)
-12. 极长静音段 (5 秒)
-13. 交替快速静音/语音 (边界测试)
+Scenarios covered:
+ 1. Pure sine wave (no silence)
+ 2. Fully silent WAV
+ 3. Leading silence + speech
+ 4. Speech + trailing silence
+ 5. Speech - silence - speech
+ 6. Multiple intervals of silence
+ 7. Silence shorter than the threshold (should not be removed)
+ 8. Low noise treated as silence
+ 9. Stereo audio
+10. Different sample rates (8 kHz / 44.1 kHz / 48 kHz)
+11. Different bit depths (8-bit / 16-bit / 32-bit)
+12. Extremely long silence segment (5 seconds)
+13. Alternating rapid silence/speech (boundary test)
 """
 
 import io
@@ -38,7 +38,7 @@ from utils.audio_silence_remover import (
 )
 
 
-# ==================== 辅助 ====================
+# ==================== Helpers ====================
 
 def _make_wav(samples, sample_rate=16000, sample_width=2, channels=1):
     pcm = _float_to_samples(samples, sample_width)
@@ -67,7 +67,7 @@ def _noise(duration_s, sr=16000, amp=5e-5):
 
 
 def _run_pipeline(audio, sr=16000, sw=2, ch=1):
-    """运行完整管线：分析 + 裁剪"""
+    """Run the full pipeline: analysis + trimming"""
     wav = _make_wav(audio, sample_rate=sr, sample_width=sw, channels=ch)
     data = wav.getvalue()
     analysis = detect_silence(io.BytesIO(data))
@@ -78,62 +78,62 @@ def _run_pipeline(audio, sr=16000, sw=2, ch=1):
     return analysis, result
 
 
-# ==================== 集成测试用例 ====================
+# ==================== Integration test cases ====================
 
 class TestIntegration:
 
-    # --- 用例 1: 纯正弦波 ---
+    # --- Case 1: Pure sine wave ---
     def test_case01_pure_sine(self):
-        """纯正弦波，无静音段 → 不裁剪"""
+        """Pure sine wave, no silence segments → do not trim"""
         audio = _sine(440, 3.0)
         analysis, result = _run_pipeline(audio)
         assert len(analysis.silence_segments) == 0
         assert result is None
 
-    # --- 用例 2: 全静音 ---
+    # --- Case 2: Complete silence ---
     def test_case02_all_silence(self):
-        """全静音 → 裁剪后保留约 200ms"""
+        """Fully silent → retain about 200 ms after trimming"""
         audio = _silence(3.0)
         analysis, result = _run_pipeline(audio)
         assert analysis.saving_percentage > 80
         assert result is not None
-        # 全静音裁剪后保留静音段首尾各 100ms = 200ms
+        # After trimming complete silence, retain 100 ms at each end = 200 ms total.
         assert 150 < result.trimmed_duration_ms < 300
 
-    # --- 用例 3: 开头静音 + 语音 ---
+    # --- Case 3: Leading silence + speech ---
     def test_case03_leading_silence(self):
-        """1.5s 静音 + 2s 语音"""
+        """1.5 s of silence + 2 s of speech"""
         audio = np.concatenate([_silence(1.5), _sine(440, 2.0)])
         analysis, result = _run_pipeline(audio)
         assert len(analysis.silence_segments) >= 1
         assert result is not None
         assert result.trimmed_duration_ms < analysis.original_duration_ms
-        # 输出 WAV 有效
+        # Output WAV is valid.
         with wave.open(io.BytesIO(result.audio_data), 'rb') as wf:
             assert wf.getnframes() > 0
 
-    # --- 用例 4: 语音 + 末尾静音 ---
+    # --- Case 4: Speech + trailing silence ---
     def test_case04_trailing_silence(self):
-        """2s 语音 + 1.5s 静音"""
+        """2 s of speech + 1.5 s of silence"""
         audio = np.concatenate([_sine(440, 2.0), _silence(1.5)])
         analysis, result = _run_pipeline(audio)
         assert len(analysis.silence_segments) >= 1
         assert result is not None
         assert result.removed_silence_ms >= 1000
 
-    # --- 用例 5: 语音-静音-语音 ---
+    # --- Case 5: Speech-silence-speech ---
     def test_case05_middle_silence(self):
-        """1s 语音 + 1s 静音 + 1s 语音"""
+        """1 s of speech + 1 s of silence + 1 s of speech"""
         audio = np.concatenate([_sine(440, 1.0), _silence(1.0), _sine(880, 1.0)])
         analysis, result = _run_pipeline(audio)
         assert len(analysis.silence_segments) >= 1
         assert result is not None
-        # MD5 验证
+        # MD5 verification.
         assert result.md5 == hashlib.md5(result.audio_data).hexdigest()
 
-    # --- 用例 6: 多段间隔静音 ---
+    # --- Case 6: Multiple intervals of silence ---
     def test_case06_multi_gaps(self):
-        """4 段语音中间 3 段静音"""
+        """4 speech segments with 3 silence segments between them"""
         parts = []
         for i in range(4):
             parts.append(_sine(300 + i * 150, 0.4))
@@ -143,28 +143,28 @@ class TestIntegration:
         analysis, result = _run_pipeline(audio)
         assert len(analysis.silence_segments) == 3
         assert result is not None
-        # 每段 800ms 裁剪至 200ms，移除 3×600ms = 1800ms
+        # Each 800 ms segment is trimmed to 200 ms, removing 3×600 ms = 1800 ms.
         assert result.trimmed_duration_ms < result.original_duration_ms * 0.7
 
-    # --- 用例 7: 短静音 (不应被移除) ---
+    # --- Case 7: Short silence (should not be removed) ---
     def test_case07_short_silence_ignored(self):
-        """150ms 静音 < 200ms 阈值 → 不移除"""
+        """150 ms of silence < 200 ms threshold → do not remove"""
         audio = np.concatenate([_sine(440, 1.0), _silence(0.15), _sine(880, 1.0)])
         analysis, result = _run_pipeline(audio)
         assert len(analysis.silence_segments) == 0
         assert result is None
 
-    # --- 用例 8: 低噪声作为静音 ---
+    # --- Case 8: Low noise treated as silence ---
     def test_case08_low_noise_silence(self):
-        """噪声 < -40 dBFS → 视为静音"""
+        """Noise < -40 dBFS → treat as silence"""
         audio = np.concatenate([_sine(440, 1.0), _noise(1.0), _sine(880, 1.0)])
         analysis, result = _run_pipeline(audio)
         assert len(analysis.silence_segments) >= 1
         assert result is not None
 
-    # --- 用例 9: 立体声 ---
+    # --- Case 9: Stereo ---
     def test_case09_stereo(self):
-        """立体声：左右声道都有信号 + 静音"""
+        """Stereo: both left and right channels contain signal + silence"""
         sr = 16000
         left = np.concatenate([_sine(440, 1.0, sr), _silence(1.0, sr), _sine(440, 1.0, sr)])
         right = np.concatenate([_sine(880, 1.0, sr), _silence(1.0, sr), _sine(880, 1.0, sr)])
@@ -180,7 +180,7 @@ class TestIntegration:
         assert result.channels == 2
         assert result.md5 == hashlib.md5(result.audio_data).hexdigest()
 
-    # --- 用例 10: 不同采样率 - 8kHz ---
+    # --- Case 10: Different sample rate - 8 kHz ---
     def test_case10_sample_rate_8k(self):
         sr = 8000
         audio = np.concatenate([_sine(300, 0.5, sr), _silence(0.7, sr), _sine(500, 0.5, sr)])
@@ -189,7 +189,7 @@ class TestIntegration:
         assert result is not None
         assert result.sample_rate == sr
 
-    # --- 用例 10b: 不同采样率 - 44.1kHz ---
+    # --- Case 10b: Different sample rate - 44.1 kHz ---
     def test_case10b_sample_rate_44k(self):
         sr = 44100
         audio = np.concatenate([_sine(440, 1.0, sr), _silence(0.8, sr)])
@@ -198,7 +198,7 @@ class TestIntegration:
         assert result is not None
         assert result.sample_rate == sr
 
-    # --- 用例 10c: 不同采样率 - 48kHz ---
+    # --- Case 10c: Different sample rate - 48 kHz ---
     def test_case10c_sample_rate_48k(self):
         sr = 48000
         audio = np.concatenate([_sine(440, 0.5, sr), _silence(1.0, sr), _sine(660, 0.5, sr)])
@@ -206,7 +206,7 @@ class TestIntegration:
         assert analysis.sample_rate == sr
         assert result is not None
 
-    # --- 用例 11: 不同位深度 - 8bit ---
+    # --- Case 11: Different bit depth - 8-bit ---
     def test_case11_8bit(self):
         audio = np.concatenate([_sine(440, 1.0), _silence(0.8)])
         analysis, result = _run_pipeline(audio, sw=1)
@@ -214,7 +214,7 @@ class TestIntegration:
         if result:
             assert result.sample_width == 1
 
-    # --- 用例 11b: 不同位深度 - 32bit ---
+    # --- Case 11b: Different bit depth - 32-bit ---
     def test_case11b_32bit(self):
         audio = np.concatenate([_sine(440, 1.0), _silence(0.8)])
         analysis, result = _run_pipeline(audio, sw=4)
@@ -222,18 +222,18 @@ class TestIntegration:
         if result:
             assert result.sample_width == 4
 
-    # --- 用例 12: 极长静音段 ---
+    # --- Case 12: Extremely long silence segment ---
     def test_case12_long_silence(self):
-        """5 秒静音"""
+        """5 seconds of silence"""
         audio = np.concatenate([_sine(440, 0.5), _silence(5.0), _sine(880, 0.5)])
         _, result = _run_pipeline(audio)
         assert result is not None
         assert result.removed_silence_ms >= 4500
         assert result.saving_percentage if hasattr(result, 'saving_percentage') else True
 
-    # --- 用例 13: 交替快速段落 ---
+    # --- Case 13: Alternating rapid segments ---
     def test_case13_rapid_alternation(self):
-        """多段短语音 + 刚好超过阈值的静音"""
+        """Multiple short speech segments + silence just over the threshold"""
         parts = []
         for _ in range(8):
             parts.append(_sine(440, 0.2))
@@ -243,21 +243,21 @@ class TestIntegration:
         analysis, result = _run_pipeline(audio)
         assert len(analysis.silence_segments) == 8
         assert result is not None
-        # 每段 550ms 裁剪至 200ms，移除 8×350ms = 2800ms
+        # Each 550 ms segment is trimmed to 200 ms, removing 8×350 ms = 2800 ms.
         assert result.trimmed_duration_ms < result.original_duration_ms
 
 
-# ==================== 性能基准 (非严格断言，记录数据) ====================
+# ==================== Performance benchmarks (no strict assertions; record data) ====================
 
 class TestPerformanceBenchmark:
 
     @pytest.mark.performance
     def test_processing_speed(self):
         """
-        性能基准：单文件处理耗时 ≤ 原始音频时长的 30%
+        Performance benchmark: processing one file takes ≤ 30% of the original audio duration
 
-        生成一段 20 秒的音频（含多段静音），
-        测量分析 + 裁剪的总耗时。
+        Generate 20 seconds of audio (including multiple silence segments),
+        and measure the total analysis + trimming time.
         """
         sr = 16000
         parts = []
@@ -278,14 +278,14 @@ class TestPerformanceBenchmark:
         ratio = elapsed / audio_duration_s
         print(f"\n[性能] 音频时长={audio_duration_s:.1f}s, 处理耗时={elapsed:.3f}s, 比值={ratio:.2%}")
 
-        # 仅在显式启用性能测试时断言严格阈值
+        # Assert strict thresholds only when performance tests are explicitly enabled.
         if os.environ.get('RUN_PERF_TESTS', '').lower() == 'true':
             assert ratio <= 0.30, f"处理耗时 {ratio:.2%} 超过音频时长的 30%"
 
     @pytest.mark.performance
     def test_large_file_performance(self):
         """
-        大文件性能测试：模拟较长音频 (60 秒)
+        Large-file performance test: simulate longer audio (60 seconds)
         """
         sr = 16000
         parts = []
@@ -312,7 +312,7 @@ class TestPerformanceBenchmark:
     @pytest.mark.performance
     def test_high_sample_rate_performance(self):
         """
-        高采样率性能测试：48kHz
+        High-sample-rate performance test: 48 kHz
         """
         sr = 48000
         parts = []

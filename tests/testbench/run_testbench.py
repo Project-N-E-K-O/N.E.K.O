@@ -77,7 +77,7 @@ def main() -> None:
     # logs all land in ``DATA_DIR/live_runtime/current.log``. Rotate
     # first so the previous boot's capture moves aside (current.log →
     # previous.log, old previous.log removed — matches user requirement:
-    # "每次开启服务自检的时候可以清理上一次留下的实时转存日志").
+    # "Clear the previous live dump logs whenever the service self-check starts").
     # Background: §4.27 #105 — we had two browser-freeze-then-hard-
     # power-off incidents where the only evidence (uvicorn's '200 OK'
     # flood) went nowhere durable. Now it does.

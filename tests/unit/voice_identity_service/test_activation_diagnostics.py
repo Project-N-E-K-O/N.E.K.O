@@ -35,7 +35,7 @@ async def test_reports_candidate_reset_without_logging_context(monkeypatch, capl
         generation, scorer, AsyncMock(),
         controller=VoiceActivationController(clock=lambda: 0.0),
     )
-    caplog.set_level(logging.INFO, logger=module.__name__)
+    caplog.set_level(logging.DEBUG, logger=module.__name__)
     await runtime.prepare()
     try:
         for sequence in range(3):
@@ -82,7 +82,7 @@ async def test_checkpoint_is_logged_immediately_without_changing_request(monkeyp
         generation, scorer, AsyncMock(),
         controller=VoiceActivationController(clock=lambda: 0.0),
     )
-    caplog.set_level(logging.INFO, logger=module.__name__)
+    caplog.set_level(logging.DEBUG, logger=module.__name__)
     await runtime.prepare()
     try:
         for sequence in range(15):

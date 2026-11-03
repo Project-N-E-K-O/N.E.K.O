@@ -109,62 +109,65 @@ test('both proactive screenshot acquisitions release late streams under suppress
     }
 });
 
-test('every successful proactive screenshot route rechecks tutorial suppression', async () => {
-    for (const route of ['cached', 'native', 'stream', 'retry', 'backend']) {
-        const listeners = new Map();
-        let settle;
-        let enter;
-        const entered = new Promise((resolve) => { enter = resolve; });
-        const gate = new Promise((resolve) => { settle = resolve; });
-        let frames = 0;
-        let stopped = 0;
-        const stream = {
-            active: true,
-            getTracks() { return [{ stop() { stopped += 1; } }]; },
-            getVideoTracks() { return [{ readyState: 'live' }]; }
-        };
-        const delayedFrame = async () => { enter(); await gate; return { dataUrl: 'FRAME' }; };
-        const state = {
-            isRecording: true, proactiveVisionEnabled: true,
-            screenCaptureStream: route === 'cached' ? stream : null,
-            selectedScreenSourceId: route === 'native' ? 'screen:0' : null
-        };
-        const window = {
-            appState: state, appConst: {},
-            addEventListener(type, listener) { listeners.set(type, listener); },
-            getDesktopCaptureProvider: () => route === 'native' ? { captureSourceAsDataUrl() {} } : null,
-            captureDesktopSourceWithTimeout: async () => {
-                await delayedFrame(); return { success: true, dataUrl: 'NATIVE' };
-            },
-            appScreen: {
-                acquireOrReuseCachedStream: async () => {
-                    if (route === 'backend') return null;
-                    state.screenCaptureStream = stream;
-                    return stream;
+test('every successful proactive screenshot route rechecks tutorial and privacy suppression', async () => {
+    for (const blocker of ['tutorial', 'privacy']) {
+        for (const route of ['cached', 'native', 'stream', 'retry', 'backend']) {
+            const listeners = new Map();
+            let settle;
+            let enter;
+            const entered = new Promise((resolve) => { enter = resolve; });
+            const gate = new Promise((resolve) => { settle = resolve; });
+            let frames = 0;
+            let stopped = 0;
+            const stream = {
+                active: true,
+                getTracks() { return [{ stop() { stopped += 1; } }]; },
+                getVideoTracks() { return [{ readyState: 'live' }]; }
+            };
+            const delayedFrame = async () => { enter(); await gate; return { dataUrl: 'FRAME' }; };
+            const state = {
+                isRecording: true, proactiveVisionEnabled: true,
+                screenCaptureStream: route === 'cached' ? stream : null,
+                selectedScreenSourceId: route === 'native' ? 'screen:0' : null
+            };
+            const window = {
+                appState: state, appConst: {},
+                addEventListener(type, listener) { listeners.set(type, listener); },
+                getDesktopCaptureProvider: () => route === 'native' ? { captureSourceAsDataUrl() {} } : null,
+                captureDesktopSourceWithTimeout: async () => {
+                    await delayedFrame(); return { success: true, dataUrl: 'NATIVE' };
                 },
-                captureFrameFromStream: async () => {
-                    frames += 1;
-                    if (route === 'retry' && frames === 1) return null;
-                    return delayedFrame();
-                },
-                fetchBackendScreenshot: delayedFrame,
-                scheduleScreenCaptureIdleCheck() {}
-            }
-        };
-        vm.runInNewContext(source, {
-            window,
-            document: { addEventListener() {}, getElementById() { return null; } },
-            localStorage: { getItem() { return null; } },
-            console, clearTimeout() {}, clearInterval() {}
-        });
-        const pending = window.appProactive.captureProactiveChatScreenshotWithSource();
-        await entered;
-        listeners.get('neko:home-tutorial-features-suppressed')({ detail: { active: true, source: 'director' } });
-        settle();
-        assert.equal((await pending).dataUrl, null, route);
-        assert.equal(frames, route === 'native' || route === 'backend' ? 0 : (route === 'retry' ? 2 : 1));
-        assert.equal(state.screenCaptureStream == null, true, route);
-        assert.equal(stopped, route === 'native' || route === 'backend' ? 0 : (route === 'retry' ? 2 : 1));
+                appScreen: {
+                    acquireOrReuseCachedStream: async () => {
+                        if (route === 'backend') return null;
+                        state.screenCaptureStream = stream;
+                        return stream;
+                    },
+                    captureFrameFromStream: async () => {
+                        frames += 1;
+                        if (route === 'retry' && frames === 1) return null;
+                        return delayedFrame();
+                    },
+                    fetchBackendScreenshot: delayedFrame,
+                    scheduleScreenCaptureIdleCheck() {}
+                }
+            };
+            vm.runInNewContext(source, {
+                window,
+                document: { addEventListener() {}, getElementById() { return null; } },
+                localStorage: { getItem() { return null; } },
+                console, clearTimeout() {}, clearInterval() {}
+            });
+            const pending = window.appProactive.captureProactiveChatScreenshotWithSource();
+            await entered;
+            if (blocker === 'privacy') state.proactiveVisionEnabled = false;
+            else listeners.get('neko:home-tutorial-features-suppressed')({ detail: { active: true, source: 'director' } });
+            settle();
+            assert.equal((await pending).dataUrl, null, route);
+            assert.equal(frames, route === 'native' || route === 'backend' ? 0 : (route === 'retry' ? 2 : 1));
+            assert.equal(state.screenCaptureStream == null, true, route);
+            assert.equal(stopped, route === 'native' || route === 'backend' ? 0 : (route === 'retry' ? 2 : 1));
+        }
     }
 });
 
@@ -191,11 +194,58 @@ test('request_screenshot rechecks tutorial suppression immediately before sendin
             };
             await vm.runInNewContext(websocketSource.slice(start, end), {
                 window, S: { socket: { readyState: 1, send(value) { sent.push(value); } } },
-                WebSocket: { OPEN: 1 }, console
+                response: { request_id: 'current-round' }, WebSocket: { OPEN: 1 }, console
             });
             assert.equal(sent.length, 1, 'always resolve the backend screenshot request');
             assert.equal(JSON.parse(sent[0]).data, phase === 'none' ? 'FRAME' : '');
+            assert.equal(JSON.parse(sent[0]).declined === true, phase !== 'none');
+            assert.equal(JSON.parse(sent[0]).request_id, 'current-round');
             assert.equal(captures, phase === 'before' ? 0 : 1);
+        }
+    }
+});
+
+test('screenshot replies correlate all paths and preserve legacy-server and ordinary failure contracts', async () => {
+    const websocketSource = fs.readFileSync(path.join(__dirname, 'app/app-websocket.js'), 'utf8');
+    const branch = websocketSource.indexOf("response.type === 'request_screenshot'");
+    const start = websocketSource.indexOf('(async function () {', branch);
+    const end = websocketSource.indexOf('})();', start) + 5;
+    for (const requestId of [undefined, 'current-round']) {
+        for (const route of ['success', 'declined', 'error-privacy', 'error-tutorial', 'error-normal', 'empty', 'legacy-success', 'closed']) {
+            const sent = [];
+            let tutorial = false;
+            const state = {
+                proactiveVisionEnabled: true,
+                socket: { readyState: route === 'closed' ? 3 : 1, send(raw) { sent.push(JSON.parse(raw)); } }
+            };
+            const window = {
+                isNekoHomeTutorialProactiveSuppressed: () => tutorial,
+                captureProactiveChatScreenshot: async () => 'LEGACY',
+                appProactive: {
+                    captureProactiveChatScreenshotWithSource: async () => {
+                        if (route === 'declined') return { dataUrl: 'IGNORE', declined: true };
+                        if (route.startsWith('error-')) {
+                            if (route === 'error-privacy') state.proactiveVisionEnabled = false;
+                            if (route === 'error-tutorial') tutorial = true;
+                            throw new Error('synthetic capture failure');
+                        }
+                        return { dataUrl: route === 'empty' ? null : 'FRAME', captureType: 'screen' };
+                    }
+                }
+            };
+            if (route === 'legacy-success') delete window.appProactive;
+            await vm.runInNewContext(websocketSource.slice(start, end), {
+                window, S: state, response: { request_id: requestId },
+                WebSocket: { OPEN: 1 }, console: { warn() {} }
+            });
+            const replies = !['error-normal', 'empty', 'closed'].includes(route);
+            assert.equal(sent.length, replies ? 1 : 0, route);
+            if (!replies) continue;
+            assert.equal(sent[0].request_id, requestId, route);
+            assert.equal(Object.hasOwn(sent[0], 'request_id'), requestId !== undefined, route);
+            const declined = ['declined', 'error-privacy', 'error-tutorial'].includes(route);
+            assert.equal(sent[0].declined === true, declined, route);
+            assert.equal(sent[0].data, declined ? '' : (route === 'legacy-success' ? 'LEGACY' : 'FRAME'), route);
         }
     }
 });
@@ -359,4 +409,175 @@ test('youtube login does not enable the unrelated personal dynamics mode', () =>
     const personalPlatformBlock = source.slice(personalPlatformStart, personalPlatformEnd);
     assert.match(personalPlatformBlock, /personalFeedPlatforms\.has\(platform\) && info\.has_cookies/);
     assert.doesNotMatch(personalPlatformBlock, /personalFeedPlatforms[^;]*youtube/);
+});
+
+
+test('request_screenshot declines privacy before capture and after an async capture', async () => {
+    const websocketSource = fs.readFileSync(path.join(__dirname, 'app/app-websocket.js'), 'utf8');
+    const branch = websocketSource.indexOf("response.type === 'request_screenshot'");
+    const start = websocketSource.indexOf('(async function () {', branch);
+    const end = websocketSource.indexOf('})();', start) + 5;
+    for (const phase of ['before', 'during', 'none']) {
+        let enabled = phase !== 'before';
+        let captures = 0;
+        const sent = [];
+        const window = {
+            appProactive: {
+                isProactiveVisionEnabledNow: () => enabled,
+                captureProactiveChatScreenshotWithSource: async () => {
+                    captures += 1;
+                    if (phase === 'during') enabled = false;
+                    return { dataUrl: 'FRAME', captureType: 'screen' };
+                }
+            }
+        };
+        await vm.runInNewContext(websocketSource.slice(start, end), {
+            window, S: { socket: { readyState: 1, send(raw) { sent.push(JSON.parse(raw)); } } },
+            response: {}, WebSocket: { OPEN: 1 }, console
+        });
+        assert.equal(sent.length, 1);
+        assert.equal(sent[0].declined === true, phase !== 'none');
+        assert.equal(sent[0].data, phase === 'none' ? 'FRAME' : '');
+        assert.equal(captures, phase === 'before' ? 0 : 1);
+    }
+});
+
+test('request_screenshot forwards a remembered-window decline instead of waiting for timeout', async () => {
+    const websocketSource = fs.readFileSync(path.join(__dirname, 'app/app-websocket.js'), 'utf8');
+    const branch = websocketSource.indexOf("response.type === 'request_screenshot'");
+    const start = websocketSource.indexOf('(async function () {', branch);
+    const end = websocketSource.indexOf('})();', start) + 5;
+    const sent = [];
+    await vm.runInNewContext(websocketSource.slice(start, end), {
+        window: { appProactive: { captureProactiveChatScreenshotWithSource: async () => ({ dataUrl: null, declined: true }) } },
+        S: { socket: { readyState: 1, send(raw) { sent.push(JSON.parse(raw)); } } },
+        response: {}, WebSocket: { OPEN: 1 }, console
+    });
+    assert.deepEqual(sent, [{ action: 'screenshot_response', data: '', declined: true }]);
+});
+
+
+test('screenshot exceptions and legacy replies keep privacy separate from technical failure', async () => {
+    const websocketSource = fs.readFileSync(path.join(__dirname, 'app/app-websocket.js'), 'utf8');
+    const branch = websocketSource.indexOf("response.type === 'request_screenshot'");
+    const start = websocketSource.indexOf('(async function () {', branch);
+    const end = websocketSource.indexOf('})();', start) + 5;
+    for (const paired of [true, false]) {
+        for (const blocked of [true, false]) {
+            for (const throws of [true, false]) {
+                let enabled = true;
+                const state = { proactiveVisionEnabled: true };
+                const sent = [];
+                async function capture() {
+                    enabled = !blocked;
+                    state.proactiveVisionEnabled = enabled;
+                    if (throws) throw new Error('synthetic capture exception');
+                    return 'FRAME';
+                }
+                const window = { captureProactiveChatScreenshot: capture };
+                if (paired) window.appProactive = {
+                    isProactiveVisionEnabledNow: () => enabled,
+                    captureProactiveChatScreenshotWithSource: async () => ({ dataUrl: await capture() })
+                };
+                state.socket = { readyState: 1, send(raw) { sent.push(JSON.parse(raw)); } };
+                await vm.runInNewContext(websocketSource.slice(start, end), {
+                    window, S: state, response: {}, WebSocket: { OPEN: 1 }, console: { warn() {} }
+                });
+                if (blocked) {
+                    assert.deepEqual(sent, [{ action: 'screenshot_response', data: '', declined: true }]);
+                } else if (throws) {
+                    assert.equal(sent.length, 0, 'technical exceptions still allow the backend timeout fallback');
+                } else {
+                    assert.equal(sent.length, 1);
+                    assert.equal(sent[0].data, 'FRAME');
+                    assert.equal(sent[0].declined, undefined);
+                }
+            }
+        }
+    }
+});
+
+
+test('live vision consent sends a typed snapshot only on an open socket', () => {
+    const websocketSource = fs.readFileSync(path.join(__dirname, 'app/app-websocket.js'), 'utf8');
+    const start = websocketSource.indexOf('    function syncProactiveVisionConsent(');
+    const end = websocketSource.indexOf('    function ensureWebSocketOpen(', start);
+    const sent = [];
+    const state = { proactiveVisionEnabled: true, socket: { readyState: 1, send(raw) { sent.push(JSON.parse(raw)); } } };
+    const mod = {};
+    const window = {};
+    vm.runInNewContext(websocketSource.slice(start, end), { window, S: state, mod, WebSocket: { OPEN: 1 }, console: { warn() {} } });
+    mod.syncProactiveVisionConsent(false);
+    mod.syncProactiveVisionConsent(true);
+    state.proactiveVisionEnabled = false;
+    mod.syncProactiveVisionConsent();
+    assert.deepEqual(sent, [false, true, false].map(enabled => ({ action: 'proactive_vision_consent', enabled })));
+    state.socket.readyState = 0;
+    mod.syncProactiveVisionConsent(false);
+    assert.equal(sent.length, 3);
+    state.socket = null;
+    mod.syncProactiveVisionConsent(false);
+    state.socket = { readyState: 1, send() { throw new Error('synthetic disconnect'); } };
+    assert.doesNotThrow(() => mod.syncProactiveVisionConsent(false));
+    state.socket = { readyState: 1, send() { assert.fail('unknown consent must not be sent'); } };
+    state.proactiveVisionEnabled = undefined;
+    mod.syncProactiveVisionConsent();
+});
+
+
+test('a screenshot taken before a revocation never rides a later request', () => {
+    const window = { appState: { proactiveVisionEnabled: true }, appConst: {}, addEventListener() {} };
+    let sharedSettings = null;
+    vm.runInNewContext(source, {
+        window,
+        document: { addEventListener() {}, getElementById() { return null; } },
+        localStorage: { getItem(key) { return key === 'project_neko_settings' ? sharedSettings : null; } },
+        console, clearTimeout() {}, clearInterval() {}
+    });
+    const proactive = window.appProactive;
+    const makeBody = () => ({
+        enabled_modes: ['vision', 'window', 'news'],
+        screenshot_data: 'data:image/jpeg;base64,AAAA',
+        screenshot_allow_desktop_fallback: true,
+        avatar_position: { centerX: 0.5 },
+        window_title: 'Editor',
+    });
+
+    const seqAtCapture = proactive.currentProactiveVisionRevocationSeq();
+    proactive.noteProactiveVisionConsent(true);
+    const untouched = makeBody();
+    assert.equal(proactive.discardVisionRevokedSince(untouched, seqAtCapture), false);
+    assert.deepEqual(untouched, makeBody(), 'enabling alone keeps the image');
+
+    // Revoke, then re-enable before the request goes out.
+    proactive.noteProactiveVisionConsent(false);
+    proactive.noteProactiveVisionConsent(true);
+    const revoked = makeBody();
+    assert.equal(proactive.discardVisionRevokedSince(revoked, seqAtCapture), true);
+    assert.deepEqual(revoked, { enabled_modes: ['news'] }, 'window shares the vision consent gate');
+
+    // Screenshot failed but the window title was attached: still vision consent.
+    const titleOnly = { enabled_modes: ['window', 'news'], window_title: 'Editor' };
+    assert.equal(proactive.discardVisionRevokedSince(titleOnly, seqAtCapture), true);
+    assert.deepEqual(titleOnly, { enabled_modes: ['news'] });
+    const noVision = { enabled_modes: ['news'] };
+    assert.equal(proactive.discardVisionRevokedSince(noVision, seqAtCapture), false);
+
+    const later = makeBody();
+    assert.equal(
+        proactive.discardVisionRevokedSince(later, proactive.currentProactiveVisionRevocationSeq()),
+        false,
+        'a capture started after the revocation is unaffected',
+    );
+
+    // Another window revoked: localStorage already says off, while this window's
+    // state and revocation seq have not seen the sync event yet.
+    sharedSettings = JSON.stringify({ proactiveVisionEnabled: false });
+    assert.equal(window.appState.proactiveVisionEnabled, true);
+    const crossWindow = makeBody();
+    assert.equal(
+        proactive.discardVisionRevokedSince(crossWindow, proactive.currentProactiveVisionRevocationSeq()),
+        true,
+    );
+    assert.equal(crossWindow.screenshot_data, undefined);
 });

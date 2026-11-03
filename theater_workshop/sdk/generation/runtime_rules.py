@@ -9,11 +9,11 @@ PUBLIC_TEXT_RULE = (
     "也不补造一个确定结果。已有 fixed_narrations 原文仍按本次编辑权限保留，发现问题报告具体字段，不擅自改写或删除原文。"
 )
 
-# 依据 N.E.K.O services/theater/numeric_v2_runtime.py 的 resolve_turn（选路、拒绝、自然结束）
-# 及 numeric_v2_evaluator.py 的 _build_messages（目标为素材、同轮收束、行动主体）。
-# 此合同供事实、证据、文学及修订四个入口共用；运行机制变化时一处同步，避免各阶段自行猜测。
-# 分幕建议是作者规划，不是运行硬门槛；保留有实际叙事变化的同地换幕及现有修订权限。
-# 等候安排可授权时间经过，不替玩家接受下一幕的新话题结论或行动。
+# Based on N.E.K.O services/theater/numeric_v2_runtime.py resolve_turn (routing, refusals, natural endings)
+# and numeric_v2_evaluator.py _build_messages (targets as material, same-turn closure, acting subject).
+# Share this contract across fact, evidence, literature, and revision entry points; update runtime changes once rather than making stages guess independently.
+# Act suggestions are author plans, not hard runtime gates; retain same-location act changes with narrative significance and existing revision permissions.
+# Waiting arrangements may authorize time passing, without accepting new next-act conclusions or actions for the player.
 GOAL_METADATA_RULE = """目标元数据边界：ordered_goals/goals 中的 evidence、anchors、delivery 和 state_effects 保留为作者规划、引用与评改资料。Evaluator 不逐项判定目标完成，Runtime 不执行目标 evidence 或 state_effects；这些字段不构成换幕门槛，也不证明玩家已经行动。semantic 不提供逐项目标的完成回执；exact 不锁存锚点，也不保证运行时逐字展示。dialogue_policy_after 只记录作者预期的后续发声状态，实际发声权限以节点 acting_contract.dialogue_policy 和 Session 为准，不能只靠目标 state_effects 安排禁言或恢复发声。节点发声策略覆盖同幕全部普通回合；同幕包含可发声与不发声阶段时使用 optional，并在已有 acting_contract.forbidden_behaviors 或 scene_boundaries 明确随已发生状态约束回应，不能每轮重新决定已完成的状态。optional 不证明已禁言或恢复，也不强制静默；需要程序硬切换发声权限时，在有实际状态变化的节点边界设置对应策略，不能仅写目标状态效果或为了凑篇幅拆节点。原样展示旁白须由作者显式声明 fixed_narrations，并核对原文与触发事件；不自动将 exact anchors 转成固定旁白。保留既有目标字段及作者证据，不因它们不驱动 Runtime 而删除旧稿资料或新增目标执行器。"""
 
 SCORING_RUNTIME_RULES = GOAL_METADATA_RULE + "\n\n" + """N.E.K.O 运行规则（用于解释作者规划，不是故事中的新增事实）：

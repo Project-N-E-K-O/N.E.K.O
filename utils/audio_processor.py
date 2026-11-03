@@ -42,9 +42,9 @@ import wave
 
 logger = get_module_logger(__name__)
 
-# ============== DEBUG 音频存储功能 ==============
-# 设置为 True 可以将 RNNoise 处理前后的音频存储到文件中
-# 用于对比降噪效果
+# ============== DEBUG audio storage ==============
+# Set True to store audio before and after RNNoise processing in files.
+# Compare noise-reduction results.
 DEBUG_SAVE_AUDIO = False
 DEBUG_AUDIO_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "debug_audio")
 # ===============================================
@@ -260,7 +260,7 @@ class AudioProcessor:
         self.noise_reduce_enabled = noise_reduce_enabled
         self.agc_enabled = agc_enabled
         self.limiter_enabled = limiter_enabled
-        # 静音重置回调：当检测到4秒静音并重置状态时调用
+        # Silence-reset callback: called when 4 seconds of silence trigger a state reset.
         self.on_silence_reset = on_silence_reset
         
         # Initialize RNNoise denoiser
@@ -291,7 +291,7 @@ class AudioProcessor:
 
         # Streaming downsample resampler: maintains FIR state across chunks.
         # Stateless soxr.resample() on 10ms chunks produces edge artifacts at every
-        # chunk boundary (perceived as 100Hz periodic clicks → "电流声"), so we use
+        # chunk boundary (perceived as 100 Hz periodic clicks or electrical buzzing), so we use
         # ResampleStream which carries filter state and outputs a continuous signal.
         if self.input_sample_rate != self.output_sample_rate:
             self._downsample_resampler = soxr.ResampleStream(
@@ -306,7 +306,7 @@ class AudioProcessor:
         self._stream_finalized = False
         self._closed = False
         
-        # Debug audio buffers - 累积存储完整音频
+        # Debug audio buffers: accumulate the complete audio.
         self._debug_audio_before: list[np.ndarray] = []
         self._debug_audio_after: list[np.ndarray] = []
         if DEBUG_SAVE_AUDIO:
@@ -360,7 +360,7 @@ class AudioProcessor:
                 self._reset_internal_state()
                 self._last_speech_time = current_time  # Prevent infinite reset loop
                 logger.debug("🔄 RNNoise state auto-reset after silence")
-                # 调用静音重置回调（仅在静音触发时，非手动请求时）
+                # Invoke the silence-reset callback only for silence-triggered resets, not manual requests.
                 if silence_triggered and self.on_silence_reset:
                     try:
                         self.on_silence_reset()
@@ -370,7 +370,7 @@ class AudioProcessor:
         
         # Apply RNNoise if available (processes int16, returns int16)
         if self._denoiser is not None and self.noise_reduce_enabled:
-            # DEBUG: 记录 RNNoise 处理前的音频
+            # DEBUG: record audio before RNNoise processing.
             if DEBUG_SAVE_AUDIO:
                 self._debug_audio_before.append(audio_int16.copy())
             
@@ -378,7 +378,7 @@ class AudioProcessor:
             if len(processed) == 0:
                 return b''  # Buffering
             
-            # DEBUG: 记录 RNNoise 处理后的音频
+            # DEBUG: record audio after RNNoise processing.
             if DEBUG_SAVE_AUDIO:
                 self._debug_audio_after.append(processed.copy())
             
@@ -604,7 +604,7 @@ class AudioProcessor:
             logger.warning("⚠️ 没有可保存的 debug 音频数据")
             return
         
-        # 合并所有音频片段
+        # Concatenate all audio segments.
         if self._debug_audio_before:
             audio_before = np.concatenate(self._debug_audio_before)
             before_path = os.path.join(DEBUG_AUDIO_DIR, "debug_audio_before.wav")
@@ -617,7 +617,7 @@ class AudioProcessor:
             self._save_wav(after_path, audio_after, self.RNNOISE_SAMPLE_RATE)
             logger.info(f"💾 已保存处理后音频: {after_path} ({len(audio_after)/self.RNNOISE_SAMPLE_RATE:.2f}秒)")
         
-        # 清空缓冲区
+        # Clear buffers.
         self._debug_audio_before.clear()
         self._debug_audio_after.clear()
         logger.info("🔧 DEBUG: 音频已保存，缓冲区已清空")

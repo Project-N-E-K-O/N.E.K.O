@@ -37,7 +37,7 @@ genai = None
 
 types = None
 
-GEMINI_AVAILABLE: bool | None = None  # None = 尚未尝试导入
+GEMINI_AVAILABLE: bool | None = None  # None = import not yet attempted
 
 _GEMINI_IMPORT_ERROR = None
 
@@ -47,17 +47,17 @@ def _ensure_gemini_sdk() -> bool:
     Returns whether the SDK is available. Under a concurrent race the worst case is one duplicate import (Python's module cache makes it idempotent).
     """
     global genai, types, GEMINI_AVAILABLE, _GEMINI_IMPORT_ERROR
-    # 显式强制不可用优先级最高 → 即便对象已塞进全局也降级。
+    # Explicitly forced unavailability takes highest priority: degrade even if objects are already in globals.
     if GEMINI_AVAILABLE is False:
         return False
-    # 对象已就位（真 import 过 / 测试注入了 mock）→ 直接信任，不重导入。
+    # An existing object (real import or test-injected mock) is trusted directly without reimporting.
     if genai is not None and types is not None:
         GEMINI_AVAILABLE = True
         return True
     try:
         from google import genai as genai_mod
         from google.genai import types as types_mod
-        # 只补缺失的，保住测试可能注入的 genai mock。
+        # Fill only missing objects, preserving any genai mock injected by tests.
         if genai is None:
             genai = genai_mod
         if types is None:
@@ -65,14 +65,14 @@ def _ensure_gemini_sdk() -> bool:
         GEMINI_AVAILABLE = True
         _GEMINI_IMPORT_ERROR = None
     except Exception as e:
-        # 不覆盖外部强制设过的可用性标志；也不清空可能被测试注入的 genai/types
-        # （只补缺失原则——导入失败时保留已注入的部分 mock）。
+        # Do not overwrite externally forced availability flags or clear genai/types potentially injected by tests.
+        # (Fill-missing-only rule: preserve partially injected mocks on import failure.)
         if GEMINI_AVAILABLE is None:
             GEMINI_AVAILABLE = False
             _GEMINI_IMPORT_ERROR = e
             _emit_gemini_import_diagnostic(e)
-    # 只有可用标志为真且对象确实就位才算可用——避免 forced True 但 import 失败时
-    # 谎报可用、让 _connect_gemini 在 None 上解引用 genai/types。
+    # Availability requires both a true flag and actual objects, avoiding false availability when forced True but import failed,
+    # which would make _connect_gemini dereference genai/types on None.
     return bool(GEMINI_AVAILABLE) and genai is not None and types is not None
 
 _config_manager = get_config_manager()
@@ -173,11 +173,11 @@ class _GeminiMixin:
             )
 
         try:
-            # 创建 Gemini 客户端
+            # Create the Gemini client.
             self._gemini_client = genai.Client(api_key=self.api_key, http_options={"api_version": "v1alpha"})
 
-            # 配置会话。Gemini Live 接受多个 Tool 实例同时存在，
-            # 一个负责 google_search、一个负责自定义 function_declarations。
+            # Configure the session. Gemini Live accepts multiple Tool instances simultaneously,
+            # one for google_search and another for custom function_declarations.
             gemini_tools: List[Any] = [types.Tool(google_search=types.GoogleSearch())]
             if self.has_tools():
                 gemini_tools.extend(self._tools_for_gemini_live())
@@ -216,16 +216,16 @@ class _GeminiMixin:
                     )
                 )
 
-            # 建立 Live 连接 - connect() 返回 async context manager
+            # Establish Live connection: connect() returns an async context manager.
             logger.info(f"Connecting to Gemini Live API with model: {self.model}")
             self._gemini_context_manager = self._gemini_client.aio.live.connect(
                 model=self.model,
                 config=config,
             )
-            # 手动进入 async context manager
+            # Enter the async context manager manually.
             self._gemini_session = await self._gemini_context_manager.__aenter__()
 
-            # 设置 ws 为 session，用于兼容性检查
+            # Set ws to session for compatibility checks.
             self.ws = self._gemini_session
             self._on_connection_attached()
             self._fatal_error_occurred = False
@@ -265,7 +265,7 @@ class _GeminiMixin:
             )
 
         try:
-            # 发送实时音频输入
+            # Send real-time audio input.
             await session.send_realtime_input(
                 audio={"data": audio_chunk, "mime_type": "audio/pcm"}
             )
@@ -396,9 +396,9 @@ class _GeminiMixin:
             parts=parts,
             role="user",
         )
-        # 身份要在**发送之前**取。这个 await 期间可能有一笔新欠账被武装，而它不是
-        # 这次发送送达的 —— 事后只读全局状态，会让一次更早发起、此刻才返回的发送
-        # 把它错认成自己送的，从而在后继内容还没上线时就起算 TTL。
+        # Capture identity **before sending**. A new pending debt may be armed during this await, but it is not
+        # delivered by this send. Reading only global state afterward would make an earlier-started send returning now
+        # incorrectly claim that debt, starting TTL before the subsequent content is available.
         delivering_debt_id = (
             getattr(self, "_gemini_cancelled_terminal_id", None)
             if getattr(self, "_gemini_cancelled_terminal_awaiting_delivery", False)
@@ -408,15 +408,15 @@ class _GeminiMixin:
             turns=[content],
             turn_complete=True,
         )
-        # Gemini 没有 response.cancel：被打断那一轮是**这条内容送达**才被叫停的，
-        # provider 也是从这一刻起才欠它一条终结。期限若一直按 handle_interruption
-        # 的时刻算，ASR 交接加这次发送（多模态还要压图）一慢就会在 provider 收到
-        # 中断之前就到点，A 的终结随后被当成当前回合去结算了后继的 token —— 正是
-        # 这个改动要修的那个回归。
-        # 只重打一次：每次发送都续命的话，一笔始终没被终结抵掉的欠账会被无限延寿。
-        # 两个字段都走 getattr：这条 send 会被没走完整构造的替身客户端直接调用
-        # （tests/unit/test_proactive_sm_integration.py 就有一个），而
-        # _consume_cancelled_terminal() 对同一组字段本来也是这么读的。
+        # Gemini has no response.cancel: the interrupted turn is stopped only when **this content is delivered**,
+        # The provider owes a terminal event only from this point. If the deadline still starts at handle_interruption,
+        # slow ASR handoff and this send (plus image compression for multimodal input) can expire it before the provider receives
+        # the interruption, causing A's terminal event to settle the successor token as the current turn; precisely
+        # the regression this change fixes.
+        # Refresh only once: renewing on every send would indefinitely extend a debt never cleared by a terminal event.
+        # Use getattr for both fields: substitute clients without full construction call this send directly
+        # (tests/unit/test_proactive_sm_integration.py contains one), and
+        # _consume_cancelled_terminal() already reads the same fields this way.
         if (
             delivering_debt_id is not None
             and getattr(self, "_gemini_cancelled_terminal_id", None)
@@ -445,7 +445,7 @@ class _GeminiMixin:
                 raise RuntimeError("Gemini session not available for create_response")
             return
 
-        # 跳过空内容的发送，避免预热时污染 Gemini 对话历史
+        # Skip empty sends to avoid contaminating Gemini conversation history during warmup.
         if not instructions or not instructions.strip():
             logger.info("Gemini: skipping empty content (warmup or empty message)")
             return
@@ -514,9 +514,16 @@ class _GeminiMixin:
             if r.call_id:
                 kw["id"] = r.call_id
             function_responses.append(types.FunctionResponse(**kw))
+        source = (owner, object()) if owner is not None else None
+        if source is not None:
+            # Install before the SDK await: model output can arrive before the
+            # send returns. A new user/connection still invalidates this owner.
+            self._gemini_tool_response_source = source
         try:
             await session.send_tool_response(function_responses=function_responses)
         except Exception as e:
+            # A failed SDK await does not prove that no bytes reached Gemini.
+            # Any resulting reply remains local until its provider terminal.
             logger.error("Gemini send_tool_response failed: %s", e)
 
     async def _close_gemini(self) -> None:
@@ -749,7 +756,7 @@ class _GeminiMixin:
         if self.ws is session:
             self.ws = None
 
-        # 重置静默超时相关状态（与普通close()保持一致）
+        # Reset silence-timeout state (consistent with normal close()).
         self._silence_timeout_triggered = False
         self._last_speech_time = None
         self._silence_reset_pending = False
@@ -762,7 +769,7 @@ class _GeminiMixin:
         self._user_recent_activity_time = 0.0
         self._ai_recent_activity_time = 0.0
 
-        # 重置音频处理器状态
+        # Reset audio processor state.
         if self._audio_processor is not None:
             self._audio_processor.reset()
 
@@ -786,7 +793,7 @@ class _GeminiMixin:
                     )
                     return
                 try:
-                    # 接收响应流
+                    # Receive the response stream.
                     turn = provider_session.receive()
                     async for response in turn:
                         await self._process_gemini_response(
@@ -794,16 +801,16 @@ class _GeminiMixin:
                             provider_session=provider_session,
                             connection_generation=connection_generation,
                         )
-                    # receive() 是 session 级 async generator，仅在连接断开时退出；
-                    # 正常会话期间此行不会执行。缺失 turn_complete 的兜底已移至
-                    # _process_gemini_response 中基于 model_turn 时间间隔的检测。
+                    # receive() is a session-level async generator that exits only on disconnection;
+                    # this line does not run during a normal session. The missing-turn_complete fallback now uses
+                    # model_turn interval detection inside _process_gemini_response.
                     self._is_responding = False
                 except asyncio.CancelledError:
                     logger.info("Gemini message handler cancelled")
                     break
                 except Exception as e:
                     error_msg = str(e)
-                    # 检测正常关闭：包含 "closed" 或者是 WebSocket 1000 正常关闭码
+                    # Detect normal closure: contains 'closed' or WebSocket normal close code 1000.
                     if "closed" in error_msg.lower() or "1000" in error_msg:
                         logger.info("Gemini session closed")
                         break
@@ -861,10 +868,16 @@ class _GeminiMixin:
             "_gemini_external_outcome_token",
             None,
         )
+        tool_response_source = getattr(self, "_gemini_tool_response_source", None)
+        server_content = getattr(response, "server_content", None)
+        source_terminal = bool(server_content and (
+            getattr(server_content, "turn_complete", False)
+            or getattr(server_content, "interrupted", False)
+        ))
         try:
-            # 处理工具调用 —— 将 function_calls 中每一个调用都派给
-            # ``on_tool_call``，结果通过 ``send_tool_response`` 一次性回写
-            # （Gemini Live 期望批量回应，而不是逐个）。
+            # Handle tool calls: dispatch every function_calls entry to
+            # ``on_tool_call`` and return all results together via ``send_tool_response``
+            # (Gemini Live expects a batch response, rather than individual responses).
             session = provider_session if provider_session is not None else self._gemini_session
             def event_owner_is_current() -> bool:
                 return bool(
@@ -933,6 +946,9 @@ class _GeminiMixin:
                         connection_generation=connection_generation,
                     )
                     self._start_gemini_tool_batch(calls, owner)
+                    # Also own this frame's dispatch token if a compatible
+                    # transport combines the call and terminal in one frame.
+                    tool_response_source = self._gemini_tool_response_source
 
             cancellation = getattr(response, 'tool_call_cancellation', None)
             if cancellation:
@@ -943,11 +959,11 @@ class _GeminiMixin:
             if vad_signal_type is not None and str(getattr(vad_signal_type, 'value', vad_signal_type)).endswith("_SOS"):
                 self.note_user_turn_started()
 
-            # 检查是否有服务器内容
+            # Check for server content.
             if response.server_content:
                 server_content = response.server_content
 
-                # 处理用户输入转录 - 只累积，不立即发送（避免碎片化显示）
+                # Handle user-input transcription: accumulate without immediate sending to avoid fragmented display.
                 if hasattr(server_content, 'input_transcription') and server_content.input_transcription:
                     input_trans = server_content.input_transcription
                     if hasattr(input_trans, 'text') and input_trans.text:
@@ -955,23 +971,23 @@ class _GeminiMixin:
                         if self._interrupted:
                             self._gemini_user_transcript_after_interrupt = True
 
-                # 检查是否有 AI 内容（model_turn 或 output_transcription）
+                # Check for AI content (model_turn or output_transcription).
                 has_ai_content = (
                     server_content.model_turn or 
                     (hasattr(server_content, 'output_transcription') and server_content.output_transcription)
                 )
 
-                # ⚠️ 重要：检测 turn 开始 - 无论是 model_turn 还是 output_transcription 先到
+                # Warning: detect turn start whichever arrives first, model_turn or output_transcription.
                 if has_ai_content and not self._is_responding:
-                    # 区分"真新 turn"与"上个 turn 的迟到帧"。双判据合取：
-                    #   A. 用户在 AI 最后一帧之后发过声 → 必然新 turn（back-and-forth）
-                    #   B. AI 最后一帧距今超过 window → 静默够久也算新 turn
-                    # 仅当两条都不满足（短静默 + 用户全程没发声）才视为
-                    # late continuation —— 这正是 Gemini turn_complete 抢跑的迟到
-                    # 音频、或同一长回复被拆 sub-turn 的场景。
-                    # 早期版本只用时间窗，会把快速一问一答（AI→用户→AI in <3s）
-                    # 误判 late continuation 导致气泡合并 / user_transcript flush 延迟
-                    # （Codex P1 反馈）。加用户发声比较后合并两种场景均正确。
+                    # Distinguish a genuinely new turn from late frames of the previous turn using two criteria:
+                    #   A. User spoke after the last AI frame → necessarily a new turn (back-and-forth).
+                    #   B. Last AI frame is older than window → sufficiently long silence also means a new turn.
+                    # Treat as late continuation only when neither holds (short silence + no user speech),
+                    # covering late audio after premature Gemini turn_complete
+                    # or a long response split into sub-turns.
+                    # Earlier versions used only the time window, misclassifying fast exchanges (AI→user→AI in <3s)
+                    # as late continuation, merging bubbles / delaying user_transcript flush
+                    # (Codex P1 feedback). Adding user-speech comparison handles both cases correctly.
                     _user_spoke_after_ai = (
                         self._user_recent_activity_time > self._ai_recent_activity_time
                     )
@@ -1018,39 +1034,39 @@ class _GeminiMixin:
                             self, "_voice_handoff_input_sequence", 0,
                         )
                         self._voice_handoff_response_input_sequence = handoff_input_sequence
-                        # 新回合开始就说明旧回合已经收场：欠账作废，免得旧回合
-                        # 永不终结时把下一条**合法**终结也吃掉，让 token 永远结算
-                        # 不掉、会话被钉成「忙」而主动搭话彻底哑掉。
+                        # A new turn means the old turn ended: invalidate its debt so a never-terminating old turn
+                        # cannot consume the next **valid** terminal event, leave its token unsettled forever,
+                        # pin the session as busy, and completely silence proactive speech.
                         #
-                        # ⚠️ 判据必须与下面宣告新回合的那条**一字不差**。只看
-                        # _is_new_turn 时，被取消那一轮的迟到内容自己就满足它
-                        # （用户已经在 AI 最后一帧之后发过声），于是欠账在它真正
-                        # 的终结到达之前就被清掉，那条终结转而去结算刚铸出的
-                        # external token —— 回合还在飞就显示空闲。
+                        # Warning: the criterion must **exactly match** the new-turn declaration below. Checking only
+                        # _is_new_turn also accepts late content from the cancelled turn itself
+                        # (the user already spoke after the last AI frame), clearing the debt before its actual
+                        # terminal event arrives; that terminal then settles the newly minted
+                        # external token, marking the session idle while the turn is still in flight.
                         #
-                        # ⚠️ 已知残留、经产品判断后接受，别再改回松判据：
-                        # 「A 的迟到内容」与「后继 B 的第一条内容」在协议层长得
-                        # 一模一样（都是 model_turn / output_transcription、都不带
-                        # 回合标识、都在打断之后），_turn_epoch 对两者也都自增，
-                        # 区分不出来。于是只有两种取法，互斥：
-                        #   看到内容就作废 → A 的终结去结算了 B 的 token，B 还在
-                        #     说话会话已读作空闲（抢话时的**常见**路径）；
-                        #   不作废（现在这样）→ 欠账是虚的、或 A 两种终结都没发
-                        #     时，B 自己的终结被吃掉，B 的 token 没人结算。
-                        # 取后者：那条残留只影响主动搭话（is_active_response 的
-                        # 读取点全在 proactive 一线），而且第一道闸
-                        # proactive.py 的 trigger_agent_callbacks 在**生成台词之前**
-                        # 就 defer 掉，是纯跳过、不烧 token，用户自己的对话链路
-                        # 一个读取点都不碰、不会卡顿。
+                        # Warning: known residual accepted after product assessment; do not restore the looser criterion:
+                        # 'late content from A' and 'first content from successor B' look identical
+                        # at protocol level (both model_turn / output_transcription, both without
+                        # turn identifiers, both after interruption). _turn_epoch increments for both,
+                        # so they cannot be distinguished. Two mutually exclusive choices remain:
+                        #   Invalidate upon content → A's terminal settles B's token while B is still
+                        #     speaking, marking the session idle (the **common** interruption path);
+                        #   Keep the debt (current behavior) → if the debt is spurious or A sends neither terminal type,
+                        #     B's own terminal is consumed, leaving B's token unsettled.
+                        # Choose the latter: this residual affects only proactive speech (all is_active_response
+                        # reads are in the proactive path), and its first gate,
+                        # proactive.py's trigger_agent_callbacks, defers **before generating dialogue**,
+                        # simply skipping without spending tokens. The user's own conversation path
+                        # never reads this state and cannot stall because of it.
                         #
-                        # 反向风险（旧回合永不终结）有两道界，都不依赖这里：
-                        # _interrupted 为真时两个 _ai_recent_activity_time 刷新点
-                        # 都被跳过，3s 后 _still_within_ai_window 转假、本判据自动
-                        # 放行；而「此后再无 AI 内容」那种连本分支都进不来的情形，
-                        # 由 _consume_cancelled_terminal() 的期限兜底。
+                        # The opposite risk (old turn never terminates) has two independent bounds:
+                        # when _interrupted is true, both _ai_recent_activity_time refresh points
+                        # are skipped; after 3s _still_within_ai_window becomes false and this criterion automatically
+                        # passes. If no AI content ever arrives afterward, this branch is never reached,
+                        # and _consume_cancelled_terminal() provides a deadline fallback.
                         self._gemini_cancelled_terminal_pending = False
-                        # 期限跟着欠账一起清：另外两条退路（消费、连接替换）都
-                        # 是成对清的，留一个孤儿期限只会让状态读起来有歧义。
+                        # Clear the deadline together with the debt: the other exits (consumption, connection replacement)
+                        # already clear them together; an orphan deadline only makes state interpretation ambiguous.
                         self._gemini_cancelled_terminal_deadline = None
                         self._gemini_cancelled_terminal_awaiting_delivery = False
                         self._gemini_cancelled_terminal_id = None
@@ -1058,7 +1074,7 @@ class _GeminiMixin:
                         # Gemini has no response.created event; clear stale interrupt state only
                         # after SDK transcription or a quiet gap proves this is not a canceled tail.
                         self._interrupted = False
-                        # 在AI开始响应前，发送累积的用户输入
+                        # Send accumulated user input before the AI starts responding.
                         if self._gemini_user_transcript and (
                             self.on_input_transcript
                             or self.on_input_transcript_with_route
@@ -1068,10 +1084,10 @@ class _GeminiMixin:
                             )
                             if not event_owner_is_current():
                                 return
-                            self._gemini_user_transcript = ""  # 清空累积
+                            self._gemini_user_transcript = ""  # Clear accumulation.
                         self._gemini_user_transcript_after_interrupt = False
-                        self._is_first_text_chunk = True  # 重置第一个 chunk 标记
-                        self._gemini_current_transcript = ""  # 清空累积
+                        self._is_first_text_chunk = True  # Reset the first-chunk flag.
+                        self._gemini_current_transcript = ""  # Clear accumulation.
                         if not self._skip_until_next_response and not self._interrupted and self.on_new_message:
                             await self.on_new_message()
                             if not event_owner_is_current():
@@ -1087,9 +1103,9 @@ class _GeminiMixin:
                             time.time() - self._ai_recent_activity_time,
                         )
 
-                # 处理输出转录 - 流式发送每个 chunk 到前端
-                # 不参与新 turn 检测；turn_complete 后到达的迟到转录会以 isNewMessage=false
-                # 追加到当前轮次的气泡（正确行为）
+                # Handle output transcription: stream each chunk to the frontend.
+                # Does not participate in new-turn detection; late transcription after turn_complete appends
+                # to the current turn's bubble with isNewMessage=false (correct behavior).
                 if hasattr(server_content, 'output_transcription') and server_content.output_transcription:
                     output_trans = server_content.output_transcription
                     if hasattr(output_trans, 'text') and output_trans.text:
@@ -1102,14 +1118,14 @@ class _GeminiMixin:
                                 return
                             self._is_first_text_chunk = False
 
-                # 处理模型输出 (音频)
+                # Handle model output (audio).
                 if server_content.model_turn:
                     for part in server_content.model_turn.parts:
-                        # 跳过 thinking/thought 部分
+                        # Skip thinking/thought parts.
                         if hasattr(part, 'thought') and part.thought:
                             continue
 
-                        # 处理音频
+                        # Handle audio.
                         if hasattr(part, 'inline_data') and part.inline_data:
                             if isinstance(part.inline_data.data, bytes):
                                 if not self._skip_until_next_response and not self._interrupted and self.on_audio_delta:
@@ -1118,17 +1134,17 @@ class _GeminiMixin:
                                     if not event_owner_is_current():
                                         return
 
-                # 检查是否 turn 完成（用 getattr 防止 SDK 无该字段时抛错）
+                # Check whether the turn is complete (getattr avoids errors if the SDK lacks this field).
                 was_interrupted = bool(
                     getattr(server_content, 'interrupted', False)
                 )
-                # 一个 server event 可能**同时**带 turn_complete 和 interrupted，
-                # 下面两条终结分支都会跑。欠账是「每个**终结**事件一笔」：
-                #   - 不能每条分支各消费一次 —— 第一条拿到 True 跳过结算，第二条
-                #     拿到 False 就用旧那一轮的终结把新铸的 token 结算掉；
-                #   - 也不能每个事件都消费 —— 取消之后的**非终结**迟到内容会把欠账
-                #     提前清掉，随后旧回合真正的终结就把新 token 当成可结算对象。
-                # 所以：先判定这是不是终结事件，是才消费，且只消费一次。
+                # A server event may contain **both** turn_complete and interrupted,
+                # executing both terminal branches below. Debt is counted once per **terminal** event:
+                #   - Do not consume in each branch: the first sees True and skips settlement, while the second
+                #     sees False and uses the old turn's terminal to settle the newly minted token;
+                #   - Do not consume on every event either: **nonterminal** late content after cancellation would
+                #     clear debt early, letting the old turn's actual terminal settle the new token afterward.
+                # Therefore identify terminal events first, then consume only those, exactly once.
                 _is_terminal_event = bool(
                     getattr(server_content, 'turn_complete', False)
                 ) or was_interrupted
@@ -1137,17 +1153,17 @@ class _GeminiMixin:
                     if _is_terminal_event
                     else False
                 )
-                # ⚠️ 这里刻意【不】触发 on_audio_done（issue #1566 的音频完结信号，
-                # 见 _transport.py 的 response.audio.done 分支）。Gemini（原生 +
-                # lanlan.app free 代理）唯一的结束信号就是 turn_complete，而它会
-                # 抢跑迟到音频 —— 本文件上下已有三处注释承认这点（"late content
-                # after premature turn_complete"、"turn_complete 后到达的迟到转录"、
-                # "Gemini turn_complete 抢跑的迟到音频"）。把 on_audio_done 挂在
-                # turn_complete 上等于把「音频还没放完就宣告放完」重新造一遍，正是
-                # 这个 issue 本身。Gemini 这条路继续靠前端的 give-up 计时器兜底：
-                # 漏发是可接受的降级，早发不是。
+                # Warning: deliberately do **not** trigger on_audio_done here (issue #1566's audio-completion signal;
+                # see _transport.py's response.audio.done branch). Gemini (native +
+                # lanlan.app free proxy) has only turn_complete as its end signal, and it can
+                # precede late audio; three comments in this file already acknowledge this ('late content
+                # after premature turn_complete', 'late transcription arriving after turn_complete',
+                # 'late audio after premature Gemini turn_complete'). Attaching on_audio_done to
+                # turn_complete would recreate 'declaring playback finished before audio finishes', precisely
+                # this issue. Gemini continues relying on the frontend give-up timer:
+                # missing the signal is an acceptable degradation; sending it early is not.
                 if getattr(server_content, 'turn_complete', False):
-                    # Gemini Live API 不返回 token 数，仅记录调用次数
+                    # Gemini Live API does not return token counts; record call counts only.
                     try:
                         from utils.token_tracker import TokenTracker
                         TokenTracker.get_instance().record(
@@ -1190,7 +1206,7 @@ class _GeminiMixin:
                         if not event_owner_is_current():
                             return
 
-                # 检查是否被中断
+                # Check for interruption.
                 if was_interrupted:
                     if (
                         not _owed_to_cancelled
@@ -1208,7 +1224,7 @@ class _GeminiMixin:
                         logger.info("Gemini: skipped response interrupted, reset skip flag")
                     self._interrupted = True
                     self._is_responding = False
-                    # 被中断时也发送已累积的用户输入
+                    # Send accumulated user input on interruption too.
                     if self._gemini_user_transcript:
                         self._gemini_user_transcript_after_interrupt = True
                         if self.on_input_transcript or self.on_input_transcript_with_route:
@@ -1222,3 +1238,10 @@ class _GeminiMixin:
 
         except Exception as e:
             logger.error(f"Error processing Gemini response: {e}")
+        finally:
+            # A terminal only closes the tool response it observed. A result
+            # sent during an awaited callback may already own a new token.
+            # Do not use the tool scope here: SERVER_VAD can keep that scope
+            # unchanged across many independent ordinary voice responses.
+            if source_terminal and getattr(self, "_gemini_tool_response_source", None) is tool_response_source:
+                self._gemini_tool_response_source = None

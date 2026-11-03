@@ -69,13 +69,13 @@ __all__ = [
 _SOURCE_USER_FACT = "user_fact"
 
 
-# 用 tuple 定义更紧凑的分档表，避免 if 链；[(importance_threshold, rein), ...]
-# 含义：importance >= threshold → 得到对应的 initial rein seed；
-# 从高到低第一条命中的即为结果，其余跳过。
-# RFC §3.1.2 本来让所有新 reflection 从 score=0 起步；这里开了个例外：
-# 通过 fact importance 给"关键节点"型 reflection（昵称/身份/用户明确说请记住）
-# 一个初始鼓励，使其可以用更少 user_fact reinforces 穿越 CONFIRMED/PROMOTED。
-# 阈值梯度（用户指定）：10→0.8, 9→0.6, 8→0.4, 7→0.2, ≤6→0.0
+# Compact tuple-based tiers avoid an if chain: [(importance_threshold, rein), ...].
+# importance >= threshold yields that initial reinforcement seed;
+# use the first descending match and skip the rest.
+# RFC section 3.1.2 originally started all reflections at score=0; this exception
+# uses fact importance to encourage pivotal reflections (nicknames/identity/explicit remember requests)
+# so fewer user_fact reinforcements are needed to cross CONFIRMED/PROMOTED thresholds.
+# User-specified thresholds: 10->0.8, 9->0.6, 8->0.4, 7->0.2, <=6->0.0.
 _IMPORTANCE_TO_INITIAL_REIN: tuple[tuple[int, float], ...] = (
     (10, 0.8),
     (9, 0.6),
@@ -117,7 +117,7 @@ def _age_days(ts: str | None, now: datetime) -> float:
         return 0.0
     delta = (now - parsed).total_seconds()
     if delta <= 0:
-        # 时钟回拨或时间戳来自未来（迁移 / 测试）：age=0 不衰减
+        # Clock rollback or future timestamps (migration/tests): age=0, without decay.
         return 0.0
     return delta / 86400
 
@@ -214,7 +214,7 @@ def compute_evidence_snapshot(
 
     # Combo logic: only on user_fact reinforces (indirect positive signal).
     # Counter increments BEFORE threshold check so the threshold reads as
-    # "this is the N-th signal"；第 3 条起满足 count > 2 条件。
+    # "This is the N-th signal"; count > 2 begins with the third signal.
     new_count = int(entry.get("user_fact_reinforce_count", 0) or 0)
     if source == _SOURCE_USER_FACT and rein_delta > 0:
         new_count += 1

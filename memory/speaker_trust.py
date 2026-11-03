@@ -18,8 +18,8 @@ from utils.llm_client import HumanMessage
 
 
 # Only high-confidence predicate forms participate in code-side CJK
-# corrections.  Single characters such as ``无`` are lexical inside names
-# (for example, 无锡), so removing them as arbitrary substrings can fabricate
+# corrections. Single characters such as ``无`` ('without') are lexical inside names
+# (for example, 无锡 / Wuxi), so removing them as arbitrary substrings can fabricate
 # a contradiction and unfairly lower a speaker's trust.
 _CJK_NEGATED_PREDICATES = (
     ("不喜欢", "喜欢"),
@@ -404,9 +404,9 @@ def _cjk_positive_variants(text: str) -> set[str]:
         while (index := text.find(negative, start)) >= 0:
             prefix = text[:index]
             suffix = text[index + len(negative):]
-            # ``不喜欢猫的女孩来自北京`` negates a relative-clause modifier,
-            # not the asserted ``来自北京`` predicate. A finite noun/predicate
-            # vocabulary cannot reliably classify what follows ``的``;
+            # ``不喜欢猫的女孩来自北京`` ('the girl who dislikes cats is from Beijing') negates a relative-clause modifier,
+            # not the asserted ``来自北京`` ('is from Beijing') predicate. A finite noun/predicate
+            # vocabulary cannot reliably classify what follows ``的`` (the modifier particle);
             # reject the relative-clause shape directly instead.
             # False negatives are safer than fabricating a trust penalty.
             if "的" in suffix:
@@ -415,7 +415,7 @@ def _cjk_positive_variants(text: str) -> set[str]:
             # Another predicate on either side makes this occurrence a
             # nested/modifying proposition rather than a safely identifiable
             # asserted predicate.  This also catches leading modifiers such
-            # as ``不喜欢猫的人认识小明``. False negatives are safer than a
+            # as ``不喜欢猫的人认识小明`` ('the person who dislikes cats knows Xiaoming'). False negatives are safer than a
             # fabricated trust penalty.
             if not any(
                 form in prefix or form in suffix for form in predicate_forms

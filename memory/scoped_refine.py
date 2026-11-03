@@ -91,8 +91,8 @@ try:
         parse_dim_from_model_id,
     )
 except ImportError:
-    # 同 memory/refine.py：embedding 栈不可用时用 stub，聚类恒空 → 整个
-    # pass no-op，行为契约不变。
+    # Match memory/refine.py: use a stub if embeddings are unavailable; clustering stays empty, making the entire
+    # pass a no-op without changing the behavior contract.
     from memory.embeddings_fallback import (
         decode_embedding,
         get_embedding_service,
@@ -114,12 +114,12 @@ logger = get_module_logger(__name__, "Memory")
 STORE_PERSONA = 'persona'
 STORE_REFLECTION = 'reflection'
 
-# lite 引擎唯一合法 action。比本体四件套小得多的失效面：split/modify/
-# discard 对 scoped 的增量价值低，而每多一种 action 就多一类需要变异验证
-# 的错误实现。
+# The lite engine's only valid action; far fewer failure modes than the full engine's four actions. split/modify/
+# discard offer little incremental value for scoped memory, while each additional action adds another class of faulty implementations
+# requiring mutation validation.
 VALID_SCOPED_REFINE_ACTIONS = frozenset({'merge'})
 
-# trust_of 回调签名（系列 7/7 的 speaker_trust 接入点）。
+# trust_of callback signature, the speaker_trust integration point in series 7/7.
 TrustFn = Callable[[dict], str | float | None]
 
 
@@ -326,8 +326,8 @@ def gather_scoped_refine_buckets(
     def _collect(entry: dict, store: str) -> None:
         if not isinstance(entry, dict):
             return
-        # suppress 条目排除：渲染层刻意把它们放「不主动提及」通道，merge
-        # 产物是普通可见条目，把 suppressed 内容并进去等于解除抑制。
+        # Exclude suppressed entries: rendering deliberately routes them to 'do not mention proactively'; merged
+        # results are ordinarily visible, so merging suppressed content would remove suppression.
         if entry.get('protected') or entry.get('suppress') or not entry.get('id'):
             return
         subject = subject_from_entry(entry)
@@ -355,12 +355,12 @@ def gather_scoped_refine_buckets(
     return ready
 
 
-# apply_fn(bucket, cluster, actions, cluster_hash) -> 应用成功的 action 数。
-# 负值哨兵表示 LLM 窗口内 prompt-visible provenance 漂移：原样留队且
-# 不计 refine_attempts；正常 action 数永远非负。
-# failure_fn(bucket, cluster, cluster_hash)。存储读写全在回调侧（manager
-# 锁内），engine 不碰磁盘——同本体 refine 的分工。返回值参与失败判定：
-# 非空 actions 全被拒（语义垃圾）按 cluster 失败计 refine_attempts。
+# apply_fn(bucket, cluster, actions, cluster_hash) -> successfully applied action count.
+# A negative sentinel means prompt-visible provenance drifted during the LLM window; retain the queue unchanged
+# without counting refine_attempts. Ordinary action counts are always nonnegative.
+# failure_fn(bucket, cluster, cluster_hash). Callbacks own all storage reads/writes under manager
+# locks; the engine never touches disk, matching full refine's separation. Returns determine failure:
+# Nonempty actions all rejected as semantic garbage count as cluster failure toward refine_attempts.
 SCOPED_REFINE_PROMPT_STALE = -1
 ScopedApplyFn = Callable[
     [ScopedRefineBucket, list[dict], list[dict], str], Awaitable[int]
@@ -478,16 +478,16 @@ class ScopedLiteRefineEngine:
             if cluster_failed and failure_fn is not None:
                 try:
                     await failure_fn(bucket, cluster, cluster_hash)
-                except Exception as fe:  # noqa: BLE001 — 兜底自身失败不挂主路径
+                except Exception as fe:  # noqa: BLE001 — failure of the fallback itself must not break the main path
                     logger.warning(
                         f"[ScopedRefine] {scope_label} cluster {cluster_hash} "
                         f"failure_fn 异常: {fe}"
                     )
-            # 成本上界：每 pass 只处理一个 cluster，无论成败。
+            # Cost cap: process only one cluster per pass, successful or not.
             break
         return result
 
-    # ── clustering（同本体算法，SCOPED_* 参数） ─────────────────────
+    # ── Clustering (same full-engine algorithm, SCOPED_* parameters) ─────────────────────
 
     def _compute_clusters(self, entries: list[dict]) -> list[list[dict]]:
         if len(entries) < 2:
@@ -576,7 +576,7 @@ class ScopedLiteRefineEngine:
             clusters.append([valid[i] for i in indices])
         return clusters
 
-    # ── hash skip + starvation（同本体语义；池内无 fact，全员计入） ──
+    # ── Hash skip + starvation (full-engine semantics; no facts in pool, so count all entries) ──
 
     @staticmethod
     def _cluster_hash(cluster: list[dict]) -> str:
@@ -634,11 +634,11 @@ class ScopedLiteRefineEngine:
             .replace('{COUNT}', str(len(cluster)))
         )
 
-        # lite 管线的成本契约（存在前提就是比本体便宜）：
-        #   summary tier（本体用 correction tier）；
-        #   不传 extra_body → create_chat_llm 缺省带各 provider 的「关
-        #   thinking」方言（本体显式传 None 开 thinking）；
-        #   60s 短超时（本体 110s）。
+        # Lite-pipeline cost contract: its purpose requires lower cost than the full engine:
+        #   summary tier instead of the full engine's correction tier;
+        #   omit extra_body so create_chat_llm supplies each provider's default thinking-disabled dialect,
+        #   unlike the full engine's explicit None enabling thinking;
+        #   short 60s timeout instead of 110s.
         set_call_type("memory_scoped_refine")
         api_config = await self._cm.aget_model_api_config('summary')
         llm = await create_chat_llm_async(
@@ -685,11 +685,11 @@ class ScopedLiteRefineEngine:
             )
             return None
         if actions and not applied:
-            # 非空 actions 但没有一条通过 apply 校验 = 语义垃圾输出。apply
-            # 侧刻意不 stamp（等下轮重试），这里必须按失败计——否则毒
-            # cluster 既不 stamp 也不进 refine_attempts，每个 cron 周期
-            # 白打一次 LLM 直到永远，戳穿 lite 管线的成本契约。空数组是
-            # 明确 no-op：apply 已 stamp，按成功计。
+            # Nonempty actions with none passing apply validation mean semantic garbage. Apply deliberately
+            # avoids stamping to permit next-round retry; count failure here, or a toxic
+            # cluster neither stamps nor increments refine_attempts and wastes an LLM call every cron cycle
+            # forever, violating the lite cost contract. An empty array is an explicit
+            # no-op, already stamped by apply, and counts as success.
             logger.warning(
                 f"[ScopedRefine] LLM 输出 {len(actions)} 条 action 全部无效 "
                 f"(cluster_hash={cluster_hash})，按失败计入 refine_attempts"
@@ -725,7 +725,7 @@ class ScopedLiteRefineEngine:
         return "\n".join(lines)
 
 
-# ── apply（存储侧写回；manager 锁内） ────────────────────────────────
+# ── Apply (storage-side writeback under manager lock) ────────────────────────────────
 
 
 def _valid_merge_source_ids(
@@ -747,18 +747,18 @@ def _valid_merge_source_ids(
     src_ids_raw = action.get('source_ids') or []
     if not isinstance(src_ids_raw, list):
         return []
-    # 去重保序（LLM 偶发重复 id 会让 evidence 继承重复计数）。
+    # Deduplicate preserving order; occasional repeated LLM IDs otherwise duplicate evidence inheritance.
     seen: set = set()
     unique_ids: list[str] = []
     for sid in src_ids_raw:
         if sid not in seen:
             unique_ids.append(sid)
             seen.add(sid)
-    # 文本快照校验：LLM 决策是针对 cluster 里那份文本做出的。锁外 LLM
-    # 窗口期间若有并发写者改了该行文本，按 id 盲信会把「模型没见过的
-    # 内容」合并掉。suppress 同理在锁内重验：gather 时未抑制、窗口内被
-    # 标记 suppress 的源若被消费，其内容会以普通可见条目的身份复活。
-    # 任一源失效 → 整条 action 拒绝（见 docstring 的 all-or-nothing）。
+    # Validate text snapshots: LLM decisions concern cluster text it actually saw. If concurrent writers change rows during the unlocked
+    # LLM window, trusting only IDs merges content the model never saw.
+    # Recheck suppression under lock too: consuming a source gathered unsuppressed but later suppressed
+    # would resurrect its content as an ordinary visible item.
+    # Any invalid source rejects the whole action; see the all-or-nothing docstring.
     for sid in unique_ids:
         if sid not in cluster_ids:
             return []
@@ -912,9 +912,9 @@ async def apply_scoped_persona_merge(
             latest_sub_zero_increment: str | None = None
             inherited_source = None
             inherited_source_id = None
-            # 全部源的上游 reflection source_id（含源条目此前 merge 累积
-            # 的清单）：time-driven 晋升的幂等检查按 source_id 找 persona
-            # 载体，只继承首源会让其余 reflection 的半提交重试重复晋升。
+            # Upstream reflection source_ids from every source, including lists accumulated through previous source merges:
+            # time-driven promotion checks idempotency by locating persona carriers via source_id;
+            # inheriting only the first source would repeat promotions on partial-commit retries for other reflections.
             merged_source_ids: list = []
             for sid in valid_ids:
                 src = by_id[sid]
@@ -989,12 +989,12 @@ async def apply_scoped_persona_merge(
             merged['merged_source_ids'] = merged_source_ids
             from memory.speaker_trust import provenance_of_entries
             merged.update(provenance_of_entries(provenance_sources))
-            # subject 戳：无戳条目在 scoped 渲染路径 fail-closed 掉队，
-            # 漏掉这行等于把被合并的记忆整体蒸发。
+            # Subject stamp: unstamped entries fail closed in scoped rendering,
+            # so omitting this would erase all merged memories from view.
             merged.update(subject.as_entry_fields())
-            # 产物 id 撞车守卫：id 由产出文本+时间盐派生，同批两条相同
-            # 文本可能撞 id——撞车的 action 跳过（不消费源），走「不
-            # stamp、下轮重审」的既有路径。
+            # Output-ID collision guard: IDs derive from output text + time salt, so identical text in one batch
+            # can collide; skip colliding actions without consuming sources and use the existing
+            # no-stamp, review-next-round path.
             if merged['id'] in {p.get('id') for p in produced} or merged['id'] in by_id:
                 logger.warning(
                     f"[ScopedRefine apply] persona: 产物 id 撞车，跳过该 action "
@@ -1006,8 +1006,8 @@ async def apply_scoped_persona_merge(
             consumed.update(valid_ids)
             applied += 1
 
-        # stamp 三分支：同本体 refine apply 的语义（垃圾输出不 stamp，
-        # 等下轮重试；明确 no-op 也 stamp 防 hash skip 失效）。
+        # Three stamp branches match full refine apply semantics: do not stamp garbage, permitting retries;
+        # stamp explicit no-ops too, preserving hash skipping.
         if applied == 0 and actions:
             if prompt_stale:
                 return SCOPED_REFINE_PROMPT_STALE
@@ -1024,9 +1024,9 @@ async def apply_scoped_persona_merge(
             if not isinstance(e, dict):
                 continue
             eid = e.get('id')
-            # 幸存者盖 stamp 前重验文本快照：cluster_hash 只含 id，LLM 窗
-            # 口内被并发改写的行若照常 stamp，新文本会被 hash-skip 静默压
-            # 制 30 天——文本漂移的幸存者不 stamp，下轮重新入审。
+            # Revalidate survivor text before stamping: cluster_hash contains only IDs, so stamping rows modified during the LLM
+            # window silently suppresses their new text through hash-skip for 30 days.
+            # Do not stamp text-drifted survivors; review them next round.
             if (
                 not prompt_stale
                 and eid in cluster_ids
@@ -1149,10 +1149,10 @@ async def apply_scoped_reflection_merge(
                 for fid in src.get('source_fact_ids') or []:
                     if fid not in audit_source_fact_ids:
                         audit_source_fact_ids.append(fid)
-            # 事件窗取并集而非继承首源：矛盾合并的结论（「曾X后Y」）覆盖
-            # 全部源的时间跨度，只抄首源会把结论锚在旧时段，recall_by_time
-            # 按当前时段召回时会漏掉它。start 取最早；end 有任一源为 None
-            # （pattern/进行中，无结束点）则并集也无结束点，否则取最晚。
+            # Union event windows instead of inheriting the first source: merged contradictions ('formerly X, then Y') span
+            # all sources' times. Copying only the first anchors conclusions in an old interval, so recall_by_time
+            # misses them in current-period recall. Use earliest start; if any source end is None
+            # (pattern/ongoing, without an endpoint), the union also has no end; otherwise use latest end.
             explicit_windows = [
                 window for window in (
                     explicit_event_window(s) for s in semantic_sources
@@ -1170,9 +1170,9 @@ async def apply_scoped_reflection_merge(
                 'id': refine_reflection_id(text),
                 'text': text,
                 'entity': subject.kind,
-                # scoped 无 pending 通道：合并产物直接回到 confirmed 态，
-                # 走 time-driven 尾程（对齐 synthesize_reflections 的
-                # scoped 分支）。
+                # Scoped memory has no pending channel: merged results return directly to confirmed state,
+                # following the time-driven final stages, aligned with synthesize_reflections'
+                # scoped branch.
                 'status': 'confirmed',
                 'source_fact_ids': source_fact_ids,
                 'audit_source_fact_ids': audit_source_fact_ids,
@@ -1189,8 +1189,8 @@ async def apply_scoped_reflection_merge(
                 'schema_version': semantic_source.get('schema_version', 1),
                 'merged_from_ids': list(valid_ids),
             })
-            # confirmed 渲染门要求 evidence_score > 0：继承源里最高的
-            # reinforcement，floor 0.1（对齐 scoped 合成的最小正种子）。
+            # Confirmed rendering requires evidence_score > 0: inherit the highest source
+            # reinforcement with floor 0.1, matching scoped synthesis's minimum positive seed.
             max_rein = max(
                 (
                     _finite_counter_value(s.get('reinforcement'))
@@ -1202,10 +1202,10 @@ async def apply_scoped_reflection_merge(
             merged['rein_last_signal_at'] = now_iso
             from memory.speaker_trust import provenance_of_entries
             merged.update(provenance_of_entries(provenance_sources))
-            # subject 戳：无戳 reflection 在 scoped 读路径 fail-closed 掉队。
+            # Subject stamp: unstamped reflections fail closed on scoped read paths.
             merged.update(subject.as_entry_fields())
-            # 产物 id 撞车守卫（同 persona 侧）：撞车会让源条目的
-            # absorbed_into 指向不唯一目标、溯源链断裂。
+            # Output-ID collision guard, matching persona: collisions make source absorbed_into
+            # point to nonunique targets, breaking provenance chains.
             if merged['id'] in {p.get('id') for p in produced} or merged['id'] in by_id:
                 logger.warning(
                     f"[ScopedRefine apply] reflection: 产物 id 撞车，跳过该 "
@@ -1232,8 +1232,8 @@ async def apply_scoped_reflection_merge(
             if not isinstance(r, dict):
                 continue
             rid = r.get('id')
-            # 同 persona 侧：文本漂移的幸存者不 stamp，防 hash-skip 把
-            # 未经模型看过的新文本压制 30 天。
+            # Match persona: do not stamp text-drifted survivors, preventing hash-skip from suppressing
+            # new text unseen by the model for 30 days.
             if (
                 not prompt_stale
                 and rid in cluster_ids
@@ -1262,7 +1262,7 @@ async def apply_scoped_reflection_merge(
     return SCOPED_REFINE_PROMPT_STALE if prompt_stale else applied
 
 
-# ── liveness bump（失败路径；同本体字段，scoped 寻址） ────────────────
+# ── Liveness bump (failure path; same full-engine fields with scoped addressing) ────────────────
 
 
 async def abump_scoped_persona_refine_attempts(
