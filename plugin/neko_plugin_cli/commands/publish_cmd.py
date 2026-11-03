@@ -9,6 +9,8 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import UTC
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from urllib.parse import quote
 
@@ -205,7 +207,7 @@ def _notify_market(release_url: str) -> int:
     waiting_reported = False
     try:
         with httpx.Client(timeout=30.0) as client:
-            while True:
+            while not waiting_reported or time.monotonic() < deadline:
                 response = client.post(
                     _MARKET_PUBLICATION_URL,
                     json={"release_url": release_url},
@@ -220,14 +222,7 @@ def _notify_market(release_url: str) -> int:
                     break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    print("[FAIL] " + _tri(
-                        "Market verification is still pending; check version management before retrying. "
-                        "The GitHub Release is already available.",
-                        "Market 核验仍未完成，请查看版本管理页后再重试；GitHub Release 已生成。",
-                        "Market の検証が未完了です。バージョン管理を確認してから再試行してください。"
-                        "GitHub Release は作成済みです。",
-                    ), file=sys.stderr)
-                    return 1
+                    break
                 if not waiting_reported:
                     print(_tri(
                         "Waiting for Market verification; publication will be retried automatically.",
@@ -235,18 +230,23 @@ def _notify_market(release_url: str) -> int:
                         "Market の検証待ちです。公開を自動再試行します。",
                     ))
                     waiting_reported = True
-                try:
-                    delay = float(response.headers.get("Retry-After", "5"))
-                except ValueError:
-                    delay = 5.0
-                if not math.isfinite(delay):
-                    delay = 5.0
+                delay = _retry_after_seconds(response.headers.get("Retry-After", "5"))
                 time.sleep(min(remaining, max(1.0, delay)))
     except httpx.HTTPError as exc:
         print(
             f"[FAIL] {_tri('Market publication request failed', 'Market 发布请求失败', 'Market 公開リクエストに失敗')}: {exc}",
             file=sys.stderr,
         )
+        return 1
+
+    if response.status_code == 503 and payload.get("code") == "release_verification_pending":
+        print("[FAIL] " + _tri(
+            "Market verification is still pending; check version management before retrying. "
+            "The GitHub Release is already available.",
+            "Market 核验仍未完成，请查看版本管理页后再重试；GitHub Release 已生成。",
+            "Market の検証が未完了です。バージョン管理を確認してから再試行してください。"
+            "GitHub Release は作成済みです。",
+        ), file=sys.stderr)
         return 1
 
     if response.status_code == 202:
@@ -318,6 +318,20 @@ def _notify_market(release_url: str) -> int:
     return 0
 
 
+def _retry_after_seconds(value: str) -> float:
+    try:
+        delay = float(value)
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(value)
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=UTC)
+            delay = retry_at.timestamp() - time.time()
+        except (TypeError, ValueError, OverflowError):
+            return 5.0
+    return delay if math.isfinite(delay) else 5.0
+
+
 def _publish_github(
     plugin: str,
     *,
@@ -331,9 +345,10 @@ def _publish_github(
     repository = _github_repository(plugin_dir)
     tag = f"v{source.version}"
     upgrade: list[ActionFileChange] = []
+    original_branch: str | None = None
     original_head = _git(plugin_dir, "rev-parse", "HEAD")
     if upgrade_github_actions:
-        _ensure_head_pushed(plugin_dir, head=original_head)
+        original_branch = _ensure_head_pushed(plugin_dir, head=original_head)
         upgrade = _prepare_github_actions_upgrade(plugin_dir, plugin_id=source.plugin_id, tag=tag)
     _ensure_standard_release_workflow(plugin_dir, plugin_id=source.plugin_id)
 
@@ -384,6 +399,7 @@ def _publish_github(
     if upgrade:
         _commit_github_actions_upgrade(
             plugin_dir, changes=upgrade, original_head=original_head, repository=repository,
+            original_branch=original_branch,
         )
     _ensure_clean_worktree(plugin_dir)
 
@@ -432,6 +448,7 @@ def _prepare_github_actions_upgrade(
 
 def _commit_github_actions_upgrade(
     plugin_dir: Path, *, changes: list[ActionFileChange], original_head: str, repository: str,
+    original_branch: str | None,
 ) -> None:
     paths = tuple(change.relative_path.as_posix() for change in changes)
     _ensure_clean_worktree(plugin_dir, allowed_paths=paths)
@@ -442,6 +459,12 @@ def _commit_github_actions_upgrade(
             "検証中にリポジトリまたは HEAD が変わりました。設定を確認してから再試行してください。",
         ))
     branch = _ensure_head_pushed(plugin_dir, head=original_head)
+    if branch != original_branch:
+        raise RuntimeError(_tri(
+            "The upstream branch changed during validation; inspect it before retrying publication.",
+            "验证期间上游分支已变化，请检查后再重试发布。",
+            "検証中に上流ブランチが変更されました。確認してから公開を再試行してください。",
+        ))
     for change in changes:
         path = plugin_dir / change.relative_path
         if (path.is_symlink() or not path.resolve().is_relative_to(plugin_dir.resolve())

@@ -1363,7 +1363,7 @@ def test_publish_market_rejects_malformed_review_receipts(
     assert neko_plugin_cli.main(["publish", "market", "https://github.com/neko/demo/releases/tag/v1.2.0"]) == 1
 
 
-@pytest.mark.parametrize("retry_after", ["3", "120", "invalid", "nan"])
+@pytest.mark.parametrize("retry_after", ["3", "120", "invalid", "nan", "Sun, 01 Jan 2023 00:02:00 GMT"])
 def test_publish_market_retries_only_pending_verification(
     monkeypatch: pytest.MonkeyPatch, retry_after: str,
 ) -> None:
@@ -1373,9 +1373,10 @@ def test_publish_market_retries_only_pending_verification(
     )
     monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
     sleeps: list[float] = []
-    patch_module_clock(monkeypatch, publish_cmd, sleep=sleeps.append)
+    patch_module_clock(monkeypatch, publish_cmd, sleep=sleeps.append, time=lambda: 1672531200.0)
     assert neko_plugin_cli.main(["publish", "market", "https://github.com/neko/demo/releases/tag/v1.2.0"]) == 0
-    assert sleeps == [float(retry_after) if retry_after in {"3", "120"} else 5.0]
+    expected = 120.0 if retry_after.endswith("GMT") else float(retry_after) if retry_after in {"3", "120"} else 5.0
+    assert sleeps == [expected]
     assert len(client.requests) == 2
     assert client.requests[0] == client.requests[1]
 
@@ -1385,6 +1386,19 @@ def test_publish_market_pending_wait_is_bounded(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
     monkeypatch.setattr(publish_cmd, "_MARKET_WAIT_SECONDS", 0)
     assert neko_plugin_cli.main(["publish", "market", "https://github.com/neko/demo/releases/tag/v1.2.0"]) == 1
+    assert len(client.requests) == 1
+
+
+def test_publish_market_does_not_send_again_after_sleep_reaches_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _RecordingClient(httpx.Response(503, headers={"Retry-After": "120"}, json={"code": "release_verification_pending"}))
+    monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
+    monkeypatch.setattr(publish_cmd, "_MARKET_WAIT_SECONDS", 2)
+    clock = [0.0]
+    def sleep(delay: float) -> None:
+        clock[0] += delay
+    patch_module_clock(monkeypatch, publish_cmd, monotonic=lambda: clock[0], sleep=sleep)
+    assert neko_plugin_cli.main(["publish", "market", "https://github.com/neko/demo/releases/tag/v1.2.0"]) == 1
+    assert clock == [2.0]
     assert len(client.requests) == 1
 
 
@@ -1444,4 +1458,23 @@ def test_publish_upgrade_does_not_push_a_branch_advanced_during_validation(
     assert neko_plugin_cli.main(["publish", str(plugin_dir), "--upgrade-github-actions"]) == 1
     assert _run_git(plugin_dir, "rev-parse", "HEAD") == head
     assert _run_git(remote, "rev-parse", "refs/heads/main") == _run_git(competitor, "rev-parse", "HEAD")
+    assert _run_git(remote, "tag", "--list") == ""
+
+
+def test_publish_upgrade_does_not_switch_push_destination_during_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, remote = _make_publish_repo(tmp_path, monkeypatch)
+    head = _run_git(plugin_dir, "rev-parse", "HEAD")
+    _run_git(plugin_dir, "push", "origin", "HEAD:refs/heads/other")
+    _run_git(plugin_dir, "update-ref", "refs/remotes/origin/other", head)
+    def check(_: object) -> int:
+        _run_git(plugin_dir, "branch", "--set-upstream-to=origin/other", "main")
+        return 0
+    monkeypatch.setattr(publish_cmd.release_cmd, "handle_release_check", check)
+
+    assert neko_plugin_cli.main(["publish", str(plugin_dir), "--upgrade-github-actions"]) == 1
+    assert _run_git(plugin_dir, "rev-parse", "HEAD") == head
+    assert _run_git(remote, "rev-parse", "refs/heads/main") == head
+    assert _run_git(remote, "rev-parse", "refs/heads/other") == head
     assert _run_git(remote, "tag", "--list") == ""
