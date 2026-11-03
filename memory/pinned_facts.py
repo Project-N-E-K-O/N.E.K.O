@@ -153,6 +153,12 @@ def _format_date(ts: float) -> str:
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
 
 
+def _format_moment(ts: float) -> str:
+    # Down to the minute: two accounts of one matter given on the same day
+    # still have to be told apart by the resolve model.
+    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+
+
 def snap_ttl_days(raw: Any) -> Optional[int]:
     """Map a model-emitted lifetime to an allowed tier; None when unusable.
 
@@ -580,6 +586,12 @@ class PinnedFactStore:
                     action, target = self._renew_instead_of_duplicate(candidate, live)
                 noted = min(_as_float(candidate.get("noted_at")) or ts, ts)
                 lifetime_end = noted + candidate["ttl_days"] * _DAY_SECONDS
+                if (action in (ACTION_REPLACE, ACTION_REMOVE) and target is not None
+                        and noted < target["text_at"]):
+                    # An older account never overrides the newer one it targets
+                    # (a replayed "exam cancelled" against a later "exam moved"),
+                    # whatever the model decided: it can at most renew it.
+                    action = ACTION_RENEW if action == ACTION_REPLACE else None
                 if action == ACTION_ADD:
                     entry = self._new_entry(candidate, ts, noted, {e["id"] for e in live})
                     live.append(entry)
@@ -601,6 +613,11 @@ class PinnedFactStore:
                 elif action == ACTION_RENEW:
                     # Saying the same thing again never shortens what is left.
                     target["expire_at"] = max(target["expire_at"], lifetime_end)
+                    if (noted > target["text_at"]
+                            and _text_key(candidate["text"]) == _text_key(target["text"])):
+                        # The same words said again later anchor to the later
+                        # day ("working late tonight" on Monday, then Wednesday).
+                        target["text_at"] = noted
                     target["ttl_days"] = max(target["ttl_days"], candidate["ttl_days"])
                     target["updated_at"] = ts
                     target["renew_count"] += 1
@@ -857,7 +874,7 @@ class PinnedFactStore:
         zone = "\n".join(
             f"[{entry['id']}] " + render_pinned_fact_line(
                 truncate_to_tokens(entry["text"], PINNED_FACT_TEXT_MAX_TOKENS),
-                since=_format_date(entry["text_at"]),
+                since=_format_moment(entry["text_at"]),
                 until=_format_date(entry["expire_at"]),
                 lang=lang,
             )
@@ -868,7 +885,7 @@ class PinnedFactStore:
         listed = "\n".join(
             f"{index}. " + render_pinned_fact_line(
                 truncate_to_tokens(candidate["text"], PINNED_FACT_TEXT_MAX_TOKENS),
-                since=_format_date(candidate.get("noted_at", now)),
+                since=_format_moment(candidate.get("noted_at", now)),
                 until=_format_date(
                     candidate.get("noted_at", now) + candidate["ttl_days"] * _DAY_SECONDS
                 ),

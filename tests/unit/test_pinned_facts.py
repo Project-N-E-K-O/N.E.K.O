@@ -648,6 +648,63 @@ def test_outdated_candidates_into_an_empty_section_do_nothing(tmp_path, monkeypa
     assert not os.path.exists(os.path.join(str(tmp_path), _NAME, PINNED_FACTS_FILENAME))
 
 
+def test_the_same_words_said_later_move_the_noted_date_forward_only(tmp_path):
+    # Codex #3598: "working late tonight" on Monday, then again on Wednesday,
+    # must read as Wednesday; a replay of Monday's must not pull it back.
+    store = _store(tmp_path)
+    monday, wednesday = _T0, _T0 + 2 * _DAY
+    store.apply_decisions(_NAME, [_candidate("主人今晚加班", 3, noted_at=monday)],
+                          [("add", None)], now=monday)
+
+    store.apply_decisions(_NAME, [_candidate("主人今晚加班", 3, noted_at=wednesday)],
+                          [("add", None)], now=wednesday)
+    [entry] = store.get_active(_NAME, now=wednesday)
+    assert (entry["text_at"], entry["renew_count"]) == (pytest.approx(wednesday), 1)
+    assert entry["expire_at"] == pytest.approx(wednesday + 3 * _DAY)
+
+    store.apply_decisions(_NAME, [_candidate("主人今晚加班", 3, noted_at=monday)],
+                          [("add", None)], now=wednesday + 1)
+    [entry] = store.get_active(_NAME, now=wednesday + 1)
+    assert entry["text_at"] == pytest.approx(wednesday)
+
+
+def test_an_older_account_never_overrides_a_newer_entry(tmp_path):
+    # Codex #3598: within one day the model sees no order; the code enforces
+    # it. An older "exam cancelled" / "exam on Wednesday" against a newer
+    # "exam moved to Friday" can at most renew it.
+    store = _store(tmp_path)
+    morning, evening = _T0, _T0 + 8 * 3600
+    store.apply_decisions(_NAME, [_candidate("主人的考试改到下周五", 14, noted_at=evening)],
+                          [("add", None)], now=evening)
+    [entry] = store.get_active(_NAME, now=evening)
+
+    counts = store.apply_decisions(
+        _NAME,
+        [_candidate("主人的考试取消了", 3, noted_at=morning),
+         _candidate("主人下周三考试", 14, noted_at=morning)],
+        [("remove", entry["id"]), ("replace", entry["id"])],
+        now=evening + 60,
+    )
+
+    assert (counts["removed"], counts["replaced"], counts["skipped"], counts["renewed"]) == (0, 0, 1, 1)
+    [after] = store.get_active(_NAME, now=evening + 60)
+    assert (after["text"], after["text_at"]) == ("主人的考试改到下周五", pytest.approx(evening))
+
+
+def test_resolve_prompt_dates_carry_the_time_of_day(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    asyncio.run(_seed(store, [("主人下周三考试", 14)]))
+    model = _install_model(monkeypatch, _Model([{"candidate": 1, "action": "add", "target": None}]))
+
+    asyncio.run(store.aadmit_extracted(
+        _NAME, [_pin("主人周六去北京", 3)], noted_at=_T0 + 3600, now=_T0 + 7200,
+    ))
+
+    [prompt] = model.prompts
+    assert datetime.fromtimestamp(_T0).strftime("%Y-%m-%d %H:%M") in prompt
+    assert datetime.fromtimestamp(_T0 + 3600).strftime("%Y-%m-%d %H:%M") in prompt
+
+
 def test_model_add_of_a_live_text_renews_instead_of_duplicating(tmp_path, monkeypatch):
     store = _store(tmp_path)
     [exam] = asyncio.run(_seed(store, [("主人下周三考试", 14)]))
