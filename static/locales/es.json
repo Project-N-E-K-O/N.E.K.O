@@ -6880,6 +6880,7 @@
             "loginRequired": "Primero inicia sesión en Universo Miau desde los ajustes de N.E.K.O",
             "mutualRequired": "Ya no se siguen mutuamente; no se puede enviar la invitación",
             "targetOffline": "Esta persona no está conectada y no se puede invitar ahora",
+            "invitationCapacity": "Se alcanzó el límite de invitaciones. Inténtalo de nuevo más tarde.",
             "communityUnavailable": "No se pudo conectar con Universo Miau",
             "declined": "{{name}} no puede venir de visita esta vez",
             "otherParty": "La otra parte",

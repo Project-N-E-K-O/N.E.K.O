@@ -12,11 +12,12 @@ function loadHub(options = {}) {
   const listeners = new Map();
   const storage = new Map();
   const intervals = [];
+  const timeouts = [];
   const window = {
     addEventListener(name, handler) { listeners.set(name, handler); },
     dispatchEvent() {},
     nekoSocialHubHost: options.host || null,
-    nekoSocial: null,
+    nekoSocial: options.social === null ? null : options.social || {},
     nekoVisitChat: options.visitChat || null,
   };
   const document = {
@@ -25,6 +26,7 @@ function loadHub(options = {}) {
     body: { appendChild() {} },
   };
   const context = vm.createContext({
+    Date: options.Date || Date,
     window,
     document,
     CustomEvent: function CustomEvent(name, options) { this.type = name; this.detail = options && options.detail; },
@@ -33,7 +35,8 @@ function loadHub(options = {}) {
       setItem(key, value) { storage.set(key, value); },
     },
     setInterval(callback, delay) { intervals.push({ callback, delay }); return intervals.length; },
-    setTimeout(callback) { callback(); return 1; },
+    clearInterval(id) { if (intervals[id - 1]) intervals[id - 1].cleared = true; },
+    setTimeout(callback, delay) { if (options.clocked) { timeouts.push({ callback, delay }); return timeouts.length; } callback(); return 1; },
     clearTimeout() {},
     requestAnimationFrame(callback) { callback(); },
     fetch: options.fetch || (async () => ({ ok: true, json: async () => (options.hubBody || {}) })),
@@ -42,7 +45,7 @@ function loadHub(options = {}) {
   });
   const source = fs.readFileSync(path.join(__dirname, '../../static/social-hub.js'), 'utf8');
   vm.runInContext(source, context);
-  return { hub: window.nekoSocialHub, listeners, intervals };
+  return { hub: window.nekoSocialHub, listeners, intervals, timeouts };
 }
 
 function loadMountedHub(options = {}) {
@@ -52,6 +55,7 @@ function loadMountedHub(options = {}) {
   });
   const { window } = dom;
   window.__NEKO_SOCIAL_HUB_STANDALONE__ = options.standalone !== false;
+  window.nekoSocial = options.social === null ? null : options.social || {};
   window.fetch = options.fetch;
   window.requestAnimationFrame = (callback) => { callback(); return 1; };
   window.setInterval = () => 1;
@@ -60,6 +64,485 @@ function loadMountedHub(options = {}) {
   window.eval(source);
   return { dom, hub: window.nekoSocialHub, document: window.document };
 }
+
+test('global presence hints coalesce and repeat once when a hint arrives during the read', async () => {
+  let notify;
+  const reads = [];
+  const { hub, timeouts } = loadHub({ clocked: true,
+    social: { onNotifyIncoming(callback) { notify = callback; } },
+    fetch: (url) => String(url).includes('friend-presence')
+      ? new Promise((resolve) => reads.push({ url, resolve }))
+      : Promise.resolve({ ok: true, json: async () => ({ logged_in: true, account: { id: 'me' }, friends: [] }) }),
+  });
+  await new Promise(setImmediate);
+  Object.assign(hub._state, { open: true, loggedIn: true, accountId: 'me',
+    friends: [{ id: 'friend', online: false, presenceStatus: 'offline' }] });
+  for (let i = 0; i < 20; i++) notify({ kind: 'presence_changed', payload: { resync: true } });
+  assert.equal(timeouts.length, 1);
+  assert.ok(timeouts[0].delay >= 500 && timeouts[0].delay <= 3000);
+  timeouts[0].callback();
+  assert.equal(reads.length, 1);
+  notify({ kind: 'presence_changed', payload: { resync: true } });
+  reads[0].resolve({ ok: true, json: async () => ({ friends: [{ id: 'friend', presence_status: 'away' }] }) });
+  await new Promise(setImmediate);
+  assert.equal(hub._state.friends[0].presenceStatus, 'away');
+  assert.equal(timeouts.length, 2);
+  assert.ok(timeouts[1].delay >= 15000 - 100, 'in-flight hints respect the minimum interval');
+  timeouts[1].callback();
+  reads[1].resolve({ ok: true, json: async () => ({ friends: [{ id: 'friend', presence_status: 'online' }] }) });
+  await new Promise(setImmediate);
+  assert.equal(hub._state.friends[0].presenceStatus, 'online');
+  assert.equal(timeouts.length, 2, 'successful read stops resync scheduling');
+  assert.ok(reads.every(({ url }) => url === '/api/community/friend-presence'));
+});
+
+test('reconnect resync is bounded on failure and does not read a closed panel', async () => {
+  let connected;
+  const reads = [];
+  const { hub, timeouts } = loadHub({ clocked: true,
+    social: { onConnState(callback) { connected = callback; } },
+    fetch: async (url) => {
+      if (!String(url).includes('friend-presence')) return { ok: true, json: async () => ({ logged_in: true, account: { id: 'me' }, friends: [] }) };
+      reads.push(url); throw new Error('fixture unavailable');
+    },
+  });
+  await new Promise(setImmediate);
+  assert.equal(typeof connected, 'function');
+  Object.assign(hub._state, { loggedIn: true, accountId: 'me' });
+  connected({ connected: true });
+  assert.equal(timeouts.length, 0);
+  hub._state.open = true;
+  connected({ connected: true });
+  for (let i = 0; i < 3; i++) {
+    timeouts[i].callback();
+    await new Promise(setImmediate);
+  }
+  assert.equal(reads.length, 3);
+  assert.equal(timeouts.length, 3, 'failed resync must not become indefinite polling');
+});
+
+test('global hint during initial hub read is recovered after the account becomes known', async () => {
+  let notify;
+  let finish;
+  const { hub, timeouts } = loadHub({ clocked: true,
+    social: { onNotifyIncoming(callback) { notify = callback; } },
+    fetch: () => new Promise((resolve) => { finish = resolve; }),
+  });
+  hub._state.open = true;
+  const reading = hub.refresh(true);
+  notify({ kind: 'presence_changed', payload: { resync: true } });
+  assert.equal(timeouts.length, 0);
+  finish({ ok: true, json: async () => ({ logged_in: true, account: { id: 'me' }, friends: [] }) });
+  await reading;
+  assert.equal(timeouts.length, 1);
+});
+
+test('sustained independent resync hints cannot request compact state each second', async () => {
+  let notify, now = Date.now();
+  class FixtureDate extends Date { static now() { return now; } }
+  const reads = [];
+  const { hub, timeouts } = loadHub({ clocked: true, Date: FixtureDate,
+    social: { onNotifyIncoming(callback) { notify = callback; } },
+    fetch: async (url) => {
+      if (!String(url).includes('friend-presence')) return { ok: true, json: async () => ({ logged_in: true, account: { id: 'me' }, friends: [] }) };
+      reads.push(url); return { ok: true, json: async () => ({ friends: [] }) };
+    },
+  });
+  await new Promise(setImmediate);
+  hub._state.open = true;
+  notify({ kind: 'presence_resync', payload: { resync: true } });
+  now += timeouts[0].delay; timeouts[0].callback(); await new Promise(setImmediate);
+  assert.equal(reads.length, 1);
+  now += 1000;
+  notify({ kind: 'presence_resync', payload: { resync: true } });
+  assert.ok(timeouts[1].delay >= 14000 && timeouts[1].delay <= 17000);
+  for (let i = 0; i < 10; i++) { now += 1000; notify({ kind: 'presence_resync', payload: { resync: true } }); }
+  assert.equal(reads.length, 1);
+  assert.equal(timeouts.length, 2);
+  now += 20000; timeouts[1].callback(); await new Promise(setImmediate);
+  assert.equal(reads.length, 2);
+  assert.equal(timeouts.length, 2, 'the last read acknowledges all merged hints');
+});
+
+for (const realtime of [true, false]) {
+  for (const outcome of ['success', 'failure', 'slow', 'closed']) {
+    test(`account switch before first reveal keeps panel usable (${realtime}, ${outcome})`, async () => {
+      let changed;
+      const reads = [];
+      const initial = { generation: 1, accountKey: 'account-a', accountId: 'account-a',
+        rolloutEnabled: true, realtimeEnabled: true, synced: true, replicaValid: true, items: [] };
+      const { dom, hub, document } = loadMountedHub({ standalone: false,
+        social: { onInvitationsChanged(callback) { changed = callback; }, getInvitations: async () => initial },
+        fetch: () => new Promise((resolve, reject) => reads.push({ resolve, reject })),
+      });
+      const timers = new Map();
+      let nextTimer = 0;
+      dom.window.setTimeout = (callback, delay) => { timers.set(++nextTimer, { callback, delay }); return nextTimer; };
+      dom.window.clearTimeout = (id) => timers.delete(id);
+      const revealTimers = () => {
+        for (const [id, timer] of Array.from(timers)) {
+          if (timer.delay === 300) { timers.delete(id); timer.callback(); }
+        }
+      };
+      try {
+        await new Promise(setImmediate);
+        hub.open();
+        const layer = document.querySelector('.neko-social-hub-layer');
+        assert.equal(layer.hidden, true);
+        changed({ ...initial, generation: 2, accountKey: 'account-b', accountId: 'account-b',
+          realtimeEnabled: realtime, synced: realtime, replicaValid: realtime });
+        assert.equal(reads.length, 2);
+        reads[0].resolve({ ok: true, json: async () => ({ logged_in: true, account: { id: 'account-a' } }) });
+        await new Promise(setImmediate);
+        if (outcome === 'slow') {
+          revealTimers();
+          assert.equal(layer.hidden, false, 'new generation must reveal loading during slow replacement read');
+        } else if (outcome === 'closed') hub.close();
+        if (outcome === 'failure') reads[1].reject(new Error('synthetic network failure'));
+        else reads[1].resolve({ ok: true, json: async () => ({ logged_in: true,
+          account: { id: 'account-b' }, friends: [], recommendations: [] }) });
+        await new Promise(setImmediate);
+        revealTimers();
+        assert.equal(layer.hidden, outcome === 'closed');
+        assert.equal(hub._state.open, outcome !== 'closed');
+        if (outcome === 'failure') assert.equal(hub._state.loadFailed, true);
+        else if (outcome !== 'closed') assert.equal(hub._state.accountId, 'account-b');
+      } finally { dom.window.close(); }
+    });
+  }
+}
+
+test('browser friend rows expose no outgoing invitation action without desktop bridge', async () => {
+  let creates = 0;
+  const calls = [];
+  const { dom, hub, document } = loadMountedHub({ social: null,
+    fetch: async (url, init) => {
+      calls.push({ url, method: init && init.method || 'GET' });
+      return { ok: true, json: async () => ({ logged_in: true, account: { id: 'me' },
+        friends: [{ id: 'friend', online: true, display_name: 'Online Friend' }], recommendations: [] }) };
+    },
+  });
+  dom.window.nekoVisitChat = { createDirectInvitation() { creates++; } };
+  try {
+    await new Promise(setImmediate);
+    const friend = document.querySelector('.neko-social-hub-friend');
+    assert.ok(friend);
+    assert.equal(friend.querySelectorAll('button').length, 0);
+    await hub._inviteFriend('friend');
+    assert.equal(creates, 0);
+    assert.ok(calls.every((call) => call.method === 'GET'));
+  } finally { dom.window.close(); }
+});
+
+test('invitation pushes update every hub locally without repeating the chat read', () => {
+  const calls = [];
+  const windows = ['chat', 'pet', 'friend-panel'].map(() => {
+    let notify;
+    const context = loadHub({
+      social: { onNotifyIncoming(callback) { notify = callback; } },
+      fetch: async (url, init) => {
+        calls.push({ url, method: init && init.method || 'GET' });
+        return { ok: true, json: async () => ({}) };
+      },
+    });
+    return { ...context, notify };
+  });
+  calls.length = 0; // Exclude the normal startup read in each window.
+  const invitation = { id: 'invite-1', kind: 'visit_invite', payload: {
+    type: 'visit_invite', visit_id: 'A'.repeat(22), actor_id: 'friend',
+    actor_display_name: 'Friend', expires_at: Date.now() / 1000 + 300,
+  } };
+  for (const context of windows) {
+    context.notify(invitation);
+    context.notify(invitation);
+    assert.equal(context.hub._state.incoming.id, invitation.id);
+    context.hub._state.invitations.set('friend', { visitId: 'A'.repeat(22), phase: 'invite_ready' });
+    context.notify({ id: 'reply-1', kind: 'visit_invite_response', payload: {
+      type: 'visit_invite_response', visit_id: 'A'.repeat(22), actor_display_name: 'Friend', accepted: false,
+    } });
+    assert.equal(context.hub._state.invitations.size, 0);
+  }
+  assert.equal(calls.filter((x) => x.method === 'GET').length, 0);
+  assert.ok(calls.every((x) => x.url.endsWith('/read')));
+});
+
+test('realtime hub uses only owner invitations, cancels periodic work and corrects mutuals once per sync generation', async () => {
+  let changed, notify;
+  const calls = [];
+  const snapshot = { generation: 3, accountKey: 'a', accountId: 'me', rolloutEnabled: true, realtimeEnabled: true,
+    synced: true, items: [{ id: 'invite', sender_id: 'me', recipient_id: 'friend', status: 'pending',
+      visit_id: 'A'.repeat(22), expires_at: new Date(Date.now() + 600000).toISOString() }] };
+  const { hub, intervals } = loadHub({ clocked: true,
+    social: { onInvitationsChanged(cb) { changed = cb; }, onNotifyIncoming(cb) { notify = cb; }, getInvitations: async () => snapshot },
+    fetch: async (url) => { calls.push(url); return { ok: true, json: async () => ({ logged_in: true, account: { id: 'me' }, friends: [] }) }; },
+  });
+  await new Promise(setImmediate);
+  assert.equal(calls.length, 0, 'closed panel does not compute recommendations or fetch the hub');
+  assert.ok(intervals.every((i) => i.cleared));
+  assert.equal(hub._state.invitations.get('friend').phase, 'invite_ready');
+  hub._state.open = true; hub._state.loggedIn = true; hub._state.accountId = 'me';
+  changed(snapshot); changed(snapshot); await new Promise(setImmediate);
+  assert.equal(calls.filter((x) => x.includes('visit-hub?include_recommendations=false&include_invitations=false')).length, 1);
+  changed({ ...snapshot, generation: 4, synced: false });
+  changed({ ...snapshot, generation: 4 }); changed({ ...snapshot, generation: 4 }); await new Promise(setImmediate);
+  assert.equal(calls.length, 2);
+  notify({ id: 'stale', kind: 'visit_invite', payload: { visit_id: 'B'.repeat(22) } });
+  assert.equal(hub._state.incoming, null);
+  changed({ ...snapshot, generation: 4, items: [{ ...snapshot.items[0], status: 'cancelled' }] });
+  assert.equal(hub._state.invitations.size, 0);
+});
+
+test('realtime sync removes former mutuals and adds new friends without legacy invitation or ranking reads', async () => {
+  let changed;
+  let friends = [{ id: 'old', display_name: 'Old friend', online: true, presence_status: 'online' }];
+  const calls = [];
+  const snapshot = { generation: 1, accountKey: 'a', accountId: 'me', realtimeEnabled: true, synced: true, items: [] };
+  const { hub, intervals } = loadHub({ clocked: true,
+    social: { onInvitationsChanged(cb) { changed = cb; }, getInvitations: async () => snapshot },
+    fetch: async (url) => { calls.push(url); return { ok: true, json: async () => ({ logged_in: true,
+      account: { id: 'me' }, friends }) }; },
+  });
+  await new Promise(setImmediate);
+  hub._state.open = true;
+  await hub.refresh();
+  assert.deepEqual(Array.from(hub._state.friends, (f) => f.id), ['old']);
+  calls.length = 0;
+  friends = [];
+  changed({ ...snapshot, generation: 2, synced: false });
+  assert.equal(calls.length, 0);
+  changed({ ...snapshot, generation: 2 });
+  await new Promise(setImmediate);
+  assert.equal(hub._state.friends.length, 0, 'removed mutual must disappear without reopening panel');
+  friends = [{ id: 'new', display_name: 'New friend', online: false, presence_status: 'offline' }];
+  changed({ ...snapshot, generation: 3 });
+  await new Promise(setImmediate);
+  assert.deepEqual(Array.from(hub._state.friends, (f) => f.id), ['new']);
+  assert.ok(calls.every((url) => url.endsWith('visit-hub?include_recommendations=false&include_invitations=false')));
+  assert.equal(calls.length, 2);
+  hub._state.open = false;
+  changed({ ...snapshot, generation: 4 });
+  await new Promise(setImmediate);
+  assert.equal(calls.length, 2, 'closed panels must not read the roster on reconnect');
+  assert.ok(intervals.every((i) => i.cleared));
+});
+
+test('failed realtime roster correction preserves friends and retries on the next sync', async () => {
+  let changed, fail = false;
+  const snapshot = { generation: 1, accountKey: 'a', accountId: 'me', realtimeEnabled: true, synced: true, items: [] };
+  const { hub } = loadHub({ clocked: true,
+    social: { onInvitationsChanged(cb) { changed = cb; }, getInvitations: async () => snapshot },
+    fetch: async () => { if (fail) throw new Error('synthetic unavailable');
+      return { ok: true, json: async () => ({ logged_in: true, account: { id: 'me' }, friends: fail === null ? [] : [{ id: 'old' }] }) }; },
+  });
+  await new Promise(setImmediate);
+  hub._state.open = true;
+  await hub.refresh();
+  fail = true;
+  changed({ ...snapshot, generation: 2 });
+  await new Promise(setImmediate);
+  assert.equal(hub._state.friends[0].id, 'old');
+  fail = null;
+  changed({ ...snapshot, generation: 3 });
+  await new Promise(setImmediate);
+  assert.equal(hub._state.friends.length, 0);
+});
+
+test('realtime recommendations are requested only for an open panel and cached for five minutes', async () => {
+  let now = 1793556000000;
+  const calls = [];
+  const snapshot = { generation: 3, accountKey: 'a', accountId: 'me', rolloutEnabled: true, realtimeEnabled: true, synced: true, items: [] };
+  const { hub } = loadHub({ clocked: true, Date: class extends Date { static now() { return now; } },
+    social: { onInvitationsChanged() {}, getInvitations: async () => snapshot },
+    fetch: async (url) => { calls.push(url); return { ok: true, json: async () => ({ logged_in: true, account: { id: 'me' },
+      friends: [], recommendations: [{ id: 'recommended', display_name: 'R' }] }) }; },
+  });
+  await new Promise(setImmediate); assert.equal(calls.length, 0);
+  hub._state.open = true;
+  await hub.refresh(); assert.ok(calls.at(-1).includes('include_recommendations=true'));
+  await hub.refresh(); assert.ok(calls.at(-1).includes('include_recommendations=false'));
+  assert.equal(hub._state.recommendations[0].id, 'recommended');
+  await hub.refresh(true, true); assert.ok(calls.at(-1).includes('include_recommendations=false'));
+  now += 300000; await hub.refresh(); assert.ok(calls.at(-1).includes('include_recommendations=true'));
+  hub._state.open = false; now += 300000; await hub.refresh(); assert.ok(calls.at(-1).includes('include_recommendations=false'));
+  assert.ok(calls.every((x) => x.includes('include_invitations=false')));
+});
+
+test('protocol support alone keeps compatibility timers; stale reconnect keeps confirmed friend state', async () => {
+  let changed;
+  const initial = { generation: 1, accountKey: 'a', accountId: 'me', protocolSupported: true,
+    realtimeEnabled: false, synced: false, replicaValid: false, items: [] };
+  const { hub, intervals } = loadHub({ clocked: true,
+    social: { onInvitationsChanged(cb) { changed = cb; }, getInvitations: async () => initial },
+  });
+  await new Promise(setImmediate);
+  assert.ok(intervals.some((timer) => !timer.cleared));
+  const ready = { ...initial, realtimeEnabled: true, synced: true, replicaValid: true };
+  changed(ready);
+  assert.ok(intervals.every((timer) => timer.cleared));
+  hub._state.friends = [{ id: 'friend', online: true, presenceStatus: 'away' }];
+  changed({ ...ready, generation: 2, synced: false });
+  assert.equal(hub._state.friends[0].online, true);
+  assert.equal(hub._state.friends[0].presenceStatus, 'away');
+  assert.ok(intervals.every((timer) => timer.cleared));
+});
+
+test('an accepted invitation waits for actual visit status before being shown as active', async () => {
+  let changed;
+  const invitation = { id: 'invite', sender_id: 'me', recipient_id: 'friend', status: 'pending',
+    visit_id: 'A'.repeat(22), expires_at: new Date(Date.now() + 600000).toISOString() };
+  const initial = { generation: 1, accountKey: 'a', accountId: 'me', realtimeEnabled: true,
+    synced: true, items: [invitation] };
+  const { hub, listeners } = loadHub({ clocked: true,
+    social: { onInvitationsChanged(cb) { changed = cb; }, getInvitations: async () => initial },
+  });
+  await new Promise(setImmediate);
+  assert.equal(hub._state.invitations.get('friend').phase, 'invite_ready');
+  changed({ ...initial, items: [{ ...invitation, status: 'accepted' }] });
+  assert.equal(hub._state.invitations.get('friend').phase, 'joining');
+  listeners.get('neko-visit-status-change')({ detail: { visitId: invitation.visit_id, phase: 'active' } });
+  assert.equal(hub._state.invitations.get('friend').phase, 'active');
+  changed({ ...initial, items: [{ ...invitation, status: 'accepted' }] });
+  assert.equal(hub._state.invitations.get('friend').phase, 'active');
+});
+
+test('invitation expiry cannot remove an active visit, but logout clears the old account immediately', async () => {
+  let changed;
+  const snapshot = { generation: 3, accountKey: 'a', accountId: 'me', rolloutEnabled: true, realtimeEnabled: true,
+    synced: true, replicaValid: true, items: [{ id: 'invite', sender_id: 'me', recipient_id: 'friend', status: 'pending',
+      visit_id: 'A'.repeat(22), expires_at: new Date(Date.now() + 100).toISOString() }] };
+  const { hub, listeners, timeouts } = loadHub({ clocked: true,
+    social: { onInvitationsChanged(cb) { changed = cb; }, getInvitations: async () => snapshot },
+  });
+  await new Promise(setImmediate);
+  assert.ok(timeouts.some((timer) => timer.delay > 0 && timer.delay <= 101), 'expiry is a single deadline');
+  listeners.get('neko-visit-status-change')({ detail: { visitId: 'A'.repeat(22), phase: 'active' } });
+  changed({ ...snapshot, items: [] });
+  assert.equal(hub._state.invitations.get('friend').phase, 'active');
+  changed({ ...snapshot, generation: 4, realtimeEnabled: false, replicaValid: false, items: [] });
+  assert.equal(hub._state.invitations.size, 0);
+  assert.equal(hub._state.incoming, null);
+  assert.equal(hub._state.account, null);
+});
+
+test('late hub data cannot cross an owner account change', async () => {
+  let changed, resolve;
+  const snapshot = { generation: 3, accountKey: 'a', accountId: 'me', rolloutEnabled: true, realtimeEnabled: true, synced: true, items: [] };
+  const { hub } = loadHub({ clocked: true,
+    social: { onInvitationsChanged(cb) { changed = cb; }, getInvitations: async () => snapshot },
+    fetch: () => new Promise((done) => { resolve = done; }),
+  });
+  await new Promise(setImmediate);
+  const pending = hub.refresh();
+  changed({ ...snapshot, generation: 4, accountKey: 'b', accountId: 'other' });
+  resolve({ ok: true, json: async () => ({ logged_in: true, account: { id: 'me' }, friends: [{ id: 'private-friend' }] }) });
+  await pending;
+  assert.equal(hub._state.friends.length, 0);
+  assert.notEqual(hub._state.accountId, 'me');
+});
+
+test('an open panel reloads the new account after syncing and does not repeat it on owner updates', async () => {
+  let changed;
+  const calls = [];
+  const initial = { generation: 3, accountKey: 'a', accountId: 'a', rolloutEnabled: true,
+    realtimeEnabled: true, synced: true, replicaValid: true, items: [] };
+  const { hub, intervals } = loadHub({ clocked: true,
+    social: { onInvitationsChanged(cb) { changed = cb; }, getInvitations: async () => initial },
+    fetch: async (url) => { calls.push(url); return { ok: true, json: async () => ({
+      logged_in: true, account: { id: 'b' }, friends: [{ id: 'b-friend' }], recommendations: [],
+    }) }; },
+  });
+  await new Promise(setImmediate);
+  hub._state.open = true; hub._state.loggedIn = true; hub._state.accountId = 'a';
+  changed({ ...initial, generation: 4, accountKey: 'b', accountId: 'b',
+    realtimeEnabled: false, synced: false, replicaValid: false });
+  assert.equal(hub._state.accountId, '');
+  const ready = { ...initial, generation: 5, accountKey: 'b', accountId: 'b' };
+  changed(ready);
+  await new Promise(setImmediate);
+  assert.equal(hub._state.loggedIn, true);
+  assert.equal(hub._state.accountId, 'b');
+  assert.equal(hub._state.friends[0].id, 'b-friend');
+  changed(ready); changed(ready);
+  await new Promise(setImmediate);
+  assert.equal(calls.filter((url) => url.includes('visit-hub')).length, 1);
+  assert.ok(intervals.every((timer) => timer.cleared));
+});
+
+test('opening a panel after an account switch consumes its pending account read', async () => {
+  let changed;
+  const calls = [];
+  const initial = { generation: 3, accountKey: 'a', accountId: 'a', rolloutEnabled: true,
+    realtimeEnabled: true, synced: true, replicaValid: true, items: [] };
+  const { hub } = loadHub({ clocked: true,
+    social: { onInvitationsChanged(cb) { changed = cb; }, getInvitations: async () => initial },
+    fetch: async (url) => { calls.push(url); return { ok: true, json: async () => ({
+      logged_in: true, account: { id: 'b' }, friends: [], recommendations: [],
+    }) }; },
+  });
+  await new Promise(setImmediate);
+  changed({ ...initial, generation: 4, accountKey: 'b', accountId: 'b',
+    realtimeEnabled: false, synced: false, replicaValid: false });
+  const ready = { ...initial, generation: 5, accountKey: 'b', accountId: 'b' };
+  changed(ready);
+  assert.equal(calls.length, 0);
+  hub._state.open = true;
+  await hub.refresh();
+  changed(ready);
+  await new Promise(setImmediate);
+  assert.equal(calls.filter((url) => url.includes('visit-hub')).length, 1);
+  assert.equal(hub._state.accountId, 'b');
+});
+
+test('ordinary browser does not present or create direct invitations', async () => {
+  const calls = [];
+  const { hub } = loadHub({ social: null, fetch: async (url) => {
+    calls.push(url); return { ok: true, json: async () => ({ logged_in: true, account: { id: 'me' },
+      incoming_invite: { id: 'notification', visit_id: 'A'.repeat(22) }, friends: [{ id: 'friend', online: true }] }) };
+  } });
+  await new Promise(setImmediate);
+  await hub._inviteFriend('friend');
+  assert.equal(hub._state.incoming, null);
+  assert.ok(calls.every((url) => url === '/api/community/visit-hub'));
+});
+
+test('a full hub response already in flight cannot erase a newer invitation push', async () => {
+  let notify, resolve;
+  let reads = 0;
+  const { hub } = loadHub({
+    social: { onNotifyIncoming(callback) { notify = callback; } },
+    fetch: () => ++reads === 1
+      ? Promise.resolve({ ok: true, json: async () => ({ logged_in: true, account: { id: 'account-1' } }) })
+      : new Promise((done) => { resolve = done; }),
+  });
+  await new Promise((done) => setImmediate(done));
+  const pending = hub.refresh(true);
+  notify({ id: 'new-invite', kind: 'visit_invite', payload: {
+    visit_id: 'A'.repeat(22), actor_id: 'friend', expires_at: Date.now() / 1000 + 300,
+  } });
+  resolve({ ok: true, json: async () => ({
+    logged_in: true, account: { id: 'account-1' }, friends: [], incoming_invite: null,
+  }) });
+  await pending;
+  assert.equal(hub._state.incoming.id, 'new-invite');
+});
+
+test('control events never produce a new-message toast', () => {
+  let notify;
+  const toasts = [];
+  const window = { nekoSocial: {
+    onUnreadCount() {}, onNotifyIncoming(callback) { notify = callback; },
+    onQuotaChanged() {}, onConnState() {},
+  }, electronToast: (text) => toasts.push(text) };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../static/app-social-ui.js'), 'utf8'), {
+    window, document: { body: {}, querySelectorAll: () => [] },
+    MutationObserver: class { observe() {} },
+  });
+  notify({ kind: 'presence_changed', payload: {} });
+  notify({ kind: 'notification_list_changed', payload: {} });
+  assert.equal(toasts.length, 0);
+  notify({ kind: 'visit_invite', title: 'Invitation' });
+  assert.equal(toasts.length, 1);
+});
 
 test('friend invitation follows the visit and clears when it ends', () => {
   const { hub, listeners } = loadHub();
@@ -209,6 +692,49 @@ test('a failed send clears the invitation once its room is cancelled', async () 
   assert.equal(hub._state.invitations.has('friend-1'), false);
   assert.equal(hub._state.toastError, true);
 });
+
+for (const transport of ['web', 'electron']) {
+  test(`a closed-room 410 clears the local pending invitation (${transport})`, async () => {
+    const cancelled = [];
+    const create = async () => ({ visit_id: 'closed-room', expires_at: Date.now() / 1000 + 300 });
+    const cancel = async (id) => { cancelled.push(id); return true; };
+    const { hub } = loadHub({
+      host: transport === 'electron' ? { createDirectInvite: create, cancelDirectInvite: cancel } : null,
+      visitChat: transport === 'web' ? { createDirectInvitation: create, cancelDirectInvitation: cancel } : null,
+      fetch: async (url) => String(url).includes('/api/community/visit-invitations')
+        ? { ok: false, status: 410, json: async () => ({ detail: 'visit_invite_expired' }) }
+        : { ok: true, json: async () => ({}) },
+    });
+    await new Promise(setImmediate);
+    hub._state.friends = [{ id: 'friend', displayName: 'Friend' }];
+    await hub._inviteFriend('friend');
+    assert.deepEqual(cancelled, ['closed-room']);
+    assert.equal(hub._state.invitations.has('friend'), false);
+    assert.equal(hub._state.toastError, true);
+  });
+}
+
+for (const transport of ['web', 'electron']) {
+  test(`capacity rejection shows a friendly hint and cancels its room (${transport})`, async () => {
+    const cancelled = [];
+    const create = async () => ({ visit_id: 'capacity-room', expires_at: Date.now() / 1000 + 300 });
+    const cancel = async (id) => { cancelled.push(id); return true; };
+    const { hub } = loadHub({
+      host: transport === 'electron' ? { createDirectInvite: create, cancelDirectInvite: cancel } : null,
+      visitChat: transport === 'web' ? { createDirectInvitation: create, cancelDirectInvitation: cancel } : null,
+      fetch: async (url) => String(url).includes('/api/community/visit-invitations')
+        ? { ok: false, status: 429, json: async () => ({ detail: 'invitation_capacity_reached' }) }
+        : { ok: true, json: async () => ({}) },
+    });
+    await new Promise(setImmediate);
+    hub._state.friends = [{ id: 'friend', displayName: 'Friend' }];
+    await hub._inviteFriend('friend');
+    assert.deepEqual(cancelled, ['capacity-room']);
+    assert.equal(hub._state.invitations.has('friend'), false);
+    assert.equal(hub._state.toast, '当前邀请较多，请稍后再试');
+    assert.equal(hub._state.toastError, true);
+  });
+}
 
 test('an invitation remains cancellable after its friend leaves the current list', () => {
   const { hub } = loadHub();
