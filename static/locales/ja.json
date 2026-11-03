@@ -6879,6 +6879,7 @@
             "loginRequired": "先に N.E.K.O の設定でミャオ宇宙にログインしてください",
             "mutualRequired": "相互フォローではなくなったため、招待を送れません",
             "targetOffline": "相手は現在オフラインのため、招待できません",
+            "invitationCapacity": "招待が上限に達しています。しばらくしてからもう一度お試しください。",
             "communityUnavailable": "ミャオ宇宙に接続できませんでした",
             "declined": "{{name}}は今回は遊びに来られません",
             "otherParty": "相手",

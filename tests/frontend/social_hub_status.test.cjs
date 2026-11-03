@@ -615,6 +615,28 @@ for (const transport of ['web', 'electron']) {
   });
 }
 
+for (const transport of ['web', 'electron']) {
+  test(`capacity rejection shows a friendly hint and cancels its room (${transport})`, async () => {
+    const cancelled = [];
+    const create = async () => ({ visit_id: 'capacity-room', expires_at: Date.now() / 1000 + 300 });
+    const cancel = async (id) => { cancelled.push(id); return true; };
+    const { hub } = loadHub({
+      host: transport === 'electron' ? { createDirectInvite: create, cancelDirectInvite: cancel } : null,
+      visitChat: transport === 'web' ? { createDirectInvitation: create, cancelDirectInvitation: cancel } : null,
+      fetch: async (url) => String(url).includes('/api/community/visit-invitations')
+        ? { ok: false, status: 429, json: async () => ({ detail: 'invitation_capacity_reached' }) }
+        : { ok: true, json: async () => ({}) },
+    });
+    await new Promise(setImmediate);
+    hub._state.friends = [{ id: 'friend', displayName: 'Friend' }];
+    await hub._inviteFriend('friend');
+    assert.deepEqual(cancelled, ['capacity-room']);
+    assert.equal(hub._state.invitations.has('friend'), false);
+    assert.equal(hub._state.toast, '当前邀请较多，请稍后再试');
+    assert.equal(hub._state.toastError, true);
+  });
+}
+
 test('an invitation remains cancellable after its friend leaves the current list', () => {
   const { hub } = loadHub();
   hub._state.friends = [];
