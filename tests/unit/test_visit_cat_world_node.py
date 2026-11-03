@@ -632,7 +632,7 @@ async function main() {
   assert.equal(restored.question_x_q16, 777);
   assert.equal(restored.yarn_x_q16, 34000);
   assert.equal(restored.yarn_holder, 'none');
-  assert.ok(Math.abs(restored.yarn_vx_q12) < 1000, String(restored.yarn_vx_q12));
+  assert.ok(restored.yarn_vx_q12 > 0 && restored.yarn_vx_q12 < 1000, String(restored.yarn_vx_q12));
   await flush();
   const republished = calls.state.filter((item) => item.phase === 'commit').pop();
   assert.equal(republished.question_x_q16, 777);
@@ -678,6 +678,15 @@ async function main() {
   assert.equal(win.NekoVisitCatWorld.snapshot().world.yarn_holder, 'none');
   hostIntent('peer', 'yarn_grab', 102, 25000);
   assert.equal(win.NekoVisitCatWorld.snapshot().world.yarn_holder, 'guest');
+  // A clock stepped back mid-drag drops the yarn instead of flinging it.
+  hostIntent('peer', 'pointer', 102, 26000);
+  now -= 5000;
+  hostIntent('peer', 'yarn_release', 103, 27000);
+  now += 5000;
+  const dropped = win.NekoVisitCatWorld.snapshot().world;
+  assert.equal(dropped.yarn_holder, 'none');
+  assert.equal(dropped.yarn_vx_q12, 0);
+  assert.equal(dropped.yarn_vy_q12, 0);
   emit('neko:visit-cat-scene-deactivated', { visit_id: VID });
 
   // A replay that grows too long gives up on the late saved world rather than
