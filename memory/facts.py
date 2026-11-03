@@ -3585,8 +3585,8 @@ class FactStore:
                 relevant, source_messages,
                 lookup=(lambda ids: self._time_indexed.aget_original_source_evidence(lanlan_name, ids))
                 if getattr(self._time_indexed, 'aget_original_source_evidence', None) is not None else None)
-            repaired = {row['id']: row for row in resolved}
-            retirements = [repaired.get(row['id'], row) for row in retirements]
+            repaired = {(row['subject'], row['id']): row for row in resolved}
+            retirements = [repaired.get((row['subject'], row['id']), row) for row in retirements]
         retirement_review = (expected_retirements, retirements, matches)
         try:
             async with self._get_persist_alock(lanlan_name):
@@ -3736,9 +3736,9 @@ class FactStore:
                     with cloudsave_writable_transaction(self._config_manager, operation='save', target=state_path):
                         with open(state_path, encoding='utf-8') as handle:
                             state = json.load(handle)
-                        repaired = {row['id']: row for row in retirements}
+                        repaired = {(row['subject'], row['id']): row for row in retirements}
                         for row in state['evidence']['retirements']:
-                            update = repaired.get(row['id'], {})
+                            update = repaired.get((row['subject'], row['id']), {})
                             for field in ('retiredThroughAt', 'retiredThroughAtFromCorrection'):
                                 if field in update:
                                     row[field] = update[field]

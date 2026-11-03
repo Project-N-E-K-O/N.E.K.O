@@ -285,7 +285,8 @@ def test_status_and_routes_expose_no_account_character_policy(local_client):
     assert runtime.calls == []
 
 
-def test_recent_display_excludes_local_sources(local_client, tmp_path, monkeypatch):
+@pytest.mark.parametrize('broken_replies', [False, True])
+def test_recent_display_excludes_local_sources(local_client, tmp_path, monkeypatch, broken_replies):
     from services.chat_sync import source
     client, runtime = local_client
     runtime.recent_memory = object()
@@ -294,10 +295,33 @@ def test_recent_display_excludes_local_sources(local_client, tmp_path, monkeypat
     (tmp_path / 'sources.sqlite3').touch()
     monkeypatch.setattr(source, 'ChatOriginalSource', lambda path: SimpleNamespace(stored_ids=lambda uid: {'b' * 32}))
     runtime.originals = [{'messageId': 'b' * 32, 'text': 'local'}, {'messageId': 'c' * 32, 'text': 'phone'}]
+    runtime.local_replies = AsyncMock(side_effect=ValueError('chat_source_integrity_error') if broken_replies else None)
     result = client.get(f'/api/chat-sync/characters/{UID}/recent-display')
     assert result.status_code == 200
     assert result.json()['originals'] == [{'messageId': 'c' * 32, 'text': 'phone'}]
     assert 'media' not in result.json() and 'localMedia' not in result.json()
+    runtime.local_replies.assert_not_awaited()
+
+
+@pytest.mark.parametrize('action', [[], {}, None, True, 1, '', 'unknown'])
+def test_model_action_rejects_invalid_types_without_resolving(local_client, action):
+    client, runtime = local_client
+    runtime.models = SimpleNamespace(resolve=AsyncMock())
+    response = client.post(f'/api/chat-sync/characters/{UID}/model-sync-action', json={'action': action})
+    assert response.status_code == 400
+    assert response.json() == {'detail': 'invalid_model_response'}
+    runtime.models.resolve.assert_not_awaited()
+    assert runtime.calls == []
+
+
+@pytest.mark.parametrize('action', ['cloud', 'local', 'retry'])
+def test_model_action_resolves_valid_choice_once(local_client, action):
+    client, runtime = local_client
+    runtime.models = SimpleNamespace(resolve=AsyncMock())
+    response = client.post(f'/api/chat-sync/characters/{UID}/model-sync-action', json={'action': action})
+    assert response.status_code == 200 and response.json() == {'accepted': True}
+    runtime.models.resolve.assert_awaited_once_with(UID, action)
+    assert runtime.calls == [('recent-changed',)]
 
 
 @pytest.mark.parametrize('recent,enabled', [(None, 1), (object(), 0)])

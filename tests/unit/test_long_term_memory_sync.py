@@ -380,6 +380,10 @@ async def test_native_failed_multi_file_save_rolls_back_and_journal_replays_exac
     for name, raw in before.items():
         assert (owner.directory / name).read_bytes() == raw
     assert owner.adapter.incoming_path(UID).exists()
+    import hashlib
+    event = json.loads((owner.directory / 'events.ndjson').read_text().splitlines()[-1])
+    assert event['payload'] == {'characterSyncId': UID,
+                               'inboxSha256': hashlib.sha256(owner.adapter.incoming_path(UID).read_bytes()).hexdigest()}
     await owner.replay.areconcile('Neko')
     assert read_views(owner.directory)['facts'][0]['text'] == 'shared experience'
     assert await owner.native.consume(UID)
@@ -1486,14 +1490,31 @@ async def test_failed_rollback_retains_journal_without_masking_write_error(owner
         require_consistent_views(owner.directory)
 
 
-def test_retirement_cutoff_and_source_union_never_regress_on_receive():
+@pytest.mark.parametrize('remote_time,proven', [(2000, True), (20000, False)])
+def test_retirement_cutoff_and_source_union_never_regress_on_receive(remote_time, proven):
     value = learned()
-    value.update(schemaVersion=2, evidence={'retirements': [{'id': 'retired', 'subject': 'master', 'sourceMessageIds': ['new-source'], 'retiredThroughAt': 2000, 'retiredThroughAtFromCorrection': True}], 'confirmations': []})
+    remote = {'id': 'retired', 'subject': 'master', 'sourceMessageIds': ['new-source'], 'retiredThroughAt': remote_time}
+    if proven:
+        remote['retiredThroughAtFromCorrection'] = True
+    value.update(schemaVersion=2, evidence={'retirements': [remote], 'confirmations': []})
     existing = {'persona': {}, 'facts': [], 'archive': [], 'reflections': [], 'sync': {'evidence': {
         'retirements': [{'id': 'retired', 'subject': 'master', 'sourceMessageIds': ['old-source'], 'retiredThroughAt': 10000, 'retiredThroughAtFromCorrection': True}], 'confirmations': []}}}
     row = import_document(value, existing)['sync']['evidence']['retirements'][0]
     assert row['retiredThroughAt'] == 10000
     assert row['sourceMessageIds'] == ['old-source', 'new-source']
+
+
+@pytest.mark.parametrize('subject', ['neko', 'relationship'])
+def test_retirement_subject_collision_rejects_the_snapshot_without_changing_local_memory(subject):
+    value = learned()
+    local = {'id': 'retired', 'subject': 'master', 'sourceMessageIds': ['old-source'], 'retiredThroughAt': 10000}
+    existing = {'persona': {}, 'facts': [], 'archive': [], 'reflections': [], 'sync': {'evidence': {
+        'retirements': [local], 'confirmations': []}}}
+    value.update(schemaVersion=2, evidence={'retirements': [{**local, 'subject': subject}], 'confirmations': []})
+    before = deepcopy(existing)
+    with pytest.raises(ValueError, match='^invalid_long_term_memory$'):
+        import_document(value, existing)
+    assert existing == before
 
 
 @pytest.mark.parametrize('protected', [True, False])
@@ -1504,6 +1525,31 @@ def test_sync_retains_persona_protection_flag(protected):
     assert native['persona']['master']['facts'][0]['protected'] is protected
     exported = next(row for row in export_document(native, 3000)['entries'] if row['kind'] == 'persona')
     assert exported['metadata']['protected'] is protected
+
+
+@pytest.mark.parametrize('kind', ['persona', 'reflection'])
+@pytest.mark.parametrize('active_duplicate', [False, True])
+def test_archived_memory_replacement_retains_local_coverage_audit(kind, active_duplicate):
+    entry = {'id': 'archived', 'text': 'unchanged impression', 'source': 'reflection',
+             'entity_key' if kind == 'persona' else 'entity': 'master', 'status': 'confirmed',
+             'covered_fact_ids': ['archive-audit'], 'archived_at': '2026-10-01T00:00:00'}
+    field = 'personaArchives' if kind == 'persona' else 'reflectionArchives'
+    existing = {'persona': {}, 'facts': [], 'archive': [], 'reflections': [], field: {'old.json': [entry]}}
+    incoming = export_document(existing, 3000)
+    if active_duplicate:
+        active = {**entry, 'covered_fact_ids': ['active-audit']}
+        if kind == 'persona':
+            existing['persona'] = {'master': {'facts': [active]}}
+        else:
+            existing['reflections'] = [active]
+        incoming = export_document(existing, 3000)
+    before = deepcopy(existing)
+    result = import_document(incoming, existing, baseline=incoming['entries'])
+    restored = [row for rows in result[field].values() for row in rows]
+    assert len(restored) == 1
+    assert restored[0]['covered_fact_ids'] == (['active-audit'] if active_duplicate else ['archive-audit'])
+    assert 'covered_fact_ids' not in json.dumps(export_document(result, 3000))
+    assert existing == before
 
 
 def test_formal_archives_roundtrip_and_keep_scoped_partitions(tmp_path):

@@ -457,6 +457,7 @@ class DesktopChatSyncRuntime:
                     conn.execute("UPDATE sync_settings SET service_url=?", (self._fixed_service_url,))
         with self._commit_lock:
             self.writer.recover(stage)
+        self.models.cleanup_cache(force=True)
 
     async def recover_writer_role(self, character_uid, local_name):
         """Verify current cloud fences before reusing any copied history candidate."""
@@ -662,6 +663,7 @@ class DesktopChatSyncRuntime:
                     await asyncio.to_thread(self.scheduler.success, domain, "model")
                 else:
                     await asyncio.to_thread(self.scheduler.failure, domain, "model", binding["generation"], presence, exc)
+        await asyncio.to_thread(self.models.cleanup_cache)
 
 
     @asynccontextmanager
@@ -936,6 +938,7 @@ class DesktopChatSyncRuntime:
                     conn.execute("DELETE FROM long_term_memory_state WHERE domain=?", (domain,))
                 for table in ("sync_new_roles", "sync_choices", "sync_bindings"):
                     conn.execute(f"DELETE FROM {table} WHERE character_uid=?", (uid,))
+        self.models.cleanup_cache(force=True)
 
     async def _automatic_channel(self, channel: str, presence: str) -> None:
         """Sync only the selected opted-in role."""

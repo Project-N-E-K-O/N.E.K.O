@@ -331,6 +331,8 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None):
             row = deepcopy(incoming_row)
             previous = retained.get(row[key])
             if field == 'retirements' and previous:
+                if previous['subject'] != row['subject']:
+                    raise ValueError('invalid_long_term_memory')
                 old_proof = bool(previous.get('retiredBySourceMessageIds') or previous.get('retiredThroughAtFromCorrection'))
                 new_proof = bool(row.get('retiredBySourceMessageIds') or row.get('retiredThroughAtFromCorrection'))
                 times = [item['retiredThroughAt'] for item, proof in [(previous, old_proof), (row, new_proof)]
@@ -346,13 +348,19 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None):
                     row.pop('retiredThroughAtFromCorrection', None)
             retained[row[key]] = row
         result['sync']['evidence'][field] = list(retained.values())
-    local_persona = {(subject, _entry_id(subject, row)): row for subject in SUBJECTS
-                     for row in existing['persona'].get(subject, {}).get('facts', [])
+    local_persona = {(row.get('entity_key'), _entry_id(row.get('entity_key'), row)): row
+                     for rows in existing.get('personaArchives', {}).values() for row in rows
                      if isinstance(row, dict) and private(row) and row.get('source') != 'character_card'}
+    local_persona.update({(subject, _entry_id(subject, row)): row for subject in SUBJECTS
+                     for row in existing['persona'].get(subject, {}).get('facts', [])
+                     if isinstance(row, dict) and private(row) and row.get('source') != 'character_card'})
     local_facts = {(row.get('entity'), _entry_id(row.get('entity'), row)): row
                    for row in existing['archive'] + existing['facts'] if isinstance(row, dict) and private(row)}
     local_reflections = {(row.get('entity'), _entry_id(row.get('entity'), row)): row
-                         for row in existing['reflections'] if isinstance(row, dict) and private(row)}
+                         for rows in existing.get('reflectionArchives', {}).values() for row in rows
+                         if isinstance(row, dict) and private(row)}
+    local_reflections.update({(row.get('entity'), _entry_id(row.get('entity'), row)): row
+                             for row in existing['reflections'] if isinstance(row, dict) and private(row)})
     pending = set()
     if baseline is not None:
         previous = {(row['kind'], row['subject'], row['id']): row for row in baseline}

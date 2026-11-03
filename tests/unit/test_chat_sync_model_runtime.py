@@ -430,6 +430,30 @@ async def pending_model_runtime(tmp_path, *, uploaded=False, large=False):
 
 
 @pytest.mark.asyncio
+async def test_cloud_choice_retries_the_same_revision_after_a_renderer_failure(tmp_path):
+    runtime, service, adapter, _ = await pending_model_runtime(tmp_path, uploaded=True)
+    try:
+        await runtime.models.step(UID, manual=True)
+        service.model = {'schemaVersion': 1, 'model': None}
+        service.model_revision += 1
+        await runtime.models.step(UID, manual=True)
+        first = (await runtime.models.status(UID))['candidate']
+        assert not await runtime.models.finish(UID, first['token'], False)
+        adapter.path = '/C.model3.json'
+        await runtime.models.step(UID, manual=True)
+        assert (await runtime.models.status(UID))['conflict']
+        await runtime.models.resolve(UID, 'cloud')
+        await runtime.models.step(UID, manual=True)
+        candidate = (await runtime.models.status(UID))['candidate']
+        assert candidate['token'] != first['token']
+        state = runtime.models.store.get(DOMAIN.key())
+        assert state['candidate']['revision'] == service.model_revision
+        assert 'failed' not in state and 'conflict' not in state
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_metadata_revision_survives_a_failed_full_record_read(tmp_path):
     runtime, service, _, _ = await pending_model_runtime(tmp_path, uploaded=True)
     try:

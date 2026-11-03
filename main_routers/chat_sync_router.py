@@ -178,16 +178,15 @@ async def recent_display(character_uid: str, runtime: Runtime):
     binding = await asyncio.to_thread(runtime.state.binding, character_uid)
     if runtime.recent_memory is None or not binding or not binding["enabled"]:
         return {"characterSyncId": character_uid, "originals": []}
-    result = await history(character_uid, runtime)
+    originals = await runtime.history(character_uid)
     from services.chat_sync.source import ChatOriginalSource
     source_path = runtime.state.path.parent / "sources.sqlite3"
     local_ids = set()
     if source_path.is_file():
         source = await asyncio.to_thread(ChatOriginalSource, source_path)
         local_ids = await asyncio.to_thread(source.stored_ids, character_uid)
-    result["originals"] = [row for row in result["originals"] if row["messageId"] not in local_ids]
-    result.pop("localReplies", None)
-    return result
+    return {"characterSyncId": character_uid,
+            "originals": [row for row in originals if row["messageId"] not in local_ids]}
 
 
 
@@ -214,7 +213,7 @@ async def model_sync_loaded(character_uid: str, token: str, body: dict, runtime:
 @router.post("/characters/{character_uid}/model-sync-action")
 async def model_sync_action(character_uid: str, body: dict, runtime: Runtime):
     await _character(character_uid)
-    if set(body) != {"action"} or body["action"] not in {"cloud", "local", "retry"}:
+    if set(body) != {"action"} or type(body["action"]) is not str or body["action"] not in {"cloud", "local", "retry"}:
         raise HTTPException(400, "invalid_model_response")
     await runtime.models.resolve(character_uid, body["action"])
     runtime.wake_scheduler()

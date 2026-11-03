@@ -1679,6 +1679,23 @@ async def test_retirement_clock_repair_does_not_persist_expanded_display_text(tm
 
 
 @pytest.mark.asyncio
+async def test_retirement_clock_repair_cannot_change_another_subject_with_the_same_id(tmp_path):
+    directory = _portable_retirement(tmp_path, correction=True)
+    path = directory / 'long_term_portable.json'
+    state = json.loads(path.read_text())
+    other = {'id': 'retired', 'subject': 'neko', 'text': '角色喜欢散步', 'sourceMessageIds': ['sync:' + 'e' * 32]}
+    state['evidence']['retirements'].append(other)
+    path.write_text(json.dumps(state))
+    harness = _harness(tmp_path, [])
+    harness._time_indexed.aget_original_source_evidence = AsyncMock(return_value={'sync:' + 'c' * 32: ('human', 2000)})
+    assert len(await harness._apersist_new_facts('小天', [{'entity': 'master', 'text': '用户喜欢红茶', 'source_indices': [1]}],
+                                               source_messages=[_trusted_sync_message('b', 3000)])) == 1
+    rows = json.loads(path.read_text())['evidence']['retirements']
+    assert rows[0]['retiredThroughAt'] == 2000 and rows[0]['retiredThroughAtFromCorrection'] is True
+    assert rows[1] == other
+
+
+@pytest.mark.asyncio
 async def test_unprovenanced_facts_use_only_exact_retirement_matching(tmp_path):
     _portable_retirement(tmp_path)
     h = _harness(tmp_path, [])

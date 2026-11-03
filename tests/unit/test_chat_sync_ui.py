@@ -110,6 +110,76 @@ def test_cloud_model_failure_is_visible_after_restoration_without_false_admissio
     """.replace('FAILURE', json.dumps(failure)).replace('RESTORATION', json.dumps(restoration)))
 
 
+@pytest.mark.parametrize('first_result', ['success', 'empty', 'error', 'role_changed'])
+def test_candidate_fetch_has_one_flight_and_releases_every_early_exit(first_result):
+    run_script(r"""(async()=>{
+        let release, reads=0, receipts=0, reloads=0;
+        const toasts=[],candidate={token:'candidate-token',path:'/user_live2d/new/model.model3.json',name:'Neko'};
+        window.live2dManager={getCurrentModel(){return{};},_modelLoadState:'ready'};
+        window.showStatusToast=(...args)=>toasts.push(args);
+        window.handleModelReload=async(name,options)=>{reloads++;window.live2dManager._lastLoadedModelPath=options.temporaryConfig.model_path;};
+        global.fetch=async(path)=>{
+            if(path.endsWith('/status'))return{ok:true,json:async()=>({characters:[{displayName:'Neko',characterSyncId:original.characterSyncId}]})};
+            if(path.endsWith('/model-sync')){
+                reads++;
+                if(reads===1)return await new Promise(resolve=>{release=resolve;});
+                return{ok:true,json:async()=>({})};
+            }
+            receipts++;
+            return{ok:true,json:async()=>({applied:receipts===1})};
+        };
+        const first=window.nekoChatSync.notifyMediaChanged();
+        await new Promise(resolve=>setImmediate(resolve));
+        const second=window.nekoChatSync.notifyMediaChanged();
+        await new Promise(resolve=>setImmediate(resolve));
+        assert.equal(reads,1);
+        if(RESULT==='role_changed')window.lanlan_config.lanlan_name='Other';
+        release({ok:RESULT!=='error',json:async()=>RESULT==='error'?{detail:'chat_sync_unavailable'}:RESULT==='empty'?{}:{candidate}});
+        await Promise.all([first,second]);
+        assert.equal(receipts,RESULT==='success'?1:0);
+        assert.equal(reloads,RESULT==='success'?1:0);
+        assert.deepEqual(toasts,[]);
+        window.lanlan_config.lanlan_name='Neko';
+        await window.nekoChatSync.notifyMediaChanged();
+        assert.equal(reads,2);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('RESULT', json.dumps(first_result)))
+
+
+@pytest.mark.parametrize('action', ['cloud', 'local', 'retry'])
+@pytest.mark.parametrize('context', ['same', 'role_changed', 'closed'])
+def test_model_action_failure_is_visible_only_in_its_current_dialog(action, context):
+    run_script(r"""(async()=>{
+        window.t=(key,values={})=>key+JSON.stringify(values);
+        const create=document.createElement;
+        document.createElement=()=>{
+            const node=create(),query=node.querySelector.bind(node);
+            node.querySelector=selector=>selector==='[data-sync-model]'?node.children.find(child=>'syncModel' in child.dataset):query(selector);
+            return node;
+        };
+        let reject;
+        global.fetch=async(path)=>{
+            if(path.endsWith('/status'))return{ok:true,json:async()=>({characters:[{displayName:'Neko',characterSyncId:original.characterSyncId,binding:{enabled:true}}]})};
+            if(path.endsWith('/model-sync'))return{ok:true,json:async()=>ACTION==='retry'?{failed:true}:{conflict:true}};
+            return await new Promise((resolve,fail)=>{reject=fail;});
+        };
+        await window.nekoChatSync.openSettings();
+        const modal=body.children[0],panel=modal.querySelector('[data-sync-model]');
+        const button=panel.children.find(child=>child.textContent.startsWith('cloudModel.'+({cloud:'useCloud',local:'keepLocal',retry:'retry'}[ACTION])));
+        const status=modal.children.find(child=>child.className==='chat-sync-status'), before=status.textContent;
+        const pending=button.events.click();
+        assert.equal(button.disabled,true);
+        if(CONTEXT==='role_changed')window.lanlan_config.lanlan_name='Other';
+        if(CONTEXT==='closed')modal.close();
+        reject(new Error('chat_sync_unavailable'));
+        await pending;
+        assert.equal(button.disabled,false);
+        if(CONTEXT==='same')assert(status.textContent.includes('chatSync.errorNetwork')&&status.textContent.includes('chat_sync_unavailable'));
+        else assert.equal(status.textContent,before);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('ACTION', json.dumps(action)).replace('CONTEXT', json.dumps(context)))
+
+
 @pytest.mark.parametrize('lost_confirmation', ['before_commit', 'after_commit'])
 def test_model_confirmation_transport_loss_keeps_renderer_success_retryable(lost_confirmation):
     run_script(r"""(async()=>{
@@ -156,6 +226,101 @@ def test_model_confirmation_transport_loss_keeps_renderer_success_retryable(lost
         assert.equal(window.live2dManager._lastLoadedModelPath,candidatePath);
     })().catch(error=>{console.error(error);process.exitCode=1;});
     """.replace('LOSS', json.dumps(lost_confirmation)))
+
+
+@pytest.mark.parametrize('received_count', [1, 200])
+def test_unknown_time_messages_follow_receive_order_and_keep_the_window_stable(received_count):
+    run_script(r"""(async()=>{
+        const local=Array.from({length:50},(_,i)=>({id:'local-'+i,createdAt:1000+i,status:'sent',blocks:[]}));
+        let messages=local.slice(),writes=0;
+        const records=Array.from({length:COUNT},(_,i)=>({...original,messageId:i.toString(16).padStart(32,'0'),text:'phone '+i,originalTime:null}));
+        const host=window.reactChatWindowHost={maxMessages:50,getState:()=>({messages}),setMessages:value=>{writes++;messages=value;}};
+        document.visibilityState='visible';
+        global.fetch=async(path)=>({ok:true,json:async()=>path.endsWith('/status')?{characters:[{
+            displayName:'Neko',characterSyncId:original.characterSyncId,binding:{enabled:true}}]}:{originals:records}});
+        windowEvents['neko-assistant-turn-end']();
+        for(let i=0;i<12;i++)await new Promise(resolve=>setImmediate(resolve));
+        assert.equal(messages.length,host.maxMessages);
+        const received=messages.filter(message=>message.id.startsWith('sync-recent-'));
+        assert.equal(received.length,Math.min(COUNT,50));
+        assert.equal(received.at(-1).blocks[0].text,'phone '+(COUNT-1));
+        assert(received.every(message=>message.createdAt===0&&message.time==='chatSync.unknownTime'));
+        const snapshot=JSON.stringify(messages);
+        windowEvents['neko-assistant-turn-end']();
+        for(let i=0;i<12;i++)await new Promise(resolve=>setImmediate(resolve));
+        assert.equal(JSON.stringify(messages),snapshot);
+        assert.equal(writes,1);
+        records.push({...original,messageId:'f'.repeat(32),text:'new arrival',originalTime:null});
+        windowEvents['neko-assistant-turn-end']();
+        for(let i=0;i<12;i++)await new Promise(resolve=>setImmediate(resolve));
+        assert.equal(messages.at(-1).blocks[0].text,'new arrival');
+        assert.equal(messages.length,50);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('COUNT', str(received_count)))
+
+
+@pytest.mark.parametrize('received_count', [50, 200])
+def test_synced_epoch_zero_remains_a_known_original_time(received_count):
+    run_script(r"""(async()=>{
+        let messages=[];
+        window.reactChatWindowHost={maxMessages:50,getState:()=>({messages}),setMessages:value=>{messages=value;}};
+        document.visibilityState='visible';
+        const records=Array.from({length:COUNT},(_,i)=>({...original,messageId:i.toString(16).padStart(32,'0'),originalTime:'0'}));
+        global.fetch=async(path)=>({ok:true,json:async()=>path.endsWith('/status')?{characters:[{
+            displayName:'Neko',characterSyncId:original.characterSyncId,binding:{enabled:true}}]}:{originals:records}});
+        windowEvents['neko-assistant-turn-end']();
+        for(let i=0;i<12;i++)await new Promise(resolve=>setImmediate(resolve));
+        assert.equal(messages.length,50);
+        assert(messages.every(message=>message.createdAt===0&&message.time===new Date(0).toLocaleString()));
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('COUNT', str(received_count)))
+
+
+def test_model_flight_and_action_error_in_a_real_chromium_page():
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        errors = []
+        page.on('pageerror', lambda error: errors.append(str(error)))
+        page.set_content('<div id="live2d-container"></div>')
+        page.evaluate(r"""() => {
+            window.lanlan_config={lanlan_name:'Neko'};
+            window.t=(key,values={})=>key==='chatSync.errorDetail'?values.message+':'+values.code:key;
+            window.calls={reads:0,receipts:0,reloads:0,toasts:[]};
+            window.live2dManager={_modelLoadState:'ready',getCurrentModel(){return{};}};
+            window.showStatusToast=(...args)=>calls.toasts.push(args);
+            window.handleModelReload=async(name,options)=>{calls.reloads++;live2dManager._lastLoadedModelPath=options.temporaryConfig.model_path;};
+            window.fetch=async(path)=>{
+                if(path.endsWith('/status'))return{ok:true,json:async()=>({characters:[{displayName:'Neko',characterSyncId:'a'.repeat(32),binding:{enabled:true}}]})};
+                if(path.endsWith('/model-sync')){
+                    calls.reads++;
+                    if(calls.reads===1)return await new Promise(resolve=>{window.releaseModel=resolve;});
+                    return{ok:true,json:async()=>({conflict:true})};
+                }
+                if(path.endsWith('/model-sync-action'))return{ok:false,json:async()=>({detail:'chat_sync_unavailable'})};
+                calls.receipts++;
+                return{ok:true,json:async()=>({applied:calls.receipts===1})};
+            };
+        }""")
+        page.add_script_tag(path=str(SCRIPT))
+        result = page.evaluate(r"""async() => {
+            const first=nekoChatSync.notifyMediaChanged();
+            while(!window.releaseModel)await new Promise(resolve=>setTimeout(resolve,0));
+            const second=nekoChatSync.notifyMediaChanged();
+            await new Promise(resolve=>setTimeout(resolve,0));
+            const reads=calls.reads;
+            releaseModel({ok:true,json:async()=>({candidate:{token:'candidate-token',path:'/new.model3.json',name:'Neko'}})});
+            await Promise.all([first,second]);
+            return{reads,...calls};
+        }""")
+        assert result == {'reads': 1, 'receipts': 1, 'reloads': 1, 'toasts': []}
+        page.evaluate('nekoChatSync.openSettings()')
+        page.get_by_role('button', name='cloudModel.useCloud', exact=True).click()
+        page.locator('.chat-sync-status').filter(has_text='chat_sync_unavailable').wait_for()
+        assert page.get_by_role('button', name='cloudModel.useCloud', exact=True).is_enabled()
+        assert not errors
+        browser.close()
 
 
 @pytest.mark.parametrize('received_count', [50, 200])

@@ -12,6 +12,8 @@ import re
 import sqlite3
 from uuid import uuid4
 
+from filelock import AsyncFileLock, Timeout
+
 from services.chat_sync import host
 from services.chat_sync.model_protocol import canonical, encode, web_url
 from services.chat_sync.model_package import install_model, package_model
@@ -87,6 +89,8 @@ class DesktopModelSync:
     def __init__(self, runtime, path):
         self.runtime, self.store, self.adapter = runtime, ModelStore(path), None
         self.lock = asyncio.Lock()
+        self.cache_lock = AsyncFileLock(str(self.store.path.parent / 'model-cache.lock'))
+        self._cleanup_needed = True
         logger = logging.getLogger("httpx")
         if not any(isinstance(item, _PrivateModelLogFilter) for item in logger.filters):
             logger.addFilter(_PrivateModelLogFilter())
@@ -181,11 +185,28 @@ class DesktopModelSync:
                 except Exception:
                     pass
             raise
+        finally:
+            await asyncio.to_thread(self.cleanup_cache)
+
+    def cleanup_cache(self, *, force=False):
+        if force:
+            self._cleanup_needed = True
+        if not self._cleanup_needed or self.runtime._closing:
+            return
+        from services.chat_sync.model_cache import collect_model_cache
+        try:
+            if collect_model_cache(self):
+                self._cleanup_needed = False
+        except Timeout:
+            # An active download/installation will collect after releasing its lease.
+            pass
+        except (OSError, ValueError, TypeError, KeyError, AttributeError, RuntimeError, sqlite3.Error):
+            logging.getLogger(__name__).warning('chat_sync_model_cache_cleanup_retry')
 
     async def _step(self, uid, *, manual=False, automatic_only=False):
         if self.adapter is None:
             return
-        async with self.lock:
+        async with self.lock, self.cache_lock:
             runtime, adapter = self.runtime, self.adapter
             authenticated = await runtime._session()
             domain, request, commit = await runtime._bound_transport(uid, authenticated=authenticated, automatic_only=automatic_only)
@@ -249,6 +270,8 @@ class DesktopModelSync:
             if candidate and candidate["revision"] == head["revision"] and candidate["expected"] == current["selection"]:
                 return
             dirty = state["selection"] != current["selection"]
+            if dirty or head['revision'] != state['revision'] or state.get('pending') or state.get('candidate'):
+                self._cleanup_needed = True
             if head["revision"] > state["revision"] and dirty and (state["revision"] > 0 or had_state) and not state.get("pending"):
                 state["conflict"] = head
                 await commit(self.store.put, key, state)
@@ -402,7 +425,14 @@ class DesktopModelSync:
         return {"conflict": bool(state.get("conflict")), "failed": bool(state.get("failed") or state.get("error"))}
 
     async def finish(self, uid, token, loaded):
-        async with self.lock:
+        try:
+            return await self._finish(uid, token, loaded)
+        finally:
+            self._cleanup_needed = True
+            await asyncio.to_thread(self.cleanup_cache)
+
+    async def _finish(self, uid, token, loaded):
+        async with self.lock, self.cache_lock:
             domain, request, commit = await self.runtime._bound_transport(uid)
             state = await asyncio.to_thread(self.store.get, domain.key())
             candidate = state.get("candidate") if state else None
@@ -431,7 +461,7 @@ class DesktopModelSync:
             return True
 
     async def resolve(self, uid, action):
-        async with self.lock:
+        async with self.lock, self.cache_lock:
             domain, _, commit = await self.runtime._bound_transport(uid)
             state = await asyncio.to_thread(self.store.get, domain.key())
             if not state or self.adapter is None:
@@ -445,9 +475,12 @@ class DesktopModelSync:
                 state["revision"] = remote["revision"] if action == "local" else remote["revision"] - 1
                 if action == 'local':
                     state['remote'] = remote['record']
+                else:
+                    state.pop('failed', None)
                 state["selection"] = "" if action == "local" else (await self.adapter.read(uid))["selection"]
             await commit(self.store.put, domain.key(), state)
             await commit(self.runtime.scheduler.retry_model, domain.key())
+            self._cleanup_needed = True
 
     async def upload_file(self, request, base, file, guard=None):
         import httpx

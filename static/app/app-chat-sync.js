@@ -100,6 +100,11 @@
                         if (!dialog.open || activeUid !== modelUid || characterName() !== modelName) return;
                         button.disabled = true;
                         try { await api('/characters/' + modelUid + '/model-sync-action', 'POST', { action: action }); await refreshStatus(); }
+                        catch (error) {
+                            if (dialog.open && activeUid === modelUid && characterName() === modelName) {
+                                statusNode.textContent = describeError(error);
+                            }
+                        }
                         finally { button.disabled = false; }
                     });
                     modelPanel.appendChild(button);
@@ -223,15 +228,16 @@
 
     async function applyReadyModel(uid, name) {
         if (modelFlight || !document.getElementById('live2d-container') || typeof window.handleModelReload !== 'function') return;
-        var value;
-        try { value = await api('/characters/' + uid + '/model-sync'); }
-        catch (_) { return; }
-        var candidate = value && value.candidate;
-        if (!candidate || characterName() !== name || candidate.name !== name) return;
-        modelFlight = candidate.token;
+        modelFlight = true;
+        var candidate;
         var failed = false;
         var loaded = false;
         try {
+            var value;
+            try { value = await api('/characters/' + uid + '/model-sync'); }
+            catch (_) { return; }
+            candidate = value && value.candidate;
+            if (!candidate || characterName() !== name || candidate.name !== name) return;
             await window.handleModelReload(name, { temporaryConfig: {
                 model_type: 'live2d', live3d_sub_type: '', model_path: candidate.path
             }, suppressToast: true, throwOnError: true, preservePreviousUntilLoaded: true });
@@ -271,6 +277,8 @@
     var displayFlight = false;
     var displayPending = false;
     var displayPrefix = 'sync-recent-';
+    var displayReceiptUid = null;
+    var displayReceiptOrder = new Map();
 
     function liveCharacterName() {
         return window.lanlan_config && window.lanlan_config.lanlan_name || window._currentCatgirl || '';
@@ -294,12 +302,12 @@
             ? record.text.replace(/^\[\d{8} [^\]\s]+ \d{2}:\d{2}\][ \t]*/, '') : record.text;
         var blocks = body ? [{ type: 'text', text: body }] : [];
         if (!blocks.length) return null;
-        var timestamp = record.originalTime === null ? 0 : Number(record.originalTime);
-        if (!Number.isSafeInteger(timestamp)) timestamp = 0;
+        var timestamp = record.originalTime === null ? null : Number(record.originalTime);
+        if (!Number.isSafeInteger(timestamp)) timestamp = null;
         return { id: displayPrefix + uid + '-' + record.messageId, role: record.role,
             author: record.role === 'assistant' ? name : text('userLabel'),
-            time: timestamp ? new Date(timestamp).toLocaleString() : text('unknownTime'),
-            createdAt: timestamp, status: 'sent', blocks: blocks };
+            time: timestamp === null ? text('unknownTime') : new Date(timestamp).toLocaleString(),
+            createdAt: timestamp === null ? 0 : timestamp, status: 'sent', blocks: blocks };
     }
 
     function displaySnapshot(messages) {
@@ -328,8 +336,26 @@
             // The endpoint supplies only received recent messages. Local split bubbles stay owned by the chat host.
             var current = host.getState().messages || [];
             var local = current.filter(function (message) { return !message.id.startsWith(displayPrefix); });
+            var unknown = new Set(result.originals.filter(function (record) {
+                return record.originalTime === null || !Number.isSafeInteger(Number(record.originalTime));
+            }).map(function (record) { return displayPrefix + uid + '-' + record.messageId; }));
+            if (displayReceiptUid !== uid) { displayReceiptUid = uid; displayReceiptOrder.clear(); }
+            var latestPosition = Math.max(0, ...local.concat(received).map(function (message) {
+                return typeof message.createdAt === 'number' ? message.createdAt : 0;
+            }), ...displayReceiptOrder.values());
+            var receiptOrder = new Map();
+            received.forEach(function (message) {
+                if (unknown.has(message.id)) receiptOrder.set(message.id,
+                    displayReceiptOrder.has(message.id) ? displayReceiptOrder.get(message.id) : ++latestPosition);
+            });
+            // Display positions are receipt order only; original times remain unknown.
+            displayReceiptOrder = receiptOrder;
+            function position(message) {
+                return receiptOrder.has(message.id) ? receiptOrder.get(message.id)
+                    : typeof message.createdAt === 'number' ? message.createdAt : Infinity;
+            }
             var merged = local.concat(received).sort(function (a, b) {
-                return (typeof a.createdAt === 'number' ? a.createdAt : Infinity) - (typeof b.createdAt === 'number' ? b.createdAt : Infinity);
+                return position(a) - position(b);
             }).slice(-host.maxMessages).map(function (message, index) {
                 // The host sorts by explicit keys, including keys retained by local split bubbles.
                 return Object.assign({}, message, { sortKey: index });
