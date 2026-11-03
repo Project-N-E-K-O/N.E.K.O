@@ -26,6 +26,7 @@
             chat_sync_unavailable: 'errorNetwork',
             chat_sync_pull_timeout: 'errorNetwork',
             long_term_memory_capacity_exceeded: 'errorLongTermCapacity',
+            long_term_memory_incoming_pending: 'errorLongTermPending',
             chat_sync_retry_later: 'errorRetryLater',
             chat_sync_service_rejected: 'errorServiceRejected',
             chat_sync_binding_changed: 'errorBindingChanged',
@@ -75,8 +76,9 @@
         activeUid = role ? role.characterSyncId : null;
         var binding = role && role.binding;
         writerRecoveryRequired = !!(state.writerRecoveryRequired || (binding && binding.writerRecoveryRequired));
-        var error = role && (role.syncSetupError || (binding && binding.lastSyncError));
-        statusNode.textContent = error ? describeError(error)
+        var errors = [role && role.syncSetupError, binding && binding.lastSyncError]
+            .concat(binding && binding.localMemoryDiagnostics || []).filter(Boolean);
+        statusNode.textContent = errors.length ? Array.from(new Set(errors)).map(describeError).join('\n')
             : text(writerRecoveryRequired ? 'writerRecoveryRequired' : 'recoveryNotRequired');
         if (binding) {
             if (binding.pendingOriginals || binding.pendingDeletions) {
@@ -228,7 +230,12 @@
     };
 
     async function applyReadyModel(uid, name) {
-        if (modelFlight || !document.getElementById('live2d-container') || typeof window.handleModelReload !== 'function') return;
+        if (modelFlight || window.appState?.isSwitchingCatgirl || !document.getElementById('live2d-container') || typeof window.handleModelReload !== 'function') return;
+        var switchAttempt = window.appState?._switchAttemptCounter || 0;
+        function isCurrentRole() {
+            return characterName() === name && !window.appState?.isSwitchingCatgirl &&
+                (window.appState?._switchAttemptCounter || 0) === switchAttempt;
+        }
         modelFlight = true;
         var candidate;
         var failed = false;
@@ -238,28 +245,28 @@
             try { value = await api('/characters/' + uid + '/model-sync'); }
             catch (_) { return; }
             candidate = value && value.candidate;
-            if (!candidate || characterName() !== name || candidate.name !== name) return;
+            if (!candidate || !isCurrentRole() || candidate.name !== name) return;
             await window.handleModelReload(name, { temporaryConfig: {
                 model_type: 'live2d', live3d_sub_type: '', model_path: candidate.path
             }, suppressToast: true, throwOnError: true, preservePreviousUntilLoaded: true });
-            if (characterName() !== name) return;
+            if (!isCurrentRole()) return;
             var manager = window.live2dManager;
             loaded = !!(manager && manager._lastLoadedModelPath === candidate.path && manager._modelLoadState === 'ready'
                 && typeof manager.getCurrentModel === 'function' && manager.getCurrentModel());
             var receipt = await api('/characters/' + uid + '/model-sync/' + candidate.token, 'POST', { loaded: loaded });
-            if (!receipt.applied && characterName() === name) {
+            if (!receipt.applied && isCurrentRole()) {
                 failed = true;
                 await window.handleModelReload(name, { suppressToast: true });
             }
         } catch (_) {
             failed = true;
-            if (characterName() === name) {
+            if (isCurrentRole()) {
                 if (!loaded) await api('/characters/' + uid + '/model-sync/' + candidate.token, 'POST', { loaded: false }).catch(function () {});
-                await window.handleModelReload(name, { suppressToast: true }).catch(function () {});
+                if (isCurrentRole()) await window.handleModelReload(name, { suppressToast: true }).catch(function () {});
             }
         } finally {
             modelFlight = null;
-            if (failed && characterName() === name && typeof window.showStatusToast === 'function') {
+            if (failed && isCurrentRole() && typeof window.showStatusToast === 'function') {
                 window.showStatusToast(window.t ? window.t('app.modelSwitchFailed') : 'Model switch failed', 3000);
             }
         }

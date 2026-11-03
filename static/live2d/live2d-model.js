@@ -1100,6 +1100,19 @@ Live2DManager.prototype.reloadModelParameters = async function(options = {}) {
 };
 
 Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
+    const preserving = options.preservePreviousUntilLoaded === true;
+    const roleName = window.lanlan_config?.lanlan_name || '';
+    const switchAttempt = window.appState?._switchAttemptCounter || 0;
+    const requireCurrentRole = model => {
+        if (!preserving || (!window.appState?.isSwitchingCatgirl &&
+                (window.appState?._switchAttemptCounter || 0) === switchAttempt &&
+                (window.lanlan_config?.lanlan_name || '') === roleName)) return;
+        try { model?.destroy({ children: true }); } catch (_) {}
+        const error = new Error('Live2D candidate superseded by a character switch.');
+        error.name = 'LoadSuperseded';
+        throw error;
+    };
+    requireCurrentRole();
     const isModelManagerPage = document.body?.classList.contains('model-manager-page')
         || window.location.pathname.includes('model_manager');
     const isPNGTuberPageMode = (window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber';
@@ -1124,7 +1137,6 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
     this._isLoadingModel = true;
     this._invalidateParameterReloadTickets();
     const loadToken = ++this._activeLoadToken;
-    const preserving = options.preservePreviousUntilLoaded === true;
     const previousModel = this.currentModel;
     const previousReady = this._isModelReadyForInteraction;
     const previousState = this._modelLoadState;
@@ -1143,6 +1155,7 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
     try {
         const preparedModel = options.preparedModel || (options.preservePreviousUntilLoaded
             ? await Live2DModel.from(modelPath, { autoFocus: false }) : null);
+        requireCurrentRole(preparedModel);
         if (preserving) {
             this._modelLoadState = 'preparing';
             this._isModelReadyForInteraction = false;
@@ -1156,6 +1169,7 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
         }
 
         const model = preparedModel || await Live2DModel.from(modelPath, { autoFocus: false });
+        requireCurrentRole(model);
         if (!this._isLoadTokenActive(loadToken)) {
             try { model && model.destroy && model.destroy({ children: true }); } catch (_) {}
             const cancelError = new Error('Live2D load superseded by a newer model request.');

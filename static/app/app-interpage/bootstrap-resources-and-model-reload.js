@@ -970,7 +970,7 @@ I.mod = window.appInterpage;
                 if (reloadOptions.preservePreviousUntilLoaded && newModelType === 'live2d' && newModelPath) {
                     if (!window.Live2DModel || typeof window.Live2DModel.from !== 'function') throw new Error('live2d_loader_unavailable');
                     preparedLive2DModel = await window.Live2DModel.from(newModelPath, { autoFocus: false });
-                    if ((window.lanlan_config?.lanlan_name || '') !== currentLanlanName) throw new Error('model_role_changed');
+                    if (window.appState?.isSwitchingCatgirl || (window.lanlan_config?.lanlan_name || '') !== currentLanlanName) throw new Error('model_role_changed');
                 }
                 var nextLighting = (temporaryConfig && !Object.prototype.hasOwnProperty.call(data, 'lighting'))
                     ? (window.lanlan_config?.lighting || null)
@@ -1481,7 +1481,7 @@ I.mod = window.appInterpage;
                             } catch (prefError) {
                                 console.warn('[Model] 读取 Live2D 用户偏好失败，将继续加载模型:', prefError);
                             }
-                            if (reloadOptions.preservePreviousUntilLoaded && (window.lanlan_config?.lanlan_name || '') !== currentLanlanName) throw new Error('model_role_changed');
+                            if (reloadOptions.preservePreviousUntilLoaded && (window.appState?.isSwitchingCatgirl || (window.lanlan_config?.lanlan_name || '') !== currentLanlanName)) throw new Error('model_role_changed');
 
                             await window.live2dManager.loadModel(newModelPath, {
                                 preparedModel: preparedLive2DModel,
@@ -1597,7 +1597,7 @@ I.mod = window.appInterpage;
             }
             // 回滚提前写入的 config，防止残留错误的模型类型
             var canRestoreModelConfig = !reloadOptions.preservePreviousUntilLoaded ||
-                (window.lanlan_config?.lanlan_name || '') === currentLanlanName;
+                (!window.appState?.isSwitchingCatgirl && (window.lanlan_config?.lanlan_name || '') === currentLanlanName);
             if (typeChanged && window.lanlan_config && canRestoreModelConfig) {
                 window.lanlan_config.model_type = oldModelType;
                 window.lanlan_config.live3d_sub_type = oldLive3dSubType || '';

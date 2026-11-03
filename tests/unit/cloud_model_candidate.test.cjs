@@ -17,7 +17,7 @@ const rollbackStart = source.indexOf('            // 回滚提前写入的 confi
 const actualRollback = source.slice(rollbackStart, source.indexOf('            if (!suppressToast) {', rollbackStart));
 assert.ok(rollbackStart > commitEnd && actualRollback.includes('oldModelType'));
 
-for (const oldType of ['vrm', 'pngtuber']) for (const phase of ['idle', 'preferences', 'preferences-error', 'unchanged', 'load-error']) {
+for (const oldType of ['vrm', 'pngtuber']) for (const phase of ['idle', 'preferences', 'preferences-error', 'switching', 'unchanged', 'load-error']) {
     test(`cloud candidate rechecks its ${oldType} role after ${phase}`, async () => {
         const current = {}, next = {}, candidate = {};
         let loads = 0;
@@ -32,14 +32,15 @@ for (const oldType of ['vrm', 'pngtuber']) for (const phase of ['idle', 'prefere
             document: { getElementById() { return null; } },
         };
         function switchRole() {
-            context.lanlan_config.lanlan_name = 'Other';
+            if (phase === 'switching') context.appState = { isSwitchingCatgirl: true };
+            else context.lanlan_config.lanlan_name = 'Other';
             context.live2dManager.currentModel = next;
         }
         context._waitForLive2DManagerIdle = async () => { if (phase === 'idle') switchRole(); };
         context.live2dManager = {
             currentModel: current,
             loadUserPreferences: async () => {
-                if (phase.startsWith('preferences')) switchRole();
+                if (phase.startsWith('preferences') || phase === 'switching') switchRole();
                 if (phase === 'preferences-error') throw new Error('preferences unavailable');
                 return [];
             },
@@ -108,6 +109,53 @@ for (const type of ['live2d', 'vrm']) for (const roleChanges of [false, true]) {
 const modelSource = fs.readFileSync(path.resolve(__dirname, '../../static/live2d/live2d-model.js'), 'utf8');
 const modelStart = modelSource.indexOf('Live2DManager.prototype.loadModel = async function');
 const loadModelSource = modelSource.slice(modelStart, modelSource.indexOf('\n// 检查加载令牌', modelStart));
+
+for (const phase of ['before-load', 'during-prepare', 'during-remove', 'switch-finished', 'name-changed']) {
+    test(`real candidate loader rejects a stale role: ${phase}`, async () => {
+        const previous = {}, candidate = { destroy() { this.destroyed = true; } };
+        let release, configured = 0, removes = 0;
+        const context = {
+            Live2DManager: function () {},
+            Live2DModel: { from: () => new Promise(resolve => { release = () => resolve(candidate); }) },
+            document: { body: { classList: { contains: () => false } } },
+            location: { pathname: '/' },
+            lanlan_config: { lanlan_name: 'Synthetic', model_type: 'live2d' },
+            appState: { isSwitchingCatgirl: phase === 'before-load', _switchAttemptCounter: 1 },
+            console: { log() {}, warn() {}, error() {} }, clearTimeout,
+        };
+        context.window = context;
+        vm.createContext(context);
+        vm.runInContext(loadModelSource, context);
+        const manager = Object.assign(new context.Live2DManager(), {
+            pixi_app: { view: { style: {} } }, currentModel: previous,
+            _activeLoadToken: 0, _modelLoadState: 'ready', _isModelReadyForInteraction: true,
+            _invalidateParameterReloadTickets() {}, _resetDerivedModelMetadata() {},
+            _isLoadTokenActive(token) { return token === this._activeLoadToken; },
+            removeModel() {
+                removes++;
+                return new Promise(resolve => { release = () => { this.currentModel = null; resolve(); }; });
+            },
+            async _configureLoadedModel() { configured++; },
+        });
+        const operation = manager.loadModel('/candidate', {
+            preservePreviousUntilLoaded: true,
+            ...(phase === 'during-prepare' ? {} : { preparedModel: candidate }),
+        });
+        if (release) {
+            if (phase === 'name-changed') context.lanlan_config.lanlan_name = 'Other';
+            else {
+                context.appState._switchAttemptCounter++;
+                context.appState.isSwitchingCatgirl = phase !== 'switch-finished';
+            }
+            release();
+        }
+        await assert.rejects(operation, error => error.name === 'LoadSuperseded');
+        assert.notEqual(manager.currentModel, candidate);
+        assert.equal(configured, 0);
+        assert.equal(removes, ['before-load', 'during-prepare'].includes(phase) ? 0 : 1);
+        if (phase !== 'before-load') assert.equal(candidate.destroyed, true);
+    });
+}
 
 for (const prepared of [false, true]) for (const failConfiguration of [false, true]) {
     test(`retained model metadata survives candidate preparation; prepared=${prepared}, configureFailure=${failConfiguration}`, async () => {

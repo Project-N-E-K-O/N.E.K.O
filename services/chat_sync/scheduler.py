@@ -203,6 +203,13 @@ class ChatSyncScheduler:
         with closing(self._connect()) as conn:
             # Retired body/marker rows can keep an old error that no pass clears.
             row = conn.execute("SELECT last_error FROM scheduler_tasks WHERE domain=? AND last_error IS NOT NULL "
-                               "AND channel NOT IN ('body','deletion','media') "
+                               "AND channel NOT IN ('body','deletion','media','long_term_capture') "
                                "ORDER BY last_attempt DESC LIMIT 1", (domain,)).fetchone()
         return row[0] if row else None
+
+    def local_memory_diagnostics(self, domain) -> list[str]:
+        """Keep local capacity notices separate from transport failures."""
+        with closing(self._connect()) as conn:
+            row = conn.execute("SELECT last_error FROM scheduler_tasks WHERE domain=? AND channel='long_term_capture' "
+                               "AND last_error='long_term_memory_capacity_exceeded'", (domain,)).fetchone()
+        return [row[0]] if row else []

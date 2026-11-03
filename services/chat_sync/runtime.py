@@ -1128,6 +1128,7 @@ class DesktopChatSyncRuntime:
             binding["lastSyncError"] = await asyncio.to_thread(
                 self.scheduler.last_error, ChatDomain(binding["owner_id"], binding["character_uid"]).key(),
             )
+            binding["localMemoryDiagnostics"] = await asyncio.to_thread(self._local_memory_diagnostics, binding)
             profile = await asyncio.to_thread(self.profiles.store.status, ChatDomain(binding["owner_id"], binding["character_uid"]).key())
             # Local UI polling sees only revision flags; full retained candidates
             # are returned by the explicit per-character profile controls.
@@ -1139,6 +1140,19 @@ class DesktopChatSyncRuntime:
                 "syncSetupDiagnostics": await asyncio.to_thread(self.state.new_role_diagnostics),
                 "syncPendingChoices": await asyncio.to_thread(self.state.pending_choices, await asyncio.to_thread(self.writer.epoch)),
                 "syncChoices": await asyncio.to_thread(self.state.choices), "writerRecoveryRequired": False}
+
+    def _local_memory_diagnostics(self, binding):
+        """Observe retained local staging without retrying or altering evidence."""
+        if not binding['enabled']:
+            return []
+        domain = ChatDomain(binding['owner_id'], binding['character_uid']).key()
+        diagnostics = self.scheduler.local_memory_diagnostics(domain)
+        try:
+            if self.long_term_memory is not None and self.long_term_memory.adapter.incoming_path(binding['character_uid']).is_file():
+                diagnostics.append('long_term_memory_incoming_pending')
+        except OSError:
+            pass
+        return diagnostics
 
     def _quarantined_status(self):
         """Expose local setup hints without treating copied consent as authority."""

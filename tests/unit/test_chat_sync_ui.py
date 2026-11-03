@@ -110,7 +110,7 @@ def test_cloud_model_failure_is_visible_after_restoration_without_false_admissio
     """.replace('FAILURE', json.dumps(failure)).replace('RESTORATION', json.dumps(restoration)))
 
 
-@pytest.mark.parametrize('first_result', ['success', 'empty', 'error', 'role_changed'])
+@pytest.mark.parametrize('first_result', ['success', 'empty', 'error', 'role_changed', 'switching', 'switch_finished'])
 def test_candidate_fetch_has_one_flight_and_releases_every_early_exit(first_result):
     run_script(r"""(async()=>{
         let release, reads=0, receipts=0, reloads=0;
@@ -134,16 +134,78 @@ def test_candidate_fetch_has_one_flight_and_releases_every_early_exit(first_resu
         await new Promise(resolve=>setImmediate(resolve));
         assert.equal(reads,1);
         if(RESULT==='role_changed')window.lanlan_config.lanlan_name='Other';
+        if(RESULT==='switching'||RESULT==='switch_finished')window.appState={
+            isSwitchingCatgirl:RESULT==='switching',_switchAttemptCounter:1};
         release({ok:RESULT!=='error',json:async()=>RESULT==='error'?{detail:'chat_sync_unavailable'}:RESULT==='empty'?{}:{candidate}});
         await Promise.all([first,second]);
         assert.equal(receipts,RESULT==='success'?1:0);
         assert.equal(reloads,RESULT==='success'?1:0);
         assert.deepEqual(toasts,[]);
         window.lanlan_config.lanlan_name='Neko';
+        if(window.appState)window.appState.isSwitchingCatgirl=false;
         await window.nekoChatSync.notifyMediaChanged();
         assert.equal(reads,2);
     })().catch(error=>{console.error(error);process.exitCode=1;});
     """.replace('RESULT', json.dumps(first_result)))
+
+
+@pytest.mark.parametrize('failed', [False, True])
+@pytest.mark.parametrize('switch_finished', [False, True])
+def test_switch_during_candidate_load_does_not_confirm_fail_or_restore_the_old_role(failed, switch_finished):
+    run_script(r"""(async()=>{
+        let release;
+        const reloads=[],receipts=[],toasts=[];
+        const candidate={token:'candidate-token',path:'/candidate.model3.json',name:'Neko'};
+        window.appState={isSwitchingCatgirl:false,_switchAttemptCounter:1};
+        window.showStatusToast=(...args)=>toasts.push(args);
+        window.live2dManager={getCurrentModel(){return{};},_modelLoadState:'ready',_lastLoadedModelPath:candidate.path};
+        window.handleModelReload=async(name,options)=>{
+            reloads.push(options);
+            await new Promise(resolve=>{release=resolve;});
+            if(FAILED)throw new Error('model_role_changed');
+        };
+        global.fetch=async(path,options)=>({ok:true,json:async()=>{
+            if(path.endsWith('/status'))return{characters:[{displayName:'Neko',characterSyncId:original.characterSyncId}]};
+            if(path.endsWith('/model-sync'))return{candidate};
+            receipts.push(options.body);return{applied:false};
+        }});
+        const pending=window.nekoChatSync.notifyMediaChanged();
+        await new Promise(resolve=>setImmediate(resolve));
+        assert.equal(typeof release,'function');
+        window.appState._switchAttemptCounter++;
+        window.appState.isSwitchingCatgirl=!FINISHED;
+        release();await pending;
+        assert.equal(reloads.length,1);
+        assert.deepEqual(receipts,[]);
+        assert.deepEqual(toasts,[]);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('FAILED', json.dumps(failed)).replace('FINISHED', json.dumps(switch_finished)))
+
+
+def test_switch_while_reporting_a_real_load_failure_cannot_restore_the_old_role():
+    run_script(r"""(async()=>{
+        let release, reloads=0;
+        const candidate={token:'candidate-token',path:'/candidate.model3.json',name:'Neko'},toasts=[],receipts=[];
+        window.appState={isSwitchingCatgirl:false,_switchAttemptCounter:1};
+        window.live2dManager={};
+        window.showStatusToast=(...args)=>toasts.push(args);
+        window.handleModelReload=async()=>{reloads++;throw new Error('load_failed');};
+        global.fetch=async(path,options)=>({ok:true,json:async()=>{
+            if(path.endsWith('/status'))return{characters:[{displayName:'Neko',characterSyncId:original.characterSyncId}]};
+            if(path.endsWith('/model-sync'))return{candidate};
+            receipts.push(JSON.parse(options.body));
+            return await new Promise(resolve=>{release=resolve;});
+        }});
+        const pending=window.nekoChatSync.notifyMediaChanged();
+        await new Promise(resolve=>setImmediate(resolve));
+        window.appState.isSwitchingCatgirl=true;
+        window.appState._switchAttemptCounter++;
+        release({applied:false});await pending;
+        assert.equal(reloads,1);
+        assert.deepEqual(receipts,[{loaded:false}]);
+        assert.deepEqual(toasts,[]);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """)
 
 
 @pytest.mark.parametrize('action', ['cloud', 'local', 'retry'])
@@ -468,27 +530,66 @@ def test_sync_settings_reports_pending_work():
     """)
 
 
-def test_sync_settings_explains_long_term_capacity_without_retrying():
+@pytest.mark.parametrize('transport_error', [None, 'chat_sync_login_required', 'chat_sync_unavailable'])
+def test_sync_settings_explains_memory_diagnostics_alongside_transport_errors_without_retrying(transport_error):
     run_script(r"""(async()=>{
         const requests=[];
         window.t=(key,values={})=>key+JSON.stringify(values);
         global.fetch=async(path)=>{requests.push(path);return{ok:true,json:async()=>({characters:[{
             displayName:'Neko',characterSyncId:original.characterSyncId,
-            binding:{lastSyncError:'long_term_memory_capacity_exceeded'}
+            binding:{lastSyncError:TRANSPORT||'long_term_memory_capacity_exceeded',localMemoryDiagnostics:[
+                'long_term_memory_capacity_exceeded','long_term_memory_incoming_pending']}
         }]})};};
         await window.nekoChatSync.openSettings();
         const shown=body.children[0].querySelectorAll('*').find(node=>node.className==='chat-sync-status').textContent;
         assert(shown.includes('chatSync.errorLongTermCapacity'));
         assert(shown.includes('long_term_memory_capacity_exceeded'));
+        assert(shown.includes('chatSync.errorLongTermPending'));
+        assert.equal(shown.split('chatSync.errorLongTermCapacity').length,2);
+        if(TRANSPORT)assert(shown.includes(TRANSPORT));
         assert(!shown.includes('errorUnknown'));
         assert.deepEqual(requests,['/api/chat-sync/status']);
     })().catch(error=>{console.error(error);process.exitCode=1;});
-    """)
+    """.replace('TRANSPORT', json.dumps(transport_error)))
+
+
+def test_all_memory_diagnostics_and_login_error_are_visible_together_in_chromium():
+    from playwright.sync_api import sync_playwright
+    labels = json.loads((ROOT / 'static/locales/en.json').read_text(encoding='utf-8'))['chatSync']
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content('<html><body></body></html>')
+        page.add_style_tag(path=str(ROOT / 'static/css/chat_sync.css'))
+        page.evaluate(r"""labels => {
+            window.lanlan_config={lanlan_name:'Neko'};
+            window.t=(key,values={})=>(labels[key.replace('chatSync.','')]||key)
+                .replace(/\{\{(.*?)\}\}/g,(_,name)=>values[name]);
+            window.requests=[];
+            window.fetch=async path=>{
+                requests.push(path);
+                return{ok:true,json:async()=>({characters:[{displayName:'Neko',characterSyncId:'c'.repeat(32),
+                    binding:{lastSyncError:'chat_sync_login_required',localMemoryDiagnostics:[
+                        'long_term_memory_capacity_exceeded','long_term_memory_incoming_pending']}}]})};
+            };
+        }""", labels)
+        page.add_script_tag(path=str(SCRIPT))
+        page.evaluate('nekoChatSync.openSettings()')
+        status = page.locator('.chat-sync-status')
+        assert status.is_visible()
+        shown = status.inner_text()
+        for key in ('loginRequired', 'errorLongTermCapacity', 'errorLongTermPending'):
+            assert labels[key] in shown
+        assert status.evaluate("node=>getComputedStyle(node).whiteSpace") == 'pre-line'
+        assert page.evaluate('requests') == ['/api/chat-sync/status']
+        assert page.locator('[data-sync-model] button').count() == 0
+        browser.close()
 
 
 @pytest.mark.parametrize('preference_error', [False, True])
 @pytest.mark.parametrize('old_type', ['vrm', 'pngtuber'])
-def test_late_candidate_role_change_preserves_the_new_role_model_in_chromium(preference_error, old_type):
+@pytest.mark.parametrize('change', ['name', 'switching'])
+def test_late_candidate_role_change_preserves_the_new_role_model_in_chromium(preference_error, old_type, change):
     from playwright.sync_api import sync_playwright
     source = (ROOT / 'static/app/app-interpage/bootstrap-resources-and-model-reload.js').read_text(encoding='utf-8')
     start = source.index('await _waitForLive2DManagerIdle(30000);', source.index('// Ensure PIXI app is initialised'))
@@ -524,12 +625,13 @@ def test_late_candidate_role_change_preserves_the_new_role_model_in_chromium(pre
                             '}catch(error){' + rollback_body + 'throw error;}};')
         page.evaluate('window.result=commitCandidate().then(()=>"loaded",error=>error.message); void 0')
         page.wait_for_function('!!window.preferencesReady')
-        page.evaluate(r"""failed => {
-            lanlan_config.lanlan_name='Other';
+        page.evaluate(r"""([failed,change]) => {
+            if(change==='switching')window.appState={isSwitchingCatgirl:true};
+            else lanlan_config.lanlan_name='Other';
             live2dManager.currentModel='new-role-model';
             if(failed)preferencesReady.reject(new Error('preferences unavailable'));
             else preferencesReady.resolve([]);
-        }""", preference_error)
+        }""", [preference_error, change])
         assert page.evaluate('result') == 'model_role_changed'
         assert page.evaluate('loads') == []
         assert page.evaluate('live2dManager.currentModel') == 'new-role-model'

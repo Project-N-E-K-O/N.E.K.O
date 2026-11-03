@@ -29,7 +29,8 @@ def test_local_memory_capacity_error_is_durable_without_transport_retry_or_extra
     scheduler = ChatSyncScheduler(path, clock=lambda: 1000)
     scheduler.record_long_term_capacity('role', 3, True)
     code = 'long_term_memory_capacity_exceeded'
-    assert scheduler.last_error('role') == code
+    assert scheduler.local_memory_diagnostics('role') == [code]
+    assert scheduler.last_error('role') is None
     assert scheduler.next_wake_at() is None
     assert scheduler.ready('role', 'pull', 3, 'session')
     assert scheduler.ready('role', 'model', 3, 'session')
@@ -40,9 +41,10 @@ def test_local_memory_capacity_error_is_durable_without_transport_retry_or_extra
     scheduler.record_long_term_capacity('role', 3, True)
     assert writer.check()['heads'] == before
     scheduler = ChatSyncScheduler(path, clock=lambda: 2000)
-    assert scheduler.last_error('role') == code
+    assert scheduler.local_memory_diagnostics('role') == [code]
     scheduler.failure('role', 'profile', 3, 'session', ValueError('chat_sync_unavailable'))
     scheduler.record_long_term_capacity('role', 3, False)
+    assert scheduler.local_memory_diagnostics('role') == []
     assert scheduler.last_error('role') == 'chat_sync_unavailable'
     before = writer.check()['heads']
     scheduler.record_long_term_capacity('role', 3, False)

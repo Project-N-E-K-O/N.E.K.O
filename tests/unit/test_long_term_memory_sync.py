@@ -424,14 +424,16 @@ async def test_over_capacity_capture_retains_memory_and_receipt_then_recovers_on
     assert len(captures) == 1
     assert before == {name: (owner.directory / name).read_bytes() for name in FILES.values()}
     assert receipt.read_bytes() == saved_receipt
-    assert owner.runtime.scheduler.last_error(DOMAIN.key()) == 'long_term_memory_capacity_exceeded'
+    assert owner.runtime.scheduler.local_memory_diagnostics(DOMAIN.key()) == ['long_term_memory_capacity_exceeded']
     binding, = (await owner.runtime.status())['bindings']
-    assert binding['lastSyncError'] == 'long_term_memory_capacity_exceeded'
+    assert binding['lastSyncError'] is None
+    assert binding['localMemoryDiagnostics'] == ['long_term_memory_capacity_exceeded']
     atomic_write_json(owner.directory / FILES['facts'], [first])
     owner.native.queue_capture('Neko')
     await asyncio.wait_for(asyncio.shield(owner.native._capture_tasks['Neko']), 3)
     assert receipt.read_bytes() == saved_receipt
     assert (await owner.runtime.status())['bindings'][0]['lastSyncError'] is None
+    assert (await owner.runtime.status())['bindings'][0]['localMemoryDiagnostics'] == []
     heads = owner.runtime.writer.check()['heads']
     assert not original('Neko', False)
     assert owner.runtime.writer.check()['heads'] == heads
@@ -463,6 +465,47 @@ async def test_conflicting_retirement_inbox_never_blocks_later_local_events(owne
     assert log.read_sentinel('Neko') == final_id
     assert inbox.exists()
     assert before == {filename: (owner.directory / filename).read_bytes() for filename in FILES.values()}
+
+
+@pytest.mark.asyncio
+async def test_waiting_inbox_status_coexists_with_errors_without_mutating_or_accepting_the_conflict(owner):
+    retired = {'id': 'same-retirement', 'subject': 'master', 'sourceMessageIds': ['old-source']}
+    atomic_write_json(owner.directory / FILES['sync'], {'evidence': {'retirements': [retired], 'confirmations': []}})
+    incoming = learned()
+    incoming.update(schemaVersion=2, evidence={'retirements': [{**retired, 'subject': 'neko'}], 'confirmations': []})
+    remote = {'ownerId': OWNER, 'characterSyncId': UID, 'revision': 1, 'completedAt': 2000, 'document': incoming}
+    assert owner.adapter.stage_remote(owner.binding, remote, owner.runtime.writer.epoch(), None,
+                                      session_fingerprint=(await owner.runtime._session())[1])
+    assert not await owner.native.consume(UID)
+    inbox = owner.adapter.incoming_path(UID)
+    before = {path: path.read_bytes() for path in [inbox, *(owner.directory / name for name in FILES.values())]}
+    owner.runtime.scheduler.record_long_term_capacity(DOMAIN.key(), owner.binding['generation'], True)
+    owner.runtime.scheduler.failure(DOMAIN.key(), 'pull', owner.binding['generation'], 'session',
+                                    ValueError('chat_sync_login_required'))
+    with pytest.raises(ValueError, match='^long_term_memory_incoming_pending$'):
+        owner.native._capture('Neko', False, UID, True)
+    binding, = (await owner.runtime.status())['bindings']
+    assert binding['lastSyncError'] == 'chat_sync_login_required'
+    assert binding['localMemoryDiagnostics'] == ['long_term_memory_capacity_exceeded', 'long_term_memory_incoming_pending']
+    assert before == {path: path.read_bytes() for path in before}
+    assert not (owner.directory / 'events.ndjson').exists()
+    remote.update(revision=2, document={**incoming, 'evidence': {'retirements': [retired], 'confirmations': []}})
+    assert owner.adapter.stage_remote(owner.binding, remote, owner.runtime.writer.epoch(), None,
+                                      session_fingerprint=(await owner.runtime._session())[1])
+    assert await owner.native.consume(UID)
+    assert 'long_term_memory_incoming_pending' not in (await owner.runtime.status())['bindings'][0]['localMemoryDiagnostics']
+    owner.runtime.state.pause(UID)
+    assert (await owner.runtime.status())['bindings'][0]['localMemoryDiagnostics'] == []
+
+
+@pytest.mark.asyncio
+async def test_unavailable_inbox_diagnostic_does_not_fail_status_or_expose_the_io_error(owner, monkeypatch):
+    def unavailable(_uid):
+        raise OSError('private local path')
+    monkeypatch.setattr(owner.adapter, 'incoming_path', unavailable)
+    binding, = (await owner.runtime.status())['bindings']
+    assert binding['localMemoryDiagnostics'] == []
+    assert binding['lastSyncError'] is None
 
 
 @pytest.mark.asyncio
