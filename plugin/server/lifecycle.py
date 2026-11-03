@@ -152,6 +152,9 @@ class ServerLifecycleService:
         """Gate reads on health while preserving retained fact ingress."""
         if require_ready and (self._delivery_path_shutting_down or not self._conversation_service_ready):
             return None
+        if require_ready and not self._message_plane_runner_is_alive():
+            self._conversation_service_ready = False
+            return None
         return self._conversation_service
 
     async def probe_conversation_service(self) -> ConversationService | None:
@@ -159,9 +162,9 @@ class ServerLifecycleService:
         async with _held(self._delivery_path_lock):
             if (
                 not self._delivery_path_shutting_down
-                and not self._conversation_service_ready
                 and self._conversation_service is not None
                 and self._message_plane_runner is not None
+                and self.conversation_service() is None
             ):
                 await self._check_message_plane_health()
         return self.conversation_service()

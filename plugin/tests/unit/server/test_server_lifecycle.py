@@ -19,6 +19,7 @@ async def test_detail_reads_reprobe_retained_service_without_starting_plane(monk
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
     from plugin.server.application.conversations import ConversationService
+    from plugin.server.domain.errors import ServerDomainError
     from plugin.server.messaging.handlers import conversations as handlers
 
     service = module.ServerLifecycleService()
@@ -29,6 +30,7 @@ async def test_detail_reads_reprobe_retained_service_without_starting_plane(monk
     monkeypatch.setattr(service, "ensure_delivery_path_started", AsyncMock(side_effect=AssertionError("reads must not start delivery")))
     entered, release = asyncio.Event(), asyncio.Event()
     probes = []
+    alive = True
 
     async def health_check_async(**_):
         probes.append(True)
@@ -37,7 +39,7 @@ async def test_detail_reads_reprobe_retained_service_without_starting_plane(monk
         await asyncio.sleep(0)
         return True
 
-    service._message_plane_runner = SimpleNamespace(is_alive=lambda: True, health_check_async=health_check_async)
+    service._message_plane_runner = SimpleNamespace(is_alive=lambda: alive, health_check_async=health_check_async)
     if cancel_first:
         first = asyncio.create_task(handlers.handle_conversation_reply_get(None, {"reply_id": "r"}))
         try:
@@ -58,6 +60,34 @@ async def test_detail_reads_reprobe_retained_service_without_starting_plane(monk
     assert results[0]["text"] == results[2]["text"] == "kept" and results[1] is None
     assert service.conversation_service() is retained
     assert service._delivery_path_started is False
+    alive = False
+    with pytest.raises(ServerDomainError) as not_ready:
+        await handlers.handle_conversation_reply_get(None, {"reply_id": "r"})
+    assert not_ready.value.code == "CONVERSATIONS_NOT_READY"
+    assert len(probes) == 1 + int(cancel_first)
+    alive = True
+    assert (await handlers.handle_conversation_reply_get(None, {"reply_id": "r"}))["text"] == "kept"
+    assert len(probes) == 2 + int(cancel_first)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("handler_name,key", [
+    ("handle_conversation_reply_get", "reply_id"),
+    ("handle_conversation_interaction_get", "input_id"),
+])
+@pytest.mark.parametrize("identity", [None, "", "bad\n", "x" * 257],
+                         ids=["missing", "empty", "control-character", "too-long"])
+async def test_invalid_detail_identity_does_not_probe_readiness(monkeypatch, handler_name, key, identity):
+    from unittest.mock import AsyncMock
+    from plugin.server.domain.errors import ServerDomainError
+    from plugin.server.messaging.handlers import conversations as handlers
+
+    lookup = AsyncMock(side_effect=AssertionError("invalid IDs must not probe readiness"))
+    monkeypatch.setattr(handlers, "_service", lookup)
+    with pytest.raises(ServerDomainError) as invalid:
+        await getattr(handlers, handler_name)(None, {} if identity is None else {key: identity})
+    assert invalid.value.code == "INVALID_ARGUMENT"
+    lookup.assert_not_awaited()
 
 
 @pytest.mark.asyncio

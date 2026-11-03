@@ -33,10 +33,12 @@ def _identity(request: dict[str, object], key: str) -> str:
 
 
 async def handle_conversation_reply_get(ctx: RpcContext, request: dict[str, object]) -> object:
+    reply_id = _identity(request, "reply_id")
     service = await _service()
-    return service.get_reply(_identity(request, "reply_id"))
+    return service.get_reply(reply_id)
 
 
 async def handle_conversation_interaction_get(ctx: RpcContext, request: dict[str, object]) -> object:
+    input_id = _identity(request, "input_id")
     service = await _service()
-    return service.get_interaction(_identity(request, "input_id"))
+    return service.get_interaction(input_id)
