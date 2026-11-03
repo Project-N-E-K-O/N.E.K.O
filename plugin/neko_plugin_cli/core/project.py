@@ -14,10 +14,15 @@ if TYPE_CHECKING:
 
 # Market-compatible plugin ID; the workbench API and UI validate against this.
 PLUGIN_ID_PATTERN = r"^[a-z][a-z0-9_]*$"
+PROJECT_CREATION_ERROR_CODES = frozenset(
+    {"INVALID_PLUGIN_ID", "PROJECT_EXISTS", "GIT_NOT_FOUND", "GIT_INIT_FAILED"}
+)
 
 
 class ProjectCreationError(ValueError):
     def __init__(self, code: str, message: str):
+        if code not in PROJECT_CREATION_ERROR_CODES:
+            raise ValueError(f"Undeclared project creation error code: {code}")
         super().__init__(message)
         self.code = code
 

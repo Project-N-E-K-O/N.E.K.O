@@ -1,0 +1,37 @@
+"""Error codes returned by the authoring workbench API.
+
+The UI localizes by code, so this enum is the contract shared with the
+frontend; ``message`` only carries an English diagnostic.
+"""
+
+from __future__ import annotations
+
+from enum import StrEnum
+
+from plugin.server.domain.errors import ServerDomainError
+
+
+class ProjectErrorCode(StrEnum):
+    INVALID_PARENT = "INVALID_PARENT"
+    INVALID_PLUGIN_ID = "INVALID_PLUGIN_ID"
+    INVALID_PROJECT_DIRECTORY = "INVALID_PROJECT_DIRECTORY"
+    PROJECT_EXISTS = "PROJECT_EXISTS"
+    PROJECT_IO_FAILED = "PROJECT_IO_FAILED"
+    GIT_NOT_FOUND = "GIT_NOT_FOUND"
+    GIT_INIT_FAILED = "GIT_INIT_FAILED"
+    PROJECT_REGISTER_FAILED = "PROJECT_REGISTER_FAILED"
+    PROJECT_ALREADY_REGISTERED = "PROJECT_ALREADY_REGISTERED"
+    PROJECT_NOT_FOUND = "PROJECT_NOT_FOUND"
+    PROJECT_STORE_INVALID = "PROJECT_STORE_INVALID"
+    PROJECT_STORE_UNREADABLE = "PROJECT_STORE_UNREADABLE"
+    PROJECT_STORE_WRITE_FAILED = "PROJECT_STORE_WRITE_FAILED"
+    DIRECTORY_PICKER_UNAVAILABLE = "DIRECTORY_PICKER_UNAVAILABLE"
+    DIRECTORY_PICKER_FAILED = "DIRECTORY_PICKER_FAILED"
+    DIRECTORY_UNAVAILABLE = "DIRECTORY_UNAVAILABLE"
+    OPEN_DIRECTORY_UNAVAILABLE = "OPEN_DIRECTORY_UNAVAILABLE"
+    OPEN_DIRECTORY_FAILED = "OPEN_DIRECTORY_FAILED"
+    PLUGIN_OPERATION_BUSY = "PLUGIN_OPERATION_BUSY"
+
+
+def project_error(code: ProjectErrorCode, message: str, status: int) -> ServerDomainError:
+    return ServerDomainError(code=code.value, message=message, status_code=status)

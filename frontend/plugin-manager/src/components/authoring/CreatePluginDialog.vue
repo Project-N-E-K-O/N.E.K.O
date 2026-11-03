@@ -25,14 +25,6 @@
       show-icon
       class="authoring-create-notice"
     />
-    <el-alert
-      v-if="created"
-      :title="t(mounted ? 'authoring.creationMounted' : 'authoring.creationComplete')"
-      type="success"
-      :closable="false"
-      show-icon
-      class="authoring-create-notice"
-    />
     <div class="authoring-create-grid">
       <form id="authoring-project-form" class="authoring-form" @submit.prevent="advance">
         <div>
@@ -106,40 +98,20 @@
     <template #footer
       ><div class="authoring-dialog-footer">
         <el-button :disabled="busy" @click="emit('update:visible', false)">{{
-          t(created ? 'common.close' : 'common.cancel')
+          t('common.cancel')
         }}</el-button>
         <div>
-          <el-button v-if="created" :disabled="busy" :loading="busy" @click="openCreated">{{
-            t('authoring.openFolder')
+          <el-button v-if="step === 1" :disabled="busy" @click="step = 0">{{
+            t('authoring.previous')
           }}</el-button>
           <el-button
-            v-if="created && !mounted"
             type="primary"
-            :disabled="busy"
+            native-type="submit"
+            form="authoring-project-form"
             :loading="busy"
-            @click="mountCreated"
-            >{{ t('authoring.mountDevelopment') }}</el-button
-          >
-          <el-button
-            v-if="created && mounted"
-            type="primary"
             :disabled="busy"
-            @click="goDevelopment"
-            >{{ t('authoring.goDevelopment') }}</el-button
+            >{{ t(step === 0 ? 'authoring.next' : 'authoring.createPlugin') }}</el-button
           >
-          <template v-if="!created">
-            <el-button v-if="step === 1" :disabled="busy" @click="step = 0">{{
-              t('authoring.previous')
-            }}</el-button>
-            <el-button
-              type="primary"
-              native-type="submit"
-              form="authoring-project-form"
-              :loading="busy"
-              :disabled="busy"
-              >{{ t(step === 0 ? 'authoring.next' : 'authoring.createPlugin') }}</el-button
-            >
-          </template>
         </div>
       </div></template
     >
@@ -149,39 +121,32 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRouter } from 'vue-router'
 import { FolderOpened } from '@element-plus/icons-vue'
 import {
   createPluginProject,
   previewPluginProject,
-  openProjectDirectory,
   pickProjectDirectory,
-  projectErrorCode,
   PLUGIN_ID_PATTERN,
-  PROJECT_ERROR_MESSAGES,
-  type PluginProjectResult,
+  type CreatedPluginProject,
+  type PluginProjectPreview,
   type PluginProjectIdentity,
   type PluginProjectRequest,
 } from '@/api/pluginProjects'
-import { formatHttpError } from '@/utils/request'
-import { mountDevelopment } from '@/api/development'
+import { useProjectErrorMessage } from '@/composables/useAuthoringProjects'
 
 const props = defineProps<{ visible: boolean }>()
 const emit = defineEmits<{
   'update:visible': [value: boolean]
-  created: [result: PluginProjectResult, key: string]
+  created: [result: CreatedPluginProject]
 }>()
 const { t } = useI18n()
-const router = useRouter()
+const errorMessage = useProjectErrorMessage()
 const step = ref(0)
 const attempted = ref(false)
 const parentDir = ref('')
 const busy = ref(false)
 const backendError = ref('')
-const preview = ref<PluginProjectResult | null>(null)
-const created = ref<PluginProjectResult | null>(null)
-const creationKey = ref('')
-const mounted = ref(false)
+const preview = ref<PluginProjectPreview | null>(null)
 const draft = reactive<{
   id: string
   name: string
@@ -203,9 +168,6 @@ watch(
     attempted.value = false
     backendError.value = ''
     preview.value = null
-    created.value = null
-    creationKey.value = crypto.randomUUID()
-    mounted.value = false
     Object.assign(draft, { id: '', name: '', description: '', author: '', type: 'plugin' })
   }
 )
@@ -225,9 +187,9 @@ const error = computed(() => {
     return t('authoring.invalidParent')
   return ''
 })
-const entry = computed(() => preview.value?.entry || created.value?.entry || '—')
+const entry = computed(() => preview.value?.entry || '—')
 const fileTree = computed(() => {
-  const result = created.value || preview.value
+  const result = preview.value
   return result
     ? [
         result.project_dir + '/',
@@ -246,10 +208,7 @@ const identity = (): PluginProjectIdentity => ({
 })
 const request = (): PluginProjectRequest => ({ parent_dir: parentDir.value.trim(), ...identity() })
 function failure(error: unknown) {
-  const key = PROJECT_ERROR_MESSAGES[projectErrorCode(error) ?? '']
-  backendError.value = key
-    ? t(`authoring.${key}`)
-    : formatHttpError(error) || t('authoring.creationFailed')
+  backendError.value = errorMessage(error, 'creationFailed')
 }
 async function pickParent() {
   if (busy.value) return
@@ -268,7 +227,7 @@ async function pickParent() {
   }
 }
 async function advance() {
-  if (busy.value || created.value) return
+  if (busy.value) return
   attempted.value = true
   if (error.value || !draft.name.trim() || !validId.value) return
   busy.value = true
@@ -278,46 +237,13 @@ async function advance() {
       preview.value = await previewPluginProject(request())
       step.value = 1
     } else {
-      created.value = await createPluginProject(request())
-      preview.value = created.value
-      emit('created', created.value, creationKey.value)
+      emit('created', await createPluginProject(request()))
+      emit('update:visible', false)
     }
   } catch (error) {
     failure(error)
   } finally {
     busy.value = false
   }
-}
-async function openCreated() {
-  if (!created.value || busy.value) return
-  busy.value = true
-  backendError.value = ''
-  try {
-    await openProjectDirectory(created.value.project_dir)
-  } catch (error) {
-    failure(error)
-  } finally {
-    busy.value = false
-  }
-}
-async function mountCreated() {
-  if (!created.value || busy.value || mounted.value) return
-  busy.value = true
-  backendError.value = ''
-  try {
-    const result = await mountDevelopment(created.value.project_dir)
-    if (result.error) throw new Error(result.error)
-    mounted.value = true
-  } catch (error) {
-    backendError.value = t('authoring.mountFailed', {
-      reason: formatHttpError(error) || String(error),
-    })
-  } finally {
-    busy.value = false
-  }
-}
-function goDevelopment() {
-  emit('update:visible', false)
-  void router.push('/development')
 }
 </script>

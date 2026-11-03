@@ -17,10 +17,21 @@ from utils.storage_policy import normalize_runtime_root
 
 _PICKER_TIMEOUT_SECONDS = 120
 _DEFAULT_TITLE = "Choose a folder"
+NATIVE_DIRECTORY_ERROR_CODES = frozenset(
+    {
+        "DIRECTORY_PICKER_UNAVAILABLE",
+        "DIRECTORY_PICKER_FAILED",
+        "DIRECTORY_UNAVAILABLE",
+        "OPEN_DIRECTORY_UNAVAILABLE",
+        "OPEN_DIRECTORY_FAILED",
+    }
+)
 
 
 class NativeDirectoryError(RuntimeError):
     def __init__(self, code: str, message: str):
+        if code not in NATIVE_DIRECTORY_ERROR_CODES:
+            raise ValueError(f"Undeclared native directory error code: {code}")
         super().__init__(message)
         self.code = code
 

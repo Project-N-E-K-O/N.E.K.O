@@ -286,6 +286,28 @@
   overflow-wrap: anywhere;
   color: var(--el-text-color-primary);
 }
+.authoring-project-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 20px;
+}
+.authoring-project-actions .el-button + .el-button {
+  margin-left: 0;
+}
+.authoring-diagnostic {
+  margin-top: 6px;
+  font-size: 12px;
+}
+.authoring-diagnostic summary {
+  cursor: pointer;
+}
+.authoring-diagnostic code {
+  display: block;
+  margin-top: 4px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .authoring-workbench pre,
 .authoring-dialog pre,
 .authoring-help-drawer pre {

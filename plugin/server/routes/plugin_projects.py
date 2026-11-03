@@ -1,29 +1,32 @@
-"""Local-only scaffold preview and creation. No plugin registration or execution."""
+"""Local-only authoring workbench projects. Nothing here loads or runs a plugin."""
 
 from __future__ import annotations
 
 import asyncio
-from typing import Literal, NoReturn
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from plugin.neko_plugin_cli.core.project import PLUGIN_ID_PATTERN, ProjectCreationError
-from plugin.server.application.plugin_projects import create_or_preview
-from plugin.server.infrastructure.development_access import require_development_access
-from plugin.server.infrastructure.native_directory import (
-    DirectoryPickerCancelled,
-    NativeDirectoryError,
-    open_directory,
-    pick_directory,
+from plugin.neko_plugin_cli.core.project import PLUGIN_ID_PATTERN
+from plugin.server.application import plugin_projects as service
+from plugin.server.application.plugin_projects import (
+    AuthoringProject,
+    CreatedProject,
+    ProjectIdentity,
+    ProjectPreview,
 )
+from plugin.server.application.plugins._env_budgets import env_seconds
+from plugin.server.application.plugins.operation_lock import bounded_operation_wait
+from plugin.server.domain.errors import ServerDomainError
+from plugin.server.infrastructure.development_access import require_development_access
 
 router = APIRouter(
     prefix="/plugin-projects", dependencies=[Depends(require_development_access)]
 )
 
 
-class ProjectIdentity(BaseModel):
+class ProjectIdentityRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     plugin_id: str = Field(pattern=PLUGIN_ID_PATTERN, max_length=64)
     name: str = Field(min_length=1, max_length=80)
@@ -31,39 +34,22 @@ class ProjectIdentity(BaseModel):
     author: str = Field(default="", max_length=80)
     plugin_type: Literal["plugin", "adapter"] = "plugin"
 
+    def identity(self) -> ProjectIdentity:
+        return ProjectIdentity(
+            plugin_id=self.plugin_id,
+            name=self.name,
+            description=self.description,
+            author=self.author,
+            plugin_type=self.plugin_type,
+        )
 
-class ProjectRequest(ProjectIdentity):
+
+class ProjectRequest(ProjectIdentityRequest):
     parent_dir: str = Field(min_length=1, max_length=4096)
 
 
-def _coded_error(status: int, code: str, exc: Exception) -> NoReturn:
-    # The UI localizes by ``code``; ``message`` is an English diagnostic.
-    raise HTTPException(status, {"code": code, "message": str(exc)}) from exc
-
-
-async def _project(body: ProjectRequest, *, create: bool):
-    try:
-        return await asyncio.to_thread(
-            create_or_preview,
-            create=create,
-            **body.model_dump(),
-        )
-    except FileExistsError as exc:
-        _coded_error(409, "PROJECT_EXISTS", exc)
-    except ProjectCreationError as exc:
-        _coded_error(409 if exc.code == "PROJECT_EXISTS" else 400, exc.code, exc)
-    except OSError as exc:
-        _coded_error(400, "PROJECT_IO_FAILED", exc)
-
-
-@router.post("/preview")
-async def preview_project(body: ProjectRequest):
-    return await _project(body, create=False)
-
-
-@router.post("/create", status_code=201)
-async def create_plugin_project(body: ProjectRequest):
-    return await _project(body, create=True)
+class RegisterRequest(BaseModel):
+    source_dir: str = Field(min_length=1, max_length=4096)
 
 
 class DirectoryRequest(BaseModel):
@@ -75,25 +61,70 @@ class PickDirectoryRequest(BaseModel):
     title: str = Field(default="", max_length=200)
 
 
-@router.post("/pick-directory")
+class PickDirectoryResponse(BaseModel):
+    ok: bool = True
+    cancelled: bool
+    selected_root: str
+
+
+class OkResponse(BaseModel):
+    ok: bool = True
+
+
+async def _call(awaitable):
+    # The UI localizes by ``code``; ``message`` is an English diagnostic.
+    try:
+        with bounded_operation_wait(
+            env_seconds("NEKO_PLUGIN_OPERATION_WAIT_BUDGET", 20.0)
+        ):
+            return await awaitable
+    except ServerDomainError as exc:
+        raise HTTPException(
+            exc.status_code, {"code": exc.code, "message": exc.message}
+        ) from exc
+
+
+@router.get("", response_model=list[AuthoringProject])
+async def list_plugin_projects():
+    return await _call(asyncio.to_thread(service.list_projects_sync))
+
+
+@router.post("/preview", response_model=ProjectPreview)
+async def preview_project(body: ProjectRequest):
+    return await _call(
+        asyncio.to_thread(service.preview_project, body.parent_dir, body.identity())
+    )
+
+
+@router.post("/create", status_code=201, response_model=CreatedProject)
+async def create_plugin_project(body: ProjectRequest):
+    return await _call(
+        service.create_and_register_project(body.parent_dir, body.identity())
+    )
+
+
+@router.post("/register", status_code=201, response_model=AuthoringProject)
+async def register_plugin_project(body: RegisterRequest):
+    return await _call(service.register_project(body.source_dir))
+
+
+@router.post("/pick-directory", response_model=PickDirectoryResponse)
 async def pick_project_directory(body: PickDirectoryRequest):
     # The dialog opens on the machine running this server; development access
     # is limited to local requests, so that is the user's own desktop.
-    try:
-        selected = await asyncio.to_thread(
-            pick_directory, start_path=body.start_path, title=body.title
-        )
-    except DirectoryPickerCancelled:
-        return {"ok": True, "cancelled": True, "selected_root": ""}
-    except NativeDirectoryError as exc:
-        _coded_error(400, exc.code, exc)
-    return {"ok": True, "cancelled": False, "selected_root": selected}
+    selected = await _call(
+        asyncio.to_thread(service.pick_project_directory, body.start_path, body.title)
+    )
+    return PickDirectoryResponse(cancelled=selected is None, selected_root=selected or "")
 
 
-@router.post("/open-directory")
+@router.post("/open-directory", response_model=OkResponse)
 async def open_project_directory(body: DirectoryRequest):
-    try:
-        await asyncio.to_thread(open_directory, body.path)
-    except NativeDirectoryError as exc:
-        _coded_error(400, exc.code, exc)
-    return {"ok": True}
+    await _call(asyncio.to_thread(service.open_project_directory, body.path))
+    return OkResponse()
+
+
+@router.delete("/{project_id}", response_model=OkResponse)
+async def remove_plugin_project(project_id: str):
+    await _call(service.remove_project(project_id))
+    return OkResponse()

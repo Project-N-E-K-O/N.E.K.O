@@ -1,5 +1,7 @@
-import { post } from './index'
+import type { AxiosError } from 'axios'
+import { del, get, post } from './index'
 import { openLocalPath } from '@/utils/openExternal'
+import { readErrorCode } from '@/utils/request'
 
 export interface PluginProjectRequest {
   parent_dir: string
@@ -12,7 +14,7 @@ export interface PluginProjectRequest {
 
 export type PluginProjectIdentity = Omit<PluginProjectRequest, 'parent_dir'>
 
-export interface PluginProjectResult {
+export interface PluginProjectPreview {
   plugin_id: string
   name: string
   description: string
@@ -22,7 +24,28 @@ export interface PluginProjectResult {
   entry: string
   project_dir: string
   files: string[]
-  created: boolean
+}
+
+export interface CreatedPluginProject extends PluginProjectPreview {
+  project_id: string
+}
+
+/** A registered project; attributes are read live from its plugin.toml. */
+export interface AuthoringProject {
+  project_id: string
+  source_dir: string
+  added_at: string
+  status: 'ok' | 'missing' | 'invalid'
+  error: string | null
+  plugin_id: string | null
+  name: string | null
+  description: string | null
+  author: string | null
+  plugin_type: string | null
+  version: string | null
+  entry: string | null
+  /** null when development registrations cannot be read. */
+  development: 'unmounted' | 'mounted' | 'mode_disabled' | null
 }
 
 const config = {
@@ -30,10 +53,17 @@ const config = {
   suppressErrorMessage: true,
   timeout: 90_000,
 }
-export const previewPluginProject = (request: PluginProjectRequest): Promise<PluginProjectResult> =>
-  post('/plugin-projects/preview', request, config)
-export const createPluginProject = (request: PluginProjectRequest): Promise<PluginProjectResult> =>
+export const listPluginProjects = (): Promise<AuthoringProject[]> => get('/plugin-projects', config)
+export const previewPluginProject = (
+  request: PluginProjectRequest
+): Promise<PluginProjectPreview> => post('/plugin-projects/preview', request, config)
+export const createPluginProject = (request: PluginProjectRequest): Promise<CreatedPluginProject> =>
   post('/plugin-projects/create', request, config)
+export const registerPluginProject = (sourceDir: string): Promise<AuthoringProject> =>
+  post('/plugin-projects/register', { source_dir: sourceDir }, config)
+/** Forgets the project; its files and any development mount are kept. */
+export const removePluginProject = (projectId: string): Promise<unknown> =>
+  del(`/plugin-projects/${encodeURIComponent(projectId)}`, config)
 
 export interface PickedDirectory {
   cancelled?: boolean
@@ -49,25 +79,9 @@ const projectDirectoryHost = () => (window as unknown as { nekoHost?: DirectoryH
 /** Mirrors PLUGIN_ID_PATTERN in plugin/neko_plugin_cli/core/project.py; the server is authoritative. */
 export const PLUGIN_ID_PATTERN = /^[a-z][a-z0-9_]*$/
 
-/** Server error codes mapped to `authoring.*` message keys. */
-export const PROJECT_ERROR_MESSAGES: Record<string, string> = {
-  INVALID_PARENT: 'invalidParent',
-  INVALID_PLUGIN_ID: 'invalidId',
-  PROJECT_EXISTS: 'directoryExists',
-  PROJECT_IO_FAILED: 'projectIoFailed',
-  GIT_NOT_FOUND: 'gitMissing',
-  GIT_INIT_FAILED: 'gitInitFailed',
-  DIRECTORY_PICKER_UNAVAILABLE: 'pickerUnavailable',
-  DIRECTORY_PICKER_FAILED: 'pickerUnavailable',
-  DIRECTORY_UNAVAILABLE: 'directoryUnavailable',
-  OPEN_DIRECTORY_UNAVAILABLE: 'openFolderFailed',
-  OPEN_DIRECTORY_FAILED: 'openFolderFailed',
-}
-
+/** Reads the code from either `detail.code` (workbench) or `X-Error-Code` (development mode). */
 export function projectErrorCode(error: unknown): string | undefined {
-  const detail = (error as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
-  const code = (detail as { code?: unknown } | undefined)?.code
-  return typeof code === 'string' ? code : undefined
+  return readErrorCode(error as AxiosError) || undefined
 }
 
 /**
