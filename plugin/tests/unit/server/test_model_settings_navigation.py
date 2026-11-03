@@ -11,6 +11,8 @@ import pytest
 from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
+from tests.docker_nginx import VARIANTS, official_server_block
+
 pytestmark = pytest.mark.plugin_unit
 ROOT = Path(__file__).resolve().parents[4]
 
@@ -60,8 +62,11 @@ async def test_plugin_settings_redirect_uses_resolved_origin_and_fixed_page(
 
 
 def test_docker_http_and_https_route_only_model_management_namespace_to_plugins():
-    source = (ROOT / "docker/entrypoint.sh").read_text(encoding="utf-8")
-    patterns = re.findall(r"location ~ (\^/\(api/model-config[^\s]+) \{", source)
+    patterns = [
+        pattern
+        for variant in VARIANTS
+        for pattern in re.findall(r"location ~ (\^/\(api/model-config[^\s]+) \{", official_server_block(variant))
+    ]
     assert len(patterns) == 2
     for pattern in patterns:
         assert re.match(pattern, "/api/model-config/slots")

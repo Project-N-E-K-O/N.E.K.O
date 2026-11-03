@@ -1694,6 +1694,8 @@ class TurnMixin:
                     and reply_turn.reply_tail is not None
                 ):
                     reply_turn.reply_tail.completed = True
+                    if getattr(reply_turn.reply_tail, "hooks", ()):
+                        reply_turn.reply_tail.text = _truncated_text
 
             try:
                 if _truncated_text is not None:

@@ -639,7 +639,7 @@ class _SyncMessageQueue(asyncio.Queue):
 
 @dataclass
 class RoleState:
-    """Per-k runtime state container for a single catgirl.
+    """Per-k runtime state container for a single neko.
 
     Merges what used to be 6 parallel module-global dicts (sync_message_queue /
     sync_shutdown_event / session_id / sync_process / websocket_locks /
@@ -1794,7 +1794,7 @@ async def _refresh_character_globals():
 
 
 def _ensure_character_slots(k: str) -> bool:
-    """Prepare the per-k sync resource slot for a single catgirl. Returns whether this is a newly created character (which decides whether to force-start the task afterwards).
+    """Prepare the per-k sync resource slot for a single neko. Returns whether this is a newly created character (which decides whether to force-start the task afterwards).
 
     A purely in-memory atomic operation: either role_state[k] already exists (do
     nothing), or both the queue and websocket_lock are filled in at once. This avoids
@@ -1818,7 +1818,7 @@ def _ensure_character_slots(k: str) -> bool:
 
 
 async def _init_character_resources(k: str, is_new_character: bool):
-    """Complete the session_manager update + sync connector task check/restart for a single catgirl.
+    """Complete the session_manager update + sync connector task check/restart for a single neko.
 
     Depends on module globals: master_name, lanlan_prompt, lanlan_basic_config (the caller must refresh them first).
     Writes the per-k slots: role_state[k].session_manager / sync_task — no state is
@@ -2037,7 +2037,7 @@ async def _init_character_resources(k: str, is_new_character: bool):
 
 
 async def _stop_character_thread(k: str):
-    """Stop a single catgirl's sync connector task (waiting up to 3s for cleanup). Dict cleanup is left to the caller to do in order.
+    """Stop a single neko's sync connector task (waiting up to 3s for cleanup). Dict cleanup is left to the caller to do in order.
 
     The ``_thread`` suffix in the name is kept to avoid touching the many call sites; the underlying mechanism is now an ``asyncio.Task``.
     """
@@ -2065,7 +2065,7 @@ async def _stop_character_thread(k: str):
 
 
 def _cleanup_character_dicts(k: str):
-    """Synchronously clean up a single catgirl's per-k slot. Make sure the corresponding task has stopped or timed out before calling."""
+    """Synchronously clean up a single neko's per-k slot. Make sure the corresponding task has stopped or timed out before calling."""
     rs = role_state.get(k)
     if rs is None:
         return
@@ -2120,9 +2120,9 @@ async def _unregister_and_cleanup_character_slot(k: str) -> None:
 
 
 async def initialize_character_data():
-    """Full refresh: load config + run per-k init for every catgirl + clean up deleted ones.
+    """Full refresh: load config + run per-k init for every neko + clean up deleted ones.
 
-    Cold path (startup / master-name edit / large bulk import). For per-catgirl edits
+    Cold path (startup / master-name edit / large bulk import). For per-neko edits
     use the fast paths: init_one_catgirl / remove_one_catgirl / switch_current_catgirl_fast.
     """
     logger.info("正在加载角色配置...")
@@ -2138,7 +2138,7 @@ async def initialize_character_data():
     # Load the latest character data off-thread to avoid blocking the loop with synchronous I/O + deepcopy.
     await _refresh_character_globals()
 
-    # Prepare per-k synchronization resource slots for every catgirl.
+    # Prepare per-k synchronization resource slots for every neko.
     is_new_map: dict[str, bool] = {k: _ensure_character_slots(k) for k in catgirl_names}
 
     # Character initialization is independent: shared prompt / master_name are read-only; per-key slots are separate.
@@ -2173,12 +2173,12 @@ async def initialize_character_data():
 
 
 # ─────────────────────────────────────────────────────────────
-# Fast-path helpers: handle only the affected catgirl without scanning all characters.
+# Fast-path helpers: handle only the affected neko without scanning all characters.
 # ─────────────────────────────────────────────────────────────
 
 
 async def switch_current_catgirl_fast():
-    """Dedicated fast path for switching the current catgirl (change of the `current catgirl` field).
+    """Dedicated fast path for switching the current neko (change of the current-neko field).
 
     Key premise: the switch only affects the single global `her_name`; per-k prompt /
     voice_id / thread state is completely unchanged. So this **only refreshes
@@ -2191,7 +2191,7 @@ async def switch_current_catgirl_fast():
 
 
 async def init_one_catgirl(name: str, *, is_new: bool = False):
-    """Fast path for adding / editing a single catgirl.
+    """Fast path for adding / editing a single neko.
 
     - is_new=True: addition; force-starts the sync connector thread
     - is_new=False: edit (prompt / voice_id etc.) — only refreshes the session_manager's
@@ -2206,7 +2206,7 @@ async def init_one_catgirl(name: str, *, is_new: bool = False):
 
 
 async def remove_one_catgirl(name: str):
-    """Fast path for deleting a single catgirl: stop the character's thread + clear dicts + refresh globals."""
+    """Fast path for deleting a single neko: stop the character's thread + clear dicts + refresh globals."""
     await _unregister_and_cleanup_character_slot(name)
     # The caller already wrote the config; refresh globals so catgirl_names etc. reflect the deletion.
     await _refresh_character_globals()

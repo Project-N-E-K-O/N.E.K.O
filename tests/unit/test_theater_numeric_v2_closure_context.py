@@ -59,7 +59,7 @@ def test_actor_identity_instruction_does_not_use_framework_name(phase):
     from services.theater.numeric_v2_actor import _system_prompt
     prompt = _system_prompt(catgirl_name='测试猫娘', player_address='你', phase=phase)
     if phase == 'transition_compact':
-        # A formal transition also generates NPC narration; catgirl identity remains determined by the dynamic character, not the implementation name.
+        # A formal transition also generates NPC narration; neko identity remains determined by the dynamic character, not the implementation name.
         assert '猫娘写入 performance，在场 NPC 的必要答复写入来源旁白' in prompt
         assert '当前猫娘由“测试猫娘”扮演。' in prompt
     else:

@@ -275,7 +275,7 @@ async def _periodic_rebuttal_loop():
         now = datetime.now()
 
         async def _check_one_rebuttal(name: str):
-            """Rebuttal check for a single catgirl. Characters are mutually independent; the outer gather runs them in parallel.
+            """Rebuttal check for a single neko. Characters are mutually independent; the outer gather runs them in parallel.
             Internally, feedbacks still run areject_promotion serially (the same reflection must not be processed concurrently).
 
             Drain mode: each round processes at most ``REBUTTAL_DRAIN_BATCH_LIMIT`` (=20)
@@ -803,7 +803,7 @@ async def _periodic_slow_memory_recheck_loop():
 
     Multi-character fairness: `_RECHECK_RR_CURSOR` rotates the round-robin start —
     each round scans from the cursor, breaks on a hit + advances the cursor. When
-    catgirl A has 100 v1 entries and catgirl B only 1, B still gets a scheduling
+    neko A has 100 v1 entries and neko B only 1, B still gets a scheduling
     slot within N rounds rather than being monopolized by A's long tail.
 
     LLM output:

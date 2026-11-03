@@ -394,7 +394,7 @@ def _clause_hits(
 # Bare affirmations (同意 / 我同意 / 没问题 / 沒問題) previously used **whole-sentence exact matching**, so
 # `没问题喵~` / `同意~` / `沒問題喔` / `不如同意` / `那就同意` all returned None on main.
 # Normalizing their ends would approve all of them, perversely expanding a high-risk command while intending to narrow it.
-# Proactive turns are especially vulnerable: task_executor replaces intent with the catgirl's own dialogue
+# Proactive turns are especially vulnerable: task_executor replaces intent with the neko's own dialogue
 # before classification, and her habitual `没问题喵~` would self-approve.
 # Thus bare affirmations require **the entire unchanged clause**, stripping nothing.
 _APPROVE_AFFIRMATIONS = frozenset({"同意", "我同意", "没问题", "沒問題"})
@@ -435,7 +435,7 @@ _STOP_ADDRESSED = frozenset({
     "算了别查了", "算了別查了", "停止搜索", "停止搜尋",
 })
 # Everyday imperatives: whole-clause matching excludes narration (`雨停下来了` misses) but cannot distinguish users
-# telling the **catgirl herself** to `停下来` from identical words directed at the agent.
+# telling the **neko herself** to `停下来` from identical words directed at the agent.
 # Dispatch therefore **additionally requires an actually running openclaw task** for this level; see channels/openclaw.py.
 _STOP_AMBIGUOUS = frozenset({
     "停下来", "停下來", "快停下来", "快停下來", "别找了", "別找了",

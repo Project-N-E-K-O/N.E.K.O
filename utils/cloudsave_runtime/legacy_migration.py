@@ -282,7 +282,7 @@ def _load_seed_characters_payload(config_manager) -> dict[str, Any]:
 
 
 def _catgirl_payload_without_character_id(payload: Any) -> dict[str, Any] | None:
-    """Return a deep copy of a catgirl payload without its device-local ``_reserved.character_id``."""
+    """Return a deep copy of a neko payload without its device-local ``_reserved.character_id``."""
     if not isinstance(payload, dict):
         return None
     from utils.config_manager import delete_reserved

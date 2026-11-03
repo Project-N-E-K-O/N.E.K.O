@@ -928,7 +928,7 @@ class GreetingMixin:
         *,
         render_language: str | None = None,
     ) -> None:
-        """When transforming back from cat form to catgirl (asking her back), trigger one dedicated greeting based on "behavior (tier) × time spent as a cat".
+        """When transforming back from cat form to neko (asking her back), trigger one dedicated greeting based on "behavior (tier) × time spent as a cat".
 
         Dual of trigger_greeting, but with independent timing: it doesn't query
         last_conversation_gap, instead using the server-observed cat-dwell

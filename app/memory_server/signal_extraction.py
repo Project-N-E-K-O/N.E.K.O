@@ -596,7 +596,7 @@ async def _run_path_b(name: str, state: dict) -> None:
 
 async def _periodic_signal_extraction_loop():
     """Polls every EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS; when the trigger condition is
-    met, runs Stage-1 + Stage-2 + signal dispatch for each catgirl (RFC §3.4.3).
+    met, runs Stage-1 + Stage-2 + signal dispatch for each neko (RFC §3.4.3).
 
     First run delayed by _INITIAL_DELAY_SIGNAL seconds (staggered against the other background loops).
     """

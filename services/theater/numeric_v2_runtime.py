@@ -1465,7 +1465,7 @@ class NumericV2Engine:
                     "performance": str(result.pop("target_performance") or "").strip(),
                 },
             ]
-            # Optional source narration remains segment one in the same commit, never moved to post-transition bridges or catgirl dialogue.
+            # Optional source narration remains segment one in the same commit, never moved to post-transition bridges or neko dialogue.
             if "source_scene_narration" in result:
                 segments[0]["scene_narration"] = result.pop("source_scene_narration")
             result["segments"] = segments

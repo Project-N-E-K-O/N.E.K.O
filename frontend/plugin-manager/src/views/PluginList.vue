@@ -46,7 +46,7 @@
             :class="{ 'workbench-header--compact': headerActionsCompact }"
           >
             <!-- 左：市场相关入口；右：模式 │ 面板 │ 视图选项 │ 数据操作。窄头部只保留图标。 -->
-            <div ref="headerMarketRef" class="workbench-header__market">
+            <div ref="headerMarketRef" class="workbench-header__market" data-motion-group>
               <button
                 v-if="marketUrl"
                 class="market-trigger"
@@ -167,7 +167,7 @@
             </div>
 
             <!-- 三级：导入是唯一主按钮；其余为描边次按钮，开关态用浅底；低频视图选项和全部重载收进“更多”。 -->
-            <div ref="headerActionsRef" class="header-actions" data-testid="plugin-list-header-actions">
+            <div ref="headerActionsRef" class="header-actions" data-testid="plugin-list-header-actions" data-motion-group>
               <el-button
                 data-motion="resize"
                 :type="multiSelectEnabled ? 'primary' : 'default'"
@@ -1586,6 +1586,7 @@ onUnmounted(() => {
 
 /* 头部内边距与 el-card 默认一致；底边不用 border，改由绝对定位的 rule 画在同一位置。 */
 .plugin-list-shell__header {
+  contain: layout;
   padding: 18px 20px 19px;
   box-sizing: border-box;
 }
@@ -1618,6 +1619,7 @@ onUnmounted(() => {
 
 .workbench-header__market,
 .header-actions {
+  contain: layout;
   display: flex;
   align-items: center;
   min-width: 0;

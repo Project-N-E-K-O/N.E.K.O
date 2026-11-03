@@ -6,6 +6,12 @@ import { OptionalModuleError, retryableModule } from '@/utils/retryableModule'
  * error/recovery UI instead of an invisible failed AsyncComponent instance. */
 export function deferredPanel(loader: () => Promise<{ default: Component }>) {
   const load = retryableModule(loader)
+  let cached: Component | null = null
+  const preload = async () => {
+    const module = await load()
+    cached = module.default
+    return module
+  }
   // `preload` shares the single-flight load, so a caller can mount the panel
   // with its module already resolved.
   return Object.assign(defineComponent({
@@ -13,7 +19,9 @@ export function deferredPanel(loader: () => Promise<{ default: Component }>) {
     emits: ['close'],
     setup(_, { attrs, slots, emit }) {
       const { t } = useI18n()
-      const resolved = shallowRef<Component | null>(null)
+      // A completed preload can mount the real content in the caller's first
+      // Vue patch, before it measures the transition's final layout.
+      const resolved = shallowRef<Component | null>(cached)
       const error = ref('')
       const pending = ref(false)
       const reloadRequired = ref(false)
@@ -24,7 +32,7 @@ export function deferredPanel(loader: () => Promise<{ default: Component }>) {
         pending.value = true
         error.value = ''
         try {
-          const module = await load()
+          const module = await preload()
           if (!disposed && seq === generation) resolved.value = module.default
         } catch (caught) {
           if (disposed || seq !== generation) return
@@ -34,7 +42,7 @@ export function deferredPanel(loader: () => Promise<{ default: Component }>) {
           if (!disposed && seq === generation) pending.value = false
         }
       }
-      onMounted(start)
+      onMounted(() => { if (!resolved.value) void start() })
       onBeforeUnmount(() => { disposed = true; generation += 1 })
       return () => resolved.value
         ? h(resolved.value, { ...attrs, onClose: () => emit('close') }, slots)
@@ -45,5 +53,5 @@ export function deferredPanel(loader: () => Promise<{ default: Component }>) {
           h('button', { type: 'button', onClick: () => emit('close') }, t('common.close')),
         ])
     },
-  }), { preload: load })
+  }), { preload })
 }
