@@ -317,6 +317,9 @@ class ConversationService:
                 if reply["started_at"] is None:
                     reply["started_at"] = occurred
             elif fact == "reply.closed":
+                if payload.get("text_incomplete") is True and reply["_message_id"] is None:
+                    reply["text"] = None
+                    reply.pop("_text_updated", None)
                 reply["text_state"] = "closed"
                 if reply["closed_at"] is None:
                     reply["closed_at"] = occurred

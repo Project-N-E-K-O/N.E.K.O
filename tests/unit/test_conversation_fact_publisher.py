@@ -47,7 +47,7 @@ async def test_oversized_reply_text_preserves_boundary_or_reports_missing_update
     await asyncio.gather(*tuple(bus._conversation_fact_tasks))
     sent = publish.await_args.kwargs["payload"]
     assert sent["reply_id"] == "r" and sent["text"] is None
-    assert sent.get("text_incomplete", False) == (fact == "reply.updated")
+    assert sent.get("text_incomplete", False) == (fact in ("reply.closed", "reply.updated"))
     assert payload["text"] is not None
 
 

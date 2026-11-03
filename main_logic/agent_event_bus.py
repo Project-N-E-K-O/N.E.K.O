@@ -983,7 +983,7 @@ def schedule_conversation_fact_observed_best_effort(
     if isinstance(text, str) and len(text) > _CONVERSATION_FACT_MAX_TEXT:
         if fact in ("reply.started", "reply.closed", "reply.updated"):
             payload = {**payload, "text": None}
-            if fact == "reply.updated":
+            if fact in ("reply.closed", "reply.updated"):
                 payload["text_incomplete"] = True
     # This channel is for small facts; in particular do not queue huge text.
     if any(isinstance(value, str) and len(value) > _CONVERSATION_FACT_MAX_TEXT

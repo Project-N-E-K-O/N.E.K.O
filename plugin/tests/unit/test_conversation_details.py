@@ -20,6 +20,35 @@ def test_omitted_oversized_correction_marks_reply_incomplete():
         svc.get_reply("r")
 
 
+@pytest.mark.parametrize("message_first", [False, True])
+def test_omitted_closed_text_does_not_present_started_prefix_as_final(message_first):
+    current = {}
+    svc = ConversationService(current.get)
+    svc.accept_fact("reply.started", {"reply_id": "r", "character": "YUI", "text": "prefix"})
+    msg = raw_message("m", reply_id="r", text="x" * 65537)
+
+    def accept_message():
+        current["m"] = message_from_event(msg)
+        svc.accept_message(msg)
+
+    if message_first:
+        accept_message()
+    else:
+        svc.accept_fact("reply.updated", {"reply_id": "r", "character": "YUI", "text": "older correction"})
+    fact, closed = svc.accept_fact("reply.closed", {
+        "reply_id": "r", "character": "YUI", "text": None, "text_incomplete": True,
+        "close_reason": "completed", "occurred_at": 2.0,
+    })
+    assert fact == "reply.closed" and closed["reply"]["text_state"] == "closed"
+    assert closed["reply"]["close_reason"] == "completed"
+    expected = "x" * 65537 if message_first else None
+    assert closed["reply"]["text"] == expected
+    assert svc.get_reply("r")["text"] == expected
+    if not message_first:
+        accept_message()
+    assert svc.get_reply("r")["text"] == "x" * 65537
+
+
 def raw_message(
     mid, *, input_id=None, reply_id=None, text="message", role="assistant_message"
 ):
