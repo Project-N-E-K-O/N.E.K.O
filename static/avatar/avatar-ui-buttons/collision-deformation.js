@@ -105,8 +105,10 @@
         return true;
     }
 
-    function clearCollisionDeformation(button) {
+    function clearCollisionDeformation(button, owner = null) {
         if (!button) return false;
+        const state = activeDeformations.get(button);
+        if (owner !== null && (!state || state.owner !== owner)) return false;
         const existed = activeDeformations.delete(button);
         if (button.classList) button.classList.remove(ACTIVE_CLASS);
         if (button.style) {
@@ -121,7 +123,7 @@
     }
 
     function beginCollisionDeformation(button, input = {}) {
-        const { direction, impactVelocityChange, startedAt, reducedMotion = false,
+        const { direction, impactVelocityChange, startedAt, reducedMotion = false, owner = null,
             visibleInsetRatios = null } = input;
         if (reducedMotion) {
             clearCollisionDeformation(button);
@@ -135,6 +137,7 @@
         });
         if (!button || !sample.active || !Number.isFinite(startedAt)) return false;
         activeDeformations.set(button, {
+            owner,
             direction,
             impactVelocityChange,
             startedAt,

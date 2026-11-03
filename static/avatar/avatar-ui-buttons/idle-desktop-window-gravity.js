@@ -47,6 +47,17 @@
             ? performance.now() : Date.now();
     }
 
+    function prefersReducedMotion() {
+        return !!(window.matchMedia
+            && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    }
+
+    function refreshReducedMotion(state) {
+        if (!state || !state.button) return !!(state && state.reduceMotion);
+        state.reduceMotion = prefersReducedMotion();
+        return state.reduceMotion;
+    }
+
     function rect(value) {
         if (!value) return null;
         const x = Number(value.x === undefined ? value.left : value.x);
@@ -184,6 +195,7 @@
     }
 
     function collideBorders(state, previous, dt, previousScene = null, moving = false) {
+        refreshReducedMotion(state);
         const hull = state.hull;
         const offsets = { left: state.size.width * hull.left, right: state.size.width * (1 - hull.right),
             top: state.size.height * hull.top, bottom: state.size.height * (1 - hull.bottom) };
@@ -271,6 +283,7 @@
     }
 
     function render(state, options = {}) {
+        refreshReducedMotion(state);
         // Identical writes still notify MutationObservers in Chromium. Avoid
         // feeding an endless layout/journey loop after the cat has settled.
         for (const [key, value] of Object.entries({ left: `${Number(state.x.toFixed(3))}px`,
@@ -333,8 +346,10 @@
     }
 
     function impact(state, impactVelocityChange, direction) {
+        refreshReducedMotion(state);
         if (impactVelocityChange < REST_SPEED || state.reduceMotion) return;
         state.deformationActive = window.NekoCollisionDeformation?.beginCollisionDeformation(state.button, {
+            owner: KIND,
             direction,
             impactVelocityChange,
             startedAt: now(),
@@ -344,6 +359,7 @@
     }
 
     function collide(state, walls = {}) {
+        refreshReducedMotion(state);
         const b = state.bounds;
         for (const axis of [
             { position: 'x', velocity: 'vx', low: 'left', high: 'right' },
@@ -461,7 +477,7 @@
         if (removalObserver) removalObserver.disconnect();
         removalObserver = null;
         state.button.classList.remove(ACTIVE_CLASS);
-        window.NekoCollisionDeformation?.clearCollisionDeformation(state.button);
+        window.NekoCollisionDeformation?.clearCollisionDeformation(state.button, KIND);
         const body = getBody(state.button);
         if (body && !body.dragging && !disposed && isCat(state.button, state.container)
             && !isReturning(state.button)) {
@@ -577,7 +593,7 @@
             grounded: false, deformationActive: false, frame: 0, pointerHeld: false,
             origin: screenOrigin(),
             lastStepAt: now(), lastSampleAt: now(),
-            reduceMotion: !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches),
+            reduceMotion: prefersReducedMotion(),
         };
         current = state;
         pendingAdmission = null;
@@ -1126,7 +1142,7 @@
             grounded: !!body.grounded,
             button,
             deformationActive: false,
-            reduceMotion: !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches),
+            reduceMotion: prefersReducedMotion(),
         };
         const elapsed = Number.isFinite(Number(dt)) && Number(dt) > 0 ? Number(dt) : 1 / 60;
         collideBorders(probe, before, elapsed, previousScene, !!previousScene);

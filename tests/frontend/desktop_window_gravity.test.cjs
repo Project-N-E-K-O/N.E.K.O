@@ -2398,6 +2398,24 @@ test('reduced motion keeps gravity while removing bounce deformation and rebound
   assert.equal(r.state().phase, 'resting');
 });
 
+test('enabling reduced motion during gravity clears deformation and prevents later rebound', () => {
+  const settings = { reduceMotion: false };
+  const r = runtime(settings);
+  r.sample();
+  r.window.NekoCollisionDeformation.beginCollisionDeformation(r.button, {
+    owner: 'desktop-window-gravity', direction: 'down', impactVelocityChange: 600, startedAt: 1000,
+  });
+  assert.equal(r.button.classList.contains('is-neko-collision-deforming'), true);
+
+  settings.reduceMotion = true;
+  for (let i = 0; i < 600 && r.resources().frames; i++) {
+    r.frame();
+    assert.ok(r.state().vy >= 0);
+    assert.equal(r.button.classList.contains('is-neko-collision-deforming'), false);
+  }
+  assert.equal(r.state().phase, 'resting');
+});
+
 test('busy sensing retains the owned scene through a container size mutation', () => {
   const r = runtime();
   r.sample(); r.settle();

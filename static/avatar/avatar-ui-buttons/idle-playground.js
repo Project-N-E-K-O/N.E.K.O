@@ -282,7 +282,9 @@ function _releaseNekoIdleCat1PlaygroundDropLifecycle(button, reason) {
     }
     state.bodies.clear();
     state.disabledCapabilities.clear();
-    window.NekoCollisionDeformation?.clearCollisionDeformation(button);
+    window.NekoCollisionDeformation?.clearCollisionDeformation(
+        button, 'idle-cat1-playground'
+    );
     const cleanups = state.cleanups.splice(0);
     cleanups.forEach((cleanup) => {
         try { cleanup(); } catch (_) {}
@@ -1340,6 +1342,7 @@ function _beginNekoIdleCat1PlaygroundCollisionDeformation(button, body, directio
     const reduceMotion = !!(window.matchMedia
         && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
     return !!window.NekoCollisionDeformation?.beginCollisionDeformation(button, {
+        owner: 'idle-cat1-playground',
         direction,
         impactVelocityChange,
         startedAt: timestamp,
