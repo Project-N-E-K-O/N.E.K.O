@@ -108,6 +108,7 @@
     recoveryWaitTimer: 0,
     recoveryWaitSeq: 0,
     recoveryCursor: 0,
+    recoveryReplay: [],
     lastTickAt: 0,
     drag: null,
     dragAuthority: null,
@@ -510,6 +511,12 @@
     var point = { x_q16: frame.x_q16, y_q16: frame.y_q16 };
     var holder = actorToHolder(frame.actor);
     if (frame.kind === 'pointer') return rememberPointer(frame);
+    if (state.recoveryCursor) {
+      // A saved world may still arrive after the wait gave up: keep what was
+      // applied meanwhile so it can be replayed on top of that world.
+      state.recoveryReplay.push(Object.assign({}, frame));
+      while (state.recoveryReplay.length > 64) state.recoveryReplay.shift();
+    }
     if (frame.kind === 'yarn_spawn' && world.yarn_active) return true;
     if (frame.kind === 'question_tap' || frame.kind === 'yarn_spawn') {
       world.yarn_active = true;
@@ -588,6 +595,7 @@
       if (result && result.stale === true && Number.isSafeInteger(cursor)
           && cursor >= 1 && cursor <= U32_MAX) {
         state.publishedWorldSeq = Math.max(state.publishedWorldSeq, cursor);
+        if (state.recoveryCursor) state.recoveryCursor = Math.max(state.recoveryCursor, cursor);
         if (cursor > state.lastAppliedWorldSeq && !item.recoveryWaited) {
           // The runtime holds a newer world this page never applied, most likely
           // a recovery commit still on its way: wait for it briefly instead of
@@ -642,8 +650,11 @@
     state.recoveryWaitTimer = 0;
     state.recoveryWaitSeq = 0;
     state.recoveryCursor = 0;
-    // Everything queued was computed from the world the recovery replaced.
+    // Everything queued was computed from the world the recovery replaced;
+    // the actions applied to that world go back in front of the pending ones.
     state.outbound = [];
+    state.pendingIntents = state.recoveryReplay.concat(state.pendingIntents);
+    state.recoveryReplay = [];
   }
 
   function applyPendingIntents() {
@@ -841,8 +852,10 @@
 
   function applyWorldFrame(frame) {
     if (!state.active || !validWorldFrame(frame)) return false;
+    // Only the saved commit is a recovery; a transient frame at or below the
+    // cursor is someone's motion, not the world to restore.
     var recovery = state.side === 'host' && state.recoveryCursor > 0
-      && frame.world_seq <= state.recoveryCursor;
+      && frame.phase === 'commit' && frame.world_seq <= state.recoveryCursor;
     if (!recovery && frame.world_seq <= state.lastAppliedWorldSeq) return false;
     var previousCollision = state.world.collision_seq;
     var previousPublished = state.publishedWorldSeq;
@@ -941,6 +954,7 @@
     state.recoveryWaitTimer = 0;
     state.recoveryWaitSeq = 0;
     state.recoveryCursor = 0;
+    state.recoveryReplay = [];
     if (state.layer) state.layer.classList.remove('is-collision');
   }
 

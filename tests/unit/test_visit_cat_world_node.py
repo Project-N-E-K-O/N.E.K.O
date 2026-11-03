@@ -603,15 +603,27 @@ async function main() {
   await advance(181);
   await flush();
   const lateBefore = calls.state.length;
+  // Another publisher moved the cursor meanwhile: the resend's stale reply extends it.
+  staleStateCursor = 320;
   await advance(1100);
   await flush();
-  assert.ok(calls.state.slice(lateBefore).some((item) => item.phase === 'commit' && item.world_seq === 301));
-  emit('neko-visit-cat-world', worldFrame(290, 12345, 'commit'));
+  assert.ok(calls.state.slice(lateBefore).some((item) => item.phase === 'commit' && item.world_seq === 321));
+  // A transient frame at or below the cursor is not the saved world.
+  emit('neko-visit-cat-world', worldFrame(310, 9000));
+  assert.notEqual(win.NekoVisitCatWorld.snapshot().world.yarn_x_q16, 9000);
+  // An action applied after the wait gave up is replayed on the late saved world.
+  emit('neko-visit-cat-world-intent', {
+    type: 'visit_cat_world_intent', visit_id: VID, actor: 'peer', kind: 'question_tap',
+    intent_id: 80, x_q16: 33000, y_q16: 15000,
+  });
+  emit('neko-visit-cat-world', Object.assign(worldFrame(305, 12345, 'commit'), { question_x_q16: 777 }));
   await flush();
-  assert.equal(win.NekoVisitCatWorld.snapshot().world.yarn_x_q16, 12345);
+  const restored = win.NekoVisitCatWorld.snapshot().world;
+  assert.equal(restored.question_x_q16, 777);
+  assert.equal(restored.yarn_x_q16, 33000);
   const republished = calls.state.filter((item) => item.phase === 'commit').pop();
-  assert.equal(republished.yarn_x_q16, 12345);
-  assert.ok(republished.world_seq > 301);
+  assert.equal(republished.question_x_q16, 777);
+  assert.ok(republished.world_seq > 321);
 
   // A stale commit that is retried resends the world as it is now.
   let releaseGate;
