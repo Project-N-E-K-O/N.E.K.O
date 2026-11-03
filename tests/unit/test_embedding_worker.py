@@ -934,8 +934,8 @@ async def test_character_retired_during_inference_is_not_written(retire):
     persona.store["旧名"] = {"master": {"facts": [_stale("persona fact")]}}
     worker = EmbeddingWarmupWorker(
         get_persona_manager=lambda: persona,
-        get_reflection_engine=lambda: _ReflectionStub(),
-        get_fact_store=lambda: _FactStub(),
+        get_reflection_engine=_ReflectionStub,
+        get_fact_store=_FactStub,
         get_character_names=lambda: list(state["names"]),
         warmup_delay_seconds=0.01,
         is_character_writable=lambda name: state["writable"],
