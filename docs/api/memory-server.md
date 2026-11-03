@@ -252,6 +252,10 @@ Returns read-only transition counts from the character's event log:
 
 Invalid datetimes or `since > until` return `400`.
 
+Counts cover only events that are still in the journal. Already-applied
+history is pruned in the background (by default the last 7 days are kept,
+at most 256 KiB), so a window reaching further back undercounts.
+
 ## Storage backend
 
 Memory data is scoped under `memory/<character>/`. The principal stores are:

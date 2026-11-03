@@ -113,6 +113,12 @@ MAX_KNOWN_POOL_FACTS = 30
 # signal loop (40s), with negligible IO/CPU impact.
 EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS = 3600
 
+# Event-journal compaction loop interval (memory/event_log.py
+# compact_applied_history). Each round costs one stat plus one line read per
+# character until a journal is due (>= 512 KiB or first line >= 30 days old),
+# so a slow cadence is plenty; journals grow a few KB per day.
+EVENT_LOG_COMPACT_INTERVAL_SECONDS = 6 * 3600
+
 # §3.6 render budget (placeholder for PR-3).
 # Private/base legacy mode (empty subjects) uses two global pools; scoped rendering
 # (groups, nonempty subjects) gives each subject its own pools, backed by
@@ -597,6 +603,27 @@ REFLECTION_RELATED_TOTAL_CAP = 20
   candidates; without duplicates, cap at 20 to prevent prompt growth.
 - Prompt cost: 20 ×~50 tok ≈1000 anchor tokens +20 ×~50 tok ≈1000
   source tokens =2k maximum, easily handled by summary-tier models."""
+
+REFLECTION_EXISTING_IMPRESSIONS_TOP_K = 5
+"""Existing impressions shown to reflection synthesis for duplicate checking.
+- Upstream: synthesize_reflections ranks active reflections (pending /
+  confirmed / promoted) and non-protected persona entries of the same subject
+  by max cosine against the fact batch, then keeps this many.
+- Purpose: the LLM may answer skip with one of these ids when the batch adds
+  nothing beyond it; the facts are then absorbed without a new reflection.
+- Vectors unavailable: no candidates, no block, prompt unchanged."""
+
+REFLECTION_EXISTING_IMPRESSIONS_MAX_TOKENS = 800
+"""Token budget for the whole existing-impressions block (whole lines only).
+- Each line is also capped at ``REFLECTION_TEXT_MAX_TOKENS`` first, so
+  5 × 150 tokens plus ids fit."""
+
+REFLECTION_COVERED_FACT_IDS_MAX = 100
+"""Newest fact ids kept in an entry's ``covered_fact_ids`` audit list.
+- Written when synthesis skips a batch as already covered by that reflection
+  or persona entry. Audit only: no evidence is added, so restated relationship
+  lines cannot climb the render ranking this way.
+- Cap keeps frequently restated entries from bloating persona.json."""
 
 # ---- Memory: temporal scope (memory/temporal.py) ─────────────────────
 # Reflection temporal decay uses four temporal_scope values (pattern / state / episode / past).

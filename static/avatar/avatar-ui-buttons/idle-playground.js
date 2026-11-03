@@ -282,6 +282,9 @@ function _releaseNekoIdleCat1PlaygroundDropLifecycle(button, reason) {
     }
     state.bodies.clear();
     state.disabledCapabilities.clear();
+    // Playground owns the only render loop for free-desktop collisions too.
+    // Its final teardown must clear whichever source started the visible effect.
+    window.NekoCollisionDeformation?.clearCollisionDeformation(button);
     const cleanups = state.cleanups.splice(0);
     cleanups.forEach((cleanup) => {
         try { cleanup(); } catch (_) {}
@@ -1136,6 +1139,18 @@ function _resolveNekoIdleCat1PlaygroundBodyCollisionPair(state, first, second) {
                 second.inverseMass *
                 getDraggedPushRatio(firstMass, secondMass);
         }
+        const impactAt = Number.isFinite(state.lastTickAt) ? state.lastTickAt : performance.now();
+        if (first.id === 'cat' && firstCanMove) {
+            _beginNekoIdleCat1PlaygroundCollisionDeformation(
+                state.button, first, direction < 0 ? 'right' : 'left',
+                Math.abs(first.vx - firstVx), impactAt
+            );
+        } else if (second.id === 'cat' && secondCanMove) {
+            _beginNekoIdleCat1PlaygroundCollisionDeformation(
+                state.button, second, direction < 0 ? 'left' : 'right',
+                Math.abs(second.vx - secondVx), impactAt
+            );
+        }
     } else {
         const direction = firstCenterY <= secondCenterY ? -1 : 1;
         if (firstCanMove) first.y += direction * overlapY * firstShare;
@@ -1157,6 +1172,18 @@ function _resolveNekoIdleCat1PlaygroundBodyCollisionPair(state, first, second) {
                 _NEKO_IDLE_CAT1_PLAYGROUND_BODY_PUSH_VELOCITY_PX_PER_SEC *
                 second.inverseMass *
                 getDraggedPushRatio(firstMass, secondMass);
+        }
+        const impactAt = Number.isFinite(state.lastTickAt) ? state.lastTickAt : performance.now();
+        if (first.id === 'cat' && firstCanMove) {
+            _beginNekoIdleCat1PlaygroundCollisionDeformation(
+                state.button, first, direction < 0 ? 'down' : 'up',
+                Math.abs(first.vy - firstVy), impactAt
+            );
+        } else if (second.id === 'cat' && secondCanMove) {
+            _beginNekoIdleCat1PlaygroundCollisionDeformation(
+                state.button, second, direction < 0 ? 'up' : 'down',
+                Math.abs(second.vy - secondVy), impactAt
+            );
         }
     }
 
@@ -1314,6 +1341,20 @@ function _setNekoIdleCat1PlaygroundCatGroundedArt(button) {
     _setNekoIdleReturnArtSource(art, _getNekoIdleReturnAssetUrl(_NEKO_IDLE_TIER_CAT1), _NEKO_IDLE_TIER_CAT1, { animate: false });
 }
 
+function _beginNekoIdleCat1PlaygroundCollisionDeformation(button, body, direction, impactVelocityChange, timestamp) {
+    if (!button || !body || body.id !== 'cat' || body.dragging) return false;
+    const reduceMotion = !!(window.matchMedia
+        && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    return !!window.NekoCollisionDeformation?.beginCollisionDeformation(button, {
+        owner: 'idle-cat1-playground',
+        direction,
+        impactVelocityChange,
+        startedAt: timestamp,
+        reducedMotion: reduceMotion,
+        visibleInsetRatios: body.visibleInsetRatios,
+    });
+}
+
 function _stepNekoIdleCat1PlaygroundPhysics(button, now) {
     const state = button && button.__nekoIdleCat1PlaygroundDropState;
     if (!state || !state.active || state.released) return;
@@ -1353,21 +1394,40 @@ function _stepNekoIdleCat1PlaygroundPhysics(button, now) {
                     : _NEKO_IDLE_CAT1_PLAYGROUND_HORIZONTAL_DAMPING;
 
                 if (body.x <= body.wallLeft) {
+                    if (body.vx < 0) {
+                        const beforeVx = body.vx;
+                        body.vx = Math.abs(body.vx) * _NEKO_IDLE_CAT1_PLAYGROUND_WALL_RESTITUTION;
+                        _beginNekoIdleCat1PlaygroundCollisionDeformation(
+                            button, body, 'left', Math.abs(body.vx - beforeVx), now
+                        );
+                    }
                     body.x = body.wallLeft;
-                    body.vx = Math.abs(body.vx) * _NEKO_IDLE_CAT1_PLAYGROUND_WALL_RESTITUTION;
                 }
 
                 if (body.x >= body.wallRight) {
+                    if (body.vx > 0) {
+                        const beforeVx = body.vx;
+                        body.vx = -Math.abs(body.vx) * _NEKO_IDLE_CAT1_PLAYGROUND_WALL_RESTITUTION;
+                        _beginNekoIdleCat1PlaygroundCollisionDeformation(
+                            button, body, 'right', Math.abs(body.vx - beforeVx), now
+                        );
+                    }
                     body.x = body.wallRight;
-                    body.vx = -Math.abs(body.vx) * _NEKO_IDLE_CAT1_PLAYGROUND_WALL_RESTITUTION;
                 }
 
                 if (Number.isFinite(body.ceilingY) && body.y <= body.ceilingY) {
+                    if (body.vy < 0) {
+                        const beforeVy = body.vy;
+                        body.vy = Math.abs(body.vy) * _NEKO_IDLE_CAT1_PLAYGROUND_WALL_RESTITUTION;
+                        _beginNekoIdleCat1PlaygroundCollisionDeformation(
+                            button, body, 'up', Math.abs(body.vy - beforeVy), now
+                        );
+                    }
                     body.y = body.ceilingY;
-                    body.vy = Math.abs(body.vy) * _NEKO_IDLE_CAT1_PLAYGROUND_WALL_RESTITUTION;
                 }
 
                 if (body.y >= body.floorY) {
+                    const beforeVy = body.vy;
                     body.y = body.floorY;
                     const reduceMotion = window.matchMedia
                         && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -1385,6 +1445,11 @@ function _stepNekoIdleCat1PlaygroundPhysics(button, now) {
                         if (Math.abs(body.vx) <= _NEKO_IDLE_CAT1_PLAYGROUND_GROUND_STOP_VELOCITY_PX_PER_SEC) {
                             body.vx = 0;
                         }
+                    }
+                    if (beforeVy > 0 && wasAirborne) {
+                        _beginNekoIdleCat1PlaygroundCollisionDeformation(
+                            button, body, 'down', Math.abs(body.vy - beforeVy), now
+                        );
                     }
                 } else {
                     body.grounded = false;
@@ -1451,6 +1516,13 @@ function _stepNekoIdleCat1PlaygroundPhysics(button, now) {
                 _setNekoIdleCat1PlaygroundBodyPosition(catBody, catBody.x, catBody.y, { force: true });
             }
         }
+    }
+    const reduceMotion = !!(window.matchMedia
+        && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    if (catBody && window.NekoCollisionDeformation?.renderCollisionDeformation(
+        button, now, reduceMotion, catBody.visibleInsetRatios
+    )) {
+        needsNextFrame = true;
     }
     if (allGrounded && (state.phase === 'dropping' || state.phase === 'ballistic')) {
         state.phase = 'settled';
