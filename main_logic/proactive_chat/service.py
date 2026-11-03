@@ -1727,6 +1727,7 @@ async def handle_proactive_chat(
         # Phase 1 sections rendered as plain text without links (e.g. window
         # search); an unmatched pick may legitimately come from one of them.
         phase1_linkless_labels: list[str] = []
+        phase1_linkless_records: list[str] = []
 
         # Collect music links after Phase1 web selection.
         # Memes likewise bypass Phase1 LLM selection and add topics directly.
@@ -1871,6 +1872,7 @@ async def handle_proactive_chat(
                         ]
                         parts.append((f"--- {label} ---", fallback_lines))
                         phase1_linkless_labels.append(label)
+                        phase1_linkless_records.extend(fallback_lines)
                         remaining_total -= len(fallback_lines)
                         if is_reserved_fallback:
                             remaining_fallback_modes -= 1
@@ -1934,7 +1936,9 @@ async def handle_proactive_chat(
             elif matched is None and _unmatched_pick_may_be_grounded_news(
                 web_parsed.get("source"),
                 all_web_links,
-                linkless_sources=phase1_linkless_labels,
+                title=web_parsed.get("title"),
+                linkless_labels=phase1_linkless_labels,
+                linkless_records=phase1_linkless_records,
             ):
                 print(
                     f"[{lanlan_name}] Phase 1 海外新闻选择未匹配，跳过: "

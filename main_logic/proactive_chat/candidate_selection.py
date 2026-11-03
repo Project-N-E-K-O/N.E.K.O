@@ -82,19 +82,21 @@ def _unmatched_pick_may_be_grounded_news(
     source: Any,
     links: list[dict[str, Any]],
     *,
-    linkless_sources: Any = (),
+    title: Any = "",
+    linkless_labels: Any = (),
+    linkless_records: Any = (),
 ) -> bool:
     """Whether an unmatched Phase 1 pick may come from overseas grounded news.
 
     Such a pick must be skipped: Phase 2 would otherwise receive only the
     model's own paraphrase, without the source facts and the no-invention
-    constraint that matched grounded candidates get. A pick that names a
-    grounded source is always skipped. When the round offers grounded
-    candidates and no linkless section (e.g. window search, which renders text
-    without links), a missing or unrecognized source is skipped too. If a
-    linkless section was rendered, such picks may legitimately come from it and
-    keep the existing title-only path. Rounds without grounded candidates are
-    unchanged.
+    constraint that matched grounded candidates get. Rounds without grounded
+    candidates are unchanged. Otherwise a pick naming a grounded source is
+    skipped; a pick identified as coming from a linkless text section (window
+    search and other fallback text, which never match a link) keeps the
+    title-only path, by its section label or by its title appearing in that
+    section's text; any other pick with a missing or unrecognized source is
+    skipped; a pick clearly naming a non-grounded linked source is kept.
     """
 
     def _norm(value: Any) -> str:
@@ -106,7 +108,12 @@ def _unmatched_pick_may_be_grounded_news(
     normalized = _norm(source)
     if normalized and normalized in grounded_sources:
         return True
-    if any(_norm(label) for label in linkless_sources):
+    if normalized and normalized in {_norm(label) for label in linkless_labels}:
+        return False
+    normalized_title = _norm(title)
+    if len(normalized_title) >= 2 and any(
+        normalized_title in _norm(record) for record in linkless_records
+    ):
         return False
     if not normalized:
         return True

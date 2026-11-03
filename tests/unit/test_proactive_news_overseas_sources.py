@@ -927,22 +927,34 @@ def test_unmatched_pick_from_grounded_news_source_is_recognized():
 
 
 @pytest.mark.unit
-def test_linkless_sections_keep_unmatched_picks_usable():
+def test_linkless_sections_keep_only_their_own_unmatched_picks():
     links = [
         {"title": "Binance", "url": "https://twitter.com/search?q=Binance", "source": "Twitter",
          "mode": "news", "grounded_news": True},
+        {"title": "World Series", "url": "https://news.example.com/g7", "source": "Google Trends",
+         "mode": "news", "grounded_news": True},
     ]
-    linkless = ["Window search"]
+    labels = ["Window search"]
+    records = ["1. How to bake sourdough bread at home | example.com"]
+
+    def check(source, title):
+        return _unmatched_pick_may_be_grounded_news(
+            source, links, title=title, linkless_labels=labels, linkless_records=records
+        )
 
     # Window search renders text without links, so its picks never match a
-    # link; they must keep the title-only path instead of being dropped.
-    assert not _unmatched_pick_may_be_grounded_news("Window search", links, linkless_sources=linkless)
-    assert not _unmatched_pick_may_be_grounded_news("search results", links, linkless_sources=linkless)
-    assert not _unmatched_pick_may_be_grounded_news("", links, linkless_sources=linkless)
-    # A pick that names grounded news is still skipped.
-    assert _unmatched_pick_may_be_grounded_news("Twitter", links, linkless_sources=linkless)
-    # Without linkless sections the stricter rule applies.
-    assert _unmatched_pick_may_be_grounded_news("search results", links, linkless_sources=[])
+    # link; identified by label or by title, they keep the title-only path.
+    assert not check("Window search", "anything")
+    assert not check("", "How to bake sourdough bread")
+    assert not check("search results", "sourdough bread at home")
+    # A rewritten news pick with an unfamiliar source is not excused merely
+    # because window results exist in the same round.
+    assert check("Google", "World Series game seven")
+    assert check("", "World Series game seven")
+    # A pick that names grounded news is always skipped.
+    assert check("Twitter", "How to bake sourdough bread")
+    # A one-character title cannot identify a linkless record.
+    assert check("", "a")
 
 
 @pytest.mark.unit
@@ -980,8 +992,10 @@ def test_service_skips_unmatched_grounded_news_picks():
     )
     assert "matched is None" in ast.unparse(branch.test)
     # Linkless sections (window search) must be passed so their picks survive.
-    assert any(kw.arg == "linkless_sources" for call in calls for kw in call.keywords)
+    keywords = {kw.arg for call in calls for kw in call.keywords}
+    assert {"title", "linkless_labels", "linkless_records"} <= keywords
     assert "phase1_linkless_labels.append(label)" in source
+    assert "phase1_linkless_records.extend(fallback_lines)" in source
     assert "跳过" in ast.unparse(branch.body[0])
 
 
