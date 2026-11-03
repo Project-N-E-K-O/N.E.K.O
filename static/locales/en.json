@@ -6883,6 +6883,7 @@
             "loginRequired": "Sign in to nekoverse in N.E.K.O Settings first",
             "mutualRequired": "You no longer follow each other",
             "targetOffline": "This friend is offline and can't be invited",
+            "invitationCapacity": "Invitation capacity reached. Please try again later.",
             "communityUnavailable": "Couldn't reach nekoverse. Try again later",
             "declined": "{{name}} can't visit this time",
             "otherParty": "They",
