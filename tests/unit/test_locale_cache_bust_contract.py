@@ -66,6 +66,8 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-11-03-sync-recovery-memory-merge",
+        "2026-11-03-news-overseas-systray-labels-main-merge",
         "2026-11-03-sync-model-main-merge",
         "2026-11-03-chat-sync-residue-main-merge",
         "2026-10-30-sync-model-main-merge",
@@ -74,7 +76,14 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-30-edge-peek-first-notice",
         "2026-10-23-media-memory-sync",
         "2026-10-30-voice-processing-host",
+        "2026-11-03-news-overseas-chat-sync-main-merge",
+        "2026-11-03-systray-intro-es-pt-labels",
         "2026-11-02-model-click-shake",
+        "2026-10-30-news-overseas-trends-steam",
+        "2026-10-30-edge-peek-first-notice",
+        "2026-11-03-news-overseas-sources-main-merge",
+        "2026-11-03-chat-sync-residue-main-merge",
+        "2026-10-30-news-source-tooltip",
         "2026-10-30-chat-sync-residue-main-merge",
         "2026-10-30-chat-sync-recovery-cloud-copies-kept",
         "2026-10-30-chat-sync-profile-upload-key",

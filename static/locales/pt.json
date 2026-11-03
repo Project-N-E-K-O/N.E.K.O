@@ -3937,7 +3937,7 @@
             "proactiveVisionChat": "Compartilhamento de tela",
             "proactiveVisionChatTooltip": "Requer Chat Proativo ativado e Modo Privacidade desativado",
             "proactiveNewsChat": "Site de notícias",
-            "proactiveNewsChatTooltip": "Use os tópicos em alta do Twitter/X (na China continental: Weibo, Tieba e Xiaoheihe)",
+            "proactiveNewsChatTooltip": "Use tendências do Twitter/X, Google Trends e os mais vendidos da Steam (na China continental: Weibo, Tieba e Xiaoheihe)",
             "proactiveCommunityChat": "Universo Miau",
             "proactiveCommunityChatTooltip": "Usar cartões públicos do feed Descobrir do Universo Miau para iniciar conversas",
             "proactiveVideoChat": "Site de vídeo",
@@ -4439,14 +4439,14 @@
                 "title": "📤 Carregar registros",
                 "desc": "Encontrou problemas ou tem sugestões? Clique aqui para fazer upload de registros para feedback ~"
             },
-            "exit": "Saída",
+            "exit": "Sair",
             "complete": {
                 "title": "🎉Tutorial Completo!",
                 "desc": "Parabéns por concluir todos os tutoriais! Agora você entende os principais recursos do N.E.K.O. Divirta-se interagindo com sua neko! Para revisar o tutorial, clique em \"Redefinir Tutorial\" nas configurações ~"
             },
             "resetPosition": "Redefinir posição do avatar",
             "resetPositionDesc": "Retorne sua Neko para a posição padrão se ela sair da tela~",
-            "openChat": "Abrir janela de bate-papo",
+            "openChat": "Abrir chat",
             "openChatDesc": "Abra uma janela de bate-papo separada para conversas de texto ~",
             "important": "IMPORTANTE:",
             "compatibility": "Modo de compatibilidade",
