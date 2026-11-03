@@ -89,7 +89,9 @@ from main_logic.proactive_chat.candidate_selection import (
     _format_phase1_link_candidate,
     _number_phase1_links_by_source,
     _phase1_linkless_modes,
+    _unmatched_pick_may_be_grounded_news,
     _round_robin_phase1_links,
+    _selected_web_link_from_match,
 )
 from main_logic.proactive_chat.generation import (
     Phase2PromptContext,
@@ -1737,6 +1739,10 @@ async def handle_proactive_chat(
         )
 
         all_web_links: list[dict] = []
+        # Phase 1 sections rendered as plain text without links (e.g. window
+        # search); an unmatched pick may legitimately come from one of them.
+        phase1_linkless_labels: list[str] = []
+        phase1_linkless_records: list[str] = []
 
         # Collect music links after Phase1 web selection.
         # Memes likewise bypass Phase1 LLM selection and add topics directly.
@@ -1880,6 +1886,8 @@ async def handle_proactive_chat(
                             for record in fallback_records[:fallback_limit]
                         ]
                         parts.append((f"--- {label} ---", fallback_lines))
+                        phase1_linkless_labels.append(label)
+                        phase1_linkless_records.extend(fallback_lines)
                         remaining_total -= len(fallback_lines)
                         if is_reserved_fallback:
                             remaining_fallback_modes -= 1
@@ -1940,6 +1948,17 @@ async def handle_proactive_chat(
                     f"[{lanlan_name}] Phase 1 社区卡牌选择未匹配，跳过: "
                     f"{web_parsed.get('title', '')[:60]}"
                 )
+            elif matched is None and _unmatched_pick_may_be_grounded_news(
+                web_parsed.get("source"),
+                all_web_links,
+                title=web_parsed.get("title"),
+                linkless_labels=phase1_linkless_labels,
+                linkless_records=phase1_linkless_records,
+            ):
+                print(
+                    f"[{lanlan_name}] Phase 1 海外新闻选择未匹配，跳过: "
+                    f"{web_parsed.get('title', '')[:60]}"
+                )
             else:
                 topic_key = _source_hash(
                     (matched.get("dedupe_key") or matched.get("url", ""))
@@ -1957,26 +1976,8 @@ async def handle_proactive_chat(
                     )
                 else:
                     if matched:
-                        selected_web_link = dict(matched)
-                        canonical_title = matched.get("title", "")
-                        selected_title = (
-                            canonical_title
-                            if matched.get("mode") == "community"
-                            else web_parsed.get("title", canonical_title)
-                        )
-                        selected_web_link.update(
-                            {
-                                "title": selected_title,
-                                "url": matched["url"],
-                                "source": (
-                                    matched.get("source", "")
-                                    if matched.get("mode") == "community"
-                                    else web_parsed.get(
-                                        "source", matched.get("source", "")
-                                    )
-                                ),
-                                "mode": matched.get("mode", "web"),
-                            }
+                        selected_web_link = _selected_web_link_from_match(
+                            matched, web_parsed
                         )
                         print(
                             f"[{lanlan_name}] Phase 1 链接预匹配成功: {matched.get('title', '')[:60]}"
