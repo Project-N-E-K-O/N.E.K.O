@@ -457,8 +457,9 @@ async def test_synthesis_without_vectors_keeps_old_prompt_and_ignores_skip(tmp_p
     assert "{EXISTING_IMPRESSIONS_BLOCK}" not in prompt
     assert "======以上为事实======\n\n请基于这些事实" in prompt
     assert len(created) == 1
-    # Nothing extra is loaded when vectors are off: same work as before.
-    persona_reads.assert_not_awaited()
+    # The existing-impressions block loads nothing when vectors are off; the
+    # one persona read is the retired-restatement check (identical text).
+    assert persona_reads.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -663,6 +664,82 @@ async def test_synthesis_skip_falls_back_when_target_suppressed_meanwhile(tmp_pa
     else:
         old = (await pm.aget_persona(CHAR))["relationship"]["facts"][0]
     assert "covered_fact_ids" not in old
+
+
+def _new_reflection_answer(text: str) -> dict:
+    return {
+        "entity": "relationship", "relation_type": "dynamic",
+        "reflection": text, "temporal_scope": "pattern", "event_when": None,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["reflection", "persona"])
+async def test_synthesis_restating_a_retired_line_is_stored_retired(tmp_path, kind):
+    """A new reflection that restates a line introspection retired would sit
+    in the prompt until next week's run; it is stored already suppressed,
+    and its facts are still absorbed (they stay recallable as facts)."""
+    tmpdir = str(tmp_path)
+    facts = _facts()
+    _write_json(tmpdir, "facts.json", facts)
+    if kind == "reflection":
+        _write_json(tmpdir, "reflections.json", [
+            _reflection("ref_hollow", "两人睡前道晚安形成了默契", **_retired()),
+        ])
+        key = "reflection.ref_hollow"
+    else:
+        _write_json(tmpdir, "persona.json", {"relationship": {"facts": [
+            _persona_entry("p_hollow", "睡前道晚安体现了两人的纽带", **_retired()),
+        ]}})
+        key = "persona.relationship.p_hollow"
+    _fs, _pm, re = _install(tmpdir)
+    answer = _new_reflection_answer("两人每晚互道晚安形成了深厚默契")
+    with _patch_vectors(_FakeEmbeddingService()), _llm(answer, []), \
+         patch("utils.language_utils.get_global_language", return_value="zh"):
+        created = await re.synthesize_reflections(CHAR)
+
+    assert len(created) == 1
+    stored = {r["id"]: r for r in _read_json(tmpdir, "reflections.json")}[created[0]["id"]]
+    assert stored["permanent_suppression"]["restates"] == key
+    assert all(f["absorbed"] for f in _read_json(tmpdir, "facts.json"))
+
+
+@pytest.mark.asyncio
+async def test_synthesis_unrelated_to_retired_lines_stays_live(tmp_path):
+    """The check is near-paraphrase only: a retired line on another topic
+    leaves the new reflection alone."""
+    tmpdir = str(tmp_path)
+    _write_json(tmpdir, "facts.json", _facts())
+    _write_json(tmpdir, "reflections.json", [
+        _reflection("ref_hollow", "两人喝咖啡形成了默契", **_retired()),
+    ])
+    _fs, _pm, re = _install(tmpdir)
+    answer = _new_reflection_answer("主人连着几晚睡前对小天说晚安")
+    with _patch_vectors(_FakeEmbeddingService()), _llm(answer, []), \
+         patch("utils.language_utils.get_global_language", return_value="zh"):
+        created = await re.synthesize_reflections(CHAR)
+
+    assert len(created) == 1
+    stored = {r["id"]: r for r in _read_json(tmpdir, "reflections.json")}[created[0]["id"]]
+    assert "permanent_suppression" not in stored
+
+
+@pytest.mark.asyncio
+async def test_retired_restatement_without_vectors_matches_identical_text_only(tmp_path):
+    tmpdir = str(tmp_path)
+    _write_json(tmpdir, "reflections.json", [
+        _reflection("ref_hollow", "两人睡前道晚安形成了默契", **_retired()),
+        _reflection("ref_live", "主人睡前说晚安"),
+    ])
+    _fs, _pm, re = _install(tmpdir)
+    with _patch_vectors(_FakeEmbeddingService(available=False)):
+        same = await re._afind_retired_restatement(CHAR, " 两人睡前道晚安形成了默契 ")
+        similar = await re._afind_retired_restatement(CHAR, "两人每晚互道晚安形成了深厚默契")
+        live = await re._afind_retired_restatement(CHAR, "主人睡前说晚安")
+
+    assert same == "reflection.ref_hollow"
+    assert similar is None, "没有向量时只认完全相同的文本"
+    assert live is None, "只比对被压制的条目"
 
 
 @pytest.mark.asyncio

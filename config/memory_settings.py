@@ -618,6 +618,15 @@ REFLECTION_EXISTING_IMPRESSIONS_MAX_TOKENS = 800
 - Each line is also capped at ``REFLECTION_TEXT_MAX_TOKENS`` first, so
   5 × 150 tokens plus ids fit."""
 
+REFLECTION_RETIRED_RESTATEMENT_MIN_COSINE = 0.92
+"""Cosine at which a newly synthesized reflection counts as restating an
+entry weekly introspection permanently suppressed (same subject); such a
+reflection is stored already suppressed instead of reaching the prompt for a
+week. Near-paraphrase level on purpose: a merely related, more concrete line
+must pass. Without vectors only an identical text matches.
+- Why not reuse the existing-impressions check: retired entries are kept out of
+  that pool, or a fresh fact batch could be swallowed into a hollow line."""
+
 REFLECTION_COVERED_FACT_IDS_MAX = 100
 """Newest fact ids kept in an entry's ``covered_fact_ids`` audit list.
 - Written when synthesis skips a batch as already covered by that reflection

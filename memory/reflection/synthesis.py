@@ -49,7 +49,11 @@ from memory._reflection.schema import (
     merge_covered_fact_ids,
     reflection_id_from_facts as _reflection_id_from_facts,
 )
-from memory.introspection import is_permanently_suppressed
+from memory.introspection import (
+    PERMANENT_SUPPRESSION_KEY,
+    build_permanent_suppression,
+    is_permanently_suppressed,
+)
 
 from utils.cloudsave_runtime import assert_cloudsave_writable
 from utils.file_utils import atomic_write_json_async
@@ -533,6 +537,21 @@ class SynthesisMixin:
                 reflection['reinforcement'] = 0.1
                 reflection['rein_last_signal_at'] = now_iso
 
+        # A restatement of a line introspection retired is stored already
+        # retired: it would otherwise sit in the prompt until next week's run.
+        # Checked before the lock -- it may embed the new text.
+        restated = await self._afind_retired_restatement(
+            lanlan_name, reflection_text, subject=memory_subject,
+        )
+        if restated is not None:
+            reflection[PERMANENT_SUPPRESSION_KEY] = build_permanent_suppression(
+                'restates a retired impression', now_iso, restates=restated,
+            )
+            logger.info(
+                f"[Reflection] {lanlan_name}: 新反思 {rid} 复述了已压制的 "
+                f"{restated}，直接以压制状态保存"
+            )
+
         # ── Lock only reload + deduplicated append + save ──
         async with self._get_alock(lanlan_name):
             if self._subject_forget_overlapped(
@@ -808,6 +827,53 @@ class SynthesisMixin:
             + f"{get_reflection_existing_impressions_note(prompt_lang)}\n\n"
         )
         return block, candidates
+
+    async def _afind_retired_restatement(
+        self, lanlan_name: str, text: str, *, subject=None,
+    ) -> str | None:
+        """Key of a permanently suppressed impression ``text`` restates, or None.
+
+        Candidates are the subject's retired reflections and persona entries,
+        the ones the existing-impressions block leaves out. A match is an
+        identical text, or a cosine of at least
+        ``REFLECTION_RETIRED_RESTATEMENT_MIN_COSINE`` when vectors are usable.
+        """
+        from config import REFLECTION_RETIRED_RESTATEMENT_MIN_COSINE
+        from memory.scopes import entry_matches_subject
+
+        try:
+            reflections = await self._aload_reflections_full(lanlan_name)
+            persona = await self._persona_manager.aget_persona(lanlan_name)
+        except Exception as e:
+            logger.warning(f"[Reflection] 已压制条目加载失败，跳过复述检查: {e}")
+            return None
+        pool: list[tuple[str, dict]] = [
+            (f"reflection.{r.get('id')}", r)
+            for r in reflections
+            if is_permanently_suppressed(r) and entry_matches_subject(r, subject)
+        ]
+        for section_key, section in (persona or {}).items():
+            if not isinstance(section, dict):
+                continue
+            pool.extend(
+                (f"persona.{section_key}.{e.get('id')}", e)
+                for e in section.get('facts') or []
+                if is_permanently_suppressed(e) and entry_matches_subject(e, subject)
+            )
+        if not pool:
+            return None
+        wanted = text.strip()
+        for key, entry in pool:
+            if str(entry.get('text') or '').strip() == wanted:
+                return key
+        scores = await ascore_against_queries([{'text': text}], [e for _, e in pool])
+        if scores is None:
+            return None
+        best_key, best_score = None, REFLECTION_RETIRED_RESTATEMENT_MIN_COSINE
+        for (key, _entry), score in zip(pool, scores):
+            if score is not None and score >= best_score:
+                best_key, best_score = key, score
+        return best_key
 
     @staticmethod
     def _synthesis_skip_key(result: dict, candidates: dict[str, dict]) -> str | None:

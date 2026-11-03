@@ -91,16 +91,21 @@ def is_permanently_suppressed(entry) -> bool:
 
 
 def build_permanent_suppression(
-    reason: str, now_iso: str, *, merged_into: str | None = None,
+    reason: str, now_iso: str, *,
+    merged_into: str | None = None, restates: str | None = None,
 ) -> dict:
     """The value stored under ``PERMANENT_SUPPRESSION_KEY``.
 
     ``merged_into`` names the entry a merge folded this one into: the source
-    stays on disk, retired, instead of being deleted.
+    stays on disk, retired, instead of being deleted. ``restates`` names the
+    retired entry a newly synthesized reflection repeats, which is why it was
+    stored already suppressed.
     """
     marker = {'at': now_iso, 'reason': reason}
     if merged_into:
         marker['merged_into'] = merged_into
+    if restates:
+        marker['restates'] = restates
     return marker
 
 
@@ -349,11 +354,13 @@ def classify_model_failure(exc: BaseException) -> str:
     """Whether a failed model call is worth retrying soon.
 
     Transient: a dropped connection, a 5xx or a rate limit -- the same call
-    may well succeed in half an hour. Final: a timeout (checked first: the
-    OpenAI SDK's timeout error subclasses its connection error), any other
-    4xx such as bad credentials or an unknown model, and anything
-    unrecognised. A final failure waits for the next weekly cycle, when the
-    input has changed anyway.
+    may well succeed in half an hour. Final: a timeout (checked first: both
+    SDKs' timeout errors subclass their connection errors), any other 4xx
+    such as bad credentials or an unknown model, and anything unrecognised.
+    A final failure waits for the next weekly cycle, when the input has
+    changed anyway. Connection errors come from the shared OpenAI + Anthropic
+    list the chat retry path uses, so either backend of the correction tier
+    is recognised.
     """
     import asyncio
 
@@ -363,9 +370,10 @@ def classify_model_failure(exc: BaseException) -> str:
     if isinstance(status, int):
         return FAILURE_TRANSIENT if status == 429 or status >= 500 else FAILURE_FINAL
     import httpx
-    from openai import APIConnectionError
 
-    if isinstance(exc, (ConnectionError, APIConnectionError, httpx.TransportError)):
+    from utils.llm_client.retry import chat_retry_error_types
+
+    if isinstance(exc, (ConnectionError, httpx.TransportError, *chat_retry_error_types())):
         return FAILURE_TRANSIENT
     return FAILURE_FINAL
 
@@ -388,7 +396,30 @@ def _print_plan(name: str, round_no: int, plan: IntrospectionPlan) -> None:
         )
 
 
-def _build_prompt(memory_text: str, *, ai_name: str, master_name: str) -> str:
+def _shown_lines(
+    memory_text: str, lines: dict[int, AnnotatedLine],
+) -> dict[int, AnnotatedLine]:
+    """The numbered lines whose tag and whole text made it into the prompt.
+
+    A line cut off by the input budget, or cut in half, is not offered to
+    the model's actions: it judged at most part of that text.
+    """
+    shown: dict[int, AnnotatedLine] = {}
+    for number, line in lines.items():
+        tag = f"- [{number} RO] " if line.readonly else f"- [{number}] "
+        start = memory_text.find(tag)
+        if start < 0:
+            continue
+        if line.text in memory_text[start:]:
+            shown[number] = line
+    return shown
+
+
+def _build_prompt(
+    memory_text: str, *, ai_name: str, master_name: str,
+    lines: dict[int, AnnotatedLine],
+) -> tuple[str, dict[int, AnnotatedLine]]:
+    """The prompt, and the numbered lines it shows in full."""
     from config import (
         MEMORY_INTROSPECTION_INPUT_MAX_TOKENS,
         MEMORY_INTROSPECTION_MAX_ACTIONS_PER_ROUND,
@@ -404,17 +435,19 @@ def _build_prompt(memory_text: str, *, ai_name: str, master_name: str) -> str:
     # caps on card and do-not-mention lines); this is the backstop for a
     # card import big enough to outgrow the sum.
     memory_text = truncate_to_tokens(memory_text, MEMORY_INTROSPECTION_INPUT_MAX_TOKENS)
+    shown = _shown_lines(memory_text, lines)
     memory_text = _DELIMITER_RUN_RE.sub('==', memory_text)
     lang = detect_prompt_language_with_ascii_fallback(
         memory_text, ui_language=get_global_language_full(),
     )
-    return (
+    prompt = (
         get_memory_introspection_prompt(lang)
         .replace('{AI_NAME}', ai_name)
         .replace('{MASTER_NAME}', master_name)
         .replace('{MAX_ACTIONS}', str(MEMORY_INTROSPECTION_MAX_ACTIONS_PER_ROUND))
         .replace('{MEMORY}', memory_text)
     )
+    return prompt, shown
 
 
 async def _ainvoke(config_manager, prompt: str, *, name: str, round_no: int):
@@ -458,7 +491,10 @@ async def arun_introspection(
         )
         if not annotator.has_editable_lines():
             break
-        prompt = _build_prompt(memory_text, ai_name=name, master_name=master_name)
+        prompt, shown_lines = _build_prompt(
+            memory_text, ai_name=name, master_name=master_name,
+            lines=annotator.lines,
+        )
         try:
             raw_actions, ran_out = await _ainvoke(
                 config_manager, prompt, name=name, round_no=round_no,
@@ -483,7 +519,7 @@ async def arun_introspection(
             )
             break
         plan = plan_actions(
-            raw_actions, annotator.lines,
+            raw_actions, shown_lines,
             max_actions=MEMORY_INTROSPECTION_MAX_ACTIONS_PER_ROUND,
         )
         result.rejected.update(plan.rejected)
