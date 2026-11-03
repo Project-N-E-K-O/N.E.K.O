@@ -37,6 +37,20 @@ async def test_fact_scheduler_is_bounded(monkeypatch):
     assert not bus.schedule_conversation_fact_observed_best_effort('Lan', fact='input.submitted', payload={'text': 'x' * 65537})
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fact", ["reply.started", "reply.closed", "reply.updated"])
+async def test_oversized_reply_text_preserves_boundary_or_reports_missing_update(monkeypatch, fact):
+    publish = AsyncMock(return_value=True)
+    monkeypatch.setattr(bus, "publish_conversation_fact_observed_best_effort", publish)
+    payload = {"reply_id": "r", "text": "x" * (bus._CONVERSATION_FACT_MAX_TEXT + 1)}
+    assert bus.schedule_conversation_fact_observed_best_effort("Lan", fact=fact, payload=payload)
+    await asyncio.gather(*tuple(bus._conversation_fact_tasks))
+    sent = publish.await_args.kwargs["payload"]
+    assert sent["reply_id"] == "r" and sent["text"] is None
+    assert sent.get("text_incomplete", False) == (fact == "reply.updated")
+    assert payload["text"] is not None
+
+
 def test_scheduler_without_running_loop_does_not_construct_coroutine(monkeypatch):
     from unittest.mock import Mock
     publish = Mock()

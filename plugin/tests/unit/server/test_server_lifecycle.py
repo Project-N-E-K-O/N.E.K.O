@@ -14,6 +14,79 @@ pytestmark = pytest.mark.plugin_unit
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [RuntimeError("invalidation failed"), asyncio.CancelledError()])
+async def test_retire_stops_plane_and_bridges_when_invalidation_fails(monkeypatch, failure):
+    from unittest.mock import AsyncMock, Mock
+
+    service = module.ServerLifecycleService()
+    runner, conversations = Mock(), Mock()
+    service._message_plane_runner = runner
+    service._conversation_service = conversations
+    stopped = []
+    monkeypatch.setattr(module.bus_subscription_manager, "invalidate_conversations", AsyncMock(side_effect=failure))
+    monkeypatch.setattr(module.bus_subscription_manager, "set_conversation_observers", Mock())
+    monkeypatch.setattr(module, "stop_bridge", lambda: stopped.append("message"))
+    monkeypatch.setattr(module, "stop_proactive_bridge", lambda: stopped.append("proactive"))
+
+    async def on_loop(operation):
+        return await operation
+
+    monkeypatch.setattr(module, "_on_subscription_loop", on_loop)
+    with pytest.raises(type(failure)):
+        await service._retire_message_plane()
+    runner.stop.assert_called_once()
+    conversations.close.assert_called_once()
+    assert stopped == ["message", "proactive"]
+    assert service._message_plane_runner is None and service.conversation_service() is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_at", ["build", "start"])
+async def test_plane_start_failure_retires_conversation_service(monkeypatch, failure_at):
+    from unittest.mock import AsyncMock, Mock
+
+    service = module.ServerLifecycleService()
+    conversations = Mock()
+    service._conversation_service = conversations
+    runner = Mock()
+    runner.start.side_effect = RuntimeError("start failed")
+
+    def build(**_):
+        if failure_at == "build":
+            raise RuntimeError("build failed")
+        return runner
+
+    async def on_loop(operation):
+        return await operation
+
+    monkeypatch.setattr(module, "build_message_plane_runner", build)
+    monkeypatch.setattr(module.bus_subscription_manager, "invalidate_conversations", AsyncMock())
+    monkeypatch.setattr(module.bus_subscription_manager, "set_conversation_observers", Mock())
+    monkeypatch.setattr(module, "_on_subscription_loop", on_loop)
+    monkeypatch.setattr(module, "stop_bridge", lambda: None)
+    monkeypatch.setattr(module, "stop_proactive_bridge", lambda: None)
+    with pytest.raises(RuntimeError):
+        await service._start_message_plane()
+    assert service.conversation_service() is None and service._message_plane_runner is None
+    conversations.close.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_timeout_closes_conversation_service(monkeypatch):
+    from unittest.mock import AsyncMock, Mock
+
+    service = module.ServerLifecycleService()
+    conversations = Mock()
+    service._conversation_service = conversations
+    monkeypatch.setattr(service, "_shutdown_internal", AsyncMock(side_effect=asyncio.TimeoutError()))
+    monkeypatch.setattr(module.state, "close_plugin_resources", lambda: None)
+    monkeypatch.setattr(module.bus_subscription_manager, "set_conversation_observers", Mock())
+    await service.shutdown()
+    conversations.close.assert_called_once()
+    assert service.conversation_service() is None
+
+
+@pytest.mark.asyncio
 async def test_shutdown_reserves_host_budget_and_keeps_registration_gate_closed(monkeypatch):
     from plugin.server.application.plugins import lifecycle_service
 

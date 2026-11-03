@@ -242,7 +242,8 @@ async def test_native_gemini_accepted_turn_emits_observed_boundaries(monkeypatch
 
 
 @pytest.mark.parametrize("defer_record", [False, True])
-async def test_gemini_late_transcript_corrects_original_reply_record(monkeypatch, defer_record):
+@pytest.mark.parametrize("new_boundary", [False, True])
+async def test_gemini_late_transcript_corrects_original_reply_record(monkeypatch, defer_record, new_boundary):
     from types import SimpleNamespace
     import main_logic.omni_realtime_client._transport as transport_module
     from tests.unit.test_gemini_chat_source_ownership import _client_manager, _dispatch, _event
@@ -264,8 +265,9 @@ async def test_gemini_late_transcript_corrects_original_reply_record(monkeypatch
 
     def observed(name, **kwargs):
         records.append(kwargs)
-        payload = {"id": "message", "content": kwargs["content"],
-                   "reply_id": kwargs["metadata"]["reply_id"],
+        payload = {"id": f"message-{len(records)}", "content": kwargs["content"],
+                   "reply_id": kwargs["metadata"].get("reply_id"),
+                   "origin": kwargs["metadata"].get("origin"),
                    "metadata": {"turn_type": kwargs["turn_type"], "lanlan_name": name}}
         if defer_record:
             pending.append(payload)
@@ -295,12 +297,46 @@ async def test_gemini_late_transcript_corrects_original_reply_record(monkeypatch
     await _dispatch(client, provider, _event(complete=True))
     for payload in pending:
         service.accept_message(store.publish("all", payload))
+    pending.clear()
     assert len(records) == 1
     assert [fact for fact, _ in facts] == ["reply.started", "reply.closed", "reply.updated"]
     assert {payload["reply_id"] for _, payload in facts} == {reply_id}
     assert client._realtime_conversation_observation["turn_id"] == original_turn
     assert service.get_reply(reply_id)["text"] == "first continuation"
-    assert store.conversation_message("message")["text"] == "first continuation"
+    assert store.conversation_message("message-1")["text"] == "first continuation"
+    # An inject inside the late-frame window cannot prove which request owns
+    # ID-less content. A recognized new boundary can carry its active source.
+    token = "proactive-injection"
+    client._gemini_proactive_outcome_owner = (
+        client._connection_generation, provider, token, None, client._tool_scope_generation,
+    )
+    client._gemini_proactive_outcome = (token, None, None)
+    client._proactive_inject_awaiting_outcome = True
+    if new_boundary:
+        client._ai_recent_activity_time = 0
+    await _dispatch(client, provider, _event(text="proactive"))
+    observation = client._realtime_conversation_observation
+    await _dispatch(client, provider, _event(complete=True))
+    for payload in pending:
+        service.accept_message(store.publish("all", payload))
+    pending.clear()
+    assert service.get_reply(reply_id)["text"] == "first continuation"
+    if not new_boundary:
+        assert observation is None
+        assert len(records) == 2 and records[-1]["metadata"].get("reply_id") is None
+        assert [fact for fact, _ in facts] == ["reply.started", "reply.closed", "reply.updated"]
+        return
+    proactive_reply = observation["reply_id"]
+    assert proactive_reply != reply_id
+    assert service.get_reply(proactive_reply)["origin"]["is_proactive"] is True
+    assert service.get_reply(proactive_reply)["text"] == "proactive"
+    await _dispatch(client, provider, _event(text=" tail"))
+    await _dispatch(client, provider, _event(complete=True))
+    for payload in pending:
+        service.accept_message(store.publish("all", payload))
+    assert len(records) == 2
+    assert service.get_reply(proactive_reply)["text"] == "proactive tail"
+    assert service.get_reply(reply_id)["text"] == "first continuation"
 
 
 async def test_provider_failure_without_text_is_not_reported_completed(monkeypatch):
@@ -320,6 +356,24 @@ async def test_provider_failure_without_text_is_not_reported_completed(monkeypat
     assert [kind for kind, _ in facts] == ["reply.closed"]
     assert facts[0][1]["close_reason"] == "failed"
     assert facts[0][1]["audio_expected"] is False
+
+
+async def test_post_commit_repetition_failure_keeps_observed_reply_completed(monkeypatch):
+    from types import SimpleNamespace
+    from tests.unit.test_offline_turn_cancellation_e2e import _client as make_client, _reply_chunks
+
+    monkeypatch.setattr("utils.token_tracker.TokenTracker.get_instance", MagicMock())
+    client = make_client()
+    client.script = [_reply_chunks("openai", "kept reply")] * 3
+
+    async def failed_check(_text):
+        raise RuntimeError("repetition check unavailable")
+
+    client._check_repetition = failed_check
+    owner = SimpleNamespace(reply_tail=None, observation_close_reason="unknown")
+    await client.stream_text("question", reply_owner=owner)
+    assert any(getattr(item, "content", None) == "kept reply" for item in client._conversation_history)
+    assert owner.observation_close_reason == "completed"
 
 
 async def test_closing_stalled_offline_reply_does_not_claim_completion(monkeypatch):

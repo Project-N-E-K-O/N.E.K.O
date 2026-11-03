@@ -297,6 +297,11 @@ class ConversationService:
                     and reply["text_state"] == "closed"
                 ):
                     return None
+            if fact == "reply.updated" and payload.get("text_incomplete") is True:
+                # The retained message predates the omitted correction. Its
+                # arrival cannot repair that missing update.
+                self._mark_incomplete(reply_id, reason="other")
+                raise _overflow()
             reply["character"] = reply["character"] or character
             reply["input_id"] = reply["input_id"] or input_id
             if origin is not None:

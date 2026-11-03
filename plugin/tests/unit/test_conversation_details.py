@@ -4,6 +4,22 @@ from plugin.sdk.shared.conversations.client import SdkConversationsV2Bus
 from plugin.sdk.shared.contracts.conversations import message_from_event
 
 
+def test_omitted_oversized_correction_marks_reply_incomplete():
+    from plugin.server.domain.errors import ServerDomainError
+
+    msg = raw_message("m", reply_id="r", text="prefix")
+    svc = ConversationService(lambda mid: message_from_event(msg) if mid == "m" else None)
+    svc.accept_message(msg)
+    svc.accept_fact("reply.closed", {"reply_id": "r", "character": "YUI", "close_reason": "completed"})
+    with pytest.raises(ServerDomainError):
+        svc.accept_fact("reply.updated", {"reply_id": "r", "character": "YUI", "text_incomplete": True})
+    with pytest.raises(ServerDomainError):
+        svc.get_reply("r")
+    svc.accept_message(msg)
+    with pytest.raises(ServerDomainError):
+        svc.get_reply("r")
+
+
 def raw_message(
     mid, *, input_id=None, reply_id=None, text="message", role="assistant_message"
 ):

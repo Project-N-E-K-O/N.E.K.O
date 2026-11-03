@@ -128,6 +128,11 @@ async def test_correction_preserves_sequence_and_invalidates_view(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_filtered_view_refreshes_when_unmatched_record_evicts_its_message(monkeypatch):
+    import uuid
+    from plugin.message_plane.ingest_server import MessagePlaneIngestServer
+    from plugin.message_plane.stores import StoreRegistry
+    from plugin.server import lifecycle as lifecycle_module
+
     state = FakeState()
     monkeypatch.setattr(bus_module, "state", state)
     changes = []
@@ -146,11 +151,18 @@ async def test_filtered_view_refreshes_when_unmatched_record_evicts_its_message(
         for sid, view in (("view", True), ("records", False))
     }
     store = TopicStore("conversations", 1)
+    stores = StoreRegistry(default_store="conversations")
+    stores.register(store)
     manager = BusSubscriptionManager()
+    monkeypatch.setattr(lifecycle_module, "bus_subscription_manager", manager)
+    service = lifecycle_module.ServerLifecycleService()
+    ingest = MessagePlaneIngestServer(
+        endpoint=f"inproc://eviction-test-{uuid.uuid4().hex}", stores=stores,
+        pub_server=None, auth_token="test-token", on_record_accepted=service._accept_conversation_record,
+    )
     await manager.start()
     try:
-        event, revision = store.publish_with_revision("all", record("user")["payload"])
-        manager.accept_conversation_record({**event, "_revision": revision})
+        ingest._ingest_delta_batch({"items": [{"store": "conversations", "topic": "all", "payload": record("user")["payload"]}]})
         for _ in range(30):
             if len(changes) == 2:
                 break
@@ -158,14 +170,14 @@ async def test_filtered_view_refreshes_when_unmatched_record_evicts_its_message(
         assert len(changes) == 2
         payload = record("assistant")["payload"]
         payload["metadata"]["turn_type"] = "assistant_message"
-        event, revision = store.publish_with_revision("all", payload)
-        manager.accept_conversation_record({**event, "_revision": revision})
+        ingest._ingest_delta_batch({"items": [{"store": "conversations", "topic": "all", "payload": payload}]})
         assert store.conversation_messages(filters={"role": "user"}, limit=10, order="asc")[0] == []
         await asyncio.wait_for(invalidated.wait(), 1)
         assert [(item["sub_id"], item["op"]) for item in changes[2:]] == [("view", "view.invalidated")]
         assert "_evicted" not in store.get_recent("all", 1)[0]
     finally:
         await manager.stop()
+        ingest.close()
 
 
 @pytest.mark.asyncio

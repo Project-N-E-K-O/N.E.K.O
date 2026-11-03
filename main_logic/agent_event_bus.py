@@ -979,6 +979,12 @@ def schedule_conversation_fact_observed_best_effort(
     """Schedule a small fact without awaiting or accumulating unbounded tasks."""
     if len(_conversation_fact_tasks) >= _CONVERSATION_FACT_MAX_TASKS:
         return False
+    text = payload.get("text")
+    if isinstance(text, str) and len(text) > _CONVERSATION_FACT_MAX_TEXT:
+        if fact in ("reply.started", "reply.closed", "reply.updated"):
+            payload = {**payload, "text": None}
+            if fact == "reply.updated":
+                payload["text_incomplete"] = True
     # This channel is for small facts; in particular do not queue huge text.
     if any(isinstance(value, str) and len(value) > _CONVERSATION_FACT_MAX_TEXT
            for value in payload.values()):

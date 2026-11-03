@@ -1911,6 +1911,8 @@ class _StreamingMixin:
                                 self._mark_reply_tail_completed(
                                     reply_owner, _live_at_commit, recovery_text,
                                 )
+                                observation_committed = bool(_live_at_commit)
+                                observation_failed = False
                                 if _live_at_commit:
                                     await self._check_repetition(recovery_text)
                                 assistant_message = history_recovery_text
@@ -2061,6 +2063,8 @@ class _StreamingMixin:
                             self._mark_reply_tail_completed(
                                 reply_owner, _live_at_commit, assistant_message_total,
                             )
+                            observation_committed = bool(_live_at_commit)
+                            observation_failed = False
                             if _live_at_commit and summary_prefix_for_history:
                                 await self._check_repetition(summary_prefix_for_history)
                             assistant_message = ""
@@ -2159,7 +2163,8 @@ class _StreamingMixin:
                         break
 
                 except _llm_retry_error_types() as e:
-                    observation_failed = True
+                    if not observation_committed:
+                        observation_failed = True
                     # A failed stream's text is discarded below, never kept.
                     cut_keeps_shown = False
                     from openai import InternalServerError
@@ -2242,8 +2247,8 @@ class _StreamingMixin:
                             status_reported = True
                         break
                 except Exception as e:
-                    observation_failed = True
-                    observation_committed = False
+                    if not observation_committed:
+                        observation_failed = True
                     cut_keeps_shown = False
                     is_api_key_rejected = _is_api_key_rejected_error(e)
                     # Telemetry: LLM call failures drive much D1 churn. Low-cardinality error_class

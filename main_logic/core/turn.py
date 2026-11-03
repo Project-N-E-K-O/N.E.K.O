@@ -744,7 +744,7 @@ class TurnMixin:
         # a different task, whose context no longer carries the proactive sid.
         if client_owned:
             return
-        if observation is not None and observation.get("allow_text_continuations") and observation.get("_message_published"):
+        if observation is not None and observation.get("allow_text_continuations") and observation.get("_message_enqueued"):
             # Late Gemini chunks correct the retained message via reply.updated.
             return
         try:
@@ -772,7 +772,7 @@ class TurnMixin:
                 ts=spoken_at,
             ))
             if observation is not None and observation.get("allow_text_continuations"):
-                observation["_message_published"] = True
+                observation["_message_enqueued"] = True
         except Exception:
             logger.debug("[plugin-bus] ai message not published", exc_info=True)
 

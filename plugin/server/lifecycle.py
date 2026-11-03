@@ -249,6 +249,13 @@ class ServerLifecycleService:
             )
             return True
 
+    def _close_conversation_service(self) -> None:
+        service = self._conversation_service
+        self._conversation_service = None
+        bus_subscription_manager.set_conversation_observers()
+        if service is not None:
+            service.close()
+
     async def _retire_message_plane(self) -> None:
         """Tear the plane AND both bridges down so a later entry rebuilds them all.
 
@@ -267,13 +274,6 @@ class ServerLifecycleService:
         """
         runner = self._message_plane_runner
         self._message_plane_runner = None
-        await _on_subscription_loop(
-            bus_subscription_manager.invalidate_conversations("message_plane_reset")
-        )
-        if self._conversation_service is not None:
-            bus_subscription_manager.set_conversation_observers()
-            self._conversation_service.close()
-            self._conversation_service = None
         self._plane_probe_failures = 0
 
         def _teardown() -> None:
@@ -296,7 +296,15 @@ class ServerLifecycleService:
                         str(exc),
                     )
 
-        await asyncio.to_thread(_teardown)
+        try:
+            await _on_subscription_loop(
+                bus_subscription_manager.invalidate_conversations("message_plane_reset")
+            )
+        finally:
+            try:
+                self._close_conversation_service()
+            finally:
+                await asyncio.to_thread(_teardown)
 
     async def _check_message_plane_health(self) -> bool:
         """Probe the current runner. Never raises; a failed probe is ``False``.
@@ -397,12 +405,16 @@ class ServerLifecycleService:
                 on_record=self._conversation_service.accept_message,
                 on_fact=self._conversation_service.accept_fact,
             )
-        self._message_plane_runner = build_message_plane_runner(
-            auth_token=ingest_auth_token(),
-            on_record_accepted=self._accept_conversation_record,
-        )
-        self._plane_probe_failures = 0
-        self._message_plane_runner.start()
+        try:
+            self._message_plane_runner = build_message_plane_runner(
+                auth_token=ingest_auth_token(),
+                on_record_accepted=self._accept_conversation_record,
+            )
+            self._plane_probe_failures = 0
+            self._message_plane_runner.start()
+        except Exception:
+            await self._retire_message_plane()
+            raise
         if not await self._check_message_plane_health():
             # Counts toward the same budget the reuse branch spends: this is
             # failure #1 against this runner, not a free one.
@@ -967,10 +979,7 @@ class ServerLifecycleService:
                 had_errors = True
 
         # Phase 3: resource cleanup
-        if self._conversation_service is not None:
-            bus_subscription_manager.set_conversation_observers()
-            self._conversation_service.close()
-            self._conversation_service = None
+        self._close_conversation_service()
         try:
             await asyncio.wait_for(asyncio.to_thread(state.close_plugin_resources), timeout=0.5)
         except asyncio.TimeoutError:
@@ -1023,6 +1032,8 @@ class ServerLifecycleService:
             except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError) as exc:
                 logger.warning("forced cleanup after timeout failed: {}", exc)
             return
+        finally:
+            self._close_conversation_service()
 
         if result.had_errors:
             logger.warning("server shutdown completed with errors")

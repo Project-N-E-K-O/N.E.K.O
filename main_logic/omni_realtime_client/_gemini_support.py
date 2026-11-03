@@ -849,6 +849,17 @@ class _GeminiMixin:
                 if outcome_token is not None:
                     self._settle_gemini_external_turn(outcome_token)
 
+    def _begin_gemini_conversation_observation(self, proactive_token=None):
+        self._close_realtime_conversation_observation("unknown")
+        self._realtime_conversation_observation = {
+            "reply_id": uuid.uuid4().hex,
+            "origin": ({"kind": "unknown", "is_proactive": True, "plugin_id": None, "task_id": None}
+                       if proactive_token is not None else None),
+            "started": False, "closed": False, "lifecycle": "realtime",
+            "allow_text_continuations": True,
+            "_proactive_token": proactive_token,
+        }
+
     async def _process_gemini_response(
         self,
         response,
@@ -978,6 +989,15 @@ class _GeminiMixin:
                     server_content.model_turn or 
                     (hasattr(server_content, 'output_transcription') and server_content.output_transcription)
                 )
+                proactive_owner = getattr(self, "_gemini_proactive_outcome_owner", None)
+                proactive_token = None
+                if (
+                    proactive_owner is not None
+                    and proactive_owner[0] == connection_generation
+                    and proactive_owner[1] is session
+                    and (len(proactive_owner) <= 4 or proactive_owner[4] == getattr(self, "_tool_scope_generation", 0))
+                ):
+                    proactive_token = proactive_owner[2]
 
                 # Warning: detect turn start whichever arrives first, model_turn or output_transcription.
                 if has_ai_content and not self._is_responding:
@@ -1087,11 +1107,7 @@ class _GeminiMixin:
                             if not event_owner_is_current():
                                 return
                             self._gemini_user_transcript = ""  # Clear accumulation.
-                        self._realtime_conversation_observation = {
-                            "reply_id": uuid.uuid4().hex, "origin": None,
-                            "started": False, "closed": False, "lifecycle": "realtime",
-                            "allow_text_continuations": True,
-                        }
+                        self._begin_gemini_conversation_observation(proactive_token)
                         self._gemini_user_transcript_after_interrupt = False
                         self._is_first_text_chunk = True  # Reset the first-chunk flag.
                         self._gemini_current_transcript = ""  # Clear accumulation.
@@ -1105,6 +1121,14 @@ class _GeminiMixin:
                             # turn, so keep their ownership snapshot aligned.
                             self._current_turn_host_id = self._read_host_turn_id()
                     else:
+                        observation = getattr(self, "_realtime_conversation_observation", None)
+                        if proactive_token is not None and (
+                            observation is None or observation.get("_proactive_token") != proactive_token
+                        ):
+                            # The pending inject proves a new request, not which
+                            # request owns these ID-less late frames. Do not
+                            # correct the previous reply or guess a new owner.
+                            self._realtime_conversation_observation = None
                         logger.debug(
                             "Gemini: late content after premature turn_complete/interruption (%.2fs ago), treating as continuation",
                             time.time() - self._ai_recent_activity_time,
