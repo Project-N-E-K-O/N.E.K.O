@@ -36,6 +36,58 @@ class SocialHubAccountSwitchBrowserTests(unittest.TestCase):
         cls.browser.close()
         cls.playwright.stop()
 
+    def test_global_presence_recovery_uses_one_compact_read_on_all_desktop_routes(self):
+        for entry in ['/', '/chat', '/chat_full']:
+            with self.subTest(entry=entry):
+                context = self.browser.new_context()
+                page = context.new_page()
+                reads, errors = [], []
+                page.on('pageerror', lambda error: errors.append(str(error)))
+
+                def route(request_route):
+                    path = urlparse(request_route.request.url).path
+                    if path == entry:
+                        request_route.fulfill(content_type='text/html', body='''<!doctype html><body><script>
+                        Math.random = () => 0;
+                        window.nekoSocial = {
+                          onNotifyIncoming(callback) { window.__notify = callback; },
+                          onConnState(callback) { window.__connection = callback; },
+                          onInvitationsChanged() {},
+                          getInvitations: async () => ({generation: 1, accountKey: 'owner', accountId: 'owner',
+                            rolloutEnabled: true, realtimeEnabled: true, synced: true, replicaValid: true, items: []})
+                        };
+                        </script><script src="/static/social-hub.js"></script></body>''')
+                    elif path == '/api/community/visit-hub':
+                        reads.append('hub')
+                        request_route.fulfill(json=BODY)
+                    elif path == '/api/community/friend-presence':
+                        reads.append('compact')
+                        request_route.fulfill(json={'friends': [{'id': 'friend-0', 'presence_status': 'away'}]})
+                    else:
+                        asset = ROOT / path.lstrip('/')
+                        request_route.fulfill(status=200 if asset.is_file() else 404,
+                            body=asset.read_bytes() if asset.is_file() else b'',
+                            content_type=(mimetypes.guess_type(asset.name)[0] or 'application/octet-stream') + '; charset=utf-8')
+
+                try:
+                    page.route('**/*', route)
+                    page.goto('http://neko.test' + entry)
+                    self.assertEqual(errors, [])
+                    page.wait_for_function('!!(window.nekoSocialHub && window.__notify)', timeout=5000)
+                    page.evaluate('nekoSocialHub.open()')
+                    page.wait_for_function('nekoSocialHub._state.loggedIn && !nekoSocialHub._state.loading')
+                    baseline = reads.count('hub')
+                    page.evaluate('''() => { for(let i=0; i<20; i++) __notify({kind: 'presence_changed', payload: {resync: true}}); }''')
+                    page.wait_for_function("nekoSocialHub._state.friends[0].presenceStatus === 'away'")
+                    self.assertEqual(reads.count('compact'), 1)
+                    self.assertEqual(reads.count('hub'), baseline)
+                    page.evaluate('nekoSocialHub.close(); __connection({connected: true})')
+                    page.wait_for_timeout(600)
+                    self.assertEqual(reads.count('compact'), 1)
+                    self.assertEqual(errors, [])
+                finally:
+                    context.close()
+
     def test_account_switch_before_first_reveal_does_not_leave_hidden_or_reopen_closed_panel(self):
         for outcome in ['fast', 'slow', 'closed']:
             with self.subTest(outcome=outcome):

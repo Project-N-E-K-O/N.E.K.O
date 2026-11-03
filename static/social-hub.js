@@ -29,6 +29,10 @@
   var loadingRefreshRevision = 0;
   var invitationSnapshotRevision = 0;
   var presenceRefreshInFlight = false;
+  var presenceResyncRequested = 0;
+  var presenceResyncApplied = 0;
+  var presenceResyncAttempts = 0;
+  var presenceResyncTimer = null;
   var presencePushRevision = 0;
   var presencePushRevisions = new Map();
   var dismissedRecommendationIds = new Set();
@@ -521,6 +525,7 @@
     var refreshGeneration = openGeneration;
     var refreshRevision = ++hubRefreshRevision;
     var presenceRevisionAtStart = presencePushRevision;
+    var presenceResyncAtStart = presenceResyncRequested;
     var ownerAccountAtStart = invitationOwnerSnapshot && invitationOwnerSnapshot.accountKey;
     var realtime = realtimeInvitations();
     if (realtime) ownerAccountLoadPending = false;
@@ -594,6 +599,7 @@
         });
       }
       state.friends = nextFriends;
+      presenceResyncApplied = Math.max(presenceResyncApplied, presenceResyncAtStart);
       if (shouldReplaceRecommendations) {
         applyRecommendationSnapshot(body, refreshRevision);
         recommendationCachedAt = Date.now();
@@ -627,6 +633,7 @@
         state.toastError = false;
       }
     } finally {
+      schedulePresenceResync();
       if (refreshGeneration === openGeneration) {
         // 静默刷新不拥有 loading；重叠读取也只能由最近的非静默刷新结束它。
         if (!silent && refreshRevision === loadingRefreshRevision) state.loading = false;
@@ -1132,8 +1139,29 @@
     var lastSeen = relativeLastSeen(friend.lastSeenAt);
     return lastSeen ? tr('visit.socialHub.lastSeen', '上次在线 {{time}}', { time: lastSeen }) : tr('visit.socialHub.offline', '离线');
   }
+  function schedulePresenceResync() {
+    if (presenceResyncApplied >= presenceResyncRequested || presenceResyncAttempts >= 3
+        || presenceResyncTimer || presenceRefreshInFlight || !state.open || !state.loggedIn) return;
+    // Coalesce global/reconnect hints and spread compact reads across clients.
+    // A failed hint has a bounded retry budget; this never restores full polling.
+    var token = {};
+    presenceResyncTimer = token;
+    setTimeout(function () {
+      if (presenceResyncTimer !== token) return;
+      presenceResyncTimer = null;
+      if (!state.open || !state.loggedIn || presenceResyncApplied >= presenceResyncRequested) return;
+      ++presenceResyncAttempts;
+      void refreshPresence();
+    }, (500 + Math.random() * 2500) * Math.pow(2, presenceResyncAttempts));
+  }
+  function requestPresenceResync() {
+    ++presenceResyncRequested;
+    presenceResyncAttempts = 0;
+    schedulePresenceResync();
+  }
   function applyPresenceChanged(notification) {
     var payload = notification && notification.payload;
+    if (payload && payload.resync === true) { requestPresenceResync(); return true; }
     var userId = String(payload && payload.user_id || '');
     var status = String(payload && payload.presence_status || '');
     if (!userId || ['online', 'away', 'offline'].indexOf(status) === -1) return false;
@@ -1152,6 +1180,7 @@
     var requestAccountId = state.accountId;
     var requestGeneration = openGeneration;
     var requestRevision = presencePushRevision;
+    var requestResyncRevision = presenceResyncRequested;
     var controller = typeof AbortController === 'function' ? new AbortController() : null;
     var abortTimer = controller ? setTimeout(function () { controller.abort(); }, 8000) : 0;
     try {
@@ -1161,6 +1190,7 @@
       var body = await json(response);
       if (!response.ok || !Array.isArray(body.friends)) return false;
       if (openGeneration !== requestGeneration || state.accountId !== requestAccountId) return false;
+      presenceResyncApplied = Math.max(presenceResyncApplied, requestResyncRevision);
       var updates = new Map();
       body.friends.forEach(function (item) {
         var userId = String(item && item.id || '');
@@ -1192,6 +1222,7 @@
     } finally {
       if (abortTimer) clearTimeout(abortTimer);
       presenceRefreshInFlight = false;
+      schedulePresenceResync();
       if (realtimeInvitations()) applyOwnerSnapshot(invitationOwnerSnapshot);
     }
   }
@@ -1595,6 +1626,11 @@
   }
   startLegacyTimers();
   var socialApi = social();
+  if (socialApi && typeof socialApi.onConnState === 'function') {
+    socialApi.onConnState(function (connection) {
+      if (connection && connection.connected === true) requestPresenceResync();
+    });
+  }
   if (socialApi && typeof socialApi.onNotifyIncoming === 'function') {
     socialApi.onNotifyIncoming(function (notification) {
       var payload = notification && notification.payload;

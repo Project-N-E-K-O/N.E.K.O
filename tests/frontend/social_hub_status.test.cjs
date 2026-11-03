@@ -65,6 +65,77 @@ function loadMountedHub(options = {}) {
   return { dom, hub: window.nekoSocialHub, document: window.document };
 }
 
+test('global presence hints coalesce and repeat once when a hint arrives during the read', async () => {
+  let notify;
+  const reads = [];
+  const { hub, timeouts } = loadHub({ clocked: true,
+    social: { onNotifyIncoming(callback) { notify = callback; } },
+    fetch: (url) => String(url).includes('friend-presence')
+      ? new Promise((resolve) => reads.push({ url, resolve }))
+      : Promise.resolve({ ok: true, json: async () => ({ logged_in: true, account: { id: 'me' }, friends: [] }) }),
+  });
+  await new Promise(setImmediate);
+  Object.assign(hub._state, { open: true, loggedIn: true, accountId: 'me',
+    friends: [{ id: 'friend', online: false, presenceStatus: 'offline' }] });
+  for (let i = 0; i < 20; i++) notify({ kind: 'presence_changed', payload: { resync: true } });
+  assert.equal(timeouts.length, 1);
+  assert.ok(timeouts[0].delay >= 500 && timeouts[0].delay <= 3000);
+  timeouts[0].callback();
+  assert.equal(reads.length, 1);
+  notify({ kind: 'presence_changed', payload: { resync: true } });
+  reads[0].resolve({ ok: true, json: async () => ({ friends: [{ id: 'friend', presence_status: 'away' }] }) });
+  await new Promise(setImmediate);
+  assert.equal(hub._state.friends[0].presenceStatus, 'away');
+  assert.equal(timeouts.length, 2);
+  timeouts[1].callback();
+  reads[1].resolve({ ok: true, json: async () => ({ friends: [{ id: 'friend', presence_status: 'online' }] }) });
+  await new Promise(setImmediate);
+  assert.equal(hub._state.friends[0].presenceStatus, 'online');
+  assert.equal(timeouts.length, 2, 'successful read stops resync scheduling');
+  assert.ok(reads.every(({ url }) => url === '/api/community/friend-presence'));
+});
+
+test('reconnect resync is bounded on failure and does not read a closed panel', async () => {
+  let connected;
+  const reads = [];
+  const { hub, timeouts } = loadHub({ clocked: true,
+    social: { onConnState(callback) { connected = callback; } },
+    fetch: async (url) => {
+      if (!String(url).includes('friend-presence')) return { ok: true, json: async () => ({ logged_in: true, account: { id: 'me' }, friends: [] }) };
+      reads.push(url); throw new Error('fixture unavailable');
+    },
+  });
+  await new Promise(setImmediate);
+  assert.equal(typeof connected, 'function');
+  Object.assign(hub._state, { loggedIn: true, accountId: 'me' });
+  connected({ connected: true });
+  assert.equal(timeouts.length, 0);
+  hub._state.open = true;
+  connected({ connected: true });
+  for (let i = 0; i < 3; i++) {
+    timeouts[i].callback();
+    await new Promise(setImmediate);
+  }
+  assert.equal(reads.length, 3);
+  assert.equal(timeouts.length, 3, 'failed resync must not become indefinite polling');
+});
+
+test('global hint during initial hub read is recovered after the account becomes known', async () => {
+  let notify;
+  let finish;
+  const { hub, timeouts } = loadHub({ clocked: true,
+    social: { onNotifyIncoming(callback) { notify = callback; } },
+    fetch: () => new Promise((resolve) => { finish = resolve; }),
+  });
+  hub._state.open = true;
+  const reading = hub.refresh(true);
+  notify({ kind: 'presence_changed', payload: { resync: true } });
+  assert.equal(timeouts.length, 0);
+  finish({ ok: true, json: async () => ({ logged_in: true, account: { id: 'me' }, friends: [] }) });
+  await reading;
+  assert.equal(timeouts.length, 1);
+});
+
 for (const realtime of [true, false]) {
   for (const outcome of ['success', 'failure', 'slow', 'closed']) {
     test(`account switch before first reveal keeps panel usable (${realtime}, ${outcome})`, async () => {
