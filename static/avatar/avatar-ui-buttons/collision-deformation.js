@@ -105,7 +105,10 @@
     function readTransformPivot(button) {
         const art = button && typeof button.querySelector === 'function'
             ? button.querySelector('.neko-idle-return-art') : null;
-        if (!art || typeof global.getComputedStyle !== 'function') return { x: 50, y: 50 };
+        const tier = button && typeof button.getAttribute === 'function'
+            ? button.getAttribute('data-neko-idle-tier') : null;
+        const fallback = { x: 50, y: 50, art, tier };
+        if (!art || typeof global.getComputedStyle !== 'function') return fallback;
         try {
             const style = global.getComputedStyle(art);
             const tokens = String(style && style.transformOrigin || '').trim().split(/\s+/);
@@ -117,10 +120,21 @@
             return {
                 x: transformOriginAxisPercent(tokens[0], width, 50),
                 y: transformOriginAxisPercent(tokens[1], height, 50),
+                art,
+                tier,
             };
         } catch (_) {
-            return { x: 50, y: 50 };
+            return fallback;
         }
+    }
+
+    function transformPivotChanged(button, pivot) {
+        if (!pivot) return true;
+        const art = button && typeof button.querySelector === 'function'
+            ? button.querySelector('.neko-idle-return-art') : null;
+        const tier = button && typeof button.getAttribute === 'function'
+            ? button.getAttribute('data-neko-idle-tier') : null;
+        return art !== pivot.art || tier !== pivot.tier;
     }
 
     function applyCollisionDeformation(button, sample, pivot = { x: 50, y: 50 }) {
@@ -199,6 +213,7 @@
             clearCollisionDeformation(button);
             return false;
         }
+        if (transformPivotChanged(button, state.pivot)) state.pivot = readTransformPivot(button);
         return applyCollisionDeformation(button, sample, state.pivot);
     }
 

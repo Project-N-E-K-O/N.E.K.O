@@ -15,8 +15,11 @@ const {
 function buttonFixture(art = null) {
   const classes = new Set();
   const values = new Map();
+  const attributes = new Map();
   return {
     querySelector: selector => selector === '.neko-idle-return-art' ? art : null,
+    getAttribute: name => attributes.get(name) || null,
+    setAttribute: (name, value) => attributes.set(name, String(value)),
     classList: {
       add: name => classes.add(name),
       remove: name => classes.delete(name),
@@ -85,15 +88,22 @@ test('contact anchoring uses translate compensation without moving the facing pi
 test('CAT2 and CAT3 contact compensation uses the art computed transform origin', () => {
   const art = { offsetWidth: 100, offsetHeight: 100 };
   const button = buttonFixture(art);
+  button.setAttribute('data-neko-idle-tier', 'cat1');
+  let transformOrigin = '50px 50px';
   const originalGetComputedStyle = globalThis.getComputedStyle;
   globalThis.getComputedStyle = target => {
     assert.equal(target, art);
-    return { transformOrigin: '50px 100px', width: '100px', height: '100px' };
+    return { transformOrigin, width: '100px', height: '100px' };
   };
   try {
     beginCollisionDeformation(button, {
       direction: 'down', impactVelocityChange: 800, startedAt: 1000,
     });
+    assert.ok(Number.parseFloat(button.style.getPropertyValue('--neko-collision-shift-y')) > 0);
+
+    transformOrigin = '50px 100px';
+    button.setAttribute('data-neko-idle-tier', 'cat2');
+    assert.equal(renderCollisionDeformation(button, 1100), true);
     assert.equal(button.style.getPropertyValue('--neko-collision-shift-y'), '0.0000%');
 
     const css = fs.readFileSync(path.resolve(__dirname, '../../static/css/index.css'), 'utf8');
