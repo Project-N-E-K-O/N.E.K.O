@@ -10,7 +10,6 @@ const PROJECT_ROOT = fs.existsSync(path.join(fileRoot, 'static')) ? fileRoot : p
 const read = (rel) => fs.readFileSync(path.join(PROJECT_ROOT, ...rel.split('/')), 'utf8');
 
 const LIVE2D_CORE_SRC = read('static/live2d/live2d-core.js');
-const LIVE2D_MODEL_SRC = read('static/live2d/live2d-model.js');
 
 // 只需要 Live2DManager 能被构造；其余浏览器 API 给最小桩。
 function createManager({ pet = false, linuxX11 = false } = {}) {
@@ -125,8 +124,4 @@ test('renderer 缺失或不带 save/restore 时安全跳过', () => {
     assert.doesNotThrow(() => mgr._optimizeRendererProfile({ internalModel: { renderer: {} } }));
     assert.equal(mgr._rendererProfileOptimized, false);
 });
-
-test('模型加载流程调用 _optimizeRendererProfile', () => {
-    assert.match(LIVE2D_MODEL_SRC, /this\._optimizeRendererProfile\(model\);/);
-    assert.doesNotMatch(LIVE2D_MODEL_SRC, /_optimizeLinuxX11RendererProfile/);
-});
+// 真实加载路径（_configureLoadedModel）的行为测试在 tests/unit/live2d_renderer_profile_load.test.js。
