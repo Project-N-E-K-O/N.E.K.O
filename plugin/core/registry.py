@@ -550,6 +550,57 @@ def _inherited_entry_field(base_meta: Any, field_name: str, fallback: Any) -> An
     return _copied_entry_value(inherited) if inherited is not None else fallback
 
 
+def _member_event_meta(member: Any) -> Any:
+    """EVENT_META_ATTR of a member, falling back to its __wrapped__ original."""
+    event_meta = getattr(member, EVENT_META_ATTR, None)
+    if event_meta is None and hasattr(member, "__wrapped__"):
+        event_meta = getattr(member.__wrapped__, EVENT_META_ATTR, None)
+    return event_meta
+
+
+def _iter_router_plugin_entries(cls: type) -> Iterable[tuple[str, Any, Any]]:
+    """Yield (entry_id, event_meta, handler) for plugin_entry methods of `cls.__routers__`.
+
+    Shared by the execution table and the static preview so both see the same ids.
+    A router instance yields its prefix-resolved collect_entries(); a router class
+    (or an instance that collects nothing) is scanned statically.
+    When multiple routers declare the same entry id, the last router wins (matching runtime).
+    """
+    router_entries: dict[str, tuple[Any, Any]] = {}
+    for router_item in getattr(cls, "__routers__", None) or []:
+        if not isinstance(router_item, type) and hasattr(router_item, "collect_entries"):
+            try:
+                collected = router_item.collect_entries() or {}
+            except Exception:
+                collected = {}
+            for resolved_id, handler in collected.items():
+                event_meta = getattr(handler, "meta", None)
+                if event_meta is None:
+                    continue
+                if (getattr(event_meta, "event_type", None) or "plugin_entry") != "plugin_entry":
+                    continue
+                eid = str(resolved_id or getattr(event_meta, "id", "") or "")
+                if eid:
+                    router_entries[eid] = (event_meta, getattr(handler, "handler", handler))
+            if collected:
+                continue
+
+        router_cls = router_item if isinstance(router_item, type) else type(router_item)
+        for name, member in inspect.getmembers(router_cls):
+            if name.startswith("_"):  # runtime _collect_decorated_entries skips these too
+                continue
+            event_meta = _member_event_meta(member)
+            if not event_meta:
+                continue
+            if (getattr(event_meta, "event_type", None) or "plugin_entry") != "plugin_entry":
+                continue
+            eid = str(getattr(event_meta, "id", None) or name)
+            if eid:
+                router_entries[eid] = (event_meta, member)
+
+    yield from ((eid, meta, handler) for eid, (meta, handler) in router_entries.items())
+
+
 def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
     """
     Scan class attributes without instantiation, extracting @EventHandler metadata into global tables.
@@ -558,9 +609,7 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
     handlers_updated = False
     decorated_entries: dict[str, EventHandler] = {}
     for name, member in inspect.getmembers(cls):
-        event_meta = getattr(member, EVENT_META_ATTR, None)
-        if event_meta is None and hasattr(member, "__wrapped__"):
-            event_meta = getattr(member.__wrapped__, EVENT_META_ATTR, None)
+        event_meta = _member_event_meta(member)
 
         if event_meta:
             etype = getattr(event_meta, "event_type", None) or "plugin_entry"
@@ -576,6 +625,22 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
             if etype == "plugin_entry":
                 decorated_entries[str(eid)] = handler_obj
                 plugin_entry_method_map[(pid, str(eid))] = name
+    # Router entries (`__routers__`) must reach event_handlers too, otherwise execution
+    # cannot find their timeout and falls back to PLUGIN_EXECUTION_TIMEOUT. Entries on the
+    # plugin class win on id clashes. The method is not on the plugin class, so
+    # plugin_entry_method_map is not written.
+    try:
+        for eid, event_meta, handler in _iter_router_plugin_entries(cls):
+            if eid in decorated_entries:
+                continue
+            handler_obj = EventHandler(meta=event_meta, handler=handler)
+            with state.acquire_event_handlers_write_lock():
+                state.event_handlers[f"{pid}.{eid}"] = handler_obj
+                state.event_handlers[f"{pid}:plugin_entry:{eid}"] = handler_obj
+            handlers_updated = True
+            decorated_entries[eid] = handler_obj
+    except Exception as e:
+        logger.warning("Plugin {}: failed to scan __routers__ entries: {}", pid, e, exc_info=True)
     entries = _effective_entries(conf, pdata)
     for ent in entries:
         try:
@@ -911,9 +976,7 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
     # 1) Decorator-based metadata (@plugin_entry / EVENT_META_ATTR)
     try:
         for name, member in inspect.getmembers(cls):
-            event_meta = getattr(member, EVENT_META_ATTR, None)
-            if event_meta is None and hasattr(member, "__wrapped__"):
-                event_meta = getattr(member.__wrapped__, EVENT_META_ATTR, None)
+            event_meta = _member_event_meta(member)
 
             if not event_meta:
                 continue
@@ -971,50 +1034,11 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
     #     For instances, prefer collect_entries() with resolved prefixes,
     #     preventing preview/runtime ID differences and false seen deduplication, meow.
     try:
-        declared_routers = getattr(cls, "__routers__", None) or []
-        for router_item in declared_routers:
-            router_obj = router_item if not isinstance(router_item, type) else None
-            router_cls = router_item if isinstance(router_item, type) else type(router_item)
-
-            # Prefer instance-resolved entries.
-            instance_handled = False
-            if router_obj is not None and hasattr(router_obj, "collect_entries"):
-                try:
-                    collected = router_obj.collect_entries() or {}
-                except Exception:
-                    collected = {}
-                if collected:
-                    instance_handled = True
-                    for resolved_id, handler in collected.items():
-                        event_meta = getattr(handler, "meta", None)
-                        if event_meta is None:
-                            continue
-                        etype = getattr(event_meta, "event_type", None) or "plugin_entry"
-                        if etype != "plugin_entry":
-                            continue
-                        eid = str(resolved_id or getattr(event_meta, "id", "") or "")
-                        if not eid or eid in seen:
-                            continue
-                        seen.add(eid)
-                        results.append(_router_entry_preview(pid, eid, event_meta))
-
-            if instance_handled:
+        for eid, event_meta, _handler in _iter_router_plugin_entries(cls):
+            if eid in seen:
                 continue
-
-            for name, member in inspect.getmembers(router_cls):
-                event_meta = getattr(member, EVENT_META_ATTR, None)
-                if event_meta is None and hasattr(member, "__wrapped__"):
-                    event_meta = getattr(member.__wrapped__, EVENT_META_ATTR, None)
-                if not event_meta:
-                    continue
-                etype = getattr(event_meta, "event_type", None) or "plugin_entry"
-                if etype != "plugin_entry":
-                    continue
-                eid = str(getattr(event_meta, "id", None) or name)
-                if not eid or eid in seen:
-                    continue
-                seen.add(eid)
-                results.append(_router_entry_preview(pid, eid, event_meta))
+            seen.add(eid)
+            results.append(_router_entry_preview(pid, eid, event_meta))
     except Exception:
         pass
 

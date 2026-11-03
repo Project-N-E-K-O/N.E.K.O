@@ -187,11 +187,14 @@ class NekoPluginBase:
                 if callable(value):
                     entries[str(meta.id)] = EventHandler(meta=meta, handler=value)
 
+        class_entry_ids = set(entries)
         for router in self._routers:
             collect_entries = getattr(router, "collect_entries", None)
             if callable(collect_entries):
                 router_entries = collect_entries()
                 for key, handler in router_entries.items():
+                    if str(key) in class_entry_ids:
+                        continue
                     if isinstance(handler, EventHandler):
                         entries[str(key)] = handler
                     elif callable(handler):
@@ -207,6 +210,8 @@ class NekoPluginBase:
 
             for key, handler in router.iter_handlers().items():
                 if not callable(handler):
+                    continue
+                if str(key) in class_entry_ids:
                     continue
                 meta = getattr(handler, EVENT_META_ATTR, None)
                 if isinstance(meta, _EventMetaLike):
