@@ -63,6 +63,19 @@ self.logger.info("Processing request: {}", request_id)
 timeout = await self.config.get_int("my_settings.timeout", default=30)
 ```
 
+### 回复完成后由插件决定配图
+
+`await self.ctx.reply_tail.subscribe("after_reply")` 可以订阅普通文字回复的完成通知。
+`after_reply` 是插件自行声明的 `@plugin_entry(id="after_reply", kind="hook")` 入口，
+收到 `text`、`user_text`、`has_attachments` 和 `_ctx.host_reply`。
+插件可以按规则、检索或辅助模型自行决定是否配图，无需主聊天模型调用发图工具。
+选好图片后，在入口返回前调用 `self.ctx.reply_tail.register(...)`，由宿主排在原回复末尾。
+
+这是显式订阅的后台通知，插件异常或超时不会阻塞正常聊天；被丢弃或打断的回复不触发。
+仅覆盖支持 v1 尾图协议的普通文字聊天。取消订阅使用
+`await self.ctx.reply_tail.unsubscribe("after_reply")`；插件停止时也会清理。
+完整示例、生命周期、容量、超时和投递边界见[原回复尾图接口](/plugin-reply-tail)。
+
 日志会显示在插件管理器中，并写入宿主管理的日志目录；日志文件位置和轮换策略由宿主负责。运行时配置通过 `await self.ctx.update_own_config(...)` 或 `await self.config.update(...)` 更新。调用后，应在同一进程中主动刷新依赖配置的派生状态。
 
 根据数据形式选择存储方式：
@@ -378,89 +391,6 @@ records = await self.bus.memory.get(bucket_id="default", limit=20)
 【访问范围】这几个 store 是共享的，读取不按插件做权限隔离：任何已启用的插件都能读 `conversations` 和 `frames`，包括来自用户、以及来自别的插件的轮次与画面。这不会扩大宿主**已经发给模型**的内容——会话没发过的帧不会出现在这里——但确实扩大了**谁能看到**：从模型服务方扩大到用户启用的每一个插件。安装一个插件就等于授予它这份可见性；你的插件如果读这两条总线，请在自己的说明里写明。
 
 `bus.memory` 保存的是有容量上限、只驻留内存的近期用户话语事件（TTL 为一小时），与角色持久化的事实、反思和人格相互独立。`ctx.query_memory(...)` 只为兼容而保留，它调用已弃用的占位端点，不执行语义召回。
-
-### 对话观察与持久记忆
-
-`self.bus.conversations_v2` 提供结构化消息读取，与旧的
-`self.bus.conversations` 快照独立：
-
-```python
-messages = await self.bus.conversations_v2.get(character="YUI", max_count=20)
-for message in messages:
-    print(message.id, message.role, message.text, message.input_id, message.reply_id)
-```
-
-`get_message(message_id)` 按 ID 读取消息，`get_reply(reply_id)` 与
-`get_interaction(input_id)` 读取当前已观察到的详情。详情可能不存在或不完整；
-文字与播放是独立事实，关联 ID、来源、时间和停止原因都可能未知。不同输入和
-回复路径的覆盖范围不同，播放报告也不能证明用户听到了声音。
-
-watcher 由插件启动和停止，采用尽力交付：
-
-```python
-watcher = self.bus.conversations_v2.watch(character="YUI", view_limit=20)
-
-@watcher.subscribe(on="record")
-async def on_record(message):
-    self.logger.info("Observed message {}", message.id)
-
-@watcher.subscribe(on="change")
-async def on_change(change):
-    self.logger.info("Recent window contains {} items", len(change.current))
-
-await watcher.start()
-# 插件关闭时：
-await watcher.stop()
-```
-
-还可订阅 `message.updated`、`input.submitted`、`reply.started`、`reply.closed`、
-`reply.updated`、`playback.started` 和 `playback.stopped`。`input.submitted` 当前
-覆盖选定的普通文字输入，发生在 session 准备之前；它不是第二条消息，也不保证
-生成成功。`change` 反映窗口成员变化，不等于持久记录被删除。事件可能丢失或延迟，
-不构成审计日志；筛选条件与事件类型的适用性在订阅时检查。完整示例见
-仓库中的 `docs/examples/conversation_memory_example.py`。
-
-按项目约定，SDK 版本保持 **0.1.0**，本次不调整版本号。插件清单继续沿用
-现有兼容性检查，例如：
-
-```toml
-[plugin.sdk]
-supported = ">=0.1.0,<0.2.0"
-recommended = ">=0.1.0,<0.2.0"
-```
-
-版本号不能区分是否包含本次新增 API。使用这些能力需要更新后的宿主／SDK 构建；
-旧构建可能缺少相应导出或操作，不能仅凭 `0.1.0` 判断能力存在。
-
-读取持久记忆时显式构造 `MemoryClient(self.ctx)`，并在每次请求指定角色和范围：
-
-```python
-from plugin.sdk.plugin import MemoryClient, MemoryTarget, MemorySubject, Ok
-
-memory = MemoryClient(self.ctx)
-target = MemoryTarget.private("YUI")
-result = await memory.search(target=target, query="tea")
-if isinstance(result, Ok):
-    for hit in result.value.items:
-        print(hit.kind, hit.text, hit.retrieval_score)
-else:
-    self.logger.warning("Memory search failed: {}", result.error.code)
-
-persona = await memory.get_persona(target=target)
-if isinstance(persona, Ok):
-    for section in persona.value.sections:
-        for entry in section.entries:
-            print(section.entity, entry.text, entry.source, entry.protected, entry.suppressed)
-
-group = MemoryTarget.scoped("YUI", [MemorySubject.group_chat("qq", "group-123")])
-scoped_result = await memory.search(target=group, query="tea")
-```
-
-`search` 至少需要非空 `query` 或 `time`，返回相关命中而非完整条目清单。
-`get_persona` 当前仅支持 private 目标，包含保留的保护与抑制条目；它不是完整记忆、
-渲染后的模型上下文，也不证明某次回复使用了某条内容。两个方法均返回 `Ok` 或 `Err`；
-空结果是成功，失败带错误码，默认五秒超时覆盖整次调用。新客户端不替代旧
-`bus.memory` bucket 接口。
 
 ### Frames
 
