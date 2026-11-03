@@ -399,7 +399,9 @@ class DesktopModelSync:
                 state.pop("candidate")
                 await commit(self.store.put, domain.key(), state)
                 return False
-            if (await self._head(domain, request))["revision"] != candidate["revision"]:
+            latest = await self._head(domain, request)
+            if latest['revision'] != candidate['revision']:
+                state['seen_revision'] = max(state.get('seen_revision', 0), latest['revision'])
                 state.pop('candidate')
                 await commit(self.store.put, domain.key(), state)
                 return False

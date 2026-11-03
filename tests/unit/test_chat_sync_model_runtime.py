@@ -102,7 +102,8 @@ async def test_automatic_model_pass_checks_only_the_selected_role_and_catches_up
 
 
 @pytest.mark.asyncio
-async def test_model_binding_waits_for_renderer_and_rejects_a_newer_unbind_race(tmp_path):
+@pytest.mark.parametrize('seen_revision', [1, 3])
+async def test_model_binding_waits_for_renderer_and_rejects_a_newer_unbind_race(tmp_path, seen_revision):
     runtime, service, _ = setup_runtime(tmp_path, ModelService())
     class Adapter:
         path = "/user_live2d/original/model.model3.json"
@@ -122,6 +123,11 @@ async def test_model_binding_waits_for_renderer_and_rejects_a_newer_unbind_race(
         await runtime.models.step(UID, manual=True)
         status = await runtime.models.status(UID)
         assert adapter.applied == 0 and status["candidate"]["path"] != adapter.path
+        if seen_revision > 1:
+            state = runtime.models.store.get(DOMAIN.key())
+            state['seen_revision'] = seen_revision
+            _, _, commit = await runtime._bound_transport(UID)
+            await commit(runtime.models.store.put, DOMAIN.key(), state)
         service.model_revision = 2
         assert await runtime.models.finish(UID, status["candidate"]["token"], True) is False
         assert adapter.applied == 0
@@ -129,6 +135,13 @@ async def test_model_binding_waits_for_renderer_and_rejects_a_newer_unbind_race(
         assert not (await runtime.models.status(UID))['failed']
         assert await runtime.models.finish(UID, status['candidate']['token'], True) is False
         assert adapter.applied == 0
+        service.model_revision = 1
+        with pytest.raises(ValueError, match='^invalid_model_response$'):
+            await runtime.models.step(UID, manual=True)
+        assert not (await runtime.models.status(UID)).get('candidate')
+        assert runtime.models.store.get(DOMAIN.key())['seen_revision'] == max(2, seen_revision)
+        assert adapter.applied == 0
+        service.model_revision = max(2, seen_revision)
         await runtime.models.step(UID, manual=True)
         latest = await runtime.models.status(UID)
         assert latest["candidate"]["token"] != status["candidate"]["token"]
