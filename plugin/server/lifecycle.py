@@ -39,14 +39,7 @@ from plugin.server.messaging.plane_runner import MessagePlaneRunner, build_messa
 from plugin.server.monitoring.metrics import metrics_collector
 from plugin.server.messaging.request_router import plugin_router
 from plugin.settings import PLUGIN_SHUTDOWN_TIMEOUT, PLUGIN_SHUTDOWN_TOTAL_TIMEOUT
-from utils.logger_config import get_module_logger
-
-_EMBEDDED_BY_AGENT = os.getenv("NEKO_PLUGIN_HOSTED_BY_AGENT", "").strip().lower() == "true"
-
-if _EMBEDDED_BY_AGENT:
-    logger = get_module_logger(__name__, "Agent")
-else:
-    logger = get_logger("server.lifecycle")
+logger = get_logger("server.lifecycle")
 
 
 # Maximum wait for the ProactiveBridge SUB to connect. The bridge now connects and subscribes immediately on startup; normally
