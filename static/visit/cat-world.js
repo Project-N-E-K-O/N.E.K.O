@@ -23,6 +23,7 @@
   var INTENT_RETRY_MAX_MS = 4000;
   var HELD_RELEASE_MIN_MS = 1500;
   var HELD_RELEASE_MAX_MS = 8000;
+  var HELD_RELEASE_ATTEMPTS = 3;
   var RECOVERY_WAIT_MS = 1000;
   var INTENT_KINDS = {
     yarn_spawn: true,
@@ -102,6 +103,8 @@
     outboundRetryMs: 0,
     heldReleaseTimer: 0,
     heldReleaseMs: 0,
+    heldReleaseAttempts: 0,
+    heldReleaseInFlight: false,
     recoveryWaitTimer: 0,
     recoveryWaitSeq: 0,
     lastTickAt: 0,
@@ -349,24 +352,39 @@
   // The world still shows this side holding the yarn while nothing here is
   // dragging it: a reload lost the drag, or the release never reached the
   // host page. Release it again (with backoff) so neither cat stays locked out.
-  function watchHeldYarn() {
+  // Each world update allows a few attempts, so a page that no longer receives
+  // the world (a display taken over by another window) soon stops releasing,
+  // and one release is in flight at a time.
+  function watchHeldYarn(worldUpdated) {
+    if (worldUpdated) state.heldReleaseAttempts = 0;
     var held = state.active && !state.ending && !state.drag
       && !!ownHolder() && state.world.yarn_holder === ownHolder();
     if (!held) {
       if (state.heldReleaseTimer) clearTimeout(state.heldReleaseTimer);
       state.heldReleaseTimer = 0;
       state.heldReleaseMs = 0;
+      state.heldReleaseAttempts = 0;
       return;
     }
-    if (state.heldReleaseTimer) return;
+    if (state.heldReleaseTimer || state.heldReleaseInFlight
+        || state.heldReleaseAttempts >= HELD_RELEASE_ATTEMPTS) return;
     state.heldReleaseMs = state.heldReleaseMs
       ? Math.min(HELD_RELEASE_MAX_MS, state.heldReleaseMs * 2) : HELD_RELEASE_MIN_MS;
     state.heldReleaseTimer = setTimeout(function () {
       state.heldReleaseTimer = 0;
-      if (!state.drag && state.world.yarn_holder === ownHolder()) {
-        sendIntent('yarn_release', { x_q16: state.world.yarn_x_q16, y_q16: state.world.yarn_y_q16 });
+      if (state.drag || state.world.yarn_holder !== ownHolder()
+          || !sendIntent('yarn_release', { x_q16: state.world.yarn_x_q16, y_q16: state.world.yarn_y_q16 })) {
+        watchHeldYarn();
+        return;
       }
-      watchHeldYarn();
+      state.heldReleaseAttempts += 1;
+      state.heldReleaseInFlight = true;
+      var token = state.intentToken;
+      state.intentQueue.then(function () {
+        if (state.intentToken !== token) return;
+        state.heldReleaseInFlight = false;
+        watchHeldYarn();
+      });
     }, state.heldReleaseMs);
   }
 
@@ -481,7 +499,8 @@
 
   function applyHostIntent(frame) {
     if (!state.active || state.side !== 'host' || !validIntent(frame)) return false;
-    if (!state.simulationStarted) {
+    if (!state.simulationStarted || state.recoveryWaitSeq) {
+      // Accepted before the world is settled: apply on top of it once it is.
       state.pendingIntents.push(Object.assign({}, frame));
       while (state.pendingIntents.length > 64) state.pendingIntents.shift();
       return true;
@@ -605,6 +624,7 @@
       state.recoveryWaitTimer = 0;
       state.recoveryWaitSeq = 0;
       drainOutbound();
+      applyPendingIntents();
     }, RECOVERY_WAIT_MS);
   }
 
@@ -614,6 +634,10 @@
     state.recoveryWaitSeq = 0;
     // Everything queued was computed from the world the recovery replaced.
     state.outbound = [];
+  }
+
+  function applyPendingIntents() {
+    state.pendingIntents.splice(0, state.pendingIntents.length).forEach(applyHostIntent);
   }
 
   function scheduleOutboundRetry() {
@@ -787,8 +811,7 @@
     if (!state.tickTimer) state.tickTimer = setInterval(function () { simulate(Date.now()); }, TICK_MS);
     renderWorld();
     publish('commit');
-    var pending = state.pendingIntents.splice(0, state.pendingIntents.length);
-    pending.forEach(applyHostIntent);
+    applyPendingIntents();
   }
 
   function validWorldFrame(frame) {
@@ -820,6 +843,7 @@
     if (state.side === 'host' && state.simulationStarted
         && frame.world_seq <= previousPublished && !awaitedRecovery) return true;
     if (awaitedRecovery) endRecoveryWait();
+    var applyHeldIntents = awaitedRecovery && state.simulationStarted;
     state.world = {
       world_seq: frame.world_seq,
       yarn_active: frame.yarn_active,
@@ -847,7 +871,8 @@
     if (frame.collision_seq !== previousCollision) pulseCollision('');
     renderWorld();
     if (releasedGrab && state.simulationStarted) publish('commit');
-    watchHeldYarn();
+    if (applyHeldIntents) applyPendingIntents();
+    watchHeldYarn(true);
     return true;
   }
 
@@ -898,6 +923,7 @@
     state.outboundRetryMs = 0;
     state.heldReleaseTimer = 0;
     state.heldReleaseMs = 0;
+    state.heldReleaseAttempts = 0;
     state.recoveryWaitTimer = 0;
     state.recoveryWaitSeq = 0;
     if (state.layer) state.layer.classList.remove('is-collision');

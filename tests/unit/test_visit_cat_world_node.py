@@ -314,10 +314,16 @@ async function main() {
   }
   await advance(500);
   assert.equal(calls.state.length, staleWaitCount);
+  // An action accepted during the wait is held, then applied on the restored world.
+  emit('neko-visit-cat-world-intent', {
+    type: 'visit_cat_world_intent', visit_id: VID, actor: 'peer', kind: 'question_tap',
+    intent_id: 60, x_q16: 44000, y_q16: 15000,
+  });
+  assert.equal(win.NekoVisitCatWorld.snapshot().world.yarn_x_q16, 30000);
   emit('neko-visit-cat-world', worldFrame(40, 47000, 'commit'));
   emit('neko-visit-cat-world', worldFrame(1, 10000));
-  assert.equal(win.NekoVisitCatWorld.snapshot().world.yarn_x_q16, 47000);
-  assert.equal(win.NekoVisitCatWorld.snapshot().published_world_seq, 40);
+  assert.equal(win.NekoVisitCatWorld.snapshot().world.yarn_x_q16, 44000);
+  assert.ok(win.NekoVisitCatWorld.snapshot().published_world_seq > 40);
   await advance(1000);
   assert.ok(calls.state.slice(staleWaitCount).every((item) => item.world_seq > 40));
   // A later recovery commit with a newer cursor still replaces the world.
@@ -502,6 +508,35 @@ async function main() {
   await flush();
   assert.equal(calls.intent.length, beforeHeld + 1);
 
+  // A page that stops receiving the world (its display taken over by another
+  // window) gives up after a few releases instead of releasing forever.
+  const beforeStale = calls.intent.length;
+  emit('neko-visit-cat-world', Object.assign(worldFrame(8, 50000), { yarn_holder: 'guest' }));
+  await advance(60000);
+  await flush();
+  assert.deepEqual(calls.intent.slice(beforeStale).map((item) => item.kind),
+    ['yarn_release', 'yarn_release', 'yarn_release']);
+  emit('neko-visit-cat-world', worldFrame(9, 50000));
+
+  // While one release is still being retried, no second release queues behind it.
+  failIntents = 1000;
+  const beforeBusy = calls.intent.length;
+  // The host keeps reporting the yarn as held while the release is retried.
+  for (let seq = 10; seq < 16; seq += 1) {
+    emit('neko-visit-cat-world', Object.assign(worldFrame(seq, 50000), { yarn_holder: 'guest' }));
+    await advance(5000);
+    await flush();
+  }
+  const busy = calls.intent.slice(beforeBusy);
+  assert.ok(busy.length > 3);
+  assert.equal(new Set(busy.map((item) => item.intent_id)).size, 1);
+  failIntents = 0;
+  emit('neko-visit-cat-world', worldFrame(16, 50000));
+  await advance(5000);
+  await flush();
+  // Nothing piled up behind it: once the API is back only that one release went out.
+  assert.equal(new Set(calls.intent.slice(beforeBusy).map((item) => item.intent_id)).size, 1);
+
   // A refused attempt never landed: a stale reply at its own id is renumbered,
   // not taken as acceptance.
   const beforeRefused = calls.intent.length;
@@ -561,7 +596,7 @@ def test_cat_visit_shared_world_is_host_authoritative_and_bounded() -> None:
     )
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout)
-    assert result["guestIntentCount"] == 18
+    assert result["guestIntentCount"] >= 21
     assert result["hostStateCount"] >= 3
     assert result["geometryEvents"] >= 3
     assert result["finalActive"] is False
