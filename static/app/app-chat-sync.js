@@ -77,7 +77,7 @@
         activeUid = role ? role.characterSyncId : null;
         var binding = role && role.binding;
         writerRecoveryRequired = !!(state.writerRecoveryRequired || (binding && binding.writerRecoveryRequired));
-        var errors = [role && role.syncSetupError, binding && binding.lastSyncError]
+        var errors = [role && role.syncSetupError, role && role.syncSetupDiagnostic, binding && binding.lastSyncError]
             .concat(binding && binding.localMemoryDiagnostics || []).filter(Boolean);
         statusNode.textContent = errors.length ? Array.from(new Set(errors)).map(describeError).join('\n')
             : text(writerRecoveryRequired ? 'writerRecoveryRequired' : 'recoveryNotRequired');

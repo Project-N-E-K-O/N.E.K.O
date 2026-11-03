@@ -607,6 +607,25 @@ def test_sync_settings_explains_memory_diagnostics_alongside_transport_errors_wi
     """.replace('TRANSPORT', json.dumps(transport_error)))
 
 
+def test_new_role_login_diagnostic_is_visible_before_a_binding_exists():
+    run_script(r"""(async()=>{
+        const requests=[];
+        window.t=(key,values={})=>key+JSON.stringify(values);
+        global.fetch=async path=>{
+            requests.push(path);
+            return{ok:true,json:async()=>({characters:[{displayName:'Neko',characterSyncId:original.characterSyncId,
+                syncSetupDiagnostic:'chat_sync_login_required'}]})};
+        };
+        await window.nekoChatSync.openSettings();
+        const shown=body.children[0].querySelectorAll('*').find(node=>node.className==='chat-sync-status').textContent;
+        assert(shown.includes('chatSync.loginRequired'));
+        assert(shown.includes('chat_sync_login_required'));
+        assert(!shown.includes('chatSync.recoveryNotRequired'));
+        assert.deepEqual(requests,['/api/chat-sync/status']);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """)
+
+
 def test_all_memory_diagnostics_and_login_error_are_visible_together_in_chromium():
     from playwright.sync_api import sync_playwright
     labels = json.loads((ROOT / 'static/locales/en.json').read_text(encoding='utf-8'))['chatSync']
