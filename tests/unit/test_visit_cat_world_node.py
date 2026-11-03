@@ -569,6 +569,25 @@ async function main() {
   assert.equal(calls.intent[beforeReload].intent_id, 5001);
   emit('neko:visit-cat-scene-deactivated', { visit_id: VID });
 
+  // A visit that ends while an automatic release is in flight does not block
+  // automatic releases in the next visit on this page.
+  lifecycle('started', 'guest');
+  failIntents = 1000;
+  emit('neko-visit-cat-world', Object.assign(worldFrame(1, 50000), { yarn_holder: 'guest' }));
+  await advance(2000);
+  await flush();
+  emit('neko:visit-cat-scene-deactivated', { visit_id: VID });
+  await advance(5000);
+  await flush();
+  failIntents = 0;
+  lifecycle('started', 'guest');
+  const beforeNextVisit = calls.intent.length;
+  emit('neko-visit-cat-world', Object.assign(worldFrame(1, 50000), { yarn_holder: 'guest' }));
+  await advance(2000);
+  await flush();
+  assert.ok(calls.intent.slice(beforeNextVisit).some((item) => item.kind === 'yarn_release'));
+  emit('neko:visit-cat-scene-deactivated', { visit_id: VID });
+
   process.stdout.write(JSON.stringify({
     guestIntentCount: calls.intent.length,
     hostStateCount: statesBeforeExit,

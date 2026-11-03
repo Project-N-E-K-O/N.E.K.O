@@ -971,6 +971,8 @@
     state.pointerLastSentAt = 0;
     state.intentToken = nextU32(state.intentToken);
     state.intentQueue = Promise.resolve();
+    // The old visit's release callback is fenced by the token: clear its flag here.
+    state.heldReleaseInFlight = false;
     state.pendingIntents = [];
     state.outbound = [];
     state.outboundBusy = false;
