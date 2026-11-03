@@ -588,6 +588,83 @@ async def test_synthesis_skip_falls_back_when_target_rewritten_meanwhile(tmp_pat
     assert "covered_fact_ids" not in old
 
 
+def _retired() -> dict:
+    return {"permanent_suppression": {
+        "at": datetime.now().isoformat(timespec="seconds"), "reason": "空洞",
+    }}
+
+
+@pytest.mark.asyncio
+async def test_existing_impressions_leave_out_permanently_suppressed_entries(tmp_path):
+    """An entry introspection retired no longer reaches the model; offering it
+    as "already covered" would swallow a fresh fact into a hollow line."""
+    tmpdir = str(tmp_path)
+    _write_json(tmpdir, "reflections.json", [
+        _reflection("ref_live", "主人睡前说晚安"),
+        _reflection("ref_retired", "两人睡前道晚安形成了默契", **_retired()),
+    ])
+    _write_json(tmpdir, "persona.json", {"relationship": {"facts": [
+        _persona_entry("p_live", "主人睡前对小天说晚安"),
+        _persona_entry("p_retired", "道晚安体现了两人的纽带", **_retired()),
+    ]}})
+    _fs, _pm, re = _install(tmpdir)
+    with _patch_vectors(_FakeEmbeddingService()):
+        _block, candidates = await re._build_existing_impressions_block(
+            CHAR, _facts(), subject=None, prompt_lang="zh",
+        )
+    assert set(candidates) == {"reflection.ref_live", "persona.relationship.p_live"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["reflection", "persona"])
+async def test_synthesis_skip_falls_back_when_target_suppressed_meanwhile(tmp_path, kind):
+    """Introspection may retire the target while the LLM judges the batch:
+    the skip is rechecked under the lock and the batch becomes a normal new
+    reflection instead of vanishing into a suppressed line."""
+    tmpdir = str(tmp_path)
+    _write_json(tmpdir, "facts.json", _facts())
+    if kind == "reflection":
+        _write_json(tmpdir, "reflections.json", [
+            _reflection("ref_old", "主人每晚睡前都会对小天说晚安"),
+        ])
+        key = "reflection.ref_old"
+    else:
+        _write_json(tmpdir, "persona.json", {"relationship": {"facts": [
+            _persona_entry("prom_night", "主人睡前会对小天说晚安"),
+        ]}})
+        key = "persona.relationship.prom_night"
+    _fs, pm, re = _install(tmpdir)
+    answer = {
+        "skip": True, "covered_by": key,
+        "entity": "relationship", "relation_type": "dynamic",
+        "reflection": "主人连着几晚睡前对小天说晚安",
+        "temporal_scope": "pattern", "event_when": None,
+    }
+
+    async def _llm_target_retired(api_config, prompt, **_kw):
+        assert key in prompt, "夹具失效：目标没有进候选"
+        if kind == "reflection":
+            rows = _read_json(tmpdir, "reflections.json")
+            rows[0].update(_retired())
+            _write_json(tmpdir, "reflections.json", rows)
+        else:
+            persona = await pm.aget_persona(CHAR)
+            persona["relationship"]["facts"][0].update(_retired())
+        return SimpleNamespace(content=json.dumps(answer, ensure_ascii=False)), 0
+
+    with _patch_vectors(_FakeEmbeddingService()), \
+         patch("memory.thinking_llm.ainvoke_thinking", _llm_target_retired), \
+         patch("utils.language_utils.get_global_language", return_value="zh"):
+        created = await re.synthesize_reflections(CHAR)
+
+    assert len(created) == 1, "目标被压制后应退回正常新增"
+    if kind == "reflection":
+        old = {r["id"]: r for r in _read_json(tmpdir, "reflections.json")}["ref_old"]
+    else:
+        old = (await pm.aget_persona(CHAR))["relationship"]["facts"][0]
+    assert "covered_fact_ids" not in old
+
+
 @pytest.mark.asyncio
 async def test_existing_impressions_keep_top_k_nearest(tmp_path):
     tmpdir = str(tmp_path)

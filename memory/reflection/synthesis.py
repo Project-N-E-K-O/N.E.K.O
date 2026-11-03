@@ -49,6 +49,7 @@ from memory._reflection.schema import (
     merge_covered_fact_ids,
     reflection_id_from_facts as _reflection_id_from_facts,
 )
+from memory.introspection import is_permanently_suppressed
 
 from utils.cloudsave_runtime import assert_cloudsave_writable
 from utils.file_utils import atomic_write_json_async
@@ -702,7 +703,9 @@ class SynthesisMixin:
 
         Candidates are active reflections (pending / confirmed) and
         non-protected persona entries of the same subject, ranked by max
-        cosine against the batch. Returns ``(block, candidates)``, where
+        cosine against the batch; entries introspection retired are left out,
+        or a fresh fact could be swallowed as a repeat of a hollow line that
+        no longer reaches the model. Returns ``(block, candidates)``, where
         ``candidates`` maps every id shown in the block to its target, which
         also records the text the model saw. Without usable vectors both are
         empty, so the prompt is unchanged.
@@ -727,6 +730,7 @@ class SynthesisMixin:
             if (
                 r.get('status') in _IMPRESSION_REFLECTION_STATUSES
                 and str(r.get('text') or '').strip()
+                and not is_permanently_suppressed(r)
                 and entry_matches_subject(r, subject)
             ):
                 pool.append((
@@ -744,6 +748,7 @@ class SynthesisMixin:
                     isinstance(e, dict)
                     and e.get('id')
                     and not e.get('protected')
+                    and not is_permanently_suppressed(e)
                     and str(e.get('text') or '').strip()
                     and entry_matches_subject(e, subject)
                 ):
@@ -843,6 +848,9 @@ class SynthesisMixin:
             entry is None
             or entry.get('status') not in _IMPRESSION_REFLECTION_STATUSES
             or entry.get('text') != target['text']
+            # Retired by introspection while the LLM was judging: the batch
+            # is not covered by a line the model no longer sees.
+            or is_permanently_suppressed(entry)
             or not entry_matches_subject(entry, subject)
         ):
             return False
