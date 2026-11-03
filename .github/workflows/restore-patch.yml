@@ -1,4 +1,4 @@
-name: Restore patch branch v2
+name: Restore patch branch v3
 on:
   workflow_dispatch: {}
 permissions:
@@ -8,21 +8,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Route A git fetch+push
-        id: routeA
+        with:
+          fetch-depth: 0
+      - name: Fetch dangling patch commits
+        run: |
+          git fetch origin 47ea787db9d33f6b1969280c15887d63406fe76b d6bef1227f71b9a51f66f8b9f33197f2ebff98f2
+      - name: Cherry-pick patches onto main and push
         run: |
           git config user.name "zaoxi82813"
           git config user.email "zaoxi82813@users.noreply.github.com"
-          git fetch origin d6bef1227f71b9a51f66f8b9f33197f2ebff98f2
-          git push origin d6bef1227f71b9a51f66f8b9f33197f2ebff98f2:refs/heads/restore-patch
-      - name: Route B API create ref fallback
-        if: failure()
-        run: |
-          curl -sf -X POST \
-            -H "Authorization: Bearer ${{ github.token }}" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/${{ github.repository }}/git/refs \
-            -d '{"ref":"refs/heads/restore-patch","sha":"d6bef1227f71b9a51f66f8b9f33197f2ebff98f2"}'
+          git checkout -b restore-patch
+          git cherry-pick 47ea787db9d33f6b1969280c15887d63406fe76b d6bef1227f71b9a51f66f8b9f33197f2ebff98f2
+          git log --oneline -3
+          git push origin restore-patch
       - name: Verify hard gate
         if: always()
         run: |
