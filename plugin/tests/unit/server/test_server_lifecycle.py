@@ -75,8 +75,8 @@ async def test_detail_reads_reprobe_retained_service_without_starting_plane(monk
     ("handle_conversation_reply_get", "reply_id"),
     ("handle_conversation_interaction_get", "input_id"),
 ])
-@pytest.mark.parametrize("identity", [None, "", "bad\n", "x" * 257],
-                         ids=["missing", "empty", "control-character", "too-long"])
+@pytest.mark.parametrize("identity", [None, "", " ", "bad\n", "x" * 257],
+                         ids=["missing", "empty", "whitespace", "control-character", "too-long"])
 async def test_invalid_detail_identity_does_not_probe_readiness(monkeypatch, handler_name, key, identity):
     from unittest.mock import AsyncMock
     from plugin.server.domain.errors import ServerDomainError
