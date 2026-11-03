@@ -120,11 +120,78 @@ def test_file_lock_held_elsewhere_is_reported_as_another_process(isolated_locks,
     try:
         assert not lock.acquire(timeout=0.2)
         assert not lock.locked()
+        assert lock._holder is None
     finally:
         foreign.release()
     message, kwargs = captured_reports[0]
     assert '跨进程' in message
     assert 'holder_thread_id' not in kwargs
+
+
+@pytest.mark.unit
+def test_thread_still_waiting_on_the_file_lock_is_named_as_holder(isolated_locks, captured_reports):
+    path = isolated_locks / 'Role' / 'recent.json'
+    lock = recent_file.recent_file_lock(path)
+    with lock:
+        lock_file = lock._file.lock_file
+    foreign = FileLock(lock_file, thread_local=False)
+    foreign.acquire()
+    got = []
+
+    def _first_waiter():
+        got.append(lock.acquire(timeout=5))
+        lock.release()
+
+    first = threading.Thread(target=_first_waiter, name='file-stage-waiter')
+    first.start()
+    try:
+        deadline = time.monotonic() + 5
+        while not lock.locked() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        # The first waiter holds the thread lock and is parked on the other "process".
+        assert not lock.acquire(timeout=0.2)
+    finally:
+        foreign.release()
+    first.join(5)
+    assert got == [True]
+    message, kwargs = next(
+        (m, k) for m, k in captured_reports if '进程内' in m
+    )
+    assert 'file-stage-waiter' in message
+    assert kwargs['holder_thread_id'] == first.ident
+
+
+@pytest.mark.unit
+def test_read_queued_behind_a_full_executor_times_out_and_reports(tmp_path, isolated_locks, captured_reports):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from tests.unit.test_recent_file_lock import _make_manager
+
+    mgr, name, _path = _make_manager(tmp_path)
+    release = threading.Event()
+    executor = ThreadPoolExecutor(max_workers=1)
+
+    async def _run():
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(executor)
+        busy = loop.run_in_executor(None, release.wait, 10)
+        started = time.monotonic()
+        try:
+            with pytest.raises(recent_file.RecentFileLockTimeout):
+                await mgr.aget_recent_history(name, lock_timeout=0.2)
+            return time.monotonic() - started
+        finally:
+            release.set()
+            await busy
+
+    try:
+        elapsed = asyncio.run(_run())
+    finally:
+        executor.shutdown(wait=True)
+    assert elapsed < 2
+    message, kwargs = captured_reports[0]
+    assert '线程池排队' in message and name in message
+    assert kwargs['loop'] is not None
 
 
 @pytest.mark.unit

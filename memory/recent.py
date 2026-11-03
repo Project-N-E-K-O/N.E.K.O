@@ -2552,16 +2552,34 @@ class CompressedRecentHistoryManager:
         except Exception as e:
             logger.error(f"获取角色配置失败: {e}")
 
+        read = asyncio.to_thread(
+            self._read_history_locked,
+            file_path,
+            lanlan_name,
+            admission_generation,
+            lock_timeout,
+        )
         try:
-            history = await asyncio.to_thread(
-                self._read_history_locked,
-                file_path,
-                lanlan_name,
-                admission_generation,
-                lock_timeout,
-            )
+            if lock_timeout is None:
+                history = await read
+            else:
+                # The lock budget starts only once a worker picks the read up; bound the
+                # executor queue wait too. A worker that already started stops by itself
+                # within lock_timeout.
+                history = await asyncio.wait_for(read, lock_timeout)
         except recent_file.RecentFileDeletedError:
             history = []
+        except recent_file.RecentFileLockTimeout:
+            raise
+        except TimeoutError as e:
+            from utils.stall_report import report_stall
+            report_stall(
+                f"读取 {lanlan_name} 的近期历史 {lock_timeout}s 内未完成（线程池排队或等锁），放弃等待",
+                loop=asyncio.get_running_loop(),
+            )
+            raise recent_file.RecentFileLockTimeout(
+                f"recent history read exceeded {lock_timeout}s: {file_path}"
+            ) from e
         if include_admission:
             return history, admission_generation
         return history

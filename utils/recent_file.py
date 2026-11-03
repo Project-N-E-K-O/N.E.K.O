@@ -147,6 +147,10 @@ class _RecentFileLock:
         deadline = None if timeout is None else time.monotonic() + timeout
         if not self._wait('thread', self._acquire_thread, deadline):
             return False
+        # Recorded before the file stage: an in-process waiter must see this thread
+        # as the holder even while it is still waiting on another process.
+        current = threading.current_thread()
+        self._holder = (current.ident, current.name, time.monotonic())
         try:
             directory = os.path.dirname(self._file.lock_file)
             os.makedirs(directory, mode=0o700, exist_ok=True)
@@ -155,13 +159,13 @@ class _RecentFileLock:
                     and (info.st_uid != os.getuid() or info.st_mode & 0o077))):
                 raise PermissionError(f'unsafe recent lock directory: {directory}')
             if not self._wait('file', self._acquire_file, deadline):
+                self._holder = None
                 self._thread.release()
                 return False
         except BaseException:
+            self._holder = None
             self._thread.release()
             raise
-        current = threading.current_thread()
-        self._holder = (current.ident, current.name, time.monotonic())
         return True
 
     def _acquire_thread(self, timeout: float) -> bool:
