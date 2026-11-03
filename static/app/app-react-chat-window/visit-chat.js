@@ -2277,6 +2277,14 @@
                 catgirl: catgirl
             });
             presentation.questionDelivered = delivered.status === 200 && delivered.body && delivered.body.delivered === true;
+            // Only these local-route replies prove that no assistant turn began.
+            // Unknown failures and lost responses remain uncertain side effects.
+            var body = delivered.body || {};
+            var refusedBeforeWrite = delivered.status >= 400 && delivered.status < 500 && body.ok === false
+                && ['visit_id_format', 'catgirl_required', 'VISIT_E_UNAUTHORIZED', 'VISIT_DISABLED',
+                    'VISIT_LOGIN_REQUIRED', 'direct_invite_question_not_ready'].indexOf(body.code) !== -1;
+            if (refusedBeforeWrite || delivered.status === 200 && body.delivered === false
+                    && body.reason === 'project_tts_unavailable') presentation.questionAttempted = false;
         } finally {
             presentation.deliveryInFlight = false;
             if (realtimeInvitationState && realtimeInvitationState.realtimeEnabled) void reconcileRealtimeInvitations();
@@ -2471,6 +2479,30 @@
             void reconcileRealtimeInvitations();
         }
     }
+    async function confirmLegacyInvitationDelivery(presentation, snapshot) {
+        var confirmation = presentation.legacyDelivery;
+        if (confirmation.nextAt > now()) return false;
+        var delay = Math.min(30000, 1000 * Math.pow(2, Math.min(confirmation.attempts || 0, 5)));
+        confirmation.attempts = (confirmation.attempts || 0) + 1;
+        confirmation.nextAt = now() + delay;
+        var result;
+        try {
+            result = await window.nekoSocial.completeInvitationDelivery(presentation.payload.invitation_id,
+                confirmation.token, snapshot.generation);
+        } catch (_) { /* retain this claim for a bounded completion-only retry */ }
+        if (result && (result.ok || result.error === 'stale_claim' || result.error === 'not_delivering')) {
+            clearTimeout(confirmation.timer);
+            presentation.legacyDelivery = null;
+            return !!result.ok;
+        }
+        clearTimeout(confirmation.timer);
+        confirmation.timer = setTimeout(function () {
+            if (pendingDirectInvitation === presentation && presentation.legacyDelivery === confirmation
+                    && realtimeInvitationState && realtimeInvitationState.accountKey === snapshot.accountKey
+                    && realtimeInvitationState.generation === snapshot.generation) void reconcileRealtimeInvitations();
+        }, delay);
+        return false;
+    }
     async function reconcileRealtimeInvitations() {
         if (!isUiWindow()) return false;
         if (realtimeInvitationFlight) { realtimeInvitationWake = true; return false; }
@@ -2525,7 +2557,8 @@
                 legacyConfirmed = pendingDirectInvitation.legacyDelivery.confirmed;
             }
         }
-        if (!item.promptEligible) return true;
+        var confirmation = pendingDirectInvitation.legacyDelivery;
+        if (!item.promptEligible && !(confirmation && confirmation.token)) return true;
         realtimeInvitationFlight = true;
         var bridge = window.nekoSocial;
         var claim;
@@ -2538,6 +2571,15 @@
                 && realtimeInvitationState.items.some(function (i) { return i.id === item.id && i.actionable; });
         }
         try {
+            if (confirmation && confirmation.token) {
+                // beginDelivery is not repeatable once durable 'delivering' is
+                // recorded. Retry only completion with the original owned claim.
+                if (confirmation.generation !== snapshot.generation) {
+                    pendingDirectInvitation.legacyDelivery = null; return false;
+                }
+                if (!current()) return false;
+                return await confirmLegacyInvitationDelivery(pendingDirectInvitation, snapshot);
+            }
             claim = await bridge.claimInvitation(item.id, snapshot.generation);
             if (!claim || !claim.ok || !current()) return false;
             if (legacyAttempted) {
@@ -2547,10 +2589,12 @@
                 if (!adopted || !adopted.ok) return false;
                 delivering = true;
                 if (!current()) return false;
-                if (pendingDirectInvitation && pendingDirectInvitation.payload.invitation_id === item.id) {
-                    pendingDirectInvitation.legacyDelivery = null;
+                if (legacyConfirmed) {
+                    pendingDirectInvitation.legacyDelivery.token = claim.token;
+                    pendingDirectInvitation.legacyDelivery.generation = snapshot.generation;
+                    return await confirmLegacyInvitationDelivery(pendingDirectInvitation, snapshot);
                 }
-                if (legacyConfirmed) await bridge.completeInvitationDelivery(item.id, claim.token, snapshot.generation);
+                pendingDirectInvitation.legacyDelivery = null;
                 return true;
             }
             var preview = await realtimeInvitationApi('GET', '/api/visit/direct/' + encodeURIComponent(item.visit_id) + '/preview', item);
