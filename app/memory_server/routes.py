@@ -51,6 +51,7 @@ from config.prompts.prompts_memory import (
     _normalize_memory_prompt_lang,
 )
 from utils.frontend_utils import get_timestamp
+from utils.recent_file import RecentFileLockTimeout
 from utils.llm_tool_leak_filter import (
     strip_tool_call_leaks,
     strip_tool_call_leaks_from_parts,
@@ -2073,6 +2074,10 @@ def _without_tool_call_leaks(history) -> list:
     return cleaned
 
 
+# Below the game pregame caller's 5s HTTP timeout.
+_RECENT_HISTORY_LOCK_TIMEOUT_SECONDS = 4.0
+
+
 @app.get("/get_recent_history/{lanlan_name}")
 async def get_recent_history(lanlan_name: str, language: str | None = None):
     lanlan_name = validate_lanlan_name(lanlan_name)
@@ -2088,9 +2093,18 @@ async def get_recent_history(lanlan_name: str, language: str | None = None):
         logger.error(f"检查角色配置失败: {e}")
         return _loc(NO_RECENT_HISTORY, _lang)
 
-    history = _screen_guarded_recent_history(
-        await runtime.recent_history_manager.aget_recent_history(lanlan_name)
-    )
+    try:
+        raw_history = await runtime.recent_history_manager.aget_recent_history(
+            lanlan_name, lock_timeout=_RECENT_HISTORY_LOCK_TIMEOUT_SECONDS,
+        )
+    except RecentFileLockTimeout as e:
+        # The only caller (game pregame) gives up after 5s and falls back to empty history;
+        # failing first keeps the worker thread from waiting on the lock forever.
+        logger.warning(f"[RecentHistory] {lanlan_name} 读取近期历史等锁超时，返回 503: {e}")
+        return JSONResponse(
+            {"status": "error", "message": "recent history is busy"}, status_code=503,
+        )
+    history = _screen_guarded_recent_history(raw_history)
     master_name, _, _, _, name_mapping, _, _, _, _ = await runtime._config_manager.aget_character_data()
     name_mapping['ai'] = lanlan_name
     result = _loc(RECENT_HISTORY_INTRO, _lang).format(name=lanlan_name)
@@ -8063,7 +8077,7 @@ async def _new_dialog(
     # without racing these reads. Phase C makes review a background task concurrent with /process;
     # /new_dialog no longer cancels running reviews (old cancellation was Phase A
     # residue, making reviews almost never finish in active sessions).
-    async with runtime._get_settle_lock(lanlan_name):
+    async with runtime._hold_settle_lock_reporting_stalls(lanlan_name, "/new_dialog"):
         # Regex removes all bracket types and contents (including [], (), {}, <>, 【】, （）, etc.).
         brackets_pattern = re.compile(r'(\[.*?\]|\(.*?\)|（.*?）|【.*?】|\{.*?\}|<.*?>)')
         master_name, _, _, _, name_mapping, _, _, _, _ = await runtime._config_manager.aget_character_data()

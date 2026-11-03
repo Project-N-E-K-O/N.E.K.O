@@ -32,6 +32,7 @@ the same reason.
 """
 
 import asyncio
+from contextlib import asynccontextmanager
 from contextvars import ContextVar, Token
 from datetime import datetime, timezone
 
@@ -51,6 +52,7 @@ from config import (
     EVIDENCE_SIGNAL_CHECK_ENABLED,
     MEMORY_RECHECK_ENABLED,
 )
+from utils.asyncio_executor import configure_default_executor
 from utils.cloudsave_runtime import (
     MaintenanceModeError,
     ROOT_MODE_NORMAL,
@@ -858,6 +860,44 @@ def _get_settle_lock(lanlan_name: str) -> asyncio.Lock:
     return _settle_locks[lanlan_name]
 
 
+# A settle-lock wait longer than this logs a stall report (see utils/stall_report.py) and keeps waiting.
+_SETTLE_STALL_REPORT_AFTER_SECONDS = 10.0
+
+
+@asynccontextmanager
+async def _hold_settle_lock_reporting_stalls(lanlan_name: str, where: str):
+    """``async with _get_settle_lock(name)`` that logs once when the wait looks stuck.
+
+    The wait itself is unchanged (same queue position, no timeout); a timer on
+    the loop only reports, including every task's stack, so the holder shows up.
+    """
+    lock = _get_settle_lock(lanlan_name)
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+
+    def _report():
+        from utils.stall_report import report_stall
+        report_stall(
+            f"{where} 等待角色 {lanlan_name} 的 settle 锁已 {loop.time() - started:.1f}s，仍在等待",
+            loop=loop,
+        )
+
+    timer = loop.call_later(_SETTLE_STALL_REPORT_AFTER_SECONDS, _report)
+    # Drive the lock through its context-manager protocol: tests stand in
+    # objects that only implement __aenter__/__aexit__.
+    try:
+        await lock.__aenter__()
+    finally:
+        timer.cancel()
+    try:
+        yield
+    except BaseException as error:
+        if not await lock.__aexit__(type(error), error, error.__traceback__):
+            raise
+    else:
+        await lock.__aexit__(None, None, None)
+
+
 def _spawn_background_task(coro) -> asyncio.Task:
     """Create a background task with strong reference + exception logging.
 
@@ -1192,6 +1232,9 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
 @app.on_event("startup")
 async def startup_event_handler():
     """Initialization at application startup"""
+    # Same floor as the main server: Python's default (cpu + 4) leaves low-end machines
+    # with a handful of workers shared by every to_thread read and lock wait.
+    configure_default_executor(asyncio.get_running_loop(), logger=logger)
     blocking_reason = get_storage_startup_blocking_reason(_config_manager)
     if blocking_reason:
         logger.info(

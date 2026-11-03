@@ -985,11 +985,15 @@ class CompressedRecentHistoryManager:
         return self._cached_disk_history(lanlan_name)
 
     def _read_history_locked(
-        self, file_path, lanlan_name, expected_generation=None,
+        self, file_path, lanlan_name, expected_generation=None, lock_timeout=None,
     ) -> list:
-        """Read one character's history under the file lock. Run me in a worker thread."""
+        """Read one character's history under the file lock. Run me in a worker thread.
+
+        ``lock_timeout`` raises ``recent_file.RecentFileLockTimeout`` instead of
+        waiting longer for the lock.
+        """
         with recent_file.recent_file_access(
-            file_path, expected_generation=expected_generation,
+            file_path, expected_generation=expected_generation, timeout=lock_timeout,
         ) as file_path:
             status, history = self._load_history_unlocked(file_path, lanlan_name)
             pending = recent_file.get_recent_pending_unlocked(file_path)
@@ -2536,7 +2540,9 @@ class CompressedRecentHistoryManager:
         except recent_file.RecentFileDeletedError:
             return []
 
-    async def aget_recent_history(self, lanlan_name, *, include_admission=False):
+    async def aget_recent_history(
+        self, lanlan_name, *, include_admission=False, lock_timeout=None,
+    ):
         file_path, admission_generation = self._capture_recent_operation_admission(
             lanlan_name,
         )
@@ -2552,6 +2558,7 @@ class CompressedRecentHistoryManager:
                 file_path,
                 lanlan_name,
                 admission_generation,
+                lock_timeout,
             )
         except recent_file.RecentFileDeletedError:
             history = []
