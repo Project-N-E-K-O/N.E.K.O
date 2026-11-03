@@ -772,6 +772,54 @@ def test_a_verbatim_replay_of_replaced_words_stays_out(tmp_path):
     assert [e["text"] for e in store.get_active(_NAME, now=_T0 + 3 * _DAY)] == ["主人的考试改到下周五"]
 
 
+def test_removing_a_withdrawn_entry_again_pins_nothing(tmp_path):
+    # Greptile #3598: two cancellations of one entry, in one batch or in two,
+    # remove it once; the second must not land as an entry of its own.
+    store = _store(tmp_path)
+    store.apply_decisions(_NAME, [_candidate("主人下周三考试", 14, noted_at=_T0)],
+                          [("add", None)], now=_T0)
+    [exam] = store.get_active(_NAME, now=_T0)
+
+    counts = store.apply_decisions(
+        _NAME,
+        [_candidate("主人的考试取消了", 3, noted_at=_T0 + _DAY),
+         _candidate("主人不用考试了", 3, noted_at=_T0 + _DAY)],
+        [("remove", exam["id"]), ("remove", exam["id"])],
+        now=_T0 + _DAY,
+    )
+    assert (counts["removed"], counts["added"], counts["skipped"]) == (1, 0, 1)
+
+    counts = store.apply_decisions(
+        _NAME, [_candidate("主人的考试确实取消了", 3, noted_at=_T0 + 2 * _DAY)],
+        [("remove", exam["id"])], now=_T0 + 2 * _DAY,
+    )
+    assert (counts["removed"], counts["added"], counts["skipped"]) == (0, 0, 1)
+    assert store.get_active(_NAME, now=_T0 + 2 * _DAY) == []
+
+
+def test_every_replaced_wording_stays_out(tmp_path):
+    # Cloud review #3598: replaced twice (A -> B -> C), a late replay of A
+    # must stay out as well as one of B.
+    store = _store(tmp_path)
+    store.apply_decisions(_NAME, [_candidate("主人下周三考试", 14, noted_at=_T0)],
+                          [("add", None)], now=_T0)
+    [exam] = store.get_active(_NAME, now=_T0)
+    for step, text in ((1, "主人的考试改到下周四"), (2, "主人的考试改到下周五")):
+        store.apply_decisions(_NAME, [_candidate(text, 14, noted_at=_T0 + step * _DAY)],
+                              [("replace", exam["id"])], now=_T0 + step * _DAY)
+
+    counts = store.apply_decisions(
+        _NAME,
+        [_candidate("主人下周三考试", 14, noted_at=_T0 + 3600),
+         _candidate("主人的考试改到下周四", 14, noted_at=_T0 + _DAY + 3600)],
+        [("add", None), ("add", None)],
+        now=_T0 + 3 * _DAY,
+    )
+
+    assert (counts["added"], counts["skipped"]) == (0, 2)
+    assert [e["text"] for e in store.get_active(_NAME, now=_T0 + 3 * _DAY)] == ["主人的考试改到下周五"]
+
+
 def test_resolve_prompt_dates_carry_the_time_of_day(tmp_path, monkeypatch):
     store = _store(tmp_path)
     asyncio.run(_seed(store, [("主人下周三考试", 14)]))

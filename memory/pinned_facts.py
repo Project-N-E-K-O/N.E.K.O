@@ -295,10 +295,11 @@ def _live_withdrawals(
 
     Only records that carry the conversation time of the retracting account
     (``noted_at``) count. Each comes back as ``{id, text, text_at,
-    withdrawn_at, action}``; a later record for the same id replaces an
-    earlier one.
+    withdrawn_at, action}``. Records are kept per (action, id, text), so an
+    entry replaced twice still remembers both wordings it moved away from;
+    a later record for the same key replaces an earlier one.
     """
-    by_id: Dict[str, Dict[str, Any]] = {}
+    by_key: Dict[tuple, Dict[str, Any]] = {}
     for record in history:
         if not isinstance(record, dict) or record.get("action") not in actions:
             continue
@@ -308,14 +309,14 @@ def _live_withdrawals(
         if (withdrawn_at is None or expire_at is None or expire_at <= now
                 or not isinstance(entry_id, str) or not isinstance(text, str)):
             continue
-        by_id[(record["action"], entry_id)] = {
+        by_key[(record["action"], entry_id, _text_key(text))] = {
             "id": entry_id,
             "text": text,
             "text_at": _as_float(record.get("text_at")) or withdrawn_at,
             "withdrawn_at": withdrawn_at,
             "action": record["action"],
         }
-    return list(by_id.values())
+    return list(by_key.values())
 
 
 def _coerce_candidate_index(raw: Any, count: int) -> Optional[int]:
@@ -623,9 +624,14 @@ class PinnedFactStore:
                 lifetime_end = noted + candidate["ttl_days"] * _DAY_SECONDS
                 retracted_at = retracted.get(target_id) if target is None and target_id else None
                 if action in _TARGETED_ACTIONS and retracted_at is not None:
-                    # Matched to an entry that was withdrawn: an account given
-                    # before the withdrawal stays out, a later one is new.
-                    action = None if noted < retracted_at else ACTION_ADD
+                    # Matched to an entry that was withdrawn. Removing it again
+                    # does nothing (a second "cancelled" must not pin itself);
+                    # a replace / renew given before the withdrawal stays out,
+                    # one given after it is new.
+                    action = (
+                        None if action == ACTION_REMOVE or noted < retracted_at
+                        else ACTION_ADD
+                    )
                 elif action in _TARGETED_ACTIONS:
                     outdated_view = expected_revs is not None and (
                         target is None
