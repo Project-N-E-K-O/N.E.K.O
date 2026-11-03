@@ -351,6 +351,8 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None):
                      if isinstance(row, dict) and private(row) and row.get('source') != 'character_card'}
     local_facts = {(row.get('entity'), _entry_id(row.get('entity'), row)): row
                    for row in existing['archive'] + existing['facts'] if isinstance(row, dict) and private(row)}
+    local_reflections = {(row.get('entity'), _entry_id(row.get('entity'), row)): row
+                         for row in existing['reflections'] if isinstance(row, dict) and private(row)}
     pending = set()
     if baseline is not None:
         previous = {(row['kind'], row['subject'], row['id']): row for row in baseline}
@@ -418,6 +420,8 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None):
             native.update(source='reflection' if sources else 'manual', source_id=sources[0] if sources else native['source_sync_id'],
                           merged_from_ids=list(sources[1:]))
             previous = local_persona.get((subject, row['id']), {})
+            if previous.get('text') == native['text'] and 'covered_fact_ids' in previous:
+                native['covered_fact_ids'] = deepcopy(previous['covered_fact_ids'])
             if 'protected' in previous:
                 native.setdefault('protected', previous['protected'])
             # The protocol omits receiver-only state and external-import ledgers.
@@ -457,6 +461,9 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None):
                 native['event_start_at'] = iso(meta['eventAt'])
             result['archive' if meta.get('archived') else 'facts'].append(native)
         else:
+            previous = local_reflections.get((subject, row['id']), {})
+            if previous.get('text') == native['text'] and 'covered_fact_ids' in previous:
+                native['covered_fact_ids'] = deepcopy(previous['covered_fact_ids'])
             native.update(entity=subject, source_fact_ids=list(meta.get('sourceFactIds') or []),
                           status=meta.get('status', 'promoted' if meta.get('promotedAt') else 'confirmed'))
             if native['status'] in ('confirmed', 'promoted') and not native.get('confirmed_at'):
