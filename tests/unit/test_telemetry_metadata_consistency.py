@@ -22,10 +22,11 @@ import utils.token_tracker.telemetry as telemetry
 
 
 @contextmanager
-def _patched_env(*, is_release, steam_id, workshop_subs, workshop_file_exists):
+def _patched_env(*, is_release, steam_id, workshop_subs, workshop_file_exists, can_probe=True):
     """Construct a controlled Steamworks / config / build environment.
 
     steam_id=None means ``get_steamworks()`` returns None (SDK unavailable).
+    can_probe=False models agent_server / memory_server: no handle and no initializer.
     Return GetSteamID's MagicMock to assert it is called only once.
     """
     get_steam_id = MagicMock(return_value=steam_id if steam_id is not None else 0)
@@ -48,6 +49,7 @@ def _patched_env(*, is_release, steam_id, workshop_subs, workshop_file_exists):
 
     with patch.object(telemetry, "_is_release_build", return_value=is_release), \
          patch("utils.steam_state.get_steamworks", return_value=sw), \
+         patch("utils.steam_state.can_probe_steamworks", return_value=can_probe), \
          patch("utils.config_manager.get_config_manager", return_value=cm):
         yield get_steam_id
 
@@ -143,3 +145,47 @@ def test_facade_telemetry_url_remains_live(monkeypatch):
 
     reporting._TELEMETRY_SERVER_URL = ""
     assert tt._TELEMETRY_SERVER_URL == ""
+
+
+# Processes without a Steamworks probe (agent_server / memory_server).
+# (steam_id, workshop_file_exists) -> (distribution, steam_user_id)
+_NO_PROBE_CASES = [
+    # No Steam signal: cannot tell steam from release → unknown, so the server keeps
+    # main_server's value instead of flipping a Steam device to release.
+    (None, False, ("unknown", "")),
+    # Disk evidence still proves Steam.
+    (None, True, ("steam", "")),
+]
+
+
+@pytest.mark.parametrize("steam_id,file_exists,expected", _NO_PROBE_CASES)
+def test_metadata_in_process_without_steam_probe(steam_id, file_exists, expected):
+    with _patched_env(
+        is_release=True,
+        steam_id=steam_id,
+        workshop_subs=0,
+        workshop_file_exists=file_exists,
+        can_probe=False,
+    ):
+        assert tt._get_telemetry_metadata() == expected
+
+
+def test_source_build_without_probe_stays_source():
+    with _patched_env(
+        is_release=False, steam_id=None, workshop_subs=0,
+        workshop_file_exists=False, can_probe=False,
+    ):
+        assert tt._get_telemetry_metadata() == ("source", "")
+
+
+def test_can_probe_steamworks_tracks_handle_and_initializer(monkeypatch):
+    import utils.steam_state as ss
+
+    monkeypatch.setattr(ss, "_steamworks", None)
+    monkeypatch.setattr(ss, "_steamworks_initializer", None)
+    assert ss.can_probe_steamworks() is False
+    monkeypatch.setattr(ss, "_steamworks_initializer", lambda: None)
+    assert ss.can_probe_steamworks() is True
+    monkeypatch.setattr(ss, "_steamworks_initializer", None)
+    monkeypatch.setattr(ss, "_steamworks", object())
+    assert ss.can_probe_steamworks() is True

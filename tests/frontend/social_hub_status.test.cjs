@@ -15,7 +15,7 @@ function loadHub(options = {}) {
   const window = {
     addEventListener(name, handler) { listeners.set(name, handler); },
     dispatchEvent() {},
-    nekoSocialHubHost: null,
+    nekoSocialHubHost: options.host || null,
     nekoSocial: null,
     nekoVisitChat: options.visitChat || null,
   };
@@ -159,6 +159,32 @@ function loadHubWithFailedSend(cancelResult) {
     id: 'friend-1', displayName: 'Community Test', avatarUrl: 'https://example.test/avatar.png',
   }];
   return { ...loaded, cancelled };
+}
+
+for (const transport of ['web', 'electron']) {
+  test(`quota failure is shown in the friend panel without sending a notification (${transport})`, async () => {
+    const quotaText = '今天的串门时间用完了';
+    const fetches = [];
+    const fail = async () => { throw new Error(quotaText); };
+    const { hub } = loadHub({
+      host: transport === 'electron' ? { createDirectInvite: fail } : null,
+      visitChat: transport === 'web' ? { createDirectInvitation: fail } : null,
+      fetch: async (url, init) => {
+        fetches.push({ url: String(url), method: init && init.method || 'GET' });
+        return { ok: true, json: async () => ({}) };
+      },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    hub._state.accountId = 'account-1';
+    hub._state.friends = [{ id: 'friend-1', displayName: 'Friend', avatarUrl: '' }];
+
+    await hub._inviteFriend('friend-1');
+
+    assert.equal(hub._state.toast, quotaText);
+    assert.equal(hub._state.toastError, true);
+    assert.equal(hub._state.invitations.has('friend-1'), false);
+    assert.equal(fetches.some((entry) => entry.method === 'POST' && entry.url === '/api/community/visit-invitations'), false);
+  });
 }
 
 for (const [label, cancelResult] of [['returns false', false], ['throws', new Error('offline')]]) {
@@ -497,6 +523,58 @@ test('an older successful hub refresh can apply when a newer silent refresh fail
   assert.equal(hub._state.accountId, 'account-recovered');
   assert.equal(hub._state.friends[0].id, 'friend-recovered');
   assert.equal(hub._state.loading, false);
+});
+
+for (const failure of ['unverified-session', 'malformed-json', 'invalid-json']) {
+  test(`background refresh preserves the signed-in panel during ${failure}`, async () => {
+    const initial = {
+      logged_in: true, account: { id: 'account-1', display_name: 'Owner' },
+      friends: [{ id: 'friend-1', display_name: 'Friend', online: true }],
+    };
+    let reads = 0;
+    const { hub, intervals } = loadHub({
+      fetch: async () => {
+        reads += 1;
+        if (reads !== 2) return { ok: true, status: 200, json: async () => initial };
+        if (failure === 'unverified-session') {
+          return { ok: false, status: 503, json: async () => ({ detail: 'community_unavailable' }) };
+        }
+        if (failure === 'invalid-json') {
+          return { ok: true, status: 200, json: async () => { throw new SyntaxError('Invalid JSON'); } };
+        }
+        return { ok: true, status: 200, json: async () => ({}) };
+      },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    intervals.find((entry) => entry.delay === 60000).callback();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(hub._state.loggedIn, true);
+    assert.equal(hub._state.accountId, 'account-1');
+    assert.equal(hub._state.friends[0].id, 'friend-1');
+    assert.equal(hub._state.loadFailed, false);
+
+    await hub.refresh(true);
+    assert.equal(hub._state.loggedIn, true);
+    assert.equal(hub._state.accountId, 'account-1');
+  });
+}
+
+test('a confirmed logout still clears the signed-in panel during a background refresh', async () => {
+  let reads = 0;
+  const { hub } = loadHub({
+    fetch: async () => ++reads === 1
+      ? { ok: true, json: async () => ({
+        logged_in: true, account: { id: 'account-1' }, friends: [{ id: 'friend-1' }],
+      }) }
+      : { ok: false, status: 401, json: async () => ({ detail: 'community_login_required' }) },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  await hub.refresh(true);
+  assert.equal(hub._state.loggedIn, false);
+  assert.equal(hub._state.accountId, '');
+  assert.equal(hub._state.account, null);
+  assert.equal(hub._state.friends.length, 0);
 });
 
 test('an older opening refresh can still fill recommendations after newer silent data', async () => {

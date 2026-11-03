@@ -193,13 +193,12 @@ If you deployed with the former `docker/community-2c2g/` files, the Compose file
 
    If the old override also set non-environment options such as `mem_limit`, `read_only`, `cap_drop`, `tmpfs`, `extra_hosts`, `devices`, or `ulimits`, carry them into `docker/compose.local.yaml` under `neko-main` as well. Options the snapshot does not record (such as `devices` and `ulimits`) must be checked by hand against the old override file.
 
-   Note that the official Compose file passes through only a fixed list of variables (see `docker/CONFIG_REFERENCE.md`); others such as `DISABLE_SSL` do not reach the container from `.env`. If the snapshot has such variables, put them in `docker/compose.local.yaml` (ignored by git) and add it to `COMPOSE_FILE`:
+   The official Compose file injects the whole `docker/.env` via `env_file:`, so variables such as `DISABLE_SSL` **work directly from `.env`** — no override file needed. (Older compose files used a fixed whitelist, which is why this step used to be necessary.) Only non-environment settings (`mem_limit`, `devices`, ...) still belong in `docker/compose.local.yaml`:
 
    ```yaml
    services:
      neko-main:
-       environment:
-         - DISABLE_SSL=${DISABLE_SSL:-}
+       mem_limit: 2g
    ```
 
    ```dotenv
@@ -209,7 +208,10 @@ If you deployed with the former `docker/community-2c2g/` files, the Compose file
    Before starting, list the variable names that will reach the container from `docker/` (names only, no values) and confirm every application variable from the snapshot is present:
 
    ```bash
-   docker compose config --format json | python3 -c 'import json,sys; print("\n".join(sorted(json.load(sys.stdin)["services"]["neko-main"]["environment"])))'
+   # Names come straight from .env (env_file injects the whole file), so this does not
+   # depend on how a given compose version renders env_file entries in "config" output.
+   # The authoritative check happens in step 6, via docker inspect on .Config.Env.
+   grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' .env | tr -d '=' | sort
    ```
 6. From `docker/`, check mounts and ports with `docker compose config`, then `docker compose up -d` and confirm credentials, characters, and memories are intact. Back at the repository root, compare the new container's effective configuration with the step 2 snapshot (the previous new-container snapshot is removed first, so a failed collection makes the comparison print `COMPARE FAILED` instead of `identical` from a stale file):
 

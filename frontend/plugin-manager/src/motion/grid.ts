@@ -1,6 +1,6 @@
 import { onBeforeUnmount } from 'vue'
 import {
-  cancelMotion, counterScaledRadius, measurePinBox, motionSuppressed, pinInPlace, playFrames, playMotion, releasePin,
+  cancelMotion, measurePinBox, motionSuppressed, pinInPlace, playFrames, playMotion, releasePin,
   type FrameTiming, type MotionOptions, type PinBox,
 } from './runtime'
 import { motionPolicy } from './policy'
@@ -93,11 +93,13 @@ export function useGridMotionController(options: {
   // the window maximizing) would make every card jump to its new slot and
   // size at once. Instead each item glides from the box it was last drawn
   // in: the item translates, its surface (`data-reflow="surface"`: border,
-  // fill, shadow) scales with counter-scaled corners, and its content
+  // fill, shadow) scales with its authored radius, and its content
   // (`data-reflow="content"`) is laid out at the final size and only clipped
   // to the scaling surface, so text is never squashed. Parts pinned to the
   // trailing or bottom edge (`data-reflow="end"` / `"bottom"`) follow that
-  // edge. Items without both layers keep snapping.
+  // edge. Keeping radius out of the keyframes avoids repainting every card
+  // every frame; only the empty chrome stretches, never the text. Items
+  // without both layers keep snapping.
   // Small per-frame width changes (the sidebar transition, a dragged window
   // edge) keep following the layout: a reflow restarted every frame would
   // hold each card near its start frame until the width settles.
@@ -137,20 +139,18 @@ export function useGridMotionController(options: {
   function glide(
     node: HTMLElement, parts: ReflowParts,
     laid: DOMRect, from: DOMRect, to: DOMRect,
-    timing: FrameTiming, done: () => void,
+    timing: FrameTiming, border: number, done: () => void,
   ) {
     const { surface, content, ends, bottoms } = parts
-    const style = getComputedStyle(surface)
-    const radius = Number.parseFloat(style.borderTopLeftRadius) || 0
-    // Clip to the inside of the surface's border, so the content fill never
-    // covers it; negative while shrinking, so edge parts slid out stay drawn.
-    const border = Number.parseFloat(style.borderRightWidth) || 0
+    // The content is transparent: a rectangular clip is enough,
+    // while the surface owns the rounded fill, border and shadow. Negative
+    // insets keep trailing controls visible while shrinking.
     const at = (box: DOMRect) => {
       if (sameBox(box, laid)) {
         return {
           item: 'none', end: 'none', bottom: 'none',
-          surface: { transform: 'none', borderRadius: `${radius}px` },
-          content: { clipPath: `inset(0 round ${radius}px)` },
+          surface: { transform: 'none' },
+          content: { clipPath: 'inset(0)' },
         }
       }
       const sx = box.width / laid.width
@@ -159,9 +159,9 @@ export function useGridMotionController(options: {
         item: `translate(${box.x - laid.x}px, ${box.y - laid.y}px)`,
         end: `translateX(${box.width - laid.width}px)`,
         bottom: `translateY(${box.height - laid.height}px)`,
-        surface: { transform: `scale(${sx}, ${sy})`, borderRadius: counterScaledRadius(radius, sx, sy) },
+        surface: { transform: `scale(${sx}, ${sy})` },
         content: {
-          clipPath: `inset(0 ${laid.width - box.width + border}px ${laid.height - box.height + border}px 0 round ${radius}px)`,
+          clipPath: `inset(0 ${laid.width - box.width + border}px ${laid.height - box.height + border}px 0)`,
         },
       }
     }
@@ -193,9 +193,20 @@ export function useGridMotionController(options: {
     })
     // Settle running reflows first, so every target is a plain layout box.
     for (const { node } of plans) cancel(node)
+    const clip = grid.closest('.grid-section')?.parentElement?.getBoundingClientRect()
+    const inView = (box: DOMRect) => box.bottom > Math.max(0, clip?.top ?? 0)
+      && box.top < Math.min(window.innerHeight, clip?.bottom ?? window.innerHeight)
+      && box.right > 0 && box.left < window.innerWidth
+    // Read every target before starting any animation. A write in this loop
+    // would make the next card's geometry read synchronously lay out the grid.
+    const targets = plans.map(plan => ({
+      ...plan,
+      to: boxIn(plan.parts.surface, scroll),
+      border: Number.parseFloat(getComputedStyle(plan.parts.surface).borderRightWidth) || 0,
+    }))
+    const boxes = new Map(targets.map(({ node, to }) => [node, to]))
     let order = 0
-    for (const { node, laid, drawn, parts } of plans) {
-      const to = boxIn(parts.surface, scroll)
+    for (const { node, laid, drawn, parts, to, border } of targets) {
       if (!laid.width || !to.width) continue
       // `drawn` is the new slot offset and scaled by the settled glide; the
       // last frame showed that same offset on the slot it was heading to.
@@ -205,17 +216,18 @@ export function useGridMotionController(options: {
             laid.width * drawn.width / to.width, laid.height * drawn.height / to.height,
           )
         : laid
-      if (!(visible(node, onScreen(from, scroll)) || visible(node, onScreen(to, scroll)))) continue
+      if (!(inView(onScreen(from, scroll)) || inView(onScreen(to, scroll)))) continue
       if (sameBox(from, to)) continue
       laidBoxes.set(node, to)
       gliding.add(node)
       // A reversed glide is already moving: it turns around at once instead of
       // holding still through a stagger delay.
-      glide(node, parts, to, from, to, reflowTiming(drawn ? 0 : order++), () => {
+      glide(node, parts, to, from, to, reflowTiming(drawn ? 0 : order++), border, () => {
         gliding.delete(node)
         syncColumns(grid)
       })
     }
+    return boxes
   }
 
   /** Re-records the slots of the grid's settled items in the current frame,
@@ -252,14 +264,14 @@ export function useGridMotionController(options: {
     // cards), and suppressed motion never plays: neither needs any boxes.
     const still = items.length > motionPolicy.largeList || motionSuppressed()
     const relaid = next !== columns || Math.abs(width - previous) >= motionPolicy.reflowStep
-    if (animate && columns && next && relaid && !still) reflow(grid, items)
+    const targets = animate && columns && next && relaid && !still ? reflow(grid, items) : undefined
     columns = next
     const boxes = new Map<HTMLElement, DOMRect>()
     if (next && !still) {
       const scroll = scrollOf(grid)
       for (const node of items) {
         const surface = reflowParts(node)?.surface
-        const box = gliding.has(node) ? laidBoxes.get(node) : surface && boxIn(surface, scroll)
+        const box = targets?.get(node) ?? (gliding.has(node) ? laidBoxes.get(node) : surface && boxIn(surface, scroll))
         if (box) boxes.set(node, box)
       }
     }

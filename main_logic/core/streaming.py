@@ -1028,6 +1028,10 @@ class StreamingMixin:
                                 stream_text_kwargs.pop("turn_context")
                             # No await before the following call: this captures the actual client receiving this turn.
                             reply_turn.session = self.session
+                            if is_chat_input_source(message_source):
+                                from main_logic.reply_tail import reply_tail_registry
+
+                                reply_tail_registry.prepare_reply(self, reply_turn, user_text=record_data)
                             observation_token = _reply_observation_owner.set(reply_turn)
                             try:
                                 await self.session.stream_text(data, **stream_text_kwargs)

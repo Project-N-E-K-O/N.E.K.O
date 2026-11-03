@@ -1340,7 +1340,7 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
             return {"status": "error", "message": str(e)}
 
 
-# ── keyed private /cache and visit facts (catgirl visit "keep as diary", OD-16 v4) ──
+# ── keyed private /cache and visit facts (neko visit "keep as diary", OD-16 v4) ──
 
 from utils.recent_file import VISIT_DIARY_KEY_RE as _KEYED_CACHE_KEY_RE  # noqa: E402
 

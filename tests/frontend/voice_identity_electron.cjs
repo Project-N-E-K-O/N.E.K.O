@@ -427,7 +427,16 @@ app.whenReady().then(async () => {
     assert.equal(reservations.at(-1).kind, 'repair');
     assert.equal(requests.filter(entry => entry.path.endsWith('/audio/check')).length, checksBeforeRepair);
     await win.webContents.executeJavaScript("document.getElementById('voice-identity-resource-complete-close').click();true;");
-    assert.equal(await win.webContents.executeJavaScript("document.getElementById('voice-identity-repair').hidden"), true);
+    assert.equal(await win.webContents.executeJavaScript("document.getElementById('voice-identity-repair').hidden"), false);
+    assert.equal(await win.webContents.executeJavaScript("document.getElementById('voice-identity-input-close').hidden"), false);
+    await win.webContents.executeJavaScript("document.getElementById('voice-identity-input-close').click();true;");
+    assert.equal(await win.webContents.executeJavaScript("document.getElementById('voice-identity-input-setup').hidden"), true);
+    assert.equal(await win.webContents.executeJavaScript("document.getElementById('voice-identity-input-settings').hidden"), false);
+    await win.webContents.executeJavaScript("document.getElementById('voice-identity-input-settings').click();true;");
+    assert.equal(await win.webContents.executeJavaScript("document.getElementById('voice-identity-input-setup').hidden"), false);
+    assert.equal(await win.webContents.executeJavaScript("document.getElementById('voice-identity-input-close').hidden"), false);
+    await win.webContents.executeJavaScript("document.getElementById('voice-identity-input-close').click();true;");
+    assert.equal(await win.webContents.executeJavaScript("document.getElementById('voice-identity-input-setup').hidden"), true);
     const report = { electron: process.versions.electron, actualPageAndWorklet: true, controlledApi: true, realMicrophoneCaptured: false, realBackend: false, quietFixedSentenceUploaded: true, prematureManualFinishBlocked: true, quietManualFinishUploaded: true, cancelledFormalInputReleased: true, manualRmsActiveSeconds: segment.rmsActiveSeconds, trialRmsActiveSeconds: check.rmsActiveSeconds, titleAccessibility, inputLayouts, fallbackRequiresSecondTest: true, inputResourcesReleasedAfterTrial: true, repeatedTrialReacquiresStream: true, cancelledLatePermissionStopped: true, formalReopensAndChecksContract: true, changedServerContractRequiresRetest: true, pcmBytes: check.bytes, gainChangeInvalidatesTest: true, cancelledDeletionPreservesProfile: true, profileDeletionRestoresLayoutWithoutReload: true, completionAutoClose: true, repairUsesOneReservation: true, ui };
     fs.writeFileSync(path.join(scratch, 'result.json'), JSON.stringify(report, null, 2));
     console.log('VOICE_READINESS_ELECTRON ' + JSON.stringify(report));

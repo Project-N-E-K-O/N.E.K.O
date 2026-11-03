@@ -200,7 +200,14 @@ done
 for bad in / /. // /data /root /home /home/someone /var /var/log /mnt/disk /etc/neko \
            /usr/local/neko /proc/neko "$CASE" "$(dirname -- "$CASE")"; do
     if PATH="$CASE/stub:$PATH" run "$bad" "$CASE/logs"; then die "accepted $bad"; fi
-    grep -q 'refusing to take ownership' "$CASE/out" || die "no refusal for $bad"
+    # 路径本身就是符号链接时（例如某些环境里 /root 指向别处），preflight 会先命中
+    # "符号链接"分支：拒绝理由不同，但同样是拒绝。这里按本机实际形态放宽断言，
+    # 免得 harness 的成败取决于 runner 上 /root 长什么样。
+    if [ -L "$bad" ]; then
+        grep -qE 'refusing to take ownership|is a symlink' "$CASE/out" || die "no refusal for $bad"
+    else
+        grep -q 'refusing to take ownership' "$CASE/out" || die "no refusal for $bad"
+    fi
     if PATH="$CASE/stub:$PATH" run "$CASE/logs" "$bad"; then die "accepted logs $bad"; fi
 done
 [[ ! -e $CASE/called ]] || die "chown/mkdir reached: $(cat "$CASE/called")"

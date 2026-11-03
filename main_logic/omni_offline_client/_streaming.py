@@ -388,6 +388,8 @@ class _StreamingMixin:
         tail = getattr(reply_owner, "reply_tail", None)
         if tail is not None and live and shown:
             tail.completed = True
+            if getattr(tail, "hooks", ()):
+                tail.text = shown
 
     def _trim_cancelled_round_text(self, shown: str, rounds) -> None:
         """Make a kept, cancelled tool round hold only the text that was shown.

@@ -355,7 +355,9 @@ async function main() {
         assert.equal(await page.evaluate(() => window.__durationEvidence.streams.length), 0);
         await page.keyboard.press('Escape');
         await completion.waitFor({ state: 'hidden' });
-        assert.equal(await repair.isVisible(), false);
+        assert.equal(await repair.isVisible(), true);
+        await page.waitForFunction(() => document.getElementById('voice-identity-resource-details').open === false);
+        assert.equal(await repair.isVisible(), true);
         assert.deepEqual(pageErrors, []);
         const report = {
             browser: await browser.version(), actualPageAndWorklet: true,

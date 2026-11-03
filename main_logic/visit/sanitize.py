@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Text hygiene for catgirl visits (design OD-23, §3.6.6, §3.8).
+"""Text hygiene for neko visits (design OD-23, §3.6.6, §3.8).
 
 Every function here is pure and synchronous.
 

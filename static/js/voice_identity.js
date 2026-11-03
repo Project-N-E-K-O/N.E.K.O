@@ -154,11 +154,11 @@
         elements.stepTitle = document.getElementById('voice-identity-step-title');
         elements.stepBody = document.getElementById('voice-identity-step-body');
         elements.eyebrow = document.getElementById('voice-identity-eyebrow');
+        elements.processingLocation = document.getElementById('voice-identity-processing-location');
         elements.actions = document.getElementById('voice-identity-actions');
         elements.result = document.getElementById('voice-identity-result');
         elements.resultTitle = document.getElementById('voice-identity-result-title');
         elements.matchPercent = document.getElementById('voice-identity-match-percent');
-        elements.scoreHelp = document.getElementById('voice-identity-score-help');
         elements.resultStatus = document.getElementById('voice-identity-result-status');
         elements.prompt = document.getElementById('voice-identity-prompt');
         elements.progress = typeof document.querySelectorAll === 'function' ? Array.from(document.querySelectorAll('#voice-identity-progress span')) : [];
@@ -667,6 +667,7 @@
             && ['preparing', 'recording', 'checking', 'finalizing'].includes(state.uiPhase);
         if (elements.result) elements.result.hidden = !resultVisible;
         if (elements.eyebrow) elements.eyebrow.hidden = resultVisible;
+        if (elements.processingLocation) elements.processingLocation.hidden = resultVisible;
         if (elements.actions) elements.actions.hidden = resultVisible;
         if (elements.stepTitle) elements.stepTitle.hidden = resultVisible;
         if (elements.stepBody) elements.stepBody.hidden = !active || resultVisible;
@@ -681,12 +682,6 @@
             const hasScore = Number.isFinite(matchPercent);
             elements.matchPercent.hidden = !hasScore;
             elements.matchPercent.textContent = hasScore ? `${matchPercent}%` : '';
-        }
-        if (elements.scoreHelp) {
-            elements.scoreHelp.textContent = translate(
-                'voiceIdentity.verificationScoreHelp',
-                '结果取本次验证录音三个检查点中的最低值，不代表身份认证准确率。',
-            );
         }
         if (elements.resultStatus && resultVisible) {
             elements.resultStatus.textContent = enrollmentCompleteMessage();

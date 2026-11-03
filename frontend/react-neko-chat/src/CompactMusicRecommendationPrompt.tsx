@@ -1,5 +1,5 @@
 import MessageBlockView from './MessageBlockView';
-import { hasProactiveRecommendationContent } from './message-schema';
+import { hasProactiveRecommendationContent, isDirectScreenObservation } from './message-schema';
 import type { ChatMessage, MessageAction } from './message-schema';
 
 export default function CompactMusicRecommendationPrompt({ messages, onAction }: {
@@ -10,6 +10,7 @@ export default function CompactMusicRecommendationPrompt({ messages, onAction }:
     .filter(block => {
       if (block.type !== 'music_recommendation' && block.type !== 'proactive_recommendation') return false;
       if (block.type === 'proactive_recommendation' && !hasProactiveRecommendationContent(block)) return false;
+      if (isDirectScreenObservation(block)) return false;
       if (block.type === 'proactive_recommendation' && block.directDelivery) {
         return !block.dismissed && !['skipped', 'unavailable'].includes(block.state)
           && !messages.slice(index + 1).some(next => next.role === 'user' || (next.role === 'assistant' && next.turnId && next.turnId !== message.turnId

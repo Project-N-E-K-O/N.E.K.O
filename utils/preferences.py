@@ -157,7 +157,7 @@ def save_user_preferences(preferences: List[Dict[str, Any]]) -> bool:
         print(f"保存用户偏好失败: {e}")
         return False
 
-def update_model_preferences(model_path: str, position: Dict[str, float], scale: Dict[str, float], parameters: Optional[Dict[str, float]] = None, display: Optional[Dict[str, float]] = None, rotation: Optional[Dict[str, float]] = None, viewport: Optional[Dict[str, float]] = None, camera_position: Optional[Dict[str, float]] = None) -> bool:
+def update_model_preferences(model_path: str, position: Dict[str, float], scale: Dict[str, float], parameters: Optional[Dict[str, float]] = None, display: Optional[Dict[str, float]] = None, rotation: Optional[Dict[str, float]] = None, viewport: Optional[Dict[str, float]] = None, camera_position: Optional[Dict[str, float]] = None, *, parameters_mode: Optional[str] = None) -> bool:
     """Update one model without racing another preference-file writer."""
     try:
         assert_cloudsave_writable(_config_manager, operation="save", target="user_preferences.json")
@@ -165,7 +165,7 @@ def update_model_preferences(model_path: str, position: Dict[str, float], scale:
         with _locked_preferences_store():
             return _update_model_preferences_unlocked(
                 model_path, position, scale, parameters, display, rotation,
-                viewport, camera_position,
+                viewport, camera_position, parameters_mode=parameters_mode,
             )
     except MaintenanceModeError:
         raise
@@ -174,7 +174,7 @@ def update_model_preferences(model_path: str, position: Dict[str, float], scale:
         return False
 
 
-def _update_model_preferences_unlocked(model_path: str, position: Dict[str, float], scale: Dict[str, float], parameters: Optional[Dict[str, float]] = None, display: Optional[Dict[str, float]] = None, rotation: Optional[Dict[str, float]] = None, viewport: Optional[Dict[str, float]] = None, camera_position: Optional[Dict[str, float]] = None) -> bool:
+def _update_model_preferences_unlocked(model_path: str, position: Dict[str, float], scale: Dict[str, float], parameters: Optional[Dict[str, float]] = None, display: Optional[Dict[str, float]] = None, rotation: Optional[Dict[str, float]] = None, viewport: Optional[Dict[str, float]] = None, camera_position: Optional[Dict[str, float]] = None, *, parameters_mode: Optional[str] = None) -> bool:
     """
     Update preferences of the given model
 
@@ -183,6 +183,7 @@ def _update_model_preferences_unlocked(model_path: str, position: Dict[str, floa
         position (Dict[str, float]): position info {'x': float, 'y': float, 'z': float}
         scale (Dict[str, float]): scale info {'x': float, 'y': float, 'z': float}
         parameters (Optional[Dict[str, float]]): model parameters {'paramId': value}
+        parameters_mode (Optional[str]): 'replace' makes parameters the complete override snapshot
         display (Optional[Dict[str, float]]): display info {'screenX': float, 'screenY': float}, for multi-monitor position restore
         rotation (Optional[Dict[str, float]]): rotation info {'x': float, 'y': float, 'z': float}, for VRM model orientation
         viewport (Optional[Dict[str, float]]): viewport info {'width': float, 'height': float}, for cross-resolution position and scale normalization
@@ -216,6 +217,8 @@ def _update_model_preferences_unlocked(model_path: str, position: Dict[str, floa
         # Add parameters if present
         if parameters is not None:
             new_model_pref['parameters'] = parameters
+        if parameters_mode is not None:
+            new_model_pref['parameters_mode'] = parameters_mode
 
         # Add monitor information if present, for multi-monitor position restoration
         if display is not None:
@@ -241,6 +244,9 @@ def _update_model_preferences_unlocked(model_path: str, position: Dict[str, floa
             elif 'parameters' in existing_pref:
                 # Retain existing parameters
                 new_model_pref['parameters'] = existing_pref['parameters']
+            if parameters_mode is None and 'parameters_mode' in existing_pref:
+                # Position/scale saves must not revive the legacy directory mirror.
+                new_model_pref['parameters_mode'] = existing_pref['parameters_mode']
             # Handle monitor information
             if display is not None:
                 pass  # Already added to new_model_pref above
@@ -346,6 +352,11 @@ def validate_model_preferences(preferences: Dict[str, Any]) -> bool:
     
     # parameters is optional, but must be a dictionary when present
     if 'parameters' in preferences and not isinstance(preferences['parameters'], dict):
+        return False
+
+    if 'parameters_mode' in preferences and (
+        preferences['parameters_mode'] != 'replace' or 'parameters' not in preferences
+    ):
         return False
     
     return True

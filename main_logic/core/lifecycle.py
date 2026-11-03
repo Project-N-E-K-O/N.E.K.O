@@ -832,7 +832,7 @@ class LifecycleMixin:
     @property
     def is_starting(self) -> bool:
         """The window where the start_session coroutine is running but is_active isn't True yet.
-        Externals (e.g. the catgirl-switch path) use this to decide whether to keep
+        Externals (e.g. the neko-switch path) use this to decide whether to keep
         the current manager instance, avoiding replacing a manager mid-initialization
         and leaking an orphan session.
         """

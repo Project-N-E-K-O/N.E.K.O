@@ -115,6 +115,30 @@ async def test_tts_chars_and_requests_are_recorded_as_usage(tmp_path, monkeypatc
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_both_sides_warm_tts_on_activation_before_the_first_line_opens_a_stream(tmp_path, monkeypatch):
+    # The first line's start timeout counts from its first push, TTS cold start included: activation starts the worker first.
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    try:
+        for side in (host, guest):
+            await wait_for(lambda side=side: "warm_speech" in side.host.events)
+            assert side.host.streams == []
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_voice_off_does_not_warm_tts(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch, settings={"visitVoiceEnabled": False})
+    try:
+        await settle()
+        assert "warm_speech" not in host.host.events and "warm_speech" not in guest.host.events
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_family_line_order_reserve_room_persist_enqueue_mirror(tmp_path, monkeypatch):
     host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
     rt = host.rt
@@ -413,7 +437,7 @@ async def test_peer_text_flood_is_acked_dropped_and_ends_the_visit(tmp_path, mon
     try:
         for i in range(200):
             seq += 1
-            # Peer human lines do not count toward the 80-catgirl-line violation guard, only text buckets and visit totals.
+            # Peer human lines do not count toward the 80-neko-line violation guard, only text buckets and visit totals.
             await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
                 "t": "text", "v": 1, "ln": f"g:{100 + i}", "lp": 10 + i, "seq": seq, "sp": "h", "ad": "gh",
                 "rt": "", "wu": False, "final": True, "txt": f"第{i}条", "truncated": False, "i_done": 0},
@@ -789,7 +813,7 @@ async def test_repeated_line_meta_mismatches_end_the_visit(tmp_path, monkeypatch
                 "ad": "hc", "rt": "", "wu": False}, nbytes=200)
         for i in range(n):
             ln, lp = f"g:{400 + i}", 400 + i
-            # Closing as catgirl contradicts the same line's type; discard as protocol error and end on repeated violations.
+            # Closing as neko contradicts the same line's type; discard as protocol error and end on repeated violations.
             await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
                 "t": "text", "v": 1, "ln": ln, "lp": lp, "seq": rt.sequencer.contiguous_seq + 1, "sp": "c",
                 "ad": "hc", "rt": "", "wu": False, "final": True, "txt": "嗯", "truncated": False, "i_done": 1,

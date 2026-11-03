@@ -104,7 +104,7 @@ def _check_staging(staging: Path, camp_filename: str) -> None:
             _checked_file(asset)
 
 
-def repair_source_models() -> None:
+def repair_source_models(*, on_progress=None) -> None:
     """Verify existing files or download fixed assets, never execute an installer.
 
     Each verified model is published atomically. Cancellation can retain a
@@ -126,12 +126,21 @@ def repair_source_models() -> None:
     _check_staging(staging, camp_manifest.filename)
     with resource_file_lock(staging / "repair.lock"):
         _check_staging(staging, camp_manifest.filename)
+        def report(resource, phase):
+            if on_progress is not None:
+                on_progress({"resource": resource, "phase": phase})
+
+        def transfer(resource):
+            return lambda value: on_progress({**value, "resource": resource})
+
+        report("campp", "checking")
         try:
             speaker.verify_campplus_asset(camp_dir, camp_manifest)
         except speaker.CampPlusAssetError:
             camp_stage = _checked_directory(staging / "campp")
             shutil.copyfile(camp_dir / "manifest.json", camp_stage / "manifest.json")
-            source = speaker.prepare_speaker_model(camp_stage)
+            source = speaker.prepare_speaker_model(camp_stage, **({"on_progress": transfer("campp")} if on_progress is not None else {}))
+            report("campp", "verifying")
             pending = camp_dir / (camp_manifest.filename + ".voice-repair.part")
             _checked_file(pending)
             shutil.copyfile(source, pending)
@@ -141,6 +150,7 @@ def repair_source_models() -> None:
 
         # The full CLI also provisions Smart Turn. Enrollment only needs Silero,
         # so pass a manifest containing that reviewed asset to the same preparer.
+        report("silero", "checking")
         try:
             verify_asset(silero_dir, spec)
         except endpointing.AssetManifestError:
@@ -148,7 +158,9 @@ def repair_source_models() -> None:
             (silero_stage / "manifest.json").write_text(
                 json.dumps({"schema_version": 1, "assets": [asdict(spec)]}), encoding="utf-8"
             )
-            source = endpointing.prepare_assets(silero_stage, maximum_asset_bytes=SILERO_MAXIMUM_DOWNLOAD_BYTES)[0]
+            source = endpointing.prepare_assets(silero_stage, maximum_asset_bytes=SILERO_MAXIMUM_DOWNLOAD_BYTES,
+                **({"on_progress": transfer("silero")} if on_progress is not None else {}))[0]
+            report("silero", "verifying")
             pending = silero_dir / (spec.filename + ".voice-repair.part")
             _checked_file(pending)
             shutil.copyfile(source, pending)

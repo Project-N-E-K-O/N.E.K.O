@@ -964,7 +964,7 @@ class UserActivityTracker:
         ``predicate()`` returns True when narration currently has no consumer —
         the sole reader (proactive Phase 2) won't act, so computing the
         emotion-tier guess just burns an LLM call with nobody to read it. The
-        injector owns the exact conditions (today: the catgirl is in
+        injector owns the exact conditions (today: the neko is in
         goodbye-silence, OR no client is connected to deliver a proactive turn
         to); the tracker treats the predicate as opaque. The 20s heartbeat keeps
         ticking the rule-based break-reminder / context-prompt logic regardless;
@@ -1212,7 +1212,7 @@ class UserActivityTracker:
                 if not _proactive_chat_enabled():
                     continue
 
-                # Skip activity_guess LLM while goodbye_silent (idle silent catgirl):
+                # Skip activity_guess LLM while goodbye_silent (idle silent neko):
                 # its sole consumer proactive Phase 2 bails at entry, leaving narration unread.
                 # Rule-based / rate-limited break reminders, context-dialog drain, and topic candidates
                 # already ran; this only saves an expensive pointless emotion-tier call.

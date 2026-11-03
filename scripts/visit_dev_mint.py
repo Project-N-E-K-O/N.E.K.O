@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Dev loopback for catgirl visits: sign identity tickets with a local Ed25519 key.
+"""Dev loopback for neko visits: sign identity tickets with a local Ed25519 key.
 
 The production verifier (``main_logic.visit.identity.verify_identity_ticket``)
 has no "skip verification" branch. The dev loopback only adds one more public

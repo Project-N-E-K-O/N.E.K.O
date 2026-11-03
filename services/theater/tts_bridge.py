@@ -1,4 +1,4 @@
-"""A lightweight bridge reusing N.E.K.O's existing catgirl TTS playback pipeline for theater."""  # noqa: DOCSTRING_CJK
+"""A lightweight bridge reusing N.E.K.O's existing neko TTS playback pipeline for theater."""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 

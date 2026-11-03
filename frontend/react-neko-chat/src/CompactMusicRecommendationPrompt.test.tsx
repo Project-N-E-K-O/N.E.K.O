@@ -21,7 +21,8 @@ const content = (category: 'meme' | 'vision') => parseChatMessage({
 describe('compact recommendation priority', () => {
   afterEach(() => vi.useRealTimers());
 
-  it.each(['meme', 'vision'] as const)('keeps countdown choices visible when a %s arrives, then displays it after a decision', category => {
+  it('keeps countdown choices visible when a meme arrives, then displays it after a decision', () => {
+    const category = 'meme';
     vi.useFakeTimers();
     const message = music();
     const onAction = vi.fn();
@@ -48,9 +49,17 @@ describe('compact recommendation priority', () => {
     { error: true },
     { state: 'accepted' },
   ])('preserves latest-content selection when music has no active countdown: %j', fields => {
-    const view = render(<CompactMusicRecommendationPrompt messages={[music(fields), content('vision')]} />);
-    expect(screen.getByText('New direct content')).toBeInTheDocument();
+    const view = render(<CompactMusicRecommendationPrompt messages={[music(fields), content('meme')]} />);
+    expect(view.container.querySelector('[data-proactive-category="meme"]')).not.toBeNull();
     expect(screen.queryByText('Countdown song')).toBeNull();
+    view.unmount();
+  });
+
+  it('never prompts a direct screen observation, which repeats the spoken line', () => {
+    const view = render(<CompactMusicRecommendationPrompt messages={[content('vision')]} />);
+    expect(view.container.querySelector('.compact-proactive-recommendation-prompt')).toBeNull();
+    view.rerender(<CompactMusicRecommendationPrompt messages={[music({ state: 'skipped' }), content('vision')]} />);
+    expect(view.container.querySelector('.compact-proactive-recommendation-prompt')).toBeNull();
     view.unmount();
   });
 });

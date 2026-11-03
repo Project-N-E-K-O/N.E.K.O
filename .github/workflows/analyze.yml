@@ -126,12 +126,15 @@ jobs:
         with:
           # i18n-sync / docstring-cjk are diff-based and need full history to
           # diff against the merge-base of origin/main. The other steps don't
-          # care, but fetch-depth: 0 has negligible cost on this repo.
+          # care. filter: blob:none keeps the full commit graph but skips the
+          # historical binary assets (hundreds of MB); git show/diff lazily
+          # fetch the few old blobs the checks actually read.
           #
           # The checkout@v5 bump also fixes a credential-handling regression the
           # old @v4 tripped against the runner's git 2.54 on the full-history
           # fetch ("could not read Username", git exit 128).
           fetch-depth: 0
+          filter: blob:none
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -231,8 +234,9 @@ jobs:
         with:
           # The baseline-growth step below diffs scripts/nonascii_asset_baseline.txt
           # against the merge-base, which a shallow clone cannot reach. Same
-          # trade the prompts-i18n job already makes: negligible on this repo.
+          # blobless full-history trade the prompts-i18n job makes.
           fetch-depth: 0
+          filter: blob:none
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
