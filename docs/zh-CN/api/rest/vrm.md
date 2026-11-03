@@ -26,7 +26,7 @@
 
 ### `DELETE /api/model/vrm/model/{model_name}`
 
-按名称删除用户导入的 VRM 模型（当不存在同名内置模型时，同时删除其关联的表情映射配置）。内置/静态模型无法删除（返回 404）。
+按名称删除用户导入的 VRM 模型（当不存在同名内置模型时，同时删除其关联的表情映射配置和物理配置，两者各自处理，一个删除失败不影响另一个）。内置/静态模型无法删除（返回 404）。
 
 ::: warning
 路径遍历攻击由 `safe_vrm_path()` 验证进行防护。
@@ -61,3 +61,19 @@
 ### `GET /api/model/vrm/expressions/{model_name}`
 
 返回通用参考表情列表。处理器**不会**解析指定 VRM 文件；前端加载模型后才发现真实表情。不要把该响应当作模型专属能力探测。
+
+## 物理配置
+
+### `GET /api/model/vrm/physics_profile/{model_name}`
+
+只读接口，读取 `static/vrm/configs/{model_name}_physics.json`，不会创建目录。文件格式、匹配规则与已知限制见 [VRM 模型 · 每模型物理配置](/zh-CN/frontend/vrm#每模型物理配置)。
+
+| 情况 | 状态码 | 响应 |
+| --- | --- | --- |
+| 读到 JSON 对象 | 200 | `{ "success": true, "config": {...}, "source": "file" }`，其中 `NaN` / `Infinity` 已换成 `null` |
+| 文件不存在 | 200 | `{ "success": true, "config": null, "source": "absent" }` |
+| JSON 损坏、不是对象或编码无法解析 | 200 | `{ "success": true, "config": null, "source": "corrupt" }` |
+| 模型名不合法（与上传同一套校验，含路径穿越检查） | 400 | `{ "success": false, "error": "..." }` |
+| 其他错误 | 500 | `{ "success": false, "error": "..." }` |
+
+文件按 `utf-8-sig` 读取，Unity / C# 写出的 BOM 不会被当成损坏。

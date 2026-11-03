@@ -5365,7 +5365,7 @@ def get_new_character_greeting_prompt(lang: str = "zh") -> str:
     )
 
 
-# -- Cat-specific greetings on return to catgirl form. --
+# -- Cat-specific greetings on return to neko form. --
 # Symmetric with GREETING_PROMPT_* but independently timed; select behavior-tier x cat-duration templates.
 # Core maps tiers to awake/CAT1, nap/CAT2, and sleep/CAT3;
 # under three minutes stays silent, awake restlessness starts at 15min, long nap/sleep at 30min.

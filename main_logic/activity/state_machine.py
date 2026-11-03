@@ -496,10 +496,10 @@ class ActivityStateMachine:
         # detects the 5-minute window has expired.
         self._unfinished_thread: dict | None = None
 
-        # Own-app dwell freeze. When the catgirl app is in the foreground,
+        # Own-app dwell freeze. When the neko app is in the foreground,
         # ``update_window`` early-returns so the previous app stays the
         # active window — but the previous app's dwell timer would
-        # otherwise keep ticking, so a brief glance at the catgirl could
+        # otherwise keep ticking, so a brief glance at the neko could
         # artificially push the prior window past dwell thresholds (e.g.
         # focused_work's 90s). On entering own_app we record the freeze
         # start; on the next non-own-app observation we advance
@@ -517,10 +517,10 @@ class ActivityStateMachine:
         work → entertainment) starts a fresh dwell timer.
 
         Special handling:
-          * ``own_app`` (catgirl app itself in foreground) — observation
+          * ``own_app`` (neko app itself in foreground) — observation
             is discarded entirely. Window tracking pretends nothing
             happened so dwell on the previous app keeps accumulating
-            and GPU fallback gaming doesn't trip on the catgirl's own
+            and GPU fallback gaming doesn't trip on the neko's own
             Live2D / VRM rendering.
           * ``private`` — observation IS recorded (state classifier
             needs to see it to emit state='private'), but title /
@@ -895,7 +895,7 @@ class ActivityStateMachine:
         #     high GPU is usually background rendering or AFK farming, not
         #     active engagement we should hesitate to interrupt.
         # Own-app foreground was already filtered upstream in update_window
-        # (no observation recorded), so the catgirl's own GPU usage doesn't
+        # (no observation recorded), so the neko's own GPU usage doesn't
         # reach this branch.
         if (
             win is not None and win.category == 'unknown'

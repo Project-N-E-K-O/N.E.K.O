@@ -89,7 +89,7 @@ from main_routers.cookies_login_router import verify_local_access
 from utils.logger_config import get_module_logger
 
 from .shared_state import get_session_manager
-from main_logic.reply_tail import reply_tail_registry
+from main_logic.reply_tail import ReplyHookUnavailableError, reply_tail_registry
 
 
 def _validate_local_callback_url(url: str) -> str:
@@ -441,6 +441,51 @@ class ReplyTailRequest(BaseModel):
     ai_behavior: Any = "blind"
 
 
+class ReplyHookSubscription(BaseModel):
+    plugin_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,128}$")
+    entry_id: str = Field(pattern=r"^[A-Za-z0-9_.:-]{1,128}$")
+    callback_url: str = Field(min_length=1, max_length=2048)
+    role: str | None = Field(default=None, max_length=256)
+    timeout_seconds: float = Field(default=15.0, gt=0.0, le=15.0)
+
+    @field_validator("callback_url")
+    @classmethod
+    def _check_callback_url_is_local(cls, value: str) -> str:
+        return _validate_local_callback_url(value)
+
+
+class ReplyHookUnsubscribe(BaseModel):
+    plugin_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,128}$")
+    entry_id: str = Field(pattern=r"^[A-Za-z0-9_.:-]{1,128}$")
+
+
+@router.post("/reply-tail/subscribe")
+async def subscribe_reply_completed(body: ReplyHookSubscription) -> dict:
+    async def dispatch(payload: dict) -> None:
+        response = await _get_http_client().post(
+            body.callback_url, json={**payload, "timeout_seconds": body.timeout_seconds},
+            timeout=body.timeout_seconds,
+        )
+        if response.status_code == 404:
+            try:
+                result = response.json()
+            except ValueError:
+                result = None
+            if isinstance(result, dict) and result.get("detail") == {"code": "PLUGIN_NOT_RUNNING"}:
+                raise ReplyHookUnavailableError
+        response.raise_for_status()
+
+    return reply_tail_registry.subscribe(
+        body.plugin_id, body.entry_id, dispatch, role=body.role, timeout=body.timeout_seconds,
+    )
+
+
+@router.post("/reply-tail/unsubscribe")
+async def unsubscribe_reply_completed(body: ReplyHookUnsubscribe) -> dict:
+    removed = reply_tail_registry.unsubscribe(body.plugin_id, body.entry_id)
+    return {"ok": True, "removed": removed}
+
+
 @router.post("/reply-tail/register")
 async def register_reply_tail(body: ReplyTailRequest) -> dict:
     return await reply_tail_registry.register(
@@ -761,6 +806,9 @@ async def unregister_tool(req: ToolUnregisterRequest) -> Dict[str, Any]:
 @router.post("/clear")
 async def clear_tools(req: ToolClearRequest) -> Dict[str, Any]:
     targets = _resolve_target_managers(req.role)
+    # Plugin stop already clears this source, even when it exposes no tools.
+    if req.source.startswith("plugin:"):
+        reply_tail_registry.unsubscribe(req.source[7:], role=req.role)
     # Symmetric unregister: resolve, remove ledger before first await, then clear managers.
     _ledger_forget(
         lambda entry: entry.tool.metadata.get("source") == req.source, req.role

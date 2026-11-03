@@ -949,7 +949,7 @@ def test_snapshot_is_plain_data():
 
 
 def test_older_line_closing_late_does_not_steal_the_newer_reply():
-    # Peer human starts first (smaller lp), peer catgirl starts later but finalizes first: late old text must not cancel the new reply.
+    # Peer human starts first (smaller lp), peer neko starts later but finalizes first: late old text must not cancel the new reply.
     room = make_room("host")
     peer = Peer(room)
     human = peer.new_ref()
@@ -1004,7 +1004,7 @@ def test_older_human_line_closing_late_keeps_the_newer_cat_count():
     peer = Peer(room)
     human = peer.new_ref()
     peer.start(human, 0.0, speaker="human")
-    peer.line(1.0)                                   # Newer catgirl line.
+    peer.line(1.0)                                   # Newer neko line.
     assert room.cat_turns_since_human == 1
     peer.done(human, 5.0, speaker="human")           # Older human line finalizes late.
     assert room.cat_turns_since_human == 1
@@ -1019,7 +1019,7 @@ def test_whole_line_older_human_recounts_cat_lines_after_it():
     peer.done(cat, 2.0)
     assert room.cat_turns_since_human == 1
     peer.done(human, 3.0, speaker="human")
-    assert room.cat_turns_since_human == 1           # Its subsequent catgirl line still counts.
+    assert room.cat_turns_since_human == 1           # Its subsequent neko line still counts.
 
 
 def test_goodbye_only_wrap_up_uses_a_valid_reason():
@@ -1042,10 +1042,10 @@ def test_an_older_human_line_never_moves_the_human_mark_back():
     peer = Peer(room)
     a = peer.new_ref()
     peer.start(a, 0.0, speaker="human")
-    peer.line(1.0)                                   # Catgirl line between two human lines.
+    peer.line(1.0)                                   # Neko line between two human lines.
     b = peer.new_ref()
     peer.start(b, 2.0, speaker="human")
-    peer.line(3.0)                                   # Catgirl line after b.
+    peer.line(3.0)                                   # Neko line after b.
     assert room.cat_turns_since_human == 1
     peer.done(a, 6.0, speaker="human")
     assert room.cat_turns_since_human == 1
@@ -1132,7 +1132,7 @@ def test_remembered_aborted_line_ids_are_bounded():
 
 
 def test_a_started_cat_line_reserves_its_text_slot():
-    # Nineteen sent + one speaking catgirl line: a human cannot take slot 20, or finalizing text becomes message 21.
+    # Nineteen sent + one speaking neko line: a human cannot take slot 20, or finalizing text becomes message 21.
     room = make_room("host")
     own = Own(room)
     for i in range(19):
@@ -1199,7 +1199,7 @@ def test_the_text_of_a_line_cut_off_by_wrap_up_is_accepted():
     {"reply_to": LineRef("h:1", 1, "host")},
 ], ids=["speaker", "addressee", "goodbye", "reply_to"])
 def test_final_metadata_must_agree_with_the_opener(change):
-    # First fragment claims human (interrupting, recording human interjection), finalization switches to catgirl: bypasses six-line rule. Drop this line as anomalous.
+    # First fragment claims human (interrupting, recording human interjection), finalization switches to neko: bypasses six-line rule. Drop this line as anomalous.
     room = make_room("host")
     peer = Peer(room)
     r = peer.new_ref()

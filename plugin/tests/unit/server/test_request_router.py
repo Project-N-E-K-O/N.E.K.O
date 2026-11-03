@@ -130,9 +130,11 @@ async def test_healthy_downlink_answers_every_request_in_a_queued_burst(router, 
     )
 
 
-@pytest.mark.parametrize("reply_delay", [0, 0.01])
+# A send that spans several loop turns, not wall-clock time: a real sleep can
+# outlast _send_busy's 0.25s timeout on a starved runner and drop the reply.
+@pytest.mark.parametrize("reply_turns", [0, 8])
 async def test_saturated_dispatcher_delivers_busy_replies_for_the_whole_burst(
-    router, monkeypatch, reply_delay
+    router, monkeypatch, reply_turns
 ):
     replies = asyncio.Queue()
     release = asyncio.Event()
@@ -142,7 +144,8 @@ async def test_saturated_dispatcher_delivers_busy_replies_for_the_whole_burst(
         return "ok"
 
     async def send(reply):
-        await asyncio.sleep(reply_delay)
+        for _ in range(reply_turns):
+            await asyncio.sleep(0)
         await replies.put(reply)
 
     router._handlers["HELD"] = held
@@ -153,7 +156,8 @@ async def test_saturated_dispatcher_delivers_busy_replies_for_the_whole_burst(
         )
     await router.start()
     try:
-        async with asyncio.timeout(2):
+        # Hang guard only; no step here waits on wall-clock time.
+        async with asyncio.timeout(30):
             busy = [await replies.get() for _ in range(344)]
             assert all(reply["error"]["code"] == "BUSY" for reply in busy)
             release.set()

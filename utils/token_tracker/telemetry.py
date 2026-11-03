@@ -17,6 +17,8 @@
 import hashlib
 import os
 import secrets
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -191,9 +193,23 @@ def _get_anonymous_device_id() -> str:
 
 _TELEMETRY_BRANCH_FILE = ".telemetry_branch"
 
-_TELEMETRY_BRANCHES: tuple = ("main",)
+# proactive_interval_40s: true first launch defaults proactiveChatInterval to 40s instead of the
+# control 15s (all regions; frontend override in static/app/app-settings.js). Earlier 15s vs 20s/25s
+# arms were retired as underpowered (#1696); the much wider gap here is meant to give a readable effect.
+# Existing installs persisted as "main" stay valid, so only new installs are drawn into this split.
+_TELEMETRY_BRANCHES: tuple = ("main", "proactive_interval_40s")
 
 _telemetry_branch_cache: dict = {}
+
+# Serializes the slow path within one process (the three servers share a process and several callers
+# resolve the branch concurrently at first launch).
+_telemetry_branch_lock = threading.Lock()
+
+# An empty branch file usually means another process is between O_EXCL create and write; wait briefly
+# before treating it as corrupt, otherwise both writers can persist different branches.
+_BRANCH_FILE_PEER_WRITE_RETRIES = 10
+
+_BRANCH_FILE_PEER_WRITE_WAIT_S = 0.02
 
 _RETIRED_INTERVAL_ROLLBACK_BRANCH = "proactive_interval_20s"
 
@@ -267,6 +283,14 @@ def _rollback_retired_proactive_interval(branch_path: Path) -> None:
         logger.debug(f"Token tracker: proactive_interval rollback skipped (error): {e}")
 
 def _get_telemetry_branch(config_dir: Path) -> str:
+    """Read or draw the A/B test branch identifier; see ``_resolve_telemetry_branch``."""
+    cached_proc = _telemetry_branch_cache.get(str(config_dir))
+    if cached_proc is not None:
+        return cached_proc
+    with _telemetry_branch_lock:
+        return _resolve_telemetry_branch(config_dir)
+
+def _resolve_telemetry_branch(config_dir: Path) -> str:
     """Read or draw the A/B test branch identifier, persisted under config_dir.
 
     Multi-process cold-start safe: atomic creation with ``O_CREAT | O_EXCL`` guarantees
@@ -326,8 +350,17 @@ def _get_telemetry_branch(config_dir: Path) -> str:
             os.close(fd)
         return _telemetry_branch_cache.setdefault(cache_key, branch)
     except FileExistsError:
-        # Another process wrote first; reread its value so both processes return the same branch
-        peer = _read()
+        # Another process wrote first; reread its value so both processes return the same branch.
+        # An empty file means that writer has not written yet, so wait for it instead of healing.
+        # Judge validity from the same read that ended the wait, so a peer write landing between
+        # two reads is still taken as the peer's branch rather than healed over.
+        raw = p.read_text(encoding="utf-8").strip() if p.exists() else ""
+        for _ in range(_BRANCH_FILE_PEER_WRITE_RETRIES):
+            if raw:
+                break
+            time.sleep(_BRANCH_FILE_PEER_WRITE_WAIT_S)
+            raw = p.read_text(encoding="utf-8").strip() if p.exists() else ""
+        peer = raw if raw in _TELEMETRY_BRANCHES else None
         if peer is not None:
             return _telemetry_branch_cache.setdefault(cache_key, peer)
         # peer=None means the file exists but contains a value outside _TELEMETRY_BRANCHES (truncated/corrupt/

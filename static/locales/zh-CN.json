@@ -3985,6 +3985,7 @@
             "localTracking": "局部跟踪",
             "lockedHoverFade": "锁定悬停淡化",
             "forgeDropEffects": "掉券动画与音效",
+            "modelClickShake": "点击颤动反馈",
             "hideCommunityEntry": "隐藏喵宇宙入口",
             "textGuardMaxLength": "回复长度上限",
             "unlimited": "无限制",

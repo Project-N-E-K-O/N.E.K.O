@@ -38,6 +38,7 @@ from main_logic.proactive_chat.mini_game_invite import (
 from main_logic.proactive_chat.music_recommendation import (
     _record_music_played_through,
 )
+from main_logic.proactive_chat.music_refusal import record_music_card_choice
 from utils.theater_activity import is_theater_active
 from main_routers.recommendation_router import capture_owner, attach_music_recommendation, attach_proactive_recommendations
 
@@ -57,6 +58,7 @@ __all__ = [
     "_resolve_topic_hook_locale",
     "build_proactive_response",
     "proactive_chat",
+    "proactive_music_card_decision",
     "proactive_music_played_through",
 ]
 
@@ -238,13 +240,8 @@ async def proactive_chat(request: Request):
         )
 
 
-@router.post("/proactive/music_played_through")
-async def proactive_music_played_through(request: Request):
-    """Record completion feedback for a recommended song."""
-    validation_error = _validate_local_mutation_request(request)
-    if validation_error is not None:
-        return validation_error
-
+async def _read_music_feedback(request: Request) -> tuple[dict, str]:
+    """Parse a music feedback body and resolve its character name."""
     try:
         data = await request.json()
     except Exception:
@@ -266,13 +263,61 @@ async def proactive_music_played_through(request: Request):
         ) = await config_manager.aget_character_data()
     except Exception:
         her_name_default = ""
-    lanlan_name = (data.get("lanlan_name") or her_name_default or "").strip()
+    lanlan_name = str(data.get("lanlan_name") or her_name_default or "").strip()
+    return data, lanlan_name
+
+
+def _missing_lanlan_name() -> JSONResponse:
+    return JSONResponse(
+        {"success": False, "error": "lanlan_name missing"},
+        status_code=400,
+    )
+
+
+@router.post("/proactive/music_played_through")
+async def proactive_music_played_through(request: Request):
+    """Record completion feedback for a recommended song."""
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
+    _, lanlan_name = await _read_music_feedback(request)
     if not lanlan_name:
-        return JSONResponse(
-            {"success": False, "error": "lanlan_name missing"},
-            status_code=400,
-        )
+        return _missing_lanlan_name()
     cleared = _record_music_played_through(lanlan_name)
     return JSONResponse(
         {"success": True, "cleared": cleared, "lanlan_name": lanlan_name}
+    )
+
+
+@router.post("/proactive/music_card_decision")
+async def proactive_music_card_decision(request: Request):
+    """Count the user's own choice on a music recommendation card.
+
+    Two consecutive skips pause music recommendations; a manual accept breaks
+    the streak. Choices are keyed by card id, so a retry from another window
+    is not a second card. Countdown auto-accepts are not reported by the client.
+    """
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
+    data, lanlan_name = await _read_music_feedback(request)
+    if not lanlan_name:
+        return _missing_lanlan_name()
+    decision = data.get("decision")
+    card_id = data.get("recommendation_id")
+    if decision not in ("skipped", "accepted"):
+        return JSONResponse(
+            {"success": False, "error": "invalid decision"},
+            status_code=400,
+        )
+    if not isinstance(card_id, str) or not card_id or len(card_id) > 100:
+        return JSONResponse(
+            {"success": False, "error": "recommendation_id missing"},
+            status_code=400,
+        )
+    cooldown = record_music_card_choice(lanlan_name, card_id, decision)
+    return JSONResponse(
+        {"success": True, "cooldown": cooldown, "lanlan_name": lanlan_name}
     )

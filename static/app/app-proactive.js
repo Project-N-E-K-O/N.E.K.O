@@ -56,10 +56,8 @@
     const PROACTIVE_LEADER_HEARTBEAT_MS = 5000;
     const PROACTIVE_LEADER_TTL_MS = 15000;
     const PROACTIVE_LEADER_RECHECK_MS = 8000; // 非 leader 的自检周期
-    const PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS = 30;
+    // 打字时下次搭话距最后一次聚焦/输入至少留这么久；剩余时间本来更长的不受影响。
     const PROACTIVE_CHAT_INPUT_MIN_DELAY_MS = 30000;
-    // 连续打字时合并重新排程，避免每个按键都清掉定时器；截止时间本身仍每次刷新。
-    const PROACTIVE_CHAT_INPUT_RESCHEDULE_MIN_MS = 400;
     // 定时器可能略早于截止时间触发。这个余量内视为同一窗口已经结束，避免聚焦状态下多等一轮。
     const PROACTIVE_CHAT_INPUT_SLOWDOWN_SLACK_MS = 250;
 
@@ -107,7 +105,6 @@
     let _proactiveLeaderHeartbeatTimer = null;
     let _wasLeaderLastTick = null; // 用于 leader 状态切换时主动 reschedule
     let _chatInputSlowdownUntil = 0;
-    let _chatInputSlowdownRescheduleAt = 0;
     const _homeTutorialSuppressionSources = new Set();
 
     function isProactiveVisionEnabledNow() {
@@ -439,42 +436,30 @@
         return element.disabled !== true && element.readOnly !== true;
     }
 
-    function _getChatInputSlowdownDelay(baseIntervalSeconds) {
-        const interval = Number(baseIntervalSeconds);
-        if (!isFinite(interval) || interval > PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS) {
-            return 0;
-        }
+    function _getChatInputSlowdownDelay() {
         // 截止时间只在聚焦或实际输入时刷新。复查和再次排程都取剩余时间，
         // 输入框还聚焦也不能把等待重置成完整的 30 秒。
         return Math.max(0, _chatInputSlowdownUntil - Date.now());
     }
 
-    function _markChatInputSlowdownWindow(baseIntervalSeconds) {
-        const interval = Number(baseIntervalSeconds);
-        if (!isFinite(interval) || interval > PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS) {
-            return;
-        }
-        _chatInputSlowdownUntil = Date.now() + Math.max(PROACTIVE_CHAT_INPUT_MIN_DELAY_MS, interval * 1000);
+    function _markChatInputSlowdownWindow() {
+        _chatInputSlowdownUntil = Date.now() + PROACTIVE_CHAT_INPUT_MIN_DELAY_MS;
     }
 
     function _chatInputSlowdownApplies() {
-        return !!(S.proactiveChatEnabled && hasAnyChatModeEnabled()
-            && Number(S.proactiveChatInterval) <= PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS);
+        return !!(S.proactiveChatEnabled && hasAnyChatModeEnabled());
     }
 
-    // 聚焦只打开一次输入窗口。之后每次实际输入都把截止时间往后推，并重新排定判定。
-    // 排程做了短合并，但截止时间每次都更新；到点时若窗口仍未结束，会再判一次而不是直接搭话。
+    // 聚焦或每次实际输入都把截止时间刷新到 30 秒后，不论搭话间隔多长。
+    // 已排好的定时器不重排：剩余时间不足 30 秒的，到点时由
+    // _deferProactiveChatForInputSlowdown 补到窗口结束再判；本来就超过 30 秒的照原时间触发。
     function _refreshChatInputSlowdown(options) {
         if (!_chatInputSlowdownApplies()) return;
-        _markChatInputSlowdownWindow(S.proactiveChatInterval);
+        _markChatInputSlowdownWindow();
         if (!options || options.fromPeer !== true) {
             _proactiveBroadcast('chat_input_focus_slowdown');
         }
-        const now = Date.now();
-        if (S.proactiveChatTimer && now - _chatInputSlowdownRescheduleAt < PROACTIVE_CHAT_INPUT_RESCHEDULE_MIN_MS) {
-            return;
-        }
-        _chatInputSlowdownRescheduleAt = now;
+        if (S.proactiveChatTimer) return;
         scheduleProactiveChat();
     }
 
@@ -1053,7 +1038,7 @@
 
         // 输入放缓 floor 跟 fixed/tier 模式正交：用户在打字时不该被主动搭话打断，
         // 不管处于屏幕专注态还是常规态。两边都套这个下限。
-        var inputSlowdownDelay = _getChatInputSlowdownDelay(baseInterval);
+        var inputSlowdownDelay = _getChatInputSlowdownDelay();
         if (inputSlowdownDelay > 0) {
             delay = Math.max(delay, inputSlowdownDelay);
         }

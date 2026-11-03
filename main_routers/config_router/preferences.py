@@ -309,6 +309,7 @@ async def save_preferences(request: Request):
         
         # Get optional parameters.
         parameters = data.get('parameters')
+        parameters_mode = data.get('parameters_mode')
         # Get optional monitor information for multi-monitor position restoration.
         display = data.get('display')
         # Get optional rotation information for VRM model orientation.
@@ -334,6 +335,7 @@ async def save_preferences(request: Request):
         ok = await asyncio.to_thread(
             update_model_preferences,
             data['model_path'], data['position'], data['scale'], parameters, display, rotation, viewport, camera_position,
+            parameters_mode=parameters_mode,
         )
         if ok:
             return {"success": True, "message": "偏好设置已保存"}

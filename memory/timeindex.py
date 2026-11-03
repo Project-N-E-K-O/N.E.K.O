@@ -363,7 +363,7 @@ def fts_tokens(content: str, stop_names: list[str] | None = None) -> list[str]:
     * Traditional characters fold to Simplified. Two renderings of the
       same sentence otherwise share almost no characters at all, which
       makes every character-level overlap score read them as unrelated.
-    * Stop-names (master / catgirl and their nicknames) are stripped.
+    * Stop-names (master / neko and their nicknames) are stripped.
       They appear in nearly every fact; leaving them in lets two facts
       about entirely different things score as similar.
     * The text is split with the *same* rules as

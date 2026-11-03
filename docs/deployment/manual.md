@@ -8,7 +8,7 @@ cd N.E.K.O
 uv sync
 ```
 
-Python is pinned to 3.11. Run every Python module, script, test, and temporary command through `uv run`.
+Python is pinned to 3.11. Run every Python module, script, test, and temporary command through `uv run`. Rebuilding the frontends needs Node.js `^22.12.0 || >=24.0.0` (the overlap of both frontend `engines` fields; CI builds with Node 22).
 
 ## Build frontend assets
 
@@ -22,7 +22,7 @@ From the repository root:
 ./build_frontend.sh
 ```
 
-Both scripts verify/unpack the built-in Live2D assets (Yui Lolita + Yui Origin), run `npm ci`, build `frontend/plugin-manager/dist/index.html`, and build `static/react/neko-chat/neko-chat-window.iife.js`.
+Both scripts unpack the built-in PNGTuber packs, verify/unpack the built-in Live2D assets (Yui Lolita + Yui Origin), run `npm ci`, build `frontend/plugin-manager/dist/index.html`, and build `static/react/neko-chat/neko-chat-window.iife.js`.
 
 ## Run normally
 
