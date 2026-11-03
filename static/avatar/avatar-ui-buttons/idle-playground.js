@@ -523,8 +523,9 @@ function _normalizeNekoIdleCat1PlaygroundBodyMass(mass) {
 
 function _normalizeNekoIdleCat1PlaygroundInsetRatio(ratio) {
     const normalized = Number(ratio);
-    if (!Number.isFinite(normalized) || normalized <= 0) return 0;
-    return Math.min(normalized, 0.45);
+    if (!Number.isFinite(normalized)) return 0;
+    // Wide action art can extend beyond the button's layout box.
+    return Math.max(-1, Math.min(normalized, 0.45));
 }
 
 function _normalizeNekoIdleCat1PlaygroundVisibleInsetRatios(ratios) {
@@ -536,7 +537,37 @@ function _normalizeNekoIdleCat1PlaygroundVisibleInsetRatios(ratios) {
     };
 }
 
+function _syncNekoIdleCat1PlaygroundCatVisibleInsets(body, button = null) {
+    if (!body || body.id !== 'cat') return;
+    const registry = window.NekoCatResourceRegistry;
+    if (!registry || typeof registry.getAppearanceVisibleInsets !== 'function') return;
+    button = button || body.element?.querySelector?.('.neko-idle-return-btn');
+    const art = button?.querySelector('.neko-idle-return-art');
+    if (!art) return;
+    const source = art.__nekoIdleGifPlaybackBaseSrc || art.getAttribute('src');
+    const ratios = registry.getAppearanceVisibleInsets(source, {
+        facingRight: button.classList.contains('is-cat1-facing-right')
+    });
+    if (!ratios || ratios === body.visibleInsetRatios) return;
+    const previous = body.visibleInsetRatios;
+    body.visibleInsetRatios = ratios;
+    if (previous && body.grounded && !body.dragging && body.width > 0 && body.height > 0) {
+        // An art change keeps its support and velocity; it is not a new fall.
+        body.y += body.height * (ratios.bottom - previous.bottom);
+        if (Math.abs(body.x - body.wallLeft) <= 0.5) {
+            body.x += body.width * (previous.left - ratios.left);
+        } else if (Math.abs(body.x - body.wallRight) <= 0.5) {
+            body.x += body.width * (ratios.right - previous.right);
+        }
+        if (!window.NekoDesktopWindowGravity?.isActive(button)
+            && typeof _setNekoIdleCat1PlaygroundBodyPosition === 'function') {
+            _setNekoIdleCat1PlaygroundBodyPosition(body, body.x, body.y);
+        }
+    }
+}
+
 function _getNekoIdleCat1PlaygroundBodyVisibleInsetsPx(body) {
+    _syncNekoIdleCat1PlaygroundCatVisibleInsets(body);
     const ratios = _normalizeNekoIdleCat1PlaygroundVisibleInsetRatios(body && body.visibleInsetRatios);
     const width = Number(body && body.width);
     const height = Number(body && body.height);
@@ -1408,7 +1439,13 @@ function _stepNekoIdleCat1PlaygroundPhysics(button, now) {
     if (catBody && catBody.grounded && state.phase !== 'dragging') {
         const art = button && button.querySelector('.neko-idle-return-art');
         if (art) {
+            const previousHull = catBody.visibleInsetRatios;
             _setNekoIdleReturnArtSource(art, _getNekoIdleReturnAssetUrl(_NEKO_IDLE_TIER_CAT1), _NEKO_IDLE_TIER_CAT1, { animate: false });
+            // This may be the final RAF; Web has no desktop observer to apply the new hull later.
+            _updateNekoIdleCat1PlaygroundBodyBounds(catBody);
+            if (catBody.visibleInsetRatios !== previousHull) {
+                _setNekoIdleCat1PlaygroundBodyPosition(catBody, catBody.x, catBody.y, { force: true });
+            }
         }
     }
     if (allGrounded && (state.phase === 'dropping' || state.phase === 'ballistic')) {

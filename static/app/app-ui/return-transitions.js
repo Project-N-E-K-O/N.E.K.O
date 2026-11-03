@@ -1301,6 +1301,11 @@
         container.style.pointerEvents = 'none';
         I.applyGoodbyeIdleAppearanceToReturnButton(container);
         positionReturnBallContainer(container, anchorRect, options.edgeAnchor);
+        if (options.captureReturnOrigin) {
+            // 记录限位后的虚拟坐标，且必须早于下面的入场 transform。
+            // 模型放大后中心可能在屏幕外，不能把返回球自动限位当成拖拽。
+            I.savedGoodbyeReturnBallRect = I.toNekoVirtualTransitionRect(container.getBoundingClientRect());
+        }
         container.style.opacity = '0';
         container.style.transform = 'translate3d(0, 8px, 0) scale(0.94)';
         container.style.transition = 'opacity 325ms cubic-bezier(0.22, 1, 0.36, 1), transform 400ms cubic-bezier(0.22, 1, 0.36, 1)';

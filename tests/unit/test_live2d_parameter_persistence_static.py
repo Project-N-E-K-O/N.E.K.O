@@ -147,7 +147,7 @@ def test_parameter_editor_saves_draft_instead_of_runtime_core_values():
 
     assert "currentParameters" not in source
     assert "draftParameters[paramId] = clampedValue" in source
-    assert "draftParameters[parameter.key] = resetValue" in source
+    assert "delete draftParameters[parameter.key]" in source
     assert "buildParametersFromDraft(" in save_source
     assert "draftParameters," in save_source
     assert "coreModel.getParameterValueByIndex(i)" not in save_source
@@ -365,20 +365,23 @@ def test_parameter_catalog_keeps_stable_index_fallback_when_model_ids_are_unavai
 
 def test_parameter_editor_initializes_and_resets_through_canonical_catalog():
     source = PARAMETER_EDITOR_PATH.read_text(encoding="utf-8")
-    record_start = source.index("function recordInitialParameters()")
+    record_start = source.index("function initializeParameterDraft()")
     record_end = source.index("// 获取参数的范围和默认值", record_start)
     record_source = source[record_start:record_end]
     reset_start = source.index("if (resetAllBtn) {")
     reset_end = source.index("function buildParametersFromDraft", reset_start)
     reset_source = source[reset_start:reset_end]
+    reset_function = _extract_js_function(source, "resetParameterOverrides")
 
     assert "manager._buildModelParameterCatalog(coreModel)" in record_source
     assert "manager._normalizeModelParameters(coreModel, rawEffectiveParameters)" in record_source
     assert "coreModel.getParameterId(i)" not in record_source
     assert "draftParameters = {};" in reset_source
-    assert "resetValue = parameter.defaultValue" in reset_source
-    assert "range.hasDefault === true" in reset_source
-    assert "initialParameters[paramId]" not in reset_source
+    assert "resetParameterOverrides(catalog)" in reset_source
+    assert "resetValue = parameter.defaultValue" in reset_function
+    assert "range.hasDefault === true" in reset_function
+    assert "delete draftParameters[parameter.key]" in reset_function
+    assert "initialParameters[" not in reset_function
 
 
 def test_parameter_range_marks_synthetic_zero_as_not_a_model_default():

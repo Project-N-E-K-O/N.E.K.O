@@ -101,7 +101,7 @@ Propensity = Literal[
 # the ``skip_probability`` mechanism's job (probabilistic gate before any
 # tone matters), and conflating "voice" with "presence" muddies both.
 # The one exception is ``witty``: entertainment is only worth interrupting
-# for if the catgirl actually has a funny take, so ``witty`` ships a
+# for if the neko actually has a funny take, so ``witty`` ships a
 # *quality bar* (``ACTIVITY_TONE_QUALITY_BARS``) rendered as one extra
 # line telling the model to [PASS] rather than force a flat line. This is
 # a deliberate-content gate, not a probabilistic one — it rides the same

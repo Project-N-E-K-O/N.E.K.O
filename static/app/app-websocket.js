@@ -6388,7 +6388,7 @@
             if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(false);
             if (typeof window.syncFloatingScreenButtonState === 'function') window.syncFloatingScreenButtonState(false);
 
-            // Auto-reconnect: skip if switching catgirl OR this socket was already
+            // Auto-reconnect: skip if switching neko OR this socket was already
             // replaced by a newer connectWebSocket() call (prevents reconnect storm
             // when the old socket's onclose fires after the switch completes).
             if (!S.isSwitchingCatgirl && S.socket === _thisSocket) {

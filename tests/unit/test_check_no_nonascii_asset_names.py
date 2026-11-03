@@ -923,6 +923,38 @@ def test_missing_merge_base_fails_instead_of_using_the_tip(tmp_path: Path) -> No
 
 
 @pytest.mark.unit
+def test_unreadable_baseline_at_merge_base_fails_instead_of_passing(
+    tmp_path: Path,
+) -> None:
+    """A baseline that exists but cannot be read is not "no baseline".
+
+    CI checks out with --filter=blob:none, so the merge-base copy is fetched
+    lazily; if that fetch fails, returning [] would wave any growth through.
+    Deleting the blob object reproduces the same state: the tree still names
+    the file, its content is gone.
+    """
+    module = _load_script_module()
+    _init_repo(tmp_path)
+    commit = ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm"]
+    _write_baseline(tmp_path, ["static/audio/base.mp3"])
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    subprocess.run(["git", *commit, "base"], cwd=tmp_path, check=True)
+    blob = subprocess.run(
+        ["git", "rev-parse", "HEAD:scripts/nonascii_asset_baseline.txt"],
+        cwd=tmp_path, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    obj = tmp_path / ".git" / "objects" / blob[:2] / blob[2:]
+    obj.chmod(0o644)
+    obj.unlink()
+
+    module.REPO_ROOT = tmp_path
+    module.BASELINE_PATH = tmp_path / "scripts" / "nonascii_asset_baseline.txt"
+    with pytest.raises(SystemExit) as excinfo:
+        module._baseline_growth(tmp_path, "HEAD")
+    assert excinfo.value.code == 2
+
+
+@pytest.mark.unit
 def test_loose_plugin_runtime_artifacts_are_not_reported(tmp_path: Path) -> None:
     """`.db`/`.log` directly under plugin/plugins/ are swept after staging too.
 

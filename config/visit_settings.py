@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Catgirl visit (cross-machine visiting) constants.
+"""Neko visit (cross-machine visiting) constants.
 
 Single source of truth for every number of the visit infrastructure
 (``docs/design/visit-infrastructure.md`` §4.8). Grouped by axis; each
@@ -436,6 +436,16 @@ VISIT_VIDEO_KBPS = 528
 
 VISIT_AUDIO_KBPS = 32
 """Voice track bitrate cap (mono 48 kHz Opus, OD-15 v4): video 528 + voice 32 + data <= 40 stays within 600."""
+
+VISIT_RX_GUARD_RATIO = 1.5
+"""Receiver-side bitrate guard (LiveKit has no server-side per-track cap): inbound video above
+``video_kbps`` x this, or voice above ``VISIT_AUDIO_KBPS`` x this, counts as over the tier.
+Mirrored by ``RX_GUARD_RATIO`` in ``static/visit/transport/loader.js``."""
+
+VISIT_RX_GUARD_WINDOW_S = 10
+"""Seconds the inbound bitrate must stay over the guard before the receiver unsubscribes that
+track and ends the visit with ``peer_protocol_violation`` (local self-protection only, never
+grounds for a ban). Mirrored by ``RX_GUARD_WINDOW_MS`` in ``loader.js``."""
 
 VISIT_DATA_KBPS_MAX = 40
 """Data channel budget (= 5 KB/s)."""

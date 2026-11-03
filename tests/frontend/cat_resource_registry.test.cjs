@@ -124,6 +124,27 @@ test('preload resource group takes precedence over stale session storage', () =>
   assert.equal(window.NekoCatResourceRegistry.selectedVoiceGroupId, 'yui_neko');
 });
 
+test('both resource groups provide stable mirrored collision bounds for every appearance asset', () => {
+  for (const groupId of RESOURCE_GROUPS) {
+    const registry = loadRegistry(undefined, {}, groupId);
+    const manifest = JSON.parse(fs.readFileSync(
+      path.join(PROJECT_ROOT, `static/assets/cat-resources/appearance/${groupId}/manifest.json`), 'utf8'));
+    for (const entry of Object.values(manifest.slots)) {
+      for (const { path: url } of entry.resources) {
+        const hull = registry.getAppearanceVisibleInsets(url);
+        assert.ok(hull, url);
+        const mirrored = registry.getAppearanceVisibleInsets(url, { facingRight: true });
+        assert.equal(mirrored.left, hull.right);
+        assert.equal(mirrored.right, hull.left);
+        assert.equal(mirrored.top, hull.top);
+        assert.equal(mirrored.bottom, hull.bottom);
+        assert.equal(registry.getAppearanceVisibleInsets(`https://localhost${url}?v=1`), hull);
+      }
+    }
+    assert.equal(registry.getAppearanceVisibleInsets('blob:unknown'), null);
+  }
+});
+
 test('compact mirror messages carry wide-art metadata from the active registry', () => {
   const coreSource = fs.readFileSync(
     path.join(PROJECT_ROOT, 'static/avatar/avatar-ui-buttons/core.js'),
@@ -263,6 +284,7 @@ test('capability reads do not consume the random selection pool', () => {
   const registry = loadRegistry(undefined, {
     Math: {
       floor: Math.floor,
+      min: Math.min,
       random() {
         randomCalls += 1;
         return 0;

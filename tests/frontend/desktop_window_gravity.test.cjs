@@ -376,6 +376,166 @@ function attachPlaygroundBody(r, overrides = {}) {
   return body;
 }
 
+function installCatGeometry(r) {
+  vm.runInContext(fs.readFileSync(path.join(avatar, 'cat-resource-registry.js'), 'utf8'), r.context);
+  const source = fs.readFileSync(path.join(avatar, 'idle-playground.js'), 'utf8');
+  for (const name of ['_normalizeNekoIdleCat1PlaygroundInsetRatio',
+    '_normalizeNekoIdleCat1PlaygroundVisibleInsetRatios', '_syncNekoIdleCat1PlaygroundCatVisibleInsets',
+    '_getNekoIdleCat1PlaygroundBodyVisibleInsetsPx']) {
+    const start = source.indexOf(`function ${name}(`);
+    vm.runInContext(source.slice(start, source.indexOf('\n}', start) + 2), r.context);
+  }
+  r.container.querySelector = () => r.button;
+  return r.window.NekoCatResourceRegistry;
+}
+
+test('cat art and facing changes keep the painted edges against the same window walls', () => {
+  const r = runtime();
+  const registry = installCatGeometry(r);
+  const body = attachPlaygroundBody(r, { width: 122, height: 122 });
+  r.art.src = registry.getAppearance('playground.cat1.air', { random: false }).url;
+  r.sample(); r.settle();
+  const floor = 750;
+  for (const slot of ['playground.cat1.air', 'idle.cat1', 'idle.cat2', 'idle.cat3',
+    'movement.cat1.walking', 'action.cat1.eat', 'action.cat1.play_yarn']) {
+    r.art.src = registry.getAppearance(slot, { random: false }).url;
+    for (const mirrored of [false, true]) {
+      r.button.classList.toggle('is-cat1-facing-right', mirrored);
+      r.mutate();
+      assert.equal(r.state().phase, 'resting', `${slot}: changing art preserves support`);
+      r.settle();
+      const hull = registry.getAppearanceVisibleInsets(r.art.src, { facingRight: mirrored });
+      assert.equal(body.visibleInsetRatios, hull);
+      assert.ok(Math.abs(body.y + 122 * (1 - hull.bottom) - floor) < 0.01, `${slot}: feet touch floor`);
+      body.x = -1000;
+      r.window.NekoDesktopWindowGravity.syncBody(body);
+      assert.ok(Math.abs(body.x + 122 * hull.left - 200) < 0.01, `${slot}: left wall`);
+      body.x = 2000;
+      r.window.NekoDesktopWindowGravity.syncBody(body);
+      assert.ok(Math.abs(body.x + 122 * (1 - hull.right) - 800) < 0.01, `${slot}: right wall`);
+      assert.equal(body.vx, 0, 'changing art or facing must not throw the cat');
+      assert.equal(body.vy, 0);
+    }
+  }
+});
+
+test('patched GIF playback retains the base asset hull and wide action art may extend past its layout box', () => {
+  const r = runtime();
+  const registry = installCatGeometry(r);
+  const body = attachPlaygroundBody(r, { width: 122, height: 122 });
+  const url = registry.getAppearance('action.cat1.play_yarn', { random: false }).url;
+  r.art.src = 'blob:patched-gif';
+  r.art.__nekoIdleGifPlaybackBaseSrc = url;
+  const insets = r.context._getNekoIdleCat1PlaygroundBodyVisibleInsetsPx(body);
+  assert.ok(insets.left < 0 && insets.right < 0, '175% art remains part of the collision hull');
+  assert.equal(body.visibleInsetRatios, registry.getAppearanceVisibleInsets(url));
+  const cachedHull = body.visibleInsetRatios;
+  r.context._getNekoIdleCat1PlaygroundBodyVisibleInsetsPx(body);
+  assert.equal(body.visibleInsetRatios, cachedHull, 'unchanged frames keep the same hull identity');
+});
+
+test('changing a desktop cat sprite preserves its support, while a held drag keeps its pointer position', () => {
+  const r = runtime();
+  const registry = installCatGeometry(r);
+  r.art.src = registry.getAppearance('idle.cat1', { random: false }).url;
+  const idle = registry.getAppearanceVisibleInsets(r.art.src);
+  const body = attachPlaygroundBody(r, { width: 122, height: 122, grounded: true,
+    x: -122 * idle.left, wallLeft: -122 * idle.left,
+    y: 900 - 122 * (1 - idle.bottom), vx: 8, vy: 0, visibleInsetRatios: idle });
+  r.art.src = registry.getAppearance('movement.cat1.walking', { random: false }).url;
+  r.context._getNekoIdleCat1PlaygroundBodyVisibleInsetsPx(body);
+  assert.ok(Math.abs(body.x + 122 * body.visibleInsetRatios.left) < 0.001);
+  assert.ok(Math.abs(body.y + 122 * (1 - body.visibleInsetRatios.bottom) - 900) < 0.001);
+  assert.equal(body.vx, 8);
+  assert.equal(body.vy, 0);
+  assert.equal(body.grounded, true);
+  body.dragging = true;
+  const held = { x: body.x, y: body.y };
+  r.art.src = registry.getAppearance('playground.cat1.air', { random: false }).url;
+  r.context._getNekoIdleCat1PlaygroundBodyVisibleInsetsPx(body);
+  assert.deepEqual({ x: body.x, y: body.y }, held);
+});
+
+test('an immediate body write after an art change uses the new hull before MutationObserver runs', () => {
+  const r = runtime();
+  const registry = installCatGeometry(r);
+  const body = attachPlaygroundBody(r, { width: 122, height: 122 });
+  r.art.src = registry.getAppearance('playground.cat1.air', { random: false }).url;
+  r.sample(); r.settle();
+  r.art.src = registry.getAppearance('movement.cat1.walking', { random: false }).url;
+  r.window.NekoDesktopWindowGravity.syncBody(body);
+  assert.equal(r.state().phase, 'resting');
+  assert.ok(Math.abs(body.y + 122 * (1 - body.visibleInsetRatios.bottom) - 750) < 0.001);
+  assert.equal(body.vy, 0);
+});
+
+test('a Web Playground landing applies idle art geometry before its final animation frame stops', () => {
+  for (const side of ['left', 'right']) for (const facingRight of [false, true]) {
+    const r = runtime({ web: true });
+    const registry = installCatGeometry(r);
+    const airUrl = registry.getAppearance('playground.cat1.air', { random: false }).url;
+    const idleUrl = registry.getAppearance('idle.cat1', { random: false }).url;
+    const air = registry.getAppearanceVisibleInsets(airUrl, { facingRight });
+    const idle = registry.getAppearanceVisibleInsets(idleUrl, { facingRight });
+    r.art.src = airUrl;
+    r.button.classList.toggle('is-cat1-facing-right', facingRight);
+    const body = attachPlaygroundBody(r, { width: 122, height: 122,
+      x: side === 'left' ? -122 * air.left : 1200 - 122 * (1 - air.right),
+      y: 900 - 122 * (1 - air.bottom) - 12, visibleInsetRatios: air });
+    const state = r.button.__nekoIdleCat1PlaygroundDropState;
+    Object.assign(state, { token: 1, phase: 'dropping', gravityPxPerSecond2: 2600,
+      maxDeltaMs: 50, lastTickAt: 1000 });
+    Object.assign(r.context, {
+      _getNekoIdleCat1PlaygroundViewportBottomPx: () => 900,
+      _getNekoIdleCat1PlaygroundViewportTopPx: () => 0,
+      _getNekoIdleCat1PlaygroundViewportLeftPx: () => 0,
+      _getNekoIdleCat1PlaygroundViewportRightPx: () => 1200,
+      _shouldNekoIdleCat1PlaygroundBodySettleRotation: () => true,
+      _stepNekoIdleCat1PlaygroundBodyRestRotation: () => false,
+      _isNekoIdleCat1PlaygroundBodyRotating: () => false,
+      _isNekoIdleCat1PlaygroundBodySettlingRotation: () => false,
+      _isNekoIdleCat1PlaygroundBodyRestRotationPending: () => false,
+      _resolveNekoIdleCat1PlaygroundBodyCollisions: () => false,
+      _installNekoIdleCat1PlaygroundPointerListeners: () => {},
+      _getNekoIdleReturnAssetUrl: () => idleUrl,
+      _NEKO_IDLE_CAT1_PLAYGROUND_HORIZONTAL_DAMPING: 0.99,
+      _NEKO_IDLE_CAT1_PLAYGROUND_GROUND_DAMPING: 0.9,
+      _NEKO_IDLE_CAT1_PLAYGROUND_WALL_RESTITUTION: 0.42,
+      _NEKO_IDLE_CAT1_PLAYGROUND_FLOOR_RESTITUTION: 0.52,
+      _NEKO_IDLE_CAT1_PLAYGROUND_FLOOR_REST_SPEED_PX_PER_SEC: 38,
+      _NEKO_IDLE_CAT1_PLAYGROUND_GROUND_STOP_VELOCITY_PX_PER_SEC: 3,
+    });
+    const source = fs.readFileSync(path.join(avatar, 'idle-playground.js'), 'utf8');
+    for (const name of ['_updateNekoIdleCat1PlaygroundBodyBounds',
+      '_setNekoIdleCat1PlaygroundBodyPosition', '_applyNekoIdleCat1PlaygroundBodyRotation',
+      '_stepNekoIdleCat1PlaygroundPhysics']) {
+      const start = source.indexOf(`function ${name}(`);
+      vm.runInContext(source.slice(start, source.indexOf('\n}', start) + 2), r.context);
+    }
+    const journey = fs.readFileSync(path.join(avatar, 'idle-journey-and-presentation.js'), 'utf8');
+    const positionStart = journey.indexOf('function _setNekoIdleCat1ContainerPosition(');
+    vm.runInContext(journey.slice(positionStart, journey.indexOf('\n}', positionStart) + 2), r.context);
+    r.advance(16);
+    r.context._stepNekoIdleCat1PlaygroundPhysics(r.button, 1016);
+    for (let i = 0; i < 120 && state.frame; i++) r.frame();
+    assert.equal(state.frame, 0, 'landing must finish without keeping an extra RAF alive');
+    assert.equal(state.phase, 'settled');
+    assert.equal(r.art.src, idleUrl);
+    assert.equal(body.visibleInsetRatios, idle, 'no later bounds read or observer should be needed');
+    assert.equal(body.grounded, true);
+    assert.equal(body.vx, 0);
+    assert.equal(body.vy, 0);
+    assert.ok(Math.abs(body.y + 122 * (1 - idle.bottom) - 900) < 0.001);
+    assert.ok(Math.abs(body.floorY - body.y) < 0.001);
+    assert.ok(Math.abs(body.x - (side === 'left' ? body.wallLeft : body.wallRight)) < 0.001);
+    const placed = r.container.getBoundingClientRect();
+    assert.ok(Math.abs(placed.y + 122 * (1 - idle.bottom) - 900) <= 0.5);
+    const visibleSide = side === 'left' ? placed.x + 122 * idle.left : placed.x + 122 * (1 - idle.right);
+    assert.ok(Math.abs(visibleSide - (side === 'left' ? 0 : 1200)) <= 0.5);
+    assert.deepEqual(r.resources(), { frames: 0, observers: 0, subscribers: 0 });
+  }
+});
+
 async function installIdleClock(r) {
   const intervals = new Map();
   const { window, context } = r;

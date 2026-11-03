@@ -327,7 +327,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
         _config_manager = get_config_manager()
         characters = await _config_manager.aload_characters()
 
-        # If no character name is specified, use the current catgirl.
+        # If no character name is specified, use the current neko.
         if not catgirl_name:
             catgirl_name = characters.get('当前猫娘', '')
 
@@ -357,7 +357,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
 
         # If no model was found by item_id, search by character name.
         if not model_info and catgirl_name:
-            # Search the catgirl list.
+            # Search the neko list.
             if '猫娘' in characters and catgirl_name in characters['猫娘']:
                 catgirl_data = characters['猫娘'][catgirl_name]
                 saved_model_path = get_reserved(
@@ -589,7 +589,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
 
 @router.put('/catgirl/l2d/{name}')
 async def update_catgirl_l2d(name: str, request: Request):
-    """Update the specified catgirl's model settings (supports Live2D and VRM)."""
+    """Update the specified neko's model settings (supports Live2D and VRM)."""
     try:
         data = await request.json()
         apply_runtime = _config_value_is_enabled(data.get('apply_runtime', True))
@@ -835,11 +835,11 @@ async def update_catgirl_l2d(name: str, request: Request):
         _config_manager = get_config_manager()
         characters = await _config_manager.aload_characters()
 
-        # Ensure the catgirl configuration exists.
+        # Ensure the neko configuration exists.
         if '猫娘' not in characters:
             characters['猫娘'] = {}
 
-        # Ensure the specified catgirl's configuration exists.
+        # Ensure the specified neko's configuration exists.
         if name not in characters['猫娘']:
             return JSONResponse(
                 {'success': False, 'error': '猫娘不存在'},
@@ -1057,7 +1057,7 @@ async def update_catgirl_l2d(name: str, request: Request):
 
 @router.patch('/catgirl/{name}/touch_set')
 async def update_catgirl_touch_set(name: str, request: Request):
-    """Fully replace the touch animation config of the specified catgirl's current model.
+    """Fully replace the touch animation config of the specified neko's current model.
 
     Request body format:
     {
@@ -1135,7 +1135,7 @@ async def update_catgirl_touch_set(name: str, request: Request):
 
 @router.put('/catgirl/{name}/lighting')
 async def update_catgirl_lighting(name: str, request: Request):
-    """Update the specified catgirl's VRM lighting config.
+    """Update the specified neko's VRM lighting config.
 
     Args:
         name: character name

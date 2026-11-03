@@ -533,7 +533,7 @@ class ToolCallingMixin:
         Covers:
         - ``self.session``: the currently active main session
         - ``self.pending_session``: the session prewarming during hot-swap (the
-          window where the new catgirl is built but not yet formally swapped).
+          window where the new neko is built but not yet formally swapped).
           Without syncing it, tools registered via register_tool before
           pending_session takes over would be lost after the hot-swap completes.
 

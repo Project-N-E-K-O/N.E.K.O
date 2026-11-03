@@ -41,7 +41,7 @@ def normalize_galgame_locale(lang: str | None) -> str:
     return normalize_prompt_locale(lang, default='en', simplified='zh', keep_traditional=True)
 
 
-# {lanlan_name} = catgirl display name; {master_name} = chat partner display name.
+# {lanlan_name} = neko display name; {master_name} = chat partner display name.
 GALGAME_OPTION_GENERATION_PROMPT = {
     'zh': """你是一个游戏剧本助手，正在为一名玩家（{master_name}）生成三个不同风格的回复候选，让玩家在与角色（{lanlan_name}）的对话里挑选其中之一发送。
 
@@ -172,7 +172,7 @@ GALGAME_DIALOGUE_FOOTER = {
 # the prompt readable in the model's native language instead of an English
 # "her/you" residue mixing into ja/ko/ru output).
 GALGAME_DEFAULT_LANLAN_PLACEHOLDER = {
-    'zh': '猫娘', 'zh-TW': '貓娘', 'en': 'Catgirl', 'ja': '猫娘', 'ko': '캣걸',
+    'zh': '猫娘', 'zh-TW': '貓娘', 'en': 'Neko', 'ja': '猫娘', 'ko': '캣걸',
     'ru': 'Кошкодевочка', 'es': 'Chica gato', 'pt': 'Garota gato',
 }
 GALGAME_DEFAULT_MASTER_PLACEHOLDER = {

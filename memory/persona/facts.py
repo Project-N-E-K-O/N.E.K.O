@@ -1380,7 +1380,7 @@ class FactsMixin:
         """Return master + lanlan names + their nicknames (``昵称``) — used to strip
         stop-names before any keyword/BM25/extraction step in the memory pipeline.
 
-        ``lanlan_name`` defaults to the currently active catgirl. When given,
+        ``lanlan_name`` defaults to the currently active neko. When given,
         use that character's own ``昵称`` — on this path ``aadd_fact`` etc.
         explicitly know the target character, avoiding misuse of the active
         character's nicknames in multi-character setups.

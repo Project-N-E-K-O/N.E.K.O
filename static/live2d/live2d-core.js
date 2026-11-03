@@ -1192,7 +1192,7 @@ class Live2DManager {
     }
 
     // 保存用户偏好
-    async saveUserPreferences(modelPath, position, scale, parameters, display, viewport) {
+    async saveUserPreferences(modelPath, position, scale, parameters, display, viewport, parametersMode) {
         try {
             // 观看模式只读：viewer 不应把本地拖动覆盖到全局模型布局（也避免向 monitor 的只读端点 POST 触发 405）
             if (window.isViewerMode) {
@@ -1213,6 +1213,7 @@ class Live2DManager {
             // 如果有参数，添加到偏好中
             if (parameters && typeof parameters === 'object') {
                 preferences.parameters = parameters;
+                if (parametersMode) preferences.parameters_mode = parametersMode;
             }
 
             // 如果有显示器信息，添加到偏好中（用于多屏幕位置恢复）

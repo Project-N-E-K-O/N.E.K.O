@@ -1325,7 +1325,7 @@ def test_mark_unfinished_thread_used_honors_threshold_override():
 
 
 def test_own_app_freezes_dwell_timer_on_previous_window():
-    """Brief glance at the catgirl app must NOT artificially extend
+    """Brief glance at the neko app must NOT artificially extend
     the previous window's dwell.
 
     Scenario: user is in VS Code for 60s (below 90s focused_work
