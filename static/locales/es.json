@@ -4436,14 +4436,14 @@
                 "title": "📤 Cargar registros",
                 "desc": "¿Encontró problemas o tiene sugerencias? Haga clic aquí para cargar registros y recibir comentarios ~"
             },
-            "exit": "Salida",
+            "exit": "Salir",
             "complete": {
                 "title": "🎉Tutorial completo!",
                 "desc": "¡Felicitaciones por completar todos los tutoriales! Ahora comprende las características principales de N.E.K.O. ¡Disfruta interactuando con tu chica gato! Para revisar el tutorial, haga clic en \"Restablecer tutorial\" en la configuración ~"
             },
-            "resetPosition": "Restablecer la posición del avatar",
+            "resetPosition": "Restablecer posición del avatar",
             "resetPositionDesc": "Devuelve tu Neko a la posición predeterminada si sale de la pantalla ~",
-            "openChat": "Abrir ventana de chat",
+            "openChat": "Abrir chat",
             "openChatDesc": "Abra una ventana de chat separada para conversaciones de texto ~",
             "important": "IMPORTANTE:",
             "compatibility": "Modo de compatibilidad",
