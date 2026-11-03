@@ -233,6 +233,49 @@ def compute_evidence_snapshot(
     }
 
 
+def merged_evidence_state(sources: list[dict]) -> dict:
+    """Evidence for one entry that replaces ``sources`` by merge.
+
+    Counters take the maximum and the signal / archive clocks the latest
+    (ISO timestamps compare chronologically), so a merge keeps every
+    source's counter-evidence and archive countdown instead of resetting
+    them to defaults (CodeRabbit Major #1392). Shared by the persona merge
+    (refine and introspection) and the introspection reflection merge.
+    """
+    state = {
+        "reinforcement": 0.0,
+        "disputation": 0.0,
+        "user_fact_reinforce_count": 0,
+        "sub_zero_days": 0,
+        "rein_last_signal_at": None,
+        "disp_last_signal_at": None,
+        "sub_zero_last_increment_date": None,
+    }
+    for src in sources:
+        state["reinforcement"] = max(
+            state["reinforcement"], float(src.get("reinforcement", 0) or 0),
+        )
+        state["disputation"] = max(
+            state["disputation"], float(src.get("disputation", 0) or 0),
+        )
+        state["user_fact_reinforce_count"] = max(
+            state["user_fact_reinforce_count"],
+            int(src.get("user_fact_reinforce_count", 0) or 0),
+        )
+        state["sub_zero_days"] = max(
+            state["sub_zero_days"], int(src.get("sub_zero_days", 0) or 0),
+        )
+        for key in (
+            "rein_last_signal_at",
+            "disp_last_signal_at",
+            "sub_zero_last_increment_date",
+        ):
+            value = src.get(key)
+            if value and (state[key] is None or value > state[key]):
+                state[key] = value
+    return state
+
+
 def maybe_mark_sub_zero(entry: dict, now: datetime) -> bool:
     """Background-loop helper; called by `_periodic_archive_sweep_loop`.
 

@@ -4481,6 +4481,7 @@ class FactStore:
         Per RFC §3.4.2 coverage rule:
           - all confirmed + promoted reflections (most recent first)
           - all non-protected persona entries
+          (entries introspection retired are left out of both)
 
         Scale control (§3.4.2 end):
           - When ``new_facts`` is provided, the pool is routed through
@@ -4514,10 +4515,18 @@ class FactStore:
         # from failed pool parts. Let errors raise instead, so drain callers
         # catch and skip marking, retrying next idle round.
         # NegKW caller (memory_server.py) already catches errors independently, unaffected.
+        from memory.introspection import is_permanently_suppressed
+
         if reflection_engine is not None:
             all_refl = await reflection_engine._aload_reflections_full(lanlan_name)
             for r in all_refl:
                 if r.get('status') not in ('confirmed', 'promoted'):
+                    continue
+                if is_permanently_suppressed(r):
+                    # Retired by introspection: no longer worth a slot in
+                    # the evidence prompt. Excluded here, at the source,
+                    # because the rebuilt pool rows do not carry the flag
+                    # and some callers skip the hard filter.
                     continue
                 pool.append({
                     'id': f"reflection.{r.get('id', '')}",
@@ -4556,6 +4565,8 @@ class FactStore:
                     if entry.get('protected'):
                         # protected = character_card; evidence always
                         # inf, so applying signals has no meaning. Skip.
+                        continue
+                    if is_permanently_suppressed(entry):
                         continue
                     pool.append({
                         'id': f"persona.{entity_key}.{entry.get('id', '')}",

@@ -476,6 +476,40 @@ async def test_reflection_suppress_rewrite_and_merge_keep_history(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_reflection_merge_keeps_full_evidence_state(tmp_path):
+    """Same inheritance as the persona merge: a source's disputation and
+    decay clocks survive, so a disputed line is not lifted toward promotion."""
+    env = _install(str(tmp_path))
+    old = (datetime.now() - timedelta(days=20)).isoformat(timespec='seconds')
+    recent = (datetime.now() - timedelta(days=1)).isoformat(timespec='seconds')
+    await _seed_reflections(env.engine, [
+        _reflection('c1', '主人信任小天', rein=1.5, rein_last_signal_at=old,
+                    disputation=0.0, sub_zero_days=0),
+        _reflection('c2', '主人把烦心事讲给小天听', rein=2.0, rein_last_signal_at=recent,
+                    disputation=1.25, disp_last_signal_at=recent,
+                    sub_zero_days=3, sub_zero_last_increment_date=recent[:10],
+                    user_fact_reinforce_count=2),
+    ])
+    fake = _FakeThinking(lambda p: json.dumps([
+        {'action': 'merge', 'ids': [_number(p, '主人信任小天'), _number(p, '主人把烦心事讲给小天听')],
+         'text': '主人遇到烦心事会先告诉小天', 'reason': '同义'},
+    ], ensure_ascii=False), '[]')
+
+    result = await _run(env, fake)
+
+    assert result.applied == 1
+    merged = next(r for r in await env.engine.aload_reflections(NAME)
+                  if r['text'] == '主人遇到烦心事会先告诉小天')
+    assert merged['reinforcement'] == 2.0
+    assert merged['disputation'] == 1.25
+    assert merged['rein_last_signal_at'] == recent
+    assert merged['disp_last_signal_at'] == recent
+    assert merged['sub_zero_days'] == 3
+    assert merged['sub_zero_last_increment_date'] == recent[:10]
+    assert merged['user_fact_reinforce_count'] == 2
+
+
+@pytest.mark.asyncio
 async def test_persona_suppression_is_event_sourced_and_replayable(tmp_path):
     from memory.event_log import EVT_PERSONA_SUPPRESSED, Reconciler
     from memory.evidence_handlers import (
@@ -886,6 +920,29 @@ async def test_permanent_suppression_leaves_recall(tmp_path):
         _tag_tier(reflections, 'reflection') + _tag_tier(left_out, 'persona'),
     )
     assert {o['id'] for o in pool} == {'r_ok', 'ok'}
+
+
+@pytest.mark.asyncio
+async def test_signal_targets_leave_out_suppressed_entries(tmp_path):
+    """The evidence pool rebuilds its rows without the flag and some callers
+    skip the hard filter, so retired entries are dropped where it is built."""
+    env = _install(str(tmp_path))
+    await _seed_persona(env.pm, {'master': [
+        {'id': 'p_live', 'text': '主人喜欢猫'},
+        {'id': 'p_gone', 'text': '主人形成了依赖', **_retired()},
+    ]})
+    await _seed_reflections(env.engine, [
+        _reflection('r_live', '主人养过橘猫', entity='master'),
+        _reflection('r_gone', '两人形成了默契', entity='master', **_retired()),
+    ])
+
+    pool = await env.engine._fact_store._aload_signal_targets(
+        NAME, reflection_engine=env.engine, persona_manager=env.pm,
+    )
+
+    ids = {row['id'] for row in pool}
+    assert {'persona.master.p_live', 'reflection.r_live'} <= ids
+    assert not {'persona.master.p_gone', 'reflection.r_gone'} & ids
 
 
 def test_archive_projection_keeps_the_suppression_flag():

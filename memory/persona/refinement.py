@@ -87,67 +87,28 @@ class RefinementMixin:
 
         Shared by refine ``merge`` and introspection ``merge``.
         """
+        from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
+        from memory.evidence import merged_evidence_state
+
         merged = self._normalize_entry(text)
         # Unique ID (as split), or section_by_id collapses entries.
         merged['id'] = self._refine_persona_id(text)
-        history = []
-        # Inherit all evidence state, not only reinforcement
-        # and user_fact_reinforce_count; otherwise disputation /
-        # rein_last_signal_at / disp_last_signal_at /
-        # sub_zero_days reset to defaults, hiding counterevidence and archive countdowns.
-        # （CodeRabbit Major #1392）。
-        max_rein = 0.0
-        max_disp = 0.0
-        max_user_count = 0
-        max_sub_zero_days = 0
-        latest_rein_signal_at: str | None = None
-        latest_disp_signal_at: str | None = None
-        latest_sub_zero_increment: str | None = None
-        inherited_source = None
-        inherited_source_id = None
-        for src in srcs:
-            history.append({
+        merged['version_history'] = [
+            {
                 'text': src.get('text', ''),
                 'replaced_at': now_iso,
                 'reason': reason,
                 'source_fact_id': None,
-            })
-            max_rein = max(max_rein, float(src.get('reinforcement', 0) or 0))
-            max_disp = max(max_disp, float(src.get('disputation', 0) or 0))
-            max_user_count = max(
-                max_user_count,
-                int(src.get('user_fact_reinforce_count', 0) or 0),
-            )
-            max_sub_zero_days = max(
-                max_sub_zero_days,
-                int(src.get('sub_zero_days', 0) or 0),
-            )
-            # ISO timestamps compare chronologically; take latest.
-            for key, current in (
-                ('rein_last_signal_at', latest_rein_signal_at),
-                ('disp_last_signal_at', latest_disp_signal_at),
-                ('sub_zero_last_increment_date', latest_sub_zero_increment),
-            ):
-                v = src.get(key)
-                if v and (current is None or v > current):
-                    if key == 'rein_last_signal_at':
-                        latest_rein_signal_at = v
-                    elif key == 'disp_last_signal_at':
-                        latest_disp_signal_at = v
-                    else:
-                        latest_sub_zero_increment = v
+            }
+            for src in srcs
+        ][-_VH_MAX:]
+        merged.update(merged_evidence_state(srcs))
+        inherited_source = None
+        inherited_source_id = None
+        for src in srcs:
             if inherited_source is None:
                 inherited_source = src.get('source')
                 inherited_source_id = src.get('source_id')
-        from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
-        merged['version_history'] = history[-_VH_MAX:]
-        merged['reinforcement'] = max_rein
-        merged['disputation'] = max_disp
-        merged['user_fact_reinforce_count'] = max_user_count
-        merged['sub_zero_days'] = max_sub_zero_days
-        merged['rein_last_signal_at'] = latest_rein_signal_at
-        merged['disp_last_signal_at'] = latest_disp_signal_at
-        merged['sub_zero_last_increment_date'] = latest_sub_zero_increment
         merged['source'] = inherited_source or 'unknown'
         merged['source_id'] = inherited_source_id
         return merged

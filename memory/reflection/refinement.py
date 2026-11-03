@@ -41,6 +41,7 @@ from memory._reflection.refine import (
     build_merge_reflection,
     build_split_reflection,
 )
+from memory.evidence import merged_evidence_state
 from memory.introspection import is_permanently_suppressed
 
 
@@ -202,6 +203,10 @@ class RefinementMixin:
                         srcs, [], {'text': act['text']},
                         srcs[0].get('entity') or 'master', now,
                     )
+                    # The refine builder keeps only the top reinforcement;
+                    # dropping a source's disputation or decay clock here
+                    # could lift a disputed line to promotion.
+                    merged.update(merged_evidence_state(srcs))
                     merged['modification_history'] = [
                         {
                             'old_text': src.get('text', ''),
