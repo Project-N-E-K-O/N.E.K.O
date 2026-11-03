@@ -617,7 +617,6 @@ class PinnedFactStore:
                 key = _text_key(w["text"])
                 superseded[key] = max(superseded.get(key, w["withdrawn_at"]), w["withdrawn_at"])
             touched: set[str] = set()
-            removed_here: set[str] = set()
             for index, (candidate, (action, target_id)) in enumerate(zip(candidates, decisions)):
                 by_id = {e["id"]: e for e in live}
                 target = by_id.get(target_id) if target_id else None
@@ -625,15 +624,18 @@ class PinnedFactStore:
                 lifetime_end = noted + candidate["ttl_days"] * _DAY_SECONDS
                 retracted_at = retracted.get(target_id) if target is None and target_id else None
                 # Withdrawn as the decision saw it: already withdrawn in the
-                # snapshot, or by this very batch. An entry that was live in
-                # the snapshot and withdrawn by someone else since is an
-                # outdated view instead, decided again below.
+                # snapshot. An entry that was live in the snapshot and has been
+                # withdrawn since is an outdated view instead, decided again
+                # below (except a removal, which has nothing left to do).
                 withdrawn_in_view = retracted_at is not None and (
-                    expected_revs is None
-                    or target_id not in expected_revs
-                    or target_id in removed_here
+                    expected_revs is None or target_id not in expected_revs
                 )
-                if action in _TARGETED_ACTIONS and withdrawn_in_view:
+                if action in _TARGETED_ACTIONS and (
+                    withdrawn_in_view
+                    # A removal whose target someone else already withdrew has
+                    # nothing left to do; retrying it could pin the cancellation.
+                    or (action == ACTION_REMOVE and retracted_at is not None)
+                ):
                     # Matched to an entry that was withdrawn. Removing it again
                     # does nothing (a second "cancelled" must not pin itself);
                     # a replace / renew given before the withdrawal stays out,
@@ -722,7 +724,6 @@ class PinnedFactStore:
                 elif action == ACTION_REMOVE:
                     history.append(self._history_record(target, "remove", ts, noted_at=noted))
                     retracted[target["id"]] = noted
-                    removed_here.add(target["id"])
                     key = _text_key(target["text"])
                     superseded[key] = max(superseded.get(key, noted), noted)
                     live = [e for e in live if e["id"] != target["id"]]

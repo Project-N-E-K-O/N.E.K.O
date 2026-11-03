@@ -833,6 +833,23 @@ def test_a_target_withdrawn_after_the_snapshot_is_decided_again(tmp_path):
     assert [e["text"] for e in store.get_active(_NAME, now=_T0 + 2 * _DAY)] == ["主人改成交一篇论文"]
 
 
+def test_removing_what_someone_else_already_withdrew_is_not_retried(tmp_path):
+    # Cloud review #3598: the removal's goal is already met; a retry would
+    # see no entry to remove and might pin the cancellation instead.
+    store = _store(tmp_path)
+    exam, snapshot_revs = _exam_withdrawn_after_the_snapshot(store)
+
+    stale: list[int] = []
+    counts = store.apply_decisions(
+        _NAME, [_candidate("主人不用考试了", 3, noted_at=_T0 + 2 * _DAY)],
+        [("remove", exam["id"])], now=_T0 + 2 * _DAY,
+        expected_revs=snapshot_revs, stale_out=stale,
+    )
+
+    assert stale == []
+    assert (counts["skipped"], counts["added"], counts["removed"]) == (1, 0, 0)
+
+
 def test_last_round_never_brings_back_what_a_later_account_withdrew(tmp_path):
     store = _store(tmp_path)
     exam, snapshot_revs = _exam_withdrawn_after_the_snapshot(store)
