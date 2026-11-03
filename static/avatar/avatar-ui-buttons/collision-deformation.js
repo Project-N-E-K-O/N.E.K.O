@@ -91,10 +91,42 @@
         });
     }
 
-    function applyCollisionDeformation(button, sample) {
+    function transformOriginAxisPercent(token, size, fallback) {
+        const value = String(token || '').trim().toLowerCase();
+        if (value === 'left' || value === 'top') return 0;
+        if (value === 'center') return 50;
+        if (value === 'right' || value === 'bottom') return 100;
+        const number = Number.parseFloat(value);
+        if (!Number.isFinite(number)) return fallback;
+        if (value.endsWith('%')) return number;
+        return size > 0 ? number / size * 100 : fallback;
+    }
+
+    function readTransformPivot(button) {
+        const art = button && typeof button.querySelector === 'function'
+            ? button.querySelector('.neko-idle-return-art') : null;
+        if (!art || typeof global.getComputedStyle !== 'function') return { x: 50, y: 50 };
+        try {
+            const style = global.getComputedStyle(art);
+            const tokens = String(style && style.transformOrigin || '').trim().split(/\s+/);
+            const rect = typeof art.getBoundingClientRect === 'function' ? art.getBoundingClientRect() : null;
+            const width = Number(art.offsetWidth) || Number.parseFloat(style && style.width)
+                || Number(rect && rect.width) || 0;
+            const height = Number(art.offsetHeight) || Number.parseFloat(style && style.height)
+                || Number(rect && rect.height) || 0;
+            return {
+                x: transformOriginAxisPercent(tokens[0], width, 50),
+                y: transformOriginAxisPercent(tokens[1], height, 50),
+            };
+        } catch (_) {
+            return { x: 50, y: 50 };
+        }
+    }
+
+    function applyCollisionDeformation(button, sample, pivot = { x: 50, y: 50 }) {
         if (!button || !button.style || !button.classList) return false;
-        const shiftX = (1 - sample.scaleX) * (sample.originX - 50);
-        const shiftY = (1 - sample.scaleY) * (sample.originY - 50);
+        const shiftX = (1 - sample.scaleX) * (sample.originX - pivot.x);
+        const shiftY = (1 - sample.scaleY) * (sample.originY - pivot.y);
         button.classList.add(ACTIVE_CLASS);
         button.style.setProperty('--neko-collision-scale-x', sample.scaleX.toFixed(4));
         button.style.setProperty('--neko-collision-scale-y', sample.scaleY.toFixed(4));
@@ -136,14 +168,16 @@
             visibleInsetRatios,
         });
         if (!button || !sample.active || !Number.isFinite(startedAt)) return false;
+        const pivot = readTransformPivot(button);
         activeDeformations.set(button, {
             owner,
             direction,
             impactVelocityChange,
             startedAt,
             visibleInsetRatios,
+            pivot,
         });
-        return applyCollisionDeformation(button, sample);
+        return applyCollisionDeformation(button, sample, pivot);
     }
 
     function renderCollisionDeformation(button, timestamp, reducedMotion = false,
@@ -165,7 +199,7 @@
             clearCollisionDeformation(button);
             return false;
         }
-        return applyCollisionDeformation(button, sample);
+        return applyCollisionDeformation(button, sample, state.pivot);
     }
 
     const api = Object.freeze({
