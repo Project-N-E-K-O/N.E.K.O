@@ -778,6 +778,14 @@ class TestConversationRecord:
 
 
 class TestMemoryRecord:
+    @pytest.mark.parametrize("raw_value", [None, "scalar", [1, 2]])
+    def test_non_mapping_raw_attribute_preserves_original_object(self, raw_value) -> None:
+        from types import SimpleNamespace
+
+        original = SimpleNamespace(raw=raw_value)
+        record = SdkBusMemoryRecord.from_raw(original)
+        assert record.dump()["value"] is original
+
     def test_from_host_record_preserves_public_fields(self) -> None:
         from plugin.core.bus.memory import MemoryRecord
 

@@ -570,7 +570,7 @@ async def test_start_recovers_after_owner_loop_closes_without_stop(monkeypatch):
         except BaseException as exc:
             errors.append(exc)
 
-    thread = threading.Thread(target=run_old_owner, name="router-closed-owner")
+    thread = threading.Thread(target=run_old_owner, name="router-closed-owner", daemon=True)
     thread.start()
     await asyncio.to_thread(thread.join, 3)
     assert not thread.is_alive() and not errors
