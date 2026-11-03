@@ -71,12 +71,40 @@ def _format_threads(holder_thread_id: int | None) -> str:
     return "".join(parts)
 
 
+def _await_chain(task: asyncio.Task) -> list[traceback.FrameSummary]:
+    """Walk a suspended task's ``cr_await`` chain, outermost frame first.
+
+    ``Task.print_stack`` shows only the outermost coroutine frame; the code
+    actually holding or waiting sits several awaits deeper.
+    """
+    frames = []
+    awaitable: object = task.get_coro()
+    while len(frames) < _MAX_FRAMES_PER_STACK:
+        frame = getattr(awaitable, "cr_frame", None) or getattr(awaitable, "gi_frame", None)
+        if frame is None:
+            break
+        frames.extend(traceback.extract_stack(frame, limit=1))
+        inner = getattr(awaitable, "cr_await", None)
+        if inner is None:
+            inner = getattr(awaitable, "gi_yieldfrom", None)
+        if inner is None:
+            break
+        awaitable = inner
+    return frames
+
+
 def _format_tasks(loop: asyncio.AbstractEventLoop) -> str:
     parts = []
     for task in asyncio.all_tasks(loop):
-        buffer = io.StringIO()
-        task.print_stack(limit=_MAX_FRAMES_PER_STACK, file=buffer)
-        parts.append(f"--- task {task.get_name()}\n{buffer.getvalue()}")
+        frames = _await_chain(task)
+        if frames:
+            stack = "".join(traceback.format_list(frames))
+        else:
+            buffer = io.StringIO()
+            task.print_stack(limit=_MAX_FRAMES_PER_STACK, file=buffer)
+            stack = buffer.getvalue()
+        # The repr names the future the innermost frame is parked on (wait_for=...).
+        parts.append(f"--- task {task.get_name()}: {task!r}\n{stack}")
     return "".join(parts)
 
 

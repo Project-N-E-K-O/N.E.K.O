@@ -166,8 +166,11 @@ async def test_stall_report_lists_event_loop_tasks(fresh_stall_budget, monkeypat
     )
     blocker = asyncio.Event()
 
-    async def parked_holder():
+    async def inner_wait_under_lock():
         await blocker.wait()
+
+    async def parked_holder():
+        await inner_wait_under_lock()
 
     task = asyncio.create_task(parked_holder(), name='parked-holder')
     await asyncio.sleep(0)
@@ -175,7 +178,10 @@ async def test_stall_report_lists_event_loop_tasks(fresh_stall_budget, monkeypat
     blocker.set()
     await task
     assert '--- task parked-holder' in logged[0]
-    assert 'parked_holder' in logged[0]
+    # The whole await chain, not just the task's outermost frame.
+    section = logged[0].split('--- task parked-holder', 1)[1]
+    assert section.index('parked_holder') < section.index('inner_wait_under_lock') < section.index('in wait')
+    assert 'wait_for=<Future pending' in section.split('--- task', 1)[0]
 
 
 @pytest.mark.unit
@@ -229,10 +235,13 @@ async def test_get_recent_history_returns_503_when_the_lock_wait_times_out():
     )
 
     with patch.object(memory_server.runtime, "_config_manager", fake_config), \
-         patch.object(memory_server.runtime, "recent_history_manager", fake_recent):
+         patch.object(memory_server.runtime, "recent_history_manager", fake_recent), \
+         patch.object(memory_server.routes.logger, "warning") as warning:
         response = await memory_server.get_recent_history("test_char")
 
     assert response.status_code == 503
+    # The lock's rate-limited stall report is the only log line; no per-request warning.
+    warning.assert_not_called()
     assert json.loads(response.body)["status"] == "error"
     kwargs = fake_recent.aget_recent_history.await_args.kwargs
     assert 0 < kwargs["lock_timeout"] < 5

@@ -2097,10 +2097,10 @@ async def get_recent_history(lanlan_name: str, language: str | None = None):
         raw_history = await runtime.recent_history_manager.aget_recent_history(
             lanlan_name, lock_timeout=_RECENT_HISTORY_LOCK_TIMEOUT_SECONDS,
         )
-    except RecentFileLockTimeout as e:
+    except RecentFileLockTimeout:
         # The only caller (game pregame) gives up after 5s and falls back to empty history;
-        # failing first keeps the worker thread from waiting on the lock forever.
-        logger.warning(f"[RecentHistory] {lanlan_name} 读取近期历史等锁超时，返回 503: {e}")
+        # failing first keeps the worker thread from waiting on the lock forever. The lock
+        # already logged this wait through the rate-limited stall report.
         return JSONResponse(
             {"status": "error", "message": "recent history is busy"}, status_code=503,
         )
