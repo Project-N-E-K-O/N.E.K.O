@@ -1713,6 +1713,63 @@ function createAnimationSettingsSidePanel(manager, prefix) {
 
     trackingRow.appendChild(hoverFadeRow);
 
+    // ── 点击模型原地颤动反馈开关 ──
+    const clickShakeRow = document.createElement('div');
+    Object.assign(clickShakeRow.style, trackingToggleRowStyle);
+
+    const clickShakeCheckbox = document.createElement('input');
+    clickShakeCheckbox.type = 'checkbox';
+    clickShakeCheckbox.style.display = 'none';
+    clickShakeCheckbox.checked = window.modelClickShakeEnabled !== false; // 默认开启
+
+    const {
+        indicator: clickShakeIndicator,
+        updateStyle: updateClickShakeIndicatorStyle
+    } = manager._createCheckIndicator();
+    Object.assign(clickShakeIndicator.style, { width: '20px', height: '20px', flexShrink: '0' });
+
+    const updateClickShakeRowStyle = () => {
+        updateClickShakeIndicatorStyle(clickShakeCheckbox.checked);
+        updateTrackingToggleRowBackground(clickShakeRow, clickShakeCheckbox.checked);
+        clickShakeRow.setAttribute('aria-checked', String(clickShakeCheckbox.checked));
+    };
+    clickShakeCheckbox.updateStyle = updateClickShakeRowStyle;
+
+    const clickShakeLabel = document.createElement('span');
+    clickShakeLabel.textContent = window.t ? window.t('settings.toggles.modelClickShake') : '点击颤动反馈';
+    clickShakeLabel.setAttribute('data-i18n', 'settings.toggles.modelClickShake');
+    Object.assign(clickShakeLabel.style, { userSelect: 'none', fontSize: '12px', flex: '1' });
+
+    clickShakeRow.appendChild(clickShakeCheckbox);
+    clickShakeRow.appendChild(clickShakeIndicator);
+    clickShakeRow.appendChild(clickShakeLabel);
+    bindTrackingToggleRowHover(clickShakeRow, () => clickShakeCheckbox.checked);
+    updateClickShakeRowStyle();
+
+    const handleClickShakeChange = () => {
+        const enabled = !clickShakeCheckbox.checked;
+        clickShakeCheckbox.checked = enabled;
+        window.modelClickShakeEnabled = enabled;
+        updateClickShakeRowStyle();
+        if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
+    };
+
+    clickShakeRow.addEventListener('click', (e) => {
+        e.stopPropagation();
+        handleClickShakeChange();
+    });
+    clickShakeRow.setAttribute('role', 'switch');
+    clickShakeRow.tabIndex = 0;
+    clickShakeRow.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            e.stopPropagation();
+            handleClickShakeChange();
+        }
+    });
+
+    trackingRow.appendChild(clickShakeRow);
+
     // ── 锻造券掉落动画与音效开关 ──
     const forgeDropEffectsRow = document.createElement('div');
     Object.assign(forgeDropEffectsRow.style, trackingToggleRowStyle);

@@ -3985,6 +3985,7 @@
             "localTracking": "Локальное отслеживание",
             "lockedHoverFade": "Затухание при наведении (заблокировано)",
             "forgeDropEffects": "Эффекты получения билета",
+            "modelClickShake": "Дрожание при нажатии",
             "hideCommunityEntry": "Скрыть вход в Мяу-вселенную",
             "textGuardMaxLength": "Ограничение длины ответа",
             "unlimited": "Без ограничений",

@@ -3985,6 +3985,7 @@
             "localTracking": "Local Tracking",
             "lockedHoverFade": "Locked Hover Fade",
             "forgeDropEffects": "Ticket Drop Effects",
+            "modelClickShake": "Click Shake Feedback",
             "hideCommunityEntry": "Hide nekoverse Entry",
             "textGuardMaxLength": "Response Length Limit",
             "unlimited": "Unlimited",
