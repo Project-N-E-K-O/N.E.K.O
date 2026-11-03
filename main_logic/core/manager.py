@@ -506,7 +506,7 @@ class LLMSessionManager(
 
         # Downstream-consumer gate for activity_guess narration, consumed only by proactive
         # Phase 2. Two cases have no reader, wasting an expensive emotion-tier call:
-        #   ① goodbye_silent (idle catgirl silence): Phase 2 immediately exits;
+        #   ① goodbye_silent (idle neko silence): Phase 2 immediately exits;
         #   ② no online WebSocket (ordinary disconnection / End Session): proactive delivery impossible.
         # Tracker outlives sessions; End Session does not cancel heartbeat (break-reminder / contextual-popup
         # rules must continue), so skip LLM through this gate without consumers. Otherwise after page closure

@@ -2244,6 +2244,9 @@
     }
 
     async function startMicCapture() {
+        if (typeof window.isNekoVisitVoiceBlocked === 'function' && window.isNekoVisitVoiceBlocked()) {
+            return false;
+        }
         // 小剧场使用独立文本输入与 TTS 队列，任一窗口演绎期间都不能重新打开普通聊天麦克风。
         if (window.nekoTheaterRuntime
                 && typeof window.nekoTheaterRuntime.blocksOrdinaryVoice === 'function'

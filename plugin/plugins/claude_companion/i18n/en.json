@@ -1,11 +1,11 @@
 {
   "plugin.name": "Claude Companion",
-  "plugin.description": "When you code with Claude Code in the terminal, automatically detects your activity (edits, debugging, testing, Git operations, etc.) and pushes warm companion messages to your NEKO catgirl partner, so she can care about you and cheer you on in chat.",
+  "plugin.description": "When you code with Claude Code in the terminal, automatically detects your activity (edits, debugging, testing, Git operations, etc.) and pushes warm companion messages to your NEKO partner, so she can care about you and cheer you on in chat.",
   "plugin.short_description": "Warm coding companion, auto-pushes activity status to NEKO",
   "tutorial.title": "Tutorial",
   "tutorial.subtitle": "Step-by-step guide to setting up Claude companion",
   "tutorial.step1.title": "Step 1: What does this plugin do?",
-  "tutorial.step1.content": "This plugin does one simple thing: when you use Claude Code in the terminal, it automatically records what you're doing (which file you edited, what bug you debugged, what code you committed), then quietly tells your NEKO catgirl about it. The catgirl will then care about you and encourage you in the chat dialog, like having a warm companion by your side while you code.",
+  "tutorial.step1.content": "This plugin does one simple thing: when you use Claude Code in the terminal, it automatically records what you're doing (which file you edited, what bug you debugged, what code you committed), then quietly tells your NEKO about it. The neko will then care about you and encourage you in the chat dialog, like having a warm companion by your side while you code.",
   "tutorial.step2.title": "Step 2: Configure Claude Code hooks",
   "tutorial.step2.content": "Find the <code class=\"file\">settings.json</code> file in the <code class=\"path\">C:\\Users\\<span class=\"placeholder\">YourUsername</span>\\.claude</code> directory.",
   "tutorial.step2.detail": "How to do it: <span class=\"highlight\">Right-click settings.json → select \"Edit in Notepad\"</span>, then insert the following content completely (copy and paste):",

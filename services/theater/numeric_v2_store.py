@@ -529,7 +529,7 @@ def _rebind_session_file(
         for key, value in catgirl_binding.items()
     }
     if isinstance(existing_binding, Mapping):
-        # Replay historical Ledger data using the name facts from that Session; a character rename may refresh only the catgirl display fields.
+        # Replay historical Ledger data using the name facts from that Session; a character rename may refresh only the neko display fields.
         refreshed_binding["player_address"] = str(
             existing_binding.get("player_address") or ""
         )
@@ -647,7 +647,7 @@ class NumericV2SessionStore:
         character_id: str,
         legacy_catgirl_name: str = "",
     ) -> NumericV2StoredSession | None:
-        """Read the unique Session for a script and catgirl from the recovery index."""  # noqa: DOCSTRING_CJK
+        """Read the unique Session for a script and neko from the recovery index."""  # noqa: DOCSTRING_CJK
 
         normalized_story_id = str(story_id or "").strip()
         normalized_character_id = str(character_id or "").strip()

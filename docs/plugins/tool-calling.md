@@ -146,7 +146,7 @@ are guarded by `verify_local_access` (only `127.0.0.1` / `::1` /
 | `description` | Description for the LLM. Determines when it gets called. |
 | `parameters` | JSON Schema (OpenAI style). |
 | `callback_url` | Where main_server POSTs when the LLM invokes the tool. |
-| `role` | `null` = register to all catgirls; specific name = only that one. |
+| `role` | `null` = register to all nekos; specific name = only that one. |
 | `source` | Custom source tag, useful for batch `clear` later. |
 | `timeout_seconds` | Per-call timeout (≤300, default 30). |
 
@@ -304,18 +304,18 @@ restarts**. The plugin must handle this:
   startup hook runs `register_with_retry`, restart means plugin restart
   too, so registration happens naturally.
 
-## Switching Catgirls
+## Switching Nekos
 
-Each catgirl has its own `LLMSessionManager` instance, but they share
+Each neko has its own `LLMSessionManager` instance, but they share
 plugin-registered tools (depending on the `role` field):
 
-- `role: null` registers to all catgirls → switching needs no
+- `role: null` registers to all nekos → switching needs no
   re-registration.
-- `role: "小八"` registers only to that catgirl → switching to a
+- `role: "小八"` registers only to that neko → switching to a
   different one means the tool isn't available; you'd need to register
-  for that catgirl separately.
+  for that neko separately.
 
-Switching catgirls **does not restart** main_server, so the registry is
+Switching nekos **does not restart** main_server, so the registry is
 preserved.
 
 ## Same-Process Registration (Advanced)
@@ -385,7 +385,7 @@ top-level: `from plugin.sdk.plugin import llm_tool`.
     description: str = "",          # shown to the LLM
     parameters: dict | None = None, # JSON Schema; default = no args
     timeout: float = 30.0,          # per-call timeout (seconds, ≤ 300)
-    role: str | None = None,        # None = global, or specific catgirl name
+    role: str | None = None,        # None = global, or specific neko name
 )
 ```
 

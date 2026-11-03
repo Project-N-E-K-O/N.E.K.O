@@ -44,7 +44,7 @@ current = config.get_character_data()
 current_async = await config.aget_character_data()
 ```
 
-`get_character_data()` は生のキャラクター辞書を返しません。現在の master と catgirl、有効な persona payload と prompt、名前マッピング、キャラクター別メモリパスを解決し、9 要素の tuple として返します。永続化された生の mapping が必要な場合は `load_characters()` を使います。
+`get_character_data()` は生のキャラクター辞書を返しません。現在の master と neko、有効な persona payload と prompt、名前マッピング、キャラクター別メモリパスを解決し、9 要素の tuple として返します。永続化された生の mapping が必要な場合は `load_characters()` を使います。
 
 キャラクターキャッシュは lock で保護され、ファイル更新時刻を確認します。現在キャラクターの選択が壊れている場合は、最初の有効なキャラクターに修正して書き戻すことがあります。
 

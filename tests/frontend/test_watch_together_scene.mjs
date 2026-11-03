@@ -316,25 +316,55 @@ for(const fail of [false,true]) {
 }
 const exiting=await fixture(false,false,{total_tokens:1});
 await exiting.elements.get('play').onclick();
-let disposed=false,closed=false;
+let disposed=false;
 exiting.game.runtime.end=async()=>{throw Error('shutdown failed');};
 exiting.game.dispose=()=>{disposed=true;};
-window.close=()=>{closed=true;window.closed=true;};
+await window.nekoBeforeWindowClose();
+assert.equal(disposed,false,'failed cleanup preserves the SDK page-exit beacon');
+assert.equal(exiting.elements.get('exit').disabled,true);
+assert.equal(exiting.elements.get('status').textContent,'shutdown failed');
+const rejectedExit=await fixture(false,false,{total_tokens:1});
+await rejectedExit.elements.get('play').onclick();
+let rejectedDisposed=false;
+rejectedExit.game.runtime.end=async()=>{
+  rejectedExit.game.runtime.state='degraded';
+  return {ok:false,data:{ok:false}};
+};
+rejectedExit.game.dispose=()=>{rejectedDisposed=true;};
+await window.nekoBeforeWindowClose();
+assert.equal(rejectedDisposed,false,'a rejected end response also preserves the SDK page-exit beacon');
+const cleanExit=await fixture(false,false,{total_tokens:1});
+await cleanExit.elements.get('play').onclick();
+let cleanDisposed=false;
+cleanExit.game.runtime.end=async()=>{cleanExit.game.runtime.state='ended';};
+cleanExit.game.dispose=()=>{cleanDisposed=true;};
+await window.nekoBeforeWindowClose();
+assert.equal(cleanDisposed,true,'successful cleanup disposes the scene before closing');
+assert.ok(cleanExit.calls.some(call=>call.action==='watch' && call.payload.event?.type==='exit'));
+const slowExit=await fixture(false,false,{total_tokens:1});
+await slowExit.elements.get('play').onclick();
+let finishExit,slowDisposed=false;
+slowExit.game.runtime.end=()=>new Promise(resolve=>{
+  finishExit=()=>{slowExit.game.runtime.state='ended';resolve();};
+});
+slowExit.game.dispose=()=>{slowDisposed=true;};
 const exitTimeout=globalThis.setTimeout;
-let exitFallback;
+let exitDeadline;
 globalThis.setTimeout=(callback,delay,...args)=>{
-  if(delay===100){exitFallback=()=>callback(...args);return 0;}
+  if(delay===1500){exitDeadline=()=>callback(...args);return 0;}
   return exitTimeout(callback,delay,...args);
 };
-try {await exiting.elements.get('exit').onclick();}
-finally {globalThis.setTimeout=exitTimeout;}
-assert.equal(disposed,true);assert.equal(closed,true);
-assert.equal(typeof exitFallback,'function');
-// Run the page-exit callback against its own window before the next fixture
-// replaces browser globals; otherwise its delayed navigation corrupts that URL.
-exitFallback();
-assert.equal(location.href,'http://localhost/watch_together');
-console.log('watch-together scene: stale discovery ignored and failed shutdown still closes');
+try {
+  const closing=window.nekoBeforeWindowClose();
+  await waitFor(()=>finishExit);
+  assert.equal(typeof exitDeadline,'function');
+  exitDeadline();
+  await closing;
+  assert.equal(slowDisposed,false,'a stalled route end cannot block closing or suppress the page-exit beacon');
+  finishExit();
+  await waitFor(()=>slowDisposed);
+} finally {globalThis.setTimeout=exitTimeout;}
+console.log('watch-together scene: exit cleans up, preserves failed teardown for page exit and bounds stalled cleanup');
 let finishCandidate, discoveries=0;
 const exclusions=await fixture(false,false,{total_tokens:1},()=>{
   discoveries++;

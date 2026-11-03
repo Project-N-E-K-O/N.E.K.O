@@ -451,7 +451,7 @@ def test_adapter_and_local_bubble_mark_visit_lines_plain_text():
     render = _function_body(adapter, "renderVisitLine")
     assert "plain_text: true" in render
     role = _function_body(adapter, "visitLineRole")
-    # Peers (visiting catgirl / the other household's human) always use role 'tool'
+    # Peers (visiting neko / the other household's human) always use role 'tool'
     assert "if (!speaker || speaker.self !== true) return 'tool';" in role
     assert set(re.findall(r"'(user|assistant|system|tool|[a-z]+)'", role)) <= {"tool", "user", "assistant", "human"}
     chat = _read(CHAT)

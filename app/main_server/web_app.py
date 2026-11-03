@@ -168,6 +168,14 @@ class CustomStaticFiles(StaticFiles):
 class StaticRootFiles(LegacyStaticAssetAliasMixin, CustomStaticFiles):
     """The repository ``static/`` mount; also answers retired asset URLs."""
 
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        # Windows file associations may classify .mjs as text/plain. Only
+        # repository assets get this override, not user model/mod directories.
+        if path.endswith(".mjs"):
+            response.headers["Content-Type"] = "application/javascript"
+        return response
+
 
 class AvatarToolStaticFiles(CustomStaticFiles):
     """Expose generated media only; private records never enter HTTP space."""
@@ -542,7 +550,7 @@ async def get_card_drop_active_character(
     master_name = ""
     # Community forge used to treat an empty live snapshot as "本体未连接" even
     # when the local ledger/credits were healthy. Fall back to the configured
-    # current catgirl so ticket selection can proceed before Pet avatar sync.
+    # current neko so ticket selection can proceed before Pet avatar sync.
     used_fallback = False
     if not name:
         name, master_name = await _fallback_active_character_identity()
@@ -833,7 +841,7 @@ app.include_router(drawing_guess_router)
 app.include_router(card_assist_router)
 app.include_router(capture_router)
 app.include_router(numeric_theater_router)
-# Catgirl visits: /api/visit (including /api/visit/transport/ws); initiation is gated by NEKO_VISIT_ENABLED, data management is not.
+# Neko visits: /api/visit (including /api/visit/transport/ws); initiation is gated by NEKO_VISIT_ENABLED, data management is not.
 app.include_router(visit_router)
 app.include_router(card_drop_router)  # Must precede the pages fallback router.
 app.include_router(community_oauth_router)

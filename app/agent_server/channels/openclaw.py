@@ -599,7 +599,7 @@ async def dispatch(
                 explicitly_typed = callable(parse_typed) and (
                     parse_typed(result.tool_args.get("original_user_text")) == magic_command
                 )
-            # Proactive turns have **no user**. task_executor replaces intent with the catgirl's latest line
+            # Proactive turns have **no user**. task_executor replaces intent with the neko's latest line
             # before classification, so her casual agreement becomes approval,
             # despite the user saying nothing in that turn (Codex P1). Approval is the sole command that actually
             # executes upstream high-risk actions; always reject it in proactive turns regardless of registry contents.
@@ -666,7 +666,7 @@ async def dispatch(
                 )
             if magic_command == "/stop" and not explicitly_typed:
                 # Imperatives such as 停下来 / 别找了 are identical in everyday conversation; users may be addressing
-                # **the catgirl herself**, especially in roleplay, rather than stopping background tasks. Whole-clause matching
+                # **the neko herself**, especially in roleplay, rather than stopping background tasks. Whole-clause matching
                 # excludes narration (`雨停下来了` does not match), but cannot exclude these imperatives.
                 # This tier therefore additionally requires evidence of an **actually running openclaw task**.
                 #
@@ -741,7 +741,7 @@ async def dispatch(
                 #
                 # Proactive turns are excluded. The reason approval is blocked above is that proactive turns **have no
                 # user**; the same applies here. Invalidation relies on /stop being the user's answer to the
-                # prompt, whereas in proactive turns the user said nothing: the catgirl's own line
+                # prompt, whereas in proactive turns the user said nothing: the neko's own line
                 # entered the classifier. Preventing approval for the user while allowing revocation for them is contradictory.
                 # Here the consequence is **silence**, not extra approval: she removes the window,
                 # then the user's agreement returns directly from the approve gate without _emit_task_result,

@@ -182,7 +182,7 @@ def test_theater_capsule_drops_ordinary_reply_preview_on_takeover(
     mock_page: Page,
     running_server: str,
 ):
-    """When theater owns the capsule, do not continue displaying the catgirl's previous normal-chat reply."""  # noqa: DOCSTRING_CJK
+    """When theater owns the capsule, do not continue displaying the neko's previous normal-chat reply."""  # noqa: DOCSTRING_CJK
 
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
     mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
@@ -1212,7 +1212,7 @@ def test_theater_capsule_rebuilds_committed_history_after_idempotent_retry(
     mock_page: Page,
     running_server: str,
 ):
-    """If commit succeeds but the response is lost, retry snapshots must restore the committed catgirl reply."""  # noqa: DOCSTRING_CJK
+    """If commit succeeds but the response is lost, retry snapshots must restore the committed neko reply."""  # noqa: DOCSTRING_CJK
 
     input_ids: list[str] = []
     first_response_lost = {"value": False}

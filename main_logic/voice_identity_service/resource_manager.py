@@ -17,6 +17,7 @@ import time
 from typing import Callable
 import uuid
 from utils.asyncio_retirement import await_retirement
+from config.resource_file_lock import ResourceFileLockBusy
 
 from config.voice_wake_word import DEFAULT_WAKE_WORD_KEYWORDS, wake_word_model_dir, wake_word_preference
 from main_logic.asr_client.endpointing.asset_manifest import AssetManifestError, resolve_verified_assets
@@ -29,6 +30,10 @@ from main_logic.voice_input.wake_word.sherpa_backend import (
     SUPPORTED_RUNTIME_VERSION, SherpaWakeWordConfig, validate_wake_word_resources,
 )
 from main_logic.voice_input.wake_word.errors import WakeWordFailureReason, safe_wake_word_reason
+from .runtime_installation import (
+    RuntimeBundleError, load_runtime, runtime_present, runtime_repair_supported,
+    stage_runtime, publish_runtime, runtime_version_published, runtime_cache_root,
+)
 
 from .audio_contract import OWNER_CAMPPLUS_DESKTOP_CONTRACT_ID
 from .enrollment import (
@@ -38,9 +43,31 @@ from .enrollment_audio import EnrollmentAudioNormalizationError, EnrollmentAudio
 from .state import VoiceIdentityEffectiveReason
 from .preference_worker import save_preference_worker
 from .publication_worker import publish_resource_worker
+from .source_model_repair import SourceModelRepairUnavailable, source_model_repair_available
 
 MAX_TRIAL_PCM_BYTES = 48_000 * 3 * 2
+# A microphone check only needs a short human utterance (10 × 32 ms).
+# Formal enrollment keeps the validator's 47-window default.
+TRIAL_MINIMUM_SPEECH_WINDOWS = 10
 RESOURCE_STATES = frozenset({"unchecked", "ready", "missing", "unavailable"})
+RESOURCE_PROGRESS_PHASES = frozenset({"checking", "downloading", "verifying", "loading", "refreshing", "complete"})
+RESOURCE_PROGRESS_NAMES = frozenset({"campp", "silero", "noise_reduction", "wake_model", "wake_runtime"})
+
+
+def _validated_progress(value: dict) -> dict:
+    if not isinstance(value, dict) or not isinstance(value.get("phase"), str) or value["phase"] not in RESOURCE_PROGRESS_PHASES:
+        raise VoiceResourceError("resource_worker_failed")
+    resource = value.get("resource")
+    if resource is not None and (not isinstance(resource, str) or resource not in RESOURCE_PROGRESS_NAMES):
+        raise VoiceResourceError("resource_worker_failed")
+    received, total, attempt = value.get("downloaded_bytes"), value.get("total_bytes"), value.get("attempt")
+    if (received is not None and (type(received) is not int or not 0 <= received <= 2 ** 40)
+            or total is not None and (type(total) is not int or not 0 < total <= 2 ** 40)
+            or attempt is not None and (type(attempt) is not int or not 1 <= attempt <= 100)
+            or value["phase"] == "downloading" and received is None
+            or received is not None and total is not None and received > total):
+        raise VoiceResourceError("resource_worker_failed")
+    return {"phase": value["phase"], "resource": resource, "downloaded_bytes": received, "total_bytes": total, "attempt": attempt}
 
 
 class VoiceResourceError(RuntimeError):
@@ -54,7 +81,7 @@ def _resource(state: str, reason: str | None, required: bool) -> dict:
 
 
 async def _check_audio(pcm16: bytes, nr_enabled: bool) -> dict:
-    validator = SileroEnrollmentSpeechValidator()
+    validator = SileroEnrollmentSpeechValidator(minimum_speech_windows=TRIAL_MINIMUM_SPEECH_WINDOWS)
     normalized = b""
     try:
         normalizer = EnrollmentAudioNormalizer(nr_enabled=nr_enabled)
@@ -77,13 +104,18 @@ async def _check_audio(pcm16: bytes, nr_enabled: bool) -> dict:
 async def _prepare_wake(path: Path) -> None:
     # This function runs only in a disposable resource process. Do not spawn a
     # nested detector child which could survive cancellation of that process.
-    validate_wake_word_resources(SherpaWakeWordConfig(model_dir=str(path), keywords=DEFAULT_WAKE_WORD_KEYWORDS))
+    validate_wake_word_resources(SherpaWakeWordConfig(model_dir=str(path), keywords=DEFAULT_WAKE_WORD_KEYWORDS,
+                                                   runtime_cache_dir=str(runtime_cache_root())))
 
 
-async def _prepare_resources(nr_enabled: bool, wake_path: str | None) -> dict:
+async def _prepare_resources(nr_enabled: bool, wake_path: str | None, *, on_progress=None) -> dict:
     from main_logic.asr_client.speaker_shadow.campplus import CampPlusEmbeddingModel
     from utils.audio_processor import AudioProcessor
     result = {}
+    def report(resource):
+        if on_progress is not None:
+            on_progress({"phase": "loading", "resource": resource})
+    report("campp")
     model = CampPlusEmbeddingModel()
     try:
         result["campp"] = _resource("ready" if await asyncio.to_thread(model.load) else "unavailable", None, True)
@@ -91,12 +123,14 @@ async def _prepare_resources(nr_enabled: bool, wake_path: str | None) -> dict:
             result["campp"]["reason"] = "model_unavailable"
     finally:
         await asyncio.to_thread(model.close)
+    report("silero")
     validator = SileroEnrollmentSpeechValidator()
     try:
         ready = await validator.load()
         result["silero"] = _resource("ready" if ready else "unavailable", None if ready else "model_unavailable", True)
     finally:
         await validator.close()
+    report("noise_reduction")
     processor = AudioProcessor(noise_reduce_enabled=nr_enabled)
     try:
         processor.process_chunk(b"\0" * 960)
@@ -104,8 +138,9 @@ async def _prepare_resources(nr_enabled: bool, wake_path: str | None) -> dict:
         result["noise_reduction"] = _resource("ready" if ready else "unavailable", None if ready else "audio_processing_unavailable", nr_enabled)
     finally:
         processor.close()
+    report("wake_runtime")
     try:
-        import sherpa_onnx
+        sherpa_onnx = load_runtime()
         ready = (sherpa_onnx.__version__ == SUPPORTED_RUNTIME_VERSION
                  and sherpa_onnx.version == SUPPORTED_RUNTIME_VERSION)
         result["wake_runtime"] = _resource("ready" if ready else "unavailable",
@@ -113,6 +148,7 @@ async def _prepare_resources(nr_enabled: bool, wake_path: str | None) -> dict:
     except Exception as exc:
         result["wake_runtime"] = _resource("unavailable", safe_wake_word_reason(exc), False)
     if wake_path:
+        report("wake_model")
         try:
             await _prepare_wake(Path(wake_path))
         except Exception as exc:
@@ -128,26 +164,45 @@ async def _prepare_resources(nr_enabled: bool, wake_path: str | None) -> dict:
 
 def _resource_worker(connection: Connection, kind: str, nr_enabled: bool, wake_path: str | None, pcm16: bytes):
     """Disposable worker makes native hangs, cancellation and shutdown bounded."""
+    def report(value):
+        connection.send({"progress": value})
     try:
-        if kind in {"audio", "prepare"}:
+        if kind in {"audio", "prepare", "repair", "repair-prepare"}:
             from utils import audio_processor
             audio_processor.DEBUG_SAVE_AUDIO = False
-        if kind == "download":
-            import sherpa_onnx
+        if kind == "runtime-check":
+            try:
+                load_runtime()
+            except Exception:
+                result = {"ready": False}
+            else:
+                result = {"ready": True}
+        elif kind == "runtime-stage":
+            result = stage_runtime(root=Path(wake_path), on_progress=report)
+        elif kind == "runtime-publish":
+            result = publish_runtime(Path(wake_path), pcm16.decode("ascii"))
+        elif kind == "download":
+            sherpa_onnx = load_runtime()
             if (sherpa_onnx.__version__ != SUPPORTED_RUNTIME_VERSION
                     or sherpa_onnx.version != SUPPORTED_RUNTIME_VERSION):
                 raise VoiceResourceError(WakeWordFailureReason.RUNTIME_FIX_REQUIRED.value)
             def validate(path):
                 asyncio.run(_prepare_wake(path))
-            directory = install_bundle(Path(wake_path), validate=validate, publish=False)
+            directory = install_bundle(Path(wake_path), validate=validate, publish=False, on_progress=report)
             result = {"version": directory.name}
         else:
-            result = asyncio.run(_check_audio(pcm16, nr_enabled) if kind == "audio" else _prepare_resources(nr_enabled, wake_path))
+            if kind == "repair":
+                from .source_model_repair import repair_source_models
+                repair_source_models(on_progress=report)
+            result = asyncio.run(_check_audio(pcm16, nr_enabled) if kind == "audio" else _prepare_resources(nr_enabled, wake_path,
+                **({"on_progress": report} if kind in {"repair", "repair-prepare"} else {})))
         connection.send({"ok": True, "result": result})
     except Exception as exc:
-        reason = (exc.code if isinstance(exc, (WakeWordBundleError, VoiceResourceError)) else
+        reason = (exc.code if isinstance(exc, (WakeWordBundleError, RuntimeBundleError, VoiceResourceError, SourceModelRepairUnavailable)) else
+                  "resource_operation_busy" if isinstance(exc, ResourceFileLockBusy) else
+                  "resource_model_repair_failed" if kind == "repair" and isinstance(exc, (CampPlusAssetError, AssetManifestError)) else
                   "resource_storage_unavailable" if isinstance(exc, OSError) else
-                  "resource_worker_failed" if kind in {"audio", "prepare"} else safe_wake_word_reason(exc))
+                  "resource_worker_failed" if kind in {"audio", "prepare", "repair", "repair-prepare"} else safe_wake_word_reason(exc))
         connection.send({"ok": False, "reason": reason})
     finally:
         pcm16 = b""
@@ -166,7 +221,8 @@ async def _stop_process(process) -> None:
     process.close()
 
 
-async def _run_worker(kind: str, nr_enabled: bool, wake_path: str | None = None, pcm16: bytes = b"", timeout: float = 30.0) -> dict:
+async def _run_worker(kind: str, nr_enabled: bool, wake_path: str | None = None, pcm16: bytes = b"", timeout: float = 30.0,
+                      *, on_progress: Callable[[dict], None] | None = None) -> dict:
     context = multiprocessing.get_context("spawn")
     parent, child = context.Pipe(duplex=False)
     target = {"preference": save_preference_worker, "publish": publish_resource_worker}.get(kind, _resource_worker)
@@ -185,26 +241,35 @@ async def _run_worker(kind: str, nr_enabled: bool, wake_path: str | None = None,
         child.close()
         deadline = asyncio.get_running_loop().time() + timeout
         while True:
+            if asyncio.get_running_loop().time() >= deadline:
+                raise VoiceResourceError("resource_prepare_timeout")
             try:
                 ready = parent.poll()
             except (OSError, EOFError) as exc:
                 raise VoiceResourceError("resource_worker_failed") from exc
             if ready:
-                break
+                try:
+                    message = parent.recv()
+                    if not isinstance(message, dict):
+                        raise VoiceResourceError("resource_worker_failed")
+                    if set(message) == {"progress"}:
+                        progress = _validated_progress(message["progress"])
+                        if on_progress is not None:
+                            on_progress(progress)
+                        # Progress neither extends the deadline nor starves cancellation.
+                        await asyncio.sleep(0)
+                        continue
+                    if not message["ok"]:
+                        raise VoiceResourceError(message["reason"])
+                    result = message["result"]
+                    break
+                except (EOFError, OSError, ValueError, KeyError, TypeError) as exc:
+                    raise VoiceResourceError("resource_worker_failed") from exc
             if not process.is_alive():
                 raise VoiceResourceError("resource_worker_failed")
             if asyncio.get_running_loop().time() >= deadline:
                 raise VoiceResourceError("resource_prepare_timeout")
             await asyncio.sleep(0.025)
-        try:
-            message = parent.recv()
-            if not message["ok"]:
-                raise VoiceResourceError(message["reason"])
-            # Return after the finally below: Nuitka 4.3 drops a value returned
-            # from a try whose finally contains a while loop (frozen gets None).
-            result = message["result"]
-        except (EOFError, OSError, ValueError, KeyError, TypeError) as exc:
-            raise VoiceResourceError("resource_worker_failed") from exc
     finally:
         parent.close()
         child.close()
@@ -216,6 +281,7 @@ async def _run_worker(kind: str, nr_enabled: bool, wake_path: str | None = None,
                 except asyncio.CancelledError:
                     continue
             cleanup.result()
+    # Return after finally: frozen builds must not drop the worker result.
     return result
 
 
@@ -233,10 +299,15 @@ class _Operation:
     committed: bool = False
     refresh_task: asyncio.Task | None = None
     reservation_deadline: float | None = None
+    progress_detail: dict | None = None
+    source_repair: bool = True
 
     def snapshot(self) -> dict:
+        detail = self.progress_detail
+        progress = (detail["downloaded_bytes"] / detail["total_bytes"]
+                    if self.state == "running" and detail and detail["phase"] == "downloading" and detail["total_bytes"] else None)
         return {"operation_id": self.operation_id, "kind": self.kind, "state": self.state, "reason": self.reason,
-                "progress": None, "result": deepcopy(self.result), "committed": self.committed}
+                "progress": progress, "progress_detail": deepcopy(detail), "result": deepcopy(self.result), "committed": self.committed}
 
 
 class VoiceResourceManager:
@@ -285,7 +356,9 @@ class VoiceResourceManager:
         # overlap publication, but must never certify a stale prepared version.
         if revision == self._prepared_revision and self._prepared_noise_reduction is nr:
             for name, value in self._prepared.items():
-                if snapshot["resources"][name]["state"] == "unchecked" or name == "noise_reduction":
+                wake_failure = (name in {"wake_runtime", "wake_model"} and value["state"] == "unavailable"
+                                and snapshot["resources"][name]["reason"] != WakeWordFailureReason.PREFERENCE_UNAVAILABLE.value)
+                if snapshot["resources"][name]["state"] == "unchecked" or name == "noise_reduction" or wake_failure:
                     snapshot["resources"][name].update(deepcopy(value), required=snapshot["resources"][name]["required"])
         snapshot["can_enroll"] = all(snapshot["resources"][name]["state"] == "ready" for name in ("campp", "silero", "noise_reduction"))
         snapshot["operation"] = self._current.snapshot() if self._current is not None else None
@@ -325,7 +398,7 @@ class VoiceResourceManager:
             resources["wake_model"] = _resource("unavailable", WakeWordFailureReason.PREFERENCE_UNAVAILABLE.value, True)
         # Discovery never imports native code, and works in frozen builds which
         # can omit wheel metadata. prepare checks Python AND native versions.
-        present_runtime = importlib.util.find_spec("sherpa_onnx") is not None
+        present_runtime = runtime_present() or importlib.util.find_spec("sherpa_onnx") is not None
         resources["wake_runtime"] = _resource("unchecked" if present_runtime else "missing",
                                                  None if present_runtime else WakeWordFailureReason.RUNTIME_MISSING.value, enabled)
         packaged = getattr(sys, "frozen", False) or "__compiled__" in globals()
@@ -334,7 +407,12 @@ class VoiceResourceManager:
         )
         for name, value in resources.items():
             value["repair_action"] = "app_repair" if packaged else ("source_runtime" if name == "wake_runtime" else "source_models")
+        if runtime_repair_supported():
+            resources["wake_runtime"]["repair_action"] = "prebuilt_runtime"
         return {"resources": resources, "wake_enabled": enabled, "wake_configured": bool(explicit),
+                "can_repair_models": not packaged and source_model_repair_available()
+                    and any(resources[name]["state"] == "missing" for name in ("campp", "silero")),
+                "can_repair_wake_runtime": runtime_repair_supported(),
                 "repair_action": repair_action,
                 "wake_managed": preference["managed"], "wake_preference_reason": (
                     None if preference["reason"] is None else WakeWordFailureReason.PREFERENCE_UNAVAILABLE.value),
@@ -357,8 +435,13 @@ class VoiceResourceManager:
     def reserve(self, kind: str) -> dict:
         if self._closed:
             raise VoiceResourceError("runtime_degraded")
-        if kind not in {"prepare", "download"}:
+        if kind not in {"prepare", "download", "repair"}:
             raise VoiceResourceError("invalid_resource_operation")
+        # Snapshot discovery and the disposable worker validate manifests off
+        # the event loop; reservation keeps its existing installation-only gate.
+        if (kind == "repair" and not source_model_repair_available(validate_manifests=False)
+                and not runtime_repair_supported()):
+            raise VoiceResourceError("resource_repair_unavailable")
         if self._current is not None and self._current.task is not None and not self._current.task.done():
             raise VoiceResourceError("resource_operation_busy")
         self._expire_reservations()
@@ -370,6 +453,8 @@ class VoiceResourceManager:
                 raise VoiceResourceError("resource_operation_busy")
             del self._operations[removable]
         operation = _Operation(str(uuid.uuid4()), kind, state="reserved", reservation_deadline=self._now() + 30)
+        if kind == "repair":
+            operation.source_repair = source_model_repair_available(validate_manifests=False)
         self._operations[operation.operation_id] = operation
         return operation.snapshot()
 
@@ -403,13 +488,16 @@ class VoiceResourceManager:
 
     async def _execute(self, operation: _Operation):
         operation.state = "running"
+        def update_progress(value):
+            if self.owns(operation.operation_id) and operation.state == "running":
+                operation.progress_detail = _validated_progress(value)
         try:
             if operation.kind == "download":
                 if platform.system() != "Windows" or platform.machine().lower() not in {"amd64", "x86_64"}:
                     raise VoiceResourceError(WakeWordFailureReason.PLATFORM_UNSUPPORTED.value)
                 if self._cache_root is None:
                     raise VoiceResourceError("resource_storage_unavailable")
-                result = await _run_worker("download", False, str(self._cache_root), timeout=180)
+                result = await _run_worker("download", False, str(self._cache_root), timeout=180, on_progress=update_progress)
                 if not self.owns(operation.operation_id):
                     raise VoiceResourceError("operation_cancelled")
                 # No await separates the ownership fence from this boundary.
@@ -427,6 +515,11 @@ class VoiceResourceManager:
             else:
                 nr = self._noise_reduction_snapshot()
                 preference = await asyncio.to_thread(wake_word_preference, self._cache_root)
+                wake_failures = {}
+                if operation.kind == "repair" and preference["reason"] is None and preference["enabled"]:
+                    wake_failures = await self._repair_wake_resources(operation, update_progress)
+                    if not self.owns(operation.operation_id):
+                        raise VoiceResourceError("operation_cancelled")
                 path = wake_word_model_dir()
                 cache_reason = None
                 if path is None:
@@ -436,24 +529,35 @@ class VoiceResourceManager:
                         cached = None
                         cache_reason = WakeWordFailureReason.MODEL_INVALID.value
                     path = str(cached) if cached is not None else None
-                result = await _run_worker("prepare", nr, path)
-                if cache_reason is not None:
+                if operation.kind == "repair":
+                    result = await _run_worker("repair" if operation.source_repair else "repair-prepare", nr, path,
+                                               timeout=420, on_progress=update_progress)
+                else:
+                    result = await _run_worker("prepare", nr, path)
+                result.update(wake_failures)
+                if preference["reason"] is not None:
+                    # Unknown wake settings fail closed without preventing
+                    # independent voiceprint resources from being prepared.
+                    result["wake_model"] = _resource("unavailable", WakeWordFailureReason.PREFERENCE_UNAVAILABLE.value, True)
+                elif cache_reason is not None and "wake_model" not in wake_failures:
                     result["wake_model"] = _resource("unavailable", cache_reason, preference["enabled"])
                 if nr != self._noise_reduction_snapshot():
                     raise VoiceResourceError("audio_contract_changed")
             if operation is not self._current or operation.cancel.is_set() or self._closed:
                 raise VoiceResourceError("runtime_degraded" if operation.committed else "operation_cancelled")
-            if operation.kind == "prepare" and self._on_ready is not None:
+            if operation.kind in {"prepare", "repair"} and self._on_ready is not None:
+                update_progress({"phase": "refreshing"})
                 await self._on_ready(operation.operation_id)
             if not self.owns(operation.operation_id):
                 raise VoiceResourceError("operation_cancelled")
-            if operation.kind == "prepare":
+            if operation.kind in {"prepare", "repair"}:
                 if nr != self._noise_reduction_snapshot():
                     raise VoiceResourceError("audio_contract_changed")
                 self._prepared = deepcopy(result)
                 self._prepared_noise_reduction = nr
                 self._prepared_revision += 1
             operation.result = deepcopy(result)
+            operation.progress_detail = _validated_progress({"phase": "complete"})
             operation.state = "succeeded"
         except asyncio.CancelledError:
             operation.state = "failed" if operation.committed else "cancelled"
@@ -466,6 +570,88 @@ class VoiceResourceManager:
             if operation.committed and operation.reason == "operation_cancelled":
                 operation.reason = "runtime_degraded"
             operation.state = "cancelled" if operation.reason == "operation_cancelled" else "failed"
+
+    async def _repair_wake_resources(self, operation: _Operation, update_progress) -> dict:
+        """Prepare -> retire worker -> owner-fenced publication -> next step."""
+        failures = {}
+        def record_failure(exc, *names):
+            # These failures indicate ownership, physical retirement or commit
+            # state is unresolved. Never continue into another resource worker.
+            if exc.code in {"operation_cancelled", "resource_operation_busy", "resource_worker_shutdown_failed",
+                            "runtime_degraded", "audio_contract_changed"}:
+                raise exc
+            failures.update({name: _resource("unavailable", exc.code, True) for name in names})
+        if self._cache_root is None:
+            record_failure(VoiceResourceError("resource_storage_unavailable"), "wake_runtime", "wake_model")
+            return failures
+        runtime_root = str(self._cache_root.parent / "wake-runtime")
+        update_progress({"phase": "checking", "resource": "wake_runtime"})
+        staged = None
+        try:
+            checked = await _run_worker("runtime-check", False, timeout=30)
+            if not self.owns(operation.operation_id):
+                raise VoiceResourceError("operation_cancelled")
+            if not checked["ready"]:
+                staged = await _run_worker("runtime-stage", False, runtime_root, timeout=240, on_progress=update_progress)
+        except VoiceResourceError as exc:
+            record_failure(exc, "wake_runtime", "wake_model")
+            return failures
+        if not self.owns(operation.operation_id):
+            raise VoiceResourceError("operation_cancelled")
+        # Publication errors remain fatal: the commit may already have happened.
+        if staged is not None and not staged["installed"]:
+            await self._publish_repair_step(operation, "runtime-publish", runtime_root, staged["ticket"].encode("ascii"))
+        if not self.owns(operation.operation_id):
+            raise VoiceResourceError("operation_cancelled")
+        # Managed deployments supply their own model directory. Downloading an
+        # unrelated cache cannot repair that path, so validate it normally.
+        if wake_word_model_dir() is not None:
+            return failures
+        try:
+            cached = await asyncio.to_thread(resolve_cached_model_dir, self._cache_root)
+        except WakeWordBundleError:
+            cached = None
+        if not self.owns(operation.operation_id):
+            raise VoiceResourceError("operation_cancelled")
+        if cached is None:
+            try:
+                staged = await _run_worker("download", False, str(self._cache_root), timeout=180, on_progress=update_progress)
+            except VoiceResourceError as exc:
+                record_failure(exc, "wake_model")
+                return failures
+            if not self.owns(operation.operation_id):
+                raise VoiceResourceError("operation_cancelled")
+            await self._publish_repair_step(operation, "publish", str(self._cache_root), staged["version"].encode("ascii"))
+        return failures
+
+    async def _publish_repair_step(self, operation: _Operation, kind: str, path: str, payload: bytes = b"") -> None:
+        if not self.owns(operation.operation_id):
+            raise VoiceResourceError("operation_cancelled")
+        operation.committing = True
+        async def publish():
+            try:
+                await _run_worker(kind, False, path, pcm16=payload, timeout=15 if kind == "runtime-publish" else 5)
+            except VoiceResourceError:
+                # The receipt may be lost after rename/atomic replace. Confirm
+                # disk publication before resolving cancellation or failure.
+                confirmed = await asyncio.to_thread(
+                    runtime_version_published if kind == "runtime-publish" else is_bundle_version_published,
+                    Path(path), payload.decode("ascii"))
+                if not confirmed:
+                    raise
+            operation.committed = True
+        commit = asyncio.create_task(publish())
+        try:
+            while not commit.done():
+                try:
+                    await asyncio.shield(commit)
+                except asyncio.CancelledError:
+                    operation.cancel.set()
+            commit.result()
+        finally:
+            operation.committing = False
+            self._prepared = {name: value for name, value in self._prepared.items() if name not in {"wake_runtime", "wake_model"}}
+            self._prepared_revision += 1
 
     async def _commit_download(self, operation: _Operation, version: str) -> None:
         """Retire a bounded publisher before resolving any cancellation request."""
@@ -505,6 +691,10 @@ class VoiceResourceManager:
             operation.state = "cancelled"
             operation.reason = "operation_cancelled"
         if operation.task is not None and not operation.task.done():
+            if operation.committing and operation.kind == "repair":
+                # Let the bounded atomic step finish, then stop before starting
+                # another download or publishing readiness.
+                operation.cancel.set()
             if not operation.committing:
                 with operation.commit_lock:
                     operation.cancel.set()

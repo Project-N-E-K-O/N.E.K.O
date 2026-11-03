@@ -639,7 +639,7 @@ async def preview_direct_invite(request: Request, visit_id: str):
 
 @router.get("/direct/{visit_id}/question")
 async def direct_invite_question(request: Request, visit_id: str, catgirl: str = ""):
-    """Ask about an account-bound invitation in the current catgirl's voice.
+    """Ask about an account-bound invitation in the current neko's voice.
 
     Only the last-summary memory for exactly this community peer and local
     character is considered.  The response intentionally contains no visit
@@ -1149,6 +1149,10 @@ async def visit_state(request: Request, catgirl: str = ""):
         # Shared computer changed community account: report visiting only, never peer/room/dialogue of that visit.
         return JSONResponse({**IDLE_STATE, "active": snapshot["active"], "phase": snapshot["phase"],
                              **release_info()})
+    # The owner needs the friend identity to restore the invitation's cancel control after reload.
+    # Keep it out of the redacted response above and never include a redeemable invite code.
+    if rt.side == "host" and rt.target_user_id:
+        snapshot["target_user_id"] = rt.target_user_id
     return JSONResponse({**snapshot, **release_info()})
 
 

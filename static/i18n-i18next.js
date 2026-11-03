@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // Include the cat-visit mode mismatch message added to every shipped locale bundle.
-    const LOCALE_VERSION = '2026-10-28-cat-visit-mode-mismatch';
+    // Merge the cat-visit locale keys with main's resource repair and edge-peek copy.
+    const LOCALE_VERSION = '2026-11-03-cat-visit-main-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

@@ -7,7 +7,7 @@ Validate the full integration **without** booting the rest of N.E.K.O:
 - feed it a fake \"push_message\" (stdout) + stdlib logger,
 - send a single `minecraft_task` and report the verdict shape.
 
-Why this exists: the repo has no shared \"mock catgirl\" harness — each plugin
+Why this exists: the repo has no shared \"mock neko\" harness — each plugin
 hand-rolls its own fake context (see test_mcp_adapter_runtime.py `_Ctx`).
 This file is the equivalent for game_agent_minecraft, but instead of a
 fake WebSocket fixture it talks to a real running mc-agent at the

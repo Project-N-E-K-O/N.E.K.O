@@ -4123,6 +4123,9 @@
         }
         abortManagedRequests(commandPendingRequests, 'cancelled');
         stopRuntimeMonitoring();
+        // An explicit end can outlive a window's close deadline. Keep its
+        // unload beacon available until the host confirms route release.
+        startPageExitLifecycle();
         stopRuntimeOperation();
         const operation = beginRuntimeOperation('end', endRequestOptions);
         setRuntimePhase('ending', 'end-request');
@@ -4140,6 +4143,7 @@
             if (response.ok && response.data?.ok !== false) {
               runtimeRouteEstablished = false;
               clearRuntimeRouteInstanceIds();
+              stopPageExitLifecycle();
               setRuntimePhase('ended', 'end-accepted');
             } else recoverEndFailure('end-rejected');
           }

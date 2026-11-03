@@ -10469,7 +10469,8 @@ body.avatar-tool-editor-page .avatar-tool-workspace-settings {
 .music-recommendation-countdown-track { height: 3px; overflow: hidden; border-radius: 4px; background: rgba(90, 154, 210, .18); }
 .music-recommendation-countdown-fill { height: 100%; border-radius: inherit; background: #65b9ed; transform-origin: left; animation: music-recommendation-countdown var(--countdown-duration) linear var(--countdown-delay) both; }
 @keyframes music-recommendation-countdown { from { transform: scaleX(1); } to { transform: scaleX(0); } }
-.proactive-direct-observation { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Exposure probe for a direct screen observation: out of flex flow so the host bubble keeps its gaps. */
+.screen-observation-exposure { position: absolute; width: 1px; height: 1px; overflow: hidden; pointer-events: none; }
 
 @media (prefers-reduced-motion: reduce) {
   .music-recommendation-countdown-fill { animation-timing-function: steps(10); }

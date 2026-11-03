@@ -431,7 +431,12 @@ def _get_telemetry_metadata() -> tuple[str, str]:
        ``("steam", "")``. Proves this machine has run the Steam edition (cloudsave
        packs workshop_config.json along), but this run got no logged-in user from
        the Steam client (not open / offline).
-    4. release with no Steam signal at all → ``("release", "")``.
+    4. release with no Steam signal, in a process that can probe Steam (main_server)
+       → ``("release", "")``.
+    5. release with no Steam signal, in a process with no Steamworks probe
+       (agent_server / memory_server) → ``("unknown", "")``. The server keeps the
+       device's known distribution on ``unknown``, so these processes no longer
+       overwrite main_server's ``steam`` with a blind ``release``.
 
     Steam64 is reported as a string rather than an int, avoiding u64 (often > 2^53)
     precision loss in JS / some JSON consumers. All exceptions are swallowed —
@@ -442,9 +447,11 @@ def _get_telemetry_metadata() -> tuple[str, str]:
 
     # Live detection: call GetSteamID() once, using the result for both distribution and
     # steam_user_id; this fixes the race by avoiding two calls straddling readiness.
+    can_probe = False
     try:
-        from utils.steam_state import get_steamworks
+        from utils.steam_state import can_probe_steamworks, get_steamworks
         sw = get_steamworks()
+        can_probe = sw is not None or can_probe_steamworks()
         if sw is not None:
             sid = 0
             try:
@@ -475,6 +482,11 @@ def _get_telemetry_metadata() -> tuple[str, str]:
         # Missing or inaccessible workshop config simply means no disk signal.
         pass
 
+    if not can_probe:
+        # agent_server / memory_server never initialize Steamworks, so they cannot tell
+        # steam from release. Claiming "release" here overwrote main_server's "steam" on the
+        # server (devices.distribution is last-write-wins); "unknown" keeps the known value.
+        return "unknown", ""
     return "release", ""
 
 def _get_telemetry_timezone() -> str:
