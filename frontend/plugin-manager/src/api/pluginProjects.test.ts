@@ -16,11 +16,7 @@ import {
   projectErrorCode,
   PLUGIN_ID_PATTERN,
 } from './pluginProjects'
-import {
-  DEVELOPMENT_ERROR_MESSAGES,
-  errorMessageKey,
-  PROJECT_ERROR_MESSAGES,
-} from '@/composables/useAuthoringProjects'
+import { errorMessageKey, PROJECT_ERROR_MESSAGES } from '@/composables/useAuthoringProjects'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..')
 const readSource = (path: string) => readFileSync(resolve(repoRoot, path), 'utf8')
@@ -94,19 +90,15 @@ describe('server contract', () => {
     const source = readSource('plugin/server/domain/plugin_project_errors.py')
     const body = source.slice(source.indexOf('class ProjectErrorCode'))
     const declared = [...body.matchAll(/^ {4}([A-Z_]+) = "\1"$/gm)].map((match) => match[1]!)
-    expect(declared.length).toBeGreaterThanOrEqual(18)
+    expect(declared.length).toBeGreaterThanOrEqual(20)
     expect(Object.keys(PROJECT_ERROR_MESSAGES).sort()).toEqual([...declared].sort())
     const keys = Object.keys(authoringMessages['en-US'])
-    const messageKeys = [
-      ...Object.values(PROJECT_ERROR_MESSAGES),
-      ...Object.values(DEVELOPMENT_ERROR_MESSAGES),
-    ]
-    expect(messageKeys.filter((key) => !keys.includes(key))).toEqual([])
+    expect(Object.values(PROJECT_ERROR_MESSAGES).filter((key) => !keys.includes(key))).toEqual([])
   })
 })
 
 describe('projectErrorCode', () => {
-  it('reads workbench detail codes and development-mode header codes', () => {
+  it('reads codes from the workbench detail and from the error-code header', () => {
     expect(projectErrorCode({ response: { data: { detail: { code: 'PROJECT_EXISTS' } } } })).toBe(
       'PROJECT_EXISTS'
     )
@@ -114,16 +106,16 @@ describe('projectErrorCode', () => {
       projectErrorCode({
         response: {
           data: { detail: 'conflict' },
-          headers: { 'x-error-code': 'DEVELOPMENT_CONFLICT' },
+          headers: { 'x-error-code': 'PLUGIN_OPERATION_BUSY' },
         },
       })
-    ).toBe('DEVELOPMENT_CONFLICT')
+    ).toBe('PLUGIN_OPERATION_BUSY')
     expect(projectErrorCode(new Error('network'))).toBeUndefined()
   })
 
   it('maps only declared codes, never inherited object properties', () => {
     expect(errorMessageKey('PROJECT_EXISTS')).toBe('directoryExists')
-    expect(errorMessageKey('DEVELOPMENT_CONFLICT')).toBe('developmentConflict')
+    expect(errorMessageKey('PROJECT_PLUGIN_ID_CONFLICT')).toBe('projectPluginIdConflict')
     expect(errorMessageKey('constructor')).toBeUndefined()
     expect(errorMessageKey('UNKNOWN_CODE')).toBeUndefined()
   })

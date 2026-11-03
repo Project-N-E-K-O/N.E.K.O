@@ -42,16 +42,18 @@ from plugin.logging_config import get_logger
 from plugin.utils.path_resolution import PathResolutionCache, canonical_read_path
 from plugin.server.domain.errors import ServerDomainError
 from plugin.settings import BUILTIN_PLUGIN_CONFIG_ROOT, PLUGIN_CONFIG_ROOTS
-from plugin.server.application.plugins.development import (
-    development_registry_lock, list_registration_records_sync,
-    registration_for_plugin_sync, registration_view_sync, _store_path as development_store_path,
+from plugin.server.application.plugins.project_sources import (
+    PROJECT_SOURCE,
+    ProjectSource,
+    list_project_sources_sync,
+    project_source_dir,
 )
 
 logger = get_logger("server.application.plugins.registry")
 _PLUGIN_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 _MANAGED_META_KEYS = {
-    "development_ref",
+    "project_id",
     "source_dir",
     "id",
     "name",
@@ -630,21 +632,29 @@ def _discover_registry_snapshot_sync(
     )
     installed_ids = {item.plugin_id for item in effective_records}
     try:
-        registrations = list_registration_records_sync()
+        project_sources, project_failures = list_project_sources_sync()
     except ServerDomainError as exc:
-        if exc.code != "DEVELOPMENT_STORE_INVALID":
-            raise
-        failures.append(PluginDiscoveryFailure(None, development_store_path(), exc.message))
-        registrations = []
-    for registration in registrations:
-        if registration.plugin_id in installed_ids:
-            # Never rename or replace another source to make development fit.
-            failures.append(PluginDiscoveryFailure(registration.plugin_id,
-                registration.source_dir / "plugin.toml", "Development plugin ID conflicts with an installed source"))
-            continue
-        effective_records.append(
-            _development_discovery_record_sync(registration, read_cache=read_cache)
+        # An unreadable workbench store hides projects, never managed plugins.
+        from plugin.server.infrastructure.authoring_project_store import store_path
+
+        failures.append(PluginDiscoveryFailure(None, store_path(), exc.message))
+        project_sources, project_failures = [], []
+    for failure in project_failures:
+        failures.append(
+            PluginDiscoveryFailure(None, failure.source_dir / "plugin.toml", failure.error)
         )
+    for source in project_sources:
+        if source.plugin_id in installed_ids:
+            # Never rename or replace another source to make a project fit.
+            failures.append(PluginDiscoveryFailure(source.plugin_id,
+                source.source_dir / "plugin.toml", "Project plugin ID conflicts with an installed plugin"))
+            continue
+        record = _project_discovery_record_sync(source, read_cache=read_cache)
+        if record is None:
+            failures.append(PluginDiscoveryFailure(source.plugin_id,
+                source.source_dir / "plugin.toml", "plugin config could not be parsed or validated"))
+            continue
+        effective_records.append(record)
     return PluginDiscoverySnapshot(
         records=effective_records,
         failures=failures,
@@ -656,42 +666,40 @@ def _discover_registry_snapshot_sync(
     )
 
 
-def _development_discovery_record_sync(
-    registration, *, read_cache: PathResolutionCache | None = None
-) -> PluginDiscoveryRecord:
-    view = registration_view_sync(registration)
-    config_path = registration.source_dir / "plugin.toml"
-    error = view.get("error")
-    record = None
-    if not error:
-        ctx = _parse_single_plugin_config(
-            config_path,
-            set(),
-            logger,
-            materialize_runtime_config=False,
-            read_cache=read_cache,
-        )
-        if ctx is not None and ctx.pid == registration.plugin_id:
-            record = _build_discovery_record_from_context(ctx)
-        elif ctx is not None:
-            error = "Development plugin ID changed; register the source again"
-        else:
-            error = "Development plugin configuration could not be parsed or validated"
-    if record is None:
-        record = PluginDiscoveryRecord(registration.plugin_id, registration.plugin_id,
-            config_path, str(view.get("entry", "")), "plugin", True, False,
-            {"id": registration.plugin_id, "name": view.get("name", registration.plugin_id),
-             "version": view.get("version", ""), "config_path": str(config_path),
-             "entry_point": view.get("entry", ""), "entries_preview": []})
+def _project_discovery_record_sync(
+    source: ProjectSource, *, read_cache: PathResolutionCache | None = None
+) -> PluginDiscoveryRecord | None:
+    ctx = _parse_single_plugin_config(
+        source.source_dir / "plugin.toml",
+        set(),
+        logger,
+        materialize_runtime_config=False,
+        read_cache=read_cache,
+    )
+    if ctx is None or ctx.pid != source.plugin_id:
+        return None
+    record = _build_discovery_record_from_context(ctx)
+    # Project sources are started only on request, like an unapproved plugin.
     record.auto_start = False
-    record.meta_payload.update(source="development", effective_source="development",
-        source_dir=str(registration.source_dir), runtime_auto_start=False,
-        development_ref={"registration_id": registration.registration_id, "revision": registration.revision})
-    if error:
-        record.meta_payload.update(runtime_load_state="failed", runtime_load_error_type="DevelopmentSourceInvalid",
-            runtime_load_error_phase="development_validation", runtime_load_error_message=str(error),
-            runtime_source_missing=not config_path.is_file())
+    record.meta_payload.update(
+        source=PROJECT_SOURCE,
+        effective_source=PROJECT_SOURCE,
+        source_dir=str(source.source_dir),
+        project_id=source.project_id,
+        runtime_auto_start=False,
+    )
     return record
+
+
+def _project_source_for_plugin_sync(
+    plugin_id: str, *, read_cache: PathResolutionCache | None = None
+) -> PluginDiscoveryRecord | None:
+    try:
+        sources, _failures = list_project_sources_sync()
+    except ServerDomainError:
+        return None
+    source = next((item for item in sources if item.plugin_id == plugin_id), None)
+    return None if source is None else _project_discovery_record_sync(source, read_cache=read_cache)
 
 
 def _normalize_entry_input_schema(entry: Mapping[str, object]) -> dict[str, object]:
@@ -988,21 +996,20 @@ def _apply_discovery_record_sync(
         )
     )
 
-    if record.meta_payload.get("source") == "development":
+    if record.meta_payload.get("source") == PROJECT_SOURCE:
         if (
             existing_target_path is not None
             and existing_target_path
             != _resolve_config_path(record.config_path, read_cache=read_cache)
         ):
+            # A project keeps its ID when its directory is replaced in the
+            # workbench, but never takes over another plugin's ID.
             if (
                 not isinstance(existing_target_meta, dict)
-                or existing_target_meta.get("development_ref", {}).get(
-                    "registration_id"
-                )
-                != record.meta_payload["development_ref"]["registration_id"]
+                or existing_target_meta.get("source") != PROJECT_SOURCE
             ):
                 raise ServerDomainError(
-                    code="DEVELOPMENT_CONFLICT",
+                    code="PLUGIN_REGISTRY_CONFLICT",
                     message="Plugin ID belongs to another source",
                     status_code=409,
                 )
@@ -1017,7 +1024,7 @@ def _apply_discovery_record_sync(
             entry_point=record.entry_point,
             plugin_data=record.meta_payload,
             purpose="register",
-            enable_rename=record.meta_payload.get("source") != "development",
+            enable_rename=record.meta_payload.get("source") != PROJECT_SOURCE,
             read_cache=read_cache,
         )
     )
@@ -1094,9 +1101,9 @@ def _apply_discovery_record_sync(
         current_meta = state.plugins.get(resolved_id)
         merged = dict(current_meta) if isinstance(current_meta, dict) else {}
         if (
-            record.meta_payload.get("source") == "development"
+            record.meta_payload.get("source") == PROJECT_SOURCE
             and isinstance(existing_target_meta, dict)
-            and existing_target_meta.get("development_ref") == record.meta_payload.get("development_ref")
+            and existing_target_meta.get("project_id") == record.meta_payload.get("project_id")
         ):
             for runtime_key in ("runtime_startup_state", "runtime_startup_error"):
                 if runtime_key in existing_target_meta:
@@ -1249,7 +1256,7 @@ def _get_autostart_plugin_ids_sync() -> list[str]:
         for plugin_id, raw_meta in state.plugins.items():
             if not isinstance(plugin_id, str) or not isinstance(raw_meta, dict):
                 continue
-            if raw_meta.get("source") == "development":
+            if raw_meta.get("source") == PROJECT_SOURCE:
                 continue
             if raw_meta.get("runtime_enabled") is False:
                 continue
@@ -1367,7 +1374,7 @@ class PluginRegistryService:
         # refreshes read the same old snapshot outside the lock, then reconcile serially using
         # stale existing_snapshot and delete the previous refresh's new records as extras
         # (codex). Disk reads now take milliseconds, so locking them costs little.
-        with development_registry_lock, _REGISTRY_REFRESH_LOCK:
+        with _REGISTRY_REFRESH_LOCK:
             existing_snapshot = _get_registered_plugin_snapshot_sync()
             running_ids = _list_running_plugin_ids_sync()
             snapshot = _discover_registry_snapshot_sync(roots, read_cache=read_cache)
@@ -1479,20 +1486,22 @@ class PluginRegistryService:
         # invalidated that snapshot (coderabbit / codex), and concurrent
         # start_plugin -> refresh_plugin versus reload_all_plugins -> refresh_registry
         # is not unusual.
-        with development_registry_lock, _REGISTRY_REFRESH_LOCK:
+        with _REGISTRY_REFRESH_LOCK:
             roots = tuple(PLUGIN_CONFIG_ROOTS)
             existing_snapshot = _get_registered_plugin_snapshot_sync()
             _prepare_plugin_import_roots(roots, logger)
             existing_config_path = _resolve_meta_config_path(
                 existing_snapshot.get(normalized_plugin_id), read_cache=read_cache
             )
-            record: PluginDiscoveryRecord | None = None
-            registration = registration_for_plugin_sync(normalized_plugin_id)
-            if registration is not None:
-                record = _development_discovery_record_sync(
-                    registration, read_cache=read_cache
-                )
-            elif (
+            record = _project_source_for_plugin_sync(
+                normalized_plugin_id, read_cache=read_cache
+            )
+            # A project that no longer loads must not fall back to being
+            # parsed as an ordinary external plugin.
+            was_project = (
+                project_source_dir(existing_snapshot.get(normalized_plugin_id)) is not None
+            )
+            if record is None and not was_project and (
                 existing_config_path is not None
                 and existing_config_path.exists()
                 and not _config_path_belongs_to_roots(
@@ -1508,7 +1517,7 @@ class PluginRegistryService:
                 )
                 if ctx is not None:
                     record = _build_discovery_record_from_context(ctx)
-            else:
+            elif record is None:
                 discovery = _discover_registry_snapshot_sync(
                     roots, read_cache=read_cache
                 )

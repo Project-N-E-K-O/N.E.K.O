@@ -1,96 +1,77 @@
-/* Match the dashboard's page inset while keeping the workbench's inner scrolling. */
-.authoring-workbench {
+/* Same frame as the other plugin manager pages: one card filling the content area,
+   title and actions in the card header. */
+.authoring-page {
   display: flex;
   flex-direction: column;
   height: 100%;
-  min-height: 440px;
   min-width: 0;
-  padding: var(--content-padding);
   container: authoring / inline-size;
-  color: var(--el-text-color-primary);
 }
-.authoring-workbench h1,
-.authoring-workbench h2,
-.authoring-workbench h3,
-.authoring-help-article h2 {
-  margin: 0;
-  line-height: 1.4;
-  font-weight: 650;
-}
-.authoring-workbench h1 {
-  font-size: 17px;
-}
-.authoring-workbench h2 {
-  font-size: 18px;
-}
-.authoring-workbench h3 {
-  font-size: 14px;
-}
-.authoring-workbench p {
-  margin: 6px 0 0;
-  font-size: 13px;
-  line-height: 1.7;
-}
-.authoring-workbench code,
-.authoring-dialog code,
-.authoring-help-drawer code,
-.authoring-code {
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
-.authoring-workbench .el-button + .el-button {
-  margin-left: 0;
-}
-.authoring-toolbar {
-  flex-shrink: 0;
+.authoring-page > .el-card {
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 12px;
-  padding: 18px 20px;
-  border-bottom: 1px solid var(--surface-border);
+  flex-direction: column;
 }
-.authoring-toolbar-title {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-.authoring-toolbar-title > .el-icon {
-  color: var(--el-color-primary);
-}
-.authoring-actions {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.authoring-home {
+.authoring-page > .el-card > .el-card__body {
+  flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
-  padding: 20px;
 }
-.authoring-feature-icon,
-.authoring-project-icon {
-  display: inline-flex;
+.authoring-page code,
+.authoring-dialog code,
+.authoring-help-drawer code {
+  font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+.authoring-header {
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 46px;
-  height: 46px;
-  background: var(--el-color-primary-light-9);
-  border: 1px solid var(--el-color-primary-light-8);
-  border-radius: var(--radius-panel);
-  color: var(--el-color-primary);
+  gap: 12px;
 }
+.authoring-header__title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1000 1 0;
+  min-width: 220px;
+}
+.authoring-header__title h2 {
+  margin: 0;
+  min-width: 0;
+  font-size: 20px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.authoring-header__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+.authoring-header__actions .el-button + .el-button {
+  margin-left: 0;
+}
+.authoring-muted {
+  color: var(--el-text-color-secondary);
+}
+.authoring-small {
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+/* Project list */
 .authoring-filters {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 12px;
-  margin: 0 0 16px;
+  margin-bottom: 16px;
 }
 .authoring-filters > .el-input {
   flex: 1 1 200px;
@@ -103,197 +84,109 @@
 }
 .authoring-project-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   gap: var(--card-gap);
 }
+/* Mirrors PluginCard: name and identity, state, two-line description, metadata footer. */
 .authoring-project-card {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
-  padding: 20px;
   background: var(--surface-card);
   border: 1px solid var(--surface-border);
   border-radius: var(--radius-card);
   box-shadow: var(--surface-shadow);
+  cursor: pointer;
   transition:
     border-color var(--motion-duration-normal) var(--motion-ease-standard),
     box-shadow var(--motion-duration-normal) var(--motion-ease-standard),
     transform var(--motion-duration-normal) var(--motion-ease-standard);
 }
+.authoring-project-card:hover,
+.authoring-project-card:focus-within {
+  border-color: color-mix(in srgb, var(--el-color-primary) 36%, var(--surface-border));
+}
 .authoring-project-card:hover {
-  border-color: color-mix(in srgb, var(--el-color-primary) 40%, var(--surface-border));
   box-shadow: var(--surface-shadow-hover);
   transform: translateY(-2px);
 }
-.authoring-project-card-heading {
+.authoring-card__header {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 18px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 16px 16px 0;
 }
-.authoring-title-button {
+.authoring-card__name {
+  margin: 0;
   max-width: 100%;
-  overflow-wrap: anywhere;
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+.authoring-card__name-button {
   display: block;
+  max-width: 100%;
   padding: 0;
   border: 0;
-  background: none;
-  color: inherit;
-  text-align: left;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--el-text-color-primary);
   font: inherit;
-  font-size: 16px;
+  text-align: left;
+  overflow-wrap: anywhere;
   cursor: pointer;
 }
-.authoring-title-button:hover {
-  color: var(--el-color-primary);
+.authoring-card__name-button:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 3px;
 }
-.authoring-project-description {
-  min-height: 45px;
-  margin-top: 12px !important;
+.authoring-card__id {
+  max-width: 100%;
   color: var(--el-text-color-secondary);
-}
-.authoring-card-status {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 16px 0;
-  font-size: 12px;
-  color: var(--el-text-color-regular);
-}
-.authoring-card-version {
-  margin-left: auto;
-  color: var(--el-text-color-secondary);
-}
-.authoring-project-card footer {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 12px;
-  padding-top: 14px;
-  border-top: 1px solid var(--surface-border);
-}
-.authoring-project-card footer > span {
-  flex: 1 1 120px;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 0.6875rem;
   overflow-wrap: anywhere;
 }
-.authoring-muted {
-  color: var(--el-text-color-secondary);
-}
-.authoring-small {
-  font-size: 12px;
-  line-height: 1.65;
-}
-.authoring-project-shell {
-  display: flex;
+.authoring-card__description {
   flex: 1;
-  flex-direction: column;
-  min-height: 0;
-}
-.authoring-project-header {
-  flex-shrink: 0;
-  padding: 12px 20px 14px;
-}
-.authoring-project-breadcrumb {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 16px;
-  color: var(--el-text-color-secondary);
-}
-.authoring-project-breadcrumb > .el-button {
-  padding-inline: 0;
-}
-.authoring-project-breadcrumb .el-select {
-  width: 200px;
-}
-.authoring-project-identity {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-.authoring-project-identity > div {
-  min-width: 0;
-  flex: 1;
-}
-.authoring-project-identity h2 {
-  font-size: 21px;
-  overflow-wrap: anywhere;
-}
-.authoring-project-identity h2 > span {
-  margin-left: 6px;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--el-text-color-secondary);
-}
-.authoring-project-identity p {
-  color: var(--el-text-color-secondary);
-}
-.authoring-project-icon--large {
-  width: 52px;
-  height: 52px;
-  border-radius: var(--radius-card);
-}
-.authoring-project-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px 20px;
-  align-items: center;
-  justify-content: space-between;
-  margin-top: 16px;
-}
-.authoring-project-meta > code {
-  color: var(--el-text-color-secondary);
-}
-.authoring-project-meta > div {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-.authoring-content {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding: 20px;
-}
-.authoring-panel {
-  min-width: 0;
-  padding: 20px;
-  border: 1px solid var(--surface-border);
-  border-radius: var(--radius-card);
-  background: var(--surface-card);
-}
-.authoring-panel-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 18px !important;
-}
-.authoring-panel-title > .el-icon {
-  color: var(--el-color-primary);
-}
-.authoring-details {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 14px 20px;
-  font-size: 13px;
-  line-height: 1.6;
-}
-.authoring-details dt {
-  color: var(--el-text-color-secondary);
-}
-.authoring-details dd {
   margin: 0;
+  padding: 12px 16px 0;
+  color: var(--el-text-color-regular);
+  font-size: 0.875rem;
+  line-height: 1.5;
   overflow-wrap: anywhere;
-  color: var(--el-text-color-primary);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
-.authoring-project-actions {
+.authoring-card__footer {
   display: flex;
-  flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
-  margin-top: 20px;
+  min-width: 0;
+  padding: 12px 16px 16px;
+  font-size: 0.75rem;
+  color: var(--el-text-color-secondary);
 }
-.authoring-project-actions .el-button + .el-button {
-  margin-left: 0;
+.authoring-card__path {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+
+/* Project details */
+.authoring-details {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.authoring-details .el-descriptions__label {
+  white-space: nowrap;
 }
 .authoring-diagnostic {
   margin-top: 6px;
@@ -306,9 +199,42 @@
   display: block;
   margin-top: 4px;
   white-space: pre-wrap;
-  overflow-wrap: anywhere;
 }
-.authoring-workbench pre,
+
+/* Create dialog and help drawer */
+.authoring-dialog h2,
+.authoring-help-article h2 {
+  margin: 0;
+  line-height: 1.4;
+  font-weight: 600;
+}
+.authoring-dialog p,
+.authoring-help-drawer p {
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.authoring-feature-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  background: var(--el-color-primary-light-9);
+  border-radius: var(--radius-panel);
+  color: var(--el-color-primary);
+}
+.authoring-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+  font-weight: 600;
+}
+.authoring-panel-title > .el-icon {
+  color: var(--el-color-primary);
+}
 .authoring-dialog pre,
 .authoring-help-drawer pre {
   margin: 14px 0 0;
@@ -489,48 +415,9 @@
   font-size: 13px;
   line-height: 1.9;
 }
-.authoring-workbench button:focus-visible {
-  outline: 2px solid var(--el-color-primary);
-  outline-offset: 3px;
-}
-@container authoring (max-width: 1100px) {
-  .authoring-project-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-@container authoring (max-width: 760px) {
-  .authoring-project-identity {
-    flex-wrap: wrap;
-  }
-  .authoring-project-identity > div {
-    flex-basis: calc(100% - 70px);
-  }
-}
 @container authoring (max-width: 520px) {
-  .authoring-project-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .authoring-toolbar,
-  .authoring-home,
-  .authoring-content {
-    padding: 14px 12px;
-  }
-  .authoring-project-header {
-    padding-inline: 12px;
-  }
-  .authoring-panel {
-    padding: 16px;
-  }
-  .authoring-toolbar > .authoring-actions {
+  .authoring-header__actions {
     width: 100%;
-  }
-  .authoring-details {
-    gap: 12px;
-  }
-}
-@media (max-width: 768px) {
-  .authoring-workbench {
-    padding: var(--content-padding-compact);
   }
 }
 @media (max-width: 650px) {

@@ -8,7 +8,6 @@ from fastapi import HTTPException
 
 from plugin.core.state import state
 from plugin.logging_config import get_logger
-from plugin.server.application.plugins.development import registration_for_plugin_sync
 from plugin.server.domain import RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.config_merge import deep_merge
@@ -182,16 +181,6 @@ def _application_state_sync(
 
 def _current_owner_config_path_sync(plugin_id: str) -> Path | None:
     """Resolve the current registry owner without consulting the host itself."""
-    try:
-        registration = registration_for_plugin_sync(plugin_id)
-    except Exception:
-        # A stale development registration must fence the old host out of
-        # application-state comparisons. Ordinary plugins return ``None`` from
-        # the registration helper and continue through registry metadata.
-        return None
-    if registration is not None:
-        return (registration.source_dir / "plugin.toml").resolve()
-
     with state.acquire_plugins_read_lock():
         metadata = state.plugins.get(plugin_id)
     candidate = metadata.get("config_path") if isinstance(metadata, Mapping) else None

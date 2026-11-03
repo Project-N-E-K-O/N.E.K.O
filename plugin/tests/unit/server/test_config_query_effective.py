@@ -207,7 +207,7 @@ def test_application_state_classifies_host_identity(monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.plugin_unit
-@pytest.mark.parametrize("owner", ["different", "missing", "registration_error"])
+@pytest.mark.parametrize("owner", ["different", "missing"])
 def test_application_state_is_conservative_for_stale_or_missing_host(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -217,16 +217,10 @@ def test_application_state_is_conservative_for_stale_or_missing_host(
     config_path = tmp_path / "demo" / "plugin.toml"
     config_path.parent.mkdir()
     config_path.write_text("", encoding="utf-8")
-    if owner == "registration_error":
-        def _registration_error(_plugin_id: str):
-            raise RuntimeError("stale registration")
-
-        monkeypatch.setattr(query_service_module, "registration_for_plugin_sync", _registration_error)
-    else:
-        monkeypatch.setattr(
-            query_service_module, "_current_owner_config_path_sync",
-            lambda _plugin_id: None if owner == "missing" else config_path,
-        )
+    monkeypatch.setattr(
+        query_service_module, "_current_owner_config_path_sync",
+        lambda _plugin_id: None if owner == "missing" else config_path,
+    )
 
     class _StaleHost:
         config_path = tmp_path / "other" / "plugin.toml"

@@ -15,7 +15,6 @@ const api = vi.hoisted(() => ({
   removePluginProject: vi.fn(),
   pickProjectDirectory: vi.fn(),
   openProjectDirectory: vi.fn(),
-  mountDevelopment: vi.fn(),
   push: vi.fn(),
   route: { query: {} as Record<string, string> },
 }))
@@ -29,7 +28,6 @@ vi.mock('@/api/pluginProjects', async (importOriginal) => ({
   pickProjectDirectory: api.pickProjectDirectory,
   openProjectDirectory: api.openProjectDirectory,
 }))
-vi.mock('@/api/development', () => ({ mountDevelopment: api.mountDevelopment }))
 vi.mock('vue-router', () => ({
   useRoute: () => api.route,
   useRouter: () => ({ push: api.push }),
@@ -61,7 +59,8 @@ const listed: AuthoringProject = {
   plugin_type: 'plugin',
   version: '0.2.0',
   entry: created.entry,
-  development: 'unmounted',
+  loaded: true,
+  running: false,
 }
 const NativeMutationObserver = globalThis.MutationObserver
 let cleanup: (() => void) | undefined
@@ -86,6 +85,7 @@ async function mount() {
         'en-US': {
           authoring: en,
           common: { cancel: 'Cancel', close: 'Close', noData: 'No data', loading: 'Loading' },
+          status: { running: 'Running', stopped: 'Stopped' },
         },
       },
     })
@@ -146,7 +146,6 @@ beforeEach(() => {
   api.previewPluginProject.mockResolvedValue({ ...created, project_id: undefined })
   api.createPluginProject.mockResolvedValue(created)
   api.pickProjectDirectory.mockResolvedValue('E:/Projects')
-  api.mountDevelopment.mockResolvedValue({})
 })
 
 afterEach(() => {
@@ -167,9 +166,9 @@ describe('authoring workbench backed by the server project list', () => {
     }
   })
 
-  it('renders the server list with live metadata and status', async () => {
+  it('renders the server list with live metadata and plugin status', async () => {
     api.listPluginProjects.mockResolvedValue([
-      { ...listed, development: 'mounted' },
+      { ...listed, running: true },
       {
         ...listed,
         project_id: 'p2',
@@ -178,18 +177,20 @@ describe('authoring workbench backed by the server project list', () => {
         plugin_id: null,
         name: null,
         version: null,
-        development: 'unmounted',
+        loaded: false,
       },
-      { ...listed, project_id: 'p3', source_dir: 'G:/Off/plugin', development: 'mode_disabled' },
+      { ...listed, project_id: 'p3', source_dir: 'G:/Stopped/plugin' },
+      { ...listed, project_id: 'p4', source_dir: 'G:/Conflict/plugin', loaded: false },
     ])
     const container = await mount()
     const cards = container.querySelectorAll('.authoring-project-card')
-    expect(cards).toHaveLength(3)
+    expect(cards).toHaveLength(4)
     expect(cards[0]!.textContent).toContain('v0.2.0')
-    expect(cards[0]!.textContent).toContain(en.mounted)
+    expect(cards[0]!.textContent).toContain('Running')
     expect(cards[1]!.textContent).toContain('old_plugin')
     expect(cards[1]!.textContent).toContain(en.statusMissing)
-    expect(cards[2]!.textContent).toContain(en.mountedModeDisabled)
+    expect(cards[2]!.textContent).toContain('Stopped')
+    expect(cards[3]!.textContent).toContain(en.notLoaded)
     expect(localStorage.length).toBe(0)
   })
 
@@ -208,50 +209,40 @@ describe('authoring workbench backed by the server project list', () => {
     expect(api.createPluginProject).toHaveBeenCalledOnce()
     expect(api.listPluginProjects).toHaveBeenCalledTimes(2)
     expect(api.push).toHaveBeenCalledWith({
-      path: '/development/workbench',
+      path: '/workbench',
       query: { project: created.project_id },
     })
-    expect(buttons('Mount in development mode')).toHaveLength(0)
     expect(localStorage.length).toBe(0)
   })
 
-  it('opens and mounts from the project details, then reloads the state', async () => {
+  it('opens the folder and the loaded plugin from the project details', async () => {
     api.route.query = { project: 'p1' }
     api.listPluginProjects.mockResolvedValue([listed])
     await mount()
-    expect(document.body.textContent).toContain(en.notMounted)
+    expect(document.body.textContent).toContain('Stopped')
     await click('Open folder')
     expect(api.openProjectDirectory).toHaveBeenCalledWith(listed.source_dir)
-    api.listPluginProjects.mockResolvedValue([{ ...listed, development: 'mounted' }])
-    await click('Mount in development mode')
-    expect(api.mountDevelopment).toHaveBeenCalledWith(listed.source_dir)
-    expect(document.body.textContent).toContain(en.mounted)
-    expect(buttons('Mount in development mode')).toHaveLength(0)
-    expect(buttons(en.goDevelopment)).toHaveLength(1)
+    await click(en.openPluginPage)
+    expect(api.push).toHaveBeenCalledWith('/plugins/hello_world')
   })
 
-  it('localizes development-mode mount errors carried in the response header', async () => {
+  it('offers no plugin page for a project the runtime did not load', async () => {
     api.route.query = { project: 'p1' }
-    api.listPluginProjects.mockResolvedValue([listed])
-    api.mountDevelopment.mockRejectedValue({
-      response: {
-        data: { detail: 'Plugin ID already registered in runtime' },
-        headers: { 'x-error-code': 'DEVELOPMENT_CONFLICT' },
-      },
+    api.listPluginProjects.mockResolvedValue([{ ...listed, loaded: false }])
+    await mount()
+    expect(document.body.textContent).toContain(en.notLoaded)
+    expect(buttons(en.openPluginPage)).toHaveLength(0)
+  })
+
+  it('localizes plugin ID conflicts when adding a project', async () => {
+    api.pickProjectDirectory.mockResolvedValueOnce('D:/Existing/plugin')
+    api.registerPluginProject.mockRejectedValue({
+      response: { data: { detail: { code: 'PROJECT_PLUGIN_ID_CONFLICT', message: 'raw' } } },
     })
     await mount()
-    await click('Mount in development mode')
+    await click(en.addExisting)
     await settle()
-    expect(document.body.textContent).toContain(en.developmentConflict)
-  })
-
-  it('offers development mode, not mounting, when registered while the mode is off', async () => {
-    api.route.query = { project: 'p1' }
-    api.listPluginProjects.mockResolvedValue([{ ...listed, development: 'mode_disabled' }])
-    await mount()
-    expect(document.body.textContent).toContain(en.mountedModeDisabled)
-    expect(buttons('Mount in development mode')).toHaveLength(0)
-    expect(buttons(en.goDevelopment)).toHaveLength(1)
+    expect(document.body.textContent).toContain(en.projectPluginIdConflict)
   })
 
   it.each([
@@ -313,7 +304,7 @@ describe('authoring workbench backed by the server project list', () => {
     expect(document.body.textContent).toContain(en.projectNotFound)
     expect(container.querySelectorAll('.authoring-project-card')).toHaveLength(0)
     await click(en.back)
-    expect(api.push).toHaveBeenCalledWith({ path: '/development/workbench' })
+    expect(api.push).toHaveBeenCalledWith({ path: '/workbench' })
   })
 
   it('keeps the raw diagnostic of an invalid project behind technical details', async () => {
@@ -328,24 +319,22 @@ describe('authoring workbench backed by the server project list', () => {
     expect(document.body.textContent).toContain(en.statusInvalidHint)
   })
 
-  it('removes a mounted project only after confirming that files and mount are kept', async () => {
+  it('removes a project only after confirming that it stops and files are kept', async () => {
     api.route.query = { project: 'p1' }
-    api.listPluginProjects.mockResolvedValue([{ ...listed, development: 'mounted' }])
+    api.listPluginProjects.mockResolvedValue([{ ...listed, running: true }])
     await mount()
-    expect(document.body.textContent).toContain(en.mounted)
-    expect(buttons(en.mountDevelopment)).toHaveLength(0)
+    expect(document.body.textContent).toContain('Running')
     await click(en.removeProject)
     await settle()
-    expect(document.querySelector('.el-message-box')?.textContent).toContain(
-      'development mode registration is kept'
-    )
+    const confirmation = document.querySelector('.el-message-box')?.textContent
+    expect(confirmation).toContain('A running plugin is stopped')
+    expect(confirmation).toContain('are not deleted')
     expect(api.removePluginProject).not.toHaveBeenCalled()
     api.listPluginProjects.mockResolvedValue([])
     await click(en.removeProject, { last: true })
     await settle()
     expect(api.removePluginProject).toHaveBeenCalledWith('p1')
-    expect(api.mountDevelopment).not.toHaveBeenCalled()
-    expect(api.push).toHaveBeenCalledWith({ path: '/development/workbench' })
+    expect(api.push).toHaveBeenCalledWith({ path: '/workbench' })
   })
 
   it('keeps the project when removal is cancelled', async () => {

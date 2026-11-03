@@ -1,4 +1,4 @@
-"""Local-only authoring workbench projects. Nothing here loads or runs a plugin."""
+"""Plugin workbench: create and register the external source projects of the runtime."""
 
 from __future__ import annotations
 
@@ -19,11 +19,11 @@ from plugin.server.application.plugin_projects import (
 from plugin.server.application.plugins._env_budgets import env_seconds
 from plugin.server.application.plugins.operation_lock import bounded_operation_wait
 from plugin.server.domain.errors import ServerDomainError
-from plugin.server.infrastructure.development_access import require_development_access
+from plugin.server.infrastructure.auth import require_admin
+from plugin.server.infrastructure.mutation_auth import require_plugin_mutation_access
 
-router = APIRouter(
-    prefix="/plugin-projects", dependencies=[Depends(require_development_access)]
-)
+router = APIRouter(prefix="/plugin-projects", dependencies=[require_admin])
+_mutation = [Depends(require_plugin_mutation_access)]
 
 
 class ProjectIdentityRequest(BaseModel):
@@ -89,42 +89,41 @@ async def list_plugin_projects():
     return await _call(asyncio.to_thread(service.list_projects_sync))
 
 
-@router.post("/preview", response_model=ProjectPreview)
+@router.post("/preview", response_model=ProjectPreview, dependencies=_mutation)
 async def preview_project(body: ProjectRequest):
     return await _call(
         asyncio.to_thread(service.preview_project, body.parent_dir, body.identity())
     )
 
 
-@router.post("/create", status_code=201, response_model=CreatedProject)
+@router.post("/create", status_code=201, response_model=CreatedProject, dependencies=_mutation)
 async def create_plugin_project(body: ProjectRequest):
     return await _call(
         service.create_and_register_project(body.parent_dir, body.identity())
     )
 
 
-@router.post("/register", status_code=201, response_model=AuthoringProject)
+@router.post("/register", status_code=201, response_model=AuthoringProject, dependencies=_mutation)
 async def register_plugin_project(body: RegisterRequest):
     return await _call(service.register_project(body.source_dir))
 
 
-@router.post("/pick-directory", response_model=PickDirectoryResponse)
+@router.post("/pick-directory", response_model=PickDirectoryResponse, dependencies=_mutation)
 async def pick_project_directory(body: PickDirectoryRequest):
-    # The dialog opens on the machine running this server; development access
-    # is limited to local requests, so that is the user's own desktop.
+    # The dialog opens on the desktop of the machine running this server.
     selected = await _call(
         asyncio.to_thread(service.pick_project_directory, body.start_path, body.title)
     )
     return PickDirectoryResponse(cancelled=selected is None, selected_root=selected or "")
 
 
-@router.post("/open-directory", response_model=OkResponse)
+@router.post("/open-directory", response_model=OkResponse, dependencies=_mutation)
 async def open_project_directory(body: DirectoryRequest):
     await _call(asyncio.to_thread(service.open_project_directory, body.path))
     return OkResponse()
 
 
-@router.delete("/{project_id}", response_model=OkResponse)
+@router.delete("/{project_id}", response_model=OkResponse, dependencies=_mutation)
 async def remove_plugin_project(project_id: str):
     await _call(service.remove_project(project_id))
     return OkResponse()

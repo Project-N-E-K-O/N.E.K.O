@@ -17,7 +17,7 @@ import pytest
 @pytest.mark.parametrize("legacy_first", [False, True])
 @pytest.mark.parametrize("native_package", [False, True], ids=["module", "package"])
 @pytest.mark.parametrize("scanner", [False, True], ids=["runtime", "metadata"])
-def test_development_imports_load_native_extensions(tmp_path: Path, legacy_first: bool, native_package: bool, scanner: bool):
+def test_source_only_imports_load_native_extensions(tmp_path: Path, legacy_first: bool, native_package: bool, scanner: bool):
     # Reuse the interpreter's real extension, preserving its PyInit_* name.
     native_spec = importlib.util.find_spec("_decimal")
     if native_spec is None or not isinstance(native_spec.loader, importlib.machinery.ExtensionFileLoader):
@@ -142,7 +142,7 @@ def test_native_fallback_rejects_extension_symlink_outside_source(tmp_path: Path
         PluginSourceFinder("plugins.probe", directory).find_spec("plugins.probe.native")
 
 
-def test_development_failed_native_import_can_retry_from_source(tmp_path: Path):
+def test_source_only_failed_native_import_can_retry_from_source(tmp_path: Path):
     directory = tmp_path / "native_retry"
     directory.mkdir()
     manifest = directory / "plugin.toml"
@@ -175,7 +175,7 @@ assert left is right and left.VALUE == 42
 
 @pytest.mark.parametrize("child", [False, True], ids=["entry", "submodule"])
 @pytest.mark.parametrize("scanner", [False, True], ids=["runtime", "metadata"])
-def test_development_imports_ignore_same_second_same_size_pyc(tmp_path: Path, child: bool, scanner: bool):
+def test_source_only_imports_ignore_same_second_same_size_pyc(tmp_path: Path, child: bool, scanner: bool):
     directory = tmp_path / "中文 source" / "dev_probe"
     directory.mkdir(parents=True)
     manifest = directory / "plugin.toml"
@@ -235,7 +235,7 @@ def test_source_finder_does_not_change_dependencies_or_other_plugins(tmp_path: P
         finder.find_spec("plugins.probe.deleted")
 
 
-def test_development_imports_keep_alias_and_lazy_imports_source_only(tmp_path: Path):
+def test_source_only_imports_keep_alias_and_lazy_imports_source_only(tmp_path: Path):
     directory = tmp_path / "alias_probe"
     directory.mkdir()
     manifest = directory / "plugin.toml"
@@ -279,7 +279,7 @@ def test_host_passes_source_policy_to_child_without_changing_default(monkeypatch
     assert captured[1]["args"][7]["source_only"] is True
 
 
-def test_development_lazy_alias_imports_share_concurrent_initialization(tmp_path: Path):
+def test_source_only_lazy_alias_imports_share_concurrent_initialization(tmp_path: Path):
     directory = tmp_path / "parallel_probe"
     directory.mkdir()
     manifest = directory / "plugin.toml"
@@ -311,7 +311,7 @@ assert modules[0].__spec__.name == 'plugins.parallel_probe.child'
 
 
 @pytest.mark.parametrize("legacy_first", [False, True])
-def test_development_failed_lazy_alias_import_can_retry(tmp_path: Path, legacy_first: bool):
+def test_source_only_failed_lazy_alias_import_can_retry(tmp_path: Path, legacy_first: bool):
     directory = tmp_path / "retry_probe"
     directory.mkdir()
     manifest = directory / "plugin.toml"
@@ -350,7 +350,7 @@ assert left.__spec__.name == 'plugins.retry_probe.child'
 @pytest.mark.parametrize("legacy_first", [False, True])
 @pytest.mark.parametrize("namespace", [False, True])
 @pytest.mark.parametrize("scanner", [False, True], ids=["runtime", "metadata"])
-def test_development_submodule_aliases_share_identity(tmp_path: Path, legacy_first: bool, namespace: bool, scanner: bool):
+def test_source_only_submodule_aliases_share_identity(tmp_path: Path, legacy_first: bool, namespace: bool, scanner: bool):
     directory = tmp_path / "mixed_probe"
     group = directory / "group"
     group.mkdir(parents=True)

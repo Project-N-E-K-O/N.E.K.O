@@ -5,20 +5,24 @@ import tomllib
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any
+from typing import Any, Callable, Literal
 
-from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy, PluginCliRootId
+from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
+
+# ``project``: a workbench project, an external source outside the managed roots.
+PluginSourceRootId = Literal["builtin", "user", "project"]
+_ROOT_ORDER = {"builtin": 0, "user": 1, "project": 2}
 
 
 @dataclass(frozen=True, slots=True)
 class PluginCliPluginRef:
-    root_id: PluginCliRootId
+    root_id: PluginSourceRootId
     directory_name: str
 
 
 @dataclass(frozen=True, slots=True)
 class ResolvedPluginSource:
-    root_id: PluginCliRootId
+    root_id: PluginSourceRootId
     directory_name: str
     plugin_id: str
     plugin_dir: Path
@@ -56,11 +60,27 @@ def _require_safe_directory_name(value: str) -> str:
     return directory_name
 
 
-class PluginSourceResolver:
-    """Resolve plugin build sources from explicit builtin/user roots."""
+def _registered_project_dirs() -> list[Path]:
+    from plugin.server.application.plugins.project_sources import list_project_sources_sync
+    from plugin.server.domain.errors import ServerDomainError
 
-    def __init__(self, policy: PluginCliPathPolicy) -> None:
+    try:
+        sources, _failures = list_project_sources_sync()
+    except ServerDomainError:
+        return []
+    return [source.source_dir for source in sources]
+
+
+class PluginSourceResolver:
+    """Resolve plugin build sources from the builtin/user roots and workbench projects."""
+
+    def __init__(
+        self,
+        policy: PluginCliPathPolicy,
+        project_dirs: Callable[[], list[Path]] = _registered_project_dirs,
+    ) -> None:
         self.policy = policy
+        self._project_dirs = project_dirs
 
     def list_plugins(self) -> list[ResolvedPluginSource]:
         return self._scan_sources()
@@ -73,11 +93,15 @@ class PluginSourceResolver:
             root_id = ref.get("root_id")
             directory_name = ref.get("directory_name")
 
-        if root_id not in {"builtin", "user"}:
-            raise ValueError(f"plugin_ref.root_id must be 'builtin' or 'user', got {root_id!r}")
+        if root_id not in _ROOT_ORDER:
+            raise ValueError(
+                f"plugin_ref.root_id must be 'builtin', 'user' or 'project', got {root_id!r}"
+            )
         if not isinstance(directory_name, str):
             raise ValueError("plugin_ref.directory_name is required")
         safe_directory_name = _require_safe_directory_name(directory_name)
+        if root_id == "project":
+            return self._project_source(safe_directory_name)
         root = self.policy.plugin_root(root_id)  # type: ignore[arg-type]
         candidate = root / safe_directory_name
         if candidate.is_symlink():
@@ -114,7 +138,8 @@ class PluginSourceResolver:
 
         if not matches:
             raise FileNotFoundError(
-                f"plugin '{value}' was not found under builtin or user plugin roots"
+                f"plugin '{value}' was not found under builtin or user plugin roots "
+                "or in the workbench"
             )
         if len(matches) > 1:
             choices = ", ".join(
@@ -127,6 +152,9 @@ class PluginSourceResolver:
 
     def resolve_absolute_path(self, raw: Path) -> ResolvedPluginSource:
         resolved = raw.expanduser().resolve(strict=False)
+        for project_dir in self._project_dirs():
+            if _compare_key(project_dir) == _compare_key(resolved):
+                return self._project_source(project_dir.name)
         for root_id, root in self.policy.build_source_roots:
             root_resolved = root.resolve(strict=False)
             if not _path_is_within(resolved, root_resolved):
@@ -153,7 +181,10 @@ class PluginSourceResolver:
             )
 
         roots = ", ".join(f"{root_id}={root}" for root_id, root in self.policy.build_source_roots)
-        raise ValueError(f"absolute plugin path must be inside builtin or user plugin roots ({roots}): {raw}")
+        raise ValueError(
+            f"absolute plugin path must be inside builtin or user plugin roots ({roots}) "
+            f"or be a workbench project: {raw}"
+        )
 
     def resolve_many(
         self,
@@ -197,12 +228,32 @@ class PluginSourceResolver:
                         plugin_dir=child.resolve(strict=False),
                     )
                 )
+        for project_dir in self._project_dirs():
+            sources.append(
+                ResolvedPluginSource(
+                    root_id="project",
+                    directory_name=project_dir.name,
+                    plugin_id=self._load_plugin_id(project_dir / "plugin.toml"),
+                    plugin_dir=project_dir,
+                )
+            )
         return sorted(sources, key=self._source_sort_key)
+
+    def _project_source(self, directory_name: str) -> ResolvedPluginSource:
+        # Project directories are named after their plugin IDs, which are unique.
+        project_dir = next(
+            (item for item in self._project_dirs() if item.name == directory_name), None
+        )
+        if project_dir is None:
+            raise FileNotFoundError(f"workbench project not found: project/{directory_name}")
+        return self._source_from_dir(
+            root_id="project", directory_name=directory_name, plugin_dir=project_dir
+        )
 
     def _source_from_dir(
         self,
         *,
-        root_id: PluginCliRootId,
+        root_id: PluginSourceRootId,
         directory_name: str,
         plugin_dir: Path,
     ) -> ResolvedPluginSource:
@@ -233,5 +284,4 @@ class PluginSourceResolver:
 
     @staticmethod
     def _source_sort_key(source: ResolvedPluginSource) -> tuple[int, str]:
-        root_order = 0 if source.root_id == "builtin" else 1
-        return (root_order, source.directory_name)
+        return (_ROOT_ORDER[source.root_id], source.directory_name)

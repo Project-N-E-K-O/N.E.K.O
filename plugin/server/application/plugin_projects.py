@@ -1,8 +1,10 @@
 """Authoring workbench projects: scaffold creation and the persistent project list.
 
-Creation never loads a project into the runtime. Listed attributes are read from
-each project's ``plugin.toml`` on demand; only identities are persisted. Every
-failure leaves this module as a ``ServerDomainError`` with a ``ProjectErrorCode``.
+Registered projects are the external plugin sources of the runtime: discovery
+loads them like source plugins but never starts them automatically. Listed
+attributes are read from each project's ``plugin.toml`` on demand; only
+identities are persisted. Every failure leaves this module as a
+``ServerDomainError`` with a ``ProjectErrorCode``.
 """
 
 from __future__ import annotations
@@ -18,9 +20,17 @@ from plugin.neko_plugin_cli.core.project import (
     create_project,
     prepare_project,
 )
+from plugin import settings
+from plugin.core.state import state
+from plugin.logging_config import get_logger
 from plugin.server.application.plugins.operation_lock import (
     PluginOperationBusy,
     serialized_plugin_operation,
+)
+from plugin.server.application.plugins.project_sources import (
+    inspect_source_directory,
+    list_project_sources_sync,
+    project_source_dir,
 )
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.domain.plugin_project_errors import ProjectErrorCode as Code
@@ -28,11 +38,10 @@ from plugin.server.domain.plugin_project_errors import project_error
 from plugin.server.infrastructure import authoring_project_store as store
 from plugin.server.infrastructure import native_directory
 
+logger = get_logger("server.application.plugin_projects")
+
 PluginType = Literal["plugin", "adapter"]
 ProjectStatus = Literal["ok", "missing", "invalid"]
-# ``mode_disabled``: registered for development, but development mode is off,
-# so the source is not running.
-DevelopmentState = Literal["unmounted", "mounted", "mode_disabled"]
 
 
 @dataclass(frozen=True)
@@ -77,8 +86,9 @@ class AuthoringProject:
     plugin_type: str | None
     version: str | None
     entry: str | None
-    # None when development registrations cannot be read.
-    development: DevelopmentState | None
+    # Whether the runtime currently provides the plugin from this project.
+    loaded: bool
+    running: bool
 
 
 def source_repo_root() -> Path | None:
@@ -151,6 +161,7 @@ def _preview(spec, target: Path, files) -> ProjectPreview:
 
 def preview_project(parent_dir: str, identity: ProjectIdentity) -> ProjectPreview:
     spec, target = _target(parent_dir, identity)
+    _require_available_plugin_id(spec.plugin_id, target)
     try:
         files = prepare_project(spec, target, repo_root=source_repo_root())
     except ProjectCreationError as exc:
@@ -160,6 +171,7 @@ def preview_project(parent_dir: str, identity: ProjectIdentity) -> ProjectPrevie
 
 def _create_files(parent_dir: str, identity: ProjectIdentity) -> ProjectPreview:
     spec, target = _target(parent_dir, identity)
+    _require_available_plugin_id(spec.plugin_id, target)
     try:
         written = create_project(spec, target, repo_root=source_repo_root())
     except ProjectCreationError as exc:
@@ -188,49 +200,40 @@ async def create_and_register_project(
     return CreatedProject(**asdict(created), project_id=project.project_id)
 
 
-def _development_sources() -> tuple[bool, set[Path]] | None:
-    from plugin.server.application.plugins import development
+def _runtime_state(record: store.ProjectRecord, plugin_id: str | None) -> tuple[bool, bool]:
+    from plugin.server.application.plugins.lifecycle_service import plugin_is_running_sync
 
-    try:
-        with development.development_registry_lock:
-            enabled = development.development_enabled_sync()
-            sources = {
-                record.source_dir for record in development.list_registration_records_sync()
-            }
-    except ServerDomainError:
-        return None
-    return enabled, sources
-
-
-def _development_state(
-    source_dir: Path, sources: tuple[bool, set[Path]] | None
-) -> DevelopmentState | None:
-    if sources is None:
-        return None
-    enabled, registered = sources
-    if source_dir not in registered:
-        return "unmounted"
-    return "mounted" if enabled else "mode_disabled"
+    if plugin_id is None:
+        return False, False
+    with state.acquire_plugins_read_lock():
+        meta = state.plugins.get(plugin_id)
+    loaded = (
+        project_source_dir(meta) == record.source_dir
+        and isinstance(meta, dict)
+        and meta.get("project_id") == record.project_id
+    )
+    return loaded, loaded and plugin_is_running_sync(plugin_id)
 
 
 def _optional_string(value: object) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def _view(
-    record: store.ProjectRecord, sources: tuple[bool, set[Path]] | None
-) -> AuthoringProject:
+def _view(record: store.ProjectRecord) -> AuthoringProject:
     from plugin.neko_plugin_cli.core.plugin_source import load_plugin_source
 
     common = {
         "project_id": record.project_id,
         "source_dir": str(record.source_dir),
         "added_at": record.added_at,
-        "development": _development_state(record.source_dir, sources),
     }
-    empty = dict.fromkeys(
-        ("plugin_id", "name", "description", "author", "plugin_type", "version", "entry")
-    )
+    empty = {
+        **dict.fromkeys(
+            ("plugin_id", "name", "description", "author", "plugin_type", "version", "entry")
+        ),
+        "loaded": False,
+        "running": False,
+    }
     if not record.source_dir.is_dir():
         return AuthoringProject(**common, **empty, status="missing", error=None)
     try:
@@ -240,8 +243,11 @@ def _view(
     table = source.plugin_toml.get("plugin")
     table = table if isinstance(table, dict) else {}
     author = table.get("author")
+    loaded, running = _runtime_state(record, source.plugin_id)
     return AuthoringProject(
         **common,
+        loaded=loaded,
+        running=running,
         status="ok",
         error=None,
         plugin_id=source.plugin_id,
@@ -255,37 +261,112 @@ def _view(
 
 
 def list_projects_sync() -> list[AuthoringProject]:
-    records = store.list_records()
-    sources = _development_sources() if records else (False, set())
-    return [_view(record, sources) for record in records]
+    return [_view(record) for record in store.list_records()]
 
 
-def _validated_project_directory(source_dir: str) -> Path:
-    from plugin.neko_plugin_cli.core.plugin_source import load_plugin_source
+def _require_available_plugin_id(plugin_id: str, source_dir: Path) -> None:
+    """A plugin ID has one owner: an installed/built-in plugin or one project."""
+    for root in settings.PLUGIN_CONFIG_ROOTS:
+        if (Path(root) / plugin_id / "plugin.toml").is_file():
+            raise project_error(
+                Code.PROJECT_PLUGIN_ID_CONFLICT,
+                f"Plugin ID '{plugin_id}' is already used by an installed plugin",
+                409,
+            )
+    with state.acquire_plugins_read_lock():
+        meta = state.plugins.get(plugin_id)
+    if meta is not None and project_source_dir(meta) is None:
+        raise project_error(
+            Code.PROJECT_PLUGIN_ID_CONFLICT,
+            f"Plugin ID '{plugin_id}' is already used by an installed plugin",
+            409,
+        )
+    sources, _failures = list_project_sources_sync()
+    owner = next(
+        (item for item in sources if item.plugin_id == plugin_id and item.source_dir != source_dir),
+        None,
+    )
+    if owner is not None:
+        raise project_error(
+            Code.PROJECT_PLUGIN_ID_CONFLICT,
+            f"Plugin ID '{plugin_id}' is already provided by {owner.source_dir}",
+            409,
+        )
 
+
+def _add_sync(source_dir: str) -> tuple[store.ProjectRecord, str]:
     directory = _existing_directory(
         source_dir, Code.INVALID_PROJECT_DIRECTORY, "project directory"
     )
     try:
-        load_plugin_source(directory)
-    except (OSError, ValueError, TypeError, KeyError) as exc:
+        metadata = inspect_source_directory(directory)
+    except ValueError as exc:
         raise project_error(Code.INVALID_PROJECT_DIRECTORY, str(exc), 400) from exc
-    return directory
-
-
-def _register_sync(source_dir: str) -> AuthoringProject:
-    record = store.add_record(_validated_project_directory(source_dir))
-    return _view(record, _development_sources())
+    _require_available_plugin_id(metadata.plugin_id, directory)
+    return store.add_record(directory), metadata.plugin_id
 
 
 @serialized_plugin_operation
 async def _register_locked(source_dir: str) -> AuthoringProject:
-    return await asyncio.to_thread(_register_sync, source_dir)
+    from plugin.server.application.plugins.registry_service import PluginRegistryService
+
+    record, plugin_id = await asyncio.to_thread(_add_sync, source_dir)
+    try:
+        await PluginRegistryService().refresh_plugin(plugin_id)
+    except ServerDomainError as exc:
+        # The project is registered; its listed state shows that it did not load.
+        logger.warning("registered project did not load: plugin_id={}, error={}", plugin_id, exc.message)
+    return await asyncio.to_thread(_view, record)
+
+
+def _loaded_plugin_id(project_id: str) -> str | None:
+    """Runtime ID loaded from the project; the caller holds a plugins lock."""
+    return next(
+        (
+            plugin_id
+            for plugin_id, meta in state.plugins.items()
+            if isinstance(meta, dict) and meta.get("project_id") == project_id
+        ),
+        None,
+    )
+
+
+def _project_plugin_id_sync(project_id: str) -> str | None:
+    with state.acquire_plugins_read_lock():
+        return _loaded_plugin_id(project_id)
+
+
+def _forget_runtime_entry_sync(record: store.ProjectRecord) -> str | None:
+    with state.acquire_plugins_write_lock():
+        plugin_id = _loaded_plugin_id(record.project_id)
+        if plugin_id is not None:
+            state.plugins.pop(plugin_id, None)
+    state.invalidate_snapshot_cache("plugins")
+    return plugin_id
 
 
 @serialized_plugin_operation
 async def _remove_locked(project_id: str) -> None:
-    await asyncio.to_thread(store.remove_record, project_id)
+    from plugin.server.application.plugins.lifecycle_service import (
+        PluginLifecycleService,
+        plugin_is_running_sync,
+        revoke_hot_reload_recovery,
+    )
+
+    plugin_id = await asyncio.to_thread(_project_plugin_id_sync, project_id)
+    if plugin_id is not None and await asyncio.to_thread(plugin_is_running_sync, plugin_id):
+        try:
+            result = await PluginLifecycleService().stop_plugin(plugin_id)
+        except ServerDomainError as exc:
+            raise project_error(Code.PROJECT_STOP_FAILED, exc.message, 409) from exc
+        if not result.get("success"):
+            raise project_error(
+                Code.PROJECT_STOP_FAILED, f"Plugin '{plugin_id}' did not stop", 409
+            )
+    record = await asyncio.to_thread(store.remove_record, project_id)
+    forgotten = await asyncio.to_thread(_forget_runtime_entry_sync, record)
+    if forgotten is not None:
+        revoke_hot_reload_recovery(forgotten)
 
 
 async def register_project(source_dir: str) -> AuthoringProject:
@@ -296,7 +377,7 @@ async def register_project(source_dir: str) -> AuthoringProject:
 
 
 async def remove_project(project_id: str) -> None:
-    """Forget the project. Its files and any development mount are untouched."""
+    """Stop and unload the project's plugin, then forget it. Files are kept."""
     try:
         await _remove_locked(project_id)
     except PluginOperationBusy as exc:

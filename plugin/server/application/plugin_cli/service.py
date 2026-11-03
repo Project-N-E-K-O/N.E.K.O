@@ -232,9 +232,6 @@ class PluginCliService:
         plugins: list[str] | None = None,
         plugin_ref: dict[str, Any] | None = None,
         plugin_refs: list[dict[str, Any]] | None = None,
-        development_ref: dict[str, Any] | None = None,
-        development_refs: list[dict[str, Any]] | None = None,
-        allow_development: bool = True,
         out: str | None = None,
         target_dir: str | None = None,
         keep_staging: bool = False,
@@ -252,9 +249,6 @@ class PluginCliService:
                 plugins=plugins,
                 plugin_ref=plugin_ref,
                 plugin_refs=plugin_refs,
-                development_ref=development_ref,
-                development_refs=development_refs,
-                allow_development=allow_development,
                 cancelled=cancelled,
                 out=out,
                 target_dir=target_dir,
@@ -1942,37 +1936,13 @@ class PluginCliService:
         package_name: str | None,
         package_description: str | None,
         version: str | None,
-        development_ref: dict[str, Any] | None = None,
-        development_refs: list[dict[str, Any]] | None = None,
-        allow_development: bool = True,
         cancelled: threading.Event | None = None,
     ) -> dict[str, object]:
-        from plugin.neko_plugin_cli.core.build import build_bundle, build_plugin
+        from plugin.neko_plugin_cli.core.build import PluginBuilder
 
         try:
             policy = self._path_policy()
             target_root = policy.package_artifacts_root
-            from .development_build import build_development_sources, resolve_development_sources
-
-            development = resolve_development_sources(mode, development_ref, development_refs or []) if allow_development else []
-            if development:
-                if mode == "single" and (plugin or plugin_ref):
-                    raise ValueError("A single build accepts exactly one source")
-                ordinary = (
-                    self._resolver().list_plugins() if mode == "all" else
-                    self._resolve_plugin_sources(
-                        mode=mode, plugin=plugin, plugins=plugins or [],
-                        plugin_ref=plugin_ref, plugin_refs=plugin_refs or [],
-                    ) if plugin or plugin_ref or plugins or plugin_refs else []
-                )
-                return build_development_sources(
-                    development=development, ordinary=ordinary, mode=mode,
-                    target_root=target_root, target_dir=target_dir, out=out,
-                    keep_staging=keep_staging, bundle_id=bundle_id,
-                    package_name=package_name, package_description=package_description,
-                    version=version,
-                    cancelled=cancelled,
-                )
             sources = self._resolve_plugin_sources(
                 mode=mode,
                 plugin=plugin,
@@ -1981,6 +1951,13 @@ class PluginCliService:
                 plugin_refs=plugin_refs or [],
             )
             plugin_dirs = [source.plugin_dir for source in sources]
+            # Workbench projects live outside the plugin roots, so metadata probing
+            # imports them from their own directory, as the runtime does.
+            builder = PluginBuilder(
+                source_only_roots=tuple(
+                    source.plugin_dir for source in sources if source.root_id == "project"
+                )
+            )
             resolved_target_dir = Path(target_dir).expanduser().resolve() if target_dir else target_root
             _require_within(resolved_target_dir, target_root, field="target_dir")
             resolved_target_dir.mkdir(parents=True, exist_ok=True)
@@ -1999,7 +1976,7 @@ class PluginCliService:
                         field="out",
                     )
                 )
-                result = build_bundle(
+                result = builder.build_bundle(
                     plugin_dirs,
                     output_path,
                     bundle_id=resolved_bundle_id,
@@ -2027,7 +2004,7 @@ class PluginCliService:
                     else resolved_target_dir / f"{output_stems[source]}.neko-plugin"
                 )
                 try:
-                    result = build_plugin(
+                    result = builder.build_plugin(
                         plugin_dir,
                         output_path,
                         keep_staging=keep_staging,
@@ -2094,23 +2071,21 @@ class PluginCliService:
                 package_path=package_path,
                 target_root=target_root,
             )
-            from plugin.server.application.plugins.development import list_registration_records_sync
+            from plugin.server.application.plugins.project_sources import list_project_sources_sync
             incoming_ids = set(getattr(plan, "bundle_plugin_ids", ()) or (plan.plugin_id,))
             try:
-                registrations = list_registration_records_sync()
-            except ServerDomainError as exc:
-                if exc.code != "DEVELOPMENT_STORE_INVALID":
-                    raise
+                projects, _failures = list_project_sources_sync()
+            except ServerDomainError:
                 # Like managed discovery, installation does not depend on a
-                # readable optional development store. Preserve it for repair;
-                # all package, target and installed-identity checks still apply.
-                logger.warning("Ignoring invalid optional development registry during managed install planning")
-                registrations = []
-            conflicts = [item for item in registrations if item.plugin_id in incoming_ids]
+                # readable workbench store. Preserve it for repair; all package,
+                # target and installed-identity checks still apply.
+                logger.warning("Ignoring unreadable workbench store during managed install planning")
+                projects = []
+            conflicts = [item for item in projects if item.plugin_id in incoming_ids]
             if conflicts:
-                plan = replace(plan, action="blocked", confirmation_token="", reason="development_registration_conflict")
+                plan = replace(plan, action="blocked", confirmation_token="", reason="project_source_conflict")
                 result = asdict(plan)
-                result["development_sources"] = [str(item.source_dir) for item in conflicts]
+                result["project_sources"] = [str(item.source_dir) for item in conflicts]
                 return result
             return asdict(plan)
         except Exception as exc:

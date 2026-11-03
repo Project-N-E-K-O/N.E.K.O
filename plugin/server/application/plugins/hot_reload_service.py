@@ -3,8 +3,8 @@
 Use standard-library polling of Path.stat mtime_ns/size signatures without third-party
 watchdog dependencies or platform filesystem notifications. Each scan:
 
-1. Target registered plugin config directories under PLUGIN_CONFIG_ROOTS plus
-   source_dir from development registrations.
+1. Target the directories of registered plugins: config directories under
+   PLUGIN_CONFIG_ROOTS and the source directories of workbench projects.
 2. Collect *.py/plugin.toml signatures per directory and compare with the previous round.
 3. Mark changed plugins pending and reload after changes remain quiet for
    PLUGIN_HOT_RELOAD_DEBOUNCE seconds.
@@ -20,10 +20,8 @@ Safety differences from manual reload are confined to triggering:
   changed, confusing code edits with startup intent. Check once outside locks
   for speed, then recheck through reload_plugin(only_if_running=True) under
   operation locks, covering intervening Stop races.
-- Preflight before reload reuses development manifest/entry/dependency validation and .py compilation.
-  Broken syntax skips this attempt, preserving old instances until the next change. Development
-  plugins already have full reload_plugin preflight; provide equivalent protection here
-  for ordinary built-in/installed plugins.
+- Preflight before reload reuses manifest/entry/dependency validation and .py compilation.
+  Broken syntax skips this attempt, preserving old instances until the next change.
 - When user operations contend, wait at most one debounce window for locks;
   PluginOperationBusy defers another window rather than jumping the queue.
 - Watching assumes plugins do not write *.py/plugin.toml into their own config directories
@@ -49,7 +47,10 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
 from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.utils.source_paths import is_vendor_sync_path
-from plugin.server.application.plugins import development as development_store
+from plugin.server.application.plugins.project_sources import (
+    SOURCE_EXCLUDED_DIR_NAMES,
+    preflight_source,
+)
 from plugin.server.application.plugins.lifecycle_service import (
     PluginLifecycleService,
     _resolve_registered_config_path_sync,
@@ -98,15 +99,14 @@ _RESTART_DRAIN_SECONDS = PLUGIN_STARTUP_TIMEOUT + _RESTART_DRAIN_OVERHEAD_SECOND
 # timeout start_plugin records once it has read the config is picked up.
 _DRAIN_RECHECK_SECONDS = 1.0
 _BUSY_RETRY_SECONDS = 1.0
-# Share development-preflight directory exclusions; their .py files are not plugin source.
-_EXCLUDED_DIR_NAMES = development_store.SOURCE_EXCLUDED_DIR_NAMES
+# Share the source-preflight directory exclusions; their .py files are not plugin source.
+_EXCLUDED_DIR_NAMES = SOURCE_EXCLUDED_DIR_NAMES
 
 
 @dataclass(slots=True)
 class _WatchTarget:
     plugin_id: str
     root: Path
-    is_development: bool
 
 
 def _signature_sync(root: Path) -> dict[str, tuple[int, int]]:
@@ -160,14 +160,10 @@ def _preflight_compile_sync(root: Path) -> str | None:
     # Reuse discovery validation (entry, dependencies) and the plugin-owned
     # ``.py`` compile pass without importing the plugin in the server process.
     # Manifest IDs may differ from conflict-suffixed runtime IDs.
-    from plugin.server.application.plugins.development_service import (
-        _preflight_source_sync,
-    )
-
     try:
-        _preflight_source_sync(root.resolve(), manifest_id)
-    except ServerDomainError as exc:
-        return exc.message
+        preflight_source(root.resolve(), manifest_id)
+    except ValueError as exc:
+        return str(exc)
     except Exception as exc:
         # Any rejection keeps the running instance; an unexpected error type
         # must not escape and leave the plugin pending for an immediate retry.
@@ -430,20 +426,8 @@ class PluginHotReloadService:
                 )
 
     def _collect_targets_sync(self) -> list[_WatchTarget]:
-        """Resolve watchable directories: dev source dirs + registered configs."""
+        """Resolve watchable directories from registered plugin configs."""
         targets: dict[str, _WatchTarget] = {}
-        try:
-            for snapshot in development_store.list_registration_records_sync():
-                if snapshot.source_dir.is_dir():
-                    targets[snapshot.plugin_id] = _WatchTarget(
-                        plugin_id=snapshot.plugin_id,
-                        root=snapshot.source_dir,
-                        is_development=True,
-                    )
-        except Exception as exc:
-            logger.debug(
-                "failed to list development registrations for hot-reload: err={}", exc
-            )
         try:
             with state.acquire_plugins_read_lock():
                 registered_plugins = [
@@ -455,8 +439,6 @@ class PluginHotReloadService:
             logger.debug("failed to read plugin registry for hot-reload: err={}", exc)
             registered_plugins = []
         for plugin_id, meta in registered_plugins:
-            if plugin_id in targets:
-                continue
             config_path = _resolve_registered_config_path_sync(meta)
             candidate = (
                 config_path.parent
@@ -470,7 +452,7 @@ class PluginHotReloadService:
                         candidate = fallback
                         break
             if candidate is not None:
-                targets[plugin_id] = _WatchTarget(plugin_id, candidate, False)
+                targets[plugin_id] = _WatchTarget(plugin_id, candidate)
         return [
             target for target in targets.values()
             if plugin_is_running_sync(target.plugin_id)
@@ -496,22 +478,20 @@ class PluginHotReloadService:
             )
             return
 
-        if not target.is_development:
-            # Development reload already has full internal preflight; add syntax checks here
-            # for ordinary plugins so broken edits cannot kill healthy processes.
-            error = await asyncio.to_thread(_preflight_compile_sync, target.root)
-            if error is not None:
-                logger.warning(
-                    "hot-reload skipped (source failed preflight, keeping the "
-                    "running instance): plugin_id={}, error={}",
-                    plugin_id,
-                    error,
-                )
-                self._emit_event(
-                    "plugin_hot_reload_skipped", plugin_id, reason="preflight_failed"
-                )
-                self._pending.pop(plugin_id, None)
-                return
+        # Broken edits must not kill a healthy process.
+        error = await asyncio.to_thread(_preflight_compile_sync, target.root)
+        if error is not None:
+            logger.warning(
+                "hot-reload skipped (source failed preflight, keeping the "
+                "running instance): plugin_id={}, error={}",
+                plugin_id,
+                error,
+            )
+            self._emit_event(
+                "plugin_hot_reload_skipped", plugin_id, reason="preflight_failed"
+            )
+            self._pending.pop(plugin_id, None)
+            return
 
         self._inflight_target = target
         logger.info("hot-reload triggered: plugin_id={}", plugin_id)

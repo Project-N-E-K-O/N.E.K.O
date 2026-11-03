@@ -28,19 +28,13 @@ export const PROJECT_ERROR_MESSAGES = {
   OPEN_DIRECTORY_FAILED: 'openFolderFailed',
   INVALID_PROJECT_DIRECTORY: 'invalidProjectDirectory',
   PROJECT_ALREADY_REGISTERED: 'projectAlreadyRegistered',
+  PROJECT_PLUGIN_ID_CONFLICT: 'projectPluginIdConflict',
+  PROJECT_STOP_FAILED: 'projectStopFailed',
   PROJECT_NOT_FOUND: 'projectNotFound',
   PROJECT_REGISTER_FAILED: 'projectRegisterFailed',
   PROJECT_STORE_INVALID: 'projectStoreInvalid',
   PROJECT_STORE_UNREADABLE: 'projectStoreUnreadable',
   PROJECT_STORE_WRITE_FAILED: 'projectStoreWriteFailed',
-  PLUGIN_OPERATION_BUSY: 'operationBusy',
-} as const satisfies Record<string, AuthoringMessageKey>
-
-/** Development-mode API codes the workbench surfaces when mounting a project. */
-export const DEVELOPMENT_ERROR_MESSAGES = {
-  DEVELOPMENT_CONFLICT: 'developmentConflict',
-  DEVELOPMENT_STALE: 'developmentStale',
-  DEVELOPMENT_STORE_INVALID: 'developmentStoreInvalid',
   PLUGIN_OPERATION_BUSY: 'operationBusy',
 } as const satisfies Record<string, AuthoringMessageKey>
 
@@ -50,7 +44,7 @@ const ownKey = (messages: Record<string, AuthoringMessageKey>, code: string) =>
 /** Message key for a server error code; only declared codes match. */
 export function errorMessageKey(code: string | undefined): AuthoringMessageKey | undefined {
   if (!code) return undefined
-  return ownKey(PROJECT_ERROR_MESSAGES, code) ?? ownKey(DEVELOPMENT_ERROR_MESSAGES, code)
+  return ownKey(PROJECT_ERROR_MESSAGES, code)
 }
 
 /** Display name; unreadable projects fall back to their folder name. */
@@ -64,7 +58,7 @@ export function projectTitle(project: AuthoringProject): string {
 }
 
 /**
- * Localized message for a workbench or development-mode API failure; unknown codes
+ * Localized message for a workbench API failure; unknown codes
  * fall back to the server diagnostic, then to `authoring.<fallbackKey>`.
  */
 export function useProjectErrorMessage() {

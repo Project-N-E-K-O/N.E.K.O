@@ -44,12 +44,12 @@ export interface AuthoringProject {
   plugin_type: string | null
   version: string | null
   entry: string | null
-  /** null when development registrations cannot be read. */
-  development: 'unmounted' | 'mounted' | 'mode_disabled' | null
+  /** Whether the runtime provides the plugin from this project. */
+  loaded: boolean
+  running: boolean
 }
 
 const config = {
-  headers: { 'X-Neko-Development': '1' },
   suppressErrorMessage: true,
   timeout: 90_000,
 }
@@ -61,7 +61,7 @@ export const createPluginProject = (request: PluginProjectRequest): Promise<Crea
   post('/plugin-projects/create', request, config)
 export const registerPluginProject = (sourceDir: string): Promise<AuthoringProject> =>
   post('/plugin-projects/register', { source_dir: sourceDir }, config)
-/** Forgets the project; its files and any development mount are kept. */
+/** Stops and unloads the project plugin, then forgets the project; its files are kept. */
 export const removePluginProject = (projectId: string): Promise<unknown> =>
   del(`/plugin-projects/${encodeURIComponent(projectId)}`, config)
 
@@ -79,7 +79,7 @@ const projectDirectoryHost = () => (window as unknown as { nekoHost?: DirectoryH
 /** Mirrors PLUGIN_ID_PATTERN in plugin/neko_plugin_cli/core/project.py; the server is authoritative. */
 export const PLUGIN_ID_PATTERN = /^[a-z][a-z0-9_]*$/
 
-/** Reads the code from either `detail.code` (workbench) or `X-Error-Code` (development mode). */
+/** Reads the code from either `detail.code` (workbench) or the `X-Error-Code` header (plugin APIs). */
 export function projectErrorCode(error: unknown): string | undefined {
   return readErrorCode(error as AxiosError) || undefined
 }

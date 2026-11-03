@@ -7,11 +7,6 @@ export interface PluginDisplayText {
   shortDescription: string
 }
 
-/** Development cards belong to their own page, including responses without local provenance. */
-export function isOrdinaryPlugin(plugin: object): boolean {
-  return !('source' in plugin && plugin.source === 'development') && !('development_ref' in plugin)
-}
-
 function stringFallback(value: unknown, fallback = ''): string {
   return typeof value === 'string' && value.length > 0 ? value : fallback
 }

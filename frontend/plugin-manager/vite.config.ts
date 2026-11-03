@@ -80,7 +80,7 @@ export default defineConfig({
         secure: false
       },
       // 代理所有插件服务器 API 请求
-      '/plugin-projects/': {
+      '^/plugin-projects(?:/.*)?(?:\\?.*)?$': {
         target: BACKEND_TARGET,
         changeOrigin: true,
         secure: false,
@@ -113,11 +113,6 @@ export default defineConfig({
             if (sameOrigin) proxyReq.setHeader('origin', BACKEND_ORIGIN)
           })
         },
-      },
-      '^/plugins/development(?:/.*)?(?:\\?.*)?$': {
-        target: BACKEND_TARGET,
-        changeOrigin: true,
-        secure: false,
       },
       // 只代理精确匹配 /plugins 的 API 请求（不带路径参数）
       // 使用 bypass 函数区分 API 请求和前端路由

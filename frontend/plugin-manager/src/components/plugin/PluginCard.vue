@@ -48,7 +48,12 @@
           <el-tag size="small" type="info" class="plugin-version-tag" :title="`v${plugin.version}`">
             <span class="plugin-version-tag__label">v{{ plugin.version }}</span>
           </el-tag>
-          <SourceTag :source="plugin.install_source?.source" :has-update="hasUpdate" compact />
+          <SourceTag
+            :source="plugin.install_source?.source"
+            :registry-source="plugin.source"
+            :has-update="hasUpdate"
+            compact
+          />
         </div>
         <el-button
           v-if="availableUiAction"

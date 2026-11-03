@@ -1,6 +1,6 @@
 <template>
   <span
-    v-if="source && source !== 'unknown'"
+    v-if="displaySource && displaySource !== 'unknown'"
     class="source-tag-group"
     :class="{ 'source-tag-group--compact': compact }"
   >
@@ -35,11 +35,13 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Box, User, Upload, ShoppingCart, Top } from '@element-plus/icons-vue'
+import { Box, User, Upload, ShoppingCart, Tools, Top } from '@element-plus/icons-vue'
 import type { PluginInstallSourceChannel } from '@/types/api'
 
 interface Props {
   source?: PluginInstallSourceChannel
+  /** Workbench projects have a registry source rather than an installation record. */
+  registrySource?: string
   hasUpdate?: boolean
   compact?: boolean
 }
@@ -52,8 +54,11 @@ const props = withDefaults(defineProps<Props>(), {
 
 const { t } = useI18n()
 
+const displaySource = computed(() => (
+  props.registrySource === 'project' ? 'project' : props.source
+))
 const sourceLabel = computed(() => (
-  props.source ? t(`plugins.installSource.channel.${props.source}`) : ''
+  displaySource.value ? t(`plugins.installSource.channel.${displaySource.value}`) : ''
 ))
 const updateLabel = computed(() => t('plugins.installSource.updateAvailable'))
 
@@ -61,25 +66,28 @@ const updateLabel = computed(() => t('plugins.installSource.updateAvailable'))
  *   builtin  -> info   (neutral, "shipped with the product")
  *   manual   -> info   (same family — no emphasis needed)
  *   imported -> primary (user-driven action, worth noting)
+ *   project  -> primary (an editable workbench project)
  *   market   -> success (comes from an official channel)
  *  builtin and manual both land on info so the default card doesn't
  *  scream at the user — there are 10+ built-ins in a fresh install and
  *  they should sit in the background. */
 const tagType = computed(() => {
-  switch (props.source) {
+  switch (displaySource.value) {
     case 'builtin': return 'info'
     case 'manual': return 'info'
     case 'imported': return 'primary'
+    case 'project': return 'primary'
     case 'market': return 'success'
     default: return 'info'
   }
 })
 
 const icon = computed(() => {
-  switch (props.source) {
+  switch (displaySource.value) {
     case 'builtin': return Box
     case 'manual': return User
     case 'imported': return Upload
+    case 'project': return Tools
     case 'market': return ShoppingCart
     default: return Box
   }

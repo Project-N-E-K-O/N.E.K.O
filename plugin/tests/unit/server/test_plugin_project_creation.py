@@ -13,12 +13,17 @@ from fastapi import FastAPI
 from plugin import settings
 from plugin.neko_plugin_cli.core import project as creator
 from plugin.server.application import plugin_projects as service
-from plugin.server.application.plugins import development as development_store
-from plugin.server.application.plugins import operation_lock
+from plugin.core.state import state as runtime_state
+from plugin.server.application.plugins import lifecycle_service, operation_lock
 from plugin.server.infrastructure import authoring_project_store as store
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.domain.plugin_project_errors import ProjectErrorCode
-from plugin.server.infrastructure import development_access, native_directory
+from plugin.server.infrastructure import (
+    autostart_approvals,
+    native_directory,
+    runtime_overrides,
+)
+from plugin.server.infrastructure.mutation_auth import require_plugin_mutation_access
 from plugin.server.routes import plugin_projects as routes
 from plugin.server.routes.plugin_projects import router
 
@@ -33,30 +38,35 @@ def isolated_state(monkeypatch, tmp_path_factory):
     monkeypatch.setattr(
         operation_lock, "_operation_file_lock_path", lambda: state / "operation.lock"
     )
-    monkeypatch.setattr(development_store, "list_registration_records_sync", lambda: [])
+    # Registered projects are published to the runtime registry.
+    monkeypatch.setattr(runtime_state, "plugins", {})
+    monkeypatch.setattr(autostart_approvals, "_cache", set())
+    monkeypatch.setattr(autostart_approvals, "_load_failed", False)
+    monkeypatch.setattr(autostart_approvals, "_save_locked", lambda _value: True)
+    monkeypatch.setattr(runtime_overrides, "_cache", None)
+    monkeypatch.setattr(runtime_overrides, "_load_from_disk", lambda: {})
+    monkeypatch.setattr(runtime_overrides, "_save_to_disk", lambda _value: None)
     return state
 
 
-@pytest.fixture
-def app(monkeypatch):
-    monkeypatch.setattr(
-        development_access,
-        "_configured_development_origins",
-        lambda: frozenset({ORIGIN}),
-    )
+def make_app(*, guarded: bool = False) -> FastAPI:
     application = FastAPI()
     application.include_router(router)
+    if not guarded:
+        application.dependency_overrides[require_plugin_mutation_access] = lambda: None
     return application
 
 
-def client(app, *, peer="127.0.0.1", origin=ORIGIN, header=True):
-    headers = {"Origin": origin}
-    if header:
-        headers["X-Neko-Development"] = "1"
+@pytest.fixture
+def app():
+    return make_app()
+
+
+def client(app, *, origin=ORIGIN):
     return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app, client=(peer, 1234)),
+        transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 1234)),
         base_url=ORIGIN,
-        headers=headers,
+        headers={"Origin": origin},
     )
 
 
@@ -179,37 +189,23 @@ async def test_invalid_identity_cannot_write(app, tmp_path, changes):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "peer,origin,header",
-    [
-        ("192.168.1.4", ORIGIN, True),
-        ("127.0.0.1", "http://evil.example", True),
-        ("127.0.0.1", ORIGIN, False),
-    ],
-)
-async def test_filesystem_routes_require_local_development_access(
-    app, tmp_path, peer, origin, header
-):
-    async with client(app, peer=peer, origin=origin, header=header) as http:
+async def test_mutations_use_the_plugin_mutation_guard(tmp_path):
+    # Like every other plugin mutation, a cross-site request without the
+    # page token is rejected before any side effect.
+    async with client(make_app(guarded=True), origin="http://evil.example") as http:
         for endpoint in ("preview", "create"):
             assert (
                 await http.post(f"/plugin-projects/{endpoint}", json=request(tmp_path))
             ).status_code == 403
-        assert (await http.get("/plugin-projects")).status_code == 403
         assert (
-            await http.post(
-                "/plugin-projects/register", json={"source_dir": str(tmp_path)}
-            )
+            await http.post("/plugin-projects/register", json={"source_dir": str(tmp_path)})
         ).status_code == 403
         assert (await http.delete("/plugin-projects/any")).status_code == 403
+        assert (await http.post("/plugin-projects/pick-directory", json={})).status_code == 403
         assert (
-            await http.post("/plugin-projects/pick-directory", json={})
+            await http.post("/plugin-projects/open-directory", json={"path": str(tmp_path)})
         ).status_code == 403
-        assert (
-            await http.post(
-                "/plugin-projects/open-directory", json={"path": str(tmp_path)}
-            )
-        ).status_code == 403
+        assert (await http.get("/plugin-projects")).status_code == 200
     assert list(tmp_path.iterdir()) == []
 
 
@@ -373,7 +369,8 @@ async def test_created_project_is_listed_from_its_live_manifest(app, tmp_path):
                 "plugin_type": "plugin",
                 "version": created["version"],
                 "entry": created["entry"],
-                "development": "unmounted",
+                "loaded": True,
+                "running": False,
             }
         ]
         manifest = Path(created["project_dir"]) / "plugin.toml"
@@ -388,18 +385,41 @@ async def test_created_project_is_listed_from_its_live_manifest(app, tmp_path):
     assert saved["projects"][0].keys() == {"project_id", "source_dir", "added_at"}
 
 
-@pytest.mark.asyncio
-async def test_existing_directories_can_be_registered_once(app, tmp_path):
+def _scaffold(parent: Path, plugin_id: str) -> Path:
     from plugin.neko_plugin_cli.templates.generator import PluginSpec
 
-    target = tmp_path / "existing"
-    creator.create_project(PluginSpec("existing", quick_start=True), target, repo_root=None)
+    target = parent / plugin_id
+    creator.create_project(PluginSpec(plugin_id, quick_start=True), target, repo_root=None)
+    return target
+
+
+@pytest.mark.asyncio
+async def test_registered_project_is_a_source_plugin_that_never_autostarts(app, tmp_path):
+    from plugin.server.application.plugins.registry_service import (
+        _get_autostart_plugin_ids_sync,
+    )
+
+    async with client(app) as http:
+        created = await _create(http, tmp_path)
+    meta = runtime_state.plugins["project_example"]
+    assert meta["source"] == "project"
+    assert meta["project_id"] == created["project_id"]
+    assert meta["source_dir"] == created["project_dir"]
+    assert meta["runtime_auto_start"] is False
+    meta["runtime_auto_start"] = True
+    assert "project_example" not in _get_autostart_plugin_ids_sync()
+
+
+@pytest.mark.asyncio
+async def test_existing_directories_can_be_registered_once(app, tmp_path):
+    target = _scaffold(tmp_path, "existing")
     async with client(app) as http:
         registered = await http.post(
             "/plugin-projects/register", json={"source_dir": str(target)}
         )
         assert registered.status_code == 201, registered.text
         assert registered.json()["plugin_id"] == "existing"
+        assert registered.json()["loaded"] is True
         again = await http.post(
             "/plugin-projects/register", json={"source_dir": str(target)}
         )
@@ -408,25 +428,43 @@ async def test_existing_directories_can_be_registered_once(app, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_same_plugin_id_may_live_in_two_directories(app, tmp_path):
+async def test_a_plugin_id_has_one_project(app, tmp_path):
     first, second = tmp_path / "a", tmp_path / "b"
     first.mkdir()
     second.mkdir()
     async with client(app) as http:
         await _create(http, first)
-        await _create(http, second)
-        listed = (await http.get("/plugin-projects")).json()
-    assert [item["plugin_id"] for item in listed] == ["project_example"] * 2
+        preview = await http.post("/plugin-projects/preview", json=request(second))
+        created = await http.post("/plugin-projects/create", json=request(second))
+    assert preview.json()["detail"]["code"] == "PROJECT_PLUGIN_ID_CONFLICT"
+    assert created.json()["detail"]["code"] == "PROJECT_PLUGIN_ID_CONFLICT"
+    assert list(second.iterdir()) == []
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["relative", "missing", "not_a_plugin"])
-async def test_only_existing_plugin_directories_can_be_registered(app, tmp_path, kind):
-    path = {
-        "relative": "relative/dir",
-        "missing": str(tmp_path / "missing"),
-        "not_a_plugin": str(tmp_path),
-    }[kind]
+async def test_installed_plugins_keep_their_plugin_ids(app, tmp_path, monkeypatch):
+    installed_root = tmp_path / "installed"
+    _scaffold(installed_root, "taken")
+    monkeypatch.setattr(settings, "PLUGIN_CONFIG_ROOTS", (installed_root,))
+    project = _scaffold(tmp_path / "projects", "taken")
+    async with client(app) as http:
+        response = await http.post("/plugin-projects/register", json={"source_dir": str(project)})
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "PROJECT_PLUGIN_ID_CONFLICT"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["relative", "missing", "not_a_plugin", "renamed"])
+async def test_only_loadable_plugin_directories_can_be_registered(app, tmp_path, kind):
+    if kind == "renamed":
+        source = _scaffold(tmp_path, "named")
+        path = str(source.rename(tmp_path / "other_name"))
+    else:
+        path = {
+            "relative": "relative/dir",
+            "missing": str(tmp_path / "missing"),
+            "not_a_plugin": str(tmp_path),
+        }[kind]
     async with client(app) as http:
         response = await http.post("/plugin-projects/register", json={"source_dir": path})
         assert response.status_code == 400
@@ -436,60 +474,60 @@ async def test_only_existing_plugin_directories_can_be_registered(app, tmp_path,
 
 @pytest.mark.asyncio
 async def test_unavailable_projects_are_marked_not_dropped(app, tmp_path):
-    first, second = tmp_path / "a", tmp_path / "b"
-    first.mkdir()
-    second.mkdir()
     async with client(app) as http:
-        broken = await _create(http, first)
-        moved = await _create(http, second)
+        broken = await _create(http, tmp_path, plugin_id="broken_one")
+        moved = await _create(http, tmp_path, plugin_id="moved_one")
         (Path(broken["project_dir"]) / "plugin.toml").write_text("not toml [", encoding="utf-8")
         Path(moved["project_dir"]).rename(tmp_path / "moved")
         listed = (await http.get("/plugin-projects")).json()
-    assert [(item["status"], item["name"]) for item in listed] == [
-        ("invalid", None),
-        ("missing", None),
+    assert [(item["status"], item["name"], item["loaded"]) for item in listed] == [
+        ("invalid", None, False),
+        ("missing", None, False),
     ]
     assert listed[0]["error"]
     assert listed[1]["source_dir"] == moved["project_dir"]
 
 
 @pytest.mark.asyncio
-async def test_removing_a_project_keeps_files_and_development_mount(
+async def test_removing_a_running_project_stops_and_unloads_it_but_keeps_files(
     app, tmp_path, monkeypatch
 ):
+    stopped = []
+
+    async def stop(self, plugin_id, **_kwargs):
+        stopped.append(plugin_id)
+        return {"success": True}
+
+    monkeypatch.setattr(lifecycle_service, "plugin_is_running_sync", lambda _pid: True)
+    monkeypatch.setattr(lifecycle_service.PluginLifecycleService, "stop_plugin", stop)
     async with client(app) as http:
         created = await _create(http, tmp_path)
-        source = Path(created["project_dir"])
-        registration = development_store.DevelopmentSnapshot("dev", 1, "project_example", source)
-        monkeypatch.setattr(
-            development_store, "list_registration_records_sync", lambda: [registration]
-        )
-        assert (await http.get("/plugin-projects")).json()[0]["development"] == "mode_disabled"
-        monkeypatch.setattr(development_store, "development_enabled_sync", lambda: True)
-        assert (await http.get("/plugin-projects")).json()[0]["development"] == "mounted"
         removed = await http.delete(f"/plugin-projects/{created['project_id']}")
-        assert removed.status_code == 200
+        assert removed.status_code == 200, removed.text
         assert (await http.get("/plugin-projects")).json() == []
         again = await http.delete(f"/plugin-projects/{created['project_id']}")
+    assert stopped == ["project_example"]
+    assert "project_example" not in runtime_state.plugins
     assert again.status_code == 404
     assert again.json()["detail"]["code"] == "PROJECT_NOT_FOUND"
-    assert (source / "plugin.toml").is_file()
-    assert development_store.list_registration_records_sync() == [registration]
+    assert (Path(created["project_dir"]) / "plugin.toml").is_file()
 
 
 @pytest.mark.asyncio
-async def test_unreadable_development_store_reports_unknown_mount_state(
-    app, tmp_path, monkeypatch
-):
-    def broken():
-        raise development_store._error("broken", "DEVELOPMENT_STORE_INVALID", 500)
+async def test_a_project_that_does_not_stop_stays_registered(app, tmp_path, monkeypatch):
+    async def stop(self, plugin_id, **_kwargs):
+        return {"success": False}
 
+    monkeypatch.setattr(lifecycle_service, "plugin_is_running_sync", lambda _pid: True)
+    monkeypatch.setattr(lifecycle_service.PluginLifecycleService, "stop_plugin", stop)
     async with client(app) as http:
-        await _create(http, tmp_path)
-        monkeypatch.setattr(development_store, "list_registration_records_sync", broken)
+        created = await _create(http, tmp_path)
+        removed = await http.delete(f"/plugin-projects/{created['project_id']}")
         listed = (await http.get("/plugin-projects")).json()
-    assert listed[0]["status"] == "ok"
-    assert listed[0]["development"] is None
+    assert removed.status_code == 409
+    assert removed.json()["detail"]["code"] == "PROJECT_STOP_FAILED"
+    assert [item["project_id"] for item in listed] == [created["project_id"]]
+    assert "project_example" in runtime_state.plugins
 
 
 @pytest.mark.asyncio
@@ -503,9 +541,9 @@ async def test_corrupt_store_is_reported_and_never_overwritten(app, tmp_path):
     assert listed.status_code == 500
     assert listed.json()["detail"]["code"] == "PROJECT_STORE_INVALID"
     assert created.status_code == 500
-    assert created.json()["detail"]["code"] == "PROJECT_REGISTER_FAILED"
-    # The project is kept on disk; only the registration failed.
-    assert (tmp_path / "project_example" / "plugin.toml").is_file()
+    # The plugin ID check reads the store, so nothing is written to disk.
+    assert created.json()["detail"]["code"] == "PROJECT_STORE_INVALID"
+    assert list(tmp_path.iterdir()) == []
     assert path.read_text(encoding="utf-8") == "{"
 
 

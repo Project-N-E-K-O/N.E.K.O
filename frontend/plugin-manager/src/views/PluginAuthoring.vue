@@ -1,91 +1,79 @@
 <template>
-  <div class="authoring-workbench" data-testid="authoring-workbench">
-    <header class="authoring-toolbar">
-      <div class="authoring-toolbar-title">
-        <el-icon :size="21"><EditPen /></el-icon>
-        <h1>{{ t('authoring.title') }}</h1>
-      </div>
-      <div class="authoring-actions">
-        <el-button :icon="Reading" @click="helpVisible = true">{{ t('authoring.help') }}</el-button>
-        <el-button :icon="Refresh" :loading="loading" @click="refresh">{{
-          t('authoring.refresh')
-        }}</el-button>
-        <template v-if="!current">
-          <el-button :icon="FolderAdd" :disabled="busy" @click="addExisting">{{
-            t('authoring.addExisting')
-          }}</el-button>
-          <el-button type="primary" :icon="Plus" @click="createVisible = true">{{
-            t('authoring.newProject')
-          }}</el-button>
-        </template>
-      </div>
-    </header>
-    <el-alert
-      v-if="loadError"
-      :title="errorMessage(loadError, 'loadFailed')"
-      type="error"
-      :closable="false"
-      show-icon
-      class="authoring-create-notice"
-    />
-    <LoadingSpinner v-if="!loaded && !loadError" :loading="true" />
-    <div v-else-if="current" class="authoring-project-shell">
-      <div class="authoring-project-header">
-        <div class="authoring-project-breadcrumb">
-          <el-button text :icon="ArrowLeft" @click="goHome">{{ t('authoring.back') }}</el-button
-          ><span>/</span
-          ><el-select
-            :model-value="current.project_id"
-            :aria-label="t('authoring.back')"
-            @update:model-value="selectProject"
-            ><el-option
-              v-for="project in projects"
-              :key="project.project_id"
-              :value="project.project_id"
-              :label="projectTitle(project)"
-          /></el-select>
-        </div>
-        <div class="authoring-project-identity">
-          <span class="authoring-project-icon authoring-project-icon--large"
-            ><el-icon :size="29"><Box /></el-icon
-          ></span>
-          <div>
-            <h2>
-              {{ projectTitle(current) }} <span v-if="current.version">v{{ current.version }}</span>
-            </h2>
-            <p>{{ current.description || '—' }}</p>
+  <div class="authoring-page" data-testid="authoring-workbench">
+    <el-card>
+      <template #header>
+        <div class="authoring-header">
+          <div class="authoring-header__title">
+            <el-button v-if="requestedProject" :icon="ArrowLeft" @click="goHome">{{
+              t('authoring.back')
+            }}</el-button>
+            <h2 :title="headerTitle">{{ headerTitle }}</h2>
+          </div>
+          <div class="authoring-header__actions">
+            <el-button :icon="Refresh" :loading="loading" @click="refresh">{{
+              t('authoring.refresh')
+            }}</el-button>
+            <template v-if="current">
+              <el-button
+                :icon="FolderOpened"
+                :disabled="busy || current.status === 'missing'"
+                @click="openFolder(current)"
+                >{{ t('authoring.openFolder') }}</el-button
+              >
+              <el-button
+                v-if="current.loaded"
+                type="primary"
+                :icon="Position"
+                :disabled="busy"
+                @click="openPluginPage(current)"
+                >{{ t('authoring.openPluginPage') }}</el-button
+              >
+              <el-button
+                type="danger"
+                text
+                :icon="Delete"
+                :disabled="busy"
+                @click="confirmRemove(current)"
+                >{{ t('authoring.removeProject') }}</el-button
+              >
+            </template>
+            <template v-else-if="!requestedProject">
+              <el-button :icon="Reading" @click="helpVisible = true">{{
+                t('authoring.help')
+              }}</el-button>
+              <el-button :icon="FolderAdd" :disabled="busy" @click="addExisting">{{
+                t('authoring.addExisting')
+              }}</el-button>
+              <el-button type="primary" :icon="Plus" @click="createVisible = true">{{
+                t('authoring.newProject')
+              }}</el-button>
+            </template>
           </div>
         </div>
-        <div class="authoring-project-meta">
-          <code>{{ current.source_dir }}</code>
-        </div>
-      </div>
-      <section class="authoring-content" :aria-label="t('authoring.projectDetails')">
-        <AuthoringProjectDetails
-          :project="current"
-          :busy="busy"
-          @open-folder="openFolder(current)"
-          @mount="mount(current)"
-          @go-development="router.push('/development')"
-          @remove="confirmRemove(current)"
-        />
-      </section>
-    </div>
-    <EmptyState
-      v-else-if="requestedProject"
-      :description="loaded ? t('authoring.projectNotFound') : ''"
-      :icon="FolderOpened"
-    >
-      <el-button :icon="ArrowLeft" @click="goHome">{{ t('authoring.back') }}</el-button>
-    </EmptyState>
-    <div v-else-if="loaded" class="authoring-home">
+      </template>
+      <el-alert
+        v-if="loadError"
+        :title="errorMessage(loadError, 'loadFailed')"
+        type="error"
+        :closable="false"
+        show-icon
+        class="authoring-create-notice"
+      />
+      <LoadingSpinner v-if="!loaded && !loadError" :loading="true" />
+      <AuthoringProjectDetails v-else-if="current" :project="current" />
+      <EmptyState
+        v-else-if="requestedProject"
+        :description="loaded ? t('authoring.projectNotFound') : ''"
+        :icon="FolderOpened"
+      />
       <AuthoringProjectList
+        v-else-if="loaded"
         ref="projectList"
         :projects="projects"
         @open="openProject"
         @create="createVisible = true"
       />
-    </div>
+    </el-card>
     <CreatePluginDialog v-model:visible="createVisible" @created="onCreated" />
     <AuthoringHelpDrawer v-model:visible="helpVisible" />
   </div>
@@ -98,11 +86,11 @@ import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   ArrowLeft,
-  Box,
-  EditPen,
+  Delete,
   FolderAdd,
   FolderOpened,
   Plus,
+  Position,
   Reading,
   Refresh,
 } from '@element-plus/icons-vue'
@@ -123,7 +111,6 @@ import {
   type AuthoringProject,
   type CreatedPluginProject,
 } from '@/api/pluginProjects'
-import { mountDevelopment } from '@/api/development'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -136,6 +123,9 @@ const requestedProject = computed(() =>
 const current = computed(() =>
   projects.value.find((project) => project.project_id === requestedProject.value)
 )
+const headerTitle = computed(() =>
+  current.value ? projectTitle(current.value) : t('authoring.title')
+)
 const createVisible = ref(false)
 const helpVisible = ref(false)
 const busy = ref(false)
@@ -143,13 +133,10 @@ const projectList = ref<InstanceType<typeof AuthoringProjectList>>()
 onMounted(refresh)
 
 function openProject(projectId: string) {
-  void router.push({ path: '/development/workbench', query: { project: projectId } })
+  void router.push({ path: '/workbench', query: { project: projectId } })
 }
 function goHome() {
-  void router.push({ path: '/development/workbench' })
-}
-function selectProject(projectId: string | number) {
-  openProject(String(projectId))
+  void router.push({ path: '/workbench' })
 }
 async function onCreated(project: CreatedPluginProject) {
   ElMessage.success(t('authoring.creationComplete'))
@@ -189,25 +176,14 @@ function openFolder(project: AuthoringProject) {
   )
 }
 
-async function mount(project: AuthoringProject) {
-  await action(
-    async () => {
-      const result = await mountDevelopment(project.source_dir)
-      if (result.error) throw new Error(result.error)
-    },
-    (error) => t('authoring.mountFailed', { reason: errorMessage(error, 'actionFailed') })
-  )
-  await refresh()
+function openPluginPage(project: AuthoringProject) {
+  if (project.plugin_id) void router.push(`/plugins/${encodeURIComponent(project.plugin_id)}`)
 }
 
 async function confirmRemove(project: AuthoringProject) {
-  const key =
-    project.development === 'mounted' || project.development === 'mode_disabled'
-      ? 'authoring.removeConfirmMounted'
-      : 'authoring.removeConfirm'
   try {
     await ElMessageBox.confirm(
-      t(key, { name: projectTitle(project), path: project.source_dir }),
+      t('authoring.removeConfirm', { name: projectTitle(project), path: project.source_dir }),
       t('authoring.removeProject'),
       {
         type: 'warning',

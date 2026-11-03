@@ -127,12 +127,10 @@ const navItems = computed(() => [
   { path: '/model-api', icon: Connection, label: t('modelApi.title') },
   { path: '/runs', icon: VideoPlay, label: t('nav.runs'), guideId: 'sidebar-runs' },
   { path: '/logs/_server', icon: Monitor, label: t('nav.serverLogs'), guideId: 'sidebar-server-logs' },
-  { path: '/development', icon: Tools, label: t('development.navTitle'), guideId: 'sidebar-development' },
-  { path: '/development/workbench', icon: Tools, label: t('authoring.title') },
+  { path: '/workbench', icon: Tools, label: t('authoring.title') },
 ])
 
 function isRouteActive(path: string): boolean {
-  if (path === '/development') return route.path === path
   if (path === '/') return route.path === '/'
   return route.path.startsWith(path)
 }

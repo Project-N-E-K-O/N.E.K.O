@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional, Set
 from fastapi import WebSocket
 
 from plugin.core.state import state
-from plugin.server.application.plugins.development_service import stop_ordinary_plugin as stop_plugin
+from plugin.server.application.plugins import PluginLifecycleService
 from plugin.runs.manager import RunCreateRequest, get_run, list_export_for_run, list_runs, cancel_run, create_run
 
 
@@ -325,7 +325,7 @@ async def ws_admin_endpoint(ws: WebSocket) -> None:
                     if not isinstance(pid, str) or not pid.strip():
                         await _send_resp(req_id, False, error="plugin_id required")
                         continue
-                    out = await stop_plugin(pid.strip())
+                    out = await PluginLifecycleService().stop_plugin(pid.strip())
                     await _send_resp(req_id, True, result=out)
                     continue
 
