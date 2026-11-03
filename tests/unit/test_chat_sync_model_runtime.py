@@ -129,6 +129,11 @@ async def test_model_binding_waits_for_renderer_and_rejects_a_newer_unbind_race(
             _, _, commit = await runtime._bound_transport(UID)
             await commit(runtime.models.store.put, DOMAIN.key(), state)
         service.model_revision = 2
+        if seen_revision > service.model_revision:
+            with pytest.raises(ValueError, match='^invalid_model_response$'):
+                await runtime.models.finish(UID, status['candidate']['token'], True)
+            assert (await runtime.models.status(UID))['candidate'] == status['candidate']
+            service.model_revision = seen_revision
         assert await runtime.models.finish(UID, status["candidate"]["token"], True) is False
         assert adapter.applied == 0
         assert not (await runtime.models.status(UID)).get('candidate')
@@ -422,6 +427,117 @@ async def pending_model_runtime(tmp_path, *, uploaded=False, large=False):
     await commit(runtime.models.store.put, DOMAIN.key(), {'revision': 1, 'selection': '["live2d","/A.model3.json"]',
                  'remote': service.model, 'pending': pending})
     return runtime, service, adapter, pending
+
+
+@pytest.mark.asyncio
+async def test_metadata_revision_survives_a_failed_full_record_read(tmp_path):
+    runtime, service, _, _ = await pending_model_runtime(tmp_path, uploaded=True)
+    try:
+        await runtime.models.step(UID)
+        service.model_revision = 3
+        offline = True
+        async def observed(request):
+            if request.url.path.endswith('/model-binding') and not request.url.params.get('metadataOnly') and offline:
+                raise httpx.ConnectError('synthetic transport loss', request=request)
+            return await service.request(request)
+        await runtime.http.aclose()
+        runtime.http = httpx.AsyncClient(transport=httpx.MockTransport(observed))
+        with pytest.raises(ValueError, match='^chat_sync_unavailable$'):
+            await runtime.models.step(UID)
+        assert runtime.models.store.get(DOMAIN.key())['seen_revision'] == 3
+        offline = False
+        service.model_revision = 2
+        with pytest.raises(ValueError, match='^invalid_model_response$'):
+            await runtime.models.step(UID)
+        assert runtime.models.store.get(DOMAIN.key())['revision'] == 2
+        assert len(service.puts) == 1
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_existing_model_conflict_retains_each_new_cloud_revision(tmp_path):
+    runtime, service, adapter, _ = await pending_model_runtime(tmp_path, uploaded=True)
+    try:
+        await runtime.models.step(UID)
+        adapter.kind, adapter.path = 'vrm', ''
+        service.model_revision = 3
+        service.model = {'schemaVersion': 1, 'model': None}
+        await runtime.models.step(UID)
+        assert runtime.models.store.get(DOMAIN.key())['conflict']['revision'] == 3
+        service.model_revision = 4
+        await runtime.models.step(UID)
+        await runtime.models.resolve(UID, 'cloud')
+        service.model_revision = 3
+        with pytest.raises(ValueError, match='^invalid_model_response$'):
+            await runtime.models.step(UID)
+        assert runtime.models.store.get(DOMAIN.key())['seen_revision'] == 4
+        service.model_revision = 4
+        await runtime.models.step(UID)
+        assert (await runtime.models.status(UID)).get('candidate')
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('kind', ['vrm', 'live3d', 'pngtuber'])
+async def test_keeping_a_non_live2d_model_keeps_its_cloud_checkpoint_consistent(tmp_path, kind):
+    runtime, service, adapter, _ = await pending_model_runtime(tmp_path, uploaded=True)
+    try:
+        await runtime.models.step(UID)
+        adapter.kind, adapter.path = kind, ''
+        service.model_revision = 3
+        service.model = {'schemaVersion': 1, 'model': None}
+        await runtime.models.step(UID)
+        await runtime.models.resolve(UID, 'local')
+        for _ in range(3):
+            await runtime.models.step(UID)
+        state = runtime.models.store.get(DOMAIN.key())
+        assert state['revision'] == 3 and state['remote'] == service.model
+        assert state['selection'] == canonical([kind, '']).decode()
+        assert await runtime.models.status(UID) == {'conflict': False, 'failed': False}
+        assert adapter.kind == kind and adapter.path == ''
+        assert len(service.puts) == 1
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['advance', 'rollback', 'content', 'unchanged'])
+async def test_model_installation_rechecks_and_retains_the_cloud_checkpoint(tmp_path, monkeypatch, change):
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    runtime, service, adapter, pending = await pending_model_runtime(tmp_path, uploaded=True)
+    adapter.config = SimpleNamespace(live2d_dir=tmp_path / 'installed')
+    async def download(_domain, _request, _package, guard):
+        await guard()
+        if change == 'advance':
+            service.model_revision = 4
+        elif change == 'rollback':
+            service.model_revision = 2
+        elif change == 'content':
+            service.model = {'schemaVersion': 1, 'model': None}
+        return Path(pending['file']['path'])
+    try:
+        await runtime.models.step(UID)
+        service.model_revision = 3
+        monkeypatch.setattr(runtime.models, 'download', download)
+        if change in ('rollback', 'content'):
+            with pytest.raises(ValueError, match='^invalid_model_response$'):
+                await runtime.models.step(UID)
+        else:
+            await runtime.models.step(UID)
+        state = runtime.models.store.get(DOMAIN.key())
+        assert state['seen_revision'] == (4 if change == 'advance' else 3)
+        assert bool(state.get('candidate')) is (change == 'unchanged')
+        assert state['revision'] == 2 and len(service.puts) == 1
+        if change == 'advance':
+            service.model_revision = 3
+            with pytest.raises(ValueError, match='^invalid_model_response$'):
+                await runtime.models.step(UID)
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.asyncio

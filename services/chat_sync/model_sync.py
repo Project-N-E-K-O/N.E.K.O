@@ -206,6 +206,9 @@ class DesktopModelSync:
                 metadata = await self._head(domain, request, metadata_only=True)
                 if metadata['revision'] < minimum:
                     raise ValueError('invalid_model_response')
+                if metadata['revision'] > minimum:
+                    state['seen_revision'] = metadata['revision']
+                    await commit(self.store.put, key, state)
                 minimum = metadata['revision']
                 if metadata['revision'] == state['revision']:
                     if metadata['recordHash'] != hashlib.sha256(encode(state['remote'])).hexdigest():
@@ -219,13 +222,17 @@ class DesktopModelSync:
                 raise ValueError('invalid_model_response')
             had_state = state is not None
             if state is None:
-                state = {"revision": 0, "selection": current["selection"] if head["record"] else ""}
+                state = {"revision": 0, "selection": current["selection"] if head["record"] else "", 'seen_revision': head['revision']}
                 await commit(self.store.put, key, state)
             if state['revision'] > 0 and state.get('remote'):
                 await self._cleanup_uploaded_package(state['remote'], commit)
             if head["revision"] < max(state["revision"], state.get("seen_revision", 0)):
                 raise ValueError("invalid_model_response")
-            if state.pop('error', False):
+            checkpoint_changed = state.pop('error', False)
+            if head['revision'] > max(state['revision'], state.get('seen_revision', 0)):
+                state['seen_revision'] = head['revision']
+                checkpoint_changed = True
+            if checkpoint_changed:
                 await commit(self.store.put, key, state)
             state["seen_revision"] = head["revision"]
             if state.get("conflict"):
@@ -321,8 +328,15 @@ class DesktopModelSync:
                     readable = getattr(adapter.config, "readable_live2d_dir", None)
                     prefix = "/user_live2d_local" if readable and Path(readable).resolve() != Path(adapter.config.live2d_dir).resolve() else "/user_live2d"
                     path = prefix + "/cloud-sync/" + installed.relative_to(destination).as_posix()
-                if (await self._head(domain, request))["revision"] != head["revision"]:
+                latest = await self._head(domain, request)
+                if latest['revision'] < max(state['revision'], state.get('seen_revision', 0)):
+                    raise ValueError('invalid_model_response')
+                if latest['revision'] != head['revision']:
+                    state['seen_revision'] = max(state.get('seen_revision', 0), latest['revision'])
+                    await commit(self.store.put, key, state)
                     return
+                if encode(latest['record']) != encode(head['record']):
+                    raise ValueError('invalid_model_response')
                 state["candidate"] = {"token": uuid4().hex, "revision": head["revision"], "record": record,
                                       "expected": current["selection"], "path": path}
                 await commit(self.store.put, key, state)
@@ -400,6 +414,8 @@ class DesktopModelSync:
                 await commit(self.store.put, domain.key(), state)
                 return False
             latest = await self._head(domain, request)
+            if latest['revision'] < max(state['revision'], state.get('seen_revision', 0)):
+                raise ValueError('invalid_model_response')
             if latest['revision'] != candidate['revision']:
                 state['seen_revision'] = max(state.get('seen_revision', 0), latest['revision'])
                 state.pop('candidate')
@@ -427,6 +443,8 @@ class DesktopModelSync:
                 remote = state.pop("conflict")
                 state.pop("pending", None); state.pop("candidate", None)
                 state["revision"] = remote["revision"] if action == "local" else remote["revision"] - 1
+                if action == 'local':
+                    state['remote'] = remote['record']
                 state["selection"] = "" if action == "local" else (await self.adapter.read(uid))["selection"]
             await commit(self.store.put, domain.key(), state)
             await commit(self.runtime.scheduler.retry_model, domain.key())
