@@ -1109,6 +1109,10 @@ async def test_cat_actions_require_ready_and_reject_once_finalization_starts(tmp
         assert status == 409 and body["code"] == "VISIT_DISPLAY_UNBOUND"
         assert not [m for m in wire.sent["host"] if m.get("t") == "cat_action"]
         host.host.bound = True
+        host.rt._display_backlogged = lambda: True
+        status, body = await host.rt.request_cat_action("rest")
+        assert status == 429 and body["code"] == "VISIT_E_BUSY"
+        del host.rt._display_backlogged
         assert host.rt.request_finalize("route_end")
         status, body = await host.rt.request_cat_action("rest")
         assert status == 409 and body["code"] == "VISIT_CAT_SCENE_NOT_ACTIVE"

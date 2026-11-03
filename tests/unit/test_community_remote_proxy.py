@@ -255,6 +255,14 @@ def test_visit_invitation_relays_the_single_sender_selected_mode(proxy, monkeypa
         "visit_id": "A" * 22,
         "visit_mode": "tiger",
     }).status_code == 400
+    # Only a missing field defaults to model; explicit falsy or non-string values are refused.
+    for bad_mode in ("", False, 0, None, ["cat"]):
+        assert proxy.post("/api/community/visit-invitations", json={
+            "target_user_id": target_id,
+            "visit_id": "A" * 22,
+            "visit_mode": bad_mode,
+        }).status_code == 400, bad_mode
+    assert len(seen) == 1
 
 
 def test_visit_hub_preserves_real_mutual_presence(proxy, monkeypatch):

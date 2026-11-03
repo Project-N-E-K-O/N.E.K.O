@@ -446,14 +446,14 @@ async def send_visit_invitation(request: Request):
         return JSONResponse({"detail": "invalid_payload"}, status_code=400)
     target = str(payload.get("target_user_id") or "") if isinstance(payload, dict) else ""
     visit_id = str(payload.get("visit_id") or "") if isinstance(payload, dict) else ""
-    visit_mode = str(payload.get("visit_mode") or "model") if isinstance(payload, dict) else "model"
+    visit_mode = payload.get("visit_mode", "model") if isinstance(payload, dict) else "model"
     try:
         uuid.UUID(target)
     except ValueError:
         return JSONResponse({"detail": "invalid_target_user"}, status_code=400)
     if VISIT_ID_RE.fullmatch(visit_id) is None:
         return JSONResponse({"detail": "invalid_visit_id"}, status_code=400)
-    if visit_mode not in {"model", "cat"}:
+    if not isinstance(visit_mode, str) or visit_mode not in {"model", "cat"}:
         return JSONResponse({"detail": "invalid_visit_mode"}, status_code=400)
     upstream_payload = {"visit_id": visit_id, "visit_mode": visit_mode}
     expires_at = payload.get("expires_at")

@@ -93,6 +93,9 @@ async function main() {
   let failIntents = 0;
   let loseIntentResponse = false;
   let acceptedLostIntent = 0;
+  let refuseThenStaleSame = false;
+  let refusedIntent = 0;
+  const storage = new Map();
 
   function schedule(fn, delay, interval) {
     const id = nextTimer++;
@@ -142,6 +145,10 @@ async function main() {
     Promise,
     setTimeout: (fn, delay) => schedule(fn, delay, 0),
     clearTimeout: cancel,
+    sessionStorage: {
+      getItem: (key) => (storage.has(key) ? storage.get(key) : null),
+      setItem: (key, value) => { storage.set(key, String(value)); },
+    },
     setInterval: (fn, delay) => schedule(fn, delay, Math.max(1, Number(delay) || 1)),
     clearInterval: cancel,
     addEventListener(type, fn) { (listeners.set(type, listeners.get(type) || []), listeners.get(type).push(fn)); },
@@ -166,6 +173,15 @@ async function main() {
         if (failIntents > 0) {
           failIntents -= 1;
           return Promise.resolve(false);
+        }
+        if (refuseThenStaleSame) {
+          refuseThenStaleSame = false;
+          refusedIntent = payload.intent_id;
+          return Promise.resolve({ ok: false, status: 409 });
+        }
+        if (refusedIntent && payload.intent_id === refusedIntent) {
+          refusedIntent = 0;
+          return Promise.resolve({ stale: true, current_intent_id: payload.intent_id });
         }
         if (loseIntentResponse) {
           loseIntentResponse = false;
@@ -280,7 +296,10 @@ async function main() {
   assert.equal(win.NekoVisitCatWorld.snapshot().simulation_started, true);
   assert.equal(win.NekoVisitCatWorld.snapshot().world.yarn_x_q16, 30000);
   assert.ok(calls.state.some((item) => item.phase === 'commit'));
-  assert.ok(win.NekoVisitCatWorld.snapshot().published_world_seq >= 41);
+  // The first commit came back stale at a cursor this page never applied: it
+  // waits for that recovery commit instead of overwriting it with its default.
+  const staleWaitCount = calls.state.length;
+  assert.equal(win.NekoVisitCatWorld.snapshot().published_world_seq, 40);
 
   // A cached recovery commit may arrive after the replay wait.  A cursor newer
   // than this host's publications replaces the default world; a later old echo cannot.
@@ -293,10 +312,18 @@ async function main() {
       collision_seq: 0,
     };
   }
-  emit('neko-visit-cat-world', worldFrame(50, 47000, 'commit'));
+  await advance(500);
+  assert.equal(calls.state.length, staleWaitCount);
+  emit('neko-visit-cat-world', worldFrame(40, 47000, 'commit'));
   emit('neko-visit-cat-world', worldFrame(1, 10000));
   assert.equal(win.NekoVisitCatWorld.snapshot().world.yarn_x_q16, 47000);
-  assert.equal(win.NekoVisitCatWorld.snapshot().published_world_seq, 50);
+  assert.equal(win.NekoVisitCatWorld.snapshot().published_world_seq, 40);
+  await advance(1000);
+  assert.ok(calls.state.slice(staleWaitCount).every((item) => item.world_seq > 40));
+  // A later recovery commit with a newer cursor still replaces the world.
+  emit('neko-visit-cat-world', worldFrame(500, 47000, 'commit'));
+  assert.equal(win.NekoVisitCatWorld.snapshot().world.yarn_x_q16, 47000);
+  assert.equal(win.NekoVisitCatWorld.snapshot().published_world_seq, 500);
 
   // Peer intent is automatically calculated by the host. No approval surface exists.
   emit('neko-visit-cat-world-intent', {
@@ -423,6 +450,18 @@ async function main() {
   await flush();
   await advance(8000);
 
+  // A cat standing exactly on the yarn still pushes it out instead of trapping it.
+  const resting = win.NekoVisitCatWorld.snapshot().world;
+  emit('neko-visit-cat-pose', {
+    type: 'visit_cat_pose', visit_id: VID, actor: 'peer', phase: 'sample',
+    motion_id: 9000, sample_seq: 1, x_q16: resting.yarn_x_q16, y_q16: resting.yarn_y_q16,
+  });
+  await advance(200);
+  const pushed = win.NekoVisitCatWorld.snapshot().world;
+  assert.ok(pushed.collision_seq > resting.collision_seq);
+  assert.notEqual(pushed.yarn_y_q16, resting.yarn_y_q16);
+  await advance(8000);
+
   // Ending immediately stops host calculation; it cannot start again behind
   // the exit confirmation flow.
   lifecycle('ending', 'host');
@@ -463,6 +502,20 @@ async function main() {
   await flush();
   assert.equal(calls.intent.length, beforeHeld + 1);
 
+  // A refused attempt never landed: a stale reply at its own id is renumbered,
+  // not taken as acceptance.
+  const beforeRefused = calls.intent.length;
+  refuseThenStaleSame = true;
+  scene.querySelector('[data-visit-cat-shared-object="question"]').click();
+  await flush();
+  await advance(2000);
+  const refused = calls.intent.slice(beforeRefused);
+  assert.deepEqual(refused.map((item) => item.kind), ['question_tap', 'question_tap', 'question_tap']);
+  assert.equal(refused[0].intent_id, refused[1].intent_id);
+  assert.ok(refused[2].intent_id > refused[1].intent_id);
+  const storageKey = 'nekoVisitCatWorldIntentSequence:' + VID;
+  assert.equal(Number(storage.get(storageKey)), refused[2].intent_id);
+
   // Leaving removes shared objects and cancels all future computation.
   const statesBeforeExit = calls.state.length;
   emit('neko:visit-cat-scene-deactivated', { visit_id: VID });
@@ -470,6 +523,16 @@ async function main() {
   assert.equal(scene.querySelector('[data-visit-cat-shared-object="yarn"]'), null);
   await advance(1000);
   assert.equal(calls.state.length, statesBeforeExit);
+
+  // A reloaded page of the same visit continues after the ids it already used.
+  storage.set(storageKey, '5000');
+  lifecycle('started', 'guest');
+  emit('neko-visit-cat-world', worldFrame(8, 40000));
+  const beforeReload = calls.intent.length;
+  scene.querySelector('[data-visit-cat-shared-object="question"]').click();
+  await flush();
+  assert.equal(calls.intent[beforeReload].intent_id, 5001);
+  emit('neko:visit-cat-scene-deactivated', { visit_id: VID });
 
   process.stdout.write(JSON.stringify({
     guestIntentCount: calls.intent.length,
@@ -498,7 +561,7 @@ def test_cat_visit_shared_world_is_host_authoritative_and_bounded() -> None:
     )
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout)
-    assert result["guestIntentCount"] == 14
+    assert result["guestIntentCount"] == 18
     assert result["hostStateCount"] >= 3
     assert result["geometryEvents"] >= 3
     assert result["finalActive"] is False

@@ -2094,6 +2094,9 @@ class VisitRuntime(ReceiveMixin, TalkMixin):
         if not self.host.display_bound():
             # The local echo would be dropped unbound while the peer still plays the action.
             return 409, {"ok": False, "code": "VISIT_DISPLAY_UNBOUND"}
+        if self._display_backlogged():
+            # The local echo is not droppable; a slow page must not queue lifecycle frames behind it.
+            return 429, {"ok": False, "code": "VISIT_E_BUSY"}
         payload = {
             "t": "cat_action",
             "v": 1,

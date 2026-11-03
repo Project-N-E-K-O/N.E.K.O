@@ -2947,7 +2947,8 @@
                     ? result.body.current_intent_id : null
             };
         }
-        return false;
+        // status 0 means no response came back: the request may still have landed.
+        return { ok: false, status: result.status };
     }
 
     async function requestCatWorldPointer(payload) {

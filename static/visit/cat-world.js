@@ -23,6 +23,7 @@
   var INTENT_RETRY_MAX_MS = 4000;
   var HELD_RELEASE_MIN_MS = 1500;
   var HELD_RELEASE_MAX_MS = 8000;
+  var RECOVERY_WAIT_MS = 1000;
   var INTENT_KINDS = {
     yarn_spawn: true,
     yarn_grab: true,
@@ -101,6 +102,8 @@
     outboundRetryMs: 0,
     heldReleaseTimer: 0,
     heldReleaseMs: 0,
+    recoveryWaitTimer: 0,
+    recoveryWaitSeq: 0,
     lastTickAt: 0,
     drag: null,
     dragAuthority: null,
@@ -149,8 +152,26 @@
     };
   }
 
+  // Intent ids continue across a reload of the same visit, so a fresh page
+  // never reuses an id the runtime already holds as its cursor.
+  var INTENT_SEQUENCE_KEY = 'nekoVisitCatWorldIntentSequence:';
+
+  function storedIntentSequence(visitId) {
+    try {
+      var value = Number(global.sessionStorage.getItem(INTENT_SEQUENCE_KEY + visitId));
+      return Number.isSafeInteger(value) && value > 0 && value <= U32_MAX ? value : 0;
+    } catch (_) { return 0; }
+  }
+
+  function storeIntentSequence() {
+    if (!state.visitId) return;
+    try { global.sessionStorage.setItem(INTENT_SEQUENCE_KEY + state.visitId, String(state.intentSequence)); }
+    catch (_) { /* ids still increase within this page */ }
+  }
+
   function nextIntentId() {
     state.intentSequence = nextU32(state.intentSequence);
+    storeIntentSequence();
     return state.intentSequence;
   }
 
@@ -168,17 +189,19 @@
   // A failed reliable intent (local HTTP error, VISIT_E_BUSY) is retried in
   // place: later intents keep their order, and a lost release cannot leave the
   // yarn held on the host after the local drag has already ended.
-  function callIntentApi(payload, visitId, token, delayMs) {
+  function callIntentApi(payload, visitId, token, delayMs, mayHaveLanded) {
     return callApi('sendIntent', payload).then(function (result) {
-      // A retry whose earlier attempt landed (only the response was lost) comes
-      // back stale at exactly this id: that is acceptance, not an old id to renumber.
-      if (delayMs && result && result.stale === true
+      // An earlier attempt that got no response may have landed: a retry that
+      // comes back stale at exactly this id is that acceptance, not an old id
+      // to renumber. A refused attempt never landed, so it is not trusted.
+      if (mayHaveLanded && result && result.stale === true
           && Number(result.current_intent_id) === payload.intent_id) return { ok: true };
       if ((result && (result.ok === true || result.stale)) || !intentStillCurrent(visitId, token)) return result;
+      var noResponse = !result || result.status === 0;
       var delay = delayMs ? Math.min(INTENT_RETRY_MAX_MS, delayMs * 2) : INTENT_RETRY_MIN_MS;
       return new Promise(function (resolve) { setTimeout(resolve, delay); }).then(function () {
         if (!intentStillCurrent(visitId, token)) return result;
-        return callIntentApi(payload, visitId, token, delay);
+        return callIntentApi(payload, visitId, token, delay, mayHaveLanded || noResponse);
       });
     });
   }
@@ -213,6 +236,7 @@
       if (!state.active || state.visitId !== visitId || state.intentToken !== token
           || !Number.isSafeInteger(cursor)) return result;
       state.intentSequence = Math.max(state.intentSequence, cursor);
+      storeIntentSequence();
       state.sentIntentCursor = Math.max(state.sentIntentCursor, cursor);
       var staleId = payload.intent_id;
       var retryId = nextIntentId();
@@ -527,7 +551,7 @@
 
   function drainOutbound() {
     if (state.outboundBusy || !state.outbound.length || !state.active || state.ending
-        || state.side !== 'host') return;
+        || state.side !== 'host' || state.recoveryWaitSeq) return;
     state.outboundBusy = true;
     var item = state.outbound.shift();
     var token = state.outboundToken;
@@ -544,6 +568,16 @@
       if (result && result.stale === true && Number.isSafeInteger(cursor)
           && cursor >= 1 && cursor <= U32_MAX) {
         state.publishedWorldSeq = Math.max(state.publishedWorldSeq, cursor);
+        if (cursor > state.lastAppliedWorldSeq && !item.recoveryWaited) {
+          // The runtime holds a newer world this page never applied, most likely
+          // a recovery commit still on its way: wait for it briefly instead of
+          // overwriting it with this page's default world.
+          item.recoveryWaited = true;
+          state.outbound.unshift(item);
+          state.outboundBusy = false;
+          waitForRecovery(cursor);
+          return;
+        }
         if (!item.retried) {
           item.retried = true;
           state.outbound.unshift(item);
@@ -562,6 +596,24 @@
       state.outboundBusy = false;
       drainOutbound();
     });
+  }
+
+  function waitForRecovery(seq) {
+    state.recoveryWaitSeq = seq;
+    if (state.recoveryWaitTimer) clearTimeout(state.recoveryWaitTimer);
+    state.recoveryWaitTimer = setTimeout(function () {
+      state.recoveryWaitTimer = 0;
+      state.recoveryWaitSeq = 0;
+      drainOutbound();
+    }, RECOVERY_WAIT_MS);
+  }
+
+  function endRecoveryWait() {
+    if (state.recoveryWaitTimer) clearTimeout(state.recoveryWaitTimer);
+    state.recoveryWaitTimer = 0;
+    state.recoveryWaitSeq = 0;
+    // Everything queued was computed from the world the recovery replaced.
+    state.outbound = [];
   }
 
   function scheduleOutboundRetry() {
@@ -624,12 +676,13 @@
     var dy = state.world.yarn_y_q16 - pose.y_q16;
     var distance = Math.hypot(dx, dy);
     var minimum = state.settings.yarnRadiusQ16 + state.settings.catRadiusQ16;
-    if (!distance || distance >= minimum) {
+    if (distance >= minimum) {
       state.yarnContacts[actor] = false;
       return false;
     }
-    var nx = dx / distance;
-    var ny = dy / distance;
+    // Exactly on top of the cat has no direction of its own: push the yarn up.
+    var nx = distance ? dx / distance : 0;
+    var ny = distance ? dy / distance : -1;
     state.world.yarn_x_q16 = clampInt(pose.x_q16 + nx * minimum, 0, Q16_MAX);
     state.world.yarn_y_q16 = clampInt(pose.y_q16 + ny * minimum, 0, Q16_MAX);
     var impulse = 1450;
@@ -763,8 +816,10 @@
     // frame no newer than what this controller already published is an echo;
     // a higher cursor is authoritative recovery and must replace the default
     // world even if it arrived after the short replay wait.
+    var awaitedRecovery = state.recoveryWaitSeq && frame.world_seq >= state.recoveryWaitSeq;
     if (state.side === 'host' && state.simulationStarted
-        && frame.world_seq <= previousPublished) return true;
+        && frame.world_seq <= previousPublished && !awaitedRecovery) return true;
+    if (awaitedRecovery) endRecoveryWait();
     state.world = {
       world_seq: frame.world_seq,
       yarn_active: frame.yarn_active,
@@ -834,6 +889,7 @@
     if (state.collisionPulseTimer) clearTimeout(state.collisionPulseTimer);
     if (state.outboundRetryTimer) clearTimeout(state.outboundRetryTimer);
     if (state.heldReleaseTimer) clearTimeout(state.heldReleaseTimer);
+    if (state.recoveryWaitTimer) clearTimeout(state.recoveryWaitTimer);
     state.tickTimer = 0;
     state.startTimer = 0;
     state.settleTimer = 0;
@@ -842,6 +898,8 @@
     state.outboundRetryMs = 0;
     state.heldReleaseTimer = 0;
     state.heldReleaseMs = 0;
+    state.recoveryWaitTimer = 0;
+    state.recoveryWaitSeq = 0;
     if (state.layer) state.layer.classList.remove('is-collision');
   }
 
@@ -901,6 +959,7 @@
     state.ending = false;
     state.visitId = frame.visit_id;
     state.side = frame.side;
+    if (!sameVisit) state.intentSequence = Math.max(state.intentSequence, storedIntentSequence(frame.visit_id));
     state.settings = readSettings();
     ensureLayer();
     scheduleSimulationStart();
