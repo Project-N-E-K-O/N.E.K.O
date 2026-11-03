@@ -282,9 +282,9 @@ function _releaseNekoIdleCat1PlaygroundDropLifecycle(button, reason) {
     }
     state.bodies.clear();
     state.disabledCapabilities.clear();
-    window.NekoCollisionDeformation?.clearCollisionDeformation(
-        button, 'idle-cat1-playground'
-    );
+    // Playground owns the only render loop for free-desktop collisions too.
+    // Its final teardown must clear whichever source started the visible effect.
+    window.NekoCollisionDeformation?.clearCollisionDeformation(button);
     const cleanups = state.cleanups.splice(0);
     cleanups.forEach((cleanup) => {
         try { cleanup(); } catch (_) {}

@@ -149,7 +149,7 @@ test('component integration survives art changes and clears itself after recover
   assert.equal(button.style.getPropertyValue('--neko-collision-shift-y'), '');
 });
 
-test('lifecycle cleanup cannot clear a deformation started by another owner', () => {
+test('owner cleanup preserves other effects while global teardown clears any owner', () => {
   const button = buttonFixture();
   beginCollisionDeformation(button, {
     owner: 'playground', direction: 'down', impactVelocityChange: 600, startedAt: 1000,
@@ -159,6 +159,12 @@ test('lifecycle cleanup cannot clear a deformation started by another owner', ()
   assert.equal(renderCollisionDeformation(button, 1100), true);
   assert.equal(button.classList.contains('is-neko-collision-deforming'), true);
   assert.equal(clearCollisionDeformation(button, 'playground'), true);
+  assert.equal(button.classList.contains('is-neko-collision-deforming'), false);
+
+  beginCollisionDeformation(button, {
+    owner: 'desktop-window-gravity', direction: 'right', impactVelocityChange: 700, startedAt: 1200,
+  });
+  assert.equal(clearCollisionDeformation(button), true);
   assert.equal(button.classList.contains('is-neko-collision-deforming'), false);
 });
 
