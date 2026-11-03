@@ -219,8 +219,12 @@
             const implied = dt > 0 ? (state[edge.axis] - previous[edge.axis] - edge.line + oldLine) / dt : 0;
             const speed = Math.max(0, (state[velocity] - wallSpeed) * direction, implied * direction);
             state[edge.axis] = edge.line - offset;
+            const beforeVelocity = state[velocity];
             state[velocity] = clampSpeed(wallSpeed - (state.reduceMotion ? 0 : RESTITUTION) * speed * direction);
-            impact(state, speed, edge.axis === 'y');
+            const impactDirection = edge.axis === 'y'
+                ? (direction > 0 ? 'down' : 'up')
+                : (direction > 0 ? 'right' : 'left');
+            impact(state, Math.abs(state[velocity] - beforeVelocity), impactDirection);
             if (edge.axis === 'y' && direction > 0 && speed < REST_SPEED && Math.abs(wallSpeed) < REST_SPEED) {
                 state.vy = 0;
                 state.grounded = true;
@@ -273,12 +277,9 @@
             top: `${Number(state.y.toFixed(3))}px`, right: '', bottom: '', transform: 'none' })) {
             if (state.container.style[key] !== value) state.container.style[key] = value;
         }
-        for (const [axis, scale] of [['x', 1 + state.squash], ['y', 1 - state.squash]]) {
-            const key = `--neko-window-gravity-scale-${axis}`;
-            if (state.button.style.getPropertyValue(key) !== scale.toFixed(4)) {
-                state.button.style.setProperty(key, scale.toFixed(4));
-            }
-        }
+        state.deformationActive = !!window.NekoCollisionDeformation?.renderCollisionDeformation(
+            state.button, now(), state.reduceMotion, state.hull
+        );
         const body = getBody(state.button);
         if (body && !body.dragging) {
             Object.assign(body, { x: state.x, y: state.y, vx: state.vx, vy: state.vy,
@@ -294,13 +295,13 @@
 
     function canWalk(button) {
         return !current || (button && current.button !== button)
-            || (current.grounded && current.vx === 0 && current.squash === 0 && !paused(current));
+            || (current.grounded && current.vx === 0 && !current.deformationActive && !paused(current));
     }
 
     function isMoving(button) {
         return !!(current && (!button || current.button === button) && !paused(current)
             && isCat(current.button, current.container) && !isReturning(current.button)
-            && (!current.grounded || current.vx !== 0 || current.vy !== 0 || current.squash !== 0));
+            && (!current.grounded || current.vx !== 0 || current.vy !== 0 || current.deformationActive));
     }
 
     function publishMotionState(state) {
@@ -331,19 +332,24 @@
             _getNekoIdleReturnContainerFromButton(button) === container && isCat(button, container));
     }
 
-    function impact(state, relativeSpeed, vertical) {
-        if (relativeSpeed < REST_SPEED || state.reduceMotion) return;
-        const amount = Math.min(0.12, relativeSpeed / 7000);
-        state.squash = vertical ? amount : -amount;
+    function impact(state, impactVelocityChange, direction) {
+        if (impactVelocityChange < REST_SPEED || state.reduceMotion) return;
+        state.deformationActive = window.NekoCollisionDeformation?.beginCollisionDeformation(state.button, {
+            direction,
+            impactVelocityChange,
+            startedAt: now(),
+            reducedMotion: state.reduceMotion,
+            visibleInsetRatios: state.hull,
+        }) || state.deformationActive;
     }
 
     function collide(state, walls = {}) {
         const b = state.bounds;
         for (const axis of [
-            { position: 'x', velocity: 'vx', low: 'left', high: 'right', vertical: false },
-            { position: 'y', velocity: 'vy', low: 'top', high: 'bottom', vertical: true },
+            { position: 'x', velocity: 'vx', low: 'left', high: 'right' },
+            { position: 'y', velocity: 'vy', low: 'top', high: 'bottom' },
         ]) {
-            const { position, velocity, low, high, vertical } = axis;
+            const { position, velocity, low, high } = axis;
             for (const side of [low, high]) {
                 const sign = side === low ? 1 : -1;
                 if ((state[position] - b[side]) * sign > CONTACT_EPSILON) continue;
@@ -352,8 +358,10 @@
                 state[position] = b[side];
                 if (relative < 0) {
                     const restitution = state.reduceMotion ? 0 : RESTITUTION;
+                    const beforeVelocity = state[velocity];
                     state[velocity] = clampSpeed(wallSpeed - restitution * (state[velocity] - wallSpeed));
-                    impact(state, -relative, vertical);
+                    impact(state, Math.abs(state[velocity] - beforeVelocity),
+                        side === 'top' ? 'up' : side === 'bottom' ? 'down' : side);
                     if (side === 'bottom' && -relative < REST_SPEED && Math.abs(wallSpeed) < REST_SPEED) {
                         state.vy = 0;
                     }
@@ -380,8 +388,6 @@
         state.y += state.vy * dt;
         collide(state);
         collideBorders(state, previous, dt);
-        state.squash *= Math.exp(-18 * dt);
-        if (Math.abs(state.squash) < 0.001) state.squash = 0;
         if (state.grounded && Math.abs(state.vx) < 2) state.vx = 0;
     }
 
@@ -436,12 +442,12 @@
         if (finishDesktopLanding(state)) return;
         // Resting needs no RAF and never blocks another action or its animation.
         // A new native-window fact wakes it when the box actually changes.
-        if (!state.grounded || state.vx !== 0 || state.squash !== 0) requestFrame(state);
+        if (!state.grounded || state.vx !== 0 || state.deformationActive) requestFrame(state);
     }
 
     function finishDesktopLanding(state) {
         if (state.windowKey || !state.grounded || state.y !== state.bounds.bottom
-            || state.vx !== 0 || state.squash !== 0) return false;
+            || state.vx !== 0 || state.deformationActive) return false;
         // An interrupted window interaction ends at the desktop floor.
         cancel(state.button);
         return true;
@@ -455,8 +461,7 @@
         if (removalObserver) removalObserver.disconnect();
         removalObserver = null;
         state.button.classList.remove(ACTIVE_CLASS);
-        state.button.style.removeProperty('--neko-window-gravity-scale-x');
-        state.button.style.removeProperty('--neko-window-gravity-scale-y');
+        window.NekoCollisionDeformation?.clearCollisionDeformation(state.button);
         const body = getBody(state.button);
         if (body && !body.dragging && !disposed && isCat(state.button, state.container)
             && !isReturning(state.button)) {
@@ -569,7 +574,7 @@
             || candidate.revision !== expected.revision || expected.targetKind !== KIND))) return false;
         const state = {
             ...candidate, x: candidate.size.x, y: candidate.size.y, vx: 0, vy: 0,
-            grounded: false, squash: 0, frame: 0, pointerHeld: false,
+            grounded: false, deformationActive: false, frame: 0, pointerHeld: false,
             origin: screenOrigin(),
             lastStepAt: now(), lastSampleAt: now(),
             reduceMotion: !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches),
@@ -674,7 +679,7 @@
             windowKey: '', grounded: false, scene, sceneSignature: signature });
         state.borders = buildBorders(state.scene, '');
         // Rebind the existing body rather than cancelling and rebuilding it:
-        // positions, velocity, squash and the simulation clock survive closure.
+        // Position, velocity, deformation and the simulation clock survive closure.
         adoptWindow(state);
         if (paused(state)) return;
         // Remove the old box before advancing. Otherwise a late native update
@@ -690,7 +695,7 @@
         const sampleAt = now();
         // Time spent at rest belongs to the old support. It must not become
         // accumulated falling time when that support is removed or replaced.
-        if (state.grounded && state.vx === 0 && state.squash === 0 && !state.frame) state.lastStepAt = sampleAt;
+        if (state.grounded && state.vx === 0 && !state.deformationActive && !state.frame) state.lastStepAt = sampleAt;
         const scene = sceneFor(result);
         let target = scene.find(item => item.key === state.windowKey && item.collisionOnly !== true);
         if (!target) { continueAfterWindowClosed(state, result); return; }
@@ -1025,7 +1030,7 @@
         collide(state);
         collideBorders(state, previous, 1 / 60);
         render(state);
-        if (!state.grounded || state.vx !== 0 || state.squash !== 0) requestFrame(state);
+        if (!state.grounded || state.vx !== 0 || state.deformationActive) requestFrame(state);
         return true;
     }
 
@@ -1045,7 +1050,7 @@
             vx: 0,
             vy: 0,
             grounded: false,
-            squash: 0,
+            deformationActive: false,
         };
         collideBorders(probe, state, 0);
         return {
@@ -1091,7 +1096,7 @@
         collide(state);
         collideBorders(state, previous, 1 / 60);
         render(state);
-        if (!state.grounded || state.vx !== 0 || state.squash !== 0) requestFrame(state);
+        if (!state.grounded || state.vx !== 0 || state.deformationActive) requestFrame(state);
         return true;
     }
 
@@ -1119,6 +1124,8 @@
             borders: buildBorders(scene, null),
             bounds: { left: -Infinity, right: Infinity, top: -Infinity, bottom: Infinity },
             grounded: !!body.grounded,
+            button,
+            deformationActive: false,
             reduceMotion: !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches),
         };
         const elapsed = Number.isFinite(Number(dt)) && Number(dt) > 0 ? Number(dt) : 1 / 60;
