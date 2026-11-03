@@ -8,7 +8,7 @@ import asyncio
 import re
 import time
 import uuid
-from urllib.parse import urljoin
+from urllib.parse import urlencode, urljoin
 
 import anyio
 
@@ -91,26 +91,44 @@ async def _community_following(client: httpx.AsyncClient, session: dict, user_id
 
 
 async def _community_notifications(client: httpx.AsyncClient, session: dict):
-    """Read every unread page so invitation reconciliation is authoritative."""
+    """Read complete invitation pages, including pending invitations already read.
+
+    Older Verse ignores visit_invitations and continues to return unread rows.
+    Both versions use matching filters for items and total_count. unread_count
+    is a separate, possibly wider counter and must not gate page completeness.
+    """
     items = []
-    offset = 0
+    cursor = None
+    seen_cursors = set()
     for _ in range(100):
+        params = {"unread": "true", "visit_invitations": "true", "limit": "100"}
+        if cursor is not None:
+            params["cursor"] = cursor
         status, body = await _community_json(
             client,
             session,
             "GET",
-            f"/api/notifications?unread=true&limit=100&offset={offset}",
+            "/api/notifications?" + urlencode(params),
         )
-        if status != 200 or not isinstance(body, dict):
+        if status != 200:
             return status, body
+        if not isinstance(body, dict):
+            return 502, {"detail": "community_invalid_response"}
         page = body.get("items")
         if not isinstance(page, list):
             return 502, {"detail": "community_invalid_response"}
         items.extend(page)
-        offset += len(page)
-        total = body.get("total")
-        if not page or len(page) < 100 or (isinstance(total, int) and offset >= total):
+        cursor = body.get("next_cursor")
+        if cursor is None:
+            if len(page) == 100 and "next_cursor" not in body:
+                return 502, {"detail": "community_invalid_response"}
+            total = body.get("total_count")
+            if isinstance(total, int) and total > len(items):
+                return 502, {"detail": "community_invalid_response"}
             return 200, {**body, "items": items}
+        if not page or not isinstance(cursor, str) or not cursor or cursor in seen_cursors:
+            return 502, {"detail": "community_invalid_response"}
+        seen_cursors.add(cursor)
     return 502, {"detail": "community_invalid_response"}
 
 
@@ -170,6 +188,65 @@ def _friend_presence_items(following) -> list[dict]:
     return friends
 
 
+def _visit_invitation_snapshot(base_url: str, notification_status: int, notifications) -> dict:
+    """Project the same authoritative invitation state for chat and the hub."""
+    incoming = None
+    incoming_invite_ids = []
+    invite_responses = []
+    now = time.time()
+    notifications_ok = (
+        notification_status == 200
+        and isinstance(notifications, dict)
+        and isinstance(notifications.get("items"), list)
+    )
+    if notifications_ok:
+        for item in notifications["items"]:
+            payload = item.get("payload") if isinstance(item, dict) else None
+            if not isinstance(payload, dict):
+                continue
+            if payload.get("type") == "visit_invite_response":
+                invite_responses.append({
+                    "id": str(item.get("id") or ""),
+                    "actor_id": str(payload.get("actor_id") or ""),
+                    "actor_display_name": payload.get("actor_display_name") or "喵友",
+                    "visit_id": str(payload.get("visit_id") or ""),
+                    "accepted": payload.get("accepted") is True,
+                })
+                continue
+            if payload.get("type") != "visit_invite":
+                continue
+            if payload.get("response") is not None:
+                continue
+            try:
+                expires_at = float(payload.get("expires_at") or 0)
+            except (TypeError, ValueError):
+                expires_at = 0
+            if expires_at and expires_at <= now:
+                continue
+            notification_id = str(item.get("id") or "")
+            if notification_id:
+                incoming_invite_ids.append(notification_id)
+            if incoming is not None:
+                continue
+            incoming = {
+                "id": notification_id,
+                "actor_id": str(payload.get("actor_id") or ""),
+                "actor_display_name": payload.get("actor_display_name") or "喵友",
+                "actor_avatar_url": _absolute_community_url(base_url, payload.get("actor_avatar_url")),
+                "visit_id": str(payload.get("visit_id") or ""),
+                "visit_mode": "cat" if payload.get("visit_mode") == "cat" else "model",
+                # Upgrade compatibility only; new directed invitations never carry a code.
+                "invite_code": str(payload.get("invite_code") or ""),
+                "expires_at": expires_at or None,
+            }
+    return {
+        "notifications_ok": notifications_ok,
+        "incoming_invite_ids": incoming_invite_ids,
+        "incoming_invite": incoming,
+        "invite_responses": invite_responses,
+    }
+
+
 @router.get("/api/community/friend-presence")
 async def friend_presence(request: Request):
     """Return a small live-presence snapshot without rotating hub content."""
@@ -186,8 +263,27 @@ async def friend_presence(request: Request):
     return {"friends": _friend_presence_items(presence_body)}
 
 
+@router.get("/api/community/visit-invitations")
+async def visit_invitations(request: Request):
+    """Check invitations without rebuilding the account and friend hub."""
+    session, error = await _community_access(request)
+    if error is not None:
+        return error
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(12)) as client:
+            (notification_status, notifications), _presence = await asyncio.gather(
+                _community_notifications(client, session),
+                # The old hub renewed presence on every poll. Keep that lease
+                # for chat-only windows without loading friends or ranking users.
+                _community_json(client, session, "GET", "/api/users/me/presence"),
+            )
+    except httpx.HTTPError:
+        return JSONResponse({"detail": "community_unavailable"}, status_code=502)
+    return _visit_invitation_snapshot(session["base_url"], notification_status, notifications)
+
+
 @router.get("/api/community/visit-hub")
-async def visit_hub(request: Request):
+async def visit_hub(request: Request, include_recommendations: bool = True, include_invitations: bool = True):
     """Return only the signed-in account's real mutuals and live invitations."""
     session, error = await _community_access(request)
     if error is not None:
@@ -206,9 +302,9 @@ async def visit_hub(request: Request):
                 (recommendation_status, recommendation_body),
             ) = await asyncio.gather(
                 _community_following(client, session, user_id),
-                _community_notifications(client, session),
+                _community_notifications(client, session) if include_invitations else asyncio.sleep(0, result=(200, {})),
                 _community_json(client, session, "GET", "/api/users/me/presence"),
-                _community_recommendations(client, session),
+                _community_recommendations(client, session) if include_recommendations else asyncio.sleep(0, result=(200, {})),
             )
     except httpx.HTTPError:
         return JSONResponse({"detail": "community_unavailable"}, status_code=502)
@@ -255,53 +351,9 @@ async def visit_hub(request: Request):
                 "follows_viewer": item.get("follows_viewer") is True,
             })
 
-    incoming = None
-    incoming_invite_ids = []
-    invite_responses = []
-    now = time.time()
-    notifications_ok = (
-        notification_status == 200
-        and isinstance(notifications, dict)
-        and isinstance(notifications.get("items"), list)
+    invitation_snapshot = _visit_invitation_snapshot(
+        session["base_url"], notification_status, notifications,
     )
-    if notifications_ok:
-        for item in notifications.get("items", []):
-            payload = item.get("payload") if isinstance(item, dict) else None
-            if not isinstance(payload, dict):
-                continue
-            if payload.get("type") == "visit_invite_response":
-                invite_responses.append({
-                    "id": str(item.get("id") or ""),
-                    "actor_id": str(payload.get("actor_id") or ""),
-                    "actor_display_name": payload.get("actor_display_name") or "喵友",
-                    "visit_id": str(payload.get("visit_id") or ""),
-                    "accepted": payload.get("accepted") is True,
-                })
-                continue
-            if payload.get("type") != "visit_invite":
-                continue
-            try:
-                expires_at = float(payload.get("expires_at") or 0)
-            except (TypeError, ValueError):
-                expires_at = 0
-            if expires_at and expires_at <= now:
-                continue
-            notification_id = str(item.get("id") or "")
-            if notification_id:
-                incoming_invite_ids.append(notification_id)
-            if incoming is not None:
-                continue
-            incoming = {
-                "id": notification_id,
-                "actor_id": str(payload.get("actor_id") or ""),
-                "actor_display_name": payload.get("actor_display_name") or "喵友",
-                "actor_avatar_url": _absolute_community_url(session["base_url"], payload.get("actor_avatar_url")),
-                "visit_id": str(payload.get("visit_id") or ""),
-                "visit_mode": "cat" if payload.get("visit_mode") == "cat" else "model",
-                # Upgrade compatibility only; new directed invitations never carry a code.
-                "invite_code": str(payload.get("invite_code") or ""),
-                "expires_at": expires_at or None,
-            }
 
     return {
         "logged_in": True,
@@ -320,10 +372,7 @@ async def visit_hub(request: Request):
         },
         "friends": friends,
         "recommendations": recommendations,
-        "notifications_ok": notifications_ok,
-        "incoming_invite_ids": incoming_invite_ids,
-        "incoming_invite": incoming,
-        "invite_responses": invite_responses,
+        **invitation_snapshot,
     }
 
 
