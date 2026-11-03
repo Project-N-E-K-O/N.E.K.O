@@ -2585,16 +2585,21 @@
             if (legacyAttempted) {
                 // Adopt a pre-takeover HTTP side effect into the owner's durable
                 // delivery state. An uncertain attempt must not generate a second question.
+                var adoptedPresentation = pendingDirectInvitation;
                 var adopted = await bridge.beginInvitationDelivery(item.id, claim.token, snapshot.generation);
                 if (!adopted || !adopted.ok) return false;
                 delivering = true;
+                if (legacyConfirmed) {
+                    // A character switch may retire this invocation after begin.
+                    // Retain the original claim on its captured card before fencing.
+                    adoptedPresentation.legacyDelivery.token = claim.token;
+                    adoptedPresentation.legacyDelivery.generation = snapshot.generation;
+                }
                 if (!current()) return false;
                 if (legacyConfirmed) {
-                    pendingDirectInvitation.legacyDelivery.token = claim.token;
-                    pendingDirectInvitation.legacyDelivery.generation = snapshot.generation;
-                    return await confirmLegacyInvitationDelivery(pendingDirectInvitation, snapshot);
+                    return await confirmLegacyInvitationDelivery(adoptedPresentation, snapshot);
                 }
-                pendingDirectInvitation.legacyDelivery = null;
+                adoptedPresentation.legacyDelivery = null;
                 return true;
             }
             var preview = await realtimeInvitationApi('GET', '/api/visit/direct/' + encodeURIComponent(item.visit_id) + '/preview', item);

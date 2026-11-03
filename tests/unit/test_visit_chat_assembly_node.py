@@ -249,7 +249,8 @@ const report = {};
   report.legacy_card_takeover = [];
   for (const pathname of ['/', '/chat', '/chat_full']) {
     for (const scenario of ['withdrawn', 'account_changed', 'account_changed_compat', 'account_changed_new', 'valid', 'uncertain', 'claim_failure', 'begin_failure',
-        'question_not_ready', 'switch_off', 'tts_unavailable', 'unclassified_failure', 'complete_failure', 'complete_throw', 'complete_account_change']) {
+        'question_not_ready', 'switch_off', 'tts_unavailable', 'unclassified_failure', 'complete_failure', 'complete_throw', 'complete_account_change',
+        'begin_character_switch', 'begin_account_change', 'begin_card_withdrawn']) {
       let changed, claims = 0, begun = 0, completed = 0, deliveries = 0;
       let snapshot = { generation: 1, accountKey: 'account-a', accountId: 'me',
         realtimeEnabled: false, synced: false, items: [] };
@@ -257,7 +258,11 @@ const report = {};
         claimInvitation: async () => { claims++; return { ok: !(scenario === 'claim_failure' && claims === 1), token: 'claim' }; },
         beginInvitationDelivery: async () => {
           begun++; if (scenario === 'begin_failure' && begun === 1) return { ok: false };
-          snapshot.items[0].promptEligible = false; changed(snapshot); return { ok: true };
+          snapshot.items[0].promptEligible = false;
+          if (scenario === 'begin_character_switch') h.win.lanlan_config.lanlan_name = 'New character';
+          if (scenario === 'begin_account_change') snapshot = { ...snapshot, generation: 3, accountKey: 'account-b', items: [] };
+          if (scenario === 'begin_card_withdrawn') snapshot = { ...snapshot, items: [] };
+          changed(snapshot); return { ok: true };
         },
         completeInvitationDelivery: async (_id, token, generation) => {
           completed++;
@@ -291,7 +296,8 @@ const report = {};
       await h.chat.presentDirectInvitation({ id: 'legacy', visit_id: VID, expires_at: 9e9 });
       const before = !!h.I.getVisitChatView().bar;
       const valid = ['valid', 'uncertain', 'claim_failure', 'begin_failure', 'question_not_ready', 'switch_off', 'tts_unavailable',
-        'unclassified_failure', 'complete_failure', 'complete_throw', 'complete_account_change'].includes(scenario);
+        'unclassified_failure', 'complete_failure', 'complete_throw', 'complete_account_change',
+        'begin_character_switch', 'begin_account_change', 'begin_card_withdrawn'].includes(scenario);
       const replaced = scenario === 'account_changed_new';
       snapshot = { ...snapshot, generation: 2, accountKey: scenario.startsWith('account_changed') ? 'account-b' : 'account-a',
         realtimeEnabled: scenario !== 'account_changed_compat', synced: true,
@@ -2252,10 +2258,11 @@ def test_hung_initial_invitation_snapshot_recovers_and_late_realtime_stops_legac
 
 
 def test_realtime_takeover_retires_old_http_cards_and_keeps_valid_delivery_once(report):
-    assert len(report["legacy_card_takeover"]) == 45
+    assert len(report["legacy_card_takeover"]) == 54
     for case in report["legacy_card_takeover"]:
         valid = case["scenario"] not in {"withdrawn", "account_changed", "account_changed_compat"}
-        assert case["before"] and case["after"] == (valid and case["scenario"] != "complete_account_change"), case
+        assert case["before"] and case["after"] == (valid and case["scenario"] not in {
+            "complete_account_change", "begin_account_change", "begin_card_withdrawn"}), case
         repeat = case["scenario"] in {"account_changed_new", "question_not_ready", "switch_off", "tts_unavailable"}
         assert case["deliveries"] == (2 if repeat else 1) and case["reads"] == 0, case
         assert case["deliveryRequests"] == [{"method": "POST", "catgirl": "咪咪"}] * case["deliveries"], case
@@ -2263,7 +2270,8 @@ def test_realtime_takeover_retires_old_http_cards_and_keeps_valid_delivery_once(
         assert case["begun"] == (2 if case["scenario"] == 'begin_failure' else int(valid)), case
         assert case["completedBeforeRetry"] <= 1, case
         assert case["completed"] == (2 if case["scenario"] in {"complete_failure", "complete_throw"}
-                                     else int(valid and case["scenario"] not in {"uncertain", "unclassified_failure"})), case
+                                     else int(valid and case["scenario"] not in {
+                                         "uncertain", "unclassified_failure", "begin_account_change", "begin_card_withdrawn"})), case
     assert report["legacy_card_inflight"] == [
         {"phase": "preview", "bar": False, "deliveries": 0},
         {"phase": "delivery", "bar": False, "deliveries": 1},
