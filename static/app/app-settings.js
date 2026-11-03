@@ -570,7 +570,8 @@
         'textGuardMaxLength',
         'renderQuality',
         'targetFrameRate',
-        'forgeDropEffectsEnabled'
+        'forgeDropEffectsEnabled',
+        'modelClickShakeEnabled'
     ];
 
     function _normalizeIndependentAsrProviderPreference(value) {
@@ -1721,6 +1722,9 @@
         const currentForgeDropEffects = typeof window.forgeDropEffectsEnabled !== 'undefined'
             ? window.forgeDropEffectsEnabled
             : true;
+        const currentModelClickShake = typeof window.modelClickShakeEnabled !== 'undefined'
+            ? window.modelClickShakeEnabled
+            : true;
 
         // 读取字幕设置（统一走 subtitle-shared store，避免多处直接写 localStorage）
         const subtitleStore = window.nekoSubtitleShared;
@@ -1767,6 +1771,7 @@
             humanoidLocalTrackingEnabled: currentHumanoidLocalTracking,
             lockedHoverFadeEnabled: currentLockedHoverFade,
             forgeDropEffectsEnabled: currentForgeDropEffects,
+            modelClickShakeEnabled: currentModelClickShake,
             subtitleEnabled: currentSubtitleEnabled,
             userLanguage: currentUserLanguage
         };
@@ -2046,6 +2051,15 @@
                     window.forgeDropEffectsEnabled = true;
                 }
 
+                // 点击模型原地颤动反馈设置
+                if (typeof settings.modelClickShakeEnabled === 'boolean') {
+                    window.modelClickShakeEnabled = settings.modelClickShakeEnabled;
+                } else if (typeof settings.modelClickShakeEnabled === 'string') {
+                    window.modelClickShakeEnabled = settings.modelClickShakeEnabled === 'true';
+                } else {
+                    window.modelClickShakeEnabled = true;
+                }
+
                 // 同步到运行中的实例
                 if (typeof window.live2dManager !== 'undefined' && window.live2dManager && typeof window.live2dManager.setFullscreenTrackingEnabled === 'function') {
                     window.live2dManager.setFullscreenTrackingEnabled(window.live2dFullscreenTrackingEnabled === true);
@@ -2096,6 +2110,7 @@
                 window.humanoidLocalTrackingEnabled = false;
                 window.lockedHoverFadeEnabled = true;
                 window.forgeDropEffectsEnabled = true;
+                window.modelClickShakeEnabled = true;
 
                 // 首启专属 marker：告诉下方异步合并块「这次仍在等首次 settings/telemetry
                 // 决议」。升级用户走的是 if (saved) 分支不会写这个，于是不会被误判成首启
@@ -2119,6 +2134,7 @@
             window.humanoidLocalTrackingEnabled = false;
             window.lockedHoverFadeEnabled = true;
             window.forgeDropEffectsEnabled = true;
+            window.modelClickShakeEnabled = true;
         }
 
         // 以下逻辑不依赖本地 JSON 解析结果，始终执行

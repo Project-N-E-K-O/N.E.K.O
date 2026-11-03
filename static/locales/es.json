@@ -3985,6 +3985,7 @@
             "localTracking": "Seguimiento local",
             "lockedHoverFade": "Desvanecimiento de desplazamiento bloqueado",
             "forgeDropEffects": "Efectos al recibir cupón",
+            "modelClickShake": "Vibración al hacer clic",
             "hideCommunityEntry": "Ocultar acceso al Universo Miau",
             "textGuardMaxLength": "Límite de longitud de respuesta",
             "unlimited": "Ilimitado",

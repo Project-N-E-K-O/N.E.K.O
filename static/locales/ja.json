@@ -3985,6 +3985,7 @@
             "localTracking": "ローカル追跡",
             "lockedHoverFade": "ロック時ホバー透過",
             "forgeDropEffects": "チケット獲得演出・効果音",
+            "modelClickShake": "クリック時の揺れ",
             "hideCommunityEntry": "ミャオ宇宙の入口を隠す",
             "textGuardMaxLength": "返信長さ上限",
             "unlimited": "無制限",

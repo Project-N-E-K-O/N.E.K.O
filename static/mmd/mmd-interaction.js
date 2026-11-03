@@ -342,6 +342,7 @@ class MMDInteraction {
 
                 this.isDragging = true;
                 this.dragMode = 'pan';
+                this._clickShakeTap = window.NekoAvatarClickShake?.tapStart(e) || null;
                 // 同步升频：不等 300ms governor 轮询，消除拖拽起步的 30fps 顿挫
                 if (this.manager.core && typeof this.manager.core._boostInteractiveFPS === 'function') {
                     this.manager.core._boostInteractiveFPS();
@@ -358,6 +359,7 @@ class MMDInteraction {
                 if (!this._hitTestModel(e.clientX, e.clientY)) return;
                 this.isDragging = true;
                 this.dragMode = 'orbit';
+                this._clickShakeTap = null;
                 if (this.manager.core && typeof this.manager.core._boostInteractiveFPS === 'function') {
                     this.manager.core._boostInteractiveFPS();
                 }
@@ -410,6 +412,10 @@ class MMDInteraction {
                 this._rememberPanDragPointer(e);
                 this._rememberDragHintPanPointer(e);
                 void this._recordDragHintPointerEdgeApproach('mmd');
+                // 一旦拖出点击范围就不再算点击，拖回原处松手也不颤
+                if (this._clickShakeTap && !window.NekoAvatarClickShake?.isTap(this._clickShakeTap, e)) {
+                    this._clickShakeTap = null;
+                }
             }
             this.previousMousePosition = { x: e.clientX, y: e.clientY };
 
@@ -467,9 +473,15 @@ class MMDInteraction {
         this.mouseUpHandler = async (e) => {
             if (this._touchGestures?.active && e.pointerType !== 'touch') return;
             if (this.isDragging) {
+                const clickShakeTap = this._clickShakeTap;
+                this._clickShakeTap = null;
                 if (this.dragMode === 'pan') {
                     this._rememberPanDragPointer(e);
                     this._rememberDragHintPanPointer(e);
+                    // 点一下（没拖动）给个原地颤动的即时反馈
+                    if (window.NekoAvatarClickShake?.isTap(clickShakeTap, e)) {
+                        window.NekoAvatarClickShake.play(canvas);
+                    }
                 }
                 // 保留本次拖拽类型再清状态，跨屏切换只对 pan 生效
                 // （orbit 是绕模型中心旋转朝向，不应触发多屏切换）
