@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // Merge main's model-click locale refresh with the chat-sync recovery result message.
-    const LOCALE_VERSION = '2026-11-03-chat-sync-residue-main-merge';
+    // Align es/pt Day1 systray intro menu labels with the desktop tray menu.
+    const LOCALE_VERSION = '2026-11-03-systray-intro-es-pt-labels';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

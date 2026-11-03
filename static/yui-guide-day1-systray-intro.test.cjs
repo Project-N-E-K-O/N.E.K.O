@@ -164,6 +164,30 @@ test('Day1 system tray intro modal combines the tray location and menu guidance'
   }
 });
 
+test('Day1 systray intro menu labels match the desktop tray menu text', () => {
+  // 弹窗教用户去托盘里找同名菜单项，所以这几项必须逐字等于桌面端托盘菜单的文字。
+  // 期望值抄自 N.E.K.O.-PC 的 src/main/tray-menu-locales.js
+  // （settings / resetModelPosition / openChatWindow / exit）；那边改了文字，这里要一起改。
+  const trayMenuLabels = {
+    en: { settings: 'Settings', resetPosition: 'Reset Avatar Position', openChat: 'Open Chat Window', exit: 'Exit' },
+    es: { settings: 'Ajustes', resetPosition: 'Restablecer posición del avatar', openChat: 'Abrir chat', exit: 'Salir' },
+    ja: { settings: '設定', resetPosition: 'アバター位置をリセット', openChat: 'チャットウィンドウを開く', exit: '終了' },
+    ko: { settings: '설정', resetPosition: '아바타 위치 초기화', openChat: '채팅 창 열기', exit: '종료' },
+    pt: { settings: 'Configurações', resetPosition: 'Redefinir posição do avatar', openChat: 'Abrir chat', exit: 'Sair' },
+    ru: { settings: 'Настройки', resetPosition: 'Сбросить позицию аватара', openChat: 'Открыть чат', exit: 'Выход' },
+    'zh-CN': { settings: '设置', resetPosition: '重置角色位置', openChat: '打开对话框', exit: '退出' },
+    'zh-TW': { settings: '設定', resetPosition: '重置角色位置', openChat: '開啟對話框', exit: '結束' },
+  };
+  assert.deepEqual(Object.keys(trayMenuLabels).sort(), [...localeCodes].sort());
+
+  for (const [code, labels] of Object.entries(trayMenuLabels)) {
+    const systray = JSON.parse(localeSources[code]).tutorial.systray;
+    for (const [key, expected] of Object.entries(labels)) {
+      assert.equal(systray[key], expected, `${code} tutorial.systray.${key} should match the tray menu`);
+    }
+  }
+});
+
 
 test('Day1 intro renders the matching platform image and localized guidance', () => {
   const method = getMethodBlock(universalManagerSource, 'showDay1SystrayIntroModal');
