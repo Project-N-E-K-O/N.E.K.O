@@ -733,7 +733,7 @@ def test_a_verbatim_replay_of_a_withdrawn_entry_stays_out(tmp_path, monkeypatch)
 def test_a_withdrawn_entry_matched_by_the_model_is_settled_by_time(tmp_path, monkeypatch):
     store = _store(tmp_path)
     exam = _withdrawn_exam(store)
-    _install_model(monkeypatch, _Model([
+    model = _install_model(monkeypatch, _Model([
         {"candidate": 1, "action": "remove", "target": exam["id"]},
         {"candidate": 2, "action": "replace", "target": exam["id"]},
     ]))
@@ -744,6 +744,9 @@ def test_a_withdrawn_entry_matched_by_the_model_is_settled_by_time(tmp_path, mon
         _pin("主人周三要考试", 14), _pin("主人又定了下周五考试", 14),
     ], noted_at=_T0 + _DAY, now=_T0 + 3 * _DAY))
     assert (counts["added"], counts["skipped"]) == (0, 2)
+    # The model knowingly matched them to a withdrawn entry: settled at once,
+    # not re-asked as if its view were outdated.
+    assert len(model.prompts) == 1
 
     counts = store.apply_decisions(
         _NAME, [_candidate("主人又定了下周五考试", 14, noted_at=_T0 + 3 * _DAY)],
@@ -795,6 +798,80 @@ def test_removing_a_withdrawn_entry_again_pins_nothing(tmp_path):
     )
     assert (counts["removed"], counts["added"], counts["skipped"]) == (0, 0, 1)
     assert store.get_active(_NAME, now=_T0 + 2 * _DAY) == []
+
+
+def _exam_withdrawn_after_the_snapshot(store) -> tuple[dict, dict]:
+    """The model saw the exam live; another admission then withdrew it and pinned a related entry."""
+    store.apply_decisions(_NAME, [_candidate("主人下周三考试", 14, noted_at=_T0)],
+                          [("add", None)], now=_T0)
+    [exam] = store.get_active(_NAME, now=_T0)
+    snapshot_revs = {exam["id"]: exam["rev"]}
+    store.apply_decisions(
+        _NAME,
+        [_candidate("主人的考试取消了", 3, noted_at=_T0 + _DAY),
+         _candidate("主人改成交一篇论文", 14, noted_at=_T0 + _DAY)],
+        [("remove", exam["id"]), ("add", None)], now=_T0 + _DAY,
+    )
+    return exam, snapshot_revs
+
+
+def test_a_target_withdrawn_after_the_snapshot_is_decided_again(tmp_path):
+    # CodeRabbit #3598: replacing an entry that was live in the model's view
+    # but withdrawn since must be decided again (with the newly pinned entry
+    # in view), not turned straight into an add.
+    store = _store(tmp_path)
+    exam, snapshot_revs = _exam_withdrawn_after_the_snapshot(store)
+
+    stale: list[int] = []
+    counts = store.apply_decisions(
+        _NAME, [_candidate("主人的论文改成下周五交", 14, noted_at=_T0 + 2 * _DAY)],
+        [("replace", exam["id"])], now=_T0 + 2 * _DAY,
+        expected_revs=snapshot_revs, stale_out=stale,
+    )
+
+    assert stale == [0] and counts["added"] == 0
+    assert [e["text"] for e in store.get_active(_NAME, now=_T0 + 2 * _DAY)] == ["主人改成交一篇论文"]
+
+
+def test_last_round_never_brings_back_what_a_later_account_withdrew(tmp_path):
+    store = _store(tmp_path)
+    exam, snapshot_revs = _exam_withdrawn_after_the_snapshot(store)
+
+    counts = store.apply_decisions(
+        _NAME,
+        [_candidate("主人下周三考两门", 14, noted_at=_T0 + 3600),
+         _candidate("主人的论文改成下周五交", 14, noted_at=_T0 + 2 * _DAY)],
+        [("replace", exam["id"]), ("replace", exam["id"])], now=_T0 + 2 * _DAY,
+        expected_revs=snapshot_revs, retry_stale=False,
+    )
+
+    # Said before the withdrawal: stays out. Said after it: no retry left,
+    # so it is added (adding loses nothing).
+    assert (counts["skipped"], counts["added"]) == (1, 1)
+    assert sorted(e["text"] for e in store.get_active(_NAME, now=_T0 + 2 * _DAY)) == sorted([
+        "主人改成交一篇论文", "主人的论文改成下周五交",
+    ])
+
+
+def test_a_second_removal_in_a_checked_round_pins_nothing(tmp_path):
+    # Within one checked batch the first removal is this batch's own change,
+    # so a second one aimed at it is a no-op, not an outdated view to retry.
+    store = _store(tmp_path)
+    store.apply_decisions(_NAME, [_candidate("主人下周三考试", 14, noted_at=_T0)],
+                          [("add", None)], now=_T0)
+    [exam] = store.get_active(_NAME, now=_T0)
+
+    stale: list[int] = []
+    counts = store.apply_decisions(
+        _NAME,
+        [_candidate("主人的考试取消了", 3, noted_at=_T0 + _DAY),
+         _candidate("主人不用考试了", 3, noted_at=_T0 + _DAY)],
+        [("remove", exam["id"]), ("remove", exam["id"])], now=_T0 + _DAY,
+        expected_revs={exam["id"]: exam["rev"]}, stale_out=stale,
+    )
+
+    assert stale == []
+    assert (counts["removed"], counts["added"], counts["skipped"]) == (1, 0, 1)
 
 
 def test_every_replaced_wording_stays_out(tmp_path):

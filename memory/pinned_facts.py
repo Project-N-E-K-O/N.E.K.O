@@ -617,13 +617,23 @@ class PinnedFactStore:
                 key = _text_key(w["text"])
                 superseded[key] = max(superseded.get(key, w["withdrawn_at"]), w["withdrawn_at"])
             touched: set[str] = set()
+            removed_here: set[str] = set()
             for index, (candidate, (action, target_id)) in enumerate(zip(candidates, decisions)):
                 by_id = {e["id"]: e for e in live}
                 target = by_id.get(target_id) if target_id else None
                 noted = min(_as_float(candidate.get("noted_at")) or ts, ts)
                 lifetime_end = noted + candidate["ttl_days"] * _DAY_SECONDS
                 retracted_at = retracted.get(target_id) if target is None and target_id else None
-                if action in _TARGETED_ACTIONS and retracted_at is not None:
+                # Withdrawn as the decision saw it: already withdrawn in the
+                # snapshot, or by this very batch. An entry that was live in
+                # the snapshot and withdrawn by someone else since is an
+                # outdated view instead, decided again below.
+                withdrawn_in_view = retracted_at is not None and (
+                    expected_revs is None
+                    or target_id not in expected_revs
+                    or target_id in removed_here
+                )
+                if action in _TARGETED_ACTIONS and withdrawn_in_view:
                     # Matched to an entry that was withdrawn. Removing it again
                     # does nothing (a second "cancelled" must not pin itself);
                     # a replace / renew given before the withdrawal stays out,
@@ -644,8 +654,13 @@ class PinnedFactStore:
                             stale_out.append(index)
                         continue
                     if outdated_view or target is None:
-                        # Never undo a change this decision did not see.
-                        action = None if action == ACTION_REMOVE else ACTION_ADD
+                        # Never undo a change this decision did not see, nor
+                        # bring back what a later account withdrew.
+                        action = (
+                            None if action == ACTION_REMOVE
+                            or (retracted_at is not None and noted < retracted_at)
+                            else ACTION_ADD
+                        )
                         target = None
                 elif (action == ACTION_ADD and unseen and retry_stale
                         and not candidate.get("outdated")):
@@ -707,6 +722,7 @@ class PinnedFactStore:
                 elif action == ACTION_REMOVE:
                     history.append(self._history_record(target, "remove", ts, noted_at=noted))
                     retracted[target["id"]] = noted
+                    removed_here.add(target["id"])
                     key = _text_key(target["text"])
                     superseded[key] = max(superseded.get(key, noted), noted)
                     live = [e for e in live if e["id"] != target["id"]]
