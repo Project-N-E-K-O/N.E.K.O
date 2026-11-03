@@ -244,17 +244,30 @@ def generate_staged(generator, *, title, setup, checkpoint=None, cast_names=None
                                    "message": "时间锚须逐字来自本次开场、入幕原文或桥段，不推断日期。"})
             return issues
 
-        excerpt = phase(_STATE_PROMPT, {
-            "catgirl_state": f"以{(names or {}).get('catgirl_name', '女主')}开头的开场收笔状态",
-            "player_state": f"以{(names or {}).get('player_name', '男主')}开头的开场收笔状态",
-            "environment_state": "以环境开头的开场收笔状态",
-            **({"catgirl_situation": "开场明确的女主当前顾虑、立场或未决问题；未交代时说明未明确，不补剧情"} if scene_key == "chapter" else {}),
-            "temporal_context": {"anchor": "有依据时逐字摘录当前时间短语，未交代则省略整个temporal_context",
-                                 "relation_to_previous": "unspecified | same_day | next_day | after_interval"},
-        }, {"opening_scene": draft[scene_key]["opening_scene"],
-            **({"entry_narrations": entry_narrations} if entry_narrations else {}),
-            "entry_bridge": draft[scene_key].get("entry_bridge", "")}, validate_excerpt,
-            "numeric_v2_opening_state_extraction", 600, locations)
+        try:
+            excerpt = phase(_STATE_PROMPT, {
+                "catgirl_state": f"以{(names or {}).get('catgirl_name', '女主')}开头的开场收笔状态",
+                "player_state": f"以{(names or {}).get('player_name', '男主')}开头的开场收笔状态",
+                "environment_state": "以环境开头的开场收笔状态",
+                **({"catgirl_situation": "开场明确的女主当前顾虑、立场或未决问题；未交代时说明未明确，不补剧情"} if scene_key == "chapter" else {}),
+                "temporal_context": {"anchor": "有依据时逐字摘录当前时间短语，未交代则省略整个temporal_context",
+                                     "relation_to_previous": "unspecified | same_day | next_day | after_interval"},
+            }, {"opening_scene": draft[scene_key]["opening_scene"],
+                **({"entry_narrations": entry_narrations} if entry_narrations else {}),
+                "entry_bridge": draft[scene_key].get("entry_bridge", "")}, validate_excerpt,
+                "numeric_v2_opening_state_extraction", 600, locations)
+        except NumericV2GenerationError as error:
+            # Issues outside the extractor's fields (e.g. relationship items or key props
+            # in the combined situation budget) cannot be fixed by re-extracting the same
+            # scene. Resume from the writer with these issues instead of looping here.
+            if any(issue.get("path") not in ("", "temporal_context.anchor")
+                   and not any(_belongs(issue["path"], source) for source, _ in locations)
+                   for issue in error.issues):
+                state.pop("written_scene")
+                state.update(phase_candidate=deepcopy(draft), issues=deepcopy(list(error.issues)))
+                persist()
+                error.checkpoint = deepcopy(state)
+            raise
         result = apply_excerpt(excerpt)
         state.pop("written_scene")
         return result

@@ -508,3 +508,41 @@ def test_opening_excerpt_replaces_writer_situation_and_carries_explicit_time(unk
         assert node["story_beat"]["character_state"]["temporal_context"] == {"anchor": "午后", "relation_to_previous": "unspecified"}
     assert len(calls) == 9
     NumericV2Compiler().compile_v2_2(result["story"])
+
+
+def test_extractor_unfixable_situation_budget_resumes_from_the_scene_writer():
+    from utils.tokenize import count_tokens
+
+    outline = _idea_outline(3)
+    oversized = deepcopy(outline)
+    # Writer-owned relationship facts alone fill the combined situation budget;
+    # the extractor can only edit the three states and the situation.
+    oversized["relationship_arc"]["stages"][1]["known_player_facts"][0] += " a" * 450
+
+    def first(messages, **options):
+        return staged_reply(messages, options["operation"], oversized)
+
+    with pytest.raises(NumericV2GenerationError) as caught:
+        NumericV2Generator(first, token_counter=count_tokens).generate_staged(
+            title="组合处境超限", setup=_generation_setup())
+    checkpoint = caught.value.checkpoint
+    assert checkpoint["completed_chapters"] == 1
+    assert "written_scene" not in checkpoint
+    assert checkpoint["phase_candidate"]["relationship_stage"] == oversized["relationship_arc"]["stages"][1]
+    assert any(issue["code"] == "projected_prompt_field_too_large"
+               and issue["path"] == "relationship_arc.stages[1].known_player_facts[0]"
+               for issue in checkpoint["issues"])
+    calls = []
+
+    def resume(messages, **options):
+        context = json.loads(messages[1]["content"])
+        calls.append(options["operation"])
+        if options["operation"] == "numeric_v2_chapter_generation" and context["chapter_index"] == 2:
+            assert any(issue["code"] == "projected_prompt_field_too_large"
+                       and issue["path"] == "relationship_stage.known_player_facts[0]" for issue in context["issues"])
+        return staged_reply(messages, options["operation"], outline)
+
+    result = NumericV2Generator(resume, token_counter=count_tokens).generate_staged(
+        title="组合处境超限", setup=_generation_setup(), checkpoint=checkpoint)
+    assert calls[:2] == ["numeric_v2_chapter_generation", "numeric_v2_opening_state_extraction"]
+    NumericV2Compiler().compile_v2_2(result["story"])
