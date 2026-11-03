@@ -35,6 +35,57 @@ def test_sync_memory_refresh_keeps_an_open_voice_session_running(mock_page: Page
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize('restoration', ['rejected', 'network'])
+def test_cloud_model_failure_toast_survives_a_failed_saved_model_reload(mock_page: Page, restoration):
+    root = Path(__file__).resolve().parents[2]
+    mock_page.goto('about:blank')
+    mock_page.set_content('<div id="live2d-container"></div><div id="vrm-container"></div>'
+                          '<div id="mmd-container"></div><div id="status-toast" style="display:none"></div>'
+                          '<span id="status"></span>')
+    mock_page.evaluate("""restoration => {
+        window.lanlan_config={lanlan_name:'Neko',model_type:'live2d'};
+        window.appState={dom:{}};
+        window.appConst={};
+        window.live2dManager={currentModel:null,getCurrentModel(){return this.currentModel;}};
+        window.t=key=>key==='app.modelSwitchFailed'?'Model switch failed':key;
+        window.syncProbe={receipts:[],configReads:0,restorations:0};
+        window.fetch=async(path,options)=>{
+            if(path.startsWith('/api/config/page_config')){
+                window.syncProbe.configReads++;
+                if(restoration==='network')throw new Error('private restoration details');
+                return{json:async()=>({success:false,error:'private config details'})};
+            }
+            if(path.endsWith('/status'))return{ok:true,json:async()=>({characters:[
+                {displayName:'Neko',characterSyncId:'a'.repeat(32)}]})};
+            if(path.endsWith('/model-sync'))return{ok:true,json:async()=>({candidate:
+                {name:'Neko',path:'/user_live2d/candidate/model.model3.json',token:'candidate-token'}})};
+            window.syncProbe.receipts.push(JSON.parse(options.body));
+            return{ok:true,json:async()=>({applied:false})};
+        };
+    }""", restoration)
+    mock_page.add_script_tag(path=str(root / 'static/app/app-ui/bootstrap-goodbye-and-toasts.js'))
+    mock_page.add_script_tag(path=str(root / 'static/app/app-interpage/bootstrap-resources-and-model-reload.js'))
+    mock_page.evaluate("""() => {
+        const I=window.__appInterpageParts;
+        I.isMainUIHiddenByModelManager=()=>false;
+        window.handleModelReload=async(name,options)=>{
+            if(options.temporaryConfig)throw new Error('private configuration details');
+            window.syncProbe.restorations++;
+            return I.handleModelReload(name,options);
+        };
+    }""")
+    mock_page.add_script_tag(path=str(root / 'static/app/app-chat-sync.js'))
+    mock_page.evaluate('window.nekoChatSync.notifyMediaChanged()')
+    expect(mock_page.locator('#status-toast')).to_be_visible()
+    expect(mock_page.locator('#status')).to_have_text('Model switch failed')
+    assert mock_page.evaluate('window.syncProbe') == {
+        'receipts': [{'loaded': False}], 'configReads': 1, 'restorations': 1,
+    }
+    assert mock_page.evaluate('window._modelReloadInFlight') is False
+    assert mock_page.evaluate('window._lastModelReloadResult') is False
+
+
+@pytest.mark.frontend
 def test_capsule_history_keeps_session_bubbles_without_sync_backfill(mock_page: Page, running_server: str):
     sync_reads = []
     role_name = ''

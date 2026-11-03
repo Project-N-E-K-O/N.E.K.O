@@ -210,6 +210,8 @@ class DesktopModelSync:
                 if metadata['revision'] == state['revision']:
                     if metadata['recordHash'] != hashlib.sha256(encode(state['remote'])).hexdigest():
                         raise ValueError('invalid_model_response')
+                    if state.pop('error', False):
+                        await commit(self.store.put, key, state)
                     await self._cleanup_uploaded_package(state['remote'], commit)
                     return
             head = await self._head(domain, request)
@@ -221,9 +223,10 @@ class DesktopModelSync:
                 await commit(self.store.put, key, state)
             if state['revision'] > 0 and state.get('remote'):
                 await self._cleanup_uploaded_package(state['remote'], commit)
-            state.pop("error", None)
             if head["revision"] < max(state["revision"], state.get("seen_revision", 0)):
                 raise ValueError("invalid_model_response")
+            if state.pop('error', False):
+                await commit(self.store.put, key, state)
             state["seen_revision"] = head["revision"]
             if state.get("conflict"):
                 return

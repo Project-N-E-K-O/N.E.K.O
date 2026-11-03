@@ -249,6 +249,7 @@
         var candidate = value && value.candidate;
         if (!candidate || characterName() !== name || candidate.name !== name) return;
         modelFlight = candidate.token;
+        var failed = false;
         try {
             await window.handleModelReload(name, { temporaryConfig: {
                 model_type: 'live2d', live3d_sub_type: '', model_path: candidate.path
@@ -258,13 +259,22 @@
             var loaded = !!(manager && manager._lastLoadedModelPath === candidate.path && manager._modelLoadState === 'ready'
                 && typeof manager.getCurrentModel === 'function' && manager.getCurrentModel());
             var receipt = await api('/characters/' + uid + '/model-sync/' + candidate.token, 'POST', { loaded: loaded });
-            if (!receipt.applied && characterName() === name) await window.handleModelReload(name, { suppressToast: true });
+            if (!receipt.applied && characterName() === name) {
+                failed = true;
+                await window.handleModelReload(name, { suppressToast: true });
+            }
         } catch (_) {
+            failed = true;
             if (characterName() === name) {
                 await api('/characters/' + uid + '/model-sync/' + candidate.token, 'POST', { loaded: false }).catch(function () {});
                 await window.handleModelReload(name, { suppressToast: true }).catch(function () {});
             }
-        } finally { modelFlight = null; }
+        } finally {
+            modelFlight = null;
+            if (failed && characterName() === name && typeof window.showStatusToast === 'function') {
+                window.showStatusToast(window.t ? window.t('app.modelSwitchFailed') : 'Model switch failed', 3000);
+            }
+        }
     }
 
     async function refreshReadyModel() {

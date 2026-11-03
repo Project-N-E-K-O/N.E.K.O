@@ -421,6 +421,61 @@ async def test_completed_model_checks_only_metadata_and_accepts_older_full_respo
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('response', ['metadata', 'legacy', 'conflict'])
+@pytest.mark.parametrize('renderer_failed', [False, True])
+async def test_successful_model_check_clears_persisted_transport_error_only(tmp_path, monkeypatch, response, renderer_failed):
+    from unittest.mock import Mock
+
+    runtime, service, _, _ = await pending_model_runtime(tmp_path, uploaded=True)
+    try:
+        await runtime.models.step(UID)
+        state = runtime.models.store.get(DOMAIN.key())
+        if response == 'conflict':
+            state['conflict'] = {'revision': service.model_revision, 'record': service.model}
+        if renderer_failed:
+            state['failed'] = service.model_revision
+        _, _, commit = await runtime._bound_transport(UID)
+        await commit(runtime.models.store.put, DOMAIN.key(), state)
+        offline = True
+        paths = []
+
+        async def observed(request):
+            if request.url.path.endswith('/model-binding') and request.method == 'GET':
+                paths.append(str(request.url))
+                if offline:
+                    raise httpx.ConnectError('synthetic transport loss', request=request)
+            result = await service.request(request)
+            if response == 'metadata' and request.url.params.get('metadataOnly') == 'true':
+                value = result.json(); value.pop('record')
+                return httpx.Response(200, json=value)
+            return result
+
+        await runtime.http.aclose()
+        runtime.http = httpx.AsyncClient(transport=httpx.MockTransport(observed))
+        with pytest.raises(ValueError, match='^chat_sync_unavailable$'):
+            await runtime.models.step(UID)
+        assert runtime.models.store.get(DOMAIN.key())['error'] is True
+        assert (await runtime.models.status(UID))['failed'] is True
+
+        offline = False
+        paths.clear()
+        await runtime.models.step(UID)
+        recovered = runtime.models.store.get(DOMAIN.key())
+        assert recovered == state
+        assert await runtime.models.status(UID) == {'conflict': response == 'conflict', 'failed': renderer_failed}
+        assert len(paths) == 1
+        assert ('metadataOnly=true' in paths[0]) is (response != 'conflict')
+        assert len(service.puts) == 1
+
+        saved = Mock(wraps=runtime.models.store.put)
+        monkeypatch.setattr(runtime.models.store, 'put', saved)
+        await runtime.models.step(UID)
+        saved.assert_not_called()
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('change', ['owner', 'role', 'hash', 'rollback'])
 async def test_completed_model_metadata_keeps_owner_role_hash_and_revision_fences(tmp_path, change):
     runtime, service, _, _ = await pending_model_runtime(tmp_path, uploaded=True)

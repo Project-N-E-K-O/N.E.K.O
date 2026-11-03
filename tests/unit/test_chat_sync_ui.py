@@ -62,6 +62,53 @@ def test_media_extension_does_not_restore_or_reorder_capsule_history():
     """)
 
 
+@pytest.mark.parametrize('failure', ['configuration', 'not_ready', 'receipt', 'none'])
+@pytest.mark.parametrize('restoration', ['success', 'silent_failure', 'exception', 'role_changed'])
+def test_cloud_model_failure_is_visible_after_restoration_without_false_admission(failure, restoration):
+    run_script(r"""(async()=>{
+        const failure=FAILURE,restoration=RESTORATION,reloads=[],receipts=[],toasts=[];
+        const candidate={token:'candidate-token',path:'/user_live2d/candidate/model.model3.json',name:'Neko'};
+        window.live2dManager={currentModel:{},getCurrentModel(){return this.currentModel;}};
+        window.showStatusToast=(...args)=>toasts.push(args);
+        window.handleModelReload=async(name,options)=>{
+            reloads.push({name,options});
+            if(options.temporaryConfig){
+                assert.equal(options.preservePreviousUntilLoaded,true);
+                assert.equal(options.throwOnError,true);
+                if(failure==='configuration'){
+                    window.live2dManager.currentModel=null;
+                    throw new Error('private provider details');
+                }
+                window.live2dManager._lastLoadedModelPath=candidate.path;
+                window.live2dManager._modelLoadState=failure==='not_ready'?'idle':'ready';
+                return true;
+            }
+            if(restoration==='role_changed')window.lanlan_config.lanlan_name='Other';
+            if(restoration==='exception')throw new Error('private restoration details');
+            return restoration==='silent_failure'?undefined:true;
+        };
+        global.fetch=async(path,options)=>({ok:true,json:async()=>{
+            if(path.endsWith('/status'))return{characters:[{displayName:'Neko',characterSyncId:original.characterSyncId}]};
+            if(path.endsWith('/model-sync'))return{candidate};
+            assert(path.endsWith('/model-sync/'+candidate.token));
+            receipts.push(JSON.parse(options.body));
+            return{applied:failure==='none'};
+        }});
+        await window.nekoChatSync.notifyMediaChanged();
+        assert.deepEqual(receipts[0],{loaded:failure!=='configuration'&&failure!=='not_ready'});
+        if(failure==='configuration'||failure==='not_ready')assert(receipts.every(receipt=>!receipt.loaded));
+        if(failure==='none'){
+            assert.equal(reloads.length,1);
+            assert.deepEqual(toasts,[]);
+        }else{
+            assert(reloads.length>=2);
+            assert(reloads.slice(1).every(reload=>reload.name==='Neko'&&!reload.options.temporaryConfig));
+            assert.deepEqual(toasts,restoration==='role_changed'?[]:[['app.modelSwitchFailed',3000]]);
+        }
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('FAILURE', json.dumps(failure)).replace('RESTORATION', json.dumps(restoration)))
+
+
 @pytest.mark.parametrize('received_count', [50, 200])
 def test_unchanged_recent_display_keeps_the_real_host_window_and_pending_feedback(received_count):
     """Comparing an uncropped batch must not replace the host's existing 50-message window."""
