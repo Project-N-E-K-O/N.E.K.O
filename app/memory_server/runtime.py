@@ -942,6 +942,9 @@ async def _bootstrap_embedding_worker() -> None:
                 # that captured old managers must finish saving before either
                 # operation can erase through replacement instances.
                 get_sweep_barrier=lambda: _reload_lock,
+                # Inference runs outside that barrier; a name released for a
+                # rename/delete meanwhile must not be written back.
+                is_character_writable=_is_character_publication_admitted,
             )
             return worker
 

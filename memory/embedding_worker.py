@@ -125,6 +125,7 @@ class EmbeddingWarmupWorker:
         warmup_delay_seconds: float,
         get_dedup_resolver=None,     # callable returning current FactDedupResolver, or None to disable
         get_sweep_barrier=None,      # callable returning the reload/forget lock
+        is_character_writable=None,  # callable(name) -> bool; False while a release/rename holds the name
     ) -> None:
         # All store/manager accesses go through getters so /reload (which
         # rebinds the memory_server module globals) is observed on the next
@@ -150,6 +151,13 @@ class EmbeddingWarmupWorker:
         # production drain a sweep that captured pre-reload managers before a
         # reload + scoped forget can erase through their replacements.
         self._get_sweep_barrier = get_sweep_barrier
+        # Inference no longer runs under the barrier, so a release + rename /
+        # delete can complete between collect and write-back; a retired name
+        # must not be loaded or saved (that would recreate its directory).
+        self._is_character_writable = is_character_writable
+        # Stores whose last save failed go to the back of the next collect,
+        # so a persistently unwritable store cannot spend every tick's budget.
+        self._failed_stores: set[tuple[str, str]] = set()
 
         self._service = get_embedding_service()
         self._first_process_event = asyncio.Event()
@@ -329,19 +337,34 @@ class EmbeddingWarmupWorker:
             logger.warning("[EmbeddingWorker] character lookup failed: %s", e)
             return []
 
+        stores = [
+            (name, kind)
+            for name in names if self._writable(name)
+            for kind in ("persona", "reflection", "fact")
+        ]
+        stores = (
+            [s for s in stores if s not in self._failed_stores]
+            + [s for s in stores if s in self._failed_stores]
+        )
         budget = MAX_ENTRIES_PER_TICK
         plan: list[tuple[str, str, list[str]]] = []
-        for name in names:
+        for name, kind in stores:
             if budget <= 0 or self._stop_event.is_set():
                 break
-            for kind in ("persona", "reflection", "fact"):
-                if budget <= 0:
-                    break
-                texts = await self._load_stale_texts(name, kind, budget)
-                if texts:
-                    plan.append((name, kind, texts))
-                    budget -= len(texts)
+            texts = await self._load_stale_texts(name, kind, budget)
+            if texts:
+                plan.append((name, kind, texts))
+                budget -= len(texts)
         return plan
+
+    def _writable(self, name: str) -> bool:
+        if self._is_character_writable is None:
+            return True
+        try:
+            return bool(self._is_character_writable(name))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[EmbeddingWorker] admission check failed for %s: %s", name, e)
+            return False
 
     async def _load_stale_texts(self, name: str, kind: str, budget: int) -> list[str]:
         """Texts of one store's stale entries, read under that store's lock."""
@@ -374,8 +397,17 @@ class EmbeddingWarmupWorker:
 
     async def _apply_sweep_plan(self, plan, vectors: dict, model_id: str) -> int:
         """Phase 3: stamp the computed vectors into the current stores."""
+        try:
+            current_names = set(self._get_character_names())
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[EmbeddingWorker] character lookup failed: %s", e)
+            return 0
         total = 0
         for name, kind, texts in plan:
+            if name not in current_names or not self._writable(name):
+                # Renamed / deleted / released while embedding: skip without
+                # loading, so the old identity's files are not recreated.
+                continue
             if kind == "fact":
                 total += await self._apply_facts(name, texts, vectors, model_id)
             else:
@@ -427,7 +459,9 @@ class EmbeddingWarmupWorker:
                 # branch in _run, a persistent disk error (full / RO /
                 # permission) would hot-loop on the same entries. 0
                 # routes us through ACTIVE/POLL_INTERVAL backoff.
+                self._failed_stores.add((name, kind))
                 return 0
+            self._failed_stores.discard((name, kind))
             return len(touched)
 
     async def _apply_facts(self, name, texts, vectors, model_id) -> int:
@@ -464,7 +498,9 @@ class EmbeddingWarmupWorker:
             # resolver would key on aren't durable yet) and return 0
             # so the outer loop backs off instead of hot-looping on a
             # persistent disk error. See _apply_locked_store for context.
+            self._failed_stores.add((name, "fact"))
             return 0
+        self._failed_stores.discard((name, "fact"))
 
         # Dedup pass: only the rows we just embedded are candidates;
         # we don't want to repeatedly scan the entire fact history on

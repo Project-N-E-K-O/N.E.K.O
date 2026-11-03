@@ -910,3 +910,79 @@ async def test_model_flip_during_inference_writes_nothing():
     assert await sweep_task == 0
     assert persona.store["小天"]["master"]["facts"][0]["embedding"] is None
     assert persona.save_calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retire", ["released", "renamed"])
+async def test_character_retired_during_inference_is_not_written(retire):
+    """A release (+ rename / delete) can finish while vectors are computed,
+    since inference runs outside the barrier. Write-back must not load or
+    save the retired name, or the cached persona would recreate its files."""
+    service = _GatedService()
+    state = {"names": ["旧名"], "writable": True}
+
+    class _TracingPersona(_PersonaStub):
+        def __init__(self) -> None:
+            super().__init__()
+            self.loads: list[str] = []
+
+        async def _aensure_persona_locked(self, name: str) -> dict:
+            self.loads.append(name)
+            return await super()._aensure_persona_locked(name)
+
+    persona = _TracingPersona()
+    persona.store["旧名"] = {"master": {"facts": [_stale("persona fact")]}}
+    worker = EmbeddingWarmupWorker(
+        get_persona_manager=lambda: persona,
+        get_reflection_engine=lambda: _ReflectionStub(),
+        get_fact_store=lambda: _FactStub(),
+        get_character_names=lambda: list(state["names"]),
+        warmup_delay_seconds=0.01,
+        is_character_writable=lambda name: state["writable"],
+    )
+    worker._service = service
+
+    sweep_task = asyncio.create_task(worker._sweep_once())
+    await service.started.wait()
+    if retire == "released":
+        state["writable"] = False
+    else:
+        state["names"] = ["新名"]
+    loads_before = len(persona.loads)
+    service.release.set()
+
+    assert await sweep_task == 0
+    assert persona.save_calls == 0
+    assert persona.loads[loads_before:] == []
+
+
+@pytest.mark.asyncio
+async def test_unwritable_store_does_not_starve_later_stores():
+    """A disk-backed store that keeps failing to save with a full tick of
+    stale rows must not spend every tick's budget: after its failure the
+    next sweep gives the remaining stores a turn."""
+    service = _FakeService(available=True, model_id="fake-4d-int8")
+
+    class _FailingPersona(_PersonaStub):
+        async def _aensure_persona_locked(self, name: str) -> dict:
+            # Disk-backed: a failed save leaves nothing stamped for the next load.
+            return json.loads(json.dumps(self.store[name]))
+
+        async def asave_persona(self, name: str, persona: dict) -> None:
+            self.save_calls += 1
+            raise OSError("read-only")
+
+    persona = _FailingPersona()
+    persona.store["小天"] = {"master": {"facts": [
+        _stale(f"persona fact {i}") for i in range(MAX_ENTRIES_PER_TICK + 5)
+    ]}}
+    reflection = _ReflectionStub()
+    reflection.store["小天"] = [_stale("reflection text")]
+    worker = _build_worker(
+        service=service, persona=persona, reflection=reflection, fact=_FactStub(),
+    )
+
+    assert await worker._sweep_once() == 0
+    assert reflection.store["小天"][0]["embedding"] is None
+    assert await worker._sweep_once() >= 1
+    assert reflection.store["小天"][0]["embedding"] is not None
