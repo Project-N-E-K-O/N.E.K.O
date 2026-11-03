@@ -127,7 +127,8 @@ class RefinementMixin:
 
         ``suppress`` is event-sourced (``EVT_PERSONA_SUPPRESSED``, replayed
         by the reconciler); ``rewrite`` / ``merge`` reuse the refine
-        helpers and are saved together at the end.
+        helpers and are saved together at the end. A merge deletes nothing:
+        its sources stay, permanently suppressed with ``merged_into``.
 
         Returns ``{'applied': n, 'stale': m}``.
         """
@@ -208,11 +209,16 @@ class RefinementMixin:
                     merged = self._build_refine_merge_entry(
                         srcs, act['text'], now_iso, reason=reason,
                     )
-                    source_ids = {src.get('id') for src in srcs}
-                    facts[:] = [
-                        e for e in facts
-                        if not (isinstance(e, dict) and e.get('id') in source_ids)
-                    ]
+                    # Sources stay on disk, retired, rather than deleted: the
+                    # merged entry's version_history keeps only the last few
+                    # texts, so a large merge would otherwise lose the rest.
+                    # Written with the merged entry in one save, not as
+                    # separate suppression events, so the two cannot diverge.
+                    for src in srcs:
+                        src[PERMANENT_SUPPRESSION_KEY] = build_permanent_suppression(
+                            act.get('reason') or verb, now_iso,
+                            merged_into=merged['id'],
+                        )
                     facts.append(merged)
                     dirty = True
                 else:

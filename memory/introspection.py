@@ -90,9 +90,18 @@ def is_permanently_suppressed(entry) -> bool:
     return isinstance(entry, dict) and bool(entry.get(PERMANENT_SUPPRESSION_KEY))
 
 
-def build_permanent_suppression(reason: str, now_iso: str) -> dict:
-    """The value stored under ``PERMANENT_SUPPRESSION_KEY``."""
-    return {'at': now_iso, 'reason': reason}
+def build_permanent_suppression(
+    reason: str, now_iso: str, *, merged_into: str | None = None,
+) -> dict:
+    """The value stored under ``PERMANENT_SUPPRESSION_KEY``.
+
+    ``merged_into`` names the entry a merge folded this one into: the source
+    stays on disk, retired, instead of being deleted.
+    """
+    marker = {'at': now_iso, 'reason': reason}
+    if merged_into:
+        marker['merged_into'] = merged_into
+    return marker
 
 
 def _clip_reason(raw) -> str:
@@ -322,9 +331,43 @@ class IntrospectionResult:
     rounds: int = 0
     applied: int = 0
     rejected: Counter = field(default_factory=Counter)
-    # False when a model call failed or returned something unparseable; the
-    # caller retries later instead of waiting a full week.
-    completed: bool = True
+    # None, FAILURE_TRANSIENT (retry soon) or FAILURE_FINAL (wait for next
+    # week); see classify_model_failure.
+    failure: str | None = None
+    failure_reason: str = ''
+
+    @property
+    def completed(self) -> bool:
+        return self.failure is None
+
+
+FAILURE_TRANSIENT = 'transient'
+FAILURE_FINAL = 'final'
+
+
+def classify_model_failure(exc: BaseException) -> str:
+    """Whether a failed model call is worth retrying soon.
+
+    Transient: a dropped connection, a 5xx or a rate limit -- the same call
+    may well succeed in half an hour. Final: a timeout (checked first: the
+    OpenAI SDK's timeout error subclasses its connection error), any other
+    4xx such as bad credentials or an unknown model, and anything
+    unrecognised. A final failure waits for the next weekly cycle, when the
+    input has changed anyway.
+    """
+    import asyncio
+
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)) or 'Timeout' in type(exc).__name__:
+        return FAILURE_FINAL
+    status = getattr(exc, 'status_code', None)
+    if isinstance(status, int):
+        return FAILURE_TRANSIENT if status == 429 or status >= 500 else FAILURE_FINAL
+    import httpx
+    from openai import APIConnectionError
+
+    if isinstance(exc, (ConnectionError, APIConnectionError, httpx.TransportError)):
+        return FAILURE_TRANSIENT
+    return FAILURE_FINAL
 
 
 def _print_text(message: str) -> None:
@@ -375,20 +418,25 @@ def _build_prompt(memory_text: str, *, ai_name: str, master_name: str) -> str:
 
 
 async def _ainvoke(config_manager, prompt: str, *, name: str, round_no: int):
-    from config import MEMORY_LLM_HARD_TIMEOUT_SECONDS
-    from memory.thinking_llm import ainvoke_thinking
+    """One model call: ``(actions or None, output_ran_out)``."""
+    from config import MEMORY_INTROSPECTION_OUTPUT_CAPS, MEMORY_LLM_HARD_TIMEOUT_SECONDS
+    from memory.thinking_llm import ainvoke_thinking, response_hit_output_limit
     from utils.token_tracker import set_call_type
 
     set_call_type("memory_introspection")
-    # Same tier and thinking budget as refine and persona correction: the
-    # actions rewrite long-term persona and are not undone automatically.
+    # Same tier as refine and persona correction, thinking on: the actions
+    # rewrite long-term persona and are not undone automatically. A larger
+    # output allowance than the shared one, since the whole injected block
+    # is under review.
     api_config = await config_manager.aget_model_api_config('correction')
-    resp, _ = await ainvoke_thinking(  # noqa: LLM_INPUT_BUDGET  # prompt built by _build_prompt, which truncates the memory block to MEMORY_INTROSPECTION_INPUT_MAX_TOKENS.
+    resp, cap = await ainvoke_thinking(  # noqa: LLM_INPUT_BUDGET  # prompt built by _build_prompt, which truncates the memory block to MEMORY_INTROSPECTION_INPUT_MAX_TOKENS.
         api_config, prompt,
         timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS,
         call_label=f"{name} memory_introspection round={round_no}",
+        output_caps=MEMORY_INTROSPECTION_OUTPUT_CAPS,
     )
-    return parse_actions(getattr(resp, 'content', '') or '')
+    actions = parse_actions(getattr(resp, 'content', '') or '')
+    return actions, response_hit_output_limit(resp, cap)
 
 
 async def arun_introspection(
@@ -412,17 +460,27 @@ async def arun_introspection(
             break
         prompt = _build_prompt(memory_text, ai_name=name, master_name=master_name)
         try:
-            raw_actions = await _ainvoke(
+            raw_actions, ran_out = await _ainvoke(
                 config_manager, prompt, name=name, round_no=round_no,
             )
-        except Exception as e:  # noqa: BLE001 — retried after the failure backoff
-            logger.warning(f"[Introspection] {name} 第{round_no}轮模型调用失败: {e}")
-            result.completed = False
+        except Exception as e:  # noqa: BLE001 — classified; the caller schedules the retry
+            result.failure = classify_model_failure(e)
+            result.failure_reason = type(e).__name__
+            logger.warning(
+                f"[Introspection] {name} 第{round_no}轮模型调用失败"
+                f"（{result.failure}）: {type(e).__name__}: {e}"
+            )
             break
         result.rounds = round_no
         if raw_actions is None:
-            logger.warning(f"[Introspection] {name} 第{round_no}轮输出不是 JSON 数组")
-            result.completed = False
+            # Out of output, or not a JSON array: the same input would most
+            # likely end the same way, so no early retry.
+            result.failure = FAILURE_FINAL
+            result.failure_reason = 'output_exhausted' if ran_out else 'unparseable'
+            logger.warning(
+                f"[Introspection] {name} 第{round_no}轮没有可用的 JSON 数组"
+                f"（{result.failure_reason}）"
+            )
             break
         plan = plan_actions(
             raw_actions, annotator.lines,

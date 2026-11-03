@@ -937,9 +937,22 @@ MEMORY_INTROSPECTION_INTERVAL_SECONDS = 7 * 24 * 3600
 A character with no recorded run is reviewed at its first idle moment, so
 existing users are covered right after the upgrade."""
 
-MEMORY_INTROSPECTION_RETRY_AFTER_FAILURE_SECONDS = 6 * 3600
-"""Backoff after a run whose model call failed or returned unparseable output;
-keeps a persistently failing model from being called on every idle poll."""
+MEMORY_INTROSPECTION_RETRY_BACKOFF_SECONDS = (30 * 60, 2 * 3600, 6 * 3600)
+"""Waits before retrying a run that failed transiently (dropped connection,
+5xx, rate limit, a write that failed). One more transient failure after the
+last step ends the attempt until the next weekly cycle. A run that timed out,
+ran out of output or returned unparseable output is not retried at all: the
+same input would most likely fail the same way, and next week's input differs.
+A run cut short by the process exiting records nothing and reruns at the first
+idle moment after restart."""
+
+MEMORY_INTROSPECTION_OUTPUT_CAPS = (32768, 16384, 8192, 4096)
+"""Output allowance (thinking + JSON answer) for the introspection call, walked
+down while the endpoint rejects a cap as above the model's limit. Headroom, not
+a target: the call still ends at MEMORY_LLM_HARD_TIMEOUT_SECONDS (110 s, bound
+by the upstream proxy), so the real reply is far shorter. Larger than the shared
+MEMORY_THINKING_OUTPUT_MAX_TOKENS because this prompt carries the whole
+injected memory block and up to 15 actions to write."""
 
 MEMORY_INTROSPECTION_MAX_ROUNDS = 3
 """Review → apply → re-render rounds per run. Each round re-renders because

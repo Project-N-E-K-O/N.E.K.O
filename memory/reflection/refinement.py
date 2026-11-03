@@ -141,7 +141,9 @@ class RefinementMixin:
         exact text, not already suppressed and not claimed by an earlier
         action of this batch, or the whole action is skipped as stale.
         ``rewrite`` / ``merge`` reuse the refine helpers; a merge also keeps
-        each source text in the new reflection's ``modification_history``.
+        each source text in the new reflection's ``modification_history``
+        and deletes nothing: its sources stay, permanently suppressed with
+        ``merged_into``.
         Reflections have no event type for suppression, so all three write
         straight to the view, as refine does.
 
@@ -166,7 +168,6 @@ class RefinementMixin:
             now = datetime.now()
             now_iso = now.isoformat()
             consumed: set[str] = set()
-            merged_away: set[str] = set()
             produced: list[dict] = []
             for act in actions:
                 srcs: list[dict] = []
@@ -218,17 +219,19 @@ class RefinementMixin:
                         for src in srcs
                     ]
                     produced.append(merged)
-                    merged_away.update(src.get('id') for src in srcs)
+                    # Sources stay, retired, as on the persona side.
+                    for src in srcs:
+                        src[PERMANENT_SUPPRESSION_KEY] = build_permanent_suppression(
+                            act.get('reason') or verb, now_iso,
+                            merged_into=merged['id'],
+                        )
                 else:
                     stale += 1
                     continue
                 consumed.update(src.get('id') for src in srcs)
                 applied += 1
             if applied:
-                await self.asave_reflections(name, [
-                    r for r in reflections
-                    if not (isinstance(r, dict) and r.get('id') in merged_away)
-                ] + produced)
+                await self.asave_reflections(name, reflections + produced)
         return {'applied': applied, 'stale': stale}
 
     async def apply_refine_actions(

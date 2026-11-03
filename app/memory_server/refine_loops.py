@@ -536,6 +536,7 @@ async def _periodic_scoped_refine_loop():
 
 _INTROSPECTION_LAST_RUN_KEY = 'introspection_last_run_at'
 _INTROSPECTION_LAST_FAILURE_KEY = 'introspection_last_failure_at'
+_INTROSPECTION_FAILURES_KEY = 'introspection_transient_failures'
 
 
 def _parse_maint_time(value, now: datetime) -> datetime | None:
@@ -555,10 +556,11 @@ def _parse_maint_time(value, now: datetime) -> datetime | None:
 
 def _introspection_due(name: str, now: datetime) -> bool:
     """Never run → due now (the upgrade path); otherwise one interval after
-    the last completed run, and not within the backoff after a failure."""
+    the last finished run, and after a transient failure not before its step
+    of the backoff ladder has passed."""
     from config import (
         MEMORY_INTROSPECTION_INTERVAL_SECONDS,
-        MEMORY_INTROSPECTION_RETRY_AFTER_FAILURE_SECONDS,
+        MEMORY_INTROSPECTION_RETRY_BACKOFF_SECONDS,
     )
 
     view = gates._maint_view(name)
@@ -568,35 +570,77 @@ def _introspection_due(name: str, now: datetime) -> bool:
         and (now - last_run).total_seconds() < MEMORY_INTROSPECTION_INTERVAL_SECONDS
     ):
         return False
+    try:
+        failures = int(view.get(_INTROSPECTION_FAILURES_KEY) or 0)
+    except (TypeError, ValueError):
+        failures = 0
     last_failure = _parse_maint_time(view.get(_INTROSPECTION_LAST_FAILURE_KEY), now)
-    if (
-        last_failure is not None
-        and (now - last_failure).total_seconds()
-        < MEMORY_INTROSPECTION_RETRY_AFTER_FAILURE_SECONDS
-    ):
-        return False
+    if failures > 0 and last_failure is not None:
+        ladder = MEMORY_INTROSPECTION_RETRY_BACKOFF_SECONDS
+        wait = ladder[min(failures, len(ladder)) - 1]
+        if (now - last_failure).total_seconds() < wait:
+            return False
     return True
 
 
-def _mutate_stamp_introspection(key: str, stamp: str, state: dict) -> tuple[bool, None]:
-    """Mutator: record when an introspection run ended (``key`` says how)."""
-    state[key] = stamp
+def _finish_introspection_state(state: dict, stamp: str) -> None:
+    state[_INTROSPECTION_LAST_RUN_KEY] = stamp
+    state.pop(_INTROSPECTION_LAST_FAILURE_KEY, None)
+    state.pop(_INTROSPECTION_FAILURES_KEY, None)
+
+
+def _mutate_introspection_finished(stamp: str, state: dict) -> tuple[bool, None]:
+    """Mutator: the run is over for this cycle, whether it succeeded or failed
+    in a way a retry would not fix; the next run is a week away."""
+    _finish_introspection_state(state, stamp)
     return True, None
 
 
-async def _astamp_introspection(name: str, *, completed: bool) -> None:
-    key = _INTROSPECTION_LAST_RUN_KEY if completed else _INTROSPECTION_LAST_FAILURE_KEY
-    await gates._amutate_maint_state(
+def _mutate_introspection_transient_failure(
+    stamp: str, max_retries: int, state: dict,
+) -> tuple[bool, bool]:
+    """Mutator: count one transient failure. Past ``max_retries`` the cycle is
+    given up and the next run waits for the weekly interval; returns whether
+    that happened."""
+    try:
+        failures = int(state.get(_INTROSPECTION_FAILURES_KEY) or 0) + 1
+    except (TypeError, ValueError):
+        failures = 1
+    if failures > max_retries:
+        _finish_introspection_state(state, stamp)
+        return True, True
+    state[_INTROSPECTION_FAILURES_KEY] = failures
+    state[_INTROSPECTION_LAST_FAILURE_KEY] = stamp
+    return True, False
+
+
+async def _astamp_introspection(name: str, *, transient_failure: bool) -> bool:
+    """Record how a run ended; True when a transient failure used up the
+    retries and the cycle was given up."""
+    from config import MEMORY_INTROSPECTION_RETRY_BACKOFF_SECONDS
+
+    stamp = datetime.now().isoformat()
+    if not transient_failure:
+        await gates._amutate_maint_state(
+            name, functools.partial(_mutate_introspection_finished, stamp),
+        )
+        return False
+    return await gates._amutate_maint_state(
         name,
         functools.partial(
-            _mutate_stamp_introspection, key, datetime.now().isoformat(),
+            _mutate_introspection_transient_failure, stamp,
+            len(MEMORY_INTROSPECTION_RETRY_BACKOFF_SECONDS),
         ),
     )
 
 
 async def _run_introspection_for_character(character: str) -> None:
-    """One introspection run, then record when it ended and how."""
-    from memory.introspection import arun_introspection
+    """One introspection run, then record when it ended and how.
+
+    A run cancelled midway (the process exiting, a character release) records
+    nothing, so it starts over at the next idle moment.
+    """
+    from memory.introspection import FAILURE_TRANSIENT, arun_introspection
 
     pm = runtime.persona_manager
     engine_ref = runtime.reflection_engine
@@ -610,13 +654,18 @@ async def _run_introspection_for_character(character: str) -> None:
             config_manager=runtime._config_manager,
         )
     except Exception:
-        await _astamp_introspection(character, completed=False)
+        # Outside the model call (a save hitting a busy or read-only store):
+        # worth another try soon.
+        await _astamp_introspection(character, transient_failure=True)
         raise
-    await _astamp_introspection(character, completed=result.completed)
+    gave_up = await _astamp_introspection(
+        character, transient_failure=result.failure == FAILURE_TRANSIENT,
+    )
     logger.info(
         f"[Introspection] {character}: 结束 rounds={result.rounds} "
         f"applied={result.applied} rejected={dict(result.rejected)} "
-        f"completed={result.completed}"
+        f"failure={result.failure}({result.failure_reason})"
+        + ("，重试次数用完，等下一周期" if gave_up else "")
     )
     if result.applied:
         from .long_term_sync import queue_capture

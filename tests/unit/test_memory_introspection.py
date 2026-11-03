@@ -117,13 +117,17 @@ class _FakeThinking:
     def __init__(self, *replies):
         self._replies = list(replies)
         self.prompts: list[str] = []
+        self.output_caps: list = []
 
-    async def __call__(self, api_config, prompt, *, timeout, call_label):
+    async def __call__(self, api_config, prompt, *, timeout, call_label, output_caps=None):
         self.prompts.append(prompt)
+        self.output_caps.append(output_caps)
         reply = self._replies.pop(0)
         content = reply(prompt) if callable(reply) else reply
         if isinstance(content, BaseException):
             raise content
+        if isinstance(content, SimpleNamespace):
+            return content, 8192
         return SimpleNamespace(content=content), 8192
 
 
@@ -399,15 +403,102 @@ async def test_persona_apply_refuses_protected_targets(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_model_failure_is_reported_as_incomplete(tmp_path):
+async def test_model_failures_are_classified_for_the_retry_policy(tmp_path):
+    import httpx
+    import openai
+
     env = _install(str(tmp_path))
     await _seed_ranked_master(env, 1)
+    request = httpx.Request('POST', 'http://llm.example.com/v1/chat/completions')
 
-    failed = await _run(env, _FakeThinking(RuntimeError('timeout')))
+    timed_out = await _run(env, _FakeThinking(openai.APITimeoutError(request=request)))
+    dropped = await _run(env, _FakeThinking(openai.APIConnectionError(request=request)))
     garbage = await _run(env, _FakeThinking('not json at all'))
+    ran_out = await _run(env, _FakeThinking(SimpleNamespace(
+        content='[{"action": "suppress", "id": 1, "rea',
+        response_metadata={'finish_reason': 'length'},
+    )))
 
-    assert failed.completed is False and failed.applied == 0
-    assert garbage.completed is False and garbage.applied == 0
+    assert (timed_out.failure, timed_out.failure_reason) == ('final', 'APITimeoutError')
+    assert (dropped.failure, dropped.failure_reason) == ('transient', 'APIConnectionError')
+    assert (garbage.failure, garbage.failure_reason) == ('final', 'unparseable')
+    assert (ran_out.failure, ran_out.failure_reason) == ('final', 'output_exhausted')
+    assert all(r.applied == 0 and not r.completed for r in (timed_out, dropped, garbage, ran_out))
+
+
+def test_classify_model_failure_status_codes_and_network_errors():
+    import asyncio
+
+    import httpx
+
+    from memory.introspection import classify_model_failure
+
+    class _Status(Exception):
+        def __init__(self, code):
+            self.status_code = code
+
+    assert classify_model_failure(_Status(429)) == 'transient'
+    assert classify_model_failure(_Status(503)) == 'transient'
+    assert classify_model_failure(_Status(401)) == 'final'
+    assert classify_model_failure(_Status(404)) == 'final'
+    assert classify_model_failure(asyncio.TimeoutError()) == 'final'
+    assert classify_model_failure(httpx.ConnectError('down')) == 'transient'
+    assert classify_model_failure(httpx.ReadTimeout('slow')) == 'final'
+    assert classify_model_failure(ConnectionResetError()) == 'transient'
+    assert classify_model_failure(ValueError('odd')) == 'final'
+
+
+@pytest.mark.asyncio
+async def test_introspection_asks_for_its_own_output_ladder(tmp_path):
+    from config import MEMORY_INTROSPECTION_OUTPUT_CAPS
+
+    env = _install(str(tmp_path))
+    await _seed_ranked_master(env, 1)
+    fake = _FakeThinking('[]')
+
+    await _run(env, fake)
+
+    assert fake.output_caps == [MEMORY_INTROSPECTION_OUTPUT_CAPS]
+    assert MEMORY_INTROSPECTION_OUTPUT_CAPS[0] == 32768
+
+
+@pytest.mark.asyncio
+async def test_thinking_call_walks_down_the_output_ladder():
+    from unittest.mock import MagicMock
+
+    from memory.thinking_llm import ainvoke_thinking
+
+    class _CapRejected(Exception):
+        status_code = 400
+
+        def __str__(self):
+            return "Error code: 400 - max_tokens must be <= 8192"
+
+    def _llm(result):
+        llm = MagicMock()
+
+        async def _ainvoke(*_a, **_k):
+            if isinstance(result, BaseException):
+                raise result
+            return result
+
+        async def _aclose():
+            return None
+
+        llm.ainvoke = _ainvoke
+        llm.aclose = _aclose
+        return llm
+
+    response = SimpleNamespace(content='[]', response_metadata={})
+    api = {'model': 'm', 'base_url': 'https://llm.example.com/v1', 'api_key': 'k', 'provider_type': 'openai'}
+    with patch("utils.llm_client.create_chat_llm",
+               side_effect=[_llm(_CapRejected()), _llm(_CapRejected()), _llm(response)]) as factory:
+        got, cap = await ainvoke_thinking(
+            api, 'prompt', timeout=60, call_label='t', output_caps=(32768, 16384, 8192, 4096),
+        )
+
+    assert got is response and cap == 8192
+    assert [c.kwargs['max_completion_tokens'] for c in factory.call_args_list] == [32768, 16384, 8192]
 
 
 # ── apply: history and the event log ────────────────────────────────
@@ -433,14 +524,41 @@ async def test_persona_rewrite_and_merge_keep_history(tmp_path):
     assert result.applied == 2
     persona = await env.pm.aensure_persona(NAME)
     facts = env.pm._get_section_facts(persona, 'relationship')
-    assert {e['id'] for e in facts} >= {'r3'} and not {'r1', 'r2'} & {e['id'] for e in facts}
     merged = next(e for e in facts if e['text'] == '主人加班到深夜时会先跟小天报备')
+    for source_id in ('r1', 'r2'):
+        source = next(e for e in facts if e['id'] == source_id)
+        assert source['permanent_suppression']['merged_into'] == merged['id'], "合并不删来源，只压制"
     assert [h['text'] for h in merged['version_history']] == ['两人形成了深厚的默契', '两人之间有一种默契']
     assert merged['reinforcement'] == 2.0, "合并沿用精炼的证据继承"
     rewritten = next(e for e in facts if e['id'] == 'r3')
     assert rewritten['text'] == '主人熬夜时小天没有劝阻过'
     assert rewritten['version_history'][-1]['text'] == '她总是默许'
     assert rewritten['version_history'][-1]['reason'].startswith('introspection')
+
+
+@pytest.mark.asyncio
+async def test_large_merge_loses_no_source_text(tmp_path):
+    """version_history keeps the last PERSONA_VERSION_HISTORY_MAX texts; the
+    sources themselves stay on disk, so a bigger merge loses nothing."""
+    from config import PERSONA_VERSION_HISTORY_MAX
+
+    env = _install(str(tmp_path))
+    texts = [f'两人形成了第{i}种默契' for i in range(PERSONA_VERSION_HISTORY_MAX + 2)]
+    await _seed_persona(env.pm, {'relationship': [
+        {'id': f'r{i}', 'text': t, 'reinforcement': 1.0, 'rein_last_signal_at': _now_iso()}
+        for i, t in enumerate(texts)
+    ]})
+    fake = _FakeThinking(lambda p: json.dumps([
+        {'action': 'merge', 'ids': [_number(p, t) for t in texts],
+         'text': '主人和小天聊天时常有默契', 'reason': '同义'},
+    ], ensure_ascii=False), '[]')
+
+    result = await _run(env, fake)
+
+    assert result.applied == 1
+    persona = await env.pm.aensure_persona(NAME)
+    on_disk = {e['text'] for e in env.pm._get_section_facts(persona, 'relationship')}
+    assert set(texts) <= on_disk, "每条来源原文都还在"
 
 
 @pytest.mark.asyncio
@@ -464,8 +582,9 @@ async def test_reflection_suppress_rewrite_and_merge_keep_history(tmp_path):
     assert result.applied == 3
     rows = await env.engine.aload_reflections(NAME)
     by_text = {r['text']: r for r in rows}
-    assert '两人的关系体现了信任' not in by_text and '主人信任小天' not in by_text
     merged = by_text['主人会把工作上的烦心事讲给小天听']
+    for source_text in ('两人的关系体现了信任', '主人信任小天'):
+        assert by_text[source_text]['permanent_suppression']['merged_into'] == merged['id']
     assert [h['old_text'] for h in merged['modification_history']] == ['两人的关系体现了信任', '主人信任小天']
     rewritten = by_text['主人每晚睡前会找小天道晚安']
     assert rewritten['id'] == 'c3'
@@ -1060,14 +1179,17 @@ def test_first_run_is_due_immediately_then_weekly(maint_state):
     assert _introspection_due(NAME, now), "时钟回拨留下的未来时间戳不能把自省推迟"
 
 
-def test_failure_backs_off_without_waiting_a_week(maint_state):
+def test_transient_failures_back_off_along_the_ladder(maint_state):
     from app.memory_server.refine_loops import _introspection_due
+    from config import MEMORY_INTROSPECTION_RETRY_BACKOFF_SECONDS as LADDER
 
     now = datetime.now()
-    _stamp(maint_state, introspection_last_failure_at=(now - timedelta(hours=1)).isoformat())
-    assert not _introspection_due(NAME, now)
-    _stamp(maint_state, introspection_last_failure_at=(now - timedelta(hours=7)).isoformat())
-    assert _introspection_due(NAME, now)
+    for failures, wait in enumerate(LADDER, start=1):
+        _stamp(maint_state, introspection_transient_failures=failures,
+               introspection_last_failure_at=(now - timedelta(seconds=wait - 60)).isoformat())
+        assert not _introspection_due(NAME, now), failures
+        _stamp(maint_state, introspection_last_failure_at=(now - timedelta(seconds=wait + 60)).isoformat())
+        assert _introspection_due(NAME, now), failures
 
 
 @pytest.mark.asyncio
@@ -1098,11 +1220,29 @@ async def test_tick_runs_only_when_idle_and_powerful_and_persists_the_stamp(main
     await refine_loops._run_introspection_tick()
     assert run.await_count == 1, "七天内不重复跑"
 
+    # A timeout / exhausted output / bad JSON is not retried early.
     maint_state._maint_state[NAME].clear()
-    run.return_value = introspection.IntrospectionResult(completed=False)
+    run.return_value = introspection.IntrospectionResult(failure='final', failure_reason='APITimeoutError')
     await refine_loops._run_introspection_tick()
-    assert 'introspection_last_failure_at' in maint_state._maint_state[NAME]
-    assert 'introspection_last_run_at' not in maint_state._maint_state[NAME]
+    assert 'introspection_last_run_at' in maint_state._maint_state[NAME], "超时、截断不提前重试"
+    assert 'introspection_transient_failures' not in maint_state._maint_state[NAME]
+
+    # A dropped connection is retried along the ladder, then given up.
+    from config import MEMORY_INTROSPECTION_RETRY_BACKOFF_SECONDS as LADDER
+
+    maint_state._maint_state[NAME].clear()
+    run.return_value = introspection.IntrospectionResult(failure='transient', failure_reason='APIConnectionError')
+    for attempt in range(1, len(LADDER) + 1):
+        maint_state._maint_state[NAME].pop('introspection_last_failure_at', None)
+        await refine_loops._run_introspection_tick()
+        state = maint_state._maint_state[NAME]
+        assert state['introspection_transient_failures'] == attempt
+        assert 'introspection_last_run_at' not in state
+    maint_state._maint_state[NAME].pop('introspection_last_failure_at', None)
+    await refine_loops._run_introspection_tick()
+    state = maint_state._maint_state[NAME]
+    assert 'introspection_last_run_at' in state, "重试次数用完就等下一周期"
+    assert 'introspection_transient_failures' not in state
 
 
 @pytest.mark.asyncio
