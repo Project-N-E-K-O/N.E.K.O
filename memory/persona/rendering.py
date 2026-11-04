@@ -39,7 +39,9 @@ from memory.evidence import evidence_score
 from memory.introspection import (
     KIND_PERSONA,
     KIND_REFLECTION,
+    PERMANENT_SUPPRESSION_KEY,
     is_permanently_suppressed,
+    retirement_blocks_restatement,
 )
 
 from ._shared import logger
@@ -73,6 +75,19 @@ def _remember_token_count(tid: str, text: str, count: int) -> None:
         _TOKEN_COUNT_MEMO.move_to_end((tid, text))
         while len(_TOKEN_COUNT_MEMO) > _TOKEN_COUNT_MEMO_MAX:
             _TOKEN_COUNT_MEMO.popitem(last=False)
+
+
+def _parse_render_time(value) -> datetime | None:
+    """A stored ISO time as local naive time; None when missing or unreadable."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone().replace(tzinfo=None)
+    return parsed
 
 
 class _RenderPrep(NamedTuple):
@@ -581,9 +596,16 @@ class RenderingMixin:
         suppressed_text_set: set[str],
         subjects=None,
         include_legacy_private: bool | None = None,
+        retired_text_cutoffs: dict[str, datetime | None] | None = None,
     ) -> list[dict]:
         """Drop reflections whose text matches a suppressed persona entry
         (existing semantic — see `_is_suppressed_text` callers below).
+
+        A text in ``retired_text_cutoffs`` (a persona line retired as stale,
+        contradicted or off-card) hides only the reflections created up to
+        that retirement: one synthesized afterwards came from new facts that
+        made the line true again. A missing or unreadable time on either
+        side hides it.
 
         Blank-rejection goes through `_renderable_text`, the same single
         definition the persona split and the suppressed section use (those
@@ -619,8 +641,14 @@ class RenderingMixin:
                 continue
             if is_permanently_suppressed(r):
                 continue
-            if r.get('text', '') in suppressed_text_set:
+            text = r.get('text', '')
+            if text in suppressed_text_set:
                 continue
+            if retired_text_cutoffs and text in retired_text_cutoffs:
+                cutoff = retired_text_cutoffs[text]
+                created = _parse_render_time(r.get('created_at'))
+                if cutoff is None or created is None or created <= cutoff:
+                    continue
             out.append(r)
         return out
 
@@ -899,15 +927,40 @@ class RenderingMixin:
 
     def _suppressed_text_set(self, persona: dict) -> set[str]:
         """Texts no reflection may repeat: the mention-cooldown ones and the
-        ones introspection retired for good."""
+        ones introspection retired for their wording
+        (``retirement_blocks_restatement``). Lines retired as stale,
+        contradicted or off-card are in ``_retired_text_cutoffs`` instead."""
         out: set[str] = set()
         for entry in self._collect_all_entries(persona):
             if isinstance(entry, dict) and (
-                entry.get('suppress') or is_permanently_suppressed(entry)
+                entry.get('suppress') or retirement_blocks_restatement(entry)
             ):
                 t = entry.get('text', '')
                 if t:
                     out.add(t)
+        return out
+
+    def _retired_text_cutoffs(self, persona: dict) -> dict[str, datetime | None]:
+        """Each permanently retired persona text, with when it was retired.
+
+        A text retired more than once keeps the latest time; ``None`` when
+        any of its times is unreadable, which hides every repeat.
+        """
+        out: dict[str, datetime | None] = {}
+        for entry in self._collect_all_entries(persona):
+            if not (isinstance(entry, dict) and is_permanently_suppressed(entry)):
+                continue
+            text = entry.get('text', '')
+            if not text:
+                continue
+            marker = entry.get(PERMANENT_SUPPRESSION_KEY)
+            at = _parse_render_time(marker.get('at') if isinstance(marker, dict) else None)
+            if text not in out:
+                out[text] = at
+            elif out[text] is None or at is None:
+                out[text] = None
+            else:
+                out[text] = max(out[text], at)
         return out
 
     # ------------------------------------------------------------------
@@ -1296,6 +1349,7 @@ class RenderingMixin:
             persona_view, suppressed_text_set,
             subjects,
             include_legacy_private,
+            retired_text_cutoffs=self._retired_text_cutoffs(persona_view),
         )
         return _RenderPrep(
             persona_view=persona_view,

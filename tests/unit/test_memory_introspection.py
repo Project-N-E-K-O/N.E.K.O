@@ -750,8 +750,8 @@ async def test_persona_suppression_is_event_sourced_and_replayable(tmp_path):
 # ── permanent suppression reaches every path ────────────────────────
 
 
-def _retired(reason: str = '空洞') -> dict:
-    return {'permanent_suppression': {'at': _now_iso(), 'reason': reason}}
+def _retired(reason: str = '空洞', issue: str = 'hollow') -> dict:
+    return {'permanent_suppression': {'at': _now_iso(), 'reason': reason, 'issue': issue}}
 
 
 @pytest.mark.asyncio
@@ -777,6 +777,81 @@ async def test_permanent_suppression_leaves_every_render_section(tmp_path):
     for gone in ('两人形成了默契', '两人有了纽带', '两人意味着彼此的港湾', '主人总被她安抚'):
         assert gone not in rendered, gone
     assert '主人周末会带小天去公园' in rendered and '主人不喜欢被催' in rendered
+
+
+@pytest.mark.asyncio
+async def test_new_facts_reopen_a_line_retired_as_stale(tmp_path):
+    """A reflection repeating a persona line retired as stale, contradicted
+    or off-card (or with no issue recorded) shows when it was synthesized
+    after the retirement: new facts made the line true again. An older copy,
+    a wording-type retirement, a line in mention cooldown or an unreadable
+    time on either side still hides it."""
+    from memory.introspection import arender_injected_memory
+
+    env = _install(str(tmp_path))
+    now = datetime.now()
+
+    def _ago(days: int) -> str:
+        return (now - timedelta(days=days)).isoformat(timespec='seconds')
+
+    def _marker(issue, at=None):
+        marker = {'at': at or _ago(3), 'reason': 'x'}
+        if issue:
+            marker['issue'] = issue
+        return {'permanent_suppression': marker}
+
+    await _seed_persona(env.pm, {'master': [
+        {'id': 'm1', 'text': '主人住在北京', **_marker('stale')},
+        {'id': 'm2', 'text': '主人喜欢早起', **_marker('stale')},
+        {'id': 'm3', 'text': '主人总是默许她', **_marker('self_rule')},
+        {'id': 'm4', 'text': '主人在学吉他', **_marker('contradiction')},
+        {'id': 'm5', 'text': '主人每天跑步', **_marker(None)},
+        {'id': 'm6', 'text': '主人在学日语', 'suppress': True, 'suppressed_at': _now_iso(),
+         **_marker('stale')},
+        {'id': 'm7', 'text': '主人养了狗', **_marker('stale')},
+        {'id': 'm8a', 'text': '主人在上海工作', **_marker('stale', _ago(3))},
+        {'id': 'm8b', 'text': '主人在上海工作', **_marker('stale', _ago(1))},
+        {'id': 'm9', 'text': '主人爱吃辣', **_marker('stale', 'not a time')},
+    ]})
+    await _seed_reflections(env.engine, [
+        _reflection('c1', '主人住在北京', entity='master'),
+        _reflection('c2', '主人喜欢早起', entity='master', created_at=_ago(5)),
+        _reflection('c3', '主人总是默许她', entity='master'),
+        _reflection('c4', '主人在学吉他', entity='master'),
+        _reflection('c5', '主人每天跑步', entity='master'),
+        _reflection('c6', '主人在学日语', entity='master'),
+        _reflection('c7', '主人养了狗', entity='master', created_at='not a time'),
+        _reflection('c8', '主人在上海工作', entity='master', created_at=_ago(2)),
+        _reflection('c9', '主人爱吃辣', entity='master'),
+    ])
+
+    rendered = await arender_injected_memory(env.pm, env.engine, NAME)
+
+    for shown in ('主人住在北京', '主人在学吉他', '主人每天跑步'):
+        assert shown in rendered, shown
+    for hidden in ('主人喜欢早起', '主人总是默许她', '主人在学日语', '主人养了狗',
+                   '主人在上海工作', '主人爱吃辣'):
+        assert hidden not in rendered, hidden
+
+
+def test_retired_text_cutoffs_keep_the_latest_readable_time(tmp_path):
+    from memory.persona.rendering import _parse_render_time
+
+    env = _install(str(tmp_path))
+
+    def _row(text, at):
+        return {'text': text, 'permanent_suppression': {'at': at, 'reason': 'x', 'issue': 'stale'}}
+
+    cutoffs = env.pm._retired_text_cutoffs({'master': {'facts': [
+        _row('a', '2026-01-01T00:00:00'), _row('a', '2026-03-01T00:00:00'),
+        _row('b', '2026-01-01T00:00:00'), _row('b', 'garbled'),
+        {'text': 'c', 'suppress': True},
+    ]}})
+
+    assert cutoffs == {'a': datetime(2026, 3, 1), 'b': None}
+    aware = '2026-03-01T00:00:00+00:00'
+    assert _parse_render_time(aware) == datetime.fromisoformat(aware).astimezone().replace(tzinfo=None)
+    assert _parse_render_time(None) is None and _parse_render_time('') is None
 
 
 @pytest.mark.asyncio
@@ -1197,7 +1272,7 @@ def test_followups_skip_suppressed_pending_reflections():
 async def test_new_contradicting_fact_does_not_rewrite_a_suppressed_entry(tmp_path):
     env = _install(str(tmp_path))
     await _seed_persona(env.pm, {
-        'master': [{'id': 'old', 'text': '主人住在东京', **_retired('过期')}],
+        'master': [{'id': 'old', 'text': '主人住在东京', **_retired('过期', 'stale')}],
         'neko': [{'id': 'live', 'text': '小天喜欢晒太阳'}],
     })
 
