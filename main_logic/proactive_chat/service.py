@@ -284,6 +284,8 @@ def _open_threads_for_activity_state(
 def _render_followup_topic_hooks(
     proactive_lang: str,
     followup_topics: list[dict[str, Any]],
+    *,
+    commitment: dict[str, Any] | None = None,
 ) -> tuple[str, list[Any]]:
     """Render follow-up topic hooks and return the surfaced reflection ids.
 
@@ -294,17 +296,22 @@ def _render_followup_topic_hooks(
     it. Semantic open_threads intentionally do not flow through this helper:
     they render inside the activity-state section, where the live state/tone
     and decision rules can arbitrate them separately from old reminiscence.
-    """
-    if not followup_topics:
-        return "", []
 
+    ``commitment`` (from /followup_topics: a promise that comes due soon)
+    renders first; its id leads the surfaced ids so /record_surfaced starts
+    its offer cooldown.
+    """
     from main_logic.topic.common import clean_text
-    from main_logic.topic.hooks import build_topic_hook_prompt
+    from main_logic.topic.hooks import build_topic_hook_prompt, commitment_cue_text
+
+    if not followup_topics and not commitment_cue_text(commitment):
+        return "", []
 
     rendered_followup_topics = followup_topics[:3]
     prompt = build_topic_hook_prompt(
         proactive_lang,
         followup_topics=rendered_followup_topics,
+        commitment=commitment,
     )
     if not prompt:
         return "", []
@@ -312,6 +319,8 @@ def _render_followup_topic_hooks(
     # Mirror _iter_followup_texts: drop blanks/duplicates so the surfaced ids
     # match exactly what the prompt rendered.
     surfaced_reflection_ids: list[Any] = []
+    if commitment_cue_text(commitment) and commitment.get("id"):
+        surfaced_reflection_ids.append(commitment["id"])
     seen_texts: set[str] = set()
     for topic in rendered_followup_topics:
         text = clean_text(topic.get("text"))
@@ -1583,6 +1592,7 @@ async def handle_proactive_chat(
         # also saving reflect POST's15s timeout risk. stale_returning welcomes reminiscence.
         followup_topics_prompt = ""
         _followup_topics = []
+        _due_commitment = None  # A promise coming due, offered ahead of the reflections.
         _surfaced_reflection_ids = []  # Track pending reflections mentioned this turn.
         _allow_reminiscence = (
             activity_snapshot is None
@@ -1610,8 +1620,10 @@ async def handle_proactive_chat(
                     timeout=5.0,
                 )
                 if _topics_resp.status_code == 200:
-                    _followup_topics = _topics_resp.json().get("topics", [])
-                    if _followup_topics:
+                    _topics_payload = _topics_resp.json()
+                    _followup_topics = _topics_payload.get("topics", [])
+                    _due_commitment = _topics_payload.get("commitment")
+                    if _followup_topics or _due_commitment:
                         try:
                             (
                                 followup_topics_prompt,
@@ -1619,6 +1631,7 @@ async def handle_proactive_chat(
                             ) = _render_followup_topic_hooks(
                                 topic_hook_lang,
                                 _followup_topics,
+                                commitment=_due_commitment,
                             )
                         except Exception as _followup_prompt_err:
                             logger.debug(
@@ -1626,6 +1639,7 @@ async def handle_proactive_chat(
                             )
                         print(
                             f"[{lanlan_name}] 回调话题候选: {len(_followup_topics)} 条"
+                            f"{'，另有 1 条快到期的承诺' if _due_commitment else ''}"
                         )
             except Exception as e:
                 logger.debug(f"[{lanlan_name}] 回调话题获取失败（不影响主流程）: {e}")
@@ -1800,6 +1814,20 @@ async def handle_proactive_chat(
                 _followup_topics = []
                 _surfaced_reflection_ids = []
                 followup_topics_prompt = ""
+                if _due_commitment:
+                    # A promise coming due is not reminiscence: it stays, and
+                    # its own offer cooldown keeps it from repeating.
+                    try:
+                        (
+                            followup_topics_prompt,
+                            _surfaced_reflection_ids,
+                        ) = _render_followup_topic_hooks(
+                            topic_hook_lang, [], commitment=_due_commitment,
+                        )
+                    except Exception as _followup_prompt_err:
+                        logger.debug(
+                            f"[{lanlan_name}] commitment cue build failed: {_followup_prompt_err}"
+                        )
 
 
         # Build once after source suppression so candidates are decayed only once.

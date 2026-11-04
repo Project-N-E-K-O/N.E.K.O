@@ -5,7 +5,8 @@ Contract groups:
 
 1. Candidates: only entries flagged ``pin`` become candidates; Stage-1 output
    from before the new fields existed yields none; lifetimes snap to the four
-   tiers; ai_disclosure facts are never pinned.
+   tiers; ai_disclosure facts are pinned only as promises (see
+   test_pinned_commitments.py).
 2. Admission into an empty section writes directly, without a model call.
 3. The four resolve actions (add / replace / renew / remove), validation of
    the ids the model returns, and the fallback when the model fails.
@@ -160,9 +161,9 @@ def test_candidates_need_pin_and_take_the_default_tier():
         "a bare string",
     ]
     assert pin_candidates_from_extracted(extracted) == [
-        {"text": "主人下周三考试", "entity": "master", "ttl_days": 14},
+        {"text": "主人下周三考试", "entity": "master", "ttl_days": 14, "kind": "fact"},
         {"text": "主人对花生过敏", "entity": "master",
-         "ttl_days": PINNED_FACT_DEFAULT_TTL_DAYS},
+         "ttl_days": PINNED_FACT_DEFAULT_TTL_DAYS, "kind": "fact"},
     ]
 
 
@@ -581,7 +582,7 @@ def test_mutation_holds_the_cloudsave_fence_across_read_and_write(tmp_path, monk
     )
     monkeypatch.setattr(
         store, "_write_unlocked",
-        lambda name, facts, history: (events.append("write"), real_write(name, facts, history))[1],
+        lambda name, *rest: (events.append("write"), real_write(name, *rest))[1],
     )
 
     store.apply_decisions(_NAME, [_candidate("主人周六去北京", 3)], [("add", None)], now=_T0)
@@ -1243,12 +1244,18 @@ def test_only_the_private_new_dialog_renders_the_pinned_section():
             if names := _functions_referencing(tree, "_render_pinned_facts_block"):
                 calling_render[rel] = names
     assert scanned > 100
-    # runtime.py only builds and wires it; routes.py reads it in one helper.
+    # runtime.py only builds and wires it; routes.py renders it for
+    # /new_dialog and hands one due promise to proactive chat (private chat
+    # too); the idle loop runs the daily check, which renders nothing.
     assert touching_store == {
         "app/memory_server/runtime.py": {
             "reload_memory_components", "ensure_memory_server_runtime_initialized",
         },
-        "app/memory_server/routes.py": {"_render_pinned_facts_block"},
+        "app/memory_server/routes.py": {
+            "_render_pinned_facts_block", "_due_commitment_topic",
+            "_record_surfaced_commitments",
+        },
+        "app/memory_server/evidence_loops.py": {"_review_pinned_facts"},
     }
     assert calling_render == {"app/memory_server/routes.py": {"_new_dialog"}}
 

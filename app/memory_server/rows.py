@@ -159,8 +159,30 @@ def _extract_role_tagged_messages_from_rows(rows: list) -> list[dict]:
     directly — do **not** wrap with ``json.dumps`` (convert_to_messages only
     accepts a list; a str gets silently swallowed into []).
     """
+    return [
+        {'type': msg_type, 'data': {'content': text}}
+        for _, msg_type, text in _iter_role_tagged_rows(rows)
+    ]
+
+
+def _extract_timed_role_messages_from_rows(rows: list) -> list[dict]:
+    """The same messages as ``_extract_role_tagged_messages_from_rows``, with their time.
+
+    Returns ``[{'at': epoch seconds, 'role': 'human'|'ai', 'text': str}, ...]``
+    in row order; rows whose timestamp does not parse are skipped. This is
+    the shape ``PinnedFactStore.areview`` reads the conversation in.
+    """
     out: list[dict] = []
-    for _, _, msg_json in rows:
+    for ts_raw, msg_type, text in _iter_role_tagged_rows(rows):
+        ts = _coerce_db_ts(ts_raw)
+        if ts is not None:
+            out.append({'at': ts.timestamp(), 'role': msg_type, 'text': text})
+    return out
+
+
+def _iter_role_tagged_rows(rows: list):
+    """Yield ``(raw timestamp, 'human'|'ai', text)`` for the rows memory may read."""
+    for ts_raw, _, msg_json in rows:
         try:
             msg = json.loads(msg_json) if isinstance(msg_json, str) else msg_json
             if not isinstance(msg, dict):
@@ -194,10 +216,9 @@ def _extract_role_tagged_messages_from_rows(rows: list) -> list[dict]:
                 continue
             if not text.strip():
                 continue
-            out.append({'type': msg_type, 'data': {'content': text}})
         except (json.JSONDecodeError, TypeError):
             continue
-    return out
+        yield ts_raw, msg_type, text
 
 
 def _trim_to_user_msg_bracket(message_dicts: list[dict]) -> list[dict]:
