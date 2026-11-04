@@ -103,7 +103,18 @@ async def settle(router, timeout: float = 2.0) -> None:
 def assert_released(router) -> None:
     assert router._dispatcher._owner_counts == {}
     assert router._dispatcher._target_counts == {}
+    assert router._dispatcher._owner_target_counts == {}
     assert not router._ingress._held
+
+
+def plugin_caller(calls, slow):
+    async def plugin_call(ctx, request):
+        calls.append((ctx.from_plugin, request["to_plugin"]))
+        if request["to_plugin"] == "B":
+            await slow.wait()
+        return f"from {request['to_plugin']}"
+
+    return plugin_call
 
 
 async def test_full_queue_share_rejects_only_the_flooding_plugin(setup):
@@ -177,51 +188,103 @@ async def test_in_flight_share_rejects_only_the_flooding_plugin(setup):
 
 async def test_calls_to_a_hung_plugin_hold_at_most_the_per_target_share(setup, monkeypatch):
     monkeypatch.setenv(_IN_FLIGHT, "8")
+    monkeypatch.setenv(_PER_TARGET, "4")
     router = setup.router
     hung = asyncio.Event()
     calls = []
-
-    async def plugin_call(ctx, request):
-        calls.append((ctx.from_plugin, request["to_plugin"]))
-        if request["to_plugin"] == "B":
-            await hung.wait()
-        return f"from {request['to_plugin']}"
-
-    router._handlers["PLUGIN_TO_PLUGIN"] = plugin_call
+    router._handlers["PLUGIN_TO_PLUGIN"] = plugin_caller(calls, hung)
     await router.start()
     ingress = router._ingress
     for index in range(4):
         await ingress.enqueue(request("A", f"a{index}", "PLUGIN_TO_PLUGIN", to_plugin="B"))
     busy = [await setup.downlinks.next("A") for _ in range(2)]
     assert all(reply["error"]["code"] == "BUSY" for reply in busy)
-    # The share is per target, across callers.
     await ingress.enqueue(request("E", "e0", "PLUGIN_TO_PLUGIN", to_plugin="B"))
-    assert (await setup.downlinks.next("E"))["error"]["code"] == "BUSY"
+    await ingress.enqueue(request("E", "e1", "PLUGIN_TO_PLUGIN", to_plugin="B"))
+    await turns()
+    # The share is per target, across callers.
+    await ingress.enqueue(request("F", "f0", "PLUGIN_TO_PLUGIN", to_plugin="B"))
+    assert (await setup.downlinks.next("F"))["error"]["code"] == "BUSY"
     # Other targets and other operations are unaffected.
     await ingress.enqueue(request("D", "d0", "PLUGIN_TO_PLUGIN", to_plugin="C"))
     assert (await setup.downlinks.next("D"))["result"] == "from C"
     await ingress.enqueue(request("C", "c0", "ECHO"))
     assert (await setup.downlinks.next("C"))["result"] == "alive"
-    assert router._dispatcher._target_counts == {"B": 2}
+    assert router._dispatcher._target_counts == {"B": 4}
 
-    # Disconnecting the caller frees its slots on the hung target.
-    assert ingress.notify_disconnect(
-        {"type": "RPC_DISCONNECT", "from_plugin": "A", "_rpc_connection_id": "conn-A"}
-    )
+    # Disconnecting the callers frees their slots on the hung target.
+    for caller in ("A", "E"):
+        assert ingress.notify_disconnect(
+            {"type": "RPC_DISCONNECT", "from_plugin": caller, "_rpc_connection_id": f"conn-{caller}"}
+        )
     await settle(router)
     assert_released(router)
-    await ingress.enqueue(request("E", "e1", "PLUGIN_TO_PLUGIN", to_plugin="B"))
+    await ingress.enqueue(request("F", "f1", "PLUGIN_TO_PLUGIN", to_plugin="B"))
     await turns()
-    assert calls[-1] == ("E", "B")
+    assert calls[-1] == ("F", "B")
     assert router._dispatcher._target_counts == {"B": 1}
 
     # Stopping cancels the hung call; a restarted router starts with fresh shares.
     stopped = router._dispatcher
     await router.stop()
     assert stopped._owner_counts == {} and stopped._target_counts == {}
+    assert stopped._owner_target_counts == {}
     await router.start()
     assert_released(router)
     hung.set()
+
+
+async def test_one_caller_cannot_take_a_slow_targets_whole_share(setup, monkeypatch):
+    monkeypatch.setenv(_IN_FLIGHT, "32")
+    monkeypatch.setenv(_PER_TARGET, "32")
+    monkeypatch.setenv(_QUEUED, "64")
+    router = setup.router
+    slow = asyncio.Event()
+    calls = []
+    router._handlers["PLUGIN_TO_PLUGIN"] = plugin_caller(calls, slow)
+    await router.start()
+    ingress = router._ingress
+    for index in range(32):
+        await ingress.enqueue(request("A", f"a{index}", "PLUGIN_TO_PLUGIN", to_plugin="B"))
+    busy = [await setup.downlinks.next("A") for _ in range(16)]
+    assert all(reply["error"]["code"] == "BUSY" for reply in busy)
+    assert calls.count(("A", "B")) == 16
+
+    await ingress.enqueue(request("C", "c0", "PLUGIN_TO_PLUGIN", to_plugin="B"))
+    await turns()
+    assert ("C", "B") in calls
+    slow.set()
+    reply = await setup.downlinks.next("C")
+    assert reply["request_id"] == "c0" and reply["result"] == "from B"
+    await settle(router)
+    assert_released(router)
+
+
+@pytest.mark.parametrize(
+    ("per_target", "per_plugin"), [(4, 4), (2, 8), (3, 3), (5, 2), (8, 16)]
+)
+async def test_caller_share_of_a_target_holds_for_any_configured_values(
+    setup, monkeypatch, per_target, per_plugin
+):
+    monkeypatch.setenv(_IN_FLIGHT, str(per_plugin))
+    monkeypatch.setenv(_PER_TARGET, str(per_target))
+    monkeypatch.setenv(_QUEUED, "64")
+    router = setup.router
+    slow = asyncio.Event()
+    calls = []
+    router._handlers["PLUGIN_TO_PLUGIN"] = plugin_caller(calls, slow)
+    await router.start()
+    ingress = router._ingress
+    for index in range(2 * per_target):
+        await ingress.enqueue(request("A", f"a{index}", "PLUGIN_TO_PLUGIN", to_plugin="B"))
+    await turns()
+    assert 1 <= calls.count(("A", "B")) <= per_target // 2
+    await ingress.enqueue(request("C", "c0", "PLUGIN_TO_PLUGIN", to_plugin="B"))
+    await turns()
+    assert ("C", "B") in calls
+    slow.set()
+    await settle(router)
+    assert_released(router)
 
 
 @pytest.mark.parametrize("control", ["RPC_CANCEL", "RPC_DISCONNECT"])

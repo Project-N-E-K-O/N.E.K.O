@@ -505,11 +505,11 @@ class RpcPeer:
                 )
 
 
-def _acquire(counts: dict[str, int], key: str) -> None:
+def _acquire(counts: dict[Any, int], key: object) -> None:
     counts[key] = counts.get(key, 0) + 1
 
 
-def _release(counts: dict[str, int], key: str) -> None:
+def _release(counts: dict[Any, int], key: object) -> None:
     # Drop zero entries: keys include plugin-supplied target names.
     remaining = counts.get(key, 0) - 1
     if remaining > 0:
@@ -524,7 +524,8 @@ class RpcDispatcher:
     Admission is nonblocking: overload produces BUSY rather than parking child
     requests behind parents that hold all available slots. Optional per-owner
     and per-target limits keep one connection, or one hung target, from
-    taking every slot.
+    taking every slot. One owner may hold at most half of a target's share,
+    so a single caller cannot lock other callers out of a slow target.
     """
 
     def __init__(
@@ -548,6 +549,7 @@ class RpcDispatcher:
         self._tasks: dict[tuple[str, str], asyncio.Task] = {}
         self._owner_counts: dict[str, int] = {}
         self._target_counts: dict[str, int] = {}
+        self._owner_target_counts: dict[tuple[str, str], int] = {}
         self._warnings = QuotaWarnings(self._logger)
         self._active = 0
         self._closed = False
@@ -595,6 +597,20 @@ class RpcDispatcher:
                     target_plugin=target,
                 )
                 return False
+            # Derived, not configured: whatever the target share is set to,
+            # one caller always leaves room for the others.
+            pair_limit = max(1, self._target_limit // 2)
+            paired = self._owner_target_counts.get((owner, target), 0)
+            if paired >= pair_limit:
+                self._warnings.warn(
+                    "in_flight_per_caller_per_target_plugin",
+                    request.get("from_plugin", owner),
+                    request.get("type"),
+                    paired,
+                    pair_limit,
+                    target_plugin=target,
+                )
+                return False
 
         async def serve():
             reply = await self.dispatch(request)
@@ -614,6 +630,7 @@ class RpcDispatcher:
         _acquire(self._owner_counts, owner)
         if target is not None:
             _acquire(self._target_counts, target)
+            _acquire(self._owner_target_counts, (owner, target))
         task.add_done_callback(lambda done: self._finished(key, done, target))
         return True
 
@@ -624,6 +641,7 @@ class RpcDispatcher:
         _release(self._owner_counts, key[0])
         if target is not None:
             _release(self._target_counts, target)
+            _release(self._owner_target_counts, (key[0], target))
         if not task.cancelled() and task.exception() is not None:
             log_rpc_failure(
                 self._logger,

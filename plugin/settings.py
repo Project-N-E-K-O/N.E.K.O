@@ -257,7 +257,8 @@ class PluginRpcQuotas:
     # Handlers one plugin connection may have running at once.
     max_in_flight_per_plugin: int
     # PLUGIN_TO_PLUGIN calls that may wait on one target plugin at once, from
-    # all callers together; a hung target holds at most this many slots.
+    # all callers together; a hung target holds at most this many slots. One
+    # caller may use at most half of it (at least 1), whatever value is set.
     max_in_flight_per_target_plugin: int
 
 
