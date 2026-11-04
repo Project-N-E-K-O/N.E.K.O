@@ -1150,7 +1150,7 @@ async def run_sync_connector(
                     try:
                         status_callback(f"⚠️ 记忆摘要失败: {err_detail}")
                     except Exception:
-                        pass
+                        pass  # A failed status push must not mask the settlement result logged above.
             else:
                 logger.info(f"[{lanlan_name}] session end 记忆结算完成（{endpoint}），{len(payload)} 条消息")
         except Exception as e:
@@ -1159,7 +1159,7 @@ async def run_sync_connector(
                 try:
                     status_callback(f"⚠️ 记忆结算异常: {type(e).__name__}")
                 except Exception:
-                    pass
+                    pass  # A failed status push must not mask the settlement error logged above.
 
     memory_lane_task = asyncio.create_task(
         _run_memory_lane(),
