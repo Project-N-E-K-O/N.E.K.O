@@ -37,8 +37,12 @@ def test_hub_has_targeted_friend_flow_without_invite_code_entry():
     assert "visit_mode: actualMode" in source
     assert "actualMode !== requestedMode" in source
     assert "visit.socialHub.modeMismatch" in source
-    assert "模型串门" in source
-    assert "猫形态" in source
+    assert "inviteFriend(friend.id, 'model')" in source
+    assert "inviteFriend(friend.id, 'cat')" not in source
+    assert "visit.socialHub.modelVisit" not in source
+    assert "visit.socialHub.catVisit" not in source
+    assert "neko-social-hub-mode-actions" not in source
+    assert "neko-social-hub-mode-actions" not in styles
     assert "visit_id: visitId" in source
     assert "invite_code: code" not in source
     assert "在线好友" in source

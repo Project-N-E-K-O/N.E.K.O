@@ -1431,7 +1431,7 @@ test('keyboard focus survives the busy follow render and recommendation refill',
   dom.window.close();
 });
 
-test('keyboard focus moves to the visit buttons when a friend invitation ends', async () => {
+test('keyboard focus stays on the single visit button when invitation state changes', async () => {
   const { dom, hub, document } = loadMountedHub({
     fetch: async () => ({ ok: true, json: async () => ({
       logged_in: true,
@@ -1449,10 +1449,13 @@ test('keyboard focus moves to the visit buttons when a friend invitation ends', 
   cancelButton.focus();
 
   hub._applyVisitStatus({ visitId: 'visit-1', action: 'ended', phase: 'ended' });
-  assert.equal(document.activeElement.getAttribute('data-neko-focus-key'), 'friend-f1-model');
+  assert.equal(document.activeElement.getAttribute('data-neko-focus-key'), 'friend-f1');
+  assert.equal(document.querySelectorAll('[data-neko-focus-key="friend-f1"]').length, 1);
+  assert.equal(document.querySelector('[data-neko-focus-key="friend-f1"]').textContent, '邀请来玩');
+  assert.equal(document.querySelector('.neko-social-hub-mode-actions'), null);
 
-  // The reverse switch lands on the invitation's status button.
-  document.querySelector('[data-neko-focus-key="friend-f1-cat"]').focus();
+  // The reverse switch keeps the same logical focus key on the status button.
+  document.querySelector('[data-neko-focus-key="friend-f1"]').focus();
   hub._applyVisitStatus({
     visitId: 'visit-2', phase: 'invite_ready', active: true, side: 'host', targetUserId: 'f1',
   });

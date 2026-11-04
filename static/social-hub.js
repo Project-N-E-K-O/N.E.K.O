@@ -204,13 +204,6 @@
     return node;
   }
 
-  // 好友行在邀请状态按钮与「模型 / 猫形态」按钮之间切换：原按钮消失时落到同一好友的另一种按钮。
-  function focusKeyCandidates(key) {
-    var match = /^friend-(.+?)(-model|-cat)?$/.exec(key);
-    if (!match) return [key];
-    return [key, match[2] ? 'friend-' + match[1] : 'friend-' + match[1] + '-model'];
-  }
-
   function avatarManagers() {
     return [window.live2dManager, window.vrmManager, window.mmdManager, window.pngtuberManager]
       .filter(function (manager, index, managers) {
@@ -1114,18 +1107,14 @@
       action.disabled = (!!view && !view.canCancel) || busyElsewhere;
       row.appendChild(action);
     } else if (social() && friend.online) {
-      var actions = el('div', 'neko-social-hub-mode-actions');
-      var modelAction = button(tr('visit.socialHub.modelVisit', '模型串门'),
-        'neko-social-hub-button primary', function () { inviteFriend(friend.id, 'model'); });
-      var catAction = button(tr('visit.socialHub.catVisit', '猫形态'),
-        'neko-social-hub-button', function () { inviteFriend(friend.id, 'cat'); });
-      focusKey(modelAction, 'friend-' + friend.id + '-model');
-      focusKey(catAction, 'friend-' + friend.id + '-cat');
-      modelAction.disabled = busyElsewhere;
-      catAction.disabled = busyElsewhere;
-      actions.appendChild(modelAction);
-      actions.appendChild(catAction);
-      row.appendChild(actions);
+      var inviteAction = button(
+        busyElsewhere ? tr('visit.socialHub.inviteLater', '稍后再邀') : tr('visit.socialHub.invite', '邀请来玩'),
+        'neko-social-hub-button' + (!busyElsewhere ? ' primary' : ''), function () {
+          inviteFriend(friend.id, 'model');
+        });
+      focusKey(inviteAction, 'friend-' + friend.id);
+      inviteAction.disabled = busyElsewhere;
+      row.appendChild(inviteAction);
     }
     return row;
   }
@@ -1391,12 +1380,10 @@
     if (activeKey) {
       var focusNodes = Array.from(panel.querySelectorAll('[data-neko-focus-key]'));
       if (presenceMenu) focusNodes = focusNodes.concat(Array.from(presenceMenu.querySelectorAll('[data-neko-focus-key]')));
-      restoredFocus = focusKeyCandidates(activeKey).some(function (key) {
-        return focusNodes.some(function (node) {
-          if (node.getAttribute('data-neko-focus-key') !== key) return false;
-          try { node.focus({ preventScroll: true }); } catch (_) { node.focus(); }
-          return true;
-        });
+      restoredFocus = focusNodes.some(function (node) {
+        if (node.getAttribute('data-neko-focus-key') !== activeKey) return false;
+        try { node.focus({ preventScroll: true }); } catch (_) { node.focus(); }
+        return true;
       });
     }
     if (!restoredFocus && pendingFocusFallback) {
