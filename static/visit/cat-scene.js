@@ -890,17 +890,47 @@
     });
   }
 
-  global.addEventListener('neko-visit-display-state', onDisplayState);
-  global.addEventListener('neko-visit-cat-scene', onCatAction);
-  global.addEventListener('neko-visit-cat-pose', onCatPose);
-  global.addEventListener('neko:visit-cat-world-collision', onWorldCollision);
-  global.addEventListener('pagehide', function () {
+  var sceneListenersBound = false;
+
+  function bindSceneListeners() {
+    if (sceneListenersBound) return;
+    sceneListenersBound = true;
+    global.addEventListener('neko-visit-display-state', onDisplayState);
+    global.addEventListener('neko-visit-cat-scene', onCatAction);
+    global.addEventListener('neko-visit-cat-pose', onCatPose);
+    global.addEventListener('neko:visit-cat-world-collision', onWorldCollision);
+  }
+
+  function unbindSceneListeners() {
+    if (!sceneListenersBound) return;
+    sceneListenersBound = false;
     global.removeEventListener('neko-visit-display-state', onDisplayState);
     global.removeEventListener('neko-visit-cat-scene', onCatAction);
     global.removeEventListener('neko-visit-cat-pose', onCatPose);
     global.removeEventListener('neko:visit-cat-world-collision', onWorldCollision);
+  }
+
+  function restoreSceneSnapshots() {
+    if (typeof global.nekoVisitDisplayStateSnapshot === 'function') {
+      var snapshot = global.nekoVisitDisplayStateSnapshot();
+      if (snapshot) onDisplayState(snapshot);
+    }
+    if (typeof global.nekoVisitCatPoseSnapshots === 'function') {
+      var poseSnapshots = global.nekoVisitCatPoseSnapshots();
+      if (Array.isArray(poseSnapshots)) poseSnapshots.forEach(onCatPose);
+    }
+  }
+
+  bindSceneListeners();
+  global.addEventListener('pagehide', function () {
+    unbindSceneListeners();
     deactivate();
-  }, { once: true });
+  });
+  global.addEventListener('pageshow', function (event) {
+    if (!event || event.persisted !== true) return;
+    bindSceneListeners();
+    restoreSceneSnapshots();
+  });
 
   global.nekoVisitCatScene = Object.freeze({
     guardModelReturn: guardModelReturn,
@@ -908,12 +938,5 @@
     isActive: function () { return scene.active; }
   });
 
-  if (typeof global.nekoVisitDisplayStateSnapshot === 'function') {
-    var snapshot = global.nekoVisitDisplayStateSnapshot();
-    if (snapshot) onDisplayState(snapshot);
-  }
-  if (typeof global.nekoVisitCatPoseSnapshots === 'function') {
-    var poseSnapshots = global.nekoVisitCatPoseSnapshots();
-    if (Array.isArray(poseSnapshots)) poseSnapshots.forEach(onCatPose);
-  }
+  restoreSceneSnapshots();
 })(typeof window !== 'undefined' ? window : globalThis);

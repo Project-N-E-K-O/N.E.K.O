@@ -352,6 +352,41 @@ async function main() {
   // Reliable local intents preserve grab-before-release order even when the
   // user performs a very fast drag.
   const yarn = scene.querySelector('[data-visit-cat-shared-object="yarn"]');
+
+  // A physically cropped Pet window converts pointer input into the same
+  // virtual-desktop coordinates used by native cat poses.
+  win._getNekoDesktopVirtualViewportSize = () => ({ width: 2000, height: 1600 });
+  win._getNekoDesktopVirtualRect = (rect) => ({
+    left: Number(rect.left) + 500,
+    top: Number(rect.top) + 300,
+    width: Number(rect.width),
+    height: Number(rect.height),
+  });
+  const beforeCroppedDrag = calls.intent.length;
+  yarn.dispatchEvent({ type: 'pointerdown', button: 0, pointerId: 3, clientX: 100, clientY: 200,
+    preventDefault() {}, stopPropagation() {} });
+  yarn.dispatchEvent({ type: 'pointerup', button: 0, pointerId: 3, clientX: 120, clientY: 220 });
+  await flush();
+  await flush();
+  const croppedGrab = calls.intent[beforeCroppedDrag];
+  assert.equal(croppedGrab.kind, 'yarn_grab');
+  assert.equal(croppedGrab.x_q16, 19661);
+  assert.equal(croppedGrab.y_q16, 20480);
+  delete win._getNekoDesktopVirtualRect;
+
+  // A partial/failed crop bridge must fall back as one unit instead of mixing
+  // a virtual viewport with local pointer coordinates.
+  const beforePartialBridge = calls.intent.length;
+  yarn.dispatchEvent({ type: 'pointerdown', button: 0, pointerId: 30, clientX: 100, clientY: 200,
+    preventDefault() {}, stopPropagation() {} });
+  yarn.dispatchEvent({ type: 'pointerup', button: 0, pointerId: 30, clientX: 120, clientY: 220 });
+  await flush();
+  await flush();
+  const fallbackGrab = calls.intent[beforePartialBridge];
+  assert.equal(fallbackGrab.x_q16, 6554);
+  assert.equal(fallbackGrab.y_q16, 16384);
+  delete win._getNekoDesktopVirtualViewportSize;
+
   yarn.dispatchEvent({ type: 'pointerdown', button: 0, pointerId: 4, clientX: 640, clientY: 260,
     preventDefault() {}, stopPropagation() {} });
   yarn.dispatchEvent({ type: 'pointerup', button: 0, pointerId: 4, clientX: 650, clientY: 270 });
@@ -656,6 +691,26 @@ async function main() {
   stateGate = null;
   await flush();
   assert.equal(calls.state[gatedBefore].yarn_x_q16, 22000);
+  emit('neko:visit-cat-scene-deactivated', { visit_id: VID });
+
+  // A bfcache restore does not rerun this script. Rebind once and replay the
+  // relay's current snapshots so later authoritative frames remain visible.
+  win.nekoVisitDisplayStateSnapshot = () => ({
+    type: 'visit_state_change', action: 'departed', visit_id: VID, side: 'guest', cat_scene: 2,
+  });
+  win.nekoVisitCatPoseSnapshots = () => [];
+  win.nekoVisitCatWorldSnapshot = () => worldFrame(800, 48000, 'commit');
+  win.nekoVisitCatWorldIntentSnapshots = () => [];
+  win.dispatchEvent({ type: 'pagehide', persisted: true });
+  assert.equal(win.NekoVisitCatWorld.isActive(), false);
+  assert.equal((listeners.get('neko-visit-cat-world') || []).length, 0);
+  win.dispatchEvent({ type: 'pageshow', persisted: true });
+  assert.equal(win.NekoVisitCatWorld.isActive(), true);
+  assert.equal(win.NekoVisitCatWorld.snapshot().world.yarn_x_q16, 48000);
+  assert.equal((listeners.get('neko-visit-cat-world') || []).length, 1);
+  win.dispatchEvent({ type: 'pagehide', persisted: true });
+  win.dispatchEvent({ type: 'pageshow', persisted: true });
+  assert.equal((listeners.get('neko-visit-cat-world') || []).length, 1);
   emit('neko:visit-cat-scene-deactivated', { visit_id: VID });
 
   // A recovery that replaces a world with a drag in progress drops that drag,

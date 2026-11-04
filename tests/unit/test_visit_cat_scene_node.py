@@ -470,6 +470,7 @@ function createHarness(options) {
     setSnapshot,
     setPoseHandler(handler) { poseHandler = handler; },
     pendingTasks,
+    listenerCount(type) { return (listeners.get(type) || []).length; },
     geometryCount: () => geometryEvents,
     entryCount: () => entryEvents,
   };
@@ -771,6 +772,33 @@ const report = {};
     x: Number.parseFloat(early.card('peer').style.getPropertyValue('--neko-visit-cat-x')),
   };
 
+  const bfcache = createHarness({
+    displaySnapshot: {
+      type: 'visit_state_change', action: 'departed', visit_id: VID, side: 'guest',
+      cat_scene: 2, self_cat_asset: 'dev_neko', peer_cat_asset: 'yui_neko',
+    },
+    poseSnapshots: [earlyPose],
+  });
+  const bfcacheListenerCounts = [bfcache.listenerCount('neko-visit-cat-pose')];
+  bfcache.win.dispatchEvent({ type: 'pagehide', persisted: true });
+  bfcacheListenerCounts.push(bfcache.listenerCount('neko-visit-cat-pose'));
+  const inactiveWhileCached = !bfcache.body.classList.contains('neko-visit-cat-scene-active');
+  bfcache.win.dispatchEvent({ type: 'pageshow', persisted: true });
+  bfcacheListenerCounts.push(bfcache.listenerCount('neko-visit-cat-pose'));
+  bfcache.pose('peer', 'commit', 10, 1, { x_q16: 50000 });
+  const restoredX = Number.parseFloat(
+    bfcache.card('peer').style.getPropertyValue('--neko-visit-cat-x')
+  );
+  bfcache.win.dispatchEvent({ type: 'pagehide', persisted: true });
+  bfcache.win.dispatchEvent({ type: 'pageshow', persisted: true });
+  bfcacheListenerCounts.push(bfcache.listenerCount('neko-visit-cat-pose'));
+  report.bfcache_restore = {
+    inactive_while_cached: inactiveWhileCached,
+    active_after_restore: bfcache.body.classList.contains('neko-visit-cat-scene-active'),
+    listener_counts: bfcacheListenerCounts,
+    updated_x: restoredX,
+  };
+
   const race = createHarness();
   const VID2 = 'BBBBBBBBBBBBBBBBBBBBBB';
   let resolveOldPose;
@@ -929,6 +957,15 @@ def test_early_relay_snapshots_restore_scene_and_peer_pose(report):
     assert report["early_snapshot"]["active"] is True
     assert report["early_snapshot"]["peer_visible"] is True
     assert report["early_snapshot"]["x"] == pytest.approx(68.6656, abs=0.001)
+
+
+def test_bfcache_restore_rebinds_scene_once_and_replays_snapshots(report):
+    assert report["bfcache_restore"] == {
+        "inactive_while_cached": True,
+        "active_after_restore": True,
+        "listener_counts": [1, 0, 1, 1],
+        "updated_x": pytest.approx(76.2951, abs=0.001),
+    }
 
 
 def test_old_pose_result_cannot_mutate_the_next_visit(report):

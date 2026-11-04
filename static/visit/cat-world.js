@@ -152,6 +152,27 @@
     var clientX = Number(event && event.clientX);
     var clientY = Number(event && event.clientY);
     if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return null;
+    try {
+      if (typeof global._getNekoDesktopVirtualViewportSize === 'function'
+          && typeof global._getNekoDesktopVirtualRect === 'function') {
+        var virtualSize = global._getNekoDesktopVirtualViewportSize();
+        var virtualWidth = Number(virtualSize && virtualSize.width);
+        var virtualHeight = Number(virtualSize && virtualSize.height);
+        var virtualRect = global._getNekoDesktopVirtualRect({
+          left: clientX, top: clientY, width: 1, height: 1
+        });
+        var virtualX = Number(virtualRect && virtualRect.left);
+        var virtualY = Number(virtualRect && virtualRect.top);
+        if (Number.isFinite(virtualWidth) && virtualWidth > 0
+            && Number.isFinite(virtualHeight) && virtualHeight > 0
+            && Number.isFinite(virtualX) && Number.isFinite(virtualY)) {
+          width = virtualWidth;
+          height = virtualHeight;
+          clientX = virtualX;
+          clientY = virtualY;
+        }
+      }
+    } catch (_) { /* ordinary browser windows keep local viewport coordinates */ }
     return {
       x_q16: clampInt(clientX / width * Q16_MAX, 0, Q16_MAX),
       y_q16: clampInt(clientY / height * Q16_MAX, 0, Q16_MAX)
@@ -1087,41 +1108,64 @@
     });
   }
 
-  global.addEventListener('neko-visit-display-state', onDisplayState);
-  global.addEventListener('neko-visit-cat-pose', onPose);
-  global.addEventListener('neko-visit-cat-world-intent', onWorldIntent);
-  global.addEventListener('neko-visit-cat-world', onWorld);
-  global.addEventListener('neko:visit-cat-scene-deactivated', onSceneDeactivated);
-  global.addEventListener('neko:idle-cat1-playground-entry-request', onPlaygroundEntryRequest);
-  global.addEventListener('pagehide', function () {
+  var worldListenersBound = false;
+
+  function bindWorldListeners() {
+    if (worldListenersBound) return;
+    worldListenersBound = true;
+    global.addEventListener('neko-visit-display-state', onDisplayState);
+    global.addEventListener('neko-visit-cat-pose', onPose);
+    global.addEventListener('neko-visit-cat-world-intent', onWorldIntent);
+    global.addEventListener('neko-visit-cat-world', onWorld);
+    global.addEventListener('neko:visit-cat-scene-deactivated', onSceneDeactivated);
+    global.addEventListener('neko:idle-cat1-playground-entry-request', onPlaygroundEntryRequest);
+  }
+
+  function unbindWorldListeners() {
+    if (!worldListenersBound) return;
+    worldListenersBound = false;
     global.removeEventListener('neko-visit-display-state', onDisplayState);
     global.removeEventListener('neko-visit-cat-pose', onPose);
     global.removeEventListener('neko-visit-cat-world-intent', onWorldIntent);
     global.removeEventListener('neko-visit-cat-world', onWorld);
     global.removeEventListener('neko:visit-cat-scene-deactivated', onSceneDeactivated);
     global.removeEventListener('neko:idle-cat1-playground-entry-request', onPlaygroundEntryRequest);
+  }
+
+  function restoreWorldSnapshots() {
+    if (typeof global.nekoVisitDisplayStateSnapshot === 'function') {
+      var initial = global.nekoVisitDisplayStateSnapshot();
+      if (initial) onDisplayState(initial);
+    }
+    if (typeof global.nekoVisitCatPoseSnapshots === 'function') {
+      var initialPoses = global.nekoVisitCatPoseSnapshots();
+      if (Array.isArray(initialPoses)) initialPoses.forEach(onPose);
+    }
+    if (typeof global.nekoVisitCatWorldSnapshot === 'function') {
+      var initialWorld = global.nekoVisitCatWorldSnapshot();
+      if (initialWorld) onWorld(initialWorld);
+    }
+    if (typeof global.nekoVisitCatWorldIntentSnapshots === 'function') {
+      var initialIntents = global.nekoVisitCatWorldIntentSnapshots();
+      if (Array.isArray(initialIntents)) initialIntents.forEach(onWorldIntent);
+    }
+  }
+
+  bindWorldListeners();
+  global.addEventListener('pagehide', function () {
+    unbindWorldListeners();
     deactivate();
-  }, { once: true });
+  });
+  global.addEventListener('pageshow', function (event) {
+    if (!event || event.persisted !== true) return;
+    bindWorldListeners();
+    restoreWorldSnapshots();
+  });
 
   global.NekoVisitCatWorld = Object.freeze({
     isActive: function () { return state.active; },
     snapshot: snapshot
   });
 
-  if (typeof global.nekoVisitDisplayStateSnapshot === 'function') {
-    var initial = global.nekoVisitDisplayStateSnapshot();
-    if (initial) onDisplayState(initial);
-  }
-  if (typeof global.nekoVisitCatPoseSnapshots === 'function') {
-    var initialPoses = global.nekoVisitCatPoseSnapshots();
-    if (Array.isArray(initialPoses)) initialPoses.forEach(onPose);
-  }
-  if (typeof global.nekoVisitCatWorldSnapshot === 'function') {
-    var initialWorld = global.nekoVisitCatWorldSnapshot();
-    if (initialWorld) onWorld(initialWorld);
-  }
-  if (typeof global.nekoVisitCatWorldIntentSnapshots === 'function') {
-    var initialIntents = global.nekoVisitCatWorldIntentSnapshots();
-    if (Array.isArray(initialIntents)) initialIntents.forEach(onWorldIntent);
-  }
+  restoreWorldSnapshots();
 })(typeof window !== 'undefined' ? window : globalThis);
