@@ -216,6 +216,9 @@ def _count_watch_event(state: dict, identifier: str, kind: str) -> None:
     key = _COUNTED_KEYS.get(kind)
     if key is None or state.get(key) == identifier:
         return
+    # Completions stay a subset of counted plays, so completion rates never exceed 100%.
+    if kind == "ended" and state.get(_COUNTED_KEYS["play"]) != identifier:
+        return
     state[key] = identifier
     automatic = bool(state.get("watch_together_automatic"))
     if kind == "ended":

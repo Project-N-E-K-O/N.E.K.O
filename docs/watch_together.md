@@ -57,7 +57,7 @@ never on opening the scene, preparing or selecting a video. The scene never
 reports `gameStarted`, so the route's first playback adds the shared
 `mini_game_played` counter (`game_type=watch-together`) once per route
 activation; automatic mode keeps one route across videos. Each viewing session
-counts its first playback as `watch_together_video_played` and its first end as
+counts its first playback as `watch_together_video_played` and, only after that, its first end as
 `watch_together_video_completed`, both with `automatic` (whether automatic
 watching started it). Resuming, seeking or replaying within one viewing session
 is not counted again. Each preparation counts `watch_together_prepared` with

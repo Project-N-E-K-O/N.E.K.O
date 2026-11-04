@@ -83,6 +83,17 @@ async def test_only_actual_playback_counts_once_per_viewing_and_route(scene, cou
 
 
 @pytest.mark.asyncio
+async def test_completion_without_counted_playback_is_not_counted(scene, counted):
+    identifier = await _start()
+    await _event(identifier, 'ended')
+    assert counted == []
+    await _event(identifier, 'play')
+    await _event(identifier, 'ended')
+    assert [name for name, _dims in counted] == [
+        'watch_together_video_played', 'mini_game_played', 'watch_together_video_completed']
+
+
+@pytest.mark.asyncio
 async def test_rejected_viewing_records_are_not_counted(scene, counted):
     identifier = await _start()
     with pytest.raises(HTTPException):
