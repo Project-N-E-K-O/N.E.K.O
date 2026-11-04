@@ -220,7 +220,7 @@ function installMainIdleRestore(f, options = {}) {
     const fetch = f.runtime.context.fetch;
     f.runtime.context.fetch = async (url, ...args) => {
         if (url === '/api/characters') return { json: async () => ({ 猫娘: { test: {
-            live2d: 'mao_pro', _reserved: { avatar: { live2d: { idle_animation: configuredIdle } } }
+            live2d: 'mao_pro', _reserved: { avatar: { live2d: configuredIdle === undefined ? {} : { idle_animation: configuredIdle } } }
         } } }) };
         if (url === '/api/live2d/model_files/mao_pro') return { json: async () => ({ motion_files: motionFiles }) };
         return fetch(url, ...args);
@@ -248,6 +248,25 @@ test('main-page saved idle deferred by an expression resumes through the common 
         assert.deepEqual(Array.from(f.manager._userIdleAnimations), []);
     } finally { f.release(); }
 });
+
+for (const selection of ['deleted.motion3.json', undefined]) {
+    test(`an ${selection ? 'unavailable' : 'absent'} saved idle clears the old scheduling choice before expression cleanup`, async () => {
+        const f = await fixture();
+        try {
+            const main = installMainIdleRestore(f, { motionFiles: [f.native.definitions.Idle[0].File, 'other.motion3.json'] });
+            f.manager.setupIdleMotionLoop(f.model);
+            await f.manager.playExpression('happy', 'happy.exp3.json');
+            await f.runtime.context.restoreLive2DIdleAnimationOnMainPage();
+            main.select(selection);
+            await f.runtime.context.restoreLive2DIdleAnimationOnMainPage();
+            assert.deepEqual(Array.from(f.manager._userIdleAnimations), []);
+            await f.manager.clearExpression();
+            [...f.manager._idleMotionLoopTimers][0].callback();
+            await new Promise(resolve => setImmediate(resolve));
+            assert.equal(f.native.state.currentGroup, 'Idle', 'cleanup cannot replay the obsolete custom selection');
+        } finally { f.release(); }
+    });
+}
 
 for (const selectedFile of ['idle/wave.motion3.json', 'wave.motion3.json']) {
     test(`saved idle ${selectedFile} does not match another directory's same-name motion`, async () => {

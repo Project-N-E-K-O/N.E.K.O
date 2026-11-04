@@ -1868,6 +1868,7 @@ I.mod = window.appInterpage;
                     live2dIdleAnimation = singleMotion;
                     console.log('[Live2D Main] 没有保存的待机动作，使用唯一 motion 作为默认待机动作:', live2dIdleAnimation);
                 } else {
+                    if (expectedManager) expectedManager._userIdleAnimations = [];
                     console.log('[Live2D Main] 没有保存的待机动作');
                     return;
                 }
@@ -1877,6 +1878,7 @@ I.mod = window.appInterpage;
 
             const motionIndex = motionFiles.indexOf(live2dIdleAnimation);
             if (motionIndex < 0) {
+                if (expectedManager) expectedManager._userIdleAnimations = [];
                 console.log('[Live2D Main] 待机动作不在当前模型的动作列表中:', live2dIdleAnimation);
                 return;
             }
