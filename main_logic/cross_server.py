@@ -978,6 +978,9 @@ async def run_sync_connector(
     # Turn-end messages the memory server did not accept. The next ordinary write resends them,
     # as the loop used to by leaving them past last_synced_index.
     memory_carry: list = []
+    # Avatar dedupe entries whose /cache failed while a later interaction already held the slot,
+    # keyed by id (the tuple keeps the entry alive): {id(entry): (entry, its prior entry)}.
+    avatar_unsaved_dedupe_entries: dict[int, tuple] = {}
 
     async def _run_memory_lane():
         while True:
@@ -1027,12 +1030,30 @@ async def run_sync_connector(
                 e,
                 memory_cache_health_state,
             )
-        # Roll the dedupe slot back only if no later interaction has replaced it meanwhile.
-        if cache_persist_failed and dedupe_key and avatar_interaction_memory_cache.get(dedupe_key) is written_entry:
-            if prior_entry is not None:
-                avatar_interaction_memory_cache[dedupe_key] = prior_entry
-            else:
-                avatar_interaction_memory_cache.pop(dedupe_key, None)
+        if not dedupe_key or written_entry is None:
+            return
+        # The next interaction on this key captured written_entry as its prior; once this
+        # write is final, nothing else can restore prior_entry through it.
+        if not cache_persist_failed:
+            avatar_unsaved_dedupe_entries.pop(id(prior_entry), None)
+            return
+        if avatar_interaction_memory_cache.get(dedupe_key) is not written_entry:
+            # A later interaction owns the slot; if its write fails too, its rollback must
+            # skip this unsaved entry rather than restore it. Records past the dedupe window
+            # can no longer suppress anything and are dropped.
+            now_ms = int(time.time() * 1000)
+            for entry_id, (entry, _) in list(avatar_unsaved_dedupe_entries.items()):
+                if now_ms - int(entry.get('ts', 0) or 0) >= AVATAR_INTERACTION_MEMORY_DEDUPE_WINDOW_MS:
+                    del avatar_unsaved_dedupe_entries[entry_id]
+            avatar_unsaved_dedupe_entries[id(written_entry)] = (written_entry, prior_entry)
+            return
+        restored = prior_entry
+        while restored is not None and id(restored) in avatar_unsaved_dedupe_entries:
+            restored = avatar_unsaved_dedupe_entries.pop(id(restored))[1]
+        if restored is not None:
+            avatar_interaction_memory_cache[dedupe_key] = restored
+        else:
+            avatar_interaction_memory_cache.pop(dedupe_key, None)
 
     async def _cache_turn_end(messages, language, render_language):
         payload = _take_memory_carry(messages)

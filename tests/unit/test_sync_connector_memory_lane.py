@@ -181,3 +181,30 @@ async def test_session_end_barrier_follows_the_settlement_without_blocking_the_l
     assert order == ["callback"]
     assert _texts(memory.posts[0][1]) == ["u1", "a1"]
     await _until(lambda: memory.endpoints() == ["cache", "cache"])
+
+
+def _avatar_turn(rank):
+    return [_reply("喵"), {"type": "system", "data": "turn end", "meta": {
+        "kind": "avatar_interaction", "memory_note": "摸头",
+        "memory_dedupe_key": "head", "memory_dedupe_rank": rank,
+    }}]
+
+
+@pytest.mark.asyncio
+async def test_two_failed_avatar_writes_do_not_suppress_the_next_interaction(connector):
+    """A (rank 1) and B (rank 2, same key) are both queued before either write finishes.
+    When both fail, neither may keep suppressing a later rank-1 interaction."""
+    failed = (False, "HTTP 503", {})
+    memory = _Memory(blocked={"cache"}, results={"cache": [failed, failed, (True, "", {})]})
+    queue, _ = connector(memory)
+
+    for item in _avatar_turn(1) + _avatar_turn(2):
+        queue.put_nowait(item)
+    await _until(lambda: memory.endpoints() == ["cache"])
+    memory.release.set()
+    await _until(lambda: memory.endpoints() == ["cache", "cache"])
+    await asyncio.sleep(0.05)  # let B's rollback run
+
+    for item in _avatar_turn(1):
+        queue.put_nowait(item)
+    await _until(lambda: memory.endpoints() == ["cache", "cache", "cache"])
