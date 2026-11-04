@@ -101,7 +101,7 @@ Returns `text/plain` context for a new model session. For a valid character it r
 
 ### `POST /preempt_summary/{lanlan_name}`
 
-Abandons the character's summary LLM calls (`/renew`, `/settle`, `/process`) to background compression, now and for the next 10 seconds or until a `preempt_summary=true` `/new_dialog` finishes. The main server calls it before a cold start so its own queued memory writes, which may sit behind a summary, reach the memory server before `/new_dialog` reads the recent history. Returns `{"status":"ok"}`.
+Abandons the character's summary LLM calls (`/renew`, `/settle`, `/process`) to background compression, now and for the next 10 seconds or until a `preempt_summary=true` `/new_dialog` finishes. The main server calls it before a cold start so its own queued memory writes, which may sit behind a summary, can reach the memory server before `/new_dialog` reads the recent history. This is best effort: the main server waits at most 1.5 seconds for those writes and then requests `/new_dialog` anyway, so writes still queued at that point land after the read. Returns `{"status":"ok"}`.
 
 This endpoint does not perform semantic fact recall. Semantic or temporal recall is requested separately through `/query_memory` by the model's `recall_memory` tool.
 
