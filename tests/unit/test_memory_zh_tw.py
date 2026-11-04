@@ -549,11 +549,20 @@ async def test_new_dialog_request_preserves_locale_provenance(
     manager._conversation_render_language = render_language
 
     assert await manager._start_session_fetch_new_dialog("Neko", 48912) == "ok"
-    expected_kwargs = {"timeout": 5.0}
-    if expected_params is not None:
-        expected_kwargs["params"] = expected_params
+    # Session start waits for /new_dialog, so it preempts a summary holding the settle lock.
+    expected_kwargs = {
+        "timeout": 5.0,
+        "params": {**(expected_params or {}), "preempt_summary": "true"},
+    }
     assert calls == [expected_kwargs]
     assert manager._new_dialog_request_kwargs() == expected_kwargs
+    # Hot-swap preparation runs beside the live session: it waits for the summary instead.
+    from main_logic.core.lifecycle import HOT_SWAP_NEW_DIALOG_TIMEOUT_S
+
+    hot_swap_kwargs = {"timeout": HOT_SWAP_NEW_DIALOG_TIMEOUT_S}
+    if expected_params is not None:
+        hot_swap_kwargs["params"] = expected_params
+    assert manager._new_dialog_request_kwargs(foreground=False) == hot_swap_kwargs
 
 
 def test_sync_connector_omits_seeded_fallback_locale(monkeypatch):

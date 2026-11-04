@@ -74,6 +74,11 @@ from .callback_render import (
 from main_logic import core as _core_facade
 from .session_records import start_phase
 
+# Hot-swap preparation waits this long for /new_dialog, which may be held up by the /renew
+# summary it is meant to include. The old session keeps serving meanwhile, and a timeout only
+# discards the pending session until the next turn retries.
+HOT_SWAP_NEW_DIALOG_TIMEOUT_S = 60.0
+
 class LifecycleMixin:
     """Session lifecycle methods (see module docstring)."""
 
@@ -1579,15 +1584,27 @@ class LifecycleMixin:
                 raise TimeoutError("TTS runtime was not ready before startup deadline")
             await asyncio.sleep(min(0.02, remaining))
 
-    def _new_dialog_request_kwargs(self) -> dict:
-        """Share explicit-locale provenance across initial and hot-swap bootstrap."""
-        request_kwargs = {"timeout": 5.0}
+    def _new_dialog_request_kwargs(self, *, foreground: bool = True) -> dict:
+        """Share explicit-locale provenance across initial and hot-swap bootstrap.
+
+        A foreground caller (session start, Offline VLM handoff) holds up the conversation
+        until /new_dialog returns, so it asks the memory server to preempt a summary running
+        under the settle lock (#3601). Hot-swap preparation runs beside the live session: it
+        waits for that summary instead, with a longer timeout, because a failure there only
+        postpones the swap.
+        """
+        params = {}
         if getattr(self, "_user_language_explicit", False):
-            request_kwargs["params"] = {"language": self.user_language}
+            params["language"] = self.user_language
         elif getattr(self, "_conversation_render_language", None):
-            request_kwargs["params"] = {
-                "render_language": self._conversation_render_language,
-            }
+            params["render_language"] = self._conversation_render_language
+        if foreground:
+            params["preempt_summary"] = "true"
+        request_kwargs = {
+            "timeout": 5.0 if foreground else HOT_SWAP_NEW_DIALOG_TIMEOUT_S,
+        }
+        if params:
+            request_kwargs["params"] = params
         return request_kwargs
 
     async def _start_session_fetch_new_dialog(self, lanlan_name, port):
@@ -2736,7 +2753,7 @@ class LifecycleMixin:
             try:
                 resp = await _hs_client.get(
                     f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}",
-                    **self._new_dialog_request_kwargs(),
+                    **self._new_dialog_request_kwargs(foreground=False),
                 )
             except httpx.ConnectError:
                 raise ConnectionError(f"❌ 记忆服务未启动！请先启动记忆服务 (端口 {self.memory_server_port})")

@@ -811,6 +811,65 @@ enable_shutdown = False
 # Per-character settlement locks block /new_dialog during initial summaries, ensuring fresh data after hot switching.
 _settle_locks: dict[str, asyncio.Lock] = {}
 
+# Cold-start /new_dialog callers waiting on (or holding) each character's settle lock, and the
+# summary sections under that lock they can preempt (#3601). A conversation cannot start before
+# its /new_dialog returns, so such a caller must not wait for a summary LLM call, which may take
+# minutes with retries. Preempted summaries go to the existing background compression.
+_settle_preemption_waiters: dict[str, int] = {}
+_settle_preemptible_sections: dict[str, set[asyncio.Future]] = {}
+
+
+class _preempting_settle_summaries:
+    """Mark a cold-start /new_dialog for ``lanlan_name`` for the duration of the block.
+
+    Entering resolves the futures of summary sections already running under the settle lock;
+    sections entered before the block exits start out preempted. Exit is synchronous, so it
+    runs before the next lock holder resumes.
+    """
+
+    def __init__(self, lanlan_name: str) -> None:
+        self._name = lanlan_name
+
+    def __enter__(self) -> None:
+        _settle_preemption_waiters[self._name] = _settle_preemption_waiters.get(self._name, 0) + 1
+        for future in _settle_preemptible_sections.get(self._name, ()):
+            if not future.done():
+                future.set_result(None)
+
+    def __exit__(self, *exc_info) -> None:
+        remaining = _settle_preemption_waiters.get(self._name, 0) - 1
+        if remaining > 0:
+            _settle_preemption_waiters[self._name] = remaining
+        else:
+            _settle_preemption_waiters.pop(self._name, None)
+
+
+class _settle_summary_preemption:
+    """Yield a future that resolves when a cold-start /new_dialog wants the settle lock.
+
+    Wrap the summary work done under ``_get_settle_lock(lanlan_name)`` and pass the future to
+    ``update_history(preempted=...)``.
+    """
+
+    def __init__(self, lanlan_name: str) -> None:
+        self._name = lanlan_name
+        self._future: asyncio.Future | None = None
+
+    def __enter__(self) -> asyncio.Future:
+        future = asyncio.get_running_loop().create_future()
+        if _settle_preemption_waiters.get(self._name, 0) > 0:
+            future.set_result(None)
+        _settle_preemptible_sections.setdefault(self._name, set()).add(future)
+        self._future = future
+        return future
+
+    def __exit__(self, *exc_info) -> None:
+        sections = _settle_preemptible_sections.get(self._name)
+        if sections is not None:
+            sections.discard(self._future)
+            if not sections:
+                _settle_preemptible_sections.pop(self._name, None)
+
 
 # Strong-reference registry prevents fire-and-forget task garbage collection.
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
