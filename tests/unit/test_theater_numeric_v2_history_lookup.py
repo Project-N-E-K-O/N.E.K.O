@@ -13,6 +13,7 @@ from services.theater import numeric_v2_workflow as workflow
 from services.theater.numeric_v2_context import history_evidence, performance_history_records
 from services.theater.numeric_v2_actor import _turn_messages
 from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2, MetricChangeV2
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_natural_ending import _engine
 from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening
 from tests.unit.test_theater_numeric_v2_transition_history import _candidate
@@ -76,7 +77,7 @@ async def test_lookup_selects_real_records_and_reports_failures(monkeypatch, mod
         async def __aenter__(self): return self
         async def __aexit__(self, *args): return False
         async def ainvoke(self, messages):
-            rows = json.loads(messages[1].content)['records']
+            rows = prompt_payload(messages[1].content)['records']
             calls.append(rows)
             if mode == 'timeout': await asyncio.sleep(1)
             ids = [row['id'] for row in rows if '许可撤回' in row['text']] if mode == 'found' else []
@@ -113,11 +114,11 @@ def test_actor_and_guard_pack_the_same_retrieved_original_with_fixed_budgets():
     actor = _turn_messages(engine, session, outcome, '那件事呢？', '温和', '测试猫娘', '哥哥', history_lookup=lookup)
     guard = evaluator._build_transition_judge_messages(engine, session, player_input='那件事呢？',
         actor_performance={'performance': '日记继续保密。'}, history_lookup=lookup)[0]
-    for messages, limit in [(actor, 10000), (guard, 8500)]:
+    for messages, limit in [(actor, 10000), (guard, 10000)]:
         assert fact['text'] in messages[1].content
         assert '按需查找 Session 演绎原文' in messages[0].content
         assert sum(history.count_tokens(m.content) for m in messages) <= limit
-    assert len(json.loads(actor[1].content.split('：\n', 1)[1])) == 6
+    assert len(prompt_payload(actor[1].content)) == 6
 
 
 @pytest.mark.parametrize('query', ['', '日记最后是否允许公开？'])

@@ -11,7 +11,7 @@ from utils.token_tracker import set_call_type
 from utils.tokenize import count_tokens
 
 from .numeric_v2_budget import numeric_v2_actor_budget
-from .numeric_v2_context import performance_history_records
+from .numeric_v2_context import performance_history_records, prompt_data_block
 from .numeric_v2_evaluator import _model_config
 from .numeric_v2_json import strip_single_json_fence
 from .numeric_v2_usage import invoke_with_usage
@@ -28,8 +28,9 @@ _LOOKUP_TIMEOUT_SECONDS = 12.0
 
 
 def _messages(query: str, rows: list[dict[str, Any]]) -> list[Any]:
-    return [SystemMessage(content=_LOOKUP_SYSTEM), HumanMessage(content=json.dumps(
-        {"question": query, "records": rows}, ensure_ascii=False, separators=(",", ":"),
+    return [SystemMessage(content=_LOOKUP_SYSTEM), HumanMessage(content=(
+        prompt_data_block("历史对话", {"records": rows}) + "\n\n"
+        + prompt_data_block("本次检索问题", {"question": query})
     ))]
 
 

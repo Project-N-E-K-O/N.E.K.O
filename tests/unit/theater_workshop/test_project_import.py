@@ -7,8 +7,8 @@ import re
 import pytest
 from pydantic import ValidationError
 
-from theater_workshop.host import open_workshop
-from theater_workshop.sdk import NumericV2ProjectError, WorkshopError
+from services.theater_workshop.host import open_workshop
+from services.theater_workshop.sdk import NumericV2ProjectError, WorkshopError
 from utils.cloudsave_runtime import MaintenanceModeError
 
 from .test_sdk_lifecycle import TestConfig, fixed_model, opened as opened, ready_to_publish, setup_project
@@ -161,7 +161,7 @@ def test_import_uses_host_write_protection(opened, author_snapshot, blocked, tmp
 def test_io_failure_leaves_no_imported_project(opened, author_snapshot, monkeypatch, operation):
     def fail_replace(*args):
         raise OSError("injected import write failure")
-    monkeypatch.setattr(f"theater_workshop.sdk.numeric_v2_project_store.os.{operation}", fail_replace)
+    monkeypatch.setattr(f"services.theater_workshop.sdk.numeric_v2_project_store.os.{operation}", fail_replace)
     with pytest.raises(OSError, match="injected import"):
         opened[0].sdk.import_project(author_snapshot)
     assert list(opened[0].sdk.root.glob("*")) == []

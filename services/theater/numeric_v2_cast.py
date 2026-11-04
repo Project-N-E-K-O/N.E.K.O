@@ -61,6 +61,10 @@ class NumericV2CastProjection:
     def text(self, value: Any) -> str:
         lead_pair = f"{self.player_name}和{self.catgirl_name}"
         replacements = (
+            # 普通作者文案也可能使用固定旁白约定的显式姓名占位；与实名同次替换，
+            # 不再扫描绑定值，避免猫娘名恰含作者姓名或另一个占位时被递归改写。
+            ("{{player_name}}", self.player_name),
+            ("{{catgirl_name}}", self.catgirl_name),
             ("男女主人公", lead_pair),
             ("男女主角", lead_pair),
             ("男女主", lead_pair),

@@ -10,6 +10,7 @@ from services.theater import numeric_v2_evaluator as evaluator
 from services.theater.numeric_v2_actor import _turn_messages
 from services.theater.numeric_v2_runtime import NumericV2Engine, TurnRequestV2
 from services.theater.numeric_v2_structured_output import review_output_schema
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 
 
@@ -68,13 +69,13 @@ def test_fact_descriptions_share_cast_with_body_without_mutating_keys_or_values(
     pending = evaluator._pending_completion_facts(engine, session)
     assert pending == [{"key": key, "value": True, "description": projected}]
     messages = evaluator._build_messages(engine, session, "我同意。")
-    data = json.loads(messages[1].content[messages[1].content.index("{"):])
+    data = prompt_payload(messages[1].content)
     assert data["current_story_beat"]["fact_contract"]["facts"][key]["description"] == projected
     messages, _ = evaluator._build_transition_judge_messages(
         engine, session, actor_performance={"performance": "我也同意。"}, player_input="我同意。",
         evaluator_fact_claims=({"key": key, "value": True, "description": description},),
     )
-    data = json.loads(messages[1].content[messages[1].content.index("{"):])
+    data = prompt_payload(messages[1].content)
     assert data["evaluator_fact_claims"][0]["description"] == projected
     assert data["evaluator_fact_claims"][0]["key"] == key
     outcome = engine.resolve_turn(session, TurnRequestV2("cast_fact_turn", 0, "我同意。"), ())
@@ -129,7 +130,7 @@ def test_claims_and_restricted_evidence_survive_ordinary_and_formal_projection(f
         evaluator_fact_claims=supplied,
     )
     system = messages[0].content
-    data = json.loads(messages[1].content.split("：", 1)[1])
+    data = prompt_payload(messages[1].content)
     assert ("evaluator_fact_claims" in data) == with_claims
     assert ("approved_evaluator_fact_indexes" in system) == with_claims
     assert supplied == original
@@ -150,7 +151,7 @@ def test_claims_and_restricted_evidence_survive_ordinary_and_formal_projection(f
 @pytest.mark.asyncio
 @pytest.mark.parametrize("formal", [False, True])
 @pytest.mark.parametrize("dispute", [False, True])
-async def test_fact_approval_uses_one_existing_call_and_existing_output_allowance(monkeypatch, formal, dispute):
+async def test_fact_approval_uses_scene_half_and_existing_output_allowance(monkeypatch, formal, dispute):
     engine, session, claims = _context()
     outcome = engine.resolve_turn(
         session, TurnRequestV2("fact_review_turn", 0, "我按下开关。"), (),
@@ -167,6 +168,8 @@ async def test_fact_approval_uses_one_existing_call_and_existing_output_allowanc
             return False
 
         async def ainvoke(self, messages):
+            if prompt_payload(messages[1].content).get("review_task") == "player_actions":
+                return SimpleNamespace(content=json.dumps({"body_violations": [], "failure_reason": ""}))
             requests.append(messages)
             return SimpleNamespace(content=json.dumps(_payload(approved_evaluator_fact_indexes=[0],
                 **({"delivery_matches_route": True} if formal else {}))))
@@ -190,14 +193,15 @@ async def test_fact_approval_uses_one_existing_call_and_existing_output_allowanc
         evaluator_fact_claims=claims,
     )
     assert review.approved_evaluator_fact_indexes == (0,)
-    assert len(calls) == len(requests) == 1
+    assert len(requests) == 1  # Scene half retains the complete fact/narrative table.
+    assert len(calls) == (2 if formal else 1)
     assert calls[0]["max_completion_tokens"] == (4096 if dispute else 512 if formal else 350)
     assert calls[0]["timeout"] == (
         evaluator.NUMERIC_V2_DISPUTE_JUDGE_TIMEOUT_SECONDS if dispute
         else evaluator.NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS
     )
     assert calls[0]["max_retries"] == 0
-    data = json.loads(requests[0][1].content.split("：", 1)[1])
+    data = prompt_payload(requests[0][1].content)
     assert data["evaluator_fact_claims"][0]["evidence"] == claims[0]["evidence"]
 
 
@@ -286,7 +290,7 @@ def test_actor_fact_prompt_prefilters_current_quote_type_and_scope_without_mutat
     messages, _ = evaluator._build_transition_judge_messages(
         engine, session, actor_performance=supplied, player_input="请确认指示灯。",
     )
-    data = json.loads(messages[1].content[messages[1].content.index("{"):])
+    data = prompt_payload(messages[1].content)
     assert data["actor_fact_candidates"] == [{
         **candidate, "index": 0,
         "description": engine.fact_contract[candidate["key"]]["description"],
@@ -309,7 +313,7 @@ def test_actor_fact_table_and_approval_contract_are_only_for_ordinary_drafts(for
         engine, session, actor_performance=supplied, player_input="带路吧。",
         route_changed=formal, transition_outcome=outcome,
     )
-    data = json.loads(messages[1].content[messages[1].content.index("{"):])
+    data = prompt_payload(messages[1].content)
     assert ("actor_fact_candidates" in data) == (not formal)
     assert ("approved_actor_fact_indexes" in messages[0].content) == (not formal)
 
@@ -369,6 +373,6 @@ async def test_actor_fact_approval_uses_same_call_budget_and_no_new_thinking_set
     assert calls[0]["timeout"] == evaluator.NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS
     schema = requests[0][1]["response_format"]["json_schema"]["schema"]
     assert "approved_actor_fact_indexes" in schema["properties"]
-    data = json.loads(requests[0][0][1].content[requests[0][0][1].content.index("{"):])
+    data = prompt_payload(requests[0][0][1].content)
     assert data["actor_fact_candidates"][0]["evidence_quote"] == candidate["evidence_quote"]
     assert supplied == original

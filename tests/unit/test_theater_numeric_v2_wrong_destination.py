@@ -252,6 +252,8 @@ async def test_real_acceptance_review_call_supplies_original_invitation_and_pars
         async def __aenter__(self): return self
         async def __aexit__(self, *args): return False
         async def ainvoke(self, messages):
+                if json.loads(messages[1].content[messages[1].content.index("{"):]).get("review_task") == "player_actions":
+                    return SimpleNamespace(content=json.dumps({"body_violations": [], "failure_reason": ""}))
                 calls.append(messages)
                 return SimpleNamespace(content=json.dumps(dict(offer_present=False, offer_quote="", valid=False, body_violations=[],
                     unsafe_suggestion_indexes=[], acceptance_authorized=False, pending_invitation_invalid=True,
@@ -311,12 +313,18 @@ async def test_acceptance_body_repair_preserves_route_and_shares_rewrite_budget(
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'validate_transition_offer', review)
     monkeypatch.setattr(workflow.NumericV2Actor, 'generate_turn', generate)
     monkeypatch.setattr(workflow.NumericV2Actor, '_character_profile', lambda self: '温和。')
+    if late_rejection:
+        with pytest.raises(NumericV2ActorOutputError, match='transition_review_failed'):
+            await workflow.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+                turn=TurnRequestV2('go', current.session.revision, '好，走吧。'), ensure_current_binding=lambda _: _binding())
+        assert await runtime.restore_session('accepted') == current
+        return
     result = await workflow.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2('go', current.session.revision, '好，走吧。'), ensure_current_binding=lambda _: _binding())
     assert len(evaluation_calls) == 1 and len(actor_calls) == 2
     assert result.stored.session.metrics['trust'] == current.session.metrics['trust'] + 2
     assert result.stored.session.revision == current.session.revision + 1
-    assert result.diagnostics['transition_judge_calls'] == 3
+    assert result.diagnostics['transition_judge_calls'] == (3 if late_rejection else 2)
     assert result.diagnostics['semantic_rewrite_attempts'] == 1
     assert result.diagnostics['transition_cancellations'] == 0
     assert result.diagnostics['semantic_review_fallback'] is late_rejection

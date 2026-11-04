@@ -1,12 +1,11 @@
 """Only exact, latest, public role duplicates may be referenced under final pressure."""
 from copy import deepcopy
 import inspect
-import json
 import pytest
 from services.theater import numeric_v2_actor as actor
 
 MARKER = '当前待确认提议原文（只证明此前说过，不证明安排正确）：'
-REFERENCE = MARKER + '见 story_so_far 最新完整猫娘原文。'
+REFERENCE = MARKER + '见 story_so_far 中角色最新的完整原文。'
 WARNING = '若原提议与 next_scene 不符，承认错误并保留玩家选择。'
 
 @pytest.fixture(params=['science_fiction', 'fantasy'])
@@ -20,7 +19,7 @@ def sample(request):
     return data, [row], offer
 
 def size(data):
-    return actor.count_tokens('system') + actor.count_tokens('context:' + json.dumps(data, ensure_ascii=False, separators=(',', ':')))
+    return actor.count_tokens('system') + actor.count_tokens('context:' + actor.render_prompt_context(data))
 
 def build(data, rows, offer, limit):
     kwargs = dict(system_prompt='system', human_prefix='context:', data=data,

@@ -25,7 +25,7 @@ stays acyclic). The hierarchy:
     L0  config, steamworks                   ← foundation (data + vendored SDK)
     L1  utils
     L2  knowledge, memory, main_logic, services
-    L3  main_routers, theater_workshop
+    L3  main_routers
     L4  plugin                                ← high-level extension surface
     L5  brain                                 ← top-of-stack agent orchestration
     L6  app, local_server, launcher.py, launcher_core  ← entrypoints
@@ -110,15 +110,15 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # script (no package); we treat it specially in PACKAGE_OF_FILE.
 #
 # ``services`` holds Main-side domain services (chat sync, theater runtime)
-# used by main_logic, main_routers and app. ``theater_workshop`` is the
-# author-side theater host (not shipped) built on services. ``launcher_core``
+# used by main_logic, main_routers and app. ``services/theater_workshop`` is
+# the source-only author host, separate from the theater runtime. ``launcher_core``
 # is launcher.py's bootstrap and imports app directly.
 
 LAYERS: List[Tuple[int, Set[str]]] = [
     (0, {"config", "steamworks"}),
     (1, {"utils"}),
     (2, {"knowledge", "memory", "main_logic", "services"}),
-    (3, {"main_routers", "theater_workshop"}),
+    (3, {"main_routers"}),
     (4, {"plugin"}),
     (5, {"brain"}),
     (6, {"app", "local_server", "launcher", "launcher_core"}),

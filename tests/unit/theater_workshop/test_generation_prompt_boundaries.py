@@ -7,14 +7,14 @@ import json
 import pytest
 import tiktoken
 
-from theater_workshop.sdk.generation.numeric_v2 import (
+from services.theater_workshop.sdk.generation.numeric_v2 import (
     NumericV2GenerationError,
     NumericV2Generator,
     _BRANCH_PATH_PROMPT,
     _MAINLINE_PROMPT,
 )
-from theater_workshop.sdk.model import LLMCallFailure
-from theater_workshop.sdk.numeric_v2_branch import NumericV2BranchService
+from services.theater_workshop.sdk.model import LLMCallFailure
+from services.theater_workshop.sdk.numeric_v2_branch import NumericV2BranchService
 
 from .test_numeric_v2_branch import _character_state, _ending_goal
 from .test_numeric_v2_generation import _generation_setup, _idea_outline

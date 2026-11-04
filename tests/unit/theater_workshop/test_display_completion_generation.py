@@ -5,11 +5,11 @@ import json
 
 import pytest
 
-from theater_workshop.host import InProcessPackageGateway
-from theater_workshop.sdk.generation.numeric_v2 import (
+from services.theater_workshop.host import InProcessPackageGateway
+from services.theater_workshop.sdk.generation.numeric_v2 import (
     NumericV2Generator, _validate_idea_outline, _continuation_output_contract,
 )
-from theater_workshop.sdk.numeric_v2 import NumericV2Compiler
+from services.theater_workshop.sdk.numeric_v2 import NumericV2Compiler
 from .numeric_v2_fixture import numeric_v2_setup
 from .test_numeric_v2_generation import _idea_outline, _generation_setup
 

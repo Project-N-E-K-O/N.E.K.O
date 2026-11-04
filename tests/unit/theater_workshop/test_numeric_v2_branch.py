@@ -1,18 +1,18 @@
 from __future__ import annotations
 from contextlib import nullcontext
-from theater_workshop.host import InProcessPackageGateway
+from services.theater_workshop.host import InProcessPackageGateway
 
 from copy import deepcopy
 
 import pytest
 
-from theater_workshop.sdk.numeric_v2 import NumericV2Compiler
-from theater_workshop.sdk.numeric_v2_branch import (
+from services.theater_workshop.sdk.numeric_v2 import NumericV2Compiler
+from services.theater_workshop.sdk.numeric_v2_branch import (
     NumericV2BranchError,
     NumericV2BranchService,
     condition_and_complement,
 )
-from theater_workshop.sdk.numeric_v2_project_store import NumericV2ProjectStore
+from services.theater_workshop.sdk.numeric_v2_project_store import NumericV2ProjectStore
 from .numeric_v2_fixture import numeric_v2_story
 
 
@@ -1089,7 +1089,7 @@ def test_branch_draft_persists_without_revision_and_applies_idempotently(tmp_pat
 @pytest.mark.parametrize("boundaries", [[], ["不得把女主展示证物的职责转交给男主"]])
 def test_branch_api_and_service_preserve_state_boundary_scope(boundaries):
     # API acceptance and branch normalization share the empty-array contract; preserve existing hard boundaries verbatim.
-    from theater_workshop.sdk.contracts import BranchCharacterStatePayload
+    from services.theater_workshop.sdk.contracts import BranchCharacterStatePayload
     state = _character_state()
     state["scene_boundaries"] = boundaries
     payload = BranchCharacterStatePayload.model_validate(state).model_dump()
@@ -1101,7 +1101,7 @@ def test_branch_api_and_service_preserve_state_boundary_scope(boundaries):
 @pytest.mark.parametrize("boundaries", [None, [f"不得越界{i}" for i in range(5)]])
 def test_branch_boundary_relaxation_keeps_shape_and_upper_limit(boundaries):
     from pydantic import ValidationError
-    from theater_workshop.sdk.contracts import BranchCharacterStatePayload
+    from services.theater_workshop.sdk.contracts import BranchCharacterStatePayload
     # Both layers reject invalid shapes and oversized arrays rather than relying on downstream validation.
     state = _character_state()
     state["scene_boundaries"] = boundaries

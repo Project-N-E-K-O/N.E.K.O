@@ -1,14 +1,14 @@
 """Every authoring and assessment prompt describes current goal metadata semantics."""
 import pytest
 
-from theater_workshop.sdk.generation.numeric_v2 import (
+from services.theater_workshop.sdk.generation.numeric_v2 import (
     _MAINLINE_PROMPT, _MAINLINE_CONTINUATION_PROMPT, _NODE_ENHANCEMENT_PROMPT,
     _BRANCH_ENDING_PROMPT, _BRANCH_PATH_PROMPT,
 )
-from theater_workshop.sdk.generation.quality import _ASSESSMENT_PROMPT, _NODE_OPTIMIZATION_PROMPT
-from theater_workshop.sdk.generation.facts import FACT_REVIEW_PROMPT
-from theater_workshop.sdk.generation.evidence import EVIDENCE_REVIEW_PROMPT
-from theater_workshop.sdk.generation.plan_review import PLAN_REVIEW_PROMPT
+from services.theater_workshop.sdk.generation.quality import _ASSESSMENT_PROMPT, _NODE_OPTIMIZATION_PROMPT
+from services.theater_workshop.sdk.generation.facts import FACT_REVIEW_PROMPT
+from services.theater_workshop.sdk.generation.evidence import EVIDENCE_REVIEW_PROMPT
+from services.theater_workshop.sdk.generation.plan_review import PLAN_REVIEW_PROMPT
 
 
 @pytest.mark.parametrize("prompt", [

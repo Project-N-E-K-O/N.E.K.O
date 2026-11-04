@@ -12,6 +12,7 @@ from services.theater.numeric_v2_runtime import (
     TurnRequestV2,
 )
 from services.theater.numeric_v2_options import default_options
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 from tests.unit.test_theater_numeric_v2_runtime import _binding
 
@@ -61,6 +62,57 @@ def story_for(destination):
         }
     )
     return story
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('body,offer,intent', [
+    ('事情已经处理完了。', '', 'unclear'),
+    ('事情已经处理完了。', '明天下午三点再一起去长街，好吗？', 'unclear'),
+    ('那就明天下午三点一起去长街。', '', 'unclear'),
+    ('好，今晚先不商量明天的安排。', '', 'reject'),
+])
+async def test_new_invitation_format_does_not_receive_a_second_authored_arrangement(
+    tmp_path, monkeypatch, body, offer, intent,
+):
+    from services.theater.numeric_v2_actor_output import _parse_output
+    from services.theater import numeric_v2_options
+
+    engine = NumericV2Engine.from_mapping(story_for('长街'))
+    runtime = NumericV2Runtime(engine, tmp_path)
+    current = await runtime.start_session(session_id='published-offer', catgirl_binding=_binding(),
+        opening_performance={'performance': '先处理眼前的事。', 'suggested_inputs': []})
+    setup = runtime.prepare_turn(current, TurnRequestV2('done', 0, '事情处理好了。'), (),
+        fact_operations=({'op': 'set', 'key': 'scene:start:done', 'value': True,
+                          'visibility': 'public'},))
+    current = await runtime.commit_turn(setup, {'performance': '事情处理好了。',
+        'suggested_inputs': [], 'transition_offered': False})
+
+    async def options():
+        return {key: key in {'evaluator', 'history_lookup'} for key in default_options()}
+
+    async def evaluate(self, **kwargs):
+        return ev._parse_output(json.dumps({'scene_complete': True,
+            'transition_intent': intent, 'metric_changes': {}}), engine, kwargs['message'], current.session)
+
+    async def invoke(self, messages, **kwargs):
+        return _parse_output(json.dumps({'performance': body, 'transition_offer': offer,
+            'suggested_inputs': ['好，那就三点见。', '先让我考虑一下。'] if offer else ['我先休息一下。']}))
+
+    monkeypatch.setattr(numeric_v2_options, 'MODEL_REVIEWS_ENABLED', False)
+    monkeypatch.setattr(workflow, 'aload_theater_module_options', options)
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
+    monkeypatch.setattr(workflow.NumericV2Actor, '_invoke', invoke)
+    monkeypatch.setattr(workflow.NumericV2Actor, '_character_profile', lambda self: '温和。')
+    result = await workflow.execute_numeric_v2_turn(config_manager=object(), runtime=runtime,
+        current=current, turn=TurnRequestV2('reply', 1, '接下来呢？'),
+        ensure_current_binding=lambda _: _binding())
+    assert result.performance['performance'] == body + ('\n' + offer if offer else '')
+    assert result.diagnostics['completion_fallback_offer_applied'] == 0
+    assert result.stored.session.transition_offered is bool(offer)
+    assert '_transition_offer_provided' not in json.dumps({
+        'session': result.stored.session.to_dict(), 'ledger': result.stored.ledger_events})
+    assert '_transition_offer_provided' not in result.performance
+    assert await NumericV2Runtime(engine, tmp_path).restore_session('published-offer') == result.stored
 
 
 @pytest.mark.parametrize("legacy", ["chat", "scene_action", "mixed_or_unclear"])
@@ -138,7 +190,7 @@ async def test_completed_scene_can_invite_after_subjective_reply_without_auto_ac
     captured = []
 
     async def options():
-        return {**default_options(), "review": True}
+        return {**{key: key == 'evaluator' for key in default_options()}, "review": True}
 
     async def evaluate(self, **kwargs):
         return ev._parse_output(
@@ -169,8 +221,10 @@ async def test_completed_scene_can_invite_after_subjective_reply_without_auto_ac
     async def review(self, **kwargs):
         if kwargs["actor_performance"]["performance"].endswith(f"要现在一起去{destination}吗？"):
             assert kwargs["actor_performance"]["suggested_inputs"][0] == "好，我们现在过去。"
-            return ev.NumericV2TransitionOfferReview(True, True, (), ())
-        return ev.NumericV2TransitionOfferReview(False, False, (), ())
+            return ev.NumericV2TransitionOfferReview(True, True, (), (),
+                approved_suggestion_texts=tuple(kwargs["actor_performance"].get("suggested_inputs") or []))
+        return ev.NumericV2TransitionOfferReview(False, False, (), (),
+            approved_suggestion_texts=tuple(kwargs["actor_performance"].get("suggested_inputs") or []))
 
     monkeypatch.setattr(workflow, "aload_theater_module_options", options)
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, "evaluate", evaluate)
@@ -236,6 +290,11 @@ async def test_completed_scene_can_invite_after_subjective_reply_without_auto_ac
     assert continued.diagnostics["completion_fallback_offer_applied"] == 0
     assert "本轮确定性完成收束合同" not in captured[-1][0].content
     assert "本轮自然收束合同" not in captured[-1][0].content
+    data = prompt_payload(captured[-1][1].content)
+    # Historical withdrawal prevents automatic revival without classifying every later input as refusal.
+    assert "不自动恢复历史撤回的提议" in data["pacing"]
+    assert "玩家拒绝或暂停了上一提议" not in data["pacing"]
+    assert "新的跨阶段安排仍须公开并等待接受" in data["pacing"]
     resumed = runtime.prepare_turn(
         continued.stored,
         TurnRequestV2("changed_mind", 4, "我休息好了，我们现在过去吧。"),

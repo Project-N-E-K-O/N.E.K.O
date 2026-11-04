@@ -24,7 +24,7 @@ def _engine():
             "source": {"id": "source", "story_beat": SOURCE_BEAT, "route_gates": [{"target_node_id": "target"}]},
             "target": {"id": "target", "story_beat": {"opening_scene": TARGET_OPENING, "summary": "她冲进控制台。"}},
         },
-        preview_route=lambda node_id, metrics: {
+        preview_route=lambda node_id, metrics, *, facts=None: {
             "target_node_id": "target",
             "transition_contract": {"bridge_scene_narration": "按玩家的等待略去平静时段，来到19:47、预热剩三分钟时。"},
         },

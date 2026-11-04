@@ -50,13 +50,15 @@ def test_old_scene_quote_and_source_response_cannot_authorize_current_visit():
 
 
 @pytest.mark.asyncio
-async def test_formal_output_has_room_without_changing_ordinary_or_dispute(monkeypatch):
-    # Formal checks output three conflict justifications and public quotations with an independent output budget; do not expand normal quick checks or timeouts.
+async def test_formal_and_dispute_output_room_stays_independent_of_ordinary_floor(monkeypatch):
+    # Full ordinary verdicts need 320; formal/dispute outputs and every deadline retain their existing budgets.
     options = []
     class Client:
         async def __aenter__(self): return self
         async def __aexit__(self, *args): return False
         async def ainvoke(self, messages):
+            if json.loads(messages[1].content[messages[1].content.index("{"):]).get("review_task") == "player_actions":
+                return SimpleNamespace(content=json.dumps({"body_violations": [], "failure_reason": ""}))
             return SimpleNamespace(content=json.dumps(dict(offer_present=False, offer_quote="", valid=False,
                 body_violations=[], unsafe_suggestion_indexes=[], failure_reason='',
                 **({'delivery_matches_route': True} if formal else {}))))
@@ -72,9 +74,11 @@ async def test_formal_output_has_room_without_changing_ordinary_or_dispute(monke
         await evaluator.validate_transition_offer(engine=engine, session=session, message='好。',
             actor_performance={'performance': '知道了。'}, transition_outcome=outcome if formal else None,
             dispute_review=dispute)
-    assert [x['max_completion_tokens'] for x in options] == [190, 512, 4096]
+    assert [x['max_completion_tokens'] for x in options] == [320, 512, 190, 4096, 4096]
     assert [x['timeout'] for x in options] == [
         ev.NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS,
         ev.NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS,
+        ev.NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS,
+        ev.NUMERIC_V2_DISPUTE_JUDGE_TIMEOUT_SECONDS,
         ev.NUMERIC_V2_DISPUTE_JUDGE_TIMEOUT_SECONDS,
     ]

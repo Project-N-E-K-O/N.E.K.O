@@ -1494,13 +1494,23 @@
         // （codex P2 指出原版 fetch 后 window.open 失败时 state 已 responded
         // 用户失去重试入口）。decline / later 路径不开窗口，无此处理。
         var preOpenedWindow = null;
+        // theater 复用具名窗口（桌面壳靠窗口名识别窗控），所以 window.open 可能返回
+        // 用户上一次邀约或「更多剧本」留下的旧选剧窗口。只有本次新建的空白窗口才归
+        // 我们写占位和关闭——接管旧窗口会擦掉用户正在浏览的页面。
+        var preOpenedIsFresh = false;
         if (option.choice === 'accept') {
             try {
-                preOpenedWindow = window.open('', '_blank');
+                preOpenedWindow = window.open('', prompt.gameType === 'theater' ? 'neko_theater_market' : '_blank');
                 if (preOpenedWindow) {
+                    // 已有同源窗口不是 about:blank；跨域读取抛异常则按「非新建」处理。
+                    try {
+                        preOpenedIsFresh = preOpenedWindow.location.href === 'about:blank';
+                    } catch (_) {
+                        preOpenedIsFresh = false;
+                    }
                     // 给个临时占位文本免得用户看到 about:blank 一闪
                     try {
-                        preOpenedWindow.document.write(
+                        if (preOpenedIsFresh) preOpenedWindow.document.write(
                             '<title>Loading…</title><body style="background:#111;color:#888;font:14px sans-serif;padding:20px">Loading mini-game…</body>'
                         );
                     } catch (_) {}
@@ -1509,10 +1519,13 @@
                 preOpenedWindow = null;
             }
         }
+        // 只关本次新建的占位窗口；旧选剧窗口只聚焦，别替用户关掉它。
         var closePreOpened = function () {
-            if (preOpenedWindow && !preOpenedWindow.closed) {
-                try { preOpenedWindow.close(); } catch (_) {}
-            }
+            if (!preOpenedWindow || preOpenedWindow.closed) return;
+            try {
+                if (preOpenedIsFresh) preOpenedWindow.close();
+                else preOpenedWindow.focus();
+            } catch (_) {}
         };
 
         // 必须带 CSRF token：后端 endpoint 用 _validate_local_mutation_request

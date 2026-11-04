@@ -37,7 +37,8 @@ async def test_independent_ledger_review_rejects_invalid_indexes(monkeypatch, in
 
 
 @pytest.mark.asyncio
-async def test_reviewed_reply_returns_before_ledger_then_cold_restore_matches(tmp_path, monkeypatch):
+@pytest.mark.parametrize("foreground_review", [True, False])
+async def test_reviewed_reply_returns_before_ledger_then_cold_restore_matches(tmp_path, monkeypatch, foreground_review):
     release = asyncio.Event()
 
     async def propose(self, **kwargs):
@@ -49,9 +50,22 @@ async def test_reviewed_reply_returns_before_ledger_then_cold_restore_matches(tm
 
     monkeypatch.setattr(workflow.NumericV2NarrativeProposer, "review", ledger_review, raising=False)
     runtime, current, execute = await _setup(tmp_path, monkeypatch, propose=propose)
+    if not foreground_review:
+        from services.theater import numeric_v2_options
+
+        async def forbidden_review(self, **kwargs):
+            raise AssertionError("前台审核关闭时不能调用正文审核")
+
+        monkeypatch.setattr(numeric_v2_options, "MODEL_REVIEWS_ENABLED", False)
+        monkeypatch.setattr(workflow, "aload_theater_module_options", numeric_v2_options.aload_theater_module_options)
+        monkeypatch.setattr(workflow.NumericV2MetricEvaluator, "validate_transition_offer", forbidden_review)
     result = await asyncio.wait_for(execute(background_narrative=True), .3)
     assert result.performance["performance"] == "我会在这里等你。"
     assert result.stored.ledger_events[-1].get("narrative_pending")
+    if not foreground_review:
+        assert result.diagnostics["transition_judge_calls"] == 0
+        assert result.diagnostics["completion_fact_review_calls"] == 0
+        assert not result.diagnostics["theater_module_options"]["review"]
     assert project_narrative_state(result.stored.session)["current"] == {}
     release.set()
     from services.theater.numeric_v2_background_narrative import settle_before_input
@@ -171,7 +185,8 @@ async def test_pending_marker_must_match_tail_body(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_next_turn_reads_settled_ledger_and_raw_delivered_history(tmp_path, monkeypatch):
+@pytest.mark.parametrize("foreground_review", [True, False])
+async def test_next_turn_reads_settled_ledger_and_raw_delivered_history(tmp_path, monkeypatch, foreground_review):
     async def propose(self, **kwargs):
         return [_event("我会在这里等你。", [
             {"entity": "character", "attribute": "commitment", "value": "在这里等你"}],
@@ -182,6 +197,10 @@ async def test_next_turn_reads_settled_ledger_and_raw_delivered_history(tmp_path
 
     runtime, _, execute = await _setup(tmp_path, monkeypatch, propose=propose)
     monkeypatch.setattr(workflow.NumericV2NarrativeProposer, "review", review)
+    if not foreground_review:
+        from services.theater import numeric_v2_options
+        monkeypatch.setattr(numeric_v2_options, "MODEL_REVIEWS_ENABLED", False)
+        monkeypatch.setattr(workflow, "aload_theater_module_options", numeric_v2_options.aload_theater_module_options)
     first = await execute(background_narrative=True)
 
     async def second_generate(self, **kwargs):
@@ -235,3 +254,39 @@ async def test_same_revision_and_body_cannot_accept_another_job_result(tmp_path,
     runtime.store._write(runtime.store._path(recreated.session.session_id), recreated)
     assert await runtime.store.settle_narrative(result.stored, None) is False
     assert await runtime.restore_session(recreated.session.session_id) == recreated
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('restart', [False, True])
+async def test_disabling_ledger_seals_old_pending_without_waiting_or_new_models(tmp_path, monkeypatch, restart):
+    from services.theater import numeric_v2_background_narrative as background, numeric_v2_options
+
+    cancelled = asyncio.Event()
+    async def propose(self, **kwargs):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+    runtime, _, execute = await _setup(tmp_path, monkeypatch, propose=propose)
+    monkeypatch.setattr(numeric_v2_options, 'MODEL_REVIEWS_ENABLED', False)
+    monkeypatch.setattr(workflow, 'aload_theater_module_options', numeric_v2_options.aload_theater_module_options)
+    before = await execute(background_narrative=True)
+    assert 'narrative_pending' in before.stored.ledger_events[-1]
+    await asyncio.sleep(0)
+    task = background._TASKS[background._key(runtime, before.stored)]
+    if restart:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        runtime = type(runtime)(runtime.engine, tmp_path)
+    # The disabled path must cancel immediately, not spend the usual next-input allowance.
+    monkeypatch.setattr(background, 'NEXT_INPUT_WAIT_SECONDS', 10)
+    current = await runtime.restore_session(before.stored.session.session_id)
+    result = await asyncio.wait_for(workflow.execute_numeric_v2_turn(
+        config_manager=object(), runtime=runtime, current=current,
+        turn=TurnRequestV2('after-disable', 1, '继续吧。'),
+        ensure_current_binding=lambda _: _binding(), background_narrative=False), 1)
+    assert cancelled.is_set()
+    assert result.stored.session.revision == 2
+    assert all('narrative_pending' not in row for row in result.stored.ledger_events)
+    assert result.stored.session.performance_history[0] == before.stored.session.performance_history[0]
+    assert await runtime.restore_session(current.session.session_id) == result.stored

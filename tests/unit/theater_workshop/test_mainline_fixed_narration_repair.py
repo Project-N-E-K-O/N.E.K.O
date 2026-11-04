@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from theater_workshop.sdk.generation.numeric_v2 import NumericV2Generator, _validate_idea_outline
+from services.theater_workshop.sdk.generation.numeric_v2 import NumericV2Generator, _validate_idea_outline
 from .test_display_completion_generation import display_outline
 from .test_numeric_v2_generation import _generation_setup
 

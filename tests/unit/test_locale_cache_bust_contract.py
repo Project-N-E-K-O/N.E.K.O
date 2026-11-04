@@ -66,8 +66,23 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
-        "2026-11-03-news-overseas-chat-sync-main-merge",
+        "2026-11-03-theater-market-news-overseas-merge",
+        "2026-11-03-theater-market-systray-labels-merge",
+        "2026-11-03-news-overseas-systray-labels-main-merge",
+        "2026-11-03-theater-market-chat-sync-merge",
         "2026-11-03-systray-intro-es-pt-labels",
+        "2026-11-03-theater-market-model-shake-merge",
+        "2026-10-28-theater-entry-social-realtime-merge",
+        "2026-10-28-theater-entry-nekoverse-merge",
+        "2026-10-28-theater-entry-social-hub-merge",
+        "2026-10-27-theater-entry-watch-together-merge",
+        "2026-10-27-theater-entry-visit-hub-merge",
+        "2026-10-27-theater-entry-stories",
+        "2026-10-27-theater-market-feedback-merge",
+        "2026-10-27-theater-market-main-merge",
+        "2026-10-26-theater-market-main-sync",
+        "2026-10-26-theater-review-fixes",
+        "2026-11-03-news-overseas-chat-sync-main-merge",
         "2026-11-02-model-click-shake",
         "2026-10-30-news-overseas-trends-steam",
         "2026-10-30-edge-peek-first-notice",
@@ -525,7 +540,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "dacd677d471f4fb5f9e2d3c2ab0a42cd2aeb1c5a27f3beaff8b6c46491b4931f"
+LOCALE_KEY_SIGNATURE = "20e517867c86fa4461b4e2054c98e6307abbc12b2b7cb94917ca1fb28d057bf2"
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "

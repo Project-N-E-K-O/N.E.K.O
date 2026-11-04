@@ -1,11 +1,11 @@
-from theater_workshop.host import InProcessPackageGateway
+from services.theater_workshop.host import InProcessPackageGateway
 import json
 from copy import deepcopy
 
 import pytest
 
-from theater_workshop.sdk.generation.numeric_v2 import NumericV2Generator, NumericV2GenerationError
-from theater_workshop.sdk.numeric_v2 import NumericV2Compiler
+from services.theater_workshop.sdk.generation.numeric_v2 import NumericV2Generator, NumericV2GenerationError
+from services.theater_workshop.sdk.numeric_v2 import NumericV2Compiler
 from .test_numeric_v2_generation import _idea_outline, _generation_setup
 
 
@@ -94,7 +94,7 @@ def test_legacy_checkpoint_remains_in_legacy_slots():
 
 
 def test_enhancement_and_review_receive_existing_project_names():
-    from theater_workshop.sdk.generation.quality import NumericV2QualityAssessor
+    from services.theater_workshop.sdk.generation.quality import NumericV2QualityAssessor
     from .test_numeric_v2_generation import _ending_enhancement_case
 
     generator, _, candidate = _ending_enhancement_case()
@@ -119,7 +119,7 @@ def test_enhancement_and_review_receive_existing_project_names():
 
 
 def test_branch_path_preserves_named_state_and_rejects_swapped_roles():
-    from theater_workshop.sdk.numeric_v2_branch import NumericV2BranchService, NumericV2BranchError
+    from services.theater_workshop.sdk.numeric_v2_branch import NumericV2BranchService, NumericV2BranchError
     from .test_numeric_v2_branch import branchable_project, _path_result
 
     project = branchable_project()

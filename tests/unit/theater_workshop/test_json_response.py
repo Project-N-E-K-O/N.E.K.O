@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from theater_workshop.sdk.json_response import JSONResponseParser
+from services.theater_workshop.sdk.json_response import JSONResponseParser
 
 
 def test_non_json_fence_does_not_become_a_generation_candidate():

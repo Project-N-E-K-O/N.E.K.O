@@ -33,10 +33,11 @@ def test_transition_deduplicates_only_complete_projected_target_boundaries():
     outcome = engine.resolve_turn(session, TurnRequestV2('one', 0, '谢谢。'), (), scene_complete=True, natural_ending_ready=True)
     messages = _build_transition_judge_messages(engine, session, actor_performance={'segments': [], 'suggested_inputs': []}, player_input='谢谢。', transition_outcome=outcome)[0]
     target = json.loads(messages[1].content.split('：', 1)[1])['target_scene']
-    boundaries = target['hard_boundaries'] + target['character_state'].get('scene_boundaries', []) + target['acting_contract'].get('forbidden_behaviors', [])
+    boundaries = target['hard_boundaries'] + target['author_entry_plan'].get('scene_boundaries', []) + target['acting_contract'].get('forbidden_behaviors', [])
     assert boundaries.count(short) == 1
-    assert all(text in boundaries for text in [long, *extras])
-    assert target['character_state']['catgirl_state'] == original['character_state']['catgirl_state']
+    assert long in boundaries
+    assert all(f'演出角色禁止行为：{text}' in boundaries for text in extras)
+    assert target['author_entry_plan']['catgirl_state'] == original['character_state']['catgirl_state']
     assert target['acting_contract']['allowed_behaviors'] == ['表达感谢']
     assert beat == original
 
@@ -166,7 +167,7 @@ def test_guard_offer_and_button_responsibilities_do_not_overlap():
     assert "正文与推荐组合" not in system
     assert "推荐中至少一条" not in system
     assert "body_violations：只列正文已写出的冲突" in system
-    assert "offer_present：以 next_scene_direction 声明的出口作为阶段边界" in system
+    assert "offer_present：先判断正文是否具体邀请玩家前往另一地点、时段或互动阶段" in system
     assert "按钮不能创建、补足或否决正文提议" in system
     assert "首次提出尚未公开的跨阶段行动" in system
     assert "opening_boundary 与 bridge_boundary 是接受后的入口" in system
@@ -178,7 +179,7 @@ def test_guard_no_offer_does_not_skip_body_or_button_checks():
 
     system = _messages(_BUTTON_ONLY_CANDIDATE)[0].content
     assert "没有提议也须检查正文" in system
-    assert system.index("4. unsafe_suggestion_indexes：逐条独立检查按钮") > system.index("3. valid")
+    assert system.index("4. suggestion_checks 中 decision=reject 的索引：逐条独立检查按钮") > system.index("3. valid")
     assert "仅按钮首提时应列索引，offer_present 与 valid 都为 false" in system
 
 
@@ -188,19 +189,21 @@ def test_guard_prompt_uses_actual_protocol_and_distinguishes_action_time():
     system = _messages(_BUTTON_ONLY_CANDIDATE)[0].content
     example, _ = json.JSONDecoder().raw_decode(system[system.index("{"):])
     assert set(example) == {
-        "offer_present", "offer_quote", "offer_kind", "valid", "body_violations", "unsafe_suggestion_indexes",
+        "offer_present", "offer_quote", "offer_kind", "valid", "body_violations", "suggestion_checks",
         "failure_reason", "player_action_kind",
     }
     # Match the fixed field count to the actual example so an incorrect count does not prompt the model to invent or remove fields.
     assert "固定八字段" in system and len(example) == 8
-    assert not _parse_transition_judge_output(json.dumps(example)).body_violations
+    assert not _parse_transition_judge_output(
+        json.dumps(example), display_suggestions=tuple(_BUTTON_ONLY_CANDIDATE["suggested_inputs"]),
+    ).body_violations
     assert "_preserved" not in system
     assert "玩家已明确实施的同一动作可以被正文承接，不是 Actor 代做" in system
     # Even after conversational execution rules enter the shared contract, attempts still cannot guarantee unknown outcomes.
     assert "尝试也不保证未知的成功结果" in system
     assert "历史另一次操作也不授权本次结果" in system
     assert "未来邀请即使请求立即开始也不是已执行" in system
-    assert "开场状态是入幕起点，后续状态承接历史和本轮已实施动作" in system
+    assert "current_scene 包含作者规划与边界，实际状态承接已提交开场、历史和本轮已实施动作" in system
 
 
 def test_guard_requires_offer_quote_from_reviewed_body():

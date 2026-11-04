@@ -24,13 +24,16 @@ def _fixture(repetitions=700):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('disputed', [False, True])
+# Repetition counts construct the measured boundary, not a promise of fixed prose capacity.
+# Full authored player/role context is counted too; retain the measured
+# 9500–10000 window below rather than promising fixed prose capacity.
 @pytest.mark.parametrize('review_kind,repetitions,allowed', [
-    ('formal', 1050, True), ('formal', 1100, False),
-    ('ordinary', 950, True), ('ordinary', 1000, False),
-    ('missed', 850, True), ('missed', 900, False),
+    ('formal', 1432, True), ('formal', 1552, False),
+    ('ordinary', 1067, True), ('ordinary', 1187, False),
+    ('missed', 971, True), ('missed', 1091, False),
 ])
 async def test_review_capacity_applies_before_fast_and_dispute_calls(monkeypatch, review_kind, repetitions, allowed, disputed):
-    """All review branches accept complete input above 8000 and reject input above 8500 before sending."""
+    """All review branches accept complete input above 9500 and reject input above 10000 before sending."""
     calls = []
     clients = []
 
@@ -42,6 +45,8 @@ async def test_review_capacity_applies_before_fast_and_dispute_calls(monkeypatch
             return False
 
         async def ainvoke(self, messages):
+            if json.loads(messages[1].content[messages[1].content.index("{"):]).get("review_task") == "player_actions":
+                return SimpleNamespace(content=json.dumps({"body_violations": [], "failure_reason": ""}))
             calls.append(messages)
             payload = dict(offer_present=False, offer_quote="", valid=False,
                 body_violations=[], unsafe_suggestion_indexes=[], failure_reason='')
@@ -60,8 +65,10 @@ async def test_review_capacity_applies_before_fast_and_dispute_calls(monkeypatch
             else evaluator.NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS
         )
         # Changing input capacity must not change output headroom, retries, or waiting deadlines.
-        fast_output = {'formal': 512, 'ordinary': 190, 'missed': 286}[review_kind]
-        assert kwargs['max_completion_tokens'] == (4096 if disputed else fast_output)
+        fast_output = {'formal': 512, 'ordinary': 320, 'missed': 320}[review_kind]
+        assert kwargs['max_completion_tokens'] in (
+            {4096} if disputed else {fast_output, 190} if review_kind == 'formal' else {fast_output}
+        )
         return Client()
 
     monkeypatch.setattr(evaluator, '_model_config', config)
@@ -78,11 +85,12 @@ async def test_review_capacity_applies_before_fast_and_dispute_calls(monkeypatch
     worker = evaluator.NumericV2MetricEvaluator(object())
     if allowed:
         await worker.validate_transition_offer(**kwargs, dispute_review=disputed)
-        assert len(calls) == len(clients) == 1
+        assert len(calls) == 1  # Scene fake records the full evidence packet.
+        assert len(clients) == (2 if review_kind == "formal" else 1)
         tokens = sum(evaluator.count_tokens(m.content) for m in calls[0])
         budget = NUMERIC_V2_ACTOR_BUDGET_PROFILES['economy']
-        assert budget['judge_input_max_tokens'] == budget['formal_judge_input_max_tokens'] == 8500
-        assert 8000 < tokens <= 8500
+        assert budget['judge_input_max_tokens'] == budget['formal_judge_input_max_tokens'] == 10000
+        assert 9500 < tokens <= 10000
         data = json.loads(calls[0][1].content.split('：', 1)[1])
         # Both official quick checks and dispute reviews must distinguish excerpts from complete evidence; missing fields cannot negate completed actions.
         assert 'excerpt_only' in calls[0][0].content
@@ -112,6 +120,6 @@ def test_formal_budget_override_does_not_change_ordinary_packing(monkeypatch):
     monkeypatch.setitem(NUMERIC_V2_ACTOR_BUDGET_PROFILES['economy'], 'formal_judge_input_max_tokens', 4200)
     old_formal, ordinary_again = build(True), build(False)
     assert [m.content for m in ordinary] == [m.content for m in ordinary_again]
-    assert sum(evaluator.count_tokens(m.content) for m in ordinary) <= 8500
-    assert sum(evaluator.count_tokens(m.content) for m in expanded) <= 8500
+    assert sum(evaluator.count_tokens(m.content) for m in ordinary) <= 10000
+    assert sum(evaluator.count_tokens(m.content) for m in expanded) <= 10000
     assert len(json.loads(expanded[1].content.split('：', 1)[1])['scene_context']) > len(json.loads(old_formal[1].content.split('：', 1)[1])['scene_context'])

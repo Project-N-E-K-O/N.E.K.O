@@ -1,0 +1,1491 @@
+{
+  "catgirl_binding": {
+    "role_overlay": "开场关系上限：戒备；称呼未知，介绍后方可使用；已知男主：无。长期关系只能依据已发生互动和当前关系状态逐步变化，未来规划不是当前事实。",
+    "source": "runtime.current_catgirl"
+  },
+  "characters": {},
+  "endings": [
+    {
+      "id": "ending_normal",
+      "summary": "按照先前共同守护车站的决定，旧站逐渐成为失物招领、历史展览与旅客休憩的空间。女主把等待变成了照顾来往旅人的日常。对过去的纪念留在柜台上，今后的生活不再需要靠一个永远不会到来的班次证明意义。",
+      "terminal": true,
+      "title": "雾散后的守望者"
+    }
+  ],
+  "initial_state": {
+    "metrics": {
+      "affection": 20
+    },
+    "player_address_known": false
+  },
+  "intro": {
+    "background": "海风带着咸湿的雾气，常年笼罩着这座名为“雾港”的旧城。这里的旧火车站即将在下个月正式停运，取而代之的是现代化的交通枢纽。你作为新接手的夜班管理员，在第一个雨夜推开了失物招领室那扇吱呀作响的木门。屋内堆满了无人认领的旧物，一位有着猫耳的少女正坐在柜台后，借着昏黄的灯光擦拭一盏并不发光的信号灯。她告诉你，她在等一个十年前就没有回来的人，而你是这十年来，第一个愿意听她说完故事的人。",
+    "catgirl_identity": "女主，旧火车站失物招领室的管理员，拥有猫耳特征的亚人少女。她坚信十年前失踪的列车长（她的监护人/亲人）并未死亡，而是被困在了某个时空夹缝或秘密地点，因此拒绝离开即将关闭的车站。",
+    "player_identity": "男主，新上任的火车站夜班管理员。"
+  },
+  "meta": {
+    "author": "NEKO_Numeric_drama",
+    "contract_version": "v2.2",
+    "language": "zh-CN",
+    "revision": "draft_4-sdk20261019-quality20261027-pacing-bridge-clue-join-scene-contract-bounded-closure-bounded-source-known-sources-focused-causality",
+    "story_id": "story_ccc0763441e3",
+    "title": "《月台尽头的猫灯》"
+  },
+  "metric_schema": {
+    "affection": {
+      "bands": [
+        {
+          "label": "礼貌守望",
+          "max": 29,
+          "min": 0
+        },
+        {
+          "label": "愿意同行",
+          "max": 69,
+          "min": 30
+        },
+        {
+          "label": "托付未来",
+          "max": 100,
+          "min": 70
+        }
+      ],
+      "decrease_criteria": [
+        "玩家轻视她守候车站的理由",
+        "玩家故意破坏失物或欺骗旅客"
+      ],
+      "description": "猫娘愿意把等待、担忧和未来计划告诉玩家的程度。",
+      "increase_criteria": [
+        "玩家尊重她对失物与旅客的认真态度",
+        "玩家兑现共同调查或守护车站的承诺"
+      ],
+      "initial": 20,
+      "max": 100,
+      "min": 0,
+      "name": "亲近度",
+      "per_turn_limit": {
+        "decrease": 5,
+        "increase": 5
+      },
+      "relationship_effect": "positive",
+      "visibility": "hidden"
+    }
+  },
+  "nodes": [
+    {
+      "chapter": "雨夜来客与尘封的柜台",
+      "id": "mainline_01",
+      "min_turns": 4,
+      "recommended_turns": 6,
+      "route_gates": [
+        {
+          "conditions": {
+            "all": []
+          },
+          "id": "route_mainline_01_02",
+          "priority": 100,
+          "target_node_id": "mainline_02",
+          "transition_contract": {
+            "accept_input": "好的，那就明天下午在失物室见。",
+            "bridge_scene_narration": "夜间值守告一段落，时间推进到次日下午，失物室的旧箱仍待整理。",
+            "fallback_offer": "今晚先休息吧，明天下午我们在失物室一起整理旧箱里的物件。",
+            "must_deliver": [
+              "夜间值守告一段落，时间推进到次日下午，失物室的旧箱仍待整理。"
+            ],
+            "must_preserve": [
+              "男主已入职",
+              "女主对男主态度略有缓和",
+              "男主已入职并表现出善意"
+            ],
+            "reason": "今晚指定的一批失物已登记或分好存放处，女主已回应。女主据此提出：今晚先休息，明天下午在失物室一起整理旧箱中的物件。玩家明确接受这一具体安排，或主动要求执行已公开的同一安排时离幕；询问、考虑或准备不算接受。",
+            "source_ids": [
+              "goal.mainline_01_goal_04"
+            ],
+            "tone": "温柔悬疑、生活流、微奇幻、怀旧、治愈"
+          }
+        }
+      ],
+      "story_beat": {
+        "acting_contract": {
+          "allowed_behaviors": [
+            "与已经入职的男主进行工作交接，接受他在职责范围内的协助",
+            "观察环境"
+          ],
+          "assertable_self_facts": [
+            "我是失物招领室管理员，玩家已经正式入职，有现成钥匙，不需要新资格或交接手续",
+            "本批只有两把普通雨伞，可以一次全部归位并记数量二与位置，不按颜色、编号或损坏情况逐项展开",
+            "我在等一个人"
+          ],
+          "cognition_state": "normal",
+          "dialogue_policy": "required",
+          "forbidden_behaviors": [
+            "主动透露核心秘密",
+            "表现过度热情",
+            "给已经入职的玩家新增调令、工作证或交接单要求；把两把普通伞扩成多个颜色/新旧批次、编号核验、维修或巡夜带路任务。玩家自选巡夜时只回应当前安排，不把巡夜作为离幕前提。",
+            "玩家仅询问整理或登记方法时，不把拿着伞走向架子写成已经归位，也不代玩家填写登记本；只说明当前已公开的数量与位置，等其实际行动。"
+          ],
+          "memory_state": "available",
+          "persona_scope": "full",
+          "self_reference_mode": "persona_allowed"
+        },
+        "catgirl_situation": "女主身体健康，略显疲惫但警觉，手持抹布，已转身审视来人；刚擦拭的信号灯和记录本在桌上。",
+        "character_state": {
+          "catgirl_state": "女主身体健康，略显疲惫但警觉，手持抹布，已转身审视来人；刚擦拭的信号灯和记录本在桌上。",
+          "continuity_from_previous": [],
+          "environment_state": "环境为雨夜旧车站失物室。柜台旁本批只有两把普通雨伞，归位后在登记本记数量二及位置即可；角落旧箱留待次日下午。",
+          "player_state": "男主身体健康，刚入职，对环境和女主感到好奇，持有新员工钥匙和手电筒。",
+          "scene_boundaries": [
+            "不得让女主立刻信任男主",
+            "不得让男主直接得知信号灯秘密",
+            "不得出现超自然攻击行为"
+          ]
+        },
+        "goals": [
+          {
+            "delivery": {
+              "output_field": "scene_update",
+              "source_ids": [
+                "opening.mainline_01"
+              ],
+              "timing": "opening",
+              "type": "environment_fact"
+            },
+            "description": "展示失物招领室的环境和雨夜氛围",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_01_goal_01",
+            "owner": "environment"
+          },
+          {
+            "delivery": {
+              "output_field": "performance_action",
+              "source_ids": [
+                "opening.mainline_01"
+              ],
+              "state_effects": {
+                "dialogue_policy": "required"
+              },
+              "timing": "turn",
+              "type": "catgirl_action"
+            },
+            "description": "女主转身审视男主，保持警惕姿态",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_01_goal_02",
+            "owner": "catgirl"
+          },
+          {
+            "delivery": {
+              "output_field": "player_input",
+              "source_ids": [
+                "runtime.player_input"
+              ],
+              "timing": "turn",
+              "type": "player_action"
+            },
+            "description": "男主自我介绍并开始整理物品",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_01_goal_03",
+            "owner": "player"
+          },
+          {
+            "delivery": {
+              "output_field": "performance_dialogue",
+              "source_ids": [
+                "goal.mainline_01_goal_03"
+              ],
+              "timing": "turn",
+              "type": "catgirl_dialogue"
+            },
+            "description": "女主简短回应，划定工作边界",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_01_goal_04",
+            "owner": "catgirl"
+          }
+        ],
+        "must_not_happen": [
+          "不使用突然失忆",
+          "不让玩家被强制替代做决定",
+          "不使用无铺垫死亡",
+          "不得让女主立刻信任男主",
+          "不得让男主直接得知信号灯秘密",
+          "不得出现超自然攻击行为"
+        ],
+        "opening_scene": "雨声敲打车站的玻璃穹顶，失物招领室灯光昏黄。你是已经正式入职的夜班管理员，带着现有钥匙来到这里。柜台旁只有两把待归位的普通雨伞，登记本留着本批数量与存放位置的空栏；没有编号、损坏检验或新旧批次。女主背对门口擦拭桌上的旧信号灯，听到门响后转身看向你。",
+        "relationship_ceiling": "guarded",
+        "summary": "新夜班管理员已正式入职，现有钥匙足够确认工作身份。女主冷淡但接受职责内协助，本幕只处理柜台旁两把普通雨伞：可以一次归位，并在登记本记数量二及位置，不另做颜色、编号、损坏或新旧分类。她回应玩家实际表现后提出次日下午整理旧箱的安排；不追加巡夜教程或其他工作。",
+        "transition_goal": "今晚指定的一批失物已登记或分好存放处，女主已回应时，可提出“今晚先休息，明天下午在失物室一起整理旧箱中的物件”这一安排。玩家接受或主动发起已经公开的安排后承接转场；已经完成的当前工作不追加新任务。",
+        "narrative_focus": "回应已入职玩家的自我介绍，交代柜台旁两把普通伞的简单归位与数量登记；明确的整批动作可一次完成，不重复检查或逐把确认。回应后邀请次日下午一起整理旧箱，今晚剩余值守由时间桥段承接。"
+      },
+      "type": "start"
+    },
+    {
+      "chapter": "旧物中的低语",
+      "id": "mainline_02",
+      "min_turns": 4,
+      "recommended_turns": 6,
+      "route_gates": [
+        {
+          "conditions": {
+            "all": []
+          },
+          "id": "route_mainline_02_03",
+          "priority": 100,
+          "target_node_id": "mainline_03",
+          "transition_contract": {
+            "accept_input": "好，我们现在去档案室查记录。",
+            "bridge_scene_narration": "两人离开失物室，沿站内走廊抵达档案室；旧列车记录尚待展开。",
+            "fallback_offer": "我们一起去档案室查那班旧列车的记录吧。",
+            "must_deliver": [
+              "两人离开失物室，沿站内走廊抵达档案室；旧列车记录尚待展开。"
+            ],
+            "must_preserve": [
+              "两人建立了初步信任",
+              "女主愿意分享部分过去",
+              "旧熊和车票按两人实际商定的方式处理；尚未查阅档案或发现档案疑点"
+            ],
+            "reason": "两人已就旧熊和车票的处理达成一致，女主已提出一起去档案室查旧列车记录。仅在玩家明确接受这项查档安排，或主动要求执行已公开的同一安排时离幕；只同意整理、休息或喝茶，以及询问、考虑或准备，都不算接受去档案室。",
+            "source_ids": [
+              "goal.mainline_02_goal_04"
+            ],
+            "tone": "温柔悬疑、生活流、微奇幻、怀旧、治愈",
+            "fixed_entry_only": true
+          }
+        }
+      ],
+      "story_beat": {
+        "acting_contract": {
+          "allowed_behaviors": [
+            "接受男主的协助",
+            "分享非敏感信息"
+          ],
+          "assertable_self_facts": [
+            "玩家已来协助整理旧物",
+            "旧熊和车票来自多年无人认领的旧箱；车票纸面泛黄，票面上没有可辨认的文字、日期或目的地；我不知道它们属于谁，不能认定是列车长留给我的。“他”指十年前失联的列车长，是照顾我长大的亲人。"
+          ],
+          "cognition_state": "normal",
+          "dialogue_policy": "required",
+          "forbidden_behaviors": [
+            "带男主去禁区",
+            "提前揭晓失踪事件的事故真相；可以说明本幕旧熊和车票的来历，但不补写尚未查到的档案内容",
+            "把旧熊或车票断言为列车长留给我的遗物、礼物或唯一念想；不得以气味、直觉或未有依据的往事确认物主，可以表达联想与思念，归属保持未知。不得给出票面的具体日期、目的地站名、班次或编号，也不得用“带某个字”的办法让玩家读出站名。"
+          ],
+          "memory_state": "available",
+          "persona_scope": "full",
+          "self_reference_mode": "persona_allowed"
+        },
+        "catgirl_situation": "女主已从旧箱取出泰迪熊并抽出夹在口袋里的旧车票，票面被水渍与磨损盖住、日期和目的地都无法辨认；熊仍在她掌中，故事尚待说明。",
+        "character_state": {
+          "catgirl_state": "女主已取出泰迪熊并抽出夹在口袋里的旧车票，票面日期与目的地都无法辨认；熊仍在她掌中；她刚向到来的玩家问好，物件故事尚待说明。",
+          "continuity_from_previous": [
+            "男主已入职并表现出善意"
+          ],
+          "environment_state": "环境为午后失物室里，当前只处理旧熊及其车票这批物件，其他纸箱保持原处。",
+          "player_state": "男主已来到失物室，尚未提出本批物件的处理方案；取物、询问与归档由实际输入决定。",
+          "scene_boundaries": [
+            "不得让女主突然改变立场",
+            "不得让男主强行闯入禁区"
+          ]
+        },
+        "fixed_narrations": [
+          {
+            "id": "ticket_illegible",
+            "text": "旧车票的纸面泛黄起皱，被水渍和磨损盖住了：票面上没有可辨认的文字、日期或目的地，只剩一团模糊的墨痕。",
+            "trigger": {
+              "type": "entry"
+            },
+            "after": [],
+            "required_before_exit": true
+          }
+        ],
+        "goals": [
+          {
+            "delivery": {
+              "output_field": "scene_update",
+              "source_ids": [
+                "opening.mainline_02"
+              ],
+              "timing": "opening",
+              "type": "environment_fact"
+            },
+            "description": "展示午后车站的宁静与陈旧感",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_02_goal_01",
+            "owner": "environment"
+          },
+          {
+            "delivery": {
+              "output_field": "performance_dialogue",
+              "source_ids": [
+                "goal.mainline_02_goal_01"
+              ],
+              "state_effects": {
+                "dialogue_policy": "required"
+              },
+              "timing": "turn",
+              "type": "catgirl_dialogue"
+            },
+            "description": "女主解释泰迪熊和车票的故事",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_02_goal_02",
+            "owner": "catgirl"
+          },
+          {
+            "delivery": {
+              "output_field": "player_input",
+              "source_ids": [
+                "runtime.player_input"
+              ],
+              "timing": "turn",
+              "type": "player_action"
+            },
+            "description": "男主倾听并提出合理的处理建议",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_02_goal_03",
+            "owner": "player"
+          },
+          {
+            "delivery": {
+              "output_field": "shared",
+              "source_ids": [
+                "goal.mainline_02_goal_03"
+              ],
+              "timing": "turn",
+              "type": "shared_agreement"
+            },
+            "description": "两人就如何处理该物品达成一致",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_02_goal_04",
+            "owner": "shared"
+          }
+        ],
+        "must_not_happen": [
+          "不使用突然失忆",
+          "不让玩家被强制替代做决定",
+          "不使用无铺垫死亡",
+          "不得让女主突然改变立场",
+          "不得让男主强行闯入禁区",
+          "不得补写票面上的文字、日期、目的地站名或列车班次，也不得编造墨迹遇光、遇水后消失或恢复之类的机制"
+        ],
+        "opening_scene": "午后阳光穿过失物室的窗子。女主从今天待归档的旧箱里取出褪色泰迪熊，拨开口袋抽出一张旧车票，票面被水渍与磨损盖住；熊仍在她掌中。她抬头招呼：“下午好，今天先看看这只熊和它的车票。”",
+        "relationship_ceiling": "cooperative",
+        "summary": "女主说明旧熊和车票来自失物室中多年未认领的旧箱，她保留这些物件，是因为它们让她想到十年前失联的列车长——照顾过她的亲人。车票纸面泛黄，票面上没有可辨认的文字、日期或目的地；不给出具体月日、站名、班次或编号。车票不能证明熊的主人、列车长当晚的经历或猫娘的旧身份。列车长是照顾她长大的亲人，本幕要向玩家交代这层关系；不编造他的名字、外号或新的身世。玩家对存放、保留原处或登记提出实际建议，她据此回应；两人就这两件物品的处理达成一致，即可结束这次整理。她提到停运前要核对旧列车记录，再邀请玩家一起去档案室，不强制归档，不添加其他票据或调查任务。",
+        "transition_goal": "两人已就旧熊和车票的处理达成一致，女主已提到停运前要核对旧列车记录，可邀请一起去档案室。玩家明确接受去档案室查记录，或主动发起这一已公开安排后离幕；只答应整理、休息或喝茶不算接受查档，不重复索要已经达成的一致。",
+        "narrative_focus": "先说明旧熊和车票来自多年未认领的旧箱；车票纸面泛黄，票面上没有可辨认的文字、日期或目的地，不给出具体月日、站名或班次。再说清自己想到的是十年前失联的列车长——照顾自己长大的亲人，这是本幕第一次向玩家交代这层关系。车票不能证明熊的主人，归属保持未知。回应玩家对两件物品的处理建议后，邀请一起去档案室核对旧记录；不追加其他物件的整理或调查。"
+      },
+      "type": "scene"
+    },
+    {
+      "chapter": "迷雾中的猫眼灯",
+      "id": "mainline_03",
+      "min_turns": 4,
+      "recommended_turns": 6,
+      "route_gates": [
+        {
+          "conditions": {
+            "all": [
+              {
+                "metric": "affection",
+                "op": "<",
+                "type": "metric_compare",
+                "value": 30
+              }
+            ]
+          },
+          "id": "route_mainline_03_04",
+          "priority": 100,
+          "target_node_id": "mainline_04",
+          "transition_contract": {
+            "accept_input": "好，末班车走后就出发去旧站台。",
+            "bridge_scene_narration": "等到已经约定的末班车离站，站内人声散去，来到旧站台。",
+            "fallback_offer": "今晚最后一班车离站后，我们一起去旧站台看看猫灯指向哪里。",
+            "must_deliver": [
+              "等到已经约定的末班车离站，站内人声散去，来到旧站台。"
+            ],
+            "must_preserve": [
+              "男主知晓信号灯的存在",
+              "两人约定夜间行动",
+              "关键道具“猫形信号灯”[cat_signal_lamp]：用途为指引真相的关键道具，只在特定条件亮起；当前归属为双方共同；状态为被女主展示给男主，仍未亮起。",
+              "女主展示了信号灯并约定今晚观察"
+            ],
+            "reason": "十月十四日K404记录的遮盖和猫灯传说已经说明。女主据此提出：今晚最后一班车离站后，一起去旧站台看看猫灯指向哪里。玩家明确接受这一具体安排，或主动要求执行已公开的同一安排时离幕；询问、考虑或准备不算接受。",
+            "source_ids": [
+              "goal.mainline_03_goal_03"
+            ],
+            "tone": "温柔悬疑、生活流、微奇幻、怀旧、治愈"
+          }
+        },
+        {
+          "conditions": {
+            "all": [
+              {
+                "metric": "affection",
+                "op": ">=",
+                "type": "metric_compare",
+                "value": 30
+              }
+            ]
+          },
+          "id": "route_branch_fb3f95e6cc",
+          "priority": 200,
+          "target_node_id": "node_branch_d4a8efdff1",
+          "transition_contract": {
+            "accept_input": "同意，末班车后去旧站台查看。",
+            "bridge_scene_narration": "约定的末班车离站后，两人抵达夜雾中的旧站台。",
+            "fallback_offer": "今晚最后一班车离站后，我们一起去旧站台看看猫灯指向哪里。",
+            "must_deliver": [
+              "约定的末班车离站后，抵达同一旧站台；异常列车尚未在来源幕出现。"
+            ],
+            "must_preserve": [
+              "男主知晓信号灯的存在",
+              "两人约定夜间行动",
+              "关键道具“猫形信号灯”[cat_signal_lamp]：用途为指引真相的关键道具，只在特定条件亮起；当前归属为双方共同；状态为被女主展示给男主，仍未亮起。",
+              "女主展示了信号灯并约定今晚观察",
+              "两人约定夜间观察信号灯"
+            ],
+            "reason": "K404记录的遮盖与猫灯传说已说明，旧站台是已公开的查看地点。女主据此提出：今晚最后一班车离站后，一起去旧站台看看猫灯指向哪里。玩家明确接受这一具体安排，或主动要求执行已公开的同一安排时离幕；询问、考虑或准备不算接受。",
+            "source_ids": [
+              "goal.mainline_03_goal_03"
+            ],
+            "tone": "温柔悬疑、生活流、微奇幻、怀旧、治愈"
+          }
+        }
+      ],
+      "story_beat": {
+        "acting_contract": {
+          "allowed_behaviors": [
+            "展示信号灯",
+            "解释基本规则"
+          ],
+          "assertable_self_facts": [
+            "原记录可读部分仅为10月14日、K404、异常，其余被涂黑，原因未知",
+            "列车长十年前没有回来，我还想知道他当晚去了哪里",
+            "猫灯的指引仍是待验证的传说"
+          ],
+          "cognition_state": "normal",
+          "dialogue_policy": "optional",
+          "forbidden_behaviors": [
+            "强迫玩家接受观察邀请；可以现在商定稍后的行动，不要求逐轮等待到约定时刻才提出邀请",
+            "表现出绝望",
+            "把猜测写成官方调度结论、整列车失踪、上级强行涂黑或目击证言；未有这些证据，不补造。",
+            "新增档案检索制度、查阅权限、申请单、调度室审批或可用的新卷宗作为离幕前任务；现有材料已足够商定观察。"
+          ],
+          "memory_state": "available",
+          "persona_scope": "full",
+          "self_reference_mode": "persona_allowed"
+        },
+        "catgirl_situation": "女主已摊开K404旧记录、握着未亮的猫灯；入幕原文已说明传说并提出今晚观察，遮盖原因仍未知，她只承接玩家的真实回应。",
+        "character_state": {
+          "catgirl_state": "女主已摊开K404旧记录、握着未亮的猫灯；入幕原文已说明传说并提出今晚观察，遮盖原因仍未知，她只承接玩家的真实回应。",
+          "continuity_from_previous": [
+            "当前这批失物的处理已得到实际回应，两人已同意到档案室核对旧列车记录。"
+          ],
+          "environment_state": "环境为傍晚档案室，桌上是女主摊开的旧记录，猫形信号灯仍在她手中且未亮。",
+          "player_state": "男主按已接受的安排来到档案室，记录已在桌上；尚未询问条目或获得额外剪报。",
+          "scene_boundaries": [
+            "不得让信号灯在非特定时间亮起",
+            "不得让男主独自解读所有线索"
+          ]
+        },
+        "goals": [
+          {
+            "delivery": {
+              "output_field": "player_input",
+              "source_ids": [
+                "runtime.player_input"
+              ],
+              "state_effects": {
+                "dialogue_policy": "required"
+              },
+              "timing": "turn",
+              "type": "player_action"
+            },
+            "description": "男主自由回应已展示的记录和猫灯传说，可以追问、反对或商量观察安排，不要求重复拿出或解读同一记录。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_03_goal_01",
+            "owner": "player"
+          },
+          {
+            "delivery": {
+              "output_field": "performance_dialogue",
+              "source_ids": [
+                "goal.mainline_03_goal_01"
+              ],
+              "state_effects": {
+                "dialogue_policy": "required"
+              },
+              "timing": "turn",
+              "type": "catgirl_dialogue"
+            },
+            "description": "女主承接已展示的猫灯传说和可读记录，回应玩家疑问，不重复取灯、读记录或编造涂黑原因。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_03_goal_02",
+            "owner": "catgirl"
+          },
+          {
+            "delivery": {
+              "output_field": "shared",
+              "source_ids": [
+                "goal.mainline_03_goal_02"
+              ],
+              "timing": "turn",
+              "type": "shared_agreement"
+            },
+            "description": "两人约定今晚一起观察信号灯",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_03_goal_03",
+            "owner": "shared"
+          }
+        ],
+        "must_not_happen": [
+          "不使用突然失忆",
+          "不让玩家被强制替代做决定",
+          "不使用无铺垫死亡",
+          "不得让信号灯在非特定时间亮起",
+          "不得让男主独自解读所有线索"
+        ],
+        "opening_scene": "档案室的灰尘在斜光中缓慢飘动，高窗把傍晚的光切成几道斜带，桌面上摊着一份边角起皱的旧记录。",
+        "relationship_ceiling": "cooperative",
+        "summary": "桌上原记录只清楚写着“10月14日，K404次列车……异常……”，其余被涂黑，涂黑者与原因未知；它不证明整列车失踪、阴谋或有人销毁证据。女主只知道照顾过自己的列车长十年前没有回来，猫灯传说称末班车离站后可在旧站台观察绿光所指方向。可读记录、被涂黑部分与猫灯传说由入幕原文一次交付，邀请也在其中；她只承接玩家的真实反应，商定安排即可，不在档案室等待或试亮。",
+        "transition_goal": "K404记录疑点与猫灯传说已经说明，玩家已经得到回应。女主据本轮提供的当前可用出口，说明对应的具体时间、地点和下一步安排；只提出这项安排，不并列其他路线的去向，也不提前交付抵达后的事件。玩家明确接受或主动要求执行已公开安排后离幕；已处理的事情不追加任务。",
+        "narrative_focus": "入幕原文已交付可读记录、被涂黑部分与猫灯传说，并已提出今晚末班车后去旧站台的邀请。本幕只承接玩家对记录、传说或邀请的真实回应：接受、暂缓、追问或反对都按原话回应；不重读记录、不重讲传说、不重复同一邀请，时间由正式转场经过。",
+        "fixed_narrations": [
+          {
+            "id": "lamp_legend",
+            "text": "档案室的灰尘在斜光中缓慢飘动，高窗把傍晚的光切成几道斜带，桌面上摊着一份边角起皱的旧记录。摊开的旧记录只能读清“10月14日，K404次列车……异常……”，其余被墨迹遮盖，涂黑者与原因未知。这些字不能证明整列车失踪。{{catgirl_name}}举起手中未亮的猫形信号灯：“传说末班车离站后，在旧站台能看到这盏灯的绿光指向哪里。今晚一起去旧站台看看，等末班车开走再出发，好吗？”",
+            "trigger": {
+              "type": "entry"
+            },
+            "after": [],
+            "required_before_exit": true
+          }
+        ]
+      },
+      "type": "scene",
+      "completion_contract": {
+        "all": [
+          {
+            "fixed_narration_id": "lamp_legend"
+          }
+        ]
+      }
+    },
+    {
+      "chapter": "末班车后的绿光",
+      "id": "mainline_04",
+      "min_turns": 4,
+      "recommended_turns": 6,
+      "route_gates": [
+        {
+          "conditions": {
+            "all": []
+          },
+          "id": "route_mainline_04_05",
+          "priority": 100,
+          "target_node_id": "mainline_05",
+          "transition_contract": {
+            "accept_input": "走吧，拿着灯去信号小屋。",
+            "bridge_scene_narration": "两人沿站台旁的步道走向旧信号小屋，猫灯的光映在脚边。",
+            "fallback_offer": "现在带着猫灯，沿站台旁步道一起去旧信号小屋。",
+            "must_deliver": [
+              "沿已公开的站旁步道接近信号小屋，猫灯亮色保持刚才状态。"
+            ],
+            "must_preserve": [
+              "信号灯已亮起",
+              "两人正处于废弃站台",
+              "关键道具“猫形信号灯”[cat_signal_lamp]：用途为指引真相的关键道具，只在特定条件亮起；当前归属为现场；状态为在废弃站台尽头亮起，发出微弱绿光。",
+              "两人跟随灯光找到了信号房"
+            ],
+            "reason": "猫灯的绿光已指向旧信号小屋，站台到小屋的步道可见。女主据此提出：现在带着猫灯，沿站台旁步道一起去旧信号小屋。玩家明确接受这一具体安排，或主动要求执行已公开的同一安排时离幕；询问、考虑或准备不算接受。",
+            "source_ids": [
+              "goal.mainline_04_goal_04"
+            ],
+            "tone": "温柔悬疑、生活流、微奇幻、怀旧、治愈"
+          }
+        }
+      ],
+      "story_beat": {
+        "acting_contract": {
+          "allowed_behaviors": [
+            "寻求安全感",
+            "指出光的方向"
+          ],
+          "assertable_self_facts": [
+            "灯亮了",
+            "他在身边"
+          ],
+          "cognition_state": "normal",
+          "dialogue_policy": "required",
+          "forbidden_behaviors": [
+            "独自跑开",
+            "陷入恐慌失能",
+            "补造十年前的目击者、灯光出现的旧证言或事故地点；目前只知道眼前绿光指向小屋步道。"
+          ],
+          "memory_state": "available",
+          "persona_scope": "full",
+          "self_reference_mode": "persona_allowed"
+        },
+        "catgirl_situation": "女主持着已经亮绿的猫形信号灯，紧张地望向通往信号小屋的步道；没有被预写抓住玩家。",
+        "character_state": {
+          "catgirl_state": "女主持着已经亮绿的猫形信号灯，紧张地望向通往信号小屋的步道；没有被预写抓住玩家。",
+          "continuity_from_previous": [
+            "女主展示了信号灯并约定今晚观察"
+          ],
+          "environment_state": "环境为旧站台夜雾未散，猫灯绿光照出通往信号小屋的步道；列车调查若已发生，其结果继续保留。",
+          "player_state": "男主已来到或从列车返回同一旧站台；手电与已获取资料只按历史归属，不预写新的安抚或记录。",
+          "scene_boundaries": [
+            "不得让女主脱离男主视线",
+            "不得出现实体怪物攻击"
+          ]
+        },
+        "goals": [
+          {
+            "delivery": {
+              "output_field": "scene_update",
+              "source_ids": [
+                "opening.mainline_04"
+              ],
+              "timing": "opening",
+              "type": "environment_fact"
+            },
+            "description": "承接当前绿灯照明与旧站台夜雾；已经亮过的猫灯不再熄灭后首次亮起。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_04_goal_01",
+            "owner": "environment"
+          },
+          {
+            "delivery": {
+              "output_field": "performance_action",
+              "source_ids": [
+                "opening.mainline_04"
+              ],
+              "timing": "turn",
+              "type": "catgirl_action"
+            },
+            "description": "女主因紧张抓住男主衣袖",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_04_goal_02",
+            "owner": "catgirl"
+          },
+          {
+            "delivery": {
+              "output_field": "player_input",
+              "source_ids": [
+                "runtime.player_input"
+              ],
+              "timing": "turn",
+              "type": "player_action"
+            },
+            "description": "男主安抚女主并确认前进方向",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_04_goal_03",
+            "owner": "player"
+          },
+          {
+            "delivery": {
+              "output_field": "shared",
+              "source_ids": [
+                "goal.mainline_04_goal_03"
+              ],
+              "timing": "turn",
+              "type": "shared_agreement"
+            },
+            "description": "两人决定跟随灯光前行",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_04_goal_04",
+            "owner": "shared"
+          }
+        ],
+        "must_not_happen": [
+          "不使用突然失忆",
+          "不让玩家被强制替代做决定",
+          "不使用无铺垫死亡",
+          "不得让女主脱离男主视线",
+          "不得出现实体怪物攻击"
+        ],
+        "opening_scene": "旧站台沉在夜雾中，猫形信号灯的幽绿光芒照出站旁通往旧信号小屋的步道。女主握着灯的底座，衣袖在雾里微微颤动，灯光沿着步道向前铺开。",
+        "relationship_ceiling": "trusted",
+        "summary": "旧站台夜雾未散，已亮绿的猫灯指向信号小屋。若此前已调查列车，承接查明的线索与当前灯色；双方确认步道方向后前往小屋。玩家如何安抚或是否牵手由实际输入决定，不以特定亲密动作作为离幕要求。 绿灯与步道是眼前观察，不补写十年前谁曾在此看见灯光，也不由灯光推定事故现场或失联原因。",
+        "transition_goal": "猫灯的绿光已指向旧信号小屋，站台到小屋的步道可见时，可提出“现在带着猫灯，沿站台旁步道一起去旧信号小屋”这一安排。玩家接受或主动发起已经公开的安排后承接转场；已经完成的当前工作不追加新任务。",
+        "narrative_focus": "绿灯已照出通往旧信号小屋的地面步道。若此前查过地图，先回应维修井就在小屋外、只是定位标记，再邀请沿步道去小屋，不把旧线索悄悄丢掉。屋内的日记与怀表留到入屋后交付，不新增暗格、备用钥匙或下井搜索作为抵达条件。"
+      },
+      "type": "scene"
+    },
+    {
+      "chapter": "信号房里的真相",
+      "id": "mainline_05",
+      "min_turns": 4,
+      "recommended_turns": 6,
+      "route_gates": [
+        {
+          "conditions": {
+            "all": [
+              {
+                "type": "fact_equals",
+                "key": "scene:mainline_05:truth_shared",
+                "value": true
+              }
+            ]
+          },
+          "id": "route_mainline_05_06",
+          "priority": 100,
+          "target_node_id": "mainline_06",
+          "transition_contract": {
+            "accept_input": "好的，把找到的日记和怀表带回站房安放。",
+            "bridge_scene_narration": "两人沿原路离开信号小屋，夜雾渐散，天色转亮。",
+            "fallback_offer": "天亮前带着找到的日记与怀表沿原路回站房，先把它们安放好。",
+            "must_deliver": [
+              "沿原路离开信号小屋，天色转亮；日记与怀表由谁保管只承接实际拿取与交接，物主仍未确认。"
+            ],
+            "must_preserve": [
+              "日记与旧值班记录已经核对，女主理解失联不等于抛弃；不补造未记载的死亡经过。",
+              "旧怀表来自信号房桌上；实际由谁保管只承接游玩记录。"
+            ],
+            "reason": "最后一页值班记录已读明，女主已回应列车长返回救援的事实。女主据此提出：天亮前带着找到的日记与怀表沿原路回站房，先把它们安放好。玩家明确接受这一具体安排，或主动要求执行已公开的同一安排时离幕；询问、考虑或准备不算接受。",
+            "source_ids": [
+              "goal.mainline_05_goal_04"
+            ],
+            "tone": "温柔悬疑、生活流、微奇幻、怀旧、治愈",
+            "fixed_entry_only": true
+          }
+        }
+      ],
+      "story_beat": {
+        "acting_contract": {
+          "allowed_behaviors": [
+            "宣泄情绪",
+            "讲述完整故事"
+          ],
+          "assertable_self_facts": [
+            "我已看到日记末页关于返回故障车厢救援的最后记录，此后没有续页",
+            "怀表具体停摆时刻、原因和编号都未有记录；表壳磨损不证明归属、佩戴或随身习惯",
+            "旧怀表和日记刚在信号房桌上发现，未有独立证据确认表主；它不是此前保管在失物室柜中的旧藏品。"
+          ],
+          "cognition_state": "normal",
+          "dialogue_policy": "required",
+          "forbidden_behaviors": [
+            "拒绝面对现实",
+            "指责男主",
+            "补造怀表刻字、编号、登记匹配或其他新证据来确认身份；不得用磨损、停摆时刻或外观推断表主、佩戴习惯或与列车长的关系。现有依据来自日记，不是新的物证鉴定。"
+          ],
+          "memory_state": "available",
+          "persona_scope": "full",
+          "self_reference_mode": "persona_allowed"
+        },
+        "catgirl_situation": "女主已看到桌上摊开的日记最后记录，明白列车长曾返回救援，但仍不知道他之后的下落；悲伤与释然留待实际回应。",
+        "character_state": {
+          "catgirl_state": "女主已看到桌上摊开的日记最后记录，明白列车长曾返回救援，但仍不知道他之后的下落；悲伤与释然留待实际回应。",
+          "continuity_from_previous": [
+            "两人跟随灯光找到了信号房"
+          ],
+          "environment_state": "环境为旧站台尽头的信号房，灰尘密布，有一张旧桌子和一把椅子。",
+          "player_state": "男主已随同行安排抵达信号房；是否翻阅证据、如何回应女主和是否接触只承接实际输入。",
+          "scene_boundaries": [
+            "不得让女主陷入疯狂",
+            "不得让男主轻视她的痛苦"
+          ]
+        },
+        "goals": [
+          {
+            "delivery": {
+              "output_field": "scene_update",
+              "source_ids": [
+                "opening.mainline_05"
+              ],
+              "timing": "opening",
+              "type": "environment_fact"
+            },
+            "description": "展示信号房内找到的日记与怀表",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_05_goal_01",
+            "owner": "environment"
+          },
+          {
+            "delivery": {
+              "output_field": "performance_action",
+              "source_ids": [
+                "goal.mainline_05_goal_01"
+              ],
+              "state_effects": {
+                "dialogue_policy": "required"
+              },
+              "timing": "turn",
+              "type": "catgirl_action"
+            },
+            "description": "女主承接已展示的日记最后记录，理解返程救援未记入旧撤离名单，回应失联并非抛弃带来的悲伤与释然，不补写未经证实的死亡现场。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_05_goal_02",
+            "owner": "catgirl"
+          },
+          {
+            "delivery": {
+              "output_field": "player_input",
+              "source_ids": [
+                "runtime.player_input"
+              ],
+              "timing": "turn",
+              "type": "player_action"
+            },
+            "description": "男主陪伴并安慰女主",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_05_goal_03",
+            "owner": "player"
+          },
+          {
+            "delivery": {
+              "output_field": "performance_dialogue",
+              "source_ids": [
+                "goal.mainline_05_goal_03"
+              ],
+              "timing": "turn",
+              "type": "catgirl_dialogue"
+            },
+            "description": "女主表达释然和对男主的感谢",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_05_goal_04",
+            "owner": "catgirl"
+          }
+        ],
+        "must_not_happen": [
+          "不使用突然失忆",
+          "不让玩家被强制替代做决定",
+          "不使用无铺垫死亡",
+          "不得让女主陷入疯狂",
+          "不得让男主轻视她的痛苦"
+        ],
+        "opening_scene": "信号房的门开着，尘封的空气带着潮湿纸页的气味。昏暗光线里，桌上的日记摊在最后一页，旁边是一块停摆的怀表。女主停在桌前，目光落在已经可读的末页，指尖轻轻发颤。",
+        "relationship_ceiling": "trusted",
+        "summary": "两人在信号房发现旧怀表与日记。日记的最后一条记录写明列车长当晚返回故障车厢疏散滞留乘客，此后再无续页；值班记录沿用的只是撤离名单，没有把返程救援写入。女主终于理解失联不是被抛弃，但不能把未记录的死亡经过编成亲眼所见。她可以悲伤，也能在玩家实际回应后逐渐释然。 怀表停摆的具体时刻与原因未记载，不把它推定成事故发生时刻；表主与佩戴经历保持未知，磨损不构成归属证据。",
+        "transition_goal": "最后一页值班记录已读明，女主已回应列车长返回救援的事实时，可提出“天亮前带着找到的日记与怀表沿原路回站房，先把它们安放好”这一安排。玩家接受或主动发起已经公开的安排后承接转场；已经完成的当前工作不追加新任务。",
+        "narrative_focus": "承接程序已经展示的日记最后记录，回应列车长返回救援、失联不等于抛弃的意义，不再要求玩家揭示或朗读未知正文。怀表主人与佩戴经历保持未知，不以磨损或停摆时刻推断。保留悲伤与下落未明，回应玩家后邀请把找到的日记与怀表带回站房；不新增物证鉴定或调查任务。",
+        "fixed_narrations": [
+          {
+            "id": "last_diary_entry",
+            "text": "日记最后一条写着：列车长当晚没有随首批人员撤离，而是返回故障车厢，疏散滞留乘客。记录到此中断，后面没有续页。旧值班记录只留下撤离名单，没有记下这次返程救援；这些文字没有交代列车长此后的下落。",
+            "trigger": {
+              "type": "entry"
+            },
+            "after": [],
+            "required_before_exit": true
+          }
+        ]
+      },
+      "type": "scene",
+      "completion_contract": {
+        "all": [
+          {
+            "fixed_narration_id": "last_diary_entry"
+          }
+        ]
+      }
+    },
+    {
+      "chapter": "晨曦中的新起点",
+      "id": "mainline_06",
+      "min_turns": 4,
+      "recommended_turns": 6,
+      "route_gates": [
+        {
+          "conditions": {
+            "all": []
+          },
+          "id": "route_to_ending_normal",
+          "priority": 100,
+          "target_node_id": "ending_normal",
+          "transition_contract": {
+            "bridge_scene_narration": "时光流转，车站迎来了它的重生。曾经的阴霾已散去，取而代之的是充满希望的日常。",
+            "must_deliver": [
+              "时光流转，车站迎来了它的重生。曾经的阴霾已散去，取而代之的是充满希望的日常。"
+            ],
+            "must_preserve": [
+              "双方实际商定的车站用途；关系程度只承接已表达的选择。",
+              "旧怀表与日记被妥善保存，猫形信号灯已不再发光。"
+            ],
+            "reason": "改造方向已经共同商定，女主作出直接回应后自然收束。结局以一年后的车站展示该安排的结果，不追加新的承诺或邀请。",
+            "source_ids": [
+              "goal.mainline_06_goal_04"
+            ],
+            "tone": "温柔悬疑、生活流、微奇幻、怀旧、治愈"
+          }
+        }
+      ],
+      "story_beat": {
+        "acting_contract": {
+          "allowed_behaviors": [
+            "表达爱意",
+            "规划未来",
+            "肢体亲近"
+          ],
+          "assertable_self_facts": [
+            "我要留下来",
+            "我们要一起改变这里",
+            "我们只知道列车长曾返程救援，之后仍然失踪、下落未明；纪念他的行动不等于确认死亡或已经归来。"
+          ],
+          "cognition_state": "normal",
+          "dialogue_policy": "optional",
+          "forbidden_behaviors": [
+            "犹豫不决",
+            "逃避责任"
+          ],
+          "memory_state": "available",
+          "persona_scope": "full",
+          "self_reference_mode": "persona_allowed"
+        },
+        "catgirl_situation": "女主已提出把这里改成纪念与互助的空间，正等玩家的真实回应；没有从玩家手中取走或摆放找到的日记与怀表，两者的物主仍未确认。",
+        "character_state": {
+          "catgirl_state": "女主已提出把这里改成纪念与互助的空间，正等玩家的真实回应；没有从玩家手中取走或摆放找到的日记与怀表，两者的物主仍未确认。",
+          "continuity_from_previous": [
+            "日记公开列车长返程救援，此后的下落仍未知；女主不再把失联等同于抛弃。"
+          ],
+          "environment_state": "环境为清晨的失物招领室，阳光明亮，空气清新的，充满希望的氛围。",
+          "player_state": "男主已返回车站；是否支持改造、采用何种方案与关系回应等待实际输入。",
+          "scene_boundaries": [
+            "不得让结局变得悲剧",
+            "不得让两人分开"
+          ]
+        },
+        "goals": [
+          {
+            "delivery": {
+              "output_field": "performance_dialogue",
+              "source_ids": [
+                "opening.mainline_06"
+              ],
+              "state_effects": {
+                "dialogue_policy": "required"
+              },
+              "timing": "opening",
+              "type": "catgirl_dialogue"
+            },
+            "description": "女主提出改造车站的构想",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_06_goal_01",
+            "owner": "catgirl"
+          },
+          {
+            "delivery": {
+              "output_field": "player_input",
+              "source_ids": [
+                "runtime.player_input"
+              ],
+              "timing": "turn",
+              "type": "player_action"
+            },
+            "description": "男主表示支持并提出建议",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_06_goal_02",
+            "owner": "player"
+          },
+          {
+            "delivery": {
+              "output_field": "shared",
+              "source_ids": [
+                "goal.mainline_06_goal_02"
+              ],
+              "timing": "turn",
+              "type": "shared_agreement"
+            },
+            "description": "两人确认共同守护车站的决定",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_06_goal_03",
+            "owner": "shared"
+          },
+          {
+            "delivery": {
+              "output_field": "performance_action",
+              "source_ids": [
+                "goal.mainline_06_goal_03"
+              ],
+              "timing": "turn",
+              "type": "catgirl_action"
+            },
+            "description": "女主回应双方实际商定的改造方向，表达感谢与期待；亲密接触只在已有关系和当轮许可范围内发生，不作为收束必需条件。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_06_goal_04",
+            "owner": "catgirl"
+          }
+        ],
+        "must_not_happen": [
+          "不使用突然失忆",
+          "不让玩家被强制替代做决定",
+          "不使用无铺垫死亡",
+          "不得让结局变得悲剧",
+          "不得让两人分开"
+        ],
+        "opening_scene": "第一缕阳光照亮失物招领室的柜台，雾气渐散；柜台旁留出一块干燥的陈列位置。",
+        "relationship_ceiling": "intimate",
+        "summary": "清晨，两人带着已经找到的日记与怀表返回失物招领室，是否已经摆放以实际历史为准。女主提出将这里改为纪念与互助空间，玩家决定是否支持、留下或提出替代安排。两人商定用途并回应彼此的选择，就是本幕的完整结果；具体采购、锯木、装修与布展留在结局时间跳跃中，不逐项派活，也不要求施工完成才收束。女主表达感谢与期待，不预设玩家的心意、承诺或恋爱关系。",
+        "transition_goal": "玩家已对改造构想表达实际立场或建议，女主已回应双方商定的安排，即可自然收束；真实分歧仍需回应。无需再完成找材料、施工、布展或交接任务，不追加新邀请或等待玩家说结束。",
+        "narrative_focus": "回应玩家对车站改造的实际立场和建议，商定纪念与互助空间的用途即可收束。玩家主动提出清理或维修时，认可其帮助并说明如何服务已商定用途；具体工作由结局时间跳跃承接，不派新活，也不要求先修灯才讨论计划。",
+        "fixed_narrations": [
+          {
+            "id": "memorial_proposal",
+            "text": "第一缕阳光照亮失物招领室的柜台，雾气渐散；柜台旁留出一块干燥的陈列位置。{{catgirl_name}}指向柜台预留的空位：“我想把这里变成纪念与互助的空间，一边陈列列车长的故事和已经找回的物件，一边帮助旅客寻找失物、留下求助信息。你愿意一起把它做成这样吗？”",
+            "trigger": {
+              "type": "entry"
+            },
+            "after": [],
+            "required_before_exit": true
+          }
+        ]
+      },
+      "type": "scene"
+    },
+    {
+      "chapter": "雾散后的守望者",
+      "ending_id": "ending_normal",
+      "id": "ending_normal",
+      "route_gates": [],
+      "story_beat": {
+        "acting_contract": {
+          "allowed_behaviors": [],
+          "cognition_state": "normal",
+          "dialogue_policy": "required",
+          "forbidden_behaviors": [],
+          "memory_state": "available",
+          "persona_scope": "full",
+          "self_reference_mode": "persona_allowed"
+        },
+        "catgirl_situation": "女主在修缮后的候车室照看旅客，神情舒展，保留对旧人的怀念。",
+        "character_state": {
+          "catgirl_state": "女主在修缮后的候车室照看旅客，神情舒展，保留对旧人的怀念。",
+          "continuity_from_previous": [
+            "两人决定共同守护车站的新用途"
+          ],
+          "environment_state": "环境为一年后的雨夜，修缮后的候车室亮着暖灯，柜台上摞着旅客留下的感谢信。女主端来两杯热可可，将其中一杯放在熟悉的位置；展示柜里的旧怀表和日记被妥善保存，窗外的站台灯映着雨丝。",
+          "player_state": "男主的行动、去留和关系只承接进入结局前已经提交的实际选择；此处不新增决定。",
+          "scene_boundaries": [
+            "不得推翻共同决定的事实",
+            "不得引入新的外部冲突"
+          ]
+        },
+        "goals": [
+          {
+            "delivery": {
+              "output_field": "scene_update",
+              "source_ids": [
+                "opening.ending_normal"
+              ],
+              "timing": "opening",
+              "type": "environment_fact"
+            },
+            "description": "结局开场展示的结果：一年后的雨夜，修缮后的候车室亮着暖灯，柜台上摞着旅客留下的感谢信。女主端来两杯热可可，将其中一杯放在熟悉的位置；展示柜里的旧怀表和日记被妥善保存，窗外的站台灯映着雨丝。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "ending_normal_goal_01",
+            "owner": "environment"
+          }
+        ],
+        "must_not_happen": [
+          "不使用突然失忆",
+          "不让玩家被强制替代做决定",
+          "不使用无铺垫死亡",
+          "不得推翻共同决定的事实",
+          "不得引入新的外部冲突"
+        ],
+        "opening_scene": "一年后的雨夜，修缮后的候车室亮着暖灯，柜台上摞着旅客留下的感谢信。女主端来两杯热可可，将其中一杯放在熟悉的位置；展示柜里的旧怀表和日记被妥善保存，窗外的站台灯映着雨丝。",
+        "relationship_ceiling": "intimate",
+        "summary": "按照先前共同守护车站的决定，旧站逐渐成为失物招领、历史展览与旅客休憩的空间。女主把等待变成了照顾来往旅人的日常。对过去的纪念留在柜台上，今后的生活不再需要靠一个永远不会到来的班次证明意义。",
+        "transition_goal": "温柔悬疑、生活流、微奇幻、怀旧、治愈"
+      },
+      "terminal": true,
+      "type": "ending"
+    },
+    {
+      "chapter": "迷雾中的临时列车",
+      "id": "node_branch_d4a8efdff1",
+      "min_turns": 4,
+      "recommended_turns": 6,
+      "route_gates": [
+        {
+          "conditions": {
+            "all": []
+          },
+          "id": "route_branch_796f98f343",
+          "priority": 100,
+          "target_node_id": "node_branch_f791e9bb41",
+          "transition_contract": {
+            "accept_input": "上去看看车内的记录。",
+            "fallback_offer": "一起登上这节已经停稳的车厢，去车内查看当晚留下的记录。",
+            "must_deliver": [],
+            "must_preserve": [
+              "玩家独自探路时已成立的位置与记录继续有效；女主是否已登车依实际历史承接，不让已在车内的人重新登车。",
+              "猫形信号灯的持有人和灯色沿实际演出保持。"
+            ],
+            "reason": "旧列车已在面前停稳、车门打开，女主确认车身属于封存的K404。女主据此提出：一起登上这节已经停稳的车厢，去车内查看当晚留下的记录。玩家明确接受这一具体安排，或主动要求执行已公开的同一安排时离幕；询问、考虑或准备不算接受。",
+            "source_ids": [
+              "goal.node_branch_d4a8efdff1_goal_04"
+            ],
+            "tone": "静谧、诡异、怀旧"
+          }
+        }
+      ],
+      "story_beat": {
+        "acting_contract": {
+          "allowed_behaviors": [
+            "寻求安全感",
+            "指出光的方向"
+          ],
+          "assertable_self_facts": [
+            "灯亮了",
+            "他在身边",
+            "车来了"
+          ],
+          "cognition_state": "normal",
+          "dialogue_policy": "required",
+          "forbidden_behaviors": [
+            "独自跑开",
+            "陷入恐慌失能",
+            "在两人实际同意登车前提前展开车内调度单、排班表或深处搜查；重复打开已经敞开的同一车门"
+          ],
+          "memory_state": "available",
+          "persona_scope": "full",
+          "self_reference_mode": "persona_allowed"
+        },
+        "catgirl_situation": "女主处于极度震惊与恍惚状态，身体僵硬，目光死死锁定列车，手中紧抓着男主的衣角。",
+        "character_state": {
+          "catgirl_state": "女主处于极度震惊与恍惚状态，身体僵硬，目光死死锁定列车，手中紧抓着男主的衣角。",
+          "continuity_from_previous": [
+            "两人约定夜间观察信号灯",
+            "关键道具“猫形信号灯”[cat_signal_lamp]：用途为指引真相的关键道具，只在特定条件亮起；当前归属为双方共同；状态为在废弃站台尽头亮起，发出微弱绿光。"
+          ],
+          "environment_state": "环境为深夜废弃站台，雾气浓重，一列旧式列车凭空出现，周围温度骤降。",
+          "player_state": "男主保持警惕，一手持手电一手护住女主，准备应对突发状况。",
+          "scene_boundaries": [
+            "不得让女主脱离男主视线",
+            "不得出现实体怪物攻击"
+          ]
+        },
+        "goals": [
+          {
+            "delivery": {
+              "output_field": "scene_update",
+              "source_ids": [
+                "opening.node_branch_d4a8efdff1"
+              ],
+              "state_effects": {
+                "dialogue_policy": "required"
+              },
+              "timing": "opening",
+              "type": "environment_fact"
+            },
+            "description": "描述废弃站台上突然出现的旧式列车及其违和感",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "node_branch_d4a8efdff1_goal_01",
+            "owner": "environment"
+          },
+          {
+            "delivery": {
+              "output_field": "performance_action",
+              "source_ids": [
+                "opening.node_branch_d4a8efdff1"
+              ],
+              "state_effects": {
+                "dialogue_policy": "required"
+              },
+              "timing": "turn",
+              "type": "catgirl_action"
+            },
+            "description": "女主颤抖着指向列车车窗，认出这是十年前停运的K404次车型",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "node_branch_d4a8efdff1_goal_02",
+            "owner": "catgirl"
+          },
+          {
+            "delivery": {
+              "output_field": "player_input",
+              "source_ids": [
+                "runtime.player_input"
+              ],
+              "state_effects": {
+                "dialogue_policy": "required"
+              },
+              "timing": "turn",
+              "type": "player_action"
+            },
+            "description": "男主从车门外用手电查看入口；女主根据照亮的现场确认入口无人，不要求反复照射或增加开锁、除锈任务。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "node_branch_d4a8efdff1_goal_03",
+            "owner": "player"
+          },
+          {
+            "delivery": {
+              "output_field": "shared",
+              "source_ids": [
+                "goal.node_branch_d4a8efdff1_goal_03"
+              ],
+              "timing": "turn",
+              "type": "shared_agreement"
+            },
+            "description": "两人决定登上列车查看情况",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "node_branch_d4a8efdff1_goal_04",
+            "owner": "shared"
+          }
+        ],
+        "must_not_happen": [
+          "不得让女主独自上车",
+          "不得出现怪物或敌对实体",
+          "不得在此时找到旧怀表",
+          "不得让女主脱离男主视线",
+          "不得出现实体怪物攻击"
+        ],
+        "opening_scene": "浓雾如墙，只有那盏猫形信号灯发出的幽绿光芒能穿透几米。你们深一脚浅一脚地踩在长满青苔的铁轨枕木上，四周死寂得令人心慌。突然，前方的雾气被一道昏黄的车灯光束撕裂，一阵陈旧却熟悉的蒸汽机车轰鸣声从虚无中传来。一列漆皮剥落的绿色老式列车缓缓停在你们面前，车门半开，仿佛等待了十年。",
+        "summary": "旧站台上，K404旧列车已停稳，车门半开。女主通过车身标记认出退役车型，借玩家手电从门外确认车内无人后，提出两人登车查看记录。当前幕只在车门外辨认与协商；车内时流、文件和搜查结果由登车后的下一幕交付。玩家若要求独自探路，女主承接分工，不擅自跟随，也不把独自探路写成两人已登车。",
+        "transition_goal": "已认出K404且入口无人后，女主提出一起登上眼前停稳的列车查记录。玩家明确同意两人进入才换幕；单独探路只承接当前分工。门已打开，不添加开锁和清障作为前提。"
+      },
+      "type": "scene"
+    },
+    {
+      "chapter": "停滞的时间与排班表",
+      "id": "node_branch_f791e9bb41",
+      "min_turns": 4,
+      "recommended_turns": 6,
+      "route_gates": [
+        {
+          "conditions": {
+            "all": []
+          },
+          "id": "route_branch_27952a23dc",
+          "priority": 100,
+          "target_node_id": "mainline_04",
+          "transition_contract": {
+            "accept_input": "拿好记录，回旧站台继续看。",
+            "bridge_scene_narration": "两人从停靠的列车返回旧站台，站台的雾气尚未散去。",
+            "fallback_offer": "带着实际取得的记录离开停靠列车，回到同一旧站台继续循猫灯查看。",
+            "must_deliver": [
+              "从尚未开走的列车返回同一旧站台，车内调查事实和猫灯已经发生的变化全部保留。"
+            ],
+            "must_preserve": [
+              "男主持有排班表副本和地图的记录",
+              "女主情绪平复但仍处于紧张状态",
+              "关键道具“猫形信号灯”[cat_signal_lamp]：用途为指引真相的关键道具，只在特定条件亮起；当前归属为双方共同；状态为光芒黯淡，回归平静。"
+            ],
+            "reason": "车内人员记录与站区图已经实际查明，女主已回应其中信息。女主据此提出：带着实际取得的记录离开停靠列车，回到同一旧站台继续循猫灯查看。玩家明确接受这一具体安排，或主动要求执行已公开的同一安排时离幕；询问、考虑或准备不算接受。",
+            "source_ids": [
+              "goal.node_branch_f791e9bb41_goal_04"
+            ],
+            "tone": "释然、紧迫、回归现实"
+          }
+        }
+      ],
+      "story_beat": {
+        "acting_contract": {
+          "allowed_behaviors": [
+            "寻求安全感",
+            "指出光的方向"
+          ],
+          "assertable_self_facts": [
+            "找到了线索",
+            "他在身边"
+          ],
+          "cognition_state": "normal",
+          "dialogue_policy": "required",
+          "forbidden_behaviors": [
+            "独自跑开",
+            "陷入恐慌失能"
+          ],
+          "memory_state": "available",
+          "persona_scope": "full",
+          "self_reference_mode": "persona_allowed"
+        },
+        "catgirl_situation": "女主已站到乘务员室门旁，尚未取出排班表或地图，猫灯状态承接刚才实际记录。",
+        "character_state": {
+          "catgirl_state": "女主已站到乘务员室门旁，尚未取出排班表或地图，猫灯状态承接刚才实际记录。",
+          "continuity_from_previous": [
+            "两人已进入列车车厢",
+            "关键道具“猫形信号灯”[cat_signal_lamp]：用途为指引真相的关键道具，只在特定条件亮起；当前归属为双方共同；状态为被带在身边，光芒依旧微弱。"
+          ],
+          "environment_state": "环境为静止的列车车厢内部，光线昏暗但稳定，充满怀旧与诡异并存的氛围。",
+          "player_state": "男主已按选择进入停靠的车厢，尚未拍摄或抄录事故资料。",
+          "scene_boundaries": [
+            "不得让女主脱离男主视线",
+            "不得出现实体怪物攻击"
+          ]
+        },
+        "goals": [
+          {
+            "delivery": {
+              "output_field": "scene_update",
+              "source_ids": [
+                "opening.node_branch_f791e9bb41"
+              ],
+              "state_effects": {
+                "dialogue_policy": "required"
+              },
+              "timing": "opening",
+              "type": "environment_fact"
+            },
+            "description": "展示车厢内时间静止的细节（停摆的钟、冒热气的茶）",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "node_branch_f791e9bb41_goal_01",
+            "owner": "environment"
+          },
+          {
+            "delivery": {
+              "output_field": "performance_action",
+              "source_ids": [
+                "goal.node_branch_f791e9bb41_goal_01"
+              ],
+              "state_effects": {
+                "dialogue_policy": "required"
+              },
+              "timing": "turn",
+              "type": "catgirl_action"
+            },
+            "description": "女主在乘务员室抽屉中发现一份泛黄的排班表副本和一张手绘地图",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "node_branch_f791e9bb41_goal_02",
+            "owner": "catgirl"
+          },
+          {
+            "delivery": {
+              "output_field": "player_input",
+              "source_ids": [
+                "runtime.player_input"
+              ],
+              "state_effects": {
+                "dialogue_policy": "required"
+              },
+              "timing": "turn",
+              "type": "player_action"
+            },
+            "description": "男主记录排班表和地图；女主说明图上维修井就在旧信号小屋外，当前先沿地面步道找小屋，不需进入地下通道。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "node_branch_f791e9bb41_goal_03",
+            "owner": "player"
+          },
+          {
+            "delivery": {
+              "output_field": "shared",
+              "source_ids": [
+                "goal.node_branch_f791e9bb41_goal_03"
+              ],
+              "timing": "turn",
+              "type": "shared_agreement"
+            },
+            "description": "两人确认已获取关键线索，决定离开车厢返回安全区域",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "node_branch_f791e9bb41_goal_04",
+            "owner": "shared"
+          }
+        ],
+        "must_not_happen": [
+          "不得在此场景中发现或提及旧怀表",
+          "不得让列车启动或移动",
+          "不得让女主情绪崩溃导致无法行动",
+          "不得让女主脱离男主视线",
+          "不得出现实体怪物攻击"
+        ],
+        "opening_scene": "车厢里的挂钟停在10:14，桌上茶杯仍冒着热气。列车保持停靠，女主站在已打开的乘务员室门旁，望向积灰的桌面和关闭的抽屉；事故文件尚未取出，门外仍是刚才的旧站台。",
+        "summary": "两人在静止车厢的乘务员室找到事故当日的排班表副本和站区手绘图。图上地下维修通道的检修井位于旧信号小屋外，只是定位标记；返回旧站台后沿地面猫灯步道去信号小屋，不另开下井探险。",
+        "transition_goal": "车内人员记录与站区图已经实际查明，女主已回应其中信息时，可提出“带着实际取得的记录离开停靠列车，回到同一旧站台继续循猫灯查看”这一安排。玩家接受或主动发起已经公开的安排后承接转场；已经完成的当前工作不追加新任务。"
+      },
+      "type": "scene"
+    }
+  ],
+  "schema": "neko.story.numeric.v2",
+  "start_node_id": "mainline_01",
+  "fact_contract": {
+    "facts": {
+      "scene:mainline_05:truth_shared": {
+        "description": "女主已经公开读出日记最后一条：列车长返回故障车厢疏散乘客，此后没有续页；她由此说明失联不是抛弃。只找到或翻开日记、猜测死因均不算完成。",
+        "value_type": "bool",
+        "visibility": "public"
+      }
+    }
+  }
+}

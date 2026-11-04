@@ -79,7 +79,7 @@ async def test_contact_delivery_commits_and_restores_without_extra_call(tmp_path
     calls = {'actor': 0, 'review': 0}
 
     async def options():
-        return {**default_options(), 'review': True}
+        return {**{key: key == 'evaluator' for key in default_options()}, 'review': True}
 
     async def evaluate(self, **kwargs):
         return NumericV2EvaluationResult((), False)

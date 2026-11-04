@@ -226,14 +226,14 @@ def test_transition_boundary_repair_receives_bridge_and_target_opening() -> None
             "current": {"story_beat": {"summary": "当前幕先完成控制台同步。"}},
             "target": {"story_beat": {"opening_scene": "下一幕的警报已经响起。"}},
         },
-        preview_route=lambda _node_id, _metrics: {
+        preview_route=lambda _node_id, _metrics, *, facts=None: {
             "target_node_id": "target",
             "transition_contract": {
                 "bridge_scene_narration": "舱门在玩家确认后关闭。",
             },
         },
     )
-    session = SimpleNamespace(current_node_id="current", metrics={})
+    session = SimpleNamespace(current_node_id="current", metrics={}, story_state={"facts": {}})
 
     context = _transition_boundary_repair_context(
         SimpleNamespace(engine=engine),
@@ -275,11 +275,11 @@ def test_transition_boundary_repair_uses_same_legacy_opening_as_playback() -> No
     engine = SimpleNamespace(
         nodes={"current": {"story_beat": {"summary": "来源阶段。"}},
                "target": {"story_beat": {"summary": "警报响起。稍后才揭露真相。"}}},
-        preview_route=lambda *_: {"target_node_id": "target", "transition_contract": {}},
+        preview_route=lambda *_, facts=None: {"target_node_id": "target", "transition_contract": {}},
     )
     context = _transition_boundary_repair_context(
         SimpleNamespace(engine=engine),
-        SimpleNamespace(session=SimpleNamespace(current_node_id="current", metrics={})),
+        SimpleNamespace(session=SimpleNamespace(current_node_id="current", metrics={}, story_state={"facts": {}})),
     )
     assert "正式换幕后才成立的下一幕开场：警报响起。" in context
     assert "稍后才揭露真相" not in context
@@ -291,12 +291,12 @@ def test_boundary_repair_uses_updated_route_and_preserves_its_proposal() -> None
         nodes={"current": {"story_beat": {"summary": "眼前交流已完成。"}},
                "low": {"story_beat": {"opening_scene": "次日回接待室。"}},
                "high": {"story_beat": {"opening_scene": "周末到观测室。"}}},
-        preview_route=lambda _, metrics: {
+        preview_route=lambda _, metrics, *, facts=None: {
             "target_node_id": "high" if metrics["trust"] >= 70 else "low",
             "transition_contract": {"reason": "周末到观测室核对结果。" if metrics["trust"] >= 70 else "次日回接待室。"},
         },
     )
-    current = SimpleNamespace(session=SimpleNamespace(current_node_id="current", metrics={"trust": 69}))
+    current = SimpleNamespace(session=SimpleNamespace(current_node_id="current", metrics={"trust": 69}, story_state={"facts": {}}))
     context = _transition_boundary_repair_context(SimpleNamespace(engine=engine), current, metrics={"trust": 71})
     assert "周末到观测室核对结果。" in context
     assert "次日回接待室" not in context
@@ -450,11 +450,11 @@ async def test_tagged_repeated_output_stops_after_retry_and_records_guard(format
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("repetition_guard", ["earlier_session", "transition_source"])
-async def test_accepted_transition_allows_one_source_repeat_retry_when_output_retry_is_disabled(
+@pytest.mark.parametrize("repetition_guard", ["earlier_session", "transition_source", "transition_target"])
+async def test_accepted_transition_allows_one_segment_repeat_retry_when_output_retry_is_disabled(
     repetition_guard: str,
 ) -> None:
-    """A source-reuse hit for an officially accepted scene transition must not stall when general retries are disabled."""  # noqa: DOCSTRING_CJK
+    """A segment-reuse hit for an officially accepted scene transition retains exactly one retry."""  # noqa: DOCSTRING_CJK
 
     class RetryActor:
         def __init__(self) -> None:
@@ -590,7 +590,8 @@ async def test_ordinary_review_keeps_committed_history_watermark_with_projected_
         config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2('new', current.session.revision, '我来帮你。'), ensure_current_binding=lambda _: _binding(),
     )
-    assert len(review_messages) == 3 and len(generations) == 2
+    assert len(review_messages) == 2 and len(generations) == 2
+    assert result.diagnostics['dispute_review_attempts'] == 0
     assert all(row['scene_context'] == review_messages[0]['scene_context'] for row in review_messages)
     assert result.stored.session.revision == current.session.revision + 1
     assert result.stored.session.node_turn_count == current.session.node_turn_count + 1

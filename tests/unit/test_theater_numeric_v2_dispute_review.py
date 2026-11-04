@@ -17,12 +17,12 @@ from tests.unit.test_theater_numeric_v2_transition_history import _candidate
 @pytest.mark.asyncio
 @pytest.mark.parametrize('formal', [False, True])
 @pytest.mark.parametrize('mode', ['safe', 'buttons', 'release', 'offer', 'invalid_offer', 'reject', 'timeout', 'protocol'])
-async def test_dispute_once_then_commit_latest_complete_reply(monkeypatch, tmp_path, formal, mode):
-    """After at most one dispute review and rewrite, adopt the final draft and score once, keeping display and cold recovery consistent."""
+async def test_rewrite_then_dispute_once_and_commit_latest_complete_reply(monkeypatch, tmp_path, formal, mode):
+    """Repair first, dispute only the latest rejected draft, and preserve the same maximum calls and atomic history."""
     engine = _engine()
     runtime = NumericV2Runtime(engine, tmp_path)
     current = await runtime.start_session(session_id='dispute', catgirl_binding=_binding(), opening_performance=_opening())
-    calls, generations, diagnostics = [], [], {}
+    calls, generations, diagnostics, order = [], [], {}, []
 
     async def evaluate(self, **kwargs):
         return evaluator.NumericV2EvaluationResult(
@@ -30,6 +30,7 @@ async def test_dispute_once_then_commit_latest_complete_reply(monkeypatch, tmp_p
 
     async def generate(self, **kwargs):
         generations.append(kwargs)
+        order.append(f'actor{len(generations)}')
         if formal:
             candidate = {**_candidate(), 'source_performance': f'（点头）这是第{len(generations)}版回应。'}
             return engine.finalize_transition_performance(kwargs['outcome'], candidate, target_opening='旧开场。')
@@ -38,6 +39,7 @@ async def test_dispute_once_then_commit_latest_complete_reply(monkeypatch, tmp_p
 
     async def review(self, **kwargs):
         calls.append(kwargs)
+        order.append(('dispute' if kwargs.get('dispute_review') else 'fast') + str(len(generations)))
         if kwargs.get('dispute_review'):
             # Independently assess the same candidate/history without passing the initial verdict's reasoning, to avoid biasing review.
             assert {k: v for k, v in kwargs.items() if k not in {'dispute_review', 'timeout_seconds'}} == {
@@ -67,14 +69,21 @@ async def test_dispute_once_then_commit_latest_complete_reply(monkeypatch, tmp_p
                   diagnostics_sink=diagnostics)
     rejected = mode in ('invalid_offer', 'reject', 'timeout', 'protocol')
     offer_repaired_before_dispute = not formal and mode in ('offer', 'invalid_offer')
+    repaired = rejected or offer_repaired_before_dispute or mode == 'release'
+    if mode in {'reject', 'timeout', 'protocol'} or (formal and mode == 'invalid_offer'):
+        with pytest.raises(workflow.NumericV2ActorOutputError, match='transition_review_failed'):
+            await workflow.execute_numeric_v2_turn(**kwargs, background_narrative=True)
+        assert await runtime.restore_session('dispute') == current
+        assert len(generations) == 2
+        return
     result = await workflow.execute_numeric_v2_turn(**kwargs, background_narrative=(rejected and mode != 'invalid_offer'))
     assert result.stored.session.revision == 1 and len(result.stored.ledger_events) == 1
     assert result.stored.session.metrics['trust'] == current.session.metrics['trust'] + 2
     assert result.stored.session.current_node_id == ('ending_leave' if formal else 'start')
     # The final draft must replace the first and become the sole official history entry, not merely display in UI or submit both drafts.
     saved = result.stored.session.performance_history[-1]
-    assert f'第{2 if rejected or offer_repaired_before_dispute else 1}版回应' in str(saved)
-    if rejected or offer_repaired_before_dispute:
+    assert f'第{2 if repaired else 1}版回应' in str(saved)
+    if repaired:
         assert '第1版回应' not in str(saved)
     assert await NumericV2Runtime(engine, tmp_path).restore_session('dispute') == result.stored
     if rejected and mode != 'invalid_offer':
@@ -86,9 +95,11 @@ async def test_dispute_once_then_commit_latest_complete_reply(monkeypatch, tmp_p
         assert not result.stored.session.transition_offered
     assert 'semantic_review_fallback' not in str(result.stored.session.to_dict())
     # Official transitions check only three body sections; valid=false on the button itself no longer triggers dispute review.
-    disputed = mode not in ('safe', 'buttons') and not (formal and mode == 'offer')
-    assert len(calls) == (3 if rejected or offer_repaired_before_dispute else 2 if disputed else 1)
-    assert len(generations) == (2 if rejected or offer_repaired_before_dispute else 1)
+    disputed = mode not in ('safe', 'buttons', 'release') and not (formal and mode == 'offer')
+    assert len(calls) == (3 if disputed else 2 if repaired else 1)
+    assert len(generations) == (2 if repaired else 1)
+    assert order == (['actor1', 'fast1', 'actor2', 'fast2'] + (['dispute2'] if disputed else [])
+                     if repaired else ['actor1', 'fast1'])
     assert sum(bool(c.get('dispute_review')) for c in calls) == int(disputed)
     assert diagnostics['dispute_review_deferred_offer_repair'] == int(offer_repaired_before_dispute)
     assert diagnostics['transition_judge_calls'] == len(calls)
@@ -151,6 +162,56 @@ async def test_ordinary_invalid_offer_repairs_before_dispute(monkeypatch, tmp_pa
     assert diagnostics['dispute_review_attempts'] == 0
     assert diagnostics['dispute_review_deferred_offer_repair'] == 1
     assert result.performance['transition_offered'] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('repair_passes', [False, True])
+async def test_dispute_wait_does_not_consume_the_repair_review_budget(monkeypatch, tmp_path, repair_passes):
+    """Finish the existing repair/review first; insufficient dispute time cannot approve an unsafe scene."""
+    from services.theater.numeric_v2_actor_output import NumericV2ActorOutputError
+
+    engine = _engine()
+    runtime = NumericV2Runtime(engine, tmp_path)
+    current = await runtime.start_session(session_id='dispute_budget', catgirl_binding=_binding(),
+                                          opening_performance=_opening())
+    generations, reviews, diagnostics = [], [], {}
+
+    async def evaluate(self, **kwargs):
+        return evaluator.NumericV2EvaluationResult((), False)
+
+    async def generate(self, **kwargs):
+        generations.append(kwargs)
+        return {'performance': f'第{len(generations)}版回应。', 'suggested_inputs': []}
+
+    async def review(self, **kwargs):
+        reviews.append(kwargs)
+        assert not kwargs.get('dispute_review')
+        bad = len(generations) == 1 or not repair_passes
+        return evaluator.NumericV2TransitionOfferReview(
+            False, False, ('scene_boundary',) if bad else (), (), '本稿场景越界。' if bad else '')
+
+    monkeypatch.setattr(workflow, 'NUMERIC_V2_REVIEW_BUDGET_SECONDS',
+                        workflow.NUMERIC_V2_DISPUTE_TIMEOUT_CAP_SECONDS - 0.5)
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'validate_transition_offer', review)
+    monkeypatch.setattr(workflow.NumericV2Actor, 'generate_turn', generate)
+    monkeypatch.setattr(workflow.NumericV2Actor, '_character_profile', lambda self: '温和。')
+    request = dict(config_manager=object(), runtime=runtime, current=current,
+                   turn=TurnRequestV2('one', 0, '我来帮你。'), ensure_current_binding=lambda _: _binding(),
+                   diagnostics_sink=diagnostics, background_narrative=True)
+    if repair_passes:
+        result = await workflow.execute_numeric_v2_turn(**request)
+        assert result.stored.session.revision == 1
+        assert '第2版回应' in str(result.stored.session.performance_history[-1])
+        assert await NumericV2Runtime(engine, tmp_path).restore_session('dispute_budget') == result.stored
+    else:
+        with pytest.raises(NumericV2ActorOutputError, match='numeric_v2_transition_review_failed'):
+            await workflow.execute_numeric_v2_turn(**request)
+        assert await NumericV2Runtime(engine, tmp_path).restore_session('dispute_budget') == current
+    assert len(generations) == len(reviews) == 2
+    assert diagnostics['semantic_rewrite_attempts'] == 1
+    assert diagnostics['dispute_review_attempts'] == 0
+    assert diagnostics['review_budget_skips'] == int(not repair_passes)
 
 
 @pytest.mark.asyncio
@@ -397,10 +458,11 @@ async def test_prose_only_movement_reason_keeps_veto_in_workflow(monkeypatch, tm
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'validate_transition_offer', review)
     monkeypatch.setattr(workflow.NumericV2Actor, 'generate_turn', generate)
     monkeypatch.setattr(workflow.NumericV2Actor, '_character_profile', lambda self: '温和。')
-    result = await workflow.execute_numeric_v2_turn(
-        config_manager=object(), runtime=runtime, current=current,
-        turn=TurnRequestV2('move_now', 0, '那带路吧，我们现在过去。'), ensure_current_binding=lambda _: _binding())
-    assert result.diagnostics['explicit_player_movement_flags_cleared'] == 0
+    with pytest.raises(workflow.NumericV2ActorOutputError, match='transition_review_failed'):
+        await workflow.execute_numeric_v2_turn(
+            config_manager=object(), runtime=runtime, current=current,
+            turn=TurnRequestV2('move_now', 0, '那带路吧，我们现在过去。'), ensure_current_binding=lambda _: _binding())
+    assert await runtime.restore_session('prose_movement') == current
 
 
 def test_guard_parser_reads_player_action_kind_fail_closed():
@@ -495,7 +557,7 @@ async def test_dispute_model_options_are_local_and_evidence_identical(monkeypatc
         await worker.validate_transition_offer(**kwargs, dispute_review=disputed)
     assert factories[0] == factories[2]
     assert 'extra_body' not in factories[0]
-    assert factories[0]['max_completion_tokens'] == 190
+    assert factories[0]['max_completion_tokens'] == 320
     assert factories[1]['extra_body'] == {'enable_thinking': True}
     assert factories[1]['max_completion_tokens'] == 4096
     # After resetting dispute timeouts to the review budget, keep them distinct from quick-check and ordinary timeouts.
@@ -573,8 +635,8 @@ async def test_dispute_verdict_gets_the_same_explicit_movement_correction(monkey
     result = await workflow.execute_numeric_v2_turn(
         config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2('move_now', 0, '那带路吧，我们现在过去。'), ensure_current_binding=lambda _: _binding())
-    assert [bool(call.get('dispute_review')) for call in reviews] == [False, True]
+    assert [bool(call.get('dispute_review')) for call in reviews] == [False, False, True]
     assert result.diagnostics['explicit_player_movement_flags_cleared'] == 1
-    assert result.diagnostics['semantic_rewrite_attempts'] == 0
-    assert len(generations) == 1
+    assert result.diagnostics['semantic_rewrite_attempts'] == 1
+    assert len(generations) == 2
     assert result.performance['scene_narration'] == '两人开始向左侧走廊移动。'

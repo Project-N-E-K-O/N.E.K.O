@@ -48,7 +48,8 @@ async def test_budget_overflow_defers_events_and_commits_only_after_full_review(
         assert await runtime.restore_session("budget_gap") == current
         if "narrative_events" in candidate:
             raise evaluator.NumericV2EvaluatorError("numeric_v2_transition_review_budget_exceeded")
-        return _parsed_review(candidate, kwargs["message"])
+        return replace(_parsed_review(candidate, kwargs["message"]),
+                       approved_suggestion_texts=tuple(candidate.get("suggested_inputs") or []))
 
     _install_modules(monkeypatch, instance, generate, review)
     result = await workflow.execute_numeric_v2_turn(
@@ -98,11 +99,19 @@ async def test_native_budget_check_sends_only_complete_degraded_draft(tmp_path, 
             return False
 
         async def ainvoke(self, messages, **kwargs):
+            if json.loads(messages[1].content[messages[1].content.index("{"):]).get("review_task") == "player_actions":
+                return SimpleNamespace(content=json.dumps({"body_violations": [], "failure_reason": ""}))
             requests.append((messages, kwargs))
             data = json.loads(messages[1].content[messages[1].content.index("{"):])
             assert "narrative_events" not in data
             payload = {"offer_present": False, "valid": False, "body_violations": [],
                        "unsafe_suggestion_indexes": [], "failure_reason": ""}
+            if data.get("suggested_inputs"):
+                payload.pop("unsafe_suggestion_indexes")
+                payload["suggestion_checks"] = [
+                    {"index": index, "decision": "allow", "requires": []}
+                    for index in range(len(data["suggested_inputs"]))
+                ]
             if formal:
                 payload["delivery_matches_route"] = True
             return SimpleNamespace(content=json.dumps(payload))
@@ -128,7 +137,7 @@ async def test_native_budget_check_sends_only_complete_degraded_draft(tmp_path, 
                 **build, actor_performance=plain, player_input=kwargs["message"],
             )
             # Separate the complete-body and auxiliary-table sizes under the
-            # offline conservative counter. Fixed 8500 coverage lives in review_capacity.
+            # offline conservative counter. Fixed 10000 coverage lives in review_capacity.
             limit = sum(evaluator.count_tokens(item.content) for item in messages) + 8
             profile = NUMERIC_V2_ACTOR_BUDGET_PROFILES[kwargs["session"].actor_budget_profile]
             monkeypatch.setitem(profile, "judge_input_max_tokens", limit)
@@ -152,7 +161,8 @@ async def test_native_budget_check_sends_only_complete_degraded_draft(tmp_path, 
         turn=TurnRequestV2("native", 0, message), ensure_current_binding=lambda _: _binding(),
     )
     assert len(seen["requests"]) == 1 and len(attempts) == 2
-    assert len(requests) == len(factories) == 1
+    assert len(requests) == 1  # The scene fake records only its own table.
+    assert len(factories) == 2  # Formal and ordinary narration both check player agency.
     assert factories[0]["max_retries"] == 0
     assert {key: value for key, value in attempts[0].items() if key != "narrative_events"} == attempts[1]
     data = json.loads(requests[0][0][1].content[requests[0][0][1].content.index("{"):])

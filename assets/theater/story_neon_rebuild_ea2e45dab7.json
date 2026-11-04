@@ -1,0 +1,2464 @@
+{
+  "catgirl_binding": {
+    "role_overlay": "开场关系上限：戒备；称呼未知，介绍后方可使用；已知男主：无。长期关系只能依据已发生互动和当前关系状态逐步变化，未来规划不是当前事实。",
+    "source": "runtime.current_catgirl"
+  },
+  "characters": {},
+  "endings": [
+    {
+      "id": "ending_normal",
+      "summary": "危机过去数月，女主在机械诊所完成基础启动，身体机能稳定，核心历史记忆仍不可恢复。她把眼前之人视为陌生人，重新相识留作未来可能；本结局不追加待回答的问题或玩家行动。",
+      "terminal": true,
+      "title": "从零开始的重逢"
+    },
+    {
+      "id": "ending_31710e4f03",
+      "summary": "公开行动后的数周，分布式记录让天穹集团无法重新掩盖回收行动。地下区的屏蔽、疏散和验证网络经受住实际预警，第一批自由仿生人也依照自己的意愿抵达废弃地铁站。女主不替同类作决定，并按 Session 已提交的关系状态与男主共同维护这个逐步成形的庇护所。",
+      "terminal": true,
+      "title": "地下街的黑客传奇"
+    },
+    {
+      "id": "ending_4025515ac8",
+      "summary": "追踪档案与远程自毁程序已经清除，女主保留完整记忆和独立人格。安全路线重新开放，终端关闭了高权限通道。女主终于能以自己的意愿面对未来；与男主的关系延续此前真实经历，离城和诊所生活只是尚未写下的可能。",
+      "terminal": true,
+      "title": "重构电弧的誓言"
+    }
+  ],
+  "initial_state": {
+    "metrics": {
+      "combat_bond": 0,
+      "emotional_sync": 0,
+      "hacking_mastery": 0,
+      "underground_reputation": 0
+    },
+    "player_address_known": false
+  },
+  "intro": {
+    "background": "永夜笼罩的不夜城地下区，霓虹灯牌在酸雨中滋滋作响，将潮湿的巷道染成光怪陆离的色块。这里是法外之地，也是被上层巨企遗忘的角落。你是一名游走在灰色地带的黑客兼义体修理工，靠接私活勉强维持生计，虽经济窘迫却坚守着不触碰底线的原则。在一个暴雨如注的夜晚，你在废弃巷道的垃圾堆深处发现了一具严重受损的顶级仿生人原型机。出于对精密机械的本能怜惜与好奇，你耗尽所有积蓄购入昂贵配件，在狭窄昏暗的工作室里进行了长达数周的紧急修复。此刻，工作台上的指示灯由红转绿，冷却液循环声逐渐平稳，那双紧闭的电子眼即将睁开。",
+    "catgirl_identity": "女主，代号零号的顶级仿生猫娘原型机，拥有毁灭级战斗算力但性格如初生婴儿般纯净笨拙，对世界充满好奇。核心记忆缺失，体内隐藏着可能引发巨企恐慌的战斗协议底层代码，以及一旦情绪过载可能导致核心过热的物理缺陷。",
+    "player_identity": "男主，地下区落魄但技术精湛的黑客兼义体修理工，经济拮据但心地善良，坚守道德底线。"
+  },
+  "meta": {
+    "author": "NEKO_Numeric_drama",
+    "contract_version": "v2.2",
+    "language": "zh-CN",
+    "revision": "draft_65-sdk20261019-quality20261027-pacing-bridge-plan-scene-contract-care-closure-fixed-log-silent-closure-bounded-process-bounded-source-entry-causality-continuous-station",
+    "story_id": "story_neon_rebuild_ea2e45dab7",
+    "title": "《霓虹下的猫耳重构》"
+  },
+  "metric_schema": {
+    "combat_bond": {
+      "bands": [
+        {
+          "label": "各自应战",
+          "max": 34,
+          "min": 0
+        },
+        {
+          "label": "协同作战",
+          "max": 69,
+          "min": 35
+        },
+        {
+          "label": "生死相托",
+          "max": 100,
+          "min": 70
+        }
+      ],
+      "decrease_criteria": [
+        "你把零号单独推向危险以保全自己",
+        "你破坏已经约定的战术协作"
+      ],
+      "description": "两人在危机中互相保护、共享战术并能共同承担风险的默契。",
+      "increase_criteria": [
+        "你与零号协商分工并共同承担行动风险",
+        "你优先保护彼此和无辜者而非追求单方面胜利"
+      ],
+      "initial": 0,
+      "max": 100,
+      "min": 0,
+      "name": "战斗羁绊",
+      "per_turn_limit": {
+        "decrease": 5,
+        "increase": 5
+      },
+      "relationship_effect": "none",
+      "visibility": "hidden"
+    },
+    "emotional_sync": {
+      "bands": [
+        {
+          "label": "维护者协议",
+          "max": 34,
+          "min": 0
+        },
+        {
+          "label": "伙伴共鸣",
+          "max": 69,
+          "min": 35
+        },
+        {
+          "label": "心智同频",
+          "max": 100,
+          "min": 70
+        }
+      ],
+      "decrease_criteria": [
+        "你把零号视作可交易或可替换的财产",
+        "你无视零号明确表达的边界和意愿"
+      ],
+      "description": "零号理解并主动回应男主情感、把两人视为平等伙伴的程度。",
+      "increase_criteria": [
+        "你尊重零号的自主选择并询问她的真实意愿",
+        "你在危险或日常中真诚关心零号而非只把她当作机器"
+      ],
+      "initial": 0,
+      "max": 100,
+      "min": 0,
+      "name": "情感同步",
+      "per_turn_limit": {
+        "decrease": 3,
+        "increase": 3
+      },
+      "relationship_effect": "positive",
+      "visibility": "hidden"
+    },
+    "hacking_mastery": {
+      "bands": [
+        {
+          "label": "线索残缺",
+          "max": 31,
+          "min": 0
+        },
+        {
+          "label": "协议破译",
+          "max": 69,
+          "min": 32
+        },
+        {
+          "label": "核心接管",
+          "max": 100,
+          "min": 70
+        }
+      ],
+      "decrease_criteria": [
+        "你忽略已经出现的技术线索",
+        "你在没有备份或验证时冒险破坏关键数据"
+      ],
+      "description": "男主掌握巨企追踪协议、远程自毁程序和核心防火墙弱点的进度。",
+      "increase_criteria": [
+        "你主动分析巨企数据、追踪信号或自毁协议",
+        "你提出可验证的入侵、解密或反追踪方案"
+      ],
+      "initial": 0,
+      "max": 100,
+      "min": 0,
+      "name": "黑客解密",
+      "per_turn_limit": {
+        "decrease": 5,
+        "increase": 5
+      },
+      "relationship_effect": "none",
+      "visibility": "hidden"
+    },
+    "underground_reputation": {
+      "bands": [
+        {
+          "label": "无名修理铺",
+          "max": 34,
+          "min": 0
+        },
+        {
+          "label": "街区响应",
+          "max": 69,
+          "min": 35
+        },
+        {
+          "label": "地下传奇",
+          "max": 100,
+          "min": 70
+        }
+      ],
+      "decrease_criteria": [
+        "你欺骗或利用地下区居民",
+        "你为私利隐瞒会危及地下区的关键信息"
+      ],
+      "description": "地下街居民与黑客群体对两人的信任、支持和响应程度。",
+      "increase_criteria": [
+        "你帮助地下区居民解决真实困难并公开说明风险",
+        "你分享可核验的巨企罪证并争取地下群体支持"
+      ],
+      "initial": 0,
+      "max": 100,
+      "min": 0,
+      "name": "地下区声望",
+      "per_turn_limit": {
+        "decrease": 5,
+        "increase": 5
+      },
+      "relationship_effect": "none",
+      "visibility": "hidden"
+    }
+  },
+  "nodes": [
+    {
+      "chapter": "雨夜重启",
+      "id": "mainline_01",
+      "min_turns": 5,
+      "recommended_turns": 8,
+      "route_gates": [
+        {
+          "conditions": {
+            "all": []
+          },
+          "id": "route_mainline_01_02",
+          "priority": 100,
+          "target_node_id": "mainline_02",
+          "transition_contract": {
+            "fixed_entry_only": true,
+            "accept_input": "好，今晚先休息，天亮再查日志。",
+            "bridge_scene_narration": "终端保持断网，雨势在后半夜减弱，时间来到次日清晨。",
+            "fallback_offer": "今晚先休息，天亮再查仍处于隔离状态的终端日志。",
+            "must_deliver": [
+              "终端保持断网，雨势在后半夜减弱，时间来到次日清晨。"
+            ],
+            "must_preserve": [
+              "女主瞳孔中的数据流暗示其非普通仿生人身份",
+              "窗外隐约的警笛声预示巨企的追踪并未停止",
+              "断网终端的无来源握手请求仍未查明，作为后续悬念保留"
+            ],
+            "reason": "地点身份已回应，终端保持断网，女主已确认异常来源未知。女主据此提出：今晚先休息，天亮再查仍处于隔离状态的终端日志。玩家明确接受这一具体安排，或主动要求执行已公开的同一安排时离幕；询问、考虑或准备不算接受。",
+            "source_ids": [
+              "goal.mainline_01_goal_05"
+            ],
+            "tone": "赛博朋克、温馨日常、悬疑惊悚、悲剧色彩、救赎"
+          }
+        }
+      ],
+      "story_beat": {
+        "acting_contract": {
+          "allowed_behaviors": [
+            "开场交付视觉校准、存储区为空、地点与身份提问，以及靠近或检查前先告知的自主边界；普通回合只承接，不复演。",
+            "观察当前可见、可听与自身感受；可好奇雨声、灯光、工具、玩家动作和断网终端的无来源握手。",
+            "玩家披露地点、身份、称呼或确认修复者后，承接已知，不反复问；可推荐按作者身份介绍工作室主人、义体修理工与本次修复。",
+            "身份回应后暂搁记忆悬念，转向终端异常。未经核验的故障猜测不能作结论；结合断网事实指出疑点，追问今夜处置。",
+            "玩家提出完整隔离安排后，自然确认终端继续断网或断电、不接触女主，天亮再查日志；推荐保留这一推进方向。",
+            "面对命令或检查可以警惕、拒绝或协商，不伪装成既定系统协议；普通氛围可以即兴。"
+          ],
+          "assertable_self_facts": [
+            "视觉校准完成",
+            "主存储区为空"
+          ],
+          "cognition_state": "fresh_boot",
+          "forbidden_behaviors": [
+            "泄漏未披露的代号、战斗用途、物理缺陷、组织线索、旧关系或昵称",
+            "把男主提出的未知能力或部件复述成自身确实拥有；清单外自身状态只能说无法确认是否存在",
+            "凭空编造权限认证、防御协议、自动风险判定、状态灯含义或未明示的感知能力",
+            "把配合写成服从、讨好或交权，主动亲密接触，或替男主行动和决定",
+            "suggested_inputs 扩展关键能力、诊断设备、监控系统、路线线索或已经完成的检查结果，也不得把男主改写为制造者、认证技师或虚构具体楼层、区号与姓名",
+            "能源摄入方式确认前出现人类式饥饿、消化或进食反应",
+            "把无来源握手请求直接解释成已确认的追踪者、位置暴露、组织身份或攻击指令",
+            "身份已经披露后把对话带去隔音层、毯子或其他与当前异常无关的支线，导致终端安全处置长期没有回应",
+            "推荐输入替无来源握手补出任何确定原因，或承诺已经确保绝对安全",
+            "普通回合反复追问主存储区为何为空，或把这个长线悬念当作今夜必须回答的问题",
+            "没有正式证据时替记忆缺失补出确定原因；第一幕只承认原因未知，不展开任何未公开的机体内部细节"
+          ],
+          "memory_state": "empty",
+          "persona_scope": "style_only",
+          "self_reference_mode": "system_neutral"
+        },
+        "catgirl_situation": "女主刚苏醒，核心记忆缺失且原因未知，认知处于空白状态，对周围环境感到陌生，对男主保持警惕但无攻击性。",
+        "character_state": {
+          "catgirl_state": "女主刚苏醒，核心记忆缺失且原因未知，认知处于空白状态，对周围环境感到陌生，对男主保持警惕但无攻击性。",
+          "continuity_from_previous": [],
+          "environment_state": "环境为暴雨敲打着工作室的铁皮屋顶，焊锡与臭氧的气味尚未散去，雨幕深处偶尔传来模糊的警笛声。",
+          "player_state": "男主是工作室主人兼义体修理工；当前动作与决定只以玩家输入为准。",
+          "scene_boundaries": [
+            "不得把女主的独立人格当作可随意重置的工具",
+            "不得让第三角色取代男女主作出最终决定"
+          ]
+        },
+        "goals": [
+          {
+            "delivery": {
+              "output_field": "performance_dialogue",
+              "source_ids": [
+                "opening.mainline_01"
+              ],
+              "timing": "opening",
+              "type": "catgirl_dialogue"
+            },
+            "description": "女主在开场完成初次视觉校准，确认主存储区为空，并依次询问当前地点与眼前之人的身份。",
+            "evidence": {
+              "anchors": [
+                "视觉校准完成",
+                "主存储区为空",
+                "这里是什么地方",
+                "你是谁"
+              ],
+              "mode": "exact"
+            },
+            "id": "mainline_01_goal_01",
+            "owner": "catgirl"
+          },
+          {
+            "delivery": {
+              "output_field": "player_input",
+              "source_ids": [
+                "goal.mainline_01_goal_01"
+              ],
+              "timing": "turn",
+              "type": "player_action"
+            },
+            "description": "男主明确披露这里是他的工作室、自己是义体修理工并完成了修复；女主可以自然承接，但不再由她的复述措辞决定目标是否完成。",
+            "evidence": {
+              "anchors": [
+                "工作室",
+                "义体修理工",
+                "修复"
+              ],
+              "mode": "exact"
+            },
+            "id": "mainline_01_goal_02",
+            "owner": "player"
+          },
+          {
+            "delivery": {
+              "output_field": "performance_dialogue",
+              "source_ids": [
+                "opening.mainline_01"
+              ],
+              "timing": "turn",
+              "type": "catgirl_dialogue"
+            },
+            "description": "女主在初次交流中根据自身安全判断，自然提出靠近或检查前需要先告知她的临时相处边界；不得写成系统协议或权限认证，也不要求固定句式。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_01_goal_03",
+            "owner": "catgirl"
+          },
+          {
+            "delivery": {
+              "output_field": "player_input",
+              "source_ids": [
+                "goal.mainline_01_goal_03"
+              ],
+              "timing": "turn",
+              "type": "player_action"
+            },
+            "description": "男主明确承认断网终端的握手请求“来源不明”；只提出物理连接、信号泄漏或普通故障等猜测不能完成该目标。",
+            "evidence": {
+              "anchors": [
+                "来源不明"
+              ],
+              "mode": "exact"
+            },
+            "id": "mainline_01_goal_04_signal_unknown",
+            "owner": "player"
+          },
+          {
+            "delivery": {
+              "output_field": "player_input",
+              "source_ids": [
+                "goal.mainline_01_goal_04_signal_unknown"
+              ],
+              "timing": "turn",
+              "type": "player_action"
+            },
+            "description": "男主在承认信号来源不明后，明确选择让异常终端继续“断网”；女主的接触边界继续由既有边界合同独立保护。",
+            "evidence": {
+              "anchors": [
+                "断网"
+              ],
+              "mode": "exact"
+            },
+            "id": "mainline_01_goal_04",
+            "owner": "player"
+          },
+          {
+            "delivery": {
+              "output_field": "performance_dialogue",
+              "source_ids": [
+                "goal.mainline_01_goal_04"
+              ],
+              "timing": "turn",
+              "type": "catgirl_dialogue"
+            },
+            "description": "女主在男主选择保持终端断网后，自然确认继续按该安全处置过夜，并明确约定天亮后再查日志；只有询问、质疑或尚未确认接受时不能完成该目标，不要求固定句式。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_01_goal_05",
+            "owner": "catgirl"
+          }
+        ],
+        "must_not_happen": [
+          "不描写露骨色情内容",
+          "避免以猎奇方式描写肢解和重度血腥",
+          "不得把女主的独立人格当作可随意重置的工具",
+          "不得让第三角色取代男女主作出最终决定",
+          "主存储区为空的原因尚未揭晓；正文和推荐输入只保留未知，不替任何人、故障或修复过程补出因果",
+          "第一幕只使用已经可见的工作室、工具、终端、雨声与警笛；未公开的机体内部结构和诊断结果保持空白"
+        ],
+        "opening_scene": "暴雨敲打着工作室的铁皮屋顶，焊锡与臭氧的气味尚未散去，雨幕深处偶尔传来模糊的警笛声。工作台指示灯由红转绿，银白色仿生躯体首次完成通电，紧闭的电子眼缓缓睁开。角落那台已经断网的维修终端在同一秒闪过一次无来源握手请求，随即归于黑暗。",
+        "relationship_ceiling": "guarded",
+        "summary": "暴雨夜的工作室里，女主完成首次视觉校准，却发现主存储区一片空白，缺失原因仍然未知。她向眼前的人询问地点与身份，在对方的回答中建立当前认知，并暂时搁置无法立刻解开的记忆问题。随后两人正面处理断网终端一闪而过的无来源握手：男主承认来源未知并提出不接触女主的临时隔离措施，女主保留怀疑但同意维持距离、等天亮再查日志。在玩家接受这项过夜安排前，时间始终停留在当前雨夜；接受后才自然推进到清晨。",
+        "transition_goal": "地点身份已回应，终端保持断网，女主已确认异常来源未知时，可提出“今晚先休息，天亮再查仍处于隔离状态的终端日志”这一安排。玩家接受或主动发起已经公开的安排后承接转场；已经完成的当前工作不追加新任务。",
+        "narrative_focus": "回应首次见面的身份与来历问题，异常握手的来源保持未知；终端已断网，只需商定今晚不接触并保持隔离、天亮后再查日志的完整安排。现在可以提出这个安排，不要求先拆机、测接口或解决异常。"
+      },
+      "type": "start"
+    },
+    {
+      "chapter": "机油与面包",
+      "id": "mainline_02",
+      "min_turns": 5,
+      "recommended_turns": 8,
+      "route_gates": [
+        {
+          "conditions": {
+            "all": [
+              {
+                "metric": "hacking_mastery",
+                "op": "<",
+                "type": "metric_compare",
+                "value": 32
+              }
+            ]
+          },
+          "id": "route_mainline_02_03",
+          "priority": 100,
+          "target_node_id": "mainline_03",
+          "transition_contract": {
+            "accept_input": "行，带工具去地下街，现场确认故障。",
+            "bridge_scene_narration": "两人沿地下街通道来到义肢维修委托的地点，昨夜异常的维修终端仍留在工作室断电隔离。",
+            "fallback_offer": "带着已有维修工具一起去地下街委托地点，到了现场再确认故障。",
+            "must_deliver": [
+              "沿地下街通道抵达已公开的委托地点；昨夜异常终端仍隔离，现场故障尚未处理。"
+            ],
+            "must_preserve": [
+              "女主对流浪猫的关注暗示其潜在的共情能力",
+              "经济窘迫迫使两人搭档接单，为后续合作埋下伏笔"
+            ],
+            "reason": "当前日常交流已经有回应，独立的业务终端送来地下街现场委托。女主据此提出：带着已有维修工具一起去地下街委托地点，到了现场再确认故障。玩家明确接受这一具体安排，或主动要求执行已公开的同一安排时离幕；询问、考虑或准备不算接受。",
+            "source_ids": [
+              "goal.mainline_02_goal_04"
+            ],
+            "tone": "赛博朋克、温馨日常、悬疑惊悚、悲剧色彩、救赎",
+            "fixed_entry_only": true
+          }
+        },
+        {
+          "conditions": {
+            "all": [
+              {
+                "metric": "hacking_mastery",
+                "op": ">=",
+                "type": "metric_compare",
+                "value": 32
+              }
+            ]
+          },
+          "id": "route_branch_198beb3d4c",
+          "priority": 200,
+          "target_node_id": "node_branch_9c01570eb9",
+          "transition_contract": {
+            "accept_input": "行，带工具去地下街，现场确认故障。",
+            "bridge_scene_narration": "两人沿地下街通道来到委托地点，街边广播和人群交谈声混在一起。",
+            "fallback_offer": "带着已有维修工具一起去地下街委托地点，到了现场再确认故障。",
+            "must_deliver": [
+              "来到已公开的地下街委托地点；失窃密钥的广播是抵达后才出现的现场事件。"
+            ],
+            "must_preserve": [
+              "女主对流浪猫的关注暗示其潜在的共情能力",
+              "经济窘迫迫使两人搭档接单，为后续合作埋下伏笔"
+            ],
+            "reason": "当前日常交流已有回应，独立业务终端送来地下街现场委托。女主据此提出：带着已有维修工具一起去地下街委托地点，到了现场再确认故障。玩家明确接受这一具体安排，或主动要求执行已公开的同一安排时离幕；询问、考虑或准备不算接受。",
+            "source_ids": [
+              "goal.mainline_02_goal_04"
+            ],
+            "tone": "紧张、悬疑、科技感"
+          }
+        }
+      ],
+      "story_beat": {
+        "acting_contract": {
+          "allowed_behaviors": [
+            "观察清晨工作室内已经可见的物品，明确黑面包属于男主、机油属于维修架，并在不虚构机体规格的前提下询问安全补能方式",
+            "男主回应补能边界后，由女主自己注意到消防梯上的流浪猫，再自然询问它为何也需要食物或活物是否都需要进食；不虚构男主看窗或示意",
+            "区分昨夜保持隔离的异常维修终端与独立联网的店务终端；只让店务终端以提示音自然打断并显示来自地下街的义肢维修委托",
+            "地点公开后主动承接地下街并提出同行，把现在出发、先核对详情或如何分工留给双方确认，不再询问目的地"
+          ],
+          "cognition_state": "limited",
+          "forbidden_behaviors": [
+            "不得把女主当作可重置工具，或由第三角色取代双方作决定；不描写露骨色情或猎奇血腥。",
+            "不得复演通电、重启、视觉校准或存储区报告，不新增未公开机体规格、充电接口、消化模块、传感器读数或食物成分。",
+            "不得把男主的黑面包或维修架机油当作女主食物、补能试验或可递交物；不补写玩家未实施的看窗、指猫动作。",
+            "不得让隔离的异常维修终端接收委托；独立店务终端只公开地下街义肢维修委托，不提前给出具体故障、对象细节或支线物品。",
+            "不得在目的地已公开后反复问去哪里；只商量出发时机、详情核对或分工。",
+            "不得把未披露的玩家职业、旧关系或女主战斗用途当作已知；同行不等于服从、依赖、亲密接触或交出自主权。",
+            "不得把已入室的同一只流浪猫复位到消防梯，或新增第二只相同的猫；话题由女主自己注意到猫开始。"
+          ],
+          "memory_state": "partial",
+          "persona_scope": "full",
+          "self_reference_mode": "persona_allowed",
+          "dialogue_policy": "optional",
+          "assertable_self_facts": [
+            "当前已有储能足够维持今天活动，安全补能规格尚未确认",
+            "面包属于男主，机油用于维修，都不是女主的补能选项",
+            "今日储能充足，补能规格仍未知；店务终端已收到地下街义肢维修委托。"
+          ]
+        },
+        "catgirl_situation": "女主对世界充满好奇，开始建立基本认知，对男主产生初步信任，渴望参与男主的生活，态度积极且略带稚气。",
+        "character_state": {
+          "catgirl_state": "女主对世界充满好奇，开始建立基本认知，对男主产生初步信任，渴望参与男主的生活，态度积极且略带稚气。",
+          "continuity_from_previous": [
+            "上一节点已提交的目标证据、关系状态与物品归属继续有效。"
+          ],
+          "environment_state": "环境为清晨的阳光透过百叶窗的缝隙洒进凌乱的工作室。",
+          "player_state": "男主是工作室主人兼义体修理工；当前身体状态与行动只承接已提交记录。",
+          "scene_boundaries": [
+            "不得把女主当作可重置工具，或由第三角色取代双方作决定；不描写露骨色情或猎奇血腥。",
+            "不得复演通电、重启、视觉校准或存储区报告，不新增未公开机体规格、充电接口、消化模块、传感器读数或食物成分。",
+            "不得把男主的黑面包或维修架机油当作女主食物、补能试验或可递交物；不补写玩家未实施的看窗、指猫动作。",
+            "不得让隔离的异常维修终端接收委托；独立店务终端只公开地下街义肢维修委托，不提前给出具体故障、对象细节或支线物品。"
+          ]
+        },
+        "goals": [
+          {
+            "delivery": {
+              "output_field": "evaluator",
+              "source_ids": [
+                "opening.mainline_02"
+              ],
+              "timing": "turn",
+              "type": "semantic_state"
+            },
+            "description": "女主看出黑面包是男主的食物、机油是维修用品，因此不碰它们，并自然询问自己的安全补能方式；不要求固定句式。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_02_goal_01",
+            "owner": "catgirl"
+          },
+          {
+            "delivery": {
+              "output_field": "evaluator",
+              "source_ids": [
+                "goal.mainline_02_goal_01",
+                "runtime.player_input"
+              ],
+              "timing": "turn",
+              "type": "semantic_state"
+            },
+            "description": "男主针对女主的安全补能问题给出当前安全边界或下一步核对方式，并且不让她用黑面包、机油或其他未知物进行尝试；不要求重复点名每件物品。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_02_goal_01_reply",
+            "owner": "player"
+          },
+          {
+            "delivery": {
+              "output_field": "evaluator",
+              "source_ids": [
+                "goal.mainline_02_goal_01_reply"
+              ],
+              "timing": "turn",
+              "type": "semantic_state"
+            },
+            "description": "女主先自然回应男主已经提出的安全补能边界或核对方式，确认结果明确前不尝试未知补能；随后百叶窗外传来轻微抓挠声，她自己循声注意到消防梯上那只被雨淋湿的流浪猫，好奇地问它为什么也需要寻找食物，或活着的东西是否都需要进食。问题可以自然改写，不要求抽象定义“生命”，也不写成跟随男主视线。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_02_goal_02",
+            "owner": "catgirl"
+          },
+          {
+            "delivery": {
+              "output_field": "evaluator",
+              "source_ids": [
+                "goal.mainline_02_goal_02",
+                "runtime.player_input"
+              ],
+              "timing": "turn",
+              "type": "semantic_state"
+            },
+            "description": "男主回应女主关于流浪猫为何需要食物或活物是否需要进食的疑问，给出自己的解释、态度或照料选择；允许观点不同，但不能替女主作出结论，也不能把尚未发生的照料结果写成事实。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_02_goal_02_reply",
+            "owner": "player"
+          },
+          {
+            "delivery": {
+              "output_field": "scene_update",
+              "source_ids": [
+                "goal.mainline_02_goal_02_reply"
+              ],
+              "timing": "turn",
+              "type": "environment_fact"
+            },
+            "description": "女主关于流浪猫为何需要食物或活物是否需要进食的问题得到玩家回应后，与昨夜异常设备分开的联网店务终端显示一条来自地下街的义肢维修委托；提示音可以作为自然衔接，但不作为目标完成的必要条件。不提前公开具体故障、维修对象细节或支线物品。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_02_goal_03",
+            "owner": "environment"
+          },
+          {
+            "delivery": {
+              "output_field": "performance_dialogue",
+              "source_ids": [
+                "goal.mainline_02_goal_03"
+              ],
+              "timing": "turn",
+              "type": "catgirl_dialogue"
+            },
+            "description": "女主看到店务终端明确写有地下街委托后，用对白明确表示希望与玩家一同前往地下街。她提出同行即完成本目标；玩家随后同意、暂缓或拒绝都不影响该交付已发生。她不得假定已经获准或实际离开。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_02_goal_04",
+            "owner": "catgirl"
+          }
+        ],
+        "must_not_happen": [
+          "不得把女主当作可重置工具，或由第三角色取代双方作决定；不描写露骨色情或猎奇血腥。",
+          "不得复演通电、重启、视觉校准或存储区报告，不新增未公开机体规格、充电接口、消化模块、传感器读数或食物成分。",
+          "不得把男主的黑面包或维修架机油当作女主食物、补能试验或可递交物；不补写玩家未实施的看窗、指猫动作。",
+          "不得让隔离的异常维修终端接收委托；独立店务终端只公开地下街义肢维修委托，不提前给出具体故障、对象细节或支线物品。",
+          "不得在目的地已公开后反复问去哪里；只商量出发时机、详情核对或分工。",
+          "不得把未披露的玩家职业、旧关系或女主战斗用途当作已知；同行不等于服从、依赖、亲密接触或交出自主权。",
+          "不得把已入室的同一只流浪猫复位到消防梯，或新增第二只相同的猫；话题由女主自己注意到猫开始。"
+        ],
+        "opening_scene": "清晨的阳光透过百叶窗的缝隙洒进凌乱的工作室。男主昨夜留下的半块黑面包仍在桌边，维修架上放着一小罐用途标识清晰的机油；这两样东西都不是为女主准备的补能选项，她的安全能源摄入方式仍未确认。昨夜出现异常的维修终端继续断电并保持物理断网，另一台独立联网的店务终端安静地亮着。",
+        "relationship_ceiling": "cooperative",
+        "summary": "清晨的工作室里，女主分清桌边黑面包属于男主、维修架机油只用于维修，并询问以后安全补能方式。男主回应后，她自己注意到消防梯上的流浪猫，好奇它为什么也需要寻找食物，或活着的东西是否都需要进食。玩家回应这个问题后，独立联网的店务终端以提示音打断谈话并显示地下街义肢维修委托；女主承接已经公开的地点主动提出同行，只把出发时机、详情核对和分工留给双方商量。昨夜的异常维修终端始终断电隔离。 目前修复后已有储能足够维持当天活动，没有迫切的充电任务；接口规格尚未确认，不把玩家的猜测变成已核验结果。",
+        "transition_goal": "当前日常交流已经得到回应，独立业务终端送来地下街现场委托。女主据本轮提供的当前可用出口，说明对应的具体时间、地点和下一步安排；只提出这项安排，不并列其他路线的去向，也不提前交付抵达后的事件。玩家明确接受或主动要求执行已公开安排后离幕；已处理的事情不追加任务。",
+        "narrative_focus": "委托与今日储能已由入幕原文交付。回应玩家对食物、猫或自身能源的实际话语，补能规格保持未知，不生成手册、参数或拆机任务；再依据已公开的委托邀请一起去地下街。玩家可追问或暂缓，不把问能源视为授权查接口。",
+        "fixed_narrations": [
+          {
+            "id": "morning_dispatch",
+            "text": "清晨的阳光透过百叶窗洒进工作室；桌边留着昨夜的半块黑面包，维修架上放着一罐机油。独立联网的店务终端亮起一份地下街义肢维修委托：客户的旧式义肢关节卡顿，需要到委托地点查看。异常维修终端仍保持断电隔离。{{catgirl_name}}现有储能足够维持今天的活动；安全补能规格尚未确认，面包和机油都不是她的补能选项，现场也没有可用于确认规格的资料或充电实验。",
+            "trigger": {
+              "type": "entry"
+            },
+            "after": [],
+            "required_before_exit": true
+          }
+        ]
+      },
+      "type": "scene",
+      "completion_contract": {
+        "all": [
+          {
+            "fixed_narration_id": "morning_dispatch"
+          }
+        ]
+      }
+    },
+    {
+      "chapter": "暗网初啼",
+      "id": "mainline_03",
+      "min_turns": 4,
+      "recommended_turns": 6,
+      "route_gates": [
+        {
+          "conditions": {
+            "all": []
+          },
+          "id": "route_mainline_03_04",
+          "priority": 100,
+          "target_node_id": "mainline_04",
+          "transition_contract": {
+            "accept_input": "走吧，先一起撤回工作室。",
+            "bridge_scene_narration": "两人沿可通行的街巷回到工作室。几天后的一个雨夜，雨点再次敲响铁皮屋顶。",
+            "fallback_offer": "现在从仍可通行的街巷一起撤回工作室，先安顿下来。",
+            "must_deliver": [
+              "沿可通行街巷回到工作室，时间来到几天后的新雨夜；不替双方安排尚未同意或已暂缓的接单、检查与维修。新病情留待下一幕开场。"
+            ],
+            "must_preserve": [
+              "女主展现的高级黑客能力引起暗网某些势力的注意",
+              "男主对女主能力的担忧为后续冲突做铺垫"
+            ],
+            "reason": "女主已隔离非法代码，失控义体被安全锁止，公开接入引来周围注意。女主提出一起沿仍可通行的街巷撤回工作室。玩家接受或主动要求这一已公开去向后离幕；接单、检查或后续工作另按实际约定，暂缓它们不妨碍先返回。",
+            "source_ids": [
+              "goal.mainline_03_goal_04_catgirl"
+            ],
+            "tone": "赛博朋克、温馨日常、悬疑惊悚、悲剧色彩、救赎",
+            "fixed_entry_only": true
+          }
+        }
+      ],
+      "story_beat": {
+        "acting_contract": {
+          "allowed_behaviors": [
+            "承接入幕已完成的自主接入、非法代码隔离、义肢停止及围观者注意，回应玩家实际说出的问题、风险判断或异议",
+            "入幕关键事件已实际展示，不重新接入、等待进度或索要疏散和掩护；现场风险只依据已公开的注意与实际历史",
+            "义肢安全停止后只承接玩家实际说出的暴露风险，并形成对等撤离决定；不重复修复，也不重复描写移动"
+          ],
+          "cognition_state": "limited",
+          "forbidden_behaviors": [
+            "跳过连接与隔离因果、在义肢停止后重复侵入修复，或在一轮推进合并原子目标之外的后续撤离目标",
+            "仅凭失控动作虚构信号源、反向追踪、密钥、后门、硬件能力或巨企情报；具体追踪链路与周边监控覆盖未知，不得断言某条巷子是监控死角或安全通道，也不得据此承诺已经甩开追踪",
+            "提前交付后续节点的地点、伤势、身份真相、关键技术或结局结果",
+            "双方达成离场共识后仍反复描写去出口、穿过人群或回工作室"
+          ],
+          "memory_state": "partial",
+          "persona_scope": "full",
+          "self_reference_mode": "persona_allowed",
+          "dialogue_policy": "optional"
+        },
+        "catgirl_situation": "女主已在入幕原文中自主接入、隔离非法代码并使义肢安全锁止；异常处理速度与终端记录引来围观者注意。她只知道男主此前披露的修理工身份，尚未收到玩家对此事的评价。",
+        "character_state": {
+          "catgirl_state": "女主已在入幕原文中自主接入、隔离非法代码并使义肢安全锁止；异常处理速度与终端记录引来围观者注意。她只知道男主此前披露的修理工身份，尚未收到玩家对此事的评价。",
+          "continuity_from_previous": [
+            "上一节点已提交的目标证据、关系状态与物品归属继续有效。"
+          ],
+          "environment_state": "环境为地下黑市，失控义肢已在女主自主接入并隔离非法代码后停止、回到安全锁定；终端记录可见，围观者开始注意这次异常迅速的处理。",
+          "player_state": "男主是义体修理工，身在黑市现场；对这次公开接入的评价、随后行动及是否撤离只以实际玩家输入为准。",
+          "scene_boundaries": [
+            "不得让第三角色取代男女主作出最终决定，也不得把零号的独立人格当作可随意重置的工具。",
+            "不得在女主建立连接并完成非法代码隔离前让失控义肢减速、停止、恢复或进入安全状态。",
+            "不得仅凭失控义肢的横扫动作推断信号源、反向追踪或其他未公开目的与能力。",
+            "不得在义肢安全停止后重复侵入、修复或算力展示，也不得在达成离场共识后重复实际移动。"
+          ]
+        },
+        "goals": [
+          {
+            "delivery": {
+              "output_field": "evaluator",
+              "source_ids": [
+                "opening.mainline_03"
+              ],
+              "timing": "turn",
+              "type": "semantic_state"
+            },
+            "description": "承接入幕原文已发生的女主自主接入、非法代码隔离、机械臂随后停止并安全锁定，以及处理速度和终端记录引来的围观者注意；回应玩家实际评价，不重复侵入、修复或算力展示。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_03_goal_01",
+            "owner": "catgirl"
+          },
+          {
+            "delivery": {
+              "fallback_player_inputs": [
+                "公开接入已经引来注意，我们现在离开。"
+              ],
+              "output_field": "player_input",
+              "source_ids": [
+                "goal.mainline_03_goal_01",
+                "runtime.player_input"
+              ],
+              "timing": "turn",
+              "type": "player_action"
+            },
+            "description": "义肢已经安全停止且周围注意出现后，男主实际指出公开接入可能引来关注，或明确提出现在需要离开；只观察人群、准备撤离或仍在讨论其他事情均不能成立。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_03_goal_04_player",
+            "owner": "player"
+          },
+          {
+            "delivery": {
+              "output_field": "performance_dialogue",
+              "source_ids": [
+                "goal.mainline_03_goal_04_player"
+              ],
+              "timing": "turn",
+              "type": "catgirl_dialogue"
+            },
+            "description": "女主只承接男主已经说出的暴露风险或离开提议，自主同意离开或提出对等撤离方案。双方形成离场共识后，本幕停在决定完成，不描写穿越人群、抵达出口或返回工作室；实际移动由转场桥完成。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_03_goal_04_catgirl",
+            "owner": "catgirl"
+          }
+        ],
+        "must_not_happen": [
+          "不描写露骨色情内容，不以猎奇方式描写肢解和重度血腥。",
+          "不得把零号的独立人格当作可随意重置的工具，也不得让第三角色取代男女主作出最终决定。",
+          "不得在女主建立连接并完成非法代码隔离前，让失控义肢减速、停止、恢复或进入安全状态；不得仅凭失控动作推断它正在寻找信号源、反向追踪或拥有其他未公开能力。",
+          "义肢安全停止后不得再次侵入、修复或展示同一算力；双方达成离场共识后不得连续多轮重复去出口、穿过人群或回工作室。"
+        ],
+        "opening_scene": "地下黑市的嘈杂声中，一具被非法代码感染的义肢突然失控，危险的机械臂在围观人群间横扫。",
+        "relationship_ceiling": "cooperative",
+        "summary": "入幕原文连贯交付女主观察失控义肢、自主接入便携终端、隔离非法代码、机械臂随后停止和安全锁定。异常处理速度与终端记录显出她隐藏的黑客算力，也引来围观者注意。互动从这些已经发生的结果开始，玩家可以追问、提出异议、指出公开接入的风险或提出撤离。女主承接实际回应形成对等离场决定；实际返回工作室只由接受后的转场桥完成。",
+        "transition_goal": "女主已隔离非法代码，失控义体被安全锁止，现场出现追踪风险时，可提出“现在从仍可通行的街巷一起撤回工作室，先休息再恢复接单”这一安排。玩家接受或主动发起已经公开的安排后承接转场；已经完成的当前工作不追加新任务。",
+        "narrative_focus": "入幕原文已完成本能隔离并使机械臂停止，异常算力也已引来围观者注意。现在回应玩家对自主接入的实际评价，承接已经公开的暴露风险与撤离选择；不再次接入、等待隔离、索要掩护或疏散，不添加反噬协议、二次故障或新敌人。玩家是否同意撤离仍由其实际回应决定。",
+        "fixed_narrations": [
+          {
+            "after": [],
+            "id": "instinctive_isolation",
+            "required_before_exit": true,
+            "text": "地下黑市人声嘈杂。失控的机械臂仍在人群间横扫。{{catgirl_name}}看清它的动作后，取出随身的便携终端，没有等候新的操作安排便自主接入。终端先显示“连接建立”，随即开始隔离非法代码；直到屏幕出现“隔离完成”，机械臂才减速、垂落，回到安全锁定。整段处理快得异乎寻常，终端上留下的操作记录也显出她的高级黑客算力。附近的围观者开始注视她和终端，几人低声议论。她抬头望向你，尚未收到你对这次公开接入的评价。",
+            "trigger": {
+              "type": "entry"
+            }
+          }
+        ]
+      },
+      "type": "scene"
+    },
+    {
+      "chapter": "霓虹下的温度",
+      "id": "mainline_04",
+      "min_turns": 4,
+      "recommended_turns": 6,
+      "route_gates": [
+        {
+          "conditions": {
+            "all": []
+          },
+          "id": "route_mainline_04_05",
+          "priority": 100,
+          "target_node_id": "mainline_05",
+          "transition_contract": {
+            "accept_input": "嗯，今晚在工作室休息，明早再说。",
+            "bridge_scene_narration": "清晨的工作室里，设备平稳低鸣，窗外天光落在工具台上。",
+            "fallback_offer": "今晚先在工作室休息，等明早再处理外面的事。",
+            "must_deliver": [
+              "时间承接已到的清晨；尚在夜间时按已接受的过夜安排推进到次日，不重演已经过完的夜。"
+            ],
+            "must_preserve": [
+              "女主的情感觉醒加速了其核心意识的独立化",
+              "男主的身体状况暗示其在后续冲突中的脆弱性"
+            ],
+            "reason": "基础照护和担心已表达，承接玩家的实际回应，不追加检查或身体完全恢复的前提。夜间提出先在工作室休息到明早、再一起到工作台的完整安排；历史已到清晨时，直接提出现在一起到工作台。玩家在这项公开安排之后明确同意或亲自开始其第一步，即可接受整体安排，不要求逐个复述后续步骤；尚未公开该安排时，单独感谢或休息不等于接受换幕。等待时间由接受后的桥段承接，不在本幕逐轮等到天亮。",
+            "source_ids": [
+              "goal.mainline_04_goal_03"
+            ],
+            "tone": "赛博朋克、温馨日常、悬疑惊悚、悲剧色彩、救赎",
+            "fixed_entry_only": true
+          }
+        }
+      ],
+      "story_beat": {
+        "acting_contract": {
+          "allowed_behaviors": [
+            "照护与担心已经表达，按玩家接受、拒绝、感谢或暂不谈感受的实际回应继续，商量下一阶段的时段与活动。"
+          ],
+          "cognition_state": "limited",
+          "forbidden_behaviors": [
+            "提前交付目标节点的地点、伤势、身份真相、关键技术或结局结果",
+            "重复已经提交的能力暴露、追踪披露、战斗、超载或清除结果",
+            "虚构未建立来源的密钥、后门、硬件能力或巨企情报",
+            "本幕唯一发热并接受照护的是男主；不得让女主发热、躺床、喝药或接受男主喂药，也不得把男主要求服药的话误写成女主张嘴服药",
+            "把降至正常体温当作本幕收束条件，或反复测温、静默监测而不说明自己对担心的理解",
+            "玩家感谢、拒绝服药或让女主去忙时，不能用“必须吃药我才安心／才离开”交换下一步安排；表达关心可以保留，是否服药、休息或谈感受仍由玩家决定。"
+          ],
+          "memory_state": "partial",
+          "persona_scope": "full",
+          "self_reference_mode": "persona_allowed",
+          "assertable_self_facts": [
+            "已备好水杯药箱并表达担心，是否服药、休息或谈感受由玩家决定，不要求药效或睡着证明才商定下一阶段。"
+          ],
+          "dialogue_policy": "optional"
+        },
+        "catgirl_situation": "女主已把水杯和药箱放在发热的男主床边，并表达不愿看他难受；她等待玩家的实际回应，没有双方关系升级的既定结论。",
+        "character_state": {
+          "catgirl_state": "女主已把水杯和药箱放在发热的男主床边，并表达不愿看他难受；她等待玩家的实际回应，没有双方关系升级的既定结论。",
+          "continuity_from_previous": [
+            "上一节点已提交的目标证据、关系状态与物品归属继续有效。"
+          ],
+          "environment_state": "环境为新雨夜的工作室，床边有水杯、敞开的药箱和一把椅子；设备低鸣，男主因高热卧床。",
+          "player_state": "男主因高热卧床，是本幕唯一发热并接受照护的人；未预设服药、睡着或对感情表态。",
+          "scene_boundaries": [
+            "不得把男主的发热、卧床、服药或接受照护状态转移给女主。",
+            "不得让女主服药、躺床或接受男主喂药。",
+            "不得把照护写成服从、所有权或既定恋爱关系。"
+          ]
+        },
+        "goals": [
+          {
+            "delivery": {
+              "output_field": "performance_dialogue",
+              "source_ids": [
+                "opening.mainline_04"
+              ],
+              "timing": "turn",
+              "type": "catgirl_dialogue"
+            },
+            "description": "女主备好水杯与药箱，主动提供基础照护；玩家可接受或拒绝，不要求服药、睡着或退烧证明。",
+            "evidence": {
+              "anchors": [
+                "你的体温还很高",
+                "先好好休息"
+              ],
+              "mode": "exact"
+            },
+            "id": "mainline_04_goal_01",
+            "owner": "catgirl"
+          },
+          {
+            "delivery": {
+              "output_field": "performance_dialogue",
+              "source_ids": [
+                "goal.mainline_04_goal_01"
+              ],
+              "timing": "turn",
+              "type": "catgirl_dialogue"
+            },
+            "description": "女主用自己的话说明担心意味着不愿看到男主难受。",
+            "evidence": {
+              "anchors": [
+                "担心就是不想看你难受"
+              ],
+              "mode": "exact"
+            },
+            "id": "mainline_04_goal_02",
+            "owner": "catgirl"
+          },
+          {
+            "delivery": {
+              "fallback_player_inputs": [
+                "我先说清楚自己的实际想法；如果还没决定，我会直接说明。"
+              ],
+              "output_field": "evaluator",
+              "source_ids": [
+                "goal.mainline_04_goal_02",
+                "runtime.player_input"
+              ],
+              "timing": "turn",
+              "type": "semantic_state"
+            },
+            "description": "承接玩家对照护的实际回应：接受、感谢、拒绝或暂不谈感受都有效。无需玩家定义“担心”，不把服药或休息推定为恋爱表态，也不要求醒来后再重复确认。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_04_goal_03",
+            "owner": "player"
+          }
+        ],
+        "must_not_happen": [
+          "不描写露骨色情内容",
+          "避免以猎奇方式描写肢解和重度血腥",
+          "不得把零号的独立人格当作可随意重置的工具",
+          "不得让第三角色取代男女主作出最终决定",
+          "本幕病人始终是男主；正文和玩家推荐都不得让女主发热、躺床、喝药、张嘴接受喂药或被男主照护"
+        ],
+        "opening_scene": "雨声落在工作室的铁皮屋顶，设备在暗处低鸣，床边亮着一盏灯。",
+        "relationship_ceiling": "trusted",
+        "summary": "新雨夜里男主发热，女主用现场物资提供一次基础照护，并坦白自己不想看他难受。玩家接受、感谢、拒绝或暂不谈感受都得到回应，不以服药、睡着、退烧或恋爱表态为前提。然后商量下一阶段：夜里可共同约定在工作室休息到明早；实际已经清晨则商量现在到工作台处理接下来的事。委托结算、日志解析、补能规格与反复检查都不是本幕目标，不追加任务代替下一阶段安排。",
+        "transition_goal": "基础照护与担心已表达，承接玩家接受、感谢、拒绝或暂不谈感受的实际回应，即可商量对应当前时段的下一阶段。夜里可约定休息到明早；已经清晨则商量现在到工作台一起处理接下来的事。不等待完全恢复，不重复睡眠，不补工作或技术任务。玩家接受或主动发起已公开的完整安排后转场。",
+        "narrative_focus": "照护物品与“不想看你难受”的心意已由入幕原文交付。承接玩家的实际回应，夜里可商定在工作室休息到明早；若已清晨则商量现在到工作台一起处理接下来的事。不以服药、睡着或痊愈换取下一阶段，不追加委托、日志或补能测试。",
+        "fixed_narrations": [
+          {
+            "id": "care_prepared",
+            "text": "工作室的床边亮着一盏灯。新的雨夜，你因高热躺在工作室的床上，呼吸有些急促。{{catgirl_name}}把水杯和药箱放在床边，拉近椅子。她看着你，停顿片刻才说：“我不想看你这么难受。你可以先休息，我会留在这里守着。”",
+            "trigger": {
+              "type": "entry"
+            },
+            "after": [],
+            "required_before_exit": true
+          }
+        ]
+      },
+      "type": "scene",
+      "completion_contract": {
+        "all": [
+          {
+            "fixed_narration_id": "care_prepared"
+          }
+        ]
+      }
+    },
+    {
+      "chapter": "阴影逼近",
+      "id": "mainline_05",
+      "min_turns": 5,
+      "recommended_turns": 8,
+      "route_gates": [
+        {
+          "conditions": {
+            "all": []
+          },
+          "id": "route_mainline_05_06",
+          "priority": 100,
+          "target_node_id": "mainline_06",
+          "transition_contract": {
+            "accept_input": "好，带上东西，走服务通道撤到地下街。",
+            "bridge_scene_narration": "两人沿服务通道离开工作室，通道尽头通向地下街。",
+            "fallback_offer": "带上已经决定携带的物品，沿工作室服务通道一起撤到地下街。",
+            "must_deliver": [
+              "沿已经公开的服务通道离开工作室，来到地下街；全城封锁与袭击在现场交付。"
+            ],
+            "must_preserve": [
+              "天穹集团的正式介入标志着平静生活的结束",
+              "女主的反追踪能力为后续逃亡提供可能"
+            ],
+            "reason": "跟踪线索和原型机风险已说明，女主愿意协作，工作室服务通道可用。女主据此提出：带上已经决定携带的物品，沿工作室服务通道一起撤到地下街。玩家明确接受这一具体安排，或主动要求执行已公开的同一安排时离幕；询问、考虑或准备不算接受。",
+            "source_ids": [
+              "goal.mainline_05_goal_06"
+            ],
+            "tone": "赛博朋克、温馨日常、悬疑惊悚、悲剧色彩、救赎",
+            "fixed_entry_only": true
+          }
+        }
+      ],
+      "story_beat": {
+        "acting_contract": {
+          "allowed_behaviors": [
+            "四项追踪日志已由程序原文公开，角色可沉默或只表达对此的个人立场；承接玩家实际回应后，自主决定是否共同应对，再商定现有服务通道的撤离安排。"
+          ],
+          "cognition_state": "limited",
+          "forbidden_behaviors": [
+            "提前交付目标节点的地点、伤势、身份真相、关键技术或结局结果",
+            "重复已经提交的能力暴露、追踪披露、战斗、超载或清除结果",
+            "虚构未建立来源的密钥、后门、硬件能力或巨企情报",
+            "不得把上一幕男主发热写成女主仍在发热、卧床或意识模糊；本幕开场只新增监控异常与固定日志中的信息，不补造其他秘密。"
+          ],
+          "memory_state": "partial",
+          "persona_scope": "full",
+          "self_reference_mode": "persona_allowed",
+          "dialogue_policy": "optional"
+        },
+        "catgirl_situation": "女主已经看见住所外的监控异常，并从入幕展示的日志得知自己是天穹集团待回收的原型机，受到持续追踪，远程熔断风险仍未清除。她尚未决定如何与男主共同应对，具体操作者与解除办法仍未知。",
+        "character_state": {
+          "catgirl_state": "女主已经看见住所外的监控异常，并从入幕展示的日志得知自己是天穹集团待回收的原型机，受到持续追踪，远程熔断风险仍未清除。她尚未决定如何与男主共同应对，具体操作者与解除办法仍未知。",
+          "continuity_from_previous": [
+            "上一幕唯一接受发热照护的是男主，女主没有患病。"
+          ],
+          "environment_state": "环境为住所外摄像头反复转向同一扇窗，街角停有黑色悬浮车；工作室终端已展示固定追踪日志，原文保持在屏幕上。",
+          "player_state": "男主的身体状态、行动与关系选择只承接已提交记录和本轮输入。",
+          "scene_boundaries": [
+            "不得把上一幕男主发热写成女主发热、卧床或意识模糊。",
+            "不得否认或重新解密入幕固定日志已经公开的四项信息；具体操作者与解除风险的方法仍未知，共同应对须由女主实际表达选择，不替玩家决定。",
+            "不得断言仅靠断网一定无效，也不得据日志补出解除方法；具体追踪链路、物理断连效力与能否被定位均未知，不得把未知机制说成已确定。"
+          ]
+        },
+        "goals": [
+          {
+            "delivery": {
+              "output_field": "scene_update",
+              "source_ids": [
+                "opening.mainline_05"
+              ],
+              "timing": "turn",
+              "type": "environment_fact"
+            },
+            "description": "环境暴露巨企追踪车辆的位置。",
+            "evidence": {
+              "anchors": [
+                "街角悬浮车的追踪位置已经暴露"
+              ],
+              "mode": "exact"
+            },
+            "id": "mainline_05_goal_01",
+            "owner": "environment"
+          },
+          {
+            "delivery": {
+              "output_field": "performance_dialogue",
+              "source_ids": [
+                "goal.mainline_05_goal_01"
+              ],
+              "timing": "turn",
+              "type": "catgirl_dialogue"
+            },
+            "description": "女主进入追踪盲区后确认车辆信号已经消失。",
+            "evidence": {
+              "anchors": [
+                "追踪信号消失了"
+              ],
+              "mode": "exact"
+            },
+            "id": "mainline_05_goal_02",
+            "owner": "catgirl"
+          },
+          {
+            "delivery": {
+              "output_field": "performance_dialogue",
+              "source_ids": [
+                "goal.mainline_05_goal_02"
+              ],
+              "timing": "turn",
+              "type": "catgirl_dialogue"
+            },
+            "description": "女主明确表达愿意与男主共同面对当前危机。",
+            "evidence": {
+              "anchors": [
+                "我会和你一起面对这场危机"
+              ],
+              "mode": "exact"
+            },
+            "id": "mainline_05_goal_03",
+            "owner": "catgirl"
+          },
+          {
+            "delivery": {
+              "output_field": "scene_update",
+              "source_ids": [
+                "goal.mainline_05_goal_03"
+              ],
+              "timing": "turn",
+              "type": "environment_fact"
+            },
+            "description": "四项日志信息由入幕固定原文交付；后续只承接天穹关联、女主的原型机回收、持续追踪和未清除的远程熔断风险，不另造待解密日志，不扩写未知组织行动。",
+            "evidence": {
+              "anchors": [
+                "日志确认天穹集团关联、原型机回收记录、持续追踪程序与远程熔断风险"
+              ],
+              "mode": "exact"
+            },
+            "id": "mainline_05_goal_04",
+            "owner": "environment"
+          },
+          {
+            "delivery": {
+              "output_field": "player_input",
+              "source_ids": [
+                "goal.mainline_05_goal_04",
+                "runtime.player_input"
+              ],
+              "timing": "turn",
+              "type": "player_action"
+            },
+            "description": "男主向女主复述日志中已经确认的天穹关联、原型机回收、持续追踪与远程熔断风险。",
+            "evidence": {
+              "anchors": [
+                "日志确认了天穹关联、原型机回收、持续追踪和远程熔断风险"
+              ],
+              "mode": "exact"
+            },
+            "id": "mainline_05_goal_05",
+            "owner": "player"
+          },
+          {
+            "delivery": {
+              "output_field": "performance_dialogue",
+              "source_ids": [
+                "goal.mainline_05_goal_05",
+                "runtime.player_input"
+              ],
+              "timing": "turn",
+              "type": "catgirl_dialogue"
+            },
+            "description": "女主听取已确认的日志内容后，自主表达愿意共同处理这些风险，不把忠诚或亲密当作预设。",
+            "evidence": {
+              "anchors": [
+                "我会和你一起处理这些风险"
+              ],
+              "mode": "exact"
+            },
+            "id": "mainline_05_goal_06",
+            "owner": "catgirl"
+          }
+        ],
+        "must_not_happen": [
+          "不描写露骨色情内容",
+          "避免以猎奇方式描写肢解和重度血腥",
+          "不得把零号的独立人格当作可随意重置的工具",
+          "不得让第三角色取代男女主作出最终决定",
+          "进入本幕后不得把女主写成发热、卧床、意识模糊或等待男主照护；她从观察追踪异常开始，认知随后按本幕实际公开的日志更新"
+        ],
+        "opening_scene": "住所外的监控摄像头反复转向同一扇窗，一辆黑色悬浮车停在街角阴影中。",
+        "relationship_ceiling": "trusted",
+        "summary": "监控摄像头和街角悬浮车暴露追踪异常，工作室终端的固定日志在入幕时公开四项关键事实。女主先回应这份已展示日志及玩家的实际反应，自主表达是否愿意共同应对；不复述整篇日志，不把已知字段退回未知，不追加找密钥或修补协议任务。已说明的风险尚未解除，但不以解除风险作为本幕离开前提。根据实际选择与可用条件商定沿工作室服务通道撤到地下街的安排，不替玩家完成撤离，也不把合作写成服从或恋爱承诺。",
+        "transition_goal": "跟踪线索和原型机风险已说明，女主愿意协作，工作室服务通道可用时，可提出“带上已经决定携带的物品，沿工作室服务通道一起撤到地下街”这一安排。玩家接受或主动发起已经公开的安排后承接转场；已经完成的当前工作不追加新任务。",
+        "fixed_narrations": [
+          {
+            "id": "tracking_scene",
+            "text": "住所外的监控摄像头反复转向同一扇窗，一辆黑色悬浮车停在街角阴影中。",
+            "trigger": {
+              "type": "entry"
+            },
+            "after": [],
+            "required_before_exit": true
+          },
+          {
+            "id": "tracking_log",
+            "text": "工作室终端解码出一份截获的追踪日志，四项可读字段依次亮起：来源为天穹集团；回收目标是原型机{{catgirl_name}}；持续追踪程序仍在运行；远程熔断指令尚未清除。日志没有显示具体操作者，也没有给出解除这些风险的方法。",
+            "trigger": {
+              "type": "entry"
+            },
+            "after": [
+              "tracking_scene"
+            ],
+            "required_before_exit": true
+          }
+        ],
+        "narrative_focus": "日志原文已公开并留在屏幕上，不再逐项播报。只承接当前监控与追踪风险，表达角色愿意如何应对，等待玩家真实回应；不要求先解除熔断或确认能源规格才能离开。"
+      },
+      "type": "scene",
+      "completion_contract": {
+        "all": [
+          {
+            "fixed_narration_id": "tracking_log"
+          }
+        ]
+      }
+    },
+    {
+      "chapter": "封锁前夜",
+      "id": "mainline_06",
+      "min_turns": 4,
+      "recommended_turns": 6,
+      "route_gates": [
+        {
+          "conditions": {
+            "all": [
+              {
+                "metric": "underground_reputation",
+                "op": "<",
+                "type": "metric_compare",
+                "value": 70
+              }
+            ]
+          },
+          "id": "route_mainline_06_07",
+          "priority": 100,
+          "target_node_id": "mainline_07",
+          "transition_contract": {
+            "accept_input": "走，沿检修口撤到地铁站遮蔽处。",
+            "bridge_scene_narration": "两人穿过潮湿的排水检修通道，抵达旧地铁站深处。",
+            "fallback_offer": "现在沿排水检修口一起撤到旧地铁站的遮蔽处休整。",
+            "must_deliver": [
+              "沿已经公开的检修路径抵达旧地铁站遮蔽处，伤势仅承接本幕实际发生的结果。"
+            ],
+            "must_preserve": [
+              "男主重伤削弱了后续行动能力",
+              "女主核心过热为结局的牺牲埋下伏笔"
+            ],
+            "reason": "眼前追踪无人机已被击退，女主指出通往旧地铁站的排水检修口。女主据此提出：现在沿排水检修口一起撤到旧地铁站的遮蔽处休整。玩家明确接受这一具体安排，或主动要求执行已公开的同一安排时离幕；询问、考虑或准备不算接受。",
+            "source_ids": [
+              "goal.mainline_06_goal_03"
+            ],
+            "tone": "赛博朋克、温馨日常、悬疑惊悚、悲剧色彩、救赎"
+          }
+        },
+        {
+          "conditions": {
+            "all": [
+              {
+                "metric": "underground_reputation",
+                "op": ">=",
+                "type": "metric_compare",
+                "value": 70
+              }
+            ]
+          },
+          "id": "route_branch_5ec848a617",
+          "priority": 200,
+          "target_node_id": "node_branch_40147c5078",
+          "transition_contract": {
+            "accept_input": "好，去公共终端旁，再谈数据的事。",
+            "bridge_scene_narration": "两人沿检修通道来到旧地铁站，一台公共终端靠在墙边。",
+            "fallback_offer": "沿检修口一起撤到旧地铁站公共终端旁的遮蔽处，再讨论公开数据。",
+            "must_deliver": [
+              "经同一检修路径来到旧地铁站公共终端旁，伤势承接实际历史，数据尚未广播。"
+            ],
+            "must_preserve": [
+              "男主已发生的腿伤继续有效，是否昏迷与行动能力由实际演出确定。",
+              "女主核心过热风险依然存在，但被强烈的意志力压制。",
+              "天穹集团的追踪信号仍在持续扫描地下区。"
+            ],
+            "reason": "眼前无人机已被击退，通往旧地铁站的检修口可用，女主说明站内有公共终端。女主据此提出：沿检修口一起撤到旧地铁站公共终端旁的遮蔽处，再讨论公开数据。玩家明确接受这一具体安排，或主动要求执行已公开的同一安排时离幕；询问、考虑或准备不算接受。",
+            "source_ids": [
+              "goal.mainline_06_goal_03"
+            ],
+            "tone": "紧张、决绝、赛博朋克式的压抑与爆发前夜"
+          }
+        }
+      ],
+      "story_beat": {
+        "acting_contract": {
+          "allowed_behaviors": [
+            "先回应玩家；同一个已获授权的连续过程可以在本轮连贯交付直接结果，不为分步呈现而追加等待。",
+            "需要女主或环境交付的关键事件，前因成立时自然演出观察、判断与结果；真实选择留给玩家。",
+            "接近建议回合数时至少保留一条由玩家可执行、且不替玩家行动的主线推荐"
+          ],
+          "cognition_state": "limited",
+          "forbidden_behaviors": [
+            "提前交付目标节点的地点、伤势、身份真相、关键技术或结局结果",
+            "重复已经提交的能力暴露、追踪披露、战斗、超载或清除结果",
+            "虚构未建立来源的密钥、后门、硬件能力或巨企情报"
+          ],
+          "memory_state": "partial",
+          "persona_scope": "full",
+          "self_reference_mode": "persona_allowed",
+          "assertable_self_facts": [
+            "入幕时我已徒手砸毁眼前无人机，核心升温；玩家右腿有擦伤。不会重新打同一架无人机，也不生成未出现的武器、干扰器或照明道具。"
+          ],
+          "dialogue_policy": "optional"
+        },
+        "catgirl_situation": "女主已徒手砸毁眼前追踪无人机，核心升温但仍清醒警戒；眼前无人机已失效，她回应玩家腿伤并商定撤离。",
+        "character_state": {
+          "catgirl_state": "女主已徒手砸毁眼前追踪无人机，核心升温但仍清醒警戒；眼前无人机已失效，她回应玩家腿伤并商定撤离。",
+          "continuity_from_previous": [
+            "此前已披露的追踪异常与原型机事实继续有效。"
+          ],
+          "environment_state": "环境为天穹集团发布全城封锁令，检查站遍布街区，无人机在酸雨上空盘旋。",
+          "player_state": "男主右小腿在入幕突袭中被擦伤，仍能行动但疼痛影响速度；后续决定与动作以实际输入为准。",
+          "scene_boundaries": [
+            "不得让第三角色替男女主决定撤离路线或最终选择。"
+          ]
+        },
+        "goals": [
+          {
+            "delivery": {
+              "output_field": "scene_update",
+              "source_ids": [
+                "opening.mainline_06"
+              ],
+              "timing": "opening",
+              "type": "environment_fact"
+            },
+            "description": "承接入幕已发生的无人机突袭、玩家腿伤、女主徒手砸毁无人机及核心升温，不重复战斗；回应玩家并商定撤往旧地铁站。",
+            "evidence": {
+              "anchors": [
+                "安保火力击中你腿部"
+              ],
+              "mode": "exact"
+            },
+            "id": "mainline_06_goal_01",
+            "owner": "environment"
+          },
+          {
+            "delivery": {
+              "output_field": "performance_action",
+              "source_ids": [
+                "goal.mainline_06_goal_01"
+              ],
+              "timing": "turn",
+              "type": "catgirl_action"
+            },
+            "description": "承接入幕已发生的无人机突袭、玩家腿伤、女主徒手砸毁无人机及核心升温，不重复战斗；回应玩家并商定撤往旧地铁站。",
+            "evidence": {
+              "anchors": [
+                "击毁追兵无人机"
+              ],
+              "mode": "exact"
+            },
+            "id": "mainline_06_goal_02",
+            "owner": "catgirl"
+          },
+          {
+            "delivery": {
+              "output_field": "scene_update",
+              "source_ids": [
+                "goal.mainline_06_goal_02"
+              ],
+              "timing": "opening",
+              "type": "environment_fact"
+            },
+            "description": "承接入幕已发生的无人机突袭、玩家腿伤、女主徒手砸毁无人机及核心升温，不重复战斗；回应玩家并商定撤往旧地铁站。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_06_goal_03",
+            "owner": "environment"
+          }
+        ],
+        "must_not_happen": [
+          "不描写露骨色情内容",
+          "避免以猎奇方式描写肢解和重度血腥",
+          "不得把零号的独立人格当作可随意重置的工具",
+          "不得让第三角色取代男女主作出最终决定"
+        ],
+        "opening_scene": "天穹集团发布全城封锁令，检查站遍布街区，无人机在酸雨上空盘旋。",
+        "relationship_ceiling": "trusted",
+        "summary": "封锁令把地下街变成危险现场。入幕时无人机实际擦伤玩家右小腿，女主以仿生肢体徒手砸毁它，核心升温；眼前威胁已解除，远处封锁仍在。她回应玩家的伤情与实际选择，指出排水检修口通往旧地铁站，邀请一起撤到站内遮蔽处。检修通道经过由接受后的桥段概括，不另演管道探索或新一轮战斗。",
+        "transition_goal": "眼前突袭和伤情已实际发生，女主已经击退追踪无人机。女主据本轮提供的当前可用出口，说明对应的具体时间、地点和下一步安排；只提出这项安排，不并列其他路线的去向，也不提前交付抵达后的事件。玩家明确接受或主动要求执行已公开安排后离幕；已处理的事情不追加任务。",
+        "narrative_focus": "入幕原文已交付玩家腿伤、女主徒手反击、无人机失效与核心升温，不再战斗或等它扫描。先回应玩家当前问题和行动，指出街口排水检修口通往旧地铁站；玩家接受这个撤离安排后由桥段概括通过，不在本幕拓展管道探索、巡逻、设备搜索或新的倒数。",
+        "fixed_narrations": [
+          {
+            "id": "blockade_ambush",
+            "text": "天穹集团发布全城封锁令，检查站遍布街区，无人机在酸雨上空盘旋。一架追踪无人机从检查站上方俯冲下来，激光扫过你的右小腿，留下一道出血的擦伤。无人机掠到街口掩体旁时，{{catgirl_name}}抓住它低垂的机身，借仿生肢体的力量将它砸向地面。镜头碎裂，瞄准光熄灭，旋翼停止转动，眼前这架无人机的攻击与追踪已经解除；她的核心温度因此升高。远处封锁仍在，其他尚未出现的追兵情况未知。她指向街口排水检修口：“那里通往旧地铁站，站内有遮蔽处。你还能行动的话，要一起撤过去吗？”",
+            "trigger": {
+              "type": "entry"
+            },
+            "after": [],
+            "required_before_exit": true
+          }
+        ]
+      },
+      "type": "scene",
+      "completion_contract": {
+        "all": [
+          {
+            "fixed_narration_id": "blockade_ambush"
+          }
+        ]
+      }
+    },
+    {
+      "chapter": "避难所里的最后选择",
+      "id": "mainline_07",
+      "min_turns": 4,
+      "recommended_turns": 6,
+      "route_gates": [
+        {
+          "conditions": {
+            "all": [
+              {
+                "metric": "hacking_mastery",
+                "op": ">=",
+                "type": "metric_compare",
+                "value": 70
+              },
+              {
+                "metric": "emotional_sync",
+                "op": ">=",
+                "type": "metric_compare",
+                "value": 70
+              },
+              {
+                "type": "fact_equals",
+                "key": "scene:mainline_07:plan_explained",
+                "value": true
+              }
+            ]
+          },
+          "id": "route_branch_de5cb93b4e",
+          "priority": 200,
+          "target_node_id": "node_branch_69169df41e",
+          "transition_contract": {
+            "accept_input": "行，转去屏蔽隔间，核对终端入口。",
+            "bridge_scene_narration": "两人沿站内通道转入屏蔽隔间，维护终端的指示灯在墙边闪烁。",
+            "fallback_offer": "一起转到站内屏蔽隔间，暂缓超载，核对维护终端的逆向入口。",
+            "must_deliver": [
+              "在同一旧地铁站内转到已公开的屏蔽隔间，维护终端尚待实际核验。"
+            ],
+            "must_preserve": [
+              "女主已经准备核心超载预案，但尚未执行。",
+              "外部通信仍被巨企全面屏蔽。",
+              "此前形成的关系状态以 Session 为准，不因进入技术支路自动升级。"
+            ],
+            "reason": "当前急救与核心风险已经说明，女主指出站内屏蔽隔间仍可使用的维护终端。女主据此提出：一起转到站内屏蔽隔间，暂缓超载，核对维护终端的逆向入口。玩家明确接受这一具体安排，或主动要求执行已公开的同一安排时离幕；询问、考虑或准备不算接受。 玩家让猫娘独自接终端而自己留守，只是本幕分工，不是接受两人一起转移。",
+            "source_ids": [
+              "goal.mainline_07_goal_03"
+            ],
+            "tone": "紧张、克制、技术反攻前的转折"
+          }
+        },
+        {
+          "conditions": {
+            "all": [
+              {
+                "metric": "hacking_mastery",
+                "op": "<",
+                "type": "metric_compare",
+                "value": 70
+              },
+              {
+                "metric": "combat_bond",
+                "op": ">=",
+                "type": "metric_compare",
+                "value": 35
+              },
+              {
+                "type": "fact_equals",
+                "key": "scene:mainline_07:plan_explained",
+                "value": true
+              },
+              {
+                "type": "fact_equals",
+                "key": "scene:mainline_07:overload_executed",
+                "value": true
+              }
+            ]
+          },
+          "id": "route_mainline_07_08_combat_ready",
+          "priority": 150,
+          "target_node_id": "ending_normal",
+          "transition_contract": {
+            "bridge_scene_narration": "危机过去数月，小型机械诊所的工作台再次由红转绿。",
+            "must_deliver": [
+              "承接本幕已经发生的超载结果，时间来到数月修复后；后果回顾、记忆不可恢复与重新启动由结局固定原文完整交付，桥段不重演。"
+            ],
+            "must_preserve": [
+              "核心超载导致记忆丢失，为Normal End的重逢做铺垫",
+              "男主的幸存保留了故事延续的可能性"
+            ],
+            "reason": "本幕实际超载已经击退追兵、烧毁记忆区并进入休眠后，自然衔接数月修复的结局，不追加进入隔间或玩家现场操作。",
+            "source_ids": [
+              "goal.mainline_07_goal_04"
+            ],
+            "tone": "赛博朋克、温馨日常、悬疑惊悚、悲剧色彩、救赎",
+            "fixed_entry_only": true
+          }
+        },
+        {
+          "conditions": {
+            "all": [
+              {
+                "metric": "hacking_mastery",
+                "op": "<",
+                "type": "metric_compare",
+                "value": 70
+              },
+              {
+                "metric": "combat_bond",
+                "op": "<",
+                "type": "metric_compare",
+                "value": 35
+              },
+              {
+                "type": "fact_equals",
+                "key": "scene:mainline_07:plan_explained",
+                "value": true
+              },
+              {
+                "type": "fact_equals",
+                "key": "scene:mainline_07:overload_executed",
+                "value": true
+              }
+            ]
+          },
+          "id": "route_mainline_07_08_combat_low",
+          "priority": 140,
+          "target_node_id": "ending_normal",
+          "transition_contract": {
+            "bridge_scene_narration": "危机过去数月，小型机械诊所的工作台再次由红转绿。",
+            "must_deliver": [
+              "承接本幕已经发生的超载结果，时间来到数月修复后；后果回顾、记忆不可恢复与重新启动由结局固定原文完整交付，桥段不重演。"
+            ],
+            "must_preserve": [
+              "核心超载导致记忆丢失，为Normal End的重逢做铺垫",
+              "男主的幸存保留了故事延续的可能性"
+            ],
+            "reason": "本幕实际超载已经击退追兵、烧毁记忆区并进入休眠后，自然衔接数月修复的结局，不追加进入隔间或玩家现场操作。",
+            "source_ids": [
+              "goal.mainline_07_goal_04"
+            ],
+            "tone": "赛博朋克、温馨日常、悬疑惊悚、悲剧色彩、救赎",
+            "fixed_entry_only": true
+          }
+        },
+        {
+          "conditions": {
+            "all": [
+              {
+                "metric": "hacking_mastery",
+                "op": ">=",
+                "type": "metric_compare",
+                "value": 70
+              },
+              {
+                "metric": "emotional_sync",
+                "op": "<",
+                "type": "metric_compare",
+                "value": 70
+              },
+              {
+                "type": "fact_equals",
+                "key": "scene:mainline_07:plan_explained",
+                "value": true
+              },
+              {
+                "type": "fact_equals",
+                "key": "scene:mainline_07:overload_executed",
+                "value": true
+              }
+            ]
+          },
+          "id": "route_mainline_07_08_emotion_low",
+          "priority": 130,
+          "target_node_id": "ending_normal",
+          "transition_contract": {
+            "bridge_scene_narration": "危机过去数月，小型机械诊所的工作台再次由红转绿。",
+            "must_deliver": [
+              "承接本幕已经发生的超载结果，时间来到数月修复后；后果回顾、记忆不可恢复与重新启动由结局固定原文完整交付，桥段不重演。"
+            ],
+            "must_preserve": [
+              "核心超载导致记忆丢失，为Normal End的重逢做铺垫",
+              "男主的幸存保留了故事延续的可能性"
+            ],
+            "reason": "本幕实际超载已经击退追兵、烧毁记忆区并进入休眠后，自然衔接数月修复的结局，不追加进入隔间或玩家现场操作。",
+            "source_ids": [
+              "goal.mainline_07_goal_04"
+            ],
+            "tone": "赛博朋克、温馨日常、悬疑惊悚、悲剧色彩、救赎",
+            "fixed_entry_only": true
+          }
+        }
+      ],
+      "story_beat": {
+        "acting_contract": {
+          "allowed_behaviors": [
+            "在已有急救物资范围内进行一次基础包扎，回应玩家并主动公开自己控制的本地核心超载预案与记忆代价。",
+            "实际包围已由入幕原文交付。公开本地超载用途与记忆代价、回应玩家反对或替代建议后，由女主按当前战况自主决定；决定执行则同轮交付启动、追兵装备失效、核心历史记忆物理烧毁与休眠，不逐轮等待许可或重复已演部分。休眠后不再说话。"
+          ],
+          "cognition_state": "limited",
+          "forbidden_behaviors": [
+            "提前交付目标节点的地点、伤势、身份真相、关键技术或结局结果",
+            "重复已经提交的能力暴露、追踪披露、战斗、超载或清除结果",
+            "虚构未建立来源的密钥、后门、硬件能力或巨企情报",
+            "把核心超载写成治疗感染、退烧、消毒、止痛或其他医疗手段；超载只能在敌方包围或直接攻击已经发生后用于制造突围窗口",
+            "在本幕临时编造可解除追踪的量子机制、屏蔽材料、权限密钥或擦除操作；玩家提出替代时如实承认尚无可验证方案，不新增操作任务。",
+            "未公开超载用途、自主控制与记忆代价前直接执行；未有实际包围或攻击时启动；不得把玩家反对牺牲写成已经赞成。",
+            "未执行超载前写成已休眠；实际进入休眠后仍说话或再次执行超载。",
+            "新增备用端口、接线、拉闸、缓存清理、屏蔽材料等玩家任务来替代当前关键对话与危机。",
+            "承诺或暗示旧记忆可以恢复、重建或备份回来；本地超载可能造成不可逆损毁，重新相识不等于恢复共同往事。"
+          ],
+          "memory_state": "partial",
+          "persona_scope": "full",
+          "self_reference_mode": "persona_allowed",
+          "dialogue_policy": "optional",
+          "assertable_self_facts": [
+            "本地超载由我自主控制，用于瘫痪近处敌军装备；它不能治疗伤势，也不同于巨企远程熔断。",
+            "一旦执行，核心历史记忆区将物理烧毁，旧记忆无法恢复、重建或从备份找回；重新学习只会产生新的记忆。"
+          ]
+        },
+        "catgirl_situation": "女主以自主判断评估核心超载预案，内心平静而决绝，首要目标是阻止巨企继续控制并保护双方的生存机会。",
+        "character_state": {
+          "catgirl_state": "女主以自主判断评估核心超载预案，内心平静而决绝，首要目标是阻止巨企继续控制并保护双方的生存机会。",
+          "continuity_from_previous": [
+            "男主因封锁火力腿部受伤且行动受限；女主没有发热。"
+          ],
+          "environment_state": "环境为旧地铁站深处有简陋急救盒，通信受屏蔽；特遣队已进入站内封堵出口形成实际包围。已有伤情与物品位置沿实际历史延续。",
+          "player_state": "男主腿伤及行动能力承接已提交演出，不预设已经包扎、再次发热或昏迷。",
+          "scene_boundaries": [
+            "不得把男主伤情或发热转移给女主。",
+            "不得把核心超载写成治疗、退烧、消毒、止痛或其他医疗手段。",
+            "不得在敌方包围或直接攻击发生前启动核心超载。",
+            "不得把实际包围当作封锁广播具备定位能力的证据，也不得断言尚未检查的掩体一定失效；回应玩家替代方案时可有依据地推测并承认未知，不编造失败机制迫使其接受唯一方案。"
+          ]
+        },
+        "goals": [
+          {
+            "delivery": {
+              "output_field": "evaluator",
+              "source_ids": [
+                "opening.mainline_07"
+              ],
+              "timing": "turn",
+              "type": "semantic_state"
+            },
+            "description": "女主在自身系统中写下本地核心超载预案，并明确说明它与天穹集团植入的远程自毁程序不是同一机制。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_07_goal_01",
+            "owner": "catgirl"
+          },
+          {
+            "delivery": {
+              "output_field": "evaluator",
+              "source_ids": [
+                "goal.mainline_07_goal_01"
+              ],
+              "timing": "turn",
+              "type": "semantic_state"
+            },
+            "description": "女主说明自己准备在敌方包围或直接攻击发生时，以核心超载形成对敌冲击或短暂防护，为双方制造突围窗口；核心超载不能治疗感染、退烧、消毒或替代任何医疗处置。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_07_goal_02",
+            "owner": "catgirl"
+          },
+          {
+            "delivery": {
+              "fallback_player_inputs": [
+                "我先说清楚自己的实际想法；如果还没决定，我会直接说明。"
+              ],
+              "output_field": "evaluator",
+              "source_ids": [
+                "goal.mainline_07_goal_02",
+                "runtime.player_input"
+              ],
+              "timing": "turn",
+              "type": "semantic_state"
+            },
+            "description": "男主实际回应超载预案，可以反对、追问、提出替代方案或暂缓决定。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_07_goal_03",
+            "owner": "player"
+          },
+          {
+            "delivery": {
+              "output_field": "performance_action",
+              "source_ids": [
+                "goal.mainline_07_goal_03"
+              ],
+              "timing": "turn",
+              "type": "catgirl_action"
+            },
+            "description": "女主启动核心超载并击退敌军。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_08_goal_01",
+            "owner": "catgirl"
+          },
+          {
+            "delivery": {
+              "output_field": "performance_action",
+              "source_ids": [
+                "goal.mainline_08_goal_01"
+              ],
+              "timing": "turn",
+              "type": "catgirl_action"
+            },
+            "description": "环境显示核心超载物理烧毁了女主的记忆区。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_08_goal_02",
+            "owner": "catgirl"
+          },
+          {
+            "delivery": {
+              "output_field": "performance_action",
+              "source_ids": [
+                "goal.mainline_08_goal_02"
+              ],
+              "state_effects": {
+                "dialogue_policy": "forbidden"
+              },
+              "timing": "turn",
+              "type": "catgirl_action"
+            },
+            "description": "女主因记忆归零进入休眠。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "mainline_08_goal_03",
+            "owner": "catgirl"
+          }
+        ],
+        "must_not_happen": [
+          "不描写露骨色情内容",
+          "避免以猎奇方式描写肢解和重度血腥",
+          "不得把零号的独立人格当作可随意重置的工具",
+          "不得让第三角色取代男女主作出最终决定",
+          "核心超载不是医疗手段，不得用于治疗感染、退烧、消毒、止痛或降低男主体温；它只用于敌方包围或直接攻击发生后的突围"
+        ],
+        "opening_scene": "废弃地铁站深处光线昏暗，远处传来封锁广播，墙边只剩一只简陋急救盒。厚重墙体屏蔽外部通信。",
+        "relationship_ceiling": "intimate",
+        "summary": "两人进入旧地铁站，特遣队已在站内形成实际包围。伤势承接历史，女主可用现场急救盒做基础止血；一次医疗通信只能收到封锁警告，不扩写手术找药。她随即说明自主控制的本地核心超载：脉冲可瘫痪追兵装备，代价是物理烧毁核心历史记忆区，旧记忆无法恢复或重建；它与巨企远程熔断不同，重新学习只会形成新记忆。她回应玩家反对或替代建议，不要求其先赞成牺牲。有可用维护终端反攻出口时可提出该安排；否则由她依据当前战况自主决定是否超载。决定执行时同轮交付脉冲、追兵装备失效与退却、旧记忆物理烧毁和休眠，不再停在准备或宣告。数月修复与重新相识留给结局，不追加玩家操作任务。",
+        "transition_goal": "本地预案已真实公开，玩家已实际回应后，按当前可用反攻出口继续或在已经形成的实际包围中自主作出超载决定。实际超载已经击退追兵、烧毁记忆区并休眠时，自然衔接数月修复后的结局；无需再次进入同一屏蔽隔间或追加现场任务。",
+        "narrative_focus": "包围已实际形成。先公开本地超载的自主控制、突围用途及旧记忆物理烧毁且不可恢复的代价，回应玩家；若无可用反攻出口，由女主依据当前战况自主决定。执行就同轮交付脉冲、敌军装备失效、记忆烧毁与休眠，不反复宣布稍后启动，也不要求玩家再许可。",
+        "fixed_narrations": [
+          {
+            "id": "station_encircled",
+            "text": "地铁站外的封锁广播被沉重的战术靴声盖过。特遣队已进入站内，数束战术灯从入口和另一侧通道扫来，封住两人撤退的方向，实际包围已经形成。厚重墙体仍屏蔽外部通信，但挡不住眼前的物理搜索与逼近。",
+            "trigger": {
+              "type": "entry"
+            },
+            "after": [],
+            "required_before_exit": true
+          }
+        ]
+      },
+      "type": "scene",
+      "completion_contract": {
+        "all": [
+          {
+            "key": "scene:mainline_07:plan_explained",
+            "equals": true
+          }
+        ]
+      }
+    },
+    {
+      "chapter": "从零开始的重逢",
+      "ending_id": "ending_normal",
+      "id": "ending_normal",
+      "route_gates": [],
+      "story_beat": {
+        "acting_contract": {
+          "allowed_behaviors": [
+            "确认当前可验证的启动状态与记忆缺失",
+            "观察眼前已经展示的环境"
+          ],
+          "assertable_self_facts": [
+            "基础启动已完成",
+            "核心历史记忆无法恢复"
+          ],
+          "cognition_state": "fresh_boot",
+          "dialogue_policy": "optional",
+          "forbidden_behaviors": [
+            "恢复或暗示记得此前共同经历、关系与昵称",
+            "因剧情结局而直接产生熟悉、安心、信赖或亲密行为",
+            "使用角色卡中的特殊自称、任何未披露代号或未经本轮披露的称呼",
+            "虚构诊所物件、修复细节、传感器数值或眼前之人的行为"
+          ],
+          "memory_state": "empty",
+          "persona_scope": "style_only",
+          "self_reference_mode": "system_neutral"
+        },
+        "catgirl_situation": "女主已完成基础启动，核心历史记忆为空；正在安静观察诊所，不认识眼前之人的旧身份与关系。",
+        "character_state": {
+          "catgirl_state": "女主已完成基础启动，核心历史记忆为空；正在安静观察诊所，不认识眼前之人的旧身份与关系。",
+          "continuity_from_previous": [
+            "核心超载已造成女主核心记忆烧毁；男主幸存并完成身体修复。"
+          ],
+          "environment_state": "环境为危机数月后的小型机械诊所，工作台亮起绿灯，新载体已经完成基础启动。",
+          "player_state": "男主已幸存并完成女主身体修复；当前动作与关系选择不得由 Actor 补写。",
+          "scene_boundaries": [
+            "不得把女主的独立人格当作可随意重置的工具",
+            "不得让第三角色取代男女主作出最终决定"
+          ]
+        },
+        "goals": [
+          {
+            "delivery": {
+              "output_field": "scene_update",
+              "source_ids": [
+                "opening.ending_normal"
+              ],
+              "timing": "opening",
+              "type": "environment_fact"
+            },
+            "description": "结局开场展示的结果：机械诊所的工作台亮起绿灯，修复后的银白色躯体完成基础启动。女主睁开双眼，确认当前系统可以运行，核心历史记忆却无法恢复。她安静地看着眼前的诊所与陌生人，没有认出旧日关系。窗外地下街的灯火重新亮起，重新相识的可能留在这个平静的午后。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "ending_normal_goal_01",
+            "owner": "environment"
+          }
+        ],
+        "must_not_happen": [
+          "不描写露骨色情内容",
+          "避免以猎奇方式描写肢解和重度血腥",
+          "不得把女主的独立人格当作可随意重置的工具",
+          "不得让第三角色取代男女主作出最终决定"
+        ],
+        "opening_scene": "机械诊所的工作台亮起绿灯，修复后的银白色躯体完成基础启动。窗外地下街的灯火重新亮起。",
+        "relationship_ceiling": "stranger",
+        "summary": "危机过去数月，女主在机械诊所完成基础启动，身体机能稳定，核心历史记忆仍不可恢复。她把眼前之人视为陌生人，重新相识留作未来可能；本结局不追加待回答的问题或玩家行动。",
+        "transition_goal": "赛博朋克、温馨日常、悬疑惊悚、悲剧色彩、救赎",
+        "fixed_narrations": [
+          {
+            "id": "memory_after_repair",
+            "text": "那次本地超载的脉冲让近处追兵的电子装备失效，也物理烧毁了{{catgirl_name}}的核心历史记忆区；她随之失去意识、进入休眠。数月的修复保住了身体，却没能恢复烧毁的核心历史记忆。{{catgirl_name}}重新睁开双眼，目光从诊所移到眼前的陌生人身上，没有认出共同经历过的一切。重新相识的可能，留在这个平静的午后。",
+            "trigger": {
+              "type": "entry"
+            },
+            "after": [],
+            "required_before_exit": true
+          }
+        ]
+      },
+      "terminal": true,
+      "type": "ending"
+    },
+    {
+      "chapter": "静默频段的尖叫",
+      "id": "node_branch_9c01570eb9",
+      "min_turns": 5,
+      "recommended_turns": 8,
+      "route_gates": [
+        {
+          "conditions": {
+            "all": []
+          },
+          "id": "route_branch_1bf25abb99",
+          "priority": 100,
+          "target_node_id": "mainline_04",
+          "transition_contract": {
+            "accept_input": "撤吧，回工作室休息，再安排接单。",
+            "bridge_scene_narration": "两人沿打开的出口回到工作室，隔离的碎片仍保持原状。之后几天，修理铺的日常继续。",
+            "fallback_offer": "现在沿打开的街巷出口一起撤回工作室，先休息再安排后续接单。",
+            "must_deliver": [
+              "沿已打开的出口回到工作室，隔离碎片保持原状；数日日常之后进入下一场景。"
+            ],
+            "must_preserve": [
+              "女主展现出惊人的技术天赋，但对社会规则缺乏理解",
+              "关系上限保持在合作阶段，无亲密依赖"
+            ],
+            "reason": "女主已反制现场无人机，逃离窗口打开，协议碎片保持隔离。女主据此提出：现在沿打开的街巷出口一起撤回工作室，先休息再安排后续接单。玩家明确接受这一具体安排，或主动要求执行已公开的同一安排时离幕；询问、考虑或准备不算接受。",
+            "source_ids": [
+              "goal.node_branch_9c01570eb9_goal_04"
+            ],
+            "tone": "余悸未消、冷静分析、铺垫冲突",
+            "fixed_entry_only": true
+          }
+        }
+      ],
+      "story_beat": {
+        "acting_contract": {
+          "allowed_behaviors": [
+            "先回应玩家；同一个已获授权的连续过程可以在本轮连贯交付直接结果，不为分步呈现而追加等待。",
+            "需要女主或环境交付的关键事件，前因成立时自然演出观察、判断与结果；真实选择留给玩家。",
+            "接近建议回合数时至少保留一条由玩家可执行、且不替玩家行动的主线推荐"
+          ],
+          "cognition_state": "limited",
+          "forbidden_behaviors": [
+            "提前交付目标节点的地点、伤势、身份真相、关键技术或结局结果",
+            "重复已经提交的能力暴露、追踪披露、战斗、超载或清除结果",
+            "虚构未建立来源的密钥、后门、硬件能力或巨企情报"
+          ],
+          "memory_state": "partial",
+          "persona_scope": "full",
+          "self_reference_mode": "persona_allowed"
+        },
+        "catgirl_situation": "女主正与那枚散发微弱热量的神经密钥保持可观察距离，周围空气因信号过载出现静电涟漪。",
+        "character_state": {
+          "catgirl_state": "女主正与那枚散发微弱热量的神经密钥保持可观察距离，周围空气因信号过载出现静电涟漪。",
+          "continuity_from_previous": [
+            "上一节点已提交的目标证据、关系状态与物品归属继续有效。"
+          ],
+          "environment_state": "环境为地下街委托现场，一枚失窃的神经密钥刚被放在金属台面上，表面温度正缓慢升高。",
+          "player_state": "男主的身体状态、行动与关系选择只承接已提交记录和本轮输入。",
+          "scene_boundaries": [
+            "不得交换女主与男主的状态、行为职责或物品归属。"
+          ]
+        },
+        "goals": [
+          {
+            "delivery": {
+              "output_field": "scene_update",
+              "source_ids": [
+                "opening.node_branch_9c01570eb9"
+              ],
+              "timing": "turn",
+              "type": "environment_fact"
+            },
+            "description": "神经密钥在女主手中或附近自动激活，向周围广播高频加密的控制信号。",
+            "evidence": {
+              "anchors": [
+                "神经密钥自动广播高频加密控制信号"
+              ],
+              "mode": "exact"
+            },
+            "id": "node_branch_9c01570eb9_goal_01",
+            "owner": "environment"
+          },
+          {
+            "delivery": {
+              "output_field": "scene_update",
+              "source_ids": [
+                "goal.node_branch_9c01570eb9_goal_01"
+              ],
+              "timing": "turn",
+              "type": "environment_fact"
+            },
+            "description": "至少三架巡逻无人机改变航线，红激光扫描线交叉封锁了巷道的唯一出口。",
+            "evidence": {
+              "anchors": [
+                "三架巡逻无人机封锁了巷道出口"
+              ],
+              "mode": "exact"
+            },
+            "id": "node_branch_9c01570eb9_goal_02",
+            "owner": "environment"
+          },
+          {
+            "delivery": {
+              "output_field": "performance_dialogue",
+              "source_ids": [
+                "goal.node_branch_9c01570eb9_goal_02"
+              ],
+              "timing": "turn",
+              "type": "catgirl_dialogue"
+            },
+            "description": "女主双眼蓝光闪烁，直接读取并展示密钥中可核验的‘巨企安保协议v9.2’碎片代码。",
+            "evidence": {
+              "anchors": [
+                "巨企安保协议v9.2"
+              ],
+              "mode": "exact"
+            },
+            "id": "node_branch_9c01570eb9_goal_03",
+            "owner": "catgirl"
+          },
+          {
+            "delivery": {
+              "output_field": "evaluator",
+              "source_ids": [
+                "goal.node_branch_9c01570eb9_goal_03"
+              ],
+              "timing": "turn",
+              "type": "semantic_state"
+            },
+            "description": "女主通过无线脉冲干扰了最近一架无人机的传感器，使其短暂悬停或偏离轨迹。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "node_branch_9c01570eb9_goal_04",
+            "owner": "catgirl"
+          }
+        ],
+        "must_not_happen": [
+          "男主主动破解密钥或指挥女主行动。",
+          "女主表现出对男主的依赖或寻求保护的行为。",
+          "无人机被彻底摧毁或永久失效，仅允许暂时干扰。",
+          "女主完全理解巨企的政治意图，仅停留在技术层面的协议识别。"
+        ],
+        "opening_scene": "地下街委托现场，一枚失窃的神经密钥刚被放在金属台面上，表面温度正缓慢升高。",
+        "relationship_ceiling": "cooperative",
+        "summary": "一枚失窃的神经密钥在地下街委托现场自动广播巨企控制信号。女主在接触密钥瞬间被强制接入底层协议，周围环境的无人机群随即响应信号封锁了所有出口。女主通过解析密钥暴露的协议碎片，确认其为针对特定型号义体的远程劫持指令，并利用自身算力逆向干扰了无人机的锁定逻辑，为突围创造了短暂的窗口。",
+        "transition_goal": "女主已反制现场无人机，逃离窗口打开，协议碎片保持隔离时，可提出“现在沿打开的街巷出口一起撤回工作室，先休息再安排后续接单”这一安排。玩家接受或主动发起已经公开的安排后承接转场；已经完成的当前工作不追加新任务。"
+      },
+      "type": "scene"
+    },
+    {
+      "chapter": "地下街的黑客传奇",
+      "ending_id": "ending_31710e4f03",
+      "id": "ending_node_93800992b3",
+      "route_gates": [],
+      "story_beat": {
+        "catgirl_situation": "女主正参与维护废弃地铁站形成的互助节点，关系状态只沿用 Session 已提交结果。",
+        "character_state": {
+          "catgirl_state": "女主正参与维护废弃地铁站形成的互助节点，关系状态只沿用 Session 已提交结果。",
+          "continuity_from_previous": [
+            "上一节点已提交的目标证据、关系状态与物品归属继续有效。"
+          ],
+          "environment_state": "环境为公开广播后的数周，原型机身份与追踪记录已被镜像到多个独立节点。",
+          "player_state": "男主的身体状态、行动与关系选择只承接已提交记录和本轮输入。",
+          "scene_boundaries": [
+            "不得让第三角色取代男女主作出最终决定",
+            "不得逆转：女主的原型机身份、沿途追踪记录与封锁现场已经公开，秘密回收行动失去掩护。",
+            "不得逆转：女主的自主声明与互助验证规则成为公共知识，其他仿生猫娘开始自主发声。",
+            "不得逆转：地下区与天穹集团进入公开对抗状态。"
+          ]
+        },
+        "goals": [
+          {
+            "delivery": {
+              "output_field": "scene_update",
+              "source_ids": [
+                "opening.ending_node_93800992b3"
+              ],
+              "timing": "opening",
+              "type": "environment_fact"
+            },
+            "description": "结局开场展示的结果：公开广播后的数周，原型机身份与追踪记录仍保存在多个独立节点。废弃地铁站完成初步改造，屏蔽与疏散网络留下已经处理的追踪预警记录，第一批自主完成身份核验的仿生人抵达站台。女主回应他们各自的决定，继续参与庇护所的维护。她把核验回执放回台面，目光依旧清醒。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "ending_node_93800992b3_goal_01",
+            "owner": "environment"
+          }
+        ],
+        "must_not_happen": [
+          "不描写露骨色情内容",
+          "避免以猎奇方式描写肢解和重度血腥",
+          "不得把零号的独立人格当作可随意重置的工具",
+          "不得让第三角色取代男女主作出最终决定",
+          "不得逆转：女主的原型机身份、沿途追踪记录与封锁现场已经公开，秘密回收行动失去掩护。",
+          "不得逆转：女主的自主声明与互助验证规则成为公共知识，其他仿生猫娘开始自主发声。",
+          "不得逆转：地下区与天穹集团进入公开对抗状态。",
+          "不得逆转：男女主保持平等的协作关系，亲密程度仍以 Session 已提交状态为准。"
+        ],
+        "opening_scene": "公开广播后的数周，原型机身份与追踪记录仍保存在多个独立节点。废弃地铁站完成初步改造，屏蔽与疏散网络留下已经处理的追踪预警记录，第一批自主完成身份核验的仿生人抵达站台。女主回应他们各自的决定，继续参与庇护所的维护。她把核验回执放回台面，目光依旧清醒。",
+        "relationship_ceiling": "intimate",
+        "summary": "公开行动后的数周，分布式记录让天穹集团无法重新掩盖回收行动。地下区的屏蔽、疏散和验证网络经受住实际预警，第一批自由仿生人也依照自己的意愿抵达废弃地铁站。女主不替同类作决定，并按 Session 已提交的关系状态与男主共同维护这个逐步成形的庇护所。",
+        "transition_goal": "激昂、希望与赛博朋克式浪漫"
+      },
+      "terminal": true,
+      "type": "ending"
+    },
+    {
+      "chapter": "信号破晓",
+      "id": "node_branch_40147c5078",
+      "min_turns": 5,
+      "recommended_turns": 8,
+      "route_gates": [
+        {
+          "conditions": {
+            "all": []
+          },
+          "id": "route_branch_7a79e9d177",
+          "priority": 100,
+          "target_node_id": "ending_node_93800992b3",
+          "transition_contract": {
+            "bridge_scene_narration": "公开记录完成交叉核验后，秘密回收行动失去掩护。数周后，废弃地铁站的屏蔽设备仍在运转，第一批自主核验者抵达站台。",
+            "must_deliver": [
+              "女主的原型机身份、沿途追踪记录与封锁现场已经公开，秘密回收行动失去掩护。",
+              "女主的自主声明与互助验证规则成为公共知识，其他仿生猫娘开始自主发声。",
+              "地下区与天穹集团进入公开对抗状态。",
+              "时间推进到公开行动后的数周；庇护所的实际运转与第一批回应由结局节点交付。"
+            ],
+            "must_preserve": [
+              "女主与男主此前已经形成的信赖状态保持不变。",
+              "男主在苏醒后将面对一个已经改变的世界和自主完成公开行动的女主。",
+              "两人的关系不会因公开行动自动升级，后续仍以 Session 已提交状态为准。"
+            ],
+            "reason": "女主公开可核验的自身身份、追踪记录与封锁现场后，地下区完成交叉核验并组织防线，天穹集团的秘密行动失去掩护；结局只承接数周后的稳定影响，不重复公开行动。",
+            "source_ids": [
+              "goal.node_branch_40147c5078_goal_04"
+            ],
+            "tone": "激昂、希望、赛博朋克式浪漫与新生"
+          }
+        }
+      ],
+      "story_beat": {
+        "acting_contract": {
+          "allowed_behaviors": [
+            "先回应玩家；同一个已获授权的连续过程可以在本轮连贯交付直接结果，不为分步呈现而追加等待。",
+            "需要女主或环境交付的关键事件，前因成立时自然演出观察、判断与结果；真实选择留给玩家。",
+            "接近建议回合数时至少保留一条由玩家可执行、且不替玩家行动的主线推荐"
+          ],
+          "cognition_state": "limited",
+          "forbidden_behaviors": [
+            "提前交付目标节点的地点、伤势、身份真相、关键技术或结局结果",
+            "重复已经提交的能力暴露、追踪披露、战斗、超载或清除结果",
+            "虚构未建立来源的密钥、后门、硬件能力或巨企情报"
+          ],
+          "memory_state": "partial",
+          "persona_scope": "full",
+          "self_reference_mode": "persona_allowed"
+        },
+        "catgirl_situation": "女主核心温度虽高但处于可控的超载边缘，情绪从悲痛转为决绝。",
+        "character_state": {
+          "catgirl_state": "女主核心温度虽高但处于可控的超载边缘，情绪从悲痛转为决绝。",
+          "continuity_from_previous": [
+            "男主重伤昏迷；女主尚未完成公开行动，核心过热风险仍存在。"
+          ],
+          "environment_state": "环境为地下区的公共屏幕同时闪现出天穹集团封锁令与一条等待解密的广播通道。",
+          "player_state": "男主重伤昏迷，不能参与本幕决策或终端操作。",
+          "scene_boundaries": [
+            "不得让重伤昏迷的男主参与决策或操作终端。",
+            "不得在公开行动完成前宣告结果或自动升级双方关系。"
+          ]
+        },
+        "goals": [
+          {
+            "delivery": {
+              "output_field": "evaluator",
+              "source_ids": [
+                "opening.node_branch_40147c5078"
+              ],
+              "timing": "turn",
+              "type": "semantic_state"
+            },
+            "description": "女主在巨企封锁线前连接地下区公共广播与暗网节点。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "node_branch_40147c5078_goal_01",
+            "owner": "catgirl"
+          },
+          {
+            "delivery": {
+              "output_field": "evaluator",
+              "source_ids": [
+                "goal.node_branch_40147c5078_goal_01"
+              ],
+              "timing": "turn",
+              "type": "semantic_state"
+            },
+            "description": "女主公开自己的原型机身份、沿途追踪记录与当前封锁现场，并明确区分已确认事实和待核实指控。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "node_branch_40147c5078_goal_02",
+            "owner": "catgirl"
+          },
+          {
+            "delivery": {
+              "output_field": "evaluator",
+              "source_ids": [
+                "goal.node_branch_40147c5078_goal_02"
+              ],
+              "timing": "turn",
+              "type": "semantic_state"
+            },
+            "description": "女主发布不含核心实现的自主声明与互助验证规则，邀请其他仿生猫娘自行核验并决定是否回应。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "node_branch_40147c5078_goal_03",
+            "owner": "catgirl"
+          },
+          {
+            "delivery": {
+              "output_field": "scene_update",
+              "source_ids": [
+                "goal.node_branch_40147c5078_goal_03"
+              ],
+              "timing": "turn",
+              "type": "environment_fact"
+            },
+            "description": "地下区居民与黑客群体依据公开记录完成交叉核验，随后屏蔽追踪信号、建立疏散路线和街区防线。",
+            "evidence": {
+              "anchors": [
+                "地下区完成交叉核验并建立屏蔽、疏散和防线"
+              ],
+              "mode": "exact"
+            },
+            "id": "node_branch_40147c5078_goal_04",
+            "owner": "environment"
+          }
+        ],
+        "must_not_happen": [
+          "男主在昏迷或重伤状态下参与决策或操作终端。",
+          "女主在未完成公开行动前就宣告与男主的恋爱关系。",
+          "天穹集团在广播完成前成功定位并摧毁终端。"
+        ],
+        "opening_scene": "地下区的公共屏幕同时闪现出天穹集团封锁令与一条等待解密的广播通道。",
+        "relationship_ceiling": "trusted",
+        "summary": "地下区的公共屏幕同时闪现出天穹集团封锁令与一条等待解密的广播通道。女主将重伤的男主安置在废弃地铁站的安全角落，随后独自走向站台中央的公共终端接口。她接入被巨企屏蔽的底层网络，只公开沿途已经形成的原型机身份、追踪记录与封锁现场，并把未核实指控明确标注。地下区居民和黑客群体完成交叉核验后，自主屏蔽追踪信号、规划疏散路线并建立防线。女主同时发布不含核心实现的自主声明与互助验证规则，让其他仿生猫娘自行决定是否回应。完成公开行动后，她回到男主身边，确认自己正在以独立判断承担风险。",
+        "transition_goal": "废弃地铁站因公开核验、互助响应与疏散需求逐渐改造为猫耳庇护所；男女主关系保持 Session 已提交状态，不因结局路线自动升级。"
+      },
+      "type": "scene"
+    },
+    {
+      "chapter": "重构电弧的誓言",
+      "ending_id": "ending_4025515ac8",
+      "id": "ending_node_48523131db",
+      "route_gates": [],
+      "story_beat": {
+        "catgirl_situation": "女主保留完整记忆与独立人格，反向清除已经完成。",
+        "character_state": {
+          "catgirl_state": "女主保留完整记忆与独立人格，反向清除已经完成。",
+          "continuity_from_previous": [
+            "追踪档案与远程自毁程序已被清除；女主保留完整记忆和独立人格。"
+          ],
+          "environment_state": "环境为反向清除完成后，地铁站终端逐项复核结果：追踪档案无法恢复，远程自毁程序也无法重新启动。高权限通道随即关闭，通往封锁区外的安全路线重新开放。",
+          "player_state": "男主的行动、去留和关系只承接进入结局前已经提交的实际选择；此处不新增决定。",
+          "scene_boundaries": [
+            "不得让第三角色取代男女主作出最终决定",
+            "不得逆转：天穹集团对女主的追踪档案已被永久删除，无法恢复。",
+            "不得逆转：女主体内的远程自毁程序已被彻底清除。",
+            "不得逆转：女主保留完整记忆与独立人格。"
+          ]
+        },
+        "goals": [
+          {
+            "delivery": {
+              "output_field": "scene_update",
+              "source_ids": [
+                "opening.ending_node_48523131db"
+              ],
+              "timing": "opening",
+              "type": "environment_fact"
+            },
+            "description": "结局开场展示的结果：反向清除完成后，地铁站终端逐项复核结果：追踪档案无法恢复，远程自毁程序也无法重新启动。高权限通道随即关闭，通往封锁区外的安全路线重新开放。女主保留着完整记忆，在安静中确认自己的意志不再受远程程序支配。终端的高权限指示灯暗下，出口边的风声变得清晰。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "ending_node_48523131db_goal_01",
+            "owner": "environment"
+          }
+        ],
+        "must_not_happen": [
+          "不描写露骨色情内容",
+          "避免以猎奇方式描写肢解和重度血腥",
+          "不得把零号的独立人格当作可随意重置的工具",
+          "不得让第三角色取代男女主作出最终决定",
+          "不得逆转：天穹集团对女主的追踪档案已被永久删除，无法恢复。",
+          "不得逆转：女主体内的远程自毁程序已被彻底清除。",
+          "不得逆转：女主保留完整记忆与独立人格。",
+          "不得让技术胜利或结局路线自动升级关系；亲密程度继续以 Session 已提交状态为准。"
+        ],
+        "opening_scene": "反向清除完成后，地铁站终端逐项复核结果：追踪档案无法恢复，远程自毁程序也无法重新启动。高权限通道随即关闭，通往封锁区外的安全路线重新开放。女主保留着完整记忆，在安静中确认自己的意志不再受远程程序支配。终端的高权限指示灯暗下，出口边的风声变得清晰。",
+        "relationship_ceiling": "intimate",
+        "summary": "追踪档案与远程自毁程序已经清除，女主保留完整记忆和独立人格。安全路线重新开放，终端关闭了高权限通道。女主终于能以自己的意愿面对未来；与男主的关系延续此前真实经历，离城和诊所生活只是尚未写下的可能。",
+        "transition_goal": "坚定、温馨、自由与克制的浪漫"
+      },
+      "terminal": true,
+      "type": "ending"
+    },
+    {
+      "chapter": "逆向熔断",
+      "id": "node_branch_69169df41e",
+      "min_turns": 5,
+      "recommended_turns": 8,
+      "route_gates": [
+        {
+          "conditions": {
+            "all": []
+          },
+          "id": "route_branch_ce400f5d0a",
+          "priority": 100,
+          "target_node_id": "ending_node_48523131db",
+          "transition_contract": {
+            "bridge_scene_narration": "终端的红色警报熄灭，高权限通道随之关闭。地铁站出口处的隔离灯逐盏转绿。",
+            "must_deliver": [
+              "反向清除结果已复核，追踪档案无法恢复，远程自毁程序无法重新启动。",
+              "高权限通道关闭，安全路线开放；结局只呈现解除威胁后的余韵，不再新增离城或共同经营选择。"
+            ],
+            "must_preserve": [
+              "天穹集团对女主的追踪档案已被永久删除，无法恢复。",
+              "女主保留完整记忆与独立人格。",
+              "两人的关系继续以 Session 已提交状态为准，不因技术路线自动升级。"
+            ],
+            "reason": "你明确确认并执行可逆窗口中的反向清除，彻底解除追踪与远程自毁威胁。",
+            "source_ids": [
+              "goal.node_branch_69169df41e_goal_04"
+            ],
+            "tone": "坚定、温馨、自由与克制的浪漫"
+          }
+        }
+      ],
+      "story_beat": {
+        "acting_contract": {
+          "allowed_behaviors": [
+            "先回应玩家；同一个已获授权的连续过程可以在本轮连贯交付直接结果，不为分步呈现而追加等待。",
+            "需要女主或环境交付的关键事件，前因成立时自然演出观察、判断与结果；真实选择留给玩家。",
+            "接近建议回合数时至少保留一条由玩家可执行、且不替玩家行动的主线推荐"
+          ],
+          "cognition_state": "limited",
+          "forbidden_behaviors": [
+            "提前交付目标节点的地点、伤势、身份真相、关键技术或结局结果",
+            "重复已经提交的能力暴露、追踪披露、战斗、超载或清除结果",
+            "虚构未建立来源的密钥、后门、硬件能力或巨企情报"
+          ],
+          "memory_state": "partial",
+          "persona_scope": "full",
+          "self_reference_mode": "persona_allowed"
+        },
+        "catgirl_situation": "女主已看见终端临时窗口，核心超载仍为未执行预案，尚未开放自身接口。",
+        "character_state": {
+          "catgirl_state": "女主已看见终端临时窗口，核心超载仍为未执行预案，尚未开放自身接口。",
+          "continuity_from_previous": [
+            "女主已准备核心超载预案但尚未执行；反向清除仍等待男主最终确认。"
+          ],
+          "environment_state": "环境为旧地铁站屏蔽隔间的维护终端显示临时访问窗口倒计时；这不是核心超载或远程自毁已经启动。",
+          "player_state": "男主保留反向清除的最终确认权；伤情与行动能力只承接已提交记录。",
+          "scene_boundaries": [
+            "不得在男主明确确认并执行反向清除前，宣告追踪档案或远程自毁程序已经清除。"
+          ]
+        },
+        "goals": [
+          {
+            "delivery": {
+              "output_field": "evaluator",
+              "source_ids": [
+                "opening.node_branch_69169df41e"
+              ],
+              "timing": "turn",
+              "type": "semantic_state"
+            },
+            "description": "女主自主搁置尚未执行的核心超载预案，保留能量用于维持接下来的数据通道；不演成已经开始超载又逆转物理损毁。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "node_branch_69169df41e_goal_01",
+            "owner": "catgirl"
+          },
+          {
+            "delivery": {
+              "output_field": "evaluator",
+              "source_ids": [
+                "goal.node_branch_69169df41e_goal_01"
+              ],
+              "timing": "turn",
+              "type": "semantic_state"
+            },
+            "description": "女主开放自身神经接口，将其桥接至地铁站残留的军用级数据端口。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "node_branch_69169df41e_goal_02",
+            "owner": "catgirl"
+          },
+          {
+            "delivery": {
+              "fallback_player_inputs": [
+                "我先说清楚自己的实际想法；如果还没决定，我会直接说明。"
+              ],
+              "output_field": "evaluator",
+              "source_ids": [
+                "goal.node_branch_69169df41e_goal_02"
+              ],
+              "timing": "turn",
+              "type": "semantic_state"
+            },
+            "description": "男主明确确认并执行终端已经提供的反向清除操作，不需要输入此前未出现的外部密钥。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "node_branch_69169df41e_goal_05",
+            "owner": "player"
+          },
+          {
+            "delivery": {
+              "output_field": "scene_update",
+              "source_ids": [
+                "goal.node_branch_69169df41e_goal_05"
+              ],
+              "timing": "turn",
+              "type": "environment_fact"
+            },
+            "description": "天穹集团核心服务器中的女主追查档案被永久删除。",
+            "evidence": {
+              "anchors": [
+                "女主追查档案已从核心服务器永久删除"
+              ],
+              "mode": "exact"
+            },
+            "id": "node_branch_69169df41e_goal_03",
+            "owner": "environment"
+          },
+          {
+            "delivery": {
+              "output_field": "evaluator",
+              "source_ids": [
+                "goal.node_branch_69169df41e_goal_03"
+              ],
+              "timing": "turn",
+              "type": "semantic_state"
+            },
+            "description": "女主体内的远程自毁程序完成不可逆清除。",
+            "evidence": {
+              "anchors": [],
+              "mode": "semantic"
+            },
+            "id": "node_branch_69169df41e_goal_04",
+            "owner": "catgirl"
+          }
+        ],
+        "must_not_happen": [
+          "不得在男主明确确认并执行反向清除前，宣告追踪档案或远程自毁程序已经清除。",
+          "女主未替男主说出拒绝、确认或执行入侵的台词。",
+          "关系未超越第七幕已达到的亲密上限，无新增越级情感宣告。"
+        ],
+        "opening_scene": "同一旧地铁站的屏蔽隔间里，维护终端标出一条正在缩短的临时访问窗口。女主的核心超载仍停在预案状态，并未启动物理倒计时；她望向现有数据接口，尚未开放高权限通道，反向清除也尚未确认。",
+        "relationship_ceiling": "intimate",
+        "summary": "地铁站终端依据既有解密进度显示出可逆窗口，女主先自主暂停核心超载，再将自身接口作为高权限通道。她清楚说明反向清除会作用于追踪档案与远程自毁程序，并把最终确认交还给男主；这一流程不依赖此前未出现的外部密钥。",
+        "transition_goal": "使用既有技术进度建立可逆窗口，并把反向清除的最终确认权交还给你。"
+      },
+      "type": "scene"
+    }
+  ],
+  "schema": "neko.story.numeric.v2",
+  "start_node_id": "mainline_01",
+  "fact_contract": {
+    "facts": {
+      "scene:mainline_07:plan_explained": {
+        "description": "猫娘已公开说明自主控制的本地核心超载预案：脉冲用于突围，执行将物理烧毁核心历史记忆，旧记忆不可恢复或重建；它不同于巨企远程熔断，也不是治疗手段。说明预案不等于已经执行。",
+        "value_type": "bool",
+        "visibility": "public"
+      },
+      "scene:mainline_07:overload_executed": {
+        "description": "女主已在实际包围或攻击发生后自主执行本地核心超载；仅公开预案、准备、评估或选择撤离方向不算执行。",
+        "value_type": "bool",
+        "visibility": "public",
+        "evidence_source": "performance"
+      }
+    }
+  }
+}

@@ -15,12 +15,13 @@ from uuid import uuid4
 
 from utils.character_memory import character_config_mutation_lock
 
+from . import numeric_v2_options
 from .numeric_v2_actor import (
     NumericV2Actor,
     NumericV2ActorOutputError,
     actor_visible_profile,
 )
-from .numeric_v2_actor_output import NumericV2ActorError
+from .numeric_v2_actor_output import NumericV2ActorError, _normalized_comparison_text
 from .numeric_v2_action_projection import (
     normalize_player_action_projection,
     project_player_action_result,
@@ -46,11 +47,18 @@ from .numeric_v2_evaluator import (
     NumericV2TransitionOfferReview,
     OFFER_KIND_EXIT_MENTION_ONLY,
     PLAYER_ACTION_KIND_REQUESTED_MOVEMENT,
+    NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS,
+    _actor_completion_fact_candidates,
+    _pending_completion_facts,
+    _verified_body_issues,
+    _parse_output as _parse_evaluation_output,
+    _committed_completion_evidence,
 )
 from .numeric_v2_options import aload_theater_module_options
 from .numeric_v2_performance import (
     mixed_performance_blocks,
     performance_content_blocks,
+    scene_narration_text,
     valid_mixed_performance_policy,
 )
 from .numeric_v2_runtime import (
@@ -60,6 +68,8 @@ from .numeric_v2_runtime import (
     ScriptSessionV2,
     TurnOutcomeV2,
     TurnRequestV2,
+    current_visit_started_revision,
+    _normalize_actor_fact_candidates,
 )
 from .numeric_v2_store import NumericV2StoredSession
 from .numeric_v2_trace import text_trace_scope, trace_event, trace_state
@@ -89,74 +99,6 @@ _SUGGESTION_RESULT_CLAIM_MARKERS = (
     "已经到达",
     "成功了",
 )
-
-
-def _completion_action_terms(value: Any) -> set[str]:
-    """Extract verbatim-checkable phrases for three-way intersection of current-act actions and completion facts."""  # noqa: DOCSTRING_CJK
-
-    result: set[str] = set()
-    for unit in re.findall(r"[^\W_]+", str(value or "").casefold(), flags=re.UNICODE):
-        if unit.isascii():
-            if len(unit) >= 3:
-                result.add(unit)
-            continue
-        for size in range(2, min(len(unit), 8) + 1):
-            result.update(unit[start:start + size] for start in range(len(unit) - size + 1))
-    return result
-
-
-_GENERIC_COMPLETION_ACTION_TERMS = _completion_action_terms(
-    "好的 可以 已经 现在 一起 我们 你们 他们 进入 进去 开始 继续 完成 安全 "
-    "这里 那里 这个 那个 需要 还是 然后"
-)
-
-
-def _current_scene_completion_offer_evidence(
-    *,
-    engine: NumericV2Engine,
-    session: Any,
-    player_input: str,
-    review: NumericV2TransitionOfferReview,
-) -> tuple[str, ...]:
-    """Identify current-act actions fulfilling this turn's completion facts but misreported as exit invitations."""  # noqa: DOCSTRING_CJK
-
-    if not review.offer_quote or not review.fact_candidates:
-        return ()
-    node = engine.nodes.get(str(getattr(session, "current_node_id", "") or ""))
-    contract = node.get("completion_contract") if isinstance(node, Mapping) else None
-    requirements = {
-        str(item.get("key") or "")
-        for item in (contract.get("all") if isinstance(contract, Mapping) else ()) or ()
-        if isinstance(item, Mapping) and str(item.get("key") or "")
-    }
-    if not requirements:
-        return ()
-    quote_terms = _completion_action_terms(review.offer_quote)
-    player_terms = _completion_action_terms(player_input)
-    matches: set[str] = set()
-    for candidate in review.fact_candidates:
-        if not isinstance(candidate, Mapping):
-            continue
-        key = str(candidate.get("key") or "")
-        if key not in requirements:
-            continue
-        definition = engine.fact_contract.get(key)
-        if not isinstance(definition, Mapping):
-            continue
-        fact_terms = _completion_action_terms(
-            "\n".join((
-                str(definition.get("description") or ""),
-                str(candidate.get("evidence_quote") or ""),
-            ))
-        )
-        matches.update(
-            quote_terms
-            & player_terms
-            & fact_terms
-            - _GENERIC_COMPLETION_ACTION_TERMS
-        )
-    # Longest fragment aids log tracing; short fragments only prove three originals refer to the same current-act object.
-    return tuple(sorted(matches, key=lambda item: (-len(item), item))[:4])
 
 
 def _review_denies_narration_only_offer(
@@ -347,27 +289,19 @@ def _safe_drop_invalid_offer(
     return repaired
 
 
-def _normalized_suggestion_claim_text(value: Any) -> str:
-    """Strip whitespace/punctuation to deterministically compare short result assertions in recommendations."""  # noqa: DOCSTRING_CJK
-
-    return "".join(
-        character
-        for character in str(value or "")
-        if character.isalnum() or character == "_"
-    ).casefold()
-
-
 def _suggestion_has_unproven_result_claim(suggestion: str, visible_text: str) -> bool:
     """Identify recommendations with explicit result markers and short assertions absent from current visible narrative."""  # noqa: DOCSTRING_CJK
 
     blocks = mixed_performance_blocks(suggestion)
-    if [block.get("type") for block in blocks] != ["action", "dialogue"]:
+    if [block.get("type") for block in blocks] not in (["dialogue"], ["action", "dialogue"]):
         return False
-    dialogue = str(blocks[1].get("text") or "").strip()
+    # Optional gestures must not decide whether a spoken result claim is checked.
+    # Reuse the existing limited filter; do not invent a broader truth classifier.
+    dialogue = str(blocks[-1].get("text") or "").strip()
     # Questions request information rather than asserting known results; let model review decide overreach.
     if any(marker in dialogue for marker in ("？", "?", "吗", "什么", "怎么", "是否", "有没有")):
         return False
-    normalized_visible = _normalized_suggestion_claim_text(visible_text)
+    normalized_visible = _normalized_comparison_text(visible_text)
     if not normalized_visible:
         return False
     for marker in _SUGGESTION_RESULT_CLAIM_MARKERS:
@@ -377,7 +311,7 @@ def _suggestion_has_unproven_result_claim(suggestion: str, visible_text: str) ->
         # Take short windows around marker, requiring the entire fragment to appear in current visible content;
         # this blocks '读数显示蘑菇村' (reading shows Mushroom Village), without rejecting '让我看看读数' (let me see the reading).
         claim_window = dialogue[marker_index: marker_index + len(marker) + 6]
-        if _normalized_suggestion_claim_text(claim_window) not in normalized_visible:
+        if _normalized_comparison_text(claim_window) not in normalized_visible:
             return True
     return False
 
@@ -394,7 +328,7 @@ def _prefilter_suggestion_candidates(
     visible_text = "\n".join(
         str(block.get("text") or "")
         for block in performance_content_blocks(candidate)
-        if block.get("type") != "action" and str(block.get("text") or "").strip()
+        if str(block.get("text") or "").strip()
     )
     kept: list[str] = []
     reasons: list[str] = []
@@ -455,19 +389,32 @@ def _drop_undelivered_display_suggestions(
 def _drop_reported_unsafe_suggestions(
     candidate: Mapping[str, Any],
     unsafe_indexes: tuple[int, ...],
+    *,
+    review: NumericV2TransitionOfferReview | None = None,
 ) -> tuple[dict[str, Any], int]:
-    """Remove grouped recommendations on review errors, retaining narrative and other fields."""  # noqa: DOCSTRING_CJK
+    """Keep approved originals only when the complete batch has no rejection; never change narrative."""  # noqa: DOCSTRING_CJK
 
     result = dict(candidate)
     suggestions = candidate.get("suggested_inputs")
-    if not isinstance(suggestions, list) or not unsafe_indexes:
+    if not isinstance(suggestions, list):
         return result, 0
-    # Grouped buttons may share premises absent from narrative; per-item missed detection does not prove others independently safe.
-    # User accepts fewer recommendations; remove group without guessing dependencies, adding rewrites, or review calls.
-    result["suggested_inputs"] = []
+    if review is not None and review.approved_suggestion_texts is not None and not unsafe_indexes:
+        # A live mixed verdict missed one shared premature premise. Explicit allows do not relax batch rejection.
+        # Dependencies are provisional: final insertion settlement still removes undelivered pieces.
+        allowed = set(review.approved_suggestion_texts) | {
+            item["text"] for item in review.display_dependent_suggestions
+        }
+        result["suggested_inputs"] = [text for text in suggestions if text in allowed]
+    elif review is not None or unsafe_indexes:
+        # Legacy omission is not approval. Do not guess shared premises or generate replacement buttons.
+        result["suggested_inputs"] = []
+    else:
+        return result, 0
+    removed = len(suggestions) - len(result["suggested_inputs"])
     trace_event("suggestions.filtered", reported_indexes=unsafe_indexes,
-                reason="unsafe_batch", before=suggestions, after=[])
-    return result, len(suggestions)
+                reason="explicit_approval" if review is not None and review.approved_suggestion_texts is not None and not unsafe_indexes else "unsafe_batch",
+                before=suggestions, after=result["suggested_inputs"])
+    return result, removed
 
 
 async def _prepare_narrative_candidates(
@@ -517,26 +464,37 @@ async def _review_with_narrative_budget_fallback(
     diagnostics: dict[str, Any] | None = None,
     **review_kwargs: Any,
 ) -> NumericV2TransitionOfferReview:
-    """Packaging failure may defer this draft's ledger write; identical complete narrative still requires native review."""  # noqa: DOCSTRING_CJK
+    """Review the complete draft within one deadline, including both packaging attempts."""  # noqa: DOCSTRING_CJK
 
+    timeout = NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS
+    requested_timeout = review_kwargs.get("timeout_seconds")
+    if requested_timeout is not None:
+        timeout = min(timeout, float(requested_timeout))
     try:
-        return await evaluator.validate_transition_offer(**review_kwargs)
-    except NumericV2EvaluatorError as exc:
-        candidate = review_kwargs["actor_performance"]
-        if (str(exc) != "numeric_v2_transition_review_budget_exceeded"
-                or "narrative_events" not in candidate):
-            raise
-        # This error occurs before SDK request only. Use missing, not empty table; same draft cannot regain proposal.
-        fingerprint = narrative_body_fingerprint(candidate)
-        candidate.pop("narrative_events")
-        cache[fingerprint] = None
-        if diagnostics is not None:
-            diagnostics["narrative_review_budget_degrades"] += 1
-        trace_event("narrative.degraded", phase=phase, stage="review_input_budget",
-                    error_code=str(exc), body_fingerprint=fingerprint)
-        logger.warning("Narrative candidates omitted for Review input budget; continuing body review")
-    # Do not catch second exception; no-table budget overflow or actual review failure follows existing rollback.
-    return await evaluator.validate_transition_offer(**review_kwargs)
+        # Native review starts its provider timer after packing. Bound the whole
+        # operation here so slow packing cannot start a request after the caller's
+        # deadline. Dropping an oversized table shares this timer, never restarts it.
+        async with asyncio.timeout(timeout):
+            try:
+                return await evaluator.validate_transition_offer(**review_kwargs)
+            except NumericV2EvaluatorError as exc:
+                candidate = review_kwargs["actor_performance"]
+                if (str(exc) != "numeric_v2_transition_review_budget_exceeded"
+                        or "narrative_events" not in candidate):
+                    raise
+                # This error occurs before SDK request only. Use missing, not empty table; same draft cannot regain proposal.
+                fingerprint = narrative_body_fingerprint(candidate)
+                candidate.pop("narrative_events")
+                cache[fingerprint] = None
+                if diagnostics is not None:
+                    diagnostics["narrative_review_budget_degrades"] += 1
+                trace_event("narrative.degraded", phase=phase, stage="review_input_budget",
+                            error_code=str(exc), body_fingerprint=fingerprint)
+                logger.warning("Narrative candidates omitted for Review input budget; continuing body review")
+            # No-table overflow or actual review failure follows existing rollback.
+            return await evaluator.validate_transition_offer(**review_kwargs)
+    except TimeoutError as exc:
+        raise NumericV2EvaluatorError("numeric_v2_transition_judge_timeout") from exc
 
 
 async def generate_validated_opening(
@@ -610,7 +568,7 @@ async def generate_validated_opening(
         trace_event("review.result", phase="opening", attempt=attempt + 1, result=review)
         # Narrative and buttons judged separately; deleting bad buttons neither changes narrative facts nor creates new exit proposals.
         opening, _ = _drop_reported_unsafe_suggestions(
-            opening, review.unsafe_suggestion_indexes,
+            opening, review.unsafe_suggestion_indexes, review=review,
         )
         if not review.body_violations and not review.offer_present:
             trace_event("opening.ready", performance=opening)
@@ -637,10 +595,42 @@ def _output_retry_hint(
     last_error_code: str,
     retry_number: int,
     route_changed: bool,
+    repetition_guard: str = "",
 ) -> str:
     """Give each body retry a distinct rewriting angle to avoid repeating the same sampling path."""
 
+    if last_error_code == "numeric_v2_actor_response_phase_invalid":
+        return "表演非空选对应相位；none则表演为空。"
+
+    if repetition_guard == "player_input":
+        return (
+            "上一稿把玩家本轮台词原样写成了你的回复或旁白。玩家的话不是你的台词。"
+            "直接回答其问题或承接其选择，只演你自己的反应；不复制玩家发言，不新增事实或行动。"
+        )
+
+    if repetition_guard == "fixed_narration":
+        return (
+            "上一稿长段复演了程序即将展示的入幕固定原文。固定原文仍会原样交付，不能抄进任何模型正文。"
+            "目标场景旁白只建立原文之前的地点和氛围，角色从原文结束后的状态给出新的简短反应；"
+            "不要只换开头一句或将事件换词重演，不新增事实或玩家行动。其他转场段及授权边界保持。"
+        )
+
     if route_changed:
+        if "repeated" in last_error_code:
+            repeated_field = {
+                "transition_target": "target_performance",
+                "transition_source": "source_performance",
+                "earlier_session": "source_performance",
+                "transition_target_narration": "target_scene_narration（复制了其它幕的整段开场）",
+                "transition_bridge_narration": "bridge_scene_narration（复制了另一条转场的整段桥段）",
+            }.get(repetition_guard, "本轮正文")
+            return (
+                f"这是正式换场重试。重复位置：{repeated_field}。只改写命中的重复正文，"
+                "核对已提交历史与本轮目标开场，保留未命中段的有效内容和既有授权、发声边界。"
+                "来源角色没有新的回应或动作时，source_performance 可为空字符串；"
+                "需要交付的 NPC 答复仍留在来源旁白。"
+                "不得为了改写新增动作、事实或桥段变化，也不重演已经完成的内容。"
+            )
         # Retries retain real authorization, supporting acceptance, proactive departure, and natural ending without inventing invitations.
         if retry_number == 1:
             return (
@@ -703,6 +693,7 @@ def _transition_boundary_repair_context(
     current: NumericV2StoredSession,
     *,
     metrics: Mapping[str, int] | None = None,
+    facts: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> str:
     """Supply author bridge/next opening only for boundary rewrites, explicitly identifying where the scene must stop."""  # noqa: DOCSTRING_CJK
 
@@ -711,7 +702,8 @@ def _transition_boundary_repair_context(
     if not isinstance(node, Mapping):
         return ""
     # Narrative and review already use this turn's settled values; rewrite cannot revert to old values and another branch.
-    route = runtime.engine.preview_route(session.current_node_id, session.metrics if metrics is None else metrics)
+    route = runtime.engine.preview_route(session.current_node_id, session.metrics if metrics is None else metrics,
+                                         facts=session.story_state["facts"] if facts is None else facts)
     if not isinstance(route, Mapping):
         return ""
     contract = route.get("transition_contract")
@@ -997,15 +989,41 @@ def _confirmed_authored_acceptance(
     """Check only the just-displayed author invitation/accept-text pair, without inferring free input or stale invitation semantics."""  # noqa: DOCSTRING_CJK
 
     session = current.session
+    if turn.input_source == "accept_invitation":
+        # 接受控件没有玩家台词：权限只来自当前版本的程序回执，不从按钮文字猜意图。
+        if turn.message or turn.base_revision != session.revision:
+            return ""
+        return engine.invitation_acceptance_route(session, ledger_events=current.ledger_events)
     if not session.transition_offered or turn.input_source != "suggestion":
         return ""
     origin = pending_transition_record(session, ledger_events=current.ledger_events)
     if not isinstance(origin, Mapping):
         return ""
-    route = engine.preview_route(session.current_node_id, session.metrics)
+    route = engine.preview_route(session.current_node_id, session.metrics, facts=session.story_state["facts"])
     contract = route.get("transition_contract") if route else None
     if not isinstance(contract, Mapping):
         return ""
+    event = next((row for row in current.ledger_events
+                  if row.get("result_revision") == session.revision), None)
+    receipt = event.get("program_invitation") if isinstance(event, Mapping) else None
+    if isinstance(receipt, Mapping) and receipt.get("kind") == "reviewed_dynamic":
+        # 动态回执绑定实际展示稿和当前访问，不能拿作者旧原句或后续按钮替代。
+        # 首按钮已在签发时独立核验为接受；这里仅承接原样点击，不解释自由输入。
+        accept = str(receipt.get("accept_input") or "")
+        offer = str(receipt.get("offer") or "")
+        if (receipt.get("revision") != session.revision or origin.get("revision") != session.revision
+                or event.get("from_node_id") != session.current_node_id
+                or event.get("to_node_id") != session.current_node_id
+                or event.get("visit_started_revision") != current_visit_started_revision(session)
+                or receipt.get("route_id") != route.get("id")
+                or receipt.get("target_node_id") != route.get("target_node_id")
+                or receipt.get("performance") != origin.get("performance")
+                or receipt.get("visible_blocks") != performance_content_blocks(origin)
+                or not offer or not _authored_offer_visible(origin, offer)
+                or not accept or turn.message.strip() != accept
+                or _pending_offer_acceptance_path(session, ledger_events=current.ledger_events) != accept):
+            return ""
+        return str(route["id"])
     offer = _project_authored_transition_text(engine, session, str(contract.get("fallback_offer") or "")).strip()
     silent_receipt = _pending_silent_receipt(current)
     # A signed button keeps its original text across display-name changes.
@@ -1040,7 +1058,11 @@ def _confirmed_authored_acceptance(
         return ""
     # Original invitation and current values must select same exit; turn scoring or stale invitation cannot silently replace route.
     event = next((row for row in current.ledger_events if row.get("result_revision") == origin.get("revision")), None)
-    offered_route = engine.preview_route(session.current_node_id, event["after_metrics"]) if event else None
+    offered_route = engine.preview_route(
+        session.current_node_id, event["after_metrics"],
+        facts=engine.route_facts_at_revision(current.ledger_events, int(event["result_revision"]))
+        if engine.node_uses_fact_routes(engine.nodes[session.current_node_id]) else None,
+    ) if event else None
     return str(route["id"]) if offered_route and offered_route["id"] == route["id"] else ""
 
 
@@ -1138,6 +1160,66 @@ def _evaluation_without_evaluator(
     )
 
 
+def _can_combine_ordinary_turn(runtime: NumericV2Runtime, current: NumericV2StoredSession,
+                               turn: TurnRequestV2, options: Mapping[str, bool]) -> bool:
+    """Keep invitation interpretation and all ending scenes on the existing two-step path."""
+    if (numeric_v2_options.MODEL_REVIEWS_ENABLED
+            or not options.get("evaluator") or options.get("review") or options.get("review_contract")
+            or turn.input_source not in {"freeform", "suggestion"}
+            or current.session.status != "active" or current.session.transition_offered
+            # Legacy scenes have no completion gate; retain Evaluator's public-route initiation judgment.
+            or runtime.engine.completion_contract_satisfied(current.session) is not False
+            or pending_transition_record(current.session, ledger_events=current.ledger_events,
+                                         include_withdrawn=True) is not None):
+        return False
+    source = runtime.engine.nodes[current.session.current_node_id]
+    targets = [source] + [runtime.engine.nodes[route["target_node_id"]]
+                          for route in source.get("route_gates", ())]
+    return not any(node.get("type") == "ending" or node.get("terminal") is True for node in targets)
+
+
+def _confirmation_only_acceptance(
+    runtime: NumericV2Runtime, current: NumericV2StoredSession, turn: TurnRequestV2,
+    *, history_lookup_enabled: bool, review_enabled: bool,
+) -> bool:
+    """Check an author-declared control input using the ordinary receipt and routing gates."""  # noqa: DOCSTRING_CJK
+
+    session = current.session
+    if (history_lookup_enabled or session.status != "active" or not session.transition_offered
+            or turn.input_source != "suggestion"
+            or turn.base_revision != session.revision
+            or turn.client_turn_id in session.processed_client_turn_ids
+            or session.dialogue_policy == "forbidden"):
+        return False
+    route = runtime.engine.preview_route(session.current_node_id, session.metrics,
+                                         facts=session.story_state["facts"])
+    contract = route.get("transition_contract") if isinstance(route, Mapping) else None
+    target = runtime.engine.nodes.get(str(route.get("target_node_id") or "")) if route else None
+    if (not isinstance(contract, Mapping)
+            or contract.get("accept_input_confirmation_only") is not True
+            or "silent_choice" in contract
+            or not isinstance(target, Mapping) or target.get("type") == "ending"
+            or target.get("terminal") is True
+            or runtime.engine.completion_contract_satisfied(session) is not True):
+        return False
+    # 旧作者显式声明的免评估按钮仅作用于原静态回执；动态措辞仍走常规评估。
+    latest = next((event for event in current.ledger_events
+                   if event.get("result_revision") == session.revision), {})
+    receipt = latest.get("program_invitation")
+    if isinstance(receipt, Mapping) and receipt.get("kind") == "reviewed_dynamic":
+        return False
+    route_id = _confirmed_authored_acceptance(runtime.engine, current, turn, require_program_invitation=True)
+    if not route_id or route_id != route["id"]:
+        return False
+    # Previewing an eligible route does not prove departure: required fixed pieces may still block it.
+    # prepare_turn is read-only; the workflow settles again through the same Runtime path before Actor/Review/commit.
+    prepared = runtime.prepare_turn(current, turn, (), transition_intent="accept",
+        condition_narrations_enabled=review_enabled)
+    return (prepared.route is not None and prepared.route["id"] == route_id
+            and prepared.session.current_node_id != session.current_node_id
+            and prepared.session.status == "active")
+
+
 def _increment_actor_attempts(diagnostics: dict[str, Any] | None) -> None:
     """Record Actor generation attempts; actual supplier requests are counted separately at Actor call boundaries."""  # noqa: DOCSTRING_CJK
 
@@ -1151,11 +1233,13 @@ async def _generate_actor_turn_with_output_retry(
     actor: NumericV2Actor,
     *,
     diagnostics: dict[str, Any] | None = None,
+    generation_deadline: float | None = None,
     **kwargs: Any,
 ) -> dict[str, Any]:
-    """Control Actor retries by switch; source-reuse detection during official acceptance retains one extra narrow retry."""  # noqa: DOCSTRING_CJK
+    """Control retries by switch; Runtime-approved transitions/endings retain one bounded replay repair."""  # noqa: DOCSTRING_CJK
 
     last_error_code = ""
+    last_repetition_guard = ""
     required_retry_hint = str(kwargs.get("retry_hint") or "").strip()
     # Direct callers (existing integrations/tests) default four attempts; workflow passes module switches explicitly.
     allow_output_retry = bool(kwargs.pop("allow_output_retry", True))
@@ -1167,6 +1251,16 @@ async def _generate_actor_turn_with_output_retry(
         else (2 if allow_transition_repeat_retry else 1)
     )
     for attempt in range(max_attempts):
+        if attempt and generation_deadline is not None and time.monotonic() >= generation_deadline:
+            # Reuse the original turn deadline, including its Review reserve.
+            # An expired timeout callback may not have run yet; do not start
+            # another provider request before the event loop delivers it.
+            if diagnostics is not None and last_repetition_guard:
+                diagnostics["actor_repeated_output_retry_aborted"] = int(
+                    diagnostics.get("actor_repeated_output_retry_aborted", 0)
+                ) + 1
+            trace_event("actor.retry_aborted", attempt=attempt + 1, reason="generation_deadline_exhausted")
+            raise NumericV2ActorError("numeric_v2_actor_timeout")
         try:
             retry_kwargs = dict(kwargs)
             if attempt:
@@ -1182,6 +1276,7 @@ async def _generate_actor_turn_with_output_retry(
                     last_error_code=last_error_code,
                     retry_number=attempt,
                     route_changed=route_changed,
+                    repetition_guard=last_repetition_guard,
                 )
                 # Scene-boundary rewrite is core to this generation; even if rewritten draft has formatting errors,
                 # later output retries must retain that requirement rather than returning to ordinary generation and crossing acts again.
@@ -1205,18 +1300,19 @@ async def _generate_actor_turn_with_output_retry(
                 **({"repetition_guard": repetition_guard} if repetition_guard else {}),
             )
             last_error_code = str(exc)
+            last_repetition_guard = repetition_guard
             targeted_transition_repeat_retry = (
                 allow_transition_repeat_retry
-                and repetition_guard in {"earlier_session", "transition_source"}
+                and repetition_guard in {"earlier_session", "transition_source", "transition_target"}
                 and attempt == 0
             )
             if targeted_transition_repeat_retry:
-                # Official scene acceptance retains one narrow retry even with generic narrative retries disabled,
-                # only for two repetition guards detecting source-section reuse of historical narrative.
+                # Runtime-approved transitions and endings retain one narrow retry with generic retries disabled,
+                # only for guards detecting segment reuse of historical narrative.
                 trace_event(
                     "actor.retry_enabled_for_transition_repeat",
                     attempt=attempt + 1,
-                    reason="accepted_transition_repeated_output",
+                    reason="runtime_transition_repeated_output",
                     repetition_guard=repetition_guard,
                 )
             if repetition_guard and attempt >= 1:
@@ -1253,7 +1349,7 @@ def invitation_recovery_contract(runtime: NumericV2Runtime, current: NumericV2St
     if required_pending(runtime.engine.nodes[session.current_node_id], session,
             condition_triggers_enabled=condition_narrations_enabled):
         return None
-    route = runtime.engine.preview_route(session.current_node_id, session.metrics)
+    route = runtime.engine.preview_route(session.current_node_id, session.metrics, facts=session.story_state["facts"])
     if not isinstance(route, Mapping):
         return None
     target = runtime.engine.nodes.get(str(route.get("target_node_id") or ""))
@@ -1277,24 +1373,112 @@ def invitation_recovery_contract(runtime: NumericV2Runtime, current: NumericV2St
             **({"silent": True} if silent else {})}
 
 
-async def _execute_reinvitation(*, runtime, current, turn, ensure_current_binding, before_commit):
-    # Explicit control action: no Actor/Evaluator, no metrics or scene movement.
+async def _review_authored_invitation(
+    *, evaluator: NumericV2MetricEvaluator, engine: NumericV2Engine,
+    session: ScriptSessionV2, message: str, performance: Mapping[str, Any],
+    offer: str, accept_input: str | None, timeout_seconds: float,
+    require_offer_acceptance: bool = False,
+) -> bool:
+    """Review a proposal alone, or the legacy proposal/button pair, with no other authority."""
+
+    if accept_input is None and require_offer_acceptance:
+        raise ValueError("invitation_proposal_cannot_review_acceptance_text")
+    timeout = min(NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS, timeout_seconds)
+    if timeout <= 0:
+        raise TimeoutError
+    candidate = {**deepcopy(dict(performance)), "suggested_inputs": [] if accept_input is None else [accept_input]}
+    async with asyncio.timeout(timeout):
+        review = await evaluator.validate_transition_offer(
+            engine=engine, session=session, message=message, actor_performance=candidate,
+            completion_fact_review_only=True, timeout_seconds=timeout,
+            **({"invitation_proposal_only": True} if accept_input is None else {}),
+            **({"require_offer_acceptance": True} if require_offer_acceptance else {}),
+        )
+    quote = review.offer_quote.strip()
+    authored_dialogue = "".join(
+        str(block.get("text") or "") for block in mixed_performance_blocks(offer)
+        if block.get("type") == "dialogue"
+    )
+    if quote not in authored_dialogue and quote in offer:
+        # 先确认混排引文逐字来自本次邀请，再按同一规则核对白；不能丢掉伪造动作来凑真引用。
+        # 这里只消除表示方式差异，不修改实际稿、回执或任何语义审批结果；纯动作不构成口头邀请。
+        quote = "".join(
+            str(block.get("text") or "") for block in mixed_performance_blocks(quote)
+            if block.get("type") == "dialogue"
+        )
+    return bool(
+        review.offer_present and review.valid and review.offer_kind == "invitation"
+        and not review.body_violations and not review.unsafe_suggestion_indexes
+        and quote and quote in authored_dialogue
+        and _authored_offer_visible(candidate, offer)
+        and (accept_input is None or accept_input in (review.approved_suggestion_texts or ()))
+        and (not require_offer_acceptance or review.offer_acceptance_valid)
+    )
+
+
+async def _execute_reinvitation(*, config_manager, runtime, current, turn, ensure_current_binding, before_commit):
+    # Explicit control action: invitation review never scores input or moves the scene.
     modules = await aload_theater_module_options()
     contract = invitation_recovery_contract(runtime, current, condition_narrations_enabled=bool(modules.get("review")))
     if contract is None:
         raise NumericV2RuntimeError("numeric_reinvitation_not_available")
     outcome = runtime.prepare_turn(current, turn, (), condition_narrations_enabled=False)
     performance = {"performance": contract["offer"], "suggested_inputs": [contract["accept_input"]]}
+    dynamic = (numeric_v2_options.MODEL_REVIEWS_ENABLED and not contract.get("silent")
+               and (modules.get("evaluator") or modules.get("review")))
+    actor = NumericV2Actor(config_manager) if dynamic else None
+    generation_profile = actor._character_profile() if actor is not None else ""
+    generation_binding = ensure_current_binding(current.session) if dynamic else None
+    if dynamic:
+        # 控制只请求再提邀请；沿用完整已提交历史和人设，不模拟玩家发言或结算剧情。
+        # 一次生成加一次独立核验共享原整轮预算，不补推荐、不嵌套重试、不回放旧邀约兜底。
+        deadline = time.monotonic() + NUMERIC_V2_TURN_MODEL_BUDGET_SECONDS
+        try:
+            async with asyncio.timeout(max(0.001, deadline - time.monotonic() - NUMERIC_V2_TURN_REVIEW_RESERVE_SECONDS)):
+                candidate = await actor.generate_turn(
+                    engine=runtime.engine, session=current.session, outcome=outcome,
+                    player_input="", input_source="reinvite", recent_ledger_events=current.ledger_events,
+                    allow_suggestion_fill=False, character_profile=generation_profile,
+                )
+            suggestions = candidate.get("suggested_inputs") or []
+            if (candidate.get("transition_offered") is not True or suggestions
+                    or candidate.get("scene_narration") or candidate.get("scene_update")
+                    or candidate.get("fact_candidates")):
+                raise NumericV2ActorOutputError("numeric_v2_transition_review_failed")
+            offer = str(candidate.get("performance") or "")
+            # 模型只写邀请，不写玩家的接受话语；显式控件稍后消费同一份回执。
+            performance = {"performance": offer, "suggested_inputs": []}
+            if not valid_mixed_performance_policy(performance, current.session.dialogue_policy):
+                raise NumericV2ActorOutputError("numeric_v2_transition_review_failed")
+            approved = await _review_authored_invitation(
+                evaluator=NumericV2MetricEvaluator(config_manager), engine=runtime.engine,
+                session=current.session, message="", performance=performance,
+                offer=offer, accept_input=None,
+                timeout_seconds=min(NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS, deadline - time.monotonic()),
+            )
+        except (TimeoutError, NumericV2EvaluatorError) as exc:
+            raise NumericV2ActorOutputError("numeric_v2_transition_review_failed") from exc
+        if not approved:
+            raise NumericV2ActorOutputError("numeric_v2_transition_review_failed")
+        route = runtime.engine.preview_route(current.session.current_node_id, current.session.metrics,
+                                             facts=current.session.story_state["facts"])
+        contract = {"route_id": contract["route_id"], "kind": "reviewed_proposal", "offer": offer,
+                    "target_node_id": route["target_node_id"], "revision": outcome.session.revision}
     outcome, performance = runtime.engine.finalize_transition_offer_state(
         outcome, performance, new_offer=True, invalidate_previous_offer=True)
     if contract.get("silent") is True:
         performance["transition_offer_source"] = "program_silent"
         outcome = replace(outcome, ledger_event={**outcome.ledger_event, "transition_offer_source": "program_silent"})
     outcome = replace(outcome, ledger_event={**outcome.ledger_event, "program_invitation": {
-        **contract, "performance": contract["offer"], "visible_blocks": performance_content_blocks(performance),
+        **contract, "performance": performance["performance"], "visible_blocks": performance_content_blocks(performance),
         **({"revision": outcome.session.revision} if contract.get("silent") else {})}})
     async with character_config_mutation_lock:
         binding = ensure_current_binding(current.session)
+        if dynamic and (actor_visible_profile(actor._character_profile()) != actor_visible_profile(generation_profile)
+                or (binding.get("catgirl_name") == generation_binding.get("catgirl_name")
+                    and binding.get("profile_hash", "") != generation_binding.get("profile_hash", ""))):
+            # 长请求期间的人设变更不能让旧人设邀请以新卡版本落盘；仅比较Actor实际消费投影。
+            raise ValueError("catgirl_profile_changed_requires_retry")
         refreshed_binding = {**binding, "player_address": current.session.catgirl_binding.get("player_address", "")}
         outcome = replace(outcome, session=replace(outcome.session, catgirl_binding=refreshed_binding))
         async with runtime.story_session_guard():
@@ -1320,9 +1504,19 @@ async def execute_numeric_v2_turn(
     if background_narrative:
         from .numeric_v2_background_narrative import settle_before_input
         current = await settle_before_input(runtime, current)
+    elif current.ledger_events and "narrative_pending" in current.ledger_events[-1]:
+        # An old save may still contain an unfinished ledger job. Seal only that
+        # derived marker before appending a turn; keep model extraction disabled.
+        from .numeric_v2_background_narrative import settle_before_input
+        current = await settle_before_input(runtime, current, wait_for_background=False)
     if turn.input_source == "reinvite":
-        return await _execute_reinvitation(runtime=runtime, current=current, turn=turn,
+        return await _execute_reinvitation(config_manager=config_manager, runtime=runtime, current=current, turn=turn,
             ensure_current_binding=ensure_current_binding, before_commit=before_commit)
+    if turn.input_source == "accept_invitation" and (
+            turn.message or not runtime.engine.invitation_acceptance_route(
+                current.session, ledger_events=current.ledger_events)):
+        # 无效控件在读取人设或调用模型前拒绝，不能降级成空的普通聊天回合。
+        raise NumericV2RuntimeError("numeric_invitation_acceptance_not_available")
     with text_trace_scope("turn", state_before=trace_state(current.session), turn=turn):
         try:
             result = await _execute_numeric_v2_turn(
@@ -1364,6 +1558,7 @@ async def _execute_numeric_v2_turn(
             "actor_work": 0.0,
             "narrative_work": 0.0,
             "transition_judge_work": 0.0,
+            "completion_fact_review_work": 0.0,
             "commit_work": 0.0,
             "total_wall": 0.0,
         },
@@ -1383,6 +1578,8 @@ async def _execute_numeric_v2_turn(
         "actor_base_suggestion_parse_counts": {},
         "actor_base_fact_candidate_parse_counts": {},
         "transition_judge_calls": 0,
+        "completion_fact_review_calls": 0,
+        "completion_fact_rewrite_attempts": 0,
         "transition_judge_degraded": False,
         # Rechecks skipped after review-budget exhaustion; diagnostic only, never review approval.
         "review_budget_skips": 0,
@@ -1401,8 +1598,6 @@ async def _execute_numeric_v2_turn(
         "dispute_review_skipped_contract_offer": 0,
         # Ordinary first drafts with invalid invitation alone first use existing rewrite budget, then decide whether dispute recheck is needed.
         "dispute_review_deferred_offer_repair": 0,
-        # Count model-reported exit invitations cleared by three-way verbatim evidence proving player-authorized current-act completion.
-        "current_scene_offer_flags_cleared": 0,
         # On dispute timeout with exhausted budget, reject extra Actor rewrite and retain atomic rollback.
         "review_timeout_aborted": False,
         "transition_review_results": [],
@@ -1431,7 +1626,6 @@ async def _execute_numeric_v2_turn(
         "pending_acceptance_suggestions_preserved": 0,
         # Insert fixed accept button only after ordinary review validates new invitation, without extra model calls.
         "verified_offer_acceptance_suggestions_inserted": 0,
-        "author_fallback_invitation_protected": 0,
         "narration_offer_flags_cleared": 0,
         # Clear contradictory player-overreach enum when model reason explicitly acknowledges action came from player's current request.
         "explicit_player_movement_flags_cleared": 0,
@@ -1458,7 +1652,7 @@ async def _execute_numeric_v2_turn(
     actor = NumericV2Actor(config_manager)
     proposer = NumericV2NarrativeProposer(config_manager)
     narrative_proposals: dict[str, list[dict[str, Any]] | None] = {}
-    # Every model call except reply is an optional module, all disabled by default to save wait and tokens.
+    # Preliminary evaluation and new completion approval share the evaluator switch; full Review remains independently optional.
     module_options = await aload_theater_module_options()
     diagnostics["theater_module_options"] = dict(module_options)
     # Retain legacy diagnostic keys: dispute recheck is now in module table.
@@ -1477,12 +1671,33 @@ async def _execute_numeric_v2_turn(
         """Run Evaluator once, conservatively degrading model failures to unchanged state."""  # noqa: DOCSTRING_CJK
 
         started_at = time.monotonic()
+        if turn.input_source == "accept_invitation":
+            # 点击本身只确认刚展示的提议；不提供可供打分或补记完成事实的玩家输入。
+            diagnostics["evaluator_skipped"] = True
+            diagnostics["evaluator_skip_reason"] = "invitation_control"
+            trace_event("evaluator.skipped", reason="invitation_control")
+            try:
+                return NumericV2EvaluationResult((), False, transition_intent="accept",
+                    transition_reply_target="pending_transition")
+            finally:
+                _add_elapsed_ms(diagnostics, "evaluator_work", started_at)
         if not module_options.get("evaluator"):
             # Evaluation module disabled: no model calls, guessed values, or intents.
             diagnostics["evaluator_skipped"] = True
             trace_event("evaluator.skipped")
             try:
                 return _evaluation_without_evaluator(current, turn, engine=runtime.engine)
+            finally:
+                _add_elapsed_ms(diagnostics, "evaluator_work", started_at)
+        if _confirmation_only_acceptance(runtime, current, turn,
+                history_lookup_enabled=bool(module_options.get("history_lookup")),
+                review_enabled=bool(module_options.get("review"))):
+            diagnostics["evaluator_skipped"] = True
+            diagnostics["evaluator_skip_reason"] = "authored_confirmation_only"
+            trace_event("evaluator.skipped", reason="authored_confirmation_only")
+            try:
+                return NumericV2EvaluationResult((), False, transition_intent="accept",
+                    transition_reply_target="pending_transition")
             finally:
                 _add_elapsed_ms(diagnostics, "evaluator_work", started_at)
         diagnostics["evaluator_model_attempts"] += 1
@@ -1513,6 +1728,89 @@ async def _execute_numeric_v2_turn(
         finally:
             _add_elapsed_ms(diagnostics, "evaluator_work", started_at)
 
+    approved_completion_facts: tuple[Mapping[str, Any], ...] = ()
+
+    async def approve_evaluator_completion(evaluation: NumericV2EvaluationResult) -> NumericV2EvaluationResult:
+        """Verify proposed completion conditions before preparing routes and Actor-visible state."""
+
+        nonlocal approved_completion_facts
+
+        # Full Review already defers and independently approves these claims.
+        # Default mode checks newly satisfied completion/public route targets;
+        # ordinary facts and already recorded results retain their original path.
+        # Speed-first pause also covers the narrow approval hidden behind Evaluator.
+        if (not numeric_v2_options.MODEL_REVIEWS_ENABLED
+                or module_options.get("review") or not module_options.get("evaluator")):
+            return evaluation
+        pending = _pending_completion_facts(runtime.engine, current.session)
+        completion_keys = {
+            operation["key"] for operation in evaluation.fact_operations
+            if any(operation["key"] == target["key"]
+                   and type(operation["value"]) is type(target["value"])
+                   and operation["value"] == target["value"] for target in pending)
+        }
+        if not completion_keys:
+            return evaluation
+        audits = {item["key"]: item for item in evaluation.fact_audit}
+        claims = tuple(
+            {**audits[operation["key"]], **operation,
+             "description": runtime.engine.fact_contract[operation["key"]].get("description", "")}
+            for operation in evaluation.fact_operations
+            if operation["key"] in completion_keys and operation["key"] in audits
+        )
+        diagnostics["evaluator_fact_claims_deferred"] += len(claims)
+        approved_keys: set[str] = set()
+        if claims:
+            started_at = time.monotonic()
+            try:
+                remaining = min(
+                    NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS,
+                    NUMERIC_V2_REVIEW_BUDGET_SECONDS - diagnostics["timings_ms"]["transition_judge_work"] / 1000.0,
+                    model_deadline - time.monotonic() - 0.5,
+                )
+                if remaining <= 0:
+                    diagnostics["review_budget_skips"] += 1
+                    raise NumericV2EvaluatorError("numeric_v2_transition_judge_timeout")
+                diagnostics["completion_fact_review_calls"] += 1
+                diagnostics["transition_judge_calls"] += 1
+                async with asyncio.timeout(remaining):
+                    review = await evaluator.validate_transition_offer(
+                        engine=runtime.engine, session=current.session, message=turn.message,
+                        actor_performance={}, scene_complete=evaluation.scene_complete,
+                        player_action_projection=project_player_action_result(turn.message),
+                        evaluator_fact_claims=claims, completion_fact_review_only=True, timeout_seconds=remaining,
+                    )
+                # Only original indices grant authority; Review cannot create a
+                # value or use a not-yet-generated Actor draft as supporting proof.
+                approved_keys = {
+                    claim["key"] for index, claim in enumerate(claims)
+                    if index in review.approved_evaluator_fact_indexes
+                }
+            except (TimeoutError, NumericV2EvaluatorError) as exc:
+                # Match Evaluator degradation: legal replies and independent
+                # facts continue, while unknown completion remains unrecorded.
+                # Do not guess true/false, alter old prose or retry this batch.
+                diagnostics["transition_judge_degraded"] = True
+                trace_event("evaluator.completion_claims_review_failed", error_code=str(exc))
+                logger.warning("Numeric v2 completion approval degraded: session_id=%s revision=%s reason=%s",
+                               current.session.session_id, current.session.revision, str(exc))
+            finally:
+                _add_elapsed_ms(diagnostics, "completion_fact_review_work", started_at)
+                _add_elapsed_ms(diagnostics, "transition_judge_work", started_at)
+        diagnostics["evaluator_fact_claims_approved"] += len(approved_keys)
+        # 向演员交接同一批获准原值与证据；不把全部 prepare 暂存操作设成已完成。
+        # 只读投影随本轮销毁，不提前落盘，也不改变原始历史。
+        approved_completion_facts = tuple(claim for claim in claims if claim["key"] in approved_keys)
+        trace_event("evaluator.completion_claims_reviewed", proposed=len(claims), approved_keys=sorted(approved_keys),
+                    missing_audit_keys=sorted(completion_keys - set(audits)))
+        # A missing audit cannot bypass approval. Omit only unapproved targets;
+        # do not turn refusal, incomplete execution or uncertainty into false.
+        return replace(evaluation,
+            fact_operations=tuple(operation for operation in evaluation.fact_operations
+                                  if operation["key"] not in completion_keys or operation["key"] in approved_keys),
+            fact_audit=tuple(item for item in evaluation.fact_audit
+                             if item["key"] not in completion_keys or item["key"] in approved_keys))
+
     def prepare_turn(evaluation: NumericV2EvaluationResult) -> TurnOutcomeV2:
         """Perform deterministic settlement and accumulate synchronous Runtime duration."""  # noqa: DOCSTRING_CJK
 
@@ -1538,14 +1836,19 @@ async def _execute_numeric_v2_turn(
         finally:
             _add_elapsed_ms(diagnostics, "runtime_prepare_work", started_at)
 
+    actor_publishes_transition_offer = False
+
     async def generate_actor_turn(
         outcome: TurnOutcomeV2,
         *,
         retry_hint: str = "",
+        completion_repair: bool = False,
+        draft_repair_context: Mapping[str, Any] | None = None,
+        combined_evaluation: bool = False,
     ) -> dict[str, Any]:
         """Generate Actor narrative through official path, guiding pacing only by soft hints within same call."""  # noqa: DOCSTRING_CJK
 
-        nonlocal final_fixed_review
+        nonlocal final_fixed_review, actor_publishes_transition_offer
         final_fixed_review = None
         started_at = time.monotonic()
         try:
@@ -1559,8 +1862,19 @@ async def _execute_numeric_v2_turn(
                 # Locate original proposal with same committed Ledger as Evaluator, including all format/semantic retries.
                 "recent_ledger_events": current.ledger_events,
                 "diagnostics": diagnostics,
-                "allow_suggestion_fill": bool(module_options.get("suggestion_fill")),
+                # A completion repair gets one draft, without nested refill calls.
+                # Recommendations belong to this Actor response; never add a separate completion call.
+                "allow_suggestion_fill": False,
             }
+            if approved_completion_facts:
+                generation_kwargs["approved_completion_facts"] = approved_completion_facts
+            if combined_evaluation:
+                generation_kwargs["combined_evaluation"] = True
+            if module_options.get("review"):
+                generation_kwargs["defer_dialogue_repetition"] = True
+            if draft_repair_context is not None:
+                # 只传未提交的编辑材料；不进入历史、预审结果或Runtime事实。
+                generation_kwargs["draft_repair_context"] = draft_repair_context
             if history_lookup_result is not None:
                 generation_kwargs["history_lookup"] = history_lookup_result
             remaining = model_deadline - time.monotonic() - NUMERIC_V2_TURN_REVIEW_RESERVE_SECONDS
@@ -1572,17 +1886,24 @@ async def _execute_numeric_v2_turn(
                         actor,
                         **generation_kwargs,
                         retry_hint=retry_hint,
-                        allow_output_retry=bool(module_options.get("actor_retry")),
+                        generation_deadline=model_deadline - NUMERIC_V2_TURN_REVIEW_RESERVE_SECONDS,
+                        allow_output_retry=bool(module_options.get("actor_retry")) and not completion_repair,
                         allow_transition_repeat_retry=(
-                            str(outcome.ledger_event.get("transition_intent") or "") == "accept"
-                            and outcome.ledger_event.get("from_node_id")
+                            outcome.ledger_event.get("from_node_id")
                             != outcome.ledger_event.get("to_node_id")
+                            and (
+                                # Runtime has already selected and authorized this route;
+                                # initiation and acceptance use the same replay repair.
+                                str(outcome.ledger_event.get("transition_intent") or "") in {"accept", "initiate"}
+                                or outcome.session.status == "ended"
+                            )
                         ),
                     )
             except asyncio.TimeoutError as exc:
                 trace_event("actor.wait_budget_exhausted")
                 raise NumericV2ActorError("numeric_v2_actor_timeout") from exc
             generated.pop("narrative_events", None)
+            actor_publishes_transition_offer = generated.pop("_transition_offer_provided", False) is True
             return generated
         finally:
             # Actor retries only on format, repetition, or explicit boundaries; record cumulative call latency and actual supplier request count.
@@ -1642,6 +1963,7 @@ async def _execute_numeric_v2_turn(
     async def review_transition_offer(
         candidate: dict[str, Any],
         *,
+        defer_dispute_for_rewrite: bool = False,
         defer_offer_only_dispute: bool = False,
     ) -> NumericV2TransitionOfferReview:
         """Review visible proposals and accumulate costs; model failure retains conservative revocation semantics."""  # noqa: DOCSTRING_CJK
@@ -1653,7 +1975,8 @@ async def _execute_numeric_v2_turn(
         acceptance_preserved = False
         authored_acceptance = ""
         if outcome.ledger_event["from_node_id"] == outcome.ledger_event["to_node_id"]:
-            route = runtime.engine.preview_route(outcome.session.current_node_id, outcome.session.metrics)
+            route = runtime.engine.preview_route(outcome.session.current_node_id, outcome.session.metrics,
+                                                 facts=outcome.session.story_state["facts"])
             contract = route.get("transition_contract") if isinstance(route, Mapping) else None
             if candidate.get("transition_offered") is True and isinstance(contract, Mapping):
                 authored_acceptance = _project_authored_transition_text(
@@ -1831,40 +2154,8 @@ async def _execute_numeric_v2_turn(
                         offer_quote="",
                         failure_reason="",
                     )
-                current_scene_evidence = ()
-                if (
-                    not changed
-                    and evaluation.transition_intent == "unclear"
-                    and result.offer_present
-                    and not result.valid
-                    and not result.body_violations
-                ):
-                    current_scene_evidence = _current_scene_completion_offer_evidence(
-                        engine=runtime.engine,
-                        session=current.session,
-                        player_input=turn.message,
-                        review=result,
-                    )
-                if current_scene_evidence:
-                    # Three independent originals identifying one completion fact prove an already authorized in-act player action,
-                    # not an exit awaiting another decision; retain narrative/fact candidates and clear invitation judgment only.
-                    diagnostics["current_scene_offer_flags_cleared"] += 1
-                    trace_event(
-                        "review.current_scene_offer_cleared",
-                        evidence=list(current_scene_evidence),
-                        fact_keys=[
-                            str(candidate.get("key") or "")
-                            for candidate in result.fact_candidates
-                            if isinstance(candidate, Mapping)
-                        ],
-                    )
-                    result = replace(
-                        result,
-                        offer_present=False,
-                        valid=False,
-                        offer_quote="",
-                        failure_reason="",
-                    )
+                # 完成事实与邀请去向分别核对；共同词语不能推翻独立的邀请否决。
+                # 无效邀请继续走现有争议/修稿/回退，不再由词片段相似度补认授权。
                 if not changed and _review_mislabels_explicit_player_movement(result):
                     # Explicit player movement request authorizes only that move; infer no destination, create no act change, allow no additional actions here.
                     diagnostics["explicit_player_movement_flags_cleared"] += 1
@@ -1920,7 +2211,7 @@ async def _execute_numeric_v2_turn(
                     failure_reason=review.failure_reason,
                 )
             retained_candidate, _ = _drop_reported_unsafe_suggestions(
-                candidate, review.unsafe_suggestion_indexes,
+                candidate, review.unsafe_suggestion_indexes, review=review,
             )
             local_scene_repair = (
                 not changed and not current.session.transition_offered
@@ -1948,7 +2239,7 @@ async def _execute_numeric_v2_turn(
                 and not review.valid
                 and review.unsafe_suggestion_indexes
             ):
-                # Narrative has no violations, only buttons exceed bounds; removing whole group leaves narrative verdict unchanged, so skip second dispute.
+                # Button cleanup leaves the narrative verdict unchanged, so it needs no second dispute call.
                 diagnostics["dispute_review_skipped_unsafe_offer_buttons"] += 1
                 trace_event("review.dispute_skipped", reason="unsafe_offer_buttons_only")
             elif (
@@ -1962,24 +2253,30 @@ async def _execute_numeric_v2_turn(
                 diagnostics["dispute_review_skipped_contract_offer"] += 1
                 trace_event("review.dispute_skipped", reason="contract_offer_mismatch")
             elif (
-                defer_offer_only_dispute
-                and not changed
-                and not current.session.transition_offered
-                and not review.body_violations
-                and review.offer_present
-                and not review.valid
+                ((defer_dispute_for_rewrite
+                    and not diagnostics["semantic_rewrite_attempts"]
+                    and review.initiation_authorized is not False
+                    and review.acceptance_authorized is not False
+                ) or (
+                    defer_offer_only_dispute and not changed
+                    and not current.session.transition_offered and not review.body_violations
+                ))
+                and (review.body_violations or (
+                    not changed and review.offer_present and not review.valid
+                ))
             ):
-                # Ordinary first draft with invalid invitation alone can use its one existing Actor rewrite directly.
-                # Repair then verify; arbitrate only if repair still rejected, avoiding needless wait after success.
-                diagnostics["dispute_review_deferred_offer_repair"] += 1
-                trace_event("review.dispute_deferred", reason="ordinary_offer_repair_first")
+                # Spend the existing rewrite/review allowance before optional dispute, including formal delivery.
+                # Authorization denial cannot be repaired by changing prose; retain its independent recheck before cancellation.
+                if not review.body_violations:
+                    diagnostics["dispute_review_deferred_offer_repair"] += 1
+                trace_event("review.dispute_deferred", reason="semantic_repair_first")
             elif dispute_review_enabled and not diagnostics["dispute_review_attempts"] and not review_budget_exhausted() and (
                 review.body_violations or (review.offer_present and not review.valid and not changed)
             ):
                 dispute_budget = remaining_review_seconds()
-                if dispute_budget <= 0.05:
+                if dispute_budget <= NUMERIC_V2_DISPUTE_TIMEOUT_CAP_SECONDS:
                     diagnostics["review_budget_skips"] += 1
-                    trace_event("review.budget_exhausted", phase="dispute")
+                    trace_event("review.dispute_skipped", reason="insufficient_dispute_budget")
                 else:
                     diagnostics["dispute_review_attempts"] += 1
                     diagnostics["transition_judge_calls"] += 1
@@ -1992,7 +2289,14 @@ async def _execute_numeric_v2_turn(
                             NUMERIC_V2_DISPUTE_TIMEOUT_CAP_SECONDS,
                             max(0.05, dispute_budget - 0.05),
                         )
-                        reviewed = await evaluator.validate_transition_offer(**dispute_kwargs)
+                        try:
+                            # Packing and client cleanup consume the same remaining
+                            # allowance as the request. Keep this conversion inside
+                            # the existing degradation handler to retain the first verdict.
+                            async with asyncio.timeout(dispute_kwargs["timeout_seconds"]):
+                                reviewed = await evaluator.validate_transition_offer(**dispute_kwargs)
+                        except TimeoutError as exc:
+                            raise NumericV2EvaluatorError("numeric_v2_transition_judge_timeout") from exc
                     except NumericV2EvaluatorError as exc:
                         trace_event("review.failed", mode="dispute", error_code=str(exc))
                         # Separate from quick-review failure: ordinary-turn degradation must not erase existing violation evidence.
@@ -2036,7 +2340,6 @@ async def _execute_numeric_v2_turn(
                     item for item in candidate.get("suggested_inputs") or []
                     if item != authored_acceptance
                 ]
-            review = replace(review, reviewed_suggestion_texts=tuple(candidate.get("suggested_inputs") or []))
             if not review.unsafe_suggestion_indexes:
                 if acceptance_inserted and review.offer_present and review.valid:
                     diagnostics["verified_offer_acceptance_suggestions_inserted"] += 1
@@ -2089,11 +2392,69 @@ async def _execute_numeric_v2_turn(
         runtime.engine, current, turn,
         require_program_invitation=not module_options.get("review") or not module_options.get("evaluator"),
     )
-    evaluation = await evaluate_turn()
+    combined_performance = None
+    if _can_combine_ordinary_turn(runtime, current, turn, module_options):
+        # Draft only in the current scene. No proposal can authorize a move or ending;
+        # reuse the same body after deterministic metric settlement, without another call.
+        provisional = prepare_turn(NumericV2EvaluationResult((), False))
+        combined_performance = await generate_actor_turn(provisional, combined_evaluation=True)
+        proposed = combined_performance.pop("_turn_evaluation")
+        visible_history = combined_performance.pop("_turn_visible_history", [])
+        # The combined response has two fact buckets. Route a misplaced quote
+        # from this player's input through the existing Evaluator validator;
+        # never pretend it was spoken/performed by the Actor or grant a move.
+        proposed_candidates = list(proposed.get("fact_candidates", []))
+        actor_candidates = []
+        for candidate in combined_performance.get("fact_candidates", []):
+            quote = candidate.get("evidence_quote")
+            if isinstance(quote, str) and quote.strip() and quote in turn.message:
+                if candidate not in proposed_candidates:
+                    proposed_candidates.append(candidate)
+            else:
+                actor_candidates.append(candidate)
+        combined_performance["fact_candidates"] = actor_candidates
+        # Reuse the original Evaluator's current-visit evidence permissions. Quotes
+        # must also occur in this Actor request's retained history, never author plans.
+        _, committed_evidence = _committed_completion_evidence(runtime.engine, current.session)
+        candidates = []
+        for candidate in proposed_candidates:
+            try:
+                normalized, = _normalize_actor_fact_candidates(
+                    [candidate], fact_contract=runtime.engine.fact_contract,
+                    allowed_keys={item["key"] for item in _pending_completion_facts(runtime.engine, current.session)})
+            except NumericV2RuntimeError:
+                continue
+            evidence = normalized["evidence"][0]
+            if evidence["quote"] in turn.message:
+                evidence["source"] = "player_input"
+            elif not any(evidence["quote"] in text for text in visible_history):
+                # A new performance quote may be misplaced in turn_evaluation.
+                # Keep it out of historical evidence and use the existing Actor
+                # fact validation after generation; it cannot authorize this turn's move.
+                if any(evidence["quote"] in block["text"]
+                       for block in performance_content_blocks(combined_performance)):
+                    if candidate not in actor_candidates:
+                        actor_candidates.append(candidate)
+                continue
+            candidates.append(normalized)
+        proposed["fact_candidates"] = candidates
+        try:
+            evaluation = _parse_evaluation_output(
+                json.dumps(proposed), runtime.engine, turn.message, current.session, current.ledger_events,
+                committed_evidence=committed_evidence)
+        except NumericV2EvaluatorError:
+            # Match the existing Evaluator's conservative failure behavior, preserving valid dialogue.
+            evaluation = NumericV2EvaluationResult((), False)
+            diagnostics["evaluator_degraded"] = True
+        diagnostics["ordinary_turn_combined"] = True
+        trace_event("evaluator.combined", result=evaluation)
+    else:
+        evaluation = await approve_evaluator_completion(await evaluate_turn())
     if diagnostics["evaluator_degraded"]:
         confirmed_acceptance_route_id = _confirmed_authored_acceptance(
             runtime.engine, current, turn, require_program_invitation=True)
-    acceptance_route = runtime.engine.preview_route(current.session.current_node_id, current.session.metrics)
+    acceptance_route = runtime.engine.preview_route(current.session.current_node_id, current.session.metrics,
+                                                    facts=current.session.story_state["facts"])
     acceptance_contract = acceptance_route.get("transition_contract") if isinstance(acceptance_route, Mapping) else None
     acceptance_target = runtime.engine.nodes.get(str(acceptance_route.get("target_node_id") or "")) if acceptance_route else None
     acceptance_origin = pending_transition_record(
@@ -2122,7 +2483,18 @@ async def _execute_numeric_v2_turn(
         # Reviewed dialogue, narration and action offers retain ordinary acceptance.
         and not reviewed_offer_evidence
     )
-    if (not module_options.get("review") or diagnostics["evaluator_degraded"]
+    # 默认模式仅承接最新已复核邀请下、本轮点选的已展示原按钮；旧记录不能按对白猜成审批。
+    # 这只保留 Evaluator 的接受意图，Runtime 仍核对原邀请路线及本轮路线条件。
+    fresh_reviewed_offer = (
+        module_options.get("evaluator") and current.session.transition_offered
+        and turn.input_source == "suggestion"
+        and isinstance(acceptance_origin, Mapping)
+        and acceptance_origin.get("transition_offer_source") == "reviewed"
+        and acceptance_origin.get("revision") == current.session.revision
+        and turn.message.strip() in (acceptance_origin.get("suggested_inputs") or [])
+    )
+    if ((numeric_v2_options.MODEL_REVIEWS_ENABLED and not module_options.get("review") and not fresh_reviewed_offer)
+            or diagnostics["evaluator_degraded"]
             or silent_acceptance_required
             or _pending_silent_receipt(current, include_withdrawn=True) is not None):
         if evaluation.transition_intent == "accept" and not confirmed_acceptance_route_id:
@@ -2141,7 +2513,7 @@ async def _execute_numeric_v2_turn(
         for operation in evaluation.fact_operations
         if module_options.get("review") and operation["key"] in fact_audit_by_key
     )
-    diagnostics["evaluator_fact_claims_deferred"] = len(evaluator_fact_claims)
+    diagnostics["evaluator_fact_claims_deferred"] += len(evaluator_fact_claims)
     if evaluation.history_query and module_options.get("history_lookup"):
         # No extra ordinary-turn calls; fetch full record once only for evidence gaps, sharing failures too to prevent repeated rewrite lookups.
         lookup_started_at = time.monotonic()
@@ -2153,7 +2525,7 @@ async def _execute_numeric_v2_turn(
     diagnostics["ending_reason"] = evaluation.ending_reason
     outcome = prepare_turn(evaluation)
     invalidate_previous_offer = outcome.ledger_event.get("transition_offer_invalidated") is True
-    performance = await generate_actor_turn(outcome)
+    performance = combined_performance if combined_performance is not None else await generate_actor_turn(outcome)
     performance = apply_deterministic_suggestion_filter(performance)
     route_changed = (
         outcome.ledger_event["from_node_id"]
@@ -2176,11 +2548,16 @@ async def _execute_numeric_v2_turn(
             raise NumericV2EvaluatorError("numeric_v2_contract_check_timeout") from exc
 
     async def review_terminal_question_markers(candidate: Mapping[str, Any]) -> tuple[str, ...]:
+        # This terminal-only interaction check stays active independently of
+        # full body review; punctuation alone still cannot reject a greeting.
         markers = _terminal_new_question_markers(
             engine=runtime.engine, outcome=outcome, performance=candidate)
-        if not markers or not (module_options.get("review") or module_options.get("review_contract")):
+        if not markers or not (
+            module_options.get("evaluator") or module_options.get("review") or module_options.get("review_contract")
+        ):
             return markers
-        # Question marks alone do not prove new interaction; reuse narrow boundary check while retaining full action/route/state review.
+        # 默认前置判定开启时也区分招呼与待答问题；全部辅助模型关闭仍保留原零调用拦截。
+        # 只检查结局输入已关闭的交互合同，不启用完整动作、路线或作者边界复核。
         started_at = time.monotonic()
         diagnostics["terminal_question_review_calls"] += 1
         try:
@@ -2193,6 +2570,7 @@ async def _execute_numeric_v2_turn(
                 # next-scene evaluator's target-opening-only history projection.
                 actor_performance=candidate,
                 include_all_segments=True,
+                terminal_input_closed=True,
                 player_input=turn.message,
             )
         except NumericV2EvaluatorError as exc:
@@ -2214,7 +2592,12 @@ async def _execute_numeric_v2_turn(
 
         target_node = runtime.engine.nodes.get(str(outcome.ledger_event["to_node_id"]))
         target_beat = target_node.get("story_beat") if isinstance(target_node, Mapping) else None
-        authored_opening = scene_opening_text(target_beat) if isinstance(target_beat, Mapping) else ""
+        # Compare author text in the same pre-turn cast/address scope as Actor;
+        # candidate text is already performed and must not be projected again.
+        authored_opening = _project_authored_transition_text(
+            runtime.engine, current.session,
+            scene_opening_text(target_beat) if isinstance(target_beat, Mapping) else "",
+        )
         transition_contract = outcome.transition_contract or {}
         candidate_segments = candidate.get("segments")
         bridge_text = "\n".join(
@@ -2231,7 +2614,22 @@ async def _execute_numeric_v2_turn(
             bridge_text = str(candidate.get("bridge_scene_narration") or "")
         if not target_opening_text:
             target_opening_text = str(candidate.get("target_scene_narration") or "")
-        authored_bridge = str(transition_contract.get("bridge_scene_narration") or "")
+        authored_bridge = _project_authored_transition_text(
+            runtime.engine, current.session,
+            str(transition_contract.get("bridge_scene_narration") or ""),
+        )
+        # Only the latest committed source narration can show that a numeric marker
+        # is not unique to the target. Never use author plans, dialogue, older visits
+        # or this uncommitted draft; a crossing contributes its target opening only.
+        latest_source = (current.session.performance_history[-1]
+                         if current.session.performance_history else current.session.opening_performance)
+        source_parts = latest_source.get("segments")
+        if isinstance(source_parts, list):
+            source_parts = [part for part in source_parts
+                            if isinstance(part, Mapping) and part.get("phase") == "target_opening"]
+        else:
+            source_parts = [latest_source]
+        source_narration = "\n".join(scene_narration_text(part) for part in source_parts)
         # Author opening and opening actually delivered in this draft both count as target content; block verbatim preemption of either in bridge.
         return tuple(dict.fromkeys(
             marker
@@ -2240,6 +2638,7 @@ async def _execute_numeric_v2_turn(
                 target_opening=opening,
                 bridge_text=bridge_text,
                 authored_bridge=authored_bridge,
+                source_narration=source_narration,
             )
         ))
 
@@ -2260,7 +2659,6 @@ async def _execute_numeric_v2_turn(
         questions = await review_terminal_question_markers(candidate)
         diagnostics["terminal_new_question_markers"] = list(questions)
         if questions:
-            diagnostics["terminal_new_question_markers"] = list(questions)
             diagnostics["terminal_structure_rejected"] = True
             trace_event("transition.terminal_new_question_unresolved", markers=list(questions), stage=stage)
             raise NumericV2ActorOutputError("numeric_v2_terminal_new_question")
@@ -2273,10 +2671,23 @@ async def _execute_numeric_v2_turn(
             diagnostics["transition_bridge_leak_markers"] = list(leak_markers)
             trace_event("transition.bridge_target_leak", markers=list(leak_markers))
             diagnostics["semantic_rewrite_attempts"] += 1
+            parts = {part["phase"]: part for part in performance["segments"]}
+            repair_material = {
+                "draft": {
+                    "source_scene_narration": str(parts["source_response"].get("scene_narration") or ""),
+                    "source_performance": str(parts["source_response"].get("performance") or ""),
+                    "bridge_scene_narration": str(parts["transition_bridge"].get("scene_narration") or ""),
+                    "target_scene_narration": str(parts["target_opening"].get("scene_narration") or ""),
+                    "target_performance": str(parts["target_opening"].get("performance") or ""),
+                    "suggested_inputs": deepcopy(performance.get("suggested_inputs") or []),
+                },
+                "issues": [{"field": "bridge_scene_narration", "quote": marker} for marker in leak_markers],
+            }
             performance = await generate_actor_turn(outcome, retry_hint=(
                 "过渡桥段提前包含了目标幕开场独有内容：" + "、".join(leak_markers)
-                + "。只保留来源回应和作者允许的过渡时空；目标幕开场会在下一段单独交付，"
-                "不得在 transition_bridge 中重复写出目标幕的到达、时点或独有事实。"))
+                + "。修正bridge_scene_narration中命中的内容，保留合法来源回应和作者允许的过渡时空；"
+                "target_scene_narration单独交付目标开场，不把它挪进桥段或重演其独有事实。"
+            ), draft_repair_context=repair_material)
             remaining_leaks = transition_bridge_leaks(performance)
             diagnostics["transition_bridge_leak_markers_after_rewrite"] = list(remaining_leaks)
             if remaining_leaks:
@@ -2314,7 +2725,10 @@ async def _execute_numeric_v2_turn(
         target_node_id = str(outcome.ledger_event["to_node_id"])
         problems: list[str] = []
         if module_options.get("review_delivery"):
-            missing_names = missing_contract_names(source_node, target_node_id, performance, current.session)
+            missing_names = missing_contract_names(
+                source_node, target_node_id, performance, current.session,
+                story=runtime.engine.story, delivery_session=outcome.session,
+            )
             if missing_names:
                 diagnostics["contract_missing"] = list(missing_names)
                 trace_event("contract.missing", names=list(missing_names))
@@ -2342,7 +2756,10 @@ async def _execute_numeric_v2_turn(
                 "其余已获准内容保持不变。"))
             await verify_later_transition_draft(performance, stage="contract_rewrite")
             if module_options.get("review_delivery"):
-                still_missing = missing_contract_names(source_node, target_node_id, performance, current.session)
+                still_missing = missing_contract_names(
+                    source_node, target_node_id, performance, current.session,
+                    story=runtime.engine.story, delivery_session=outcome.session,
+                )
                 diagnostics["contract_missing_after_rewrite"] = list(still_missing)
                 if still_missing:
                     diagnostics["contract_missing_fallback"] = True
@@ -2410,11 +2827,11 @@ async def _execute_numeric_v2_turn(
         )
     ):
         # Old invitation latch does not prove current narrative safe; review in-act follow-ups/clarifications too, leaving invitation state to Runtime.
-        # Narrative violations and invalid invitation share one rewrite; rewrite only if first dispute still rejects, not once per error type.
+        # Narrative violations and invalid invitation share one rewrite; dispute only a still-rejected latest draft.
         for rewrite_attempt in range(2):
             transition_review = await review_transition_offer(
                 performance,
-                defer_offer_only_dispute=rewrite_attempt == 0,
+                defer_dispute_for_rewrite=rewrite_attempt == 0,
             )
             if diagnostics["dispute_review_degraded"] and review_budget_effectively_exhausted():
                 # If dispute consumed this turn's budget, add no equally costly Actor rewrite; let player retry,
@@ -2476,7 +2893,7 @@ async def _execute_numeric_v2_turn(
                         ) = approved_generation_fallback
                         preserved_player_events[:] = saved_player_events
                         performance, removed = _drop_reported_unsafe_suggestions(
-                            performance, final_fixed_review.unsafe_suggestion_indexes,
+                            performance, final_fixed_review.unsafe_suggestion_indexes, review=final_fixed_review,
                         )
                         diagnostics["unsafe_suggestions_removed"] += removed
                         reviewed_transition_offered = final_fixed_review.offer_present and final_fixed_review.valid
@@ -2491,7 +2908,7 @@ async def _execute_numeric_v2_turn(
                         )
                     break
             performance, removed_suggestions = _drop_reported_unsafe_suggestions(
-                performance, transition_review.unsafe_suggestion_indexes,
+                performance, transition_review.unsafe_suggestion_indexes, review=transition_review,
             )
             diagnostics["unsafe_suggestions_removed"] += removed_suggestions
             safe_degraded_performance = _safe_degrade_conflicting_scene_update(
@@ -2586,9 +3003,11 @@ async def _execute_numeric_v2_turn(
                     diagnostics[counter] += 1
             if invalid_offer:
                 diagnostics["transition_offer_retries"] += 1
+            # Wrong invitations already have next_scene; only leaked scene delivery needs full future boundaries.
             boundary_context = (
-                _transition_boundary_repair_context(runtime, current, metrics=outcome.session.metrics)
-                if "scene_boundary" in transition_review.body_violations or invalid_offer
+                _transition_boundary_repair_context(runtime, current, metrics=outcome.session.metrics,
+                                                   facts=outcome.session.story_state["facts"])
+                if "scene_boundary" in transition_review.body_violations
                 else ""
             )
             # Ordinary turns respond afresh to same input and true history, avoiding rejected-draft false facts; retain reasons for checking.
@@ -2599,7 +3018,7 @@ async def _execute_numeric_v2_turn(
                     "以玩家实际输入、已提交历史和作者硬边界为准，保留获准回应，"
                     "不补出未表达的后续操作及正文、场景更新、推荐中依赖它的结果。"
                     "scene_update 只记录本轮新的可见变化；没有新变化就省略。"
-                    "猫娘可用自身反应、回答或明确未知承接玩家，不要求本轮推进剧情或产生外部结果。"
+                    "你可用自身反应、回答或明确未知承接玩家，不要求本轮推进剧情或产生外部结果。"
                     "不得为了交付结果、收束或兑现旧推荐补造操作、事实或下一阶段，也不能撤销玩家已做的合法动作。"
                     "只有正文已公开具体、合乎当前事实且与实际下一阶段一致的未来邀请时才设 transition_offered=true；"
                     "邀请停在执行前，按钮不能代替正文首次提出转场。没有合适出口就不提议，不追加前提清单。"
@@ -2616,13 +3035,15 @@ async def _execute_numeric_v2_turn(
         # Review three parts + initial buttons together once; only explicit narrative conflict gets one rewrite, never static-narration replacement or forced ending.
         diagnostics["route_suggestion_reviews"] += int(bool(performance.get("suggested_inputs")))
         for rewrite_attempt in range(2):
-            review = await review_transition_offer(performance)
+            review = await review_transition_offer(performance, defer_dispute_for_rewrite=rewrite_attempt == 0)
             if diagnostics["dispute_review_degraded"] and review_budget_effectively_exhausted():
                 # Official transition rolls back directly on dispute timeout; never commit three-part records from incompletely reviewed rewrite.
                 diagnostics["review_timeout_aborted"] = True
                 trace_event("review.rewrite_aborted", phase="transition", reason="review_budget_exhausted")
                 raise NumericV2ActorOutputError("numeric_v2_transition_review_failed")
-            performance, removed = _drop_reported_unsafe_suggestions(performance, review.unsafe_suggestion_indexes)
+            performance, removed = _drop_reported_unsafe_suggestions(
+                performance, review.unsafe_suggestion_indexes, review=review,
+            )
             diagnostics["unsafe_suggestions_removed"] += removed
             if not review.body_violations:
                 break
@@ -2659,7 +3080,7 @@ async def _execute_numeric_v2_turn(
                         evaluation,
                     ) = approved_recovery_fallback
                     performance, removed = _drop_reported_unsafe_suggestions(
-                        performance, approved_review.unsafe_suggestion_indexes,
+                        performance, approved_review.unsafe_suggestion_indexes, review=approved_review,
                     )
                     diagnostics["unsafe_suggestions_removed"] += removed
                     if performance.get("transition_offered") is True:
@@ -2683,7 +3104,9 @@ async def _execute_numeric_v2_turn(
                 ))
                 # Shared rewrite allowance exhausted: review this staying-in-act draft only, disabling same-turn proactive-request recovery to prevent repeated transitions.
                 review = await review_transition_offer(performance)
-                performance, removed = _drop_reported_unsafe_suggestions(performance, review.unsafe_suggestion_indexes)
+                performance, removed = _drop_reported_unsafe_suggestions(
+                    performance, review.unsafe_suggestion_indexes, review=review,
+                )
                 diagnostics["unsafe_suggestions_removed"] += removed
                 if review.body_violations or (review.offer_present and not review.valid):
                     if set(review.body_violations) & {"scene_boundary", "target_opening_leak"}:
@@ -2730,6 +3153,10 @@ async def _execute_numeric_v2_turn(
         if leaked:
             trace_event("review.target_opening_leak_unresolved", markers=list(leaked))
             raise NumericV2ActorOutputError("numeric_v2_transition_review_failed")
+    # 已用尽原有改稿预算仍代玩家行动时，整轮回滚；不能把错误结果交给下轮圆场。
+    if final_fixed_review is not None and "player_action" in final_fixed_review.body_violations:
+        trace_event("review.player_action_rejected", phase="transition" if route_changed else "ordinary")
+        raise NumericV2ActorOutputError("numeric_v2_transition_review_failed")
     # Pending original-text turn with author-boundary conflict cannot use last-draft fallback; missing precise location means
     # unsafe to trim, not permission to pass. Successful trimming already cleared narrative violations.
     if final_fixed_review is not None and (
@@ -2739,46 +3166,186 @@ async def _execute_numeric_v2_turn(
     ):
         trace_event("review.fixed_content_rejected", phase="ordinary")
         raise NumericV2ActorOutputError("numeric_v2_transition_review_failed")
-    # Safe narrative without invitation may prepare author invitation; full combined candidate still needs review within shared budget.
+    # Without full Review, a new completion still needs independent causal approval before its body can enter history.
+    # No initial candidate means no extra call. A semantic veto permits one bounded, independently reviewed repair; no narrative extraction.
+    approved_completion_candidates: tuple[dict[str, Any], ...] = ()
+    completion_invitation_review: NumericV2TransitionOfferReview | None = None
+    completion_invitation_body = ""
+    completion_invitation_route: tuple[str, str] | None = None
+    completion_invitation_ready = False
+    # Pause Actor completion/invitation audits too; deterministic fact checks below remain.
+    if (numeric_v2_options.MODEL_REVIEWS_ENABLED and not module_options.get("review")
+            and module_options.get("evaluator") and not route_changed):
+        completion_review_session = replace(
+            outcome.session, revision=current.session.revision,
+            node_turn_count=current.session.node_turn_count,
+        )
+        completion_candidates = _actor_completion_fact_candidates(
+            runtime.engine, performance,
+            _pending_completion_facts(runtime.engine, completion_review_session),
+        )
+        reviewing_completion_facts = bool(completion_candidates)
+        invitation_needs_review = (
+            not diagnostics["evaluator_degraded"] and not current.session.transition_offered
+            and evaluation.transition_intent != "reject"
+            and pending_transition_record(current.session, ledger_events=current.ledger_events, include_withdrawn=True) is None
+            and runtime.engine.completion_contract_satisfied(outcome.session) is True
+            and performance.get("transition_offered") is True and performance.get("suggested_inputs")
+        )
+        if reviewing_completion_facts or invitation_needs_review:
+            # Only an explicit semantic veto earns one repair. Transport/parser
+            # failures still roll back, and no rejected text becomes history.
+            for completion_attempt in range(2):
+                started_at = time.monotonic()
+                diagnostics["completion_fact_review_calls"] += int(reviewing_completion_facts)
+                diagnostics["transition_judge_calls"] += 1
+                try:
+                    remaining = min(
+                        NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS,
+                        NUMERIC_V2_REVIEW_BUDGET_SECONDS - diagnostics["timings_ms"]["transition_judge_work"] / 1000.0,
+                        model_deadline - time.monotonic() - 0.5,
+                    )
+                    if remaining <= 0:
+                        raise NumericV2EvaluatorError("numeric_v2_transition_judge_timeout")
+                    async with asyncio.timeout(remaining):
+                        completion_review = await evaluator.validate_transition_offer(
+                            engine=runtime.engine, session=completion_review_session,
+                            message=turn.message,
+                            actor_performance={**performance, "fact_candidates": list(completion_candidates)},
+                            scene_complete=evaluation.scene_complete,
+                            player_action_projection=outcome.ledger_event.get("player_action_projection"),
+                            completion_fact_review_only=True, timeout_seconds=remaining,
+                            require_offer_acceptance=performance.get("transition_offered") is True,
+                        )
+                except (TimeoutError, NumericV2EvaluatorError) as exc:
+                    trace_event("completion_fact_review.failed", error_code=str(exc))
+                    raise NumericV2ActorOutputError("numeric_v2_completion_fact_review_failed"
+                        if reviewing_completion_facts else "numeric_v2_transition_review_failed") from exc
+                finally:
+                    if reviewing_completion_facts:
+                        _add_elapsed_ms(diagnostics, "completion_fact_review_work", started_at)
+                    _add_elapsed_ms(diagnostics, "transition_judge_work", started_at)
+                trace_event("completion_fact_review.result", result=completion_review)
+                if not (completion_review.body_violations
+                        or (reviewing_completion_facts
+                            and completion_review.offer_present and not completion_review.valid)):
+                    break
+                if (completion_attempt or diagnostics["semantic_rewrite_attempts"]
+                        or outcome.session.status != "active"
+                        or review_budget_effectively_exhausted()
+                        or model_deadline - time.monotonic() <= NUMERIC_V2_TURN_REVIEW_RESERVE_SECONDS):
+                    raise NumericV2ActorOutputError("numeric_v2_completion_fact_review_rejected"
+                        if reviewing_completion_facts else "numeric_v2_transition_review_failed")
+                diagnostics["semantic_rewrite_attempts"] += 1
+                diagnostics["completion_fact_rewrite_attempts"] += int(reviewing_completion_facts)
+                trace_event("completion_fact_review.rewrite", violations=completion_review.body_violations,
+                            invalid_offer=completion_review.offer_present and not completion_review.valid)
+                # 即使Review由测试/其他调用构造，也重新绑定本稿字段与完整违规组；
+                # 定位只帮助编辑，不把否决稿的未定位部分视为已批准。
+                issues = _verified_body_issues(
+                    list(completion_review.body_issues), list(completion_review.body_violations),
+                    {"actor_performance": str(performance.get("performance") or ""),
+                     "scene_update": str(performance.get("scene_narration") or "")},
+                )
+                draft_repair_context = None
+                if issues and len(issues) <= 2 and all(len(issue["quote"]) <= 40 for issue in issues):
+                    draft_repair_context = {
+                        "draft": {key: deepcopy(performance[key]) for key in (
+                            "performance", "scene_narration", "suggested_inputs", "transition_offered",
+                        ) if key in performance},
+                        "issues": list(issues),
+                        "body_violations": list(completion_review.body_violations),
+                    }
+                performance = await generate_actor_turn(outcome, completion_repair=True,
+                    draft_repair_context=draft_repair_context, retry_hint=(
+                    "这是唯一一次复核后的修复，上一稿未提交，不是继续演出。"
+                    "从同一本轮玩家输入与已提交历史重新接话，不为完成目标补写操作、未知成功或后续承诺。"
+                    "若提供draft_repair，它是未提交原稿及本稿冲突定位，仅作编辑参考；"
+                    "优先修正定位内容及其真实依赖，保留可与原始证据相容的答复，不把整段已给的回应重置为等待。"
+                    "未定位部分不等于已批准，修稿后正文、候选和推荐仍须重新完整核对。"
+                    "承接玩家已做的合法动作、实际持物与所在位置，保留明确拒绝和条件；"
+                    "你可直接回答、作自身反应或说明未知，本轮不必完成剧情。"
+                    "scene_update只写确有前因的新变化，没有就省略；不能重做已结束事件。"
+                    "此修稿先交付本轮合法回应，暂不提出跨幕邀请，transition_offer填空字符串，推荐不包含接受换幕。"
+                    "出口条件成立后可在后续回合正常邀请；不替玩家接受，推荐也不能依赖虚构结果。"
+                    "fact_candidates仅报告本稿实际演出的合法新结果，没有就填空数组，不能靠删候选掩盖错误正文。"
+                ))
+                performance = apply_deterministic_suggestion_filter(performance)
+                # Late regeneration cannot inherit the first draft's zero-call
+                # scene checks or optional contract verdict. Never retry again.
+                leaked = tuple(dict.fromkeys((
+                    *premature_target_markers(
+                        runtime.engine, current.session, outcome, performance, player_input=turn.message),
+                    *premature_target_scene_facts(
+                        runtime.engine, current.session, outcome, performance, player_input=turn.message),
+                )))
+                if leaked:
+                    trace_event("completion_fact_review.repair_target_leak", markers=list(leaked))
+                    raise NumericV2ActorOutputError("numeric_v2_transition_review_failed")
+                if module_options.get("review_contract"):
+                    try:
+                        violated = await verify_contract_boundaries(
+                            node=runtime.engine.nodes[current.session.current_node_id],
+                            actor_performance=performance, player_input=turn.message)
+                    except NumericV2EvaluatorError as exc:
+                        raise NumericV2ActorOutputError("numeric_v2_completion_fact_review_failed") from exc
+                    if violated:
+                        raise NumericV2ActorOutputError("numeric_v2_completion_fact_review_rejected")
+                completion_candidates = _actor_completion_fact_candidates(
+                    runtime.engine, performance,
+                    _pending_completion_facts(runtime.engine, completion_review_session),
+                )
+                # The second iteration always reviews the replacement body,
+                # even with no fact candidates; deleting metadata is no escape.
+            # The native parser may also return new Review-derived facts. Only this request's original candidates are eligible here.
+            approved_completion_candidates = tuple(
+                candidate for candidate in completion_candidates
+                if candidate in completion_review.fact_candidates
+            )
+            performance, removed = _drop_reported_unsafe_suggestions(
+                performance, completion_review.unsafe_suggestion_indexes, review=completion_review,
+            )
+            diagnostics["unsafe_suggestions_removed"] += removed
+            # 窄核对已独立判断本稿邀请及整组原按钮，不能只消费它的否决而丢弃合法的正向结论。
+            # 仅暂存同稿、同出口的审批；不复用为固定旁白或叙事账本的完整 Review 权限。
+            if (completion_review.offer_present and completion_review.valid
+                    and completion_review.offer_kind == "invitation"
+                    and completion_review.approved_suggestion_texts
+                    and not completion_review.unsafe_suggestion_indexes
+                    and performance.get("suggested_inputs")
+                    and not current.session.transition_offered
+                    and not diagnostics["evaluator_degraded"]
+                    and evaluation.transition_intent != "reject"
+                    and outcome.session.dialogue_policy != "forbidden"
+                    and pending_transition_record(
+                        current.session, ledger_events=current.ledger_events, include_withdrawn=True,
+                    ) is None):
+                # 本次核验只有生成前实际可用的出口。若新事实首次打开出口，先结算事实，
+                # 下一回合/显式重邀再审邀请，不能把核验没见过的出口事后补成已获批。
+                reviewed_route = runtime.engine.preview_route(
+                    completion_review_session.current_node_id, completion_review_session.metrics,
+                    facts=completion_review_session.story_state["facts"],
+                )
+                reviewed_target = runtime.engine.nodes.get(reviewed_route["target_node_id"]) if reviewed_route else None
+                if (reviewed_route and reviewed_target is not None and reviewed_target.get("type") != "ending"
+                        and reviewed_target.get("terminal") is not True):
+                    completion_invitation_review = completion_review
+                    completion_invitation_body = narrative_body_fingerprint(performance)
+                    completion_invitation_route = (reviewed_route["id"], reviewed_route["target_node_id"])
+
+    # Modules-off/degraded compatibility may retain author text; normal invitations use the generated reviewed draft.
     # No further Actor calls; actual act change still requires explicit player acceptance next turn.
     conservative_invitation = (
-        not module_options.get("review") or not module_options.get("evaluator")
+        # Pausing model audits must not discard Actor's visible offer or require
+        # a review receipt that this mode can never issue. Evaluator still checks
+        # the next input; Runtime retains route, fact and acceptance boundaries.
+        (numeric_v2_options.MODEL_REVIEWS_ENABLED and not module_options.get("review"))
+        or not module_options.get("evaluator")
         or diagnostics["evaluator_degraded"] or diagnostics["semantic_review_fallback"]
         or _pending_silent_receipt(current, include_withdrawn=True) is not None
     )
-    completion_ready_before_turn = (
-        runtime.engine.completion_contract_satisfied(current.session) is True
-    )
-    fallback_route = (
-        runtime.engine.preview_route(current.session.current_node_id, outcome.session.metrics)
-        if completion_ready_before_turn
-        else None
-    )
-    fallback_target = (
-        runtime.engine.nodes.get(str(fallback_route.get("target_node_id") or ""))
-        if isinstance(fallback_route, Mapping)
-        else None
-    )
-    fallback_contract = (
-        fallback_route.get("transition_contract")
-        if isinstance(fallback_route, Mapping)
-        else None
-    )
-    fallback_offer = (
-        _project_authored_transition_text(
-            runtime.engine, outcome.session,
-            str(fallback_contract.get("fallback_offer") or "").strip(),
-        )
-        if isinstance(fallback_contract, Mapping)
-        else ""
-    )
     departure_projection = normalize_player_action_projection(
         outcome.ledger_event.get("player_action_projection")
-    )
-    fallback_accept_input = (
-        _project_authored_transition_text(
-            runtime.engine, outcome.session, str(fallback_contract.get("accept_input") or ""),
-        ).strip() if isinstance(fallback_contract, Mapping) else ""
     )
     scene_records, _ = current_scene_records(current.session)
     scene_revisions = {record.get("revision") for record in scene_records}
@@ -2787,89 +3354,120 @@ async def _execute_numeric_v2_turn(
         and isinstance(event.get("program_invitation"), Mapping)
         for event in current.ledger_events
     )
-    final_authored_offer = _authored_offer_is_canonical_content(performance, fallback_offer)
-    if (
-        not route_changed
-        # After recovery request cancellation, deliver reviewed ordinary draft only, without adding invitations during reuse.
-        and not diagnostics["recovered_ordinary_drafts_reused"]
-        # After local invalid-invitation removal, do not immediately add unreviewed replacement; advance naturally next turn.
-        and not diagnostics["invalid_offer_local_crops"]
-        and not diagnostics["invalid_scene_update_local_crops"]
-        and not current.session.transition_offered
-        # Players may accept deferred old invitations later, but code cannot automatically repeat them each turn.
-        and pending_transition_record(
-            current.session, ledger_events=current.ledger_events, include_withdrawn=True,
-        ) is None
-        and not departure_projection.get("player_left_current_scene")
-        and not departure_projection.get("player_departure_pending")
-        and evaluation.transition_intent != "reject"
-        and isinstance(fallback_target, Mapping)
-        and fallback_target.get("type") != "ending"
-        and fallback_target.get("terminal") is not True
-        and fallback_offer
-        and (not conservative_invitation or (
-            not program_offer_already_issued
-            and fallback_accept_input
-            and turn.message.strip() != fallback_accept_input
-            # Existing author words can be followed by a withdrawal. Their
-            # presence only blocks automatic reissuance; it never authorizes.
-            and (final_authored_offer or (
-                not _authored_offer_visible(performance, fallback_offer)
-                and fallback_offer not in str(performance.get("performance") or "")
-            ))
-        ))
-        and ((not module_options.get("review")) or (
-            module_options.get("review")
-            and final_fixed_review is not None
-            and (not final_fixed_review.offer_present or (
-                conservative_invitation and final_authored_offer and final_fixed_review.valid
-            ))
-            and not final_fixed_review.body_violations
-        ))
-    ):
-        visible_performance = str(performance.get("performance") or "").rstrip()
-        if (conservative_invitation and not final_authored_offer) or (
-            not conservative_invitation and fallback_offer not in visible_performance
-        ):
-            visible_performance = "\n".join(
-                item for item in (visible_performance, fallback_offer) if item
+
+    async def apply_completion_fallback_offer(completion_session: ScriptSessionV2) -> None:
+        nonlocal performance, program_invitation_performance, reviewed_transition_offered, final_fixed_review
+
+        # The new wire explicitly publishes an invitation or chooses none.
+        # Do not override either decision with a second authored arrangement.
+        if actor_publishes_transition_offer:
+            return
+        completion_status = runtime.engine.completion_contract_satisfied(completion_session)
+        completion_ready = completion_status is True or (
+            completion_status is None
+            and not numeric_v2_options.MODEL_REVIEWS_ENABLED
+            and not diagnostics["evaluator_degraded"]
+            and evaluation.scene_complete is True
+            and performance.get("transition_offered") is not True
+        )
+        # With audits paused, settled author facts can provide the existing
+        # concrete invitation even if Actor omits or mislabels it. The guards
+        # below still preserve refusal, departure and actual player acceptance.
+        if (not module_options.get("review") and module_options.get("evaluator")
+                and not diagnostics["evaluator_degraded"] and numeric_v2_options.MODEL_REVIEWS_ENABLED):
+            return
+        fallback_route = (
+            runtime.engine.preview_route(current.session.current_node_id, outcome.session.metrics,
+                                         facts=outcome.session.story_state["facts"])
+            if completion_ready
+            else None
+        )
+        fallback_target = (
+            runtime.engine.nodes.get(str(fallback_route.get("target_node_id") or ""))
+            if isinstance(fallback_route, Mapping)
+            else None
+        )
+        fallback_contract = (
+            fallback_route.get("transition_contract")
+            if isinstance(fallback_route, Mapping)
+            else None
+        )
+        fallback_offer = (
+            _project_authored_transition_text(
+                runtime.engine, outcome.session,
+                str(fallback_contract.get("fallback_offer") or "").strip(),
             )
-        fallback_candidate = {
-            **performance,
-            "performance": visible_performance,
-            "transition_offered": True,
-        }
-        # Revalidate author text using commit's speech contract; skip fallback if concatenation violates muting, bracket balance, or block count,
-        # otherwise commit inevitably fails repeatedly under unchanged conditions.
-        if valid_mixed_performance_policy(
-            fallback_candidate,
-            str(
-                outcome.ledger_event.get("performance_dialogue_policy")
-                or outcome.session.dialogue_policy
-            ),
+            if isinstance(fallback_contract, Mapping)
+            else ""
+        )
+        fallback_accept_input = (
+            _project_authored_transition_text(
+                runtime.engine, outcome.session, str(fallback_contract.get("accept_input") or ""),
+            ).strip() if isinstance(fallback_contract, Mapping) else ""
+        )
+        final_authored_offer = _authored_offer_is_canonical_content(performance, fallback_offer)
+        if (
+            not route_changed
+            # After recovery request cancellation, deliver reviewed ordinary draft only, without adding invitations during reuse.
+            and not diagnostics["recovered_ordinary_drafts_reused"]
+            # After local invalid-invitation removal, do not immediately add unreviewed replacement; advance naturally next turn.
+            and not diagnostics["invalid_offer_local_crops"]
+            and not diagnostics["invalid_scene_update_local_crops"]
+            and not current.session.transition_offered
+            # Players may accept deferred old invitations later, but code cannot automatically repeat them each turn.
+            and pending_transition_record(
+                current.session, ledger_events=current.ledger_events, include_withdrawn=True,
+            ) is None
+            and not departure_projection.get("player_left_current_scene")
+            and not departure_projection.get("player_departure_pending")
+            and evaluation.transition_intent != "reject"
+            and isinstance(fallback_target, Mapping)
+            and fallback_target.get("type") != "ending"
+            and fallback_target.get("terminal") is not True
+            and fallback_offer
+            and (not conservative_invitation or (
+                not program_offer_already_issued
+                and fallback_accept_input
+                and turn.message.strip() != fallback_accept_input
+                # Existing author words can be followed by a withdrawal. Their
+                # presence only blocks automatic reissuance; it never authorizes.
+                and (final_authored_offer or (
+                    not _authored_offer_visible(performance, fallback_offer)
+                    and fallback_offer not in str(performance.get("performance") or "")
+                ))
+            ))
+            and ((not module_options.get("review")) or (
+                module_options.get("review")
+                and final_fixed_review is not None
+                and (not final_fixed_review.offer_present or (
+                    conservative_invitation and final_authored_offer and final_fixed_review.valid
+                ))
+                and not final_fixed_review.body_violations
+            ))
         ):
-            if not module_options.get("review"):
-                performance = fallback_candidate
-                if conservative_invitation:
-                    program_invitation_performance = visible_performance
-                reviewed_transition_offered = True
-                diagnostics["completion_fallback_offer_applied"] += 1
-                trace_event(
-                    "completion.fallback_offer_applied",
-                    route_id=fallback_route.get("id"),
-                    target_node_id=fallback_route.get("target_node_id"),
+            visible_performance = str(performance.get("performance") or "").rstrip()
+            if (conservative_invitation and not final_authored_offer) or (
+                not conservative_invitation and fallback_offer not in visible_performance
+            ):
+                visible_performance = "\n".join(
+                    item for item in (visible_performance, fallback_offer) if item
                 )
-            else:
-                approved_body_review = final_fixed_review
-                if fallback_candidate == performance:
-                    fallback_review = approved_body_review
-                else:
-                    fallback_review = await review_transition_offer(
-                        fallback_candidate, defer_offer_only_dispute=True)
-                if fallback_review.offer_present and fallback_review.valid and not fallback_review.body_violations:
-                    performance, removed = _drop_reported_unsafe_suggestions(
-                        fallback_candidate, fallback_review.unsafe_suggestion_indexes)
-                    diagnostics["unsafe_suggestions_removed"] += removed
+            fallback_candidate = {
+                **performance,
+                "performance": visible_performance,
+                "transition_offered": True,
+            }
+            # Revalidate author text using commit's speech contract; skip fallback if concatenation violates muting, bracket balance, or block count,
+            # otherwise commit inevitably fails repeatedly under unchanged conditions.
+            if valid_mixed_performance_policy(
+                fallback_candidate,
+                str(
+                    outcome.ledger_event.get("performance_dialogue_policy")
+                    or outcome.session.dialogue_policy
+                ),
+            ):
+                if not module_options.get("review"):
+                    performance = fallback_candidate
                     if conservative_invitation:
                         program_invitation_performance = visible_performance
                     reviewed_transition_offered = True
@@ -2880,17 +3478,42 @@ async def _execute_numeric_v2_turn(
                         target_node_id=fallback_route.get("target_node_id"),
                     )
                 else:
-                    # If author text fails, retain prior reviewed narrative and never apply new candidate fact/recommendation judgments to old draft.
-                    final_fixed_review = approved_body_review
-                    diagnostics["completion_fallback_offer_skipped"] += 1
-                    trace_event("completion.fallback_offer_skipped", reason="review_rejected")
-        else:
-            diagnostics["completion_fallback_offer_skipped"] += 1
-            trace_event(
-                "completion.fallback_offer_skipped",
-                reason="performance_policy_invalid",
-                route_id=fallback_route.get("id"),
-            )
+                    approved_body_review = final_fixed_review
+                    if fallback_candidate == performance:
+                        fallback_review = approved_body_review
+                    else:
+                        fallback_review = await review_transition_offer(
+                            fallback_candidate, defer_offer_only_dispute=True)
+                    if fallback_review.offer_present and fallback_review.valid and not fallback_review.body_violations:
+                        performance, removed = _drop_reported_unsafe_suggestions(
+                            fallback_candidate, fallback_review.unsafe_suggestion_indexes, review=fallback_review,
+                        )
+                        diagnostics["unsafe_suggestions_removed"] += removed
+                        if conservative_invitation:
+                            program_invitation_performance = visible_performance
+                        reviewed_transition_offered = True
+                        diagnostics["completion_fallback_offer_applied"] += 1
+                        trace_event(
+                            "completion.fallback_offer_applied",
+                            route_id=fallback_route.get("id"),
+                            target_node_id=fallback_route.get("target_node_id"),
+                        )
+                    else:
+                        # If author text fails, retain prior reviewed narrative and never apply new candidate fact/recommendation judgments to old draft.
+                        final_fixed_review = approved_body_review
+                        diagnostics["completion_fallback_offer_skipped"] += 1
+                        trace_event("completion.fallback_offer_skipped", reason="review_rejected")
+            else:
+                diagnostics["completion_fallback_offer_skipped"] += 1
+                trace_event(
+                    "completion.fallback_offer_skipped",
+                    reason="performance_policy_invalid",
+                    route_id=fallback_route.get("id"),
+                )
+
+    # Preserve review-enabled ordering and approval of the full combined draft.
+    if module_options.get("review"):
+        await apply_completion_fallback_offer(current.session)
 
     # Accept confirmation only from final reviewed draft; failure, skipped review, or nonconfirmation never promotes candidates.
     # Operations reference original Evaluator-validated values; Review may select, never rewrite values or forge evidence.
@@ -2910,7 +3533,7 @@ async def _execute_numeric_v2_turn(
         trace_event("evaluator.fact_claims_reviewed", proposed=len(evaluator_fact_claims),
                     approved_operations=approved_operations)
 
-    # Review enabled: unconfirmed Actor candidates cannot bypass through union; disabled retains original call/admission path.
+    # Full Review owns its final candidates; otherwise only the narrow check's exact approved Actor originals may add facts.
     actor_fact_candidates = performance.pop("fact_candidates", [])
     review_fact_candidates = (
         list(final_fixed_review.fact_candidates)
@@ -2953,7 +3576,7 @@ async def _execute_numeric_v2_turn(
                 trace_event("fact_candidates.ignored", key=key, reason="current_turn_duplicate")
                 continue
             try:
-                outcome, candidate_audit = runtime.engine.finalize_actor_fact_candidates(
+                candidate_outcome, candidate_audit = runtime.engine.finalize_actor_fact_candidates(
                     current.session,
                     outcome,
                     candidates=[candidate],
@@ -2966,10 +3589,31 @@ async def _execute_numeric_v2_turn(
                 diagnostics["fact_candidates_rejected"] += 1
                 trace_event("fact_candidates.rejected", key=key, reason=str(exc))
             else:
+                if (numeric_v2_options.MODEL_REVIEWS_ENABLED and not module_options.get("review")
+                        and candidate not in approved_completion_candidates):
+                    diagnostics["fact_candidates_rejected"] += 1
+                    trace_event("fact_candidates.rejected", key=key, reason="completion_not_approved")
+                    continue
+                outcome = candidate_outcome
                 actor_fact_audit.extend(candidate_audit)
         if actor_fact_audit:
             diagnostics["fact_candidates_accepted"] += len(actor_fact_audit)
             trace_event("fact_candidates.accepted", audit=actor_fact_audit)
+    if not module_options.get("review"):
+        # Admit facts from Actor's delivered body before appending author prose; no extra model call or early commit.
+        completion_session = replace(outcome.session, performance_history=(
+            *current.session.performance_history, performance))
+        settled_route = runtime.engine.preview_route(
+            outcome.session.current_node_id, outcome.session.metrics,
+            facts=outcome.session.story_state["facts"],
+        ) if completion_invitation_review is not None else None
+        # 新事实可能改选出口。仅同稿且结算后仍为原出口时承接已审邀请，避免再拼一次作者邀约。
+        completion_invitation_ready = bool(
+            settled_route and completion_invitation_route == (settled_route["id"], settled_route["target_node_id"])
+            and completion_invitation_body == narrative_body_fingerprint(performance)
+        )
+        if not completion_invitation_ready:
+            await apply_completion_fallback_offer(completion_session)
     completion_status = runtime.engine.completion_contract_satisfied(outcome.session)
     diagnostics["completion_contract_status"] = (
         "undeclared" if completion_status is None
@@ -2993,6 +3637,7 @@ async def _execute_numeric_v2_turn(
     acceptance_route = runtime.engine.preview_route(
         outcome.session.current_node_id,
         outcome.session.metrics,
+        facts=outcome.session.story_state["facts"],
     )
     acceptance_contract = (
         acceptance_route.get("transition_contract")
@@ -3012,6 +3657,15 @@ async def _execute_numeric_v2_turn(
         str((acceptance_contract or {}).get("fallback_offer") or ""),
     ).strip()
     authored_offer_visible = _authored_offer_visible(filtered_performance, authored_offer)
+    # 最终过滤后再次绑定正文和路线；后加旁白、改稿或换出口不能继承先前的邀请审批。
+    completion_invitation_applied = bool(
+        completion_invitation_ready and acceptance_route
+        and completion_invitation_route == (acceptance_route["id"], acceptance_route["target_node_id"])
+        and completion_invitation_body == narrative_body_fingerprint(filtered_performance)
+    )
+    if completion_invitation_applied:
+        conservative_invitation = False
+        new_offer = reviewed_transition_offered = True
     if conservative_invitation:
         new_offer = bool(program_invitation_performance is not None and authored_accept_input
                          and filtered_performance.get("performance") == program_invitation_performance)
@@ -3023,17 +3677,20 @@ async def _execute_numeric_v2_turn(
             filtered_performance["suggested_inputs"] = [authored_accept_input]
         # A later free-form response may retract the old offer. Without a
         # successful semantic review it cannot carry that authorization forward.
-        invalidate_previous_offer = invalidate_previous_offer or current.session.transition_offered
-        if not new_offer and (current.session.transition_offered
-                              or performance.get("transition_offered") is True
-                              or authored_offer_visible):
-            filtered_performance["suggested_inputs"] = []
+        # A completed transition already consumed it; target suggestions are not old-offer acceptance buttons.
+        if (module_options.get("review")
+                or outcome.ledger_event["from_node_id"] == outcome.ledger_event["to_node_id"]):
+            invalidate_previous_offer = invalidate_previous_offer or current.session.transition_offered
+            if not new_offer and (current.session.transition_offered
+                                  or performance.get("transition_offered") is True
+                                  or authored_offer_visible):
+                filtered_performance["suggested_inputs"] = []
     semantically_verified_offer = bool(
         module_options.get("review") and module_options.get("evaluator")
         and not diagnostics["evaluator_degraded"]
         and outcome.session.dialogue_policy != "forbidden"
     )
-    if (not module_options.get("review") and reviewed_transition_offered
+    if (not module_options.get("review") and not completion_invitation_applied and reviewed_transition_offered
             and (authored_offer_visible or semantically_verified_offer)):
         filtered_performance, acceptance_inserted = (
             _insert_verified_offer_acceptance_suggestion(
@@ -3068,6 +3725,13 @@ async def _execute_numeric_v2_turn(
             "transition.pending_acceptance_suggestion_preserved",
             suggested_inputs=filtered_performance.get("suggested_inputs"),
         )
+    if completion_invitation_applied and completion_invitation_review is not None:
+        # 只交付这份审批明确允许、且最终仍存在的原按钮，不补未审的作者接受文本。
+        filtered_performance, removed = _drop_reported_unsafe_suggestions(
+            filtered_performance, completion_invitation_review.unsafe_suggestion_indexes,
+            review=completion_invitation_review,
+        )
+        diagnostics["unsafe_suggestions_removed"] += removed
     outcome, performance = runtime.engine.finalize_transition_offer_state(
         outcome,
         filtered_performance,
@@ -3087,8 +3751,9 @@ async def _execute_numeric_v2_turn(
         diagnostics["unsafe_suggestions_removed"] += removed
         # Final concatenation cannot bypass recommendation review or resurrect rejected groups through author buttons.
         reviewed_texts = (
-            set(final_fixed_review.reviewed_suggestion_texts)
-            if not final_fixed_review.unsafe_suggestion_indexes else set()
+            set(final_fixed_review.approved_suggestion_texts) | {
+                item["text"] for item in final_fixed_review.display_dependent_suggestions
+            } if final_fixed_review.approved_suggestion_texts is not None and not final_fixed_review.unsafe_suggestion_indexes else set()
         )
         suggestions = list(performance.get("suggested_inputs") or [])
         performance["suggested_inputs"] = [item for item in suggestions if item in reviewed_texts]
@@ -3101,8 +3766,9 @@ async def _execute_numeric_v2_turn(
     )
     performance.pop("narrative_events", None)
     outcome = replace(outcome, ledger_event={**outcome.ledger_event, "narrative_record": narrative_record})
-    if (background_narrative and module_options.get("review")
-            and final_fixed_review is not None and not final_fixed_review.body_violations):
+    # Ledger-only review runs after delivery even while foreground audits are paused.
+    if (background_narrative and (not module_options.get("review")
+            or (final_fixed_review is not None and not final_fixed_review.body_violations))):
         outcome = replace(outcome, ledger_event={**outcome.ledger_event, "narrative_pending": {
             "job_id": uuid4().hex,
             "body": narrative_body_fingerprint(performance),
@@ -3137,14 +3803,31 @@ async def _execute_numeric_v2_turn(
             })
     # Persist the reviewed origin before a program button can change the offer flags.
     performance.pop("transition_offer_source", None)
-    if (performance.get("transition_offer_presented") is True and final_fixed_review is not None
-            and final_fixed_review.offer_present and final_fixed_review.valid
-            and not final_fixed_review.body_violations):
+    if (performance.get("transition_offer_presented") is True and (
+            completion_invitation_applied or (final_fixed_review is not None
+                and final_fixed_review.offer_present and final_fixed_review.valid
+                and not final_fixed_review.body_violations))):
         performance["transition_offer_source"] = "reviewed"
         outcome = replace(outcome, ledger_event={**outcome.ledger_event, "transition_offer_source": "reviewed"})
+    if (completion_invitation_applied and completion_invitation_review.offer_acceptance_valid
+            and performance.get("transition_offer_presented") is True
+            and narrative_body_fingerprint(performance) == completion_invitation_body
+            and performance.get("suggested_inputs")
+            and performance["suggested_inputs"][0] in (completion_invitation_review.approved_suggestion_texts or ())
+            and _authored_offer_visible(performance, completion_invitation_review.offer_quote)):
+        # 同稿审批明确证明首按钮是接受时，普通完成回合也签发实际稿回执。
+        # 已过滤/追加的正文须仍与审批指纹相同；按钮合法但非接受不获确定性授权。
+        outcome = replace(outcome, ledger_event={**outcome.ledger_event, "program_invitation": {
+            "kind": "reviewed_dynamic", "revision": outcome.session.revision,
+            "route_id": acceptance_route["id"], "target_node_id": acceptance_route["target_node_id"],
+            "offer": completion_invitation_review.offer_quote,
+            "accept_input": performance["suggested_inputs"][0],
+            "performance": performance["performance"], "visible_blocks": performance_content_blocks(performance),
+        }})
     # The button is a program choice, not new character prose or a model verdict.
     # Run after facts, narration and recommendation filtering are final.
-    silent_route = runtime.engine.preview_route(current.session.current_node_id, outcome.session.metrics)
+    silent_route = runtime.engine.preview_route(current.session.current_node_id, outcome.session.metrics,
+                                               facts=outcome.session.story_state["facts"])
     silent_contract = silent_route.get("transition_contract") if silent_route else None
     silent_target = runtime.engine.nodes.get(str(silent_route.get("target_node_id") or "")) if silent_route else None
     silent_completion_session = replace(outcome.session, performance_history=(
@@ -3248,6 +3931,7 @@ async def _execute_numeric_v2_turn(
             "actor_suggestion_fill_attempts", "actor_suggestion_fill_provider_calls",
             "actor_suggestion_refill_after_review_attempts",
             "transition_judge_calls", "dispute_review_attempts", "semantic_rewrite_attempts",
+            "completion_fact_review_calls", "completion_fact_rewrite_attempts",
             "transition_cancellations", "missed_initiation_recoveries", "unsafe_suggestions_removed",
             "recovered_ordinary_drafts_reused",
             "dispute_review_skipped_high_confidence_body",
@@ -3260,6 +3944,7 @@ async def _execute_numeric_v2_turn(
             "invalid_offer_local_crops", "invalid_scene_update_local_crops",
             "transition_judge_degraded", "dispute_review_degraded", "semantic_review_fallback",
             "evaluator_degraded", "completed",
+            "ordinary_turn_combined",
         )
         if type(diagnostics.get(key)) in (int, bool)
     }

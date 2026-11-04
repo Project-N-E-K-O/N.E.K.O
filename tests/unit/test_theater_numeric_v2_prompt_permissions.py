@@ -9,6 +9,7 @@ import pytest
 from services.theater import numeric_v2_actor as actor, numeric_v2_workflow as workflow
 from services.theater.numeric_v2_actor_output import _parse_output, NumericV2ActorOutputError
 from services.theater.numeric_v2_runtime import NumericV2Engine, MetricChangeV2, TurnRequestV2
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 from tests.unit.test_theater_numeric_v2_natural_ending import _engine
 from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening
@@ -17,7 +18,7 @@ from tests.unit.test_theater_numeric_v2_transition_history import _candidate
 
 def _payload(messages):
     text = messages[1].content
-    return json.loads(text[text.index('{'):])
+    return prompt_payload(text)
 
 
 def _contract(policy):
@@ -47,9 +48,9 @@ async def test_opening_call_respects_actual_speech_permission(monkeypatch, polic
         data = _payload(messages)
         assert kwargs['dialogue_policy'] == data['acting_context']['dialogue_policy'] == policy
         if policy != 'required':
-            assert '再由猫娘主动说出第一句' not in data['instruction']
+            assert '再由猫娘主动说出第一句' not in messages[0].content
         if policy == 'forbidden':
-            assert '不说出对白' in data['instruction']
+            assert '不说出对白' in messages[0].content
         candidate = dict(scene_narration='门口亮起一盏灯。', performance=performance,
                          suggested_inputs=['（点头）我先看看。', '（停步）等一会儿。'], transition_offered=False)
         return _parse_output(json.dumps(candidate), opening_required=True, dialogue_policy=kwargs['dialogue_policy'])
@@ -132,7 +133,7 @@ def test_nonrelationship_band_reaches_role_without_advancing_relationship_pose()
     relationship = lambda row: next(line for line in row['role'].splitlines() if line.startswith('与玩家的当前关系：'))
     assert relationship(rows[0]) == relationship(rows[1])
     for row in rows:
-        assert list(row) == ['role', 'current_scene', 'story_so_far', 'pacing', 'next_scene', 'player_input']
+        assert list(row) == ["role", "current_scene", "pacing", "next_scene", "story_so_far", "player_input"]
         assert not any(value in row['role'] for value in ('29', '30', '69', '100', 'pressure', 'trust'))
     next_outcome = engine.resolve_turn(changed.session, TurnRequestV2('two', 1, '继续听。'), ())
     next_row = _payload(actor._turn_messages(engine, changed.session, next_outcome, '继续听。', '温和。', '小葵', '你'))
@@ -180,7 +181,7 @@ def test_opening_omits_retired_transition_fields_but_keeps_current_permissions()
     for stale in ('target_scene.opening_situation', 'target_performance', 'scene_horizon.transition.intent',
                   'runtime_unresolved', 'next 是玩家接受后的下一幕计划'):
         assert stale not in system
-    assert '不得假定玩家已经说话' in _payload(messages)['instruction']
+    assert '不得假定玩家已经说话' in messages[0].content
     assert '玩家称呼尚未确认' in system
     assert 'forbidden 只能写动作' in system
     assert '作者剧情方向是导演信息' in system
@@ -195,8 +196,8 @@ def test_opening_does_not_assign_later_turn_or_transition_tasks():
     assert '已实施的动作是已发生事实' not in system
     assert 'current_story_beat.opening_scene' in system
     assert 'opening_deliverables' not in system
-    assert '2—3' in system
-    assert '不得假定玩家已经说话' in _payload(messages)['instruction']
+    assert '一至三条' in system
+    assert '不得假定玩家已经说话' in messages[0].content
 
 
 @pytest.mark.parametrize('boundary', ['未获许可不得拆开星核。', '未获许可不得公开信件。'])
@@ -212,6 +213,6 @@ def test_suggestion_fill_only_assigns_suggestion_duties(boundary, offered):
     assert '来源禁令不延伸到目标段' not in system
     assert 'scene_update' not in system
     assert sum(m.content.count(boundary) for m in messages) == 1
-    assert '2—3' in system
+    assert '一至三条' in system
     assert ('accept_input' in system) == offered
     assert _payload(messages)['visible_performance'] == '先确认许可，再决定下一步。'

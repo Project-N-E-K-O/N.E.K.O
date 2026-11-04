@@ -16,6 +16,7 @@ from services.theater.numeric_v2_narrative import (
 )
 from services.theater.numeric_v2_runtime import NumericV2Engine, TurnRequestV2
 from services.theater.numeric_v2_structured_output import actor_output_schema, narrative_output_schema, review_output_schema
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 from tests.unit.test_theater_numeric_v2_natural_ending import _engine as ending_engine
 from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening
@@ -45,7 +46,7 @@ def _payload(phase, *, quote="我已经完成检查。"):
         return {"source_scene_narration": "", "source_performance": "（收好工具）可以走了。",
                 "bridge_scene_narration": "两人来到走廊。", "target_scene_narration": "走廊亮着灯。",
                 "target_performance": quote, "suggested_inputs": []}
-    return {"performance": quote, "suggested_inputs": [], "transition_offered": False}
+    return {"performance": quote, "transition_offer": "", "suggested_inputs": []}
 
 
 def _flags(phase):
@@ -116,7 +117,7 @@ def test_actor_output_instructions_leave_event_generation_out_but_keep_state_rea
     instruction = actor._output_schema_instruction(phase)
     assert "narrative_events" not in instruction
     assert "authorization_quote" not in instruction
-    system = actor._system_prompt(catgirl_name="小岚", player_address="你", phase=phase)
+    system = actor._system_prompt(catgirl_name="小岚", phase=phase)
     assert "narrative_events" not in system
     assert "narrative_state是已提交动态账本" in system
     assert "last_known只是最后已知状态" in system
@@ -187,13 +188,13 @@ def test_committed_projection_stays_in_fixed_context_and_keeps_original_history(
     monkeypatch.setattr(actor, "project_narrative_state", lambda _, **kwargs: deepcopy(state))
 
     messages = actor._turn_messages(engine, session, outcome, request.message, "克制。", "小岚", "你")
-    data = json.loads(messages[1].content.split("\n", 1)[1])
+    data = prompt_payload(messages[1].content)
     assert data["player_input"] == request.message
     if formal:
         assert data["story_context"]["narrative_state"] == state
         assert "recent_context" in data
     else:
-        assert list(data) == ["role", "current_scene", "story_so_far", "pacing", "next_scene", "player_input"]
+        assert list(data) == ["role", "current_scene", "pacing", "next_scene", "story_so_far", "player_input"]
         assert "narrative_state（已提交动态叙事账本）" in data["current_scene"]
         assert json.dumps(state, ensure_ascii=False, separators=(",", ":")) in data["current_scene"]
         assert data["story_so_far"]
@@ -210,8 +211,11 @@ def test_narrative_projection_is_not_removed_with_older_history_budget(monkeypat
                 next_scene="", player_input="保留本轮原话")
     rows = [{"revision": 1, "player_input": "旧" * 500, "performance": "旧对白"},
             {"revision": 2, "player_input": "最近输入", "performance": "最近对白"}]
+    budget = len("合同") + len("上下文：\n" + actor.render_prompt_context(
+        {**data, "story_so_far": actor._story_so_far_text(rows[-1:])},
+    ))
     fitted = actor._fit_simple_turn_prompt_data(system_prompt="合同", human_prefix="上下文：\n",
-        data=data, history_rows=rows, max_tokens=300)
+        data=data, history_rows=rows, max_tokens=budget)
     assert fitted["current_scene"] == state and fitted["player_input"] == data["player_input"]
     assert "旧对白" not in fitted["story_so_far"] and "最近对白" in fitted["story_so_far"]
 
@@ -248,7 +252,7 @@ def test_restricted_cognition_formal_prompt_accepts_filtered_confirmed_state_onl
     outcome = engine.resolve_turn(session, request, (), scene_complete=formal, natural_ending_ready=formal)
     assert (outcome.session.current_node_id != session.current_node_id) is formal
     messages = actor._turn_messages(engine, session, outcome, request.message, "克制。", "小岚", "你")
-    data = json.loads(messages[1].content.split("\n", 1)[1])
+    data = prompt_payload(messages[1].content)
     if with_narrative:
         context = data["story_context"]
         assert "story_context.narrative_state中已过滤为角色可知的投影" in context["knowledge_scope"]

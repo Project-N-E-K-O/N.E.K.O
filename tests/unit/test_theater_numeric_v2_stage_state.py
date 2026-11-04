@@ -27,12 +27,12 @@ def test_formal_transition_keeps_stage_scope_and_actual_state_for_both_consumers
         actor_performance=candidate, route_changed=True, transition_outcome=outcome)[0]
     for messages in (actor, review):
         assert '放在工作台上' in messages[1].content
-        assert '不得损坏样品' in messages[1].content
+        assert '不得损坏样品' in ''.join(message.content for message in messages)
         assert '有阶段限定的来源禁令不延伸到目标段' in messages[0].content
     assert '工作台' not in actor[0].content  # General rules must not include props or locations specific to this counterexample.
     data = json.loads(review[1].content.split('：', 1)[1])
-    assert source['must_not_happen'] == data['current_scene']['hard_boundaries']
-    assert target['must_not_happen'] == data['target_scene']['hard_boundaries']
+    assert [f'禁止发生的剧情：{rule}' for rule in source['must_not_happen']] == data['current_scene']['hard_boundaries']
+    assert [f'禁止发生的剧情：{rule}' for rule in target['must_not_happen']] == data['target_scene']['hard_boundaries']
 
 
 def test_acceptance_still_checks_actual_exit_in_evaluator_contract():
@@ -69,8 +69,8 @@ def test_player_fact_rule_reaches_all_suggestion_generation_paths():
             performance={'performance': '需要登记姓名和擅长的手工类型。'}, max_tokens=1800),
     ]
     for prompt in messages:
-        assert '不得编造玩家姓名、联系方式、职业、技能或既往经历' in prompt[0].content
-        assert '不能用假名、示例号码或占位符填空' in prompt[0].content
+        assert '不编造玩家姓名、联系方式、职业、技能、经历、既有关系与行程' in prompt[0].content
+        assert '未知资料留给玩家输入，不填假名、示例或占位符' in prompt[0].content
     for outcome in (None, transition):
         review = _build_transition_judge_messages(engine, session, player_input=message,
             actor_performance={'performance': '请问需要登记哪些信息？', 'suggested_inputs': ['（填写）我叫林风，擅长竹编。']},

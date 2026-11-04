@@ -9,6 +9,8 @@ from typing import Any, Mapping
 
 from utils.tokenize import count_tokens
 
+from .numeric_v2_performance import scene_narration_text
+
 
 RECORD_SCHEMA = "numeric_v2_narrative_record_v2"
 _LEGACY_RECORD_SCHEMA = "numeric_v2_narrative_record_v1"
@@ -109,11 +111,49 @@ def _evidence_text(performance: Mapping[str, Any], event: Mapping[str, Any], mes
     return str(performance.get(key) or "") if key else ""
 
 
+def _ordered_evidence_blocks(
+    performance: Mapping[str, Any], phase: str, message: str,
+) -> tuple[list[dict[str, str]], bool]:
+    """Read current source blocks in display order, without rendering author templates."""
+
+    container = None
+    if phase in {"opening", "turn"} and not performance.get("segments"):
+        container = performance
+    elif isinstance(performance.get("segments"), list):
+        container = next((row for row in performance["segments"]
+                          if isinstance(row, Mapping) and row.get("phase") == phase), None)
+    # 旧 content／紧凑别名没有在此容器展示固定片段；桥段本来禁止挂载固定原文。
+    # 只读已捕获的 text，不查剧本 definitions、不按当前姓名重新渲染旧引文。
+    fixed = (container.get("fixed_narrations", []) if isinstance(container, Mapping)
+             and ("performance" in container or "scene_narration" in container)
+             and phase != "transition_bridge" else [])
+    fixed = [row for row in fixed if isinstance(row, Mapping)
+             and isinstance(row.get("text"), str) and row["text"].strip()
+             and row.get("position") in {"before", "after"}] if isinstance(fixed, list) else []
+    before = [{"source": "scene_narration", "text": row["text"]} for row in fixed if row["position"] == "before"]
+    after = [{"source": "scene_narration", "text": row["text"]} for row in fixed if row["position"] == "after"]
+    # 新固定片段的顺序只按播放器可见字段取值；scene_update 的旧引用兼容留在原 reader，
+    # 不能把混合新结构中未播放的旧别名当作新的现场来源。共用播放器的 before 回声去重。
+    narration = (scene_narration_text(container) if fixed else
+                 _evidence_text(performance, {"phase": phase, "source": "scene_narration"}, message))
+    acting = _evidence_text(performance, {"phase": phase, "source": "performance"}, message)
+    blocks = [{"source": "scene_narration", "text": narration}] if narration else []
+    blocks.extend(before)
+    if acting:
+        blocks.append({"source": "performance", "text": acting})
+    blocks.extend(after)
+    return blocks, bool(fixed)
+
+
 def _valid_evidence(
     event: Mapping[str, Any], performance: Mapping[str, Any], message: str, *, check_values: bool = True,
 ) -> bool:
     authorization = event.get("authorization_quote")
-    return (event["quote"] in _evidence_text(performance, event, message)
+    # 保留旧字符串／空白／别名的引用语义；新增原文也必须完整落在同源单块中，不能拼接。
+    source_matches = (event["quote"] in _evidence_text(performance, event, message)
+                      or any(event["source"] == block["source"] and event["quote"] in block["text"]
+                             for block in _ordered_evidence_blocks(performance, event["phase"], message)[0]))
+    return (source_matches
             and (authorization is None or authorization in message)
             and (not check_values or all(change["attribute"] == "holder" or change["value"] in event["quote"]
                                          for change in event["changes"])))
@@ -154,6 +194,44 @@ def narrative_body_fingerprint(performance: Mapping[str, Any]) -> str:
     ) if key in performance}
     return hashlib.sha256(json.dumps(fields, ensure_ascii=False, sort_keys=True,
                                     separators=(",", ":")).encode()).hexdigest()
+
+
+def _order_new_record_events(
+    events: list[dict[str, Any]], performance: Mapping[str, Any], message: str,
+) -> list[dict[str, Any]]:
+    """Order newly approved fixed-text events only; stored record replay keeps its own order."""
+
+    located = []
+    for index, event in enumerate(events):
+        blocks, has_fixed = _ordered_evidence_blocks(performance, event["phase"], message)
+        if not has_fixed or event["source"] == "player_input":
+            located.append(((PHASES.index(event["phase"]), index, 0), None, event))
+            continue
+        matches = [(order, block["text"]) for order, block in enumerate(blocks)
+                   if block["source"] == event["source"] and event["quote"] in block["text"]]
+        # 块间或块内重复引文都不能猜最早时点；丢整项，后续覆盖判定会保留缺口。
+        if len(matches) != 1:
+            continue
+        order, text = matches[0]
+        start = text.find(event["quote"])
+        if start != text.rfind(event["quote"]):
+            continue
+        located.append(((PHASES.index(event["phase"]), order, start), start + len(event["quote"]), event))
+    rejected = set()
+    for left, (position, end, event) in enumerate(located):
+        if end is None:
+            continue
+        changes = {(row["entity"], row["attribute"]): row["value"] for row in event["changes"]}
+        for right in range(left + 1, len(located)):
+            other_position, other_end, other = located[right]
+            other_changes = {(row["entity"], row["attribute"]): row["value"] for row in other["changes"]}
+            if (other_end is not None and position[:2] == other_position[:2]
+                    and position[2] < other_end and other_position[2] < end
+                    and any(pair in changes and changes[pair] != value for pair, value in other_changes.items())):
+                # 同一属性的重叠引文无法证明先后，不能按模型列表顺序选择最终值。
+                rejected.update((left, right))
+    return [event for index, (_, _, event) in sorted(enumerate(located), key=lambda row: row[1][0])
+            if index not in rejected]
 
 
 def make_narrative_record(
@@ -211,7 +289,9 @@ def make_narrative_record(
     accepted = []
     # Bind after merging: an inherited player event can introduce an entity used
     # by a later approved body event, in the same order as deterministic replay.
-    for _, event in sorted(enumerate(candidates), key=lambda item: (PHASES.index(item[1]["phase"]), item[0])):
+    # 只在创建新记录时按实际片段定位排序，且先排序再绑定实体；后置原文不能为早先代词补身份。
+    # 审批编号始终指原冻结表；apply_narrative_record 不重排旧 v1/v2 记录。
+    for event in _order_new_record_events(candidates, performance, message):
         if _bound_event(event, known):
             accepted.append(event)
             known.update(change["entity"] for change in event["changes"])

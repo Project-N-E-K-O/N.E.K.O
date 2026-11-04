@@ -8,7 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 # Author-side tooling that stays in the repository but is not shipped.
-NOT_SHIPPED = {"theater_workshop"}
+NOT_SHIPPED = {"services/theater_workshop"}
 # Plugin test suites under plugin/tests import the repository test helpers.
 IGNORED_IMPORTS = {"tests"}
 
@@ -66,3 +66,5 @@ def test_sdist_includes_wheel_packages_and_skips_author_tooling() -> None:
     assert packages <= include
     assert "services" in packages
     assert not (packages | include) & NOT_SHIPPED
+    for target in targets.values():
+        assert NOT_SHIPPED <= set(target["exclude"])

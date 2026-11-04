@@ -10,6 +10,7 @@ from services.theater import numeric_v2_evaluator as evaluator
 from services.theater.numeric_v2_actor import _turn_messages
 from services.theater.numeric_v2_context import history_evidence
 from services.theater.numeric_v2_runtime import NumericV2Engine, TurnRequestV2
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 from tests.unit.test_theater_numeric_v2_prompt_contract import _session
 from utils.tokenize import count_tokens
@@ -69,7 +70,7 @@ def test_packed_evidence_dedup_preserves_provenance_and_trimmed_history(monkeypa
             session.performance_history[1],
         ))
     messages = build(session)
-    data = json.loads(messages[1].content[messages[1].content.index('{'):])
+    data = prompt_payload(messages[1].content)
     assert (duplicate in data.get('history_evidence', [])) is trim
     assert all(item in data.get('history_evidence', []) for item in protected)
     assert any(row['revision'] == 1 for row in data['scene_context']) is not trim
@@ -110,7 +111,7 @@ def test_three_consumers_receive_old_fact_without_changing_actor_six_fields():
     for messages in (actor, evaluator._build_messages(engine, session, query), judge):
         assert "本地综合大学" in messages[1].content
         assert "失忆或认知边界" in messages[0].content
-    assert len(json.loads(actor[1].content.split("：\n", 1)[1])) == 6
+    assert len(prompt_payload(actor[1].content)) == 6
 
 
 def test_optional_retrieval_fits_guard_budget_without_cutting_candidate(monkeypatch):
@@ -187,7 +188,7 @@ def test_guard_uses_claim_to_find_original_and_later_changes(facts, claim):
     session = replace(session, revision=3, performance_history=(*rows, crossing))
     messages = evaluator._build_transition_judge_messages(engine, session,
         player_input="还记得之前怎么决定的吗？", actor_performance={"performance": claim})[0]
-    data = json.loads(messages[1].content.split("：", 1)[1])
+    data = prompt_payload(messages[1].content)
     evidence = data.get("history_evidence", [])
     assert all(any(row["text"] == fact for row in evidence) for fact in facts)
     assert all(row["text"] != claim for row in evidence)

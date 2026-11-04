@@ -3,8 +3,8 @@ from copy import deepcopy
 import json
 import pytest
 
-from theater_workshop.sdk.generation.quality import NumericV2QualityAssessor, QualityAssessmentError
-from theater_workshop.sdk.generation.plan_review import validate_plan_review
+from services.theater_workshop.sdk.generation.quality import NumericV2QualityAssessor, QualityAssessmentError
+from services.theater_workshop.sdk.generation.plan_review import validate_plan_review
 from .test_numeric_v2_generation import _quality_story_context, _generation_setup, _quality_payload, _quality_reply
 
 
@@ -88,7 +88,7 @@ def test_scoring_reviews_all_eligible_plans_once_or_skips(has_plan):
         return original(messages, **options)
     agent.call_llm = reply
     report = agent.assess(story=story, setup=_generation_setup(), authoring=authoring)
-    assert len(calls) == (3 if has_plan else 2)
+    assert len(calls) == len(story["nodes"]) + (2 if has_plan else 1)
     assert report["plan_review"]["status"] == ("complete" if has_plan else "not_needed")
 
 
@@ -136,7 +136,7 @@ def test_conflict_pair_is_validated_once_and_blocks_both_plans_without_changing_
 
 @pytest.mark.parametrize("field", ["/narrative_focus", "/acting_contract/dialogue_policy"])
 def test_model_ready_never_grants_structural_permission(field):
-    from theater_workshop.sdk.generation.repair import classify_repair
+    from services.theater_workshop.sdk.generation.repair import classify_repair
     agent, story, authoring, context, report = fixture()
     issue = report["issues"][0]
     issue["repair_targets"][0]["field"] = field
@@ -151,7 +151,7 @@ def test_model_ready_never_grants_structural_permission(field):
 
 
 def test_provider_failure_has_plan_phase_and_does_not_publish_report():
-    from theater_workshop.sdk.model import LLMCallFailure
+    from services.theater_workshop.sdk.model import LLMCallFailure
     agent, _, _, context, report = fixture();before = deepcopy(report)
     agent.call_llm = lambda *a, **kw: LLMCallFailure("timeout", error_code="model_timeout", exception_type="TimeoutError")
     with pytest.raises(QualityAssessmentError) as caught:
@@ -200,6 +200,7 @@ def test_three_eligible_plans_have_each_distinct_pair_once_and_ignore_manual_pla
     calls = []
     def reply(messages, **options):
         body = json.loads(messages[1]["content"]);calls.append(options)
+        assert all(set(pair) == {"issue_ids"} for pair in body["pairs_to_compare"])
         assert [pair["issue_ids"] for pair in body["pairs_to_compare"]] == [
             ["quality_issue_01", "quality_issue_02"], ["quality_issue_01", "quality_issue_03"],
             ["quality_issue_02", "quality_issue_03"]]

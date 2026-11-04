@@ -119,6 +119,8 @@ async def test_model_cannot_enable_crop_during_fact_review(monkeypatch, pending_
             return False
 
         async def ainvoke(self, messages):
+            if json.loads(messages[1].content[messages[1].content.index("{"):]).get("review_task") == "player_actions":
+                return SimpleNamespace(content='{"body_violations":[],"failure_reason":""}')
             assert ('"scene_update_removal_safe"' in messages[0].content) is not pending_facts
             return SimpleNamespace(content=json.dumps({
                 "offer_present": False, "valid": False, "body_violations": ["player_action"],
@@ -144,7 +146,7 @@ async def test_model_cannot_enable_crop_during_fact_review(monkeypatch, pending_
     )
     assert review.scene_update_removal_safe is not pending_facts
     assert review.body_violations == ("player_action",)
-    assert len(calls) == 1
+    assert len(calls) == 2
     assert calls[0]["max_completion_tokens"] == (350 if pending_facts else 512)
     assert calls[0]["timeout"] == evaluator.NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS
 

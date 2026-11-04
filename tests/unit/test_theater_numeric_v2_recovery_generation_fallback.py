@@ -130,6 +130,9 @@ async def setup_case(tmp_path, monkeypatch, *, genre="fantasy", failure="actor",
             offer_present=not formal, valid=not formal and gate != "invalid_offer",
             body_violations=("author_boundary",) if not formal and gate == "body_violation" else (),
             unsafe_suggestion_indexes=(1,) if not formal and genre == "science_fiction" else (),
+            # Keep the science-fiction case as the legacy rejection/batch-degradation control.
+            approved_suggestion_texts=None if not formal and genre == "science_fiction" else
+                tuple(candidate.get("suggested_inputs") or []),
             offer_quote=c["body"].split("。", 1)[-1] if not formal else "",
             missed_initiation=not formal, public_destination_quote=c["opening"] if not formal else "",
             initiation_authorized=True if formal else None, delivery_matches_route=True if formal else None,

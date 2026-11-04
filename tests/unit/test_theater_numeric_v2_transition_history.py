@@ -1,14 +1,22 @@
 """Transition prose must retain actual history rather than be overwritten by static author narration; retest semantics with real models separately."""
 
+from copy import deepcopy
+from dataclasses import replace
 import json
 
 import pytest
 
+from services.theater import numeric_v2_actor as actor
 from services.theater.numeric_v2_actor_output import _parse_output, NumericV2ActorOutputError
 from services.theater.numeric_v2_evaluator import _build_messages
-from services.theater.numeric_v2_runtime import TurnRequestV2
+from services.theater.numeric_v2_fixed_narration import render_text
+from services.theater.numeric_v2_performance import performance_content_blocks
+from services.theater.numeric_v2_runtime import NumericV2Engine, TurnRequestV2
+from tests.utils.theater_prompt import prompt_payload
+from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 from tests.unit.test_theater_numeric_v2_natural_ending import _engine
 from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening
+from tests.unit.test_theater_numeric_v2_prompt_contract import _payload, _session, _story_state_at
 
 
 def _candidate():
@@ -56,7 +64,7 @@ def test_evaluator_uses_current_narrative_instead_of_transition_title():
                 transition_goal='新生活')
     session = engine.create_session(session_id='direction', catgirl_binding=_binding(), opening_performance=_opening())
     messages = _build_messages(engine, session, '先去旅店放行李吧。')
-    data = json.loads(messages[1].content.split('\n', 1)[1])
+    data = prompt_payload(messages[1].content)
     assert data['current_story_beat']['scene_direction'] == beat['narrative_summary']
     # Ending preview must read full direction too, never fall back to another old summary.
     ending = data['transition_preview']['natural_ending_context']
@@ -74,12 +82,12 @@ def test_ending_preview_keeps_active_boundaries_and_target_direction():
                   opening_only_boundaries=['已有双方明确的约定。'],
                   acting_contract={'forbidden_behaviors': ['不追加入住手续。']})
     session = engine.create_session(session_id='boundaries', catgirl_binding=_binding(), opening_performance=_opening())
-    data = json.loads(_build_messages(engine, session, '按约定办。')[1].content.split('\n', 1)[1])
+    data = prompt_payload(_build_messages(engine, session, '按约定办。')[1].content)
     context = data['transition_preview']['natural_ending_context']
     assert context['ending_direction'] == target['narrative_summary']
     assert '不替玩家确认新的安排。' in context['source_boundaries']
     assert '玩家尚未提出方案。' not in context['source_boundaries']
-    assert {'已有双方明确的约定。', '不追加入住手续。'} <= set(context['ending_boundaries'])
+    assert {'已有双方明确的约定。', '演出角色禁止行为：不追加入住手续。'} <= set(context['ending_boundaries'])
 
 
 @pytest.mark.parametrize('reason', [None, '双方已达成约定。', '依据' * 1000])
@@ -164,7 +172,7 @@ async def test_dynamic_transition_reviews_whole_candidate_before_atomic_commit(m
         assert result.diagnostics['ending_reason'] == '本幕结果已交付。'
         assert 'ending_reason' not in json.dumps(result.stored.ledger_events, ensure_ascii=False)
     assert len(generations) == (2 if verdict in ('repair', 'reject') else 1)
-    assert len(reviews) == (3 if verdict in ('repair', 'reject') else 1)
+    assert len(reviews) == (3 if verdict == 'reject' else 2 if verdict == 'repair' else 1)
 
 
 def test_transition_review_keeps_source_history_and_actual_destination():
@@ -180,7 +188,7 @@ def test_transition_review_keeps_source_history_and_actual_destination():
     candidate = engine.finalize_transition_performance(outcome, _candidate(), target_opening='旧开场。')
     messages = _build_transition_judge_messages(engine, session, player_input='谢谢。',
         actor_performance=candidate, route_changed=True, transition_outcome=outcome)[0]
-    data = json.loads(messages[1].content.split('：', 1)[1])
+    data = prompt_payload(messages[1].content)
     assert data['terminal'] is True
     assert '来源开场不得披露姓名。' not in data['current_scene']['hard_boundaries']
     assert data['candidate_segments'][0]['performer'] == 'catgirl'
@@ -240,7 +248,7 @@ async def test_review_target_direction_waits_until_after_nonterminal_opening(tmp
     public_quote = f'左侧走廊通往{destination}，通道已经开放。'
     messages = _build_transition_judge_messages(engine, stored.session, player_input=message,
         actor_performance=candidate, transition_outcome=outcome, public_destination_quote=public_quote)[0]
-    data = json.loads(messages[1].content.split('：', 1)[1])
+    data = prompt_payload(messages[1].content)
     assert 'story_direction' not in data['target_scene']
     assert future not in '\n'.join(part.content for part in messages)
     # An excluded template cannot consume packing budget or evict history.
@@ -253,12 +261,12 @@ async def test_review_target_direction_waits_until_after_nonterminal_opening(tmp
         target.update(summary=future, narrative_summary=future)
     context = data['target_scene']
     assert context['opening_situation'] == target['opening_scene']
-    assert context['character_state']['catgirl_state'] == target['character_state']['catgirl_state']
-    assert context['character_state']['player_state'] == target['character_state']['player_state']
+    assert context['author_entry_plan']['catgirl_state'] == target['character_state']['catgirl_state']
+    assert context['author_entry_plan']['player_state'] == target['character_state']['player_state']
     assert context['acting_contract']['allowed_behaviors'] == target['acting_contract']['allowed_behaviors']
     assert context['acting_contract']['assertable_self_facts'] == target['acting_contract']['assertable_self_facts']
     assert {'入幕时后续操作尚未开始。', '不得改变玩家登记卡的持有者。',
-            '不得替玩家选择查阅内容。'} <= set(context['hard_boundaries'])
+            '演出角色禁止行为：不得替玩家选择查阅内容。'} <= set(context['hard_boundaries'])
     assert data['player_input'] == message
     assert data['transition_contract'] == outcome.transition_contract
     assert data['transition_authorization']['transition_intent'] == intent
@@ -283,7 +291,7 @@ async def test_review_target_direction_waits_until_after_nonterminal_opening(tmp
     assert restored == committed
     ordinary = _build_transition_judge_messages(engine, restored.session, player_input='先看看入口标识。',
         actor_performance={'performance': '（指向标识）可以先看看这里。', 'suggested_inputs': []})[0]
-    ordinary_data = json.loads(ordinary[1].content.split('：', 1)[1])
+    ordinary_data = prompt_payload(ordinary[1].content)
     assert ordinary_data['current_scene']['story_direction'] == future
     assert 'target_scene' not in ordinary_data
     assert (engine.story, stored.session, outcome, candidate) == before
@@ -346,7 +354,7 @@ async def test_compact_bridge_contract_through_actor_commit_and_restore(monkeypa
         assert runtime.store._path('bridge').read_bytes() == before
         candidate['bridge_scene_narration'] = '天亮后，两人沿楼梯抵达大厅。'
     performance = await actor.generate_turn(**kwargs)
-    data = json.loads(messages_seen[-1][1].content.split('\n', 1)[1])
+    data = prompt_payload(messages_seen[-1][1].content)
     assert data['transition']['bridge_required'] is (requirement != 'optional')
     assert 'bridge_required' in messages_seen[-1][0].content
     assert performance['segments'][1]['scene_narration'] == candidate['bridge_scene_narration']
@@ -404,3 +412,160 @@ def test_runtime_optional_bridge_matches_legacy_array_permission():
     assert compact == legacy
     with pytest.raises(ValueError, match='numeric_transition_performance_invalid'):
         engine.finalize_transition_performance(outcome, candidate, target_opening='旧开场。', bridge_required=True)
+
+
+# 已展示的来源固定原文进入有限尾声，顺序、姓名及容量边界保持不变。
+TAIL_MARKER = "上一幕尾声（只承接你当时可见的情绪和姿态，不作为当前任务）："
+SOURCE_BEFORE = "旧绑定猫娘眼角尚湿。"
+SOURCE_AFTER = "她的肩膀仍微微发抖。"
+TARGET_TEXT = "目标幕窗帘已经拉开。"
+
+
+def _piece(text, position, piece_id="after", *, node_id="ending_leave"):
+    # These are captured delivery bytes, with the original names already bound.
+    return {"node_id": node_id, "id": piece_id, "text": text, "position": position,
+            "bindings": {"catgirl_name": "旧绑定猫娘", "player_name": "旧绑定玩家"}}
+
+
+def _record(source, *, target=None):
+    return {"revision": 1, "from_node_id": "ending_leave", "to_node_id": "start",
+            "input_text": "换个地方吧。", "segments": [
+                {"phase": "source_response", **source},
+                {"phase": "transition_bridge", "scene_narration": "两人来到灯下。"},
+                {"phase": "target_opening", "scene_narration": "室内安静。",
+                 "performance": "这里安静。", **(target or {})},
+            ]}
+
+
+def _messages(record, *, later_turn=False):
+    """Exercise real history selection, retrieval and final six-block packing."""
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+    base = _session(engine)
+    history = (record,)
+    if later_turn:
+        history += ({"revision": 2, "from_node_id": "start", "to_node_id": "start",
+                     "input_text": "先坐下。", "performance": "我接着讲。"},)
+    revision = 2 if later_turn else 1
+    session = replace(base, revision=revision, story_state=_story_state_at(base, revision),
+                      node_turn_count=1 if later_turn else 0, performance_history=history)
+    before = deepcopy(session.to_dict())
+    query = "接着说吧。"
+    outcome = engine.resolve_turn(session, TurnRequestV2("fixed_tail", revision, query), (),
+                                  scene_complete=False)
+    messages = actor._turn_messages(engine, session, outcome, query,
+                                    "安静克制，习惯用短句回应。", "测试猫娘", "哥哥")
+    assert session.to_dict() == before
+    return messages
+
+
+def _tail(messages):
+    story = _payload(messages)["story_so_far"]
+    return story.split(TAIL_MARKER, 1)[1].split("\n", 1)[0] if TAIL_MARKER in story else ""
+
+
+@pytest.mark.parametrize("position", ["before", "after"])
+def test_actual_first_turn_includes_source_original_at_its_visible_position(position):
+    text = SOURCE_BEFORE if position == "before" else SOURCE_AFTER
+    record = _record({"performance": "好，走吧。", "fixed_narrations": [_piece(text, position)]})
+    before = deepcopy(record)
+    tail = _tail(_messages(record))
+    assert text in tail
+    if position == "before":
+        assert tail.index(text) < tail.index("好，走吧。")
+    else:
+        assert tail.index("好，走吧。") < tail.index(text)
+    assert record == before
+
+
+def test_actual_source_with_empty_optional_speech_keeps_both_originals_in_order():
+    record = _record({"performance": "", "fixed_narrations": [
+        _piece(SOURCE_BEFORE, "before", "before"), _piece(SOURCE_AFTER, "after")]})
+    tail = _tail(_messages(record))
+    assert tail.index(SOURCE_BEFORE) < tail.index(SOURCE_AFTER)
+    assert tail.count(SOURCE_BEFORE) == tail.count(SOURCE_AFTER) == 1
+
+
+def test_target_original_stays_target_context_and_never_becomes_source_tail():
+    record = _record({"performance": "好，走吧。", "fixed_narrations": [
+        _piece(SOURCE_AFTER, "after")]}, target={"fixed_narrations": [
+            _piece(TARGET_TEXT, "before", "target", node_id="start")]})
+    messages = _messages(record)
+    tail = _tail(messages)
+    assert SOURCE_AFTER in tail and TARGET_TEXT not in tail
+    story = _payload(messages)["story_so_far"]
+    assert story.count(TARGET_TEXT) == 1
+    assert story.index(SOURCE_AFTER) < story.index("两人来到灯下。") < story.index(TARGET_TEXT)
+
+
+def test_tail_reads_captured_binding_without_rerendering_names_or_placeholders():
+    captured = render_text("{{catgirl_name}}眼角尚湿。", {"catgirl_name": "旧绑定猫娘"})
+    assert captured == SOURCE_BEFORE
+    record = _record({"performance": "", "fixed_narrations": [
+        _piece(captured, "before")]})
+    tail = _tail(_messages(record))
+    assert SOURCE_BEFORE in tail
+    assert "测试猫娘眼角尚湿" not in tail
+    assert "{{catgirl_name}}" not in tail
+
+
+@pytest.mark.parametrize("position, expected_count", [("before", 1), ("after", 2)])
+def test_tail_reuses_display_echo_rules_without_new_deduplication(position, expected_count):
+    record = _record({"scene_narration": SOURCE_BEFORE, "performance": "",
+                      "fixed_narrations": [_piece(SOURCE_BEFORE, position)]})
+    visible = performance_content_blocks(record["segments"][0])
+    assert sum(block["text"] == SOURCE_BEFORE for block in visible) == expected_count
+    assert _tail(_messages(record)).count(SOURCE_BEFORE) == expected_count
+
+
+def test_originals_do_not_expand_existing_two_visible_block_tail_limit():
+    record = _record({"performance": "好，走吧。", "fixed_narrations": [
+        _piece(SOURCE_BEFORE, "before", "before"), _piece(SOURCE_AFTER, "after")]})
+    tail = _tail(_messages(record))
+    assert actor.NUMERIC_V2_PREVIOUS_SCENE_TAIL_MAX_BLOCKS == 2
+    assert SOURCE_BEFORE not in tail
+    assert tail == f"好，走吧。（{SOURCE_AFTER}）"
+
+
+def test_long_original_keeps_existing_tail_budget_without_expanding_it():
+    record = _record({"performance": "", "fixed_narrations": [
+        _piece("肩膀微微发抖。" * 120, "after")]})
+    tail = _tail(_messages(record))
+    assert actor.NUMERIC_V2_PREVIOUS_SCENE_TAIL_MAX_TOKENS == 80
+    # The existing tail helper may omit an overlong block when its rendered
+    # wrapper does not fit. This fix must not relax that budget to retain it.
+    assert actor.count_tokens(tail) <= 80
+    assert tail != "（" + "肩膀微微发抖。" * 120 + "）"
+
+
+def test_previous_source_original_is_not_inherited_after_first_target_turn():
+    record = _record({"performance": "好，走吧。", "fixed_narrations": [
+        _piece(SOURCE_AFTER, "after")]})
+    assert SOURCE_AFTER in _tail(_messages(record))
+    assert _tail(_messages(record, later_turn=True)) == ""
+
+
+def test_full_message_budget_still_drops_source_tail_before_current_context(monkeypatch):
+    baseline = _messages(_record({"performance": ""}))
+    limit = actor._messages_tokens(baseline)
+    original_budget = actor.numeric_v2_actor_budget
+    monkeypatch.setattr(actor, "numeric_v2_actor_budget", lambda profile: {
+        **original_budget(profile), "input_max_tokens": limit})
+    messages = _messages(_record({"performance": "", "fixed_narrations": [
+        _piece(SOURCE_AFTER, "after")]}))
+    assert _tail(messages) == ""
+    assert [message.content for message in messages] == [message.content for message in baseline]
+    assert _payload(messages)["player_input"] == "接着说吧。"
+
+
+@pytest.mark.parametrize("source, expected_tail", [
+    ({"scene_narration": "雨声停下。", "performance": "（抬眼）好，走吧。"}, "（抬眼）好，走吧。"),
+    # Legacy projection deliberately combines dialogue blocks. Reading raw here
+    # would alter its existing two-block cutoff even though it has no originals.
+    ({"content": [{"type": "dialogue", "speaker_id": "active_catgirl", "text": text}
+                  for text in ("旧句甲。", "旧句乙。", "最后一句。")]}, "旧句甲。旧句乙。最后一句。"),
+])
+def test_no_fixed_source_request_keeps_its_existing_tail_and_empty_list_equivalence(source, expected_tail):
+    messages = _messages(_record(source))
+    empty = _messages(_record({**source, "fixed_narrations": []}))
+    assert _tail(messages) == expected_tail
+    assert [message.content for message in messages] == [message.content for message in empty]
