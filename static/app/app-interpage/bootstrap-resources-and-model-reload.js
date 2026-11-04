@@ -1775,8 +1775,11 @@ I.mod = window.appInterpage;
                 : null;
             const expectedManager = window.live2dManager;
             const expectedModel = expectedManager?.getCurrentModel();
+            const restoreSequence = (expectedManager?._idleAnimationRestoreSequence || 0) + 1;
+            if (expectedManager) expectedManager._idleAnimationRestoreSequence = restoreSequence;
             const canContinue = () => {
                 if (window.live2dManager !== expectedManager || expectedManager?.getCurrentModel() !== expectedModel) return false;
+                if (expectedManager && expectedManager._idleAnimationRestoreSequence !== restoreSequence) return false;
                 if (!shouldContinue) return true;
                 try {
                     return shouldContinue() !== false;

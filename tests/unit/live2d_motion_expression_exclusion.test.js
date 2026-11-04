@@ -225,7 +225,7 @@ function installMainIdleRestore(f, options = {}) {
         if (url === '/api/live2d/model_files/mao_pro') return { json: async () => ({ motion_files: motionFiles }) };
         return fetch(url, ...args);
     };
-    return { savedFile, clearSelection() { configuredIdle = ''; } };
+    return { savedFile, select(file) { configuredIdle = file; }, clearSelection() { configuredIdle = ''; } };
 }
 
 test('main-page saved idle deferred by an expression resumes through the common scheduler', async () => {
@@ -289,6 +289,35 @@ test('an old main-page idle request cannot clear the selection of a replacement 
         assert.deepEqual(Array.from(f.manager._userIdleAnimations), ['new.motion3.json']);
     } finally { gate.resolve(); f.release(); next.release(); }
 });
+
+for (const nextSelection of ['custom/new.motion3.json', '']) {
+    test(`a newer idle ${nextSelection ? 'selection' : 'clear'} supersedes an older load on the same model`, async () => {
+        const f = await fixture(), entered = deferred(), gate = deferred();
+        try {
+            const oldFile = 'custom/old.motion3.json';
+            const main = installMainIdleRestore(f, {
+                savedFile: oldFile, motionFiles: [oldFile, 'custom/new.motion3.json']
+            });
+            const load = f.native.loadMotion;
+            f.native.loadMotion = async function(group, index, ...args) {
+                if (group === 'PreviewAll' && index === 0) { entered.resolve(); await gate.promise; }
+                return load.call(this, group, index, ...args);
+            };
+            const oldRestore = f.runtime.context.restoreLive2DIdleAnimationOnMainPage();
+            await entered.promise;
+            main.select(nextSelection);
+            await f.runtime.context.restoreLive2DIdleAnimationOnMainPage();
+            gate.resolve();
+            await oldRestore;
+            assert.deepEqual(Array.from(f.manager._userIdleAnimations), nextSelection ? [nextSelection] : []);
+            if (nextSelection) {
+                assert.equal(f.native.definitions.PreviewAll[f.native.state.currentIndex].File, nextSelection);
+            } else {
+                assert.equal(f.native.state.currentPriority, 0, 'the obsolete load cannot restart an explicitly cleared idle');
+            }
+        } finally { gate.resolve(); f.release(); }
+    });
+}
 
 test('smooth expression cleanup holds exclusion until the fade completes', async () => {
     const f = await fixture({ manual: true });
