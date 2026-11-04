@@ -417,6 +417,8 @@ class ProactiveBridge:
                 events_out.append(
                     {
                         "event_type": "music_play_url",
+                        **({"netease_id": ui["netease_id"]} if plugin_id == "netease_music" and ui.get("netease_id") else {}),
+                        **({"queue_ticket": ui["queue_ticket"]} if plugin_id == "netease_music" and ui.get("queue_ticket") else {}),
                         "lanlan_name": target_lanlan,
                         "url": url,
                         "name": ui.get("name") or metadata.get("name"),
@@ -425,6 +427,8 @@ class ProactiveBridge:
                         "timestamp": timestamp,
                     }
                 )
+            elif action == "netease_stop" and plugin_id == "netease_music" and target_lanlan:
+                events_out.append({"event_type":"netease_stop", "lanlan_name":target_lanlan})
             elif action == "media_allowlist_add":
                 domains = ui.get("domains") or metadata.get("domains") or []
                 http_urls = ui.get("http_urls") or metadata.get("http_urls") or []

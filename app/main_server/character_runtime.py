@@ -1068,11 +1068,18 @@ async def _handle_agent_event(event: dict):
                 )
             return
 
+        elif event_type == "netease_stop":
+            if mgr and mgr.websocket:
+                await mgr.websocket.send_json({"type": "netease_stop"})
+            return
+
         elif event_type == "music_play_url":
             # Music playback is a global UI action, broadcast to all active sessions
             targets = [mgr] if mgr else [m for _, m in _iter_session_managers()]
             payload = {
                 "type": "music_play_url",
+                "netease_id": event.get("netease_id"),
+                "queue_ticket": event.get("queue_ticket"),
                 "url": event.get("url"),
                 "name": event.get("name") or "Plugin Music",
                 "artist": event.get("artist") or "External",

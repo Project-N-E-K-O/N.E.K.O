@@ -4,6 +4,7 @@ import ast
 import asyncio
 import json
 import tomllib
+from threading import Lock
 from pathlib import Path
 from typing import Any
 
@@ -86,6 +87,7 @@ def _make_plugin(
     receipts: list[dict[str, object]] | None = None,
 ) -> tuple[NeteaseMusicPlugin, list[dict[str, object]], list[dict[str, object]]]:
     plugin = NeteaseMusicPlugin.__new__(NeteaseMusicPlugin)
+    plugin._library_lock = Lock()
     plugin._provider_factory = lambda: provider
     plugin._closed = False
     plugin._generation_counter = 0
@@ -177,7 +179,7 @@ def test_manifest_is_default_off_and_has_no_keyword_trigger() -> None:
     assert plugin_meta["id"] == "netease_music"
     assert plugin_meta["entry"] == "plugin.plugins.netease_music:NeteaseMusicPlugin"
     assert plugin_meta["name"] == "网易云匿名点歌"
-    assert "匿名搜索网易云单曲" in plugin_meta["description"]
+    assert "歌单连播" in plugin_meta["description"]
     assert "keywords" not in plugin_meta
     assert manifest["plugin_runtime"] == {"enabled": False, "auto_start": False}
 
@@ -240,13 +242,14 @@ def test_all_locales_have_the_same_required_keys() -> None:
         "messages.no_results",
         "messages.unavailable",
         "messages.submitted",
-        "messages.fallback",
         "errors.missing_target",
         "errors.search_failed",
         "errors.media_failed",
         "errors.delivery_failed",
         "errors.message_delivery_failed",
-    } == expected_keys
+        "playlist.added",
+        "playlist.ended",
+    } <= expected_keys
 
 
 @pytest.mark.plugin_unit
@@ -300,6 +303,7 @@ async def test_clear_match_submits_allowlist_then_play_to_same_target() -> None:
         "media_type": "audio",
         "name": "晴天",
         "artist": "周杰伦",
+        "netease_id": 1,
     }
 
     assert finish_calls[-1]["data"]["status"] == "submitted"
@@ -329,78 +333,19 @@ async def test_duplicate_exact_titles_play_first_search_result() -> None:
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
-async def test_first_result_wins_even_when_later_result_is_exact() -> None:
-    first = _song(song_id=1, name="纸短情长 (翻唱版)", artist="其他歌手")
-    provider = _Provider(
-        candidates=[
-            first,
-            _song(song_id=2, name="纸短情长", artist="烟把儿"),
-        ]
-    )
-    plugin, pushes, finish_calls = _make_plugin(provider)
-
-    result = await plugin.play_netease_music(PlayRequest(query="纸短情长"), _ctx())
-
-    assert result["finish"]["delivery"] == "silent"
-    assert provider.resolve_calls == [first.song_id]
-    assert _action(pushes[1])["name"] == "纸短情长 (翻唱版)"
-    assert _action(pushes[2])["text"].startswith("我不太确定")
-    assert finish_calls[-1]["data"]["used_fallback"] is True
-
-
-@pytest.mark.plugin_unit
-@pytest.mark.asyncio
-async def test_fuzzy_query_plays_first_result_and_pushes_gentle_notice() -> None:
-    provider = _Provider(
-        candidates=[
-            _song(song_id=1, artist="周杰伦"),
-            _song(song_id=2, artist="其他歌手", album="翻唱合集"),
-        ]
-    )
-    plugin, pushes, finish_calls = _make_plugin(provider)
-
-    result = await plugin.play_netease_music(PlayRequest(query="晴"), _ctx())
-
-    assert result["finish"]["delivery"] == "silent"
-    assert provider.resolve_calls == [1]
-    assert len(pushes) == 3
-    assert _action(pushes[1])["action"] == "media_play_url"
-    assert _action(pushes[1])["artist"] == "周杰伦"
-    assert pushes[2]["visibility"] == ["chat"]
-    assert pushes[2]["ai_behavior"] == "blind"
-    assert pushes[2]["target_lanlan"] == "Mika"
-    assert _action(pushes[2])["text"] == (
-        "我不太确定这是不是你想听的版本，先按搜索结果给你放第一首啦。"
-    )
-    assert finish_calls[-1]["data"]["status"] == "submitted"
-    assert finish_calls[-1]["data"]["used_fallback"] is True
-    assert finish_calls[-1]["data"]["notice_submitted"] is True
-
-
-@pytest.mark.plugin_unit
-@pytest.mark.asyncio
-async def test_fallback_notice_rejection_does_not_turn_submitted_play_into_error() -> None:
-    provider = _Provider(
-        candidates=[
-            _song(song_id=1, artist="周杰伦"),
-            _song(song_id=2, artist="其他歌手"),
-        ]
-    )
-    plugin, pushes, finish_calls = _make_plugin(
-        provider,
-        receipts=[
-            {"submitted": True},
-            {"submitted": True},
-            {"submitted": False, "reason": "transport_unavailable"},
-        ],
-    )
-
-    result = await plugin.play_netease_music(PlayRequest(query="晴"), _ctx())
-
-    assert result["finish"]["delivery"] == "silent"
-    assert len(pushes) == 3
-    assert finish_calls[-1]["data"]["status"] == "submitted"
-    assert finish_calls[-1]["data"]["notice_submitted"] is False
+async def test_later_exact_beats_first_and_wrong_artist_never_plays() -> None:
+    wrong = _song(song_id=1, name="Heavy Water", artist="Andreas Waldetoft")
+    exact = _song(song_id=2, name="Heavy Water", artist="Grouper")
+    provider = _Provider(candidates=[wrong, exact])
+    plugin, pushes, _ = _make_plugin(provider)
+    await plugin.play_netease_music(PlayRequest(query="Heavy Water Grouper"), _ctx())
+    assert provider.resolve_calls == [2]
+    assert _action(pushes[-1])["artist"] == "Grouper"
+    provider.candidates = [wrong]
+    pushes.clear()
+    await plugin.play_netease_music(PlayRequest(query="Heavy Water Grouper"), _ctx())
+    assert provider.resolve_calls == [2]
+    assert not any(_action(p).get("action") == "media_play_url" for p in pushes)
 
 
 @pytest.mark.plugin_unit
@@ -632,3 +577,104 @@ async def test_cancelled_error_is_not_swallowed() -> None:
 
     assert pushes == []
     assert finish_calls == []
+
+
+@pytest.mark.asyncio
+async def test_queue_natural_end_is_once_and_saved_ids_survive_new_instance(tmp_path):
+    from unittest.mock import AsyncMock
+
+    rows = [_song(song_id=i, name=str(i), artist="Band") for i in (11, 12, 13)]
+    provider = _Provider(candidates=rows)
+    provider.playlist = AsyncMock(return_value=("NetEase list", rows))
+    plugin, pushes, _ = _make_plugin(provider)
+    plugin._queues = {}
+    plugin.data_path = lambda: tmp_path
+    await plugin.playlist("search", name="indie", _ctx=_ctx())
+    assert provider.resolve_calls == [11]
+    ticket = _action(pushes[-1])["queue_ticket"]
+    await plugin.playlist("save", name="读书", _ctx=_ctx())
+    assert "https:" not in plugin._library_file("Mika").read_text()
+    await plugin.playlist_terminal(ticket, "ended", _ctx={"lanlan_name": "Other"})
+    await plugin.playlist_terminal(ticket, "ended", _ctx=_ctx())
+    await plugin.playlist_terminal(ticket, "ended", _ctx=_ctx())
+    assert provider.resolve_calls == [11, 12]
+    await plugin.playlist_terminal(
+        _action(pushes[-1])["queue_ticket"], "closed", _ctx=_ctx()
+    )
+    assert provider.resolve_calls == [11, 12]
+    fresh, _, _ = _make_plugin(provider)
+    fresh._queues = {}
+    fresh.data_path = lambda: tmp_path
+    await fresh.playlist("replay", name="读书", _ctx=_ctx())
+    assert provider.resolve_calls == [11, 12, 11]
+    assert [t.song_id for t in fresh._queues["lanlan:Mika"].tracks] == [11, 12, 13]
+
+
+@pytest.mark.asyncio
+async def test_curated_revise_preserves_current_and_rejects_mismatched_artist():
+    rows = [_song(song_id=i, name=str(i), artist="Band") for i in (1, 2, 3)]
+    provider = _Provider(candidates=rows)
+    plugin, pushes, _ = _make_plugin(provider)
+    plugin._queues = {}
+    await plugin.playlist(
+        "curate", tracks=["1 | Band", "2 | Band", "3 | Wrong"], _ctx=_ctx()
+    )
+    ticket = _action(pushes[-1])["queue_ticket"]
+    await plugin.playlist("revise", tracks=["3 | Band", "1 | Band"], _ctx=_ctx())
+    queue = plugin._queues["lanlan:Mika"]
+    assert [t.song_id for t in queue.tracks] == [1, 3]
+    assert queue.ticket == ticket
+    await plugin.playlist_terminal(ticket, "error", _ctx=_ctx())
+    assert provider.resolve_calls == [1, 3]
+
+
+@pytest.mark.asyncio
+async def test_collect_current_song_preserves_library_and_reports_result(tmp_path):
+    from unittest.mock import AsyncMock
+
+    plugin, pushes, _ = _make_plugin(_Provider())
+    plugin._queues = {}
+    plugin.data_path = lambda: tmp_path
+    song = {"song_id": 7, "name": "Current", "artist": "Band"}
+    plugin._current_track = AsyncMock(side_effect=[song, song, None])
+    library = {"dreampop": [[4, "Existing", "Artist"]], "other": [[9, "Other", "Band"]]}
+    plugin._write_library("Mika", library)
+    for status in ("added", "already_saved", "not_saved"):
+        result = await plugin.playlist("save_current", name="dreampop", _ctx=_ctx())
+        assert result["finish"]["data"]["status"] == status
+        assert pushes[-1]["ai_behavior"] == "respond"
+    library["dreampop"].append([7, "Current", "Band"])
+    assert plugin._library("Mika") == library
+
+
+@pytest.mark.asyncio
+async def test_saved_queue_plays_through_once_despite_duplicate_end_reports(tmp_path):
+    songs = [_song(song_id=i, name=f"Song {i}") for i in range(1, 5)]
+    provider = _Provider(candidates=songs)
+    player, pushes, _ = _make_plugin(provider)
+    player._queues = {}
+    player.data_path = lambda: tmp_path
+    player._write_library("Mika", {"Night": [[s.song_id, s.name, s.artist] for s in songs]})
+
+    await player.playlist("replay", name="Night", _ctx=_ctx(language="en"))
+    for song in songs:
+        action = _action(pushes[-1])
+        assert action["netease_id"] == song.song_id
+        ticket = action["queue_ticket"]
+        await player.playlist_terminal(ticket, "ended", _ctx=_ctx())
+        duplicate = await player.playlist_terminal(ticket, "ended", _ctx=_ctx())
+        assert duplicate["finish"]["data"]["status"] == "stale"
+    assert provider.resolve_calls == [1, 2, 3, 4]
+    assert pushes[-1]["parts"][0]["text"] == "Reached the end of Night."
+
+
+@pytest.mark.asyncio
+async def test_concurrent_additions_keep_both_tracks(tmp_path):
+    player, _, _ = _make_plugin(_Provider())
+    player.data_path = lambda: tmp_path
+    rows = [[1, "First", "Artist"], [2, "Second", "Artist"]]
+    await asyncio.gather(*(
+        asyncio.to_thread(player._store_tracks, "Mika", "Mix", [row], append_current=True)
+        for row in [*rows, rows[0]]
+    ))
+    assert sorted(player._library("Mika")["Mix"]) == rows

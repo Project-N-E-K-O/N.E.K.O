@@ -334,3 +334,38 @@ async def test_resolve_media_wraps_network_errors_without_leaking_url() -> None:
     with pytest.raises(ProviderError, match="media request failed") as caught:
         await _provider(handler).resolve_media(1)
     assert "signed_url" not in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_playlist_uses_track_ids_for_order_when_details_are_partial():
+    def handler(request):
+        if request.url.path.endswith("/get/web"):
+            assert b"type=1000" in request.content
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "result": {"playlists": [{"id": 12, "name": "Mix"}]},
+                },
+            )
+        if request.url.path.endswith("/playlist/detail"):
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "playlist": {
+                        "name": "Mix",
+                        "trackIds": [{"id": 3}, {"id": 2}, {"id": 1}],
+                        "tracks": [_song(2, "Second", "Band")],
+                    },
+                },
+            )
+        assert request.url.path.endswith("/song/detail")
+        return httpx.Response(
+            200, json={"songs": [_song(1, "Last", "Band"), _song(3, "First", "Band")]}
+        )
+
+    async with _provider(handler) as provider:
+        name, tracks = await provider.playlist("Mix")
+    assert name == "Mix"
+    assert [track.song_id for track in tracks] == [3, 2, 1]

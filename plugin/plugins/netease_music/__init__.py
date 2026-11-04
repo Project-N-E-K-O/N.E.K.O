@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from threading import Lock
 from collections.abc import Mapping
 from typing import Any, Protocol
 
@@ -17,6 +18,7 @@ from plugin.sdk.plugin import (
     tr,
 )
 
+from .playlists import PlaylistMixin
 from .credential_ui import CredentialUiMixin
 from .models import PlayRequest, ResolvedMedia, SongCandidate
 from .provider import (
@@ -41,12 +43,14 @@ class _ProviderContext(Protocol):
 
 
 @neko_plugin
-class NeteaseMusicPlugin(CredentialUiMixin, NekoPluginBase):
+class NeteaseMusicPlugin(PlaylistMixin, CredentialUiMixin, NekoPluginBase):
     """Search NetEase anonymously and submit validated playback actions."""
 
     def __init__(self, ctx: Any):
         super().__init__(ctx)
         self._init_credential_store()
+        self._library_lock = Lock()
+        self._queues = {}
         self._provider_factory = lambda: NeteaseMusicProvider(
             cookies=self._netease_cookies
         )
@@ -128,6 +132,7 @@ class NeteaseMusicPlugin(CredentialUiMixin, NekoPluginBase):
 
         session_key = self._session_key(target_lanlan)
         generation = self._begin_request(session_key)
+        getattr(self, "_queues", {}).pop(session_key, None)
         if self._closed:
             return await self._finish_silent("superseded")
 
@@ -182,7 +187,8 @@ class NeteaseMusicPlugin(CredentialUiMixin, NekoPluginBase):
         if not self._is_current(session_key, generation):
             return await self._finish_silent("superseded")
 
-        if not candidates:
+        selected = select_first_exact_match(params.query, candidates)
+        if selected is None:
             return await self._push_expected_outcome(
                 session_key=session_key,
                 generation=generation,
@@ -195,9 +201,6 @@ class NeteaseMusicPlugin(CredentialUiMixin, NekoPluginBase):
                     ctx,
                 ),
             )
-
-        selected = candidates[0]
-        used_fallback = select_first_exact_match(params.query, [selected]) is None
 
         try:
             media = await provider.resolve_media(selected.song_id)
@@ -232,6 +235,23 @@ class NeteaseMusicPlugin(CredentialUiMixin, NekoPluginBase):
         if not self._is_current(session_key, generation):
             return await self._finish_silent("superseded")
 
+        if not self._push_track(target_lanlan, selected, media):
+            return self._error("errors.delivery_failed", "播放动作提交失败。", code="delivery_rejected", ctx=ctx)
+        return await self.finish(
+            data={
+                "status": "submitted",
+                "summary": self._t(
+                    "messages.submitted",
+                    "播放动作已提交。",
+                    ctx,
+                ),
+                "song": self._candidate_data(selected),
+                "used_fallback": False,
+            },
+            delivery="silent",
+        )
+
+    def _push_track(self, target_lanlan, selected, media, ticket=""):
         allowlist_receipt = self.push_message(
             source=_SOURCE,
             visibility=[],
@@ -246,15 +266,7 @@ class NeteaseMusicPlugin(CredentialUiMixin, NekoPluginBase):
             target_lanlan=target_lanlan,
         )
         if not self._submitted(allowlist_receipt):
-            return self._error(
-                "errors.delivery_failed",
-                "播放动作提交失败，未开始播放。",
-                code="delivery_rejected",
-                ctx=ctx,
-            )
-
-        if not self._is_current(session_key, generation):
-            return await self._finish_silent("superseded")
+            return False
 
         play_receipt = self.push_message(
             source=_SOURCE,
@@ -268,52 +280,13 @@ class NeteaseMusicPlugin(CredentialUiMixin, NekoPluginBase):
                     "media_type": "audio",
                     "name": selected.name,
                     "artist": selected.artist,
+                    "netease_id": selected.song_id,
+                    **({"queue_ticket": ticket} if ticket else {}),
                 }
             ],
             target_lanlan=target_lanlan,
         )
-        if not self._submitted(play_receipt):
-            return self._error(
-                "errors.delivery_failed",
-                "播放动作提交失败，未开始播放。",
-                code="delivery_rejected",
-                ctx=ctx,
-            )
-
-        notice_submitted = True
-        if used_fallback:
-            notice_receipt = self.push_message(
-                source=_SOURCE,
-                visibility=["chat"],
-                ai_behavior="blind",
-                parts=[
-                    {
-                        "type": "text",
-                        "text": self._t(
-                            "messages.fallback",
-                            "我不太确定这是不是你想听的版本，先按搜索结果给你放第一首啦。",
-                            ctx,
-                        ),
-                    }
-                ],
-                target_lanlan=target_lanlan,
-            )
-            notice_submitted = self._submitted(notice_receipt)
-
-        return await self.finish(
-            data={
-                "status": "submitted",
-                "summary": self._t(
-                    "messages.submitted",
-                    "播放动作已提交。",
-                    ctx,
-                ),
-                "song": self._candidate_data(selected),
-                "used_fallback": used_fallback,
-                "notice_submitted": notice_submitted,
-            },
-            delivery="silent",
-        )
+        return self._submitted(play_receipt)
 
     def _new_provider(self) -> _ProviderContext:
         return self._provider_factory()

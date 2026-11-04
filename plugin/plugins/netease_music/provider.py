@@ -10,6 +10,8 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
+import json
+
 import httpx
 from pyncm_async import Session as NeteaseSession
 from pyncm_async.apis.track import GetTrackAudio
@@ -69,6 +71,17 @@ def _normalize_match(value: str) -> str:
 
 def _artist_names(candidate: SongCandidate) -> tuple[str, ...]:
     return candidate.artist_names or ((candidate.artist,) if candidate.artist else ())
+
+
+def select_recording(title: str, artist: str, candidates: Iterable[SongCandidate]) -> SongCandidate | None:
+    """Match both supplied fields so a title alone cannot select a cover."""
+    title, artist = _normalize_match(title), _normalize_match(artist)
+    for candidate in candidates:
+        if _normalize_match(candidate.name) == title and any(
+            _normalize_match(name) == artist for name in _artist_names(candidate)
+        ):
+            return candidate
+    return None
 
 
 def select_first_exact_match(
@@ -283,6 +296,69 @@ class NeteaseMusicProvider:
                 break
         return candidates
 
+    async def playlist(self, query: str) -> tuple[str, list[SongCandidate]]:
+        """Keep NetEase's order, using stable IDs rather than signed URLs."""
+        response = await self._client.post(
+            SEARCH_URL, data={"s": query, "type": "1000", "limit": "8", "offset": "0"}
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get("code") != 200:
+            raise ProviderError("Playlist search unavailable")
+        choices = [
+            p
+            for p in (payload.get("result") or {}).get("playlists", [])
+            if isinstance(p, Mapping) and _positive_song_id(p.get("id"))
+        ]
+        if not choices:
+            return "", []
+        choice = next(
+            (
+                p
+                for p in choices
+                if _normalize_match(p.get("name", "")) == _normalize_match(query)
+            ),
+            choices[0],
+        )
+        detail = await self._client.get(
+            "https://music.163.com/api/v6/playlist/detail",
+            params={"id": choice["id"], "n": 1000},
+        )
+        detail.raise_for_status()
+        body = detail.json()
+        if body.get("code") != 200:
+            raise ProviderError("Playlist unavailable")
+        playlist = body.get("playlist") or {}
+        ids = list(
+            dict.fromkeys(
+                i
+                for t in playlist.get("trackIds", [])
+                if isinstance(t, Mapping) and (i := _positive_song_id(t.get("id")))
+            )
+        )[:1000]
+        by_id = {
+            c.song_id: c
+            for t in playlist.get("tracks", [])
+            if (c := _parse_candidate(t))
+        }
+        if not ids:
+            return _sanitize_display(playlist.get("name")), list(by_id.values())
+        missing = [i for i in ids if i not in by_id]
+        for start in range(0, len(missing), 100):
+            details = await self._client.post(
+                "https://music.163.com/api/v3/song/detail",
+                data={
+                    "c": json.dumps([{"id": i} for i in missing[start : start + 100]])
+                },
+            )
+            details.raise_for_status()
+            for song in details.json().get("songs", []):
+                if candidate := _parse_candidate(song):
+                    by_id[candidate.song_id] = candidate
+        return _sanitize_display(playlist.get("name")), [
+            by_id[i] for i in ids if i in by_id
+        ]
+
     async def resolve_media(self, song_id: int) -> ResolvedMedia:
         normalized_id = _positive_song_id(song_id)
         if normalized_id is None:
@@ -324,6 +400,8 @@ class NeteaseMusicProvider:
             return None
         data = payload.get("data")
         if not isinstance(data, list) or not data or not isinstance(data[0], Mapping):
+            return None
+        if data[0].get("freeTrialInfo"):
             return None
         url = data[0].get("url")
         return url if isinstance(url, str) and url else None

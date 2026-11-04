@@ -450,7 +450,22 @@ def _netease_proxy_redirect(url, song_id):
         url = 'https://' + url[7:]
     if not is_allowed_audio_url(url):
         return None
-    return RedirectResponse(url=f'/api/music/proxy?url={quote(url, safe="")}&netease_id={song_id}')
+    return RedirectResponse(
+        url=f"/api/music/proxy?url={quote(url, safe='')}&netease_id={song_id}"
+    )
+
+
+@router.get("/api/music/current/netease")
+async def current_netease_track(lanlan_name: str):
+    from main_routers.shared_state import get_session_manager
+
+    manager = get_session_manager().get(lanlan_name)
+    track = (
+        getattr(manager, "_current_netease_track", None)
+        if getattr(manager, "websocket", None)
+        else None
+    )
+    return {"track": track}
 
 
 @router.get("/api/music/play/netease/{song_id}")

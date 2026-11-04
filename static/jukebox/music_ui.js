@@ -277,6 +277,8 @@
             && previousContext.recommendationId === (options.recommendationId || '')
             && previousContext.url === String(track.url || '');
         return {
+            neteaseId: track.neteaseId,
+            queueTicket: track.queueTicket || '',
             playbackId: playbackId || '',
             token: token,
             lifecycleStartedAt: getMusicLifecycleTimestamp(),
@@ -358,6 +360,9 @@
                 action: 'music_playback_state',
                 state: state,
                 playback_id: context.playbackId,
+                netease_id: context.neteaseId,
+                queue_ticket: context.queueTicket || '',
+                queue_closed: failureReason === 'closed',
                 playback_window_id: MUSIC_COORD_SENDER_ID,
                 playback_started_at: context.lifecycleStartedAt,
                 source: context.source,
@@ -2421,6 +2426,10 @@
     };
 
 
+    window.closeNeteasePlayer = () => {
+        if (localPlayer?._musicPlaybackReportContext?.neteaseId) closeLocalMusicPlayer();
+    };
+
     function closeLocalMusicPlayer() {
         recordMusicCloseFeedback(playbackStartedAt);
         playbackStartedAt = 0;
@@ -2470,7 +2479,7 @@
             && (['playing', 'paused'].includes(terminalReportContext.lastReportedState)
                 || ['playing', 'paused'].includes(terminalReportContext.recommendationLastState))
         ) {
-            reportMusicPlaybackState('ended', null, terminalReportContext);
+            reportMusicPlaybackState('ended', null, terminalReportContext, 'closed');
         }
         // 重要：销毁播放器意味着取消所有正在进行的异步加载令牌
         // 只有在 fullTeardown (手动关闭) 或明确要求时才更新 token
