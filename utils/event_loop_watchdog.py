@@ -45,8 +45,9 @@ _DISABLED_VALUES = frozenset({"0", "off", "false", "no", "disable", "disabled"})
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # One watchdog per event loop: in merged mode several services share a loop
-# and each asks for a watchdog at startup. Keyed weakly so a closed, dropped
-# loop does not keep its entry alive.
+# and each asks for a watchdog at startup. The value holds its loop strongly
+# (``self._loop``), so weak keys alone never drop an entry: entries are removed
+# explicitly by the last ``stop()`` or by the checker once the loop is closed.
 _REGISTRY = weakref.WeakKeyDictionary()
 _REGISTRY_LOCK = threading.Lock()
 
@@ -171,9 +172,10 @@ class EventLoopStallWatchdog:
     def stop(self, timeout=1.0):
         """Release one owner; the last release stops the thread and heartbeat.
 
-        Any release pauses reporting at once, so cleanup after the first
-        service's shutdown begins is not logged as stalls. Idempotent once
-        fully stopped.
+        Each owner must call this exactly once: a second call from the same
+        owner releases another owner's share. Any release pauses reporting at
+        once, so cleanup after the first service's shutdown begins is not
+        logged as stalls. Idempotent once fully stopped.
         """
         self._reporting_paused.set()
         with _REGISTRY_LOCK:
