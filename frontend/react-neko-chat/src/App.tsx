@@ -1,3 +1,4 @@
+import { ChatScreenVisibilityProvider } from './ChatScreenVisibility';
 import {
   useState,
   useEffect,
@@ -893,12 +894,12 @@ export default function ChatWindowRoot(props: ChatWindowProps) {
     props.chatSurfaceMode === 'full',
   );
   return (
-    <>
+    <ChatScreenVisibilityProvider messages={props.messages || defaultMessages}>
       {props.chatSurfaceMode === 'full'
         ? <FullChatSurface {...props} />
         : <CompactChatApp {...props} />}
       <NekoTooltipLayer />
-    </>
+    </ChatScreenVisibilityProvider>
   );
 }
 

@@ -1,3 +1,4 @@
+import { ClearChatScreenButton } from './ChatScreenVisibility';
 /**
  * Full-window chat surface. Its history, composer and responsive layout remain
  * independent from Compact Chat, while avatar-tool selection delegates to the
@@ -3246,6 +3247,11 @@ export default function FullChatSurface({
           {/* Avatar button moved to #react-chat-window-header-actions in host template */}
         </header>
 
+        {theaterPresentation?.active !== true ? (
+          <div className="chat-clear-screen-tools full-chat-clear-screen-tools">
+            <ClearChatScreenButton />
+          </div>
+        ) : null}
         {chatBodyNode}
 
         {shouldRenderComposerPanel ? (
