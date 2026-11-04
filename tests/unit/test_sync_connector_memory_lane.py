@@ -276,3 +276,23 @@ async def test_drain_timeout_reports_the_write_in_flight(monkeypatch):
     task.cancel()
     await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 2)
     assert any("执行中 1 个，排队中 0 个" in w for w in warnings)
+
+
+@pytest.mark.asyncio
+async def test_memory_flush_resolves_after_the_writes_queued_before_it(connector):
+    memory = _Memory(blocked={"renew"})
+    queue, _ = connector(memory)
+    done = asyncio.get_running_loop().create_future()
+
+    queue.put_nowait(_user("u1"))
+    queue.put_nowait({"type": "system", "data": "renew session"})
+    for item in _turn("u2", "a2"):
+        queue.put_nowait(item)
+    queue.put_nowait({"type": "system", "data": "memory flush", "_memory_flush_done": done})
+    await _until(lambda: memory.endpoints() == ["renew"])
+    await asyncio.sleep(0.02)
+    assert not done.done()
+
+    memory.release.set()
+    await asyncio.wait_for(done, 1)
+    assert memory.endpoints() == ["renew", "cache"]

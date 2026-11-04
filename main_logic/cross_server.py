@@ -1011,6 +1011,10 @@ async def run_sync_connector(
         if backlog >= MEMORY_LANE_BACKLOG_WARN and backlog % MEMORY_LANE_BACKLOG_WARN == 0:
             logger.warning(f"[{lanlan_name}] 记忆写入积压 {backlog} 个，记忆服务可能响应缓慢")
 
+    async def _resolve_memory_flush(done) -> None:
+        if isinstance(done, asyncio.Future) and not done.done():
+            done.set_result(None)
+
     def _take_memory_carry(messages: list) -> list:
         payload = memory_carry + messages
         memory_carry.clear()
@@ -1304,6 +1308,13 @@ async def run_sync_connector(
                                 text_output_request_id = None
                                 text_output_proof = None
                             
+                            if message["data"] == "memory flush":
+                                # A starting session waits until the writes queued before it are sent,
+                                # so its /new_dialog reads them (#3601); see LifecycleMixin.
+                                _enqueue_memory_write(functools.partial(
+                                    _resolve_memory_flush, message.get("_memory_flush_done"),
+                                ))
+
                             if message["data"] == "renew session":
                                 # Check shutdown state.
                                 if shutdown_event.is_set():

@@ -38,8 +38,9 @@ def runtime(monkeypatch):
     from app.memory_server import runtime as memory_runtime
 
     monkeypatch.setattr(memory_runtime, "_settle_locks", {})
-    monkeypatch.setattr(memory_runtime, "_settle_preemption_waiters", {})
-    monkeypatch.setattr(memory_runtime, "_settle_preemptible_sections", {})
+    monkeypatch.setattr(memory_runtime, "_summary_preemption_waiters", {})
+    monkeypatch.setattr(memory_runtime, "_preemptible_summaries", {})
+    monkeypatch.setattr(memory_runtime, "_summary_preemption_windows", {})
     return memory_runtime
 
 
@@ -162,7 +163,7 @@ async def test_cold_start_takes_the_settle_lock_without_waiting_for_the_summary(
 
     async def renew():
         async with lock:
-            with runtime._settle_summary_preemption("Neko") as preempted:
+            with runtime._summary_preemption("Neko") as preempted:
                 await mgr.update_history(
                     [AIMessage(content="new ai")], "Neko", detailed=True,
                     on_compress_done=done, preempted=preempted,
@@ -175,15 +176,15 @@ async def test_cold_start_takes_the_settle_lock_without_waiting_for_the_summary(
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(lock.acquire(), 0.1)
 
-    with runtime._preempting_settle_summaries("Neko"):
+    with runtime._preempting_summaries("Neko"):
         await asyncio.wait_for(lock.acquire(), 1)
         lock.release()
 
     await asyncio.wait_for(renew_task, 1)
     assert summary.cancelled
     assert done.calls == [("Neko", 3, False, True)]
-    assert runtime._settle_preemption_waiters == {}
-    assert runtime._settle_preemptible_sections == {}
+    assert runtime._summary_preemption_waiters == {}
+    assert runtime._preemptible_summaries == {}
 
 
 @pytest.mark.asyncio
@@ -198,7 +199,7 @@ async def test_summary_queued_ahead_of_a_cold_start_starts_preempted(tmp_path, r
 
     async def renew():
         async with lock:
-            with runtime._settle_summary_preemption("Neko") as preempted:
+            with runtime._summary_preemption("Neko") as preempted:
                 await mgr.update_history(
                     [AIMessage(content="new ai")], "Neko", detailed=True,
                     on_compress_done=_CompressDone(), preempted=preempted,
@@ -207,7 +208,7 @@ async def test_summary_queued_ahead_of_a_cold_start_starts_preempted(tmp_path, r
     acquired = asyncio.Event()
 
     async def cold_start():
-        with runtime._preempting_settle_summaries("Neko"):
+        with runtime._preempting_summaries("Neko"):
             async with lock:
                 acquired.set()
 
@@ -224,10 +225,10 @@ async def test_summary_queued_ahead_of_a_cold_start_starts_preempted(tmp_path, r
 
 @pytest.mark.asyncio
 async def test_other_characters_summaries_are_not_preempted(runtime):
-    with runtime._settle_summary_preemption("Other") as preempted:
-        with runtime._preempting_settle_summaries("Neko"):
+    with runtime._summary_preemption("Other") as preempted:
+        with runtime._preempting_summaries("Neko"):
             assert not preempted.done()
-        with runtime._preempting_settle_summaries("Other"):
+        with runtime._preempting_summaries("Other"):
             assert preempted.done()
 
 
@@ -250,16 +251,21 @@ def _route_patches(memory_server, update_history):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("endpoint", ["process_conversation_for_renew", "settle_conversation"])
-async def test_renew_and_settle_summaries_are_preemptible(runtime, endpoint):
+@pytest.mark.parametrize("endpoint, under_settle_lock", [
+    ("process_conversation_for_renew", True),
+    ("settle_conversation", True),
+    # /process holds no settle lock, but a starting session waits for it to come back.
+    ("process_conversation", False),
+])
+async def test_summary_endpoints_are_preemptible(runtime, endpoint, under_settle_lock):
     from app import memory_server
 
     seen = []
 
     async def update_history(*_args, preempted=None, **_kwargs):
         seen.append(preempted)
-        assert preempted in runtime._settle_preemptible_sections["测试角色"]
-        assert runtime._get_settle_lock("测试角色").locked()
+        assert preempted in runtime._preemptible_summaries["测试角色"]
+        assert runtime._get_settle_lock("测试角色").locked() is under_settle_lock
 
     request = memory_server.HistoryRequest(input_history=json.dumps([]))
     patches = _route_patches(memory_server, update_history)
@@ -272,7 +278,7 @@ async def test_renew_and_settle_summaries_are_preemptible(runtime, endpoint):
             p.stop()
 
     assert len(seen) == 1 and isinstance(seen[0], asyncio.Future)
-    assert runtime._settle_preemptible_sections == {}
+    assert runtime._preemptible_summaries == {}
 
 
 @pytest.mark.asyncio
@@ -283,10 +289,46 @@ async def test_new_dialog_preempts_only_when_asked(runtime, monkeypatch, preempt
     seen = []
 
     async def fake_new_dialog(name, *_args):
-        seen.append(runtime._settle_preemption_waiters.get(name))
+        seen.append(runtime._summary_preemption_waiters.get(name))
         return "ok"
 
     monkeypatch.setattr(routes, "_new_dialog", fake_new_dialog)
     assert await routes.new_dialog("Neko", preempt_summary=preempt_summary) == "ok"
     assert seen == [expected]
-    assert runtime._settle_preemption_waiters == {}
+    assert runtime._summary_preemption_waiters == {}
+
+
+@pytest.mark.asyncio
+async def test_preempt_summary_window_covers_running_and_later_summaries(runtime, monkeypatch):
+    from app.memory_server import routes
+
+    with runtime._summary_preemption("Neko") as running:
+        assert await routes.preempt_summary("Neko") == {"status": "ok"}
+        assert running.done()
+    # A summary starting while the main server flushes its queued writes is preempted too.
+    with runtime._summary_preemption("Neko") as later:
+        assert later.done()
+    with runtime._summary_preemption("Other") as unrelated:
+        assert not unrelated.done()
+
+    # The cold-start /new_dialog that follows closes the window.
+    async def fake_new_dialog(name, *_args):
+        return "ok"
+
+    monkeypatch.setattr(routes, "_new_dialog", fake_new_dialog)
+    await routes.new_dialog("Neko", preempt_summary=True)
+    with runtime._summary_preemption("Neko") as after:
+        assert not after.done()
+    assert runtime._summary_preemption_windows == {}
+
+
+@pytest.mark.asyncio
+async def test_preempt_summary_window_expires(runtime, monkeypatch):
+    from app.memory_server import routes
+
+    monkeypatch.setattr(routes, "PREEMPT_SUMMARY_WINDOW_S", 0.05)
+    await routes.preempt_summary("Neko")
+    await asyncio.sleep(0.1)
+    with runtime._summary_preemption("Neko") as later:
+        assert not later.done()
+    assert runtime._summary_preemption_windows == {}
