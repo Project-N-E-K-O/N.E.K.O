@@ -1862,11 +1862,15 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
             if _has_human_messages(input_history):
                 await gates._aclear_review_clean(lanlan_name)
             logger.info(f"[MemoryServer] 收到 {lanlan_name} 的对话历史处理请求，消息数: {len(input_history)}")
-            await runtime.recent_history_manager.update_history(
-                input_history,
-                lanlan_name,
-                on_compress_done=review._on_compress_done,
-            )
+            # Not under the settle lock, but a starting session waits for this request to come
+            # back (its memory writes are flushed first), so its summary is preemptible too.
+            with runtime._summary_preemption(lanlan_name) as preempted:
+                await runtime.recent_history_manager.update_history(
+                    input_history,
+                    lanlan_name,
+                    on_compress_done=review._on_compress_done,
+                    preempted=preempted,
+                )
             await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
 
             # Asynchronous fact extraction (nonblocking response, silently skip failures).
@@ -1921,13 +1925,16 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
                 await gates._aclear_review_clean(lanlan_name)
             logger.info(f"[MemoryServer] renew: 收到 {lanlan_name} 的对话历史处理请求，消息数: {len(input_history)}")
             # Lock first-turn summary, blocking /new_dialog until summary and timestamp persist.
+            # A cold-start /new_dialog preempts the summary instead (see runtime._preempting_summaries).
             async with runtime._get_settle_lock(lanlan_name):
-                await runtime.recent_history_manager.update_history(
-                    input_history,
-                    lanlan_name,
-                    detailed=True,
-                    on_compress_done=review._on_compress_done,
-                )
+                with runtime._summary_preemption(lanlan_name) as preempted:
+                    await runtime.recent_history_manager.update_history(
+                        input_history,
+                        lanlan_name,
+                        detailed=True,
+                        on_compress_done=review._on_compress_done,
+                        preempted=preempted,
+                    )
                 await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
 
             # Run the following outside lock, without blocking /new_dialog.
@@ -1978,12 +1985,14 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
             async with runtime._get_settle_lock(lanlan_name):
                 if input_history:
                     await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
-                await runtime.recent_history_manager.update_history(
-                    [],
-                    lanlan_name,
-                    detailed=True,
-                    on_compress_done=review._on_compress_done,
-                )
+                with runtime._summary_preemption(lanlan_name) as preempted:
+                    await runtime.recent_history_manager.update_history(
+                        [],
+                        lanlan_name,
+                        detailed=True,
+                        on_compress_done=review._on_compress_done,
+                        preempted=preempted,
+                    )
 
             if input_history or is_supported_language_code(request.language):
                 await post_turn._spawn_outbox_post_turn_signals(
@@ -7841,15 +7850,41 @@ async def set_prompt_locale_preference(
     }
 
 
+# How long POST /preempt_summary keeps preempting summaries that start after it; the
+# cold-start /new_dialog that follows closes the window sooner.
+PREEMPT_SUMMARY_WINDOW_S = 10.0
+
+
+@app.post("/preempt_summary/{lanlan_name}")
+async def preempt_summary(lanlan_name: str):
+    """Abandon ``lanlan_name``'s summary LLM calls to background compression (#3601).
+
+    The main server calls this before a cold start: it then waits for its own queued memory
+    writes, which may be stuck behind a summary, and only then sends
+    ``/new_dialog?preempt_summary=true``.
+    """
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    runtime._open_summary_preemption_window(lanlan_name, PREEMPT_SUMMARY_WINDOW_S)
+    return {"status": "ok"}
+
+
 @app.get("/new_dialog/{lanlan_name}")
 async def new_dialog(
     lanlan_name: str,
     language: str | None = None,
     render_language: str | None = None,
+    preempt_summary: bool = False,
 ):
+    """``preempt_summary``: the caller is starting a conversation and waits for this response
+    (#3601), so a summary LLM call holding the settle lock is abandoned to background
+    compression instead of being waited for. Hot-swap preparation leaves it off: the old
+    session is still serving, and the new one should start from the finished summary."""
     request_language = language if is_supported_language_code(language) else render_language
     with language_context(_activate_request_language(request_language)):
-        return await _new_dialog(lanlan_name, language, render_language)
+        if not preempt_summary:
+            return await _new_dialog(lanlan_name, language, render_language)
+        with runtime._preempting_summaries(validate_lanlan_name(lanlan_name)):
+            return await _new_dialog(lanlan_name, language, render_language)
 
 
 async def _write_new_dialog_locale(
@@ -7960,6 +7995,25 @@ outbox_infra.register_outbox_handler(
     OP_PERSIST_PROMPT_LOCALE,
     _outbox_new_dialog_locale_handler,
 )
+
+
+async def _render_pinned_facts_block(lanlan_name: str, lang: str) -> str:
+    """The pinned-fact section of the private-chat prompt; "" when there is none.
+
+    Read on every call, so a session start or a hot-swap prompt rebuild picks
+    up entries admitted since the previous one. A failure costs only this
+    section, never the rest of the long-term memory.
+    """
+    store = runtime.pinned_fact_store
+    if store is None:
+        return ""
+    try:
+        return await store.arender_prompt_block(lanlan_name, lang)
+    except Exception as e:
+        logger.warning(
+            f"[MemoryServer] {lanlan_name}: pinned-fact render failed: {type(e).__name__}"
+        )
+        return ""
 
 
 async def _new_dialog(
@@ -8116,6 +8170,11 @@ async def _new_dialog(
             persona_md = await runtime.persona_manager.arender_persona_markdown(
                 lanlan_name, pending_reflections, confirmed_reflections,
             )
+        # Pinned important facts: their own section, ahead of the persona
+        # sections. Private chat only; no scoped renderer calls this.
+        pinned_block = await _render_pinned_facts_block(lanlan_name, _lang)
+        if pinned_block:
+            result += pinned_block + "\n\n"
         if persona_md:
             result += persona_md
         else:

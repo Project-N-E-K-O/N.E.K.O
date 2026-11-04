@@ -46,10 +46,12 @@ from memory._reflection.ontology import (
 )
 
 from memory._reflection.schema import (
+    merge_covered_fact_ids,
     reflection_id_from_facts as _reflection_id_from_facts,
 )
 
-
+from utils.cloudsave_runtime import assert_cloudsave_writable
+from utils.file_utils import atomic_write_json_async
 
 
 from ._shared import (
@@ -57,6 +59,16 @@ from ._shared import (
     MIN_FACTS_FOR_REFLECTION,
     REFLECTION_COOLDOWN_MINUTES,
 )
+from .similarity import ascore_against_queries, vectors_ready
+
+
+# Reflection statuses that still count as an existing impression for the
+# pre-synthesis duplicate check (and may receive covered_fact_ids). A promoted
+# reflection is represented by its persona copy instead: every promotion path
+# writes one through aadd_fact, and that copy is what renders. The reflection
+# row is history; once the copy is rewritten or archived it must not absorb
+# new facts.
+_IMPRESSION_REFLECTION_STATUSES = ('pending', 'confirmed')
 
 
 def _detect_synthesis_prompt_language(text: str) -> str:
@@ -303,12 +315,22 @@ class SynthesisMixin:
             subject=memory_subject,
             prompt_lang=prompt_lang,
         )
+        impressions_block, impression_candidates = (
+            await self._build_existing_impressions_block(
+                lanlan_name,
+                unabsorbed,
+                subject=memory_subject,
+                prompt_lang=prompt_lang,
+            )
+        )
         reflection_prompt = get_reflection_prompt(prompt_lang)
         prompt = reflection_prompt.replace('{RELATED_CONTEXT_BLOCK}', related_block)
+        prompt = prompt.replace('{EXISTING_IMPRESSIONS_BLOCK}', impressions_block)
         prompt = prompt.replace('{FACTS}', facts_text)
         prompt = prompt.replace('{LANLAN_NAME}', lanlan_name)
         prompt = prompt.replace('{MASTER_NAME}', master_name)
 
+        skip_key = None
         try:
             set_call_type("memory_reflection")
             api_config = await self._config_manager.aget_model_api_config('summary')
@@ -334,11 +356,21 @@ class SynthesisMixin:
                 logger.warning(f"[Reflection] LLM 返回非 dict: {type(result)}")
                 await self._abump_synth_backoff(lanlan_name, backoff_key, "non-dict response")
                 return []
+            skip_key = self._synthesis_skip_key(result, impression_candidates)
+            if skip_key is None and result.get('skip') is True:
+                logger.info(
+                    f"[Reflection] {lanlan_name}: skip 指向的 id 不在候选集合里，"
+                    f"按正常新增处理"
+                )
             reflection_text = result.get('reflection', '')
             if not isinstance(reflection_text, str):
-                logger.warning(f"[Reflection] reflection 字段非 str: {type(reflection_text)}")
-                await self._abump_synth_backoff(lanlan_name, backoff_key, "reflection field non-str")
-                return []
+                if skip_key is None:
+                    logger.warning(f"[Reflection] reflection 字段非 str: {type(reflection_text)}")
+                    await self._abump_synth_backoff(lanlan_name, backoff_key, "reflection field non-str")
+                    return []
+                # A valid skip needs no text; it only matters if the skip
+                # target vanishes below, and then empty text is a failure.
+                reflection_text = ''
             reflection_text = reflection_text.strip()
             semantic_entity = result.get('entity', 'relationship')
             if semantic_entity not in ('master', 'neko', 'relationship'):
@@ -386,6 +418,38 @@ class SynthesisMixin:
             logger.warning(f"[Reflection] 合成失败: {e}")
             await self._abump_synth_backoff(lanlan_name, backoff_key, f"LLM/parse exception: {e}")
             return []
+
+        if skip_key is not None:
+            # The batch restates an existing impression: absorb the facts and
+            # point that impression at them, but create nothing and add no
+            # evidence (re-scoring restated lines is what let hollow
+            # relationship sentences crowd the render budget).
+            async with self._get_alock(lanlan_name):
+                if self._subject_forget_overlapped(
+                    lanlan_name, memory_subject, forget_epoch,
+                ):
+                    logger.info(
+                        f"[Reflection] {lanlan_name}: subject forget overlapped "
+                        f"synthesis for {memory_subject.key}/"
+                        f"{memory_subject.scope}; dropping late skip"
+                    )
+                    return []
+                covered = await self._arecord_covered_facts_locked(
+                    lanlan_name, impression_candidates[skip_key],
+                    source_fact_ids, subject=memory_subject,
+                )
+            if covered:
+                await self._aclear_synth_backoff(lanlan_name, backoff_key)
+                await self._fact_store.amark_absorbed(lanlan_name, source_fact_ids)
+                logger.info(
+                    f"[Reflection] {lanlan_name}: {len(source_fact_ids)} 条事实已被 "
+                    f"{skip_key} 覆盖，不新增反思"
+                )
+                return []
+            logger.info(
+                f"[Reflection] {lanlan_name}: skip 目标 {skip_key} 已不再有效，"
+                f"按正常新增处理"
+            )
 
         if not reflection_text:
             await self._abump_synth_backoff(lanlan_name, backoff_key, "empty reflection text")
@@ -470,16 +534,8 @@ class SynthesisMixin:
 
         # ── Lock only reload + deduplicated append + save ──
         async with self._get_alock(lanlan_name):
-            if (
-                memory_subject is not None
-                and (
-                    self._subject_forget_is_active(
-                        lanlan_name, memory_subject,
-                    )
-                    or self._subject_forget_epoch(
-                        lanlan_name, memory_subject,
-                    ) != forget_epoch
-                )
+            if self._subject_forget_overlapped(
+                lanlan_name, memory_subject, forget_epoch,
             ):
                 # The source facts were erased while the LLM was in flight.
                 # A late result must not recreate an immediately recallable
@@ -632,6 +688,186 @@ class SynthesisMixin:
             f"{related_text}\n"
             f"（{get_reflection_related_context_note(prompt_lang)}）\n"
             "======以上为相关历史背景======\n\n"
+        )
+
+    async def _build_existing_impressions_block(
+        self,
+        lanlan_name: str,
+        unabsorbed: list[dict],
+        *,
+        subject=None,
+        prompt_lang: str = "zh",
+    ) -> tuple[str, dict[str, dict]]:
+        """Show the batch's nearest existing impressions so the LLM can skip.
+
+        Candidates are active reflections (pending / confirmed) and
+        non-protected persona entries of the same subject, ranked by max
+        cosine against the batch. Returns ``(block, candidates)``, where
+        ``candidates`` maps every id shown in the block to its target, which
+        also records the text the model saw. Without usable vectors both are
+        empty, so the prompt is unchanged.
+        """
+        from config import (
+            REFLECTION_EXISTING_IMPRESSIONS_MAX_TOKENS,
+            REFLECTION_EXISTING_IMPRESSIONS_TOP_K,
+            REFLECTION_TEXT_MAX_TOKENS,
+        )
+        from memory.scopes import entry_matches_subject
+
+        if not vectors_ready():
+            return "", {}
+        pool: list[tuple[str, dict, dict]] = []
+        try:
+            reflections = await self._aload_reflections_full(lanlan_name)
+            persona = await self._persona_manager.aget_persona(lanlan_name)
+        except Exception as e:
+            logger.warning(f"[Reflection] existing impressions 加载失败: {e}")
+            return "", {}
+        for r in reflections:
+            if (
+                r.get('status') in _IMPRESSION_REFLECTION_STATUSES
+                and str(r.get('text') or '').strip()
+                and entry_matches_subject(r, subject)
+            ):
+                pool.append((
+                    f"reflection.{r['id']}",
+                    {'kind': 'reflection', 'id': r['id'], 'text': r['text']},
+                    r,
+                ))
+        for section_key, section in (persona or {}).items():
+            if not isinstance(section, dict):
+                continue
+            for e in section.get('facts') or []:
+                # Scoped sections share the persona file; the subject check
+                # keeps group/member entries out of other domains' candidates.
+                if (
+                    isinstance(e, dict)
+                    and e.get('id')
+                    and not e.get('protected')
+                    and str(e.get('text') or '').strip()
+                    and entry_matches_subject(e, subject)
+                ):
+                    pool.append((
+                        f"persona.{section_key}.{e['id']}",
+                        {
+                            'kind': 'persona', 'section': section_key,
+                            'id': e['id'], 'text': e['text'],
+                        },
+                        e,
+                    ))
+        if not pool:
+            return "", {}
+
+        scores = await ascore_against_queries(unabsorbed, [e for _, _, e in pool])
+        if scores is None:
+            return "", {}
+        ranked: list[int] = []
+        seen_texts: set[str] = set()
+        for i in sorted(
+            (i for i, score in enumerate(scores) if score is not None),
+            key=lambda i: scores[i],
+            reverse=True,
+        ):
+            # Identical lines (e.g. one sentence in two persona sections) take
+            # one slot; the rest go to other impressions.
+            text = str(pool[i][2].get('text') or '').strip()
+            if text in seen_texts:
+                continue
+            seen_texts.add(text)
+            ranked.append(i)
+            if len(ranked) >= REFLECTION_EXISTING_IMPRESSIONS_TOP_K:
+                break
+        if not ranked:
+            return "", {}
+
+        from utils.tokenize import take_lines_within_token_budget, truncate_to_tokens
+        lines = [
+            f"[{pool[i][0]}] "
+            + truncate_to_tokens(
+                str(pool[i][2].get('text') or '').strip(),
+                REFLECTION_TEXT_MAX_TOKENS,
+            )
+            for i in ranked
+        ]
+        lines, _dropped = take_lines_within_token_budget(
+            lines, REFLECTION_EXISTING_IMPRESSIONS_MAX_TOKENS,
+        )
+        candidates = {pool[i][0]: pool[i][1] for i in ranked[:len(lines)]}
+        from config.prompts.prompts_memory import (
+            get_reflection_existing_impressions_note,
+        )
+        block = (
+            "======以下为已有印象======\n"
+            + "\n".join(lines)
+            + "\n======以上为已有印象======\n"
+            + f"{get_reflection_existing_impressions_note(prompt_lang)}\n\n"
+        )
+        return block, candidates
+
+    @staticmethod
+    def _synthesis_skip_key(result: dict, candidates: dict[str, dict]) -> str | None:
+        """Return the candidate id a skip answer points at, or None.
+
+        Only an id from this batch's candidate set counts; anything else is a
+        failed skip and synthesis carries on as an ordinary new reflection.
+        """
+        if not candidates or result.get('skip') is not True:
+            return None
+        covered_by = result.get('covered_by')
+        if not isinstance(covered_by, str):
+            return None
+        key = covered_by.strip().strip('[]').strip()
+        return key if key in candidates else None
+
+    async def _arecord_covered_facts_locked(
+        self, lanlan_name: str, target: dict, fact_ids: list[str], *, subject=None,
+    ) -> bool:
+        """Attach a skipped fact batch to the impression that covers it.
+
+        Caller MUST hold ``self._get_alock(lanlan_name)``. A persona target
+        also takes the persona lock (reflection -> persona, the order the
+        promotion path already uses). Audit only: evidence is untouched.
+        Returns False when the target is no longer an eligible impression,
+        including when refinement or a correction rewrote its text while the
+        LLM was judging the old wording.
+        """
+        if target['kind'] == 'persona':
+            return await self._persona_manager.arecord_covered_facts(
+                lanlan_name, target['section'], target['id'], fact_ids,
+                expected_text=target['text'], subject=subject,
+            )
+        from memory.scopes import entry_matches_subject
+        reflections = await self._aload_reflections_full(lanlan_name)
+        entry = self._find_reflection_in_list(reflections, target['id'])
+        if (
+            entry is None
+            or entry.get('status') not in _IMPRESSION_REFLECTION_STATUSES
+            or entry.get('text') != target['text']
+            or not entry_matches_subject(entry, subject)
+        ):
+            return False
+        if merge_covered_fact_ids(entry, fact_ids):
+            # Full-view write (promoted rows included) under the reflection
+            # lock, same as the state-change path; asave_reflections only
+            # takes the active list.
+            assert_cloudsave_writable(
+                self._config_manager,
+                operation="save",
+                target=f"memory/{lanlan_name}/reflections.json",
+            )
+            await atomic_write_json_async(
+                self._reflections_path(lanlan_name), reflections,
+                indent=2, ensure_ascii=False,
+            )
+        return True
+
+    def _subject_forget_overlapped(
+        self, lanlan_name: str, memory_subject, forget_epoch,
+    ) -> bool:
+        """True when a scoped forget began or finished since synthesis started."""
+        return memory_subject is not None and (
+            self._subject_forget_is_active(lanlan_name, memory_subject)
+            or self._subject_forget_epoch(lanlan_name, memory_subject) != forget_epoch
         )
 
     async def reflect(self, lanlan_name: str, *, subject=None) -> dict | None:

@@ -1614,6 +1614,22 @@ event_when（可选 — 事件发生时间，一律用相对时间，绝不写�
 - 例 1：用户说"昨天晚上没睡好" → event_when = {"start": {"offset": -1, "unit": "day"}, "end": null}
 - 例 2：用户说"喜欢喝咖啡"（长期偏好，无时间） → 不写 event_when
 
+pin / pin_ttl_days（可选 — 是否放进「重要事实常驻区」）：
+- 常驻区里的事在到期前会一直摆在 {LANLAN_NAME} 面前，不用等长期记忆慢慢沉淀，所以只收真正要紧的事
+- 只有以下四类才写 "pin": true：
+  - {MASTER_NAME} 明确要求记住的（"记住"、"别忘了"、"一定要记得"）
+  - 有时间点的安排和约定：考试、面试、出行、复诊、截止日期、两人约好的事
+  - 健康与安全：过敏、生病、用药、忌口、受伤
+  - 身份类变化：换称呼或昵称、搬家、换工作、毕业、家里添人、宠物离世
+- 以下**不算**，不要写 pin：对关系的概括、情绪解读、对 {LANLAN_NAME} 自己行为的总结、一次性闲聊；"别再提某个话题"这类要求也不算（另有机制负责）
+- 写了 "pin": true 就必须同时写 pin_ttl_days，只能从 3 / 14 / 90 / 365 里选一个：
+  - 3：眼前的事，如感冒、今晚加班
+  - 14：近期安排，如下周考试、出差
+  - 90：阶段性状态，如新工作、备考、养伤
+  - 365：长期但可能变化的，如过敏、生日、称呼
+  - 有具体日期的事件，选能覆盖到事件结束的那一档
+- 不属于这四类就省略这两个字段
+
 ======以下为对话======
 {CONVERSATION}
 ======以上为对话======
@@ -1621,6 +1637,7 @@ event_when（可选 — 事件发生时间，一律用相对时间，绝不写�
 请以 JSON 数组格式返回（如果没有值得提取的事实，返回空数组 []）：
 [
   {"text": "事实描述", "importance": 7, "entity": "master", "event_when": null},
+  {"text": "事实描述", "importance": 9, "entity": "master", "event_when": null, "pin": true, "pin_ttl_days": 14},
   ...
 ]""",
     # The ======以下为对话====== / ======以上为对话====== pair stays Simplified in
@@ -1652,6 +1669,22 @@ event_when（選填 — 事件發生時間，一律用相對時間，絕不寫�
 - 例 1：使用者說「昨天晚上沒睡好」→ event_when = {"start": {"offset": -1, "unit": "day"}, "end": null}
 - 例 2：使用者說「喜歡喝咖啡」（長期偏好，無時間）→ 不寫 event_when
 
+pin / pin_ttl_days（選填 — 是否放進「重要事實常駐區」）：
+- 常駐區裡的事在到期前會一直擺在 {LANLAN_NAME} 面前，不用等長期記憶慢慢沉澱，所以只收真正要緊的事
+- 只有以下四類才寫 "pin": true：
+  - {MASTER_NAME} 明確要求記住的（「記住」、「別忘了」、「一定要記得」）
+  - 有時間點的安排和約定：考試、面試、出行、回診、截止日期、兩人約好的事
+  - 健康與安全：過敏、生病、用藥、忌口、受傷
+  - 身分類變化：換稱呼或暱稱、搬家、換工作、畢業、家裡添人、寵物離世
+- 以下**不算**，不要寫 pin：對關係的概括、情緒解讀、對 {LANLAN_NAME} 自己行為的總結、一次性閒聊；「別再提某個話題」這類要求也不算（另有機制負責）
+- 寫了 "pin": true 就必須同時寫 pin_ttl_days，只能從 3 / 14 / 90 / 365 裡選一個：
+  - 3：眼前的事，如感冒、今晚加班
+  - 14：近期安排，如下週考試、出差
+  - 90：階段性狀態，如新工作、備考、養傷
+  - 365：長期但可能變化的，如過敏、生日、稱呼
+  - 有具體日期的事件，選能涵蓋到事件結束的那一檔
+- 不屬於這四類就省略這兩個欄位
+
 ======以下为对话======
 {CONVERSATION}
 ======以上为对话======
@@ -1659,6 +1692,7 @@ event_when（選填 — 事件發生時間，一律用相對時間，絕不寫�
 請以 JSON 陣列格式回傳（如果沒有值得擷取的事實，回傳空陣列 []）：
 [
   {"text": "事實描述", "importance": 7, "entity": "master", "event_when": null},
+  {"text": "事實描述", "importance": 9, "entity": "master", "event_when": null, "pin": true, "pin_ttl_days": 14},
   ...
 ]""",
     "en": """Extract important factual information about {LANLAN_NAME} and {MASTER_NAME} from the following conversation.
@@ -1686,6 +1720,22 @@ event_when (optional — when the event happened; ALWAYS relative time, never ab
 - Example 1: "didn't sleep well last night" → event_when = {"start": {"offset": -1, "unit": "day"}, "end": null}
 - Example 2: "loves coffee" (long-term preference, no time) → omit event_when
 
+pin / pin_ttl_days (optional — whether the fact goes into the "pinned important facts" section):
+- Pinned facts stay in front of {LANLAN_NAME} until they expire instead of waiting to settle into long-term memory, so pin only what really matters
+- Write "pin": true only for these four kinds:
+  - Things {MASTER_NAME} explicitly asks to be remembered ("remember", "don't forget", "make sure you remember")
+  - Plans and appointments with a point in time: exams, interviews, trips, follow-up doctor visits, deadlines, things the two of them agreed to do
+  - Health and safety: allergies, illness, medication, foods to avoid, injuries
+  - Identity changes: a new name or nickname to be called by, moving house, a new job, graduation, a new family member, a pet passing away
+- These do **not** count, never pin them: summaries of the relationship, readings of emotions, summaries of {LANLAN_NAME}'s own behavior, one-off small talk; requests like "stop bringing up a topic" do not count either (another mechanism handles them)
+- "pin": true requires pin_ttl_days, chosen from 3 / 14 / 90 / 365 only:
+  - 3: something happening right now, e.g. a cold, working late tonight
+  - 14: a near-term plan, e.g. an exam next week, a business trip
+  - 90: a phase of life, e.g. a new job, preparing for an exam, recovering from an injury
+  - 365: long-lived but changeable, e.g. an allergy, a birthday, how to be called
+  - For a dated event, pick the smallest tier that still covers the end of the event
+- If none of the four kinds applies, omit both fields
+
 ======以下为对话======
 {CONVERSATION}
 ======以上为对话======
@@ -1693,6 +1743,7 @@ event_when (optional — when the event happened; ALWAYS relative time, never ab
 Return as a JSON array (empty array if nothing is worth extracting):
 [
   {"text": "fact description", "importance": 7, "entity": "master", "event_when": null},
+  {"text": "fact description", "importance": 9, "entity": "master", "event_when": null, "pin": true, "pin_ttl_days": 14},
   ...
 ]""",
     "ja": """以下の会話から {LANLAN_NAME} と {MASTER_NAME} に関する重要な事実情報を抽出してください。
@@ -1720,6 +1771,22 @@ event_when（任意 — 事件発生時刻、必ず相対時間で、絶対日�
 - 例 1：「昨夜よく眠れなかった」→ event_when = {"start": {"offset": -1, "unit": "day"}, "end": null}
 - 例 2：「コーヒー好き」（長期嗜好、時間情報なし） → event_when を省略
 
+pin / pin_ttl_days（任意 — 「重要事実の常駐エリア」に入れるかどうか）：
+- 常駐エリアの事柄は期限まで常に {LANLAN_NAME} の目の前に置かれ、長期記憶に定着するのを待たない。だから本当に大事なことだけを入れる
+- 次の四種類に限り "pin": true を書く：
+  - {MASTER_NAME} が覚えておくようはっきり頼んだこと（「覚えておいて」「忘れないで」「絶対に覚えてて」）
+  - 日時のある予定や約束：試験、面接、旅行・外出、再診、締め切り、二人で約束したこと
+  - 健康と安全：アレルギー、病気、服薬、食べられないもの、けが
+  - 身の上の変化：呼び名やニックネームの変更、引っ越し、転職、卒業、家族が増えた、ペットが亡くなった
+- 次のものは**該当しない**ので pin を書かない：関係の総括、感情の解釈、{LANLAN_NAME} 自身の振る舞いのまとめ、一度きりの雑談。「ある話題をもう出さないで」という要望も該当しない（別の仕組みが扱う）
+- "pin": true を書いたら必ず pin_ttl_days も書き、3 / 14 / 90 / 365 から一つだけ選ぶ：
+  - 3：目の前のこと。例：風邪、今夜の残業
+  - 14：近いうちの予定。例：来週の試験、出張
+  - 90：一時期続く状態。例：新しい仕事、受験勉強、けがの療養
+  - 365：長く続くが変わりうること。例：アレルギー、誕生日、呼び名
+  - 日付の決まった出来事は、その出来事が終わるまでをカバーできる段階を選ぶ
+- 四種類のどれにも当たらなければ、二つのフィールドとも省略する
+
 ======以下为对话======
 {CONVERSATION}
 ======以上为对话======
@@ -1727,6 +1794,7 @@ event_when（任意 — 事件発生時刻、必ず相対時間で、絶対日�
 以下の形式のJSON配列で返してください（抽出する事実がなければ空配列 [] を返す）：
 [
   {"text": "事実の説明", "importance": 7, "entity": "master", "event_when": null},
+  {"text": "事実の説明", "importance": 9, "entity": "master", "event_when": null, "pin": true, "pin_ttl_days": 14},
   ...
 ]""",
     "ko": """다음 대화에서 {LANLAN_NAME}과 {MASTER_NAME}에 대한 중요한 사실 정보를 추출해 주세요.
@@ -1754,6 +1822,22 @@ event_when (선택 — 사건 발생 시간; 반드시 상대 시간으로, 절�
 - 예 1: "어젯밤 잠을 못 잤다" → event_when = {"start": {"offset": -1, "unit": "day"}, "end": null}
 - 예 2: "커피를 좋아한다" (장기 선호, 시간 정보 없음) → event_when 생략
 
+pin / pin_ttl_days (선택 — "중요 사실 상주 구역"에 넣을지 여부):
+- 상주 구역의 내용은 만료될 때까지 늘 {LANLAN_NAME} 앞에 놓이며, 장기 기억으로 굳기를 기다리지 않음. 그러니 정말 중요한 것만 넣을 것
+- 다음 네 종류일 때만 "pin": true를 씀:
+  - {MASTER_NAME}이(가) 기억해 달라고 분명히 요청한 것("기억해", "잊지 마", "꼭 기억해 줘")
+  - 시점이 있는 일정과 약속: 시험, 면접, 여행·외출, 재진료, 마감일, 두 사람이 약속한 일
+  - 건강과 안전: 알레르기, 질병, 복용 약, 못 먹는 음식, 부상
+  - 신상 변화: 호칭이나 별명 변경, 이사, 이직, 졸업, 가족이 늘어남, 반려동물을 떠나보냄
+- 다음은 **해당하지 않으므로** pin을 쓰지 말 것: 관계에 대한 총평, 감정 해석, {LANLAN_NAME} 자신의 행동에 대한 정리, 일회성 잡담. "어떤 화제를 더 꺼내지 마" 같은 요청도 해당하지 않음(다른 장치가 처리함)
+- "pin": true를 썼다면 pin_ttl_days도 반드시 쓰고, 3 / 14 / 90 / 365 중 하나만 고름:
+  - 3: 당장의 일. 예: 감기, 오늘 밤 야근
+  - 14: 가까운 일정. 예: 다음 주 시험, 출장
+  - 90: 한동안 이어지는 상태. 예: 새 직장, 시험 준비, 부상 회복
+  - 365: 오래가지만 바뀔 수 있는 것. 예: 알레르기, 생일, 호칭
+  - 날짜가 정해진 일은 그 일이 끝날 때까지를 덮는 단계를 고를 것
+- 네 종류 어디에도 해당하지 않으면 두 필드 모두 생략
+
 ======以下为对话======
 {CONVERSATION}
 ======以上为对话======
@@ -1761,6 +1845,7 @@ event_when (선택 — 사건 발생 시간; 반드시 상대 시간으로, 절�
 다음 형식의 JSON 배열로 반환해 주세요 (추출할 사실이 없으면 빈 배열 [] 반환):
 [
   {"text": "사실 설명", "importance": 7, "entity": "master", "event_when": null},
+  {"text": "사실 설명", "importance": 9, "entity": "master", "event_when": null, "pin": true, "pin_ttl_days": 14},
   ...
 ]""",
     "ru": """Извлеките важную фактическую информацию о {LANLAN_NAME} и {MASTER_NAME} из следующей беседы.
@@ -1788,6 +1873,22 @@ event_when (необязательно — когда произошло соб�
 - Пример 1: "плохо спал прошлой ночью" → event_when = {"start": {"offset": -1, "unit": "day"}, "end": null}
 - Пример 2: "любит кофе" (долгосрочное предпочтение без времени) → опустите event_when
 
+pin / pin_ttl_days (необязательно — помещать ли факт в «раздел закреплённых важных фактов»):
+- Закреплённое остаётся перед глазами {LANLAN_NAME} до истечения срока и не ждёт, пока осядет в долговременной памяти, поэтому закрепляйте только действительно важное
+- Пишите "pin": true только для этих четырёх видов:
+  - то, что {MASTER_NAME} прямо просит запомнить («запомни», «не забудь», «обязательно помни»)
+  - планы и договорённости с привязкой ко времени: экзамены, собеседования, поездки, повторный визит к врачу, дедлайны, то, о чём двое договорились
+  - здоровье и безопасность: аллергии, болезни, лекарства, запрещённая еда, травмы
+  - перемены в жизни: новое имя или прозвище, переезд, новая работа, выпуск, пополнение в семье, смерть питомца
+- **Не считаются** и не закрепляются: обобщения об отношениях, толкования эмоций, итоги собственного поведения {LANLAN_NAME}, разовая болтовня; просьбы вроде «больше не поднимай эту тему» тоже не считаются (ими занимается другой механизм)
+- При "pin": true обязательно укажите pin_ttl_days, только одно из 3 / 14 / 90 / 365:
+  - 3: то, что происходит прямо сейчас, например простуда, работа допоздна сегодня
+  - 14: ближайшие планы, например экзамен на следующей неделе, командировка
+  - 90: состояние на какой-то период, например новая работа, подготовка к экзамену, восстановление после травмы
+  - 365: долгосрочное, но изменчивое, например аллергия, день рождения, как обращаться
+  - Для события с конкретной датой выберите наименьший срок, который покрывает его окончание
+- Если ни один из четырёх видов не подходит, опустите оба поля
+
 ======以下为对话======
 {CONVERSATION}
 ======以上为对话======
@@ -1795,6 +1896,7 @@ event_when (необязательно — когда произошло соб�
 Верните в формате JSON-массива (пустой массив, если нет достойных извлечения фактов):
 [
   {"text": "описание факта", "importance": 7, "entity": "master", "event_when": null},
+  {"text": "описание факта", "importance": 9, "entity": "master", "event_when": null, "pin": true, "pin_ttl_days": 14},
   ...
 ]""",
     "es": """Extrae información factual importante sobre {LANLAN_NAME} y {MASTER_NAME} de la siguiente conversación.
@@ -1822,6 +1924,22 @@ event_when (opcional — cuándo ocurrió el evento; SIEMPRE tiempo relativo, nu
 - Ej. 1: "no dormí bien anoche" → event_when = {"start": {"offset": -1, "unit": "day"}, "end": null}
 - Ej. 2: "le encanta el café" (preferencia a largo plazo sin tiempo) → omite event_when
 
+pin / pin_ttl_days (opcional — si el hecho entra en la «sección de hechos importantes fijados»):
+- Lo fijado queda delante de {LANLAN_NAME} hasta que caduca, sin esperar a asentarse en la memoria de largo plazo, así que fija solo lo que de verdad importa
+- Escribe "pin": true solo para estos cuatro tipos:
+  - Lo que {MASTER_NAME} pide expresamente recordar («recuerda», «no te olvides», «acuérdate sí o sí»)
+  - Planes y citas con un momento concreto: exámenes, entrevistas, viajes, revisiones médicas, fechas límite, cosas que los dos acordaron
+  - Salud y seguridad: alergias, enfermedades, medicación, alimentos que debe evitar, lesiones
+  - Cambios personales: un nuevo nombre o apodo con el que llamarle, mudanza, trabajo nuevo, graduación, un nuevo miembro en la familia, la muerte de una mascota
+- **No cuentan**, no los fijes: resúmenes de la relación, interpretaciones de emociones, resúmenes del propio comportamiento de {LANLAN_NAME}, charla puntual; peticiones como «no vuelvas a sacar tal tema» tampoco cuentan (de eso se ocupa otro mecanismo)
+- Con "pin": true es obligatorio pin_ttl_days, elegido solo entre 3 / 14 / 90 / 365:
+  - 3: algo que pasa ahora mismo, p. ej. un resfriado, trabajar hasta tarde esta noche
+  - 14: un plan cercano, p. ej. un examen la semana que viene, un viaje de trabajo
+  - 90: una etapa, p. ej. un trabajo nuevo, preparar un examen, recuperarse de una lesión
+  - 365: algo duradero pero que puede cambiar, p. ej. una alergia, un cumpleaños, cómo quiere que le llamen
+  - Para un evento con fecha, elige el tramo más corto que cubra hasta que termine
+- Si no encaja en ninguno de los cuatro tipos, omite ambos campos
+
 ======以下为对话======
 {CONVERSATION}
 ======以上为对话======
@@ -1829,6 +1947,7 @@ event_when (opcional — cuándo ocurrió el evento; SIEMPRE tiempo relativo, nu
 Devuelve un array JSON (si no hay hechos que extraer, devuelve []):
 [
   {"text": "descripción del hecho", "importance": 7, "entity": "master", "event_when": null},
+  {"text": "descripción del hecho", "importance": 9, "entity": "master", "event_when": null, "pin": true, "pin_ttl_days": 14},
   ...
 ]""",
     "pt": """Extraia informações factuais importantes sobre {LANLAN_NAME} e {MASTER_NAME} da conversa abaixo.
@@ -1856,6 +1975,22 @@ event_when (opcional — quando o evento aconteceu; SEMPRE tempo relativo, jamai
 - Ex. 1: "não dormi bem ontem à noite" → event_when = {"start": {"offset": -1, "unit": "day"}, "end": null}
 - Ex. 2: "adora café" (preferência de longo prazo sem tempo) → omita event_when
 
+pin / pin_ttl_days (opcional — se o fato entra na «seção de fatos importantes fixados»):
+- O que é fixado fica diante de {LANLAN_NAME} até vencer, sem esperar se assentar na memória de longo prazo, então fixe só o que realmente importa
+- Escreva "pin": true apenas para estes quatro tipos:
+  - O que {MASTER_NAME} pede explicitamente para lembrar ("lembra disso", "não esquece", "não pode esquecer")
+  - Planos e compromissos com data marcada: provas, entrevistas, viagens, retornos médicos, prazos, coisas que os dois combinaram
+  - Saúde e segurança: alergias, doenças, medicação, alimentos a evitar, lesões
+  - Mudanças pessoais: novo nome ou apelido pelo qual ser chamado, mudança de casa, novo emprego, formatura, novo membro na família, morte de um bicho de estimação
+- **Não contam**, não fixe: resumos da relação, interpretações de emoções, resumos do próprio comportamento de {LANLAN_NAME}, conversa casual pontual; pedidos como "não toque mais nesse assunto" também não contam (outro mecanismo cuida disso)
+- Com "pin": true é obrigatório pin_ttl_days, escolhido só entre 3 / 14 / 90 / 365:
+  - 3: algo acontecendo agora, ex.: um resfriado, trabalhar até tarde hoje
+  - 14: um plano próximo, ex.: uma prova na semana que vem, uma viagem a trabalho
+  - 90: uma fase, ex.: um emprego novo, estudar para uma prova, recuperar-se de uma lesão
+  - 365: algo duradouro mas que pode mudar, ex.: uma alergia, um aniversário, como prefere ser chamado
+  - Para um evento com data, escolha a faixa mais curta que cubra até o fim do evento
+- Se não se encaixar em nenhum dos quatro tipos, omita os dois campos
+
 ======以下为对话======
 {CONVERSATION}
 ======以上为对话======
@@ -1863,6 +1998,7 @@ event_when (opcional — quando o evento aconteceu; SEMPRE tempo relativo, jamai
 Retorne um array JSON (se não houver fatos a extrair, retorne []):
 [
   {"text": "descrição do fato", "importance": 7, "entity": "master", "event_when": null},
+  {"text": "descrição do fato", "importance": 9, "entity": "master", "event_when": null, "pin": true, "pin_ttl_days": 14},
   ...
 ]""",
 }
@@ -2234,6 +2370,7 @@ FACT_EXTRACTION_AI_AWARE_PROMPT = {
 - entity 标注为 "master"(关于{MASTER_NAME})、"neko"(关于{LANLAN_NAME})或 "relationship"(关于两人关系)
 - importance 1-10，规则与基础抽取一致（10 = 关键长期信息；8-9 = 长期稳定核心；6-7 = 普通偏好/日常；5 = 次要观察；1-4 = 弱相关线索）
 - event_when 可选，相对时间格式 `{"start": {"offset": <int>, "unit": "<unit>"}, "end": {...}}`；无时间线索写 null
+- pin / pin_ttl_days 可选，判定与基础抽取一致：只有 {MASTER_NAME} 明确要求记住的、有时间点的安排和约定（考试、面试、出行、复诊、截止日期、两人约好的事）、健康与安全（过敏、生病、用药、忌口、受伤）、身份类变化（换称呼或昵称、搬家、换工作、毕业、家里添人、宠物离世）才写 "pin": true，并从 3 / 14 / 90 / 365 里选 pin_ttl_days（3 = 眼前的事，14 = 近期安排，90 = 阶段性状态，365 = 长期但可能变化的；有具体日期的事件选能覆盖到事件结束的那一档）；对关系的概括、情绪解读、对 {LANLAN_NAME} 自己行为的总结、一次性闲聊、"别再提某个话题"都不算；source 为 ai_disclosure 的一律不写 pin
 
 ======以下为已知事实池（已被另一通路抽取，避免重复抽取相同内容）======
 {KNOWN_POOL}
@@ -2247,6 +2384,7 @@ FACT_EXTRACTION_AI_AWARE_PROMPT = {
 [
   {"text": "事实描述", "importance": 7, "entity": "master", "event_when": null, "source": "user_observation"},
   {"text": "事实描述", "importance": 7, "entity": "neko", "event_when": null, "source": "ai_disclosure"},
+  {"text": "事实描述", "importance": 9, "entity": "master", "event_when": null, "source": "user_observation", "pin": true, "pin_ttl_days": 14},
   ...
 ]""",
     # Known-facts-pool delimiters ARE localized (every locale translates them);
@@ -2268,6 +2406,7 @@ FACT_EXTRACTION_AI_AWARE_PROMPT = {
 - entity 標註為 "master"(關於{MASTER_NAME})、"neko"(關於{LANLAN_NAME})或 "relationship"(關於兩人關係)
 - importance 1-10，規則與基礎擷取一致（10 = 關鍵長期資訊；8-9 = 長期穩定核心；6-7 = 普通偏好/日常；5 = 次要觀察；1-4 = 弱相關線索）
 - event_when 選填，相對時間格式 `{"start": {"offset": <int>, "unit": "<unit>"}, "end": {...}}`；無時間線索寫 null
+- pin / pin_ttl_days 選填，判定與基礎擷取一致：只有 {MASTER_NAME} 明確要求記住的、有時間點的安排和約定（考試、面試、出行、回診、截止日期、兩人約好的事）、健康與安全（過敏、生病、用藥、忌口、受傷）、身分類變化（換稱呼或暱稱、搬家、換工作、畢業、家裡添人、寵物離世）才寫 "pin": true，並從 3 / 14 / 90 / 365 裡選 pin_ttl_days（3 = 眼前的事，14 = 近期安排，90 = 階段性狀態，365 = 長期但可能變化的；有具體日期的事件選能涵蓋到事件結束的那一檔）；對關係的概括、情緒解讀、對 {LANLAN_NAME} 自己行為的總結、一次性閒聊、「別再提某個話題」都不算；source 為 ai_disclosure 的一律不寫 pin
 
 ======以下為已知事實池（已被另一通道擷取，避免重複擷取相同內容）======
 {KNOWN_POOL}
@@ -2281,6 +2420,7 @@ FACT_EXTRACTION_AI_AWARE_PROMPT = {
 [
   {"text": "事實描述", "importance": 7, "entity": "master", "event_when": null, "source": "user_observation"},
   {"text": "事實描述", "importance": 7, "entity": "neko", "event_when": null, "source": "ai_disclosure"},
+  {"text": "事實描述", "importance": 9, "entity": "master", "event_when": null, "source": "user_observation", "pin": true, "pin_ttl_days": 14},
   ...
 ]""",
     "en": """Extract important factual information about {LANLAN_NAME} and {MASTER_NAME} from the following conversation.
@@ -2299,6 +2439,7 @@ Requirements:
 - entity ∈ "master" / "neko" / "relationship"
 - importance 1-10, same rubric as base extraction
 - event_when optional, relative time format; null if no time cue
+- pin / pin_ttl_days optional, same rules as base extraction: write "pin": true only for things {MASTER_NAME} explicitly asks to be remembered, plans and appointments with a point in time (exams, interviews, trips, follow-up doctor visits, deadlines, things the two agreed to do), health and safety (allergies, illness, medication, foods to avoid, injuries) and identity changes (a new name or nickname, moving house, a new job, graduation, a new family member, a pet passing away), and pick pin_ttl_days from 3 / 14 / 90 / 365 (3 = happening right now, 14 = near-term plan, 90 = a phase of life, 365 = long-lived but changeable; for a dated event, the smallest tier that covers its end). Relationship summaries, emotion readings, summaries of {LANLAN_NAME}'s own behavior, one-off small talk and "stop bringing up a topic" requests do not count; never pin a fact whose source is ai_disclosure
 
 ======Known facts pool (already extracted by another pass, do NOT re-extract)======
 {KNOWN_POOL}
@@ -2312,6 +2453,7 @@ Return as a JSON array (empty array if nothing worth additionally extracting):
 [
   {"text": "fact description", "importance": 7, "entity": "master", "event_when": null, "source": "user_observation"},
   {"text": "fact description", "importance": 7, "entity": "neko", "event_when": null, "source": "ai_disclosure"},
+  {"text": "fact description", "importance": 9, "entity": "master", "event_when": null, "source": "user_observation", "pin": true, "pin_ttl_days": 14},
   ...
 ]""",
     "ja": """以下の会話から {LANLAN_NAME} と {MASTER_NAME} に関する重要な事実情報を抽出してください。
@@ -2330,6 +2472,7 @@ Return as a JSON array (empty array if nothing worth additionally extracting):
 - entity ∈ "master" / "neko" / "relationship"
 - importance 1-10（基本抽出と同じ基準）
 - event_when は任意、相対時間形式、時間の手がかりがなければ null
+- pin / pin_ttl_days は任意、判定は基本抽出と同じ：{MASTER_NAME} が覚えておくようはっきり頼んだこと、日時のある予定や約束（試験、面接、旅行・外出、再診、締め切り、二人で約束したこと）、健康と安全（アレルギー、病気、服薬、食べられないもの、けが）、身の上の変化（呼び名やニックネームの変更、引っ越し、転職、卒業、家族が増えた、ペットが亡くなった）に限り "pin": true を書き、pin_ttl_days を 3 / 14 / 90 / 365 から選ぶ（3 = 目の前のこと、14 = 近いうちの予定、90 = 一時期続く状態、365 = 長く続くが変わりうること。日付の決まった出来事は終わるまでをカバーできる段階）。関係の総括、感情の解釈、{LANLAN_NAME} 自身の振る舞いのまとめ、一度きりの雑談、「ある話題をもう出さないで」は該当しない。source が ai_disclosure の事実には pin を書かない
 
 ======既知事実プール（別パスで抽出済み、重複抽出しないこと）======
 {KNOWN_POOL}
@@ -2343,6 +2486,7 @@ Return as a JSON array (empty array if nothing worth additionally extracting):
 [
   {"text": "事実の説明", "importance": 7, "entity": "master", "event_when": null, "source": "user_observation"},
   {"text": "事実の説明", "importance": 7, "entity": "neko", "event_when": null, "source": "ai_disclosure"},
+  {"text": "事実の説明", "importance": 9, "entity": "master", "event_when": null, "source": "user_observation", "pin": true, "pin_ttl_days": 14},
   ...
 ]""",
     "ko": """다음 대화에서 {LANLAN_NAME}과 {MASTER_NAME}에 대한 중요한 사실 정보를 추출해 주세요.
@@ -2361,6 +2505,7 @@ Return as a JSON array (empty array if nothing worth additionally extracting):
 - entity ∈ "master" / "neko" / "relationship"
 - importance 1-10 (기본 추출과 동일 기준)
 - event_when 선택, 상대 시간 형식, 시간 단서 없으면 null
+- pin / pin_ttl_days 선택, 판정은 기본 추출과 동일: {MASTER_NAME}이(가) 기억해 달라고 분명히 요청한 것, 시점이 있는 일정과 약속(시험, 면접, 여행·외출, 재진료, 마감일, 두 사람이 약속한 일), 건강과 안전(알레르기, 질병, 복용 약, 못 먹는 음식, 부상), 신상 변화(호칭이나 별명 변경, 이사, 이직, 졸업, 가족이 늘어남, 반려동물을 떠나보냄)일 때만 "pin": true를 쓰고 pin_ttl_days를 3 / 14 / 90 / 365 중에서 고름(3 = 당장의 일, 14 = 가까운 일정, 90 = 한동안 이어지는 상태, 365 = 오래가지만 바뀔 수 있는 것. 날짜가 정해진 일은 끝날 때까지를 덮는 단계). 관계 총평, 감정 해석, {LANLAN_NAME} 자신의 행동 정리, 일회성 잡담, "어떤 화제를 더 꺼내지 마" 요청은 해당하지 않음. source가 ai_disclosure인 사실에는 pin을 쓰지 않음
 
 ======기지 사실 풀 (다른 통로에서 추출됨, 중복 추출하지 마세요)======
 {KNOWN_POOL}
@@ -2374,6 +2519,7 @@ Return as a JSON array (empty array if nothing worth additionally extracting):
 [
   {"text": "사실 설명", "importance": 7, "entity": "master", "event_when": null, "source": "user_observation"},
   {"text": "사실 설명", "importance": 7, "entity": "neko", "event_when": null, "source": "ai_disclosure"},
+  {"text": "사실 설명", "importance": 9, "entity": "master", "event_when": null, "source": "user_observation", "pin": true, "pin_ttl_days": 14},
   ...
 ]""",
     "ru": """Извлеките важную фактическую информацию о {LANLAN_NAME} и {MASTER_NAME} из следующей беседы.
@@ -2392,6 +2538,7 @@ Return as a JSON array (empty array if nothing worth additionally extracting):
 - entity ∈ "master" / "neko" / "relationship"
 - importance 1-10 (те же критерии, что и базовое извлечение)
 - event_when необязательно, относительное время; null если нет временного маркера
+- pin / pin_ttl_days необязательно, правила те же, что и в базовом извлечении: "pin": true только для того, что {MASTER_NAME} прямо просит запомнить, планов и договорённостей с привязкой ко времени (экзамены, собеседования, поездки, повторный визит к врачу, дедлайны, то, о чём двое договорились), здоровья и безопасности (аллергии, болезни, лекарства, запрещённая еда, травмы) и перемен в жизни (новое имя или прозвище, переезд, новая работа, выпуск, пополнение в семье, смерть питомца); pin_ttl_days выбирается из 3 / 14 / 90 / 365 (3 = происходит прямо сейчас, 14 = ближайшие планы, 90 = состояние на период, 365 = долгосрочное, но изменчивое; для события с датой наименьший срок, покрывающий его окончание). Обобщения об отношениях, толкования эмоций, итоги собственного поведения {LANLAN_NAME}, разовая болтовня и просьбы «больше не поднимай эту тему» не считаются; факты с source ai_disclosure не закрепляются
 
 ======Пул известных фактов (уже извлечено другим проходом, не повторяйте)======
 {KNOWN_POOL}
@@ -2405,6 +2552,7 @@ Return as a JSON array (empty array if nothing worth additionally extracting):
 [
   {"text": "описание факта", "importance": 7, "entity": "master", "event_when": null, "source": "user_observation"},
   {"text": "описание факта", "importance": 7, "entity": "neko", "event_when": null, "source": "ai_disclosure"},
+  {"text": "описание факта", "importance": 9, "entity": "master", "event_when": null, "source": "user_observation", "pin": true, "pin_ttl_days": 14},
   ...
 ]""",
     "es": """Extrae información factual importante sobre {LANLAN_NAME} y {MASTER_NAME} de la siguiente conversación.
@@ -2423,6 +2571,7 @@ Requisitos:
 - entity ∈ "master" / "neko" / "relationship"
 - importance 1-10 (mismo baremo que extracción base)
 - event_when opcional, tiempo relativo; null si no hay pista temporal
+- pin / pin_ttl_days opcional, mismas reglas que la extracción base: "pin": true solo para lo que {MASTER_NAME} pide expresamente recordar, planes y citas con un momento concreto (exámenes, entrevistas, viajes, revisiones médicas, fechas límite, cosas que los dos acordaron), salud y seguridad (alergias, enfermedades, medicación, alimentos a evitar, lesiones) y cambios personales (nuevo nombre o apodo, mudanza, trabajo nuevo, graduación, un nuevo miembro en la familia, la muerte de una mascota); pin_ttl_days se elige entre 3 / 14 / 90 / 365 (3 = pasa ahora mismo, 14 = plan cercano, 90 = una etapa, 365 = duradero pero puede cambiar; para un evento con fecha, el tramo más corto que cubra hasta que termine). Resúmenes de la relación, interpretaciones de emociones, resúmenes del propio comportamiento de {LANLAN_NAME}, charla puntual y peticiones de «no vuelvas a sacar tal tema» no cuentan; nunca fijes un hecho con source ai_disclosure
 
 ======Reserva de hechos conocidos (ya extraídos por otra pasada, NO re-extraer)======
 {KNOWN_POOL}
@@ -2436,6 +2585,7 @@ Devuelve un array JSON (si no hay hechos adicionales que extraer, devuelve []):
 [
   {"text": "descripción del hecho", "importance": 7, "entity": "master", "event_when": null, "source": "user_observation"},
   {"text": "descripción del hecho", "importance": 7, "entity": "neko", "event_when": null, "source": "ai_disclosure"},
+  {"text": "descripción del hecho", "importance": 9, "entity": "master", "event_when": null, "source": "user_observation", "pin": true, "pin_ttl_days": 14},
   ...
 ]""",
     "pt": """Extraia informações factuais importantes sobre {LANLAN_NAME} e {MASTER_NAME} da conversa abaixo.
@@ -2454,6 +2604,7 @@ Requisitos:
 - entity ∈ "master" / "neko" / "relationship"
 - importance 1-10 (mesmo critério da extração base)
 - event_when opcional, tempo relativo; null se não houver pista temporal
+- pin / pin_ttl_days opcional, mesmas regras da extração base: "pin": true só para o que {MASTER_NAME} pede explicitamente para lembrar, planos e compromissos com data marcada (provas, entrevistas, viagens, retornos médicos, prazos, coisas que os dois combinaram), saúde e segurança (alergias, doenças, medicação, alimentos a evitar, lesões) e mudanças pessoais (novo nome ou apelido, mudança de casa, novo emprego, formatura, novo membro na família, morte de um bicho de estimação); pin_ttl_days é escolhido entre 3 / 14 / 90 / 365 (3 = acontecendo agora, 14 = plano próximo, 90 = uma fase, 365 = duradouro mas pode mudar; para um evento com data, a faixa mais curta que cubra até o fim). Resumos da relação, interpretações de emoções, resumos do próprio comportamento de {LANLAN_NAME}, conversa casual pontual e pedidos de "não toque mais nesse assunto" não contam; nunca fixe um fato com source ai_disclosure
 
 ======Pool de fatos conhecidos (já extraídos por outra passagem, NÃO re-extrair)======
 {KNOWN_POOL}
@@ -2467,6 +2618,7 @@ Retorne um array JSON (se não houver fatos adicionais a extrair, retorne []):
 [
   {"text": "descrição do fato", "importance": 7, "entity": "master", "event_when": null, "source": "user_observation"},
   {"text": "descrição do fato", "importance": 7, "entity": "neko", "event_when": null, "source": "ai_disclosure"},
+  {"text": "descrição do fato", "importance": 9, "entity": "master", "event_when": null, "source": "user_observation", "pin": true, "pin_ttl_days": 14},
   ...
 ]""",
 }
@@ -2748,26 +2900,31 @@ REFLECTION_PROMPT = {
 {FACTS}
 ======以上为事实======
 
-请基于这些事实，提炼一条高层次的反思洞察。请按以下五步思考：
+{EXISTING_IMPRESSIONS_BLOCK}请基于这些事实，整理出一条具体的记忆（reflection）：写清发生了什么，不要给抽象结论。请按以下五步思考：
 
-第一步：判断该反思主要关于谁（entity）
+第一步：判断这条记忆主要关于谁（entity）
 - "master": 主要关于 {MASTER_NAME} 的个人特征
 - "neko": 主要关于 {LANLAN_NAME} 的自我认知
-- "relationship": 关于两人之间的关系动态
+- "relationship": 关于两人之间具体的互动（谁对谁做了什么、说了什么）
 
 第二步：选定语义类别 relation_type（必须与 entity 匹配）
 - master 可用: preference(偏好) | trait(性格) | habit(习惯) | identity(身份) | emotional(情感) | boundary(边界)
 - neko 可用: self_awareness(自我认知) | learned(习得行为) | role_note(角色备注)
-- relationship 可用: dynamic(互动模式) | milestone(里程碑) | tension(摩擦) | shared_memory(共同记忆) | agreement(约定)
+- relationship 可用: dynamic(反复出现的具体互动) | milestone(里程碑) | tension(摩擦) | shared_memory(共同记忆) | agreement(约定)
 
 第三步：围绕已选定的 entity / relation_type 撰写 reflection 文本
 要求：
 - 紧扣单一观察或模式，不要罗列事实，也不要把多个无关事实混在一起
+- 每个动作的主语都写出具体是谁（用事实里的名字），不要用"我/你/他/她/对方/两人/双方"代替，避免分不清是谁做的
+- relationship 类必须落在具体的事和原话上：谁、做了什么、说了什么（原话可简短引用）；事实里找不到具体事件支撑的关系判断不要写
+- 只写发生了什么，不下结论、不加评价尾巴：禁止"形成了……默契/模式""体现了……""意味着……""说明了……""两人之间存在……纽带/羁绊""关系更加……"这类句子
+  - 反例：「两人形成了互相关心的默契」
+  - 正例：「{MASTER_NAME} 感冒那次，{LANLAN_NAME} 每隔一会儿就问一句"好点没"」
 - 简洁清晰，不得超过 150 字
 - **不要在 reflection 文本里使用"今天/刚刚/最近/这周/近期"等相对时间词** —— 具体时间靠 event_when 字段记录，文本保持中性叙事（例如"某次"、"那段时间"、"当时"）
 
 第四步：判定时间属性 temporal_scope（三档之一，反映"是否会过期"）
-- "pattern": 持续模式 / 性格特质 / 长期偏好，永不过期。例：「{MASTER_NAME} 喜欢咖啡」「{LANLAN_NAME} 性格内向」「两人长期互相依赖」。
+- "pattern": 持续模式 / 性格特质 / 长期偏好，永不过期。例：「{MASTER_NAME} 喜欢咖啡」「{LANLAN_NAME} 性格内向」「{MASTER_NAME} 每次出门前都会对 {LANLAN_NAME} 说"我走了"」。
 - "state": 当前持续的情境，几周内自然过期。例：「{MASTER_NAME} 最近工作压力大」「{LANLAN_NAME} 这段时间在适应新角色」。
 - "episode": 一次具体事件，几天内过期。例：「{MASTER_NAME} 昨晚通宵改代码」「{LANLAN_NAME} 今天收到一份礼物」。
 - 拿不准时请倾向选 pattern（误判 pattern 当 state / episode 会让长期特征过早淡出，比反过来更危险）。
@@ -2783,33 +2940,38 @@ REFLECTION_PROMPT = {
 - 例 3：长期"喜欢咖啡"（pattern） → null
 
 请以 JSON 格式返回，字段顺序保持如下：
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "你的反思洞察", "temporal_scope": "pattern", "event_when": null}""",
+{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "具体发生了什么（主语写名字）", "temporal_scope": "pattern", "event_when": null}""",
     "zh-TW": """以下是關於 {LANLAN_NAME} 和 {MASTER_NAME} 的一系列已擷取事實：
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
 {FACTS}
 ======以上为事实======
 
-請根據這些事實，提煉一條高層次的反思洞察。請按以下五步思考：
+{EXISTING_IMPRESSIONS_BLOCK}請根據這些事實，整理出一條具體的記憶（reflection）：寫清發生了什麼，不要給抽象結論。請按以下五步思考：
 
-第一步：判斷該反思主要關於誰（entity）
+第一步：判斷這條記憶主要關於誰（entity）
 - "master": 主要關於 {MASTER_NAME} 的個人特徵
 - "neko": 主要關於 {LANLAN_NAME} 的自我認知
-- "relationship": 關於兩人之間的關係動態
+- "relationship": 關於兩人之間具體的互動（誰對誰做了什麼、說了什麼）
 
 第二步：選定語意類別 relation_type（必須與 entity 相符）
 - master 可用: preference(偏好) | trait(性格) | habit(習慣) | identity(身分) | emotional(情感) | boundary(界線)
 - neko 可用: self_awareness(自我認知) | learned(習得行為) | role_note(角色備註)
-- relationship 可用: dynamic(互動模式) | milestone(里程碑) | tension(摩擦) | shared_memory(共同記憶) | agreement(約定)
+- relationship 可用: dynamic(反覆出現的具體互動) | milestone(里程碑) | tension(摩擦) | shared_memory(共同記憶) | agreement(約定)
 
 第三步：圍繞已選定的 entity / relation_type 撰寫 reflection 文字
 要求：
 - 緊扣單一觀察或模式，不要羅列事實，也不要把多個無關事實混在一起
+- 每個動作的主語都寫出具體是誰（用事實裡的名字），不要用「我/你/他/她/對方/兩人/雙方」代替，避免分不清是誰做的
+- relationship 類必須落在具體的事和原話上：誰、做了什麼、說了什麼（原話可簡短引用）；事實裡找不到具體事件支撐的關係判斷不要寫
+- 只寫發生了什麼，不下結論、不加評價尾巴：禁止「形成了……默契/模式」「體現了……」「意味著……」「說明了……」「兩人之間存在……紐帶/羈絆」「關係更加……」這類句子
+  - 反例：「兩人形成了互相關心的默契」
+  - 正例：「{MASTER_NAME} 感冒那次，{LANLAN_NAME} 每隔一會兒就問一句『好點沒』」
 - 簡潔清晰，不得超過 150 字
 - **不要在 reflection 文字裡使用「今天/剛剛/最近/這週/近期」等相對時間詞** —— 具體時間由 event_when 欄位紀錄，文字保持中性敘事（例如「某次」、「那段時間」、「當時」）
 
 第四步：判定時間屬性 temporal_scope（三類之一，反映「是否會過期」）
-- "pattern": 持續模式 / 性格特質 / 長期偏好，永不過期。例：「{MASTER_NAME} 喜歡咖啡」「{LANLAN_NAME} 性格內向」「兩人長期互相依賴」。
+- "pattern": 持續模式 / 性格特質 / 長期偏好，永不過期。例：「{MASTER_NAME} 喜歡咖啡」「{LANLAN_NAME} 性格內向」「{MASTER_NAME} 每次出門前都會對 {LANLAN_NAME} 說『我走了』」。
 - "state": 目前持續的情境，幾週內自然過期。例：「{MASTER_NAME} 最近工作壓力大」「{LANLAN_NAME} 這段時間在適應新角色」。
 - "episode": 一次具體事件，幾天內過期。例：「{MASTER_NAME} 昨晚熬夜改程式碼」「{LANLAN_NAME} 今天收到一份禮物」。
 - 拿不準時請傾向選 pattern（誤判 pattern 為 state / episode 會讓長期特徵過早淡出，比反過來更危險）。
@@ -2825,19 +2987,19 @@ REFLECTION_PROMPT = {
 - 例 3：長期「喜歡咖啡」（pattern）→ null
 
 請以 JSON 格式回傳，欄位順序保持如下：
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "你的反思洞察", "temporal_scope": "pattern", "event_when": null}""",
+{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "具體發生了什麼（主語寫名字）", "temporal_scope": "pattern", "event_when": null}""",
     "en": """Below are a series of extracted facts about {LANLAN_NAME} and {MASTER_NAME}:
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
 {FACTS}
 ======以上为事实======
 
-Based on these facts, distill one higher-level reflective insight. Follow these five steps:
+{EXISTING_IMPRESSIONS_BLOCK}Based on these facts, write one concrete memory (reflection): state what actually happened, not an abstract conclusion. Follow these five steps:
 
-Step 1: Determine which entity the reflection primarily concerns
+Step 1: Determine which entity the memory primarily concerns
 - "master": primarily about {MASTER_NAME}'s personal traits
 - "neko": primarily about {LANLAN_NAME}'s self-perception
-- "relationship": about the dynamics between them
+- "relationship": about concrete interactions between them (who did or said what to whom)
 
 Step 2: Choose a semantic relation_type (must match the entity)
 - master: preference | trait | habit | identity | emotional | boundary
@@ -2847,11 +3009,16 @@ Step 2: Choose a semantic relation_type (must match the entity)
 Step 3: Write the reflection around the chosen entity / relation_type
 Requirements:
 - Stay focused on a single observation or pattern; do not list facts, and do not mix unrelated facts
+- Name the actor of every action (use the names from the facts); never substitute "I / you / he / she / the other one / the two / both", so it is always clear who did what
+- relationship entries must rest on a concrete event and the actual words: who, did what, said what (short quotes are fine); do not write a relationship judgment that no concrete event in the facts supports
+- Describe what happened; no conclusions and no evaluative tail. Forbidden: "formed a tacit understanding / pattern of...", "reflects...", "means...", "shows that...", "a bond exists between the two...", "their relationship grew closer"
+  - Bad: "The two formed a tacit habit of caring for each other"
+  - Good: "When {MASTER_NAME} had a cold, {LANLAN_NAME} kept asking 'feeling better yet?'"
 - Be concise and clear; the reflection MUST NOT exceed 150 words
 - **Do NOT use relative time words like "today / just now / recently / this week" in the reflection text** — specific timing lives in event_when; keep the prose neutral (e.g. "on one occasion", "during that period", "at that time")
 
 Step 4: Classify temporal_scope (one of three — what governs expiry)
-- "pattern": persistent mode / personality trait / long-term preference, never expires. e.g. "{MASTER_NAME} loves coffee", "{LANLAN_NAME} is introverted", "long-term mutual reliance".
+- "pattern": persistent mode / personality trait / long-term preference, never expires. e.g. "{MASTER_NAME} loves coffee", "{LANLAN_NAME} is introverted", "{MASTER_NAME} always tells {LANLAN_NAME} 'I'm heading out' before leaving".
 - "state": currently ongoing situation that naturally expires in weeks. e.g. "{MASTER_NAME} is stressed about work lately", "{LANLAN_NAME} is adjusting to a new role".
 - "episode": one specific event, expires in days. e.g. "{MASTER_NAME} pulled an all-nighter coding last night", "{LANLAN_NAME} received a gift today".
 - When unsure, prefer pattern (misclassifying pattern as state/episode causes long-term traits to fade prematurely, which is worse than the reverse).
@@ -2867,19 +3034,19 @@ Step 5: Annotate event_when (always use RELATIVE TIME, never absolute dates)
 - Example 3: long-term "loves coffee" (pattern) → null
 
 Return JSON with fields in this exact order:
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "your reflective insight", "temporal_scope": "pattern", "event_when": null}""",
+{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "what concretely happened (name the actors)", "temporal_scope": "pattern", "event_when": null}""",
     "ja": """以下は {LANLAN_NAME} と {MASTER_NAME} に関する一連の抽出済み事実です：
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
 {FACTS}
 ======以上为事实======
 
-これらの事実に基づき、より高次元の反省的洞察を 1 つ抽出してください。次の 5 ステップで進めてください：
+{EXISTING_IMPRESSIONS_BLOCK}これらの事実に基づき、具体的な記憶（reflection）を 1 つ書いてください：抽象的な結論ではなく、実際に何があったかを書くこと。次の 5 ステップで進めてください：
 
-ステップ 1：この反省が主に誰についてのものか判断する（entity）
+ステップ 1：この記憶が主に誰についてのものか判断する（entity）
 - "master": 主に {MASTER_NAME} の個人的特徴について
 - "neko": 主に {LANLAN_NAME} の自己認識について
-- "relationship": 二人の関係の動態について
+- "relationship": 二人の間の具体的なやり取りについて（誰が誰に何をした・何を言ったか）
 
 ステップ 2：意味カテゴリ relation_type を選定（entity と整合）
 - master: preference | trait | habit | identity | emotional | boundary
@@ -2889,11 +3056,16 @@ Return JSON with fields in this exact order:
 ステップ 3：選定した entity / relation_type に沿って reflection を書く
 要件：
 - 単一の観察やパターンに集中し、事実を列挙したり、無関係な事実を混ぜたりしないこと
+- すべての行動の主語を具体的に書くこと（事実中の名前を使う）。「私／あなた／彼／彼女／相手／二人／お互い」で置き換えず、誰がしたのか曖昧にしないこと
+- relationship は具体的な出来事と実際の言葉に基づくこと：誰が、何をして、何と言ったか（短い引用可）。事実に具体的な出来事の裏付けがない関係の判断は書かないこと
+- 起きたことだけを書き、結論や評価の締めくくりを付けないこと。「〜という暗黙の了解／パターンが形成された」「〜を体現している」「〜を意味する」「〜を示している」「二人の間には〜の絆がある」「関係がより深まった」のような文は禁止
+  - 悪い例：「二人はお互いを気遣う暗黙の了解を形成した」
+  - 良い例：「{MASTER_NAME} が風邪をひいた時、{LANLAN_NAME} は何度も『もう良くなった？』と聞いた」
 - 簡潔かつ明瞭で、150 字を超えてはならない
 - **reflection 本文に「今日／さっき／最近／今週」等の相対時間表現を入れないこと** —— 具体的な時間は event_when に記録し、本文は中性的な語り（「ある時」「その頃」等）にすること
 
 ステップ 4：時間属性 temporal_scope を判定（三択、「いつ期限切れか」を表す）
-- "pattern": 持続的なパターン / 性格特性 / 長期的な嗜好、決して期限切れにならない。例：「{MASTER_NAME} はコーヒー好き」「{LANLAN_NAME} は内向的」。
+- "pattern": 持続的なパターン / 性格特性 / 長期的な嗜好、決して期限切れにならない。例：「{MASTER_NAME} はコーヒー好き」「{LANLAN_NAME} は内向的」「{MASTER_NAME} は出かける前に必ず {LANLAN_NAME} に『行ってきます』と言う」。
 - "state": 現在進行中の情況、数週間で自然に期限切れ。例：「{MASTER_NAME} は最近仕事のストレスが大きい」。
 - "episode": 一度きりの具体的な出来事、数日で期限切れ。例：「{MASTER_NAME} は昨夜徹夜でコードを書いた」。
 - 迷ったら pattern を選ぶ（pattern を state / episode と誤認すると長期特性が早く消える方が危険）。
@@ -2907,19 +3079,19 @@ Return JSON with fields in this exact order:
 - 例：「先週月曜に登山」→ {"start": {"offset": -1, "unit": "week"}, "end": {"offset": -1, "unit": "week"}}
 
 JSON 形式で返してください。フィールドの順序は以下の通り保ってください：
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "あなたの反省的洞察", "temporal_scope": "pattern", "event_when": null}""",
+{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "具体的に何があったか（主語は名前で）", "temporal_scope": "pattern", "event_when": null}""",
     "ko": """다음은 {LANLAN_NAME}과 {MASTER_NAME}에 대해 추출된 일련의 사실입니다:
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
 {FACTS}
 ======以上为事实======
 
-이 사실들을 바탕으로 더 높은 차원의 반성적 통찰 하나를 도출해 주세요. 다음 다섯 단계를 따르세요:
+{EXISTING_IMPRESSIONS_BLOCK}이 사실들을 바탕으로 구체적인 기억(reflection) 하나를 작성해 주세요: 추상적인 결론이 아니라 실제로 무슨 일이 있었는지를 쓰세요. 다음 다섯 단계를 따르세요:
 
-1단계: 이 반성이 주로 누구에 대한 것인지 판단합니다 (entity)
+1단계: 이 기억이 주로 누구에 대한 것인지 판단합니다 (entity)
 - "master": 주로 {MASTER_NAME}의 개인적 특성에 대해
 - "neko": 주로 {LANLAN_NAME}의 자기 인식에 대해
-- "relationship": 두 사람 사이의 관계 동태에 대해
+- "relationship": 두 사람 사이의 구체적인 상호작용에 대해 (누가 누구에게 무엇을 했고 무슨 말을 했는지)
 
 2단계: 의미 범주 relation_type 선택 (entity와 일치해야 함)
 - master: preference | trait | habit | identity | emotional | boundary
@@ -2929,11 +3101,16 @@ JSON 形式で返してください。フィールドの順序は以下の通り
 3단계: 선택한 entity / relation_type을 중심으로 reflection을 작성
 요구사항:
 - 단일 관찰 또는 패턴에 집중하고, 사실을 나열하거나 관련 없는 사실을 섞지 마세요
+- 모든 행동의 주어를 구체적으로 쓰세요 (사실에 나온 이름 사용). "나/너/그/그녀/상대/두 사람/서로"로 대신하지 말고, 누가 한 일인지 헷갈리지 않게 하세요
+- relationship은 구체적인 사건과 실제 한 말에 근거해야 합니다: 누가, 무엇을 했고, 무슨 말을 했는지 (짧은 인용 가능). 사실에서 구체적인 사건으로 뒷받침되지 않는 관계 판단은 쓰지 마세요
+- 일어난 일만 쓰고, 결론이나 평가성 꼬리말을 붙이지 마세요. "~하는 암묵적인 합의/패턴이 형성되었다", "~을 보여준다", "~을 의미한다", "~을 드러낸다", "두 사람 사이에는 ~한 유대가 있다", "관계가 더 깊어졌다" 같은 문장은 금지
+  - 나쁜 예: "두 사람은 서로를 챙기는 암묵적인 합의를 형성했다"
+  - 좋은 예: "{MASTER_NAME}가 감기에 걸렸을 때 {LANLAN_NAME}는 몇 번이고 '좀 나아졌어?'라고 물었다"
 - 간결하고 명확하게, 150자를 초과해서는 안 됩니다
 - **reflection 본문에 "오늘/방금/최근/이번 주" 등 상대 시간 표현을 쓰지 마세요** —— 구체적 시간은 event_when에 기록하고, 본문은 중립적 서술 ("어느 시기에", "그 무렵" 등) 유지
 
 4단계: 시간 속성 temporal_scope 판정 (세 가지 중 하나, 만료 시점을 결정)
-- "pattern": 지속적 패턴 / 성격 특성 / 장기 선호, 만료되지 않음. 예: "{MASTER_NAME}는 커피를 좋아함", "{LANLAN_NAME}는 내향적".
+- "pattern": 지속적 패턴 / 성격 특성 / 장기 선호, 만료되지 않음. 예: "{MASTER_NAME}는 커피를 좋아함", "{LANLAN_NAME}는 내향적", "{MASTER_NAME}는 외출하기 전에 늘 {LANLAN_NAME}에게 '다녀올게'라고 말함".
 - "state": 현재 진행 중인 상황, 몇 주 안에 자연 만료. 예: "{MASTER_NAME}는 최근 업무 스트레스가 큼".
 - "episode": 일회성 구체적 사건, 며칠 안에 만료. 예: "{MASTER_NAME}는 어젯밤 밤샘 코딩".
 - 모호할 때는 pattern을 선택 (pattern을 state/episode로 오판하면 장기 특성이 일찍 사라져 더 위험함).
@@ -2947,19 +3124,19 @@ JSON 形式で返してください。フィールドの順序は以下の通り
 - 예: "지난 월요일에 등산" → {"start": {"offset": -1, "unit": "week"}, "end": {"offset": -1, "unit": "week"}}
 
 JSON 형식으로 반환하며, 필드 순서는 다음과 같이 유지하세요:
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "당신의 반성적 통찰", "temporal_scope": "pattern", "event_when": null}""",
+{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "구체적으로 무슨 일이 있었는지 (주어는 이름으로)", "temporal_scope": "pattern", "event_when": null}""",
     "ru": """Ниже представлена серия извлечённых фактов о {LANLAN_NAME} и {MASTER_NAME}:
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
 {FACTS}
 ======以上为事实======
 
-На основе этих фактов выведите одно рефлексивное наблюдение более высокого уровня. Выполните пять шагов:
+{EXISTING_IMPRESSIONS_BLOCK}На основе этих фактов напишите одно конкретное воспоминание (reflection): что именно произошло, а не абстрактный вывод. Выполните пять шагов:
 
-Шаг 1: Определите, к кому это наблюдение относится в первую очередь (entity)
+Шаг 1: Определите, к кому это воспоминание относится в первую очередь (entity)
 - "master": в основном о личных качествах {MASTER_NAME}
 - "neko": в основном о самовосприятии {LANLAN_NAME}
-- "relationship": о динамике отношений между ними
+- "relationship": о конкретных взаимодействиях между ними (кто что сделал или сказал кому)
 
 Шаг 2: Выберите семантическую категорию relation_type (должна соответствовать entity)
 - master: preference | trait | habit | identity | emotional | boundary
@@ -2969,11 +3146,16 @@ JSON 형식으로 반환하며, 필드 순서는 다음과 같이 유지하세�
 Шаг 3: Напишите reflection вокруг выбранных entity / relation_type
 Требования:
 - Сосредоточьтесь на одном наблюдении или паттерне; не перечисляйте факты и не смешивайте несвязанные факты
+- Называйте исполнителя каждого действия (используйте имена из фактов); не заменяйте их на «я / ты / он / она / собеседник / оба / друг друга», чтобы всегда было ясно, кто что сделал
+- Записи relationship должны опираться на конкретное событие и реально сказанные слова: кто, что сделал, что сказал (короткие цитаты допустимы); не пишите суждение об отношениях, которое не подкреплено конкретным событием из фактов
+- Описывайте то, что произошло, без выводов и оценочных концовок. Запрещены фразы вроде «сложилось молчаливое взаимопонимание / сложился паттерн…», «это отражает…», «это означает…», «это показывает…», «между ними существует связь…», «их отношения стали ближе»
+  - Плохо: «Между ними сложилось молчаливое взаимопонимание и забота друг о друге»
+  - Хорошо: «Пока {MASTER_NAME} болеет простудой, {LANLAN_NAME} то и дело спрашивает: „Уже лучше?“»
 - Сжато и ясно; длина НЕ должна превышать 150 слов
 - **Не используйте в тексте reflection относительные слова времени "сегодня / только что / недавно / на этой неделе"** —— конкретное время фиксируется в event_when, текст держите нейтральным ("однажды", "в тот период")
 
 Шаг 4: Классифицируйте temporal_scope (один из трёх — определяет срок действия)
-- "pattern": устойчивая модель / черта характера / долгосрочное предпочтение, не истекает. Пример: "{MASTER_NAME} любит кофе", "{LANLAN_NAME} интроверт".
+- "pattern": устойчивая модель / черта характера / долгосрочное предпочтение, не истекает. Пример: "{MASTER_NAME} любит кофе", "{LANLAN_NAME} интроверт", "{MASTER_NAME} перед выходом из дома всегда говорит {LANLAN_NAME}: «Я ухожу»".
 - "state": текущая длящаяся ситуация, естественно истекает через недели. Пример: "{MASTER_NAME} в последнее время в стрессе из-за работы".
 - "episode": конкретное одноразовое событие, истекает через дни. Пример: "{MASTER_NAME} вчера всю ночь кодил".
 - При сомнении предпочитайте pattern (ошибка pattern→state/episode уводит долгосрочные черты раньше времени — хуже обратной).
@@ -2987,19 +3169,19 @@ JSON 형식으로 반환하며, 필드 순서는 다음과 같이 유지하세�
 - Пример: "ходил в горы в прошлый понедельник" → {"start": {"offset": -1, "unit": "week"}, "end": {"offset": -1, "unit": "week"}}
 
 Верните в формате JSON, сохраняя порядок полей:
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "ваше рефлексивное наблюдение", "temporal_scope": "pattern", "event_when": null}""",
+{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "что конкретно произошло (исполнители названы по имени)", "temporal_scope": "pattern", "event_when": null}""",
     "es": """A continuación hay una serie de hechos extraídos sobre {LANLAN_NAME} y {MASTER_NAME}:
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
 {FACTS}
 ======以上为事实======
 
-Con base en estos hechos, destila una sola reflexión de nivel superior. Sigue estos cinco pasos:
+{EXISTING_IMPRESSIONS_BLOCK}Con base en estos hechos, escribe un solo recuerdo concreto (reflection): lo que realmente pasó, no una conclusión abstracta. Sigue estos cinco pasos:
 
-Paso 1: Determina a qué entidad se refiere principalmente la reflexión
+Paso 1: Determina a qué entidad se refiere principalmente el recuerdo
 - "master": principalmente sobre rasgos personales de {MASTER_NAME}
 - "neko": principalmente sobre la autopercepción de {LANLAN_NAME}
-- "relationship": sobre la dinámica entre ambos
+- "relationship": sobre interacciones concretas entre ambos (quién le hizo o le dijo qué a quién)
 
 Paso 2: Elige una relation_type semántica (debe coincidir con la entidad)
 - master: preference | trait | habit | identity | emotional | boundary
@@ -3009,11 +3191,16 @@ Paso 2: Elige una relation_type semántica (debe coincidir con la entidad)
 Paso 3: Escribe la reflection alrededor de entity / relation_type elegidos
 Requisitos:
 - Céntrate en una sola observación o patrón; no enumeres hechos ni mezcles hechos no relacionados
+- Nombra a quien realiza cada acción (usa los nombres de los hechos); nunca lo sustituyas por "yo / tú / él / ella / la otra persona / los dos / ambos", para que siempre quede claro quién hizo qué
+- Las entradas relationship deben apoyarse en un suceso concreto y en las palabras que realmente se dijeron: quién, qué hizo, qué dijo (se permiten citas breves); no escribas un juicio sobre la relación que ningún suceso concreto de los hechos respalde
+- Describe lo que pasó, sin conclusiones ni coletillas valorativas. Prohibido: "se formó una complicidad / un patrón de...", "refleja...", "significa...", "demuestra que...", "existe un vínculo entre ambos...", "su relación se volvió más cercana"
+  - Mal: "Entre los dos se formó una complicidad de cuidarse mutuamente"
+  - Bien: "Durante el resfriado de {MASTER_NAME}, {LANLAN_NAME} preguntaba a cada rato: '¿ya estás mejor?'"
 - Sé conciso y claro; la reflexión NO debe superar 150 palabras
 - **No uses palabras relativas de tiempo "hoy / hace un momento / recientemente / esta semana" en el texto** —— el tiempo concreto se registra en event_when; mantén la prosa neutra ("en una ocasión", "durante ese período")
 
 Paso 4: Clasifica temporal_scope (uno de tres — gobierna la caducidad)
-- "pattern": modo persistente / rasgo de personalidad / preferencia a largo plazo, nunca caduca. Ej.: "{MASTER_NAME} ama el café", "{LANLAN_NAME} es introvertido/a".
+- "pattern": modo persistente / rasgo de personalidad / preferencia a largo plazo, nunca caduca. Ej.: "{MASTER_NAME} ama el café", "{LANLAN_NAME} es introvertido/a", "{MASTER_NAME} siempre le dice 'me voy' a {LANLAN_NAME} antes de salir".
 - "state": situación actual en curso, caduca naturalmente en semanas. Ej.: "{MASTER_NAME} está estresado/a por el trabajo últimamente".
 - "episode": un evento específico, caduca en días. Ej.: "{MASTER_NAME} pasó la noche programando ayer".
 - Cuando dudes, prefiere pattern (clasificar pattern como state/episode hace que los rasgos a largo plazo se desvanezcan prematuramente, lo cual es peor).
@@ -3027,19 +3214,19 @@ Paso 5: Anota event_when con TIEMPO RELATIVO (prohibidas fechas absolutas)
 - Ej.: "fui de excursión el lunes pasado" → {"start": {"offset": -1, "unit": "week"}, "end": {"offset": -1, "unit": "week"}}
 
 Devuelve JSON con los campos en este orden exacto:
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "tu reflexión", "temporal_scope": "pattern", "event_when": null}""",
+{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "qué pasó concretamente (con el nombre de quien actúa)", "temporal_scope": "pattern", "event_when": null}""",
     "pt": """Abaixo há uma série de fatos extraídos sobre {LANLAN_NAME} e {MASTER_NAME}:
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
 {FACTS}
 ======以上为事实======
 
-Com base nesses fatos, extraia uma única reflexão de nível superior. Siga estes cinco passos:
+{EXISTING_IMPRESSIONS_BLOCK}Com base nesses fatos, escreva uma única memória concreta (reflection): o que realmente aconteceu, não uma conclusão abstrata. Siga estes cinco passos:
 
-Passo 1: Determine a qual entidade a reflexão se refere principalmente
+Passo 1: Determine a qual entidade a memória se refere principalmente
 - "master": principalmente sobre características pessoais de {MASTER_NAME}
 - "neko": principalmente sobre a autopercepção de {LANLAN_NAME}
-- "relationship": sobre a dinâmica entre os dois
+- "relationship": sobre interações concretas entre os dois (quem fez ou disse o quê para quem)
 
 Passo 2: Escolha uma relation_type semântica (deve corresponder à entidade)
 - master: preference | trait | habit | identity | emotional | boundary
@@ -3049,11 +3236,16 @@ Passo 2: Escolha uma relation_type semântica (deve corresponder à entidade)
 Passo 3: Escreva a reflection em torno de entity / relation_type escolhidos
 Requisitos:
 - Foque em uma única observação ou padrão; não liste fatos nem misture fatos não relacionados
+- Nomeie quem faz cada ação (use os nomes dos fatos); nunca substitua por "eu / você / ele / ela / a outra pessoa / os dois / ambos", para que fique sempre claro quem fez o quê
+- Entradas relationship devem se apoiar em um acontecimento concreto e nas palavras realmente ditas: quem, fez o quê, disse o quê (citações curtas são permitidas); não escreva um julgamento sobre a relação que nenhum acontecimento concreto dos fatos sustente
+- Descreva o que aconteceu, sem conclusões nem arremates avaliativos. Proibido: "formou-se uma cumplicidade / um padrão de...", "reflete...", "significa...", "demonstra que...", "existe um vínculo entre os dois...", "a relação ficou mais próxima"
+  - Ruim: "Os dois formaram uma cumplicidade de cuidar um do outro"
+  - Bom: "Durante o resfriado de {MASTER_NAME}, {LANLAN_NAME} perguntava a toda hora: 'já está melhor?'"
 - Seja conciso e claro; a reflexão NÃO deve exceder 150 palavras
 - **Não use palavras de tempo relativo "hoje / agora mesmo / recentemente / esta semana" no texto** —— o tempo concreto fica em event_when; mantenha a prosa neutra ("em certa ocasião", "naquele período")
 
 Passo 4: Classifique temporal_scope (um dos três — define a expiração)
-- "pattern": modo persistente / traço de personalidade / preferência de longo prazo, nunca expira. Ex.: "{MASTER_NAME} adora café", "{LANLAN_NAME} é introvertido/a".
+- "pattern": modo persistente / traço de personalidade / preferência de longo prazo, nunca expira. Ex.: "{MASTER_NAME} adora café", "{LANLAN_NAME} é introvertido/a", "{MASTER_NAME} sempre diz 'estou saindo' para {LANLAN_NAME} antes de sair".
 - "state": situação atualmente em andamento, expira naturalmente em semanas. Ex.: "{MASTER_NAME} anda estressado/a com o trabalho".
 - "episode": um evento específico, expira em dias. Ex.: "{MASTER_NAME} virou a noite codando ontem".
 - Quando em dúvida, prefira pattern (classificar pattern como state/episode faz traços de longo prazo desvanecerem cedo demais, o que é pior).
@@ -3067,7 +3259,7 @@ Passo 5: Anote event_when com TEMPO RELATIVO (datas absolutas proibidas)
 - Ex.: "fui escalar segunda-feira passada" → {"start": {"offset": -1, "unit": "week"}, "end": {"offset": -1, "unit": "week"}}
 
 Retorne JSON com os campos nesta ordem exata:
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "sua reflexão", "temporal_scope": "pattern", "event_when": null}""",
+{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "o que aconteceu concretamente (com o nome de quem age)", "temporal_scope": "pattern", "event_when": null}""",
 }
 
 
@@ -3083,12 +3275,49 @@ REFLECTION_RELATED_CONTEXT_NOTE = {
 }
 
 
+# Follows the existing-impressions block that synthesis injects only when
+# vectors found candidates. The skip exit lives here, not in REFLECTION_PROMPT,
+# so the prompt without candidates stays exactly what it was. The other
+# fields are still requested on skip: an id outside the candidate set falls
+# back to an ordinary new reflection built from them.
+REFLECTION_EXISTING_IMPRESSIONS_NOTE = {
+    "zh": """上面是已经记下的印象，方括号里是 id。写之前先对照：
+- 如果这批事实没有超出其中某一条的新信息（只是同一件事、同一个习惯换个说法又出现了一次），请在返回的 JSON 最前面加上 "skip": true 和 "covered_by": "<那一条的 id，照方括号里的原样抄写>"，其余字段照常填写。
+- 只要有任何新的具体内容（新的事、新的原话、新的细节），就不要加这两个字段，照常写一条新记忆。""",
+    "zh-TW": """上面是已經記下的印象，方括號裡是 id。寫之前先對照：
+- 如果這批事實沒有超出其中某一條的新資訊（只是同一件事、同一個習慣換個說法又出現了一次），請在回傳的 JSON 最前面加上 "skip": true 和 "covered_by": "<那一條的 id，照方括號裡的原樣抄寫>"，其餘欄位照常填寫。
+- 只要有任何新的具體內容（新的事、新的原話、新的細節），就不要加這兩個欄位，照常寫一條新記憶。""",
+    "en": """Above are impressions already on record; each id is in square brackets. Check them before writing:
+- If this batch of facts adds nothing beyond one of them (the same event or habit showing up again in different words), put "skip": true and "covered_by": "<that entry's id, copied exactly from the brackets>" at the start of the returned JSON, and still fill in every other field as usual.
+- If there is anything new and concrete (a new event, new words actually said, a new detail), do not add these two fields; write a new memory as usual.""",
+    "ja": """上は既に記録済みの印象で、角括弧内が id です。書く前に照らし合わせてください：
+- この事実群がそのうちどれか 1 件を超える新しい情報を含まない場合（同じ出来事や習慣が言い方を変えて再び現れただけの場合）、返す JSON の先頭に "skip": true と "covered_by": "<その項目の id、角括弧内をそのまま書き写す>" を加え、その他のフィールドも通常どおり埋めてください。
+- 新しい具体的な内容（新しい出来事、新しい実際の発言、新しい細部）が一つでもあれば、この 2 つのフィールドは加えず、通常どおり新しい記憶を書いてください。""",
+    "ko": """위는 이미 기록된 인상이며, 대괄호 안이 id입니다. 쓰기 전에 먼저 대조하세요:
+- 이번 사실들이 그중 어느 한 항목을 넘어서는 새로운 정보가 없다면 (같은 일이나 습관이 표현만 바뀌어 다시 나타난 것이라면), 반환하는 JSON 맨 앞에 "skip": true 와 "covered_by": "<그 항목의 id, 대괄호 안을 그대로 옮겨 쓰기>"를 넣고, 나머지 필드도 평소대로 채우세요.
+- 새로운 구체적 내용(새로운 사건, 새로 한 말, 새로운 세부 사항)이 하나라도 있으면 이 두 필드는 넣지 말고 평소대로 새 기억을 작성하세요.""",
+    "ru": """Выше — уже записанные впечатления, id указан в квадратных скобках. Сверьтесь с ними перед тем, как писать:
+- Если эта партия фактов не добавляет ничего сверх одного из них (то же событие или привычка снова появились в других словах), поставьте в начало возвращаемого JSON "skip": true и "covered_by": "<id этой записи, скопированный из скобок без изменений>", а остальные поля всё равно заполните как обычно.
+- Если есть хоть что-то новое и конкретное (новое событие, новые реально сказанные слова, новая деталь), не добавляйте эти два поля и напишите новое воспоминание как обычно.""",
+    "es": """Arriba están las impresiones ya registradas; cada id va entre corchetes. Compáralas antes de escribir:
+- Si este lote de hechos no aporta nada más allá de una de ellas (el mismo suceso o hábito que vuelve a aparecer con otras palabras), pon "skip": true y "covered_by": "<el id de esa entrada, copiado tal cual de los corchetes>" al principio del JSON devuelto, y aun así rellena todos los demás campos como de costumbre.
+- Si hay algo nuevo y concreto (un suceso nuevo, palabras nuevas que realmente se dijeron, un detalle nuevo), no añadas estos dos campos y escribe un recuerdo nuevo como de costumbre.""",
+    "pt": """Acima estão as impressões já registradas; cada id fica entre colchetes. Compare antes de escrever:
+- Se este lote de fatos não acrescenta nada além de uma delas (o mesmo acontecimento ou hábito reaparecendo com outras palavras), coloque "skip": true e "covered_by": "<o id dessa entrada, copiado exatamente dos colchetes>" no início do JSON retornado e, mesmo assim, preencha todos os outros campos normalmente.
+- Se houver qualquer coisa nova e concreta (um acontecimento novo, palavras novas realmente ditas, um detalhe novo), não adicione esses dois campos e escreva uma nova memória normalmente.""",
+}
+
+
 def get_reflection_prompt(lang: str = "zh") -> str:
     return _loc(REFLECTION_PROMPT, lang)
 
 
 def get_reflection_related_context_note(lang: str = "zh") -> str:
     return _loc(REFLECTION_RELATED_CONTEXT_NOTE, lang)
+
+
+def get_reflection_existing_impressions_note(lang: str = "zh") -> str:
+    return _loc(REFLECTION_EXISTING_IMPRESSIONS_NOTE, lang)
 
 
 reflection_prompt = REFLECTION_PROMPT["zh"]
@@ -4488,6 +4717,319 @@ def get_persona_correction_pair_labels(lang: str = "zh") -> tuple[str, str]:
 
 
 persona_correction_prompt = PERSONA_CORRECTION_PROMPT["zh"]
+
+
+# ---------- pinned important facts (memory/pinned_facts.py) ----------
+# Rendered as one "### " section of the private-chat long-term memory, ahead of
+# the persona sections. Each entry shows when its current text was noted (its
+# wording may be relative, e.g. "next Wednesday") and when it leaves the section.
+PINNED_FACTS_SECTION_HEADER = {
+    "zh": "务必记住的事（到期前一直有效；相关时自然用上，不必刻意提起）",
+    "zh-TW": "務必記住的事（到期前一直有效；相關時自然用上，不必刻意提起）",
+    "en": "Things to keep in mind (valid until the date shown; use them naturally when relevant, no need to bring them up on purpose)",
+    "ja": "必ず覚えておくこと（期限まで有効。関係があるときに自然に活かし、わざわざ持ち出す必要はない）",
+    "ko": "꼭 기억해야 할 것 (기한까지 유효. 관련 있을 때 자연스럽게 활용하고, 일부러 꺼낼 필요는 없음)",
+    "ru": "Что нужно обязательно помнить (действует до указанной даты; используй, когда это к месту, специально заводить разговор не нужно)",
+    "es": "Cosas que hay que tener presentes (válidas hasta la fecha indicada; úsalas con naturalidad cuando venga al caso, sin sacarlas a propósito)",
+    "pt": "Coisas para ter sempre em mente (válidas até a data indicada; use-as com naturalidade quando fizer sentido, sem puxar o assunto de propósito)",
+}
+
+PINNED_FACT_LINE = {
+    "zh": "{text}（记于 {since}，到 {until}）",
+    "zh-TW": "{text}（記於 {since}，到 {until}）",
+    "en": "{text} (noted {since}, until {until})",
+    "ja": "{text}（{since} 記録、{until} まで）",
+    "ko": "{text} ({since} 기록, {until}까지)",
+    "ru": "{text} (записано {since}, до {until})",
+    "es": "{text} (anotado el {since}, hasta el {until})",
+    "pt": "{text} (anotado em {since}, até {until})",
+}
+
+# A withdrawn entry, listed in the resolve prompt next to the live ones while
+# its lifetime lasts, so an account from before the withdrawal can be matched
+# to it and kept out.
+PINNED_FACT_REMOVED_LINE = {
+    "zh": "{text}（记于 {since}，已于 {removed} 撤销）",
+    "zh-TW": "{text}（記於 {since}，已於 {removed} 撤銷）",
+    "en": "{text} (noted {since}, withdrawn {removed})",
+    "ja": "{text}（{since} 記録、{removed} に取り消し済み）",
+    "ko": "{text} ({since} 기록, {removed}에 취소됨)",
+    "ru": "{text} (записано {since}, отменено {removed})",
+    "es": "{text} (anotado el {since}, retirado el {removed})",
+    "pt": "{text} (anotado em {since}, retirado em {removed})",
+}
+
+# Placeholders are substituted with str.replace in this order: {LANLAN_NAME},
+# {MASTER_NAME}, {TODAY}, then {ZONE} and {CANDIDATES} last, so a literal
+# placeholder inside an entry text is never expanded again.
+PINNED_FACT_RESOLVE_PROMPT = {
+    "zh": """你在帮 {LANLAN_NAME} 维护一份「重要事实常驻区」：里面是 {LANLAN_NAME} 必须牢记的少量事实（关于 {MASTER_NAME}、关于 {LANLAN_NAME} 自己或两人之间），每条都有到期日。现在有新的候选事实要进区，请逐条决定怎么处理。
+
+今天是 {TODAY}。
+
+======以下为常驻区现有条目======
+{ZONE}
+======以上为常驻区现有条目======
+
+======以下为新候选======
+{CANDIDATES}
+======以上为新候选======
+
+每条候选从下面四个动作里选一个：
+- add：常驻区里还没有这件事，新增一条。
+- replace：常驻区里有同一件事，但说法有了更新（时间、地点、细节或状态变了），用候选替换那一条，以最新的说法为准。
+- renew：常驻区里有同一件事，候选只是又说了一遍、内容没有变化，给那一条续期。
+- remove：候选说明常驻区里的某件事已经不成立了（比如"考试取消了""感冒好了"），删除那一条，候选本身不再新增。
+
+规则：
+- replace、renew、remove 必须在 target 里填常驻区条目方括号里的 id，只能填上面列出的 id。
+- add 的 target 写 null。
+- 拿不准是不是同一件事时选 add。
+- 候选的记录日期早于常驻区里同一件事的记录日期时，它是更早的说法：选 renew 指向那一条，不要 replace 或 remove。
+- 标着「已撤销」的条目已经不成立。候选如果说的是同一件事：记录时间早于撤销时间，就是撤销前的旧说法，选 remove 并在 target 填那条的 id，候选不会入区；晚于撤销时间，就当新的事选 add。
+- 每条候选只输出一个动作。
+
+只返回 JSON 数组，不要输出其他内容：
+[
+  {"candidate": 1, "action": "add", "target": null},
+  {"candidate": 2, "action": "replace", "target": "pin_0a1b2c3d"}
+]""",
+    "zh-TW": """你在幫 {LANLAN_NAME} 維護一份「重要事實常駐區」：裡面是 {LANLAN_NAME} 必須牢記的少量事實（關於 {MASTER_NAME}、關於 {LANLAN_NAME} 自己或兩人之間），每條都有到期日。現在有新的候選事實要進區，請逐條決定怎麼處理。
+
+今天是 {TODAY}。
+
+======以下為常駐區現有條目======
+{ZONE}
+======以上為常駐區現有條目======
+
+======以下為新候選======
+{CANDIDATES}
+======以上為新候選======
+
+每條候選從下面四個動作裡選一個：
+- add：常駐區裡還沒有這件事，新增一條。
+- replace：常駐區裡有同一件事，但說法有了更新（時間、地點、細節或狀態變了），用候選替換那一條，以最新的說法為準。
+- renew：常駐區裡有同一件事，候選只是又說了一遍、內容沒有變化，給那一條續期。
+- remove：候選說明常駐區裡的某件事已經不成立了（比如「考試取消了」「感冒好了」），刪除那一條，候選本身不再新增。
+
+規則：
+- replace、renew、remove 必須在 target 裡填常駐區條目方括號裡的 id，只能填上面列出的 id。
+- add 的 target 寫 null。
+- 拿不準是不是同一件事時選 add。
+- 候選的記錄日期早於常駐區裡同一件事的記錄日期時，它是更早的說法：選 renew 指向那一條，不要 replace 或 remove。
+- 標著「已撤銷」的條目已經不成立。候選如果說的是同一件事：記錄時間早於撤銷時間，就是撤銷前的舊說法，選 remove 並在 target 填那條的 id，候選不會入區；晚於撤銷時間，就當新的事選 add。
+- 每條候選只輸出一個動作。
+
+只回傳 JSON 陣列，不要輸出其他內容：
+[
+  {"candidate": 1, "action": "add", "target": null},
+  {"candidate": 2, "action": "replace", "target": "pin_0a1b2c3d"}
+]""",
+    "en": """You are helping {LANLAN_NAME} maintain a "pinned important facts" section: a small set of facts {LANLAN_NAME} must keep in mind (about {MASTER_NAME}, about {LANLAN_NAME}, or about the two of them), each with an expiry date. New candidate facts are about to enter the section; decide what to do with each one.
+
+Today is {TODAY}.
+
+======Below is the current pinned section======
+{ZONE}
+======Above is the current pinned section======
+
+======Below is the list of new candidates======
+{CANDIDATES}
+======Above is the list of new candidates======
+
+For each candidate pick one of these four actions:
+- add: the section has nothing about this yet; add it as a new entry.
+- replace: the section already has the same matter, but the account has been updated (time, place, details or status changed); replace that entry with the candidate, the latest account wins.
+- renew: the section already has the same matter and the candidate only says it again without changing anything; extend that entry.
+- remove: the candidate shows that something in the section no longer holds (e.g. "the exam was cancelled", "the cold is gone"); delete that entry and do not add the candidate itself.
+
+Rules:
+- replace, renew and remove must put the entry's id (the one in square brackets) in target, and only ids listed above are allowed.
+- add uses null as target.
+- When unsure whether it is the same matter, choose add.
+- If a candidate was noted earlier than the section's entry about the same matter, it is the older account: choose renew on that entry, never replace or remove.
+- Entries marked as withdrawn no longer hold. If a candidate is about the same matter: noted before the withdrawal, it is the account from before it, so choose remove with that entry's id as target and the candidate stays out; noted after the withdrawal, treat it as new and choose add.
+- Output exactly one action per candidate.
+
+Return only a JSON array and nothing else:
+[
+  {"candidate": 1, "action": "add", "target": null},
+  {"candidate": 2, "action": "replace", "target": "pin_0a1b2c3d"}
+]""",
+    "ja": """あなたは {LANLAN_NAME} のために「重要事実の常駐エリア」を管理しています。ここには {LANLAN_NAME} が必ず覚えておくべき少数の事実（{MASTER_NAME} について、{LANLAN_NAME} 自身について、または二人の間のこと）が入っていて、どの項目にも期限があります。新しい候補がエリアに入ろうとしているので、候補ごとに扱いを決めてください。
+
+今日は {TODAY} です。
+
+======以下は常駐エリアの現在の項目======
+{ZONE}
+======以上は常駐エリアの現在の項目======
+
+======以下は新しい候補======
+{CANDIDATES}
+======以上は新しい候補======
+
+候補ごとに次の四つから一つ選んでください：
+- add：エリアにまだこの件がない。新しく追加する。
+- replace：エリアに同じ件があるが、内容が更新された（時間・場所・詳細・状態が変わった）。その項目を候補で置き換え、最新の言い方を優先する。
+- renew：エリアに同じ件があり、候補は同じことをもう一度言っただけで内容は変わっていない。その項目の期限を延ばす。
+- remove：候補から、エリアのある件がもう成り立たないとわかる（例：「試験が中止になった」「風邪が治った」）。その項目を削除し、候補自体は追加しない。
+
+ルール：
+- replace・renew・remove は target に項目の角括弧内の id を入れること。上に挙げた id 以外は使わない。
+- add の target は null。
+- 同じ件かどうか迷ったら add を選ぶ。
+- 候補の記録日が、エリア内の同じ件の記録日より前なら、それは古い言い方なので、その項目に renew を選び、replace や remove は選ばない。
+- 「取り消し済み」と付いた項目はもう成り立たない。候補が同じ件なら、記録が取り消しより前なら取り消し前の古い言い方なので remove を選び target にその項目の id を入れる（候補は入らない）。取り消しより後なら新しい件として add を選ぶ。
+- 候補一つにつき動作は一つだけ出力する。
+
+JSON 配列だけを返し、ほかには何も出力しないでください：
+[
+  {"candidate": 1, "action": "add", "target": null},
+  {"candidate": 2, "action": "replace", "target": "pin_0a1b2c3d"}
+]""",
+    "ko": """당신은 {LANLAN_NAME}을(를) 위해 "중요 사실 상주 구역"을 관리하고 있습니다. 여기에는 {LANLAN_NAME}이(가) 꼭 기억해야 할 소수의 사실({MASTER_NAME}에 대한 것, {LANLAN_NAME} 자신에 대한 것, 또는 두 사람 사이의 일)이 들어 있고, 항목마다 만료일이 있습니다. 새 후보들이 구역에 들어오려고 하니, 후보마다 어떻게 처리할지 정해 주세요.
+
+오늘은 {TODAY}입니다.
+
+======아래는 상주 구역의 현재 항목======
+{ZONE}
+======위는 상주 구역의 현재 항목======
+
+======아래는 새 후보======
+{CANDIDATES}
+======위는 새 후보======
+
+후보마다 다음 네 가지 중 하나를 고르세요:
+- add: 구역에 아직 이 일이 없음. 새로 추가.
+- replace: 구역에 같은 일이 있지만 내용이 바뀜(시간, 장소, 세부 사항, 상태가 달라짐). 그 항목을 후보로 교체하고, 가장 최근의 말을 기준으로 함.
+- renew: 구역에 같은 일이 있고, 후보는 같은 말을 다시 했을 뿐 내용은 그대로임. 그 항목의 기한을 연장.
+- remove: 후보로 보아 구역의 어떤 일이 더 이상 성립하지 않음(예: "시험이 취소됐다", "감기가 나았다"). 그 항목을 삭제하고, 후보 자체는 추가하지 않음.
+
+규칙:
+- replace, renew, remove는 target에 항목의 대괄호 안 id를 넣어야 하며, 위에 나온 id만 쓸 수 있음.
+- add의 target은 null.
+- 같은 일인지 애매하면 add를 고름.
+- 후보의 기록일이 구역 안 같은 일의 기록일보다 이르면 그것은 예전의 말이므로, 그 항목에 renew를 고르고 replace나 remove는 고르지 않음.
+- "취소됨" 표시가 있는 항목은 더 이상 성립하지 않음. 후보가 같은 일이라면, 기록이 취소보다 이르면 취소 전의 예전 말이므로 remove를 고르고 target에 그 항목의 id를 넣음(후보는 들어가지 않음). 취소보다 늦으면 새로운 일로 보고 add를 고름.
+- 후보 하나당 동작은 하나만 출력.
+
+JSON 배열만 반환하고 다른 내용은 출력하지 마세요:
+[
+  {"candidate": 1, "action": "add", "target": null},
+  {"candidate": 2, "action": "replace", "target": "pin_0a1b2c3d"}
+]""",
+    "ru": """Ты помогаешь вести для {LANLAN_NAME} «раздел закреплённых важных фактов»: это небольшой набор фактов, которые нельзя забывать (о {MASTER_NAME}, о {LANLAN_NAME} или об их отношениях), и у каждого есть срок действия. Появились новые факты-кандидаты; реши, что делать с каждым.
+
+Сегодня {TODAY}.
+
+======Ниже текущие записи раздела======
+{ZONE}
+======Выше текущие записи раздела======
+
+======Ниже новые кандидаты======
+{CANDIDATES}
+======Выше новые кандидаты======
+
+Для каждого кандидата выбери одно из четырёх действий:
+- add: в разделе об этом ещё ничего нет; добавить новой записью.
+- replace: в разделе есть то же самое, но сведения обновились (изменились время, место, детали или состояние); заменить ту запись кандидатом, верна самая свежая версия.
+- renew: в разделе есть то же самое, и кандидат просто повторяет это без изменений; продлить ту запись.
+- remove: из кандидата следует, что что-то из раздела больше не актуально (например, «экзамен отменили», «простуда прошла»); удалить ту запись, а самого кандидата не добавлять.
+
+Правила:
+- для replace, renew и remove в target нужно указать id записи (тот, что в квадратных скобках), и только из перечисленных выше.
+- для add в target пиши null.
+- если не уверен, то же ли это самое, выбирай add.
+- если кандидат записан раньше, чем запись раздела о том же самом, это более старая версия: выбери renew для той записи, но не replace и не remove.
+- записи с пометкой «отменено» больше не актуальны. Если кандидат о том же самом: записан раньше отмены — это версия до неё, выбери remove с id этой записи в target, кандидат не добавляется; записан позже отмены — считай это новым и выбирай add.
+- на каждого кандидата выведи ровно одно действие.
+
+Верни только JSON-массив и больше ничего:
+[
+  {"candidate": 1, "action": "add", "target": null},
+  {"candidate": 2, "action": "replace", "target": "pin_0a1b2c3d"}
+]""",
+    "es": """Estás ayudando a {LANLAN_NAME} a mantener una «sección de hechos importantes fijados»: un pequeño conjunto de hechos que no se deben olvidar (sobre {MASTER_NAME}, sobre {LANLAN_NAME} o sobre los dos), cada uno con fecha de caducidad. Hay nuevos hechos candidatos a punto de entrar en la sección; decide qué hacer con cada uno.
+
+Hoy es {TODAY}.
+
+======A continuación están las entradas actuales de la sección======
+{ZONE}
+======Arriba están las entradas actuales de la sección======
+
+======A continuación están los nuevos candidatos======
+{CANDIDATES}
+======Arriba están los nuevos candidatos======
+
+Para cada candidato elige una de estas cuatro acciones:
+- add: la sección todavía no tiene nada sobre esto; añádelo como entrada nueva.
+- replace: la sección ya tiene el mismo asunto, pero la información cambió (hora, lugar, detalles o estado); sustituye esa entrada por el candidato, vale la versión más reciente.
+- renew: la sección ya tiene el mismo asunto y el candidato solo lo repite sin cambios; prolonga esa entrada.
+- remove: el candidato indica que algo de la sección ya no es cierto (p. ej. «cancelaron el examen», «ya se me pasó el resfriado»); elimina esa entrada y no añadas el candidato.
+
+Reglas:
+- replace, renew y remove deben poner en target el id de la entrada (el que va entre corchetes), y solo se admiten los id listados arriba.
+- add lleva null en target.
+- Si dudas de si es el mismo asunto, elige add.
+- Si un candidato se anotó antes que la entrada de la sección sobre el mismo asunto, es la versión anterior: elige renew sobre esa entrada, nunca replace ni remove.
+- Las entradas marcadas como retiradas ya no son ciertas. Si un candidato trata del mismo asunto: si se anotó antes de la retirada, es la versión previa, así que elige remove con el id de esa entrada en target y el candidato no entra; si se anotó después, trátalo como nuevo y elige add.
+- Da exactamente una acción por candidato.
+
+Devuelve solo un array JSON y nada más:
+[
+  {"candidate": 1, "action": "add", "target": null},
+  {"candidate": 2, "action": "replace", "target": "pin_0a1b2c3d"}
+]""",
+    "pt": """Você está ajudando {LANLAN_NAME} a manter uma «seção de fatos importantes fixados»: um pequeno conjunto de fatos que não podem ser esquecidos (sobre {MASTER_NAME}, sobre {LANLAN_NAME} ou sobre os dois), cada um com data de validade. Há novos fatos candidatos prestes a entrar na seção; decida o que fazer com cada um.
+
+Hoje é {TODAY}.
+
+======Abaixo estão as entradas atuais da seção======
+{ZONE}
+======Acima estão as entradas atuais da seção======
+
+======Abaixo estão os novos candidatos======
+{CANDIDATES}
+======Acima estão os novos candidatos======
+
+Para cada candidato escolha uma destas quatro ações:
+- add: a seção ainda não tem nada sobre isso; adicione como nova entrada.
+- replace: a seção já tem o mesmo assunto, mas a informação mudou (horário, lugar, detalhes ou estado); substitua essa entrada pelo candidato, vale a versão mais recente.
+- renew: a seção já tem o mesmo assunto e o candidato só repete sem mudanças; prorrogue essa entrada.
+- remove: o candidato mostra que algo da seção não vale mais (ex.: "a prova foi cancelada", "o resfriado passou"); exclua essa entrada e não adicione o candidato.
+
+Regras:
+- replace, renew e remove devem colocar em target o id da entrada (o que está entre colchetes), e só os ids listados acima.
+- add usa null em target.
+- Na dúvida se é o mesmo assunto, escolha add.
+- Se um candidato foi anotado antes da entrada da seção sobre o mesmo assunto, é a versão mais antiga: escolha renew para essa entrada, nunca replace nem remove.
+- As entradas marcadas como retiradas não valem mais. Se um candidato for sobre o mesmo assunto: anotado antes da retirada, é a versão anterior, então escolha remove com o id dessa entrada em target e o candidato não entra; anotado depois, trate como novo e escolha add.
+- Dê exatamente uma ação por candidato.
+
+Retorne apenas um array JSON e nada mais:
+[
+  {"candidate": 1, "action": "add", "target": null},
+  {"candidate": 2, "action": "replace", "target": "pin_0a1b2c3d"}
+]""",
+}
+
+
+def get_pinned_facts_section_header(lang: str = "zh") -> str:
+    return _loc(PINNED_FACTS_SECTION_HEADER, lang)
+
+
+def render_pinned_fact_line(text: str, *, since: str, until: str, lang: str = "zh") -> str:
+    """One entry of the pinned section, without its list marker or id prefix."""
+    return _loc(PINNED_FACT_LINE, lang).format(text=text, since=since, until=until)
+
+
+def render_pinned_fact_removed_line(text: str, *, since: str, removed: str, lang: str = "zh") -> str:
+    """One withdrawn entry for the resolve prompt, without its id prefix."""
+    return _loc(PINNED_FACT_REMOVED_LINE, lang).format(text=text, since=since, removed=removed)
+
+
+def get_pinned_fact_resolve_prompt(lang: str = "zh") -> str:
+    return _loc(PINNED_FACT_RESOLVE_PROMPT, lang)
 
 
 # ---------- fact_dedup_prompt → i18n dict ----------

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import threading
 from collections.abc import Mapping
 
 from plugin.core.rpc import (
@@ -14,6 +15,7 @@ from plugin.core.rpc import (
     rpc_reply,
 )
 from plugin.core.state import state
+from plugin.core.control_ingress import ControlIngress
 from plugin.core.zmq_transport import pack_rpc_payload, unpack_rpc_payload
 from plugin.logging_config import get_logger
 from plugin.server.domain.errors import ServerDomainError
@@ -43,16 +45,37 @@ class PluginRouter:
         self._router_task: asyncio.Task | None = None
         self._busy_replies: set[asyncio.Task] = set()
         self._shutdown_event = asyncio.Event()
+        self._start_lock = threading.Lock()
+        self._stop_task = None
+        self._ingress = None
+        self._queue = None
 
     async def start(self) -> None:
-        if self._router_task is not None and not self._router_task.done():
-            return
-        if self._router_task is not None:
-            self._observe(self._router_task)
+        while True:
+            with self._start_lock:
+                if self._router_task is None:
+                    self._start_local()
+                    return
+                if not self._router_task.done():
+                    if self._stop_task is not None and not self._stop_task.done():
+                        raise RpcClosedError("Plugin router is stopping")
+                    return
+                lease = self._ingress
+            # Another caller may recover before this cleanup runs. Stop only
+            # the failed generation, then inspect the current one again.
+            await self._stop_ingress(lease)
+
+    def _start_local(self) -> None:
+        if self._stop_task is not None and not self._stop_task.done():
+            raise RpcClosedError("Plugin router is stopping")
         self._shutdown_event = asyncio.Event()
         self._dispatcher = RpcDispatcher(
             self._handlers, error_mapper=_domain_error, logger=logger
         )
+        self._stop_task = None
+        self._queue = state.plugin_comm_queue
+        self._ingress = ControlIngress(self._queue, self._dispatch_control)
+        state.plugin_control_ingress = self._ingress
         self._router_task = asyncio.create_task(
             self._router_loop(), name="plugin-router-loop"
         )
@@ -69,6 +92,56 @@ class PluginRouter:
             )
 
     async def stop(self) -> None:
+        lease = self._ingress
+        await self._stop_ingress(lease)
+
+    async def _stop_ingress(self, lease: ControlIngress | None) -> None:
+        if lease is None or lease is not self._ingress:
+            return
+        # The ingress owns its loop for its entire lifetime. Reading another
+        # router field here could pair an old loop with a restarted ingress.
+        owner = lease.loop
+        if owner is asyncio.get_running_loop():
+            await self._stop_on_owner(lease)
+        else:
+            if owner.is_closed():
+                with self._start_lock:
+                    if lease is not self._ingress:
+                        return
+                    if self._router_task is not None and self._router_task.done():
+                        # asyncio.run may have cancelled the old generation
+                        # and closed its loop without calling our stop(). With
+                        # no owner left to schedule cleanup on, retire its
+                        # references under the generation lock before restart.
+                        lease.close()
+                        if state.plugin_control_ingress is lease:
+                            state.plugin_control_ingress = None
+                            state._plugin_comm_queue = None
+                        self._router_task = None
+                        self._ingress = None
+                        self._queue = None
+                        self._stop_task = None
+                        self._busy_replies.clear()
+                        return
+            if owner.is_closed() or not owner.is_running():
+                if lease is not self._ingress:
+                    return
+                raise RpcClosedError("Plugin router owner stopped before cleanup")
+            await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(self._stop_on_owner(lease), owner))
+
+    async def _stop_on_owner(self, lease) -> None:
+        if lease is not self._ingress:
+            return
+        if self._stop_task is None:
+            self._stop_task = asyncio.create_task(self._stop_local())
+        await asyncio.shield(self._stop_task)
+
+    async def _stop_local(self) -> None:
+        if self._ingress is not None:
+            self._ingress.close()
+            if state.plugin_control_ingress is self._ingress:
+                state.plugin_control_ingress = None
+                state._plugin_comm_queue = None
         self._shutdown_event.set()
         if self._router_task is not None:
             self._router_task.cancel()
@@ -78,13 +151,16 @@ class PluginRouter:
             task.cancel()
         await asyncio.gather(*busy_replies, return_exceptions=True)
         await self._dispatcher.close()
-        self._router_task = None
+        with self._start_lock:
+            self._router_task = None
+            self._ingress = None
+            self._queue = None
         logger.info("Plugin router stopped")
 
     async def _router_loop(self) -> None:
         received = 0
         while not self._shutdown_event.is_set():
-            request = await state.plugin_comm_queue.get()
+            request = await self._queue.get()
             received += 1
             if received >= _RECEIVE_BATCH_SIZE:
                 received = 0
@@ -101,8 +177,13 @@ class PluginRouter:
             if not isinstance(request, Mapping):
                 logger.warning("Discarding malformed plugin control request")
                 continue
+            if not self._ingress.take(request):
+                continue
             if not self._dispatcher.submit(dict(request), self._send_response):
                 self._reply_busy(request)
+
+    def _dispatch_control(self, request: dict) -> None:
+        self._dispatcher.submit(request, self._send_response)
 
     def _reply_busy(self, request: Mapping[str, object]) -> None:
         # Overload replies must not hold the shared receive loop: a blocked
