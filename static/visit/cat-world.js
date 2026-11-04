@@ -158,8 +158,10 @@
           && typeof global._getNekoDesktopVirtualViewportSize === 'function') {
         var eventCoordinates = crop.getEventCoordinates(event);
         var eventVirtual = eventCoordinates && eventCoordinates.virtual;
-        var eventVirtualX = Number(eventVirtual && eventVirtual.x);
-        var eventVirtualY = Number(eventVirtual && eventVirtual.y);
+        var eventVirtualX = eventVirtual && typeof eventVirtual.x === 'number'
+          ? eventVirtual.x : NaN;
+        var eventVirtualY = eventVirtual && typeof eventVirtual.y === 'number'
+          ? eventVirtual.y : NaN;
         var eventVirtualSize = global._getNekoDesktopVirtualViewportSize();
         var eventVirtualWidth = Number(eventVirtualSize && eventVirtualSize.width);
         var eventVirtualHeight = Number(eventVirtualSize && eventVirtualSize.height);
@@ -176,6 +178,8 @@
           };
         }
       }
+    } catch (_) { /* fall through to the older desktop coordinate bridge */ }
+    try {
       if (typeof global._getNekoDesktopVirtualViewportSize === 'function'
           && typeof global._getNekoDesktopVirtualRect === 'function') {
         var virtualSize = global._getNekoDesktopVirtualViewportSize();

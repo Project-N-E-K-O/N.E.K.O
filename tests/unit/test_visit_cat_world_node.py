@@ -368,15 +368,15 @@ async function main() {
   };
   win.__nekoNiriPetPhysicalCrop = {
     getEventCoordinates: (event) => ({
-      local: { x: Number(event.clientX) - 500, y: Number(event.clientY) - 300 },
-      virtual: { x: Number(event.clientX), y: Number(event.clientY) },
-      patched: true,
+      local: { x: Number(event.clientX), y: Number(event.clientY) },
+      virtual: { x: Number(event.clientX) + 500, y: Number(event.clientY) + 300 },
+      patched: false,
     }),
   };
   const beforeCroppedDrag = calls.intent.length;
-  yarn.dispatchEvent({ type: 'pointerdown', button: 0, pointerId: 3, clientX: 600, clientY: 500,
+  yarn.dispatchEvent({ type: 'pointerdown', button: 0, pointerId: 3, clientX: 100, clientY: 200,
     preventDefault() {}, stopPropagation() {} });
-  yarn.dispatchEvent({ type: 'pointerup', button: 0, pointerId: 3, clientX: 620, clientY: 520 });
+  yarn.dispatchEvent({ type: 'pointerup', button: 0, pointerId: 3, clientX: 120, clientY: 220 });
   await flush();
   await flush();
   const croppedGrab = calls.intent[beforeCroppedDrag];
@@ -384,6 +384,31 @@ async function main() {
   assert.equal(croppedGrab.x_q16, 19661);
   assert.equal(croppedGrab.y_q16, 20480);
   assert.equal(virtualRectCalls, 0);
+
+  // An incomplete or throwing native bridge must still use the older generic
+  // conversion instead of snapping the pointer to the virtual origin.
+  win.__nekoNiriPetPhysicalCrop.getEventCoordinates = () => ({ virtual: null });
+  const beforeIncompleteBridge = calls.intent.length;
+  yarn.dispatchEvent({ type: 'pointerdown', button: 0, pointerId: 32, clientX: 100, clientY: 200,
+    preventDefault() {}, stopPropagation() {} });
+  yarn.dispatchEvent({ type: 'pointerup', button: 0, pointerId: 32, clientX: 120, clientY: 220 });
+  await flush();
+  await flush();
+  assert.equal(calls.intent[beforeIncompleteBridge].x_q16, 19661);
+  assert.equal(calls.intent[beforeIncompleteBridge].y_q16, 20480);
+  const callsAfterIncompleteBridge = virtualRectCalls;
+  assert.ok(callsAfterIncompleteBridge > 0);
+
+  win.__nekoNiriPetPhysicalCrop.getEventCoordinates = () => { throw new Error('crop bridge unavailable'); };
+  const beforeThrowingBridge = calls.intent.length;
+  yarn.dispatchEvent({ type: 'pointerdown', button: 0, pointerId: 33, clientX: 100, clientY: 200,
+    preventDefault() {}, stopPropagation() {} });
+  yarn.dispatchEvent({ type: 'pointerup', button: 0, pointerId: 33, clientX: 120, clientY: 220 });
+  await flush();
+  await flush();
+  assert.equal(calls.intent[beforeThrowingBridge].x_q16, 19661);
+  assert.equal(calls.intent[beforeThrowingBridge].y_q16, 20480);
+  assert.ok(virtualRectCalls > callsAfterIncompleteBridge);
   delete win.__nekoNiriPetPhysicalCrop;
 
   // Older desktop bridges expose only the generic local-to-virtual helpers.
