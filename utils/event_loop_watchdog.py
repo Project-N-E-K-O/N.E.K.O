@@ -131,6 +131,10 @@ class EventLoopStallWatchdog:
         self._labels = [label]
         self._owners = 0
         self._stop_event = threading.Event()
+        # Set by any owner's stop(): on a shared loop the first service to
+        # shut down means the process is shutting down, and its synchronous
+        # cleanup should not be reported while the last owner still runs.
+        self._reporting_paused = threading.Event()
         self._last_beat = time.monotonic()
         self._loop_thread_id = None
         self._task = None
@@ -160,14 +164,18 @@ class EventLoopStallWatchdog:
 
     def _acquire(self, label):
         self._owners += 1
+        self._reporting_paused.clear()
         if label not in self._labels:
             self._labels.append(label)
 
     def stop(self, timeout=1.0):
         """Release one owner; the last release stops the thread and heartbeat.
 
-        Idempotent once fully stopped.
+        Any release pauses reporting at once, so cleanup after the first
+        service's shutdown begins is not logged as stalls. Idempotent once
+        fully stopped.
         """
+        self._reporting_paused.set()
         with _REGISTRY_LOCK:
             if self._owners > 1:
                 self._owners -= 1
@@ -189,6 +197,14 @@ class EventLoopStallWatchdog:
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout)
 
+    def _abandon_closed_loop(self):
+        self._stop_event.set()
+        self._task = None  # died with the loop
+        with _REGISTRY_LOCK:
+            self._owners = 0
+            if _REGISTRY.get(self._loop) is self:
+                del _REGISTRY[self._loop]
+
     async def _heartbeat(self):
         while not self._stop_event.is_set():
             self._last_beat = time.monotonic()
@@ -205,6 +221,9 @@ class EventLoopStallWatchdog:
             overslept = now - last_tick - self.check_interval_s
             last_tick = now
             beat = self._last_beat
+            if self._reporting_paused.is_set():
+                stalled_beat = None
+                continue
             if stalled_beat is not None:
                 if beat != stalled_beat:
                     self._finish_stall(beat - stall_origin, stall_reported)
@@ -215,6 +234,10 @@ class EventLoopStallWatchdog:
                 # restart the measurement instead of blaming the loop.
                 resumed_at = now
                 continue
+            if self._loop.is_closed():
+                # Closed without stop(): nothing left to watch.
+                self._abandon_closed_loop()
+                return
             origin = max(beat, resumed_at)
             if now - origin < self.threshold_s or not self._loop.is_running():
                 continue
@@ -274,7 +297,7 @@ class EventLoopStallWatchdog:
         return True
 
     def _finish_stall(self, gap_s, reported):
-        if self._stop_event.is_set():
+        if self._stop_event.is_set() or self._reporting_paused.is_set():
             return
         # The gap between heartbeats includes one regular sleep interval.
         blocked_ms = int(max(0.0, gap_s - self.heartbeat_interval_s) * 1000)

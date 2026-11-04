@@ -6,6 +6,7 @@ import time
 
 import pytest
 
+from utils import event_loop_watchdog
 from utils.event_loop_watchdog import (
     DEFAULT_THRESHOLD_S,
     HEARTBEAT_TASK_NAME,
@@ -48,6 +49,16 @@ def _messages(handler, level=logging.WARNING):
 
 def _stack_dumps(handler):
     return [m for m in _messages(handler) if "event loop blocked" in m]
+
+
+def _run_on_closed_loop(coro):
+    # tests/conftest.py routes asyncio.run through nest_asyncio, which reuses
+    # one loop and never closes it; these tests need a loop that really closes.
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 
 def _block_loop_in_sync_code():
@@ -182,11 +193,32 @@ def test_closed_loop_without_stop_is_not_reported(stall_logger):
         holder["watchdog"].start()
         await asyncio.sleep(0.05)
 
-    asyncio.run(main())
+    _run_on_closed_loop(main())
     time.sleep(THRESHOLD_S * 3)
-    holder["watchdog"].stop()
 
     assert _stack_dumps(handler) == []
+    # The checker noticed the closed loop and exited on its own.
+    assert not holder["watchdog"].running
+    holder["watchdog"].stop()
+
+
+def test_closed_loop_drops_registry_entry_without_stop(stall_logger):
+    logger, _handler = stall_logger
+    holder = {}
+
+    async def main():
+        holder["loop"] = asyncio.get_running_loop()
+        holder["watchdog"] = start_loop_stall_watchdog_from_env(
+            holder["loop"], logger=logger, label="main_server", environ={}
+        )
+        await asyncio.sleep(0.05)
+
+    _run_on_closed_loop(main())
+    deadline = time.monotonic() + 2
+    while holder["watchdog"].running and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert not holder["watchdog"].running
+    assert holder["loop"] not in event_loop_watchdog._REGISTRY
 
 
 @pytest.mark.parametrize(
@@ -323,3 +355,25 @@ def test_paths_outside_known_roots_do_not_leak_user_names():
     assert os.path.basename(home) not in under_home
     assert "alice" not in elsewhere
     assert in_project == "tests/unit/test_event_loop_watchdog.py"
+
+
+def test_first_release_of_shared_watchdog_pauses_reporting(stall_logger):
+    logger, handler = stall_logger
+
+    async def main():
+        loop = asyncio.get_running_loop()
+        env = {THRESHOLD_ENV: str(int(THRESHOLD_S * 1000))}
+        first = start_loop_stall_watchdog_from_env(loop, logger=logger, label="main_server", environ=env)
+        second = start_loop_stall_watchdog_from_env(loop, logger=logger, label="agent_server", environ=env)
+        try:
+            await asyncio.sleep(0.15)
+            first.stop()  # main_server begins shutdown; agent_server still holds it
+            assert first.running
+            _block_loop_in_sync_code()  # shutdown cleanup on the shared loop
+            await asyncio.sleep(0.4)
+        finally:
+            second.stop()
+
+    asyncio.run(main())
+    assert _stack_dumps(handler) == []
+    assert not [m for m in _messages(handler, logging.DEBUG) if "recovered after" in m]
