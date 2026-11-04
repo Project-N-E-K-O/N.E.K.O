@@ -60,6 +60,10 @@ def _block_loop_somewhere_else():
     time.sleep(BLOCK_S)
 
 
+def _brief_sync_work():
+    time.sleep(0.01)
+
+
 async def _run_with_watchdog(logger, body, **kwargs):
     watchdog = EventLoopStallWatchdog(
         asyncio.get_running_loop(), logger=logger, threshold_s=THRESHOLD_S, **kwargs
@@ -104,7 +108,7 @@ def test_healthy_loop_logs_nothing(stall_logger):
     async def body():
         for _ in range(20):
             await asyncio.sleep(0.05)
-            time.sleep(0.01)
+            _brief_sync_work()
 
     asyncio.run(_run_with_watchdog(logger, body))
 
