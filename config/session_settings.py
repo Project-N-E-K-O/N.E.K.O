@@ -184,6 +184,49 @@ ANTI_REPEAT_VERBATIM_GUARD_SOURCE_TAGS = frozenset({"MEME"})
   dropping only if the rewrite remains verbatim.
 - Nonfresh material uses full dialogue checks like other channels; this exemption is inactive."""
 
+# ── Habitual-phrase avoid list (cross-session catchphrases) ───
+HABITUAL_PHRASE_SOURCE_REPLY_LIMIT = 200
+"""Latest assistant replies read from time_indexed.db per recompute.
+- Purpose: memory/habitual_phrases.py mines this window for phrases she keeps reusing.
+- Rationale: twice the review panel's 100, so a light user's window still spans
+  several days and a heavy user's spans several sittings; mining stays well inside the
+  miner's occurrence budget at typical reply lengths."""
+
+HABITUAL_PHRASE_MIN_SESSIONS = 3
+"""Minimum distinct sessions a phrase must appear in to count as a habit.
+- Purpose: the cross-session criterion; a burst of repetition inside one session
+  never qualifies however dense it is.
+- Rationale: the miner's own distinct-message floor is 3; requiring the same number of
+  separate sittings is what turns "repeated a lot" into "repeated across time"."""
+
+HABITUAL_PHRASE_SESSION_GAP_SECONDS = 1800.0
+"""Silence between two replies that starts a new session for the criterion above.
+- Purpose: time_indexed.db rows carry one id per memory write batch, not per sitting,
+  so sessions are rebuilt from reply timestamps.
+- Rationale: 30 minutes separates sittings without splitting one ongoing chat; a new day
+  is always a new session once the gap is crossed."""
+
+HABITUAL_PHRASE_MAX_ITEMS = 8
+"""Most phrases kept per character, ranked by sessions, then days, then occurrences.
+- Purpose: caps both the stored list and the session-start prompt list.
+- Rationale: a short list the model can actually honour; more turns into noise."""
+
+HABITUAL_PHRASE_PROMPT_MAX_TOKENS = 160
+"""Token budget for the whole rendered avoid-list block (header, items and closing line).
+- Purpose: lowest-ranked phrases are dropped until the block fits.
+- Rationale: 8 short phrases plus the localized header fit with room to spare."""
+
+HABITUAL_PHRASE_REFRESH_INTERVAL_SECONDS = 86400.0
+"""Recompute the list for a character at most this often, and only while memory is idle.
+- Purpose: the background job's cadence; session start only reads the stored file.
+- Rationale: daily matches how fast a verbal habit forms or fades."""
+
+HABITUAL_PHRASE_MAX_AGE_SECONDS = 7 * 86400.0
+"""A stored list older than this is ignored at session start.
+- Purpose: entries are never permanent. A recompute rewrites the whole list, so a phrase
+  she stopped using drops out; this bound covers recomputes that keep failing.
+- Rationale: a week of missed daily refreshes means the list no longer describes her."""
+
 AVATAR_INTERACTION_DEDUPE_MAX_ITEMS = 32
 """_recent_avatar_interaction_ids deque maxlen.
 - Purpose: deduplicate processed avatar interaction IDs.

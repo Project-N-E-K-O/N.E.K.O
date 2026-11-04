@@ -69,6 +69,26 @@ class LatestAssistantTexts:
     # lose the alignment callers need to tell which analyzed replies are
     # linkable, and a partial set silently misrepresents the scope.
     response_ids: list[str | None] = field(default_factory=list)
+    # Aligned the same way: the row's stored time as a naive local datetime,
+    # ``None`` for a legacy row without one or a value that does not parse.
+    timestamps: list[datetime | None] = field(default_factory=list)
+
+
+def _coerce_row_timestamp(value: object) -> datetime | None:
+    """A stored ``timestamp`` cell as a naive datetime, or None if unusable."""
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            try:
+                parsed = datetime.strptime(value, "%Y-%m-%d %H:%M:%S.%f")
+            except ValueError:
+                return None
+    else:
+        return None
+    return parsed.replace(tzinfo=None) if parsed.tzinfo is not None else parsed
 
 
 _ANTI_REPEAT_RESPONSE_ID_KEY = "anti_repeat_response_id"
@@ -1305,6 +1325,7 @@ class TimeIndexedMemory:
 
         cursor: tuple[object, int] | None = None
         records: list[tuple[str, str | None]] = []
+        record_timestamps: list[datetime | None] = []
         skipped_row_count = 0
         scanned_row_count = 0
         scan_budget = max(
@@ -1376,6 +1397,7 @@ class TimeIndexedMemory:
                     skipped_row_count += 1
                     continue
                 records.append(assistant_record)
+                record_timestamps.append(_coerce_row_timestamp(key[0]))
                 if len(records) >= limit:
                     break
             cursor = (keys[-1][0], int(keys[-1][1]))
@@ -1391,11 +1413,13 @@ class TimeIndexedMemory:
                 )
 
         records.reverse()
+        record_timestamps.reverse()
         return LatestAssistantTexts(
             [message for message, _response_id in records],
             True,
             skipped_row_count,
             [response_id for _message, response_id in records],
+            record_timestamps,
         )
 
     async def aretrieve_latest_assistant_texts(

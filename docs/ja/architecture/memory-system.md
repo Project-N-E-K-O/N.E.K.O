@@ -169,6 +169,7 @@ HTTP endpoint は構造化された行を返しますが、メイン会話ハン
 - リフレクション合成。
 - ペルソナとリフレクションの refinement。
 - ゼロ未満エビデンスの日数追跡とアーカイブスイープ。
+- アイドル時に約1日1回、キャラクターごとの口癖回避リストを再計算（ローカルの n-gram 抽出のみ、モデル呼び出しなし）。
 - 旧事実/リフレクションのイベント時刻 schema の低速移行。
 - 任意の Embedding ウォームアップとバックフィル。
 
@@ -185,6 +186,7 @@ HTTP endpoint は構造化された行を返しますが、メイン会話ハン
 | `time_indexed.db` | `time_indexed_original` の生の時系列会話行。旧圧縮テーブルが存在する場合もある |
 | `facts.json`、`facts_archive.json` | アクティブな事実と古い absorbed 事実 |
 | `pinned_facts.json` | 期限付きの常駐の重要事実と、置換・削除・期限切れ・追い出しされた項目の有限な履歴 |
+| `habitual_phrases.json` | 最近の複数セッションで繰り返し使われた言い回しと、その回数・初出/最終出現時刻。再計算のたびに丸ごと置き換えられ、セッション開始時に回避リストとして読まれる |
 | `reflections.json`、`surfaced.json` | アクティブなリフレクションと、提示/ユーザーフィードバックの状態 |
 | `reflection_archive/` | シャード化されたリフレクションアーカイブ |
 | `persona.json`、`persona_corrections.json` | ペルソナビューとキュー済みの矛盾判定 |

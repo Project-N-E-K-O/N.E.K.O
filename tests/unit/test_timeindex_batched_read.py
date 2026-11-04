@@ -200,6 +200,50 @@ def test_latest_assistant_texts_are_bounded_filtered_and_chronological(
     assert result.skipped_row_count == 1
 
 
+def test_latest_assistant_timestamps_stay_aligned_with_messages(
+    timeindex_module,
+    tmp_path,
+):
+    """One timestamp per returned message, skipped rows contributing none.
+
+    The habitual-phrase job rebuilds sessions from these, so a timestamp
+    taken from a skipped user row, or a list compacted past a NULL, would
+    attach a reply to the wrong sitting.
+    """
+    from datetime import datetime
+
+    rows = [
+        {"session_id": "1", "message": _stored_message("ai", "first"), "timestamp": None},
+        {
+            "session_id": "2",
+            "message": _stored_message("human", "user turn"),
+            "timestamp": "2026-01-01 09:30:00.000000",
+        },
+        {
+            "session_id": "3",
+            "message": _stored_message("ai", "second"),
+            "timestamp": "2026-01-01 10:00:00.000000",
+        },
+        {
+            "session_id": "4",
+            "message": _stored_message("ai", "third"),
+            "timestamp": "2026-01-02T08:15:00+00:00",
+        },
+    ]
+    manager, engine = _create_manager(timeindex_module, tmp_path, rows)
+    try:
+        result = manager.retrieve_latest_assistant_texts("cat", 10, batch_size=1)
+    finally:
+        engine.dispose()
+
+    assert result.messages == ["first", "second", "third"]
+    assert result.timestamps == [
+        None,
+        datetime(2026, 1, 1, 10, 0, 0),
+        datetime(2026, 1, 2, 8, 15, 0),
+    ]
+
+
 def test_latest_assistant_texts_include_null_timestamps_across_pages(
     timeindex_module,
     tmp_path,

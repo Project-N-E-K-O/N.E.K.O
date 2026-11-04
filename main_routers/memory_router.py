@@ -116,6 +116,7 @@ def _empty_repetition_effects(days: int) -> dict:
         "period_days": days,
         "totals": {
             "soft_hint_injected": 0,
+            "phrase_hint_injected": 0,
             "detected": 0,
             "regen_triggered": 0,
             "regen_guard_passed": 0,
