@@ -8,6 +8,7 @@ const { read, loadRuntime, createMao, deferred } = require('./fixtures/live2d_ru
 
 async function fixture({ manual = false } = {}) {
     const runtime = await loadRuntime();
+    runtime.context.document.body.classList.remove = () => {};
     vm.runInContext(read('static/live2d/live2d-emotion.js'), runtime.context);
     vm.runInContext(read('static/live2d/live2d-interaction.js'), runtime.context);
     const f = createMao(runtime), api = runtime.context.PIXI.live2d;
@@ -80,6 +81,20 @@ for (const manual of [false, true]) {
             assert.equal(await f.manager.playExpression('happy', 'happy.exp3.json'), true);
             assert.equal(f.value('ParamAngleY'), 0, 'the old idle pose is reset before the expression');
             assert.equal(f.native.state.currentPriority, 0);
+            if (manual) {
+                f.runtime.context.clock += 220;
+                f.model.internalModel.events.emit('beforeModelUpdate');
+            } else {
+                const expressions = f.native.expressionManager;
+                const fadeIn = expressions.currentExpression.getFadeInTime();
+                assert.ok(fadeIn > 0);
+                expressions.update(f.core, 0);
+                assert.equal(f.value('ParamAngleX'), 0, 'native expression starts at zero fade weight');
+                expressions.update(f.core, fadeIn / 2);
+                assert.ok(f.value('ParamAngleX') > 0 && f.value('ParamAngleX') < 7);
+                expressions.update(f.core, fadeIn);
+            }
+            assert.equal(f.value('ParamAngleX'), 7, 'the expression must actually write the Core while motion is paused');
             assert.equal(await f.manager.playActionMotion('happy', 0), false);
             assert.equal(await f.manager.playMotion('happy'), false);
             assert.equal(f.manager.playSimpleMotion('happy'), false);
@@ -190,6 +205,69 @@ test('idle scheduling retries during expressions and resumes the saved idle afte
     } finally { f.release(); }
 });
 
+function installMainIdleRestore(f) {
+    const source = read('static/app/app-interpage/bootstrap-resources-and-model-reload.js');
+    const start = source.indexOf('    function _injectMotionGroupSafely(');
+    const exportLine = 'window.restoreLive2DIdleAnimationOnMainPage = restoreLive2DIdleAnimationOnMainPage;';
+    const end = source.indexOf(exportLine, start);
+    assert.ok(start >= 0 && end > start);
+    vm.runInContext(source.slice(start, end + exportLine.length), f.runtime.context);
+    f.runtime.context.live2dManager = f.manager;
+    f.runtime.context.lanlan_config = { lanlan_name: 'test' };
+    const savedFile = f.native.definitions.Idle[0].File;
+    let configuredIdle = savedFile;
+    const fetch = f.runtime.context.fetch;
+    f.runtime.context.fetch = async (url, ...args) => {
+        if (url === '/api/characters') return { json: async () => ({ 猫娘: { test: {
+            live2d: 'mao_pro', _reserved: { avatar: { live2d: { idle_animation: configuredIdle } } }
+        } } }) };
+        if (url === '/api/live2d/model_files/mao_pro') return { json: async () => ({ motion_files: [savedFile] }) };
+        return fetch(url, ...args);
+    };
+    return { savedFile, clearSelection() { configuredIdle = ''; } };
+}
+
+test('main-page saved idle deferred by an expression resumes through the common scheduler', async () => {
+    const f = await fixture();
+    try {
+        const main = installMainIdleRestore(f);
+        f.manager.setupIdleMotionLoop(f.model);
+        await f.manager.playExpression('happy', 'happy.exp3.json');
+        await f.runtime.context.restoreLive2DIdleAnimationOnMainPage();
+        assert.deepEqual(Array.from(f.manager._userIdleAnimations), [path.basename(main.savedFile)]);
+        assert.equal(f.native.state.currentPriority, 0, 'saved idle cannot interrupt the expression');
+        await f.manager.clearExpression();
+        [...f.manager._idleMotionLoopTimers][0].callback();
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(f.native.state.currentGroup, 'PreviewAll', 'restore the saved group rather than default Idle');
+        assert.equal(f.native.state.currentPriority, 1);
+        assert.equal(f.native.definitions.PreviewAll[f.native.state.currentIndex].File, main.savedFile);
+        main.clearSelection();
+        await f.runtime.context.restoreLive2DIdleAnimationOnMainPage();
+        assert.deepEqual(Array.from(f.manager._userIdleAnimations), []);
+    } finally { f.release(); }
+});
+
+test('an old main-page idle request cannot clear the selection of a replacement model', async () => {
+    const f = await fixture(), next = createMao(f.runtime), entered = deferred(), gate = deferred();
+    try {
+        const main = installMainIdleRestore(f);
+        main.clearSelection();
+        const fetch = f.runtime.context.fetch;
+        f.runtime.context.fetch = async (url, ...args) => {
+            if (url === '/api/characters') { entered.resolve(); await gate.promise; }
+            return fetch(url, ...args);
+        };
+        const pending = f.runtime.context.restoreLive2DIdleAnimationOnMainPage();
+        await entered.promise;
+        f.manager.currentModel = next.model;
+        f.manager._userIdleAnimations = ['new.motion3.json'];
+        gate.resolve();
+        await pending;
+        assert.deepEqual(Array.from(f.manager._userIdleAnimations), ['new.motion3.json']);
+    } finally { gate.resolve(); f.release(); next.release(); }
+});
+
 test('smooth expression cleanup holds exclusion until the fade completes', async () => {
     const f = await fixture({ manual: true });
     try {
@@ -254,6 +332,45 @@ test('Idle without an expression preserves the current transient expression and 
         assert.equal(f.native.state.currentPriority, 0);
     } finally { f.release(); }
 });
+
+for (const knownMissing of [false, true]) {
+    test(`a ${knownMissing ? 'known missing' : 'failed'} expression falls back to its configured motion`, async () => {
+        const f = await fixture();
+        try {
+            if (knownMissing) f.manager.markExpressionFileMissing('happy.exp3.json');
+            f.runtime.context.fetch = async file => file.endsWith('.exp3.json')
+                ? { ok: false, statusText: 'Not Found' }
+                : { ok: true, json: async () => ({ Meta: { Duration: 1 }, Curves: [] }) };
+            await f.manager.setEmotion('happy');
+            assert.equal(f.manager.hasActiveTransientExpression(), false);
+            assert.equal(f.native.state.currentGroup, 'happy');
+            assert.equal(f.native.state.currentPriority, 2);
+        } finally { f.release(); }
+    });
+}
+
+for (const fading of [false, true]) {
+    test(`model removal clears ${fading ? 'fading' : 'manual'} expression ownership before the next model`, async () => {
+        const f = await fixture({ manual: true }), next = createMao(f.runtime);
+        try {
+            await f.manager.playExpression('happy', 'happy.exp3.json');
+            const fade = fading ? f.manager.smoothResetToInitialState(800) : null;
+            assert.equal(f.manager.hasActiveTransientExpression(), true);
+            f.manager._userIdleAnimations = ['old.motion3.json'];
+            await f.manager.removeModel({ skipCloseWindows: true });
+            if (fade) await fade;
+            assert.equal(f.model.internalModel.events.listenerCount('beforeModelUpdate'), 0);
+            assert.equal(f.manager._manualExpressionListener, null);
+            assert.equal(f.manager._smoothResetListener, null);
+            assert.deepEqual(Array.from(f.manager._userIdleAnimations), []);
+            f.manager.currentModel = next.model;
+            next.motionManager.state.currentPriority = 0;
+            assert.equal(f.manager.hasActiveTransientExpression(), false);
+            f.manager.playSimpleMotion('happy');
+            assert.equal(next.value('ParamAngleY'), 8, 'old expression state cannot block the new model');
+        } finally { f.release(); next.release(); }
+    });
+}
 
 test('click fallback cannot add a transient expression to an occupied action', async () => {
     const f = await fixture();

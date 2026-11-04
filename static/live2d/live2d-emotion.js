@@ -1115,7 +1115,7 @@ Live2DManager.prototype._removeManualExpressionOverride = function(expectedListe
     const listener = this._manualExpressionListener;
     const emitter = this._manualExpressionEmitter || (this.currentModel && this.currentModel.internalModel);
     const resource = this._manualExpressionResource;
-    const retire = options.retire === true && resource?.listener === listener;
+    const retire = options.retire === true && !!resource && resource.listener === listener;
     let removed = true;
     if (retire) removed = this._retireManualExpressionResource(resource);
     else if (listener && emitter) emitter.off('beforeModelUpdate', listener);
@@ -1919,13 +1919,6 @@ Live2DManager.prototype.setEmotion = async function(emotion, options = {}) {
             if (!isCurrent()) return false;
             if (this._activeTransientExpression) await this.clearExpression();
             if (!isCurrent()) return false;
-            // 清除旧表情后可以为本轮仅含动作的情感预约动作槽。
-            if (!shouldAttemptMotion && !this.hasActiveTransientExpression()
-                && (typeof this.hasActiveActionMotion !== 'function' || !this.hasActiveActionMotion(emotionModel))) {
-                shouldAttemptMotion = true;
-                this._actionMotionRequestPendingModel = emotionModel;
-                this._actionMotionRequestPendingOperation = operation;
-            }
         }
 
         if (!isCurrent()) return false;
@@ -1941,6 +1934,14 @@ Live2DManager.prototype.setEmotion = async function(emotion, options = {}) {
             console.log(`Idle 未配置新表情，保留当前表情`);
         } else {
             console.log(`情感 ${emotion} 未配置新表情，已清除上一套表情状态`);
+        }
+
+        // 旧表情已清除或新表情加载失败时，可在互斥检查后预约本轮动作。
+        if (!shouldAttemptMotion && !shouldPreserveExistingExpression && !this.hasActiveTransientExpression()
+            && (typeof this.hasActiveActionMotion !== 'function' || !this.hasActiveActionMotion(emotionModel))) {
+            shouldAttemptMotion = true;
+            this._actionMotionRequestPendingModel = emotionModel;
+            this._actionMotionRequestPendingOperation = operation;
         }
 
         // 播放动作

@@ -497,6 +497,10 @@ const Easing = {
 
 Live2DManager.prototype.removeModel = async function(options = {}) {
     this._cancelAvatarOperations();
+    if (typeof this._cancelSmoothReset === 'function') this._cancelSmoothReset();
+    if (typeof this._removeManualExpressionOverride === 'function') {
+        this._removeManualExpressionOverride(this._manualExpressionListener, this._manualExpressionEmitter, { retire: true });
+    }
     this._invalidateParameterReloadTickets();
     // Stop old performance drivers before the first asynchronous teardown.
     if (this._avatarPerformanceSessionOwners) this._avatarPerformanceSessionOwners.clear();
@@ -579,6 +583,7 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
     this._transientExpressionTask = null;
     this._transientExpressionPending = null;
     this._activeTransientExpression = false;
+    this._userIdleAnimations = [];
     this._motionParameterTrackGeneration = (this._motionParameterTrackGeneration || 0) + 1;
     if (typeof this._nextMotionTimerGeneration === 'function') {
         this._nextMotionTimerGeneration();

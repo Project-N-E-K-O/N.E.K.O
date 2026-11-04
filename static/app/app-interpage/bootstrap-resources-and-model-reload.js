@@ -1773,7 +1773,10 @@ I.mod = window.appInterpage;
             const shouldContinue = options && typeof options.shouldContinue === 'function'
                 ? options.shouldContinue
                 : null;
+            const expectedManager = window.live2dManager;
+            const expectedModel = expectedManager?.getCurrentModel();
             const canContinue = () => {
+                if (window.live2dManager !== expectedManager || expectedManager?.getCurrentModel() !== expectedModel) return false;
                 if (!shouldContinue) return true;
                 try {
                     return shouldContinue() !== false;
@@ -1849,6 +1852,7 @@ I.mod = window.appInterpage;
             const motionFiles = modelFilesData?.motion_files || [];
             if (!live2dIdleAnimation) {
                 if (hasExplicitIdleAnimation) {
+                    if (expectedManager) expectedManager._userIdleAnimations = [];
                     console.log('[Live2D Main] 待机动作已明确清空');
                     return;
                 }
@@ -1910,6 +1914,9 @@ I.mod = window.appInterpage;
                 console.log('[Live2D Main] 待机动作恢复已被新的交互取消');
                 return;
             }
+
+            // 将保存的选择交给统一待机调度器，表情或动作结束后可自动重试。
+            live2dManager._userIdleAnimations = [live2dIdleAnimation.split('/').pop()];
 
             // 7. 设置循环播放
             const motionInstance = motionManager.motionGroups?.[groupName]?.[motionIndex];
