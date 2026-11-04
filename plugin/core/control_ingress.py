@@ -3,17 +3,25 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import time
 from collections import Counter
 from collections.abc import Callable, Mapping
 from concurrent.futures import Future
 
-from plugin.core.rpc import RpcClosedError, request_deadline
+from plugin.core.rpc import QuotaWarnings, RpcClosedError, request_deadline
 
 
 class ControlIngress:
-    def __init__(self, queue: asyncio.Queue, control: Callable[[dict], None]):
+    def __init__(
+        self,
+        queue: asyncio.Queue,
+        control: Callable[[dict], None],
+        *,
+        max_queued_per_connection: int | None = None,
+        logger: object = None,
+    ):
         self.queue = queue
         self.loop = asyncio.get_running_loop()
         self._control = control
@@ -22,6 +30,11 @@ class ControlIngress:
         self._handoffs: set[Future] = set()
         self._queued: Counter[tuple[str, str]] = Counter()
         self._cancelled: Counter[tuple[str, str]] = Counter()
+        # Per-connection share of the shared queue: queued requests plus
+        # taken ones the router retained while their BUSY reply is in flight.
+        self._limit = max_queued_per_connection
+        self._held: Counter[str] = Counter()
+        self._warnings = QuotaWarnings(logger or logging.getLogger(__name__))
 
     @staticmethod
     def _key(request: Mapping) -> tuple[str, str]:
@@ -49,8 +62,19 @@ class ControlIngress:
         deadline = request_deadline(request, None)
         if deadline is not None and deadline <= time.monotonic():
             raise TimeoutError("Plugin control request expired before admission")
+        held = self._held[key[0]]
+        if self._limit is not None and held >= self._limit:
+            self._warnings.warn(
+                "queued_per_plugin",
+                request.get("from_plugin", key[0]),
+                operation,
+                held,
+                self._limit,
+            )
+            raise asyncio.QueueFull
         self.queue.put_nowait(request)
         self._queued[key] += 1
+        self._held[key[0]] += 1
 
     async def _enqueue_local(
         self,
@@ -116,8 +140,25 @@ class ControlIngress:
         except RuntimeError:
             return False
 
+    def _drop_hold(self, connection_id: str) -> None:
+        self._held[connection_id] -= 1
+        if self._held[connection_id] <= 0:
+            self._held.pop(connection_id, None)
+
+    def retain(self, request: Mapping) -> bool:
+        """Keep a taken request's queue share until ``release`` is called."""
+        if self._closed:
+            return False
+        self._held[self._key(request)[0]] += 1
+        return True
+
+    def release(self, request: Mapping) -> None:
+        if not self._closed:
+            self._drop_hold(self._key(request)[0])
+
     def take(self, request: Mapping) -> bool:
         key = self._key(request)
+        self._drop_hold(key[0])
         self._queued[key] -= 1
         if self._queued[key] <= 0:
             self._queued.pop(key, None)
@@ -136,3 +177,4 @@ class ControlIngress:
             future.cancel()
         self._queued.clear()
         self._cancelled.clear()
+        self._held.clear()

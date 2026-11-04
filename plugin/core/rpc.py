@@ -105,6 +105,48 @@ def log_rpc_failure(logger: Any, message: str, exc: BaseException) -> None:
     logger.error(f"{message}, error_type={type(exc).__name__}, stack={stack}")
 
 
+class QuotaWarnings:
+    """Rate-limit quota warnings per plugin; log metadata only, never request content."""
+
+    _MAX_TRACKED = 1024
+
+    def __init__(self, logger: Any, *, interval: float = 10.0):
+        self._logger = logger
+        self._interval = interval
+        self._next: dict[tuple[str, str], float] = {}
+        self._suppressed: dict[tuple[str, str], int] = {}
+
+    def warn(
+        self,
+        quota: str,
+        plugin_id: object,
+        operation: object,
+        count: int,
+        limit: int,
+        *,
+        target_plugin: object = None,
+    ) -> None:
+        # Both strings come from the plugin; clip them so a log line stays small.
+        plugin = str(plugin_id)[:64]
+        key = quota, plugin
+        now = time.monotonic()
+        if now < self._next.get(key, 0.0):
+            self._suppressed[key] = self._suppressed.get(key, 0) + 1
+            return
+        if len(self._next) >= self._MAX_TRACKED:
+            for stale in [k for k, until in self._next.items() if until <= now]:
+                self._next.pop(stale)
+                self._suppressed.pop(stale, None)
+        self._next[key] = now + self._interval
+        suppressed = self._suppressed.pop(key, 0)
+        target = "" if target_plugin is None else f", target_plugin={str(target_plugin)[:64]}"
+        self._logger.warning(
+            f"Plugin RPC quota reached: quota={quota}, plugin_id={plugin}, "
+            f"operation={str(operation)[:64]}{target}, count={count}, limit={limit}, "
+            f"suppressed_since_last={suppressed}"
+        )
+
+
 class RpcRemoteError(RuntimeError):
     def __init__(self, error: object):
         if isinstance(error, Mapping):
@@ -463,11 +505,26 @@ class RpcPeer:
                 )
 
 
+def _acquire(counts: dict[str, int], key: str) -> None:
+    counts[key] = counts.get(key, 0) + 1
+
+
+def _release(counts: dict[str, int], key: str) -> None:
+    # Drop zero entries: keys include plugin-supplied target names.
+    remaining = counts.get(key, 0) - 1
+    if remaining > 0:
+        counts[key] = remaining
+    else:
+        counts.pop(key, None)
+
+
 class RpcDispatcher:
     """Own incoming tasks and turn each handler outcome into one wire reply.
 
     Admission is nonblocking: overload produces BUSY rather than parking child
-    requests behind parents that hold all available slots.
+    requests behind parents that hold all available slots. Optional per-owner
+    and per-target limits keep one connection, or one hung target, from
+    taking every slot.
     """
 
     def __init__(
@@ -475,14 +532,23 @@ class RpcDispatcher:
         handlers: Mapping[str, Handler],
         *,
         max_in_flight: int = 256,
+        max_in_flight_per_owner: int | None = None,
+        target_of: Callable[[Mapping[str, Any]], str | None] | None = None,
+        max_in_flight_per_target: int | None = None,
         error_mapper: Callable[[Exception], object | None] | None = None,
         logger: Any = None,
     ):
         self._handlers = handlers
         self._limit = max_in_flight
+        self._owner_limit = max_in_flight_per_owner
+        self._target_of = target_of
+        self._target_limit = max_in_flight_per_target
         self._error_mapper = error_mapper
         self._logger = logger or logging.getLogger(__name__)
         self._tasks: dict[tuple[str, str], asyncio.Task] = {}
+        self._owner_counts: dict[str, int] = {}
+        self._target_counts: dict[str, int] = {}
+        self._warnings = QuotaWarnings(self._logger)
         self._active = 0
         self._closed = False
 
@@ -506,6 +572,29 @@ class RpcDispatcher:
             return True
         if self._closed or len(self._tasks) >= self._limit:
             return False
+        owned = self._owner_counts.get(owner, 0)
+        if self._owner_limit is not None and owned >= self._owner_limit:
+            self._warnings.warn(
+                "in_flight_per_plugin",
+                request.get("from_plugin", owner),
+                request.get("type"),
+                owned,
+                self._owner_limit,
+            )
+            return False
+        target = self._target_of(request) if self._target_of is not None else None
+        if target is not None and self._target_limit is not None:
+            targeted = self._target_counts.get(target, 0)
+            if targeted >= self._target_limit:
+                self._warnings.warn(
+                    "in_flight_per_target_plugin",
+                    request.get("from_plugin", owner),
+                    request.get("type"),
+                    targeted,
+                    self._target_limit,
+                    target_plugin=target,
+                )
+                return False
 
         async def serve():
             reply = await self.dispatch(request)
@@ -522,11 +611,19 @@ class RpcDispatcher:
 
         task = asyncio.create_task(serve(), name=f"plugin-rpc:{key[1]}")
         self._tasks[key] = task
-        task.add_done_callback(lambda done: self._finished(key, done))
+        _acquire(self._owner_counts, owner)
+        if target is not None:
+            _acquire(self._target_counts, target)
+        task.add_done_callback(lambda done: self._finished(key, done, target))
         return True
 
-    def _finished(self, key: tuple[str, str], task: asyncio.Task) -> None:
+    def _finished(
+        self, key: tuple[str, str], task: asyncio.Task, target: str | None = None
+    ) -> None:
         self._tasks.pop(key, None)
+        _release(self._owner_counts, key[0])
+        if target is not None:
+            _release(self._target_counts, target)
         if not task.cancelled() and task.exception() is not None:
             log_rpc_failure(
                 self._logger,
