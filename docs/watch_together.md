@@ -50,6 +50,22 @@ was watched (seeking remains possible). The local
 history does not grant long-term character memory consent; this scene does not
 request the memory capability.
 
+## Usage counters
+
+Watching is counted only when the media host reports actual playback (`play`),
+never on opening the scene, preparing or selecting a video. The scene never
+reports `gameStarted`, so the route's first playback adds the shared
+`mini_game_played` counter (`game_type=watch-together`) once per route
+activation; automatic mode keeps one route across videos. Each viewing session
+counts its first playback as `watch_together_video_played` and its first end as
+`watch_together_video_completed`, both with `automatic` (whether automatic
+watching started it). Resuming, seeking or replaying within one viewing session
+is not counted again. Each preparation counts `watch_together_prepared` with
+`source` (`manual`/`discovery`) and its terminal `outcome`; a live request that
+returns spoken lines counts `watch_together_live_spoken` with `action`. These are
+counters, so they are uploaded; dimensions never carry character names, titles or
+video IDs, and counter failures never affect playback.
+
 ## Playback and preparation
 
 Video preparation uses the pinned PyAV package and its bundled FFmpeg libraries.

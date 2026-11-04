@@ -7,10 +7,14 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 
 from main_logic.watch_together.library import application_library
+from main_logic.watch_together.telemetry import count
 
 router = APIRouter(prefix="/api/watch-together", tags=["watch-together"])
 # One live-line generation per scene route at a time.
 _LIVE_BUSY_KEY = "_watch_live_busy"
+# Route-state keys: the viewing session each counter last counted, and whether the route has played.
+_COUNTED_KEYS = {"play": "_watch_counted_play", "ended": "_watch_counted_ended"}
+_ROUTE_PLAYED_KEY = "_watch_route_played"
 
 
 def _library_call(method, *args):
@@ -155,6 +159,8 @@ async def live(request: Request):
         live_lines.settle(callbacks, False)
         return {"lines": []}
     live_lines.settle(callbacks, True)
+    if spoken:
+        count("watch_together_live_spoken", action=action)
     return {"lines": spoken}
 
 
@@ -178,6 +184,8 @@ async def watch(request: Request):
         if data.get("action") == "start":
             identifier = await asyncio.to_thread(_library_call, "start_watch", data["job"], data["version"], data["lanlan_name"])
             state["watch_together_id"] = identifier
+            # Only the scene knows whether automatic watching started this video.
+            state["watch_together_automatic"] = data.get("automatic") is True
             return {"id": identifier}
         identifier = data["id"]
         if state.get("watch_together_id") != identifier:
@@ -192,9 +200,33 @@ async def watch(request: Request):
             raise ValueError()
         safe = {"type": event["type"], "cue": str(event.get("cue", ""))[:80]}
         await asyncio.to_thread(_library_call, "record_watch", identifier, position, safe)
+        _count_watch_event(state, identifier, safe["type"])
         return {"ok": True}
     except (KeyError, ValueError, TypeError):
         raise HTTPException(400, "Invalid viewing record")
+
+
+def _count_watch_event(state: dict, identifier: str, kind: str) -> None:
+    """Count each viewing session's first actual playback and first completion.
+
+    Opening the scene, preparing or selecting a video is not watching: only the
+    media host's ``play`` event (emitted once playback is really allowed) counts.
+    Resuming, replaying or seeking within the same viewing session is not counted again.
+    """
+    key = _COUNTED_KEYS.get(kind)
+    if key is None or state.get(key) == identifier:
+        return
+    state[key] = identifier
+    automatic = bool(state.get("watch_together_automatic"))
+    if kind == "ended":
+        count("watch_together_video_completed", automatic=automatic)
+        return
+    count("watch_together_video_played", automatic=automatic)
+    # The scene never reports gameStarted, so the shared per-game play count starts at
+    # the route's first actual playback; automatic mode keeps one route across videos.
+    if not state.get(_ROUTE_PLAYED_KEY):
+        state[_ROUTE_PLAYED_KEY] = True
+        count("mini_game_played", game_type="watch-together")
 
 
 @router.post("/prepare")
