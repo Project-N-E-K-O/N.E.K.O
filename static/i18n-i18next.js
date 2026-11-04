@@ -30,7 +30,7 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // Merge the overseas news source tooltip with main's es/pt systray intro labels.
-    const LOCALE_VERSION = '2026-11-03-news-overseas-systray-labels-main-merge';
+    const LOCALE_VERSION = '2026-11-03-shared-invitation-state';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
