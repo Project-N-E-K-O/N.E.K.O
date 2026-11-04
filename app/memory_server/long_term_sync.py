@@ -143,6 +143,20 @@ def _archive_cleanup_journal(binding, epoch, operation):
             'archiveDiagnosticCleanup': {'binding': binding, 'epoch': list(epoch), 'operationId': operation}}
 
 
+def _ensure_archive_cleanup_journal(path, closed):
+    """Persist the current cleanup only when no rollback record can be lost."""
+    try:
+        existing = json.loads(path.read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        pass
+    else:
+        if existing == closed:
+            return
+        if not isinstance(existing, dict) or existing.get('version') != 1 or existing.get('phase') != 'closed':
+            raise ValueError('invalid_long_term_cleanup_journal')
+    atomic_write_json(path, closed, ensure_ascii=False)
+
+
 def _retry_archive_diagnostic_cleanup(name, path, cleanup):
     """Retry only diagnostic storage after a durable, completed snapshot apply."""
     try:
@@ -542,10 +556,8 @@ async def consume(uid):
                         closed = _archive_cleanup_journal(payload['binding'], payload['epoch'],
                                                           f'download:{payload["head"]["revision"]}')
                         try:
-                            # A previously applied receipt may have no remaining cleanup journal.
-                            if not journal.is_file():
-                                atomic_write_json(journal, closed, ensure_ascii=False)
-                        except OSError:
+                            _ensure_archive_cleanup_journal(journal, closed)
+                        except (OSError, ValueError):
                             logger.warning('[LongTermSync] archive cleanup journal save deferred')
                             return False
                         path.unlink()

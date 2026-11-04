@@ -403,8 +403,10 @@ async def test_stale_capture_does_not_report_a_capacity_failure_for_a_changed_ro
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('failure', ['io', 'sqlite'])
 @pytest.mark.parametrize('scenario', ['archive', 'capacity', 'publish'])
-async def test_capture_diagnostic_storage_failure_preserves_capture_outcome(owner, monkeypatch, scenario):
+async def test_capture_diagnostic_storage_failure_preserves_capture_outcome(owner, monkeypatch, scenario, failure):
+    import sqlite3
     import memory.long_term_sync as portable
 
     if scenario == 'archive':
@@ -421,7 +423,7 @@ async def test_capture_diagnostic_storage_failure_preserves_capture_outcome(owne
     attempts = []
     def denied(domain, generation, code):
         attempts.append((domain, generation, code))
-        raise OSError('diagnostic unavailable')
+        raise {'io': OSError, 'sqlite': sqlite3.OperationalError}[failure]('diagnostic unavailable')
     monkeypatch.setattr(owner.native, '_capture_scheduler', lambda _: owner.runtime.scheduler)
     monkeypatch.setattr(owner.runtime.scheduler, 'record_long_term_capture_error', denied)
     receipt = owner.adapter.local_path(owner.binding)
@@ -2071,7 +2073,8 @@ async def test_malformed_cleanup_marker_is_retained_without_opening_writer(owner
 
 
 @pytest.mark.asyncio
-async def test_repeated_snapshot_restores_missing_cleanup_marker_before_removing_inbox(owner, monkeypatch):
+@pytest.mark.parametrize('existing', ['missing', 'null', 'incomplete'])
+async def test_repeated_snapshot_restores_cleanup_marker_before_removing_inbox(owner, monkeypatch, existing):
     import sqlite3
     from memory.long_term_sync import JOURNAL
 
@@ -2081,6 +2084,10 @@ async def test_repeated_snapshot_restores_missing_cleanup_marker_before_removing
     inbox = owner.adapter.incoming_path(UID)
     journal = owner.directory / JOURNAL
     assert not journal.exists()
+    if existing != 'missing':
+        cleanup = None if existing == 'null' else {'binding': owner.binding}
+        atomic_write_json(journal, {'version': 1, 'phase': 'closed', 'archiveDiagnosticCleanup': cleanup})
+    original_marker = journal.read_bytes() if journal.is_file() else None
     owner.runtime.scheduler.record_long_term_capture_error(DOMAIN.key(), owner.binding['generation'],
                                                           'long_term_archive_subject_unavailable')
     monkeypatch.setattr(owner.native, '_capture_scheduler', lambda _: owner.runtime.scheduler)
@@ -2100,7 +2107,8 @@ async def test_repeated_snapshot_restores_missing_cleanup_marker_before_removing
     with monkeypatch.context() as patch:
         patch.setattr(owner.native, 'atomic_write_json', denied_marker)
         assert await owner.native.consume(UID) is False
-    assert inbox.is_file() and not journal.exists()
+    assert inbox.is_file()
+    assert (journal.read_bytes() if journal.is_file() else None) == original_marker
     assert not attempts
     owner.runtime.writer.check()
 
@@ -2117,6 +2125,28 @@ async def test_repeated_snapshot_restores_missing_cleanup_marker_before_removing
     assert not journal.exists()
     assert owner.runtime.scheduler.local_memory_diagnostics(DOMAIN.key()) == []
     assert before == {path: path.read_bytes() for path in before}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('marker', [b'{"version":1,"phase":"pending"}', b'{unreadable'])
+async def test_consume_preserves_recovery_journal_changed_before_inbox_removal(owner, monkeypatch, marker):
+    from memory.long_term_sync import JOURNAL
+
+    await stage(owner)
+    journal = owner.directory / JOURNAL
+    inbox = owner.adapter.incoming_path(UID)
+    original_inbox = inbox.read_bytes()
+    log = owner.native.runtime.event_log
+    original = log.record_and_save
+    def save_and_interrupt(*args, **kwargs):
+        result = original(*args, **kwargs)
+        journal.write_bytes(marker)
+        return result
+    monkeypatch.setattr(log, 'record_and_save', save_and_interrupt)
+    assert await owner.native.consume(UID) is False
+    assert journal.read_bytes() == marker
+    assert inbox.read_bytes() == original_inbox
+    owner.runtime.writer.check()
 
 
 @pytest.mark.asyncio
