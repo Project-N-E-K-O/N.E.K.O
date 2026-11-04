@@ -138,22 +138,27 @@ def _recover_snapshot(name):
         runtime.persona_manager._personas.pop(name, None)
 
 
+def _archive_cleanup_journal(binding, epoch, operation):
+    return {'version': 1, 'phase': 'closed',
+            'archiveDiagnosticCleanup': {'binding': binding, 'epoch': list(epoch), 'operationId': operation}}
+
+
 def _retry_archive_diagnostic_cleanup(name, path, cleanup):
     """Retry only diagnostic storage after a durable, completed snapshot apply."""
     try:
+        binding, epoch = cleanup['binding'], tuple(cleanup['epoch'])
+        uid, operation = binding['character_uid'], cleanup['operationId']
         writer = _authority()
         if writer is None:
             return
         with writer.locked():
             try:
-                binding, epoch = cleanup['binding'], tuple(cleanup['epoch'])
-                uid = binding['character_uid']
                 adapter = DesktopLongTermAdapter(runtime._config_manager)
                 if _uid(name) != uid or _binding(uid) != binding or writer.epoch() != epoch:
                     path.unlink(missing_ok=True)
                     return
                 local = adapter.read_local(binding, epoch)
-                if not local or local['operationId'] != cleanup['operationId']:
+                if not local or local['operationId'] != operation:
                     path.unlink(missing_ok=True)
                     return
                 if adapter.incoming_path(uid).exists():
@@ -169,7 +174,7 @@ def _retry_archive_diagnostic_cleanup(name, path, cleanup):
             except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
                 # Diagnostic I/O must not quarantine an otherwise healthy writer.
                 pass
-    except (OSError, ValueError, sqlite3.Error):
+    except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
         pass
     logger.warning('[LongTermSync] archive diagnostic cleanup deferred')
 
@@ -192,6 +197,16 @@ def _snapshot_source_evidence(name, views, incoming=None):
 def _capture_scheduler(directory):
     from services.chat_sync.scheduler import ChatSyncScheduler
     return ChatSyncScheduler(directory / 'scheduler.sqlite3')
+
+
+def _record_capture_diagnostic(directory, binding, code):
+    from services.chat_sync.ledger import ChatDomain
+
+    try:
+        domain = ChatDomain(binding['owner_id'], binding['character_uid']).key()
+        _capture_scheduler(directory).record_long_term_capture_error(domain, binding['generation'], code)
+    except (OSError, ValueError, sqlite3.Error):
+        logger.warning('[LongTermSync] capture diagnostic update deferred')
 
 
 def _read_native_views(name):
@@ -224,9 +239,6 @@ def _capture(name, force, expected_uid=None, require_consumed=False):
             raise ValueError('long_term_memory_incoming_pending')
         previous = adapter.read_local(binding, epoch)
         completed = max(time.time_ns() // 1_000_000, (previous['document']['completedAt'] if previous else 0) + 1)
-        from services.chat_sync.ledger import ChatDomain
-        domain = ChatDomain(binding['owner_id'], uid).key()
-        scheduler = _capture_scheduler(writer.directory)
         try:
             with runtime.fact_store._get_lock(name):
                 views = _read_native_views(name)
@@ -234,9 +246,9 @@ def _capture(name, force, expected_uid=None, require_consumed=False):
         except (LongTermMemoryCapacityExceeded, LongTermArchiveSubjectUnavailable) as error:
             if _uid(name) != uid or _binding(uid) != binding:
                 return None if expected_uid is not None else False
-            scheduler.record_long_term_capture_error(domain, binding['generation'], str(error))
+            _record_capture_diagnostic(writer.directory, binding, str(error))
             raise
-        scheduler.record_long_term_capture_error(domain, binding['generation'], None)
+        _record_capture_diagnostic(writer.directory, binding, None)
         if not force and ((not previous and not document['entries'] and not document['evidence']['retirements'] and not document['evidence']['confirmations'])
                           or (previous and previous['nativeEntries'] == document['entries'] and (previous['document'].get('evidence') or {'retirements': [], 'confirmations': []}) == document['evidence'])):
             return False
@@ -339,9 +351,7 @@ def _write_snapshot(name, payload, *, check_only=False):
             if _uid(name) == binding['character_uid'] and _binding(binding['character_uid']) == binding:
                 writer = _authority()
                 if writer is not None:
-                    from services.chat_sync.ledger import ChatDomain
-                    domain = ChatDomain(binding['owner_id'], binding['character_uid']).key()
-                    _capture_scheduler(writer.directory).record_long_term_capture_error(domain, binding['generation'], str(error))
+                    _record_capture_diagnostic(writer.directory, binding, str(error))
         except (OSError, ValueError, sqlite3.Error):
             logger.warning('[LongTermSync] archive diagnostic recording deferred')
         if not check_only:
@@ -416,8 +426,7 @@ def _write_snapshot_locked(name, payload, *, check_only=False):
                 _replace_fact_index(name, views)
                 runtime.fact_store._facts.pop(name, None)
                 runtime.persona_manager._personas.pop(name, None)
-                atomic_write_json(directory / JOURNAL, {'version': 1, 'phase': 'closed',
-                    'archiveDiagnosticCleanup': {'binding': binding, 'epoch': list(epoch), 'operationId': operation}}, ensure_ascii=False)
+                atomic_write_json(directory / JOURNAL, _archive_cleanup_journal(binding, epoch, operation), ensure_ascii=False)
             except BaseException as error:
                 # A failed rollback retains a durable journal and blocks all derived reads.
                 try:
@@ -529,10 +538,18 @@ async def consume(uid):
             if writer is not None:
                 with writer.locked():
                     if applied[0] and path.is_file() and json.loads(path.read_text(encoding='utf-8')) == payload:
+                        journal = Path(runtime._config_manager.memory_dir) / name / JOURNAL
+                        closed = _archive_cleanup_journal(payload['binding'], payload['epoch'],
+                                                          f'download:{payload["head"]["revision"]}')
+                        try:
+                            # A previously applied receipt may have no remaining cleanup journal.
+                            if not journal.is_file():
+                                atomic_write_json(journal, closed, ensure_ascii=False)
+                        except OSError:
+                            logger.warning('[LongTermSync] archive cleanup journal save deferred')
+                            return False
                         path.unlink()
-                        _retry_archive_diagnostic_cleanup(name, Path(runtime._config_manager.memory_dir) / name / JOURNAL,
-                            {'binding': payload['binding'], 'epoch': payload['epoch'],
-                             'operationId': f'download:{payload["head"]["revision"]}'})
+                        _retry_archive_diagnostic_cleanup(name, journal, closed['archiveDiagnosticCleanup'])
             return applied[0]
         return await _complete_file_commit(commit)
 

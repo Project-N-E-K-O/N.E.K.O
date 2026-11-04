@@ -403,6 +403,40 @@ async def test_stale_capture_does_not_report_a_capacity_failure_for_a_changed_ro
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('scenario', ['archive', 'capacity', 'publish'])
+async def test_capture_diagnostic_storage_failure_preserves_capture_outcome(owner, monkeypatch, scenario):
+    import memory.long_term_sync as portable
+
+    if scenario == 'archive':
+        archive = owner.directory / 'persona_archive' / '2026-10-01_aaaaaaaa.json'
+        archive.parent.mkdir()
+        atomic_write_json(archive, [{'id': 'unknown', 'text': 'Unknown archive subject'}])
+    else:
+        atomic_write_json(owner.directory / FILES['facts'], [
+            {'id': key, 'entity': 'master', 'text': 'A learned preference'} for key in ('one', 'two')])
+        if scenario == 'capacity':
+            monkeypatch.setattr(portable, 'MAX_ENTRIES', 1)
+    expected = {'archive': 'long_term_archive_subject_unavailable',
+                'capacity': 'long_term_memory_capacity_exceeded', 'publish': None}[scenario]
+    attempts = []
+    def denied(domain, generation, code):
+        attempts.append((domain, generation, code))
+        raise OSError('diagnostic unavailable')
+    monkeypatch.setattr(owner.native, '_capture_scheduler', lambda _: owner.runtime.scheduler)
+    monkeypatch.setattr(owner.runtime.scheduler, 'record_long_term_capture_error', denied)
+    receipt = owner.adapter.local_path(owner.binding)
+    if expected is None:
+        assert owner.native._capture('Neko', True)
+        assert receipt.is_file()
+    else:
+        with pytest.raises(ValueError, match=f'^{expected}$'):
+            owner.native._capture('Neko', True)
+        assert not receipt.exists()
+    assert attempts == [(DOMAIN.key(), owner.binding['generation'], expected)]
+    owner.runtime.writer.check()
+
+
+@pytest.mark.asyncio
 async def test_over_capacity_capture_retains_memory_and_receipt_then_recovers_on_a_later_update(owner, monkeypatch):
     import memory.long_term_sync as portable
     monkeypatch.setattr(portable, 'MAX_ENTRIES', 1)
@@ -1982,7 +2016,11 @@ async def test_archive_cleanup_retry_cannot_clear_a_newer_or_unrelated_problem(o
     monkeypatch.setattr(owner.native, '_capture_scheduler', lambda _: owner.runtime.scheduler)
     monkeypatch.setattr(owner.runtime.scheduler, 'clear_archive_subject_error', denied)
     assert await owner.native.consume(UID)
-    monkeypatch.setattr(owner.runtime.scheduler, 'clear_archive_subject_error', original)
+    attempts = []
+    def observed(*args):
+        attempts.append(args)
+        return original(*args)
+    monkeypatch.setattr(owner.runtime.scheduler, 'clear_archive_subject_error', observed)
     journal = owner.directory / JOURNAL
     value = json.loads(journal.read_text(encoding='utf-8'))
     cleanup = value['archiveDiagnosticCleanup']
@@ -2005,11 +2043,80 @@ async def test_archive_cleanup_retry_cannot_clear_a_newer_or_unrelated_problem(o
         atomic_write_json(path, [{'id': 'new-unknown', 'text': 'A later unresolved archive'}])
     atomic_write_json(journal, value)
     before = {path: path.read_bytes() for path in owner.directory.rglob('*') if path.is_file() and path != journal}
+    if changed in {'owner', 'generation'}:
+        def unexpected_receipt(*args):
+            pytest.fail('A stale binding must be rejected before accessing its receipt')
+        monkeypatch.setattr(type(owner.adapter), 'read_local', unexpected_receipt)
     owner.native._recover_snapshot('Neko')
+    assert attempts == []
     assert owner.runtime.scheduler.local_memory_diagnostics(DOMAIN.key()) == ['long_term_archive_subject_unavailable']
     assert journal.exists() == (changed in {'inbox', 'archive'})
     assert before == {path: path.read_bytes() for path in before}
     owner.runtime.writer.check()
+
+
+@pytest.mark.asyncio
+async def test_malformed_cleanup_marker_is_retained_without_opening_writer(owner, monkeypatch):
+    from memory.long_term_sync import JOURNAL
+
+    journal = owner.directory / JOURNAL
+    atomic_write_json(journal, {'version': 1, 'phase': 'closed', 'archiveDiagnosticCleanup': None})
+    original = journal.read_bytes()
+    def unexpected_writer():
+        pytest.fail('Malformed cleanup metadata must not reach the writer')
+    monkeypatch.setattr(owner.native, '_authority', unexpected_writer)
+    assert await owner.native.consume_for_name('Neko') is False
+    assert journal.read_bytes() == original
+    assert read_views(owner.directory)['facts'] == []
+
+
+@pytest.mark.asyncio
+async def test_repeated_snapshot_restores_missing_cleanup_marker_before_removing_inbox(owner, monkeypatch):
+    import sqlite3
+    from memory.long_term_sync import JOURNAL
+
+    await stage(owner)
+    assert await owner.native.consume(UID)
+    await stage(owner)
+    inbox = owner.adapter.incoming_path(UID)
+    journal = owner.directory / JOURNAL
+    assert not journal.exists()
+    owner.runtime.scheduler.record_long_term_capture_error(DOMAIN.key(), owner.binding['generation'],
+                                                          'long_term_archive_subject_unavailable')
+    monkeypatch.setattr(owner.native, '_capture_scheduler', lambda _: owner.runtime.scheduler)
+    before = {path: path.read_bytes() for path in [
+        *(owner.directory / name for name in FILES.values()), owner.directory / '.long_term_generation',
+        owner.adapter.local_path(owner.binding)]}
+    attempts = []
+    original_clear = owner.runtime.scheduler.clear_archive_subject_error
+    def denied_clear(*args):
+        attempts.append(args)
+        raise sqlite3.OperationalError('diagnostic unavailable')
+    monkeypatch.setattr(owner.runtime.scheduler, 'clear_archive_subject_error', denied_clear)
+    original_write = owner.native.atomic_write_json
+    def denied_marker(path, *args, **kwargs):
+        assert path == journal
+        raise OSError('marker unavailable')
+    with monkeypatch.context() as patch:
+        patch.setattr(owner.native, 'atomic_write_json', denied_marker)
+        assert await owner.native.consume(UID) is False
+    assert inbox.is_file() and not journal.exists()
+    assert not attempts
+    owner.runtime.writer.check()
+
+    def only_marker(path, *args, **kwargs):
+        assert path == journal
+        return original_write(path, *args, **kwargs)
+    monkeypatch.setattr(owner.native, 'atomic_write_json', only_marker)
+    assert await owner.native.consume(UID)
+    assert not inbox.exists() and journal.is_file()
+    assert attempts == [(DOMAIN.key(), owner.binding['generation'])]
+    assert owner.runtime.scheduler.local_memory_diagnostics(DOMAIN.key()) == ['long_term_archive_subject_unavailable']
+    monkeypatch.setattr(owner.runtime.scheduler, 'clear_archive_subject_error', original_clear)
+    assert await owner.native.consume_for_name('Neko') is False
+    assert not journal.exists()
+    assert owner.runtime.scheduler.local_memory_diagnostics(DOMAIN.key()) == []
+    assert before == {path: path.read_bytes() for path in before}
 
 
 @pytest.mark.asyncio
