@@ -91,6 +91,7 @@ import re
 import secrets
 import threading
 import time
+import unicodedata
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
@@ -176,8 +177,8 @@ _OUTCOMES = frozenset({OUTCOME_DONE, OUTCOME_INVALID, OUTCOME_PAST})
 
 # Wrapping a model may put around a quote it copies from the conversation.
 _QUOTE_WRAPPING = "\"'`“”‘’「」『』«»《》 "
-# A shorter quote ("ok") matches almost any conversation.
-_QUOTE_MIN_CHARS = 2
+# A shorter quote ("ok", "好了") matches almost any conversation.
+_QUOTE_MIN_TOKENS = 3
 
 _PLACEHOLDER_RE = re.compile(r"\{(LANLAN_NAME|MASTER_NAME|TODAY|ZONE|CANDIDATES|CONVERSATION)\}")
 
@@ -330,6 +331,49 @@ def _quote_key(text: Any) -> str:
     return " ".join(text.strip(_QUOTE_WRAPPING).split()).casefold()
 
 
+def _is_wide(ch: str) -> bool:
+    """CJK, kana, hangul and other full-width characters."""
+    return unicodedata.east_asian_width(ch) in ("W", "F")
+
+
+def _spaced_letter(ch: str) -> bool:
+    """A letter or digit of a script that separates its words with spaces."""
+    return ch.isalnum() and not _is_wide(ch)
+
+
+def _contains_quote(text_key: str, quote_key: str) -> bool:
+    """Whether ``quote_key`` occurs in ``text_key``, whole words for spaced scripts.
+
+    "ok" must not match inside "book"; a quote in a script written without
+    spaces has no word edges to respect.
+    """
+    start = text_key.find(quote_key)
+    while start >= 0:
+        end = start + len(quote_key)
+        cut_before = start > 0 and _spaced_letter(quote_key[0]) and _spaced_letter(text_key[start - 1])
+        cut_after = end < len(text_key) and _spaced_letter(quote_key[-1]) and _spaced_letter(text_key[end])
+        if not cut_before and not cut_after:
+            return True
+        start = text_key.find(quote_key, start + 1)
+    return False
+
+
+def _with_condition(text: Any, condition: Any) -> Any:
+    """A promise's text carrying the condition it waits for.
+
+    The model may give the condition only in ``pin_condition``; dropped, the
+    promise would read as due right away. Appended unless the text says it.
+    """
+    if not isinstance(text, str) or not isinstance(condition, str):
+        return text
+    condition = " ".join(condition.split())
+    if not condition or _text_key(condition) in _text_key(" ".join(text.split())):
+        return text
+    if any(_is_wide(ch) for ch in text + condition):
+        return f"{text}（{condition}）"
+    return f"{text} ({condition})"
+
+
 def pin_candidates_from_extracted(
     extracted: Any,
     *,
@@ -368,7 +412,10 @@ def pin_candidates_from_extracted(
             # Neither a time nor a condition: a pleasantry ("I'll always be
             # there for you"), not something to follow through on.
             continue
-        text = _normalize_text(raw.get("text"))
+        text = _normalize_text(
+            _with_condition(raw.get("text"), condition)
+            if kind == KIND_COMMITMENT else raw.get("text")
+        )
         if text is None or _text_key(text) in seen:
             continue
         seen.add(_text_key(text))
@@ -636,12 +683,16 @@ def retirement_allowed(
 def _quoted_at(
     evidence: Optional[str], shown: List[Dict[str, Any]], not_before: float,
 ) -> Optional[float]:
-    """Time of the earliest shown message, not older than ``not_before``, that contains the quote."""
+    """Time of the earliest shown message after ``not_before`` that contains the quote.
+
+    Strictly after: an entry is dated by the last message of its window, which
+    may be the very promise it records, and a promise does not prove itself kept.
+    """
     key = _quote_key(evidence)
-    if len(key) < _QUOTE_MIN_CHARS:
+    if not key or count_tokens(key) < _QUOTE_MIN_TOKENS:
         return None
     for message in shown:
-        if message["at"] >= not_before and key in _quote_key(message["text"]):
+        if message["at"] > not_before and _contains_quote(_quote_key(message["text"]), key):
             return message["at"]
     return None
 
@@ -1111,10 +1162,17 @@ class PinnedFactStore:
                     due_at = target.get("due_at")
                     if candidate.get("due_at") is not None and noted >= target["text_at"]:
                         due_at = candidate["due_at"]
-                    # Saying the same thing again never shortens what is left.
-                    target["expire_at"] = max(
-                        target["expire_at"], _expiry(noted, candidate["ttl_days"], due_at),
+                    # Saying the same thing again never shortens what is left,
+                    # except by the end of the matter: once a later account dates
+                    # it ("the exam is tomorrow"), the entry leaves after it.
+                    expire_at = max(
+                        target["expire_at"], noted + candidate["ttl_days"] * _DAY_SECONDS,
                     )
+                    if due_at is not None:
+                        expire_at = min(
+                            expire_at, due_at + PINNED_FACT_DUE_GRACE_DAYS * _DAY_SECONDS,
+                        )
+                    target["expire_at"] = expire_at
                     target["due_at"] = due_at
                     if (noted > target["text_at"]
                             and _text_key(candidate["text"]) == _text_key(target["text"])):

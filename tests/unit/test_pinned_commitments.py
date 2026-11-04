@@ -152,6 +152,20 @@ def test_a_promise_needs_a_time_or_a_condition():
     ]
 
 
+def test_a_condition_given_only_in_its_field_stays_with_the_promise():
+    candidates = pin_candidates_from_extracted([
+        _promise("小天答应给主人讲完那个故事", pin_condition="等主人考完"),
+        _promise("Tian promised to finish the story", pin_condition="after the  exam"),
+        _promise("小天答应等主人考完把故事讲完", pin_condition="等主人考完"),
+    ], default_source="ai_disclosure")
+
+    assert [c["text"] for c in candidates] == [
+        "小天答应给主人讲完那个故事（等主人考完）",
+        "Tian promised to finish the story (after the exam)",
+        "小天答应等主人考完把故事讲完",
+    ]
+
+
 def test_a_promise_from_path_b_enters_as_an_open_commitment(tmp_path):
     store = _store(tmp_path)
 
@@ -261,6 +275,20 @@ def test_saying_a_dated_event_again_without_its_date_keeps_its_end(tmp_path):
     [exam] = store.get_active(_NAME, now=_T0 + 3 * _DAY)
     assert exam["renew_count"] == 1
     assert exam["expire_at"] == _T0 + 10 * _DAY
+
+
+def test_a_later_account_that_dates_the_end_caps_the_entry(tmp_path):
+    store = _store(tmp_path)
+    _add(store, _candidate("主人下周三考试", 14, kind="fact"))
+
+    # The next day it turns out the exam is tomorrow.
+    store.apply_decisions(
+        _NAME, [_candidate("主人下周三考试", 14, kind="fact", due_at=_T0 + 2 * _DAY)],
+        [("add", None)], now=_T0 + _DAY,
+    )
+
+    [exam] = store.get_active(_NAME, now=_T0 + _DAY)
+    assert (exam["due_at"], exam["expire_at"]) == (_T0 + 2 * _DAY, _T0 + 3 * _DAY)
 
 
 # ── 3. retirement in the resolve call ────────────────────────────────
@@ -430,6 +458,7 @@ def test_the_daily_check_retires_on_a_verbatim_quote(tmp_path, monkeypatch):
     "收",                    # too short to prove anything
     None,                    # no evidence at all
     "你上次说的书我收到了吗",  # only in a message from before the promise
+    "我一定给你推荐一本好书",  # the promise itself, which dates the entry
 ])
 def test_the_daily_check_keeps_an_entry_without_checkable_evidence(
     tmp_path, monkeypatch, evidence,
@@ -442,6 +471,7 @@ def test_the_daily_check_keeps_an_entry_without_checkable_evidence(
     ]))
     load = _loader([
         {"at": _T0 - _HOUR, "role": "human", "text": "你上次说的书我收到了吗"},
+        {"at": _T0, "role": "ai", "text": "我一定给你推荐一本好书"},
         {"at": _T0 + _DAY, "role": "human", "text": "今天好累，收拾了一下午房间"},
     ])
 
@@ -449,6 +479,32 @@ def test_the_daily_check_keeps_an_entry_without_checkable_evidence(
 
     assert counts["retired"] == 0
     assert [e["id"] for e in store.get_active(_NAME, now=_T0 + 2 * _DAY)] == [promise["id"]]
+
+
+@pytest.mark.parametrize(("evidence", "retired"), [
+    ("ok", 0),                                # too short to prove anything
+    ("got it", 0),
+    ("ook you recommended arrived", 0),       # starts inside "book"
+    ("the book you recommend", 0),            # ends inside "recommended"
+    ("the book you recommended arrived", 1),
+])
+def test_a_quote_in_a_spaced_script_must_be_whole_words(
+    tmp_path, monkeypatch, evidence, retired,
+):
+    store = _store(tmp_path)
+    promise = _add(store, _candidate("Tian promised to recommend a book", 14, kind="commitment"))
+    _install_review_model(monkeypatch, store, _ReviewModel([
+        {"target": promise["id"], "action": "retire", "outcome": "done",
+         "evidence": evidence, "reason": "?"},
+    ]))
+    load = _loader([
+        {"at": _T0 + _DAY, "role": "human",
+         "text": "ok so the book you recommended arrived today, got it"},
+    ])
+
+    counts = asyncio.run(store.areview(_NAME, load, now=_T0 + 2 * _DAY))
+
+    assert counts["retired"] == retired
 
 
 def test_the_daily_check_retires_by_date_only_what_can_be_over_by_date(tmp_path, monkeypatch):
