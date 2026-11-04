@@ -226,6 +226,35 @@ test('combined emotions choose an expression when configured and a motion otherw
     } finally { f.release(); }
 });
 
+test('switching from a transient expression to a motion-only emotion clears the expression before starting the action', async () => {
+    const f = await fixture();
+    try {
+        f.native.definitions.sad = f.native.definitions.happy;
+        f.native.motionGroups.sad = [];
+        f.manager.fileReferences.Motions.sad = f.native.definitions.sad;
+        await f.manager.setEmotion('happy');
+        assert.equal(f.manager.hasActiveTransientExpression(), true);
+        let expressionAtMotionStart;
+        f.native.on('motionStart', () => { expressionAtMotionStart = f.manager.hasActiveTransientExpression(); });
+        await f.manager.setEmotion('sad');
+        assert.equal(f.manager.hasActiveTransientExpression(), false);
+        assert.equal(f.native.state.currentGroup, 'sad');
+        assert.equal(expressionAtMotionStart, false, 'clear the old expression before admitting the new motion');
+        assert.equal(f.native.state.currentPriority, 2);
+        assert.equal(f.manager._actionMotionRequestPendingModel, null);
+    } finally { f.release(); }
+});
+
+test('Idle without an expression preserves the current transient expression and does not start a motion', async () => {
+    const f = await fixture();
+    try {
+        await f.manager.setEmotion('happy');
+        await f.manager.setEmotion('Idle');
+        assert.equal(f.manager.hasActiveTransientExpression(), true);
+        assert.equal(f.native.state.currentPriority, 0);
+    } finally { f.release(); }
+});
+
 test('click fallback cannot add a transient expression to an occupied action', async () => {
     const f = await fixture();
     try {

@@ -1857,7 +1857,7 @@ Live2DManager.prototype.setEmotion = async function(emotion, options = {}) {
     if (shouldReplaceTouchSetExpression && typeof this._cancelTouchSetExpressionRestore === 'function') {
         this._cancelTouchSetExpressionRestore();
     }
-    const shouldAttemptMotion = !willApplyNewExpression && !this.hasActiveTransientExpression()
+    let shouldAttemptMotion = !willApplyNewExpression && !this.hasActiveTransientExpression()
         && (typeof this.hasActiveActionMotion !== 'function' || !this.hasActiveActionMotion(emotionModel));
     
     // 相同表情通常保持不变；若当前由 TouchSet 临时表情占用，则必须重放正常情感表情以接管表情槽。
@@ -1919,6 +1919,13 @@ Live2DManager.prototype.setEmotion = async function(emotion, options = {}) {
             if (!isCurrent()) return false;
             if (this._activeTransientExpression) await this.clearExpression();
             if (!isCurrent()) return false;
+            // 清除旧表情后可以为本轮仅含动作的情感预约动作槽。
+            if (!shouldAttemptMotion && !this.hasActiveTransientExpression()
+                && (typeof this.hasActiveActionMotion !== 'function' || !this.hasActiveActionMotion(emotionModel))) {
+                shouldAttemptMotion = true;
+                this._actionMotionRequestPendingModel = emotionModel;
+                this._actionMotionRequestPendingOperation = operation;
+            }
         }
 
         if (!isCurrent()) return false;
