@@ -1183,7 +1183,11 @@
         if (snap.active === false) {
           var endedVisit = state.visitId || state.closedVisitId;
           if (!endedVisit) return true;
-          applyStateChange({ type: 'visit_state_change', action: 'ended', visit_id: endedVisit, side: state.side }, true);
+          var endedFrame = { type: 'visit_state_change', action: 'ended', visit_id: endedVisit, side: state.side };
+          applyStateChange(endedFrame, true);
+          if (typeof win.nekoRestoreVisitStateToDisplay === 'function') {
+            try { win.nekoRestoreVisitStateToDisplay(endedFrame); } catch (_) { /* media cleanup already completed */ }
+          }
           return true;
         }
         if (!snap.active || !snap.visit_id || !snap.side || snap.phase === 'ended' || snap.phase === 'ending') return false;

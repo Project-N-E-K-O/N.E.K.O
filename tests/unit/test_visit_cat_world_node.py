@@ -399,6 +399,16 @@ async function main() {
   const callsAfterIncompleteBridge = virtualRectCalls;
   assert.ok(callsAfterIncompleteBridge > 0);
 
+  win.__nekoNiriPetPhysicalCrop.getEventCoordinates = () => ({ virtual: { x: null, y: 300 } });
+  const beforePartialNativeBridge = calls.intent.length;
+  yarn.dispatchEvent({ type: 'pointerdown', button: 0, pointerId: 34, clientX: 100, clientY: 200,
+    preventDefault() {}, stopPropagation() {} });
+  yarn.dispatchEvent({ type: 'pointerup', button: 0, pointerId: 34, clientX: 120, clientY: 220 });
+  await flush();
+  await flush();
+  assert.equal(calls.intent[beforePartialNativeBridge].x_q16, 19661);
+  assert.equal(calls.intent[beforePartialNativeBridge].y_q16, 20480);
+
   win.__nekoNiriPetPhysicalCrop.getEventCoordinates = () => { throw new Error('crop bridge unavailable'); };
   const beforeThrowingBridge = calls.intent.length;
   yarn.dispatchEvent({ type: 'pointerdown', button: 0, pointerId: 33, clientX: 100, clientY: 200,
@@ -763,6 +773,29 @@ async function main() {
   assert.equal(win.NekoVisitCatWorld.isActive(), true);
   assert.equal(win.NekoVisitCatWorld.snapshot().world.yarn_x_q16, 48000);
   assert.equal((listeners.get('neko-visit-cat-world') || []).length, 1);
+  emit('neko:visit-cat-scene-deactivated', { visit_id: VID });
+
+  // A host restored from BFCache restarts its authoritative simulator and
+  // publishes a cursor newer than the retained commit.
+  win.nekoVisitDisplayStateSnapshot = () => ({
+    type: 'visit_state_change', action: 'departed', visit_id: VID, side: 'host', cat_scene: 2,
+  });
+  let retainedHostWorld = worldFrame(900, 49000, 'commit');
+  win.nekoVisitCatWorldSnapshot = () => retainedHostWorld;
+  win.dispatchEvent({ type: 'pagehide', persisted: true });
+  win.dispatchEvent({ type: 'pageshow', persisted: true });
+  await advance(181);
+  await flush();
+  const firstRestoredHostCursor = win.NekoVisitCatWorld.snapshot().published_world_seq;
+  assert.ok(firstRestoredHostCursor > 900);
+  retainedHostWorld = worldFrame(firstRestoredHostCursor, 49000, 'commit');
+  const statesBeforeHostRestore = calls.state.length;
+  win.dispatchEvent({ type: 'pagehide', persisted: true });
+  win.dispatchEvent({ type: 'pageshow', persisted: true });
+  await advance(181);
+  await flush();
+  assert.ok(win.NekoVisitCatWorld.snapshot().published_world_seq > firstRestoredHostCursor);
+  assert.ok(calls.state.length > statesBeforeHostRestore);
   emit('neko:visit-cat-scene-deactivated', { visit_id: VID });
 
   // A recovery that replaces a world with a drag in progress drops that drag,

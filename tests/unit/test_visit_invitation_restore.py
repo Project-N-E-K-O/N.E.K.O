@@ -7,7 +7,7 @@ import pytest
 
 from tests.unit.test_visit_chat_assembly_node import CHAT_PATH, HARNESS, PACER_PATH, RELAY_SAMPLES
 from tests.unit.test_visit_peer_crop_node import _BRIDGE_JS
-from tests.visit_js_harness import BRIDGE_FILES, run_visit_js
+from tests.visit_js_harness import BRIDGE_FILES, VISIT_ID, run_visit_js
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -238,6 +238,33 @@ def test_refresh_after_cancel_reconciles_pet_without_clearing_a_valid_invitation
     assert out["beforeConfirmation"]
     assert out["blocked"] is (outcome != "ended")
     assert out["visitId"] == (None if outcome == "ended" else "B" * 22 if outcome == "new_visit" else "A" * 22)
+
+
+def test_idle_recovery_dispatches_ended_to_the_local_display():
+    out = run_visit_js(
+        """
+        const pet = makeBridge();
+        const restored = [];
+        pet.ctx.nekoRestoreVisitStateToDisplay = frame => { restored.push(frame); return true; };
+        pet.bridge.onStateChange({ type: 'visit_state_change', action: 'pending', visit_id: VISIT_ID, side: 'host' });
+        pet.bridge.onStateChange({ type: 'visit_state_change', action: 'started', visit_id: VISIT_ID, side: 'host' });
+        pet.ctx.fetch = async () => ({ ok: true, json: async () => ({ active: false }) });
+        const applied = await pet.bridge.recoverAfterReload('咪咪');
+        return { applied, frame: restored[0], visitId: pet.bridge.getVisitId() };
+        """,
+        files=BRIDGE_FILES,
+        extra_prelude=_prelude(),
+    )
+    assert out == {
+        "applied": True,
+        "frame": {
+            "type": "visit_state_change",
+            "action": "ended",
+            "visit_id": VISIT_ID,
+            "side": "host",
+        },
+        "visitId": "",
+    }
 
 
 def test_late_idle_recovery_cannot_clear_an_invitation_restored_by_a_newer_snapshot():

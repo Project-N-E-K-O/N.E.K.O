@@ -779,8 +779,20 @@ const report = {};
     },
     poseSnapshots: [earlyPose],
   });
+  const bfcacheNative = bfcache.installNativeSelf();
+  bfcache.setSnapshot({
+    tier: 'cat1', slot: 'movement.cat1.walking', mode: 'walk', facing: 'right',
+    x_q16: 24000, y_q16: 26000,
+  });
+  bfcache.advance(128);
+  await bfcache.settle();
+  const posesBeforeCache = bfcache.poseCalls.length;
+  bfcache.emit('neko-visit-cat-scene', {
+    type: 'visit_cat_scene', visit_id: VID, actor: 'peer', kind: 'play', seq: 1, seed: 7,
+  });
   const bfcacheListenerCounts = [bfcache.listenerCount('neko-visit-cat-pose')];
   bfcache.win.dispatchEvent({ type: 'pagehide', persisted: true });
+  const idleAfterSuspend = bfcache.art('peer').getAttribute('data-visit-cat-resource-slot');
   bfcacheListenerCounts.push(bfcache.listenerCount('neko-visit-cat-pose'));
   const inactiveWhileCached = !bfcache.body.classList.contains('neko-visit-cat-scene-active');
   bfcache.win.dispatchEvent({ type: 'pageshow', persisted: true });
@@ -792,8 +804,15 @@ const report = {};
   bfcache.win.dispatchEvent({ type: 'pagehide', persisted: true });
   bfcache.win.dispatchEvent({ type: 'pageshow', persisted: true });
   bfcacheListenerCounts.push(bfcache.listenerCount('neko-visit-cat-pose'));
+  bfcache.setSnapshot({
+    tier: 'cat1', slot: 'movement.cat1.walking', mode: 'walk', facing: 'right',
+    x_q16: 28000, y_q16: 26000,
+  });
+  bfcache.advance(128);
+  await bfcache.settle();
   const activeAfterSecondRestore = bfcache.body.classList.contains('neko-visit-cat-scene-active');
-  const bfcacheNative = bfcache.installNativeSelf();
+  const nativeInputAfterRestore = bfcacheNative.container.getAttribute('data-neko-visit-cat-input');
+  const posesResumed = bfcache.poseCalls.length > posesBeforeCache;
   let bfcacheReturnClicks = 0;
   bfcacheNative.button.addEventListener('click', () => { bfcacheReturnClicks += 1; });
   bfcache.state('ended');
@@ -803,6 +822,9 @@ const report = {};
     listener_counts: bfcacheListenerCounts,
     updated_x: restoredX,
     returned_after_end: bfcacheReturnClicks,
+    native_input: nativeInputAfterRestore,
+    poses_resumed: posesResumed,
+    idle_after_suspend: idleAfterSuspend,
   };
 
   const pendingBfcacheReturn = createHarness();
@@ -989,6 +1011,9 @@ def test_bfcache_restore_rebinds_scene_once_and_replays_snapshots(report):
         "listener_counts": [1, 0, 1, 1],
         "updated_x": pytest.approx(76.2951, abs=0.001),
         "returned_after_end": 1,
+        "native_input": "actor",
+        "poses_resumed": True,
+        "idle_after_suspend": "idle.cat1",
     }
     assert report["bfcache_confirmed_return"] == {"end_calls": 1, "commits": 1}
 

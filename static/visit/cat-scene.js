@@ -620,8 +620,12 @@
 
   function suspendForPageCache() {
     clearReturnReconcile();
-    clearSlotTimer(scene.slots.self);
-    clearSlotTimer(scene.slots.peer);
+    [scene.slots.self, scene.slots.peer].forEach(function (slot) {
+      if (!slot.timer) return;
+      clearSlotTimer(slot);
+      var tier = slot.card && slot.card.getAttribute('data-visit-cat-tier');
+      setIdle(slot, VALID_TIERS[tier] ? tier : 'cat1');
+    });
     clearCollisionPulse(scene.slots.self);
     clearCollisionPulse(scene.slots.peer);
     clearCollisionPulse(scene.nativeSelf);
