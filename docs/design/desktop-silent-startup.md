@@ -116,24 +116,26 @@ startup failures and OS login launches still need native integration testing.
 
 ## UI evidence
 
+Screenshots are kept on the fork evidence branch, outside the proposed upstream
+source tree, following the repository screenshot-artifact policy.
 All screenshots use synthetic preferences and a signed-out placeholder account;
 no real conversations, credentials or user data are shown.
 
 Before:
 
-![Before: system settings without silent startup](desktop-silent-startup/before.png)
+![Before: system settings without silent startup](https://raw.githubusercontent.com/lgw2023/N.E.K.O/ff2c702c17f3e7d7b7a4a6a6ba692e1f80f3a891/docs/design/desktop-silent-startup/before.png)
 
 After enabling:
 
-![After: silent startup enabled and saved](desktop-silent-startup/after-enabled.png)
+![After: silent startup enabled and saved](https://raw.githubusercontent.com/lgw2023/N.E.K.O/ff2c702c17f3e7d7b7a4a6a6ba692e1f80f3a891/docs/design/desktop-silent-startup/after-enabled.png)
 
 Rejected configuration write:
 
-![Failed save restores the previous switch state](desktop-silent-startup/save-error.png)
+![Failed save restores the previous switch state](https://raw.githubusercontent.com/lgw2023/N.E.K.O/ff2c702c17f3e7d7b7a4a6a6ba692e1f80f3a891/docs/design/desktop-silent-startup/save-error.png)
 
 English, dark appearance:
 
-![English dark appearance](desktop-silent-startup/locale-en.png)
+![English dark appearance](https://raw.githubusercontent.com/lgw2023/N.E.K.O/ff2c702c17f3e7d7b7a4a6a6ba692e1f80f3a891/docs/design/desktop-silent-startup/locale-en.png)
 
 ## Acceptance before an official release
 
