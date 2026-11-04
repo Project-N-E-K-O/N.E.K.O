@@ -356,6 +356,11 @@ embedding_warmup_worker = None
 # the idle-maintenance loop resolves them). None when bootstrap
 # fails or the embedding service is permanently disabled.
 fact_dedup_resolver = None
+# Pinned important facts (memory/pinned_facts.py): fed by the FactStore's
+# private-chat Stage-1 results, rendered by /new_dialog. Rebuilt with the
+# persona manager on reload; its file locks are module-level, so in-flight
+# writes on the old instance still serialize against the new one.
+pinned_fact_store = None
 
 # Lock protecting reloads.
 _reload_lock = asyncio.Lock()
@@ -499,7 +504,7 @@ async def reload_memory_components(
     extreme last-writer-wins case at most one cursor advance is lost — the next tick
     recovers it.
     """
-    global recent_history_manager, settings_manager, time_manager, fact_store, persona_manager, reflection_engine, cursor_store, outbox, event_log, reconciler, fact_dedup_resolver
+    global recent_history_manager, settings_manager, time_manager, fact_store, persona_manager, reflection_engine, cursor_store, outbox, event_log, reconciler, fact_dedup_resolver, pinned_fact_store
     requested_resume_names = set(resume_derived_task_names or ())
     capture_characters = None
     requested_resume_generations = dict(resume_derived_task_generations or {})
@@ -566,6 +571,15 @@ async def reload_memory_components(
             except Exception as e:
                 logger.warning(f"[MemoryServer] reload: fact_dedup_resolver 重建失败: {e}")
                 new_fact_dedup_resolver = None
+            # Optional like the dedup resolver above: a failure here costs the
+            # pinned section until the next reload, never the reload itself.
+            try:
+                from memory.pinned_facts import PinnedFactStore
+                new_pinned_fact_store = PinnedFactStore(persona_manager=new_persona)
+                new_facts.attach_pinned_fact_store(new_pinned_fact_store)
+            except Exception as e:
+                logger.warning(f"[MemoryServer] reload: pinned_fact_store 重建失败: {e}")
+                new_pinned_fact_store = None
 
             # Then swap references atomically.
             recent_history_manager = new_recent
@@ -579,6 +593,7 @@ async def reload_memory_components(
             event_log = new_event_log
             reconciler = new_reconciler
             fact_dedup_resolver = new_fact_dedup_resolver
+            pinned_fact_store = new_pinned_fact_store
 
             if old_time_manager is not None and old_time_manager is not new_time:
                 _defer_time_manager_cleanup(old_time_manager)
@@ -942,6 +957,9 @@ async def _bootstrap_embedding_worker() -> None:
                 # that captured old managers must finish saving before either
                 # operation can erase through replacement instances.
                 get_sweep_barrier=lambda: _reload_lock,
+                # Inference runs outside that barrier; a name released for a
+                # rename/delete meanwhile must not be written back.
+                is_character_writable=_is_character_publication_admitted,
             )
             return worker
 
@@ -960,7 +978,7 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
 
     global recent_history_manager, settings_manager, time_manager, fact_store
     global persona_manager, reflection_engine, cursor_store, outbox, event_log, reconciler
-    global embedding_warmup_worker, fact_dedup_resolver
+    global embedding_warmup_worker, fact_dedup_resolver, pinned_fact_store
     global _memory_runtime_init_completed, _memory_background_tasks_started, _recent_sync_wake_task
 
     if _memory_runtime_init_completed:
@@ -1008,6 +1026,9 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
         event_log = EventLog()
         persona_manager = PersonaManager(event_log=event_log)
         reflection_engine = ReflectionEngine(fact_store, persona_manager, event_log=event_log)
+        from memory.pinned_facts import PinnedFactStore
+        pinned_fact_store = PinnedFactStore(persona_manager=persona_manager)
+        fact_store.attach_pinned_fact_store(pinned_fact_store)
         cursor_store = CursorStore()
         outbox = Outbox()
         reconciler = Reconciler(event_log)

@@ -7932,6 +7932,25 @@ outbox_infra.register_outbox_handler(
 )
 
 
+async def _render_pinned_facts_block(lanlan_name: str, lang: str) -> str:
+    """The pinned-fact section of the private-chat prompt; "" when there is none.
+
+    Read on every call, so a session start or a hot-swap prompt rebuild picks
+    up entries admitted since the previous one. A failure costs only this
+    section, never the rest of the long-term memory.
+    """
+    store = runtime.pinned_fact_store
+    if store is None:
+        return ""
+    try:
+        return await store.arender_prompt_block(lanlan_name, lang)
+    except Exception as e:
+        logger.warning(
+            f"[MemoryServer] {lanlan_name}: pinned-fact render failed: {type(e).__name__}"
+        )
+        return ""
+
+
 async def _new_dialog(
     lanlan_name: str,
     language: str | None = None,
@@ -8082,6 +8101,11 @@ async def _new_dialog(
             persona_md = await arender_injected_memory(
                 runtime.persona_manager, runtime.reflection_engine, lanlan_name,
             )
+        # Pinned important facts: their own section, ahead of the persona
+        # sections. Private chat only; no scoped renderer calls this.
+        pinned_block = await _render_pinned_facts_block(lanlan_name, _lang)
+        if pinned_block:
+            result += pinned_block + "\n\n"
         if persona_md:
             result += persona_md
         else:
