@@ -350,6 +350,7 @@ Live2DManager.prototype.playActionMotion = async function(groupName, index, opti
     const motionManager = model?.internalModel?.motionManager;
     if (!model || typeof model.motion !== 'function' || !motionManager) return false;
     if (!this._allowsAvatarOperation(options, 'motion')) return false;
+    if (this.hasActiveTransientExpression?.(model)) return false;
     const operation = live2dCreateAvatarOperation(this, options);
     const owners = live2dGetMotionOwners(motionManager);
     if (owners.quarantine.size) {
@@ -357,6 +358,7 @@ Live2DManager.prototype.playActionMotion = async function(groupName, index, opti
         catch (_) { operation.dispose(); return false; }
     }
     if (!operation.isCurrent()) { operation.dispose(); return false; }
+    if (this.hasActiveTransientExpression?.(model)) { operation.dispose(); return false; }
     if (this.hasActiveActionMotion(model)) {
         console.log(`[Live2D] 已有动作正在播放，忽略新动作: ${groupName}`);
         operation.dispose();
@@ -575,6 +577,7 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
     }
     this._transientExpressionGeneration = (this._transientExpressionGeneration || 0) + 1;
     this._transientExpressionTask = null;
+    this._transientExpressionPending = null;
     this._activeTransientExpression = false;
     this._motionParameterTrackGeneration = (this._motionParameterTrackGeneration || 0) + 1;
     if (typeof this._nextMotionTimerGeneration === 'function') {
@@ -2163,7 +2166,7 @@ Live2DManager.prototype.setupIdleMotionLoop = function(model) {
             if (this.currentModel !== model || model.destroyed || window._currentMotionPreviewId != null || this._temporaryMotionSuspendToken) {
                 return;
             }
-            if (this.isAvatarPerformanceCapabilityLocked('motion')) {
+            if (this.isAvatarPerformanceCapabilityLocked('motion') || this.hasActiveTransientExpression?.(model)) {
                 scheduleIdleMotion(1000, { replace: true });
                 return;
             }
@@ -2195,7 +2198,7 @@ Live2DManager.prototype.setupIdleMotionLoop = function(model) {
         if (this._temporaryMotionSuspendToken) {
             return;
         }
-        if (this.isAvatarPerformanceCapabilityLocked('motion')) {
+        if (this.isAvatarPerformanceCapabilityLocked('motion') || this.hasActiveTransientExpression?.(model)) {
             scheduleIdleMotion(1000, { replace: true });
             return;
         }
@@ -2222,7 +2225,8 @@ Live2DManager.prototype.setupIdleMotionLoop = function(model) {
 
 // 播放待机动作（从用户保存的 Idle 动画或默认 Idle 随机选择）
 Live2DManager.prototype._playIdleMotion = async function(motionManager) {
-    if (this._temporaryMotionSuspendToken || this.isAvatarPerformanceCapabilityLocked('motion')) {
+    if (this._temporaryMotionSuspendToken || this.isAvatarPerformanceCapabilityLocked('motion')
+        || this.hasActiveTransientExpression?.()) {
         return;
     }
     const expectedModel = this.currentModel;
@@ -2233,6 +2237,7 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
         && window._currentMotionPreviewId == null
         && !this._temporaryMotionSuspendToken
         && !this.isAvatarPerformanceCapabilityLocked('motion')
+        && !this.hasActiveTransientExpression?.(expectedModel)
     );
     const getRandomizedIndexes = (length) => {
         const indexes = [];
@@ -3119,7 +3124,8 @@ Live2DManager.prototype.installMouthOverride = function() {
             }
             
             // 先调用原始的 motionManager.update（添加错误处理）
-            if (!this._temporaryMotionSuspendToken && !this.isAvatarPerformanceCapabilityLocked('motion') && origMotionManagerUpdate) {
+            if (!this._temporaryMotionSuspendToken && !this.isAvatarPerformanceCapabilityLocked('motion')
+                && !this.hasActiveTransientExpression?.() && origMotionManagerUpdate) {
                 const parameterSetter = coreModel.setParameterValueByIndex;
                 const hadOwnParameterSetter = Object.prototype.hasOwnProperty.call(coreModel, 'setParameterValueByIndex');
                 // Cubism 的按 ID、加法和乘法写入最终都经过这个 setter。

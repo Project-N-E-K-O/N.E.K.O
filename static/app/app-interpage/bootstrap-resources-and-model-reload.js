@@ -1922,7 +1922,8 @@ I.mod = window.appInterpage;
             }
 
             // 8. 以 IDLE 优先级恢复；普通动作占用时不抢占
-            if (live2dManager.hasActiveActionMotion(live2dModel)) return;
+            if (live2dManager.hasActiveActionMotion(live2dModel)
+                || live2dManager.hasActiveTransientExpression?.(live2dModel)) return;
             const motionState = motionManager.state;
             if (
                 (Number(motionState?.currentPriority || 0) === 1 || motionState?.reservedIdleGroup !== undefined)
