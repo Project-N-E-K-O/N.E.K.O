@@ -999,11 +999,6 @@ export default function CompactExportHistoryPanel({
       onClick={(event) => event.stopPropagation()}
     >
       <div className="compact-export-history-panel">
-      {mode === 'chat' && !previewOpen ? (
-        <div className="chat-clear-screen-tools">
-          <ClearChatScreenButton disabled={!historyInteractive || choiceLayerAbove} />
-        </div>
-      ) : null}
       {mode === 'theater' && !previewOpen ? (
         <div className="compact-theater-history-header">
           <div className="compact-theater-history-header-row">
@@ -1164,6 +1159,11 @@ export default function CompactExportHistoryPanel({
               onPointerCancel={finishScrollbarPointerDrag}
               onLostPointerCapture={finishScrollbarPointerDrag}
             />
+          ) : null}
+          {mode === 'chat' ? (
+            <div className="chat-clear-screen-tools">
+              <ClearChatScreenButton disabled={!historyInteractive || choiceLayerAbove} />
+            </div>
           ) : null}
           {mode === 'chat' && controlsOpen ? (
             <div

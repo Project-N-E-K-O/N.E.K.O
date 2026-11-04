@@ -3176,6 +3176,9 @@ export default function FullChatSurface({
     </section>
   ) : (
     <section className="chat-body">
+      <div className="chat-clear-screen-tools full-chat-clear-screen-tools">
+        {theaterPresentation?.active !== true ? <ClearChatScreenButton /> : null}
+      </div>
       {messageListNode}
     </section>
   );
@@ -3247,11 +3250,6 @@ export default function FullChatSurface({
           {/* Avatar button moved to #react-chat-window-header-actions in host template */}
         </header>
 
-        {theaterPresentation?.active !== true ? (
-          <div className="chat-clear-screen-tools full-chat-clear-screen-tools">
-            <ClearChatScreenButton />
-          </div>
-        ) : null}
         {chatBodyNode}
 
         {shouldRenderComposerPanel ? (

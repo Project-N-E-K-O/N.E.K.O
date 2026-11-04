@@ -10721,5 +10721,8 @@ body.avatar-tool-editor-page .avatar-tool-workspace-settings {
 }
 
 .full-chat-clear-screen-tools {
-  padding: 4px 14px 0;
+  position: absolute;
+  top: 8px;
+  right: 14px;
+  z-index: 2;
 }
