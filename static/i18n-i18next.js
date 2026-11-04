@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // Merge the overseas news source tooltip with main's es/pt systray intro labels.
-    const LOCALE_VERSION = '2026-11-03-news-overseas-systray-labels-main-merge';
+    // Add the visit invitation capacity-limit error message (#3584).
+    const LOCALE_VERSION = '2026-11-04-visit-invitation-capacity';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
