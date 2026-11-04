@@ -1142,6 +1142,8 @@
         "compactExportHistory": "대화 기록",
         "compactHistoryToggleOpen": "대화 기록 보이기",
         "compactHistoryToggleClose": "대화 기록 숨기기",
+    "clearScreen": "화면 지우기",
+    "clearScreenHint": "현재 메시지만 화면에서 숨깁니다. 대화 기록과 기억은 유지됩니다.",
     "compactHistoryExport": "대화 기록 내보내기",
         "compactExportControlsCollapse": "선택 도구 숨기기",
         "compactExportControlsExpand": "선택 도구 보이기",

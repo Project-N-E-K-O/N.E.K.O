@@ -1142,6 +1142,8 @@
         "compactExportHistory": "履歴",
         "compactHistoryToggleOpen": "履歴を表示",
         "compactHistoryToggleClose": "履歴を隠す",
+    "clearScreen": "画面をクリア",
+    "clearScreenHint": "画面上の既存のメッセージのみ非表示にします。会話履歴と記憶は保持されます。",
     "compactHistoryExport": "会話履歴をエクスポート",
         "compactExportControlsCollapse": "選択操作を隠す",
         "compactExportControlsExpand": "選択操作を表示",

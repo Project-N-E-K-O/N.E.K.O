@@ -1,3 +1,4 @@
+import { ClearChatScreenButton, useChatScreenVisibility } from './ChatScreenVisibility';
 import clsx from 'clsx';
 import {
   useEffect,
@@ -269,6 +270,11 @@ export default function CompactExportHistoryPanel({
     () => allMessages.filter((message) => !isTopicHintMessage(message) && hasVisibleMessageContent(message)),
     [allMessages],
   );
+  const { hiddenMessageIds } = useChatScreenVisibility();
+  const displayMessages = useMemo(
+    () => mode === 'theater' ? messages : messages.filter(message => !hiddenMessageIds.has(message.id)),
+    [messages, mode, hiddenMessageIds],
+  );
   const exposureAnchorIds = useMemo(
     () => getScreenObservationAnchorIds(messages, allMessages),
     [messages, allMessages],
@@ -314,7 +320,7 @@ export default function CompactExportHistoryPanel({
   const exportActionsDisabled = !previewHasSelection || exportBusy;
   const historyInteractive = visibilityState === 'open';
   const selectionControlsInteractive = mode === 'chat' && historyInteractive && controlsOpen;
-  const historyHasContent = messages.length > 0 || thinking;
+  const historyHasContent = displayMessages.length > 0 || thinking;
   const scrollbarHitVisible = scrollbarVisible
     && !!scrollRef.current
     && !!getCompactHistoryScrollbarMetrics(scrollRef.current);
@@ -518,7 +524,7 @@ export default function CompactExportHistoryPanel({
         window.cancelAnimationFrame(frameId);
       }
     };
-  }, [autoScrollToBottom, messages, previewOpen, visibilityState, thinking]);
+  }, [autoScrollToBottom, displayMessages, previewOpen, visibilityState, thinking]);
 
   // 图片（尤其是远端表情包 / GIF）可能在上面的固定 settle 帧结束后才完成解码。若图片块没有
   // width/height 元数据，它会从 0 高度增长到固有高度；此时 scrollHeight 增大但 scrollTop 不会
@@ -993,6 +999,11 @@ export default function CompactExportHistoryPanel({
       onClick={(event) => event.stopPropagation()}
     >
       <div className="compact-export-history-panel">
+      {mode === 'chat' && !previewOpen ? (
+        <div className="chat-clear-screen-tools">
+          <ClearChatScreenButton disabled={!historyInteractive || choiceLayerAbove} />
+        </div>
+      ) : null}
       {mode === 'theater' && !previewOpen ? (
         <div className="compact-theater-history-header">
           <div className="compact-theater-history-header-row">
@@ -1052,13 +1063,13 @@ export default function CompactExportHistoryPanel({
           >
             {historyHasContent ? (
               <div ref={scrollContentRef} className="compact-export-history-scroll-content">
-                {messages.map((message, index) => {
+                {displayMessages.map((message, index) => {
                   const selectable = isCompactExportMessageSelectable(message);
                   const selected = selectedIds.has(message.id);
                   const selectionEnabled = selectionControlsInteractive && selectable;
                   const failed = message.status === 'failed';
                   const streaming = message.status === 'streaming';
-                  const tone = getCompactHistoryBubbleTone(message, index, messages[index - 1]);
+                  const tone = getCompactHistoryBubbleTone(message, index, displayMessages[index - 1]);
                   const motionStyle: CSSProperties & Record<string, string> = {
                     '--compact-history-enter-delay': resolveCompactHistoryEnterDelay(message, index),
                     '--compact-history-exit-delay': computeCompactHistoryExitDelay(index),

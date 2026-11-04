@@ -10673,3 +10673,53 @@ body.avatar-tool-editor-page .avatar-tool-workspace-settings {
 .music-recommendation-icon .recommendation-neko-artwork,
 .proactive-recommendation-bubble .neko-recommendation-icon .recommendation-neko-artwork { width: 20px; height: 20px; }
 .mini-game-invite-icon .recommendation-neko-artwork { width: 28px; height: 28px; }
+
+/* Visual-only clearing uses the regular desktop control hit regions. */
+.chat-clear-screen-tools {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: flex-end;
+  pointer-events: none;
+}
+
+.chat-clear-screen-button {
+  flex-shrink: 0;
+  padding: 5px 10px;
+  border: 1px solid rgba(130, 150, 180, 0.25);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, calc(0.9 * var(--neko-chat-opacity-factor, 1)));
+  color: #526580;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+}
+
+.chat-clear-screen-button:hover:not(:disabled) {
+  background: #edf3fc;
+}
+
+.chat-clear-screen-button:focus-visible {
+  outline: 2px solid #668fd9;
+  outline-offset: 2px;
+}
+
+.chat-clear-screen-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+[data-theme="dark"] .chat-clear-screen-button {
+  color: #d4dfef;
+  background: rgba(40, 49, 65, calc(0.9 * var(--neko-chat-opacity-factor, 1)));
+  border-color: rgba(155, 175, 205, 0.3);
+}
+
+[data-theme="dark"] .chat-clear-screen-button:hover:not(:disabled) {
+  background: #34435b;
+}
+
+.full-chat-clear-screen-tools {
+  padding: 4px 14px 0;
+}

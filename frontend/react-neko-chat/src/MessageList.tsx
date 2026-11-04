@@ -1,3 +1,4 @@
+import { useChatScreenVisibility } from './ChatScreenVisibility';
 import { useRef, useEffect, useMemo, useState, type ReactNode } from 'react';
 import MessageBubble from './MessageBubble';
 import ScreenObservationExposure, { getScreenObservationAnchorIds } from './ScreenObservationExposure';
@@ -39,6 +40,7 @@ export default function MessageList({
   footer,
   footerKey,
 }: MessageListProps) {
+  const { hiddenMessageIds } = useChatScreenVisibility();
   const containerRef = useRef<HTMLDivElement>(null);
   const shouldScrollRef = useRef(true);
   const scrollbarTimerRef = useRef<number | null>(null);
@@ -50,8 +52,8 @@ export default function MessageList({
   });
 
   const displayMessages = useMemo(
-    () => messages.filter(hasVisibleMessageContent).slice(-MAX_DISPLAY_MESSAGES),
-    [messages],
+    () => messages.filter(message => !hiddenMessageIds.has(message.id) && hasVisibleMessageContent(message)).slice(-MAX_DISPLAY_MESSAGES),
+    [messages, hiddenMessageIds],
   );
 
   const exposureAnchorIds = useMemo(

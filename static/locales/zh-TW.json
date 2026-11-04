@@ -1142,6 +1142,8 @@
         "compactExportHistory": "歷史對話",
         "compactHistoryToggleOpen": "展開歷史對話",
         "compactHistoryToggleClose": "收起歷史對話",
+    "clearScreen": "清空畫面",
+    "clearScreenHint": "僅隱藏目前已有訊息，保留聊天記錄與記憶。",
     "compactHistoryExport": "匯出歷史對話",
         "compactExportControlsCollapse": "隱藏選擇列",
         "compactExportControlsExpand": "顯示選擇列",

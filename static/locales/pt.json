@@ -1142,6 +1142,8 @@
         "compactExportHistory": "Histórico",
         "compactHistoryToggleOpen": "Mostrar histórico",
         "compactHistoryToggleClose": "Ocultar histórico",
+    "clearScreen": "Limpar tela",
+    "clearScreenHint": "Oculta as mensagens existentes nesta tela. O histórico e a memória são mantidos.",
     "compactHistoryExport": "Exportar histórico da conversa",
         "compactExportControlsCollapse": "Ocultar controles de seleção",
         "compactExportControlsExpand": "Mostrar controles de seleção",
