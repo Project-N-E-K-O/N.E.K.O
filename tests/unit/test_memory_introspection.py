@@ -1055,10 +1055,11 @@ async def test_promotion_rechecks_suppression_after_the_model_returns(tmp_path):
     reads = []
 
     async def _retire_r4_then_read(name):
-        # 1st read builds the impression pool before the LLM call; the 2nd
-        # is the merge-target lookup, after the post-LLM recheck passed.
+        # Reads in order: the pre-LLM retirement check, the impression pool,
+        # the post-LLM recheck, then (4th) the merge-target lookup -- after
+        # that recheck passed -- and last the final check under the lock.
         reads.append(name)
-        if len(reads) == 2:
+        if len(reads) == 4:
             await _retire_on_disk(env, 'R4')
         return await real_get_persona(name)
 
@@ -1067,13 +1068,135 @@ async def test_promotion_rechecks_suppression_after_the_model_returns(tmp_path):
             'action': 'merge_into', 'target_id': 'persona.master.p2', 'merged_text': '合并文本四',
         }))
 
-    assert len(reads) == 2, "夹具失效：目标查找的时机变了"
+    assert len(reads) == 5, "夹具失效：目标查找的时机变了"
     assert (fresh, unknown, retired_target, late) == (
         'no_longer_eligible', 'no_longer_eligible', 'invalid_target', 'no_longer_eligible',
     )
     persona_text = json.dumps(await env.pm.aensure_persona(NAME), ensure_ascii=False)
     for text in ('主人和猫的第1件事', '合并文本一', '合并文本四'):
         assert text not in persona_text
+
+
+def _stale_marker(days: int) -> dict:
+    at = (datetime.now() - timedelta(days=days)).isoformat(timespec='seconds')
+    return {'permanent_suppression': {'at': at, 'reason': '过期', 'issue': 'stale'}}
+
+
+@pytest.mark.asyncio
+async def test_promotion_skips_a_reflection_hidden_behind_a_retired_persona_line(tmp_path):
+    """The reflection itself carries no flag, but the render hides it behind a
+    persona line retired as stale; promoting it would write that line back
+    unflagged. One whose facts all postdate the retirement is the way back."""
+    env = _install(str(tmp_path))
+    newer = (datetime.now() - timedelta(days=1)).isoformat(timespec='seconds')
+    await _seed_persona(env.pm, {'master': [
+        {'id': 'p_old', 'text': '主人住在北京', **_stale_marker(3)},
+    ]})
+    await _seed_reflections(env.engine, [
+        _reflection('R_old', '主人住在北京', entity='master', rein=2.5),
+        _reflection('R_back', '主人住在北京', entity='master', rein=2.5,
+                    source_facts_oldest_at=newer),
+    ])
+    llm = AsyncMock(return_value={'action': 'promote_fresh'})
+
+    with patch.object(env.engine, '_allm_call_promotion_merge', llm):
+        old = await env.engine._apromote_with_merge(NAME, await _reflection_row(env.engine, 'R_old'))
+        back = await env.engine._apromote_with_merge(NAME, await _reflection_row(env.engine, 'R_back'))
+
+    assert old == 'no_longer_eligible'
+    assert back == 'promote_fresh'
+    assert llm.await_count == 1, "被遮住的反思在调用模型前就该跳过"
+    live = [e for e in (await env.pm.aensure_persona(NAME))['master']['facts']
+            if e.get('text') == '主人住在北京' and 'permanent_suppression' not in e]
+    assert len(live) == 1 and live[0].get('source_id') == 'R_back'
+
+
+@pytest.mark.asyncio
+async def test_promotion_rechecks_the_persona_line_after_the_model_returns(tmp_path):
+    """The persona line R repeats may be retired while the merge model
+    thinks: during the call (post-LLM recheck), or after that recheck passed
+    and before the write (the final check of each path)."""
+    env = _install(str(tmp_path))
+    await _seed_persona(env.pm, {'master': [
+        {'id': 'p_a', 'text': '主人住在北京'},
+        {'id': 'p_b', 'text': '主人在学吉他'},
+        {'id': 'p_c', 'text': '主人每天跑步'},
+        {'id': 'p_t', 'text': '主人喜欢运动'},
+    ]})
+    await _seed_reflections(env.engine, [
+        _reflection('R1', '主人住在北京', entity='master', rein=2.5),
+        _reflection('R2', '主人在学吉他', entity='master', rein=2.5),
+        _reflection('R3', '主人每天跑步', entity='master', rein=2.5),
+    ])
+
+    async def _retire(pid):
+        (await _persona_entry(env.pm, 'master', pid)).update(_stale_marker(0))
+
+    async def _promote(rid, llm, retire_on_read=None, pid=None):
+        real = env.pm.aget_persona
+        reads = []
+
+        async def _read(name):
+            reads.append(name)
+            if len(reads) == retire_on_read:
+                await _retire(pid)
+            return await real(name)
+
+        with patch.object(env.engine, '_allm_call_promotion_merge', llm), \
+             patch.object(env.pm, 'aget_persona', _read):
+            outcome = await env.engine._apromote_with_merge(NAME, await _reflection_row(env.engine, rid))
+        return outcome, len(reads)
+
+    async def _retire_p_a_during_llm(*args, **kwargs):
+        await _retire('p_a')
+        return {'action': 'promote_fresh'}
+
+    during = await _promote('R1', _retire_p_a_during_llm)
+    # Reads: pre-LLM check, impression pool, post-LLM recheck, final check.
+    fresh_late = await _promote('R2', AsyncMock(return_value={'action': 'promote_fresh'}), 4, 'p_b')
+    # Reads: ... post-LLM recheck, merge-target lookup, final check.
+    merge_late = await _promote('R3', AsyncMock(return_value={
+        'action': 'merge_into', 'target_id': 'persona.master.p_t', 'merged_text': '主人每天跑步，喜欢运动',
+    }), 5, 'p_c')
+
+    assert during == ('no_longer_eligible', 3)
+    assert fresh_late == ('no_longer_eligible', 4), "夹具失效：最终检查前的读取次数变了"
+    assert merge_late == ('no_longer_eligible', 5), "夹具失效：最终检查前的读取次数变了"
+    persona_text = json.dumps(await env.pm.aensure_persona(NAME), ensure_ascii=False)
+    assert '主人每天跑步，喜欢运动' not in persona_text
+    for text in ('主人住在北京', '主人在学吉他', '主人每天跑步'):
+        live = [e for e in (await env.pm.aensure_persona(NAME))['master']['facts']
+                if e.get('text') == text and 'permanent_suppression' not in e]
+        assert live == [], text
+
+
+@pytest.mark.asyncio
+async def test_promotion_waits_when_persona_cannot_be_read(tmp_path):
+    env = _install(str(tmp_path))
+
+    with patch.object(env.pm, 'aget_persona', AsyncMock(side_effect=OSError('locked'))):
+        retired = await env.engine._aretired_from_promotion(NAME)
+
+    assert retired({'id': 'r', 'text': '主人喜欢猫'}), "读不到人格时本轮不升格"
+
+
+@pytest.mark.asyncio
+async def test_time_driven_promotion_skips_a_reflection_hidden_behind_a_retired_persona_line(tmp_path):
+    env = _install(str(tmp_path))
+    old = (datetime.now() - timedelta(days=365)).isoformat()
+    await _seed_persona(env.pm, {'master': [
+        {'id': 'p_old', 'text': '主人住在北京', **_stale_marker(3)},
+    ]})
+    await _seed_reflections(env.engine, [
+        _reflection('R_old', '主人住在北京', entity='master', confirmed_at=old),
+    ])
+
+    await env.engine.aauto_promote_time_driven(NAME)
+
+    assert (await _reflection_row(env.engine, 'R_old'))['status'] == 'confirmed'
+    live = [e for e in (await env.pm.aensure_persona(NAME))['master']['facts']
+            if e.get('text') == '主人住在北京' and 'permanent_suppression' not in e]
+    assert live == []
 
 
 @pytest.mark.asyncio
@@ -1306,6 +1429,9 @@ def test_long_term_sync_import_keeps_local_suppression():
         'reflections': [
             {'id': 'r1', 'entity': 'relationship', 'text': '两人意味着港湾', 'status': 'confirmed',
              'created_at': _now_iso(), 'confirmed_at': _now_iso(), 'permanent_suppression': marker},
+            {'id': 'r2', 'entity': 'master', 'text': '主人住在北京', 'status': 'confirmed',
+             'created_at': _now_iso(), 'confirmed_at': _now_iso(),
+             'source_facts_oldest_at': '2026-11-01T09:00:00'},
         ],
     }
     snapshot = export_document(views, int(datetime.now().timestamp() * 1000))
@@ -1313,7 +1439,10 @@ def test_long_term_sync_import_keeps_local_suppression():
     result = import_document(snapshot, views)
 
     assert result['persona']['relationship']['facts'][0]['permanent_suppression'] == marker
-    assert result['reflections'][0]['permanent_suppression'] == marker
+    rows = {r['id']: r for r in result['reflections']}
+    assert rows['r1']['permanent_suppression'] == marker
+    # The evidence age decides whether a line retired as stale may come back.
+    assert rows['r2']['source_facts_oldest_at'] == '2026-11-01T09:00:00'
 
 
 @pytest.mark.asyncio

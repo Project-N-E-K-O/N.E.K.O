@@ -207,11 +207,14 @@ def import_document(incoming, existing, *, baseline=None):
                           confirmed_at=iso(meta.get('evidenceReviewedAt') or incoming['completedAt']))
             if meta.get('promotedAt'):
                 native['promoted_at'] = iso(meta['promotedAt'])
-            # Introspection's suppression is this device's decision and not part
-            # of the protocol; a snapshot of the same row must not lift it.
+            # Introspection's suppression and the synthesis-time evidence age
+            # are this device's records and not part of the protocol; a
+            # snapshot of the same row must neither lift the one nor drop the
+            # other (without it a line retired as stale stays hidden).
             previous = local_reflections.get((subject, row['id']), {})
-            if 'permanent_suppression' in previous:
-                native['permanent_suppression'] = deepcopy(previous['permanent_suppression'])
+            for field in ('permanent_suppression', 'source_facts_oldest_at'):
+                if field in previous:
+                    native[field] = deepcopy(previous[field])
             result['reflections'].append(native)
     return result
 
