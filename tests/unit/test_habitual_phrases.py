@@ -305,6 +305,17 @@ def test_a_name_at_the_edge_of_a_long_phrase_is_still_caught():
     assert _compute(replies, protected_terms=["碳基生物"]) == []
 
 
+def test_a_line_longer_than_the_growth_cap_is_still_one_entry():
+    """Windows far apart on one long line grow into overlapping spans: one entry."""
+    line = "今天我们一起去公园散步看花吃冰淇淋然后回家"
+    assert len(line) > hp._MAX_PHRASE_CHARACTERS
+    follow_ups = ["还有别的事吗？", "快去睡觉吧！", "下次早点说。"]
+    entries = _compute(_sessions(*[[f"{line}。{tail}"] for tail in follow_ups]))
+    assert len(entries) == 1
+    assert entries[0]["phrase"] in line
+    assert len(entries[0]["phrase"]) == hp._MAX_PHRASE_CHARACTERS
+
+
 def test_a_fragment_used_more_widely_than_its_excluded_parent_is_still_listed():
     """Only fragments that tie or trail the excluded phrase are claimed by it."""
     replies = _sessions(
@@ -319,6 +330,12 @@ def test_word_phrases_are_deduplicated_by_shared_words():
     entries = _compute(_three_sessions("you know what I mean."), language="en")
     assert len(entries) == 1
     assert entries[0]["normalized_phrase"] == "you know what i mean"
+
+
+def test_korean_word_and_character_windows_of_one_phrase_are_one_entry():
+    """Korean is mined both ways; the character window must not come back on its own."""
+    entries = _compute(_three_sessions("정말 고마워요."), language="ko")
+    assert _phrases(entries) == ["정말 고마워요"]
 
 
 def test_prompt_list_is_cut_to_the_token_budget(tmp_path, monkeypatch):
@@ -372,6 +389,86 @@ def test_a_damaged_or_foreign_file_reads_as_absent(tmp_path):
             f.write(content)
         assert store.read(_NAME) is None
         assert store.prompt_phrases(_NAME, "zh") == []
+
+
+_SHAPES = [
+    {"entries": 1},
+    {"entries": "x"},
+    {"parameters": 1},
+    {"source": "x"},
+    {"computed_at": "soon"},
+    {"language": 3},
+]
+
+
+@pytest.mark.parametrize("damage", _SHAPES, ids=[next(iter(d)) for d in _SHAPES])
+def test_valid_json_of_the_wrong_shape_reads_as_absent(tmp_path, damage):
+    store = _store(tmp_path)
+    _write(store, ["今天也要加油哦"])
+    path = os.path.join(str(tmp_path), _NAME, HABITUAL_PHRASES_FILENAME)
+    payload = _read_file(tmp_path)
+    payload.update(damage)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False)
+    assert store.read(_NAME) is None
+    assert store.prompt_phrases(_NAME, "zh") == []
+
+
+def test_damaged_entries_are_dropped_one_by_one(tmp_path):
+    store = _store(tmp_path)
+    _write(store, ["今天也要加油哦"])
+    path = os.path.join(str(tmp_path), _NAME, HABITUAL_PHRASES_FILENAME)
+    payload = _read_file(tmp_path)
+    payload["entries"] = [1, "x", {"phrase": 3}, {"phrase": " "}, *payload["entries"]]
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False)
+    assert store.prompt_phrases(_NAME, "zh") == ["今天也要加油哦"]
+
+
+@pytest.mark.asyncio
+async def test_the_job_rewrites_a_damaged_file_instead_of_failing_on_it(tmp_path, monkeypatch):
+    from app.memory_server import habitual_phrase_loop, runtime
+
+    store = _store(tmp_path)
+    cm, time_manager = _loop_runtime(tmp_path, [_three_sessions("今天也要加油哦。")])
+    monkeypatch.setattr(habitual_phrase_loop, "get_habitual_phrase_store", lambda: store)
+    monkeypatch.setattr(habitual_phrase_loop, "get_character_prompt_locale", lambda _n: "zh-CN")
+    monkeypatch.setattr(runtime, "_config_manager", cm)
+    monkeypatch.setattr(runtime, "time_manager", time_manager)
+
+    now = datetime.now().timestamp()
+    _write(store, ["早上好呀朋友"], now=now - 60)
+    path = os.path.join(str(tmp_path), _NAME, HABITUAL_PHRASES_FILENAME)
+    payload = _read_file(tmp_path)
+    payload["entries"] = 1
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f)
+
+    assert await habitual_phrase_loop._arefresh_habitual_phrases_one(_NAME, now=now)
+    assert [e["phrase"] for e in _read_file(tmp_path)["entries"]] == ["今天也要加油哦"]
+
+
+def test_a_reply_repeated_verbatim_does_not_rescan_per_fragment(monkeypatch):
+    """A long reply said word for word in every session yields thousands of fragments.
+
+    Each fragment of an already-claimed phrase must be skipped before the
+    growth scan, and each reply split into units once: per-fragment rescans
+    took about 20 s of background CPU on 3 x 2000 characters.
+    """
+    import random
+
+    rng = random.Random(7)
+    text = "".join(chr(rng.randint(0x4E00, 0x4E00 + 3000)) for _ in range(1990))
+    replies = _three_sessions(text)
+    grows, splits = [], []
+    real_grow, real_split = hp._maximal_phrase, hp._MessageUnits.of
+    monkeypatch.setattr(hp, "_maximal_phrase", lambda *a: grows.append(1) or real_grow(*a))
+    monkeypatch.setattr(
+        hp._MessageUnits, "of", classmethod(lambda cls, *a: splits.append(1) or real_split(*a)),
+    )
+    assert _compute(replies, card_text=text) == [], "every phrase is in the card"
+    assert len(splits) <= 2 * len(replies)
+    assert len(grows) <= len(text) // 4, f"{len(grows)} growth scans"
 
 
 class _History:

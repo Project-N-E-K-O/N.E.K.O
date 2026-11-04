@@ -153,34 +153,53 @@ def _compact(text: str) -> str:
     return "".join(ch for ch in _fold(text) if ch.isalnum())
 
 
-def _common_run(left: Sequence[str], right: Sequence[str]) -> int:
-    """Length of the longest contiguous run the two sequences share."""
-    best = 0
-    previous = [0] * (len(right) + 1)
-    for a in left:
-        current = [0] * (len(right) + 1)
-        for j, b in enumerate(right, start=1):
-            if a == b:
-                current[j] = previous[j - 1] + 1
-                best = max(best, current[j])
-        previous = current
-    return best
+def _word_runs(normalized: str) -> set[tuple[str, ...]]:
+    words = normalized.split(" ")
+    size = DEFAULT_WORD_NGRAM_MIN
+    return {tuple(words[i : i + size]) for i in range(len(words) - size + 1)}
 
 
-def _overlaps(left: str, right: str) -> bool:
-    """Whether two normalized phrases are windows onto the same wording.
+def _char_runs(normalized: str) -> set[str]:
+    compact = normalized.replace(" ", "")
+    size = DEFAULT_CJK_NGRAM_MIN
+    return {compact[i : i + size] for i in range(len(compact) - size + 1)}
+
+
+class _Claims:
+    """Wording already taken by a listed or excluded phrase.
 
     The miner emits every n-gram, so one long catchphrase surfaces as many
     overlapping fragments with near-identical counts. Two phrases overlap when
     they share a run the miner would itself have mined as a phrase: two words
-    when both are word phrases, otherwise four characters.
+    when both are word phrases, otherwise four characters (spaces ignored).
+    Claimed runs are kept as sets, so a check costs one pass over the phrase
+    however many phrases are claimed; a reply repeated verbatim yields
+    thousands of fragments, and pairwise comparison took tens of seconds.
     """
-    if " " in left and " " in right:
-        return _common_run(left.split(" "), right.split(" ")) >= DEFAULT_WORD_NGRAM_MIN
-    return (
-        _common_run(left.replace(" ", ""), right.replace(" ", ""))
-        >= DEFAULT_CJK_NGRAM_MIN
-    )
+
+    def __init__(self) -> None:
+        self._word_runs: set[tuple[str, ...]] = set()
+        self._char_runs_of_words: set[str] = set()
+        self._char_runs_of_chars: set[str] = set()
+
+    def overlaps(self, normalized: str) -> bool:
+        chars = _char_runs(normalized)
+        if " " in normalized:
+            return not (
+                self._word_runs.isdisjoint(_word_runs(normalized))
+                and self._char_runs_of_chars.isdisjoint(chars)
+            )
+        return not (
+            self._char_runs_of_chars.isdisjoint(chars)
+            and self._char_runs_of_words.isdisjoint(chars)
+        )
+
+    def add(self, normalized: str) -> None:
+        if " " in normalized:
+            self._word_runs |= _word_runs(normalized)
+            self._char_runs_of_words |= _char_runs(normalized)
+        else:
+            self._char_runs_of_chars |= _char_runs(normalized)
 
 
 _Unit = Optional[tuple[str, str]]
@@ -205,7 +224,44 @@ def _units(text: str, spaced: bool) -> List[_Unit]:
     return units
 
 
-def _maximal_phrase(normalized: str, texts: Sequence[str]) -> Optional[tuple[str, str]]:
+@dataclass(frozen=True)
+class _MessageUnits:
+    """One reply split into units once, with a key to locate a phrase in it."""
+
+    units: List[_Unit]
+    # Folded words for word phrases; for character phrases a string with
+    # one character per unit, so a phrase is found with ``str.find``.
+    key: Any
+
+    @classmethod
+    def of(cls, text: str, spaced: bool) -> "_MessageUnits":
+        units = _units(text, spaced)
+        if spaced:
+            return cls(units, [unit[0] if unit else None for unit in units])
+        return cls(
+            units,
+            "".join(unit[0] if unit and len(unit[0]) == 1 else "\x00" for unit in units),
+        )
+
+    def starts(self, normalized: str, spaced: bool) -> List[int]:
+        if spaced:
+            needle = normalized.split(" ")
+            size = len(needle)
+            return [
+                start for start in range(len(self.key) - size + 1)
+                if self.key[start : start + size] == needle
+            ]
+        found: List[int] = []
+        start = self.key.find(normalized)
+        while start != -1:
+            found.append(start)
+            start = self.key.find(normalized, start + 1)
+        return found
+
+
+def _maximal_phrase(
+    normalized: str, messages: Sequence[_MessageUnits]
+) -> Optional[tuple[str, str]]:
     """Grow a mined window into the whole phrase it sits in: ``(folded, surface)``.
 
     The miner emits fixed-size windows, so a catchphrase longer than its
@@ -217,15 +273,12 @@ def _maximal_phrase(normalized: str, texts: Sequence[str]) -> Optional[tuple[str
     window's counts still hold. None when the window cannot be located.
     """
     spaced = " " in normalized
-    needle = normalized.split(" ") if spaced else list(normalized)
-    size = len(needle)
-    occurrences: list[tuple[List[_Unit], int, int]] = []
-    for text in texts:
-        units = _units(text, spaced)
-        folded = [unit[0] if unit else None for unit in units]
-        for start in range(len(folded) - size + 1):
-            if folded[start : start + size] == needle:
-                occurrences.append((units, start, start + size))
+    size = len(normalized.split(" ")) if spaced else len(normalized)
+    occurrences: list[tuple[List[_Unit], int, int]] = [
+        (message.units, start, start + size)
+        for message in messages
+        for start in message.starts(normalized, spaced)
+    ]
     if not occurrences:
         return None
     limit = _MAX_PHRASE_WORDS if spaced else _MAX_PHRASE_CHARACTERS
@@ -448,22 +501,39 @@ def compute_entries(
     # is the same habit. So an excluded phrase still claims its fragments; it
     # just is not listed itself.
     exclusions = _build_exclusions(card_text, protected_terms)
-    claimed: list[str] = []
+    claims = _Claims()
+    split_replies: dict[tuple[int, bool], _MessageUnits] = {}
+
+    def _split(line: int, spaced: bool) -> _MessageUnits:
+        key = (line, spaced)
+        if key not in split_replies:
+            split_replies[key] = _MessageUnits.of(
+                timed[line - 1].text[:_MAX_REPLY_CHARACTERS], spaced
+            )
+        return split_replies[key]
+
     entries: list[dict[str, Any]] = []
     for entry in qualified:
         if len(entries) >= max_items:
             break
         lines = entry.pop("_lines")
+        # Checked before growing too: growing only widens a phrase, so a
+        # fragment of a claimed phrase stays claimed, and skipping it here
+        # spares the growth scan for every one of its many fragments.
+        if claims.overlaps(entry["normalized_phrase"]):
+            continue
+        spaced = " " in entry["normalized_phrase"]
         grown = _maximal_phrase(
-            entry["normalized_phrase"],
-            [timed[line - 1].text[:_MAX_REPLY_CHARACTERS] for line in lines],
+            entry["normalized_phrase"], [_split(line, spaced) for line in lines],
         )
         if grown is not None:
             entry["normalized_phrase"], entry["phrase"] = grown
-        if any(_overlaps(entry["normalized_phrase"], other) for other in claimed):
-            continue
-        claimed.append(entry["normalized_phrase"])
-        if exclusions.excludes(entry["normalized_phrase"], language):
+        # Grown into a claimed phrase: the same wording reached from a
+        # lower-ranked window. It is skipped but still claimed, so its sibling
+        # windows stop at the cheap check above instead of each growing again.
+        duplicate = grown is not None and claims.overlaps(entry["normalized_phrase"])
+        claims.add(entry["normalized_phrase"])
+        if duplicate or exclusions.excludes(entry["normalized_phrase"], language):
             continue
         entries.append(entry)
     return entries, source
@@ -531,24 +601,39 @@ def _normalize_entry(raw: Any) -> Optional[Dict[str, Any]]:
 
 
 def _normalize_payload(raw: Any) -> Optional[Dict[str, Any]]:
-    """A readable payload, or None for an absent, foreign or damaged one."""
+    """A readable payload, or None for an absent, foreign or damaged one.
+
+    Never raises. A wrong shape reads as absent rather than as an error, so
+    the background job treats the character as due and rewrites the file;
+    raising here would make every later refresh fail on the same file.
+    """
     if not isinstance(raw, dict) or raw.get("schema_version") != SCHEMA_VERSION:
         return None
     computed_at = _as_time(raw.get("computed_at"))
     language = raw.get("language")
-    if computed_at is None or not isinstance(language, str) or not language:
+    raw_entries = raw.get("entries")
+    parameters = raw.get("parameters", {})
+    source = raw.get("source", {})
+    if (
+        computed_at is None
+        or not isinstance(language, str)
+        or not language
+        or not isinstance(raw_entries, list)
+        or not isinstance(parameters, dict)
+        or not isinstance(source, dict)
+    ):
         return None
     entries = [
         entry
-        for entry in (_normalize_entry(item) for item in raw.get("entries") or [])
+        for entry in (_normalize_entry(item) for item in raw_entries)
         if entry is not None
     ]
     return {
         "schema_version": SCHEMA_VERSION,
         "computed_at": computed_at,
         "language": language,
-        "parameters": dict(raw.get("parameters") or {}),
-        "source": dict(raw.get("source") or {}),
+        "parameters": dict(parameters),
+        "source": dict(source),
         "entries": entries,
     }
 
