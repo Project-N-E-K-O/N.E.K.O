@@ -816,6 +816,10 @@ async def _complete_session_end_memory_barrier(message: dict, lanlan_name: str) 
             completion.set_result(None)
 
 
+# How long a stopping connector waits for its queued memory writes (see run_sync_connector).
+MEMORY_LANE_DRAIN_TIMEOUT_S = 1.5
+
+
 async def run_sync_connector(
     message_queue: asyncio.Queue,
     lanlan_name,
@@ -991,6 +995,8 @@ async def run_sync_connector(
                 raise
             except Exception as e:
                 logger.error(f"[{lanlan_name}] 记忆写入任务异常: {type(e).__name__}: {e}", exc_info=True)
+            finally:
+                memory_lane.task_done()
 
     def _take_memory_carry(messages: list) -> list:
         payload = memory_carry + messages
@@ -1660,10 +1666,18 @@ async def run_sync_connector(
     except asyncio.CancelledError:
         raise
     finally:
-        # Writes still queued are dropped, as messages still queued for this loop always were; a
-        # pending barrier falls back to its caller's timeout (_wait_for_session_end_memory_barrier).
-        memory_lane_task.cancel()
-        await asyncio.gather(memory_lane_task, return_exceptions=True)
+        # Give queued writes (a session-end settlement, say) a bounded chance to go out. The
+        # character stop path waits 3 s for this task, so leave room for the cleanup below; what
+        # is still queued after that is dropped, and a pending barrier falls back to its caller's
+        # timeout (_wait_for_session_end_memory_barrier).
+        try:
+            await asyncio.wait_for(memory_lane.join(), timeout=MEMORY_LANE_DRAIN_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            if not memory_lane.empty():
+                logger.warning(f"[{lanlan_name}] 连接器退出时仍有 {memory_lane.qsize()} 个记忆写入未发出，已放弃")
+        finally:
+            memory_lane_task.cancel()
+            await asyncio.gather(memory_lane_task, return_exceptions=True)
         # Completed replies may still wait out their late-transcript grace.
         try:
             await original_output.flush_terminated()

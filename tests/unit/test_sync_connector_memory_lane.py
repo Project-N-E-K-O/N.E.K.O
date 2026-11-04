@@ -208,3 +208,32 @@ async def test_two_failed_avatar_writes_do_not_suppress_the_next_interaction(con
     for item in _avatar_turn(1):
         queue.put_nowait(item)
     await _until(lambda: memory.endpoints() == ["cache", "cache", "cache"])
+
+
+@pytest.mark.asyncio
+async def test_stopping_connector_sends_queued_settlement(monkeypatch):
+    """A session end queued behind a slow write still goes out if the lane drains in time."""
+    from main_logic import cross_server
+
+    memory = _Memory(blocked={"renew"})
+    monkeypatch.setattr(cross_server, "_post_memory_server", memory)
+    monkeypatch.setattr(cross_server, "_publish_analyze_request_with_fallback", AsyncMock(return_value=True))
+    queue = asyncio.Queue()
+    task = asyncio.create_task(cross_server.run_sync_connector(
+        queue, "Lan", config={"monitor": False, "bullet": False},
+    ))
+    queue.put_nowait(_user("u1"))
+    queue.put_nowait({"type": "system", "data": "renew session"})
+    queue.put_nowait(_user("u2"))
+    queue.put_nowait(_reply("a2"))
+    queue.put_nowait({"type": "system", "data": "session end"})
+    await _until(lambda: memory.endpoints() == ["renew"] and queue.empty())
+    await asyncio.sleep(0.02)
+
+    task.cancel()
+    await asyncio.sleep(0.1)
+    memory.release.set()
+    await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 3)
+
+    assert memory.endpoints() == ["renew", "process"]
+    assert _texts(memory.posts[1][1]) == ["u2", "a2"]
