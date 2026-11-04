@@ -110,10 +110,7 @@ for (const exporter of exporters) {
                 const state = loadExporter(exporter, hasPicker);
                 const bytes = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 255, 128]);
                 const blob = new Blob([bytes], { type: 'application/octet-stream' });
-                const pickerType = filename.endsWith('.png')
-                    ? { accept: { 'image/png': ['.png'] } }
-                    : { accept: { 'application/octet-stream': ['.nekocfg'] } };
-                const saved = await state.save(blob, filename, pickerType);
+                const saved = await state.save(blob, filename);
 
                 assert.equal(saved, exporter.expectedReturnValue, 'download handoff result preserves the caller contract');
                 assert.deepEqual(state.emptyFiles, [], 'no preliminary save creates an empty file');
