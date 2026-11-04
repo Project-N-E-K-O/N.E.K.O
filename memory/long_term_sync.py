@@ -209,12 +209,19 @@ def import_document(incoming, existing, *, baseline=None):
                 native['promoted_at'] = iso(meta['promotedAt'])
             # Introspection's suppression and the synthesis-time evidence age
             # are this device's records and not part of the protocol; a
-            # snapshot of the same row must neither lift the one nor drop the
-            # other (without it a line retired as stale stays hidden).
+            # snapshot of the same row must not lift the one, nor drop the
+            # other (without it a line retired as stale stays hidden). The
+            # evidence age only holds for the same text on the same facts:
+            # a peer's rewrite may rest on older ones.
             previous = local_reflections.get((subject, row['id']), {})
-            for field in ('permanent_suppression', 'source_facts_oldest_at'):
-                if field in previous:
-                    native[field] = deepcopy(previous[field])
+            if 'permanent_suppression' in previous:
+                native['permanent_suppression'] = deepcopy(previous['permanent_suppression'])
+            if (
+                'source_facts_oldest_at' in previous
+                and previous.get('text') == native['text']
+                and sorted(previous.get('source_fact_ids') or []) == sorted(native['source_fact_ids'])
+            ):
+                native['source_facts_oldest_at'] = previous['source_facts_oldest_at']
             result['reflections'].append(native)
     return result
 

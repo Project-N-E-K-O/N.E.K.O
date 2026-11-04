@@ -584,18 +584,13 @@ class RenderingMixin:
         suppressed_text_set: set[str],
         subjects=None,
         include_legacy_private: bool | None = None,
-        retired_text_cutoffs: dict[str, datetime | None] | None = None,
+        retired_hides=None,
     ) -> list[dict]:
         """Drop reflections whose text matches a suppressed persona entry
         (existing semantic — see `_is_suppressed_text` callers below).
 
-        A text in ``retired_text_cutoffs`` (a persona line retired as stale,
-        contradicted or off-card) lets through only a reflection whose every
-        source fact postdates that retirement (``source_facts_oldest_at``,
-        recorded at synthesis): new facts made the line true again. Its own
-        ``created_at`` is no evidence -- synthesis may run on facts noted
-        before the retirement. A missing or unreadable time on either side
-        hides it.
+        ``retired_hides`` (``retired_persona_hides``) also drops the ones
+        repeating a persona line introspection retired.
 
         Blank-rejection goes through `_renderable_text`, the same single
         definition the persona split and the suppressed section use (those
@@ -634,7 +629,7 @@ class RenderingMixin:
             text = r.get('text', '')
             if text in suppressed_text_set:
                 continue
-            if retired_text_cutoffs and cls._hidden_by_retirement_cutoff(r, retired_text_cutoffs):
+            if retired_hides is not None and retired_hides(r):
                 continue
             out.append(r)
         return out
@@ -654,25 +649,48 @@ class RenderingMixin:
         return cutoff is None or evidence is None or evidence <= cutoff
 
     def retired_persona_hides(self, persona: dict):
-        """A predicate: does the render hide this reflection for repeating a
-        persona line introspection retired?
+        """A predicate: does this reflection repeat a persona line
+        introspection retired?
 
-        Always for a line retired for its wording; for one retired as
-        stale, contradicted or off-card unless every fact behind the
-        reflection is newer. The mention cooldown is not counted. For
-        callers that must not treat such a reflection as a live impression
-        (the pre-synthesis dedup pool).
+        Always for a line retired for its wording; for one retired as stale,
+        contradicted or off-card unless every fact behind the reflection
+        postdates the retirement (``source_facts_oldest_at``, recorded at
+        synthesis -- its own ``created_at`` is no evidence, synthesis may run
+        on facts noted before). Only lines of the reflection's own subject
+        count: a private retirement says nothing about a group's
+        same-worded reflection. The mention cooldown is not counted here
+        (``_suppressed_text_set``). The render, the pre-synthesis dedup pool
+        and promotion all ask this one predicate.
         """
-        wording = {
-            entry.get('text', '')
-            for entry in self._collect_all_entries(persona)
-            if isinstance(entry, dict) and retirement_blocks_restatement(entry)
+        from memory.scopes import subject_from_entry
+
+        def _subject(entry: dict):
+            subject = subject_from_entry(entry)
+            return None if subject is None else (subject.scope, subject.key)
+
+        retired_by_subject: dict = {}
+        for entry in self._collect_all_entries(persona):
+            if isinstance(entry, dict) and is_permanently_suppressed(entry):
+                retired_by_subject.setdefault(_subject(entry), []).append(entry)
+        rules = {
+            subject: (
+                {e.get('text', '') for e in entries if retirement_blocks_restatement(e)},
+                self._retired_text_cutoffs({'retired': {'facts': entries}}),
+            )
+            for subject, entries in retired_by_subject.items()
         }
-        cutoffs = self._retired_text_cutoffs(persona)
-        return lambda reflection: (
-            reflection.get('text', '') in wording
-            or self._hidden_by_retirement_cutoff(reflection, cutoffs)
-        )
+
+        def hides(reflection: dict) -> bool:
+            rule = rules.get(_subject(reflection))
+            if rule is None:
+                return False
+            wording, cutoffs = rule
+            return (
+                reflection.get('text', '') in wording
+                or self._hidden_by_retirement_cutoff(reflection, cutoffs)
+            )
+
+        return hides
 
     @staticmethod
     def _renders_scoped_only(subjects=None, include_legacy_private=None) -> bool:
@@ -948,15 +966,9 @@ class RenderingMixin:
         return "\n\n".join(sections) if sections else ""
 
     def _suppressed_text_set(self, persona: dict) -> set[str]:
-        """Texts no reflection may repeat: the mention-cooldown ones and the
-        ones introspection retired for their wording
-        (``retirement_blocks_restatement``). Lines retired as stale,
-        contradicted or off-card are in ``_retired_text_cutoffs`` instead."""
         out: set[str] = set()
         for entry in self._collect_all_entries(persona):
-            if isinstance(entry, dict) and (
-                entry.get('suppress') or retirement_blocks_restatement(entry)
-            ):
+            if isinstance(entry, dict) and entry.get('suppress'):
                 t = entry.get('text', '')
                 if t:
                     out.add(t)
@@ -1373,7 +1385,7 @@ class RenderingMixin:
             persona_view, suppressed_text_set,
             subjects,
             include_legacy_private,
-            retired_text_cutoffs=self._retired_text_cutoffs(persona_view),
+            retired_hides=self.retired_persona_hides(persona_view),
         )
         return _RenderPrep(
             persona_view=persona_view,

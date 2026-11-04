@@ -975,6 +975,23 @@ def test_retired_text_cutoffs_keep_the_latest_readable_time(tmp_path):
     }
 
 
+def test_a_private_retirement_does_not_hide_another_subjects_reflection(tmp_path):
+    """Introspection reviews private memory; its retirement of a line says
+    nothing about a group's reflection worded the same way."""
+    from memory.scopes import MemorySubject
+
+    env = _install(str(tmp_path))
+    group = MemorySubject.group_chat('qq', '7788').as_entry_fields()
+    hides = env.pm.retired_persona_hides({'master': {'facts': [
+        {'id': 'p1', 'text': '常聊摄影', **_retired()},
+        {'id': 'p2', 'text': '常去爬山', **_stale_marker(3)},
+    ]}})
+
+    assert hides({'text': '常聊摄影'}) and hides({'text': '常去爬山'})
+    assert not hides({'text': '常聊摄影', **group})
+    assert not hides({'text': '常去爬山', **group})
+
+
 @pytest.mark.asyncio
 async def test_permanent_suppression_leaves_the_promotion_pool(tmp_path):
     env = _install(str(tmp_path))
@@ -1443,6 +1460,32 @@ def test_long_term_sync_import_keeps_local_suppression():
     assert rows['r1']['permanent_suppression'] == marker
     # The evidence age decides whether a line retired as stale may come back.
     assert rows['r2']['source_facts_oldest_at'] == '2026-11-01T09:00:00'
+
+
+@pytest.mark.parametrize('change', ['text', 'source_fact_ids'])
+def test_long_term_sync_drops_the_evidence_age_of_a_rewritten_reflection(change):
+    """A peer may rewrite the same row onto older facts: the local evidence
+    age no longer describes it."""
+    from memory.long_term_sync import export_document, import_document
+
+    def _views(text, fact_ids):
+        return {
+            'persona': {}, 'facts': [], 'archive': [],
+            'reflections': [
+                {'id': 'r2', 'entity': 'master', 'text': text, 'status': 'confirmed',
+                 'created_at': _now_iso(), 'confirmed_at': _now_iso(),
+                 'source_fact_ids': fact_ids, 'source_facts_oldest_at': '2026-11-01T09:00:00'},
+            ],
+        }
+
+    local = _views('主人住在北京', ['f1'])
+    remote = _views('主人搬回了北京' if change == 'text' else '主人住在北京',
+                    ['f0', 'f1'] if change == 'source_fact_ids' else ['f1'])
+    snapshot = export_document(remote, int(datetime.now().timestamp() * 1000))
+
+    result = import_document(snapshot, local)
+
+    assert 'source_facts_oldest_at' not in result['reflections'][0]
 
 
 @pytest.mark.asyncio
