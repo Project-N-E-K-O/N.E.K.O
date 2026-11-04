@@ -323,6 +323,8 @@ def get_default_steam_info():
 # avoiding DLL loading during module imports.
 steamworks = None
 _server_loop: asyncio.AbstractEventLoop | None = None
+# Default-on stall watchdog for _server_loop (shared with memory/agent in merged mode).
+_loop_stall_watchdog = None
 
 _config_manager = get_config_manager()
 _cloudsave_manager = get_cloudsave_manager(_config_manager)
@@ -1382,12 +1384,24 @@ async def release_storage_startup_barrier(
 async def on_startup():
     """Initialization performed at server startup"""
     if _IS_MAIN_PROCESS:
-        global _server_loop
+        global _server_loop, _loop_stall_watchdog
         _server_loop = asyncio.get_running_loop()
         importlib.import_module(
             f"{__package__}._shared"
         ).runtime.server_loop = _server_loop
         configure_default_executor(_server_loop, logger=logger)
+        # Logs the loop thread's stack when the loop misses its heartbeat for
+        # NEKO_LOOP_STALL_THRESHOLD_MS (default 1000; 0 disables). Started first
+        # so stalls in the rest of startup are covered; returns immediately.
+        if _loop_stall_watchdog is None:
+            try:
+                from utils.event_loop_watchdog import start_loop_stall_watchdog_from_env
+
+                _loop_stall_watchdog = start_loop_stall_watchdog_from_env(
+                    _server_loop, logger=logger, label="main_server"
+                )
+            except Exception as _e:
+                logger.warning("[loop-stall] watchdog start failed: %s", _e)
 
         init_shared_state(
             role_state=role_state,
@@ -1477,10 +1491,19 @@ async def on_startup():
 @app.on_event("shutdown")
 async def on_shutdown():
     """Clean up resources at server shutdown"""
-    global _preload_task, _game_cleanup_task, agent_event_bridge
+    global _preload_task, _game_cleanup_task, agent_event_bridge, _loop_stall_watchdog
 
     if _IS_MAIN_PROCESS:
         logger.info("正在清理资源...")
+        # Release first: shutdown runs known synchronous cleanup that would only
+        # produce stall noise. In merged mode the loop's watchdog is shared and
+        # stops once every service sharing it has released it.
+        if _loop_stall_watchdog is not None:
+            try:
+                _loop_stall_watchdog.stop()
+            except Exception as e:
+                logger.debug(f"loop stall watchdog stop failed: {e}")
+            _loop_stall_watchdog = None
         # Isolate each step's failure; after first caller cancellation share 8 s including cancellation grace.
         # Skip subsequent async steps only on total-budget exhaustion, then reraise the first cancellation.
         shutdown_cancellation: asyncio.CancelledError | None = None
