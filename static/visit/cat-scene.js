@@ -618,6 +618,34 @@
     }
   }
 
+  function suspendForPageCache() {
+    clearReturnReconcile();
+    clearSlotTimer(scene.slots.self);
+    clearSlotTimer(scene.slots.peer);
+    clearCollisionPulse(scene.slots.self);
+    clearCollisionPulse(scene.slots.peer);
+    clearCollisionPulse(scene.nativeSelf);
+    clearNativeSelfBinding();
+    stopGeometryPulse();
+    if (scene.root) scene.root.hidden = true;
+    if (document.body && document.body.classList) document.body.classList.remove('neko-visit-cat-scene-active');
+  }
+
+  function resumeFromPageCache() {
+    if (!scene.active || !VALID_VISIT_ID.test(String(scene.visitId || ''))) return;
+    if (scene.root) scene.root.hidden = false;
+    if (document.body && document.body.classList) document.body.classList.add('neko-visit-cat-scene-active');
+    forceCatAppearance();
+    bindNativeSelf();
+    if (!scene.nativeSelf.container) requestNativeCatEntry();
+    if (!scene.nativeSelf.frame) scene.nativeSelf.frame = requestSceneFrame(syncNativeSelf);
+    if (scene.pendingModelReturn && scene.pendingModelReturn.visitId === scene.visitId) {
+      scheduleReturnReconcile(scene.visitId);
+    }
+    updateControls();
+    emitGeometryChanged();
+  }
+
   function completeEndedVisit(visitId) {
     if (!scene.active || scene.visitId !== visitId) return false;
     var pendingReturn = scene.pendingModelReturn;
@@ -922,13 +950,18 @@
   }
 
   bindSceneListeners();
-  global.addEventListener('pagehide', function () {
+  global.addEventListener('pagehide', function (event) {
     unbindSceneListeners();
+    if (event && event.persisted === true) {
+      suspendForPageCache();
+      return;
+    }
     deactivate();
   });
   global.addEventListener('pageshow', function (event) {
     if (!event || event.persisted !== true) return;
     bindSceneListeners();
+    resumeFromPageCache();
     restoreSceneSnapshots();
   });
 

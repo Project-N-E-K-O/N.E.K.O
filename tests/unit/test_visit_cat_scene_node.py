@@ -792,11 +792,34 @@ const report = {};
   bfcache.win.dispatchEvent({ type: 'pagehide', persisted: true });
   bfcache.win.dispatchEvent({ type: 'pageshow', persisted: true });
   bfcacheListenerCounts.push(bfcache.listenerCount('neko-visit-cat-pose'));
+  const activeAfterSecondRestore = bfcache.body.classList.contains('neko-visit-cat-scene-active');
+  const bfcacheNative = bfcache.installNativeSelf();
+  let bfcacheReturnClicks = 0;
+  bfcacheNative.button.addEventListener('click', () => { bfcacheReturnClicks += 1; });
+  bfcache.state('ended');
   report.bfcache_restore = {
     inactive_while_cached: inactiveWhileCached,
-    active_after_restore: bfcache.body.classList.contains('neko-visit-cat-scene-active'),
+    active_after_restore: activeAfterSecondRestore,
     listener_counts: bfcacheListenerCounts,
     updated_x: restoredX,
+    returned_after_end: bfcacheReturnClicks,
+  };
+
+  const pendingBfcacheReturn = createHarness();
+  pendingBfcacheReturn.state('started', {
+    cat_scene: 2, self_cat_asset: 'dev_neko', peer_cat_asset: 'yui_neko',
+  });
+  let pendingBfcacheCommits = 0;
+  pendingBfcacheReturn.confirmAnswers.push(true);
+  pendingBfcacheReturn.win.nekoVisitCatScene.guardModelReturn(() => { pendingBfcacheCommits += 1; });
+  await pendingBfcacheReturn.settle();
+  pendingBfcacheReturn.win.dispatchEvent({ type: 'pagehide', persisted: true });
+  pendingBfcacheReturn.win.dispatchEvent({ type: 'pageshow', persisted: true });
+  pendingBfcacheReturn.state('ended');
+  pendingBfcacheReturn.state('ended');
+  report.bfcache_confirmed_return = {
+    end_calls: pendingBfcacheReturn.endCalls.length,
+    commits: pendingBfcacheCommits,
   };
 
   const race = createHarness();
@@ -965,7 +988,9 @@ def test_bfcache_restore_rebinds_scene_once_and_replays_snapshots(report):
         "active_after_restore": True,
         "listener_counts": [1, 0, 1, 1],
         "updated_x": pytest.approx(76.2951, abs=0.001),
+        "returned_after_end": 1,
     }
+    assert report["bfcache_confirmed_return"] == {"end_calls": 1, "commits": 1}
 
 
 def test_old_pose_result_cannot_mutate_the_next_visit(report):

@@ -735,6 +735,8 @@ async function main() {
   assert.equal((listeners.get('neko-visit-cat-world') || []).length, 1);
   win.dispatchEvent({ type: 'pagehide', persisted: true });
   win.dispatchEvent({ type: 'pageshow', persisted: true });
+  assert.equal(win.NekoVisitCatWorld.isActive(), true);
+  assert.equal(win.NekoVisitCatWorld.snapshot().world.yarn_x_q16, 48000);
   assert.equal((listeners.get('neko-visit-cat-world') || []).length, 1);
   emit('neko:visit-cat-scene-deactivated', { visit_id: VID });
 
