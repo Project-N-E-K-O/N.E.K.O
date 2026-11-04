@@ -1,8 +1,8 @@
-"""Native directory selection and opening for the local plugin workbench.
+"""Native directory selection and opening through platform bridges.
 
 Only platform-native bridges are used (osascript / PowerShell / zenity, kdialog
 and yad). Tk/Tcl is excluded by project policy; see scripts/check_no_tkinter.py.
-Error messages are English diagnostics; the UI localizes by ``code``.
+Error messages are English diagnostics; callers localize by ``code``.
 """
 
 from __future__ import annotations
@@ -179,7 +179,9 @@ def _pick_via_powershell(*, start_path: str, title: str) -> str:
             "powershell.exe",
         ),
         "powershell.exe",
+        "powershell",
         "pwsh.exe",
+        "pwsh",
     )
     if not executable:
         raise _picker_unavailable("PowerShell is required for the native folder picker")

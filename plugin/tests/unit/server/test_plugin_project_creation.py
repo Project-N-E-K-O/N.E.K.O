@@ -21,12 +21,12 @@ from plugin.server.domain.errors import ServerDomainError
 from plugin.server.domain.plugin_project_errors import ProjectErrorCode
 from plugin.server.infrastructure import (
     autostart_approvals,
-    native_directory,
     runtime_overrides,
 )
 from plugin.server.infrastructure.mutation_auth import require_plugin_mutation_access
 from plugin.server.routes import plugin_projects as routes
 from plugin.server.routes.plugin_projects import router
+from utils import native_directory
 
 ORIGIN = "http://127.0.0.1:48916"
 

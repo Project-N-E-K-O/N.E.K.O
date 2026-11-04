@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import re
 import threading
 try:
     import tomllib
@@ -41,6 +40,7 @@ from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.utils.path_resolution import PathResolutionCache, canonical_read_path
 from plugin.server.domain.errors import ServerDomainError
+from plugin.server.domain.normalization import is_valid_plugin_id
 from plugin.settings import BUILTIN_PLUGIN_CONFIG_ROOT, PLUGIN_CONFIG_ROOTS
 from plugin.server.application.plugins.project_sources import (
     PROJECT_SOURCE,
@@ -50,7 +50,6 @@ from plugin.server.application.plugins.project_sources import (
 )
 
 logger = get_logger("server.application.plugins.registry")
-_PLUGIN_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 _MANAGED_META_KEYS = {
     "project_id",
@@ -172,7 +171,7 @@ def _find_plugin_config_path(
     read_cache: PathResolutionCache | None = None,
 ) -> Path | None:
     normalized_plugin_id = plugin_id.strip()
-    if not _PLUGIN_ID_PATTERN.fullmatch(normalized_plugin_id):
+    if not is_valid_plugin_id(normalized_plugin_id):
         return None
 
     # Roots are declared in effective-source priority order (user, builtin).
@@ -1472,7 +1471,7 @@ class PluginRegistryService:
     def _refresh_plugin_sync(self, plugin_id: str) -> dict[str, object]:
         read_cache = PathResolutionCache()
         normalized_plugin_id = plugin_id.strip()
-        if not _PLUGIN_ID_PATTERN.fullmatch(normalized_plugin_id):
+        if not is_valid_plugin_id(normalized_plugin_id):
             raise ServerDomainError(
                 code="PLUGIN_INVALID_ID",
                 message="Invalid plugin id",

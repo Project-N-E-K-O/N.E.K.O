@@ -10,7 +10,6 @@ never start automatically and they are imported from their own directory.
 from __future__ import annotations
 
 import os
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,6 +18,7 @@ from plugin.core.entry_points import (
     describe_plugin_entry_directory_mismatch,
     normalize_plugin_entry_point,
 )
+from plugin.server.domain.normalization import is_valid_plugin_id
 from plugin.utils.source_paths import is_vendor_sync_path
 
 PROJECT_SOURCE = "project"
@@ -79,7 +79,7 @@ def inspect_source_directory(source_dir: Path) -> SourceMetadata:
         source = _load_plugin_source(source_dir)
     except (OSError, TypeError, KeyError) as exc:
         raise ValueError(str(exc)) from exc
-    if not re.fullmatch(r"[a-zA-Z0-9_-]+", source.plugin_id):
+    if not is_valid_plugin_id(source.plugin_id):
         raise ValueError(f"Invalid plugin ID: {source.plugin_id!r}")
     if source_dir.name != source.plugin_id:
         raise ValueError(

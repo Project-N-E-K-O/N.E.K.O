@@ -15,7 +15,6 @@ from ..core.lint import ruff_command
 from ..paths import CliDefaults
 from ._completers import PLUGIN_NAME_COMPLETER
 from ._resolve import resolve_plugin_dir_candidate
-from .release_cmd import _defaults_from_args
 
 
 def register(subparsers: argparse._SubparsersAction, *, defaults: CliDefaults) -> None:
@@ -36,7 +35,7 @@ def register(subparsers: argparse._SubparsersAction, *, defaults: CliDefaults) -
 
 
 def handle(args: argparse.Namespace) -> int:
-    defaults = _defaults_from_args(args, defaults=args._defaults)
+    defaults = args._defaults.with_plugins_root(getattr(args, "plugins_root", None))
     try:
         plugin_dir = resolve_plugin_dir_candidate(args.plugin, defaults=defaults)
     except Exception as exc:

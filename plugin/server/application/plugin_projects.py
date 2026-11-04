@@ -43,7 +43,7 @@ from plugin.server.domain.errors import ServerDomainError
 from plugin.server.domain.plugin_project_errors import ProjectErrorCode as Code
 from plugin.server.domain.plugin_project_errors import project_error
 from plugin.server.infrastructure import authoring_project_store as store
-from plugin.server.infrastructure import native_directory
+from utils import native_directory
 
 logger = get_logger("server.application.plugin_projects")
 

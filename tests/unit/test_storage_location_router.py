@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from main_routers import storage_location_router as storage_location_router_module
 from main_routers.shared_state import init_shared_state
 from utils.cloudsave_runtime import CLOUDSAVE_DISABLED_ENV, ROOT_MODE_MAINTENANCE_READONLY
+from utils import native_directory
 from utils import storage_location_bootstrap as storage_location_bootstrap_module
 from utils.config_manager import ConfigManager
 from utils.config_manager import storage_roots as storage_roots_module
@@ -1635,10 +1636,10 @@ def test_storage_location_pick_directory_reports_cancelled_selection(tmp_path):
 
 @pytest.mark.unit
 def test_storage_location_pick_directory_uses_windows_native_picker(tmp_path):
-    with patch.object(storage_location_router_module.sys, "platform", "win32"):
+    with patch.object(native_directory.sys, "platform", "win32"):
         with patch.object(
-            storage_location_router_module,
-            "_pick_directory_via_powershell",
+            native_directory,
+            "_pick_via_powershell",
             return_value=str((tmp_path / "picked-win").resolve()),
         ) as powershell_picker:
             selected_root = storage_location_router_module._pick_storage_location_directory(start_path=str(tmp_path))
@@ -1652,25 +1653,21 @@ def test_windows_powershell_directory_picker_uses_topmost_owner(tmp_path):
     selected_root = str((tmp_path / "picked-win").resolve())
 
     with patch.object(
-        storage_location_router_module,
-        "_resolve_executable_name",
+        native_directory,
+        "_find_executable",
         return_value="powershell.exe",
     ), patch.object(
-        storage_location_router_module.shutil,
-        "which",
-        return_value="powershell.exe",
-    ), patch.object(
-        storage_location_router_module.subprocess,
+        native_directory.subprocess,
         "run",
-        return_value=storage_location_router_module.subprocess.CompletedProcess(
+        return_value=native_directory.subprocess.CompletedProcess(
             args=[],
             returncode=0,
             stdout=selected_root + "\n",
             stderr="",
         ),
     ) as run_mock:
-        result = storage_location_router_module._pick_directory_via_powershell(
-            start_path=str(tmp_path)
+        result = native_directory._pick_via_powershell(
+            start_path=str(tmp_path), title="请选择存储位置目录"
         )
 
     assert result == selected_root
@@ -1687,12 +1684,12 @@ def test_windows_powershell_directory_picker_uses_topmost_owner(tmp_path):
 @pytest.mark.unit
 def test_storage_location_pick_directory_propagates_native_unavailable_on_linux(tmp_path):
     """Raise if Linux native dialog unavailable; no tkinter fallback (project policy excludes tk)."""
-    with patch.object(storage_location_router_module.sys, "platform", "linux"):
+    with patch.object(native_directory.sys, "platform", "linux"):
         with patch.object(
-            storage_location_router_module,
-            "_pick_directory_via_linux_dialog",
-            side_effect=storage_location_router_module._DirectoryPickerUnavailable(
-                "directory_picker_unavailable",
+            native_directory,
+            "_pick_via_linux_dialog",
+            side_effect=native_directory.NativeDirectoryError(
+                "DIRECTORY_PICKER_UNAVAILABLE",
                 "native picker unavailable",
             ),
         ) as linux_picker:

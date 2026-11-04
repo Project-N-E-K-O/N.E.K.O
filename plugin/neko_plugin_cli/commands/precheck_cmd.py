@@ -25,7 +25,7 @@ from ..core.plugin_source import load_plugin_source
 from ..paths import CliDefaults
 from ._completers import PLUGIN_NAME_COMPLETER
 from ._resolve import resolve_plugin_dir_candidate
-from .release_cmd import _defaults_from_args, _diagnose_repository
+from .release_cmd import _diagnose_repository
 
 STAGE_LINT = "lint"
 STAGE_SYNC = "sync"
@@ -108,7 +108,7 @@ def _run_stage(stage: str, plugin_dir_arg: str, args: argparse.Namespace, *, cap
 
 
 def handle(args: argparse.Namespace) -> int:
-    defaults = _defaults_from_args(args, defaults=args._defaults)
+    defaults = args._defaults.with_plugins_root(getattr(args, "plugins_root", None))
     capture = bool(args.as_json)
     try:
         plugin_dir = resolve_plugin_dir_candidate(args.plugin, defaults=defaults)

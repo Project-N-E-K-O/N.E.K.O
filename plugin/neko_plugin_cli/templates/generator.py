@@ -540,10 +540,10 @@ def _render_readme_md(
 
 ## Development / 开发
 
-Open this folder in your editor. Load it from N.E.K.O's development plugins page
+Open this folder in your editor. Add it to the Plugin studio in N.E.K.O's plugin manager
 when you are ready to run it. Runtime entries must use `async def`.
 
-在编辑器中打开本目录。需要运行时，在 N.E.K.O 的开发插件页面加载此目录。
+在编辑器中打开本目录。需要运行时，在 N.E.K.O 插件管理器的「插件制作工作台」中添加此目录。
 运行时入口使用 `async def`。
 
 - ID: `{spec.plugin_id}`

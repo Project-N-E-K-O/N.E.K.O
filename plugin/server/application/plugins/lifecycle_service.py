@@ -41,6 +41,7 @@ from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.server.domain import IO_RUNTIME_ERRORS, RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
+from plugin.server.domain.normalization import is_valid_plugin_id
 from plugin.server.application.plugins.operation_lock import (
     bounded_operation_wait,
     _HeldPluginOperationLock,
@@ -166,7 +167,6 @@ async def clear_plugin_llm_tools(
     return await clear_plugin_tools(plugin_id, timeout=timeout)
 
 
-_PLUGIN_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 _PLUGIN_STARTUP_TIMEOUT_MAX = 300.0
 # Minimum time a step receives after compression by the whole-pass budget.
 #
@@ -726,7 +726,7 @@ def _set_plugin_runtime_metadata_sync(
 
 def _get_plugin_config_path(plugin_id: str) -> Path | None:
     normalized_plugin_id = plugin_id.strip()
-    if not _PLUGIN_ID_PATTERN.fullmatch(normalized_plugin_id):
+    if not is_valid_plugin_id(normalized_plugin_id):
         return None
 
     for root in PLUGIN_CONFIG_ROOTS:

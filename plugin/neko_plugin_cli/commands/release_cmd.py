@@ -30,7 +30,7 @@ def _tri(english: str, chinese: str, japanese: str) -> str:
 def handle_check(args: argparse.Namespace) -> int:
     command_label = getattr(args, "_command_label", "check")
     try:
-        defaults = _defaults_from_args(args, defaults=args._defaults)
+        defaults = args._defaults.with_plugins_root(getattr(args, "plugins_root", None))
         plugin_dir = resolve_plugin_dir_candidate(args.plugin, defaults=defaults)
         source = load_plugin_source(plugin_dir)
         issues = validate_plugin_dir(
@@ -62,7 +62,7 @@ def handle_check(args: argparse.Namespace) -> int:
 def handle_release_check(args: argparse.Namespace) -> int:
     command_label = getattr(args, "_command_label", "check --release")
     try:
-        defaults = _defaults_from_args(args, defaults=args._defaults)
+        defaults = args._defaults.with_plugins_root(getattr(args, "plugins_root", None))
         plugin_dir = resolve_plugin_dir_candidate(args.plugin, defaults=defaults)
         source = load_plugin_source(plugin_dir)
         issues = validate_plugin_dir(
@@ -113,18 +113,6 @@ def handle_release_check(args: argparse.Namespace) -> int:
         if severity == "warning":
             print(f"  [WARNING] {message}")
     return 0
-
-
-def _defaults_from_args(args: argparse.Namespace, *, defaults: CliDefaults) -> CliDefaults:
-    plugins_root = getattr(args, "plugins_root", None)
-    if not plugins_root:
-        return defaults
-    return CliDefaults(
-        plugin_root=defaults.plugin_root,
-        target_dir=defaults.target_dir,
-        plugins_root=Path(plugins_root).expanduser().resolve(),
-        profiles_root=defaults.profiles_root,
-    )
 
 
 def _is_builtin_source_plugin_dir(plugin_dir: Path, defaults: CliDefaults) -> bool:
