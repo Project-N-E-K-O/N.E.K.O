@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -458,8 +458,9 @@ async def test_synthesis_without_vectors_keeps_old_prompt_and_ignores_skip(tmp_p
     assert "======以上为事实======\n\n请基于这些事实" in prompt
     assert len(created) == 1
     # The existing-impressions block loads nothing when vectors are off; the
-    # one persona read is the retired-restatement check (identical text).
-    assert persona_reads.await_count == 1
+    # two persona reads are the retired-restatement check (identical text)
+    # and its recheck under the save lock.
+    assert persona_reads.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -775,6 +776,117 @@ async def test_synthesis_records_when_its_oldest_fact_was_noted(tmp_path, times,
     assert stored["source_facts_oldest_at"] == (expected.isoformat() if expected else None)
 
 
+def _stale_since(days: int, issue: str = "stale") -> dict:
+    at = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+    return {"permanent_suppression": {"at": at, "reason": "x", "issue": issue}}
+
+
+def _facts_since(days: int) -> str:
+    return (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+
+
+@pytest.mark.asyncio
+async def test_existing_impressions_leave_out_reflections_hidden_behind_a_retired_persona_line(tmp_path):
+    """A reflection the render hides because it repeats a retired persona
+    line is no live impression: offering it as "already covered" would
+    swallow the very facts that would bring a stale line back."""
+    tmpdir = str(tmp_path)
+    _write_json(tmpdir, "reflections.json", [
+        _reflection("ref_old", "主人住在北京", source_facts_oldest_at=_facts_since(5)),
+        _reflection("ref_new", "主人住在北京", source_facts_oldest_at=_facts_since(1)),
+        _reflection("ref_hollow", "两人形成了默契", source_facts_oldest_at=_facts_since(1)),
+        _reflection("ref_live", "主人睡前说晚安"),
+    ])
+    _write_json(tmpdir, "persona.json", {"relationship": {"facts": [
+        _persona_entry("p_stale", "主人住在北京", **_stale_since(3)),
+        # Retired for its wording: hidden even with facts newer than that.
+        _persona_entry("p_hollow", "两人形成了默契", **_stale_since(3, "hollow")),
+    ]}})
+    _fs, _pm, re = _install(tmpdir)
+    with _patch_vectors(_FakeEmbeddingService()):
+        _block, candidates = await re._build_existing_impressions_block(
+            CHAR, _facts(), subject=None, prompt_lang="zh",
+        )
+    assert set(candidates) == {"reflection.ref_new", "reflection.ref_live"}
+
+
+@pytest.mark.asyncio
+async def test_synthesis_skip_falls_back_when_its_line_is_retired_in_persona_meanwhile(tmp_path):
+    """Introspection may retire the persona line a candidate repeats while
+    the LLM judges the batch; the render then hides the candidate, so the
+    recheck under the lock turns the skip into a normal new reflection."""
+    tmpdir = str(tmp_path)
+    _write_json(tmpdir, "facts.json", _facts())
+    text = "主人每晚睡前都会对小天说晚安"
+    _write_json(tmpdir, "reflections.json", [_reflection("ref_old", text)])
+    _fs, pm, re = _install(tmpdir)
+    answer = {
+        "skip": True, "covered_by": "reflection.ref_old",
+        "entity": "relationship", "relation_type": "dynamic",
+        "reflection": "主人连着几晚睡前对小天说晚安",
+        "temporal_scope": "pattern", "event_when": None,
+    }
+
+    async def _llm_line_retired(api_config, prompt, **_kw):
+        assert "reflection.ref_old" in prompt, "夹具失效：目标没有进候选"
+        persona = await pm.aget_persona(CHAR)
+        persona.setdefault("relationship", {}).setdefault("facts", []).append(
+            _persona_entry("p_line", text, **_stale_since(0)),
+        )
+        return SimpleNamespace(content=json.dumps(answer, ensure_ascii=False)), 0
+
+    with _patch_vectors(_FakeEmbeddingService()), \
+         patch("memory.thinking_llm.ainvoke_thinking", _llm_line_retired), \
+         patch("utils.language_utils.get_global_language", return_value="zh"):
+        created = await re.synthesize_reflections(CHAR)
+
+    assert len(created) == 1, "目标被渲染隐藏后应退回正常新增"
+    old = {r["id"]: r for r in _read_json(tmpdir, "reflections.json")}["ref_old"]
+    assert "covered_fact_ids" not in old
+
+
+@pytest.mark.asyncio
+async def test_restatement_retired_after_the_check_is_caught_at_save(tmp_path):
+    """Introspection can retire a matching line between the unlocked
+    restatement check and the save; the save rechecks the entries retired
+    since and stores the new reflection retired."""
+    tmpdir = str(tmp_path)
+    _write_json(tmpdir, "facts.json", _facts())
+    text = "两人睡前道晚安形成了默契"
+    _fs, _pm, re = _install(tmpdir)
+    original = re._afind_retired_restatement
+
+    async def _check_then_retire(*args, **kwargs):
+        outcome = await original(*args, **kwargs)
+        _write_json(tmpdir, "reflections.json", [
+            _reflection("ref_late", text, **_retired("hollow")),
+        ])
+        return outcome
+
+    with _patch_vectors(_FakeEmbeddingService()), _llm(_new_reflection_answer(text), []), \
+         patch.object(re, "_afind_retired_restatement", _check_then_retire), \
+         patch("utils.language_utils.get_global_language", return_value="zh"):
+        created = await re.synthesize_reflections(CHAR)
+
+    assert len(created) == 1
+    stored = {r["id"]: r for r in _read_json(tmpdir, "reflections.json")}[created[0]["id"]]
+    assert stored["permanent_suppression"]["restates"] == "reflection.ref_late"
+
+
+def test_refine_modify_that_absorbs_facts_forgets_the_evidence_time():
+    from memory.reflection import ReflectionEngine
+
+    kept = {"text": "a", "source_facts_oldest_at": "2026-11-01T00:00:00"}
+    ReflectionEngine._apply_refine_modify(kept, "b", "r", "2026-11-04T00:00:00")
+    absorbed = {"text": "a", "source_facts_oldest_at": "2026-11-01T00:00:00"}
+    ReflectionEngine._apply_refine_modify(
+        absorbed, "b", "r", "2026-11-04T00:00:00", absorbed_fact_ids=["f9"],
+    )
+
+    assert kept["source_facts_oldest_at"] == "2026-11-01T00:00:00"
+    assert absorbed["source_facts_oldest_at"] is None, "吸收了年龄不明的事实，不能再当作新证据"
+
+
 @pytest.mark.asyncio
 async def test_retired_restatement_without_vectors_matches_identical_text_only(tmp_path):
     tmpdir = str(tmp_path)
@@ -784,13 +896,14 @@ async def test_retired_restatement_without_vectors_matches_identical_text_only(t
     ])
     _fs, _pm, re = _install(tmpdir)
     with _patch_vectors(_FakeEmbeddingService(available=False)):
-        same = await re._afind_retired_restatement(CHAR, " 两人睡前道晚安形成了默契 ")
-        similar = await re._afind_retired_restatement(CHAR, "两人每晚互道晚安形成了深厚默契")
-        live = await re._afind_retired_restatement(CHAR, "主人睡前说晚安")
+        same, seen = await re._afind_retired_restatement(CHAR, " 两人睡前道晚安形成了默契 ")
+        similar, _ = await re._afind_retired_restatement(CHAR, "两人每晚互道晚安形成了深厚默契")
+        live, _ = await re._afind_retired_restatement(CHAR, "主人睡前说晚安")
 
     assert same == "reflection.ref_hollow"
     assert similar is None, "没有向量时只认完全相同的文本"
     assert live is None, "只比对被压制的条目"
+    assert seen == {"reflection.ref_hollow"}, "返回本次比对过的候选，供保存时只复查新增的"
 
 
 @pytest.mark.asyncio

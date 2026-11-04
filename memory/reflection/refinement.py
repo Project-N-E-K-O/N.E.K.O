@@ -118,6 +118,10 @@ class RefinementMixin:
         src['text'] = new_text
         existing_sources = list(src.get('source_fact_ids') or [])
         src['source_fact_ids'] = sorted(set(existing_sources + absorbed))
+        if absorbed:
+            # Facts of unknown age joined: the line is no longer known to
+            # rest only on facts newer than a retirement (see the render).
+            src['source_facts_oldest_at'] = None
         mod_history = list(src.get('modification_history') or [])
         mod_history.append({
             'old_text': old_text,

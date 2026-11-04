@@ -634,13 +634,45 @@ class RenderingMixin:
             text = r.get('text', '')
             if text in suppressed_text_set:
                 continue
-            if retired_text_cutoffs and text in retired_text_cutoffs:
-                cutoff = retired_text_cutoffs[text]
-                evidence = to_naive_local(_parse_iso_safe(r.get('source_facts_oldest_at')))
-                if cutoff is None or evidence is None or evidence <= cutoff:
-                    continue
+            if retired_text_cutoffs and cls._hidden_by_retirement_cutoff(r, retired_text_cutoffs):
+                continue
             out.append(r)
         return out
+
+    @staticmethod
+    def _hidden_by_retirement_cutoff(
+        reflection: dict, cutoffs: dict[str, datetime | None],
+    ) -> bool:
+        """Whether ``reflection`` repeats a persona line retired as stale,
+        contradicted or off-card (``cutoffs``, see ``_retired_text_cutoffs``)
+        without every fact behind it postdating that retirement."""
+        text = reflection.get('text', '')
+        if text not in cutoffs:
+            return False
+        cutoff = cutoffs[text]
+        evidence = to_naive_local(_parse_iso_safe(reflection.get('source_facts_oldest_at')))
+        return cutoff is None or evidence is None or evidence <= cutoff
+
+    def retired_persona_hides(self, persona: dict):
+        """A predicate: does the render hide this reflection for repeating a
+        persona line introspection retired?
+
+        Always for a line retired for its wording; for one retired as
+        stale, contradicted or off-card unless every fact behind the
+        reflection is newer. The mention cooldown is not counted. For
+        callers that must not treat such a reflection as a live impression
+        (the pre-synthesis dedup pool).
+        """
+        wording = {
+            entry.get('text', '')
+            for entry in self._collect_all_entries(persona)
+            if isinstance(entry, dict) and retirement_blocks_restatement(entry)
+        }
+        cutoffs = self._retired_text_cutoffs(persona)
+        return lambda reflection: (
+            reflection.get('text', '') in wording
+            or self._hidden_by_retirement_cutoff(reflection, cutoffs)
+        )
 
     @staticmethod
     def _renders_scoped_only(subjects=None, include_legacy_private=None) -> bool:
