@@ -402,6 +402,24 @@ class TestAssistOnlyKeyIsolation:
         assert 'cosyvoice-existing' in config_manager.get_voices_for_current_api(for_listing=True)
 
     @pytest.mark.unit
+    @pytest.mark.parametrize('provider', _ASSIST_ONLY_PROVIDERS)
+    def test_registered_voice_lands_in_listed_bucket(self, config_manager, provider):
+        """POST /voices must save into the bucket that listing and validation read."""
+        config_field = _PROVIDER_CATALOG['api_key_registry'][provider]['config_field']
+        _write_core_config(config_manager, {
+            'coreApi': 'openai',
+            'coreApiKey': 'sk-openai-core',
+            'assistApi': provider,
+            config_field: 'sk-assist-dedicated',
+        })
+        config_manager.save_voice_for_current_api('cosyvoice-registered', {
+            'name': 'Registered voice',
+            'provider': 'cosyvoice',
+        })
+        assert 'cosyvoice-registered' in config_manager.get_voices_for_current_api()
+        assert config_manager.delete_voice_for_current_api('cosyvoice-registered')
+
+    @pytest.mark.unit
     def test_core_capable_assist_still_falls_back(self, config_manager):
         """The same vendor on both sides keeps sharing the single core key."""
         _write_core_config(config_manager, {
