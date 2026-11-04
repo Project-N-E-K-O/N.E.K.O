@@ -922,9 +922,15 @@ def _decide_phase1_channels(
     vision_content: str | None,
     *,
     has_unfinished_thread: bool,
+    has_due_commitment: bool = False,
 ) -> Phase1Decision:
-    """Finalize Phase 1 without changing source order or continuation rules."""
-    if not phase1_topics and not vision_content and not has_unfinished_thread:
+    """Finalize Phase 1 without changing source order or continuation rules.
+
+    A promise coming due (its cue already in the memory context) keeps the
+    round alive like an unfinished thread: Phase 2 follows up on it text-only.
+    """
+    if (not phase1_topics and not vision_content and not has_unfinished_thread
+            and not has_due_commitment):
         return Phase1Decision(
             result=ProactiveChatResult(
                 body=_proactive_pass_body(

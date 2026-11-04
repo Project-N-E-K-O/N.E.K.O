@@ -77,7 +77,7 @@ from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writa
 from memory.external_markdown_import import MAX_ENTRIES, MAX_ENTRY_CHARS
 from memory.outbox import OP_PERSIST_PROMPT_LOCALE
 from memory.persona.fusion import ExternalMemoryImportTooLargeError
-from memory.pinned_facts import PINNED_FACT_ID_PREFIX, due_date as pinned_due_date
+from memory.pinned_facts import due_date as pinned_due_date
 from utils.natural_expression_candidates import (
     CandidateMinerError,
     SourceMessage,
@@ -1187,23 +1187,17 @@ async def api_followup_topics(lanlan_name: str):
 async def api_record_surfaced(request: Request, lanlan_name: str):
     """Record which reflections this proactive chat mentioned, refreshing the cooldown.
 
-    Pinned-entry ids among them (a promise from /followup_topics) go to the
-    pinned section instead, never into the reflections' surfaced log.
+    ``commitment_ids`` (the promise from /followup_topics, when it was
+    offered) start that promise's own offer cooldown in the pinned section.
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
     body = await request.json()
+    commitment_ids = body.get("commitment_ids") or []
+    if isinstance(commitment_ids, list):
+        await _record_surfaced_commitments(lanlan_name, commitment_ids)
     reflection_ids = body.get("reflection_ids", [])
     if not reflection_ids:
         return {"ok": True}
-    if isinstance(reflection_ids, list):
-        pinned_ids = [
-            i for i in reflection_ids
-            if isinstance(i, str) and i.startswith(PINNED_FACT_ID_PREFIX)
-        ]
-        await _record_surfaced_commitments(lanlan_name, pinned_ids)
-        reflection_ids = [i for i in reflection_ids if i not in pinned_ids]
-        if not reflection_ids:
-            return {"ok": True}
     try:
         await runtime.reflection_engine.arecord_surfaced(lanlan_name, reflection_ids)
     except Exception as e:

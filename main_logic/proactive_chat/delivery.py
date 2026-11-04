@@ -411,6 +411,7 @@ async def _record_committed_delivery(
     active_channels: list[str],
     has_unfinished_thread: bool,
     surfaced_reflection_ids: list[Any],
+    surfaced_commitment_ids: list[Any] | None = None,
     selected_web_link: dict[str, Any] | None,
     selected_web_topic_key: str | None,
     web_parsed: dict[str, Any] | None,
@@ -467,14 +468,19 @@ async def _record_committed_delivery(
     try:
         memory_base = f"http://127.0.0.1:{memory_server_port}"
         memory_client = _get_internal_http_client()
-        if surfaced_reflection_ids:
+        commitment_ids = list(surfaced_commitment_ids or [])
+        if surfaced_reflection_ids or commitment_ids:
             await memory_client.post(
                 f"{memory_base}/record_surfaced/{lanlan_name}",
-                json={"reflection_ids": surfaced_reflection_ids},
+                json={
+                    "reflection_ids": list(surfaced_reflection_ids),
+                    "commitment_ids": commitment_ids,
+                },
                 timeout=5.0,
             )
             print(
-                f"[{lanlan_name}] 记录 surfaced 反思: {len(surfaced_reflection_ids)} 条"
+                f"[{lanlan_name}] 记录 surfaced 反思: {len(surfaced_reflection_ids)} 条，"
+                f"承诺: {len(commitment_ids)} 条"
             )
     except Exception as exc:
         active_logger.debug(

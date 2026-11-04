@@ -5131,8 +5131,8 @@ PINNED_COMMITMENTS_SECTION_HEADER = {
     "pt": "O que você prometeu (ainda não cumprido; cumpra quando chegar a hora, não esqueça)",
 }
 
-# One open commitment, in the rendered section and in the resolve / review
-# prompts; ``until`` is the date it is due (or, without one, its expiry).
+# One open commitment with a date, in the rendered section and in the
+# resolve / review prompts; ``until`` is the date it is due.
 PINNED_COMMITMENT_LINE = {
     "zh": "{text}（答应于 {since}，期限 {until}）",
     "zh-TW": "{text}（答應於 {since}，期限 {until}）",
@@ -5142,6 +5142,19 @@ PINNED_COMMITMENT_LINE = {
     "ru": "{text} (обещано {since}, срок {until})",
     "es": "{text} (prometido el {since}, plazo hasta el {until})",
     "pt": "{text} (prometido em {since}, prazo até {until})",
+}
+
+# An open commitment waiting on a condition: it has no deadline, so none is
+# shown (the tier ceiling it expires at is bookkeeping, not a due date).
+PINNED_COMMITMENT_UNDATED_LINE = {
+    "zh": "{text}（答应于 {since}）",
+    "zh-TW": "{text}（答應於 {since}）",
+    "en": "{text} (promised {since})",
+    "ja": "{text}（{since} に約束）",
+    "ko": "{text} ({since} 약속)",
+    "ru": "{text} (обещано {since})",
+    "es": "{text} (prometido el {since})",
+    "pt": "{text} (prometido em {since})",
 }
 
 # A candidate reporting that a promise was kept. It may only retire the
@@ -5405,6 +5418,11 @@ def get_pinned_commitments_section_header(lang: str = "zh") -> str:
 def render_pinned_commitment_line(text: str, *, since: str, until: str, lang: str = "zh") -> str:
     """One open commitment, without its list marker or id prefix."""
     return _loc(PINNED_COMMITMENT_LINE, lang).format(text=text, since=since, until=until)
+
+
+def render_pinned_commitment_undated_line(text: str, *, since: str, lang: str = "zh") -> str:
+    """One open commitment without a date of its own (it waits on a condition)."""
+    return _loc(PINNED_COMMITMENT_UNDATED_LINE, lang).format(text=text, since=since)
 
 
 def render_pinned_commitment_done_line(text: str, *, since: str, lang: str = "zh") -> str:

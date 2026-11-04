@@ -281,6 +281,20 @@ def _open_threads_for_activity_state(
     return list(fresh_open_threads or [])
 
 
+def _offered_commitment_ids(commitment: dict[str, Any] | None) -> list[Any]:
+    """The id of the promise the memory cues render, kept apart from reflections.
+
+    It goes to /record_surfaced as ``commitment_ids`` for the promise's own
+    offer cooldown, and never counts as use of the reminiscence channel: a
+    promise shown on its own must not decay the reflections that follow.
+    """
+    from main_logic.topic.hooks import commitment_cue_text
+
+    if commitment_cue_text(commitment) and commitment.get("id"):
+        return [commitment["id"]]
+    return []
+
+
 def _render_followup_topic_hooks(
     proactive_lang: str,
     followup_topics: list[dict[str, Any]],
@@ -298,13 +312,12 @@ def _render_followup_topic_hooks(
     and decision rules can arbitrate them separately from old reminiscence.
 
     ``commitment`` (from /followup_topics: a promise that comes due soon)
-    renders first; its id leads the surfaced ids so /record_surfaced starts
-    its offer cooldown.
+    renders first. Its id is not a reflection id: see _offered_commitment_ids.
     """
     from main_logic.topic.common import clean_text
-    from main_logic.topic.hooks import build_topic_hook_prompt, commitment_cue_text
+    from main_logic.topic.hooks import build_topic_hook_prompt
 
-    if not followup_topics and not commitment_cue_text(commitment):
+    if not followup_topics and not _offered_commitment_ids(commitment):
         return "", []
 
     rendered_followup_topics = followup_topics[:3]
@@ -319,8 +332,6 @@ def _render_followup_topic_hooks(
     # Mirror _iter_followup_texts: drop blanks/duplicates so the surfaced ids
     # match exactly what the prompt rendered.
     surfaced_reflection_ids: list[Any] = []
-    if commitment_cue_text(commitment) and commitment.get("id"):
-        surfaced_reflection_ids.append(commitment["id"])
     seen_texts: set[str] = set()
     for topic in rendered_followup_topics:
         text = clean_text(topic.get("text"))
@@ -1593,6 +1604,7 @@ async def handle_proactive_chat(
         followup_topics_prompt = ""
         _followup_topics = []
         _due_commitment = None  # A promise coming due, offered ahead of the reflections.
+        _surfaced_commitment_ids = []  # Its id once the cue renders it; not a reflection.
         _surfaced_reflection_ids = []  # Track pending reflections mentioned this turn.
         _allow_reminiscence = (
             activity_snapshot is None
@@ -1633,6 +1645,10 @@ async def handle_proactive_chat(
                                 _followup_topics,
                                 commitment=_due_commitment,
                             )
+                            if followup_topics_prompt:
+                                _surfaced_commitment_ids = _offered_commitment_ids(
+                                    _due_commitment
+                                )
                         except Exception as _followup_prompt_err:
                             logger.debug(
                                 f"[{lanlan_name}] followup topic prompt build failed: {_followup_prompt_err}"
@@ -1814,7 +1830,7 @@ async def handle_proactive_chat(
                 _followup_topics = []
                 _surfaced_reflection_ids = []
                 followup_topics_prompt = ""
-                if _due_commitment:
+                if _surfaced_commitment_ids:
                     # A promise coming due is not reminiscence: it stays, and
                     # its own offer cooldown keeps it from repeating.
                     try:
@@ -1828,6 +1844,8 @@ async def handle_proactive_chat(
                         logger.debug(
                             f"[{lanlan_name}] commitment cue build failed: {_followup_prompt_err}"
                         )
+                    if not followup_topics_prompt:
+                        _surfaced_commitment_ids = []
 
 
         # Build once after source suppression so candidates are decayed only once.
@@ -2194,6 +2212,7 @@ async def handle_proactive_chat(
             phase1_topics,
             vision_content,
             has_unfinished_thread=_has_unfinished_thread,
+            has_due_commitment=bool(_surfaced_commitment_ids),
         )
         if phase1_decision.result is not None:
             print(f"[{lanlan_name}] Phase 1 所有通道均无可用话题")
@@ -2202,7 +2221,7 @@ async def handle_proactive_chat(
             )
         if not phase1_topics and not vision_content:
             print(
-                f"[{lanlan_name}] Phase 1 无话题但有未收尾话题，进入 text-only 跟进 Phase 2"
+                f"[{lanlan_name}] Phase 1 无话题但有未收尾话题或快到期的承诺，进入 text-only 跟进 Phase 2"
             )
 
         # Phase1 preemption check after topic assembly, before Phase2.
@@ -2660,6 +2679,7 @@ async def handle_proactive_chat(
             **state_storage_kwargs,
             has_unfinished_thread=_has_unfinished_thread,
             surfaced_reflection_ids=_surfaced_reflection_ids,
+            surfaced_commitment_ids=_surfaced_commitment_ids,
             selected_web_link=selected_web_link,
             selected_web_topic_key=selected_web_topic_key,
             web_parsed=web_parsed,

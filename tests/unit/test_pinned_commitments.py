@@ -747,6 +747,21 @@ def test_the_promise_offered_to_proactive_chat_is_the_one_due_soonest(tmp_path):
     assert next(e for e in store.get_active(_NAME, now=_T0) if e["id"] == soon["id"])["rev"] == 0
 
 
+def test_a_promise_waiting_on_a_condition_has_no_deadline(tmp_path):
+    from config.prompts.prompts_memory import get_pinned_commitments_section_header
+
+    store = _store(tmp_path)
+    promise = _add(store, _candidate("小天答应给主人讲完那个故事（等主人考完）", 3, kind="commitment"))
+
+    # Its expiry is the tier ceiling, not a date it is due by: never offered
+    # as "due soon", and rendered without one.
+    assert store.get_due_commitment(_NAME, now=promise["expire_at"] - _HOUR) is None
+    assert store.render_prompt_block(_NAME, "zh", now=_T0) == (
+        "### " + get_pinned_commitments_section_header("zh") + "\n"
+        "- 小天答应给主人讲完那个故事（等主人考完）（答应于 2026-11-02）"
+    )
+
+
 def test_followup_topics_carry_the_due_promise_and_surfacing_is_split(tmp_path, monkeypatch):
     from app.memory_server import routes, runtime
 
@@ -769,11 +784,21 @@ def test_followup_topics_carry_the_due_promise_and_surfacing_is_split(tmp_path, 
         "due": datetime.fromtimestamp(now + _DAY).strftime("%Y-%m-%d"),
     }
 
-    request = SimpleNamespace(json=AsyncMock(return_value={"reflection_ids": [promise["id"], "ref_1"]}))
+    request = SimpleNamespace(json=AsyncMock(return_value={
+        "reflection_ids": ["ref_1"], "commitment_ids": [promise["id"]],
+    }))
     asyncio.run(routes.api_record_surfaced(request, _NAME))
 
     reflections.arecord_surfaced.assert_awaited_once_with(_NAME, ["ref_1"])
     assert asyncio.run(routes.api_followup_topics(_NAME))["commitment"] is None
+
+    # Offered on its own: the reflections' surfaced log is not touched.
+    reflections.arecord_surfaced.reset_mock()
+    request = SimpleNamespace(json=AsyncMock(return_value={
+        "reflection_ids": [], "commitment_ids": [promise["id"]],
+    }))
+    asyncio.run(routes.api_record_surfaced(request, _NAME))
+    reflections.arecord_surfaced.assert_not_awaited()
 
 
 def test_the_due_promise_leads_the_proactive_memory_cues():
@@ -781,7 +806,10 @@ def test_the_due_promise_leads_the_proactive_memory_cues():
         TOPIC_COMMITMENT_CUE_INTROS,
         TOPIC_MEMORY_CUE_INTROS,
     )
-    from main_logic.proactive_chat.service import _render_followup_topic_hooks
+    from main_logic.proactive_chat.service import (
+        _offered_commitment_ids,
+        _render_followup_topic_hooks,
+    )
 
     commitment = {"id": "pin_00aa11bb", "text": "明天提醒主人带准考证", "due": "2026-11-03"}
 
@@ -790,11 +818,61 @@ def test_the_due_promise_leads_the_proactive_memory_cues():
     )
     assert prompt.index(TOPIC_COMMITMENT_CUE_INTROS["zh"]) < prompt.index(TOPIC_MEMORY_CUE_INTROS["zh"])
     assert "2026-11-03" in prompt and "明天提醒主人带准考证" in prompt
-    assert ids == ["pin_00aa11bb", "ref_1"]
+    # The promise is no reflection: it must not count as use of that channel.
+    assert ids == ["ref_1"]
+    assert _offered_commitment_ids(commitment) == ["pin_00aa11bb"]
 
     prompt, ids = _render_followup_topic_hooks("en", [], commitment=commitment)
-    assert prompt.startswith(TOPIC_COMMITMENT_CUE_INTROS["en"]) and ids == ["pin_00aa11bb"]
-    assert _render_followup_topic_hooks("en", [], commitment={"id": "pin_x", "text": " "}) == ("", [])
+    assert prompt.startswith(TOPIC_COMMITMENT_CUE_INTROS["en"]) and ids == []
+    blank = {"id": "pin_x", "text": " "}
+    assert _render_followup_topic_hooks("en", [], commitment=blank) == ("", [])
+    assert _offered_commitment_ids(blank) == []
+
+
+def test_a_due_promise_alone_keeps_the_proactive_round_going():
+    from main_logic.proactive_chat.generation import _decide_phase1_channels
+
+    assert _decide_phase1_channels([], None, has_unfinished_thread=False).result is not None
+    decision = _decide_phase1_channels(
+        [], None, has_unfinished_thread=False, has_due_commitment=True,
+    )
+    assert decision.result is None and decision.active_channels == []
+
+
+@pytest.mark.parametrize(("reflection_ids", "commitment_ids"), [([], ["pin_00aa11bb"]), (["ref_1"], [])])
+def test_delivering_a_promise_cools_it_down_without_using_up_reminiscence(
+    monkeypatch, reflection_ids, commitment_ids,
+):
+    from main_logic.proactive_chat import delivery as proactive_delivery
+    from main_logic.proactive_chat.delivery import CommittedDelivery, _record_committed_delivery
+
+    for name in ("_record_proactive_chat", "_record_proactive_material",
+                 "_mini_game_invite_count_post_response_chat"):
+        monkeypatch.setattr(proactive_delivery, name, lambda *a, **k: None)
+    monkeypatch.setattr(proactive_delivery, "_increment_proactive_chat_total", AsyncMock())
+    reminiscence = []
+    monkeypatch.setattr(proactive_delivery, "_record_reminiscence_usage", reminiscence.append)
+    client = SimpleNamespace(post=AsyncMock())
+    monkeypatch.setattr(proactive_delivery, "_get_internal_http_client", lambda: client)
+    delivery = CommittedDelivery(
+        turn_id="t", primary_channel="chat", source_links=[], delivered_tag="CHAT",
+        delivered_music_link=None, is_music_used=False, action_note="",
+        vision_screenshot_b64=None,
+    )
+
+    asyncio.run(_record_committed_delivery(
+        mgr=SimpleNamespace(current_speech_id="t"), delivery=delivery,
+        lanlan_name=_NAME, response_text="记得带伞哦", source_tag="CHAT", active_channels=[],
+        has_unfinished_thread=False, surfaced_reflection_ids=reflection_ids,
+        surfaced_commitment_ids=commitment_ids,
+        selected_web_link=None, selected_web_topic_key=None, web_parsed=None,
+        selected_music_link=None, selected_music_topic_key=None, selected_meme_link=None,
+        selected_meme_topic_key=None, meme_content=None,
+    ))
+
+    assert reminiscence == ([_NAME] if reflection_ids else [])
+    [call] = client.post.await_args_list
+    assert call.kwargs["json"] == {"reflection_ids": reflection_ids, "commitment_ids": commitment_ids}
 
 
 def test_open_promises_render_in_their_own_section(tmp_path):
@@ -829,8 +907,11 @@ def test_commitment_and_review_prompt_tables_cover_every_locale():
     from config.prompts import prompts_memory as pm
 
     for table in (pm.PINNED_COMMITMENTS_SECTION_HEADER, pm.PINNED_COMMITMENT_LINE,
-                  pm.PINNED_COMMITMENT_DONE_LINE, pm.PINNED_FACT_REVIEW_PROMPT):
+                  pm.PINNED_COMMITMENT_UNDATED_LINE, pm.PINNED_COMMITMENT_DONE_LINE,
+                  pm.PINNED_FACT_REVIEW_PROMPT):
         assert set(table) == _LOCALES
+    for lang, line in pm.PINNED_COMMITMENT_UNDATED_LINE.items():
+        assert "2026-01-02" in line.format(text="T", since="2026-01-02"), lang
     for lang, line in pm.PINNED_COMMITMENT_LINE.items():
         rendered = line.format(text="T", since="2026-01-02", until="2026-03-04")
         assert "2026-01-02" in rendered and "2026-03-04" in rendered, lang

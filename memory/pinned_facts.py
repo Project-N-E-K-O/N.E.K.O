@@ -125,6 +125,7 @@ from config.prompts.prompts_memory import (
     get_pinned_facts_section_header,
     render_pinned_commitment_done_line,
     render_pinned_commitment_line,
+    render_pinned_commitment_undated_line,
     render_pinned_fact_line,
     render_pinned_fact_removed_line,
 )
@@ -139,8 +140,7 @@ logger = get_module_logger(__name__, "Memory")
 
 PINNED_FACTS_FILENAME = "pinned_facts.json"
 
-# Every entry id starts with this, so a caller holding a mixed id list (the
-# proactive-chat surfaced ids) can tell pinned entries apart without a read.
+# Every entry id starts with this (reflection ids start with "ref_").
 PINNED_FACT_ID_PREFIX = "pin_"
 
 # Disk schema version; _normalize_entry reads anything older field by field.
@@ -271,14 +271,9 @@ def _expiry(noted: float, ttl_days: int, due_at: Optional[float]) -> float:
     return min(ceiling, due_at + PINNED_FACT_DUE_GRACE_DAYS * _DAY_SECONDS)
 
 
-def _deadline(entry: Dict[str, Any]) -> float:
-    """When the matter of an entry is due: its end when known, else its expiry."""
-    return entry.get("due_at") or entry["expire_at"]
-
-
 def due_date(entry: Dict[str, Any]) -> str:
-    """The date an entry is due, as the section renders it."""
-    return _format_date(_deadline(entry))
+    """The date an entry's matter is due, as the section renders it; needs ``due_at``."""
+    return _format_date(entry["due_at"])
 
 
 def _is_live(entry: Dict[str, Any], ts: float) -> bool:
@@ -873,6 +868,10 @@ class PinnedFactStore:
         """An entry as the section and the model prompts show it, without marker or id."""
         text = entry["text"] if text is None else text
         if entry.get("kind") == KIND_COMMITMENT:
+            if entry.get("due_at") is None:
+                # Waiting on a condition: there is no deadline to state, and
+                # the tier ceiling it expires at is bookkeeping.
+                return render_pinned_commitment_undated_line(text, since=since, lang=lang)
             return render_pinned_commitment_line(
                 text, since=since, until=due_date(entry), lang=lang,
             )
@@ -933,9 +932,12 @@ class PinnedFactStore:
     ) -> Optional[Dict[str, Any]]:
         """The open commitment due soonest, for proactive chat; None when there is none.
 
-        Only one due within ``PINNED_COMMITMENT_DUE_SOON_DAYS`` (or already
-        due, while still live) counts, and not one offered within
-        ``PINNED_COMMITMENT_SURFACE_COOLDOWN_HOURS``.
+        Only one with a date of its own, due within
+        ``PINNED_COMMITMENT_DUE_SOON_DAYS`` (or already due, while still live),
+        counts, and not one offered within
+        ``PINNED_COMMITMENT_SURFACE_COOLDOWN_HOURS``. A promise waiting on a
+        condition has no deadline: its expiry is the tier ceiling, which says
+        nothing about when it is due.
         """
         ts = float(now if now is not None else _now())
         horizon = ts + PINNED_COMMITMENT_DUE_SOON_DAYS * _DAY_SECONDS
@@ -943,10 +945,11 @@ class PinnedFactStore:
         pool = [
             entry for entry in self.get_active(name, now=ts)
             if entry["kind"] == KIND_COMMITMENT
-            and _deadline(entry) <= horizon
+            and entry.get("due_at") is not None
+            and entry["due_at"] <= horizon
             and (entry.get("surfaced_at") is None or ts - entry["surfaced_at"] >= cooldown)
         ]
-        return min(pool, key=_deadline) if pool else None
+        return min(pool, key=lambda entry: entry["due_at"]) if pool else None
 
     async def aget_due_commitment(
         self, name: str, *, now: Optional[float] = None,
