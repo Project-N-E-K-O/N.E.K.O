@@ -113,6 +113,12 @@ MAX_KNOWN_POOL_FACTS = 30
 # signal loop (40s), with negligible IO/CPU impact.
 EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS = 3600
 
+# Event-journal compaction loop interval (memory/event_log.py
+# compact_applied_history). Each round costs one stat plus one line read per
+# character until a journal is due (>= 512 KiB or first line >= 30 days old),
+# so a slow cadence is plenty; journals grow a few KB per day.
+EVENT_LOG_COMPACT_INTERVAL_SECONDS = 6 * 3600
+
 # §3.6 render budget (placeholder for PR-3).
 # Private/base legacy mode (empty subjects) uses two global pools; scoped rendering
 # (groups, nonempty subjects) gives each subject its own pools, backed by
@@ -121,6 +127,56 @@ EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS = 3600
 PERSONA_RENDER_MAX_TOKENS = 2000         # Non-protected persona budget (per subject).
 REFLECTION_RENDER_MAX_TOKENS = 2000      # Reflection rendering budget (pending + confirmed, per subject).
 PERSONA_RENDER_ENCODING = "o200k_base"   # tiktoken encoding
+
+# ── Pinned important facts (memory/pinned_facts.py) ─────────────────────
+# Facts the extraction model flags as important skip the evidence pipeline and
+# sit in a small resident section of the private-chat long-term memory until
+# they expire. The original fact still goes through the ordinary pipeline;
+# expiry only takes it out of the resident section.
+PINNED_FACT_TTL_TIERS_DAYS = (3, 14, 90, 365)
+"""The only lifetimes a pinned fact can have, in days.
+- 3: things happening right now (a cold, working late tonight).
+- 14: near-term plans (an exam next week, a business trip).
+- 90: a phase of life (a new job, studying for an exam, recovering from an injury).
+- 365: long-lived but changeable (an allergy, a birthday, how the user wants to be called).
+- A dated event takes the smallest tier that still covers the end of the event;
+  memory/pinned_facts.py:snap_ttl_days rounds any other value up the same way."""
+
+PINNED_FACT_DEFAULT_TTL_DAYS = 14
+"""Tier used when the model sets ``pin`` but gives no usable ``pin_ttl_days``.
+The second-shortest tier: too short only drops the entry early (the fact itself
+stays in the ordinary pipeline), too long keeps a stale entry in every prompt."""
+
+PINNED_FACT_MAX_ACTIVE = 20
+"""Cap on live entries. The whole section goes to the resolve model on every
+admission, and past the cap the entry closest to expiry is evicted."""
+
+PINNED_FACT_HISTORY_MAX = 60
+"""Replaced / removed / expired / evicted entries kept in the file for diagnosis.
+Never rendered; oldest records go first."""
+
+PINNED_FACT_TEXT_MAX_TOKENS = 60
+"""Per-entry text cap, applied when an entry is written."""
+
+PINNED_FACT_RENDER_MAX_TOKENS = 600
+"""Token budget of the rendered section (header included). Over budget, the
+least recently updated entries are left out of that render."""
+
+PINNED_FACT_MAX_CANDIDATES_PER_ROUND = 8
+"""Pinned candidates taken from one extraction round; bounds the resolve prompt
+together with PINNED_FACT_MAX_ACTIVE and PINNED_FACT_TEXT_MAX_TOKENS."""
+
+PINNED_FACT_RESOLVE_ATTEMPTS = 3
+"""Resolve rounds per admission. A round's targeted decision is not applied
+when another admission changed that entry after the snapshot the model saw;
+those candidates are decided again on fresh state. The last round still
+checks, but degrades such a decision instead of applying it (remove is
+dropped, replace / renew become add), so an older view never undoes a
+newer change."""
+
+PINNED_FACT_RESOLVE_MODEL_TIER = "correction"
+"""Model tier of the add / replace / renew / remove decision, the same tier and
+thinking mode as persona correction resolution."""
 
 # ── Overall cap for scoped (group) L10 core memory ──────────────────────────
 # Per-subject budgets stop competition but not total growth: rendering five
@@ -597,6 +653,27 @@ REFLECTION_RELATED_TOTAL_CAP = 20
   candidates; without duplicates, cap at 20 to prevent prompt growth.
 - Prompt cost: 20 ×~50 tok ≈1000 anchor tokens +20 ×~50 tok ≈1000
   source tokens =2k maximum, easily handled by summary-tier models."""
+
+REFLECTION_EXISTING_IMPRESSIONS_TOP_K = 5
+"""Existing impressions shown to reflection synthesis for duplicate checking.
+- Upstream: synthesize_reflections ranks active reflections (pending /
+  confirmed / promoted) and non-protected persona entries of the same subject
+  by max cosine against the fact batch, then keeps this many.
+- Purpose: the LLM may answer skip with one of these ids when the batch adds
+  nothing beyond it; the facts are then absorbed without a new reflection.
+- Vectors unavailable: no candidates, no block, prompt unchanged."""
+
+REFLECTION_EXISTING_IMPRESSIONS_MAX_TOKENS = 800
+"""Token budget for the whole existing-impressions block (whole lines only).
+- Each line is also capped at ``REFLECTION_TEXT_MAX_TOKENS`` first, so
+  5 × 150 tokens plus ids fit."""
+
+REFLECTION_COVERED_FACT_IDS_MAX = 100
+"""Newest fact ids kept in an entry's ``covered_fact_ids`` audit list.
+- Written when synthesis skips a batch as already covered by that reflection
+  or persona entry. Audit only: no evidence is added, so restated relationship
+  lines cannot climb the render ranking this way.
+- Cap keeps frequently restated entries from bloating persona.json."""
 
 # ---- Memory: temporal scope (memory/temporal.py) ─────────────────────
 # Reflection temporal decay uses four temporal_scope values (pattern / state / episode / past).

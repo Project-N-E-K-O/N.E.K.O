@@ -350,6 +350,7 @@ Live2DManager.prototype.playActionMotion = async function(groupName, index, opti
     const motionManager = model?.internalModel?.motionManager;
     if (!model || typeof model.motion !== 'function' || !motionManager) return false;
     if (!this._allowsAvatarOperation(options, 'motion')) return false;
+    if (this.hasActiveTransientExpression?.(model)) return false;
     const operation = live2dCreateAvatarOperation(this, options);
     const owners = live2dGetMotionOwners(motionManager);
     if (owners.quarantine.size) {
@@ -357,6 +358,7 @@ Live2DManager.prototype.playActionMotion = async function(groupName, index, opti
         catch (_) { operation.dispose(); return false; }
     }
     if (!operation.isCurrent()) { operation.dispose(); return false; }
+    if (this.hasActiveTransientExpression?.(model)) { operation.dispose(); return false; }
     if (this.hasActiveActionMotion(model)) {
         console.log(`[Live2D] 已有动作正在播放，忽略新动作: ${groupName}`);
         operation.dispose();
@@ -495,6 +497,10 @@ const Easing = {
 
 Live2DManager.prototype.removeModel = async function(options = {}) {
     this._cancelAvatarOperations();
+    if (typeof this._cancelSmoothReset === 'function') this._cancelSmoothReset();
+    if (typeof this._removeManualExpressionOverride === 'function') {
+        this._removeManualExpressionOverride(this._manualExpressionListener, this._manualExpressionEmitter, { retire: true });
+    }
     this._invalidateParameterReloadTickets();
     // Stop old performance drivers before the first asynchronous teardown.
     if (this._avatarPerformanceSessionOwners) this._avatarPerformanceSessionOwners.clear();
@@ -575,7 +581,9 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
     }
     this._transientExpressionGeneration = (this._transientExpressionGeneration || 0) + 1;
     this._transientExpressionTask = null;
+    this._transientExpressionPending = null;
     this._activeTransientExpression = false;
+    this._userIdleAnimations = [];
     this._motionParameterTrackGeneration = (this._motionParameterTrackGeneration || 0) + 1;
     if (typeof this._nextMotionTimerGeneration === 'function') {
         this._nextMotionTimerGeneration();
@@ -947,13 +955,20 @@ Live2DManager.prototype._findModelPreference = function(preferences, modelPath) 
     )) || null;
 };
 
-Live2DManager.prototype._mergeEffectiveModelParameters = function(modelDirectoryParameters, userPreferenceParameters, coreModel) {
+Live2DManager.prototype._mergeEffectiveModelParameters = function(modelDirectoryParameters, userPreferenceParameters, coreModel, parametersMode) {
     const directoryParameters = coreModel
         ? this._normalizeModelParameters(coreModel, modelDirectoryParameters)
         : (modelDirectoryParameters && typeof modelDirectoryParameters === 'object' ? modelDirectoryParameters : {});
     const preferenceParameters = coreModel
         ? this._normalizeModelParameters(coreModel, userPreferenceParameters)
         : (userPreferenceParameters && typeof userPreferenceParameters === 'object' ? userPreferenceParameters : {});
+    // New editor saves are complete snapshots. An empty snapshot explicitly
+    // releases all overrides, even if a read-only directory mirror is stale.
+    // Legacy preferences retain their per-parameter merge behavior.
+    if (parametersMode === 'replace' && userPreferenceParameters
+        && typeof userPreferenceParameters === 'object' && !Array.isArray(userPreferenceParameters)) {
+        return preferenceParameters;
+    }
     return {
         ...directoryParameters,
         ...preferenceParameters
@@ -1002,12 +1017,14 @@ Live2DManager.prototype._getParameterReloadTicketStatus = function(ticket) {
         && (this._parameterConfigRevision || 0) === ticket.configRevision ? 'active' : 'superseded';
 };
 
-Live2DManager.prototype._applyEffectiveModelParameters = function(model, modelDirectoryParameters, userPreferenceParameters, reloadTicket) {
+Live2DManager.prototype._applyEffectiveModelParameters = function(model, modelDirectoryParameters, userPreferenceParameters, reloadTicket, parametersMode) {
     const coreModel = model?.internalModel?.coreModel;
+    const previousParameters = this.effectiveModelParameters || {};
     const effectiveParameters = this._mergeEffectiveModelParameters(
         modelDirectoryParameters,
         userPreferenceParameters,
-        coreModel
+        coreModel,
+        parametersMode
     );
     const hasEffectiveParameters = Object.keys(effectiveParameters).length > 0;
 
@@ -1018,6 +1035,20 @@ Live2DManager.prototype._applyEffectiveModelParameters = function(model, modelDi
     // override installation fail. Revision does not certify visual success.
     this._parameterConfigRevision = (this._parameterConfigRevision || 0) + 1;
     if (reloadTicket) reloadTicket.configRevision = this._parameterConfigRevision;
+
+    // Release deleted overrides in the visible model, SDK parameter cache and
+    // appearance baseline, so the next frame or emotion cleanup cannot revive them.
+    const removedDefaults = {};
+    for (const paramId of Object.keys(previousParameters)) {
+        if (Object.prototype.hasOwnProperty.call(effectiveParameters, paramId)) continue;
+        const resolved = this._resolveModelParameterKey(coreModel, paramId);
+        if (!resolved) continue;
+        const defaultValue = this._getCoreParameterDefaultValue(coreModel, resolved.idx);
+        if (Number.isFinite(defaultValue)) removedDefaults[paramId] = defaultValue;
+    }
+    if (Object.keys(removedDefaults).length > 0) {
+        this.applyModelParameters(model, removedDefaults, { updateSavedParameters: true });
+    }
 
     if (hasEffectiveParameters) {
         this.applyModelParameters(model, effectiveParameters);
@@ -1062,7 +1093,7 @@ Live2DManager.prototype.reloadModelParameters = async function(options = {}) {
             throw new Error('未找到当前模型的用户偏好参数');
         }
         const effectiveParameters = this._applyEffectiveModelParameters(
-            model, modelDirectoryParameters, preference.parameters, ticket
+            model, modelDirectoryParameters, preference.parameters, ticket, preference.parameters_mode
         );
         if (this._getParameterReloadTicketStatus(ticket) !== 'active') return staleResult();
         return { applied: true, parameters: effectiveParameters };
@@ -2140,7 +2171,7 @@ Live2DManager.prototype.setupIdleMotionLoop = function(model) {
             if (this.currentModel !== model || model.destroyed || window._currentMotionPreviewId != null || this._temporaryMotionSuspendToken) {
                 return;
             }
-            if (this.isAvatarPerformanceCapabilityLocked('motion')) {
+            if (this.isAvatarPerformanceCapabilityLocked('motion') || this.hasActiveTransientExpression?.(model)) {
                 scheduleIdleMotion(1000, { replace: true });
                 return;
             }
@@ -2172,7 +2203,7 @@ Live2DManager.prototype.setupIdleMotionLoop = function(model) {
         if (this._temporaryMotionSuspendToken) {
             return;
         }
-        if (this.isAvatarPerformanceCapabilityLocked('motion')) {
+        if (this.isAvatarPerformanceCapabilityLocked('motion') || this.hasActiveTransientExpression?.(model)) {
             scheduleIdleMotion(1000, { replace: true });
             return;
         }
@@ -2199,7 +2230,8 @@ Live2DManager.prototype.setupIdleMotionLoop = function(model) {
 
 // 播放待机动作（从用户保存的 Idle 动画或默认 Idle 随机选择）
 Live2DManager.prototype._playIdleMotion = async function(motionManager) {
-    if (this._temporaryMotionSuspendToken || this.isAvatarPerformanceCapabilityLocked('motion')) {
+    if (this._temporaryMotionSuspendToken || this.isAvatarPerformanceCapabilityLocked('motion')
+        || this.hasActiveTransientExpression?.()) {
         return;
     }
     const expectedModel = this.currentModel;
@@ -2210,6 +2242,7 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
         && window._currentMotionPreviewId == null
         && !this._temporaryMotionSuspendToken
         && !this.isAvatarPerformanceCapabilityLocked('motion')
+        && !this.hasActiveTransientExpression?.(expectedModel)
     );
     const getRandomizedIndexes = (length) => {
         const indexes = [];
@@ -2296,9 +2329,16 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
             console.warn('[Live2D] motionGroups 不可用或 PreviewAll 组不存在，跳过用户待机动作');
         } else {
             const group = motionGroups.PreviewAll;
+            const normalizeIdleFile = file => String(file || '').replace(/\\/g, '/').replace(/^\.\//, '');
+            const availableFiles = new Set(Array.isArray(group) ? group.map((motion, index) => normalizeIdleFile(
+                getMotionFile(motion) || getRegisteredMotionFile('PreviewAll', index)
+            )).filter(Boolean) : []);
+            const configuredFiles = new Set(idleAnimations.map(normalizeIdleFile));
+            // 先匹配完整相对路径；仅旧文件名配置在没有精确匹配时按 basename 兼容。
+            const legacyNames = new Set([...configuredFiles].filter(file => !file.includes('/') && !availableFiles.has(file)));
             const isConfiguredIdle = (motion, file) => {
-                const motionFile = file || getMotionFile(motion);
-                return motionFile && idleAnimations.includes(motionFile.split('/').pop());
+                const motionFile = normalizeIdleFile(file || getMotionFile(motion));
+                return motionFile && (configuredFiles.has(motionFile) || legacyNames.has(motionFile.split('/').pop()));
             };
             const available = Array.isArray(group)
                 ? group.filter((motion, index) => isConfiguredIdle(
@@ -2313,7 +2353,7 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
                 if (motionManager.playing
                     && currentGroup === 'PreviewAll'
                     && currentFile
-                    && idleAnimations.includes(currentFile.split('/').pop())) {
+                    && isConfiguredIdle(null, currentFile)) {
                     return;
                 }
                 if (typeof this.hasActiveActionMotion === 'function'
@@ -2419,8 +2459,8 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         this.applyRenderQuality(window.renderQuality);
     }
 
-    if (typeof this._optimizeLinuxX11RendererProfile === 'function') {
-        this._optimizeLinuxX11RendererProfile(model);
+    if (typeof this._optimizeRendererProfile === 'function') {
+        this._optimizeRendererProfile(model);
     }
 
     // 应用位置和缩放设置
@@ -2684,7 +2724,7 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     const userPreferenceParameters = options.preferences && options.preferences.parameters;
     if (this._getParameterReloadTicketStatus(parameterTicket) === 'active') {
         try {
-            this._applyEffectiveModelParameters(model, modelDirectoryParameters, userPreferenceParameters, parameterTicket);
+            this._applyEffectiveModelParameters(model, modelDirectoryParameters, userPreferenceParameters, parameterTicket, options.preferences?.parameters_mode);
         } catch (e) {
             console.error('应用有效模型参数或安装口型覆盖失败:', e);
         }
@@ -3003,9 +3043,10 @@ Live2DManager.prototype.installMouthOverride = function() {
             unavailableDefaults.push(entry.id);
             continue;
         }
-        // Keep zero offsets: frames without motion changes still restore the
-        // saved value. Default metadata is fixed for this installation/model.
-        savedParamEntries.push({ ...entry, offset });
+        // Keep zero offsets so releasing a parameter restores its saved default.
+        // Default metadata is fixed for this installation/model.
+        savedParamEntries.push({ ...entry, offset, defaultValue,
+            motionValue: defaultValue, appliedValue: entry.value });
     }
     if (unavailableDefaults.length > 0) {
         console.warn('[Live2D SavedParameters] 跳过缺少有效默认值的运行时叠加项:', {
@@ -3014,6 +3055,7 @@ Live2DManager.prototype.installMouthOverride = function() {
         });
     }
     const savedParameterRevision = this._parameterConfigRevision || 0;
+    const motionWrittenParamIndices = new Set();
     const shouldApplyPersistentExpressions = this._parameterEditingMode !== true;
     const lookAtParamIndices = {};
     for (const id of ['ParamAngleX', 'ParamAngleY', 'ParamEyeBallX', 'ParamEyeBallY']) {
@@ -3053,16 +3095,22 @@ Live2DManager.prototype.installMouthOverride = function() {
                 return; // 如果模型已销毁，直接返回
             }
 
-            // 1. 捕获更新前的参数值（用于检测 Motion 是否修改了参数）
-            // 1a. 保存参数 + 口型 + 眨眼参数快照（用于后续 Diff 检测）
+            // 口型、眨眼、呼吸和视线保留各自的变化检测。
+            // 保存外观参数的归属由本帧实际写入判断，不能用数值差判断。
             const preUpdateParams = {};
             const currentPersistentParamIds = savedParamEntries.length > 0 ? getCurrentPersistentParamIds() : null;
-            if (savedParamEntries.length > 0
-                && (this._parameterConfigRevision || 0) === savedParameterRevision) {
+            motionWrittenParamIndices.clear();
+            // SDK fades blend from the previous frame. Remove only our own
+            // last overlay before evaluation so a saved offset is composed once.
+            // Foreign writes and click transitions keep their own input values.
+            if (!this._clickFadeState && (this._parameterConfigRevision || 0) === savedParameterRevision) {
                 for (const entry of savedParamEntries) {
-                    if (isPersistentSavedParam(entry, currentPersistentParamIds)) continue;
+                    if (entry.offset === 0 || isPersistentSavedParam(entry, currentPersistentParamIds)) continue;
                     try {
-                        preUpdateParams[entry.id] = coreModel.getParameterValueByIndex(entry.idx);
+                        const currentValue = coreModel.getParameterValueByIndex(entry.idx);
+                        if (currentValue === entry.appliedValue || currentValue === Math.fround(entry.appliedValue)) {
+                            coreModel.setParameterValueByIndex(entry.idx, entry.motionValue);
+                        }
                     } catch (_) {}
                 }
             }
@@ -3088,8 +3136,20 @@ Live2DManager.prototype.installMouthOverride = function() {
             }
             
             // 先调用原始的 motionManager.update（添加错误处理）
-            if (!this._temporaryMotionSuspendToken && !this.isAvatarPerformanceCapabilityLocked('motion') && origMotionManagerUpdate) {
+            if (!this._temporaryMotionSuspendToken && !this.isAvatarPerformanceCapabilityLocked('motion')
+                && !this.hasActiveTransientExpression?.() && origMotionManagerUpdate) {
+                const parameterSetter = coreModel.setParameterValueByIndex;
+                const hadOwnParameterSetter = Object.prototype.hasOwnProperty.call(coreModel, 'setParameterValueByIndex');
+                // Cubism 的按 ID、加法和乘法写入最终都经过这个 setter。
+                // 仅在 motion 更新期间记录，排除后续物理、表情和外观叠加。
+                const recordMotionParameterWrite = savedParamEntries.length > 0
+                    && typeof parameterSetter === 'function'
+                    ? function(...args) {
+                        motionWrittenParamIndices.add(args[0]);
+                        return parameterSetter.apply(this, args);
+                    } : null;
                 try {
+                    if (recordMotionParameterWrite) coreModel.setParameterValueByIndex = recordMotionParameterWrite;
                     origMotionManagerUpdate(...args);
                 } catch (e) {
                     // SDK 内部 motion 在异步加载期间可能会抛出 getParameterIndex 错误
@@ -3097,6 +3157,12 @@ Live2DManager.prototype.installMouthOverride = function() {
                     // 当 motion 加载完成后错误会自动消失
                     if (this._mouthOverrideToken !== overrideToken || this.currentModel?.internalModel !== internalModel || internalModel.coreModel !== coreModel) {
                         return;
+                    }
+                } finally {
+                    // 异常或模型接管也必须释放记录器，且不能覆盖后来安装的 setter。
+                    if (recordMotionParameterWrite && coreModel.setParameterValueByIndex === recordMotionParameterWrite) {
+                        if (hadOwnParameterSetter) coreModel.setParameterValueByIndex = parameterSetter;
+                        else delete coreModel.setParameterValueByIndex;
                     }
                 }
             }
@@ -3236,14 +3302,16 @@ Live2DManager.prototype.installMouthOverride = function() {
                         if (isPersistentSavedParam(entry, currentPersistentParamIds)) continue;
                         try {
                             const currentVal = coreModel.getParameterValueByIndex(entry.idx);
-                            const preVal = preUpdateParams[entry.id] !== undefined ? preUpdateParams[entry.id] : currentVal;
                             const offset = entry.offset;
 
-                            if (Math.abs(currentVal - preVal) > 0.001) {
+                            if (motionWrittenParamIndices.has(entry.idx)) {
+                                entry.motionValue = currentVal;
                                 coreModel.setParameterValueByIndex(entry.idx, currentVal + offset);
                             } else {
+                                entry.motionValue = entry.defaultValue;
                                 coreModel.setParameterValueByIndex(entry.idx, entry.value);
                             }
+                            entry.appliedValue = coreModel.getParameterValueByIndex(entry.idx);
                         } catch (_) {}
                     }
                 }
@@ -3592,7 +3660,7 @@ Live2DManager.prototype.applyModelSettings = function(model, options) {
 };
 
 // 应用模型参数值到 Live2D 参数
-Live2DManager.prototype.applyModelParameters = function(model, parameters) {
+Live2DManager.prototype.applyModelParameters = function(model, parameters, options = {}) {
     if (!model || !model.internalModel || !model.internalModel.coreModel || !parameters) {
         return;
     }
@@ -3632,6 +3700,13 @@ Live2DManager.prototype.applyModelParameters = function(model, parameters) {
                 }
 
                 coreModel.setParameterValueByIndex(resolved.idx, value);
+                // Bundled Cubism restores this pre-expression cache every frame.
+                // Update only released parameters; saving the entire model here
+                // would also capture temporary physics/expression values.
+                if (options.updateSavedParameters && Array.isArray(coreModel._savedParameters)
+                    && resolved.idx < coreModel._savedParameters.length) {
+                    coreModel._savedParameters[resolved.idx] = value;
+                }
             } catch (e) {
                 // Ignore
             }

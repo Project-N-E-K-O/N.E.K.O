@@ -256,11 +256,11 @@
   },
   "schema_version": 4,
   "sdk_version": "0.1.0",
-  "source_bytes": 13969,
+  "source_bytes": 13976,
   "source_files": [
     "__init__.py",
     "config.schema.json",
     "plugin.toml"
   ],
-  "source_sha256": "4748d025c6b8cdf46d47fca723b625a656f03c1a31403fdbb0c9cadd4c46fbf9"
+  "source_sha256": "c169a35b4efbd42640421b3e540258fd10fb22466799734684c31de585437137"
 }

@@ -820,7 +820,7 @@ def test_failed_non_forced_refresh_is_retried(
 def test_character_switch_load_sites_wire_touch_refresh_hook():
     """Codex round-9: the character-switch Live2D loader must wire the refresh hook.
 
-    # The catgirl-switch path loads models directly (primary + fallback loadModel
+    # The neko-switch path loads models directly (primary + fallback loadModel
     # sites) without going through handleModelReload or live2d-init, so without
     # the hook the switched-to character keeps the previous character's in-memory
     # touch set and unwired native HitAreas.
@@ -853,7 +853,7 @@ def test_initialization_touch_set_honors_explicit_lanlan_name(
 ):
     """Greptile round-10: an explicit lanlanName override must take precedence.
 
-    # After a catgirl switch the URL keeps the OLD lanlan_name; the switch hook
+    # After a neko switch the URL keeps the OLD lanlan_name; the switch hook
     # passes the new name explicitly. Calling InitializationTouchSet with a
     # nonexistent override must resolve against that name and return false
     # gracefully (character missing), not fall back to the URL/page_config
@@ -893,7 +893,7 @@ def test_touch_set_resolution_prefers_current_character_over_url(
 ):
     """Coderabbit round-10: a stale URL lanlan_name must not win over the live one.
 
-    # After an in-place catgirl switch, window.lanlan_config.lanlan_name holds
+    # After an in-place neko switch, window.lanlan_config.lanlan_name holds
     # the NEW character while the URL keeps the old one. A later hot-switch
     # refresh (no explicit name) must resolve the CURRENT character; otherwise
     # it commits the previous character's touch set onto the current model.

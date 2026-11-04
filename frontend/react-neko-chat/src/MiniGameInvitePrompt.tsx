@@ -8,18 +8,26 @@ export default function MiniGameInvitePrompt({ prompt, presentation, disabled = 
   disabled?: boolean;
   onSelect: (option: ChoiceOption) => void;
 }) {
+  // Watch together is an invitation to a video, not a game round.
+  const watchTogether = prompt.gameType === 'watch-together';
+  const title = watchTogether
+    ? i18n('chat.watchTogetherInviteTitle', 'Watch together')
+    : i18n('chat.miniGameInviteTitle', 'Game invitation');
+  const hint = watchTogether
+    ? i18n('chat.watchTogetherInviteHint', "Pick a video and I'll watch it with you")
+    : i18n('chat.miniGameInviteHint', 'Shall we play together?');
   return (
     <section className={`mini-game-invite mini-game-invite-${presentation}`}
       data-invite-session-id={prompt.sessionId} data-compact-no-drag="true"
       data-compact-hit-region={presentation === 'bubble' ? 'true' : undefined}
       data-compact-hit-region-id={presentation === 'bubble' ? `choice:mini-game:${prompt.sessionId || 'pending'}` : undefined}
       data-compact-hit-region-kind={presentation === 'bubble' ? 'choice' : undefined}
-      aria-label={i18n('chat.miniGameInviteTitle', 'Game invitation')}>
+      aria-label={title}>
       <header className="mini-game-invite-heading">
-        <span className="mini-game-invite-icon neko-recommendation-icon" aria-hidden="true"><RecommendationIcon kind="game" /></span>
+        <span className="mini-game-invite-icon neko-recommendation-icon" aria-hidden="true"><RecommendationIcon kind={watchTogether ? 'video' : 'game'} /></span>
         <div>
-          <strong>{i18n('chat.miniGameInviteTitle', 'Game invitation')}</strong>
-          <p>{i18n('chat.miniGameInviteHint', 'Shall we play together?')}</p>
+          <strong>{title}</strong>
+          <p>{hint}</p>
         </div>
       </header>
       <div className="mini-game-invite-actions" role="group"

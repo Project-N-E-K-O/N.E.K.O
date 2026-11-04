@@ -365,7 +365,7 @@ async def test_successful_proactive_query_is_remembered(monkeypatch) -> None:
     fetch = AsyncMock(
         return_value={
             "success": True,
-            "data": [{"name": "童年", "url": "/music/childhood"}],
+            "data": [{"name": "童年", "url": "/api/music/play/netease/1"}],
         }
     )
     monkeypatch.setattr(music_recommendation, "fetch_music_content", fetch)
@@ -403,7 +403,7 @@ async def test_music_failsafe_only_applies_to_strict_song_request(
     fetch = AsyncMock(
         return_value={
             "success": True,
-            "data": [{"name": "童年", "url": "/music/childhood"}],
+            "data": [{"name": "童年", "url": "/api/music/play/netease/1"}],
             "best_match": {"status": "fuzzy"},
         }
     )
@@ -1264,6 +1264,12 @@ async def test_community_source_uses_round_locale_through_http(
     import httpx
     from utils.web_scraper import trending_content
 
+    # Coverage can preload the compatibility facade before the collector is
+    # imported. Patch the dependency captured by that collector, so this test
+    # cannot fall through to the real credential loader of an older module instance.
+    source_fetch = service.collect_proactive_sources.__globals__["_fetch_source"]
+    feed_globals = source_fetch.__globals__["fetch_neko_community_feed"].__globals__
+
     requests = []
 
     def handle(request):
@@ -1281,8 +1287,8 @@ async def test_community_source_uses_round_locale_through_http(
     async with httpx.AsyncClient(transport=transport) as shared:
         monkeypatch.setattr(service, "get_global_language_full", lambda: "en")
         monkeypatch.setattr(trending_content, "get_global_language_full", lambda: "en")
-        monkeypatch.setattr(trending_content, "get_external_http_client", lambda: shared)
-        monkeypatch.setattr(trending_content, "_neko_community_access_token", AsyncMock(
+        monkeypatch.setitem(feed_globals, "get_external_http_client", lambda: shared)
+        monkeypatch.setitem(feed_globals, "_neko_community_access_token", AsyncMock(
             return_value="desktop-token" if auth_status else "",
         ))
         monkeypatch.setattr(trending_content.httpx, "AsyncClient", lambda **kwargs: isolated)

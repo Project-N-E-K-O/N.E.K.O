@@ -163,6 +163,106 @@
         return null;
     }
 
+    // A single audio owner accumulates a fixed phase prefix. Never clip each tick:
+    // quantized currentTime would otherwise lose every other small observation.
+    function createObservedPlaybackMeter(epochId, originContext) {
+        originContext = JSON.parse(JSON.stringify(originContext));
+        let phase = null;
+        let closedMs = 0;
+        let emittedMs = 0;
+        let lastTick = null;
+        let suspended = false;
+        const closePhase = () => {
+            if (phase) closedMs += phase.confirmed;
+            phase = null;
+        };
+        return {
+            observe(audio, tick, state) {
+                if (!audio || !Number.isFinite(tick) || !Number.isFinite(audio.currentTime)) return;
+                const rate = Number.isFinite(audio.playbackRate) ? audio.playbackRate : 1;
+                if (!(rate > 0)) { closePhase(); lastTick = tick; return; }
+                const breaking = state === 'seeking' || state === 'ratechange';
+                const gap = phase && phase.running && lastTick !== null && (tick < lastTick || tick - lastTick > 2000);
+                if (breaking || gap || audio.seeking) {
+                    closePhase();
+                    suspended = state === 'seeking' || !!audio.seeking;
+                    lastTick = tick;
+                    return;
+                }
+                if (state === 'seeked' || state === 'playing') suspended = false;
+                if (suspended && state === 'progress' && !audio.paused && audio.readyState >= 3) suspended = false;
+                const playing = !audio.paused && !audio.ended && !suspended
+                    && !['waiting', 'stalled', 'stopped', 'failed', 'ended'].includes(state);
+                if (!phase) phase = { media: audio.currentTime, rate, clock: 0, running: playing, confirmed: 0 };
+                if (phase.rate !== rate) {
+                    closePhase();
+                    phase = { media: audio.currentTime, rate, clock: 0, running: playing, confirmed: 0 };
+                }
+                if (phase.running && lastTick !== null) phase.clock += Math.max(0, tick - lastTick);
+                const mediaMs = (audio.currentTime - phase.media) * 1000 / phase.rate;
+                if (mediaMs < -50) {
+                    closePhase();
+                    phase = { media: audio.currentTime, rate, clock: 0, running: playing, confirmed: 0 };
+                } else {
+                    phase.confirmed = Math.max(phase.confirmed, Math.max(0, Math.min(phase.clock, mediaMs)));
+                    phase.running = playing;
+                }
+                if (state === 'waiting' || state === 'stalled') { suspended = true; phase.running = false; }
+                if (['stopped', 'failed', 'ended'].includes(state)) { closePhase(); suspended = true; }
+                lastTick = tick;
+            },
+            take(minimumMs = 0) {
+                // Quantize the cumulative prefix, so fractional milliseconds are
+                // carried rather than thrown away at every event/checkpoint.
+                const end = Math.floor(closedMs + (phase ? phase.confirmed : 0));
+                if (!Number.isSafeInteger(end) || end <= emittedMs || end - emittedMs < minimumMs) return null;
+                const result = { version: 'playback_elapsed_observed_v2', epoch_id: epochId,
+                    range_start_ms: emittedMs, range_end_ms: end, origin_context: originContext };
+                emittedMs = end;
+                return result;
+            }
+        };
+    }
+
+    function observeRecommendationPlayback(context, audio, state, checkpoint) {
+        if (!context || !context.offerContext || !audio || !window.nekoFeedbackCapture) return null;
+        const tick = typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : NaN;
+        if (!context.observation) {
+            context.observation = createObservedPlaybackMeter(
+                MUSIC_COORD_SENDER_ID + ':' + String(context.token) + ':' + String(++context.observationRevision),
+                window.nekoFeedbackCapture.capture(context.offerContext));
+            context.observationStartedAt = tick;
+        }
+        context.observation.observe(audio, tick, state);
+        const rotating = tick - context.observationStartedAt >= 23 * 60 * 60 * 1000;
+        const measurement = context.observation.take(checkpoint && !rotating ? 15000 : 0);
+        // Rotate before the server's 24-hour immutable-origin bound. Rotation is
+        // a telemetry boundary; it never pauses or recreates the actual audio.
+        if (rotating) {
+            context.observation = null;
+        }
+        return measurement;
+    }
+
+    function sendRecommendationMeasurement(context, measurement) {
+        if (measurement && window.nekoMusicRecommendations) {
+            window.nekoMusicRecommendations.recordPlayback(context.recommendationId, 'measurement', {
+                playback_id: context.recommendationPlaybackId,
+                offer_context: context.offerContext, measurement
+            });
+        }
+    }
+
+    window.addEventListener('neko:feedback-capture-changed', () => {
+        const context = localPlayer && localPlayer._musicPlaybackReportContext;
+        if (!context || !context.offerContext) return;
+        // Do not move an old range into the newly learned account/clear state.
+        // Normal playback continues; subsequent observed changes get a new epoch.
+        context.observation = null;
+        observeRecommendationPlayback(context, localPlayer.audio,
+            localPlayer.audio && localPlayer.audio.paused ? 'paused' : 'playing', false);
+    });
+
     function createMusicPlaybackReportContext(playbackId, options, track, token) {
         options = options || {};
         track = track || {};
@@ -173,6 +273,9 @@
         )) {
             reportRecommendationPlaybackState('stopped', previousContext, 'replaced');
         }
+        const sameOwner = previousContext && previousContext.playbackId === playbackId
+            && previousContext.recommendationId === (options.recommendationId || '')
+            && previousContext.url === String(track.url || '');
         return {
             playbackId: playbackId || '',
             token: token,
@@ -184,7 +287,12 @@
             hasNextCandidate: options.hasNextCandidate === true,
             failureUiHandled: false,
             recommendationId: typeof options.recommendationId === 'string' ? options.recommendationId : '',
-            recommendationPlaybackId: options.recommendationId ? MUSIC_COORD_SENDER_ID + ':' + String(token) : '',
+            recommendationPlaybackId: sameOwner ? previousContext.recommendationPlaybackId
+                : options.recommendationId ? MUSIC_COORD_SENDER_ID + ':' + String(token) : '',
+            offerContext: JSON.parse(JSON.stringify(options.offerContext || (sameOwner && previousContext.offerContext) || null)),
+            observation: sameOwner ? previousContext.observation : null,
+            observationRevision: sameOwner ? previousContext.observationRevision : 0,
+            observationStartedAt: sameOwner ? previousContext.observationStartedAt : 0,
             listenedSeconds: 0,
             url: String(track.url || ''),
             track: {
@@ -199,10 +307,16 @@
             // Recommendation evidence is independent of the conversational socket.
             // Only the owning player carries this immutable recommendation id.
             if (evidenceContext && evidenceContext.recommendationId && window.nekoMusicRecommendations) {
-                if (['ended', 'stopped', 'failed'].includes(evidenceContext.recommendationLastState)) return;
                 const audio = localPlayer && localPlayer.audio;
                 const kind = state === 'error' ? 'failed'
                     : state === 'ended' && audio && !audio.ended ? 'stopped' : state;
+                if (['ended', 'stopped', 'failed'].includes(evidenceContext.recommendationLastState)) {
+                    // The original business state stays terminal. A real replay
+                    // can still contribute its newly observed elapsed interval.
+                    sendRecommendationMeasurement(evidenceContext,
+                        observeRecommendationPlayback(evidenceContext, audio, kind, false));
+                    return;
+                }
                 let listened = 0;
                 const played = audio && audio.played;
                 if (played) {
@@ -210,12 +324,16 @@
                 }
                 evidenceContext.listenedSeconds = Math.min(86400, Math.max(evidenceContext.listenedSeconds, listened));
                 evidenceContext.recommendationLastState = kind;
-                window.nekoMusicRecommendations.recordPlayback(evidenceContext.recommendationId, kind, {
+                const fields = {
                     playback_id: evidenceContext.recommendationPlaybackId,
                     listened_seconds: evidenceContext.listenedSeconds,
                     position_seconds: audio && Number.isFinite(audio.currentTime) ? Math.min(86400, Math.max(0, audio.currentTime)) : 0,
                     reason: String(failureReason || '').slice(0, 64)
-                });
+                };
+                if (evidenceContext.offerContext) fields.offer_context = evidenceContext.offerContext;
+                const measurement = observeRecommendationPlayback(evidenceContext, audio, kind, false);
+                if (measurement) fields.measurement = measurement;
+                window.nekoMusicRecommendations.recordPlayback(evidenceContext.recommendationId, kind, fields);
             }
         } catch (_) {
             console.warn('[Music recommendation] Playback evidence could not be recorded');
@@ -2777,6 +2895,8 @@
                     boundPlayer._loadError = false;
                     if (!playbackStartedAt) playbackStartedAt = Date.now();
                     updateMusicCard('playing', currentPlayingTrack);
+                    if (reportContext.offerContext) sendRecommendationMeasurement(reportContext,
+                        observeRecommendationPlayback(reportContext, boundPlayer.audio, 'playing', false));
                     reportMusicPlaybackState('playing', null, reportContext);
                     // 跨窗口协调：本地真正开始放歌后通知其他窗口
                     broadcastMusicCoord('music_started');
@@ -3019,6 +3139,11 @@
                 let isDragging = false;
                 const progressContainer = musicBar.querySelector('.music-bar-progress-container');
                 localPlayer.on('timeupdate', () => {
+                    const context = getOwnedMusicPlaybackReportContext(boundPlayer, 'progress');
+                    if (context && context.offerContext && window.nekoMusicRecommendations) {
+                        const measurement = observeRecommendationPlayback(context, boundPlayer.audio, 'progress', true);
+                        sendRecommendationMeasurement(context, measurement);
+                    }
                     if (!localPlayer || !localPlayer.audio || isDragging) return;
                     const cur = localPlayer.audio.currentTime, dur = localPlayer.audio.duration;
                     if (dur > 0) {
@@ -3029,6 +3154,13 @@
                     // timeupdate 一秒 ~4 次，限速到 500ms 一条状态镜像
                     emitBarStateThrottled(500);
                 });
+                for (const boundary of ['seeking', 'seeked', 'ratechange', 'waiting', 'stalled']) {
+                    boundPlayer.audio.addEventListener(boundary, () => {
+                        const context = getOwnedMusicPlaybackReportContext(boundPlayer, 'progress');
+                        if (context) sendRecommendationMeasurement(context,
+                            observeRecommendationPlayback(context, boundPlayer.audio, boundary, false));
+                    });
+                }
 
                 const handleProgressMove = (e) => {
                     if (!isDragging) return;

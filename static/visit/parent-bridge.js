@@ -12,6 +12,8 @@
  * - 分数累加器把任意源帧率抽成目标帧率：直通 30 fps、兼容模式（--disable-gpu-compositing，
  *   WebGL 源快照回读每帧约 8 ms）15 fps。
  * - 可见性 = 帧饥饿检测：>1 s 没有成功的 onFrame 就告诉 iframe hidden，不看页面可见性事件。
+ * - 猫娘语音（OD-15 v4）：传输页报 voice / remote_audio，交给 voice-relay.js 开关自家 TTS 旁路、
+ *   把对端语音接进自家扬声器；换 iframe / 移除 iframe 时一并收掉。
  * 除 PNGTuber 取帧期间的节拍外，本文件没有每帧循环、不自起动画帧、不建 WebSocket。
  */
 (function (root) {
@@ -55,6 +57,7 @@
   var MODEL_CONTAINER_IDS = ['live2d-container', 'vrm-container', 'mmd-container', 'pngtuber-container'];
   var ACTIVE_PHASES = { active: 1, wrap_up: 1 };
   var VISIT_ID_RE = /^[A-Za-z0-9_-]{22}$/;
+  var VISIT_UNAVAILABLE = {};
 
   /**
    * 分数累加器（纯函数）：acc += target / renderFps；acc ≥ 1 时抓一帧并减 1；
@@ -107,6 +110,9 @@
     var clearTimeoutFn = env.clearTimeout || function (h) { win.clearTimeout(h); };
     var geo = env.geometry || win.NekoVisitCropGeometry;
     var assetVersion = env.assetVersion || '';
+    var relayFactory = win.NekoVisitVoiceRelay;
+    var voice = env.voice || (relayFactory ? relayFactory.createVoiceRelay({ window: win, log: function (level, msg) { logFrame(level, msg); } }) : null);
+    var recoverySeq = 0; // 并行恢复只采纳最后发起的请求，和实时帧代数分别判定。
 
     var state = {
       frame: null,
@@ -144,6 +150,7 @@
       peerBadge: null,
       firstFrame: null,
       publishing: false,
+      voiceClosed: false,    // 这一场的语音已被收尾关掉（voice_off / ending）：之后的开启请求一律不理
       closedVisitId: null,   // 传输页已报 closed 的场次：ended / 新 pending 之前不再为它补建 iframe
       authRetryVisitId: null,  // 已经因 4403 重取 token 重建过一次的场次（同一场只重来一次）
       forceTokenRefresh: false,  // 下一次鉴权跳过缓存的 token、直接重取
@@ -312,6 +319,7 @@
       state.place = null;
       state.firstFrame = null;
       state.publishing = false;
+      state.voiceClosed = false;
       state.captureFps = isCompatMode() ? CAPTURE_FPS_COMPAT : CAPTURE_FPS_DIRECT;
       state.sampler.setTarget(state.captureFps);
       state.sampler.reset();
@@ -392,6 +400,7 @@
       opts = opts || {};
       stopCapture();
       stopTick();
+      if (voice) voice.reset();
       if (state.readyTimer !== null) clearTimeoutFn(state.readyTimer);
       state.readyTimer = null;
       if (state.authTimer !== null) clearTimeoutFn(state.authTimer);
@@ -529,6 +538,8 @@
         state.readyTimer = null;
         var sink = f.contentWindow && f.contentWindow.__nekoVisitFrameSink;
         if (!sink || typeof sink.setAuthToken !== 'function') return;
+        // 同一个 iframe 重新加载过：旧页面的语音旁路 / 对端语音都作废，新页面要时再报
+        if (voice) voice.reset();
         // iframe 每报一次 ready 就重新交一次 token（它重载过就要新的）；旧的重试作废
         state.authGen += 1;
         if (state.authTimer !== null) clearTimeoutFn(state.authTimer);
@@ -538,6 +549,18 @@
         state.publishing = data.on === true;
         syncCapture();
         tick(true);
+      } else if (data.t === 'voice' || data.t === 'remote_audio') {
+        var voiceSink = f.contentWindow && f.contentWindow.__nekoVisitFrameSink;
+        if (!voice || !voiceSink) return;
+        // 收尾后迟到的 on:true 一律不处理：不再开旁路（私聊已恢复，共享的 TTS 链不能再接进房间），也不再播对端；关的照常处理
+        var ending = state.voiceClosed || state.phase === 'ending' || state.phase === 'ended';
+        var wantOn = data.on === true && !ending;
+        if (data.t === 'voice') {
+          voice.setLocalWanted(wantOn, voiceSink);
+        } else {
+          var peerTrack = wantOn && typeof voiceSink.remoteAudioTrack === 'function' ? voiceSink.remoteAudioTrack() : null;
+          voice.setRemoteTrack(peerTrack);
+        }
       } else if (data.t === 'geometry') {
         if (data.crop === 'upper' || data.crop === 'full') state.cropMode = data.crop;
         if (data.cropW > 0 && data.cropH > 0) state.cropAspect = data.cropW / data.cropH;
@@ -1032,6 +1055,10 @@
     };
 
     function onStateChange(msg) {
+      applyStateChange(msg, false);
+    }
+
+    function applyStateChange(msg, fromRecovery) {
       if (!msg || msg.type !== 'visit_state_change') return;
       var action = msg.action;
       // 别的场次迟到的事件在改任何状态之前就丢掉（closed 之后 visitId 已空，按记下的 closedVisitId 过滤）；
@@ -1043,7 +1070,7 @@
       if (action !== 'pending' && msg.visit_id && msg.visit_id === state.endedVisitId) return;
       // 只有能建 / 拆 iframe 的生命周期事件才让在途的重载恢复快照作废；peer_hidden / peer_crop /
       // departed 这类辅助事件不建 iframe，不能让快照白白丢掉
-      if (action === 'ended' || PHASE_OF_ACTION[action]) state.liveGen += 1;
+      if (!fromRecovery && (action === 'ended' || PHASE_OF_ACTION[action])) state.liveGen += 1;
       if (msg.peer_crop === 'upper' || msg.peer_crop === 'full') state.auxGen.crop += 1;
       if (action === 'peer_hidden' || action === 'peer_visible') state.auxGen.hidden += 1;
       if (action === 'departed') state.auxGen.away += 1;
@@ -1061,6 +1088,13 @@
       if (phase && action !== 'ended') {
         state.phase = phase;
         post({ t: 'visit_state', phase: phase });
+      }
+      // 收掉语音旁路与对端语音并锁住，本场不再开：voice_off 是后端交还私聊之前直接写在主连接上的
+      // （私聊的 TTS 音频随后走同一条连接，这一帧一定先到），ending 再兜一道。旁路接的是共享的 TTS 链，
+      // 私聊恢复后她的台词不能再进串门房间
+      if (action === 'voice_off' || action === 'ending') {
+        state.voiceClosed = true;
+        if (voice) voice.reset();
       }
       if (action === 'departed') setAway(true);
       else if (action === 'peer_hidden') setPeerHidden(true);
@@ -1103,7 +1137,14 @@
         return win.fetch('/api/visit/state?catgirl=' + encodeURIComponent(lanlanName), { headers: { 'X-CSRF-Token': token }, cache: 'no-store', credentials: 'same-origin' });
       }).then(function (res) {
         if (!res) return NO_RESPONSE;
-        return res.ok ? res.json() : null;
+        if (res.ok) return res.json();
+        if (res.status === 404) return VISIT_UNAVAILABLE;
+        if (res.status === 403 && typeof res.json === 'function') {
+          return Promise.resolve(res.json()).then(function (body) {
+            return body && body.code === 'VISIT_E_UNAUTHORIZED' ? VISIT_UNAVAILABLE : null;
+          });
+        }
+        return null;
       });
       var wait = Math.max(0, Math.min(RECOVER_FETCH_TIMEOUT_MS, deadline - now()));
       return withTimeout(request, wait, NO_RESPONSE).then(function (snap) {
@@ -1119,28 +1160,46 @@
     /**
      * 页面重载后：GET /api/visit/state 得知在飞场次就重建 iframe（20 s 页面重载宽限内重入房）。
      * overall：整个恢复的绝对截止时刻（不传就不额外限制）；每一步的窗口都不超过它。
+     * 返回 true 表示已应用权威快照或确认串门接口不可用；临时失败或过时响应返回 false。
      */
     function recoverAfterReload(lanlanName, overall) {
       if (!lanlanName || typeof win.fetch !== 'function') return Promise.resolve(false);
       var cap = typeof overall === 'number' ? overall : Infinity;
+      var requestSeq = ++recoverySeq;
       var gen = state.liveGen;
+      var frameAtSend = state.frame;
       var auxGen = { crop: state.auxGen.crop, hidden: state.auxGen.hidden, away: state.auxGen.away };
       // /api/visit/state 要 CSRF：重载后页面配置一时取不到 token 时不能直接空着头去请求（403 后就再也不恢复）
       return acquireToken(0, Math.min(now() + RECOVER_TOKEN_WINDOW_MS, cap)).then(function (token) {
         if (!token) return null;
         return fetchSnapshot(lanlanName, token, 0, Math.min(now() + RECOVER_FETCH_WINDOW_MS, cap));
       }).then(function (snap) {
-        if (!snap || !snap.active || !snap.visit_id || !snap.side || snap.phase === 'ended' || snap.phase === 'ending') return false;
-        // 查询期间实时通道已经推过新状态（比如已经结束）：这份快照过时了，不能拿它重建
-        if (gen !== state.liveGen) return false;
-        if (state.frame) return false;
+        // 新恢复请求、实时生命周期帧或传输 iframe 变化都会让在途快照作废。
+        if (!snap || requestSeq !== recoverySeq || gen !== state.liveGen || state.frame !== frameAtSend) return false;
+        var cfg = win.lanlan_config;
+        if (cfg && cfg.lanlan_name && cfg.lanlan_name !== lanlanName) return false;
+        // 本机访问限制或未提供串门接口时结束临时核对；拒绝访问不能证明已有场次结束。
+        if (snap === VISIT_UNAVAILABLE) return true;
+        if (snap.active === false) {
+          var endedVisit = state.visitId || state.closedVisitId;
+          if (!endedVisit) return true;
+          applyStateChange({ type: 'visit_state_change', action: 'ended', visit_id: endedVisit, side: state.side }, true);
+          return true;
+        }
+        if (!snap.active || !snap.visit_id || !snap.side || snap.phase === 'ended' || snap.phase === 'ending') return false;
+        if (state.frame && (state.visitId !== snap.visit_id || state.side !== snap.side)) return false;
         var actionByPhase = { pending: 'pending', invite_ready: 'invite_ready', joining: 'joining', awaiting_accept: 'awaiting_accept', active: 'started', wrap_up: 'wrap_up' };
         var action = actionByPhase[snap.phase];
         if (!action) return false;
         // 建 iframe 会清掉显隐 / 离家样式：先记下查询期间实时推来的值，建完再套回去
         var live = { hidden: !!state.peerHidden, away: !!state.away };
-        ensureFrame(snap.side, snap.visit_id);
-        state.phase = snap.phase;
+        if (state.frame) {
+          // 缓存期间可能错过阶段帧；同一场保留传输 iframe，并走实时路径同步采集和传输状态。
+          applyStateChange({ type: 'visit_state_change', action: action, visit_id: snap.visit_id, side: snap.side }, true);
+        } else {
+          ensureFrame(snap.side, snap.visit_id);
+          state.phase = snap.phase;
+        }
         // 查询期间实时通道推过的对端构图 / 显隐 / 出门比快照新：更新过的用实时值，没更新过的才用快照
         var room = snap.room || {};
         if (auxGen.crop === state.auxGen.crop && (room.peer_crop === 'upper' || room.peer_crop === 'full')) state.peerCrop = room.peer_crop;
@@ -1148,6 +1207,8 @@
         else if (snap.side === 'guest' && ACTIVE_PHASES[snap.phase]) setAway(true);
         if (auxGen.hidden !== state.auxGen.hidden) setPeerHidden(live.hidden);
         else if (snap.peer && snap.peer.hidden) setPeerHidden(true);
+        syncCapture();
+        tick(true);
         return true;
       }).catch(function () {
         return false;
@@ -1168,6 +1229,12 @@
 
     var bridge = {
       onStateChange: onStateChange,
+      blocksOrdinaryVoice: function () {
+        return !!((state.visitId || state.closedVisitId) && state.phase
+          && state.phase !== 'ending' && state.phase !== 'ended');
+      },
+      getPhase: function () { return state.phase; },
+      getVisitId: function () { return state.visitId || state.closedVisitId || ''; },
       /** VRM / MMD 在 render 之后调用（同一任务）。 */
       onExternalRender: function () {
         if (!captureWanted()) return;

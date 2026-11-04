@@ -11,6 +11,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 LOCALES_DIR = REPO_ROOT / "static" / "locales"
 REQUIRED_KEYS = (
     "chat.miniGameInviteOptionsAriaLabel",
+    "chat.watchTogetherInviteTitle",
+    "chat.watchTogetherInviteHint",
     "chat.avatarToolTemporarilyUnavailable",
     "autostartPrompt.title",
     "autostartPrompt.message",

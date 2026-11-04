@@ -34,8 +34,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-import pickle
 import os
+import pickle
 import queue
 import secrets
 import threading
@@ -60,14 +60,9 @@ CH_COMM = "comm"
 CH_RESP = "resp"
 
 _LINGER_MS = 1000
-# Which channels each child -> host socket is allowed to carry. The split
-# belongs to the socket, not to the decoder: _decode_uplink still accepts the
-# union by default, so a transport pair built without a dedicated message
-# endpoint (see ChildTransport, where _msg_sock falls back to _ul_sock) keeps
-# working against a host that reads both planes off one socket. What the split
-# closes is the smuggling route into *this* host: HostTransport always binds
-# both sockets, so a plugin holding the control endpoint must not be able to
-# use it to push message frames around the message plane's own ceiling.
+# Which channels each child -> host socket is allowed to carry. Each host
+# socket decodes with its own set, so a plugin holding the control endpoint
+# cannot use it to push message frames around the message plane's own ceiling.
 _CONTROL_UPLINK_CHANNELS = frozenset({CH_RES, CH_STS, CH_COMM})
 _MESSAGE_UPLINK_CHANNELS = frozenset({CH_MSG, CH_MSG_BATCH})
 _UPLINK_CHANNELS = _CONTROL_UPLINK_CHANNELS | _MESSAGE_UPLINK_CHANNELS
@@ -98,39 +93,54 @@ def _normalize_uplink_extension(value: object) -> object:
     raise TypeError(f"unsupported uplink value type: {type(value).__name__}")
 
 
+def pack_rpc_payload(value: Any) -> bytes:
+    """The control protocol's supported value types, shared by its adapters."""
+    return ormsgpack.packb(value, default=_normalize_uplink_extension, option=_UPLINK_PACK_OPTIONS)
+
+
+def unpack_rpc_payload(raw: bytes) -> Any:
+    return ormsgpack.unpackb(raw, option=_UPLINK_UNPACK_OPTIONS)
+
+
+def _result_fault(payload: dict, code: str, message: str) -> dict:
+    req_id = payload.get("req_id")
+    return {"req_id": req_id if isinstance(req_id, (str, int)) else "unknown", "success": False,
+            "data": None, "error": {"code": code, "message": message}}
+
+
 def _encode_uplink(token: str, channel: str, payload: Any) -> bytes:
     if not token or channel not in _UPLINK_CHANNELS or not isinstance(payload, dict):
         raise TypeError("invalid uplink message")
     try:
-        return ormsgpack.packb(
-            [token, channel, payload],
-            default=_normalize_uplink_extension,
-            option=_UPLINK_PACK_OPTIONS,
-        )
+        return pack_rpc_payload([token, channel, payload])
     except Exception as exc:
         if channel == CH_RES:
-            req_id = payload.get("req_id")
-            error_payload = {
-                "req_id": req_id if isinstance(req_id, (str, int)) else "unknown",
-                "success": False,
-                "data": None,
-                "error": "Plugin result is not MessagePack-serializable",
-            }
-            return ormsgpack.packb(
-                [token, channel, error_payload],
-                option=_UPLINK_PACK_OPTIONS,
-            )
+            return pack_rpc_payload([token, channel, _result_fault(payload, "SERIALIZATION_FAILED",
+                "Plugin result is not MessagePack-serializable")])
         raise TypeError("uplink payload must be MessagePack-serializable") from exc
+
+
+def _encode_bounded_uplink(token: str, channel: str, payload: Any) -> bytes:
+    data = _encode_uplink(token, channel, payload)
+    try:
+        _refuse_oversized_uplink_frame(channel, data)
+    except ValueError:
+        if channel != CH_RES or not isinstance(payload.get("req_id"), str):
+            raise
+        data = _encode_uplink(token, channel, _result_fault(payload, "RESULT_TOO_LARGE",
+            f"Plugin result exceeds control transport limit: {len(data)} > {_control_uplink_max_bytes()} bytes"))
+        _refuse_oversized_uplink_frame(channel, data)
+    return data
 
 
 def _decode_uplink(
     raw: bytes,
     *,
     expected_token: str,
-    allowed_channels: frozenset = _UPLINK_CHANNELS,
+    allowed_channels: frozenset,
 ) -> Tuple[str, dict]:
     try:
-        decoded = ormsgpack.unpackb(raw, option=_UPLINK_UNPACK_OPTIONS)
+        decoded = unpack_rpc_payload(raw)
     except Exception as exc:
         raise ValueError("invalid uplink payload") from exc
     if not isinstance(decoded, list) or len(decoded) != 3:
@@ -522,7 +532,7 @@ class ChildTransport:
         uplink_endpoint: str,
         uplink_token: str,
         *,
-        message_uplink_endpoint: str | None = None,
+        message_uplink_endpoint: str,
         image_uplink_endpoint: str | None = None,
     ) -> None:
         # Sync context — used for the uplink PUSH socket (thread-safe via lock)
@@ -534,14 +544,11 @@ class ChildTransport:
         self._ul_sock.connect(uplink_endpoint)
         self._ul_lock = threading.Lock()
 
-        self._msg_sock = self._ul_sock
-        self._msg_lock = self._ul_lock
-        if message_uplink_endpoint:
-            self._msg_sock = self._sync_ctx.socket(zmq.PUSH)
-            self._msg_sock.setsockopt(zmq.LINGER, _LINGER_MS)
-            self._msg_sock.setsockopt(zmq.SNDHWM, 5000)
-            self._msg_sock.connect(message_uplink_endpoint)
-            self._msg_lock = threading.Lock()
+        self._msg_sock = self._sync_ctx.socket(zmq.PUSH)
+        self._msg_sock.setsockopt(zmq.LINGER, _LINGER_MS)
+        self._msg_sock.setsockopt(zmq.SNDHWM, 5000)
+        self._msg_sock.connect(message_uplink_endpoint)
+        self._msg_lock = threading.Lock()
         self._message_batcher = None
         self._message_batcher_init_lock = threading.Lock()
 
@@ -561,7 +568,7 @@ class ChildTransport:
 
         self._downlink_endpoint = downlink_endpoint
         self._uplink_endpoint = uplink_endpoint
-        self._message_uplink_endpoint = message_uplink_endpoint or uplink_endpoint
+        self._message_uplink_endpoint = message_uplink_endpoint
         self._uplink_token = uplink_token
         self._closed = False
 
@@ -661,12 +668,10 @@ class ChildTransport:
         ``send_uplink_nowait`` — the "non-blocking" one — block. Bounding this
         bounds that.
 
-        Raises ``queue.Full`` rather than something transport-shaped:
-        ``ChannelSender`` stands in for a ``multiprocessing.Queue``, and that
-        is what ``Queue.put(timeout=...)`` raises when it cannot deliver.
+        Raises ``queue.Full`` when it cannot deliver in time; the context's
+        backpressure handling classifies that as a full uplink.
         """
-        data = _encode_uplink(self._uplink_token, channel, msg)
-        _refuse_oversized_uplink_frame(channel, data)
+        data = _encode_bounded_uplink(self._uplink_token, channel, msg)
         sock, lock = self._uplink_socket(channel)
         budget = max(0.0, float(timeout))
         deadline = time.monotonic() + budget
@@ -699,8 +704,7 @@ class ChildTransport:
         one in-flight send; blocking on it without a cap is what made this
         method's name a lie while a bounded ``send_uplink`` held the lock.
         """
-        data = _encode_uplink(self._uplink_token, channel, msg)
-        _refuse_oversized_uplink_frame(channel, data)
+        data = _encode_bounded_uplink(self._uplink_token, channel, msg)
         sock, lock = self._uplink_socket(channel)
         if not lock.acquire(timeout=_UPLINK_NOWAIT_LOCK_WAIT_S):
             raise queue.Full(f"uplink busy: {channel}")
@@ -748,10 +752,10 @@ class ChildTransport:
                     self._message_batcher = batcher
         batcher.enqueue(msg)
 
-    # ── channel senders (queue-compatible interface) ─────────────
+    # ── channel senders ──────────────────────────────────────────
 
     def channel_sender(self, channel: str) -> "ChannelSender":
-        """Return a :class:`ChannelSender` that mimics ``mp.Queue.put`` / ``put_nowait``."""
+        """Return a :class:`ChannelSender` bound to *channel*."""
         if channel == CH_MSG:
             return MessageChannelSender(self, channel)
         return ChannelSender(self, channel)
@@ -882,15 +886,15 @@ class ChildTransport:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# ChannelSender — drop-in for mp.Queue on the child side
+# ChannelSender — child-side send handles
 # ═══════════════════════════════════════════════════════════════════
 
 class ChannelSender:
-    """Queue-like object that tags each message with a *channel* and sends it
+    """Send-only handle that tags each message with a *channel* and sends it
     through the shared :class:`ChildTransport` uplink.
 
-    Accepted by :class:`~plugin.core.context.PluginContext` in place of the
-    old ``multiprocessing.Queue`` references (``status_queue``, ``message_queue``, etc.).
+    :class:`~plugin.core.context.PluginContext` holds these as
+    ``status_queue`` and ``message_queue``.
     """
 
     __slots__ = ("_transport", "_ch")
@@ -899,24 +903,15 @@ class ChannelSender:
         self._transport = transport
         self._ch = channel
 
-    def put(self, obj: Any, block: bool = True, timeout: float | None = None) -> None:
-        self._transport.send_uplink(self._ch, obj, timeout=timeout or 10.0)
+    def put(self, obj: Any, *, timeout: float | None) -> None:
+        # An unlimited RPC still bounds the frame send itself.
+        if timeout is None:
+            self._transport.send_uplink(self._ch, obj)
+        else:
+            self._transport.send_uplink(self._ch, obj, timeout=timeout)
 
     def put_nowait(self, obj: Any) -> None:
         self._transport.send_uplink_nowait(self._ch, obj)
-
-    def get(self, block: bool = True, timeout: float | None = None) -> Any:
-        raise NotImplementedError("ChannelSender is send-only; use transport.recv_downlink() for reads")
-
-    def get_nowait(self) -> Any:
-        raise NotImplementedError("ChannelSender is send-only")
-
-    # no-ops for mp.Queue compat
-    def close(self) -> None:
-        pass
-
-    def cancel_join_thread(self) -> None:
-        pass
 
 
 class MessageChannelSender(ChannelSender):

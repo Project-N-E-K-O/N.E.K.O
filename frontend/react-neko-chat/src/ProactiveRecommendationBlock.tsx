@@ -4,7 +4,7 @@ import { normalizeExternalUrlHref, openExternalUrl } from './openExternal';
 import MessageImageBlock from './MessageImageBlock';
 import RecommendationIcon from './RecommendationIcon';
 import { useRecommendationExposure } from './useRecommendationExposure';
-import { hasProactiveRecommendationContent } from './message-schema';
+import { hasProactiveRecommendationContent, isDirectScreenObservation } from './message-schema';
 import type { ChatMessage, MessageAction, MessageBlock } from './message-schema';
 
 type ProactiveBlock = Extract<MessageBlock, { type: 'proactive_recommendation' }>;
@@ -27,7 +27,8 @@ export default function ProactiveRecommendationBlock({ block, message, interacti
   block: ProactiveBlock; message: ChatMessage; interactive: boolean; presentation?: 'card' | 'bubble';
   onAction?: (message: ChatMessage, action: MessageAction) => void;
 }) {
-  const visible = hasProactiveRecommendationContent(block);
+  // A direct screen observation repeats the spoken line; ScreenObservationExposure reports it from that bubble.
+  const visible = hasProactiveRecommendationContent(block) && !isDirectScreenObservation(block);
   const root = useRecommendationExposure(message, block.recommendationId, interactive && visible, 'proactive_recommendation_shown', onAction);
   if (!visible) return null;
   const category = i18n(`proactiveCard.categories.${block.category}`, 'A thought for you');
@@ -35,7 +36,7 @@ export default function ProactiveRecommendationBlock({ block, message, interacti
   const isMeme = block.category === 'meme';
   const usesNekoIcon = ['news', 'video', 'personal'].includes(block.category);
   const isScreenObservation = block.category === 'vision' && !block.content.url;
-  const direct = !!block.directDelivery && (isMeme || isScreenObservation);
+  const direct = !!block.directDelivery && isMeme;
   const showMeme = isMeme && (block.state === 'accepted' || (direct && block.state === 'pending'));
   const generatedMemeTitle = isMeme && /^(?:表情(?:包)?|meme|gif|image)[_\s-]*\d+(?:\.(?:gif|png|jpe?g|webp))?$/i.test(block.content.title.trim());
   const title = generatedMemeTitle ? i18n('proactiveCard.memeTitle', 'A meme I wanted to share with you')
@@ -50,13 +51,13 @@ export default function ProactiveRecommendationBlock({ block, message, interacti
         : block.state === 'unavailable' ? i18n('proactiveCard.unavailable', 'This recommendation is no longer available') : '';
   return <div ref={root} className={`proactive-recommendation proactive-recommendation-${presentation}`}
     data-recommendation-id={block.recommendationId} data-proactive-category={block.category}>
-    {direct && isScreenObservation ? <p className="proactive-direct-observation">{title}</p> : <header className="proactive-recommendation-heading">
+    <header className="proactive-recommendation-heading">
       {!isMeme ? <span className={`proactive-recommendation-icon${usesNekoIcon ? ' neko-recommendation-icon' : ''}`} aria-hidden="true">{usesNekoIcon ? icons[block.category] : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">{icons[block.category]}</svg>}</span> : null}
       <div><div className="proactive-recommendation-meta"><span className="proactive-recommendation-category">{category}</span>
         {block.content.source ? <><span aria-hidden="true">·</span><small title={block.content.source}>{block.content.source}</small></> : null}</div>
         <strong>{title}</strong>
       </div>
-    </header>}
+    </header>
     {showMeme && url && !block.dismissed ? <MessageImageBlock
       block={{ type: 'image', url: `/api/meme/proxy-image?url=${encodeURIComponent(url)}`, alt: title }}
       interactive={interactive} /> : null}

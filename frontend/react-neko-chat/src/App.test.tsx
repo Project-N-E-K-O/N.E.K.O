@@ -1922,6 +1922,15 @@ describe('App', () => {
     expect(actionButtons).toHaveLength(2);
     expect(actionButtons[0]).toBeEnabled();
     expect(actionButtons[1]).toBeEnabled();
+    expect(actionButtons[0]).toHaveAttribute(
+      'data-compact-hit-region-id',
+      'history:message-action:visit-debrief-actions:diary',
+    );
+    expect(actionButtons[1]).toHaveAttribute(
+      'data-compact-hit-region-id',
+      'history:message-action:visit-debrief-actions:forget',
+    );
+    expect(actionButtons[0]).toHaveAttribute('data-compact-hit-region-kind', 'message-action');
 
     fireEvent.click(actionButtons[0]);
     fireEvent.click(actionButtons[1]);
@@ -9416,6 +9425,49 @@ describe('App', () => {
     }
   });
 
+  it('starts a new yarn-ball drag when the previous release was lost outside the window', () => {
+    render(<App chatSurfaceMode="compact" compactChatState="input" />);
+    const minimize = document.body.querySelector('.compact-chat-minimize-ball') as HTMLButtonElement;
+    const grabs: Array<Record<string, number>> = [];
+    const ends: Array<Record<string, number | string>> = [];
+    const onGrab = (event: Event) => grabs.push((event as CustomEvent).detail);
+    const onEnd = (event: Event) => ends.push((event as CustomEvent).detail);
+    window.addEventListener('neko:compact-surface-drag-grab', onGrab);
+    window.addEventListener('neko:compact-surface-drag-end', onEnd);
+    try {
+      fireEvent.pointerDown(minimize, {
+        pointerId: 1, clientX: 40, clientY: 36, screenX: 240, screenY: 360,
+        button: 0, buttons: 1, pointerType: 'mouse',
+      });
+      fireEvent.pointerMove(document, {
+        pointerId: 1, clientX: 64, clientY: 48, screenX: 264, screenY: 372,
+        buttons: 1, pointerType: 'mouse',
+      });
+      expect(grabs).toHaveLength(1);
+      // 在任务栏松手不会把 pointerup 送回窗口，鼠标 pointerId 保持为 1。
+      fireEvent.pointerDown(minimize, {
+        pointerId: 1, clientX: 48, clientY: 36, screenX: 248, screenY: 360,
+        button: 0, buttons: 1, pointerType: 'mouse',
+      });
+      fireEvent.pointerMove(document, {
+        pointerId: 1, clientX: 80, clientY: 52, screenX: 280, screenY: 376,
+        buttons: 1, pointerType: 'mouse',
+      });
+      expect(ends.map((detail) => detail.reason)).toEqual(['lost-pointerup']);
+      expect(grabs).toHaveLength(2);
+      expect(grabs[1]).toMatchObject({
+        pointerId: 1,
+        clientX: 48,
+        clientY: 36,
+        screenX: 248,
+        screenY: 360,
+      });
+    } finally {
+      window.removeEventListener('neko:compact-surface-drag-grab', onGrab);
+      window.removeEventListener('neko:compact-surface-drag-end', onEnd);
+    }
+  });
+
   it('finishes a replaced compact surface drag before priming the next pointer', () => {
     render(<App chatSurfaceMode="compact" compactChatState="input" />);
     const inputFrame = document.body.querySelector('.compact-chat-surface-frame') as HTMLDivElement;
@@ -10120,7 +10172,6 @@ describe('App', () => {
 
     const input = screen.getByPlaceholderText('Type a message...');
     input.focus();
-    // 真实失焦（如切换应用）后 document.hasFocus() 为 false；延迟折叠只有在焦点未回归时才执行。
     const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
     try {
       fireEvent(window, new Event('blur'));
@@ -10129,11 +10180,6 @@ describe('App', () => {
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
 
-      // 瞬时失焦抖动会在 ~280ms 内自行恢复焦点并放弃折叠；真实失焦（焦点不回归）照常折叠。
-      expect(onCompactChatStateChange).not.toHaveBeenCalled();
-      await act(async () => {
-        await new Promise((resolve) => window.setTimeout(resolve, 400));
-      });
       expect(onCompactChatStateChange).toHaveBeenCalledWith('default');
     } finally {
       hasFocus.mockRestore();

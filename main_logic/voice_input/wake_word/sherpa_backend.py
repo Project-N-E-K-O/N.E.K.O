@@ -17,9 +17,9 @@ from types import MappingProxyType
 from main_logic.voice_input.activation.contracts import AudioFrame, WakeWordBatchResult, WakeWordDetection
 from .diagnostics import WakeWordDiagnostics
 from .errors import safe_wake_word_reason
+from .runtime_bundle import SUPPORTED_RUNTIME_VERSION, RuntimeBundleError, load_runtime
 
 
-SUPPORTED_RUNTIME_VERSION = "1.13.8+neko.kws2"
 BATCH_PROTOCOL_VERSION = 1
 MAX_BATCH_FRAMES = 16
 MAX_BATCH_SAMPLES = 640
@@ -42,6 +42,7 @@ class SherpaWakeWordConfig:
     inference_timeout: float = 2.0
     max_frame_samples: int = 16000
     max_active_paths: int = 8
+    runtime_cache_dir: str | None = None
 
     def __post_init__(self) -> None:
         if not self.keywords or len(self.keywords) > 32:
@@ -80,7 +81,10 @@ class _StreamingSpotter:
     """Worker-owned decoder and affine mapping to original PCM sample positions."""
 
     def __init__(self, config: SherpaWakeWordConfig) -> None:
-        import sherpa_onnx
+        try:
+            sherpa_onnx = load_runtime(Path(config.runtime_cache_dir) if config.runtime_cache_dir else None)
+        except RuntimeBundleError as exc:
+            raise WakeWordBackendError(exc.code) from exc
 
         self.runtime_version = getattr(sherpa_onnx, "__version__", None)
         self.native_version = getattr(sherpa_onnx, "version", None)

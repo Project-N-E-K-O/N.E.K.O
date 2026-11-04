@@ -2,8 +2,9 @@
  * visit-settings.js — 设置弹窗「串门」分组的辅助（docs/design/visit-infrastructure.md
  * §5 PR-13、§3.7.6；OD-09 v3 / OD-06 v2）。
  *
- * 两个开关本身（visitEnabled 默认关、visitVoiceEnabled 默认开）由
- * avatar-ui-popup.js 的通用开关项渲染、经 saveNEKOSettings 持久化；本文件只管：
+ * 两个开关本身（主菜单的 visitEnabled 总开关默认关、二级面板的
+ * visitVoiceEnabled 默认开）由 avatar-ui-popup.js 的通用开关项渲染、
+ * 经 saveNEKOSettings 持久化；本文件只管：
  * - 总闸探测：`GET /api/visit/state?catgirl=` 的 `enabled`（NEKO_VISIT_ENABLED）为真
  *   才显示分组入口，`default_tier` 作只读档位显示；
  * - 构图偏好「上半身 / 全身」（本机偏好，建房时带上，不进对话设置）；
@@ -246,22 +247,22 @@
         return row;
     }
 
-    function buildPersonaRow() {
-        var btn = document.createElement('button');
-        btn.type = 'button';
-        btn.textContent = t('visit.settings.persona', '串门自我介绍');
-        btn.setAttribute('data-i18n', 'visit.settings.persona');
-        Object.assign(btn.style, {
-            margin: '4px 12px',
-            padding: '4px 8px',
-            fontSize: '12px',
-            border: '1px solid var(--neko-popup-indicator-border, #ccc)',
-            borderRadius: '6px',
-            background: 'transparent',
-            color: 'var(--neko-popup-text, #333)',
-            cursor: 'pointer',
-            textAlign: 'left'
+    function buildPersonaRow(manager) {
+        if (!manager || typeof manager._createSidePanelMenuItem !== 'function') return null;
+        var theaterItem = (manager._characterMenuItems || []).find(function (item) {
+            return item && item.id === 'theater';
         });
+        if (!theaterItem || !theaterItem.icon) return null;
+
+        // 与角色设置侧栏里的「小剧场」共用同一菜单项工厂和同一图标配置；
+        // 只替换 id / 文案 / 点击行为，样式与图标不在串门模块重复定义。
+        var btn = manager._createSidePanelMenuItem({
+            id: 'visit-persona',
+            label: t('visit.settings.persona', '串门自我介绍'),
+            labelKey: 'visit.settings.persona',
+            icon: theaterItem.icon
+        });
+        btn.setAttribute('data-neko-visit-persona-button', '');
         btn.addEventListener('click', function (event) {
             event.stopPropagation();
             openPersona(false);
@@ -270,11 +271,14 @@
     }
 
     /** 往「串门」侧边面板里补上开关之外的几行：构图、只读档位、人设入口。 */
-    function appendPanelExtras(container) {
+    function appendPanelExtras(container, manager) {
         if (!container) return;
         container.appendChild(buildCropRow());
         container.appendChild(buildTierRow());
-        if (personaPanelAvailable()) container.appendChild(buildPersonaRow());
+        if (personaPanelAvailable()) {
+            var personaRow = buildPersonaRow(manager);
+            if (personaRow) container.appendChild(personaRow);
+        }
     }
 
     window.nekoVisitSettings = Object.freeze({

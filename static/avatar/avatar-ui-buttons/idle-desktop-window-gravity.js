@@ -22,11 +22,12 @@
     const MAX_FRAME_SECONDS = 0.05;
     const MAX_SAMPLE_SECONDS = 0.8;
     const CONTACT_EPSILON = 0.5;
-    // A stable body hull across action animations, measured from the idle GIF.
-    // The playground supplies its existing airborne body hull instead.
+    // Fallback for callers without a Playground body. Real bodies supply the
+    // current asset's stable, frame-union hull through the resource registry.
     const insets = Object.freeze({ left: 89 / 512, top: 49 / 512, right: 118 / 512, bottom: 19 / 512 });
     let current = null;
     let latest = null;
+    let lastFreeDesktopSceneAt = 0;
     // Only an explicit pointer release may hand the cat to a window.
     // A held drag is free, while a throw and a fresh native scene must never
     // claim a stationary cat.
@@ -36,10 +37,25 @@
     let disposed = false;
     let removalObserver = null;
     let dragMotions = new WeakMap();
+    let cachedBorders = null;
+    // A stationary press sets body.dragging, so a window that disappears during
+    // the press cannot drop the cat until the pointer is released.
+    let lostDesktopSupport = new WeakSet();
 
     function now() {
         return typeof performance !== 'undefined' && typeof performance.now === 'function'
             ? performance.now() : Date.now();
+    }
+
+    function prefersReducedMotion() {
+        return !!(window.matchMedia
+            && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    }
+
+    function refreshReducedMotion(state) {
+        if (!state || !state.button) return !!(state && state.reduceMotion);
+        state.reduceMotion = prefersReducedMotion();
+        return state.reduceMotion;
     }
 
     function rect(value) {
@@ -63,12 +79,14 @@
         };
     }
 
-    function boundsFor(windowRect, size, body = null) {
+    function boundsFor(windowRect, size, body = null, origin = null) {
         const target = rect(windowRect);
         const viewportWidth = Number(window.innerWidth);
         const viewportHeight = Number(window.innerHeight);
         if (!target || !size || !Number.isFinite(viewportWidth) || !Number.isFinite(viewportHeight)) return null;
-        const origin = screenOrigin();
+        const sampleOrigin = origin && Number.isFinite(origin.x) && Number.isFinite(origin.y)
+            ? origin : screenOrigin();
+        origin = sampleOrigin;
         const hull = body && body.visibleInsetRatios || insets;
         // The collision hull excludes transparent GIF margins. Keep its visible
         // part on screen even when the native window extends beyond the display.
@@ -99,8 +117,12 @@
 
     function getBody(button) {
         const playground = button && button.__nekoIdleCat1PlaygroundDropState;
-        return playground && playground.active && !playground.released
+        const body = playground && playground.active && !playground.released
             && playground.bodies && playground.bodies.get('cat') || null;
+        if (body && typeof _syncNekoIdleCat1PlaygroundCatVisibleInsets === 'function') {
+            _syncNekoIdleCat1PlaygroundCatVisibleInsets(body, button);
+        }
+        return body;
     }
 
     function contains(bounds, position) {
@@ -127,6 +149,9 @@
     }
 
     function buildBorders(scene, ownerKey) {
+        const origin = screenOrigin();
+        const cacheKey = `${ownerKey == null ? '\0' : ownerKey}|${origin.x},${origin.y}|${window.innerWidth},${window.innerHeight}|${sceneSignature(scene)}`;
+        if (cachedBorders && cachedBorders.key === cacheKey) return cachedBorders.borders;
         const borders = [];
         const windows = scene.map(item => ({ ...item, rect: localRect(item.rect) }));
         windows.forEach((item, index) => {
@@ -159,6 +184,7 @@
                 }
             }
         });
+        cachedBorders = { key: cacheKey, borders };
         return borders;
     }
 
@@ -169,6 +195,7 @@
     }
 
     function collideBorders(state, previous, dt, previousScene = null, moving = false) {
+        refreshReducedMotion(state);
         const hull = state.hull;
         const offsets = { left: state.size.width * hull.left, right: state.size.width * (1 - hull.right),
             top: state.size.height * hull.top, bottom: state.size.height * (1 - hull.bottom) };
@@ -204,8 +231,12 @@
             const implied = dt > 0 ? (state[edge.axis] - previous[edge.axis] - edge.line + oldLine) / dt : 0;
             const speed = Math.max(0, (state[velocity] - wallSpeed) * direction, implied * direction);
             state[edge.axis] = edge.line - offset;
+            const beforeVelocity = state[velocity];
             state[velocity] = clampSpeed(wallSpeed - (state.reduceMotion ? 0 : RESTITUTION) * speed * direction);
-            impact(state, speed, edge.axis === 'y');
+            const impactDirection = edge.axis === 'y'
+                ? (direction > 0 ? 'down' : 'up')
+                : (direction > 0 ? 'right' : 'left');
+            impact(state, Math.abs(state[velocity] - beforeVelocity), impactDirection);
             if (edge.axis === 'y' && direction > 0 && speed < REST_SPEED && Math.abs(wallSpeed) < REST_SPEED) {
                 state.vy = 0;
                 state.grounded = true;
@@ -252,18 +283,16 @@
     }
 
     function render(state, options = {}) {
+        refreshReducedMotion(state);
         // Identical writes still notify MutationObservers in Chromium. Avoid
         // feeding an endless layout/journey loop after the cat has settled.
         for (const [key, value] of Object.entries({ left: `${Number(state.x.toFixed(3))}px`,
             top: `${Number(state.y.toFixed(3))}px`, right: '', bottom: '', transform: 'none' })) {
             if (state.container.style[key] !== value) state.container.style[key] = value;
         }
-        for (const [axis, scale] of [['x', 1 + state.squash], ['y', 1 - state.squash]]) {
-            const key = `--neko-window-gravity-scale-${axis}`;
-            if (state.button.style.getPropertyValue(key) !== scale.toFixed(4)) {
-                state.button.style.setProperty(key, scale.toFixed(4));
-            }
-        }
+        state.deformationActive = !!window.NekoCollisionDeformation?.renderCollisionDeformation(
+            state.button, now(), state.reduceMotion, state.hull
+        );
         const body = getBody(state.button);
         if (body && !body.dragging) {
             Object.assign(body, { x: state.x, y: state.y, vx: state.vx, vy: state.vy,
@@ -279,13 +308,13 @@
 
     function canWalk(button) {
         return !current || (button && current.button !== button)
-            || (current.grounded && current.vx === 0 && current.squash === 0 && !paused(current));
+            || (current.grounded && current.vx === 0 && !current.deformationActive && !paused(current));
     }
 
     function isMoving(button) {
         return !!(current && (!button || current.button === button) && !paused(current)
             && isCat(current.button, current.container) && !isReturning(current.button)
-            && (!current.grounded || current.vx !== 0 || current.vy !== 0 || current.squash !== 0));
+            && (!current.grounded || current.vx !== 0 || current.vy !== 0 || current.deformationActive));
     }
 
     function publishMotionState(state) {
@@ -316,19 +345,27 @@
             _getNekoIdleReturnContainerFromButton(button) === container && isCat(button, container));
     }
 
-    function impact(state, relativeSpeed, vertical) {
-        if (relativeSpeed < REST_SPEED || state.reduceMotion) return;
-        const amount = Math.min(0.12, relativeSpeed / 7000);
-        state.squash = vertical ? amount : -amount;
+    function impact(state, impactVelocityChange, direction) {
+        refreshReducedMotion(state);
+        if (impactVelocityChange < REST_SPEED || state.reduceMotion) return;
+        state.deformationActive = window.NekoCollisionDeformation?.beginCollisionDeformation(state.button, {
+            owner: KIND,
+            direction,
+            impactVelocityChange,
+            startedAt: now(),
+            reducedMotion: state.reduceMotion,
+            visibleInsetRatios: state.hull,
+        }) || state.deformationActive;
     }
 
     function collide(state, walls = {}) {
+        refreshReducedMotion(state);
         const b = state.bounds;
         for (const axis of [
-            { position: 'x', velocity: 'vx', low: 'left', high: 'right', vertical: false },
-            { position: 'y', velocity: 'vy', low: 'top', high: 'bottom', vertical: true },
+            { position: 'x', velocity: 'vx', low: 'left', high: 'right' },
+            { position: 'y', velocity: 'vy', low: 'top', high: 'bottom' },
         ]) {
-            const { position, velocity, low, high, vertical } = axis;
+            const { position, velocity, low, high } = axis;
             for (const side of [low, high]) {
                 const sign = side === low ? 1 : -1;
                 if ((state[position] - b[side]) * sign > CONTACT_EPSILON) continue;
@@ -337,8 +374,10 @@
                 state[position] = b[side];
                 if (relative < 0) {
                     const restitution = state.reduceMotion ? 0 : RESTITUTION;
+                    const beforeVelocity = state[velocity];
                     state[velocity] = clampSpeed(wallSpeed - restitution * (state[velocity] - wallSpeed));
-                    impact(state, -relative, vertical);
+                    impact(state, Math.abs(state[velocity] - beforeVelocity),
+                        side === 'top' ? 'up' : side === 'bottom' ? 'down' : side);
                     if (side === 'bottom' && -relative < REST_SPEED && Math.abs(wallSpeed) < REST_SPEED) {
                         state.vy = 0;
                     }
@@ -365,8 +404,6 @@
         state.y += state.vy * dt;
         collide(state);
         collideBorders(state, previous, dt);
-        state.squash *= Math.exp(-18 * dt);
-        if (Math.abs(state.squash) < 0.001) state.squash = 0;
         if (state.grounded && Math.abs(state.vx) < 2) state.vx = 0;
     }
 
@@ -421,12 +458,12 @@
         if (finishDesktopLanding(state)) return;
         // Resting needs no RAF and never blocks another action or its animation.
         // A new native-window fact wakes it when the box actually changes.
-        if (!state.grounded || state.vx !== 0 || state.squash !== 0) requestFrame(state);
+        if (!state.grounded || state.vx !== 0 || state.deformationActive) requestFrame(state);
     }
 
     function finishDesktopLanding(state) {
         if (state.windowKey || !state.grounded || state.y !== state.bounds.bottom
-            || state.vx !== 0 || state.squash !== 0) return false;
+            || state.vx !== 0 || state.deformationActive) return false;
         // An interrupted window interaction ends at the desktop floor.
         cancel(state.button);
         return true;
@@ -440,8 +477,7 @@
         if (removalObserver) removalObserver.disconnect();
         removalObserver = null;
         state.button.classList.remove(ACTIVE_CLASS);
-        state.button.style.removeProperty('--neko-window-gravity-scale-x');
-        state.button.style.removeProperty('--neko-window-gravity-scale-y');
+        window.NekoCollisionDeformation?.clearCollisionDeformation(state.button, KIND);
         const body = getBody(state.button);
         if (body && !body.dragging && !disposed && isCat(state.button, state.container)
             && !isReturning(state.button)) {
@@ -554,10 +590,10 @@
             || candidate.revision !== expected.revision || expected.targetKind !== KIND))) return false;
         const state = {
             ...candidate, x: candidate.size.x, y: candidate.size.y, vx: 0, vy: 0,
-            grounded: false, squash: 0, frame: 0, pointerHeld: false,
+            grounded: false, deformationActive: false, frame: 0, pointerHeld: false,
             origin: screenOrigin(),
             lastStepAt: now(), lastSampleAt: now(),
-            reduceMotion: !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches),
+            reduceMotion: prefersReducedMotion(),
         };
         current = state;
         pendingAdmission = null;
@@ -569,7 +605,9 @@
                 if (paused(state)) return;
                 const actual = rect(state.container.getBoundingClientRect());
                 if (!actual) return;
-                if (actual.width !== state.size.width || actual.height !== state.size.height) {
+                const body = getBody(state.button);
+                if (actual.width !== state.size.width || actual.height !== state.size.height
+                    || (body && body.visibleInsetRatios && body.visibleInsetRatios !== state.hull)) {
                     if (latest) updateBounds(state, latest);
                 }
                 // Tier/layout changes can bypass the shared movement helper.
@@ -580,7 +618,7 @@
             });
             removalObserver.observe(state.container.parentNode, { childList: true });
             removalObserver.observe(state.container, {
-                attributes: true, attributeFilter: ['style', 'class', 'data-neko-idle-tier'], subtree: true,
+                attributes: true, attributeFilter: ['style', 'class', 'src', 'data-neko-idle-tier'], subtree: true,
             });
         }
         const body = getBody(state.button);
@@ -593,19 +631,26 @@
         return true;
     }
 
-    function adoptWindow(state) {
-        for (const target of state.scene) {
+    function containerAt(scene, state, size = null, origin = null) {
+        const measured = size || state.size;
+        for (const target of scene) {
             if (target.collisionOnly === true) continue;
-            const bounds = boundsFor(target.rect, state.size, getBody(state.button));
+            const bounds = boundsFor(target.rect, measured, getBody(state.button), origin);
             if (!contains(bounds, state)) continue;
-            state.windowKey = target.key;
-            state.bounds = bounds;
-            state.borders = buildBorders(state.scene, target.key);
-            state.lastSampleAt = now();
-            collide(state);
-            return true;
+            return { target, bounds };
         }
-        return false;
+        return null;
+    }
+
+    function adoptWindow(state) {
+        const container = containerAt(state.scene, state);
+        if (!container) return false;
+        state.windowKey = container.target.key;
+        state.bounds = container.bounds;
+        state.borders = buildBorders(state.scene, state.windowKey);
+        state.lastSampleAt = now();
+        collide(state);
+        return true;
     }
 
     function continueAfterWindowClosed(state, result) {
@@ -616,9 +661,20 @@
         const size = rect(state.container.getBoundingClientRect());
         const origin = screenOrigin();
         const body = getBody(state.button);
-        const floorHeight = body && typeof _getNekoIdleCat1PlaygroundViewportBottomPx === 'function'
+        const workTop = typeof _getNekoIdleCat1PlaygroundViewportTopPx === 'function'
+            ? _getNekoIdleCat1PlaygroundViewportTopPx() : 0;
+        const workBottom = typeof _getNekoIdleCat1PlaygroundViewportBottomPx === 'function'
             ? _getNekoIdleCat1PlaygroundViewportBottomPx() : window.innerHeight;
-        const bounds = boundsFor({ ...origin, width: window.innerWidth, height: floorHeight }, size, body);
+        const workLeft = typeof _getNekoIdleCat1PlaygroundViewportLeftPx === 'function'
+            ? _getNekoIdleCat1PlaygroundViewportLeftPx() : 0;
+        const workRight = typeof _getNekoIdleCat1PlaygroundViewportRightPx === 'function'
+            ? _getNekoIdleCat1PlaygroundViewportRightPx() : window.innerWidth;
+        const bounds = boundsFor({
+            x: origin.x + workLeft,
+            y: origin.y + workTop,
+            width: Math.max(0, workRight - workLeft),
+            height: Math.max(0, workBottom - workTop),
+        }, size, body, origin);
         if (!bounds) { cancel(state.button); return; }
         const scene = sceneFor(result);
         const signature = sceneSignature(scene);
@@ -639,7 +695,7 @@
             windowKey: '', grounded: false, scene, sceneSignature: signature });
         state.borders = buildBorders(state.scene, '');
         // Rebind the existing body rather than cancelling and rebuilding it:
-        // positions, velocity, squash and the simulation clock survive closure.
+        // Position, velocity, deformation and the simulation clock survive closure.
         adoptWindow(state);
         if (paused(state)) return;
         // Remove the old box before advancing. Otherwise a late native update
@@ -655,12 +711,30 @@
         const sampleAt = now();
         // Time spent at rest belongs to the old support. It must not become
         // accumulated falling time when that support is removed or replaced.
-        if (state.grounded && state.vx === 0 && state.squash === 0 && !state.frame) state.lastStepAt = sampleAt;
+        if (state.grounded && state.vx === 0 && !state.deformationActive && !state.frame) state.lastStepAt = sampleAt;
         const scene = sceneFor(result);
-        const target = scene.find(item => item.key === state.windowKey && item.collisionOnly !== true);
+        let target = scene.find(item => item.key === state.windowKey && item.collisionOnly !== true);
         if (!target) { continueAfterWindowClosed(state, result); return; }
         const size = rect(state.container.getBoundingClientRect());
-        const next = boundsFor(target.rect, size, getBody(state.button));
+        // One snapshot has to correct the cat and measure every window. The
+        // old origin would otherwise miss the front window after the pet moves.
+        // Physics still steps in the previous frame; only the containment probe
+        // uses the corrected position.
+        const origin = screenOrigin();
+        const originDx = state.origin.x - origin.x;
+        const originDy = state.origin.y - origin.y;
+        const probe = originDx || originDy
+            ? { ...state, x: state.x + originDx, y: state.y + originDy }
+            : state;
+        // Scene order is front to back. A window raised over the cat becomes
+        // the container; the buried window must not keep the floor.
+        const front = paused(state) ? null : containerAt(scene, probe, size, origin);
+        const ownerChanged = !!(front && front.target.key !== state.windowKey);
+        if (ownerChanged) {
+            target = front.target;
+            state.windowKey = target.key;
+        }
+        const next = ownerChanged ? front.bounds : boundsFor(target.rect, size, getBody(state.button), origin);
         if (!next || !isCat(state.button, state.container) || isReturning(state.button)) {
             cancel(state.button);
             return;
@@ -668,11 +742,11 @@
         const elapsed = (sampleAt - state.lastSampleAt) / 1000;
         state.lastSampleAt = sampleAt;
         state.revision = result.revision;
-        const origin = screenOrigin();
         const body = getBody(state.button);
         const hull = body && body.visibleInsetRatios || insets;
+        const hullChanged = hull !== state.hull;
         const coordinateChange = origin.x !== state.origin.x || origin.y !== state.origin.y
-            || size.width !== state.size.width || size.height !== state.size.height || hull !== state.hull;
+            || size.width !== state.size.width || size.height !== state.size.height || hullChanged;
         const previous = state.bounds;
         const signature = sceneSignature(scene);
         const sceneChanged = signature !== state.sceneSignature || coordinateChange;
@@ -691,9 +765,25 @@
         // Account for elapsed motion against the previous walls before applying
         // a fresh sample. Resetting lastStepAt here without stepping discards
         // most falling time when window updates arrive as often as RAFs.
-        if ((geometryChanged || sceneChanged) && !paused(state)) advancePhysics(state, sampleAt);
-        state.x += state.origin.x - origin.x;
-        state.y += state.origin.y - origin.y;
+        if (hullChanged && body && !body.dragging) {
+            // The Playground already anchored the new art to the same support.
+            // Do not integrate that corrected position against the old hull.
+            state.x = body.x;
+            state.y = body.y;
+            state.vx = clampSpeed(body.vx);
+            state.vy = clampSpeed(body.vy);
+            state.grounded = body.grounded;
+            state.lastStepAt = sampleAt;
+        } else if ((geometryChanged || sceneChanged) && !paused(state)) advancePhysics(state, sampleAt);
+        if (originDx || originDy) {
+            state.x += originDx;
+            state.y += originDy;
+            const alignedBody = body && !body.dragging ? body : null;
+            if (alignedBody) {
+                if (Number.isFinite(alignedBody.x)) alignedBody.x += originDx;
+                if (Number.isFinite(alignedBody.y)) alignedBody.y += originDy;
+            }
+        }
         state.origin = origin;
         state.size = size;
         state.hull = hull;
@@ -701,17 +791,17 @@
         const previousScene = state.scene;
         state.scene = scene;
         state.sceneSignature = signature;
-        if (sceneChanged) state.borders = buildBorders(scene, state.windowKey);
+        if (sceneChanged || ownerChanged) state.borders = buildBorders(scene, state.windowKey);
         if (paused(state)) return;
         if (!geometryChanged && !sceneChanged) return;
         const walls = {};
         for (const side of Object.keys(next)) {
             // A delayed reader or monitor/DPI jump is a bounds correction, never
             // a huge throw. Repeated unchanged samples cannot inject energy.
-            walls[side] = !coordinateChange && elapsed >= 1 / 240 && elapsed <= MAX_SAMPLE_SECONDS
+            walls[side] = !ownerChanged && !coordinateChange && elapsed >= 1 / 240 && elapsed <= MAX_SAMPLE_SECONDS
                 ? clampSpeed((next[side] - previous[side]) / elapsed) : 0;
         }
-        if (state.grounded && geometryChanged) {
+        if (state.grounded && geometryChanged && !ownerChanged) {
             const floorVx = (walls.left + walls.right) / 2;
             state.vx = clampSpeed(state.vx + (floorVx - state.vx) * 0.45);
         }
@@ -736,6 +826,7 @@
             if (result && result.sessionId) sceneUnavailable = true;
             clearPendingAdmission();
             cancel(null);
+            releaseUnsupportedDesktopCats();
             return false;
         }
         if (pendingRead) {
@@ -765,6 +856,9 @@
                 if (!pendingAdmission || pendingAdmission.kind !== 'drag') {
                     clearPendingAdmission(false);
                 }
+                // The desktop cat was never admitted. A minimized window must
+                // not leave it grounded on the floor that just disappeared.
+                releaseUnsupportedDesktopCats();
             }
             return false;
         }
@@ -775,13 +869,17 @@
             latest = null;
             clearPendingAdmission();
             cancel(null);
+            releaseUnsupportedDesktopCats();
             return false;
         }
+        const previousScene = latest && Array.isArray(latest.windows) ? sceneFor(latest) : null;
         latest = result;
         sceneUnavailable = false;
         const state = current;
         if (!state) {
             attemptPendingAdmission();
+            collideFreeDesktopCats(previousScene);
+            releaseUnsupportedDesktopCats();
             return false;
         }
         if (state.sessionId !== result.sessionId
@@ -803,6 +901,23 @@
         // the throw at pointer release, not when that asynchronous work finishes.
         const releasedAt = Number.isFinite(detail.releasedAt) ? detail.releasedAt : Date.now();
         return _getNekoIdleDragReleaseVelocity(drag, releasedAt, false);
+    }
+
+    function reconcilePausedOwner(state) {
+        if (!state || !Array.isArray(state.scene)) return false;
+        const body = getBody(state.button);
+        const probe = body && !body.dragging ? { ...state, x: body.x, y: body.y } : state;
+        const front = containerAt(state.scene, probe, state.size);
+        if (!front || front.target.key === state.windowKey) return false;
+        state.windowKey = front.target.key;
+        state.bounds = front.bounds;
+        state.borders = buildBorders(state.scene, state.windowKey);
+        if (body && !body.dragging) {
+            body.floorY = state.bounds.bottom;
+            body.wallLeft = state.bounds.left;
+            body.wallRight = state.bounds.right;
+        }
+        return true;
     }
 
     function handleManualMove(event) {
@@ -838,6 +953,9 @@
             if (velocity && !getBody(state.button)) {
                 Object.assign(state, velocity, { grounded: false });
             }
+            // A window raised while the press froze owner selection is already
+            // in the committed scene. Adopt it before the next sample arrives.
+            reconcilePausedOwner(state);
             // Also reconcile a box moved during a stationary press, without
             // treating the accumulated displacement as a shake.
             collide(state);
@@ -928,7 +1046,7 @@
         collide(state);
         collideBorders(state, previous, 1 / 60);
         render(state);
-        if (!state.grounded || state.vx !== 0 || state.squash !== 0) requestFrame(state);
+        if (!state.grounded || state.vx !== 0 || state.deformationActive) requestFrame(state);
         return true;
     }
 
@@ -948,7 +1066,7 @@
             vx: 0,
             vy: 0,
             grounded: false,
-            squash: 0,
+            deformationActive: false,
         };
         collideBorders(probe, state, 0);
         return {
@@ -965,6 +1083,9 @@
         if (!playgroundActive) return false;
         const state = current;
         if (!state || state.button !== button || body !== getBody(button) || paused(state)) return false;
+        if (body.visibleInsetRatios && body.visibleInsetRatios !== state.hull && latest) {
+            updateBounds(state, latest);
+        }
         const previous = { x: state.x, y: state.y };
         const elapsed = Math.max(0, (timestamp - state.lastStepAt) / 1000);
         state.x = body.x; state.y = body.y;
@@ -982,14 +1103,137 @@
         const state = current;
         if (!state || body !== getBody(state.button)) return false;
         if (body.dragging) return false;
+        if (body.visibleInsetRatios && body.visibleInsetRatios !== state.hull && latest) {
+            updateBounds(state, latest);
+        }
         const previous = { x: state.x, y: state.y };
         state.x = body.x; state.y = body.y;
         state.vx = clampSpeed(body.vx); state.vy = clampSpeed(body.vy);
         collide(state);
         collideBorders(state, previous, 1 / 60);
         render(state);
-        if (!state.grounded || state.vx !== 0 || state.squash !== 0) requestFrame(state);
+        if (!state.grounded || state.vx !== 0 || state.deformationActive) requestFrame(state);
         return true;
+    }
+
+    // A cat resting on the desktop still meets window edges. Crossing one
+    // bounces the body; it does not hand the cat to that window.
+    function collideDesktopBody(button, body, dt, previous, previousScene = null) {
+        if (!playgroundActive || disposed || !body || body.dragging || body.id !== 'cat') return false;
+        if (current && current.button === button) return false;
+        if (!latest || !Array.isArray(latest.windows)) return false;
+        const scene = sceneFor(latest);
+        if (!scene.length) return false;
+        const width = Number(body.width);
+        const height = Number(body.height);
+        if (!(width > 0) || !(height > 0)) return false;
+        const before = previous && Number.isFinite(Number(previous.x)) && Number.isFinite(Number(previous.y))
+            ? { x: Number(previous.x), y: Number(previous.y) }
+            : { x: body.x, y: body.y };
+        const probe = {
+            x: body.x,
+            y: body.y,
+            vx: Number(body.vx) || 0,
+            vy: Number(body.vy) || 0,
+            size: { width, height },
+            hull: body.visibleInsetRatios || insets,
+            borders: buildBorders(scene, null),
+            bounds: { left: -Infinity, right: Infinity, top: -Infinity, bottom: Infinity },
+            grounded: !!body.grounded,
+            button,
+            deformationActive: false,
+            reduceMotion: prefersReducedMotion(),
+        };
+        const elapsed = Number.isFinite(Number(dt)) && Number(dt) > 0 ? Number(dt) : 1 / 60;
+        collideBorders(probe, before, elapsed, previousScene, !!previousScene);
+        const hit = probe.x !== body.x || probe.y !== body.y || probe.vx !== body.vx || probe.vy !== body.vy;
+        if (!hit) return false;
+        body.x = probe.x;
+        body.y = probe.y;
+        body.vx = probe.vx;
+        body.vy = probe.vy;
+        if (probe.grounded) body.grounded = true;
+        return true;
+    }
+
+    function supportedByScene(body, scene) {
+        const width = Number(body.width);
+        const height = Number(body.height);
+        if (!(width > 0) || !(height > 0)) return false;
+        const hull = body.visibleInsetRatios || insets;
+        const foot = body.y + height * (1 - hull.bottom);
+        const left = body.x + width * hull.left;
+        const right = body.x + width * (1 - hull.right);
+        return buildBorders(scene, null).some(edge => edge.axis === 'y'
+            && Math.abs(foot - edge.line) <= CONTACT_EPSILON
+            && right > edge.start && left < edge.end);
+    }
+
+    // A desktop cat can rest on a window without being admitted into it.
+    // Minimizing that window removes the edge; grounded must not keep the cat
+    // suspended above the work-area floor.
+    function releaseUnsupportedDesktopCats() {
+        if (!playgroundActive || current || typeof document === 'undefined'
+            || typeof document.querySelectorAll !== 'function') return;
+        const scene = latest && Array.isArray(latest.windows) ? sceneFor(latest) : [];
+        document.querySelectorAll('.neko-idle-return-btn').forEach((button) => {
+            const body = getBody(button);
+            if (!body || !body.grounded) return;
+            releaseUnsupportedDesktopCat(button, body, scene);
+        });
+    }
+
+    function releaseUnsupportedDesktopCat(button, body, scene) {
+        const floor = Number(body.floorY);
+        const unsupported = Number.isFinite(floor) && body.y < floor - CONTACT_EPSILON
+            && !supportedByScene(body, scene);
+        if (!unsupported) {
+            lostDesktopSupport.delete(body);
+            return;
+        }
+        if (body.dragging) {
+            lostDesktopSupport.add(body);
+            return;
+        }
+        lostDesktopSupport.delete(body);
+        body.grounded = false;
+        if (typeof _startNekoIdleCat1PlaygroundPhysics === 'function') {
+            _startNekoIdleCat1PlaygroundPhysics(button);
+        }
+    }
+
+    function releaseDeferredDesktopSupport(button, body) {
+        if (!body || body.dragging || !lostDesktopSupport.has(body)) return;
+        lostDesktopSupport.delete(body);
+        if (!body.grounded) return;
+        const scene = latest && Array.isArray(latest.windows) ? sceneFor(latest) : [];
+        const floor = Number(body.floorY);
+        if (!Number.isFinite(floor) || body.y >= floor - CONTACT_EPSILON) return;
+        if (supportedByScene(body, scene)) return;
+        body.grounded = false;
+        if (typeof _startNekoIdleCat1PlaygroundPhysics === 'function') {
+            _startNekoIdleCat1PlaygroundPhysics(button);
+        }
+    }
+
+    function collideFreeDesktopCats(previousScene) {
+        if (!playgroundActive || current || typeof document === 'undefined'
+            || typeof document.querySelectorAll !== 'function') return;
+        const sampleAt = now();
+        const elapsed = lastFreeDesktopSceneAt > 0 ? (sampleAt - lastFreeDesktopSceneAt) / 1000 : 0;
+        lastFreeDesktopSceneAt = sampleAt;
+        document.querySelectorAll('.neko-idle-return-btn').forEach((button) => {
+            const body = getBody(button);
+            if (!body || body.dragging) return;
+            const before = { x: body.x, y: body.y };
+            if (!collideDesktopBody(button, body, elapsed, before, previousScene)) return;
+            if (typeof _setNekoIdleCat1PlaygroundBodyPosition === 'function') {
+                _setNekoIdleCat1PlaygroundBodyPosition(body, body.x, body.y, { force: true });
+            }
+            if (typeof _startNekoIdleCat1PlaygroundPhysics === 'function') {
+                _startNekoIdleCat1PlaygroundPhysics(button);
+            }
+        });
     }
 
     function releaseBody(button, body, options = {}) {
@@ -1006,12 +1250,22 @@
         } else if (options.admit !== true) {
             if (pendingAdmission && pendingAdmission.body === body) clearPendingAdmission(false);
         }
-        if (current && current.button === button) current.lastStepAt = now();
+        if (current && current.button === button) {
+            current.lastStepAt = now();
+            reconcilePausedOwner(current);
+        } else if (!current) {
+            releaseDeferredDesktopSupport(button, body);
+        }
         return syncBody(body);
     }
 
     function getBounds(container) {
         return current && current.container === container ? { ...current.bounds } : null;
+    }
+
+    function isDesktopSupported(body) {
+        if (!body || !latest || !Array.isArray(latest.windows)) return null;
+        return supportedByScene(body, sceneFor(latest));
     }
 
     function isActive(button) {
@@ -1031,6 +1285,7 @@
 
     window.NekoDesktopWindowGravity = Object.freeze({
         isActive, isMoving, cancel, getState, applyPosition, constrainTarget, stepBody, syncBody, releaseBody, dragBody, getBounds,
+        collideDesktopBody, isDesktopSupported,
         requestAdmission,
         canWalk, usesContinuousDrag,
         createDragSampleSession: _createNekoIdleDragSampleSession,

@@ -37,7 +37,7 @@ class _FakeProcessHost:
         self.started = False
         self.stopped = False
 
-    async def start(self, message_target_queue: object, startup_timeout: float | None = None) -> None:
+    async def start(self, startup_timeout: float | None = None) -> None:
         self.startup_timeout = startup_timeout
         self.started = True
 
@@ -1731,7 +1731,6 @@ async def test_start_plugin_defaults_startup_failure_to_warn_and_marks_degraded(
 
         async def start(
             self,
-            message_target_queue: object,
             startup_timeout: float | None = None,
             startup_failure: str = "warn",
         ) -> dict[str, object]:
@@ -1842,7 +1841,6 @@ async def test_start_plugin_startup_failure_fail_keeps_startup_error_fatal(
 
         async def start(
             self,
-            message_target_queue: object,
             startup_timeout: float | None = None,
             startup_failure: str = "warn",
         ) -> dict[str, object]:
@@ -1949,7 +1947,6 @@ async def test_start_plugin_does_not_map_startup_business_timeout_to_start_timeo
 
         async def start(
             self,
-            message_target_queue: object,
             startup_timeout: float | None = None,
             startup_failure: str = "warn",
         ) -> None:
@@ -2051,7 +2048,7 @@ async def test_start_plugin_applies_runtime_startup_timeout_to_legacy_host_and_c
             self.shutdown_timeout: float | None = None
             _SlowProcessHost.instances.append(self)
 
-        async def start(self, message_target_queue: object) -> None:
+        async def start(self) -> None:
             self.started = True
             await asyncio.sleep(0.05)
 
@@ -2153,7 +2150,7 @@ async def test_start_plugin_lets_timeout_aware_host_own_startup_timeout_cleanup(
             self.startup_cleanup_ran = False
             _TimeoutAwareHost.instances.append(self)
 
-        async def start(self, message_target_queue: object, startup_timeout: float | None = None) -> None:
+        async def start(self, startup_timeout: float | None = None) -> None:
             self.started = True
             self.startup_timeout = startup_timeout
             try:
@@ -2264,7 +2261,7 @@ async def test_start_plugin_classifies_exponent_form_startup_timeout(
             super().__init__(*args, **kwargs)
             _ExponentTimeoutHost.instances.append(self)
 
-        async def start(self, message_target_queue: object, startup_timeout: float | None = None) -> None:
+        async def start(self, startup_timeout: float | None = None) -> None:
             self.started = True
             self.startup_timeout = startup_timeout
             raise PluginLifecycleError(

@@ -2719,29 +2719,17 @@
     }
 
     async function saveFile(blob, filename) {
-        try {
-            if ('showSaveFilePicker' in window) {
-                const handle = await window.showSaveFilePicker({
-                    suggestedName: filename,
-                    types: [{ description: 'PNG 图片', accept: { 'image/png': ['.png'] } }]
-                });
-                const writable = await handle.createWritable();
-                await writable.write(blob);
-                await writable.close();
-                return;
-            }
-        } catch (e) {
-            if (e.name === 'AbortError') return; // 用户取消
-        }
-        // fallback
+        // 统一走下载流程；Electron 的 will-download 已负责另存为对话框。
+        // 先用 showSaveFilePicker 再回退下载，会在写入失败时留下空文件并重复弹窗。
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
         a.download = filename;
         document.body.appendChild(a);
         a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+        a.remove();
+        // 等浏览器 / Electron 接管下载后再释放 Blob URL。
+        setTimeout(() => URL.revokeObjectURL(url), 60_000);
     }
     // ====== 图层列表面板 ======
 

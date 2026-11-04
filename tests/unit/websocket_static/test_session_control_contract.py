@@ -132,11 +132,15 @@ def test_session_ended_by_server_stops_assistant_text_output():
         "// -------- response_discarded --------",
         1,
     )[0]
-    assert "if (S.suppressAssistantStreamUntilNextSession)" in gemini_block
-    assert gemini_block.index("if (S.suppressAssistantStreamUntilNextSession)") < gemini_block.index(
+    suppression_guard = (
+        "if (S.suppressAssistantStreamUntilNextSession\n"
+        "                            && !isVisitAssistantMirrorResponse(response))"
+    )
+    assert suppression_guard in gemini_block
+    assert gemini_block.index(suppression_guard) < gemini_block.index(
         "window.appendMessage(response.text, 'gemini', isNewMessage)"
     )
-    assert "return;" in gemini_block.split("if (S.suppressAssistantStreamUntilNextSession)", 1)[1].split(
+    assert "return;" in gemini_block.split(suppression_guard, 1)[1].split(
         "var isNewMessage",
         1,
     )[0]
@@ -176,13 +180,29 @@ def test_session_ended_by_server_stops_assistant_text_output():
         "// AI turn_end 后只 reschedule",
         1,
     )[0]
-    assert "if (S.suppressAssistantStreamUntilNextSession)" in turn_end_block
-    assert turn_end_block.index("if (S.suppressAssistantStreamUntilNextSession)") < turn_end_block.index(
+    assert "if (S.suppressAssistantStreamUntilNextSession" in turn_end_block
+    assert "&& !isVisitAssistantMirrorResponse(response))" in turn_end_block
+    assert turn_end_block.index("if (S.suppressAssistantStreamUntilNextSession") < turn_end_block.index(
         "flushRealisticBufferOnTurnEnd();"
     )
     assert turn_end_block.index("clearPendingRollbackForRequest(response.request_id);") < turn_end_block.index(
         "clearPendingAssistantTurnStart();"
     )
+
+
+def test_only_server_identified_visit_homecoming_messages_bypass_session_end_suppression():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    helper = source.split("function isVisitAssistantMirrorResponse(response)", 1)[1].split(
+        "function allocateAssistantTurnId(serverTurnId)",
+        1,
+    )[0]
+    assert "metadata.source !== 'neko_visit'" in helper
+    assert "metadata = response && response.meta" in helper
+    assert "'visit_direct_invite_question', 'visit_line', 'visit_ritual', 'visit_debrief'" in helper
+    assert "mirror.kind === kind" in helper
+    assert "String(mirror.session_id || '') === sessionId" in helper
+    assert "return !!sessionId" in helper
 
 
 def test_session_started_only_settles_the_start_it_answers():

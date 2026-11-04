@@ -429,6 +429,33 @@ async def test_verified_hello_invites_the_family_and_fills_peer_vid(tmp_path, mo
         await teardown(side, wire=wire, clock=clocks[0])
 
 
+async def test_direct_host_auto_accept_does_not_block_the_receive_pipeline(tmp_path, monkeypatch, clocks):
+    side, rt, wire = await _host_joined(tmp_path, monkeypatch, clocks)
+    release = asyncio.Event()
+    activation_started = asyncio.Event()
+
+    async def slow_activation():
+        activation_started.set()
+        await release.wait()
+
+    rt.direct = True
+    rt.target_user_id = "22222222-2222-4222-8222-222222222222"
+    rt.activate = slow_activation
+    try:
+        await rt.on_transport_state({"state": "connected", "peer_present": True})
+        await asyncio.wait_for(
+            rt.on_recv(from_vid=GUEST_VID, cmd=1, payload=_guest_hello(), nbytes=900),
+            timeout=0.5,
+        )
+        await asyncio.wait_for(activation_started.wait(), timeout=0.5)
+        assert rt.accepted is True
+        assert rt.phase == "awaiting_accept"
+    finally:
+        release.set()
+        await settle()
+        await teardown(side, wire=wire, clock=clocks[0])
+
+
 async def test_peer_card_name_installed_as_another_local_card_stays_visible(tmp_path, monkeypatch, clocks):
     from main_routers.visit_router.local_context import CharacterContext
 
@@ -1579,6 +1606,42 @@ async def test_non_finite_transport_stats_are_not_kept(tmp_path, monkeypatch):
                                "loss_pct": 0.0, "rx_w": 640, "rx_h": 480})
         assert "rtt_ms" not in rt.stats and "rx_fps" not in rt.stats and rt.stats["tx_fps"] == 30
         json.dumps(rt.snapshot(), allow_nan=False)            # /state still serializes.
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+@pytest.mark.parametrize("side_name,flag", [
+    ("host", "video_rx_overrun"),
+    ("host", "audio_rx_overrun"),
+    ("guest", "audio_rx_overrun"),
+])
+async def test_receiver_bitrate_overrun_ends_the_visit_as_a_protocol_violation(tmp_path, monkeypatch, side_name, flag):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt if side_name == "host" else guest.rt
+    try:
+        await wait_for(lambda: host.rt.ready_exchanged and guest.rt.ready_exchanged)
+        before = rt.anomaly_count()
+        rt.on_transport_stats({"rx_kbps": 900, "rtt_ms": 40, "loss_pct": 0.0, "dc_queue": 0})
+        assert rt.exit_task is None                           # Plain stats (even high ones) are only forwarded.
+        rt.on_transport_stats({"rx_kbps": 900, "rtt_ms": 40, "loss_pct": 0.0, flag: "true"})
+        assert rt.exit_task is None                           # Only a literal true counts.
+        rt.on_transport_stats({"rx_kbps": 900, "rtt_ms": 40, "loss_pct": 0.0, flag: True})
+        await finish(rt, clock)
+        assert rt.finalize_reason == "peer_protocol_violation"
+        assert rt.anomaly_count() == before + 1               # Recorded as a local anomaly only (never a ban signal).
+        leaves = [p for p in wire.sent[side_name] if p.get("t") == "leave"]
+        assert leaves and leaves[0]["reason"] == "peer_protocol_violation"
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_receiver_bitrate_overrun_before_ready_is_ignored(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, accept=False)
+    try:
+        assert not host.rt.ready_exchanged                    # Nothing is subscribed before ready.
+        host.rt.on_transport_stats({"video_rx_overrun": True, "audio_rx_overrun": "yes"})
+        guest.rt.on_transport_stats({"audio_rx_overrun": True})
+        assert host.rt.exit_task is None and guest.rt.exit_task is None
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
 
@@ -3868,7 +3931,7 @@ async def test_late_text_whose_speaker_changed_since_its_first_piece_is_not_reco
         lp = rt.room.max_lp_seen + 1
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "line_delta", "v": 1, "ln": "g:96", "i": 0, "lp": lp, "txt": "猫", "sp": "c", "ad": "hc",
-            "rt": "", "wu": False}, nbytes=200)                # Starts as catgirl line.
+            "rt": "", "wu": False}, nbytes=200)                # Starts as neko line.
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "line_delta", "v": 1, "ln": "g:97", "i": 0, "lp": lp + 1, "txt": "猫", "sp": "c", "ad": "hc",
             "rt": "", "wu": False}, nbytes=200)                # Starts without farewell status.
@@ -4247,3 +4310,155 @@ async def test_peer_blocked_while_its_name_is_read_is_not_installed(tmp_path, mo
     await _finished(rt)
     assert rt.finalize_reason == "peer_blocked" and rt.peer is None
     assert side.host.frames_of("visit_invite") == []
+
+
+# ── Neko voice tracks (OD-15 v4) ───────────────────────────────────────────────
+
+
+async def test_voice_tracks_stay_off_before_ready(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, accept=False, audio=True)
+    try:
+        await settle()
+        for side in ("host", "guest"):
+            snaps = [m for m in wire.downlinks[side] if m.get("type") == "media"]
+            assert all(m["audio_publish"] is False and m["audio_subscribe"] is False for m in snaps)
+        for rt in (host.rt, guest.rt):
+            snap = rt.media_snapshot()
+            assert snap["audio_publish"] is False and snap["audio_subscribe"] is False
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_voice_tracks_are_symmetric_after_ready_and_independent_of_video(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, audio=True)
+    try:
+        for side in ("host", "guest"):
+            await wait_for(lambda s=side: [m for m in wire.downlinks[s] if m.get("type") == "media" and m["audio_publish"]])
+            snaps = [m for m in wire.downlinks[side] if m.get("type") == "media"]
+            assert snaps[-1]["audio_publish"] is True and snaps[-1]["audio_subscribe"] is True
+        # No encoder / decoder only drops video: the voices still flow both ways.
+        guest.rt.video_ok = False
+        host.rt.peer.video = False
+        for rt in (host.rt, guest.rt):
+            snap = rt.media_snapshot()
+            assert snap["audio_publish"] is True and snap["audio_subscribe"] is True
+        # A TTS fallback keeps the track published (it simply goes silent).
+        guest.rt.voice.fallen_back = True
+        assert guest.rt.media_snapshot()["audio_publish"] is True
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_turning_voice_off_mutes_both_directions_at_once(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, audio=True)
+
+    def media(side):
+        return [m for m in wire.downlinks[side] if m.get("type") == "media"]
+
+    try:
+        for side in ("host", "guest"):
+            await wait_for(lambda s=side: [m for m in media(s) if m["audio_publish"]])
+        before = {side: len(media(side)) for side in ("host", "guest")}
+        assert rtm.apply_voice_setting(False) == 2
+        for side in ("host", "guest"):
+            await wait_for(lambda s=side: len(media(s)) > before[s])
+            assert media(side)[-1]["audio_publish"] is False and media(side)[-1]["audio_subscribe"] is False
+        count = {side: len(media(side)) for side in ("host", "guest")}
+        rtm.apply_voice_setting(False)                     # Unchanged: no extra snapshot.
+        await settle()
+        assert {side: len(media(side)) for side in ("host", "guest")} == count
+        rtm.apply_voice_setting(True)
+        for side in ("host", "guest"):
+            await wait_for(lambda s=side: len(media(s)) > count[s])
+            assert media(side)[-1]["audio_publish"] is True
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_voice_stays_off_while_servers_gives_no_audio_gate(tmp_path, monkeypatch):
+    # Plan A gate: credentials without Servers' literal ``audio: true`` (older Servers) keep exactly the old
+    # behaviour -- no voice in either direction even after ready, whatever visitVoiceEnabled says.
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    try:
+        for side in (host, guest):
+            assert side.rt.creds.audio is False
+            snap = side.rt.media_snapshot()
+            assert snap["audio_publish"] is False and snap["audio_subscribe"] is False
+        for side in ("host", "guest"):
+            assert all(not m["audio_publish"] and not m["audio_subscribe"]
+                       for m in wire.downlinks[side] if m.get("type") == "media")
+        rtm.apply_voice_setting(False)
+        rtm.apply_voice_setting(True)
+        await settle()
+        assert host.rt.media_snapshot()["audio_publish"] is False
+        assert guest.rt.media_snapshot()["audio_subscribe"] is False
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_renewal_turning_voice_off_stops_it_for_the_rest_of_the_visit(tmp_path, monkeypatch):
+    # Servers' emergency stop: a renewal with publish.audio false stops both directions now and for good;
+    # a later renewal back to true is ignored (next visit).
+    import dataclasses
+
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, audio=True)
+
+    def media(side):
+        return [m for m in wire.downlinks[side] if m.get("type") == "media"]
+
+    try:
+        await wait_for(lambda: [m for m in media("host") if m["audio_publish"]])
+        rt = host.rt
+        renewed_to = {"audio": False}
+
+        async def renew(*, wall_now=None):
+            rt.grant._current = dataclasses.replace(rt.grant.current, audio=renewed_to["audio"])
+            return True
+
+        rt.grant.ensure_fresh = renew
+        before = len(media("host"))
+        await rt._renew_grant()
+        await wait_for(lambda: len(media("host")) > before)
+        assert media("host")[-1]["audio_publish"] is False and media("host")[-1]["audio_subscribe"] is False
+        refresh = [m for m in wire.downlinks["host"] if m.get("type") == "credentials" and m.get("refresh")]
+        assert refresh and refresh[-1]["publish"]["audio"] is False
+        renewed_to["audio"] = True                         # Back on: ignored for this visit.
+        await rt._renew_grant()
+        await settle()
+        assert rt.media_snapshot()["audio_publish"] is False
+        refresh = [m for m in wire.downlinks["host"] if m.get("type") == "credentials" and m.get("refresh")]
+        assert refresh[-1]["publish"]["audio"] is False
+        assert guest.rt.media_snapshot()["audio_publish"] is True   # The other side decides for itself.
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_voice_is_off_before_private_chat_gets_the_tts_chain_back(tmp_path, monkeypatch):
+    # The page taps the shared assistant TTS output: the voice-off snapshot must already be written when the takeover
+    # is released, or private replies spoken during the leave / grace window would reach the peer.
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, audio=True)
+
+    def media(side):
+        return [m for m in wire.downlinks[side] if m.get("type") == "media"]
+
+    try:
+        await wait_for(lambda: [m for m in media("host") if m["audio_publish"]])
+        seen = {}
+        real_release = host.host.release_takeover
+
+        def spy(token):
+            seen["last_media"] = dict(media("host")[-1])
+            seen["voice_off_frames"] = [f for f in host.host.frames
+                                        if f.get("type") == "visit_state_change" and f.get("action") == "voice_off"]
+            return real_release(token)
+
+        host.host.release_takeover = spy
+        host.rt.request_finalize("route_end")
+        assert host.rt.media_snapshot()["audio_publish"] is False      # Off as soon as the visit starts ending.
+        await wait_for(lambda: "last_media" in seen, timeout=10)
+        assert seen["last_media"]["audio_publish"] is False and seen["last_media"]["audio_subscribe"] is False
+        # The page-side voice_off frame was written on the display socket before the release, too.
+        assert len(seen["voice_off_frames"]) == 1 and seen["voice_off_frames"][0]["visit_id"] == host.rt.visit_id
+        await finish(host.rt, clock)
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)

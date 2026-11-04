@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from main_routers import community_remote_proxy as P
+from tests.fake_clock import patch_module_clock
 from utils.instance_access import InstanceAccessMiddleware
 
 
@@ -27,6 +28,97 @@ def test_anonymous_never_opens_upstream(proxy, monkeypatch):
     monkeypatch.setattr(P.O, "resolve_saved_oauth_status", lambda: pytest.fail("Anonymous account read"))
     proxy.headers.pop("Authorization")
     assert proxy.post("/api/forge/credits/grant", content="invalid").status_code == 401
+
+
+@pytest.mark.parametrize("recommendations", [True, False])
+def test_realtime_hub_can_omit_invitation_and_cached_recommendation_reads(proxy, monkeypatch, recommendations):
+    owner_id = "11111111-1111-4111-8111-111111111111"
+    seen = []
+
+    async def status():
+        return {"logged_in": True, "snapshot": {"access_token": "synthetic", "local_user_id": owner_id}}
+
+    async def upstream(request):
+        seen.append(request.url.path)
+        if request.url.path == "/api/users/me":
+            return httpx.Response(200, json={"id": owner_id})
+        return httpx.Response(200, json={"items": [], "status": "online"})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(P.O, "resolve_saved_oauth_status", status)
+    monkeypatch.setattr(P.C, "_social_base_url", lambda: "https://community.example")
+    monkeypatch.setattr(P.httpx, "AsyncClient", lambda **kwargs: real_client(transport=httpx.MockTransport(upstream), **kwargs))
+    response = proxy.get("/api/community/visit-hub", params={
+        "include_invitations": "false", "include_recommendations": str(recommendations).lower(),
+    })
+    assert response.status_code == 200
+    assert "/api/notifications" not in seen
+    assert ("/api/users/me/recommendations" in seen) is recommendations
+
+
+@pytest.mark.parametrize("endpoint", [
+    "/api/community/visit-hub", "/api/community/friend-presence", "/api/community/visit-invitations",
+])
+def test_saved_but_temporarily_unverified_session_does_not_report_logout(proxy, monkeypatch, endpoint):
+    async def status():
+        return {
+            "logged_in": False,
+            "snapshot": {"access_token": "saved-secret", "local_user_id": "owner"},
+        }
+
+    monkeypatch.setattr(P.O, "resolve_saved_oauth_status", status)
+    monkeypatch.setattr(P.httpx, "AsyncClient", lambda **kwargs: pytest.fail("Unverified token must not be forwarded"))
+    response = proxy.get(endpoint)
+    assert response.status_code == 503
+    assert response.json() == {"detail": "community_unavailable"}
+    assert "saved-secret" not in response.text
+
+
+@pytest.mark.parametrize("endpoint", ["/api/community/visit-hub", "/api/community/visit-invitations"])
+@pytest.mark.parametrize("saved_status", [
+    {"logged_in": False, "snapshot": None},
+    {"logged_in": False, "snapshot": {"local_user_id": "owner"}},
+    {"logged_in": False, "snapshot": {"access_token": ""}},
+    {"logged_in": False, "snapshot": {"access_token": "rejected-secret"}, "rejected": True},
+])
+def test_definite_logout_still_requires_login(proxy, monkeypatch, saved_status, endpoint):
+    async def status():
+        return saved_status
+
+    monkeypatch.setattr(P.O, "resolve_saved_oauth_status", status)
+    monkeypatch.setattr(P.httpx, "AsyncClient", lambda **kwargs: pytest.fail("Logged-out request must not reach cloud"))
+    response = proxy.get(endpoint)
+    assert response.status_code == 401
+    assert response.json() == {"detail": "community_login_required"}
+
+
+def test_hub_recovers_after_temporary_session_verification_failure(proxy, monkeypatch):
+    statuses = iter([False, True])
+    seen = []
+    owner_id = "11111111-1111-4111-8111-111111111111"
+
+    async def status():
+        return {"logged_in": next(statuses), "snapshot": {"access_token": "saved-secret", "local_user_id": owner_id}}
+
+    async def upstream(request):
+        seen.append(request.url.path)
+        if request.url.path == "/api/users/me":
+            return httpx.Response(200, json={"id": owner_id})
+        if request.url.path == "/api/users/me/presence":
+            return httpx.Response(200, json={"status": "online"})
+        return httpx.Response(200, json={"items": [], "total": 0})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(P.O, "resolve_saved_oauth_status", status)
+    monkeypatch.setattr(P.C, "_social_base_url", lambda: "https://community.example")
+    monkeypatch.setattr(P.httpx, "AsyncClient", lambda **kwargs: real_client(transport=httpx.MockTransport(upstream), **kwargs))
+    assert proxy.get("/api/community/visit-hub").status_code == 503
+    assert seen == []
+    recovered = proxy.get("/api/community/visit-hub")
+    assert recovered.status_code == 200
+    assert recovered.json()["logged_in"] is True
+    assert recovered.json()["account"]["id"] == owner_id
+    assert "saved-secret" not in recovered.text
 
 
 def test_desktop_simple_cross_site_post_cannot_use_cloud_account(monkeypatch):
@@ -97,3 +189,653 @@ def test_account_switch_stops_old_notification_stream(proxy, monkeypatch):
     monkeypatch.setattr(P.httpx, "AsyncClient", lambda **kwargs: real_client(transport=httpx.MockTransport(upstream), **kwargs))
     response = proxy.get("/api/notifications/stream")
     assert response.text == "data: before\n\n"
+
+
+def test_visit_invite_response_relays_only_the_boolean_decision(proxy, monkeypatch):
+    notification_id = "22222222-2222-4222-8222-222222222222"
+    seen = []
+
+    async def status():
+        return {"logged_in": True, "snapshot": {"access_token": "cloud-secret", "local_user_id": "owner"}}
+
+    async def upstream(request):
+        seen.append(request)
+        return httpx.Response(200, json={"ok": True})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(P.O, "resolve_saved_oauth_status", status)
+    monkeypatch.setattr(P.C, "_social_base_url", lambda: "https://community.example")
+    monkeypatch.setattr(
+        P.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+    response = proxy.post(
+        f"/api/community/visit-invitations/{notification_id}/respond",
+        json={"accepted": False, "actor_id": "forged"},
+    )
+    assert response.status_code == 200
+    assert seen[0].url.path == f"/api/notifications/{notification_id}/visit-response"
+    assert seen[0].headers["Authorization"] == "Bearer cloud-secret"
+    assert seen[0].read().decode() == '{"accepted":false}'
+    assert proxy.post(
+        f"/api/community/visit-invitations/{notification_id}/respond", json={"accepted": "no"},
+    ).status_code == 400
+
+
+def test_visit_hub_preserves_real_mutual_presence(proxy, monkeypatch):
+    owner_id = "11111111-1111-4111-8111-111111111111"
+    online_id = "22222222-2222-4222-8222-222222222222"
+    offline_id = "33333333-3333-4333-8333-333333333333"
+
+    async def status():
+        return {"logged_in": True, "snapshot": {"access_token": "cloud-secret", "local_user_id": owner_id}}
+
+    async def upstream(request):
+        if request.url.path == "/api/users/me":
+            return httpx.Response(200, json={
+                "id": owner_id,
+                "display_name": "Owner",
+                "username": "owner",
+                "avatar_url": "/static/avatars/owner.webp",
+            })
+        if request.url.path == "/api/users/me/presence":
+            return httpx.Response(200, json={"status": "away"})
+        if request.url.path == "/api/users/me/recommendations":
+            return httpx.Response(200, json={"items": [
+                {
+                    "id": "55555555-5555-4555-8555-555555555555",
+                    "display_name": "推荐喵友",
+                    "avatar_url": "/static/avatars/recommended.webp",
+                    "reason": "liked_you",
+                    "follows_viewer": False,
+                    "online": True,
+                    "score": 999,
+                },
+                {
+                    "id": "66666666-6666-4666-8666-666666666666",
+                    "display_name": "异常原因喵友",
+                    "reason": ["untrusted"],
+                },
+            ]})
+        if request.url.path == f"/api/users/{owner_id}/following":
+            return httpx.Response(200, json={"items": [
+                {"id": online_id, "display_name": "在线喵友", "is_mutual": True,
+                 "online": True, "presence_status": "away",
+                 "last_seen_at": "2026-10-26T08:00:00Z"},
+                {"id": offline_id, "display_name": "离线喵友", "is_mutual": True,
+                 "online": False, "last_seen_at": "2026-10-20T08:00:00Z"},
+                {"id": "44444444-4444-4444-8444-444444444444", "display_name": "单向关注",
+                 "is_mutual": False, "online": True},
+            ], "total": 3})
+        if request.url.path == "/api/notifications":
+            return httpx.Response(200, json={"items": []})
+        return httpx.Response(404, json={"detail": "not_found"})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(P.O, "resolve_saved_oauth_status", status)
+    monkeypatch.setattr(P.C, "_social_base_url", lambda: "https://community.example")
+    monkeypatch.setattr(
+        P.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+
+    response = proxy.get("/api/community/visit-hub")
+    assert response.status_code == 200
+    assert response.json()["account"] == {
+        "id": owner_id,
+        "display_name": "Owner",
+        "username": "owner",
+        "avatar_url": "https://community.example/static/avatars/owner.webp",
+        "presence_status": "away",
+    }
+    assert response.json()["friends"] == [
+        {"id": online_id, "display_name": "在线喵友", "username": None, "avatar_url": None,
+         "online": True, "presence_status": "away",
+         "last_seen_at": "2026-10-26T08:00:00Z"},
+        {"id": offline_id, "display_name": "离线喵友", "username": None, "avatar_url": None,
+         "online": False, "presence_status": "offline",
+         "last_seen_at": "2026-10-20T08:00:00Z"},
+    ]
+    assert response.json()["recommendations"] == [
+        {
+            "id": "55555555-5555-4555-8555-555555555555",
+            "display_name": "推荐喵友",
+            "username": None,
+            "avatar_url": "https://community.example/static/avatars/recommended.webp",
+            "reason": "liked_you",
+            "follows_viewer": False,
+        },
+        {
+            "id": "66666666-6666-4666-8666-666666666666",
+            "display_name": "异常原因喵友",
+            "username": None,
+            "avatar_url": None,
+            "reason": "active_user",
+            "follows_viewer": False,
+        },
+    ]
+
+
+def test_friend_presence_returns_only_live_mutual_status(proxy, monkeypatch):
+    friend_id = "22222222-2222-4222-8222-222222222222"
+    seen = []
+
+    async def status():
+        return {"logged_in": True, "snapshot": {"access_token": "cloud-secret"}}
+
+    async def upstream(request):
+        seen.append(request)
+        if request.url.path == "/api/users/me/friends/presence":
+            return httpx.Response(200, json={"items": [
+                {"id": friend_id, "online": True, "presence_status": ["untrusted"],
+                 "last_seen_at": "2026-10-28T06:00:00Z"},
+            ]})
+        return httpx.Response(404, json={"detail": "not_found"})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(P.O, "resolve_saved_oauth_status", status)
+    monkeypatch.setattr(P.C, "_social_base_url", lambda: "https://community.example")
+    monkeypatch.setattr(
+        P.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+
+    response = proxy.get("/api/community/friend-presence")
+    assert response.status_code == 200
+    assert response.json() == {"friends": [{
+        "id": friend_id,
+        "online": True,
+        "presence_status": "online",
+        "last_seen_at": "2026-10-28T06:00:00Z",
+    }]}
+    assert len(seen) == 1
+    assert seen[0].url.path == "/api/users/me/friends/presence"
+    assert seen[0].headers["Authorization"] == "Bearer cloud-secret"
+    assert "cloud-secret" not in response.text
+    assert "display_name" not in response.text
+
+
+def test_friend_presence_falls_back_during_verse_rollout(proxy, monkeypatch):
+    owner_id = "11111111-1111-4111-8111-111111111111"
+    friend_id = "22222222-2222-4222-8222-222222222222"
+    seen = []
+
+    async def status():
+        return {"logged_in": True, "snapshot": {"access_token": "cloud-secret"}}
+
+    async def upstream(request):
+        seen.append(request.url.path)
+        if request.url.path == "/api/users/me/friends/presence":
+            return httpx.Response(404, json={"detail": "not_found"})
+        if request.url.path == "/api/users/me":
+            return httpx.Response(200, json={"id": owner_id})
+        if request.url.path == f"/api/users/{owner_id}/following":
+            return httpx.Response(200, json={"items": [{
+                "id": friend_id,
+                "is_mutual": True,
+                "online": True,
+                "presence_status": "away",
+                "last_seen_at": "2026-10-28T06:00:00Z",
+            }], "total": 1})
+        return httpx.Response(404, json={"detail": "not_found"})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(P.O, "resolve_saved_oauth_status", status)
+    monkeypatch.setattr(P.C, "_social_base_url", lambda: "https://community.example")
+    monkeypatch.setattr(
+        P.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+
+    response = proxy.get("/api/community/friend-presence")
+
+    assert response.status_code == 200
+    assert response.json()["friends"] == [{
+        "id": friend_id,
+        "online": True,
+        "presence_status": "away",
+        "last_seen_at": "2026-10-28T06:00:00Z",
+    }]
+    assert seen == [
+        "/api/users/me/friends/presence",
+        "/api/users/me",
+        f"/api/users/{owner_id}/following",
+    ]
+
+
+def test_recommendation_failure_does_not_break_the_visit_hub(proxy, monkeypatch):
+    owner_id = "11111111-1111-4111-8111-111111111111"
+
+    async def status():
+        return {"logged_in": True, "snapshot": {"access_token": "cloud-secret"}}
+
+    async def upstream(request):
+        if request.url.path == "/api/users/me":
+            return httpx.Response(200, json={"id": owner_id})
+        if request.url.path == f"/api/users/{owner_id}/following":
+            return httpx.Response(200, json={"items": []})
+        if request.url.path == "/api/users/me/presence":
+            return httpx.Response(200, json={"status": "online"})
+        if request.url.path == "/api/users/me/recommendations":
+            return httpx.Response(503, json={"detail": "unavailable"})
+        if request.url.path == "/api/notifications":
+            return httpx.Response(200, json={"items": []})
+        return httpx.Response(404, json={"detail": "not_found"})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(P.O, "resolve_saved_oauth_status", status)
+    monkeypatch.setattr(P.C, "_social_base_url", lambda: "https://community.example")
+    monkeypatch.setattr(
+        P.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+
+    response = proxy.get("/api/community/visit-hub")
+    assert response.status_code == 200
+    assert response.json()["recommendations"] == []
+
+
+@pytest.mark.asyncio
+async def test_recommendation_transport_failure_is_optional():
+    async def upstream(_request):
+        raise httpx.ConnectError("offline")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as client:
+        status, body = await P._community_recommendations(
+            client,
+            {"base_url": "https://community.example", "access": "cloud-secret"},
+        )
+
+    assert status == 502
+    assert body == {"detail": "community_unavailable"}
+
+
+@pytest.mark.asyncio
+async def test_recommendation_timeout_is_optional(monkeypatch):
+    async def upstream(_request):
+        await asyncio.sleep(0.05)
+        return httpx.Response(200, json={"items": []})
+
+    monkeypatch.setattr(P, "RECOMMENDATION_TIMEOUT_SECONDS", 0.01)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as client:
+        status, body = await P._community_recommendations(
+            client,
+            {"base_url": "https://community.example", "access": "cloud-secret"},
+        )
+
+    assert status == 502
+    assert body == {"detail": "community_unavailable"}
+
+
+def test_follow_recommended_user_relays_only_the_validated_uuid(proxy, monkeypatch):
+    target_id = "55555555-5555-4555-8555-555555555555"
+    seen = []
+
+    async def status():
+        return {"logged_in": True, "snapshot": {"access_token": "cloud-secret"}}
+
+    async def upstream(request):
+        seen.append(request)
+        return httpx.Response(200, json={
+            "followee_id": target_id,
+            "following": True,
+            "follower_count": 4,
+            "follows_viewer": True,
+            "is_mutual": True,
+        })
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(P.O, "resolve_saved_oauth_status", status)
+    monkeypatch.setattr(P.C, "_social_base_url", lambda: "https://community.example")
+    monkeypatch.setattr(
+        P.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+
+    response = proxy.post(f"/api/community/users/{target_id}/follow")
+    assert response.status_code == 200
+    assert response.json()["is_mutual"] is True
+    assert seen[0].method == "POST"
+    assert seen[0].url.path == f"/api/users/{target_id}/follow"
+    assert seen[0].headers["Authorization"] == "Bearer cloud-secret"
+    assert proxy.post("/api/community/users/not-a-uuid/follow").status_code == 400
+
+
+def test_follow_recommended_user_rejects_a_stale_account(proxy, monkeypatch):
+    current_account_id = "11111111-1111-4111-8111-111111111111"
+    stale_account_id = "22222222-2222-4222-8222-222222222222"
+    target_id = "55555555-5555-4555-8555-555555555555"
+
+    async def status():
+        return {
+            "logged_in": True,
+            "snapshot": {"access_token": "new-account-secret"},
+            "verified_profile": {"local_user_id": current_account_id},
+        }
+
+    async def upstream(_request):
+        pytest.fail("A stale recommendation must not reach the current account")
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(P.O, "resolve_saved_oauth_status", status)
+    monkeypatch.setattr(P.C, "_social_base_url", lambda: "https://community.example")
+    monkeypatch.setattr(
+        P.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+
+    response = proxy.post(
+        f"/api/community/users/{target_id}/follow",
+        params={"expected_account_id": stale_account_id},
+    )
+    assert response.status_code == 409
+    assert response.json() == {"detail": "community_account_changed"}
+
+
+def test_visit_hub_reads_mutual_friends_after_the_first_page(proxy, monkeypatch):
+    owner_id = "11111111-1111-4111-8111-111111111111"
+    later_id = "22222222-2222-4222-8222-222222222222"
+    offsets = []
+
+    async def status():
+        return {"logged_in": True, "snapshot": {"access_token": "cloud-secret"}}
+
+    async def upstream(request):
+        if request.url.path == "/api/users/me":
+            return httpx.Response(200, json={"id": owner_id, "display_name": "Owner"})
+        if request.url.path == "/api/users/me/presence":
+            return httpx.Response(200, json={"status": "online"})
+        if request.url.path == "/api/notifications":
+            return httpx.Response(200, json={"items": []})
+        if request.url.path == f"/api/users/{owner_id}/following":
+            offset = int(request.url.params["offset"])
+            offsets.append(offset)
+            if offset == 0:
+                return httpx.Response(200, json={
+                    "items": [
+                        {"id": f"00000000-0000-4000-8000-{index:012d}", "is_mutual": False}
+                        for index in range(100)
+                    ],
+                    "total": 101,
+                })
+            return httpx.Response(200, json={
+                "items": [{"id": later_id, "display_name": "Later", "is_mutual": True}],
+                "total": 101,
+            })
+        return httpx.Response(404, json={"detail": "not_found"})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(P.O, "resolve_saved_oauth_status", status)
+    monkeypatch.setattr(P.C, "_social_base_url", lambda: "https://community.example")
+    monkeypatch.setattr(
+        P.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+
+    response = proxy.get("/api/community/visit-hub")
+    assert response.status_code == 200
+    assert offsets == [0, 100]
+    assert [friend["id"] for friend in response.json()["friends"]] == [later_id]
+
+
+@pytest.mark.asyncio
+async def test_following_rejects_a_non_object_success_body():
+    async def upstream(_request):
+        return httpx.Response(200, json=[])
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(upstream),
+    ) as client:
+        status, body = await P._community_following(
+            client,
+            {"base_url": "https://community.example", "access": "cloud-secret"},
+            "11111111-1111-4111-8111-111111111111",
+        )
+
+    assert status == 502
+    assert body == {"detail": "community_invalid_response"}
+
+
+@pytest.mark.parametrize("path", ["visit-hub", "visit-invitations"])
+@pytest.mark.parametrize("notification_status", [401, 503])
+def test_invitation_reads_do_not_claim_notifications_are_authoritative_on_failure(
+    proxy, monkeypatch, path, notification_status,
+):
+    owner_id = "11111111-1111-4111-8111-111111111111"
+
+    async def status():
+        return {"logged_in": True, "snapshot": {"access_token": "cloud-secret"}}
+
+    async def upstream(request):
+        if request.url.path == "/api/users/me":
+            return httpx.Response(200, json={"id": owner_id})
+        if request.url.path == f"/api/users/{owner_id}/following":
+            return httpx.Response(200, json={"items": []})
+        if request.url.path == "/api/users/me/presence":
+            return httpx.Response(200, json={"status": "online"})
+        if request.url.path == "/api/notifications":
+            return httpx.Response(notification_status, json={"detail": "unavailable"})
+        return httpx.Response(404, json={"detail": "not_found"})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(P.O, "resolve_saved_oauth_status", status)
+    monkeypatch.setattr(P.C, "_social_base_url", lambda: "https://community.example")
+    monkeypatch.setattr(
+        P.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+
+    response = proxy.get(f"/api/community/{path}")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["notifications_ok"] is False
+    assert body["incoming_invite_ids"] == []
+    assert body["incoming_invite"] is None
+
+
+@pytest.mark.parametrize("path", ["visit-hub", "visit-invitations"])
+def test_invitation_reads_page_all_unread_invitation_ids(proxy, monkeypatch, path):
+    owner_id = "11111111-1111-4111-8111-111111111111"
+    notification_ids = [f"00000000-0000-4000-8000-{index:012d}" for index in range(101)]
+
+    async def status():
+        return {"logged_in": True, "snapshot": {"access_token": "cloud-secret"}}
+
+    async def upstream(request):
+        if request.url.path == "/api/users/me":
+            return httpx.Response(200, json={"id": owner_id})
+        if request.url.path == f"/api/users/{owner_id}/following":
+            return httpx.Response(200, json={"items": []})
+        if request.url.path == "/api/users/me/presence":
+            return httpx.Response(200, json={"status": "online"})
+        if request.url.path == "/api/notifications":
+            offset = 100 if request.url.params.get("cursor") == "page-2" else 0
+            ids = notification_ids[offset:offset + 100]
+            return httpx.Response(200, json={
+                "items": [{
+                    "id": notification_id,
+                    "payload": {"type": "visit_invite", "visit_id": "A" * 22},
+                } for notification_id in ids],
+                "next_cursor": "page-2" if offset == 0 else None,
+                "total_count": len(notification_ids),
+            })
+        return httpx.Response(404, json={"detail": "not_found"})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(P.O, "resolve_saved_oauth_status", status)
+    monkeypatch.setattr(P.C, "_social_base_url", lambda: "https://community.example")
+    monkeypatch.setattr(
+        P.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+
+    body = proxy.get(f"/api/community/{path}").json()
+    assert body["notifications_ok"] is True
+    assert body["incoming_invite_ids"] == notification_ids
+    assert body["incoming_invite"]["id"] == notification_ids[0]
+
+
+def test_visit_invitations_skips_hub_reads_and_keeps_presence_and_invitation_projection(proxy, monkeypatch):
+    seen = []
+    validations = []
+    patch_module_clock(monkeypatch, P, time=lambda: 1000)
+
+    async def status():
+        validations.append(True)
+        return {"logged_in": True, "snapshot": {"access_token": "cloud-secret"}}
+
+    async def upstream(request):
+        seen.append(request)
+        if request.url.path == "/api/users/me/presence":
+            return httpx.Response(200, json={"status": "invisible"})
+        assert request.url.path == "/api/notifications", "Invitation polling must not rebuild the hub"
+        assert dict(request.url.params) == {
+            "unread": "true", "visit_invitations": "true", "limit": "100",
+        }
+        return httpx.Response(200, json={"items": [
+            {"id": "expired", "payload": {"type": "visit_invite", "expires_at": 999}},
+            {"id": "unrelated", "payload": {"type": "like", "private_text": "not-an-invitation"}},
+            {"id": "live", "payload": {
+                "type": "visit_invite", "visit_id": "A" * 22, "actor_id": "friend",
+                "actor_avatar_url": "/avatar.webp", "invite_code": "LEGACYCODE", "expires_at": 1001,
+            }},
+            {"id": "other-live", "payload": {"type": "visit_invite", "visit_id": "B" * 22}},
+            {"id": "response", "payload": {"type": "visit_invite_response", "accepted": True}},
+        ]})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(P.O, "resolve_saved_oauth_status", status)
+    monkeypatch.setattr(P.C, "_social_base_url", lambda: "https://community.example")
+    monkeypatch.setattr(
+        P.httpx, "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+    response = proxy.get("/api/community/visit-invitations?url=https://evil.example")
+    body = response.json()
+    assert response.status_code == 200
+    assert validations == [True]
+    assert sorted(request.url.path for request in seen) == ["/api/notifications", "/api/users/me/presence"]
+    assert all(request.url.host == "community.example" for request in seen)
+    assert all(request.headers["Authorization"] == "Bearer cloud-secret" for request in seen)
+    assert set(body) == {"notifications_ok", "incoming_invite_ids", "incoming_invite", "invite_responses"}
+    assert body["notifications_ok"] is True
+    assert body["incoming_invite_ids"] == ["live", "other-live"]
+    assert body["incoming_invite"]["actor_avatar_url"] == "https://community.example/avatar.webp"
+    assert body["incoming_invite"]["invite_code"] == "LEGACYCODE"
+    assert body["invite_responses"][0]["accepted"] is True
+    assert "cloud-secret" not in response.text
+    assert "not-an-invitation" not in response.text
+
+
+def test_visit_invitations_requires_instance_and_cloud_authorization(proxy, monkeypatch):
+    async def forbidden():
+        pytest.fail("Anonymous polling must not read the saved cloud session")
+
+    monkeypatch.setattr(P.O, "resolve_saved_oauth_status", forbidden)
+    access = proxy.headers.pop("Authorization")
+    assert proxy.get("/api/community/visit-invitations").status_code == 401
+    proxy.headers["Authorization"] = access
+
+    async def logged_out():
+        return {"logged_in": False}
+
+    monkeypatch.setattr(P.O, "resolve_saved_oauth_status", logged_out)
+    monkeypatch.setattr(P.httpx, "AsyncClient", lambda **kwargs: pytest.fail("No cloud request without login"))
+    response = proxy.get("/api/community/visit-invitations")
+    assert response.status_code == 401
+    assert response.json() == {"detail": "community_login_required"}
+
+
+@pytest.mark.parametrize("failure", ["notifications", "presence"])
+def test_visit_invitations_transport_failure_is_not_an_empty_authoritative_snapshot(proxy, monkeypatch, failure):
+    async def status():
+        return {"logged_in": True, "snapshot": {"access_token": "cloud-secret"}}
+
+    async def upstream(request):
+        if request.url.path.endswith(failure):
+            raise httpx.ConnectError("offline")
+        return httpx.Response(200, json={"items": []})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(P.O, "resolve_saved_oauth_status", status)
+    monkeypatch.setattr(P.C, "_social_base_url", lambda: "https://community.example")
+    monkeypatch.setattr(
+        P.httpx, "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+    response = proxy.get("/api/community/visit-invitations")
+    assert response.status_code == 502
+    assert "notifications_ok" not in response.json()
+
+
+@pytest.mark.parametrize("late_response", [httpx.Response(503), httpx.Response(200, json={"items": None})])
+def test_visit_invitations_does_not_publish_partial_pages_as_a_complete_snapshot(proxy, monkeypatch, late_response):
+    cursors = []
+
+    async def status():
+        return {"logged_in": True, "snapshot": {"access_token": "cloud-secret"}}
+
+    async def upstream(request):
+        if request.url.path == "/api/users/me/presence":
+            return httpx.Response(200, json={"status": "online"})
+        assert request.url.path == "/api/notifications"
+        cursor = request.url.params.get("cursor")
+        cursors.append(cursor)
+        if cursor:
+            return late_response
+        return httpx.Response(200, json={"items": [
+            {"id": f"invite-{index}", "payload": {"type": "visit_invite", "visit_id": "A" * 22}}
+            for index in range(100)
+        ], "next_cursor": "page-2", "total_count": 101})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(P.O, "resolve_saved_oauth_status", status)
+    monkeypatch.setattr(P.C, "_social_base_url", lambda: "https://community.example")
+    monkeypatch.setattr(
+        P.httpx, "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+    response = proxy.get("/api/community/visit-invitations")
+    body = response.json()
+    assert response.status_code == 200
+    assert cursors == [None, "page-2"]
+    assert body["notifications_ok"] is False
+    assert body["incoming_invite_ids"] == []
+    assert body["incoming_invite"] is None
+
+
+def test_presence_update_relays_only_supported_status(proxy, monkeypatch):
+    seen = []
+
+    async def status():
+        return {"logged_in": True, "snapshot": {"access_token": "cloud-secret", "local_user_id": "owner"}}
+
+    async def upstream(request):
+        seen.append(request)
+        return httpx.Response(200, json={"status": "invisible"})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(P.O, "resolve_saved_oauth_status", status)
+    monkeypatch.setattr(P.C, "_social_base_url", lambda: "https://community.example")
+    monkeypatch.setattr(
+        P.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+
+    response = proxy.put("/api/community/presence", json={"status": "invisible", "extra": "ignored"})
+    assert response.status_code == 200
+    assert response.json() == {"status": "invisible"}
+    assert seen[0].url.path == "/api/users/me/presence"
+    assert seen[0].read().decode() == '{"status":"invisible"}'
+    assert proxy.put("/api/community/presence", json={"status": "offline"}).status_code == 400

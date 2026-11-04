@@ -19,7 +19,7 @@ import logging
 
 # Application name and version configuration
 APP_NAME = "N.E.K.O"
-APP_VERSION = "0.9.0"
+APP_VERSION = "0.9.1"
 logger = logging.getLogger(f"{APP_NAME}.{__package__}")
 
 # GPT-SoVITS voice_id prefix (character management identifies GPT-SoVITS voices using "gsv:<voice_id>")

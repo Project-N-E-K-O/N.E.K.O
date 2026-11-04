@@ -373,6 +373,35 @@ export async function fetchMarketPlugins(
   }
 }
 
+/** Market `/plugins` 单页上限（后端 `page_size` 校验为 `le=100`）。 */
+const CATALOG_PAGE_SIZE = 100
+
+export type FetchMarketCatalogParams = Pick<
+  FetchMarketPluginsParams,
+  'sort_by' | 'sort_order' | 'channel'
+>
+
+/**
+ * 拉取完整目录（按服务端排序拼接所有分页）。
+ *
+ * 过滤与分页在前端完成：前端过滤规则（qualifier、排除项、拼音、已安装状态）
+ * 服务端无法表达，只对单页结果过滤会让命中项散落在各页。任一页失败返回 null，
+ * 不返回残缺目录。
+ */
+export async function fetchMarketCatalog(
+  params: FetchMarketCatalogParams,
+): Promise<MarketPlugin[] | null> {
+  const first = await fetchMarketPlugins({ ...params, page: 1, page_size: CATALOG_PAGE_SIZE })
+  if (!first) return null
+  const rest = await Promise.all(
+    Array.from({ length: Math.max(0, first.pages - 1) }, (_, index) =>
+      fetchMarketPlugins({ ...params, page: index + 2, page_size: CATALOG_PAGE_SIZE }),
+    ),
+  )
+  if (rest.some((page) => !page)) return null
+  return [first, ...rest].flatMap((page) => page!.items)
+}
+
 /** 获取单个插件详情。 */
 export async function fetchMarketPlugin(
   pluginId: string | number,

@@ -771,6 +771,34 @@
         // 桌面端这里不发起 OAuth：账号在托盘设置里登录，或直接在社区页登录后由桌面静默认领；
         // 仅浏览器环境未登录时在预开的弹窗里走 OAuth。
         window.addEventListener('live2d-social-click', async () => {
+            // 桌面端与浏览器都优先复用贴着社交按钮出现的页面内浮层。
+            // 面板里的“打开完整社区”设置一次性旁路标记，再复用下方 OAuth 流程。
+            if (window.__nekoOpenFullCommunityOnce) {
+                window.__nekoOpenFullCommunityOnce = false;
+            } else if (window.nekoSocialHub && typeof window.nekoSocialHub.handlePrimaryClick === 'function') {
+                // 与设置菜单一致，优先复用页面内、贴着按钮出现的浮层。
+                if (window.nekoSocialHub.handlePrimaryClick() !== false) return;
+            } else if (window.electronShell && typeof window.electronShell.openSocialHub === 'function') {
+                // 兼容尚未加载页面内浮层的旧页面；正常桌面入口不会走到这里。
+                const socialButton = Array.from(document.querySelectorAll('[id$="-btn-social"]')).find((button) => {
+                    const rect = button.getBoundingClientRect();
+                    const style = window.getComputedStyle(button);
+                    return rect.width > 0 && rect.height > 0
+                        && style.display !== 'none' && style.visibility !== 'hidden';
+                });
+                const rect = socialButton ? socialButton.getBoundingClientRect() : null;
+                const result = await window.electronShell.openSocialHub({
+                    anchorRect: rect ? {
+                        left: rect.left,
+                        top: rect.top,
+                        right: rect.right,
+                        bottom: rect.bottom,
+                        width: rect.width,
+                        height: rect.height,
+                    } : null,
+                });
+                if (!result || result.handled !== false) return;
+            }
             if (window.nekoSocialUnlock && window.nekoSocialUnlock.isLocked()) {
                 return;
             }
@@ -1473,7 +1501,7 @@
                 return;
             }
             // 第零步：在任何状态变更之前立即捕获模型位置。
-            // return-ball 会出现在这个位置；后续 return 时也以它作为模型位移基准。
+            // return-ball 会以这个位置为锚点，再限制到屏幕内。
             const requestedRestoreRect = event && event.detail && event.detail.restoreSavedGoodbyeRect;
             // 教程结束恢复猫咪态时，用户模型刚被临时重载到教程站位；必须沿用教程前
             // 猫咪/返回按钮锚点，不能把临时模型位置误存成新的猫咪位置。
@@ -1517,6 +1545,7 @@
                 width: savedGoodbyeRect.width,
                 height: savedGoodbyeRect.height
             } : null;
+            I.savedGoodbyeReturnBallRect = null;
 
             // 第一步：立即设置标志位
             if (window.live2dManager) {
@@ -1805,7 +1834,7 @@
                 }
             }
             if (useMmdReturn && mmdReturnButtonContainer) {
-                activeReturnButtonContainer = I.showReturnBallContainer(mmdReturnButtonContainer, savedGoodbyeRect, { deferReveal: true });
+                activeReturnButtonContainer = I.showReturnBallContainer(mmdReturnButtonContainer, savedGoodbyeRect, { deferReveal: true, captureReturnOrigin: true });
             } else {
                 I.hideReturnBallContainer(mmdReturnButtonContainer);
             }
@@ -1846,6 +1875,7 @@
             if (useLive2dReturn && live2dReturnContainer) {
                 activeReturnButtonContainer = I.showReturnBallContainer(live2dReturnContainer, savedGoodbyeRect, {
                     deferReveal: true,
+                    captureReturnOrigin: true,
                     edgeAnchor: live2DPeekEdgeAnchor
                 });
             } else {
@@ -1862,7 +1892,7 @@
                 // 与 MMD/VRM/Live2D 分支一致延迟显形：等 model-to-cat 烟雾转场
                 // 收尾再 reveal。早显会让返回球在转场期间就可交互，且桌面桥的
                 // 窗口收缩（return-ball-show）与转场抢窗口几何，拖拽起步易丢位移。
-                activeReturnButtonContainer = I.showReturnBallContainer(pngtuberReturnButtonContainer, savedGoodbyeRect, { deferReveal: true });
+                activeReturnButtonContainer = I.showReturnBallContainer(pngtuberReturnButtonContainer, savedGoodbyeRect, { deferReveal: true, captureReturnOrigin: true });
             } else {
                 I.hideReturnBallContainer(pngtuberReturnButtonContainer);
             }
@@ -1880,7 +1910,7 @@
             }
 
             if (useVrmReturn && vrmReturnButtonContainer) {
-                activeReturnButtonContainer = I.showReturnBallContainer(vrmReturnButtonContainer, savedGoodbyeRect, { deferReveal: true });
+                activeReturnButtonContainer = I.showReturnBallContainer(vrmReturnButtonContainer, savedGoodbyeRect, { deferReveal: true, captureReturnOrigin: true });
             } else {
                 I.hideReturnBallContainer(vrmReturnButtonContainer);
             }
@@ -2218,13 +2248,14 @@
             // 如果返回按钮被拖拽到新位置，先偏移模型再显示，避免闪烁
             const returnRect = event && event.detail && event.detail.returnButtonRect;
             const savedRect = window._savedGoodbyeRect;
+            const returnOriginRect = I.savedGoodbyeReturnBallRect || savedRect;
             window._nekoModelReturnEnterRect = returnRect || savedRect || null;
             let returnModelWasMoved = false;
-            if (returnRect && savedRect) {
+            if (returnRect && returnOriginRect) {
                 const returnCenterX = returnRect.left + returnRect.width / 2;
                 const returnCenterY = returnRect.top + returnRect.height / 2;
-                const savedCenterX = savedRect.left + savedRect.width / 2;
-                const savedCenterY = savedRect.top + savedRect.height / 2;
+                const savedCenterX = returnOriginRect.left + returnOriginRect.width / 2;
+                const savedCenterY = returnOriginRect.top + returnOriginRect.height / 2;
                 const screenDx = returnCenterX - savedCenterX;
                 const screenDy = returnCenterY - savedCenterY;
 
@@ -2251,6 +2282,7 @@
                 }
             }
             window._savedGoodbyeRect = null;
+            I.savedGoodbyeReturnBallRect = null;
             const isMobileViewport = typeof window.isMobileWidth === 'function'
                 ? window.isMobileWidth()
                 : (window.innerWidth <= 768);

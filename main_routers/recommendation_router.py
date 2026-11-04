@@ -5,18 +5,35 @@ import asyncio
 import hashlib
 import sqlite3
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from main_logic.recommendation_feedback import FeedbackConflict, RecommendationStore, RecommendationEventKind
+from main_logic.recommendation_feedback import FeedbackConflict, FeedbackDecisionConflict, RecommendationStore, RecommendationEventKind
 from services.chat_sync import host
 from utils.config_manager import get_config_manager
 from utils.preferences import load_global_conversation_settings
 
 router = APIRouter(prefix="/recommendations", tags=["recommendations"])
+STORE_PROTOCOL_VERSION = 1
+
+
+def install_store_protocol(version: int):
+    """Selected once by startup assembly, not by an untrusted request."""
+    global STORE_PROTOCOL_VERSION
+    if version not in (1, 2):
+        raise ValueError("unsupported_feedback_protocol")
+    STORE_PROTOCOL_VERSION = version
+
+
+def _control(owner):
+    if STORE_PROTOCOL_VERSION != 2:
+        return None
+    from services.proactive_feedback.capture import get_control_snapshot
+    return get_control_snapshot(owner)
 
 CATEGORY_SETTINGS = {
     "music": "proactiveMusicEnabled", "news": "proactiveNewsChatEnabled",
@@ -42,7 +59,7 @@ def _operate(operation, *args):
     with host.saved_session_writer_fence():
         owner = _owner()
         path = Path(get_config_manager().get_runtime_config_path("recommendation_feedback.sqlite3"))
-        return operation(RecommendationStore(path), owner, *args)
+        return operation(RecommendationStore(path, protocol_version=STORE_PROTOCOL_VERSION), owner, *args)
 
 
 async def capture_owner():
@@ -65,7 +82,7 @@ async def attach_music_recommendation(body: dict, expected_owner: dict, characte
             return None
         settings = {key: value for key, value in load_global_conversation_settings().items()
                     if key.startswith("proactive") and isinstance(value, (bool, int))}
-        return store.create(owner, character, str(body.get("turn_id") or ""), track, settings)
+        return store.create(owner, character, str(body.get("turn_id") or ""), track, settings, control=_control(owner))
 
     body["music_recommendation"] = await asyncio.to_thread(_operate, create)
 
@@ -118,11 +135,11 @@ async def attach_proactive_recommendations(body: dict, expected_owner: dict, cha
         result = []
         for category, content in candidates:
             metadata = {"name": "", "artist": "", "url": ""} if category == "vision" and not content["url"] else content
-            record = store.create(owner, character, str(body.get("turn_id") or ""), metadata, settings, category=category)
+            record = store.create(owner, character, str(body.get("turn_id") or ""), metadata, settings, category=category, control=_control(owner))
             result.append({"id": record["id"], "category": category, "state": record["state"],
                            "expires_at": record["expires_at"], "content": {
                                "title": content["name"], "source": content["artist"], "url": content["url"],
-                           }})
+                           }, **({"offer_context": record["offer_context"]} if "offer_context" in record else {})})
         return result
 
     body["proactive_recommendations"] = await asyncio.to_thread(_operate, create)
@@ -131,12 +148,15 @@ async def attach_proactive_recommendations(body: dict, expected_owner: dict, cha
 class RecommendationEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
     event_id: str = Field(min_length=1, max_length=100)
-    kind: RecommendationEventKind
+    kind: RecommendationEventKind | Literal["measurement"]
     occurred_at: float | None = Field(default=None, ge=0, le=1e12, allow_inf_nan=False, strict=True)
     playback_id: str | None = Field(default=None, min_length=1, max_length=512)
     listened_seconds: float = Field(default=0, ge=0, le=86400, allow_inf_nan=False, strict=True)
     position_seconds: float = Field(default=0, ge=0, le=86400, allow_inf_nan=False, strict=True)
     reason: str = Field(default="", max_length=64)
+    context: dict | None = None
+    offer_context: dict | None = None
+    measurement: dict | None = None
 
 
 def _validate(request):
@@ -150,14 +170,40 @@ async def recommendation_event(request: Request, recommendation_id: str, event: 
     if rejected is not None:
         return rejected
     try:
+        # Preserve JSON number spelling/types for the shared JS handoff hash;
+        # Pydantic's float fields otherwise turn an original integer into 1.0.
+        raw_event = await request.json()
         def record(store, owner):
             settings = load_global_conversation_settings() if event.kind == "accepted" else {}
             disabled = frozenset(category for category, setting in CATEGORY_SETTINGS.items()
                                  if settings.get("proactiveChatEnabled") is False or settings.get(setting) is False
                                  or (category in {"vision", "window"} and settings.get("proactiveVisionEnabled") is False))
-            return store.record(owner, recommendation_id, event.model_dump(), disabled_categories=disabled)
+            value = raw_event if store.protocol_version == 2 else event.model_dump(exclude={"context", "offer_context", "measurement"})
+            return store.record(owner, recommendation_id, value, disabled_categories=disabled, control=_control(owner),
+                                canonical_header=request.headers.get("X-NEKO-Feedback-Canonical"))
         result = await asyncio.to_thread(_operate, record)
         return {"success": True, **result}
+    except FeedbackDecisionConflict as exc:
+        return JSONResponse({"success": False, "error_code": str(exc), "telemetry": exc.telemetry}, status_code=409)
+    except FeedbackConflict as exc:
+        return JSONResponse({"success": False, "error_code": str(exc)}, status_code=409)
+    except (OSError, sqlite3.Error):
+        return JSONResponse({"success": False, "error_code": "feedback_unavailable"}, status_code=503)
+
+
+class DispatchClaim(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    event_id: str = Field(min_length=1, max_length=100)
+
+
+@router.post("/{recommendation_id}/dispatch")
+async def recommendation_dispatch(request: Request, recommendation_id: str, claim: DispatchClaim):
+    rejected = _validate(request)
+    if rejected is not None:
+        return rejected
+    try:
+        claimed = await asyncio.to_thread(_operate, lambda store, owner: store.claim_dispatch(owner, recommendation_id, claim.event_id))
+        return {"success": True, "dispatch_grant": claimed}
     except FeedbackConflict as exc:
         return JSONResponse({"success": False, "error_code": str(exc)}, status_code=409)
     except (OSError, sqlite3.Error):

@@ -56,8 +56,10 @@
     const PROACTIVE_LEADER_HEARTBEAT_MS = 5000;
     const PROACTIVE_LEADER_TTL_MS = 15000;
     const PROACTIVE_LEADER_RECHECK_MS = 8000; // 非 leader 的自检周期
-    const PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS = 30;
+    // 打字时下次搭话距最后一次聚焦/输入至少留这么久；剩余时间本来更长的不受影响。
     const PROACTIVE_CHAT_INPUT_MIN_DELAY_MS = 30000;
+    // 定时器可能略早于截止时间触发。这个余量内视为同一窗口已经结束，避免聚焦状态下多等一轮。
+    const PROACTIVE_CHAT_INPUT_SLOWDOWN_SLACK_MS = 250;
 
     const PROACTIVE_SELF_ID = (Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
 
@@ -347,12 +349,9 @@
                     } catch (e) {
                         console.warn('[Proactive] 处理 user_input_reset IPC 失败:', e);
                     }
-                } else if (data.type === 'chat_input_focus_slowdown'
-                        && S.proactiveChatEnabled
-                        && hasAnyChatModeEnabled()
-                        && Number(S.proactiveChatInterval) <= PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS) {
-                    _markChatInputSlowdownWindow(S.proactiveChatInterval);
-                    scheduleProactiveChat();
+                } else if (data.type === 'chat_input_focus_slowdown') {
+                    // 其他窗口的聚焦或继续输入。只刷新本窗口的截止时间，不再向外广播。
+                    _refreshChatInputSlowdown({ fromPeer: true });
                 }
             };
         }
@@ -437,43 +436,57 @@
         return element.disabled !== true && element.readOnly !== true;
     }
 
-    function _getFocusedChatInputElement() {
-        try {
-            const active = document.activeElement;
-            if (!active || !_isChatInputElement(active)) return null;
-            if (document.hasFocus && !document.hasFocus()) return null;
-            return active;
-        } catch (_) {
-            return null;
-        }
+    function _getChatInputSlowdownDelay() {
+        // 截止时间只在聚焦或实际输入时刷新。复查和再次排程都取剩余时间，
+        // 输入框还聚焦也不能把等待重置成完整的 30 秒。
+        return Math.max(0, _chatInputSlowdownUntil - Date.now());
     }
 
-    function _getChatInputSlowdownDelay(baseIntervalSeconds) {
-        const interval = Number(baseIntervalSeconds);
-        if (!isFinite(interval) || interval > PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS) {
-            return 0;
-        }
-        const minDelay = Math.max(PROACTIVE_CHAT_INPUT_MIN_DELAY_MS, interval * 1000);
-        return _getFocusedChatInputElement()
-            ? minDelay
-            : Math.max(0, _chatInputSlowdownUntil - Date.now());
+    function _markChatInputSlowdownWindow() {
+        _chatInputSlowdownUntil = Date.now() + PROACTIVE_CHAT_INPUT_MIN_DELAY_MS;
     }
 
-    function _markChatInputSlowdownWindow(baseIntervalSeconds) {
-        const interval = Number(baseIntervalSeconds);
-        if (!isFinite(interval) || interval > PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS) {
-            return;
+    function _chatInputSlowdownApplies() {
+        return !!(S.proactiveChatEnabled && hasAnyChatModeEnabled());
+    }
+
+    // 聚焦或每次实际输入都把截止时间刷新到 30 秒后，不论搭话间隔多长。
+    // 已排好的定时器不重排：剩余时间不足 30 秒的，到点时由
+    // _deferProactiveChatForInputSlowdown 补到窗口结束再判；本来就超过 30 秒的照原时间触发。
+    function _refreshChatInputSlowdown(options) {
+        if (!_chatInputSlowdownApplies()) return;
+        _markChatInputSlowdownWindow();
+        if (!options || options.fromPeer !== true) {
+            _proactiveBroadcast('chat_input_focus_slowdown');
         }
-        _chatInputSlowdownUntil = Date.now() + Math.max(PROACTIVE_CHAT_INPUT_MIN_DELAY_MS, interval * 1000);
+        if (S.proactiveChatTimer) return;
+        scheduleProactiveChat();
+    }
+
+    function _inputSlowdownStillBlocksSend() {
+        return _chatInputSlowdownUntil - Date.now() > PROACTIVE_CHAT_INPUT_SLOWDOWN_SLACK_MS;
+    }
+
+    function _deferProactiveChatForInputSlowdown(label, retry) {
+        const remaining = _chatInputSlowdownUntil - Date.now();
+        if (remaining <= PROACTIVE_CHAT_INPUT_SLOWDOWN_SLACK_MS) {
+            return false;
+        }
+        // 短合并可能留下一个比新截止时间更早的定时器。这里只补到窗口结束再判定，
+        // 不走 scheduleProactiveChat：那条路径在输入框仍聚焦时会再给一整段最小延迟。
+        console.log(label);
+        S.proactiveChatTimer = setTimeout(retry, remaining);
+        return true;
     }
 
     document.addEventListener('focusin', function (event) {
         if (!_isChatInputElement(event.target)) return;
-        if (!S.proactiveChatEnabled || !hasAnyChatModeEnabled()) return;
-        if (Number(S.proactiveChatInterval) > PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS) return;
-        _markChatInputSlowdownWindow(S.proactiveChatInterval);
-        scheduleProactiveChat();
-        _proactiveBroadcast('chat_input_focus_slowdown');
+        _refreshChatInputSlowdown();
+    }, true);
+
+    document.addEventListener('input', function (event) {
+        if (!_isChatInputElement(event.target)) return;
+        _refreshChatInputSlowdown();
     }, true);
 
     function _purgeStaleProactivePeers() {
@@ -875,7 +888,7 @@
             var delay = S.proactiveChatInterval * 1000;
             console.log('[ProactiveChat] 语音模式：' + (delay / 1000) + '秒后触发（无退避，无回复计数：' + (S._voiceProactiveNoResponseCount || 0) + '/10）');
 
-            S.proactiveChatTimer = setTimeout(async function () {
+            S.proactiveChatTimer = setTimeout(async function retryProactiveVoiceTick() {
                 // setTimeout firing does not clear our stored handle.
                 S.proactiveChatTimer = null;
                 if (S.isProactiveChatRunning) return;
@@ -897,6 +910,9 @@
                 if (_isUserRecentlySpeaking()) {
                     console.log('[ProactiveChat] 语音模式：用户最近在发声，本次 nudge 跳过（不计数），继续下一 tick');
                     scheduleProactiveChat();
+                    return;
+                }
+                if (_deferProactiveChatForInputSlowdown('[ProactiveChat] 语音模式：用户仍在输入，本次跳过，重新判定', retryProactiveVoiceTick)) {
                     return;
                 }
                 S.isProactiveChatRunning = true;
@@ -1022,7 +1038,7 @@
 
         // 输入放缓 floor 跟 fixed/tier 模式正交：用户在打字时不该被主动搭话打断，
         // 不管处于屏幕专注态还是常规态。两边都套这个下限。
-        var inputSlowdownDelay = _getChatInputSlowdownDelay(baseInterval);
+        var inputSlowdownDelay = _getChatInputSlowdownDelay();
         if (inputSlowdownDelay > 0) {
             delay = Math.max(delay, inputSlowdownDelay);
         }
@@ -1033,7 +1049,7 @@
             console.log('主动搭话：' + (delay / 1000).toFixed(1) + '秒后触发（基础间隔：' + baseInterval + '秒，退避级别：' + level + '，cap1：' + cap1 + '，cap2：' + cap2 + '，启动延迟：' + (startupDelay / 1000) + '秒，输入放缓：' + (inputSlowdownDelay ? ((inputSlowdownDelay / 1000) + '秒') : '无') + '）');
         }
 
-        S.proactiveChatTimer = setTimeout(async function () {
+        S.proactiveChatTimer = setTimeout(async function retryProactiveTextTick() {
             // setTimeout firing does not clear our stored handle.
             S.proactiveChatTimer = null;
             // 双重检查锁：定时器触发时再次检查是否正在执行
@@ -1050,6 +1066,11 @@
             if (_isAssistantSpeaking()) {
                 console.log('[ProactiveChat] 文本模式：AI 正在播放语音，本次跳过（不累加退避），继续下一 tick', _dumpSpeakingGateState());
                 scheduleProactiveChat();
+                return;
+            }
+            // 输入发生在本次排程之后时，旧定时器仍可能到点。这里再看一次截止时间：
+            // 窗口还有效就重新排定，不把已经在打的字打断。仅聚焦且窗口已结束时照常触发。
+            if (_deferProactiveChatForInputSlowdown('[ProactiveChat] 文本模式：用户仍在输入，本次跳过，重新判定', retryProactiveTextTick)) {
                 return;
             }
 
@@ -1137,6 +1158,12 @@
 
     async function triggerProactiveChat() {
         var requestSent = false;
+        var proactiveScreenTimeBeforeInputCancel = null;
+        function restoreScreenCooldownAfterInputCancel() {
+            if (proactiveScreenTimeBeforeInputCancel !== null) {
+                S._lastProactiveChatScreenTime = proactiveScreenTimeBeforeInputCancel;
+            }
+        }
         try {
             // Capture before any await: clearing chat or switching character retires
             // this response's card offers even when its dialogue already committed.
@@ -1202,6 +1229,10 @@
                     if (voiceProactiveSec && typeof voiceProactiveSec.getMutationHeaders === 'function') {
                         try { Object.assign(hdrs, await voiceProactiveSec.getMutationHeaders()); } catch (_) { }
                     }
+                    // 取请求头是异步的。这段时间里用户开始输入会刷新截止时间，不能再把搭话送出去。
+                    if (_inputSlowdownStillBlocksSend()) {
+                        return null;
+                    }
                     return fetch('/api/proactive_chat', {
                         method: 'POST',
                         headers: hdrs,
@@ -1210,6 +1241,10 @@
                 }
 
                 var resp = await _sendVoiceProactive();
+                if (!resp) {
+                    console.log('[ProactiveChat] 语音模式：等待请求头期间用户开始输入，取消本次搭话');
+                    return false;
+                }
 
                 // CSRF-403 retry-once: 只在 error_code === 'csrf_validation_failed'
                 // 时调 refreshToken() + 重试一次。其它 403（业务规则、反代、WAF）走
@@ -1223,6 +1258,10 @@
                         await voiceProactiveSec.refreshToken();
                         resp = await _sendVoiceProactive();
                     } catch (_) { /* fall through to 403 handling below */ }
+                }
+                if (!resp) {
+                    console.log('[ProactiveChat] 语音模式：等待请求头期间用户开始输入，取消本次搭话');
+                    return false;
                 }
 
                 // HTTP 409 = server try_start_proactive 因并发拒绝（AI 还在响应上一轮 /
@@ -1477,8 +1516,10 @@
                     return;
                 }
 
-                // 更新屏幕感知时间戳（仅当 vision/window 实际保留时才消耗冷却）
+                // 先占上冷却，避免截图还在飞时下一轮又抓一帧。若请求最终没发出
+                // （例如取请求头期间用户开始输入），下面会把这个时间戳还回去。
                 if (availableModes.includes('vision') || availableModes.includes('window')) {
+                    proactiveScreenTimeBeforeInputCancel = S._lastProactiveChatScreenTime || 0;
                     S._lastProactiveChatScreenTime = Date.now();
                 }
             }
@@ -1521,6 +1562,10 @@
                 if (proactiveSec && typeof proactiveSec.getMutationHeaders === 'function') {
                     try { Object.assign(hdrs, await proactiveSec.getMutationHeaders()); } catch (_) { }
                 }
+                // 取请求头是异步的。这段时间里用户开始输入会刷新截止时间，不能再把搭话送出去。
+                if (_inputSlowdownStillBlocksSend()) {
+                    return null;
+                }
                 // 截图、取 header、CSRF 重试期间都可能撤权后又重新开启。
                 if (discardVisionRevokedSince(requestBody, visionRevocationSeqAtCapture)) {
                     console.log('截图后视觉授权被撤回过，本次请求不带截图和窗口信息');
@@ -1534,6 +1579,11 @@
             }
 
             var response = await _sendProactive();
+            if (!response) {
+                restoreScreenCooldownAfterInputCancel();
+                console.log('[ProactiveChat] 等待请求头期间用户开始输入，取消本次搭话');
+                return false;
+            }
 
             // CSRF-403 retry-once: 只在 error_code === 'csrf_validation_failed'
             // 时调 refreshToken() + 重试一次。其它 403 走真实失败分支，避免把所有
@@ -1547,6 +1597,11 @@
                     await proactiveSec.refreshToken();
                     response = await _sendProactive();
                 } catch (_) { /* fall through to 403 handling below */ }
+            }
+            if (!response) {
+                restoreScreenCooldownAfterInputCancel();
+                console.log('[ProactiveChat] 等待请求头期间用户开始输入，取消本次搭话');
+                return false;
             }
 
             // HTTP 409 = server try_start_proactive 因并发拒绝（AI 还在响应上一轮 /

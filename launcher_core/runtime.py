@@ -298,33 +298,6 @@ def _reload_runtime_config_from_env() -> None:
     )
 
 
-def _install_logging_brace_compat() -> None:
-    if getattr(logging, "_neko_brace_compat_installed", False):
-        return
-
-    original_get_message = logging.LogRecord.getMessage
-
-    def _compat_get_message(record: logging.LogRecord) -> str:
-        try:
-            return original_get_message(record)
-        except TypeError:
-            msg = str(record.msg)
-            args = record.args
-            if not args or "%" in msg or "{" not in msg or "}" not in msg:
-                raise
-            try:
-                if isinstance(args, dict):
-                    return msg.format(**args)
-                if not isinstance(args, tuple):
-                    args = (args,)
-                return msg.format(*args)
-            except Exception:
-                return f"{msg} | args={record.args!r}"
-
-    logging.LogRecord.getMessage = _compat_get_message
-    logging._neko_brace_compat_installed = True
-
-
 def _patch_http_user_agents() -> None:
     """Globally patch HTTP clients' default User-Agent to prevent CF blocking custom APIs."""
     try:
@@ -365,7 +338,8 @@ def _bootstrap_launcher_runtime(project_dir: str) -> None:
         sys.path.insert(0, project_dir)
     os.chdir(project_dir)
     _configure_multiprocessing_executable(project_dir)
-    _install_logging_brace_compat()
+    from utils.logger_config import install_message_formatting
+    install_message_formatting()
     _initialize_launcher_context()
     # Globally patch requests' default User-Agent to avoid CF blocking.
     _patch_http_user_agents()
@@ -436,8 +410,17 @@ def _resolve_storage_layout_for_launch() -> dict:
     reset_config_manager_cache()
     resolved_config_manager = get_config_manager(APP_NAME, migrate=False)
     if isolated_runtime_dir and isolated_selected_root:
-        selected_root = Path(resolved_config_manager.app_docs_dir).resolve(strict=False)
-        anchor_root = Path(resolved_config_manager.anchor_root).resolve(strict=False)
+        # The inherited selected-root override intentionally pins an isolated instance,
+        # but a migration completed above has just committed a newer selected root.  The
+        # cached manager still reflects the old override, so prefer the authoritative
+        # migration target for this launch while retaining the instance's policy anchor.
+        committed_target = (
+            str(migration_result.get("target_root") or "").strip()
+            if migration_result.get("completed") is True
+            else ""
+        )
+        selected_root = Path(committed_target or resolved_config_manager.app_docs_dir).resolve(strict=False)
+        anchor_root = Path(isolated_anchor_root or resolved_config_manager.anchor_root).resolve(strict=False)
         layout = {
             "selected_root": str(selected_root),
             "anchor_root": str(anchor_root),

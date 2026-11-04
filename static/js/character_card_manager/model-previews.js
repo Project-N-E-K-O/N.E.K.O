@@ -69,7 +69,9 @@ async function ensureVrmModulesLoaded() {
         '/static/vrm/vrm-core.js',
         '/static/vrm/vrm-expression.js',
         '/static/vrm/vrm-animation.js',
+        '/static/vrm/vrm-physics-profile.js',
         '/static/avatar/avatar-touch-gestures.js',
+        '/static/avatar/avatar-click-shake.js',
         '/static/vrm/vrm-interaction.js',
         '/static/vrm/vrm-cursor-follow.js',
         '/static/vrm/vrm-manager.js'
@@ -127,6 +129,7 @@ async function ensureMmdModulesLoaded() {
         '/static/mmd/mmd-animation.js',
         '/static/mmd/mmd-expression.js',
         '/static/avatar/avatar-touch-gestures.js',
+        '/static/avatar/avatar-click-shake.js',
         '/static/mmd/mmd-interaction.js',
         '/static/mmd/mmd-cursor-follow.js',
         '/static/mmd/mmd-manager.js'

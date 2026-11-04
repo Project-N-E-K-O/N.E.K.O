@@ -12,6 +12,7 @@ from main_routers.system_router import _shared
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
+    monkeypatch.setattr(routes, "STORE_PROTOCOL_VERSION", 1)
     snapshot = {"local_user_id": "a", "access_token": "private", "base_url": "https://community.example"}
     lock = threading.RLock()
     @contextmanager
@@ -51,6 +52,34 @@ async def test_actual_routes_register_decide_and_export_without_tokens(client):
     assert response.json()["events"][0]["kind"] == "accepted"
     assert "private" not in response.text
     assert "access_token" not in response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first,opposite", [("accepted", "skipped"), ("skipped", "accepted")])
+async def test_v2_opposite_decision_is_rejected_with_exact_terminal_handoff(client, monkeypatch, first, opposite):
+    import base64
+    import hashlib
+    import json
+    http, _ = client
+    monkeypatch.setattr(routes, "STORE_PROTOCOL_VERSION", 2)
+    owner = await routes.capture_owner()
+    rec = await create()
+    endpoint = f"/api/proactive/recommendations/{rec}/events"
+    context = {"version": "desktop-feedback-capture-v2", "owner_key": owner["key"]}
+    original = {"event_id": "original-choice", "kind": first, "context": context}
+    assert http.post(endpoint, json=original).status_code == 200
+    rejected = {"event_id": "opposite-choice", "kind": opposite, "context": context,
+                "occurred_at": 1e-7, "reason": "猫😀"}
+    canonical = json.dumps(rejected, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
+    response = http.post(endpoint, json=rejected,
+        headers={"X-NEKO-Feedback-Canonical": base64.b64encode(canonical).decode()})
+    assert response.status_code == 409
+    assert response.json() == {"success": False, "error_code": "recommendation_decision_conflict",
+        "telemetry": {"event_id": "opposite-choice", "payload_hash": hashlib.sha256(canonical).hexdigest(),
+                      "status": "discarded", "reason": "decision_conflict"}}
+    replayed = http.post(endpoint, json=original)
+    assert replayed.status_code == 200
+    assert not replayed.json()["applied"] and replayed.json()["state"] == first
 
 
 @pytest.mark.asyncio
@@ -210,3 +239,46 @@ async def test_committed_screen_observation_has_feedback_without_retaining_scree
     snapshot['local_user_id'] = 'replacement'
     await routes.attach_proactive_recommendations(body, owner, 'Neko')
     assert body['proactive_recommendations'] == []
+
+
+@pytest.mark.asyncio
+async def test_v2_actual_route_handoff_uses_original_json_hash_and_claims_dispatch_once(client, monkeypatch):
+    from main_logic.recommendation_feedback import RecommendationStore
+    http, _ = client
+    monkeypatch.setattr(routes, "STORE_PROTOCOL_VERSION", 2)
+    snapshot = {"version": "desktop-feedback-capture-v2", "owner_key": routes._owner()["key"],
+                "account_incarnation": "fixture", "clear_generation": 0, "registration_id": "fixture",
+                "registration_version": 1, "binding_revision": 1,
+                "capture": {"clock_session_id": "fixture", "tick_ms": 1.5, "anchor_id": "fixture"},
+                "time_proof": {"anchor_token": "fixture", "send_tick_ms": 0, "receive_tick_ms": 1}}
+    monkeypatch.setattr(routes, "_control", lambda owner: snapshot)
+    body = {"success": True, "action": "chat", "source_mode": "music", "turn_id": "fixture",
+            "source_links": [{"title": "Fixture", "artist": "Fixture", "url": "https://example.com/fixture"}]}
+    await routes.attach_music_recommendation(body, await routes.capture_owner(), "Fixture")
+    card = body["music_recommendation"]
+    value = {"event_id": "fixture-accept", "kind": "accepted", "occurred_at": 1,
+             "listened_seconds": 0, "position_seconds": 0,
+             "context": snapshot, "offer_context": card["offer_context"]}
+    endpoint = f"/api/proactive/recommendations/{card['id']}"
+    reply = http.post(endpoint + "/events", json=value)
+    assert reply.status_code == 200 and reply.json()["playback_grant"]
+    assert reply.json()["telemetry"]["payload_hash"] == RecommendationStore.event_identity(value)[2]
+    assert reply.json()["telemetry"]["status"] == "durable"
+    retried = http.post(endpoint + "/events", json=value).json()
+    assert not retried["applied"] and retried["telemetry"] == reply.json()["telemetry"]
+    assert http.post(endpoint + "/dispatch", json={"event_id": "fixture-accept"}).json()["dispatch_grant"]
+    assert not http.post(endpoint + "/dispatch", json={"event_id": "fixture-accept"}).json()["dispatch_grant"]
+    changed = {**value, "occurred_at": 2}
+    assert http.post(endpoint + "/events", json=changed).status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_v2_late_legacy_request_does_not_receive_new_capture(client, monkeypatch):
+    http, _ = client
+    rec = await create()  # A real pre-upgrade operational offer.
+    monkeypatch.setattr(routes, "STORE_PROTOCOL_VERSION", 2)
+    monkeypatch.setattr(routes, "_control", lambda owner: None)
+    reply = http.post(f"/api/proactive/recommendations/{rec}/events", json={"event_id": "old-accept", "kind": "accepted"})
+    assert reply.status_code == 200 and reply.json()["playback_grant"]
+    assert reply.json()["telemetry"]["status"] == "discarded"
+    assert reply.json()["telemetry"]["reason"] == "legacy_capture_missing"

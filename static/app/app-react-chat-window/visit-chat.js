@@ -9,8 +9,8 @@
  *
  * 管的事：
  * - 串门状态（visit_state_change / visit_invite）→ compact 输入框上方的串门工具条
- *   （React 的 visitBar 属性）、输入框禁用与占位文字；开关打开且没在串门时，直接显示
- *   「邀请客人 / 去别人家」两个发起入口；
+ *   （React 的 visitBar 属性）、输入框禁用与占位文字；空闲时不显示旧发起入口，好友邀请到达时
+ *   只显示「拒绝 / 接受」，串门建立后再显示当前阶段可用的交互；
  * - 亲人打字：按阶段先拦（邀请等待 / 接待确认 / 收尾 / guest 侧不发、文字留在输入框），
  *   发出去的句子先出一个本地气泡，后端拒绝（status 带回 request_id）时标「未送达」，文字只在
  *   输入框自提交后没再编辑时恢复；收件人开关决定 source（对方猫娘 / 自家猫娘）；
@@ -44,11 +44,35 @@
     var DETAILS_ACTION = 'visit_details';
     var EXPORT_ACTION = 'visit_export';
     var REPORT_ACTION = 'visit_report';
+    var DIRECT_INVITE_ACTION = 'visit_direct_invite_decision'; // legacy persisted bubbles only
     var REPORT_REASONS = ['harassment', 'sexual', 'privacy', 'spam', 'other'];
     var REPORT_NOTE_MAX = 500;
     // 进行中的阶段（不含 ending：后端已交还输入，亲人恢复普通聊天）
     var WAITING_PHASES = ['pending', 'invite_ready', 'joining', 'awaiting_accept'];
     var OWNED_PHASES = WAITING_PHASES.concat(['active', 'wrap_up']);
+    var START_FAILURE_CODES = {
+        quota_exceeded: 'VISIT_QUOTA_EXCEEDED',
+        login_required: 'VISIT_LOGIN_REQUIRED',
+        banned: 'VISIT_BANNED',
+        concurrency_limit: 'VISIT_CONCURRENCY_LIMIT',
+        tier_not_entitled: 'VISIT_TIER_NOT_ENTITLED',
+        cross_region_unsupported: 'VISIT_CROSS_REGION_UNSUPPORTED',
+        servers_unreachable: 'VISIT_SERVERS_UNREACHABLE',
+        unsupported: 'VISIT_UNSUPPORTED_ON_THIS_MACHINE',
+        invite_invalid: 'VISIT_INVITE_INVALID',
+        invite_expired: 'VISIT_INVITE_INVALID',
+        busy: 'VISIT_E_BUSY',
+        peer_lost: 'VISIT_PEER_LOST',
+        proto_mismatch: 'VISIT_PROTO_MISMATCH',
+        peer_identity_rejected: 'VISIT_PEER_IDENTITY_REJECTED',
+        peer_blocked: 'VISIT_PEER_IDENTITY_REJECTED',
+        relay_lost: 'VISIT_RELAY_LOST',
+        local_page_lost: 'VISIT_RELAY_LOST',
+        kicked: 'VISIT_KICKED'
+    };
+    // Retain terminal setup errors across ended resetting the visible visit,
+    // including when WebSocket failure arrives before POST /rooms returns.
+    var startFailures = new Map();
 
     // ── 小工具 ──────────────────────────────────────────────────────
 
@@ -154,14 +178,41 @@
 
     // ── 本机 HTTP（回环 + CSRF；读端点同样带 token）─────────────────────
 
-    async function mutationHeaders() {
+    var fallbackCsrfToken = '';
+
+    async function fallbackMutationHeaders(forceRefresh) {
+        if (fallbackCsrfToken && forceRefresh !== true) {
+            return { 'X-CSRF-Token': fallbackCsrfToken };
+        }
+        try {
+            var response = await fetch('/api/config/page_config', { cache: 'no-store' });
+            if (!response.ok) return {};
+            var data = await response.json();
+            var token = data && data.autostart_csrf_token;
+            if (typeof token !== 'string' || !token) return {};
+            fallbackCsrfToken = token;
+            return { 'X-CSRF-Token': token };
+        } catch (_) {
+            return {};
+        }
+    }
+
+    async function mutationHeaders(forceRefresh) {
         var security = window.nekoLocalMutationSecurity;
         if (security && typeof security.getMutationHeaders === 'function') {
             try {
-                return await security.getMutationHeaders();
+                if (forceRefresh === true && typeof security.refreshToken === 'function') {
+                    await security.refreshToken();
+                }
+                var headers = await security.getMutationHeaders();
+                if (headers && typeof headers['X-CSRF-Token'] === 'string'
+                        && headers['X-CSRF-Token']) return headers;
             } catch (_) { /* 拿不到：后端 403，按失败处理 */ }
         }
-        return {};
+        // 独立聊天窗、后端刚重启或脚本加载顺序变化时，公共 helper 可能暂时
+        // 还没建立。串门不能因此静默等到邀请码超时，直接从同源 page_config
+        // 补取一次当前进程的 token。
+        return fallbackMutationHeaders(forceRefresh === true);
     }
 
     async function isStaleCsrf(response) {
@@ -174,10 +225,10 @@
         }
     }
 
-    async function api(method, path, body) {
+    async function api(method, path, body, signal) {
         var send = async function () {
-            var headers = Object.assign({}, await mutationHeaders());
-            var init = { method: method, cache: 'no-store', headers: headers };
+            var headers = Object.assign({}, await mutationHeaders(false));
+            var init = { method: method, cache: 'no-store', headers: headers, signal: signal };
             if (body !== undefined) {
                 headers['Content-Type'] = 'application/json';
                 init.body = JSON.stringify(body);
@@ -188,11 +239,16 @@
         try {
             response = await send();
             if (await isStaleCsrf(response)) {
-                var security = window.nekoLocalMutationSecurity;
-                if (security && typeof security.refreshToken === 'function') {
-                    await security.refreshToken();
-                    response = await send();
+                // 后端重启会换 token；无论公共 helper 是否已加载，都强制刷新，
+                // 然后只重放一次原请求。
+                var refreshed = await mutationHeaders(true);
+                var retryHeaders = Object.assign({}, refreshed);
+                var retryInit = { method: method, cache: 'no-store', headers: retryHeaders, signal: signal };
+                if (body !== undefined) {
+                    retryHeaders['Content-Type'] = 'application/json';
+                    retryInit.body = JSON.stringify(body);
                 }
+                response = await fetch(path, retryInit);
             }
         } catch (_) {
             return { status: 0, body: null };
@@ -358,6 +414,9 @@
     var lastEnded = null;
     var releaseEnabled = false;
     var starting = false;
+    var pendingDirectInvitation = null; // {messageId, payload, busy}
+    var directInvitationPresenting = new Set();
+    var resolvedDirectInvitationIds = new Set();
     var typing = null;           // {name, until}
     var typingTimer = 0;
     var reconnectTimer = 0;
@@ -365,6 +424,7 @@
     var inviteDialog = null;     // {visitId, handle, timer}
     var endedVisitIds = [];      // 本页见过 ended 的场次（最多 32 个）
     var boundCatgirl = '';       // 最近一次 bind 时这一页的角色名
+    var visitStateKnown = false; // 首次恢复完成前，空白状态不代表后端已经空闲。
     var previewedPeer = null;    // 出门确认时预览到的对端 {visitId, name, shortCode, crossRegion}
 
     function markEnded(visitId) {
@@ -377,8 +437,8 @@
         return {
             visitId: null, side: null, phase: null,
             peerName: '', peerShortId: '', peerHumanLabel: '',
-            inviteCode: '', inviteExpiresAt: 0, crossRegion: false,
-            peerHidden: false, reconnecting: false, endingSoonAt: 0,
+            inviteCode: '', inviteExpiresAt: 0, targetUserId: '', crossRegion: false,
+            peerHidden: false, reconnecting: false, cancelRequested: false, endingSoonAt: 0,
             recipient: 'guest_cat', ownName: '',
             // 这一场真的开始过（见过 active / wrap_up）：结束时才留查看详情 / 导出 / 举报
             everStarted: false
@@ -405,6 +465,30 @@
 
     function inVisit() {
         return !!visit.visitId && visit.phase !== null && visit.phase !== 'ended';
+    }
+
+    function publicVisitState() {
+        return {
+            visitId: visit.visitId || '',
+            phase: visit.cancelRequested && OWNED_PHASES.indexOf(visit.phase) !== -1 ? 'cancelling' : visit.phase || '',
+            side: visit.side || '', ready: visitStateKnown,
+            active: inVisit(), inviteExpiresAt: visit.inviteExpiresAt || 0,
+            targetUserId: visit.targetUserId || ''
+        };
+    }
+
+    function dispatchVisitStatus(sourceFrame) {
+        var detail = publicVisitState();
+        var action = String(sourceFrame && sourceFrame.action || '');
+        if (action === 'ended') {
+            detail.visitId = String(sourceFrame.visit_id || '');
+            detail.phase = 'ended';
+            detail.active = false;
+        }
+        detail.action = action || detail.phase;
+        try {
+            window.dispatchEvent(new CustomEvent('neko-visit-status-change', { detail: detail }));
+        } catch (_) { /* noop */ }
     }
 
     /** 串门是否接管了输入框（ending 不算：后端已交还，亲人恢复普通聊天）。 */
@@ -467,18 +551,23 @@
     }
 
     function idleBar() {
-        if (!releaseEnabled || !userSwitchOn()) return null;
-        return {
-            tone: 'idle',
-            actions: [
-                barAction('invite', t('visit.bar.invite', '邀请客人'), 'primary', { disabled: starting }),
-                barAction('go', t('visit.bar.goVisit', '去别人家'), 'primary', { disabled: starting })
-            ]
-        };
+        if (pendingDirectInvitation) {
+            return {
+                tone: 'waiting',
+                actions: [
+                    barAction('direct_decline', t('visit.directInvite.decline', '拒绝'), 'secondary', { disabled: pendingDirectInvitation.busy === true }),
+                    barAction('direct_accept', t('visit.directInvite.accept', '接受'), 'primary', { disabled: pendingDirectInvitation.busy === true })
+                ]
+            };
+        }
+        return null;
     }
 
     function visitBar() {
         if (!inVisit()) return idleBar();
+        // 建房、等待对方与出门途中都不占用聊天框上方的操作区。
+        // 邀请的撤回与邀请码备用流程统一留在喵宇宙面板里；真正开始串门后再显示过程操作。
+        if (WAITING_PHASES.indexOf(visit.phase) !== -1) return null;
         var badge = badgeText();
         var bar = { badge: badge ? badge.text : undefined, tone: badge ? badge.tone : 'active', actions: [] };
         var host = visit.side === 'host';
@@ -487,13 +576,7 @@
         } else if (visit.phase === 'active' && visit.endingSoonAt) {
             bar.detail = t('visit.bar.endingSoon', '快到时间了');
         }
-        if (host && visit.phase === 'invite_ready' && visit.inviteCode) {
-            bar.detail = t('visit.bar.inviteCode', '邀请码 {{code}}', { code: visit.inviteCode });
-            bar.actions.push(barAction('copy', t('visit.bar.copy', '复制'), 'primary'));
-        }
-        if (WAITING_PHASES.indexOf(visit.phase) !== -1) {
-            bar.actions.push(barAction('cancel', t('visit.common.cancel', '取消'), 'danger'));
-        } else if (visit.phase === 'active') {
+        if (visit.phase === 'active') {
             if (host) {
                 bar.actions.push(barAction('to_guest', t('visit.bar.toGuest', '发给 {{name}}', { name: peerCatName() }),
                     'secondary', { pressed: visit.recipient === 'guest_cat' }));
@@ -513,8 +596,8 @@
     function inputPlaceholder() {
         if (!inVisit()) return '';
         if (visit.side === 'guest' && visit.phase !== 'ending') return t('visit.input.placeholderAway', '她出门了，可以叫她回来');
+        if (WAITING_PHASES.indexOf(visit.phase) !== -1) return t('visit.input.placeholderWaiting', '客人还没到等等再聊吧');
         if (visit.reconnecting) return t('visit.input.placeholderReconnecting', '正在重连，稍等一下');
-        if (WAITING_PHASES.indexOf(visit.phase) !== -1) return t('visit.input.placeholderWaiting', '等客人到了才能说话');
         if (visit.phase === 'wrap_up') return t('visit.wrapUp.composerPlaceholder', '她们正在道别…');
         if (visit.phase === 'active') {
             return visit.recipient === 'own_cat'
@@ -529,7 +612,8 @@
         if (!isUiWindow()) return null;
         var bar = visitBar();
         var disabled = inVisit() && visit.phase !== 'ending'
-            && (visit.side === 'guest' || visit.phase === 'wrap_up' || visit.reconnecting);
+            && (visit.side === 'guest' || visit.phase === 'wrap_up'
+                || (visit.reconnecting && WAITING_PHASES.indexOf(visit.phase) === -1));
         return {
             bar: bar,
             composerDisabled: disabled,
@@ -798,8 +882,64 @@
         return name || peerCatName();
     }
 
+    function participantName(participant) {
+        participant = participant || {};
+        var explicit = String(participant.name || '').trim();
+        if (explicit) return explicit;
+        var own = participant.side && participant.side === visit.side;
+        if (participant.kind === 'cat') return own ? ownCatName() : peerCatName();
+        if (participant.kind === 'human') {
+            return own ? userName() : (visit.peerHumanLabel || t('visit.speaker.peerHuman', '对方的家里人'));
+        }
+        return '';
+    }
+
+    /**
+     * 人名已由气泡头展示；兼容旧端或模型偶发模仿历史标记而输出的
+     * ``[名字] 正文`` / ``【名字】：正文``。句首名称后是空白、冒号或横线时，按无意义
+     * 标签整体去掉；名称在句中，或句首后直接跟逗号等有语义标点时，只拆掉括号、保留
+     * 名字。其它方括号内容保留。流式首片只到 ``[na`` 时先不上屏，避免前缀闪一下。
+     */
+    function withoutRepeatedSpeakerPrefix(text, speaker, addressee) {
+        var raw = String(text || '');
+        var candidate = raw.replace(/^\s+/, '');
+        var names = [participantName(speaker), participantName(addressee)].filter(function (name, index, all) {
+            return !!name && all.indexOf(name) === index;
+        });
+        for (var n = 0; n < names.length; n++) {
+            var prefixes = ['[' + names[n] + ']', '【' + names[n] + '】'];
+            for (var i = 0; i < prefixes.length; i++) {
+                var prefix = prefixes[i];
+                if (candidate.indexOf(prefix) === 0) {
+                    var rest = candidate.slice(prefix.length);
+                    if (!rest) return '';
+                    if (/^[\s:：\-—]+/.test(rest)) return rest.replace(/^[\s:：\-—]+/, '');
+                    return names[n] + rest;
+                }
+                if (candidate && prefix.indexOf(candidate) === 0) return '';
+            }
+        }
+        var normalized = raw;
+        names.forEach(function (name) {
+            normalized = normalized.split('[' + name + ']').join(name);
+            normalized = normalized.split('【' + name + '】').join(name);
+        });
+        return normalized;
+    }
+
     function renderLine(entry) {
         if (!isUiWindow()) return;
+        // 实时的自家猫娘台词已由后端提交到标准 gemini_response 链路，不再画第二个
+        // 专用气泡。页面重载时普通助手消息不会恢复，必须用 transcript 快照补回历史台词。
+        if (!entry.fromSnapshot && entry.speaker
+                && entry.speaker.self === true && entry.speaker.kind === 'cat') return;
+        // 协议偶尔会在上游模型失败时收到空的 delta / final。空内容不是一条可见消息，
+        // 不应占出一个只有作者和时间的气泡；带“被打断”提示的空行仍保留提示。
+        var visibleText = withoutRepeatedSpeakerPrefix(entry.text, entry.speaker, entry.addressee);
+        if (relayCleanIsEmpty(visibleText) && !entry.truncated) {
+            if (entry.final) removeRenderedLine(entry);
+            return;
+        }
         var adapter = window.appChat;
         if (!adapter || typeof adapter.renderVisitLine !== 'function') return;
         var notice = entry.truncated ? t('visit.stream.truncated', '（被打断）') : '';
@@ -818,11 +958,18 @@
             speaker: entry.speaker,
             author: speakerAuthor(entry.speaker, entry.addressee),
             avatarUrl: entry.speaker && entry.speaker.self !== true && entry.speaker.kind === 'cat' ? peerAvatarUrl : '',
-            text: entry.text,
+            text: visibleText,
             notice: notice,
             replace: !!claimed
         });
         entry.rendered = true;
+    }
+
+    function removeRenderedLine(entry) {
+        if (!entry || !entry.rendered) return;
+        var host = getHost();
+        if (host && typeof host.removeMessage === 'function') host.removeMessage(entry.messageId);
+        entry.rendered = false;
     }
 
     function armStall(entry) {
@@ -870,6 +1017,11 @@
         entry.text = String(frame.text || '');
         entry.truncated = frame.truncated === true;
         if (typing && frame.speaker && frame.speaker.name === typing.name) typing = null;
+        // authoritative final 为空时，撤掉此前 delta 形成的半截气泡；否则会留下“空回复”。
+        if (relayCleanIsEmpty(entry.text) && !entry.truncated) {
+            removeRenderedLine(entry);
+            return;
+        }
         renderLine(entry);
     }
 
@@ -911,28 +1063,35 @@
         if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = 0; }
     }
 
+    function needsVisitStatePoll() {
+        return visit.reconnecting || (visit.cancelRequested && inVisit());
+    }
+
     function pollReconnect() {
         clearReconnectPoll();
         reconnectTimer = setTimeout(async function () {
             reconnectTimer = 0;
-            if (!visit.reconnecting) return;
+            if (!needsVisitStatePoll()) return;
             var catgirl = currentCatgirl();
             if (!catgirl) return;
             var polledVisitId = visit.visitId;
+            var seqAtSend = stateFrameSeq;
             var result = await api('GET', '/api/visit/state?catgirl=' + encodeURIComponent(catgirl));
             var body = result.body;
             // 请求在路上时这一场已经结束、新一场开始：旧请求的快照不能拿来收新一场
             if (visit.visitId !== polledVisitId) return;
-            if (result.status === 200 && body && typeof body === 'object' && visit.reconnecting) {
+            if (result.status === 200 && body && typeof body === 'object' && needsVisitStatePoll()) {
                 // ended 帧可能在断线里丢了：快照说没在串门（或已是另一场）就收掉这一场；同一场则按快照校正阶段
-                applyState(body, false);
+                applyState(body, stateFrameSeq !== seqAtSend);
+                dispatchVisitStatus();
             }
-            if (visit.reconnecting) pollReconnect();
+            if (needsVisitStatePoll()) pollReconnect();
         }, RECONNECT_POLL_MS);
     }
 
     // 切换角色：清掉上一位角色的串门 UI 状态（不走 onEnded：不往新角色刚清空的聊天里写结束消息）
     function resetForCharacterSwitch() {
+        visitStateKnown = false;
         openDialogs.slice().forEach(function (handle) { handle.close(null); });
         // 人设面板是另一个模块的对话框：一并关掉，免得在新角色的页面上改 / 确认上一位的人设
         if (typeof window.closeVisitPersonaPreview === 'function') window.closeVisitPersonaPreview();
@@ -947,6 +1106,7 @@
         previewedPeer = null;
         lastEnded = null;
         render();
+        Promise.resolve().then(reconcileRealtimeInvitations);
     }
 
     // 换到另一场：清掉上一场的状态、台词拼接、待认领的本地气泡与访客头像（line_id 按场次计数）
@@ -989,7 +1149,14 @@
         if (visit.visitId && visit.visitId !== visitId && inVisit() && action !== 'pending' && action !== 'invite_ready') return;
         if (visit.visitId !== visitId) {
             // 漏收了上一场的 ended、新一场的 pending 先到：上一场照样留下结束消息、标掉还在等回显的本地气泡
-            if (visit.visitId && inVisit()) onEnded({ visit_id: visit.visitId, side: visit.side, reason: '' });
+            if (visit.visitId && inVisit()) {
+                var previousVisit = visit.visitId;
+                var previousSide = visit.side;
+                onEnded({ visit_id: previousVisit, side: previousSide, reason: '' });
+                // invite_ready 也可作为新场次的权威起点；先让显示端回收旧 iframe，
+                // 否则它会按旧 visit_id 丢掉稍后转发的新 invite_ready。
+                relayEndedToDisplay(previousVisit, previousSide);
+            }
             startNewVisit(visitId);
         }
         if (frame.side === 'host' || frame.side === 'guest') {
@@ -1000,6 +1167,7 @@
         if (typeof frame.peer_short_id === 'string' && frame.peer_short_id) visit.peerShortId = frame.peer_short_id;
         if (typeof frame.peer_human_label === 'string' && frame.peer_human_label) visit.peerHumanLabel = frame.peer_human_label;
         if (typeof frame.cross_region === 'boolean') visit.crossRegion = frame.cross_region;
+        if (typeof frame.target_user_id === 'string') visit.targetUserId = frame.target_user_id;
         visit.ownName = currentCatgirl();
         applyPreviewedPeer();
         // 后端只给已激活的场次推 ending（额度不足、登录失效等激活前失败走状态横幅 + ended）：
@@ -1025,12 +1193,19 @@
             break;
         case 'video_reconnecting':
             break;
+        case 'voice_off':
+            // 只给父页收语音旁路用（OD-15 v4），聊天面不变；跟随窗收到时同样转给 Pet 窗的父页（重复收到无害）
+            if (typeof window.nekoRelayVisitStateToDisplay === 'function') {
+                window.nekoRelayVisitStateToDisplay(frame);
+            }
+            return;
         case 'ending_soon':
             visit.endingSoonAt = typeof frame.ends_at === 'number' ? frame.ends_at : now() / 1000;
             break;
         case 'ended':
             onEnded(frame);
             render();
+            relayEndedToDisplay(visitId, frame.side);
             return;
         case 'pending':
         case 'joining':
@@ -1054,12 +1229,23 @@
         }
         if (action === 'started' || action === 'departed' || action === 'wrap_up' || action === 'ending') {
             visit.reconnecting = false;
-            clearReconnectPoll();
+            if (needsVisitStatePoll()) pollReconnect();
+            else clearReconnectPoll();
         }
+        visitStateKnown = true;
         render();
+        // Electron 多窗口里 /chat 往往是最新的主 WebSocket，而媒体 iframe
+        // 必须由 Pet 窗创建；把已经校验并应用的生命周期状态同步过去。
+        if (typeof window.nekoRelayVisitStateToDisplay === 'function') {
+            window.nekoRelayVisitStateToDisplay(frame);
+        }
     }
 
     function onEnded(frame) {
+        visitStateKnown = true;
+        if (!visit.everStarted && !startFailures.has(frame.visit_id)) {
+            rememberStartFailure(frame.visit_id, START_FAILURE_CODES[frame.reason] || '', { reason: frame.reason });
+        }
         markEnded(frame.visit_id);
         peerAvatarUrl = '';
         if (previewedPeer && previewedPeer.visitId === frame.visit_id) previewedPeer = null;
@@ -1087,6 +1273,7 @@
             lastEnded = ended;
             appendEndedMessage(ended);
         }
+        Promise.resolve().then(reconcileRealtimeInvitations);
     }
 
     // ── 结束后该场系统消息（折叠区：查看详情 / 导出 / 举报）──────────────
@@ -1503,8 +1690,12 @@
         var code = bodyCode(result);
         var body = result.body || {};
         if (result.status === 0) return t('visit.error.unreachable', '连不上本机服务');
+        if (result.status === 403 && code === 'csrf_validation_failed') {
+            return t('visit.error.localAuth', '本机串门凭证已失效，请重试');
+        }
         if (code === 'VISIT_DISABLED') return t('visit.error.disabled', '「允许串门」还没有打开，请先在设置里打开');
         if (code === 'VISIT_PERSONA_UNREVIEWED') return t('visit.persona.unreviewed', '出门前先看一眼她的串门自我介绍');
+        if (code === 'VISIT_QUOTA_EXCEEDED') return t('visit.status.VISIT_QUOTA_EXCEEDED', '今天的串门时间用完了');
         if (code === 'VISIT_UNSUPPORTED_ON_THIS_MACHINE'
                 && ((body.details && body.details.reason) || body.reason) === 'insecure_context') {
             return t('visit.error.insecure_context', '自定义后端地址需要 https 或 localhost 才能串门');
@@ -1522,6 +1713,22 @@
         if (code === 'voice_session_active') return t('visit.error.voiceSession', '先结束语音通话再串门');
         if (code === 'already_visiting') return t('visit.error.alreadyVisiting', '她已经在串门了');
         return t('visit.error.generic', '没能完成，请稍后再试');
+    }
+
+    function rememberStartFailure(visitId, code, details) {
+        if (!VISIT_ID_RE.test(visitId || '')) return;
+        startFailures.set(visitId, { code: code, details: { reason: details && details.reason } });
+        while (startFailures.size > 20) startFailures.delete(startFailures.keys().next().value);
+    }
+
+    function startFailureResult(visitId) {
+        var failure = startFailures.get(visitId);
+        if (!failure) return null;
+        return {
+            ok: false, visit_id: visitId, code: failure.code,
+            error: failure.code ? startErrorText({ status: 409, body: failure })
+                : t('visit.error.generic', '没能完成，请稍后再试')
+        };
     }
 
     // 构图偏好由设置分组（visit-settings.js，只在 index.html）写进 localStorage；chat.html 直接读同一个键
@@ -1560,8 +1767,13 @@
         var frame = { type: 'visit_state_change', action: phase, side: 'host', visit_id: visitId };
         if (phase === 'invite_ready' && typeof body.invite_code === 'string') frame.invite_code = body.invite_code;
         if (typeof body.invite_expires_at === 'number') frame.invite_expires_at = body.invite_expires_at;
+        if (typeof body.target_user_id === 'string') frame.target_user_id = body.target_user_id;
         onStateChange(frame);
-        return { visitId: visitId, phase: phase, hasCode: INVITE_CODE_RE.test(String(body.invite_code || '')) };
+        return {
+            visitId: visitId, phase: phase,
+            hasCode: INVITE_CODE_RE.test(String(body.invite_code || '')),
+            targetUserId: String(body.target_user_id || '')
+        };
     }
 
     /** 建房是异步的；即使 invite_ready 的 WS 帧丢了，也从受保护的本机接口把原邀请码补回来。 */
@@ -1602,68 +1814,196 @@
 
     function recoverCurrentHostInviteIfWaiting(catgirl) {
         if (currentCatgirl() !== catgirl || visit.side !== 'host' || !VISIT_ID_RE.test(String(visit.visitId || ''))) return;
-        if ((visit.phase === 'pending' || visit.phase === 'invite_ready') && !visit.inviteCode) {
+        if ((visit.phase === 'pending' || visit.phase === 'invite_ready') && !visit.inviteCode && !visit.targetUserId) {
             scheduleInviteRecovery(catgirl, visit.visitId, 0);
         }
     }
 
-    async function startInvite() {
+    async function startInvite(targetUserId) {
         var catgirl = currentCatgirl();
-        if (!catgirl || starting) return;
+        if (!catgirl) return { ok: false, error: t('visit.error.noCharacter', '当前没有可串门的角色') };
+        targetUserId = String(targetUserId || '');
+        if (targetUserId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(targetUserId)) {
+            return { ok: false, error: '好友账号格式无效，请刷新好友列表后重试' };
+        }
+        if (starting) return { ok: false, error: t('visit.error.starting', '正在准备串门房间，请稍候') };
         starting = true;
         render();
         try {
             // 页面错过 invite_ready 或重新载入时，先恢复仍有效的原房间；绝不为同一场再建一个。
             var currentSeq = stateFrameSeq;
             var current = await api('GET', currentHostRoomUrl(catgirl));
-            if (currentCatgirl() !== catgirl) return;
+            if (currentCatgirl() !== catgirl) {
+                return { ok: false, error: t('visit.error.characterSwitched', '角色已切换，请重新邀请') };
+            }
+            var currentFailure = startFailureResult(current.body && current.body.visit_id);
+            if (currentFailure) return currentFailure;
             if (stateFrameSeq !== currentSeq) {
+                if (String(visit.targetUserId || '') !== targetUserId) {
+                    return { ok: false, error: '当前已有另一条串门邀请，请先结束后再继续' };
+                }
                 recoverCurrentHostInviteIfWaiting(catgirl);
-                return;
+                return { ok: true, visit_id: visit.visitId };
             }
             var restored = applyHostRoomResponse(current, catgirl, currentSeq);
             if (restored) {
-                if (!restored.hasCode) scheduleInviteRecovery(catgirl, restored.visitId, 0);
-                return;
+                if (restored.targetUserId !== targetUserId) {
+                    return { ok: false, error: '当前已有另一条串门邀请，请先结束后再邀请这位好友' };
+                }
+                if (!targetUserId && !restored.hasCode) scheduleInviteRecovery(catgirl, restored.visitId, 0);
+                return { ok: true, visit_id: restored.visitId };
             }
             // 只有明确不存在待客邀请码时才新建。读取失败不能被当成“不存在”，否则可能重复建房。
             if (current.status !== 404) {
-                toast(startErrorText(current), 6000);
-                return;
+                var currentError = startErrorText(current);
+                toast(currentError, 6000);
+                return { ok: false, error: currentError };
             }
             var crop = readCrop();
             var createSeq = stateFrameSeq;
             var result = await withPersonaRetry(function () {
-                return api('POST', '/api/visit/rooms', { catgirl: catgirl, crop: crop });
+                var room = { catgirl: catgirl, crop: crop };
+                if (targetUserId) room.target_user_id = targetUserId;
+                return api('POST', '/api/visit/rooms', room);
             }, catgirl);
-            if (await abandonIfCharacterSwitched(result, catgirl)) return;
+            if (await abandonIfCharacterSwitched(result, catgirl)) {
+                return { ok: false, error: t('visit.error.characterSwitched', '角色已切换，请重新邀请') };
+            }
+            var createFailure = startFailureResult(result.body && result.body.visit_id);
+            if (createFailure) return createFailure;
             if (stateFrameSeq !== createSeq) {
+                if (String(visit.targetUserId || '') !== targetUserId) {
+                    return { ok: false, error: '当前已有另一条串门邀请，请先结束后再继续' };
+                }
                 recoverCurrentHostInviteIfWaiting(catgirl);
-                return;
+                return { ok: true, visit_id: visit.visitId };
             }
             var created = applyHostRoomResponse(result, catgirl, createSeq);
             if (created) {
-                if (!created.hasCode) scheduleInviteRecovery(catgirl, created.visitId, 0);
-                return;
+                if (!targetUserId && !created.hasCode) scheduleInviteRecovery(catgirl, created.visitId, 0);
+                return { ok: true, visit_id: created.visitId };
             }
             // GET 与 POST 之间另一窗口可能刚建好房间：再恢复一次，而不是停在 already_visiting。
             if (result.status === 409 && ((result.body || {}).reason === 'already_visiting')) {
                 var raceSeq = stateFrameSeq;
                 var raced = await api('GET', currentHostRoomUrl(catgirl));
+                var racedFailure = startFailureResult(raced.body && raced.body.visit_id);
+                if (racedFailure) return racedFailure;
                 if (stateFrameSeq !== raceSeq) {
+                    if (String(visit.targetUserId || '') !== targetUserId) {
+                        return { ok: false, error: '当前已有另一条串门邀请，请先结束后再继续' };
+                    }
                     recoverCurrentHostInviteIfWaiting(catgirl);
-                    return;
+                    return { ok: true, visit_id: visit.visitId };
                 }
                 var recovered = applyHostRoomResponse(raced, catgirl, raceSeq);
                 if (recovered) {
-                    if (!recovered.hasCode) scheduleInviteRecovery(catgirl, recovered.visitId, 0);
-                    return;
+                    if (recovered.targetUserId !== targetUserId) {
+                        return { ok: false, error: '当前已有另一条串门邀请，请先结束后再邀请这位好友' };
+                    }
+                    if (!targetUserId && !recovered.hasCode) scheduleInviteRecovery(catgirl, recovered.visitId, 0);
+                    return { ok: true, visit_id: recovered.visitId };
                 }
             }
-            toast(startErrorText(result), 6000);
+            var resultError = startErrorText(result);
+            toast(resultError, 6000);
+            return { ok: false, error: resultError };
         } finally {
             starting = false;
             render();
+        }
+    }
+
+    /** 独立串门浮窗使用：创建或恢复本角色的邀请码，并等待异步建房完成。 */
+    async function createInviteCode() {
+        if (visit.inviteCode && (visit.phase === 'pending' || visit.phase === 'invite_ready')) {
+            return {
+                invite_code: visit.inviteCode, expires_at: visit.inviteExpiresAt || null,
+                visit_id: visit.visitId || null, phase: visit.phase
+            };
+        }
+        var started = await startInvite();
+        if (!started || started.ok !== true) {
+            throw new Error((started && started.error) || '没能创建串门房间，请稍后再试');
+        }
+        var expectedVisitId = started.visit_id || visit.visitId;
+        return new Promise(function (resolve, reject) {
+            var deadline = now() + 15000;
+            var timer = setInterval(function () {
+                var failure = startFailureResult(expectedVisitId);
+                if (failure) {
+                    clearInterval(timer);
+                    reject(new Error(failure.error));
+                    return;
+                }
+                if (visit.visitId === expectedVisitId && visit.inviteCode
+                        && (visit.phase === 'pending' || visit.phase === 'invite_ready')) {
+                    clearInterval(timer);
+                    resolve({
+                        invite_code: visit.inviteCode, expires_at: visit.inviteExpiresAt || null,
+                        visit_id: visit.visitId || null, phase: visit.phase
+                    });
+                    return;
+                }
+                if (now() >= deadline) {
+                    clearInterval(timer);
+                    reject(new Error('没有拿到串门邀请码，请稍后再试'));
+                }
+            }, 120);
+        });
+    }
+
+    /** 好友面板使用：房间直接绑定接收账号，不生成、传递或兑换邀请码。 */
+    async function createDirectInvitation(targetUserId) {
+        // Phase-one outgoing invitations are desktop-only: friendRow and
+        // inviteFriend require nekoSocial. Browser HTTP receive fallback does
+        // not enable an outgoing invitation entry point.
+        if (!window.nekoSocial) throw new Error(t('visit.directInvite.unavailable', '现在还出不了门，可以再试一次'));
+        targetUserId = String(targetUserId || '');
+        if (visit.targetUserId === targetUserId && visit.visitId && visit.phase === 'invite_ready') {
+            return {
+                target_user_id: targetUserId, expires_at: visit.inviteExpiresAt || null,
+                visit_id: visit.visitId, phase: visit.phase
+            };
+        }
+        var started = await startInvite(targetUserId);
+        if (!started || started.ok !== true) {
+            throw new Error((started && started.error) || '没能创建定向串门房间，请稍后再试');
+        }
+        var expectedVisitId = started.visit_id || visit.visitId;
+        try {
+            return await new Promise(function (resolve, reject) {
+                var deadline = now() + 15000;
+                var timer = setInterval(function () {
+                    var failure = startFailureResult(expectedVisitId);
+                    if (failure) {
+                        clearInterval(timer);
+                        reject(new Error(failure.error));
+                        return;
+                    }
+                    if (visit.targetUserId === targetUserId && visit.visitId === expectedVisitId && visit.phase === 'invite_ready') {
+                        clearInterval(timer);
+                        resolve({
+                            target_user_id: targetUserId, expires_at: visit.inviteExpiresAt || null,
+                            visit_id: visit.visitId, phase: visit.phase
+                        });
+                        return;
+                    }
+                    if (now() >= deadline) {
+                        clearInterval(timer);
+                        reject(new Error('定向串门房间没有准备好，请稍后再试'));
+                    }
+                }, 120);
+            });
+        } catch (error) {
+            var cleanupNeeded = !startFailures.has(expectedVisitId) && visit.visitId === expectedVisitId
+                && visit.targetUserId === targetUserId && WAITING_PHASES.indexOf(visit.phase) !== -1;
+            // The local room may have been created even if its invite_ready frame
+            // missed the 15 s UI deadline. Retire that room before unlocking the hub.
+            if (cleanupNeeded) {
+                await endRoute('route_end');
+            }
+            throw error;
         }
     }
 
@@ -1686,8 +2026,11 @@
     }
 
     /** 先预览（只读、不消耗邀请码），预览失败不弹确认框、不发 join。 */
-    async function previewThenConfirm(inviteCode, catgirl) {
-        var preview = await api('GET', '/api/visit/invites/' + encodeURIComponent(inviteCode) + '/preview');
+    async function previewThenConfirm(inviteCode, catgirl, directVisitId) {
+        var previewUrl = directVisitId
+            ? '/api/visit/direct/' + encodeURIComponent(directVisitId) + '/preview'
+            : '/api/visit/invites/' + encodeURIComponent(inviteCode) + '/preview';
+        var preview = await api('GET', previewUrl);
         // 预览期间别的窗口换了角色：确认框与 join 都钉在发起时那位，已不是当前角色就作罢
         if (currentCatgirl() !== catgirl) return null;
         if (preview.status !== 200 || !preview.body || !VISIT_ID_RE.test(String(preview.body.visit_id || ''))) {
@@ -1731,6 +2074,562 @@
         if (await abandonIfCharacterSwitched(result, catgirl)) return null;
         if (result.status !== 202) toast(startErrorText(result), 6000);
         return result;
+    }
+
+    async function joinDirect(visitId, alreadyConfirmed) {
+        visitId = String(visitId || '');
+        if (!VISIT_ID_RE.test(visitId)) throw new Error('定向串门邀请格式无效');
+        var catgirl = currentCatgirl();
+        if (!catgirl) return null;
+        var data;
+        if (alreadyConfirmed === true) {
+            var preview = await api('GET', '/api/visit/direct/' + encodeURIComponent(visitId) + '/preview');
+            if (currentCatgirl() !== catgirl) return null;
+            if (preview.status !== 200 || !preview.body || String(preview.body.visit_id || '') !== visitId) {
+                toast(previewErrorText(preview), 6000);
+                return preview;
+            }
+            if (preview.body.locally_blocked === true) {
+                toast(t('visit.join.blocked', '你已屏蔽此人'), 6000);
+                return { status: 409, body: { code: 'peer_blocked' } };
+            }
+            data = preview.body;
+        } else {
+            data = await previewThenConfirm('', catgirl, visitId);
+        }
+        if (!data) return null;
+        if (String(data.visit_id || '') !== visitId) throw new Error('定向串门邀请不匹配');
+        previewedPeer = {
+            visitId: visitId, name: String(data.host_display_name || ''),
+            shortCode: String(data.host_short_code || ''), crossRegion: data.cross_region === true
+        };
+        var result = await withPersonaRetry(function () {
+            return api('POST', '/api/visit/rooms/' + encodeURIComponent(visitId) + '/join-direct', {
+                catgirl: catgirl, confirm: true, crop: readCrop()
+            });
+        }, catgirl);
+        if (await abandonIfCharacterSwitched(result, catgirl)) return null;
+        if (result.status !== 202) toast(startErrorText(result), 6000);
+        return result;
+    }
+
+    function directInviteMessageId(notificationId) {
+        return 'visit-direct-invite-' + String(notificationId || '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 80);
+    }
+
+    async function markDirectInviteRead(notificationId) {
+        if (!notificationId) return;
+        try {
+            await api('POST', '/api/community/visit-invitations/' + encodeURIComponent(notificationId) + '/read', {});
+        } catch (_) { /* 已读同步失败不应阻断用户接受或拒绝 */ }
+    }
+
+    function notifyDirectInviteResolved(payload, accepted) {
+        try {
+            window.dispatchEvent(new CustomEvent('neko-social-incoming-resolved', {
+                detail: {
+                    id: String(payload.invitation_id || payload.notification_id || ''),
+                    actorId: String(payload.actor_id || ''),
+                    visitId: String(payload.visit_id || ''),
+                    expiresAt: Number(payload.expires_at) || 0,
+                    accepted: accepted === true
+                }
+            }));
+        } catch (_) { /* noop */ }
+    }
+
+    async function reportDirectInviteDecision(payload, accepted) {
+        if (payload.invitation_id) {
+            var snapshot = await window.nekoSocial.getInvitations();
+            if (snapshot.accountKey !== payload.account_key) return { status: 409, body: {} };
+            var queued = await window.nekoSocial.reportInvitationDecision(payload.invitation_id, accepted === true, snapshot.generation);
+            return { status: queued && queued.ok ? 200 : 503, body: queued };
+        }
+        var notificationId = String(payload.notification_id || '');
+        if (!notificationId) return { status: 400, body: {} };
+        return api('POST', '/api/community/visit-invitations/'
+            + encodeURIComponent(notificationId) + '/respond', { accepted: accepted === true });
+    }
+
+    function clearPendingDirectInvitation(payload, accepted) {
+        if (!pendingDirectInvitation || pendingDirectInvitation.payload !== payload) return;
+        var notificationId = String(payload.notification_id || '');
+        if (notificationId) {
+            resolvedDirectInvitationIds.add(notificationId);
+            while (resolvedDirectInvitationIds.size > 128) {
+                resolvedDirectInvitationIds.delete(resolvedDirectInvitationIds.values().next().value);
+            }
+        }
+        pendingDirectInvitation = null;
+        notifyDirectInviteResolved(payload, accepted);
+        render();
+        refreshCompactGeometry();
+    }
+
+    function directInvitationExpired(payload) {
+        var expiresAt = Number(payload && payload.expires_at) || 0;
+        return expiresAt > 0 && expiresAt <= now() / 1000;
+    }
+    function connectInvitationInvalid(result) {
+        if (!result) return false;
+        if (result.status === 404 || result.status === 410) return true;
+        var body = result.body || {};
+        // The local host wraps Connect codes as VISIT_INVITE_INVALID + reason.
+        // Other reasons (for example peer_blocked/room_full) remain retryable UI errors.
+        return ['invite_invalid', 'invite_expired', 'invite_expiring'].indexOf(String(body.reason || body.code || '')) !== -1;
+    }
+
+    async function decideDirectInvitation(decision) {
+        var pending = pendingDirectInvitation;
+        if (!pending || pending.busy === true) return;
+        var payload = pending.payload || {};
+        var visitId = String(payload.visit_id || '');
+        if (!VISIT_ID_RE.test(visitId) || (decision !== 'accept' && decision !== 'decline')) return;
+        if (payload.catgirl && payload.catgirl !== currentCatgirl()) {
+            if (payload.invitation_id) {
+                payload.catgirl = currentCatgirl();
+            } else {
+                pendingDirectInvitation = null;
+                render();
+                refreshCompactGeometry();
+                await presentDirectInvitation({
+                    id: payload.notification_id,
+                    actor_id: payload.actor_id,
+                    visit_id: payload.visit_id,
+                    expires_at: payload.expires_at
+                });
+                return;
+            }
+        }
+        if (directInvitationExpired(payload)) {
+            if (!payload.invitation_id) await markDirectInviteRead(String(payload.notification_id || ''));
+            clearPendingDirectInvitation(payload, false);
+            toast(t('visit.directInvite.expired', '这次邀请已经失效了'), 5000);
+            return;
+        }
+        pending.busy = true;
+        render();
+        if (decision === 'decline') {
+            try {
+                var declined = await reportDirectInviteDecision(payload, false);
+                if (declined.status === 404 || declined.status === 410) {
+                    await markDirectInviteRead(String(payload.notification_id || ''));
+                    clearPendingDirectInvitation(payload, false);
+                    toast(t('visit.directInvite.expired', '这次邀请已经失效了'), 5000);
+                    return;
+                }
+                if (declined.status < 200 || declined.status >= 300) throw new Error('response_failed');
+            } catch (_) {
+                pending.busy = false;
+                render();
+                toast(t('visit.directInvite.responseFailed', '拒绝结果没有发出去，请再试一次'), 5000);
+                return;
+            }
+            clearPendingDirectInvitation(payload, false);
+            return;
+        }
+        var result;
+        try {
+            result = await joinDirect(visitId, true);
+        } catch (_) {
+            pending.busy = false;
+            render();
+            toast(t('visit.directInvite.unavailable', '现在还出不了门，可以再试一次'), 5000);
+            return;
+        }
+        if (result && result.status === 202) {
+            clearPendingDirectInvitation(payload, true);
+            // 房间连接本身已经让邀请方知道“接受”；社区结果只负责把通知收口，失败不反悔这次串门。
+            reportDirectInviteDecision(payload, true).then(function (response) {
+                if (!payload.invitation_id && (!response || response.status < 200 || response.status >= 300)) {
+                    markDirectInviteRead(String(payload.notification_id || ''));
+                }
+            }).catch(function () {
+                if (!payload.invitation_id) markDirectInviteRead(String(payload.notification_id || ''));
+            });
+            return;
+        }
+        pending.busy = false;
+        render();
+        if (connectInvitationInvalid(result)) {
+            if (payload.invitation_id) await invalidateRealtimeInvitation(payload);
+            else await markDirectInviteRead(String(payload.notification_id || ''));
+            clearPendingDirectInvitation(payload, false);
+            toast(t('visit.directInvite.expired', '这次邀请已经失效了'), 5000);
+            return;
+        }
+        toast(t('visit.directInvite.unavailable', '现在还出不了门，可以再试一次'), 5000);
+    }
+
+    async function onDirectInviteAction(_message, action) {
+        // Compatibility for a persisted bubble produced by an earlier build:
+        // transfer its payload to the floating bar and handle the same decision.
+        var payload = action && action.payload && typeof action.payload === 'object' ? action.payload : {};
+        pendingDirectInvitation = { messageId: '', payload: payload, busy: false };
+        await decideDirectInvitation(String(payload.decision || ''));
+    }
+
+    async function deliverLegacyInvitationQuestion(presentation, visitId, catgirl) {
+        presentation.questionAttempted = true;
+        presentation.deliveryInFlight = true;
+        try {
+            var delivered = await api('POST', '/api/visit/direct/' + encodeURIComponent(visitId) + '/deliver-question', {
+                catgirl: catgirl
+            });
+            presentation.questionDelivered = delivered.status === 200 && delivered.body && delivered.body.delivered === true;
+            // Only these local-route replies prove that no assistant turn began.
+            // Unknown failures and lost responses remain uncertain side effects.
+            var body = delivered.body || {};
+            var refusedBeforeWrite = delivered.status >= 400 && delivered.status < 500 && body.ok === false
+                && ['visit_id_format', 'catgirl_required', 'VISIT_E_UNAUTHORIZED', 'VISIT_DISABLED',
+                    'VISIT_LOGIN_REQUIRED', 'direct_invite_question_not_ready'].indexOf(body.code) !== -1;
+            if (refusedBeforeWrite || delivered.status === 200 && body.delivered === false
+                    && body.reason === 'project_tts_unavailable') presentation.questionAttempted = false;
+        } finally {
+            presentation.deliveryInFlight = false;
+            if (realtimeInvitationState && realtimeInvitationState.realtimeEnabled) void reconcileRealtimeInvitations();
+        }
+    }
+
+    /** 把喵宇宙定向邀请变成当前猫娘的一条聊天提问，而不是悬浮窗卡片。 */
+    async function presentDirectInvitation(incoming) {
+        if (realtimeInvitationState && realtimeInvitationState.realtimeEnabled) {
+            await reconcileRealtimeInvitations();
+            return true;
+        }
+        incoming = incoming && typeof incoming === 'object' ? incoming : {};
+        var visitId = String(incoming.visit_id || incoming.visitId || '');
+        var notificationId = String(incoming.notification_id || incoming.id || '');
+        if (!isUiWindow() || !releaseEnabled || !userSwitchOn()
+                || !VISIT_ID_RE.test(visitId) || !notificationId) return false;
+        var accountAtStart = String(realtimeInvitationState && realtimeInvitationState.accountKey || '');
+        function stillLegacyOwner() {
+            return !(realtimeInvitationState && realtimeInvitationState.realtimeEnabled)
+                && String(realtimeInvitationState && realtimeInvitationState.accountKey || '') === accountAtStart;
+        }
+        if (resolvedDirectInvitationIds.has(notificationId)) {
+            await markDirectInviteRead(notificationId);
+            return true;
+        }
+        if (inVisit()) {
+            if (visit.visitId === visitId) {
+                await markDirectInviteRead(notificationId);
+                return true;
+            }
+            // 正在另一场串门（含邀请方等待回应）时保留未读通知。等当前场结束后，
+            // 轮询会再次展示；此时不能打断语音，因为串门栏也没有接受/拒绝按钮。
+            return false;
+        }
+        var messageId = directInviteMessageId(notificationId);
+        if (directInvitationPresenting.has(messageId)) return true;
+        var host = getHost();
+        var catgirl = currentCatgirl();
+        if (!host || !catgirl) return false;
+        if (pendingDirectInvitation && pendingDirectInvitation.payload
+                && String(pendingDirectInvitation.payload.visit_id || '') === visitId) {
+            if (pendingDirectInvitation.payload.catgirl !== catgirl) {
+                pendingDirectInvitation = null;
+                render();
+                refreshCompactGeometry();
+            } else {
+                render();
+                if (!pendingDirectInvitation.questionDelivered) {
+                    await deliverLegacyInvitationQuestion(pendingDirectInvitation, visitId, catgirl);
+                }
+                return true;
+            }
+        }
+        directInvitationPresenting.add(messageId);
+        try {
+            // 先由 Connect 用当前登录账号核验定向房间；聊天里不展示伪造或已失效的通知。
+            var preview = await api('GET', '/api/visit/direct/' + encodeURIComponent(visitId) + '/preview');
+            if (currentCatgirl() !== catgirl || !stillLegacyOwner()) return false;
+            if (preview.status !== 200 || !preview.body || String(preview.body.visit_id || '') !== visitId) {
+                if (preview.status === 410) await markDirectInviteRead(notificationId);
+                return false;
+            }
+            var payload = {
+                notification_id: notificationId,
+                account_key: accountAtStart,
+                actor_id: String(incoming.actor_id || incoming.actorId || ''),
+                visit_id: visitId,
+                expires_at: Number(incoming.expires_at || incoming.expiresAt) || Number(preview.body.expires_at) || 0,
+                catgirl: catgirl
+            };
+            // 先把最终问句生成好，再交给标准助手回复链路；该链路统一负责
+            // 气泡、语音、口型、自动展开与 turn 生命周期。
+            var generated = await api('GET', '/api/visit/direct/' + encodeURIComponent(visitId)
+                + '/question?catgirl=' + encodeURIComponent(catgirl));
+            if (generated.status !== 200 || !generated.body || !String(generated.body.question || '').trim()) {
+                return false;
+            }
+            if (currentCatgirl() !== catgirl || !stillLegacyOwner()) return false;
+            var presentation = {
+                messageId: messageId, payload: payload, busy: false, questionDelivered: false
+            };
+            pendingDirectInvitation = presentation;
+            render();
+            refreshCompactGeometry();
+            await deliverLegacyInvitationQuestion(presentation, visitId, catgirl);
+            return true;
+        } finally {
+            directInvitationPresenting.delete(messageId);
+            if (realtimeInvitationState && realtimeInvitationState.realtimeEnabled) void reconcileRealtimeInvitations();
+        }
+    }
+
+    // 多窗口模式下，喵宇宙按钮位于 Pet 窗口，真正的聊天消息却只能由
+    // /chat 跟随窗写入。接收方聊天窗自己读取未读邀请；SSE 只负责提速，
+    // 轮询负责覆盖本地 Verse 断流、窗口晚启动和通知重放丢失。
+    var directInvitationPollInFlight = false;
+    async function pollDirectInvitations() {
+        if (realtimeInvitationState && realtimeInvitationState.realtimeEnabled) return reconcileRealtimeInvitations();
+        if (!invitationBridgeReady) return false;
+        if (!isUiWindow() || !releaseEnabled || !userSwitchOn() || directInvitationPollInFlight) return false;
+        directInvitationPollInFlight = true;
+        try {
+            var result = await api('GET', '/api/community/visit-invitations');
+            // A cached chat page can meet an older local host during an upgrade.
+            // Older hosts have POST on this path, so GET can return 405 as well
+            // as 404. Other failures must not look like invitation withdrawal.
+            if (result.status === 404 || result.status === 405) {
+                result = await api('GET', '/api/community/visit-hub');
+            }
+            var incoming = result.status === 200 && result.body && result.body.incoming_invite;
+            if (realtimeInvitationState && realtimeInvitationState.realtimeEnabled) return false;
+            var notificationIds = result.status === 200 && result.body
+                && Array.isArray(result.body.incoming_invite_ids)
+                ? result.body.incoming_invite_ids.map(String) : [];
+            if (pendingDirectInvitation) {
+                var pendingPayload = pendingDirectInvitation.payload || {};
+                var pendingNotificationId = String(pendingPayload.notification_id || '');
+                if (pendingNotificationId && notificationIds.indexOf(pendingNotificationId) !== -1) {
+                    // The notification is still authoritative, but presentation may be incomplete:
+                    // retry a failed delivery or regenerate the question after a character switch.
+                    return await presentDirectInvitation(pendingPayload);
+                }
+                if (result.status === 200 && result.body && result.body.notifications_ok === true) {
+                    clearPendingDirectInvitation(pendingPayload, false);
+                } else {
+                    return false;
+                }
+            }
+            if (!incoming || !incoming.visit_id || !incoming.id) {
+                return false;
+            }
+            return await presentDirectInvitation(incoming);
+        } finally {
+            directInvitationPollInFlight = false;
+        }
+    }
+
+    // The main process is the only invitation replica and delivery arbiter. Renderer
+    // retries only request an existing pending row; they never read cloud invitations.
+    var realtimeInvitationState = null;
+    var realtimeInvitationFlight = false;
+    var realtimeInvitationWake = false;
+    var legacyInvitationTimer = 0;
+    var invitationBridgeTimer = 0;
+    var invitationBridgeReady = !(window.nekoSocial && typeof window.nekoSocial.getInvitations === 'function'
+        && typeof window.nekoSocial.onInvitationsChanged === 'function');
+
+    function recoverLegacyInvitationRead() {
+        if (invitationBridgeReady) return;
+        invitationBridgeReady = true;
+        if (!legacyInvitationTimer) legacyInvitationTimer = setInterval(pollDirectInvitations, 5000);
+        void pollDirectInvitations();
+    }
+
+    function realtimePayload(item, snapshot) {
+        return { invitation_id: item.id, notification_id: item.notification_id || '',
+            actor_id: item.sender_id, visit_id: item.visit_id,
+            expires_at: new Date(item.expires_at).getTime() / 1000,
+            catgirl: currentCatgirl(), account_key: snapshot.accountKey, generation: snapshot.generation };
+    }
+    async function realtimeInvitationApi(method, path, item, body) {
+        var controller = typeof AbortController === 'function' ? new AbortController() : null;
+        var timer;
+        var timeout = new Promise(function (resolve) {
+            timer = setTimeout(function () {
+                if (controller) controller.abort();
+                resolve({ status: 0, body: {} });
+            }, Math.max(0, Math.min(15000, new Date(item.expires_at).getTime() - now())));
+        });
+        try { return await Promise.race([api(method, path, body, controller && controller.signal), timeout]); }
+        finally { clearTimeout(timer); }
+    }
+    async function invalidateRealtimeInvitation(payload) {
+        var snapshot = await window.nekoSocial.getInvitations();
+        if (snapshot.accountKey === payload.account_key) {
+            await window.nekoSocial.markInvitationInvalid(payload.invitation_id, snapshot.generation);
+        }
+    }
+    function receiveRealtimeInvitations(snapshot) {
+        if (!snapshot || !Number.isSafeInteger(snapshot.generation)
+                || realtimeInvitationState && snapshot.generation < realtimeInvitationState.generation) return;
+        realtimeInvitationState = snapshot;
+        invitationBridgeReady = true;
+        clearTimeout(invitationBridgeTimer); invitationBridgeTimer = 0;
+        if (snapshot.realtimeEnabled && legacyInvitationTimer) {
+            clearInterval(legacyInvitationTimer); legacyInvitationTimer = 0;
+        } else if (!snapshot.realtimeEnabled && isUiWindow() && !legacyInvitationTimer) {
+            legacyInvitationTimer = setInterval(pollDirectInvitations, 5000);
+        }
+        if (snapshot.realtimeEnabled || pendingDirectInvitation) {
+            void reconcileRealtimeInvitations();
+        }
+    }
+    async function confirmLegacyInvitationDelivery(presentation, snapshot) {
+        var confirmation = presentation.legacyDelivery;
+        if (confirmation.nextAt > now()) return false;
+        var delay = Math.min(30000, 1000 * Math.pow(2, Math.min(confirmation.attempts || 0, 5)));
+        confirmation.attempts = (confirmation.attempts || 0) + 1;
+        confirmation.nextAt = now() + delay;
+        var result;
+        try {
+            result = await window.nekoSocial.completeInvitationDelivery(presentation.payload.invitation_id,
+                confirmation.token, snapshot.generation);
+        } catch (_) { /* retain this claim for a bounded completion-only retry */ }
+        if (result && (result.ok || result.error === 'stale_claim' || result.error === 'not_delivering')) {
+            clearTimeout(confirmation.timer);
+            presentation.legacyDelivery = null;
+            return !!result.ok;
+        }
+        clearTimeout(confirmation.timer);
+        confirmation.timer = setTimeout(function () {
+            if (pendingDirectInvitation === presentation && presentation.legacyDelivery === confirmation
+                    && realtimeInvitationState && realtimeInvitationState.accountKey === snapshot.accountKey
+                    && realtimeInvitationState.generation === snapshot.generation) void reconcileRealtimeInvitations();
+        }, delay);
+        return false;
+    }
+    async function reconcileRealtimeInvitations() {
+        if (!isUiWindow()) return false;
+        if (realtimeInvitationFlight) { realtimeInvitationWake = true; return false; }
+        var snapshot = realtimeInvitationState;
+        if (!snapshot) return false;
+        var items = Array.isArray(snapshot.items) ? snapshot.items : [];
+        var legacyItem = null, legacyAttempted = false, legacyConfirmed = false;
+        if (pendingDirectInvitation && pendingDirectInvitation.payload.invitation_id) {
+            var old = pendingDirectInvitation.payload;
+            var stillPending = snapshot.accountKey === old.account_key && items.some(function (i) {
+                return i.id === old.invitation_id && i.actionable;
+            });
+            if (!stillPending) { pendingDirectInvitation = null; render(); refreshCompactGeometry(); }
+        }
+        else if (pendingDirectInvitation) {
+            var legacy = pendingDirectInvitation;
+            var sameAccount = !legacy.payload.account_key || legacy.payload.account_key === snapshot.accountKey;
+            if (snapshot.realtimeEnabled) {
+                legacyItem = sameAccount && items.find(function (i) {
+                    return i.actionable && i.notification_id === legacy.payload.notification_id
+                        && i.visit_id === legacy.payload.visit_id;
+                });
+                if (legacyItem) {
+                    if (legacy.deliveryInFlight) return false;
+                    legacyConfirmed = !!legacy.questionDelivered;
+                    legacyAttempted = !!(legacy.questionAttempted || legacyConfirmed);
+                }
+            }
+            if (!sameAccount || snapshot.realtimeEnabled && !legacyItem) {
+                // Withdrawing a stale toolbar is not a user decision or a read
+                // receipt. Never send either action under the replacement account.
+                pendingDirectInvitation = null; render(); refreshCompactGeometry();
+            }
+        }
+        if (!snapshot.realtimeEnabled || !releaseEnabled || !userSwitchOn() || inVisit()) return false;
+        var handoff = pendingDirectInvitation && pendingDirectInvitation.legacyDelivery
+            && items.find(function (i) { return i.id === pendingDirectInvitation.payload.invitation_id && i.actionable; });
+        var item = legacyItem || handoff || items.find(function (i) { return i.actionable; });
+        var catgirl = currentCatgirl();
+        if (!item || !catgirl || !getHost()) return false;
+        // A delivered/delivering question still leaves a decision in the toolbar,
+        // including after a renderer/process restart or a character switch.
+        if (!pendingDirectInvitation || pendingDirectInvitation.payload.invitation_id !== item.id) {
+            pendingDirectInvitation = { messageId: directInviteMessageId(item.id),
+                payload: realtimePayload(item, snapshot), busy: false, questionDelivered: legacyConfirmed || !item.promptEligible,
+                legacyDelivery: legacyAttempted ? { confirmed: legacyConfirmed } : null };
+            render(); refreshCompactGeometry();
+        } else {
+            pendingDirectInvitation.payload.catgirl = catgirl;
+            if (pendingDirectInvitation.legacyDelivery) {
+                legacyAttempted = true;
+                legacyConfirmed = pendingDirectInvitation.legacyDelivery.confirmed;
+            }
+        }
+        var confirmation = pendingDirectInvitation.legacyDelivery;
+        if (!item.promptEligible && !(confirmation && confirmation.token)) return true;
+        realtimeInvitationFlight = true;
+        var bridge = window.nekoSocial;
+        var claim;
+        var delivering = false;
+        function current() {
+            return realtimeInvitationState && realtimeInvitationState.realtimeEnabled
+                && realtimeInvitationState.accountKey === snapshot.accountKey
+                && realtimeInvitationState.generation === snapshot.generation
+                && currentCatgirl() === catgirl && !inVisit() && userSwitchOn()
+                && realtimeInvitationState.items.some(function (i) { return i.id === item.id && i.actionable; });
+        }
+        try {
+            if (confirmation && confirmation.token) {
+                // beginDelivery is not repeatable once durable 'delivering' is
+                // recorded. Retry only completion with the original owned claim.
+                if (confirmation.generation !== snapshot.generation) {
+                    pendingDirectInvitation.legacyDelivery = null; return false;
+                }
+                if (!current()) return false;
+                return await confirmLegacyInvitationDelivery(pendingDirectInvitation, snapshot);
+            }
+            claim = await bridge.claimInvitation(item.id, snapshot.generation);
+            if (!claim || !claim.ok || !current()) return false;
+            if (legacyAttempted) {
+                // Adopt a pre-takeover HTTP side effect into the owner's durable
+                // delivery state. An uncertain attempt must not generate a second question.
+                var adoptedPresentation = pendingDirectInvitation;
+                var adopted = await bridge.beginInvitationDelivery(item.id, claim.token, snapshot.generation);
+                if (!adopted || !adopted.ok) return false;
+                delivering = true;
+                if (legacyConfirmed) {
+                    // A character switch may retire this invocation after begin.
+                    // Retain the original claim on its captured card before fencing.
+                    adoptedPresentation.legacyDelivery.token = claim.token;
+                    adoptedPresentation.legacyDelivery.generation = snapshot.generation;
+                }
+                if (!current()) return false;
+                if (legacyConfirmed) {
+                    return await confirmLegacyInvitationDelivery(adoptedPresentation, snapshot);
+                }
+                adoptedPresentation.legacyDelivery = null;
+                return true;
+            }
+            var preview = await realtimeInvitationApi('GET', '/api/visit/direct/' + encodeURIComponent(item.visit_id) + '/preview', item);
+            if (!current()) return false;
+            if (connectInvitationInvalid(preview)) {
+                await invalidateRealtimeInvitation(realtimePayload(item, snapshot)); return false;
+            }
+            if (preview.status !== 200 || !preview.body || preview.body.visit_id !== item.visit_id) return false;
+            var generated = await realtimeInvitationApi('GET', '/api/visit/direct/' + encodeURIComponent(item.visit_id)
+                + '/question?catgirl=' + encodeURIComponent(catgirl), item);
+            if (!current() || generated.status !== 200 || !generated.body || !String(generated.body.question || '').trim()) return false;
+            var permission = await bridge.beginInvitationDelivery(item.id, claim.token, snapshot.generation);
+            if (!permission || !permission.ok) return false;
+            delivering = true;
+            if (!current()) return false;
+            // Durable 'delivering' precedes the side effect; an uncertain POST is
+            // never retried automatically, even when its response is lost.
+            var delivered = await realtimeInvitationApi('POST', '/api/visit/direct/' + encodeURIComponent(item.visit_id) + '/deliver-question', item, { catgirl: catgirl });
+            if (delivered.status === 200 && delivered.body && delivered.body.delivered === true) {
+                await bridge.completeInvitationDelivery(item.id, claim.token, snapshot.generation);
+            }
+            return true;
+        } catch (_) { return false; }
+        finally {
+            if (claim && claim.ok && !delivering) {
+                try { await bridge.releaseInvitation(item.id, claim.token, snapshot.generation); } catch (_) { /* owner fences stale claims */ }
+            }
+            realtimeInvitationFlight = false;
+            if (realtimeInvitationWake) { realtimeInvitationWake = false; Promise.resolve().then(reconcileRealtimeInvitations); }
+        }
     }
 
     async function startJoin() {
@@ -1811,6 +2710,7 @@
         }
         visit.side = 'host';
         visit.phase = 'awaiting_accept';
+        visitStateKnown = true;
         if (frame.peer_name) visit.peerName = String(frame.peer_name);
         if (frame.peer_short_id) visit.peerShortId = String(frame.peer_short_id);
         if (frame.peer_human_label) visit.peerHumanLabel = String(frame.peer_human_label);
@@ -1895,32 +2795,34 @@
         return result;
     }
 
-    async function copyInviteCode() {
-        var code = visit.inviteCode;
-        if (!code) return;
-        var ok = false;
-        try {
-            if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-                await navigator.clipboard.writeText(code);
-                ok = true;
+    async function cancelDirectInvitation(visitId) {
+        visitId = String(visitId || '');
+        if (!VISIT_ID_RE.test(visitId) || visit.visitId !== visitId
+                || visit.side !== 'host' || !visit.targetUserId
+                || WAITING_PHASES.indexOf(visit.phase) === -1) return false;
+        var catgirl = currentCatgirl();
+        var result = await endRoute('route_end');
+        if (currentCatgirl() === catgirl && visit.visitId === visitId && result) {
+            if (result.status === 404) {
+                handleFrame({ type: 'visit_state_change', action: 'ended', visit_id: visitId, side: visit.side });
+            } else if (result.status === 200 && inVisit()) {
+                // 200 只确认开始收尾；持续核对后端，释放接管后再恢复普通聊天。
+                visit.cancelRequested = true;
+                pollReconnect();
+                dispatchVisitStatus();
+                render();
             }
-        } catch (_) { ok = false; }
-        toast(ok ? t('visit.bar.copied', '邀请码已复制') : t('visit.bar.copyFailed', '没能复制，请手动抄下邀请码'));
+        }
+        return !!result && (result.status === 200 || result.status === 404);
     }
 
     I.handleVisitBarAction = function handleVisitBarAction(actionId) {
         switch (actionId) {
-        case 'invite':
-            startInvite();
+        case 'direct_decline':
+            decideDirectInvitation('decline');
             return;
-        case 'go':
-            startJoin();
-            return;
-        case 'copy':
-            copyInviteCode();
-            return;
-        case 'cancel':
-            endRoute('route_end');
+        case 'direct_accept':
+            decideDirectInvitation('accept');
             return;
         case 'to_guest':
             visit.recipient = 'guest_cat';
@@ -2029,6 +2931,17 @@
         return findDebriefMessages(function (requestId) { return requestId === 'visit-debrief:' + visitId; });
     }
 
+    function removeSupersededChipMessages(currentRequestId) {
+        var host = getHost();
+        if (!host || typeof host.removeMessage !== 'function') return;
+        findDebriefMessages(function (requestId) {
+            var parsed = parseDebriefRequestId(requestId);
+            return requestId !== currentRequestId && parsed && parsed.kind === 'chips';
+        }).forEach(function (message) {
+            host.removeMessage(message.id);
+        });
+    }
+
     function greyFailuresUpTo(visitId, seq, inclusive, statusText) {
         sameVisitFailures(visitId).forEach(function (message) {
             var s = seqOfMessage(message);
@@ -2079,15 +2992,23 @@
         var parsed = parseDebriefRequestId(requestId);
         if (!parsed) return false;
         if (!isUiWindow()) return true;
-        var already = debriefSeen.has(requestId) || findDebriefMessages(function (id) { return id === requestId; }).length > 0;
+        var seenOnThisConnection = debriefSeen.has(requestId);
+        var already = seenOnThisConnection || findDebriefMessages(function (id) { return id === requestId; }).length > 0;
+        // 重连后 debriefSeen 会清空：即使当前 request_id 已经在历史里，也借这次
+        // 权威重放把旧版本遗留的多张初始问题收口。相同连接上的迟到重复帧则不再
+        // 触碰更新的问题，避免旧 request_id 反过来移除新卡片。
+        if (parsed.kind === 'chips' && !seenOnThisConnection) removeSupersededChipMessages(requestId);
         if (!already) {
+            // 每次串门都会产生一个新的“是否记日记”问题。用户连续串门但没有立刻
+            // 选择时，旧问题仍保留在 spool 里供以后处理，却不应在聊天窗里堆成一列。
+            // 只收起更早的初始问题；已经进入预览 / 写入失败流程的卡片继续保留。
             if (typeof window.appendReactChatBlocks !== 'function' || !window.appendReactChatBlocks(response)) return true;
-            debriefSeen.add(requestId);
             if (parsed.kind === 'failed') {
                 // 新版失败块到了：同一场更早的失败块按钮全部置灰（只留当前版可点）
                 greyFailuresUpTo(parsed.visitId, parsed.seq, false);
             }
         }
+        debriefSeen.add(requestId);
         sendSocketFrame({ action: 'visit_debrief_chip_ack', visit_id: parsed.visitId, request_id: requestId });
         return true;
     }
@@ -2256,7 +3177,9 @@
         // 拿页上最新的那一份（React 回调里的 message 可能是旧快照）
         var current = findMessage(message.id) || message;
         var payload = action.payload || {};
-        if (action.action === DEBRIEF_ACTION) {
+        if (action.action === DIRECT_INVITE_ACTION) {
+            onDirectInviteAction(current, action);
+        } else if (action.action === DEBRIEF_ACTION) {
             onDebriefAction(current, action);
         } else if (action.action === ENDED_ACTION) {
             expandEndedMessage(current, String(payload.visit_id || ''));
@@ -2266,6 +3189,15 @@
             exportTranscript(String(payload.visit_id));
         } else if (action.action === REPORT_ACTION && VISIT_ID_RE.test(String(payload.visit_id || ''))) {
             openReport(String(payload.visit_id), current);
+        }
+    });
+
+    window.addEventListener('neko-social-invite-response', function (event) {
+        var detail = event && event.detail || {};
+        if (detail.accepted === false && String(detail.visitId || '') === visit.visitId
+                && visit.side === 'host' && WAITING_PHASES.indexOf(visit.phase) !== -1) {
+            if (visit.targetUserId) cancelDirectInvitation(visit.visitId);
+            else endRoute('route_end');
         }
     });
 
@@ -2297,6 +3229,11 @@
      */
     function handleStatus(code, details) {
         details = details || {};
+        // VISIT_E_BUSY also refuses individual inputs; only ended establishes
+        // that a busy status actually terminated room setup.
+        if (code !== 'VISIT_E_BUSY' && Object.values(START_FAILURE_CODES).indexOf(code) !== -1) {
+            rememberStartFailure(details.visit_id, code, details);
+        }
         var requestId = typeof details.request_id === 'string' ? details.request_id : '';
         if (INPUT_REFUSALS.indexOf(code) !== -1 && requestId && !markNotDelivered(requestId, true)) {
             // 被拒的不是串门句（未 bind 的页面在串门期间发普通聊天、阶段切换的空档等）：按普通句收尾——
@@ -2325,8 +3262,59 @@
             ? phase : null;
     }
 
+    function relayEndedToDisplay(visitId, side) {
+        if (!visitId) return;
+        var frame = {
+            type: 'visit_state_change', action: 'ended', visit_id: visitId, side: side || ''
+        };
+        // 网页单窗口需要直接归还媒体桥；Electron 聊天窗则转发给 Pet 窗。
+        if (!isChatFollowerPath() && window.nekoVisitParentBridge
+                && typeof window.nekoVisitParentBridge.onStateChange === 'function') {
+            try { window.nekoVisitParentBridge.onStateChange(frame); } catch (_) { /* 不阻止聊天面的收尾 */ }
+        }
+        if (typeof window.nekoRelayVisitStateToDisplay === 'function') window.nekoRelayVisitStateToDisplay(frame);
+    }
+
+    function relayStateSnapshotToDisplay(state, visitId) {
+        if (!visitId || typeof window.nekoRelayVisitStateToDisplay !== 'function') return;
+        var phase = phaseFromState(state.phase);
+        if (!phase) return;
+        var frame = {
+            type: 'visit_state_change',
+            action: phase === 'active' ? 'started' : phase,
+            side: state.side || state.role || '',
+            visit_id: visitId
+        };
+        // GET /api/visit/state keeps the media layout on room.peer_crop.  Older
+        // snapshots used peer.crop, so retain that as a compatibility fallback.
+        var peerCrop = state.room && (state.room.peer_crop === 'upper' || state.room.peer_crop === 'full')
+            ? state.room.peer_crop
+            : (state.peer && (state.peer.crop === 'upper' || state.peer.crop === 'full') ? state.peer.crop : '');
+        if (peerCrop) frame.peer_crop = peerCrop;
+        window.nekoRelayVisitStateToDisplay(frame);
+        // 这一帧可能先于 Pet 窗自己的重载恢复建出 iframe，恢复随即作废，它本该套上的出门样式 / 对端显隐
+        // 也就没了：按后端 started → departed 的顺序补上出门，再按快照同步对端显隐（建 iframe 会清掉这两样，必须排在阶段帧之后）
+        if (frame.side === 'guest' && (phase === 'active' || phase === 'wrap_up')) {
+            window.nekoRelayVisitStateToDisplay({
+                type: 'visit_state_change', action: 'departed', side: frame.side, visit_id: visitId
+            });
+        }
+        if (state.peer && typeof state.peer.hidden === 'boolean') {
+            window.nekoRelayVisitStateToDisplay({
+                type: 'visit_state_change', action: state.peer.hidden ? 'peer_hidden' : 'peer_visible',
+                side: frame.side, visit_id: visitId
+            });
+        }
+    }
+
     // 快照里的对端信息与重载前的台词并进这一场；onlyFill：只填空缺字段（帧带来的更新不覆盖）
     function mergeSnapshotDetails(state, onlyFill) {
+        if (typeof state.target_user_id === 'string' && (!onlyFill || !visit.targetUserId)) {
+            visit.targetUserId = state.target_user_id;
+        }
+        if (typeof state.invite_expires_at === 'number' && (!onlyFill || !visit.inviteExpiresAt)) {
+            visit.inviteExpiresAt = state.invite_expires_at;
+        }
         var peer = state.peer;
         if (peer && typeof peer === 'object') {
             if (peer.cat_name && (!onlyFill || !visit.peerName)) visit.peerName = String(peer.cat_name);
@@ -2351,17 +3339,33 @@
 
     function applyState(state, stale) {
         if (!state || typeof state !== 'object') return;
+        Promise.resolve().then(reconcileRealtimeInvitations);
+        if (!stale) visitStateKnown = true;
         releaseEnabled = state.enabled === true;
+        if (!releaseEnabled && pendingDirectInvitation) {
+            pendingDirectInvitation = null;
+            refreshCompactGeometry();
+        }
         var snapshotVisit = state.active === true && typeof state.visit_id === 'string' && state.visit_id
             && endedVisitIds.indexOf(state.visit_id) === -1 ? state.visit_id : '';
         // 断线或页面重载时可能只读到激活前失败的 ending 快照；
         // 与实时帧一样直接回到初始入口，不复活一个从未开始的场次。
-        if (snapshotVisit && state.phase === 'ending' && !snapshotStarted(state)) {
+        var sameVisitEnding = visit.visitId === snapshotVisit;
+        if (snapshotVisit && state.phase === 'ending' && !snapshotStarted(state)
+            && (!stale || sameVisitEnding)) {
+            if (visit.visitId && visit.visitId !== snapshotVisit && inVisit()) {
+                var previousEndingVisit = visit.visitId;
+                var previousEndingSide = visit.side;
+                onEnded({ visit_id: previousEndingVisit, side: previousEndingSide, reason: '' });
+                relayEndedToDisplay(previousEndingVisit, previousEndingSide);
+            }
             if (visit.visitId === snapshotVisit) {
                 onEnded({ visit_id: snapshotVisit, side: state.side || state.role, reason: '' });
             } else {
                 markEnded(snapshotVisit);
             }
+            // 不先转发 ending：显示端会为它补建一个永远收不到 ended 的 iframe。
+            relayEndedToDisplay(snapshotVisit, state.side || state.role);
             render();
             return;
         }
@@ -2390,7 +3394,13 @@
         if (snapshotVisit) {
             if (visit.visitId !== snapshotVisit) {
                 // 断线期间别的窗口结束了这一场、又开了新一场：上一场照样留下结束消息、标掉还在等回显的本地气泡
-                if (inVisit()) onEnded({ visit_id: visit.visitId, side: visit.side, reason: '' });
+                if (inVisit()) {
+                    var previousVisit = visit.visitId;
+                    var previousSide = visit.side;
+                    onEnded({ visit_id: previousVisit, side: previousSide, reason: '' });
+                    // 显示端必须先退掉旧 iframe，之后才会接受没有 pending 的新场次快照。
+                    relayEndedToDisplay(previousVisit, previousSide);
+                }
                 startNewVisit(snapshotVisit);
             }
             visit.side = state.side || state.role || visit.side;
@@ -2402,10 +3412,22 @@
             visit.reconnecting = state.reconnecting === true;
             visit.ownName = currentCatgirl();
             mergeSnapshotDetails(state, false);
-            if (visit.reconnecting) pollReconnect();
+            if (needsVisitStatePoll()) pollReconnect();
+            // 实时 pending 可能正好落在 Pet / chat WebSocket 换手的空窗；本地场次完成
+            // 收口 / 切换后再同步权威快照，确保显示端不会因旧 visit_id 而丢弃它。
+            relayStateSnapshotToDisplay(state, snapshotVisit);
         } else if (inVisit() && (state.active !== true || state.visit_id !== visit.visitId)) {
             // 断线期间那一场已经结束、ended 帧没收到：走与 ended 帧同一个收尾（留下查看详情 / 导出 / 举报）
-            onEnded({ visit_id: visit.visitId, side: visit.side, reason: '' });
+            var endedVisit = visit.visitId;
+            var endedSide = visit.side;
+            onEnded({ visit_id: endedVisit, side: endedSide, reason: '' });
+            relayEndedToDisplay(endedVisit, endedSide);
+        } else if (state.active !== true && typeof state.visit_id === 'string' && state.visit_id) {
+            // 页面本地状态已经空了，Pet 窗仍可能留着重载前的 iframe；权威空闲快照照样负责回收。
+            relayEndedToDisplay(state.visit_id, state.side || state.role);
+        }
+        if (state.active === false && typeof window.nekoRelayVisitIdleToDisplay === 'function') {
+            window.nekoRelayVisitIdleToDisplay();
         }
         render();
     }
@@ -2461,6 +3483,7 @@
         }
         var stale = stateFrameSeq !== seqAtSend;
         applyState(state, stale);
+        dispatchVisitStatus();
         var detail = { socket: socket };
         if (typeof state.visit_id === 'string' && state.visit_id) detail.visit_id = state.visit_id;
         var startedPhases = ['active', 'wrap_up', 'ending'];
@@ -2478,6 +3501,7 @@
     function reconcileLineVisit(frame) {
         var lineVisit = typeof frame.visit_id === 'string' ? frame.visit_id : '';
         if (!lineVisit || endedVisitIds.indexOf(lineVisit) !== -1) return;
+        visitStateKnown = true;
         if (lineVisit === visit.visitId) {
             // 同一场、还停在等待阶段（漏了 started）：台词就是已开始的证据，推进到 active，在途的旧快照作废
             if (visit.phase === null || WAITING_PHASES.indexOf(visit.phase) !== -1) {
@@ -2511,6 +3535,7 @@
         case 'visit_state_change':
             stateFrameSeq += 1;
             onStateChange(frame);
+            dispatchVisitStatus(frame);
             break;
         case 'visit_invite':
             // 邀请同样是权威的换场：读 state 期间到了它，读回来的快照就作废（不能把刚换进来的新一场又收掉）
@@ -2544,6 +3569,10 @@
         var on = userSwitchOn();
         if (on !== lastSwitch) {
             lastSwitch = on;
+            if (!on && pendingDirectInvitation) {
+                pendingDirectInvitation = null;
+                refreshCompactGeometry();
+            }
             render();
         }
     }, 1500);
@@ -2555,6 +3584,15 @@
         applyState: applyState,
         afterBind: afterBind,
         isActive: function () { return I.isVisitChatActive(); },
+        getState: publicVisitState,
+        // 喵宇宙面板的备用邀请码入口复用正式预览、确认与加入流程。
+        joinWithCode: joinWithCode,
+        joinDirect: joinDirect,
+        presentDirectInvitation: presentDirectInvitation,
+        pollDirectInvitations: pollDirectInvitations,
+        createInviteCode: createInviteCode,
+        createDirectInvitation: createDirectInvitation,
+        cancelDirectInvitation: cancelDirectInvitation,
         // 测试用：只读快照与内部入口
         _test: {
             assembleClauses: assembleClauses,
@@ -2563,6 +3601,11 @@
             relayCleanIsEmpty: relayCleanIsEmpty,
             openDetails: openDetails,
             joinWithCode: joinWithCode,
+            joinDirect: joinDirect,
+            presentDirectInvitation: presentDirectInvitation,
+            pollDirectInvitations: pollDirectInvitations,
+            cancelDirectInvitation: cancelDirectInvitation,
+            onDirectInviteAction: onDirectInviteAction,
             startInvite: startInvite,
             exportTranscript: exportTranscript,
             onDebriefAction: onDebriefAction,
@@ -2570,4 +3613,33 @@
             dialogs: function () { return openDialogs.slice(); }
         }
     };
+
+    if (isUiWindow()) {
+        setTimeout(pollDirectInvitations, 500);
+        if (invitationBridgeReady) legacyInvitationTimer = setInterval(pollDirectInvitations, 5000);
+        var socialNotifications = window.nekoSocial;
+        if (socialNotifications && typeof socialNotifications.onInvitationsChanged === 'function'
+                && typeof socialNotifications.getInvitations === 'function') {
+            socialNotifications.onInvitationsChanged(receiveRealtimeInvitations);
+            invitationBridgeTimer = setTimeout(recoverLegacyInvitationRead, 3000);
+            Promise.resolve().then(function () { return socialNotifications.getInvitations(); })
+                .then(function (snapshot) {
+                    receiveRealtimeInvitations(snapshot);
+                    if (!invitationBridgeReady) recoverLegacyInvitationRead();
+                }).catch(recoverLegacyInvitationRead).finally(function () {
+                    clearTimeout(invitationBridgeTimer); invitationBridgeTimer = 0;
+                });
+        }
+        window.addEventListener('neko-visit-status-change', function () { void reconcileRealtimeInvitations(); });
+        window.addEventListener('neko-visit-bound', function () { void reconcileRealtimeInvitations(); });
+        if (socialNotifications && typeof socialNotifications.onNotifyIncoming === 'function') {
+            socialNotifications.onNotifyIncoming(function (notification) {
+                var payload = notification && notification.payload;
+                if (notification && (notification.kind === 'visit_invite'
+                        || payload && payload.type === 'visit_invite')) {
+                    pollDirectInvitations();
+                }
+            });
+        }
+    }
 })();

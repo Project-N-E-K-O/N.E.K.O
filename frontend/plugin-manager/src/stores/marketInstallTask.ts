@@ -61,6 +61,8 @@ export interface MarketInstallTask {
   message?: string
   downloaded_bytes?: number
   total_bytes?: number | null
+  /** The download route currently streaming the package, e.g. ``github-direct``. */
+  active_sources?: string[]
   error?: string | null
   error_code?: string | null
   error_details?: Record<string, unknown> | null

@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>喵宇宙串门面板预览</title>
+  <link rel="stylesheet" href="/static/css/social-hub.css?v=real-mutuals-1">
+  <style>
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+    body {
+      background: linear-gradient(135deg, #f4f8fc, #ffffff 54%, #eff7fd);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+    }
+    .preview-model-edge {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 154px;
+      height: 100%;
+      border-right: 1px solid rgba(111, 136, 161, .18);
+      background: rgba(255, 255, 255, .76);
+      box-shadow: 16px 0 40px rgba(69, 105, 140, .08);
+    }
+    #preview-btn-social {
+      position: absolute;
+      top: 112px;
+      left: 84px;
+      width: 58px;
+      height: 58px;
+      padding: 0;
+      border: 0;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, .96);
+      box-shadow: 0 8px 24px rgba(48, 105, 151, .15);
+      cursor: pointer;
+    }
+    #preview-btn-social > img { width: 100%; height: 100%; object-fit: contain; }
+    .preview-badge {
+      position: absolute;
+      right: -5px;
+      min-width: 20px;
+      height: 20px;
+      padding: 0 4px;
+      border: 2px solid #fff;
+      border-radius: 999px;
+      box-sizing: border-box;
+      color: #fff;
+      font-size: 11px;
+      line-height: 16px;
+      text-align: center;
+    }
+    .preview-badge.unread { top: -5px; background: #ff4d57; }
+    .preview-badge.credit { bottom: -4px; background: #2da8ef; }
+  </style>
+</head>
+<body>
+  <div class="preview-model-edge" aria-hidden="true"></div>
+  <button id="preview-btn-social" type="button" aria-label="喵宇宙">
+    <img src="/static/icons/neko_community_on.png" alt="喵宇宙">
+    <span class="preview-badge unread">5</span>
+    <span class="preview-badge credit">2</span>
+  </button>
+  <script src="/static/avatar/avatar-popup-common.js?v=real-mutuals-1"></script>
+  <script src="/static/social-hub.js?v=real-mutuals-1"></script>
+  <script>
+    document.getElementById('preview-btn-social').addEventListener('click', function () {
+      window.nekoSocialHub.toggle();
+    });
+  </script>
+</body>
+</html>

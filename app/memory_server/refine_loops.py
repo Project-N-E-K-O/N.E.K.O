@@ -160,6 +160,8 @@ async def _periodic_persona_refine_loop():
                     _run_persona_refine_for_character,
                     name,
                 )
+                from .long_term_sync import queue_capture
+                queue_capture(name)
             except Exception as e:
                 logger.warning(f"[PersonaRefine] {name} cron 异常: {e}")
         await asyncio.sleep(interval)
@@ -379,6 +381,8 @@ async def _periodic_reflection_refine_loop():
                     _run_reflection_refine_with_subject_locales,
                     name,
                 )
+                from .long_term_sync import queue_capture
+                queue_capture(name)
             except Exception as e:
                 logger.warning(f"[ReflectionRefine] {name} cron 异常: {e}")
         await asyncio.sleep(interval)

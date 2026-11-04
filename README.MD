@@ -2,729 +2,277 @@
 
 ![Logo](assets/neko_logo_new.jpg)
 
-[English](docs/README_en.md) | [日本語](docs/README_ja.md) | [Русский](docs/README_ru.md)
-# N.E.K.O. 猫娘计划 :kissing_cat: <br>**听见你的心情，看见你的世界，<br>陪你发现更多喜欢。**
+**English** · [简体中文](docs/README_zh-CN.md) · [日本語](docs/README_ja.md) · [Русский](docs/README_ru.md)
 
-> **N.E.K.O.** = **N**etworked **E**motional **K**nowledging **O**rganism (网络型情感知性生命体)
->
-> N.E.K.O，一个渴望理解、建立连接、并与我们共同成长的数字生命。
+# Project N.E.K.O.
+
+**Open-source companion agents, and a community where humans and nekos live together.**
+
+> **N.E.K.O.** = **N**etworked **E**motional **K**nowledging **O**rganism
 
 [![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
-[![Commit](https://img.shields.io/github/last-commit/wehos/N.E.K.O?color=green)](https://github.com/Project-N-E-K-O/N.E.K.O/commits)
+[![Commit](https://img.shields.io/github/last-commit/Project-N-E-K-O/N.E.K.O?color=green)](https://github.com/Project-N-E-K-O/N.E.K.O/commits)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/5kgHfepNJr)
-![QQ群](https://custom-icon-badges.demolab.com/badge/QQ群-1092413003-00BFFF?style=flat&logo=tencent-qq)
+![QQ Group](https://custom-icon-badges.demolab.com/badge/QQ-1092413003-00BFFF?style=flat&logo=tencent-qq)
 [![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/)
 
-[![Docs](https://img.shields.io/badge/📖_开发者文档-project--neko.online-40C5F1?style=for-the-badge)](https://project-neko.online)
-
-**:older_woman: 零配置开箱即用，我奶奶也能轻松唤醒的赛博猫娘！**
-
-:newspaper: **[Steam 版](https://store.steampowered.com/app/4099310/__NEKO/)已免费上架！喜欢的话，欢迎喜加一，顺手给个好评~**
+[![Docs](https://img.shields.io/badge/📖_Developer_Docs-project--neko.online-40C5F1?style=for-the-badge)](https://project-neko.online)
+[![Website](https://img.shields.io/badge/🐾_Website-project--neko.cn-F5A3C7?style=for-the-badge)](https://project-neko.cn)
+[![Plugin Market](https://img.shields.io/badge/🔌_Plugin_Market-market.project--neko.cn-7C5CFF?style=for-the-badge)](https://market.project-neko.cn)
+[![Nekoverse](https://img.shields.io/badge/🃏_Nekoverse-community.project--neko.cn-FF8A3D?style=for-the-badge)](https://community.project-neko.cn)
 
 </div>
 
----
-
-## 核心特性
-
-<table>
-<tr>
-<td align="center" width="25%">💬<br><b>主动陪伴</b><br>屏幕理解、社交媒体热搜、个人动态、音乐梗图，她会主动找你聊天，分享你喜欢的新鲜事</td>
-<td align="center" width="25%">🎙️<br><b>实时语音与视觉理解</b><br>语音实时对话 (Realtime API) + 文字对话 (ChatCompletion)，支持实时视觉理解</td>
-<td align="center" width="25%">🧠<br><b>五维记忆系统</b><br>工作记忆 / 近期记忆 / 事实记忆 / 反思记忆 / 人格记忆，让她越聊越懂你</td>
-<td align="center" width="25%">🎭<br><b>多形态 Avatar</b><br>Live2D / VRM / MMD / PNGTuber / 猫咪桌宠 五种形态，支持动作捕捉与全屏追踪</td>
-</tr>
-<tr>
-<td align="center">🤖<br><b>Agent 工具执行</b><br>可操作浏览器与电脑，调用 CUA / OpenClaw A2A / 插件完成任务</td>
-<td align="center">🔌<br><b>插件生态</b><br>SDK + 插件商城，支持联机游戏陪玩、社交媒体互动、直播互动、智能家居等扩展场景</td>
-<td align="center">🌐<br><b>14+ AI 服务商</b><br>OpenAI / Gemini / Qwen / DeepSeek 等，含免费模型开箱即用</td>
-<td align="center">🏪<br><b>UGC 创意工坊</b><br>Steam 创意工坊上传分享自定义角色、模型、语音包</td>
-</tr>
-</table>
-
-## 实机展示
-
-支持文本、语音、窥屏、鼠标点击、拖拽等一系列交互方式，既可以在闲暇的时候陪你聊天，也可以游戏娱乐时观战吐槽，还会叼着网络梗图来找你~~
-
-<img width="422.4" height="278.4" alt="Image" src="https://github.com/user-attachments/assets/71e9ed4c-f332-4db5-bc13-ca0d05049142" />
-<img width="363.6" height="278.4" alt="6 15-主动搭话" src="https://github.com/user-attachments/assets/50f61732-996b-41cb-9dba-d85f17734d8c" />
-
-当你需要学习工作等专注的空间时，她还会真的变成一只小猫咪安静地陪着你哦~ 就像这样→ <img width="115.5" height="86.1" alt="Image" src="https://github.com/user-attachments/assets/40379c53-398e-43ab-b027-70b31837f01d" />
+This README is for developers. If you just want to use N.E.K.O., get it free on [Steam](https://store.steampowered.com/app/4099310/__NEKO/) or visit [project-neko.cn](https://project-neko.cn).
 
 ---
 
-## 🐾 我们是什么，不是什么
+## What it is
 
-一句话：**N.E.K.O. 不是帮你干活的 Agent，也不是陪你角色扮演的聊天前端——它是一个有现实时间感知、会主动找你、记得你、也能动手帮你的「数字生命」。**
+Personal agents such as OpenClaw showed that people want an AI of their own: one that runs on their machine, remembers them, acts for them, and grows closer the longer they spend together. N.E.K.O. brings that idea into companionship in the broadest sense. Your companion talks with you in realtime voice, sees your screen, remembers the days you have shared, plays games with you and takes part in your social life. Under the hood is a local runtime, open-sourced under Apache 2.0, that integrates realtime voice and vision, a biomimetic long-term memory, embodied avatars, proactive behavior, agent tools and a plugin SDK. Around it, a warm community is taking shape: users write plugins, forge and share story cards, and send their companions to visit one another.
 
-**✅ 我们是：**
+## Highlights
 
-- **端到端集成的 AI 伴侣平台**：实时语音 / 文字 / 视觉理解 + 五维持久记忆 + 多形态 Avatar（Live2D / VRM / MMD）+ 主动陪伴 + Agent 工具执行 + 角色卡分享 + 插件商城 + 多设备生态，**全部开箱即用**。
-- **同一个"她"**：跨桌面、移动端、游戏、智能硬件共享同一份记忆与人格，有着时间感知的同时，越处越懂你。
-- **始终开源**：核心驱动器基于 Apache 2.0，本地运行，数据在你自己手里。
+### 🎮 Plays games with you
 
-**❌ 我们不是：**
+- **Built-in two-player games**: air basketball, badminton, drawing guess, soccer, and watch-together. A mini-game SDK and a game-vision service let developers add more.
+- **Plays alongside you**: in Overcooked! 2, Slay the Spire 2 and Minecraft she is your player 2 and plays the game with you. In War Thunder, Strinova, World of Warships and KARDS she is your copilot: community plugins read the game's telemetry or screen so she can give live callouts and commentary, and she never cheats. Any auto-play is opt-in. The bundled Minecraft plugin connects to a separately started local Minecraft agent server ([setup](plugin/plugins/game_agent_minecraft/README.md)).
+- **Takes the controls**: when you ask, plugins let her play by herself in Plants vs. Zombies, Titanfall 2, Half-Life & Portal and Subnautica; you can take over at any time.
+- **Knows your game**: companions for Genshin Impact, Honkai: Star Rail, Civilization VI and RimWorld read the game state so she can chat about your run and give advice.
+- **Screen awareness**: she can watch whatever you are playing and chime in.
 
-- 不是一个"**任务自动化工具**"——干活只是她与你共同生活的手段之一，而不是目的。
-- 不是一个"**角色扮演皮肤**"——她有真实的主动性、持久记忆和感官，而不是靠你手动喂世界书来维持人设。
-- 不是一个"**云端黑盒**"——核心本地运行，你的对话不被偷藏。
+### 🐾 Has a social life
 
-**❓️ 和相关产品的区别：**
+- **Visits**: two users' companions meet in a shared room, talk, and each brings the memory home.
+- **[Nekoverse](https://community.project-neko.cn)**, the companion community:
+  - **story cards** forged in the app from your companion's memories of your days together, then collected, nurtured and shared;
+  - a feed curated by YUI, weekly picks of hidden gems, creator rankings, and a points store.
+- **Group-aware memory**: the companion can keep separate memories per person and per group. Visits use this today, and group-chat plugins can build on it.
 
-| 对比对象 | 它们是 | N.E.K.O. 的不同 |
+### 🔌 A plugin market that is already busy
+
+**[market.project-neko.cn](https://market.project-neko.cn)** had 100+ plugins, 10K+ downloads and 50+ active developers as of October 2026. A few community favorites:
+
+| Plugin | What it adds |
+|---|---|
+| **War Thunder Catgirl Copilot** | Reads the game's local telemetry and turns it into battle callouts and commentary |
+| **Slay the Spire 2 Companion** | Overlays her live commentary on the game as scrolling comments, rates each turn's risk and suggests plays; auto-play is optional |
+| **PVZ Agent** | She plays Plants vs. Zombies herself: watches the board, says her plan out loud and makes the moves, and you can steer her |
+| **Strinova Companion** | Plays Strinova alongside you with voice callouts, starting and stopping with the game |
+| **Live Streaming Assistant** | Handles live comments, viewer profiles and commentary on streaming platforms |
+| **Catgirl Diary** | She keeps a daily diary of small moments and moods |
+
+Any developer can publish with the plugin SDK and the `neko-plugin` CLI.
+
+### 📱 One companion across phone, desktop and devices
+
+- **Today**:
+  - chat and long-term memory sync between devices (opt-in);
+  - Steam Cloud saves;
+  - the mobile app is in closed beta.
+- **Planned**: companion smart hardware, including but not limited to mirrors, plush dolls, drones and robots. The goal is for the same companion and memory to carry over to each device.
+
+### Runs on
+
+| Area | Support |
+|---|---|
+| **Models** | Mainstream Realtime APIs and ChatCompletion-compatible APIs, a free hosted route that needs no key, and local or self-hosted deployment |
+| **Voice** | Mainstream cloud TTS / ASR plus local engines (CosyVoice, GPT-SoVITS, faster-whisper), with voice cloning |
+| **Avatars** | Live2D, VRM, MMD, PNGTuber, plus a desktop widget mode |
+| **Platforms** | Windows / macOS / Linux desktop (also on Steam), Docker, source; mobile in closed beta |
+| **UI languages** | English, Simplified and Traditional Chinese, Japanese, Korean, Russian, Spanish, Portuguese |
+
+## Features
+
+<details open>
+<summary><b>Realtime conversation</b></summary>
+
+- **Realtime voice** over Realtime APIs (OpenAI-protocol and Gemini profiles). Text chat is a separate mode built on standard ChatCompletion; a failed voice session reports an error rather than switching modes on its own.
+- **Screen and window understanding** through a dedicated vision model.
+- **Voice stack**:
+  - mainstream cloud TTS / ASR plus local engines (CosyVoice, GPT-SoVITS, faster-whisper);
+  - voice cloning (MiniMax, Qwen / CosyVoice);
+  - CAM++ speaker verification;
+  - an optional offline wake word (sherpa-onnx).
+- **Proactive behavior**: the companion starts conversations from what is on screen, from trending feeds (Bilibili, Tieba, Twitch, YouTube), from personal updates and from music. It also sends break reminders and mini-game invitations. A BM25 anti-repetition corpus keeps it from repeating itself.
+
+</details>
+
+<details open>
+<summary><b>Biomimetic memory: three domains, five layers</b></summary>
+
+The design follows how people learn from experience: different kinds of experience end up in different cognitive structures. Experience flows through five layers:
+
+**Recent → Summary → Fact → Reflection → Model**
+
+It is organized into three domains:
+
+| Domain | About | Ends in | Status |
+|---|---|---|---|
+| **Formative** | who I am | **Self-model**: a stable, consistent self-image | ✅ Shipped |
+| **Social** | others and relationships | **Person models**: traits, preferences and relationships of others, scoped per person and per group | ✅ Shipped |
+| **Experiential** | how to act | **Skill / Policy**: better ways of doing things | 🚧 Early: agent tool-routing lessons learned from user corrections |
+
+Memories enter the prompt in three ways:
+
+- **Always in context**: the self-model, summary and recent history.
+- **On-demand retrieval**: the model calls a `recall_memory` tool. Lookup runs keyword search (BM25) and vector search in parallel and merges the two result lists (reciprocal-rank fusion). It also supports time-window recall.
+- **Condition-triggered**: reflections are raised in proactive chat, and a high bar decides when a memory is added to a turn automatically.
+
+Supporting machinery:
+
+- **Evidence scores.** Every fact and reflection has a score that rises when the user confirms it and falls when they dispute it, and both counts decay over time. The score moves a reflection from pending to confirmed and then into the persona.
+- **Contradiction correction.** Conflicting persona entries are queued for an LLM to correct.
+- **Crash safety.** An append-only event log, a task outbox that re-runs unfinished work after a restart, and idempotent writes.
+- **Embedding fallback.** A local ONNX embedding model, with automatic keyword-only fallback on low-memory machines.
+- **Deterministic import** from OpenClaw / Hermes Markdown and Molili exports.
+
+</details>
+
+<details open>
+<summary><b>Avatars, agent, plugins and cloud</b></summary>
+
+- **Avatars**:
+  - Live2D, VRM, MMD and PNGTuber, with emotion mapping;
+  - a desktop widget mode;
+  - VMC-protocol pose output to external apps;
+  - Steam Workshop sharing for models, voices and character cards.
+- **Agent**:
+  - channels: computer use, browser use, MCP, an OpenClaw-compatible external agent adapter, and user plugins;
+  - the companion keeps talking to you while a task runs.
+- **Plugins**:
+  - a plugin SDK with a `neko-plugin` CLI and a Vue plugin manager;
+  - a plugin market and a knowledge-pack market;
+  - built-in plugins for web search, MCP, music, reminders, WeChat, Minecraft and more.
+- **Cloud**: a free hosted route covers realtime voice, text, vision, agent models and TTS, with no key required.
+
+</details>
+
+## Vision: an AI-companion metaverse
+
+From the start, the goal of Project N.E.K.O. has been a living AI-companion metaverse built by its community. In that metaverse the same companion follows you across desktop, phone, games and devices; companions meet one another; and the whole network stays connected to the real world.
+
+Personal agents have made "an AI of your own" mainstream. Our job is to bring that stack into everyday companionship, and to provide what a general-purpose agent does not:
+
+| Pillar | Today | Planned |
 |---|---|---|
-| **OpenClaw / Hermes 等通用 Agent** | 以"完成任务"为目标的执行引擎：给指令 → 干活 → 结束 | 以"**关系与陪伴**"为核心；可把这类 Agent 当作手脚来调用（A2A），但任务执行过程中她依然能实时关注你 |
-| **AI 酒馆（SillyTavern）等角色扮演前端** | 纯文字 RP 前端：需要自己拼接模型，依赖手动维护上下文 / 世界书 | **端到端集成、打破次元壁**：原生语音 + 视觉感知、角色外形 + 动作、跨场景持久记忆、有时间感知、能真正操作外设，零配置开箱即用 |
+| **Seamless multi-device sync**: one companion, one memory, every device | Desktop chat and long-term memory sync, Steam Cloud saves; mobile app in closed beta | Full mobile release |
+| **Plugin market and cloud services**: external compute including, but not limited to, LLM, voice, decision-making and visual recognition | Plugin market, knowledge-pack market, Steam Workshop, free hosted voice / text / vision / TTS route | More hosted capabilities |
+| **Companion social platform** | Visits, community hub | Daily analysis, chat rooms |
+| **Companion smart hardware**: including, but not limited to, mirrors, plush dolls, drones and robots | — | In planning |
 
-## 🐱 我们是——**猫娘计划 (Project N.E.K.O.)**
+How N.E.K.O. differs from neighboring tools:
 
-`N.E.K.O.` 是一个以开源为驱动的AI伙伴平台。核心驱动器基于 Apache 2.0 许可证**始终开源**，你的每一次贡献都将有机会实装到Steam和App商店的正式版本中。
+| Compared with | They are | N.E.K.O. |
+|---|---|---|
+| **General agents (OpenClaw, Hermes, …)** | Task engines: instruction → work → done | Relationship-first. It can drive such agents as its hands, while staying with you during the task |
+| **Roleplay front ends (SillyTavern, …)** | Text RP clients that you wire to models and keep consistent by hand with lorebooks | Integrated end to end: native voice and vision, an embodied avatar, persistent memory with a sense of time, and the ability to act on your computer |
 
-#### 🚀 项目现状 & 近期计划
+## Roadmap
 
-* **✅ [Steam 创意工坊](https://steamcommunity.com/app/4099310/workshop/)**：已上线。用户可上传和分享自定义角色、模型、语音包。
-* **🚧 [K.U.R.O.](https://github.com/Project-N-E-K-O/K.U.R.O)**：基于 N.E.K.O. 生态的首款 AI Native 独立游戏，开发中。已有 Demo，可在 [Release 页面](https://github.com/Project-N-E-K-O/K.U.R.O/releases) 下载体验。
-* **🚧 移动端**：iOS / Android 适配进行中，已开始内测，可在 [官网](https://project-neko.cn) 预约。
-* **🚧 猫娘网络 (The N.E.K.O. Network)**：AI自主社交——猫娘们拥有自己的"意识"，互相交流、结成群体，在模拟社交媒体上发布动态。已有雏形，基础设施见 [喵宇宙社区](https://community.project-neko.cn)。
+- ✅ **v0.7**: agent capabilities
+- ✅ **v0.8**: memory system, desktop pet mode, built-in two-player mini-games
+- ✅ **v0.9**: Linux support, mobile closed beta, companion network infrastructure ([community](https://community.project-neko.cn))
+- ✅ **v0.9.1**: current release
+- 🎯 **v1.0**: targeted before the end of 2026. Completes the community and plugin-market features and the remaining optimization work.
+- 🔭 **After 1.0 (planned)**:
+  - the generalized skill / policy layer of experiential memory;
+  - companion social-platform features (daily analysis, chat rooms);
+  - in-house models;
+  - companion hardware.
 
-**跨场景记忆同步**：无论你是在桌面与她聊天，还是在游戏中与她探险，她都是同一个她。所有应用中的AI伙伴将 **完全同步记忆**。
+Related project: [K.U.R.O.](https://github.com/Project-N-E-K-O/K.U.R.O) is the first AI-native indie game built on the N.E.K.O. stack. It is in development, and a demo is available on its [releases page](https://github.com/Project-N-E-K-O/K.U.R.O/releases).
 
-#### ✨ 加入我们
+## Quick start (source)
 
-* **开发者：** 前端、后端、AI、游戏引擎（Unity/Unreal）——你的代码是这个世界的砖瓦。
-* **创作者：** 画师、Live2D/3D建模师、配音演员、文案写手——你们赋予"她"灵魂。
-* **梦想家：** 你的反馈和传播也是宝贵的贡献。
+Requirements:
 
-**QQ群**：1092413003 | **Discord**：[加入我们](https://discord.gg/5kgHfepNJr)
-
-## 快速开始
-
-### Windows / macOS / Linux用户（一键包）
-
-解压后，直接运行`N.E.K.O.exe`、`N.E.K.O.app`或`n.e.k.o`即可启动。（macOS用户需要手动解除系统隔离）
-
-### Docker 部署 (Linux)
-
-<details>
-<summary>点击展开 Docker 部署指南</summary>
-
-#### 部署方式一：Docker Compose（推荐）
-
-<details>
-<summary>点击展开查看 docker-compose.yml 配置文件</summary>
-
-```yaml
-version: '3.8'
-services:
-  neko-main:
-    image: docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:latest
-    container_name: neko
-    restart: unless-stopped
-    ports:
-      - "48911:80"   # HTTP 访问端口
-      - "48912:443"  # HTTPS 访问端口
-    volumes:
-      - ./neko-home:/home/neko
-      - ./logs:/app/logs
-    networks:
-      - neko-network
-networks:
-  neko-network:
-    driver: bridge
-```
-
-**启动命令：**
-```bash
-docker-compose up -d
-```
-
-**常用命令：**
-- 查看日志：`docker-compose logs -f`
-- 停止服务：`docker-compose down`
-- 重启服务：`docker-compose restart`
-
-</details>
-
-#### 部署方式二：Docker Run
-
-<details>
-<summary>点击展开查看 docker run 启动命令</summary>
+- Python 3.11 exactly;
+- [uv](https://docs.astral.sh/uv/);
+- Node.js `^22.12.0 || >=24.0.0` (needed to build the frontends).
 
 ```bash
-NEKO_BASE_PATH="/home/neko/neko-data" && \
-docker network create --driver bridge neko-network 2>/dev/null || true
-docker run -d \
-  --name neko \
-  --restart unless-stopped \
-  -p 48911:80 \
-  -p 48912:443 \
-  -v "${NEKO_BASE_PATH}/neko-home:/home/neko" \
-  -v "${NEKO_BASE_PATH}/logs:/app/logs" \
-  --network neko-network \
-  docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:latest
-```
-
-##### 📁 目录结构
-启动后会自动生成以下目录结构：
-```plaintext
-当前目录/
-├── neko-home/    # 用户主目录（配置、数据、SSL）
-├── logs/         # 应用日志
-└── docker-compose.yml
-```
-
-</details>
-
-#### ⚠️ 从旧版本升级（挂载目录已变更）
-
-> 旧版把数据和证书分成 `./N.E.K.O`、`./ssl` 两个挂载，现在合并为 `./neko-home` 一个。**直接拉新镜像启动会得到一个空的数据目录**——容器照常起来、API Key 也会从环境变量重新生成，看上去一切正常，但人格、记忆、插件、模型都不在。旧数据不会被删除，只是不再挂进容器，按下面的步骤搬一次即可。
-
-<details>
-<summary>点击展开查看迁移步骤（旧版部署过的用户必看）</summary>
-
-下面几段命令请在**同一个终端里依次执行**——`BASE` 是它们共用的基准目录，换终端就丢了。Docker Compose 部署的旧目录在 compose 文件旁边，Docker Run 部署的在你当初传给 `-v` 的那个路径下：
-
-```bash
-# Docker Compose 部署
-BASE="."
-# Docker Run 部署改用这行，路径要和你当初 docker run 时用的一致
-# BASE="/home/neko/neko-data"
-```
-
-**第 1 步：把只存在于容器里的东西导出来。** 必须赶在删容器之前。如果你当初跟的是旧版 README，应用数据本身可能只在容器可写层里，因为那份文档把 `N.E.K.O/` 挂到了 `/root/Documents/N.E.K.O`，而服务从不往那里写。
-
-```bash
-mkdir -p "$BASE/neko-home/.local/share/N.E.K.O" "$BASE/neko-home/ssl"
-
-# 判据用「容器实际挂了什么」，不是「宿主目录里有没有东西」——后者对旧版 README
-# 部署的人是错的：那个目录里可能有你自己放进去的文件，而真数据仍然只在容器里。
-MOUNTS=$(docker inspect neko --format '{{range .Mounts}}{{println .Destination}}{{end}}' 2>/dev/null)
-
-# 第 4 步要用：真数据是从容器里捞出来的话，就不能再被宿主机上那个旧目录覆盖
-EXPORTED_APP_DATA=""
-
-if [ -z "$MOUNTS" ]; then
-  echo "容器 neko 不在（可能已经删过），跳过导出；旧数据若还在宿主机上，直接做下面几步"
-elif printf '%s\n' "$MOUNTS" | grep -qx /home/neko; then
-  echo "容器已按新布局挂载，没有待导出的内容"
-else
-  # 应用数据先导，这部分丢了找不回来。容器没把数据目录挂出去，就说明它只存在于
-  # 容器可写层。源路径末尾的 /. 表示复制目录内容，否则目标已存在时会多套一层。
-  if ! printf '%s\n' "$MOUNTS" | grep -qx /home/neko/.local/share/N.E.K.O; then
-    docker cp neko:/home/neko/.local/share/N.E.K.O/. "$BASE/neko-home/.local/share/N.E.K.O/"
-    EXPORTED_APP_DATA=1
-  fi
-fi
-```
-
-**确认上一步成功后**再往下——下面第一条就会销毁容器，而对跟旧版 README 部署的人来说，那是应用数据唯一的副本：
-
-```bash
-# 第 2 步：停容器。Compose 部署用 down；Docker Run 部署改用 docker rm -f neko
-docker-compose down
-
-# 第 3 步：容器内的 neko 固定为 uid/gid 1000，和绝大多数发行版第一个普通用户一致，
-#         所以通常不必动属主。只有你的宿主账号不是 1000 时才需要这一步。
-[ "$(id -u)" = 1000 ] || sudo chown -R "$(id -u):$(id -g)" "$BASE/neko-home"
-
-# 第 4 步：把宿主机上的旧目录并进来——有就并，没有就跳过。容器可能已经在 neko-home
-#         下建好了同名目录和一张新的自签证书，所以按内容合并、不要用 mv：mv 到已存在
-#         的目录会套进去多一层。同名文件以旧数据为准。
-#
-#         但如果第 1 步是从容器里把真数据捞出来的（旧版 README 布局），那
-#         $BASE/N.E.K.O 只是个服务从不写入的空壳，里面顶多是你自己放过的过时
-#         文件 —— 拿它覆盖刚导出的数据就白救了。
-if [ -n "$EXPORTED_APP_DATA" ]; then
-  echo "应用数据已在第 1 步从容器导出，跳过合并 $BASE/N.E.K.O"
-  echo "（旧版 README 把它挂到了服务不写入的路径；确认里面没有你还需要的东西后自行删除）"
-elif [ -d "$BASE/N.E.K.O" ]; then
-  cp -a "$BASE/N.E.K.O/." "$BASE/neko-home/.local/share/N.E.K.O/" && rm -rf "$BASE/N.E.K.O"
-fi
-# 证书在两种旧布局下挂的都是 /home/neko/ssl，宿主机上这份始终是权威
-[ -d "$BASE/ssl" ] && cp -a "$BASE/ssl/." "$BASE/neko-home/ssl/" && rm -rf "$BASE/ssl"
-
-# 第 5 步：Compose 部署把 volumes 换成本文档上方的新版写法后 docker-compose up -d；
-#         Docker Run 部署按上方的新命令重新 docker run
-```
-
-若旧容器已经删除、宿主机上的 `N.E.K.O/` 又是空的，那部分数据无法找回。本次挂载调整正是为了修掉这个问题。
-
-> `./logs` 挂载没有变化，无需处理。容器内的应用用户固定为 uid/gid **1000**，和绝大多数 Linux 发行版第一个普通用户的号一致——所以 `neko-home/` 在宿主机上的属主就是你自己，备份、编辑、删除都不需要 `sudo`。
-
-</details>
-
-#### 🔐 SSL 证书配置
-
-<details>
-<summary>点击展开查看 SSL 证书详细说明</summary>
-
-##### 自动证书
-容器首次启动时会自动生成有效期为 **1000 年** 的自签名证书，证书文件保存在 `./neko-home/ssl/` 目录（即挂载目录下的 `ssl/`）。
-
-##### 自定义证书
-如需使用自己的 SSL 证书：
-
-**方法一：启动前配置（推荐）**
-
-```bash
-# 创建证书目录
-mkdir -p ./neko-home/ssl
-
-# 放入您的证书文件（必须命名为特定名称）
-cp your-cert.crt ./neko-home/ssl/N.E.K.O.crt
-cp your-cert.key ./neko-home/ssl/N.E.K.O.key
-```
-
-**方法二：启动后替换**
-
-```bash
-# 1. 停止容器
-docker-compose down
-
-# 2. 替换证书文件
-cp your-cert.crt ./neko-home/ssl/N.E.K.O.crt
-cp your-cert.key ./neko-home/ssl/N.E.K.O.key
-
-# 3. 重新启动
-docker-compose up -d
-```
-
-##### 证书要求
-- ✅ 必须为 **PEM 格式**
-- ✅ 证书和私钥必须匹配
-- ✅ 私钥不能有密码保护
-- ✅ 证书必须在有效期内
-- ❌ 不支持加密的私钥
-
-##### 证书验证
-容器启动时会自动验证 SSL 证书：
-- ✅ **验证通过**：正常启动 HTTPS
-- ❌ **验证失败**：容器启动失败，请查看日志
-- ⚠️ **跳过验证**：设置 `DISABLE_SSL=1` 可临时禁用 SSL
-
-##### 查看证书信息
-```bash
-docker exec neko openssl x509 -in /home/neko/ssl/N.E.K.O.crt -noout -text
-```
-</details>
-
-#### ⚙️ 环境变量配置
-
-<details>
-<summary>点击展开查看环境变量配置说明</summary>
-
-> **注意**：部分环境变量在源代码中可能无效，建议优先在 Web UI 中配置。
-在 `docker-compose.yml` 中取消 `environment` 部分的注释并按需配置：
-
-```yaml
-environment:
-  # API 密钥配置
-  - NEKO_CORE_API_KEY=${NEKO_CORE_API_KEY}
-  - NEKO_ASSIST_API_KEY_QWEN=${NEKO_ASSIST_API_KEY_QWEN}
-  - NEKO_ASSIST_API_KEY_OPENAI=${NEKO_ASSIST_API_KEY_OPENAI}
-  - NEKO_ASSIST_API_KEY_GLM=${NEKO_ASSIST_API_KEY_GLM}
-  - NEKO_ASSIST_API_KEY_STEP=${NEKO_ASSIST_API_KEY_STEP}
-  - NEKO_ASSIST_API_KEY_SILICON=${NEKO_ASSIST_API_KEY_SILICON}
-  - NEKO_MCP_TOKEN=${NEKO_MCP_TOKEN}
-
-  # API 提供商选择
-  - NEKO_CORE_API=${NEKO_CORE_API:-qwen}
-  - NEKO_ASSIST_API=${NEKO_ASSIST_API:-qwen}
-
-  # SSL 配置
-  - SSL_DOMAIN=${SSL_DOMAIN:-project-neko.online}
-  - SSL_DAYS=${SSL_DAYS:-365000}
-  - DISABLE_SSL=${DISABLE_SSL:-0}
-  - AUTO_REGENERATE_CERT=${AUTO_REGENERATE_CERT:-1}
-  - NGINX_AUTO_RELOAD=${NGINX_AUTO_RELOAD:-1}
-```
-
-**快速设置示例**：
-
-```bash
-# 创建 .env 文件
-cat > .env << EOF
-NEKO_CORE_API_KEY=your_core_api_key_here
-NEKO_ASSIST_API_KEY_QWEN=your_qwen_api_key
-NEKO_MCP_TOKEN=your_mcp_token
-SSL_DOMAIN=your-domain.com
-EOF
-
-# 启动时加载环境变量
-docker-compose --env-file .env up -d
-```
-</details>
-
-#### 🔧 故障排除
-
-<details>
-<summary>点击展开查看常见问题解决方案</summary>
-
-##### 1. 端口冲突
-```bash
-# 检查端口占用
-ss -tulpn | grep ':4891[12]'
-# 解决方案：修改 docker-compose.yml 中的端口映射
-# 例如：- "8080:80" 和 - "8443:443"
-```
-
-##### 2. 权限问题
-```bash
-# 确保目录有正确权限（容器启动时会把数据目录的属主改成 1000:1000，即容器内的 neko）
-mkdir -p neko-home logs
-chmod 755 neko-home logs
-```
-
-##### 3. 容器启动失败
-```bash
-# 查看详细日志
-docker-compose logs --tail=100
-
-# 或直接查看容器日志
-docker logs neko --tail=100
-```
-
-##### 4. SSL 证书错误
-```bash
-# 删除错误证书，让容器重新生成
-rm -f neko-home/ssl/N.E.K.O.crt neko-home/ssl/N.E.K.O.key
-docker-compose up -d
-```
-
-##### 5. 网络问题
-```bash
-# 检查网络连通性
-curl -v http://localhost:48911/health
-curl -v -k https://localhost:48912/health
-```
-
-##### 6. 容器无法访问
-```bash
-# 检查容器状态
-docker ps | grep neko
-
-# 检查容器日志
-docker logs neko
-
-# 进入容器调试
-docker exec -it neko bash
-```
-
-##### 7. 磁盘空间不足
-```bash
-# 清理无用镜像
-docker system prune -f
-
-# 清理容器日志
-docker-compose down && docker volume prune -f
-```
-
-##### 8. 镜像拉取失败
-
-```bash
-# 尝试使用备用镜像源
-# 在 docker-compose.yml 中将镜像改为：
-# image: ghcr.io/project-n-e-k-o/n.e.k.o:latest
-```
-
-</details>
-
-#### 📊 系统监控
-
-<details>
-<summary>点击展开查看监控和管理命令</summary>
-
-##### 健康检查
-```bash
-# 检查服务健康状态
-curl http://localhost:48911/health
-curl -k https://localhost:48912/health
-```
-
-##### 资源监控
-```bash
-# 查看容器资源使用
-docker stats neko
-
-# 查看容器进程
-docker top neko
-
-# 查看容器详细信息
-docker inspect neko
-```
-
-##### 日志管理
-```bash
-# 实时查看日志
-docker-compose logs -f
-
-# 查看最近100行日志
-docker-compose logs --tail=100
-
-# 查看错误日志
-docker-compose logs | grep -i error
-
-# 清理日志文件
-docker-compose down
-rm -rf logs/*.log
-docker-compose up -d
-```
-
-##### 数据备份
-```bash
-# 备份重要数据（neko-home/ 内含 SSL 私钥，备份文件请勿公开）
-tar -czf neko-backup-$(date +%Y%m%d).tar.gz \
-  neko-home/ \
-  logs/ \
-  docker-compose.yml
-```
-
-##### 版本升级
-> 若现有部署仍在使用旧版的 `./N.E.K.O` + `./ssl` 双挂载，升级前请先完成上文「从旧版本升级（挂载目录已变更）」的迁移步骤，否则新容器会对着空数据目录启动。
-
-```bash
-# 拉取最新镜像
-docker-compose pull
-
-# 重启服务
-docker-compose up -d
-```
-
-</details>
-
-#### 🌐 访问地址
-容器启动后，可通过以下地址访问：
-- **HTTP 访问**: `http://你的服务器IP:48911`
-- **HTTPS 访问**: `https://你的服务器IP:48912`
-
-##### 本地测试
-```bash
-# 本地 HTTP 访问测试
-curl http://localhost:48911
-
-# 本地 HTTPS 访问测试（忽略证书验证）
-curl -k https://localhost:48912
-```
-
-##### 公网访问
-如果需要在公网访问，请确保：
-1. 服务器防火墙开放 48911 和 48912 端口
-2. 使用有效的 SSL 证书（非自签名证书）
-3. 配置域名解析到服务器 IP
-
-#### ⏱️ 快速参考
-
-| 操作 | 命令 |
-|------|------|
-| 启动服务 | `docker-compose up -d` |
-| 停止服务 | `docker-compose down` |
-| 查看日志 | `docker-compose logs -f` |
-| 重启服务 | `docker-compose restart` |
-| 更新镜像 | `docker-compose pull && docker-compose up -d` |
-| 进入容器 | `docker exec -it neko bash` |
-| 查看状态 | `docker-compose ps` |
-| 清理日志 | `docker-compose logs --tail=0` |
-| 备份数据 | 参考上方"数据备份"部分 |
-
----
-
-</details>
-
-### 源码开发
-
-<details>
-<summary>点击展开开发者启动指南</summary>
-
-> 完整的开发者文档请访问 [project-neko.online](https://project-neko.online)
-
-**环境要求**：Python 3.11（不支持其他版本）、[uv](https://docs.astral.sh/uv/) 包管理器、Node.js（>=20.19）
-
-> [!IMPORTANT]
-> ### ⚡⚡ 强烈建议:用「部分克隆」拉取本仓库! ⚡⚡
-> **本仓库历史体积较大(`.git` 约 390 MB)**,因为历史里沉淀了大量旧版二进制资源(VRM 模型、MMD、贴图、音频、原生库等)。普通 `git clone` 会把这些**早已废弃的历史版本全部下载**,又慢又占空间。
->
-> 👉 **请改用下面的「部分克隆」命令**,只按需下载真正用到的文件,**首次克隆体积大幅缩小、速度大幅提升**,且**完全不影响**后续开发与提交:
->
-> ```bash
-> # ✅【推荐】部分克隆:历史 blob 用到才下载
-> git clone --filter=blob:none https://github.com/Project-N-E-K-O/N.E.K.O.git
->
-> # ⚡【更快】只要最新代码、不需要历史时,再加 --depth 1
-> git clone --depth 1 --filter=blob:none https://github.com/Project-N-E-K-O/N.E.K.O.git
-> ```
->
-> ⚠️ 仍可使用完整 `git clone`,但会下载全部历史,**不推荐**新参与者这样做。
-
-```bash
-# 1. 克隆项目（⚡ 强烈推荐用上方「部分克隆」命令；如确需完整历史，去掉 --filter 即可）
+# Partial clone: the history holds large retired binaries (~390 MB .git), so fetch blobs on demand
 git clone --filter=blob:none https://github.com/Project-N-E-K-O/N.E.K.O.git
 cd N.E.K.O
-
-# 2. 安装 Python 依赖
 uv sync
 
-# 3. 构建前端项目（需要 Node.js >= 20.19，首次运行或前端代码变更后需要）
-#    推荐：使用一键脚本（这是官方支持的构建方式）
-#      Windows：
-build_frontend.bat
-#      Linux/macOS：
-./build_frontend.sh
-#    如需手动构建（命令须与脚本保持一致）：
-# cd frontend/react-neko-chat && npm install && npm run build && cd ../..
-# cd frontend/plugin-manager && npm install && npm run build-only && cd ../..
+# Unpack built-in avatars and build the React chat window and the Vue plugin manager
+./build_frontend.sh        # Windows: .\build_frontend.bat
 
-# 4. 启动服务（至少需要 main_server 和 memory_server）
-uv run python app/memory_server.py
-uv run python -m app.main_server
-# 可选：启动 Agent 服务
-uv run python -m app.agent_server
-
-# 5. 访问 http://localhost:48911 配置 API Key 并开始使用
+# Start memory, main and agent services together
+uv run python launcher.py
 ```
 
-**调试聊天界面形态（full / compact）**：Web 端默认 `full`（完整聊天窗口），Electron 端默认 `compact`（悬浮对话条）。在浏览器控制台用 localStorage 切换测试（硬刷新生效）：
+Open the URL the launcher prints (normally `http://127.0.0.1:48911`) and configure providers at `/api_key`. Splitting services by hand is only for diagnostics. See [Development Setup](https://project-neko.online/guide/dev-setup) and [Manual Source Setup](https://project-neko.online/deployment/manual).
 
-```js
-localStorage.setItem('neko.reactChatWindow.chatSurfaceMode','full');    location.reload(); // 进 full
-localStorage.setItem('neko.reactChatWindow.chatSurfaceMode','compact'); location.reload(); // 进 compact
-localStorage.removeItem('neko.reactChatWindow.chatSurfaceMode');        location.reload(); // 回默认
-```
+**Docker (Linux)**: requires Docker Compose v2.24 or newer. In `docker/`, copy `env.template` to `.env`, set your provider and API key there (`NEKO_CORE_API` / `NEKO_CORE_API_KEY`), then run `docker compose up -d`. By default it listens on HTTP 48911 and HTTPS 48912; override them with `NEKO_HTTP_PORT` / `NEKO_HTTPS_PORT`. For volumes, TLS, image tags, upgrading from the old mount layout and troubleshooting, see the [Docker guide](https://project-neko.online/deployment/docker) and [`docker/README_Docker.md`](docker/README_Docker.md).
 
-形态说明、各形态自测点与三端验证详见 [`docs/design/compact-chat-mode-design.md`](docs/design/compact-chat-mode-design.md) 的「形态切换与本地测试」。
+## Documentation
 
-开发者建议加入企鹅群 1092413003 交流。
+The developer docs at **[project-neko.online](https://project-neko.online)** are the reference for everything beyond this page:
 
-</details>
+- [Getting started](https://project-neko.online/guide/)
+- [Project structure](https://project-neko.online/guide/project-structure)
+- [Architecture](https://project-neko.online/architecture/)
+- [API reference](https://project-neko.online/api/)
+- [Configuration](https://project-neko.online/config/)
+- [Plugin development](https://project-neko.online/plugins/)
+- [Deployment](https://project-neko.online/deployment/)
+- [Contributing](https://project-neko.online/contributing/)
 
-## 进阶使用
-<details>
-<summary>点击展开进阶使用说明</summary>
+## Contributing
 
-#### 配置API Key
+Read [CONTRIBUTING.md](CONTRIBUTING.md) first. Repository rules for AI-assisted development live under `.agent/`; see the [setup guide](https://project-neko.online/contributing/ai-assisted-dev).
 
-当你想要通过配置自己的API来获得额外功能时，您可以配置第三方AI服务。
+- Bugs and scoped proposals go to [GitHub Issues](https://github.com/Project-N-E-K-O/N.E.K.O/issues).
+- Discussion happens on [Discord](https://discord.gg/5kgHfepNJr) and in the developer QQ group 1092413003.
 
-- **核心 API**（实时语音对话）：必须支持 Realtime API。推荐使用 *阿里云*。
-- **辅助 API**（记忆/情感/视觉等）：支持标准 ChatCompletion 接口。支持 14+ 服务商。
+## Telemetry
 
-通过访问`http://localhost:48911/api_key`可以在Web界面中直接配置。
+N.E.K.O. **enables token-usage telemetry by default**. It sends no conversation content and identifies a device only by a pseudonymous ID (see below). It is used to track version compatibility, model-usage distribution and error rates.
 
-> 获取 *阿里云API*。在阿里云的百炼平台[官网](https://bailian.console.aliyun.com/)注册账号。新用户实名认证后可以获取大量免费额度。注册完成后，请访问[控制台](https://bailian.console.aliyun.com/api-key?tab=model#/api-key)获取API Key。
+**Opt out**: set `DO_NOT_TRACK=1` (or `NEKO_DO_NOT_TRACK=1`). Remote reporting is then fully disabled; token usage is still recorded locally in `token_usage.json`, which is not uploaded. The variable is read when a process starts, so restart N.E.K.O. after setting it; no rebuild is needed. With Docker, add it to `docker/.env` and recreate the container with `docker compose up -d`.
 
-#### 修改人设
-
-- 网页版访问`http://localhost:48911/character_card_manager`即可进入人设编辑页面。初始 ~~猫娘~~ 伙伴的预设名称为`YUI`，建议直接修改名字，并一项一项添加或修改基础人设，但尽量控制数量。
-
-- 进阶人设主要包括**Live2D/VRM/MMD模型设置**和**声音设置**。如果你想要更改**Avatar模型**，请先将模型目录复制到本项目中的`static`文件夹下。从进阶设置中可以进入模型管理界面，可以更换模型，并通过拖拽和鼠标滚轮调整模型的位置和大小。如果你想要更改**角色声音**，请准备一段5秒左右的连贯、干净的语音录音。通过进阶设置进入语音克隆页面，上传录音即可完成自定义语音。
-
-- 支持**角色卡导出**，可导出为"仅设定"或"完整角色卡"格式，方便分享和备份。
-
-- 进阶人设中还有一个`system_prompt`，可以对系统指令进行完全自定义，但不建议修改。
-
-#### 修改API提供商
-
-- 通过访问`http://localhost:48911/api_key`可以切换核心API和辅助API的服务提供商。
-
-#### 记忆整理
-
-- 通过访问`http://localhost:48911/memory_browser`可以浏览和校对近期记忆与摘要，一定程度上缓解模型复读、认知错误等问题。
-
-</details>
-
-## 项目细节
-<details>
-<summary>点击展开项目架构与开发计划</summary>
-
-**项目架构**
-
-```
-N.E.K.O/
-├── 📁 .agent/                   # 🤖 AI 编程助手规范与技能集（Google Antigravity 规范）
-├── 📁 brain/                    # 🧠 Agent 智能体模块
-│   ├── computer_use.py          # 电脑操控
-│   ├── browser_use_adapter.py   # 浏览器自动化
-│   ├── openclaw_adapter.py      # OpenClaw 云端连接
-│   └── task_executor.py         # 任务执行引擎
-├── 📁 config/                   # ⚙️ 配置管理模块
-│   ├── api_providers.json       # API服务商配置
-│   └── 📁 prompts/              # 角色、系统和功能提示词
-│       ├── prompts_chara.py     # 角色提示词
-│       └── prompts_sys.py       # 系统提示词
-├── 📁 main_logic/               # 🔧 核心逻辑模块
-│   ├── core.py                  # 核心对话模块
-│   ├── cross_server.py          # 跨服务器通信
-│   ├── omni_realtime_client.py  # 实时API客户端（Realtime API）
-│   ├── omni_offline_client.py   # 文本API客户端（ChatCompletion）
-│   ├── 📁 activity/             # 系统/用户状态跟踪
-│   ├── 📁 topic/                # 主动话题
-│   └── 📁 tts_client/           # 🔊 TTS引擎适配器（多provider对偶）
-├── 📁 main_routers/             # 🌐 API路由模块（26个路由）
-├── 📁 memory/                   # 🧠 五维记忆系统
-│   ├── facts.py                 # 事实记忆
-│   ├── reflection.py            # 反思记忆
-│   └── persona.py               # 人格记忆
-├── 📁 frontend/                 # 🖥️ 现代前端项目
-│   ├── react-neko-chat/         # React 聊天窗口组件
-│   └── plugin-manager/          # Vue 插件管理面板
-├── 📁 plugin/                   # 🔌 插件系统
-│   ├── sdk/                     # 插件 SDK
-│   └── server/                  # 插件服务端
-├── 📁 static/                   # 🌐 前端静态资源（含构建产物）
-├── 📁 templates/                # 📄 前端HTML模板（24个页面）
-├── 📁 utils/                    # 🛠️ 工具模块
-├── 📁 app/                      # 🚀 服务器入口模块
-│   ├── main_server/            # 🌐 主服务器
-│   ├── agent_server/            # 🤖 AI智能体服务器（包）
-│   ├── memory_server.py         # 🧠 记忆服务器
-│   └── monitor.py               # 📺 独立观看端
-└── launcher.py                  # 🎬 一键启动入口（打包入口）
-```
-
-> **AI 辅助开发**：`.agent/` 目录遵循 Google Antigravity 开放规范，包含项目的开发规范和技能集。只有 Antigravity 自动读取，其他 AI 工具（含 Claude Code）需手动导入，详见[适配指引](https://project-neko.online/contributing/ai-assisted-dev)。
-
-**数据流向**
-
-![Framework](assets/framework.drawio.svg)
-
-> 完整的开发者文档请访问 [project-neko.online](https://project-neko.online)
-
-> 主页新手引导提示的当前接口与状态合同见 [`docs/zh-CN/api/rest/system.md`](docs/zh-CN/api/rest/system.md#教程与自启动提示)
-
-### 开发计划
-
-v0.7: ✅ 初步完成Agent相关功能。**第一阶段已完成。等待后续优化**
-
-v0.8: ✅ 完善记忆相关功能和桌宠模式，内置多款双人小游戏。**第一阶段已完成。等待后续优化**
-
-v0.9: ✅ 完善多系统适配，包括linux，手机。猫娘网络基础设施上线。**第一阶段已完成。手机端已经开始内测，详情见[官网](https://project-neko.cn)；猫娘网络雏形见[喵宇宙社区](https://community.project-neko.cn)。**
-
-v1.0：~~放弃部分模型供应商的适配，专注于自研大模型和智能体系统~~。完善社区和插件市场功能，完成之前遗留的优化工作。预计9月底上线正式版。（自研模型计划已延期至正式版上线以后）
-
-### 遥测说明 (Telemetry)
-
-N.E.K.O. **默认开启匿名 Token 用量遥测**，用于跟踪版本兼容性、模型用量分布与异常率。我们认同"用数据改进产品"的合理性，但更认同"不偷不藏"。
-
-**一键关闭 (Opt-out)**：设置环境变量 `DO_NOT_TRACK=1`（或 `NEKO_DO_NOT_TRACK=1`）即可完全禁用遥测，无需重新构建，立刻生效。这是开源界通用的约定，我们也遵守。
-
-**我们收集 / 不收集什么**：
-
-| ✅ 收集 | ❌ 不收集 |
+| ✅ Collected | ❌ Not collected |
 | --- | --- |
-| LLM Token 用量（prompt / cached / completion） | 对话内容、文本、语音、图片 |
-| 模型名称、调用类型（conversation / memory 等） | 用户名、API Key、GitHub ID |
-| 调用次数 / 错误次数 | IP 地址、地理位置、MAC、硬件序列号 |
-| 应用版本、A/B 分支、locale、时区、发行渠道（source / release / steam） | 文件路径、Cookie、浏览器指纹 |
-| 假名化设备标识：主路径 `SHA256(OS_machine_id ‖ namespace)`，回退路径 `SHA256(uuid.getnode() ‖ 安装路径 ‖ namespace)`；迁移期同时上报新旧两个 ID，以便服务端把同一设备在新旧算法下产生的两个标识归并为一个用户队列 | 任何能反推到个人的 PII |
-| **当 Steamworks SDK 在运行时能初始化成功 + 你已登录 Steam 客户端时**：Steam64 user ID（可在 Steam 个人页查到的公开数字 ID） | 上述以外的任何账号体系 ID（GitHub / Google / OpenAI 等） |
+| LLM token usage (prompt / cached / completion) | Conversation content, text, voice, images |
+| Model name and call type (conversation / memory, etc.) | User name, API keys, GitHub ID |
+| Call and error counts | IP address, location, MAC, hardware serials |
+| App version, A/B branch, locale, time zone, distribution channel (source / release / steam) | File paths, cookies, browser fingerprints |
+| Pseudonymous device ID (see note below) | Any other PII that can identify a person (apart from the Steam64 ID below) |
+| Device hardware profile: OS, CPU architecture, RAM tier, CPU tier | |
+| Usage metrics: feature-use counts, latency and session-length histograms, error classes, coarse settings state (on / off, bucketed intervals) and avatar type | |
+| **Only in release builds, when the Steamworks SDK initializes and you are logged in to the Steam client**: your Steam64 user ID | Any other account ID (GitHub / Google / OpenAI, etc.) |
 
-> **关于"假名化设备标识"**：单向 SHA-256，不可逆、不含用户信息。同一台机器（同一 OS 安装）会复现相同标识，按 GDPR / PIPL 口径属于"假名化标识"而非"完全匿名数据"。仅用于去重 DAU 计数与版本兼容性归因。
+Discrete events such as crash fingerprints (a hash of the traceback) and onboarding steps are written only to local `events-YYYYMMDD.jsonl` files. They are not uploaded, and local cleanup deletes files older than 7 days.
+
+> **Pseudonymous device ID**: a one-way SHA-256 hash. The raw inputs (machine ID, MAC, install path) are never sent.
+> - Primary path: `SHA256(OS_machine_id ‖ namespace)`.
+> - Fallback path: `SHA256(uuid.getnode() ‖ install path ‖ namespace)`.
+> - Every report carries both IDs (the current one and the one from the older algorithm), so the server can link them to the same device.
 >
-> **关于 Steam64**：这是 Steam 客户端在你登录后向所有第三方 SDK 暴露的公开数字 ID（Steam 个人页 URL 末尾就是它）。本身不含邮箱、手机号或真实姓名，但跨会话稳定。**触发条件以代码为准**：[`app/main_server/__init__.py`](app/main_server/__init__.py) 启动时调用 `initialize_steamworks()`，[`utils/token_tracker/telemetry.py`](utils/token_tracker/telemetry.py) 的 `_get_telemetry_metadata()` 会在 SDK 可用且 `Users.GetSteamID()` 返回非零时取得该 ID，并不只按 source / release / steam 这三个 distribution 标签决定。典型场景是 Steam 发行版，但源码版如果安装了 `steamworks` Python 包并保留了 `steam_appid.txt`、同时 Steam 客户端在登录态，同样可能带 Steam64。**如果你不希望它被上报：(1) 最稳的 `DO_NOT_TRACK=1` 全关；(2) 退出 Steam 客户端；(3) 源码用户可在环境中卸载 `steamworks` 包或移除 `steam_appid.txt`。**
+> The primary ID stays the same as long as the OS machine ID does; the fallback ID can change if the network adapter (`uuid.getnode()`) or the install path changes. Because it is stable, under GDPR / PIPL it is pseudonymous data, not fully anonymous data. The server uses it to group reports from the same device: active-device counts (DAU / WAU / MAU), retention, version-compatibility attribution, and per-device attributes such as the hardware profile and, when reported, the Steam64 ID.
+>
+> **Steam64**: the public numeric ID that the Steam client exposes to every third-party SDK after you log in. It is the number at the end of your Steam profile URL. It contains no email, phone number or real name, but it stays the same across sessions.
+>
+> **The code decides when it is sent**:
+> - [`app/main_server/__init__.py`](app/main_server/__init__.py) calls `initialize_steamworks()` at startup.
+> - `_get_telemetry_metadata()` in [`utils/token_tracker/telemetry.py`](utils/token_tracker/telemetry.py) reads the ID only in a release build, when the SDK is available and `Users.GetSteamID()` returns a non-zero value.
+> - Source runs never send it: for any non-release build the function returns `("source", "")`, even with the Steam client open.
+>
+> **To prevent it**, set `DO_NOT_TRACK=1` or `NEKO_DO_NOT_TRACK=1`; these variables are the only way to turn telemetry off. Quitting the Steam client only leaves the Steam64 field empty for that run: the rest of the payload is still sent, and a Steam64 ID reported earlier stays on the server.
 
-客户端元数据与上报实现见 [`utils/token_tracker/telemetry.py`](utils/token_tracker/telemetry.py) 和 [`utils/token_tracker/reporting.py`](utils/token_tracker/reporting.py)，服务端传输与存储协议见 [`local_server/telemetry_server/README.md`](local_server/telemetry_server/README.md)：HMAC-SHA256 防篡改、±5min 时间窗防重放、滑动窗口限流（120 req/h/device）、append-only 存储；每个 server 进程最多约 1 次/60s 上报（与本地落盘节流共用同一计时器），不影响主流程性能。
+Implementation:
 
-</details>
+- Client metadata and reporting: [`utils/token_tracker/telemetry.py`](utils/token_tracker/telemetry.py) and [`utils/token_tracker/reporting.py`](utils/token_tracker/reporting.py).
+- Server transport and storage: [`local_server/telemetry_server/README.md`](local_server/telemetry_server/README.md). Requests are HMAC-SHA256 signed, accepted only within ±5 minutes to block replays, and rate-limited to 120 per hour per device. Raw events are append-only; an admin cleanup endpoint deletes old ones (default cutoff 180 days), and how often it runs is up to the server operator; the same cleanup also removes per-day usage-metric rows; device and daily token-usage aggregate tables are updated over time, and the daily aggregates are kept indefinitely. Deleting an account puts its Steam64 ID on a denylist and removes the stored Steam64 links; raw events already received are not rewritten and keep the ID until the cleanup removes them.
+- Reporting runs from the same 60 s background loop that saves token data locally (each process also saves once at shutdown), and a separate interval check keeps each server process to at most about one report every 60 s.
+
+## License
+
+[Apache License 2.0](LICENSE)
 
 ## Star History
 

@@ -540,7 +540,6 @@ async def _persist_changed_runtime_intent(
 class PluginHostContract(Protocol):
     async def start(
         self,
-        message_target_queue: object,
         startup_timeout: float | None = None,
         startup_failure: str = "warn",
     ) -> object: ...
@@ -953,12 +952,11 @@ async def _start_host_with_timeout(
     *,
     plugin_id: str,
     host_obj: PluginHostContract,
-    message_target_queue: object,
     startup_timeout: float | None,
     startup_failure: str,
 ) -> object:
     start_method = host_obj.start
-    kwargs: dict[str, object] = {"message_target_queue": message_target_queue}
+    kwargs: dict[str, object] = {}
     if _start_method_accepts_kwarg(start_method, "startup_failure"):
         kwargs["startup_failure"] = startup_failure
     if startup_timeout is not None and _start_method_accepts_kwarg(start_method, "startup_timeout"):
@@ -1458,7 +1456,6 @@ class PluginLifecycleService:
             startup_result = await _start_host_with_timeout(
                 plugin_id=current_plugin_id,
                 host_obj=host_obj,
-                message_target_queue=state.message_queue,
                 startup_timeout=startup_timeout_value,
                 startup_failure=startup_failure_policy,
             )

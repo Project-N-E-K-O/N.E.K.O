@@ -14,6 +14,7 @@ import {
 import { i18n } from './i18n';
 import MessageBlockView from './MessageBlockView';
 import MessageReactions from './MessageReactions';
+import ScreenObservationExposure, { getScreenObservationAnchorIds } from './ScreenObservationExposure';
 import ThinkingDots from './ThinkingDots';
 import { isTopicHintMessage } from './TopicHintBubble';
 import { hasVisibleMessageContent, type ChatMessage, type MessageAction } from './message-schema';
@@ -163,6 +164,7 @@ function getCompactHistoryMessageClassName(message: ChatMessage, selected: boole
   return clsx('compact-export-history-message', {
     'is-user': message.role === 'user',
     'is-assistant': message.role === 'assistant' || message.role === 'tool',
+    'is-visit-peer': message.role === 'tool',
     'is-system': message.role === 'system',
     'is-selected': selected,
     'is-unselected': hasSelection && selectable && !selected,
@@ -175,7 +177,8 @@ function getCompactHistoryMessageClassName(message: ChatMessage, selected: boole
 function getCompactHistoryRoleGroup(message?: ChatMessage) {
   if (!message) return 'none';
   if (message.role === 'user') return 'user';
-  if (message.role === 'assistant' || message.role === 'tool') return 'assistant';
+  if (message.role === 'tool') return 'visit-peer';
+  if (message.role === 'assistant') return 'assistant';
   return 'system';
 }
 
@@ -265,6 +268,10 @@ export default function CompactExportHistoryPanel({
   const messages = useMemo(
     () => allMessages.filter((message) => !isTopicHintMessage(message) && hasVisibleMessageContent(message)),
     [allMessages],
+  );
+  const exposureAnchorIds = useMemo(
+    () => getScreenObservationAnchorIds(messages, allMessages),
+    [messages, allMessages],
   );
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const scrollContentRef = useRef<HTMLDivElement | null>(null);
@@ -753,6 +760,7 @@ export default function CompactExportHistoryPanel({
               className={clsx('compact-export-preview-message', {
                 'is-user': message.role === 'user',
                 'is-assistant': message.role === 'assistant' || message.role === 'tool',
+                'is-visit-peer': message.role === 'tool',
                 'is-system': message.role === 'system',
               })}
               role="listitem"
@@ -1101,6 +1109,10 @@ export default function CompactExportHistoryPanel({
                               onAction={onAction}
                             />
                           ))}
+                          {exposureAnchorIds.has(message.id) ? (
+                            <ScreenObservationExposure messages={allMessages} turnId={message.turnId}
+                              interactive={!selectionEnabled} onAction={onAction} />
+                          ) : null}
                         </div>
                       </div>
                       <MessageReactions message={message} />

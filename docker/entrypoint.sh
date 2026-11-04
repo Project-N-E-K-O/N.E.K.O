@@ -5,10 +5,50 @@ set -e
 PIDS=()
 RELOADER_PID=""
 
+# 端口必须先校验再导出，而且**非法值要拒绝启动**，不能回落。
+#
+# 为什么不能回落：后端读端口用的是 config.network._read_port_env，它会静默回落到
+# 默认端口；但 nginx 渲染、Compose 健康检查、看门狗是**各自独立读环境变量**的。
+# 一旦入口脚本保留原始非法值，三者就会各说各话：
+#   - nginx 拿 notaport 去渲染 proxy_pass，拒绝启动；
+#   - 健康检查探 notaport → 永远失败，正常的容器被标成 unhealthy；
+#   - 看门狗 docker exec 进去也探 notaport → 把正常容器重启到预算耗尽。
+# 与其让三方对不上，不如在启动第一行就报错。
+normalize_port() {
+    _port_name="$1"
+    _port_default="$2"
+    _port_raw="${!_port_name:-}"
+    if [ -z "$_port_raw" ]; then
+        export "$_port_name=$_port_default"
+        return 0
+    fi
+    # 先去掉前导零再判长度：bash 的 [ -lt ] 在超长数字（如 999999999999999999999）
+    # 上会报错返回非零，条件判反，非法值反而漏过去。
+    _port_digits=$(printf '%s' "$_port_raw" | sed 's/^0*//')
+    case "$_port_digits" in
+        ''|*[!0-9]*) _port_valid=0 ;;
+        *) if [ "${#_port_digits}" -le 5 ]; then _port_valid=1; else _port_valid=0; fi ;;
+    esac
+    if [ "$_port_valid" = "1" ] && [ "$_port_digits" -ge 1 ] && [ "$_port_digits" -le 65535 ]; then
+        export "$_port_name=$_port_digits"
+        return 0
+    fi
+    echo "❌ $_port_name=$_port_raw 不是 1-65535 的端口号，拒绝启动。" >&2
+    echo "   后端会在这个值上回落默认端口，而 nginx / 健康检查 / 看门狗各自读原始值：" >&2
+    echo "   健康检查会永远失败，看门狗会把正常容器重启到预算耗尽。" >&2
+    echo "   删掉这一行即使用默认 $_port_default。" >&2
+    exit 1
+}
+
 # 设置环境变量
-export NEKO_MAIN_SERVER_PORT=${NEKO_MAIN_SERVER_PORT:-48911}
-export NGINX_PORT=${NGINX_PORT:-80}
-export NGINX_SSL_PORT=${NGINX_SSL_PORT:-443}
+# 这四个端口同时决定「服务绑哪里」和「nginx 转发到哪」：渲染层会把它们注入路由表。
+# 只改其中一个而不改另一个，会出现"服务在新端口、反代打旧端口"。
+normalize_port NEKO_MAIN_SERVER_PORT 48911
+normalize_port NEKO_MEMORY_SERVER_PORT 48912
+normalize_port NEKO_TOOL_SERVER_PORT 48915
+normalize_port NEKO_USER_PLUGIN_SERVER_PORT 48916
+normalize_port NGINX_PORT 80
+normalize_port NGINX_SSL_PORT 443
 export SSL_DOMAIN=${SSL_DOMAIN:-project-neko.online}
 export SSL_DAYS=${SSL_DAYS:-365000}  # 1000年
 export NGINX_AUTO_RELOAD=${NGINX_AUTO_RELOAD:-1}  # 是否启用自动重载，默认启用
@@ -18,6 +58,17 @@ export NEKO_BEHIND_PROXY=true
 # Nginx 保留客户端 Host；将配置的部署域名显式加入应用层可信主机。
 # loopback 和 IP 字面量由中间件默认允许，因此本地/IP 访问不依赖此项。
 export NEKO_TRUSTED_HOSTS="${NEKO_TRUSTED_HOSTS:-${SSL_DOMAIN}}"
+
+# Nginx 配置渲染层（分层模板 + 渲染器，见 docker/nginx/README.md）
+# 模板随镜像落在 /app/docker/nginx/，由 render.sh 渲染到 /etc/nginx/。
+NGINX_TEMPLATE_DIR="${NGINX_TEMPLATE_DIR:-/app/docker/nginx}"
+if [ ! -r "$NGINX_TEMPLATE_DIR/render.sh" ]; then
+    echo "❌ Nginx render layer not found: $NGINX_TEMPLATE_DIR/render.sh"
+    exit 1
+fi
+# shellcheck source=docker/nginx/render.sh
+. "$NGINX_TEMPLATE_DIR/render.sh"
+
 
 # 1. 信号处理优化
 setup_signal_handlers() {
@@ -531,285 +582,17 @@ setup_nginx_proxy() {
         print_certificate_fun_info "$cert_file"
     fi
     
-    # 生成主要的Nginx配置文件
-    cat > /etc/nginx/nginx.conf <<EOF
-worker_processes auto;
-error_log /var/log/nginx/error.log notice;
-pid /var/run/nginx.pid;
-
-events {
-    worker_connections 1024;
-}
-
-http {
-    include /etc/nginx/mime.types;
-    default_type application/octet-stream;
-    
-    log_format main '\$remote_addr - \$remote_user [\$time_local] "\$request" '
-                    '\$status \$body_bytes_sent "\$http_referer" '
-                    '"\$http_user_agent" "\$http_x_forwarded_for"';
-    
-    access_log /var/log/nginx/access.log main;
-    
-    sendfile on;
-    tcp_nopush on;
-    keepalive_timeout 65;
-    types_hash_max_size 2048;
-    
-    # 包含我们的代理配置
-    include /etc/nginx/conf.d/*.conf;
-}
-EOF
-    
-    # 根据是否启用SSL生成不同的配置
-    if [ "${DISABLE_SSL:-0}" = "1" ]; then
-        echo "🌐 Generating HTTP-only configuration (SSL disabled)..."
-        cat > /etc/nginx/conf.d/neko-proxy.conf <<EOF
-server {
-    listen ${NGINX_PORT};
-    server_name _;
-    
-    # 禁用默认的Nginx版本显示
-    server_tokens off;
-    
-    # 取消客户端请求体大小限制
-    client_max_body_size 0;
-
-    # CSRF bootstrap must reach the same plugin backend as lifecycle mutations.
-    # Preserve the public authority and overwrite proxy metadata for NAS access.
-    location = /security/csrf-token {
-        proxy_pass http://127.0.0.1:48916;
-        proxy_set_header Host \$http_host;
-        proxy_set_header X-Forwarded-For \$remote_addr;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-
-    # 代理到用户插件服务 (Plugin Server, 内嵌于 agent_server 进程)
-    location ~ ^/(api/model-config(?:/|$)|ui|plugins?|plugin/|available|server/|logs/|metrics|runs|packages|plugin-cli/|market/|health|market-bridge/) {
-        proxy_pass http://127.0.0.1:48916;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$http_host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-Host \$host;
-        
-        proxy_connect_timeout 60s;
-        proxy_send_timeout 60s;
-        proxy_read_timeout 86400;
-    }
-
-    # 插件 WebSocket 路径 → 插件服务器 (48916)
-    location ~ ^/ws/(run|admin|logs)(/|$) {
-        proxy_pass http://127.0.0.1:48916;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$http_host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-Host \$host;
-        
-        proxy_connect_timeout 60s;
-        proxy_send_timeout 60s;
-        proxy_read_timeout 86400;
-    }
-    
-    # 代理到N.E.K.O主服务
-    location / {
-        proxy_pass http://127.0.0.1:${NEKO_MAIN_SERVER_PORT};
-        proxy_set_header Host \$http_host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-Host \$host;
-        
-        # WebSocket支持
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        
-        # 超时设置
-        proxy_connect_timeout 60s;
-        proxy_send_timeout 60s;
-        proxy_read_timeout 86400;  # 长超时用于WebSocket
-    }
-    
-    # 代理到记忆服务
-    location /memory/ {
-        proxy_pass http://127.0.0.1:48912;
-        proxy_set_header Host \$http_host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-    
-    # 代理到Agent服务
-    location /agent/ {
-        proxy_pass http://127.0.0.1:48915;
-        proxy_set_header Host \$http_host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-    
-    # 静态文件服务
-    location /static/ {
-        alias /app/static/;
-        expires 30d;
-        add_header Cache-Control "public, immutable";
-        try_files \$uri \$uri/ =404;
-    }
-    
-    # 健康检查端点
-    location /health {
-        access_log off;
-        return 200 "healthy\n";
-        add_header Content-Type text/plain;
-    }
-    
-    # 阻止访问隐藏文件
-    location ~ /\. {
-        deny all;
-        access_log off;
-        log_not_found off;
-    }
-}
-EOF
-    else
-        echo "🌐 Generating HTTP+HTTPS configuration..."
-        cat > /etc/nginx/conf.d/neko-proxy.conf <<EOF
-server {
-    listen ${NGINX_PORT};
-    listen ${NGINX_SSL_PORT} ssl http2;
-    
-    # SSL证书配置（仅对443端口生效）
-    ssl_certificate $cert_file;
-    ssl_certificate_key $key_file;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_prefer_server_ciphers on;
-    ssl_ciphers ECDHE-RSA-AES256-GCM-SHA512:DHE-RSA-AES256-GCM-SHA512:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-GCM-SHA384;
-    
-    # 设置HSTS头（增强安全性）
-    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-    
-    server_name _;
-    
-    # 禁用默认的Nginx版本显示
-    server_tokens off;
-    
-    # 取消客户端请求体大小限制
-    client_max_body_size 0;
-
-    # CSRF bootstrap must reach the same plugin backend as lifecycle mutations.
-    # Preserve the public authority and overwrite proxy metadata for NAS access.
-    location = /security/csrf-token {
-        proxy_pass http://127.0.0.1:48916;
-        proxy_set_header Host \$http_host;
-        proxy_set_header X-Forwarded-For \$remote_addr;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-
-    # 代理到用户插件服务 (Plugin Server, 内嵌于 agent_server 进程)
-    location ~ ^/(api/model-config(?:/|$)|ui|plugins?|plugin/|available|server/|logs/|metrics|runs|packages|plugin-cli/|market/|health|market-bridge/) {
-        proxy_pass http://127.0.0.1:48916;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$http_host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-Host \$host;
-        
-        proxy_connect_timeout 60s;
-        proxy_send_timeout 60s;
-        proxy_read_timeout 86400;
-    }
-
-    # 插件 WebSocket 路径 → 插件服务器 (48916)
-    location ~ ^/ws/(run|admin|logs)(/|$) {
-        proxy_pass http://127.0.0.1:48916;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$http_host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-Host \$host;
-        
-        proxy_connect_timeout 60s;
-        proxy_send_timeout 60s;
-        proxy_read_timeout 86400;
-    }
-    
-    # 代理到N.E.K.O主服务
-    location / {
-        proxy_pass http://127.0.0.1:${NEKO_MAIN_SERVER_PORT};
-        proxy_set_header Host \$http_host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-Host \$host;
-        
-        # WebSocket支持
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        
-        # 超时设置
-        proxy_connect_timeout 60s;
-        proxy_send_timeout 60s;
-        proxy_read_timeout 86400;  # 长超时用于WebSocket
-    }
-    
-    # 代理到记忆服务
-    location /memory/ {
-        proxy_pass http://127.0.0.1:48912;
-        proxy_set_header Host \$http_host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-    
-    # 代理到Agent服务
-    location /agent/ {
-        proxy_pass http://127.0.0.1:48915;
-        proxy_set_header Host \$http_host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-    
-    # 静态文件服务
-    location /static/ {
-        alias /app/static/;
-        expires 30d;
-        add_header Cache-Control "public, immutable";
-        try_files \$uri \$uri/ =404;
-    }
-    
-    # 健康检查端点
-    location /health {
-        access_log off;
-        return 200 "healthy\n";
-        add_header Content-Type text/plain;
-    }
-    
-    # 阻止访问隐藏文件
-    location ~ /\. {
-        deny all;
-        access_log off;
-        log_not_found off;
-    }
-}
-EOF
+    # 生成分层 Nginx 配置：L0 全局层 / L1a 监听器层 / L1b server 骨架 / L1c 路由表。
+    # HTTP 与 HTTPS 两种模式的差异只存在于 L1a（listener.conf）；路由表与转发头
+    # 片段两种模式共用一份，因此不存在"改了一处忘了另一处"的静默回归。
+    # 分层依据、不变量与改法见 docker/nginx/README.md。
+    # 失败必须中止启动：渲染一半的配置交给 nginx -t 是"先崩后查"，而渲染器自己
+    # 已经知道哪里失败了（模板缺失 / 变量未注入 / 写入失败）。
+    if ! render_nginx_configuration "$cert_file" "$key_file"; then
+        echo "❌ 渲染 Nginx 配置失败（模板缺失 / 变量未注入 / 写入失败），停止启动"
+        exit 1
     fi
-    
+
     # 测试Nginx配置
     echo "🔧 Testing Nginx configuration..."
     if nginx -t; then
@@ -831,13 +614,24 @@ start_nginx_reloader() {
     
     echo "🔄 Starting Nginx configuration auto-reloader (every 5 minutes)..."
     
-    # 记录初始配置文件的修改时间
-    local nginx_conf="/etc/nginx/nginx.conf"
-    local site_conf="/etc/nginx/conf.d/neko-proxy.conf"
+    # 记录初始配置文件的修改时间。分层之后配置由多个文件组成，全部纳入指纹：
+    # 用户覆盖 snippets/ 或 locations.conf 时同样能触发重载。
     local ssl_cert="/home/neko/ssl/N.E.K.O.crt"
     local ssl_key="/home/neko/ssl/N.E.K.O.key"
+    local -a nginx_confs=(
+        /etc/nginx/nginx.conf
+        /etc/nginx/conf.d/neko-proxy.conf
+        "$NGINX_NEKO_DIR/listener.conf"
+        "$NGINX_NEKO_DIR/locations.conf"
+    )
+    # 片段目录同样参与指纹；glob 未匹配时保持字面量，用 -e 兜住
+    for _nginx_snippet in "$NGINX_NEKO_DIR"/snippets/*.conf; do
+        if [ -e "$_nginx_snippet" ]; then
+            nginx_confs+=("$_nginx_snippet")
+        fi
+    done
     
-    local last_conf_time=$(stat -c %Y "$nginx_conf" "$site_conf" 2>/dev/null)
+    local last_conf_time=$(stat -c %Y "${nginx_confs[@]}" 2>/dev/null)
     local last_ssl_time=""
     
     if [ -f "$ssl_cert" ] && [ -f "$ssl_key" ]; then
@@ -853,7 +647,7 @@ start_nginx_reloader() {
         local changed=0
         
         # 检查Nginx配置文件是否变化
-        local current_conf_time=$(stat -c %Y "$nginx_conf" "$site_conf" 2>/dev/null)
+        local current_conf_time=$(stat -c %Y "${nginx_confs[@]}" 2>/dev/null)
         if [ "$current_conf_time" != "$last_conf_time" ]; then
             echo "📄 Nginx configuration files changed"
             changed=1
@@ -1013,8 +807,24 @@ setup_dependencies() {
     echo "   Installing Python dependencies using uv..."
     
     # 检查是否存在uv.lock
+    #
+    # 带 --frozen：镜像里的 uv.lock 与 pyproject.toml 是同一个 commit 的，运行时
+    # 只需要补齐/校验环境，不该重新解析依赖（那会联网、且可能改掉锁）。缺锁时才
+    # 退回普通 uv sync。
     if [ -f "uv.lock" ]; then
-        uv sync
+        # --locked：先断言 uv.lock 与 pyproject.toml 一致，再按锁安装。
+        # 注意不能用 --frozen —— 它的语义是"同步但不更新锁"，锁过期时**不会报错**，
+        # 而是照旧装旧依赖集合；那会让"源码挂进容器"的开发场景静默缺依赖。
+        #
+        # 锁过期时 --locked 会失败，那不是配置错误，是"源码比锁新"：退回普通
+        # sync 重新解析并告警，让容器起得来，而不是把开发挡在门外。
+        # 生产镜像里两者一致，这条永不触发。
+        if ! uv sync --locked; then
+            echo "⚠️ uv sync --frozen 失败：容器里的 pyproject.toml 与 uv.lock 不一致"
+            echo "   常见于把源码挂进容器做开发（源码比锁新）。退回普通 uv sync 重新解析依赖。"
+            echo "   生产镜像里两者应当一致；若未挂载源码也出现本提示，请检查镜像版本。"
+            uv sync
+        fi
     else
         # 如果没有锁定文件，尝试初始化
         if [ -f "pyproject.toml" ]; then
@@ -1026,11 +836,19 @@ setup_dependencies() {
         fi
     fi
     
-    # uv sync 以 root 运行，生成的文件归 root；服务以 neko 用户运行，须修正权限
-    echo "🔧 Fixing .venv permissions for neko user..."
-    chown -R neko:neko /app/.venv 2>/dev/null || echo "⚠️ Could not chown .venv (non-fatal)"
-    # 同时确保文档和模板目录可被 neko 读取（用于 OpenClaw 指南等静态内容）
-    chown -R neko:neko /app/docs /app/templates /app/static 2>/dev/null || echo "⚠️ Could not chown doc/template/static dirs (non-fatal)"
+    # uv sync 以 root 运行，生成的文件归 root；服务以 neko 用户运行，须修正权限。
+    #
+    # 只改属主不对的条目（与数据目录那段同一写法）。镜像里这些目录本来就是 neko
+    # 的，无条件 chown -R 会对每个来自镜像层的 inode 发起 chown，在 overlayfs 上
+    # 触发 copy-up —— 等于每次启动都把整棵 .venv 复制进容器可写层，低配机器上
+    # 是实打实的磁盘与启动时间开销。稳态下这一遍是纯遍历、不产生写入。
+    echo "🔧 Aligning /app ownership for neko user (only wrong entries)..."
+    for _app_dir in /app/.venv /app/docs /app/templates /app/static; do
+        [ -e "$_app_dir" ] || continue
+        find "$_app_dir" \( ! -user neko -o ! -group neko \) -exec chown -h neko:neko {} + 2>/dev/null \
+            || echo "⚠️ Could not align ownership of $_app_dir (non-fatal)"
+    done
+    unset _app_dir
     
     echo "✅ Dependencies installed successfully"
     
@@ -1236,6 +1054,33 @@ detect_legacy_layout() {
     return 0
 }
 
+# ── 插件数据持久化边界检测 ────────────────────────────────────
+# 插件数据默认全部落在持久化根内的四个位置：
+#   <root>/plugins                      插件状态（配置 / 数据）
+#   <root>/.neko-plugin-installations   用户安装的插件代码（含 vendor/ 依赖）
+#   <root>/.neko-plugin-packages        安装包落地（.neko-plugin / .neko-bundle）
+#   <root>/.neko-package-profiles       包 profile
+#
+# 三个旧变量可以把它们挪走。一旦指向挂载之外，插件数据就不会随容器保存 ——
+# 容器重建即丢，而且**没有任何报错**，直到用户发现插件配置和依赖都没了。
+# 这里只检测、不改写，也不阻止启动。
+warn_plugin_roots_outside_mount() {
+    local var value
+    for var in PLUGIN_CONFIG_ROOT PLUGIN_PACKAGES_ROOT PACKAGE_PROFILES_ROOT; do
+        value="${!var:-}"
+        [ -n "$value" ] || continue
+        case "$value" in
+            /home/neko/*) ;;
+            *)
+                echo "⚠️  $var=$value 指向持久化挂载 (/home/neko) 之外"
+                echo "    对应用户插件数据不会随容器保存，容器重建后会丢失。"
+                echo "    默认位置在 /home/neko/.local/share/N.E.K.O 下；确实要自定义"
+                echo "    目录时，请把那个目录也加进 compose 的 volumes。"
+                ;;
+        esac
+    done
+}
+
 warn_legacy_layout() {
     if [ -z "$LEGACY_LAYOUT_HINT" ]; then
         return 0
@@ -1282,6 +1127,14 @@ main() {
     echo "=================================================="
     echo "   N.E.K.O. Container with Nginx Proxy - Startup"
     echo "=================================================="
+
+    # 镜像/应用身份。中枢排障第一问就是"你跑的是哪一版"，而滚动 tag
+    # （latest / ci-standard）在容器里反查不出任何东西。镜像版本与 revision 由 CI
+    # 在构建时注入（本地 docker build 为空 → unknown）；应用版本从代码常量读，
+    # 不启 Python 进程。
+    _app_version=$(awk -F'"' '/^APP_VERSION *=/{print $2; exit}' /app/config/application.py 2>/dev/null)
+    echo "🏷️  Image: ${NEKO_BUILD_VERSION:-unknown} @ ${NEKO_BUILD_REVISION:-unknown} (app ${_app_version:-unknown})"
+    unset _app_version
 
     # 先取快照：后面的 setup_* 会往 /home/neko 和 /app/logs 里写东西
     detect_legacy_layout
@@ -1365,7 +1218,8 @@ main() {
         echo "       sudo sh docker/preflight.sh <neko-home 路径> <logs 路径>"
     fi
 
-    # 放在服务启动前打印：此时前面的初始化日志已经刷完，这条不会被淹掉
+    # 放在服务启动前打印：此时前面的初始化日志已经刷完，这两条不会被淹掉
+    warn_plugin_roots_outside_mount
     warn_legacy_layout
 
     # 启动N.E.K.O服务

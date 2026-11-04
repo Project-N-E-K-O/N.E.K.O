@@ -256,6 +256,52 @@ def test_launcher_preserves_storage_override_for_isolated_local_instance(monkeyp
     assert migration_calls == [{"anchor_root": str(selected_root)}]
 
 
+@pytest.mark.unit
+def test_isolated_instance_uses_the_committed_migration_target(monkeypatch, tmp_path):
+    from launcher_core import runtime as launcher
+
+    runtime_dir = tmp_path / "runtime"
+    anchor_root = tmp_path / "storage-anchor"
+    old_root = tmp_path / "storage-old"
+    target_root = tmp_path / "storage-new"
+    stale_manager = SimpleNamespace(app_docs_dir=old_root, anchor_root=anchor_root)
+
+    monkeypatch.setenv("NEKO_RUNTIME_STATE_DIR", str(runtime_dir))
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(old_root))
+    monkeypatch.setenv("NEKO_STORAGE_ANCHOR_ROOT", str(anchor_root))
+    monkeypatch.setattr(launcher, "reset_config_manager_cache", lambda: None)
+    monkeypatch.setattr(launcher, "get_config_manager", lambda _app_name, **_kwargs: stale_manager)
+    monkeypatch.setattr(
+        launcher,
+        "run_pending_storage_migration",
+        lambda _manager, **_kwargs: {
+            "attempted": True,
+            "completed": True,
+            "source_root": str(old_root),
+            "target_root": str(target_root),
+            "anchor_root": str(anchor_root),
+        },
+    )
+
+    try:
+        result = launcher._resolve_storage_layout_for_launch()
+    finally:
+        for key in (
+            "NEKO_STORAGE_SELECTED_ROOT",
+            "NEKO_STORAGE_ANCHOR_ROOT",
+            "NEKO_STORAGE_CLOUDSAVE_ROOT",
+            "NEKO_RUNTIME_STATE_DIR",
+        ):
+            launcher.os.environ.pop(key, None)
+
+    assert result["layout"] == {
+        "selected_root": str(target_root.resolve()),
+        "anchor_root": str(anchor_root.resolve()),
+        "cloudsave_root": str((anchor_root / "cloudsave").resolve()),
+        "source": "isolated_runtime",
+    }
+
+
 
 @pytest.mark.unit
 def test_launcher_uses_multi_process_mode_by_default_in_source(monkeypatch):

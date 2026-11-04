@@ -15,7 +15,7 @@
     const PC_OVERLAY_MAX_TOTAL_SAME_RUN_STALE_RETRIES = 6;
     const PC_OVERLAY_DEFERRED_RECONCILIATION_DELAY_MS = 48;
     const CONTROL_BANNER_TEXT_KEY = 'tutorial.yuiGuide.controlBanner';
-    const CONTROL_BANNER_FALLBACK_TEXT = 'The catgirl is controlling the mouse';
+    const CONTROL_BANNER_FALLBACK_TEXT = 'The neko is controlling the mouse';
     const CONTROL_BANNER_INTERRUPT_EMPHASIS_MS = 2000;
     const OverlayRendererApi = window.TutorialOverlayRendererApi || {};
     const OverlayCursorStateStore = OverlayRendererApi.OverlayCursorStateStore

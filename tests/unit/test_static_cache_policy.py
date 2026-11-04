@@ -1,4 +1,5 @@
 import hashlib
+import mimetypes
 import re
 from email.parser import BytesParser
 from email.policy import default
@@ -6,7 +7,7 @@ from email.policy import default
 import pytest
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.main_server.web_app import AvatarToolStaticFiles, CustomStaticFiles, _has_generated_asset_version
+from app.main_server.web_app import AvatarToolStaticFiles, CustomStaticFiles, StaticRootFiles, _has_generated_asset_version
 
 
 async def _render_response(response, scope):
@@ -494,11 +495,18 @@ async def test_public_path_check_runs_off_the_event_loop(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('query', [b'', b'v=1760000000'])
-async def test_game_modules_revalidate_relative_imports(tmp_path, query):
+@pytest.mark.parametrize('static_type,expected_mime', [
+    (CustomStaticFiles, 'text/plain; charset=utf-8'),
+    (StaticRootFiles, 'application/javascript'),
+])
+async def test_game_modules_revalidate_relative_imports(tmp_path, query, monkeypatch, static_type, expected_mime):
+    mimetypes.init()
+    monkeypatch.setitem(mimetypes.types_map, '.mjs', 'text/plain')
     folder = tmp_path / 'game' / 'sdk'
     folder.mkdir(parents=True)
     (folder / 'media-clock.mjs').write_text('export {};', encoding='utf-8')
     scope = {'type':'http', 'method':'GET', 'path':'/game/sdk/media-clock.mjs',
              'root_path':'', 'query_string':query, 'headers':[]}
-    response = await CustomStaticFiles(directory=tmp_path).get_response('game/sdk/media-clock.mjs', scope)
+    response = await static_type(directory=tmp_path).get_response('game/sdk/media-clock.mjs', scope)
+    assert response.headers['content-type'] == expected_mime
     assert response.headers['cache-control'] == 'no-cache'

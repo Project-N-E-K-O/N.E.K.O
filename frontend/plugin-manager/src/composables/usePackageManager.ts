@@ -174,12 +174,9 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
   })
   const {
     filterText: pluginFilter,
-    useRegex,
-    filterMode,
     selectedTypes,
     layoutMode,
     selectedPluginIds,
-    regexError,
     pluginCount,
     adapterCount,
     filteredPurePlugins,
@@ -849,10 +846,7 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
     layoutMode,
     buildMode,
     pluginFilter,
-    useRegex,
-    filterMode,
     selectedTypes,
-    regexError,
     pluginsLoading,
     packagesLoading,
     localPackages,

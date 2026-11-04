@@ -1322,6 +1322,24 @@
         );
     }
 
+    function isVisitAssistantMirrorResponse(response) {
+        var metadata = response && response.metadata;
+        if (!metadata || typeof metadata !== 'object') {
+            metadata = response && response.meta;
+        }
+        if (!metadata || typeof metadata !== 'object' || metadata.source !== 'neko_visit') {
+            return false;
+        }
+        var kind = String(metadata.kind || '');
+        var sessionId = String(metadata.session_id || '');
+        var mirror = metadata.mirror && typeof metadata.mirror === 'object'
+            ? metadata.mirror : {};
+        return !!sessionId
+            && ['visit_direct_invite_question', 'visit_line', 'visit_ritual', 'visit_debrief'].indexOf(kind) >= 0
+            && mirror.kind === kind
+            && String(mirror.session_id || '') === sessionId;
+    }
+
     function allocateAssistantTurnId(serverTurnId) {
         var normalized = normalizeAssistantTurnId(serverTurnId);
         if (normalized) {
@@ -2169,13 +2187,25 @@
     // CSRF token 与本机 HTTP 变更端点同一个：nekoLocalMutationSecurity 只对外给 getMutationHeaders / refreshToken
     async function _visitCsrfToken(refresh) {
         var security = window.nekoLocalMutationSecurity;
-        if (!security) return '';
+        if (security) {
+            try {
+                if (refresh && typeof security.refreshToken === 'function') await security.refreshToken();
+                if (typeof security.getMutationHeaders === 'function') {
+                    var headers = await security.getMutationHeaders();
+                    var token = headers && headers['X-CSRF-Token'];
+                    if (typeof token === 'string' && token) return token;
+                }
+            } catch (_) { /* fall through to direct same-origin refresh */ }
+        }
+        // index.html 里主 WebSocket 可能比公共安全 helper 更早连上；后端重启后
+        // helper 也可能仍握着旧 token。直接同源读取一次，避免 display bind
+        // 永久未授权，后续 pending 帧无法驱动 Pet 窗创建传输 iframe。
         try {
-            if (refresh && typeof security.refreshToken === 'function') await security.refreshToken();
-            if (typeof security.getMutationHeaders !== 'function') return '';
-            var headers = await security.getMutationHeaders();
-            var token = headers && headers['X-CSRF-Token'];
-            return typeof token === 'string' ? token : '';
+            var response = await fetch('/api/config/page_config', { cache: 'no-store' });
+            if (!response.ok) return '';
+            var data = await response.json();
+            return data && typeof data.autostart_csrf_token === 'string'
+                ? data.autostart_csrf_token : '';
         } catch (_) {
             return '';
         }
@@ -3336,18 +3366,27 @@
 
                 // -------- gemini_response --------
                 if (response.type === 'chat_sync_history_changed') {
-                    // Only a local committed-page hint reaches this current socket.
-                    // The sync UI reads its own cursor/history before passive merge.
-                    if (window.nekoChatSync) window.nekoChatSync.notifyHistoryCommitted(response).catch(function () {});
-                    return;
-                }
-                if (response.type === 'chat_original_identity') {
-                    // Backend identities only join optimistic UI; they never submit new chat.
-                    if (window.nekoChatSync && response.role === 'user') window.nekoChatSync.markAcceptedUser(response);
+                    if (typeof response.memoryEditedName === 'string' && window.appInterpage
+                            && typeof window.appInterpage.handleMemoryEdited === 'function') {
+                        window.appInterpage.handleMemoryEdited(response.memoryEditedName).catch(function () {});
+                        try {
+                            if (typeof BroadcastChannel !== 'undefined') {
+                                const channel = new BroadcastChannel('neko_page_channel');
+                                channel.postMessage({ action: 'recent_memory_changed', catgirl_name: response.memoryEditedName });
+                                channel.close();
+                            }
+                        } catch (error) {
+                            console.warn('[ChatSync] Recent-memory refresh channel unavailable', error);
+                        }
+                    }
                     return;
                 }
                 if (response.type === 'gemini_response') {
-                    if (S.suppressAssistantStreamUntilNextSession) {
+                    // 串门期间普通会话可能已关闭，但邀请询问、自家猫娘台词、回家仪式语
+                    // 和复盘语都通过正式助手消息链路送达。仅按完整的服务端 mirror 身份
+                    // 放行这些串门回复；suppression 锁不解除，其他迟到回复仍会被丢弃。
+                    if (S.suppressAssistantStreamUntilNextSession
+                            && !isVisitAssistantMirrorResponse(response)) {
                         console.log('[App] discard assistant chunk after session ended by server');
                         return;
                     }
@@ -3434,9 +3473,6 @@
                             assistantResponseMeta,
                             response.request_id
                         );
-                    }
-                    if (window.nekoChatSync && response.chat_original_id) {
-                        window.nekoChatSync.markAssistantOriginal(response.chat_original_id, window._nekoAssistantTurnId);
                     }
                     if (response.turn_id) {
                         window.realisticGeminiCurrentTurnId = response.turn_id;
@@ -3667,10 +3703,6 @@
 
                 // -------- user_transcript --------
                 } else if (response.type === 'user_transcript') {
-                    // Snapshot exact display IDs before this accepted voice frame is rendered.
-                    var syncVoiceHost = window.reactChatWindowHost;
-                    var syncVoiceBefore = syncVoiceHost && typeof syncVoiceHost.getState === 'function'
-                        ? new Set(syncVoiceHost.getState().messages.map(function (item) { return item.id; })) : null;
                     // user_transcript 不带轮次身份（由 main_logic/core/turn.py 发出），
                     // 这里无法配对，只能保持无条件移除；迟到 final 误删新一轮气泡的情况
                     // 由后端在 user_transcript 之后补发该轮 preview 复原
@@ -3710,9 +3742,6 @@
                     }
                     var now = Date.now();
                     var shouldMerge = S.isRecording &&
-                        // A canonical transcript owns one exact display identity.
-                        // Keep separate accepted frames separate on the React host.
-                        !(response.chat_original_id && syncVoiceBefore) &&
                         S.lastVoiceUserMessage &&
                         S.lastVoiceUserMessage.isConnected &&
                         (now - S.lastVoiceUserMessageTime) < C.VOICE_TRANSCRIPT_MERGE_WINDOW;
@@ -3734,14 +3763,6 @@
                                 }
                             }
                         }
-                    }
-
-                    if (response.chat_original_id && window.nekoChatSync && syncVoiceBefore) {
-                        syncVoiceHost.getState().messages.forEach(function (item) {
-                            if (item.role === 'user' && !syncVoiceBefore.has(item.id)) {
-                                window.nekoChatSync.markLiveOriginal(response.chat_original_id, item.id);
-                            }
-                        });
                     }
 
                 // -------- user_activity --------
@@ -5504,7 +5525,8 @@
 
                 // -------- system turn end --------
                 } else if (response.type === 'system' && response.data === 'turn end') {
-                    if (S.suppressAssistantStreamUntilNextSession) {
+                    if (S.suppressAssistantStreamUntilNextSession
+                            && !isVisitAssistantMirrorResponse(response)) {
                         console.log('[App] discard assistant turn_end after session ended by server');
                         clearPendingRollbackForRequest(response.request_id);
                         clearPendingAssistantTurnStart();
@@ -6361,7 +6383,7 @@
             if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(false);
             if (typeof window.syncFloatingScreenButtonState === 'function') window.syncFloatingScreenButtonState(false);
 
-            // Auto-reconnect: skip if switching catgirl OR this socket was already
+            // Auto-reconnect: skip if switching neko OR this socket was already
             // replaced by a newer connectWebSocket() call (prevents reconnect storm
             // when the old socket's onclose fires after the switch completes).
             if (!S.isSwitchingCatgirl && S.socket === _thisSocket) {

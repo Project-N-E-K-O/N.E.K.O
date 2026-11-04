@@ -27,11 +27,58 @@ def isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(preferences, "_config_manager", Config())
     monkeypatch.setattr(preferences, "assert_cloudsave_writable", lambda *a, **k: None)
     monkeypatch.setattr(preferences_audit, "_attribution_factory", None)
+    monkeypatch.setattr(preferences_audit, "_capture_protocol", 1)
+    monkeypatch.setattr(preferences_audit, "_capture_provider", None)
     return path
 
 
 def seed(path, **settings):
     path.write_text(json.dumps([{"model_path": preferences.GLOBAL_CONVERSATION_KEY, **settings}]), encoding="utf-8")
+
+
+def test_v2_capacity_does_not_block_current_settings_or_recapture_original_entry(isolated, monkeypatch):
+    seed(isolated, proactiveMusicEnabled=False)
+    monkeypatch.setattr(preferences_audit, "MAX_PENDING_CHANGES", 1)
+    tick = [10]
+    preferences.install_settings_capture_provider(lambda owner: {
+        "version": "desktop-feedback-capture-v2", "owner_key": owner["key"],
+        "capture": {"clock_session_id": "fixture", "tick_ms": tick[0]}}, protocol_version=2)
+    assert preferences.save_global_conversation_settings({"proactiveMusicEnabled": True})
+    original, = preferences.pending_settings_changes()
+    tick[0] = 99
+    assert preferences.save_global_conversation_settings({"proactiveMusicEnabled": False})
+    assert preferences.load_global_conversation_settings()["proactiveMusicEnabled"] is False
+    assert preferences.pending_settings_changes() == [original]
+    assert original["context"]["capture"]["tick_ms"] == 10
+    raw = json.loads(isolated.read_text(encoding="utf-8"))[0][preferences_audit.JOURNAL_KEY]
+    assert raw["incomplete"] is True and raw["revision"] == 2
+
+
+def test_v2_upgrade_drops_only_legacy_pending_journal_and_keeps_current_setting(isolated):
+    seed(isolated, proactiveMusicEnabled=False)
+    assert preferences.save_global_conversation_settings({"proactiveMusicEnabled": True})
+    old, = preferences.pending_settings_changes()
+    preferences.install_settings_capture_provider(None, protocol_version=2)
+    assert preferences.save_global_conversation_settings({"proactiveMusicEnabled": False})
+    current, = preferences.pending_settings_changes()
+    assert current["id"] != old["id"] and "context" in current
+    assert preferences.load_global_conversation_settings()["proactiveMusicEnabled"] is False
+    assert current["context"]["version"] == "desktop-feedback-capture-v2"
+
+
+def test_current_snapshot_reserves_revision_without_fabricating_a_setting_change(isolated):
+    seed(isolated, proactiveMusicEnabled=True)
+    owner = {"key": "fixture"}
+    captured = preferences.reserve_current_settings_snapshot(owner, lambda value: {
+        "version": "desktop-feedback-capture-v2", "owner_key": value["key"]})
+    assert captured["payload"]["revision"] == 1
+    assert captured["payload"]["previous"] == captured["payload"]["settings"] == {"proactiveMusicEnabled": True}
+    assert captured["payload"]["origin"] == "baseline"
+    assert preferences.pending_settings_changes() == []
+    assert preferences.load_global_conversation_settings()["proactiveMusicEnabled"] is True
+    assert preferences.save_global_conversation_settings({"proactiveMusicEnabled": False})
+    entry, = preferences.pending_settings_changes()
+    assert entry["payload"]["revision"] == 2
 
 
 def test_actual_change_commits_with_config_and_filters_unrelated_data(isolated):
@@ -295,6 +342,45 @@ def test_local_root_migration_preserves_original_owner_events_and_rejects_confli
         _merge_preferences_payloads(older, newer)
 
 
+@pytest.mark.parametrize("old_protocol,new_protocol,old_incomplete,new_incomplete", [
+    (2, None, True, False), (None, 2, False, True),
+    (2, 2, False, False), (None, None, None, None),
+])
+def test_local_root_migration_keeps_capture_and_incomplete_flags_without_changing_facts(
+    isolated, old_protocol, new_protocol, old_incomplete, new_incomplete,
+):
+    from utils.cloudsave_runtime.legacy_migration import _merge_preferences_payloads
+
+    first = {"id": "original-old-entry", "owner": {"key": "original-old-owner"},
+             "payload": {"revision": 4, "origin": "user"}}
+    second = {"id": "original-new-entry", "owner": {"key": "original-new-owner"},
+              "payload": {"revision": 8, "origin": "system"}}
+    old_journal = {"version": 1, "revision": 4, "entries": [first]}
+    new_journal = {"version": 1, "revision": 8, "entries": [second]}
+    for journal, protocol, incomplete in ((old_journal, old_protocol, old_incomplete),
+                                           (new_journal, new_protocol, new_incomplete)):
+        if protocol is not None:
+            journal["protocol_version"] = protocol
+        if incomplete is not None:
+            journal["incomplete"] = incomplete
+    older = [{"model_path": preferences.GLOBAL_CONVERSATION_KEY, "proactiveMusicEnabled": True,
+              preferences_audit.JOURNAL_KEY: old_journal}]
+    newer = [{"model_path": preferences.GLOBAL_CONVERSATION_KEY, "proactiveMusicEnabled": False,
+              preferences_audit.JOURNAL_KEY: new_journal}]
+    original_older, original_newer = deepcopy(older), deepcopy(newer)
+    merged = _merge_preferences_payloads(older, newer)
+    journal = preferences_audit.read_journal(merged)
+    assert journal["entries"] == [first, second]
+    assert journal["revision"] == 8
+    assert preferences_audit.proactive_snapshot(merged) == {"proactiveMusicEnabled": False}
+    if old_protocol == 2 or new_protocol == 2:
+        assert journal["protocol_version"] == 2
+        assert journal["incomplete"] is bool(old_incomplete or new_incomplete)
+    else:
+        assert journal == {"version": 1, "revision": 8, "entries": [first, second]}
+    assert older == original_older and newer == original_newer
+
+
 def test_full_preferences_reset_logs_change_without_dropping_pending(isolated):
     seed(isolated, proactiveMusicEnabled=False)
     assert preferences.save_global_conversation_settings({"proactiveMusicEnabled": True})
@@ -360,6 +446,49 @@ def test_real_json_to_sqlite_handoff_survives_ack_failure_without_duplicate(isol
     assert saved_owner == owner["key"]
     assert item_id == original[0]["id"]
     assert json.loads(payload) == original[0]["payload"]
+
+
+@pytest.mark.parametrize("protocol,durable", [(1, True), (2, True), (2, False)])
+def test_source_ack_failure_is_distinct_only_after_durable_v2_handoff(isolated, monkeypatch, protocol, durable):
+    from main_logic.recommendation_feedback import RecommendationStore
+    from services.proactive_feedback.runtime import drain_settings
+
+    owner = {"key": "synthetic-owner", "user_id": "synthetic-user", "community": "https://community.example"}
+
+    @contextmanager
+    def attribution():
+        yield owner
+
+    preferences.install_settings_attribution_context(attribution)
+    if protocol == 2 and durable:
+        preferences.install_settings_capture_provider(lambda value: {
+            "version": "desktop-feedback-capture-v2", "owner_key": value["key"]}, protocol_version=2)
+    seed(isolated, proactiveMusicEnabled=False)
+    assert preferences.save_global_conversation_settings({"proactiveMusicEnabled": True})
+    original = preferences.pending_settings_changes()
+    before = isolated.read_bytes()
+    atomic = preferences.atomic_write_json
+    store = RecommendationStore(isolated.parent / "source-ack.sqlite3", protocol_version=protocol)
+
+    def fail_ack(*args, **kwargs):
+        raise OSError("synthetic acknowledgement write failure")
+
+    monkeypatch.setattr(preferences, "atomic_write_json", fail_ack)
+    with pytest.raises(OSError) as caught:
+        drain_settings(store)
+    assert isolated.read_bytes() == before
+    assert preferences.pending_settings_changes() == original
+    assert preferences.load_global_conversation_settings()["proactiveMusicEnabled"] is True
+    if protocol == 2 and durable:
+        assert type(caught.value).__name__ == "SettingsAcknowledgementPending"
+        assert store.sync_status(owner)["held"] == 1
+    else:
+        assert type(caught.value) is OSError
+    monkeypatch.setattr(preferences, "atomic_write_json", atomic)
+    drain_settings(store)
+    assert preferences.pending_settings_changes() == []
+    if protocol == 2 and durable:
+        assert store.sync_status(owner)["pending"] == 1
 
 
 @pytest.mark.asyncio

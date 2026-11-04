@@ -8,6 +8,7 @@ from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from copy import deepcopy
 import hashlib
+import json
 import time
 from uuid import uuid4
 
@@ -25,6 +26,17 @@ _PROACTIVE_BOOL_KEYS = frozenset({
 _PROACTIVE_INTERVAL_KEYS = frozenset({"proactiveChatInterval", "proactiveVisionInterval"})
 _attribution_factory = None
 _attribution = ContextVar("preferences_settings_attribution", default=None)
+_capture_provider = None
+_capture_protocol = 1
+MAX_PENDING_BYTES = 4 * 1024 * 1024
+
+
+def install_settings_capture_provider(provider, *, protocol_version=1):
+    """Assembly injects a short in-memory capture read; no domain imports here."""
+    if protocol_version not in (1, 2):
+        raise ValueError("Unsupported settings capture protocol")
+    global _capture_provider, _capture_protocol
+    _capture_provider, _capture_protocol = provider, protocol_version
 
 
 def install_settings_attribution_context(factory):
@@ -99,16 +111,21 @@ def attach_journal(data, journal):
 
 def prepare_atomic_preferences(previous, proposed):
     journal = read_journal(previous)
+    if _capture_protocol == 2:
+        # First upgrade and late legacy members keep current settings but do
+        # not acquire a new capture merely because the worker imports them.
+        journal["entries"] = [entry for entry in journal["entries"] if isinstance(entry.get("context"), dict)]
+        journal["protocol_version"] = 2
     before, after = proactive_snapshot(previous), proactive_snapshot(proposed)
     if before != after:
-        if len(journal["entries"]) >= MAX_PENDING_CHANGES:
+        if _capture_protocol == 1 and len(journal["entries"]) >= MAX_PENDING_CHANGES:
             raise ValueError("Settings audit journal is full; synchronize before changing settings")
         attribution = _attribution.get()
         if attribution is None:
             raise RuntimeError("Settings write has no attribution fence")
         owner, origin = attribution
         journal["revision"] += 1
-        journal["entries"].append({
+        entry = {
             "id": str(uuid4()),
             "owner": deepcopy(owner),
             "payload": {
@@ -118,7 +135,19 @@ def prepare_atomic_preferences(previous, proposed):
                 "previous": before,
                 "settings": after,
             },
-        })
+        }
+        if _capture_protocol == 2:
+            capture = _capture_provider(owner) if _capture_provider is not None else None
+            # An official new mutation without server authority is partial,
+            # distinct from a legacy entry with no context field whatsoever.
+            entry["context"] = deepcopy(capture) if isinstance(capture, dict) else {"version": "desktop-feedback-capture-v2", "owner_key": owner["key"]}
+            encoded = json.dumps(journal["entries"] + [entry], ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
+            if len(journal["entries"]) >= MAX_PENDING_CHANGES or len(encoded) > MAX_PENDING_BYTES:
+                journal["incomplete"] = True
+            else:
+                journal["entries"].append(entry)
+        else:
+            journal["entries"].append(entry)
     return attach_journal(proposed, journal)
 
 
@@ -145,4 +174,13 @@ def merge_local_journals(previous, current):
         entries[entry["id"]] = entry
     if len(entries) > MAX_PENDING_CHANGES:
         raise ValueError("Settings audit capacity exceeded during local migration")
-    return {"version": 1, "revision": max(older["revision"], newer["revision"]), "entries": list(entries.values())}
+    merged = {"version": 1, "revision": max(older["revision"], newer["revision"]), "entries": list(entries.values())}
+    # These are local journal state, not imported setting changes. Moving the
+    # runtime directory must not hide earlier capacity loss or downgrade v2.
+    if older.get("protocol_version") == 2 or newer.get("protocol_version") == 2:
+        merged["protocol_version"] = 2
+    elif older.get("protocol_version") == 1 or newer.get("protocol_version") == 1:
+        merged["protocol_version"] = 1
+    if "incomplete" in older or "incomplete" in newer:
+        merged["incomplete"] = bool(older.get("incomplete") or newer.get("incomplete"))
+    return merged

@@ -9,6 +9,7 @@
 // 常量
 const AVATAR_POPUP_ANIMATION_DURATION_MS = 200;
 const AVATAR_POPUP_HOVER_COLLAPSE_DELAY_MS = 260;
+const AVATAR_POPUP_HOVER_BRIDGE_GRACE_MS = 900;
 const AVATAR_POPUP_HOVER_RECHECK_MS = 90;
 const AVATAR_POPUP_HOVER_BRIDGE_PADDING_PX = 18;
 const AVATAR_CHARACTER_MANAGER_WINDOW_WIDTH = 1240;
@@ -487,25 +488,7 @@ function createSettingsPopupContent(manager, prefix, popup) {
     animSidePanel._popupElement = popup;
     manager._attachSidePanelHover(animSettingsBtn, animSidePanel);
 
-    // 2.5 串门设置（docs/design/visit-infrastructure.md §5 PR-13）：入口默认隐藏，
-    // static/visit/visit-settings.js 探到 NEKO_VISIT_ENABLED 总闸开着才显示
-    const visitSettingsBtn = manager._createSettingsMenuButton({
-        label: window.t ? window.t('visit.settings.groupTitle') : '串门',
-        labelKey: 'visit.settings.groupTitle'
-    });
-    visitSettingsBtn.style.display = 'none';
-    visitSettingsBtn.setAttribute('data-neko-visit-settings-entry', '');
-    popup.appendChild(visitSettingsBtn);
-
-    const visitSidePanel = manager._createVisitSettingsSidePanel(popup);
-    visitSidePanel._anchorElement = visitSettingsBtn;
-    visitSidePanel._popupElement = popup;
-    manager._attachSidePanelHover(visitSettingsBtn, visitSidePanel);
-    if (window.nekoVisitSettings && typeof window.nekoVisitSettings.revealEntries === 'function') {
-        void window.nekoVisitSettings.revealEntries();
-    }
-
-    // 2.6 猫咪设置（自动变猫 / 重力猫猫 / 猫猫音效）：浏览器部署的独立入口，
+    // 2.5 猫咪设置（自动变猫 / 重力猫猫 / 猫猫音效）：浏览器部署的独立入口，
     // 与桌面壳聚合设置页「通用 → 猫咪」分组共用状态层
     const catSettingsBtn = manager._createSettingsMenuButton({
         label: window.t ? window.t('settings.toggles.catSettings') : '猫咪设置',
@@ -520,7 +503,28 @@ function createSettingsPopupContent(manager, prefix, popup) {
 
     // 3. 角色设置按钮已移至分隔线下方（在 _createSettingsMenuItems 中创建）
 
-    // 4. 主动搭话和自主视觉（角色设置已移至分隔线下方的导航菜单区域）
+    // 4. 串门、主动搭话和自主视觉：三个滑块连续排列。
+    // 串门整行同时仍是二级设置面板的悬停入口；发布总闸开启后才显示。
+    const visitSettingsToggle = manager._createSettingsToggleItem({
+        id: 'visit-enabled',
+        label: window.t ? window.t('visit.settings.groupTitle') : '串门',
+        labelKey: 'visit.settings.groupTitle',
+        tooltipKey: 'visit.settings.enabledTooltip',
+        storageKey: 'visitEnabled',
+        controlStyle: 'slider'
+    });
+    visitSettingsToggle.style.display = 'none';
+    visitSettingsToggle.setAttribute('data-neko-visit-settings-entry', '');
+    popup.appendChild(visitSettingsToggle);
+
+    const visitSidePanel = manager._createVisitSettingsSidePanel(popup);
+    visitSidePanel._anchorElement = visitSettingsToggle;
+    visitSidePanel._popupElement = popup;
+    manager._attachSidePanelHover(visitSettingsToggle, visitSidePanel);
+    if (window.nekoVisitSettings && typeof window.nekoVisitSettings.revealEntries === 'function') {
+        void window.nekoVisitSettings.revealEntries();
+    }
+
     const settingsToggles = [
         { id: 'proactive-chat', label: window.t ? window.t('settings.toggles.proactiveChat') : '主动搭话', labelKey: 'settings.toggles.proactiveChat', storageKey: 'proactiveChatEnabled', hasInterval: true, intervalKey: 'proactiveChatInterval', defaultInterval: 15, controlStyle: 'slider' },
         { id: 'proactive-vision', label: window.t ? window.t('settings.toggles.proactiveVision') : '隐私模式', labelKey: 'settings.toggles.proactiveVision', tooltipKey: 'settings.toggles.proactiveVisionTooltip', storageKey: 'proactiveVisionEnabled', hasInterval: true, intervalKey: 'proactiveVisionInterval', defaultInterval: 15, inverted: true, controlStyle: 'slider' }
@@ -794,8 +798,8 @@ function createChatSettingsSidePanel(manager, prefix, popup) {
 }
 
 /**
- * 创建串门设置侧边面板：两个开关（visitEnabled / visitVoiceEnabled）+ 构图 / 档位 / 人设入口。
- * 串门记忆开关是隐藏配置，不在这里出现（OD-09 v3）。
+ * 创建串门设置侧边面板：出声开关 + 构图 / 档位 / 人设入口。
+ * visitEnabled 已提升为主菜单的串门总开关；串门记忆开关是隐藏配置，不在这里出现（OD-09 v3）。
  */
 function createVisitSettingsSidePanel(manager, prefix, popup) {
     const container = manager._createSidePanelContainer();
@@ -808,7 +812,6 @@ function createVisitSettingsSidePanel(manager, prefix, popup) {
     container.style.padding = '4px 4px';
 
     const visitToggles = [
-        { id: 'visit-enabled', label: window.t ? window.t('visit.settings.enabled') : '允许串门', labelKey: 'visit.settings.enabled', tooltipKey: 'visit.settings.enabledTooltip', storageKey: 'visitEnabled', alwaysTinted: true },
         { id: 'visit-voice', label: window.t ? window.t('visit.settings.voice') : '串门时出声', labelKey: 'visit.settings.voice', tooltipKey: 'visit.settings.voiceTooltip', storageKey: 'visitVoiceEnabled', alwaysTinted: true },
     ];
 
@@ -821,7 +824,7 @@ function createVisitSettingsSidePanel(manager, prefix, popup) {
     });
 
     if (window.nekoVisitSettings && typeof window.nekoVisitSettings.appendPanelExtras === 'function') {
-        window.nekoVisitSettings.appendPanelExtras(container);
+        window.nekoVisitSettings.appendPanelExtras(container, manager);
     }
 
     document.body.appendChild(container);
@@ -1710,6 +1713,68 @@ function createAnimationSettingsSidePanel(manager, prefix) {
 
     trackingRow.appendChild(hoverFadeRow);
 
+    // ── 点击模型原地颤动反馈开关 ──
+    const clickShakeRow = document.createElement('div');
+    Object.assign(clickShakeRow.style, trackingToggleRowStyle);
+
+    const clickShakeCheckbox = document.createElement('input');
+    clickShakeCheckbox.type = 'checkbox';
+    clickShakeCheckbox.style.display = 'none';
+    // 以颤动模块的判定为准：没加载 app-settings.js 的页面也能读到已存的设置；默认开启
+    const isClickShakeEnabled = () => (window.NekoAvatarClickShake
+        ? window.NekoAvatarClickShake.isEnabled()
+        : window.modelClickShakeEnabled !== false);
+    clickShakeCheckbox.checked = isClickShakeEnabled();
+
+    const {
+        indicator: clickShakeIndicator,
+        updateStyle: updateClickShakeIndicatorStyle
+    } = manager._createCheckIndicator();
+    Object.assign(clickShakeIndicator.style, { width: '20px', height: '20px', flexShrink: '0' });
+
+    const updateClickShakeRowStyle = () => {
+        updateClickShakeIndicatorStyle(clickShakeCheckbox.checked);
+        updateTrackingToggleRowBackground(clickShakeRow, clickShakeCheckbox.checked);
+        clickShakeRow.setAttribute('aria-checked', String(clickShakeCheckbox.checked));
+    };
+    clickShakeCheckbox.updateStyle = updateClickShakeRowStyle;
+
+    const clickShakeLabel = document.createElement('span');
+    clickShakeLabel.textContent = window.t ? window.t('settings.toggles.modelClickShake') : '点击颤动反馈';
+    clickShakeLabel.setAttribute('data-i18n', 'settings.toggles.modelClickShake');
+    Object.assign(clickShakeLabel.style, { userSelect: 'none', fontSize: '12px', flex: '1' });
+
+    clickShakeRow.appendChild(clickShakeCheckbox);
+    clickShakeRow.appendChild(clickShakeIndicator);
+    clickShakeRow.appendChild(clickShakeLabel);
+    bindTrackingToggleRowHover(clickShakeRow, () => clickShakeCheckbox.checked);
+    updateClickShakeRowStyle();
+
+    const handleClickShakeChange = () => {
+        // 按实际值切换：别的窗口改过设置时，面板显示可能还没刷新
+        const enabled = !isClickShakeEnabled();
+        clickShakeCheckbox.checked = enabled;
+        window.modelClickShakeEnabled = enabled;
+        updateClickShakeRowStyle();
+        if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
+    };
+
+    clickShakeRow.addEventListener('click', (e) => {
+        e.stopPropagation();
+        handleClickShakeChange();
+    });
+    clickShakeRow.setAttribute('role', 'switch');
+    clickShakeRow.tabIndex = 0;
+    clickShakeRow.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            e.stopPropagation();
+            handleClickShakeChange();
+        }
+    });
+
+    trackingRow.appendChild(clickShakeRow);
+
     // ── 锻造券掉落动画与音效开关 ──
     const forgeDropEffectsRow = document.createElement('div');
     Object.assign(forgeDropEffectsRow.style, trackingToggleRowStyle);
@@ -1770,8 +1835,94 @@ function createAnimationSettingsSidePanel(manager, prefix) {
 
     trackingRow.appendChild(forgeDropEffectsRow);
 
+    // ── 隐藏喵宇宙入口（只收起按钮栏里的喵宇宙按钮）──
+    // 状态归 window.nekoCommunityEntry 管；与桌面端设置页「通用 → 喵宇宙」共用同一份偏好。
+    const communityEntryRow = document.createElement('div');
+    Object.assign(communityEntryRow.style, trackingToggleRowStyle);
+
+    const communityEntryCheckbox = document.createElement('input');
+    communityEntryCheckbox.type = 'checkbox';
+    communityEntryCheckbox.id = `${prefix}-community-entry-hidden`;
+    // 由文件级的单个监听器按这个标记同步勾选状态（见 syncCommunityEntryToggles），面板本身不挂 window 监听器
+    communityEntryCheckbox.setAttribute('data-neko-community-entry-toggle', '');
+    communityEntryCheckbox.style.display = 'none';
+    communityEntryCheckbox.checked = !!(window.nekoCommunityEntry && window.nekoCommunityEntry.isHidden());
+
+    const {
+        indicator: communityEntryIndicator,
+        updateStyle: updateCommunityEntryIndicatorStyle
+    } = manager._createCheckIndicator();
+    Object.assign(communityEntryIndicator.style, { width: '20px', height: '20px', flexShrink: '0' });
+
+    const updateCommunityEntryRowStyle = () => {
+        updateCommunityEntryIndicatorStyle(communityEntryCheckbox.checked);
+        updateTrackingToggleRowBackground(communityEntryRow, communityEntryCheckbox.checked);
+        communityEntryRow.setAttribute('aria-checked', String(communityEntryCheckbox.checked));
+    };
+    communityEntryCheckbox.updateStyle = updateCommunityEntryRowStyle;
+
+    const communityEntryLabel = document.createElement('span');
+    communityEntryLabel.textContent = window.t
+        ? window.t('settings.toggles.hideCommunityEntry')
+        : '隐藏喵宇宙入口';
+    communityEntryLabel.setAttribute('data-i18n', 'settings.toggles.hideCommunityEntry');
+    Object.assign(communityEntryLabel.style, { userSelect: 'none', fontSize: '12px', flex: '1' });
+
+    communityEntryRow.appendChild(communityEntryCheckbox);
+    communityEntryRow.appendChild(communityEntryIndicator);
+    communityEntryRow.appendChild(communityEntryLabel);
+    bindTrackingToggleRowHover(communityEntryRow, () => communityEntryCheckbox.checked);
+    updateCommunityEntryRowStyle();
+
+    const handleCommunityEntryChange = () => {
+        if (!window.nekoCommunityEntry || typeof window.nekoCommunityEntry.setHidden !== 'function') return;
+        communityEntryCheckbox.checked = window.nekoCommunityEntry.setHidden(!communityEntryCheckbox.checked);
+        updateCommunityEntryRowStyle();
+    };
+
+    communityEntryRow.addEventListener('click', (e) => {
+        e.stopPropagation();
+        handleCommunityEntryChange();
+    });
+    communityEntryRow.setAttribute('role', 'switch');
+    communityEntryRow.tabIndex = 0;
+    communityEntryRow.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            e.stopPropagation();
+            handleCommunityEntryChange();
+        }
+    });
+
+    trackingRow.appendChild(communityEntryRow);
+
+    // 面板只建一次；每次展开前按实际值刷新点击颤动开关
+    const originalExpand = container._expand;
+    container._expand = () => {
+        clickShakeCheckbox.checked = isClickShakeEnabled();
+        updateClickShakeRowStyle();
+        originalExpand();
+    };
+
     document.body.appendChild(container);
     return container;
+}
+
+/**
+ * 「隐藏喵宇宙入口」在桌面端设置页或其他窗口改动时，同步所有现存设置面板里的勾选。
+ * 只挂一个文件级监听器、每次现查 DOM：面板被移除后不会被监听器引用住。
+ */
+function syncCommunityEntryToggles(event) {
+    const hidden = !!(event && event.detail && event.detail.hidden === true);
+    document.querySelectorAll('input[data-neko-community-entry-toggle]').forEach((checkbox) => {
+        checkbox.checked = hidden;
+        if (typeof checkbox.updateStyle === 'function') checkbox.updateStyle();
+    });
+}
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function'
+    && !window.__nekoCommunityEntryToggleSyncInstalled) {
+    window.__nekoCommunityEntryToggleSyncInstalled = true;
+    window.addEventListener('neko-community-entry-visibility-changed', syncCommunityEntryToggles);
 }
 
 /**
@@ -2021,11 +2172,8 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
         lastPointerPosition = { x: event.clientX, y: event.clientY };
     };
 
-    // 指针离开整个窗口（或窗口失焦）后不会再有 pointermove，记录的位置会
-    // 一直停在保持区里，收起复查就永远不会放行；清掉它。菜单会随模型呼吸/
-    // 鼠标跟随在静止指针下漂移，布局变化会让浏览器补发合成的 mouseleave，
-    // 所以收起判定靠"实时指针位置 + 实时矩形"的驻留复查而不是单次 leave
-    // 事件；坐标也不加时效——指针原地长停是合法悬停，只有离开窗口才作废。
+    // 指针离开整个窗口（或窗口失焦）后不会再有 pointermove。清掉记录的位置，
+    // 下一次复查就能收起，不必把过渡宽限走完。
     const forgetPointerOnWindowExit = (event) => {
         if (event.type === 'blur' || !event.relatedTarget) lastPointerPosition = null;
     };
@@ -2087,12 +2235,10 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
             : delay;
         if (sidePanel._hoverCollapseTimer) { clearTimeout(sidePanel._hoverCollapseTimer); sidePanel._hoverCollapseTimer = null; }
         startPointerTracking();
-        // 收起判定走驻留复查：每拍重新取实时矩形和最新指针位置，指针仍贴
-        // 着锚点/面板（含过渡缝隙，以及菜单漂移把边界推过静止指针造成的
-        // 贴边停留）就继续观察，真正移出后的下一拍立即收起。不设固定宽限
-        // ——按单次 leave 起算的宽限会在用户中途停顿、或菜单随模型呼吸在
-        // 指针下持续漂移时把还悬停着的面板收走，表现为「悬停展开后一停
-        // 就关」。
+        // 锚点或面板上的 :hover 直接取消收起。过渡缝（锚点和面板包围盒外加
+        // 18px）只再维持一小段，方便从按钮移到面板；停在缝里超过这段就收起。
+        // 光标停在按钮或面板上时不靠这段宽限续命。
+        const bridgeGraceStartedAt = Date.now();
         const attemptCollapse = () => {
             sidePanel._hoverCollapseTimer = null;
             if (!sidePanel.isConnected || sidePanel.style.display === 'none' || isTutorialHoverDisabled()) {
@@ -2103,7 +2249,10 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
                 stopPointerTracking();
                 return;
             }
-            if (isPointerInTransferBridge()) {
+            if (
+                isPointerInTransferBridge()
+                && Date.now() - bridgeGraceStartedAt < AVATAR_POPUP_HOVER_BRIDGE_GRACE_MS
+            ) {
                 sidePanel._hoverCollapseTimer = setTimeout(attemptCollapse, AVATAR_POPUP_HOVER_RECHECK_MS);
                 return;
             }

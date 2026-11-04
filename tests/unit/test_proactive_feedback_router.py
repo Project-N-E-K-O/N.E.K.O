@@ -1,6 +1,7 @@
 """Local authorization, lifecycle and durable-store transport integration."""
 import asyncio
 import json
+import threading
 import uuid
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -200,6 +201,200 @@ async def test_optional_bootstrap_failure_does_not_break_application(monkeypatch
     await routes._bootstrap_task
     assert routes._runtime is None
     await routes.close_runtime()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_bootstrap_cannot_install_capture_after_shutdown(tmp_path, monkeypatch):
+    from services.proactive_feedback import capture
+    from services.proactive_feedback.runtime_v2 import ProactiveFeedbackRuntimeV2
+    from main_routers import recommendation_router
+    from utils import preferences, preferences_audit
+
+    loop, main_thread = asyncio.get_running_loop(), threading.current_thread()
+    entered, release, finished = asyncio.Event(), threading.Event(), threading.Event()
+    original_install = preferences.install_settings_capture_provider
+
+    def delayed_install(provider, *, protocol_version=1):
+        if provider is not None:
+            loop.call_soon_threadsafe(entered.set)
+            if threading.current_thread() is not main_thread:
+                assert release.wait(5)
+        original_install(provider, protocol_version=protocol_version)
+        if provider is not None:
+            finished.set()
+
+    monkeypatch.setattr(preferences_audit, "_capture_provider", None)
+    monkeypatch.setattr(preferences_audit, "_capture_protocol", 1)
+    monkeypatch.setattr(capture, "_provider", None)
+    monkeypatch.setattr(recommendation_router, "STORE_PROTOCOL_VERSION", 1)
+    monkeypatch.setattr(preferences, "install_settings_capture_provider", delayed_install)
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(503)))
+    runtime = ProactiveFeedbackRuntimeV2(RecommendationStore(tmp_path / "bootstrap.sqlite3", protocol_version=2), client=client)
+    monkeypatch.setattr(runtime, "start", lambda: None)
+
+    async def factory():
+        return runtime
+
+    monkeypatch.setattr(routes, "create_runtime", factory)
+    monkeypatch.setattr(routes, "_runtime", None)
+    monkeypatch.setattr(routes, "_bootstrap_task", None)
+    monkeypatch.setattr(routes, "_closing", False)
+    try:
+        routes.schedule_start()
+        await asyncio.wait_for(entered.wait(), 3)
+        await asyncio.wait_for(routes.close_runtime(), 3)
+        release.set()
+        assert await asyncio.to_thread(finished.wait, 3)
+        assert preferences_audit._capture_provider is None
+        assert preferences_audit._capture_protocol == 1
+        assert capture.get_control_snapshot({"key": "fixture"}) is None
+        assert recommendation_router.STORE_PROTOCOL_VERSION == 1
+    finally:
+        release.set()
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_shutdown_still_retires_capture_and_attribution(monkeypatch):
+    from services.proactive_feedback import capture
+    from main_routers import recommendation_router
+    from utils import preferences_audit
+
+    entered = asyncio.Event()
+
+    async def close():
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(preferences_audit, "_capture_provider", lambda owner: owner)
+    monkeypatch.setattr(preferences_audit, "_capture_protocol", 2)
+    monkeypatch.setattr(preferences_audit, "_attribution_factory", lambda: None)
+    monkeypatch.setattr(capture, "_provider", lambda owner: {"owner_key": owner["key"]})
+    monkeypatch.setattr(recommendation_router, "STORE_PROTOCOL_VERSION", 2)
+    monkeypatch.setattr(routes, "_runtime", SimpleNamespace(close=close))
+    monkeypatch.setattr(routes, "_bootstrap_task", None)
+    monkeypatch.setattr(routes, "_closing", False)
+    task = asyncio.create_task(routes.close_runtime())
+    await asyncio.wait_for(entered.wait(), 3)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert capture.get_control_snapshot({"key": "fixture"}) is None
+    assert preferences_audit._capture_provider is None
+    assert preferences_audit._capture_protocol == 1
+    assert preferences_audit._attribution_factory is None
+    assert recommendation_router.STORE_PROTOCOL_VERSION == 1
+    assert routes._runtime is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_old_close", [False, True])
+async def test_old_shutdown_cannot_retire_replacement_bindings(tmp_path, monkeypatch, cancel_old_close):
+    from services.proactive_feedback import capture
+    from services.proactive_feedback.runtime_v2 import ProactiveFeedbackRuntimeV2
+    from main_routers import recommendation_router
+    from utils import preferences_audit
+
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def close_old():
+        entered.set()
+        await release.wait()
+
+    monkeypatch.setattr(preferences_audit, "_capture_provider", None)
+    monkeypatch.setattr(preferences_audit, "_capture_protocol", 1)
+    monkeypatch.setattr(preferences_audit, "_attribution_factory", None)
+    monkeypatch.setattr(capture, "_provider", None)
+    monkeypatch.setattr(recommendation_router, "STORE_PROTOCOL_VERSION", 1)
+    monkeypatch.setattr(routes, "_runtime", SimpleNamespace(close=close_old))
+    monkeypatch.setattr(routes, "_bootstrap_task", None)
+    monkeypatch.setattr(routes, "_closing", False)
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(503)))
+    replacement = ProactiveFeedbackRuntimeV2(RecommendationStore(tmp_path / "replacement.sqlite3", protocol_version=2), client=client)
+    monkeypatch.setattr(replacement, "start", lambda: None)
+
+    async def factory():
+        return replacement
+
+    monkeypatch.setattr(routes, "create_runtime", factory)
+    task = asyncio.create_task(routes.close_runtime())
+    try:
+        await asyncio.wait_for(entered.wait(), 3)
+        await routes.start_runtime()
+        routes.schedule_start()
+        await routes._bootstrap_task
+        if cancel_old_close:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            release.set()
+            await task
+        assert routes._runtime is replacement
+        assert capture._provider == replacement.control_snapshot
+        assert preferences_audit._capture_provider is capture.get_control_snapshot
+        assert preferences_audit._capture_protocol == recommendation_router.STORE_PROTOCOL_VERSION == 2
+        assert preferences_audit._attribution_factory is host.attribution_context
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await routes.close_runtime()
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_late_bootstrap_cannot_publish_over_replacement(monkeypatch):
+    entered, cancelled, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    started, closed = [], []
+
+    def runtime(name):
+        async def close():
+            closed.append(name)
+        return SimpleNamespace(start=lambda: started.append(name), close=close)
+
+    obsolete, replacement = runtime("obsolete"), runtime("replacement")
+    calls = 0
+
+    async def factory():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                # Model a creation operation that completed despite a caller
+                # cancellation, returning its still locally owned resource.
+                cancelled.set()
+                await release.wait()
+            return obsolete
+        return replacement
+
+    monkeypatch.setattr(routes, "create_runtime", factory)
+    monkeypatch.setattr(routes, "_runtime", None)
+    monkeypatch.setattr(routes, "_bootstrap_task", None)
+    monkeypatch.setattr(routes, "_closing", False)
+    routes.schedule_start()
+    await asyncio.wait_for(entered.wait(), 3)
+    closer = asyncio.create_task(routes.close_runtime())
+    try:
+        await asyncio.wait_for(cancelled.wait(), 3)
+        await routes.start_runtime()
+        routes.schedule_start()
+        await routes._bootstrap_task
+        release.set()
+        await asyncio.wait_for(closer, 3)
+        assert routes._runtime is replacement
+        assert started == ["replacement"]
+        assert closed == ["obsolete"]
+    finally:
+        release.set()
+        if not closer.done():
+            closer.cancel()
+            await asyncio.gather(closer, return_exceptions=True)
+        await routes.close_runtime()
 
 
 @pytest.mark.asyncio

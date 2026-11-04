@@ -113,7 +113,7 @@ ActivityCategory = Literal[
                    # tracker bypasses LLM enrichment + buffers entirely so
                    # the user's secret (password manager, banking, health
                    # records, etc.) never leaves the process.
-    'own_app',     # The N.E.K.O / catgirl app itself in foreground.
+    'own_app',     # The N.E.K.O / neko app itself in foreground.
                    # Tracker treats as "no new window data this tick" —
                    # window observation is NOT updated and the previous
                    # window's dwell timer is FROZEN: state machine
@@ -123,13 +123,13 @@ ActivityCategory = Literal[
                    # duration so dwell only counts non-own-app time.
                    # GPU fallback gaming is intentionally NOT
                    # short-circuited during own_app foreground —
-                   # catgirl Live2D/VRM rendering typically lands below
+                   # neko Live2D/VRM rendering typically lands below
                    # the gaming threshold, and a high-GPU app the user
                    # was already running in the background continues to
                    # be the user's "real activity" worth classifying.
                    # Avoids the recursive feedback where "user is
-                   # looking at the catgirl app" feeds back into the
-                   # catgirl's chat decisions.
+                   # looking at the neko app" feeds back into the
+                   # neko's chat decisions.
 ]
 
 
@@ -250,19 +250,19 @@ PRIVATE_PROCESS_NAMES: list[str] = [
 
 # === OWN-APP EXCLUSION (second-highest priority, after private) ===
 #
-# The N.E.K.O / catgirl app itself. When in foreground, the tracker
+# The N.E.K.O / neko app itself. When in foreground, the tracker
 # treats this as "no fresh window data" — observation is NOT updated
 # and the previous window's dwell timer is FROZEN: state machine
 # records ``_own_app_freeze_started_at`` on entry and on the next
 # non-own_app observation advances ``_current_window_started_at`` by
-# the freeze duration, so a brief glance at the catgirl can't push the
+# the freeze duration, so a brief glance at the neko can't push the
 # previously-foreground app past dwell thresholds (e.g. focused_work's
 # 90s). GPU fallback gaming is intentionally NOT short-circuited
-# during own_app foreground (catgirl Live2D/VRM typically lands below
+# during own_app foreground (neko Live2D/VRM typically lands below
 # the threshold; a high-GPU app the user was running in the
 # background remains their "real activity" worth classifying).
-# Avoids the recursive feedback where "user is looking at the catgirl"
-# becomes a signal the catgirl uses to decide whether to chat.
+# Avoids the recursive feedback where "user is looking at the neko"
+# becomes a signal the neko uses to decide whether to chat.
 #
 # Process names from ``specs/launcher.spec`` (PyInstaller output for
 # the Windows desktop build) and known sibling executables shipped
@@ -2921,7 +2921,7 @@ def _build_title_table() -> list[tuple[Needle, ClassifyResult]]:
         for alias in aliases:
             table.append((_make_needle(alias), ClassifyResult('private', None, canonical)))
 
-    # OWN_APP — second priority. Beats gaming because the catgirl app's
+    # OWN_APP — second priority. Beats gaming because the neko app's
     # own GPU usage would otherwise trip gaming-by-GPU fallback.
     for canonical, aliases in OWN_APP_TITLE_KEYWORDS:
         for alias in aliases:

@@ -41,7 +41,9 @@ from utils.preferences_audit import (
     JOURNAL_KEY as _SETTINGS_JOURNAL_KEY,
     attach_journal as _attach_settings_journal,
     install_settings_attribution_context,
+    install_settings_capture_provider,
     prepare_atomic_preferences as _prepare_atomic_preferences,
+    proactive_snapshot as _proactive_settings_snapshot,
     read_journal as _read_settings_journal,
     settings_attribution_context as _settings_attribution_context,
     without_journal as _without_settings_journal,
@@ -155,7 +157,7 @@ def save_user_preferences(preferences: List[Dict[str, Any]]) -> bool:
         print(f"保存用户偏好失败: {e}")
         return False
 
-def update_model_preferences(model_path: str, position: Dict[str, float], scale: Dict[str, float], parameters: Optional[Dict[str, float]] = None, display: Optional[Dict[str, float]] = None, rotation: Optional[Dict[str, float]] = None, viewport: Optional[Dict[str, float]] = None, camera_position: Optional[Dict[str, float]] = None) -> bool:
+def update_model_preferences(model_path: str, position: Dict[str, float], scale: Dict[str, float], parameters: Optional[Dict[str, float]] = None, display: Optional[Dict[str, float]] = None, rotation: Optional[Dict[str, float]] = None, viewport: Optional[Dict[str, float]] = None, camera_position: Optional[Dict[str, float]] = None, *, parameters_mode: Optional[str] = None) -> bool:
     """Update one model without racing another preference-file writer."""
     try:
         assert_cloudsave_writable(_config_manager, operation="save", target="user_preferences.json")
@@ -163,7 +165,7 @@ def update_model_preferences(model_path: str, position: Dict[str, float], scale:
         with _locked_preferences_store():
             return _update_model_preferences_unlocked(
                 model_path, position, scale, parameters, display, rotation,
-                viewport, camera_position,
+                viewport, camera_position, parameters_mode=parameters_mode,
             )
     except MaintenanceModeError:
         raise
@@ -172,7 +174,7 @@ def update_model_preferences(model_path: str, position: Dict[str, float], scale:
         return False
 
 
-def _update_model_preferences_unlocked(model_path: str, position: Dict[str, float], scale: Dict[str, float], parameters: Optional[Dict[str, float]] = None, display: Optional[Dict[str, float]] = None, rotation: Optional[Dict[str, float]] = None, viewport: Optional[Dict[str, float]] = None, camera_position: Optional[Dict[str, float]] = None) -> bool:
+def _update_model_preferences_unlocked(model_path: str, position: Dict[str, float], scale: Dict[str, float], parameters: Optional[Dict[str, float]] = None, display: Optional[Dict[str, float]] = None, rotation: Optional[Dict[str, float]] = None, viewport: Optional[Dict[str, float]] = None, camera_position: Optional[Dict[str, float]] = None, *, parameters_mode: Optional[str] = None) -> bool:
     """
     Update preferences of the given model
 
@@ -181,6 +183,7 @@ def _update_model_preferences_unlocked(model_path: str, position: Dict[str, floa
         position (Dict[str, float]): position info {'x': float, 'y': float, 'z': float}
         scale (Dict[str, float]): scale info {'x': float, 'y': float, 'z': float}
         parameters (Optional[Dict[str, float]]): model parameters {'paramId': value}
+        parameters_mode (Optional[str]): 'replace' makes parameters the complete override snapshot
         display (Optional[Dict[str, float]]): display info {'screenX': float, 'screenY': float}, for multi-monitor position restore
         rotation (Optional[Dict[str, float]]): rotation info {'x': float, 'y': float, 'z': float}, for VRM model orientation
         viewport (Optional[Dict[str, float]]): viewport info {'width': float, 'height': float}, for cross-resolution position and scale normalization
@@ -214,6 +217,8 @@ def _update_model_preferences_unlocked(model_path: str, position: Dict[str, floa
         # Add parameters if present
         if parameters is not None:
             new_model_pref['parameters'] = parameters
+        if parameters_mode is not None:
+            new_model_pref['parameters_mode'] = parameters_mode
 
         # Add monitor information if present, for multi-monitor position restoration
         if display is not None:
@@ -239,6 +244,9 @@ def _update_model_preferences_unlocked(model_path: str, position: Dict[str, floa
             elif 'parameters' in existing_pref:
                 # Retain existing parameters
                 new_model_pref['parameters'] = existing_pref['parameters']
+            if parameters_mode is None and 'parameters_mode' in existing_pref:
+                # Position/scale saves must not revive the legacy directory mirror.
+                new_model_pref['parameters_mode'] = existing_pref['parameters_mode']
             # Handle monitor information
             if display is not None:
                 pass  # Already added to new_model_pref above
@@ -344,6 +352,11 @@ def validate_model_preferences(preferences: Dict[str, Any]) -> bool:
     
     # parameters is optional, but must be a dictionary when present
     if 'parameters' in preferences and not isinstance(preferences['parameters'], dict):
+        return False
+
+    if 'parameters_mode' in preferences and (
+        preferences['parameters_mode'] != 'replace' or 'parameters' not in preferences
+    ):
         return False
     
     return True
@@ -924,6 +937,38 @@ def pending_settings_changes(limit: int = 100) -> List[Dict[str, Any]]:
         raise ValueError("Settings journal limit must be between 1 and 4096")
     with _locked_preferences_store(attribute=False):
         return _read_settings_journal(_load_preferences_data_for_write_unlocked())["entries"][:limit]
+
+
+def settings_capture_status() -> Dict[str, Any]:
+    """Minimal local diagnostic; no raw entries or values leave this boundary."""
+    with _locked_preferences_store(attribute=False):
+        journal = _read_settings_journal(_load_preferences_data_for_write_unlocked())
+        return {"scope": "all_local_accounts", "statistics_incomplete": bool(journal.get("incomplete")),
+                "protocol_version": journal.get("protocol_version", 1)}
+
+
+def reserve_current_settings_snapshot(owner, capture_provider) -> Dict[str, Any]:
+    """Reserve the shared revision without changing any current setting value.
+
+    Composition must already hold the credential attribution fence. This uses
+    only the preferences lock, preserving credential -> preferences -> SQLite
+    ordering. The snapshot has no custody promise until Store admission.
+    """
+    assert_cloudsave_writable(_config_manager, operation="save", target="user_preferences.json")
+    with _locked_preferences_store(attribute=False):
+        data = _load_preferences_data_for_write_unlocked()
+        journal = _read_settings_journal(data)
+        if journal["revision"] >= 2**53 - 1:
+            raise ValueError("Settings revision exhausted")
+        context = capture_provider(owner)
+        if not isinstance(context, dict) or context.get("owner_key") != owner.get("key"):
+            raise ValueError("Current settings capture unavailable")
+        snapshot = _proactive_settings_snapshot(data)
+        journal["revision"] += 1
+        committed = _attach_settings_journal(data, journal)
+        atomic_write_json(_get_preferences_write_path(), committed, ensure_ascii=False, indent=2)
+        return {"context": context, "payload": {"revision": journal["revision"], "origin": "baseline",
+                "occurred_at": time.time(), "previous": snapshot, "settings": snapshot}}
 
 
 def acknowledge_settings_changes(ids) -> int:

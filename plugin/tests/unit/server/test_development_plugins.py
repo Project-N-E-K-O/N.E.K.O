@@ -424,7 +424,7 @@ async def test_ordinary_lifecycle_can_start_after_corrupt_development_store(tmp_
             self.started = False
             hosts.append(self)
 
-        async def start(self, message_target_queue, startup_timeout=None):
+        async def start(self, startup_timeout=None):
             self.started = True
 
         async def shutdown(self, timeout=None):
@@ -1076,7 +1076,7 @@ async def test_start_integrates_source_policy_and_does_not_write_metadata_to_sou
         def __init__(self, **kwargs):
             calls["host"] = kwargs
             self.process = SimpleNamespace(is_alive=lambda: True, exitcode=None)
-        async def start(self, message_target_queue, startup_timeout=None, startup_failure=None):
+        async def start(self, startup_timeout=None, startup_failure=None):
             calls["started"] = True
         async def shutdown(self, timeout=None):
             pass

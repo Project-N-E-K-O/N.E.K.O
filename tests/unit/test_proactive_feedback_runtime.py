@@ -30,6 +30,8 @@ def receipt(batch, status="stored"):
 
 
 class Store:
+    protocol_version = 1
+
     def __init__(self):
         self.batch = make_batch()
         self.acks, self.errors, self.settings = [], [], []
@@ -96,6 +98,29 @@ def runtime_for(setup, handler=None, **kwargs):
                                        attribution_context=attribution, clock=lambda: now[0], client=client,
                                        fenced_snapshot_provider=lambda: dict(saved), **kwargs)
     return runtime, client
+
+
+@pytest.mark.asyncio
+async def test_v1_426_blocks_old_transport_and_exposes_upgrade_state(setup):
+    async def handler(request):
+        setup[3].append(request)
+        if request.method == "GET":
+            return httpx.Response(200, json={"user": {"id": setup[0]["local_user_id"]}})
+        return httpx.Response(426, json={"detail": "proactive_upgrade_required"})
+    runtime, client = runtime_for(setup, handler)
+    try:
+        result = await runtime.sync_once()
+        assert result["state"] == "blocked" and result["error_code"] == "upgrade_required"
+        status = await runtime.status()
+        assert status["upgrade_required"] and status["minimum_protocol"] == 2 and not status["fully_synced"]
+        count = len(setup[3])
+        await runtime.sync_once()
+        assert len(setup[3]) == count
+        assert not setup[1].acks
+        with pytest.raises(SyncFailure, match="upgrade_required"):
+            await runtime.resume_blocked_batch(owner_key=setup[4]["key"], batch_id=setup[1].batch["batch_id"], batch_hash=payload_hash(setup[1].batch))
+    finally:
+        await client.aclose()
 
 
 @pytest.mark.asyncio

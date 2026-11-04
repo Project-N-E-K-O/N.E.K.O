@@ -23,6 +23,7 @@ These documents preserve design intent and implementation context. They are grou
 - [Compact chat mode](./compact-chat-mode-design)
 - [Memory event journal](./memory-event-log-rfc)
 - [User-driven memory evidence](./memory-evidence-rfc)
+- [Plugin control requests and entry execution](./plugin-control-rpc)
 - [PNGTuber lightweight avatar](./pngtuber-lightweight-avatar-plan)
 - [Translation subtitle panel](./translation-subtitle-panel-design)
 - [TTS provider and voice-source unification](./tts-voice-source-unification)
@@ -55,8 +56,8 @@ These documents preserve design intent and implementation context. They are grou
 
 ## Approved proposals (not yet implemented)
 
-- [Catgirl visiting infrastructure (v3, all decisions approved)](./visit-infrastructure)
-- [Catgirl visiting: Servers contract](./visit-servers-contract) — Chinese-only. Current contract for the closed-source Servers endpoints; generated from §4.7 of the design record and pinned to it by a unit test.
-- [Catgirl visiting: field tests T1–T15](./visit-field-tests) — Chinese-only. Result table and `chrome://webrtc-internals` acceptance fields for the design record's field-test list.
+- [Neko visiting infrastructure (v3, all decisions approved)](./visit-infrastructure)
+- [Neko visiting: Servers contract](./visit-servers-contract) — Chinese-only. Current contract for the closed-source Servers endpoints; generated from §4.7 of the design record and pinned to it by a unit test.
+- [Neko visiting: field tests T1–T15](./visit-field-tests) — Chinese-only. Result table and `chrome://webrtc-internals` acceptance fields for the design record's field-test list.
 
 New records should state whether they are a current contract, implemented record, proposal, historical snapshot, or deprecated document near the beginning.

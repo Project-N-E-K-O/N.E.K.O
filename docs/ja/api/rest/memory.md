@@ -18,6 +18,7 @@
 | `POST` | `/api/memory/review_config` | 最近のメモリの自動レビュー設定を更新 |
 | `GET` | `/api/memory/powerful_memory_config` | Powerful Memory 設定を取得 |
 | `POST` | `/api/memory/powerful_memory_config` | Powerful Memory 設定を更新し、必要な移行を実行 |
+| `GET` | `/api/memory/farewell-summary` | デスクトップ版の終了時お別れカード用の読み取り専用メモリ概要 |
 | `GET` | `/api/memory/legacy/scan` | ユーザーに提示できる旧メモリルートを読み取り専用で走査 |
 | `POST` | `/api/memory/legacy/purge` | 走査済みの旧ルートから明示的に選択された項目を削除 |
 
@@ -192,6 +193,37 @@ Powerful Memory は、シグナル分析、昇格時のマージ、反証チェ�
 ```json
 { "success": false, "error": "migration HTTP 409" }
 ```
+
+## お別れカードの概要
+
+### `GET /api/memory/farewell-summary`
+
+現在選択中のキャラクターの読み取り専用メモリ概要で、デスクトップ版の終了時お別れカードに表示されます。デスクトップのメインプロセスがループバック経由で 1.2 秒のタイムアウト付きで呼び出すため、このルートはローカルファイルを読むだけです。モデル呼び出し、同期、書き込みは一切行いません。
+
+```json
+{
+  "memory_count": 128,
+  "conversation_count": 342,
+  "flashback": {
+    "id": "fact_20260314103000_ab12cd34",
+    "text": "ご主人様は雨の日に家で本を読むのが大好き",
+    "date": "2026-03-14"
+  }
+}
+```
+
+| フィールド | 説明 |
+|---|---|
+| `memory_count` | ローカルの有効メモリ数。コミュニティカードの `totalMemoryCount` と同じ基準で、`facts.json` と `facts_archive.json` を重複排除し、機械ログ行を除きます。 |
+| `conversation_count` | キャラクターの `time_indexed.db` 内のユーザーメッセージ数（会話 1 往復につき 1 件）。データベースがない、または読めない場合は省略されます。 |
+| `flashback` | 振り返る価値のある古いメモリ 1 件、または `null`。 |
+| `flashback.id` | メモリ ID。単純な文字列でない ID は安定した不透明トークンになります。 |
+| `flashback.text` | メモリ本文。空白をまとめ、最大 200 文字。 |
+| `flashback.date` | メモリの出来事のローカル日付（`YYYY-MM-DD`）。出来事の時刻がない場合は記録日時を使います。 |
+
+フラッシュバックは共有可能なメモリからのみ選ばれ、規則は `/api/card-drop/facts` と同じです。private、redacted、機械ログ行、`neko_visit` 由来の行、および `subject_archived_at` や `arbitration_*` を持つアーカイブ行は除外されます。7 日未満のメモリは選ばれません。残りのうち importance 5 以上を優先し、最も古い 4 分の 1 から importance で重み付けして 1 件を抽選するため、呼び出しごとに結果が変わることがあります。
+
+キャラクターが選択されていない場合は `{"flashback": null}` を返します。失敗した場合はエラーを返さず、件数フィールドを省略します。
 
 ## 旧メモリのクリーンアップ
 

@@ -45,6 +45,31 @@ function renderPanel(overrides: Partial<Parameters<typeof CompactExportHistoryPa
 }
 
 describe('CompactExportHistoryPanel', () => {
+  it('keeps visit peer messages visually distinct from both the user and the local assistant', () => {
+    const visitPeerMessage = parseChatMessage({
+      id: 'visit-peer-message',
+      role: 'tool',
+      author: 'Guest Neko',
+      time: '10:01',
+      createdAt: 2,
+      blocks: [{ type: 'text', text: 'I came to visit.' }],
+      status: 'sent',
+    });
+    const { container } = renderPanel({
+      messages: [message, visitPeerMessage],
+      selectedIds: new Set(),
+      selectedCount: 0,
+      selectableCount: 2,
+      previewOpen: false,
+      visibilityState: 'open',
+    });
+
+    const row = container.querySelector('[data-compact-export-history-message-id="visit-peer-message"]');
+    expect(row).toHaveClass('is-visit-peer');
+    // Local assistant -> visit peer is a visual speaker switch, not one assistant group.
+    expect(row).toHaveAttribute('data-compact-history-group', 'switch');
+  });
+
   it('counts only visible recommendations while preserving dialogue and selection guards', () => {
     const hidden = ['chat', 'news'].map(category => parseChatMessage({ ...message, id: `hidden-${category}`, blocks: [{
       type: 'proactive_recommendation', recommendationId: '19f3bbca-a275-43d4-923d-1b2ceee91943',
@@ -61,7 +86,9 @@ describe('CompactExportHistoryPanel', () => {
     const { container } = renderPanel({ messages, selectedIds: new Set(selectable.map(item => item.id)),
       selectedCount: selectable.length, selectableCount: selectable.length, previewOpen: false });
     expect(container.querySelectorAll('.compact-export-history-bubble[role="button"]')).toHaveLength(3);
-    for (const item of hidden) expect(container.querySelector(`[data-message-id="${item.id}"]`)).toBeNull();
+    for (const item of hidden) {
+      expect(container.querySelector(`[data-compact-export-history-message-id="${item.id}"]`)).toBeNull();
+    }
   });
   it('omits retired proactive placeholder rows while preserving actual dialogue', () => {
     const placeholder = parseChatMessage({ ...message, id: 'retired-topic', blocks: [{
@@ -69,7 +96,7 @@ describe('CompactExportHistoryPanel', () => {
       category: 'chat', state: 'accepted', content: { title: '', source: '', url: '' },
     }] });
     const { container } = renderPanel({ messages: [placeholder, message], controlsOpen: false, previewOpen: false });
-    expect(container.querySelector('[data-message-id="retired-topic"]')).toBeNull();
+    expect(container.querySelector('[data-compact-export-history-message-id="retired-topic"]')).toBeNull();
     expect(container.querySelector('.proactive-recommendation')).toBeNull();
     expect(screen.getByText('Export me.')).toBeInTheDocument();
   });

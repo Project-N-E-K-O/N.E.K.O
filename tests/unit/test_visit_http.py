@@ -67,14 +67,14 @@ OTHER_OWN = "e" * 24
 
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
-    for module in (rtm, transport_ws, visit_route_state, http, cr, tu):
+    for module in (rtm, transport_ws, visit_route_state, http, cr, tu, display_socket):
         module._reset_for_tests()
     rtm.register_visit_route_kind()
     monkeypatch.setattr(visit_settings, "VISIT_ENABLED", True)
     monkeypatch.setattr(visit_settings, "NEKO_VISIT_ALLOW_NONLOCAL", False)
     monkeypatch.delenv("NEKO_BEHIND_PROXY", raising=False)
     yield
-    for module in (rtm, transport_ws, visit_route_state, http, cr, tu):
+    for module in (rtm, transport_ws, visit_route_state, http, cr, tu, display_socket):
         module._reset_for_tests()
 
 
@@ -950,6 +950,20 @@ async def test_state_never_carries_the_invite_code(env):
     assert "invite_code" not in _keys(resp.json()) and INVITE not in resp.text
 
 
+async def test_state_restores_host_invitation_target_only_to_its_owner(env):
+    await _rooms(env)
+    target = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    env.host.rt.target_user_id = target
+    async with env.client() as client:
+        restored = await client.get("/api/visit/state?catgirl=Host", headers=GOOD)
+        env.account = "someone-else"
+        hidden = await client.get("/api/visit/state?catgirl=Host", headers=GOOD)
+    assert restored.json()["target_user_id"] == target
+    assert restored.json()["phase"] == "pending"
+    assert "target_user_id" not in hidden.json() and target not in hidden.text
+    assert "invite_code" not in restored.json()
+
+
 async def test_current_host_room_recovers_only_the_owned_pending_invite(env):
     async with env.client() as c:
         missing = await c.get("/api/visit/rooms/current?catgirl=Host", headers=GOOD)
@@ -986,13 +1000,32 @@ async def test_create_room_after_restart_always_mints_a_fresh_local_visit_id(env
 
 async def test_create_room_waits_for_desktop_restart_cleanup(env, monkeypatch):
     async def cleanup_failed():
-        return False
+        return cr.VisitServersUnreachable("desktop_restart_reset")
 
     monkeypatch.setattr(display_socket, "wait_desktop_restart_reset", cleanup_failed)
     async with env.client() as c:
         response = await c.post("/api/visit/rooms", headers=GOOD, json={"catgirl": "Host"})
     assert response.status_code == 503
     assert response.json()["code"] == "servers_unreachable"
+    assert env.host.rt is None
+
+
+async def test_create_room_asks_for_login_when_desktop_restart_cleanup_needs_it(env, monkeypatch):
+    async def no_local_invites():
+        return 0
+
+    async def signed_out():
+        raise cr.VisitLoginRequired()
+
+    monkeypatch.setattr(rtm, "reset_pending_host_invites_for_desktop_restart", no_local_invites)
+    monkeypatch.setattr(cr, "cancel_pending_host_invites", signed_out)
+    await display_socket._reset_for_new_desktop_run({"desktop_run_id": "desktop-a"})
+    await display_socket._reset_for_new_desktop_run({"desktop_run_id": "desktop-b"})
+    async with env.client() as c:
+        response = await c.post("/api/visit/rooms", headers=GOOD, json={"catgirl": "Host"})
+    # Symmetric with the startup reset: signed out is a login prompt, not "servers unreachable".
+    assert response.status_code == 409
+    assert response.json()["code"] == "VISIT_LOGIN_REQUIRED"
     assert env.host.rt is None
 
 
