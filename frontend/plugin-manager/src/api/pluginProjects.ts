@@ -1,5 +1,5 @@
 import type { AxiosError } from 'axios'
-import { del, get, post } from './index'
+import { del, get, post, put } from './index'
 import { openLocalPath } from '@/utils/openExternal'
 import { readErrorCode } from '@/utils/request'
 
@@ -13,6 +13,13 @@ export interface PluginProjectRequest {
 }
 
 export type PluginProjectIdentity = Omit<PluginProjectRequest, 'parent_dir'>
+
+export interface PluginProjectMetadata {
+  name: string
+  version: string
+  author: string
+  description: string
+}
 
 export interface PluginProjectPreview {
   plugin_id: string
@@ -61,9 +68,39 @@ export const createPluginProject = (request: PluginProjectRequest): Promise<Crea
   post('/plugin-projects/create', request, config)
 export const registerPluginProject = (sourceDir: string): Promise<AuthoringProject> =>
   post('/plugin-projects/register', { source_dir: sourceDir }, config)
+export const updatePluginProjectMetadata = (
+  projectId: string,
+  metadata: PluginProjectMetadata
+): Promise<AuthoringProject> =>
+  put(`/plugin-projects/${encodeURIComponent(projectId)}/metadata`, metadata, config)
 /** Stops and unloads the project plugin, then forgets the project; its files are kept. */
 export const removePluginProject = (projectId: string): Promise<unknown> =>
   del(`/plugin-projects/${encodeURIComponent(projectId)}`, config)
+
+export interface PrecheckStage {
+  name: 'lint' | 'sync' | 'release-check'
+  passed: boolean
+  output: string
+}
+
+/** Verbatim report of `neko-plugin precheck --json`, the same gates Market CI runs. */
+export interface PrecheckReport {
+  plugin_id: string | null
+  version: string | null
+  plugin_dir: string
+  passed: boolean
+  ruff_version: string
+  environment_issues: [string, string][]
+  stages: PrecheckStage[]
+}
+
+export const precheckPluginProject = (projectId: string): Promise<PrecheckReport> =>
+  post(
+    `/plugin-projects/${encodeURIComponent(projectId)}/precheck`,
+    {},
+    // The server budgets 600s for the CLI; the client must outlive it.
+    { ...config, timeout: 660_000 }
+  )
 
 export interface PickedDirectory {
   cancelled?: boolean

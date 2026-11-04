@@ -36,6 +36,8 @@ export const PROJECT_ERROR_MESSAGES = {
   PROJECT_STORE_UNREADABLE: 'projectStoreUnreadable',
   PROJECT_STORE_WRITE_FAILED: 'projectStoreWriteFailed',
   PLUGIN_OPERATION_BUSY: 'operationBusy',
+  PRECHECK_UNAVAILABLE: 'precheckUnavailable',
+  PRECHECK_FAILED_TO_RUN: 'precheckFailedToRun',
 } as const satisfies Record<string, AuthoringMessageKey>
 
 const ownKey = (messages: Record<string, AuthoringMessageKey>, code: string) =>

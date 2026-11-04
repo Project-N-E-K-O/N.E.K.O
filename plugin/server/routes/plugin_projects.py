@@ -14,6 +14,7 @@ from plugin.server.application.plugin_projects import (
     AuthoringProject,
     CreatedProject,
     ProjectIdentity,
+    ProjectMetadata,
     ProjectPreview,
 )
 from plugin.server.application.plugins._env_budgets import env_seconds
@@ -50,6 +51,14 @@ class ProjectRequest(ProjectIdentityRequest):
 
 class RegisterRequest(BaseModel):
     source_dir: str = Field(min_length=1, max_length=4096)
+
+
+class ProjectMetadataRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    name: str = Field(min_length=1, max_length=80)
+    version: str = Field(min_length=1, max_length=64)
+    author: str = Field(max_length=80)
+    description: str = Field(max_length=250)
 
 
 class DirectoryRequest(BaseModel):
@@ -108,6 +117,11 @@ async def register_plugin_project(body: RegisterRequest):
     return await _call(service.register_project(body.source_dir))
 
 
+@router.put("/{project_id}/metadata", response_model=AuthoringProject, dependencies=_mutation)
+async def update_project_metadata(project_id: str, body: ProjectMetadataRequest):
+    return await _call(service.update_project_metadata(project_id, ProjectMetadata(**body.model_dump())))
+
+
 @router.post("/pick-directory", response_model=PickDirectoryResponse, dependencies=_mutation)
 async def pick_project_directory(body: PickDirectoryRequest):
     # The dialog opens on the desktop of the machine running this server.
@@ -121,6 +135,12 @@ async def pick_project_directory(body: PickDirectoryRequest):
 async def open_project_directory(body: DirectoryRequest):
     await _call(asyncio.to_thread(service.open_project_directory, body.path))
     return OkResponse()
+
+
+@router.post("/{project_id}/precheck", dependencies=_mutation)
+async def precheck_plugin_project(project_id: str):
+    # The CLI runs the Market CI gates; the report passes through verbatim.
+    return await _call(asyncio.to_thread(service.precheck_project_sync, project_id))
 
 
 @router.delete("/{project_id}", response_model=OkResponse, dependencies=_mutation)

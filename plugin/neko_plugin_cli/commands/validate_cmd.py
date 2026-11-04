@@ -122,6 +122,7 @@ def validate_plugin_dir(
 
     _check_gitignore(plugin_dir / ".gitignore", issues, strict=strict)
     _check_python_decorators(plugin_dir, issues)
+    _check_symlink_tree(plugin_dir, issues)
 
     return issues
 
@@ -1138,3 +1139,24 @@ def _check_gitignore(path: Path, issues: list[tuple[str, str]], *, strict: bool)
     for pattern in required_patterns:
         if not re.search(rf"(^|\n){re.escape(pattern)}($|\n)", text):
             issues.append(("warning", f".gitignore should include {pattern}"))
+
+
+def _check_symlink_tree(plugin_dir: Path, issues: list[tuple[str, str]]) -> None:
+    # Market CI rejects any symlink in the mounted source; report the same
+    # rule locally so the upload is not the first place it surfaces. CI scans
+    # the checkout before dependency sync, so vendor/ (which pip may populate
+    # with link wrappers) and .git/ are out of scope here too.
+    try:
+        links = [
+            path
+            for path in plugin_dir.rglob("*")
+            if path.is_symlink() and path.relative_to(plugin_dir).parts[0] not in {"vendor", ".git"}
+        ]
+    except OSError as exc:
+        issues.append(("warning", f"plugin source tree could not be scanned for links: {exc}"))
+        return
+    if not links:
+        return
+    shown = ", ".join(str(path.relative_to(plugin_dir)) for path in links[:5])
+    suffix = f" (+{len(links) - 5} more)" if len(links) > 5 else ""
+    issues.append(("error", f"plugin source must not contain symbolic links: {shown}{suffix}"))

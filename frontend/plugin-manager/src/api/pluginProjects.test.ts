@@ -6,8 +6,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { authoringMessages } from '@/i18n/authoring'
 
 const post = vi.hoisted(() => vi.fn())
+const put = vi.hoisted(() => vi.fn())
 const openLocalPath = vi.hoisted(() => vi.fn())
-vi.mock('./index', () => ({ post }))
+vi.mock('./index', () => ({ post, put }))
 vi.mock('@/utils/openExternal', () => ({ openLocalPath }))
 
 import {
@@ -15,6 +16,7 @@ import {
   pickProjectDirectory,
   projectErrorCode,
   PLUGIN_ID_PATTERN,
+  updatePluginProjectMetadata,
 } from './pluginProjects'
 import { errorMessageKey, PROJECT_ERROR_MESSAGES } from '@/composables/useAuthoringProjects'
 
@@ -24,7 +26,17 @@ const readSource = (path: string) => readFileSync(resolve(repoRoot, path), 'utf8
 afterEach(() => {
   vi.unstubAllGlobals()
   post.mockReset()
+  put.mockReset()
   openLocalPath.mockReset()
+})
+
+describe('updatePluginProjectMetadata', () => {
+  it('sends metadata through the project mutation endpoint', async () => {
+    const metadata = { name: 'Renamed', version: '0.2.0', author: '', description: 'Description' }
+    put.mockResolvedValue({ project_id: 'p1', ...metadata })
+    await expect(updatePluginProjectMetadata('p1', metadata)).resolves.toMatchObject(metadata)
+    expect(put).toHaveBeenCalledWith('/plugin-projects/p1/metadata', metadata, expect.objectContaining({ suppressErrorMessage: true }))
+  })
 })
 
 describe('pickProjectDirectory', () => {

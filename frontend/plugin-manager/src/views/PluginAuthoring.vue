@@ -8,6 +8,12 @@
               t('authoring.back')
             }}</el-button>
             <h2 :title="headerTitle">{{ headerTitle }}</h2>
+            <template v-if="current">
+              <AuthoringProjectStatus :project="current" />
+              <el-tag v-if="current.plugin_type" size="small" type="info">{{
+                current.plugin_type
+              }}</el-tag>
+            </template>
           </div>
           <div class="authoring-header__actions">
             <el-button :icon="Refresh" :loading="loading" @click="refresh">{{
@@ -60,12 +66,18 @@
         class="authoring-create-notice"
       />
       <LoadingSpinner v-if="!loaded && !loadError" :loading="true" />
+      <!-- The tab shell is a reserved extension point for future project
+           sections; the merged overview is its only pane for now. -->
       <el-tabs v-else-if="current" v-model="activeTab" class="authoring-tabs">
         <el-tab-pane :label="t('authoring.tabOverview')" name="overview">
-          <AuthoringProjectDetails :project="current" />
+          <AuthoringProjectDetails
+            :key="current.project_id"
+            :project="current"
+            @updated="onProjectUpdated"
+          />
         </el-tab-pane>
-        <el-tab-pane :label="t('authoring.tabProfile')" name="profile">
-          <EmptyState :description="t('common.noData')" :icon="Document" />
+        <el-tab-pane :label="t('authoring.precheckTab')" name="precheck">
+          <AuthoringProjectPrecheck :key="current.project_id" :project-id="current.project_id" />
         </el-tab-pane>
       </el-tabs>
       <EmptyState
@@ -87,14 +99,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   ArrowLeft,
   Delete,
-  Document,
   FolderAdd,
   FolderOpened,
   Plus,
@@ -106,6 +117,8 @@ import EmptyState from '@/components/common/EmptyState.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import AuthoringProjectList from '@/components/authoring/AuthoringProjectList.vue'
 import AuthoringProjectDetails from '@/components/authoring/AuthoringProjectDetails.vue'
+import AuthoringProjectPrecheck from '@/components/authoring/AuthoringProjectPrecheck.vue'
+import AuthoringProjectStatus from '@/components/authoring/AuthoringProjectStatus.vue'
 import AuthoringHelpDrawer from '@/components/authoring/AuthoringHelpDrawer.vue'
 import CreatePluginDialog from '@/components/authoring/CreatePluginDialog.vue'
 import {
@@ -134,11 +147,7 @@ const current = computed(() =>
 const headerTitle = computed(() =>
   current.value ? projectTitle(current.value) : t('authoring.title')
 )
-const activeTab = ref<'overview' | 'profile'>('overview')
-// Each project opens on its overview.
-watch(requestedProject, () => {
-  activeTab.value = 'overview'
-})
+const activeTab = ref('overview')
 const createVisible = ref(false)
 const helpVisible = ref(false)
 const busy = ref(false)
@@ -150,6 +159,11 @@ function openProject(projectId: string) {
 }
 function goHome() {
   void router.push({ path: '/workbench' })
+}
+function onProjectUpdated(updated: AuthoringProject) {
+  projects.value = projects.value.map((project) =>
+    project.project_id === updated.project_id ? updated : project
+  )
 }
 async function onCreated(project: CreatedPluginProject) {
   ElMessage.success(t('authoring.creationComplete'))

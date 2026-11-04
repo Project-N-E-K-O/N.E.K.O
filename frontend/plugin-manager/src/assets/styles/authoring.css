@@ -184,9 +184,117 @@
   display: flex;
   flex-direction: column;
   gap: 16px;
+  max-width: 960px;
+}
+.authoring-details-panel {
+  padding: 16px;
+  background: var(--surface-card);
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--surface-shadow);
+}
+.authoring-details-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.authoring-details-header h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
 }
 .authoring-details .el-descriptions__label {
   white-space: nowrap;
+}
+.authoring-details .el-descriptions__content {
+  overflow-wrap: anywhere;
+}
+.authoring-details-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.authoring-details-fields > label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: 13px;
+  color: var(--el-text-color-regular);
+}
+.authoring-details-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+@container authoring (max-width: 640px) {
+  .authoring-details-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+/* Pre-release check */
+.authoring-precheck {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 960px;
+}
+.authoring-precheck-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.authoring-precheck-env h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--el-text-color-secondary);
+}
+.authoring-precheck-env ul {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.authoring-precheck-env li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.authoring-precheck-stage {
+  padding: 12px 16px;
+  background: var(--surface-card);
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-card);
+}
+.authoring-precheck-stage summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+}
+.authoring-precheck-stage pre {
+  margin: 12px 0 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: 12px;
+  border-radius: var(--radius-control);
+  background: var(--surface-inset);
+  color: var(--el-text-color-regular);
+  font:
+    12px/1.7 ui-monospace,
+    SFMono-Regular,
+    Consolas,
+    monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .authoring-diagnostic {
   margin-top: 6px;

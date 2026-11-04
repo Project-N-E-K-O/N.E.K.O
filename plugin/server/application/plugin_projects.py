@@ -10,10 +10,16 @@ identities are persisted. Every failure leaves this module as a
 from __future__ import annotations
 
 import asyncio
+import json
+import subprocess
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
+
+import tomli_w
+
+from utils.file_utils import atomic_write_text
 
 from plugin.neko_plugin_cli.core.project import (
     ProjectCreationError,
@@ -23,6 +29,7 @@ from plugin.neko_plugin_cli.core.project import (
 from plugin import settings
 from plugin.core.state import state
 from plugin.logging_config import get_logger
+from plugin.server.application.plugins._env_budgets import env_seconds
 from plugin.server.application.plugins.operation_lock import (
     PluginOperationBusy,
     serialized_plugin_operation,
@@ -51,6 +58,14 @@ class ProjectIdentity:
     description: str
     author: str
     plugin_type: PluginType
+
+
+@dataclass(frozen=True)
+class ProjectMetadata:
+    name: str
+    version: str
+    author: str
+    description: str
 
 
 @dataclass(frozen=True)
@@ -264,6 +279,51 @@ def list_projects_sync() -> list[AuthoringProject]:
     return [_view(record) for record in store.list_records()]
 
 
+def _update_metadata_sync(
+    project_id: str, metadata: ProjectMetadata
+) -> tuple[store.ProjectRecord, str]:
+    from plugin.neko_plugin_cli.core.plugin_source import load_plugin_source
+
+    record = next((item for item in store.list_records() if item.project_id == project_id), None)
+    if record is None:
+        raise project_error(Code.PROJECT_NOT_FOUND, "Project is not in the workbench", 404)
+    try:
+        source = load_plugin_source(record.source_dir)
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise project_error(Code.INVALID_PROJECT_DIRECTORY, str(exc), 400) from exc
+    table = source.plugin_toml["plugin"]
+    table.update(name=metadata.name, version=metadata.version, description=metadata.description)
+    # Keep contact fields when the manifest uses an author table.
+    if isinstance(table.get("author"), dict):
+        table["author"]["name"] = metadata.author
+    else:
+        table["author"] = metadata.author
+    try:
+        atomic_write_text(source.plugin_toml_path, tomli_w.dumps(source.plugin_toml))
+    except OSError as exc:
+        raise project_error(Code.PROJECT_IO_FAILED, f"Cannot save plugin.toml: {exc}", 500) from exc
+    return record, source.plugin_id
+
+
+@serialized_plugin_operation
+async def _update_metadata_locked(project_id: str, metadata: ProjectMetadata) -> AuthoringProject:
+    record, plugin_id = await asyncio.to_thread(_update_metadata_sync, project_id, metadata)
+    from plugin.server.application.plugins.registry_service import PluginRegistryService
+
+    try:
+        await PluginRegistryService().refresh_plugin(plugin_id)
+    except ServerDomainError as exc:
+        logger.warning("project metadata saved but registry refresh failed: {}", exc.message)
+    return await asyncio.to_thread(_view, record)
+
+
+async def update_project_metadata(project_id: str, metadata: ProjectMetadata) -> AuthoringProject:
+    try:
+        return await _update_metadata_locked(project_id, metadata)
+    except PluginOperationBusy as exc:
+        raise _busy_error(exc) from exc
+
+
 def _require_available_plugin_id(plugin_id: str, source_dir: Path) -> None:
     """A plugin ID has one owner: an installed/built-in plugin or one project."""
     for root in settings.PLUGIN_CONFIG_ROOTS:
@@ -399,3 +459,55 @@ def open_project_directory(path: str) -> None:
         native_directory.open_directory(path)
     except native_directory.NativeDirectoryError as exc:
         raise project_error(Code(exc.code), str(exc), 400) from exc
+
+
+def precheck_project_sync(project_id: str) -> dict[str, object]:
+    """Run the Market CI gates against a registered project's source.
+
+    The gates live in the CLI (``neko-plugin precheck``); this only locates
+    the project, runs the CLI from the source checkout and returns its JSON
+    report verbatim, so the workbench can never drift from CI.
+    """
+    root = source_repo_root()
+    if root is None:
+        raise project_error(
+            Code.PRECHECK_UNAVAILABLE,
+            "Pre-release checks need a source checkout; they are unavailable in a packaged build.",
+            503,
+        )
+    record = next((item for item in store.list_records() if item.project_id == project_id), None)
+    if record is None:
+        raise project_error(Code.PROJECT_NOT_FOUND, f"unknown project: {project_id}", 404)
+    budget = env_seconds("NEKO_PLUGIN_PRECHECK_BUDGET", 600.0)
+    try:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "plugin.neko_plugin_cli.cli",
+                "precheck",
+                record.source_dir,
+                "--json",
+            ],
+            cwd=root,
+            text=True,
+            capture_output=True,
+            timeout=budget,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise project_error(Code.PRECHECK_FAILED_TO_RUN, f"precheck could not run: {exc}", 500) from exc
+    lines = [line for line in completed.stdout.splitlines() if line.strip()]
+    if not lines:
+        tail = completed.stderr.strip()[-500:]
+        raise project_error(
+            Code.PRECHECK_FAILED_TO_RUN, f"precheck produced no report: {tail}", 500
+        )
+    try:
+        report = json.loads(lines[-1])
+    except ValueError as exc:
+        raise project_error(
+            Code.PRECHECK_FAILED_TO_RUN, f"precheck report is not valid JSON: {exc}", 500
+        ) from exc
+    if not isinstance(report, dict):
+        raise project_error(Code.PRECHECK_FAILED_TO_RUN, "precheck report is not an object", 500)
+    return report

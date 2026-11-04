@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import subprocess
+import tomllib
 from pathlib import Path
 
 import httpx
@@ -68,6 +69,103 @@ def client(app, *, origin=ORIGIN):
         base_url=ORIGIN,
         headers={"Origin": origin},
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("author_table", [True, False])
+async def test_metadata_update_preserves_project_identity_and_other_manifest_values(
+    app, tmp_path, author_table
+):
+    import tomli_w
+
+    source = _scaffold(tmp_path, "editable_project")
+    manifest = source / "plugin.toml"
+    original = tomllib.loads(manifest.read_text(encoding="utf-8"))
+    original["plugin"]["author"] = (
+        {"name": "Original", "email": "author@example.com"} if author_table else "Original"
+    )
+    original["custom_config"] = {"enabled": True, "items": ["a", "b"]}
+    manifest.write_text(tomli_w.dumps(original), encoding="utf-8")
+    record = store.add_record(source)
+    store_before = store.store_path().read_bytes()
+    pyproject_before = (source / "pyproject.toml").read_bytes()
+    metadata = {
+        "name": "Updated 项目",
+        "version": "0.2.0",
+        "author": "New author",
+        "description": 'A "quoted" description\nWith another line',
+    }
+    async with client(app) as http:
+        result = await http.put(f"/plugin-projects/{record.project_id}/metadata", json=metadata)
+        listed = await http.get("/plugin-projects")
+    assert result.status_code == 200, result.text
+    for field, value in metadata.items():
+        assert result.json()[field] == value
+        assert listed.json()[0][field] == value
+    expected = original
+    expected["plugin"].update({key: value for key, value in metadata.items() if key != "author"})
+    if author_table:
+        expected["plugin"]["author"]["name"] = metadata["author"]
+    else:
+        expected["plugin"]["author"] = metadata["author"]
+    assert tomllib.loads(manifest.read_text(encoding="utf-8")) == expected
+    assert store.store_path().read_bytes() == store_before
+    assert (source / "pyproject.toml").read_bytes() == pyproject_before
+    assert result.json()["plugin_id"] == "editable_project"
+    assert result.json()["loaded"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changes", [
+    {"plugin_id": "other"}, {"entry": "other:Plugin"}, {"source_dir": "other"},
+    {"plugin_type": "adapter"}, {"name": " "}, {"version": ""}, {"author": "a" * 81},
+])
+async def test_metadata_update_rejects_invalid_or_read_only_fields(app, tmp_path, changes):
+    source = _scaffold(tmp_path, "editable_project")
+    record = store.add_record(source)
+    manifest = source / "plugin.toml"
+    before = manifest.read_bytes()
+    payload = {"name": "Name", "version": "0.2.0", "author": "", "description": "", **changes}
+    async with client(app) as http:
+        result = await http.put(f"/plugin-projects/{record.project_id}/metadata", json=payload)
+    assert result.status_code == 422
+    assert manifest.read_bytes() == before
+
+
+@pytest.mark.asyncio
+async def test_metadata_write_failure_keeps_the_original_manifest(app, tmp_path, monkeypatch):
+    source = _scaffold(tmp_path, "editable_project")
+    record = store.add_record(source)
+    manifest = source / "plugin.toml"
+    before = manifest.read_bytes()
+
+    def fail(*_args, **_kwargs):
+        raise PermissionError("Read-only project")
+
+    monkeypatch.setattr(service, "atomic_write_text", fail)
+    async with client(app) as http:
+        result = await http.put(f"/plugin-projects/{record.project_id}/metadata", json={
+            "name": "New", "version": "0.2.0", "author": "", "description": "",
+        })
+    assert result.status_code == 500
+    assert result.json()["detail"]["code"] == "PROJECT_IO_FAILED"
+    assert manifest.read_bytes() == before
+
+
+@pytest.mark.asyncio
+async def test_metadata_updates_require_registration_valid_source_and_mutation_access(app, tmp_path):
+    payload = {"name": "New", "version": "0.2.0", "author": "", "description": ""}
+    async with client(app) as http:
+        missing = await http.put("/plugin-projects/unknown/metadata", json=payload)
+        assert missing.status_code == 404
+        assert missing.json()["detail"]["code"] == "PROJECT_NOT_FOUND"
+        record = store.add_record(tmp_path)
+        invalid = await http.put(f"/plugin-projects/{record.project_id}/metadata", json=payload)
+        assert invalid.status_code == 400
+        assert invalid.json()["detail"]["code"] == "INVALID_PROJECT_DIRECTORY"
+    async with client(make_app(guarded=True), origin="https://untrusted.example") as http:
+        denied = await http.put(f"/plugin-projects/{record.project_id}/metadata", json=payload)
+    assert denied.status_code == 403
 
 
 def request(parent: Path, **changes):

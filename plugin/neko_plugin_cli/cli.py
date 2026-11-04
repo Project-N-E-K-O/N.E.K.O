@@ -33,6 +33,8 @@ if __package__ in {None, ""}:  # pragma: no cover - exercised by script invocati
         init_cmd,
         build_cmd,
         install_cmd,
+        lint_cmd,
+        precheck_cmd,
         publish_cmd,
     )
     from plugin.neko_plugin_cli.paths import resolve_default_paths  # noqa: E402
@@ -44,6 +46,8 @@ else:
         init_cmd,
         build_cmd,
         install_cmd,
+        lint_cmd,
+        precheck_cmd,
         publish_cmd,
     )
     from .paths import resolve_default_paths
@@ -96,6 +100,8 @@ def build_parser() -> argparse.ArgumentParser:
     init_cmd.register(subparsers, defaults=defaults)
     check_cmd.register(subparsers, defaults=defaults)
     deps_cmd.register(subparsers, defaults=defaults)
+    lint_cmd.register(subparsers, defaults=defaults)
+    precheck_cmd.register(subparsers, defaults=defaults)
     build_cmd.register(subparsers, defaults=defaults)
     install_cmd.register(subparsers, defaults=defaults)
     analyze_cmd.register(subparsers, defaults=defaults)

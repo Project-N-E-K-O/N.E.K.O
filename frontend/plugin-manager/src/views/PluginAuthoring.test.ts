@@ -15,6 +15,8 @@ const api = vi.hoisted(() => ({
   removePluginProject: vi.fn(),
   pickProjectDirectory: vi.fn(),
   openProjectDirectory: vi.fn(),
+  updatePluginProjectMetadata: vi.fn(),
+  precheckPluginProject: vi.fn(),
   push: vi.fn(),
   route: { query: {} as Record<string, string> },
 }))
@@ -27,6 +29,8 @@ vi.mock('@/api/pluginProjects', async (importOriginal) => ({
   removePluginProject: api.removePluginProject,
   pickProjectDirectory: api.pickProjectDirectory,
   openProjectDirectory: api.openProjectDirectory,
+  updatePluginProjectMetadata: api.updatePluginProjectMetadata,
+  precheckPluginProject: api.precheckPluginProject,
 }))
 vi.mock('vue-router', () => ({
   useRoute: () => api.route,
@@ -84,7 +88,14 @@ async function mount() {
       messages: {
         'en-US': {
           authoring: en,
-          common: { cancel: 'Cancel', close: 'Close', noData: 'No data', loading: 'Loading' },
+          common: {
+            cancel: 'Cancel',
+            close: 'Close',
+            noData: 'No data',
+            loading: 'Loading',
+            edit: 'Edit',
+            save: 'Save',
+          },
           status: { running: 'Running', stopped: 'Stopped' },
         },
       },
@@ -226,17 +237,108 @@ describe('authoring workbench backed by the server project list', () => {
     expect(api.push).toHaveBeenCalledWith('/plugins/hello_world')
   })
 
-  it('shows the overview first and an empty profile tab', async () => {
+  it('shows every project field on one page with the status beside the title', async () => {
     api.route.query = { project: 'p1' }
     api.listPluginProjects.mockResolvedValue([listed])
     const container = await mount()
-    const tabs = [...container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)
-    expect(tabs).toEqual([en.tabOverview, en.tabProfile])
-    expect(container.querySelector('.el-descriptions')).toBeTruthy()
-    ;(container.querySelector('#tab-profile') as HTMLElement).click()
+    const tabs = [...container.querySelectorAll('.authoring-tabs > .el-tabs__header [role="tab"]')]
+    expect(tabs.map((tab) => tab.textContent)).toEqual([en.tabOverview, en.precheckTab])
+    expect(tabs[0]?.getAttribute('aria-selected')).toBe('true')
+    const header = container.querySelector('.authoring-header')!
+    expect(header.textContent).toContain(listed.name)
+    expect(header.textContent).toContain('Stopped')
+    expect(header.textContent).toContain(listed.plugin_type)
+    const panel = container.querySelector('.authoring-details-panel')!
+    expect(panel.textContent).toContain(listed.version)
+    expect(panel.textContent).toContain(listed.source_dir)
+    expect(panel.textContent).toContain(listed.entry)
+    expect(api.listPluginProjects).toHaveBeenCalledOnce()
+  })
+
+  it('runs the pre-release check and renders the CI gate report', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.precheckPluginProject.mockResolvedValue({
+      plugin_id: listed.plugin_id,
+      version: listed.version,
+      plugin_dir: listed.source_dir,
+      passed: false,
+      ruff_version: '0.12.4',
+      environment_issues: [['warning', 'git working tree has uncommitted changes']],
+      stages: [
+        { name: 'lint', passed: true, output: '' },
+        { name: 'sync', passed: false, output: 'vendor drift' },
+      ],
+    })
+    const container = await mount()
+    const tabs = [...container.querySelectorAll('.authoring-tabs > .el-tabs__header [role="tab"]')]
+    ;(tabs[1] as HTMLElement).click()
     await flush()
-    const profile = container.querySelector('#pane-profile') as HTMLElement
-    expect(profile.textContent).toContain('No data')
+    await click(en.precheckRun)
+    expect(api.precheckPluginProject).toHaveBeenCalledWith('p1')
+    const pane = container.querySelector('.authoring-precheck')!
+    expect(pane.textContent).toContain(en.precheckFailed)
+    expect(pane.textContent).toContain(en.precheckStageSync)
+    expect(pane.textContent).toContain('vendor drift')
+    // The gate after the failing one is reported as skipped, not run.
+    expect(pane.textContent).toContain(en.precheckSkipped)
+    expect(pane.textContent).toContain(en.precheckEnv)
+    expect(pane.textContent).toContain('git working tree has uncommitted changes')
+  })
+
+  it('saves editable metadata and refreshes the project details', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    const updated = {
+      ...listed,
+      name: 'Renamed plugin',
+      version: '0.3.0',
+      author: 'New author',
+      description: 'New description',
+    }
+    api.updatePluginProjectMetadata.mockResolvedValue(updated)
+    const container = await mount()
+    await click('Edit')
+    await fill('project-metadata-name', updated.name)
+    await fill('project-metadata-version', updated.version)
+    await fill('project-metadata-author', updated.author)
+    await fill('project-metadata-description', updated.description)
+    await click('Save')
+    expect(api.updatePluginProjectMetadata).toHaveBeenCalledExactlyOnceWith('p1', {
+      name: updated.name,
+      version: updated.version,
+      author: updated.author,
+      description: updated.description,
+    })
+    expect(container.querySelector('.authoring-header h2')?.textContent).toBe(updated.name)
+    expect(container.querySelector('.authoring-details-panel')?.textContent).toContain(
+      updated.description
+    )
+    expect(container.querySelector('#project-metadata-name')).toBeNull()
+  })
+
+  it('discards edits on cancel and retains them after a failed save', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.updatePluginProjectMetadata.mockRejectedValue(new Error('Write failed'))
+    const container = await mount()
+    await click('Edit')
+    await fill('project-metadata-name', 'Discarded name')
+    await click('Cancel')
+    expect(api.updatePluginProjectMetadata).not.toHaveBeenCalled()
+    await click('Edit')
+    expect((container.querySelector('#project-metadata-name') as HTMLInputElement).value).toBe(
+      listed.name
+    )
+    await fill('project-metadata-name', 'Retained draft')
+    await click('Save')
+    expect(container.querySelector('.authoring-details-panel')?.textContent).toContain(
+      'Write failed'
+    )
+    expect((container.querySelector('#project-metadata-name') as HTMLInputElement).value).toBe(
+      'Retained draft'
+    )
+    expect(container.querySelector('.authoring-header h2')?.textContent).toBe(listed.name)
   })
 
   it('offers no plugin page for a project the runtime did not load', async () => {
