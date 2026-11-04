@@ -43,6 +43,7 @@ from memory.introspection import (
     is_permanently_suppressed,
     retirement_blocks_restatement,
 )
+from memory.temporal import _parse_iso_safe, to_naive_local
 
 from ._shared import logger
 
@@ -75,19 +76,6 @@ def _remember_token_count(tid: str, text: str, count: int) -> None:
         _TOKEN_COUNT_MEMO.move_to_end((tid, text))
         while len(_TOKEN_COUNT_MEMO) > _TOKEN_COUNT_MEMO_MAX:
             _TOKEN_COUNT_MEMO.popitem(last=False)
-
-
-def _parse_render_time(value) -> datetime | None:
-    """A stored ISO time as local naive time; None when missing or unreadable."""
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    if parsed.tzinfo is not None:
-        parsed = parsed.astimezone().replace(tzinfo=None)
-    return parsed
 
 
 class _RenderPrep(NamedTuple):
@@ -602,10 +590,12 @@ class RenderingMixin:
         (existing semantic — see `_is_suppressed_text` callers below).
 
         A text in ``retired_text_cutoffs`` (a persona line retired as stale,
-        contradicted or off-card) hides only the reflections created up to
-        that retirement: one synthesized afterwards came from new facts that
-        made the line true again. A missing or unreadable time on either
-        side hides it.
+        contradicted or off-card) lets through only a reflection whose every
+        source fact postdates that retirement (``source_facts_oldest_at``,
+        recorded at synthesis): new facts made the line true again. Its own
+        ``created_at`` is no evidence -- synthesis may run on facts noted
+        before the retirement. A missing or unreadable time on either side
+        hides it.
 
         Blank-rejection goes through `_renderable_text`, the same single
         definition the persona split and the suppressed section use (those
@@ -646,8 +636,8 @@ class RenderingMixin:
                 continue
             if retired_text_cutoffs and text in retired_text_cutoffs:
                 cutoff = retired_text_cutoffs[text]
-                created = _parse_render_time(r.get('created_at'))
-                if cutoff is None or created is None or created <= cutoff:
+                evidence = to_naive_local(_parse_iso_safe(r.get('source_facts_oldest_at')))
+                if cutoff is None or evidence is None or evidence <= cutoff:
                     continue
             out.append(r)
         return out
@@ -954,7 +944,9 @@ class RenderingMixin:
             if not text:
                 continue
             marker = entry.get(PERMANENT_SUPPRESSION_KEY)
-            at = _parse_render_time(marker.get('at') if isinstance(marker, dict) else None)
+            at = to_naive_local(_parse_iso_safe(
+                marker.get('at') if isinstance(marker, dict) else None
+            ))
             if text not in out:
                 out[text] = at
             elif out[text] is None or at is None:

@@ -782,10 +782,11 @@ async def test_permanent_suppression_leaves_every_render_section(tmp_path):
 @pytest.mark.asyncio
 async def test_new_facts_reopen_a_line_retired_as_stale(tmp_path):
     """A reflection repeating a persona line retired as stale, contradicted
-    or off-card (or with no issue recorded) shows when it was synthesized
-    after the retirement: new facts made the line true again. An older copy,
-    a wording-type retirement, a line in mention cooldown or an unreadable
-    time on either side still hides it."""
+    or off-card (or with no issue recorded) shows when every fact behind it
+    postdates the retirement: new facts made the line true again. One built
+    on older facts (even if synthesized afterwards), a wording-type
+    retirement, a line in mention cooldown or a missing / unreadable time on
+    either side still hides it."""
     from memory.introspection import arender_injected_memory
 
     env = _install(str(tmp_path))
@@ -812,17 +813,28 @@ async def test_new_facts_reopen_a_line_retired_as_stale(tmp_path):
         {'id': 'm8a', 'text': '主人在上海工作', **_marker('stale', _ago(3))},
         {'id': 'm8b', 'text': '主人在上海工作', **_marker('stale', _ago(1))},
         {'id': 'm9', 'text': '主人爱吃辣', **_marker('stale', 'not a time')},
+        {'id': 'm10', 'text': '主人住在广州', **_marker('stale')},
+        {'id': 'm11', 'text': '主人住在深圳', **_marker('stale')},
     ]})
+
+    def _fresh(rid, text, facts_at=None, **extra):
+        return _reflection(rid, text, entity='master',
+                           source_facts_oldest_at=facts_at or _ago(1), **extra)
+
     await _seed_reflections(env.engine, [
-        _reflection('c1', '主人住在北京', entity='master'),
-        _reflection('c2', '主人喜欢早起', entity='master', created_at=_ago(5)),
-        _reflection('c3', '主人总是默许她', entity='master'),
-        _reflection('c4', '主人在学吉他', entity='master'),
-        _reflection('c5', '主人每天跑步', entity='master'),
-        _reflection('c6', '主人在学日语', entity='master'),
-        _reflection('c7', '主人养了狗', entity='master', created_at='not a time'),
-        _reflection('c8', '主人在上海工作', entity='master', created_at=_ago(2)),
-        _reflection('c9', '主人爱吃辣', entity='master'),
+        _fresh('c1', '主人住在北京'),
+        _fresh('c2', '主人喜欢早起', _ago(5)),
+        _fresh('c3', '主人总是默许她'),
+        _fresh('c4', '主人在学吉他'),
+        _fresh('c5', '主人每天跑步'),
+        _fresh('c6', '主人在学日语'),
+        _fresh('c7', '主人养了狗', 'not a time'),
+        _fresh('c8', '主人在上海工作', _ago(2)),
+        _fresh('c9', '主人爱吃辣'),
+        # Synthesized just now, but from facts noted before the retirement.
+        _fresh('c10', '主人住在广州', _ago(4)),
+        # No record of its facts' time (an older or merged reflection).
+        _reflection('c11', '主人住在深圳', entity='master'),
     ])
 
     rendered = await arender_injected_memory(env.pm, env.engine, NAME)
@@ -830,13 +842,11 @@ async def test_new_facts_reopen_a_line_retired_as_stale(tmp_path):
     for shown in ('主人住在北京', '主人在学吉他', '主人每天跑步'):
         assert shown in rendered, shown
     for hidden in ('主人喜欢早起', '主人总是默许她', '主人在学日语', '主人养了狗',
-                   '主人在上海工作', '主人爱吃辣'):
+                   '主人在上海工作', '主人爱吃辣', '主人住在广州', '主人住在深圳'):
         assert hidden not in rendered, hidden
 
 
 def test_retired_text_cutoffs_keep_the_latest_readable_time(tmp_path):
-    from memory.persona.rendering import _parse_render_time
-
     env = _install(str(tmp_path))
 
     def _row(text, at):
@@ -846,12 +856,14 @@ def test_retired_text_cutoffs_keep_the_latest_readable_time(tmp_path):
         _row('a', '2026-01-01T00:00:00'), _row('a', '2026-03-01T00:00:00'),
         _row('b', '2026-01-01T00:00:00'), _row('b', 'garbled'),
         {'text': 'c', 'suppress': True},
+        _row('d', '2026-03-01T00:00:00+00:00'),
     ]}})
 
-    assert cutoffs == {'a': datetime(2026, 3, 1), 'b': None}
-    aware = '2026-03-01T00:00:00+00:00'
-    assert _parse_render_time(aware) == datetime.fromisoformat(aware).astimezone().replace(tzinfo=None)
-    assert _parse_render_time(None) is None and _parse_render_time('') is None
+    aware = datetime.fromisoformat('2026-03-01T00:00:00+00:00')
+    assert cutoffs == {
+        'a': datetime(2026, 3, 1), 'b': None,
+        'd': aware.astimezone().replace(tzinfo=None),
+    }
 
 
 @pytest.mark.asyncio

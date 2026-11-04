@@ -748,6 +748,34 @@ async def test_restating_a_line_retired_as_stale_is_new_information(tmp_path, is
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("times, expected", [
+    (["2026-10-01T09:00:00", "2026-09-15T08:00:00+00:00", "2026-10-20T10:00:00",
+      "2026-10-02T00:00:00", "2026-10-03T00:00:00"],
+     datetime.fromisoformat("2026-09-15T08:00:00+00:00").astimezone().replace(tzinfo=None)),
+    (["2026-10-01T09:00:00", None, "2026-10-20T10:00:00",
+      "2026-10-02T00:00:00", "2026-10-03T00:00:00"], None),
+])
+async def test_synthesis_records_when_its_oldest_fact_was_noted(tmp_path, times, expected):
+    """The render reopens a line retired as stale only for a reflection whose
+    every fact postdates the retirement, so synthesis records the oldest
+    fact's time (its own created_at is just when synthesis ran); one fact
+    without a time leaves it unknown."""
+    tmpdir = str(tmp_path)
+    facts = _facts()
+    for row, at in zip(facts, times):
+        if at:
+            row["created_at"] = at
+    _write_json(tmpdir, "facts.json", facts)
+    _fs, _pm, re = _install(tmpdir)
+    with _patch_vectors(_FakeEmbeddingService()), _llm(_new_reflection_answer("两人每晚互道晚安"), []), \
+         patch("utils.language_utils.get_global_language", return_value="zh"):
+        created = await re.synthesize_reflections(CHAR)
+
+    stored = {r["id"]: r for r in _read_json(tmpdir, "reflections.json")}[created[0]["id"]]
+    assert stored["source_facts_oldest_at"] == (expected.isoformat() if expected else None)
+
+
+@pytest.mark.asyncio
 async def test_retired_restatement_without_vectors_matches_identical_text_only(tmp_path):
     tmpdir = str(tmp_path)
     _write_json(tmpdir, "reflections.json", [

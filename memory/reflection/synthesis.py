@@ -77,6 +77,26 @@ from .similarity import ascore_against_queries, vectors_ready
 _IMPRESSION_REFLECTION_STATUSES = ('pending', 'confirmed')
 
 
+def _oldest_fact_time(facts: list[dict]) -> str | None:
+    """When the oldest of ``facts`` was noted; None if any time is missing.
+
+    Stored as ``source_facts_oldest_at``: the render lets a reflection repeat
+    a persona line retired as stale only when every fact behind it postdates
+    the retirement, and the reflection's own ``created_at`` is merely when
+    synthesis ran.
+    """
+    from memory.temporal import _parse_iso_safe, to_naive_local
+
+    oldest = None
+    for fact in facts:
+        at = to_naive_local(_parse_iso_safe(fact.get('created_at')))
+        if at is None:
+            return None
+        if oldest is None or at < oldest:
+            oldest = at
+    return oldest.isoformat() if oldest is not None else None
+
+
 def _detect_synthesis_prompt_language(text: str) -> str:
     return detect_prompt_language_with_ascii_fallback(
         text,
@@ -498,6 +518,7 @@ class SynthesisMixin:
             'entity': reflection_entity,
             'status': 'pending',  # pending | confirmed | denied | promoted | archived
             'source_fact_ids': source_fact_ids,
+            'source_facts_oldest_at': _oldest_fact_time(unabsorbed),
             'created_at': now_iso,
             'feedback': None,
             'next_eligible_at': (now + timedelta(minutes=REFLECTION_COOLDOWN_MINUTES)).isoformat(),
