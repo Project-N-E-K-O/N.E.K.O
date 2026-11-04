@@ -1,0 +1,239 @@
+diff --git a/src/main.js b/src/main.js
+--- a/src/main.js
++++ b/src/main.js
+@@ -9781,7 +9781,7 @@
+ }
+
+ function getConfig() {
+-  const defaultConfig = { apiBaseUrl: 'http://localhost:48911/', autoLaunch: false, useSystemProxy: false, streamerMode: false, darkMode: false, appearanceMode: 'light', voiceAutoScreen: false, chatFontPreset: 'handwritten', chatAutoCollapseOnEnter: false, chatOpacity: 50, floatingMenuOpacity: 50, globalAlwaysOnTop: true, individualTopMostPages: {}, preventSystemSleep: false, widgetModeEnabled: false, widgetModeStealthEnabled: false, edgePeekLockEnabled: false, compatibilityMode: false, windowsDisableWgcCapture: false, linuxForceX11: getLinuxForceX11Default(), linuxUseNativeNotify: false, goodbyeIdleAppearance: 'cat', startupDefaultForm: 'model', catResourceGroup: 'dev_neko' };
++  const defaultConfig = { apiBaseUrl: 'http://localhost:48911/', autoLaunch: false, silentStartup: false, useSystemProxy: false, streamerMode: false, darkMode: false, appearanceMode: 'light', voiceAutoScreen: false, chatFontPreset: 'handwritten', chatAutoCollapseOnEnter: false, chatOpacity: 50, floatingMenuOpacity: 50, globalAlwaysOnTop: true, individualTopMostPages: {}, preventSystemSleep: false, widgetModeEnabled: false, widgetModeStealthEnabled: false, edgePeekLockEnabled: false, compatibilityMode: false, windowsDisableWgcCapture: false, linuxForceX11: getLinuxForceX11Default(), linuxUseNativeNotify: false, goodbyeIdleAppearance: 'cat', startupDefaultForm: 'model', catResourceGroup: 'dev_neko' };
+   const userPath = getUserConfigPath();
+   const bundledPath = getBundledConfigPath();
+
+@@ -9813,6 +9813,9 @@
+     }
+     return defaultConfig;
+   }
++
++  // Missing or malformed values keep the existing startup experience.
++  config.silentStartup = config.silentStartup === true;
+
+   // 兼容旧配置
+   if (typeof config.autoLaunch === 'undefined') {
+@@ -10727,6 +10730,11 @@
+
+ // 创建加载窗口
+ function createLoadingWindow() {
++  // Decide before allocating a BrowserWindow so no show/focus callback can flash it.
++  if (appConfig && appConfig.silentStartup === true) {
++    log('[LoadingWindow] skipped: silent startup enabled');
++    return;
++  }
+   loadingWindowStatus = {
+     title: loadingText('loadingStartingTitle'),
+     detail: loadingText('loadingStartingDetail'),
+diff --git a/src/main/desktop-settings-actions.js b/src/main/desktop-settings-actions.js
+--- a/src/main/desktop-settings-actions.js
++++ b/src/main/desktop-settings-actions.js
+@@ -1613,6 +1613,7 @@
+       goodbyeIdleAppearance: getGoodbyeIdleAppearance(),
+       startupDefaultForm: getStartupDefaultForm(),
+       catResourceGroup: getCatResourceGroup(),
++      silentStartup: cfg.silentStartup === true,
+       autoLaunch: {
+         enabled: autostartStatus.enabled === true,
+         supported: autostartStatus.supported !== false,
+@@ -1699,6 +1700,17 @@
+       case 'catResourceGroup':
+         setCatResourceGroupFromTray(value);
+         return true;
++      case 'silentStartup': {
++        if (typeof value !== 'boolean') return false;
++        const cfg = ensureAppConfig();
++        if (!cfg) return false;
++        // Publish the preference only after the persisted write succeeds.
++        const nextConfig = { ...cfg, silentStartup: value };
++        if (saveConfig(nextConfig, { logDetails: false }) === false) return false;
++        cfg.silentStartup = value;
++        notifyChanged();
++        return true;
++      }
+       case 'autoLaunch':
+         setAutoLaunchFromTray(!!value);
+         return true;
+diff --git a/src/main/tray-settings-pet-locales.js b/src/main/tray-settings-pet-locales.js
+--- a/src/main/tray-settings-pet-locales.js
++++ b/src/main/tray-settings-pet-locales.js
+@@ -1692,6 +1692,65 @@
+   },
+ };
+
++const silentStartupCopy = {
++  "zh-CN": {
++    "settingsSilentStartup": "静默启动",
++    "settingsSilentStartupDesc": "启动时不显示置顶加载窗口，准备就绪后显示桌宠。手动启动和开机自启动均适用，下次启动生效。",
++    "settingsSilentStartupSaving": "正在保存…",
++    "settingsSilentStartupSaved": "已保存，下次启动生效。",
++    "settingsSilentStartupSaveFailed": "保存失败，设置未更改，请重试。"
++  },
++  "zh-TW": {
++    "settingsSilentStartup": "靜默啟動",
++    "settingsSilentStartupDesc": "啟動時不顯示置頂載入視窗，準備就緒後顯示桌寵。手動啟動及登入自動啟動皆適用，下次啟動生效。",
++    "settingsSilentStartupSaving": "正在儲存…",
++    "settingsSilentStartupSaved": "已儲存，下次啟動生效。",
++    "settingsSilentStartupSaveFailed": "儲存失敗，設定未變更，請重試。"
++  },
++  "en": {
++    "settingsSilentStartup": "Silent startup",
++    "settingsSilentStartupDesc": "Skip the always-on-top loading window and show the pet when ready. Applies to manual launches and sign-in launches, starting next launch.",
++    "settingsSilentStartupSaving": "Saving…",
++    "settingsSilentStartupSaved": "Saved. Applies next launch.",
++    "settingsSilentStartupSaveFailed": "Could not save. The setting was not changed. Try again."
++  },
++  "ja": {
++    "settingsSilentStartup": "サイレント起動",
++    "settingsSilentStartupDesc": "起動時に最前面の読み込み画面を表示せず、準備ができたらデスクトップペットを表示します。手動起動とログイン時の自動起動に適用され、次回起動から有効です。",
++    "settingsSilentStartupSaving": "保存中…",
++    "settingsSilentStartupSaved": "保存しました。次回起動から有効です。",
++    "settingsSilentStartupSaveFailed": "保存できませんでした。設定は変更されていません。再試行してください。"
++  },
++  "ko": {
++    "settingsSilentStartup": "조용히 시작",
++    "settingsSilentStartupDesc": "항상 위에 표시되는 로딩 창을 건너뛰고 준비되면 데스크톱 펫을 표시합니다. 수동 실행과 로그인 시 자동 실행 모두 다음 실행부터 적용됩니다.",
++    "settingsSilentStartupSaving": "저장 중…",
++    "settingsSilentStartupSaved": "저장했습니다. 다음 실행부터 적용됩니다.",
++    "settingsSilentStartupSaveFailed": "저장하지 못했습니다. 설정이 변경되지 않았습니다. 다시 시도하세요."
++  },
++  "ru": {
++    "settingsSilentStartup": "Тихий запуск",
++    "settingsSilentStartupDesc": "Не показывать окно загрузки поверх других окон; показать питомца после подготовки. Действует со следующего запуска, вручную и при входе в систему.",
++    "settingsSilentStartupSaving": "Сохранение…",
++    "settingsSilentStartupSaved": "Сохранено. Вступит в силу при следующем запуске.",
++    "settingsSilentStartupSaveFailed": "Не удалось сохранить. Настройка не изменена. Повторите попытку."
++  },
++  "es": {
++    "settingsSilentStartup": "Inicio silencioso",
++    "settingsSilentStartupDesc": "Omite la ventana de carga siempre visible y muestra la mascota cuando esté lista. Se aplica desde el próximo inicio, tanto manual como al iniciar sesión.",
++    "settingsSilentStartupSaving": "Guardando…",
++    "settingsSilentStartupSaved": "Guardado. Se aplicará en el próximo inicio.",
++    "settingsSilentStartupSaveFailed": "No se pudo guardar. La opción no ha cambiado. Inténtalo de nuevo."
++  },
++  "pt": {
++    "settingsSilentStartup": "Inicialização silenciosa",
++    "settingsSilentStartupDesc": "Oculta a janela de carregamento sempre no topo e mostra o mascote quando estiver pronto. Vale a partir da próxima inicialização, manual ou ao entrar no sistema.",
++    "settingsSilentStartupSaving": "Salvando…",
++    "settingsSilentStartupSaved": "Salvo. Será aplicado na próxima inicialização.",
++    "settingsSilentStartupSaveFailed": "Não foi possível salvar. A opção não foi alterada. Tente novamente."
++  }
++};
++
+ const updateGuidanceCopy = {
+   'zh-CN': { settingsUpdateGuidance: '应用不再内置更新检查。Windows x64 Portable 和 Linux x64 AppImage 请通过 N.E.K.O.-Launcher 更新；macOS、Linux 目录版及其他发行类型请从 N.E.K.O. 的 GitHub Releases 手动下载新版。' },
+   'zh-TW': { settingsUpdateGuidance: '應用程式不再內建更新檢查。Windows x64 Portable 和 Linux x64 AppImage 請透過 N.E.K.O.-Launcher 更新；macOS、Linux 目錄版及其他發行類型請從 N.E.K.O. 的 GitHub Releases 手動下載新版。' },
+@@ -1709,6 +1768,7 @@
+   Object.assign(petSettingsLocales[language], desktopAccountCopy[language] || desktopAccountCopy.en);
+   Object.assign(petSettingsLocales[language], communityEntryCopy[language] || communityEntryCopy.en);
+   Object.assign(petSettingsLocales[language], updateGuidanceCopy[language]);
++  Object.assign(petSettingsLocales[language], silentStartupCopy[language]);
+ }
+
+ module.exports = {
+diff --git a/src/renderer/settings/settings.js b/src/renderer/settings/settings.js
+--- a/src/renderer/settings/settings.js
++++ b/src/renderer/settings/settings.js
+@@ -129,6 +129,8 @@
+ let confirmOpen = false;
+ let backgroundOperation = null;
+ let backgroundErrorKey = '';
++let silentStartupActivity = '';
++
+
+ function t(key, fallback) {
+   const texts = payload.texts || {};
+@@ -166,7 +168,7 @@
+
+ function switchControl(key, checked, options = {}) {
+   return `<label class="switch">
+-    <input type="checkbox" role="switch" data-patch="${escapeHtml(key)}" ${checked ? 'checked' : ''} ${options.disabled ? 'disabled' : ''}>
++    <input type="checkbox" role="switch" data-patch="${escapeHtml(key)}" ${checked ? 'checked' : ''} ${options.disabled ? 'disabled' : ''} ${options.labelledBy ? `aria-labelledby="${escapeHtml(options.labelledBy)}"` : ''} ${options.describedBy ? `aria-describedby="${escapeHtml(options.describedBy)}"` : ''}>
+     <span class="switch-ui" aria-hidden="true"></span>
+   </label>`;
+ }
+@@ -580,6 +582,42 @@
+     </section>`;
+ }
+
++function renderSilentStartupRow() {
++  const activityKeys = {
++    saving: 'settingsSilentStartupSaving',
++    saved: 'settingsSilentStartupSaved',
++    error: 'settingsSilentStartupSaveFailed',
++  };
++  return `<div class="row">
++    <div class="row-copy">
++      <div class="row-title" id="silent-startup-label">${escapeHtml(t('settingsSilentStartup'))}</div>
++      <div class="row-desc" id="silent-startup-desc">${escapeHtml(t('settingsSilentStartupDesc'))}</div>
++      <div id="silent-startup-status" role="status" aria-live="polite" class="row-desc${silentStartupActivity === 'error' ? ' status error' : ''}">${escapeHtml(activityKeys[silentStartupActivity] ? t(activityKeys[silentStartupActivity]) : '')}</div>
++    </div>
++    ${switchControl('silentStartup', snapshot().silentStartup === true, {
++      disabled: silentStartupActivity === 'saving',
++      labelledBy: 'silent-startup-label',
++      describedBy: 'silent-startup-desc silent-startup-status',
++    })}
++  </div>`;
++}
++
++async function saveSilentStartup(value) {
++  if (silentStartupActivity === 'saving') return;
++  const previous = snapshot().silentStartup === true;
++  silentStartupActivity = 'saving';
++  renderSection();
++  try {
++    const result = await patch('silentStartup', value);
++    if (result && result.snapshot) payload.snapshot = result.snapshot;
++    silentStartupActivity = result && result.ok === true ? 'saved' : 'error';
++  } catch (_) {
++    payload.snapshot.silentStartup = previous;
++    silentStartupActivity = 'error';
++  }
++  renderSection();
++}
++
+ function renderGeneral() {
+   const snap = snapshot();
+   const prefs = petPrefs();
+@@ -630,6 +668,7 @@
+       <h2 class="group-title">${escapeHtml(t('settingsGroupSystem'))}</h2>
+       <div class="card">
+         ${row(t('autoLaunch'), switchControl('autoLaunch', snap.autoLaunch && snap.autoLaunch.enabled, { disabled: snap.autoLaunch && snap.autoLaunch.supported === false }), t('settingsAutoLaunchDesc'))}
++        ${renderSilentStartupRow()}
+         ${row(t('preventSystemSleep'), switchControl('preventSystemSleep', snap.preventSystemSleep && snap.preventSystemSleep.active, { disabled: snap.preventSystemSleep && snap.preventSystemSleep.supported === false }), t('settingsPreventSleepDesc'))}
+         ${row(t('globalAlwaysOnTop'), switchControl('globalAlwaysOnTop', snap.globalAlwaysOnTop === true), t('settingsAlwaysOnTopDesc'))}
+         ${row(t('streamerMode'), switchControl('streamerMode', snap.streamerMode === true), t('settingsStreamerModeDesc'))}
+@@ -1181,7 +1220,11 @@
+ function bindCommonPatches(root) {
+   root.querySelectorAll('input[type="checkbox"][data-patch]').forEach((input) => {
+     input.addEventListener('change', () => {
+-      void patch(input.dataset.patch, input.checked);
++      if (input.dataset.patch === 'silentStartup') {
++        void saveSilentStartup(input.checked);
++      } else {
++        void patch(input.dataset.patch, input.checked);
++      }
+     });
+   });
+   root.querySelectorAll('select[data-patch]').forEach((select) => {
+diff --git a/src/renderer/settings/settings.css b/src/renderer/settings/settings.css
+--- a/src/renderer/settings/settings.css
++++ b/src/renderer/settings/settings.css
+@@ -396,6 +396,10 @@
+   flex: 0 0 auto;
+ }
+ .switch input { opacity: 0; width: 0; height: 0; position: absolute; }
++.switch input[data-patch="silentStartup"]:focus-visible + .switch-ui {
++  outline: 2px solid var(--primary);
++  outline-offset: 3px;
++}
+ .switch-ui,
+ .switch span {
+   position: absolute;

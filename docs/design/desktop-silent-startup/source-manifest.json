@@ -1,0 +1,31 @@
+{
+  "desktop_package_version": "0.9.1",
+  "baseline": "Installed desktop app source; not a checkout of the inaccessible Electron repository",
+  "files": [
+    {
+      "path": "src/main.js",
+      "before_sha256": "dbf536572cfb83ddb8b22e3dc7cb38e00dc49cc43c43582ee06d4aaa9af3e348",
+      "after_sha256": "4116b0369df0a6eca3620ed14cbb0b9c18c7102ebde62d80a82ec219e6ce431f"
+    },
+    {
+      "path": "src/main/desktop-settings-actions.js",
+      "before_sha256": "4d348895b84dd02f3b58481d842f80a6931d0c271ae4761c3695e1b433fa16f4",
+      "after_sha256": "a56d66b18be42b3bfc21611ed1e042253fe50c5f879eb85f2822ac90be124042"
+    },
+    {
+      "path": "src/main/tray-settings-pet-locales.js",
+      "before_sha256": "47a71e2a23e215422cb92a22e6db35debe40f6608ddb2af097865745a6e96e77",
+      "after_sha256": "97deee0f51cd5246bbaaab31c5e24df5d95b59528a7dc6e499ac531763e983c6"
+    },
+    {
+      "path": "src/renderer/settings/settings.js",
+      "before_sha256": "7b3ebaca87bc090eea254a8197fa8b6e5a79cb94e2f9f464eea745bb6203061b",
+      "after_sha256": "8f76952a603a51bb04f3f33ce387f2d1f3d5983fe651bbadb647cbfbc426115e"
+    },
+    {
+      "path": "src/renderer/settings/settings.css",
+      "before_sha256": "a61ea4d4b941079fe76abcbac8164c683ba967132157a51d1fc2fbd417ba4975",
+      "after_sha256": "81679672b551dc784ab2e941299d0336f5ba4ba6debe56d78453823127841f68"
+    }
+  ]
+}
