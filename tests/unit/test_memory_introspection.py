@@ -131,13 +131,13 @@ class _FakeThinking:
         return SimpleNamespace(content=content), 8192
 
 
-async def _run(env, fake):
+async def _run(env, fake, pinned_fact_store=None):
     from memory.introspection import arun_introspection
 
     with patch("memory.thinking_llm.ainvoke_thinking", fake):
         return await arun_introspection(
             NAME, persona_manager=env.pm, reflection_engine=env.engine,
-            config_manager=env.cm,
+            config_manager=env.cm, pinned_fact_store=pinned_fact_store,
         )
 
 
@@ -166,22 +166,39 @@ async def _seed_full_fixture(env) -> int:
     return sum(count_tokens(t) for t in ('主人喜欢辣条', '主人怕冷', '两人形成了默契'))
 
 
+async def _pinned_store(env, texts: list[str]):
+    from memory.pinned_facts import PinnedFactStore
+
+    with patch("memory.pinned_facts.get_config_manager", return_value=env.cm):
+        store = PinnedFactStore()
+    await store.aadmit_extracted(NAME, [
+        {'text': t, 'importance': 9, 'entity': 'master', 'pin': True, 'pin_ttl_days': 14}
+        for t in texts
+    ])
+    return store
+
+
 @pytest.mark.asyncio
 async def test_annotated_render_matches_injected_render(tmp_path):
     from memory.introspection import RenderAnnotator, arender_injected_memory
 
     env = _install(str(tmp_path), card={'性格': '傲娇'})
     budget = await _seed_full_fixture(env)
+    pinned = await _pinned_store(env, ['主人下周三考试', '主人这个月在减肥'])
 
     with patch('memory.persona.rendering.PERSONA_RENDER_MAX_TOKENS', budget):
-        injected = await arender_injected_memory(env.pm, env.engine, NAME)
+        injected = (await arender_injected_memory(
+            env.pm, env.engine, NAME, pinned_fact_store=pinned, lang='zh',
+        )).text
         annotator = RenderAnnotator()
-        annotated = await arender_injected_memory(
-            env.pm, env.engine, NAME, annotator=annotator,
-        )
+        annotated = (await arender_injected_memory(
+            env.pm, env.engine, NAME, pinned_fact_store=pinned, lang='zh',
+            annotator=annotator,
+        )).text
 
     # Fixture sanity: every section kind is present, the trim did drop m3.
-    for text in ('性格: 傲娇', '主人喜欢辣条', '两人形成了默契', '主人常在深夜找她聊天',
+    for text in ('主人下周三考试', '主人这个月在减肥',
+                 '性格: 傲娇', '主人喜欢辣条', '两人形成了默契', '主人常在深夜找她聊天',
                  '主人可能在准备考试', '主人不喜欢被催', '主人去年搬过一次家'):
         assert text in injected, f"夹具失效：{text} 没进渲染"
     assert '主人最近在学吉他' not in injected, "夹具失效：预算没有挤掉 m3"
@@ -206,6 +223,95 @@ async def test_annotated_render_matches_injected_render(tmp_path):
     assert by_id['c2'].kind == 'reflection'
     card = [line for line in annotator.lines.values() if line.text == '性格: 傲娇']
     assert card and card[0].readonly
+    pinned_lines = [line for line in annotator.lines.values() if line.kind == 'pinned']
+    assert {line.text for line in pinned_lines} == {'主人下周三考试', '主人这个月在减肥'}
+    assert all(line.readonly for line in pinned_lines), "常驻区条目在自省里只读"
+    assert injected.index('主人下周三考试') < injected.index('性格: 傲娇'), "常驻区在人格之前"
+
+
+@pytest.mark.asyncio
+async def test_numbering_keeps_the_pinned_entries_the_budget_keeps(tmp_path):
+    """The pinned section's token budget is measured without line numbers: at
+    the tightest budget that still fits every entry, the numbered render
+    keeps them all too."""
+    from memory import pinned_facts
+    from memory.introspection import RenderAnnotator, _arender_pinned_section
+
+    env = _install(str(tmp_path))
+    texts = ['主人下周三考试', '主人这个月在减肥', '主人周五要出差']
+    store = await _pinned_store(env, texts)
+    full = store.render_prompt_block(NAME, 'zh')
+    cap = next(
+        cap for cap in range(1, count_tokens(full) + 200)
+        if all(t in _with_cap(pinned_facts, cap, store) for t in texts)
+    )
+
+    with patch.object(pinned_facts, 'PINNED_FACT_RENDER_MAX_TOKENS', cap):
+        annotator = RenderAnnotator()
+        numbered = await _arender_pinned_section(store, NAME, 'zh', annotator)
+
+    assert _TAG_RE.sub('- ', numbered) == full
+    assert len(annotator.lines) == len(texts)
+
+
+def _with_cap(module, cap: int, store) -> str:
+    with patch.object(module, 'PINNED_FACT_RENDER_MAX_TOKENS', cap):
+        return store.render_prompt_block(NAME, 'zh')
+
+
+def test_plan_refuses_actions_on_pinned_lines():
+    from memory.introspection import KIND_PINNED, RenderAnnotator, plan_actions
+
+    annotator = RenderAnnotator()
+    tag = annotator.tag(KIND_PINNED, {'id': 'pf_1', 'text': '主人下周三考试'})
+    plan = plan_actions([
+        {'action': 'suppress', 'id': 1, 'issue': 'stale', 'reason': 'x'},
+        {'action': 'rewrite', 'id': 1, 'text': 'y', 'reason': 'x'},
+    ], annotator.lines, max_actions=15)
+
+    assert tag == '[1 RO] '
+    assert plan.persona == [] and plan.reflection == []
+    assert plan.rejected == {'readonly': 2}
+
+
+@pytest.mark.asyncio
+async def test_a_failing_pinned_section_costs_only_itself(tmp_path):
+    from memory.introspection import arender_injected_memory
+
+    env = _install(str(tmp_path))
+    await _seed_persona(env.pm, {'master': [{'id': 'm1', 'text': '主人喜欢辣条'}]})
+    broken = SimpleNamespace(arender_prompt_block=AsyncMock(side_effect=OSError('locked')))
+
+    injected = await arender_injected_memory(
+        env.pm, env.engine, NAME, pinned_fact_store=broken, lang='zh',
+    )
+
+    assert injected.pinned == '' and injected.pinned_prefix == ''
+    assert '主人喜欢辣条' in injected.persona and injected.text == injected.persona
+
+
+def test_injected_memory_joins_the_parts_as_new_dialog_did():
+    from memory.introspection import InjectedMemory
+
+    assert InjectedMemory(pinned='### P\n- a', persona='### Q').text == '### P\n- a\n\n### Q'
+    assert InjectedMemory(pinned='', persona='### Q').text == '### Q'
+    assert InjectedMemory(pinned='### P', persona='').text == '### P\n\n'
+
+
+@pytest.mark.asyncio
+async def test_introspection_reviews_the_pinned_section_read_only(tmp_path):
+    env = _install(str(tmp_path))
+    await _seed_ranked_master(env, 1)
+    pinned = await _pinned_store(env, ['主人下周三考试'])
+    fake = _FakeThinking(lambda p: json.dumps([
+        {'action': 'suppress', 'id': 1, 'issue': 'stale', 'reason': 'x'},
+    ]), '[]')
+
+    result = await _run(env, fake, pinned_fact_store=pinned)
+
+    assert '- [1 RO] 主人下周三考试' in fake.prompts[0]
+    assert result.applied == 0 and result.rejected == {'readonly': 1}
+    assert [e['text'] for e in pinned.get_active(NAME)] == ['主人下周三考试']
 
 
 def test_new_dialog_injects_through_the_shared_render():
@@ -217,7 +323,10 @@ def test_new_dialog_injects_through_the_shared_render():
 
     source = inspect.getsource(routes._new_dialog)
     assert "arender_injected_memory(" in source
-    assert "arender_persona_markdown(" not in source
+    assert "pinned_fact_store=runtime.pinned_fact_store" in source
+    assert "injected.pinned_prefix" in source
+    for direct in ("arender_persona_markdown(", "arender_prompt_block("):
+        assert direct not in source, direct
 
 
 # ── validation of model actions ─────────────────────────────────────
@@ -772,7 +881,7 @@ async def test_permanent_suppression_leaves_every_render_section(tmp_path):
         _reflection('c3', '主人不喜欢被催'),
     ])
 
-    rendered = await arender_injected_memory(env.pm, env.engine, NAME)
+    rendered = (await arender_injected_memory(env.pm, env.engine, NAME)).text
 
     for gone in ('两人形成了默契', '两人有了纽带', '两人意味着彼此的港湾', '主人总被她安抚'):
         assert gone not in rendered, gone
@@ -837,7 +946,7 @@ async def test_new_facts_reopen_a_line_retired_as_stale(tmp_path):
         _reflection('c11', '主人住在深圳', entity='master'),
     ])
 
-    rendered = await arender_injected_memory(env.pm, env.engine, NAME)
+    rendered = (await arender_injected_memory(env.pm, env.engine, NAME)).text
 
     for shown in ('主人住在北京', '主人在学吉他', '主人每天跑步'):
         assert shown in rendered, shown
@@ -1507,7 +1616,7 @@ async def test_lines_cut_by_the_input_budget_cannot_be_acted_on(tmp_path):
     env = _install(str(tmp_path))
     texts = await _seed_ranked_master(env, 4)
     annotator = RenderAnnotator()
-    rendered = await arender_injected_memory(env.pm, env.engine, NAME, annotator=annotator)
+    rendered = (await arender_injected_memory(env.pm, env.engine, NAME, annotator=annotator)).text
     third = rendered.index(f"] {texts[2]}")
     # Keep the third line's tag and a couple of its characters, nothing more.
     cap = count_tokens(rendered[:third + 4])

@@ -652,6 +652,7 @@ async def _run_introspection_for_character(character: str) -> None:
             persona_manager=pm,
             reflection_engine=engine_ref,
             config_manager=runtime._config_manager,
+            pinned_fact_store=runtime.pinned_fact_store,
         )
     except Exception:
         # Outside the model call (a save hitting a busy or read-only store):

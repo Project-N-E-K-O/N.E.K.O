@@ -60,6 +60,9 @@ PERMANENT_SUPPRESSION_KEY = 'permanent_suppression'
 
 KIND_PERSONA = 'persona'
 KIND_REFLECTION = 'reflection'
+# The pinned-fact section: shown for comparison, never a target (it has its
+# own lifetimes and admission-time conflict resolution).
+KIND_PINNED = 'pinned'
 
 ACTION_SUPPRESS = 'suppress'
 ACTION_REWRITE = 'rewrite'
@@ -197,7 +200,8 @@ class RenderAnnotator:
         else:
             entity = entry.get('entity')
         readonly = (
-            bool(entry.get('protected'))
+            kind == KIND_PINNED
+            or bool(entry.get('protected'))
             or not entry_id
             or (kind == KIND_PERSONA and entity is None)
         )
@@ -215,16 +219,56 @@ class RenderAnnotator:
         return any(not line.readonly for line in self.lines.values())
 
 
+@dataclass(frozen=True)
+class InjectedMemory:
+    """The long-term memory ``/new_dialog`` injects, in its two parts."""
+
+    # The pinned-fact section; "" when nothing is pinned.
+    pinned: str
+    # The persona + reflection sections; "" falls back to legacy settings.
+    persona: str
+
+    @property
+    def pinned_prefix(self) -> str:
+        return self.pinned + "\n\n" if self.pinned else ""
+
+    @property
+    def text(self) -> str:
+        """Both parts exactly as ``/new_dialog`` joins them."""
+        return self.pinned_prefix + self.persona
+
+
+async def _arender_pinned_section(
+    pinned_fact_store, name: str, lang: str, annotator: RenderAnnotator | None,
+) -> str:
+    """The pinned-fact section; a failure costs only this section."""
+    if pinned_fact_store is None:
+        return ""
+    tag = (lambda entry: annotator.tag(KIND_PINNED, entry)) if annotator is not None else None
+    try:
+        return await pinned_fact_store.arender_prompt_block(name, lang, tag=tag)
+    except Exception as e:
+        logger.warning(
+            f"[MemoryServer] {name}: pinned-fact render failed: {type(e).__name__}"
+        )
+        return ""
+
+
 async def arender_injected_memory(
     persona_manager, reflection_engine, name: str,
-    *, annotator: RenderAnnotator | None = None,
-) -> str:
-    """The persona + reflection block ``/new_dialog`` injects.
+    *, pinned_fact_store=None, lang: str = 'zh',
+    annotator: RenderAnnotator | None = None,
+) -> InjectedMemory:
+    """The pinned-fact section and the persona + reflection block
+    ``/new_dialog`` injects.
 
     The single definition both ``/new_dialog`` and introspection call, so
     the block introspection reviews cannot drift from the one the chat model
     reads: same suppression refresh, same reflection selection, same render.
+    The pinned section renders first, as it is injected first; its lines are
+    numbered read-only.
     """
+    pinned = await _arender_pinned_section(pinned_fact_store, name, lang, annotator)
     try:
         await reflection_engine.aupdate_suppressions(name)
     except Exception as e:
@@ -232,9 +276,10 @@ async def arender_injected_memory(
     pending = await reflection_engine.aget_pending_reflections(name)
     confirmed = await reflection_engine.aget_confirmed_reflections(name)
     extra = {'annotator': annotator} if annotator is not None else {}
-    return await persona_manager.arender_persona_markdown(
+    persona = await persona_manager.arender_persona_markdown(
         name, pending, confirmed, **extra,
     )
+    return InjectedMemory(pinned=pinned, persona=persona)
 
 
 # ── action validation ───────────────────────────────────────────────
@@ -527,21 +572,29 @@ async def _ainvoke(config_manager, prompt: str, *, name: str, round_no: int):
 
 async def arun_introspection(
     name: str, *, persona_manager, reflection_engine, config_manager,
+    pinned_fact_store=None,
 ) -> IntrospectionResult:
     """Review and correct one character's injected memory, up to N rounds."""
     from config import (
         MEMORY_INTROSPECTION_MAX_ACTIONS_PER_ROUND,
         MEMORY_INTROSPECTION_MAX_ROUNDS,
     )
+    from config.prompts.prompts_memory import _normalize_memory_prompt_lang
+    from utils.language_utils import get_global_language_full
+
+    # The character's prompt locale (the caller runs inside it), as
+    # /new_dialog uses when the request names no language.
+    lang = _normalize_memory_prompt_lang(get_global_language_full())
 
     result = IntrospectionResult()
     _, _, _, _, name_mapping, _, _, _, _ = await config_manager.aget_character_data()
     master_name = name_mapping.get('human', '主人')
     for round_no in range(1, MEMORY_INTROSPECTION_MAX_ROUNDS + 1):
         annotator = RenderAnnotator()
-        memory_text = await arender_injected_memory(
-            persona_manager, reflection_engine, name, annotator=annotator,
-        )
+        memory_text = (await arender_injected_memory(
+            persona_manager, reflection_engine, name,
+            pinned_fact_store=pinned_fact_store, lang=lang, annotator=annotator,
+        )).text
         if not annotator.has_editable_lines():
             break
         prompt, shown_lines = _build_prompt(

@@ -1240,15 +1240,18 @@ def test_only_the_private_new_dialog_renders_the_pinned_section():
             scanned += 1
             if names := _functions_referencing(tree, "pinned_fact_store"):
                 touching_store[rel] = names
-            if names := _functions_referencing(tree, "_render_pinned_facts_block"):
+            if names := _functions_referencing(tree, "arender_injected_memory"):
                 calling_render[rel] = names
     assert scanned > 100
-    # runtime.py only builds and wires it; routes.py reads it in one helper.
+    # runtime.py only builds and wires it; /new_dialog hands it to the shared
+    # private-chat render, and weekly introspection (private memory only)
+    # reviews that same render.
     assert touching_store == {
         "app/memory_server/runtime.py": {
             "reload_memory_components", "ensure_memory_server_runtime_initialized",
         },
-        "app/memory_server/routes.py": {"_render_pinned_facts_block"},
+        "app/memory_server/routes.py": {"_new_dialog"},
+        "app/memory_server/refine_loops.py": {"_run_introspection_for_character"},
     }
     assert calling_render == {"app/memory_server/routes.py": {"_new_dialog"}}
 
