@@ -415,7 +415,9 @@ def test_closed_loop_exits_even_during_an_unrecovered_stall(stall_logger):
         watchdog._heartbeat = single_beat  # the heartbeat never comes back
         watchdog.start()
         holder["watchdog"] = watchdog
-        await asyncio.sleep(THRESHOLD_S * 3)
+        deadline = time.monotonic() + 5
+        while not _stack_dumps(handler) and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
 
     _run_on_closed_loop(main())
     assert len(_stack_dumps(handler)) == 1
