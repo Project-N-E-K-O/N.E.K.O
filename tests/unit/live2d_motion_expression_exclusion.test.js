@@ -205,7 +205,7 @@ test('idle scheduling retries during expressions and resumes the saved idle afte
     } finally { f.release(); }
 });
 
-function installMainIdleRestore(f) {
+function installMainIdleRestore(f, options = {}) {
     const source = read('static/app/app-interpage/bootstrap-resources-and-model-reload.js');
     const start = source.indexOf('    function _injectMotionGroupSafely(');
     const exportLine = 'window.restoreLive2DIdleAnimationOnMainPage = restoreLive2DIdleAnimationOnMainPage;';
@@ -214,14 +214,15 @@ function installMainIdleRestore(f) {
     vm.runInContext(source.slice(start, end + exportLine.length), f.runtime.context);
     f.runtime.context.live2dManager = f.manager;
     f.runtime.context.lanlan_config = { lanlan_name: 'test' };
-    const savedFile = f.native.definitions.Idle[0].File;
+    const savedFile = options.savedFile || f.native.definitions.Idle[0].File;
+    const motionFiles = options.motionFiles || [savedFile];
     let configuredIdle = savedFile;
     const fetch = f.runtime.context.fetch;
     f.runtime.context.fetch = async (url, ...args) => {
         if (url === '/api/characters') return { json: async () => ({ 猫娘: { test: {
             live2d: 'mao_pro', _reserved: { avatar: { live2d: { idle_animation: configuredIdle } } }
         } } }) };
-        if (url === '/api/live2d/model_files/mao_pro') return { json: async () => ({ motion_files: [savedFile] }) };
+        if (url === '/api/live2d/model_files/mao_pro') return { json: async () => ({ motion_files: motionFiles }) };
         return fetch(url, ...args);
     };
     return { savedFile, clearSelection() { configuredIdle = ''; } };
@@ -234,7 +235,7 @@ test('main-page saved idle deferred by an expression resumes through the common 
         f.manager.setupIdleMotionLoop(f.model);
         await f.manager.playExpression('happy', 'happy.exp3.json');
         await f.runtime.context.restoreLive2DIdleAnimationOnMainPage();
-        assert.deepEqual(Array.from(f.manager._userIdleAnimations), [path.basename(main.savedFile)]);
+        assert.deepEqual(Array.from(f.manager._userIdleAnimations), [main.savedFile]);
         assert.equal(f.native.state.currentPriority, 0, 'saved idle cannot interrupt the expression');
         await f.manager.clearExpression();
         [...f.manager._idleMotionLoopTimers][0].callback();
@@ -247,6 +248,27 @@ test('main-page saved idle deferred by an expression resumes through the common 
         assert.deepEqual(Array.from(f.manager._userIdleAnimations), []);
     } finally { f.release(); }
 });
+
+for (const selectedFile of ['idle/wave.motion3.json', 'wave.motion3.json']) {
+    test(`saved idle ${selectedFile} does not match another directory's same-name motion`, async () => {
+        const f = await fixture();
+        try {
+            installMainIdleRestore(f, {
+                savedFile: selectedFile, motionFiles: ['actions/wave.motion3.json', selectedFile]
+            });
+            vm.runInContext('Math.random = () => 0.99;', f.runtime.context);
+            f.manager.setupIdleMotionLoop(f.model);
+            await f.manager.playExpression('happy', 'happy.exp3.json');
+            await f.runtime.context.restoreLive2DIdleAnimationOnMainPage();
+            assert.deepEqual(Array.from(f.manager._userIdleAnimations), [selectedFile]);
+            await f.manager.clearExpression();
+            [...f.manager._idleMotionLoopTimers][0].callback();
+            await new Promise(resolve => setImmediate(resolve));
+            assert.equal(f.native.state.currentGroup, 'PreviewAll');
+            assert.equal(f.native.definitions.PreviewAll[f.native.state.currentIndex].File, selectedFile);
+        } finally { f.release(); }
+    });
+}
 
 test('an old main-page idle request cannot clear the selection of a replacement model', async () => {
     const f = await fixture(), next = createMao(f.runtime), entered = deferred(), gate = deferred();

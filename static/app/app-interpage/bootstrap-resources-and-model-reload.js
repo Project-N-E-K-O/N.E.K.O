@@ -1916,7 +1916,7 @@ I.mod = window.appInterpage;
             }
 
             // 将保存的选择交给统一待机调度器，表情或动作结束后可自动重试。
-            live2dManager._userIdleAnimations = [live2dIdleAnimation.split('/').pop()];
+            live2dManager._userIdleAnimations = [live2dIdleAnimation];
 
             // 7. 设置循环播放
             const motionInstance = motionManager.motionGroups?.[groupName]?.[motionIndex];

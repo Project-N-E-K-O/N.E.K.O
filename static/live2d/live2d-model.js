@@ -2329,9 +2329,16 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
             console.warn('[Live2D] motionGroups 不可用或 PreviewAll 组不存在，跳过用户待机动作');
         } else {
             const group = motionGroups.PreviewAll;
+            const normalizeIdleFile = file => String(file || '').replace(/\\/g, '/').replace(/^\.\//, '');
+            const availableFiles = new Set(Array.isArray(group) ? group.map((motion, index) => normalizeIdleFile(
+                getMotionFile(motion) || getRegisteredMotionFile('PreviewAll', index)
+            )).filter(Boolean) : []);
+            const configuredFiles = new Set(idleAnimations.map(normalizeIdleFile));
+            // 先匹配完整相对路径；仅旧文件名配置在没有精确匹配时按 basename 兼容。
+            const legacyNames = new Set([...configuredFiles].filter(file => !file.includes('/') && !availableFiles.has(file)));
             const isConfiguredIdle = (motion, file) => {
-                const motionFile = file || getMotionFile(motion);
-                return motionFile && idleAnimations.includes(motionFile.split('/').pop());
+                const motionFile = normalizeIdleFile(file || getMotionFile(motion));
+                return motionFile && (configuredFiles.has(motionFile) || legacyNames.has(motionFile.split('/').pop()));
             };
             const available = Array.isArray(group)
                 ? group.filter((motion, index) => isConfiguredIdle(
@@ -2346,7 +2353,7 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
                 if (motionManager.playing
                     && currentGroup === 'PreviewAll'
                     && currentFile
-                    && idleAnimations.includes(currentFile.split('/').pop())) {
+                    && isConfiguredIdle(null, currentFile)) {
                     return;
                 }
                 if (typeof this.hasActiveActionMotion === 'function'
