@@ -221,6 +221,10 @@ class EventLoopStallWatchdog:
             overslept = now - last_tick - self.check_interval_s
             last_tick = now
             beat = self._last_beat
+            if self._loop.is_closed():
+                # Closed without stop(): nothing left to watch.
+                self._abandon_closed_loop()
+                return
             if self._reporting_paused.is_set():
                 stalled_beat = None
                 continue
@@ -234,10 +238,6 @@ class EventLoopStallWatchdog:
                 # restart the measurement instead of blaming the loop.
                 resumed_at = now
                 continue
-            if self._loop.is_closed():
-                # Closed without stop(): nothing left to watch.
-                self._abandon_closed_loop()
-                return
             origin = max(beat, resumed_at)
             if now - origin < self.threshold_s or not self._loop.is_running():
                 continue

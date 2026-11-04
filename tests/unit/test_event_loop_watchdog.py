@@ -377,3 +377,46 @@ def test_first_release_of_shared_watchdog_pauses_reporting(stall_logger):
     asyncio.run(main())
     assert _stack_dumps(handler) == []
     assert not [m for m in _messages(handler, logging.DEBUG) if "recovered after" in m]
+
+
+def _wait_until_stopped(watchdog, timeout=2.0):
+    deadline = time.monotonic() + timeout
+    while watchdog.running and time.monotonic() < deadline:
+        time.sleep(0.02)
+    return not watchdog.running
+
+
+def test_closed_loop_exits_even_while_reporting_is_paused(stall_logger):
+    logger, _handler = stall_logger
+    holder = {}
+
+    async def main():
+        holder["loop"] = loop = asyncio.get_running_loop()
+        holder["watchdog"] = start_loop_stall_watchdog_from_env(loop, logger=logger, label="main_server", environ={})
+        start_loop_stall_watchdog_from_env(loop, logger=logger, label="agent_server", environ={})
+        await asyncio.sleep(0.05)
+        holder["watchdog"].stop()  # one owner left, reporting paused
+
+    _run_on_closed_loop(main())
+    assert _wait_until_stopped(holder["watchdog"])
+    assert holder["loop"] not in event_loop_watchdog._REGISTRY
+
+
+def test_closed_loop_exits_even_during_an_unrecovered_stall(stall_logger):
+    logger, handler = stall_logger
+    holder = {}
+
+    async def main():
+        watchdog = EventLoopStallWatchdog(asyncio.get_running_loop(), logger=logger, threshold_s=THRESHOLD_S)
+
+        async def single_beat():
+            watchdog._last_beat = time.monotonic()
+
+        watchdog._heartbeat = single_beat  # the heartbeat never comes back
+        watchdog.start()
+        holder["watchdog"] = watchdog
+        await asyncio.sleep(THRESHOLD_S * 3)
+
+    _run_on_closed_loop(main())
+    assert len(_stack_dumps(handler)) == 1
+    assert _wait_until_stopped(holder["watchdog"])
