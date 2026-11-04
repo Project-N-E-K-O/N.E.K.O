@@ -118,4 +118,52 @@ describe('visual-only chat clearing', () => {
     }} />);
     expect(screen.queryByRole('button', { name: 'Clear screen' })).not.toBeInTheDocument();
   });
+
+  it('exposes an accessible icon with temporary success feedback', () => {
+    vi.useFakeTimers();
+    try {
+      render(<App chatSurfaceMode="full" messages={[message('one', 'Hello')]} />);
+      const button = screen.getByRole('button', { name: 'Clear screen' });
+      expect(button.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+      expect(button).toHaveTextContent('');
+      expect(button).toHaveAttribute('data-neko-tooltip', expect.stringContaining('Conversation history and memory are kept.'));
+      fireEvent.focusIn(button);
+      expect(screen.getByRole('tooltip')).toHaveTextContent('Clear screen');
+      fireEvent.click(button);
+      expect(button).toHaveAttribute('data-cleared', 'true');
+      expect(screen.getByRole('status')).toHaveTextContent('Screen cleared');
+      act(() => vi.advanceTimersByTime(1000));
+      expect(button).not.toHaveAttribute('data-cleared');
+      expect(screen.getByRole('status')).toHaveTextContent('');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the compact capsule from replaying hidden streaming text', async () => {
+    vi.useFakeTimers();
+    try {
+      const messages = [message('stream', 'X', true)];
+      const { container, rerender } = render(<App messages={messages} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent('X');
+      fireEvent.click(screen.getByRole('button', { name: 'Clear screen' }));
+      expect(container.querySelector('.compact-chat-capsule-text')).not.toHaveTextContent('X');
+      rerender(<App messages={[message('stream', 'X hidden reply', true)]} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+      expect(container.querySelector('.compact-chat-capsule-text')).not.toHaveTextContent('X');
+      expect(container.querySelector('.compact-export-history-scroll')).not.toHaveTextContent('X');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('disables compact clearing when its only message is a hidden topic hint', () => {
+    const hint = parseChatMessage({ id: 'hint', role: 'system', author: 'Neko', time: '',
+      blocks: [{ type: 'topic-hint', author: 'Neko' }] });
+    const { rerender } = render(<App messages={[hint]} />);
+    expect(screen.getByRole('button', { name: 'Clear screen' })).toBeDisabled();
+    rerender(<App messages={[hint]} chatSurfaceMode="full" />);
+    expect(screen.getByRole('button', { name: 'Clear screen' })).toBeEnabled();
+  });
 });

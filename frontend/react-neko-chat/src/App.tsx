@@ -1,4 +1,4 @@
-import { ChatScreenVisibilityProvider } from './ChatScreenVisibility';
+import { ChatScreenVisibilityProvider, useChatScreenVisibility } from './ChatScreenVisibility';
 import {
   useState,
   useEffect,
@@ -974,6 +974,7 @@ function CompactChatApp({
   _rollbackKey,
   _avatarToolDeactivationKey,
 }: ChatWindowProps) {
+  const { hiddenMessageIds } = useChatScreenVisibility();
   useCompactToolWheelAudioPreload();
   const localAvatarToolCatalog = useLocalAvatarToolCatalog();
   const toolIconItems = localAvatarToolCatalog.registry.items;
@@ -1793,7 +1794,10 @@ function CompactChatApp({
     }
   }, [compactExportSelectedIds, compactExportSelectableIds]);
   const surfaceModeClassName = `chat-surface-mode-${chatSurfaceMode}`;
-  const compactMessagePreviewFromMessages = useMemo(() => getCompactMessagePreview(messages), [messages]);
+  const compactMessagePreviewFromMessages = useMemo(
+    () => getCompactMessagePreview(messages.filter(message => !hiddenMessageIds.has(message.id))),
+    [messages, hiddenMessageIds],
+  );
   const compactCaptionPreview = useMemo<CompactMessagePreview | null>(() => {
     if (!compactCaptionState?.turnId || !compactCaptionState.text) {
       return null;
@@ -1837,6 +1841,7 @@ function CompactChatApp({
     && !compactMessagePreview
     && !compactSuppressAssistantFallback
     && !!compactSpeechPreviewIdRef.current
+    && !hiddenMessageIds.has(compactSpeechPreviewIdRef.current)
     && !!compactSpeechPreviewTextRef.current;
   const compactSpeechModeActive = compactPreservedSpeechActive
     || (!compactSuppressAssistantFallback

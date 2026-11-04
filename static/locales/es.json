@@ -1143,6 +1143,7 @@
         "compactHistoryToggleOpen": "Mostrar historial",
         "compactHistoryToggleClose": "Ocultar historial",
     "clearScreen": "Limpiar pantalla",
+    "clearScreenDone": "Pantalla limpia",
     "clearScreenHint": "Oculta los mensajes existentes en esta pantalla. Se conservan el historial y la memoria.",
     "compactHistoryExport": "Exportar historial de conversación",
         "compactExportControlsCollapse": "Ocultar controles de selección",

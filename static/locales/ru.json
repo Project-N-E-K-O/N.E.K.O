@@ -1143,6 +1143,7 @@
         "compactHistoryToggleOpen": "Показать историю",
         "compactHistoryToggleClose": "Скрыть историю",
     "clearScreen": "Очистить экран",
+    "clearScreenDone": "Экран очищен",
     "clearScreenHint": "Скрывает текущие сообщения на экране. История разговора и память сохраняются.",
     "compactHistoryExport": "Экспорт истории диалога",
         "compactExportControlsCollapse": "Скрыть элементы выбора",

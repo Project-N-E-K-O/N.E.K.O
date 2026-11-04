@@ -1161,8 +1161,8 @@ export default function CompactExportHistoryPanel({
             />
           ) : null}
           {mode === 'chat' ? (
-            <div className="chat-clear-screen-tools">
-              <ClearChatScreenButton disabled={!historyInteractive || choiceLayerAbove} />
+            <div className={`chat-clear-screen-tools${controlsOpen ? ' is-selecting' : ''}`}>
+              <ClearChatScreenButton disabled={!historyInteractive || choiceLayerAbove || displayMessages.length === 0} />
             </div>
           ) : null}
           {mode === 'chat' && controlsOpen ? (

@@ -10674,55 +10674,161 @@ body.avatar-tool-editor-page .avatar-tool-workspace-settings {
 .proactive-recommendation-bubble .neko-recommendation-icon .recommendation-neko-artwork { width: 20px; height: 20px; }
 .mini-game-invite-icon .recommendation-neko-artwork { width: 28px; height: 28px; }
 
-/* Visual-only clearing uses the regular desktop control hit regions. */
+/* Quiet edge tools: keep history geometry intact and share the cyan toolbar ink. */
 .chat-clear-screen-tools {
-  flex: 0 0 auto;
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  z-index: 3;
   display: flex;
-  justify-content: flex-end;
   pointer-events: none;
 }
 
-.chat-clear-screen-button {
-  flex-shrink: 0;
-  padding: 5px 10px;
-  border: 1px solid rgba(130, 150, 180, 0.25);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, calc(0.9 * var(--neko-chat-opacity-factor, 1)));
-  color: #526580;
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-  pointer-events: auto;
-  -webkit-app-region: no-drag;
+.chat-clear-screen-tools.is-selecting {
+  bottom: calc(var(--compact-export-controls-expanded-block-size) + 8px);
 }
 
-.chat-clear-screen-button:hover:not(:disabled) {
-  background: #edf3fc;
+.chat-clear-screen-button {
+  --clear-ink: #2bbce9;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  padding: 6px;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--clear-ink);
+  cursor: pointer;
+  pointer-events: auto;
+  touch-action: manipulation;
+  -webkit-app-region: no-drag;
+  transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease, opacity 160ms ease;
+}
+
+.chat-clear-screen-art {
+  width: 20px;
+  height: 20px;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.chat-clear-screen-brush {
+  transform-origin: 12px 12px;
+  transition: transform 180ms ease, opacity 140ms ease;
+}
+
+.chat-clear-screen-sparkles {
+  opacity: .65;
+  transition: opacity 180ms ease;
+}
+
+.chat-clear-screen-check {
+  opacity: 0;
+  stroke-dasharray: 18;
+  stroke-dashoffset: 18;
+  transition: opacity 140ms ease, stroke-dashoffset 240ms ease;
+}
+
+.chat-clear-screen-button:hover:not(:disabled),
+.chat-clear-screen-button:focus-visible {
+  background: rgba(255, 255, 255, calc(.9 * var(--neko-chat-opacity-factor, 1)));
+  border-color: rgba(87, 199, 232, .24);
+  box-shadow: 0 2px 10px rgba(55, 151, 189, .12), inset 0 1px 0 rgba(255, 255, 255, .8);
+}
+
+.chat-clear-screen-button:hover:not(:disabled) .chat-clear-screen-brush {
+  transform: rotate(-10deg) translateY(-1px);
+}
+
+.chat-clear-screen-button:hover:not(:disabled) .chat-clear-screen-sparkles {
+  opacity: 1;
 }
 
 .chat-clear-screen-button:focus-visible {
-  outline: 2px solid #668fd9;
-  outline-offset: 2px;
+  outline: 2px solid rgba(43, 188, 233, .6);
+  outline-offset: 3px;
+}
+
+.chat-clear-screen-button:active:not(:disabled) .chat-clear-screen-art {
+  transform: scale(.9);
 }
 
 .chat-clear-screen-button:disabled {
-  opacity: 0.5;
+  opacity: .28;
   cursor: default;
 }
 
-[data-theme="dark"] .chat-clear-screen-button {
-  color: #d4dfef;
-  background: rgba(40, 49, 65, calc(0.9 * var(--neko-chat-opacity-factor, 1)));
-  border-color: rgba(155, 175, 205, 0.3);
+.chat-clear-screen-button[data-cleared="true"] {
+  opacity: 1;
+  background: rgba(79, 204, 235, .1);
 }
 
-[data-theme="dark"] .chat-clear-screen-button:hover:not(:disabled) {
-  background: #34435b;
+.chat-clear-screen-button[data-cleared="true"] .chat-clear-screen-brush,
+.chat-clear-screen-button[data-cleared="true"] .chat-clear-screen-sparkles {
+  opacity: 0;
+}
+
+.chat-clear-screen-button[data-cleared="true"] .chat-clear-screen-check {
+  opacity: 1;
+  stroke-dashoffset: 0;
+}
+
+.chat-clear-screen-announcement {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .full-chat-clear-screen-tools {
-  position: absolute;
   top: 8px;
   right: 14px;
+  bottom: auto;
   z-index: 2;
+}
+
+[data-theme="dark"] .chat-clear-screen-button {
+  --clear-ink: #73d9f5;
+}
+
+[data-theme="dark"] .chat-clear-screen-button:hover:not(:disabled),
+[data-theme="dark"] .chat-clear-screen-button:focus-visible {
+  background: rgba(39, 58, 74, calc(.94 * var(--neko-chat-opacity-factor, 1)));
+  border-color: rgba(115, 217, 245, .2);
+  box-shadow: 0 3px 12px rgba(0, 0, 0, .14);
+}
+
+@media (pointer: coarse) {
+  .chat-clear-screen-button {
+    width: 44px;
+    height: 44px;
+  }
+
+  .compact-export-history-anchor:has(.chat-clear-screen-tools) {
+    --compact-export-history-shadow-gutter-right: 44px;
+  }
+
+  .full-chat-clear-screen-tools {
+    top: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-clear-screen-button,
+  .chat-clear-screen-brush,
+  .chat-clear-screen-sparkles,
+  .chat-clear-screen-check {
+    transition: none;
+  }
+
+  .chat-clear-screen-button:hover:not(:disabled) .chat-clear-screen-brush,
+  .chat-clear-screen-button:active:not(:disabled) .chat-clear-screen-art {
+    transform: none;
+  }
 }
