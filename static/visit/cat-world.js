@@ -153,6 +153,29 @@
     var clientY = Number(event && event.clientY);
     if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return null;
     try {
+      var crop = global.__nekoNiriPetPhysicalCrop;
+      if (crop && typeof crop.getEventCoordinates === 'function'
+          && typeof global._getNekoDesktopVirtualViewportSize === 'function') {
+        var eventCoordinates = crop.getEventCoordinates(event);
+        var eventVirtual = eventCoordinates && eventCoordinates.virtual;
+        var eventVirtualX = Number(eventVirtual && eventVirtual.x);
+        var eventVirtualY = Number(eventVirtual && eventVirtual.y);
+        var eventVirtualSize = global._getNekoDesktopVirtualViewportSize();
+        var eventVirtualWidth = Number(eventVirtualSize && eventVirtualSize.width);
+        var eventVirtualHeight = Number(eventVirtualSize && eventVirtualSize.height);
+        if (Number.isFinite(eventVirtualWidth) && eventVirtualWidth > 0
+            && Number.isFinite(eventVirtualHeight) && eventVirtualHeight > 0
+            && Number.isFinite(eventVirtualX) && Number.isFinite(eventVirtualY)) {
+          width = eventVirtualWidth;
+          height = eventVirtualHeight;
+          clientX = eventVirtualX;
+          clientY = eventVirtualY;
+          return {
+            x_q16: clampInt(clientX / width * Q16_MAX, 0, Q16_MAX),
+            y_q16: clampInt(clientY / height * Q16_MAX, 0, Q16_MAX)
+          };
+        }
+      }
       if (typeof global._getNekoDesktopVirtualViewportSize === 'function'
           && typeof global._getNekoDesktopVirtualRect === 'function') {
         var virtualSize = global._getNekoDesktopVirtualViewportSize();

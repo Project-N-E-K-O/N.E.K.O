@@ -356,22 +356,47 @@ async function main() {
   // A physically cropped Pet window converts pointer input into the same
   // virtual-desktop coordinates used by native cat poses.
   win._getNekoDesktopVirtualViewportSize = () => ({ width: 2000, height: 1600 });
-  win._getNekoDesktopVirtualRect = (rect) => ({
-    left: Number(rect.left) + 500,
-    top: Number(rect.top) + 300,
-    width: Number(rect.width),
-    height: Number(rect.height),
-  });
+  let virtualRectCalls = 0;
+  win._getNekoDesktopVirtualRect = (rect) => {
+    virtualRectCalls += 1;
+    return {
+      left: Number(rect.left) + 500,
+      top: Number(rect.top) + 300,
+      width: Number(rect.width),
+      height: Number(rect.height),
+    };
+  };
+  win.__nekoNiriPetPhysicalCrop = {
+    getEventCoordinates: (event) => ({
+      local: { x: Number(event.clientX) - 500, y: Number(event.clientY) - 300 },
+      virtual: { x: Number(event.clientX), y: Number(event.clientY) },
+      patched: true,
+    }),
+  };
   const beforeCroppedDrag = calls.intent.length;
-  yarn.dispatchEvent({ type: 'pointerdown', button: 0, pointerId: 3, clientX: 100, clientY: 200,
+  yarn.dispatchEvent({ type: 'pointerdown', button: 0, pointerId: 3, clientX: 600, clientY: 500,
     preventDefault() {}, stopPropagation() {} });
-  yarn.dispatchEvent({ type: 'pointerup', button: 0, pointerId: 3, clientX: 120, clientY: 220 });
+  yarn.dispatchEvent({ type: 'pointerup', button: 0, pointerId: 3, clientX: 620, clientY: 520 });
   await flush();
   await flush();
   const croppedGrab = calls.intent[beforeCroppedDrag];
   assert.equal(croppedGrab.kind, 'yarn_grab');
   assert.equal(croppedGrab.x_q16, 19661);
   assert.equal(croppedGrab.y_q16, 20480);
+  assert.equal(virtualRectCalls, 0);
+  delete win.__nekoNiriPetPhysicalCrop;
+
+  // Older desktop bridges expose only the generic local-to-virtual helpers.
+  const beforeLegacyCroppedDrag = calls.intent.length;
+  yarn.dispatchEvent({ type: 'pointerdown', button: 0, pointerId: 31, clientX: 100, clientY: 200,
+    preventDefault() {}, stopPropagation() {} });
+  yarn.dispatchEvent({ type: 'pointerup', button: 0, pointerId: 31, clientX: 120, clientY: 220 });
+  await flush();
+  await flush();
+  const legacyCroppedGrab = calls.intent[beforeLegacyCroppedDrag];
+  assert.equal(legacyCroppedGrab.x_q16, 19661);
+  assert.equal(legacyCroppedGrab.y_q16, 20480);
+  assert.ok(virtualRectCalls > 0);
   delete win._getNekoDesktopVirtualRect;
 
   // A partial/failed crop bridge must fall back as one unit instead of mixing
