@@ -1495,8 +1495,9 @@ async def on_shutdown():
 
     if _IS_MAIN_PROCESS:
         logger.info("正在清理资源...")
-        # Stop first: shutdown runs known synchronous cleanup that would only
-        # produce stall noise.
+        # Release first: shutdown runs known synchronous cleanup that would only
+        # produce stall noise. In merged mode the loop's watchdog is shared and
+        # stops once every service sharing it has released it.
         if _loop_stall_watchdog is not None:
             try:
                 _loop_stall_watchdog.stop()

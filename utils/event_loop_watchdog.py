@@ -16,10 +16,12 @@ the loop, and one ``Event.wait`` timeout per check interval on the thread.
 
 import asyncio
 import functools
+import math
 import os
 import sys
 import threading
 import time
+import weakref
 from pathlib import Path
 
 
@@ -42,6 +44,12 @@ _DISABLED_VALUES = frozenset({"0", "off", "false", "no", "disable", "disabled"})
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
+# One watchdog per event loop: in merged mode several services share a loop
+# and each asks for a watchdog at startup. Keyed weakly so a closed, dropped
+# loop does not keep its entry alive.
+_REGISTRY = weakref.WeakKeyDictionary()
+_REGISTRY_LOCK = threading.Lock()
+
 
 def resolve_stall_threshold(raw):
     """Parse the ``NEKO_LOOP_STALL_THRESHOLD_MS`` value.
@@ -57,7 +65,7 @@ def resolve_stall_threshold(raw):
     if text in _DISABLED_VALUES:
         return None
     millis = float(text)
-    if millis != millis:  # NaN
+    if not math.isfinite(millis):
         raise ValueError(f"invalid stall threshold: {raw!r}")
     if millis <= 0:
         return None
@@ -66,21 +74,30 @@ def resolve_stall_threshold(raw):
 
 @functools.lru_cache(maxsize=1024)
 def _short_path(filename):
-    """Shorten a code filename so logs do not carry home-directory paths."""
+    """Shorten a code filename so logs do not carry user names or home paths.
+
+    Files under the project or interpreter roots become relative paths, files
+    under the home directory become ``~/...``, and anything else keeps only
+    its base name.
+    """
     if not filename or filename.startswith("<"):
         return filename
     try:
-        normalized = os.path.normcase(os.path.abspath(filename))
+        absolute = os.path.abspath(filename)
+        normalized = os.path.normcase(absolute)
     except (TypeError, ValueError):
-        return filename
+        return ".../" + os.path.basename(str(filename))
     roots = {str(_PROJECT_ROOT), sys.prefix, sys.base_prefix, sys.exec_prefix}
     for root in sorted((r for r in roots if r), key=len, reverse=True):
         root_norm = os.path.normcase(os.path.abspath(root))
         if normalized.startswith(root_norm + os.sep):
-            return os.path.abspath(filename)[len(root_norm) + 1:].replace("\\", "/")
-    parts = Path(filename).parts
-    tail = "/".join(parts[-3:])
-    return tail if len(parts) <= 3 else ".../" + tail
+            return absolute[len(root_norm) + 1:].replace("\\", "/")
+    home = os.path.expanduser("~")
+    if home and home != "~":
+        home_norm = os.path.normcase(os.path.abspath(home))
+        if normalized.startswith(home_norm + os.sep):
+            return "~/" + absolute[len(home_norm) + 1:].replace("\\", "/")
+    return ".../" + os.path.basename(absolute)
 
 
 def _format_frames(frames):
@@ -91,7 +108,9 @@ class EventLoopStallWatchdog:
     """Detect event-loop stalls and log the loop thread's stack.
 
     ``start()`` must be called from the loop's own thread (the loop thread id
-    is captured there). ``stop()`` may be called from any thread.
+    is captured there). ``stop()`` may be called from any thread. A watchdog
+    shared through ``start_loop_stall_watchdog_from_env`` counts its owners;
+    each owner calls ``stop()`` once and the last call shuts it down.
     """
 
     def __init__(
@@ -109,7 +128,8 @@ class EventLoopStallWatchdog:
         self.heartbeat_interval_s = min(MAX_HEARTBEAT_INTERVAL_S, self.threshold_s / 4)
         self.check_interval_s = min(MAX_CHECK_INTERVAL_S, self.threshold_s / 4)
         self._report_interval_s = float(report_interval_s)
-        self._label = label
+        self._labels = [label]
+        self._owners = 0
         self._stop_event = threading.Event()
         self._last_beat = time.monotonic()
         self._loop_thread_id = None
@@ -117,6 +137,10 @@ class EventLoopStallWatchdog:
         self._thread = None
         # signature -> [last_report_monotonic, suppressed_since_last_report]
         self._reports = {}
+
+    @property
+    def label(self):
+        return "+".join(self._labels)
 
     @property
     def running(self):
@@ -127,14 +151,30 @@ class EventLoopStallWatchdog:
         """Schedule the heartbeat and start the checker thread; returns at once."""
         if self._thread is not None:
             return
+        self._owners = 1
         self._loop_thread_id = threading.get_ident()
         self._last_beat = time.monotonic()
         self._task = self._loop.create_task(self._heartbeat(), name=HEARTBEAT_TASK_NAME)
         self._thread = threading.Thread(target=self._watch, name=THREAD_NAME, daemon=True)
         self._thread.start()
 
+    def _acquire(self, label):
+        self._owners += 1
+        if label not in self._labels:
+            self._labels.append(label)
+
     def stop(self, timeout=1.0):
-        """Stop the checker thread and cancel the heartbeat. Idempotent."""
+        """Release one owner; the last release stops the thread and heartbeat.
+
+        Idempotent once fully stopped.
+        """
+        with _REGISTRY_LOCK:
+            if self._owners > 1:
+                self._owners -= 1
+                return
+            self._owners = 0
+            if _REGISTRY.get(self._loop) is self:
+                del _REGISTRY[self._loop]
         self._stop_event.set()
         task, self._task = self._task, None
         if task is not None and not task.done():
@@ -224,7 +264,7 @@ class EventLoopStallWatchdog:
             "%s %s event loop blocked: no heartbeat for %d ms (threshold %d ms)%s. "
             "Loop thread stack, innermost last:\n%s%s",
             _LOG_PREFIX,
-            self._label,
+            self.label,
             int(elapsed_s * 1000),
             int(self.threshold_s * 1000),
             suppressed_note,
@@ -242,14 +282,14 @@ class EventLoopStallWatchdog:
             self._logger.warning(
                 "%s %s event loop recovered after ~%d ms blocked",
                 _LOG_PREFIX,
-                self._label,
+                self.label,
                 blocked_ms,
             )
         else:
             self._logger.debug(
                 "%s %s event loop recovered after ~%d ms blocked (report suppressed)",
                 _LOG_PREFIX,
-                self._label,
+                self.label,
                 blocked_ms,
             )
 
@@ -257,8 +297,10 @@ class EventLoopStallWatchdog:
 def start_loop_stall_watchdog_from_env(loop, *, logger, label="main", environ=None):
     """Start a watchdog configured by ``NEKO_LOOP_STALL_THRESHOLD_MS``.
 
-    Returns the started watchdog, or ``None`` when disabled by the variable.
-    Must be called on the loop's thread.
+    Returns the watchdog, or ``None`` when disabled by the variable. If this
+    loop already has a running watchdog, that one is returned with one more
+    owner instead of starting a second; the caller still calls ``stop()``
+    once. Must be called on the loop's thread.
     """
     raw = (os.environ if environ is None else environ).get(THRESHOLD_ENV)
     try:
@@ -275,11 +317,22 @@ def start_loop_stall_watchdog_from_env(loop, *, logger, label="main", environ=No
     if threshold_s is None:
         logger.info("%s watchdog disabled via %s=%s", _LOG_PREFIX, THRESHOLD_ENV, raw)
         return None
-    watchdog = EventLoopStallWatchdog(loop, logger=logger, threshold_s=threshold_s, label=label)
-    watchdog.start()
+    with _REGISTRY_LOCK:
+        existing = _REGISTRY.get(loop)
+        if existing is not None and existing._owners > 0:
+            existing._acquire(label)
+            watchdog = None
+        else:
+            watchdog = EventLoopStallWatchdog(loop, logger=logger, threshold_s=threshold_s, label=label)
+            watchdog.start()
+            _REGISTRY[loop] = watchdog
+    if watchdog is None:
+        logger.info("%s %s shares the watchdog already running on this loop", _LOG_PREFIX, label)
+        return existing
     logger.info(
-        "%s watchdog started (threshold=%d ms, heartbeat=%d ms; set %s=0 to disable)",
+        "%s %s watchdog started (threshold=%d ms, heartbeat=%d ms; set %s=0 to disable)",
         _LOG_PREFIX,
+        label,
         int(watchdog.threshold_s * 1000),
         int(watchdog.heartbeat_interval_s * 1000),
         THRESHOLD_ENV,

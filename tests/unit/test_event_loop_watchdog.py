@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import threading
 import time
 
@@ -11,6 +12,7 @@ from utils.event_loop_watchdog import (
     THREAD_NAME,
     THRESHOLD_ENV,
     EventLoopStallWatchdog,
+    _short_path,
     resolve_stall_threshold,
     start_loop_stall_watchdog_from_env,
 )
@@ -200,7 +202,7 @@ def test_resolve_stall_threshold(raw, expected):
     assert resolve_stall_threshold(raw) == expected
 
 
-@pytest.mark.parametrize("raw", ["abc", "nan"])
+@pytest.mark.parametrize("raw", ["abc", "nan", "inf", "-inf", "1e400"])
 def test_resolve_stall_threshold_rejects_garbage(raw):
     with pytest.raises(ValueError):
         resolve_stall_threshold(raw)
@@ -232,3 +234,88 @@ def test_from_env_invalid_value_falls_back_to_default(stall_logger):
 
     assert asyncio.run(main()) == DEFAULT_THRESHOLD_S
     assert any("ignoring invalid" in m for m in _messages(handler))
+
+
+def _watchdog_threads():
+    return [t for t in threading.enumerate() if t.name == THREAD_NAME and t.is_alive()]
+
+
+def test_same_loop_shares_one_watchdog_until_last_owner_stops(stall_logger):
+    logger, handler = stall_logger
+
+    async def main():
+        loop = asyncio.get_running_loop()
+        first = start_loop_stall_watchdog_from_env(loop, logger=logger, label="main_server", environ={})
+        second = start_loop_stall_watchdog_from_env(loop, logger=logger, label="agent_server", environ={})
+        assert second is first
+        assert first.label == "main_server+agent_server"
+        assert len(_watchdog_threads()) == 1
+        first.stop()
+        assert first.running  # agent_server still holds it
+        second.stop()
+        await asyncio.sleep(0)
+        assert not first.running
+        assert _watchdog_threads() == []
+        # A later start on the same loop gets a fresh watchdog.
+        third = start_loop_stall_watchdog_from_env(loop, logger=logger, label="agent_server", environ={})
+        try:
+            assert third is not first and third.running
+        finally:
+            third.stop()
+
+    asyncio.run(main())
+    assert _watchdog_threads() == []
+    assert any("shares the watchdog" in m for m in _messages(handler, logging.INFO))
+
+
+def test_different_loops_each_get_their_own_watchdog(stall_logger):
+    logger, _handler = stall_logger
+    started = threading.Event()
+    release = threading.Event()
+    other = {}
+
+    def other_loop_thread():
+        async def main():
+            other["watchdog"] = start_loop_stall_watchdog_from_env(
+                asyncio.get_running_loop(), logger=logger, label="agent_server", environ={}
+            )
+            started.set()
+            while not release.is_set():
+                await asyncio.sleep(0.01)
+            other["watchdog"].stop()
+
+        asyncio.run(main())
+
+    async def main():
+        mine = start_loop_stall_watchdog_from_env(
+            asyncio.get_running_loop(), logger=logger, label="main_server", environ={}
+        )
+        thread = threading.Thread(target=other_loop_thread)
+        thread.start()
+        try:
+            assert started.wait(5)
+            assert other["watchdog"] is not mine
+            assert len(_watchdog_threads()) == 2
+        finally:
+            release.set()
+            thread.join(5)
+            mine.stop()
+
+    asyncio.run(main())
+    assert _watchdog_threads() == []
+
+
+def test_paths_outside_known_roots_do_not_leak_user_names():
+    home = os.path.expanduser("~")
+    _short_path.cache_clear()
+    try:
+        under_home = _short_path(os.path.join(home, "scripts", "helper.py"))
+        elsewhere = _short_path(os.path.join(os.sep, "srv", "alice", "work", "helper.py"))
+        in_project = _short_path(__file__)
+    finally:
+        _short_path.cache_clear()
+    assert under_home == "~/scripts/helper.py"
+    assert elsewhere == ".../helper.py"
+    assert os.path.basename(home) not in under_home
+    assert "alice" not in elsewhere
+    assert in_project == "tests/unit/test_event_loop_watchdog.py"
