@@ -827,6 +827,21 @@ const report = {};
     idle_after_suspend: idleAfterSuspend,
   };
 
+  const selfActionCache = createHarness();
+  selfActionCache.state('started', {
+    cat_scene: 2, self_cat_asset: 'dev_neko', peer_cat_asset: 'yui_neko',
+  });
+  selfActionCache.emit('neko-visit-cat-scene', {
+    type: 'visit_cat_scene', visit_id: VID, actor: 'self', kind: 'play', seq: 1, seed: 11,
+  });
+  const selfActionBeforeSuspend = selfActionCache.art('self')
+    .getAttribute('data-visit-cat-resource-slot');
+  selfActionCache.win.dispatchEvent({ type: 'pagehide', persisted: true });
+  report.bfcache_self_action = {
+    before_suspend: selfActionBeforeSuspend,
+    after_suspend: selfActionCache.art('self').getAttribute('data-visit-cat-resource-slot'),
+  };
+
   const pendingBfcacheReturn = createHarness();
   pendingBfcacheReturn.state('started', {
     cat_scene: 2, self_cat_asset: 'dev_neko', peer_cat_asset: 'yui_neko',
@@ -1014,6 +1029,10 @@ def test_bfcache_restore_rebinds_scene_once_and_replays_snapshots(report):
         "native_input": "actor",
         "poses_resumed": True,
         "idle_after_suspend": "idle.cat1",
+    }
+    assert report["bfcache_self_action"] == {
+        "before_suspend": "action.cat1.play_yarn",
+        "after_suspend": "idle.cat1",
     }
     assert report["bfcache_confirmed_return"] == {"end_calls": 1, "commits": 1}
 

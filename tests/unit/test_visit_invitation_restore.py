@@ -244,8 +244,9 @@ def test_idle_recovery_dispatches_ended_to_the_local_display():
     out = run_visit_js(
         """
         const pet = makeBridge();
+        load(pet.ctx, [DISPLAY_RELAY]);
         const restored = [];
-        pet.ctx.nekoRestoreVisitStateToDisplay = frame => { restored.push(frame); return true; };
+        pet.ctx.addEventListener('neko-visit-display-state', event => restored.push(event.detail));
         pet.bridge.onStateChange({ type: 'visit_state_change', action: 'pending', visit_id: VISIT_ID, side: 'host' });
         pet.bridge.onStateChange({ type: 'visit_state_change', action: 'started', visit_id: VISIT_ID, side: 'host' });
         pet.ctx.fetch = async () => ({ ok: true, json: async () => ({ active: false }) });
@@ -265,6 +266,23 @@ def test_idle_recovery_dispatches_ended_to_the_local_display():
         },
         "visitId": "",
     }
+
+
+def test_idle_recovery_keeps_ended_state_when_display_restore_throws():
+    out = run_visit_js(
+        """
+        const pet = makeBridge();
+        pet.ctx.nekoRestoreVisitStateToDisplay = () => { throw new Error('display unavailable'); };
+        pet.bridge.onStateChange({ type: 'visit_state_change', action: 'pending', visit_id: VISIT_ID, side: 'host' });
+        pet.bridge.onStateChange({ type: 'visit_state_change', action: 'started', visit_id: VISIT_ID, side: 'host' });
+        pet.ctx.fetch = async () => ({ ok: true, json: async () => ({ active: false }) });
+        const applied = await pet.bridge.recoverAfterReload('咪咪');
+        return { applied, visitId: pet.bridge.getVisitId() };
+        """,
+        files=BRIDGE_FILES,
+        extra_prelude=_prelude(),
+    )
+    assert out == {"applied": True, "visitId": ""}
 
 
 def test_late_idle_recovery_cannot_clear_an_invitation_restored_by_a_newer_snapshot():

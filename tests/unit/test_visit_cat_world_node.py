@@ -788,6 +788,7 @@ async function main() {
   await flush();
   const firstRestoredHostCursor = win.NekoVisitCatWorld.snapshot().published_world_seq;
   assert.ok(firstRestoredHostCursor > 900);
+  assert.equal(win.NekoVisitCatWorld.snapshot().world.yarn_x_q16, 49000);
   retainedHostWorld = worldFrame(firstRestoredHostCursor, 49000, 'commit');
   const statesBeforeHostRestore = calls.state.length;
   win.dispatchEvent({ type: 'pagehide', persisted: true });
