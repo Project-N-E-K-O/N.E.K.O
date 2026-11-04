@@ -988,9 +988,12 @@ async def run_sync_connector(
     # keyed by id (the tuple keeps the entry alive): {id(entry): (entry, its prior entry)}.
     avatar_unsaved_dedupe_entries: dict[int, tuple] = {}
 
+    memory_lane_running: list = []  # The job the lane is executing, if any.
+
     async def _run_memory_lane():
         while True:
             job = await memory_lane.get()
+            memory_lane_running[:] = [job]
             try:
                 await job()
             except asyncio.CancelledError:
@@ -998,6 +1001,7 @@ async def run_sync_connector(
             except Exception as e:
                 logger.error(f"[{lanlan_name}] 记忆写入任务异常: {type(e).__name__}: {e}", exc_info=True)
             finally:
+                memory_lane_running.clear()
                 memory_lane.task_done()
 
     def _enqueue_memory_write(job) -> None:
@@ -1682,8 +1686,10 @@ async def run_sync_connector(
         try:
             await asyncio.wait_for(memory_lane.join(), timeout=MEMORY_LANE_DRAIN_TIMEOUT_S)
         except asyncio.TimeoutError:
-            if not memory_lane.empty():
-                logger.warning(f"[{lanlan_name}] 连接器退出时仍有 {memory_lane.qsize()} 个记忆写入未发出，已放弃")
+            logger.warning(
+                f"[{lanlan_name}] 连接器退出时记忆写入未完成，已放弃："
+                f"执行中 {len(memory_lane_running)} 个，排队中 {memory_lane.qsize()} 个"
+            )
         finally:
             memory_lane_task.cancel()
             await asyncio.gather(memory_lane_task, return_exceptions=True)

@@ -254,3 +254,25 @@ async def test_memory_write_backlog_is_logged(connector, monkeypatch):
             queue.put_nowait(item)
     await _until(lambda: any("积压" in w for w in warnings))
     memory.release.set()
+
+
+@pytest.mark.asyncio
+async def test_drain_timeout_reports_the_write_in_flight(monkeypatch):
+    from main_logic import cross_server
+
+    monkeypatch.setattr(cross_server, "MEMORY_LANE_DRAIN_TIMEOUT_S", 0.1)
+    warnings = []
+    monkeypatch.setattr(cross_server.logger, "warning", lambda msg, *a, **k: warnings.append(msg))
+    memory = _Memory(blocked={"renew"})
+    monkeypatch.setattr(cross_server, "_post_memory_server", memory)
+    queue = asyncio.Queue()
+    task = asyncio.create_task(cross_server.run_sync_connector(
+        queue, "Lan", config={"monitor": False, "bullet": False},
+    ))
+    queue.put_nowait(_user("u1"))
+    queue.put_nowait({"type": "system", "data": "renew session"})
+    await _until(lambda: memory.endpoints() == ["renew"])
+
+    task.cancel()
+    await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 2)
+    assert any("执行中 1 个，排队中 0 个" in w for w in warnings)
