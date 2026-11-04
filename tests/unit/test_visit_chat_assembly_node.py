@@ -98,6 +98,7 @@ function createHarness(opts) {
   const toasts = [];
   const sendCalls = [];
   const relayFrames = [];
+  const restoreFrames = [];
   const socket = { readyState: 1, send(m) { sent.push(JSON.parse(m)); } };
   const body = new Node('body');
   const docListeners = [];
@@ -165,6 +166,12 @@ function createHarness(opts) {
       return true;
     },
   };
+  if (opts.localRestore === true) {
+    win.nekoRestoreVisitStateToDisplay = function (frame) {
+      restoreFrames.push(JSON.parse(JSON.stringify(frame)));
+      return true;
+    };
+  }
   win.window = win;
   win.t = () => '';
   async function fetchStub(url, init) {
@@ -217,7 +224,7 @@ function createHarness(opts) {
   function buttonsOf(node) { return node.all((n) => n.tagName === 'BUTTON'); }
   function lineMessage(id) { return messages.find((x) => x.id.indexOf('visit-line-') === 0 && x.id.endsWith(':' + id)); }
   function lineText(id) { const m = lineMessage(id); return m ? m.blocks.map((b) => b.text).join('|') : null; }
-  return { win, I, chat, sent, fetches, messages, rollbacks, toasts, sendCalls, relayFrames, socket, body, advance, settle, frame, state, dialogs, buttonsOf, lineText, lineMessage, timers, pressKey, listeners };
+  return { win, I, chat, sent, fetches, messages, rollbacks, toasts, sendCalls, relayFrames, restoreFrames, socket, body, advance, settle, frame, state, dialogs, buttonsOf, lineText, lineMessage, timers, pressKey, listeners };
 }
 
 const report = {};
@@ -1128,13 +1135,14 @@ const report = {};
   // ── 重连轮询发现已结束：照样留下该场的结束消息（查看详情 / 导出 / 举报） ──
   {
     const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => ({ status: 200, body: { active: false, visit_id: null, phase: null, enabled: true } }) };
-    const h = createHarness({ routes });
+    const h = createHarness({ routes, localRestore: true });
     h.state('started');
     h.state('reconnecting');
     h.advance(5100);
     await h.settle();
     report.recover_ended_message = h.messages.some((m) => m.id === 'visit-ended-' + VID);
-    report.recover_ended_relay = h.relayFrames[h.relayFrames.length - 1].action;
+    report.recover_ended_relay = h.restoreFrames[h.restoreFrames.length - 1].action;
+    report.recover_ended_local_restore = !h.relayFrames.some((frame) => frame.action === 'ended');
   }
   // ── abort 的 i_done 比收到的片多：补占位，迟片还能落位 ──
   {
@@ -2769,6 +2777,7 @@ def test_snapshot_visit_switch_resets_line_and_avatar_caches(report):
 def test_snapshot_recovery_of_an_ended_visit_keeps_its_ended_message(report):
     assert report["recover_ended_message"] is True
     assert report["recover_ended_relay"] == "ended"
+    assert report["recover_ended_local_restore"] is True
 
 
 def test_abort_extends_to_i_done_with_placeholders(report):

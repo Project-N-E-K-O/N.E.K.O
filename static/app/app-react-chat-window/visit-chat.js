@@ -3541,7 +3541,9 @@
                 && typeof window.nekoVisitParentBridge.onStateChange === 'function') {
             try { window.nekoVisitParentBridge.onStateChange(frame); } catch (_) { /* 不阻止聊天面的收尾 */ }
         }
-        if (typeof window.nekoRelayVisitStateToDisplay === 'function') window.nekoRelayVisitStateToDisplay(frame);
+        var restore = typeof window.nekoRestoreVisitStateToDisplay === 'function'
+            ? window.nekoRestoreVisitStateToDisplay : window.nekoRelayVisitStateToDisplay;
+        if (typeof restore === 'function') restore(frame);
     }
 
     function relayStateSnapshotToDisplay(state, visitId) {
