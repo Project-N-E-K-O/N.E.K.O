@@ -123,6 +123,10 @@ MANAGED_MEMORY_FILENAMES = (
     # all-dedup days; independently syncing/rolling back them and facts desynchronizes ledger,
     # so hash/upload/delete/restore together (missing files skipped with is_file/exists).
     "external_import_state.json",
+    # Pinned important facts (memory/pinned_facts.py): what the user asked to
+    # be remembered, so it travels with facts.json. Its store keeps no cache,
+    # so an apply that rewrites it needs no eviction hook.
+    "pinned_facts.json",
     "prompt_locale.json",
     "scoped_prompt_locales.json",
     "persona.json",

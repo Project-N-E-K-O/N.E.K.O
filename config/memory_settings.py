@@ -128,6 +128,56 @@ PERSONA_RENDER_MAX_TOKENS = 2000         # Non-protected persona budget (per sub
 REFLECTION_RENDER_MAX_TOKENS = 2000      # Reflection rendering budget (pending + confirmed, per subject).
 PERSONA_RENDER_ENCODING = "o200k_base"   # tiktoken encoding
 
+# ── Pinned important facts (memory/pinned_facts.py) ─────────────────────
+# Facts the extraction model flags as important skip the evidence pipeline and
+# sit in a small resident section of the private-chat long-term memory until
+# they expire. The original fact still goes through the ordinary pipeline;
+# expiry only takes it out of the resident section.
+PINNED_FACT_TTL_TIERS_DAYS = (3, 14, 90, 365)
+"""The only lifetimes a pinned fact can have, in days.
+- 3: things happening right now (a cold, working late tonight).
+- 14: near-term plans (an exam next week, a business trip).
+- 90: a phase of life (a new job, studying for an exam, recovering from an injury).
+- 365: long-lived but changeable (an allergy, a birthday, how the user wants to be called).
+- A dated event takes the smallest tier that still covers the end of the event;
+  memory/pinned_facts.py:snap_ttl_days rounds any other value up the same way."""
+
+PINNED_FACT_DEFAULT_TTL_DAYS = 14
+"""Tier used when the model sets ``pin`` but gives no usable ``pin_ttl_days``.
+The second-shortest tier: too short only drops the entry early (the fact itself
+stays in the ordinary pipeline), too long keeps a stale entry in every prompt."""
+
+PINNED_FACT_MAX_ACTIVE = 20
+"""Cap on live entries. The whole section goes to the resolve model on every
+admission, and past the cap the entry closest to expiry is evicted."""
+
+PINNED_FACT_HISTORY_MAX = 60
+"""Replaced / removed / expired / evicted entries kept in the file for diagnosis.
+Never rendered; oldest records go first."""
+
+PINNED_FACT_TEXT_MAX_TOKENS = 60
+"""Per-entry text cap, applied when an entry is written."""
+
+PINNED_FACT_RENDER_MAX_TOKENS = 600
+"""Token budget of the rendered section (header included). Over budget, the
+least recently updated entries are left out of that render."""
+
+PINNED_FACT_MAX_CANDIDATES_PER_ROUND = 8
+"""Pinned candidates taken from one extraction round; bounds the resolve prompt
+together with PINNED_FACT_MAX_ACTIVE and PINNED_FACT_TEXT_MAX_TOKENS."""
+
+PINNED_FACT_RESOLVE_ATTEMPTS = 3
+"""Resolve rounds per admission. A round's targeted decision is not applied
+when another admission changed that entry after the snapshot the model saw;
+those candidates are decided again on fresh state. The last round still
+checks, but degrades such a decision instead of applying it (remove is
+dropped, replace / renew become add), so an older view never undoes a
+newer change."""
+
+PINNED_FACT_RESOLVE_MODEL_TIER = "correction"
+"""Model tier of the add / replace / renew / remove decision, the same tier and
+thinking mode as persona correction resolution."""
+
 # ── Overall cap for scoped (group) L10 core memory ──────────────────────────
 # Per-subject budgets stop competition but not total growth: rendering five
 # subjects costs 5 × 4000 = 20k, consuming most context with core memory alone.

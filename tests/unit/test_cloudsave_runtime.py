@@ -2466,6 +2466,31 @@ def test_export_snapshot_includes_external_import_state_sidecar(tmp_path):
 
 
 @pytest.mark.unit
+def test_export_snapshot_includes_pinned_facts(tmp_path):
+    # Pinned important facts are what the user asked to be remembered; a device
+    # change or restore must bring them along with facts.json.
+    cm = _make_config_manager(tmp_path)
+
+    from memory.pinned_facts import PINNED_FACTS_FILENAME
+    from utils.cloudsave_runtime import (
+        MANAGED_MEMORY_FILENAMES,
+        export_local_cloudsave_snapshot,
+    )
+
+    assert PINNED_FACTS_FILENAME in MANAGED_MEMORY_FILENAMES
+    _write_runtime_state(cm, character_name="小满")
+    payload = {"version": 1, "facts": [{"id": "pin_0a1b2c3d", "text": "主人下周三考试"}], "history": []}
+    atomic_write_json(
+        Path(cm.memory_dir) / "小满" / PINNED_FACTS_FILENAME,
+        payload, ensure_ascii=False, indent=2,
+    )
+    export_local_cloudsave_snapshot(cm)
+
+    staged = cm.cloudsave_dir / "characters" / "小满" / "memory" / PINNED_FACTS_FILENAME
+    assert json.loads(staged.read_text(encoding="utf-8")) == payload
+
+
+@pytest.mark.unit
 def test_export_snapshot_includes_prompt_locale_sidecars(tmp_path):
     cm = _make_config_manager(tmp_path)
 

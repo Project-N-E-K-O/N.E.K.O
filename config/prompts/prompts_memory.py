@@ -1614,6 +1614,22 @@ event_when（可选 — 事件发生时间，一律用相对时间，绝不写�
 - 例 1：用户说"昨天晚上没睡好" → event_when = {"start": {"offset": -1, "unit": "day"}, "end": null}
 - 例 2：用户说"喜欢喝咖啡"（长期偏好，无时间） → 不写 event_when
 
+pin / pin_ttl_days（可选 — 是否放进「重要事实常驻区」）：
+- 常驻区里的事在到期前会一直摆在 {LANLAN_NAME} 面前，不用等长期记忆慢慢沉淀，所以只收真正要紧的事
+- 只有以下四类才写 "pin": true：
+  - {MASTER_NAME} 明确要求记住的（"记住"、"别忘了"、"一定要记得"）
+  - 有时间点的安排和约定：考试、面试、出行、复诊、截止日期、两人约好的事
+  - 健康与安全：过敏、生病、用药、忌口、受伤
+  - 身份类变化：换称呼或昵称、搬家、换工作、毕业、家里添人、宠物离世
+- 以下**不算**，不要写 pin：对关系的概括、情绪解读、对 {LANLAN_NAME} 自己行为的总结、一次性闲聊；"别再提某个话题"这类要求也不算（另有机制负责）
+- 写了 "pin": true 就必须同时写 pin_ttl_days，只能从 3 / 14 / 90 / 365 里选一个：
+  - 3：眼前的事，如感冒、今晚加班
+  - 14：近期安排，如下周考试、出差
+  - 90：阶段性状态，如新工作、备考、养伤
+  - 365：长期但可能变化的，如过敏、生日、称呼
+  - 有具体日期的事件，选能覆盖到事件结束的那一档
+- 不属于这四类就省略这两个字段
+
 ======以下为对话======
 {CONVERSATION}
 ======以上为对话======
@@ -1621,6 +1637,7 @@ event_when（可选 — 事件发生时间，一律用相对时间，绝不写�
 请以 JSON 数组格式返回（如果没有值得提取的事实，返回空数组 []）：
 [
   {"text": "事实描述", "importance": 7, "entity": "master", "event_when": null},
+  {"text": "事实描述", "importance": 9, "entity": "master", "event_when": null, "pin": true, "pin_ttl_days": 14},
   ...
 ]""",
     # The ======以下为对话====== / ======以上为对话====== pair stays Simplified in
@@ -1652,6 +1669,22 @@ event_when（選填 — 事件發生時間，一律用相對時間，絕不寫�
 - 例 1：使用者說「昨天晚上沒睡好」→ event_when = {"start": {"offset": -1, "unit": "day"}, "end": null}
 - 例 2：使用者說「喜歡喝咖啡」（長期偏好，無時間）→ 不寫 event_when
 
+pin / pin_ttl_days（選填 — 是否放進「重要事實常駐區」）：
+- 常駐區裡的事在到期前會一直擺在 {LANLAN_NAME} 面前，不用等長期記憶慢慢沉澱，所以只收真正要緊的事
+- 只有以下四類才寫 "pin": true：
+  - {MASTER_NAME} 明確要求記住的（「記住」、「別忘了」、「一定要記得」）
+  - 有時間點的安排和約定：考試、面試、出行、回診、截止日期、兩人約好的事
+  - 健康與安全：過敏、生病、用藥、忌口、受傷
+  - 身分類變化：換稱呼或暱稱、搬家、換工作、畢業、家裡添人、寵物離世
+- 以下**不算**，不要寫 pin：對關係的概括、情緒解讀、對 {LANLAN_NAME} 自己行為的總結、一次性閒聊；「別再提某個話題」這類要求也不算（另有機制負責）
+- 寫了 "pin": true 就必須同時寫 pin_ttl_days，只能從 3 / 14 / 90 / 365 裡選一個：
+  - 3：眼前的事，如感冒、今晚加班
+  - 14：近期安排，如下週考試、出差
+  - 90：階段性狀態，如新工作、備考、養傷
+  - 365：長期但可能變化的，如過敏、生日、稱呼
+  - 有具體日期的事件，選能涵蓋到事件結束的那一檔
+- 不屬於這四類就省略這兩個欄位
+
 ======以下为对话======
 {CONVERSATION}
 ======以上为对话======
@@ -1659,6 +1692,7 @@ event_when（選填 — 事件發生時間，一律用相對時間，絕不寫�
 請以 JSON 陣列格式回傳（如果沒有值得擷取的事實，回傳空陣列 []）：
 [
   {"text": "事實描述", "importance": 7, "entity": "master", "event_when": null},
+  {"text": "事實描述", "importance": 9, "entity": "master", "event_when": null, "pin": true, "pin_ttl_days": 14},
   ...
 ]""",
     "en": """Extract important factual information about {LANLAN_NAME} and {MASTER_NAME} from the following conversation.
@@ -1686,6 +1720,22 @@ event_when (optional — when the event happened; ALWAYS relative time, never ab
 - Example 1: "didn't sleep well last night" → event_when = {"start": {"offset": -1, "unit": "day"}, "end": null}
 - Example 2: "loves coffee" (long-term preference, no time) → omit event_when
 
+pin / pin_ttl_days (optional — whether the fact goes into the "pinned important facts" section):
+- Pinned facts stay in front of {LANLAN_NAME} until they expire instead of waiting to settle into long-term memory, so pin only what really matters
+- Write "pin": true only for these four kinds:
+  - Things {MASTER_NAME} explicitly asks to be remembered ("remember", "don't forget", "make sure you remember")
+  - Plans and appointments with a point in time: exams, interviews, trips, follow-up doctor visits, deadlines, things the two of them agreed to do
+  - Health and safety: allergies, illness, medication, foods to avoid, injuries
+  - Identity changes: a new name or nickname to be called by, moving house, a new job, graduation, a new family member, a pet passing away
+- These do **not** count, never pin them: summaries of the relationship, readings of emotions, summaries of {LANLAN_NAME}'s own behavior, one-off small talk; requests like "stop bringing up a topic" do not count either (another mechanism handles them)
+- "pin": true requires pin_ttl_days, chosen from 3 / 14 / 90 / 365 only:
+  - 3: something happening right now, e.g. a cold, working late tonight
+  - 14: a near-term plan, e.g. an exam next week, a business trip
+  - 90: a phase of life, e.g. a new job, preparing for an exam, recovering from an injury
+  - 365: long-lived but changeable, e.g. an allergy, a birthday, how to be called
+  - For a dated event, pick the smallest tier that still covers the end of the event
+- If none of the four kinds applies, omit both fields
+
 ======以下为对话======
 {CONVERSATION}
 ======以上为对话======
@@ -1693,6 +1743,7 @@ event_when (optional — when the event happened; ALWAYS relative time, never ab
 Return as a JSON array (empty array if nothing is worth extracting):
 [
   {"text": "fact description", "importance": 7, "entity": "master", "event_when": null},
+  {"text": "fact description", "importance": 9, "entity": "master", "event_when": null, "pin": true, "pin_ttl_days": 14},
   ...
 ]""",
     "ja": """以下の会話から {LANLAN_NAME} と {MASTER_NAME} に関する重要な事実情報を抽出してください。
@@ -1720,6 +1771,22 @@ event_when（任意 — 事件発生時刻、必ず相対時間で、絶対日�
 - 例 1：「昨夜よく眠れなかった」→ event_when = {"start": {"offset": -1, "unit": "day"}, "end": null}
 - 例 2：「コーヒー好き」（長期嗜好、時間情報なし） → event_when を省略
 
+pin / pin_ttl_days（任意 — 「重要事実の常駐エリア」に入れるかどうか）：
+- 常駐エリアの事柄は期限まで常に {LANLAN_NAME} の目の前に置かれ、長期記憶に定着するのを待たない。だから本当に大事なことだけを入れる
+- 次の四種類に限り "pin": true を書く：
+  - {MASTER_NAME} が覚えておくようはっきり頼んだこと（「覚えておいて」「忘れないで」「絶対に覚えてて」）
+  - 日時のある予定や約束：試験、面接、旅行・外出、再診、締め切り、二人で約束したこと
+  - 健康と安全：アレルギー、病気、服薬、食べられないもの、けが
+  - 身の上の変化：呼び名やニックネームの変更、引っ越し、転職、卒業、家族が増えた、ペットが亡くなった
+- 次のものは**該当しない**ので pin を書かない：関係の総括、感情の解釈、{LANLAN_NAME} 自身の振る舞いのまとめ、一度きりの雑談。「ある話題をもう出さないで」という要望も該当しない（別の仕組みが扱う）
+- "pin": true を書いたら必ず pin_ttl_days も書き、3 / 14 / 90 / 365 から一つだけ選ぶ：
+  - 3：目の前のこと。例：風邪、今夜の残業
+  - 14：近いうちの予定。例：来週の試験、出張
+  - 90：一時期続く状態。例：新しい仕事、受験勉強、けがの療養
+  - 365：長く続くが変わりうること。例：アレルギー、誕生日、呼び名
+  - 日付の決まった出来事は、その出来事が終わるまでをカバーできる段階を選ぶ
+- 四種類のどれにも当たらなければ、二つのフィールドとも省略する
+
 ======以下为对话======
 {CONVERSATION}
 ======以上为对话======
@@ -1727,6 +1794,7 @@ event_when（任意 — 事件発生時刻、必ず相対時間で、絶対日�
 以下の形式のJSON配列で返してください（抽出する事実がなければ空配列 [] を返す）：
 [
   {"text": "事実の説明", "importance": 7, "entity": "master", "event_when": null},
+  {"text": "事実の説明", "importance": 9, "entity": "master", "event_when": null, "pin": true, "pin_ttl_days": 14},
   ...
 ]""",
     "ko": """다음 대화에서 {LANLAN_NAME}과 {MASTER_NAME}에 대한 중요한 사실 정보를 추출해 주세요.
@@ -1754,6 +1822,22 @@ event_when (선택 — 사건 발생 시간; 반드시 상대 시간으로, 절�
 - 예 1: "어젯밤 잠을 못 잤다" → event_when = {"start": {"offset": -1, "unit": "day"}, "end": null}
 - 예 2: "커피를 좋아한다" (장기 선호, 시간 정보 없음) → event_when 생략
 
+pin / pin_ttl_days (선택 — "중요 사실 상주 구역"에 넣을지 여부):
+- 상주 구역의 내용은 만료될 때까지 늘 {LANLAN_NAME} 앞에 놓이며, 장기 기억으로 굳기를 기다리지 않음. 그러니 정말 중요한 것만 넣을 것
+- 다음 네 종류일 때만 "pin": true를 씀:
+  - {MASTER_NAME}이(가) 기억해 달라고 분명히 요청한 것("기억해", "잊지 마", "꼭 기억해 줘")
+  - 시점이 있는 일정과 약속: 시험, 면접, 여행·외출, 재진료, 마감일, 두 사람이 약속한 일
+  - 건강과 안전: 알레르기, 질병, 복용 약, 못 먹는 음식, 부상
+  - 신상 변화: 호칭이나 별명 변경, 이사, 이직, 졸업, 가족이 늘어남, 반려동물을 떠나보냄
+- 다음은 **해당하지 않으므로** pin을 쓰지 말 것: 관계에 대한 총평, 감정 해석, {LANLAN_NAME} 자신의 행동에 대한 정리, 일회성 잡담. "어떤 화제를 더 꺼내지 마" 같은 요청도 해당하지 않음(다른 장치가 처리함)
+- "pin": true를 썼다면 pin_ttl_days도 반드시 쓰고, 3 / 14 / 90 / 365 중 하나만 고름:
+  - 3: 당장의 일. 예: 감기, 오늘 밤 야근
+  - 14: 가까운 일정. 예: 다음 주 시험, 출장
+  - 90: 한동안 이어지는 상태. 예: 새 직장, 시험 준비, 부상 회복
+  - 365: 오래가지만 바뀔 수 있는 것. 예: 알레르기, 생일, 호칭
+  - 날짜가 정해진 일은 그 일이 끝날 때까지를 덮는 단계를 고를 것
+- 네 종류 어디에도 해당하지 않으면 두 필드 모두 생략
+
 ======以下为对话======
 {CONVERSATION}
 ======以上为对话======
@@ -1761,6 +1845,7 @@ event_when (선택 — 사건 발생 시간; 반드시 상대 시간으로, 절�
 다음 형식의 JSON 배열로 반환해 주세요 (추출할 사실이 없으면 빈 배열 [] 반환):
 [
   {"text": "사실 설명", "importance": 7, "entity": "master", "event_when": null},
+  {"text": "사실 설명", "importance": 9, "entity": "master", "event_when": null, "pin": true, "pin_ttl_days": 14},
   ...
 ]""",
     "ru": """Извлеките важную фактическую информацию о {LANLAN_NAME} и {MASTER_NAME} из следующей беседы.
@@ -1788,6 +1873,22 @@ event_when (необязательно — когда произошло соб�
 - Пример 1: "плохо спал прошлой ночью" → event_when = {"start": {"offset": -1, "unit": "day"}, "end": null}
 - Пример 2: "любит кофе" (долгосрочное предпочтение без времени) → опустите event_when
 
+pin / pin_ttl_days (необязательно — помещать ли факт в «раздел закреплённых важных фактов»):
+- Закреплённое остаётся перед глазами {LANLAN_NAME} до истечения срока и не ждёт, пока осядет в долговременной памяти, поэтому закрепляйте только действительно важное
+- Пишите "pin": true только для этих четырёх видов:
+  - то, что {MASTER_NAME} прямо просит запомнить («запомни», «не забудь», «обязательно помни»)
+  - планы и договорённости с привязкой ко времени: экзамены, собеседования, поездки, повторный визит к врачу, дедлайны, то, о чём двое договорились
+  - здоровье и безопасность: аллергии, болезни, лекарства, запрещённая еда, травмы
+  - перемены в жизни: новое имя или прозвище, переезд, новая работа, выпуск, пополнение в семье, смерть питомца
+- **Не считаются** и не закрепляются: обобщения об отношениях, толкования эмоций, итоги собственного поведения {LANLAN_NAME}, разовая болтовня; просьбы вроде «больше не поднимай эту тему» тоже не считаются (ими занимается другой механизм)
+- При "pin": true обязательно укажите pin_ttl_days, только одно из 3 / 14 / 90 / 365:
+  - 3: то, что происходит прямо сейчас, например простуда, работа допоздна сегодня
+  - 14: ближайшие планы, например экзамен на следующей неделе, командировка
+  - 90: состояние на какой-то период, например новая работа, подготовка к экзамену, восстановление после травмы
+  - 365: долгосрочное, но изменчивое, например аллергия, день рождения, как обращаться
+  - Для события с конкретной датой выберите наименьший срок, который покрывает его окончание
+- Если ни один из четырёх видов не подходит, опустите оба поля
+
 ======以下为对话======
 {CONVERSATION}
 ======以上为对话======
@@ -1795,6 +1896,7 @@ event_when (необязательно — когда произошло соб�
 Верните в формате JSON-массива (пустой массив, если нет достойных извлечения фактов):
 [
   {"text": "описание факта", "importance": 7, "entity": "master", "event_when": null},
+  {"text": "описание факта", "importance": 9, "entity": "master", "event_when": null, "pin": true, "pin_ttl_days": 14},
   ...
 ]""",
     "es": """Extrae información factual importante sobre {LANLAN_NAME} y {MASTER_NAME} de la siguiente conversación.
@@ -1822,6 +1924,22 @@ event_when (opcional — cuándo ocurrió el evento; SIEMPRE tiempo relativo, nu
 - Ej. 1: "no dormí bien anoche" → event_when = {"start": {"offset": -1, "unit": "day"}, "end": null}
 - Ej. 2: "le encanta el café" (preferencia a largo plazo sin tiempo) → omite event_when
 
+pin / pin_ttl_days (opcional — si el hecho entra en la «sección de hechos importantes fijados»):
+- Lo fijado queda delante de {LANLAN_NAME} hasta que caduca, sin esperar a asentarse en la memoria de largo plazo, así que fija solo lo que de verdad importa
+- Escribe "pin": true solo para estos cuatro tipos:
+  - Lo que {MASTER_NAME} pide expresamente recordar («recuerda», «no te olvides», «acuérdate sí o sí»)
+  - Planes y citas con un momento concreto: exámenes, entrevistas, viajes, revisiones médicas, fechas límite, cosas que los dos acordaron
+  - Salud y seguridad: alergias, enfermedades, medicación, alimentos que debe evitar, lesiones
+  - Cambios personales: un nuevo nombre o apodo con el que llamarle, mudanza, trabajo nuevo, graduación, un nuevo miembro en la familia, la muerte de una mascota
+- **No cuentan**, no los fijes: resúmenes de la relación, interpretaciones de emociones, resúmenes del propio comportamiento de {LANLAN_NAME}, charla puntual; peticiones como «no vuelvas a sacar tal tema» tampoco cuentan (de eso se ocupa otro mecanismo)
+- Con "pin": true es obligatorio pin_ttl_days, elegido solo entre 3 / 14 / 90 / 365:
+  - 3: algo que pasa ahora mismo, p. ej. un resfriado, trabajar hasta tarde esta noche
+  - 14: un plan cercano, p. ej. un examen la semana que viene, un viaje de trabajo
+  - 90: una etapa, p. ej. un trabajo nuevo, preparar un examen, recuperarse de una lesión
+  - 365: algo duradero pero que puede cambiar, p. ej. una alergia, un cumpleaños, cómo quiere que le llamen
+  - Para un evento con fecha, elige el tramo más corto que cubra hasta que termine
+- Si no encaja en ninguno de los cuatro tipos, omite ambos campos
+
 ======以下为对话======
 {CONVERSATION}
 ======以上为对话======
@@ -1829,6 +1947,7 @@ event_when (opcional — cuándo ocurrió el evento; SIEMPRE tiempo relativo, nu
 Devuelve un array JSON (si no hay hechos que extraer, devuelve []):
 [
   {"text": "descripción del hecho", "importance": 7, "entity": "master", "event_when": null},
+  {"text": "descripción del hecho", "importance": 9, "entity": "master", "event_when": null, "pin": true, "pin_ttl_days": 14},
   ...
 ]""",
     "pt": """Extraia informações factuais importantes sobre {LANLAN_NAME} e {MASTER_NAME} da conversa abaixo.
@@ -1856,6 +1975,22 @@ event_when (opcional — quando o evento aconteceu; SEMPRE tempo relativo, jamai
 - Ex. 1: "não dormi bem ontem à noite" → event_when = {"start": {"offset": -1, "unit": "day"}, "end": null}
 - Ex. 2: "adora café" (preferência de longo prazo sem tempo) → omita event_when
 
+pin / pin_ttl_days (opcional — se o fato entra na «seção de fatos importantes fixados»):
+- O que é fixado fica diante de {LANLAN_NAME} até vencer, sem esperar se assentar na memória de longo prazo, então fixe só o que realmente importa
+- Escreva "pin": true apenas para estes quatro tipos:
+  - O que {MASTER_NAME} pede explicitamente para lembrar ("lembra disso", "não esquece", "não pode esquecer")
+  - Planos e compromissos com data marcada: provas, entrevistas, viagens, retornos médicos, prazos, coisas que os dois combinaram
+  - Saúde e segurança: alergias, doenças, medicação, alimentos a evitar, lesões
+  - Mudanças pessoais: novo nome ou apelido pelo qual ser chamado, mudança de casa, novo emprego, formatura, novo membro na família, morte de um bicho de estimação
+- **Não contam**, não fixe: resumos da relação, interpretações de emoções, resumos do próprio comportamento de {LANLAN_NAME}, conversa casual pontual; pedidos como "não toque mais nesse assunto" também não contam (outro mecanismo cuida disso)
+- Com "pin": true é obrigatório pin_ttl_days, escolhido só entre 3 / 14 / 90 / 365:
+  - 3: algo acontecendo agora, ex.: um resfriado, trabalhar até tarde hoje
+  - 14: um plano próximo, ex.: uma prova na semana que vem, uma viagem a trabalho
+  - 90: uma fase, ex.: um emprego novo, estudar para uma prova, recuperar-se de uma lesão
+  - 365: algo duradouro mas que pode mudar, ex.: uma alergia, um aniversário, como prefere ser chamado
+  - Para um evento com data, escolha a faixa mais curta que cubra até o fim do evento
+- Se não se encaixar em nenhum dos quatro tipos, omita os dois campos
+
 ======以下为对话======
 {CONVERSATION}
 ======以上为对话======
@@ -1863,6 +1998,7 @@ event_when (opcional — quando o evento aconteceu; SEMPRE tempo relativo, jamai
 Retorne um array JSON (se não houver fatos a extrair, retorne []):
 [
   {"text": "descrição do fato", "importance": 7, "entity": "master", "event_when": null},
+  {"text": "descrição do fato", "importance": 9, "entity": "master", "event_when": null, "pin": true, "pin_ttl_days": 14},
   ...
 ]""",
 }
@@ -2234,6 +2370,7 @@ FACT_EXTRACTION_AI_AWARE_PROMPT = {
 - entity 标注为 "master"(关于{MASTER_NAME})、"neko"(关于{LANLAN_NAME})或 "relationship"(关于两人关系)
 - importance 1-10，规则与基础抽取一致（10 = 关键长期信息；8-9 = 长期稳定核心；6-7 = 普通偏好/日常；5 = 次要观察；1-4 = 弱相关线索）
 - event_when 可选，相对时间格式 `{"start": {"offset": <int>, "unit": "<unit>"}, "end": {...}}`；无时间线索写 null
+- pin / pin_ttl_days 可选，判定与基础抽取一致：只有 {MASTER_NAME} 明确要求记住的、有时间点的安排和约定（考试、面试、出行、复诊、截止日期、两人约好的事）、健康与安全（过敏、生病、用药、忌口、受伤）、身份类变化（换称呼或昵称、搬家、换工作、毕业、家里添人、宠物离世）才写 "pin": true，并从 3 / 14 / 90 / 365 里选 pin_ttl_days（3 = 眼前的事，14 = 近期安排，90 = 阶段性状态，365 = 长期但可能变化的；有具体日期的事件选能覆盖到事件结束的那一档）；对关系的概括、情绪解读、对 {LANLAN_NAME} 自己行为的总结、一次性闲聊、"别再提某个话题"都不算；source 为 ai_disclosure 的一律不写 pin
 
 ======以下为已知事实池（已被另一通路抽取，避免重复抽取相同内容）======
 {KNOWN_POOL}
@@ -2247,6 +2384,7 @@ FACT_EXTRACTION_AI_AWARE_PROMPT = {
 [
   {"text": "事实描述", "importance": 7, "entity": "master", "event_when": null, "source": "user_observation"},
   {"text": "事实描述", "importance": 7, "entity": "neko", "event_when": null, "source": "ai_disclosure"},
+  {"text": "事实描述", "importance": 9, "entity": "master", "event_when": null, "source": "user_observation", "pin": true, "pin_ttl_days": 14},
   ...
 ]""",
     # Known-facts-pool delimiters ARE localized (every locale translates them);
@@ -2268,6 +2406,7 @@ FACT_EXTRACTION_AI_AWARE_PROMPT = {
 - entity 標註為 "master"(關於{MASTER_NAME})、"neko"(關於{LANLAN_NAME})或 "relationship"(關於兩人關係)
 - importance 1-10，規則與基礎擷取一致（10 = 關鍵長期資訊；8-9 = 長期穩定核心；6-7 = 普通偏好/日常；5 = 次要觀察；1-4 = 弱相關線索）
 - event_when 選填，相對時間格式 `{"start": {"offset": <int>, "unit": "<unit>"}, "end": {...}}`；無時間線索寫 null
+- pin / pin_ttl_days 選填，判定與基礎擷取一致：只有 {MASTER_NAME} 明確要求記住的、有時間點的安排和約定（考試、面試、出行、回診、截止日期、兩人約好的事）、健康與安全（過敏、生病、用藥、忌口、受傷）、身分類變化（換稱呼或暱稱、搬家、換工作、畢業、家裡添人、寵物離世）才寫 "pin": true，並從 3 / 14 / 90 / 365 裡選 pin_ttl_days（3 = 眼前的事，14 = 近期安排，90 = 階段性狀態，365 = 長期但可能變化的；有具體日期的事件選能涵蓋到事件結束的那一檔）；對關係的概括、情緒解讀、對 {LANLAN_NAME} 自己行為的總結、一次性閒聊、「別再提某個話題」都不算；source 為 ai_disclosure 的一律不寫 pin
 
 ======以下為已知事實池（已被另一通道擷取，避免重複擷取相同內容）======
 {KNOWN_POOL}
@@ -2281,6 +2420,7 @@ FACT_EXTRACTION_AI_AWARE_PROMPT = {
 [
   {"text": "事實描述", "importance": 7, "entity": "master", "event_when": null, "source": "user_observation"},
   {"text": "事實描述", "importance": 7, "entity": "neko", "event_when": null, "source": "ai_disclosure"},
+  {"text": "事實描述", "importance": 9, "entity": "master", "event_when": null, "source": "user_observation", "pin": true, "pin_ttl_days": 14},
   ...
 ]""",
     "en": """Extract important factual information about {LANLAN_NAME} and {MASTER_NAME} from the following conversation.
@@ -2299,6 +2439,7 @@ Requirements:
 - entity ∈ "master" / "neko" / "relationship"
 - importance 1-10, same rubric as base extraction
 - event_when optional, relative time format; null if no time cue
+- pin / pin_ttl_days optional, same rules as base extraction: write "pin": true only for things {MASTER_NAME} explicitly asks to be remembered, plans and appointments with a point in time (exams, interviews, trips, follow-up doctor visits, deadlines, things the two agreed to do), health and safety (allergies, illness, medication, foods to avoid, injuries) and identity changes (a new name or nickname, moving house, a new job, graduation, a new family member, a pet passing away), and pick pin_ttl_days from 3 / 14 / 90 / 365 (3 = happening right now, 14 = near-term plan, 90 = a phase of life, 365 = long-lived but changeable; for a dated event, the smallest tier that covers its end). Relationship summaries, emotion readings, summaries of {LANLAN_NAME}'s own behavior, one-off small talk and "stop bringing up a topic" requests do not count; never pin a fact whose source is ai_disclosure
 
 ======Known facts pool (already extracted by another pass, do NOT re-extract)======
 {KNOWN_POOL}
@@ -2312,6 +2453,7 @@ Return as a JSON array (empty array if nothing worth additionally extracting):
 [
   {"text": "fact description", "importance": 7, "entity": "master", "event_when": null, "source": "user_observation"},
   {"text": "fact description", "importance": 7, "entity": "neko", "event_when": null, "source": "ai_disclosure"},
+  {"text": "fact description", "importance": 9, "entity": "master", "event_when": null, "source": "user_observation", "pin": true, "pin_ttl_days": 14},
   ...
 ]""",
     "ja": """以下の会話から {LANLAN_NAME} と {MASTER_NAME} に関する重要な事実情報を抽出してください。
@@ -2330,6 +2472,7 @@ Return as a JSON array (empty array if nothing worth additionally extracting):
 - entity ∈ "master" / "neko" / "relationship"
 - importance 1-10（基本抽出と同じ基準）
 - event_when は任意、相対時間形式、時間の手がかりがなければ null
+- pin / pin_ttl_days は任意、判定は基本抽出と同じ：{MASTER_NAME} が覚えておくようはっきり頼んだこと、日時のある予定や約束（試験、面接、旅行・外出、再診、締め切り、二人で約束したこと）、健康と安全（アレルギー、病気、服薬、食べられないもの、けが）、身の上の変化（呼び名やニックネームの変更、引っ越し、転職、卒業、家族が増えた、ペットが亡くなった）に限り "pin": true を書き、pin_ttl_days を 3 / 14 / 90 / 365 から選ぶ（3 = 目の前のこと、14 = 近いうちの予定、90 = 一時期続く状態、365 = 長く続くが変わりうること。日付の決まった出来事は終わるまでをカバーできる段階）。関係の総括、感情の解釈、{LANLAN_NAME} 自身の振る舞いのまとめ、一度きりの雑談、「ある話題をもう出さないで」は該当しない。source が ai_disclosure の事実には pin を書かない
 
 ======既知事実プール（別パスで抽出済み、重複抽出しないこと）======
 {KNOWN_POOL}
@@ -2343,6 +2486,7 @@ Return as a JSON array (empty array if nothing worth additionally extracting):
 [
   {"text": "事実の説明", "importance": 7, "entity": "master", "event_when": null, "source": "user_observation"},
   {"text": "事実の説明", "importance": 7, "entity": "neko", "event_when": null, "source": "ai_disclosure"},
+  {"text": "事実の説明", "importance": 9, "entity": "master", "event_when": null, "source": "user_observation", "pin": true, "pin_ttl_days": 14},
   ...
 ]""",
     "ko": """다음 대화에서 {LANLAN_NAME}과 {MASTER_NAME}에 대한 중요한 사실 정보를 추출해 주세요.
@@ -2361,6 +2505,7 @@ Return as a JSON array (empty array if nothing worth additionally extracting):
 - entity ∈ "master" / "neko" / "relationship"
 - importance 1-10 (기본 추출과 동일 기준)
 - event_when 선택, 상대 시간 형식, 시간 단서 없으면 null
+- pin / pin_ttl_days 선택, 판정은 기본 추출과 동일: {MASTER_NAME}이(가) 기억해 달라고 분명히 요청한 것, 시점이 있는 일정과 약속(시험, 면접, 여행·외출, 재진료, 마감일, 두 사람이 약속한 일), 건강과 안전(알레르기, 질병, 복용 약, 못 먹는 음식, 부상), 신상 변화(호칭이나 별명 변경, 이사, 이직, 졸업, 가족이 늘어남, 반려동물을 떠나보냄)일 때만 "pin": true를 쓰고 pin_ttl_days를 3 / 14 / 90 / 365 중에서 고름(3 = 당장의 일, 14 = 가까운 일정, 90 = 한동안 이어지는 상태, 365 = 오래가지만 바뀔 수 있는 것. 날짜가 정해진 일은 끝날 때까지를 덮는 단계). 관계 총평, 감정 해석, {LANLAN_NAME} 자신의 행동 정리, 일회성 잡담, "어떤 화제를 더 꺼내지 마" 요청은 해당하지 않음. source가 ai_disclosure인 사실에는 pin을 쓰지 않음
 
 ======기지 사실 풀 (다른 통로에서 추출됨, 중복 추출하지 마세요)======
 {KNOWN_POOL}
@@ -2374,6 +2519,7 @@ Return as a JSON array (empty array if nothing worth additionally extracting):
 [
   {"text": "사실 설명", "importance": 7, "entity": "master", "event_when": null, "source": "user_observation"},
   {"text": "사실 설명", "importance": 7, "entity": "neko", "event_when": null, "source": "ai_disclosure"},
+  {"text": "사실 설명", "importance": 9, "entity": "master", "event_when": null, "source": "user_observation", "pin": true, "pin_ttl_days": 14},
   ...
 ]""",
     "ru": """Извлеките важную фактическую информацию о {LANLAN_NAME} и {MASTER_NAME} из следующей беседы.
@@ -2392,6 +2538,7 @@ Return as a JSON array (empty array if nothing worth additionally extracting):
 - entity ∈ "master" / "neko" / "relationship"
 - importance 1-10 (те же критерии, что и базовое извлечение)
 - event_when необязательно, относительное время; null если нет временного маркера
+- pin / pin_ttl_days необязательно, правила те же, что и в базовом извлечении: "pin": true только для того, что {MASTER_NAME} прямо просит запомнить, планов и договорённостей с привязкой ко времени (экзамены, собеседования, поездки, повторный визит к врачу, дедлайны, то, о чём двое договорились), здоровья и безопасности (аллергии, болезни, лекарства, запрещённая еда, травмы) и перемен в жизни (новое имя или прозвище, переезд, новая работа, выпуск, пополнение в семье, смерть питомца); pin_ttl_days выбирается из 3 / 14 / 90 / 365 (3 = происходит прямо сейчас, 14 = ближайшие планы, 90 = состояние на период, 365 = долгосрочное, но изменчивое; для события с датой наименьший срок, покрывающий его окончание). Обобщения об отношениях, толкования эмоций, итоги собственного поведения {LANLAN_NAME}, разовая болтовня и просьбы «больше не поднимай эту тему» не считаются; факты с source ai_disclosure не закрепляются
 
 ======Пул известных фактов (уже извлечено другим проходом, не повторяйте)======
 {KNOWN_POOL}
@@ -2405,6 +2552,7 @@ Return as a JSON array (empty array if nothing worth additionally extracting):
 [
   {"text": "описание факта", "importance": 7, "entity": "master", "event_when": null, "source": "user_observation"},
   {"text": "описание факта", "importance": 7, "entity": "neko", "event_when": null, "source": "ai_disclosure"},
+  {"text": "описание факта", "importance": 9, "entity": "master", "event_when": null, "source": "user_observation", "pin": true, "pin_ttl_days": 14},
   ...
 ]""",
     "es": """Extrae información factual importante sobre {LANLAN_NAME} y {MASTER_NAME} de la siguiente conversación.
@@ -2423,6 +2571,7 @@ Requisitos:
 - entity ∈ "master" / "neko" / "relationship"
 - importance 1-10 (mismo baremo que extracción base)
 - event_when opcional, tiempo relativo; null si no hay pista temporal
+- pin / pin_ttl_days opcional, mismas reglas que la extracción base: "pin": true solo para lo que {MASTER_NAME} pide expresamente recordar, planes y citas con un momento concreto (exámenes, entrevistas, viajes, revisiones médicas, fechas límite, cosas que los dos acordaron), salud y seguridad (alergias, enfermedades, medicación, alimentos a evitar, lesiones) y cambios personales (nuevo nombre o apodo, mudanza, trabajo nuevo, graduación, un nuevo miembro en la familia, la muerte de una mascota); pin_ttl_days se elige entre 3 / 14 / 90 / 365 (3 = pasa ahora mismo, 14 = plan cercano, 90 = una etapa, 365 = duradero pero puede cambiar; para un evento con fecha, el tramo más corto que cubra hasta que termine). Resúmenes de la relación, interpretaciones de emociones, resúmenes del propio comportamiento de {LANLAN_NAME}, charla puntual y peticiones de «no vuelvas a sacar tal tema» no cuentan; nunca fijes un hecho con source ai_disclosure
 
 ======Reserva de hechos conocidos (ya extraídos por otra pasada, NO re-extraer)======
 {KNOWN_POOL}
@@ -2436,6 +2585,7 @@ Devuelve un array JSON (si no hay hechos adicionales que extraer, devuelve []):
 [
   {"text": "descripción del hecho", "importance": 7, "entity": "master", "event_when": null, "source": "user_observation"},
   {"text": "descripción del hecho", "importance": 7, "entity": "neko", "event_when": null, "source": "ai_disclosure"},
+  {"text": "descripción del hecho", "importance": 9, "entity": "master", "event_when": null, "source": "user_observation", "pin": true, "pin_ttl_days": 14},
   ...
 ]""",
     "pt": """Extraia informações factuais importantes sobre {LANLAN_NAME} e {MASTER_NAME} da conversa abaixo.
@@ -2454,6 +2604,7 @@ Requisitos:
 - entity ∈ "master" / "neko" / "relationship"
 - importance 1-10 (mesmo critério da extração base)
 - event_when opcional, tempo relativo; null se não houver pista temporal
+- pin / pin_ttl_days opcional, mesmas regras da extração base: "pin": true só para o que {MASTER_NAME} pede explicitamente para lembrar, planos e compromissos com data marcada (provas, entrevistas, viagens, retornos médicos, prazos, coisas que os dois combinaram), saúde e segurança (alergias, doenças, medicação, alimentos a evitar, lesões) e mudanças pessoais (novo nome ou apelido, mudança de casa, novo emprego, formatura, novo membro na família, morte de um bicho de estimação); pin_ttl_days é escolhido entre 3 / 14 / 90 / 365 (3 = acontecendo agora, 14 = plano próximo, 90 = uma fase, 365 = duradouro mas pode mudar; para um evento com data, a faixa mais curta que cubra até o fim). Resumos da relação, interpretações de emoções, resumos do próprio comportamento de {LANLAN_NAME}, conversa casual pontual e pedidos de "não toque mais nesse assunto" não contam; nunca fixe um fato com source ai_disclosure
 
 ======Pool de fatos conhecidos (já extraídos por outra passagem, NÃO re-extrair)======
 {KNOWN_POOL}
@@ -2467,6 +2618,7 @@ Retorne um array JSON (se não houver fatos adicionais a extrair, retorne []):
 [
   {"text": "descrição do fato", "importance": 7, "entity": "master", "event_when": null, "source": "user_observation"},
   {"text": "descrição do fato", "importance": 7, "entity": "neko", "event_when": null, "source": "ai_disclosure"},
+  {"text": "descrição do fato", "importance": 9, "entity": "master", "event_when": null, "source": "user_observation", "pin": true, "pin_ttl_days": 14},
   ...
 ]""",
 }
@@ -4565,6 +4717,319 @@ def get_persona_correction_pair_labels(lang: str = "zh") -> tuple[str, str]:
 
 
 persona_correction_prompt = PERSONA_CORRECTION_PROMPT["zh"]
+
+
+# ---------- pinned important facts (memory/pinned_facts.py) ----------
+# Rendered as one "### " section of the private-chat long-term memory, ahead of
+# the persona sections. Each entry shows when its current text was noted (its
+# wording may be relative, e.g. "next Wednesday") and when it leaves the section.
+PINNED_FACTS_SECTION_HEADER = {
+    "zh": "务必记住的事（到期前一直有效；相关时自然用上，不必刻意提起）",
+    "zh-TW": "務必記住的事（到期前一直有效；相關時自然用上，不必刻意提起）",
+    "en": "Things to keep in mind (valid until the date shown; use them naturally when relevant, no need to bring them up on purpose)",
+    "ja": "必ず覚えておくこと（期限まで有効。関係があるときに自然に活かし、わざわざ持ち出す必要はない）",
+    "ko": "꼭 기억해야 할 것 (기한까지 유효. 관련 있을 때 자연스럽게 활용하고, 일부러 꺼낼 필요는 없음)",
+    "ru": "Что нужно обязательно помнить (действует до указанной даты; используй, когда это к месту, специально заводить разговор не нужно)",
+    "es": "Cosas que hay que tener presentes (válidas hasta la fecha indicada; úsalas con naturalidad cuando venga al caso, sin sacarlas a propósito)",
+    "pt": "Coisas para ter sempre em mente (válidas até a data indicada; use-as com naturalidade quando fizer sentido, sem puxar o assunto de propósito)",
+}
+
+PINNED_FACT_LINE = {
+    "zh": "{text}（记于 {since}，到 {until}）",
+    "zh-TW": "{text}（記於 {since}，到 {until}）",
+    "en": "{text} (noted {since}, until {until})",
+    "ja": "{text}（{since} 記録、{until} まで）",
+    "ko": "{text} ({since} 기록, {until}까지)",
+    "ru": "{text} (записано {since}, до {until})",
+    "es": "{text} (anotado el {since}, hasta el {until})",
+    "pt": "{text} (anotado em {since}, até {until})",
+}
+
+# A withdrawn entry, listed in the resolve prompt next to the live ones while
+# its lifetime lasts, so an account from before the withdrawal can be matched
+# to it and kept out.
+PINNED_FACT_REMOVED_LINE = {
+    "zh": "{text}（记于 {since}，已于 {removed} 撤销）",
+    "zh-TW": "{text}（記於 {since}，已於 {removed} 撤銷）",
+    "en": "{text} (noted {since}, withdrawn {removed})",
+    "ja": "{text}（{since} 記録、{removed} に取り消し済み）",
+    "ko": "{text} ({since} 기록, {removed}에 취소됨)",
+    "ru": "{text} (записано {since}, отменено {removed})",
+    "es": "{text} (anotado el {since}, retirado el {removed})",
+    "pt": "{text} (anotado em {since}, retirado em {removed})",
+}
+
+# Placeholders are substituted with str.replace in this order: {LANLAN_NAME},
+# {MASTER_NAME}, {TODAY}, then {ZONE} and {CANDIDATES} last, so a literal
+# placeholder inside an entry text is never expanded again.
+PINNED_FACT_RESOLVE_PROMPT = {
+    "zh": """你在帮 {LANLAN_NAME} 维护一份「重要事实常驻区」：里面是 {LANLAN_NAME} 必须牢记的少量事实（关于 {MASTER_NAME}、关于 {LANLAN_NAME} 自己或两人之间），每条都有到期日。现在有新的候选事实要进区，请逐条决定怎么处理。
+
+今天是 {TODAY}。
+
+======以下为常驻区现有条目======
+{ZONE}
+======以上为常驻区现有条目======
+
+======以下为新候选======
+{CANDIDATES}
+======以上为新候选======
+
+每条候选从下面四个动作里选一个：
+- add：常驻区里还没有这件事，新增一条。
+- replace：常驻区里有同一件事，但说法有了更新（时间、地点、细节或状态变了），用候选替换那一条，以最新的说法为准。
+- renew：常驻区里有同一件事，候选只是又说了一遍、内容没有变化，给那一条续期。
+- remove：候选说明常驻区里的某件事已经不成立了（比如"考试取消了""感冒好了"），删除那一条，候选本身不再新增。
+
+规则：
+- replace、renew、remove 必须在 target 里填常驻区条目方括号里的 id，只能填上面列出的 id。
+- add 的 target 写 null。
+- 拿不准是不是同一件事时选 add。
+- 候选的记录日期早于常驻区里同一件事的记录日期时，它是更早的说法：选 renew 指向那一条，不要 replace 或 remove。
+- 标着「已撤销」的条目已经不成立。候选如果说的是同一件事：记录时间早于撤销时间，就是撤销前的旧说法，选 remove 并在 target 填那条的 id，候选不会入区；晚于撤销时间，就当新的事选 add。
+- 每条候选只输出一个动作。
+
+只返回 JSON 数组，不要输出其他内容：
+[
+  {"candidate": 1, "action": "add", "target": null},
+  {"candidate": 2, "action": "replace", "target": "pin_0a1b2c3d"}
+]""",
+    "zh-TW": """你在幫 {LANLAN_NAME} 維護一份「重要事實常駐區」：裡面是 {LANLAN_NAME} 必須牢記的少量事實（關於 {MASTER_NAME}、關於 {LANLAN_NAME} 自己或兩人之間），每條都有到期日。現在有新的候選事實要進區，請逐條決定怎麼處理。
+
+今天是 {TODAY}。
+
+======以下為常駐區現有條目======
+{ZONE}
+======以上為常駐區現有條目======
+
+======以下為新候選======
+{CANDIDATES}
+======以上為新候選======
+
+每條候選從下面四個動作裡選一個：
+- add：常駐區裡還沒有這件事，新增一條。
+- replace：常駐區裡有同一件事，但說法有了更新（時間、地點、細節或狀態變了），用候選替換那一條，以最新的說法為準。
+- renew：常駐區裡有同一件事，候選只是又說了一遍、內容沒有變化，給那一條續期。
+- remove：候選說明常駐區裡的某件事已經不成立了（比如「考試取消了」「感冒好了」），刪除那一條，候選本身不再新增。
+
+規則：
+- replace、renew、remove 必須在 target 裡填常駐區條目方括號裡的 id，只能填上面列出的 id。
+- add 的 target 寫 null。
+- 拿不準是不是同一件事時選 add。
+- 候選的記錄日期早於常駐區裡同一件事的記錄日期時，它是更早的說法：選 renew 指向那一條，不要 replace 或 remove。
+- 標著「已撤銷」的條目已經不成立。候選如果說的是同一件事：記錄時間早於撤銷時間，就是撤銷前的舊說法，選 remove 並在 target 填那條的 id，候選不會入區；晚於撤銷時間，就當新的事選 add。
+- 每條候選只輸出一個動作。
+
+只回傳 JSON 陣列，不要輸出其他內容：
+[
+  {"candidate": 1, "action": "add", "target": null},
+  {"candidate": 2, "action": "replace", "target": "pin_0a1b2c3d"}
+]""",
+    "en": """You are helping {LANLAN_NAME} maintain a "pinned important facts" section: a small set of facts {LANLAN_NAME} must keep in mind (about {MASTER_NAME}, about {LANLAN_NAME}, or about the two of them), each with an expiry date. New candidate facts are about to enter the section; decide what to do with each one.
+
+Today is {TODAY}.
+
+======Below is the current pinned section======
+{ZONE}
+======Above is the current pinned section======
+
+======Below is the list of new candidates======
+{CANDIDATES}
+======Above is the list of new candidates======
+
+For each candidate pick one of these four actions:
+- add: the section has nothing about this yet; add it as a new entry.
+- replace: the section already has the same matter, but the account has been updated (time, place, details or status changed); replace that entry with the candidate, the latest account wins.
+- renew: the section already has the same matter and the candidate only says it again without changing anything; extend that entry.
+- remove: the candidate shows that something in the section no longer holds (e.g. "the exam was cancelled", "the cold is gone"); delete that entry and do not add the candidate itself.
+
+Rules:
+- replace, renew and remove must put the entry's id (the one in square brackets) in target, and only ids listed above are allowed.
+- add uses null as target.
+- When unsure whether it is the same matter, choose add.
+- If a candidate was noted earlier than the section's entry about the same matter, it is the older account: choose renew on that entry, never replace or remove.
+- Entries marked as withdrawn no longer hold. If a candidate is about the same matter: noted before the withdrawal, it is the account from before it, so choose remove with that entry's id as target and the candidate stays out; noted after the withdrawal, treat it as new and choose add.
+- Output exactly one action per candidate.
+
+Return only a JSON array and nothing else:
+[
+  {"candidate": 1, "action": "add", "target": null},
+  {"candidate": 2, "action": "replace", "target": "pin_0a1b2c3d"}
+]""",
+    "ja": """あなたは {LANLAN_NAME} のために「重要事実の常駐エリア」を管理しています。ここには {LANLAN_NAME} が必ず覚えておくべき少数の事実（{MASTER_NAME} について、{LANLAN_NAME} 自身について、または二人の間のこと）が入っていて、どの項目にも期限があります。新しい候補がエリアに入ろうとしているので、候補ごとに扱いを決めてください。
+
+今日は {TODAY} です。
+
+======以下は常駐エリアの現在の項目======
+{ZONE}
+======以上は常駐エリアの現在の項目======
+
+======以下は新しい候補======
+{CANDIDATES}
+======以上は新しい候補======
+
+候補ごとに次の四つから一つ選んでください：
+- add：エリアにまだこの件がない。新しく追加する。
+- replace：エリアに同じ件があるが、内容が更新された（時間・場所・詳細・状態が変わった）。その項目を候補で置き換え、最新の言い方を優先する。
+- renew：エリアに同じ件があり、候補は同じことをもう一度言っただけで内容は変わっていない。その項目の期限を延ばす。
+- remove：候補から、エリアのある件がもう成り立たないとわかる（例：「試験が中止になった」「風邪が治った」）。その項目を削除し、候補自体は追加しない。
+
+ルール：
+- replace・renew・remove は target に項目の角括弧内の id を入れること。上に挙げた id 以外は使わない。
+- add の target は null。
+- 同じ件かどうか迷ったら add を選ぶ。
+- 候補の記録日が、エリア内の同じ件の記録日より前なら、それは古い言い方なので、その項目に renew を選び、replace や remove は選ばない。
+- 「取り消し済み」と付いた項目はもう成り立たない。候補が同じ件なら、記録が取り消しより前なら取り消し前の古い言い方なので remove を選び target にその項目の id を入れる（候補は入らない）。取り消しより後なら新しい件として add を選ぶ。
+- 候補一つにつき動作は一つだけ出力する。
+
+JSON 配列だけを返し、ほかには何も出力しないでください：
+[
+  {"candidate": 1, "action": "add", "target": null},
+  {"candidate": 2, "action": "replace", "target": "pin_0a1b2c3d"}
+]""",
+    "ko": """당신은 {LANLAN_NAME}을(를) 위해 "중요 사실 상주 구역"을 관리하고 있습니다. 여기에는 {LANLAN_NAME}이(가) 꼭 기억해야 할 소수의 사실({MASTER_NAME}에 대한 것, {LANLAN_NAME} 자신에 대한 것, 또는 두 사람 사이의 일)이 들어 있고, 항목마다 만료일이 있습니다. 새 후보들이 구역에 들어오려고 하니, 후보마다 어떻게 처리할지 정해 주세요.
+
+오늘은 {TODAY}입니다.
+
+======아래는 상주 구역의 현재 항목======
+{ZONE}
+======위는 상주 구역의 현재 항목======
+
+======아래는 새 후보======
+{CANDIDATES}
+======위는 새 후보======
+
+후보마다 다음 네 가지 중 하나를 고르세요:
+- add: 구역에 아직 이 일이 없음. 새로 추가.
+- replace: 구역에 같은 일이 있지만 내용이 바뀜(시간, 장소, 세부 사항, 상태가 달라짐). 그 항목을 후보로 교체하고, 가장 최근의 말을 기준으로 함.
+- renew: 구역에 같은 일이 있고, 후보는 같은 말을 다시 했을 뿐 내용은 그대로임. 그 항목의 기한을 연장.
+- remove: 후보로 보아 구역의 어떤 일이 더 이상 성립하지 않음(예: "시험이 취소됐다", "감기가 나았다"). 그 항목을 삭제하고, 후보 자체는 추가하지 않음.
+
+규칙:
+- replace, renew, remove는 target에 항목의 대괄호 안 id를 넣어야 하며, 위에 나온 id만 쓸 수 있음.
+- add의 target은 null.
+- 같은 일인지 애매하면 add를 고름.
+- 후보의 기록일이 구역 안 같은 일의 기록일보다 이르면 그것은 예전의 말이므로, 그 항목에 renew를 고르고 replace나 remove는 고르지 않음.
+- "취소됨" 표시가 있는 항목은 더 이상 성립하지 않음. 후보가 같은 일이라면, 기록이 취소보다 이르면 취소 전의 예전 말이므로 remove를 고르고 target에 그 항목의 id를 넣음(후보는 들어가지 않음). 취소보다 늦으면 새로운 일로 보고 add를 고름.
+- 후보 하나당 동작은 하나만 출력.
+
+JSON 배열만 반환하고 다른 내용은 출력하지 마세요:
+[
+  {"candidate": 1, "action": "add", "target": null},
+  {"candidate": 2, "action": "replace", "target": "pin_0a1b2c3d"}
+]""",
+    "ru": """Ты помогаешь вести для {LANLAN_NAME} «раздел закреплённых важных фактов»: это небольшой набор фактов, которые нельзя забывать (о {MASTER_NAME}, о {LANLAN_NAME} или об их отношениях), и у каждого есть срок действия. Появились новые факты-кандидаты; реши, что делать с каждым.
+
+Сегодня {TODAY}.
+
+======Ниже текущие записи раздела======
+{ZONE}
+======Выше текущие записи раздела======
+
+======Ниже новые кандидаты======
+{CANDIDATES}
+======Выше новые кандидаты======
+
+Для каждого кандидата выбери одно из четырёх действий:
+- add: в разделе об этом ещё ничего нет; добавить новой записью.
+- replace: в разделе есть то же самое, но сведения обновились (изменились время, место, детали или состояние); заменить ту запись кандидатом, верна самая свежая версия.
+- renew: в разделе есть то же самое, и кандидат просто повторяет это без изменений; продлить ту запись.
+- remove: из кандидата следует, что что-то из раздела больше не актуально (например, «экзамен отменили», «простуда прошла»); удалить ту запись, а самого кандидата не добавлять.
+
+Правила:
+- для replace, renew и remove в target нужно указать id записи (тот, что в квадратных скобках), и только из перечисленных выше.
+- для add в target пиши null.
+- если не уверен, то же ли это самое, выбирай add.
+- если кандидат записан раньше, чем запись раздела о том же самом, это более старая версия: выбери renew для той записи, но не replace и не remove.
+- записи с пометкой «отменено» больше не актуальны. Если кандидат о том же самом: записан раньше отмены — это версия до неё, выбери remove с id этой записи в target, кандидат не добавляется; записан позже отмены — считай это новым и выбирай add.
+- на каждого кандидата выведи ровно одно действие.
+
+Верни только JSON-массив и больше ничего:
+[
+  {"candidate": 1, "action": "add", "target": null},
+  {"candidate": 2, "action": "replace", "target": "pin_0a1b2c3d"}
+]""",
+    "es": """Estás ayudando a {LANLAN_NAME} a mantener una «sección de hechos importantes fijados»: un pequeño conjunto de hechos que no se deben olvidar (sobre {MASTER_NAME}, sobre {LANLAN_NAME} o sobre los dos), cada uno con fecha de caducidad. Hay nuevos hechos candidatos a punto de entrar en la sección; decide qué hacer con cada uno.
+
+Hoy es {TODAY}.
+
+======A continuación están las entradas actuales de la sección======
+{ZONE}
+======Arriba están las entradas actuales de la sección======
+
+======A continuación están los nuevos candidatos======
+{CANDIDATES}
+======Arriba están los nuevos candidatos======
+
+Para cada candidato elige una de estas cuatro acciones:
+- add: la sección todavía no tiene nada sobre esto; añádelo como entrada nueva.
+- replace: la sección ya tiene el mismo asunto, pero la información cambió (hora, lugar, detalles o estado); sustituye esa entrada por el candidato, vale la versión más reciente.
+- renew: la sección ya tiene el mismo asunto y el candidato solo lo repite sin cambios; prolonga esa entrada.
+- remove: el candidato indica que algo de la sección ya no es cierto (p. ej. «cancelaron el examen», «ya se me pasó el resfriado»); elimina esa entrada y no añadas el candidato.
+
+Reglas:
+- replace, renew y remove deben poner en target el id de la entrada (el que va entre corchetes), y solo se admiten los id listados arriba.
+- add lleva null en target.
+- Si dudas de si es el mismo asunto, elige add.
+- Si un candidato se anotó antes que la entrada de la sección sobre el mismo asunto, es la versión anterior: elige renew sobre esa entrada, nunca replace ni remove.
+- Las entradas marcadas como retiradas ya no son ciertas. Si un candidato trata del mismo asunto: si se anotó antes de la retirada, es la versión previa, así que elige remove con el id de esa entrada en target y el candidato no entra; si se anotó después, trátalo como nuevo y elige add.
+- Da exactamente una acción por candidato.
+
+Devuelve solo un array JSON y nada más:
+[
+  {"candidate": 1, "action": "add", "target": null},
+  {"candidate": 2, "action": "replace", "target": "pin_0a1b2c3d"}
+]""",
+    "pt": """Você está ajudando {LANLAN_NAME} a manter uma «seção de fatos importantes fixados»: um pequeno conjunto de fatos que não podem ser esquecidos (sobre {MASTER_NAME}, sobre {LANLAN_NAME} ou sobre os dois), cada um com data de validade. Há novos fatos candidatos prestes a entrar na seção; decida o que fazer com cada um.
+
+Hoje é {TODAY}.
+
+======Abaixo estão as entradas atuais da seção======
+{ZONE}
+======Acima estão as entradas atuais da seção======
+
+======Abaixo estão os novos candidatos======
+{CANDIDATES}
+======Acima estão os novos candidatos======
+
+Para cada candidato escolha uma destas quatro ações:
+- add: a seção ainda não tem nada sobre isso; adicione como nova entrada.
+- replace: a seção já tem o mesmo assunto, mas a informação mudou (horário, lugar, detalhes ou estado); substitua essa entrada pelo candidato, vale a versão mais recente.
+- renew: a seção já tem o mesmo assunto e o candidato só repete sem mudanças; prorrogue essa entrada.
+- remove: o candidato mostra que algo da seção não vale mais (ex.: "a prova foi cancelada", "o resfriado passou"); exclua essa entrada e não adicione o candidato.
+
+Regras:
+- replace, renew e remove devem colocar em target o id da entrada (o que está entre colchetes), e só os ids listados acima.
+- add usa null em target.
+- Na dúvida se é o mesmo assunto, escolha add.
+- Se um candidato foi anotado antes da entrada da seção sobre o mesmo assunto, é a versão mais antiga: escolha renew para essa entrada, nunca replace nem remove.
+- As entradas marcadas como retiradas não valem mais. Se um candidato for sobre o mesmo assunto: anotado antes da retirada, é a versão anterior, então escolha remove com o id dessa entrada em target e o candidato não entra; anotado depois, trate como novo e escolha add.
+- Dê exatamente uma ação por candidato.
+
+Retorne apenas um array JSON e nada mais:
+[
+  {"candidate": 1, "action": "add", "target": null},
+  {"candidate": 2, "action": "replace", "target": "pin_0a1b2c3d"}
+]""",
+}
+
+
+def get_pinned_facts_section_header(lang: str = "zh") -> str:
+    return _loc(PINNED_FACTS_SECTION_HEADER, lang)
+
+
+def render_pinned_fact_line(text: str, *, since: str, until: str, lang: str = "zh") -> str:
+    """One entry of the pinned section, without its list marker or id prefix."""
+    return _loc(PINNED_FACT_LINE, lang).format(text=text, since=since, until=until)
+
+
+def render_pinned_fact_removed_line(text: str, *, since: str, removed: str, lang: str = "zh") -> str:
+    """One withdrawn entry for the resolve prompt, without its id prefix."""
+    return _loc(PINNED_FACT_REMOVED_LINE, lang).format(text=text, since=since, removed=removed)
+
+
+def get_pinned_fact_resolve_prompt(lang: str = "zh") -> str:
+    return _loc(PINNED_FACT_RESOLVE_PROMPT, lang)
 
 
 # ---------- fact_dedup_prompt → i18n dict ----------
