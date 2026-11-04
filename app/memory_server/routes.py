@@ -51,6 +51,7 @@ from config.prompts.prompts_memory import (
     _normalize_memory_prompt_lang,
 )
 from utils.frontend_utils import get_timestamp
+from utils.recent_file import RecentFileLockTimeout
 from utils.llm_tool_leak_filter import (
     strip_tool_call_leaks,
     strip_tool_call_leaks_from_parts,
@@ -2082,10 +2083,38 @@ def _without_tool_call_leaks(history) -> list:
     return cleaned
 
 
+# Below the game pregame caller's 5s HTTP timeout.
+_RECENT_HISTORY_LOCK_TIMEOUT_SECONDS = 4.0
+
+
 @app.get("/get_recent_history/{lanlan_name}")
 async def get_recent_history(lanlan_name: str, language: str | None = None):
     lanlan_name = validate_lanlan_name(lanlan_name)
     _lang = _normalize_memory_prompt_lang(_activate_request_language(language))
+    # The only caller (game pregame) gives up after 5s and falls back to empty history.
+    # One deadline covers every step that can queue on the default executor or the recent
+    # lock, and the worker thread's own lock wait ends at it too instead of outliving the 503.
+    deadline = time.monotonic() + _RECENT_HISTORY_LOCK_TIMEOUT_SECONDS
+    try:
+        async with asyncio.timeout(_RECENT_HISTORY_LOCK_TIMEOUT_SECONDS):
+            return await _render_recent_history(lanlan_name, _lang, deadline)
+    except RecentFileLockTimeout:
+        # Already reported by the lock or the manager; one stuck wait counts once.
+        return JSONResponse(
+            {"status": "error", "message": "recent history is busy"}, status_code=503,
+        )
+    except TimeoutError:
+        from utils.stall_report import report_stall
+        report_stall(
+            f"/get_recent_history {lanlan_name} {_RECENT_HISTORY_LOCK_TIMEOUT_SECONDS}s 内未完成，返回 503",
+            loop=asyncio.get_running_loop(),
+        )
+        return JSONResponse(
+            {"status": "error", "message": "recent history is busy"}, status_code=503,
+        )
+
+
+async def _render_recent_history(lanlan_name: str, _lang: str, deadline: float):
     # Check whether character exists in configuration.
     try:
         character_data = await runtime._config_manager.aload_characters()
@@ -2097,9 +2126,10 @@ async def get_recent_history(lanlan_name: str, language: str | None = None):
         logger.error(f"检查角色配置失败: {e}")
         return _loc(NO_RECENT_HISTORY, _lang)
 
-    history = _screen_guarded_recent_history(
-        await runtime.recent_history_manager.aget_recent_history(lanlan_name)
+    raw_history = await runtime.recent_history_manager.aget_recent_history(
+        lanlan_name, lock_timeout=max(0.0, deadline - time.monotonic()),
     )
+    history = _screen_guarded_recent_history(raw_history)
     master_name, _, _, _, name_mapping, _, _, _, _ = await runtime._config_manager.aget_character_data()
     name_mapping['ai'] = lanlan_name
     result = _loc(RECENT_HISTORY_INTRO, _lang).format(name=lanlan_name)
@@ -8117,7 +8147,7 @@ async def _new_dialog(
     # without racing these reads. Phase C makes review a background task concurrent with /process;
     # /new_dialog no longer cancels running reviews (old cancellation was Phase A
     # residue, making reviews almost never finish in active sessions).
-    async with runtime._get_settle_lock(lanlan_name):
+    async with runtime._hold_settle_lock_reporting_stalls(lanlan_name, "/new_dialog"):
         # Regex removes all bracket types and contents (including [], (), {}, <>, 【】, （）, etc.).
         brackets_pattern = re.compile(r'(\[.*?\]|\(.*?\)|（.*?）|【.*?】|\{.*?\}|<.*?>)')
         master_name, _, _, _, name_mapping, _, _, _, _ = await runtime._config_manager.aget_character_data()

@@ -41,7 +41,7 @@ import time
 from contextlib import contextmanager
 from typing import Any, Iterator
 
-from filelock import FileLock
+from filelock import FileLock, Timeout as FileLockTimeout
 
 from utils.file_utils import atomic_write_json
 
@@ -51,6 +51,7 @@ __all__ = [
     "VISIT_DIARY_KEY_RE",
     "RecentFileDeletedError",
     "RecentGenerationConflictError",
+    "RecentFileLockTimeout",
     "acquire_recent_file_locks",
     "activate_recent_paths",
     "capture_recent_generation",
@@ -96,6 +97,14 @@ class RecentGenerationConflictError(RuntimeError):
     """Raised when rollback no longer owns the identity transition it would undo."""
 
 
+class RecentFileLockTimeout(TimeoutError):
+    """Raised when ``recent_file_access(timeout=...)`` could not take the lock in time."""
+
+
+# A lock wait longer than this logs a stall report (see utils/stall_report.py) and keeps waiting.
+_STALL_REPORT_AFTER_SECONDS = 10.0
+
+
 # ── per-path lock registry ────────────────────────────────────────────────
 # Key locks by file path, not character name: main_routers writers resolve paths by filename,
 # including resolve_recent_file_path's legacy-layout fallback, and lack character-name-to-manager
@@ -123,15 +132,25 @@ class _RecentFileLock:
     """Keep thread exclusion and extend the same critical section across processes."""
 
     def __init__(self, path):
+        self._path = path
         self._thread = threading.Lock()
         # Lock files must survive character moves/deletion without recreating
         # deleted directories or colliding when two character folders merge.
         key = hashlib.sha256(os.path.realpath(path).encode('utf-8')).hexdigest()
         user = str(os.getuid()) if hasattr(os, 'getuid') else 'user'
         self._file = FileLock(os.path.join(tempfile.gettempdir(), f'neko-recent-locks-{user}', key + '.lock'), thread_local=False)
+        # (thread ident, thread name, monotonic acquire time) of the current owner, for stall reports.
+        self._holder: tuple[int, str, float] | None = None
 
-    def acquire(self):
-        self._thread.acquire()
+    def acquire(self, timeout: float | None = None) -> bool:
+        """Block until held; with ``timeout`` (seconds) return False instead of waiting longer."""
+        deadline = None if timeout is None else time.monotonic() + timeout
+        if not self._wait('thread', self._acquire_thread, deadline):
+            return False
+        # Recorded before the file stage: an in-process waiter must see this thread
+        # as the holder even while it is still waiting on another process.
+        current = threading.current_thread()
+        self._holder = (current.ident, current.name, time.monotonic())
         try:
             directory = os.path.dirname(self._file.lock_file)
             os.makedirs(directory, mode=0o700, exist_ok=True)
@@ -139,12 +158,71 @@ class _RecentFileLock:
             if (not stat.S_ISDIR(info.st_mode) or (hasattr(os, 'getuid')
                     and (info.st_uid != os.getuid() or info.st_mode & 0o077))):
                 raise PermissionError(f'unsafe recent lock directory: {directory}')
-            self._file.acquire()
+            if not self._wait('file', self._acquire_file, deadline):
+                self._holder = None
+                self._thread.release()
+                return False
         except BaseException:
+            self._holder = None
             self._thread.release()
             raise
+        return True
+
+    def _acquire_thread(self, timeout: float) -> bool:
+        return self._thread.acquire(timeout=timeout)
+
+    def _acquire_file(self, timeout: float) -> bool:
+        try:
+            self._file.acquire(timeout=timeout)
+        except FileLockTimeout:
+            return False
+        return True
+
+    def _wait(self, stage, attempt, deadline) -> bool:
+        """Run one acquire stage, reporting once when it outlasts the stall threshold."""
+        started = time.monotonic()
+        first = _STALL_REPORT_AFTER_SECONDS
+        # Decided up front: a timed acquire may return a clock tick before the deadline.
+        last_slice = deadline is not None and deadline - started <= first
+        if last_slice:
+            first = max(0.0, deadline - started)
+        if attempt(first):
+            return True
+        self._report_stall(stage, time.monotonic() - started, timed_out=last_slice)
+        if last_slice:
+            return False
+        if deadline is None:
+            return attempt(-1)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        if attempt(remaining):
+            return True
+        self._report_stall(stage, time.monotonic() - started, timed_out=True)
+        return False
+
+    def _report_stall(self, stage, waited, *, timed_out):
+        from utils.stall_report import report_stall
+
+        outcome = '放弃等待' if timed_out else '仍在等待'
+        if stage == 'file':
+            # The thread lock is ours already, so the file lock is held by another process.
+            message = (f'recent 文件锁跨进程等待 {waited:.1f}s（{outcome}），'
+                       f'被其他进程持有: {self._path} (lock={self._file.lock_file}, pid={os.getpid()})')
+            report_stall(message)
+            return
+        holder = self._holder
+        if holder is None:
+            message = f'recent 文件锁进程内等待 {waited:.1f}s（{outcome}），持有者未知: {self._path}'
+            report_stall(message)
+            return
+        ident, name, since = holder
+        message = (f'recent 文件锁进程内等待 {waited:.1f}s（{outcome}），'
+                   f'持有者线程 {name} ({ident}) 已持有 {time.monotonic() - since:.1f}s: {self._path}')
+        report_stall(message, holder_thread_id=ident)
 
     def release(self):
+        self._holder = None
         try:
             self._file.release()
         finally:
@@ -225,8 +303,15 @@ def capture_recent_generation(path: Any) -> tuple[str, int]:
 @contextmanager
 def recent_file_access(
     path: Any, *, expected_generation: tuple[str, int] | None = None,
+    timeout: float | None = None,
 ) -> Iterator[str]:
-    """Lock a path and retry if a completed rename redirected it while waiting."""
+    """Lock a path and retry if a completed rename redirected it while waiting.
+
+    With ``timeout`` (seconds, shared by every retry) raise
+    ``RecentFileLockTimeout`` instead of waiting longer. Only readers that can
+    degrade should pass it; writers keep waiting.
+    """
+    deadline = None if timeout is None else time.monotonic() + timeout
     original_key = _lock_key(path)
     if expected_generation is None:
         expected_generation = capture_recent_generation(path)
@@ -240,7 +325,9 @@ def recent_file_access(
             if lock is None:
                 lock = _RecentFileLock(resolved_key)
                 _LOCKS[resolved_key] = lock
-        lock.acquire()
+        remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+        if not lock.acquire(timeout=remaining):
+            raise RecentFileLockTimeout(f"timed out after {timeout}s waiting for recent lock: {resolved_key}")
         with _LOCKS_GUARD:
             latest_key = _resolve_key_unlocked(original_key)
             latest_lock = _LOCKS.get(latest_key)
