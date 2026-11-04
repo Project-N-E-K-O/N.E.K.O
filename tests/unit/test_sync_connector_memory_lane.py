@@ -237,3 +237,20 @@ async def test_stopping_connector_sends_queued_settlement(monkeypatch):
 
     assert memory.endpoints() == ["renew", "process"]
     assert _texts(memory.posts[1][1]) == ["u2", "a2"]
+
+
+@pytest.mark.asyncio
+async def test_memory_write_backlog_is_logged(connector, monkeypatch):
+    from main_logic import cross_server
+
+    monkeypatch.setattr(cross_server, "MEMORY_LANE_BACKLOG_WARN", 2)
+    warnings = []
+    monkeypatch.setattr(cross_server.logger, "warning", lambda msg, *a, **k: warnings.append(msg))
+    memory = _Memory(blocked={"cache"})
+    queue, _ = connector(memory)
+
+    for i in range(4):
+        for item in _turn(f"u{i}", f"a{i}"):
+            queue.put_nowait(item)
+    await _until(lambda: any("积压" in w for w in warnings))
+    memory.release.set()

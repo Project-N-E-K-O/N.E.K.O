@@ -818,6 +818,8 @@ async def _complete_session_end_memory_barrier(message: dict, lanlan_name: str) 
 
 # How long a stopping connector waits for its queued memory writes (see run_sync_connector).
 MEMORY_LANE_DRAIN_TIMEOUT_S = 1.5
+# Queued memory writes at which (and at each further multiple of which) a backlog warning is logged.
+MEMORY_LANE_BACKLOG_WARN = 50
 
 
 async def run_sync_connector(
@@ -997,6 +999,13 @@ async def run_sync_connector(
                 logger.error(f"[{lanlan_name}] 记忆写入任务异常: {type(e).__name__}: {e}", exc_info=True)
             finally:
                 memory_lane.task_done()
+
+    def _enqueue_memory_write(job) -> None:
+        memory_lane.put_nowait(job)
+        # The loop no longer slows down when the memory server does; say so once the backlog grows.
+        backlog = memory_lane.qsize()
+        if backlog >= MEMORY_LANE_BACKLOG_WARN and backlog % MEMORY_LANE_BACKLOG_WARN == 0:
+            logger.warning(f"[{lanlan_name}] 记忆写入积压 {backlog} 个，记忆服务可能响应缓慢")
 
     def _take_memory_carry(messages: list) -> list:
         payload = memory_carry + messages
@@ -1326,7 +1335,7 @@ async def run_sync_connector(
                                 # Send only remaining messages not covered by /cache, triggering LLM settlement.
                                 remaining = chat_history[last_synced_index:]
                                 logger.info(f"[{lanlan_name}] 热重置：聊天历史 {len(chat_history)} 条，增量 {len(remaining)} 条")
-                                memory_lane.put_nowait(functools.partial(
+                                _enqueue_memory_write(functools.partial(
                                     _settle_hot_reset, remaining, *_current_memory_languages(),
                                 ))
                                 chat_history.clear()
@@ -1434,7 +1443,7 @@ async def run_sync_connector(
                                             {'role': 'user', 'content': [{'type': 'text', 'text': memory_note}]},
                                             {'role': 'assistant', 'content': [{'type': 'text', 'text': avatar_turn_assistant_text}]},
                                         ]
-                                        memory_lane.put_nowait(functools.partial(
+                                        _enqueue_memory_write(functools.partial(
                                             _cache_avatar_turn,
                                             avatar_memory_messages,
                                             *_current_memory_languages(),
@@ -1523,7 +1532,7 @@ async def run_sync_connector(
                                     # memory_carry with the next write.
                                     new_messages = chat_history[last_synced_index:]
                                     last_synced_index = len(chat_history)
-                                    memory_lane.put_nowait(functools.partial(
+                                    _enqueue_memory_write(functools.partial(
                                         _cache_turn_end, new_messages, *_current_memory_languages(),
                                     ))
 
@@ -1611,7 +1620,7 @@ async def run_sync_connector(
                                 
                                 remaining = chat_history[last_synced_index:]
                                 logger.info(f"[{lanlan_name}] 会话结束：聊天历史 {len(chat_history)} 条，增量 {len(remaining)} 条")
-                                memory_lane.put_nowait(functools.partial(
+                                _enqueue_memory_write(functools.partial(
                                     _settle_session_end,
                                     remaining,
                                     is_context_reset_barrier,
@@ -1655,7 +1664,7 @@ async def run_sync_connector(
                         pending_user_images = []
                         # Behind the settlement on the memory lane, so the callback still follows
                         # the terminal memory-server write without the loop waiting for it.
-                        memory_lane.put_nowait(functools.partial(
+                        _enqueue_memory_write(functools.partial(
                             _complete_session_end_memory_barrier,
                             message,
                             lanlan_name,
