@@ -60,6 +60,7 @@ from ._shared import (
     _START_LLM_CONCURRENT_ABORTED,
     _ORPHAN_SESSION_REAPER_TASKS,
     _PASSIVE_MEDIA_SESSION_UPDATE_ACK_TIMEOUT_S,
+    _HOT_SWAP_NEW_DIALOG_TIMEOUT_S,
 )
 from .callback_render import (
     _build_callback_instruction,
@@ -73,11 +74,6 @@ from .callback_render import (
 # facade patch would no longer reach this module's methods.
 from main_logic import core as _core_facade
 from .session_records import start_phase
-
-# Hot-swap preparation waits this long for /new_dialog, which may be held up by the /renew
-# summary it is meant to include. The old session keeps serving meanwhile, and a timeout only
-# discards the pending session until the next turn retries.
-HOT_SWAP_NEW_DIALOG_TIMEOUT_S = 60.0
 
 class LifecycleMixin:
     """Session lifecycle methods (see module docstring)."""
@@ -1601,7 +1597,7 @@ class LifecycleMixin:
         if foreground:
             params["preempt_summary"] = "true"
         request_kwargs = {
-            "timeout": 5.0 if foreground else HOT_SWAP_NEW_DIALOG_TIMEOUT_S,
+            "timeout": 5.0 if foreground else _HOT_SWAP_NEW_DIALOG_TIMEOUT_S,
         }
         if params:
             request_kwargs["params"] = params

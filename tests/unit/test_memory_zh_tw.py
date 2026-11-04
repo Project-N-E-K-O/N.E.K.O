@@ -557,9 +557,9 @@ async def test_new_dialog_request_preserves_locale_provenance(
     assert calls == [expected_kwargs]
     assert manager._new_dialog_request_kwargs() == expected_kwargs
     # Hot-swap preparation runs beside the live session: it waits for the summary instead.
-    from main_logic.core.lifecycle import HOT_SWAP_NEW_DIALOG_TIMEOUT_S
+    from main_logic.core._shared import _HOT_SWAP_NEW_DIALOG_TIMEOUT_S
 
-    hot_swap_kwargs = {"timeout": HOT_SWAP_NEW_DIALOG_TIMEOUT_S}
+    hot_swap_kwargs = {"timeout": _HOT_SWAP_NEW_DIALOG_TIMEOUT_S}
     if expected_params is not None:
         hot_swap_kwargs["params"] = expected_params
     assert manager._new_dialog_request_kwargs(foreground=False) == hot_swap_kwargs
