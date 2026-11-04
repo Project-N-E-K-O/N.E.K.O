@@ -114,7 +114,8 @@ def _write(store, phrases, *, language="zh-CN", now=None, name=_NAME):
         for index, phrase in enumerate(phrases)
     ]
     ts = datetime.now().timestamp() if now is None else now
-    assert store.write(name, build_payload(entries, {}, language=language, now=ts))
+    written = store.write(name, build_payload(entries, {}, language=language, now=ts))
+    assert written
 
 
 def _read_file(tmp_path, name=_NAME) -> dict:

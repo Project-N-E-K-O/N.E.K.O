@@ -66,6 +66,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import re
 import threading
@@ -576,7 +577,7 @@ def _as_time(raw: Any) -> Optional[float]:
         value = float(raw)
     except (TypeError, ValueError, OverflowError):
         return None
-    return value if value == value and value not in (float("inf"), float("-inf")) else None
+    return value if math.isfinite(value) else None
 
 
 def _normalize_entry(raw: Any) -> Optional[Dict[str, Any]]:
