@@ -678,3 +678,106 @@ async def test_concurrent_additions_keep_both_tracks(tmp_path):
         for row in [*rows, rows[0]]
     ))
     assert sorted(player._library("Mika")["Mix"]) == rows
+
+
+@pytest.mark.asyncio
+async def test_close_after_end_cancels_pending_advance_and_next():
+    from unittest.mock import AsyncMock
+    from plugin.plugins.netease_music.playlists import Queue
+    provider = _Provider()
+    started = asyncio.Event()
+    release = asyncio.Event()
+    async def resolve(song_id):
+        started.set()
+        await release.wait()
+        return provider.media
+    provider.resolve_media = resolve
+    plugin, pushes, _ = _make_plugin(provider)
+    q = Queue('mix', [_song(1), _song(2)], cursor=1, ticket='a'*32)
+    plugin._queues = {'lanlan:Mika': q}
+    plugin._begin_request('lanlan:Mika')
+    pending = asyncio.create_task(plugin.playlist_terminal(q.ticket, 'ended', _ctx=_ctx()))
+    await started.wait()
+    await plugin.playlist_terminal('a'*32, 'closed', _ctx=_ctx())
+    release.set()
+    await pending
+    assert not any(p['parts'][0].get('action') == 'media_play_url' for p in pushes)
+    assert q.cursor == len(q.tracks)
+    await plugin.playlist('next', _ctx=_ctx())
+    assert not any(p['parts'][0].get('action') == 'media_play_url' for p in pushes)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_advance_retries_unplayed_track():
+    from plugin.plugins.netease_music.playlists import Queue
+    provider = _Provider(media_error=asyncio.CancelledError())
+    plugin, _, _ = _make_plugin(provider)
+    q = Queue('mix', [_song(1), _song(2)])
+    plugin._queues = {'lanlan:Mika': q}
+    generation = plugin._begin_request('lanlan:Mika')
+    with pytest.raises(asyncio.CancelledError):
+        await plugin._advance(provider, 'Mika', 'lanlan:Mika', q)
+    assert q.cursor == 0
+    provider.media_error = None
+    await plugin.playlist('next', _ctx=_ctx())
+    assert provider.resolve_calls == [1, 1]
+
+
+@pytest.mark.asyncio
+async def test_failed_single_request_preserves_playlist():
+    from plugin.plugins.netease_music.playlists import Queue
+    provider = _Provider(candidates=[])
+    plugin, pushes, _ = _make_plugin(provider)
+    q = Queue('mix', [_song(1), _song(2)], cursor=1, ticket='a'*32)
+    plugin._queues = {'lanlan:Mika': q}
+    plugin._begin_request('lanlan:Mika')
+    await plugin.play_netease_music(PlayRequest(query='Missing'), _ctx())
+    assert plugin._queues['lanlan:Mika'] is q
+    await plugin.playlist_terminal('a'*32, 'ended', _ctx=_ctx())
+    assert provider.resolve_calls == [2]
+
+
+@pytest.mark.asyncio
+async def test_collection_reports_failed_confirmation_without_losing_saved_track(tmp_path):
+    from unittest.mock import AsyncMock
+    plugin, _, _ = _make_plugin(_Provider(), receipts=[{'submitted': False, 'reason':'backpressure'}])
+    plugin._queues = {}
+    plugin.data_path = lambda: tmp_path
+    plugin._current_track = AsyncMock(return_value={'song_id':1, 'name':'晴天', 'artist':'周杰伦'})
+    result = await plugin.playlist('save_current', name='夜读', _ctx=_ctx())
+    assert result['finish']['data']['confirmation_submitted'] is False
+    assert plugin._library('Mika')['夜读'] == [[1, '晴天', '周杰伦']]
+
+
+def test_library_reads_utf8_even_when_platform_default_is_not_utf8(tmp_path, monkeypatch):
+    plugin, _, _ = _make_plugin(_Provider())
+    plugin.data_path = lambda: tmp_path
+    plugin._write_library('Mika', {'夜读': [[1, '晴天', '周杰伦']]})
+    original = Path.read_text
+    def read_text(path, encoding=None, **kwargs):
+        return original(path, encoding=encoding or 'ascii', **kwargs)
+    monkeypatch.setattr(Path, 'read_text', read_text)
+    assert plugin._library('Mika')['夜读'][0][1] == '晴天'
+
+
+@pytest.mark.asyncio
+async def test_failed_single_during_transition_does_not_abandon_next_track():
+    from plugin.plugins.netease_music.playlists import Queue
+    started, release = asyncio.Event(), asyncio.Event()
+    provider = _Provider(candidates=[])
+    async def resolve(song_id):
+        started.set()
+        await release.wait()
+        return provider.media
+    provider.resolve_media = resolve
+    plugin, pushes, _ = _make_plugin(provider)
+    q = Queue('mix', [_song(1), _song(2)], cursor=1, ticket='a'*32)
+    plugin._queues = {'lanlan:Mika': q}
+    plugin._begin_request('lanlan:Mika')
+    pending = asyncio.create_task(plugin.playlist_terminal(q.ticket, 'ended', _ctx=_ctx()))
+    await started.wait()
+    await plugin.play_netease_music(PlayRequest(query='Missing'), _ctx())
+    release.set()
+    await pending
+    actions = [p['parts'][0] for p in pushes if p['parts'][0].get('action') == 'media_play_url']
+    assert [a['netease_id'] for a in actions] == [2]

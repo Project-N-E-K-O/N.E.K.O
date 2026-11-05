@@ -30,5 +30,6 @@
   "playlist.revised": "현재 곡 다음에 새로 선택한 {count}곡이 이어집니다.",
   "playlist.playing": "{name}의 {count}곡을 순서대로 재생합니다.",
   "playlist.paused": "네 곡을 재생할 수 없어 일시정지했습니다. 다음 곡을 요청해 주세요.",
-  "playlist.ended": "{name} 재생이 끝났습니다."
+  "playlist.ended": "{name} 재생이 끝났습니다.",
+  "entry.playlist.description": "배경 음악은 curate로 대화와 취향에 맞는 6~8곡을 선택하며 tracks 항목은 “곡명 | 아티스트”입니다. search는 name으로 공개 재생목록을 검색합니다. revise는 현재 곡을 유지하며 다음 곡을 바꿉니다. save_current는 확인된 현재 곡을 지정한 로컬 목록에 중복 없이 추가합니다. save는 전체 대기열 저장, replay는 저장 목록 재생, list는 목록 보기, next는 다음 곡, stop은 정지입니다."
 }

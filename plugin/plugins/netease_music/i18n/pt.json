@@ -30,5 +30,6 @@
   "playlist.revised": "Após esta faixa serão tocadas {count} novas.",
   "playlist.playing": "Reproduzindo {name} em ordem ({count} faixas).",
   "playlist.paused": "Quatro faixas indisponíveis. Peça a próxima para continuar.",
-  "playlist.ended": "Fim da lista {name}."
+  "playlist.ended": "Fim da lista {name}.",
+  "entry.playlist.description": "Use curate para escolher 6–8 músicas conforme a conversa e as preferências; cada item de tracks é “título | artista”. search busca listas públicas por name. revise altera as próximas faixas sem interromper a atual. save_current adiciona a faixa confirmada a uma lista local sem duplicatas. save salva toda a fila, replay reproduz uma lista salva, list mostra as listas, next avança e stop encerra."
 }

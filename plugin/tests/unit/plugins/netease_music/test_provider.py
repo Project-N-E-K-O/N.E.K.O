@@ -369,3 +369,11 @@ async def test_playlist_uses_track_ids_for_order_when_details_are_partial():
         name, tracks = await provider.playlist("Mix")
     assert name == "Mix"
     assert [track.song_id for track in tracks] == [3, 2, 1]
+
+
+def test_select_recording_accepts_full_collaboration_credit():
+    from plugin.plugins.netease_music.provider import select_recording
+    from plugin.plugins.netease_music.models import SongCandidate
+    track = SongCandidate(1, 'Song', 'A / B', artist_names=('A', 'B'))
+    assert select_recording('Song', 'A / B', [track]) is track
+    assert select_recording('Song', 'C', [track]) is None

@@ -78,7 +78,7 @@ def select_recording(title: str, artist: str, candidates: Iterable[SongCandidate
     title, artist = _normalize_match(title), _normalize_match(artist)
     for candidate in candidates:
         if _normalize_match(candidate.name) == title and any(
-            _normalize_match(name) == artist for name in _artist_names(candidate)
+            _normalize_match(name) == artist for name in (*_artist_names(candidate), candidate.artist)
         ):
             return candidate
     return None

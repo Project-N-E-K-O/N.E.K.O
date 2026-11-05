@@ -1309,3 +1309,16 @@ test('non-full teardown releases the real keyboard shortcut before the next play
     assert.equal(oldCalls, 1);
     assert.equal(newCalls, 1, 'replacement player must receive the shortcut');
 });
+
+for (const state of ['loading', 'ended']) {
+  test(`closing a queued ${state} track reports queue cancellation`, async t => {
+    const s = createSurface(t);
+    const events = [];
+    s.w.appState = {socket:{readyState:1, send:raw=>events.push(JSON.parse(raw))}};
+    await s.w.sendMusicMessageDetailed({name:'Song',artist:'Band',url:'https://music.163.com/test.mp3',queueTicket:'a'.repeat(32)}, false);
+    if (state === 'ended') { s.players[0].play(); s.players[0].finish(); }
+    s.clickClose();
+    assert.equal(events.filter(e => e.queue_closed).length, 1);
+    assert.equal(events.find(e => e.queue_closed).queue_ticket, 'a'.repeat(32));
+  });
+}

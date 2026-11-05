@@ -30,5 +30,6 @@
   "playlist.revised": "Current song continues with {count} new tracks to follow.",
   "playlist.playing": "Playing {name} in order ({count} tracks).",
   "playlist.paused": "Four tracks were unavailable. Say “next track” to continue.",
-  "playlist.ended": "Reached the end of {name}."
+  "playlist.ended": "Reached the end of {name}.",
+  "entry.playlist.description": "Use curate for background music: choose 6–8 tracks from chat and music preferences, each as “title | artist”. Use search with a name to find a public NetEase playlist. revise replaces upcoming tracks without interrupting the current song. save_current appends the confirmed current song to a named local playlist, deduplicating IDs. Use save only to save the whole queue, replay for a saved playlist, list to list saved playlists, next to skip, and stop to end playback."
 }

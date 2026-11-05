@@ -5316,6 +5316,7 @@
         }
     },
     "music": {
+        "noExactRecording": "找不到歌名與歌手相符的版本。",
         "recommendation": {
             "title": "音樂推薦",
             "pending": "想聽聽這首歌嗎？",

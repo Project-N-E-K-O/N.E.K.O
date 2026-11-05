@@ -737,7 +737,7 @@
                     if (result.data && result.data.length > 0) {
                         var realTrack = findExactRecording(result.data, aiTrackInfo.name, aiTrackInfo.artist);
                         if (!realTrack) {
-                            if (window.showStatusToast) window.showStatusToast('没有找到歌名与歌手相符的版本。', 3000);
+                            if (window.showStatusToast) window.showStatusToast(window.safeT ? window.safeT('music.noExactRecording', '没有找到歌名与歌手相符的版本。') : '没有找到歌名与歌手相符的版本。', 3000);
                             continue;
                         }
                         console.log('[Music] 指令搜歌最终选择:', realTrack.name, '-', realTrack.artist);

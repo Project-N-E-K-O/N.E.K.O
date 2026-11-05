@@ -66,6 +66,9 @@ class NeteaseMusicPlugin(PlaylistMixin, CredentialUiMixin, NekoPluginBase):
         await self._load_netease_cookies()
         self._closed = False
         self._session_generations.clear()
+        for queue in getattr(self, "_queues", {}).values():
+            queue.advance_epoch += 1
+            queue.ticket = queue.advancing_ticket = ""
         return Ok(
             {
                 "status": "ready",
@@ -132,7 +135,6 @@ class NeteaseMusicPlugin(PlaylistMixin, CredentialUiMixin, NekoPluginBase):
 
         session_key = self._session_key(target_lanlan)
         generation = self._begin_request(session_key)
-        getattr(self, "_queues", {}).pop(session_key, None)
         if self._closed:
             return await self._finish_silent("superseded")
 
@@ -237,6 +239,7 @@ class NeteaseMusicPlugin(PlaylistMixin, CredentialUiMixin, NekoPluginBase):
 
         if not self._push_track(target_lanlan, selected, media):
             return self._error("errors.delivery_failed", "播放动作提交失败。", code="delivery_rejected", ctx=ctx)
+        getattr(self, "_queues", {}).pop(session_key, None)
         return await self.finish(
             data={
                 "status": "submitted",

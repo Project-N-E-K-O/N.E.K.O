@@ -23,6 +23,8 @@ class Queue:
     locale: str | None = None
     cursor: int = 0
     ticket: str = ""
+    advancing_ticket: str = ""
+    advance_epoch: int = 0
 
 
 class PlaylistMixin:
@@ -33,7 +35,7 @@ class PlaylistMixin:
 
     def _library(self, target):
         path = self._library_file(target)
-        return json.loads(path.read_text()) if path.is_file() else {}
+        return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
 
     def _write_library(self, target, library):
         path = self._library_file(target)
@@ -85,13 +87,18 @@ class PlaylistMixin:
                 artist=track["artist"],
                 count=count,
             )
-        self._note(target, message, ai_behavior="respond")
+        receipt = self._note(target, message, ai_behavior="respond")
         return await self.finish(
-            data={"status": status, "summary": message}, delivery="silent"
+            data={
+                "status": status,
+                "summary": message,
+                "confirmation_submitted": self._submitted(receipt),
+            },
+            delivery="silent",
         )
 
     def _note(self, target, text, ai_behavior="blind"):
-        self.push_message(
+        return self.push_message(
             source="netease_music",
             visibility=["chat"],
             ai_behavior=ai_behavior,
@@ -102,7 +109,7 @@ class PlaylistMixin:
     @plugin_entry(
         id="playlist",
         name=tr("playlist.title", default="网易云歌单连播与收藏"),
-        description="放点歌、陪伴连播默认 curate：结合聊天和音乐偏好记忆选 6 至 8 首，tracks 为字符串数组，每项「歌名 | 歌手」。搜网易云现成歌单用 search，name 传关键词。revise 按新偏好替换尚未播放的曲目，不打断当前歌；save_current 将此刻播放器确认的一首追加到指定本地歌单，自动去重；仅在明确保存整张播放队列时用 save；replay 重放“我们自己的本地歌单”或已收藏的 name；list 列出收藏；next 下一首；stop 停止。",
+        description=tr("entry.playlist.description", default="放点歌、陪伴连播默认 curate：结合聊天和音乐偏好记忆选 6 至 8 首，tracks 为字符串数组，每项「歌名 | 歌手」。搜网易云现成歌单用 search，name 传关键词。revise 按新偏好替换尚未播放的曲目，不打断当前歌；save_current 将此刻播放器确认的一首追加到指定本地歌单，自动去重；仅在明确保存整张播放队列时用 save；replay 重放“我们自己的本地歌单”或已收藏的 name；list 列出收藏；next 下一首；stop 停止。"),
         input_schema={
             "type": "object",
             "properties": {
@@ -164,6 +171,8 @@ class PlaylistMixin:
             self._begin_request(key)
             if q:
                 q.ticket = ""
+                q.advancing_ticket = ""
+                q.advance_epoch += 1
                 q.cursor = len(q.tracks)
             self.push_message(
                 source="netease_music",
@@ -184,7 +193,7 @@ class PlaylistMixin:
             q.ticket = ""
         async with self._new_provider() as provider:
             if action == "next":
-                return await self._advance(provider, target, key, generation, q)
+                return await self._advance(provider, target, key, q)
             if action == "search" and name:
                 name, rows = await provider.playlist(name)
             elif action == "replay" and name:
@@ -215,7 +224,7 @@ class PlaylistMixin:
                 return await self._finish_silent("revised")
             q = self._queues[key] = Queue(name, rows, locale)
             self._note(target, t("playlist.playing", name=name, count=len(rows)))
-            return await self._advance(provider, target, key, generation, q)
+            return await self._advance(provider, target, key, q)
 
     async def _curated_tracks(self, provider, pairs):
         gate = asyncio.Semaphore(4)
@@ -238,18 +247,27 @@ class PlaylistMixin:
             {track.song_id: track for track in results if track is not None}.values()
         )
 
-    async def _advance(self, provider, target, key, generation, q):
+    async def _advance(self, provider, target, key, q):
+        q.advance_epoch += 1
+        epoch = q.advance_epoch
+
         def still_playing_queue():
-            return self._queues.get(key) is q and self._is_current(key, generation)
+            # A failed replacement song request must not cancel this queue.
+            return self._queues.get(key) is q and not self._closed and q.advance_epoch == epoch
 
         skipped = 0
         while q.cursor < len(q.tracks) and still_playing_queue():
             track = q.tracks[q.cursor]
             q.cursor += 1
+            next_cursor = q.cursor
             try:
                 media = await asyncio.wait_for(
                     provider.resolve_media(track.song_id), timeout=14
                 )
+            except asyncio.CancelledError:
+                if still_playing_queue() and q.cursor == next_cursor:
+                    q.cursor -= 1
+                raise
             except (TimeoutError, ProviderError, httpx.HTTPError):
                 skipped += 1
                 if skipped >= 4 and q.cursor < len(q.tracks) and still_playing_queue():
@@ -258,6 +276,7 @@ class PlaylistMixin:
                 continue
             if not still_playing_queue():
                 break
+            q.advancing_ticket = ""
             q.ticket = secrets.token_hex(16)
             if self._push_track(target, track, media, q.ticket):
                 return await self.finish(
@@ -297,15 +316,19 @@ class PlaylistMixin:
         if (
             not q
             or not ticket
-            or ticket != q.ticket
+            or (ticket != q.ticket and not (reason == "closed" and ticket == q.advancing_ticket))
             or reason not in ("ended", "error", "closed")
         ):
             return await self._finish_silent("stale")
         q.ticket = ""
-        generation = self._session_generations.get(key)
-        if generation is None:
+        if self._session_generations.get(key) is None:
             return await self._finish_silent("stale")
         if reason == "closed":
+            self._begin_request(key)
+            q.advancing_ticket = ""
+            q.advance_epoch += 1
+            q.cursor = len(q.tracks)
             return await self._finish_silent("closed")
+        q.advancing_ticket = ticket
         async with self._new_provider() as provider:
-            return await self._advance(provider, target, key, generation, q)
+            return await self._advance(provider, target, key, q)

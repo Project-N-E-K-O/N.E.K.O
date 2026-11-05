@@ -69,11 +69,25 @@ async def _deliver_queue_terminal(target, ticket, reason):
                         "ticket": ticket,
                         "reason": reason,
                     },
-                    "idempotency_key": "music-terminal-" + ticket,
+                    "idempotency_key": "music-terminal-" + ticket + "-" + reason + "-" + str(attempt),
                 },
                 timeout=5,
             )
             response.raise_for_status()
+            run = response.json()
+            # Acceptance is not execution: the plugin may still be starting.
+            # Poll within the entry timeout before deciding whether to retry.
+            async with asyncio.timeout(95):
+                while run.get("status") in ("queued", "running", "cancel_requested"):
+                    await asyncio.sleep(0.5)
+                    status = await client.get(
+                        f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/runs/{run['run_id']}",
+                        timeout=5,
+                    )
+                    status.raise_for_status()
+                    run = status.json()
+            if run.get("status") != "succeeded":
+                raise RuntimeError("music terminal run did not succeed")
             return
         except Exception as exc:
             if attempt:
@@ -82,7 +96,13 @@ async def _deliver_queue_terminal(target, ticket, reason):
                 await asyncio.sleep(0.25)
 
 
-def handle_music_playback_state(manager: Any, event: dict[str, Any]) -> bool:
+def clear_music_playback_connection(manager: Any, websocket: Any) -> None:
+    if getattr(manager, "_music_playback_websocket", None) is websocket:
+        manager._current_netease_track = None
+        manager._music_playback_websocket = None
+
+
+def handle_music_playback_state(manager: Any, event: dict[str, Any], *, websocket: Any = None) -> bool:
     """Store a player-confirmed state without waking the LLM immediately."""
     state = _clean_playback_text(event.get("state"), 16).lower()
     if state not in _PLAYBACK_STATES:
@@ -118,7 +138,7 @@ def handle_music_playback_state(manager: Any, event: dict[str, Any]) -> bool:
         manager._music_playback_owner_key = owner_key
         manager._music_playback_owner_started_at = playback_started_at
 
-    event_key = (playback_id, state, playback_started_at)
+    event_key = (playback_id, state, playback_started_at, event.get("queue_closed") is True)
     if getattr(manager, "_music_playback_event_key", None) == event_key:
         return False
     manager._music_playback_event_key = event_key
@@ -135,6 +155,7 @@ def handle_music_playback_state(manager: Any, event: dict[str, Any]) -> bool:
         and artist
         else None
     )
+    manager._music_playback_websocket = websocket
     ticket = event.get("queue_ticket")
     if event.get("source") == "music_play_url":
         logger.info("Music player confirmed: state=%s queue=%s", state, bool(ticket))

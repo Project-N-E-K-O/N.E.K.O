@@ -17,3 +17,11 @@ test('legacy chat directive never plays a same-title recording by the wrong arti
   await window.processMusicCommands(requested);
   assert.deepEqual(played, [right]);
 });
+
+test('no-match toast uses the selected locale', async () => {
+  const toasts = [];
+  const window = { _musicSearchEpoch:0, safeT:(key) => `translated:${key}`, showStatusToast:text=>toasts.push(text) };
+  runInNewContext(command, {window, console, fetch:async () => ({json:async () => ({success:true,data:[{name:'Wrong',artist:'Other'}]})})});
+  await window.processMusicCommands('[play_music: {"name":"Song","artist":"Band"}]');
+  assert.deepEqual(toasts, ['translated:music.noExactRecording']);
+});
