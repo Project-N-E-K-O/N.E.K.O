@@ -1603,15 +1603,17 @@ async def test_entity_fallback_cannot_bypass_retired_paraphrase_review(tmp_path)
 
 @pytest.mark.asyncio
 async def test_invalid_source_fallback_cannot_treat_ai_as_user_confirmation(tmp_path):
+    """A retired match cited to a character line is rejected alone, without failing the batch."""
     from utils.llm_client import AIMessage
-    from memory.facts import FactExtractionFailed
     _portable_retirement(tmp_path)
     h = _harness(tmp_path, [])
     h._allm_call_with_retries = AsyncMock()
-    with pytest.raises(FactExtractionFailed):
-        await h._apersist_new_facts('小天', [{'entity':'master','source':'invalid_model_enum','text':'用户喜欢红茶','source_indices':[2]}],
-            source_messages=[_trusted_sync_message('b',3000,'unrelated user line'), _trusted_sync_message('d',4000,'AI repeats old preference', AIMessage)])
-    assert not h._mem
+    rows = await h._apersist_new_facts('小天', [
+        {'entity':'master','source':'invalid_model_enum','text':'用户喜欢红茶','source_indices':[2]},
+        {'entity':'master','text':'an independent user fact','source_indices':[1]}],
+        source_messages=[_trusted_sync_message('b',3000,'unrelated user line'), _trusted_sync_message('d',4000,'AI repeats old preference', AIMessage)])
+    assert [row['text'] for row in rows] == ['an independent user fact']
+    assert all(row['text'] != '用户喜欢红茶' for row in h._mem)
 
 
 

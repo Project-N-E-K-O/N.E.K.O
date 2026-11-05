@@ -776,11 +776,13 @@ def fact_source_evidence(retirements, fact, entity, source_messages, *, source='
             proofs = []
             break
         proofs.append((identity, at))
+    # A misattributed user observation is rejected whatever it matches; retrying the
+    # whole batch cannot make a character line prove a user fact.
+    if misattributed:
+        return None
     if matching and not proofs:
         if any(trusted_message_source(message)[0] for message in source_messages or []):
             raise FactExtractionFailed('retired_assertion_source_unavailable')
-        return None
-    if misattributed:
         return None
     if not proofs:
         return {}
