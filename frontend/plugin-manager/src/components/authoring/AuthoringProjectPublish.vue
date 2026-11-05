@@ -2,18 +2,18 @@
   <div class="authoring-publish">
     <el-alert v-if="requestError" :title="requestError" type="error" :closable="false" show-icon />
     <el-alert
-      v-else-if="status?.remote?.rate_limited"
-      :title="t('authoring.publishRateLimited')"
+      v-if="remoteWarning"
+      :title="remoteWarning"
       type="warning"
       :closable="false"
       show-icon
     />
     <div class="authoring-precheck-actions">
-      <el-button :icon="Refresh" :loading="loading" @click="load">
+      <el-button :icon="Refresh" :loading="loading" @click="refresh">
         {{ t('authoring.publishRefresh') }}
       </el-button>
       <el-button
-        v-if="canStart && !releaseReady"
+        v-if="canStartGithub && !releaseReady"
         type="primary"
         :icon="Position"
         :disabled="taskActive"
@@ -22,14 +22,14 @@
         {{ t('authoring.publishRunGithubMarket') }}
       </el-button>
       <el-button
-        v-if="canStart && !releaseReady"
+        v-if="canStartGithub && !releaseReady"
         :disabled="taskActive"
         @click="confirmPublish('github')"
       >
         {{ t('authoring.publishRunGithub') }}
       </el-button>
       <el-button
-        v-if="canStart && releaseReady"
+        v-if="canNotifyMarket"
         type="primary"
         :icon="Position"
         :disabled="taskActive"
@@ -52,6 +52,9 @@
         <el-tag size="small" :type="TASK_TAG_TYPES[task.status]">
           {{ t(TASK_LABELS[task.status]) }}
         </el-tag>
+        <span v-if="taskFinishedAt" class="authoring-muted authoring-small">{{
+          t('authoring.publishTaskLastRun', { time: taskFinishedAt })
+        }}</span>
         <span v-if="task.message" class="authoring-small">{{ task.message }}</span>
         <a
           v-if="task.status === 'succeeded' && task.release_url"
@@ -61,11 +64,13 @@
           >{{ task.release_url }}</a
         >
       </h4>
-      <details v-if="task.log.length" :open="task.status === 'failed'">
+      <!-- Only a failure watched here opens the log; an earlier run stays collapsed. -->
+      <details v-if="task.log.length" :open="task.status === 'failed' && taskWatched">
         <summary>{{ t('authoring.publishTaskLog') }}</summary>
         <pre>{{ task.log.join('\n') }}</pre>
       </details>
     </section>
+    <el-skeleton v-if="!status && loading" class="authoring-publish-steps" :rows="5" animated />
     <ol v-if="status" class="authoring-publish-steps">
       <li
         v-for="step in steps"
@@ -74,15 +79,18 @@
         :class="{
           'authoring-publish-step--current': step.id === currentStepId,
           'authoring-publish-step--pending':
-            currentStepId && step.id !== currentStepId && step.state !== 'done',
+            currentStepId &&
+            step.id !== currentStepId &&
+            step.state !== 'done' &&
+            step.id !== 'submission',
         }"
       >
         <el-tag size="small" :type="TAG_TYPES[step.state]">{{ t(STATE_LABELS[step.state]) }}</el-tag>
         <div>
           <strong>{{ step.title }}</strong>
           <p v-if="step.detail" class="authoring-muted authoring-small">{{ step.detail }}</p>
-          <template v-if="step.id === 'repository' && canCreateRepo">
-            <div class="authoring-precheck-actions">
+          <template v-if="step.id === 'repository'">
+            <div v-if="canCreateRepo" class="authoring-precheck-actions">
               <el-button
                 type="primary"
                 :icon="Plus"
@@ -92,6 +100,13 @@
                 {{ creatingRepo ? t('authoring.publishCreatingRepo') : t('authoring.publishCreateRepo') }}
               </el-button>
             </div>
+            <el-alert
+              v-if="createdRepoUrl"
+              :title="t('authoring.publishRepoCreated', { repo: createdRepoUrl })"
+              type="success"
+              :closable="false"
+              show-icon
+            />
             <el-alert
               v-if="repoManualSteps.length"
               :title="t('authoring.publishRepoManualTitle')"
@@ -112,12 +127,8 @@
           </template>
           <AuthoringProjectSubmission
             v-if="step.id === 'submission'"
-            ref="submissionRef"
-            :project-id="projectId"
-            :plugin-id="status.plugin_id"
             :github-repository="status.repository.github_repository"
-            :plugin-name="submissionPluginId"
-            @changed="load"
+            @state="submissionState = $event"
           />
         </div>
       </li>
@@ -135,6 +146,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { CircleClose, Plus, Position, Refresh } from '@element-plus/icons-vue'
 import AuthoringProjectSubmission from '@/components/authoring/AuthoringProjectSubmission.vue'
 import {
+  RELEASE_WORKFLOW_PATH,
   cancelPluginProjectPublishTask,
   createPluginProjectRepo,
   getPluginProjectPublishStatus,
@@ -143,14 +155,18 @@ import {
   publishTaskActive,
   startPluginProjectPublish,
   type PublishMode,
+  type PublishRemoteState,
+  type PublishRepositoryState,
   type PublishStatus,
   type PublishTask,
   type PublishTaskStatus,
 } from '@/api/pluginProjects'
+import type { SubmissionPanelState } from '@/api/marketSubmissions'
 import { useProjectErrorMessage } from '@/composables/useAuthoringProjects'
 import { openExternalUrl } from '@/utils/openExternal'
+import { formatRunTimestamp } from '@/utils/runDisplay'
 
-type StepState = 'done' | 'todo' | 'unknown' | 'later'
+type StepState = 'done' | 'todo' | 'waiting' | 'unknown'
 interface Step {
   id: string
   title: string
@@ -161,14 +177,14 @@ interface Step {
 const TAG_TYPES: Record<StepState, 'success' | 'warning' | 'info'> = {
   done: 'success',
   todo: 'warning',
+  waiting: 'info',
   unknown: 'info',
-  later: 'info',
 }
 const STATE_LABELS: Record<StepState, string> = {
   done: 'authoring.publishStatusDone',
   todo: 'authoring.publishStatusTodo',
+  waiting: 'authoring.publishStatusWaiting',
   unknown: 'authoring.publishStatusUnknown',
-  later: 'authoring.publishStatusLater',
 }
 const TASK_TAG_TYPES: Record<PublishTaskStatus, 'success' | 'danger' | 'warning' | 'info'> = {
   queued: 'info',
@@ -184,8 +200,18 @@ const TASK_LABELS: Record<PublishTaskStatus, string> = {
   failed: 'authoring.publishTaskFailed',
   canceled: 'authoring.publishTaskCanceled',
 }
+const VERIFY_DETAILS: Record<PublishRemoteState['verify'], string> = {
+  success: 'authoring.publishVerifyPassed',
+  failure: 'authoring.publishVerifyFailed',
+  running: 'authoring.publishVerifyRunning',
+  not_run: 'authoring.publishVerifyNotRun',
+  missing: 'authoring.publishVerifyMissing',
+  unknown: '',
+}
 // The CLI can run for up to 20 minutes; progress comes from polling, not the request.
 const POLL_INTERVAL_MS = 3000
+/** Consecutive failed polls tolerated before polling stops and asks for a refresh. */
+const POLL_MAX_FAILURES = 5
 const CONFIRM_MODES: Record<PublishMode, string> = {
   github_and_market: 'authoring.publishConfirmGithubMarket',
   github: 'authoring.publishConfirmGithub',
@@ -199,80 +225,75 @@ const loading = ref(false)
 const status = ref<PublishStatus | null>(null)
 const requestError = ref('')
 const task = ref<PublishTask | null>(null)
+/** True once this panel saw the task active, so its outcome is news, not history. */
+const taskWatched = ref(false)
 const taskError = ref('')
 const canceling = ref(false)
-let poll: ReturnType<typeof setInterval> | undefined
+const submissionState = ref<SubmissionPanelState>({ phase: null, marketPluginId: null })
+let disposed = false
+let pollTimer: ReturnType<typeof setTimeout> | undefined
+let pollFailures = 0
+let reloadQueued = false
+let queuedFresh = false
 
 const taskActive = computed(() => !!task.value && publishTaskActive(task.value))
+const taskFinishedAt = computed(() =>
+  task.value?.finished_at ? formatRunTimestamp(task.value.finished_at, true) : ''
+)
 const releaseReady = computed(
   () =>
     status.value?.remote?.release.state === 'published' &&
     !status.value.remote.release.missing_assets.length
 )
-/** The local gate the CLI enforces, mirrored so the button cannot offer a doomed run. */
-const canStart = computed(() => {
-  const repo = status.value?.repository
-  if (!repo || taskActive.value) return false
+/** The server gate for the github modes (plugin_publish_tasks._local_gate), mirrored. */
+const canStartGithub = computed(() => {
+  const current = status.value
+  const repo = current?.repository
+  if (!current || !repo) return false
   return (
     repo.is_repository &&
     !!repo.github_repository &&
     repo.worktree_clean === true &&
-    repo.head_pushed === true
+    repo.head_pushed === true &&
+    current.actions[RELEASE_WORKFLOW_PATH] === 'CURRENT' &&
+    !(repo.tag_exists && repo.tag_at_head === false) &&
+    current.remote?.visibility !== 'private'
   )
 })
-
-/** The submission child component; its exposed phase drives the two steps it owns. */
-const submissionRef = ref<InstanceType<typeof AuthoringProjectSubmission> | null>(null)
-/** The plugin_id the Market draft prefills from, if the project carries one. */
-const submissionPluginId = computed(() => status.value?.plugin_id ?? null)
-
-/** The phase the submission component is in; maps onto the step state it renders. */
-const submissionPhase = computed(() => submissionRef.value?.phase ?? null)
-const submissionState = computed<StepState>(() => {
-  const phase = submissionPhase.value
-  if (phase === null) return 'unknown'
-  if (phase === 'approved') return 'done'
-  if (phase === 'draft' || phase === 'submitted' || phase === 'in_review') return 'todo'
-  return 'unknown'
-})
-const submissionDetail = computed(() => {
-  const current = submissionRef.value?.submission
-  if (!current) return t('authoring.submissionStepDetailLater')
-  return ''
-})
-
-/** The approved Market plugin, used by the market-version step. */
-const marketPluginId = computed(() => {
-  const current = submissionRef.value?.submission
-  return submissionPhase.value === 'approved' && current?.plugin_id != null
-    ? String(current.plugin_id)
-    : ''
-})
-const marketState = computed<StepState>(() => (marketPluginId.value ? 'done' : 'unknown'))
-const marketDetail = computed(() => {
-  if (!marketPluginId.value) return t('authoring.marketVersionStepDetailLater')
-  return t('authoring.marketVersionListed', { id: marketPluginId.value })
+/** market_notify needs only the GitHub repository and a complete published release. */
+const canNotifyMarket = computed(
+  () => !!status.value?.repository.github_repository && releaseReady.value
+)
+const remoteWarning = computed(() => {
+  const remote = status.value?.remote
+  if (!remote) return ''
+  if (remote.rate_limited) return t('authoring.publishRateLimited')
+  return remote.reachable ? '' : t('authoring.publishRemoteUnreachable')
 })
 
 // Repository creation: offered only when the project is a git repo with no
-// GitHub remote yet. A packaged build (no source checkout) cannot create one.
+// origin yet. A foreign (non-GitHub) origin is reported instead.
 const creatingRepo = ref(false)
+const createdRepoUrl = ref('')
 const repoManualSteps = ref<string[]>([])
 const repoCreateError = ref('')
 const canCreateRepo = computed(() => {
   const repo = status.value?.repository
-  return !!repo && repo.is_repository && !repo.github_repository
+  return !!repo && repo.is_repository && !repo.github_repository && repo.origin_url === null
 })
 
 async function createRepo() {
   if (creatingRepo.value) return
   creatingRepo.value = true
+  createdRepoUrl.value = ''
   repoManualSteps.value = []
   repoCreateError.value = ''
   try {
     const result = await createPluginProjectRepo(props.projectId)
+    if (disposed) return
     if (result.status === 'created') {
-      await load()
+      createdRepoUrl.value = result.repository_url
+      await load({ fresh: true })
     } else if (result.status === 'manual') {
       // gh is unavailable: surface the steps the CLI printed so the user can
       // create the repository by hand, then refresh.
@@ -287,66 +308,115 @@ async function createRepo() {
   }
 }
 
-async function load() {
-  if (loading.value) return
+/**
+ * Read the publish status. A call made while one is in flight is queued and
+ * runs once it ends, because the in-flight read predates the change that
+ * prompted the new call. A failed read keeps the last status on screen.
+ */
+async function load(options: { fresh?: boolean } = {}) {
+  if (loading.value) {
+    reloadQueued = true
+    queuedFresh ||= !!options.fresh
+    return
+  }
   loading.value = true
   requestError.value = ''
   try {
-    status.value = await getPluginProjectPublishStatus(props.projectId)
+    const next = await getPluginProjectPublishStatus(props.projectId, !!options.fresh)
+    if (!disposed) status.value = next
   } catch (error) {
-    status.value = null
-    requestError.value = describeError(error, 'publishLoadFailed')
+    if (!disposed) requestError.value = describeError(error, 'publishLoadFailed')
   } finally {
     loading.value = false
   }
+  if (reloadQueued && !disposed) {
+    const fresh = queuedFresh
+    reloadQueued = false
+    queuedFresh = false
+    await load({ fresh })
+  }
 }
 
-/** Resume a task still running on the server after the tab is reopened. */
+function applyTask(next: PublishTask) {
+  task.value = next
+  taskError.value = ''
+  pollFailures = 0
+  if (publishTaskActive(next)) {
+    taskWatched.value = true
+    schedulePoll()
+  }
+}
+
+/** Read the latest task, resuming polling when it is still running on the server. */
 async function loadTask() {
   try {
-    task.value = await getPluginProjectPublishTask(props.projectId)
-    taskError.value = ''
+    const next = await getPluginProjectPublishTask(props.projectId)
+    if (!disposed) applyTask(next)
   } catch (error) {
-    task.value = null
-    // Never having published is the normal state, not an error.
-    taskError.value =
-      projectErrorCode(error) === 'PUBLISH_TASK_NOT_FOUND'
-        ? ''
-        : describeError(error, 'publishTaskNotFound')
+    if (disposed) return
+    if (projectErrorCode(error) === 'PUBLISH_TASK_NOT_FOUND') {
+      // Never having published is the normal state, not an error.
+      task.value = null
+      taskError.value = ''
+    } else {
+      taskError.value = describeError(error, 'publishTaskPollFailed')
+    }
   }
 }
 
-function startPolling() {
-  if (poll) return
-  poll = setInterval(() => void pollTask(), POLL_INTERVAL_MS)
+function schedulePoll() {
+  if (disposed || pollTimer) return
+  pollTimer = setTimeout(() => {
+    pollTimer = undefined
+    void pollTask()
+  }, POLL_INTERVAL_MS)
 }
 function stopPolling() {
-  if (!poll) return
-  clearInterval(poll)
-  poll = undefined
+  clearTimeout(pollTimer)
+  pollTimer = undefined
 }
 
+/** One poll; the next is scheduled only after this one answers, so replies never overlap. */
 async function pollTask() {
+  let next: PublishTask
   try {
-    task.value = await getPluginProjectPublishTask(props.projectId)
-    taskError.value = ''
+    next = await getPluginProjectPublishTask(props.projectId)
   } catch (error) {
-    taskError.value = describeError(error, 'publishTaskNotFound')
-    stopPolling()
+    if (disposed) return
+    if (projectErrorCode(error) === 'PUBLISH_TASK_NOT_FOUND') {
+      // The server restarted and forgot the task; its outcome is in the status.
+      task.value = null
+      taskError.value = ''
+      await load({ fresh: true })
+      return
+    }
+    pollFailures += 1
+    if (pollFailures < POLL_MAX_FAILURES) schedulePoll()
+    else taskError.value = describeError(error, 'publishTaskPollFailed')
     return
   }
-  if (!taskActive.value) {
-    // The run just ended; reconcile the read-only status against GitHub once.
-    stopPolling()
-    await load()
-  }
+  if (disposed) return
+  applyTask(next)
+  // The run just ended; reconcile the read-only status against GitHub once.
+  if (!publishTaskActive(next)) await load({ fresh: true })
 }
 
-onMounted(async () => {
-  await Promise.all([load(), loadTask()])
-  if (taskActive.value) startPolling()
+/** The explicit Refresh: bypass the server's GitHub cache and re-read the task. */
+function refresh() {
+  return Promise.all([load({ fresh: true }), loadTask()])
+}
+
+/** Re-read when the user returns to the tab; GitHub answers may stay cached. */
+function reload() {
+  return Promise.all([load(), loadTask()])
+}
+
+onMounted(reload)
+onUnmounted(() => {
+  disposed = true
+  stopPolling()
 })
-onUnmounted(stopPolling)
+defineExpose({ reload })
 
 async function confirmPublish(mode: PublishMode) {
   const tag = status.value?.repository.tag ?? ''
@@ -364,9 +434,8 @@ async function confirmPublish(mode: PublishMode) {
     return
   }
   try {
-    task.value = await startPluginProjectPublish(props.projectId, mode)
-    taskError.value = ''
-    startPolling()
+    const started = await startPluginProjectPublish(props.projectId, mode)
+    if (!disposed) applyTask(started)
   } catch (error) {
     taskError.value = describeError(error, 'publishStartFailed')
   }
@@ -390,7 +459,8 @@ async function confirmCancel() {
   }
   canceling.value = true
   try {
-    task.value = await cancelPluginProjectPublishTask(props.projectId, current.task_id)
+    const canceled = await cancelPluginProjectPublishTask(props.projectId, current.task_id)
+    if (!disposed) applyTask(canceled)
   } catch (error) {
     ElMessage.error(describeError(error, 'actionFailed'))
   } finally {
@@ -398,79 +468,135 @@ async function confirmCancel() {
   }
 }
 
+/** Why the remote read gave no answer, for a step whose remote fact is unknown. */
+function remoteUnknownDetail(remote: PublishRemoteState | null) {
+  return remote ? t('authoring.publishRemoteUnknown') : ''
+}
+
+/** Local git facts first: they need no network and decide what the user does next. */
+function localRepositoryProblem(current: PublishStatus): string {
+  const repo: PublishRepositoryState = current.repository
+  if (!repo.is_repository) return t('authoring.publishRepoNoGit')
+  if (!repo.github_repository) {
+    return repo.origin_url
+      ? t('authoring.publishRepoForeignOrigin', { url: repo.origin_url })
+      : t('authoring.publishRepoNoGithub')
+  }
+  if (repo.worktree_clean !== true) {
+    return repo.dirty_paths.length
+      ? t('authoring.publishRepoUncommittedFiles', { files: repo.dirty_paths.join(', ') })
+      : t('authoring.publishRepoUncommitted')
+  }
+  if (!repo.head) return t('authoring.publishRepoNoCommits')
+  if (repo.detached) return t('authoring.publishRepoDetached')
+  if (repo.head_pushed !== true) {
+    const branch = repo.branch ?? ''
+    if (!repo.upstream) return t('authoring.publishRepoNoUpstream', { branch })
+    if (!repo.upstream.startsWith('origin/')) {
+      return t('authoring.publishRepoUpstreamNotOrigin', { upstream: repo.upstream, branch })
+    }
+    return t('authoring.publishRepoUnpushed')
+  }
+  if (repo.tag_exists && repo.tag_at_head === false) {
+    return t('authoring.publishRepoTagElsewhere', { tag: repo.tag })
+  }
+  if (current.actions[RELEASE_WORKFLOW_PATH] !== 'CURRENT') {
+    return t('authoring.publishRepoReleaseWorkflow')
+  }
+  return ''
+}
+
+function repositoryStep(current: PublishStatus): Pick<Step, 'state' | 'detail'> {
+  const problem = localRepositoryProblem(current)
+  if (problem) return { state: 'todo', detail: problem }
+  const remote = current.remote
+  if (!remote || remote.visibility === 'unknown') {
+    return { state: 'unknown', detail: remoteUnknownDetail(remote) }
+  }
+  if (remote.visibility !== 'public') {
+    return { state: 'todo', detail: t('authoring.publishRepoNotPublic') }
+  }
+  return {
+    state: 'done',
+    detail: t('authoring.publishRepoReady', { repo: current.repository.github_repository }),
+  }
+}
+
+function verifyStep(remote: PublishRemoteState | null): Pick<Step, 'state' | 'detail'> {
+  if (!remote || remote.verify === 'unknown') {
+    return { state: 'unknown', detail: remoteUnknownDetail(remote) }
+  }
+  return {
+    state: remote.verify === 'success' ? 'done' : remote.verify === 'running' ? 'waiting' : 'todo',
+    detail: t(VERIFY_DETAILS[remote.verify]),
+  }
+}
+
+function releaseStep(remote: PublishRemoteState | null, tag: string): Pick<Step, 'state' | 'detail'> {
+  if (!remote || remote.release.state === 'unknown') {
+    return { state: 'unknown', detail: remoteUnknownDetail(remote) }
+  }
+  if (remote.release.state === 'missing') {
+    if (remote.tag === 'elsewhere') {
+      return { state: 'todo', detail: t('authoring.publishRemoteTagElsewhere', { tag }) }
+    }
+    if (remote.tag === 'at_head') {
+      return { state: 'waiting', detail: t('authoring.publishReleaseBuilding', { tag }) }
+    }
+    return { state: 'todo', detail: t('authoring.publishReleaseMissing', { tag }) }
+  }
+  const missing = remote.release.missing_assets
+  if (missing.length) {
+    return { state: 'todo', detail: t('authoring.publishReleaseAssets', { tag, assets: missing.join(', ') }) }
+  }
+  return { state: 'done', detail: t('authoring.publishReleaseReady', { tag }) }
+}
+
+function submissionStep(): Pick<Step, 'state' | 'detail'> {
+  const phase = submissionState.value.phase
+  if (phase === 'approved') return { state: 'done', detail: '' }
+  if (phase === 'submitted' || phase === 'in_review') return { state: 'waiting', detail: '' }
+  if (phase === null && !releaseReady.value) {
+    return { state: 'waiting', detail: t('authoring.submissionStepDetailLater') }
+  }
+  // No submission yet, a draft, a request for changes, or a closed one to redo.
+  return { state: 'todo', detail: '' }
+}
+
+function marketStep(): Pick<Step, 'state' | 'detail'> {
+  const id = submissionState.value.marketPluginId
+  return id === null
+    ? { state: 'waiting', detail: t('authoring.marketVersionStepDetailLater') }
+    : { state: 'done', detail: t('authoring.marketVersionListed', { id }) }
+}
+
 const steps = computed<Step[]>(() => {
   const current = status.value
   if (!current) return []
-  const { repository: repo, remote } = current
-  const tag = repo.tag
-
-  let repoState: StepState = 'unknown'
-  let repoDetail = ''
-  if (!repo.is_repository) {
-    repoState = 'todo'
-    repoDetail = t('authoring.publishRepoNoGit')
-  } else if (!repo.github_repository) {
-    repoState = 'todo'
-    repoDetail = t('authoring.publishRepoNoGithub')
-  } else if (remote && remote.visibility !== 'unknown') {
-    if (remote.visibility !== 'public') {
-      repoState = 'todo'
-      repoDetail = t('authoring.publishRepoNotPublic')
-    } else if (repo.worktree_clean !== true) {
-      repoState = 'todo'
-      repoDetail = t('authoring.publishRepoUncommitted')
-    } else if (repo.head_pushed !== true) {
-      repoState = 'todo'
-      repoDetail = t('authoring.publishRepoUnpushed')
-    } else {
-      repoState = 'done'
-      repoDetail = t('authoring.publishRepoReady', { repo: repo.github_repository })
-    }
-  }
-
-  let verifyState: StepState = 'unknown'
-  let verifyDetail = ''
-  if (remote && remote.verify !== 'unknown') {
-    verifyState = remote.verify === 'success' ? 'done' : 'todo'
-    verifyDetail = t(
-      remote.verify === 'success' ? 'authoring.publishVerifyPassed' : 'authoring.publishVerifyPending'
-    )
-  }
-
-  let releaseState: StepState = 'unknown'
-  let releaseDetail = ''
-  if (remote && remote.release.state !== 'unknown') {
-    const missing = remote.release.missing_assets
-    if (remote.release.state === 'missing') {
-      releaseState = 'todo'
-      releaseDetail = t('authoring.publishReleaseMissing', { tag })
-    } else if (missing.length) {
-      releaseState = 'todo'
-      releaseDetail = t('authoring.publishReleaseAssets', { tag, assets: missing.join(', ') })
-    } else {
-      releaseState = 'done'
-      releaseDetail = t('authoring.publishReleaseReady', { tag })
-    }
-  }
-
+  const { remote } = current
   return [
-    { id: 'repository', title: t('authoring.publishStepRepository'), state: repoState, detail: repoDetail },
-    { id: 'verify', title: t('authoring.publishStepVerify'), state: verifyState, detail: verifyDetail },
-    { id: 'release', title: t('authoring.publishStepRelease'), state: releaseState, detail: releaseDetail },
-    { id: 'submission', title: t('authoring.publishStepSubmission'), state: submissionState.value, detail: submissionDetail.value },
-    { id: 'market', title: t('authoring.publishStepMarket'), state: marketState.value, detail: marketDetail.value },
+    { id: 'repository', title: t('authoring.publishStepRepository'), ...repositoryStep(current) },
+    { id: 'verify', title: t('authoring.publishStepVerify'), ...verifyStep(remote) },
+    { id: 'release', title: t('authoring.publishStepRelease'), ...releaseStep(remote, current.repository.tag) },
+    { id: 'submission', title: t('authoring.publishStepSubmission'), ...submissionStep() },
+    { id: 'market', title: t('authoring.publishStepMarket'), ...marketStep() },
   ]
 })
 
-/** The first step that is not done is the one the user should act on now. */
-const currentStepId = computed(() => steps.value.find((step) => step.state !== 'done')?.id ?? '')
+/** The first step the user can act on; an unknown one only when nothing is actionable. */
+const currentStepId = computed(
+  () =>
+    (steps.value.find((step) => step.state === 'todo') ??
+      steps.value.find((step) => step.state === 'unknown'))?.id ?? ''
+)
 
 const notes = computed(() => {
   const current = status.value
   if (!current) return []
   const result: string[] = []
+  // release.yml is a publish blocker and is reported on the repository step.
   const outdated = Object.entries(current.actions)
-    .filter(([, state]) => state !== 'CURRENT')
+    .filter(([file, state]) => file !== RELEASE_WORKFLOW_PATH && state !== 'CURRENT')
     .map(([file]) => file)
   if (outdated.length) {
     result.push(t('authoring.publishActionsOutdated', { files: outdated.join(', ') }))
@@ -509,6 +635,7 @@ const notes = computed(() => {
 .authoring-publish-task h4 {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--spacing-sm);
   margin: 0;
 }

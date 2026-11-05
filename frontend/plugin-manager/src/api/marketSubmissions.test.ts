@@ -2,18 +2,23 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const fetchBridge = vi.hoisted(() => vi.fn())
-vi.mock('./marketBridge', () => ({ fetchBridge, readErrorCode: (body: unknown) => {
-  const record = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>
-  const detail = record.detail && typeof record.detail === 'object' ? (record.detail as Record<string, unknown>) : null
-  return String(detail?.code || record.code || '')
-} }))
+vi.mock('./marketBridge', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./marketBridge')>()),
+  fetchBridge,
+}))
 
 import {
   MarketSubmissionError,
   createSubmissionDraft,
   listMarketSubmissions,
+  marketSubmissionUrl,
   previewSubmissionRepository,
+  submissionMatchesRepository,
+  submissionPhase,
   submitSubmission,
+  updateSubmissionDraft,
+  withdrawSubmission,
+  type MarketSubmission,
 } from './marketSubmissions'
 
 afterEach(() => {
@@ -27,29 +32,43 @@ function jsonResponse(status: number, body: unknown): Response {
   })
 }
 
-describe('listMarketSubmissions', () => {
-  it('forwards the status filter as a query string', async () => {
-    fetchBridge.mockResolvedValue(jsonResponse(200, { submissions: [] }))
-    await listMarketSubmissions('closed')
-    expect(fetchBridge).toHaveBeenCalledWith('/market/submissions/mine?status=closed', undefined)
-  })
+function submission(overrides: Partial<MarketSubmission> = {}): MarketSubmission {
+  return {
+    id: 1,
+    status: 'draft',
+    decision: null,
+    terminal_kind: null,
+    plugin_id: null,
+    current_snapshot: {
+      repo_url: 'https://github.com/owner/repo',
+      repo_owner: 'owner',
+      repo_name: 'repo',
+      plugin_name: 'Repo',
+      plugin_slug: 'repo',
+      submitted_ref: 'main',
+      resolved_commit: 'abc',
+    },
+    review_progress: null,
+    ...overrides,
+  }
+}
 
-  it('omits the query string when no filter is given', async () => {
-    fetchBridge.mockResolvedValue(jsonResponse(200, { submissions: [] }))
-    await listMarketSubmissions()
-    expect(fetchBridge).toHaveBeenCalledWith('/market/submissions/mine', undefined)
+describe('listMarketSubmissions', () => {
+  it('asks for this repository only, on one large page, without retrying a 403', async () => {
+    fetchBridge.mockResolvedValue(jsonResponse(200, { items: [], total: 0, page: 1, page_size: 100, total_pages: 0 }))
+    await expect(listMarketSubmissions('owner/repo')).resolves.toMatchObject({ items: [] })
+    expect(fetchBridge).toHaveBeenCalledWith(
+      '/market/submissions/mine?q=owner%2Frepo&page_size=100',
+      undefined,
+      { retryOnForbidden: false }
+    )
   })
 })
 
 describe('write endpoints', () => {
   it('posts the draft body as JSON', async () => {
     fetchBridge.mockResolvedValue(jsonResponse(201, { id: 1, status: 'draft' }))
-    const payload = {
-      repo_url: 'https://github.com/o/r',
-      plugin_name: 'demo',
-      plugin_slug: 'demo',
-      tags: ['a'],
-    }
+    const payload = { repo_url: 'https://github.com/o/r', plugin_name: 'demo', plugin_slug: 'demo' }
     await createSubmissionDraft(payload)
     const [path, init] = fetchBridge.mock.calls[0]!
     expect(path).toBe('/market/submissions/drafts')
@@ -59,49 +78,130 @@ describe('write endpoints', () => {
 
   it('posts the repository preview body', async () => {
     fetchBridge.mockResolvedValue(jsonResponse(200, { identity_status: 'matched', workflow_status: 'available', warnings: [] }))
-    await previewSubmissionRepository({ repo_url: 'https://github.com/o/r', submitted_ref: 'HEAD' })
+    await previewSubmissionRepository({ repo_url: 'https://github.com/o/r', submitted_ref: 'main' })
     const [path, init] = fetchBridge.mock.calls[0]!
     expect(path).toBe('/market/submissions/repository-preview')
-    expect(JSON.parse(init.body as string)).toEqual({ repo_url: 'https://github.com/o/r', submitted_ref: 'HEAD' })
+    expect(JSON.parse(init.body as string)).toEqual({ repo_url: 'https://github.com/o/r', submitted_ref: 'main' })
   })
 
-  it('posts a submit with the note body', async () => {
-    fetchBridge.mockResolvedValue(jsonResponse(200, { id: 152, status: 'submitted' }))
-    await submitSubmission(152, 'first')
-    const [path, init] = fetchBridge.mock.calls[0]!
-    expect(path).toBe('/market/submissions/152/submit')
-    expect(JSON.parse(init.body as string)).toEqual({ note: 'first' })
+  it('puts a draft update, and posts submit and withdraw with an empty body', async () => {
+    fetchBridge.mockImplementation(async () => jsonResponse(200, { id: 152, status: 'draft' }))
+    await updateSubmissionDraft(152, { resolved_commit: 'def', submitted_ref: 'main' })
+    await submitSubmission(152)
+    await withdrawSubmission(152)
+    const calls = fetchBridge.mock.calls.map(([path, init]) => [path, init.method, JSON.parse(init.body as string)])
+    expect(calls).toEqual([
+      ['/market/submissions/152/draft', 'PUT', { resolved_commit: 'def', submitted_ref: 'main' }],
+      ['/market/submissions/152/submit', 'POST', {}],
+      ['/market/submissions/152/withdraw', 'POST', {}],
+    ])
   })
 })
 
 describe('error handling', () => {
-  it('throws a MarketSubmissionError carrying the bridge code on failure', async () => {
+  it('reads a local code from a detail object', async () => {
     fetchBridge.mockResolvedValue(
-      jsonResponse(409, { detail: { code: 'market_email_unverified', message: 'verify your email' } })
+      jsonResponse(409, { detail: { code: 'market_auth_pending', message: 'not resolved yet' } })
     )
-    await expect(listMarketSubmissions()).rejects.toMatchObject({
+    await expect(listMarketSubmissions('o/r')).rejects.toMatchObject({
       name: 'MarketSubmissionError',
-      code: 'market_email_unverified',
+      code: 'market_auth_pending',
       status: 409,
+      serverMessage: 'not resolved yet',
+    })
+  })
+
+  it('reads a local code next to a string detail', async () => {
+    fetchBridge.mockResolvedValue(
+      jsonResponse(409, { detail: 'the Market account email is not verified', code: 'market_email_unverified' })
+    )
+    await expect(listMarketSubmissions('o/r')).rejects.toMatchObject({ code: 'market_email_unverified' })
+  })
+
+  it('keeps the structured detail of a Market business error', async () => {
+    fetchBridge.mockResolvedValue(
+      jsonResponse(409, { detail: { code: 'open_submission_exists', message: 'exists', submission_id: 9 } })
+    )
+    const error = await createSubmissionDraft({ repo_url: 'u', plugin_name: 'n', plugin_slug: 's' }).catch((e) => e)
+    expect(error).toBeInstanceOf(MarketSubmissionError)
+    expect(error.code).toBe('open_submission_exists')
+    expect(error.detail.submission_id).toBe(9)
+  })
+
+  it('carries the Market text of a string detail and a validation list', async () => {
+    fetchBridge.mockResolvedValueOnce(jsonResponse(400, { detail: 'repository is private' }))
+    await expect(listMarketSubmissions('o/r')).rejects.toMatchObject({
+      code: 'market_submission_failed',
+      serverMessage: 'repository is private',
+    })
+    fetchBridge.mockResolvedValueOnce(
+      jsonResponse(422, { detail: [{ loc: ['body', 'plugin_name'], msg: 'too long' }, { msg: 'bad slug' }] })
+    )
+    await expect(listMarketSubmissions('o/r')).rejects.toMatchObject({ serverMessage: 'too long; bad slug' })
+  })
+
+  it('has no server message when the body carries no text', async () => {
+    fetchBridge.mockResolvedValue(jsonResponse(500, {}))
+    await expect(listMarketSubmissions('o/r')).rejects.toMatchObject({
+      code: 'market_submission_failed',
+      status: 500,
+      serverMessage: '',
     })
   })
 
   it('throws market_bridge_unreachable when the bridge returns null (no token)', async () => {
     fetchBridge.mockResolvedValue(null)
-    await expect(listMarketSubmissions()).rejects.toMatchObject({
+    await expect(listMarketSubmissions('o/r')).rejects.toMatchObject({
       code: 'market_bridge_unreachable',
       status: 0,
     })
   })
+})
 
-  it('falls back to a generic code when the body carries none', async () => {
-    fetchBridge.mockResolvedValue(jsonResponse(500, { detail: 'boom' }))
-    await expect(listMarketSubmissions()).rejects.toMatchObject({ code: 'market_submission_failed', status: 500 })
+describe('submissionMatchesRepository', () => {
+  it.each([
+    ['https://github.com/Owner/Repo', true],
+    ['https://github.com/owner/repo.git', true],
+    ['https://github.com/owner/repo/', true],
+    ['https://github.com/owner/repo-extra', false],
+    ['https://github.com/other/repo', false],
+    ['https://gitlab.com/owner/repo', false],
+  ])('%s matches owner/repo: %s', (repoUrl, expected) => {
+    const item = submission({ current_snapshot: { ...submission().current_snapshot!, repo_url: repoUrl } })
+    expect(submissionMatchesRepository(item, 'owner/repo')).toBe(expected)
   })
 
-  it('is an Error subclass with the bridge code', async () => {
-    const error = new MarketSubmissionError('market_auth_required', 409)
-    expect(error).toBeInstanceOf(Error)
-    expect(error.code).toBe('market_auth_required')
+  it('never matches a submission without a snapshot', () => {
+    expect(submissionMatchesRepository(submission({ current_snapshot: null }), 'owner/repo')).toBe(false)
+  })
+})
+
+describe('submissionPhase', () => {
+  it.each([
+    [{ status: 'draft' }, 'draft'],
+    [{ status: 'submitted' }, 'submitted'],
+    [{ status: 'in_review' }, 'in_review'],
+    [
+      {
+        status: 'in_review',
+        review_progress: { phase: 'human_review', next_actor: 'author', title: 't', description: 'd' },
+      },
+      'author_action',
+    ],
+    [{ status: 'closed', decision: 'approved' }, 'approved'],
+    [{ status: 'closed', decision: 'rejected' }, 'rejected'],
+    [{ status: 'closed', decision: 'canceled', terminal_kind: 'author_withdrawn' }, 'withdrawn'],
+    [{ status: 'closed', decision: 'canceled', terminal_kind: 'reviewer_closed' }, 'closed'],
+    [{ status: 'closed', decision: 'superseded', terminal_kind: 'superseded' }, 'superseded'],
+  ] as const)('%j is %s', (overrides, phase) => {
+    expect(submissionPhase(submission(overrides as Partial<MarketSubmission>))).toBe(phase)
+  })
+})
+
+describe('marketSubmissionUrl', () => {
+  it('links the submission in the Market developer area', () => {
+    expect(marketSubmissionUrl('https://market.example/', 152)).toBe(
+      'https://market.example/#/developer/submissions?submission=152'
+    )
   })
 })

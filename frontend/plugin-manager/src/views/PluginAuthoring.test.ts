@@ -5,7 +5,13 @@ import { createI18n } from 'vue-i18n'
 import ElementPlus from 'element-plus'
 import PluginAuthoring from './PluginAuthoring.vue'
 import { authoringMessages } from '@/i18n/authoring'
-import type { AuthoringProject, CreatedPluginProject } from '@/api/pluginProjects'
+import type {
+  AuthoringProject,
+  CreatedPluginProject,
+  PublishStatus,
+  PublishTask,
+} from '@/api/pluginProjects'
+import { RELEASE_WORKFLOW_PATH } from '@/api/pluginProjects'
 
 const api = vi.hoisted(() => ({
   listPluginProjects: vi.fn(),
@@ -44,21 +50,38 @@ vi.mock('vue-router', () => ({
   useRoute: () => api.route,
   useRouter: () => ({ push: api.push }),
 }))
-// The publish tab mounts the submission panel, which drives its own Market
-// login and fetch calls. Replace it with an inert panel: this suite covers
-// the GitHub publish flow, not the Market submission flow, and the panel has
-// its own tests. `phase`/`submission` stay null so the steps render as
-// unchecked.
-vi.mock('@/components/authoring/AuthoringProjectSubmission.vue', async () => {
-  const { defineComponent, h } = await import('vue')
+// The real submission panel is mounted, so the state it reports reaches the
+// publish steps; only its Market login and network calls are replaced.
+const market = vi.hoisted(() => ({
+  listMarketSubmissions: vi.fn(),
+  authenticated: false,
+}))
+vi.mock('@/api/marketSubmissions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api/marketSubmissions')>()),
+  listMarketSubmissions: market.listMarketSubmissions,
+}))
+vi.mock('@/composables/useMarketAuth', async () => {
+  const { computed, ref } = await import('vue')
   return {
-    default: defineComponent({
-      name: 'AuthoringProjectSubmissionStub',
-      setup(_, { expose }) {
-        expose({ phase: null, submission: null })
-        return () => h('div', { 'data-testid': 'submission-stub' })
-      },
-    }),
+    useMarketAuth: () => {
+      const marketAuth = ref<{ authenticated: boolean; market_web_url?: string }>({
+        authenticated: false,
+      })
+      return {
+        marketAuth,
+        marketAuthBusy: ref(false),
+        marketAuthDisplayName: computed(() => 'Author'),
+        marketAuthStateMessageKey: computed(() => ''),
+        loadMarketAuthStatus: async () => {
+          marketAuth.value = {
+            authenticated: market.authenticated,
+            market_web_url: 'https://market.example',
+          }
+        },
+        startMarketLogin: vi.fn(),
+        stopMarketAuthPolling: vi.fn(),
+      }
+    },
   }
 })
 
@@ -91,6 +114,61 @@ const listed: AuthoringProject = {
   loaded: true,
   running: false,
 }
+/** A project whose local and remote state passes every publish gate, without a release. */
+function publishStatus(overrides: {
+  repository?: Partial<PublishStatus['repository']>
+  remote?: Partial<NonNullable<PublishStatus['remote']>> | null
+  actions?: PublishStatus['actions']
+} = {}): PublishStatus {
+  return {
+    plugin_id: listed.plugin_id!,
+    version: listed.version!,
+    repository: {
+      git_available: true,
+      is_repository: true,
+      tag: 'v0.2.0',
+      origin_url: 'https://github.com/owner/hello_world.git',
+      github_repository: 'owner/hello_world',
+      branch: 'main',
+      upstream: 'origin/main',
+      head: 'abc',
+      detached: false,
+      head_pushed: true,
+      worktree_clean: true,
+      dirty_paths: [],
+      tag_exists: false,
+      tag_at_head: null,
+      ...overrides.repository,
+    },
+    actions: overrides.actions ?? { [RELEASE_WORKFLOW_PATH]: 'CURRENT' },
+    remote:
+      overrides.remote === null
+        ? null
+        : {
+            rate_limited: false,
+            reachable: true,
+            visibility: 'public',
+            verify: 'success',
+            release: { state: 'missing', missing_assets: [] },
+            tag: 'missing',
+            ...overrides.remote,
+          },
+  }
+}
+const publishTask = (overrides: Partial<PublishTask> = {}): PublishTask => ({
+  task_id: 't1',
+  project_id: 'p1',
+  mode: 'github_and_market',
+  status: 'queued',
+  message: '',
+  release_url: '',
+  log: [],
+  started_at: null,
+  updated_at: 1,
+  finished_at: null,
+  ...overrides,
+})
+const taskNotFound = { response: { data: { detail: { code: 'PUBLISH_TASK_NOT_FOUND' } } } }
 const NativeMutationObserver = globalThis.MutationObserver
 let cleanup: (() => void) | undefined
 
@@ -157,6 +235,21 @@ async function fill(id: string, value: string) {
   await flush()
 }
 
+async function openTab(container: HTMLElement, index: number) {
+  const tabs = [...container.querySelectorAll('.authoring-tabs > .el-tabs__header [role="tab"]')]
+  ;(tabs[index] as HTMLElement).click()
+  await flush()
+}
+
+async function openPublish(container: HTMLElement) {
+  await openTab(container, 2)
+  return container.querySelector('.authoring-publish')!
+}
+
+function steps() {
+  return [...document.querySelectorAll('.authoring-publish-step')]
+}
+
 async function settle() {
   // Element Plus message boxes open and close through transitions and timers.
   for (let i = 0; i < 5; i++) {
@@ -183,12 +276,13 @@ beforeEach(() => {
   api.createPluginProject.mockResolvedValue(created)
   api.pickProjectDirectory.mockResolvedValue('E:/Projects')
   // Never having published is the normal state the publish tab expects.
-  api.getPluginProjectPublishTask.mockRejectedValue({
-    response: { data: { detail: { code: 'PUBLISH_TASK_NOT_FOUND' } } },
-  })
+  api.getPluginProjectPublishTask.mockRejectedValue(taskNotFound)
+  market.authenticated = false
+  market.listMarketSubmissions.mockResolvedValue({ items: [] })
 })
 
 afterEach(() => {
+  vi.useRealTimers()
   cleanup?.()
   cleanup = undefined
   document.body.innerHTML = ''
@@ -287,94 +381,82 @@ describe('authoring workbench backed by the server project list', () => {
   it('reads the publish status only when its tab opens and lists the steps', async () => {
     api.route.query = { project: 'p1' }
     api.listPluginProjects.mockResolvedValue([listed])
-    api.getPluginProjectPublishStatus.mockResolvedValue({
-      plugin_id: listed.plugin_id,
-      version: listed.version,
-      repository: {
-        git_available: true,
-        is_repository: true,
-        tag: 'v0.2.0',
-        origin_url: 'https://github.com/owner/hello_world.git',
-        github_repository: 'owner/hello_world',
-        branch: 'main',
-        upstream: 'origin/main',
-        head: 'abc',
-        head_pushed: true,
-        worktree_clean: true,
-        tag_exists: false,
-        tag_at_head: null,
-      },
-      actions: { 'ruff.toml': 'CURRENT', '.github/workflows/release.yml': 'UPGRADE' },
-      remote: {
-        rate_limited: false,
-        visibility: 'public',
-        verify: 'success',
-        release: { state: 'missing', missing_assets: [] },
-      },
-    })
+    api.getPluginProjectPublishStatus.mockResolvedValue(
+      publishStatus({
+        actions: { [RELEASE_WORKFLOW_PATH]: 'CURRENT', '.github/workflows/verify.yml': 'UPGRADE' },
+      })
+    )
     const container = await mount()
     // The tab is lazy: opening a project must not call GitHub.
     expect(api.getPluginProjectPublishStatus).not.toHaveBeenCalled()
-    const tabs = [...container.querySelectorAll('.authoring-tabs > .el-tabs__header [role="tab"]')]
-    ;(tabs[2] as HTMLElement).click()
-    await flush()
-    expect(api.getPluginProjectPublishStatus).toHaveBeenCalledWith('p1')
-    const pane = container.querySelector('.authoring-publish')!
-    expect(pane.textContent).toContain(en.publishStepRepository)
-    expect(pane.textContent).toContain('owner/hello_world is public and HEAD is pushed.')
-    expect(pane.textContent).toContain(en.publishVerifyPassed)
-    expect(pane.textContent).toContain('Release v0.2.0 does not exist yet.')
-    // Submission and Market version are not read in this phase (the panel is stubbed here).
-    expect(pane.textContent).toContain(en.publishStatusUnknown)
-    expect(pane.textContent).toContain('.github/workflows/release.yml')
+    const pane = await openPublish(container)
+    expect(api.getPluginProjectPublishStatus).toHaveBeenCalledExactlyOnceWith('p1', false)
+    const [repository, verify, release, submission, marketVersion] = steps()
+    expect(repository!.textContent).toContain('owner/hello_world is public and HEAD is pushed.')
+    expect(verify!.textContent).toContain(en.publishVerifyPassed)
+    expect(release!.textContent).toContain('Release v0.2.0 does not exist yet.')
+    // The first step with something to do is highlighted; the panel with controls is never dimmed.
+    expect(release!.className).toContain('authoring-publish-step--current')
+    expect(submission!.className).not.toContain('authoring-publish-step--pending')
+    // Signed out and no release yet: both Market steps wait, with their explanation.
+    expect(submission!.textContent).toContain(en.publishStatusWaiting)
+    expect(submission!.textContent).toContain(en.submissionStepDetailLater)
+    expect(submission!.textContent).toContain(en.submissionLogin)
+    expect(marketVersion!.textContent).toContain(en.marketVersionStepDetailLater)
+    expect(pane.textContent).toContain('.github/workflows/verify.yml')
     expect(pane.textContent).toContain('n.e.k.o_plugin_hello_world')
+  })
+
+  it('carries the real submission panel state into the submission and Market steps', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(
+      publishStatus({ remote: { release: { state: 'published', missing_assets: [] } } })
+    )
+    market.authenticated = true
+    market.listMarketSubmissions.mockResolvedValue({
+      items: [
+        {
+          id: 152,
+          status: 'closed',
+          decision: 'approved',
+          terminal_kind: 'approved',
+          plugin_id: 7,
+          current_snapshot: {
+            repo_url: 'https://github.com/Owner/hello_world',
+            repo_owner: 'Owner',
+            repo_name: 'hello_world',
+            plugin_name: 'Hello',
+            plugin_slug: 'hello_world',
+            submitted_ref: 'main',
+            resolved_commit: 'abc',
+          },
+        },
+      ],
+      total: 1,
+      page: 1,
+      page_size: 100,
+      total_pages: 1,
+    })
+    const container = await mount()
+    await openPublish(container)
+    expect(market.listMarketSubmissions).toHaveBeenCalledWith('owner/hello_world')
+    const [, , , submission, marketVersion] = steps()
+    expect(submission!.textContent).toContain(en.publishStatusDone)
+    expect(submission!.textContent).toContain(en.submissionStateApproved)
+    expect(marketVersion!.textContent).toContain(en.publishStatusDone)
+    expect(marketVersion!.textContent).toContain('Listed on the Market as #7.')
   })
 
   it('offers the full publish only after the second confirmation', async () => {
     api.route.query = { project: 'p1' }
     api.listPluginProjects.mockResolvedValue([listed])
-    api.getPluginProjectPublishStatus.mockResolvedValue({
-      plugin_id: listed.plugin_id,
-      version: listed.version,
-      repository: {
-        git_available: true,
-        is_repository: true,
-        tag: 'v0.2.0',
-        origin_url: 'https://github.com/owner/hello_world.git',
-        github_repository: 'owner/hello_world',
-        branch: 'main',
-        upstream: 'origin/main',
-        head: 'abc',
-        head_pushed: true,
-        worktree_clean: true,
-        tag_exists: false,
-        tag_at_head: null,
-      },
-      actions: {},
-      remote: {
-        rate_limited: false,
-        visibility: 'public',
-        verify: 'success',
-        release: { state: 'missing', missing_assets: [] },
-      },
-    })
-    api.startPluginProjectPublish.mockResolvedValue({
-      task_id: 't1',
-      project_id: 'p1',
-      mode: 'github_and_market',
-      status: 'queued',
-      message: '',
-      release_url: '',
-      log: [],
-      started_at: null,
-      updated_at: 1,
-      finished_at: null,
-    })
+    api.getPluginProjectPublishStatus.mockResolvedValue(publishStatus())
+    api.startPluginProjectPublish.mockResolvedValue(publishTask())
     const container = await mount()
-    const tabs = [...container.querySelectorAll('.authoring-tabs > .el-tabs__header [role="tab"]')]
-    ;(tabs[2] as HTMLElement).click()
-    await flush()
+    await openPublish(container)
     // No release yet, so the full flow is offered, not the Market-only one.
+    expect(buttons(en.publishRunMarket)).toHaveLength(0)
     await click(en.publishRunGithubMarket)
     await settle()
     expect(api.startPluginProjectPublish).not.toHaveBeenCalled()
@@ -386,37 +468,249 @@ describe('authoring workbench backed by the server project list', () => {
     )
   })
 
-  it('keeps the publish buttons hidden until the repository is ready', async () => {
+  it('shows the server reason after a refused publish', async () => {
     api.route.query = { project: 'p1' }
     api.listPluginProjects.mockResolvedValue([listed])
-    api.getPluginProjectPublishStatus.mockResolvedValue({
-      plugin_id: listed.plugin_id,
-      version: listed.version,
-      repository: {
-        git_available: true,
-        is_repository: true,
-        tag: 'v0.2.0',
-        origin_url: null,
-        github_repository: null,
-        branch: 'main',
-        upstream: null,
-        head: 'abc',
-        head_pushed: false,
-        worktree_clean: true,
-        tag_exists: false,
-        tag_at_head: null,
+    api.getPluginProjectPublishStatus.mockResolvedValue(publishStatus())
+    api.startPluginProjectPublish.mockRejectedValue({
+      response: {
+        data: {
+          detail: { code: 'PUBLISH_NOT_READY', message: 'release assets are incomplete: a.zip' },
+        },
       },
-      actions: {},
-      remote: null,
     })
-    await mount()
-    const tabs = [
-      ...document.querySelectorAll('.authoring-tabs > .el-tabs__header [role="tab"]'),
-    ]
-    ;(tabs[2] as HTMLElement).click()
-    await flush()
+    const container = await mount()
+    await openPublish(container)
+    await click(en.publishRunGithub)
+    await settle()
+    await click(en.publishConfirmTitle, { last: true })
+    await settle()
+    const text = container.querySelector('.authoring-publish')!.textContent
+    expect(text).toContain(en.publishNotReady)
+    expect(text).toContain('release assets are incomplete: a.zip')
+  })
+
+  it('offers repository creation only when there is no origin at all', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(
+      publishStatus({
+        repository: { origin_url: null, github_repository: null, upstream: null, head_pushed: null },
+        remote: null,
+      })
+    )
+    const container = await mount()
+    await openPublish(container)
     expect(buttons(en.publishRunGithubMarket)).toHaveLength(0)
     expect(buttons(en.publishRunMarket)).toHaveLength(0)
+    expect(buttons(en.publishCreateRepo)).toHaveLength(1)
+    expect(steps()[0]!.textContent).toContain(en.publishRepoNoGithub)
+  })
+
+  it('names a non-GitHub origin instead of offering to create a repository', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(
+      publishStatus({
+        repository: { origin_url: 'https://gitee.com/owner/hello_world.git', github_repository: null },
+        remote: null,
+      })
+    )
+    const container = await mount()
+    await openPublish(container)
+    expect(buttons(en.publishCreateRepo)).toHaveLength(0)
+    expect(steps()[0]!.textContent).toContain(
+      'origin points to https://gitee.com/owner/hello_world.git, which is not a GitHub repository.'
+    )
+  })
+
+  it.each([
+    [
+      'release.yml is outdated',
+      publishStatus({ actions: { [RELEASE_WORKFLOW_PATH]: 'UPGRADE' } }),
+      en.publishRepoReleaseWorkflow,
+    ],
+    [
+      'the local tag is on another commit',
+      publishStatus({ repository: { tag_exists: true, tag_at_head: false } }),
+      'Local tag v0.2.0 already points at another commit; bump the version.',
+    ],
+    [
+      'the worktree is dirty',
+      publishStatus({ repository: { worktree_clean: false, dirty_paths: ['main.py', 'a.txt'] } }),
+      'Uncommitted changes: main.py, a.txt. Commit them first.',
+    ],
+    [
+      'the branch has no upstream',
+      publishStatus({ repository: { upstream: null, head_pushed: null } }),
+      'Branch main has no upstream; run git push -u origin main.',
+    ],
+    [
+      'the upstream is not on origin',
+      publishStatus({ repository: { upstream: 'fork/main', head_pushed: false } }),
+      'Branch main tracks fork/main, not origin; run git push -u origin main.',
+    ],
+    [
+      'HEAD is detached',
+      publishStatus({ repository: { detached: true, branch: null, head_pushed: null } }),
+      en.publishRepoDetached,
+    ],
+    [
+      'the repository is private',
+      publishStatus({ remote: { visibility: 'private' } }),
+      en.publishRepoNotPublic,
+    ],
+  ])('offers no GitHub publish when %s', async (_, status, detail) => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(status)
+    const container = await mount()
+    await openPublish(container)
+    expect(buttons(en.publishRunGithubMarket)).toHaveLength(0)
+    expect(buttons(en.publishRunGithub)).toHaveLength(0)
+    expect(steps()[0]!.textContent).toContain(en.publishStatusTodo)
+    expect(steps()[0]!.textContent).toContain(detail)
+  })
+
+  it('reports local git problems even when GitHub cannot be read', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(
+      publishStatus({
+        repository: { worktree_clean: false, dirty_paths: ['main.py'] },
+        remote: {
+          reachable: false,
+          visibility: 'unknown',
+          verify: 'unknown',
+          release: { state: 'unknown', missing_assets: [] },
+          tag: 'unknown',
+        },
+      })
+    )
+    const container = await mount()
+    const pane = await openPublish(container)
+    const [repository, verify, release] = steps()
+    expect(pane.textContent).toContain(en.publishRemoteUnreachable)
+    expect(repository!.textContent).toContain('Uncommitted changes: main.py. Commit them first.')
+    expect(repository!.className).toContain('authoring-publish-step--current')
+    expect(verify!.textContent).toContain(en.publishRemoteUnknown)
+    expect(release!.textContent).toContain(en.publishRemoteUnknown)
+  })
+
+  it.each([
+    ['failure', en.publishVerifyFailed, en.publishStatusTodo],
+    ['running', en.publishVerifyRunning, en.publishStatusWaiting],
+    ['not_run', en.publishVerifyNotRun, en.publishStatusTodo],
+    ['missing', en.publishVerifyMissing, en.publishStatusTodo],
+  ] as const)('explains a verify state of %s', async (verify, detail, label) => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(publishStatus({ remote: { verify } }))
+    const container = await mount()
+    await openPublish(container)
+    expect(steps()[1]!.textContent).toContain(detail)
+    expect(steps()[1]!.textContent).toContain(label)
+  })
+
+  it('explains a missing release whose tag is already on GitHub', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(publishStatus({ remote: { tag: 'elsewhere' } }))
+    const container = await mount()
+    await openPublish(container)
+    expect(steps()[2]!.textContent).toContain(
+      'Tag v0.2.0 on GitHub points at another commit; bump the version.'
+    )
+  })
+
+  it('refresh bypasses the cache, re-reads the task and keeps the last status on error', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(publishStatus())
+    const container = await mount()
+    await openPublish(container)
+    expect(api.getPluginProjectPublishTask).toHaveBeenCalledOnce()
+    await click(en.publishRefresh)
+    expect(api.getPluginProjectPublishStatus).toHaveBeenLastCalledWith('p1', true)
+    expect(api.getPluginProjectPublishTask).toHaveBeenCalledTimes(2)
+    api.getPluginProjectPublishStatus.mockRejectedValue(new Error('server down'))
+    await click(en.publishRefresh)
+    expect(container.querySelector('.authoring-publish')!.textContent).toContain('server down')
+    expect(steps()).toHaveLength(5)
+  })
+
+  it('reloads the status when the publish tab is opened again', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(publishStatus())
+    const container = await mount()
+    await openPublish(container)
+    expect(api.getPluginProjectPublishStatus).toHaveBeenCalledOnce()
+    await openTab(container, 0)
+    await openPublish(container)
+    expect(api.getPluginProjectPublishStatus).toHaveBeenCalledTimes(2)
+    expect(api.getPluginProjectPublishStatus).toHaveBeenLastCalledWith('p1', false)
+  })
+
+  it('runs a reload requested during a read once that read ends', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    let resolve!: (value: PublishStatus) => void
+    api.getPluginProjectPublishStatus
+      .mockReturnValueOnce(new Promise((done) => (resolve = done)))
+      .mockResolvedValue(publishStatus({ remote: { verify: 'failure' } }))
+    const container = await mount()
+    await openPublish(container)
+    await openTab(container, 0)
+    await openPublish(container)
+    // The second read waits for the first instead of being dropped.
+    expect(api.getPluginProjectPublishStatus).toHaveBeenCalledOnce()
+    resolve(publishStatus())
+    await flush()
+    expect(api.getPluginProjectPublishStatus).toHaveBeenCalledTimes(2)
+    expect(steps()[1]!.textContent).toContain(en.publishVerifyFailed)
+  })
+
+  it('shows an earlier failed run collapsed, with when it ran', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(publishStatus())
+    api.getPluginProjectPublishTask.mockResolvedValue(
+      publishTask({ status: 'failed', message: '[FAIL] old', log: ['[FAIL] old'], finished_at: 1_700_000_000 })
+    )
+    const container = await mount()
+    await openPublish(container)
+    const section = container.querySelector('.authoring-publish-task')!
+    expect(section.textContent).toContain(en.publishTaskFailed)
+    expect(section.textContent).toContain('Last run ·')
+    expect(section.querySelector('details')!.open).toBe(false)
+  })
+
+  it('keeps polling through a transient error and drops a task the server forgot', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(publishStatus())
+    api.getPluginProjectPublishTask
+      .mockResolvedValueOnce(publishTask({ status: 'running' }))
+      .mockRejectedValueOnce(new Error('network'))
+      .mockRejectedValueOnce(taskNotFound)
+    const container = await mount()
+    await openPublish(container)
+    expect(buttons(en.publishCancelTask)).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(3000)
+    await flush()
+    // A failed poll is retried, and the running task stays on screen meanwhile.
+    expect(api.getPluginProjectPublishTask).toHaveBeenCalledTimes(2)
+    expect(container.querySelector('.authoring-publish-task')?.textContent).toContain(
+      en.publishTaskRunning
+    )
+    await vi.advanceTimersByTimeAsync(3000)
+    await flush()
+    expect(api.getPluginProjectPublishTask).toHaveBeenCalledTimes(3)
+    expect(container.querySelector('.authoring-publish-task')).toBeNull()
+    expect(buttons(en.publishCancelTask)).toHaveLength(0)
+    expect(api.getPluginProjectPublishStatus).toHaveBeenLastCalledWith('p1', true)
   })
 
   it('runs the pre-release check and renders the CI gate report', async () => {

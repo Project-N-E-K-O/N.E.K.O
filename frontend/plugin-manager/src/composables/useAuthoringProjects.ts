@@ -56,6 +56,17 @@ export function errorMessageKey(code: string | undefined): AuthoringMessageKey |
   return ownKey(PROJECT_ERROR_MESSAGES, code)
 }
 
+/**
+ * Codes whose localized text names only the kind of failure; the server's
+ * message carries the actual cause (the failed check, the CLI's stderr tail,
+ * a timeout) and is shown after it.
+ */
+const CODES_WITH_SERVER_DETAIL: ReadonlySet<string> = new Set([
+  'PUBLISH_NOT_READY',
+  'PRECHECK_FAILED_TO_RUN',
+  'REPO_CREATE_FAILED',
+])
+
 /** Display name; unreadable projects fall back to their folder name. */
 export function projectTitle(project: AuthoringProject): string {
   return (
@@ -67,15 +78,20 @@ export function projectTitle(project: AuthoringProject): string {
 }
 
 /**
- * Localized message for a workbench API failure; unknown codes
- * fall back to the server diagnostic, then to `authoring.<fallbackKey>`.
+ * Localized message for a workbench API failure; codes in CODES_WITH_SERVER_DETAIL
+ * also carry the server's message, and unknown codes fall back to the server
+ * diagnostic, then to `authoring.<fallbackKey>`.
  */
 export function useProjectErrorMessage() {
   const { t } = useI18n()
   return (error: unknown, fallbackKey: AuthoringMessageKey) => {
-    const key = errorMessageKey(projectErrorCode(error))
-    if (key) return t(`authoring.${key}`)
+    const code = projectErrorCode(error)
+    const key = errorMessageKey(code)
     const detail = formatHttpError(error) || (error instanceof Error ? error.message : '')
+    if (key) {
+      const message = t(`authoring.${key}`)
+      return code && CODES_WITH_SERVER_DETAIL.has(code) && detail ? `${message} ${detail}` : message
+    }
     return detail || t(`authoring.${fallbackKey}`)
   }
 }

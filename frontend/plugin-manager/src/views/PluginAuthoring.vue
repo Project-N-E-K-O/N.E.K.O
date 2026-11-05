@@ -80,7 +80,11 @@
           <AuthoringProjectPrecheck :key="current.project_id" :project-id="current.project_id" />
         </el-tab-pane>
         <el-tab-pane :label="t('authoring.publishTab')" name="publish" lazy>
-          <AuthoringProjectPublish :key="current.project_id" :project-id="current.project_id" />
+          <AuthoringProjectPublish
+            ref="publishPanel"
+            :key="current.project_id"
+            :project-id="current.project_id"
+          />
         </el-tab-pane>
       </el-tabs>
       <EmptyState
@@ -102,7 +106,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -156,7 +160,14 @@ const createVisible = ref(false)
 const helpVisible = ref(false)
 const busy = ref(false)
 const projectList = ref<InstanceType<typeof AuthoringProjectList>>()
+const publishPanel = ref<InstanceType<typeof AuthoringProjectPublish>>()
 onMounted(refresh)
+// The lazy publish pane stays mounted across tab switches; coming back to it
+// re-reads the status (a commit or push may have happened meanwhile). The first
+// visit mounts the pane, which reads on its own.
+watch(activeTab, (tab) => {
+  if (tab === 'publish') void publishPanel.value?.reload()
+})
 
 function openProject(projectId: string) {
   void router.push({ path: '/workbench', query: { project: projectId } })

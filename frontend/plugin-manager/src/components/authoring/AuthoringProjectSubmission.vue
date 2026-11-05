@@ -24,278 +24,397 @@
       <p class="authoring-muted authoring-small">
         {{ t('authoring.submissionLoggedInAs', { name: marketAuthDisplayName }) }}
       </p>
+      <el-alert
+        v-if="marketAuthStateMessageKey"
+        :title="t(marketAuthStateMessageKey)"
+        type="warning"
+        :closable="false"
+        show-icon
+      />
       <el-alert v-if="loadError" :title="loadError" type="error" :closable="false" show-icon />
+      <el-alert v-if="notice" :title="notice" type="info" :closable="false" show-icon />
+      <el-alert v-if="actionError" :title="actionError" type="error" :closable="false" show-icon />
+      <el-alert
+        v-if="previewNotes.length"
+        :title="t('authoring.submissionPreviewNotes')"
+        type="warning"
+        :closable="false"
+        show-icon
+      >
+        <ul class="authoring-submission-notes">
+          <li v-for="note in previewNotes" :key="note">{{ note }}</li>
+        </ul>
+      </el-alert>
 
-      <!-- Matched submission: show its state and the one action it allows. -->
-      <template v-if="submission">
+      <!-- Matched submission: its state and the actions it allows. -->
+      <template v-if="submission && phase">
         <div class="authoring-submission-state">
-          <el-tag size="small" :type="STATE_TAG_TYPES[phase]">{{ t(STATE_LABELS[phase]) }}</el-tag>
+          <el-tag size="small" :type="STATE_TAG_TYPES[phase]">{{ t(`authoring.${STATE_LABELS[phase]}`) }}</el-tag>
           <span v-if="stateDetail" class="authoring-muted authoring-small">{{ stateDetail }}</span>
-        </div>
-        <div v-if="phase === 'draft'" class="authoring-precheck-actions">
-          <el-button
-            type="primary"
-            :icon="Promotion"
-            :loading="acting"
-            @click="confirmSubmit"
+          <a
+            v-if="submissionUrl"
+            class="authoring-small"
+            href="#"
+            @click.prevent="openExternalUrl(submissionUrl)"
+            >{{ t('authoring.submissionOpenOnMarket') }}</a
           >
-            {{ t('authoring.submissionSubmitReview') }}
-          </el-button>
         </div>
-      </template>
-
-      <!-- No submission yet: preview, then create a draft. -->
-      <template v-else>
+        <p v-if="progressDescription" class="authoring-muted authoring-small">
+          {{ progressDescription }}
+        </p>
         <el-alert
-          :title="t('authoring.submissionNone')"
+          v-if="isOpen"
+          :title="t('authoring.submissionMarketMetadata')"
           type="info"
           :closable="false"
           show-icon
         />
-        <el-alert
-          v-if="previewWarning"
-          :title="previewWarning"
-          type="warning"
-          :closable="false"
-          show-icon
-        />
-        <div class="authoring-precheck-actions">
-          <el-button
-            type="primary"
-            :icon="Plus"
-            :disabled="!canCreateDraft"
-            :loading="acting"
-            @click="createDraft"
-          >
-            {{ acting ? t('authoring.submissionCreatingDraft') : t('authoring.submissionCreateDraft') }}
-          </el-button>
-          <el-button :icon="Refresh" :loading="loading" @click="reload">
-            {{ t('authoring.publishRefresh') }}
-          </el-button>
-        </div>
       </template>
+      <el-alert
+        v-else-if="loaded"
+        :title="t('authoring.submissionNone')"
+        type="info"
+        :closable="false"
+        show-icon
+      />
+
+      <div class="authoring-precheck-actions">
+        <el-button
+          v-if="phase === 'draft'"
+          type="primary"
+          :icon="Promotion"
+          :loading="acting"
+          @click="confirmSubmit"
+        >
+          {{ t('authoring.submissionSubmitReview') }}
+        </el-button>
+        <el-button
+          v-if="canCreateDraft"
+          type="primary"
+          :icon="Plus"
+          :loading="acting"
+          @click="createDraft"
+        >
+          {{ acting ? t('authoring.submissionCreatingDraft') : t('authoring.submissionCreateDraft') }}
+        </el-button>
+        <el-button v-if="isOpen" :icon="CircleClose" :disabled="acting" @click="confirmWithdraw">
+          {{ t('authoring.submissionWithdraw') }}
+        </el-button>
+        <el-button :icon="Refresh" :loading="loading" @click="reload()">
+          {{ t('authoring.publishRefresh') }}
+        </el-button>
+      </div>
     </template>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Promotion, Refresh, User } from '@element-plus/icons-vue'
+import { ElMessageBox } from 'element-plus'
+import { CircleClose, Plus, Promotion, Refresh, User } from '@element-plus/icons-vue'
 import { useMarketAuth } from '@/composables/useMarketAuth'
 import {
   MarketSubmissionError,
+  PLUGIN_NAME_MAX_LENGTH,
+  RESUBMITTABLE_PHASES,
   createSubmissionDraft,
   listMarketSubmissions,
+  marketSubmissionUrl,
   previewSubmissionRepository,
+  submissionMatchesRepository,
+  submissionPhase,
   submitSubmission,
+  updateSubmissionDraft,
+  withdrawSubmission,
   type MarketSubmission,
+  type RepositoryPreview,
+  type SubmissionDraftUpdate,
+  type SubmissionPanelState,
+  type SubmissionPhase,
 } from '@/api/marketSubmissions'
 import type { AuthoringMessageKey } from '@/i18n/authoring'
+import { openExternalUrl } from '@/utils/openExternal'
 
-const props = defineProps<{
-  projectId: string
-  pluginId: string
-  githubRepository: string | null
-  pluginName: string | null
-}>()
-const emit = defineEmits<{ (event: 'changed'): void }>()
+const props = defineProps<{ githubRepository: string | null }>()
+const emit = defineEmits<{ (event: 'state', state: SubmissionPanelState): void }>()
 
 const { t } = useI18n()
 const {
   marketAuth,
   marketAuthBusy,
   marketAuthDisplayName,
+  marketAuthStateMessageKey,
   loadMarketAuthStatus,
   startMarketLogin,
+  stopMarketAuthPolling,
 } = useMarketAuth()
 
-type Phase = 'draft' | 'submitted' | 'in_review' | 'approved' | 'rejected' | 'closed' | 'withdrawn'
-const STATE_TAG_TYPES: Record<Phase, 'success' | 'warning' | 'info' | 'danger'> = {
+const STATE_TAG_TYPES: Record<SubmissionPhase, 'success' | 'warning' | 'info' | 'danger'> = {
   draft: 'warning',
   submitted: 'info',
   in_review: 'info',
+  author_action: 'warning',
   approved: 'success',
   rejected: 'danger',
-  closed: 'info',
   withdrawn: 'info',
+  superseded: 'info',
+  closed: 'info',
 }
-const STATE_LABELS: Record<Phase, AuthoringMessageKey> = {
+const STATE_LABELS: Record<SubmissionPhase, AuthoringMessageKey> = {
   draft: 'submissionStateDraft',
   submitted: 'submissionStateSubmitted',
   in_review: 'submissionStateInReview',
+  author_action: 'submissionStateAuthorAction',
   approved: 'submissionStateApproved',
   rejected: 'submissionStateRejected',
-  closed: 'submissionStateClosed',
   withdrawn: 'submissionStateWithdrawn',
+  superseded: 'submissionStateSuperseded',
+  closed: 'submissionStateClosed',
+}
+const OPEN_PHASES: readonly SubmissionPhase[] = ['draft', 'submitted', 'in_review', 'author_action']
+/** Error codes from the bridge or the Market that have their own message. */
+const ERROR_MESSAGES: Record<string, AuthoringMessageKey> = {
+  market_auth_required: 'marketAuthRequired',
+  market_auth_pending: 'marketAuthPending',
+  market_email_unverified: 'marketEmailUnverified',
+  market_auth_rejected: 'marketAuthRejected',
+  market_submission_unavailable: 'marketSubmissionUnavailable',
+  market_submission_redirect_rejected: 'marketSubmissionRedirectRejected',
+  market_submission_not_configured: 'marketSubmissionNotConfigured',
+  market_submission_id_invalid: 'marketSubmissionIdInvalid',
+  market_bridge_unreachable: 'marketBridgeUnreachable',
+  submission_content_too_large: 'submissionContentTooLarge',
 }
 
 const signedIn = computed(() => marketAuth.value.authenticated === true)
+/** Signed in and accepted by the Market; only then are submission calls made. */
+const marketReady = computed(() => signedIn.value && !marketAuthStateMessageKey.value)
 const loading = ref(false)
+/** True once the submission list for this repository has been read. */
+const loaded = ref(false)
 const acting = ref(false)
 const loadError = ref('')
-const previewWarning = ref('')
+const actionError = ref('')
+const notice = ref('')
+const previewNotes = ref<string[]>([])
 const submission = ref<MarketSubmission | null>(null)
 
 /** The repo URL the draft is created from, derived from the GitHub slug. */
 const repoUrl = computed(() =>
   props.githubRepository ? `https://github.com/${props.githubRepository}` : ''
 )
-const canCreateDraft = computed(() => !!repoUrl.value && !acting.value)
+const phase = computed<SubmissionPhase | null>(() =>
+  submission.value ? submissionPhase(submission.value) : null
+)
+const isOpen = computed(() => !!phase.value && OPEN_PHASES.includes(phase.value))
+/** A new draft is possible when nothing matched or the latest submission is closed for good. */
+const canCreateDraft = computed(
+  () =>
+    marketReady.value &&
+    loaded.value &&
+    !!repoUrl.value &&
+    (phase.value === null || RESUBMITTABLE_PHASES.includes(phase.value))
+)
+const submissionUrl = computed(() => {
+  const base = marketAuth.value.market_web_url
+  return base && submission.value ? marketSubmissionUrl(base, submission.value.id) : ''
+})
 
-const phase = computed<Phase>(() => normalizePhase(submission.value))
 const stateDetail = computed(() => {
   const current = submission.value
-  if (!current) return ''
+  if (!current || !phase.value) return ''
   if (phase.value === 'approved' && current.plugin_id != null) {
     return t('authoring.submissionApprovedDetail', { id: current.plugin_id })
   }
-  if (phase.value === 'in_review' || phase.value === 'submitted') {
-    return t('authoring.submissionInReviewDetail')
-  }
-  const note = current.review_progress?.terminal_kind
-  return note ? t('authoring.submissionTimelineReason', { note }) : ''
+  if (RESUBMITTABLE_PHASES.includes(phase.value)) return t('authoring.submissionClosedDetail')
+  if (phase.value === 'draft') return ''
+  // The Market localizes its own progress line; it says what the author must do.
+  return current.review_progress?.title || t('authoring.submissionInReviewDetail')
 })
+const progressDescription = computed(() =>
+  phase.value && phase.value !== 'draft' && phase.value !== 'approved'
+    ? submission.value?.review_progress?.description || ''
+    : ''
+)
 
-/** Map the Market's status/decision onto the local phase the UI renders. */
-function normalizePhase(current: MarketSubmission | null): Phase {
-  if (!current) return 'draft'
-  const status = String(current.status || '').toLowerCase()
-  const decision = String(current.decision || '').toLowerCase()
-  if (status === 'closed') {
-    if (decision === 'approved') return 'approved'
-    if (decision === 'rejected') return 'rejected'
-    if (decision === 'withdrawn') return 'withdrawn'
-    return 'closed'
-  }
-  if (status === 'in_review') return 'in_review'
-  if (status === 'submitted') return 'submitted'
-  return 'draft'
-}
-
-/** True when a submission's repository matches this project's GitHub repo. */
-function matchesProject(item: MarketSubmission): boolean {
-  const repo = props.githubRepository?.toLowerCase()
-  if (!repo) return false
-  const candidates = [
-    item.repo_name,
-    item.snapshot?.repo_name,
-    item.repo_url,
-    item.snapshot?.repo_url,
-  ]
-  return candidates.some((value) => {
-    const text = String(value || '').toLowerCase()
-    return text === repo || text.endsWith(`/${repo}`) || text.includes(`github.com/${repo}`)
-  })
-}
+watch(
+  [phase, submission],
+  () =>
+    emit('state', {
+      phase: phase.value,
+      marketPluginId: phase.value === 'approved' ? (submission.value?.plugin_id ?? null) : null,
+    }),
+  { immediate: true }
+)
 
 function describe(error: unknown, fallback: AuthoringMessageKey): string {
-  if (error instanceof MarketSubmissionError) {
-    const key = errorMessageKey(error.code)
-    if (key) return t(`authoring.${key}`)
+  if (!(error instanceof MarketSubmissionError)) return t(`authoring.${fallback}`)
+  if (error.code === 'plugin_slug_conflict') {
+    return t('authoring.submissionSlugConflict', { slug: String(error.detail.plugin_slug ?? '') })
   }
-  return t(`authoring.${fallback}`)
+  if (error.code === 'plugin_identity_mismatch') {
+    return t('authoring.submissionIdentityMismatch', {
+      manifest: String(error.detail.manifest_plugin_id ?? ''),
+      repository: String(error.detail.repository_plugin_id ?? ''),
+    })
+  }
+  if (Object.prototype.hasOwnProperty.call(ERROR_MESSAGES, error.code)) {
+    return t(`authoring.${ERROR_MESSAGES[error.code]}`)
+  }
+  // The Market localizes its business errors; show them after the action that failed.
+  const reason = error.serverMessage
+  return reason ? `${t(`authoring.${fallback}`)} ${reason}` : t(`authoring.${fallback}`)
 }
 
-/** Only the submission error codes this feature can produce map to a message. */
-function errorMessageKey(code: string): AuthoringMessageKey | undefined {
-  const table: Record<string, AuthoringMessageKey> = {
-    market_auth_required: 'marketAuthRequired',
-    market_email_unverified: 'marketEmailUnverified',
-    market_auth_rejected: 'marketAuthRejected',
-    market_submission_unavailable: 'marketSubmissionUnavailable',
-    market_submission_failed: 'marketSubmissionFailed',
-    market_bridge_unreachable: 'marketBridgeUnreachable',
-  }
-  return Object.prototype.hasOwnProperty.call(table, code) ? table[code] : undefined
-}
+let reloadGeneration = 0
 
-async function reload() {
-  if (loading.value || !signedIn.value) return
+/** Read this repository's submissions; `selectId` picks one the Market just named. */
+async function reload(selectId?: number) {
+  const repository = props.githubRepository
+  const generation = ++reloadGeneration
+  if (!marketReady.value || !repository) {
+    submission.value = null
+    loaded.value = false
+    return
+  }
   loading.value = true
   loadError.value = ''
   try {
-    const result = await listMarketSubmissions()
-    const items = result.submissions ?? []
-    submission.value = items.find(matchesProject) ?? null
+    const page = await listMarketSubmissions(repository)
+    if (generation !== reloadGeneration) return
+    const items = page.items.filter((item) => submissionMatchesRepository(item, repository))
+    submission.value =
+      items.find((item) => item.id === selectId) ??
+      items.find((item) => item.status !== 'closed') ??
+      items[0] ??
+      null
+    loaded.value = true
   } catch (error) {
+    if (generation !== reloadGeneration) return
     submission.value = null
+    loaded.value = false
     loadError.value = describe(error, 'submissionLoadFailed')
   } finally {
-    loading.value = false
+    if (generation === reloadGeneration) loading.value = false
   }
 }
 
-async function createDraft() {
-  if (!canCreateDraft.value) return
+/** Preview the repository; null when the Market cannot read a plugin ID from it. */
+async function readPreview(submittedRef?: string): Promise<RepositoryPreview | null> {
+  const preview = await previewSubmissionRepository({
+    repo_url: repoUrl.value,
+    submitted_ref: submittedRef,
+  })
+  previewNotes.value = [
+    ...preview.warnings,
+    ...(preview.workflow_status === 'available' ? [] : [t('authoring.submissionWorkflowMissing')]),
+  ]
+  if (!preview.plugin_id) {
+    actionError.value = t('authoring.submissionNoManifest')
+    return null
+  }
+  return preview
+}
+
+function startAction() {
   acting.value = true
-  previewWarning.value = ''
+  actionError.value = ''
+  notice.value = ''
+  previewNotes.value = []
+}
+
+async function createDraft() {
+  if (!canCreateDraft.value || acting.value) return
+  startAction()
   try {
-    // Preview first so a naming conflict is shown before a doomed draft.
-    const preview = await previewSubmissionRepository({ repo_url: repoUrl.value })
-    if (preview.identity_status === 'mismatched' && preview.expected_repository_name) {
-      previewWarning.value = t('authoring.submissionMismatch', {
-        expected: preview.expected_repository_name,
-      })
-      return
-    }
-    const created = await createSubmissionDraft({
+    const preview = await readPreview()
+    if (!preview?.plugin_id) return
+    submission.value = await createSubmissionDraft({
       repo_url: repoUrl.value,
-      plugin_name: preview.plugin_name || props.pluginName || props.pluginId,
-      plugin_slug: preview.plugin_id || props.pluginId,
+      plugin_name: (preview.plugin_name || preview.plugin_id).slice(0, PLUGIN_NAME_MAX_LENGTH),
+      plugin_slug: preview.plugin_id,
       description: preview.description ?? undefined,
       short_description: preview.short_description ?? undefined,
       license_name: preview.license_name ?? undefined,
-      submitted_ref: preview.submitted_ref ?? undefined,
-      resolved_commit: preview.resolved_commit ?? undefined,
+      submitted_ref: preview.submitted_ref,
+      resolved_commit: preview.resolved_commit,
     })
-    submission.value = created
-    emit('changed')
   } catch (error) {
-    if (error instanceof MarketSubmissionError && error.status >= 400 && error.status < 500) {
-      previewWarning.value = t('authoring.submissionCreateFailed')
+    if (error instanceof MarketSubmissionError && error.code === 'open_submission_exists') {
+      await reload(Number(error.detail.submission_id))
+      notice.value = t('authoring.submissionOpenExists')
       return
     }
-    ElMessage.error(describe(error, 'submissionCreateFailed'))
+    actionError.value = describe(error, 'submissionCreateFailed')
   } finally {
     acting.value = false
+  }
+}
+
+async function confirm(message: AuthoringMessageKey, title: AuthoringMessageKey, button: AuthoringMessageKey) {
+  try {
+    await ElMessageBox.confirm(t(`authoring.${message}`), t(`authoring.${title}`), {
+      type: 'warning',
+      confirmButtonText: t(`authoring.${button}`),
+      cancelButtonText: t('common.cancel'),
+    })
+    return true
+  } catch {
+    return false
   }
 }
 
 async function confirmSubmit() {
   const current = submission.value
-  if (!current) return
-  try {
-    await ElMessageBox.confirm(
-      t('authoring.submissionConfirmSubmit'),
-      t('authoring.submissionConfirmSubmitTitle'),
-      {
-        type: 'warning',
-        confirmButtonText: t('authoring.submissionSubmitReview'),
-        cancelButtonText: t('common.cancel'),
-      }
-    )
-  } catch {
+  if (!current || acting.value) return
+  if (!(await confirm('submissionConfirmSubmit', 'submissionConfirmSubmitTitle', 'submissionSubmitReview'))) {
     return
   }
-  acting.value = true
+  startAction()
   try {
+    // The Market resolves the branch again at submit and refuses a draft whose
+    // commit is no longer its head, so point the draft at the current head first.
+    const snapshot = current.current_snapshot
+    const preview = await readPreview(snapshot?.submitted_ref ?? undefined)
+    if (!preview?.plugin_id) return
+    const update: SubmissionDraftUpdate = {}
+    if (preview.resolved_commit !== snapshot?.resolved_commit) {
+      update.submitted_ref = preview.submitted_ref
+      update.resolved_commit = preview.resolved_commit
+    }
+    if (preview.plugin_id !== snapshot?.plugin_slug) update.plugin_slug = preview.plugin_id
+    if (Object.keys(update).length) {
+      submission.value = await updateSubmissionDraft(current.id, update)
+    }
     submission.value = await submitSubmission(current.id)
-    emit('changed')
   } catch (error) {
-    ElMessage.error(describe(error, 'submissionSubmitFailed'))
+    actionError.value = describe(error, 'submissionSubmitFailed')
   } finally {
     acting.value = false
   }
 }
 
-onMounted(async () => {
-  await loadMarketAuthStatus()
-  if (signedIn.value) await reload()
-})
+async function confirmWithdraw() {
+  const current = submission.value
+  if (!current || acting.value) return
+  if (!(await confirm('submissionConfirmWithdraw', 'submissionConfirmWithdrawTitle', 'submissionWithdraw'))) {
+    return
+  }
+  startAction()
+  try {
+    submission.value = await withdrawSubmission(current.id)
+  } catch (error) {
+    actionError.value = describe(error, 'submissionWithdrawFailed')
+  } finally {
+    acting.value = false
+  }
+}
 
-defineExpose({ phase, submission })
+// Reading starts once the login is confirmed, and again when the repository changes.
+watch([marketReady, () => props.githubRepository], () => void reload())
+onMounted(loadMarketAuthStatus)
+onUnmounted(stopMarketAuthPolling)
 </script>
 
 <style scoped>
@@ -308,6 +427,11 @@ defineExpose({ phase, submission })
 .authoring-submission-state {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--spacing-sm);
+}
+.authoring-submission-notes {
+  margin: 0;
+  padding-left: var(--spacing-md);
 }
 </style>

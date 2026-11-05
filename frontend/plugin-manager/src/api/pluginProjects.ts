@@ -111,18 +111,30 @@ export interface PublishRepositoryState {
   branch: string | null
   upstream: string | null
   head: string | null
+  detached: boolean
+  /** True only when the upstream is origin/<branch> and equals HEAD; null without HEAD, upstream or branch. */
   head_pushed: boolean | null
+  /** Same definition as the CLI publish gate. */
   worktree_clean: boolean | null
+  /** The first changed paths when the worktree is not clean. */
+  dirty_paths: string[]
   tag_exists: boolean
   tag_at_head: boolean | null
 }
 
 export interface PublishRemoteState {
   rate_limited: boolean
+  /** False when a GitHub read failed by network error, timeout or 5xx (not a rate limit). */
+  reachable: boolean
   visibility: 'public' | 'private' | 'not_found' | 'unknown'
   verify: 'success' | 'failure' | 'running' | 'not_run' | 'missing' | 'unknown'
   release: { state: 'published' | 'missing' | 'unknown'; missing_assets: string[] }
+  /** Remote tag v<version> compared with the local HEAD. */
+  tag: 'missing' | 'at_head' | 'elsewhere' | 'unknown'
 }
+
+/** The workflow file the publish gate requires to be CURRENT. */
+export const RELEASE_WORKFLOW_PATH = '.github/workflows/release.yml'
 
 /** Read-only: local git facts plus public GitHub reads; nothing is pushed or published. */
 export interface PublishStatus {
@@ -134,8 +146,15 @@ export interface PublishStatus {
   remote: PublishRemoteState | null
 }
 
-export const getPluginProjectPublishStatus = (projectId: string): Promise<PublishStatus> =>
-  get(`/plugin-projects/${encodeURIComponent(projectId)}/publish-status`, config)
+/** `fresh` bypasses the server's GitHub cache (an explicit refresh); rate limits still apply. */
+export const getPluginProjectPublishStatus = (
+  projectId: string,
+  fresh = false
+): Promise<PublishStatus> =>
+  get(`/plugin-projects/${encodeURIComponent(projectId)}/publish-status`, {
+    ...config,
+    ...(fresh ? { params: { fresh: 1 } } : {}),
+  })
 
 /** Outcome of `neko-plugin create-repo` run from the workbench. */
 export type RepoCreateStatus = 'created' | 'manual' | 'failed'

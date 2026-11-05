@@ -5,10 +5,11 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { authoringMessages } from '@/i18n/authoring'
 
+const get = vi.hoisted(() => vi.fn())
 const post = vi.hoisted(() => vi.fn())
 const put = vi.hoisted(() => vi.fn())
 const openLocalPath = vi.hoisted(() => vi.fn())
-vi.mock('./index', () => ({ post, put }))
+vi.mock('./index', () => ({ get, post, put }))
 vi.mock('@/utils/openExternal', () => ({ openLocalPath }))
 
 import {
@@ -17,6 +18,7 @@ import {
   projectErrorCode,
   PLUGIN_ID_PATTERN,
   createPluginProjectRepo,
+  getPluginProjectPublishStatus,
   updatePluginProjectMetadata,
 } from './pluginProjects'
 import { errorMessageKey, PROJECT_ERROR_MESSAGES } from '@/composables/useAuthoringProjects'
@@ -26,6 +28,7 @@ const readSource = (path: string) => readFileSync(resolve(repoRoot, path), 'utf8
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  get.mockReset()
   post.mockReset()
   put.mockReset()
   openLocalPath.mockReset()
@@ -37,6 +40,17 @@ describe('updatePluginProjectMetadata', () => {
     put.mockResolvedValue({ project_id: 'p1', ...metadata })
     await expect(updatePluginProjectMetadata('p1', metadata)).resolves.toMatchObject(metadata)
     expect(put).toHaveBeenCalledWith('/plugin-projects/p1/metadata', metadata, expect.objectContaining({ suppressErrorMessage: true }))
+  })
+})
+
+describe('getPluginProjectPublishStatus', () => {
+  it('asks the server to bypass its GitHub cache only on an explicit refresh', async () => {
+    get.mockResolvedValue({})
+    await getPluginProjectPublishStatus('p1')
+    await getPluginProjectPublishStatus('p1', true)
+    expect(get.mock.calls[0]![0]).toBe('/plugin-projects/p1/publish-status')
+    expect(get.mock.calls[0]![1]).not.toHaveProperty('params')
+    expect(get.mock.calls[1]![1]).toMatchObject({ params: { fresh: 1 }, suppressErrorMessage: true })
   })
 })
 
