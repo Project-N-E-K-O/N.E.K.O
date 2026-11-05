@@ -1792,7 +1792,13 @@ I.mod = window.appInterpage;
             const shouldContinue = options && typeof options.shouldContinue === 'function'
                 ? options.shouldContinue
                 : null;
+            const expectedManager = window.live2dManager;
+            const expectedModel = expectedManager?.getCurrentModel();
+            const restoreSequence = (expectedManager?._idleAnimationRestoreSequence || 0) + 1;
+            if (expectedManager) expectedManager._idleAnimationRestoreSequence = restoreSequence;
             const canContinue = () => {
+                if (window.live2dManager !== expectedManager || expectedManager?.getCurrentModel() !== expectedModel) return false;
+                if (expectedManager && expectedManager._idleAnimationRestoreSequence !== restoreSequence) return false;
                 if (!shouldContinue) return true;
                 try {
                     return shouldContinue() !== false;
@@ -1868,6 +1874,7 @@ I.mod = window.appInterpage;
             const motionFiles = modelFilesData?.motion_files || [];
             if (!live2dIdleAnimation) {
                 if (hasExplicitIdleAnimation) {
+                    if (expectedManager) expectedManager._userIdleAnimations = [];
                     console.log('[Live2D Main] 待机动作已明确清空');
                     return;
                 }
@@ -1880,6 +1887,7 @@ I.mod = window.appInterpage;
                     live2dIdleAnimation = singleMotion;
                     console.log('[Live2D Main] 没有保存的待机动作，使用唯一 motion 作为默认待机动作:', live2dIdleAnimation);
                 } else {
+                    if (expectedManager) expectedManager._userIdleAnimations = [];
                     console.log('[Live2D Main] 没有保存的待机动作');
                     return;
                 }
@@ -1889,6 +1897,7 @@ I.mod = window.appInterpage;
 
             const motionIndex = motionFiles.indexOf(live2dIdleAnimation);
             if (motionIndex < 0) {
+                if (expectedManager) expectedManager._userIdleAnimations = [];
                 console.log('[Live2D Main] 待机动作不在当前模型的动作列表中:', live2dIdleAnimation);
                 return;
             }
@@ -1930,6 +1939,9 @@ I.mod = window.appInterpage;
                 return;
             }
 
+            // 将保存的选择交给统一待机调度器，表情或动作结束后可自动重试。
+            live2dManager._userIdleAnimations = [live2dIdleAnimation];
+
             // 7. 设置循环播放
             const motionInstance = motionManager.motionGroups?.[groupName]?.[motionIndex];
             if (motionInstance) {
@@ -1941,7 +1953,8 @@ I.mod = window.appInterpage;
             }
 
             // 8. 以 IDLE 优先级恢复；普通动作占用时不抢占
-            if (live2dManager.hasActiveActionMotion(live2dModel)) return;
+            if (live2dManager.hasActiveActionMotion(live2dModel)
+                || live2dManager.hasActiveTransientExpression?.(live2dModel)) return;
             const motionState = motionManager.state;
             if (
                 (Number(motionState?.currentPriority || 0) === 1 || motionState?.reservedIdleGroup !== undefined)

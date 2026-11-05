@@ -73,13 +73,13 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-11-03-sync-recovery-memory-merge",
         "2026-11-03-news-overseas-systray-labels-main-merge",
         "2026-11-03-sync-model-main-merge",
-        "2026-11-03-chat-sync-residue-main-merge",
         "2026-10-30-sync-model-main-merge",
-        "2026-11-02-model-click-shake",
         "2026-10-29-sync-review-main-merge",
-        "2026-10-30-edge-peek-first-notice",
         "2026-10-23-media-memory-sync",
-        "2026-10-30-voice-processing-host",
+        "2026-11-04-visit-invitation-capacity",
+        "2026-10-22-pr3353-opper-assist-provider-main-rebase",
+        "2026-11-03-sync-archive-subject-recovery",
+        "2026-11-05-opper-assist-provider-main-merge",
         "2026-11-03-news-overseas-chat-sync-main-merge",
         "2026-11-03-systray-intro-es-pt-labels",
         "2026-11-02-model-click-shake",
@@ -133,6 +133,9 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-22-recent-memory-sync",
         "2026-10-23-pr3482-feedback-devices",
         "2026-10-22-memory-browser-local-only",
+        "2026-10-20-pr3353-opper-assist-provider-main-rebase",
+        "2026-10-11-pr3353-opper-assist-provider-main-rebase",
+        "2026-10-09-opper-assist-provider",
         "2026-10-22-pr3477-visit-main-merge",
         "2026-10-22-pr3467-rebase-main",
         "2026-10-21-pr3467-music-countdown",
@@ -539,7 +542,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "90d89f40800ee818afd1ecb609f23045ee0c1a49660b460e6baee3a520be0d3e"
+LOCALE_KEY_SIGNATURE = "2ab6d75cd8329f830d91fdff2e11aaf95f863dad793698f500a8d7c7a4beb892"
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "

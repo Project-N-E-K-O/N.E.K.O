@@ -350,6 +350,7 @@ Live2DManager.prototype.playActionMotion = async function(groupName, index, opti
     const motionManager = model?.internalModel?.motionManager;
     if (!model || typeof model.motion !== 'function' || !motionManager) return false;
     if (!this._allowsAvatarOperation(options, 'motion')) return false;
+    if (this.hasActiveTransientExpression?.(model)) return false;
     const operation = live2dCreateAvatarOperation(this, options);
     const owners = live2dGetMotionOwners(motionManager);
     if (owners.quarantine.size) {
@@ -357,6 +358,7 @@ Live2DManager.prototype.playActionMotion = async function(groupName, index, opti
         catch (_) { operation.dispose(); return false; }
     }
     if (!operation.isCurrent()) { operation.dispose(); return false; }
+    if (this.hasActiveTransientExpression?.(model)) { operation.dispose(); return false; }
     if (this.hasActiveActionMotion(model)) {
         console.log(`[Live2D] 已有动作正在播放，忽略新动作: ${groupName}`);
         operation.dispose();
@@ -495,6 +497,10 @@ const Easing = {
 
 Live2DManager.prototype.removeModel = async function(options = {}) {
     this._cancelAvatarOperations();
+    if (typeof this._cancelSmoothReset === 'function') this._cancelSmoothReset();
+    if (typeof this._removeManualExpressionOverride === 'function') {
+        this._removeManualExpressionOverride(this._manualExpressionListener, this._manualExpressionEmitter, { retire: true });
+    }
     this._invalidateParameterReloadTickets();
     // Stop old performance drivers before the first asynchronous teardown.
     if (this._avatarPerformanceSessionOwners) this._avatarPerformanceSessionOwners.clear();
@@ -575,7 +581,9 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
     }
     this._transientExpressionGeneration = (this._transientExpressionGeneration || 0) + 1;
     this._transientExpressionTask = null;
+    this._transientExpressionPending = null;
     this._activeTransientExpression = false;
+    this._userIdleAnimations = [];
     this._motionParameterTrackGeneration = (this._motionParameterTrackGeneration || 0) + 1;
     if (typeof this._nextMotionTimerGeneration === 'function') {
         this._nextMotionTimerGeneration();
@@ -2204,7 +2212,7 @@ Live2DManager.prototype.setupIdleMotionLoop = function(model) {
             if (this.currentModel !== model || model.destroyed || window._currentMotionPreviewId != null || this._temporaryMotionSuspendToken) {
                 return;
             }
-            if (this.isAvatarPerformanceCapabilityLocked('motion')) {
+            if (this.isAvatarPerformanceCapabilityLocked('motion') || this.hasActiveTransientExpression?.(model)) {
                 scheduleIdleMotion(1000, { replace: true });
                 return;
             }
@@ -2236,7 +2244,7 @@ Live2DManager.prototype.setupIdleMotionLoop = function(model) {
         if (this._temporaryMotionSuspendToken) {
             return;
         }
-        if (this.isAvatarPerformanceCapabilityLocked('motion')) {
+        if (this.isAvatarPerformanceCapabilityLocked('motion') || this.hasActiveTransientExpression?.(model)) {
             scheduleIdleMotion(1000, { replace: true });
             return;
         }
@@ -2263,7 +2271,8 @@ Live2DManager.prototype.setupIdleMotionLoop = function(model) {
 
 // 播放待机动作（从用户保存的 Idle 动画或默认 Idle 随机选择）
 Live2DManager.prototype._playIdleMotion = async function(motionManager) {
-    if (this._temporaryMotionSuspendToken || this.isAvatarPerformanceCapabilityLocked('motion')) {
+    if (this._temporaryMotionSuspendToken || this.isAvatarPerformanceCapabilityLocked('motion')
+        || this.hasActiveTransientExpression?.()) {
         return;
     }
     const expectedModel = this.currentModel;
@@ -2274,6 +2283,7 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
         && window._currentMotionPreviewId == null
         && !this._temporaryMotionSuspendToken
         && !this.isAvatarPerformanceCapabilityLocked('motion')
+        && !this.hasActiveTransientExpression?.(expectedModel)
     );
     const getRandomizedIndexes = (length) => {
         const indexes = [];
@@ -2360,9 +2370,16 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
             console.warn('[Live2D] motionGroups 不可用或 PreviewAll 组不存在，跳过用户待机动作');
         } else {
             const group = motionGroups.PreviewAll;
+            const normalizeIdleFile = file => String(file || '').replace(/\\/g, '/').replace(/^\.\//, '');
+            const availableFiles = new Set(Array.isArray(group) ? group.map((motion, index) => normalizeIdleFile(
+                getMotionFile(motion) || getRegisteredMotionFile('PreviewAll', index)
+            )).filter(Boolean) : []);
+            const configuredFiles = new Set(idleAnimations.map(normalizeIdleFile));
+            // 先匹配完整相对路径；仅旧文件名配置在没有精确匹配时按 basename 兼容。
+            const legacyNames = new Set([...configuredFiles].filter(file => !file.includes('/') && !availableFiles.has(file)));
             const isConfiguredIdle = (motion, file) => {
-                const motionFile = file || getMotionFile(motion);
-                return motionFile && idleAnimations.includes(motionFile.split('/').pop());
+                const motionFile = normalizeIdleFile(file || getMotionFile(motion));
+                return motionFile && (configuredFiles.has(motionFile) || legacyNames.has(motionFile.split('/').pop()));
             };
             const available = Array.isArray(group)
                 ? group.filter((motion, index) => isConfiguredIdle(
@@ -2377,7 +2394,7 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
                 if (motionManager.playing
                     && currentGroup === 'PreviewAll'
                     && currentFile
-                    && idleAnimations.includes(currentFile.split('/').pop())) {
+                    && isConfiguredIdle(null, currentFile)) {
                     return;
                 }
                 if (typeof this.hasActiveActionMotion === 'function'
@@ -3160,7 +3177,8 @@ Live2DManager.prototype.installMouthOverride = function() {
             }
             
             // 先调用原始的 motionManager.update（添加错误处理）
-            if (!this._temporaryMotionSuspendToken && !this.isAvatarPerformanceCapabilityLocked('motion') && origMotionManagerUpdate) {
+            if (!this._temporaryMotionSuspendToken && !this.isAvatarPerformanceCapabilityLocked('motion')
+                && !this.hasActiveTransientExpression?.() && origMotionManagerUpdate) {
                 const parameterSetter = coreModel.setParameterValueByIndex;
                 const hadOwnParameterSetter = Object.prototype.hasOwnProperty.call(coreModel, 'setParameterValueByIndex');
                 // Cubism 的按 ID、加法和乘法写入最终都经过这个 setter。

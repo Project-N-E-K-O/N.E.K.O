@@ -2203,27 +2203,18 @@ function showExportOptionsModal(catgirlName) {
     });
 }
 
-async function _downloadBlobAs(blob, filename, pickerType) {
-    // pickerType: { description, accept }，限制保存对话框文件类型
-    try {
-        if ('showSaveFilePicker' in window && pickerType) {
-            const fh = await window.showSaveFilePicker({ suggestedName: filename, types: [pickerType] });
-            const w = await fh.createWritable();
-            await w.write(blob);
-            await w.close();
-            return true;
-        }
-    } catch (err) {
-        if (err && err.name === 'AbortError') return false;
-        // 其它错误回退到 <a> 下载
-    }
+async function _downloadBlobAs(blob, filename) {
+    // 统一走下载流程；Electron 的 will-download 已负责另存为对话框。
+    // 先用 showSaveFilePicker 再回退下载，会在写入失败时留下空文件并重复弹窗。
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
     a.download = filename;
     document.body.appendChild(a);
     a.click();
-    setTimeout(() => { if (a.parentNode) a.parentNode.removeChild(a); URL.revokeObjectURL(url); }, 0);
+    a.remove();
+    // 等浏览器 / Electron 接管下载后再释放 Blob URL。
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
     return true;
 }
 
@@ -2253,9 +2244,6 @@ async function exportCharacterCard(catgirlName) {
     const fallbackName = mode === 'settings-only'
         ? `${catgirlName}_设定.nekocfg`
         : `${catgirlName}.png`;
-    const pickerType = mode === 'settings-only'
-        ? { description: 'NEKO 设定文件', accept: { 'application/octet-stream': ['.nekocfg'] } }
-        : { description: 'NEKO 角色卡 (PNG)', accept: { 'image/png': ['.png'] } };
 
     const loadingText = window.t ? window.t('character.exportingCard') : '正在导出...';
     showMessage(loadingText, 'info');
@@ -2267,7 +2255,7 @@ async function exportCharacterCard(catgirlName) {
         }
         const blob = await resp.blob();
         const filename = _filenameFromContentDisposition(resp.headers.get('Content-Disposition'), fallbackName);
-        const ok = await _downloadBlobAs(blob, filename, pickerType);
+        const ok = await _downloadBlobAs(blob, filename);
         if (ok) {
             const successText = window.t ? window.t('character.exportCardSuccess') : '导出成功';
             showMessage(successText, 'success');

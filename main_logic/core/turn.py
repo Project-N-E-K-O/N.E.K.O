@@ -1913,10 +1913,11 @@ class TurnMixin:
         cleaned = text.strip()
         if not cleaned:
             return
+        published_at = time.time() if ts is None else ts
+        event_id = uuid4().hex
         # Plugin conversations bus: original user wording, paired with _publish_ai_message_to_plugin_bus;
         # voice timestamps reflect transcription arrival, not guaranteed actual cross-character speech order.
         try:
-            published_at = time.time() if ts is None else ts
             # Speech ids remain diagnostic context; each record is one message.
             user_turn_id = str(getattr(self, "current_speech_id", "") or "")
             self._fire_task(publish_conversation_turn_observed_best_effort(
@@ -1932,11 +1933,14 @@ class TurnMixin:
                     "ts": published_at,
                 },
                 ts=published_at,
+                event_id=event_id,
             ))
         except Exception:
             logger.debug("[plugin-bus] user message not published", exc_info=True)
         event = {
             "type": "user_message",
+            "event_id": event_id,
+            "_ts": published_at,
             "content": cleaned,
             "lanlan": self.lanlan_name,
             "is_voice": bool(is_voice_source),

@@ -885,7 +885,7 @@ async def test_path_b_filters_known_pool_by_window_and_caps():
     fake_fact_store.aload_facts = AsyncMock(return_value=all_facts)
     captured_known_pool = []
 
-    async def capture_extract(name, messages, known_pool):
+    async def capture_extract(name, messages, known_pool, **_kwargs):
         captured_known_pool.extend(known_pool)
         return []
 
