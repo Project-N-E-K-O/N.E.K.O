@@ -275,6 +275,10 @@ class NotifyMixin:
         # readers need the same key or user bans never arrive.
         # system prompt，codex P2）。
         _directives_key = self.lanlan_name or "default"
+        # The directive / topic blocks below take the full locale, not the short
+        # _lang above: short has already collapsed zh-TW into zh, so their zh-TW
+        # templates were never reached. prompts_directives normalizes internally.
+        _directives_lang = normalize_language_code(self.user_language, format="full")
 
         # ── Explicit user topic-ban injection ──
         # Users' past-three-day 别再提 X / stop saying X instructions are already visible
@@ -287,7 +291,7 @@ class NotifyMixin:
 
             prompt += get_user_directives_manager().render_prompt_block(
                 _directives_key,
-                _lang,
+                _directives_lang,
             )
         except Exception as _exc:  # pragma: no cover - defensive
             logger.debug(
@@ -308,7 +312,7 @@ class NotifyMixin:
             anti_repeat_corpus = get_anti_repeat_corpus()
             await anti_repeat_corpus.apreload(_directives_key)
             topics = anti_repeat_corpus.top_recent_topics(_directives_key)
-            topic_block = render_recent_topics_block(topics, _lang)
+            topic_block = render_recent_topics_block(topics, _directives_lang)
             prompt += topic_block
             if topic_block:
                 from memory.anti_repeat_effects import (
@@ -363,7 +367,8 @@ class NotifyMixin:
             logger.debug("[UserDirectives] pending flag read failed: %s", exc)
             return
         try:
-            _lang = normalize_language_code(self.user_language, format='short')
+            # Full, not short: same reason as _build_initial_prompt's _directives_lang.
+            _lang = normalize_language_code(self.user_language, format='full')
             # Render the **entire active list**, not newly extracted terms only, matching
             # _build_initial_prompt injection. Incremental-only injection makes session bans depend on
             # which were just uttered, differing from
