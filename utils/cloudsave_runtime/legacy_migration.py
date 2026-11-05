@@ -31,6 +31,7 @@ from typing import Any
 
 from config import DEFAULT_CONFIG_DATA
 from utils.file_utils import atomic_write_json, scrub_non_finite_numbers
+from utils.preferences_sanitize import sanitize_preferences_payload
 from utils.storage_path_rewrite import rebase_runtime_bound_workshop_config_paths
 
 from ._shared import (
@@ -648,8 +649,6 @@ def _stage_merged_runtime_configs(config_manager, *, source_root: Path, target_r
         # poisoned model entry -- and any poisoned number inside the settings
         # journal -- straight through, so the import would fail and leave the user
         # on the old root. Clean the payload instead of dropping it.
-        from utils.preferences import sanitize_preferences_payload
-
         atomic_write_json(
             config_dir / "user_preferences.json",
             sanitize_preferences_payload(merged_preferences),

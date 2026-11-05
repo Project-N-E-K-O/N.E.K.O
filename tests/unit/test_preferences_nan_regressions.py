@@ -27,6 +27,7 @@ from starlette.responses import Response
 
 from main_routers.config_router import preferences as preferences_router
 from utils import preferences, preferences_audit
+from utils import preferences_sanitize as sanitize
 
 GLOBAL_KEY = preferences.GLOBAL_CONVERSATION_KEY
 JOURNAL_KEY = preferences_audit.JOURNAL_KEY
@@ -48,8 +49,8 @@ def isolated_preferences(monkeypatch, tmp_path):
 
     monkeypatch.setattr(preferences, "_config_manager", Config())
     monkeypatch.setattr(preferences, "assert_cloudsave_writable", lambda *a, **k: None)
-    monkeypatch.setattr(preferences, "_SANITIZE_WARNED", set())
-    monkeypatch.setattr(preferences, "_SANITIZE_SUPPRESSED", [0])
+    monkeypatch.setattr(sanitize, "_SANITIZE_WARNED", set())
+    monkeypatch.setattr(sanitize, "_SANITIZE_SUPPRESSED", [0])
     # Journal behaviour must not depend on which test file ran before this one.
     monkeypatch.setattr(preferences_audit, "_attribution_factory", None)
     monkeypatch.setattr(preferences_audit, "_capture_protocol", 1)

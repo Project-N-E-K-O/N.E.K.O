@@ -18,6 +18,7 @@ from starlette.responses import Response
 
 from main_routers.config_router import preferences as preferences_router
 from utils import preferences
+from utils import preferences_sanitize as sanitize
 
 INVALID_MESSAGE = "偏好数据格式无效"
 
@@ -37,8 +38,8 @@ def isolated_preferences(monkeypatch, tmp_path):
 
     monkeypatch.setattr(preferences, "_config_manager", Config())
     monkeypatch.setattr(preferences, "assert_cloudsave_writable", lambda *a, **k: None)
-    monkeypatch.setattr(preferences, "_SANITIZE_WARNED", set())
-    monkeypatch.setattr(preferences, "_SANITIZE_SUPPRESSED", [0])
+    monkeypatch.setattr(sanitize, "_SANITIZE_WARNED", set())
+    monkeypatch.setattr(sanitize, "_SANITIZE_SUPPRESSED", [0])
     return path
 
 

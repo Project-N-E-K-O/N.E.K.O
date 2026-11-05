@@ -25,6 +25,7 @@ from starlette.requests import Request
 
 from main_routers.config_router import preferences as preferences_router
 from utils import preferences, preferences_audit
+from utils import preferences_sanitize as sanitize
 
 GLOBAL_KEY = preferences.GLOBAL_CONVERSATION_KEY
 
@@ -45,8 +46,8 @@ def isolated_preferences(monkeypatch, tmp_path):
 
     monkeypatch.setattr(preferences, "_config_manager", Config())
     monkeypatch.setattr(preferences, "assert_cloudsave_writable", lambda *a, **k: None)
-    monkeypatch.setattr(preferences, "_SANITIZE_WARNED", set())
-    monkeypatch.setattr(preferences, "_SANITIZE_SUPPRESSED", [0])
+    monkeypatch.setattr(sanitize, "_SANITIZE_WARNED", set())
+    monkeypatch.setattr(sanitize, "_SANITIZE_SUPPRESSED", [0])
     # Journal behaviour must not depend on which test file ran before this one.
     monkeypatch.setattr(preferences_audit, "_attribution_factory", None)
     monkeypatch.setattr(preferences_audit, "_capture_protocol", 1)
@@ -88,35 +89,35 @@ def model_entry(model_path, **extra):
 @pytest.mark.unit
 def test_huge_int_is_rejected_without_raising():
     """10**500 is beyond float range; math.isfinite would raise OverflowError."""
-    assert preferences.is_finite_json_number(10 ** 500) is False
+    assert sanitize.is_finite_json_number(10 ** 500) is False
 
 
 @pytest.mark.unit
 def test_safe_integer_boundary():
-    assert preferences.is_finite_json_number(2 ** 53) is True
-    assert preferences.is_finite_json_number(2 ** 53 + 1) is False
-    assert preferences.is_finite_json_number(-2 ** 53) is True
-    assert preferences.is_finite_json_number(-2 ** 53 - 1) is False
+    assert sanitize.is_finite_json_number(2 ** 53) is True
+    assert sanitize.is_finite_json_number(2 ** 53 + 1) is False
+    assert sanitize.is_finite_json_number(-2 ** 53) is True
+    assert sanitize.is_finite_json_number(-2 ** 53 - 1) is False
 
 
 @pytest.mark.unit
 def test_bool_is_not_a_number():
     # bool subclasses int and math.isfinite(True) is True; persisting "true" as a
     # coordinate breaks Number.isFinite on the client.
-    assert preferences.is_finite_json_number(True) is False
-    assert preferences.is_finite_json_number(False) is False
+    assert sanitize.is_finite_json_number(True) is False
+    assert sanitize.is_finite_json_number(False) is False
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
 def test_non_finite_floats_are_rejected(value):
-    assert preferences.is_finite_json_number(value) is False
+    assert sanitize.is_finite_json_number(value) is False
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("value", [0, -1, 1.5, 2 ** 53 - 1])
 def test_finite_numbers_are_accepted(value):
-    assert preferences.is_finite_json_number(value) is True
+    assert sanitize.is_finite_json_number(value) is True
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +128,7 @@ def test_finite_numbers_are_accepted(value):
 @pytest.mark.unit
 def test_nan_position_drops_only_the_bad_coordinate():
     """A read removes the poisoned number, not the user's model entry."""
-    cleaned = preferences._sanitize_preferences_entries(
+    cleaned = sanitize._sanitize_preferences_entries(
         [
             model_entry("ok.model3.json"),
             model_entry("bad.model3.json", position={"x": float("nan"), "y": 2}),
@@ -143,7 +144,7 @@ def test_nan_position_drops_only_the_bad_coordinate():
 @pytest.mark.unit
 def test_missing_position_key_keeps_the_entry():
     """Only non-finite numbers are removed; a missing y/z is not a reason to drop."""
-    cleaned = preferences._sanitize_preferences_entries(
+    cleaned = sanitize._sanitize_preferences_entries(
         [model_entry("bad.model3.json", position={"x": 1})]
     )
     assert len(cleaned) == 1
@@ -153,7 +154,7 @@ def test_missing_position_key_keeps_the_entry():
 @pytest.mark.unit
 def test_non_mapping_field_is_preserved_as_is():
     """Shape is not policed on read: a non-dict position survives untouched."""
-    cleaned = preferences._sanitize_preferences_entries(
+    cleaned = sanitize._sanitize_preferences_entries(
         [model_entry("m.model3.json", position=None, scale=["legacy"])]
     )
     assert len(cleaned) == 1
@@ -163,7 +164,7 @@ def test_non_mapping_field_is_preserved_as_is():
 
 @pytest.mark.unit
 def test_non_finite_optional_field_is_dropped_without_losing_the_model():
-    cleaned = preferences._sanitize_preferences_entries(
+    cleaned = sanitize._sanitize_preferences_entries(
         [model_entry("m.model3.json", rotation={"x": float("inf"), "y": 0, "z": 0})]
     )
     assert len(cleaned) == 1
@@ -175,7 +176,7 @@ def test_non_finite_optional_field_is_dropped_without_losing_the_model():
 @pytest.mark.unit
 def test_parameters_group_is_dropped_together():
     """B-2: mode='replace' promises a complete snapshot, so a bad value drops both."""
-    cleaned = preferences._sanitize_preferences_entries(
+    cleaned = sanitize._sanitize_preferences_entries(
         [
             model_entry(
                 "m.model3.json",
@@ -192,7 +193,7 @@ def test_parameters_group_is_dropped_together():
 @pytest.mark.unit
 def test_dangling_parameters_mode_is_dropped():
     """B-2: a mode without the parameters it describes can never validate again."""
-    cleaned = preferences._sanitize_preferences_entries(
+    cleaned = sanitize._sanitize_preferences_entries(
         [model_entry("m.model3.json", parameters_mode="replace")]
     )
     assert len(cleaned) == 1
@@ -201,7 +202,7 @@ def test_dangling_parameters_mode_is_dropped():
 
 @pytest.mark.unit
 def test_valid_parameters_group_survives():
-    cleaned = preferences._sanitize_preferences_entries(
+    cleaned = sanitize._sanitize_preferences_entries(
         [
             model_entry(
                 "m.model3.json",
@@ -223,7 +224,7 @@ def test_valid_entry_is_byte_for_byte_unchanged():
         display={"screenX": 0, "screenY": 0},
         camera_position={"x": 1, "y": 2, "z": 3, "qx": 0, "qy": 0, "qz": 0, "qw": 1},
     )
-    assert preferences._sanitize_preferences_entries([entry]) == [entry]
+    assert sanitize._sanitize_preferences_entries([entry]) == [entry]
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +235,7 @@ def test_valid_entry_is_byte_for_byte_unchanged():
 @pytest.mark.unit
 def test_global_entry_keeps_journal_and_drops_only_bad_numbers():
     journal = {"version": 1, "revision": 3, "entries": []}
-    cleaned = preferences._sanitize_preferences_entries(
+    cleaned = sanitize._sanitize_preferences_entries(
         [
             {
                 "model_path": GLOBAL_KEY,
@@ -256,7 +257,7 @@ def test_global_entry_keeps_journal_and_drops_only_bad_numbers():
 
 @pytest.mark.unit
 def test_deeply_nested_global_nan_is_stripped():
-    cleaned = preferences._sanitize_preferences_entries(
+    cleaned = sanitize._sanitize_preferences_entries(
         [
             {
                 "model_path": GLOBAL_KEY,
@@ -272,7 +273,7 @@ def test_deeply_nested_global_nan_is_stripped():
 @pytest.mark.unit
 def test_sanitized_payload_always_serialises_with_allow_nan_false():
     """B-3 post-condition: this is what makes 'GET never 500s' provable."""
-    payload = preferences._sanitize_preferences_entries(
+    payload = sanitize._sanitize_preferences_entries(
         [
             model_entry("a.model3.json", rotation={"x": float("nan")}),
             {"model_path": GLOBAL_KEY, "weird": {"deep": [float("inf")]}},
@@ -300,18 +301,18 @@ def test_repeated_loads_warn_once_per_field(isolated_preferences):
         assert len(loaded) == 1
         assert loaded[0]["position"] == {"y": 0}
 
-    assert preferences._SANITIZE_WARNED == {("a.model3.json", "position.x")}
+    assert sanitize._SANITIZE_WARNED == {("a.model3.json", "position.x")}
 
 
 @pytest.mark.unit
 def test_warn_tracking_is_bounded(isolated_preferences, monkeypatch):
-    monkeypatch.setattr(preferences, "_SANITIZE_WARNED_MAX", 2)
+    monkeypatch.setattr(sanitize, "_SANITIZE_WARNED_MAX", 2)
 
     for index in range(4):
-        preferences._note_sanitize_drop(f"m{index}.model3.json", "position.x")
+        sanitize._note_sanitize_drop(f"m{index}.model3.json", "position.x")
 
-    assert len(preferences._SANITIZE_WARNED) == 2
-    assert preferences._SANITIZE_SUPPRESSED[0] == 2
+    assert len(sanitize._SANITIZE_WARNED) == 2
+    assert sanitize._SANITIZE_SUPPRESSED[0] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -493,11 +494,11 @@ def test_post_preferences_still_stores_finite_values(isolated_preferences):
 @pytest.mark.unit
 def test_sanitize_preferences_payload_tolerates_dict_and_none():
     """The file may hold the legacy dict form; a missing file holds nothing."""
-    assert preferences.sanitize_preferences_payload(None) == []
-    assert preferences.sanitize_preferences_payload("not a payload") == []
-    assert preferences.sanitize_preferences_payload([None, "x", 3]) == []
+    assert sanitize.sanitize_preferences_payload(None) == []
+    assert sanitize.sanitize_preferences_payload("not a payload") == []
+    assert sanitize.sanitize_preferences_payload([None, "x", 3]) == []
 
-    cleaned = preferences.sanitize_preferences_payload(
+    cleaned = sanitize.sanitize_preferences_payload(
         {"model_path": "a.model3.json", "position": {"x": float("nan"), "y": 1}}
     )
     assert [entry["model_path"] for entry in cleaned] == ["a.model3.json"]
@@ -516,7 +517,7 @@ def test_sanitize_preferences_payload_does_not_mutate_its_input():
         }
     ]
 
-    cleaned = preferences.sanitize_preferences_payload(payload)
+    cleaned = sanitize.sanitize_preferences_payload(payload)
 
     assert cleaned[0]["position"] == {"y": 1}
     # The parameters group is dropped as a unit (its "replace" snapshot would lie).
@@ -563,7 +564,7 @@ def test_sanitize_preferences_payload_keeps_journal_structure():
         "_settings_mutation_journal": journal,
     }]
 
-    cleaned = preferences.sanitize_preferences_payload(payload)
+    cleaned = sanitize.sanitize_preferences_payload(payload)
 
     assert len(cleaned) == 1
     global_entry = cleaned[0]
@@ -596,9 +597,9 @@ def test_write_sanitiser_refuses_to_answer_with_an_empty_file():
     payload = [{"model_path": "a.model3.json", "position": {"x": 1, "weird": {1, 2}}}]
 
     with pytest.raises(ValueError):
-        preferences.sanitize_preferences_payload(payload)
+        sanitize.sanitize_preferences_payload(payload)
 
-    assert preferences._sanitize_preferences_entries(payload) == []
+    assert sanitize._sanitize_preferences_entries(payload) == []
 
 
 def seed_writer_payload(path):

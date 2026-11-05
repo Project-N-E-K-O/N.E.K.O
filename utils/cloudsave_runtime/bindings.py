@@ -21,6 +21,7 @@ Split out of the former monolithic ``utils/cloudsave_runtime.py``.
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 from copy import deepcopy
@@ -29,6 +30,7 @@ from typing import Any
 
 from config import CHARACTER_RESERVED_FIELDS, DEFAULT_LIVE2D_MODEL_PATH
 from utils.preferences_audit import JOURNAL_KEY, attach_journal, read_journal
+from utils.preferences_sanitize import sanitize_preferences_payload
 from utils.conversation_settings_constants import (
     ALLOWED_CONVERSATION_SETTINGS as _ALLOWED_CONVERSATION_SETTINGS,
     ASR_WRITE_ID_MAX_FUTURE_SKEW_MS as _ASR_WRITE_ID_MAX_FUTURE_SKEW_MS,
@@ -78,11 +80,10 @@ def _sanitize_preferences_for_write(payload: Any) -> list[dict[str, Any]]:
     -- would therefore abort the cloud export or restore as a whole. Removing
     only the non-finite numbers keeps every entry and the journal structure.
 
-    The import is local on purpose: ``utils.preferences`` imports this package,
-    so a module-level import would be circular.
+    The cleaner lives in ``utils.preferences_sanitize``, a leaf module: importing
+    ``utils.preferences`` here would initialise the configuration manager -- and
+    run its migration -- as an import side effect.
     """
-    from utils.preferences import sanitize_preferences_payload
-
     return sanitize_preferences_payload(payload)
 
 
@@ -116,10 +117,18 @@ def _build_runtime_preferences_payload(config_manager, conversation_settings: di
         for entry in existing_preferences
         if not isinstance(entry, dict) or entry.get("model_path") != GLOBAL_CONVERSATION_KEY
     ]
+    # Clean before the completeness check (M-001). A non-finite value must not
+    # count as "restored": if it did, the key would look present here, the reset
+    # marker would be dropped, and the trailing sanitation would remove the value
+    # afterwards -- leaving a missing setting with no tombstone. An open client
+    # would then keep its old local value and write it back, silently undoing that
+    # part of the restore. Only non-finite floats are removed; bools, ints and
+    # strings are legitimate setting values.
     filtered_settings = {
         key: value
         for key, value in (conversation_settings or {}).items()
         if key not in {"model_path", JOURNAL_KEY}
+        and not (isinstance(value, float) and not math.isfinite(value))
     }
     restored_setting_keys = set(filtered_settings) & _ALLOWED_CONVERSATION_SETTINGS
     if restored_setting_keys == _ALLOWED_CONVERSATION_SETTINGS:
