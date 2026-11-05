@@ -550,7 +550,7 @@ def test_cached_idle_pet_checks_for_missed_invitations_before_allowing_voice(out
 
 
 @pytest.mark.parametrize("change", ["newer_phase", "different_visit"])
-def test_existing_transport_recovery_preserves_newer_lifecycle_and_other_visit(change):
+def test_existing_transport_recovery_preserves_newer_lifecycle_or_replaces_stale_visit(change):
     out = run_visit_js(
         f"""
         const pet = makeBridge();
@@ -569,7 +569,44 @@ def test_existing_transport_recovery_preserves_newer_lifecycle_and_other_visit(c
         """,
         files=BRIDGE_FILES, extra_prelude=_prelude(),
     )
-    assert out == {"applied": False, "sameFrame": True, "phase": "wrap_up" if change == "newer_phase" else "joining", "visitId": True}
+    if change == "newer_phase":
+        assert out == {"applied": False, "sameFrame": True, "phase": "wrap_up", "visitId": True}
+    else:
+        assert out == {"applied": True, "sameFrame": False, "phase": "active", "visitId": False}
+
+
+def test_bfcache_recovery_replaces_stale_cat_display_before_starting_the_new_visit():
+    out = run_visit_js(
+        """
+        const pet = makeBridge();
+        load(pet.ctx, [DISPLAY_RELAY]);
+        const restored = [];
+        pet.ctx.addEventListener('neko-visit-display-state', event => restored.push(event.detail));
+        pet.bridge.onStateChange({ type: 'visit_state_change', action: 'started',
+          visit_id: VISIT_ID, side: 'host' });
+        pet.ctx.nekoRestoreVisitStateToDisplay({ type: 'visit_state_change', action: 'started',
+          visit_id: VISIT_ID, side: 'host', cat_scene: 2,
+          self_cat_asset: 'dev_neko', peer_cat_asset: 'yui_neko' });
+        pet.ctx.dispatchEvent({ type: 'pagehide', persisted: true });
+        pet.ctx.fetch = async () => ({ ok: true, json: async () => snapshot({
+          visit_id: 'B'.repeat(22), side: 'host', phase: 'active', cat_scene: 2,
+          self_cat_asset: 'yui_neko', peer_cat_asset: 'dev_neko'
+        }) });
+        const applied = await pet.bridge.recoverAfterReload('咪咪');
+        const snapshotAfter = pet.ctx.nekoVisitDisplayStateSnapshot();
+        return { applied, visitId: pet.bridge.getVisitId(), actions: restored.map(frame => ({
+          action: frame.action, visit_id: frame.visit_id, self_cat_asset: frame.self_cat_asset || ''
+        })), snapshotAfter };
+        """,
+        files=BRIDGE_FILES,
+        extra_prelude=_prelude(),
+    )
+    assert out["applied"] and out["visitId"] == "B" * 22
+    assert out["actions"][-2:] == [
+        {"action": "ended", "visit_id": VISIT_ID, "self_cat_asset": ""},
+        {"action": "started", "visit_id": "B" * 22, "self_cat_asset": "yui_neko"},
+    ]
+    assert out["snapshotAfter"]["visit_id"] == "B" * 22
 
 
 @pytest.mark.parametrize("failure", ["nonlocal", "missing_endpoint", "csrf", "server"])
