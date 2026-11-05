@@ -366,6 +366,32 @@ async def test_review_model_response_carries_source_index_to_persistence(tmp_pat
     assert 'recent_memory_id' not in prompts[0] and 'chat_original_source' not in prompts[0]
 
 
+@pytest.mark.parametrize('bad', ['oops', True, 1.5, None])
+@pytest.mark.parametrize('synced', [True, False])
+@pytest.mark.asyncio
+async def test_review_malformed_source_index_cannot_borrow_the_last_unmatched_identity(tmp_path, monkeypatch, bad, synced):
+    """With one same-role row left, a malformed index must not fall back to elimination in a synced window."""
+    from tests.unit.test_recent_file_lock import _make_manager, _write_disk, _read_disk, _ReviewLLM
+    from utils.llm_client import messages_to_dict
+
+    monkeypatch.setattr('memory.recent.assert_cloudsave_writable', lambda *args, **kwargs: None)
+    manager, name, path = _make_manager(tmp_path)
+    original = (_identified_review_messages() if synced else _unsynced_typed_review_messages())[:3]
+    _write_disk(path, original)
+    llm = _ReviewLLM([{'source_index': 0, 'role': 'Master', 'content': 'edited user-A'},
+                      {'source_index': 1, 'role': 'assistant', 'content': 'edited reply-A'},
+                      {'source_index': bad, 'role': 'Master', 'content': 'totally unrelated'}])
+    monkeypatch.setattr(manager, '_get_review_llm', lambda: llm)
+    status, _ = await manager.review_history(name, snapshot=original)
+    saved = _read_disk(path)
+    if synced:
+        assert status == 'failed'
+        assert messages_to_dict(saved) == messages_to_dict(original)
+    else:
+        assert status == 'patched'
+        assert [message.content for message in saved] == ['edited user-A', 'edited reply-A', 'totally unrelated']
+
+
 @pytest.mark.parametrize('memo_position', [0, 1, None])
 @pytest.mark.asyncio
 async def test_review_source_indices_follow_memo_normalization(tmp_path, monkeypatch, memo_position):

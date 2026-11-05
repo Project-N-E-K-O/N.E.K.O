@@ -360,6 +360,10 @@ def _compute_review_capacity(snapshot: list, current: list) -> tuple[int, int | 
     return (len(slots), slots[-1] if slots else None)
 
 
+# A source_index the review model returned but that is not an int (null included).
+_MALFORMED_REVIEW_SOURCE = object()
+
+
 def _resolve_review_sources(snapshot, corrected_messages, source_indexes=None):
     """Resolve edits to snapshot rows, never to their destination slots."""
     sources = [None] * len(corrected_messages) if source_indexes is None else list(source_indexes)
@@ -2700,6 +2704,11 @@ class CompressedRecentHistoryManager:
             projection_keys = ('recent_memory_id', 'recent_memory_time')
             has_sync_identity = any(any(key in message_metadata(current[slot]) for key in projection_keys)
                                     for slot in review_slots)
+            if source_indexes is not None and any(source is _MALFORMED_REVIEW_SOURCE for source in source_indexes):
+                if has_sync_identity:
+                    logger.warning(f"[RecentReview] {lanlan_name}: 模型返回的来源编号格式无效，同步消息无法对应，放弃本次审阅")
+                    return ('failed', None, 'invalid_review_sources')
+                source_indexes = [None if source is _MALFORMED_REVIEW_SOURCE else source for source in source_indexes]
             try:
                 sources = _resolve_review_sources(snapshot, corrected_messages, source_indexes)
             except ValueError:
@@ -3001,8 +3010,11 @@ class CompressedRecentHistoryManager:
                         # Default to user message.
                         corrected_messages.append(HumanMessage(content=content))
                     source_index = msg_data.get('source_index')
-                    # A malformed index is an unknown source; the commit decides whether that blocks.
-                    source_indexes.append(source_index if type(source_index) is int else None)
+                    # Keep "omitted" (None) apart from "malformed": a synced window rejects the
+                    # latter, while an unsynced one treats it as an unknown source.
+                    if 'source_index' in msg_data and type(source_index) is not int:
+                        source_index = _MALFORMED_REVIEW_SOURCE
+                    source_indexes.append(source_index)
 
                 # Normalize SystemMessage position: if snapshot head is memo,
                 # corrected_messages must begin with exactly one SystemMessage.
