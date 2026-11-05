@@ -276,6 +276,19 @@ def test_review_without_sync_projection_still_carries_proven_original_source(rev
     assert [message.metadata for message in saved] == [message.metadata for message in original[:2]]
 
 
+@pytest.mark.parametrize('bad', ['oops', 99])
+def test_review_unknown_position_still_blocks_elimination_for_its_neighbor(review_identity_case, bad):
+    """An omitted rewrite must not claim the last row an invalid-index rewrite may stand for."""
+    from utils.llm_client import HumanMessage, AIMessage
+
+    original = _unsynced_typed_review_messages()[:3]
+    corrected = [HumanMessage('edited user-A'), AIMessage('edited reply-A'), HumanMessage('x'), HumanMessage('y')]
+    status, saved, _ = review_identity_case(original, corrected, source_indexes=[0, 1, bad, None])
+    assert status == 'patched'
+    assert [message.content for message in saved][-2:] == ['x', 'y']
+    assert all('chat_original_source' not in (message.metadata or {}) for message in saved[-2:])
+
+
 def test_review_same_role_neighbors_keep_their_own_identity(review_identity_case):
     from utils.llm_client import HumanMessage
 

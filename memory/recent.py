@@ -403,8 +403,9 @@ def _resolve_review_sources(snapshot, corrected_messages, source_indexes=None, *
             continue
         matches = [index for index, original in enumerate(snapshot)
                    if index not in used and original.type == message.type]
-        unresolved = sum(source is None and slot not in unknown and corrected.type == message.type
-                         for slot, (source, corrected) in enumerate(zip(sources, corrected_messages, strict=True)))
+        # Unknown positions still compete for the remaining rows; they are only never assigned one.
+        unresolved = sum(source is None and corrected.type == message.type
+                         for source, corrected in zip(sources, corrected_messages, strict=True))
         if len(matches) == unresolved == 1:
             sources[position] = matches[0]
             used.add(matches[0])
