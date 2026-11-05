@@ -93,6 +93,14 @@ frame(started);
 assert.equal(window.nekoVisitCatPoseSnapshots().length, 1);
 assert.equal(window.nekoVisitCatWorldSnapshot().world_seq, 6);
 
+// BFCache does not rerun display-relay.js. Stable snapshots must remain for
+// cat-scene/cat-world to replay when their pageshow handlers rebind.
+window.dispatchEvent({ type: 'pagehide', persisted: true });
+assert.equal(window.nekoVisitDisplayStateSnapshot().visit_id, started.visit_id);
+assert.equal(window.nekoVisitCatPoseSnapshots().length, 1);
+assert.equal(window.nekoVisitCatWorldSnapshot().world_seq, 6);
+window.dispatchEvent({ type: 'pageshow', persisted: true });
+
 // A reload snapshot has no neko-visit-frame: a single window must apply it locally.
 const restored = [];
 window.addEventListener('neko-visit-display-state', (event) => restored.push(event.detail.visit_id));
@@ -101,6 +109,10 @@ assert.equal(window.nekoRelayVisitStateToDisplay(recovered), false);
 assert.equal(window.nekoRestoreVisitStateToDisplay(recovered), true);
 assert.deepEqual(restored, ['BBBBBBBBBBBBBBBBBBBBBB']);
 assert.equal(window.nekoVisitDisplayStateSnapshot().visit_id, 'BBBBBBBBBBBBBBBBBBBBBB');
+window.dispatchEvent({ type: 'pagehide', persisted: false });
+assert.equal(window.nekoVisitDisplayStateSnapshot(), null);
+assert.equal(window.nekoVisitCatPoseSnapshots().length, 0);
+assert.equal(window.nekoVisitCatWorldSnapshot(), null);
 process.stdout.write(JSON.stringify({ received: received.length, retainedAfterDuplicateStart: true }));
 """
 

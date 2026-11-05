@@ -634,19 +634,24 @@
     try { bridge.onStateChange(frame); } catch (_) { /* 下一条权威状态仍可恢复 */ }
   }
 
-  window.addEventListener('pagehide', function () {
+  window.addEventListener('pagehide', function (event) {
     stopIdleReconciliation();
     window.removeEventListener('neko-visit-frame', onVisitFrame);
     if (channel && typeof channel.close === 'function') {
       try { channel.close(); } catch (_) { /* noop */ }
     }
     channel = null;
-    lastDisplayState = null;
-    retainedCatStart = null;
-    retainedCatPhase = null;
-    retainedCatPoses.self = null;
-    retainedCatPoses.peer = null;
-    retainedCatWorld = null;
+    // A BFCache restore does not rerun this script. Keep the stable scene
+    // snapshots that cat-scene/cat-world replay on pageshow; ordinary unloads
+    // still release everything. Transient intents are never replayed.
+    if (!event || event.persisted !== true) {
+      lastDisplayState = null;
+      retainedCatStart = null;
+      retainedCatPhase = null;
+      retainedCatPoses.self = null;
+      retainedCatPoses.peer = null;
+      retainedCatWorld = null;
+    }
     retainedCatWorldIntents = [];
     lastCatWorldPointers.self = null;
     lastCatWorldPointers.peer = null;
