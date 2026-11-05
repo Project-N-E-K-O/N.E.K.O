@@ -71,6 +71,7 @@ from config.prompts.prompts_sys import (
     AGENT_TASK_STATUS_QUEUED,
     AGENT_TASKS_HEADER,
     AGENT_TASKS_NOTICE,
+    normalize_sys_prompt_locale,
 )
 from utils.language_utils import normalize_language_code, is_supported_language_code
 from utils.llm_tool_leak_filter import strip_tool_call_leaks
@@ -226,7 +227,8 @@ class NotifyMixin:
 
     async def _build_initial_prompt(self) -> str:
         """Build the system prompt and inject active task summary when agent is enabled."""
-        _lang = normalize_language_code(self.user_language, format="short")
+        # prompts_sys keys: zh / zh-TW / en ... A short code would fold zh-TW into zh.
+        _lang = normalize_sys_prompt_locale(self.user_language)
         if self._is_agent_enabled():
             # Keep the current wrapper structure but revert prompt semantics:
             # do not distinguish browser/computer/plugin in the initial capability text.
@@ -520,7 +522,7 @@ class NotifyMixin:
             active = [t for t in tasks if t.get("status") in ("running", "queued")]
             if not active:
                 return ""
-            _lang = normalize_language_code(self.user_language, format="short")
+            _lang = normalize_sys_prompt_locale(self.user_language)
             lines = []
             for t in active:
                 params = t.get("params") or {}
