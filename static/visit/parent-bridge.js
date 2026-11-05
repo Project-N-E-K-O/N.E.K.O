@@ -1194,13 +1194,14 @@
         var action = actionByPhase[snap.phase];
         if (!snap.active || !VISIT_ID_RE.test(snap.visit_id || '')
             || (snap.side !== 'host' && snap.side !== 'guest') || !action) return false;
-        var replacedVisit = state.frame && state.visitId !== snap.visit_id;
+        var replacedVisitId = state.visitId || state.closedVisitId;
+        var replacedVisit = replacedVisitId && replacedVisitId !== snap.visit_id;
         if (replacedVisit) {
           // BFCache 期间 Chat 可能已经结束旧场并开始新场。权威快照确认换场后，
           // 先让旧传输页正常退房并清掉旧猫场景，否则后面的新 visit_id 会被过滤。
           var replacedFrame = {
             type: 'visit_state_change', action: 'ended',
-            visit_id: state.visitId, side: state.side, reason: 'replaced'
+            visit_id: replacedVisitId, side: state.side, reason: 'replaced'
           };
           applyStateChange(replacedFrame, true);
           if (typeof win.nekoRestoreVisitStateToDisplay === 'function') {

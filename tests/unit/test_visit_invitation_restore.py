@@ -588,6 +588,8 @@ def test_bfcache_recovery_replaces_stale_cat_display_before_starting_the_new_vis
           visit_id: VISIT_ID, side: 'host', cat_scene: 2,
           self_cat_asset: 'dev_neko', peer_cat_asset: 'yui_neko' });
         pet.ctx.dispatchEvent({ type: 'pagehide', persisted: true });
+        pet.bridge._onFrameMessage({ source: pet.child, origin: pet.ctx.location.origin,
+          data: { t: 'closed', code: 4409 } });
         pet.ctx.fetch = async () => ({ ok: true, json: async () => snapshot({
           visit_id: 'B'.repeat(22), side: 'host', phase: 'active', cat_scene: 2,
           self_cat_asset: 'yui_neko', peer_cat_asset: 'dev_neko'
