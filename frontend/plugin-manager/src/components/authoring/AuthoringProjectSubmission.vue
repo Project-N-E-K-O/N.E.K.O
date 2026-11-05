@@ -243,6 +243,7 @@ async function createDraft() {
     const created = await createSubmissionDraft({
       repo_url: repoUrl.value,
       plugin_name: preview.plugin_name || props.pluginName || props.pluginId,
+      plugin_slug: preview.plugin_id || props.pluginId,
       description: preview.description ?? undefined,
       short_description: preview.short_description ?? undefined,
       license_name: preview.license_name ?? undefined,

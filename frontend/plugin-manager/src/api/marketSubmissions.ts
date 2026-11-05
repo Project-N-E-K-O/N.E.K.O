@@ -57,6 +57,8 @@ export interface RepositoryPreview {
 export interface SubmissionDraftCreate {
   repo_url: string
   plugin_name: string
+  /** The Market plugin ID; required, and must already be a valid ID. */
+  plugin_slug: string
   plugin_directory?: string
   description?: string
   short_description?: string

@@ -44,7 +44,12 @@ describe('listMarketSubmissions', () => {
 describe('write endpoints', () => {
   it('posts the draft body as JSON', async () => {
     fetchBridge.mockResolvedValue(jsonResponse(201, { id: 1, status: 'draft' }))
-    const payload = { repo_url: 'https://github.com/o/r', plugin_name: 'demo', tags: ['a'] }
+    const payload = {
+      repo_url: 'https://github.com/o/r',
+      plugin_name: 'demo',
+      plugin_slug: 'demo',
+      tags: ['a'],
+    }
     await createSubmissionDraft(payload)
     const [path, init] = fetchBridge.mock.calls[0]!
     expect(path).toBe('/market/submissions/drafts')

@@ -67,7 +67,16 @@
       </details>
     </section>
     <ol v-if="status" class="authoring-publish-steps">
-      <li v-for="step in steps" :key="step.id" class="authoring-publish-step">
+      <li
+        v-for="step in steps"
+        :key="step.id"
+        class="authoring-publish-step"
+        :class="{
+          'authoring-publish-step--current': step.id === currentStepId,
+          'authoring-publish-step--pending':
+            currentStepId && step.id !== currentStepId && step.state !== 'done',
+        }"
+      >
         <el-tag size="small" :type="TAG_TYPES[step.state]">{{ t(STATE_LABELS[step.state]) }}</el-tag>
         <div>
           <strong>{{ step.title }}</strong>
@@ -407,7 +416,10 @@ const steps = computed<Step[]>(() => {
     if (remote.visibility !== 'public') {
       repoState = 'todo'
       repoDetail = t('authoring.publishRepoNotPublic')
-    } else if (repo.worktree_clean !== true || repo.head_pushed !== true) {
+    } else if (repo.worktree_clean !== true) {
+      repoState = 'todo'
+      repoDetail = t('authoring.publishRepoUncommitted')
+    } else if (repo.head_pushed !== true) {
       repoState = 'todo'
       repoDetail = t('authoring.publishRepoUnpushed')
     } else {
@@ -444,11 +456,14 @@ const steps = computed<Step[]>(() => {
   return [
     { id: 'repository', title: t('authoring.publishStepRepository'), state: repoState, detail: repoDetail },
     { id: 'verify', title: t('authoring.publishStepVerify'), state: verifyState, detail: verifyDetail },
-    { id: 'submission', title: t('authoring.publishStepSubmission'), state: submissionState.value, detail: submissionDetail.value },
     { id: 'release', title: t('authoring.publishStepRelease'), state: releaseState, detail: releaseDetail },
+    { id: 'submission', title: t('authoring.publishStepSubmission'), state: submissionState.value, detail: submissionDetail.value },
     { id: 'market', title: t('authoring.publishStepMarket'), state: marketState.value, detail: marketDetail.value },
   ]
 })
+
+/** The first step that is not done is the one the user should act on now. */
+const currentStepId = computed(() => steps.value.find((step) => step.state !== 'done')?.id ?? '')
 
 const notes = computed(() => {
   const current = status.value
@@ -533,6 +548,13 @@ const notes = computed(() => {
 }
 .authoring-publish-step p {
   margin: var(--spacing-xs) 0 0;
+}
+.authoring-publish-step--current {
+  border-left: 3px solid var(--el-color-primary);
+  background: var(--surface-raised, var(--surface-inset));
+}
+.authoring-publish-step--pending {
+  opacity: 0.62;
 }
 .authoring-publish-notes {
   margin: var(--spacing-md) 0 0;
