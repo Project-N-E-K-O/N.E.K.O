@@ -10675,9 +10675,13 @@ body.avatar-tool-editor-page .avatar-tool-workspace-settings {
 .mini-game-invite-icon .recommendation-neko-artwork { width: 28px; height: 28px; }
 
 /* Quiet edge tools: keep history geometry intact and share the cyan toolbar ink. */
+.compact-export-history-anchor:has(.chat-clear-screen-tools) {
+  --compact-export-history-shadow-gutter-right: 56px;
+}
+
 .chat-clear-screen-tools {
   position: absolute;
-  right: 0;
+  right: 24px;
   bottom: 0;
   z-index: 3;
   display: flex;
@@ -10811,7 +10815,7 @@ body.avatar-tool-editor-page .avatar-tool-workspace-settings {
   }
 
   .compact-export-history-anchor:has(.chat-clear-screen-tools) {
-    --compact-export-history-shadow-gutter-right: 44px;
+    --compact-export-history-shadow-gutter-right: 68px;
   }
 
   .full-chat-clear-screen-tools {

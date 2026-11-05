@@ -66,6 +66,10 @@ export default function MessageList({
     [displayMessages],
   );
 
+  useEffect(() => {
+    if (displayMessages.length === 0) shouldScrollRef.current = true;
+  }, [displayMessages.length]);
+
   // Always instant scroll: behavior:'smooth' is silently broken in our Electron
   // host (window.scrollTo / element.scrollTo with behavior:'smooth' is a no-op),
   // which left the chat stuck at scrollTop=0 on mount and after each new message.

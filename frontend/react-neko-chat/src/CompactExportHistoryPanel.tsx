@@ -304,7 +304,7 @@ export default function CompactExportHistoryPanel({
     height: 0,
     scrollable: false,
   });
-  const selectedMessages = messages.filter(message => selectedIds.has(message.id));
+  const selectedMessages = displayMessages.filter(message => selectedIds.has(message.id));
   const previewHasSelection = selectedMessages.length > 0;
   const selectedMessageIds = selectedMessages.map(message => message.id);
   const selectedMessageSignature = selectedMessages.map(message => [

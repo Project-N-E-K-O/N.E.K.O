@@ -13,18 +13,40 @@ export function ChatScreenVisibilityProvider({ messages, children }: {
   messages: ChatMessage[];
   children: ReactNode;
 }) {
+  const captionTurnRef = useRef('');
   const [hiddenMessageIds, setHiddenMessageIds] = useState<ReadonlySet<string>>(EMPTY_HIDDEN_IDS);
   useEffect(() => {
     // A real host reset starts a new conversation; a visual clear never emits it.
-    const reset = () => setHiddenMessageIds(EMPTY_HIDDEN_IDS);
+    const reset = () => {
+      captionTurnRef.current = '';
+      setHiddenMessageIds(EMPTY_HIDDEN_IDS);
+    };
+    const rememberCaptionTurn = (event: Event) => {
+      const turnId = (event as CustomEvent).detail?.turnId;
+      if (turnId) captionTurnRef.current = String(turnId);
+    };
     window.addEventListener('react-chat-window:messages-cleared', reset);
-    return () => window.removeEventListener('react-chat-window:messages-cleared', reset);
+    window.addEventListener('react-chat-window:set-messages', reset);
+    window.addEventListener('react-chat-window:messages-replaced', reset);
+    window.addEventListener('neko-assistant-turn-start', rememberCaptionTurn);
+    window.addEventListener('neko-compact-caption-update', rememberCaptionTurn);
+    return () => {
+      window.removeEventListener('react-chat-window:messages-cleared', reset);
+      window.removeEventListener('react-chat-window:set-messages', reset);
+      window.removeEventListener('react-chat-window:messages-replaced', reset);
+      window.removeEventListener('neko-assistant-turn-start', rememberCaptionTurn);
+      window.removeEventListener('neko-compact-caption-update', rememberCaptionTurn);
+    };
   }, []);
   const value = useMemo(() => ({
     hiddenMessageIds,
     canClearScreen: messages.some(message => !hiddenMessageIds.has(message.id) && hasVisibleMessageContent(message)),
     // Keep host messages intact, including streaming IDs and export metadata.
-    clearScreen: () => setHiddenMessageIds(previous => new Set([...previous, ...messages.map(message => message.id)])),
+    clearScreen: () => setHiddenMessageIds(previous => new Set([
+      ...previous,
+      ...messages.map(message => message.id),
+      ...(captionTurnRef.current ? [`compact-caption:${captionTurnRef.current}`] : []),
+    ])),
   }), [hiddenMessageIds, messages]);
   return <ChatScreenVisibilityContext.Provider value={value}>{children}</ChatScreenVisibilityContext.Provider>;
 }

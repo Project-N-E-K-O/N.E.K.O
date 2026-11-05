@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import App from './App';
 import CompactExportHistoryPanel from './CompactExportHistoryPanel';
 import { ChatScreenVisibilityProvider } from './ChatScreenVisibility';
@@ -87,7 +87,7 @@ describe('visual-only chat clearing', () => {
     expect(fresh.container.querySelector('.message-list')).toHaveTextContent('Original history');
   });
 
-  it('keeps the original messages available for export after clearing their rows', async () => {
+  it('does not export an invisible preselected message after clearing', async () => {
     const messages = [message('export-original', 'Keep this in the export')];
     const buildPreview = vi.fn().mockResolvedValue({ previewKind: 'empty' });
     function ExportHarness() {
@@ -107,9 +107,9 @@ describe('visual-only chat clearing', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Clear screen' }));
     expect(container.querySelector('.compact-export-history-scroll')).not.toHaveTextContent('Keep this in the export');
     fireEvent.click(screen.getByRole('button', { name: 'Export' }));
-    await waitFor(() => expect(buildPreview).toHaveBeenCalledWith(expect.objectContaining({
-      messageIds: ['export-original'],
-    })));
+    await act(async () => {});
+    expect(buildPreview).not.toHaveBeenCalled();
+    expect(messages[0].id).toBe('export-original');
   });
 
   it('does not offer ordinary chat clearing during a theater performance', () => {
@@ -166,4 +166,44 @@ describe('visual-only chat clearing', () => {
     rerender(<App messages={[hint]} chatSurfaceMode="full" />);
     expect(screen.getByRole('button', { name: 'Clear screen' })).toBeEnabled();
   });
+  it.each(['set-messages', 'messages-replaced'])('resets reused IDs on host %s', eventName => {
+    const {container, rerender} = render(<App chatSurfaceMode="full" messages={[message('id', 'Old')]} />);
+    fireEvent.click(screen.getByRole('button', {name:'Clear screen'}));
+    act(() => window.dispatchEvent(new CustomEvent(`react-chat-window:${eventName}`, {detail:{messages:[]}})));
+    rerender(<App chatSurfaceMode="full" messages={[message('id', 'Replacement')]} />);
+    expect(container.querySelector('.message-list')).toHaveTextContent('Replacement');
+  });
+
+  it('hides caption events from the cleared turn but shows the next turn', async () => {
+    vi.useFakeTimers();
+    try {
+      const {container} = render(<App messages={[message('host-id','Original',true)]} />);
+      const caption = (turnId:string,text:string) => act(() => window.dispatchEvent(
+        new CustomEvent('neko-compact-caption-update', {detail:{turnId,text}}),
+      ));
+      caption('turn1', 'X');
+      await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent('X');
+      fireEvent.click(screen.getByRole('button', {name:'Clear screen'}));
+      caption('turn1','XY');
+      await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+      expect(container.querySelector('.compact-chat-capsule-text')).not.toHaveTextContent('X');
+      caption('turn2','Z');
+      await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent('Z');
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('resumes bottom-following after clearing a scrolled-up full history', () => {
+    const {container, rerender} = render(<App chatSurfaceMode="full" messages={[message('old','Old')]} />);
+    const list = container.querySelector('.message-list') as HTMLElement;
+    Object.defineProperty(list, 'scrollHeight', {configurable:true, get:()=>1000});
+    Object.defineProperty(list, 'clientHeight', {configurable:true, get:()=>100});
+    list.scrollTop = 0;
+    fireEvent.scroll(list);
+    fireEvent.click(screen.getByRole('button', {name:'Clear screen'}));
+    rerender(<App chatSurfaceMode="full" messages={[message('old','Old'), message('new','New')]} />);
+    expect(list.scrollTop).toBe(1000);
+  });
+
 });

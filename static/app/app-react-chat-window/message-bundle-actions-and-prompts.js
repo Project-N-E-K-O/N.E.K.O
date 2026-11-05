@@ -1935,6 +1935,7 @@
             I.state.messages = I.state.messages.slice(-MAX_MESSAGES);
         }
         I.invalidatePendingGalgameRequest();
+        window.dispatchEvent(new CustomEvent('react-chat-window:messages-replaced'));
         I.renderWindow();
         return I.state.messages;
     }

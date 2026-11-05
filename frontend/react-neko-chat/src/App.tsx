@@ -1460,8 +1460,8 @@ function CompactChatApp({
   const compactChoiceLayerOpen = isCompactSurface && compactSurfaceChoicesVisible;
   const compactExportSelectedCount = compactExportSelectedIds.size;
   const compactExportSelectableMessages = useMemo(
-    () => messages.filter(isCompactExportMessageSelectable),
-    [messages],
+    () => messages.filter(message => !hiddenMessageIds.has(message.id) && isCompactExportMessageSelectable(message)),
+    [messages, hiddenMessageIds],
   );
   const compactExportSelectableIds = useMemo(
     () => new Set(compactExportSelectableMessages.map(message => message.id)),
@@ -1803,6 +1803,7 @@ function CompactChatApp({
       return null;
     }
     const captionMessageId = `compact-caption:${compactCaptionState.turnId}`;
+    if (hiddenMessageIds.has(captionMessageId)) return null;
     return {
       messageId: captionMessageId,
       turnStartId: captionMessageId,
@@ -1814,7 +1815,7 @@ function CompactChatApp({
       isAssistant: true,
       isGuide: false,
     };
-  }, [compactCaptionState]);
+  }, [compactCaptionState, hiddenMessageIds]);
   // 小剧场演绎统一写入历史气泡，胶囊只保留玩家输入职责，不再承担旁白或对白预览。
   const compactMessagePreview = theaterActive
     ? null
