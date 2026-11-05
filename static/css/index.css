@@ -979,8 +979,12 @@ body.neko-game-active [id$="-lock-icon"] {
     --neko-idle-return-facing-transform: scaleX(1);
 }
 
-.neko-idle-return-btn.is-desktop-window-gravity > .neko-idle-return-art {
-    scale: var(--neko-window-gravity-scale-x, 1) var(--neko-window-gravity-scale-y, 1);
+.neko-idle-return-btn.is-neko-collision-deforming > .neko-idle-return-art {
+    translate:
+        var(--neko-collision-shift-x, 0%)
+        var(--neko-collision-shift-y, 0%);
+    scale: var(--neko-collision-scale-x, 1) var(--neko-collision-scale-y, 1);
+    will-change: opacity, transform, translate, scale, filter;
 }
 
 .neko-idle-return-btn.is-cat1-desktop-window-top-edge-active.is-cat1-desktop-window-top-edge-facing-right > .neko-idle-return-art {
@@ -1860,25 +1864,6 @@ body.galgame-mode-enabled #react-chat-window-shell:not(.is-minimized):not(.is-co
     gap: 6px;
     z-index: 4;
     pointer-events: auto;
-}
-
-/* Keep opt-in sync reachable in both full and compact current-chat surfaces. */
-#chatSyncButton {
-    width: 32px;
-    height: 32px;
-    border: 0;
-    border-radius: 8px;
-    color: #5f6c82;
-    background: transparent;
-    cursor: pointer;
-    pointer-events: auto;
-    flex: 0 0 auto;
-}
-
-body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"] #chatSyncButton {
-    position: absolute;
-    top: -36px;
-    right: 40px;
 }
 
 /* Only sync modals opt in to clicks; the transparent chat/body remains pass-through. */

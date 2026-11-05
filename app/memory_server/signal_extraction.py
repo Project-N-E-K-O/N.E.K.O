@@ -559,6 +559,7 @@ async def _run_path_b(name: str, state: dict) -> None:
 
     persisted = await runtime.fact_store.aextract_facts_with_known_pool(
         name, messages, known_pool,
+        conversation_at=last_fetched_ts,
     )
     if persisted is None:
         # Stage-1 LLM terminal failure (retries exhausted): retain cursor and retry the window on
@@ -596,7 +597,7 @@ async def _run_path_b(name: str, state: dict) -> None:
 
 async def _periodic_signal_extraction_loop():
     """Polls every EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS; when the trigger condition is
-    met, runs Stage-1 + Stage-2 + signal dispatch for each catgirl (RFC §3.4.3).
+    met, runs Stage-1 + Stage-2 + signal dispatch for each neko (RFC §3.4.3).
 
     First run delayed by _INITIAL_DELAY_SIGNAL seconds (staggered against the other background loops).
     """
@@ -708,6 +709,9 @@ async def _periodic_signal_extraction_loop():
                         name, messages,
                         reflection_engine=runtime.reflection_engine,
                         persona_manager=runtime.persona_manager,
+                        # The window may be a retry of an old one; pinned
+                        # entries are dated by its latest message.
+                        conversation_at=_coerce_db_ts(rows[-1][0]),
                     )
                 except FactExtractionFailed as e:
                     # Stage-1 terminal failure — cursor NOT advanced, next

@@ -41,6 +41,14 @@ _HANDSHAKE_OVERRIDE_UNSET: Any = object()
 _MAGIC_COMMAND_IMAGE_DROP_REQUEST_MAX = 64
 _VOICE_PROACTIVE_ACK_GRACE_S = 0.05
 _PASSIVE_MEDIA_SESSION_UPDATE_ACK_TIMEOUT_S = 5.0
+# Hot-swap preparation waits this long for /new_dialog, which may be held up by the /renew
+# summary it is meant to include. The old session keeps serving meanwhile, and a timeout only
+# discards the pending session until the next turn retries.
+_HOT_SWAP_NEW_DIALOG_TIMEOUT_S = 60.0
+# Before a foreground /new_dialog: how long to wait for POST /preempt_summary, and then for the
+# connector to send the memory writes queued so far (both best effort, see _flush_memory_writes).
+_PREEMPT_SUMMARY_TIMEOUT_S = 1.0
+_MEMORY_FLUSH_WAIT_S = 1.5
 _TEXT_SESSION_INPUT_TYPES = frozenset({"text", "avatar_drop_image", "user_image"})
 _IMAGE_INPUT_TYPES = frozenset({"screen", "camera", "avatar_drop_image", "user_image"})
 _LIVE_VISION_STREAM_INPUT_TYPES = frozenset({"screen", "camera"})

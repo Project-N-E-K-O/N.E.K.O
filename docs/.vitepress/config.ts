@@ -11,6 +11,7 @@ const SRC_EXCLUDE = new Set([
   'README_en.md',
   'README_ja.md',
   'README_ru.md',
+  'README_zh-CN.md',
   'zh-CN/guide/openclaw_guide.md',
   'zh-CN/guide/openclaw_guide.en.md',
   'zh-CN/guide/openclaw_guide.ja.md',

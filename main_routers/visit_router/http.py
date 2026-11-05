@@ -580,7 +580,7 @@ async def preview_direct_invite(request: Request, visit_id: str):
 
 @router.get("/direct/{visit_id}/question")
 async def direct_invite_question(request: Request, visit_id: str, catgirl: str = ""):
-    """Ask about an account-bound invitation in the current catgirl's voice.
+    """Ask about an account-bound invitation in the current neko's voice.
 
     Only the last-summary memory for exactly this community peer and local
     character is considered.  The response intentionally contains no visit

@@ -1611,10 +1611,10 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     logger.info(f"[{lanlan_name}] greeting_check: since_disconnect={since_disconnect:.1f}s ≤15s reason={greeting_reason or '-'} → skip (refresh/reconnect)")
 
             elif action == "cat_greeting_check":
-                # On returning from cat form to catgirl, frontend requests a dedicated greeting based on time spent as a cat.
+                # On returning from cat form to neko, frontend requests a dedicated greeting based on time spent as a cat.
                 # Symmetric with greeting_check but timed independently: use the server-observed goodbye cycle as threshold;
                 # frontend duration is diagnostic only and cannot increase it. Do not inspect conversation gaps.
-                # Do not restore Agent intent; that signals first session entry, unlike returning to catgirl form.
+                # Do not restore Agent intent; that signals first session entry, unlike returning to neko form.
                 reported_duration, cat_tier, cat_was_auto, episode = _normalize_cat_greeting_check(message)
                 cat_duration = session_manager[lanlan_name].consume_goodbye_cycle_duration()
                 if cat_duration is None:

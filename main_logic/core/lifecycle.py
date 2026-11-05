@@ -60,6 +60,9 @@ from ._shared import (
     _START_LLM_CONCURRENT_ABORTED,
     _ORPHAN_SESSION_REAPER_TASKS,
     _PASSIVE_MEDIA_SESSION_UPDATE_ACK_TIMEOUT_S,
+    _HOT_SWAP_NEW_DIALOG_TIMEOUT_S,
+    _PREEMPT_SUMMARY_TIMEOUT_S,
+    _MEMORY_FLUSH_WAIT_S,
 )
 from .callback_render import (
     _build_callback_instruction,
@@ -832,7 +835,7 @@ class LifecycleMixin:
     @property
     def is_starting(self) -> bool:
         """The window where the start_session coroutine is running but is_active isn't True yet.
-        Externals (e.g. the catgirl-switch path) use this to decide whether to keep
+        Externals (e.g. the neko-switch path) use this to decide whether to keep
         the current manager instance, avoiding replacing a manager mid-initialization
         and leaking an orphan session.
         """
@@ -1579,22 +1582,60 @@ class LifecycleMixin:
                 raise TimeoutError("TTS runtime was not ready before startup deadline")
             await asyncio.sleep(min(0.02, remaining))
 
-    def _new_dialog_request_kwargs(self) -> dict:
-        """Share explicit-locale provenance across initial and hot-swap bootstrap."""
-        request_kwargs = {"timeout": 5.0}
+    def _new_dialog_request_kwargs(self, *, foreground: bool = True) -> dict:
+        """Share explicit-locale provenance across initial and hot-swap bootstrap.
+
+        A foreground caller (session start, Offline VLM handoff) holds up the conversation
+        until /new_dialog returns, so it asks the memory server to preempt a summary running
+        under the settle lock (#3601). Hot-swap preparation runs beside the live session: it
+        waits for that summary instead, with a longer timeout, because a failure there only
+        postpones the swap.
+        """
+        params = {}
         if getattr(self, "_user_language_explicit", False):
-            request_kwargs["params"] = {"language": self.user_language}
+            params["language"] = self.user_language
         elif getattr(self, "_conversation_render_language", None):
-            request_kwargs["params"] = {
-                "render_language": self._conversation_render_language,
-            }
+            params["render_language"] = self._conversation_render_language
+        if foreground:
+            params["preempt_summary"] = "true"
+        request_kwargs = {
+            "timeout": 5.0 if foreground else _HOT_SWAP_NEW_DIALOG_TIMEOUT_S,
+        }
+        if params:
+            request_kwargs["params"] = params
         return request_kwargs
+
+    async def _flush_memory_writes(self, client, lanlan_name, port) -> None:
+        """Let this character's queued memory writes reach the memory server before /new_dialog.
+
+        The connector sends them one at a time, so the latest turns may wait behind a /renew,
+        /settle or /process summary taking minutes (#3601). Preempt the summaries first, then
+        wait, bounded, for the connector to send everything queued so far. Best effort: on a
+        failure or timeout /new_dialog may only miss those latest turns, which still land later.
+        """
+        try:
+            await client.post(
+                f"http://127.0.0.1:{port}/preempt_summary/{lanlan_name}",
+                timeout=_PREEMPT_SUMMARY_TIMEOUT_S,
+            )
+        except Exception as e:
+            logger.debug(f"[{lanlan_name}] 打断摘要请求失败，继续开会话: {type(e).__name__}: {e}")
+        queue = getattr(self, "sync_message_queue", None)
+        if queue is None:
+            return
+        done = asyncio.get_running_loop().create_future()
+        queue.put({'type': 'system', 'data': 'memory flush', '_memory_flush_done': done})
+        try:
+            await asyncio.wait_for(asyncio.shield(done), timeout=_MEMORY_FLUSH_WAIT_S)
+        except asyncio.TimeoutError:
+            logger.warning(f"[{lanlan_name}] 等待记忆写入发出超时（{_MEMORY_FLUSH_WAIT_S}s），开场上下文可能缺最近几轮")
 
     async def _start_session_fetch_new_dialog(self, lanlan_name, port):
         """Independent task: fetch the /new_dialog response. Kicked off before the gather,
         deliberately avoiding the GIL contention window during TTS worker startup."""
         from utils.internal_http_client import get_internal_http_client
         _mem_client = get_internal_http_client()
+        await self._flush_memory_writes(_mem_client, lanlan_name, port)
         try:
             resp = await _mem_client.get(
                 f"http://127.0.0.1:{port}/new_dialog/{lanlan_name}",
@@ -2736,7 +2777,7 @@ class LifecycleMixin:
             try:
                 resp = await _hs_client.get(
                     f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}",
-                    **self._new_dialog_request_kwargs(),
+                    **self._new_dialog_request_kwargs(foreground=False),
                 )
             except httpx.ConnectError:
                 raise ConnectionError(f"❌ 记忆服务未启动！请先启动记忆服务 (端口 {self.memory_server_port})")

@@ -118,7 +118,7 @@ def test_get_character_data_uses_persona_override_in_runtime_view():
 
         assert character_data[current_name]["性格原型"] == "经典元气猫娘"
         assert character_data[current_name]["一句话台词"] == "今天也让我陪着你吧。"
-        assert "sunny cat girl" in prompt_map[current_name]
+        assert "sunny neko" in prompt_map[current_name]
         assert "energetic, affectionate cat companion" not in prompt_map[current_name]
 
 
@@ -160,7 +160,7 @@ def test_get_character_data_ignores_stale_persona_selection_system_prompt_when_o
         _, _, _, character_data, _, prompt_map, _, _, _ = config_manager.get_character_data()
 
         assert character_data[current_name]["性格原型"] == "优雅全能管家"
-        assert "butler-cat girl" in prompt_map[current_name]
+        assert "butler neko" in prompt_map[current_name]
         assert "elegant, steady, professional composure" not in prompt_map[current_name]
         assert "<NEKO_PERSONA_SELECTION>" not in prompt_map[current_name]
         assert "笨蛋人类" not in prompt_map[current_name]
@@ -200,7 +200,7 @@ def test_get_character_data_keeps_custom_system_prompt_when_override_exists():
 
         assert character_data[current_name]["性格原型"] == "经典元气猫娘"
         assert "reserved fox spirit" in prompt_map[current_name]
-        assert "sunny cat girl" in prompt_map[current_name]
+        assert "sunny neko" in prompt_map[current_name]
         assert "energetic, affectionate cat companion" not in prompt_map[current_name]
 
 
@@ -246,7 +246,7 @@ def test_get_character_data_strips_legacy_persona_block_but_keeps_custom_system_
         assert "moonlight" in prompt_map[current_name]
         assert "<NEKO_PERSONA_SELECTION>" not in prompt_map[current_name]
         assert "笨蛋人类" not in prompt_map[current_name]
-        assert "sunny cat girl" in prompt_map[current_name]
+        assert "sunny neko" in prompt_map[current_name]
         assert "energetic, affectionate cat companion" not in prompt_map[current_name]
 
 

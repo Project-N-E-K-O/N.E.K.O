@@ -357,7 +357,7 @@ class ManagerHost:
     async def mirror_assistant_output(
         self, text: str, *, metadata: dict, request_id: str, finalize_turn: bool = False,
     ) -> None:
-        # Do not filter by visit_bind (section 4.5 covers only visit_* frames/chips): the homecoming summary is ordinary catgirl speech, spoken aloud and entering sync normally.
+        # Do not filter by visit_bind (section 4.5 covers only visit_* frames/chips): the homecoming summary is ordinary neko speech, spoken aloud and entering sync normally.
         # Bound this wait: finalization archives files and unregisters afterward, so a stuck page must not block them too.
         try:
             await asyncio.wait_for(

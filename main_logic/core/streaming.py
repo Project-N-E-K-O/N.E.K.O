@@ -888,14 +888,10 @@ class StreamingMixin:
                             speech_id=new_user_sid,
                             request_id=text_request_id,
                         )
-                        # Record consumed tool context as provenance, even when
-                        # this reply also contains ordinary conversation. Current
-                        # sync policy stores the whole mixed reply locally; later
-                        # tool sync must change the policy, not disguise its origin.
+                        # A reply to synthetic input (not typed into the chat
+                        # box) is never stored as a chat original.
                         if not is_chat_input_source(message_source):
                             mark_turn_origin(self, new_user_sid, 'system')
-                        elif _agent_cb_ctx:
-                            mark_turn_origin(self, new_user_sid, 'agent')
                         # Path A (inline) focused cognition: score this user message and, if
                         # over the bar, run THIS reply thinking-on. Scored on
                         # ``record_data`` (= memory_text or data) — the user-VISIBLE
@@ -1017,6 +1013,10 @@ class StreamingMixin:
                                 stream_text_kwargs.pop("turn_context")
                             # No await before the following call: this captures the actual client receiving this turn.
                             reply_turn.session = self.session
+                            if is_chat_input_source(message_source):
+                                from main_logic.reply_tail import reply_tail_registry
+
+                                reply_tail_registry.prepare_reply(self, reply_turn, user_text=record_data)
                             await self.session.stream_text(data, **stream_text_kwargs)
                         finally:
                             # stream_text claims the staged attachments (or puts them

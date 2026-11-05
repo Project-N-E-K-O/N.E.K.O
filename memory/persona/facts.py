@@ -193,7 +193,7 @@ class FactsMixin:
                         # Scoped input bodies stay out of ordinary Memory logs, matching scoped
                         # extraction/persistence redaction rules; record lengths only.
                         logger.info(
-                            f"[Persona] {name}: scoped 新条目与角色卡矛盾，"
+                            f"[Persona] {name}: scoped/常驻区新条目与角色卡矛盾，"
                             f"无条件拒绝: card_len={len(old_text)} "
                             f"new_len={len(text)}"
                         )
@@ -404,6 +404,55 @@ class FactsMixin:
             await self.asave_persona(name, persona)
             return self.FACT_ADDED
 
+    # Card sections (filled from characters.json: the character card into
+    # "neko", the master profile into "master") that a private fact of each
+    # entity is checked against; see acontradicts_character_card.
+    # Known trade-off: a relationship-type field on the character card (how
+    # the character addresses the master, say) never blocks a master or neko
+    # fact. The keyword-overlap test rarely flags such pairs anyway, while
+    # scanning across cards rejects the master's birthday or age on the
+    # character's own (both measured for PR #3598). Revisit if the
+    # contradiction test learns whose field it is looking at.
+    _CARD_SECTIONS_BY_ENTITY = {
+        'master': ('master',),
+        'neko': ('neko',),
+        'relationship': ('master', 'neko'),
+    }
+
+    async def acontradicts_character_card(
+        self, name: str, text: str, *, entity: str | None = None,
+    ) -> bool:
+        """Whether ``text`` contradicts a protected character-card entry.
+
+        The card half of ``aadd_fact``'s contradiction check, for stores whose
+        entries live outside persona.json (memory/pinned_facts.py). The
+        rejection log line records lengths only.
+
+        ``entity`` picks the card sections a private fact is held against
+        (``_CARD_SECTIONS_BY_ENTITY``). Both cards carry fields such as
+        birthday or age, and the overlap test cannot tell whose they are, so
+        "the master's birthday is ..." against the character card's own
+        birthday is a false conflict. A relationship fact has no card section
+        of its own (relationship fields live in either card), so it is held
+        against both. None, or an unknown entity, scans every section, like
+        the scoped branch of ``aadd_fact``.
+        """
+        persona = await self.aensure_persona(name)
+        sections = self._CARD_SECTIONS_BY_ENTITY.get(entity) if entity else None
+        if sections is None or not isinstance(persona, dict):
+            card_facts = self._collect_card_facts(persona)
+        else:
+            card_facts = self._collect_card_facts({
+                key: persona[key] for key in sections if key in persona
+            })
+        if not card_facts:
+            return False
+        stop_names = await self._aget_entity_stop_names(name)
+        code, _ = self._evaluate_fact_contradiction(
+            name, text, card_facts, stop_names, redact_text=True,
+        )
+        return code == self.FACT_REJECTED_CARD
+
     @staticmethod
     def _find_entry_in_section(section_facts: list, entry_id: str) -> dict | None:
         for entry in section_facts:
@@ -531,6 +580,38 @@ class FactsMixin:
                 if isinstance(entry, dict) and entry.get('id') == bare_id:
                     return ek, entry
         return None, None
+
+    async def arecord_covered_facts(
+        self, name: str, section_key: str, entry_id: str,
+        fact_ids: list[str], *, expected_text: str, subject=None,
+    ) -> bool:
+        """Record facts that reflection synthesis skipped as already covered
+        by one persona entry.
+
+        Audit only: evidence stays untouched, so restating an entry never
+        raises its render priority. Returns False when the entry is gone,
+        protected, outside ``subject``'s isolation domain, or no longer
+        reads ``expected_text`` (the wording the skip decision was made on).
+        """
+        from memory._reflection.schema import merge_covered_fact_ids
+        from memory.scopes import entry_matches_subject
+        async with self._get_alock(name):
+            persona = await self._aensure_persona_locked(name)
+            section = persona.get(section_key)
+            entry = self._find_entry_in_section(
+                section.get('facts', []) if isinstance(section, dict) else [],
+                entry_id,
+            )
+            if (
+                entry is None
+                or entry.get('protected')
+                or entry.get('text') != expected_text
+                or not entry_matches_subject(entry, subject)
+            ):
+                return False
+            if merge_covered_fact_ids(entry, fact_ids):
+                await self.asave_persona(name, persona)
+            return True
 
     async def amerge_into(
         self, name: str, target_entry_id: str, merged_text: str,
@@ -1379,7 +1460,7 @@ class FactsMixin:
         """Return master + lanlan names + their nicknames (``昵称``) — used to strip
         stop-names before any keyword/BM25/extraction step in the memory pipeline.
 
-        ``lanlan_name`` defaults to the currently active catgirl. When given,
+        ``lanlan_name`` defaults to the currently active neko. When given,
         use that character's own ``昵称`` — on this path ``aadd_fact`` etc.
         explicitly know the target character, avoiding misuse of the active
         character's nicknames in multi-character setups.

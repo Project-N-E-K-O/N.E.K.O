@@ -61,7 +61,7 @@ def _manager(monkeypatch):
     mgr._build_initial_prompt = AsyncMock(return_value="SYSTEM\n")
     mgr._make_tool_call_handler = MagicMock(return_value=None)
     mgr._bind_session_lifecycle_callbacks = MagicMock()
-    mgr._new_dialog_request_kwargs = lambda: {}
+    mgr._new_dialog_request_kwargs = lambda **_kwargs: {}
     pending = _ChatSession()
     mgr._create_offline_vlm_client = MagicMock(return_value=pending)
     monkeypatch.setattr(

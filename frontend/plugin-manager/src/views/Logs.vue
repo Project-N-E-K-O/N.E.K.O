@@ -4,50 +4,31 @@
       <template #header>
         <div class="card-header" data-yui-guide-id="logs-card-header">
           <span data-yui-guide-id="logs-title">{{ isServerLog ? $t('logs.serverLogs') : $t('logs.pluginLogs') + ': ' + pluginId }}</span>
-          <el-button :icon="Refresh" data-yui-guide-id="logs-refresh" @click="handleRefresh" :loading="loading">
+          <el-button :icon="Refresh" data-yui-guide-id="logs-refresh" @click="viewer?.refresh()" :loading="viewer?.loading">
             {{ $t('common.refresh') }}
           </el-button>
         </div>
       </template>
 
       <div data-yui-guide-id="logs-viewer-wrap">
-        <LogViewer :plugin-id="pluginId" />
+        <LogViewer ref="viewer" :plugin-id="pluginId" />
       </div>
     </el-card>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
-import { useLogsStore } from '@/stores/logs'
 import { PANEL_HOST_MIN_HEIGHT } from '@/utils/constants'
 import LogViewer from '@/components/logs/LogViewer.vue'
 
 const route = useRoute()
-const logsStore = useLogsStore()
+const viewer = ref<InstanceType<typeof LogViewer> | null>(null)
 
 const pluginId = computed(() => (route.params.id as string) || '')
 const isServerLog = computed(() => pluginId.value === '_server')
-const loading = computed(() => logsStore.loading)
-
-async function handleRefresh() {
-  if (pluginId.value) {
-    try {
-      await logsStore.fetchLogs(pluginId.value)
-    } catch (error) {
-      ElMessage.error(String((error as any)?.message || error || 'Failed to fetch logs'))
-    }
-  }
-}
-
-onMounted(async () => {
-  if (pluginId.value) {
-    await handleRefresh()
-  }
-})
 </script>
 
 <style scoped>

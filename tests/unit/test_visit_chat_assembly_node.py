@@ -137,10 +137,12 @@ function createHarness(opts) {
     reactChatWindowHost: host,
     lanlan_config: { lanlan_name: '咪咪', master_display_name: '阿明' },
     appState: { socket: socket, audioPlayerContext: { currentTime: 0 } },
-    location: { pathname: '/' },
+    location: { pathname: opts.pathname || '/' },
+    __NEKO_MULTI_WINDOW__: opts.multiWindow === true,
     showStatusToast(text) { toasts.push(text); },
     nekoRelayVisitStateToDisplay(frame) { relayFrames.push(JSON.parse(JSON.stringify(frame))); },
     visitEnabled: true,
+    nekoSocial: opts.social === null ? null : opts.social || {},
     nekoLocalMutationSecurity: { getMutationHeaders: async () => ({ 'X-CSRF-Token': 'tok' }) },
     appChat: {
       renderVisitLine(spec) {
@@ -181,7 +183,7 @@ function createHarness(opts) {
     navigator: { clipboard: { writeText: async () => {} } },
     Blob: function (parts) { this.text = parts.join(''); },
     URL: { createObjectURL: () => 'blob:x', revokeObjectURL() {} },
-    Date: { now: () => wall },
+    Date: class extends Date { static now() { return wall; } },
     setTimeout(fn, ms) { const id = nextId++; timers.push({ id, at: wall + (ms || 0), fn, every: 0 }); return id; },
     clearTimeout(id) { const i = timers.findIndex((t) => t.id === id); if (i >= 0) timers.splice(i, 1); },
     setInterval(fn, ms) { const id = nextId++; timers.push({ id, at: wall + ms, fn, every: ms }); return id; },
@@ -215,12 +217,278 @@ function createHarness(opts) {
   function buttonsOf(node) { return node.all((n) => n.tagName === 'BUTTON'); }
   function lineMessage(id) { return messages.find((x) => x.id.indexOf('visit-line-') === 0 && x.id.endsWith(':' + id)); }
   function lineText(id) { const m = lineMessage(id); return m ? m.blocks.map((b) => b.text).join('|') : null; }
-  return { win, I, chat, sent, fetches, messages, rollbacks, toasts, sendCalls, relayFrames, socket, body, advance, settle, frame, state, dialogs, buttonsOf, lineText, lineMessage, timers, pressKey };
+  return { win, I, chat, sent, fetches, messages, rollbacks, toasts, sendCalls, relayFrames, socket, body, advance, settle, frame, state, dialogs, buttonsOf, lineText, lineMessage, timers, pressKey, listeners };
 }
 
 const report = {};
 
 (async () => {
+  report.partial_invitation_bridges = [];
+  for (const mode of [{ name: 'web', pathname: '/' },
+      { name: 'chat', pathname: '/chat', multiWindow: true },
+      { name: 'chat_full', pathname: '/chat_full', multiWindow: true }]) {
+    for (const missing of ['getter', 'listener', 'both']) {
+      let subscriptions = 0, gets = 0;
+      const social = {};
+      if (missing === 'getter') social.onInvitationsChanged = () => { subscriptions++; };
+      if (missing === 'listener') social.getInvitations = async () => { gets++; return {}; };
+      const h = createHarness(Object.assign({}, mode, { social, routes: {
+        '/api/community/visit-invitations': async () => ({ status: 200, body: {
+          notifications_ok: true, incoming_invite_ids: [] } }),
+      } }));
+      h.chat.applyState({ enabled: true, active: false });
+      h.advance(500); await h.settle(); h.advance(4500); await h.settle();
+      report.partial_invitation_bridges.push({ mode: mode.name, missing, subscriptions, gets,
+        statusListener: h.listeners.has('neko-visit-status-change'),
+        boundListener: h.listeners.has('neko-visit-bound'),
+        reads: h.fetches.filter((entry) => entry.url === '/api/community/visit-invitations').length,
+        pollTimers: h.timers.filter((timer) => timer.every === 5000).length });
+    }
+  }
+  report.realtime_pages = [];
+  report.legacy_card_takeover = [];
+  for (const pathname of ['/', '/chat', '/chat_full']) {
+    for (const scenario of ['withdrawn', 'account_changed', 'account_changed_compat', 'account_changed_new', 'valid', 'uncertain', 'claim_failure', 'begin_failure',
+        'question_not_ready', 'switch_off', 'tts_unavailable', 'unclassified_failure', 'complete_failure', 'complete_throw', 'complete_account_change',
+        'begin_character_switch', 'begin_account_change', 'begin_card_withdrawn']) {
+      let changed, claims = 0, begun = 0, completed = 0, deliveries = 0;
+      let snapshot = { generation: 1, accountKey: 'account-a', accountId: 'me',
+        realtimeEnabled: false, synced: false, items: [] };
+      const social = { onInvitationsChanged(callback) { changed = callback; }, getInvitations: async () => snapshot,
+        claimInvitation: async () => { claims++; return { ok: !(scenario === 'claim_failure' && claims === 1), token: 'claim' }; },
+        beginInvitationDelivery: async () => {
+          begun++; if (scenario === 'begin_failure' && begun === 1) return { ok: false };
+          snapshot.items[0].promptEligible = false;
+          if (scenario === 'begin_character_switch') h.win.lanlan_config.lanlan_name = 'New character';
+          if (scenario === 'begin_account_change') snapshot = { ...snapshot, generation: 3, accountKey: 'account-b', items: [] };
+          if (scenario === 'begin_card_withdrawn') snapshot = { ...snapshot, items: [] };
+          changed(snapshot); return { ok: true };
+        },
+        completeInvitationDelivery: async (_id, token, generation) => {
+          completed++;
+          if (token !== 'claim' || generation !== 2) throw new Error('wrong completion claim');
+          if (completed === 1 && scenario.startsWith('complete_')) {
+            changed(snapshot); // Failure emissions must not cause a tight retry loop.
+            if (scenario === 'complete_throw') throw new Error('synthetic IPC failure');
+            return { ok: false, error: 'storage_unavailable' };
+          }
+          return { ok: true };
+        },
+        releaseInvitation: async () => ({ ok: true }) };
+      const h = createHarness({ pathname, multiWindow: pathname !== '/', social, routes: {
+        ['/api/visit/direct/' + VID + '/preview']: async () => ({ status: 200, body: { visit_id: VID } }),
+        ['/api/visit/direct/' + VID + '/question*']: async () => ({ status: 200, body: { question: 'Legacy question' } }),
+        ['/api/visit/direct/' + VID + '/deliver-question']: async () => {
+          deliveries++;
+          if (deliveries === 1 && scenario === 'question_not_ready') return { status: 409, body: { ok: false, code: 'direct_invite_question_not_ready' } };
+          if (deliveries === 1 && scenario === 'switch_off') return { status: 409, body: { ok: false, code: 'VISIT_DISABLED' } };
+          if (deliveries === 1 && scenario === 'tts_unavailable') return { status: 200, body: { ok: false, delivered: false, reason: 'project_tts_unavailable' } };
+          if (scenario === 'unclassified_failure') return { status: 409, body: { ok: false, code: 'unknown' } };
+          return { status: scenario === 'uncertain' ? 503 : 200, body: { delivered: true } };
+        },
+        ['/api/visit/direct/' + VID2 + '/preview']: async () => ({ status: 200, body: { visit_id: VID2 } }),
+        ['/api/visit/direct/' + VID2 + '/question*']: async () => ({ status: 200, body: { question: 'New account question' } }),
+        ['/api/visit/direct/' + VID2 + '/deliver-question']: async () => {
+          deliveries++; return { status: 200, body: { delivered: true } };
+        },
+      } });
+      h.chat.applyState({ enabled: true, active: false }); await h.settle();
+      await h.chat.presentDirectInvitation({ id: 'legacy', visit_id: VID, expires_at: 9e9 });
+      const before = !!h.I.getVisitChatView().bar;
+      const valid = ['valid', 'uncertain', 'claim_failure', 'begin_failure', 'question_not_ready', 'switch_off', 'tts_unavailable',
+        'unclassified_failure', 'complete_failure', 'complete_throw', 'complete_account_change',
+        'begin_character_switch', 'begin_account_change', 'begin_card_withdrawn'].includes(scenario);
+      const replaced = scenario === 'account_changed_new';
+      snapshot = { ...snapshot, generation: 2, accountKey: scenario.startsWith('account_changed') ? 'account-b' : 'account-a',
+        realtimeEnabled: scenario !== 'account_changed_compat', synced: true,
+        items: valid || replaced ? [{ id: '33333333-3333-4333-8333-333333333333',
+          notification_id: replaced ? 'replacement' : 'legacy', visit_id: replaced ? VID2 : VID,
+          sender_id: 'friend', recipient_id: 'me', expires_at: '2023-11-14T22:23:20Z', actionable: true, promptEligible: true }] : [] };
+      changed(snapshot); await h.settle();
+      if (scenario.endsWith('_failure')) { changed(snapshot); await h.settle(); }
+      const completedBeforeRetry = completed;
+      if (scenario === 'complete_account_change') {
+        snapshot = { ...snapshot, generation: 3, accountKey: 'account-b', items: [] }; changed(snapshot); await h.settle();
+      }
+      if (scenario.startsWith('complete_')) { h.advance(1000); await h.settle(); }
+      report.legacy_card_takeover.push({ pathname, scenario, before, after: !!h.I.getVisitChatView().bar,
+        claims, begun, completed, completedBeforeRetry, deliveries,
+        deliveryRequests: h.fetches.filter((entry) => entry.url.endsWith('/deliver-question'))
+          .map((entry) => ({ method: entry.method, catgirl: entry.body && entry.body.catgirl })),
+        reads: h.fetches.filter((entry) => entry.url.startsWith('/api/community/')).length });
+    }
+  }
+  report.legacy_card_inflight = [];
+  for (const phase of ['preview', 'delivery']) {
+    let changed, release;
+    const snapshot = { generation: 1, accountKey: 'account-a', realtimeEnabled: false, synced: false, items: [] };
+    const h = createHarness({ social: { onInvitationsChanged(callback) { changed = callback; }, getInvitations: async () => snapshot }, routes: {
+      ['/api/visit/direct/' + VID + '/preview']: async () => phase === 'preview'
+        ? await new Promise((resolve) => { release = () => resolve({ status: 200, body: { visit_id: VID } }); })
+        : { status: 200, body: { visit_id: VID } },
+      ['/api/visit/direct/' + VID + '/question*']: async () => ({ status: 200, body: { question: 'Legacy question' } }),
+      ['/api/visit/direct/' + VID + '/deliver-question']: async () => phase === 'delivery'
+        ? await new Promise((resolve) => { release = () => resolve({ status: 200, body: { delivered: true } }); })
+        : { status: 200, body: { delivered: true } },
+    } });
+    h.chat.applyState({ enabled: true, active: false }); await h.settle();
+    const task = h.chat.presentDirectInvitation({ id: 'legacy', visit_id: VID, expires_at: 9e9 });
+    await h.settle(); changed({ ...snapshot, generation: 2, realtimeEnabled: true, synced: true }); await h.settle();
+    release(); await task; await h.settle();
+    report.legacy_card_inflight.push({ phase, bar: !!h.I.getVisitChatView().bar,
+      deliveries: h.fetches.filter((entry) => entry.url.endsWith('/deliver-question')).length });
+  }
+  report.initial_invitation_snapshot_recovery = [];
+  for (const pathname of ['/', '/chat', '/chat_full']) {
+    for (const scenario of ['hung', 'late_realtime', 'ready_early']) {
+      let changed, resolveRead;
+      const social = { onInvitationsChanged(callback) { changed = callback; },
+        getInvitations: () => new Promise(() => {}) };
+      const snapshot = { generation: 1, accountKey: 'account-a', accountId: 'me',
+        realtimeEnabled: true, synced: true, items: [] };
+      const h = createHarness({ pathname, social, routes: {
+        '/api/community/visit-invitations': async () => {
+          if (scenario === 'late_realtime') return await new Promise((resolve) => { resolveRead = resolve; });
+          return { status: 200, body: { notifications_ok: true, incoming_invite_ids: [] } };
+        },
+      } });
+      h.chat.applyState({ enabled: true, active: false });
+      await h.settle();
+      if (scenario === 'ready_early') changed(snapshot);
+      h.advance(3500); await h.settle();
+      if (scenario === 'late_realtime') {
+        changed(snapshot);
+        if (resolveRead) resolveRead({ status: 200, body: { notifications_ok: true,
+          incoming_invite_ids: ['old-notification'], incoming_invite: { id: 'old-notification', visit_id: VID } } });
+        await h.settle();
+      }
+      h.advance(10000); await h.settle();
+      report.initial_invitation_snapshot_recovery.push({ pathname, scenario,
+        reads: h.fetches.filter((entry) => entry.url === '/api/community/visit-invitations').length,
+        presentations: h.fetches.filter((entry) => entry.url.includes('/direct/')).length,
+        pollTimers: h.timers.filter((entry) => entry.every === 5000).length,
+        statusListener: h.listeners.has('neko-visit-status-change') });
+    }
+  }
+  {
+    const h = createHarness({ social: null });
+    report.browser_outgoing_invitation = await h.chat.createDirectInvitation('friend')
+      .then(() => 'unexpected-success', () => 'desktop-required');
+    report.browser_outgoing_reads = h.fetches.length;
+  }
+  report.realtime_failures = [];
+  for (const scenario of ['question_failure', 'uncertain_delivery', 'connect_invalid', 'connect_invalid_raw', 'peer_blocked', 'character_switch', 'hung_question']) {
+    let changed, claims = 0, releases = 0, invalid = 0, decisions = 0, delivery = 0, questions = 0;
+    const snapshot = { generation: 2, accountKey: 'account-a', accountId: 'recipient', realtimeEnabled: true, synced: true,
+      items: [{ id: '33333333-3333-4333-8333-333333333333', sender_id: 'sender', visit_id: VID,
+        expires_at: '2023-11-14T22:23:20Z', actionable: true, promptEligible: true }] };
+    const social = { onInvitationsChanged(cb) { changed = cb; }, getInvitations: async () => snapshot,
+      claimInvitation: async () => { claims++; snapshot.items[0].promptEligible = false; changed(snapshot); return { ok: true, token: 'claim' }; },
+      beginInvitationDelivery: async () => ({ ok: true }), completeInvitationDelivery: async () => ({ ok: true }),
+      releaseInvitation: async () => { releases++; return { ok: true }; },
+      reportInvitationDecision: async () => { decisions++; return { ok: true }; },
+      markInvitationInvalid: async () => { invalid++; snapshot.items[0].actionable = false; changed(snapshot); return { ok: true }; },
+    };
+    let previews = 0;
+    const h = createHarness({ pathname: '/chat', multiWindow: true, social, routes: {
+      ['/api/visit/direct/' + VID + '/preview']: async () => ++previews > 1 && ['connect_invalid', 'connect_invalid_raw', 'peer_blocked'].includes(scenario)
+        ? { status: 409, body: scenario === 'connect_invalid_raw' ? { code: 'invite_invalid' }
+          : { code: 'VISIT_INVITE_INVALID', reason: scenario === 'peer_blocked' ? 'peer_blocked' : 'invite_invalid' } }
+        : { status: 200, body: { visit_id: VID } },
+      ['/api/visit/direct/' + VID + '/question*']: async () => {
+        questions++;
+        if (scenario === 'hung_question') return new Promise(() => {});
+        return questions === 1 && scenario === 'question_failure'
+          ? { status: 503, body: {} } : { status: 200, body: { question: 'Question' } };
+      },
+      ['/api/visit/direct/' + VID + '/deliver-question']: async () => { delivery++; return scenario === 'uncertain_delivery'
+        ? { status: 503, body: {} } : { status: 200, body: { delivered: true } }; },
+    } });
+    h.chat.applyState({ enabled: true, active: false }); await h.settle();
+    if (scenario === 'question_failure') {
+      h.advance(500); await h.settle();
+      snapshot.items[0].promptEligible = true; changed(snapshot); await h.settle();
+    } else if (['connect_invalid', 'connect_invalid_raw', 'peer_blocked'].includes(scenario)) {
+      h.I.handleVisitBarAction('direct_accept'); await h.settle();
+    } else if (scenario === 'character_switch') {
+      h.win.lanlan_config.lanlan_name = 'New character'; changed(snapshot); await h.settle();
+    }
+    changed(snapshot); h.advance(20000); await h.settle();
+    report.realtime_failures.push({ scenario, claims, releases, invalid, decisions, delivery, questions });
+  }
+  for (const pathname of ['/', '/chat', '/chat_full']) {
+    let changed, claims = 0, begun = 0, completed = 0;
+    const snapshot = { generation: 2, accountKey: 'account-a', accountId: 'recipient', realtimeEnabled: true, synced: true,
+      items: [{ id: '33333333-3333-4333-8333-333333333333', sender_id: 'sender', visit_id: VID,
+        expires_at: '2023-11-14T22:23:20Z', actionable: true, promptEligible: true }] };
+    const social = { onInvitationsChanged(cb) { changed = cb; }, getInvitations: async () => snapshot,
+      claimInvitation: async () => { claims++; snapshot.items[0].promptEligible = false; changed(snapshot); return { ok: true, token: 'claim' }; },
+      beginInvitationDelivery: async () => { begun++; return { ok: true }; },
+      completeInvitationDelivery: async () => { completed++; return { ok: true }; }, releaseInvitation: async () => ({ ok: true }) };
+    const h = createHarness({ pathname, multiWindow: true, social, routes: {
+      ['/api/visit/direct/' + VID + '/preview']: async () => ({ status: 200, body: { visit_id: VID } }),
+      ['/api/visit/direct/' + VID + '/question*']: async () => ({ status: 200, body: { question: 'Question' } }),
+      ['/api/visit/direct/' + VID + '/deliver-question']: async () => ({ status: 200, body: { delivered: true } }),
+    } });
+    h.chat.applyState({ enabled: true, active: false }); await h.settle();
+    h.advance(600000); await h.settle();
+    if (changed) { changed(snapshot); changed(snapshot); await h.settle(); }
+    report.realtime_pages.push({ pathname, claims, begun, completed,
+      reads: h.fetches.filter((x) => x.url.startsWith('/api/community/')).length,
+      pollTimers: h.timers.filter((t) => t.every === 5000).length });
+  }
+  report.invitation_without_preload = [];
+  for (const mode of [{ name: 'web', pathname: '/' },
+      { name: 'chat', pathname: '/chat', multiWindow: true },
+      { name: 'chat_full', pathname: '/chat_full', multiWindow: true },
+      { name: 'pet', pathname: '/', multiWindow: true }]) {
+    for (const decision of ['accept', 'decline']) {
+      const incoming = { id: 'browser', visit_id: VID, expires_at: 9e9 };
+      const h = createHarness(Object.assign({}, mode, { social: null, routes: {
+        '/api/community/visit-invitations': async () => ({ status: 200, body: {
+          incoming_invite: incoming, incoming_invite_ids: ['browser'], notifications_ok: true,
+        } }),
+        ['/api/visit/direct/' + VID + '/preview']: async () => ({ status: 200, body: { visit_id: VID } }),
+        ['/api/visit/direct/' + VID + '/question*']: async () => ({ status: 200, body: { question: 'Question' } }),
+        ['/api/visit/direct/' + VID + '/deliver-question']: async () => ({ status: 200, body: { delivered: true } }),
+        ['/api/visit/rooms/' + VID + '/join-direct']: async () => ({ status: 202, body: {} }),
+        '/api/community/visit-invitations/browser/respond': async () => ({ status: 200, body: {} }),
+      } }));
+      h.chat.applyState({ enabled: true, active: false });
+      h.advance(500); await h.settle(); h.advance(4500); await h.settle();
+      h.I.handleVisitBarAction('direct_' + decision); await h.settle();
+      report.invitation_without_preload.push({ mode: mode.name, decision,
+        reads: h.fetches.filter((x) => x.url === '/api/community/visit-invitations').length,
+        deliveries: h.fetches.filter((x) => x.url.endsWith('/deliver-question')).length,
+        joins: h.fetches.filter((x) => x.url.endsWith('/join-direct')).length,
+        responses: h.fetches.filter((x) => x.url.endsWith('/respond')).map((x) => ({ method: x.method, body: x.body })) });
+    }
+  }
+  // The chat window is the only compact read owner for invitation pushes.
+  report.invitation_push_windows = [];
+  for (const pathname of ['/', '/chat', '/chat_full']) {
+    let incoming;
+    let finish;
+    const h = createHarness({ pathname, multiWindow: true,
+      social: { onNotifyIncoming(callback) { incoming = callback; } },
+      routes: { '/api/community/visit-invitations': async () => {
+        await new Promise((resolve) => { finish = resolve; });
+        return { status: 200, body: { notifications_ok: true, incoming_invite_ids: [] } };
+      } },
+    });
+    h.chat.applyState({ enabled: true, active: false });
+    if (incoming) {
+      incoming({ kind: 'visit_invite', payload: {} });
+      incoming({ kind: 'visit_invite', payload: {} });
+      await h.settle();
+      finish();
+      await h.settle();
+    }
+    report.invitation_push_windows.push({ pathname,
+      compact: h.fetches.filter((x) => x.url === '/api/community/visit-invitations').length,
+      full: h.fetches.filter((x) => x.url === '/api/community/visit-hub').length,
+    });
+  }
   // ── 拼接：乱序落位、缺片留占位不补洞、final 覆盖 ──
   {
     const h = createHarness();
@@ -1681,7 +1949,7 @@ const report = {};
           ? { status: 503, body: { error: 'temporary_failure' } }
           : { status: 200, body: { delivered: true } };
       },
-      '/api/community/visit-hub': async () => ({ status: 200, body: {
+      '/api/community/visit-invitations': async () => ({ status: 200, body: {
         incoming_invite: { id: 'notif-retry', visit_id: VID, actor_id: 'friend-1', expires_at: 9e9 },
         incoming_invite_ids: ['notif-retry'], notifications_ok: true,
       } }),
@@ -1715,7 +1983,7 @@ const report = {};
         return { status: 200, body: { question: '要去串门吗？' } };
       },
       ['/api/visit/direct/' + VID + '/deliver-question']: async () => ({ status: 200, body: { delivered: true } }),
-      '/api/community/visit-hub': async () => ({ status: 200, body: {
+      '/api/community/visit-invitations': async () => ({ status: 200, body: {
         incoming_invite: { id: 'notif-character', visit_id: VID, actor_id: 'friend-1', expires_at: 9e9 },
         incoming_invite_ids: ['notif-character'], notifications_ok: true,
       } }),
@@ -1728,6 +1996,116 @@ const report = {};
     h.win.lanlan_config.lanlan_name = '小橘';
     await h.chat._test.pollDirectInvitations();
     report.direct_invite_character_questions = questionUrls;
+  }
+  // No SSE is required: startup and five-second fallback use the compact route
+  // in web/chat windows while the Electron pet window does not poll.
+  report.invitation_poll_windows = [];
+  for (const mode of [
+    { name: 'web', pathname: '/' },
+    { name: 'chat', multiWindow: true, pathname: '/chat' },
+    { name: 'chat_full', multiWindow: true, pathname: '/chat_full' },
+    { name: 'pet', multiWindow: true, pathname: '/' },
+  ]) {
+    const h = createHarness(Object.assign({}, mode, { routes: {
+      '/api/community/visit-invitations': async () => ({ status: 200, body: {
+        incoming_invite: null, incoming_invite_ids: [], notifications_ok: true,
+      } }),
+    } }));
+    h.chat.applyState({ enabled: true, active: false });
+    h.advance(500);
+    await h.settle();
+    h.advance(4500);
+    await h.settle();
+    report.invitation_poll_windows.push({ mode: mode.name,
+      paths: h.fetches.map((entry) => entry.url).filter((url) => url.startsWith('/api/community/')) });
+  }
+  // Disabled features never start cloud invitation reads.
+  report.invitation_poll_disabled = [];
+  for (const disabled of ['release', 'user']) {
+    const h = createHarness();
+    h.chat.applyState({ enabled: disabled !== 'release', active: false });
+    if (disabled === 'user') h.win.visitEnabled = false;
+    h.advance(5500);
+    await h.settle();
+    report.invitation_poll_disabled.push(h.fetches.length);
+  }
+  // During an upgrade only unsupported routes use the legacy hub. Auth,
+  // throttling and transient failures must not retry through a heavier API.
+  report.invitation_poll_compatibility = [];
+  for (const status of [200, 404, 405, 401, 403, 429, 500, 502, 503]) {
+    let deliveries = 0;
+    const snapshot = {
+      incoming_invite: { id: 'notif-compatible', visit_id: VID, actor_id: 'friend-1', expires_at: 9e9 },
+      incoming_invite_ids: ['notif-compatible'], notifications_ok: true,
+    };
+    const h = createHarness({ routes: {
+      '/api/community/visit-invitations': async () => ({ status, body: snapshot }),
+      '/api/community/visit-hub': async () => ({ status: 200, body: snapshot }),
+      ['/api/visit/direct/' + VID + '/preview']: async () => ({ status: 200, body: { visit_id: VID, expires_at: 9e9 } }),
+      ['/api/visit/direct/' + VID + '/question?catgirl=%E5%92%AA%E5%92%AA']: async () => ({ status: 200, body: { question: '要去串门吗？' } }),
+      ['/api/visit/direct/' + VID + '/deliver-question']: async () => { deliveries++; return { status: 200, body: { delivered: true } }; },
+    } });
+    h.chat.applyState({ enabled: true, active: false });
+    await h.chat._test.pollDirectInvitations();
+    report.invitation_poll_compatibility.push({ status, deliveries,
+      paths: h.fetches.map((entry) => entry.url).filter((url) => url.startsWith('/api/community/')) });
+  }
+  // An unavailable/partial notification read must retain a pending invitation;
+  // a later authoritative absence resolves it and rejects late replays.
+  report.invitation_poll_reconciliation = [];
+  for (const failure of ['transport', 'unavailable', 'partial']) {
+    let phase = 'failed';
+    let deliveries = 0;
+    let resolutions = 0;
+    const incoming = { id: 'notif-preserved', visit_id: VID, actor_id: 'friend-1', expires_at: 9e9 };
+    const h = createHarness({ routes: {
+      ['/api/visit/direct/' + VID + '/preview']: async () => ({ status: 200, body: { visit_id: VID, expires_at: 9e9 } }),
+      ['/api/visit/direct/' + VID + '/question?catgirl=%E5%92%AA%E5%92%AA']: async () => ({ status: 200, body: { question: '要去串门吗？' } }),
+      ['/api/visit/direct/' + VID + '/deliver-question']: async () => { deliveries++; return { status: 200, body: { delivered: true } }; },
+      '/api/community/visit-invitations': async () => {
+        if (phase === 'failed') {
+          if (failure === 'transport') throw new Error('offline');
+          return { status: failure === 'unavailable' ? 503 : 200,
+            body: { incoming_invite_ids: [], notifications_ok: false } };
+        }
+        return { status: 200, body: { incoming_invite: phase === 'present' ? incoming : null,
+          incoming_invite_ids: phase === 'present' ? [incoming.id] : [], notifications_ok: true } };
+      },
+    } });
+    h.win.addEventListener('neko-social-incoming-resolved', () => { resolutions++; });
+    h.chat.applyState({ enabled: true, active: false });
+    await h.chat._test.presentDirectInvitation(incoming);
+    await h.chat._test.pollDirectInvitations();
+    phase = 'present';
+    await h.chat._test.pollDirectInvitations();
+    const afterRecovery = deliveries;
+    const resolvedAfterRecovery = resolutions;
+    phase = 'absent';
+    await h.chat._test.pollDirectInvitations();
+    phase = 'present';
+    await h.chat._test.pollDirectInvitations();
+    report.invitation_poll_reconciliation.push({ failure, afterRecovery, resolvedAfterRecovery,
+      resolvedAfterWithdrawal: resolutions, afterWithdrawal: deliveries,
+      legacyCalls: h.fetches.filter((entry) => entry.url === '/api/community/visit-hub').length });
+  }
+  // A slow compact request still owns the existing single-flight guard.
+  {
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const h = createHarness({ routes: {
+      '/api/community/visit-invitations': async () => { await gate; return { status: 200, body: {
+        incoming_invite: null, incoming_invite_ids: [], notifications_ok: true,
+      } }; },
+    } });
+    h.chat.applyState({ enabled: true, active: false });
+    const first = h.chat._test.pollDirectInvitations();
+    await h.settle();
+    await h.chat._test.pollDirectInvitations();
+    report.invitation_poll_concurrent_calls = h.fetches.length;
+    release();
+    await first;
+    await h.chat._test.pollDirectInvitations();
+    report.invitation_poll_retry_calls = h.fetches.length;
   }
   // Startup failures must reach the caller without depending on global toasts.
   report.invite_quota_orders = [];
@@ -1858,6 +2236,121 @@ def report() -> dict:
     return _run(HARNESS.replace("__CHAT_PATH__", json.dumps(str(CHAT_PATH)))
                 .replace("__PACER_PATH__", json.dumps(str(PACER_PATH)))
                 .replace("__RELAY_SAMPLES__", json.dumps(RELAY_SAMPLES)))
+
+
+def test_partial_invitation_bridges_keep_initialization_and_legacy_recovery(report):
+    assert len(report["partial_invitation_bridges"]) == 9
+    for case in report["partial_invitation_bridges"]:
+        assert case["subscriptions"] == case["gets"] == 0
+        assert case["statusListener"] and case["boundListener"]
+        assert case["reads"] == 2 and case["pollTimers"] == 1
+
+
+def test_hung_initial_invitation_snapshot_recovers_and_late_realtime_stops_legacy_reads(report):
+    assert len(report["initial_invitation_snapshot_recovery"]) == 9
+    for case in report["initial_invitation_snapshot_recovery"]:
+        assert case["statusListener"] and case["presentations"] == 0, case
+        assert case["pollTimers"] == (1 if case["scenario"] == "hung" else 0), case
+        if case["scenario"] == "hung":
+            assert case["reads"] >= 1, case
+        else:
+            assert case["reads"] == (1 if case["scenario"] == "late_realtime" else 0), case
+
+
+def test_realtime_takeover_retires_old_http_cards_and_keeps_valid_delivery_once(report):
+    assert len(report["legacy_card_takeover"]) == 54
+    for case in report["legacy_card_takeover"]:
+        valid = case["scenario"] not in {"withdrawn", "account_changed", "account_changed_compat"}
+        assert case["before"] and case["after"] == (valid and case["scenario"] not in {
+            "complete_account_change", "begin_account_change", "begin_card_withdrawn"}), case
+        repeat = case["scenario"] in {"account_changed_new", "question_not_ready", "switch_off", "tts_unavailable"}
+        assert case["deliveries"] == (2 if repeat else 1) and case["reads"] == 0, case
+        assert case["deliveryRequests"] == [{"method": "POST", "catgirl": "咪咪"}] * case["deliveries"], case
+        assert case["claims"] == (2 if case["scenario"] in {"claim_failure", "begin_failure"} else int(valid)), case
+        assert case["begun"] == (2 if case["scenario"] == 'begin_failure' else int(valid)), case
+        assert case["completedBeforeRetry"] <= 1, case
+        assert case["completed"] == (2 if case["scenario"] in {"complete_failure", "complete_throw"}
+                                     else int(valid and case["scenario"] not in {
+                                         "uncertain", "unclassified_failure", "begin_account_change", "begin_card_withdrawn"})), case
+    assert report["legacy_card_inflight"] == [
+        {"phase": "preview", "bar": False, "deliveries": 0},
+        {"phase": "delivery", "bar": False, "deliveries": 1},
+    ]
+
+
+def test_browser_receive_fallback_does_not_enable_desktop_only_outgoing_creation(report):
+    assert report["browser_outgoing_invitation"] == "desktop-required"
+    assert report["browser_outgoing_reads"] == 0
+
+
+def test_realtime_pages_use_owner_once_and_have_no_invitation_poll_over_ten_minutes(report):
+    assert report["realtime_pages"] == [
+        {"pathname": "/", "claims": 0, "begun": 0, "completed": 0, "reads": 0, "pollTimers": 0},
+        {"pathname": "/chat", "claims": 1, "begun": 1, "completed": 1, "reads": 0, "pollTimers": 0},
+        {"pathname": "/chat_full", "claims": 1, "begun": 1, "completed": 1, "reads": 0, "pollTimers": 0},
+    ]
+
+
+def test_invitation_without_preload_keeps_http_poll_presentation_and_decisions(report):
+    assert len(report["invitation_without_preload"]) == 8
+    for case in report["invitation_without_preload"]:
+        ui = case["mode"] != "pet"
+        assert case["reads"] == (2 if ui else 0), case
+        assert case["deliveries"] == (1 if ui else 0), case
+        assert case["joins"] == int(ui and case["decision"] == "accept"), case
+        assert case["responses"] == ([{"method": "POST", "body": {
+            "accepted": case["decision"] == "accept",
+        }}] if ui else []), case
+
+
+def test_realtime_question_failures_and_connect_invalid_keep_delivery_and_cloud_decisions_separate(report):
+    assert report["realtime_failures"] == [
+        {"scenario": "question_failure", "claims": 2, "releases": 1, "invalid": 0, "decisions": 0, "delivery": 1, "questions": 2},
+        {"scenario": "uncertain_delivery", "claims": 1, "releases": 0, "invalid": 0, "decisions": 0, "delivery": 1, "questions": 1},
+        {"scenario": "connect_invalid", "claims": 1, "releases": 0, "invalid": 1, "decisions": 0, "delivery": 1, "questions": 1},
+        {"scenario": "connect_invalid_raw", "claims": 1, "releases": 0, "invalid": 1, "decisions": 0, "delivery": 1, "questions": 1},
+        {"scenario": "peer_blocked", "claims": 1, "releases": 0, "invalid": 0, "decisions": 0, "delivery": 1, "questions": 1},
+        {"scenario": "character_switch", "claims": 1, "releases": 0, "invalid": 0, "decisions": 0, "delivery": 1, "questions": 1},
+        {"scenario": "hung_question", "claims": 1, "releases": 1, "invalid": 0, "decisions": 0, "delivery": 0, "questions": 1},
+    ]
+
+
+def test_invitation_fallback_poll_uses_compact_reads_in_web_and_electron_chat_windows(report):
+    compact = "/api/community/visit-invitations"
+    for case in report["invitation_poll_windows"]:
+        assert case["paths"] == ([] if case["mode"] == "pet" else [compact, compact]), case
+    assert report["invitation_poll_disabled"] == [0, 0]
+
+
+def test_invitation_poll_falls_back_only_when_the_local_host_lacks_the_get_route(report):
+    for case in report["invitation_poll_compatibility"]:
+        expected = ["/api/community/visit-invitations"]
+        if case["status"] in (404, 405):
+            expected.append("/api/community/visit-hub")
+        assert case["paths"] == expected, case
+        assert case["deliveries"] == (1 if case["status"] in (200, 404, 405) else 0), case
+
+
+def test_invitation_poll_preserves_pending_state_on_failure_and_clears_on_authoritative_withdrawal(report):
+    for case in report["invitation_poll_reconciliation"]:
+        assert case["afterRecovery"] == 1, case
+        assert case["resolvedAfterRecovery"] == 0, case
+        assert case["resolvedAfterWithdrawal"] == 1, case
+        assert case["afterWithdrawal"] == 1, case
+        assert case["legacyCalls"] == 0, case
+
+
+def test_invitation_poll_keeps_single_flight_and_allows_the_next_read(report):
+    assert report["invitation_poll_concurrent_calls"] == 1
+    assert report["invitation_poll_retry_calls"] == 2
+
+
+def test_invitation_push_has_one_compact_read_per_chat_route_and_none_in_pet(report):
+    assert report["invitation_push_windows"] == [
+        {"pathname": "/", "compact": 0, "full": 0},
+        {"pathname": "/chat", "compact": 1, "full": 0},
+        {"pathname": "/chat_full", "compact": 1, "full": 0},
+    ]
 
 
 def test_quota_reaches_invite_caller_in_web_and_electron_for_both_event_orders(report):
