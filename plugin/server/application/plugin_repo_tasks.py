@@ -15,15 +15,15 @@ Outcomes mirror the CLI's exit codes:
 
 from __future__ import annotations
 
-import asyncio
-import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import Literal
 
 from plugin.logging_config import get_logger
 from plugin.neko_plugin_cli.core.plugin_source import load_plugin_source
+from plugin.server.application.plugin_project_commands import project_operation, run_cli
 from plugin.server.application.plugin_projects import source_repo_root
 from plugin.server.application.plugins._env_budgets import env_seconds
 from plugin.server.domain.plugin_project_errors import ProjectErrorCode as Code
@@ -40,7 +40,7 @@ _LOG_LINE_CHARS = 400
 RepoCreateStatus = Literal["created", "manual", "failed"]
 
 
-def _record_source_dir(project_id: str):
+def _record_source_dir(project_id: str) -> Path:
     record = next((item for item in store.list_records() if item.project_id == project_id), None)
     if record is None:
         raise project_error(Code.PROJECT_NOT_FOUND, f"unknown project: {project_id}", 404)
@@ -52,7 +52,7 @@ def _clip(text: str) -> list[str]:
     return lines[-_LOG_LINES:]
 
 
-def _run(source_dir, *, private: bool) -> dict[str, object]:
+async def _run(source_dir: Path, *, private: bool) -> dict[str, object]:
     root = source_repo_root()
     if root is None:
         raise project_error(
@@ -66,20 +66,9 @@ def _run(source_dir, *, private: bool) -> dict[str, object]:
     argv = [sys.executable, "-m", "plugin.neko_plugin_cli.cli", "create-repo", str(source_dir)]
     if private:
         argv.append("--private")
-    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"}
     budget = env_seconds("NEKO_PLUGIN_REPO_CREATE_BUDGET", 180.0)
     try:
-        completed = subprocess.run(
-            argv,
-            cwd=root,
-            env=env,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=budget,
-        )
+        completed = await run_cli(argv, cwd=root, timeout=budget, merge_stderr=True)
     except subprocess.TimeoutExpired as exc:
         raise project_error(
             Code.REPO_CREATE_FAILED,
@@ -125,4 +114,5 @@ def _first_https_github_url(log: list[str]) -> str:
 async def create_repository(project_id: str, *, private: bool = False) -> dict[str, object]:
     """Run ``neko-plugin create-repo`` for a project and return its outcome."""
     source_dir = _record_source_dir(project_id)
-    return await asyncio.to_thread(_run, source_dir, private=private)
+    with project_operation(project_id, "create-repo"):
+        return await _run(source_dir, private=private)

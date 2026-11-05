@@ -29,6 +29,7 @@ from plugin.neko_plugin_cli.core.project import (
 from plugin import settings
 from plugin.core.state import state
 from plugin.logging_config import get_logger
+from plugin.server.application.plugin_project_commands import project_operation, run_cli
 from plugin.server.application.plugins._env_budgets import env_seconds
 from plugin.server.application.plugins.operation_lock import (
     PluginOperationBusy,
@@ -461,7 +462,7 @@ def open_project_directory(path: str) -> None:
         raise project_error(Code(exc.code), str(exc), 400) from exc
 
 
-def precheck_project_sync(project_id: str) -> dict[str, object]:
+async def precheck_project(project_id: str) -> dict[str, object]:
     """Run the Market CI gates against a registered project's source.
 
     The gates live in the CLI (``neko-plugin precheck``); this only locates
@@ -479,23 +480,26 @@ def precheck_project_sync(project_id: str) -> dict[str, object]:
     if record is None:
         raise project_error(Code.PROJECT_NOT_FOUND, f"unknown project: {project_id}", 404)
     budget = env_seconds("NEKO_PLUGIN_PRECHECK_BUDGET", 600.0)
-    try:
-        completed = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "plugin.neko_plugin_cli.cli",
-                "precheck",
-                record.source_dir,
-                "--json",
-            ],
-            cwd=root,
-            text=True,
-            capture_output=True,
-            timeout=budget,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise project_error(Code.PRECHECK_FAILED_TO_RUN, f"precheck could not run: {exc}", 500) from exc
+    argv = [
+        sys.executable,
+        "-m",
+        "plugin.neko_plugin_cli.cli",
+        "precheck",
+        str(record.source_dir),
+        "--json",
+    ]
+    # ``sync --clean`` rewrites vendor/; never alongside a publish or create-repo.
+    with project_operation(project_id, "precheck"):
+        try:
+            completed = await run_cli(argv, cwd=root, timeout=budget)
+        except subprocess.TimeoutExpired as exc:
+            raise project_error(
+                Code.PRECHECK_FAILED_TO_RUN, f"precheck timed out after {budget:.0f} seconds", 504
+            ) from exc
+        except OSError as exc:
+            raise project_error(
+                Code.PRECHECK_FAILED_TO_RUN, f"precheck could not run: {exc}", 500
+            ) from exc
     lines = [line for line in completed.stdout.splitlines() if line.strip()]
     if not lines:
         tail = completed.stderr.strip()[-500:]

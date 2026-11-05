@@ -10,7 +10,6 @@ read-only publish status reconciles against it after a server restart.
 from __future__ import annotations
 
 import asyncio
-import os
 import re
 import subprocess
 import sys
@@ -23,17 +22,24 @@ from typing import Literal, NamedTuple
 from urllib.parse import quote
 from uuid import uuid4
 
-import psutil
-
 from plugin.logging_config import get_logger
-from plugin.neko_plugin_cli.core.plugin_source import load_plugin_source
-from plugin.neko_plugin_cli.repo_state import read_repo_state
+from plugin.neko_plugin_cli.repo_state import RepoState
+from plugin.server.application.plugin_project_commands import (
+    claim_project,
+    release_project,
+    start_cli,
+    terminate_process_tree,
+)
 from plugin.server.application.plugin_projects import source_repo_root
-from plugin.server.application.plugin_publish_status import read_remote_github
+from plugin.server.application.plugin_publish_status import (
+    LocalStatus,
+    RemoteGithubState,
+    read_local_status,
+    read_remote_github,
+)
 from plugin.server.application.plugins._env_budgets import env_seconds
 from plugin.server.domain.plugin_project_errors import ProjectErrorCode as Code
 from plugin.server.domain.plugin_project_errors import project_error
-from plugin.server.infrastructure import authoring_project_store as store
 
 logger = get_logger("server.application.plugin_publish_tasks")
 
@@ -43,7 +49,15 @@ _LOG_LINES = 200
 _LOG_LINE_CHARS = 400
 _MAX_TASKS = 64
 _TERMINATE_GRACE_SECONDS = 15.0
+# Part of the server budget kept for sync, release checks, ruff and the tag
+# push before the CLI starts waiting for the GitHub Release.
+_PRE_RELEASE_RESERVE_SECONDS = 300.0
+_MIN_RELEASE_WAIT_SECONDS = 60.0
 _RELEASE_URL_PATTERN = re.compile(r"GitHub Release ready: (\S+)")
+_RELEASE_WORKFLOW = ".github/workflows/release.yml"
+# Lines the CLI starts itself; anything else after ``[FAIL]`` continues it.
+_MARKER_PATTERN = re.compile(r"^\[[^\]]+\]")
+_CAUSE_PATTERN = re.compile(r"^\s*(fatal:|error:|! \[)", re.IGNORECASE)
 
 
 @dataclass
@@ -97,7 +111,51 @@ class _Gate(NamedTuple):
     tag: str
 
 
-def _local_gate(project_id: str) -> _Gate:
+def _push_blockers(state: RepoState) -> list[str]:
+    branch = state.branch
+    if state.head is None:
+        return ["the repository has no commits yet"]
+    if state.detached:
+        return ["HEAD is detached; check out the branch to publish from"]
+    if state.upstream is None:
+        return [f"branch {branch} has no upstream; run git push -u origin {branch}"]
+    if not state.upstream.startswith("origin/"):
+        return [
+            f"branch {branch} tracks {state.upstream}, which is not on origin; "
+            f"run git push -u origin {branch}"
+        ]
+    if state.head_pushed is not True:
+        return [f"HEAD is not pushed to {state.upstream}; run git push"]
+    return []
+
+
+def _release_blockers(local: LocalStatus) -> list[str]:
+    """What ``publish github`` would refuse before it pushes a tag."""
+    state = local.repository
+    reasons: list[str] = []
+    if state.worktree_clean is None:
+        reasons.append("git status could not be read")
+    elif not state.worktree_clean:
+        reasons.append(
+            "the git working tree has uncommitted changes: " + ", ".join(state.dirty_paths)
+        )
+    reasons.extend(_push_blockers(state))
+    from plugin.neko_plugin_cli.repo_action_migration import ActionFileStatus
+
+    workflow = local.actions.get(_RELEASE_WORKFLOW)
+    if workflow != ActionFileStatus.CURRENT:
+        reasons.append(
+            f"the standard release workflow {_RELEASE_WORKFLOW} is {workflow or 'missing'}; "
+            f"run neko-plugin setup-repo {local.source_dir} --upgrade-github-actions"
+        )
+    if state.tag_exists and state.tag_at_head is False:
+        reasons.append(
+            f"tag {state.tag} already points at another commit; bump the version in plugin.toml"
+        )
+    return reasons
+
+
+def _local_gate(project_id: str, mode: PublishMode) -> _Gate:
     """Refuse to start unless the CLI's own local preconditions already hold."""
     root = source_repo_root()
     if root is None:
@@ -106,14 +164,8 @@ def _local_gate(project_id: str) -> _Gate:
             "Publishing needs a source checkout; it is unavailable in a packaged build.",
             503,
         )
-    record = next((item for item in store.list_records() if item.project_id == project_id), None)
-    if record is None:
-        raise project_error(Code.PROJECT_NOT_FOUND, f"unknown project: {project_id}", 404)
-    try:
-        source = load_plugin_source(record.source_dir)
-    except (OSError, TypeError, KeyError, ValueError) as exc:
-        raise project_error(Code.INVALID_PROJECT_DIRECTORY, str(exc), 400) from exc
-    state = read_repo_state(record.source_dir, version=source.version)
+    local = read_local_status(project_id)
+    state = local.repository
     reasons: list[str] = []
     if not state.git_available:
         reasons.append("git is not available")
@@ -121,59 +173,96 @@ def _local_gate(project_id: str) -> _Gate:
         reasons.append("the project directory does not have its own git repository")
     if not state.github_repository:
         reasons.append("git remote origin does not point to a GitHub repository")
-    if state.worktree_clean is not True:
-        reasons.append("the git working tree has uncommitted changes")
-    if state.head_pushed is not True:
-        reasons.append("HEAD is not pushed to its origin branch")
+    # Notifying the Market only names an existing release; local edits do not matter.
+    if state.is_repository and mode != "market_notify":
+        reasons.extend(_release_blockers(local))
     if reasons:
         raise project_error(Code.PUBLISH_NOT_READY, "; ".join(reasons), 409)
     assert state.github_repository is not None  # the check above raised without it
     return _Gate(
         root=root,
-        source_dir=record.source_dir,
-        plugin_id=source.plugin_id,
+        source_dir=local.source_dir,
+        plugin_id=local.plugin_id,
         repository=state.github_repository,
         head=state.head,
         tag=state.tag,
     )
 
 
+def _remote_release_blockers(gate: _Gate, remote: RemoteGithubState) -> list[str]:
+    """GitHub facts that make a new release pointless; unknown facts are left to the CLI."""
+    reasons: list[str] = []
+    if remote["visibility"] == "private":
+        reasons.append(
+            f"repository {gate.repository} is private; the Market needs a public repository"
+        )
+    elif remote["visibility"] == "not_found":
+        reasons.append(
+            f"repository {gate.repository} is not visible on GitHub (missing or private); "
+            "the Market needs a public repository"
+        )
+    if remote["tag"] == "elsewhere":
+        reasons.append(
+            f"remote tag {gate.tag} already points at another commit; "
+            "bump the version in plugin.toml"
+        )
+    return reasons
+
+
+def _verified_release_url(gate: _Gate, remote: RemoteGithubState) -> str:
+    # The Market rejects releases it cannot verify; check before asking.
+    if remote["rate_limited"]:
+        raise project_error(
+            Code.PUBLISH_RATE_LIMITED,
+            "GitHub rate limit reached; the release cannot be verified right now.",
+            429,
+        )
+    if not remote["reachable"]:
+        raise project_error(
+            Code.PUBLISH_NOT_READY,
+            "GitHub could not be reached; the release cannot be verified right now",
+            409,
+        )
+    release = remote["release"]
+    if release["state"] == "unknown":
+        raise project_error(
+            Code.PUBLISH_NOT_READY, f"release {gate.tag} could not be read from GitHub", 409
+        )
+    if release["state"] != "published":
+        raise project_error(
+            Code.PUBLISH_NOT_READY, f"release {gate.tag} is not published yet", 409
+        )
+    if release["missing_assets"]:
+        raise project_error(
+            Code.PUBLISH_NOT_READY,
+            f"release assets are incomplete: {', '.join(release['missing_assets'])}",
+            409,
+        )
+    return f"https://github.com/{gate.repository}/releases/tag/{quote(gate.tag, safe='')}"
+
+
 async def start_publish(project_id: str, mode: PublishMode) -> dict[str, object]:
-    gate = await asyncio.to_thread(_local_gate, project_id)
+    gate = await asyncio.to_thread(_local_gate, project_id, mode)
+    budget = env_seconds("NEKO_PLUGIN_PUBLISH_BUDGET", 1200.0)
+    argv = [sys.executable, "-m", "plugin.neko_plugin_cli.cli", "publish"]
     release_url = ""
     if mode == "market_notify":
-        # The Market rejects releases it cannot verify; check before asking.
-        remote = await read_remote_github(gate.repository, gate.head, gate.tag, gate.plugin_id)
-        if remote["rate_limited"]:
-            raise project_error(
-                Code.PUBLISH_RATE_LIMITED,
-                "GitHub rate limit reached; the release cannot be verified right now.",
-                429,
-            )
-        release = remote["release"]
-        if release["state"] != "published":
-            raise project_error(
-                Code.PUBLISH_NOT_READY, f"release {gate.tag} is not published yet", 409
-            )
-        if release["missing_assets"]:
-            raise project_error(
-                Code.PUBLISH_NOT_READY,
-                f"release assets are incomplete: {', '.join(release['missing_assets'])}",
-                409,
-            )
-        release_url = (
-            f"https://github.com/{gate.repository}/releases/tag/{quote(gate.tag, safe='')}"
+        remote = await read_remote_github(
+            gate.repository, gate.head, gate.tag, gate.plugin_id, fresh=True
         )
-
-    argv = [sys.executable, "-m", "plugin.neko_plugin_cli.cli", "publish"]
-    if mode == "github":
-        argv += ["github", str(gate.source_dir)]
-    elif mode == "market_notify":
+        release_url = _verified_release_url(gate, remote)
         argv += ["market", release_url]
     else:
-        argv += [str(gate.source_dir)]
+        remote = await read_remote_github(gate.repository, gate.head, gate.tag, gate.plugin_id)
+        reasons = _remote_release_blockers(gate, remote)
+        if reasons:
+            raise project_error(Code.PUBLISH_NOT_READY, "; ".join(reasons), 409)
+        if mode == "github":
+            argv += ["github"]
+        # The CLI's own wait must end before the server stops it.
+        release_wait = max(budget - _PRE_RELEASE_RESERVE_SECONDS, _MIN_RELEASE_WAIT_SECONDS)
+        argv += [str(gate.source_dir), "--timeout", f"{release_wait:.0f}"]
 
-    budget = env_seconds("NEKO_PLUGIN_PUBLISH_BUDGET", 1200.0)
     task = _Task(
         task_id=uuid4().hex, project_id=project_id, mode=mode, release_url=release_url
     )
@@ -186,13 +275,15 @@ async def start_publish(project_id: str, mode: PublishMode) -> dict[str, object]
                 f"a publish task is already running for project {project_id}",
                 409,
             )
+        # Shared with precheck and create-repo: they touch the same tree.
+        claim_project(project_id, "publish")
         _prune()
         _tasks[task.task_id] = task
         _active[project_id] = task.task_id
         _latest[project_id] = task.task_id
         snapshot = _snapshot(task)
     worker = asyncio.create_task(
-        _run_task(task, argv, gate.root, budget), name=f"plugin-publish-{task.task_id}"
+        _run_task(task, argv, gate, budget), name=f"plugin-publish-{task.task_id}"
     )
     _workers[task.task_id] = worker
     worker.add_done_callback(lambda _done, task_id=task.task_id: _workers.pop(task_id, None))
@@ -239,25 +330,15 @@ def _prune() -> None:
 
 def _stream(task: _Task, argv: list[str], cwd: Path) -> tuple[int | None, str]:
     """Run the CLI to completion, collecting its output. Called in a thread."""
-    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"}
     try:
-        process = subprocess.Popen(
-            argv,
-            cwd=cwd,
-            env=env,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
+        process = start_cli(argv, cwd=cwd, merge_stderr=True)
     except OSError as exc:
         return None, f"publish command could not start: {exc}"
     with _lock:
         task.process = process
         cancelled = task.cancel_requested
     if cancelled:
-        _terminate_process(process)
+        terminate_process_tree(process)
     with _lock:
         task.status = "running"
         task.started_at = time.time()
@@ -270,62 +351,37 @@ def _stream(task: _Task, argv: list[str], cwd: Path) -> tuple[int | None, str]:
     return process.wait(), ""
 
 
-def _terminate_process(process: subprocess.Popen[str]) -> None:
-    """Kill the CLI and everything it spawned (git, uvx, build children)."""
-    if process.poll() is not None:
-        return
-    parent: psutil.Process | None = None
-    try:
-        parent = psutil.Process(process.pid)
-    except psutil.Error:
-        pass
-    children: list[psutil.Process] = []
-    if parent is not None:
-        try:
-            children = parent.children(recursive=True)
-        except psutil.Error:
-            children = []
-
-    for child in children:
-        try:
-            child.terminate()
-        except psutil.Error:
-            pass
-    try:
-        process.terminate()
-    except OSError:
-        pass
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        for child in children:
-            try:
-                child.kill()
-            except psutil.Error:
-                pass
-        try:
-            process.kill()
-            process.wait(timeout=5)
-        except (OSError, subprocess.TimeoutExpired):  # pragma: no cover - escalation best-effort
-            logger.warning("publish subprocess did not exit after kill: pid={}", process.pid)
-
-
 def _terminate(task: _Task) -> None:
     with _lock:
         process = task.process
     if process is not None:
-        _terminate_process(process)
+        terminate_process_tree(process)
 
 
 def _failure_message(task: _Task, returncode: int | None) -> str:
+    """The last ``[FAIL]`` line, completed by the cause a multi-line error carries.
+
+    A git error prints its first stderr line on the ``[FAIL]`` line (often
+    ``To https://...``); the actual ``fatal:`` / ``! [rejected]`` line follows.
+    """
     with _lock:
         lines = list(task.log)
-    failures = [line for line in lines if "[FAIL]" in line]
-    if failures:
-        return failures[-1][:_LOG_LINE_CHARS]
-    if returncode is None:
-        return "the publish task was interrupted before completion"
-    return f"publish exited with code {returncode}"
+    starts = [index for index, line in enumerate(lines) if "[FAIL]" in line]
+    if not starts:
+        if returncode is None:
+            return "the publish task was interrupted before completion"
+        return f"publish exited with code {returncode}"
+    start = starts[-1]
+    continuation: list[str] = []
+    for line in lines[start + 1 :]:
+        if _MARKER_PATTERN.match(line):
+            break
+        if line.strip():
+            continuation.append(line.strip())
+    causes = [line for line in continuation if _CAUSE_PATTERN.match(line)]
+    cause = causes[-1] if causes else (continuation[-1] if continuation else "")
+    message = f"{lines[start]} | {cause}" if cause else lines[start]
+    return message[:_LOG_LINE_CHARS]
 
 
 def _extract_release_url(task: _Task) -> str:
@@ -338,15 +394,29 @@ def _extract_release_url(task: _Task) -> str:
     return ""
 
 
-async def _run_task(task: _Task, argv: list[str], cwd: Path, budget: float) -> None:
-    stream = asyncio.create_task(asyncio.to_thread(_stream, task, argv, cwd))
+async def _timeout_message(task: _Task, gate: _Gate, budget: float) -> str:
+    message = f"publish timed out after {budget:.0f} seconds"
+    if task.mode == "market_notify":
+        return message
+    remote = await read_remote_github(
+        gate.repository, gate.head, gate.tag, gate.plugin_id, fresh=True
+    )
+    if remote["tag"] != "at_head":
+        return message
+    return (
+        f"{message} after tag {gate.tag} was pushed; the GitHub Release may still be in "
+        "progress. Notify the Market once it appears."
+    )
+
+
+async def _run_task(task: _Task, argv: list[str], gate: _Gate, budget: float) -> None:
+    stream = asyncio.create_task(asyncio.to_thread(_stream, task, argv, gate.root))
     returncode: int | None = None
     spawn_error = ""
-    timed_out = False
+    timeout_message = ""
     try:
         returncode, spawn_error = await asyncio.wait_for(asyncio.shield(stream), budget)
     except TimeoutError:
-        timed_out = True
         await asyncio.to_thread(_terminate, task)
         try:
             returncode, spawn_error = await asyncio.wait_for(
@@ -354,16 +424,18 @@ async def _run_task(task: _Task, argv: list[str], cwd: Path, budget: float) -> N
             )
         except TimeoutError:  # pragma: no cover - a killed process reaches EOF
             logger.warning("publish stream did not end after terminate: task={}", task.task_id)
+        timeout_message = await _timeout_message(task, gate, budget)
     except asyncio.CancelledError:
         # Server shutdown must not orphan a child that may still push a tag.
         _terminate(task)
         raise
     finally:
-        _finalize(task, returncode, spawn_error, timed_out, budget)
+        _finalize(task, returncode, spawn_error, timeout_message)
+        release_project(task.project_id)
 
 
 def _finalize(
-    task: _Task, returncode: int | None, spawn_error: str, timed_out: bool, budget: float
+    task: _Task, returncode: int | None, spawn_error: str, timeout_message: str
 ) -> None:
     with _lock:
         if task.status in _TERMINAL_STATUSES:
@@ -374,9 +446,9 @@ def _finalize(
         elif spawn_error:
             task.status = "failed"
             task.message = spawn_error
-        elif timed_out:
+        elif timeout_message:
             task.status = "failed"
-            task.message = f"publish timed out after {budget:.0f} seconds"
+            task.message = timeout_message
         elif returncode == 0:
             task.status = "succeeded"
         else:

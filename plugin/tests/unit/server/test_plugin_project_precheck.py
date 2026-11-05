@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import httpx
+import psutil
 import pytest
 from fastapi import FastAPI
 
 from plugin import settings
 from plugin.neko_plugin_cli.core import project as creator
+from plugin.server.application import plugin_project_commands as commands
 from plugin.server.application import plugin_projects as service
 from plugin.core.state import state as runtime_state
 from plugin.server.application.plugins import operation_lock
@@ -39,7 +42,9 @@ def isolated_state(monkeypatch, tmp_path_factory):
         operation_lock, "_operation_file_lock_path", lambda: state / "operation.lock"
     )
     monkeypatch.setattr(runtime_state, "plugins", {})
-    return state
+    commands._busy.clear()
+    yield state
+    commands._busy.clear()
 
 
 @pytest.fixture
@@ -69,11 +74,11 @@ def _scaffold(parent: Path, plugin_id: str) -> Path:
 def _stub_cli(monkeypatch, stdout: str, returncode: int = 0):
     calls: list[list[str]] = []
 
-    def fake_run(argv, **kwargs):
+    async def fake_run(argv, **kwargs):
         calls.append(list(argv))
         return subprocess.CompletedProcess(argv, returncode, stdout=stdout, stderr="")
 
-    monkeypatch.setattr(service.subprocess, "run", fake_run)
+    monkeypatch.setattr(service, "run_cli", fake_run)
     return calls
 
 
@@ -88,7 +93,7 @@ async def test_precheck_returns_the_cli_report_verbatim(app, tmp_path, monkeypat
     argv = calls[0]
     assert argv[-1] == "--json"
     assert "precheck" in argv
-    assert record.source_dir in argv
+    assert str(record.source_dir) in argv
 
 
 @pytest.mark.asyncio
@@ -118,3 +123,74 @@ async def test_precheck_without_a_report_is_a_server_failure(app, tmp_path, monk
         response = await http.post(f"/plugin-projects/{record.project_id}/precheck", json={})
     assert response.status_code == 500
     assert response.json()["detail"]["code"] == "PRECHECK_FAILED_TO_RUN"
+
+
+@pytest.mark.asyncio
+async def test_precheck_is_refused_while_the_project_is_publishing(app, tmp_path, monkeypatch):
+    record = store.add_record(_scaffold(tmp_path, "pre_demo"))
+    calls = _stub_cli(monkeypatch, json.dumps(REPORT))
+    commands.claim_project(record.project_id, "publish")
+    async with client(app) as http:
+        response = await http.post(f"/plugin-projects/{record.project_id}/precheck", json={})
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "PLUGIN_OPERATION_BUSY"
+    assert "publish" in detail["message"]
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_precheck_timeout_is_reported_and_releases_the_project(app, tmp_path, monkeypatch):
+    record = store.add_record(_scaffold(tmp_path, "pre_demo"))
+
+    async def timeout(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, 600)
+
+    monkeypatch.setattr(service, "run_cli", timeout)
+    async with client(app) as http:
+        response = await http.post(f"/plugin-projects/{record.project_id}/precheck", json={})
+    assert response.status_code == 504
+    assert response.json()["detail"]["code"] == "PRECHECK_FAILED_TO_RUN"
+    assert record.project_id not in commands._busy
+
+
+def test_cli_children_run_in_utf8_mode(monkeypatch):
+    monkeypatch.delenv("PYTHONUTF8", raising=False)
+    env = commands.cli_child_env()
+    assert env["PYTHONUTF8"] == "1"
+    assert env["PYTHONIOENCODING"] == "utf-8"
+
+
+
+@pytest.mark.asyncio
+async def test_run_cli_decodes_utf8_output(tmp_path):
+    printed = await commands.run_cli(
+        [sys.executable, "-c", "print('\\u63d2\\u4ef6\\u53d1\\u5e03')"], cwd=tmp_path, timeout=30
+    )
+    assert printed.stdout.strip() == "\u63d2\u4ef6\u53d1\u5e03"
+
+
+@pytest.mark.asyncio
+async def test_run_cli_timeout_kills_grandchildren_too(tmp_path):
+    pid_file = tmp_path / "pid.txt"
+    # The CLI stand-in starts a grandchild that a direct-child kill would orphan.
+    script = (
+        "import pathlib, subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(child.pid))\n"
+        "time.sleep(60)\n"
+    )
+    with pytest.raises(subprocess.TimeoutExpired):
+        await commands.run_cli([sys.executable, "-c", script], cwd=tmp_path, timeout=5)
+    grandchild = int(pid_file.read_text())
+    _, alive = psutil.wait_procs(
+        [process for process in [_process_or_none(grandchild)] if process], timeout=5
+    )
+    assert alive == []
+
+
+def _process_or_none(pid):
+    try:
+        return psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        return None

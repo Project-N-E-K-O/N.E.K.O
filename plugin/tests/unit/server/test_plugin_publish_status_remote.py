@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 import httpx
 import pytest
@@ -12,6 +13,7 @@ from plugin.server.application import plugin_publish_status as publish_status
 BASE = '/repos/owner/repo'
 VERIFY = BASE + '/actions/workflows/verify.yml/runs'
 RELEASE = BASE + '/releases/tags/v1.0.0'
+TAG_REF = BASE + '/git/ref/tags/v1.0.0'
 HEAD = 'a' * 40
 ASSETS = ('demo.neko-plugin', 'demo.market-release-check.txt', 'market-evidence.json')
 PUBLIC = (200, {'private': False}, None)
@@ -32,13 +34,20 @@ class Github:
         return httpx.Response(status, json=payload, headers=headers)
 
 
+def _reset():
+    publish_status._cache.clear()
+    publish_status._inflight.clear()
+    publish_status._client = None
+    publish_status._rate_limited_until = 0.0
+
+
 @pytest.fixture(autouse=True)
 def _isolated(monkeypatch):
-    publish_status._cache.clear()
+    _reset()
     monkeypatch.delenv('GH_TOKEN', raising=False)
     monkeypatch.delenv('GITHUB_TOKEN', raising=False)
     yield
-    publish_status._cache.clear()
+    _reset()
 
 
 def _serve(monkeypatch, routes):
@@ -60,8 +69,10 @@ def _serve(monkeypatch, routes):
     return github
 
 
-def _read(head=HEAD):
-    return asyncio.run(publish_status.read_remote_github('owner/repo', head, 'v1.0.0', 'demo'))
+def _read(head=HEAD, *, fresh=False):
+    return asyncio.run(
+        publish_status.read_remote_github('owner/repo', head, 'v1.0.0', 'demo', fresh=fresh)
+    )
 
 
 def _runs(status, conclusion=None):
@@ -76,37 +87,67 @@ def _release(*assets):
     return (200, {'assets': list(assets)}, None)
 
 
+def _tag_ref(sha, kind='commit'):
+    return (200, {'object': {'sha': sha, 'type': kind}}, None)
+
+
+FINAL = {
+    BASE: PUBLIC,
+    VERIFY: _runs('completed', 'success'),
+    RELEASE: _release(*[_asset(name) for name in ASSETS]),
+    TAG_REF: _tag_ref(HEAD),
+}
+
+
 def test_public_repository_with_passing_verify_and_complete_release(monkeypatch):
-    github = _serve(
-        monkeypatch,
-        {
-            BASE: PUBLIC,
-            VERIFY: _runs('completed', 'success'),
-            RELEASE: _release(*[_asset(name) for name in ASSETS]),
-        },
-    )
+    github = _serve(monkeypatch, FINAL)
     assert _read() == {
         'rate_limited': False,
+        'reachable': True,
         'visibility': 'public',
         'verify': 'success',
         'release': {'state': 'published', 'missing_assets': []},
+        'tag': 'at_head',
     }
     # Only the public GitHub API is ever contacted.
     assert {request.url.host for request in github.requests} == {'api.github.com'}
 
 
-def test_missing_repository_workflow_and_release_are_reported_as_such(monkeypatch):
+def test_missing_repository_workflow_release_and_tag_are_reported_as_such(monkeypatch):
     _serve(monkeypatch, {})
     result = _read()
     assert result['visibility'] == 'not_found'
     assert result['verify'] == 'missing'
     assert result['release'] == {'state': 'missing', 'missing_assets': []}
+    assert result['tag'] == 'missing'
     assert result['rate_limited'] is False
+    assert result['reachable'] is True
 
 
 def test_private_repository_is_reported_as_private(monkeypatch):
     _serve(monkeypatch, {BASE: (200, {'private': True}, None)})
     assert _read()['visibility'] == 'private'
+
+
+def test_remote_tag_on_another_commit_is_elsewhere(monkeypatch):
+    _serve(monkeypatch, {TAG_REF: _tag_ref('b' * 40)})
+    assert _read()['tag'] == 'elsewhere'
+
+
+def test_annotated_remote_tag_is_followed_to_its_commit(monkeypatch):
+    _serve(
+        monkeypatch,
+        {
+            TAG_REF: _tag_ref('c' * 40, kind='tag'),
+            BASE + '/git/tags/' + 'c' * 40: (200, {'object': {'sha': HEAD, 'type': 'commit'}}, None),
+        },
+    )
+    assert _read()['tag'] == 'at_head'
+
+
+def test_remote_tag_is_unknown_without_a_local_head(monkeypatch):
+    _serve(monkeypatch, {TAG_REF: _tag_ref(HEAD)})
+    assert _read(head=None)['tag'] == 'unknown'
 
 
 @pytest.mark.parametrize(
@@ -142,15 +183,26 @@ def test_release_assets_that_are_not_uploaded_or_empty_count_as_missing(monkeypa
 
 @pytest.mark.parametrize('entry', [LIMITED, (429, {}, None)])
 def test_rate_limit_leaves_remote_steps_unknown_and_is_not_cached(monkeypatch, entry):
-    github = _serve(monkeypatch, {BASE: entry, VERIFY: entry, RELEASE: entry})
+    github = _serve(monkeypatch, {BASE: entry, VERIFY: entry, RELEASE: entry, TAG_REF: entry})
     result = _read()
     assert result['rate_limited'] is True
     assert result['visibility'] == 'unknown'
     assert result['verify'] == 'unknown'
     assert result['release'] == {'state': 'unknown', 'missing_assets': []}
+    assert result['tag'] == 'unknown'
     first = len(github.requests)
     _read()
     assert len(github.requests) > first
+
+
+def test_a_known_rate_limit_reset_is_waited_out_even_when_fresh(monkeypatch):
+    reset = str(int(time.time()) + 600)
+    limited = (403, {}, {'x-ratelimit-remaining': '0', 'x-ratelimit-reset': reset})
+    github = _serve(monkeypatch, {BASE: limited})
+    assert _read()['rate_limited'] is True
+    first = len(github.requests)
+    assert _read(fresh=True)['rate_limited'] is True
+    assert len(github.requests) == first
 
 
 def test_forbidden_without_an_exhausted_quota_is_not_a_rate_limit(monkeypatch):
@@ -158,31 +210,83 @@ def test_forbidden_without_an_exhausted_quota_is_not_a_rate_limit(monkeypatch):
     _serve(monkeypatch, {BASE: forbidden})
     result = _read()
     assert result['rate_limited'] is False
+    assert result['reachable'] is True
     assert result['visibility'] == 'unknown'
 
 
-def test_answers_are_cached_per_repository_commit_and_tag(monkeypatch):
-    github = _serve(
-        monkeypatch,
-        {BASE: PUBLIC, VERIFY: _runs('completed', 'success'), RELEASE: _release()},
-    )
+def test_final_answers_are_cached_per_repository_commit_and_tag(monkeypatch):
+    github = _serve(monkeypatch, FINAL)
     first = _read()
-    assert len(github.requests) == 3
+    assert len(github.requests) == 4
     assert _read() == first
-    assert len(github.requests) == 3
+    assert len(github.requests) == 4
     # Another commit is a different question.
     _read(head='b' * 40)
-    assert len(github.requests) == 6
+    assert len(github.requests) == 8
 
 
-def test_network_failures_leave_everything_unknown_without_raising(monkeypatch):
+def test_fresh_bypasses_the_cache(monkeypatch):
+    github = _serve(monkeypatch, FINAL)
+    _read()
+    _read(fresh=True)
+    assert len(github.requests) == 8
+
+
+@pytest.mark.parametrize(
+    'routes',
+    [
+        # Verify still running.
+        {**FINAL, VERIFY: _runs('in_progress')},
+        # Verify run not created yet right after a push.
+        {**FINAL, VERIFY: (200, {'workflow_runs': []}, None)},
+        # Release not created yet, or still uploading.
+        {**FINAL, RELEASE: (404, {}, None)},
+        {**FINAL, RELEASE: _release(_asset(ASSETS[0]))},
+    ],
+)
+def test_answers_that_can_still_change_are_not_cached(monkeypatch, routes):
+    github = _serve(monkeypatch, routes)
+    _read()
+    _read()
+    assert len(github.requests) == 8
+
+
+def test_network_failures_are_unreachable_and_not_cached(monkeypatch):
     error = httpx.ConnectError('boom')
-    _serve(monkeypatch, {BASE: error, VERIFY: error, RELEASE: error})
+    github = _serve(monkeypatch, {BASE: error, VERIFY: error, RELEASE: error, TAG_REF: error})
     result = _read()
     assert result['rate_limited'] is False
+    assert result['reachable'] is False
     assert result['visibility'] == 'unknown'
     assert result['verify'] == 'unknown'
     assert result['release']['state'] == 'unknown'
+    assert result['tag'] == 'unknown'
+    first = len(github.requests)
+    _read()
+    assert len(github.requests) == 2 * first
+
+
+def test_a_server_error_is_unreachable_and_not_cached(monkeypatch):
+    github = _serve(monkeypatch, {**FINAL, RELEASE: (502, {}, None)})
+    result = _read()
+    assert result['reachable'] is False
+    assert result['release']['state'] == 'unknown'
+    _read()
+    assert len(github.requests) == 8
+
+
+def test_concurrent_reads_of_one_release_share_one_set_of_requests(monkeypatch):
+    github = _serve(monkeypatch, {**FINAL, VERIFY: _runs('in_progress')})
+
+    async def both():
+        return await asyncio.gather(
+            publish_status.read_remote_github('owner/repo', HEAD, 'v1.0.0', 'demo'),
+            publish_status.read_remote_github('owner/repo', HEAD, 'v1.0.0', 'demo', fresh=True),
+        )
+
+    first, second = asyncio.run(both())
+    assert first == second
+    assert len(github.requests) == 4
 
 
 def test_verify_is_not_read_without_a_head_commit(monkeypatch):
@@ -196,7 +300,6 @@ def test_token_is_sent_only_when_configured(monkeypatch):
     github = _serve(monkeypatch, {BASE: PUBLIC})
     _read()
     assert all('authorization' not in request.headers for request in github.requests)
-    publish_status._cache.clear()
     monkeypatch.setenv('GH_TOKEN', 'secret')
     github.requests.clear()
     _read()
