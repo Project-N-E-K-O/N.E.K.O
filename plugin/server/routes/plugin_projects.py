@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from plugin.neko_plugin_cli.core.project import PLUGIN_ID_PATTERN
@@ -165,10 +165,16 @@ async def plugin_project_publish_status(project_id: str):
     return await _call(publish_status.get_publish_status(project_id))
 
 
-@router.post("/{project_id}/create-repo", status_code=201, dependencies=_mutation)
-async def create_plugin_project_repo(project_id: str, body: CreateRepoRequest):
+@router.post("/{project_id}/create-repo", dependencies=_mutation)
+async def create_plugin_project_repo(project_id: str, body: CreateRepoRequest, response: Response):
     # Runs `neko-plugin create-repo` (gh); on no gh the result carries manual steps.
-    return await _call(repo_tasks.create_repository(project_id, private=body.private))
+    # 201 only when a repository was actually created; a `manual` or `failed`
+    # outcome stays 200 so its structured body (status + log) still reaches the
+    # UI instead of being turned into an error with no detail.
+    result = await _call(repo_tasks.create_repository(project_id, private=body.private))
+    if isinstance(result, dict) and result.get("status") == "created":
+        response.status_code = 201
+    return result
 
 
 @router.post("/{project_id}/publish", status_code=202, dependencies=_mutation)

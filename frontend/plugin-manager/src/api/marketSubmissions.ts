@@ -68,18 +68,6 @@ export interface SubmissionDraftCreate {
   metadata?: Record<string, unknown>
 }
 
-export interface SubmissionTimelineEvent {
-  id?: number | string
-  kind?: string
-  actor?: string | null
-  created_at?: string | null
-  note?: string | null
-}
-
-export interface SubmissionTimeline {
-  events: SubmissionTimelineEvent[]
-}
-
 /** Carries the stable bridge error code so callers can localize by code. */
 export class MarketSubmissionError extends Error {
   constructor(
@@ -134,34 +122,10 @@ export function previewSubmissionRepository(payload: {
   return call('/market/submissions/repository-preview', jsonInit('POST', payload))
 }
 
-/** Run the Market's full pre-submission checks (supersedes repository-preview for a draft gate). */
-export function preflightSubmission(payload: {
-  repo_url: string
-  plugin_directory?: string
-  submitted_ref?: string
-}): Promise<RepositoryPreview> {
-  return call('/market/submissions/preflight', jsonInit('POST', payload))
-}
-
 export function createSubmissionDraft(payload: SubmissionDraftCreate): Promise<MarketSubmission> {
   return call('/market/submissions/drafts', jsonInit('POST', payload))
 }
 
-export function getMarketSubmission(id: number | string): Promise<MarketSubmission> {
-  return call(`/market/submissions/${encodeURIComponent(String(id))}`)
-}
-
-export function getSubmissionTimeline(
-  id: number | string,
-  limit = 50
-): Promise<SubmissionTimeline> {
-  return call(`/market/submissions/${encodeURIComponent(String(id))}/timeline?limit=${limit}`)
-}
-
 export function submitSubmission(id: number | string, note?: string): Promise<MarketSubmission> {
   return call(`/market/submissions/${encodeURIComponent(String(id))}/submit`, jsonInit('POST', { note }))
-}
-
-export function withdrawSubmission(id: number | string, note?: string): Promise<MarketSubmission> {
-  return call(`/market/submissions/${encodeURIComponent(String(id))}/withdraw`, jsonInit('POST', { note }))
 }

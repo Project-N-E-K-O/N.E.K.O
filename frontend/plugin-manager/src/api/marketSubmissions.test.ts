@@ -11,7 +11,6 @@ vi.mock('./marketBridge', () => ({ fetchBridge, readErrorCode: (body: unknown) =
 import {
   MarketSubmissionError,
   createSubmissionDraft,
-  getSubmissionTimeline,
   listMarketSubmissions,
   previewSubmissionRepository,
   submitSubmission,
@@ -67,12 +66,6 @@ describe('write endpoints', () => {
     const [path, init] = fetchBridge.mock.calls[0]!
     expect(path).toBe('/market/submissions/152/submit')
     expect(JSON.parse(init.body as string)).toEqual({ note: 'first' })
-  })
-
-  it('forwards the timeline limit query', async () => {
-    fetchBridge.mockResolvedValue(jsonResponse(200, { events: [] }))
-    await getSubmissionTimeline(152, 25)
-    expect(fetchBridge).toHaveBeenCalledWith('/market/submissions/152/timeline?limit=25', undefined)
   })
 })
 

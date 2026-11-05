@@ -4,8 +4,8 @@ The proxy is the only credentialed path from the publish workbench to the
 Market's ``/review/submissions`` API: the browser holds only the bridge
 token, and the desktop OAuth access token is attached server-side. These
 tests pin that contract -- the forwarded method/path/body, the server-only
-Bearer header, the pre-forward auth gate, the single 401 refresh-retry, and
-that an upstream error body is never passed through.
+Bearer header, the pre-forward auth gate, the single 401 refresh-retry, and that a business 4xx body the Market
+authored is passed through unchanged.
 """
 
 from __future__ import annotations
@@ -134,7 +134,7 @@ def test_missing_login_is_refused_locally_without_forwarding(monkeypatch):
 def test_unverified_email_is_refused_locally_without_forwarding(monkeypatch):
     pending = {"access_token": _ACCESS_TOKEN, "subject": "s", "subject_pending": True}
     client, upstream, _ = _install(monkeypatch, _ok({}), token=pending)
-    response = client.post("/market/submissions/preflight", json={})
+    response = client.post("/market/submissions/repository-preview", json={})
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "market_email_unverified"
     assert upstream.requests == []
@@ -165,7 +165,7 @@ def test_a_persistent_401_ends_as_a_local_auth_rejected(monkeypatch):
     assert len(upstream.requests) == 2
 
 
-def test_an_upstream_error_status_does_not_pass_its_body_through(monkeypatch):
+def test_an_upstream_4xx_body_is_passed_through_unchanged(monkeypatch):
     def responder(request, attempt):
         return httpx.Response(422, json={"secret_upstream_field": "leak"})
 
@@ -195,7 +195,7 @@ def test_a_network_failure_is_a_local_502(monkeypatch):
         raise httpx.ConnectError("boom")
 
     client, _, _ = _install(monkeypatch, responder)
-    response = client.post("/market/submissions/preflight", json={})
+    response = client.post("/market/submissions/repository-preview", json={})
     assert response.status_code == 502
     assert response.json()["code"] == "market_submission_unavailable"
 
@@ -203,7 +203,7 @@ def test_a_network_failure_is_a_local_502(monkeypatch):
 @pytest.mark.parametrize("bad_id", ["../mine", "1;2", "abc$", "../../secret", "a" * 40])
 def test_a_malformed_submission_id_is_refused_before_forwarding(monkeypatch, bad_id):
     client, upstream, _ = _install(monkeypatch, _ok({}))
-    response = client.get(f"/market/submissions/{bad_id}")
+    response = client.post(f"/market/submissions/{bad_id}/submit", json={})
     assert response.status_code in (400, 404)
     # Nothing reaches the Market with an id that could reshape the path.
     assert all("secret" not in request.url.path for request in upstream.requests)
@@ -212,15 +212,6 @@ def test_a_malformed_submission_id_is_refused_before_forwarding(monkeypatch, bad
 @pytest.mark.parametrize("good_id", ["152", "9" * 19, "123e4567-e89b-12d3-a456-426614174000"])
 def test_a_numeric_or_uuid_submission_id_is_accepted(monkeypatch, good_id):
     client, upstream, _ = _install(monkeypatch, _ok({"id": good_id}))
-    response = client.get(f"/market/submissions/{good_id}")
+    response = client.post(f"/market/submissions/{good_id}/submit", json={})
     assert response.status_code == 200
-    assert upstream.requests[0].url.path == f"/api/v1/review/submissions/{good_id}"
-
-
-def test_timeline_forwards_its_limit_query(monkeypatch):
-    client, upstream, _ = _install(monkeypatch, _ok({"events": []}))
-    response = client.get("/market/submissions/152/timeline?limit=50")
-    assert response.status_code == 200
-    forwarded = upstream.requests[0]
-    assert forwarded.url.path == "/api/v1/review/submissions/152/timeline"
-    assert forwarded.url.query == b"limit=50"
+    assert upstream.requests[0].url.path == f"/api/v1/review/submissions/{good_id}/submit"

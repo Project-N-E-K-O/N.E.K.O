@@ -107,7 +107,7 @@
             :project-id="projectId"
             :plugin-id="status.plugin_id"
             :github-repository="status.repository.github_repository"
-            :plugin-name="submissionPluginName"
+            :plugin-name="submissionPluginId"
             @changed="load"
           />
         </div>
@@ -214,8 +214,8 @@ const canStart = computed(() => {
 
 /** The submission child component; its exposed phase drives the two steps it owns. */
 const submissionRef = ref<InstanceType<typeof AuthoringProjectSubmission> | null>(null)
-/** The plugin's display name used to prefill the Market draft, if the project carries one. */
-const submissionPluginName = computed(() => status.value?.plugin_id ?? null)
+/** The plugin_id the Market draft prefills from, if the project carries one. */
+const submissionPluginId = computed(() => status.value?.plugin_id ?? null)
 
 /** The phase the submission component is in; maps onto the step state it renders. */
 const submissionPhase = computed(() => submissionRef.value?.phase ?? null)
@@ -242,7 +242,7 @@ const marketPluginId = computed(() => {
 const marketState = computed<StepState>(() => (marketPluginId.value ? 'done' : 'unknown'))
 const marketDetail = computed(() => {
   if (!marketPluginId.value) return t('authoring.marketVersionStepDetailLater')
-  return t('authoring.marketVersionPublished', { version: status.value?.version ?? '' })
+  return t('authoring.marketVersionListed', { id: marketPluginId.value })
 })
 
 // Repository creation: offered only when the project is a git repo with no

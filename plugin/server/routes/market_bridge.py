@@ -818,8 +818,6 @@ async def market_catalog_plugin(request: Request, plugin_id: str) -> Response:
 # exactly like ``_report_market_install_best_effort``. The local bridge-token
 # guard matches the other ``/market`` write endpoints.
 _SUBMISSION_RESPONSE_HEADERS = _CATALOG_RESPONSE_HEADERS
-# Mirrors the Market timeline cap; forwarding a larger value is pointless.
-_SUBMISSION_TIMELINE_MAX_LIMIT = 200
 _SUBMISSION_ID_PATTERN = re.compile(r"\A(?:[0-9]{1,19}|[0-9a-fA-F-]{8,36})\Z")
 
 
@@ -869,8 +867,10 @@ async def _proxy_market_submission(
 
     The request carries the server-held access token; the browser only ever
     sent the bridge token, verified by the caller. A single 401 triggers one
-    refresh-and-retry (the pattern the OAuth endpoints use); the upstream body
-    is never passed through on failure, only a local code the UI can localize.
+    refresh-and-retry (the pattern the OAuth endpoints use). An auth, network
+    or redirect failure returns only a local code; a business 4xx/5xx the
+    Market authored is passed through unchanged (status + body) so the UI can
+    localize by its ``code`` and show its ``detail``.
     """
     _require_local_bridge_token_access(request)
     base_url = _normalized_base_url(MARKET_API_URL)
@@ -1000,13 +1000,6 @@ async def market_submission_mine(request: Request) -> Response:
     )
 
 
-@router.post("/submissions/preflight")
-async def market_submission_preflight(request: Request) -> Response:
-    return await _proxy_market_submission(
-        request, method="POST", upstream_path="/preflight", forward_body=True
-    )
-
-
 @router.post("/submissions/repository-preview")
 async def market_submission_repository_preview(request: Request) -> Response:
     return await _proxy_market_submission(
@@ -1021,49 +1014,12 @@ async def market_submission_create_draft(request: Request) -> Response:
     )
 
 
-@router.get("/submissions/{submission_id}")
-async def market_submission_detail(request: Request, submission_id: str) -> Response:
-    return await _proxy_market_submission(
-        request, method="GET", upstream_path=f"/{_validated_submission_id(submission_id)}"
-    )
-
-
-@router.get("/submissions/{submission_id}/timeline")
-async def market_submission_timeline(request: Request, submission_id: str) -> Response:
-    return await _proxy_market_submission(
-        request,
-        method="GET",
-        upstream_path=f"/{_validated_submission_id(submission_id)}/timeline",
-        forward_query=True,
-    )
-
-
-@router.put("/submissions/{submission_id}/draft")
-async def market_submission_update_draft(request: Request, submission_id: str) -> Response:
-    return await _proxy_market_submission(
-        request,
-        method="PUT",
-        upstream_path=f"/{_validated_submission_id(submission_id)}/draft",
-        forward_body=True,
-    )
-
-
 @router.post("/submissions/{submission_id}/submit")
 async def market_submission_submit(request: Request, submission_id: str) -> Response:
     return await _proxy_market_submission(
         request,
         method="POST",
         upstream_path=f"/{_validated_submission_id(submission_id)}/submit",
-        forward_body=True,
-    )
-
-
-@router.post("/submissions/{submission_id}/withdraw")
-async def market_submission_withdraw(request: Request, submission_id: str) -> Response:
-    return await _proxy_market_submission(
-        request,
-        method="POST",
-        upstream_path=f"/{_validated_submission_id(submission_id)}/withdraw",
         forward_body=True,
     )
 

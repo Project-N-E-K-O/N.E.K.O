@@ -253,7 +253,7 @@ async function createDraft() {
     emit('changed')
   } catch (error) {
     if (error instanceof MarketSubmissionError && error.status >= 400 && error.status < 500) {
-      previewWarning.value = t('authoring.submissionPreviewFailed', { reason: error.message })
+      previewWarning.value = t('authoring.submissionCreateFailed')
       return
     }
     ElMessage.error(describe(error, 'submissionCreateFailed'))
