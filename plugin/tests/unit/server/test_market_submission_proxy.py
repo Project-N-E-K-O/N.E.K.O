@@ -3,12 +3,15 @@
 The proxy is the only credentialed path from the publish workbench to the
 Market's ``/review/submissions`` API: the browser holds only the bridge
 token, and the desktop OAuth access token is attached server-side. These
-tests pin that contract -- the forwarded method/path/body, the server-only
-Bearer header, the pre-forward auth gate, the single 401 refresh-retry, and that a business 4xx body the Market
-authored is passed through unchanged.
+tests pin that contract -- the bridge-token check, the forwarded
+method/path/query/body, the server-only Bearer header, the pre-forward auth
+gate, the single 401 refresh-retry, the email-gate 403 mapping, and that a
+business 4xx body the Market authored is passed through unchanged.
 """
 
 from __future__ import annotations
+
+import json
 
 import httpx
 import pytest
@@ -25,6 +28,8 @@ _VERIFIED_TOKEN = {
     "subject": "ory-subject-abc",
     "subject_pending": False,
 }
+_BRIDGE = {"token": market_bridge.get_bridge_token()}
+_EMPTY_PAGE = {"items": [], "total": 0, "page": 1, "page_size": 20, "total_pages": 0}
 
 
 class _Upstream:
@@ -64,8 +69,8 @@ def _install(monkeypatch, responder, *, token=_VERIFIED_TOKEN):
 
     monkeypatch.setattr(market_bridge, "ensure_httpx", fake_httpx)
     monkeypatch.setattr(market_bridge, "_ensure_valid_oauth_token", fake_ensure)
-    # The local bridge-token guard is exercised separately; here it is a no-op
-    # so the OAuth and forwarding behaviour can be tested in isolation.
+    # The local-origin guard is exercised separately; here it is a no-op so the
+    # token check, OAuth and forwarding behaviour can be tested in isolation.
     monkeypatch.setattr(market_bridge, "_require_local_bridge_token_access", lambda request: None)
     monkeypatch.setattr(market_bridge, "MARKET_API_URL", "https://market.example.com")
     monkeypatch.setattr(
@@ -85,69 +90,201 @@ def _ok(payload):
     return responder
 
 
-def test_mine_is_forwarded_as_a_get_with_the_query_string(monkeypatch):
-    client, upstream, _ = _install(monkeypatch, _ok({"submissions": []}))
-    response = client.get("/market/submissions/mine?status=closed")
+def _forbidden_with_user(user):
+    """Reply 403 to every submission call and ``user`` to ``/auth/me``."""
+
+    def responder(request, attempt):
+        if request.url.path == "/api/v1/auth/me":
+            return httpx.Response(200, json=user)
+        return httpx.Response(403, json={"detail": "请先验证邮箱"})
+
+    return responder
+
+
+def test_mine_returns_the_market_page_unchanged(monkeypatch):
+    page = {
+        "items": [{"id": 7, "status": "draft", "current_snapshot": {"repo_name": "r"}}],
+        "total": 1,
+        "page": 1,
+        "page_size": 20,
+        "total_pages": 1,
+    }
+    client, upstream, _ = _install(monkeypatch, _ok(page))
+    response = client.get("/market/submissions/mine", params=_BRIDGE)
     assert response.status_code == 200
-    assert response.json() == {"submissions": []}
-    assert len(upstream.requests) == 1
+    assert response.json() == page
     forwarded = upstream.requests[0]
     assert forwarded.method == "GET"
     assert forwarded.url.path == "/api/v1/review/submissions/mine"
-    assert forwarded.url.query == b"status=closed"
+
+
+def test_mine_forwards_only_the_market_query_params(monkeypatch):
+    client, upstream, _ = _install(monkeypatch, _ok(_EMPTY_PAGE))
+    response = client.get(
+        "/market/submissions/mine",
+        params={
+            **_BRIDGE,
+            "q": "owner/repo",
+            "status": "closed",
+            "decision": "approved",
+            "page": "2",
+            "page_size": "100",
+            "extra": "1",
+        },
+    )
+    assert response.status_code == 200
+    forwarded = dict(upstream.requests[0].url.params)
+    assert forwarded == {
+        "q": "owner/repo",
+        "status": "closed",
+        "decision": "approved",
+        "page": "2",
+        "page_size": "100",
+    }
+    assert _BRIDGE["token"] not in str(upstream.requests[0].url)
+
+
+@pytest.mark.parametrize("bridge", [{}, {"token": "wrong"}])
+def test_a_missing_or_wrong_bridge_token_is_refused_without_forwarding(monkeypatch, bridge):
+    client, upstream, _ = _install(monkeypatch, _ok(_EMPTY_PAGE))
+    response = client.get("/market/submissions/mine", params=bridge)
+    assert response.status_code == 403
+    assert upstream.requests == []
+
+
+def test_the_bridge_token_is_accepted_as_a_bearer_header(monkeypatch):
+    client, upstream, _ = _install(monkeypatch, _ok(_EMPTY_PAGE))
+    response = client.get(
+        "/market/submissions/mine",
+        headers={"Authorization": f"Bearer {_BRIDGE['token']}"},
+    )
+    assert response.status_code == 200
+    # The Market gets the desktop access token, never the bridge token.
+    assert upstream.requests[0].headers["authorization"] == f"Bearer {_ACCESS_TOKEN}"
 
 
 def test_access_token_is_attached_only_server_side(monkeypatch):
     client, upstream, _ = _install(monkeypatch, _ok({"ok": True}))
-    client.post("/market/submissions/drafts", json={"repo_url": "https://x", "plugin_name": "n"})
+    client.post(
+        "/market/submissions/drafts",
+        params=_BRIDGE,
+        json={"repo_url": "https://x", "plugin_name": "n"},
+    )
     forwarded = upstream.requests[0]
     assert forwarded.headers["authorization"] == f"Bearer {_ACCESS_TOKEN}"
+    assert forwarded.url.query == b""
 
 
 def test_draft_body_is_forwarded_verbatim(monkeypatch):
-    captured: list[bytes] = []
-
-    def responder(request, attempt):
-        captured.append(request.content)
-        return httpx.Response(201, json={"id": 1})
-
-    client, upstream, _ = _install(monkeypatch, responder)
+    client, upstream, _ = _install(monkeypatch, _ok({"id": 1}))
     body = {"repo_url": "https://github.com/o/r", "plugin_name": "demo", "tags": ["a", "b"]}
-    response = client.post("/market/submissions/drafts", json=body)
-    assert response.status_code == 201
+    response = client.post("/market/submissions/drafts", params=_BRIDGE, json=body)
+    assert response.status_code == 200
     forwarded = upstream.requests[0]
     assert forwarded.method == "POST"
     assert forwarded.url.path == "/api/v1/review/submissions/drafts"
-    import json as _json
+    assert json.loads(forwarded.content) == body
 
-    assert _json.loads(captured[0]) == body
+
+def test_draft_update_is_forwarded_as_a_put_with_its_body(monkeypatch):
+    client, upstream, _ = _install(monkeypatch, _ok({"id": 7}))
+    body = {"submitted_ref": None, "resolved_commit": "a" * 40}
+    response = client.put("/market/submissions/7/draft", params=_BRIDGE, json=body)
+    assert response.status_code == 200
+    forwarded = upstream.requests[0]
+    assert forwarded.method == "PUT"
+    assert forwarded.url.path == "/api/v1/review/submissions/7/draft"
+    assert forwarded.url.query == b""
+    assert json.loads(forwarded.content) == body
+
+
+@pytest.mark.parametrize("body", [{}, {"note": "replacing it"}])
+def test_withdraw_is_forwarded_as_a_post_with_its_body(monkeypatch, body):
+    client, upstream, _ = _install(monkeypatch, _ok({"id": 7, "status": "closed"}))
+    response = client.post("/market/submissions/7/withdraw", params=_BRIDGE, json=body)
+    assert response.status_code == 200
+    forwarded = upstream.requests[0]
+    assert forwarded.method == "POST"
+    assert forwarded.url.path == "/api/v1/review/submissions/7/withdraw"
+    assert json.loads(forwarded.content) == body
 
 
 def test_missing_login_is_refused_locally_without_forwarding(monkeypatch):
     client, upstream, _ = _install(monkeypatch, _ok({}), token=None)
-    response = client.get("/market/submissions/mine")
+    response = client.get("/market/submissions/mine", params=_BRIDGE)
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "market_auth_required"
     assert upstream.requests == []
 
 
-def test_unverified_email_is_refused_locally_without_forwarding(monkeypatch):
+def test_a_pending_subject_is_refused_locally_without_forwarding(monkeypatch):
     pending = {"access_token": _ACCESS_TOKEN, "subject": "s", "subject_pending": True}
     client, upstream, _ = _install(monkeypatch, _ok({}), token=pending)
-    response = client.post("/market/submissions/repository-preview", json={})
+    response = client.post("/market/submissions/repository-preview", params=_BRIDGE, json={})
     assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "market_email_unverified"
+    assert response.json()["detail"]["code"] == "market_auth_pending"
     assert upstream.requests == []
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("POST", "/market/submissions/repository-preview"),
+        ("POST", "/market/submissions/drafts"),
+        ("PUT", "/market/submissions/7/draft"),
+        ("POST", "/market/submissions/7/submit"),
+    ],
+)
+def test_an_email_gate_403_becomes_market_email_unverified(monkeypatch, method, path):
+    client, upstream, _ = _install(
+        monkeypatch, _forbidden_with_user({"id": 3, "email_verified": False})
+    )
+    response = client.request(method, path, params=_BRIDGE, json={})
+    assert response.status_code == 409
+    assert response.json()["code"] == "market_email_unverified"
+    assert upstream.requests[-1].url.path == "/api/v1/auth/me"
+    assert upstream.requests[-1].headers["authorization"] == f"Bearer {_ACCESS_TOKEN}"
+
+
+def test_a_403_for_a_verified_user_passes_through(monkeypatch):
+    client, _, _ = _install(monkeypatch, _forbidden_with_user({"id": 3, "email_verified": True}))
+    response = client.post("/market/submissions/7/submit", params=_BRIDGE, json={})
+    assert response.status_code == 403
+    assert response.json() == {"detail": "请先验证邮箱"}
+
+
+def test_a_403_is_passed_through_when_the_market_user_is_unreadable(monkeypatch):
+    def responder(request, attempt):
+        return httpx.Response(403, json={"detail": "user disabled"})
+
+    client, _, _ = _install(monkeypatch, responder)
+    response = client.post("/market/submissions/drafts", params=_BRIDGE, json={})
+    assert response.status_code == 403
+    assert response.json() == {"detail": "user disabled"}
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [("GET", "/market/submissions/mine"), ("POST", "/market/submissions/7/withdraw")],
+)
+def test_a_403_on_a_login_only_route_is_never_remapped(monkeypatch, method, path):
+    client, upstream, _ = _install(
+        monkeypatch, _forbidden_with_user({"id": 3, "email_verified": False})
+    )
+    response = client.request(method, path, params=_BRIDGE, json={} if method == "POST" else None)
+    assert response.status_code == 403
+    assert response.json() == {"detail": "请先验证邮箱"}
+    assert all(request.url.path != "/api/v1/auth/me" for request in upstream.requests)
 
 
 def test_a_401_triggers_one_refresh_and_retry(monkeypatch):
     def responder(request, attempt):
         if attempt == 0:
             return httpx.Response(401, json={"detail": "token expired"})
-        return httpx.Response(200, json={"ok": True})
+        return httpx.Response(200, json=_EMPTY_PAGE)
 
     client, upstream, ensured = _install(monkeypatch, responder)
-    response = client.get("/market/submissions/mine")
+    response = client.get("/market/submissions/mine", params=_BRIDGE)
     assert response.status_code == 200
     assert len(upstream.requests) == 2
     # The retry asks the token store to refresh past the rejected credential.
@@ -159,7 +296,7 @@ def test_a_persistent_401_ends_as_a_local_auth_rejected(monkeypatch):
         return httpx.Response(401, json={"detail": "still bad"})
 
     client, upstream, _ = _install(monkeypatch, responder)
-    response = client.get("/market/submissions/mine")
+    response = client.get("/market/submissions/mine", params=_BRIDGE)
     assert response.status_code == 401
     assert response.json()["code"] == "market_auth_rejected"
     assert len(upstream.requests) == 2
@@ -170,13 +307,12 @@ def test_an_upstream_4xx_body_is_passed_through_unchanged(monkeypatch):
         return httpx.Response(422, json={"secret_upstream_field": "leak"})
 
     client, _, _ = _install(monkeypatch, responder)
-    response = client.post("/market/submissions/drafts", json={"repo_url": "x", "plugin_name": "n"})
-    # The upstream status reaches the client; its body is forwarded as-is only
-    # for a 4xx the Market authored (the UI maps upstream code+detail). The
-    # proxy never injects its own body for a plain upstream 4xx.
+    response = client.post(
+        "/market/submissions/drafts", params=_BRIDGE, json={"repo_url": "x", "plugin_name": "n"}
+    )
+    # The upstream status and body reach the client unchanged: the UI maps the
+    # Market's own code and detail, and the proxy adds nothing.
     assert response.status_code == 422
-    # The response is whatever the Market returned, unchanged -- the proxy adds
-    # nothing and strips headers to the whitelist.
     assert response.json() == {"secret_upstream_field": "leak"}
 
 
@@ -185,7 +321,7 @@ def test_a_redirect_is_rejected_rather_than_followed(monkeypatch):
         return httpx.Response(302, headers={"location": "https://evil.example"})
 
     client, _, _ = _install(monkeypatch, responder)
-    response = client.get("/market/submissions/mine")
+    response = client.get("/market/submissions/mine", params=_BRIDGE)
     assert response.status_code == 502
     assert response.json()["code"] == "market_submission_redirect_rejected"
 
@@ -195,23 +331,41 @@ def test_a_network_failure_is_a_local_502(monkeypatch):
         raise httpx.ConnectError("boom")
 
     client, _, _ = _install(monkeypatch, responder)
-    response = client.post("/market/submissions/repository-preview", json={})
+    response = client.post("/market/submissions/repository-preview", params=_BRIDGE, json={})
     assert response.status_code == 502
     assert response.json()["code"] == "market_submission_unavailable"
 
 
-@pytest.mark.parametrize("bad_id", ["../mine", "1;2", "abc$", "../../secret", "a" * 40])
-def test_a_malformed_submission_id_is_refused_before_forwarding(monkeypatch, bad_id):
+def test_an_unconfigured_market_is_a_local_503(monkeypatch):
     client, upstream, _ = _install(monkeypatch, _ok({}))
-    response = client.post(f"/market/submissions/{bad_id}/submit", json={})
+    monkeypatch.setattr(market_bridge, "MARKET_API_URL", "")
+    response = client.get("/market/submissions/mine", params=_BRIDGE)
+    assert response.status_code == 503
+    assert response.json()["code"] == "market_submission_not_configured"
+    assert upstream.requests == []
+
+
+@pytest.mark.parametrize("action", ["submit", "withdraw"])
+@pytest.mark.parametrize("bad_id", ["../mine", "1;2", "abc$", "../../secret", "a" * 40])
+def test_a_malformed_submission_id_is_refused_before_forwarding(monkeypatch, bad_id, action):
+    client, upstream, _ = _install(monkeypatch, _ok({}))
+    response = client.post(f"/market/submissions/{bad_id}/{action}", params=_BRIDGE, json={})
     assert response.status_code in (400, 404)
     # Nothing reaches the Market with an id that could reshape the path.
     assert all("secret" not in request.url.path for request in upstream.requests)
 
 
+def test_a_malformed_draft_id_is_refused_with_its_code(monkeypatch):
+    client, upstream, _ = _install(monkeypatch, _ok({}))
+    response = client.put("/market/submissions/abc$/draft", params=_BRIDGE, json={})
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "market_submission_id_invalid"
+    assert upstream.requests == []
+
+
 @pytest.mark.parametrize("good_id", ["152", "9" * 19, "123e4567-e89b-12d3-a456-426614174000"])
 def test_a_numeric_or_uuid_submission_id_is_accepted(monkeypatch, good_id):
     client, upstream, _ = _install(monkeypatch, _ok({"id": good_id}))
-    response = client.post(f"/market/submissions/{good_id}/submit", json={})
+    response = client.post(f"/market/submissions/{good_id}/submit", params=_BRIDGE, json={})
     assert response.status_code == 200
     assert upstream.requests[0].url.path == f"/api/v1/review/submissions/{good_id}/submit"
