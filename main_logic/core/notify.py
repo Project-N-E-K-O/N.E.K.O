@@ -275,9 +275,9 @@ class NotifyMixin:
         # readers need the same key or user bans never arrive.
         # system prompt，codex P2）。
         _directives_key = self.lanlan_name or "default"
-        # The directive / topic blocks below take the full locale, not the short
-        # _lang above: short has already collapsed zh-TW into zh, so their zh-TW
-        # templates were never reached. prompts_directives normalizes internally.
+        # The directive / topic blocks below take the full locale, not _lang above
+        # (a prompts_sys key): prompts_directives normalizes it internally, and a
+        # short code would already have collapsed zh-TW into zh before it got there.
         _directives_lang = normalize_language_code(self.user_language, format="full")
 
         # ── Explicit user topic-ban injection ──

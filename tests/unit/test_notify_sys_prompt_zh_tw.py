@@ -102,13 +102,9 @@ class _TasksClient:
 @pytest.fixture(autouse=True)
 def _only_sys_prompt_inputs(monkeypatch):
     """Empty directive / topic blocks (and no disk), and a canned agent task list (no HTTP)."""
-    monkeypatch.setattr(
-        user_directives_module, "get_user_directives_manager", lambda: _NoDirectives()
-    )
-    monkeypatch.setattr(
-        anti_repeat_module, "get_anti_repeat_corpus", lambda: _NoRecentTopics()
-    )
-    monkeypatch.setattr(internal_client, "get_internal_http_client", lambda: _TasksClient())
+    monkeypatch.setattr(user_directives_module, "get_user_directives_manager", _NoDirectives)
+    monkeypatch.setattr(anti_repeat_module, "get_anti_repeat_corpus", _NoRecentTopics)
+    monkeypatch.setattr(internal_client, "get_internal_http_client", _TasksClient)
 
 
 def _expected_prompt(key: str, *, agent_enabled: bool) -> str:
