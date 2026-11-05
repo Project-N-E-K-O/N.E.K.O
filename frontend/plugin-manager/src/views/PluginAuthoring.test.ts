@@ -17,6 +17,7 @@ const api = vi.hoisted(() => ({
   openProjectDirectory: vi.fn(),
   updatePluginProjectMetadata: vi.fn(),
   precheckPluginProject: vi.fn(),
+  getPluginProjectPublishStatus: vi.fn(),
   push: vi.fn(),
   route: { query: {} as Record<string, string> },
 }))
@@ -31,6 +32,7 @@ vi.mock('@/api/pluginProjects', async (importOriginal) => ({
   openProjectDirectory: api.openProjectDirectory,
   updatePluginProjectMetadata: api.updatePluginProjectMetadata,
   precheckPluginProject: api.precheckPluginProject,
+  getPluginProjectPublishStatus: api.getPluginProjectPublishStatus,
 }))
 vi.mock('vue-router', () => ({
   useRoute: () => api.route,
@@ -242,7 +244,7 @@ describe('authoring workbench backed by the server project list', () => {
     api.listPluginProjects.mockResolvedValue([listed])
     const container = await mount()
     const tabs = [...container.querySelectorAll('.authoring-tabs > .el-tabs__header [role="tab"]')]
-    expect(tabs.map((tab) => tab.textContent)).toEqual([en.tabOverview, en.precheckTab])
+    expect(tabs.map((tab) => tab.textContent)).toEqual([en.tabOverview, en.precheckTab, en.publishTab])
     expect(tabs[0]?.getAttribute('aria-selected')).toBe('true')
     const header = container.querySelector('.authoring-header')!
     expect(header.textContent).toContain(listed.name)
@@ -253,6 +255,52 @@ describe('authoring workbench backed by the server project list', () => {
     expect(panel.textContent).toContain(listed.source_dir)
     expect(panel.textContent).toContain(listed.entry)
     expect(api.listPluginProjects).toHaveBeenCalledOnce()
+  })
+
+  it('reads the publish status only when its tab opens and lists the steps', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue({
+      plugin_id: listed.plugin_id,
+      version: listed.version,
+      repository: {
+        git_available: true,
+        is_repository: true,
+        tag: 'v0.2.0',
+        origin_url: 'https://github.com/owner/hello_world.git',
+        github_repository: 'owner/hello_world',
+        branch: 'main',
+        upstream: 'origin/main',
+        head: 'abc',
+        head_pushed: true,
+        worktree_clean: true,
+        tag_exists: false,
+        tag_at_head: null,
+      },
+      actions: { 'ruff.toml': 'CURRENT', '.github/workflows/release.yml': 'UPGRADE' },
+      remote: {
+        rate_limited: false,
+        visibility: 'public',
+        verify: 'success',
+        release: { state: 'missing', missing_assets: [] },
+      },
+    })
+    const container = await mount()
+    // The tab is lazy: opening a project must not call GitHub.
+    expect(api.getPluginProjectPublishStatus).not.toHaveBeenCalled()
+    const tabs = [...container.querySelectorAll('.authoring-tabs > .el-tabs__header [role="tab"]')]
+    ;(tabs[2] as HTMLElement).click()
+    await flush()
+    expect(api.getPluginProjectPublishStatus).toHaveBeenCalledWith('p1')
+    const pane = container.querySelector('.authoring-publish')!
+    expect(pane.textContent).toContain(en.publishStepRepository)
+    expect(pane.textContent).toContain('owner/hello_world is public and HEAD is pushed.')
+    expect(pane.textContent).toContain(en.publishVerifyPassed)
+    expect(pane.textContent).toContain('Release v0.2.0 does not exist yet.')
+    // Submission and Market version are not read in this phase.
+    expect(pane.textContent).toContain(en.publishStatusLater)
+    expect(pane.textContent).toContain('.github/workflows/release.yml')
+    expect(pane.textContent).toContain('n.e.k.o_plugin_hello_world')
   })
 
   it('runs the pre-release check and renders the CI gate report', async () => {

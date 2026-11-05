@@ -79,6 +79,9 @@
         <el-tab-pane :label="t('authoring.precheckTab')" name="precheck">
           <AuthoringProjectPrecheck :key="current.project_id" :project-id="current.project_id" />
         </el-tab-pane>
+        <el-tab-pane :label="t('authoring.publishTab')" name="publish" lazy>
+          <AuthoringProjectPublish :key="current.project_id" :project-id="current.project_id" />
+        </el-tab-pane>
       </el-tabs>
       <EmptyState
         v-else-if="requestedProject"
@@ -118,6 +121,7 @@ import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import AuthoringProjectList from '@/components/authoring/AuthoringProjectList.vue'
 import AuthoringProjectDetails from '@/components/authoring/AuthoringProjectDetails.vue'
 import AuthoringProjectPrecheck from '@/components/authoring/AuthoringProjectPrecheck.vue'
+import AuthoringProjectPublish from '@/components/authoring/AuthoringProjectPublish.vue'
 import AuthoringProjectStatus from '@/components/authoring/AuthoringProjectStatus.vue'
 import AuthoringHelpDrawer from '@/components/authoring/AuthoringHelpDrawer.vue'
 import CreatePluginDialog from '@/components/authoring/CreatePluginDialog.vue'

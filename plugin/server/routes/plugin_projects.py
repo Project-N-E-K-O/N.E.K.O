@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from plugin.neko_plugin_cli.core.project import PLUGIN_ID_PATTERN
 from plugin.server.application import plugin_projects as service
+from plugin.server.application import plugin_publish_status as publish_status
 from plugin.server.application.plugin_projects import (
     AuthoringProject,
     CreatedProject,
@@ -141,6 +142,12 @@ async def open_project_directory(body: DirectoryRequest):
 async def precheck_plugin_project(project_id: str):
     # The CLI runs the Market CI gates; the report passes through verbatim.
     return await _call(asyncio.to_thread(service.precheck_project_sync, project_id))
+
+
+@router.get("/{project_id}/publish-status")
+async def plugin_project_publish_status(project_id: str):
+    # Read-only: local git facts plus public GitHub reads; nothing is pushed.
+    return await _call(publish_status.get_publish_status(project_id))
 
 
 @router.delete("/{project_id}", response_model=OkResponse, dependencies=_mutation)

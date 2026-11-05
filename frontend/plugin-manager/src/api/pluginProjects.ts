@@ -102,6 +102,41 @@ export const precheckPluginProject = (projectId: string): Promise<PrecheckReport
     { ...config, timeout: 660_000 }
   )
 
+export interface PublishRepositoryState {
+  git_available: boolean
+  is_repository: boolean
+  tag: string
+  origin_url: string | null
+  github_repository: string | null
+  branch: string | null
+  upstream: string | null
+  head: string | null
+  head_pushed: boolean | null
+  worktree_clean: boolean | null
+  tag_exists: boolean
+  tag_at_head: boolean | null
+}
+
+export interface PublishRemoteState {
+  rate_limited: boolean
+  visibility: 'public' | 'private' | 'not_found' | 'unknown'
+  verify: 'success' | 'failure' | 'running' | 'not_run' | 'missing' | 'unknown'
+  release: { state: 'published' | 'missing' | 'unknown'; missing_assets: string[] }
+}
+
+/** Read-only: local git facts plus public GitHub reads; nothing is pushed or published. */
+export interface PublishStatus {
+  plugin_id: string
+  version: string
+  repository: PublishRepositoryState
+  /** Standard GitHub Actions files keyed by path. */
+  actions: Record<string, 'ADD' | 'CURRENT' | 'UPGRADE' | 'CONFLICT'>
+  remote: PublishRemoteState | null
+}
+
+export const getPluginProjectPublishStatus = (projectId: string): Promise<PublishStatus> =>
+  get(`/plugin-projects/${encodeURIComponent(projectId)}/publish-status`, config)
+
 export interface PickedDirectory {
   cancelled?: boolean
   selected_root?: string
