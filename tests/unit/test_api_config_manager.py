@@ -61,6 +61,7 @@ class TestKeybookSaveLoad:
         'assistApiKeyMimoTokenPlan': 'ASSIST_API_KEY_MIMO_TOKEN_PLAN',
         'assistApiKeyGrok': 'ASSIST_API_KEY_GROK',
         'assistApiKeyRequesty': 'ASSIST_API_KEY_REQUESTY',
+        'assistApiKeyOpper': 'ASSIST_API_KEY_OPPER',
     }
 
     @pytest.mark.unit
@@ -106,6 +107,7 @@ class TestKeybookSaveLoad:
                        'ASSIST_API_KEY_CLAUDE', 'ASSIST_API_KEY_OPENROUTER',
                        'ASSIST_API_KEY_ORCAROUTER',
                        'ASSIST_API_KEY_REQUESTY',
+                       'ASSIST_API_KEY_OPPER',
                        'ASSIST_API_KEY_QWEN_INTL',
                        'ASSIST_API_KEY_MINIMAX', 'ASSIST_API_KEY_MINIMAX_INTL',
                        'ASSIST_API_KEY_MIMO']:
@@ -123,6 +125,19 @@ class TestKeybookSaveLoad:
         })
         cfg = config_manager.get_core_config()
         assert cfg['ASSIST_API_KEY_QWEN_INTL'] == 'sk-core-master'
+
+    @pytest.mark.unit
+    def test_opper_never_fallbacks_when_selected(self, config_manager):
+        """Opper is assist-only and needs its own key: selected with an empty key, it must not fall back to CORE_API_KEY."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core-master',
+            'coreApi': 'qwen',
+            'assistApi': 'opper',
+            'assistApiKeyOpper': '',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['ASSIST_API_KEY_OPPER'] == ''
+        assert cfg['OPENROUTER_API_KEY'] == ''
 
     @pytest.mark.unit
     def test_free_core_does_not_fill_paid_assist_when_key_empty(self, config_manager):
@@ -327,6 +342,82 @@ class TestRequestyResolution:
             'coreApiKey': 'sk-dashscope-core',
             'assistApi': 'qwen',
             'assistApiKeyRequesty': requesty_key,
+        })
+        assert 'cosyvoice-existing' in config_manager.get_voices_for_current_api(for_listing=True)
+        assert config_manager.get_core_config()['AUDIO_API_KEY'] == 'sk-dashscope-core'
+
+
+class TestOpperResolution:
+    @pytest.mark.unit
+    @pytest.mark.parametrize('core_provider', ['qwen', 'openai', 'free'])
+    @pytest.mark.parametrize('opper_key', ['', 'sk-opper-dedicated'])
+    def test_selected_provider_credentials_and_models(
+        self, config_manager, core_provider, opper_key,
+    ):
+        """Resolve each Opper task without borrowing another provider's key."""
+        core_key = 'free-access' if core_provider == 'free' else 'sk-other-core'
+        _write_core_config(config_manager, {
+            'coreApi': core_provider,
+            'coreApiKey': core_key,
+            'assistApi': 'opper',
+            'assistApiKeyOpper': opper_key,
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['CORE_API_KEY'] == core_key
+        assert cfg['CORE_API_TYPE'] == core_provider
+        assert cfg['ASSIST_API_KEY_OPPER'] == opper_key
+        assert cfg['OPENROUTER_API_KEY'] == opper_key
+        assert cfg['AUDIO_API_KEY'] == (
+            core_key if core_provider != 'free' else ''
+        )
+        assert cfg['AGENT_MODEL_API_KEY'] == opper_key
+        for task in ('conversation', 'summary', 'correction', 'emotion', 'vision', 'agent'):
+            resolved = config_manager.get_model_api_config(task)
+            assert resolved['api_key'] == opper_key, task
+            assert resolved['base_url'] == 'https://api.opper.ai/v3/compat', task
+            assert resolved['model'] == 'gpt-5.4-mini', task
+            assert resolved['provider_type'] == 'openai_compatible', task
+
+    @pytest.mark.unit
+    def test_missing_key_does_not_use_legacy_assist_defaults(self, config_manager, monkeypatch):
+        """Clear legacy router defaults while retaining the independent audio key."""
+        import config
+
+        monkeypatch.setattr(config, 'DEFAULT_AUDIO_API_KEY', 'sk-legacy-audio')
+        monkeypatch.setattr(config, 'DEFAULT_OPENROUTER_API_KEY', 'sk-legacy-router')
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'coreApiKey': 'sk-other-core',
+            'assistApi': 'opper',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['AUDIO_API_KEY'] == 'sk-legacy-audio'
+        assert cfg['OPENROUTER_API_KEY'] == ''
+        assert config_manager.get_model_api_config('conversation')['api_key'] == ''
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('opper_key', ['', 'sk-opper-dedicated'])
+    def test_opper_key_preserves_cosyvoice_voice_storage(self, config_manager, opper_key):
+        """An Opper text key must not change voice buckets across assist switches."""
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'coreApiKey': 'sk-dashscope-core',
+            'assistApi': 'opper',
+            'assistApiKeyOpper': opper_key,
+        })
+        config_manager.save_voice_for_current_api('cosyvoice-existing', {
+            'name': 'Existing cloned voice',
+            'provider': 'cosyvoice',
+        })
+        stored = config_manager.load_voice_storage()
+        assert 'cosyvoice-existing' in stored['sk-dashscope-core']
+        assert 'cosyvoice-existing' in config_manager.get_voices_for_current_api(for_listing=True)
+        assert config_manager.get_model_api_config('conversation')['api_key'] == opper_key
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'coreApiKey': 'sk-dashscope-core',
+            'assistApi': 'qwen',
+            'assistApiKeyOpper': opper_key,
         })
         assert 'cosyvoice-existing' in config_manager.get_voices_for_current_api(for_listing=True)
         assert config_manager.get_core_config()['AUDIO_API_KEY'] == 'sk-dashscope-core'
@@ -886,6 +977,7 @@ class TestProviderExclusion:
             'openrouter',
             'orcarouter',
             'requesty',
+            'opper',
             'elevenlabs',
             'qwen_intl',
             'minimax_intl',
