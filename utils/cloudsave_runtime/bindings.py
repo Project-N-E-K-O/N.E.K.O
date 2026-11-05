@@ -68,8 +68,28 @@ def _load_user_preferences_entries(config_manager, *, strict: bool = False) -> l
     return []
 
 
+def _sanitize_preferences_for_write(payload: Any) -> list[dict[str, Any]]:
+    """Clean a preferences payload before it is merged into a written one.
+
+    The paths below read JSON with ``json.load`` (which accepts ``NaN`` /
+    ``Infinity``) and hand the merged result to ``atomic_write_json`` (which
+    refuses them, M-001). A model entry poisoned by an older build -- or a
+    poisoned number inside the settings journal / restored conversation settings
+    -- would therefore abort the cloud export or restore as a whole. Removing
+    only the non-finite numbers keeps every entry and the journal structure.
+
+    The import is local on purpose: ``utils.preferences`` imports this package,
+    so a module-level import would be circular.
+    """
+    from utils.preferences import sanitize_preferences_payload
+
+    return sanitize_preferences_payload(payload)
+
+
 def _extract_conversation_settings(config_manager) -> dict[str, Any]:
-    for entry in _load_user_preferences_entries(config_manager):
+    for entry in _sanitize_preferences_for_write(
+        _load_user_preferences_entries(config_manager)
+    ):
         if isinstance(entry, dict) and entry.get("model_path") == GLOBAL_CONVERSATION_KEY:
             return {
                 key: value
@@ -190,7 +210,9 @@ def _build_runtime_preferences_payload(config_manager, conversation_settings: di
     })
     # Audit history belongs to this device and its original owners. Never import
     # journal entries from an archive or discard pending local handoff on restore.
-    return attach_journal(preferences, local_journal)
+    # The payload mixes the local file and the archive, so it is cleaned as a
+    # whole: it is written back with ``allow_nan=False`` (M-001).
+    return _sanitize_preferences_for_write(attach_journal(preferences, local_journal))
 
 
 def _derive_binding_model_reference(character_payload: dict[str, Any]) -> tuple[str, str]:

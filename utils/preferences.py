@@ -33,7 +33,7 @@ from utils.conversation_settings_constants import (
     MAX_SAFE_ASR_WRITE_ID,
     MAX_SAFE_CONVERSATION_SETTINGS_REVISION,
 )
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json, scrub_non_finite_numbers
 from utils.logger_config import get_module_logger
 from utils.preferences_store_lock import (
     PREFERENCES_THREAD_LOCK as _PREFERENCES_THREAD_LOCK,
@@ -105,14 +105,27 @@ PREFERENCES_FILE = _get_active_preferences_path()
 # ``load_user_preferences`` is called by ``_update_model_preferences_unlocked``
 # while it already holds the store lock, so writing here would re-enter it.
 #
+# The write side needs the same pass for the same reason (M-001 review): a global
+# settings writer loads the raw file through
+# ``_load_preferences_data_for_write_unlocked`` and hands the whole payload back
+# to ``_save_user_preferences_unlocked``, which serialises with
+# ``allow_nan=False``. Without ``sanitize_preferences_payload`` one poisoned model
+# entry makes every settings save fail, so the file can never be repaired through
+# that door. Sanitising the loaded snapshot heals those entries on the next write
+# and leaves the write itself untouched: it is still read-modify-write of the same
+# file, with the same lock.
+#
 # Deliberately *not* done here:
 # - the ``__global_conversation__`` entry is never dropped, and its settings
-#   journal is never touched (that journal is the pending-settings queue; losing
+#   journal is never discarded (that journal is the pending-settings queue; losing
 #   it silently loses user settings). Only the non-finite numbers inside the
-#   entry are removed, because a single NaN anywhere in the payload is enough to
-#   break serialisation again.
-# - the journal never reaches this code anyway: ``_without_settings_journal``
-#   strips it from the returned copies before sanitation.
+#   entry -- including inside the journal's nested payload/settings -- are
+#   removed, because a single NaN anywhere in the payload is enough to break
+#   serialisation again; the journal's own version/revision/entries structure is
+#   preserved so the handoff still reads it.
+# - on the read path the journal never reaches this code anyway:
+#   ``_without_settings_journal`` strips it from the returned copies before
+#   sanitation.
 # ===========================================================================
 
 # JavaScript has no integer type; ``JSON.parse`` maps anything above
@@ -157,16 +170,20 @@ def is_finite_json_number(value: Any) -> bool:
     - ``int`` beyond ``2**53``: ``math.isfinite`` raises ``OverflowError`` for
       these, and JavaScript cannot represent them either.
     """
-    if isinstance(value, bool):
-        return False
-    if isinstance(value, float):
-        try:
-            return math.isfinite(value)
-        except (OverflowError, TypeError):
+    try:
+        if isinstance(value, bool):
             return False
-    if isinstance(value, int):
-        return abs(value) <= _MAX_SAFE_INT
-    return False
+        if isinstance(value, float):
+            return math.isfinite(value)
+        if isinstance(value, int):
+            return abs(value) <= _MAX_SAFE_INT
+        return False
+    except (OverflowError, TypeError):
+        # Belt and braces: the predicate must never raise for a hostile value on
+        # a deserialised payload. ``math.isfinite`` raises ``OverflowError`` for
+        # integers past float range, and a subclass can raise ``TypeError`` from
+        # ``__abs__``; both mean "not a usable JSON number" here.
+        return False
 
 
 def _note_sanitize_drop(model_path: Any, field: str) -> None:
@@ -196,35 +213,24 @@ def _note_sanitize_drop(model_path: Any, field: str) -> None:
     )
 
 
-def _scrub_numeric_mapping(
-    value: Any,
-    required_keys: tuple,
-    field: str,
-    model_path: Any,
-) -> Optional[Dict[str, Any]]:
+def _scrub_numeric_mapping(value: Any, field: str, model_path: Any) -> Any:
     """Copy a numeric mapping without non-finite numbers.
 
-    Returns ``None`` when a required key is gone, which tells the caller to drop
-    the whole entry (``position`` / ``scale`` are meaningless without ``x``/``y``).
+    Only the offending numeric key is removed; nothing else is a reason to drop
+    the field or the entry (M-001). A missing ``y``/``z`` therefore leaves the
+    other coordinates in place, and a non-mapping value (``None``, a list, a
+    string) is returned unchanged instead of being deleted: the read path only
+    removes non-finite numbers, it never polices shape.
     """
     if not isinstance(value, dict):
-        _note_sanitize_drop(model_path, field)
-        return None
+        return value
 
     cleaned: Dict[str, Any] = {}
     for key, item in value.items():
-        if key in _NUMERIC_KEYS:
-            if is_finite_json_number(item):
-                cleaned[key] = item
-            else:
-                _note_sanitize_drop(model_path, f'{field}.{key}')
+        if key in _NUMERIC_KEYS and not is_finite_json_number(item):
+            _note_sanitize_drop(model_path, f'{field}.{key}')
         else:
             cleaned[key] = item
-
-    for key in required_keys:
-        if key not in cleaned:
-            _note_sanitize_drop(model_path, f'{field}.{key}')
-            return None
     return cleaned
 
 
@@ -273,72 +279,50 @@ def _scrub_non_finite(node: Any, model_path: Any, prefix: str = '') -> Any:
     """Recursively remove non-finite numbers while keeping the surrounding shape.
 
     Used for the ``__global_conversation__`` entry (which must survive, only its
-    bad numbers must not) and as the last-resort fallback below.
+    bad numbers must not) and as the last-resort fallback below. Numbers are
+    judged by :func:`is_finite_json_number`, so a value that is fine for JSON but
+    not for JavaScript (a boolean, an integer past ``2**53``) is dropped too.
     """
-    if isinstance(node, dict):
-        cleaned: Dict[Any, Any] = {}
-        for key, value in node.items():
-            path = f'{prefix}.{key}' if prefix else str(key)
-            if isinstance(value, (dict, list)):
-                cleaned[key] = _scrub_non_finite(value, model_path, path)
-            elif isinstance(value, (int, float)) and not isinstance(value, bool):
-                if is_finite_json_number(value):
-                    cleaned[key] = value
-                else:
-                    _note_sanitize_drop(model_path, path)
-            else:
-                cleaned[key] = value
-        return cleaned
-    if isinstance(node, list):
-        cleaned_items = []
-        for index, value in enumerate(node):
-            path = f'{prefix}[{index}]'
-            if isinstance(value, (dict, list)):
-                cleaned_items.append(_scrub_non_finite(value, model_path, path))
-            elif isinstance(value, (int, float)) and not isinstance(value, bool):
-                if is_finite_json_number(value):
-                    cleaned_items.append(value)
-                else:
-                    _note_sanitize_drop(model_path, path)
-            else:
-                cleaned_items.append(value)
-        return cleaned_items
-    return node
+    return scrub_non_finite_numbers(
+        node,
+        prefix=prefix,
+        is_finite=is_finite_json_number,
+        on_drop=lambda path: _note_sanitize_drop(model_path, path),
+    )
 
 
-def _sanitize_model_entry(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Return a cleaned model entry, or ``None`` when it must be dropped."""
+def _sanitize_model_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a cleaned model entry.
+
+    Sanitising a read never discards an entry: a partially usable entry still
+    belongs to the user, and silently losing it on a *read* is the worse failure
+    (M-001). Only the non-finite numbers inside it are removed; a field that is
+    absent or not a mapping stays exactly as it was.
+    """
     model_path = entry.get('model_path')
     cleaned = dict(entry)
 
-    # position / scale are required: without a usable pair the entry cannot place
-    # the model at all, and keeping a half-broken one is worse than dropping it.
-    for field in ('position', 'scale'):
-        scrubbed = _scrub_numeric_mapping(cleaned.get(field), ('x', 'y'), field, model_path)
-        if scrubbed is None:
-            return None
-        cleaned[field] = scrubbed
-
-    for field in _OPTIONAL_NUMERIC_FIELDS:
+    for field in ('position', 'scale') + _OPTIONAL_NUMERIC_FIELDS:
         if field not in cleaned:
             continue
-        scrubbed = _scrub_numeric_mapping(cleaned.get(field), (), field, model_path)
-        if scrubbed is None:
-            cleaned.pop(field, None)
-        else:
-            cleaned[field] = scrubbed
+        cleaned[field] = _scrub_numeric_mapping(cleaned.get(field), field, model_path)
 
     _sanitize_parameters_group(cleaned, model_path)
     return cleaned
 
 
-def _ensure_serialisable(entries: List[Any]) -> List[Dict[str, Any]]:
+def _ensure_serialisable(entries: List[Any], *, fallback_empty: bool = True) -> List[Dict[str, Any]]:
     """Guarantee that the returned payload cannot fail ``allow_nan=False``.
 
     This is the post-condition that makes "GET never 500s again" a provable
     property instead of an enumeration of known writers: if anything non-finite
-    survived the targeted passes above, strip it now and fail closed to an empty
-    list only if that is somehow still not enough.
+    survived the targeted passes above, strip it now.
+
+    ``fallback_empty`` chooses what happens when even that is not enough, which
+    only a payload that did not come from ``json.load`` can cause: a *read*
+    reports an empty list (the file on disk is untouched, so nothing is lost),
+    while a *write* raises instead of handing back "no entries" -- a writer must
+    never blank the user's file because one value was unrepresentable.
     """
     try:
         json.dumps(entries, allow_nan=False)
@@ -354,7 +338,11 @@ def _ensure_serialisable(entries: List[Any]) -> List[Dict[str, Any]]:
     try:
         json.dumps(stripped, allow_nan=False)
         return stripped
-    except (ValueError, TypeError):
+    except (ValueError, TypeError) as exc:
+        if not fallback_empty:
+            raise ValueError(
+                "preferences payload is not JSON-serialisable even after sanitising"
+            ) from exc
         logger.error(
             "user_preferences.json: payload unserialisable after fallback strip; "
             "reporting empty preferences instead of failing the request"
@@ -362,16 +350,8 @@ def _ensure_serialisable(entries: List[Any]) -> List[Dict[str, Any]]:
         return []
 
 
-def _sanitize_preferences_entries(entries: Any) -> List[Dict[str, Any]]:
-    """Sanitize a decoded preferences list in memory.
-
-    Per-field behaviour (see M-001-fix-plan section P0-3):
-      - ``position`` / ``scale`` non-finite or missing ``x``/``y`` -> drop entry
-      - ``rotation`` / ``viewport`` / ``camera_position`` / ``display`` -> drop field
-      - ``parameters`` group invalid -> drop ``parameters`` + ``parameters_mode``
-      - ``__global_conversation__`` -> keep the entry, drop only bad numbers
-      - settings journal -> never present here, never touched
-    """
+def _sanitize_entries(entries: Any, *, fallback_empty: bool) -> List[Dict[str, Any]]:
+    """Shared entry walk behind the read sanitiser and ``sanitize_preferences_payload``."""
     if not isinstance(entries, list):
         return []
 
@@ -382,10 +362,67 @@ def _sanitize_preferences_entries(entries: Any) -> List[Dict[str, Any]]:
         if entry.get('model_path') == GLOBAL_CONVERSATION_KEY:
             result.append(_scrub_non_finite(entry, entry.get('model_path')))
             continue
-        cleaned = _sanitize_model_entry(entry)
-        if cleaned is not None:
-            result.append(cleaned)
-    return _ensure_serialisable(result)
+        result.append(_sanitize_model_entry(entry))
+    return _ensure_serialisable(result, fallback_empty=fallback_empty)
+
+
+def _sanitize_preferences_entries(entries: Any) -> List[Dict[str, Any]]:
+    """Sanitize a decoded preferences list in memory.
+
+    Per-field behaviour (see M-001-fix-plan section P0-3):
+      - ``position`` / ``scale`` / ``rotation`` / ``viewport`` /
+        ``camera_position`` / ``display`` -> drop only the non-finite numeric
+        keys; missing keys and non-mapping values are left untouched
+      - an entry is never dropped by sanitation: a half-broken entry is still
+        the user's data, and the read path must not lose it silently
+      - ``parameters`` group invalid -> drop ``parameters`` + ``parameters_mode``
+      - ``__global_conversation__`` -> keep the entry, drop only bad numbers
+      - the settings journal is *preserved* on the write path (see
+        :func:`sanitize_preferences_payload`): only its non-finite numbers are
+        removed, its ``version`` / ``revision`` / ``entries`` structure stays
+
+    A read fails closed to an empty list if the payload is still not
+    serialisable, because the file itself is untouched; the write path raises
+    instead (see ``fallback_empty``).
+    """
+    return _sanitize_entries(entries, fallback_empty=True)
+
+
+def sanitize_preferences_payload(payload: Any) -> List[Dict[str, Any]]:
+    """Return a cleaned copy of a raw ``user_preferences.json`` payload (M-001).
+
+    ``payload`` is whatever ``json.load`` returned for the file: a list of
+    entries, the legacy single-dict form, or ``None`` when the file is unreadable
+    or absent. The result is always a list that ``json.dumps(allow_nan=False)``
+    accepts, so a caller that reads a payload and writes it back (a migration
+    merge, a global-settings update) can no longer fail as a whole because one
+    entry still carries a ``NaN`` from an older build.
+
+    What survives matters as much as what is removed:
+
+    - every model entry survives, and so does ``__global_conversation__``; only
+      the non-finite numbers inside them are deleted (``_sanitize_model_entry``
+      / ``_scrub_non_finite``);
+    - the ``_settings_mutation_journal`` inside the global entry is scrubbed in
+      place but never dropped: ``payload`` / ``settings`` and friends may carry
+      poisoned numbers, while the journal's own ``version`` / ``revision`` /
+      ``entries`` structure must stay intact for the settings handoff to work;
+    - the ``parameters`` / ``parameters_mode`` invariant is kept, exactly as on
+      the read path.
+
+    The input is not modified; containers are copied.
+
+    Unlike the read path, this never answers "no entries" for a payload it could
+    not clean: a write that swallowed that answer would replace the user's file
+    with an empty list, so such a payload raises ``ValueError`` instead.
+    """
+    if payload is None:
+        return []
+    if isinstance(payload, dict):
+        payload = [payload]
+    elif not isinstance(payload, list):
+        return []
+    return _sanitize_entries(payload, fallback_empty=False)
 
 
 def load_user_preferences() -> List[Dict[str, Any]]:
@@ -1181,7 +1218,14 @@ async def ais_privacy_mode_enabled() -> bool:
 
 
 def _load_preferences_data_for_write_unlocked() -> List[Dict[str, Any]]:
-    """Load the latest write-root snapshot while the caller holds the lock."""
+    """Load the latest write-root snapshot while the caller holds the lock.
+
+    The snapshot is sanitised before it is handed back (M-001): every global
+    settings writer below reads this file, modifies one entry and writes the
+    whole payload again with ``allow_nan=False``. A model entry poisoned by an
+    older build would otherwise make that write fail forever, so the read heals
+    it in memory -- nothing is written here, and which file is read is unchanged.
+    """
     global PREFERENCES_FILE
     write_path = _get_preferences_write_path()
     read_path = _get_preferences_read_path()
@@ -1197,11 +1241,7 @@ def _load_preferences_data_for_write_unlocked() -> List[Dict[str, Any]]:
         PREFERENCES_FILE = write_path
         data = []
 
-    if isinstance(data, dict):
-        return [data]
-    if isinstance(data, list):
-        return data
-    return []
+    return sanitize_preferences_payload(data)
 
 
 def save_global_conversation_settings_versioned(

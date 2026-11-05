@@ -18,6 +18,7 @@ import asyncio
 import errno
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -907,6 +908,73 @@ def atomic_write_json(
         **json_kwargs,
     )
     atomic_write_text(path, content, encoding=encoding)
+
+
+def is_json_number(value: Any) -> bool:
+    """Return True for a JSON number; ``bool`` subclasses ``int`` but is not one."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _is_finite_json_value(value: Any) -> bool:
+    """Default scrub predicate: only what ``allow_nan=False`` would refuse."""
+    return not isinstance(value, float) or math.isfinite(value)
+
+
+def scrub_non_finite_numbers(
+    value: Any,
+    *,
+    prefix: str = "",
+    is_finite: Callable[[Any], bool] | None = None,
+    on_drop: Callable[[str], None] | None = None,
+) -> Any:
+    """Return ``value`` with every non-finite number deleted, shape preserved.
+
+    ``json.load`` accepts the non-standard ``NaN`` / ``Infinity`` literals that
+    ``atomic_write_json`` refuses to emit (M-001), so any code that reads a JSON
+    file and writes a payload derived from it -- migrating a legacy root,
+    rewriting a config, updating one key of a preference store -- fails as a
+    whole when that file still carries a poisoned number. Removing only the
+    offending values keeps every entry, and every key around them, alive.
+
+    Containers are copied, never mutated, so a caller can keep using its input
+    (and roll back cleanly when the write fails). ``is_finite`` decides whether
+    a number may stay; the default keeps every finite number, including
+    integers that JavaScript could not represent, because this helper only
+    removes what the JSON writer would reject. ``on_drop`` receives the dotted
+    path (``a.b[0]``) of each removed value so the caller can log it.
+    """
+    checker = is_finite if is_finite is not None else _is_finite_json_value
+    if isinstance(value, dict):
+        cleaned: dict[Any, Any] = {}
+        for key, item in value.items():
+            path = f"{prefix}.{key}" if prefix else str(key)
+            if isinstance(item, (dict, list)):
+                cleaned[key] = scrub_non_finite_numbers(
+                    item, prefix=path, is_finite=is_finite, on_drop=on_drop
+                )
+            elif is_json_number(item) and not checker(item):
+                if on_drop is not None:
+                    on_drop(path)
+            else:
+                cleaned[key] = item
+        return cleaned
+    if isinstance(value, list):
+        cleaned_items: list[Any] = []
+        for index, item in enumerate(value):
+            path = f"{prefix}[{index}]"
+            if isinstance(item, (dict, list)):
+                cleaned_items.append(
+                    scrub_non_finite_numbers(
+                        item, prefix=path, is_finite=is_finite, on_drop=on_drop
+                    )
+                )
+            elif is_json_number(item) and not checker(item):
+                if on_drop is not None:
+                    on_drop(path)
+            else:
+                cleaned_items.append(item)
+        return cleaned_items
+    return value
 
 
 def read_json_tolerating_replace(

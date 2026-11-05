@@ -310,7 +310,16 @@ async def save_preferences(request: Request, response: Response = None):
             response.status_code = code
 
     try:
-        data = await request.json()
+        # A body that is not valid JSON is a client error, not a server fault: the
+        # starlette decoder raises ValueError (json.JSONDecodeError / UnicodeDecodeError),
+        # which the generic handler below used to turn into a 500. Only this line is
+        # guarded -- a ValueError raised by the save path (update_model_preferences
+        # and friends) must still reach the handler that reports a failure.
+        try:
+            data = await request.json()
+        except ValueError:
+            _set_status(400)
+            return {"success": False, "error": "无效的数据"}
         if not data:
             _set_status(400)
             return {"success": False, "error": "无效的数据"}
