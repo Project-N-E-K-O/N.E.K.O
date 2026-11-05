@@ -16,7 +16,6 @@
 from __future__ import annotations
 import weakref
 from typing import TYPE_CHECKING, Any, AsyncIterator
-from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     pass
@@ -194,23 +193,13 @@ class ChatOpenAI:
             limit_value = int(token_limit)
             p[limit_field] = limit_value
         extra_body = overrides.pop("extra_body", self.extra_body)
-        if extra_body and urlsplit(str(self.base_url or '')).hostname in {
-            'router.requesty.ai', 'router.eu.requesty.ai',
-        }:
-            # Requesty documents a top-level reasoning_effort, unlike OpenRouter.
-            # Apply at request time so Focus overrides use the same wire dialect.
-            # https://docs.requesty.ai/features/reasoning
-            reasoning = extra_body.get('reasoning')
-            if isinstance(reasoning, dict) and set(reasoning) == {'effort'}:
-                extra_body = dict(extra_body)
-                extra_body.pop('reasoning')
-                p['reasoning_effort'] = extra_body.pop('reasoning_effort', reasoning['effort'])
-        # Hosts that honour only a top-level reasoning_effort (per-model table in
-        # config.providers); applied here so Focus overrides are translated too.
-        from config.providers import rewrite_host_reasoning_effort
-        extra_body, host_effort = rewrite_host_reasoning_effort(self.base_url, self.model, extra_body)
-        if host_effort is not None:
-            p['reasoning_effort'] = host_effort
+        # Router hosts that want a top-level reasoning_effort (Requesty, Opper;
+        # see config.providers.ROUTER_REASONING). Applied at request time so
+        # Focus overrides use the same wire dialect.
+        from config.providers import rewrite_router_reasoning
+        extra_body, router_effort = rewrite_router_reasoning(self.base_url, self.model, extra_body)
+        if router_effort is not None:
+            p['reasoning_effort'] = router_effort
         if extra_body:
             p["extra_body"] = extra_body
         # Tool calling: per-call overrides take priority over instance default

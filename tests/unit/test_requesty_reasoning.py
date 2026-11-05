@@ -6,6 +6,7 @@ import httpx
 import openai
 import pytest
 
+from config import providers as P
 from config.providers import focus_extra_body
 from utils.llm_client import create_chat_llm
 
@@ -45,12 +46,13 @@ def test_requesty_regular_and_focus_wire_payloads(model, endpoint):
                 {'extra_body': None}, {'reasoning_effort': 'high'},
             ):
                 sdk.chat.completions.create(**client._params(messages, **overrides))
-        assert captured[0]['reasoning_effort'] == 'none'
+        registered = P.MODELS_EXTRA_BODY_MAP[model]
+        assert captured[0]['reasoning_effort'] == registered['reasoning']['effort']
         assert captured[1]['reasoning_effort'] == 'low'
         assert 'reasoning_effort' not in captured[2]
         assert captured[3]['reasoning_effort'] == 'high'
         assert all('reasoning' not in body for body in captured)
-        assert client.extra_body == {'reasoning': {'effort': 'none'}}
+        assert client.extra_body == registered
     finally:
         client.close()
 
@@ -66,7 +68,7 @@ def test_other_endpoints_keep_existing_reasoning_dialect(endpoint):
     client = create_chat_llm('google/gemini-2.5-flash', endpoint, 'test-key')
     try:
         params = client._params([{'role': 'user', 'content': 'Synthetic test'}])
-        assert params['extra_body'] == {'reasoning': {'effort': 'none'}}
+        assert params['extra_body'] == P.MODELS_EXTRA_BODY_MAP['google/gemini-2.5-flash']
         assert 'reasoning_effort' not in params
     finally:
         client.close()
