@@ -592,7 +592,7 @@ def retirement_source_prompt(directory, messages, formatted, names):
 
 
 class FactEvidenceUnavailable(RuntimeError):
-    """Trusted originals are incomplete; retry without spending model failure budget."""
+    """Trusted originals are incomplete; callers retain evidence and bound retries."""
 
 
 def original_source_time(value):

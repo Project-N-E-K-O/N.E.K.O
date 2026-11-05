@@ -45,6 +45,7 @@ from memory.event_log import (
     EVIDENCE_SOURCE_USER_KEYWORD_REBUT,
 )
 from memory.facts import FactExtractionFailed
+from memory.long_term_sync import FactEvidenceUnavailable
 
 from . import gates, runtime
 from ._shared import logger
@@ -165,7 +166,7 @@ def _stage1_path_a_bump_failure(
     *,
     processed_turns: int | None = None,
 ) -> bool:
-    """Liveness fallback for Path A Stage-1 LLM terminal failures.
+    """Liveness fallback for Path A extraction or unavailable evidence.
 
     Bumps the failure counter for the (cursor_key) current window; when it reaches
     ``MEMORY_LIVENESS_MAX_ATTEMPTS``, force-pushes the cursor to now (counts as
@@ -203,7 +204,7 @@ def _stage1_path_a_bump_failure(
 def _stage1_path_b_bump_failure(
     name: str, state: dict, cursor_key: str, force_to: datetime,
 ) -> bool:
-    """Liveness fallback for Path B Stage-1 LLM terminal failures (the dual of path A's).
+    """Liveness fallback for Path B extraction or unavailable evidence.
 
     Bumps the failure counter for the (cursor_key) current B window; when it
     reaches ``MEMORY_LIVENESS_MAX_ATTEMPTS``, force-pushes
@@ -557,12 +558,15 @@ async def _run_path_b(name: str, state: dict) -> None:
     known_pool.sort(key=lambda f: -safe_importance(f))
     known_pool = known_pool[:MAX_KNOWN_POOL_FACTS]
 
-    persisted = await runtime.fact_store.aextract_facts_with_known_pool(
-        name, messages, known_pool,
-        conversation_at=last_fetched_ts,
-    )
+    try:
+        persisted = await runtime.fact_store.aextract_facts_with_known_pool(
+            name, messages, known_pool,
+            conversation_at=last_fetched_ts,
+        )
+    except FactEvidenceUnavailable:
+        persisted = None
     if persisted is None:
-        # Stage-1 LLM terminal failure (retries exhausted): retain cursor and retry the window on
+        # Terminal extraction failure or unavailable evidence: retain cursor and retry the window on
         # B's next trigger (fact dedup hashes prevent duplicate writes). Distinguishing None from [] is crucial:
         # treating failure as successful zero extraction would permanently skip the window (CodeRabbit / Codex
         # P1 round-2 on PR #1408）。
@@ -710,7 +714,7 @@ async def _periodic_signal_extraction_loop():
                         # entries are dated by its latest message.
                         conversation_at=_coerce_db_ts(rows[-1][0]),
                     )
-                except FactExtractionFailed as e:
+                except (FactExtractionFailed, FactEvidenceUnavailable) as e:
                     # Stage-1 terminal failure — cursor NOT advanced, next
                     # cycle retries the same message window (§3.4.3)。
                     # Liveness fallback: repeated failures for one window reaching MEMORY_LIVENESS
