@@ -992,7 +992,7 @@
             }
             dialog.setAttribute('role', 'dialog');
             dialog.setAttribute('aria-modal', 'true');
-            dialog.setAttribute('aria-label', modalConfig.title || 'Dialog');
+            dialog.setAttribute('aria-label', modalConfig.ariaLabel || modalConfig.title || modalConfig.message || 'Dialog');
             if (modalConfig.maxWidth) {
                 dialog.style.maxWidth = String(modalConfig.maxWidth);
             }
@@ -1421,6 +1421,7 @@
         const promise = createModal({
             type: 'confirm',
             title: title,
+            ariaLabel: options.ariaLabel,
             message: message,
             okText: options.okText,
             cancelText: options.cancelText,

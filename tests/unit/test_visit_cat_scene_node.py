@@ -602,6 +602,7 @@ const report = {};
     endCalls: h.endCalls.length,
     active: h.body.classList.contains('neko-visit-cat-scene-active'),
   };
+  report.exit_confirmation = h.confirms[0];
 
   h.confirmAnswers.push(true);
   report.confirm_guarded = h.win.nekoVisitCatScene.guardModelReturn(() => { returnCommits += 1; });
@@ -998,6 +999,11 @@ def test_native_snapshot_sends_sample_then_stable_commit_only(report):
 
 
 def test_model_return_is_guarded_until_exit_is_confirmed(report):
+    assert report["exit_confirmation"] == {
+        "message": "是否退出猫猫串门",
+        "title": "",
+        "options": {"danger": True, "ariaLabel": "是否退出猫猫串门"},
+    }
     assert report["cancel_guarded"] is True
     assert report["after_cancel"] == {"commits": 0, "endCalls": 0, "active": True}
     assert report["confirm_guarded"] is True

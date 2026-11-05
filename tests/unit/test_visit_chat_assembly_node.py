@@ -727,6 +727,28 @@ const report = {};
     report.recall_body = call && call.body;
     report.recall_toast = h.toasts.length > 0;
   }
+  // ── 猫形态退出：普通退出也复用场景内的统一确认；模型串门不受影响 ──
+  {
+    const routes = { '/api/visit/route/end': async () => ({ status: 200, body: { ok: true } }) };
+    const h = createHarness({ routes });
+    h.frame({ type: 'visit_state_change', action: 'pending', visit_id: VID, side: 'guest', visit_mode: 'cat', ts: 1 });
+    h.frame({ type: 'visit_state_change', action: 'departed', visit_id: VID, side: 'guest', visit_mode: 'cat', ts: 1 });
+    h.I.handleVisitBarAction('recall');
+    await h.settle();
+    const first = h.dialogs()[0];
+    report.cat_exit_confirm_text = first && first.textContent;
+    report.cat_exit_before_confirm = h.fetches.filter((f) => f.url === '/api/visit/route/end').length;
+    h.buttonsOf(first).find((b) => b.attrs['data-visit-dialog-button'] === 'cancel').click();
+    await h.settle();
+    report.cat_exit_after_cancel = h.fetches.filter((f) => f.url === '/api/visit/route/end').length;
+    h.I.handleVisitBarAction('recall');
+    await h.settle();
+    const second = h.dialogs()[0];
+    h.buttonsOf(second).find((b) => b.attrs['data-visit-dialog-button'] === 'ok').click();
+    await h.settle();
+    const call = h.fetches.find((f) => f.url === '/api/visit/route/end');
+    report.cat_exit_after_confirm = call && call.body;
+  }
   // ── debrief：芯片去重 + ack；点「记成日记」带 lanlan_name；预览块 committing 帧 ──
   {
     const routes = { '/api/visit/debrief/choice': async () => ({ status: 200, body: { ok: true, applied: 'preview', preview: { diary: 'd', facts: [] } } }) };
@@ -2612,6 +2634,15 @@ def test_recall_posts_the_route_end_body_and_toasts_recall_already(report):
         "lanlan_name": "咪咪", "visit_id": "AAAAAAAAAAAAAAAAAAAAAA", "reason": "recall",
     }
     assert report["recall_toast"] is True
+
+
+def test_cat_visit_exit_uses_the_shared_confirmation_without_changing_model_visits(report):
+    assert report["cat_exit_confirm_text"] == "是否退出猫猫串门取消确定"
+    assert report["cat_exit_before_confirm"] == 0
+    assert report["cat_exit_after_cancel"] == 0
+    assert report["cat_exit_after_confirm"] == {
+        "lanlan_name": "咪咪", "visit_id": "AAAAAAAAAAAAAAAAAAAAAA", "reason": "recall",
+    }
 
 
 def test_debrief_chips_dedupe_ack_and_choice_body(report):

@@ -310,11 +310,14 @@
         // 宿主页弹窗在 React 根之外：登记成 Electron 透明窗的原生命中岛（与小剧场弹窗同一套）
         dialog.setAttribute('data-compact-geometry-owner', 'surface');
         dialog.setAttribute('data-compact-geometry-item', 'visitDialog');
-        var title = document.createElement('div');
-        title.className = 'visit-dialog-title';
-        title.textContent = spec.title || '';
-        dialog.setAttribute('aria-label', spec.title || '');
-        dialog.appendChild(title);
+        var titleText = spec.title || '';
+        if (titleText) {
+            var title = document.createElement('div');
+            title.className = 'visit-dialog-title';
+            title.textContent = titleText;
+            dialog.appendChild(title);
+        }
+        dialog.setAttribute('aria-label', spec.ariaLabel || titleText || '');
         var linesBox = document.createElement('div');
         linesBox.className = 'visit-dialog-lines';
         dialog.appendChild(linesBox);
@@ -399,8 +402,10 @@
 
     function confirmDialog(text, options) {
         options = options || {};
+        var hasTitle = Object.prototype.hasOwnProperty.call(options, 'title');
         return openDialog({
-            title: options.title || t('visit.common.confirmTitle', '确认'),
+            title: hasTitle ? options.title : t('visit.common.confirmTitle', '确认'),
+            ariaLabel: options.ariaLabel || text,
             lines: [text],
             buttons: [
                 { id: 'cancel', label: t('visit.common.cancel', '取消') },
@@ -562,7 +567,7 @@
                 actions: [
                     barAction('direct_decline', t('visit.directInvite.decline', '拒绝'), 'secondary', { disabled: pendingDirectInvitation.busy === true }),
                     barAction('direct_accept', isCatInvite
-                        ? t('visit.directInvite.acceptCat', '接受猫形态串门')
+                        ? t('visit.directInvite.acceptCat', '接受猫猫串门')
                         : t('visit.directInvite.accept', '接受'), 'primary', { disabled: pendingDirectInvitation.busy === true })
                 ]
             };
@@ -1720,7 +1725,7 @@
         }
         if (code === 'voice_session_active') return t('visit.error.voiceSession', '先结束语音通话再串门');
         if (code === 'already_visiting') return t('visit.error.alreadyVisiting', '她已经在串门了');
-        return t('visit.error.generic', '没能完成，请稍后再试');
+        return t('visit.error.generic', '操作失败，请重试');
     }
 
     function rememberStartFailure(visitId, code, details) {
@@ -1735,7 +1740,7 @@
         return {
             ok: false, visit_id: visitId, code: failure.code,
             error: failure.code ? startErrorText({ status: 409, body: failure })
-                : t('visit.error.generic', '没能完成，请稍后再试')
+                : t('visit.error.generic', '操作失败，请重试')
         };
     }
 
@@ -1860,7 +1865,7 @@
                     return { ok: false, error: '当前已有另一条串门邀请，请先结束后再继续' };
                 }
                 if (visit.visitMode !== requestedMode) {
-                    return { ok: false, error: '当前已有另一种形态的串门邀请，请先结束后再继续' };
+                    return { ok: false, error: t('visit.error.otherVisitActive', '已有其他串门，请先结束') };
                 }
                 recoverCurrentHostInviteIfWaiting(catgirl);
                 return { ok: true, visit_id: visit.visitId };
@@ -1871,7 +1876,7 @@
                     return { ok: false, error: '当前已有另一条串门邀请，请先结束后再邀请这位好友' };
                 }
                 if (restored.visitMode !== requestedMode) {
-                    return { ok: false, error: '当前已有另一种形态的串门邀请，请先结束后再继续' };
+                    return { ok: false, error: t('visit.error.otherVisitActive', '已有其他串门，请先结束') };
                 }
                 if (!targetUserId && !restored.hasCode) scheduleInviteRecovery(catgirl, restored.visitId, 0);
                 return { ok: true, visit_id: restored.visitId };
@@ -1902,7 +1907,7 @@
                     return { ok: false, error: '当前已有另一条串门邀请，请先结束后再继续' };
                 }
                 if (visit.visitMode !== requestedMode) {
-                    return { ok: false, error: '当前已有另一种形态的串门邀请，请先结束后再继续' };
+                    return { ok: false, error: t('visit.error.otherVisitActive', '已有其他串门，请先结束') };
                 }
                 recoverCurrentHostInviteIfWaiting(catgirl);
                 return { ok: true, visit_id: visit.visitId };
@@ -1913,7 +1918,7 @@
                     if (targetUserId) {
                         try { await cancelDirectInvitation(created.visitId); } catch (_) { /* keep visible for manual retry */ }
                     }
-                    return { ok: false, error: '串门形态没有正确建立，请结束后重试' };
+                    return { ok: false, error: t('visit.socialHub.modeMismatch', '串门创建失败，请重试') };
                 }
                 if (!targetUserId && !created.hasCode) scheduleInviteRecovery(catgirl, created.visitId, 0);
                 return { ok: true, visit_id: created.visitId };
@@ -1929,7 +1934,7 @@
                         return { ok: false, error: '当前已有另一条串门邀请，请先结束后再继续' };
                     }
                     if (visit.visitMode !== requestedMode) {
-                        return { ok: false, error: '当前已有另一种形态的串门邀请，请先结束后再继续' };
+                        return { ok: false, error: t('visit.error.otherVisitActive', '已有其他串门，请先结束') };
                     }
                     recoverCurrentHostInviteIfWaiting(catgirl);
                     return { ok: true, visit_id: visit.visitId };
@@ -1940,7 +1945,7 @@
                         return { ok: false, error: '当前已有另一条串门邀请，请先结束后再邀请这位好友' };
                     }
                     if (recovered.visitMode !== requestedMode) {
-                        return { ok: false, error: '当前已有另一种形态的串门邀请，请先结束后再继续' };
+                        return { ok: false, error: t('visit.error.otherVisitActive', '已有其他串门，请先结束') };
                     }
                     if (!targetUserId && !recovered.hasCode) scheduleInviteRecovery(catgirl, recovered.visitId, 0);
                     return { ok: true, visit_id: recovered.visitId };
@@ -2066,7 +2071,7 @@
         if (result.status === 503) return t('visit.preview.unreachable', '暂时连不上串门服务，稍后再试');
         if (code === 'VISIT_LOGIN_REQUIRED') return t('visit.status.VISIT_LOGIN_REQUIRED', '请先登录');
         if (code === 'invite_code_format') return t('visit.join.codeFormat', '邀请码是 10 位，由字母和数字 2–7 组成');
-        return t('visit.error.generic', '没能完成，请稍后再试');
+        return t('visit.error.generic', '操作失败，请重试');
     }
 
     /** 先预览（只读、不消耗邀请码），预览失败不弹确认框、不发 join。 */
@@ -2776,7 +2781,7 @@
                 name: String(frame.peer_name || peerCatName()), code: String(frame.peer_short_id || '')
             })];
             if (frame.cross_region === true) out.push({ text: t('visit.join.crossRegion', '对方在另一个地区，连接可能不太稳定'), tone: 'warning' });
-            if (failed) out.push({ text: failedText || t('visit.error.generic', '没能完成，请稍后再试'), tone: 'warning' });
+            if (failed) out.push({ text: failedText || t('visit.error.generic', '操作失败，请重试'), tone: 'warning' });
             out.push({ text: t('visit.invite.countdown', '{{s}} 秒后自动婉拒', { s: left }), tone: 'muted' });
             return out;
         };
@@ -2840,9 +2845,23 @@
         if (result.status === 409 && bodyCode(result) === 'VISIT_RECALL_ALREADY') {
             toast(t('visit.wrapUp.recallAlready', '她们已经在道别了'));
         } else if (result.status !== 200 && result.status !== 404) {
-            toast(t('visit.error.generic', '没能完成，请稍后再试'));
+            toast(t('visit.error.generic', '操作失败，请重试'));
         }
         return result;
+    }
+
+    function requestVisitExit(reason) {
+        if (visit.visitMode !== 'cat') return endRoute(reason);
+        var visitId = visit.visitId;
+        var message = t('visit.catScene.exitConfirm', '是否退出猫猫串门');
+        return confirmDialog(message, {
+            title: '',
+            ariaLabel: message,
+            danger: true
+        }).then(function (confirmed) {
+            if (!confirmed || visit.visitId !== visitId || visit.visitMode !== 'cat') return null;
+            return endRoute(reason);
+        });
     }
 
     async function requestCatAction(visitId, kind) {
@@ -2854,7 +2873,7 @@
             kind: kind
         });
         if (result.status !== 200 && result.status !== 202) {
-            toast(t('visit.catScene.actionFailed', '猫猫这次没能行动，请稍后再试'));
+            toast(t('visit.catScene.actionFailed', '动作传输失败，请重试'));
             return false;
         }
         return {
@@ -3033,7 +3052,7 @@
             catModelReturnProbe = { visitId: visitId, catgirl: catgirl };
             return 'unknown';
         }
-        toast(t('visit.error.generic', '没能完成，请稍后再试'));
+        toast(t('visit.error.generic', '操作失败，请重试'));
         return false;
     }
 
@@ -3102,10 +3121,10 @@
             render();
             return;
         case 'recall':
-            endRoute('recall');
+            requestVisitExit('recall');
             return;
         case 'end_now':
-            endRoute('route_end');
+            requestVisitExit('route_end');
             return;
         default:
         }
@@ -3392,7 +3411,7 @@
                 patchDebriefMessage(message, ['forget'], committing, 'info');
             } else {
                 restoreButtons(message, 'all');
-                toast(t('visit.error.generic', '没能完成，请稍后再试'));
+                toast(t('visit.error.generic', '操作失败，请重试'));
             }
             return;
         }
@@ -3402,7 +3421,7 @@
         }
         // 其他（400 / 网络错）：恢复可点，让用户再试
         restoreButtons(message, 'all');
-        toast(t('visit.error.generic', '没能完成，请稍后再试'));
+        toast(t('visit.error.generic', '操作失败，请重试'));
     }
 
     function restoreButtons(message, which) {

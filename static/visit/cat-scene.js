@@ -855,14 +855,10 @@
     }
   }
 
-  function confirmReturn() {
-    var message = t('visit.catScene.returnConfirm', '返回模型会退出本次串门，确定要离开吗？');
-    var title = t('visit.catScene.returnTitle', '退出猫猫串门');
+  function confirmExit() {
+    var message = t('visit.catScene.exitConfirm', '是否退出猫猫串门');
     if (typeof global.showConfirm === 'function') {
-      return Promise.resolve(global.showConfirm(message, title, {
-        danger: true,
-        confirmText: t('visit.catScene.returnConfirmAction', '退出并返回模型')
-      }));
+      return Promise.resolve(global.showConfirm(message, '', { danger: true, ariaLabel: message }));
     }
     if (typeof global.confirm === 'function') return Promise.resolve(global.confirm(message));
     return Promise.resolve(false);
@@ -875,7 +871,7 @@
     var previousPendingReturn = scene.pendingModelReturn;
     scene.returning = true;
     updateControls();
-    confirmReturn().then(function (confirmed) {
+    confirmExit().then(function (confirmed) {
       if (!confirmed || !scene.active || scene.visitId !== visitId) {
         scene.returning = false;
         updateControls();

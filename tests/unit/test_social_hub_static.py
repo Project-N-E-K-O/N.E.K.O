@@ -37,6 +37,7 @@ def test_hub_has_targeted_friend_flow_without_invite_code_entry():
     assert "visit_mode: actualMode" in source
     assert "actualMode !== requestedMode" in source
     assert "visit.socialHub.modeMismatch" in source
+    assert "tr('visit.socialHub.modeMismatch', '串门创建失败，请重试')" in source
     assert "inviteFriend(friend.id, 'model')" in source
     assert "inviteFriend(friend.id, 'cat')" not in source
     assert "visit.socialHub.modelVisit" not in source

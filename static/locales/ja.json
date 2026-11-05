@@ -6870,16 +6870,14 @@
             "greet": "あいさつ",
             "play": "遊ぶ",
             "rest": "休む",
-            "returnTitle": "ねこのおでかけを終了",
-            "returnConfirm": "モデルに戻ると、このおでかけは終了します。終了しますか？",
-            "returnConfirmAction": "終了してモデルに戻る",
+            "exitConfirm": "ねこのおでかけを終了しますか？",
             "actionUnavailable": "ねこの動作は一時的に利用できません",
-            "actionFailed": "動作を届けられませんでした。もう一度お試しください"
+            "actionFailed": "動作の送信に失敗しました。もう一度お試しください"
         },
         "directInvite": {
             "decline": "断る",
             "accept": "受ける",
-            "acceptCat": "猫形態の訪問を受ける",
+            "acceptCat": "ねこの訪問を受ける",
             "expired": "この招待はもう無効です",
             "responseFailed": "お断りの返事を送れませんでした。もう一度お試しください",
             "unavailable": "今はまだ出かけられません。もう一度お試しください"
@@ -6924,7 +6922,7 @@
             "desktopRequired": "指名招待はデスクトップ版 Neko から送ってください",
             "preparingRoom": "{{name}} のための部屋を準備しています…",
             "roomMissing": "指名訪問用の部屋を取得できませんでした",
-            "modeMismatch": "訪問形態が正しく作成されませんでした。訪問を終了して、もう一度お試しください",
+            "modeMismatch": "訪問の作成に失敗しました。もう一度お試しください",
             "sendFailed": "招待を送れませんでした。しばらくしてから再試行してください",
             "invited": "{{name}} に訪問の招待を送りました",
             "cancelFailed": "今は招待を取り消せません。しばらくしてから再試行してください",
@@ -7068,7 +7066,8 @@
         },
         "error": {
             "disabled": "「おでかけを許可」がオフです。先に設定でオンにしてください",
-            "generic": "うまくいきませんでした。しばらくしてからお試しください",
+            "generic": "操作に失敗しました。もう一度お試しください",
+            "otherVisitActive": "別の訪問があります。先に終了してください",
             "unreachable": "ローカルサービスに接続できません",
             "voiceSession": "音声通話を終えてからおでかけしてください",
             "alreadyVisiting": "すでにおでかけ中です",

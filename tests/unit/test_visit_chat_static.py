@@ -393,6 +393,7 @@ def test_cat_scene_reuses_visit_http_and_guards_existing_model_return():
     action = _function_body(chat, "requestCatAction")
     assert "'/api/visit/route/cat-action'" in action
     assert "visit_id: visitId" in action and "kind: kind" in action
+    assert "t('visit.catScene.actionFailed', '动作传输失败，请重试')" in action
     end = _function_body(chat, "endCatVisitForModelReturn")
     assert "'/api/visit/route/end'" in end
     assert "reason: 'route_end'" in end and "lanlan_name: catgirl" in end
@@ -405,6 +406,8 @@ def test_cat_scene_reuses_visit_http_and_guards_existing_model_return():
     assert "VISIT_CAT_POSE_STALE" in pose and "current_motion_id" in pose
     assert "requestCatPose: requestCatPose" in chat
     assert "endCatVisitForModelReturn: endCatVisitForModelReturn" in chat
+    assert "t('visit.error.otherVisitActive', '已有其他串门，请先结束')" in chat
+    assert "t('visit.socialHub.modeMismatch', '串门创建失败，请重试')" in chat
     reconcile = _function_body(chat, "confirmCatVisitEnded")
     assert "'/api/visit/state?catgirl='" in reconcile
     assert "result.body.active === false" in reconcile

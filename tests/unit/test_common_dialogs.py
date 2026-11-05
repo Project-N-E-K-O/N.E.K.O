@@ -531,6 +531,35 @@ def test_show_confirm_implicit_dismiss_returns_false():
     }
 
 
+def test_titleless_confirm_uses_message_as_accessible_name_and_common_buttons():
+    result = _run_common_dialogs_node_scenario(
+        """
+    const pending = window.showConfirm('是否退出猫猫串门', '', {
+      danger: true,
+      ariaLabel: '是否退出猫猫串门',
+    });
+    await wait(10);
+    const overlay = document.querySelectorAll('.modal-overlay')[0];
+    const dialog = overlay.querySelector('.modal-dialog');
+    const state = {
+      titleCount: overlay.querySelectorAll('.modal-title').length,
+      ariaLabel: dialog.attributes['aria-label'],
+      buttons: modalButtonTexts(),
+    };
+    overlay.querySelectorAll('.modal-btn')[1].onclick();
+    state.confirmed = await pending;
+    return state;
+        """
+    )
+
+    assert result == {
+        "titleCount": 0,
+        "ariaLabel": "是否退出猫猫串门",
+        "buttons": ["取消", "确定"],
+        "confirmed": True,
+    }
+
+
 @pytest.mark.unit
 def test_theater_confirm_registers_compact_hit_island_and_refreshes_geometry():
     result = _run_common_dialogs_node_scenario(
