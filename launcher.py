@@ -24,6 +24,11 @@ from launcher_core.bootstrap import _ensure_utf8_filesystem_encoding, _pin_proje
 
 
 if __name__ == "__main__":
+    # Frozen spawn workers must consume their private arguments before loading
+    # dotenv, release modes, or the launcher runtime (which starts services).
+    from multiprocessing import freeze_support as _freeze_support
+
+    _freeze_support()
     # Local development overrides live in the git-ignored project .env.  Load
     # them before any config module is imported so a normal manual launch uses
     # the same settings as every spawned backend process.

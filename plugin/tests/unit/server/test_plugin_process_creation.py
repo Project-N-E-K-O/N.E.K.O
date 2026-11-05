@@ -259,14 +259,25 @@ def test_scan_reaps_a_process_returned_after_its_creation_deadline(tmp_path, mon
 
 def _report_start_method(plugin_id, entry_point, report_path, downlink, uplink, token,
                          stop_event, options, **kwargs):
+    assert "launcher_core.runtime" not in sys.modules
+    assert "app.main_server" not in sys.modules
     # Exercise the actual process and the stop event passed to a plugin runner.
     report_path.write_text(multiprocessing.get_start_method(), encoding="utf-8")
     stop_event.set()
 
 
 @pytest.mark.skipif("fork" not in multiprocessing.get_all_start_methods(), reason="requires fork")
-def test_macos_plugin_does_not_inherit_merged_host_fork_context(tmp_path, monkeypatch):
+@pytest.mark.parametrize("launcher_entry", [False, True])
+def test_macos_plugin_does_not_inherit_merged_host_fork_context(tmp_path, monkeypatch, launcher_entry):
     from plugin.core import host as host_module
+
+    if launcher_entry:
+        import __main__
+        from pathlib import Path
+        launcher = Path(__file__).resolve().parents[4] / "launcher.py"
+        assert launcher.is_file()
+        monkeypatch.setattr(__main__, "__file__", str(launcher))
+        monkeypatch.setattr(__main__, "__spec__", None)
 
     # Model the merged launcher's fork default without changing the test runner's
     # global multiprocessing configuration. Also runs on Linux CI.
