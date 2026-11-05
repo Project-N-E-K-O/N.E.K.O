@@ -163,6 +163,9 @@ class NeteaseMusicPlugin(PlaylistMixin, CredentialUiMixin, NekoPluginBase):
     async def _invalidate_credential_requests(self) -> None:
         self._generation_counter += 1
         self._session_generations.clear()
+        for queue in getattr(self, "_queues", {}).values():
+            queue.advance_epoch += 1
+            queue.ticket = queue.advancing_ticket = ""
         current_task = asyncio.current_task()
         pending = [
             task

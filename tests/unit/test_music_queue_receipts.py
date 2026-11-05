@@ -50,6 +50,8 @@ async def test_closed_after_ended_is_delivered_and_socket_disconnect_clears_trac
     assert manager._current_netease_track is not None
     music_playback.clear_music_playback_connection(manager, owner)
     assert manager._current_netease_track is None
+    assert music_playback.handle_music_playback_state(manager, event, websocket=other)
+    assert manager._current_netease_track['song_id'] == 1
     assert music_playback.handle_music_playback_state(manager, {**event,'state':'ended'}, websocket=owner)
     assert music_playback.handle_music_playback_state(manager, {**event,'state':'ended','queue_closed':True}, websocket=owner)
     await asyncio.gather(*music_playback._queue_callbacks)

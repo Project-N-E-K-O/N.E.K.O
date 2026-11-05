@@ -3025,6 +3025,10 @@
                 }
             }
 
+            window.dispatchEvent(new CustomEvent('neko:music-socket-open', {
+                detail: { socket: _thisSocket }
+            }));
+
             window.dispatchEvent(new CustomEvent('voice-input-socket-open', {
                 detail: { socket: _thisSocket }
             }));

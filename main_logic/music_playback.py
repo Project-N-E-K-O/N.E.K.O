@@ -100,6 +100,7 @@ def clear_music_playback_connection(manager: Any, websocket: Any) -> None:
     if getattr(manager, "_music_playback_websocket", None) is websocket:
         manager._current_netease_track = None
         manager._music_playback_websocket = None
+        manager._music_playback_event_key = None
 
 
 def handle_music_playback_state(manager: Any, event: dict[str, Any], *, websocket: Any = None) -> bool:
@@ -139,7 +140,10 @@ def handle_music_playback_state(manager: Any, event: dict[str, Any], *, websocke
         manager._music_playback_owner_started_at = playback_started_at
 
     event_key = (playback_id, state, playback_started_at, event.get("queue_closed") is True)
-    if getattr(manager, "_music_playback_event_key", None) == event_key:
+    if (
+        getattr(manager, "_music_playback_event_key", None) == event_key
+        and (websocket is None or getattr(manager, "_music_playback_websocket", None) is websocket)
+    ):
         return False
     manager._music_playback_event_key = event_key
 

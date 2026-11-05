@@ -781,3 +781,26 @@ async def test_failed_single_during_transition_does_not_abandon_next_track():
     await pending
     actions = [p['parts'][0] for p in pushes if p['parts'][0].get('action') == 'media_play_url']
     assert [a['netease_id'] for a in actions] == [2]
+
+
+@pytest.mark.asyncio
+async def test_credential_change_invalidates_pending_queue_resolution():
+    from plugin.plugins.netease_music.playlists import Queue
+    started, release = asyncio.Event(), asyncio.Event()
+    provider = _Provider()
+    async def resolve(song_id):
+        started.set()
+        await release.wait()
+        return provider.media
+    provider.resolve_media = resolve
+    plugin, pushes, _ = _make_plugin(provider)
+    q = Queue('mix', [_song(1)])
+    plugin._queues = {'lanlan:Mika': q}
+    plugin._begin_request('lanlan:Mika')
+    pending = asyncio.create_task(plugin._advance(provider,'Mika','lanlan:Mika',q))
+    await started.wait()
+    await plugin._invalidate_credential_requests()
+    release.set()
+    result = await pending
+    assert result['finish']['data']['status'] == 'superseded'
+    assert pushes == []

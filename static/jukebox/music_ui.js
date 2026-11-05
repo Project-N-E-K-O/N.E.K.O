@@ -2433,8 +2433,16 @@
     function closeLocalMusicPlayer() {
         recordMusicCloseFeedback(playbackStartedAt);
         playbackStartedAt = 0;
-        destroyMusicPlayer(true, true, true);
+        destroyMusicPlayer(true, true, true, false, true);
     }
+
+    window.addEventListener('neko:music-socket-open', (event) => {
+        if (event.detail?.socket !== window.appState?.socket) return;
+        const context = localPlayer && localPlayer._musicPlaybackReportContext;
+        const audio = localPlayer && localPlayer.audio;
+        if (!context?.playbackStarted || !audio || audio.ended || localPlayer._destroying || localPlayer._loadError) return;
+        reportMusicPlaybackState(audio.paused ? 'paused' : 'playing', null, context);
+    });
 
     function releaseMusicPlayerInstance(player) {
         if (!player) return;
@@ -2467,7 +2475,8 @@
         removeDOM = true,
         fullTeardown = false,
         updateToken = false,
-        preserveMusicCard = false
+        preserveMusicCard = false,
+        userClosed = false
     ) => {
         // 播放器销毁即结束当前曲目生命周期，清起播时间戳，避免残留到下一首
         playbackStartedAt = 0;
@@ -2476,11 +2485,13 @@
         if (
             fullTeardown
             && terminalReportContext
-            && (terminalReportContext.queueTicket
+            && ((userClosed && terminalReportContext.queueTicket)
                 || ['playing', 'paused'].includes(terminalReportContext.lastReportedState)
                 || ['playing', 'paused'].includes(terminalReportContext.recommendationLastState))
         ) {
-            reportMusicPlaybackState('ended', null, terminalReportContext, 'closed');
+            // Automatic cleanup releases the old UI, not the pending queue.
+            const context = userClosed ? terminalReportContext : { ...terminalReportContext, queueTicket: '' };
+            reportMusicPlaybackState('ended', null, context, userClosed ? 'closed' : '');
         }
         // 重要：销毁播放器意味着取消所有正在进行的异步加载令牌
         // 只有在 fullTeardown (手动关闭) 或明确要求时才更新 token
