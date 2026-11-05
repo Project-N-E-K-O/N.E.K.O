@@ -44,6 +44,23 @@ vi.mock('vue-router', () => ({
   useRoute: () => api.route,
   useRouter: () => ({ push: api.push }),
 }))
+// The publish tab mounts the submission panel, which drives its own Market
+// login and fetch calls. Replace it with an inert panel: this suite covers
+// the GitHub publish flow, not the Market submission flow, and the panel has
+// its own tests. `phase`/`submission` stay null so the steps render as
+// unchecked.
+vi.mock('@/components/authoring/AuthoringProjectSubmission.vue', async () => {
+  const { defineComponent, h } = await import('vue')
+  return {
+    default: defineComponent({
+      name: 'AuthoringProjectSubmissionStub',
+      setup(_, { expose }) {
+        expose({ phase: null, submission: null })
+        return () => h('div', { 'data-testid': 'submission-stub' })
+      },
+    }),
+  }
+})
 
 const en = authoringMessages['en-US']
 const created: CreatedPluginProject = {
@@ -307,8 +324,8 @@ describe('authoring workbench backed by the server project list', () => {
     expect(pane.textContent).toContain('owner/hello_world is public and HEAD is pushed.')
     expect(pane.textContent).toContain(en.publishVerifyPassed)
     expect(pane.textContent).toContain('Release v0.2.0 does not exist yet.')
-    // Submission and Market version are not read in this phase.
-    expect(pane.textContent).toContain(en.publishStatusLater)
+    // Submission and Market version are not read in this phase (the panel is stubbed here).
+    expect(pane.textContent).toContain(en.publishStatusUnknown)
     expect(pane.textContent).toContain('.github/workflows/release.yml')
     expect(pane.textContent).toContain('n.e.k.o_plugin_hello_world')
   })

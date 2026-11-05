@@ -72,6 +72,15 @@
         <div>
           <strong>{{ step.title }}</strong>
           <p v-if="step.detail" class="authoring-muted authoring-small">{{ step.detail }}</p>
+          <AuthoringProjectSubmission
+            v-if="step.id === 'submission'"
+            ref="submissionRef"
+            :project-id="projectId"
+            :plugin-id="status.plugin_id"
+            :github-repository="status.repository.github_repository"
+            :plugin-name="submissionPluginName"
+            @changed="load"
+          />
         </div>
       </li>
     </ol>
@@ -86,6 +95,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { CircleClose, Position, Refresh } from '@element-plus/icons-vue'
+import AuthoringProjectSubmission from '@/components/authoring/AuthoringProjectSubmission.vue'
 import {
   cancelPluginProjectPublishTask,
   getPluginProjectPublishStatus,
@@ -170,6 +180,39 @@ const canStart = computed(() => {
     repo.worktree_clean === true &&
     repo.head_pushed === true
   )
+})
+
+/** The submission child component; its exposed phase drives the two steps it owns. */
+const submissionRef = ref<InstanceType<typeof AuthoringProjectSubmission> | null>(null)
+/** The plugin's display name used to prefill the Market draft, if the project carries one. */
+const submissionPluginName = computed(() => status.value?.plugin_id ?? null)
+
+/** The phase the submission component is in; maps onto the step state it renders. */
+const submissionPhase = computed(() => submissionRef.value?.phase ?? null)
+const submissionState = computed<StepState>(() => {
+  const phase = submissionPhase.value
+  if (phase === null) return 'unknown'
+  if (phase === 'approved') return 'done'
+  if (phase === 'draft' || phase === 'submitted' || phase === 'in_review') return 'todo'
+  return 'unknown'
+})
+const submissionDetail = computed(() => {
+  const current = submissionRef.value?.submission
+  if (!current) return t('authoring.submissionStepDetailLater')
+  return ''
+})
+
+/** The approved Market plugin, used by the market-version step. */
+const marketPluginId = computed(() => {
+  const current = submissionRef.value?.submission
+  return submissionPhase.value === 'approved' && current?.plugin_id != null
+    ? String(current.plugin_id)
+    : ''
+})
+const marketState = computed<StepState>(() => (marketPluginId.value ? 'done' : 'unknown'))
+const marketDetail = computed(() => {
+  if (!marketPluginId.value) return t('authoring.marketVersionStepDetailLater')
+  return t('authoring.marketVersionPublished', { version: status.value?.version ?? '' })
 })
 
 async function load() {
@@ -338,9 +381,9 @@ const steps = computed<Step[]>(() => {
   return [
     { id: 'repository', title: t('authoring.publishStepRepository'), state: repoState, detail: repoDetail },
     { id: 'verify', title: t('authoring.publishStepVerify'), state: verifyState, detail: verifyDetail },
-    { id: 'submission', title: t('authoring.publishStepSubmission'), state: 'later', detail: '' },
+    { id: 'submission', title: t('authoring.publishStepSubmission'), state: submissionState.value, detail: submissionDetail.value },
     { id: 'release', title: t('authoring.publishStepRelease'), state: releaseState, detail: releaseDetail },
-    { id: 'market', title: t('authoring.publishStepMarket'), state: 'later', detail: '' },
+    { id: 'market', title: t('authoring.publishStepMarket'), state: marketState.value, detail: marketDetail.value },
   ]
 })
 
