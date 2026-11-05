@@ -40,6 +40,8 @@ class ProjectErrorCode(StrEnum):
     PUBLISH_RATE_LIMITED = "PUBLISH_RATE_LIMITED"
     PUBLISH_TASK_ACTIVE = "PUBLISH_TASK_ACTIVE"
     PUBLISH_TASK_NOT_FOUND = "PUBLISH_TASK_NOT_FOUND"
+    REPO_CREATE_UNAVAILABLE = "REPO_CREATE_UNAVAILABLE"
+    REPO_CREATE_FAILED = "REPO_CREATE_FAILED"
 
 
 def project_error(code: ProjectErrorCode, message: str, status: int) -> ServerDomainError:

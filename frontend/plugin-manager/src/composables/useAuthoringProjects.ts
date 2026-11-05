@@ -43,6 +43,8 @@ export const PROJECT_ERROR_MESSAGES = {
   PUBLISH_RATE_LIMITED: 'publishActionRateLimited',
   PUBLISH_TASK_ACTIVE: 'publishTaskActive',
   PUBLISH_TASK_NOT_FOUND: 'publishTaskNotFound',
+  REPO_CREATE_UNAVAILABLE: 'repoCreateUnavailable',
+  REPO_CREATE_FAILED: 'repoCreateFailed',
 } as const satisfies Record<string, AuthoringMessageKey>
 
 const ownKey = (messages: Record<string, AuthoringMessageKey>, code: string) =>

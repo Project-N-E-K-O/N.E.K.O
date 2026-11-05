@@ -12,6 +12,7 @@ from plugin.neko_plugin_cli.core.project import PLUGIN_ID_PATTERN
 from plugin.server.application import plugin_projects as service
 from plugin.server.application import plugin_publish_status as publish_status
 from plugin.server.application import plugin_publish_tasks as publish_tasks
+from plugin.server.application import plugin_repo_tasks as repo_tasks
 from plugin.server.application.plugin_projects import (
     AuthoringProject,
     CreatedProject,
@@ -88,6 +89,13 @@ class PublishRequest(BaseModel):
     mode: publish_tasks.PublishMode
 
 
+class CreateRepoRequest(BaseModel):
+    """Options for creating the project's GitHub repository through the CLI."""
+
+    model_config = ConfigDict(extra="forbid")
+    private: bool = False
+
+
 async def _call(awaitable):
     # The UI localizes by ``code``; ``message`` is an English diagnostic.
     try:
@@ -155,6 +163,12 @@ async def precheck_plugin_project(project_id: str):
 async def plugin_project_publish_status(project_id: str):
     # Read-only: local git facts plus public GitHub reads; nothing is pushed.
     return await _call(publish_status.get_publish_status(project_id))
+
+
+@router.post("/{project_id}/create-repo", status_code=201, dependencies=_mutation)
+async def create_plugin_project_repo(project_id: str, body: CreateRepoRequest):
+    # Runs `neko-plugin create-repo` (gh); on no gh the result carries manual steps.
+    return await _call(repo_tasks.create_repository(project_id, private=body.private))
 
 
 @router.post("/{project_id}/publish", status_code=202, dependencies=_mutation)

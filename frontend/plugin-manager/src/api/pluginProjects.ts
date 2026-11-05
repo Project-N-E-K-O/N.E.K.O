@@ -137,6 +137,29 @@ export interface PublishStatus {
 export const getPluginProjectPublishStatus = (projectId: string): Promise<PublishStatus> =>
   get(`/plugin-projects/${encodeURIComponent(projectId)}/publish-status`, config)
 
+/** Outcome of `neko-plugin create-repo` run from the workbench. */
+export type RepoCreateStatus = 'created' | 'manual' | 'failed'
+
+export interface RepoCreateResult {
+  status: RepoCreateStatus
+  /** The new repository's URL on success; empty otherwise. */
+  repository_url: string
+  /** Bounded tail of the CLI output; carries the manual steps when status is 'manual'. */
+  log: string[]
+  finished_at: number
+}
+
+export const createPluginProjectRepo = (
+  projectId: string,
+  options: { private?: boolean } = {}
+): Promise<RepoCreateResult> =>
+  post(
+    `/plugin-projects/${encodeURIComponent(projectId)}/create-repo`,
+    { private: options.private ?? false },
+    // gh network + repo creation can take a little while; outlive the default.
+    { ...config, timeout: 190_000 }
+  )
+
 export type PublishMode = 'github_and_market' | 'github' | 'market_notify'
 
 /** Lifecycle of one `neko-plugin publish` background task. */

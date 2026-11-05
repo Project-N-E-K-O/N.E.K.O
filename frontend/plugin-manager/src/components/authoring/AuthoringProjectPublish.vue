@@ -72,6 +72,35 @@
         <div>
           <strong>{{ step.title }}</strong>
           <p v-if="step.detail" class="authoring-muted authoring-small">{{ step.detail }}</p>
+          <template v-if="step.id === 'repository' && canCreateRepo">
+            <div class="authoring-precheck-actions">
+              <el-button
+                type="primary"
+                :icon="Plus"
+                :loading="creatingRepo"
+                @click="createRepo"
+              >
+                {{ creatingRepo ? t('authoring.publishCreatingRepo') : t('authoring.publishCreateRepo') }}
+              </el-button>
+            </div>
+            <el-alert
+              v-if="repoManualSteps.length"
+              :title="t('authoring.publishRepoManualTitle')"
+              type="info"
+              :closable="false"
+              show-icon
+            >
+              <p class="authoring-small">{{ t('authoring.publishRepoManualHint') }}</p>
+              <pre class="authoring-publish-manual">{{ repoManualSteps.join('\n') }}</pre>
+            </el-alert>
+            <el-alert
+              v-if="repoCreateError"
+              :title="repoCreateError"
+              type="error"
+              :closable="false"
+              show-icon
+            />
+          </template>
           <AuthoringProjectSubmission
             v-if="step.id === 'submission'"
             ref="submissionRef"
@@ -94,10 +123,11 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { CircleClose, Position, Refresh } from '@element-plus/icons-vue'
+import { CircleClose, Plus, Position, Refresh } from '@element-plus/icons-vue'
 import AuthoringProjectSubmission from '@/components/authoring/AuthoringProjectSubmission.vue'
 import {
   cancelPluginProjectPublishTask,
+  createPluginProjectRepo,
   getPluginProjectPublishStatus,
   getPluginProjectPublishTask,
   projectErrorCode,
@@ -214,6 +244,39 @@ const marketDetail = computed(() => {
   if (!marketPluginId.value) return t('authoring.marketVersionStepDetailLater')
   return t('authoring.marketVersionPublished', { version: status.value?.version ?? '' })
 })
+
+// Repository creation: offered only when the project is a git repo with no
+// GitHub remote yet. A packaged build (no source checkout) cannot create one.
+const creatingRepo = ref(false)
+const repoManualSteps = ref<string[]>([])
+const repoCreateError = ref('')
+const canCreateRepo = computed(() => {
+  const repo = status.value?.repository
+  return !!repo && repo.is_repository && !repo.github_repository
+})
+
+async function createRepo() {
+  if (creatingRepo.value) return
+  creatingRepo.value = true
+  repoManualSteps.value = []
+  repoCreateError.value = ''
+  try {
+    const result = await createPluginProjectRepo(props.projectId)
+    if (result.status === 'created') {
+      await load()
+    } else if (result.status === 'manual') {
+      // gh is unavailable: surface the steps the CLI printed so the user can
+      // create the repository by hand, then refresh.
+      repoManualSteps.value = result.log
+    } else {
+      repoCreateError.value = result.log.join('\n') || describeError(null, 'repoCreateFailed')
+    }
+  } catch (error) {
+    repoCreateError.value = describeError(error, 'repoCreateFailed')
+  } finally {
+    creatingRepo.value = false
+  }
+}
 
 async function load() {
   if (loading.value) return
@@ -406,6 +469,21 @@ const notes = computed(() => {
 </script>
 
 <style scoped>
+.authoring-publish-manual {
+  margin: var(--spacing-xs) 0 0;
+  padding: var(--spacing-sm);
+  border-radius: var(--radius-control);
+  background: var(--surface-inset);
+  color: var(--el-text-color-regular);
+  font:
+    12px/1.7 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Consolas,
+    monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .authoring-publish-task {
   margin-top: var(--spacing-md);
   padding: var(--spacing-sm) var(--spacing-md);

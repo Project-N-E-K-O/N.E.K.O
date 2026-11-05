@@ -16,6 +16,7 @@ import {
   pickProjectDirectory,
   projectErrorCode,
   PLUGIN_ID_PATTERN,
+  createPluginProjectRepo,
   updatePluginProjectMetadata,
 } from './pluginProjects'
 import { errorMessageKey, PROJECT_ERROR_MESSAGES } from '@/composables/useAuthoringProjects'
@@ -36,6 +37,28 @@ describe('updatePluginProjectMetadata', () => {
     put.mockResolvedValue({ project_id: 'p1', ...metadata })
     await expect(updatePluginProjectMetadata('p1', metadata)).resolves.toMatchObject(metadata)
     expect(put).toHaveBeenCalledWith('/plugin-projects/p1/metadata', metadata, expect.objectContaining({ suppressErrorMessage: true }))
+  })
+})
+
+describe('createPluginProjectRepo', () => {
+  it('posts to the create-repo endpoint with the private flag and a long timeout', async () => {
+    post.mockResolvedValue({ status: 'created', repository_url: 'https://github.com/o/r', log: [], finished_at: 1 })
+    await expect(createPluginProjectRepo('p1')).resolves.toMatchObject({ status: 'created' })
+    expect(post).toHaveBeenCalledWith(
+      '/plugin-projects/p1/create-repo',
+      { private: false },
+      expect.objectContaining({ timeout: 190_000 })
+    )
+  })
+
+  it('forwards private: true when requested', async () => {
+    post.mockResolvedValue({ status: 'created', repository_url: '', log: [], finished_at: 1 })
+    await createPluginProjectRepo('p1', { private: true })
+    expect(post).toHaveBeenCalledWith(
+      '/plugin-projects/p1/create-repo',
+      { private: true },
+      expect.any(Object)
+    )
   })
 })
 
