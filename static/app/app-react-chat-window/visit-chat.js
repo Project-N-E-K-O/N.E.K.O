@@ -301,6 +301,7 @@
     }
 
     function openDialog(spec) {
+        var returnFocus = document.activeElement;
         var overlay = document.createElement('div');
         overlay.className = 'visit-dialog-overlay';
         var dialog = document.createElement('div');
@@ -336,11 +337,19 @@
                 if (handle.closed) return;
                 handle.closed = true;
                 if (typeof document.removeEventListener === 'function') document.removeEventListener('keydown', onKeydown, true);
+                var active = document.activeElement;
+                var shouldRestoreFocus = !active || active === document.body
+                    || (typeof dialog.contains === 'function' && dialog.contains(active))
+                    || focusableElements().indexOf(active) !== -1;
                 if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
                 releaseInteractive();
                 refreshCompactGeometry();
                 var index = openDialogs.indexOf(handle);
                 if (index >= 0) openDialogs.splice(index, 1);
+                if (shouldRestoreFocus && returnFocus && typeof returnFocus.focus === 'function'
+                        && (returnFocus.isConnected === undefined || returnFocus.isConnected)) {
+                    try { returnFocus.focus({ preventScroll: true }); } catch (_) { /* noop */ }
+                }
                 settle(value === undefined ? null : value);
             },
             setLines: function (lines) {
@@ -377,11 +386,38 @@
                 if (event.target === overlay) handle.close(null);
             });
         }
-        // 焦点留在对话框后面的页面上时 overlay 收不到按键：Escape 挂在 document 上（只认最上面那个对话框）
+        function focusableElements() {
+            if (typeof dialog.querySelectorAll === 'function') {
+                return Array.prototype.slice.call(dialog.querySelectorAll(
+                    'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), '
+                    + 'textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+                ));
+            }
+            return Array.prototype.slice.call(actions.children || []).filter(function (element) {
+                return !element.disabled && typeof element.focus === 'function';
+            });
+        }
+        // 焦点留在对话框后面的页面上时 overlay 收不到按键：键盘处理挂在 document 上（只认最上面那个对话框）
         function onKeydown(event) {
-            if (event.key !== 'Escape' || spec.dismissible === false) return;
             if (openDialogs[openDialogs.length - 1] !== handle) return;
-            handle.close(null);
+            if (event.key === 'Tab') {
+                var focusable = focusableElements();
+                var first = focusable[0];
+                var last = focusable[focusable.length - 1];
+                var activeIndex = focusable.indexOf(document.activeElement);
+                if (!first) {
+                    if (typeof event.preventDefault === 'function') event.preventDefault();
+                    if (typeof dialog.focus === 'function') dialog.focus();
+                } else if (event.shiftKey && activeIndex <= 0) {
+                    if (typeof event.preventDefault === 'function') event.preventDefault();
+                    last.focus();
+                } else if (!event.shiftKey && (activeIndex === -1 || activeIndex === focusable.length - 1)) {
+                    if (typeof event.preventDefault === 'function') event.preventDefault();
+                    first.focus();
+                }
+                return;
+            }
+            if (event.key === 'Escape' && spec.dismissible !== false) handle.close(null);
         }
         if (typeof document.addEventListener === 'function') document.addEventListener('keydown', onKeydown, true);
         (document.body || document.documentElement).appendChild(overlay);

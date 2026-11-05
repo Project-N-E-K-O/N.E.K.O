@@ -177,7 +177,20 @@ class FakeElement {{
     return results.length > 0 ? results[0] : null;
   }}
 
-  focus() {{}}
+  contains(element) {{
+    let current = element;
+    while (current) {{
+      if (current === this) return true;
+      current = current.parentNode;
+    }}
+    return false;
+  }}
+
+  get isConnected() {{
+    return document.body.contains(this) || document.head.contains(this);
+  }}
+
+  focus() {{ document.activeElement = this; }}
 
   select() {{}}
 }}
@@ -186,6 +199,7 @@ const document = {{
   head: new FakeElement('head'),
   body: new FakeElement('body'),
   _listeners: new Map(),
+  activeElement: null,
   createElement(tagName) {{
     return new FakeElement(tagName);
   }},
@@ -221,6 +235,7 @@ const document = {{
     return null;
   }},
 }};
+document.activeElement = document.body;
 
 const silentConsole = {{
   log() {{}},
@@ -557,6 +572,53 @@ def test_titleless_confirm_uses_message_as_accessible_name_and_common_buttons():
         "ariaLabel": "是否退出猫猫串门",
         "buttons": ["取消", "确定"],
         "confirmed": True,
+    }
+
+
+def test_confirm_traps_tab_and_restores_the_opening_control():
+    result = _run_common_dialogs_node_scenario(
+        """
+    const opener = document.createElement('button');
+    document.body.appendChild(opener);
+    opener.focus();
+    const pending = window.showConfirm('是否退出猫猫串门', '', {
+      danger: true,
+      ariaLabel: '是否退出猫猫串门',
+    });
+    await wait(120);
+    const overlay = document.querySelectorAll('.modal-overlay')[0];
+    const buttons = overlay.querySelectorAll('.modal-btn');
+    const cancel = buttons[0];
+    const confirm = buttons[1];
+    const initialFocusIsCancel = document.activeElement === cancel;
+    confirm.focus();
+    let forwardPrevented = false;
+    document.dispatchEvent({ type: 'keydown', key: 'Tab', shiftKey: false,
+      preventDefault() { forwardPrevented = true; } });
+    const forwardWrappedToCancel = document.activeElement === cancel;
+    let reversePrevented = false;
+    document.dispatchEvent({ type: 'keydown', key: 'Tab', shiftKey: true,
+      preventDefault() { reversePrevented = true; } });
+    const reverseWrappedToConfirm = document.activeElement === confirm;
+    cancel.onclick();
+    const confirmed = await pending;
+    return {
+      initialFocusIsCancel, forwardPrevented, forwardWrappedToCancel,
+      reversePrevented, reverseWrappedToConfirm,
+      restoredToOpener: document.activeElement === opener,
+      confirmed,
+    };
+        """
+    )
+
+    assert result == {
+        "initialFocusIsCancel": True,
+        "forwardPrevented": True,
+        "forwardWrappedToCancel": True,
+        "reversePrevented": True,
+        "reverseWrappedToConfirm": True,
+        "restoredToOpener": True,
+        "confirmed": False,
     }
 
 
