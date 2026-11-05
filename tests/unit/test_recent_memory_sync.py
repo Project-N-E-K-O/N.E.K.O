@@ -258,6 +258,12 @@ def test_review_without_sync_projection_is_not_blocked_by_unproven_sources(revie
     status, saved, _ = review_identity_case(original, corrected, source_indexes=sources)
     assert status == 'patched'
     assert [message.content for message in saved] == ['rewritten user A', 'rewritten user B']
+    if sources == [1, 0]:
+        # Index 1 is a character line: that position stays unknown, index 0 still proves user-A.
+        assert 'chat_original_source' not in (saved[0].metadata or {})
+        assert saved[1].metadata == original[0].metadata
+    else:
+        assert all('chat_original_source' not in (message.metadata or {}) for message in saved)
 
 
 def test_review_without_sync_projection_still_carries_proven_original_source(review_identity_case):
@@ -390,6 +396,9 @@ async def test_review_malformed_source_index_cannot_borrow_the_last_unmatched_id
     else:
         assert status == 'patched'
         assert [message.content for message in saved] == ['edited user-A', 'edited reply-A', 'totally unrelated']
+        assert [message.metadata for message in saved[:2]] == [message.metadata for message in original[:2]]
+        # The malformed position stays unknown: it must not borrow user-B's original source.
+        assert 'chat_original_source' not in (saved[2].metadata or {})
 
 
 @pytest.mark.parametrize('memo_position', [0, 1, None])

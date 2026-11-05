@@ -364,22 +364,33 @@ def _compute_review_capacity(snapshot: list, current: list) -> tuple[int, int | 
 _MALFORMED_REVIEW_SOURCE = object()
 
 
-def _resolve_review_sources(snapshot, corrected_messages, source_indexes=None):
-    """Resolve edits to snapshot rows, never to their destination slots."""
+def _resolve_review_sources(snapshot, corrected_messages, source_indexes=None, *, strict=True):
+    """Resolve edits to snapshot rows, never to their destination slots.
+
+    ``strict`` rejects any malformed or invalid explicit index. Otherwise such a
+    position stays unknown: it is never inferred and never borrows another row's source.
+    """
+    if source_indexes is not None and len(source_indexes) != len(corrected_messages):
+        if strict:
+            raise ValueError('invalid_review_sources')
+        source_indexes = None
     sources = [None] * len(corrected_messages) if source_indexes is None else list(source_indexes)
-    if len(sources) != len(corrected_messages):
-        raise ValueError('invalid_review_sources')
+    unknown = set()
     used = set()
     for position, source in enumerate(sources):
         if source is None:
             continue
         if (type(source) is not int or not 0 <= source < len(snapshot) or source in used
                 or snapshot[source].type != corrected_messages[position].type):
-            raise ValueError('invalid_review_sources')
+            if strict:
+                raise ValueError('invalid_review_sources')
+            sources[position] = None
+            unknown.add(position)
+            continue
         used.add(source)
     # Legacy responses can omit indices. Only unique matches prove an identity.
     for position, message in enumerate(corrected_messages):
-        if sources[position] is not None:
+        if sources[position] is not None or position in unknown:
             continue
         matches = [index for index, original in enumerate(snapshot) if index not in used
                    and original.type == message.type
@@ -388,12 +399,12 @@ def _resolve_review_sources(snapshot, corrected_messages, source_indexes=None):
             sources[position] = matches[0]
             used.add(matches[0])
     for position, message in enumerate(corrected_messages):
-        if sources[position] is not None:
+        if sources[position] is not None or position in unknown:
             continue
         matches = [index for index, original in enumerate(snapshot)
                    if index not in used and original.type == message.type]
-        unresolved = sum(source is None and corrected.type == message.type
-                         for source, corrected in zip(sources, corrected_messages, strict=True))
+        unresolved = sum(source is None and slot not in unknown and corrected.type == message.type
+                         for slot, (source, corrected) in enumerate(zip(sources, corrected_messages, strict=True)))
         if len(matches) == unresolved == 1:
             sources[position] = matches[0]
             used.add(matches[0])
@@ -2704,18 +2715,13 @@ class CompressedRecentHistoryManager:
             projection_keys = ('recent_memory_id', 'recent_memory_time')
             has_sync_identity = any(any(key in message_metadata(current[slot]) for key in projection_keys)
                                     for slot in review_slots)
-            if source_indexes is not None and any(source is _MALFORMED_REVIEW_SOURCE for source in source_indexes):
-                if has_sync_identity:
-                    logger.warning(f"[RecentReview] {lanlan_name}: 模型返回的来源编号格式无效，同步消息无法对应，放弃本次审阅")
-                    return ('failed', None, 'invalid_review_sources')
-                source_indexes = [None if source is _MALFORMED_REVIEW_SOURCE else source for source in source_indexes]
             try:
-                sources = _resolve_review_sources(snapshot, corrected_messages, source_indexes)
+                # Unsynced windows keep a bad index as an unknown source instead of failing.
+                sources = _resolve_review_sources(snapshot, corrected_messages, source_indexes,
+                                                  strict=has_sync_identity)
             except ValueError:
-                if has_sync_identity:
-                    logger.warning(f"[RecentReview] {lanlan_name}: 模型返回的来源编号无效，同步消息无法对应，放弃本次审阅")
-                    return ('failed', None, 'invalid_review_sources')
-                sources = _resolve_review_sources(snapshot, corrected_messages)
+                logger.warning(f"[RecentReview] {lanlan_name}: 模型返回的来源编号无效，同步消息无法对应，放弃本次审阅")
+                return ('failed', None, 'invalid_review_sources')
             if has_sync_identity and any(source is None for source in sources):
                 logger.warning(
                     f"[RecentReview] {lanlan_name}: {sum(source is None for source in sources)} 条改写消息"
