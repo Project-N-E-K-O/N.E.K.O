@@ -654,12 +654,16 @@
     emitGeometryChanged();
   }
 
-  function completeEndedVisit(visitId) {
+  function completeEndedVisit(visitId, preserveNativeCat) {
     if (!scene.active || scene.visitId !== visitId) return false;
     var pendingReturn = scene.pendingModelReturn;
     var shouldRestoreModel = scene.nativeSelf.entryRequested;
     var returnButton = scene.nativeSelf.button || findReturnButton();
     deactivate();
+    // A BFCache recovery can replace one active cat visit with another. In that
+    // case the native cat belongs to the new visit; returning it to the model
+    // would race the new binding and hide the local actor after it starts.
+    if (preserveNativeCat) return true;
     if (pendingReturn && pendingReturn.visitId === visitId
         && typeof pendingReturn.commit === 'function') {
       pendingReturn.commit();
@@ -726,7 +730,7 @@
     }
     if (!scene.active || frame.visit_id !== scene.visitId) return;
     if (frame.action === 'ended') {
-      completeEndedVisit(frame.visit_id);
+      completeEndedVisit(frame.visit_id, frame.reason === 'replaced');
       return;
     }
     if (frame.action === 'ending') {

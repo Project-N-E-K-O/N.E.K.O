@@ -726,6 +726,24 @@ const report = {};
   alreadyCat.state('ended');
   report.preserve_preexisting_cat = existingReturnClicks;
 
+  const replacement = createHarness();
+  replacement.state('started', {
+    cat_scene: 2, self_cat_asset: 'dev_neko', peer_cat_asset: 'yui_neko',
+  });
+  const replacementNative = replacement.installNativeSelf();
+  let replacementReturnClicks = 0;
+  replacementNative.button.addEventListener('click', () => { replacementReturnClicks += 1; });
+  replacement.state('ended', { reason: 'replaced' });
+  replacement.stateFor('B'.repeat(22), 'started', {
+    cat_scene: 2, self_cat_asset: 'yui_neko', peer_cat_asset: 'dev_neko',
+  });
+  report.cat_visit_replacement = {
+    return_clicks: replacementReturnClicks,
+    active: replacement.body.classList.contains('neko-visit-cat-scene-active'),
+    visit_id: replacement.root().getAttribute('data-visit-id'),
+    native_actor: replacementNative.container.getAttribute('data-visit-cat-actor'),
+  };
+
   const bounded = createHarness();
   bounded.installNativeSelf();
   const poseResolvers = [];
@@ -1018,6 +1036,15 @@ def test_ended_cleans_native_binding_animation_and_scene(report):
     }
     assert report["auto_return_after_peer_exit"] == 1
     assert report["preserve_preexisting_cat"] == 0
+
+
+def test_cat_visit_replacement_keeps_the_native_cat_for_the_new_scene(report):
+    assert report["cat_visit_replacement"] == {
+        "return_clicks": 0,
+        "active": True,
+        "visit_id": "B" * 22,
+        "native_actor": "self",
+    }
 
 
 def test_early_relay_snapshots_restore_scene_and_peer_pose(report):

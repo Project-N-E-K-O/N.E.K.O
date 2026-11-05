@@ -1200,7 +1200,7 @@
           // 先让旧传输页正常退房并清掉旧猫场景，否则后面的新 visit_id 会被过滤。
           var replacedFrame = {
             type: 'visit_state_change', action: 'ended',
-            visit_id: state.visitId, side: state.side
+            visit_id: state.visitId, side: state.side, reason: 'replaced'
           };
           applyStateChange(replacedFrame, true);
           if (typeof win.nekoRestoreVisitStateToDisplay === 'function') {
