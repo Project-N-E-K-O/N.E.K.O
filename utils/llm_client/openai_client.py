@@ -205,6 +205,12 @@ class ChatOpenAI:
                 extra_body = dict(extra_body)
                 extra_body.pop('reasoning')
                 p['reasoning_effort'] = extra_body.pop('reasoning_effort', reasoning['effort'])
+        # Hosts that honour only a top-level reasoning_effort (per-model table in
+        # config.providers); applied here so Focus overrides are translated too.
+        from config.providers import rewrite_host_reasoning_effort
+        extra_body, host_effort = rewrite_host_reasoning_effort(self.base_url, self.model, extra_body)
+        if host_effort is not None:
+            p['reasoning_effort'] = host_effort
         if extra_body:
             p["extra_body"] = extra_body
         # Tool calling: per-call overrides take priority over instance default

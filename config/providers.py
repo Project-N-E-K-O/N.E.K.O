@@ -28,6 +28,7 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
 
 
 # ────────────────────────────────────────────────────────────────
@@ -218,6 +219,17 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "google/gemini-3.6-flash": EXTRA_BODY_OPENROUTER_MINIMAL,
     "google/gemini-3.8-flash": EXTRA_BODY_OPENROUTER_MINIMAL,
     "qwen/qwen3.5-9b": EXTRA_BODY_OPENROUTER,
+    # gemini/-prefixed ids (Opper catalog form): Opper honours only top-level reasoning_effort.
+    # Observed (2026-11-05, api.opper.ai/v3/compat): none brings reasoning tokens to 0 for every id
+    # below except 3.8-flash (none ≈ low there; minimal returns 400), and low is accepted by all.
+    # Bare gemini-* ids keep the Google dialect and are rewritten per host (OPPER_REASONING_EFFORT).
+    "gemini/gemini-2.5-flash": EXTRA_BODY_OPENAI_NATIVE,
+    "gemini/gemini-2.5-flash-lite": EXTRA_BODY_OPENAI_NATIVE,
+    "gemini/gemini-3-flash-preview": EXTRA_BODY_OPENAI_NATIVE,
+    "gemini/gemini-3.1-flash-lite": EXTRA_BODY_OPENAI_NATIVE,
+    "gemini/gemini-3.5-flash": EXTRA_BODY_OPENAI_NATIVE,
+    "gemini/gemini-3.6-flash": EXTRA_BODY_OPENAI_NATIVE,
+    "gemini/gemini-3.8-flash": EXTRA_BODY_OPENAI_NATIVE,
 }
 
 
@@ -296,6 +308,61 @@ def focus_extra_body(model: str) -> dict | None:
     # (Gemini's thinking_config); a caller mutating the result must not poison
     # the registry. Cheap — focus_extra_body runs once per focus turn.
     return copy.deepcopy(enabled) if enabled else None
+
+
+# Opper (api.opper.ai/v3/compat) honours only top-level reasoning_effort: thinking.type,
+# extra_body.google.thinking_config, reasoning.effort and enable_thinking all return 200 but are
+# ignored. Bare model id → (regular, focus) effort, replacing the registered Google-dialect forms.
+# Observed (2026-11-05):
+#   - gemini-2.5-flash (bare id) ignores none / minimal (~2200 reasoning tokens on a hard prompt);
+#     low is its floor (~800). The gemini/-prefixed id honours none (see MODELS_EXTRA_BODY_MAP).
+#   - Other Gemini ids reach 0 reasoning tokens with none, except 3.8-flash (none ≈ low ≈ 500,
+#     minimal returns 400).
+#   - Claude is not listed: 4.x does not think by default, and 5.x keeps thinking under every
+#     effort and thinking.type (reasoning_effort none / minimal even return 400 on some Haiku 4.5
+#     ids), so the registered thinking body is left as is.
+OPPER_REASONING_EFFORT: dict[str, tuple[str, str]] = {
+    "gemini-2.5-flash": ("low", "low"),
+    "gemini-2.5-flash-lite": ("none", "low"),
+    "gemini-3-flash-preview": ("none", "low"),
+    "gemini-3.1-flash-lite": ("none", "low"),
+    "gemini-3.5-flash": ("none", "low"),
+    "gemini-3.6-flash": ("none", "low"),
+    "gemini-3.8-flash": ("none", "low"),
+}
+
+# Hostname → per-model (regular, focus) top-level reasoning_effort table.
+HOST_REASONING_EFFORT: dict[str, dict[str, tuple[str, str]]] = {
+    "api.opper.ai": OPPER_REASONING_EFFORT,
+}
+
+
+def rewrite_host_reasoning_effort(
+    base_url: str | None, model: str, extra_body: dict | None,
+) -> tuple[dict | None, str | None]:
+    """Translate a registered thinking body into a host's top-level ``reasoning_effort``.
+
+    For hosts in ``HOST_REASONING_EFFORT``, when ``extra_body`` carries the
+    model's registered regular (thinking-off) or focus (thinking-on) knob, the
+    knob is removed and the measured effort for that mode is returned. Other
+    keys are preserved, and an explicit ``reasoning_effort`` already in
+    ``extra_body`` wins. Returns ``(extra_body, None)`` unchanged otherwise;
+    the input dict is never mutated."""
+    table = HOST_REASONING_EFFORT.get(urlsplit(str(base_url or "")).hostname or "")
+    efforts = table.get(model) if table else None
+    if not efforts or not extra_body:
+        return extra_body, None
+    forms = (
+        (MODELS_EXTRA_BODY_MAP.get(model), efforts[0]),
+        (MODELS_FOCUS_EXTRA_BODY_MAP.get(model), efforts[1]),
+    )
+    for form, effort in forms:
+        if form and all(k in extra_body and extra_body[k] == v for k, v in form.items()):
+            rest = {k: v for k, v in extra_body.items() if k not in form}
+            if "reasoning_effort" in rest:
+                return rest, None
+            return rest, effort
+    return extra_body, None
 
 
 # Background memory calls intentionally enabling thinking (review, signal detection, refine, reflection synthesis, etc.) normally omit
