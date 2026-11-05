@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -48,10 +49,40 @@ def release_ruff_process(
     return state
 
 
+_real_gh_auth_token = publish_cmd._gh_auth_token
+
+
+@pytest.fixture(autouse=True)
+def offline_github(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Never read the developer's real gh login or reach GitHub in tests; a
+    # test that expects HTTP traffic installs its own client.
+    monkeypatch.setattr(publish_cmd, "_gh_auth_token", lambda: None)
+    monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: _RecordingClient())
+
+
+_REPOSITORY_API_RE = re.compile(r"https://api\.github\.com/repos/[^/]+/[^/]+")
+
+
 class _RecordingClient:
-    def __init__(self, *responses: httpx.Response) -> None:
+    """Fake httpx client.
+
+    Release lookups and Market posts are answered from ``responses`` and
+    recorded in ``requests``. The repository visibility lookup and the release
+    workflow run lookup are answered from ``repository`` / ``runs`` and
+    recorded in ``github_reads``.
+    """
+
+    def __init__(
+        self,
+        *responses: httpx.Response,
+        repository: httpx.Response | None = None,
+        runs: httpx.Response | None = None,
+    ) -> None:
         self.responses = list(responses)
         self.requests: list[dict[str, Any]] = []
+        self.github_reads: list[str] = []
+        self.repository = repository or httpx.Response(200, json={"private": False})
+        self.runs = runs or httpx.Response(200, json={"workflow_runs": []})
 
     def __enter__(self) -> _RecordingClient:
         return self
@@ -64,6 +95,12 @@ class _RecordingClient:
         return self.responses.pop(0)
 
     def get(self, url: str, **kwargs: Any) -> httpx.Response:
+        if _REPOSITORY_API_RE.fullmatch(url):
+            self.github_reads.append(url)
+            return self.repository
+        if "/actions/workflows/release.yml/runs" in url:
+            self.github_reads.append(url)
+            return self.runs
         self.requests.append({"method": "GET", "url": url, **kwargs})
         return self.responses.pop(0)
 
@@ -304,7 +341,12 @@ def test_publish_github_pushes_version_tag_and_waits_for_release(
             },
         }
     ]
-    assert release_url in capsys.readouterr().out
+    assert client.github_reads[0] == (
+        "https://api.github.com/repos/neko/n.e.k.o_plugin_publish_demo"
+    )
+    output = capsys.readouterr().out
+    assert "[WAIT] waiting for GitHub Release v1.2.0" in output
+    assert release_url in output
 
 
 def test_publish_ignores_ambient_branch_ref_when_creating_version_tag(
@@ -779,7 +821,9 @@ def test_publish_github_rechecks_worktree_after_release_preflight(
     assert exit_code == 1
     assert _run_git(remote, "tag", "--list") == ""
     assert client.requests == []
-    assert "git working tree has uncommitted changes" in capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert "git working tree has uncommitted changes" in error
+    assert "preflight-output.txt" in error
 
 
 @pytest.mark.parametrize("command", [["publish"], ["publish", "github"]])
@@ -1023,6 +1067,7 @@ def test_publish_rejects_remote_tag_that_points_to_another_commit(
     _run_git(plugin_dir, "add", "README.md")
     _run_git(plugin_dir, "commit", "-m", "new head")
     _run_git(plugin_dir, "push", "origin", "main")
+    monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: _RecordingClient())
     monkeypatch.setattr(
         publish_cmd.release_cmd,
         "handle_release_check",
@@ -1033,7 +1078,37 @@ def test_publish_rejects_remote_tag_that_points_to_another_commit(
 
     assert exit_code == 1
     assert _run_git(remote, "tag", "--list") == "v1.2.0"
-    assert "remote tag v1.2.0 points to" in capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert "remote tag v1.2.0 points to" in error
+    assert "bump the version in plugin.toml" in error
+    assert "git push origin :refs/tags/v1.2.0" in error
+
+
+def test_publish_rejects_local_tag_on_another_commit_with_recovery_hint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir, remote = _make_publish_repo(tmp_path, monkeypatch)
+    _run_git(plugin_dir, "tag", "v1.2.0")
+    (plugin_dir / "README.md").write_text("new commit\n", encoding="utf-8")
+    _run_git(plugin_dir, "add", "README.md")
+    _run_git(plugin_dir, "commit", "-m", "new head")
+    _run_git(plugin_dir, "push", "origin", "main")
+    monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: _RecordingClient())
+    monkeypatch.setattr(
+        publish_cmd.release_cmd,
+        "handle_release_check",
+        lambda _: 0,
+    )
+
+    exit_code = neko_plugin_cli.main(["publish", "github", str(plugin_dir)])
+
+    assert exit_code == 1
+    assert _run_git(remote, "tag", "--list") == ""
+    error = capsys.readouterr().err
+    assert "local tag v1.2.0 points to" in error
+    assert "git tag -d v1.2.0" in error
 
 
 def test_publish_does_not_notify_market_before_github_release_exists(
@@ -1092,7 +1167,10 @@ def test_publish_waits_until_all_release_assets_are_downloadable(
         ),
     )
     monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
-    patch_module_clock(monkeypatch, publish_cmd, sleep=lambda _: None)
+    sleeps: list[float] = []
+    patch_module_clock(
+        monkeypatch, publish_cmd, monotonic=lambda: 0.0, sleep=sleeps.append
+    )
     monkeypatch.setattr(
         publish_cmd.release_cmd,
         "handle_release_check",
@@ -1104,6 +1182,7 @@ def test_publish_waits_until_all_release_assets_are_downloadable(
     )
 
     assert exit_code == 0
+    assert sleeps == [15.0]
     assert [request.get("method", "POST") for request in client.requests] == [
         "GET",
         "GET",
@@ -1179,3 +1258,327 @@ def test_publish_market_surfaces_stable_market_error(
     error = capsys.readouterr().err
     assert "release_verification_rejected" in error
     assert "未提供可验证的标准发布证据" in error
+
+
+
+_PUBLISH_REPOSITORY = "neko/n.e.k.o_plugin_publish_demo"
+
+
+def test_github_headers_fall_back_to_gh_login(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(publish_cmd, "_gh_auth_token", lambda: "gh-login-token")
+
+    assert publish_cmd._github_headers()["Authorization"] == "Bearer gh-login-token"
+
+    monkeypatch.setenv("GH_TOKEN", "env-token")
+    assert publish_cmd._github_headers()["Authorization"] == "Bearer env-token"
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "expected"),
+    [(0, "gho_token\n", "gho_token"), (1, "", None), (0, "\n", None)],
+)
+def test_gh_auth_token_reads_the_gh_login(
+    returncode: int,
+    stdout: str,
+    expected: str | None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append({"command": command, **kwargs})
+        return subprocess.CompletedProcess(command, returncode, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(publish_cmd.subprocess, "run", run)
+
+    assert _real_gh_auth_token() == expected
+    assert calls[0]["command"] == ["gh", "auth", "token"]
+    assert calls[0]["encoding"] == "utf-8"
+
+
+def test_gh_auth_token_is_none_without_gh(monkeypatch: pytest.MonkeyPatch) -> None:
+    def run(*_: Any, **__: Any) -> Any:
+        raise FileNotFoundError("gh")
+
+    monkeypatch.setattr(publish_cmd.subprocess, "run", run)
+
+    assert _real_gh_auth_token() is None
+
+
+def _rate_limited(reset: int) -> httpx.Response:
+    return httpx.Response(
+        403,
+        headers={"x-ratelimit-remaining": "0", "x-ratelimit-reset": str(reset)},
+        json={"message": "API rate limit exceeded"},
+    )
+
+
+def test_wait_for_release_waits_out_a_rate_limit_inside_the_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release_url = f"https://github.com/{_PUBLISH_REPOSITORY}/releases/tag/v1.2.0"
+    client = _RecordingClient(_rate_limited(1010), _ready_release(release_url))
+    monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
+    sleeps: list[float] = []
+    patch_module_clock(
+        monkeypatch,
+        publish_cmd,
+        monotonic=lambda: 0.0,
+        time=lambda: 1000.0,
+        sleep=sleeps.append,
+    )
+
+    assert (
+        publish_cmd._wait_for_release(
+            _PUBLISH_REPOSITORY,
+            plugin_id="publish_demo",
+            tag="v1.2.0",
+            head="a" * 40,
+            headers={},
+            timeout=60,
+        )
+        == release_url
+    )
+    assert sleeps == [11.0]
+
+
+def test_wait_for_release_reports_a_rate_limit_that_outlasts_the_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _RecordingClient(_rate_limited(4600))
+    monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
+    sleeps: list[float] = []
+    patch_module_clock(
+        monkeypatch,
+        publish_cmd,
+        monotonic=lambda: 0.0,
+        time=lambda: 1000.0,
+        sleep=sleeps.append,
+    )
+
+    with pytest.raises(RuntimeError, match="rate limit") as exc_info:
+        publish_cmd._wait_for_release(
+            _PUBLISH_REPOSITORY,
+            plugin_id="publish_demo",
+            tag="v1.2.0",
+            head="a" * 40,
+            headers={},
+            timeout=60,
+        )
+
+    assert "gh auth login" in str(exc_info.value)
+    assert sleeps == []
+
+
+def test_a_plain_403_is_not_treated_as_a_rate_limit() -> None:
+    assert publish_cmd._rate_limit_wait(httpx.Response(403, json={})) is None
+    assert (
+        publish_cmd._rate_limit_wait(
+            httpx.Response(429, headers={"retry-after": "7"}, json={})
+        )
+        == 7.0
+    )
+
+
+@pytest.mark.parametrize(
+    ("repository_response", "message"),
+    [
+        (httpx.Response(200, json={"private": True}), "is private"),
+        (httpx.Response(404, json={"message": "Not Found"}), "is not visible"),
+    ],
+)
+def test_publish_refuses_a_repository_the_market_cannot_read_before_tagging(
+    repository_response: httpx.Response,
+    message: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir, remote = _make_publish_repo(tmp_path, monkeypatch)
+    client = _RecordingClient(repository=repository_response)
+    monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
+    monkeypatch.setattr(publish_cmd.release_cmd, "handle_release_check", lambda _: 0)
+
+    exit_code = neko_plugin_cli.main(["publish", "github", str(plugin_dir)])
+
+    assert exit_code == 1
+    assert _run_git(remote, "tag", "--list") == ""
+    assert _run_git(plugin_dir, "tag", "--list") == ""
+    assert client.requests == []
+    error = capsys.readouterr().err
+    assert message in error
+    assert "Market needs a public repository" in error
+
+
+def test_publish_fails_fast_when_the_release_workflow_run_failed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir, _ = _make_publish_repo(tmp_path, monkeypatch)
+    run_url = f"https://github.com/{_PUBLISH_REPOSITORY}/actions/runs/42"
+    client = _RecordingClient(
+        httpx.Response(404, json={"message": "Not Found"}),
+        runs=httpx.Response(
+            200,
+            json={
+                "workflow_runs": [
+                    {
+                        "head_branch": "v1.2.0",
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "html_url": run_url,
+                    }
+                ]
+            },
+        ),
+    )
+    monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
+    sleeps: list[float] = []
+    patch_module_clock(
+        monkeypatch, publish_cmd, monotonic=lambda: 0.0, sleep=sleeps.append
+    )
+    monkeypatch.setattr(publish_cmd.release_cmd, "handle_release_check", lambda _: 0)
+
+    exit_code = neko_plugin_cli.main(["publish", str(plugin_dir), "--timeout", "900"])
+
+    assert exit_code == 1
+    assert sleeps == []
+    head = _run_git(plugin_dir, "rev-parse", "HEAD")
+    assert any(f"head_sha={head}" in url for url in client.github_reads)
+    error = capsys.readouterr().err
+    assert "concluded failure" in error
+    assert run_url in error
+
+
+def test_publish_keeps_waiting_while_the_release_workflow_runs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, _ = _make_publish_repo(tmp_path, monkeypatch)
+    release_url = f"https://github.com/{_PUBLISH_REPOSITORY}/releases/tag/v1.2.0"
+    client = _RecordingClient(
+        httpx.Response(404, json={"message": "Not Found"}),
+        _ready_release(release_url),
+        runs=httpx.Response(
+            200,
+            json={
+                "workflow_runs": [
+                    # Another tag on the same commit does not decide this release.
+                    {"head_branch": "v1.1.0", "status": "completed", "conclusion": "failure"},
+                    {"head_branch": "v1.2.0", "status": "in_progress", "conclusion": None},
+                ]
+            },
+        ),
+    )
+    monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
+    patch_module_clock(monkeypatch, publish_cmd, monotonic=lambda: 0.0, sleep=lambda _: None)
+    monkeypatch.setattr(publish_cmd.release_cmd, "handle_release_check", lambda _: 0)
+
+    exit_code = neko_plugin_cli.main(["publish", "github", str(plugin_dir), "--timeout", "900"])
+
+    assert exit_code == 0
+
+
+def test_publish_names_the_upstream_command_when_branch_has_no_upstream(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, _ = _make_publish_repo(tmp_path, monkeypatch)
+    _run_git(plugin_dir, "branch", "--unset-upstream")
+    head = _run_git(plugin_dir, "rev-parse", "HEAD")
+
+    with pytest.raises(RuntimeError, match="has no upstream") as exc_info:
+        publish_cmd._ensure_head_pushed(plugin_dir, head=head)
+
+    assert "git push -u origin main" in str(exc_info.value)
+
+
+def test_publish_reports_a_detached_head(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, _ = _make_publish_repo(tmp_path, monkeypatch)
+    _run_git(plugin_dir, "checkout", "--detach")
+    head = _run_git(plugin_dir, "rev-parse", "HEAD")
+
+    with pytest.raises(RuntimeError, match="HEAD is detached"):
+        publish_cmd._ensure_head_pushed(plugin_dir, head=head)
+
+
+def test_publish_rejects_an_upstream_on_another_remote(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, _ = _make_publish_repo(tmp_path, monkeypatch)
+    other = tmp_path / "other.git"
+    subprocess.run(
+        ["git", "init", "--bare", str(other)],
+        check=True,
+        capture_output=True,
+    )
+    _run_git(plugin_dir, "remote", "add", "fork", f"file://{other}")
+    _run_git(plugin_dir, "push", "-u", "fork", "main")
+    head = _run_git(plugin_dir, "rev-parse", "HEAD")
+
+    with pytest.raises(RuntimeError, match="tracks fork/main") as exc_info:
+        publish_cmd._ensure_head_pushed(plugin_dir, head=head)
+
+    assert "git push -u origin main" in str(exc_info.value)
+
+
+def test_publish_lists_untracked_files_that_block_publishing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, _ = _make_publish_repo(tmp_path, monkeypatch)
+    (plugin_dir / "notes.txt").write_text("todo\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="uncommitted changes: notes.txt"):
+        publish_cmd._ensure_clean_worktree(plugin_dir)
+
+
+def test_publish_keeps_a_multi_line_git_error_on_the_fail_line(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fail(*_: Any, **__: Any) -> str:
+        raise RuntimeError(
+            "To https://github.com/o/r.git\n"
+            " ! [rejected]        v1.2.0 -> v1.2.0 (already exists)\n"
+            "error: failed to push some refs\n"
+        )
+
+    monkeypatch.setattr(publish_cmd, "_publish_github", fail)
+
+    assert neko_plugin_cli.main(["publish", "github", "."]) == 1
+
+    fail_lines = [
+        line for line in capsys.readouterr().err.splitlines() if "[FAIL]" in line
+    ]
+    assert len(fail_lines) == 1
+    assert fail_lines[0].endswith(
+        "To https://github.com/o/r.git | ! [rejected]        v1.2.0 -> v1.2.0 "
+        "(already exists) | error: failed to push some refs"
+    )
+
+
+def test_publish_decodes_git_and_ruff_output_as_utf8(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    release_ruff_process: dict[str, Any],
+) -> None:
+    plugin_dir, _ = _make_publish_repo(tmp_path, monkeypatch)
+    with (plugin_dir / ".git" / "config").open("a", encoding="utf-8") as config:
+        config.write("[neko]\n\tnote = 插件发布\n")
+
+    assert publish_cmd._git(plugin_dir, "config", "neko.note") == "插件发布"
+
+    publish_cmd._ensure_release_ruff_passes(plugin_dir)
+    kwargs = release_ruff_process["calls"][0]["kwargs"]
+    assert kwargs["encoding"] == "utf-8"
+    assert kwargs["errors"] == "replace"

@@ -796,12 +796,6 @@ def _check_entry_target(
     if expected_bases and actual_bases.isdisjoint(expected_bases):
         issues.append(("warning", f"plugin.entry class '{class_name}' should inherit one of: {', '.join(sorted(expected_bases))}"))
 
-    lifecycle_ids = _decorator_ids_in_class(class_node, "lifecycle")
-    if "startup" not in lifecycle_ids:
-        issues.append(("warning", "plugin.entry class should define @lifecycle(id=\"startup\")"))
-    if "shutdown" not in lifecycle_ids:
-        issues.append(("warning", "plugin.entry class should define @lifecycle(id=\"shutdown\")"))
-
 
 def _resolve_entry_module_path(plugin_dir: Path, plugin_id: str, module_name: str) -> Path | None:
     prefix = f"plugin.plugins.{plugin_id}"
@@ -993,19 +987,6 @@ def _has_decorator(decorators: list[ast.expr], name: str) -> bool:
     return any(_decorator_name(item) == name for item in decorators)
 
 
-def _decorator_ids_in_class(class_node: ast.ClassDef, decorator_name: str) -> set[str]:
-    ids: set[str] = set()
-    for item in class_node.body:
-        if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        for decorator in item.decorator_list:
-            if _decorator_name(decorator) == decorator_name:
-                value = _decorator_keyword_string(decorator, "id")
-                if value:
-                    ids.add(value)
-    return ids
-
-
 def _decorator_keyword_string(decorator: ast.expr, keyword: str) -> str:
     value = _decorator_keyword_literal(decorator, keyword)
     return value.strip() if isinstance(value, str) else ""
@@ -1115,7 +1096,8 @@ def _check_json_file(path: Path, label: str, issues: list[tuple[str, str]], *, s
         issues.append(("error" if strict else "warning", f"{label} is missing"))
         return
     try:
-        text = path.read_text(encoding="utf-8")
+        # utf-8-sig: Windows editors save a BOM, which json.loads rejects.
+        text = path.read_text(encoding="utf-8-sig")
     except UnicodeDecodeError as exc:
         issues.append(("error" if strict else "warning", f"{label} is not valid UTF-8: {exc}"))
         return
@@ -1131,7 +1113,8 @@ def _check_gitignore(path: Path, issues: list[tuple[str, str]], *, strict: bool)
         return
 
     try:
-        text = path.read_text(encoding="utf-8")
+        # utf-8-sig: a BOM would otherwise hide the first line from the checks below.
+        text = path.read_text(encoding="utf-8-sig")
     except UnicodeDecodeError as exc:
         issues.append(("error" if strict else "warning", f".gitignore is not valid UTF-8: {exc}"))
         return

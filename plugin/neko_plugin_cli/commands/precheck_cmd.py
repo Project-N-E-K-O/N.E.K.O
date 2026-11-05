@@ -25,7 +25,7 @@ from ..core.plugin_source import load_plugin_source
 from ..paths import CliDefaults
 from ._completers import PLUGIN_NAME_COMPLETER
 from ._resolve import resolve_plugin_dir_candidate
-from .release_cmd import _diagnose_repository
+from .release_cmd import _diagnose_repository, _print_issues
 
 STAGE_LINT = "lint"
 STAGE_SYNC = "sync"
@@ -136,8 +136,10 @@ def handle(args: argparse.Namespace) -> int:
     if all(stage.passed for stage in stages):
         stages.append(_run_stage(STAGE_RELEASE_CHECK, plugin_dir_arg, args, capture=capture))
     passed = all(stage.passed for stage in stages)
+    environment_issues = _diagnose_repository(plugin_dir, defaults=defaults)
 
     if not capture:
+        _print_issues(environment_issues, plugin_dir=plugin_dir, show_fixes=True)
         status = "[OK]" if passed else "[FAIL]"
         print(f"{status} {plugin_dir.name}: precheck {'passed' if passed else 'failed'}")
         return 0 if passed else 1
@@ -155,7 +157,7 @@ def handle(args: argparse.Namespace) -> int:
         "plugin_dir": str(plugin_dir),
         "passed": passed,
         "ruff_version": RUFF_LINT_SPEC.version,
-        "environment_issues": [list(issue) for issue in _diagnose_repository(plugin_dir)],
+        "environment_issues": [list(issue) for issue in environment_issues],
         "stages": [stage.as_dict() for stage in stages],
     }
     print(json.dumps(report, ensure_ascii=False))

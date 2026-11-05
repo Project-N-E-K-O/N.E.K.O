@@ -102,8 +102,12 @@ def _run_precheck(
     monkeypatch: pytest.MonkeyPatch, plugin_dir: Path, results: list[_Completed]
 ) -> tuple[int, list[list[str]]]:
     calls: list[list[str]] = []
+    real_run = precheck_cmd.subprocess.run
 
     def fake_run(argv, **kwargs):
+        if argv[0] == "git":
+            # The repository diagnosis reads git through the same module.
+            return real_run(argv, **kwargs)
         calls.append(list(argv))
         return results[len(calls) - 1]
 
@@ -157,3 +161,25 @@ def test_precheck_json_report_shape(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     assert "tests failed" in report["stages"][-1]["output"]
     assert report["ruff_version"] == RUFF_LINT_SPEC.version
     assert isinstance(report["environment_issues"], list)
+
+
+
+def test_ruff_command_extends_rather_than_replaces_the_default_excludes() -> None:
+    # --exclude would drop ruff's defaults (.venv, build, dist, ...).
+    command = ruff_command("some/dir")
+    assert "--exclude" not in command
+    assert command[command.index("--extend-exclude") + 1] == "vendor"
+
+
+def test_precheck_prints_environment_issues_without_json(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    monkeypatch.setattr(
+        precheck_cmd, "_diagnose_repository", lambda *_args, **_kwargs: [("warning", "git status failed")]
+    )
+    monkeypatch.setattr(precheck_cmd.subprocess, "run", lambda argv, **kwargs: _Completed(0))
+    assert neko_plugin_cli.main(["precheck", str(plugin_dir)]) == 0
+    out = capsys.readouterr().out
+    assert "[WARNING] git status failed" in out
+    assert "precheck passed" in out

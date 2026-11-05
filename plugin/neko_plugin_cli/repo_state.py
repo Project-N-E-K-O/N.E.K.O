@@ -1,7 +1,9 @@
 """Local git facts of a plugin source checkout, read without network access.
 
-The workbench publish panel shows these. ``publish`` keeps its own stricter
-checks and remains the only code that pushes anything.
+The workbench publish panel, the server publish gate and ``publish`` all
+judge "clean" and "pushed" through this module, so the three cannot disagree.
+``publish`` stays the only code that pushes anything; it additionally checks
+the live remote with ``ls-remote``.
 """
 
 from __future__ import annotations
@@ -10,10 +12,15 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
+
+from plugin.utils.source_paths import VENDOR_SYNC_GLOBS
 
 from .commands._resolve import parse_github_repository_remote
 
 _GIT_TIMEOUT_SECONDS = 15
+# Enough paths to tell the user what to commit without flooding the panel.
+_DIRTY_PATHS_SHOWN = 10
 
 
 @dataclass(frozen=True)
@@ -21,26 +28,37 @@ class RepoState:
     git_available: bool
     is_repository: bool
     tag: str
+    # Credentials embedded in the remote URL are removed.
     origin_url: str | None = None
     github_repository: str | None = None
     branch: str | None = None
     upstream: str | None = None
     head: str | None = None
-    # Compared with the remote-tracking branch as of the last fetch.
+    detached: bool = False
+    # True when HEAD equals its ``origin/<branch>`` upstream as of the last
+    # fetch; False when it differs or the upstream is on another remote;
+    # None when there is no HEAD, no upstream, or HEAD is detached.
     head_pushed: bool | None = None
-    # Tracked changes only: untracked sync work dirs are not plugin source.
+    # The same definition ``publish`` enforces: tracked changes plus untracked,
+    # not-ignored files, except dependency-sync work dirs.
     worktree_clean: bool | None = None
+    dirty_paths: tuple[str, ...] = ()
     tag_exists: bool = False
     tag_at_head: bool | None = None
 
 
-def _git(plugin_dir: Path, *args: str) -> str | None:
+def git_output(plugin_dir: Path, *args: str, strip: bool = True) -> str | None:
+    """Run ``git`` in ``plugin_dir``; UTF-8 stdout, or None on any failure.
+
+    Pass ``strip=False`` for column-sensitive output such as ``status --porcelain``.
+    """
     try:
         completed = subprocess.run(
             ["git", *args],
             cwd=plugin_dir,
-            text=True,
             capture_output=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=_GIT_TIMEOUT_SECONDS,
             check=False,
         )
@@ -48,7 +66,54 @@ def _git(plugin_dir: Path, *args: str) -> str | None:
         return None
     if completed.returncode != 0:
         return None
-    return completed.stdout.strip()
+    return completed.stdout.strip() if strip else completed.stdout
+
+
+def _porcelain_paths(output: str) -> list[str]:
+    return [line[3:] for line in output.splitlines() if len(line) > 3]
+
+
+def worktree_dirty_paths(plugin_dir: Path) -> list[str] | None:
+    """Paths that keep the worktree from being clean, or None when git fails.
+
+    Tracked changes always count, including sync work dirs that were committed
+    by accident. Untracked files count unless git ignores them or they are a
+    dependency-sync work dir.
+    """
+    tracked = git_output(
+        plugin_dir, "status", "--porcelain", "--untracked-files=no", strip=False
+    )
+    every = git_output(
+        plugin_dir,
+        "status",
+        "--porcelain",
+        "--untracked-files=all",
+        "--",
+        ".",
+        # A wildcard pathspec matches whole paths: exclude each work dir
+        # itself and everything under it.
+        *(
+            f":(top,exclude){pattern}{suffix}"
+            for pattern in VENDOR_SYNC_GLOBS
+            for suffix in ("", "/*")
+        ),
+        strip=False,
+    )
+    if tracked is None or every is None:
+        return None
+    paths: list[str] = []
+    for path in [*_porcelain_paths(tracked), *_porcelain_paths(every)]:
+        if path not in paths:
+            paths.append(path)
+    return paths
+
+
+def strip_url_credentials(url: str) -> str:
+    """Drop ``user[:password]@`` from an http(s) remote URL; other forms are returned as is."""
+    parts = urlsplit(url)
+    if parts.scheme not in {"http", "https"} or "@" not in parts.netloc:
+        return url
+    return urlunsplit(parts._replace(netloc=parts.netloc.rsplit("@", 1)[1]))
 
 
 def read_repo_state(plugin_dir: Path, *, version: str) -> RepoState:
@@ -60,23 +125,39 @@ def read_repo_state(plugin_dir: Path, *, version: str) -> RepoState:
     if not (plugin_dir / ".git").exists():
         return RepoState(git_available=True, is_repository=False, tag=tag)
 
-    origin_url = _git(plugin_dir, "remote", "get-url", "origin") or None
-    head = _git(plugin_dir, "rev-parse", "HEAD")
-    upstream = _git(plugin_dir, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
-    upstream_head = _git(plugin_dir, "rev-parse", "@{upstream}") if upstream else None
-    status = _git(plugin_dir, "status", "--porcelain", "--untracked-files=no")
-    tag_commit = _git(plugin_dir, "rev-parse", "--verify", "--quiet", f"refs/tags/{tag}^{{commit}}")
+    raw_origin = git_output(plugin_dir, "remote", "get-url", "origin") or None
+    origin_url = strip_url_credentials(raw_origin) if raw_origin else None
+    head = git_output(plugin_dir, "rev-parse", "HEAD") or None
+    branch = git_output(plugin_dir, "symbolic-ref", "--short", "-q", "HEAD") or None
+    detached = bool(head) and branch is None
+    upstream = (
+        git_output(plugin_dir, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+        or None
+        if branch
+        else None
+    )
+    head_pushed: bool | None = None
+    if head and upstream:
+        remote, _, remote_branch = upstream.partition("/")
+        if remote != "origin" or not remote_branch:
+            head_pushed = False
+        else:
+            head_pushed = git_output(plugin_dir, "rev-parse", "@{upstream}") == head
+    dirty = worktree_dirty_paths(plugin_dir)
+    tag_commit = git_output(plugin_dir, "rev-parse", "--verify", "--quiet", f"refs/tags/{tag}^{{commit}}")
     return RepoState(
         git_available=True,
         is_repository=True,
         tag=tag,
         origin_url=origin_url,
         github_repository=parse_github_repository_remote(origin_url) if origin_url else None,
-        branch=_git(plugin_dir, "symbolic-ref", "--short", "-q", "HEAD") or None,
-        upstream=upstream or None,
-        head=head or None,
-        head_pushed=None if not head else upstream_head == head,
-        worktree_clean=None if status is None else not status,
+        branch=branch,
+        upstream=upstream,
+        head=head,
+        detached=detached,
+        head_pushed=head_pushed,
+        worktree_clean=None if dirty is None else not dirty,
+        dirty_paths=tuple((dirty or [])[:_DIRTY_PATHS_SHOWN]),
         tag_exists=bool(tag_commit),
         tag_at_head=(tag_commit == head) if tag_commit and head else None,
     )

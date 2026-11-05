@@ -41,6 +41,12 @@ def _git(repo: Path, *args: str) -> str:
     return completed.stdout.strip()
 
 
+def _commit_all(repo: Path) -> None:
+    """Commit the scaffold: check --release rejects files CI would not check out."""
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "user.name=Init Test", "-c", "user.email=init@example.com", "commit", "-qm", "scaffold")
+
+
 def _source_tree_defaults(tmp_path: Path) -> CliDefaults:
     plugin_root = tmp_path / "plugin"
     return CliDefaults(
@@ -331,6 +337,7 @@ def test_init_and_market_check_accept_github_ssh_over_https_remote(
         == 0
     )
     assert _git(repo, "remote", "get-url", "origin") == remote
+    _commit_all(repo)
     assert (
         neko_plugin_cli.main(
             [
@@ -396,6 +403,7 @@ def test_market_release_check_uses_origin_instead_of_local_directory_name(
         )
         == 0
     )
+    _commit_all(repo)
 
     exit_code = neko_plugin_cli.main(
         [
@@ -499,6 +507,7 @@ def test_init_and_market_check_accept_case_equivalent_github_remote(
         == 0
     )
     assert _git(repo, "remote", "get-url", "origin") == remote
+    _commit_all(repo)
     assert (
         neko_plugin_cli.main(
             [

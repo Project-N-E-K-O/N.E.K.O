@@ -18,6 +18,7 @@ from ..core.build_rules import VENDOR_SYNC_GLOBS
 from ..core.plugin_source import load_plugin_source
 from ..paths import CliDefaults
 from ..repo_action_migration import ActionFileStatus, migrate_github_actions
+from ..repo_state import git_output, worktree_dirty_paths
 from ..templates.generator import PluginSpec
 from . import deps_cmd, release_cmd
 from ._resolve import parse_github_repository_remote, resolve_plugin_dir_candidate
@@ -25,9 +26,17 @@ from ._resolve import parse_github_repository_remote, resolve_plugin_dir_candida
 _MARKET_PUBLICATION_URL = (
     "https://market.project-neko.cn/api/v1/release-publications"
 )
+_GITHUB_API_URL = "https://api.github.com"
 _RELEASE_CHECK_SUFFIX = ".market-release-check.txt"
 _MARKET_EVIDENCE_NAME = "market-evidence.json"
 _RELEASE_RUFF_TIMEOUT_SECONDS = 120
+# Unauthenticated callers get 60 GitHub API requests per hour per IP.
+_RELEASE_POLL_SECONDS = 15.0
+_GH_TOKEN_TIMEOUT_SECONDS = 20
+_DIRTY_PATHS_SHOWN = 5
+_FAILED_RUN_CONCLUSIONS = frozenset(
+    {"failure", "cancelled", "timed_out", "startup_failure"}
+)
 
 
 def _tri(english: str, chinese: str, japanese: str) -> str:
@@ -169,8 +178,13 @@ def _run_github_phase(args: argparse.Namespace, plugin: str) -> str | None:
             timeout=args.timeout,
         )
     except (OSError, RuntimeError, ValueError, httpx.HTTPError) as exc:
+        # Git errors span several lines and the cause is usually on the last
+        # one; keep them on the single [FAIL] line callers read.
+        detail = " | ".join(
+            line.strip() for line in str(exc).splitlines() if line.strip()
+        )
         print(
-            f"[FAIL] {_tri('GitHub publication failed', 'GitHub 发布失败', 'GitHub への公開に失敗')}: {exc}",
+            f"[FAIL] {_tri('GitHub publication failed', 'GitHub 发布失败', 'GitHub への公開に失敗')}: {detail}",
             file=sys.stderr,
         )
         return None
@@ -304,11 +318,15 @@ def _publish_github(
     head = _git(plugin_dir, "rev-parse", "HEAD")
     _ensure_head_pushed(plugin_dir, head=head)
     _ensure_release_ruff_passes(plugin_dir)
+    headers = _github_headers()
+    _ensure_public_repository(repository, headers=headers)
     _ensure_remote_tag(plugin_dir, tag=tag, head=head)
     return _wait_for_release(
         repository,
         plugin_id=source.plugin_id,
         tag=tag,
+        head=head,
+        headers=headers,
         timeout=timeout,
     )
 
@@ -350,52 +368,76 @@ def _ensure_clean_worktree(plugin_dir: Path) -> None:
                 "プラグインのソースディレクトリに専用 Git リポジトリがありません",
             )
         )
-    # Untracked sync work dirs are not plugin source. Keep checking tracked
-    # changes (including accidentally committed sync work dirs).
-    if _git(plugin_dir, "status", "--porcelain", "--untracked-files=no") or _git(
-        plugin_dir, "status", "--porcelain", "--", ".",
-        # A wildcard pathspec matches whole paths: exclude each work dir
-        # itself and everything under it.
-        *(
-            f":(top,exclude){pattern}{suffix}"
-            for pattern in VENDOR_SYNC_GLOBS
-            for suffix in ("", "/*")
-        ),
-    ):
+    dirty = worktree_dirty_paths(plugin_dir)
+    if dirty is None:
         raise RuntimeError(
             _tri(
-                "git working tree has uncommitted changes",
-                "Git 工作区存在未提交的修改",
-                "Git ワークツリーに未コミットの変更があります",
+                "git status failed",
+                "无法读取 Git 工作区状态",
+                "Git ワークツリーの状態を読み取れません",
+            )
+        )
+    if dirty:
+        shown = ", ".join(dirty[:_DIRTY_PATHS_SHOWN])
+        if len(dirty) > _DIRTY_PATHS_SHOWN:
+            shown += f", … (+{len(dirty) - _DIRTY_PATHS_SHOWN})"
+        raise RuntimeError(
+            _tri(
+                f"git working tree has uncommitted changes: {shown}",
+                f"Git 工作区存在未提交的修改：{shown}",
+                f"Git ワークツリーに未コミットの変更があります：{shown}",
             )
         )
 
 
 def _ensure_head_pushed(plugin_dir: Path, *, head: str) -> None:
-    upstream = _git(
+    branch = git_output(plugin_dir, "symbolic-ref", "--short", "-q", "HEAD")
+    if not branch:
+        raise RuntimeError(
+            _tri(
+                "HEAD is detached; check out the branch to publish from",
+                "HEAD 处于分离状态；请先切换到要发布的分支",
+                "HEAD がデタッチ状態です。公開するブランチをチェックアウトしてください",
+            )
+        )
+    set_upstream = f"git push -u origin {branch}"
+    upstream = git_output(
         plugin_dir,
         "rev-parse",
         "--abbrev-ref",
         "--symbolic-full-name",
         "@{upstream}",
     )
-    remote, separator, branch = upstream.partition("/")
-    if separator != "/" or remote != "origin" or not branch:
+    if not upstream:
         raise RuntimeError(
             _tri(
-                "the current branch must track an origin branch",
-                "当前分支必须跟踪 origin 上的分支",
-                "現在のブランチは origin のブランチを追跡する必要があります",
+                f"branch {branch} has no upstream; run {set_upstream}",
+                f"分支 {branch} 没有上游分支；请运行 {set_upstream}",
+                f"ブランチ {branch} に上流ブランチがありません。{set_upstream} を実行してください",
             )
         )
-    output = _git(plugin_dir, "ls-remote", "origin", f"refs/heads/{branch}")
-    remote_head = output.split(maxsplit=1)[0] if output else None
-    if remote_head != head:
+    remote, _, remote_branch = upstream.partition("/")
+    if remote != "origin" or not remote_branch:
         raise RuntimeError(
             _tri(
-                "HEAD is not pushed to its origin branch; push the branch first",
-                "HEAD 尚未推送到 origin 分支；请先推送当前分支",
-                "HEAD が origin ブランチに push されていません。先にブランチを push してください",
+                f"branch {branch} tracks {upstream}, not an origin branch; run {set_upstream}",
+                f"分支 {branch} 跟踪的是 {upstream}，不是 origin 上的分支；请运行 {set_upstream}",
+                f"ブランチ {branch} は origin ではなく {upstream} を追跡しています。{set_upstream} を実行してください",
+            )
+        )
+    output = _git(plugin_dir, "ls-remote", "origin", f"refs/heads/{remote_branch}")
+    remote_head = output.split(maxsplit=1)[0] if output else None
+    if remote_head != head:
+        push = (
+            f"git push origin {branch}"
+            if remote_branch == branch
+            else f"git push origin {branch}:{remote_branch}"
+        )
+        raise RuntimeError(
+            _tri(
+                f"HEAD is not pushed to origin/{remote_branch}; run {push}",
+                f"HEAD 尚未推送到 origin/{remote_branch}；请运行 {push}",
+                f"HEAD が origin/{remote_branch} に push されていません。{push} を実行してください",
             )
         )
 
@@ -422,7 +464,8 @@ def _ensure_release_ruff_passes(plugin_dir: Path) -> None:
                 ".",
             ],
             cwd=plugin_dir,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             timeout=_RELEASE_RUFF_TIMEOUT_SECONDS,
@@ -531,22 +574,30 @@ def _ensure_remote_tag(plugin_dir: Path, *, tag: str, head: str) -> None:
     remote_commit = _remote_tag_commit(plugin_dir, tag)
     if remote_commit:
         if remote_commit != head:
+            delete = f"git push origin :refs/tags/{tag}"
             raise RuntimeError(
                 _tri(
-                    f"remote tag {tag} points to {remote_commit[:12]}, not HEAD {head[:12]}",
-                    f"远程 tag {tag} 指向 {remote_commit[:12]}，不是 HEAD {head[:12]}",
-                    f"リモート tag {tag} は {remote_commit[:12]} を指し、HEAD {head[:12]} ではありません",
+                    f"remote tag {tag} points to {remote_commit[:12]}, not HEAD {head[:12]}; "
+                    f"bump the version in plugin.toml, or delete the tag ({delete})",
+                    f"远程 tag {tag} 指向 {remote_commit[:12]}，不是 HEAD {head[:12]}；"
+                    f"请提升 plugin.toml 中的版本号，或删除该 tag（{delete}）",
+                    f"リモート tag {tag} は {remote_commit[:12]} を指し、HEAD {head[:12]} ではありません。"
+                    f"plugin.toml のバージョンを上げるか、tag を削除してください（{delete}）",
                 )
             )
         return
 
     local = _local_tag_commit(plugin_dir, tag)
     if local and local != head:
+        delete = f"git tag -d {tag}"
         raise RuntimeError(
             _tri(
-                f"local tag {tag} points to {local[:12]}, not HEAD {head[:12]}",
-                f"本地 tag {tag} 指向 {local[:12]}，不是 HEAD {head[:12]}",
-                f"ローカル tag {tag} は {local[:12]} を指し、HEAD {head[:12]} ではありません",
+                f"local tag {tag} points to {local[:12]}, not HEAD {head[:12]}; "
+                f"bump the version in plugin.toml, or delete the tag ({delete})",
+                f"本地 tag {tag} 指向 {local[:12]}，不是 HEAD {head[:12]}；"
+                f"请提升 plugin.toml 中的版本号，或删除该 tag（{delete}）",
+                f"ローカル tag {tag} は {local[:12]} を指し、HEAD {head[:12]} ではありません。"
+                f"plugin.toml のバージョンを上げるか、tag を削除してください（{delete}）",
             )
         )
     if not local:
@@ -581,7 +632,8 @@ def _local_tag_commit(plugin_dir: Path, tag: str) -> str | None:
     completed = subprocess.run(
         ["git", "rev-parse", "--verify", "--quiet", f"refs/tags/{tag}^{{commit}}"],
         cwd=plugin_dir,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
@@ -600,26 +652,192 @@ def _local_tag_commit(plugin_dir: Path, tag: str) -> str | None:
     return completed.stdout.strip()
 
 
-def _wait_for_release(
-    repository: str,
-    *,
-    plugin_id: str,
-    tag: str,
-    timeout: float,
-) -> str:
-    api_url = (
-        f"https://api.github.com/repos/{repository}/releases/tags/"
-        f"{quote(tag, safe='')}"
-    )
+def _gh_auth_token() -> str | None:
+    """The token of the user's ``gh auth login``, or None when gh cannot give one."""
+    try:
+        completed = subprocess.run(
+            ["gh", "auth", "token"],
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_GH_TOKEN_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    token = completed.stdout.strip()
+    return token if completed.returncode == 0 and token else None
+
+
+def _github_headers() -> dict[str, str]:
     headers = {
         "Accept": "application/vnd.github+json",
         "User-Agent": "neko-plugin",
         "X-GitHub-Api-Version": "2022-11-28",
     }
-    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    token = (
+        os.environ.get("GH_TOKEN")
+        or os.environ.get("GITHUB_TOKEN")
+        or _gh_auth_token()
+    )
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    return headers
 
+
+def _rate_limit_wait(response: httpx.Response) -> float | None:
+    """Seconds until GitHub accepts requests again, or None when not rate limited."""
+    if response.status_code not in {403, 429}:
+        return None
+    retry_after = response.headers.get("retry-after", "")
+    if retry_after.isdigit():
+        return float(retry_after)
+    reset = response.headers.get("x-ratelimit-reset", "")
+    if response.headers.get("x-ratelimit-remaining") != "0" or not reset.isdigit():
+        return None
+    return max(int(reset) - time.time(), 0.0) + 1.0
+
+
+def _github_get(
+    client: httpx.Client,
+    url: str,
+    *,
+    headers: dict[str, str],
+    deadline: float,
+) -> httpx.Response:
+    """GET from the GitHub API, waiting out a rate limit that resets before ``deadline``."""
+    while True:
+        response = client.get(url, headers=headers)
+        wait = _rate_limit_wait(response)
+        if wait is None:
+            return response
+        if time.monotonic() + wait > deadline:
+            seconds = math.ceil(wait)
+            raise RuntimeError(
+                _tri(
+                    f"GitHub API rate limit reached (resets in {seconds} s); "
+                    "sign in with gh auth login or set GH_TOKEN",
+                    f"已达到 GitHub API 速率限制（{seconds} 秒后重置）；"
+                    "请运行 gh auth login 登录或设置 GH_TOKEN",
+                    f"GitHub API のレート制限に達しました（{seconds} 秒後にリセット）。"
+                    "gh auth login でサインインするか GH_TOKEN を設定してください",
+                )
+            )
+        time.sleep(wait)
+
+
+def _ensure_public_repository(repository: str, *, headers: dict[str, str]) -> None:
+    """Refuse before tagging when the Market could not read the repository."""
+    with httpx.Client(timeout=30.0) as client:
+        response = _github_get(
+            client,
+            f"{_GITHUB_API_URL}/repos/{repository}",
+            headers=headers,
+            deadline=time.monotonic(),
+        )
+    if response.status_code == 404:
+        raise RuntimeError(
+            _tri(
+                f"GitHub repository {repository} is not visible (private or missing); "
+                "the Market needs a public repository",
+                f"GitHub 仓库 {repository} 不可见（私有或不存在）；Market 需要公开仓库",
+                f"GitHub リポジトリ {repository} が見えません（非公開または存在しません）。"
+                "Market には公開リポジトリが必要です",
+            )
+        )
+    if response.status_code != 200:
+        raise RuntimeError(
+            _tri(
+                f"GitHub repository lookup returned HTTP {response.status_code}",
+                f"查询 GitHub 仓库返回 HTTP {response.status_code}",
+                f"GitHub リポジトリの照会が HTTP {response.status_code} を返しました",
+            )
+        )
+    payload = response.json()
+    if not isinstance(payload, dict) or payload.get("private") is not False:
+        raise RuntimeError(
+            _tri(
+                f"GitHub repository {repository} is private; "
+                "the Market needs a public repository",
+                f"GitHub 仓库 {repository} 是私有仓库；Market 需要公开仓库",
+                f"GitHub リポジトリ {repository} は非公開です。Market には公開リポジトリが必要です",
+            )
+        )
+
+
+def _raise_if_release_run_failed(
+    client: httpx.Client,
+    repository: str,
+    *,
+    tag: str,
+    head: str,
+    headers: dict[str, str],
+    deadline: float,
+) -> None:
+    """Fail fast when the release workflow run for ``tag`` has already failed."""
+    response = _github_get(
+        client,
+        f"{_GITHUB_API_URL}/repos/{repository}/actions/workflows/release.yml/runs"
+        f"?event=push&head_sha={head}",
+        headers=headers,
+        deadline=deadline,
+    )
+    # Actions can be unreadable (disabled, no permission); the release lookup
+    # still decides the outcome then.
+    if response.status_code != 200:
+        return
+    payload = response.json()
+    runs = payload.get("workflow_runs") if isinstance(payload, dict) else None
+    run = next(
+        (
+            run
+            for run in (runs if isinstance(runs, list) else [])
+            if isinstance(run, dict) and run.get("head_branch") == tag
+        ),
+        None,
+    )
+    if (
+        run is None
+        or run.get("status") != "completed"
+        or run.get("conclusion") not in _FAILED_RUN_CONCLUSIONS
+    ):
+        return
+    conclusion = run["conclusion"]
+    run_url = run.get("html_url") or ""
+    raise RuntimeError(
+        _tri(
+            f"release workflow for {tag} concluded {conclusion}: {run_url}; "
+            "fix it and re-run the workflow, or bump the version",
+            f"{tag} 的发布工作流结果为 {conclusion}：{run_url}；"
+            "请修复后重新运行该工作流，或提升版本号",
+            f"{tag} のリリースワークフローの結果は {conclusion} です：{run_url}。"
+            "修正してワークフローを再実行するか、バージョンを上げてください",
+        )
+    )
+
+
+def _wait_for_release(
+    repository: str,
+    *,
+    plugin_id: str,
+    tag: str,
+    head: str,
+    headers: dict[str, str],
+    timeout: float,
+) -> str:
+    print(
+        "[WAIT] "
+        + _tri(
+            f"waiting for GitHub Release {tag}",
+            f"正在等待 GitHub Release {tag}",
+            f"GitHub Release {tag} を待機しています",
+        ),
+        flush=True,
+    )
+    api_url = (
+        f"{_GITHUB_API_URL}/repos/{repository}/releases/tags/"
+        f"{quote(tag, safe='')}"
+    )
     deadline = time.monotonic() + max(timeout, 0)
     expected_assets = (
         f"{plugin_id}.neko-plugin",
@@ -629,7 +847,7 @@ def _wait_for_release(
     unready_assets = list(expected_assets)
     with httpx.Client(timeout=30.0) as client:
         while True:
-            response = client.get(api_url, headers=headers)
+            response = _github_get(client, api_url, headers=headers, deadline=deadline)
             if response.status_code == 200:
                 payload = response.json()
                 if not isinstance(payload, dict):
@@ -667,15 +885,22 @@ def _wait_for_release(
                 ]
                 if not unready_assets:
                     return release_url
-            if response.status_code != 404:
-                if response.status_code != 200:
-                    raise RuntimeError(
-                        _tri(
-                            f"GitHub Release lookup returned HTTP {response.status_code}",
-                            f"查询 GitHub Release 返回 HTTP {response.status_code}",
-                            f"GitHub Release の照会が HTTP {response.status_code} を返しました",
-                        )
+            elif response.status_code != 404:
+                raise RuntimeError(
+                    _tri(
+                        f"GitHub Release lookup returned HTTP {response.status_code}",
+                        f"查询 GitHub Release 返回 HTTP {response.status_code}",
+                        f"GitHub Release の照会が HTTP {response.status_code} を返しました",
                     )
+                )
+            _raise_if_release_run_failed(
+                client,
+                repository,
+                tag=tag,
+                head=head,
+                headers=headers,
+                deadline=deadline,
+            )
             if time.monotonic() >= deadline:
                 if response.status_code == 200:
                     missing = ", ".join(unready_assets)
@@ -693,7 +918,7 @@ def _wait_for_release(
                         f"GitHub Release {tag} の待機がタイムアウトしました。GitHub Actions を確認してください",
                     )
                 )
-            time.sleep(min(5.0, max(deadline - time.monotonic(), 0)))
+            time.sleep(min(_RELEASE_POLL_SECONDS, max(deadline - time.monotonic(), 0)))
 
 
 def _release_asset_is_downloadable(asset: object) -> bool:
@@ -716,7 +941,8 @@ def _git(plugin_dir: Path, *args: str) -> str:
     completed = subprocess.run(
         ["git", *args],
         cwd=plugin_dir,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
@@ -737,7 +963,8 @@ def _git_config_values(plugin_dir: Path, key: str) -> list[str]:
     completed = subprocess.run(
         ["git", "config", "--get-all", key],
         cwd=plugin_dir,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )

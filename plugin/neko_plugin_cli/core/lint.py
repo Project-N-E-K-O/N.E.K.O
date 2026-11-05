@@ -38,7 +38,9 @@ RUFF_LINT_SPEC = RuffLintSpec(
         "120",
         "--select",
         "E4,E7,E9,F,I",
-        "--exclude",
+        # --exclude would replace ruff's defaults (.venv, build, dist, ...);
+        # --isolated and --no-respect-gitignore leave nothing else to skip them.
+        "--extend-exclude",
         "vendor",
     ),
 )

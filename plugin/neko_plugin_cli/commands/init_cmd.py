@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import shutil
 import subprocess
@@ -13,6 +14,7 @@ from plugin._types.plugin_types import SCAFFOLDABLE_PLUGIN_TYPES
 
 from ..paths import CliDefaults
 from ..repo_action_migration import ActionFileStatus, migrate_github_actions
+from ..repo_state import git_output
 from ..templates.generator import PluginSpec, generate_repo_support_files
 from ..core.plugin_source import load_plugin_source
 from ..core.project import create_project
@@ -92,7 +94,7 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
         ),
     )
     setup_parser.add_argument("--overwrite", action="store_true", help="Overwrite existing support files")
-    setup_parser.add_argument("--git", action="store_true", help="Initialize a git repository if this plugin directory is not already inside one")
+    setup_parser.add_argument("--git", action="store_true", help="Initialize a git repository if this plugin directory does not have its own")
     setup_parser.add_argument("--remote", help="Add a git remote named origin after --git initialization")
     setup_parser.add_argument("--no-readme", action="store_true", help="Do not generate README.md")
     setup_parser.add_argument("--no-tests", action="store_true", help="Do not generate tests/test_smoke.py")
@@ -341,7 +343,7 @@ def handle_setup_repo(args: argparse.Namespace) -> int:
         if args.remote:
             print(f"  remote: {args.remote}")
     elif args.git:
-        print("  git:    skipped (already inside an existing repository)")
+        print("  git:    skipped (the plugin directory already has its own repository)")
     return 0
 
 
@@ -377,6 +379,7 @@ def handle_create_repo(args: argparse.Namespace) -> int:
                     f"リポジトリは既に設定済み：{repository}",
                 )
             )
+            _print_push_next_step(plugin_dir)
             return 0
         print(
             "[FAIL] "
@@ -402,19 +405,24 @@ def handle_create_repo(args: argparse.Namespace) -> int:
 
     try:
         _initialize_git_repo(plugin_dir)
-        _gh_create_repository(plugin_dir, slug=slug, private=args.private)
-    except _RepositoryNameTaken:
-        print(
-            "[FAIL] "
-            + _tri(
-                f"a GitHub repository named {slug} already exists; "
-                "choose a different owner or delete it first",
-                f"名为 {slug} 的 GitHub 仓库已存在；请换一个拥有者或先删除它",
-                f"{slug} という GitHub リポジトリが既に存在します；別のオーナーを選ぶか先に削除してください",
-            ),
-            file=sys.stderr,
-        )
-        return 1
+        try:
+            _gh_create_repository(plugin_dir, slug=slug, private=args.private)
+        except _RepositoryNameTaken:
+            # A retry after a timed-out or half-failed create finds the
+            # caller's own empty repository; wire it instead of failing.
+            if not _adopt_empty_repository(plugin_dir, slug=slug):
+                print(
+                    "[FAIL] "
+                    + _tri(
+                        f"a GitHub repository named {slug} already exists and is not "
+                        "an empty repository you administer; choose a different owner or delete it first",
+                        f"名为 {slug} 的 GitHub 仓库已存在，且不是由你管理的空仓库；请换一个拥有者或先删除它",
+                        f"{slug} という GitHub リポジトリが既に存在し、あなたが管理する空のリポジトリではありません；"
+                        "別のオーナーを選ぶか先に削除してください",
+                    ),
+                    file=sys.stderr,
+                )
+                return 1
     except RuntimeError as exc:
         print(f"[FAIL] {exc}", file=sys.stderr)
         return 1
@@ -440,6 +448,7 @@ def handle_create_repo(args: argparse.Namespace) -> int:
             f"リポジトリの準備完了：https://github.com/{repository}",
         )
     )
+    _print_push_next_step(plugin_dir)
     return 0
 
 
@@ -447,20 +456,71 @@ class _RepositoryNameTaken(RuntimeError):
     """The GitHub repository name already exists."""
 
 
+def _has_own_repository(plugin_dir: Path) -> bool:
+    # The same rule as ``publish``: a parent checkout (such as N.E.K.O
+    # itself) is never the plugin's repository.
+    return (plugin_dir / ".git").exists()
+
+
 def _existing_origin_url(plugin_dir: Path) -> str | None:
-    if _find_parent_git_dir(plugin_dir) is None:
+    if not _has_own_repository(plugin_dir):
         return None
-    completed = subprocess.run(
-        ["git", "remote", "get-url", "origin"],
-        cwd=plugin_dir,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+    return git_output(plugin_dir, "remote", "get-url", "origin") or None
+
+
+def _git_command(plugin_dir: Path, arguments: str) -> str:
+    return f'git -C "{plugin_dir}" {arguments}'
+
+
+def _current_branch(plugin_dir: Path) -> str:
+    branch = (
+        git_output(plugin_dir, "symbolic-ref", "--short", "-q", "HEAD")
+        if _has_own_repository(plugin_dir)
+        else None
     )
-    if completed.returncode != 0:
-        return None
-    url = completed.stdout.strip()
-    return url or None
+    return branch or "main"
+
+
+def _first_commit_steps(plugin_dir: Path) -> list[str]:
+    """Commands that give the plugin its own repository with a first commit, when missing."""
+    if _has_own_repository(plugin_dir):
+        if git_output(plugin_dir, "rev-parse", "--verify", "-q", "HEAD"):
+            return []
+        steps = []
+    else:
+        steps = [_git_command(plugin_dir, "init -b main")]
+    return [
+        *steps,
+        _git_command(plugin_dir, "add -A"),
+        _git_command(plugin_dir, 'commit -m "Initial commit"'),
+    ]
+
+
+def _print_push_next_step(plugin_dir: Path) -> None:
+    """Name the push that gives the branch the origin upstream ``publish`` requires.
+
+    create-repo never pushes: what to commit and when to push stays the
+    user's decision, and ``publish`` re-checks that HEAD is pushed anyway.
+    """
+    if _has_own_repository(plugin_dir) and git_output(
+        plugin_dir, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"
+    ):
+        return
+    print(
+        "  "
+        + _tri("next", "下一步", "次の手順")
+        + ": "
+        + _tri(
+            "push the branch to set its upstream:",
+            "推送当前分支以设置上游分支：",
+            "ブランチを push して上流ブランチを設定します：",
+        )
+    )
+    for command in [
+        *_first_commit_steps(plugin_dir),
+        _git_command(plugin_dir, f"push -u origin {_current_branch(plugin_dir)}"),
+    ]:
+        print(f"       {command}")
 
 
 def _gh_available() -> bool:
@@ -471,7 +531,8 @@ def _gh_authenticated() -> bool:
     try:
         completed = subprocess.run(
             ["gh", "auth", "status"],
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             timeout=20,
@@ -485,7 +546,8 @@ def _gh_default_owner() -> str | None:
     try:
         completed = subprocess.run(
             ["gh", "api", "user", "--jq", ".login"],
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=20,
@@ -498,13 +560,57 @@ def _gh_default_owner() -> str | None:
     return owner or None
 
 
+def _gh_repository_view(slug: str) -> dict[str, object] | None:
+    try:
+        completed = subprocess.run(
+            ["gh", "repo", "view", slug, "--json", "isEmpty,viewerPermission,url"],
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=20,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    try:
+        payload = json.loads(completed.stdout)
+    except ValueError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _adopt_empty_repository(plugin_dir: Path, *, slug: str) -> bool:
+    """Wire ``slug`` as origin when it is an empty repository the caller administers."""
+    view = _gh_repository_view(slug)
+    if (
+        view is None
+        or view.get("isEmpty") is not True
+        or view.get("viewerPermission") != "ADMIN"
+        or not isinstance(view.get("url"), str)
+    ):
+        return False
+    _run_git(["remote", "add", "origin", view["url"]], cwd=plugin_dir)
+    print(
+        "[OK] "
+        + _tri(
+            f"reusing your existing empty repository {slug}",
+            f"复用你已有的空仓库 {slug}",
+            f"既存の空リポジトリ {slug} を再利用します",
+        )
+    )
+    return True
+
+
 def _gh_create_repository(plugin_dir: Path, *, slug: str, private: bool) -> None:
     visibility = "--private" if private else "--public"
     try:
         completed = subprocess.run(
             ["gh", "repo", "create", slug, visibility, "--source", ".", "--remote", "origin"],
             cwd=plugin_dir,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             timeout=120,
@@ -542,12 +648,17 @@ def _print_manual_repo_steps(plugin_dir: Path, *, repo_name: str) -> None:
     print(
         "  2. "
         + _tri(
-            "Copy its URL, then wire it as origin:",
-            "复制其 URL，然后将其设为 origin：",
-            "その URL をコピーして origin に設定します：",
+            "Copy its URL, then wire it as origin and push:",
+            "复制其 URL，然后将其设为 origin 并推送：",
+            "その URL をコピーして origin に設定し、push します：",
         )
     )
-    print(f"       neko-plugin setup-repo {plugin_dir} --git --remote <repository-url>")
+    for command in [
+        *_first_commit_steps(plugin_dir),
+        _git_command(plugin_dir, "remote add origin <repository-url>"),
+        _git_command(plugin_dir, f"push -u origin {_current_branch(plugin_dir)}"),
+    ]:
+        print(f"       {command}")
 
 
 def _remote_matches_plugin(remote: str, *, plugin_id: str) -> bool:
@@ -580,12 +691,12 @@ def _resolve_existing_plugin_dir(raw: str, *, args: argparse.Namespace, defaults
 
 
 def _initialize_git_repo(target_dir: Path, *, remote: str | None = None) -> bool:
-    existing_git = _find_parent_git_dir(target_dir)
-    if existing_git is not None:
+    if _has_own_repository(target_dir):
         if remote:
-            raise RuntimeError("--remote can only be used when initializing a new git repository")
+            raise RuntimeError(_existing_repository_remote_message(target_dir, remote))
         return False
     _run_git(["init"], cwd=target_dir)
+    _run_git(["symbolic-ref", "HEAD", "refs/heads/main"], cwd=target_dir)
     if remote:
         _run_git(["remote", "add", "origin", remote], cwd=target_dir)
     return True
@@ -594,22 +705,19 @@ def _initialize_git_repo(target_dir: Path, *, remote: str | None = None) -> bool
 def _preflight_git_request(target_dir: Path, *, initialize_git: bool, remote: str | None = None) -> None:
     if not initialize_git:
         return
-    existing_git = _find_parent_git_dir(target_dir)
-    if existing_git is not None:
+    if _has_own_repository(target_dir):
         if remote:
-            raise RuntimeError("--remote can only be used when initializing a new git repository")
+            raise RuntimeError(_existing_repository_remote_message(target_dir, remote))
         return
     if shutil.which("git") is None:
         raise RuntimeError("git executable not found; install git or omit --git")
 
 
-def _find_parent_git_dir(path: Path) -> Path | None:
-    current = path.resolve()
-    for candidate in (current, *current.parents):
-        git_dir = candidate / ".git"
-        if git_dir.exists():
-            return git_dir
-    return None
+def _existing_repository_remote_message(target_dir: Path, remote: str) -> str:
+    return (
+        "--remote can only be used when initializing a new git repository; "
+        f"to add origin to the existing one run: {_git_command(target_dir, f'remote add origin {remote}')}"
+    )
 
 
 def _run_git(command: list[str], *, cwd: Path) -> None:
@@ -620,7 +728,8 @@ def _run_git(command: list[str], *, cwd: Path) -> None:
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
         )
     except FileNotFoundError as exc:
         raise RuntimeError("git executable not found; install git or omit --git") from exc

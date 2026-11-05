@@ -14,6 +14,8 @@ from pathlib import Path
 from ..core import inspect_package, build_plugin
 from ..core.plugin_source import load_plugin_source
 from ..paths import CliDefaults
+from ..plugin_import_alias import PLUGIN_ID_ENV, PLUGIN_SOURCE_ENV
+from ..repo_state import git_output, worktree_dirty_paths
 from ._resolve import parse_github_repository_remote, resolve_plugin_dir_candidate
 from .validate_cmd import validate_plugin_dir
 
@@ -21,6 +23,8 @@ from .validate_cmd import validate_plugin_dir
 Issue = tuple[str, str]
 _MARKET_REPO_PREFIX = "n.e.k.o_plugin_"
 _MARKET_PLUGIN_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+_DIRTY_PATHS_SHOWN = 5
+_WORKTREE_NOT_COMMITTED = "git working tree has uncommitted or untracked files"
 
 
 def _tri(english: str, chinese: str, japanese: str) -> str:
@@ -41,7 +45,7 @@ def handle_check(args: argparse.Namespace) -> int:
                 defaults,
             ),
         )
-        issues.extend(_diagnose_repository(plugin_dir))
+        issues.extend(_diagnose_repository(plugin_dir, defaults=defaults))
     except Exception as exc:
         print(f"[FAIL] {command_label}: {exc}", file=sys.stderr)
         return 1
@@ -73,10 +77,15 @@ def handle_release_check(args: argparse.Namespace) -> int:
                 defaults,
             ),
         )
+        # Both Market workflows reject such an ID before anything else runs.
+        issues.extend(_diagnose_market_plugin_id(source.plugin_id))
+        # CI builds the pushed commit, not the working tree.
+        issues.extend(_diagnose_repository(plugin_dir, defaults=defaults, release=True))
         if getattr(args, "market_release", False):
             issues.extend(
                 _diagnose_market_release(
                     plugin_dir,
+                    repository_root=_repository_root(plugin_dir, defaults),
                     plugin_id=source.plugin_id,
                     version=source.version,
                     github_repository=getattr(args, "_release_repository", None),
@@ -89,7 +98,12 @@ def handle_release_check(args: argparse.Namespace) -> int:
             _print_issues(issues, plugin_id=source.plugin_id, plugin_dir=plugin_dir, show_fixes=True)
             return 1
 
-        test_result = _run_tests(plugin_dir, skip_tests=args.skip_tests)
+        test_result = _run_tests(
+            plugin_dir,
+            plugin_id=source.plugin_id,
+            defaults=defaults,
+            skip_tests=args.skip_tests,
+        )
         target_dir = Path(args.target_dir).expanduser().resolve()
         target_dir.mkdir(parents=True, exist_ok=True)
         package_path = target_dir / f"{source.plugin_id}.neko-plugin"
@@ -123,56 +137,88 @@ def _is_builtin_source_plugin_dir(plugin_dir: Path, defaults: CliDefaults) -> bo
     )
 
 
-def _diagnose_repository(plugin_dir: Path) -> list[Issue]:
-    issues: list[Issue] = []
+def _repository_root(plugin_dir: Path, defaults: CliDefaults) -> Path | None:
+    """The git repository that holds the plugin source, or None.
+
+    The plugin may sit in a subdirectory of its repository. A plugin at
+    ``<checkout>/plugin/plugins/<id>`` belongs to that N.E.K.O tree, whether
+    it is the checkout running the CLI or the one Market CI copies the plugin
+    (and any ``.git`` it carries) into; it has no repository of its own to judge.
+    """
+    parent = plugin_dir.resolve().parent
+    if parent.name == "plugins" and parent.parent.name == "plugin":
+        return None
+    toplevel = git_output(plugin_dir, "rev-parse", "--show-toplevel")
+    if not toplevel:
+        return None
+    root = Path(toplevel).resolve()
+    return None if root == defaults.repo_root.resolve() else root
+
+
+def _diagnose_repository(plugin_dir: Path, *, defaults: CliDefaults, release: bool = False) -> list[Issue]:
+    """Local git readiness; with ``release`` an uncommitted tree is an error."""
     if shutil.which("git") is None:
         return [("warning", "git executable not found")]
 
-    if not (plugin_dir / ".git").exists():
-        issues.append(("warning", "plugin source directory does not have its own git repository"))
-        return issues
+    repository_root = _repository_root(plugin_dir, defaults)
+    if repository_root is None:
+        return [("warning", "plugin source directory does not have its own git repository")]
 
-    remote = _run_git(["remote", "get-url", "origin"], cwd=plugin_dir)
-    if remote.returncode != 0 or not remote.stdout.strip():
+    issues: list[Issue] = []
+    # check --market-release reports a missing origin as an error itself.
+    if not release and not git_output(repository_root, "remote", "get-url", "origin"):
         issues.append(("warning", "git remote 'origin' is not configured"))
 
-    status = _run_git(["status", "--porcelain"], cwd=plugin_dir)
-    if status.returncode != 0:
+    dirty = worktree_dirty_paths(plugin_dir)
+    if dirty is None:
         issues.append(("warning", "git status failed"))
-    elif status.stdout.strip():
-        issues.append(("warning", "git working tree has uncommitted changes"))
-
+    elif dirty:
+        shown = ", ".join(dirty[:_DIRTY_PATHS_SHOWN])
+        more = f" (+{len(dirty) - _DIRTY_PATHS_SHOWN})" if len(dirty) > _DIRTY_PATHS_SHOWN else ""
+        issues.append(
+            (
+                "error" if release else "warning",
+                _tri(
+                    f"{_WORKTREE_NOT_COMMITTED}: {shown}{more}",
+                    f"Git 工作区有未提交或未跟踪的文件：{shown}{more}",
+                    f"Git 作業ツリーに未コミットまたは未追跡のファイルがあります: {shown}{more}",
+                ),
+            )
+        )
     return issues
+
+
+def _diagnose_market_plugin_id(plugin_id: str) -> list[Issue]:
+    if _MARKET_PLUGIN_ID_RE.fullmatch(plugin_id) is not None:
+        return []
+    return [
+        (
+            "error",
+            _tri(
+                f"Market plugin ID must match ^[a-z][a-z0-9_]*$, got {plugin_id}",
+                f"Market 插件 ID 必须符合 ^[a-z][a-z0-9_]*$，当前为 {plugin_id}",
+                f"Market プラグイン ID は ^[a-z][a-z0-9_]*$ に一致する必要があります。現在値: {plugin_id}",
+            ),
+        )
+    ]
 
 
 def _diagnose_market_release(
     plugin_dir: Path,
     *,
+    repository_root: Path | None,
     plugin_id: str,
     version: str,
     github_repository: str | None = None,
     ref_name: str | None = None,
 ) -> list[Issue]:
     issues: list[Issue] = []
-    if _MARKET_PLUGIN_ID_RE.fullmatch(plugin_id) is None:
-        issues.append(
-            (
-                "error",
-                _tri(
-                    f"Market plugin ID must match ^[a-z][a-z0-9_]*$, got {plugin_id}",
-                    f"Market 插件 ID 必须符合 ^[a-z][a-z0-9_]*$，当前为 {plugin_id}",
-                    f"Market プラグイン ID は ^[a-z][a-z0-9_]*$ に一致する必要があります。現在値: {plugin_id}",
-                ),
-            )
-        )
     expected_repo = f"{_MARKET_REPO_PREFIX}{plugin_id}"
     if github_repository is None:
         github_repository = os.environ.get("GITHUB_REPOSITORY", "").strip()
     remote_url = ""
-    if (plugin_dir / ".git").exists():
-        remote = _run_git(["remote", "get-url", "origin"], cwd=plugin_dir)
-        if remote.returncode == 0:
-            remote_url = remote.stdout.strip()
+    if repository_root is not None:
+        remote_url = git_output(repository_root, "remote", "get-url", "origin") or ""
     repo_name: str | None = None
     if github_repository:
         parts = github_repository.split("/")
@@ -228,22 +274,42 @@ def _diagnose_market_release(
     else:
         issues.append(("warning", "GITHUB_REF_NAME is missing; tag/version alignment was not checked"))
 
-    release_workflow = plugin_dir / ".github" / "workflows" / "release.yml"
+    # CI reads release.yml at the repository root, also for a plugin in a subdirectory.
+    release_workflow = (repository_root or plugin_dir) / ".github" / "workflows" / "release.yml"
     if not release_workflow.is_file():
         issues.append(("error", ".github/workflows/release.yml is missing"))
 
     return issues
 
 
-def _run_tests(plugin_dir: Path, *, skip_tests: bool) -> str:
+def _run_tests(plugin_dir: Path, *, plugin_id: str, defaults: CliDefaults, skip_tests: bool) -> str:
     tests_dir = plugin_dir / "tests"
     if skip_tests:
         return "skipped"
     if not tests_dir.is_dir():
         return "not-found"
+    command = [sys.executable, "-m", "pytest"]
+    env: dict[str, str] | None = None
+    pytest_ini = defaults.repo_root / "pytest.ini"
+    if pytest_ini.is_file():
+        # CI runs the tests from plugin/plugins/<id> of a N.E.K.O checkout, where
+        # pytest picks up that checkout's pytest.ini; use the same configuration.
+        command += ["-c", str(pytest_ini), "--rootdir", str(defaults.repo_root)]
+        if (defaults.plugin_root / "plugins" / plugin_id).resolve() != plugin_dir.resolve():
+            # Out of tree: import plugin.plugins.<id> from here instead of a mount.
+            command += ["-p", "plugin.neko_plugin_cli.plugin_import_alias"]
+            env = {
+                **os.environ,
+                "PYTHONPATH": os.pathsep.join(
+                    filter(None, [str(defaults.repo_root), os.environ.get("PYTHONPATH")])
+                ),
+                PLUGIN_ID_ENV: plugin_id,
+                PLUGIN_SOURCE_ENV: str(plugin_dir),
+            }
     completed = subprocess.run(
-        [sys.executable, "-m", "pytest", str(tests_dir)],
+        [*command, str(tests_dir)],
         cwd=plugin_dir,
+        env=env,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -254,16 +320,6 @@ def _run_tests(plugin_dir: Path, *, skip_tests: bool) -> str:
             print(output, file=sys.stderr)
         raise RuntimeError(f"tests failed with exit code {completed.returncode}")
     return "passed"
-
-
-def _run_git(command: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", *command],
-        cwd=cwd,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
 
 
 def _sha256_file(path: Path) -> str:
@@ -329,8 +385,12 @@ def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> st
         return f"cd {plugin_dir} && git init"
     if message == "git remote 'origin' is not configured":
         return "git remote add origin <repo-url>"
-    if message == "git working tree has uncommitted changes":
-        return "commit or stash changes before publishing"
+    if message.startswith(_WORKTREE_NOT_COMMITTED):
+        return _tri(
+            "commit these files or add them to .gitignore; CI checks the pushed commit, not the working tree",
+            "提交这些文件或将其加入 .gitignore；CI 检查的是已推送的提交，而不是工作区",
+            "これらのファイルをコミットするか .gitignore に追加してください。CI は作業ツリーではなくプッシュ済みのコミットを検査します",
+        )
     if message == "git executable not found":
         return "install git, then rerun neko-plugin check"
     return ""
