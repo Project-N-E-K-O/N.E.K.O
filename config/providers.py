@@ -480,17 +480,6 @@ def rewrite_router_reasoning(
     if effort is None:
         return extra_body, None
     return extra_body, clamp_reasoning_effort(model, effort)
-    forms = (
-        (MODELS_EXTRA_BODY_MAP.get(model), efforts[0]),
-        (MODELS_FOCUS_EXTRA_BODY_MAP.get(model), efforts[1]),
-    )
-    for form, effort in forms:
-        if form and all(k in extra_body and extra_body[k] == v for k, v in form.items()):
-            rest = {k: v for k, v in extra_body.items() if k not in form}
-            if "reasoning_effort" in rest:
-                return rest, None
-            return rest, effort
-    return extra_body, None
 
 
 # Background memory calls intentionally enabling thinking (review, signal detection, refine, reflection synthesis, etc.) normally omit
