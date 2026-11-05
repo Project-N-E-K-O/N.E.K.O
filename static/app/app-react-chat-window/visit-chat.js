@@ -2860,7 +2860,18 @@
             danger: true
         }).then(function (confirmed) {
             if (!confirmed || visit.visitId !== visitId || visit.visitMode !== 'cat') return null;
-            return endRoute(reason);
+            return endRoute(reason).then(function (result) {
+                if (result && (result.status === 200 || result.status === 404)
+                        && visit.visitId === visitId && inVisit()) {
+                    // The single ended frame can be lost. Reuse the existing
+                    // authoritative state poll until applyState releases this visit.
+                    visit.cancelRequested = true;
+                    pollReconnect();
+                    dispatchVisitStatus();
+                    render();
+                }
+                return result;
+            });
         });
     }
 

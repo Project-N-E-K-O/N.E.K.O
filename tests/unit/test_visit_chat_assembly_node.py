@@ -729,7 +729,12 @@ const report = {};
   }
   // ── 猫形态退出：普通退出也复用场景内的统一确认；模型串门不受影响 ──
   {
-    const routes = { '/api/visit/route/end': async () => ({ status: 200, body: { ok: true } }) };
+    const routes = {
+      '/api/visit/route/end': async () => ({ status: 200, body: { ok: true } }),
+      '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => ({ status: 200, body: {
+        active: false, visit_id: null, phase: null, enabled: true,
+      } }),
+    };
     const h = createHarness({ routes });
     h.frame({ type: 'visit_state_change', action: 'pending', visit_id: VID, side: 'guest', visit_mode: 'cat', ts: 1 });
     h.frame({ type: 'visit_state_change', action: 'departed', visit_id: VID, side: 'guest', visit_mode: 'cat', ts: 1 });
@@ -748,6 +753,11 @@ const report = {};
     await h.settle();
     const call = h.fetches.find((f) => f.url === '/api/visit/route/end');
     report.cat_exit_after_confirm = call && call.body;
+    report.cat_exit_active_before_reconcile = h.chat.isActive();
+    h.advance(5100);
+    await h.settle();
+    report.cat_exit_active_after_reconcile = h.chat.isActive();
+    report.cat_exit_state_probes = h.fetches.filter((f) => f.url.indexOf('/api/visit/state?catgirl=') === 0).length;
   }
   // ── debrief：芯片去重 + ack；点「记成日记」带 lanlan_name；预览块 committing 帧 ──
   {
@@ -2643,6 +2653,9 @@ def test_cat_visit_exit_uses_the_shared_confirmation_without_changing_model_visi
     assert report["cat_exit_after_confirm"] == {
         "lanlan_name": "咪咪", "visit_id": "AAAAAAAAAAAAAAAAAAAAAA", "reason": "recall",
     }
+    assert report["cat_exit_active_before_reconcile"] is True
+    assert report["cat_exit_active_after_reconcile"] is False
+    assert report["cat_exit_state_probes"] == 1
 
 
 def test_debrief_chips_dedupe_ack_and_choice_body(report):

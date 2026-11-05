@@ -541,6 +541,12 @@
     } catch (_) { /* a fallback self card remains available */ }
   }
 
+  function enterNativeCatVisitMode() {
+    var playground = global.nekoIdleCat1Playground;
+    if (!playground || typeof playground.enterVisitMode !== 'function') return false;
+    try { return playground.enterVisitMode() === true; } catch (_) { return false; }
+  }
+
   function resetSlot(slot, asset) {
     clearSlotTimer(slot);
     clearCollisionPulse(slot);
@@ -579,6 +585,7 @@
       scene.nativeSelf.entryRequested = false;
     }
     forceCatAppearance();
+    enterNativeCatVisitMode();
     bindNativeSelf();
     if (!scene.nativeSelf.container) requestNativeCatEntry();
     if (!scene.nativeSelf.frame) scene.nativeSelf.frame = requestSceneFrame(syncNativeSelf);
@@ -647,6 +654,7 @@
     if (scene.root) scene.root.hidden = false;
     if (document.body && document.body.classList) document.body.classList.add('neko-visit-cat-scene-active');
     forceCatAppearance();
+    enterNativeCatVisitMode();
     bindNativeSelf();
     if (!scene.nativeSelf.container) requestNativeCatEntry();
     if (!scene.nativeSelf.frame) scene.nativeSelf.frame = requestSceneFrame(syncNativeSelf);

@@ -236,6 +236,7 @@ function createHarness(options) {
   const confirmAnswers = [];
   let geometryEvents = 0;
   let entryEvents = 0;
+  let visitModeEntries = 0;
   const entryDetails = [];
   let localSnapshot = null;
   let poseHandler = null;
@@ -308,6 +309,9 @@ function createHarness(options) {
     },
     NekoIdleCatVisitBridge: {
       snapshot() { return localSnapshot && Object.assign({}, localSnapshot); },
+    },
+    nekoIdleCat1Playground: {
+      enterVisitMode() { visitModeEntries += 1; return true; },
     },
     nekoVisitChat: {
       async requestCatPose(visitId, phase, pose) {
@@ -477,6 +481,7 @@ function createHarness(options) {
     listenerCount(type) { return (listeners.get(type) || []).length; },
     geometryCount: () => geometryEvents,
     entryCount: () => entryEvents,
+    visitModeEntryCount: () => visitModeEntries,
     entryDetails: () => entryDetails.slice(),
   };
 }
@@ -501,6 +506,7 @@ const report = {};
   report.root_created = !!h.root();
   report.body_active = h.body.classList.contains('neko-visit-cat-scene-active');
   report.entry_events = h.entryCount();
+  report.visit_mode_entries = h.visitModeEntryCount();
   report.entry_transition_only = h.entryDetails()[0] && h.entryDetails()[0].visitCatEntry;
   report.no_action_buttons = h.root().querySelectorAll('[data-visit-cat-action]').length === 0;
 
@@ -947,6 +953,7 @@ def test_scene_requires_v2_and_reuses_delayed_native_self(report):
     assert report["root_created"] is True
     assert report["body_active"] is True
     assert report["entry_events"] == 1
+    assert report["visit_mode_entries"] == 1
     assert report["entry_transition_only"] is True
     assert report["no_action_buttons"] is True
     assert report["native"] == {

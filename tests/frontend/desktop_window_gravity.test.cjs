@@ -905,6 +905,43 @@ test('cat visits keep local Playground gravity but register only the local cat b
   assert.equal(dropState.bodies.has('yarn'), true);
 });
 
+test('cat visit entry removes solo objects without resetting the running cat', () => {
+  const r = runtime();
+  const { api } = installPlaygroundSetting(r);
+  const removed = [];
+  const parent = { removeChild(element) { removed.push(element.id); } };
+  const cat = { id: 'cat', x: 321, y: 234, vx: 145, vy: -87, dragging: false };
+  const yarn = { id: 'yarn', element: { id: 'yarn' } };
+  const desktopYarn = { id: 'desktop-yarn', element: { id: 'desktop-yarn', parentNode: parent } };
+  const question = { id: 'question-block', element: { id: 'question-block', parentNode: parent } };
+  const state = r.button.__nekoIdleCat1PlaygroundDropState = {
+    active: true, released: false, bodies: new Map([
+      ['cat', cat], ['yarn', yarn], ['desktop-yarn', desktopYarn], ['question-block', question],
+    ]),
+    container: r.container, pointerBodyId: '', targetMode: 'desktop',
+    targetElement: desktopYarn.element, targetScreenRect: {}, entryQuestionBlockElement: question.element,
+  };
+  let stopped = 0, rebound = 0, restarted = 0;
+  r.context._stopNekoIdleCat1PlaygroundPhysics = () => { stopped++; };
+  r.context._clearNekoIdleCat1PlaygroundPointerListeners = () => {};
+  r.context._installNekoIdleCat1PlaygroundPointerListeners = () => { rebound++; };
+  r.context._startNekoIdleCat1PlaygroundPhysics = () => { restarted++; };
+  r.context._clearNekoIdleCat1QuestionMark = () => {};
+  r.context._clearNekoIdleCat1PlaygroundQuestionBlockClone = () => {};
+  r.context._releaseNekoIdleCat1PlaygroundQuestionBlockPointerHold = () => false;
+
+  assert.equal(api.enterVisitMode(), true);
+  assert.deepEqual(Array.from(state.bodies.keys()), ['cat']);
+  assert.equal(state.bodies.get('cat'), cat);
+  assert.deepEqual({ x: cat.x, y: cat.y, vx: cat.vx, vy: cat.vy }, { x: 321, y: 234, vx: 145, vy: -87 });
+  assert.deepEqual(removed.sort(), ['desktop-yarn', 'question-block']);
+  assert.equal(state.targetMode, 'none');
+  assert.equal(state.targetElement, null);
+  assert.equal(state.targetScreenRect, null);
+  assert.equal(state.entryQuestionBlockElement, null);
+  assert.deepEqual({ stopped, rebound, restarted }, { stopped: 1, rebound: 1, restarted: 1 });
+});
+
 test('the real Playground starter forwards catOnly to body registration', () => {
   const r = runtime();
   installPlaygroundSetting(r);

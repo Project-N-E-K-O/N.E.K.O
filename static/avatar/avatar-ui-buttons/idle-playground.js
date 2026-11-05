@@ -323,6 +323,37 @@ function _removeNekoIdleCat1PlaygroundYarnBody(button) {
     return true;
 }
 
+function _switchNekoIdleCat1PlaygroundToVisitMode() {
+    const button = _getNekoIdleCat1PlaygroundEntryButton();
+    const state = button && button.__nekoIdleCat1PlaygroundDropState;
+    if (!state || !state.active || state.released || !state.bodies || !state.bodies.has('cat')) return false;
+    if (state.pointerBodyId && state.pointerBodyId !== 'cat') {
+        _handleNekoIdleCat1PlaygroundPointerUp(button, {
+            type: 'pointercancel', pointerId: state.pointerId
+        });
+    }
+    _releaseNekoIdleCat1PlaygroundQuestionBlockPointerHold(state);
+    _stopNekoIdleCat1PlaygroundPhysics(button);
+    state.bodies.forEach((body, bodyId) => {
+        if (bodyId === 'cat') return;
+        if ((bodyId === 'desktop-yarn' || bodyId === 'question-block')
+            && body && body.element && body.element.parentNode) {
+            try { body.element.parentNode.removeChild(body.element); } catch (_) {}
+        }
+        state.bodies.delete(bodyId);
+    });
+    state.targetMode = 'none';
+    state.targetElement = null;
+    state.targetScreenRect = null;
+    state.entryQuestionBlockElement = null;
+    _clearNekoIdleCat1QuestionMark(button);
+    _clearNekoIdleCat1PlaygroundQuestionBlockClone(button);
+    _clearNekoIdleCat1PlaygroundPointerListeners(button);
+    _installNekoIdleCat1PlaygroundPointerListeners(button);
+    _startNekoIdleCat1PlaygroundPhysics(button);
+    return true;
+}
+
 function _handleNekoIdleCat1PlaygroundYarnActivationAck(event) {
     const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
     const activationId = typeof detail.activationId === 'string' ? detail.activationId : '';
@@ -2154,6 +2185,7 @@ if (typeof window !== 'undefined') {
         setGravityCatEnabled: _setNekoIdleCat1GravityCatEnabled,
         requestGravityEntry: () => _requestNekoIdleCat1GravityEntry('gravity-cat-setting'),
         isActive: _isNekoIdleCat1PlaygroundActiveAnywhere,
+        enterVisitMode: _switchNekoIdleCat1PlaygroundToVisitMode,
     });
     window.addEventListener('neko:idle-cat1-playground-entry-request', _handleNekoIdleCat1PlaygroundEntryRequest);
     window.addEventListener('neko:cat-local-active-change', _handleNekoIdleCat1GravityCatActiveChange);
