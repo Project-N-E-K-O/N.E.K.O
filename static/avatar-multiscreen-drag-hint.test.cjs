@@ -127,6 +127,7 @@ for (const action of ['ack', 'never']) {
         const state = hint._readState();
         if (action === 'ack') {
             assert.ok(state.snoozeUntil > Date.now());
+            assert.notEqual(state.never, true);
         } else {
             assert.equal(state.never, true);
         }
