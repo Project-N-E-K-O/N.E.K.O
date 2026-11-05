@@ -38,6 +38,11 @@ export const PROJECT_ERROR_MESSAGES = {
   PLUGIN_OPERATION_BUSY: 'operationBusy',
   PRECHECK_UNAVAILABLE: 'precheckUnavailable',
   PRECHECK_FAILED_TO_RUN: 'precheckFailedToRun',
+  PUBLISH_UNAVAILABLE: 'publishUnavailable',
+  PUBLISH_NOT_READY: 'publishNotReady',
+  PUBLISH_RATE_LIMITED: 'publishActionRateLimited',
+  PUBLISH_TASK_ACTIVE: 'publishTaskActive',
+  PUBLISH_TASK_NOT_FOUND: 'publishTaskNotFound',
 } as const satisfies Record<string, AuthoringMessageKey>
 
 const ownKey = (messages: Record<string, AuthoringMessageKey>, code: string) =>

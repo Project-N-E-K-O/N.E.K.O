@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from plugin.neko_plugin_cli.core.project import PLUGIN_ID_PATTERN
 from plugin.server.application import plugin_projects as service
 from plugin.server.application import plugin_publish_status as publish_status
+from plugin.server.application import plugin_publish_tasks as publish_tasks
 from plugin.server.application.plugin_projects import (
     AuthoringProject,
     CreatedProject,
@@ -81,6 +82,12 @@ class OkResponse(BaseModel):
     ok: bool = True
 
 
+class PublishRequest(BaseModel):
+    """Destination of one background publish run; the server enforces readiness."""
+
+    mode: publish_tasks.PublishMode
+
+
 async def _call(awaitable):
     # The UI localizes by ``code``; ``message`` is an English diagnostic.
     try:
@@ -148,6 +155,22 @@ async def precheck_plugin_project(project_id: str):
 async def plugin_project_publish_status(project_id: str):
     # Read-only: local git facts plus public GitHub reads; nothing is pushed.
     return await _call(publish_status.get_publish_status(project_id))
+
+
+@router.post("/{project_id}/publish", status_code=202, dependencies=_mutation)
+async def start_plugin_project_publish(project_id: str, body: PublishRequest):
+    # Background task running `neko-plugin publish`; poll publish-task for progress.
+    return await _call(publish_tasks.start_publish(project_id, body.mode))
+
+
+@router.get("/{project_id}/publish-task")
+async def latest_plugin_project_publish_task(project_id: str):
+    return await _call(asyncio.to_thread(publish_tasks.latest_publish_task, project_id))
+
+
+@router.post("/{project_id}/publish-task/{task_id}/cancel", dependencies=_mutation)
+async def cancel_plugin_project_publish_task(project_id: str, task_id: str):
+    return await _call(publish_tasks.cancel_publish(project_id, task_id))
 
 
 @router.delete("/{project_id}", response_model=OkResponse, dependencies=_mutation)

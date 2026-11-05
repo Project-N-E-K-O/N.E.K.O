@@ -61,7 +61,7 @@ def _serve(monkeypatch, routes):
 
 
 def _read(head=HEAD):
-    return asyncio.run(publish_status._read_remote('owner/repo', head, 'v1.0.0', 'demo'))
+    return asyncio.run(publish_status.read_remote_github('owner/repo', head, 'v1.0.0', 'demo'))
 
 
 def _runs(status, conclusion=None):

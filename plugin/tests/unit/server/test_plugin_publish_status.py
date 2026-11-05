@@ -29,7 +29,7 @@ def test_project_without_a_repository_skips_every_remote_read(monkeypatch, tmp_p
     async def forbidden(*args, **kwargs):
         raise AssertionError("GitHub must not be read without a GitHub origin")
 
-    monkeypatch.setattr(publish_status, "_read_remote", forbidden)
+    monkeypatch.setattr(publish_status, "read_remote_github", forbidden)
     result = asyncio.run(publish_status.get_publish_status("p1"))
     assert result["plugin_id"] == "demo"
     assert result["version"] == "0.1.0"

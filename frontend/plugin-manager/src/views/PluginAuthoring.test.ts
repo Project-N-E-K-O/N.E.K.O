@@ -18,6 +18,9 @@ const api = vi.hoisted(() => ({
   updatePluginProjectMetadata: vi.fn(),
   precheckPluginProject: vi.fn(),
   getPluginProjectPublishStatus: vi.fn(),
+  getPluginProjectPublishTask: vi.fn(),
+  startPluginProjectPublish: vi.fn(),
+  cancelPluginProjectPublishTask: vi.fn(),
   push: vi.fn(),
   route: { query: {} as Record<string, string> },
 }))
@@ -33,6 +36,9 @@ vi.mock('@/api/pluginProjects', async (importOriginal) => ({
   updatePluginProjectMetadata: api.updatePluginProjectMetadata,
   precheckPluginProject: api.precheckPluginProject,
   getPluginProjectPublishStatus: api.getPluginProjectPublishStatus,
+  getPluginProjectPublishTask: api.getPluginProjectPublishTask,
+  startPluginProjectPublish: api.startPluginProjectPublish,
+  cancelPluginProjectPublishTask: api.cancelPluginProjectPublishTask,
 }))
 vi.mock('vue-router', () => ({
   useRoute: () => api.route,
@@ -159,6 +165,10 @@ beforeEach(() => {
   api.previewPluginProject.mockResolvedValue({ ...created, project_id: undefined })
   api.createPluginProject.mockResolvedValue(created)
   api.pickProjectDirectory.mockResolvedValue('E:/Projects')
+  // Never having published is the normal state the publish tab expects.
+  api.getPluginProjectPublishTask.mockRejectedValue({
+    response: { data: { detail: { code: 'PUBLISH_TASK_NOT_FOUND' } } },
+  })
 })
 
 afterEach(() => {
@@ -301,6 +311,95 @@ describe('authoring workbench backed by the server project list', () => {
     expect(pane.textContent).toContain(en.publishStatusLater)
     expect(pane.textContent).toContain('.github/workflows/release.yml')
     expect(pane.textContent).toContain('n.e.k.o_plugin_hello_world')
+  })
+
+  it('offers the full publish only after the second confirmation', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue({
+      plugin_id: listed.plugin_id,
+      version: listed.version,
+      repository: {
+        git_available: true,
+        is_repository: true,
+        tag: 'v0.2.0',
+        origin_url: 'https://github.com/owner/hello_world.git',
+        github_repository: 'owner/hello_world',
+        branch: 'main',
+        upstream: 'origin/main',
+        head: 'abc',
+        head_pushed: true,
+        worktree_clean: true,
+        tag_exists: false,
+        tag_at_head: null,
+      },
+      actions: {},
+      remote: {
+        rate_limited: false,
+        visibility: 'public',
+        verify: 'success',
+        release: { state: 'missing', missing_assets: [] },
+      },
+    })
+    api.startPluginProjectPublish.mockResolvedValue({
+      task_id: 't1',
+      project_id: 'p1',
+      mode: 'github_and_market',
+      status: 'queued',
+      message: '',
+      release_url: '',
+      log: [],
+      started_at: null,
+      updated_at: 1,
+      finished_at: null,
+    })
+    const container = await mount()
+    const tabs = [...container.querySelectorAll('.authoring-tabs > .el-tabs__header [role="tab"]')]
+    ;(tabs[2] as HTMLElement).click()
+    await flush()
+    // No release yet, so the full flow is offered, not the Market-only one.
+    await click(en.publishRunGithubMarket)
+    await settle()
+    expect(api.startPluginProjectPublish).not.toHaveBeenCalled()
+    await click(en.publishConfirmTitle, { last: true })
+    await settle()
+    expect(api.startPluginProjectPublish).toHaveBeenCalledWith('p1', 'github_and_market')
+    expect(container.querySelector('.authoring-publish-task')?.textContent).toContain(
+      en.publishTaskQueued
+    )
+  })
+
+  it('keeps the publish buttons hidden until the repository is ready', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue({
+      plugin_id: listed.plugin_id,
+      version: listed.version,
+      repository: {
+        git_available: true,
+        is_repository: true,
+        tag: 'v0.2.0',
+        origin_url: null,
+        github_repository: null,
+        branch: 'main',
+        upstream: null,
+        head: 'abc',
+        head_pushed: false,
+        worktree_clean: true,
+        tag_exists: false,
+        tag_at_head: null,
+      },
+      actions: {},
+      remote: null,
+    })
+    await mount()
+    const tabs = [
+      ...document.querySelectorAll('.authoring-tabs > .el-tabs__header [role="tab"]'),
+    ]
+    ;(tabs[2] as HTMLElement).click()
+    await flush()
+    expect(buttons(en.publishRunGithubMarket)).toHaveLength(0)
+    expect(buttons(en.publishRunMarket)).toHaveLength(0)
   })
 
   it('runs the pre-release check and renders the CI gate report', async () => {

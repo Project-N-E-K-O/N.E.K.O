@@ -137,6 +137,52 @@ export interface PublishStatus {
 export const getPluginProjectPublishStatus = (projectId: string): Promise<PublishStatus> =>
   get(`/plugin-projects/${encodeURIComponent(projectId)}/publish-status`, config)
 
+export type PublishMode = 'github_and_market' | 'github' | 'market_notify'
+
+/** Lifecycle of one `neko-plugin publish` background task. */
+export type PublishTaskStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled'
+
+export interface PublishTask {
+  task_id: string
+  project_id: string
+  mode: PublishMode
+  status: PublishTaskStatus
+  message: string
+  release_url: string
+  /** Bounded tail of the CLI output. */
+  log: string[]
+  started_at: number | null
+  updated_at: number
+  finished_at: number | null
+}
+
+/** True while the task can still change; the frontend polls until it is false. */
+export const publishTaskActive = (task: PublishTask): boolean =>
+  task.status === 'queued' || task.status === 'running'
+
+export const startPluginProjectPublish = (
+  projectId: string,
+  mode: PublishMode
+): Promise<PublishTask> =>
+  post(
+    `/plugin-projects/${encodeURIComponent(projectId)}/publish`,
+    { mode },
+    { ...config, timeout: 60_000 }
+  )
+
+export const getPluginProjectPublishTask = (projectId: string): Promise<PublishTask> =>
+  get(`/plugin-projects/${encodeURIComponent(projectId)}/publish-task`, config)
+
+export const cancelPluginProjectPublishTask = (
+  projectId: string,
+  taskId: string
+): Promise<PublishTask> =>
+  post(
+    `/plugin-projects/${encodeURIComponent(projectId)}/publish-task/${encodeURIComponent(taskId)}/cancel`,
+    {},
+    { ...config, timeout: 60_000 }
+  )
+
 export interface PickedDirectory {
   cancelled?: boolean
   selected_root?: string

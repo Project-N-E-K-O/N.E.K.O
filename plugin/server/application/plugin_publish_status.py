@@ -11,6 +11,7 @@ import asyncio
 import os
 import time
 from dataclasses import asdict
+from typing import Literal, TypedDict
 from urllib.parse import quote
 
 from plugin.neko_plugin_cli.core.plugin_source import load_plugin_source
@@ -26,7 +27,24 @@ from plugin.utils.http_imports import ensure_httpx
 _GITHUB_API = "https://api.github.com"
 _CACHE_SECONDS = 60.0
 # Unauthenticated GitHub reads are limited to 60 per hour, so answers are kept.
-_cache: dict[tuple[str, str, str], tuple[float, dict[str, object]]] = {}
+_cache: dict[tuple[str, str, str], tuple[float, RemoteGithubState]] = {}
+
+
+class RemoteReleaseState(TypedDict):
+    state: Literal["published", "missing", "unknown"]
+    missing_assets: list[str]
+
+
+VerifyState = Literal["success", "failure", "running", "not_run", "missing", "unknown"]
+
+
+class RemoteGithubState(TypedDict):
+    """Public GitHub reads for one release; mirrors the frontend contract."""
+
+    rate_limited: bool
+    visibility: Literal["public", "private", "not_found", "unknown"]
+    verify: VerifyState
+    release: RemoteReleaseState
 
 
 def _read_local(project_id: str) -> tuple[str, str, RepoState, dict[str, str]]:
@@ -53,7 +71,7 @@ def _json_object(response) -> dict[str, object]:
     return payload if isinstance(payload, dict) else {}
 
 
-def _run_state(run: object) -> str:
+def _run_state(run: object) -> VerifyState:
     if not isinstance(run, dict):
         return "not_run"
     if run.get("status") != "completed":
@@ -61,9 +79,10 @@ def _run_state(run: object) -> str:
     return "success" if run.get("conclusion") == "success" else "failure"
 
 
-async def _read_remote(
+async def read_remote_github(
     repository: str, head: str | None, tag: str, plugin_id: str
-) -> dict[str, object]:
+) -> RemoteGithubState:
+    """Public GitHub reads for one release; shared with the publish tasks."""
     key = (repository.casefold(), head or "", tag)
     cached = _cache.get(key)
     if cached is not None and time.monotonic() - cached[0] < _CACHE_SECONDS:
@@ -77,7 +96,7 @@ async def _read_remote(
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    result: dict[str, object] = {
+    result: RemoteGithubState = {
         "rate_limited": False,
         "visibility": "unknown",
         "verify": "unknown",
@@ -151,7 +170,7 @@ async def get_publish_status(project_id: str) -> dict[str, object]:
     plugin_id, version, state, actions = await asyncio.to_thread(_read_local, project_id)
     remote = None
     if state.github_repository:
-        remote = await _read_remote(state.github_repository, state.head, state.tag, plugin_id)
+        remote = await read_remote_github(state.github_repository, state.head, state.tag, plugin_id)
     return {
         "plugin_id": plugin_id,
         "version": version,
