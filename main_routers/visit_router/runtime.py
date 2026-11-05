@@ -3415,6 +3415,7 @@ async def start_visit(
     from utils.external_route_registry import is_external_route_locked
 
     name = str(lanlan_name or "")
+    allow_goodbye_silent = bool(VISIT_CAT_SCENE_ENABLED and cat_scene is True)
     if side not in ("host", "guest"):
         raise ValueError("side must be 'host' or 'guest'")
     stop_gen = _stop_gen
@@ -3452,7 +3453,8 @@ async def start_visit(
     slot = activate_visit_route(name, phase=PHASE_PENDING, visit_id=vid)
     _pending_visits[key] = config_dir
     try:
-        failure = host.precondition_failure()
+        failure = (host.precondition_failure(allow_goodbye_silent=True)
+                   if allow_goodbye_silent else host.precondition_failure())
         if failure is not None:
             raise VisitRefused(409, {"reason": failure})
         account = await _local_account()
@@ -3468,7 +3470,8 @@ async def start_visit(
         # While checking the account (before runtime registration and visit input ownership), a voice session / hot switch may have started and replaced the manager: check again.
         if not host.is_current():
             raise VisitRefused(409, {"reason": "busy"})
-        failure = host.precondition_failure()
+        failure = (host.precondition_failure(allow_goodbye_silent=True)
+                   if allow_goodbye_silent else host.precondition_failure())
         if failure is not None:
             raise VisitRefused(409, {"reason": failure})
         if account is None:

@@ -253,6 +253,29 @@ async def test_preconditions_after_the_slot_release_it(tmp_path, monkeypatch, cl
     assert rtm.get_runtime("Host") is None
 
 
+async def test_cat_admission_allows_existing_cat_silence(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    monkeypatch.setattr(rtm, "VISIT_CAT_SCENE_ENABLED", True)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    side.host.precondition = "goodbye_silent"
+    try:
+        side.rt = await rtm.start_visit(
+            side.name,
+            side.role,
+            visit_id=VISIT_ID,
+            cat_scene=True,
+            host=side.host,
+            deps=side.deps,
+            clock=clock,
+            wall=wall,
+        )
+        assert side.rt.cat_scene_requested is True
+        assert side.host.precondition_allow_goodbye_silent == [True, True]
+    finally:
+        await teardown(side, clock=clock)
+
+
 async def test_no_local_login_is_a_synchronous_409(tmp_path, monkeypatch, clocks):
     patch_admission(monkeypatch)
 

@@ -530,7 +530,11 @@
     scene.nativeSelf.entryRequested = true;
     try {
       global.dispatchEvent(new CustomEvent('live2d-goodbye-click', {
-        detail: { source: 'cat-visit-entry', reason: 'cat-visit-entry' }
+        detail: {
+          source: 'cat-visit-entry',
+          reason: 'cat-visit-entry',
+          visitCatEntry: true
+        }
       }));
     } catch (_) { /* a fallback self card remains available */ }
   }

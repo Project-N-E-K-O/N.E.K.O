@@ -236,6 +236,7 @@ function createHarness(options) {
   const confirmAnswers = [];
   let geometryEvents = 0;
   let entryEvents = 0;
+  const entryDetails = [];
   let localSnapshot = null;
   let poseHandler = null;
 
@@ -275,7 +276,10 @@ function createHarness(options) {
     },
     dispatchEvent(event) {
       if (event.type === 'neko:visit-cat-geometry-changed') geometryEvents += 1;
-      if (event.type === 'live2d-goodbye-click') entryEvents += 1;
+      if (event.type === 'live2d-goodbye-click') {
+        entryEvents += 1;
+        entryDetails.push(Object.assign({}, event.detail || {}));
+      }
       if (event.type === 'neko:goodbye-idle-appearance') {
         const mode = event.detail && event.detail.mode;
         win.__nekoGoodbyeIdleAppearance = mode;
@@ -473,6 +477,7 @@ function createHarness(options) {
     listenerCount(type) { return (listeners.get(type) || []).length; },
     geometryCount: () => geometryEvents,
     entryCount: () => entryEvents,
+    entryDetails: () => entryDetails.slice(),
   };
 }
 
@@ -496,6 +501,7 @@ const report = {};
   report.root_created = !!h.root();
   report.body_active = h.body.classList.contains('neko-visit-cat-scene-active');
   report.entry_events = h.entryCount();
+  report.entry_transition_only = h.entryDetails()[0] && h.entryDetails()[0].visitCatEntry;
   report.no_action_buttons = h.root().querySelectorAll('[data-visit-cat-action]').length === 0;
 
   const native = h.installNativeSelf();
@@ -918,6 +924,7 @@ def test_scene_requires_v2_and_reuses_delayed_native_self(report):
     assert report["root_created"] is True
     assert report["body_active"] is True
     assert report["entry_events"] == 1
+    assert report["entry_transition_only"] is True
     assert report["no_action_buttons"] is True
     assert report["native"] == {
         "bound_actor": "self",
