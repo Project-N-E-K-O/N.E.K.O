@@ -67,9 +67,12 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
         "2026-11-04-visit-invitation-capacity",
+        "2026-11-05-opper-assist-provider-main-merge",
+        "2026-11-04-cat-visit-invitation-capacity-main-merge",
         "2026-11-03-cat-visit-invitation-capacity-main-merge",
         "2026-11-03-cat-visit-overseas-news-main-merge",
         "2026-11-03-cat-visit-main-merge",
+        "2026-10-22-pr3353-opper-assist-provider-main-rebase",
         "2026-11-03-news-overseas-systray-labels-main-merge",
         "2026-11-03-news-overseas-chat-sync-main-merge",
         "2026-11-03-systray-intro-es-pt-labels",
@@ -126,6 +129,9 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-22-recent-memory-sync",
         "2026-10-23-pr3482-feedback-devices",
         "2026-10-22-memory-browser-local-only",
+        "2026-10-20-pr3353-opper-assist-provider-main-rebase",
+        "2026-10-11-pr3353-opper-assist-provider-main-rebase",
+        "2026-10-09-opper-assist-provider",
         "2026-10-22-pr3477-visit-main-merge",
         "2026-10-22-pr3467-rebase-main",
         "2026-10-21-pr3467-music-countdown",
@@ -532,7 +538,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "47af9065d2a55ba78a703c8c5ce6098405a2b650771cfd9ee15563b306bbd833"
+LOCALE_KEY_SIGNATURE = "79f62ee12ccc1e986e5c36cd4008305c9bc9689a1c5b564509cddd436dd4c87e"
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "

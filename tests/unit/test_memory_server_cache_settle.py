@@ -1270,7 +1270,9 @@ async def test_run_post_turn_signals_off_mode_keeps_stage1_for_ai_only_ordinary_
          patch.object(memory_server.gates, "_ais_powerful_memory_enabled", AsyncMock(return_value=False)):
         await memory_server._run_post_turn_signals(payload_messages, "测试角色")
 
-    fake_fact_store.extract_facts.assert_awaited_once_with([ordinary], "测试角色")
+    fake_fact_store.extract_facts.assert_awaited_once_with(
+        [ordinary], "测试角色", conversation_at=None,
+    )
     # No user utterance: the signal-extraction turn counter stays untouched.
     record_turn.assert_not_called()
 

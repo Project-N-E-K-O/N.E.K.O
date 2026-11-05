@@ -20,6 +20,9 @@ handler at import time.
 """
 
 import asyncio
+import math
+import time
+from datetime import datetime
 from functools import wraps
 
 from config import (
@@ -180,6 +183,9 @@ async def _spawn_outbox_post_turn_signals(
             )
     payload = {
         'messages': messages_to_dict(messages),
+        # When the turn happened: a replay after a restart can run much
+        # later, and the pinned-fact section dates its entries by the turn.
+        'turn_at': time.time(),
     }
     if has_explicit_language:
         if locale_order is not None:
@@ -280,6 +286,7 @@ async def _run_post_turn_signals_after_locale_reservation(
     language: str | None = None,
     admission_order: int | None,
     locale_only: bool = False,
+    conversation_at: datetime | None = None,
 ):
     locale_order = await _wait_for_character_prompt_locale_order(
         lanlan_name,
@@ -291,6 +298,7 @@ async def _run_post_turn_signals_after_locale_reservation(
         language=language,
         locale_order=locale_order,
         locale_only=locale_only,
+        conversation_at=conversation_at,
     )
 
 
@@ -333,6 +341,7 @@ async def _run_post_turn_signals(
     language: str | None = None,
     locale_order: int | None = None,
     locale_only: bool = False,
+    conversation_at: datetime | None = None,
 ):
     """Background async: per-turn signals at every turn end. Failures are skipped silently.
 
@@ -400,7 +409,9 @@ async def _run_post_turn_signals(
     theater_only_batch = bool(messages) and not ordinary_messages
     if not powerful_enabled and not theater_only_batch:
         try:
-            await runtime.fact_store.extract_facts(ordinary_messages, lanlan_name)
+            await runtime.fact_store.extract_facts(
+                ordinary_messages, lanlan_name, conversation_at=conversation_at,
+            )
         except Exception as e:
             logger.warning(f"[MemoryServer] OFF-mode 事实提取失败: {e}")
 
@@ -525,6 +536,19 @@ async def _run_post_turn_signals(
             logger.warning(f"[MemoryServer] 矛盾审视失败: {e}")
 
 
+def _payload_turn_time(payload: dict) -> datetime | None:
+    """The turn time a post-turn payload recorded; None for payloads that predate it."""
+    raw = payload.get('turn_at')
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    if not math.isfinite(raw) or raw <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(raw)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
 async def _outbox_post_turn_signals_handler(lanlan_name: str, payload: dict) -> None:
     """Outbox handler for OP_POST_TURN_SIGNALS: restore messages from the payload and run
     ``_run_post_turn_signals``.
@@ -554,10 +578,15 @@ async def _outbox_post_turn_signals_handler(lanlan_name: str, payload: dict) -> 
         render_language = None
     if not messages and not is_supported_language_code(language):
         return
+    # Only payloads that recorded their turn time pass it on; older ones
+    # carry no such information and are extracted as "now", as before.
+    turn_time = _payload_turn_time(payload)
+    dated = {'conversation_at': turn_time} if turn_time is not None else {}
     if payload.get('locale_order_deferred'):
         kwargs = {
             'language': language,
             'admission_order': payload.get('locale_admission_order'),
+            **dated,
         }
         if not messages:
             kwargs['locale_only'] = True
@@ -570,6 +599,7 @@ async def _outbox_post_turn_signals_handler(lanlan_name: str, payload: dict) -> 
     kwargs = {
         'language': language,
         'locale_order': payload.get('locale_order'),
+        **dated,
     }
     if render_language is not None:
         kwargs['render_language'] = render_language
