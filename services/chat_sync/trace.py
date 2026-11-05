@@ -12,13 +12,12 @@ from uuid import uuid4
 
 _ID = re.compile(r"[0-9a-f]{32}\Z")
 _EVENTS = frozenset({
-    "source_committed", "session_begin", "session_end", "channel_wait", "channel_enter", "channel_end",
+    "source_committed", "session_begin", "session_end", "channel_wait", "channel_end",
     "http_begin", "http_send", "http_headers", "http_body_complete", "http_end",
-    "upload_ack_committed", "download_committed", "history_notify_begin", "history_notify_end",
+    "history_notify_begin", "history_notify_end",
     "assistant_source_selected", "assistant_source_excluded", "assistant_source_finished",
-    "local_reply_committed",
 })
-_ROUTES = frozenset({"identity", "bindings", "body_batch", "deletion", "changes", "profile", "recovery", "character", "other"})
+_ROUTES = frozenset({"identity", "bindings", "profile", "recovery", "character", "other"})
 _trace = None
 
 
@@ -55,12 +54,12 @@ class ChatSyncTrace:
         finally:
             self._context.reset(token)
 
-    def emit(self, event, *, at=None, **fields):
+    def emit(self, event, **fields):
         """Drop unknown fields and untrusted free text, including exception text."""
         if not self.enabled or event not in _EVENTS:
             return
         try:
-            wall, mono = at or self.instant()
+            wall, mono = self.instant()
             context = self._context.get()
             details = {**context, **fields}
             if fields.get("span_id") and context.get("span_id") != fields["span_id"]:
@@ -70,24 +69,22 @@ class ChatSyncTrace:
                 value = details.get(key)
                 if isinstance(value, str) and _ID.fullmatch(value):
                     safe[key] = value
-            if details.get("operation") in ("body", "pull", "deletion"):
+            if details.get("operation") == "pull":
                 safe["operation"] = details["operation"]
             if details.get("route") in _ROUTES:
                 safe["route"] = details["route"]
             if details.get("outcome") in ("success", "error", "cancelled"):
                 safe["outcome"] = details["outcome"]
-            if details.get("source_origin") in ("chat", "proactive", "agent", "avatar", "system", "tool", "mirror"):
+            if details.get("source_origin") in ("chat", "proactive", "avatar", "system"):
                 safe["source_origin"] = details["source_origin"]
             if details.get("source_reason") in (
                 "nonchat_origin", "unknown_origin", "mirror", "invalid_identity", "invalid_text",
-                "saved", "save_unavailable", "save_failed", "terminal_excluded",
-                "local_saved", "local_save_unavailable", "local_save_failed",
+                "late_after_seal", "saved", "save_unavailable", "save_failed", "terminal_excluded",
             ):
                 safe["source_reason"] = details["source_reason"]
-            for key in ("cursor", "status"):
-                value = details.get(key)
-                if type(value) is int and 0 <= value <= 2**53 - 1:
-                    safe[key] = value
+            status = details.get("status")
+            if type(status) is int and 0 <= status <= 2**53 - 1:
+                safe["status"] = status
             with self._lock:
                 self._sequence += 1
                 record = {"v": 1, "event": event, "clock_id": self.clock_id, "seq": self._sequence,
@@ -120,11 +117,7 @@ def route_class(path):
         return "identity"
     if "/recovery/" in path:
         return "recovery"
-    if "/batches/" in path:
-        return "body_batch"
-    if "/deletions/" in path:
-        return "deletion"
-    for suffix, label in (("/bindings", "bindings"), ("/changes", "changes"), ("/profile", "profile")):
+    for suffix, label in (("/bindings", "bindings"), ("/profile", "profile")):
         if path.endswith(suffix):
             return label
     return "character" if re.fullmatch(r"/prototype/chat-sync/characters/[0-9a-f]{32}", path) else "other"

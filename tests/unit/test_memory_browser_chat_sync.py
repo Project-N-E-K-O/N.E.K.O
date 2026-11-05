@@ -100,6 +100,19 @@ def test_save_and_clear_only_update_the_recent_memory_file(editor, chat):
     ]
 
 
+@pytest.mark.parametrize('damaged', ['{not json', '[1, "row"]'])
+def test_save_still_repairs_a_damaged_recent_file(editor, damaged):
+    client, path, _, _ = editor
+    path.write_text(damaged)
+    loaded = client.get('/api/memory/recent_file', params={'filename': 'recent_Role.json'}).json()
+    response = client.post('/api/memory/recent_file/save', json={
+        'filename': 'recent_Role.json', 'chat': [{'role': 'human', 'text': 'repaired', 'source_index': 0}],
+        'fingerprint': loaded['fingerprint'], 'identity_token': loaded['identity_token'],
+    })
+    assert response.status_code == 200 and response.json()['success'] is True
+    assert [row['data']['content'] for row in json.loads(path.read_text())] == ['repaired']
+
+
 @pytest.mark.parametrize('openai_format', [False, True])
 def test_editor_preserves_server_projection_identity_and_timestamp(editor, openai_format):
     client, path, _, _ = editor

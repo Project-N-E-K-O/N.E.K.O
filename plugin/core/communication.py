@@ -296,10 +296,12 @@ class PluginCommunicationResourceManager:
         if not was_closed and self.process_status is not None:
             from plugin.core.state import state
             try:
-                state.plugin_comm_queue.put_nowait({"type": "RPC_DISCONNECT", "from_plugin": self.plugin_id,
-                    "_rpc_connection_id": self._connection_id})
-            except asyncio.QueueFull:
-                self.logger.warning("RPC disconnect notification queue is full: plugin_id={}", self.plugin_id)
+                ingress = state.plugin_control_ingress
+                if ingress is not None:
+                    ingress.notify_disconnect({"type": "RPC_DISCONNECT", "from_plugin": self.plugin_id,
+                        "_rpc_connection_id": self._connection_id})
+            except RuntimeError:
+                self.logger.warning("RPC disconnect owner is unavailable: plugin_id={}", self.plugin_id)
 
     # ── send commands (downlink) ─────────────────────────────────
 
@@ -827,7 +829,8 @@ class PluginCommunicationResourceManager:
             self._publish_message_to_plane(msg)
 
         if PLUGIN_LOG_MESSAGE_FORWARD:
-            log_content = _format_log_text(msg.get("content", ""))
+            content = msg.get("content", "")
+            content_length = len(content) if isinstance(content, str) else 0
             window = PLUGIN_MESSAGE_FORWARD_LOG_DEDUP_WINDOW_SECONDS
             if window and window > 0:
                 now_ts = time.monotonic()
@@ -836,7 +839,7 @@ class PluginCommunicationResourceManager:
                     msg.get("source", "unknown"),
                     msg.get("priority", 0),
                     msg.get("description", ""),
-                    log_content,
+                    _format_log_text(content),
                 )
                 last_key = self._last_forward_log_key
                 last_ts = self._last_forward_log_time
@@ -845,21 +848,21 @@ class PluginCommunicationResourceManager:
                     return
                 if last_key is not None and self._last_forward_log_repeat_count > 0:
                     self.logger.info(
-                        "[MESSAGE FORWARD] (suppressed {} duplicates for Plugin: {} | Source: {} | Priority: {} | Description: {})",
+                        "[MESSAGE FORWARD] (suppressed {} duplicates for Plugin: {} | Source: {} | Priority: {})",
                         self._last_forward_log_repeat_count,
-                        last_key[0], last_key[1], last_key[2], last_key[3],
+                        last_key[0], last_key[1], last_key[2],
                     )
                 self._last_forward_log_key = key
                 self._last_forward_log_time = now_ts
                 self._last_forward_log_repeat_count = 0
 
             self.logger.info(
-                "[MESSAGE FORWARD] Plugin: {} | Source: {} | Priority: {} | Description: {} | Content: {}",
+                "[MESSAGE FORWARD] Plugin: {} | Source: {} | Priority: {} | Message ID: {} | Content length: {}",
                 self.plugin_id,
                 msg.get("source", "unknown"),
                 msg.get("priority", 0),
-                msg.get("description", ""),
-                log_content,
+                msg.get("message_id", ""),
+                content_length,
             )
 
     # ── plugin-to-plugin comm routing ────────────────────────────
@@ -868,12 +871,19 @@ class PluginCommunicationResourceManager:
         """Forward a plugin-to-plugin request to the central comm queue."""
         try:
             from plugin.core.state import state
-            comm_queue = state.plugin_comm_queue
-            if comm_queue is not None:
-                trusted_msg = dict(msg)
-                trusted_msg["from_plugin"] = self.plugin_id
-                trusted_msg["_rpc_connection_id"] = self._connection_id
-                await comm_queue.put(trusted_msg)
+            from plugin.core.rpc import RpcClosedError, rpc_reply
+            trusted_msg = dict(msg)
+            trusted_msg["from_plugin"] = self.plugin_id
+            trusted_msg["_rpc_connection_id"] = self._connection_id
+            try:
+                ingress = state.plugin_control_ingress
+                if ingress is None:
+                    raise RpcClosedError("Plugin control router is not running")
+                await ingress.enqueue(trusted_msg, is_current=lambda: not self._closed)
+            except (asyncio.QueueFull, RpcClosedError, TimeoutError) as exc:
+                if msg.get("type") not in {"RPC_CANCEL", "RPC_DISCONNECT"}:
+                    code = "BUSY" if isinstance(exc, asyncio.QueueFull) else ("DEADLINE_EXCEEDED" if isinstance(exc, TimeoutError) else "CONNECTION_CLOSED")
+                    await asyncio.wait_for(self.send_plugin_response(rpc_reply(trusted_msg, error={"code": code, "message": "Plugin control request was not admitted"})), timeout=0.25)
         except Exception as e:
             self.logger.warning("Failed to route comm message from plugin {}: {}", self.plugin_id, e)
 

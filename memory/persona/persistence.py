@@ -68,9 +68,10 @@ class PersistenceMixin:
         is no legacy flat file to migrate (RFC §3.5.5, last paragraph).
         """
         from memory import ensure_character_dir
+        from memory.archive_shards import PERSONA_ARCHIVE_DIRNAME
         return os.path.join(
             ensure_character_dir(self._config_manager.memory_dir, name),
-            'persona_archive',
+            PERSONA_ARCHIVE_DIRNAME,
         )
 
     def _sync_save_persona_view(self, n: str, view: dict) -> None:

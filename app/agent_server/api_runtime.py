@@ -331,6 +331,47 @@ def _resolve_conversation_ts(event: Dict[str, Any]) -> float:
     return value if math.isfinite(value) else time.time()
 
 
+def _forward_user_context(event: Dict[str, Any]) -> None:
+    """Project user turns into the embedded plugin runtime's recent context.
+
+    Main and agent can be separate processes. Only update the plugin bucket:
+    redispatching all utterance sinks here would repeat memory side effects.
+    The local write and this relay share identity and producer time so merged
+    mode and repeated delivery cannot duplicate or refresh a user utterance.
+    """
+    if not _user_plugins_enabled() or event.get("turn_type") != "user_message":
+        return
+    content = event.get("content")
+    metadata = event.get("metadata")
+    if not isinstance(content, str) or not content.strip():
+        return
+    if not isinstance(metadata, dict) or not isinstance(metadata.get("is_voice"), bool):
+        return
+    # Do not convert a malformed or missing producer time into fresh activity.
+    timestamp = event.get("ts")
+    if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)) or not math.isfinite(timestamp):
+        return
+    try:
+        from plugin.core.state import state
+
+        character = event.get("lanlan_name")
+        payload = {
+            "type": "user_message",
+            "event_id": event.get("event_id"),
+            "_ts": timestamp,
+            "content": content.strip(),
+            "lanlan": character,
+            "is_voice": metadata["is_voice"],
+            "source": str(event.get("source") or "unknown"),
+        }
+        for bucket in dict.fromkeys(("default", character)):
+            if isinstance(bucket, str) and bucket:
+                state.add_user_context_event(bucket, payload)
+    except Exception:
+        # This observer must not interrupt the conversation bus or log text.
+        logger.debug("[UserContext] projection failed")
+
+
 def _forward_conversation_turn(event: Dict[str, Any]) -> bool:
     """Copy one already-handled conversation message into the ``conversations`` store.
 
@@ -554,6 +595,7 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
         _forward_provider_frame(event)
         return
     if event_type == "conversation_turn_observed":
+        _forward_user_context(event)
         _forward_conversation_turn(event)
         return
     if event_type == "conversation_fact_observed":
@@ -778,8 +820,26 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
         except Exception:
             logger.debug("[TaskExecutor] emit notification failed", exc_info=True)
 
+# Stall watchdog for this process's event loop. In merged mode the loop is
+# shared with main_server, which has usually started it already; the start
+# helper then hands back that same watchdog instead of a second one.
+_loop_stall_watchdog = None
+
+
 @app.on_event("startup")
 async def startup():
+    global _loop_stall_watchdog
+    # Started first so the rest of startup is covered; returns immediately.
+    if _loop_stall_watchdog is None:
+        try:
+            from utils.event_loop_watchdog import start_loop_stall_watchdog_from_env
+
+            _loop_stall_watchdog = start_loop_stall_watchdog_from_env(
+                asyncio.get_running_loop(), logger=logger, label="agent_server"
+            )
+        except Exception as e:
+            logger.warning(f"[loop-stall] watchdog start failed: {e}")
+
     # Install token tracking hooks for this process
     try:
         from utils.token_tracker import TokenTracker, install_hooks
@@ -964,7 +1024,15 @@ async def startup():
 @app.on_event("shutdown")
 async def shutdown():
     """Gracefully stop running tasks and release async resources."""
+    global _loop_stall_watchdog
     logger.info("[Agent] Shutdown initiated — stopping running tasks")
+    # Release first so the synchronous cleanup below is not reported as stalls.
+    if _loop_stall_watchdog is not None:
+        try:
+            _loop_stall_watchdog.stop()
+        except Exception as e:
+            logger.debug(f"[loop-stall] watchdog stop failed: {e}")
+        _loop_stall_watchdog = None
 
     try:
         from utils.token_tracker import TokenTracker

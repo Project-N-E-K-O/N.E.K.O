@@ -1029,6 +1029,7 @@ async def publish_conversation_turn_observed_best_effort(
     message_count: int = 0,
     metadata: Optional[Dict[str, Any]] = None,
     ts: Optional[float] = None,
+    event_id: Optional[str] = None,
 ) -> bool:
     """Copy one message of an already-handled turn onto the plugin bus.
 
@@ -1077,13 +1078,16 @@ async def publish_conversation_turn_observed_best_effort(
 
     Best effort in the same strong sense as the frame publisher: ``True`` means
     "handed to the socket", never "a plugin will see it".
+
+    ``event_id`` may be supplied when the same observation is also delivered
+    locally, so consumers can deduplicate the two paths.
     """
     text = str(content or "")
     if not text.strip():
         return False
     event: Dict[str, Any] = {
         "event_type": CONVERSATION_TURN_OBSERVED_EVENT,
-        "event_id": uuid.uuid4().hex,
+        "event_id": event_id or uuid.uuid4().hex,
         "lanlan_name": lanlan_name,
         "source": str(source or "unknown"),
         "conversation_id": str(conversation_id or ""),

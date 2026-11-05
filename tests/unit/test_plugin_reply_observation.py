@@ -1,15 +1,85 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
-from unittest.mock import MagicMock
 
 import main_logic.core.turn as turn_module
 from main_logic import core
+from main_logic.core.turn import TurnMixin
+from main_logic.omni_realtime_client import OmniRealtimeClient, _gemini_support
+from main_logic.tool_calling import ToolResult
+from tests.unit.test_core_game_route_memory_contract import _make_manager
 from tests.unit.test_offline_late_completion_turn_ownership import (
     _client, _core_manager, _text, _wire, _observe, _make_callback_media_manager,
 )
+from tests.unit.test_realtime_tool_ownership import _GeminiSession
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
+
+
+@pytest.fixture
+def _gemini_sdk(monkeypatch):
+    """Gemini dispatch runs against the real genai types, without telemetry."""
+    from google.genai import types
+    from utils.token_tracker import TokenTracker
+    monkeypatch.setattr(_gemini_support, "types", types)
+    monkeypatch.setattr(TokenTracker, "get_instance",
+                        lambda: SimpleNamespace(record=lambda **_kwargs: None))
+
+
+def _event(*, text=None, user=None, complete=False, interrupted=False):
+    return SimpleNamespace(
+        tool_call=None,
+        tool_call_cancellation=None,
+        voice_activity_detection_signal=None,
+        server_content=SimpleNamespace(
+            input_transcription=SimpleNamespace(text=user) if user else None,
+            output_transcription=SimpleNamespace(text=text) if text else None,
+            model_turn=None,
+            turn_complete=complete,
+            interrupted=interrupted,
+        ),
+    )
+
+
+def _client_manager():
+    manager = _make_manager()
+    manager._clear_tts_pipeline = AsyncMock()
+    manager.send_user_activity = AsyncMock()
+    manager._reset_ai_turn_buffer = lambda: None
+    manager.tool_registry = SimpleNamespace(
+        get=lambda _name: None,
+        execute=AsyncMock(side_effect=lambda call: ToolResult(
+            name=call.name, call_id=call.call_id, output={"value": "synthetic"}
+        )),
+    )
+
+    async def text_delta(text, is_first_chunk):
+        await TurnMixin.send_lanlan_response(manager, text, is_first_chunk)
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime", "synthetic", api_type="gemini",
+        get_host_turn_id=lambda: manager.current_speech_id,
+        on_new_message=manager.handle_new_message,
+        on_text_delta=text_delta,
+        on_input_transcript=AsyncMock(),
+        on_response_done=AsyncMock(),
+    )
+    provider = _GeminiSession()
+    manager.session = client
+    client._gemini_session = client.ws = provider
+    client._on_connection_attached()
+    client.on_tool_call = manager._make_tool_call_handler(client)
+    return manager, client, provider
+
+
+async def _dispatch(client, provider, event):
+    await client._process_gemini_response(
+        event, provider_session=provider,
+        connection_generation=client._connection_generation,
+    )
 
 
 async def test_normal_reply_facts_and_record_share_frozen_identity(monkeypatch):
@@ -221,10 +291,8 @@ async def test_realtime_response_scopes_observation_and_keeps_unknown_origin(mon
     assert records[-1]["metadata"]["reply_id"] == facts[0][1]["reply_id"]
 
 
-async def test_native_gemini_accepted_turn_emits_observed_boundaries(monkeypatch):
-    from types import SimpleNamespace
+async def test_native_gemini_accepted_turn_emits_observed_boundaries(monkeypatch, _gemini_sdk):
     import main_logic.omni_realtime_client._transport as transport_module
-    from tests.unit.test_gemini_chat_source_ownership import _client_manager, _dispatch, _event
     from utils.token_tracker import TokenTracker
     facts = []
     def note(name, *, fact, payload):
@@ -243,10 +311,8 @@ async def test_native_gemini_accepted_turn_emits_observed_boundaries(monkeypatch
 
 @pytest.mark.parametrize("defer_record", [False, True])
 @pytest.mark.parametrize("new_boundary", [False, True])
-async def test_gemini_late_transcript_corrects_original_reply_record(monkeypatch, defer_record, new_boundary):
-    from types import SimpleNamespace
+async def test_gemini_late_transcript_corrects_original_reply_record(monkeypatch, _gemini_sdk, defer_record, new_boundary):
     import main_logic.omni_realtime_client._transport as transport_module
-    from tests.unit.test_gemini_chat_source_ownership import _client_manager, _dispatch, _event
     from plugin.message_plane.stores import TopicStore
     from plugin.server.application.conversations import ConversationService
 
@@ -339,10 +405,8 @@ async def test_gemini_late_transcript_corrects_original_reply_record(monkeypatch
     assert service.get_reply(reply_id)["text"] == "first continuation"
 
 
-async def test_gemini_ambiguous_injection_retires_open_previous_observation(monkeypatch):
-    from types import SimpleNamespace
+async def test_gemini_ambiguous_injection_retires_open_previous_observation(monkeypatch, _gemini_sdk):
     import main_logic.omni_realtime_client._transport as transport_module
-    from tests.unit.test_gemini_chat_source_ownership import _client_manager, _dispatch, _event
 
     facts = []
     note = lambda name, *, fact, payload: facts.append((fact, payload))
