@@ -1651,7 +1651,13 @@ I.mod = window.appInterpage;
             }
         } finally {
             if (preparedLive2DModel && window.live2dManager?.currentModel !== preparedLive2DModel) {
-                preparedLive2DModel.destroy({ children: true });
+                // loadModel may already have destroyed a superseded candidate; a second
+                // destroy throws and must not skip the in-flight cleanup below.
+                try {
+                    preparedLive2DModel.destroy({ children: true });
+                } catch (destroyError) {
+                    console.warn('[Model] 清理未使用的预加载模型失败:', destroyError);
+                }
             }
             // Clear in-flight flag
             window._modelReloadInFlight = false;

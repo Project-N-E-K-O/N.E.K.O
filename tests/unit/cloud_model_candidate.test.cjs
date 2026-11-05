@@ -178,6 +178,28 @@ for (const type of ['live2d', 'vrm']) for (const roleChanges of [false, true]) {
     });
 }
 
+test('cloud candidate that was already destroyed still clears the in-flight reload', async () => {
+    const context = {
+        I: { isMainUIHiddenByModelManager: () => false, cleanupLive2DOverlayUI() {}, cleanupVRMOverlayUI() {} },
+        console: { log() {}, warn() {}, error() {} }, Date, JSON, Promise, setTimeout, clearTimeout,
+        _isModelHostPage: () => true, activeMMDReloadCanvasSessionId: '', deferredMainUIShowAfterModelReload: null,
+        lanlan_config: { lanlan_name: 'Synthetic', model_type: 'live2d' }, live2dManager: { currentModel: {} },
+        Live2DModel: { from: async () => {
+            context.lanlan_config.lanlan_name = 'Other';
+            // The bundled InternalModel.destroy releases its renderer, so a second call throws.
+            return { destroy() { throw new TypeError("Cannot read properties of undefined (reading 'release')"); } };
+        } },
+    };
+    context.window = context;
+    vm.createContext(context);
+    vm.runInContext(actualReload, context);
+    await assert.rejects(context.I.handleModelReload('Synthetic', {
+        temporaryConfig: { model_type: 'live2d', model_path: '/user_live2d/candidate/model.model3.json' },
+        suppressToast: true, throwOnError: true, preservePreviousUntilLoaded: true,
+    }), /model_role_changed/);
+    assert.equal(context._modelReloadInFlight, false);
+});
+
 const modelSource = fs.readFileSync(path.resolve(__dirname, '../../static/live2d/live2d-model.js'), 'utf8');
 const modelStart = modelSource.indexOf('Live2DManager.prototype.loadModel = async function');
 const loadModelSource = modelSource.slice(modelStart, modelSource.indexOf('\n// 检查加载令牌', modelStart));
