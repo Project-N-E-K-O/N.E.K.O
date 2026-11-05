@@ -2,7 +2,7 @@
 
 In desktop 0.9.1, turn off Global Always on Top in desktop mode, quit, and relaunch. The character still covers a focused normal window while the chat yields to it. On macOS the new character panel reports `isAlwaysOnTop() === false` even though WindowServer puts it at floating level 3. The coordinator sees the requested value and skips the native level change.
 
-[window-level.patch](window-level.patch) updates the Electron desktop source. When the saved preference is off, create the panel hidden, explicitly reset its native level, and call `showInactive()` after initialization. The visible character then starts at normal level 0. The condition applies only to character windows of type `panel` whose coordinator reports the preference is off.
+[window-level.patch](window-level.patch) updates the Electron desktop source. When the saved preference is off, create the panel hidden, explicitly reset its native level, and call `showInactive()` after initialization only if the original `show` option was not `false`. The visible character then starts at normal level 0. The condition applies only to character windows of type `panel` whose coordinator reports the preference is off.
 
 ## Integration
 
@@ -12,7 +12,7 @@ The patch was prepared against the packaged 0.9.1 source. SHA-256 for `src/windo
 
 ```text
 before  3bbaad60a6a37e8f776f237816692c142a326d738c98eabdc0e458fda8ffffe4
-after   9ec57b99b2a228678c4c1b5607f3eceeca075681464f3b878aa1c7f34908454d
+after   d2ac0c293aa9868180d392107a7ce3b9b4eb6c55565acc4e77f33be7e6788d69
 ```
 
 ```sh
@@ -38,3 +38,11 @@ for window in windows where window[kCGWindowOwnerPID as String] as? Int == pid {
 ```
 
 On a real macOS arm64 desktop 0.9.1 restart with silent startup enabled and Global Always on Top off, the character/chat native levels changed from 3/0 before the patch to 0/0 afterward. An isolated Electron 42.6.1 panel fixture also verified startup with the preference on and off and both runtime toggle directions. Maintainers can repeat the native checks on the current desktop source revision.
+
+## Startup order and hidden-window contract
+
+In the packaged 0.9.1 `src/main.js`, startup assigns `isGlobalAlwaysOnTop = appConfig.globalAlwaysOnTop !== false` and immediately injects `windowManager.setTopCoordinator({ isEnabled: () => isGlobalAlwaysOnTop, ... })` before window creation. The initial Pet creation therefore reads the persisted preference, rather than an uninitialized coordinator. Integrators must preserve this order.
+
+The patch snapshots `winOptions.show !== false` before temporarily hiding the panel. Electron treats omitted/undefined `show` as visible. An explicit `false` remains hidden after the native level reset, so a future startup gate can suppress the character without this patch revealing it. The loading-window preference in #3621 is independent.
+
+Run `node --test docs/design/macos-pet-panel-level/window-level.test.cjs` for the patched control-flow cases (default-visible, explicitly visible, explicitly hidden, always-on-top enabled, and non-panel). These are mock-window checks; the prior native visible-panel result above is from the earlier patch, and the revised hidden-window path still needs native acceptance in the desktop source integration.
