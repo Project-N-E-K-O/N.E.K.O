@@ -1201,8 +1201,9 @@
           // 先让旧传输页正常退房并清掉旧猫场景，否则后面的新 visit_id 会被过滤。
           var replacedFrame = {
             type: 'visit_state_change', action: 'ended',
-            visit_id: replacedVisitId, side: state.side, reason: 'replaced'
+            visit_id: replacedVisitId, side: state.side
           };
+          if (snap.cat_scene === 2) replacedFrame.reason = 'cat_replaced';
           applyStateChange(replacedFrame, true);
           if (typeof win.nekoRestoreVisitStateToDisplay === 'function') {
             try { win.nekoRestoreVisitStateToDisplay(replacedFrame); } catch (_) { /* transport replacement still continues */ }

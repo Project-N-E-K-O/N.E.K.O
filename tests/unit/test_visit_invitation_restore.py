@@ -597,7 +597,8 @@ def test_bfcache_recovery_replaces_stale_cat_display_before_starting_the_new_vis
         const applied = await pet.bridge.recoverAfterReload('咪咪');
         const snapshotAfter = pet.ctx.nekoVisitDisplayStateSnapshot();
         return { applied, visitId: pet.bridge.getVisitId(), actions: restored.map(frame => ({
-          action: frame.action, visit_id: frame.visit_id, self_cat_asset: frame.self_cat_asset || ''
+          action: frame.action, visit_id: frame.visit_id, reason: frame.reason || '',
+          self_cat_asset: frame.self_cat_asset || ''
         })), snapshotAfter };
         """,
         files=BRIDGE_FILES,
@@ -605,10 +606,45 @@ def test_bfcache_recovery_replaces_stale_cat_display_before_starting_the_new_vis
     )
     assert out["applied"] and out["visitId"] == "B" * 22
     assert out["actions"][-2:] == [
-        {"action": "ended", "visit_id": VISIT_ID, "self_cat_asset": ""},
-        {"action": "started", "visit_id": "B" * 22, "self_cat_asset": "yui_neko"},
+        {"action": "ended", "visit_id": VISIT_ID, "reason": "cat_replaced", "self_cat_asset": ""},
+        {"action": "started", "visit_id": "B" * 22, "reason": "", "self_cat_asset": "yui_neko"},
     ]
     assert out["snapshotAfter"]["visit_id"] == "B" * 22
+
+
+def test_bfcache_recovery_from_cat_to_model_does_not_preserve_the_old_cat():
+    out = run_visit_js(
+        """
+        const pet = makeBridge();
+        load(pet.ctx, [DISPLAY_RELAY]);
+        const restored = [];
+        pet.ctx.addEventListener('neko-visit-display-state', event => restored.push(event.detail));
+        pet.bridge.onStateChange({ type: 'visit_state_change', action: 'started',
+          visit_id: VISIT_ID, side: 'host' });
+        pet.ctx.nekoRestoreVisitStateToDisplay({ type: 'visit_state_change', action: 'started',
+          visit_id: VISIT_ID, side: 'host', cat_scene: 2,
+          self_cat_asset: 'dev_neko', peer_cat_asset: 'yui_neko' });
+        pet.ctx.dispatchEvent({ type: 'pagehide', persisted: true });
+        pet.ctx.fetch = async () => ({ ok: true, json: async () => snapshot({
+          visit_id: 'B'.repeat(22), side: 'host', phase: 'active', cat_scene: 0
+        }) });
+        const applied = await pet.bridge.recoverAfterReload('咪咪');
+        return { applied, visitId: pet.bridge.getVisitId(), actions: restored.slice(-2).map(frame => ({
+          action: frame.action, visit_id: frame.visit_id, reason: frame.reason || '',
+          cat_scene: frame.cat_scene || 0
+        })) };
+        """,
+        files=BRIDGE_FILES,
+        extra_prelude=_prelude(),
+    )
+    assert out == {
+        "applied": True,
+        "visitId": "B" * 22,
+        "actions": [
+            {"action": "ended", "visit_id": VISIT_ID, "reason": "", "cat_scene": 0},
+            {"action": "started", "visit_id": "B" * 22, "reason": "", "cat_scene": 0},
+        ],
+    }
 
 
 @pytest.mark.parametrize("failure", ["nonlocal", "missing_endpoint", "csrf", "server"])

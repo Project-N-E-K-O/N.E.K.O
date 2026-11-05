@@ -733,15 +733,19 @@ const report = {};
   const replacementNative = replacement.installNativeSelf();
   let replacementReturnClicks = 0;
   replacementNative.button.addEventListener('click', () => { replacementReturnClicks += 1; });
-  replacement.state('ended', { reason: 'replaced' });
+  replacement.state('ended', { reason: 'cat_replaced' });
   replacement.stateFor('B'.repeat(22), 'started', {
     cat_scene: 2, self_cat_asset: 'yui_neko', peer_cat_asset: 'dev_neko',
   });
+  const replacementActive = replacement.body.classList.contains('neko-visit-cat-scene-active');
+  const replacementVisitId = replacement.root().getAttribute('data-visit-id');
+  const replacementNativeActor = replacementNative.container.getAttribute('data-visit-cat-actor');
+  replacement.stateFor('B'.repeat(22), 'ended');
   report.cat_visit_replacement = {
-    return_clicks: replacementReturnClicks,
-    active: replacement.body.classList.contains('neko-visit-cat-scene-active'),
-    visit_id: replacement.root().getAttribute('data-visit-id'),
-    native_actor: replacementNative.container.getAttribute('data-visit-cat-actor'),
+    active_before_end: replacementActive,
+    visit_id_before_end: replacementVisitId,
+    native_actor_before_end: replacementNativeActor,
+    return_clicks_after_end: replacementReturnClicks,
   };
 
   const bounded = createHarness();
@@ -1040,10 +1044,10 @@ def test_ended_cleans_native_binding_animation_and_scene(report):
 
 def test_cat_visit_replacement_keeps_the_native_cat_for_the_new_scene(report):
     assert report["cat_visit_replacement"] == {
-        "return_clicks": 0,
-        "active": True,
-        "visit_id": "B" * 22,
-        "native_actor": "self",
+        "active_before_end": True,
+        "visit_id_before_end": "B" * 22,
+        "native_actor_before_end": "self",
+        "return_clicks_after_end": 1,
     }
 
 
