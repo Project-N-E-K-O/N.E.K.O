@@ -1322,7 +1322,7 @@ class _StreamingMixin:
                         # summary-mode lift / vision switch), ``None`` stays
                         # uncapped.
                         _focus_overrides = self._focus_stream_overrides(
-                            thinking_on, self.model, base_url=self.base_url,
+                            thinking_on, self.model, base_url=getattr(self, "base_url", None),
                             base_max_tokens=(
                                 getattr(getattr(self, "llm", None), "max_completion_tokens", None)
                             ),
