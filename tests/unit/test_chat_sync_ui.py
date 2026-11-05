@@ -664,7 +664,7 @@ def test_all_memory_diagnostics_and_login_error_are_visible_together_in_chromium
 
 @pytest.mark.parametrize('preference_error', [False, True])
 @pytest.mark.parametrize('old_type', ['vrm', 'pngtuber'])
-@pytest.mark.parametrize('change', ['name', 'switching'])
+@pytest.mark.parametrize('change', ['name', 'switching', 'returned'])
 def test_late_candidate_role_change_preserves_the_new_role_model_in_chromium(preference_error, old_type, change):
     from playwright.sync_api import sync_playwright
     source = (ROOT / 'static/app/app-interpage/bootstrap-resources-and-model-reload.js').read_text(encoding='utf-8')
@@ -679,6 +679,8 @@ def test_late_candidate_role_change_preserves_the_new_role_model_in_chromium(pre
         page.evaluate(r"""oldType => {
             window.reloadOptions={preservePreviousUntilLoaded:true};
             window.currentLanlanName='Neko';
+            window.currentSwitchAttempt=1;
+            window.appState={isSwitchingCatgirl:false,_switchAttemptCounter:1};
             window.lanlan_config={lanlan_name:'Neko',model_type:'live2d',live3d_sub_type:'',pngtuber:{}};
             window.typeChanged=true;
             window.oldModelType=oldType;
@@ -703,6 +705,7 @@ def test_late_candidate_role_change_preserves_the_new_role_model_in_chromium(pre
         page.wait_for_function('!!window.preferencesReady')
         page.evaluate(r"""([failed,change]) => {
             if(change==='switching')window.appState={isSwitchingCatgirl:true};
+            else if(change==='returned')window.appState._switchAttemptCounter+=2;
             else lanlan_config.lanlan_name='Other';
             live2dManager.currentModel='new-role-model';
             if(failed)preferencesReady.reject(new Error('preferences unavailable'));

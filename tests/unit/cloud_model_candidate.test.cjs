@@ -9,6 +9,76 @@ const start = source.indexOf('    I.handleModelReload = async function');
 const actualReload = source.slice(start, source.indexOf('\n    }', start) + 7).trim();
 assert.ok(start > 0 && actualReload.endsWith('}'));
 
+for (const phase of ['preload', 'idle', 'preferences', 'preferences-error', 'queued']) {
+    test(`full reload rejects a candidate after switching away and back during ${phase}`, async () => {
+        const original = {}, restored = {};
+        let loads = 0, disposed = 0, preloads = 0, release;
+        const candidate = { destroy() { disposed++; } };
+        const context = {
+            I: { isMainUIHiddenByModelManager: () => false, cleanupPNGTuberOverlayUI() {} },
+            console: { log() {}, warn() {}, error() {} }, Date, JSON, Promise, setTimeout,
+            _isModelHostPage: () => true, activeMMDReloadCanvasSessionId: '',
+            deferredMainUIShowAfterModelReload: null,
+            lanlan_config: { lanlan_name: 'Synthetic', model_type: 'live2d', live3d_sub_type: '' },
+            appState: { isSwitchingCatgirl: false, _switchAttemptCounter: 1 },
+            document: { getElementById() { return null; } },
+        };
+        function switchAwayAndBack() {
+            context.appState.isSwitchingCatgirl = true;
+            context.lanlan_config.lanlan_name = 'Other';
+            context.appState._switchAttemptCounter++;
+            context.lanlan_config.lanlan_name = 'Synthetic';
+            context.appState._switchAttemptCounter++;
+            context.appState.isSwitchingCatgirl = false;
+            context.live2dManager.currentModel = restored;
+        }
+        context.Live2DModel = { from: async () => {
+            preloads++;
+            if (phase === 'queued' && preloads === 1) await new Promise(resolve => { release = resolve; });
+            if (phase === 'preload') switchAwayAndBack();
+            return candidate;
+        } };
+        context._waitForLive2DManagerIdle = async () => {
+            if (phase === 'idle') switchAwayAndBack();
+        };
+        context.live2dManager = {
+            currentModel: original, pixi_app: {},
+            async loadUserPreferences() {
+                if (phase.startsWith('preferences')) switchAwayAndBack();
+                if (phase === 'preferences-error') throw new Error('preferences unavailable');
+                return [];
+            },
+            async loadModel() { loads++; this.currentModel = candidate; throw new Error('stale_candidate_loaded'); },
+        };
+        context.window = context;
+        vm.createContext(context);
+        vm.runInContext(actualReload, context);
+        const options = {
+            temporaryConfig: { model_type: 'live2d', model_path: '/candidate.model3.json' },
+            suppressToast: true, throwOnError: true, preservePreviousUntilLoaded: true,
+        };
+        const operation = context.I.handleModelReload('Synthetic', options);
+        let queued;
+        if (phase === 'queued') {
+            queued = context.I.handleModelReload('Synthetic', {
+                ...options, temporaryConfig: { ...options.temporaryConfig, model_path: '/queued.model3.json' },
+            });
+            switchAwayAndBack();
+            release();
+        }
+        await assert.rejects(operation, /model_role_changed/);
+        if (queued) {
+            assert.equal(await queued, false);
+            assert.equal(preloads, 1);
+        }
+        assert.equal(loads, 0);
+        assert.equal(disposed, 1);
+        assert.equal(context.live2dManager.currentModel, restored);
+        assert.equal(context.lanlan_config.model_type, 'live2d');
+        assert.equal(context._modelReloadInFlight, false);
+    });
+}
+
 const commitStart = source.indexOf('await _waitForLive2DManagerIdle(30000);', source.indexOf('// Ensure PIXI app is initialised'));
 const commitEnd = source.indexOf('preparedLive2DModel = null;', commitStart) + 'preparedLive2DModel = null;'.length;
 const actualCommit = source.slice(commitStart, commitEnd);
@@ -17,13 +87,14 @@ const rollbackStart = source.indexOf('            // 回滚提前写入的 confi
 const actualRollback = source.slice(rollbackStart, source.indexOf('            if (!suppressToast) {', rollbackStart));
 assert.ok(rollbackStart > commitEnd && actualRollback.includes('oldModelType'));
 
-for (const oldType of ['vrm', 'pngtuber']) for (const phase of ['idle', 'preferences', 'preferences-error', 'switching', 'unchanged', 'load-error']) {
+for (const oldType of ['vrm', 'pngtuber']) for (const phase of ['idle', 'idle-returned', 'preferences', 'preferences-returned', 'preferences-error', 'switching', 'unchanged', 'load-error']) {
     test(`cloud candidate rechecks its ${oldType} role after ${phase}`, async () => {
         const current = {}, next = {}, candidate = {};
         let loads = 0;
         const context = {
             console: { log() {}, warn() {}, error() {} },
             reloadOptions: { preservePreviousUntilLoaded: true }, currentLanlanName: 'Synthetic',
+            currentSwitchAttempt: 1, appState: { isSwitchingCatgirl: false, _switchAttemptCounter: 1 },
             newModelPath: '/candidate.model3.json', preparedLive2DModel: candidate,
             typeChanged: true, oldModelType: oldType, oldLive3dSubType: 'mmd',
             pngRestores: 0, loadPNGTuberAvatar: async () => { context.pngRestores++; },
@@ -33,10 +104,11 @@ for (const oldType of ['vrm', 'pngtuber']) for (const phase of ['idle', 'prefere
         };
         function switchRole() {
             if (phase === 'switching') context.appState = { isSwitchingCatgirl: true };
+            else if (phase.endsWith('-returned')) context.appState._switchAttemptCounter += 2;
             else context.lanlan_config.lanlan_name = 'Other';
             context.live2dManager.currentModel = next;
         }
-        context._waitForLive2DManagerIdle = async () => { if (phase === 'idle') switchRole(); };
+        context._waitForLive2DManagerIdle = async () => { if (phase.startsWith('idle')) switchRole(); };
         context.live2dManager = {
             currentModel: current,
             loadUserPreferences: async () => {
