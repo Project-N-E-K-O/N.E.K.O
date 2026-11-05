@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 
@@ -181,6 +182,35 @@ def test_requesty_readback_uses_only_its_dedicated_key(
     )
     assert 'sk-other-core' not in json.dumps(response)
     assert 'sk-requesty-dedicated' not in json.dumps(response)
+
+
+def _assist_only_key_fields() -> list[tuple[str, str]]:
+    path = Path(__file__).resolve().parents[2] / 'config' / 'api_providers.json'
+    catalog = json.loads(path.read_text(encoding='utf-8'))
+    providers = (
+        set(catalog['assist_api_providers'])
+        - set(catalog['core_api_providers'])
+        - {'vllm_omni'}
+    )
+    registry = catalog['api_key_registry']
+    return [(p, registry[p]['config_field']) for p in sorted(providers)]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(('provider', 'config_field'), _assist_only_key_fields())
+def test_assist_only_readback_never_shows_core_key(
+    config_manager, core_config_router, provider, config_field,
+):
+    """An assist-only provider's empty key must read back empty, not as coreApiKey."""
+    _write_core_config(config_manager, {
+        'coreApi': 'qwen',
+        'coreApiKey': 'sk-other-core',
+        'assistApi': provider,
+    })
+    response = asyncio.run(core_config_router.get_core_config_api())
+    assert response['success'] is True
+    assert response[config_field] == ''
+    assert response['assist_api_key_display'] == ''
 
 
 @pytest.mark.unit
