@@ -752,7 +752,11 @@ async def verify_retired_assertions(retirements, extracted, messages, request, *
 
 
 def fact_source_evidence(retirements, fact, entity, source_messages, *, source='user_observation', matched_ids=()):
-    """Return trusted provenance, None for retired replay, or fail for unresolved evidence."""
+    """Return trusted provenance, {} when sources cannot be proven, None to reject, or fail for unresolved evidence.
+
+    Only a user observation cited to a non-user message is rejected outright; a missing or
+    unusable citation keeps the fact without provenance, as before source evidence existed.
+    """
     from memory.facts import FactExtractionFailed
     matching = [row for row in retirements if row.get('subject') == entity and isinstance(row.get('text'), str)
                 and (row['id'] in matched_ids or _assertion_text(row['text']) == _assertion_text(fact.get('text', '')))]
@@ -761,12 +765,14 @@ def fact_source_evidence(retirements, fact, entity, source_messages, *, source='
         type(index) is int and 1 <= index <= len(source_messages) for index in indices)
     selected = [source_messages[index - 1] for index in dict.fromkeys(indices)] if valid else []
     proofs = []
+    misattributed = False
     for message in selected:
+        if source == 'user_observation' and getattr(message, 'type', '') not in ('human', 'user'):
+            proofs = []
+            misattributed = True
+            break
         identity, at = trusted_message_source(message)
         if not identity:
-            proofs = []
-            break
-        if source == 'user_observation' and getattr(message, 'type', '') not in ('human', 'user'):
             proofs = []
             break
         proofs.append((identity, at))
@@ -774,7 +780,7 @@ def fact_source_evidence(retirements, fact, entity, source_messages, *, source='
         if any(trusted_message_source(message)[0] for message in source_messages or []):
             raise FactExtractionFailed('retired_assertion_source_unavailable')
         return None
-    if not proofs and any(trusted_message_source(message)[0] for message in source_messages or []):
+    if misattributed:
         return None
     if not proofs:
         return {}

@@ -1572,7 +1572,8 @@ async def test_cancel_during_reconfirmation_save_waits_for_consistent_committed_
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('indices', [None, [], [True], [0], [3], [2]])
-async def test_fresh_trusted_batch_rejects_unverified_user_observation_sources(tmp_path, indices):
+async def test_fresh_trusted_batch_rejects_only_user_observations_cited_to_character_lines(tmp_path, indices):
+    """A missing or unusable citation keeps the fact without provenance; citing a character line rejects it."""
     from utils.llm_client import AIMessage
     h = _harness(tmp_path, [])
     sources = [_trusted_sync_message('a', 1000, 'My notebook has a silver cover.'),
@@ -1581,8 +1582,13 @@ async def test_fresh_trusted_batch_rejects_unverified_user_observation_sources(t
         {'entity': 'master', 'text': 'a valid independent fact', 'source_indices': [1]},
         {'entity': 'neko', 'text': 'an unsupported candidate', 'source_indices': indices}],
         source_messages=sources)
-    assert [row['text'] for row in rows] == ['a valid independent fact']
-    assert all(row['text'] != 'an unsupported candidate' for row in h._mem)
+    if indices == [2]:
+        assert [row['text'] for row in rows] == ['a valid independent fact']
+        assert all(row['text'] != 'an unsupported candidate' for row in h._mem)
+    else:
+        assert [row['text'] for row in rows] == ['a valid independent fact', 'an unsupported candidate']
+        assert rows[0]['source_message_ids'] == ['sync:' + 'a' * 32]
+        assert 'source_message_ids' not in rows[1]
 
 
 @pytest.mark.asyncio
@@ -2173,8 +2179,26 @@ async def test_invalid_candidate_source_does_not_drop_valid_batch_members(tmp_pa
         {'entity': 'master', 'text': 'Invented user preference', 'source_indices': [2]},
         {'entity': 'master', 'text': 'Invalid index', 'source_indices': [99]},
     ], source_messages=messages)
-    assert [row['text'] for row in rows] == ['Enjoys tea']
+    # The character line cannot prove a user fact; an out-of-range citation only loses provenance.
+    assert [row['text'] for row in rows] == ['Enjoys tea', 'Invalid index']
     assert rows[0]['source_message_ids'] == ['raw-user']
+    assert 'source_message_ids' not in rows[1]
+
+
+@pytest.mark.asyncio
+async def test_source_accepted_reports_pre_dedup_candidates_that_passed_source_checks(tmp_path):
+    from utils.llm_client import HumanMessage, AIMessage
+    h = _harness(tmp_path, [])
+    messages = [HumanMessage(content='I enjoy tea', additional_kwargs={'memory_source_id': 'raw-user', 'memory_source_created_at': 1000}),
+                AIMessage(content='Maybe swimming', additional_kwargs={'memory_source_id': 'raw-ai', 'memory_source_created_at': 1001})]
+    candidates = [{'entity': 'master', 'text': 'Enjoys tea', 'source_indices': [1]},
+                  {'entity': 'master', 'text': 'Invented user preference', 'source_indices': [2]}]
+    first: list[dict] = []
+    await h._apersist_new_facts('小天', candidates, source_messages=messages, source_accepted=first)
+    # Repeating the batch folds into the stored row, yet the candidate still counts as accepted.
+    again: list[dict] = []
+    assert await h._apersist_new_facts('小天', candidates, source_messages=messages, source_accepted=again) == []
+    assert [row['text'] for row in first] == [row['text'] for row in again] == ['Enjoys tea']
 
 
 @pytest.mark.asyncio

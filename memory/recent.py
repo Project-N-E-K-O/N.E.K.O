@@ -2694,14 +2694,24 @@ class CompressedRecentHistoryManager:
                 # persist nor update fingerprint, preventing anchor drift outside reviewed range.
                 return ('white', None, 'review 输出为空')
 
+            sync_keys = ('recent_memory_id', 'recent_memory_time', 'chat_original_source')
+            # Only synced projection rows demand a proven source. chat_original_source is on every
+            # typed message, so it is carried when proven but never blocks the review.
+            projection_keys = ('recent_memory_id', 'recent_memory_time')
+            has_sync_identity = any(any(key in message_metadata(current[slot]) for key in projection_keys)
+                                    for slot in review_slots)
             try:
                 sources = _resolve_review_sources(snapshot, corrected_messages, source_indexes)
             except ValueError:
-                return ('failed', None, 'invalid_review_sources')
-            sync_keys = ('recent_memory_id', 'recent_memory_time', 'chat_original_source')
-            has_sync_identity = any(any(key in message_metadata(current[slot]) for key in sync_keys)
-                                    for slot in review_slots)
+                if has_sync_identity:
+                    logger.warning(f"[RecentReview] {lanlan_name}: 模型返回的来源编号无效，同步消息无法对应，放弃本次审阅")
+                    return ('failed', None, 'invalid_review_sources')
+                sources = _resolve_review_sources(snapshot, corrected_messages)
             if has_sync_identity and any(source is None for source in sources):
+                logger.warning(
+                    f"[RecentReview] {lanlan_name}: {sum(source is None for source in sources)} 条改写消息"
+                    f"认不出来源，同步消息无法对应，放弃本次审阅"
+                )
                 return ('failed', None, 'ambiguous_review_sources')
             first_source = len(snapshot) - capacity
             retained = []
@@ -2991,9 +3001,8 @@ class CompressedRecentHistoryManager:
                         # Default to user message.
                         corrected_messages.append(HumanMessage(content=content))
                     source_index = msg_data.get('source_index')
-                    if 'source_index' in msg_data and type(source_index) is not int:
-                        return ('failed', None)
-                    source_indexes.append(source_index)
+                    # A malformed index is an unknown source; the commit decides whether that blocks.
+                    source_indexes.append(source_index if type(source_index) is int else None)
 
                 # Normalize SystemMessage position: if snapshot head is memo,
                 # corrected_messages must begin with exactly one SystemMessage.

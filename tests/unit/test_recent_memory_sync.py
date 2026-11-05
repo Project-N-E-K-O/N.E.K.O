@@ -241,6 +241,35 @@ def test_review_invalid_sources_leave_disk_unchanged(review_identity_case, sourc
     assert messages_to_dict(saved) == messages_to_dict(original)
 
 
+def _unsynced_typed_review_messages():
+    """Typed chat carries chat_original_source even when the character never enabled sync."""
+    return [
+        type(message)(message.content, metadata={'chat_original_source': message.metadata['chat_original_source']})
+        for message in _identified_review_messages()
+    ]
+
+
+@pytest.mark.parametrize('sources', [None, [None, None], [99, 98], [1, 0]])
+def test_review_without_sync_projection_is_not_blocked_by_unproven_sources(review_identity_case, sources):
+    from utils.llm_client import HumanMessage
+
+    original = _unsynced_typed_review_messages()
+    corrected = [HumanMessage('rewritten user A'), HumanMessage('rewritten user B')]
+    status, saved, _ = review_identity_case(original, corrected, source_indexes=sources)
+    assert status == 'patched'
+    assert [message.content for message in saved] == ['rewritten user A', 'rewritten user B']
+
+
+def test_review_without_sync_projection_still_carries_proven_original_source(review_identity_case):
+    from utils.llm_client import HumanMessage, AIMessage
+
+    original = _unsynced_typed_review_messages()
+    status, saved, _ = review_identity_case(original, [HumanMessage('edited user-A'), AIMessage('edited reply-A')],
+                                          source_indexes=[0, 1])
+    assert status == 'patched'
+    assert [message.metadata for message in saved] == [message.metadata for message in original[:2]]
+
+
 def test_review_same_role_neighbors_keep_their_own_identity(review_identity_case):
     from utils.llm_client import HumanMessage
 

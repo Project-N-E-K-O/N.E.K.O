@@ -3593,6 +3593,7 @@ class FactStore:
         effect_keys: list[str | None] | None = None,
         visit_origin: dict | None = None,
         source_messages: list | None = None,
+        source_accepted: list[dict] | None = None,
     ) -> list[dict]:
         # Collect near-duplicate pairs under lock, submit only afterward: submission needs
         # FactDedupResolver's per-character lock, while aresolve reverses the order,
@@ -3663,6 +3664,7 @@ class FactStore:
                     near_dup_pairs_out=near_dup_pairs,
                     retirement_review=retirement_review,
                     **({'source_messages': source_messages} if source_messages is not None else {}),
+                    **({'source_accepted': source_accepted} if source_accepted is not None else {}),
                     **(
                         {"effect_keys": effect_keys}
                         if effect_keys is not None else {}
@@ -3718,6 +3720,7 @@ class FactStore:
         effect_keys: list[str | None] | None = None,
         visit_origin: dict | None = None,
         source_messages: list | None = None,
+        source_accepted: list[dict] | None = None,
     ) -> list[dict]:
         """Dedup (SHA-256 + FTS5) + persist. importance < 5 facts are KEPT
         (RFC §3.1.3)—downstream `get_unabsorbed_facts(min_importance=5)`
@@ -3748,6 +3751,10 @@ class FactStore:
         ``reconciled_facts`` receives snapshots of existing rows whose
         provenance this call reconciled, so callers can distinguish their own
         write from a concurrent provenance change.
+
+        ``source_accepted`` receives the candidates that passed source and
+        retirement checks, before dedup folds any of them into existing rows,
+        so the pinned section never admits a candidate persistence rejected.
 
         ``effect_keys`` (keyed scoped_history only) is aligned index-for-index
         with ``extracted``. A non-empty entry is stamped onto the created row
@@ -3803,8 +3810,18 @@ class FactStore:
                     source_provenance[id(candidate)] = proof
                     if accepted_effects is not None:
                         accepted_effects.append(effect_keys[index] if index < len(effect_keys) else None)
+            rejected = sum(isinstance(candidate, dict) for candidate in extracted) - len(accepted)
+            unproven = sum(1 for candidate in accepted if not source_provenance[id(candidate)])
+            if rejected or unproven:
+                # Counts only: fact texts never go to the logger.
+                logger.info(
+                    f"[FactStore] {lanlan_name}: 来源校验拒绝 {rejected} 条候选，"
+                    f"{unproven} 条没有可用来源编号、按无来源保存"
+                )
             extracted = accepted
             effect_keys = accepted_effects
+        if source_accepted is not None:
+            source_accepted.extend(candidate for candidate in extracted if isinstance(candidate, dict))
 
         new_facts: list[dict] = []
         # Stage-2 candidates (new fact, existing fact, text overlap). Only collect into caller's
@@ -5079,11 +5096,15 @@ class FactStore:
 
         # Persist newly extracted facts with signal_processed=False.
         # Even zero new facts still drains previous unprocessed tail below.
-        persisted_this_round = await self._apersist_new_facts(lanlan_name, extracted, source_messages=messages)
-        # The raw result, not the persisted rows: a fact that dedup folded into
-        # an existing one still has to renew its pinned entry.
+        source_accepted: list[dict] = []
+        persisted_this_round = await self._apersist_new_facts(
+            lanlan_name, extracted, source_messages=messages, source_accepted=source_accepted,
+        )
+        # The pre-dedup result, not the persisted rows: a fact that dedup folded into
+        # an existing one still has to renew its pinned entry. Candidates rejected by
+        # the source checks (for example a retired assertion) never reach it.
         await self._aadmit_pinned_candidates(
-            lanlan_name, extracted, conversation_at=conversation_at,
+            lanlan_name, source_accepted, conversation_at=conversation_at,
         )
 
         # Drain all signal_processed=False facts (historical tail + current additions).
@@ -5255,18 +5276,20 @@ class FactStore:
                 )
         if not extracted:
             return []
+        source_accepted: list[dict] = []
         created = await self._apersist_new_facts(
             lanlan_name, extracted, subject=subject,
             speaker_provenance=speaker_provenance,
             expected_subject_generation=expected_subject_generation,
             reconciled_facts=reconciled_facts,
             source_messages=messages,
+            source_accepted=source_accepted,
         )
         if memory_subject is None:
             # Private chat only: the pinned section renders into the private
             # prompt, so scoped (group / member) content must never enter it.
             await self._aadmit_pinned_candidates(
-                lanlan_name, extracted, conversation_at=conversation_at,
+                lanlan_name, source_accepted, conversation_at=conversation_at,
             )
         return created
 
@@ -5947,14 +5970,16 @@ class FactStore:
             return None
         if not extracted:
             return []
+        source_accepted: list[dict] = []
         persisted = await self._apersist_new_facts(
             lanlan_name, extracted, default_source='ai_disclosure', subject=subject, source_messages=messages,
+            source_accepted=source_accepted,
         )
         if coerce_subject(subject) is None:
             # Same private-only rule and source default as the persistence above:
             # a fact without an explicit user_observation source is never pinned.
             await self._aadmit_pinned_candidates(
-                lanlan_name, extracted, default_source='ai_disclosure',
+                lanlan_name, source_accepted, default_source='ai_disclosure',
                 conversation_at=conversation_at,
             )
         return persisted
