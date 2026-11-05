@@ -107,6 +107,10 @@ function createHarness(opts) {
   const documentShim = {
     body: body, documentElement: body, activeElement: body,
     createElement: (tag) => { const node = new Node(tag); node.ownerDocument = documentShim; return node; },
+    querySelectorAll(selector) {
+      const className = String(selector || '').startsWith('.') ? String(selector).slice(1) : '';
+      return className ? body.all((node) => String(node.className || '').split(/\s+/).includes(className)) : [];
+    },
     addEventListener(type, fn) { docListeners.push({ type, fn }); },
     removeEventListener(type, fn) { const i = docListeners.findIndex((l) => l.type === type && l.fn === fn); if (i >= 0) docListeners.splice(i, 1); },
   };
@@ -119,6 +123,7 @@ function createHarness(opts) {
     return prevented;
   }
   function appendFocusNode() { const node = documentShim.createElement('button'); body.appendChild(node); node.focus(); return node; }
+  function appendOverlay(className) { const node = documentShim.createElement('div'); node.className = className; body.appendChild(node); return node; }
   // 与真实宿主一样：每条消息带 sortKey（没给就排到最后），按 sortKey 排序
   let sortSeq = 0;
   function sortAll() { messages.sort((a, b) => a.sortKey - b.sortKey); }
@@ -234,7 +239,7 @@ function createHarness(opts) {
   function buttonsOf(node) { return node.all((n) => n.tagName === 'BUTTON'); }
   function lineMessage(id) { return messages.find((x) => x.id.indexOf('visit-line-') === 0 && x.id.endsWith(':' + id)); }
   function lineText(id) { const m = lineMessage(id); return m ? m.blocks.map((b) => b.text).join('|') : null; }
-  return { win, I, chat, sent, fetches, messages, rollbacks, toasts, sendCalls, relayFrames, restoreFrames, socket, body, advance, settle, frame, state, dialogs, buttonsOf, lineText, lineMessage, timers, pressKey, appendFocusNode, activeElement: () => documentShim.activeElement, listeners };
+  return { win, I, chat, sent, fetches, messages, rollbacks, toasts, sendCalls, relayFrames, restoreFrames, socket, body, advance, settle, frame, state, dialogs, buttonsOf, lineText, lineMessage, timers, pressKey, appendFocusNode, appendOverlay, activeElement: () => documentShim.activeElement, listeners };
 }
 
 const report = {};
@@ -758,6 +763,10 @@ const report = {};
     report.cat_exit_tab_forward_wrapped = h.activeElement() === firstButtons[0];
     report.cat_exit_tab_reverse_prevented = h.pressKey('Tab', true);
     report.cat_exit_tab_reverse_wrapped = h.activeElement() === firstButtons[1];
+    const commonModal = h.appendOverlay('modal-overlay');
+    report.cat_exit_covered_tab_ignored = h.pressKey('Tab') === false
+      && h.activeElement() === firstButtons[1];
+    h.body.removeChild(commonModal);
     report.cat_exit_confirm_text = first && first.textContent;
     report.cat_exit_before_confirm = h.fetches.filter((f) => f.url === '/api/visit/route/end').length;
     h.buttonsOf(first).find((b) => b.attrs['data-visit-dialog-button'] === 'cancel').click();
@@ -2670,6 +2679,7 @@ def test_cat_visit_exit_uses_the_shared_confirmation_without_changing_model_visi
     assert report["cat_exit_tab_forward_wrapped"] is True
     assert report["cat_exit_tab_reverse_prevented"] is True
     assert report["cat_exit_tab_reverse_wrapped"] is True
+    assert report["cat_exit_covered_tab_ignored"] is True
     assert report["cat_exit_cancel_restored_focus"] is True
     assert report["cat_exit_before_confirm"] == 0
     assert report["cat_exit_after_cancel"] == 0

@@ -325,6 +325,15 @@ function _removeNekoIdleCat1PlaygroundYarnBody(button) {
 
 function _switchNekoIdleCat1PlaygroundToVisitMode() {
     const button = _getNekoIdleCat1PlaygroundEntryButton();
+    if (!button) return false;
+    const pending = button.__nekoIdleCat1PlaygroundPendingEntry;
+    if (pending) {
+        const detail = pending.detail && typeof pending.detail === 'object' ? pending.detail : {};
+        _cancelNekoIdleCat1PlaygroundPendingEntry(button);
+        _clearNekoIdleCat1QuestionMark(button);
+        _clearNekoIdleCat1PlaygroundQuestionBlockClone(button);
+        return _startNekoIdleCat1PlaygroundDrop(button, detail, { catOnly: true });
+    }
     const state = button && button.__nekoIdleCat1PlaygroundDropState;
     if (!state || !state.active || state.released || !state.bodies || !state.bodies.has('cat')) return false;
     if (state.pointerBodyId && state.pointerBodyId !== 'cat') {
@@ -2099,7 +2108,8 @@ function _startNekoIdleCat1PlaygroundDropAfterYarnTargetReady(button, detail) {
     const pending = {
         frame: 0,
         timer: 0,
-        token: startedAt
+        token: startedAt,
+        detail: detail && typeof detail === 'object' ? detail : {}
     };
     button.__nekoIdleCat1PlaygroundPendingEntry = pending;
 

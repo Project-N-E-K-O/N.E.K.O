@@ -397,9 +397,17 @@
                 return !element.disabled && typeof element.focus === 'function';
             });
         }
+        function commonModalIsAbove() {
+            if (typeof document.querySelectorAll !== 'function') return false;
+            return Array.prototype.slice.call(document.querySelectorAll('.modal-overlay')).some(function (element) {
+                return element && element.hidden !== true
+                    && (!element.style || element.style.display !== 'none');
+            });
+        }
         // 焦点留在对话框后面的页面上时 overlay 收不到按键：键盘处理挂在 document 上（只认最上面那个对话框）
         function onKeydown(event) {
-            if (openDialogs[openDialogs.length - 1] !== handle) return;
+            // 公共 modal 的固定层级高于串门层；下层串门框不能与其争夺键盘焦点。
+            if (commonModalIsAbove() || openDialogs[openDialogs.length - 1] !== handle) return;
             if (event.key === 'Tab') {
                 var focusable = focusableElements();
                 var first = focusable[0];

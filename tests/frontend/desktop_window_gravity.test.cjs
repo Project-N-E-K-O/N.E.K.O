@@ -845,6 +845,7 @@ function installPlaygroundSetting(r) {
   };
   r.context._forEachNekoIdleReturnButton = callback => callback(r.button);
   vm.runInContext(fs.readFileSync(path.join(avatar, 'idle-playground.js'), 'utf8'), r.context);
+  const startAfterYarnTargetReady = r.context._startNekoIdleCat1PlaygroundDropAfterYarnTargetReady;
   // Keep the real setting, visibility guard, entry event and entry handler.
   // The downstream lifecycle has separate physics tests.
   r.context._startNekoIdleCat1PlaygroundDropAfterYarnTargetReady = (button, detail) => {
@@ -852,7 +853,7 @@ function installPlaygroundSetting(r) {
     return true;
   };
   r.context._releaseAllNekoIdleCat1PlaygroundDropLifecycles = reason => releases.push(reason);
-  return { entries, releases, api: r.window.nekoIdleCat1Playground };
+  return { entries, releases, api: r.window.nekoIdleCat1Playground, startAfterYarnTargetReady };
 }
 
 test('manual gravity setting immediately enters visible CAT1 through the existing Playground entry', () => {
@@ -940,6 +941,31 @@ test('cat visit entry removes solo objects without resetting the running cat', (
   assert.equal(state.targetScreenRect, null);
   assert.equal(state.entryQuestionBlockElement, null);
   assert.deepEqual({ stopped, rebound, restarted }, { stopped: 1, rebound: 1, restarted: 1 });
+});
+
+test('cat visit entry cancels a pending solo target and starts cat-only immediately', () => {
+  const r = runtime();
+  const { api, startAfterYarnTargetReady } = installPlaygroundSetting(r);
+  const detail = { source: 'solo-playground', trigger: 'question-mark-entry' };
+  const starts = [];
+  r.context._getNekoIdleCat1PairMoveChatTarget = () => null;
+  r.context._requestNekoIdleCat1PlaygroundYarnTarget = () => true;
+  r.context._clearNekoIdleCat1QuestionMark = () => {};
+  r.context._setNekoIdleCat1QuestionMarkKeyboardTarget = () => {};
+  r.context._clearNekoIdleCat1PlaygroundQuestionBlockClone = () => {};
+  assert.equal(startAfterYarnTargetReady(r.button, detail), true);
+  assert.equal(r.button.__nekoIdleCat1PlaygroundPendingEntry.detail, detail);
+  r.context._startNekoIdleCat1PlaygroundDrop = (button, entryDetail, options) => {
+    starts.push({ button, entryDetail, options });
+    return true;
+  };
+
+  assert.equal(api.enterVisitMode(), true);
+  assert.equal(r.button.__nekoIdleCat1PlaygroundPendingEntry, null);
+  assert.equal(starts.length, 1);
+  assert.equal(starts[0].button, r.button);
+  assert.equal(starts[0].entryDetail, detail);
+  assert.equal(starts[0].options.catOnly, true);
 });
 
 test('the real Playground starter forwards catOnly to body registration', () => {
