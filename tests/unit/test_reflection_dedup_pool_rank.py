@@ -4,7 +4,7 @@ Persona-drift stopgap guards.
 
   - promotion merge pool: ranked by similarity to R (evidence fallback) before
     the whole-line token cut, so recently appended near-duplicates are seen
-  - REFLECTION_PROMPT: concrete-event wording, watermark literals kept,
+  - REFLECTION_PROMPT: relationship patterns rather than event accounts, watermark literals kept,
     existing-impressions slot present in every locale
   - synthesis duplicate check: nearest same-subject impressions shown, a valid
     skip absorbs the batch without a new reflection and without evidence,
@@ -306,7 +306,7 @@ async def test_similarity_embeds_queries_but_only_reads_cached_candidates():
 # ── 2. reflection prompt wording ─────────────────────────────────────
 
 
-def test_reflection_prompt_locales_are_concrete_and_keep_watermarks():
+def test_reflection_prompt_locales_keep_watermarks():
     from config.prompts.prompts_memory import (
         REFLECTION_EXISTING_IMPRESSIONS_NOTE,
         REFLECTION_PROMPT,
@@ -330,6 +330,29 @@ def test_reflection_prompt_locales_are_concrete_and_keep_watermarks():
     # The pattern tie-break stays.
     assert "拿不准时请倾向选 pattern" in REFLECTION_PROMPT["zh"]
     assert "When unsure, prefer pattern" in REFLECTION_PROMPT["en"]
+
+
+def test_reflection_prompt_asks_for_patterns_not_event_accounts():
+    """A reflection sums up how the two relate; what happened once is a fact.
+    The ban on hollow labels and its bad example stay."""
+    from config.prompts.prompts_memory import REFLECTION_PROMPT as PROMPT
+
+    for lang, level in {'zh': '某一次事件的经过', 'zh-TW': '某一次事件的經過', 'en': 'the account of a single event', 'ja': 'ある一回の出来事の経緯', 'ko': '어느 한 번의 사건 경위', 'ru': 'рассказ об одном событии', 'es': 'el relato de un solo suceso', 'pt': 'o relato de um único acontecimento'}.items():
+        text = PROMPT[lang]
+        assert level in text, lang
+        for old in {'zh': ['写清发生了什么', '必须落在具体的事和原话上'], 'zh-TW': ['寫清發生了什麼', '必須落在具體的事和原話上'], 'en': ['state what actually happened', 'must rest on a concrete event'], 'ja': ['実際に何があったかを書くこと', '具体的な出来事と実際の言葉に基づくこと'], 'ko': ['실제로 무슨 일이 있었는지를 쓰세요', '구체적인 사건과 실제 한 말에 근거해야'], 'ru': ['что именно произошло, а не абстрактный вывод', 'должны опираться на конкретное событие'], 'es': ['lo que realmente pasó, no una conclusión abstracta', 'deben apoyarse en un suceso concreto'], 'pt': ['o que realmente aconteceu, não uma conclusão abstrata', 'devem se apoiar em um acontecimento concreto']}[lang]:
+            assert old not in text, (lang, old)
+    assert '"形成了……默契/模式"' in PROMPT['zh'] and '反例：「两人形成了互相关心的默契」' in PROMPT['zh']
+    assert 'formed a tacit understanding / pattern of' in PROMPT['en']
+    # A new instance of a known pattern is covered, not a new reflection.
+    from config.prompts.prompts_memory import REFLECTION_EXISTING_IMPRESSIONS_NOTE as NOTE
+    for lang, old in {
+        'zh': '新的事、新的原话', 'zh-TW': '新的事、新的原話', 'en': 'a new event, new words actually said',
+        'ja': '新しい出来事、新しい実際の発言', 'ko': '새로운 사건, 새로 한 말', 'ru': 'новое событие, новые реально сказанные слова',
+        'es': 'un suceso nuevo, palabras nuevas', 'pt': 'um acontecimento novo, palavras novas',
+    }.items():
+        assert old not in NOTE[lang], lang
+        assert '"skip": true' in NOTE[lang] and '"covered_by"' in NOTE[lang], lang
 
 
 # ── 3. synthesis duplicate check ─────────────────────────────────────
