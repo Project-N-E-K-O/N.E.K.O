@@ -361,7 +361,13 @@ describe('CompactExportHistoryPanel', () => {
       expect(bar).not.toBeNull();
       const layout = () => {
         const computed = window.getComputedStyle(bar);
-        return { display: computed.display, height: computed.height, margin: computed.margin, flex: computed.flex };
+        return {
+          display: computed.display,
+          height: computed.height,
+          margin: computed.margin,
+          flex: computed.flex,
+          position: computed.position,
+        };
       };
       const initialLayout = layout();
       expect(initialLayout.display).not.toBe('none');
