@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import sys
 
+from memory.introspection import PERMANENT_SUPPRESSION_KEY, is_permanently_suppressed
 from utils.long_term_memory_protocol import document
 from utils.recent_memory_protocol import canonical
 
@@ -108,6 +109,13 @@ def export_document(views, completed_at):
                 metadata['evidenceReviewedAt'] = timestamp(native['confirmed_at'])
             if native.get('promoted_at'):
                 metadata['promotedAt'] = timestamp(native['promoted_at'])
+        if kind in ('persona', 'reflection') and is_permanently_suppressed(native):
+            # Retired by introspection on this device: peers drop it instead
+            # of injecting it, and this device keeps its own row (see import).
+            metadata['status'] = 'superseded'
+            marker = native[PERMANENT_SUPPRESSION_KEY]
+            if isinstance(marker, dict) and marker.get('merged_into'):
+                metadata['supersededById'] = str(marker['merged_into'])[:200]
         identity = (kind, subject, key)
         if identity not in rows or not archived:
             rows[identity] = {'kind': kind, 'subject': subject, 'id': key, 'text': text, 'metadata': metadata}
@@ -145,10 +153,21 @@ def import_document(incoming, existing, *, baseline=None):
         native = value if isinstance(value, dict) else {'text': str(value)}
         return (kind, subject, _entry_id(subject, native)) in pending
 
+    # Rows introspection retired here stay as they are: a snapshot carries
+    # them as superseded (or, from a peer that has not seen the retirement,
+    # live), and neither may replace, duplicate or delete this device's row.
+    locally_retired = (
+        {('persona', subject, key) for (subject, key), row in local_persona.items()
+         if is_permanently_suppressed(row)}
+        | {('reflection', subject, key) for (subject, key), row in local_reflections.items()
+           if is_permanently_suppressed(row)}
+    )
+
     # Keep static character-card entries and scoped/group partitions on this device.
     for subject in SUBJECTS:
         section = result['persona'].setdefault(subject, {})
         section['facts'] = [row for row in section.get('facts', []) if retained('persona', subject, row)
+                            or is_permanently_suppressed(row)
                             or (isinstance(row, dict) and (not private(row) or row.get('source') == 'character_card'))]
     for field in ('facts', 'archive'):
         result[field] = [row for row in result[field] if isinstance(row, dict)
@@ -157,12 +176,13 @@ def import_document(incoming, existing, *, baseline=None):
     incoming_reflections = {(row['subject'], row['id']) for row in incoming['entries'] if row['kind'] == 'reflection'}
     result['reflections'] = [row for row in result['reflections'] if isinstance(row, dict)
         and (not private(row) or row.get('entity') not in SUBJECTS or retained('reflection', row.get('entity'), row)
+             or is_permanently_suppressed(row)
              or (row.get('status') not in ('confirmed', 'promoted')
                  and (not isinstance(row.get('id'), str)
                       or (row.get('entity'), row.get('id')) not in incoming_reflections)))]
     for row in incoming['entries']:
         kind, subject, meta = row['kind'], row['subject'], row['metadata']
-        if (kind, subject, row['id']) in pending:
+        if (kind, subject, row['id']) in pending or (kind, subject, row['id']) in locally_retired:
             continue
         if meta.get('voidedAt') or meta.get('status') in ('denied', 'retracted', 'superseded'):
             continue
@@ -184,8 +204,7 @@ def import_document(incoming, existing, *, baseline=None):
             previous = local_persona.get((subject, row['id']), {})
             # The protocol omits receiver-only state and external-import ledgers.
             # Keep these locally; reflection links still come from the snapshot.
-            for field in ('suppress', 'suppressed_at', 'recent_mentions', 'sub_zero_days', 'sub_zero_last_increment_date',
-                          'permanent_suppression'):
+            for field in ('suppress', 'suppressed_at', 'recent_mentions', 'sub_zero_days', 'sub_zero_last_increment_date'):
                 if field in previous:
                     native[field] = deepcopy(previous[field])
             if previous.get('source') and previous['source'] != 'reflection':
@@ -207,15 +226,12 @@ def import_document(incoming, existing, *, baseline=None):
                           confirmed_at=iso(meta.get('evidenceReviewedAt') or incoming['completedAt']))
             if meta.get('promotedAt'):
                 native['promoted_at'] = iso(meta['promotedAt'])
-            # Introspection's suppression and the synthesis-time evidence age
-            # are this device's records and not part of the protocol; a
-            # snapshot of the same row must not lift the one, nor drop the
-            # other (without it a line retired as stale stays hidden). The
-            # evidence age only holds for the same text on the same facts:
-            # a peer's rewrite may rest on older ones.
+            # The synthesis-time evidence age is this device's record and not
+            # part of the protocol; a snapshot of the same row must not drop
+            # it (without it a line retired as stale stays hidden). It only
+            # holds for the same text on the same facts: a peer's rewrite may
+            # rest on older ones.
             previous = local_reflections.get((subject, row['id']), {})
-            if 'permanent_suppression' in previous:
-                native['permanent_suppression'] = deepcopy(previous['permanent_suppression'])
             if (
                 'source_facts_oldest_at' in previous
                 and previous.get('text') == native['text']

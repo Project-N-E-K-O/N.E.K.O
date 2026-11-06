@@ -1462,6 +1462,87 @@ def test_long_term_sync_import_keeps_local_suppression():
     assert rows['r2']['source_facts_oldest_at'] == '2026-11-01T09:00:00'
 
 
+def _sync_views(persona_rows, reflection_rows):
+    return {
+        'persona': {'relationship': {'facts': [
+            {'source': 'manual', **row} for row in persona_rows
+        ]}},
+        'facts': [], 'archive': [],
+        'reflections': [
+            {'entity': 'relationship', 'status': 'confirmed', 'created_at': _now_iso(),
+             'confirmed_at': _now_iso(), **row}
+            for row in reflection_rows
+        ],
+    }
+
+
+def _sync_now() -> int:
+    return int(datetime.now().timestamp() * 1000)
+
+
+def test_long_term_sync_exports_retired_rows_as_superseded():
+    """A peer must not inject what introspection retired here; a merge
+    source also names the entry it went into."""
+    from memory.long_term_sync import export_document
+
+    merged = {'at': _now_iso(), 'reason': '合并', 'merged_into': 'p9'}
+    views = _sync_views(
+        [{'id': 'p1', 'text': '两人形成了默契', **_retired()},
+         {'id': 'p2', 'text': '主人喜欢喝茶', 'permanent_suppression': merged},
+         {'id': 'p3', 'text': '主人周末去爬山'}],
+        [{'id': 'r1', 'text': '两人意味着港湾', **_retired()},
+         {'id': 'r2', 'text': '主人常在深夜聊天'}],
+    )
+
+    rows = {(r['kind'], r['id']): r['metadata'] for r in export_document(views, _sync_now())['entries']}
+
+    assert rows[('persona', 'p1')]['status'] == 'superseded'
+    assert 'supersededById' not in rows[('persona', 'p1')]
+    assert rows[('persona', 'p2')]['status'] == 'superseded'
+    assert rows[('persona', 'p2')]['supersededById'] == 'p9'
+    assert rows[('reflection', 'r1')]['status'] == 'superseded'
+    assert 'status' not in rows[('persona', 'p3')] and 'status' not in rows[('reflection', 'r2')]
+
+
+def test_long_term_sync_peer_cannot_revive_or_duplicate_a_local_retirement():
+    """A peer that has not seen the retirement still sends the row live; the
+    row retired here stays once, retired, with this device's text."""
+    from memory.long_term_sync import export_document, import_document
+
+    local = _sync_views(
+        [{'id': 'p1', 'text': '两人形成了默契', **_retired()}],
+        [{'id': 'r1', 'text': '两人意味着港湾', **_retired()}],
+    )
+    remote = _sync_views(
+        [{'id': 'p1', 'text': '两人形成了深厚默契'}],
+        [{'id': 'r1', 'text': '两人意味着港湾'}],
+    )
+
+    result = import_document(export_document(remote, _sync_now()), local)
+
+    personas = [r for r in result['persona']['relationship']['facts'] if r.get('id') == 'p1']
+    reflections = [r for r in result['reflections'] if r.get('id') == 'r1']
+    assert len(personas) == 1 and len(reflections) == 1
+    assert personas[0]['text'] == '两人形成了默契' and 'permanent_suppression' in personas[0]
+    assert 'permanent_suppression' in reflections[0]
+
+
+def test_long_term_sync_drops_a_row_a_peer_retired():
+    """The peer retired it: this device no longer injects its live copy."""
+    from memory.long_term_sync import export_document, import_document
+
+    local = _sync_views([{'id': 'p3', 'text': '主人周末去爬山'}], [{'id': 'r3', 'text': '主人常在深夜聊天'}])
+    remote = _sync_views(
+        [{'id': 'p3', 'text': '主人周末去爬山', **_retired()}],
+        [{'id': 'r3', 'text': '主人常在深夜聊天', **_retired()}],
+    )
+
+    result = import_document(export_document(remote, _sync_now()), local)
+
+    assert [r for r in result['persona']['relationship']['facts'] if r.get('id') == 'p3'] == []
+    assert [r for r in result['reflections'] if r.get('id') == 'r3'] == []
+
+
 @pytest.mark.parametrize('change', ['text', 'source_fact_ids'])
 def test_long_term_sync_drops_the_evidence_age_of_a_rewritten_reflection(change):
     """A peer may rewrite the same row onto older facts: the local evidence
