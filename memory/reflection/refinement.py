@@ -198,6 +198,11 @@ class RefinementMixin:
                 elif verb == ACTION_REWRITE:
                     self._apply_refine_modify(srcs[0], act['text'], reason, now_iso)
                 elif verb == ACTION_MERGE:
+                    if len({src.get('entity') for src in srcs}) > 1:
+                        # The plan saw one subject; a sync may have replaced
+                        # a row with the same id and text under another.
+                        stale += 1
+                        continue
                     if any(src.get('suppress') for src in srcs):
                         # Same rule as persona: a source in mention cooldown
                         # (it can enter one after the render) would come out

@@ -1358,6 +1358,33 @@ async def test_refine_merge_with_a_suppressed_source_is_rejected_whole(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_reflection_merge_across_entities_at_apply_time_is_stale(tmp_path):
+    """The plan saw one subject; if a source turned into another subject's
+    row (same id, same text) before the apply, the merge is dropped."""
+    env = _install(str(tmp_path))
+    await _seed_reflections(env.engine, [
+        _reflection('c1', '主人信任小天', entity='master'),
+        _reflection('c2', '主人把烦心事讲给小天听', entity='master'),
+    ])
+
+    def _move_c2_then_merge(prompt):
+        rows = env.engine.load_reflections(NAME)
+        next(r for r in rows if r['id'] == 'c2')['entity'] = 'relationship'
+        env.engine.save_reflections(NAME, rows)
+        return json.dumps([
+            {'action': 'merge', 'ids': [_number(prompt, '主人信任小天'), _number(prompt, '主人把烦心事讲给小天听')],
+             'text': '主人遇到烦心事会先告诉小天', 'reason': '同义'},
+        ], ensure_ascii=False)
+
+    result = await _run(env, _FakeThinking(_move_c2_then_merge))
+
+    assert result.applied == 0 and result.rejected == {'stale': 1}
+    rows = await env.engine.aload_reflections(NAME)
+    assert {r['id'] for r in rows} == {'c1', 'c2'}
+    assert not any('permanent_suppression' in r for r in rows)
+
+
+@pytest.mark.asyncio
 async def test_reflection_merge_with_a_source_entering_cooldown_is_stale(tmp_path):
     """A reflection can enter mention cooldown after the render; merging it
     then would hand back a fresh, uncooled reflection."""
