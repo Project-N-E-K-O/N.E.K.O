@@ -3607,16 +3607,10 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor.is-th
   pointer-events: none;
 }
 
-/* 选择层打开时弱化普通历史消息，但串门结束与日记确认等系统提示必须保持可读。
-   不能直接给 scroll 容器降透明度，否则系统提示再清晰的底色也会被整层压暗。 */
-.compact-export-history-anchor.under-choice-prompt .compact-export-history-message:not(.is-system) {
+/* 选择层覆盖历史区时统一弱化所有消息，包括串门结束与日记确认等系统提示。 */
+.compact-export-history-anchor.under-choice-prompt .compact-export-history-message {
   opacity: 0.32;
   filter: blur(1.5px);
-}
-
-.compact-export-history-anchor.under-choice-prompt .compact-export-history-message.is-system {
-  opacity: 1;
-  filter: none;
 }
 
 .compact-export-history-anchor.under-choice-prompt .compact-export-history-bubble,
@@ -3929,6 +3923,11 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor.is-th
 .compact-export-history-resize-bar:hover::after,
 .compact-export-history-resize-bar.is-active::after {
   opacity: 0.55;
+}
+
+/* 遮挡时调整条已禁用，连同悬停抓手一起隐藏；保留占位以免历史消息跳动。 */
+.compact-export-history-anchor.under-choice-prompt .compact-export-history-resize-bar {
+  visibility: hidden;
 }
 
 .compact-export-history-check {
