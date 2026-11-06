@@ -1107,6 +1107,52 @@ def test_a_changed_account_starts_its_cooldown_over(tmp_path):
     assert not pinned_mod._in_mention_cooldown(entry, _T0 + _HOUR)
 
 
+def test_introspection_numbers_every_section_in_the_order_shown(tmp_path, monkeypatch):
+    import re
+
+    store = _store(tmp_path)
+    # File order (exam, allergy, promise) differs from the order shown.
+    exam = _add(store, _candidate("主人周三考试", 14, kind="fact"))
+    allergy = _add(store, _candidate("主人对花生过敏", 30, kind="fact"))
+    promise = _add(store, _candidate("小天答应周五陪主人复习", 14, kind="commitment",
+                                     due_at=_T0 + 3 * _DAY))
+    store.record_mentions(_NAME, "周三考试加油", stop_names=_STOP_NAMES, now=_T0 + 1)
+    now = _T0 + _HOUR
+
+    def numbered_render():
+        tagged: list[str] = []
+
+        def tag(entry):
+            tagged.append(entry["id"])
+            return f"[{len(tagged)}] "
+
+        return store.render_prompt_block(_NAME, "zh", now=now, tag=tag), tagged
+
+    def unnumbered(text):
+        return re.sub(r"^- \[\d+\] ", "- ", text, flags=re.M)
+
+    plain = store.render_prompt_block(_NAME, "zh", now=now)
+    numbered, tagged = numbered_render()
+    assert plain.count("### ") == 3, "fixture: facts, promises and recently mentioned"
+    assert unnumbered(numbered) == plain
+    # One number per rendered line, in the order shown: facts, promises, then
+    # what she mentioned recently.
+    assert tagged == [allergy["id"], promise["id"], exam["id"]]
+    bullets = [line for line in numbered.splitlines() if line.startswith("- ")]
+    assert [line.split("]")[0] for line in bullets] == ["- [1", "- [2", "- [3"]
+
+    # The budget is measured without the numbers: a tight one keeps the same lines.
+    for cap in range(1, pinned_mod.PINNED_FACT_RENDER_MAX_TOKENS):
+        monkeypatch.setattr(pinned_mod, "PINNED_FACT_RENDER_MAX_TOKENS", cap)
+        plain = store.render_prompt_block(_NAME, "zh", now=now)
+        if plain.count("\n- ") == 2:
+            break
+    else:
+        pytest.fail("fixture: no budget keeps exactly two entries")
+    numbered, tagged = numbered_render()
+    assert unnumbered(numbered) == plain and len(tagged) == 2
+
+
 @pytest.mark.parametrize("outcome", ["landed", "store_failed", "refused", "unreachable"])
 def test_an_offer_that_did_not_land_is_left_to_the_delivery_record(monkeypatch, outcome):
     from main_logic.proactive_chat import delivery as proactive_delivery
