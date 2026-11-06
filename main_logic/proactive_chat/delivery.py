@@ -401,6 +401,30 @@ async def _commit_proactive_delivery(
     )
 
 
+async def _record_commitment_offer(
+    lanlan_name: str,
+    commitment_ids: list[Any],
+    *,
+    memory_server_port: int = MEMORY_SERVER_PORT,
+) -> bool:
+    """Start the offer cooldown of the promises a Phase 2 prompt carries; True once it landed.
+
+    Recorded when the prompt reaches the model rather than on delivery, so a
+    round that ends in a pass still counts as an offer. A failure leaves it to
+    the delivery record.
+    """
+    try:
+        response = await _get_internal_http_client().post(
+            f"http://127.0.0.1:{memory_server_port}/record_surfaced/{lanlan_name}",
+            json={"reflection_ids": [], "commitment_ids": list(commitment_ids)},
+            timeout=2.0,
+        )
+    except Exception as exc:
+        logger.debug("[%s] 承诺提供记录失败，投递时再记: %s", lanlan_name, exc)
+        return False
+    return response.status_code == 200
+
+
 async def _record_committed_delivery(
     *,
     mgr: Any,

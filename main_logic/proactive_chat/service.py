@@ -83,6 +83,7 @@ from main_logic.proactive_chat.delivery import (
     DeliveryCommit,
     ProactiveLifecycle,
     _commit_proactive_delivery,
+    _record_commitment_offer,
     _record_committed_delivery,
 )
 from main_logic.proactive_chat.candidate_selection import (
@@ -2578,6 +2579,15 @@ async def handle_proactive_chat(
         # applies the cooldown only for such turns, and only if still in this
         # exact episode/turn (race guard: a no-op if inline moved it since).
         lifecycle.mark_phase2(mgr.state.snapshot())
+
+        if _surfaced_commitment_ids and await _record_commitment_offer(
+            lanlan_name, _surfaced_commitment_ids, memory_server_port=MEMORY_SERVER_PORT,
+        ):
+            # The promise reaches the Phase 2 model now: its offer cooldown
+            # starts whatever the model makes of it, so a [PASS] does not bring
+            # the same promise (and another Phase 2 call) back next round.
+            # Delivery records it again only if this did not land.
+            _surfaced_commitment_ids = []
 
         guarded_output = await _run_phase2_generation(
             mgr=mgr,

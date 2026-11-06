@@ -1107,6 +1107,41 @@ def test_a_changed_account_starts_its_cooldown_over(tmp_path):
     assert not pinned_mod._in_mention_cooldown(entry, _T0 + _HOUR)
 
 
+@pytest.mark.parametrize("outcome", ["landed", "refused", "unreachable"])
+def test_a_promise_put_to_phase_2_counts_as_offered_whatever_the_model_does(
+    monkeypatch, outcome,
+):
+    import inspect
+
+    from main_logic.proactive_chat import delivery as proactive_delivery
+    from main_logic.proactive_chat import service
+
+    post = (
+        AsyncMock(side_effect=OSError("down")) if outcome == "unreachable"
+        else AsyncMock(return_value=SimpleNamespace(status_code=200 if outcome == "landed" else 503))
+    )
+    monkeypatch.setattr(
+        proactive_delivery, "_get_internal_http_client", lambda: SimpleNamespace(post=post),
+    )
+
+    landed = asyncio.run(proactive_delivery._record_commitment_offer(
+        _NAME, ["pin_00aa11bb"], memory_server_port=1,
+    ))
+
+    # A failed record is left to the delivery record, which still has the id.
+    assert landed is (outcome == "landed")
+    assert post.await_args.kwargs["json"] == {"reflection_ids": [], "commitment_ids": ["pin_00aa11bb"]}
+    # Recorded once the round is committed to Phase 2, before the model runs:
+    # a [PASS] must not bring the same promise back next round.
+    source = inspect.getsource(service.handle_proactive_chat)
+    offer = source.index("if _surfaced_commitment_ids and await _record_commitment_offer(")
+    assert source.index("if not await _enter_proactive_phase2(") < offer
+    assert offer < source.index("guarded_output = await _run_phase2_generation(")
+    assert source.index("_surfaced_commitment_ids = []", offer) < source.index(
+        "guarded_output = await _run_phase2_generation(",
+    )
+
+
 def test_her_private_replies_are_checked_for_pinned_mentions(tmp_path, monkeypatch):
     import inspect
 
