@@ -270,10 +270,10 @@ export default function CompactExportHistoryPanel({
     () => allMessages.filter((message) => !isTopicHintMessage(message) && hasVisibleMessageContent(message)),
     [allMessages],
   );
-  const { hiddenMessageIds } = useChatScreenVisibility();
+  const { isMessageHidden } = useChatScreenVisibility();
   const displayMessages = useMemo(
-    () => mode === 'theater' ? messages : messages.filter(message => !hiddenMessageIds.has(message.id)),
-    [messages, mode, hiddenMessageIds],
+    () => mode === 'theater' ? messages : messages.filter(message => !isMessageHidden(message)),
+    [messages, mode, isMessageHidden],
   );
   const exposureAnchorIds = useMemo(
     () => getScreenObservationAnchorIds(messages, allMessages),

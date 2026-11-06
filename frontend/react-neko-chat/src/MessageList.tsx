@@ -40,7 +40,7 @@ export default function MessageList({
   footer,
   footerKey,
 }: MessageListProps) {
-  const { hiddenMessageIds } = useChatScreenVisibility();
+  const { isMessageHidden } = useChatScreenVisibility();
   const containerRef = useRef<HTMLDivElement>(null);
   const shouldScrollRef = useRef(true);
   const scrollbarTimerRef = useRef<number | null>(null);
@@ -52,8 +52,8 @@ export default function MessageList({
   });
 
   const displayMessages = useMemo(
-    () => messages.filter(message => !hiddenMessageIds.has(message.id) && hasVisibleMessageContent(message)).slice(-MAX_DISPLAY_MESSAGES),
-    [messages, hiddenMessageIds],
+    () => messages.filter(message => !isMessageHidden(message) && hasVisibleMessageContent(message)).slice(-MAX_DISPLAY_MESSAGES),
+    [messages, isMessageHidden],
   );
 
   const exposureAnchorIds = useMemo(
