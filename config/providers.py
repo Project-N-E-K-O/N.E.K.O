@@ -93,8 +93,9 @@ EXTRA_BODY_OPENROUTER_THINKING = {"reasoning": {"effort": "low"}}
 EXTRA_BODY_OPENROUTER_MINIMAL = {"reasoning": {"effort": "minimal"}}
 # Router-bound efforts follow the upstream floor in UPSTREAM_REASONING_FLOOR (owner-confirmed
 # 2026-11-05: the floor is the vendor's rule, so every router must respect it even when one
-# accepts a lower value): Gemini 3.x bottoms out at low (no none / minimal), gemini-2.5-flash at
-# minimal. At low the focused-cognition form equals the regular form, so it has no enable pair.
+# accepts a lower value): Gemini 3.x and gemini-2.5-flash bottom out at minimal, except
+# gemini-3.8-flash at low (it rejects minimal). At low the focused-cognition form equals the
+# regular form, so it has no enable pair.
 EXTRA_BODY_OPENROUTER_LOW = {"reasoning": {"effort": "low"}}
 
 # MiniMax reasoning_split controls only thinking output format, not enablement; M2.x always
@@ -218,10 +219,10 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     # OpenRouter format (provider/model): unified reasoning parameter.
     "google/gemini-2.5-flash": EXTRA_BODY_OPENROUTER_MINIMAL,
     "google/gemini-2.5-flash-lite": EXTRA_BODY_OPENROUTER,
-    "google/gemini-3-flash-preview": EXTRA_BODY_OPENROUTER_LOW,
-    "google/gemini-3.1-flash-lite": EXTRA_BODY_OPENROUTER_LOW,
-    "google/gemini-3.5-flash": EXTRA_BODY_OPENROUTER_LOW,
-    "google/gemini-3.6-flash": EXTRA_BODY_OPENROUTER_LOW,
+    "google/gemini-3-flash-preview": EXTRA_BODY_OPENROUTER_MINIMAL,
+    "google/gemini-3.1-flash-lite": EXTRA_BODY_OPENROUTER_MINIMAL,
+    "google/gemini-3.5-flash": EXTRA_BODY_OPENROUTER_MINIMAL,
+    "google/gemini-3.6-flash": EXTRA_BODY_OPENROUTER_MINIMAL,
     "google/gemini-3.8-flash": EXTRA_BODY_OPENROUTER_LOW,
     "qwen/qwen3.5-9b": EXTRA_BODY_OPENROUTER,
 }
@@ -310,23 +311,35 @@ def focus_extra_body(model: str, base_url: str | None = None) -> dict | None:
 
 # Lowest reasoning effort each upstream vendor allows (owner-confirmed 2026-11-05). It is the
 # vendor's rule, so every router-bound effort respects it even where a router accepts lower:
-# Claude has no none / minimal, Gemini 3.x bottoms out at low (no none / minimal),
-# gemini-2.5-flash at minimal, gpt-5-nano at minimal. Matched on the upstream id with any
-# router prefix ("google/", "gemini/", "anthropic/") stripped; unlisted models have no floor.
+# Claude has no none / minimal; Gemini 3.x cannot turn thinking off (no none) and bottoms out
+# at minimal, except the 3.x Pro models and gemini-3.7-flash / 3.8-flash at low; gemini-2.5-flash
+# and gpt-5-nano at minimal. The Pro models and 3.7-flash are not registered; Opper returns the
+# same 400 for them as for 3.8 (gemini/gemini-3-pro-preview is served by 3.1-pro-preview there).
+# Gemini 3.x evidence (2026-11-06): Google's Gemini 3.5 Flash guide lists MINIMAL / LOW / MEDIUM /
+# HIGH and the legacy thinking page marks minimal as an error on 3.8 Flash; Opper returns 400
+# "does not support reasoning_effort minimal; use thinking_level (low, medium, high)" for 3.8 and
+# reaches 0 reasoning tokens with minimal on 3-flash-preview / 3.1-flash-lite / 3.5 / 3.6 /
+# 3.5-flash-lite. Matched on the upstream id with any router prefix ("google/", "gemini/",
+# "anthropic/") stripped; exact ids win over prefixes; unlisted models have no floor.
 REASONING_EFFORT_ORDER: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 UPSTREAM_REASONING_FLOOR: dict[str, str] = {
     "gemini-2.5-flash": "minimal",
+    "gemini-3-pro-preview": "low",
+    "gemini-3.1-pro-preview": "low",
+    "gemini-3.7-flash": "low",
+    "gemini-3.8-flash": "low",
     "gpt-5-nano": "minimal",
 }
 UPSTREAM_REASONING_FLOOR_PREFIXES: tuple[tuple[str, str], ...] = (
     ("claude-", "low"),
-    ("gemini-3", "low"),
+    ("gemini-3", "minimal"),
 )
 
 
 def reasoning_effort_floor(model: str) -> str | None:
     """Lowest effort the model's upstream vendor accepts, or ``None`` if unrestricted."""
-    upstream = (model or "").rsplit("/", 1)[-1]
+    # Router prefix and variant suffix ("google/…", "…:flex", "…:free") do not change the upstream model.
+    upstream = (model or "").rsplit("/", 1)[-1].split(":", 1)[0]
     floor = UPSTREAM_REASONING_FLOOR.get(upstream)
     if floor is not None:
         return floor
@@ -373,8 +386,9 @@ class RouterReasoningConfig:
 # Observed (2026-11-05), then raised to UPSTREAM_REASONING_FLOOR:
 #   - gemini-2.5-flash (bare id) ignores none / minimal (~2200 reasoning tokens on a hard prompt);
 #     low is the lowest that works (~800). gemini/gemini-2.5-flash honours minimal (~0 tokens).
-#   - 2.5-flash-lite reaches 0 with none. 3.x accepts none and low (3.8-flash returns 400 on
-#     minimal); the floor puts them at low.
+#   - 2.5-flash-lite reaches 0 with none. 3-flash-preview / 3.1-flash-lite / 3.5 / 3.6 reach 0
+#     with none or minimal and sit on the minimal floor; 3.8-flash returns 400 on minimal and
+#     barely reduces with none (~500, same as low), so it sits on low.
 #   - Claude is not listed: 4.x does not think by default, 5.x keeps thinking under every effort
 #     and thinking.type, and low turns thinking on for 4.x, so nothing is sent.
 OPPER_REASONING_EFFORT: dict[str, tuple[str, str]] = {
@@ -382,14 +396,14 @@ OPPER_REASONING_EFFORT: dict[str, tuple[str, str]] = {
     "gemini/gemini-2.5-flash": ("minimal", "low"),
     "gemini-2.5-flash-lite": ("none", "low"),
     "gemini/gemini-2.5-flash-lite": ("none", "low"),
-    "gemini-3-flash-preview": ("low", "low"),
-    "gemini/gemini-3-flash-preview": ("low", "low"),
-    "gemini-3.1-flash-lite": ("low", "low"),
-    "gemini/gemini-3.1-flash-lite": ("low", "low"),
-    "gemini-3.5-flash": ("low", "low"),
-    "gemini/gemini-3.5-flash": ("low", "low"),
-    "gemini-3.6-flash": ("low", "low"),
-    "gemini/gemini-3.6-flash": ("low", "low"),
+    "gemini-3-flash-preview": ("minimal", "low"),
+    "gemini/gemini-3-flash-preview": ("minimal", "low"),
+    "gemini-3.1-flash-lite": ("minimal", "low"),
+    "gemini/gemini-3.1-flash-lite": ("minimal", "low"),
+    "gemini-3.5-flash": ("minimal", "low"),
+    "gemini/gemini-3.5-flash": ("minimal", "low"),
+    "gemini-3.6-flash": ("minimal", "low"),
+    "gemini/gemini-3.6-flash": ("minimal", "low"),
     "gemini-3.8-flash": ("low", "low"),
     "gemini/gemini-3.8-flash": ("low", "low"),
 }
