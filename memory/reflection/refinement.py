@@ -142,8 +142,9 @@ class RefinementMixin:
 
         Twin of ``PersonaManager.aapply_introspection_actions``: every target
         ``(reflection_id, text_at_render)`` must still be active with that
-        exact text, not already suppressed and not claimed by an earlier
-        action of this batch, or the whole action is skipped as stale.
+        exact text under the subject the model saw (``entity``), not already
+        suppressed and not claimed by an earlier action of this batch, or the
+        whole action is skipped as stale.
         ``rewrite`` / ``merge`` reuse the refine helpers; a merge also keeps
         each source text in the new reflection's ``modification_history``
         and deletes nothing: its sources stay, permanently suppressed with
@@ -182,6 +183,9 @@ class RefinementMixin:
                         or rid in consumed
                         or is_permanently_suppressed(src)
                         or src.get('text') != text
+                        # A sync may move a row to another subject keeping
+                        # its id and text; the model judged the old one.
+                        or ('entity' in act and src.get('entity') != act['entity'])
                     ):
                         srcs = []
                         break
@@ -198,11 +202,6 @@ class RefinementMixin:
                 elif verb == ACTION_REWRITE:
                     self._apply_refine_modify(srcs[0], act['text'], reason, now_iso)
                 elif verb == ACTION_MERGE:
-                    if len({src.get('entity') for src in srcs}) > 1:
-                        # The plan saw one subject; a sync may have replaced
-                        # a row with the same id and text under another.
-                        stale += 1
-                        continue
                     if any(src.get('suppress') for src in srcs):
                         # Same rule as persona: a source in mention cooldown
                         # (it can enter one after the render) would come out

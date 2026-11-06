@@ -1358,9 +1358,11 @@ async def test_refine_merge_with_a_suppressed_source_is_rejected_whole(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_reflection_merge_across_entities_at_apply_time_is_stale(tmp_path):
-    """The plan saw one subject; if a source turned into another subject's
-    row (same id, same text) before the apply, the merge is dropped."""
+@pytest.mark.parametrize('moved', [{'c2'}, {'c1', 'c2'}])
+async def test_reflection_moved_to_another_subject_before_apply_is_stale(tmp_path, moved):
+    """The model judged rows of one subject; if a sync moved one of them, or
+    all of them together, to another subject (same id, same text) before
+    the apply, the action is dropped."""
     env = _install(str(tmp_path))
     await _seed_reflections(env.engine, [
         _reflection('c1', '主人信任小天', entity='master'),
@@ -1369,7 +1371,9 @@ async def test_reflection_merge_across_entities_at_apply_time_is_stale(tmp_path)
 
     def _move_c2_then_merge(prompt):
         rows = env.engine.load_reflections(NAME)
-        next(r for r in rows if r['id'] == 'c2')['entity'] = 'relationship'
+        for row in rows:
+            if row['id'] in moved:
+                row['entity'] = 'relationship'
         env.engine.save_reflections(NAME, rows)
         return json.dumps([
             {'action': 'merge', 'ids': [_number(prompt, '主人信任小天'), _number(prompt, '主人把烦心事讲给小天听')],

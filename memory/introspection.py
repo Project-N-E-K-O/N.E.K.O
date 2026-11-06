@@ -393,8 +393,11 @@ def plan_actions(
         else:
             issue = str(action.get('issue') or '').strip().lower()
             resolved['issue'] = issue if issue in ISSUE_CODES else None
+        # The subject the model saw (one for all targets, checked above):
+        # the persona section to act in, or what each reflection must still
+        # belong to when the action is applied.
+        resolved['entity'] = targets[0].entity
         if kind == KIND_PERSONA:
-            resolved['entity'] = targets[0].entity
             plan.persona.append(resolved)
         else:
             plan.reflection.append(resolved)
