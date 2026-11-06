@@ -23,7 +23,7 @@ import re
 from dataclasses import dataclass
 from functools import partial
 from itertools import zip_longest
-from typing import Any, Awaitable, Callable
+from typing import Any, Callable
 
 from config import (
     ANTI_REPEAT_DROP_THRESHOLD,
@@ -778,8 +778,13 @@ async def _fetch_phase1_followups(
     return music_content, meme_content
 
 
-def _announce_first_model(make_llm, on_model_start: Callable[[], Awaitable[Any]]):
-    """``make_llm`` that runs ``on_model_start`` once, after the first model it creates."""
+def _announce_first_model(make_llm, on_model_start: Callable[[], None]):
+    """``make_llm`` that calls ``on_model_start`` once, after the first model it creates.
+
+    Synchronous on purpose: it runs between ``_make_proactive_llm``'s last
+    consent and round checks and the stream that sends the prompt, so it must
+    never wait on anything.
+    """
     started = False
 
     async def make_and_announce(*args, **kwargs):
@@ -787,7 +792,7 @@ def _announce_first_model(make_llm, on_model_start: Callable[[], Awaitable[Any]]
         llm = await make_llm(*args, **kwargs)
         if not started:
             started = True
-            await on_model_start()
+            on_model_start()
         return llm
 
     return make_and_announce
@@ -817,12 +822,13 @@ async def _run_phase2_generation(
     vision_consent_epoch: int | None = None,
     round_is_current: Callable[[], bool] | None = None,
     vision_consent_required: bool = False,
-    on_model_start: Callable[[], Awaitable[Any]] | None = None,
+    on_model_start: Callable[[], None] | None = None,
 ) -> Phase2GuardedOutput:
     """Own Phase 2 messages, model stream, and output guards.
 
-    ``on_model_start`` runs once, as soon as the first model is created: the
-    prompt is about to reach a model. A round retired before that never runs it.
+    ``on_model_start`` is called once (synchronously, see
+    _announce_first_model) as soon as the first model is created: the prompt
+    is about to reach a model. A round retired before that never calls it.
     """
     active_logger = log or logger
     use_vision = bool(screenshot_b64 and model_config.has_vision_model)

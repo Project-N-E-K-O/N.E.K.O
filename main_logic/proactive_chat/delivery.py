@@ -402,12 +402,16 @@ async def _commit_proactive_delivery(
 
 
 class CommitmentOffer:
-    """The promise a Phase 2 prompt carries, recorded as offered once a model receives it.
+    """The promise a Phase 2 prompt carries, recorded as offered once a model got it.
 
-    Recorded then rather than on delivery, so a round that ends in a pass
-    still counts as an offer and the promise is not picked again next round.
-    A round retired before any model ran records nothing. Whatever did not
-    land is left to the delivery record (``unrecorded_ids``).
+    Recorded whatever the round's outcome rather than on delivery only, so a
+    round that ends in a pass still counts as an offer and the promise is not
+    picked again next round. ``mark_model_started`` (the Phase 2
+    ``on_model_start`` hook) only sets a flag: it runs between the last
+    consent check and the send, where nothing may be awaited. The record
+    itself goes out after generation (``record_if_offered``); a round retired
+    before any model ran records nothing, and whatever did not land is left
+    to the delivery record (``unrecorded_ids``).
     """
 
     def __init__(
@@ -420,10 +424,14 @@ class CommitmentOffer:
         self._lanlan_name = lanlan_name
         self._ids = list(commitment_ids)
         self._memory_server_port = memory_server_port
+        self._model_started = False
         self._landed = False
 
-    async def record(self) -> None:
-        if self._ids and not self._landed:
+    def mark_model_started(self) -> None:
+        self._model_started = True
+
+    async def record_if_offered(self) -> None:
+        if self._ids and self._model_started and not self._landed:
             self._landed = await _record_commitment_offer(
                 self._lanlan_name, self._ids, memory_server_port=self._memory_server_port,
             )
@@ -439,17 +447,18 @@ async def _record_commitment_offer(
     *,
     memory_server_port: int = MEMORY_SERVER_PORT,
 ) -> bool:
-    """POST the offer of these promises to /record_surfaced; True once it landed."""
+    """POST the offer of these promises to /record_surfaced; True once the store wrote it."""
     try:
         response = await _get_internal_http_client().post(
             f"http://127.0.0.1:{memory_server_port}/record_surfaced/{lanlan_name}",
             json={"reflection_ids": [], "commitment_ids": list(commitment_ids)},
             timeout=2.0,
         )
+        body = response.json() if response.status_code == 200 else {}
     except Exception as exc:
         logger.debug("[%s] 承诺提供记录失败，投递时再记: %s", lanlan_name, exc)
         return False
-    return response.status_code == 200
+    return isinstance(body, dict) and body.get("commitments_recorded") is True
 
 
 async def _record_committed_delivery(

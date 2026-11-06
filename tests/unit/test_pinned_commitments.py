@@ -1107,27 +1107,65 @@ def test_a_changed_account_starts_its_cooldown_over(tmp_path):
     assert not pinned_mod._in_mention_cooldown(entry, _T0 + _HOUR)
 
 
-@pytest.mark.parametrize("outcome", ["landed", "refused", "unreachable"])
+@pytest.mark.parametrize("outcome", ["landed", "store_failed", "refused", "unreachable"])
 def test_an_offer_that_did_not_land_is_left_to_the_delivery_record(monkeypatch, outcome):
     from main_logic.proactive_chat import delivery as proactive_delivery
 
+    replies = {
+        "landed": (200, {"ok": True, "commitments_recorded": True}),
+        "store_failed": (200, {"ok": True, "commitments_recorded": False}),
+        "refused": (503, {}),
+    }
     post = (
         AsyncMock(side_effect=OSError("down")) if outcome == "unreachable"
-        else AsyncMock(return_value=SimpleNamespace(status_code=200 if outcome == "landed" else 503))
+        else AsyncMock(return_value=SimpleNamespace(
+            status_code=replies[outcome][0], json=lambda: replies[outcome][1],
+        ))
     )
     monkeypatch.setattr(
         proactive_delivery, "_get_internal_http_client", lambda: SimpleNamespace(post=post),
     )
     offer = proactive_delivery.CommitmentOffer(_NAME, ["pin_00aa11bb"], memory_server_port=1)
 
-    asyncio.run(offer.record())
-    asyncio.run(offer.record())
+    # No model got the prompt yet: nothing to record.
+    asyncio.run(offer.record_if_offered())
+    post.assert_not_awaited()
+
+    offer.mark_model_started()
+    asyncio.run(offer.record_if_offered())
+    asyncio.run(offer.record_if_offered())
 
     assert post.await_args.kwargs["json"] == {"reflection_ids": [], "commitment_ids": ["pin_00aa11bb"]}
     if outcome == "landed":
         assert (post.await_count, offer.unrecorded_ids) == (1, [])
     else:
         assert offer.unrecorded_ids == ["pin_00aa11bb"]
+
+
+@pytest.mark.parametrize("store_ok", [True, False])
+def test_record_surfaced_says_whether_the_promise_was_written(monkeypatch, store_ok):
+    from app.memory_server import routes, runtime
+
+    store = SimpleNamespace(amark_surfaced=AsyncMock(
+        side_effect=None if store_ok else OSError("disk full"),
+    ))
+    reflections = SimpleNamespace(arecord_surfaced=AsyncMock())
+    monkeypatch.setattr(runtime, "pinned_fact_store", store)
+    monkeypatch.setattr(runtime, "reflection_engine", reflections)
+
+    def post(body):
+        return asyncio.run(routes.api_record_surfaced(SimpleNamespace(json=AsyncMock(return_value=body)), _NAME))
+
+    assert post({"reflection_ids": [], "commitment_ids": ["pin_00aa11bb"]}) == {
+        "ok": True, "commitments_recorded": store_ok,
+    }
+    assert post({"reflection_ids": ["ref_1"], "commitment_ids": ["pin_00aa11bb"]}) == {
+        "ok": True, "commitments_recorded": store_ok,
+    }
+    # Reflections only: nothing to report about promises.
+    assert post({"reflection_ids": ["ref_1"]}) == {"ok": True}
+    monkeypatch.setattr(runtime, "pinned_fact_store", None)
+    assert post({"reflection_ids": [], "commitment_ids": ["pin_00aa11bb"]})["commitments_recorded"] is False
 
 
 @pytest.mark.parametrize("round_current", [True, False])
@@ -1153,7 +1191,8 @@ def test_a_promise_counts_as_offered_once_a_model_receives_the_prompt(monkeypatc
         # The model passed (or the round was refused): no delivery follows.
         return SimpleNamespace(result=ProactiveChatResult(body={"action": "pass"}))
 
-    async def on_model_start():
+    def on_model_start():
+        # Synchronous: it runs between the last consent check and the send.
         events.append("offered")
 
     monkeypatch.setattr(generation, "_make_proactive_llm", make_model)
@@ -1181,8 +1220,12 @@ def test_proactive_chat_hands_the_offer_to_phase_2_and_the_rest_to_delivery():
     from main_logic.proactive_chat import service
 
     source = inspect.getsource(service.handle_proactive_chat)
-    assert "on_model_start=commitment_offer.record" in source
+    assert "on_model_start=commitment_offer.mark_model_started" in source
     assert "surfaced_commitment_ids=commitment_offer.unrecorded_ids" in source
+    # The record goes out once generation is over, before the round can end.
+    generation_at = source.index("guarded_output = await _run_phase2_generation(")
+    record_at = source.index("await commitment_offer.record_if_offered()")
+    assert generation_at < record_at < source.index('"phase2_post_generation"', generation_at)
 
 
 def test_her_private_replies_are_checked_for_pinned_mentions(tmp_path, monkeypatch):

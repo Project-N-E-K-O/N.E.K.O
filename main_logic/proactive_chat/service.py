@@ -2580,14 +2580,16 @@ async def handle_proactive_chat(
         # exact episode/turn (race guard: a no-op if inline moved it since).
         lifecycle.mark_phase2(mgr.state.snapshot())
 
-        # Recorded as offered once a model receives the prompt, whatever it then
-        # makes of it: a [PASS] must not bring the same promise (and another
-        # Phase 2 call) back next round.
+        # Recorded as offered once a model got the prompt, whatever it then made
+        # of it: a [PASS] must not bring the same promise (and another Phase 2
+        # call) back next round. The model start only sets a flag; the record
+        # goes out after generation, so nothing is awaited between the last
+        # consent check and the send.
         commitment_offer = CommitmentOffer(
             lanlan_name, _surfaced_commitment_ids, memory_server_port=MEMORY_SERVER_PORT,
         )
         guarded_output = await _run_phase2_generation(
-            on_model_start=commitment_offer.record,
+            on_model_start=commitment_offer.mark_model_started,
             mgr=mgr,
             vision_consent_epoch=vision_consent_epoch,
             round_is_current=lifecycle.owns_round,
@@ -2611,6 +2613,7 @@ async def handle_proactive_chat(
             music_cooldown=music_cooldown,
             log=logger,
         )
+        await commitment_offer.record_if_offered()
         if _round_preempted():
             return await _end_proactive(ProactiveChatResult(
                 body=_proactive_preempted_json("phase2_post_generation"),

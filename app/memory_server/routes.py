@@ -1156,15 +1156,17 @@ async def _due_commitment_topic(lanlan_name: str) -> dict | None:
     return {"id": entry["id"], "text": entry["text"], "due": pinned_due_date(entry)}
 
 
-async def _record_surfaced_commitments(lanlan_name: str, pinned_ids: list[str]) -> None:
-    """Start the offer cooldown of the promises proactive chat was given."""
+async def _record_surfaced_commitments(lanlan_name: str, pinned_ids: list[str]) -> bool:
+    """Start the offer cooldown of the promises proactive chat was given; True once written."""
     store = runtime.pinned_fact_store
     if store is None or not pinned_ids:
-        return
+        return False
     try:
         await store.amark_surfaced(lanlan_name, pinned_ids)
     except Exception as e:
         logger.debug(f"[ReflectAPI] {lanlan_name}: 承诺 surfaced 记录失败: {type(e).__name__}")
+        return False
+    return True
 
 
 @app.get("/followup_topics/{lanlan_name}")
@@ -1188,21 +1190,26 @@ async def api_record_surfaced(request: Request, lanlan_name: str):
     """Record which reflections this proactive chat mentioned, refreshing the cooldown.
 
     ``commitment_ids`` (the promise from /followup_topics, when it was
-    offered) start that promise's own offer cooldown in the pinned section.
+    offered) start that promise's own offer cooldown in the pinned section;
+    ``commitments_recorded`` tells the caller whether that write landed, so
+    a failed one is retried with the delivery record.
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
     body = await request.json()
+    result: dict[str, object] = {"ok": True}
     commitment_ids = body.get("commitment_ids") or []
-    if isinstance(commitment_ids, list):
-        await _record_surfaced_commitments(lanlan_name, commitment_ids)
+    if commitment_ids:
+        result["commitments_recorded"] = isinstance(commitment_ids, list) and await _record_surfaced_commitments(
+            lanlan_name, commitment_ids,
+        )
     reflection_ids = body.get("reflection_ids", [])
     if not reflection_ids:
-        return {"ok": True}
+        return result
     try:
         await runtime.reflection_engine.arecord_surfaced(lanlan_name, reflection_ids)
     except Exception as e:
         logger.debug(f"[ReflectAPI] {lanlan_name}: record_surfaced 失败: {e}")
-    return {"ok": True}
+    return result
 
 
 @app.post("/cache/{lanlan_name}")
