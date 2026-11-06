@@ -67,22 +67,25 @@ class _RecordingClient:
     """Fake httpx client.
 
     Release lookups and Market posts are answered from ``responses`` and
-    recorded in ``requests``. The repository visibility lookup and the release
-    workflow run lookup are answered from ``repository`` / ``runs`` and
-    recorded in ``github_reads``.
+    recorded in ``requests``; an exception in ``responses`` is raised instead.
+    The repository visibility lookup and the release workflow run lookup are
+    answered from ``repository`` / ``runs`` (one per lookup, the last one
+    repeated) and recorded in ``github_reads``.
     """
 
     def __init__(
         self,
-        *responses: httpx.Response,
+        *responses: httpx.Response | Exception,
         repository: httpx.Response | None = None,
-        runs: httpx.Response | None = None,
+        runs: httpx.Response | list[httpx.Response] | None = None,
     ) -> None:
         self.responses = list(responses)
         self.requests: list[dict[str, Any]] = []
         self.github_reads: list[str] = []
         self.repository = repository or httpx.Response(200, json={"private": False})
-        self.runs = runs or httpx.Response(200, json={"workflow_runs": []})
+        if runs is None:
+            runs = _successful_runs()
+        self.runs = runs if isinstance(runs, list) else [runs]
 
     def __enter__(self) -> _RecordingClient:
         return self
@@ -90,9 +93,15 @@ class _RecordingClient:
     def __exit__(self, *_: object) -> None:
         return None
 
+    def _next(self) -> httpx.Response:
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
     def post(self, url: str, **kwargs: Any) -> httpx.Response:
         self.requests.append({"url": url, **kwargs})
-        return self.responses.pop(0)
+        return self._next()
 
     def get(self, url: str, **kwargs: Any) -> httpx.Response:
         if _REPOSITORY_API_RE.fullmatch(url):
@@ -100,15 +109,89 @@ class _RecordingClient:
             return self.repository
         if "/actions/workflows/release.yml/runs" in url:
             self.github_reads.append(url)
-            return self.runs
+            return self.runs.pop(0) if len(self.runs) > 1 else self.runs[0]
         self.requests.append({"method": "GET", "url": url, **kwargs})
-        return self.responses.pop(0)
+        return self._next()
+
+
+def _workflow_runs(*runs: dict[str, Any]) -> httpx.Response:
+    return httpx.Response(200, json={"total_count": len(runs), "workflow_runs": list(runs)})
+
+
+def _run(
+    tag: str,
+    *,
+    status: str = "completed",
+    conclusion: str | None = "success",
+    event: str = "push",
+) -> dict[str, Any]:
+    return {
+        "id": 42,
+        "event": event,
+        "head_branch": tag,
+        "status": status,
+        "conclusion": conclusion,
+        "path": ".github/workflows/release.yml",
+        "html_url": "https://github.com/neko/n.e.k.o_plugin_publish_demo/actions/runs/42",
+    }
+
+
+def _successful_runs() -> httpx.Response:
+    # The tests publish v1.2.0 (hand-made plugin.toml) or v0.1.0 (init scaffold).
+    return _workflow_runs(_run("v1.2.0"), _run("v0.1.0"))
 
 
 class _FailingGitHubClient(_RecordingClient):
     def get(self, url: str, **kwargs: Any) -> httpx.Response:
         request = httpx.Request("GET", url)
         raise httpx.ConnectError("connection refused", request=request)
+
+
+def _market_version(version: str = "1.2.0") -> dict[str, Any]:
+    # Fields of the Market's Version schema (app/schemas/version.py) the CLI reads plus context.
+    return {
+        "id": 12,
+        "plugin_id": 3,
+        "version": version,
+        "channel": "stable",
+        "is_latest": True,
+        "release_tag": version,
+        "release_url": f"https://github.com/neko/n.e.k.o_plugin_demo/releases/tag/v{version}",
+        "verification_status": "passed",
+    }
+
+
+def _market_published() -> dict[str, Any]:
+    return {"status": "published", "version": _market_version(), "candidate": None}
+
+
+def _market_review(status: str) -> dict[str, Any]:
+    # ReleaseReviewReceipt (app/schemas/release_review.py).
+    return {
+        "status": status,
+        "version": None,
+        "candidate": {
+            "id": 7,
+            "plugin_id": 3,
+            "version": "1.2.0",
+            "channel": "stable",
+            "status": status,
+        },
+    }
+
+
+def _market_pending(code: str = "release_verification_pending", *, retry_after: str = "5") -> httpx.Response:
+    # VersionDomainError handler (app/main.py) with Retry-After.
+    return httpx.Response(
+        503,
+        headers={"Retry-After": retry_after},
+        json={
+            "detail": "Release verification is queued or running. Retry shortly.",
+            "code": code,
+            "issues": None,
+            "verification_job_id": 41,
+        },
+    )
 
 
 def _ready_release(release_url: str) -> httpx.Response:
@@ -277,13 +360,7 @@ def test_publish_market_anonymously_notifies_market(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     release_url = "https://github.com/neko/n.e.k.o_plugin_demo/releases/tag/v1.2.0"
-    response = httpx.Response(
-        201,
-        json={
-            "status": "published",
-            "version": {"version": "1.2.0"},
-        },
-    )
+    response = httpx.Response(201, json=_market_published())
     client = _RecordingClient(response)
     monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
 
@@ -297,7 +374,118 @@ def test_publish_market_anonymously_notifies_market(
         }
     ]
     assert "Authorization" not in str(client.requests)
-    assert "[OK] Market published v1.2.0" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "[MARKET] status=published\n" in output
+    assert "[OK] Market published v1.2.0" in output
+
+
+_MARKET_RELEASE_URL = "https://github.com/neko/n.e.k.o_plugin_demo/releases/tag/v1.2.0"
+
+
+@pytest.mark.parametrize(
+    ("response", "exit_code", "market_line", "message"),
+    [
+        (
+            httpx.Response(200, json={"status": "already_published", "version": _market_version()}),
+            0,
+            "[MARKET] status=already_published\n",
+            "[OK] Market already published v1.2.0",
+        ),
+        (
+            httpx.Response(202, json=_market_review("pending_review")),
+            0,
+            "[MARKET] status=pending_review candidate=7\n",
+            "waiting for a Market reviewer",
+        ),
+        (
+            httpx.Response(202, json=_market_review("rejected")),
+            1,
+            "[MARKET] status=rejected candidate=7\n",
+            "publish a new version",
+        ),
+    ],
+)
+def test_publish_market_reports_the_market_status(
+    response: httpx.Response,
+    exit_code: int,
+    market_line: str,
+    message: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _RecordingClient(response)
+    monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
+
+    assert neko_plugin_cli.main(["publish", "market", _MARKET_RELEASE_URL]) == exit_code
+
+    captured = capsys.readouterr()
+    assert captured.out.count("[MARKET]") == 1
+    assert market_line in captured.out
+    assert message in captured.out + captured.err
+
+
+@pytest.mark.parametrize(
+    ("first", "expected_sleep"),
+    [
+        (_market_pending(), 5.0),
+        (_market_pending("release_verification_busy", retry_after="120"), 60.0),
+        (httpx.Response(429, headers={"Retry-After": "2"}, json={"detail": "Too Many Requests"}), 2.0),
+        (_market_pending(retry_after="soon"), 5.0),
+        (httpx.ConnectError("connection refused"), 5.0),
+    ],
+)
+def test_publish_market_retries_the_same_body_while_the_market_is_verifying(
+    first: httpx.Response | Exception,
+    expected_sleep: float,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _RecordingClient(first, httpx.Response(201, json=_market_published()))
+    monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
+    sleeps: list[float] = []
+    patch_module_clock(monkeypatch, publish_cmd, monotonic=lambda: 0.0, sleep=sleeps.append)
+
+    assert neko_plugin_cli.main(["publish", "market", _MARKET_RELEASE_URL]) == 0
+
+    assert sleeps == [expected_sleep]
+    assert [request["json"] for request in client.requests] == [
+        {"release_url": _MARKET_RELEASE_URL},
+        {"release_url": _MARKET_RELEASE_URL},
+    ]
+    output = capsys.readouterr().out
+    assert "[WAIT] Market is still verifying the release" in output
+    assert "[MARKET] status=published" in output
+
+
+def test_publish_market_gives_up_when_the_wait_budget_runs_out(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _RecordingClient(*(_market_pending() for _ in range(3)))
+    monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
+    clock = {"now": 0.0}
+    sleeps: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock["now"] += seconds
+
+    patch_module_clock(monkeypatch, publish_cmd, monotonic=lambda: clock["now"], sleep=sleep)
+
+    exit_code = neko_plugin_cli.main(
+        ["publish", "market", _MARKET_RELEASE_URL, "--market-wait", "8"]
+    )
+
+    assert exit_code == 1
+    assert sleeps == [5.0, 3.0]
+    assert len(client.requests) == 3
+    captured = capsys.readouterr()
+    # The verifying message is printed once, not on every retry.
+    assert captured.out.count("[WAIT]") == 1
+    assert "[MARKET]" not in captured.out
+    assert "[FAIL]" in captured.err
+    assert "release_verification_pending" in captured.err
+    assert "still not accepted after 8 s" in captured.err
 
 
 def test_publish_github_pushes_version_tag_and_waits_for_release(
@@ -413,7 +601,7 @@ def test_publish_uses_writable_preflight_directory_when_default_is_unusable(
     assert len(client.requests) == 1
 
 
-def test_publish_rejects_wrong_origin_even_when_github_repository_matches(
+def test_publish_judges_the_repository_name_by_origin_and_only_warns(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -426,23 +614,24 @@ def test_publish_rejects_wrong_origin_even_when_github_repository_matches(
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     plugin_dir, remote = _make_cli_publish_repo(tmp_path, monkeypatch)
 
-    wrong_github_url = "https://github.com/neko/wrong-repository"
-    _run_git(plugin_dir, "remote", "set-url", "origin", wrong_github_url)
-    client = _RecordingClient(
-        _ready_release(
-            "https://github.com/neko/wrong-repository/releases/tag/v0.1.0"
-        )
-    )
+    other_github_url = "https://github.com/neko/other-repository"
+    _run_git(plugin_dir, "remote", "set-url", "origin", other_github_url)
+    release_url = "https://github.com/neko/other-repository/releases/tag/v0.1.0"
+    client = _RecordingClient(_ready_release(release_url))
     monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
 
     exit_code = neko_plugin_cli.main(
         ["publish", "github", "publish_demo"]
     )
 
-    assert exit_code == 1
-    assert _run_git(remote, "tag", "--list") == ""
-    assert client.requests == []
-    assert "market repository name must be" in capsys.readouterr().err
+    # The Market does not require the n.e.k.o_plugin_<id> name.
+    assert exit_code == 0
+    assert _run_git(remote, "tag", "--list") == "v0.1.0"
+    assert client.github_reads[0] == "https://api.github.com/repos/neko/other-repository"
+    assert (
+        "recommended market repository name is n.e.k.o_plugin_publish_demo, "
+        "got other-repository"
+    ) in capsys.readouterr().out
 
 
 def test_publish_rejects_push_url_for_different_github_repository(
@@ -702,6 +891,8 @@ def test_publish_defaults_to_github_then_market(
         (201, {"status": "failed", "version": {"version": "1.2.0"}}),
         (200, {"status": "already_published", "version": {}}),
         (200, {"status": "published", "version": {"version": "1.2.0"}}),
+        (202, {"status": "pending_review", "version": None, "candidate": None}),
+        (202, {"status": "published", "version": None, "candidate": {"id": 7}}),
     ],
 )
 def test_publish_market_rejects_malformed_success_response(
@@ -1080,8 +1271,10 @@ def test_publish_rejects_remote_tag_that_points_to_another_commit(
     assert _run_git(remote, "tag", "--list") == "v1.2.0"
     error = capsys.readouterr().err
     assert "remote tag v1.2.0 points to" in error
+    assert "a new version number is needed" in error
     assert "bump the version in plugin.toml" in error
-    assert "git push origin :refs/tags/v1.2.0" in error
+    # The Market keeps every version it has seen; moving the tag cannot help.
+    assert "git push origin :refs/tags/v1.2.0" not in error
 
 
 def test_publish_rejects_local_tag_on_another_commit_with_recovery_hint(
@@ -1423,19 +1616,7 @@ def test_publish_fails_fast_when_the_release_workflow_run_failed(
     run_url = f"https://github.com/{_PUBLISH_REPOSITORY}/actions/runs/42"
     client = _RecordingClient(
         httpx.Response(404, json={"message": "Not Found"}),
-        runs=httpx.Response(
-            200,
-            json={
-                "workflow_runs": [
-                    {
-                        "head_branch": "v1.2.0",
-                        "status": "completed",
-                        "conclusion": "failure",
-                        "html_url": run_url,
-                    }
-                ]
-            },
-        ),
+        runs=_workflow_runs(_run("v1.2.0", conclusion="failure")),
     )
     monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
     sleeps: list[float] = []
@@ -1455,33 +1636,92 @@ def test_publish_fails_fast_when_the_release_workflow_run_failed(
     assert run_url in error
 
 
-def test_publish_keeps_waiting_while_the_release_workflow_runs(
+def test_publish_waits_for_the_release_workflow_run_to_succeed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     plugin_dir, _ = _make_publish_repo(tmp_path, monkeypatch)
     release_url = f"https://github.com/{_PUBLISH_REPOSITORY}/releases/tag/v1.2.0"
     client = _RecordingClient(
-        httpx.Response(404, json={"message": "Not Found"}),
+        # The assets are uploaded before the run's last step finishes.
         _ready_release(release_url),
-        runs=httpx.Response(
-            200,
-            json={
-                "workflow_runs": [
-                    # Another tag on the same commit does not decide this release.
-                    {"head_branch": "v1.1.0", "status": "completed", "conclusion": "failure"},
-                    {"head_branch": "v1.2.0", "status": "in_progress", "conclusion": None},
-                ]
-            },
+        _ready_release(release_url),
+        httpx.Response(201, json=_market_published()),
+        runs=[
+            _workflow_runs(
+                # Another tag on the same commit does not decide this release.
+                _run("v1.1.0", conclusion="failure"),
+                _run("v1.2.0", status="in_progress", conclusion=None),
+            ),
+            _workflow_runs(_run("v1.2.0")),
+        ],
+    )
+    monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
+    sleeps: list[float] = []
+    patch_module_clock(monkeypatch, publish_cmd, monotonic=lambda: 0.0, sleep=sleeps.append)
+    monkeypatch.setattr(publish_cmd.release_cmd, "handle_release_check", lambda _: 0)
+
+    exit_code = neko_plugin_cli.main(["publish", str(plugin_dir), "--timeout", "900"])
+
+    assert exit_code == 0
+    assert sleeps == [15.0]
+    assert [request.get("method", "POST") for request in client.requests] == [
+        "GET",
+        "GET",
+        "POST",
+    ]
+    assert "[MARKET] status=published" in capsys.readouterr().out
+
+
+def test_publish_times_out_while_the_release_workflow_run_is_unfinished(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir, _ = _make_publish_repo(tmp_path, monkeypatch)
+    release_url = f"https://github.com/{_PUBLISH_REPOSITORY}/releases/tag/v1.2.0"
+    client = _RecordingClient(
+        _ready_release(release_url),
+        runs=_workflow_runs(_run("v1.2.0", status="in_progress", conclusion=None)),
+    )
+    monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
+    monkeypatch.setattr(publish_cmd.release_cmd, "handle_release_check", lambda _: 0)
+
+    exit_code = neko_plugin_cli.main(["publish", str(plugin_dir), "--timeout", "0"])
+
+    assert exit_code == 1
+    assert [request.get("method", "POST") for request in client.requests] == ["GET"]
+    error = capsys.readouterr().err
+    assert "timed out waiting for the release workflow run for v1.2.0" in error
+    assert "in_progress" in error
+
+
+def test_publish_fails_fast_when_a_dispatched_release_run_on_the_tag_failed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir, _ = _make_publish_repo(tmp_path, monkeypatch)
+    release_url = f"https://github.com/{_PUBLISH_REPOSITORY}/releases/tag/v1.2.0"
+    client = _RecordingClient(
+        _ready_release(release_url),
+        runs=_workflow_runs(
+            # Newest first: a manual re-run on the tag decides over the push run.
+            _run("v1.2.0", conclusion="failure", event="workflow_dispatch"),
+            _run("v1.2.0"),
+            # A dispatch from a branch is not a release run for the tag.
+            _run("main", conclusion="success", event="workflow_dispatch"),
         ),
     )
     monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: client)
-    patch_module_clock(monkeypatch, publish_cmd, monotonic=lambda: 0.0, sleep=lambda _: None)
     monkeypatch.setattr(publish_cmd.release_cmd, "handle_release_check", lambda _: 0)
 
-    exit_code = neko_plugin_cli.main(["publish", "github", str(plugin_dir), "--timeout", "900"])
+    exit_code = neko_plugin_cli.main(["publish", str(plugin_dir), "--timeout", "900"])
 
-    assert exit_code == 0
+    assert exit_code == 1
+    assert not any("event=" in url for url in client.github_reads)
+    assert "concluded failure" in capsys.readouterr().err
 
 
 def test_publish_names_the_upstream_command_when_branch_has_no_upstream(

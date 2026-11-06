@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from plugin.neko_plugin_cli.repo_state import read_repo_state
+from plugin.neko_plugin_cli.repo_state import committed_file_sizes, read_repo_state
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is required")
 
@@ -129,3 +129,24 @@ def test_tag_left_behind_an_older_commit_is_not_at_head(tmp_path):
     state = read_repo_state(tmp_path, version="0.1.0")
     assert state.tag_exists is True
     assert state.tag_at_head is False
+
+
+
+def test_committed_file_sizes_lists_the_head_tree(tmp_path):
+    _repository(tmp_path)
+    (tmp_path / "data dir").mkdir()
+    (tmp_path / "data dir" / "a b.bin").write_bytes(b"\x00" * 300)
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "data")
+    # Uncommitted content is not what GitHub zips for the commit.
+    (tmp_path / "plugin.toml").write_text("[plugin]\nid = 'changed'\n", encoding="utf-8")
+
+    assert sorted(committed_file_sizes(tmp_path)) == [
+        ("data dir/a b.bin", 300),
+        ("plugin.toml", len("[plugin]\n")),
+    ]
+
+
+def test_committed_file_sizes_is_none_without_a_commit(tmp_path):
+    _git(tmp_path, "init")
+    assert committed_file_sizes(tmp_path) is None

@@ -63,9 +63,9 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
     parser.add_argument(
         "--remote",
         help=_tri(
-            "Add a matching GitHub repository as origin",
-            "将匹配的 GitHub 仓库添加为 origin",
-            "一致する GitHub リポジトリを origin として追加",
+            "Add a GitHub repository as origin (recommended name: n.e.k.o_plugin_<id>)",
+            "将 GitHub 仓库添加为 origin（推荐名称：n.e.k.o_plugin_<id>）",
+            "GitHub リポジトリを origin として追加（推奨名：n.e.k.o_plugin_<id>）",
         ),
     )
     parser.set_defaults(handler=handle, _defaults=defaults)
@@ -178,17 +178,31 @@ def handle(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-    if args.remote and not _remote_matches_plugin(args.remote, plugin_id=plugin_id):
-        print(
-            "[FAIL] "
-            + _tri(
-                f"remote must be a GitHub repository named {_market_repo_name(plugin_id)}",
-                f"remote 必须是名为 {_market_repo_name(plugin_id)} 的 GitHub 仓库",
-                f"remote は {_market_repo_name(plugin_id)} という名前の GitHub リポジトリである必要があります",
-            ),
-            file=sys.stderr,
-        )
-        return 1
+    repo_name = _market_repo_name(plugin_id)
+    if args.remote:
+        remote_repository = parse_github_repository_remote(args.remote)
+        if remote_repository is None:
+            print(
+                "[FAIL] "
+                + _tri(
+                    "remote must be a GitHub repository",
+                    "remote 必须是 GitHub 仓库",
+                    "remote は GitHub リポジトリである必要があります",
+                ),
+                file=sys.stderr,
+            )
+            return 1
+        remote_name = remote_repository.rsplit("/", 1)[-1]
+        if remote_name.casefold() != repo_name.casefold():
+            print(
+                "[WARNING] "
+                + _tri(
+                    f"the recommended repository name is {repo_name}; the Market also accepts {remote_name}",
+                    f"推荐的仓库名为 {repo_name}；Market 也接受 {remote_name}",
+                    f"推奨リポジトリ名は {repo_name} です。Market は {remote_name} も受け付けます",
+                )
+            )
+        repo_name = remote_name
 
     spec = PluginSpec(
         plugin_id=plugin_id,
@@ -226,7 +240,7 @@ def handle(args: argparse.Namespace) -> int:
     for path in created:
         print(f"  └── {path.relative_to(target_dir)}")
     print(f"\n  {_tri('plugin', '插件', 'プラグイン')}: {plugin_id}")
-    print(f"  {_tri('repository', '仓库', 'リポジトリ')}: {_market_repo_name(plugin_id)}")
+    print(f"  {_tri('repository', '仓库', 'リポジトリ')}: {repo_name}")
     print(f"  {_tri('entry', '入口', 'エントリ')}: {spec.entry_point}")
     print(f"  Git: {_tri('initialized (main)', '已初始化（main）', '初期化済み（main）')}")
     if args.remote:
@@ -235,9 +249,9 @@ def handle(args: argparse.Namespace) -> int:
         print(
             "  " + _tri("next", "下一步", "次の手順") + ": "
             + _tri(
-                "add the matching GitHub repository as origin",
-                "将匹配的 GitHub 仓库添加为 origin",
-                "一致する GitHub リポジトリを origin として追加してください",
+                f"add the GitHub repository (recommended name: {repo_name}) as origin",
+                f"将 GitHub 仓库（推荐名称：{repo_name}）添加为 origin",
+                f"GitHub リポジトリ（推奨名：{repo_name}）を origin として追加してください",
             )
         )
     return 0
@@ -659,15 +673,6 @@ def _print_manual_repo_steps(plugin_dir: Path, *, repo_name: str) -> None:
         _git_command(plugin_dir, f"push -u origin {_current_branch(plugin_dir)}"),
     ]:
         print(f"       {command}")
-
-
-def _remote_matches_plugin(remote: str, *, plugin_id: str) -> bool:
-    repository = parse_github_repository_remote(remote)
-    if repository is None:
-        return False
-    return repository.rsplit("/", 1)[-1].casefold() == _market_repo_name(
-        plugin_id
-    ).casefold()
 
 
 def _resolve_plugins_root(args: argparse.Namespace, *, defaults: CliDefaults) -> Path:

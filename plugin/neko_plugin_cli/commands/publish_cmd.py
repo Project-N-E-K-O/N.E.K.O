@@ -34,8 +34,13 @@ _RELEASE_RUFF_TIMEOUT_SECONDS = 120
 _RELEASE_POLL_SECONDS = 15.0
 _GH_TOKEN_TIMEOUT_SECONDS = 20
 _DIRTY_PATHS_SHOWN = 5
-_FAILED_RUN_CONCLUSIONS = frozenset(
-    {"failure", "cancelled", "timed_out", "startup_failure"}
+# The Market answers these while its verification job is queued or running.
+_MARKET_RETRY_STATUSES = frozenset({429, 503})
+_MARKET_DEFAULT_RETRY_SECONDS = 5.0
+_MARKET_MAX_RETRY_SECONDS = 60
+_MARKET_NETWORK_RETRY_SECONDS = 5.0
+_MARKET_REVIEW_STATUSES = frozenset(
+    {"pending_review", "approved", "superseded", "rejected"}
 )
 
 
@@ -112,9 +117,19 @@ def register(
         type=_finite_timeout,
         default=900.0,
         help=_tri(
-            "Seconds to wait for the GitHub Release assets (default: 900)",
-            "等待 GitHub Release 资产上传完成的秒数（默认：900）",
-            "GitHub Release アセットのアップロード完了を待つ秒数（既定値：900）",
+            "Seconds to wait for the GitHub Release and its workflow run (default: 900)",
+            "等待 GitHub Release 及其工作流运行完成的秒数（默认：900）",
+            "GitHub Release とそのワークフロー実行の完了を待つ秒数（既定値：900）",
+        ),
+    )
+    parser.add_argument(
+        "--market-wait",
+        type=_finite_timeout,
+        default=1800.0,
+        help=_tri(
+            "Seconds to keep retrying while the Market is still verifying the release (default: 1800)",
+            "Market 仍在核验 Release 时持续重试的秒数（默认：1800）",
+            "Market が Release を検証中の間、再試行を続ける秒数（既定値：1800）",
         ),
     )
     parser.set_defaults(handler=handle, _defaults=defaults)
@@ -133,7 +148,7 @@ def handle(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
-        return _notify_market(args.target)
+        return _notify_market(args.target, wait=args.market_wait)
 
     if args.mode_or_plugin == "github":
         plugin = args.target or "."
@@ -167,7 +182,7 @@ def handle(args: argparse.Namespace) -> int:
         f"[OK] GitHub Release ready: {release_url} / "
         f"GitHub Release 已就绪 / GitHub Release の準備完了"
     )
-    return _notify_market(release_url)
+    return _notify_market(release_url, wait=args.market_wait)
 
 
 def _run_github_phase(args: argparse.Namespace, plugin: str) -> str | None:
@@ -190,29 +205,78 @@ def _run_github_phase(args: argparse.Namespace, plugin: str) -> str | None:
         return None
 
 
-def _notify_market(release_url: str) -> int:
-    try:
-        with httpx.Client(timeout=30.0) as client:
-            response = client.post(
-                _MARKET_PUBLICATION_URL,
-                json={"release_url": release_url},
-            )
-    except httpx.HTTPError as exc:
-        print(
-            f"[FAIL] {_tri('Market publication request failed', 'Market 发布请求失败', 'Market 公開リクエストに失敗')}: {exc}",
-            file=sys.stderr,
-        )
-        return 1
+def _notify_market(release_url: str, *, wait: float) -> int:
+    """POST the release to the Market, retrying while it is still verifying.
 
+    The Market answers 503 (scan queued or running) or 429 with Retry-After
+    until its verification job finishes; re-posting the same body re-attaches
+    to that job (N.E.K.O-PluginMarket .github/workflows/notify-market-release.yml).
+    """
+    deadline = time.monotonic() + max(wait, 0)
+    waiting_reason: str | None = None
+    with httpx.Client(timeout=30.0) as client:
+        while True:
+            try:
+                response = client.post(
+                    _MARKET_PUBLICATION_URL,
+                    json={"release_url": release_url},
+                )
+            except httpx.HTTPError as exc:
+                reason = f"{_tri('Market publication request failed', 'Market 发布请求失败', 'Market 公開リクエストに失敗')}: {exc}"
+                delay = _MARKET_NETWORK_RETRY_SECONDS
+            else:
+                payload = _response_object(response)
+                if response.status_code not in _MARKET_RETRY_STATUSES:
+                    return _report_market_response(response.status_code, payload)
+                code = payload.get("code") or f"http_{response.status_code}"
+                reason = f"{code}: {payload.get('detail') or ''}".rstrip(": ")
+                delay = _market_retry_delay(response)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                print(
+                    f"[FAIL] {_tri('Market publication failed', 'Market 发布失败', 'Market への公開に失敗')}: "
+                    f"{reason}; "
+                    + _tri(
+                        f"still not accepted after {wait:.0f} s; run neko-plugin publish market {release_url} again later",
+                        f"{wait:.0f} 秒后仍未完成；请稍后再次运行 neko-plugin publish market {release_url}",
+                        f"{wait:.0f} 秒経っても完了していません。後で neko-plugin publish market {release_url} を再実行してください",
+                    ),
+                    file=sys.stderr,
+                )
+                return 1
+            if reason != waiting_reason:
+                waiting_reason = reason
+                print(
+                    "[WAIT] "
+                    + _tri(
+                        f"Market is still verifying the release, retrying ({reason})",
+                        f"Market 仍在核验此 Release，正在重试（{reason}）",
+                        f"Market はまだ Release を検証中です。再試行します（{reason}）",
+                    ),
+                    flush=True,
+                )
+            time.sleep(min(delay, remaining))
+
+
+def _response_object(response: httpx.Response) -> dict:
     try:
         payload = response.json()
     except ValueError:
-        payload = {}
-    if not isinstance(payload, dict):
-        payload = {}
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
-    if response.status_code not in {200, 201}:
-        code = payload.get("code") or f"http_{response.status_code}"
+
+def _market_retry_delay(response: httpx.Response) -> float:
+    retry_after = response.headers.get("retry-after", "")
+    if not retry_after.isdigit():
+        return _MARKET_DEFAULT_RETRY_SECONDS
+    return float(min(max(int(retry_after), 1), _MARKET_MAX_RETRY_SECONDS))
+
+
+def _report_market_response(status_code: int, payload: dict) -> int:
+    """Print the ``[MARKET] status=...`` line for a final Market answer."""
+    if status_code not in {200, 201, 202}:
+        code = payload.get("code") or f"http_{status_code}"
         detail = payload.get("detail") or _tri(
             "Market rejected the release",
             "Market 拒绝了此 Release",
@@ -226,13 +290,23 @@ def _notify_market(release_url: str) -> int:
         return 1
 
     status = payload.get("status")
-    version = payload.get("version") or {}
+    version = payload.get("version")
     version_name = version.get("version") if isinstance(version, dict) else None
-    expected = (response.status_code, status) in {
-        (201, "published"),
-        (200, "already_published"),
-    }
-    if not expected or not isinstance(version_name, str) or not version_name:
+    candidate = payload.get("candidate")
+    candidate_id = candidate.get("id") if isinstance(candidate, dict) else None
+    if status_code == 202:
+        expected = (
+            status in _MARKET_REVIEW_STATUSES
+            and isinstance(candidate_id, int)
+            and not isinstance(candidate_id, bool)
+        )
+    else:
+        expected = (
+            (status_code, status) in {(201, "published"), (200, "already_published")}
+            and isinstance(version_name, str)
+            and bool(version_name)
+        )
+    if not expected:
         print(
             "[FAIL] "
             + _tri(
@@ -244,15 +318,54 @@ def _notify_market(release_url: str) -> int:
         )
         return 1
 
-    if status == "already_published":
+    print(f"[MARKET] status={status}" + (f" candidate={candidate_id}" if status_code == 202 else ""))
+    if status == "published":
+        print(
+            f"[OK] Market published v{version_name} / "
+            f"Market 发布成功 v{version_name} / Market 公開完了 v{version_name}"
+        )
+    elif status == "already_published":
         print(
             f"[OK] Market already published v{version_name} / "
             f"Market 已发布 v{version_name} / Market 公開済み v{version_name}"
         )
+    elif status == "rejected":
+        print(
+            "[FAIL] "
+            + _tri(
+                "the Market rejected this exact release before; publish a new version",
+                "Market 之前已拒绝过这个完全相同的 Release；请发布新版本",
+                "Market はこれと同一の Release を以前に拒否しました。新しいバージョンを公開してください",
+            ),
+            file=sys.stderr,
+        )
+        return 1
+    elif status == "pending_review":
+        print(
+            "[OK] "
+            + _tri(
+                "Market accepted the release; it is waiting for a Market reviewer",
+                "Market 已接收此 Release，正在等待 Market 审核员审核",
+                "Market は Release を受け付けました。Market のレビュアーによる審査待ちです",
+            )
+        )
+    elif status == "approved":
+        print(
+            "[OK] "
+            + _tri(
+                "a Market reviewer already approved this release",
+                "Market 审核员已批准此 Release",
+                "Market のレビュアーはこの Release を承認済みです",
+            )
+        )
     else:
         print(
-            f"[OK] Market published v{version_name} / "
-            f"Market 发布成功 v{version_name} / Market 公開完了 v{version_name}"
+            "[OK] "
+            + _tri(
+                "a newer release of this version replaced this one in Market review",
+                "此版本的更新 Release 已在 Market 审核中取代了这一个",
+                "このバージョンの新しい Release が Market の審査でこれを置き換えました",
+            )
         )
     return 0
 
@@ -574,15 +687,16 @@ def _ensure_remote_tag(plugin_dir: Path, *, tag: str, head: str) -> None:
     remote_commit = _remote_tag_commit(plugin_dir, tag)
     if remote_commit:
         if remote_commit != head:
-            delete = f"git push origin :refs/tags/{tag}"
+            # The Market keeps every version it has seen, including yanked
+            # ones, so moving the tag cannot publish this commit as that version.
             raise RuntimeError(
                 _tri(
                     f"remote tag {tag} points to {remote_commit[:12]}, not HEAD {head[:12]}; "
-                    f"bump the version in plugin.toml, or delete the tag ({delete})",
+                    "a new version number is needed: bump the version in plugin.toml",
                     f"远程 tag {tag} 指向 {remote_commit[:12]}，不是 HEAD {head[:12]}；"
-                    f"请提升 plugin.toml 中的版本号，或删除该 tag（{delete}）",
+                    "需要新的版本号：请提升 plugin.toml 中的版本号",
                     f"リモート tag {tag} は {remote_commit[:12]} を指し、HEAD {head[:12]} ではありません。"
-                    f"plugin.toml のバージョンを上げるか、tag を削除してください（{delete}）",
+                    "新しいバージョン番号が必要です：plugin.toml のバージョンを上げてください",
                 )
             )
         return
@@ -765,7 +879,7 @@ def _ensure_public_repository(repository: str, *, headers: dict[str, str]) -> No
         )
 
 
-def _raise_if_release_run_failed(
+def _release_run(
     client: httpx.Client,
     repository: str,
     *,
@@ -773,36 +887,46 @@ def _raise_if_release_run_failed(
     head: str,
     headers: dict[str, str],
     deadline: float,
-) -> None:
-    """Fail fast when the release workflow run for ``tag`` has already failed."""
+) -> dict | None:
+    """The newest release workflow run for ``tag`` at ``head``, or None when there is none yet.
+
+    The Market accepts a run started by the tag push, or a manual dispatch on
+    the tag (N.E.K.O-PluginMarket app/services/release_fetcher.py).
+    """
     response = _github_get(
         client,
         f"{_GITHUB_API_URL}/repos/{repository}/actions/workflows/release.yml/runs"
-        f"?event=push&head_sha={head}",
+        f"?head_sha={head}",
         headers=headers,
         deadline=deadline,
     )
-    # Actions can be unreadable (disabled, no permission); the release lookup
-    # still decides the outcome then.
+    # Unreadable Actions (disabled, no permission) leave the run unknown; the
+    # wait then ends at its timeout.
     if response.status_code != 200:
-        return
+        return None
     payload = response.json()
     runs = payload.get("workflow_runs") if isinstance(payload, dict) else None
-    run = next(
+    return next(
         (
             run
             for run in (runs if isinstance(runs, list) else [])
-            if isinstance(run, dict) and run.get("head_branch") == tag
+            if isinstance(run, dict)
+            and run.get("head_branch") == tag
+            and run.get("event") in {"push", "workflow_dispatch"}
         ),
         None,
     )
+
+
+def _raise_if_release_run_failed(run: dict | None, *, tag: str) -> None:
+    """Fail fast when the release workflow run for ``tag`` finished without success."""
     if (
         run is None
         or run.get("status") != "completed"
-        or run.get("conclusion") not in _FAILED_RUN_CONCLUSIONS
+        or run.get("conclusion") == "success"
     ):
         return
-    conclusion = run["conclusion"]
+    conclusion = run.get("conclusion")
     run_url = run.get("html_url") or ""
     raise RuntimeError(
         _tri(
@@ -847,6 +971,7 @@ def _wait_for_release(
     unready_assets = list(expected_assets)
     with httpx.Client(timeout=30.0) as client:
         while True:
+            assets_ready = False
             response = _github_get(client, api_url, headers=headers, deadline=deadline)
             if response.status_code == 200:
                 payload = response.json()
@@ -883,8 +1008,7 @@ def _wait_for_release(
                     for name in expected_assets
                     if not _release_asset_is_downloadable(assets_by_name.get(name))
                 ]
-                if not unready_assets:
-                    return release_url
+                assets_ready = not unready_assets
             elif response.status_code != 404:
                 raise RuntimeError(
                     _tri(
@@ -893,7 +1017,7 @@ def _wait_for_release(
                         f"GitHub Release の照会が HTTP {response.status_code} を返しました",
                     )
                 )
-            _raise_if_release_run_failed(
+            run = _release_run(
                 client,
                 repository,
                 tag=tag,
@@ -901,7 +1025,24 @@ def _wait_for_release(
                 headers=headers,
                 deadline=deadline,
             )
+            _raise_if_release_run_failed(run, tag=tag)
+            # The Market refuses a release whose workflow run has not
+            # completed with success (release_fetcher.py), and uploading the
+            # assets is not the run's last step.
+            if assets_ready and run is not None and run.get("status") == "completed":
+                return release_url
             if time.monotonic() >= deadline:
+                if assets_ready:
+                    run_state = run.get("status") if run is not None else "not found"
+                    raise RuntimeError(
+                        _tri(
+                            f"timed out waiting for the release workflow run for {tag} to succeed "
+                            f"(run: {run_state}); check GitHub Actions",
+                            f"等待 {tag} 的发布工作流成功超时（运行状态：{run_state}）；请检查 GitHub Actions",
+                            f"{tag} のリリースワークフローの成功待機がタイムアウトしました"
+                            f"（実行状態：{run_state}）。GitHub Actions を確認してください",
+                        )
+                    )
                 if response.status_code == 200:
                     missing = ", ".join(unready_assets)
                     raise RuntimeError(

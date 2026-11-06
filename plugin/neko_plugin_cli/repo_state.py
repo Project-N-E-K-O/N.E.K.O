@@ -108,6 +108,25 @@ def worktree_dirty_paths(plugin_dir: Path) -> list[str] | None:
     return paths
 
 
+def committed_file_sizes(repository_root: Path) -> list[tuple[str, int]] | None:
+    """``(path, bytes)`` of every file in the HEAD commit, or None when git fails.
+
+    Paths are relative to the repository root; this is the tree GitHub zips
+    for a commit.
+    """
+    output = git_output(repository_root, "ls-tree", "-r", "-z", "--long", "HEAD", strip=False)
+    if output is None:
+        return None
+    files: list[tuple[str, int]] = []
+    for record in output.split("\0"):
+        meta, _, path = record.partition("\t")
+        fields = meta.split()
+        # Submodules are commits, not files of this repository.
+        if len(fields) == 4 and fields[1] == "blob":
+            files.append((path, int(fields[3])))
+    return files
+
+
 def strip_url_credentials(url: str) -> str:
     """Drop ``user[:password]@`` from an http(s) remote URL; other forms are returned as is."""
     parts = urlsplit(url)

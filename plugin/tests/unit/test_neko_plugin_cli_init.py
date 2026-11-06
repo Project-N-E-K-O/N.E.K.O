@@ -9,7 +9,7 @@ import subprocess
 import pytest
 
 from plugin.neko_plugin_cli import cli as neko_plugin_cli
-from plugin.neko_plugin_cli.commands import init_cmd
+from plugin.neko_plugin_cli.commands import init_cmd, release_cmd
 from plugin.neko_plugin_cli.paths import CliDefaults
 
 
@@ -273,8 +273,9 @@ def test_init_does_not_delete_directory_created_during_mkdir_race(
     assert sentinel.read_text(encoding="utf-8") == "do not delete\n"
 
 
-def test_init_accepts_only_matching_github_remote(
+def test_init_accepts_any_github_remote_and_warns_about_an_unconventional_name(
     tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     repo = tmp_path / "repo"
     remote = "git@github.com:alice/n.e.k.o_plugin_remote_demo.git"
@@ -293,22 +294,28 @@ def test_init_accepts_only_matching_github_remote(
         == 0
     )
     assert _git(repo, "remote", "get-url", "origin") == remote
+    assert "[WARNING]" not in capsys.readouterr().out
 
-    bad_repo = tmp_path / "bad-repo"
+    # The Market does not require the n.e.k.o_plugin_<id> name.
+    other_repo = tmp_path / "other-repo"
+    other_remote = "https://github.com/alice/other-name.git"
     assert (
         neko_plugin_cli.main(
             [
                 "init",
                 "remote_demo",
                 "--output",
-                str(bad_repo),
+                str(other_repo),
                 "--remote",
-                "https://github.com/alice/wrong-name.git",
+                other_remote,
             ]
         )
-        == 1
+        == 0
     )
-    assert not bad_repo.exists()
+    assert _git(other_repo, "remote", "get-url", "origin") == other_remote
+    output = capsys.readouterr().out
+    assert "[WARNING] the recommended repository name is n.e.k.o_plugin_remote_demo" in output
+    assert "other-name" in output
 
 
 def test_init_and_market_check_accept_github_ssh_over_https_remote(
@@ -578,3 +585,97 @@ def test_setup_repo_does_not_expose_custom_workflow_source_flags(
 
     assert exc_info.value.code == 2
     assert removed_flag in capsys.readouterr().err
+
+
+
+def _market_check(repo: Path, tmp_path: Path) -> int:
+    return neko_plugin_cli.main(
+        [
+            "check",
+            "--release",
+            "--market-release",
+            "--skip-tests",
+            "--target-dir",
+            str(tmp_path / "target"),
+            str(repo),
+        ]
+    )
+
+
+def test_market_release_check_rejects_committed_files_the_market_scan_rejects(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo = tmp_path / "repo"
+    remote = "https://github.com/alice/n.e.k.o_plugin_limits_demo.git"
+    assert neko_plugin_cli.main(["init", "limits_demo", "--output", str(repo), "--remote", remote]) == 0
+    (repo / "native").mkdir()
+    (repo / "native" / "helper.DLL").write_bytes(b"MZ")
+    (repo / "data.txt").write_text("0" * (2 * 1024 * 1024 + 1), encoding="utf-8")
+    # The scan streams media files, so the per-file limit does not apply to them.
+    (repo / "cover.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * (3 * 1024 * 1024))
+    _commit_all(repo)
+
+    assert _market_check(repo, tmp_path) == 1
+
+    error = capsys.readouterr().err
+    assert "the Market rejects binary files in the repository: native/helper.DLL" in error
+    assert "the Market rejects files over 2 MiB: data.txt /" in error
+    assert "cover.png" not in error
+
+
+def test_market_release_check_rejects_a_version_the_market_cannot_store(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo = tmp_path / "repo"
+    remote = "https://github.com/alice/n.e.k.o_plugin_version_demo.git"
+    assert neko_plugin_cli.main(["init", "version_demo", "--output", str(repo), "--remote", remote]) == 0
+    plugin_toml = repo / "plugin.toml"
+    long_version = "1.0.0-" + "a" * 45
+    plugin_toml.write_text(
+        plugin_toml.read_text(encoding="utf-8").replace('version = "0.1.0"', f'version = "{long_version}"'),
+        encoding="utf-8",
+    )
+    _commit_all(repo)
+
+    assert _market_check(repo, tmp_path) == 1
+
+    assert "Market version must be at most 50 characters, got 51" in capsys.readouterr().err
+
+
+def test_market_plugin_id_is_limited_to_100_characters() -> None:
+    assert release_cmd._diagnose_market_plugin_id("a" * 100) == []
+    [(severity, message)] = release_cmd._diagnose_market_plugin_id("a" * 101)
+    assert severity == "error"
+    assert "at most 100 characters, got 101" in message
+
+
+@pytest.mark.parametrize(
+    ("files", "expected"),
+    [
+        # 4999 files plus the archive's top-level directory: 5000 entries.
+        ([(f"f{index}.py", 1) for index in range(4999)], None),
+        ([(f"f{index}.py", 1) for index in range(5000)], "more than 5000 files and directories, got 5001"),
+        # Each file is in its own directory, so the directories count too.
+        ([(f"d{index}/f.py", 1) for index in range(2500)], "got 5001"),
+        ([(f"cover{index}.png", 2 * 1024 * 1024) for index in range(17)], "committed files total 34.0 MiB"),
+        ([(f"cover{index}.png", 2 * 1024 * 1024) for index in range(16)], None),
+    ],
+)
+def test_market_source_archive_limits_follow_the_market_scan(
+    files: list[tuple[str, int]],
+    expected: str | None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(release_cmd, "committed_file_sizes", lambda _root: files)
+
+    issues = release_cmd._diagnose_market_source_archive(tmp_path)
+
+    if expected is None:
+        assert issues == []
+    else:
+        [(severity, message)] = issues
+        assert severity == "error"
+        assert expected in message
