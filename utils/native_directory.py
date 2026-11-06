@@ -83,7 +83,7 @@ def _picker_unavailable(message: str) -> NativeDirectoryError:
     return NativeDirectoryError("DIRECTORY_PICKER_UNAVAILABLE", message)
 
 
-def _run_picker(command: list[str]) -> subprocess.CompletedProcess[str]:
+def _run_picker(command: list[str], *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
             command,
@@ -91,6 +91,7 @@ def _run_picker(command: list[str]) -> subprocess.CompletedProcess[str]:
             text=True,
             check=False,
             timeout=_PICKER_TIMEOUT_SECONDS,
+            env=env,
         )
     except FileNotFoundError as exc:
         raise _picker_unavailable("Native folder picker is not installed") from exc
@@ -147,26 +148,22 @@ $owner.ShowInTaskbar = $false
 $owner.Opacity = 0
 $owner.TopMost = $true
 $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-$dialog.Description = '{title}'
+$dialog.Description = $env:NEKO_PICK_TITLE
 $dialog.ShowNewFolderButton = $true
-if ('{start_path}') {{
-    $dialog.SelectedPath = '{start_path}'
-}}
+if ($env:NEKO_PICK_START) {
+    $dialog.SelectedPath = $env:NEKO_PICK_START
+}
 $owner.Show()
 $owner.Activate()
 $owner.BringToFront()
 [System.Windows.Forms.Application]::DoEvents()
 $result = $dialog.ShowDialog($owner)
-if ($result -eq [System.Windows.Forms.DialogResult]::OK) {{
+if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
     Write-Output $dialog.SelectedPath
     exit 0
-}}
+}
 exit 2
 """.strip()
-
-
-def _powershell_string(value: str) -> str:
-    return value.replace("'", "''")
 
 
 def _pick_via_powershell(*, start_path: str, title: str) -> str:
@@ -186,10 +183,10 @@ def _pick_via_powershell(*, start_path: str, title: str) -> str:
     if not executable:
         raise _picker_unavailable("PowerShell is required for the native folder picker")
 
-    script = _POWERSHELL_SCRIPT.format(
-        title=_powershell_string(title), start_path=_powershell_string(start_path)
+    completed = _run_picker(
+        [executable, "-NoProfile", "-STA", "-Command", _POWERSHELL_SCRIPT],
+        env={**os.environ, "NEKO_PICK_TITLE": title, "NEKO_PICK_START": start_path},
     )
-    completed = _run_picker([executable, "-NoProfile", "-STA", "-Command", script])
     if completed.returncode == 2:
         raise DirectoryPickerCancelled()
     if completed.returncode != 0:

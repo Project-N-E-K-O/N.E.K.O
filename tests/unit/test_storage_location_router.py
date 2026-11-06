@@ -1682,6 +1682,21 @@ def test_windows_powershell_directory_picker_uses_topmost_owner(tmp_path):
 
 
 @pytest.mark.unit
+def test_windows_picker_keeps_quotes_and_commands_out_of_the_script(tmp_path):
+    title = "x’; Start-Process calc; ‘"
+    start = str(tmp_path / "Bob’s 'plugins'")
+    with patch.object(native_directory, "_find_executable", return_value="powershell.exe"), patch.object(
+        native_directory.subprocess, "run",
+        return_value=native_directory.subprocess.CompletedProcess([], 0, stdout=start, stderr=""),
+    ) as run:
+        assert native_directory._pick_via_powershell(start_path=start, title=title) == start
+    command = run.call_args.args[0]
+    assert title not in command[-1] and start not in command[-1]
+    assert run.call_args.kwargs["env"]["NEKO_PICK_TITLE"] == title
+    assert run.call_args.kwargs["env"]["NEKO_PICK_START"] == start
+
+
+@pytest.mark.unit
 def test_storage_location_pick_directory_propagates_native_unavailable_on_linux(tmp_path):
     """Raise if Linux native dialog unavailable; no tkinter fallback (project policy excludes tk)."""
     with patch.object(native_directory.sys, "platform", "linux"):
