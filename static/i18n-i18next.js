@@ -29,8 +29,7 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // Add the Opper assist API provider names in all eight languages, merged with the latest main locales.
-    const LOCALE_VERSION = '2026-11-05-opper-assist-provider-main-merge';
+    const LOCALE_VERSION = '2026-11-05-cat-visit-exit-confirmation';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

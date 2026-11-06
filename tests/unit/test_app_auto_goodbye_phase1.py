@@ -680,6 +680,23 @@ def test_app_auto_goodbye_phase1_harness():
           assert(manualState.autoGoodbyeTriggered === false, 'manual goodbye should not set auto flag');
           assert(manualState.lastReason === 'manual-goodbye', 'manual goodbye should preserve manual reason');
 
+          // Entering an active cat visit reuses the visual model-to-cat event,
+          // but must not send the global goodbye signal that ends the visit.
+          const catVisitEntry = createHarness('/', {{ barrierResolved: true }});
+          await catVisitEntry.flush();
+          catVisitEntry.setSocketOpen(true);
+          catVisitEntry.tickAll();
+          catVisitEntry.win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{
+            detail: {{ source: 'cat-visit-entry', reason: 'cat-visit-entry', visitCatEntry: true }}
+          }}));
+          const catVisitGoodbyes = catVisitEntry.sentMessages.filter(
+            (message) => message && message.action === 'goodbye_state' && message.active === true
+          );
+          const catVisitState = catVisitEntry.win.nekoAutoGoodbye.getState();
+          assert(catVisitEntry.goodbyeEvents.length === 1, 'cat visit should still enter the visual cat form');
+          assert(catVisitGoodbyes.length === 0, 'cat visit entry must not signal a visit goodbye');
+          assert(catVisitState.lastReason === 'cat-visit-entry', 'cat visit transition should remain distinguishable');
+
           // Fresh-page priming reconciles stale backend goodbye_silent: a model/pet window that is
           // not in goodbye sends goodbye_state:false once on first prime, clearing leftover silence
           // from a previous "请她离开" so greeting / proactive are not永久 suppressed after a reload.

@@ -6857,9 +6857,27 @@
         }
     },
     "visit": {
+        "catScene": {
+            "title": "ねこのおでかけ",
+            "active": "おでかけ中",
+            "ending": "おでかけを終了しています…",
+            "reconnecting": "再接続しています…",
+            "wrapUp": "帰る準備中",
+            "myCat": "うちのねこ",
+            "peerCat": "相手のねこ",
+            "returnModel": "モデルに戻る",
+            "controls": "うちのねこの動作",
+            "greet": "あいさつ",
+            "play": "遊ぶ",
+            "rest": "休む",
+            "exitConfirm": "ねこのおでかけを終了しますか？",
+            "actionUnavailable": "ねこの動作は一時的に利用できません",
+            "actionFailed": "動作の送信に失敗しました。もう一度お試しください"
+        },
         "directInvite": {
             "decline": "断る",
             "accept": "受ける",
+            "acceptCat": "ねこの訪問を受ける",
             "expired": "この招待はもう無効です",
             "responseFailed": "お断りの返事を送れませんでした。もう一度お試しください",
             "unavailable": "今はまだ出かけられません。もう一度お試しください"
@@ -6904,11 +6922,14 @@
             "desktopRequired": "指名招待はデスクトップ版 Neko から送ってください",
             "preparingRoom": "{{name}} のための部屋を準備しています…",
             "roomMissing": "指名訪問用の部屋を取得できませんでした",
+            "modeMismatch": "訪問の作成に失敗しました。もう一度お試しください",
             "sendFailed": "招待を送れませんでした。しばらくしてから再試行してください",
             "invited": "{{name}} に訪問の招待を送りました",
             "cancelFailed": "今は招待を取り消せません。しばらくしてから再試行してください",
             "inviteLater": "あとで招待",
             "invite": "遊びに誘う",
+            "modelVisit": "モデル形態",
+            "catVisit": "猫形態",
             "justNow": "たった今",
             "lastSeen": "最終オンライン {{time}}",
             "offline": "オフライン",
@@ -7045,7 +7066,8 @@
         },
         "error": {
             "disabled": "「おでかけを許可」がオフです。先に設定でオンにしてください",
-            "generic": "うまくいきませんでした。しばらくしてからお試しください",
+            "generic": "操作に失敗しました。もう一度お試しください",
+            "otherVisitActive": "別の訪問があります。先に終了してください",
             "unreachable": "ローカルサービスに接続できません",
             "voiceSession": "音声通話を終えてからおでかけしてください",
             "alreadyVisiting": "すでにおでかけ中です",

@@ -6857,9 +6857,27 @@
         }
     },
     "visit": {
+        "catScene": {
+            "title": "Visita gatuna",
+            "active": "De visita",
+            "ending": "Saliendo de la visita…",
+            "reconnecting": "Reconectando…",
+            "wrapUp": "Preparándose para volver",
+            "myCat": "Mi gato",
+            "peerCat": "Gato de la otra persona",
+            "returnModel": "Volver al modelo",
+            "controls": "Acciones de mi gato",
+            "greet": "Saludar",
+            "play": "Jugar",
+            "rest": "Descansar",
+            "exitConfirm": "¿Salir de la visita gatuna?",
+            "actionUnavailable": "Las acciones del gato no están disponibles temporalmente",
+            "actionFailed": "No se pudo transmitir la acción. Inténtalo de nuevo"
+        },
         "directInvite": {
             "decline": "Rechazar",
             "accept": "Aceptar",
+            "acceptCat": "Aceptar visita gatuna",
             "expired": "Esta invitación ya caducó",
             "responseFailed": "No se pudo enviar el rechazo. Inténtalo de nuevo",
             "unavailable": "Ahora mismo no puede salir. Inténtalo de nuevo"
@@ -6904,11 +6922,14 @@
             "desktopRequired": "Envía las invitaciones directas desde la app de escritorio de Neko",
             "preparingRoom": "Preparando una sala para {{name}}…",
             "roomMissing": "No se pudo obtener la sala de visita directa",
+            "modeMismatch": "No se pudo crear la visita. Inténtalo de nuevo",
             "sendFailed": "No se pudo enviar la invitación. Inténtalo más tarde",
             "invited": "Se envió la invitación de visita a {{name}}",
             "cancelFailed": "Ahora no se puede cancelar la invitación. Inténtalo más tarde",
             "inviteLater": "Invitar luego",
             "invite": "Invitar",
+            "modelVisit": "Forma de modelo",
+            "catVisit": "Forma de gato",
             "justNow": "justo ahora",
             "lastSeen": "Última conexión: {{time}}",
             "offline": "Desconectado",
@@ -7045,7 +7066,8 @@
         },
         "error": {
             "disabled": "\"Permitir visitas\" está desactivado. Actívalo primero en Ajustes",
-            "generic": "No se pudo completar. Inténtalo más tarde",
+            "generic": "La operación falló. Inténtalo de nuevo",
+            "otherVisitActive": "Ya hay otra visita. Finalízala primero",
             "unreachable": "No se puede conectar con el servicio local",
             "voiceSession": "Termina la llamada de voz antes de la visita",
             "alreadyVisiting": "Ya está de visita",

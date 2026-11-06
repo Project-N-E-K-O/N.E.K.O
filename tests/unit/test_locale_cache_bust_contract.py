@@ -66,7 +66,13 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-11-05-cat-visit-opper-main-merge",
         "2026-11-04-visit-invitation-capacity",
+        "2026-11-05-opper-assist-provider-main-merge",
+        "2026-11-04-cat-visit-invitation-capacity-main-merge",
+        "2026-11-03-cat-visit-invitation-capacity-main-merge",
+        "2026-11-03-cat-visit-overseas-news-main-merge",
+        "2026-11-03-cat-visit-main-merge",
         "2026-10-22-pr3353-opper-assist-provider-main-rebase",
         "2026-11-03-news-overseas-systray-labels-main-merge",
         "2026-11-03-news-overseas-chat-sync-main-merge",
@@ -81,12 +87,14 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-30-chat-sync-recovery-cloud-copies-kept",
         "2026-10-30-chat-sync-profile-upload-key",
         "2026-10-30-chat-sync-retired-keys",
+        "2026-10-28-cat-visit-mode-mismatch",
         "2026-10-29-visit-invitation-input",
         "2026-10-30-voice-processing-host",
         "2026-10-30-voice-repair-recovery",
         "2026-10-30-local-audio-copy",
         "2026-10-28-pr3507-resource-setup-main-sync",
         "2026-10-28-social-hub-realtime-main-merge",
+        "2026-10-28-cat-visits",
         "2026-10-28-hide-nekoverse-entry",
         "2026-10-28-voice-resource-setup-ci-fix",
         "2026-10-27-voice-input-setup-main-rebase",
@@ -531,7 +539,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "283e778b38074cef9529ba0f1bb800f7a5f5f6e66dd6f6e6e28fd2f32c96d3d6"
+LOCALE_KEY_SIGNATURE = "94cf89e0e4b423771b063261060b5739ef1703a08ee34cd122f7c750ac50a610"
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "
