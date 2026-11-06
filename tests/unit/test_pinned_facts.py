@@ -1246,7 +1246,8 @@ def test_only_the_private_new_dialog_renders_the_pinned_section():
     assert scanned > 100
     # runtime.py only builds and wires it; routes.py renders it for
     # /new_dialog and hands one due promise to proactive chat (private chat
-    # too); the idle loop runs the daily check, which renders nothing.
+    # too); the idle loop runs the daily check and the private post-turn
+    # flow records mentions, neither of which renders anything.
     assert touching_store == {
         "app/memory_server/runtime.py": {
             "reload_memory_components", "ensure_memory_server_runtime_initialized",
@@ -1256,6 +1257,7 @@ def test_only_the_private_new_dialog_renders_the_pinned_section():
             "_record_surfaced_commitments",
         },
         "app/memory_server/evidence_loops.py": {"_review_pinned_facts"},
+        "app/memory_server/post_turn.py": {"_record_pinned_mentions"},
     }
     assert calling_render == {"app/memory_server/routes.py": {"_new_dialog"}}
 

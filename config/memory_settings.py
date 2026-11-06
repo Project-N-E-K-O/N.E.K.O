@@ -222,6 +222,21 @@ PINNED_COMMITMENT_SURFACE_COOLDOWN_HOURS = 12
 """After proactive chat was offered a commitment, the same one is not offered
 again for this long, so she does not bring up one promise in every round."""
 
+PINNED_MENTION_COOLDOWN_HOURS = 24
+"""Once a reply of the character's brings up a pinned entry, it renders under
+"recently mentioned" (remembered, not to be raised on her own initiative) for
+this long, and a commitment in that cooldown is not offered to proactive chat.
+A mention while the cooldown still runs extends it; one after it ran out
+doubles the next cooldown, so a matter raised every so often is raised ever
+more rarely."""
+
+PINNED_MENTION_COOLDOWN_MAX_HOURS = 168
+"""Cap on the doubling mention cooldown (a week)."""
+
+PINNED_COMMITMENT_DUE_LEAD_HOURS = 12
+"""A dated commitment's mention cooldown ends at the latest this long before
+it is due, so having mentioned a promise never keeps it from being kept."""
+
 # ── Overall cap for scoped (group) L10 core memory ──────────────────────────
 # Per-subject budgets stop competition but not total growth: rendering five
 # subjects costs 5 × 4000 = 20k, consuming most context with core memory alone.

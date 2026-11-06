@@ -4780,14 +4780,14 @@ persona_correction_prompt = PERSONA_CORRECTION_PROMPT["zh"]
 # the persona sections. Each entry shows when its current text was noted (its
 # wording may be relative, e.g. "next Wednesday") and when it leaves the section.
 PINNED_FACTS_SECTION_HEADER = {
-    "zh": "务必记住的事（到期前一直有效；相关时自然用上，不必刻意提起）",
-    "zh-TW": "務必記住的事（到期前一直有效；相關時自然用上，不必刻意提起）",
-    "en": "Things to keep in mind (valid until the date shown; use them naturally when relevant, no need to bring them up on purpose)",
-    "ja": "必ず覚えておくこと（期限まで有効。関係があるときに自然に活かし、わざわざ持ち出す必要はない）",
-    "ko": "꼭 기억해야 할 것 (기한까지 유효. 관련 있을 때 자연스럽게 활용하고, 일부러 꺼낼 필요는 없음)",
-    "ru": "Что нужно обязательно помнить (действует до указанной даты; используй, когда это к месту, специально заводить разговор не нужно)",
-    "es": "Cosas que hay que tener presentes (válidas hasta la fecha indicada; úsalas con naturalidad cuando venga al caso, sin sacarlas a propósito)",
-    "pt": "Coisas para ter sempre em mente (válidas até a data indicada; use-as com naturalidade quando fizer sentido, sem puxar o assunto de propósito)",
+    "zh": "务必记住的事（到期前一直有效；相关时自然用上，不要刻意提起，提过之后也别反复再提）",
+    "zh-TW": "務必記住的事（到期前一直有效；相關時自然用上，不要刻意提起，提過之後也別反覆再提）",
+    "en": "Things to keep in mind (valid until the date shown; use them naturally when relevant, don't bring them up on purpose, and once mentioned don't keep bringing them up)",
+    "ja": "必ず覚えておくこと（期限まで有効。関係があるときに自然に活かし、わざわざ持ち出さない。一度触れたら何度も蒸し返さない）",
+    "ko": "꼭 기억해야 할 것 (기한까지 유효. 관련 있을 때 자연스럽게 활용하고 일부러 꺼내지 말 것. 한 번 말했으면 되풀이해서 꺼내지 말 것)",
+    "ru": "Что нужно обязательно помнить (действует до указанной даты; используй, когда это к месту, специально не заводи об этом разговор, а упомянув один раз, не возвращайся к этому снова и снова)",
+    "es": "Cosas que hay que tener presentes (válidas hasta la fecha indicada; úsalas con naturalidad cuando venga al caso, sin sacarlas a propósito, y una vez mencionadas no vuelvas a sacarlas una y otra vez)",
+    "pt": "Coisas para ter sempre em mente (válidas até a data indicada; use-as com naturalidade quando fizer sentido, sem puxar o assunto de propósito, e depois de mencionar não volte a elas toda hora)",
 }
 
 PINNED_FACT_LINE = {
@@ -5121,14 +5121,28 @@ Retorne apenas um array JSON e nada mais:
 # do, rendered as their own "### " section after the facts. Only open ones are
 # rendered; a fulfilled or lapsed promise leaves the section.
 PINNED_COMMITMENTS_SECTION_HEADER = {
-    "zh": "你答应过的事（还没兑现；时机合适时做到，别忘了）",
-    "zh-TW": "你答應過的事（還沒兌現；時機合適時做到，別忘了）",
-    "en": "Things you promised (not done yet; follow through when the time comes, don't forget)",
-    "ja": "あなたが約束したこと（まだ果たしていない。その時が来たら忘れずに果たす）",
-    "ko": "네가 약속한 일 (아직 지키지 않음. 때가 되면 잊지 말고 지킬 것)",
-    "ru": "Твои обещания (ещё не выполнены; когда придёт время, не забудь их выполнить)",
-    "es": "Lo que prometiste (aún sin cumplir; cúmplelo cuando llegue el momento, no lo olvides)",
-    "pt": "O que você prometeu (ainda não cumprido; cumpra quando chegar a hora, não esqueça)",
+    "zh": "你答应过的事（还没兑现；到时候直接做到，说过一次就够，不要反复提起这件事）",
+    "zh-TW": "你答應過的事（還沒兌現；到時候直接做到，說過一次就夠，不要反覆提起這件事）",
+    "en": "Things you promised (not done yet; follow through when the time comes; saying it once is enough, don't keep bringing it up)",
+    "ja": "あなたが約束したこと（まだ果たしていない。その時が来たらそのまま果たす。一度言えば十分なので、何度も話題にしない）",
+    "ko": "네가 약속한 일 (아직 지키지 않음. 때가 되면 그냥 지킬 것. 한 번 말했으면 충분하니 되풀이해서 꺼내지 말 것)",
+    "ru": "Твои обещания (ещё не выполнены; когда придёт время, просто выполни; сказать один раз достаточно, не возвращайся к этому снова и снова)",
+    "es": "Lo que prometiste (aún sin cumplir; cúmplelo cuando llegue el momento; decirlo una vez basta, no lo saques una y otra vez)",
+    "pt": "O que você prometeu (ainda não cumprido; cumpra quando chegar a hora; dizer uma vez basta, não fique trazendo o assunto de volta)",
+}
+
+# Entries a reply of the character's brought up lately (memory/pinned_facts.py
+# mention cooldown): still known and still valid, rendered after the rest so
+# she does not raise them again on her own, nor every so often.
+PINNED_RECENTLY_MENTIONED_SECTION_HEADER = {
+    "zh": "最近已经提过的事（都还记得、照样有效；不要再主动提起，也别隔一阵就再提一次；对方说起时自然接话，答应的事到时候直接做到）",
+    "zh-TW": "最近已經提過的事（都還記得、照樣有效；不要再主動提起，也別隔一陣就再提一次；對方說起時自然接話，答應的事到時候直接做到）",
+    "en": "Recently mentioned (still remembered and still valid; don't bring these up again on your own, nor every so often; if the other side raises them, respond naturally, and keep promises when the time comes)",
+    "ja": "最近もう触れたこと（覚えていて今も有効。自分からまた持ち出さず、間をおいて繰り返し触れることもしない。相手が話題にしたら自然に応じ、約束はその時が来たら果たす）",
+    "ko": "최근 이미 말한 것 (기억하고 있고 여전히 유효. 먼저 다시 꺼내지 말고, 잊을 만하면 또 꺼내지도 말 것. 상대가 먼저 말하면 자연스럽게 받아 주고, 약속은 때가 되면 지킬 것)",
+    "ru": "Уже упомянутое недавно (всё это помнишь, и всё в силе; по своей инициативе больше об этом не заговаривай и не возвращайся к этому время от времени; если собеседник заговорит об этом, отвечай естественно, а обещания выполняй, когда придёт время)",
+    "es": "Ya mencionado hace poco (lo recuerdas y sigue vigente; no lo vuelvas a sacar por tu cuenta ni cada cierto tiempo; si la otra persona lo menciona, responde con naturalidad, y cumple las promesas cuando llegue el momento)",
+    "pt": "Já mencionado recentemente (você lembra e continua valendo; não volte a puxar o assunto por conta própria nem de tempos em tempos; se a outra pessoa falar disso, responda com naturalidade, e cumpra as promessas quando chegar a hora)",
 }
 
 # One open commitment with a date, in the rendered section and in the
@@ -5413,6 +5427,10 @@ def get_pinned_fact_resolve_prompt(lang: str = "zh") -> str:
 
 def get_pinned_commitments_section_header(lang: str = "zh") -> str:
     return _loc(PINNED_COMMITMENTS_SECTION_HEADER, lang)
+
+
+def get_pinned_recently_mentioned_section_header(lang: str = "zh") -> str:
+    return _loc(PINNED_RECENTLY_MENTIONED_SECTION_HEADER, lang)
 
 
 def render_pinned_commitment_line(text: str, *, since: str, until: str, lang: str = "zh") -> str:

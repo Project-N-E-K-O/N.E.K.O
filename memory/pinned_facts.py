@@ -67,6 +67,12 @@ Design notes
 - **Commitments**: an open one renders in its own section and the one due
   soonest is offered to proactive chat. Kept or lapsed, it leaves the section
   for the history with ``status`` ``done`` or ``expired``.
+- **No repeating**: each of her replies is checked for the entries it brings
+  up (``arecord_mentions``, the persona's local keyword match). A mentioned
+  entry renders under "recently mentioned" (still known, not to be raised on
+  her own initiative) and is not offered to proactive chat until its
+  cooldown runs out; the cooldown doubles each time she raises the matter
+  again afterwards. The section headers say the same in words.
 - **Storage**: ``memory/{name}/pinned_facts.json`` (cloudsave-managed, next to
   facts.json). Live entries are capped at ``PINNED_FACT_MAX_ACTIVE``;
   replaced / removed / retired / expired / evicted ones move to a bounded
@@ -100,6 +106,7 @@ from config import (
     LLM_OUTPUT_GUARD_MAX_TOKENS,
     MEMORY_LLM_HARD_TIMEOUT_SECONDS,
     PINNED_COMMITMENT_DUE_SOON_DAYS,
+    PINNED_COMMITMENT_DUE_LEAD_HOURS,
     PINNED_COMMITMENT_SURFACE_COOLDOWN_HOURS,
     PINNED_FACT_DEFAULT_TTL_DAYS,
     PINNED_FACT_DUE_GRACE_DAYS,
@@ -117,12 +124,15 @@ from config import (
     PINNED_FACT_REVIEW_MODEL_TIER,
     PINNED_FACT_TEXT_MAX_TOKENS,
     PINNED_FACT_TTL_TIERS_DAYS,
+    PINNED_MENTION_COOLDOWN_HOURS,
+    PINNED_MENTION_COOLDOWN_MAX_HOURS,
 )
 from config.prompts.prompts_memory import (
     get_pinned_commitments_section_header,
     get_pinned_fact_resolve_prompt,
     get_pinned_fact_review_prompt,
     get_pinned_facts_section_header,
+    get_pinned_recently_mentioned_section_header,
     render_pinned_commitment_done_line,
     render_pinned_commitment_line,
     render_pinned_commitment_undated_line,
@@ -159,6 +169,9 @@ STATUS_OPEN = "open"
 STATUS_DONE = "done"
 STATUS_EXPIRED = "expired"
 _STATUSES = frozenset({STATUS_OPEN, STATUS_DONE, STATUS_EXPIRED})
+
+# Render section of the entries in their mention cooldown (both kinds).
+_SECTION_MENTIONED = "mentioned"
 
 ACTION_ADD = "add"
 ACTION_REPLACE = "replace"
@@ -274,6 +287,35 @@ def _expiry(noted: float, ttl_days: int, due_at: Optional[float]) -> float:
 def due_date(entry: Dict[str, Any]) -> str:
     """The date an entry's matter is due, as the section renders it; needs ``due_at``."""
     return _format_date(entry["due_at"])
+
+
+def _mention_cooldown_until(entry: Dict[str, Any]) -> Optional[float]:
+    """Until when an entry she brought up stays off her own initiative; None if never.
+
+    ``PINNED_MENTION_COOLDOWN_HOURS`` after the last mention, doubled for
+    every earlier mention made once a cooldown had run out (so a matter raised
+    every so often is raised ever more rarely), up to
+    ``PINNED_MENTION_COOLDOWN_MAX_HOURS``. A dated promise comes out of it
+    ``PINNED_COMMITMENT_DUE_LEAD_HOURS`` before it is due at the latest:
+    having mentioned a promise must not keep it from being kept.
+    """
+    count = entry.get("mention_count") or 0
+    mentioned_at = entry.get("mentioned_at")
+    if not count or mentioned_at is None:
+        return None
+    hours = min(
+        PINNED_MENTION_COOLDOWN_HOURS * 2 ** min(count - 1, 16),
+        PINNED_MENTION_COOLDOWN_MAX_HOURS,
+    )
+    until = mentioned_at + hours * 3600.0
+    if entry.get("kind") == KIND_COMMITMENT and entry.get("due_at") is not None:
+        until = min(until, entry["due_at"] - PINNED_COMMITMENT_DUE_LEAD_HOURS * 3600.0)
+    return until
+
+
+def _in_mention_cooldown(entry: Dict[str, Any], ts: float) -> bool:
+    until = _mention_cooldown_until(entry)
+    return until is not None and ts < until
 
 
 def _is_live(entry: Dict[str, Any], ts: float) -> bool:
@@ -498,6 +540,8 @@ def _normalize_entry(raw: Any) -> Optional[Dict[str, Any]]:
             "due_at": due_at,
             "renew_count": _as_count(raw.get("renew_count")),
             "rev": _as_count(raw.get("rev")),
+            "mentioned_at": _as_float(raw.get("mentioned_at")),
+            "mention_count": _as_count(raw.get("mention_count")),
         }
         if kind == KIND_COMMITMENT:
             status = raw.get("status")
@@ -882,20 +926,28 @@ class PinnedFactStore:
     def render_prompt_block(self, name: str, lang: str, *, now: Optional[float] = None) -> str:
         """The ``### `` sections for the private-chat prompt; "" when nothing is live.
 
-        Facts come first, then the open commitments under their own header.
-        Over ``PINNED_FACT_RENDER_MAX_TOKENS`` (headers included) the least
-        recently updated entries are left out. The kept ones render in file
-        order, so an unchanged section renders byte-identically between
-        sessions.
+        Facts come first, then the open commitments under their own header,
+        then the entries in their mention cooldown (see _mention_cooldown_until)
+        under "recently mentioned": still known, not to be raised again on
+        her own initiative. Over ``PINNED_FACT_RENDER_MAX_TOKENS`` (headers
+        included) the least recently updated entries are left out. The kept
+        ones render in file order, so an unchanged section renders
+        byte-identically between sessions.
         """
-        active = self.get_active(name, now=now)
+        ts = float(now if now is not None else _now())
+        active = self.get_active(name, now=ts)
         if not active:
             return ""
         headers = {
             KIND_FACT: "### " + get_pinned_facts_section_header(lang),
             KIND_COMMITMENT: "### " + get_pinned_commitments_section_header(lang),
+            _SECTION_MENTIONED: "### " + get_pinned_recently_mentioned_section_header(lang),
         }
-        kinds = [kind for kind in headers if any(e["kind"] == kind for e in active)]
+        section_of = {
+            entry["id"]: _SECTION_MENTIONED if _in_mention_cooldown(entry, ts) else entry["kind"]
+            for entry in active
+        }
+        keys = [key for key in headers if key in section_of.values()]
         lines = {
             entry["id"]: "- " + self._entry_line(
                 entry, lang, since=_format_date(entry["text_at"]),
@@ -904,8 +956,8 @@ class PinnedFactStore:
         }
         ranked = sorted(active, key=lambda e: e["updated_at"], reverse=True)
         budget = PINNED_FACT_RENDER_MAX_TOKENS - sum(
-            count_tokens(headers[kind] + "\n") for kind in kinds
-        ) - (len(kinds) - 1) * count_tokens("\n\n")
+            count_tokens(headers[key] + "\n") for key in keys
+        ) - (len(keys) - 1) * count_tokens("\n\n")
         kept, dropped = take_lines_within_token_budget(
             [lines[e["id"]] for e in ranked], budget,
         )
@@ -916,10 +968,13 @@ class PinnedFactStore:
                 name, dropped, PINNED_FACT_RENDER_MAX_TOKENS,
             )
         sections = []
-        for kind in kinds:
-            body = [lines[e["id"]] for e in active if e["kind"] == kind and e["id"] in kept_ids]
+        for key in keys:
+            body = [
+                lines[e["id"]] for e in active
+                if section_of[e["id"]] == key and e["id"] in kept_ids
+            ]
             if body:
-                sections.append(headers[kind] + "\n" + "\n".join(body))
+                sections.append(headers[key] + "\n" + "\n".join(body))
         return "\n\n".join(sections)
 
     async def arender_prompt_block(
@@ -935,9 +990,10 @@ class PinnedFactStore:
         Only one with a date of its own, due within
         ``PINNED_COMMITMENT_DUE_SOON_DAYS`` (or already due, while still live),
         counts, and not one offered within
-        ``PINNED_COMMITMENT_SURFACE_COOLDOWN_HOURS``. A promise waiting on a
-        condition has no deadline: its expiry is the tier ceiling, which says
-        nothing about when it is due.
+        ``PINNED_COMMITMENT_SURFACE_COOLDOWN_HOURS`` nor one still in its
+        mention cooldown (she brought it up herself lately). A promise waiting
+        on a condition has no deadline: its expiry is the tier ceiling, which
+        says nothing about when it is due.
         """
         ts = float(now if now is not None else _now())
         horizon = ts + PINNED_COMMITMENT_DUE_SOON_DAYS * _DAY_SECONDS
@@ -948,6 +1004,7 @@ class PinnedFactStore:
             and entry.get("due_at") is not None
             and entry["due_at"] <= horizon
             and (entry.get("surfaced_at") is None or ts - entry["surfaced_at"] >= cooldown)
+            and not _in_mention_cooldown(entry, ts)
         ]
         return min(pool, key=lambda entry: entry["due_at"]) if pool else None
 
@@ -978,6 +1035,58 @@ class PinnedFactStore:
             if found:
                 self._write_unlocked(name, facts, history, reviewed_at)
         return found
+
+    def record_mentions(
+        self,
+        name: str,
+        response_text: str,
+        *,
+        stop_names: Optional[List[str]] = None,
+        now: Optional[float] = None,
+    ) -> List[str]:
+        """Note the live entries one of her replies brought up; returns their ids.
+
+        The same local keyword match the persona's repetition check uses,
+        with the master's and the character's names stripped first. A mention
+        outside the entry's cooldown counts one more mention (doubling the
+        next cooldown); one inside it only moves the cooldown along. Like
+        ``surfaced_at`` this is bookkeeping: ``rev`` stays.
+        """
+        if not name or not response_text:
+            return []
+        from memory.persona import _is_mentioned
+
+        ts = float(now if now is not None else _now())
+        hit = {
+            entry["id"] for entry in self.get_active(name, now=ts)
+            if _is_mentioned(entry["text"], response_text, stop_names=stop_names)
+        }
+        if not hit:
+            return []
+        with self._mutating(name):
+            facts, history, reviewed_at = self._read_unlocked(name)
+            found = []
+            for entry in facts:
+                if entry["id"] in hit and _is_live(entry, ts):
+                    if not _in_mention_cooldown(entry, ts):
+                        entry["mention_count"] += 1
+                    entry["mentioned_at"] = ts
+                    found.append(entry["id"])
+            if found:
+                self._write_unlocked(name, facts, history, reviewed_at)
+        return found
+
+    async def arecord_mentions(
+        self, name: str, response_text: str, *, now: Optional[float] = None,
+    ) -> List[str]:
+        if not name or not response_text:
+            return []
+        from memory.stop_names import acollect_stop_names
+
+        stop_names = await acollect_stop_names(self._config_manager, name)
+        return await asyncio.to_thread(
+            self.record_mentions, name, response_text, stop_names=stop_names, now=now,
+        )
 
     async def amark_surfaced(
         self, name: str, ids: List[Any], *, now: Optional[float] = None,
@@ -1153,6 +1262,10 @@ class PinnedFactStore:
                         "expire_at": _expiry(noted, candidate["ttl_days"], due_at),
                         "due_at": due_at,
                         "rev": target["rev"] + 1,
+                        # A changed account ("the exam moved to Friday") is
+                        # news worth one mention: its cooldown starts over.
+                        "mentioned_at": None,
+                        "mention_count": 0,
                     })
                     _set_kind_fields(target)
                     touched.add(target["id"])
@@ -1322,6 +1435,8 @@ class PinnedFactStore:
             "due_at": due_at,
             "renew_count": 0,
             "rev": 0,
+            "mentioned_at": None,
+            "mention_count": 0,
         }
         _set_kind_fields(entry)
         return entry
@@ -1687,7 +1802,11 @@ class PinnedFactStore:
 
         Expired entries leave first. The model is asked only when the section
         is not empty and no model has looked at all of it within
-        PINNED_FACT_REVIEW_INTERVAL_HOURS. ``load_conversation(since)`` returns
+        PINNED_FACT_REVIEW_INTERVAL_HOURS, except while a commitment is open:
+        a kept promise shows in the conversation, which an admission resolve
+        never reads, so then only the caller's once-a-day pacing applies
+        (``pinned_review_ts`` in the idle maintenance state).
+        ``load_conversation(since)`` returns
         the messages since that epoch time, oldest first, as ``{"at": epoch,
         "role": "human" | "ai", "text": str}``. The model may only retire: a
         done / invalid verdict counts only when its evidence is a verbatim
@@ -1702,6 +1821,7 @@ class PinnedFactStore:
         if not active or (
             reviewed_at is not None
             and ts - reviewed_at < PINNED_FACT_REVIEW_INTERVAL_HOURS * 3600.0
+            and not any(entry["kind"] == KIND_COMMITMENT for entry in active)
         ):
             return {}
         since = max(

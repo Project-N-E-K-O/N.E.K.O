@@ -15,6 +15,9 @@ Contract groups:
    loop's scheduling.
 5. Proactive chat: the promise due soonest leads the memory cues, with an
    offer cooldown; rendering and prompt tables.
+6. No repeating: what her replies bring up enters a doubling mention
+   cooldown, renders under "recently mentioned" and is not offered to
+   proactive chat meanwhile; a dated promise comes out before it is due.
 """
 from __future__ import annotations
 
@@ -28,9 +31,12 @@ from unittest.mock import AsyncMock
 import pytest
 
 from config import (
+    PINNED_COMMITMENT_DUE_LEAD_HOURS,
     PINNED_COMMITMENT_SURFACE_COOLDOWN_HOURS,
     PINNED_FACT_REVIEW_CONVERSATION_MAX_TOKENS,
     PINNED_FACT_REVIEW_INTERVAL_HOURS,
+    PINNED_MENTION_COOLDOWN_HOURS,
+    PINNED_MENTION_COOLDOWN_MAX_HOURS,
 )
 from memory import pinned_facts as pinned_mod
 from memory.pinned_facts import PINNED_FACTS_FILENAME, pin_candidates_from_extracted
@@ -935,3 +941,139 @@ def test_commitment_and_review_prompt_tables_cover_every_locale():
     assert set(pa.TOPIC_COMMITMENT_CUE_LABELS) == set(pa.TOPIC_MEMORY_CUE_LABELS)
     for lang, label in pa.TOPIC_COMMITMENT_CUE_LABELS.items():
         assert "2026-11-03" in label.format(due="2026-11-03"), lang
+    assert set(pm.PINNED_RECENTLY_MENTIONED_SECTION_HEADER) == _LOCALES
+
+
+def test_an_open_promise_keeps_the_daily_check_going_after_a_resolve(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    _add(store, _candidate("小天答应给主人推荐一本书", 14, kind="commitment"))
+    # An admission resolve looked at the whole section an hour ago.
+    store.apply_decisions(
+        _NAME, [_candidate("主人周六去北京", 3)], [("add", None)], now=_T0 + _HOUR,
+        reviewed_at=_T0 + _HOUR,
+    )
+    review = _install_review_model(monkeypatch, store, _ReviewModel([]))
+
+    asyncio.run(store.areview(_NAME, _loader([]), now=_T0 + 2 * _HOUR))
+
+    # A kept promise shows only in the conversation, which the resolve never read.
+    assert len(review.prompts) == 1
+
+
+# ── 6. no repeating ──────────────────────────────────────────────────
+
+_STOP_NAMES = ["主人", _NAME]
+
+
+def _cooldown_hours(store, entry_id, ts) -> float:
+    [entry] = [e for e in store.get_active(_NAME, now=ts) if e["id"] == entry_id]
+    return (pinned_mod._mention_cooldown_until(entry) - entry["mentioned_at"]) / _HOUR
+
+
+def test_what_she_brought_up_moves_to_recently_mentioned_until_it_cools_down(tmp_path):
+    from config.prompts.prompts_memory import (
+        get_pinned_facts_section_header,
+        get_pinned_recently_mentioned_section_header,
+    )
+
+    store = _store(tmp_path)
+    allergy = _add(store, _candidate("主人对花生过敏", 365, kind="fact"))
+    trip = _add(store, _candidate("主人周六去北京", 3, kind="fact"))
+
+    found = store.record_mentions(
+        _NAME, "那这个蛋糕里有花生，你可千万别吃哦", stop_names=_STOP_NAMES, now=_T0 + 1,
+    )
+
+    assert found == [allergy["id"]]
+    [entry] = [e for e in store.get_active(_NAME, now=_T0 + 1) if e["id"] == allergy["id"]]
+    # Bookkeeping, not content: an admission deciding on it is not sent round again.
+    assert (entry["mention_count"], entry["rev"]) == (1, 0)
+    mentioned = "### " + get_pinned_recently_mentioned_section_header("zh")
+    block = store.render_prompt_block(_NAME, "zh", now=_T0 + _HOUR)
+    assert block == (
+        "### " + get_pinned_facts_section_header("zh") + "\n"
+        "- 主人周六去北京（记于 2026-11-02，到 2026-11-05）\n\n"
+        + mentioned + "\n"
+        "- 主人对花生过敏（记于 2026-11-02，到 2027-11-02）"
+    )
+    cooled = _T0 + 1 + PINNED_MENTION_COOLDOWN_HOURS * _HOUR + 1
+    assert mentioned not in store.render_prompt_block(_NAME, "zh", now=cooled)
+    assert trip["id"] not in found
+
+
+def test_the_names_alone_are_no_mention(tmp_path):
+    store = _store(tmp_path)
+    _add(store, _candidate("主人对花生过敏", 365, kind="fact"))
+
+    assert store.record_mentions(
+        _NAME, "主人早上好呀，小天今天也很精神", stop_names=_STOP_NAMES, now=_T0 + 1,
+    ) == []
+
+
+def test_raising_a_matter_again_after_its_cooldown_doubles_the_next_one(tmp_path):
+    store = _store(tmp_path)
+    allergy = _add(store, _candidate("主人对花生过敏", 365, kind="fact"))
+    say = "记得别碰花生"
+    base = PINNED_MENTION_COOLDOWN_HOURS
+
+    store.record_mentions(_NAME, say, stop_names=_STOP_NAMES, now=_T0)
+    assert _cooldown_hours(store, allergy["id"], _T0) == base
+    # Talked about again while still cooling down: it only moves along.
+    store.record_mentions(_NAME, say, stop_names=_STOP_NAMES, now=_T0 + 10 * _HOUR)
+    assert _cooldown_hours(store, allergy["id"], _T0 + 10 * _HOUR) == base
+    # Raised again once it had cooled down: the next cooldown doubles.
+    ts = _T0 + 10 * _HOUR + base * _HOUR + 1
+    store.record_mentions(_NAME, say, stop_names=_STOP_NAMES, now=ts)
+    assert _cooldown_hours(store, allergy["id"], ts) == 2 * base
+    for _ in range(6):
+        ts += PINNED_MENTION_COOLDOWN_MAX_HOURS * _HOUR + 1
+        store.record_mentions(_NAME, say, stop_names=_STOP_NAMES, now=ts)
+    assert _cooldown_hours(store, allergy["id"], ts) == PINNED_MENTION_COOLDOWN_MAX_HOURS
+
+
+def test_a_promise_she_mentioned_is_not_offered_until_shortly_before_it_is_due(tmp_path):
+    store = _store(tmp_path)
+    soon = _add(store, _candidate("小天答应后天陪主人复习", 3, kind="commitment",
+                                  due_at=_T0 + 30 * _HOUR))
+
+    store.record_mentions(_NAME, "后天我陪你复习呀", stop_names=_STOP_NAMES, now=_T0 + 10 * _HOUR)
+
+    # Mentioned at +10h: a day's cooldown would last to +34h, past the due
+    # time; it ends PINNED_COMMITMENT_DUE_LEAD_HOURS before +30h instead.
+    lead_start = _T0 + 30 * _HOUR - PINNED_COMMITMENT_DUE_LEAD_HOURS * _HOUR
+    assert store.get_due_commitment(_NAME, now=lead_start - 60) is None
+    assert store.get_due_commitment(_NAME, now=lead_start + 60)["id"] == soon["id"]
+
+
+def test_a_changed_account_starts_its_cooldown_over(tmp_path):
+    store = _store(tmp_path)
+    exam = _add(store, _candidate("主人周三考试", 14, kind="fact"))
+    store.record_mentions(_NAME, "周三考试加油", stop_names=_STOP_NAMES, now=_T0 + 1)
+
+    store.apply_decisions(
+        _NAME, [_candidate("主人的考试改到周五了", 14, kind="fact")],
+        [("replace", exam["id"])], now=_T0 + _HOUR,
+    )
+
+    [entry] = store.get_active(_NAME, now=_T0 + _HOUR)
+    assert (entry["mention_count"], entry["mentioned_at"]) == (0, None)
+    assert not pinned_mod._in_mention_cooldown(entry, _T0 + _HOUR)
+
+
+def test_her_private_replies_are_checked_for_pinned_mentions(tmp_path, monkeypatch):
+    import inspect
+
+    from app.memory_server import post_turn, runtime
+
+    store = _store(tmp_path)
+    allergy = _add(store, _candidate("主人对花生过敏", 365, kind="fact"))
+    monkeypatch.setattr(runtime, "pinned_fact_store", store)
+    monkeypatch.setattr(
+        "memory.stop_names.acollect_stop_names", AsyncMock(return_value=_STOP_NAMES),
+    )
+
+    asyncio.run(post_turn._record_pinned_mentions(_NAME, "蛋糕里有花生，别吃哦"))
+
+    [entry] = store.get_active(_NAME)
+    assert (entry["id"], entry["mention_count"]) == (allergy["id"], 1)
+    assert "_record_pinned_mentions(" in inspect.getsource(post_turn._run_post_turn_signals)

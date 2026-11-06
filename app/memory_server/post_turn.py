@@ -333,6 +333,14 @@ async def _resolve_corrections_with_subject_locale(lanlan_name: str) -> int:
     )
 
 
+async def _record_pinned_mentions(lanlan_name: str, ai_response: str) -> None:
+    """Start the mention cooldown of the pinned entries a reply of hers brought up."""
+    store = runtime.pinned_fact_store
+    if store is None or not ai_response:
+        return
+    await store.arecord_mentions(lanlan_name, ai_response)
+
+
 @_with_language_context
 async def _run_post_turn_signals(
     messages: list,
@@ -351,7 +359,8 @@ async def _run_post_turn_signals(
       1. OFF-mode Stage-1 fallback — when powerful_memory is off the batch loop is
          fully stopped, and per-turn ``fact_store.extract_facts`` is the only
          fallback for fact extraction (not run in ON-mode; left to the batch loop)
-      2. repetition sniffing — local BM25, §2.6 5h-window suppress
+      2. repetition sniffing — local BM25, §2.6 5h-window suppress; 2b. the
+         same for the pinned section (its mention cooldown)
       3. check_feedback — detects user feedback on surfaced reflections (LLM runs
          only when surfaced has pending entries) + NEGATIVE_KEYWORDS hits trigger
          the LLM target check
@@ -426,6 +435,14 @@ async def _run_post_turn_signals(
             await runtime.reflection_engine.arecord_mentions(lanlan_name, ai_response)
     except Exception as e:
         logger.warning(f"[MemoryServer] 复读嗅探失败: {e}")
+
+    try:
+        # 2b. The same sniffing for the pinned section (private chat only, like
+        #     this whole flow): what she just brought up enters its mention
+        #     cooldown, so a resident fact or promise is not raised every turn.
+        await _record_pinned_mentions(lanlan_name, _extract_ai_response(ordinary_messages))
+    except Exception as e:
+        logger.warning(f"[MemoryServer] 常驻区复读嗅探失败: {type(e).__name__}")
 
     try:
         # 3. Check user feedback on previously surfaced reflections and dispatch evidence signals.
