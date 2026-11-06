@@ -74,13 +74,13 @@
         /></label>
         <label for="authoring-author"
           >{{ t('authoring.author')
-          }}<el-input id="authoring-author" v-model="draft.author" :readonly="step === 1 || busy"
+          }}<el-input id="authoring-author" v-model="draft.author" maxlength="80" :readonly="step === 1 || busy"
         /></label>
         <div>
           <span class="authoring-field-label">{{ t('authoring.type') }}</span
           ><el-radio-group v-model="draft.type" :disabled="step === 1 || busy"
-            ><el-radio value="plugin">Plugin</el-radio
-            ><el-radio value="adapter">Adapter</el-radio></el-radio-group
+            ><el-radio value="plugin">{{ t('plugins.typePlugin') }}</el-radio
+            ><el-radio value="adapter">{{ t('plugins.typeAdapter') }}</el-radio></el-radio-group
           >
         </div>
       </form>
@@ -121,6 +121,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useLocalizedError } from '@/composables/useLocalizedError'
 import { FolderOpened } from '@element-plus/icons-vue'
 import {
   createPluginProject,
@@ -145,7 +146,8 @@ const step = ref(0)
 const attempted = ref(false)
 const parentDir = ref('')
 const busy = ref(false)
-const backendError = ref('')
+const backendFailure = useLocalizedError(errorMessage, 'creationFailed')
+const backendError = backendFailure.message
 const preview = ref<PluginProjectPreview | null>(null)
 const draft = reactive<{
   id: string
@@ -166,7 +168,7 @@ watch(
     if (!visible) return
     step.value = 0
     attempted.value = false
-    backendError.value = ''
+    backendFailure.clear()
     preview.value = null
     Object.assign(draft, { id: '', name: '', description: '', author: '', type: 'plugin' })
   }
@@ -174,7 +176,7 @@ watch(
 watch([draft, parentDir], () => {
   if (step.value === 0) {
     preview.value = null
-    backendError.value = ''
+    backendFailure.clear()
   }
 })
 const validId = computed(() => PLUGIN_ID_PATTERN.test(draft.id))
@@ -208,12 +210,12 @@ const identity = (): PluginProjectIdentity => ({
 })
 const request = (): PluginProjectRequest => ({ parent_dir: parentDir.value.trim(), ...identity() })
 function failure(error: unknown) {
-  backendError.value = errorMessage(error, 'creationFailed')
+  backendFailure.set(error)
 }
 async function pickParent() {
   if (busy.value) return
   busy.value = true
-  backendError.value = ''
+  backendFailure.clear()
   try {
     const selected = await pickProjectDirectory(
       parentDir.value.trim(),
@@ -231,7 +233,7 @@ async function advance() {
   attempted.value = true
   if (error.value || !draft.name.trim() || !validId.value) return
   busy.value = true
-  backendError.value = ''
+  backendFailure.clear()
   try {
     if (step.value === 0) {
       preview.value = await previewPluginProject(request())

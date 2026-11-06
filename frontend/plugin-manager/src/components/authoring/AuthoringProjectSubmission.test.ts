@@ -93,6 +93,7 @@ const HEAD = 'a'.repeat(40)
 const OLD = 'b'.repeat(40)
 let cleanup: (() => void) | undefined
 let states: SubmissionPanelState[] = []
+let switchLocale: (language: 'en-US' | 'zh-CN') => void
 
 const snapshot = {
   id: 31,
@@ -181,13 +182,16 @@ async function mount(props: { pushedHead?: string | null } = {}) {
   app.use(ElementPlus)
   app.component('el-select', SelectStub)
   app.component('el-option', OptionStub)
-  app.use(
-    createI18n({
-      legacy: false,
-      locale: 'en-US',
-      messages: { 'en-US': { authoring: en, common: { cancel: 'Cancel' } } },
-    })
-  )
+  const i18n = createI18n({
+    legacy: false,
+    locale: 'en-US',
+    messages: {
+      'en-US': { authoring: en, common: { cancel: 'Cancel' } },
+      'zh-CN': { authoring: authoringMessages['zh-CN'], common: { cancel: '取消' } },
+    },
+  })
+  switchLocale = (language) => { i18n.global.locale.value = language }
+  app.use(i18n)
   app.mount(container)
   cleanup = () => {
     app.unmount()
@@ -666,4 +670,83 @@ describe('Market submission panel', () => {
     expect(document.body.textContent).toContain(en.submissionStateWithdrawn)
     expect(hasButton(en.submissionCreateDraft)).toBe(true)
   })
+})
+
+
+it('retranslates zone and submission action failures without replaying writes', async () => {
+  market.listMarketZones.mockRejectedValue(new Error('offline'))
+  market.listMarketSubmissions.mockResolvedValue(page([item({ status: 'submitted' })]))
+  market.createSubmissionRevision.mockRejectedValue(new MarketSubmissionError('market_email_unverified', 403))
+  await mount()
+  await settle()
+  await click(en.submissionNewRevision)
+  await typeNote('New revision')
+  await click(en.submissionRevisionSend)
+  await settle()
+  expect(document.body.textContent).toContain(en.marketEmailUnverified)
+  expect(document.body.textContent).toContain(en.submissionZonesLoadFailed)
+  switchLocale('zh-CN')
+  await settle()
+  expect(document.body.textContent).toContain(authoringMessages['zh-CN'].marketEmailUnverified)
+  expect(document.body.textContent).toContain(authoringMessages['zh-CN'].submissionZonesLoadFailed)
+  expect(document.body.textContent).not.toContain(en.marketEmailUnverified)
+  expect(market.createSubmissionRevision).toHaveBeenCalledTimes(1)
+  expect((document.querySelector('textarea') as HTMLTextAreaElement).value).toBe('New revision')
+})
+
+it('refreshes only translated progress while preserving unsaved draft tags and its snapshot', async () => {
+  const original = item()
+  market.listMarketSubmissions.mockResolvedValue(page([original]))
+  await mount()
+  await settle()
+  await clickTag(en.submissionTagGame)
+  market.listMarketSubmissions.mockResolvedValue(page([item({
+    current_snapshot: { ...snapshot, id: 99, tags: ['其他'] },
+    review_progress: { phase: 'draft', next_actor: 'author', title: '草稿', description: '说明' },
+  })]))
+  switchLocale('zh-CN')
+  await settle()
+  expect(tagChip(authoringMessages['zh-CN'].submissionTagGame)?.classList.contains('is-checked')).toBe(true)
+  expect(tagChip(authoringMessages['zh-CN'].submissionTagTool)?.classList.contains('is-checked')).toBe(true)
+  expect(market.updateSubmissionDraft).not.toHaveBeenCalled()
+  expect(market.submitSubmission).not.toHaveBeenCalled()
+  expect(market.createSubmissionDraft).not.toHaveBeenCalled()
+})
+
+it('updates the Market progress text on a language change without resetting a revision note', async () => {
+  market.listMarketSubmissions.mockResolvedValue(page([item({ status: 'in_review', review_progress: {
+    phase: 'human_review', next_actor: 'reviewer', title: 'Waiting for reviewer', description: 'Review in progress',
+  } })]))
+  await mount()
+  await settle()
+  await click(en.submissionNewRevision)
+  await typeNote('Keep this note')
+  market.listMarketSubmissions.mockResolvedValue(page([item({ status: 'in_review', review_progress: {
+    phase: 'human_review', next_actor: 'reviewer', title: '等待审核', description: '审核进行中',
+  } })]))
+  switchLocale('zh-CN')
+  await settle()
+  expect(document.body.textContent).toContain('等待审核')
+  expect(document.body.textContent).not.toContain('Waiting for reviewer')
+  expect((document.querySelector('textarea') as HTMLTextAreaElement).value).toBe('Keep this note')
+  expect(market.createSubmissionRevision).not.toHaveBeenCalled()
+})
+
+
+it('rereads progress in the current language when the locale changes during the initial read', async () => {
+  let finish!: (value: ReturnType<typeof page>) => void
+  market.listMarketSubmissions.mockReturnValueOnce(new Promise((resolve) => { finish = resolve }))
+  market.listMarketSubmissions.mockResolvedValue(page([item({ status: 'in_review', review_progress: {
+    phase: 'human_review', next_actor: 'reviewer', title: '等待审核', description: '审核进行中',
+  } })]))
+  await mount()
+  switchLocale('zh-CN')
+  await flush()
+  finish(page([item({ status: 'in_review', review_progress: {
+    phase: 'human_review', next_actor: 'reviewer', title: 'Waiting for reviewer', description: 'Review in progress',
+  } })]))
+  await settle()
+  expect(market.listMarketSubmissions).toHaveBeenCalledTimes(2)
+  expect(document.body.textContent).toContain('等待审核')
+  expect(document.body.textContent).not.toContain('Waiting for reviewer')
 })

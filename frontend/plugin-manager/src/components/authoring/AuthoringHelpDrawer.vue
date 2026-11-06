@@ -44,7 +44,7 @@ const { t } = useI18n()
 // Commands are documentation only. The workbench never executes them.
 const commands = {
   start: 'uv run neko-plugin init <plugin_id> --type plugin --name "My Plugin" --output "<parent-directory>/<plugin_id>"',
-  checks: 'uv run neko-plugin check <plugin_id>\nuv run neko-plugin check <plugin_id> --release',
-  publish: 'uv run neko-plugin build <plugin_id>\nuv run neko-plugin publish <plugin_id>',
+  checks: 'uv run neko-plugin check "<parent-directory>/<plugin_id>"\nuv run neko-plugin check "<parent-directory>/<plugin_id>" --release',
+  publish: 'uv run neko-plugin build "<parent-directory>/<plugin_id>"\nuv run neko-plugin publish "<parent-directory>/<plugin_id>"',
 }
 </script>

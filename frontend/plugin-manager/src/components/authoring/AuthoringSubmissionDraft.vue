@@ -91,6 +91,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import type { AuthoringMessageKey } from '@/i18n/authoring'
+import { useLocalizedError } from '@/composables/useLocalizedError'
 import { ElMessageBox } from 'element-plus'
 import { Check, Plus, Promotion } from '@element-plus/icons-vue'
 import AuthoringSubmissionMetadata from '@/components/authoring/AuthoringSubmissionMetadata.vue'
@@ -134,9 +136,18 @@ const emit = defineEmits<{
 const { t } = useI18n()
 
 const acting = ref(false)
-const actionError = ref('')
+const actionFailure = useLocalizedError<AuthoringMessageKey>(
+  (error: unknown, fallback: AuthoringMessageKey) => describeSubmissionError(t, error, fallback),
+  'submissionCreateFailed'
+)
+const actionError = actionFailure.message
 const issues = ref<PreflightIssue[]>([])
-const previewNotes = ref<string[]>([])
+const previewWarnings = ref<string[]>([])
+const workflowMissing = ref(false)
+const previewNotes = computed(() => [
+  ...previewWarnings.value,
+  ...(workflowMissing.value ? [t('authoring.submissionWorkflowMissing')] : []),
+])
 const pluginName = ref(props.pluginName.slice(0, PLUGIN_NAME_MAX_LENGTH))
 const zoneSlug = ref('')
 const tags = ref<string[]>([])
@@ -172,9 +183,10 @@ function metadataPayload(): Pick<SubmissionDraftUpdate, 'zone_slug' | 'tags'> {
 
 function startAction() {
   acting.value = true
-  actionError.value = ''
+  actionFailure.clear()
   issues.value = []
-  previewNotes.value = []
+  previewWarnings.value = []
+  workflowMissing.value = false
 }
 
 async function createDraft() {
@@ -199,10 +211,8 @@ async function createDraft() {
     issues.value = check.issues
     const preview = check.preview
     if (preview) {
-      previewNotes.value = [
-        ...preview.warnings,
-        ...(preview.workflow_status === 'available' ? [] : [t('authoring.submissionWorkflowMissing')]),
-      ]
+      previewWarnings.value = preview.warnings
+      workflowMissing.value = preview.workflow_status !== 'available'
     }
     if (!check.ready || !preview) return
     // The Market's own resolution of the repository wins over what was sent.
@@ -221,7 +231,7 @@ async function createDraft() {
       emit('conflict', Number(error.detail.submission_id))
       return
     }
-    actionError.value = describeSubmissionError(t, error, 'submissionCreateFailed')
+    actionFailure.set(error, 'submissionCreateFailed')
   } finally {
     acting.value = false
   }
@@ -234,7 +244,7 @@ async function saveMetadata() {
   try {
     emit('updated', await updateSubmissionDraft(current.id, metadataPayload()))
   } catch (error) {
-    actionError.value = describeSubmissionError(t, error, 'submissionSaveMetadataFailed')
+    actionFailure.set(error, 'submissionSaveMetadataFailed')
   } finally {
     acting.value = false
   }
@@ -272,7 +282,7 @@ async function confirmSubmit() {
     if (Object.keys(update).length) emit('updated', await updateSubmissionDraft(current.id, update))
     emit('updated', await submitSubmission(current.id))
   } catch (error) {
-    actionError.value = describeSubmissionError(t, error, 'submissionSubmitFailed')
+    actionFailure.set(error, 'submissionSubmitFailed')
   } finally {
     acting.value = false
   }

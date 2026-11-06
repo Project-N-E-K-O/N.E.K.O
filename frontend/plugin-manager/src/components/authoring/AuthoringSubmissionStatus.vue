@@ -83,6 +83,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useLocalizedError } from '@/composables/useLocalizedError'
 import { ElMessageBox } from 'element-plus'
 import { CircleClose, EditPen, Promotion } from '@element-plus/icons-vue'
 import AuthoringSubmissionMetadata from '@/components/authoring/AuthoringSubmissionMetadata.vue'
@@ -147,7 +148,11 @@ const STATE_LABELS: Record<SubmissionPhase, AuthoringMessageKey> = {
 const OPEN_PHASES: readonly SubmissionPhase[] = ['draft', ...REVISABLE_PHASES]
 
 const acting = ref(false)
-const actionError = ref('')
+const actionFailure = useLocalizedError<AuthoringMessageKey>(
+  (error: unknown, fallback: AuthoringMessageKey) => describeSubmissionError(t, error, fallback),
+  'submissionRevisionFailed'
+)
+const actionError = actionFailure.message
 
 const submissionUrl = computed(() =>
   props.marketWebUrl ? marketSubmissionUrl(props.marketWebUrl, props.submission.id) : ''
@@ -196,7 +201,7 @@ function startRevision() {
   zoneSlug.value = snapshot.value?.zone_slug ?? ''
   tags.value = [...(snapshot.value?.tags ?? [])]
   note.value = ''
-  actionError.value = ''
+  actionFailure.clear()
   revising.value = true
 }
 
@@ -213,7 +218,7 @@ async function sendRevision() {
   if (zoneChanged.value) body.zone_slug = zoneSlug.value
   if (tagsChanged.value) body.tags = tags.value
   acting.value = true
-  actionError.value = ''
+  actionFailure.clear()
   try {
     const next = await createSubmissionRevision(props.submission.id, body)
     revising.value = false
@@ -224,7 +229,7 @@ async function sendRevision() {
       emit('stale')
       return
     }
-    actionError.value = describeSubmissionError(t, error, 'submissionRevisionFailed')
+    actionFailure.set(error, 'submissionRevisionFailed')
   } finally {
     acting.value = false
   }
@@ -246,11 +251,11 @@ async function confirmWithdraw() {
     return
   }
   acting.value = true
-  actionError.value = ''
+  actionFailure.clear()
   try {
     emit('updated', await withdrawSubmission(props.submission.id))
   } catch (error) {
-    actionError.value = describeSubmissionError(t, error, 'submissionWithdrawFailed')
+    actionFailure.set(error, 'submissionWithdrawFailed')
   } finally {
     acting.value = false
   }

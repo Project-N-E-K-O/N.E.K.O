@@ -239,18 +239,20 @@ async function flush() {
   }
 }
 
+let switchLocale: (language: 'en-US' | 'zh-CN') => void
+
 async function mount() {
   const container = document.createElement('div')
   document.body.append(container)
   const app = createApp(PluginAuthoring)
   app.use(ElementPlus)
-  app.use(
-    createI18n({
+  const i18n = createI18n({
       legacy: false,
       locale: 'en-US',
       messages: {
         'en-US': {
           authoring: en,
+          plugins: { typePlugin: 'Plugin', typeAdapter: 'Adapter' },
           common: {
             cancel: 'Cancel',
             close: 'Close',
@@ -261,9 +263,16 @@ async function mount() {
           },
           status: { running: 'Running', stopped: 'Stopped' },
         },
+        'zh-CN': {
+          authoring: authoringMessages['zh-CN'],
+          plugins: { typePlugin: '插件', typeAdapter: '适配器' },
+          common: { cancel: '取消', close: '关闭', edit: '编辑', save: '保存' },
+          status: { running: '运行中', stopped: '已停止' },
+        },
       },
     })
-  )
+  switchLocale = (language) => { i18n.global.locale.value = language }
+  app.use(i18n)
   app.mount(container)
   cleanup = () => {
     app.unmount()
@@ -1397,4 +1406,53 @@ describe('authoring workbench backed by the server project list', () => {
     await settle()
     expect(api.removePluginProject).not.toHaveBeenCalled()
   })
+})
+
+
+it('retranslates a persistent creation error and type labels, and limits the author length', async () => {
+  await mount()
+  await click(en.newProject)
+  expect((document.getElementById('authoring-author') as HTMLInputElement).maxLength).toBe(80)
+  await click(en.chooseFolder)
+  await fill('authoring-name', created.name)
+  await fill('authoring-id', created.plugin_id)
+  api.previewPluginProject.mockRejectedValue({ response: { data: { code: 'GIT_NOT_FOUND' } } })
+  await click(en.next)
+  expect(document.body.textContent).toContain(en.gitMissing)
+  switchLocale('zh-CN')
+  await flush()
+  expect(document.body.textContent).toContain(authoringMessages['zh-CN'].gitMissing)
+  expect(document.body.textContent).not.toContain(en.gitMissing)
+  expect([...document.querySelectorAll('.el-radio__label')].map((el) => el.textContent)).toEqual(['插件', '适配器'])
+})
+
+it('translates the current project type using the shared plugin labels', async () => {
+  api.route.query = { project: 'p1' }
+  api.listPluginProjects.mockResolvedValue([{ ...listed, plugin_type: 'adapter' }])
+  const container = await mount()
+  switchLocale('zh-CN')
+  await flush()
+  expect(container.querySelector('.authoring-header__title')!.textContent).toContain('适配器')
+})
+
+it('explains an unavailable existing-project picker without offering a manual path', async () => {
+  await mount()
+  api.pickProjectDirectory.mockRejectedValue({ response: { data: { code: 'DIRECTORY_PICKER_UNAVAILABLE' } } })
+  await click(en.addExisting)
+  expect(document.body.textContent).toContain(en.projectPickerUnavailable)
+  expect(document.body.textContent).not.toContain(en.pickerUnavailable)
+  expect(api.registerPluginProject).not.toHaveBeenCalled()
+  expect(document.querySelectorAll('.el-message-box__input').length).toBe(0)
+})
+
+it('documents the explicit external project path for each follow-up CLI command', async () => {
+  await mount()
+  await click(en.help)
+  const commands = [...document.querySelectorAll('.authoring-help-drawer pre')].map((el) => el.textContent).join('\n')
+  for (const command of ['check', 'check-release', 'build', 'publish']) {
+    const expected = command === 'check-release'
+      ? 'check "<parent-directory>/<plugin_id>" --release'
+      : `${command} "<parent-directory>/<plugin_id>"`
+    expect(commands).toContain(expected)
+  }
 })

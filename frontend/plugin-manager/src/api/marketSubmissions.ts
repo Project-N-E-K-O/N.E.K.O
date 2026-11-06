@@ -10,6 +10,7 @@
  * code and fall back to the Market's text.
  */
 import { fetchBridge, readErrorCode } from './marketBridge'
+import { getLocale } from '@/i18n'
 
 /** Identity verdict from the Market's repository preview / preflight. */
 export type SubmissionIdentityStatus = 'matched' | 'mismatched' | 'unknown'
@@ -241,7 +242,9 @@ function detailMessage(detail: unknown): string {
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   // The Market's own 403s are passed through and must not be repeated; a
   // bridge-token 403 only follows a server restart mid-session (reload fixes it).
-  const res = await fetchBridge(path, init, { retryOnForbidden: false })
+  const headers = new Headers(init?.headers)
+  headers.set('Accept-Language', getLocale())
+  const res = await fetchBridge(path, { ...init, headers }, { retryOnForbidden: false })
   if (!res) {
     // No bridge token: the plugin manager is not paired with the server.
     throw new MarketSubmissionError('market_bridge_unreachable', 0)

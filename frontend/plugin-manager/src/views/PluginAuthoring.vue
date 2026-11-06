@@ -11,7 +11,7 @@
             <template v-if="current">
               <AuthoringProjectStatus :project="current" />
               <el-tag v-if="current.plugin_type" size="small" type="info">{{
-                current.plugin_type
+                t(current.plugin_type === 'adapter' ? 'plugins.typeAdapter' : 'plugins.typePlugin')
               }}</el-tag>
             </template>
           </div>
@@ -144,6 +144,7 @@ import {
 import {
   openProjectDirectory,
   pickProjectDirectory,
+  projectErrorCode,
   type AuthoringProject,
   type CreatedPluginProject,
 } from '@/api/pluginProjects'
@@ -219,6 +220,11 @@ function addExisting() {
     const project = await register(selected)
     projectList.value?.resetFilters()
     ElMessage.success(t('authoring.projectAdded', { name: projectTitle(project) }))
+  }, (error) => {
+    const code = projectErrorCode(error)
+    return code === 'DIRECTORY_PICKER_UNAVAILABLE' || code === 'DIRECTORY_PICKER_FAILED'
+      ? t('authoring.projectPickerUnavailable')
+      : errorMessage(error, 'actionFailed')
   })
 }
 

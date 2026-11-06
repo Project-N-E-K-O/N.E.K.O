@@ -78,6 +78,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useLocalizedError } from '@/composables/useLocalizedError'
+import type { AuthoringMessageKey } from '@/i18n/authoring'
 import { User } from '@element-plus/icons-vue'
 import AuthoringSubmissionDraft from '@/components/authoring/AuthoringSubmissionDraft.vue'
 import AuthoringSubmissionStatus from '@/components/authoring/AuthoringSubmissionStatus.vue'
@@ -113,7 +115,7 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{ (event: 'state', state: SubmissionPanelState): void }>()
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const {
   marketAuth,
   marketAuthBusy,
@@ -130,8 +132,13 @@ const marketReady = computed(() => signedIn.value && !marketAuthStateMessageKey.
 const loading = ref(false)
 /** True once the submission list for this repository has been read. */
 const loaded = ref(false)
-const loadError = ref('')
-const notice = ref('')
+const loadFailure = useLocalizedError<AuthoringMessageKey>(
+  (error: unknown, fallback: AuthoringMessageKey) => describeSubmissionError(t, error, fallback),
+  'submissionLoadFailed'
+)
+const loadError = loadFailure.message
+const noticeKey = ref<AuthoringMessageKey | null>(null)
+const notice = computed(() => noticeKey.value ? t(`authoring.${noticeKey.value}`) : '')
 const submission = ref<MarketSubmission | null>(null)
 const workspace = ref<SubmissionWorkspace | null>(null)
 
@@ -153,15 +160,16 @@ const canCreateDraft = computed(
 
 const zones = ref<MarketZone[]>([])
 const zonesLoading = ref(false)
-const zonesError = ref('')
+const zonesFailed = ref(false)
+const zonesError = computed(() => zonesFailed.value ? t('authoring.submissionZonesLoadFailed') : '')
 
 async function loadZones() {
   zonesLoading.value = true
-  zonesError.value = ''
+  zonesFailed.value = false
   try {
     zones.value = await listMarketZones()
   } catch {
-    zonesError.value = t('authoring.submissionZonesLoadFailed')
+    zonesFailed.value = true
   } finally {
     zonesLoading.value = false
   }
@@ -189,7 +197,7 @@ async function loadWorkspace(current: MarketSubmission, generation: number) {
     if (generation === reloadGeneration) workspace.value = next
   } catch (error) {
     if (generation === reloadGeneration) {
-      loadError.value = describeSubmissionError(t, error, 'submissionWorkspaceLoadFailed')
+      loadFailure.set(error, 'submissionWorkspaceLoadFailed')
     }
   }
 }
@@ -197,6 +205,7 @@ async function loadWorkspace(current: MarketSubmission, generation: number) {
 /** Read this repository's submissions; `selectId` picks one the Market just named. */
 async function reload(selectId?: number) {
   const repository = props.githubRepository
+  const language = locale.value
   const generation = ++reloadGeneration
   if (!marketReady.value || !repository) {
     submission.value = null
@@ -205,10 +214,14 @@ async function reload(selectId?: number) {
     return
   }
   loading.value = true
-  loadError.value = ''
+  loadFailure.clear()
   try {
     const page = await listMarketSubmissions(repository)
     if (generation !== reloadGeneration) return
+    if (language !== locale.value) {
+      await reload(selectId)
+      return
+    }
     const items = page.items.filter((item) => submissionMatchesRepository(item, repository))
     submission.value =
       items.find((item) => item.id === selectId) ??
@@ -222,15 +235,15 @@ async function reload(selectId?: number) {
     submission.value = null
     workspace.value = null
     loaded.value = false
-    loadError.value = describeSubmissionError(t, error, 'submissionLoadFailed')
+    loadFailure.set(error, 'submissionLoadFailed')
   } finally {
     if (generation === reloadGeneration) loading.value = false
   }
 }
 
 function onUpdated(next: MarketSubmission) {
-  notice.value = ''
-  loadError.value = ''
+  noticeKey.value = null
+  loadFailure.clear()
   submission.value = next
   // The Market's answer supersedes any read still in flight.
   loading.value = false
@@ -239,13 +252,13 @@ function onUpdated(next: MarketSubmission) {
 
 async function onConflict(submissionId: number) {
   await reload(submissionId)
-  notice.value = t('authoring.submissionOpenExists')
+  noticeKey.value = 'submissionOpenExists'
 }
 
 async function onStale() {
   const id = submission.value?.id
   await reload(id)
-  notice.value = t('authoring.submissionRevisionStale')
+  noticeKey.value = 'submissionRevisionStale'
 }
 
 // Reading starts once the login is confirmed, and again when the repository changes.
@@ -254,7 +267,32 @@ onMounted(() => {
   void loadMarketAuthStatus()
   void loadZones()
 })
-onUnmounted(stopMarketAuthPolling)
+// Only refresh server-localized progress on a language change. Preserve the
+// selected snapshot and all draft/revision edits; never replay a write.
+watch(locale, async (language) => {
+  const current = submission.value
+  const repository = props.githubRepository
+  const generation = reloadGeneration
+  if (!marketReady.value || !current || !repository) return
+  try {
+    const page = await listMarketSubmissions(repository)
+    if (generation !== reloadGeneration || locale.value !== language || submission.value !== current) return
+    const translated = page.items.find((item) => item.id === current.id)
+    if (translated?.review_progress && current.review_progress) {
+      current.review_progress = {
+        ...current.review_progress,
+        title: translated.review_progress.title,
+        description: translated.review_progress.description,
+      }
+    }
+  } catch (error) {
+    if (generation === reloadGeneration && locale.value === language) loadFailure.set(error)
+  }
+})
+onUnmounted(() => {
+  reloadGeneration++
+  stopMarketAuthPolling()
+})
 /** The publish page's single Refresh re-reads the submission through this. */
 defineExpose({ reload: () => Promise.all([reload(), zonesError.value ? loadZones() : undefined]) })
 </script>

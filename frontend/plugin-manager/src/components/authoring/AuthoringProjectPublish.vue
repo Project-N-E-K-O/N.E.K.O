@@ -160,6 +160,7 @@
 <script setup lang="ts">
 import { computed, h, nextTick, onMounted, onUnmounted, ref, watch, type ComponentPublicInstance } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useLocalizedError } from '@/composables/useLocalizedError'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft, ArrowRight, Refresh } from '@element-plus/icons-vue'
 import AuthoringProjectPrecheck from '@/components/authoring/AuthoringProjectPrecheck.vue'
@@ -241,14 +242,16 @@ const describeError = useProjectErrorMessage()
 const root = ref<HTMLElement>()
 const loading = ref(false)
 const status = ref<PublishStatus | null>(null)
-const requestError = ref('')
+const requestFailure = useLocalizedError(describeError, 'publishLoadFailed')
+const requestError = requestFailure.message
 const task = ref<PublishTask | null>(null)
 /** True once this panel saw the task active, so its outcome is news, not history. */
 const taskWatched = ref(false)
 /** Polling a task failed; shown once for the page. */
-const taskError = ref('')
+const taskFailure = useLocalizedError(describeError, 'publishTaskPollFailed')
+const taskError = taskFailure.message
 /** A refused start, shown in the step of the mode that was refused. */
-const startError = ref<{ mode: PublishMode; message: string } | null>(null)
+const startError = ref<{ mode: PublishMode; error: unknown } | null>(null)
 const canceling = ref(false)
 const submissionState = ref<SubmissionPanelState>({
   phase: null,
@@ -295,7 +298,7 @@ const stepRef = (id: PublishPageId) => ({
 const taskFor = (modes: PublishMode[]) =>
   task.value && modes.includes(task.value.mode) ? task.value : null
 const startErrorFor = (modes: PublishMode[]) =>
-  startError.value && modes.includes(startError.value.mode) ? startError.value.message : ''
+  startError.value && modes.includes(startError.value.mode) ? describeError(startError.value.error, 'publishStartFailed') : ''
 /** Values the beginner guide fills into its commands and paths. */
 const guideParams = computed<GuideParams>(() => ({
   repo: status.value?.repository.github_repository ?? undefined,
@@ -315,14 +318,15 @@ function guideOpen(id: PublishPageId) {
 
 // Step 0: the publishing tools of this machine, read once per panel and on Refresh.
 const toolchain = ref<Toolchain | null>(null)
-const toolchainError = ref('')
+const toolchainFailure = useLocalizedError(describeError, 'toolchainLoadFailed')
+const toolchainError = toolchainFailure.message
 async function loadToolchain() {
-  toolchainError.value = ''
+  toolchainFailure.clear()
   try {
     const next = await getPluginToolchain(props.projectId)
     if (!disposed) toolchain.value = next
   } catch (error) {
-    if (!disposed) toolchainError.value = describeError(error, 'toolchainLoadFailed')
+    if (!disposed) toolchainFailure.set(error)
   }
 }
 
@@ -363,12 +367,12 @@ async function load(options: { fresh?: boolean } = {}) {
     return
   }
   loading.value = true
-  requestError.value = ''
+  requestFailure.clear()
   try {
     const next = await getPluginProjectPublishStatus(props.projectId, !!options.fresh)
     if (!disposed) status.value = next
   } catch (error) {
-    if (!disposed) requestError.value = describeError(error, 'publishLoadFailed')
+    if (!disposed) requestFailure.set(error)
   } finally {
     loading.value = false
   }
@@ -408,7 +412,7 @@ watch(
 
 function applyTask(next: PublishTask) {
   task.value = next
-  taskError.value = ''
+  taskFailure.clear()
   pollFailures = 0
   if (publishTaskActive(next)) {
     taskWatched.value = true
@@ -426,9 +430,9 @@ async function loadTask() {
     if (projectErrorCode(error) === 'PUBLISH_TASK_NOT_FOUND') {
       // Never having published is the normal state, not an error.
       task.value = null
-      taskError.value = ''
+      taskFailure.clear()
     } else {
-      taskError.value = describeError(error, 'publishTaskPollFailed')
+      taskFailure.set(error)
     }
   }
 }
@@ -455,13 +459,13 @@ async function pollTask() {
     if (projectErrorCode(error) === 'PUBLISH_TASK_NOT_FOUND') {
       // The server restarted and forgot the task; its outcome is in the status.
       task.value = null
-      taskError.value = ''
+      taskFailure.clear()
       await load({ fresh: true })
       return
     }
     pollFailures += 1
     if (pollFailures < POLL_MAX_FAILURES) schedulePoll()
-    else taskError.value = describeError(error, 'publishTaskPollFailed')
+    else taskFailure.set(error)
     return
   }
   if (disposed) return
@@ -583,7 +587,7 @@ async function confirmPublish(mode: PublishMode) {
     if (!disposed) applyTask(started)
   } catch (error) {
     // The server gate stays authoritative; its reason shows in the step that was refused.
-    startError.value = { mode, message: describeError(error, 'publishStartFailed') }
+    startError.value = { mode, error }
   }
 }
 

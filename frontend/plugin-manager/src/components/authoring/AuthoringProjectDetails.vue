@@ -119,6 +119,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useLocalizedError } from '@/composables/useLocalizedError'
 import { ElMessage } from 'element-plus'
 import { Download, Edit } from '@element-plus/icons-vue'
 import { buildPluginCli, downloadPluginPackage } from '@/api/pluginCli'
@@ -147,7 +148,8 @@ const { t } = useI18n()
 const describeError = useProjectErrorMessage()
 const editing = ref(false)
 const saving = ref(false)
-const saveError = ref('')
+const saveFailure = useLocalizedError(describeError, 'saveFailed')
+const saveError = saveFailure.message
 const packing = ref(false)
 const draft = reactive<PluginProjectMetadata>({
   name: '',
@@ -204,26 +206,26 @@ function startEditing() {
     author: props.project.author || '',
     description: props.project.description || '',
   })
-  saveError.value = ''
+  saveFailure.clear()
   editing.value = true
 }
 
 function cancelEditing() {
   editing.value = false
-  saveError.value = ''
+  saveFailure.clear()
 }
 
 async function save() {
   if (!canSave.value) return
   saving.value = true
-  saveError.value = ''
+  saveFailure.clear()
   try {
     const updated = await updatePluginProjectMetadata(props.project.project_id, { ...draft })
     emit('updated', updated)
     editing.value = false
     ElMessage.success(t('authoring.saved'))
   } catch (error) {
-    saveError.value = describeError(error, 'saveFailed')
+    saveFailure.set(error)
   } finally {
     saving.value = false
   }

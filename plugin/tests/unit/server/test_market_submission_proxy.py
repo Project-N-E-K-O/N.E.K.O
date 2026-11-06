@@ -512,3 +512,24 @@ def test_new_id_routes_refuse_a_malformed_id(monkeypatch, method, action):
     assert response.status_code == 400
     assert response.json()["detail"]["code"] == "market_submission_id_invalid"
     assert upstream.requests == []
+
+
+@pytest.mark.parametrize("language", ["zh-CN", "zh-TW", "en-US", "ja", "ko", "ru", "es", "pt"])
+@pytest.mark.parametrize("method,path", [("GET", "/mine"), ("POST", "/preflight")])
+def test_submission_forwards_the_selected_language_on_initial_request_and_retry(monkeypatch, language, method, path):
+    client, upstream, _ = _install(
+        monkeypatch,
+        lambda request, attempt: httpx.Response(401 if attempt == 0 else 200, json=_EMPTY_PAGE),
+    )
+    response = client.request(
+        method, f"/market/submissions{path}", params=_BRIDGE,
+        headers={"Accept-Language": language},
+        **({"json": {"plugin_slug": "demo"}} if method == "POST" else {}),
+    )
+    assert response.status_code == 200
+    assert len(upstream.requests) == 2
+    assert all(request.headers["accept-language"] == language for request in upstream.requests)
+    assert upstream.requests[1].headers["authorization"] == "Bearer refreshed-access-token"
+    if method == "POST":
+        assert upstream.requests[1].headers["content-type"] == "application/json"
+        assert json.loads(upstream.requests[1].content) == {"plugin_slug": "demo"}

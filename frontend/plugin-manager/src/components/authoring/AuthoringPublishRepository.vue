@@ -34,6 +34,7 @@
 <script setup lang="ts">
 import { onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useLocalizedError } from '@/composables/useLocalizedError'
 import { Plus } from '@element-plus/icons-vue'
 import { createPluginProjectRepo } from '@/api/pluginProjects'
 import type { FlowMessage } from '@/components/authoring/publishFlow'
@@ -55,7 +56,8 @@ const describeError = useProjectErrorMessage()
 const creating = ref(false)
 const createdUrl = ref('')
 const manualSteps = ref<string[]>([])
-const createError = ref('')
+const createFailure = useLocalizedError(describeError, 'repoCreateFailed')
+const createError = createFailure.message
 let disposed = false
 onUnmounted(() => {
   disposed = true
@@ -66,7 +68,7 @@ async function createRepo() {
   creating.value = true
   createdUrl.value = ''
   manualSteps.value = []
-  createError.value = ''
+  createFailure.clear()
   try {
     const result = await createPluginProjectRepo(props.projectId)
     if (disposed) return
@@ -78,10 +80,10 @@ async function createRepo() {
       // create the repository by hand, then refresh.
       manualSteps.value = result.log
     } else {
-      createError.value = result.log.join('\n') || describeError(null, 'repoCreateFailed')
+      createFailure.set(result.log.length ? new Error(result.log.join('\n')) : null)
     }
   } catch (error) {
-    createError.value = describeError(error, 'repoCreateFailed')
+    createFailure.set(error)
   } finally {
     creating.value = false
   }

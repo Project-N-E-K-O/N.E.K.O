@@ -46,6 +46,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useLocalizedError } from '@/composables/useLocalizedError'
 import { VideoPlay } from '@element-plus/icons-vue'
 import {
   precheckPluginProject,
@@ -64,7 +65,8 @@ const { t } = useI18n()
 const describeError = useProjectErrorMessage()
 const running = ref(false)
 const report = ref<PrecheckReport | null>(null)
-const requestError = ref('')
+const requestFailure = useLocalizedError(describeError, 'precheckFailedToRun')
+const requestError = requestFailure.message
 
 interface StageView {
   name: StageName
@@ -108,12 +110,12 @@ function stageTagType(state: StageState) {
 async function run() {
   if (running.value) return
   running.value = true
-  requestError.value = ''
+  requestFailure.clear()
   try {
     report.value = await precheckPluginProject(props.projectId)
   } catch (error) {
     report.value = null
-    requestError.value = describeError(error, 'precheckFailedToRun')
+    requestFailure.set(error)
   } finally {
     running.value = false
   }

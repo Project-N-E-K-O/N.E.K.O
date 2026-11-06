@@ -43,6 +43,7 @@ const en = {
   gitMissing: 'Install Git before creating the plugin repository.',
   creationFailed: 'Could not create the plugin project.',
   pickerUnavailable: 'Cannot open the folder picker. Enter the parent directory manually.',
+  projectPickerUnavailable: 'Cannot open the folder picker. Adding an existing project requires a folder picker on the computer running N.E.K.O.',
   projectIoFailed: 'Could not write the project files. Check folder permissions and free space.',
   gitInitFailed: 'Git could not initialize the repository, so the new project was removed.',
   directoryUnavailable: 'The folder does not exist or cannot be accessed.',
@@ -403,6 +404,7 @@ export const authoringMessages = {
     gitMissing: '请先安装 Git，再创建插件仓库。',
     creationFailed: '无法创建插件项目。',
     pickerUnavailable: '无法打开目录选择器，请手动填写父目录。',
+    projectPickerUnavailable: '无法打开目录选择器。添加现有项目需要在运行 N.E.K.O 的电脑上使用目录选择器。',
     projectIoFailed: '无法写入项目文件，请检查目录权限和磁盘空间。',
     gitInitFailed: 'Git 无法初始化仓库，已撤销本次创建。',
     directoryUnavailable: '文件夹不存在或无法访问。',
@@ -750,6 +752,7 @@ export const authoringMessages = {
     gitMissing: '請先安裝 Git，再建立外掛儲存庫。',
     creationFailed: '無法建立外掛專案。',
     pickerUnavailable: '無法開啟目錄選擇器，請手動填寫父目錄。',
+    projectPickerUnavailable: '無法開啟目錄選擇器。新增現有專案需要在執行 N.E.K.O 的電腦上使用目錄選擇器。',
     projectIoFailed: '無法寫入專案檔案，請檢查目錄權限與磁碟空間。',
     gitInitFailed: 'Git 無法初始化儲存庫，已撤銷本次建立。',
     directoryUnavailable: '資料夾不存在或無法存取。',
@@ -1097,6 +1100,7 @@ export const authoringMessages = {
     gitMissing: 'Git をインストールしてから作成してください。',
     creationFailed: 'プロジェクトを作成できませんでした。',
     pickerUnavailable: 'フォルダー選択を開けません。親パスを入力してください。',
+    projectPickerUnavailable: 'フォルダー選択を開けません。既存のプロジェクトを追加するには、N.E.K.O を実行しているコンピューターのフォルダー選択が必要です。',
     projectIoFailed:
       'プロジェクトファイルを書き込めません。フォルダーの権限と空き容量を確認してください。',
     gitInitFailed: 'Git でリポジトリを初期化できなかったため、作成を取り消しました。',
@@ -1454,6 +1458,7 @@ export const authoringMessages = {
     gitMissing: '저장소를 만들기 전에 Git을 설치하세요.',
     creationFailed: '프로젝트를 생성하지 못했습니다.',
     pickerUnavailable: '폴더 선택기를 열 수 없습니다. 경로를 직접 입력하세요.',
+    projectPickerUnavailable: '폴더 선택기를 열 수 없습니다. 기존 프로젝트를 추가하려면 N.E.K.O를 실행하는 컴퓨터에서 폴더 선택기를 사용할 수 있어야 합니다.',
     projectIoFailed: '프로젝트 파일을 쓸 수 없습니다. 폴더 권한과 여유 공간을 확인하세요.',
     gitInitFailed: 'Git 저장소를 초기화하지 못해 생성을 취소했습니다.',
     directoryUnavailable: '폴더가 없거나 접근할 수 없습니다.',
@@ -1807,6 +1812,7 @@ export const authoringMessages = {
     gitMissing: 'Установите Git перед созданием репозитория.',
     creationFailed: 'Не удалось создать проект.',
     pickerUnavailable: 'Не удалось открыть выбор папки. Введите путь вручную.',
+    projectPickerUnavailable: 'Не удалось открыть выбор папки. Для добавления существующего проекта нужен выбор папки на компьютере, где запущен N.E.K.O.',
     projectIoFailed:
       'Не удалось записать файлы проекта. Проверьте права доступа и свободное место.',
     gitInitFailed: 'Git не смог инициализировать репозиторий, поэтому создание отменено.',
@@ -2163,6 +2169,7 @@ export const authoringMessages = {
     gitMissing: 'Instala Git antes de crear el repositorio.',
     creationFailed: 'No se pudo crear el proyecto.',
     pickerUnavailable: 'No se puede abrir el selector. Introduce la ruta manualmente.',
+    projectPickerUnavailable: 'No se puede abrir el selector de carpetas. Para añadir un proyecto existente se necesita un selector en el equipo que ejecuta N.E.K.O.',
     projectIoFailed:
       'No se pudieron escribir los archivos del proyecto. Revisa los permisos y el espacio libre.',
     gitInitFailed: 'Git no pudo inicializar el repositorio, así que se deshizo la creación.',
@@ -2518,6 +2525,7 @@ export const authoringMessages = {
     gitMissing: 'Instale o Git antes de criar o repositório.',
     creationFailed: 'Não foi possível criar o projeto.',
     pickerUnavailable: 'Não foi possível abrir o seletor. Digite o caminho manualmente.',
+    projectPickerUnavailable: 'Não foi possível abrir o seletor de pastas. Para adicionar um projeto existente, é necessário um seletor no computador que executa N.E.K.O.',
     projectIoFailed:
       'Não foi possível gravar os arquivos do projeto. Verifique as permissões e o espaço livre.',
     gitInitFailed: 'O Git não conseguiu inicializar o repositório, então a criação foi desfeita.',

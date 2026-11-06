@@ -2,6 +2,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const fetchBridge = vi.hoisted(() => vi.fn())
+const appLocale = vi.hoisted(() => ({ value: 'en-US' }))
+vi.mock('@/i18n', () => ({ getLocale: () => appLocale.value }))
 vi.mock('./marketBridge', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./marketBridge')>()),
   fetchBridge,
@@ -26,6 +28,7 @@ import {
 } from './marketSubmissions'
 
 afterEach(() => {
+  appLocale.value = 'en-US'
   fetchBridge.mockReset()
   vi.unstubAllGlobals()
 })
@@ -81,7 +84,7 @@ describe('listMarketSubmissions', () => {
     await expect(listMarketSubmissions('owner/repo')).resolves.toMatchObject({ items: [] })
     expect(fetchBridge).toHaveBeenCalledWith(
       '/market/submissions/mine?q=owner%2Frepo&page_size=100',
-      undefined,
+      { headers: expect.any(Headers) },
       { retryOnForbidden: false }
     )
   })
@@ -96,6 +99,21 @@ describe('listMarketSubmissions', () => {
     const result = await listMarketSubmissions('owner/repo')
     expect(result.items.filter((item) => submissionMatchesRepository(item, 'owner/repo'))).toEqual([exact])
     expect(fetchBridge.mock.calls[1]![0]).toContain('page=2')
+  })
+})
+
+describe('submission language', () => {
+  it('uses the applied app language for reads and writes, including after a switch', async () => {
+    fetchBridge.mockImplementation(async () => jsonResponse(200, { items: [], total_pages: 0 }))
+    await listMarketSubmissions('o/r')
+    expect(new Headers(fetchBridge.mock.calls[0]![1].headers).get('Accept-Language')).toBe('en-US')
+    appLocale.value = 'ja'
+    await updateSubmissionDraft(5, { tags: ['工具'] })
+    const init = fetchBridge.mock.calls[1]![1]
+    expect(new Headers(init.headers).get('Accept-Language')).toBe('ja')
+    expect(new Headers(init.headers).get('Content-Type')).toBe('application/json')
+    expect(init.method).toBe('PUT')
+    expect(JSON.parse(init.body)).toEqual({ tags: ['工具'] })
   })
 })
 
@@ -157,7 +175,7 @@ describe('write endpoints', () => {
     }
     fetchBridge.mockResolvedValue(jsonResponse(200, workspace))
     await expect(getSubmissionWorkspace(152)).resolves.toEqual(workspace)
-    expect(fetchBridge).toHaveBeenCalledWith('/market/submissions/152/workspace', undefined, {
+    expect(fetchBridge).toHaveBeenCalledWith('/market/submissions/152/workspace', { headers: expect.any(Headers) }, {
       retryOnForbidden: false,
     })
   })
