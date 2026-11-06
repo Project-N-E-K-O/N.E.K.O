@@ -177,6 +177,16 @@
         );
     }
 
+    function isPetCareExplorationAway() {
+        try {
+            return !!(window.nekoPetCareMode
+                && typeof window.nekoPetCareMode.isExplorationAway === 'function'
+                && window.nekoPetCareMode.isExplorationAway());
+        } catch (_) {
+            return false;
+        }
+    }
+
     function hasCoreInfrastructure() {
         if (!document.body) {
             return false;
@@ -416,6 +426,10 @@
 
     function getIdleBlockReasons() {
         const reasons = [];
+        if (window.nekoPetCareMode && typeof window.nekoPetCareMode.isExplorationAway === 'function' &&
+            window.nekoPetCareMode.isExplorationAway()) {
+            reasons.push('pet-care-exploration-away');
+        }
         if (!state.autoCatEnabled) {
             reasons.push('user-disabled');
         }
@@ -616,6 +630,16 @@
             source,
             reason,
         });
+    }
+
+    // User care is an explicit interaction with a sleeping cat. Keep the
+    // cat in CAT1 long enough for the user action and its presentation to
+    // finish, without changing the ordinary idle countdown rules.
+    function restartVisualTierForPetCare(source) {
+        if (!isGoodbyeActive()) return false;
+        clearDragTierMemory();
+        restartVisualTierCountdown(TIER_CAT1, source || 'pet-care-user-action', 'pet-care-user-action');
+        return true;
     }
 
     function handleReturnBallDragEnd() {
@@ -845,8 +869,17 @@
         }
 
         ensureInfrastructurePrimed();
-        const goodbyeActive = isGoodbyeActive();
         const idleSuppressed = syncIdleSuppressionState('tick');
+
+        // Exploration owns the visible cat entity for its whole activity
+        // window. Keep the existing goodbye lifecycle alive for recall/model
+        // return, but do not advance or re-emit CAT2/CAT3 while the nest owns
+        // the return surface.
+        if (isPetCareExplorationAway()) {
+            return;
+        }
+
+        const goodbyeActive = isGoodbyeActive();
 
         if (goodbyeActive) {
             syncVisualTierFromCurrentState('tick-goodbye');
@@ -936,6 +969,7 @@
 
         const handleReturnCommit = (event) => {
             const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+            if (detail.explorationRecall === true || detail.activityId || detail.explorationId) return;
             if (!isGreetingReturnSource(detail.source)) return;
             // Returning is an explicit user override of any startup request still waiting for avatar readiness.
             cancelStartupDefaultCatRequest(true);
@@ -958,6 +992,7 @@
 
         const handleReturnComplete = (event) => {
             const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+            if (detail.explorationRecall === true || detail.activityId || detail.explorationId) return;
             if (!isGreetingReturnSource(detail.source)) return;
             const returnSnapshot = state.pendingReturnSnapshot;
             if (!returnSnapshot) return;
@@ -997,6 +1032,45 @@
         };
         window.addEventListener('neko:cat-return-commit', handleReturnCommit);
         window.addEventListener('neko:cat-return-complete', handleReturnComplete);
+        window.addEventListener('neko:pet-care:exploration-gate', (event) => {
+            const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+            const activityId = String(detail.activityId || detail.explorationId || detail.exploration_id || '').trim();
+            if (!activityId) return;
+            const petCareMode = window.nekoPetCareMode;
+            if (petCareMode && typeof petCareMode.shouldApplyExplorationGate === 'function'
+                && !petCareMode.shouldApplyExplorationGate(detail)) return;
+            if (detail.active === true) {
+                state.autoGoodbyeTriggered = false;
+                state.lastInteractionAt = nowMs();
+                clearDragTierMemory();
+                if (isGoodbyeActive()) {
+                    restartVisualTierCountdown(
+                        TIER_CAT1,
+                        'pet-care-exploration-away',
+                        'pet-care-exploration-away'
+                    );
+                } else {
+                    setVisualTier(TIER_NONE, {
+                        source: 'pet-care-exploration-away',
+                    });
+                }
+                syncIdleSuppressionState('pet-care-exploration-away');
+            } else {
+                clearDragTierMemory();
+                if (isGoodbyeActive()) {
+                    restartVisualTierCountdown(
+                        TIER_CAT1,
+                        'pet-care-exploration-returned',
+                        'pet-care-exploration-returned'
+                    );
+                } else {
+                    setVisualTier(TIER_NONE, {
+                        source: 'pet-care-exploration-returned',
+                    });
+                }
+                noteUserInteraction('pet-care-exploration-returned');
+            }
+        });
         window.addEventListener('neko:goodbye-state-cleared', () => {
             state.pendingReturnSnapshot = null;
         });
@@ -1046,6 +1120,7 @@
         getIdleBlockReasons: getIdleBlockReasons,
         tryAutoGoodbye: tryAutoGoodbye,
         setVisualTier: setVisualTier,
+        restartVisualTierForPetCare: restartVisualTierForPetCare,
         setAutoCatEnabled: setAutoCatEnabled,
         isAutoCatEnabled: isAutoCatEnabled,
         clearTimers: clearTimers,

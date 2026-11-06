@@ -50,6 +50,7 @@
 
     let disposed = false;
     let currentAction = null;
+    let explorationAway = false;
     const targetState = {
         sessionId: '',
         revision: 0,
@@ -551,6 +552,7 @@
     }
 
     function tryStart(expectedCandidate) {
+        if (explorationAway) return false;
         const candidate = getCandidate();
         if (!candidate) return false;
         if (expectedCandidate
@@ -775,6 +777,7 @@
         disconnectRemovalObserver();
         window.removeEventListener(MANUAL_MOVE_EVENT, handleManualMove);
         window.removeEventListener(PLAYGROUND_EVENT, handlePlayground);
+        window.removeEventListener('neko:pet-care:exploration-gate', handleExplorationGate);
         window.removeEventListener('pagehide', dispose);
         window.removeEventListener('beforeunload', dispose);
         try {
@@ -790,8 +793,19 @@
         getState: getState,
         isActive: isActive,
     });
+    function handleExplorationGate(event) {
+        const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+        const activityId = String(detail.activityId || detail.explorationId || detail.exploration_id || '').trim();
+        if (!activityId) return;
+        const petCareMode = window.nekoPetCareMode;
+        if (petCareMode && typeof petCareMode.shouldApplyExplorationGate === 'function'
+            && !petCareMode.shouldApplyExplorationGate(detail)) return;
+        explorationAway = detail.active === true;
+        if (explorationAway) cancel(null, { reason: 'exploration-away', restoreArt: false });
+    }
     window.addEventListener(MANUAL_MOVE_EVENT, handleManualMove);
     window.addEventListener(PLAYGROUND_EVENT, handlePlayground);
+    window.addEventListener('neko:pet-care:exploration-gate', handleExplorationGate);
     window.addEventListener('pagehide', dispose);
     window.addEventListener('beforeunload', dispose);
 })();

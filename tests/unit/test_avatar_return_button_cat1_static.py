@@ -104,7 +104,11 @@ def test_cat1_play_action_module_is_independent_from_eat_action():
     assert "'cat1-play-action'" in play_block
     assert "let audioDone" not in play_block
     assert "markAudioDone" not in play_block
-    assert "if (!gifDone) return;" in play_block
+    assert "const scheduleFinish = (durationMs) => {" in play_block
+    assert "Math.max(safeMeasuredDurationMs, minimumDurationMs) - elapsedMs" in play_block
+    assert "_finishNekoIdleCat1PlayAction(button, token);" in play_block
+    assert "scheduleFinish(NaN)" in play_block
+    assert "reason: 'cat1-play-action-duration-failed'" in play_block
     assert "_playNekoIdleSound(" in play_block
     assert "_getNekoCatVoiceUrl('cat1.play_yarn')" in play_block
     finish_play_block = source.split("function _finishNekoIdleCat1PlayAction(button, token)", 1)[1].split(

@@ -167,6 +167,11 @@ Object.assign(AvatarButtonMixin.methods, {
 
             returnBtn.addEventListener('mouseenter', (event) => {
                 if (_isNekoIdleThoughtBubbleEventHit(returnBtn, event)) return;
+                if (window.nekoPetCareMode?.shouldBlockEntityOutput?.({ source: 'hover' }).blocked) return;
+                // Sulking filters only the cat's ordinary acknowledgement.
+                // The independent PetCare hover entry and left-click model
+                // return remain available to the user.
+                if (window.nekoPetCareMode?.shouldSuppressHoverResponse?.()) return;
                 const tier = returnBtn.getAttribute('data-neko-idle-tier');
                 if (tier && tier !== 'none') {
                     _playNekoIdleHoverArt(returnArt, tier, { userInitiated: true });
@@ -227,9 +232,19 @@ Object.assign(AvatarButtonMixin.methods, {
                 _cancelNekoIdleCat1EatAction(returnBtn, { restoreArt: false });
                 _cancelNekoIdleCat1StretchAction(returnBtn, { restoreArt: false });
                 _cancelNekoIdleCat1PlayAction(returnBtn, { restoreArt: false });
+                _cancelNekoIdleCat1PlayTeaserWandAction(returnBtn, { restoreArt: false });
+                _cancelNekoIdleCat1PettingAction(returnBtn, { restoreArt: false });
                 _finishNekoIdleReturnDragAction(returnBtn, { restoreArt: false });
                 _cancelNekoIdleCat1Journey(returnBtn);
                 _dispatchNekoIdleReturnClickFromButton(returnBtn);
+            });
+
+            returnBtn.addEventListener('contextmenu', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                if (_isNekoIdleThoughtBubbleEventHit(returnBtn, event)) return;
+                if (!_isNekoIdleCat1PettingEnabledForButton(returnBtn)) return;
+                _requestNekoIdleCat1PettingPresentation(returnBtn);
             });
 
             const thoughtBubble = document.createElement('span');
@@ -1034,6 +1049,8 @@ Object.assign(AvatarButtonMixin.methods, {
 
             container.addEventListener('mousedown', (e) => {
                 if (e.button !== 0) {
+                    const button = _getNekoIdleReturnButtonFromContainer(container);
+                    if (e.button === 2 && _isNekoIdleCat1PettingEnabledForButton(button)) return;
                     e.preventDefault();
                     e.stopImmediatePropagation();
                     return;

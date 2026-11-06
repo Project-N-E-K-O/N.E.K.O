@@ -966,6 +966,97 @@ const fetch = (_url, options) => new Promise((resolve, reject) => {
 
 
 @pytest.mark.unit
+def test_browser_native_sync_opens_community_without_waiting_for_slow_delegate():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    source = read_js_parts(APP_UI_PATH)
+    start = source.index("window.addEventListener('live2d-social-click', async () => {")
+    listener = source[start:source.index("// 睡觉按钮（请她离开）", start)]
+    script = r"""
+const assert = require('node:assert/strict');
+let now = 0;
+let nextTimer = 0;
+const timers = new Map();
+const setTimeout = (callback, delay) => {
+    const id = ++nextTimer;
+    timers.set(id, { callback, at: now + delay });
+    return id;
+};
+const clearTimeout = id => timers.delete(id);
+const advance = elapsed => {
+    now += elapsed;
+    for (const [id, timer] of [...timers]) {
+        if (timer.at <= now) { timers.delete(id); timer.callback(); }
+    }
+};
+const flush = () => new Promise(resolve => setImmediate(resolve));
+let onClick;
+let released = 0;
+const navigations = [];
+const popup = {
+    closed: false,
+    opener: {},
+    document: { documentElement: { style: {} } },
+    location: {
+        href: 'about:blank',
+        replace(url) { this.href = String(url); navigations.push({ url: String(url), at: now }); },
+    },
+    focus() {},
+    close() { this.closed = true; },
+};
+const window = {
+    location: new URL('http://127.0.0.1:48911/'),
+    addEventListener: (_type, callback) => { onClick = callback; },
+    open: () => { throw new Error('the named popup probe already reserved the window'); },
+    showStatusToast() {},
+    t: key => key,
+};
+const document = { documentElement: { getAttribute: () => 'light' } };
+const focusOpenSocialWindow = () => false;
+const shouldIgnoreSocialOpenRequest = () => false;
+const getSocialOpenState = () => ({ generation: 1 });
+const releaseSocialOpenRequest = () => { released += 1; };
+const isSocialOpenRequestCurrent = () => true;
+const probeNamedSocialWindow = () => ({ socialWindow: popup, existing: false });
+const rememberSocialWindow = () => {};
+const forgetSocialWindow = () => {};
+const isResolvedDarkTheme = () => false;
+const registerSocialThemeTarget = () => null;
+const queueSocialThemeSync = () => {};
+const response = body => ({ ok: true, status: 200, json: async () => body });
+const fetch = async url => {
+    if (url === '/api/system/social/config') {
+        return response({ social_base_url: 'https://community.example' });
+    }
+    if (url === '/api/system/client-id') return response({ client_id: 'device-id' });
+    if (url === '/api/card-drop/sync-ticket') return response({ sync_ticket: 'ticket-ready' });
+    if (url === '/api/card-drop/native-delegate') return new Promise(() => {});
+    if (url === '/api/card-drop/auth-status') return response({ logged_in: true });
+    throw new Error('unexpected request: ' + url);
+};
+""" + listener + r"""
+(async () => {
+    const flow = onClick();
+    await flush();
+    assert.equal(navigations.length, 0);
+    advance(4000);
+    await flush(); await flush(); await flush();
+    await flow;
+    assert.equal(navigations.length, 1,
+        'the verified account handoff must not wait for the optional delegate');
+    const target = new URL(navigations[0].url);
+    assert.equal(target.origin, 'https://community.example');
+    assert.equal(new URLSearchParams(target.hash.slice(1)).get('native_sync'), 'ticket-ready');
+    assert.equal(navigations[0].at, 4000);
+    assert.equal(released, 1);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    result = run_node_stdin(node, script, capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("ticket_delay_ms", [2000, 5000])
 @pytest.mark.parametrize("auth_status_logged_out", [False, True])
 def test_social_handoff_reuses_only_unsent_tickets_and_starts_fallback_early(

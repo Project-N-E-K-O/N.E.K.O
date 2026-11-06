@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360" role="img" aria-label="窗边小路探索地">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#bde8ff"/>
+      <stop offset="1" stop-color="#eef8ff"/>
+    </linearGradient>
+    <linearGradient id="ground" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#9bd0a8"/>
+      <stop offset="1" stop-color="#6fa887"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#31546b" flood-opacity=".18"/>
+    </filter>
+  </defs>
+  <rect x="10" y="10" width="620" height="340" rx="28" fill="#f8fcff" filter="url(#shadow)"/>
+  <rect x="28" y="28" width="584" height="304" rx="20" fill="url(#sky)"/>
+  <circle cx="500" cy="93" r="35" fill="#fff4ba" opacity=".9"/>
+  <path d="M28 232 C128 190 188 218 268 190 C348 162 421 193 612 147 V332 H28Z" fill="url(#ground)"/>
+  <path d="M312 332 C326 277 360 246 404 210 C432 188 457 162 474 132" fill="none" stroke="#e8d4a4" stroke-width="30" stroke-linecap="round" opacity=".95"/>
+  <path d="M312 332 C326 277 360 246 404 210 C432 188 457 162 474 132" fill="none" stroke="#f6e8c5" stroke-width="18" stroke-linecap="round"/>
+  <g fill="#5f9871" opacity=".9">
+    <circle cx="105" cy="218" r="25"/><circle cx="142" cy="204" r="34"/><circle cx="184" cy="220" r="23"/>
+    <circle cx="554" cy="224" r="30"/><circle cx="585" cy="207" r="22"/>
+  </g>
+  <g stroke="#3d6275" stroke-width="10" stroke-linecap="round" opacity=".75">
+    <path d="M98 75h115M98 112h80"/><path d="M92 70l-11 12m18-5-7 17"/>
+  </g>
+  <path d="M28 264h584" stroke="#ffffff" stroke-opacity=".6" stroke-width="4"/>
+  <g fill="#fff" opacity=".7">
+    <circle cx="244" cy="95" r="5"/><circle cx="264" cy="84" r="3"/><circle cx="284" cy="101" r="4"/>
+  </g>
+</svg>

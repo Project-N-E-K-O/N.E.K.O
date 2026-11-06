@@ -86,7 +86,9 @@ def test_cat1_hiss_easter_egg_reuses_the_independent_stretch_presentation():
     assert "cat1_stretch_done_near_chat" not in manager_source
     assert "window.NekoCatIdlePresentation = Object.freeze" in actions_source
     assert "requestCat1HissStretch: _requestNekoIdleCat1HissStretchPresentation" in actions_source
-    assert "requestCat1Stretch:" not in actions_source
+    # PetCare reuses the independent stretch runner for brushing.  The
+    # chat-specific hiss entry remains a separate public presentation bridge.
+    assert "requestCat1Stretch: _requestNekoPetCareCat1StretchPresentation" in actions_source
     assert "_getNekoCatVoiceUrl('cat1.hiss')" in actions_source
     assert "/static/assets/cat-resources/voice/dev_neko/interaction/cat1-voice-chat-angry.mp3" in registry_source
     assert "appendStickerItem(hissReply.stickerUrl, reply, pending.requestId);" in manager_source

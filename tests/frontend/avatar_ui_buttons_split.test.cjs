@@ -209,3 +209,183 @@ test('Cat Mind dry-run applies the resource preflight to every registered action
     }
     assert.deepEqual(requests, actionIds);
 });
+
+test('user yarn runner waits for PetCare lease authorization and preserves activity identity', async () => {
+    const { window, listeners, context } = loadMixin();
+    const acknowledgements = [];
+    const runs = [];
+    let releaseAuthorization;
+    const authorization = new Promise((resolve) => { releaseAuthorization = resolve; });
+    window.nekoPetCareEntry = {
+        authorizeCatMindYarnAction(request) {
+            assert.equal(request.detail.activityId, 'chat-yarn-session-1');
+            return authorization;
+        },
+    };
+    window.nekoCatMind = {
+        acknowledgeActionRequest(payload) {
+            acknowledgements.push(payload);
+            return true;
+        },
+    };
+    context._dryRunNekoCatMindActionProvider = () => ({ allowed: true, reason: 'ready' });
+    context._findNekoCatMindVisibleButtonForTier = () => ({ id: 'cat1-button' });
+    context._playNekoIdleCat1PlayAction = (_button, options) => {
+        runs.push(options);
+        options.onAccepted({ runId: 'yarn-run-1' });
+        options.onStarted({ runId: 'yarn-run-1' });
+        return true;
+    };
+
+    const requestListener = listeners.get('neko:cat-mind:action-request');
+    requestListener({ detail: {
+        source: 'cat_mind', requestId: 'yarn-request-1',
+        actionId: 'cat1_play_yarn', tier: 'cat1',
+        detail: { activityId: 'chat-yarn-session-1' },
+    }});
+    assert.equal(runs.length, 0);
+    assert.equal(acknowledgements[0].status, 'deferred');
+
+    releaseAuthorization({ authorized: true, minimumDurationMs: 8000 });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0].activityId, 'chat-yarn-session-1');
+    assert.equal(runs[0].minimumDurationMs, 8000);
+    assert.deepEqual(acknowledgements.map(({ status, runId }) => ({ status, runId })), [
+        { status: 'deferred', runId: '' },
+        { status: 'deferred', runId: '' },
+        { status: 'accepted', runId: 'yarn-run-1' },
+        { status: 'started', runId: 'yarn-run-1' },
+    ]);
+});
+
+test('user yarn authorization remains fail-closed and legacy boolean success adds no local floor', async () => {
+    const { window, listeners, context } = loadMixin();
+    const acknowledgements = [];
+    const runs = [];
+    const authorizations = [
+        () => Promise.resolve(false),
+        () => Promise.resolve({ authorized: true, minimumDurationMs: 0 }),
+        () => Promise.reject(new Error('lease unavailable')),
+        () => Promise.resolve(true),
+        () => Promise.resolve({ authorized: true, minimumDurationMs: 29000 }),
+    ];
+    window.nekoPetCareEntry = {
+        authorizeCatMindYarnAction() { return authorizations.shift()(); },
+    };
+    window.nekoCatMind = {
+        acknowledgeActionRequest(payload) {
+            acknowledgements.push(payload);
+            return true;
+        },
+    };
+    context._dryRunNekoCatMindActionProvider = () => ({ allowed: true, reason: 'ready' });
+    context._findNekoCatMindVisibleButtonForTier = () => ({ id: 'cat1-button' });
+    context._playNekoIdleCat1PlayAction = (_button, options) => {
+        runs.push(options);
+        return true;
+    };
+    const requestListener = listeners.get('neko:cat-mind:action-request');
+    const request = (suffix) => requestListener({ detail: {
+        source: 'cat_mind', requestId: `yarn-request-${suffix}`,
+        actionId: 'cat1_play_yarn', tier: 'cat1',
+        detail: { activityId: `chat-yarn-session-${suffix}` },
+    }});
+
+    request('rejected');
+    await new Promise((resolve) => setImmediate(resolve));
+    request('invalid-floor');
+    await new Promise((resolve) => setImmediate(resolve));
+    request('failed');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(runs.length, 0);
+    assert.equal(acknowledgements.filter((item) => item.status === 'rejected').length, 3);
+
+    request('legacy');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(runs.length, 1);
+    assert.equal(Object.hasOwn(runs[0], 'minimumDurationMs'), false);
+
+    request('lease-floor');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(runs.length, 2);
+    assert.equal(runs[1].minimumDurationMs, 29000);
+});
+
+test('desktop exploration art revalidates custom-event asset URLs before assigning src', () => {
+    const { window, listeners, context } = loadMixin();
+    const attributes = new Map([
+        ['src', '/static/assets/neko-idle/original.png'],
+        ['srcset', '/static/assets/neko-idle/original@2x.png 2x'],
+    ]);
+    const art = {
+        src: '/static/assets/neko-idle/original.png',
+        dataset: {},
+        style: {},
+        getAttribute(name) { return attributes.get(name) || ''; },
+        setAttribute(name, value) { attributes.set(name, String(value)); },
+        removeAttribute(name) { attributes.delete(name); },
+    };
+    const buttonAttributes = new Map([['data-neko-idle-tier', 'cat1']]);
+    const button = {
+        dataset: {},
+        querySelector(selector) {
+            return selector === '.neko-idle-return-art' ? art : null;
+        },
+        getAttribute(name) { return buttonAttributes.get(name) || ''; },
+        setAttribute(name, value) { buttonAttributes.set(name, String(value)); },
+    };
+    const container = {
+        dataset: {},
+        getAttribute(name) { return name === 'data-neko-return-visible' ? 'true' : ''; },
+    };
+    window.nekoPetCareEntry = { getState() { return {
+        catLocalActive: true,
+        explorationRecallRequested: false,
+        explorationPending: null,
+        exploration: { exploration_id: 'exp-asset-1', active: true, status: 'active' },
+    }; } };
+    Object.assign(context, {
+        _forEachNekoIdleReturnButton(callback) { callback(button); },
+        _getNekoIdleReturnContainerFromButton() { return container; },
+        _cleanupNekoIdleArtTransition() {},
+        _clearNekoIdleHoverPlayback() {},
+        _clearNekoIdleGifPlaybackSource() {},
+    });
+
+    const listener = listeners.get('neko:pet-care:exploration-asset');
+    assert.equal(typeof listener, 'function');
+    listener({ detail: {
+        active: true, exploration_id: 'exp-asset-1',
+        asset_url: '/\\cdn.example/exploration.png',
+    } });
+    assert.equal(art.src, '/static/assets/neko-idle/cat-bad.png');
+
+    listener({ detail: {
+        active: true, exploration_id: 'exp-asset-1',
+        asset_url: '/static/assets/neko-idle/exploration-window-path.svg',
+    } });
+    assert.equal(art.src, '/static/assets/neko-idle/exploration-window-path.svg');
+});
+
+test('right-click petting is gated by the explicit unlock marker and leaves left-click return intact', () => {
+    const methodsSource = fs.readFileSync(path.join(PARTS_DIR, 'methods-return.js'), 'utf8');
+    const contextMenuStart = methodsSource.indexOf("returnBtn.addEventListener('contextmenu'");
+    const thoughtBubbleStart = methodsSource.indexOf('const thoughtBubble =', contextMenuStart);
+    assert.ok(contextMenuStart >= 0 && thoughtBubbleStart > contextMenuStart);
+    const contextMenuSection = methodsSource.slice(contextMenuStart, thoughtBubbleStart);
+    assert.match(contextMenuSection, /event\.preventDefault\(\)/);
+    assert.match(contextMenuSection, /_isNekoIdleCat1PettingEnabledForButton\(returnBtn\)/);
+    assert.match(contextMenuSection, /_requestNekoIdleCat1PettingPresentation\(returnBtn\)/);
+
+    const clickStart = methodsSource.indexOf("returnBtn.addEventListener('click'");
+    const clickSection = methodsSource.slice(clickStart, contextMenuStart);
+    assert.match(clickSection, /_dispatchNekoIdleReturnClickFromButton\(returnBtn\)/);
+    assert.doesNotMatch(clickSection, /_requestNekoIdleCat1PettingPresentation/);
+
+    const mouseStart = methodsSource.indexOf("container.addEventListener('mousedown'");
+    const mouseEnd = methodsSource.indexOf("container.addEventListener('touchstart'", mouseStart);
+    const mouseSection = methodsSource.slice(mouseStart, mouseEnd);
+    assert.match(mouseSection,
+        /e\.button === 2 && _isNekoIdleCat1PettingEnabledForButton\(button\)\) return;/);
+});

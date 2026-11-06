@@ -284,6 +284,7 @@ global.window = {{
 }};
 
 const S = window.appState;
+let __nekoExplorationRecallListenerBound = false;
 vm.runInThisContext({json.dumps(listeners)}, {{ filename: 'initFloatingButtonListeners.js' }});
 initFloatingButtonListeners();
 

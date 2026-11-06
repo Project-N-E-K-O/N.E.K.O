@@ -96,6 +96,18 @@
         "wideArt": true
       }
     },
+    "action.cat1.play_teaser_wand": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat-play-2.gif",
+        "media_type": "image/gif"
+      }]
+    },
+    "action.cat1.petting": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat-stroke.gif",
+        "media_type": "image/gif"
+      }]
+    },
     "playground.cat1.air": {
       "resources": [{
         "path": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-2.gif",

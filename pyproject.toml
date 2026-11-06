@@ -150,6 +150,10 @@ packages = [
 ]
 exclude = [
   "plugin/plugins",
+  # PetCare's long-term authority lives in the standalone Verse service.  Keep
+  # this fence even after deleting the former client mirror so a future local
+  # module cannot silently enter an official client wheel.
+  "services/pet_care",
   # Legacy data files kept in the repo; the knowledge subsystem only serves
   # packs the user imports, so they are not shipped.
   "knowledge/data",
@@ -183,6 +187,8 @@ include = [
 ]
 exclude = [
   "plugin/plugins",
+  # The official client ships only the same-origin PetCare gateway.
+  "services/pet_care",
   # Legacy data files kept in the repo; the knowledge subsystem only serves
   # packs the user imports, so they are not shipped.
   "knowledge/data",

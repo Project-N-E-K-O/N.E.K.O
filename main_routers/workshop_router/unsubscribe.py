@@ -32,10 +32,15 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from ..shared_state import ensure_steamworks as get_steamworks, get_config_manager
 from utils.character_memory import character_config_mutation_lock
-from utils.config_manager import get_character_uid, get_reserved
+from utils.config_manager import get_character_uid, get_reserved, is_valid_character_uid
 from utils.asyncio_retirement import await_retirement
 from utils.chat_avatar_store import ChatAvatarError, remove_record as remove_chat_avatar_record
 from utils.config_manager.storage_roots import chat_avatar_directory
+from main_routers.pet_care_role_alias_outbox import (
+    PetCareRoleAliasOutboxError,
+    finish_retirement as finish_pet_care_role_alias_retirement,
+    prepare_retirement as prepare_pet_care_role_alias_retirement,
+)
 
 
 _RESUME_RETRY_INITIAL_DELAY_SECONDS = 1.0
@@ -419,6 +424,9 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
     released_derived_task_claims: dict[str, str] = {}
     mutation_lock_acquired = False
     reserved_names: list[str] = []  # Character names reserved during transaction, blocking route admission.
+    config_mgr = None
+    pet_care_prepared_uids: list[str] = []
+    pet_care_finish_cancelled = False
 
     # Check Steamworks initialized successfully.
     if steamworks is None:
@@ -631,6 +639,7 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
         cleanup_summary: dict = {
             "candidate_characters": list(candidate_names),
             "cleaned_characters": [],
+            "pet_care_role_alias_retirements": [],
             "removed_memory_paths": [],
             "errors": [],
             # Character names whose memory_server release returned non-success (diagnostics only,
@@ -652,6 +661,7 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                 )
                 from ..shared_state import get_remove_one_catgirl
                 from ..characters_router.crud import (
+                    _pet_care_role_alias_retirement,
                     collect_numeric_v2_character_purge,
                     complete_numeric_v2_character_purge,
                     discard_numeric_v2_character_purge_intent,
@@ -906,13 +916,46 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
             if theater_preflight_failed:
                 await _discard_uncommitted_purge_intents()
 
+            # Persist the PetCare integration event before publishing the batch
+            # character deletion. A crash after characters.json is replaced but
+            # before the response reaches the renderer can then be reconciled
+            # from the durable role-absence fact on the next lifecycle flush.
+            pet_care_marker_failed = False
+            if pending_del_names and not theater_preflight_failed:
+                for name in pending_del_names:
+                    uid = pending_avatar_uids.get(name)
+                    if not is_valid_character_uid(uid):
+                        continue
+                    try:
+                        _, prepare_cancelled = await _await_thread_call_to_completion(
+                            prepare_pet_care_role_alias_retirement,
+                            config_mgr,
+                            uid,
+                        )
+                        pet_care_prepared_uids.append(uid)
+                        if prepare_cancelled:
+                            raise asyncio.CancelledError
+                    except PetCareRoleAliasOutboxError as exc:
+                        logger.error(
+                            "取消订阅同步清理: PetCare 角色退役 outbox 写入失败 %s: %r",
+                            name,
+                            exc,
+                        )
+                        cleanup_summary["errors"].append({
+                            "character": name,
+                            "stage": "pet_care_retirement_outbox",
+                            "error": str(exc),
+                        })
+                        pet_care_marker_failed = True
+                        break
+
             # Retire visit residue: record pending_retire before characters.json commit, retire only afterward;
             # unsuccessful commit means character remains; remove marker only. Marker failure aborts like theater precheck failure.
             from main_routers.visit_router import character_hooks as visit_hooks
 
             visit_items: dict[str, dict] = {}
             visit_marker_failed = False
-            if pending_del_names and not theater_preflight_failed:
+            if pending_del_names and not theater_preflight_failed and not pet_care_marker_failed:
                 for name in pending_del_names:
                     try:
                         item = await visit_hooks.begin_retire(config_mgr, name, pending_avatar_uids.get(name))
@@ -943,15 +986,26 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                         })
                 visit_items.clear()
 
-            if visit_marker_failed:
+            if visit_marker_failed or pet_care_marker_failed:
                 # No commit: abort branch below removes recorded markers as uncommitted deletion.
                 await _discard_uncommitted_purge_intents()
 
             # Batch characters.json write (N deletions → one atomic write).
-            if pending_del_names and not theater_preflight_failed and not visit_marker_failed:
+            if (pending_del_names and not theater_preflight_failed and
+                    not visit_marker_failed and not pet_care_marker_failed):
                 try:
                     await config_mgr.asave_characters(characters_mut)
                     cleanup_summary["cleaned_characters"] = list(pending_del_names)
+                    cleanup_summary["pet_care_role_alias_retirements"] = [
+                        retirement
+                        for name in pending_del_names
+                        if (
+                            retirement := _pet_care_role_alias_retirement(
+                                pending_avatar_uids.get(name)
+                            )
+                        )
+                        is not None
+                    ]
                     logger.info(
                         f"取消订阅同步清理: 批量删除 {len(pending_del_names)} 个角色并写入 characters.json: "
                         f"{pending_del_names}"
@@ -971,7 +1025,10 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
 
             # Any local config cleanup failure (per-name deletion/batch persistence) aborts immediately.
             delete_config_failed = any(
-                err.get("stage") in {"delete_config", "theater_preflight", "visit_retire_marker"}
+                err.get("stage") in {
+                    "delete_config", "theater_preflight", "visit_retire_marker",
+                    "pet_care_retirement_outbox",
+                }
                 for err in cleanup_summary.get("errors") or []
             )
             if local_config_cleanup_failed or delete_config_failed:
@@ -1342,18 +1399,46 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
         }, status_code=500)
     finally:
         try:
-            if mutation_lock_acquired:
-                character_config_mutation_lock.release()
-            _end_reservation(reserved_names)
+            if config_mgr is not None:
+                for uid in reversed(pet_care_prepared_uids):
+                    try:
+                        _, finish_cancelled = await _await_thread_call_to_completion(
+                            finish_pet_care_role_alias_retirement,
+                            config_mgr,
+                            uid,
+                        )
+                        pet_care_finish_cancelled |= finish_cancelled
+                    except PetCareRoleAliasOutboxError as exc:
+                        # The prepared row remains durable and its in-process
+                        # fence has already been released. A later lifecycle
+                        # read retries from authoritative characters.json.
+                        logger.warning(
+                            "取消订阅同步清理: PetCare 退役 outbox 收口待重试: %r",
+                            exc,
+                        )
+                    except asyncio.CancelledError:
+                        # _await_thread_call_to_completion preserves caller
+                        # cancellation when the finish thread fails. Keep
+                        # finalizing the remaining prepared UIDs so none of
+                        # their in-process reconciliation fences leak, then
+                        # re-raise cancellation after the whole finally block.
+                        pet_care_finish_cancelled = True
         finally:
-            if released_derived_task_claims:
-                await _finish_resume_preserving_cancellation(
-                    _resume_released_derived_tasks(
-                        config_mgr,
-                        released_derived_task_claims,
-                        item_id_int,
+            try:
+                if mutation_lock_acquired:
+                    character_config_mutation_lock.release()
+                _end_reservation(reserved_names)
+            finally:
+                if released_derived_task_claims:
+                    await _finish_resume_preserving_cancellation(
+                        _resume_released_derived_tasks(
+                            config_mgr,
+                            released_derived_task_claims,
+                            item_id_int,
+                        )
                     )
-                )
+                if pet_care_finish_cancelled:
+                    raise asyncio.CancelledError
 
 
 def _end_reservation(names: list[str]) -> None:

@@ -768,6 +768,21 @@
             var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
             if (!detail || detail.type !== 'visual-tier') return;
 
+            // Exploration owns the cat entity and its return surface. A late
+            // CAT2/CAT3 event from the pre-departure goodbye cycle must not
+            // reopen the chat idle dock while the nest is visible.
+            var petCareMode = window.nekoPetCareMode;
+            if (petCareMode && typeof petCareMode.isExplorationAway === 'function' &&
+                petCareMode.isExplorationAway()) {
+                I.idleDockTier = I.IDLE_DOCK_TIER_NONE;
+                if (I.hasIdleDockPendingOrActive()) {
+                    I.exitIdleDock({});
+                } else {
+                    I.clearIdleDockState();
+                }
+                return;
+            }
+
             I.setGoodbyeComposerHidden(detail.tier !== I.IDLE_DOCK_TIER_NONE, detail.source || 'visual-tier');
 
             I.idleDockTier = !I.isGoodbyeIdleBallAppearanceActive() &&

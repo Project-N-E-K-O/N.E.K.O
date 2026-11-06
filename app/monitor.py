@@ -88,7 +88,16 @@ def _viewer_static_assets_ctx():
         return {"static_asset_version": cached_version}
     from config import APP_VERSION
     latest_mtime = 0
-    for relative_path in ("static/css/index.css", "static/css/edge-peek.css"):
+    # Pet-care runs in the desktop owner surface and is loaded with this same
+    # template cache key. Include its stylesheet and owner script so a local
+    # desktop restart cannot keep an older panel geometry from the browser
+    # cache after the files change.
+    for relative_path in (
+        "static/css/index.css",
+        "static/css/edge-peek.css",
+        "static/css/pet-care.css",
+        "static/app/app-pet-care.js",
+    ):
         try:
             latest_mtime = max(latest_mtime, int(os.path.getmtime(get_resource_path(relative_path))))
         except OSError:

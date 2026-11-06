@@ -449,6 +449,11 @@ async def test_deleting_a_character_leaves_no_id_behind(tmp_path):
 
     body = response if isinstance(response, dict) else json.loads(bytes(response.body))
     assert body.get("success") is True, body
+    assert body.get("pet_care_role_alias_retirement") == {
+        "character_uid": gone_uid,
+        "source_revision": f"delete:{gone_uid}",
+        "status": "retired",
+    }
     assert gone_uid not in path.read_text(encoding="utf-8")
     assert get_character_uid(cm.load_characters()["猫娘"]["Current"]) == kept_uid
 

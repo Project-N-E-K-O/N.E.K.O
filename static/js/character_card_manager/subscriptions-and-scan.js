@@ -612,7 +612,7 @@ function viewItemDetails(itemId) {
 }
 
 // 取消订阅功能
-function unsubscribeItem(itemId, itemName) {
+async function unsubscribeItem(itemId, itemName) {
     if (!confirm(window.t ? window.t('steam.unsubscribeConfirm', { name: itemName }) : `确定要取消订阅 "${itemName}" 吗？`)) {
         return;
     }
@@ -640,6 +640,15 @@ function unsubscribeItem(itemId, itemName) {
     // 调用后端API执行取消订阅操作
     showMessage(window.t ? window.t('steam.cancellingSubscription', { name: itemName }) : `Cancelling subscription to "${itemName}"...`, 'success');
 
+    let petCareAccountId = '';
+    if (window.NekoPetCareRoleAliasSync?.captureAccount) {
+        try {
+            petCareAccountId = await window.NekoPetCareRoleAliasSync.captureAccount();
+        } catch (error) {
+            console.warn('退订前无法确认 PetCare 账号，将仅使用已记录归属排队退役:', error);
+        }
+    }
+
     fetch('/api/steam/workshop/unsubscribe', {
         method: 'POST',
         headers: {
@@ -661,6 +670,15 @@ function unsubscribeItem(itemId, itemName) {
             // 诊断日志：只记录状态/计数，避免把 cleanup_summary 里的本地路径 /
             // 角色名直接落到浏览器或 Electron 日志里，泄露用户信息。
             const summaryForLog = data && data.cleanup_summary ? data.cleanup_summary : {};
+            const retirements = Array.isArray(summaryForLog.pet_care_role_alias_retirements)
+                ? summaryForLog.pet_care_role_alias_retirements
+                : [];
+            if (window.NekoPetCareRoleAliasSync?.retire) {
+                retirements.forEach(retirement => {
+                    window.NekoPetCareRoleAliasSync.retire(retirement, petCareAccountId)
+                        .catch(error => console.warn('PetCare 角色别名退役同步待重试:', error));
+                });
+            }
             console.info('[unsubscribe response]', {
                 status: response.status,
                 ok: response.ok,

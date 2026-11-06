@@ -23,8 +23,16 @@ ITEM_ID = 4242
 class _Config:
     def __init__(self, app_docs_dir: Path, characters: dict):
         self.app_docs_dir = str(app_docs_dir)
+        self.local_state_dir = app_docs_dir / "state"
         self.characters = characters
         self.saved: list[dict] = []
+
+    def ensure_local_state_directory(self):
+        self.local_state_dir.mkdir(parents=True, exist_ok=True)
+        return True
+
+    def load_characters(self, *, require_authoritative=False):
+        return json.loads(json.dumps(self.characters))
 
     async def aload_characters(self):
         return json.loads(json.dumps(self.characters))
@@ -38,6 +46,7 @@ def _workshop_character(character_id: str) -> dict:
     return {
         "_reserved": {
             "character_id": character_id,
+            "character_uid": hashlib.sha256(character_id.encode("utf-8")).hexdigest()[:32],
             "character_origin": {"source": "steam_workshop", "source_id": str(ITEM_ID)},
         },
     }
@@ -147,6 +156,12 @@ async def test_workshop_unsubscribe_cascades_theater_data(tmp_path, monkeypatch)
 
     assert result["success"] is True, result
     assert result["cleanup_summary"]["cleaned_characters"] == ["Lan"]
+    deleted_uid = hashlib.sha256(binding["character_id"].encode("utf-8")).hexdigest()[:32]
+    assert result["cleanup_summary"]["pet_care_role_alias_retirements"] == [{
+        "character_uid": deleted_uid,
+        "source_revision": f"delete:{deleted_uid}",
+        "status": "retired",
+    }]
     assert result["cleanup_summary"]["errors"] == []
     assert "Lan" not in config.characters["猫娘"]
     assert steam_calls == [ITEM_ID]
@@ -157,6 +172,50 @@ async def test_workshop_unsubscribe_cascades_theater_data(tmp_path, monkeypatch)
     # The other character's theater data is untouched.
     assert other_session_path.is_file()
     assert archive_store.list_public_archives(character_id=other_binding["character_id"])
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_workshop_unsubscribe_finishes_every_pet_care_retirement_after_cancellation(
+    tmp_path, monkeypatch,
+):
+    config = _Config(tmp_path, {
+        "当前猫娘": "Other",
+        "猫娘": {
+            "Lan": _workshop_character("character_" + "1" * 32),
+            "Mia": _workshop_character("character_" + "2" * 32),
+            "Other": {"_reserved": {"character_id": "character_" + "3" * 32}},
+        },
+    })
+    unsubscribe, _ = _install_unsubscribe(monkeypatch, config, candidate="Lan")
+    monkeypatch.setattr(
+        unsubscribe, "_collect_character_names_by_workshop_item_id", lambda *_: ["Lan", "Mia"],
+    )
+    original_await = unsubscribe._await_thread_call_to_completion
+    finished_uids: list[str] = []
+
+    async def controlled_await(func, *args, **kwargs):
+        if func is unsubscribe.prepare_pet_care_role_alias_retirement:
+            return None, False
+        if func is unsubscribe.finish_pet_care_role_alias_retirement:
+            finished_uids.append(args[1])
+            if len(finished_uids) == 1:
+                raise asyncio.CancelledError
+            return None, False
+        return await original_await(func, *args, **kwargs)
+
+    monkeypatch.setattr(unsubscribe, "_await_thread_call_to_completion", controlled_await)
+
+    with pytest.raises(asyncio.CancelledError):
+        await unsubscribe._unsubscribe_workshop_item(
+            _DummyRequest({"item_id": str(ITEM_ID)}), asyncio.Event(),
+        )
+
+    expected_uids = [
+        hashlib.sha256(("character_" + digit * 32).encode("utf-8")).hexdigest()[:32]
+        for digit in ("2", "1")
+    ]
+    assert finished_uids == expected_uids
 
 
 @pytest.mark.unit

@@ -807,6 +807,11 @@ async def _account_request_identity(request: Request) -> str | None:
         return None
 
 
+async def account_request_identity(request: Request) -> str | None:
+    """Public verified-request identity contract for business adapters."""
+    return await _account_request_identity(request)
+
+
 @router.get("/oauth/status", summary="社区 OAuth 登录状态（远程不含本机路径）")
 async def oauth_status_endpoint(request: Request):
     if not C._local_request_source_allowed(request):
@@ -821,13 +826,32 @@ async def oauth_status_endpoint(request: Request):
         (session_path, session_paths), status = await asyncio.gather(
             asyncio.to_thread(_desktop_session_paths_for_host), resolve_saved_oauth_status(),
         )
-        session_fields = {"session_path": session_path, "session_paths": session_paths}
+        snapshot = status.get("snapshot") or {}
+        session_fields = {
+            "session_path": session_path,
+            "session_paths": session_paths,
+            "session_id": snapshot.get("session_id") or "",
+        }
     else:
         status = await resolve_saved_oauth_status()
+        snapshot = status.get("snapshot") or {}
         # An opaque, non-authorizing revision lets Electron fence/retry streams
         # after Linux refreshes its cloud token without copying that token.
-        access = str((status.get("snapshot") or {}).get("access_token") or "")
-        session_fields = {"session_generation": int.from_bytes(hashlib.sha256(access.encode()).digest()[:6], "big")}
+        # It must come from the login-session record, never from access_token:
+        # token refresh rotates the latter while the account session remains
+        # the same.  The generation alias is retained for older clients.
+        remote_session_id = str(snapshot.get("session_id") or status.get("session_id") or "").strip()
+        if not remote_session_id and snapshot:
+            stable_key = "|".join(
+                str(snapshot.get(key) or "").strip()
+                for key in ("local_user_id", "auth_source", "base_url")
+            )
+            remote_session_id = hashlib.sha256(stable_key.encode("utf-8")).hexdigest()
+        generation = int.from_bytes(hashlib.sha256(remote_session_id.encode("utf-8")).digest()[:6], "big") if remote_session_id else 0
+        session_fields = {
+            "session_id": remote_session_id,
+            "session_generation": generation,
+        }
     snapshot = status["snapshot"]
     auth = status["auth"]
     if not status["logged_in"] or not snapshot:
