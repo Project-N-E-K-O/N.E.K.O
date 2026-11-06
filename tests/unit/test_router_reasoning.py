@@ -212,6 +212,8 @@ def test_anthropic_dotted_ids_untouched_off_orcarouter(endpoint):
     ('anthropic/claude-haiku-4.5', 'minimal', 'low'),
     ('gemini-3.8-flash', 'minimal', 'low'),
     ('google/gemini-3.8-flash', 'none', 'low'),
+    ('gemini-3.7-flash', 'minimal', 'low'),
+    ('google/gemini-3.7-flash', 'none', 'low'),
     ('google/gemini-3.5-flash', 'none', 'minimal'),
     ('gemini/gemini-3-flash-preview', 'none', 'minimal'),
     ('gemini-3.6-flash', 'minimal', 'minimal'),
