@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from plugin.server.application import plugin_publish_status as publish_status
+from tests.fake_clock import patch_module_clock
 
 BASE = '/repos/owner/repo'
 VERIFY = BASE + '/actions/workflows/verify.yml/runs'
@@ -244,9 +245,14 @@ def test_fresh_bypasses_the_cache(monkeypatch):
         {**FINAL, RELEASE: _release(_asset(ASSETS[0]))},
     ],
 )
-def test_answers_that_can_still_change_are_not_cached(monkeypatch, routes):
+def test_answers_that_can_still_change_are_kept_only_briefly(monkeypatch, routes):
     github = _serve(monkeypatch, routes)
+    clock = [1000.0]
+    patch_module_clock(monkeypatch, publish_status, monotonic=lambda: clock[0])
     _read()
+    _read()
+    assert len(github.requests) == 4
+    clock[0] += publish_status._CHANGING_CACHE_SECONDS + 1
     _read()
     assert len(github.requests) == 8
 
@@ -302,6 +308,6 @@ def test_token_is_sent_only_when_configured(monkeypatch):
     assert all('authorization' not in request.headers for request in github.requests)
     monkeypatch.setenv('GH_TOKEN', 'secret')
     github.requests.clear()
-    _read()
+    _read(fresh=True)
     assert github.requests
     assert all(request.headers['authorization'] == 'Bearer secret' for request in github.requests)

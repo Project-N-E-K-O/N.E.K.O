@@ -25,11 +25,15 @@ from plugin.utils.http_imports import ensure_httpx
 
 _GITHUB_API = "https://api.github.com"
 _CACHE_SECONDS = 60.0
+# A verify still running or a release still uploading can change any moment;
+# keep it only long enough that opening the tab twice does not ask GitHub twice.
+_CHANGING_CACHE_SECONDS = 15.0
 # A blocked api.github.com should fail fast instead of holding every refresh.
 _CONNECT_TIMEOUT_SECONDS = 4.0
-# Unauthenticated GitHub reads are limited to 60 per hour, so final answers
-# are kept. Anything that can still change (a running verify, a release still
-# uploading) or that GitHub did not answer definitively is read again.
+# Unauthenticated GitHub reads are limited to 60 per hour. Final answers are
+# kept for a minute, answers that can still change for a few seconds, and an
+# answer GitHub did not give definitively (error, timeout) is never kept.
+# The value is (monotonic expiry, result).
 _cache: dict[tuple[str, str, str, str], tuple[float, RemoteGithubState]] = {}
 _inflight: dict[tuple[str, str, str, str], asyncio.Future[RemoteGithubState]] = {}
 # Monotonic time until which GitHub said the quota is spent.
@@ -250,8 +254,9 @@ async def _read(repository: str, head: str | None, tag: str, plugin_id: str) -> 
     if head:
         reads.append(read_verify())
     await asyncio.gather(*reads)
-    if definitive and _is_final(result):
-        _cache[(repository.casefold(), head or "", tag, plugin_id)] = (time.monotonic(), result)
+    if definitive:
+        ttl = _CACHE_SECONDS if _is_final(result) else _CHANGING_CACHE_SECONDS
+        _cache[(repository.casefold(), head or "", tag, plugin_id)] = (time.monotonic() + ttl, result)
     return result
 
 
@@ -266,7 +271,7 @@ async def read_remote_github(
     key = (repository.casefold(), head or "", tag, plugin_id)
     if not fresh:
         cached = _cache.get(key)
-        if cached is not None and time.monotonic() - cached[0] < _CACHE_SECONDS:
+        if cached is not None and time.monotonic() < cached[0]:
             return cached[1]
     if time.monotonic() < _rate_limited_until:
         return _unknown(rate_limited=True)
