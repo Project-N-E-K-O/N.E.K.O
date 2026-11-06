@@ -62,13 +62,6 @@
         <p v-if="progressDescription" class="authoring-muted authoring-small">
           {{ progressDescription }}
         </p>
-        <el-alert
-          v-if="isOpen"
-          :title="t('authoring.submissionMarketMetadata')"
-          type="info"
-          :closable="false"
-          show-icon
-        />
       </template>
       <el-alert
         v-else-if="loaded"
@@ -78,21 +71,68 @@
         show-icon
       />
 
+      <!-- Zone and tags: the Market takes them only from the draft, so they are set here. -->
+      <div v-if="editingMetadata" class="authoring-submission-metadata">
+        <el-alert v-if="zonesError" :title="zonesError" type="warning" :closable="false" show-icon />
+        <el-form label-position="top" size="small" @submit.prevent>
+          <el-form-item :label="t('authoring.submissionZone')" :required="metadataRequired">
+            <el-select
+              v-model="zoneSlug"
+              filterable
+              :loading="zonesLoading"
+              :disabled="acting"
+              :placeholder="t('authoring.submissionZonePlaceholder')"
+            >
+              <el-option v-for="zone in zones" :key="zone.id" :label="zoneLabel(zone)" :value="zone.id" />
+            </el-select>
+          </el-form-item>
+          <el-form-item :label="t('authoring.submissionTags')" :required="metadataRequired">
+            <div class="authoring-submission-tags">
+              <el-check-tag
+                v-for="tag in tagOptions"
+                :key="tag"
+                :checked="tags.includes(tag)"
+                :disabled="acting || (!tags.includes(tag) && tags.length >= SUBMISSION_TAGS_MAX)"
+                @change="toggleTag(tag)"
+              >
+                {{ tagLabel(tag) }}
+              </el-check-tag>
+            </div>
+            <p class="authoring-muted authoring-small">
+              {{ t('authoring.submissionTagsCount', { count: tags.length, max: SUBMISSION_TAGS_MAX }) }}
+            </p>
+          </el-form-item>
+        </el-form>
+        <p v-if="metadataRequired && !metadataComplete" class="authoring-muted authoring-small">
+          {{ t('authoring.submissionMetadataRequired') }}
+        </p>
+      </div>
+
       <div class="authoring-precheck-actions">
         <el-button
           v-if="phase === 'draft'"
           type="primary"
           :icon="Promotion"
           :loading="acting"
+          :disabled="metadataBlocking"
           @click="confirmSubmit"
         >
           {{ t('authoring.submissionSubmitReview') }}
+        </el-button>
+        <el-button
+          v-if="phase === 'draft' && metadataDirty"
+          :icon="Check"
+          :disabled="acting"
+          @click="saveMetadata"
+        >
+          {{ t('authoring.submissionSaveMetadata') }}
         </el-button>
         <el-button
           v-if="canCreateDraft"
           type="primary"
           :icon="Plus"
           :loading="acting"
+          :disabled="metadataBlocking"
           @click="createDraft"
         >
           {{ acting ? t('authoring.submissionCreatingDraft') : t('authoring.submissionCreateDraft') }}
@@ -112,14 +152,17 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessageBox } from 'element-plus'
-import { CircleClose, Plus, Promotion, Refresh, User } from '@element-plus/icons-vue'
+import { Check, CircleClose, Plus, Promotion, Refresh, User } from '@element-plus/icons-vue'
 import { useMarketAuth } from '@/composables/useMarketAuth'
 import {
   MarketSubmissionError,
   PLUGIN_NAME_MAX_LENGTH,
   RESUBMITTABLE_PHASES,
+  STANDARD_SUBMISSION_TAGS,
+  SUBMISSION_TAGS_MAX,
   createSubmissionDraft,
   listMarketSubmissions,
+  listMarketZones,
   marketSubmissionUrl,
   previewSubmissionRepository,
   submissionMatchesRepository,
@@ -128,6 +171,7 @@ import {
   updateSubmissionDraft,
   withdrawSubmission,
   type MarketSubmission,
+  type MarketZone,
   type RepositoryPreview,
   type SubmissionDraftUpdate,
   type SubmissionPanelState,
@@ -139,7 +183,7 @@ import { openExternalUrl } from '@/utils/openExternal'
 const props = defineProps<{ githubRepository: string | null }>()
 const emit = defineEmits<{ (event: 'state', state: SubmissionPanelState): void }>()
 
-const { t } = useI18n()
+const { t, te } = useI18n()
 const {
   marketAuth,
   marketAuthBusy,
@@ -220,6 +264,78 @@ const submissionUrl = computed(() => {
   const base = marketAuth.value.market_web_url
   return base && submission.value ? marketSubmissionUrl(base, submission.value.id) : ''
 })
+
+const zones = ref<MarketZone[]>([])
+const zonesLoading = ref(false)
+const zonesError = ref('')
+const zoneSlug = ref('')
+const tags = ref<string[]>([])
+
+/** The form shows while a draft can be created or the draft can still change. */
+const editingMetadata = computed(() => canCreateDraft.value || phase.value === 'draft')
+/** The Market blocks a first approval without them; an existing plugin keeps its own. */
+const metadataRequired = computed(
+  () => phase.value !== 'draft' || submission.value?.plugin_id == null
+)
+const metadataComplete = computed(() => !!zoneSlug.value && tags.value.length > 0)
+const metadataBlocking = computed(() => metadataRequired.value && !metadataComplete.value)
+const metadataDirty = computed(() => {
+  const snapshot = submission.value?.current_snapshot
+  if (phase.value !== 'draft' || !snapshot) return false
+  return (
+    zoneSlug.value !== (snapshot.zone_slug ?? '') ||
+    tags.value.join('\n') !== (snapshot.tags ?? []).join('\n')
+  )
+})
+
+function zoneLabel(zone: MarketZone): string {
+  const key = `market.zones.${zone.id}`
+  return te(key) ? t(key) : zone.name
+}
+
+const standardTagIds = new Map<string, string>(STANDARD_SUBMISSION_TAGS.map((tag) => [tag.value, tag.id]))
+/** The standard tags, plus any other tag a draft already carries. */
+const tagOptions = computed(() => [
+  ...STANDARD_SUBMISSION_TAGS.map((tag) => tag.value),
+  ...tags.value.filter((tag) => !standardTagIds.has(tag)),
+])
+
+function tagLabel(tag: string): string {
+  const id = standardTagIds.get(tag)
+  return id ? t(`authoring.submissionTag${id[0]!.toUpperCase()}${id.slice(1)}`) : tag
+}
+
+function toggleTag(tag: string) {
+  if (tags.value.includes(tag)) {
+    tags.value = tags.value.filter((current) => current !== tag)
+  } else if (tags.value.length < SUBMISSION_TAGS_MAX) {
+    tags.value = [...tags.value, tag]
+  }
+}
+
+async function loadZones() {
+  zonesLoading.value = true
+  zonesError.value = ''
+  try {
+    zones.value = await listMarketZones()
+  } catch {
+    zonesError.value = t('authoring.submissionZonesLoadFailed')
+  } finally {
+    zonesLoading.value = false
+  }
+}
+
+// A draft read from the Market shows its own zone and tags.
+watch(submission, (current) => {
+  const snapshot = current?.current_snapshot
+  if (!snapshot || submissionPhase(current) !== 'draft') return
+  zoneSlug.value = snapshot.zone_slug ?? ''
+  tags.value = [...(snapshot.tags ?? [])]
+})
+
+function metadataPayload(): Pick<SubmissionDraftUpdate, 'zone_slug' | 'tags'> {
+  return { zone_slug: zoneSlug.value || undefined, tags: tags.value }
+}
 
 const stateDetail = computed(() => {
   const current = submission.value
@@ -334,6 +450,7 @@ async function createDraft() {
       repo_url: repoUrl.value,
       plugin_name: (preview.plugin_name || preview.plugin_id).slice(0, PLUGIN_NAME_MAX_LENGTH),
       plugin_slug: preview.plugin_id,
+      ...metadataPayload(),
       description: preview.description ?? undefined,
       short_description: preview.short_description ?? undefined,
       license_name: preview.license_name ?? undefined,
@@ -367,7 +484,7 @@ async function confirm(message: AuthoringMessageKey, title: AuthoringMessageKey,
 
 async function confirmSubmit() {
   const current = submission.value
-  if (!current || acting.value) return
+  if (!current || acting.value || metadataBlocking.value) return
   if (!(await confirm('submissionConfirmSubmit', 'submissionConfirmSubmitTitle', 'submissionSubmitReview'))) {
     return
   }
@@ -384,12 +501,26 @@ async function confirmSubmit() {
       update.resolved_commit = preview.resolved_commit
     }
     if (preview.plugin_id !== snapshot?.plugin_slug) update.plugin_slug = preview.plugin_id
+    if (metadataDirty.value) Object.assign(update, metadataPayload())
     if (Object.keys(update).length) {
       submission.value = await updateSubmissionDraft(current.id, update)
     }
     submission.value = await submitSubmission(current.id)
   } catch (error) {
     actionError.value = describe(error, 'submissionSubmitFailed')
+  } finally {
+    acting.value = false
+  }
+}
+
+async function saveMetadata() {
+  const current = submission.value
+  if (!current || acting.value) return
+  startAction()
+  try {
+    submission.value = await updateSubmissionDraft(current.id, metadataPayload())
+  } catch (error) {
+    actionError.value = describe(error, 'submissionSaveMetadataFailed')
   } finally {
     acting.value = false
   }
@@ -413,11 +544,22 @@ async function confirmWithdraw() {
 
 // Reading starts once the login is confirmed, and again when the repository changes.
 watch([marketReady, () => props.githubRepository], () => void reload())
-onMounted(loadMarketAuthStatus)
+onMounted(() => {
+  void loadMarketAuthStatus()
+  void loadZones()
+})
 onUnmounted(stopMarketAuthPolling)
 </script>
 
 <style scoped>
+.authoring-submission-metadata .el-select {
+  width: 100%;
+}
+.authoring-submission-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
 .authoring-submission {
   display: flex;
   flex-direction: column;

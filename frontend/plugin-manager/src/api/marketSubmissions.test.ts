@@ -11,6 +11,7 @@ import {
   MarketSubmissionError,
   createSubmissionDraft,
   listMarketSubmissions,
+  listMarketZones,
   marketSubmissionUrl,
   previewSubmissionRepository,
   submissionMatchesRepository,
@@ -23,6 +24,21 @@ import {
 
 afterEach(() => {
   fetchBridge.mockReset()
+  vi.unstubAllGlobals()
+})
+
+describe('listMarketZones', () => {
+  it('reads the zones through the public catalog proxy', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse(200, [{ id: 'game', name: 'Game' }]))
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(listMarketZones()).resolves.toEqual([{ id: 'game', name: 'Game' }])
+    expect(fetchMock).toHaveBeenCalledWith('/market/catalog/api/v1/zones')
+  })
+
+  it('fails with a stable code when the catalog is down', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(502, {})))
+    await expect(listMarketZones()).rejects.toMatchObject({ code: 'market_catalog_unavailable' })
+  })
 })
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -45,6 +61,8 @@ function submission(overrides: Partial<MarketSubmission> = {}): MarketSubmission
       repo_name: 'repo',
       plugin_name: 'Repo',
       plugin_slug: 'repo',
+      zone_slug: null,
+      tags: [],
       submitted_ref: 'main',
       resolved_commit: 'abc',
     },

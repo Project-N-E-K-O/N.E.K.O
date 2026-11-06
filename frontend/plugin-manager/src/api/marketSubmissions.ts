@@ -30,6 +30,8 @@ export interface MarketSubmission {
     repo_name: string | null
     plugin_name: string
     plugin_slug: string
+    zone_slug: string | null
+    tags: string[]
     submitted_ref: string | null
     resolved_commit: string | null
   } | null
@@ -76,6 +78,10 @@ export interface SubmissionDraftCreate {
   plugin_name: string
   /** The Market plugin ID; required, and must already be a valid ID. */
   plugin_slug: string
+  /** A slug from {@link listMarketZones}; a new plugin is not approved without one. */
+  zone_slug?: string
+  /** A new plugin is not approved without at least one tag. */
+  tags?: string[]
   description?: string
   short_description?: string
   submitted_ref?: string
@@ -86,12 +92,62 @@ export interface SubmissionDraftCreate {
 /** The subset of the Market's `SubmissionDraftUpdate` the workbench changes. */
 export interface SubmissionDraftUpdate {
   plugin_slug?: string
+  zone_slug?: string
+  tags?: string[]
   submitted_ref?: string
   resolved_commit?: string
 }
 
 /** `SubmissionDraftCreate.plugin_name` max_length on the Market. */
 export const PLUGIN_NAME_MAX_LENGTH = 100
+/** The Market's own forms let an author pick at most this many tags. */
+export const SUBMISSION_TAGS_MAX = 5
+
+/**
+ * The Market's standard tags (`STANDARD_PLUGIN_TAGS`), in its display order.
+ * `value` is what the Market stores; `id` names the label in the workbench i18n.
+ */
+export const STANDARD_SUBMISSION_TAGS = [
+  { id: 'game', value: '游戏' },
+  { id: 'query', value: '查询' },
+  { id: 'strategy', value: '攻略' },
+  { id: 'auxiliary', value: '辅助' },
+  { id: 'playWith', value: '陪玩' },
+  { id: 'interactive', value: '互动' },
+  { id: 'emotion', value: '情感' },
+  { id: 'enhance', value: '增强' },
+  { id: 'function', value: '功能' },
+  { id: 'tool', value: '工具' },
+  { id: 'system', value: '系统' },
+  { id: 'monitor', value: '监控' },
+  { id: 'entertainment', value: '娱乐' },
+  { id: 'music', value: '音乐' },
+  { id: 'video', value: '视频' },
+  { id: 'joke', value: '笑话' },
+  { id: 'develop', value: '开发' },
+  { id: 'code', value: '代码' },
+  { id: 'api', value: 'API' },
+  { id: 'ai', value: 'AI' },
+  { id: 'image', value: '图像' },
+  { id: 'generate', value: '生成' },
+  { id: 'translate', value: '翻译' },
+  { id: 'language', value: '语言' },
+  { id: 'study', value: '学习' },
+  { id: 'schedule', value: '日程' },
+  { id: 'task', value: '任务' },
+  { id: 'manage', value: '管理' },
+  { id: 'remind', value: '提醒' },
+  { id: 'weather', value: '天气' },
+  { id: 'statistics', value: '统计' },
+  { id: 'data', value: '数据' },
+] as const
+
+/** One row of the Market's public `GET /zones`; `id` is the zone slug. */
+export interface MarketZone {
+  id: string
+  name: string
+  description?: string | null
+}
 
 /** Carries the stable error code, the Market's message and its structured detail. */
 export class MarketSubmissionError extends Error {
@@ -195,6 +251,16 @@ export function submitSubmission(id: number): Promise<MarketSubmission> {
 
 export function withdrawSubmission(id: number): Promise<MarketSubmission> {
   return call(submissionPath(id, 'withdraw'), jsonInit('POST', {}))
+}
+
+/** The Market's zones, read through the public same-origin catalog proxy. */
+export async function listMarketZones(): Promise<MarketZone[]> {
+  const res = await fetch('/market/catalog/api/v1/zones')
+  const body = await res.json().catch(() => null)
+  if (!res.ok || !Array.isArray(body)) {
+    throw new MarketSubmissionError(readErrorCode(body) || 'market_catalog_unavailable', res.status)
+  }
+  return body as MarketZone[]
 }
 
 /** `owner/repo` of a GitHub URL, lower-cased; null for anything else. */

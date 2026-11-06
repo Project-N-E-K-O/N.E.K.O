@@ -809,6 +809,13 @@ async def market_catalog_plugin(request: Request, plugin_id: str) -> Response:
     )
 
 
+@router.get("/catalog/api/v1/zones")
+async def market_catalog_zones(request: Request) -> Response:
+    """Proxy the Market's public zone list; the submission form picks one from it."""
+
+    return await _proxy_market_catalog(request, "/zones")
+
+
 # -- Review submission proxy --
 #
 # The publish workbench drives the Market review flow (preflight, draft,
