@@ -60,27 +60,25 @@ export function ChatScreenVisibilityProvider({ messages, children }: {
     (message: ChatMessage) => isHiddenMessage(message, hiddenMessageIds, hiddenTurnIds),
     [hiddenMessageIds, hiddenTurnIds],
   );
-  const value = useMemo(() => {
-    return {
-      hiddenMessageIds,
-      isMessageHidden,
-      canClearScreen: messages.some(message => !isMessageHidden(message) && hasVisibleMessageContent(message)),
-      // Keep host messages intact, including streaming IDs and export metadata.
-      clearScreen: () => {
-        const captionTurnId = captionTurnRef.current;
-        setHiddenMessageIds(previous => new Set([
-          ...previous,
-          ...messages.map(message => message.id),
-          ...(captionTurnId ? [`compact-caption:${captionTurnId}`] : []),
-        ]));
-        setHiddenTurnIds(previous => new Set([
-          ...previous,
-          ...messages.flatMap(message => (message.role === 'assistant' && message.turnId ? [message.turnId] : [])),
-          ...(captionTurnId ? [captionTurnId] : []),
-        ]));
-      },
-    };
-  }, [hiddenMessageIds, isMessageHidden, messages]);
+  const value = useMemo(() => ({
+    hiddenMessageIds,
+    isMessageHidden,
+    canClearScreen: messages.some(message => !isMessageHidden(message) && hasVisibleMessageContent(message)),
+    // Keep host messages intact, including streaming IDs and export metadata.
+    clearScreen: () => {
+      const captionTurnId = captionTurnRef.current;
+      setHiddenMessageIds(previous => new Set([
+        ...previous,
+        ...messages.map(message => message.id),
+        ...(captionTurnId ? [`compact-caption:${captionTurnId}`] : []),
+      ]));
+      setHiddenTurnIds(previous => new Set([
+        ...previous,
+        ...messages.flatMap(message => (message.role === 'assistant' && message.turnId ? [message.turnId] : [])),
+        ...(captionTurnId ? [captionTurnId] : []),
+      ]));
+    },
+  }), [hiddenMessageIds, isMessageHidden, messages]);
   return <ChatScreenVisibilityContext.Provider value={value}>{children}</ChatScreenVisibilityContext.Provider>;
 }
 
