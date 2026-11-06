@@ -326,8 +326,7 @@ def _mentions(keywords: set[str], reply_key: str) -> bool:
     """Whether a reply repeats enough of an entry's content pieces to have brought it up.
 
     At least ``_MENTION_MIN_HITS`` distinct pieces (all of them for an entry
-    with fewer): one shared word ("tomorrow", "明天") is small talk, not the
-    matter.
+    with fewer): one shared word ("tomorrow") is small talk, not the matter.
     """
     if not keywords:
         return False
