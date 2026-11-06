@@ -338,7 +338,8 @@ UPSTREAM_REASONING_FLOOR_PREFIXES: tuple[tuple[str, str], ...] = (
 
 def reasoning_effort_floor(model: str) -> str | None:
     """Lowest effort the model's upstream vendor accepts, or ``None`` if unrestricted."""
-    upstream = (model or "").rsplit("/", 1)[-1]
+    # Router prefix and variant suffix ("google/…", "…:flex", "…:free") do not change the upstream model.
+    upstream = (model or "").rsplit("/", 1)[-1].split(":", 1)[0]
     floor = UPSTREAM_REASONING_FLOOR.get(upstream)
     if floor is not None:
         return floor
