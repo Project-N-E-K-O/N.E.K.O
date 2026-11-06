@@ -342,9 +342,9 @@ class NotifyMixin:
 
             if await asyncio.to_thread(is_slop_filter_enabled):
                 phrases = await get_habitual_phrase_store().aprompt_phrases(
-                    _directives_key, _lang,
+                    _directives_key, _directives_lang,
                 )
-                phrase_block = render_habitual_phrases_block(phrases, _lang)
+                phrase_block = render_habitual_phrases_block(phrases, _directives_lang)
                 prompt += phrase_block
                 if phrase_block:
                     from memory.anti_repeat_effects import (

@@ -613,6 +613,21 @@ async def test_session_start_injects_the_stored_list_without_mining(tmp_path, mo
 
 
 @pytest.mark.asyncio
+async def test_traditional_chinese_sessions_get_the_traditional_block(tmp_path, monkeypatch):
+    """The block takes the full locale like the topic block; a short code would lose zh-TW."""
+    from main_logic.core.notify import NotifyMixin
+
+    store = _store(tmp_path)
+    _write(store, ["今天也要加油哦"])
+    _patch_session_start(monkeypatch, store)
+
+    prompt = await NotifyMixin._build_initial_prompt(_session_manager("zh-TW"))
+
+    expected = HABITUAL_PHRASE_AVOID_PROMPT_BLOCK["zh-TW"].format(items="- 今天也要加油哦", n=1)
+    assert prompt.endswith(expected)
+
+
+@pytest.mark.asyncio
 async def test_session_start_follows_the_natural_expression_switch(tmp_path, monkeypatch):
     from main_logic.core.notify import NotifyMixin
 
@@ -678,8 +693,8 @@ def test_every_locale_renders_the_phrases_verbatim(lang):
     assert "2" in block
 
 
-@pytest.mark.parametrize("lang", ["zh", "en", "ja", "ko", "ru", "es", "pt"])
-def test_render_resolves_each_short_locale(lang):
+@pytest.mark.parametrize("lang", sorted(_LOCALES))
+def test_render_resolves_each_locale(lang):
     block = render_habitual_phrases_block(["一", "二"], lang)
     assert block == HABITUAL_PHRASE_AVOID_PROMPT_BLOCK[lang].format(items="- 一\n- 二", n=2)
 
