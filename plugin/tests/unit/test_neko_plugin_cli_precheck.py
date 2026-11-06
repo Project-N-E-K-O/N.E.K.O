@@ -55,8 +55,7 @@ def test_ruff_command_pins_version_and_target() -> None:
 
 @pytest.mark.parametrize("workflow", ["plugin-market-verify.yml", "plugin-market-release.yml"])
 def test_market_workflows_run_the_pinned_ruff_command(workflow: str) -> None:
-    # core.lint owns the pinned invocation; the workflow text must stay
-    # token-identical to it or one side has drifted.
+    # The local precheck must use the same pinned invocation as Market CI.
     steps = yaml.safe_load(
         (REPO_ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
     )["jobs"][workflow.removesuffix(".yml").removeprefix("plugin-market-")]["steps"]
@@ -162,13 +161,6 @@ def test_precheck_json_report_shape(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     assert report["ruff_version"] == RUFF_LINT_SPEC.version
     assert isinstance(report["environment_issues"], list)
 
-
-
-def test_ruff_command_extends_rather_than_replaces_the_default_excludes() -> None:
-    # --exclude would drop ruff's defaults (.venv, build, dist, ...).
-    command = ruff_command("some/dir")
-    assert "--exclude" not in command
-    assert command[command.index("--extend-exclude") + 1] == "vendor"
 
 
 def test_precheck_prints_environment_issues_without_json(

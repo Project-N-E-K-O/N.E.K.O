@@ -102,9 +102,6 @@ export interface PublishFlow {
   pushedHead: string | null
   /** No origin at all: the workbench can create the GitHub repository. */
   canCreateRepository: boolean
-  /** The tag-and-Release modes (with or without the Market notification). */
-  canPublishGithub: boolean
-  canNotifyMarket: boolean
   remoteWarning: FlowMessage | null
   notes: FlowMessage[]
 }
@@ -262,20 +259,6 @@ function marketStep(
   return releaseReady
     ? { state: 'todo', detail: message('marketVersionNotify', { tag }) }
     : { state: 'waiting', detail: message('marketVersionAwaitingRelease') }
-}
-
-/** The server gate for the github modes (`plugin_publish_tasks._local_gate`), mirrored. */
-function localPublishGate(status: PublishStatus): boolean {
-  const repo = status.repository
-  return (
-    repo.is_repository &&
-    !!repo.github_repository &&
-    repo.worktree_clean === true &&
-    repo.head_pushed === true &&
-    status.actions[RELEASE_WORKFLOW_PATH] === 'CURRENT' &&
-    !(repo.tag_exists && repo.tag_at_head === false) &&
-    status.remote?.visibility !== 'private'
-  )
 }
 
 function notes(status: PublishStatus): FlowMessage[] {
@@ -497,9 +480,6 @@ export function publishFlow(facts: PublishFlowFacts): PublishFlow {
     currentStepId: current?.id ?? null,
     pushedHead: repo.head_pushed === true ? repo.head : null,
     canCreateRepository: repo.is_repository && !repo.github_repository && repo.origin_url === null,
-    canPublishGithub: approved && !releaseReady && localPublishGate(status),
-    // Notifying again after an answer, or once listed, gets the same answer back.
-    canNotifyMarket: approved && releaseReady && !answer && !facts.marketListed && !!repo.github_repository,
     remoteWarning: remoteWarning(remote),
     notes: notes(status),
   }

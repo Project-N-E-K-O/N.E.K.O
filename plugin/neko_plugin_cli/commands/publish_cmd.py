@@ -15,6 +15,7 @@ from urllib.parse import quote
 import httpx
 
 from ..core.build_rules import VENDOR_SYNC_GLOBS
+from ..core.lint import ruff_command
 from ..core.plugin_source import load_plugin_source
 from ..paths import CliDefaults
 from ..repo_action_migration import ActionFileStatus, migrate_github_actions
@@ -558,24 +559,13 @@ def _ensure_head_pushed(plugin_dir: Path, *, head: str) -> None:
 def _ensure_release_ruff_passes(plugin_dir: Path) -> None:
     try:
         completed = subprocess.run(
-            [
-                "uvx",
-                "ruff==0.12.4",
-                "check",
-                "--ignore-noqa",
-                "--isolated",
-                "--target-version",
-                "py311",
-                "--line-length",
-                "120",
-                "--select",
-                "E4,E7,E9,F,I",
-                "--exclude",
+            ruff_command(
+                ".",
+                respect_gitignore=True,
                 # "./" anchors the sync work dirs to the plugin root, matching
                 # the build rules; a bare pattern would match at any depth.
-                ",".join(["vendor", *(f"./{pattern}" for pattern in VENDOR_SYNC_GLOBS)]),
-                ".",
-            ],
+                extra_excludes=tuple(f"./{pattern}" for pattern in VENDOR_SYNC_GLOBS),
+            ),
             cwd=plugin_dir,
             encoding="utf-8",
             errors="replace",

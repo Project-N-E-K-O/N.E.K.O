@@ -1081,6 +1081,9 @@ def test_release_ruff_excludes_dependency_sync_work_dirs(
     publish_cmd._ensure_release_ruff_passes(tmp_path)
 
     command = release_ruff_process["calls"][0]["command"]
+    # Publishing keeps respecting gitignore; precheck follows the stricter CI scan.
+    assert "--no-respect-gitignore" not in command
+    assert command[-1] == "."
     excludes = command[command.index("--exclude") + 1].split(",")
     hex8 = "[0-9a-f]" * 8
     assert excludes == [

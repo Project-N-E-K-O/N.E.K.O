@@ -115,8 +115,6 @@ describe('publishFlow', () => {
       state: 'waiting',
       detail: { key: 'marketVersionStepDetailLater' },
     })
-    expect(flow.canPublishGithub).toBe(false)
-    expect(flow.canNotifyMarket).toBe(false)
   })
 
   it.each([
@@ -141,7 +139,6 @@ describe('publishFlow', () => {
       warning: null,
     })
     expect(step(flow, 'market').detail).toEqual({ key: 'marketVersionAwaitingRelease' })
-    expect(flow.canPublishGithub).toBe(true)
   })
 
   it('warns that a Release from another commit than the approved one goes to human review', () => {
@@ -165,18 +162,16 @@ describe('publishFlow', () => {
     const flow = flowOf({ status: status({ remote: published }), submission: approved(), task: null })
     expect(flow.currentStepId).toBe('market')
     expect(step(flow, 'market').detail).toEqual({ key: 'marketVersionNotify', params: { tag: 'v0.2.0' } })
-    expect(flow.canNotifyMarket).toBe(true)
-    expect(flow.canPublishGithub).toBe(false)
   })
 
-  it('never offers the Market notification before approval, even with a Release', () => {
+  it('waits for approval in the Market step, even with a Release', () => {
     const flow = flowOf({
       status: status({ remote: published }),
       submission: submission({ phase: 'in_review' }),
       task: null,
     })
     expect(step(flow, 'release').state).toBe('done')
-    expect(flow.canNotifyMarket).toBe(false)
+    expect(step(flow, 'market').state).toBe('waiting')
   })
 
   it.each([
@@ -192,7 +187,6 @@ describe('publishFlow', () => {
       task: task({ market_status: marketStatus, market_candidate_id: 12 }),
     })
     expect(step(flow, 'market')).toMatchObject({ state, detail })
-    expect(flow.canNotifyMarket).toBe(false)
   })
 
   it('reads a rejection from a failed full run, which keeps no release URL', () => {
@@ -224,7 +218,6 @@ describe('publishFlow', () => {
       marketListed: true,
     })
     expect(step(flow, 'market')).toMatchObject({ state: 'done', detail: { key: 'marketVersionListed' } })
-    expect(flow.canNotifyMarket).toBe(false)
   })
 
   it('prefers the Market list over an older answer for the same Release', () => {
@@ -245,10 +238,9 @@ describe('publishFlow', () => {
       marketListed: false,
     })
     expect(step(flow, 'market').detail?.key).toBe('marketVersionNotify')
-    expect(flow.canNotifyMarket).toBe(true)
   })
 
-  it('reports local git problems first and gates the GitHub publish on them', () => {
+  it('reports local git problems first and withholds the submission commit', () => {
     const flow = flowOf({
       status: status({ repository: { head_pushed: false } }),
       submission: approved(),
@@ -257,7 +249,6 @@ describe('publishFlow', () => {
     expect(flow.currentStepId).toBe('repository')
     expect(step(flow, 'repository').detail).toEqual({ key: 'publishRepoUnpushed' })
     expect(flow.pushedHead).toBeNull()
-    expect(flow.canPublishGithub).toBe(false)
   })
 
   it('passes the full pushed HEAD to the submission', () => {
@@ -325,18 +316,6 @@ describe('publishFlow action blockers', () => {
     expect(release.blockers.github).toEqual([])
     const market = flowOf({ status: status({ remote: published }), submission: approved(), task: null })
     expect(market.blockers.market_notify).toEqual([])
-  })
-
-  it('agrees with the visible flags when nothing blocks', () => {
-    for (const facts of [
-      { status: status(), submission: approved(), task: null },
-      { status: status({ remote: published }), submission: approved(), task: null },
-      { status: status({ repository: { worktree_clean: false } }), submission: approved(), task: null },
-    ]) {
-      const flow = flowOf(facts)
-      expect(flow.blockers.github.length === 0).toBe(flow.canPublishGithub)
-      expect(flow.blockers.market_notify.length === 0).toBe(flow.canNotifyMarket)
-    }
   })
 
   it('lets a Release alone run before approval, but not the full run that notifies the Market', () => {

@@ -8,7 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from plugin.neko_plugin_cli.repo_state import committed_file_sizes, read_repo_state
+from plugin.neko_plugin_cli import repo_state
+from plugin.neko_plugin_cli.repo_state import committed_file_sizes, read_repo_state, read_workspace_log
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is required")
 
@@ -93,6 +94,22 @@ def test_ignored_files_and_sync_work_dirs_keep_the_worktree_clean(tmp_path):
     work_dir.mkdir()
     (work_dir / "lib.py").write_text("x", encoding="utf-8")
     assert read_repo_state(tmp_path, version="0.1.0").worktree_clean is True
+    assert read_workspace_log(tmp_path, read_repo_state(tmp_path, version="0.1.0")).changes == ()
+
+    # Tracked work-dir files still count, as do plugin-owned look-alike directories.
+    _git(tmp_path, "add", str(work_dir / "lib.py"))
+    _git(tmp_path, "commit", "-m", "track work file")
+    (work_dir / "lib.py").write_text("changed", encoding="utf-8")
+    look_alike = tmp_path / ".vendor.backup-notes"
+    look_alike.mkdir()
+    (look_alike / "mine.py").write_text("mine", encoding="utf-8")
+    state = read_repo_state(tmp_path, version="0.1.0")
+    log = read_workspace_log(tmp_path, state)
+    assert {(change.path, change.kind) for change in log.changes} == {
+        (".vendor.backup-0123abcd/lib.py", "modified"),
+        (".vendor.backup-notes/mine.py", "untracked"),
+    }
+    assert {change.path for change in log.changes} == set(state.dirty_paths)
 
 
 def test_head_pushed_needs_an_origin_upstream(tmp_path):
@@ -166,11 +183,15 @@ def test_dirty_paths_name_renamed_and_spaced_files(tmp_path):
 
     assert state.worktree_clean is False
     assert set(state.dirty_paths) == {"new name.py", "plugin.toml", "notes draft.md"}
+    log = read_workspace_log(tmp_path, state)
+    assert {(change.path, change.kind) for change in log.changes} == {
+        ("new name.py", "renamed"),
+        ("plugin.toml", "modified"),
+        ("notes draft.md", "untracked"),
+    }
 
 
-def test_workspace_log_lists_changes_by_kind_and_recent_commits(tmp_path):
-    from plugin.neko_plugin_cli.repo_state import read_workspace_log
-
+def test_workspace_log_lists_changes_by_kind_and_recent_commits(tmp_path, monkeypatch):
     _repository(tmp_path)
     (tmp_path / "main.py").write_text("print(1)\n", encoding="utf-8")
     _git(tmp_path, "add", "main.py")
@@ -179,7 +200,16 @@ def test_workspace_log_lists_changes_by_kind_and_recent_commits(tmp_path):
     (tmp_path / "notes.txt").write_text("todo\n", encoding="utf-8")
     _git(tmp_path, "rm", "-q", "plugin.toml")
     state = read_repo_state(tmp_path, version="0.1.0")
+    reads = []
+    real_git_output = repo_state.git_output
+
+    def git_output(path, *args, **kwargs):
+        reads.append(args)
+        return real_git_output(path, *args, **kwargs)
+
+    monkeypatch.setattr(repo_state, "git_output", git_output)
     log = read_workspace_log(tmp_path, state)
+    assert sum(args[0] == "status" for args in reads) == 1
     assert log is not None
     assert {(change.path, change.kind) for change in log.changes} == {
         ("main.py", "modified"),
@@ -197,8 +227,6 @@ def test_workspace_log_lists_changes_by_kind_and_recent_commits(tmp_path):
 
 
 def test_workspace_log_marks_commits_not_on_the_upstream(tmp_path):
-    from plugin.neko_plugin_cli.repo_state import read_workspace_log
-
     remote = tmp_path / "remote.git"
     work = tmp_path / "work"
     work.mkdir()
@@ -222,6 +250,4 @@ def test_workspace_log_marks_commits_not_on_the_upstream(tmp_path):
 
 
 def test_workspace_log_is_none_without_a_repository(tmp_path):
-    from plugin.neko_plugin_cli.repo_state import read_workspace_log
-
     assert read_workspace_log(tmp_path, read_repo_state(tmp_path, version="0.1.0")) is None
