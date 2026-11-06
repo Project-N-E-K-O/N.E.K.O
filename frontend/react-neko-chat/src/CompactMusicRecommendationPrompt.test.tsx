@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ChatScreenVisibilityProvider, ClearChatScreenButton } from './ChatScreenVisibility';
 import CompactMusicRecommendationPrompt from './CompactMusicRecommendationPrompt';
 import { parseChatMessage } from './message-schema';
 
@@ -62,4 +63,36 @@ describe('compact recommendation priority', () => {
     expect(view.container.querySelector('.compact-proactive-recommendation-prompt')).toBeNull();
     view.unmount();
   });
+  it('keeps cleared cards hidden when the prompt remounts and retains expiry context', () => {
+    const messages = [music(), content('meme')];
+    const view = render(<ChatScreenVisibilityProvider messages={messages}>
+      <ClearChatScreenButton /><CompactMusicRecommendationPrompt messages={messages} />
+    </ChatScreenVisibilityProvider>);
+    expect(screen.getByText('Countdown song')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', {name:'Clear screen'}));
+    view.rerender(<ChatScreenVisibilityProvider messages={messages}><ClearChatScreenButton /></ChatScreenVisibilityProvider>);
+    view.rerender(<ChatScreenVisibilityProvider messages={messages}>
+      <ClearChatScreenButton /><CompactMusicRecommendationPrompt messages={messages} />
+    </ChatScreenVisibilityProvider>);
+    expect(view.container.querySelector('aside')).toBeNull();
+    const fresh = {...music(), id:'new-music'};
+    view.rerender(<ChatScreenVisibilityProvider messages={[...messages, fresh]}>
+      <CompactMusicRecommendationPrompt messages={[...messages, fresh]} />
+    </ChatScreenVisibilityProvider>);
+    expect(screen.getByText('Countdown song')).toBeInTheDocument();
+  });
+
+  it('uses hidden later user messages to expire visible direct recommendations', () => {
+    const user = parseChatMessage({id:'user',role:'user',author:'Me',time:'',blocks:[{type:'text',text:'Next topic'}]});
+    const view = render(<ChatScreenVisibilityProvider messages={[user]}>
+      <ClearChatScreenButton />
+    </ChatScreenVisibilityProvider>);
+    fireEvent.click(screen.getByRole('button', {name:'Clear screen'}));
+    const messages = [content('meme'), user];
+    view.rerender(<ChatScreenVisibilityProvider messages={messages}>
+      <CompactMusicRecommendationPrompt messages={messages} />
+    </ChatScreenVisibilityProvider>);
+    expect(view.container.querySelector('aside')).toBeNull();
+  });
+
 });

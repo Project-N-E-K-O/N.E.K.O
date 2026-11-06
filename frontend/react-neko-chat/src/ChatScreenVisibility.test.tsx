@@ -206,4 +206,44 @@ describe('visual-only chat clearing', () => {
     expect(list.scrollTop).toBe(1000);
   });
 
+  it.each(['messages-cleared', 'messages-replaced', 'set-messages'])(
+    'does not revive cleared caption or speech previews after %s', async eventName => {
+      vi.useFakeTimers();
+      try {
+        const {container, rerender} = render(<App messages={[message('old','Y',true)]} />);
+        act(() => window.dispatchEvent(new CustomEvent('neko-compact-caption-update', {
+          detail:{turnId:'old-turn',text:'X'},
+        })));
+        await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+        expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent('X');
+        fireEvent.click(screen.getByRole('button', {name:'Clear screen'}));
+        rerender(<App messages={[]} />);
+        act(() => window.dispatchEvent(new CustomEvent(`react-chat-window:${eventName}`, {detail:{messages:[]}})));
+        await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+        expect(container.querySelector('.compact-chat-capsule-text')).not.toHaveTextContent(/X|Y/);
+        act(() => window.dispatchEvent(new CustomEvent('neko-compact-caption-update', {
+          detail:{turnId:'new-turn',text:'Z'},
+        })));
+        await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+        expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent('Z');
+      } finally { vi.useRealTimers(); }
+    },
+  );
+
+  it.each(['messages-cleared', 'messages-replaced', 'set-messages'])(
+    'clears preserved message speech on %s without a caption event', async eventName => {
+      vi.useFakeTimers();
+      try {
+        const {container, rerender} = render(<App messages={[message('old','Y',true)]} />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+        expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent('Y');
+        fireEvent.click(screen.getByRole('button', {name:'Clear screen'}));
+        rerender(<App messages={[]} />);
+        act(() => window.dispatchEvent(new CustomEvent(`react-chat-window:${eventName}`)));
+        await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+        expect(container.querySelector('.compact-chat-capsule-text')).not.toHaveTextContent('Y');
+      } finally { vi.useRealTimers(); }
+    },
+  );
+
 });

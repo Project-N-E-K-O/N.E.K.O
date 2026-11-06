@@ -1069,6 +1069,17 @@ function CompactChatApp({
   const [compactSpeechFallbackRevealActive, setCompactSpeechFallbackRevealActive] = useState(false);
   const [speechPlaybackState, setSpeechPlaybackState] = useState<SpeechPlaybackState | null>(null);
   const [compactCaptionState, setCompactCaptionState] = useState<CompactCaptionState | null>(null);
+  useEffect(() => {
+    const resetCompactPreview = () => {
+      setCompactCaptionState(null);
+      compactSpeechPreviewIdRef.current = '';
+      compactSpeechPreviewTextRef.current = '';
+      compactSpeechPreviewTurnIdRef.current = '';
+    };
+    const events = ['react-chat-window:messages-cleared', 'react-chat-window:set-messages', 'react-chat-window:messages-replaced'];
+    events.forEach(name => window.addEventListener(name, resetCompactPreview));
+    return () => events.forEach(name => window.removeEventListener(name, resetCompactPreview));
+  }, []);
   const [compactAssistantStreamingGap, setCompactAssistantStreamingGap] = useState<{
     turnId: string;
     acceptStreaming: boolean;
