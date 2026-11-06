@@ -7,6 +7,34 @@ from scripts import soniox_realtime_smoke as smoke
 from scripts.soniox_realtime_smoke import _render_tokens
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [
+    OSError("controlled network failure"),
+    TimeoutError("controlled handshake timeout"),
+])
+async def test_smoke_connection_failure_returns_result(monkeypatch, failure):
+    from unittest.mock import MagicMock
+
+    monkeypatch.setattr(smoke, "_read_pcm_wav", lambda _path: (
+        b"\0\0" * 320, 16_000, 1, 0.02,
+    ))
+    connect = MagicMock(side_effect=failure)
+    monkeypatch.setattr(smoke.websockets, "connect", connect)
+    result = await smoke.transcribe_file(
+        Path("controlled.wav"), api_key="controlled-key", region="eu",
+        language_hints=["en"], chunk_ms=80, trailing_silence_ms=0, timeout_s=1,
+    )
+    assert result.ok is False
+    assert result.error_type == type(failure).__name__
+    assert result.messages == result.bytes_sent == 0
+    assert result.transcript == ""
+    assert result.provider_error_code is None
+    assert connect.call_args.args == (smoke.REGION_URLS["eu"],)
+    assert connect.call_args.kwargs["additional_headers"] == {
+        "Authorization": "Bearer controlled-key",
+    }
+
+
 def test_smoke_waits_for_end_and_filters_control_tokens():
     final_tokens = []
     text, saw_text, saw_end = _render_tokens(
@@ -62,6 +90,8 @@ async def test_bad_wav_returns_a_result_without_stopping_valid_file(
         return b"\0\0" * 320, 16_000, 1, 0.02
 
     monkeypatch.setattr(smoke, "_read_pcm_wav", read_pcm_wav)
+    sent = []
+    calls = []
 
     class FakeWebSocket:
         async def __aenter__(self):
@@ -70,8 +100,8 @@ async def test_bad_wav_returns_a_result_without_stopping_valid_file(
         async def __aexit__(self, *_args):
             return False
 
-        async def send(self, _payload):
-            return None
+        async def send(self, payload):
+            sent.append(payload)
 
         async def recv(self):
             return json.dumps(
@@ -83,11 +113,11 @@ async def test_bad_wav_returns_a_result_without_stopping_valid_file(
                 }
             )
 
-    monkeypatch.setattr(
-        smoke.websockets,
-        "connect",
-        lambda *_args, **_kwargs: FakeWebSocket(),
-    )
+    def connect(url, **kwargs):
+        calls.append((url, kwargs))
+        return FakeWebSocket()
+
+    monkeypatch.setattr(smoke.websockets, "connect", connect)
     results = [
         await smoke.transcribe_file(
             path,
@@ -112,3 +142,15 @@ async def test_bad_wav_returns_a_result_without_stopping_valid_file(
     assert results[0].error_type == "ValueError"
     assert results[1].ok is True
     assert results[1].transcript == "valid"
+    assert len(calls) == 1
+    assert calls[0][0] == smoke.REGION_URLS["us"]
+    assert calls[0][1]["additional_headers"] == {"Authorization": "Bearer key"}
+    assert json.loads(sent[0]) == {
+        "model": "stt-rt-v5",
+        "audio_format": "pcm_s16le",
+        "sample_rate": 16_000,
+        "num_channels": 1,
+        "enable_endpoint_detection": True,
+        "enable_language_identification": True,
+        "language_hints": ["en"],
+    }
