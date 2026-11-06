@@ -401,18 +401,45 @@ async def _commit_proactive_delivery(
     )
 
 
+class CommitmentOffer:
+    """The promise a Phase 2 prompt carries, recorded as offered once a model receives it.
+
+    Recorded then rather than on delivery, so a round that ends in a pass
+    still counts as an offer and the promise is not picked again next round.
+    A round retired before any model ran records nothing. Whatever did not
+    land is left to the delivery record (``unrecorded_ids``).
+    """
+
+    def __init__(
+        self,
+        lanlan_name: str,
+        commitment_ids: list[Any],
+        *,
+        memory_server_port: int = MEMORY_SERVER_PORT,
+    ) -> None:
+        self._lanlan_name = lanlan_name
+        self._ids = list(commitment_ids)
+        self._memory_server_port = memory_server_port
+        self._landed = False
+
+    async def record(self) -> None:
+        if self._ids and not self._landed:
+            self._landed = await _record_commitment_offer(
+                self._lanlan_name, self._ids, memory_server_port=self._memory_server_port,
+            )
+
+    @property
+    def unrecorded_ids(self) -> list[Any]:
+        return [] if self._landed else list(self._ids)
+
+
 async def _record_commitment_offer(
     lanlan_name: str,
     commitment_ids: list[Any],
     *,
     memory_server_port: int = MEMORY_SERVER_PORT,
 ) -> bool:
-    """Start the offer cooldown of the promises a Phase 2 prompt carries; True once it landed.
-
-    Recorded when the prompt reaches the model rather than on delivery, so a
-    round that ends in a pass still counts as an offer. A failure leaves it to
-    the delivery record.
-    """
+    """POST the offer of these promises to /record_surfaced; True once it landed."""
     try:
         response = await _get_internal_http_client().post(
             f"http://127.0.0.1:{memory_server_port}/record_surfaced/{lanlan_name}",

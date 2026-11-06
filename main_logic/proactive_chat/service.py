@@ -79,11 +79,11 @@ from main_logic.proactive_chat.decisions import (
     _should_use_voice_fast_path,
 )
 from main_logic.proactive_chat.delivery import (
+    CommitmentOffer,
     CommittedDelivery,
     DeliveryCommit,
     ProactiveLifecycle,
     _commit_proactive_delivery,
-    _record_commitment_offer,
     _record_committed_delivery,
 )
 from main_logic.proactive_chat.candidate_selection import (
@@ -2580,16 +2580,14 @@ async def handle_proactive_chat(
         # exact episode/turn (race guard: a no-op if inline moved it since).
         lifecycle.mark_phase2(mgr.state.snapshot())
 
-        if _surfaced_commitment_ids and await _record_commitment_offer(
+        # Recorded as offered once a model receives the prompt, whatever it then
+        # makes of it: a [PASS] must not bring the same promise (and another
+        # Phase 2 call) back next round.
+        commitment_offer = CommitmentOffer(
             lanlan_name, _surfaced_commitment_ids, memory_server_port=MEMORY_SERVER_PORT,
-        ):
-            # The promise reaches the Phase 2 model now: its offer cooldown
-            # starts whatever the model makes of it, so a [PASS] does not bring
-            # the same promise (and another Phase 2 call) back next round.
-            # Delivery records it again only if this did not land.
-            _surfaced_commitment_ids = []
-
+        )
         guarded_output = await _run_phase2_generation(
+            on_model_start=commitment_offer.record,
             mgr=mgr,
             vision_consent_epoch=vision_consent_epoch,
             round_is_current=lifecycle.owns_round,
@@ -2689,7 +2687,7 @@ async def handle_proactive_chat(
             **state_storage_kwargs,
             has_unfinished_thread=_has_unfinished_thread,
             surfaced_reflection_ids=_surfaced_reflection_ids,
-            surfaced_commitment_ids=_surfaced_commitment_ids,
+            surfaced_commitment_ids=commitment_offer.unrecorded_ids,
             selected_web_link=selected_web_link,
             selected_web_topic_key=selected_web_topic_key,
             web_parsed=web_parsed,

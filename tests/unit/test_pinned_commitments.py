@@ -1108,13 +1108,8 @@ def test_a_changed_account_starts_its_cooldown_over(tmp_path):
 
 
 @pytest.mark.parametrize("outcome", ["landed", "refused", "unreachable"])
-def test_a_promise_put_to_phase_2_counts_as_offered_whatever_the_model_does(
-    monkeypatch, outcome,
-):
-    import inspect
-
+def test_an_offer_that_did_not_land_is_left_to_the_delivery_record(monkeypatch, outcome):
     from main_logic.proactive_chat import delivery as proactive_delivery
-    from main_logic.proactive_chat import service
 
     post = (
         AsyncMock(side_effect=OSError("down")) if outcome == "unreachable"
@@ -1123,23 +1118,71 @@ def test_a_promise_put_to_phase_2_counts_as_offered_whatever_the_model_does(
     monkeypatch.setattr(
         proactive_delivery, "_get_internal_http_client", lambda: SimpleNamespace(post=post),
     )
+    offer = proactive_delivery.CommitmentOffer(_NAME, ["pin_00aa11bb"], memory_server_port=1)
 
-    landed = asyncio.run(proactive_delivery._record_commitment_offer(
-        _NAME, ["pin_00aa11bb"], memory_server_port=1,
+    asyncio.run(offer.record())
+    asyncio.run(offer.record())
+
+    assert post.await_args.kwargs["json"] == {"reflection_ids": [], "commitment_ids": ["pin_00aa11bb"]}
+    if outcome == "landed":
+        assert (post.await_count, offer.unrecorded_ids) == (1, [])
+    else:
+        assert offer.unrecorded_ids == ["pin_00aa11bb"]
+
+
+@pytest.mark.parametrize("round_current", [True, False])
+def test_a_promise_counts_as_offered_once_a_model_receives_the_prompt(monkeypatch, round_current):
+    from main_logic.proactive_chat import generation
+    from main_logic.proactive_chat.contracts import ProactiveChatResult
+
+    events: list[str] = []
+
+    async def make_model(*args, round_is_current=None, **kwargs):
+        if round_is_current is not None and not round_is_current():
+            raise PermissionError("Proactive round retired")
+        events.append("model")
+        return object()
+
+    async def stream(*, make_llm, **kwargs):
+        try:
+            await make_llm()
+            await make_llm()  # A regeneration creates a second model.
+            events.append("generated")
+        except PermissionError:
+            events.append("refused")
+        # The model passed (or the round was refused): no delivery follows.
+        return SimpleNamespace(result=ProactiveChatResult(body={"action": "pass"}))
+
+    async def on_model_start():
+        events.append("offered")
+
+    monkeypatch.setattr(generation, "_make_proactive_llm", make_model)
+    monkeypatch.setattr(generation, "_generate_phase2_stream", stream)
+
+    output = asyncio.run(generation._run_phase2_generation(
+        mgr=SimpleNamespace(), proactive_sid="sid",
+        model_config=generation.ProactiveModelConfig("m", None, "k", None),
+        lanlan_name=_NAME, proactive_lang="zh", master_name="主人",
+        system_prompt="sys", dynamic_context="", screenshot_b64=None,
+        focus_thinking=False, expects_source_tag=False, active_channels=[],
+        selected_music_link=None, selected_meme_link=None, music_content=None,
+        meme_content=None, is_playing_music=False, music_cooldown=False,
+        round_is_current=lambda: round_current, on_model_start=on_model_start,
     ))
 
-    # A failed record is left to the delivery record, which still has the id.
-    assert landed is (outcome == "landed")
-    assert post.await_args.kwargs["json"] == {"reflection_ids": [], "commitment_ids": ["pin_00aa11bb"]}
-    # Recorded once the round is committed to Phase 2, before the model runs:
-    # a [PASS] must not bring the same promise back next round.
+    assert output.result.body == {"action": "pass"}
+    # Once, right after the first model is made; never for a retired round.
+    assert events == (["model", "offered", "model", "generated"] if round_current else ["refused"])
+
+
+def test_proactive_chat_hands_the_offer_to_phase_2_and_the_rest_to_delivery():
+    import inspect
+
+    from main_logic.proactive_chat import service
+
     source = inspect.getsource(service.handle_proactive_chat)
-    offer = source.index("if _surfaced_commitment_ids and await _record_commitment_offer(")
-    assert source.index("if not await _enter_proactive_phase2(") < offer
-    assert offer < source.index("guarded_output = await _run_phase2_generation(")
-    assert source.index("_surfaced_commitment_ids = []", offer) < source.index(
-        "guarded_output = await _run_phase2_generation(",
-    )
+    assert "on_model_start=commitment_offer.record" in source
+    assert "surfaced_commitment_ids=commitment_offer.unrecorded_ids" in source
 
 
 def test_her_private_replies_are_checked_for_pinned_mentions(tmp_path, monkeypatch):
