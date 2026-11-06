@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 import runpy
 import subprocess
+import zipfile
 
 import pytest
 
@@ -679,3 +681,51 @@ def test_market_source_archive_limits_follow_the_market_scan(
         [(severity, message)] = issues
         assert severity == "error"
         assert expected in message
+
+
+
+def _write_package(path: Path, members: dict[str, bytes]) -> Path:
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, data in members.items():
+            archive.writestr(name, data)
+    return path
+
+
+@pytest.mark.parametrize(
+    ("members", "expected"),
+    [
+        ({"manifest.toml": b"id = 'demo'", "payload/plugins/demo/__init__.py": b"x = 1\n"}, None),
+        # A binary by suffix, and one renamed to look like text.
+        ({"payload/plugins/demo/native.pyd": b"\0"}, "binary files in the package: payload/plugins/demo/native.pyd"),
+        ({"payload/plugins/demo/data.txt": b"MZ\x90\x00"}, "binary files in the package: payload/plugins/demo/data.txt"),
+        ({"payload/plugins/demo/big.json": b" " * (2 * 1024 * 1024 + 1)}, "package files over 2 MiB"),
+        # Media is streamed by the scan, so its size alone is not rejected.
+        ({"payload/plugins/demo/cover.png": b"\x89PNG\r\n\x1a\n" + b"\0" * (3 * 1024 * 1024)}, None),
+        ({f"payload/plugins/demo/f{index}.py": b"" for index in range(5001)}, "more than 5000 entries, got 5001"),
+    ],
+)
+def test_market_package_limits_follow_the_market_scan(
+    members: dict[str, bytes], expected: str | None, tmp_path: Path
+) -> None:
+    package = _write_package(tmp_path / "demo.neko-plugin", members)
+
+    issues = release_cmd._diagnose_market_package(package)
+
+    if expected is None:
+        assert issues == []
+    else:
+        [(severity, message)] = issues
+        assert severity == "error"
+        assert expected in message
+
+
+def test_market_package_over_32_mib_is_rejected(tmp_path: Path) -> None:
+    # Stored random-looking bytes keep the archive itself over the limit.
+    package = tmp_path / "demo.neko-plugin"
+    with zipfile.ZipFile(package, "w", compression=zipfile.ZIP_STORED) as archive:
+        for index in range(17):
+            archive.writestr(f"payload/plugins/demo/cover{index}.png", b"\x89PNG\r\n\x1a\n" + os.urandom(2 * 1024 * 1024))
+
+    messages = [message for _, message in release_cmd._diagnose_market_package(package)]
+
+    assert any("package over 32 MiB" in message for message in messages)

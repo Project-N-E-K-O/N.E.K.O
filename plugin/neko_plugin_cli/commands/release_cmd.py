@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path, PurePosixPath
 
 from ..core import inspect_package, build_plugin
@@ -33,6 +34,14 @@ _MARKET_MAX_VERSION_CHARS = 50
 _MARKET_MAX_ARCHIVE_BYTES = 32 * 1024 * 1024
 _MARKET_MAX_FILE_BYTES = 2 * 1024 * 1024
 _MARKET_MAX_ARCHIVE_ENTRIES = 5000
+# The release package is also scanned, unpacked in memory.
+_MARKET_MAX_EXPANDED_BYTES = 128 * 1024 * 1024
+# File starts the scan treats as a binary whatever the file is called.
+_MARKET_BINARY_SIGNATURES = (
+    b"MZ", b"\x7fELF", b"PK\x03\x04", b"PK\x05\x06", b"\x1f\x8b",
+    b"7z\xbc\xaf\x27\x1c", b"Rar!", b"\x28\xb5\x2f\xfd", b"\x00asm", b"BZh", b"\xfd7zXZ\x00",
+    b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf", b"\xce\xfa\xed\xfe", b"\xcf\xfa\xed\xfe",
+)
 _MARKET_BINARY_SUFFIXES = frozenset(
     {
         ".exe", ".dll", ".pyd", ".so", ".dylib", ".wasm", ".zip", ".whl", ".pyc",
@@ -133,6 +142,11 @@ def handle_release_check(args: argparse.Namespace) -> int:
         inspect_result = inspect_package(build_result.package_path)
         if inspect_result.payload_hash_verified is not True:
             print("[FAIL] package payload hash verification failed", file=sys.stderr)
+            return 1
+        package_issues = _diagnose_market_package(build_result.package_path)
+        if package_issues:
+            print(f"[FAIL] {source.plugin_id}: {command_label} built a package the Market rejects", file=sys.stderr)
+            _print_issues(package_issues)
             return 1
     except Exception as exc:
         print(f"[FAIL] {command_label}: {exc}", file=sys.stderr)
@@ -393,6 +407,94 @@ def _diagnose_market_source_archive(repository_root: Path) -> list[Issue]:
                     f"the Market rejects a source archive over 32 MiB; committed files total {mib}",
                     f"Market 拒绝超过 32 MiB 的源码包；已提交文件共 {mib}",
                     f"Market は 32 MiB を超えるソースアーカイブを拒否します。コミット済みファイルの合計: {mib}",
+                ),
+            )
+        )
+    return issues
+
+
+def _diagnose_market_package(package_path: Path) -> list[Issue]:
+    """The Market's scan limits for the built release package.
+
+    Mirrors N.E.K.O-PluginMarket app/services/plugin_security.py ``_scan_archive``
+    and the package size check in app/services/release_security.py.
+    """
+    issues: list[Issue] = []
+    size = package_path.stat().st_size
+    if size > _MARKET_MAX_ARCHIVE_BYTES:
+        mib = f"{size / (1024 * 1024):.1f} MiB"
+        issues.append(
+            (
+                "error",
+                _tri(
+                    f"the Market rejects a package over 32 MiB; this package is {mib}",
+                    f"Market 拒绝超过 32 MiB 的插件包；当前包为 {mib}",
+                    f"Market は 32 MiB を超えるパッケージを拒否します。このパッケージ: {mib}",
+                ),
+            )
+        )
+    with zipfile.ZipFile(package_path) as archive:
+        entries = archive.infolist()
+        files = [entry for entry in entries if not entry.is_dir()]
+        binaries: list[str] = []
+        oversized: list[str] = []
+        for entry in files:
+            suffix = PurePosixPath(entry.filename).suffix.lower()
+            with archive.open(entry) as member:
+                prefix = member.read(512)
+            if (
+                suffix in _MARKET_BINARY_SUFFIXES
+                or prefix.startswith(_MARKET_BINARY_SIGNATURES)
+                or prefix[257:262] == b"ustar"
+            ):
+                binaries.append(entry.filename)
+            elif suffix not in _MARKET_ASSET_SUFFIXES and entry.file_size > _MARKET_MAX_FILE_BYTES:
+                oversized.append(entry.filename)
+        expanded = sum(entry.file_size for entry in files)
+    if binaries:
+        shown = _shown_paths(binaries)
+        issues.append(
+            (
+                "error",
+                _tri(
+                    f"the Market rejects binary files in the package: {shown}",
+                    f"Market 拒绝插件包中的二进制文件：{shown}",
+                    f"Market はパッケージ内のバイナリファイルを拒否します: {shown}",
+                ),
+            )
+        )
+    if oversized:
+        shown = _shown_paths(oversized)
+        issues.append(
+            (
+                "error",
+                _tri(
+                    f"the Market rejects package files over 2 MiB: {shown}",
+                    f"Market 拒绝插件包中超过 2 MiB 的文件：{shown}",
+                    f"Market はパッケージ内の 2 MiB を超えるファイルを拒否します: {shown}",
+                ),
+            )
+        )
+    if len(entries) > _MARKET_MAX_ARCHIVE_ENTRIES:
+        issues.append(
+            (
+                "error",
+                _tri(
+                    f"the Market rejects a package with more than {_MARKET_MAX_ARCHIVE_ENTRIES} entries, got {len(entries)}",
+                    f"Market 拒绝条目超过 {_MARKET_MAX_ARCHIVE_ENTRIES} 个的插件包，当前为 {len(entries)}",
+                    f"Market はエントリが {_MARKET_MAX_ARCHIVE_ENTRIES} を超えるパッケージを拒否します。現在: {len(entries)}",
+                ),
+            )
+        )
+    if expanded > _MARKET_MAX_EXPANDED_BYTES:
+        mib = f"{expanded / (1024 * 1024):.1f} MiB"
+        issues.append(
+            (
+                "error",
+                _tri(
+                    f"the Market rejects a package that unpacks to over 128 MiB; this one unpacks to {mib}",
+                    f"Market 拒绝解压后超过 128 MiB 的插件包；当前为 {mib}",
+                    f"Market は展開後 128 MiB を超えるパッケージを拒否します。現在: {mib}",
                 ),
             )
         )
