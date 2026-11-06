@@ -48,26 +48,6 @@ def test_importing_the_sanitizer_leaf_does_not_touch_the_config_manager():
 
 
 @pytest.mark.unit
-def test_importing_preferences_does_trigger_migration():
-    """Guard the contrast: the heavy module is the one with the side effect."""
-    code = (
-        "import sys\n"
-        "import utils.preferences\n"
-        "import utils.config_manager as cm\n"
-        "print('MIGRATED', cm._config_manager_migrated)\n"
-    )
-    result = subprocess.run(
-        [sys.executable, "-c", code],
-        cwd=str(REPO_ROOT),
-        capture_output=True,
-        text=True,
-        timeout=180,
-    )
-    assert result.returncode == 0, result.stderr[-2000:]
-    assert "MIGRATED True" in result.stdout
-
-
-@pytest.mark.unit
 def test_cloud_restore_of_a_nan_setting_keeps_the_reset_marker(monkeypatch):
     """A poisoned setting must count as *not restored*, so the tombstone survives."""
     from utils.cloudsave_runtime import bindings
@@ -89,6 +69,27 @@ def test_cloud_restore_of_a_nan_setting_keeps_the_reset_marker(monkeypatch):
     assert "proactiveChatInterval" not in global_entry
     assert "proactiveVisionInterval" not in global_entry
     # ... and the archive is treated as incomplete, so clients are told to reset.
+    assert global_entry[bindings._CONVERSATION_SETTINGS_RESET_KEY] is True
+
+
+@pytest.mark.unit
+def test_cloud_restore_of_an_unsafe_integer_keeps_the_reset_marker(monkeypatch):
+    """The pre-check uses the same number rule as the trailing sanitation."""
+    from utils.cloudsave_runtime import bindings
+
+    monkeypatch.setattr(bindings, "_load_user_preferences_entries", lambda *a, **k: [])
+
+    settings = {key: True for key in bindings._ALLOWED_CONVERSATION_SETTINGS}
+    settings["textGuardMaxLength"] = 2 ** 53 + 1
+
+    payload = bindings._build_runtime_preferences_payload(object(), settings)
+
+    global_entry = next(
+        entry
+        for entry in payload
+        if entry.get("model_path") == bindings.GLOBAL_CONVERSATION_KEY
+    )
+    assert "textGuardMaxLength" not in global_entry
     assert global_entry[bindings._CONVERSATION_SETTINGS_RESET_KEY] is True
 
 

@@ -21,7 +21,6 @@ Split out of the former monolithic ``utils/cloudsave_runtime.py``.
 from __future__ import annotations
 
 import json
-import math
 import os
 import time
 from copy import deepcopy
@@ -30,7 +29,7 @@ from typing import Any
 
 from config import CHARACTER_RESERVED_FIELDS, DEFAULT_LIVE2D_MODEL_PATH
 from utils.preferences_audit import JOURNAL_KEY, attach_journal, read_journal
-from utils.preferences_sanitize import sanitize_preferences_payload
+from utils.preferences_sanitize import is_finite_json_number, sanitize_preferences_payload
 from utils.conversation_settings_constants import (
     ALLOWED_CONVERSATION_SETTINGS as _ALLOWED_CONVERSATION_SETTINGS,
     ASR_WRITE_ID_MAX_FUTURE_SKEW_MS as _ASR_WRITE_ID_MAX_FUTURE_SKEW_MS,
@@ -122,13 +121,19 @@ def _build_runtime_preferences_payload(config_manager, conversation_settings: di
     # marker would be dropped, and the trailing sanitation would remove the value
     # afterwards -- leaving a missing setting with no tombstone. An open client
     # would then keep its old local value and write it back, silently undoing that
-    # part of the restore. Only non-finite floats are removed; bools, ints and
-    # strings are legitimate setting values.
+    # part of the restore. Numbers are judged by the same rule the trailing
+    # sanitation uses (``is_finite_json_number``), so an integer past 2**53 is
+    # dropped here too instead of slipping past the check and vanishing later.
+    # Bools and strings are legitimate setting values and are kept.
     filtered_settings = {
         key: value
         for key, value in (conversation_settings or {}).items()
         if key not in {"model_path", JOURNAL_KEY}
-        and not (isinstance(value, float) and not math.isfinite(value))
+        and not (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and not is_finite_json_number(value)
+        )
     }
     restored_setting_keys = set(filtered_settings) & _ALLOWED_CONVERSATION_SETTINGS
     if restored_setting_keys == _ALLOWED_CONVERSATION_SETTINGS:

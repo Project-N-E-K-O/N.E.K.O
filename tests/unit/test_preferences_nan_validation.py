@@ -213,6 +213,20 @@ def test_full_valid_payload_is_accepted():
 
 
 @pytest.mark.unit
+def test_unknown_keys_reject_non_finite_but_keep_finite_values():
+    """Unknown keys are tolerated, but only with values the writer can emit."""
+    assert preferences.validate_model_preferences(
+        payload(position={"x": 1, "y": 2, "extra": float("nan")})
+    ) is False
+    assert preferences.validate_model_preferences(
+        payload(rotation={"x": 0, "y": 0, "z": 0, "meta": [float("-inf")]})
+    ) is False
+    assert preferences.validate_model_preferences(
+        payload(position={"x": 1, "y": 2, "label": "a", "extra": 3.5}, future_field=1)
+    ) is True
+
+
+@pytest.mark.unit
 def test_explicit_null_optional_fields_stay_accepted():
     """Clients have always been allowed to send null for an optional block."""
     assert preferences.validate_model_preferences(
@@ -237,6 +251,11 @@ def test_explicit_null_optional_fields_stay_accepted():
         payload(parameters={"ParamAngleX": float("nan")}),
         payload(parameters_mode="replace"),
         payload(model_path=123),
+        # Values outside the documented numeric keys still reach the strict
+        # writer; they must fail validation (400), not the write (500).
+        payload(position={"x": 1, "y": 2, "extra": float("nan")}),
+        payload(display={"screenX": 0, "nested": {"z": float("inf")}}),
+        payload(future_field=float("nan")),
     ],
 )
 def test_post_rejects_non_finite_with_400_and_writes_nothing(

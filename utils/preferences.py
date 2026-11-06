@@ -462,6 +462,16 @@ def validate_model_preferences(preferences: Dict[str, Any]) -> bool:
     ):
         return False
 
+    # The checks above only know the documented numeric keys. Anything else in
+    # the request (an unknown key inside ``position``, a nested value, a new
+    # top-level field) still reaches the strict writer, which would refuse it and
+    # turn bad input into a 500. Apply the writer's own rule to the whole payload
+    # so every non-finite number is a validation failure, i.e. a 400.
+    try:
+        json.dumps(preferences, allow_nan=False)
+    except (TypeError, ValueError):
+        return False
+
     return True
 
 def move_model_to_top(model_path: str) -> bool:
