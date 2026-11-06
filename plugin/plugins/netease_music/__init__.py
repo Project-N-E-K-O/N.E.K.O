@@ -164,6 +164,11 @@ class NeteaseMusicPlugin(PlaylistMixin, CredentialUiMixin, NekoPluginBase):
         self._generation_counter += 1
         self._session_generations.clear()
         for queue in getattr(self, "_queues", {}).values():
+            # Rewind only the unresolved track owned by this epoch, before
+            # another next request can start using the new credentials.
+            if queue.pending_advance == (queue.advance_epoch, queue.cursor):
+                queue.cursor -= 1
+            queue.pending_advance = None
             queue.advance_epoch += 1
             queue.ticket = queue.advancing_ticket = ""
         current_task = asyncio.current_task()

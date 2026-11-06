@@ -800,7 +800,39 @@ async def test_credential_change_invalidates_pending_queue_resolution():
     pending = asyncio.create_task(plugin._advance(provider,'Mika','lanlan:Mika',q))
     await started.wait()
     await plugin._invalidate_credential_requests()
+    assert q.cursor == 0
     release.set()
     result = await pending
     assert result['finish']['data']['status'] == 'superseded'
     assert pushes == []
+
+
+@pytest.mark.asyncio
+async def test_old_resolution_cannot_rewind_a_new_advance_after_credential_change():
+    from plugin.plugins.netease_music.playlists import Queue
+    started, release = asyncio.Event(), asyncio.Event()
+    provider = _Provider()
+    calls = []
+    async def resolve(song_id):
+        calls.append(song_id)
+        if len(calls) == 1:
+            started.set()
+            await release.wait()
+        return provider.media
+    provider.resolve_media = resolve
+    plugin, pushes, _ = _make_plugin(provider)
+    q = Queue('mix', [_song(1), _song(2)])
+    plugin._queues = {'lanlan:Mika': q}
+    plugin._begin_request('lanlan:Mika')
+    pending = asyncio.create_task(plugin._advance(provider, 'Mika', 'lanlan:Mika', q))
+    await started.wait()
+    await plugin._invalidate_credential_requests()
+    await plugin.playlist('next', _ctx=_ctx())
+    ticket = q.ticket
+    assert calls == [1, 1]
+    assert q.cursor == 1
+    release.set()
+    assert (await pending)['finish']['data']['status'] == 'superseded'
+    assert q.cursor == 1 and q.ticket == ticket
+    await plugin.playlist('next', _ctx=_ctx())
+    assert calls == [1, 1, 2]

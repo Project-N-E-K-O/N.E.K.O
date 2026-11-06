@@ -1357,3 +1357,65 @@ test('socket reconnect re-confirms the existing playing track', async t => {
   assert.equal(events[0].playback_id,original.playback_id);
   assert.equal(events[0].netease_id,7);
 });
+
+for (const state of ['playing', 'ended', 'closed']) {
+  test(`character switch does not report old ${state} playback to the new character`, async t => {
+    const s = createSurface(t), events = [];
+    s.w.lanlan_config = {lanlan_name:'Alice'};
+    s.w.appState = {socket:{readyState:1,send:raw=>events.push(JSON.parse(raw))}};
+    await s.w.sendMusicMessageDetailed({name:'Song',artist:'Band',url:'https://music.163.com/test.mp3',neteaseId:7,queueTicket:'a'.repeat(32)},false);
+    s.players[0].play();
+    events.length = 0;
+    s.w.lanlan_config.lanlan_name = 'Bob';
+    const socket = s.w.appState.socket = {readyState:1,send:raw=>events.push(JSON.parse(raw))};
+    if (state === 'ended') s.players[0].finish();
+    if (state === 'closed') s.clickClose();
+    s.w.dispatchEvent(new s.w.CustomEvent('neko:music-socket-open',{detail:{socket}}));
+    assert.deepEqual(events, []);
+    s.w.lanlan_config.lanlan_name = 'Alice';
+    s.w.dispatchEvent(new s.w.CustomEvent('neko:music-socket-open',{detail:{socket}}));
+    assert.equal(events.length, 1);
+    assert.equal(events[0].state, state === 'closed' ? 'ended' : state);
+    assert.equal(events[0].queue_closed, state === 'closed');
+  });
+}
+
+for (const terminal of ['ended', 'error', 'closed']) {
+  test(`reconnect delivers offline ${terminal} after player cleanup exactly once`, async t => {
+    const s = createSurface(t), events = [];
+    s.w.lanlan_config = {lanlan_name:'Alice'};
+    const socket = s.w.appState = {socket:{readyState:1,send:raw=>events.push(JSON.parse(raw))}};
+    await s.w.sendMusicMessageDetailed({name:'Song',artist:'Band',url:'https://music.163.com/test.mp3',queueTicket:'a'.repeat(32)},false);
+    s.players[0].play();
+    events.length = 0;
+    socket.socket.readyState = 3;
+    if (terminal === 'ended') s.players[0].finish();
+    else if (terminal === 'error') { s.players[0].audio.error={code:2}; s.players[0].emit('error'); }
+    else { s.players[0].finish(); s.clickClose(); }
+    await s.advance(22000);
+    assert.equal(s.players[0].destroyed, true);
+    assert.deepEqual(events, []);
+    socket.socket.readyState = 1;
+    for (let i=0;i<2;i++) s.w.dispatchEvent(new s.w.CustomEvent('neko:music-socket-open',{detail:{socket:socket.socket}}));
+    assert.equal(events.length, 1);
+    assert.equal(events[0].queue_ticket, 'a'.repeat(32));
+    assert.equal(events[0].state, terminal === 'closed' ? 'ended' : terminal);
+    assert.equal(events[0].queue_closed, terminal === 'closed');
+  });
+}
+
+test('paused queue remains resumable past the cleanup timeout', async t => {
+  const s = createSurface(t), events = [];
+  s.w.appState = {socket:{readyState:1,send:raw=>events.push(JSON.parse(raw))}};
+  await s.w.sendMusicMessageDetailed({name:'Song',artist:'Band',url:'https://music.163.com/test.mp3',queueTicket:'a'.repeat(32)},false);
+  const player = s.players[0];
+  player.play();
+  player.audio.pause();
+  await s.advance(72000);
+  assert.equal(player.destroyed, false);
+  assert.equal(events.at(-1).state, 'paused');
+  player.play();
+  assert.equal(events.at(-1).state, 'playing');
+  s.clickClose();
+  assert.equal(events.at(-1).queue_closed, true);
+});

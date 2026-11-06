@@ -277,6 +277,7 @@
             && previousContext.recommendationId === (options.recommendationId || '')
             && previousContext.url === String(track.url || '');
         return {
+            characterName: String(window.lanlan_config?.lanlan_name || ''),
             neteaseId: track.neteaseId,
             queueTicket: track.queueTicket || '',
             playbackId: playbackId || '',
@@ -342,21 +343,30 @@
         }
     }
 
+    // Retain terminal receipts independently of the player: its UI may be
+    // destroyed before the character's socket reconnects.
+    const pendingMusicTerminalReports = new Map();
+
+    function sendMusicPlaybackReport(report) {
+        if (report.characterName !== String(window.lanlan_config?.lanlan_name || '')) return false;
+        const socket = window.appState?.socket;
+        if (!socket || typeof socket.send !== 'function') return false;
+        if (socket.readyState !== 1 && typeof socket.readyState !== 'undefined') return false;
+        try {
+            socket.send(JSON.stringify(report.payload));
+            return true;
+        } catch (_) { return false; }
+    }
+
     function reportMusicPlaybackState(state, track, playbackContext, failureReason) {
         reportRecommendationPlaybackState(state, playbackContext, failureReason);
-        try {
-            const appState = window.appState;
-            const socket = appState && appState.socket;
-            if (!socket || typeof socket.send !== 'function') return;
-            if (socket.readyState !== 1 && typeof socket.readyState !== 'undefined') return;
-            const context = playbackContext || createMusicPlaybackReportContext(
-                getCurrentMusicPlaybackId(),
-                currentMusicPlaybackContext,
-                track,
-                latestMusicRequestToken
-            );
-            const currentTrack = track || context.track || {};
-            socket.send(JSON.stringify({
+        const context = playbackContext || createMusicPlaybackReportContext(
+            getCurrentMusicPlaybackId(), currentMusicPlaybackContext, track, latestMusicRequestToken
+        );
+        const currentTrack = track || context.track || {};
+        const report = {
+            characterName: context.characterName,
+            payload: {
                 action: 'music_playback_state',
                 state: state,
                 playback_id: context.playbackId,
@@ -373,9 +383,18 @@
                     name: String(currentTrack.name || '').slice(0, 120),
                     artist: String(currentTrack.artist || '').slice(0, 120)
                 }
-            }));
-            context.lastReportedState = state;
-        } catch (_) { /* best-effort playback awareness */ }
+            }
+        };
+        const key = JSON.stringify([context.characterName, context.playbackId, context.queueTicket]);
+        const terminal = state === 'ended' || state === 'error';
+        if (sendMusicPlaybackReport(report)) {
+            pendingMusicTerminalReports.delete(key);
+        } else if (terminal) {
+            const previous = pendingMusicTerminalReports.get(key);
+            // An explicit close must supersede an undelivered ended/error.
+            if (!previous?.payload.queue_closed) pendingMusicTerminalReports.set(key, report);
+        }
+        context.lastReportedState = state;
     }
 
     function reportMusicPlaybackFailureIfNeeded(playbackContext, failureReason, deferFailureUi) {
@@ -2438,6 +2457,9 @@
 
     window.addEventListener('neko:music-socket-open', (event) => {
         if (event.detail?.socket !== window.appState?.socket) return;
+        for (const [key, report] of pendingMusicTerminalReports) {
+            if (sendMusicPlaybackReport(report)) pendingMusicTerminalReports.delete(key);
+        }
         const context = localPlayer && localPlayer._musicPlaybackReportContext;
         const audio = localPlayer && localPlayer.audio;
         if (!context?.playbackStarted || !audio || audio.ended || localPlayer._destroying || localPlayer._loadError) return;
@@ -2934,6 +2956,8 @@
                     if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
                     autoDestroyTimer = setTimeout(() => {
                         if (localPlayer === boundPlayer && boundPlayer._latestToken === tokenAtEvent) {
+                            // A paused queue remains resumable instead of discarding its player.
+                            if (reportContext.queueTicket && !boundPlayer.audio.ended) return;
                             destroyMusicPlayer(true, true, true);
                         }
                     }, MUSIC_CONFIG.timeouts.paused);

@@ -25,6 +25,7 @@ class Queue:
     ticket: str = ""
     advancing_ticket: str = ""
     advance_epoch: int = 0
+    pending_advance: tuple[int, int] | None = None
 
 
 class PlaylistMixin:
@@ -260,6 +261,8 @@ class PlaylistMixin:
             track = q.tracks[q.cursor]
             q.cursor += 1
             next_cursor = q.cursor
+            pending_advance = (epoch, next_cursor)
+            q.pending_advance = pending_advance
             try:
                 media = await asyncio.wait_for(
                     provider.resolve_media(track.song_id), timeout=14
@@ -274,6 +277,9 @@ class PlaylistMixin:
                     self._note(target, self.i18n.t("playlist.paused", locale=q.locale))
                     return await self._finish_silent("network_pause")
                 continue
+            finally:
+                if q.pending_advance == pending_advance:
+                    q.pending_advance = None
             if not still_playing_queue():
                 break
             q.advancing_ticket = ""
