@@ -1162,11 +1162,11 @@ async def _record_surfaced_commitments(lanlan_name: str, pinned_ids: list[str]) 
     if store is None or not pinned_ids:
         return False
     try:
-        await store.amark_surfaced(lanlan_name, pinned_ids)
+        written = await store.amark_surfaced(lanlan_name, pinned_ids)
     except Exception as e:
         logger.debug(f"[ReflectAPI] {lanlan_name}: 承诺 surfaced 记录失败: {type(e).__name__}")
         return False
-    return True
+    return bool(written)
 
 
 @app.get("/followup_topics/{lanlan_name}")

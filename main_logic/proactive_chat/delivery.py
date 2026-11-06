@@ -402,16 +402,16 @@ async def _commit_proactive_delivery(
 
 
 class CommitmentOffer:
-    """The promise a Phase 2 prompt carries, recorded as offered once a model got it.
+    """The promise a Phase 2 prompt carries, recorded as offered once the model answered.
 
-    Recorded whatever the round's outcome rather than on delivery only, so a
-    round that ends in a pass still counts as an offer and the promise is not
-    picked again next round. ``mark_model_started`` (the Phase 2
-    ``on_model_start`` hook) only sets a flag: it runs between the last
-    consent check and the send, where nothing may be awaited. The record
-    itself goes out after generation (``record_if_offered``); a round retired
-    before any model ran records nothing, and whatever did not land is left
-    to the delivery record (``unrecorded_ids``).
+    Recorded whatever the answer rather than on delivery only, so a round
+    that ends in a pass still counts as an offer and the promise is not picked
+    again next round. ``mark_model_replied`` (the Phase 2 ``on_model_reply``
+    hook) only sets a flag: it runs inside the stream, where nothing may be
+    awaited. The record itself goes out after generation
+    (``record_if_offered``); a round retired before the model was made, or a
+    stream that failed before any reply, records nothing, and whatever did
+    not land is left to the delivery record (``unrecorded_ids``).
     """
 
     def __init__(
@@ -424,14 +424,14 @@ class CommitmentOffer:
         self._lanlan_name = lanlan_name
         self._ids = list(commitment_ids)
         self._memory_server_port = memory_server_port
-        self._model_started = False
+        self._model_replied = False
         self._landed = False
 
-    def mark_model_started(self) -> None:
-        self._model_started = True
+    def mark_model_replied(self) -> None:
+        self._model_replied = True
 
     async def record_if_offered(self) -> None:
-        if self._ids and self._model_started and not self._landed:
+        if self._ids and self._model_replied and not self._landed:
             self._landed = await _record_commitment_offer(
                 self._lanlan_name, self._ids, memory_server_port=self._memory_server_port,
             )

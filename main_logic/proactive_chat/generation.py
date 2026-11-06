@@ -778,26 +778,6 @@ async def _fetch_phase1_followups(
     return music_content, meme_content
 
 
-def _announce_first_model(make_llm, on_model_start: Callable[[], None]):
-    """``make_llm`` that calls ``on_model_start`` once, after the first model it creates.
-
-    Synchronous on purpose: it runs between ``_make_proactive_llm``'s last
-    consent and round checks and the stream that sends the prompt, so it must
-    never wait on anything.
-    """
-    started = False
-
-    async def make_and_announce(*args, **kwargs):
-        nonlocal started
-        llm = await make_llm(*args, **kwargs)
-        if not started:
-            started = True
-            on_model_start()
-        return llm
-
-    return make_and_announce
-
-
 async def _run_phase2_generation(
     *,
     mgr: Any,
@@ -822,13 +802,15 @@ async def _run_phase2_generation(
     vision_consent_epoch: int | None = None,
     round_is_current: Callable[[], bool] | None = None,
     vision_consent_required: bool = False,
-    on_model_start: Callable[[], None] | None = None,
+    on_model_reply: Callable[[], None] | None = None,
 ) -> Phase2GuardedOutput:
     """Own Phase 2 messages, model stream, and output guards.
 
-    ``on_model_start`` is called once (synchronously, see
-    _announce_first_model) as soon as the first model is created: the prompt
-    is about to reach a model. A round retired before that never calls it.
+    ``on_model_reply`` is called once when the first chunk of the model's
+    reply arrives: the model has taken the prompt, whatever it then answers.
+    A round retired before the model was made, or a stream that fails before
+    any reply, never calls it. It is synchronous on purpose and must not wait
+    on anything, since it runs inside the stream.
     """
     active_logger = log or logger
     use_vision = bool(screenshot_b64 and model_config.has_vision_model)
@@ -876,8 +858,6 @@ async def _run_phase2_generation(
         round_is_current=round_is_current,
         vision_consent_required=vision_consent_required,
     )
-    if on_model_start is not None:
-        make_llm = _announce_first_model(make_llm, on_model_start)
     silence_since_before_generation = _proactive_silence_since(mgr)
     generated = await _generate_phase2_stream(
         mgr=mgr,
@@ -894,6 +874,7 @@ async def _run_phase2_generation(
         human_text=human_text,
         screenshot_b64=screenshot_b64,
         log=active_logger,
+        on_model_reply=on_model_reply,
     )
     if generated.result is not None:
         return Phase2GuardedOutput(result=generated.result)
@@ -1012,8 +993,13 @@ async def _generate_phase2_stream(
     human_text: str,
     screenshot_b64: str | None,
     log: logging.Logger | None = None,
+    on_model_reply: Callable[[], None] | None = None,
 ) -> Phase2Generation:
-    """Run the guarded Phase 2 stream and preserve its legacy abort semantics."""
+    """Run the guarded Phase 2 stream and preserve its legacy abort semantics.
+
+    ``on_model_reply`` is called once, synchronously, when the first chunk of
+    the reply arrives (see _run_phase2_generation).
+    """
     active_logger = log or logger
     from utils.token_tracker import set_call_type
 
@@ -1080,6 +1066,9 @@ async def _generate_phase2_stream(
                 disable_thinking=phase2_disable_thinking,
             ) as llm:
                 async for chunk in llm.astream(messages):
+                    if on_model_reply is not None:
+                        on_model_reply()
+                        on_model_reply = None
                     if mgr.state.is_proactive_preempted(proactive_sid):
                         print(
                             f"[{lanlan_name}] Phase 2 astream chunk 前检测到抢占，abort"

@@ -1127,11 +1127,11 @@ def test_an_offer_that_did_not_land_is_left_to_the_delivery_record(monkeypatch, 
     )
     offer = proactive_delivery.CommitmentOffer(_NAME, ["pin_00aa11bb"], memory_server_port=1)
 
-    # No model got the prompt yet: nothing to record.
+    # The model has not answered yet: nothing to record.
     asyncio.run(offer.record_if_offered())
     post.assert_not_awaited()
 
-    offer.mark_model_started()
+    offer.mark_model_replied()
     asyncio.run(offer.record_if_offered())
     asyncio.run(offer.record_if_offered())
 
@@ -1142,76 +1142,102 @@ def test_an_offer_that_did_not_land_is_left_to_the_delivery_record(monkeypatch, 
         assert offer.unrecorded_ids == ["pin_00aa11bb"]
 
 
-@pytest.mark.parametrize("store_ok", [True, False])
-def test_record_surfaced_says_whether_the_promise_was_written(monkeypatch, store_ok):
+@pytest.mark.parametrize("outcome", ["written", "write_failed", "store_raised", "no_store"])
+def test_record_surfaced_says_whether_the_promise_was_written(tmp_path, monkeypatch, outcome):
     from app.memory_server import routes, runtime
 
-    store = SimpleNamespace(amark_surfaced=AsyncMock(
-        side_effect=None if store_ok else OSError("disk full"),
-    ))
-    reflections = SimpleNamespace(arecord_surfaced=AsyncMock())
-    monkeypatch.setattr(runtime, "pinned_fact_store", store)
-    monkeypatch.setattr(runtime, "reflection_engine", reflections)
+    now = pinned_mod._now()
+    store = _store(tmp_path)
+    promise = _add(store, _candidate("小天答应明天提醒主人带伞", 3, kind="commitment",
+                                     due_at=now + _DAY), now=now)
+    if outcome == "write_failed":
+        def disk_full(*args, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(pinned_mod, "atomic_write_json", disk_full)
+    elif outcome == "store_raised":
+        monkeypatch.setattr(store, "amark_surfaced", AsyncMock(side_effect=TimeoutError("lock busy")))
+    monkeypatch.setattr(runtime, "pinned_fact_store", None if outcome == "no_store" else store)
+    monkeypatch.setattr(runtime, "reflection_engine", SimpleNamespace(arecord_surfaced=AsyncMock()))
 
     def post(body):
         return asyncio.run(routes.api_record_surfaced(SimpleNamespace(json=AsyncMock(return_value=body)), _NAME))
 
-    assert post({"reflection_ids": [], "commitment_ids": ["pin_00aa11bb"]}) == {
-        "ok": True, "commitments_recorded": store_ok,
+    written = outcome == "written"
+    assert post({"reflection_ids": [], "commitment_ids": [promise["id"]]}) == {
+        "ok": True, "commitments_recorded": written,
     }
-    assert post({"reflection_ids": ["ref_1"], "commitment_ids": ["pin_00aa11bb"]}) == {
-        "ok": True, "commitments_recorded": store_ok,
+    assert post({"reflection_ids": ["ref_1"], "commitment_ids": [promise["id"]]}) == {
+        "ok": True, "commitments_recorded": written,
     }
     # Reflections only: nothing to report about promises.
     assert post({"reflection_ids": ["ref_1"]}) == {"ok": True}
-    monkeypatch.setattr(runtime, "pinned_fact_store", None)
-    assert post({"reflection_ids": [], "commitment_ids": ["pin_00aa11bb"]})["commitments_recorded"] is False
+    # Only a write that landed starts the cooldown; otherwise it is offered again.
+    assert (store.get_due_commitment(_NAME) is None) == written
+    # A promise no longer in the section has nothing to cool down: not recorded.
+    if written:
+        assert post({"reflection_ids": [], "commitment_ids": ["pin_gone"]})["commitments_recorded"] is False
 
 
-@pytest.mark.parametrize("round_current", [True, False])
-def test_a_promise_counts_as_offered_once_a_model_receives_the_prompt(monkeypatch, round_current):
-    from main_logic.proactive_chat import generation
-    from main_logic.proactive_chat.contracts import ProactiveChatResult
+@pytest.mark.parametrize("outcome", ["passed", "stream_failed", "retired"])
+def test_a_promise_counts_as_offered_once_the_model_answers(monkeypatch, outcome):
+    from main_logic.proactive_chat import contracts, generation
 
     events: list[str] = []
+
+    class Model:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return None
+
+        async def astream(self, messages):
+            if outcome == "stream_failed":
+                raise ConnectionError("provider unreachable")  # Before any reply.
+            for content in ("[PA", "SS]"):
+                events.append("chunk")
+                yield SimpleNamespace(content=content)
 
     async def make_model(*args, round_is_current=None, **kwargs):
         if round_is_current is not None and not round_is_current():
             raise PermissionError("Proactive round retired")
         events.append("model")
-        return object()
+        return Model()
 
-    async def stream(*, make_llm, **kwargs):
-        try:
-            await make_llm()
-            await make_llm()  # A regeneration creates a second model.
-            events.append("generated")
-        except PermissionError:
-            events.append("refused")
-        # The model passed (or the round was refused): no delivery follows.
-        return SimpleNamespace(result=ProactiveChatResult(body={"action": "pass"}))
-
-    def on_model_start():
-        # Synchronous: it runs between the last consent check and the send.
-        events.append("offered")
+    def on_model_reply():
+        # Synchronous: it runs inside the stream, past the last consent check.
+        events.append("replied")
 
     monkeypatch.setattr(generation, "_make_proactive_llm", make_model)
-    monkeypatch.setattr(generation, "_generate_phase2_stream", stream)
+    monkeypatch.setattr(generation, "leaks_thinking_in_content", lambda _model: False)
+    mgr = SimpleNamespace(
+        state=SimpleNamespace(is_proactive_preempted=lambda _sid=None: False),
+        current_speech_id="other", handle_new_message=AsyncMock(),
+    )
 
     output = asyncio.run(generation._run_phase2_generation(
-        mgr=SimpleNamespace(), proactive_sid="sid",
+        mgr=mgr, proactive_sid="sid",
         model_config=generation.ProactiveModelConfig("m", None, "k", None),
         lanlan_name=_NAME, proactive_lang="zh", master_name="主人",
         system_prompt="sys", dynamic_context="", screenshot_b64=None,
         focus_thinking=False, expects_source_tag=False, active_channels=[],
         selected_music_link=None, selected_meme_link=None, music_content=None,
         meme_content=None, is_playing_music=False, music_cooldown=False,
-        round_is_current=lambda: round_current, on_model_start=on_model_start,
+        round_is_current=lambda: outcome != "retired", on_model_reply=on_model_reply,
     ))
 
-    assert output.result.body == {"action": "pass"}
-    # Once, right after the first model is made; never for a retired round.
-    assert events == (["model", "offered", "model", "generated"] if round_current else ["refused"])
+    # Once, on the first chunk of the reply, whatever the reply says; never
+    # when no model ran or the stream failed before answering.
+    assert events == {
+        "passed": ["model", "chunk", "replied", "chunk"],
+        "stream_failed": ["model"],
+        "retired": [],
+    }[outcome]
+    assert output.result.body["reason_code"] == (
+        contracts.PROACTIVE_REASON_PASS_MODEL_PASS if outcome == "passed"
+        else contracts.PROACTIVE_REASON_PASS_GENERATION_EMPTY
+    )
 
 
 def test_proactive_chat_hands_the_offer_to_phase_2_and_the_rest_to_delivery():
@@ -1220,7 +1246,7 @@ def test_proactive_chat_hands_the_offer_to_phase_2_and_the_rest_to_delivery():
     from main_logic.proactive_chat import service
 
     source = inspect.getsource(service.handle_proactive_chat)
-    assert "on_model_start=commitment_offer.mark_model_started" in source
+    assert "on_model_reply=commitment_offer.mark_model_replied" in source
     assert "surfaced_commitment_ids=commitment_offer.unrecorded_ids" in source
     # The record goes out once generation is over, before the round can end.
     generation_at = source.index("guarded_output = await _run_phase2_generation(")

@@ -1066,10 +1066,12 @@ class PinnedFactStore:
     def mark_surfaced(
         self, name: str, ids: List[Any], *, now: Optional[float] = None,
     ) -> List[str]:
-        """Record that proactive chat was offered these commitments; returns the ids found.
+        """Record that proactive chat was offered these commitments; returns the ids written.
 
-        ``surfaced_at`` is bookkeeping, not content, so ``rev`` stays: an
-        admission deciding on the entry meanwhile is not sent round again.
+        Nothing is returned when none of them is live or the write failed, so
+        the caller can tell the offer did not land. ``surfaced_at`` is
+        bookkeeping, not content, so ``rev`` stays: an admission deciding on
+        the entry meanwhile is not sent round again.
         """
         wanted = {i for i in ids if isinstance(i, str)}
         if not name or not wanted:
@@ -1082,8 +1084,8 @@ class PinnedFactStore:
                 if entry["id"] in wanted and entry["kind"] == KIND_COMMITMENT and _is_live(entry, ts):
                     entry["surfaced_at"] = ts
                     found.append(entry["id"])
-            if found:
-                self._write_unlocked(name, facts, history, reviewed_at)
+            if found and not self._write_unlocked(name, facts, history, reviewed_at):
+                return []
         return found
 
     def record_mentions(
