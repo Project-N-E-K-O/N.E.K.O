@@ -2026,6 +2026,20 @@ def test_rewrites_stay_at_the_persona_and_relationship_level():
             assert old not in text, (lang, old)
 
 
+def test_persona_leans_to_the_ai_s_own_character_and_self_rule_is_narrow():
+    """Persona is shaped by the relationship but records the AI's own
+    character and reactions; only giving in written as a rule (or a reaction
+    against the card) is the self_rule problem, not the AI reacting at all."""
+    from config.prompts.prompts_memory import MEMORY_INTROSPECTION_PROMPT as PROMPT
+
+    for lang, text in PROMPT.items():
+        lines = text.splitlines()
+        self_rule = next(line for line in lines if line.endswith('[self_rule]'))
+        rewrite = next(line for line in lines if line.startswith('- rewrite'))
+        assert '{MASTER_NAME}' in self_rule, lang
+        assert rewrite.count('{AI_NAME}') >= 2, lang
+
+
 def test_prompt_has_all_locales_with_paired_delimiters():
     from config.prompts.prompts_memory import MEMORY_INTROSPECTION_PROMPT
 

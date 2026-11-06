@@ -5742,14 +5742,14 @@ MEMORY_INTROSPECTION_PROMPT = {
 1. 互相矛盾：两条说法冲突 [contradiction]
 2. 冗余：同一个意思换了几种说法 [redundant]
 3. 空洞的关系定性：例如「形成了……默契／模式／纽带」「体现了／意味着……」，放到任何两个人身上都成立，读不出这两人具体是怎样相处的 [hollow]
-4. 把 {AI_NAME} 自己的反应写成规律：例如「{AI_NAME}总是默许……」 [self_rule]
+4. 把 {AI_NAME} 对 {MASTER_NAME} 的迁就、默许、让步写成恒定规律（例如「{AI_NAME}总是默许……」），或写出与角色卡性格相悖的反应；{AI_NAME} 正常的性格与反应方式不算问题 [self_rule]
 5. 主语或指代不清：读不出是谁做的、谁说的 [unclear]
 6. 过期或明显已经失效 [stale]
 7. 和角色卡（RO 行）冲突 [card_conflict]
 
 可用操作：
 - suppress：永久压制这一条，之后不再注入。适合空洞的定性、过期、与角色卡冲突、或改不好的条目
-- rewrite：改写这一条，让它更准确、更有信息量：写清主语，说清具体是什么性格、偏好、习惯或相处方式。人格条目写性格与偏好，反思写两人之间的关系与相处方式，都保持概括，不要写成某一次事件的经过（发生过的具体事件归事实管）；不许改成另一句空话，改不出有信息量的说法就用 suppress
+- rewrite：改写这一条，让它更准确、更有信息量：写清主语，说清具体是什么性格、偏好、习惯或相处方式。人格条目侧重性格与偏好，尤其是 {AI_NAME} 自己的性格和反应方式（它由两人的关系塑造，但记下的是 {AI_NAME} 本人怎样），反思写两人之间的关系与相处方式，都保持概括，不要写成某一次事件的经过（发生过的具体事件归事实管）；不许改成另一句空话，改不出有信息量的说法就用 suppress
 - merge：把说同一件事的几条合并成一条。只能合并同一类条目：同一节人格条目之间，或反思条目之间
 - 没有问题的条目不用列出
 
@@ -5781,14 +5781,14 @@ MEMORY_INTROSPECTION_PROMPT = {
 1. 互相矛盾：兩條說法衝突 [contradiction]
 2. 冗餘：同一個意思換了幾種說法 [redundant]
 3. 空洞的關係定性：例如「形成了……默契／模式／紐帶」「體現了／意味著……」，放到任何兩個人身上都成立，讀不出這兩人具體是怎樣相處的 [hollow]
-4. 把 {AI_NAME} 自己的反應寫成規律：例如「{AI_NAME}總是默許……」 [self_rule]
+4. 把 {AI_NAME} 對 {MASTER_NAME} 的遷就、默許、讓步寫成恆定規律（例如「{AI_NAME}總是默許……」），或寫出與角色卡性格相悖的反應；{AI_NAME} 正常的性格與反應方式不算問題 [self_rule]
 5. 主語或指代不清：讀不出是誰做的、誰說的 [unclear]
 6. 過期或明顯已經失效 [stale]
 7. 和角色卡（RO 行）衝突 [card_conflict]
 
 可用操作：
 - suppress：永久壓制這一條，之後不再注入。適合空洞的定性、過期、與角色卡衝突、或改不好的條目
-- rewrite：改寫這一條，讓它更準確、更有資訊量：寫清主語，說清具體是什麼性格、偏好、習慣或相處方式。人格條目寫性格與偏好，反思寫兩人之間的關係與相處方式，都保持概括，不要寫成某一次事件的經過（發生過的具體事件歸事實管）；不許改成另一句空話，改不出有資訊量的說法就用 suppress
+- rewrite：改寫這一條，讓它更準確、更有資訊量：寫清主語，說清具體是什麼性格、偏好、習慣或相處方式。人格條目側重性格與偏好，尤其是 {AI_NAME} 自己的性格和反應方式（它由兩人的關係塑造，但記下的是 {AI_NAME} 本人怎樣），反思寫兩人之間的關係與相處方式，都保持概括，不要寫成某一次事件的經過（發生過的具體事件歸事實管）；不許改成另一句空話，改不出有資訊量的說法就用 suppress
 - merge：把說同一件事的幾條合併成一條。只能合併同一類條目：同一節人格條目之間，或反思條目之間
 - 沒有問題的條目不用列出
 
@@ -5820,14 +5820,14 @@ Read every entry and find the problematic ones:
 1. Contradiction: two entries conflict [contradiction]
 2. Redundancy: the same idea phrased several ways [redundant]
 3. Hollow relationship labels: e.g. "they have formed a tacit understanding / pattern / bond", "this reflects / means ...", which would fit any two people and say nothing about how these two actually get along [hollow]
-4. {AI_NAME}'s own reactions written up as a rule: e.g. "{AI_NAME} always goes along with ..." [self_rule]
+4. {AI_NAME} giving in, going along or yielding to {MASTER_NAME} written up as a fixed rule (e.g. "{AI_NAME} always goes along with ..."), or a reaction that contradicts the card's personality; {AI_NAME}'s ordinary traits and ways of reacting are not a problem [self_rule]
 5. Unclear subject or reference: you cannot tell who did or said it [unclear]
 6. Outdated or clearly no longer true [stale]
 7. Conflicts with the character card (RO lines) [card_conflict]
 
 Available actions:
 - suppress: permanently suppress this entry so it is no longer injected. Use it for hollow labels, outdated entries, conflicts with the character card, or entries that cannot be fixed
-- rewrite: rewrite this entry so it is more accurate and informative: name the subject and say which trait, preference, habit or way of relating it is. Persona entries describe traits and preferences, reflection entries describe the relationship and how the two relate; keep both at that level of generality and never turn them into the account of a single event (events belong to facts). Never turn it into another empty phrase — if it cannot be made informative, use suppress
+- rewrite: rewrite this entry so it is more accurate and informative: name the subject and say which trait, preference, habit or way of relating it is. Persona entries describe traits and preferences, above all {AI_NAME}'s own character and ways of reacting (shaped by the relationship, but recording how {AI_NAME} is), reflection entries describe the relationship and how the two relate; keep both at that level of generality and never turn them into the account of a single event (events belong to facts). Never turn it into another empty phrase — if it cannot be made informative, use suppress
 - merge: combine several entries that say the same thing into one. Only merge entries of the same kind: persona entries within one section, or reflection entries with each other
 - do not list entries that have no problem
 
@@ -5859,14 +5859,14 @@ Output only a JSON array:
 1. 矛盾：2 つの記述が食い違っている [contradiction]
 2. 冗長：同じ意味を何通りにも言い換えている [redundant]
 3. 中身のない関係づけ：「……という暗黙の了解／パターン／絆が生まれた」「……を表している／意味している」など、どの二人にも当てはまり、この二人が実際にどう接しているのかが読み取れない [hollow]
-4. {AI_NAME} 自身の反応を法則として書いている：例「{AI_NAME}はいつも……を黙認する」 [self_rule]
+4. {AI_NAME} の {MASTER_NAME} への譲歩・黙認・迎合を不変の法則として書いている（例「{AI_NAME}はいつも……を黙認する」）、またはキャラクターカードの性格に反する反応を書いている。{AI_NAME} の普通の性格や反応の仕方は問題ではない [self_rule]
 5. 主語や指示対象が不明：誰がしたのか、誰が言ったのか読み取れない [unclear]
 6. 古くなった、または明らかにもう当てはまらない [stale]
 7. キャラクターカード（RO 行）と矛盾する [card_conflict]
 
 使える操作：
 - suppress：このエントリを恒久的に抑制し、今後注入しない。中身のない関係づけ、古い内容、キャラクターカードとの矛盾、直しようのないエントリに使う
-- rewrite：このエントリを書き換え、より正確で情報量のあるものにする：主語を明確にし、どんな性格・好み・習慣・接し方なのかをはっきり書く。persona エントリは性格や好みを、振り返り（reflection）エントリは二人の関係と接し方を書くもので、どちらも概括の水準を保ち、ある一回の出来事の経緯にしてはいけない（具体的な出来事は事実が扱う）。別の空虚な言い回しにしてはいけない。情報量のある書き方にできないなら suppress を使う
+- rewrite：このエントリを書き換え、より正確で情報量のあるものにする：主語を明確にし、どんな性格・好み・習慣・接し方なのかをはっきり書く。persona エントリは性格や好み、とりわけ {AI_NAME} 自身の性格と反応の仕方（二人の関係によって形づくられるが、記録するのは {AI_NAME} 本人がどうであるか）を、振り返り（reflection）エントリは二人の関係と接し方を書くもので、どちらも概括の水準を保ち、ある一回の出来事の経緯にしてはいけない（具体的な出来事は事実が扱う）。別の空虚な言い回しにしてはいけない。情報量のある書き方にできないなら suppress を使う
 - merge：同じことを言っている複数のエントリを 1 つにまとめる。同じ種類同士だけ：同じ節の persona エントリ同士、または振り返り（reflection）エントリ同士
 - 問題のないエントリは挙げなくてよい
 
@@ -5898,14 +5898,14 @@ JSON 配列だけを出力：
 1. 서로 모순: 두 항목의 내용이 충돌함 [contradiction]
 2. 중복: 같은 뜻을 여러 방식으로 말함 [redundant]
 3. 내용 없는 관계 규정: 예) 「……한 암묵적 이해/패턴/유대가 형성되었다」「……을(를) 보여 준다/의미한다」처럼 어떤 두 사람에게도 들어맞아, 이 두 사람이 실제로 어떻게 지내는지 알 수 없음 [hollow]
-4. {AI_NAME} 자신의 반응을 규칙처럼 씀: 예) 「{AI_NAME}은(는) 늘 ……을(를) 묵인한다」 [self_rule]
+4. {AI_NAME}이(가) {MASTER_NAME}에게 맞춰 주거나 묵인하거나 양보하는 것을 변하지 않는 규칙처럼 씀 (예: 「{AI_NAME}은(는) 늘 ……을(를) 묵인한다」), 또는 캐릭터 카드의 성격과 어긋나는 반응을 씀. {AI_NAME}의 평범한 성격과 반응 방식은 문제가 아님 [self_rule]
 5. 주어나 지시 대상이 불분명: 누가 했는지, 누가 말했는지 알 수 없음 [unclear]
 6. 오래되었거나 이미 맞지 않음이 분명함 [stale]
 7. 캐릭터 카드(RO 줄)와 충돌함 [card_conflict]
 
 사용할 수 있는 작업:
 - suppress: 이 항목을 영구히 억제하여 더 이상 주입하지 않음. 내용 없는 관계 규정, 오래된 항목, 캐릭터 카드와의 충돌, 고칠 수 없는 항목에 사용
-- rewrite: 이 항목을 더 정확하고 정보가 담기도록 고쳐 씀: 주어를 분명히 하고, 어떤 성격·취향·습관·지내는 방식인지 분명히 쓸 것. persona 항목은 성격과 취향을, 회고(reflection) 항목은 두 사람의 관계와 지내는 방식을 쓰는 것이므로 둘 다 개괄 수준을 유지하고, 어느 한 번의 사건 경위로 쓰지 말 것(구체적인 사건은 사실이 다룸). 또 다른 빈말로 바꾸면 안 되며, 정보가 담긴 표현으로 만들 수 없으면 suppress를 사용
+- rewrite: 이 항목을 더 정확하고 정보가 담기도록 고쳐 씀: 주어를 분명히 하고, 어떤 성격·취향·습관·지내는 방식인지 분명히 쓸 것. persona 항목은 성격과 취향, 특히 {AI_NAME} 자신의 성격과 반응 방식(두 사람의 관계가 만들어 가지만, 기록하는 것은 {AI_NAME} 본인이 어떤지)을, 회고(reflection) 항목은 두 사람의 관계와 지내는 방식을 쓰는 것이므로 둘 다 개괄 수준을 유지하고, 어느 한 번의 사건 경위로 쓰지 말 것(구체적인 사건은 사실이 다룸). 또 다른 빈말로 바꾸면 안 되며, 정보가 담긴 표현으로 만들 수 없으면 suppress를 사용
 - merge: 같은 내용을 말하는 여러 항목을 하나로 합침. 같은 종류끼리만: 같은 절의 persona 항목끼리, 또는 회고(reflection) 항목끼리
 - 문제없는 항목은 나열하지 않음
 
@@ -5937,14 +5937,14 @@ JSON 배열만 출력:
 1. Противоречие: две записи конфликтуют [contradiction]
 2. Избыточность: одна и та же мысль в нескольких формулировках [redundant]
 3. Пустые характеристики отношений: например, «между ними сложилось молчаливое понимание / закономерность / связь», «это отражает / означает …» — подходят к любой паре и ничего не говорят о том, как эти двое на самом деле общаются [hollow]
-4. Собственные реакции {AI_NAME}, записанные как правило: например, «{AI_NAME} всегда молча соглашается с …» [self_rule]
+4. Уступчивость, молчаливое согласие или уступки {AI_NAME} перед {MASTER_NAME}, записанные как неизменное правило (например, «{AI_NAME} всегда молча соглашается с …»), или реакция, противоречащая характеру из карточки; обычные черты и реакции {AI_NAME} проблемой не являются [self_rule]
 5. Неясный субъект или отсылка: нельзя понять, кто это сделал или сказал [unclear]
 6. Устарело или явно больше не соответствует действительности [stale]
 7. Противоречит карточке персонажа (строкам RO) [card_conflict]
 
 Доступные действия:
 - suppress: навсегда подавить запись, чтобы она больше не подставлялась. Подходит для пустых характеристик, устаревших записей, конфликтов с карточкой персонажа и записей, которые не удаётся исправить
-- rewrite: переписать запись, чтобы она стала точнее и содержательнее: назовите субъекта и укажите, какая именно это черта, предпочтение, привычка или манера общения. Записи persona описывают черты и предпочтения, записи reflection — отношения и то, как эти двое общаются; сохраняйте этот уровень обобщения и не превращайте запись в рассказ об одном событии (события — это факты); нельзя превращать её в другую пустую фразу — если содержательнее не получается, используйте suppress
+- rewrite: переписать запись, чтобы она стала точнее и содержательнее: назовите субъекта и укажите, какая именно это черта, предпочтение, привычка или манера общения. Записи persona описывают черты и предпочтения, прежде всего собственный характер {AI_NAME} и то, как {AI_NAME} реагирует (он складывается в отношениях, но записывается то, какой характер у {AI_NAME}), записи reflection — отношения и то, как эти двое общаются; сохраняйте этот уровень обобщения и не превращайте запись в рассказ об одном событии (события — это факты); нельзя превращать её в другую пустую фразу — если содержательнее не получается, используйте suppress
 - merge: объединить несколько записей об одном и том же в одну. Объединять можно только записи одного вида: записи persona внутри одного раздела или записи reflection между собой
 - записи без проблем перечислять не нужно
 
@@ -5976,14 +5976,14 @@ Lee cada entrada y localiza las problemáticas:
 1. Contradicción: dos entradas chocan entre sí [contradiction]
 2. Redundancia: la misma idea dicha de varias maneras [redundant]
 3. Etiquetas de relación vacías: p. ej. «han desarrollado una complicidad / un patrón / un vínculo», «esto refleja / significa …», que valdrían para cualquier par de personas y no dicen cómo se tratan realmente estos dos [hollow]
-4. Reacciones de {AI_NAME} escritas como una regla: p. ej. «{AI_NAME} siempre consiente …» [self_rule]
+4. Que {AI_NAME} ceda, consienta o se pliegue ante {MASTER_NAME}, escrito como una regla fija (p. ej. «{AI_NAME} siempre consiente …»), o una reacción que contradiga la personalidad de la ficha; los rasgos y reacciones normales de {AI_NAME} no son un problema [self_rule]
 5. Sujeto o referencia poco claros: no se entiende quién lo hizo o lo dijo [unclear]
 6. Desactualizado o claramente ya no vigente [stale]
 7. Choca con la ficha del personaje (líneas RO) [card_conflict]
 
 Acciones disponibles:
 - suppress: suprimir esta entrada de forma permanente para que ya no se inyecte. Úsala para etiquetas vacías, entradas desactualizadas, conflictos con la ficha del personaje o entradas que no se pueden arreglar
-- rewrite: reescribir esta entrada para que sea más precisa e informativa: nombra al sujeto y di qué rasgo, preferencia, hábito o forma de tratarse es. Las entradas persona describen rasgos y preferencias; las entradas reflection, la relación y cómo se tratan los dos; mantén ese nivel de generalidad y nunca la conviertas en el relato de un solo suceso (los sucesos son hechos); nunca la conviertas en otra frase vacía; si no se puede hacer informativa, usa suppress
+- rewrite: reescribir esta entrada para que sea más precisa e informativa: nombra al sujeto y di qué rasgo, preferencia, hábito o forma de tratarse es. Las entradas persona describen rasgos y preferencias, sobre todo el carácter y las reacciones propios de {AI_NAME} (los moldea la relación, pero se anota cómo es {AI_NAME}); las entradas reflection, la relación y cómo se tratan los dos; mantén ese nivel de generalidad y nunca la conviertas en el relato de un solo suceso (los sucesos son hechos); nunca la conviertas en otra frase vacía; si no se puede hacer informativa, usa suppress
 - merge: unir en una sola varias entradas que dicen lo mismo. Solo entre entradas del mismo tipo: entradas persona de una misma sección, o entradas reflection entre sí
 - no hace falta listar las entradas sin problemas
 
@@ -6015,14 +6015,14 @@ Leia cada entrada e encontre as problemáticas:
 1. Contradição: duas entradas se contradizem [contradiction]
 2. Redundância: a mesma ideia dita de várias formas [redundant]
 3. Rótulos de relação vazios: ex. «desenvolveram uma cumplicidade / um padrão / um vínculo», «isso reflete / significa …», que serviriam para quaisquer duas pessoas e não dizem como esses dois realmente se tratam [hollow]
-4. Reações do próprio {AI_NAME} escritas como regra: ex. «{AI_NAME} sempre consente com …» [self_rule]
+4. {AI_NAME} cedendo, consentindo ou se dobrando a {MASTER_NAME}, escrito como regra fixa (ex. «{AI_NAME} sempre consente com …»), ou uma reação que contradiz a personalidade da ficha; os traços e reações normais de {AI_NAME} não são problema [self_rule]
 5. Sujeito ou referência pouco claros: não dá para saber quem fez ou disse [unclear]
 6. Desatualizado ou claramente não mais válido [stale]
 7. Conflita com a ficha do personagem (linhas RO) [card_conflict]
 
 Ações disponíveis:
 - suppress: suprimir esta entrada permanentemente para que não seja mais injetada. Use para rótulos vazios, entradas desatualizadas, conflitos com a ficha do personagem ou entradas que não dá para consertar
-- rewrite: reescrever esta entrada para que fique mais precisa e informativa: nomeie o sujeito e diga qual traço, preferência, hábito ou forma de se tratar é. Entradas persona descrevem traços e preferências; entradas reflection, a relação e como os dois se tratam; mantenha esse nível de generalidade e nunca a transforme no relato de um único acontecimento (acontecimentos são fatos); nunca a transforme em outra frase vazia; se não for possível torná-la informativa, use suppress
+- rewrite: reescrever esta entrada para que fique mais precisa e informativa: nomeie o sujeito e diga qual traço, preferência, hábito ou forma de se tratar é. Entradas persona descrevem traços e preferências, sobretudo o caráter e as reações do próprio {AI_NAME} (moldados pela relação, mas o que se registra é como {AI_NAME} é); entradas reflection, a relação e como os dois se tratam; mantenha esse nível de generalidade e nunca a transforme no relato de um único acontecimento (acontecimentos são fatos); nunca a transforme em outra frase vazia; se não for possível torná-la informativa, use suppress
 - merge: juntar em uma só várias entradas que dizem a mesma coisa. Somente entre entradas do mesmo tipo: entradas persona de uma mesma seção, ou entradas reflection entre si
 - não é preciso listar entradas sem problemas
 

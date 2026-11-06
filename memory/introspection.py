@@ -130,7 +130,7 @@ def retirement_blocks_restatement(entry) -> bool:
     """Whether a new line restating this retired entry should be retired too.
 
     Only when the entry was retired for its wording (hollow, redundant, the
-    AI's own reaction as a rule, unclear subject), folded into a merge, or
+    AI's giving in written as a rule, unclear subject), folded into a merge, or
     was itself such a restatement. A line retired as stale, contradicted or
     conflicting with the card can become true again, and one with no issue
     recorded gets the benefit of the doubt.
