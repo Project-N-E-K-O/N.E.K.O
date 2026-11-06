@@ -1,10 +1,7 @@
 """A forked plugin child must not hold the host's HTTP server sockets.
 
-Plugin hosts are started with a bare ``multiprocessing.Process``
-(plugin/core/host.py), so the start method is the platform default: spawn on
-Windows and on macOS run from source, FORK on Linux -- and FORK on macOS too in
-the packaged (merged) topology, where ``app/main_server/__init__.py`` calls
-``multiprocessing.set_start_method("fork")``. Under fork the child copies the
+Linux plugin hosts may use fork. The merged macOS host also selects fork,
+but launches plugin processes using spawn. Under fork the child copies the
 host's whole descriptor table, and that table holds the host's HTTP listening
 sockets plus every browser connection the host has already accepted.
 
