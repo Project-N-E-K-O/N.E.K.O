@@ -11,6 +11,7 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
 
 function fixture() {
   const calls = [];
+  const events = [];
   const timers = new Map();
   let timerId = 0;
   const I = {
@@ -22,11 +23,13 @@ function fixture() {
   const window = {
     __appReactChatWindowParts: I,
     appState: { lanlan_name: 'Neko' },
+    dispatchEvent(event) { events.push(event); return true; },
     _lastSubmittedRequestId: 'test-request',
     nekoLocalMutationSecurity: { async getMutationHeaders() { return { 'X-CSRF-Token': 'test-csrf' }; } },
   };
   const ctx = vm.createContext({
     window, console, Date, AbortController,
+    CustomEvent: class { constructor(type, options = {}) { this.type = type; this.detail = options.detail; } },
     setTimeout(fn) { const id = ++timerId; timers.set(id, fn); return id; },
     clearTimeout(id) { timers.delete(id); },
     fetch(url, options) {
@@ -38,8 +41,19 @@ function fixture() {
   for (const source of sources) vm.runInContext(source, ctx);
   I.renderWindow = () => {};
   I.invalidatePendingGalgameRequest = () => false;
-  return { I, window, calls, expire() { for (const fn of [...timers.values()]) fn(); } };
+  return { I, window, calls, events, expire() { for (const fn of [...timers.values()]) fn(); } };
 }
+
+test('host replacement distinguishes an empty reset from an ordinary snapshot', () => {
+  const { I, events } = fixture();
+  I.setMessages([message()]);
+  assert.equal(events.at(-1).type, 'react-chat-window:messages-replaced');
+  assert.equal(events.at(-1).detail.conversationReset, false);
+  I.setMessages([]);
+  assert.equal(events.at(-1).detail.conversationReset, true);
+  I.clearMessages();
+  assert.equal(events.at(-1).type, 'react-chat-window:messages-cleared');
+});
 
 function message(id = 'user-1', extra = {}) {
   return { id, role: 'user', author: 'You', time: '10:00', status: 'sent',

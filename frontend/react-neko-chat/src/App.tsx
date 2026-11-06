@@ -1070,11 +1070,20 @@ function CompactChatApp({
   const [speechPlaybackState, setSpeechPlaybackState] = useState<SpeechPlaybackState | null>(null);
   const [compactCaptionState, setCompactCaptionState] = useState<CompactCaptionState | null>(null);
   useEffect(() => {
-    const resetCompactPreview = () => {
+    const resetCompactPreview = (event: Event) => {
       setCompactCaptionState(null);
       compactSpeechPreviewIdRef.current = '';
       compactSpeechPreviewTextRef.current = '';
       compactSpeechPreviewTurnIdRef.current = '';
+      const detail = (event as CustomEvent).detail;
+      // An empty host replacement also starts a fresh conversation. Keep the
+      // turn guard during ordinary snapshots, which may contain stale streams.
+      if (event.type === 'react-chat-window:messages-cleared'
+        || detail?.conversationReset === true
+        || (event.type === 'react-chat-window:set-messages'
+          && Array.isArray(detail?.messages) && detail.messages.length === 0)) {
+        setCompactAssistantStreamingGap(null);
+      }
     };
     const events = ['react-chat-window:messages-cleared', 'react-chat-window:set-messages', 'react-chat-window:messages-replaced'];
     events.forEach(name => window.addEventListener(name, resetCompactPreview));

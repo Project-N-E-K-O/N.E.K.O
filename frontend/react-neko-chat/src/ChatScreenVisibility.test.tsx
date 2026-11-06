@@ -246,4 +246,43 @@ describe('visual-only chat clearing', () => {
     },
   );
 
+  it.each([
+    ['messages-cleared', undefined],
+    ['set-messages', {messages:[]}],
+    ['messages-replaced', {conversationReset:true}],
+  ])('releases an unfinished turn on conversation reset %s', async (eventName, detail) => {
+    vi.useFakeTimers();
+    try {
+      const {container} = render(<App messages={[]} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      const preview = () => container.querySelector('.compact-chat-capsule-text')?.textContent;
+      const emptyCopy = preview();
+      expect(emptyCopy).toBeTruthy();
+      act(() => window.dispatchEvent(new CustomEvent('neko-assistant-turn-start', {detail:{turnId:'old-turn'}})));
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(preview()).toBe('');
+      act(() => window.dispatchEvent(new CustomEvent(`react-chat-window:${eventName}`, {detail})));
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(preview()).toBe(emptyCopy);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('keeps the current turn guard during an ordinary nonempty replacement', async () => {
+    vi.useFakeTimers();
+    try {
+      const stale = {...message('stale','X',true), turnId:'previous-turn'};
+      const {container} = render(<App messages={[stale]} />);
+      act(() => window.dispatchEvent(new CustomEvent('neko-assistant-turn-start', {detail:{turnId:'current-turn'}})));
+      act(() => {
+        window.dispatchEvent(new CustomEvent('react-chat-window:set-messages', {detail:{messages:[stale]}}));
+        window.dispatchEvent(new CustomEvent('react-chat-window:messages-replaced', {detail:{conversationReset:false}}));
+      });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(container.querySelector('.compact-chat-capsule-text')?.textContent).toBe('');
+      act(() => window.dispatchEvent(new CustomEvent('neko-compact-caption-update', {detail:{turnId:'current-turn',text:'Y'}})));
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent('Y');
+    } finally { vi.useRealTimers(); }
+  });
+
 });
