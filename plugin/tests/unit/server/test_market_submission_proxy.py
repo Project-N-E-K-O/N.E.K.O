@@ -369,3 +369,142 @@ def test_a_numeric_or_uuid_submission_id_is_accepted(monkeypatch, good_id):
     response = client.post(f"/market/submissions/{good_id}/submit", params=_BRIDGE, json={})
     assert response.status_code == 200
     assert upstream.requests[0].url.path == f"/api/v1/review/submissions/{good_id}/submit"
+
+
+
+def test_preflight_forwards_its_untyped_body_verbatim(monkeypatch):
+    # Shaped like the Market's preflight answer (publication_preflight.py:168-173).
+    result = {"ready": False, "issues": [], "preview": None, "normalized_icon_url": None}
+    client, upstream, _ = _install(monkeypatch, _ok(result))
+    body = {"repo_url": "https://github.com/o/r", "plugin_slug": "demo", "unknown": [1, {"x": 2}]}
+    response = client.post("/market/submissions/preflight", params=_BRIDGE, json=body)
+    assert response.status_code == 200
+    assert response.json() == result
+    forwarded = upstream.requests[0]
+    assert forwarded.method == "POST"
+    assert forwarded.url.path == "/api/v1/review/submissions/preflight"
+    assert forwarded.url.query == b""
+    assert json.loads(forwarded.content) == body
+
+
+def test_revision_is_forwarded_as_a_post_with_its_body(monkeypatch):
+    client, upstream, _ = _install(monkeypatch, _ok({"id": 7, "status": "submitted"}))
+    body = {"base_snapshot_id": 31, "note": "new commit", "submitted_ref": "b" * 40, "resolved_commit": "b" * 40}
+    response = client.post("/market/submissions/7/revision", params=_BRIDGE, json=body)
+    assert response.status_code == 200
+    forwarded = upstream.requests[0]
+    assert forwarded.method == "POST"
+    assert forwarded.url.path == "/api/v1/review/submissions/7/revision"
+    assert forwarded.url.query == b""
+    assert json.loads(forwarded.content) == body
+
+
+def test_workspace_is_a_get_that_forwards_no_query(monkeypatch):
+    client, upstream, _ = _install(monkeypatch, _ok({"submission": {"id": 7}}))
+    response = client.get(
+        "/market/submissions/7/workspace", params={**_BRIDGE, "activity_cursor": "c1"}
+    )
+    assert response.status_code == 200
+    forwarded = upstream.requests[0]
+    assert forwarded.method == "GET"
+    assert forwarded.url.path == "/api/v1/review/submissions/7/workspace"
+    assert forwarded.url.query == b""
+    assert forwarded.content == b""
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("POST", "/market/submissions/preflight"),
+        ("POST", "/market/submissions/7/revision"),
+        ("GET", "/market/submissions/7/workspace"),
+    ],
+)
+def test_new_routes_never_forward_the_bridge_token(monkeypatch, method, path):
+    client, upstream, _ = _install(monkeypatch, _ok({}))
+    response = client.request(
+        method,
+        path,
+        params=_BRIDGE,
+        headers={"Authorization": f"Bearer {_BRIDGE['token']}"},
+        json={} if method == "POST" else None,
+    )
+    assert response.status_code == 200
+    forwarded = upstream.requests[0]
+    assert _BRIDGE["token"] not in str(forwarded.url)
+    assert _BRIDGE["token"] not in forwarded.headers["authorization"]
+    assert forwarded.headers["authorization"] == f"Bearer {_ACCESS_TOKEN}"
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("POST", "/market/submissions/preflight"),
+        ("POST", "/market/submissions/7/revision"),
+        ("GET", "/market/submissions/7/workspace"),
+    ],
+)
+def test_new_routes_refuse_a_wrong_bridge_token(monkeypatch, method, path):
+    client, upstream, _ = _install(monkeypatch, _ok({}))
+    response = client.request(
+        method, path, params={"token": "wrong"}, json={} if method == "POST" else None
+    )
+    assert response.status_code == 403
+    assert upstream.requests == []
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("POST", "/market/submissions/preflight"),
+        ("POST", "/market/submissions/7/revision"),
+        ("GET", "/market/submissions/7/workspace"),
+    ],
+)
+def test_new_routes_refresh_once_on_a_401(monkeypatch, method, path):
+    def responder(request, attempt):
+        if attempt == 0:
+            return httpx.Response(401, json={"detail": "token expired"})
+        return httpx.Response(200, json={"ok": True})
+
+    client, upstream, ensured = _install(monkeypatch, responder)
+    response = client.request(method, path, params=_BRIDGE, json={} if method == "POST" else None)
+    assert response.status_code == 200
+    assert len(upstream.requests) == 2
+    assert ensured[-1] == _ACCESS_TOKEN
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [("POST", "/market/submissions/preflight"), ("POST", "/market/submissions/7/revision")],
+)
+def test_new_verified_email_routes_map_the_email_gate(monkeypatch, method, path):
+    client, _, _ = _install(monkeypatch, _forbidden_with_user({"id": 3, "email_verified": False}))
+    response = client.request(method, path, params=_BRIDGE, json={})
+    assert response.status_code == 409
+    assert response.json()["code"] == "market_email_unverified"
+
+
+def test_a_workspace_403_is_never_remapped(monkeypatch):
+    client, upstream, _ = _install(
+        monkeypatch, _forbidden_with_user({"id": 3, "email_verified": False})
+    )
+    response = client.get("/market/submissions/7/workspace", params=_BRIDGE)
+    assert response.status_code == 403
+    assert all(request.url.path != "/api/v1/auth/me" for request in upstream.requests)
+
+
+@pytest.mark.parametrize(
+    ("method", "action"), [("POST", "revision"), ("GET", "workspace")]
+)
+def test_new_id_routes_refuse_a_malformed_id(monkeypatch, method, action):
+    client, upstream, _ = _install(monkeypatch, _ok({}))
+    response = client.request(
+        method,
+        f"/market/submissions/abc$/{action}",
+        params=_BRIDGE,
+        json={} if method == "POST" else None,
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "market_submission_id_invalid"
+    assert upstream.requests == []

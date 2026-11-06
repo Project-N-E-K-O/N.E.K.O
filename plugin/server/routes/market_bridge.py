@@ -819,10 +819,10 @@ async def market_catalog_zones(request: Request) -> Response:
 # -- Review submission proxy --
 #
 # The publish workbench drives the Market review flow (preflight, draft,
-# submit, withdraw) through these routes. They reuse the same desktop OAuth
-# login the Market download already uses: the access token is attached as a
-# server-side ``Authorization: Bearer`` header and never reaches the browser,
-# exactly like ``_report_market_install_best_effort``. Every call must carry
+# submit, revision, workspace, withdraw) through these routes. They reuse the
+# same desktop OAuth login the Market download already uses: the access token
+# is attached as a server-side ``Authorization: Bearer`` header and never
+# reaches the browser, exactly like ``_report_market_install_best_effort``. Every call must carry
 # the bridge token (``_verify_token``, as the other ``/market`` write endpoints
 # require) and come from the local plugin manager: a remote Market page paired
 # through ``/token-exchange`` holds the token too, but must not act on the
@@ -1056,6 +1056,18 @@ async def market_submission_mine(request: Request) -> Response:
     )
 
 
+@router.post("/submissions/preflight")
+async def market_submission_preflight(request: Request) -> Response:
+    # The Market takes an untyped dict here, so the body is forwarded as sent.
+    return await _proxy_market_submission(
+        request,
+        method="POST",
+        upstream_path="/preflight",
+        forward_body=True,
+        requires_verified_email=True,
+    )
+
+
 @router.post("/submissions/repository-preview")
 async def market_submission_repository_preview(request: Request) -> Response:
     return await _proxy_market_submission(
@@ -1097,6 +1109,27 @@ async def market_submission_submit(request: Request, submission_id: str) -> Resp
         upstream_path=f"/{_validated_submission_id(submission_id)}/submit",
         forward_body=True,
         requires_verified_email=True,
+    )
+
+
+@router.post("/submissions/{submission_id}/revision")
+async def market_submission_create_revision(request: Request, submission_id: str) -> Response:
+    return await _proxy_market_submission(
+        request,
+        method="POST",
+        upstream_path=f"/{_validated_submission_id(submission_id)}/revision",
+        forward_body=True,
+        requires_verified_email=True,
+    )
+
+
+@router.get("/submissions/{submission_id}/workspace")
+async def market_submission_workspace(request: Request, submission_id: str) -> Response:
+    # A login-only Market route; no query parameter is forwarded.
+    return await _proxy_market_submission(
+        request,
+        method="GET",
+        upstream_path=f"/{_validated_submission_id(submission_id)}/workspace",
     )
 
 

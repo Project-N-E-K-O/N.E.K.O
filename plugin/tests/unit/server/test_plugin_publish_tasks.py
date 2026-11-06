@@ -332,10 +332,57 @@ async def test_market_notify_verifies_the_release_before_asking(
         assert response.status_code == 202
     finished = await _wait_terminal(record.project_id)
     assert finished["status"] == "succeeded"
-    assert fake.calls[0][-2:] == [
+    assert fake.calls[0][-4:] == [
         "market",
         "https://github.com/owner/repo/releases/tag/v0.1.0",
+        "--market-wait",
+        "1800",
     ]
+
+
+@pytest.mark.parametrize(
+    ("lines", "returncode", "status", "market_status", "candidate"),
+    [
+        (["[OK] GitHub Release ready", "[MARKET] status=published"], 0, "succeeded", "published", None),
+        (["[MARKET] status=pending_review candidate=17"], 0, "succeeded", "pending_review", 17),
+        (["[MARKET] status=rejected candidate=9"], 1, "failed", "rejected", 9),
+        (["[OK] done"], 0, "succeeded", None, None),
+    ],
+)
+async def test_the_task_reports_the_market_status_line(
+    app, tmp_path, monkeypatch, no_psutil, lines, returncode, status, market_status, candidate
+):
+    record = store.add_record(tmp_path)
+    _ready_gate(monkeypatch, tmp_path)
+    monkeypatch.setattr(tasks.subprocess, "Popen", _scripted_process(lines, returncode))
+    async with client(app) as http:
+        await http.post(
+            f"/plugin-projects/{record.project_id}/publish", json={"mode": "github_and_market"}
+        )
+        await _wait_terminal(record.project_id)
+        latest = (await http.get(f"/plugin-projects/{record.project_id}/publish-task")).json()
+    assert latest["status"] == status
+    assert latest["market_status"] == market_status
+    assert latest["market_candidate_id"] == candidate
+    if returncode:
+        # A rejection keeps the existing failure message; there is no [FAIL] line here.
+        assert latest["message"] == "publish exited with code 1"
+
+
+async def test_a_running_task_has_no_market_status_yet(app, tmp_path, monkeypatch, no_psutil):
+    record = store.add_record(tmp_path)
+    _ready_gate(monkeypatch, tmp_path)
+    monkeypatch.setattr(tasks.subprocess, "Popen", _blocking_process())
+    async with client(app) as http:
+        started = (
+            await http.post(f"/plugin-projects/{record.project_id}/publish", json={"mode": "github"})
+        ).json()
+        assert started["market_status"] is None
+        assert started["market_candidate_id"] is None
+        await http.post(
+            f"/plugin-projects/{record.project_id}/publish-task/{started['task_id']}/cancel"
+        )
+    await _wait_terminal(record.project_id)
 
 
 async def test_publish_status_route_rejects_an_unknown_mode(app, tmp_path):
@@ -472,6 +519,24 @@ async def test_github_publish_gives_the_cli_a_release_wait_inside_the_server_bud
     await _wait_terminal(record.project_id)
     argv = fake.calls[0]
     assert argv[argv.index("--timeout") + 1] == "700"
+    assert "--market-wait" not in argv
+
+
+async def test_publish_to_the_market_gives_the_cli_its_market_wait(
+    app, tmp_path, monkeypatch, no_psutil
+):
+    record = store.add_record(tmp_path)
+    _ready_gate(monkeypatch, tmp_path)
+    monkeypatch.setenv("NEKO_PLUGIN_MARKET_WAIT", "600")
+    fake = _scripted_process(["[MARKET] status=published", "[OK] done"])
+    monkeypatch.setattr(tasks.subprocess, "Popen", fake)
+    async with client(app) as http:
+        await http.post(
+            f"/plugin-projects/{record.project_id}/publish", json={"mode": "github_and_market"}
+        )
+    await _wait_terminal(record.project_id)
+    argv = fake.calls[0]
+    assert argv[argv.index("--market-wait") + 1] == "600"
 
 
 async def test_failure_message_carries_the_git_cause_line(app, tmp_path, monkeypatch, no_psutil):
