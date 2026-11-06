@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import CompactExportHistoryPanel, { isCompactExportMessageSelectable } from './CompactExportHistoryPanel';
 import { parseChatMessage } from './message-schema';
+import compactChatStyles from './styles.css?raw';
 
 const message = parseChatMessage({
   id: 'compact-export-message',
@@ -348,13 +349,40 @@ describe('CompactExportHistoryPanel', () => {
     }
   });
 
-  it('drops the history resize bar hit-region when a choice prompt sits above', () => {
-    const { container } = renderPanel({ previewOpen: false, visibilityState: 'open', choiceLayerAbove: true });
-    const bar = container.querySelector('.compact-export-history-resize-bar');
-    expect(bar).not.toBeNull();
-    expect(bar?.getAttribute('data-compact-hit-region-id')).toBeNull();
-    expect(bar?.getAttribute('data-compact-hit-region')).toBeNull();
-    expect(bar?.getAttribute('data-compact-hit-region-kind')).toBeNull();
+  it('hides the covered history resize bar without collapsing its layout and restores it after choices close', () => {
+    const style = document.createElement('style');
+    style.textContent = compactChatStyles;
+    document.head.append(style);
+    try {
+      const props = createPanelProps({ previewOpen: false, visibilityState: 'open' });
+      const { container, rerender } = render(<CompactExportHistoryPanel {...props} />);
+      const bar = container.querySelector<HTMLElement>('.compact-export-history-resize-bar')!;
+      expect(bar).not.toBeNull();
+      const layout = () => {
+        const computed = window.getComputedStyle(bar);
+        return { display: computed.display, height: computed.height, margin: computed.margin, flex: computed.flex };
+      };
+      const initialLayout = layout();
+      expect(initialLayout.display).not.toBe('none');
+      expect(window.getComputedStyle(bar).visibility).toBe('visible');
+
+      rerender(<CompactExportHistoryPanel {...props} choiceLayerAbove />);
+      expect(window.getComputedStyle(bar).visibility).toBe('hidden');
+      expect(layout()).toEqual(initialLayout);
+      expect(bar).not.toHaveAttribute('data-compact-hit-region-id');
+      expect(bar).not.toHaveAttribute('data-compact-hit-region');
+      expect(bar).not.toHaveAttribute('data-compact-hit-region-kind');
+
+      rerender(<CompactExportHistoryPanel {...props} choiceLayerAbove={false} />);
+      expect(container.querySelector('.compact-export-history-resize-bar')).toBe(bar);
+      expect(window.getComputedStyle(bar).visibility).toBe('visible');
+      expect(layout()).toEqual(initialLayout);
+      expect(bar).toHaveAttribute('data-compact-hit-region-id', 'history:resize');
+      expect(bar).toHaveAttribute('data-compact-hit-region', 'true');
+      expect(bar).toHaveAttribute('data-compact-hit-region-kind', 'resize');
+    } finally {
+      style.remove();
+    }
   });
 
   it('pins the history list to bottom when returning from preview', () => {
