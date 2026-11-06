@@ -210,7 +210,7 @@ def test_latest_assistant_timestamps_stay_aligned_with_messages(
     taken from a skipped user row, or a list compacted past a NULL, would
     attach a reply to the wrong sitting.
     """
-    from datetime import datetime
+    from datetime import datetime, timedelta, timezone
 
     rows = [
         {"session_id": "1", "message": _stored_message("ai", "first"), "timestamp": None},
@@ -227,7 +227,9 @@ def test_latest_assistant_timestamps_stay_aligned_with_messages(
         {
             "session_id": "4",
             "message": _stored_message("ai", "third"),
-            "timestamp": "2026-01-02T08:15:00+00:00",
+            # An unusual offset on purpose: it differs from the local zone of
+            # any machine running this, so dropping it without converting fails.
+            "timestamp": "2026-01-02T08:15:00+05:45",
         },
     ]
     manager, engine = _create_manager(timeindex_module, tmp_path, rows)
@@ -236,11 +238,12 @@ def test_latest_assistant_timestamps_stay_aligned_with_messages(
     finally:
         engine.dispose()
 
+    offset = timezone(timedelta(hours=5, minutes=45))
     assert result.messages == ["first", "second", "third"]
     assert result.timestamps == [
         None,
         datetime(2026, 1, 1, 10, 0, 0),
-        datetime(2026, 1, 2, 8, 15, 0),
+        datetime(2026, 1, 2, 8, 15, 0, tzinfo=offset).astimezone().replace(tzinfo=None),
     ]
 
 

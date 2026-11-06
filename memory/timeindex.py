@@ -75,7 +75,13 @@ class LatestAssistantTexts:
 
 
 def _coerce_row_timestamp(value: object) -> datetime | None:
-    """A stored ``timestamp`` cell as a naive datetime, or None if unusable."""
+    """A stored ``timestamp`` cell as a naive LOCAL datetime, or None if unusable.
+
+    Rows written by this process are naive local time. A value carrying an
+    offset (import and migration paths) is converted to local time first:
+    dropping the offset alone would keep its foreign wall-clock time and put
+    the reply hours away from its neighbours.
+    """
     if isinstance(value, datetime):
         parsed = value
     elif isinstance(value, str):
@@ -88,7 +94,7 @@ def _coerce_row_timestamp(value: object) -> datetime | None:
                 return None
     else:
         return None
-    return parsed.replace(tzinfo=None) if parsed.tzinfo is not None else parsed
+    return parsed.astimezone().replace(tzinfo=None) if parsed.tzinfo is not None else parsed
 
 
 _ANTI_REPEAT_RESPONSE_ID_KEY = "anti_repeat_response_id"

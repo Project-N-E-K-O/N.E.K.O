@@ -260,10 +260,19 @@ class _MessageUnits:
         return found
 
 
+@dataclass(frozen=True)
+class _GrownPhrase:
+    """A window grown into its phrase: the whole of it, and the part shown."""
+
+    whole: str      # folded; what dedup and exclusion judge
+    shown: str      # folded; at most _MAX_PHRASE_* units, around the window
+    surface: str    # ``shown`` as she wrote it
+
+
 def _maximal_phrase(
     normalized: str, messages: Sequence[_MessageUnits]
-) -> Optional[tuple[str, str]]:
-    """Grow a mined window into the whole phrase it sits in: ``(folded, surface)``.
+) -> Optional[_GrownPhrase]:
+    """Grow a mined window into the whole phrase it sits in.
 
     The miner emits fixed-size windows, so a catchphrase longer than its
     largest window comes back as several shifted ones, and a name at either
@@ -272,6 +281,11 @@ def _maximal_phrase(
     actually says, so dedup and exclusion judge that rather than a slice of
     it. The grown phrase occurs exactly where the window does, so the
     window's counts still hold. None when the window cannot be located.
+
+    Growth itself is uncapped -- only the part SHOWN is cut to a prompt line.
+    Capping the growth let a name past the cap escape exclusion: the head of
+    a long line was listed while the windows carrying the name, overlapping
+    it, were dropped as duplicates.
     """
     spaced = " " in normalized
     size = len(normalized.split(" ")) if spaced else len(normalized)
@@ -294,14 +308,22 @@ def _maximal_phrase(
             seen.add(unit[0])
         return len(seen) == 1
 
-    while occurrences[0][2] - occurrences[0][1] < limit and _all_agree(lambda s, e: s - 1):
+    window_end = occurrences[0][2]
+    while _all_agree(lambda s, e: s - 1):
         occurrences = [(units, start - 1, end) for units, start, end in occurrences]
-    while occurrences[0][2] - occurrences[0][1] < limit and _all_agree(lambda s, e: e):
+    while _all_agree(lambda s, e: e):
         occurrences = [(units, start, end + 1) for units, start, end in occurrences]
     units, start, end = occurrences[0]
+    # The shown part: as much context before the window as fits, then after.
+    shown_start = max(start, window_end - limit)
+    shown_end = min(end, shown_start + limit)
     joiner = " " if spaced else ""
-    span = units[start:end]
-    return joiner.join(unit[0] for unit in span), joiner.join(unit[1] for unit in span)
+    shown = units[shown_start:shown_end]
+    return _GrownPhrase(
+        whole=joiner.join(unit[0] for unit in units[start:end]),
+        shown=joiner.join(unit[0] for unit in shown),
+        surface=joiner.join(unit[1] for unit in shown),
+    )
 
 
 def _is_sublist(needle: Sequence[str], haystack: Sequence[str]) -> bool:
@@ -518,23 +540,31 @@ def compute_entries(
         if len(entries) >= max_items:
             break
         lines = entry.pop("_lines")
-        # Checked before growing too: growing only widens a phrase, so a
-        # fragment of a claimed phrase stays claimed, and skipping it here
-        # spares the growth scan for every one of its many fragments.
+        # A window inside a phrase already claimed (listed or excluded) is a
+        # fragment of it. Skipping it before growing spares the growth scan
+        # for every one of the many fragments one long line produces.
         if claims.overlaps(entry["normalized_phrase"]):
             continue
         spaced = " " in entry["normalized_phrase"]
         grown = _maximal_phrase(
             entry["normalized_phrase"], [_split(line, spaced) for line in lines],
         )
+        whole = entry["normalized_phrase"]
         if grown is not None:
-            entry["normalized_phrase"], entry["phrase"] = grown
-        # Grown into a claimed phrase: the same wording reached from a
-        # lower-ranked window. It is skipped but still claimed, so its sibling
-        # windows stop at the cheap check above instead of each growing again.
-        duplicate = grown is not None and claims.overlaps(entry["normalized_phrase"])
-        claims.add(entry["normalized_phrase"])
-        if duplicate or exclusions.excludes(entry["normalized_phrase"], language):
+            whole = grown.whole
+            entry["normalized_phrase"], entry["phrase"] = grown.shown, grown.surface
+        # The WHOLE phrase is claimed, so every other window of the same line
+        # stops at the cheap check above. A window that grows into a claimed
+        # phrase without overlapping it is not a sibling: its occurrences all
+        # share that context, which happens when a second habit is fused onto
+        # the first with no punctuation between them, and it is kept.
+        claims.add(whole)
+        # The whole phrase decides: a name anywhere in it excludes the line,
+        # not only one inside the part that would be shown. The shown part is
+        # checked too, since it alone may be what her card spells out.
+        if exclusions.excludes(whole, language) or exclusions.excludes(
+            entry["normalized_phrase"], language
+        ):
             continue
         entries.append(entry)
     return entries, source

@@ -306,6 +306,23 @@ def test_a_name_at_the_edge_of_a_long_phrase_is_still_caught():
     assert _compute(replies, protected_terms=["碳基生物"]) == []
 
 
+@pytest.mark.parametrize(
+    "line",
+    [
+        "今天我们一起去公园散步看花吃冰淇淋然后回家碳基生物",
+        "今天我们一起去公园散步碳基生物看花吃冰淇淋然后回家",
+    ],
+    ids=["name-at-end", "name-in-middle"],
+)
+def test_a_name_beyond_the_shown_part_still_excludes_the_line(line):
+    """Exclusion judges the whole shared line, not the 16 characters it would show."""
+    assert len(line) > hp._MAX_PHRASE_CHARACTERS
+    follow_ups = ["还有别的事吗？", "快去睡觉吧！", "下次早点说。"]
+    replies = _sessions(*[[f"{line}。{tail}"] for tail in follow_ups])
+    assert _compute(replies), "without the name protected the line is a habit"
+    assert _compute(replies, protected_terms=["碳基生物"]) == []
+
+
 def test_a_line_longer_than_the_growth_cap_is_still_one_entry():
     """Windows far apart on one long line grow into overlapping spans: one entry."""
     line = "今天我们一起去公园散步看花吃冰淇淋然后回家"
@@ -469,7 +486,31 @@ def test_a_reply_repeated_verbatim_does_not_rescan_per_fragment(monkeypatch):
     )
     assert _compute(replies, card_text=text) == [], "every phrase is in the card"
     assert len(splits) <= 2 * len(replies)
-    assert len(grows) <= len(text) // 4, f"{len(grows)} growth scans"
+    assert len(grows) <= 2, f"{len(grows)} growth scans: one line, one growth"
+
+
+def test_each_reply_is_split_once_for_all_its_phrases(monkeypatch):
+    """Phrases mined from the same replies reuse one split of each reply."""
+    reply = "。".join(_DISTINCT_PHRASES) + "。"
+    replies = _three_sessions(reply)
+    splits = []
+    real_split = hp._MessageUnits.of
+    monkeypatch.setattr(
+        hp._MessageUnits, "of", classmethod(lambda cls, *a: splits.append(1) or real_split(*a)),
+    )
+    assert len(_compute(replies)) == HABITUAL_PHRASE_MAX_ITEMS
+    assert len(splits) <= len(replies)
+
+
+def test_a_second_habit_fused_onto_the_first_is_kept():
+    """No punctuation between two habits: the second still stands on its own."""
+    replies = _sessions(
+        *[["今天也要加油哦我们一起去吃饭吧。"]] * HABITUAL_PHRASE_MIN_SESSIONS,
+        *[["今天也要加油哦！"]] * 3,
+    )
+    phrases = _phrases(_compute(replies))
+    assert phrases[0] == "今天也要加油哦"
+    assert any("我们一起去吃饭吧" in phrase for phrase in phrases[1:])
 
 
 class _History:
