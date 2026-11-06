@@ -981,7 +981,7 @@ def test_what_she_brought_up_moves_to_recently_mentioned_until_it_cools_down(tmp
     trip = _add(store, _candidate("主人周六去北京", 3, kind="fact"))
 
     found = store.record_mentions(
-        _NAME, "那这个蛋糕里有花生，你可千万别吃哦", stop_names=_STOP_NAMES, now=_T0 + 1,
+        _NAME, "你对花生过敏，这个蛋糕可千万别吃哦", stop_names=_STOP_NAMES, now=_T0 + 1,
     )
 
     assert found == [allergy["id"]]
@@ -1003,17 +1003,64 @@ def test_what_she_brought_up_moves_to_recently_mentioned_until_it_cools_down(tmp
 
 def test_the_names_alone_are_no_mention(tmp_path):
     store = _store(tmp_path)
-    _add(store, _candidate("主人对花生过敏", 365, kind="fact"))
+    _add(store, _candidate("小天答应给主人推荐一本书", 14, kind="commitment"))
 
     assert store.record_mentions(
         _NAME, "主人早上好呀，小天今天也很精神", stop_names=_STOP_NAMES, now=_T0 + 1,
     ) == []
 
 
+@pytest.mark.parametrize(("text", "reply", "mentioned"), [
+    ("小天答应明天提醒主人带伞", "明天见啦", False),
+    ("小天答应明天提醒主人带伞", "明天记得带伞哦", True),
+    ("Tian promised to remind you to bring an umbrella tomorrow",
+     "Would you like some tea? See you tomorrow", False),
+    ("Tian promised to remind you to bring an umbrella tomorrow",
+     "Don't forget your umbrella tomorrow!", True),
+])
+def test_sharing_one_word_is_small_talk_not_a_mention(tmp_path, text, reply, mentioned):
+    store = _store(tmp_path)
+    entry = _add(store, _candidate(text, 3, kind="commitment"))
+
+    found = store.record_mentions(_NAME, reply, stop_names=_STOP_NAMES + ["Tian"], now=_T0 + 1)
+
+    assert found == ([entry["id"]] if mentioned else [])
+
+
+def test_a_mention_of_words_replaced_meanwhile_is_not_recorded(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    exam = _add(store, _candidate("主人周三考试", 14, kind="fact"))
+    as_read = store.get_active(_NAME, now=_T0 + 1)
+    # The exam moves while her reply about Wednesday is being matched.
+    store.apply_decisions(
+        _NAME, [_candidate("主人的考试改到周五了", 14, kind="fact")],
+        [("replace", exam["id"])], now=_T0 + 2,
+    )
+    monkeypatch.setattr(store, "get_active", lambda name, now=None: as_read)
+
+    assert store.record_mentions(_NAME, "周三考试加油", stop_names=_STOP_NAMES, now=_T0 + 3) == []
+    monkeypatch.undo()
+    [entry] = store.get_active(_NAME, now=_T0 + 3)
+    assert (entry["text"], entry["mention_count"]) == ("主人的考试改到周五了", 0)
+
+
+def test_a_long_promise_keeps_its_condition(tmp_path):
+    from config import PINNED_FACT_TEXT_MAX_TOKENS
+    from utils.tokenize import count_tokens
+
+    text = "小天答应" + "把那个讲到一半的关于森林里小狐狸找妈妈的长故事" * 6 + "讲完"
+    [candidate] = pin_candidates_from_extracted(
+        [_promise(text, pin_condition="等主人考完试")], default_source="ai_disclosure",
+    )
+
+    assert candidate["text"].endswith("（等主人考完试）")
+    assert count_tokens(candidate["text"]) <= PINNED_FACT_TEXT_MAX_TOKENS
+
+
 def test_raising_a_matter_again_after_its_cooldown_doubles_the_next_one(tmp_path):
     store = _store(tmp_path)
     allergy = _add(store, _candidate("主人对花生过敏", 365, kind="fact"))
-    say = "记得别碰花生"
+    say = "你对花生过敏，记得别碰"
     base = PINNED_MENTION_COOLDOWN_HOURS
 
     store.record_mentions(_NAME, say, stop_names=_STOP_NAMES, now=_T0)
@@ -1072,7 +1119,7 @@ def test_her_private_replies_are_checked_for_pinned_mentions(tmp_path, monkeypat
         "memory.stop_names.acollect_stop_names", AsyncMock(return_value=_STOP_NAMES),
     )
 
-    asyncio.run(post_turn._record_pinned_mentions(_NAME, "蛋糕里有花生，别吃哦"))
+    asyncio.run(post_turn._record_pinned_mentions(_NAME, "你对花生过敏，蛋糕别吃哦"))
 
     [entry] = store.get_active(_NAME)
     assert (entry["id"], entry["mention_count"]) == (allergy["id"], 1)

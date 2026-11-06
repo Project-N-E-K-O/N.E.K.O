@@ -173,6 +173,11 @@ _STATUSES = frozenset({STATUS_OPEN, STATUS_DONE, STATUS_EXPIRED})
 # Render section of the entries in their mention cooldown (both kinds).
 _SECTION_MENTIONED = "mentioned"
 
+# A reply has brought an entry up when it repeats this many distinct content
+# pieces of it; words of spaced scripts shorter than this never count.
+_MENTION_MIN_HITS = 2
+_MENTION_MIN_WORD_CHARS = 4
+
 ACTION_ADD = "add"
 ACTION_REPLACE = "replace"
 ACTION_RENEW = "renew"
@@ -289,6 +294,47 @@ def due_date(entry: Dict[str, Any]) -> str:
     return _format_date(entry["due_at"])
 
 
+def _mention_text_key(text: str, stop_names: Optional[List[str]]) -> str:
+    from memory.stop_names import strip_stop_names
+
+    return (strip_stop_names(text, stop_names) if stop_names else text).casefold()
+
+
+def _mention_keywords(text: str, stop_names: Optional[List[str]]) -> set[str]:
+    """The content pieces of an entry a reply has to repeat to have mentioned it.
+
+    Character pairs for scripts written without spaces (CJK, kana, hangul);
+    whole words of at least ``_MENTION_MIN_WORD_CHARS`` characters for the
+    rest, so that "to", "you" or "не" never count.
+    """
+    keywords: set[str] = set()
+    for run in re.findall(r"\w+", _mention_text_key(text, stop_names)):
+        piece = ""
+        for ch in run + " ":
+            if piece and (_is_wide(ch) != _is_wide(piece[-1]) or ch == " "):
+                if _is_wide(piece[-1]):
+                    keywords.update(piece[i:i + 2] for i in range(len(piece) - 1))
+                elif len(piece) >= _MENTION_MIN_WORD_CHARS:
+                    keywords.add(piece)
+                piece = ""
+            if ch != " ":
+                piece += ch
+    return keywords
+
+
+def _mentions(keywords: set[str], reply_key: str) -> bool:
+    """Whether a reply repeats enough of an entry's content pieces to have brought it up.
+
+    At least ``_MENTION_MIN_HITS`` distinct pieces (all of them for an entry
+    with fewer): one shared word ("tomorrow", "明天") is small talk, not the
+    matter.
+    """
+    if not keywords:
+        return False
+    hits = sum(1 for keyword in keywords if keyword in reply_key)
+    return hits >= min(_MENTION_MIN_HITS, len(keywords))
+
+
 def _mention_cooldown_until(entry: Dict[str, Any]) -> Optional[float]:
     """Until when an entry she brought up stays off her own initiative; None if never.
 
@@ -399,16 +445,21 @@ def _with_condition(text: Any, condition: Any) -> Any:
     """A promise's text carrying the condition it waits for.
 
     The model may give the condition only in ``pin_condition``; dropped, the
-    promise would read as due right away. Appended unless the text says it.
+    promise would read as due right away. Appended unless the text says it,
+    with room kept for it within ``PINNED_FACT_TEXT_MAX_TOKENS``: a long text
+    is cut before the condition, never the condition itself.
     """
     if not isinstance(text, str) or not isinstance(condition, str):
         return text
+    text = " ".join(text.split())
     condition = " ".join(condition.split())
-    if not condition or _text_key(condition) in _text_key(" ".join(text.split())):
+    if not text or not condition or _text_key(condition) in _text_key(text):
         return text
-    if any(_is_wide(ch) for ch in text + condition):
-        return f"{text}（{condition}）"
-    return f"{text} ({condition})"
+    condition = truncate_to_tokens(condition, PINNED_FACT_TEXT_MAX_TOKENS // 2)
+    opening, closing = ("（", "）") if any(_is_wide(ch) for ch in text + condition) else (" (", ")")
+    # One token of slack: joining two pieces can cost a token at the seam.
+    room = PINNED_FACT_TEXT_MAX_TOKENS - count_tokens(opening + condition + closing) - 1
+    return f"{truncate_to_tokens(text, max(room, 1))}{opening}{condition}{closing}"
 
 
 def pin_candidates_from_extracted(
@@ -1046,20 +1097,21 @@ class PinnedFactStore:
     ) -> List[str]:
         """Note the live entries one of her replies brought up; returns their ids.
 
-        The same local keyword match the persona's repetition check uses,
-        with the master's and the character's names stripped first. A mention
-        outside the entry's cooldown counts one more mention (doubling the
-        next cooldown); one inside it only moves the cooldown along. Like
-        ``surfaced_at`` this is bookkeeping: ``rev`` stays.
+        A local match (see _mentions), with the master's and the character's
+        names stripped first. A mention outside the entry's cooldown counts
+        one more mention (doubling the next cooldown); one inside it only
+        moves the cooldown along. The match is made on the text as read, so it
+        is applied only while the entry's ``rev`` is still the one read: an
+        entry replaced meanwhile is news, not something already mentioned.
+        Like ``surfaced_at`` this is bookkeeping: ``rev`` stays.
         """
         if not name or not response_text:
             return []
-        from memory.persona import _is_mentioned
-
         ts = float(now if now is not None else _now())
+        reply_key = _mention_text_key(response_text, stop_names)
         hit = {
-            entry["id"] for entry in self.get_active(name, now=ts)
-            if _is_mentioned(entry["text"], response_text, stop_names=stop_names)
+            entry["id"]: entry["rev"] for entry in self.get_active(name, now=ts)
+            if _mentions(_mention_keywords(entry["text"], stop_names), reply_key)
         }
         if not hit:
             return []
@@ -1067,7 +1119,7 @@ class PinnedFactStore:
             facts, history, reviewed_at = self._read_unlocked(name)
             found = []
             for entry in facts:
-                if entry["id"] in hit and _is_live(entry, ts):
+                if hit.get(entry["id"]) == entry["rev"] and _is_live(entry, ts):
                     if not _in_mention_cooldown(entry, ts):
                         entry["mention_count"] += 1
                     entry["mentioned_at"] = ts
