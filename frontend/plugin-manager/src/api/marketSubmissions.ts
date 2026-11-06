@@ -47,7 +47,7 @@ export interface MarketSubmission {
   } | null
 }
 
-/** Market `PaginatedResponse` of `GET /mine`. */
+/** Submission page; multi-page lookups are combined into one client page. */
 export interface MarketSubmissionPage {
   items: MarketSubmission[]
   total: number
@@ -275,10 +275,19 @@ const submissionPath = (id: number, action: string) =>
 /**
  * List the signed-in account's submissions whose repository URL contains
  * `repository` (`owner/repo`); the Market matches `q` against `repo_url`.
+ * Fetch all matching pages before the panel applies exact repository matching.
  */
-export function listMarketSubmissions(repository: string): Promise<MarketSubmissionPage> {
+export async function listMarketSubmissions(repository: string): Promise<MarketSubmissionPage> {
   const query = new URLSearchParams({ q: repository, page_size: '100' })
-  return call(`/market/submissions/mine?${query.toString()}`)
+  const first = await call<MarketSubmissionPage>(`/market/submissions/mine?${query.toString()}`)
+  if (first.total_pages <= 1) return first
+  const items = [...first.items]
+  for (let page = first.page + 1; page <= first.total_pages; page++) {
+    query.set('page', String(page))
+    const next = await call<MarketSubmissionPage>(`/market/submissions/mine?${query.toString()}`)
+    items.push(...next.items)
+  }
+  return { items, total: items.length, page: 1, page_size: items.length, total_pages: 1 }
 }
 
 /**

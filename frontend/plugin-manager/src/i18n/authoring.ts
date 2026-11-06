@@ -28,7 +28,7 @@ const en = {
   helpChecks: 'Understand your checks',
   helpPublish: 'Share your plugin',
   helpStartBody:
-    'Create the standard project, open it in your editor and start with one async entry. Keep identity and source together.',
+    'Use New plugin in the workbench to create a project. The command below is for a source checkout, run from the N.E.K.O root; --output selects the plugin directory, named after its ID.',
   helpChecksBody:
     'Errors block the relevant workflow. Warnings need judgment. A passing static check does not replace entry tests or Hosted UI verification. Reports belong to a source snapshot.',
   helpPublishBody:
@@ -388,7 +388,7 @@ export const authoringMessages = {
     helpChecks: '读懂检查结果',
     helpPublish: '分享你的插件',
     helpStartBody:
-      '创建标准项目，在自己的编辑器中从一个 async 入口开始。插件身份和源码保持在同一个项目中。',
+      '优先使用工作台的「新建插件」。下方命令用于源码版，请在 N.E.K.O 根目录执行；--output 指定源码目录，目录名须与插件 ID 一致。',
     helpChecksBody:
       '错误会阻止对应流程，警告需要结合实际判断。静态检查通过后，仍需测试入口与 Hosted UI。每份报告都对应一份源码快照。',
     helpPublishBody:
@@ -735,7 +735,7 @@ export const authoringMessages = {
     helpChecks: '讀懂檢查結果',
     helpPublish: '分享你的外掛',
     helpStartBody:
-      '建立標準專案，在自己的編輯器中從一個 async 入口開始。身分與原始碼保留在同一專案。',
+      '優先使用工作台的「新建插件」。下方命令用於原始碼版，請在 N.E.K.O 根目錄執行；--output 指定原始碼目錄，目錄名須與插件 ID 一致。',
     helpChecksBody:
       '錯誤會阻止對應流程，警告需要結合實際判斷。靜態檢查通過後，仍需測試入口與 Hosted UI。每份報告都對應一份原始碼快照。',
     helpPublishBody:
@@ -1082,7 +1082,7 @@ export const authoringMessages = {
     helpChecks: 'チェックを理解する',
     helpPublish: 'プラグインを共有',
     helpStartBody:
-      '標準プロジェクトを作成し、エディターで async エントリから始めます。ID とソースを同じプロジェクトで管理します。',
+      'ワークベンチの新規プラグインを使って作成します。下のコマンドはソース版の N.E.K.O ルートで実行し、--output に ID と同名のソースディレクトリを指定します。',
     helpChecksBody:
       'エラーは処理を止め、警告は判断を促します。静的チェックは実行や Hosted UI テストの代わりにはなりません。',
     helpPublishBody:
@@ -1439,7 +1439,7 @@ export const authoringMessages = {
     helpChecks: '검사 이해하기',
     helpPublish: '플러그인 공유',
     helpStartBody:
-      '표준 프로젝트를 만들고 편집기에서 async 진입점부터 시작하세요. ID와 소스를 같은 프로젝트에서 관리하세요.',
+      '워크벤치의 새 플러그인으로 생성하세요. 아래 명령은 소스 버전의 N.E.K.O 루트에서 실행하며, --output에 ID와 같은 이름의 소스 디렉터리를 지정합니다.',
     helpChecksBody:
       '오류는 해당 과정을 막고 경고는 판단이 필요합니다. 정적 검사는 실행과 Hosted UI 테스트를 대신하지 않습니다.',
     helpPublishBody:
@@ -1792,7 +1792,7 @@ export const authoringMessages = {
     helpChecks: 'Как читать проверки',
     helpPublish: 'Распространение плагина',
     helpStartBody:
-      'Создайте проект и начните с async-точки входа в своём редакторе. Храните идентификатор и код вместе.',
+      'Создавайте проект через New plugin в рабочей области. Команда ниже запускается из корня исходников N.E.K.O; --output задаёт каталог с именем ID плагина.',
     helpChecksBody:
       'Ошибки блокируют этап, предупреждения требуют оценки. Статическая проверка не заменяет тестирование поведения и Hosted UI.',
     helpPublishBody:
@@ -2148,7 +2148,7 @@ export const authoringMessages = {
     helpChecks: 'Entender los resultados',
     helpPublish: 'Compartir tu plugin',
     helpStartBody:
-      'Crea el proyecto y empieza con una entrada async en tu editor. Mantén la identidad y el código en el mismo proyecto.',
+      'Usa Nuevo plugin en el taller. El comando siguiente se ejecuta desde la raíz del código fuente de N.E.K.O; --output indica el directorio, cuyo nombre debe coincidir con el ID.',
     helpChecksBody:
       'Los errores bloquean y los avisos requieren criterio. Las comprobaciones estáticas no sustituyen las pruebas de entradas o Hosted UI.',
     helpPublishBody:
@@ -2503,7 +2503,7 @@ export const authoringMessages = {
     helpChecks: 'Entender verificações',
     helpPublish: 'Compartilhar seu plugin',
     helpStartBody:
-      'Crie um projeto padrão e comece com uma entrada async no editor. Mantenha identidade e código no mesmo projeto.',
+      'Use Novo plugin na bancada. O comando abaixo é executado na raiz do código-fonte do N.E.K.O; --output define o diretório com o mesmo nome do ID do plugin.',
     helpChecksBody:
       'Erros bloqueiam a etapa; avisos exigem avaliação. Verificações estáticas não substituem testes de entradas e Hosted UI.',
     helpPublishBody:

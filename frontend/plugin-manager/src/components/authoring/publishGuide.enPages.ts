@@ -58,6 +58,8 @@ export const enPages: Record<PublishPageId, PageGuide> = {
           'With gh installed and signed in, click Create GitHub repository below: it creates a public repository under your account and connects it. Without gh, create an empty repository on github.com (do not add a README), then run these with your repository address:',
         ],
         commands: [
+          { label: 'For an existing folder without Git', command: 'git init -b {branch}' },
+          { label: 'First commit', command: 'git add .\ngit commit -m "Initial plugin"' },
           { label: 'Connect the GitHub repository', command: 'git remote add origin https://github.com/<your-name>/n.e.k.o_plugin_{pluginId}.git' },
           { label: 'First upload', command: 'git push -u origin {branch}' },
         ],

@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createApp, defineComponent, h, markRaw, nextTick } from 'vue'
+import { createApp, defineComponent, h, markRaw, nextTick, ref } from 'vue'
 import { createI18n } from 'vue-i18n'
 import ElementPlus from 'element-plus'
 import AuthoringProjectSubmission from './AuthoringProjectSubmission.vue'
@@ -163,11 +163,13 @@ async function settle() {
 }
 
 async function mount(props: { pushedHead?: string | null } = {}) {
+  const panel = ref<InstanceType<typeof AuthoringProjectSubmission>>()
   const container = document.createElement('div')
   document.body.append(container)
   const app = createApp({
     render: () =>
       h(AuthoringProjectSubmission, {
+        ref: panel,
         githubRepository: 'owner/repo',
         pluginId: 'repo_plugin',
         pluginName: 'Repo plugin',
@@ -192,7 +194,7 @@ async function mount(props: { pushedHead?: string | null } = {}) {
     container.remove()
   }
   await flush()
-  return container
+  return panel.value!
 }
 
 async function click(text: string, { last = false } = {}) {
@@ -448,6 +450,32 @@ describe('Market submission panel', () => {
     )
     await mount()
     expect(tagChip('legacy')?.classList.contains('is-checked')).toBe(true)
+    tagChip('legacy')!.click()
+    await flush()
+    expect(tagChip('legacy')?.classList.contains('is-checked')).toBe(false)
+    tagChip('legacy')!.click()
+    await flush()
+    expect(tagChip('legacy')?.classList.contains('is-checked')).toBe(true)
+  })
+
+  it('refresh prefers the open submission over the previously selected closed one', async () => {
+    const closed = item({ status: 'closed', terminal_kind: 'author_withdrawn' })
+    market.listMarketSubmissions.mockResolvedValueOnce(page([closed]))
+    const panel = await mount()
+    market.listMarketSubmissions.mockResolvedValueOnce(page([closed, item({ id: 9, status: 'submitted' })]))
+    await panel.reload()
+    await flush()
+    expect(states.at(-1)?.phase).toBe('submitted')
+  })
+
+  it('refresh retries a failed zone request', async () => {
+    market.listMarketZones.mockRejectedValueOnce(new Error('offline'))
+    const panel = await mount()
+    expect(document.body.textContent).toContain(en.submissionZonesLoadFailed)
+    await panel.reload()
+    await flush()
+    expect(market.listMarketZones).toHaveBeenCalledTimes(2)
+    expect(document.body.textContent).not.toContain(en.submissionZonesLoadFailed)
   })
 
   it("blocks submitting a new plugin's draft that has no zone or tags", async () => {
@@ -487,8 +515,8 @@ describe('Market submission panel', () => {
     expect(document.body.textContent).toContain(message)
   })
 
-  it('points the draft at the pushed HEAD, then submits it (never /revision)', async () => {
-    market.listMarketSubmissions.mockResolvedValue(page([item()]))
+  it.each([OLD, HEAD])('pins the draft ref to pushed HEAD when its resolved commit is %s', async (resolved_commit) => {
+    market.listMarketSubmissions.mockResolvedValue(page([item({ current_snapshot: { ...snapshot, resolved_commit, submitted_ref: 'main' } })]))
     market.updateSubmissionDraft.mockResolvedValue(item({ current_snapshot: { ...snapshot, resolved_commit: HEAD } }))
     market.submitSubmission.mockResolvedValue(item({ status: 'submitted' }))
     await mount()
@@ -561,9 +589,11 @@ describe('Market submission panel', () => {
       page([item({ status: 'submitted', current_snapshot: { ...snapshot, resolved_commit: HEAD } })])
     )
     market.createSubmissionRevision.mockResolvedValue(item({ status: 'submitted' }))
-    await mount()
+    const panel = await mount()
     await settle()
     await click(en.submissionNewRevision)
+    market.listMarketSubmissions.mockResolvedValue(page([item({ status: 'submitted', current_snapshot: { ...snapshot, id: 32, resolved_commit: HEAD, tags: ['工具', '其他'] } })]))
+    await panel.reload()
     expect(document.body.textContent).toContain(en.submissionRevisionNoChange)
     await clickTag(en.submissionTagGame)
     await typeNote('Add a tag')
@@ -573,6 +603,8 @@ describe('Market submission panel', () => {
       base_snapshot_id: 31,
       note: 'Add a tag',
       tags: ['工具', '游戏'],
+      submitted_ref: HEAD,
+      resolved_commit: HEAD,
     })
   })
 

@@ -263,7 +263,7 @@ async function confirmSubmit() {
     // at the pushed HEAD and the current plugin ID.
     const snapshot = current.current_snapshot
     const update: SubmissionDraftUpdate = {}
-    if (head.toLowerCase() !== (snapshot?.resolved_commit ?? '').toLowerCase()) {
+    if (snapshot?.submitted_ref !== head || head.toLowerCase() !== (snapshot?.resolved_commit ?? '').toLowerCase()) {
       update.submitted_ref = head
       update.resolved_commit = head
     }

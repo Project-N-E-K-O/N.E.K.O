@@ -210,6 +210,14 @@ describe('publishFlow', () => {
     expect(step(flow, 'market').detail?.key).toBe('marketVersionNotify')
   })
 
+  it.each([
+    ['https://github.com/other/repo/releases/tag/v0.2.0', false],
+    ['https://github.com/OWNER/N.E.K.O_PLUGIN_HELLO_WORLD/releases/tag/v0.2.0', true],
+  ] as const)('associates the Market answer with its repository: %s', (url, listed) => {
+    const flow = flowOf({ status: status({ remote: published }), submission: approved(), task: task({ release_url: url, market_status: 'published' }) })
+    expect(step(flow, 'market').detail?.key).toBe(listed ? 'marketVersionListed' : 'marketVersionNotify')
+  })
+
   it('reads a listed version from the Market when no task survived', () => {
     const flow = flowOf({
       status: status({ remote: published }),

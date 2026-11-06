@@ -593,6 +593,13 @@ describe('authoring workbench backed by the server project list', () => {
     expect(marketVersion.textContent).toContain(en.publishStatusDone)
     expect(marketVersion.textContent).toContain(en.marketVersionListed)
     expect(marketVersion.textContent).not.toContain('comes first')
+    let finish!: (versions: { version: string }[]) => void
+    api.fetchMarketPluginVersions.mockReturnValueOnce(new Promise((resolve) => { finish = resolve }))
+    api.getPluginProjectPublishStatus.mockResolvedValue(publishStatus({ repository: { tag: 'v0.3.0' } }))
+    await click(en.publishRefresh)
+    expect(steps()[4]!.textContent).not.toContain(en.marketVersionListed)
+    finish([{ version: 'v0.2.0' }])
+    await settle()
   })
 
   it('starts the full publish after the second confirmation, with its task in the Release step', async () => {
@@ -1254,7 +1261,7 @@ describe('authoring workbench backed by the server project list', () => {
     expect(api.buildPluginCli).toHaveBeenCalledWith({
       mode: 'single',
       plugin_ref: { root_id: 'project', directory_name: 'hello_world' },
-    })
+    }, { timeout: 300_000 })
     expect(api.downloadPluginPackage).toHaveBeenCalledWith('D:/packages/hello_world.neko-plugin')
     await settle()
     expect(document.body.textContent).toContain(en.buildPackageDone)

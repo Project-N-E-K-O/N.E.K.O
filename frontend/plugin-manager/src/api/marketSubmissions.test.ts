@@ -85,6 +85,18 @@ describe('listMarketSubmissions', () => {
       { retryOnForbidden: false }
     )
   })
+
+  it('loads later matches before exact repository selection', async () => {
+    const earlier = Array.from({ length: 100 }, (_, id) => submission({
+      id, current_snapshot: { ...submission().current_snapshot!, repo_url: `https://github.com/owner/repo-${id}`, repo_name: `repo-${id}` },
+    }))
+    const exact = submission({ id: 101 })
+    fetchBridge.mockResolvedValueOnce(jsonResponse(200, { items: earlier, total: 101, page: 1, page_size: 100, total_pages: 2 }))
+    fetchBridge.mockResolvedValueOnce(jsonResponse(200, { items: [exact], total: 101, page: 2, page_size: 100, total_pages: 2 }))
+    const result = await listMarketSubmissions('owner/repo')
+    expect(result.items.filter((item) => submissionMatchesRepository(item, 'owner/repo'))).toEqual([exact])
+    expect(fetchBridge.mock.calls[1]![0]).toContain('page=2')
+  })
 })
 
 describe('write endpoints', () => {

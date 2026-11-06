@@ -256,7 +256,7 @@ onMounted(() => {
 })
 onUnmounted(stopMarketAuthPolling)
 /** The publish page's single Refresh re-reads the submission through this. */
-defineExpose({ reload: () => reload(submission.value?.id) })
+defineExpose({ reload: () => Promise.all([reload(), zonesError.value ? loadZones() : undefined]) })
 </script>
 
 <style scoped>

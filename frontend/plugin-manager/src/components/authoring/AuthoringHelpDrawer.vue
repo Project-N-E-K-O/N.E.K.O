@@ -43,7 +43,7 @@ const emit = defineEmits<{ 'update:visible': [visible: boolean] }>()
 const { t } = useI18n()
 // Commands are documentation only. The workbench never executes them.
 const commands = {
-  start: 'uv run neko-plugin init <plugin_id> --type plugin --name "My Plugin"',
+  start: 'uv run neko-plugin init <plugin_id> --type plugin --name "My Plugin" --output "<parent-directory>/<plugin_id>"',
   checks: 'uv run neko-plugin check <plugin_id>\nuv run neko-plugin check <plugin_id> --release',
   publish: 'uv run neko-plugin build <plugin_id>\nuv run neko-plugin publish <plugin_id>',
 }

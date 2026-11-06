@@ -33,7 +33,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   STANDARD_SUBMISSION_TAGS,
@@ -63,10 +63,14 @@ function zoneLabel(zone: MarketZone): string {
 }
 
 const standardTagIds = new Map<string, string>(STANDARD_SUBMISSION_TAGS.map((tag) => [tag.value, tag.id]))
+const extraTags = ref<string[]>([])
+watch(() => props.tags, (tags) => {
+  extraTags.value = [...new Set([...extraTags.value, ...tags.filter((tag) => !standardTagIds.has(tag))])]
+}, { immediate: true })
 /** The standard tags, plus any other tag the submission already carries. */
 const tagOptions = computed(() => [
   ...STANDARD_SUBMISSION_TAGS.map((tag) => tag.value),
-  ...props.tags.filter((tag) => !standardTagIds.has(tag)),
+  ...extraTags.value,
 ])
 
 function tagLabel(tag: string): string {

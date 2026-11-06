@@ -174,7 +174,7 @@ async function buildPackage() {
       mode: 'single',
       // A project folder is named after its plugin ID.
       plugin_ref: { root_id: 'project', directory_name: pluginId },
-    })
+    }, { timeout: 300_000 })
     const [built] = result.built
     if (!built) {
       const detail = result.failed[0]?.error

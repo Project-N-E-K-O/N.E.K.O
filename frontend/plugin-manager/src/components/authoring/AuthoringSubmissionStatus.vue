@@ -173,10 +173,11 @@ const progressDescription = computed(() =>
 )
 
 const revising = ref(false)
+const revisionBase = ref<MarketSubmission['current_snapshot']>(null)
 const note = ref('')
 const zoneSlug = ref('')
 const tags = ref<string[]>([])
-const snapshot = computed(() => props.submission.current_snapshot)
+const snapshot = computed(() => revising.value ? revisionBase.value : props.submission.current_snapshot)
 const submittedCommit = computed(() => snapshot.value?.resolved_commit ?? '')
 const codeChanged = computed(
   () => !!props.pushedHead && props.pushedHead.toLowerCase() !== submittedCommit.value.toLowerCase()
@@ -191,6 +192,7 @@ const canSendRevision = computed(
 const shortCommit = (sha: string) => sha.slice(0, 7)
 
 function startRevision() {
+  revisionBase.value = props.submission.current_snapshot
   zoneSlug.value = snapshot.value?.zone_slug ?? ''
   tags.value = [...(snapshot.value?.tags ?? [])]
   note.value = ''
@@ -202,10 +204,11 @@ async function sendRevision() {
   const base = snapshot.value
   if (!base || !canSendRevision.value) return
   const body: SubmissionRevisionCreate = { base_snapshot_id: base.id, note: note.value.trim() }
-  if (codeChanged.value) {
+  const commit = codeChanged.value ? props.pushedHead : base.resolved_commit
+  if (commit) {
     // An exact commit: with only resolved_commit, a branch ref would be resolved to its head instead.
-    body.submitted_ref = props.pushedHead!
-    body.resolved_commit = props.pushedHead!
+    body.submitted_ref = commit
+    body.resolved_commit = commit
   }
   if (zoneChanged.value) body.zone_slug = zoneSlug.value
   if (tagsChanged.value) body.tags = tags.value

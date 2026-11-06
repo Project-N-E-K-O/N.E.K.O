@@ -108,6 +108,7 @@
         />
         <AuthoringProjectPrecheck v-else-if="step.id === 'verify'" :project-id="projectId" />
         <AuthoringProjectSubmission
+          :key="status.repository.github_repository ?? ''"
           v-else-if="step.id === 'submission'"
           ref="submissionPanel"
           :github-repository="status.repository.github_repository"
@@ -388,6 +389,7 @@ async function load(options: { fresh?: boolean } = {}) {
  */
 async function loadMarketListing() {
   const read = ++marketReads
+  marketListed.value = null
   const pluginId = submissionState.value.marketPluginId
   const tag = status.value?.repository.tag
   if (pluginId === null || !tag) {

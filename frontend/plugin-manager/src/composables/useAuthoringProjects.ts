@@ -103,17 +103,21 @@ export function useAuthoringProjects() {
   /** True once the list has loaded successfully at least once. */
   const loaded = ref(false)
   const loadError = ref<unknown>(null)
+  let refreshGeneration = 0
 
   async function refresh() {
+    const generation = ++refreshGeneration
     loading.value = true
     try {
-      projects.value = await listPluginProjects()
+      const next = await listPluginProjects()
+      if (generation !== refreshGeneration) return
+      projects.value = next
       loaded.value = true
       loadError.value = null
     } catch (error) {
-      loadError.value = error
+      if (generation === refreshGeneration) loadError.value = error
     } finally {
-      loading.value = false
+      if (generation === refreshGeneration) loading.value = false
     }
   }
 
