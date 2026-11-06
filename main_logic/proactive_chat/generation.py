@@ -802,8 +802,16 @@ async def _run_phase2_generation(
     vision_consent_epoch: int | None = None,
     round_is_current: Callable[[], bool] | None = None,
     vision_consent_required: bool = False,
+    on_model_reply: Callable[[], None] | None = None,
 ) -> Phase2GuardedOutput:
-    """Own Phase 2 messages, model stream, and output guards."""
+    """Own Phase 2 messages, model stream, and output guards.
+
+    ``on_model_reply`` is called once when the first chunk of the model's
+    reply arrives: the model has taken the prompt, whatever it then answers.
+    A round retired before the model was made, or a stream that fails before
+    any reply, never calls it. It is synchronous on purpose and must not wait
+    on anything, since it runs inside the stream.
+    """
     active_logger = log or logger
     use_vision = bool(screenshot_b64 and model_config.has_vision_model)
     disable_thinking = use_vision or not focus_thinking
@@ -866,6 +874,7 @@ async def _run_phase2_generation(
         human_text=human_text,
         screenshot_b64=screenshot_b64,
         log=active_logger,
+        on_model_reply=on_model_reply,
     )
     if generated.result is not None:
         return Phase2GuardedOutput(result=generated.result)
@@ -922,9 +931,15 @@ def _decide_phase1_channels(
     vision_content: str | None,
     *,
     has_unfinished_thread: bool,
+    has_due_commitment: bool = False,
 ) -> Phase1Decision:
-    """Finalize Phase 1 without changing source order or continuation rules."""
-    if not phase1_topics and not vision_content and not has_unfinished_thread:
+    """Finalize Phase 1 without changing source order or continuation rules.
+
+    A promise coming due (its cue already in the memory context) keeps the
+    round alive like an unfinished thread: Phase 2 follows up on it text-only.
+    """
+    if (not phase1_topics and not vision_content and not has_unfinished_thread
+            and not has_due_commitment):
         return Phase1Decision(
             result=ProactiveChatResult(
                 body=_proactive_pass_body(
@@ -978,8 +993,13 @@ async def _generate_phase2_stream(
     human_text: str,
     screenshot_b64: str | None,
     log: logging.Logger | None = None,
+    on_model_reply: Callable[[], None] | None = None,
 ) -> Phase2Generation:
-    """Run the guarded Phase 2 stream and preserve its legacy abort semantics."""
+    """Run the guarded Phase 2 stream and preserve its legacy abort semantics.
+
+    ``on_model_reply`` is called once, synchronously, when the first chunk of
+    the reply arrives (see _run_phase2_generation).
+    """
     active_logger = log or logger
     from utils.token_tracker import set_call_type
 
@@ -1046,6 +1066,9 @@ async def _generate_phase2_stream(
                 disable_thinking=phase2_disable_thinking,
             ) as llm:
                 async for chunk in llm.astream(messages):
+                    if on_model_reply is not None:
+                        on_model_reply()
+                        on_model_reply = None
                     if mgr.state.is_proactive_preempted(proactive_sid):
                         print(
                             f"[{lanlan_name}] Phase 2 astream chunk 前检测到抢占，abort"

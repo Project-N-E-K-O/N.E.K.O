@@ -198,18 +198,20 @@
 返回主动聊天话题候选，但不把它们标记为已展示：
 
 ```json
-{ "topics": [] }
+{ "topics": [], "commitment": null }
 ```
 
-调用方必须把实际使用的 reflection ID 提交给 `/record_surfaced`。
+`commitment` 是常驻区里角色两天内最早到期的未兑现承诺，形如 `{"id": "pin_...", "text": "...", "due": "YYYY-MM-DD"}`，没有时为 `null`。没有日期的承诺、12 小时内交出过的承诺、她最近提过的承诺都不会返回。
+
+调用方必须把实际使用的 reflection ID，以及模型已经拿到的承诺 ID，提交给 `/record_surfaced`。
 
 ### `POST /record_surfaced/{lanlan_name}`
 
 ```json
-{ "reflection_ids": ["reflection_..."] }
+{ "reflection_ids": ["reflection_..."], "commitment_ids": ["pin_..."] }
 ```
 
-记录主动聊天已展示的反思并刷新冷却时间。列表为空或缺失时是 no-op。稳定响应为 `{"ok":true}`；持久化失败只记录日志，不让调用方失败。
+记录主动聊天已展示的反思并刷新冷却时间。列表为空或缺失时是 no-op。响应为 `{"ok":true}`；`commitment_ids` 非空时另带 `commitments_recorded`，只有常驻区确实写入了这次提供才为 `true`，调用方据此判断要不要再提交一次该承诺。其余持久化失败只记录日志，不让调用方失败。
 
 ### `POST /cancel_correction/{lanlan_name}`
 
