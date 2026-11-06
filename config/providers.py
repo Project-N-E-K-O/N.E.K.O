@@ -402,12 +402,17 @@ OPPER_REASONING_EFFORT: dict[str, tuple[str, str]] = {
 #     (anthropic/claude-sonnet-5.5), so they resolve to the native entries and send the native
 #     thinking body. Not live-tested on Claude (paid models returned 402); verified only on the
 #     free deepseek/deepseek-v4-flash-free, where thinking:{type:disabled} reached 0 reasoning tokens.
+#     Its DeepSeek ids (deepseek/deepseek-v4-flash) resolve to the native DeepSeek entries the same
+#     way; the free variant thinks by default and maps onto deepseek-v4-flash.
 _REQUESTY_REASONING = RouterReasoningConfig(reasoning_to_top_level=True)
 _OPPER_REASONING = RouterReasoningConfig(strip_prefixes=("gemini/",), efforts=OPPER_REASONING_EFFORT)
 _ORCAROUTER_REASONING = RouterReasoningConfig(
-    strip_prefixes=("anthropic/",),
+    strip_prefixes=("anthropic/", "deepseek/"),
     dotted_versions=True,
-    model_aliases={"claude-haiku-4-5": "claude-haiku-4-5-20251001"},
+    model_aliases={
+        "claude-haiku-4-5": "claude-haiku-4-5-20251001",
+        "deepseek-v4-flash-free": "deepseek-v4-flash",
+    },
 )
 ROUTER_REASONING: dict[str, RouterReasoningConfig] = {
     "router.requesty.ai": _REQUESTY_REASONING,

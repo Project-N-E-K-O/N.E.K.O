@@ -168,6 +168,53 @@ def test_orcarouter_claude_sends_native_thinking_block(model, native):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize('model, native', [
+    ('deepseek/deepseek-v4-flash', 'deepseek-v4-flash'),
+    ('deepseek/deepseek-v4-pro', 'deepseek-v4-pro'),
+    ('deepseek/deepseek-v4-flash-vision-exp', 'deepseek-v4-flash-vision-exp'),
+    ('deepseek/deepseek-v4-flash-free', 'deepseek-v4-flash'),
+])
+def test_orcarouter_deepseek_sends_native_thinking_block(model, native):
+    """OrcaRouter passes DeepSeek's thinking.type through; measured 0 reasoning tokens when disabled."""
+    assert P.resolve_router_model(model, ORCAROUTER) == native
+    expected = P.MODELS_EXTRA_BODY_MAP[native]
+    focus = focus_extra_body(model, ORCAROUTER)
+    assert focus == P.MODELS_FOCUS_EXTRA_BODY_MAP[native]
+    bodies, instance_extra = _wire_bodies(model, ORCAROUTER, ({}, {'extra_body': focus}))
+    assert instance_extra == expected
+    assert bodies[0]['thinking'] == expected['thinking']
+    assert bodies[1]['thinking'] == focus['thinking']
+    for body in bodies:
+        assert 'reasoning_effort' not in body and 'reasoning' not in body
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('model', ['deepseek/deepseek-v4.1-flash', 'deepseek/deepseek-reasoner'])
+def test_orcarouter_unregistered_deepseek_sends_nothing(model):
+    """DeepSeek ids without a native entry keep sending no thinking block."""
+    assert P.resolve_router_model(model, ORCAROUTER) == model
+    bodies, instance_extra = _wire_bodies(model, ORCAROUTER, ({},))
+    assert not instance_extra
+    assert 'thinking' not in bodies[0]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('endpoint', [
+    OPENROUTER, REQUESTY, OPPER, 'https://api.orcarouter.ai.example.test/v1', 'http://localhost:4000/v1',
+])
+def test_deepseek_prefixed_ids_untouched_off_orcarouter(endpoint):
+    """OpenRouter also names it deepseek/deepseek-v4-flash; only OrcaRouter maps it to native DeepSeek."""
+    model = 'deepseek/deepseek-v4-flash'
+    assert P.resolve_router_model(model, endpoint) == model
+    bodies, instance_extra = _wire_bodies(model, endpoint, (
+        {}, {'extra_body': focus_extra_body(model, endpoint)},
+    ))
+    assert not instance_extra
+    for body in bodies:
+        assert 'thinking' not in body
+
+
+@pytest.mark.unit
 def test_orcarouter_default_models_resolve():
     """The OrcaRouter profile's default models all reach a registered native entry."""
     from config.api_profiles import DEFAULT_ASSIST_API_PROFILES
