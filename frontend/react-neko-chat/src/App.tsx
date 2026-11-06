@@ -974,7 +974,7 @@ function CompactChatApp({
   _rollbackKey,
   _avatarToolDeactivationKey,
 }: ChatWindowProps) {
-  const { hiddenMessageIds } = useChatScreenVisibility();
+  const { hiddenMessageIds, isMessageHidden } = useChatScreenVisibility();
   useCompactToolWheelAudioPreload();
   const localAvatarToolCatalog = useLocalAvatarToolCatalog();
   const toolIconItems = localAvatarToolCatalog.registry.items;
@@ -1480,8 +1480,8 @@ function CompactChatApp({
   const compactChoiceLayerOpen = isCompactSurface && compactSurfaceChoicesVisible;
   const compactExportSelectedCount = compactExportSelectedIds.size;
   const compactExportSelectableMessages = useMemo(
-    () => messages.filter(message => !hiddenMessageIds.has(message.id) && isCompactExportMessageSelectable(message)),
-    [messages, hiddenMessageIds],
+    () => messages.filter(message => !isMessageHidden(message) && isCompactExportMessageSelectable(message)),
+    [messages, isMessageHidden],
   );
   const compactExportSelectableIds = useMemo(
     () => new Set(compactExportSelectableMessages.map(message => message.id)),
@@ -1815,8 +1815,8 @@ function CompactChatApp({
   }, [compactExportSelectedIds, compactExportSelectableIds]);
   const surfaceModeClassName = `chat-surface-mode-${chatSurfaceMode}`;
   const compactMessagePreviewFromMessages = useMemo(
-    () => getCompactMessagePreview(messages.filter(message => !hiddenMessageIds.has(message.id))),
-    [messages, hiddenMessageIds],
+    () => getCompactMessagePreview(messages.filter(message => !isMessageHidden(message))),
+    [messages, isMessageHidden],
   );
   const compactCaptionPreview = useMemo<CompactMessagePreview | null>(() => {
     if (!compactCaptionState?.turnId || !compactCaptionState.text) {

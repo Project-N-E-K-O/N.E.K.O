@@ -285,4 +285,96 @@ describe('visual-only chat clearing', () => {
     } finally { vi.useRealTimers(); }
   });
 
+  const sentence = (id: string, text: string, turnId?: string, streaming = false) => parseChatMessage({
+    id, role: 'assistant', author: 'Neko', time: '12:00', status: streaming ? 'streaming' : 'sent', turnId,
+    blocks: [{ type: 'text', text }],
+  });
+  const userMessage = (id: string, text: string) => parseChatMessage({
+    id, role: 'user', author: 'Me', time: '12:00', status: 'sent', blocks: [{ type: 'text', text }],
+  });
+
+  it.each(['compact', 'full'] as const)('keeps later %s sentences of the cleared reply hidden', mode => {
+    const { container, rerender } = render(
+      <App chatSurfaceMode={mode} messages={[sentence('s1', 'First sentence', 'turn-a')]} />,
+    );
+    const history = () => container.querySelector(mode === 'full' ? '.message-list' : '.compact-export-history-scroll') as HTMLElement;
+    fireEvent.click(screen.getByRole('button', { name: 'Clear screen' }));
+    rerender(<App chatSurfaceMode={mode} messages={[
+      sentence('s1', 'First sentence', 'turn-a'), sentence('s2', 'Second sentence', 'turn-a'),
+    ]} />);
+    expect(history()).not.toHaveTextContent('Second sentence');
+    expect(screen.getByRole('button', { name: 'Clear screen' })).toBeDisabled();
+
+    rerender(<App chatSurfaceMode={mode} messages={[
+      sentence('s1', 'First sentence', 'turn-a'), sentence('s2', 'Second sentence', 'turn-a'),
+      userMessage('u1', 'User follow-up'), sentence('s3', 'Next reply', 'turn-b'),
+    ]} />);
+    expect(history()).not.toHaveTextContent('Second sentence');
+    expect(history()).toHaveTextContent('User follow-up');
+    expect(history()).toHaveTextContent('Next reply');
+    expect(screen.getByRole('button', { name: 'Clear screen' })).toBeEnabled();
+  });
+
+  it('hides the caption turn even before its sentences carry a turn id', () => {
+    const { container, rerender } = render(
+      <App chatSurfaceMode="full" messages={[sentence('old', 'Earlier reply')]} />,
+    );
+    act(() => window.dispatchEvent(new CustomEvent('neko-assistant-turn-start', { detail: { turnId: 'turn-live' } })));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear screen' }));
+    rerender(<App chatSurfaceMode="full" messages={[
+      sentence('old', 'Earlier reply'), sentence('live-2', 'Rest of the live reply', 'turn-live'),
+    ]} />);
+    expect(container.querySelector('.message-list')).not.toHaveTextContent('Rest of the live reply');
+  });
+
+  it('keeps the compact capsule off later sentences of the cleared reply', async () => {
+    vi.useFakeTimers();
+    try {
+      const startTurn = (turnId: string) => act(() => window.dispatchEvent(
+        new CustomEvent('neko-assistant-turn-start', { detail: { turnId } }),
+      ));
+      const { container, rerender } = render(<App messages={[]} />);
+      startTurn('turn-a');
+      rerender(<App messages={[sentence('s1', 'Q', 'turn-a', true)]} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent('Q');
+      fireEvent.click(screen.getByRole('button', { name: 'Clear screen' }));
+      rerender(<App messages={[sentence('s1', 'Q', 'turn-a'), sentence('s2', 'J', 'turn-a', true)]} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+      expect(container.querySelector('.compact-chat-capsule-text')).not.toHaveTextContent('J');
+      startTurn('turn-b');
+      rerender(<App messages={[
+        sentence('s1', 'Q', 'turn-a'), sentence('s2', 'J', 'turn-a'), sentence('s3', 'K', 'turn-b', true),
+      ]} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent('K');
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('still shows a recommendation card that arrives later in the cleared reply', () => {
+    const card = parseChatMessage({
+      id: 'card', role: 'assistant', author: 'Neko', time: '12:00', status: 'sent', turnId: 'turn-a',
+      blocks: [{ type: 'music_recommendation', recommendationId: '6f1c2f0a-7d7e-4a39-9a51-3b0b3c1d2e4f',
+        state: 'pending', track: { name: 'Late card song', artist: 'Artist', url: 'https://example.com/a.mp3', cover: '' } }],
+    });
+    const { container, rerender } = render(
+      <App chatSurfaceMode="full" messages={[sentence('s1', 'First sentence', 'turn-a')]} />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Clear screen' }));
+    rerender(<App chatSurfaceMode="full" messages={[
+      sentence('s1', 'First sentence', 'turn-a'), sentence('s2', 'Second sentence', 'turn-a'), card,
+    ]} />);
+    expect(container.querySelector('.message-list')).not.toHaveTextContent('Second sentence');
+    expect(container.querySelector('.message-list')).toHaveTextContent('Late card song');
+  });
+
+  it('releases hidden reply turns on a host reset', () => {
+    const { container, rerender } = render(
+      <App chatSurfaceMode="full" messages={[sentence('s1', 'Old reply', 'turn-a')]} />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Clear screen' }));
+    act(() => window.dispatchEvent(new CustomEvent('react-chat-window:messages-cleared')));
+    rerender(<App chatSurfaceMode="full" messages={[sentence('s9', 'Restored reply', 'turn-a')]} />);
+    expect(container.querySelector('.message-list')).toHaveTextContent('Restored reply');
+  });
 });

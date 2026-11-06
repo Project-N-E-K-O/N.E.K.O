@@ -1,13 +1,29 @@
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { i18n } from './i18n';
 import { hasVisibleMessageContent, type ChatMessage } from './message-schema';
 
 const EMPTY_HIDDEN_IDS: ReadonlySet<string> = new Set();
 const ChatScreenVisibilityContext = createContext({
   hiddenMessageIds: EMPTY_HIDDEN_IDS,
+  isMessageHidden: (_message: ChatMessage): boolean => false,
   canClearScreen: false,
   clearScreen: () => {},
 });
+
+const isRecommendationMessage = (message: ChatMessage) => message.blocks.some(
+  block => block.type === 'music_recommendation' || block.type === 'proactive_recommendation',
+);
+
+// Realistic mode gives every sentence of one reply its own message ID, so a reply that is
+// still arriving when the screen is cleared must also be hidden by its turn. Recommendation
+// cards stay ID-only: a later card may carry a countdown the user still needs to answer.
+const isHiddenMessage = (
+  message: ChatMessage,
+  hiddenIds: ReadonlySet<string>,
+  hiddenTurnIds: ReadonlySet<string>,
+) => hiddenIds.has(message.id)
+  || (message.role === 'assistant' && !!message.turnId && hiddenTurnIds.has(message.turnId)
+    && !isRecommendationMessage(message));
 
 export function ChatScreenVisibilityProvider({ messages, children }: {
   messages: ChatMessage[];
@@ -15,11 +31,13 @@ export function ChatScreenVisibilityProvider({ messages, children }: {
 }) {
   const captionTurnRef = useRef('');
   const [hiddenMessageIds, setHiddenMessageIds] = useState<ReadonlySet<string>>(EMPTY_HIDDEN_IDS);
+  const [hiddenTurnIds, setHiddenTurnIds] = useState<ReadonlySet<string>>(EMPTY_HIDDEN_IDS);
   useEffect(() => {
     // A real host reset starts a new conversation; a visual clear never emits it.
     const reset = () => {
       captionTurnRef.current = '';
       setHiddenMessageIds(EMPTY_HIDDEN_IDS);
+      setHiddenTurnIds(EMPTY_HIDDEN_IDS);
     };
     const rememberCaptionTurn = (event: Event) => {
       const turnId = (event as CustomEvent).detail?.turnId;
@@ -38,16 +56,29 @@ export function ChatScreenVisibilityProvider({ messages, children }: {
       window.removeEventListener('neko-compact-caption-update', rememberCaptionTurn);
     };
   }, []);
+  const isMessageHidden = useCallback(
+    (message: ChatMessage) => isHiddenMessage(message, hiddenMessageIds, hiddenTurnIds),
+    [hiddenMessageIds, hiddenTurnIds],
+  );
   const value = useMemo(() => ({
     hiddenMessageIds,
-    canClearScreen: messages.some(message => !hiddenMessageIds.has(message.id) && hasVisibleMessageContent(message)),
+    isMessageHidden,
+    canClearScreen: messages.some(message => !isMessageHidden(message) && hasVisibleMessageContent(message)),
     // Keep host messages intact, including streaming IDs and export metadata.
-    clearScreen: () => setHiddenMessageIds(previous => new Set([
-      ...previous,
-      ...messages.map(message => message.id),
-      ...(captionTurnRef.current ? [`compact-caption:${captionTurnRef.current}`] : []),
-    ])),
-  }), [hiddenMessageIds, messages]);
+    clearScreen: () => {
+      const captionTurnId = captionTurnRef.current;
+      setHiddenMessageIds(previous => new Set([
+        ...previous,
+        ...messages.map(message => message.id),
+        ...(captionTurnId ? [`compact-caption:${captionTurnId}`] : []),
+      ]));
+      setHiddenTurnIds(previous => new Set([
+        ...previous,
+        ...messages.flatMap(message => (message.role === 'assistant' && message.turnId ? [message.turnId] : [])),
+        ...(captionTurnId ? [captionTurnId] : []),
+      ]));
+    },
+  }), [hiddenMessageIds, isMessageHidden, messages]);
   return <ChatScreenVisibilityContext.Provider value={value}>{children}</ChatScreenVisibilityContext.Provider>;
 }
 
