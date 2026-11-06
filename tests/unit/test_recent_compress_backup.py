@@ -563,6 +563,10 @@ def test_every_memory_server_background_spawn_is_drainable():
         # Weekly introspection: registered by character in review.introspection_tasks,
         # drained the same way (test_character_release_cancels_a_running_introspection).
         ("refine_loops.py", "_run_introspection_tick"),
+        # Daily pinned-section check: registered by character in
+        # review.pinned_review_tasks, drained the same way
+        # (test_a_release_cancels_a_check_waiting_on_the_model).
+        ("evidence_loops.py", "_review_pinned_facts"),
     }
 
     def _callee_name(node):

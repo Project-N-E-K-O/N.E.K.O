@@ -153,6 +153,12 @@ async def _review_pinned_facts(name: str):
     one look a day rather than one every idle tick. The store itself skips
     the model while a review (an admission resolve included) is fresher than
     a day.
+
+    The check runs as a task registered in ``review.pinned_review_tasks``,
+    spawned under the lock a character release takes (like weekly
+    introspection): a name already retired, or gone from the roster, is
+    skipped, and a release cancels and drains a check still waiting on the
+    model, so it never writes into the released name's directory.
     """
     store = runtime.pinned_fact_store
     if store is None:
@@ -180,7 +186,29 @@ async def _review_pinned_facts(name: str):
             character_name, load_conversation, now=now.timestamp(),
         )
 
-    return await _run_with_character_language(name, operation)
+    async with review._get_review_spawn_lock(name):
+        if name in review._retired_derived_task_names:
+            return None
+        # A rename / delete that finished after the idle loop read the roster
+        # has already lifted its retirement: ask the roster again.
+        characters = await runtime._config_manager.aload_characters()
+        if name not in (characters.get('猫娘') or {}):
+            return None
+        existing = review.pinned_review_tasks.get(name)
+        if existing is not None and not existing.done():
+            return None
+        task = runtime._spawn_background_task(
+            _run_with_character_language(name, operation),
+        )
+        review.pinned_review_tasks[name] = task
+    # wait(), not await: a release cancelling the check must not cancel the
+    # idle loop with it.
+    await asyncio.wait({task})
+    if review.pinned_review_tasks.get(name) is task:
+        review.pinned_review_tasks.pop(name, None)
+    if task.cancelled():
+        return None
+    return task.result()
 
 
 async def _spawn_review_with_character_language(name: str):

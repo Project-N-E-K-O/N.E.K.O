@@ -344,6 +344,33 @@ def _render_followup_topic_hooks(
     return prompt, surfaced_reflection_ids
 
 
+def _drop_reminiscence_cues(
+    lanlan_name: str,
+    proactive_lang: str,
+    commitment: dict[str, Any] | None,
+    commitment_ids: list[Any],
+) -> tuple[str, list[Any], list[Any]]:
+    """The memory cues left once the reminiscence channel is suppressed.
+
+    Old reflections go. A promise coming due is not reminiscence: it stays
+    (its own offer cooldown keeps it from repeating), but only if it was
+    offered (``commitment_ids``) and still renders. Returns ``(prompt,
+    surfaced reflection ids, offered commitment ids)``.
+    """
+    if not commitment_ids:
+        return "", [], []
+    try:
+        prompt, reflection_ids = _render_followup_topic_hooks(
+            proactive_lang, [], commitment=commitment,
+        )
+    except Exception as err:
+        logger.debug(f"[{lanlan_name}] commitment cue build failed: {err}")
+        return "", [], []
+    if not prompt:
+        return "", [], []
+    return prompt, reflection_ids, list(commitment_ids)
+
+
 def _command_language_candidates(
     command_or_data: ProactiveChatCommand | dict,
 ) -> tuple[Any, Any, Any]:
@@ -1829,24 +1856,13 @@ async def handle_proactive_chat(
                         f"[{lanlan_name}] reminiscence channel suppressed by weight, dropping followup section"
                     )
                 _followup_topics = []
-                _surfaced_reflection_ids = []
-                followup_topics_prompt = ""
-                if _surfaced_commitment_ids:
-                    # A promise coming due is not reminiscence: it stays, and
-                    # its own offer cooldown keeps it from repeating.
-                    try:
-                        (
-                            followup_topics_prompt,
-                            _surfaced_reflection_ids,
-                        ) = _render_followup_topic_hooks(
-                            topic_hook_lang, [], commitment=_due_commitment,
-                        )
-                    except Exception as _followup_prompt_err:
-                        logger.debug(
-                            f"[{lanlan_name}] commitment cue build failed: {_followup_prompt_err}"
-                        )
-                    if not followup_topics_prompt:
-                        _surfaced_commitment_ids = []
+                (
+                    followup_topics_prompt,
+                    _surfaced_reflection_ids,
+                    _surfaced_commitment_ids,
+                ) = _drop_reminiscence_cues(
+                    lanlan_name, topic_hook_lang, _due_commitment, _surfaced_commitment_ids,
+                )
 
 
         # Build once after source suppression so candidates are decayed only once.

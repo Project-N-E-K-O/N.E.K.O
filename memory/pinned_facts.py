@@ -1005,10 +1005,11 @@ class PinnedFactStore:
             for entry in active
         }
         keys = [key for key in headers if key in section_of.values()]
-        lines = {
-            entry["id"]: "- " + self._entry_line(
-                entry, lang, since=_format_date(entry["text_at"]),
-            )
+        # The list marker and the text are kept apart, so the plain and the
+        # numbered render build each line from the same parts.
+        marker = "- "
+        texts = {
+            entry["id"]: self._entry_line(entry, lang, since=_format_date(entry["text_at"]))
             for entry in active
         }
         ranked = sorted(active, key=lambda e: e["updated_at"], reverse=True)
@@ -1016,7 +1017,7 @@ class PinnedFactStore:
             count_tokens(headers[key] + "\n") for key in keys
         ) - (len(keys) - 1) * count_tokens("\n\n")
         kept, dropped = take_lines_within_token_budget(
-            [lines[e["id"]] for e in ranked], budget,
+            [marker + texts[e["id"]] for e in ranked], budget,
         )
         kept_ids = {e["id"] for e in ranked[:len(kept)]}
         if dropped:
@@ -1027,7 +1028,7 @@ class PinnedFactStore:
         sections = []
         for key in keys:
             body = [
-                "- " + tag(e) + lines[e["id"]][2:] if tag else lines[e["id"]]
+                marker + (tag(e) if tag else "") + texts[e["id"]]
                 for e in active
                 if section_of[e["id"]] == key and e["id"] in kept_ids
             ]

@@ -639,12 +639,18 @@ class _Clock(datetime):
         return cls.current
 
 
-def _wire_idle_check(monkeypatch, store):
-    from app.memory_server import evidence_loops, gates, runtime
+def _wire_idle_check(monkeypatch, store, *, roster=(_NAME,)):
+    from app.memory_server import evidence_loops, gates, review, runtime
 
     monkeypatch.setattr(gates, "_maint_state", {})
     monkeypatch.setattr(gates, "_persist_maint_state_locked", lambda: None)
     monkeypatch.setattr(runtime, "pinned_fact_store", store)
+    monkeypatch.setattr(runtime, "_config_manager", SimpleNamespace(
+        aload_characters=AsyncMock(return_value={"猫娘": {name: {} for name in roster}}),
+    ))
+    monkeypatch.setattr(review, "_review_spawn_locks", {})
+    monkeypatch.setattr(review, "_retired_derived_task_names", set())
+    monkeypatch.setattr(review, "pinned_review_tasks", {})
     monkeypatch.setattr(runtime, "time_manager", SimpleNamespace(
         aretrieve_original_by_timeframe=AsyncMock(return_value=[
             ("2026-11-02 11:00:00", "s", json.dumps(
@@ -685,6 +691,55 @@ def test_the_idle_check_looks_at_each_character_once_a_day(monkeypatch):
     [message] = conversations[0]
     assert (message["role"], message["text"]) == ("human", "书收到了")
     assert message["at"] == datetime(2026, 11, 2, 11, 0, 0).timestamp()
+
+
+@pytest.mark.parametrize("released", ["retired", "gone_from_roster"])
+def test_a_released_character_is_not_checked(monkeypatch, released):
+    from app.memory_server import review
+
+    areview = AsyncMock(return_value={})
+    loops = _wire_idle_check(
+        monkeypatch, SimpleNamespace(areview=areview),
+        roster=() if released == "gone_from_roster" else (_NAME,),
+    )
+    if released == "retired":
+        review._retired_derived_task_names.add(_NAME)  # A rename / delete in progress.
+
+    assert asyncio.run(loops._review_pinned_facts(_NAME)) is None
+    areview.assert_not_awaited()
+    assert review.pinned_review_tasks == {}
+
+
+def test_a_release_cancels_a_check_waiting_on_the_model(monkeypatch):
+    from app.memory_server import review
+
+    events: list[str] = []
+
+    async def areview(name, load_conversation, *, now):
+        events.append("asked")
+        await asyncio.Event().wait()  # The model has not answered yet.
+        events.append("wrote")
+        return {"retired": 1}
+
+    loops = _wire_idle_check(monkeypatch, SimpleNamespace(areview=areview))
+
+    async def scenario():
+        check = asyncio.create_task(loops._review_pinned_facts(_NAME))
+        for _ in range(1000):
+            if events:
+                break
+            await asyncio.sleep(0)
+        assert events == ["asked"], "the check never reached the model"
+        cancelled = await review.cancel_character_derived_tasks(_NAME)
+        # Bounded: a check the release cannot reach would wait forever.
+        return cancelled, await asyncio.wait_for(check, timeout=5)
+
+    cancelled, result = asyncio.run(scenario())
+
+    # The release found the check and drained it; the idle loop itself carries
+    # on (no CancelledError), and nothing was written for the old name.
+    assert (cancelled, result, events) == (1, None, ["asked"])
+    assert review.pinned_review_tasks == {}
 
 
 @pytest.mark.parametrize("activity", ["idle", "busy", "busy_after_review"])
@@ -833,6 +888,41 @@ def test_the_due_promise_leads_the_proactive_memory_cues():
     blank = {"id": "pin_x", "text": " "}
     assert _render_followup_topic_hooks("en", [], commitment=blank) == ("", [])
     assert _offered_commitment_ids(blank) == []
+
+
+def test_suppressed_reminiscence_keeps_only_the_due_promise(monkeypatch):
+    import inspect
+
+    from config.prompts.prompts_activity import TOPIC_MEMORY_CUE_INTROS
+    from main_logic.proactive_chat import service
+
+    commitment = {"id": "pin_00aa11bb", "text": "明天提醒主人带准考证", "due": "2026-11-03"}
+
+    prompt, reflection_ids, commitment_ids = service._drop_reminiscence_cues(
+        _NAME, "zh", commitment, ["pin_00aa11bb"],
+    )
+    # Old reflections go, the promise and its id stay.
+    assert "明天提醒主人带准考证" in prompt and TOPIC_MEMORY_CUE_INTROS["zh"] not in prompt
+    assert (reflection_ids, commitment_ids) == ([], ["pin_00aa11bb"])
+    # Not offered, or no longer rendering: nothing is left to keep.
+    assert service._drop_reminiscence_cues(_NAME, "zh", commitment, []) == ("", [], [])
+    assert service._drop_reminiscence_cues(
+        _NAME, "zh", {"id": "pin_x", "text": " "}, ["pin_x"],
+    ) == ("", [], [])
+
+    def broken(*args, **kwargs):
+        raise ValueError("cue build failed")
+
+    monkeypatch.setattr(service, "_render_followup_topic_hooks", broken)
+    assert service._drop_reminiscence_cues(_NAME, "zh", commitment, ["pin_00aa11bb"]) == ("", [], [])
+
+    # handle_proactive_chat uses it when the channel is suppressed, and what is
+    # left still decides whether a promise alone keeps the round going.
+    source = inspect.getsource(service.handle_proactive_chat)
+    suppressed_at = source.index('if "reminiscence" in suppressed:')
+    assert suppressed_at < source.index("= _drop_reminiscence_cues(", suppressed_at) < source.index(
+        "has_due_commitment=bool(_surfaced_commitment_ids)", suppressed_at,
+    )
 
 
 def test_a_due_promise_alone_keeps_the_proactive_round_going():
