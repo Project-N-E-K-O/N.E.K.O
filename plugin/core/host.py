@@ -107,7 +107,7 @@ def _refresh_child_storage_layout_env(logger_obj: Any) -> None:
 # Drop inherited host HTTP sockets after fork.
 # ============================================================================
 
-# Plugins use bare multiprocessing.Process, hence fork on POSIX; children inherit the entire
+# Where plugins use fork, children inherit the entire
 # host descriptor table, including HTTP listeners and every accepted browser connection.
 # Children never read them, and TCP disconnects only when the last reference closes;
 # closing host copies therefore sends no FIN. Browsers/internal httpx-pool callers retain
@@ -156,9 +156,7 @@ def _iter_open_fds() -> Iterator[int]:
     Fork inheritance applies only where per-process fd directories are enumerable: Linux /proc/self/fd,
     macOS/BSD fdescfs /dev/fd, both process-local numeric listings. Without either,
     enumerate nothing, typically Windows spawn where children re-execute without host descriptors.
-    macOS multiprocessing also defaults to spawn, but merged packaged mode explicitly
-    forks through app/main_server/__init__.py set_start_method,
-    making /dev/fd required coverage rather than optional support.
+    Raw forks can also run this hook on macOS, where /dev/fd is available.
     """
     for directory in ("/proc/self/fd", "/dev/fd"):
         try:
@@ -1892,7 +1890,12 @@ class PluginHost:
         # Only the three child->host uplinks carry tokens; downlinks carry no credentials.
         self.transport = HostTransport()
 
-        self._process_stop_event: Any = multiprocessing.Event()
+        context = multiprocessing
+        if sys.platform == "darwin" and multiprocessing.get_start_method() == "fork":
+            # The merged server selects fork. Native networking (e.g. getaddrinfo)
+            # can crash in a forked child of the multithreaded macOS host.
+            context = multiprocessing.get_context("spawn")
+        self._process_stop_event: Any = context.Event()
         self._startup_options: dict[str, object] = {"startup_failure": "warn"}
         self._model_gateway_token = ""
         self._model_gateway_starting = False
@@ -1903,7 +1906,7 @@ class PluginHost:
 
         # POSIX fork inherits all host fds; _close_inherited_host_sockets
         # drops HTTP sockets inside children, described above.
-        self.process = multiprocessing.Process(
+        self.process = context.Process(
             target=_plugin_process_runner,
             args=(
                 plugin_id,

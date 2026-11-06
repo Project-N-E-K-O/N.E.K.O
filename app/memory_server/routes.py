@@ -7997,25 +7997,6 @@ outbox_infra.register_outbox_handler(
 )
 
 
-async def _render_pinned_facts_block(lanlan_name: str, lang: str) -> str:
-    """The pinned-fact section of the private-chat prompt; "" when there is none.
-
-    Read on every call, so a session start or a hot-swap prompt rebuild picks
-    up entries admitted since the previous one. A failure costs only this
-    section, never the rest of the long-term memory.
-    """
-    store = runtime.pinned_fact_store
-    if store is None:
-        return ""
-    try:
-        return await store.arender_prompt_block(lanlan_name, lang)
-    except Exception as e:
-        logger.warning(
-            f"[MemoryServer] {lanlan_name}: pinned-fact render failed: {type(e).__name__}"
-        )
-        return ""
-
-
 async def _new_dialog(
     lanlan_name: str,
     language: str | None = None,
@@ -8159,24 +8140,21 @@ async def _new_dialog(
         # is read after entry, so reenter context before nested renderers that may read
         # global language; explicit _lang still serves table-driven strings in this function.
         with language_context(_activate_request_language(language)):
-            # Inject pending + confirmed reflections into context too (labeled sections).
-            try:
-                await runtime.reflection_engine.aupdate_suppressions(lanlan_name)
-            except Exception as e:
-                logger.debug(f"[MemoryServer] reflection suppress 刷新失败: {e}")
-            pending_reflections = await runtime.reflection_engine.aget_pending_reflections(lanlan_name)
-            confirmed_reflections = await runtime.reflection_engine.aget_confirmed_reflections(lanlan_name)
+            # Pinned important facts (their own section, ahead of the persona
+            # sections; private chat only, no scoped renderer reads them) and
+            # persona + pending/confirmed reflections (labeled sections).
+            # Shared with weekly introspection, which must review exactly
+            # this block. Read on every call, so a session start or a hot-swap
+            # prompt rebuild picks up entries admitted since the previous one.
+            from memory.introspection import arender_injected_memory
             result = _loc(PERSONA_HEADER, _lang).format(name=lanlan_name)
-            persona_md = await runtime.persona_manager.arender_persona_markdown(
-                lanlan_name, pending_reflections, confirmed_reflections,
+            injected = await arender_injected_memory(
+                runtime.persona_manager, runtime.reflection_engine, lanlan_name,
+                pinned_fact_store=runtime.pinned_fact_store, lang=_lang,
             )
-        # Pinned important facts: their own section, ahead of the persona
-        # sections. Private chat only; no scoped renderer calls this.
-        pinned_block = await _render_pinned_facts_block(lanlan_name, _lang)
-        if pinned_block:
-            result += pinned_block + "\n\n"
-        if persona_md:
-            result += persona_md
+        result += injected.pinned_prefix
+        if injected.persona:
+            result += injected.persona
         else:
             # Compatibility fallback: old settings (natural-language format).
             # get_settings uses open() + json.load(); offload to avoid blocking (cold fallback, but multi-file IO when triggered).

@@ -184,6 +184,7 @@ from .review import (  # noqa: F401
     compress_backup_tasks,
     correction_cancel_flags,
     correction_tasks,
+    introspection_tasks,
     maybe_spawn_review,
 )
 
@@ -213,6 +214,7 @@ from .evidence_loops import (  # noqa: F401
 
 from . import refine_loops  # noqa: F401
 from .refine_loops import (  # noqa: F401
+    _periodic_introspection_loop,
     _periodic_persona_refine_loop,
     _periodic_reflection_refine_loop,
     _periodic_reflection_synthesis_loop,

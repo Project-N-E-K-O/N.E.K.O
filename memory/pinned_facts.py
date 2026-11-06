@@ -509,12 +509,19 @@ class PinnedFactStore:
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         return await asyncio.to_thread(self.get_snapshot, name, now=now)
 
-    def render_prompt_block(self, name: str, lang: str, *, now: Optional[float] = None) -> str:
+    def render_prompt_block(
+        self, name: str, lang: str, *, now: Optional[float] = None, tag=None,
+    ) -> str:
         """The ``### `` section for the private-chat prompt; "" when nothing is live.
 
         Over ``PINNED_FACT_RENDER_MAX_TOKENS`` the least recently updated
         entries are left out. The kept ones render in file order, so an
         unchanged section renders byte-identically between sessions.
+
+        ``tag(entry)`` (introspection's line numbers) is called once per
+        rendered entry, in order, and goes right after the list marker. The
+        budget is measured without it, so a numbered render keeps exactly
+        the entries the plain one does.
         """
         active = self.get_active(name, now=now)
         if not active:
@@ -541,13 +548,16 @@ class PinnedFactStore:
                 name, dropped, PINNED_FACT_RENDER_MAX_TOKENS,
             )
         return header + "\n" + "\n".join(
-            lines[e["id"]] for e in active if e["id"] in kept_ids
+            "- " + tag(e) + lines[e["id"]][2:] if tag else lines[e["id"]]
+            for e in active if e["id"] in kept_ids
         )
 
     async def arender_prompt_block(
-        self, name: str, lang: str, *, now: Optional[float] = None,
+        self, name: str, lang: str, *, now: Optional[float] = None, tag=None,
     ) -> str:
-        return await asyncio.to_thread(self.render_prompt_block, name, lang, now=now)
+        return await asyncio.to_thread(
+            self.render_prompt_block, name, lang, now=now, tag=tag,
+        )
 
     # ── write API ─────────────────────────────────────────────
 

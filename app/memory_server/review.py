@@ -50,6 +50,10 @@ from utils.recent_file import capture_recent_generation
 # Global variables managing correction tasks.
 correction_tasks = {}  # {lanlan_name: asyncio.Task}
 correction_cancel_flags = {}  # {lanlan_name: asyncio.Event}
+# Weekly introspection runs (refine_loops). Registered here, under the review
+# spawn lock, so a character rename / delete cancels and drains a run that is
+# waiting on the model instead of letting it write to the released identity.
+introspection_tasks: dict[str, asyncio.Task] = {}
 
 
 # Phase C: prevent spawn races; /process /renew /settle / IdleMaint share maybe_spawn_review,
@@ -124,7 +128,7 @@ async def _cancel_character_derived_tasks_unlocked(lanlan_name: str) -> int:
         cancel_event.set()
 
     candidates = []
-    for registry in (correction_tasks, compress_backup_tasks):
+    for registry in (correction_tasks, compress_backup_tasks, introspection_tasks):
         task = registry.get(lanlan_name)
         if task is not None and not task.done() and task not in candidates:
             candidates.append(task)
@@ -142,7 +146,7 @@ async def _cancel_character_derived_tasks_unlocked(lanlan_name: str) -> int:
                 exc,
             )
 
-    for registry in (correction_tasks, compress_backup_tasks):
+    for registry in (correction_tasks, compress_backup_tasks, introspection_tasks):
         task = registry.get(lanlan_name)
         if task is None or task.done():
             registry.pop(lanlan_name, None)

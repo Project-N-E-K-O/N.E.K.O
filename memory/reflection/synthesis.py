@@ -49,6 +49,12 @@ from memory._reflection.schema import (
     merge_covered_fact_ids,
     reflection_id_from_facts as _reflection_id_from_facts,
 )
+from memory.introspection import (
+    PERMANENT_SUPPRESSION_KEY,
+    build_permanent_suppression,
+    is_permanently_suppressed,
+    retirement_blocks_restatement,
+)
 
 from utils.cloudsave_runtime import assert_cloudsave_writable
 from utils.file_utils import atomic_write_json_async
@@ -69,6 +75,26 @@ from .similarity import ascore_against_queries, vectors_ready
 # row is history; once the copy is rewritten or archived it must not absorb
 # new facts.
 _IMPRESSION_REFLECTION_STATUSES = ('pending', 'confirmed')
+
+
+def _oldest_fact_time(facts: list[dict]) -> str | None:
+    """When the oldest of ``facts`` was noted; None if any time is missing.
+
+    Stored as ``source_facts_oldest_at``: the render lets a reflection repeat
+    a persona line retired as stale only when every fact behind it postdates
+    the retirement, and the reflection's own ``created_at`` is merely when
+    synthesis ran.
+    """
+    from memory.temporal import _parse_iso_safe, to_naive_local
+
+    oldest = None
+    for fact in facts:
+        at = to_naive_local(_parse_iso_safe(fact.get('created_at')))
+        if at is None:
+            return None
+        if oldest is None or at < oldest:
+            oldest = at
+    return oldest.isoformat() if oldest is not None else None
 
 
 def _detect_synthesis_prompt_language(text: str) -> str:
@@ -492,6 +518,7 @@ class SynthesisMixin:
             'entity': reflection_entity,
             'status': 'pending',  # pending | confirmed | denied | promoted | archived
             'source_fact_ids': source_fact_ids,
+            'source_facts_oldest_at': _oldest_fact_time(unabsorbed),
             'created_at': now_iso,
             'feedback': None,
             'next_eligible_at': (now + timedelta(minutes=REFLECTION_COOLDOWN_MINUTES)).isoformat(),
@@ -532,6 +559,16 @@ class SynthesisMixin:
                 reflection['reinforcement'] = 0.1
                 reflection['rein_last_signal_at'] = now_iso
 
+        # A restatement of a line introspection retired is stored already
+        # retired: it would otherwise sit in the prompt until next week's run.
+        # Checked before the lock -- it may embed the new text; the save
+        # rechecks only entries retired since.
+        restated, restatement_seen = await self._afind_retired_restatement(
+            lanlan_name, reflection_text, subject=memory_subject,
+        )
+        if restated is not None:
+            self._store_as_restatement(lanlan_name, reflection, restated, now_iso)
+
         # ── Lock only reload + deduplicated append + save ──
         async with self._get_alock(lanlan_name):
             if self._subject_forget_overlapped(
@@ -548,6 +585,15 @@ class SynthesisMixin:
                 return []
             # Reload against concurrent synthesis during inference, deduplicating IDs/appending current lists.
             reflections = await self.aload_reflections(lanlan_name)
+            if restated is None:
+                # Introspection may have retired a matching line after the
+                # unlocked check; reflections are retired under this lock.
+                restated = await self._arecheck_retired_restatement(
+                    lanlan_name, reflection_text, reflections, restatement_seen,
+                    subject=memory_subject,
+                )
+                if restated is not None:
+                    self._store_as_restatement(lanlan_name, reflection, restated, now_iso)
             created = False
             if any(r.get('id') == rid for r in reflections):
                 logger.info(
@@ -702,7 +748,11 @@ class SynthesisMixin:
 
         Candidates are active reflections (pending / confirmed) and
         non-protected persona entries of the same subject, ranked by max
-        cosine against the batch. Returns ``(block, candidates)``, where
+        cosine against the batch; entries introspection retired are left out,
+        and so are reflections the render hides behind a retired persona line
+        (``retired_persona_hides``), or a fresh fact could be swallowed as a
+        repeat of a line that no longer reaches the model -- for a line
+        retired as stale, the very facts that would bring it back. Returns ``(block, candidates)``, where
         ``candidates`` maps every id shown in the block to its target, which
         also records the text the model saw. Without usable vectors both are
         empty, so the prompt is unchanged.
@@ -723,10 +773,13 @@ class SynthesisMixin:
         except Exception as e:
             logger.warning(f"[Reflection] existing impressions 加载失败: {e}")
             return "", {}
+        hidden = self._persona_manager.retired_persona_hides(persona or {})
         for r in reflections:
             if (
                 r.get('status') in _IMPRESSION_REFLECTION_STATUSES
                 and str(r.get('text') or '').strip()
+                and not is_permanently_suppressed(r)
+                and not hidden(r)
                 and entry_matches_subject(r, subject)
             ):
                 pool.append((
@@ -744,6 +797,7 @@ class SynthesisMixin:
                     isinstance(e, dict)
                     and e.get('id')
                     and not e.get('protected')
+                    and not is_permanently_suppressed(e)
                     and str(e.get('text') or '').strip()
                     and entry_matches_subject(e, subject)
                 ):
@@ -805,6 +859,102 @@ class SynthesisMixin:
         return block, candidates
 
     @staticmethod
+    def _store_as_restatement(
+        lanlan_name: str, reflection: dict, restated: str, now_iso: str,
+    ) -> None:
+        reflection[PERMANENT_SUPPRESSION_KEY] = build_permanent_suppression(
+            'restates a retired impression', now_iso, restates=restated,
+        )
+        logger.info(
+            f"[Reflection] {lanlan_name}: 新反思 {reflection.get('id')} 复述了已压制的 "
+            f"{restated}，直接以压制状态保存"
+        )
+
+    @staticmethod
+    def _retired_restatement_pool(
+        reflections: list[dict], persona: dict | None, subject,
+    ) -> list[tuple[str, dict]]:
+        """The subject's retired reflections and persona entries whose
+        retirement says the wording itself is wrong
+        (``retirement_blocks_restatement``): a line retired as stale or
+        contradicted may be true again."""
+        from memory.scopes import entry_matches_subject
+
+        pool: list[tuple[str, dict]] = [
+            (f"reflection.{r.get('id')}", r)
+            for r in reflections
+            if retirement_blocks_restatement(r) and entry_matches_subject(r, subject)
+        ]
+        for section_key, section in (persona or {}).items():
+            if not isinstance(section, dict):
+                continue
+            pool.extend(
+                (f"persona.{section_key}.{e.get('id')}", e)
+                for e in section.get('facts') or []
+                if retirement_blocks_restatement(e) and entry_matches_subject(e, subject)
+            )
+        return pool
+
+    async def _afind_retired_restatement(
+        self, lanlan_name: str, text: str, *, subject=None,
+    ) -> tuple[str | None, set[str]]:
+        """Key of a permanently suppressed impression ``text`` restates (or
+        None), and the keys of every candidate checked.
+
+        Candidates come from ``_retired_restatement_pool``; the save rechecks
+        only the ones retired after this check. A match is an identical text,
+        or a cosine of at least ``REFLECTION_RETIRED_RESTATEMENT_MIN_COSINE``
+        when vectors are usable.
+        """
+        try:
+            reflections = await self._aload_reflections_full(lanlan_name)
+            persona = await self._persona_manager.aget_persona(lanlan_name)
+        except Exception as e:
+            logger.warning(f"[Reflection] 已压制条目加载失败，跳过复述检查: {e}")
+            return None, set()
+        pool = self._retired_restatement_pool(reflections, persona, subject)
+        return await self._amatch_restatement(text, pool), {key for key, _ in pool}
+
+    async def _arecheck_retired_restatement(
+        self, lanlan_name: str, text: str, reflections: list[dict],
+        seen: set[str], *, subject=None,
+    ) -> str | None:
+        """Caller holds the reflection lock. Matches ``text`` against the
+        candidates retired since ``_afind_retired_restatement`` looked
+        (``seen``) -- usually none, so the save rarely embeds under the lock.
+        """
+        try:
+            persona = await self._persona_manager.aget_persona(lanlan_name)
+        except Exception as e:
+            logger.warning(f"[Reflection] 复述复查读取人格失败: {e}")
+            return None
+        fresh = [
+            (key, entry)
+            for key, entry in self._retired_restatement_pool(reflections, persona, subject)
+            if key not in seen
+        ]
+        return await self._amatch_restatement(text, fresh)
+
+    @staticmethod
+    async def _amatch_restatement(text: str, pool: list[tuple[str, dict]]) -> str | None:
+        from config import REFLECTION_RETIRED_RESTATEMENT_MIN_COSINE
+
+        if not pool:
+            return None
+        wanted = text.strip()
+        for key, entry in pool:
+            if str(entry.get('text') or '').strip() == wanted:
+                return key
+        scores = await ascore_against_queries([{'text': text}], [e for _, e in pool])
+        if scores is None:
+            return None
+        best_key, best_score = None, REFLECTION_RETIRED_RESTATEMENT_MIN_COSINE
+        for (key, _entry), score in zip(pool, scores):
+            if score is not None and score >= best_score:
+                best_key, best_score = key, score
+        return best_key
+
+    @staticmethod
     def _synthesis_skip_key(result: dict, candidates: dict[str, dict]) -> str | None:
         """Return the candidate id a skip answer points at, or None.
 
@@ -839,10 +989,20 @@ class SynthesisMixin:
         from memory.scopes import entry_matches_subject
         reflections = await self._aload_reflections_full(lanlan_name)
         entry = self._find_reflection_in_list(reflections, target['id'])
+        try:
+            persona = await self._persona_manager.aget_persona(lanlan_name)
+        except Exception as e:
+            logger.warning(f"[Reflection] covered_by 复查读取人格失败，按正常新增处理: {e}")
+            return False
         if (
             entry is None
             or entry.get('status') not in _IMPRESSION_REFLECTION_STATUSES
             or entry.get('text') != target['text']
+            # Retired by introspection while the LLM was judging (itself, or
+            # the persona line it repeats): the batch is not covered by a
+            # line the model no longer sees.
+            or is_permanently_suppressed(entry)
+            or self._persona_manager.retired_persona_hides(persona or {})(entry)
             or not entry_matches_subject(entry, subject)
         ):
             return False

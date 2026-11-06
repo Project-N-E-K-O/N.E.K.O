@@ -466,6 +466,30 @@ async def test_remote_replacement_preserves_local_edits_and_deletions_against_pu
 
 
 @pytest.mark.asyncio
+async def test_unpublished_local_retirement_is_still_published_after_a_remote_replacement(owner):
+    """Introspection retired p1 here and a remote snapshot arrives before the
+    retirement is published: it survives the import and stays out of the
+    receipt baseline, so the next capture publishes it as superseded."""
+    await stage(owner)
+    assert await owner.native.consume(UID)
+    current = read_views(owner.directory)
+    current['persona']['master']['facts'][0]['permanent_suppression'] = {
+        'at': datetime.now().isoformat(), 'reason': 'hollow', 'issue': 'hollow',
+    }
+    atomic_write_json(owner.directory / 'persona.json', current['persona'])
+    await stage(owner, completed=3000, revision=2)
+    assert await owner.native.consume(UID)
+
+    assert 'permanent_suppression' in read_views(owner.directory)['persona']['master']['facts'][0]
+    receipt = owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())
+    assert {r['id']: r['metadata'] for r in receipt['nativeEntries']}['p1'].get('status') != 'superseded'
+    assert owner.native._capture('Neko', False)
+    captured = owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())
+    assert {r['id']: r['metadata'] for r in captured['document']['entries']}['p1']['status'] == 'superseded'
+    assert not owner.native._capture('Neko', False)
+
+
+@pytest.mark.asyncio
 async def test_remote_still_replaces_unchanged_published_entries(owner):
     await stage(owner)
     assert await owner.native.consume(UID)
