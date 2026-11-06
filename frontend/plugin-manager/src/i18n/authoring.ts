@@ -32,7 +32,7 @@ const en = {
   helpChecksBody:
     'Errors block the relevant workflow. Warnings need judgment. A passing static check does not replace entry tests or Hosted UI verification. Reports belong to a source snapshot.',
   helpPublishBody:
-    'Commit and push in the plugin’s own repository. Submit the first Market review in your browser. After approval, publish a version and wait for the package, check report and evidence assets.',
+    'Commit and push in the plugin’s own repository. Submit the plugin for Market review from the Publish tab. After approval, publish a version from the approved commit and wait for the package, check report and evidence assets.',
   parentDirectory: 'Parent directory',
   chooseFolder: 'Choose folder',
   createPlugin: 'Create plugin',
@@ -321,7 +321,7 @@ export const authoringMessages = {
     helpChecksBody:
       '错误会阻止对应流程，警告需要结合实际判断。静态检查通过后，仍需测试入口与 Hosted UI。每份报告都对应一份源码快照。',
     helpPublishBody:
-      '在插件自己的仓库中 commit 和 push。首次投稿在浏览器中完成审核；审核通过后发布版本，等待安装包、检查报告和发布证据三项资产就绪。',
+      '在插件自己的仓库中 commit 和 push。在发布页向 Market 投稿审核；审核通过后，用通过审核的 commit 发布版本，等待安装包、检查报告和发布证据三项资产就绪。',
     parentDirectory: '父目录',
     chooseFolder: '选择文件夹',
     createPlugin: '创建插件',
@@ -597,7 +597,7 @@ export const authoringMessages = {
     helpChecksBody:
       '錯誤會阻止對應流程，警告需要結合實際判斷。靜態檢查通過後，仍需測試入口與 Hosted UI。每份報告都對應一份原始碼快照。',
     helpPublishBody:
-      '在外掛自己的儲存庫中 commit 和 push。首次投稿在瀏覽器中完成審核；審核通過後發布版本，等待安裝包、檢查報告和發布證據三項資產就緒。',
+      '在外掛自己的儲存庫中 commit 並 push。在發布頁向 Market 投稿審核；審核通過後，以通過審核的 commit 發布版本，等待安裝包、檢查報告與發布證據三項資產就緒。',
     parentDirectory: '父目錄',
     chooseFolder: '選擇資料夾',
     createPlugin: '建立外掛',
@@ -873,7 +873,7 @@ export const authoringMessages = {
     helpChecksBody:
       'エラーは処理を止め、警告は判断を促します。静的チェックは実行や Hosted UI テストの代わりにはなりません。',
     helpPublishBody:
-      'プラグイン自身のリポジトリで commit と push。初回はブラウザーで審査を受け、承認後に公開してパッケージ・レポート・証拠を待ちます。',
+      'プラグイン自身のリポジトリで commit と push を行います。公開タブから Market の審査に提出します。承認後、承認されたコミットからバージョンを公開し、パッケージ、チェックレポート、エビデンスの 3 つのアセットがそろうまで待ちます。',
     parentDirectory: '親ディレクトリ',
     chooseFolder: 'フォルダーを選択',
     createPlugin: 'プラグインを作成',
@@ -1159,7 +1159,7 @@ export const authoringMessages = {
     helpChecksBody:
       '오류는 해당 과정을 막고 경고는 판단이 필요합니다. 정적 검사는 실행과 Hosted UI 테스트를 대신하지 않습니다.',
     helpPublishBody:
-      '플러그인 저장소에서 commit과 push하세요. 첫 심사는 브라우저에서 완료하고 승인 후 패키지, 검사 보고서, 증거가 준비될 때까지 기다리세요.',
+      '플러그인 자체 저장소에서 commit 및 push 하세요. 게시 탭에서 Market 심사에 제출합니다. 승인 후 승인된 커밋으로 버전을 게시하고 패키지, 검사 보고서, 증거 자산 세 가지가 준비될 때까지 기다리세요.',
     parentDirectory: '상위 폴더',
     chooseFolder: '폴더 선택',
     createPlugin: '플러그인 만들기',
@@ -1441,7 +1441,7 @@ export const authoringMessages = {
     helpChecksBody:
       'Ошибки блокируют этап, предупреждения требуют оценки. Статическая проверка не заменяет тестирование поведения и Hosted UI.',
     helpPublishBody:
-      'Сделайте commit и push в репозитории плагина. Первичная проверка проходит в браузере. После одобрения дождитесь пакета, отчёта и доказательств релиза.',
+      'Сделайте commit и push в собственном репозитории плагина. Отправьте плагин на проверку Market со вкладки публикации. После одобрения опубликуйте версию из одобренного коммита и дождитесь пакета, отчёта проверки и файла доказательств.',
     parentDirectory: 'Родительский каталог',
     chooseFolder: 'Выбрать папку',
     createPlugin: 'Создать плагин',
@@ -1726,7 +1726,7 @@ export const authoringMessages = {
     helpChecksBody:
       'Los errores bloquean y los avisos requieren criterio. Las comprobaciones estáticas no sustituyen las pruebas de entradas o Hosted UI.',
     helpPublishBody:
-      'Realiza commit y push en el repositorio del plugin. Solicita la primera revisión en el navegador; tras aprobarse, espera el paquete, el informe y las pruebas del Release.',
+      'Haz commit y push en el repositorio propio del plugin. Envía el plugin a revisión del Market desde la pestaña de publicación. Tras la aprobación, publica una versión desde el commit aprobado y espera el paquete, el informe de comprobación y la evidencia.',
     parentDirectory: 'Carpeta principal',
     chooseFolder: 'Elegir carpeta',
     createPlugin: 'Crear plugin',
@@ -2010,7 +2010,7 @@ export const authoringMessages = {
     helpChecksBody:
       'Erros bloqueiam a etapa; avisos exigem avaliação. Verificações estáticas não substituem testes de entradas e Hosted UI.',
     helpPublishBody:
-      'Faça commit e push no repositório do plugin. A primeira revisão ocorre no navegador; após aprovação, aguarde pacote, relatório e evidências do Release.',
+      'Faça commit e push no repositório do próprio plugin. Envie o plugin para revisão do Market na aba de publicação. Após a aprovação, publique uma versão a partir do commit aprovado e aguarde o pacote, o relatório de verificação e a evidência.',
     parentDirectory: 'Diretório pai',
     chooseFolder: 'Escolher pasta',
     createPlugin: 'Criar plugin',
