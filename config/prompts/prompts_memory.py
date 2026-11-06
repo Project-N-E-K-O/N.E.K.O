@@ -2940,7 +2940,7 @@ REFLECTION_PROMPT = {
 - 例 3：长期"喜欢咖啡"（pattern） → null
 
 请以 JSON 格式返回，字段顺序保持如下：
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "具体发生了什么（主语写名字）", "temporal_scope": "pattern", "event_when": null}""",
+{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "概括出的特点、偏好或相处方式（主语写名字）", "temporal_scope": "pattern", "event_when": null}""",
     "zh-TW": """以下是關於 {LANLAN_NAME} 和 {MASTER_NAME} 的一系列已擷取事實：
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
@@ -2987,7 +2987,7 @@ REFLECTION_PROMPT = {
 - 例 3：長期「喜歡咖啡」（pattern）→ null
 
 請以 JSON 格式回傳，欄位順序保持如下：
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "具體發生了什麼（主語寫名字）", "temporal_scope": "pattern", "event_when": null}""",
+{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "概括出的特點、偏好或相處方式（主語寫名字）", "temporal_scope": "pattern", "event_when": null}""",
     "en": """Below are a series of extracted facts about {LANLAN_NAME} and {MASTER_NAME}:
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
@@ -3034,7 +3034,7 @@ Step 5: Annotate event_when (always use RELATIVE TIME, never absolute dates)
 - Example 3: long-term "loves coffee" (pattern) → null
 
 Return JSON with fields in this exact order:
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "what concretely happened (name the actors)", "temporal_scope": "pattern", "event_when": null}""",
+{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "the trait, preference or way of relating, summed up (name the actors)", "temporal_scope": "pattern", "event_when": null}""",
     "ja": """以下は {LANLAN_NAME} と {MASTER_NAME} に関する一連の抽出済み事実です：
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
@@ -3079,7 +3079,7 @@ Return JSON with fields in this exact order:
 - 例：「先週月曜に登山」→ {"start": {"offset": -1, "unit": "week"}, "end": {"offset": -1, "unit": "week"}}
 
 JSON 形式で返してください。フィールドの順序は以下の通り保ってください：
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "具体的に何があったか（主語は名前で）", "temporal_scope": "pattern", "event_when": null}""",
+{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "まとめた特徴・好み・接し方（主語は名前で）", "temporal_scope": "pattern", "event_when": null}""",
     "ko": """다음은 {LANLAN_NAME}과 {MASTER_NAME}에 대해 추출된 일련의 사실입니다:
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
@@ -3124,7 +3124,7 @@ JSON 形式で返してください。フィールドの順序は以下の通り
 - 예: "지난 월요일에 등산" → {"start": {"offset": -1, "unit": "week"}, "end": {"offset": -1, "unit": "week"}}
 
 JSON 형식으로 반환하며, 필드 순서는 다음과 같이 유지하세요:
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "구체적으로 무슨 일이 있었는지 (주어는 이름으로)", "temporal_scope": "pattern", "event_when": null}""",
+{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "정리한 특징·취향·지내는 방식 (주어는 이름으로)", "temporal_scope": "pattern", "event_when": null}""",
     "ru": """Ниже представлена серия извлечённых фактов о {LANLAN_NAME} и {MASTER_NAME}:
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
@@ -3169,7 +3169,7 @@ JSON 형식으로 반환하며, 필드 순서는 다음과 같이 유지하세�
 - Пример: "ходил в горы в прошлый понедельник" → {"start": {"offset": -1, "unit": "week"}, "end": {"offset": -1, "unit": "week"}}
 
 Верните в формате JSON, сохраняя порядок полей:
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "что конкретно произошло (исполнители названы по имени)", "temporal_scope": "pattern", "event_when": null}""",
+{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "обобщённая черта, предпочтение или манера общения (исполнители названы по имени)", "temporal_scope": "pattern", "event_when": null}""",
     "es": """A continuación hay una serie de hechos extraídos sobre {LANLAN_NAME} y {MASTER_NAME}:
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
@@ -3214,7 +3214,7 @@ Paso 5: Anota event_when con TIEMPO RELATIVO (prohibidas fechas absolutas)
 - Ej.: "fui de excursión el lunes pasado" → {"start": {"offset": -1, "unit": "week"}, "end": {"offset": -1, "unit": "week"}}
 
 Devuelve JSON con los campos en este orden exacto:
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "qué pasó concretamente (con el nombre de quien actúa)", "temporal_scope": "pattern", "event_when": null}""",
+{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "el rasgo, la preferencia o la forma de tratarse, resumidos (con el nombre de quien actúa)", "temporal_scope": "pattern", "event_when": null}""",
     "pt": """Abaixo há uma série de fatos extraídos sobre {LANLAN_NAME} e {MASTER_NAME}:
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
@@ -3259,7 +3259,7 @@ Passo 5: Anote event_when com TEMPO RELATIVO (datas absolutas proibidas)
 - Ex.: "fui escalar segunda-feira passada" → {"start": {"offset": -1, "unit": "week"}, "end": {"offset": -1, "unit": "week"}}
 
 Retorne JSON com os campos nesta ordem exata:
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "o que aconteceu concretamente (com o nome de quem age)", "temporal_scope": "pattern", "event_when": null}""",
+{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "o traço, a preferência ou a forma de se tratar, resumidos (com o nome de quem age)", "temporal_scope": "pattern", "event_when": null}""",
 }
 
 

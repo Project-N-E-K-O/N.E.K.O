@@ -344,6 +344,13 @@ def test_reflection_prompt_asks_for_patterns_not_event_accounts():
             assert old not in text, (lang, old)
     assert '"形成了……默契/模式"' in PROMPT['zh'] and '反例：「两人形成了互相关心的默契」' in PROMPT['zh']
     assert 'formed a tacit understanding / pattern of' in PROMPT['en']
+    # The output template models the field too.
+    for lang, old in {
+        'zh': '具体发生了什么（主语写名字）', 'zh-TW': '具體發生了什麼（主語寫名字）',
+        'en': 'what concretely happened', 'ja': '具体的に何があったか', 'ko': '구체적으로 무슨 일이 있었는지',
+        'ru': 'что конкретно произошло', 'es': 'qué pasó concretamente', 'pt': 'o que aconteceu concretamente',
+    }.items():
+        assert old not in PROMPT[lang], lang
     # A new instance of a known pattern is covered, not a new reflection.
     from config.prompts.prompts_memory import REFLECTION_EXISTING_IMPRESSIONS_NOTE as NOTE
     for lang, old in {
