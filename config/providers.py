@@ -312,8 +312,9 @@ def focus_extra_body(model: str, base_url: str | None = None) -> dict | None:
 # Lowest reasoning effort each upstream vendor allows (owner-confirmed 2026-11-05). It is the
 # vendor's rule, so every router-bound effort respects it even where a router accepts lower:
 # Claude has no none / minimal; Gemini 3.x cannot turn thinking off (no none) and bottoms out
-# at minimal, except gemini-3.7-flash / 3.8-flash at low; gemini-2.5-flash and gpt-5-nano at
-# minimal. gemini-3.7-flash is not registered; Opper returns the same 400 for it as for 3.8.
+# at minimal, except the 3.x Pro models and gemini-3.7-flash / 3.8-flash at low; gemini-2.5-flash
+# and gpt-5-nano at minimal. The Pro models and 3.7-flash are not registered; Opper returns the
+# same 400 for them as for 3.8 (gemini/gemini-3-pro-preview is served by 3.1-pro-preview there).
 # Gemini 3.x evidence (2026-11-06): Google's Gemini 3.5 Flash guide lists MINIMAL / LOW / MEDIUM /
 # HIGH and the legacy thinking page marks minimal as an error on 3.8 Flash; Opper returns 400
 # "does not support reasoning_effort minimal; use thinking_level (low, medium, high)" for 3.8 and
@@ -323,6 +324,8 @@ def focus_extra_body(model: str, base_url: str | None = None) -> dict | None:
 REASONING_EFFORT_ORDER: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 UPSTREAM_REASONING_FLOOR: dict[str, str] = {
     "gemini-2.5-flash": "minimal",
+    "gemini-3-pro-preview": "low",
+    "gemini-3.1-pro-preview": "low",
     "gemini-3.7-flash": "low",
     "gemini-3.8-flash": "low",
     "gpt-5-nano": "minimal",
