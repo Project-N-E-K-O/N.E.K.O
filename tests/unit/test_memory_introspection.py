@@ -1527,6 +1527,24 @@ def test_long_term_sync_peer_cannot_revive_or_duplicate_a_local_retirement():
     assert 'permanent_suppression' in reflections[0]
 
 
+def test_long_term_sync_receipt_baseline_holds_only_published_retirements():
+    """The baseline a download records keeps a local retirement only once
+    the remote carries it as superseded; until then it stays a difference
+    for the next capture to publish."""
+    from memory.long_term_sync import export_document, import_document
+
+    local = _sync_views([{'id': 'p1', 'text': '两人形成了默契', **_retired()}], [])
+    unpublished = export_document(_sync_views([{'id': 'p1', 'text': '两人形成了默契'}], []), _sync_now())
+    published = export_document(local, _sync_now())
+
+    def _baseline_p1(remote):
+        rows = import_document(remote, local, keep_unpublished_retirements=False)
+        return [r for r in rows['persona']['relationship']['facts'] if r.get('id') == 'p1']
+
+    assert ['permanent_suppression' in r for r in _baseline_p1(unpublished)] == [False]
+    assert ['permanent_suppression' in r for r in _baseline_p1(published)] == [True]
+
+
 def test_long_term_sync_drops_a_row_a_peer_retired():
     """The peer retired it: this device no longer injects its live copy."""
     from memory.long_term_sync import export_document, import_document

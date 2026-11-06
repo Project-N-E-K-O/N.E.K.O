@@ -134,7 +134,7 @@ def export_document(views, completed_at):
     return document({'schemaVersion': 1, 'completedAt': completed_at, 'entries': [rows[key] for key in sorted(rows)]})
 
 
-def import_document(incoming, existing, *, baseline=None):
+def import_document(incoming, existing, *, baseline=None, keep_unpublished_retirements=True):
     incoming = document(incoming)
     result = deepcopy(existing)
     local_persona = {(subject, _entry_id(subject, row)): row for subject in SUBJECTS
@@ -162,12 +162,21 @@ def import_document(incoming, existing, *, baseline=None):
         | {('reflection', subject, key) for (subject, key), row in local_reflections.items()
            if is_permanently_suppressed(row)}
     )
+    if not keep_unpublished_retirements:
+        # A receipt baseline holds only what the remote already carries: a
+        # retirement it does not carry as superseded is unpublished and has
+        # to stay a difference, or the next capture never publishes it.
+        locally_retired &= {(row['kind'], row['subject'], row['id']) for row in incoming['entries']
+                            if row['metadata'].get('status') == 'superseded'}
+
+    def retired(kind, subject, value):
+        return isinstance(value, dict) and (kind, subject, _entry_id(subject, value)) in locally_retired
 
     # Keep static character-card entries and scoped/group partitions on this device.
     for subject in SUBJECTS:
         section = result['persona'].setdefault(subject, {})
         section['facts'] = [row for row in section.get('facts', []) if retained('persona', subject, row)
-                            or is_permanently_suppressed(row)
+                            or retired('persona', subject, row)
                             or (isinstance(row, dict) and (not private(row) or row.get('source') == 'character_card'))]
     for field in ('facts', 'archive'):
         result[field] = [row for row in result[field] if isinstance(row, dict)
@@ -176,7 +185,7 @@ def import_document(incoming, existing, *, baseline=None):
     incoming_reflections = {(row['subject'], row['id']) for row in incoming['entries'] if row['kind'] == 'reflection'}
     result['reflections'] = [row for row in result['reflections'] if isinstance(row, dict)
         and (not private(row) or row.get('entity') not in SUBJECTS or retained('reflection', row.get('entity'), row)
-             or is_permanently_suppressed(row)
+             or retired('reflection', row.get('entity'), row)
              or (row.get('status') not in ('confirmed', 'promoted')
                  and (not isinstance(row.get('id'), str)
                       or (row.get('entity'), row.get('id')) not in incoming_reflections)))]
