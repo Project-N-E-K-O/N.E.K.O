@@ -462,7 +462,7 @@ async def _make_proactive_llm(
         "provider_type": provider_type,
     }
     if not disable_thinking:
-        kwargs["extra_body"] = focus_extra_body(model)
+        kwargs["extra_body"] = focus_extra_body(model, base_url)
     llm = await create_chat_llm_async(  # noqa: LLM_OUTPUT_BUDGET
         model,
         base_url,
