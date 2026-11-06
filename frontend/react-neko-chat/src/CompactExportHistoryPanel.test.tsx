@@ -356,6 +356,7 @@ describe('CompactExportHistoryPanel', () => {
     try {
       const props = createPanelProps({ previewOpen: false, visibilityState: 'open' });
       const { container, rerender } = render(<CompactExportHistoryPanel {...props} />);
+      const history = container.querySelector('.compact-export-history-anchor');
       const bar = container.querySelector<HTMLElement>('.compact-export-history-resize-bar')!;
       expect(bar).not.toBeNull();
       const layout = () => {
@@ -365,8 +366,10 @@ describe('CompactExportHistoryPanel', () => {
       const initialLayout = layout();
       expect(initialLayout.display).not.toBe('none');
       expect(window.getComputedStyle(bar).visibility).toBe('visible');
+      expect(history).not.toHaveAttribute('inert');
 
       rerender(<CompactExportHistoryPanel {...props} choiceLayerAbove />);
+      expect(history).toHaveAttribute('inert');
       expect(window.getComputedStyle(bar).visibility).toBe('hidden');
       expect(layout()).toEqual(initialLayout);
       expect(bar).not.toHaveAttribute('data-compact-hit-region-id');
@@ -374,6 +377,7 @@ describe('CompactExportHistoryPanel', () => {
       expect(bar).not.toHaveAttribute('data-compact-hit-region-kind');
 
       rerender(<CompactExportHistoryPanel {...props} choiceLayerAbove={false} />);
+      expect(history).not.toHaveAttribute('inert');
       expect(container.querySelector('.compact-export-history-resize-bar')).toBe(bar);
       expect(window.getComputedStyle(bar).visibility).toBe('visible');
       expect(layout()).toEqual(initialLayout);
