@@ -217,6 +217,10 @@ def _remote_release_blockers(gate: _Gate, remote: RemoteGithubState) -> list[str
 
 def _verified_release_url(gate: _Gate, remote: RemoteGithubState) -> str:
     # The Market rejects releases it cannot verify; check before asking.
+    if remote["visibility"] in {"private", "not_found"}:
+        raise project_error(
+            Code.PUBLISH_NOT_READY, "The Market requires a public GitHub repository", 409
+        )
     if remote["rate_limited"]:
         raise project_error(
             Code.PUBLISH_RATE_LIMITED,
@@ -348,24 +352,25 @@ def _prune() -> None:
 
 def _stream(task: _Task, argv: list[str], cwd: Path) -> tuple[int | None, str]:
     """Run the CLI to completion, collecting its output. Called in a thread."""
-    try:
-        process = start_cli(argv, cwd=cwd, merge_stderr=True)
-    except OSError as exc:
-        return None, f"publish command could not start: {exc}"
     with _lock:
+        if task.cancel_requested:
+            return None, ""
+        try:
+            process = start_cli(argv, cwd=cwd, merge_stderr=True)
+        except OSError as exc:
+            return None, f"publish command could not start: {exc}"
         task.process = process
-        cancelled = task.cancel_requested
-    if cancelled:
-        terminate_process_tree(process)
-    with _lock:
         task.status = "running"
         task.started_at = time.time()
         task.updated_at = task.started_at
     assert process.stdout is not None
-    for line in process.stdout:
+    while line := process.stdout.readline(_LOG_LINE_CHARS + 1):
         with _lock:
             task.log.append(line.rstrip("\n")[:_LOG_LINE_CHARS])
             task.updated_at = time.time()
+        # Retain one bounded entry per line, discarding oversized tails in chunks.
+        while line and not line.endswith("\n"):
+            line = process.stdout.readline(_LOG_LINE_CHARS + 1)
     return process.wait(), ""
 
 
@@ -457,7 +462,13 @@ async def _run_task(task: _Task, argv: list[str], gate: _Gate, budget: float) ->
         timeout_message = await _timeout_message(task, gate, budget)
     except asyncio.CancelledError:
         # Server shutdown must not orphan a child that may still push a tag.
-        _terminate(task)
+        with _lock:
+            task.cancel_requested = True
+        await asyncio.to_thread(_terminate, task)
+        try:
+            await asyncio.wait_for(asyncio.shield(stream), _TERMINATE_GRACE_SECONDS)
+        except TimeoutError:
+            logger.warning("canceled publish stream did not end: task={}", task.task_id)
         raise
     finally:
         _finalize(task, returncode, spawn_error, timeout_message)

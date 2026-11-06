@@ -677,7 +677,9 @@ def _project_discovery_record_sync(
     )
     if ctx is None or ctx.pid != source.plugin_id:
         return None
-    record = _build_discovery_record_from_context(ctx)
+    record, _failure = _build_discovery_record_safely(source.source_dir / "plugin.toml", ctx)
+    if record is None:
+        return None
     # Project sources are started only on request, like an unapproved plugin.
     record.auto_start = False
     record.meta_payload.update(

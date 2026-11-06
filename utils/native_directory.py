@@ -83,7 +83,9 @@ def _picker_unavailable(message: str) -> NativeDirectoryError:
     return NativeDirectoryError("DIRECTORY_PICKER_UNAVAILABLE", message)
 
 
-def _run_picker(command: list[str], *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+def _run_picker(
+    command: list[str], *, env: dict[str, str] | None = None, encoding: str | None = None,
+) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
             command,
@@ -92,6 +94,7 @@ def _run_picker(command: list[str], *, env: dict[str, str] | None = None) -> sub
             check=False,
             timeout=_PICKER_TIMEOUT_SECONDS,
             env=env,
+            encoding=encoding,
         )
     except FileNotFoundError as exc:
         raise _picker_unavailable("Native folder picker is not installed") from exc
@@ -137,6 +140,7 @@ def _pick_via_osascript(*, start_path: str, title: str) -> str:
 
 
 _POWERSHELL_SCRIPT = """
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 $owner = New-Object System.Windows.Forms.Form
@@ -159,7 +163,7 @@ $owner.BringToFront()
 [System.Windows.Forms.Application]::DoEvents()
 $result = $dialog.ShowDialog($owner)
 if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
-    Write-Output $dialog.SelectedPath
+    [Console]::Out.WriteLine($dialog.SelectedPath)
     exit 0
 }
 exit 2
@@ -186,6 +190,7 @@ def _pick_via_powershell(*, start_path: str, title: str) -> str:
     completed = _run_picker(
         [executable, "-NoProfile", "-STA", "-Command", _POWERSHELL_SCRIPT],
         env={**os.environ, "NEKO_PICK_TITLE": title, "NEKO_PICK_START": start_path},
+        encoding="utf-8",
     )
     if completed.returncode == 2:
         raise DirectoryPickerCancelled()
@@ -227,9 +232,13 @@ def _pick_via_linux_dialog(*, start_path: str, title: str) -> str:
             continue
         if completed.returncode == 0:
             return _selected_or_cancelled(completed)
-        if completed.returncode in (1, 252):
+        stderr = str(completed.stderr or "").strip()
+        display_failed = any(message in stderr.lower() for message in (
+            "cannot open display", "could not connect to display", "cannot connect to display",
+        ))
+        if completed.returncode in (1, 252) and not display_failed:
             raise DirectoryPickerCancelled()
-        last_error = str(completed.stderr or "").strip() or completed.returncode
+        last_error = stderr or completed.returncode
 
     raise _picker_failed(last_error)
 
@@ -256,7 +265,10 @@ def open_directory(path: Path | str) -> None:
         raise NativeDirectoryError(
             "DIRECTORY_UNAVAILABLE", "Use an absolute directory path"
         )
-    target_path = normalize_runtime_root(raw)
+    try:
+        target_path = normalize_runtime_root(raw)
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise NativeDirectoryError("DIRECTORY_UNAVAILABLE", str(exc)) from exc
     if not target_path.is_dir():
         raise NativeDirectoryError(
             "DIRECTORY_UNAVAILABLE", "Directory does not exist or is not accessible"

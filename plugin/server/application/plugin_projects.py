@@ -37,7 +37,6 @@ from plugin.server.application.plugins.operation_lock import (
 )
 from plugin.server.application.plugins.project_sources import (
     inspect_source_directory,
-    list_project_sources_sync,
     project_source_dir,
 )
 from plugin.server.domain.errors import ServerDomainError
@@ -470,9 +469,9 @@ def _require_available_plugin_id(plugin_id: str, source_dir: Path) -> None:
             f"Plugin ID '{plugin_id}' is already used by an installed plugin",
             409,
         )
-    sources, _failures = list_project_sources_sync()
     owner = next(
-        (item for item in sources if item.plugin_id == plugin_id and item.source_dir != source_dir),
+        (item for item in store.list_records()
+         if item.source_dir.name == plugin_id and item.source_dir != source_dir),
         None,
     )
     if owner is not None:
@@ -525,11 +524,21 @@ def _project_plugin_id_sync(project_id: str) -> str | None:
         return _loaded_plugin_id(project_id)
 
 
-def _forget_runtime_entry_sync(record: store.ProjectRecord) -> str | None:
+def _remove_project_entry_sync(project_id: str) -> str | None:
+    failure: ServerDomainError | None = None
+    plugin_id = None
     with state.acquire_plugins_write_lock():
-        plugin_id = _loaded_plugin_id(record.project_id)
-        if plugin_id is not None:
-            state.plugins.pop(plugin_id, None)
+        try:
+            record = store.remove_record(project_id)
+        except ServerDomainError as exc:
+            # The generator-based state lock cannot rethrow frozen domain errors.
+            failure = exc
+        else:
+            plugin_id = _loaded_plugin_id(record.project_id)
+            if plugin_id is not None:
+                state.plugins.pop(plugin_id, None)
+    if failure is not None:
+        raise failure
     state.invalidate_snapshot_cache("plugins")
     return plugin_id
 
@@ -552,8 +561,7 @@ async def _remove_locked(project_id: str) -> None:
             raise project_error(
                 Code.PROJECT_STOP_FAILED, f"Plugin '{plugin_id}' did not stop", 409
             )
-    record = await asyncio.to_thread(store.remove_record, project_id)
-    forgotten = await asyncio.to_thread(_forget_runtime_entry_sync, record)
+    forgotten = await asyncio.to_thread(_remove_project_entry_sync, project_id)
     if forgotten is not None:
         revoke_hot_reload_recovery(forgotten)
 

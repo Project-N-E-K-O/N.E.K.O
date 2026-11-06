@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import threading
 import time
 from types import SimpleNamespace
@@ -21,7 +22,7 @@ from plugin.server.application.plugin_publish_status import LocalStatus
 from plugin.server.application.plugins import operation_lock
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure import authoring_project_store as store
-from plugin.server.infrastructure.mutation_auth import require_plugin_mutation_access
+from plugin.server.infrastructure.mutation_auth import csrf_token, require_plugin_mutation_access
 from plugin.server.routes.plugin_projects import router
 
 ORIGIN = "http://127.0.0.1:48916"
@@ -62,7 +63,7 @@ def client(app):
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 1234)),
         base_url=ORIGIN,
-        headers={"Origin": ORIGIN},
+        headers={"Origin": ORIGIN, "X-CSRF-Token": csrf_token()},
     )
 
 
@@ -120,7 +121,7 @@ def _scripted_process(lines, returncode=0):
             self.argv = argv
             self.pid = 0
             self.returncode = None
-            self.stdout = iter([*lines, ""])
+            self.stdout = io.StringIO("\n".join(lines) + "\n")
             self._returncode = returncode
 
         def poll(self):
@@ -149,6 +150,11 @@ def _blocking_process():
         def __next__(self):
             if self._stop.wait(10):
                 raise StopIteration
+            raise RuntimeError("test process was never terminated")
+
+        def readline(self, size=-1):
+            if self._stop.wait(10):
+                return ""
             raise RuntimeError("test process was never terminated")
 
         def poll(self):
@@ -190,6 +196,43 @@ async def _wait_terminal(project_id: str, timeout: float = 10.0) -> dict:
             return snapshot
         await asyncio.sleep(0.02)
     raise AssertionError(f"task did not finish: {snapshot}")
+
+
+async def test_canceling_the_worker_before_stream_start_prevents_cli_spawn(tmp_path, monkeypatch):
+    task = tasks._Task("delayed", "delayed-project", "github")
+    gate = tasks._Gate(tmp_path, tmp_path, "demo", "owner/repo", "a" * 40, "v0.1.0")
+    entered, release = threading.Event(), threading.Event()
+    terminated = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    original = tasks._stream
+    original_terminate = tasks._terminate
+    process = _scripted_process(["must not run"])
+    monkeypatch.setattr(tasks.subprocess, "Popen", process)
+
+    def delayed(*args):
+        entered.set()
+        release.wait(10)
+        return original(*args)
+
+    def terminate(task):
+        original_terminate(task)
+        loop.call_soon_threadsafe(terminated.set)
+
+    monkeypatch.setattr(tasks, "_stream", delayed)
+    monkeypatch.setattr(tasks, "_terminate", terminate)
+    commands.claim_project(task.project_id, "publish")
+    worker = asyncio.create_task(tasks._run_task(task, ["ignored"], gate, 30))
+    assert await asyncio.to_thread(entered.wait, 5)
+    worker.cancel()
+    await asyncio.wait_for(terminated.wait(), 5)
+    assert task.cancel_requested
+    assert task.project_id in commands._busy
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await worker
+    assert process.calls == []
+    assert task.status == "canceled"
+    assert task.project_id not in commands._busy
 
 
 async def test_publish_needs_a_source_checkout(app, tmp_path, monkeypatch):
@@ -521,6 +564,16 @@ async def test_market_notify_waits_for_a_successful_release_workflow(app, tmp_pa
         )
     assert response.status_code == 409
     assert "must complete successfully" in response.json()["detail"]["message"]
+
+
+@pytest.mark.parametrize("visibility", ["private", "not_found"])
+async def test_market_notify_rejects_non_public_repositories(app, tmp_path, monkeypatch, visibility):
+    record = store.add_record(tmp_path)
+    _ready_gate(monkeypatch, tmp_path, remote={"visibility": visibility})
+    async with client(app) as http:
+        response = await http.post(f"/plugin-projects/{record.project_id}/publish", json={"mode": "market_notify"})
+    assert response.status_code == 409
+    assert "public GitHub repository" in response.json()["detail"]["message"]
 
 
 async def test_github_publish_gives_the_cli_a_release_wait_inside_the_server_budget(

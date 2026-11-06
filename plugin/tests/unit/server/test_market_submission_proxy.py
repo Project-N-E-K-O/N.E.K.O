@@ -65,6 +65,8 @@ def _install(monkeypatch, responder, *, token=_VERIFIED_TOKEN):
 
     async def fake_ensure(*, force_refresh=False, rejected_access_token=None):
         ensured.append(rejected_access_token)
+        if force_refresh and rejected_access_token is not None and token:
+            return {**token, "access_token": "refreshed-access-token"}
         return token
 
     monkeypatch.setattr(market_bridge, "ensure_httpx", fake_httpx)
@@ -289,6 +291,7 @@ def test_a_401_triggers_one_refresh_and_retry(monkeypatch):
     assert len(upstream.requests) == 2
     # The retry asks the token store to refresh past the rejected credential.
     assert ensured[-1] == _ACCESS_TOKEN
+    assert upstream.requests[1].headers["authorization"] == "Bearer refreshed-access-token"
 
 
 def test_a_persistent_401_ends_as_a_local_auth_rejected(monkeypatch):
@@ -472,6 +475,7 @@ def test_new_routes_refresh_once_on_a_401(monkeypatch, method, path):
     assert response.status_code == 200
     assert len(upstream.requests) == 2
     assert ensured[-1] == _ACCESS_TOKEN
+    assert upstream.requests[1].headers["authorization"] == "Bearer refreshed-access-token"
 
 
 @pytest.mark.parametrize(

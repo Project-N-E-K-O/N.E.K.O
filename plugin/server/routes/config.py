@@ -21,6 +21,7 @@ from plugin.server.infrastructure.config_access import ConfigAccessSnapshot, bin
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
 from plugin.server.infrastructure.mutation_auth import PluginPageMutationGuardedRoute
 from plugin.server.application.plugins.project_sources import project_source_dir
+from plugin.server.application.plugins.operation_lock import PluginOperationBusy, serialized_plugin_operation
 
 router = APIRouter()
 # Plugin pages (including published market plugins) call these routes; the
@@ -46,7 +47,7 @@ def _config_snapshot_sync(plugin_id: str) -> ConfigAccessSnapshot | None:
     return ConfigAccessSnapshot(plugin_id=plugin_id, manifest_path=path, host=host)
 
 
-async def _dispatch_config(request: Request, action: Callable[..., Awaitable[dict[str, object]]],
+async def _dispatch_config_access(request: Request, action: Callable[..., Awaitable[dict[str, object]]],
                            *, plugin_id: str, **kwargs: object) -> dict[str, object]:
     snapshot = await asyncio.to_thread(_config_snapshot_sync, plugin_id)
     if snapshot is None:
@@ -56,6 +57,20 @@ async def _dispatch_config(request: Request, action: Callable[..., Awaitable[dic
     # workbench change reuses the ID across an await.
     with bind_config_access(snapshot):
         return await action(plugin_id=plugin_id, **kwargs)
+
+
+@serialized_plugin_operation
+async def _dispatch_config_write(request: Request, action, *, plugin_id: str, **kwargs):
+    return await _dispatch_config_access(request, action, plugin_id=plugin_id, **kwargs)
+
+
+async def _dispatch_config(request: Request, action, *, plugin_id: str, **kwargs):
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        try:
+            return await _dispatch_config_write(request, action, plugin_id=plugin_id, **kwargs)
+        except PluginOperationBusy as exc:
+            raise ServerDomainError(code="PLUGIN_OPERATION_BUSY", message=str(exc), status_code=409) from exc
+    return await _dispatch_config_access(request, action, plugin_id=plugin_id, **kwargs)
 
 
 class ConfigUpdateRequest(BaseModel):

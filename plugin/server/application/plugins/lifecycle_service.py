@@ -1081,7 +1081,6 @@ class PluginLifecycleService:
         current_plugin_id = plugin_id
         resolved_plugin_ids = [plugin_id]
         # Workbench projects are imported only from their own source directory.
-        project_dir = await asyncio.to_thread(_project_source_dir_sync, plugin_id)
 
         existing_host_obj = await asyncio.to_thread(_get_plugin_host_sync, current_plugin_id)
         if isinstance(existing_host_obj, PluginHostContract):
@@ -1138,6 +1137,7 @@ class PluginLifecycleService:
                         error_type=str(exc.details.get("error_type", "RegistryRefreshFailed")) if isinstance(exc.details, dict) else "RegistryRefreshFailed",
                     ) from exc
 
+        project_dir = await asyncio.to_thread(_project_source_dir_sync, current_plugin_id)
         registered_meta = await asyncio.to_thread(_get_plugin_meta_sync, current_plugin_id)
         config_path = await asyncio.to_thread(_resolve_registered_config_path_sync, registered_meta)
         if config_path is None:

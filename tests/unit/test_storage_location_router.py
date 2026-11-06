@@ -1694,6 +1694,42 @@ def test_windows_picker_keeps_quotes_and_commands_out_of_the_script(tmp_path):
     assert title not in command[-1] and start not in command[-1]
     assert run.call_args.kwargs["env"]["NEKO_PICK_TITLE"] == title
     assert run.call_args.kwargs["env"]["NEKO_PICK_START"] == start
+    assert run.call_args.kwargs["encoding"] == "utf-8"
+    assert "[Console]::Out.WriteLine" in command[-1]
+
+
+def test_windows_picker_console_protocol_round_trips_unicode_paths(tmp_path):
+    if native_directory.sys.platform != "win32":
+        pytest.skip("Windows PowerShell protocol")
+    executable = native_directory._find_executable("powershell.exe")
+    if executable is None:
+        pytest.skip("PowerShell unavailable")
+    setting = native_directory._POWERSHELL_SCRIPT.splitlines()[0]
+    value = str(tmp_path / "中文😀")
+    result = native_directory.subprocess.run(
+        [executable, "-NoProfile", "-Command", setting + "; [Console]::Out.WriteLine($env:NEKO_PICK_START)"],
+        env={**native_directory.os.environ, "NEKO_PICK_START": value},
+        capture_output=True, text=True, encoding="utf-8", check=True,
+    )
+    assert result.stdout.strip() == value
+
+
+def test_open_directory_reports_invalid_normalization_as_directory_error(tmp_path):
+    with pytest.raises(native_directory.NativeDirectoryError) as caught:
+        native_directory.open_directory(str(tmp_path) + "\0")
+    assert caught.value.code == "DIRECTORY_UNAVAILABLE"
+
+
+def test_linux_display_failure_tries_the_next_available_picker(tmp_path):
+    results = [
+        native_directory.subprocess.CompletedProcess([], 1, "", "cannot open display"),
+        native_directory.subprocess.CompletedProcess([], 0, str(tmp_path), ""),
+    ]
+    with patch.object(native_directory, "_find_executable", side_effect=lambda *args: args[0]), patch.object(
+        native_directory, "_run_picker", side_effect=results,
+    ) as run:
+        assert native_directory._pick_via_linux_dialog(start_path="", title="Folder") == str(tmp_path)
+    assert run.call_count == 2
 
 
 @pytest.mark.unit

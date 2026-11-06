@@ -23,7 +23,7 @@ from plugin.server.infrastructure import (
     autostart_approvals,
     runtime_overrides,
 )
-from plugin.server.infrastructure.mutation_auth import require_plugin_mutation_access
+from plugin.server.infrastructure.mutation_auth import csrf_token, require_plugin_mutation_access
 from plugin.server.routes import plugin_projects as routes
 from plugin.server.routes.plugin_projects import router
 from utils import native_directory
@@ -67,7 +67,7 @@ def client(app, *, origin=ORIGIN):
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 1234)),
         base_url=ORIGIN,
-        headers={"Origin": origin},
+        headers={"Origin": origin, **({"X-CSRF-Token": csrf_token()} if require_plugin_mutation_access in app.dependency_overrides else {})},
     )
 
 
@@ -305,6 +305,34 @@ async def test_mutations_use_the_plugin_mutation_guard(tmp_path):
         ).status_code == 403
         assert (await http.get("/plugin-projects")).status_code == 200
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_untrusted_project_request_is_rejected_before_reading_its_body():
+    consumed = False
+
+    async def body():
+        nonlocal consumed
+        consumed = True
+        yield b"invalid and potentially large JSON"
+
+    async with client(make_app(guarded=True), origin="http://evil.example") as http:
+        response = await http.post("/plugin-projects/create", content=body())
+    assert response.status_code == 403
+    assert not consumed
+
+
+@pytest.mark.asyncio
+async def test_invalid_registered_project_keeps_its_id_reserved(app, tmp_path):
+    old = _scaffold(tmp_path / "old", "reserved")
+    record = store.add_record(old)
+    (old / "plugin.toml").write_text("broken [", encoding="utf-8")
+    new = _scaffold(tmp_path / "new", "reserved")
+    async with client(app) as http:
+        response = await http.post("/plugin-projects/register", json={"source_dir": str(new)})
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "PROJECT_PLUGIN_ID_CONFLICT"
+    assert [x.project_id for x in store.list_records()] == [record.project_id]
 
 
 @pytest.mark.asyncio
@@ -803,6 +831,37 @@ async def test_active_project_operations_prevent_removal(app, tmp_path, operatio
         assert removed.status_code == 409
         assert removed.json()["detail"]["code"] == "PLUGIN_OPERATION_BUSY"
         assert store.list_records()[0].project_id == created["project_id"]
+
+
+def test_removal_keeps_the_record_when_the_runtime_write_lock_is_unavailable(tmp_path, monkeypatch):
+    record = store.add_record(_scaffold(tmp_path, "locked"))
+
+    class Unavailable:
+        def __enter__(self):
+            raise TimeoutError("runtime lock unavailable")
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(runtime_state, "acquire_plugins_write_lock", Unavailable)
+    with pytest.raises(TimeoutError):
+        service._remove_project_entry_sync(record.project_id)
+    assert store.list_records()[0].project_id == record.project_id
+
+
+def test_removal_keeps_runtime_metadata_when_the_store_write_fails(tmp_path, monkeypatch):
+    record = store.add_record(_scaffold(tmp_path, "retained"))
+    meta = {"source": "project", "project_id": record.project_id}
+    runtime_state.plugins["retained"] = meta
+
+    def fail(_id):
+        raise ServerDomainError(code="PROJECT_STORE_WRITE_FAILED", message="locked", status_code=503)
+
+    monkeypatch.setattr(store, "remove_record", fail)
+    with pytest.raises(ServerDomainError):
+        service._remove_project_entry_sync(record.project_id)
+    assert runtime_state.plugins["retained"] is meta
+    assert store.list_records()[0].project_id == record.project_id
 
 
 @pytest.mark.asyncio

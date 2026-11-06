@@ -19,7 +19,7 @@ from plugin.server.application import plugin_projects as service
 from plugin.core.state import state as runtime_state
 from plugin.server.application.plugins import operation_lock
 from plugin.server.infrastructure import authoring_project_store as store
-from plugin.server.infrastructure.mutation_auth import require_plugin_mutation_access
+from plugin.server.infrastructure.mutation_auth import csrf_token, require_plugin_mutation_access
 from plugin.server.routes.plugin_projects import router
 
 ORIGIN = "http://127.0.0.1:48916"
@@ -59,7 +59,7 @@ def client(app):
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 1234)),
         base_url=ORIGIN,
-        headers={"Origin": ORIGIN},
+        headers={"Origin": ORIGIN, "X-CSRF-Token": csrf_token()},
     )
 
 

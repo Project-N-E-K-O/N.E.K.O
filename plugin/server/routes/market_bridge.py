@@ -939,7 +939,7 @@ async def _proxy_market_submission(
     for attempt in range(2):
         token_data = await _authenticated_market_token()
         if rejected_token is not None:
-            token_data = await _ensure_valid_oauth_token(rejected_access_token=rejected_token)
+            token_data = await _ensure_valid_oauth_token(force_refresh=True, rejected_access_token=rejected_token)
             if not token_data or not token_data.get("access_token"):
                 break
         access_token = token_data["access_token"]

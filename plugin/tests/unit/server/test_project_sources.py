@@ -90,6 +90,63 @@ def test_the_first_project_owns_a_plugin_id(tmp_path):
     assert "already provided" in failures[0].error
 
 
+def test_build_source_enumeration_reports_a_broken_project_store(monkeypatch):
+    from plugin.server.application.plugin_cli.source_resolver import _registered_project_dirs
+
+    def broken():
+        raise ServerDomainError(code="PROJECT_STORE_INVALID", message="broken store", status_code=500)
+
+    monkeypatch.setattr(store, "list_records", broken)
+    with pytest.raises(ServerDomainError) as caught:
+        _registered_project_dirs()
+    assert caught.value.code == "PROJECT_STORE_INVALID"
+
+
+@pytest.mark.asyncio
+async def test_bad_project_payload_does_not_interrupt_other_discovery(isolated, tmp_path):
+    scaffold(isolated, "managed")
+    good = scaffold(tmp_path / "projects", "good")
+    bad = scaffold(tmp_path / "projects", "bad")
+    text = (bad / "plugin.toml").read_text(encoding="utf-8")
+    text = text.replace('name = "bad"', 'name = "bad"\ndescription = ["invalid"]')
+    (bad / "plugin.toml").write_text(text, encoding="utf-8")
+    store.add_record(good)
+    store.add_record(bad)
+    result = await registry_service.PluginRegistryService().refresh_registry()
+    assert {"managed", "good"}.issubset(state.plugins)
+    assert any(x["config_path"] == str(bad / "plugin.toml") for x in result["failed"])
+
+
+@pytest.mark.asyncio
+async def test_config_write_and_project_removal_share_the_operation_lock(tmp_path, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from plugin.server.routes import config as config_routes
+    from plugin.server.infrastructure.config_access import ConfigAccessSnapshot
+    from plugin.server.application import plugin_projects
+
+    source = scaffold(tmp_path, "config_demo")
+    record = store.add_record(source)
+    state.plugins["config_demo"] = project_meta(source, record.project_id)
+    entered, release = asyncio.Event(), asyncio.Event()
+    monkeypatch.setattr(config_routes, "_config_snapshot_sync", lambda pid: ConfigAccessSnapshot(pid, source / "plugin.toml", None))
+
+    async def write(**kwargs):
+        entered.set()
+        await release.wait()
+        return {"ok": True}
+
+    writing = asyncio.create_task(config_routes._dispatch_config(SimpleNamespace(method="PUT"), write, plugin_id="config_demo"))
+    await entered.wait()
+    removing = asyncio.create_task(plugin_projects.remove_project(record.project_id))
+    await asyncio.sleep(0.01)
+    assert not removing.done()
+    release.set()
+    await writing
+    await removing
+    assert store.list_records() == []
+
+
 def test_projects_cannot_live_inside_managed_plugin_roots(isolated):
     inside = scaffold(isolated, "inside")
     with pytest.raises(ValueError, match="overlaps a managed plugin directory"):

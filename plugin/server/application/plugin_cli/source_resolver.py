@@ -62,12 +62,7 @@ def _require_safe_directory_name(value: str) -> str:
 
 def _registered_project_dirs() -> list[Path]:
     from plugin.server.application.plugins.project_sources import list_project_sources_sync
-    from plugin.server.domain.errors import ServerDomainError
-
-    try:
-        sources, _failures = list_project_sources_sync()
-    except ServerDomainError:
-        return []
+    sources, _failures = list_project_sources_sync()
     return [source.source_dir for source in sources]
 
 
