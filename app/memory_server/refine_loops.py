@@ -642,6 +642,8 @@ async def _run_introspection_for_character(character: str) -> None:
     """
     from memory.introspection import FAILURE_TRANSIENT, arun_introspection
 
+    from .long_term_sync import queue_capture
+
     pm = runtime.persona_manager
     engine_ref = runtime.reflection_engine
     if pm is None or engine_ref is None:
@@ -656,7 +658,10 @@ async def _run_introspection_for_character(character: str) -> None:
         )
     except Exception:
         # Outside the model call (a save hitting a busy or read-only store):
-        # worth another try soon.
+        # worth another try soon. An earlier round may already have saved its
+        # actions, so they still go to the capture; one with nothing new
+        # publishes nothing.
+        queue_capture(character)
         await _astamp_introspection(character, transient_failure=True)
         raise
     gave_up = await _astamp_introspection(
@@ -669,7 +674,6 @@ async def _run_introspection_for_character(character: str) -> None:
         + ("，重试次数用完，等下一周期" if gave_up else "")
     )
     if result.applied:
-        from .long_term_sync import queue_capture
         queue_capture(character)
 
 

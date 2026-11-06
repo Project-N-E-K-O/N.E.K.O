@@ -1795,6 +1795,23 @@ async def test_tick_runs_only_when_idle_and_powerful_and_persists_the_stamp(main
 
 
 @pytest.mark.asyncio
+async def test_a_run_that_fails_after_saving_still_queues_the_capture(maint_state, monkeypatch):
+    """A round may have saved its actions before a later save fails; those
+    changes still reach the other devices."""
+    from app.memory_server import long_term_sync, refine_loops
+
+    _tick_runtime(monkeypatch, AsyncMock(side_effect=OSError('read-only store')))
+    captured = MagicMock()
+    monkeypatch.setattr(long_term_sync, 'queue_capture', captured)
+
+    with pytest.raises(OSError):
+        await refine_loops._run_introspection_for_character(NAME)
+
+    captured.assert_called_once_with(NAME)
+    assert maint_state._maint_view(NAME)['introspection_transient_failures'] == 1
+
+
+@pytest.mark.asyncio
 async def test_character_release_cancels_a_running_introspection(maint_state, monkeypatch):
     """Rename / delete during the model wait: the release cancels and drains
     the run, so it never applies actions to the released identity; a retired
