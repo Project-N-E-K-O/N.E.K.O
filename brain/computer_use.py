@@ -1019,7 +1019,7 @@ class ComputerUseAdapter:
                         provider_type=provider_type,
                     )
                     self._llm_client_sig = current_sig
-                extra = get_agent_extra_body(model) or {}
+                extra = get_agent_extra_body(model, base_url) or {}
                 set_call_type("agent_cua")
                 # Per-call overrides via invoke_raw's **kwargs path: routes
                 # both max_completion_tokens AND timeout through _params()
@@ -1480,7 +1480,7 @@ class ComputerUseAdapter:
             return dict(self._CANCEL_TERMINATE)
 
         model = self._agent_model_cfg.get("model", "")
-        extra = get_agent_extra_body(model) or {}
+        extra = get_agent_extra_body(model, self._agent_model_cfg.get("base_url", "")) or {}
 
         for attempt in range(3):
             if self._cancelled:
