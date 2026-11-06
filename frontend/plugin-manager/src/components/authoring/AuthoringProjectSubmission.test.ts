@@ -8,16 +8,20 @@ import { authoringMessages } from '@/i18n/authoring'
 import {
   MarketSubmissionError,
   type MarketSubmission,
+  type PreflightResult,
   type RepositoryPreview,
   type SubmissionPanelState,
+  type SubmissionWorkspace,
 } from '@/api/marketSubmissions'
 
 const market = vi.hoisted(() => ({
   listMarketSubmissions: vi.fn(),
-  previewSubmissionRepository: vi.fn(),
+  preflightSubmission: vi.fn(),
   createSubmissionDraft: vi.fn(),
   updateSubmissionDraft: vi.fn(),
   submitSubmission: vi.fn(),
+  createSubmissionRevision: vi.fn(),
+  getSubmissionWorkspace: vi.fn(),
   withdrawSubmission: vi.fn(),
   listMarketZones: vi.fn(),
   openExternalUrl: vi.fn(),
@@ -27,10 +31,12 @@ vi.mock('@/api/marketSubmissions', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/api/marketSubmissions')>()),
   listMarketZones: market.listMarketZones,
   listMarketSubmissions: market.listMarketSubmissions,
-  previewSubmissionRepository: market.previewSubmissionRepository,
+  preflightSubmission: market.preflightSubmission,
   createSubmissionDraft: market.createSubmissionDraft,
   updateSubmissionDraft: market.updateSubmissionDraft,
   submitSubmission: market.submitSubmission,
+  createSubmissionRevision: market.createSubmissionRevision,
+  getSubmissionWorkspace: market.getSubmissionWorkspace,
   withdrawSubmission: market.withdrawSubmission,
 }))
 vi.mock('@/utils/openExternal', () => ({ openExternalUrl: market.openExternalUrl }))
@@ -83,10 +89,13 @@ vi.mock('@/composables/useMarketAuth', async () => {
 
 const en = authoringMessages['en-US']
 const NativeMutationObserver = globalThis.MutationObserver
+const HEAD = 'a'.repeat(40)
+const OLD = 'b'.repeat(40)
 let cleanup: (() => void) | undefined
 let states: SubmissionPanelState[] = []
 
 const snapshot = {
+  id: 31,
   repo_url: 'https://github.com/owner/repo',
   repo_owner: 'owner',
   repo_name: 'repo',
@@ -94,8 +103,8 @@ const snapshot = {
   plugin_slug: 'repo_plugin',
   zone_slug: 'game',
   tags: ['工具'],
-  submitted_ref: 'main',
-  resolved_commit: 'old',
+  submitted_ref: OLD,
+  resolved_commit: OLD,
 }
 const item = (overrides: Partial<MarketSubmission> = {}): MarketSubmission => ({
   id: 5,
@@ -120,10 +129,23 @@ const preview = (overrides: Partial<RepositoryPreview> = {}): RepositoryPreview 
   plugin_id: 'repo_plugin',
   plugin_name: 'Repo plugin',
   description: 'Does things',
-  resolved_commit: 'new',
-  submitted_ref: 'main',
+  short_description: null,
+  license_name: 'MIT',
+  resolved_commit: HEAD,
+  submitted_ref: HEAD,
+  commit_url: `https://github.com/owner/repo/commit/${HEAD}`,
   warnings: [],
   ...overrides,
+})
+const ready = (overrides: Partial<PreflightResult> = {}): PreflightResult => ({
+  ready: true,
+  issues: [],
+  preview: preview(),
+  normalized_icon_url: null,
+  ...overrides,
+})
+const workspace = (count: number): SubmissionWorkspace => ({
+  overview: { action_required: count > 0, current_feedback_action_count: count, next_actor: 'author' },
 })
 
 async function flush() {
@@ -140,13 +162,17 @@ async function settle() {
   }
 }
 
-async function mount() {
+async function mount(props: { pushedHead?: string | null } = {}) {
   const container = document.createElement('div')
   document.body.append(container)
   const app = createApp({
     render: () =>
       h(AuthoringProjectSubmission, {
         githubRepository: 'owner/repo',
+        pluginId: 'repo_plugin',
+        pluginName: 'Repo plugin',
+        pluginDescription: 'Does things',
+        pushedHead: props.pushedHead === undefined ? HEAD : props.pushedHead,
         onState: (state: SubmissionPanelState) => states.push(state),
       }),
   })
@@ -193,6 +219,14 @@ async function setSelect(placeholder: string, value: string) {
   await flush()
 }
 
+async function typeNote(value: string) {
+  const textarea = document.querySelector('textarea') as HTMLTextAreaElement | null
+  expect(textarea, 'Missing revision note').toBeTruthy()
+  textarea!.value = value
+  textarea!.dispatchEvent(new Event('input', { bubbles: true }))
+  await flush()
+}
+
 const tagChip = (label: string) =>
   [...document.querySelectorAll('.el-check-tag')].find((element) => element.textContent?.trim() === label) as
     | HTMLElement
@@ -224,7 +258,8 @@ beforeEach(() => {
     }
   )
   market.listMarketSubmissions.mockResolvedValue(page([]))
-  market.previewSubmissionRepository.mockResolvedValue(preview())
+  market.preflightSubmission.mockResolvedValue(ready())
+  market.getSubmissionWorkspace.mockResolvedValue(workspace(0))
   market.listMarketZones.mockResolvedValue([
     { id: 'game', name: 'Game' },
     { id: 'tools', name: 'Tools' },
@@ -244,16 +279,17 @@ describe('Market submission panel', () => {
     await mount()
     expect(document.body.textContent).toContain(en.submissionLoginRequired)
     expect(market.listMarketSubmissions).not.toHaveBeenCalled()
-    expect(states.at(-1)).toEqual({ phase: null, marketPluginId: null })
+    expect(states.at(-1)).toEqual({ phase: null, marketPluginId: null, resolvedCommit: null })
   })
 
-  it('reports an approved submission with its Market plugin id', async () => {
+  it('reports an approved submission with its plugin id and approved commit', async () => {
     market.listMarketSubmissions.mockResolvedValue(
       page([item({ status: 'closed', decision: 'approved', plugin_id: 7 })])
     )
     await mount()
-    expect(states.at(-1)).toEqual({ phase: 'approved', marketPluginId: 7 })
+    expect(states.at(-1)).toEqual({ phase: 'approved', marketPluginId: 7, resolvedCommit: OLD })
     expect(document.body.textContent).toContain('Published to the Market as plugin 7.')
+    expect(market.getSubmissionWorkspace).not.toHaveBeenCalled()
   })
 
   it('ignores submissions for a similarly named repository', async () => {
@@ -265,25 +301,38 @@ describe('Market submission panel', () => {
     expect(states.at(-1)?.phase).toBeNull()
   })
 
-  it('creates a draft from the preview, with the chosen zone and tags', async () => {
-    market.previewSubmissionRepository.mockResolvedValue(preview({ plugin_name: 'x'.repeat(150) }))
+  it('runs preflight with the full payload, then creates the draft from its preview', async () => {
+    market.preflightSubmission.mockResolvedValue(
+      ready({ preview: preview({ submitted_ref: 'main', short_description: 'Short' }), normalized_icon_url: null })
+    )
     market.createSubmissionDraft.mockResolvedValue(item())
     await mount()
-    expect(document.body.textContent).toContain('Game')
     await chooseMetadata('tools', [en.submissionTagTool, en.submissionTagGame])
     await click(en.submissionCreateDraft)
-    expect(market.createSubmissionDraft).toHaveBeenCalledExactlyOnceWith({
+    const payload = {
       repo_url: 'https://github.com/owner/repo',
-      plugin_name: 'x'.repeat(100),
+      plugin_name: 'Repo plugin',
       plugin_slug: 'repo_plugin',
+      plugin_directory: '',
+      description: 'Does things',
       zone_slug: 'tools',
       tags: ['工具', '游戏'],
-      description: 'Does things',
-      short_description: undefined,
-      license_name: undefined,
+      submitted_ref: HEAD,
+      resolved_commit: HEAD,
+      metadata: { source: 'neko_plugin_workbench' },
+    }
+    expect(market.preflightSubmission).toHaveBeenCalledExactlyOnceWith(payload)
+    expect(market.createSubmissionDraft).toHaveBeenCalledExactlyOnceWith({
+      ...payload,
       submitted_ref: 'main',
-      resolved_commit: 'new',
+      resolved_commit: HEAD,
+      commit_url: `https://github.com/owner/repo/commit/${HEAD}`,
+      license_name: 'MIT',
+      short_description: 'Short',
     })
+    expect(market.preflightSubmission.mock.invocationCallOrder[0]).toBeLessThan(
+      market.createSubmissionDraft.mock.invocationCallOrder[0]!
+    )
     expect(states.at(-1)?.phase).toBe('draft')
     ;([...document.querySelectorAll('a')].find((a) => a.textContent === en.submissionOpenOnMarket) as HTMLElement).click()
     expect(market.openExternalUrl).toHaveBeenCalledWith(
@@ -291,7 +340,45 @@ describe('Market submission panel', () => {
     )
   })
 
-  it('keeps create-draft disabled until a zone and a tag are chosen', async () => {
+  it('falls back to the description for the short description', async () => {
+    market.createSubmissionDraft.mockResolvedValue(item())
+    await mount()
+    await chooseMetadata()
+    await click(en.submissionCreateDraft)
+    expect(market.createSubmissionDraft.mock.calls[0]![0].short_description).toBe('Does things')
+  })
+
+  it('shows the preflight issues and creates nothing when the Market is not ready', async () => {
+    market.preflightSubmission.mockResolvedValue(
+      ready({
+        ready: false,
+        issues: [
+          {
+            code: 'invalid_input',
+            field: 'plugin_slug',
+            message: 'The plugin ID does not match plugin.toml.',
+            current: 'repo_plugin',
+            expected: 'other_plugin',
+            remedy: 'Correct the fields.',
+          },
+        ],
+        preview: preview({ warnings: ['plugin.toml is large'], workflow_status: 'missing' }),
+      })
+    )
+    await mount()
+    await chooseMetadata()
+    await click(en.submissionCreateDraft)
+    expect(market.createSubmissionDraft).not.toHaveBeenCalled()
+    const text = document.body.textContent
+    expect(text).toContain(en.submissionPreflightIssues)
+    expect(text).toContain('The plugin ID does not match plugin.toml.')
+    expect(text).toContain('expected: other_plugin')
+    expect(text).toContain('Correct the fields.')
+    expect(text).toContain('plugin.toml is large')
+    expect(text).toContain(en.submissionWorkflowMissing)
+  })
+
+  it('keeps create-draft disabled until a zone and a tag are chosen and HEAD is pushed', async () => {
     await mount()
     expect(document.body.textContent).toContain(en.submissionMetadataRequired)
     expect(button(en.submissionCreateDraft)?.disabled).toBe(true)
@@ -302,7 +389,14 @@ describe('Market submission panel', () => {
     expect(document.body.textContent).not.toContain(en.submissionMetadataRequired)
   })
 
-  it('offers the Market\'s standard tags and stops at five', async () => {
+  it('refuses a draft until HEAD is pushed', async () => {
+    await mount({ pushedHead: null })
+    await chooseMetadata()
+    expect(document.body.textContent).toContain(en.submissionHeadNotPushed)
+    expect(button(en.submissionCreateDraft)?.disabled).toBe(true)
+  })
+
+  it("offers the Market's standard tags and stops at five", async () => {
     await mount()
     expect(document.querySelectorAll('.el-check-tag')).toHaveLength(32)
     for (const label of [
@@ -328,7 +422,7 @@ describe('Market submission panel', () => {
     expect(document.body.textContent).toContain(en.submissionZonesLoadFailed)
   })
 
-  it('shows a draft\'s zone and tags and saves a change to them', async () => {
+  it("shows a draft's zone and tags and saves a change to them", async () => {
     market.listMarketSubmissions.mockResolvedValue(page([item()]))
     market.updateSubmissionDraft.mockResolvedValue(
       item({ current_snapshot: { ...snapshot, zone_slug: 'tools', tags: ['工具', '游戏'] } })
@@ -356,26 +450,12 @@ describe('Market submission panel', () => {
     expect(tagChip('legacy')?.classList.contains('is-checked')).toBe(true)
   })
 
-  it('blocks submitting a new plugin\'s draft that has no zone or tags', async () => {
+  it("blocks submitting a new plugin's draft that has no zone or tags", async () => {
     market.listMarketSubmissions.mockResolvedValue(
       page([item({ current_snapshot: { ...snapshot, zone_slug: null, tags: [] } })])
     )
     await mount()
     expect(button(en.submissionSubmitReview)?.disabled).toBe(true)
-  })
-
-  it('refuses a draft when the Market finds no plugin ID, and shows its warnings', async () => {
-    market.previewSubmissionRepository.mockResolvedValue(
-      preview({ plugin_id: null, warnings: ['plugin.toml is missing'], workflow_status: 'missing' })
-    )
-    await mount()
-    await chooseMetadata()
-    await click(en.submissionCreateDraft)
-    expect(market.createSubmissionDraft).not.toHaveBeenCalled()
-    const text = document.body.textContent
-    expect(text).toContain(en.submissionNoManifest)
-    expect(text).toContain('plugin.toml is missing')
-    expect(text).toContain(en.submissionWorkflowMissing)
   })
 
   it('selects the open submission the Market names on a conflict', async () => {
@@ -386,6 +466,7 @@ describe('Market submission panel', () => {
     await chooseMetadata()
     market.listMarketSubmissions.mockResolvedValue(page([item({ id: 4 }), item({ id: 9, status: 'submitted' })]))
     await click(en.submissionCreateDraft)
+    await settle()
     expect(document.body.textContent).toContain(en.submissionOpenExists)
     expect(states.at(-1)?.phase).toBe('submitted')
   })
@@ -406,27 +487,135 @@ describe('Market submission panel', () => {
     expect(document.body.textContent).toContain(message)
   })
 
-  it('points the draft at the current head before submitting it', async () => {
+  it('points the draft at the pushed HEAD, then submits it (never /revision)', async () => {
     market.listMarketSubmissions.mockResolvedValue(page([item()]))
-    market.updateSubmissionDraft.mockResolvedValue(item({ current_snapshot: { ...snapshot, resolved_commit: 'new' } }))
+    market.updateSubmissionDraft.mockResolvedValue(item({ current_snapshot: { ...snapshot, resolved_commit: HEAD } }))
     market.submitSubmission.mockResolvedValue(item({ status: 'submitted' }))
     await mount()
     await click(en.submissionSubmitReview)
     await settle()
     await click(en.submissionSubmitReview, { last: true })
     await settle()
-    expect(market.previewSubmissionRepository).toHaveBeenCalledWith({
-      repo_url: 'https://github.com/owner/repo',
-      submitted_ref: 'main',
-    })
-    expect(market.updateSubmissionDraft).toHaveBeenCalledWith(5, {
-      submitted_ref: 'main',
-      resolved_commit: 'new',
-    })
+    expect(market.updateSubmissionDraft).toHaveBeenCalledWith(5, { submitted_ref: HEAD, resolved_commit: HEAD })
     expect(market.updateSubmissionDraft.mock.invocationCallOrder[0]).toBeLessThan(
       market.submitSubmission.mock.invocationCallOrder[0]!
     )
+    expect(market.createSubmissionRevision).not.toHaveBeenCalled()
     expect(states.at(-1)?.phase).toBe('submitted')
+  })
+
+  it('shows the Market progress and the feedback waiting for the author', async () => {
+    market.listMarketSubmissions.mockResolvedValue(
+      page([
+        item({
+          status: 'in_review',
+          review_progress: {
+            phase: 'human_review',
+            next_actor: 'author',
+            title: 'Reviewer feedback waits for you',
+            description: 'Reply to the comments or send a new revision.',
+          },
+        }),
+      ])
+    )
+    market.getSubmissionWorkspace.mockResolvedValue(workspace(2))
+    await mount()
+    await settle()
+    const text = document.body.textContent
+    expect(market.getSubmissionWorkspace).toHaveBeenCalledWith(5)
+    expect(text).toContain(en.submissionStateAuthorAction)
+    expect(text).toContain('Reviewer feedback waits for you')
+    expect(text).toContain('Reply to the comments or send a new revision.')
+    expect(text).toContain('2 reviewer comments wait for your reply.')
+    ;([...document.querySelectorAll('a')].find((a) => a.textContent === en.submissionOpenFeedback) as HTMLElement).click()
+    expect(market.openExternalUrl).toHaveBeenCalledWith(
+      'https://market.example/#/developer/submissions?submission=5'
+    )
+    expect(states.at(-1)?.phase).toBe('author_action')
+  })
+
+  it('sends a revision with the pushed HEAD pinned and a note', async () => {
+    market.listMarketSubmissions.mockResolvedValue(page([item({ status: 'in_review' })]))
+    market.createSubmissionRevision.mockResolvedValue(
+      item({ status: 'submitted', current_snapshot: { ...snapshot, id: 32, resolved_commit: HEAD } })
+    )
+    await mount()
+    await settle()
+    await click(en.submissionNewRevision)
+    expect(document.body.textContent).toContain(`replaces the submitted commit ${OLD.slice(0, 7)}`)
+    expect(button(en.submissionRevisionSend)?.disabled).toBe(true)
+    await typeNote('  Fixed the lint errors.  ')
+    await click(en.submissionRevisionSend)
+    await settle()
+    expect(market.createSubmissionRevision).toHaveBeenCalledExactlyOnceWith(5, {
+      base_snapshot_id: 31,
+      note: 'Fixed the lint errors.',
+      submitted_ref: HEAD,
+      resolved_commit: HEAD,
+    })
+    expect(states.at(-1)).toEqual({ phase: 'submitted', marketPluginId: null, resolvedCommit: HEAD })
+  })
+
+  it('sends a metadata-only revision when only the tags changed', async () => {
+    market.listMarketSubmissions.mockResolvedValue(
+      page([item({ status: 'submitted', current_snapshot: { ...snapshot, resolved_commit: HEAD } })])
+    )
+    market.createSubmissionRevision.mockResolvedValue(item({ status: 'submitted' }))
+    await mount()
+    await settle()
+    await click(en.submissionNewRevision)
+    expect(document.body.textContent).toContain(en.submissionRevisionNoChange)
+    await clickTag(en.submissionTagGame)
+    await typeNote('Add a tag')
+    await click(en.submissionRevisionSend)
+    await settle()
+    expect(market.createSubmissionRevision).toHaveBeenCalledExactlyOnceWith(5, {
+      base_snapshot_id: 31,
+      note: 'Add a tag',
+      tags: ['工具', '游戏'],
+    })
+  })
+
+  it('reloads with a message when the revision base is stale', async () => {
+    market.listMarketSubmissions.mockResolvedValue(page([item({ status: 'in_review' })]))
+    market.createSubmissionRevision.mockRejectedValue(
+      new MarketSubmissionError('market_submission_failed', 409, 'the submission changed')
+    )
+    await mount()
+    await settle()
+    await click(en.submissionNewRevision)
+    await typeNote('fix')
+    market.listMarketSubmissions.mockClear()
+    await click(en.submissionRevisionSend)
+    await settle()
+    expect(market.listMarketSubmissions).toHaveBeenCalledOnce()
+    expect(document.body.textContent).toContain(en.submissionRevisionStale)
+  })
+
+  it('explains an identity mismatch on a revision', async () => {
+    market.listMarketSubmissions.mockResolvedValue(page([item({ status: 'in_review' })]))
+    market.createSubmissionRevision.mockRejectedValue(
+      new MarketSubmissionError('plugin_identity_mismatch', 422, 'mismatch', {
+        manifest_plugin_id: 'other',
+        repository_plugin_id: 'repo_plugin',
+        expected_repository_name: null,
+      })
+    )
+    await mount()
+    await settle()
+    await click(en.submissionNewRevision)
+    await typeNote('fix')
+    await click(en.submissionRevisionSend)
+    await settle()
+    expect(document.body.textContent).toContain(
+      'The plugin ID in plugin.toml (other) does not match this submission (repo_plugin).'
+    )
+  })
+
+  it('offers no new revision on a draft', async () => {
+    market.listMarketSubmissions.mockResolvedValue(page([item()]))
+    await mount()
+    expect(hasButton(en.submissionNewRevision)).toBe(false)
   })
 
   it('withdraws only after confirmation, then offers a new draft', async () => {
@@ -444,28 +633,5 @@ describe('Market submission panel', () => {
     expect(market.withdrawSubmission).toHaveBeenCalledWith(5)
     expect(document.body.textContent).toContain(en.submissionStateWithdrawn)
     expect(hasButton(en.submissionCreateDraft)).toBe(true)
-  })
-
-  it('shows what the Market asks of the author', async () => {
-    market.listMarketSubmissions.mockResolvedValue(
-      page([
-        item({
-          status: 'in_review',
-          review_progress: {
-            phase: 'author_action',
-            next_actor: 'author',
-            title: 'Plugin ID conflict',
-            description: 'Rename the plugin and resubmit.',
-            diagnostic_code: 'slug_conflict',
-          },
-        }),
-      ])
-    )
-    await mount()
-    const text = document.body.textContent
-    expect(text).toContain(en.submissionStateAuthorAction)
-    expect(text).toContain('Plugin ID conflict')
-    expect(text).toContain('Rename the plugin and resubmit.')
-    expect(states.at(-1)?.phase).toBe('author_action')
   })
 })

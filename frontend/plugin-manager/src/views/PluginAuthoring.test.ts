@@ -54,11 +54,13 @@ vi.mock('vue-router', () => ({
 // publish steps; only its Market login and network calls are replaced.
 const market = vi.hoisted(() => ({
   listMarketSubmissions: vi.fn(),
+  listMarketZones: vi.fn(),
   authenticated: false,
 }))
 vi.mock('@/api/marketSubmissions', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/api/marketSubmissions')>()),
   listMarketSubmissions: market.listMarketSubmissions,
+  listMarketZones: market.listMarketZones,
 }))
 vi.mock('@/composables/useMarketAuth', async () => {
   const { computed, ref } = await import('vue')
@@ -162,12 +164,45 @@ const publishTask = (overrides: Partial<PublishTask> = {}): PublishTask => ({
   status: 'queued',
   message: '',
   release_url: '',
+  market_status: null,
+  market_candidate_id: null,
   log: [],
   started_at: null,
   updated_at: 1,
   finished_at: null,
   ...overrides,
 })
+/** Sign in to a Market account whose submission of this repository was approved at `commit`. */
+function approvedSubmission(commit = 'abc') {
+  market.authenticated = true
+  market.listMarketSubmissions.mockResolvedValue({
+    items: [
+      {
+        id: 152,
+        status: 'closed',
+        decision: 'approved',
+        terminal_kind: 'approved',
+        plugin_id: 7,
+        current_snapshot: {
+          id: 31,
+          repo_url: 'https://github.com/Owner/hello_world',
+          repo_owner: 'Owner',
+          repo_name: 'hello_world',
+          plugin_name: 'Hello',
+          plugin_slug: 'hello_world',
+          zone_slug: 'game',
+          tags: ['工具'],
+          submitted_ref: commit,
+          resolved_commit: commit,
+        },
+      },
+    ],
+    total: 1,
+    page: 1,
+    page_size: 100,
+    total_pages: 1,
+  })
+}
 const taskNotFound = { response: { data: { detail: { code: 'PUBLISH_TASK_NOT_FOUND' } } } }
 const NativeMutationObserver = globalThis.MutationObserver
 let cleanup: (() => void) | undefined
@@ -279,6 +314,7 @@ beforeEach(() => {
   api.getPluginProjectPublishTask.mockRejectedValue(taskNotFound)
   market.authenticated = false
   market.listMarketSubmissions.mockResolvedValue({ items: [] })
+  market.listMarketZones.mockResolvedValue([{ id: 'game', name: 'Game' }])
 })
 
 afterEach(() => {
@@ -391,18 +427,19 @@ describe('authoring workbench backed by the server project list', () => {
     expect(api.getPluginProjectPublishStatus).not.toHaveBeenCalled()
     const pane = await openPublish(container)
     expect(api.getPluginProjectPublishStatus).toHaveBeenCalledExactlyOnceWith('p1', false)
-    const [repository, verify, release, submission, marketVersion] = steps()
+    const [repository, verify, submission, release, marketVersion] = steps()
     expect(repository!.textContent).toContain('owner/hello_world is public and HEAD is pushed.')
     expect(verify!.textContent).toContain(en.publishVerifyPassed)
-    expect(release!.textContent).toContain('Release v0.2.0 does not exist yet.')
-    // The first step with something to do is highlighted; the panel with controls is never dimmed.
-    expect(release!.className).toContain('authoring-publish-step--current')
-    expect(submission!.className).not.toContain('authoring-publish-step--pending')
-    // Signed out and no release yet: both Market steps wait, with their explanation.
-    expect(submission!.textContent).toContain(en.publishStatusWaiting)
-    expect(submission!.textContent).toContain(en.submissionStepDetailLater)
+    // The submission comes before the Release: the Market approves without one.
+    expect(submission!.className).toContain('authoring-publish-step--current')
+    expect(submission!.textContent).toContain(en.publishStatusTodo)
     expect(submission!.textContent).toContain(en.submissionLogin)
+    expect(release!.textContent).toContain(en.publishStatusWaiting)
+    expect(release!.textContent).toContain(en.publishReleaseAfterApproval)
     expect(marketVersion!.textContent).toContain(en.marketVersionStepDetailLater)
+    // Nothing is published before the Market approves the submission.
+    expect(buttons(en.publishRunGithubMarket)).toHaveLength(0)
+    expect(buttons(en.publishRunGithub)).toHaveLength(0)
     expect(pane.textContent).toContain('.github/workflows/verify.yml')
     expect(pane.textContent).toContain('n.e.k.o_plugin_hello_world')
   })
@@ -413,39 +450,57 @@ describe('authoring workbench backed by the server project list', () => {
     api.getPluginProjectPublishStatus.mockResolvedValue(
       publishStatus({ remote: { release: { state: 'published', missing_assets: [] } } })
     )
-    market.authenticated = true
-    market.listMarketSubmissions.mockResolvedValue({
-      items: [
-        {
-          id: 152,
-          status: 'closed',
-          decision: 'approved',
-          terminal_kind: 'approved',
-          plugin_id: 7,
-          current_snapshot: {
-            repo_url: 'https://github.com/Owner/hello_world',
-            repo_owner: 'Owner',
-            repo_name: 'hello_world',
-            plugin_name: 'Hello',
-            plugin_slug: 'hello_world',
-            submitted_ref: 'main',
-            resolved_commit: 'abc',
-          },
-        },
-      ],
-      total: 1,
-      page: 1,
-      page_size: 100,
-      total_pages: 1,
-    })
+    approvedSubmission()
     const container = await mount()
     await openPublish(container)
     expect(market.listMarketSubmissions).toHaveBeenCalledWith('owner/hello_world')
-    const [, , , submission, marketVersion] = steps()
+    const [, , submission, release, marketVersion] = steps()
     expect(submission!.textContent).toContain(en.publishStatusDone)
     expect(submission!.textContent).toContain(en.submissionStateApproved)
-    expect(marketVersion!.textContent).toContain(en.publishStatusDone)
-    expect(marketVersion!.textContent).toContain('Listed on the Market as #7.')
+    expect(release!.textContent).toContain(en.publishStatusDone)
+    expect(marketVersion!.textContent).toContain(en.publishStatusTodo)
+    expect(marketVersion!.textContent).toContain('Release v0.2.0 is ready; notify the Market to list it.')
+    expect(buttons(en.publishRunMarket)).toHaveLength(1)
+  })
+
+  it('warns before a Release from another commit than the approved one', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(publishStatus())
+    approvedSubmission('def0000')
+    const container = await mount()
+    await openPublish(container)
+    const release = steps()[3]!
+    expect(release.className).toContain('authoring-publish-step--current')
+    expect(release.textContent).toContain('Release v0.2.0 does not exist yet.')
+    expect(release.textContent).toContain('HEAD abc is not the approved commit def0000.')
+  })
+
+  it.each([
+    ['pending_review', 'Sent to Market human review (candidate #12).'],
+    ['rejected', 'The Market rejected this release (candidate #12); publish a new version.'],
+    ['published', en.marketVersionListed],
+  ] as const)('shows the Market answer %s from the last publish task', async (marketStatus, detail) => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(
+      publishStatus({ remote: { release: { state: 'published', missing_assets: [] } } })
+    )
+    api.getPluginProjectPublishTask.mockResolvedValue(
+      publishTask({
+        mode: 'market_notify',
+        status: marketStatus === 'rejected' ? 'failed' : 'succeeded',
+        release_url: 'https://github.com/owner/hello_world/releases/tag/v0.2.0',
+        market_status: marketStatus,
+        market_candidate_id: 12,
+        finished_at: 1_700_000_000,
+      })
+    )
+    approvedSubmission()
+    const container = await mount()
+    await openPublish(container)
+    expect(steps()[4]!.textContent).toContain(detail)
+    expect(buttons(en.publishRunMarket)).toHaveLength(0)
   })
 
   it('offers the full publish only after the second confirmation', async () => {
@@ -453,6 +508,7 @@ describe('authoring workbench backed by the server project list', () => {
     api.listPluginProjects.mockResolvedValue([listed])
     api.getPluginProjectPublishStatus.mockResolvedValue(publishStatus())
     api.startPluginProjectPublish.mockResolvedValue(publishTask())
+    approvedSubmission()
     const container = await mount()
     await openPublish(container)
     // No release yet, so the full flow is offered, not the Market-only one.
@@ -479,6 +535,7 @@ describe('authoring workbench backed by the server project list', () => {
         },
       },
     })
+    approvedSubmission()
     const container = await mount()
     await openPublish(container)
     await click(en.publishRunGithub)
@@ -564,6 +621,7 @@ describe('authoring workbench backed by the server project list', () => {
     api.route.query = { project: 'p1' }
     api.listPluginProjects.mockResolvedValue([listed])
     api.getPluginProjectPublishStatus.mockResolvedValue(status)
+    approvedSubmission()
     const container = await mount()
     await openPublish(container)
     expect(buttons(en.publishRunGithubMarket)).toHaveLength(0)
@@ -587,9 +645,10 @@ describe('authoring workbench backed by the server project list', () => {
         },
       })
     )
+    approvedSubmission()
     const container = await mount()
     const pane = await openPublish(container)
-    const [repository, verify, release] = steps()
+    const [repository, verify, , release] = steps()
     expect(pane.textContent).toContain(en.publishRemoteUnreachable)
     expect(repository!.textContent).toContain('Uncommitted changes: main.py. Commit them first.')
     expect(repository!.className).toContain('authoring-publish-step--current')
@@ -616,9 +675,10 @@ describe('authoring workbench backed by the server project list', () => {
     api.route.query = { project: 'p1' }
     api.listPluginProjects.mockResolvedValue([listed])
     api.getPluginProjectPublishStatus.mockResolvedValue(publishStatus({ remote: { tag: 'elsewhere' } }))
+    approvedSubmission()
     const container = await mount()
     await openPublish(container)
-    expect(steps()[2]!.textContent).toContain(
+    expect(steps()[3]!.textContent).toContain(
       'Tag v0.2.0 on GitHub points at another commit; bump the version.'
     )
   })

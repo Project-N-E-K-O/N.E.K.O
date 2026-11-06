@@ -2,8 +2,8 @@
   <div class="authoring-publish">
     <el-alert v-if="requestError" :title="requestError" type="error" :closable="false" show-icon />
     <el-alert
-      v-if="remoteWarning"
-      :title="remoteWarning"
+      v-if="flow?.remoteWarning"
+      :title="text(flow.remoteWarning)"
       type="warning"
       :closable="false"
       show-icon
@@ -13,7 +13,7 @@
         {{ t('authoring.publishRefresh') }}
       </el-button>
       <el-button
-        v-if="canStartGithub && !releaseReady"
+        v-if="flow?.canPublishGithub"
         type="primary"
         :icon="Position"
         :disabled="taskActive"
@@ -22,14 +22,14 @@
         {{ t('authoring.publishRunGithubMarket') }}
       </el-button>
       <el-button
-        v-if="canStartGithub && !releaseReady"
+        v-if="flow?.canPublishGithub"
         :disabled="taskActive"
         @click="confirmPublish('github')"
       >
         {{ t('authoring.publishRunGithub') }}
       </el-button>
       <el-button
-        v-if="canNotifyMarket"
+        v-if="flow?.canNotifyMarket"
         type="primary"
         :icon="Position"
         :disabled="taskActive"
@@ -71,26 +71,33 @@
       </details>
     </section>
     <el-skeleton v-if="!status && loading" class="authoring-publish-steps" :rows="5" animated />
-    <ol v-if="status" class="authoring-publish-steps">
+    <ol v-if="status && flow" class="authoring-publish-steps">
       <li
-        v-for="step in steps"
+        v-for="step in flow.steps"
         :key="step.id"
         class="authoring-publish-step"
         :class="{
-          'authoring-publish-step--current': step.id === currentStepId,
+          'authoring-publish-step--current': step.id === flow.currentStepId,
           'authoring-publish-step--pending':
-            currentStepId &&
-            step.id !== currentStepId &&
+            flow.currentStepId &&
+            step.id !== flow.currentStepId &&
             step.state !== 'done' &&
             step.id !== 'submission',
         }"
       >
         <el-tag size="small" :type="TAG_TYPES[step.state]">{{ t(STATE_LABELS[step.state]) }}</el-tag>
         <div>
-          <strong>{{ step.title }}</strong>
-          <p v-if="step.detail" class="authoring-muted authoring-small">{{ step.detail }}</p>
+          <strong>{{ t(STEP_TITLES[step.id]) }}</strong>
+          <p v-if="step.detail" class="authoring-muted authoring-small">{{ text(step.detail) }}</p>
+          <el-alert
+            v-if="step.warning"
+            :title="text(step.warning)"
+            type="warning"
+            :closable="false"
+            show-icon
+          />
           <template v-if="step.id === 'repository'">
-            <div v-if="canCreateRepo" class="authoring-precheck-actions">
+            <div v-if="flow.canCreateRepository" class="authoring-precheck-actions">
               <el-button
                 type="primary"
                 :icon="Plus"
@@ -128,13 +135,19 @@
           <AuthoringProjectSubmission
             v-if="step.id === 'submission'"
             :github-repository="status.repository.github_repository"
+            :plugin-id="status.plugin_id"
+            :plugin-name="pluginName"
+            :plugin-description="pluginDescription"
+            :pushed-head="flow.pushedHead"
             @state="submissionState = $event"
           />
         </div>
       </li>
     </ol>
-    <ul v-if="notes.length" class="authoring-publish-notes">
-      <li v-for="note in notes" :key="note" class="authoring-muted authoring-small">{{ note }}</li>
+    <ul v-if="flow?.notes.length" class="authoring-publish-notes">
+      <li v-for="note in flow.notes" :key="note.key" class="authoring-muted authoring-small">
+        {{ text(note) }}
+      </li>
     </ul>
   </div>
 </template>
@@ -146,7 +159,12 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { CircleClose, Plus, Position, Refresh } from '@element-plus/icons-vue'
 import AuthoringProjectSubmission from '@/components/authoring/AuthoringProjectSubmission.vue'
 import {
-  RELEASE_WORKFLOW_PATH,
+  publishFlow,
+  type FlowMessage,
+  type PublishStepId,
+  type PublishStepState,
+} from '@/components/authoring/publishFlow'
+import {
   cancelPluginProjectPublishTask,
   createPluginProjectRepo,
   getPluginProjectPublishStatus,
@@ -155,8 +173,6 @@ import {
   publishTaskActive,
   startPluginProjectPublish,
   type PublishMode,
-  type PublishRemoteState,
-  type PublishRepositoryState,
   type PublishStatus,
   type PublishTask,
   type PublishTaskStatus,
@@ -166,25 +182,24 @@ import { useProjectErrorMessage } from '@/composables/useAuthoringProjects'
 import { openExternalUrl } from '@/utils/openExternal'
 import { formatRunTimestamp } from '@/utils/runDisplay'
 
-type StepState = 'done' | 'todo' | 'waiting' | 'unknown'
-interface Step {
-  id: string
-  title: string
-  state: StepState
-  detail: string
-}
-
-const TAG_TYPES: Record<StepState, 'success' | 'warning' | 'info'> = {
+const TAG_TYPES: Record<PublishStepState, 'success' | 'warning' | 'info'> = {
   done: 'success',
   todo: 'warning',
   waiting: 'info',
   unknown: 'info',
 }
-const STATE_LABELS: Record<StepState, string> = {
+const STATE_LABELS: Record<PublishStepState, string> = {
   done: 'authoring.publishStatusDone',
   todo: 'authoring.publishStatusTodo',
   waiting: 'authoring.publishStatusWaiting',
   unknown: 'authoring.publishStatusUnknown',
+}
+const STEP_TITLES: Record<PublishStepId, string> = {
+  repository: 'authoring.publishStepRepository',
+  verify: 'authoring.publishStepVerify',
+  submission: 'authoring.publishStepSubmission',
+  release: 'authoring.publishStepRelease',
+  market: 'authoring.publishStepMarket',
 }
 const TASK_TAG_TYPES: Record<PublishTaskStatus, 'success' | 'danger' | 'warning' | 'info'> = {
   queued: 'info',
@@ -200,14 +215,6 @@ const TASK_LABELS: Record<PublishTaskStatus, string> = {
   failed: 'authoring.publishTaskFailed',
   canceled: 'authoring.publishTaskCanceled',
 }
-const VERIFY_DETAILS: Record<PublishRemoteState['verify'], string> = {
-  success: 'authoring.publishVerifyPassed',
-  failure: 'authoring.publishVerifyFailed',
-  running: 'authoring.publishVerifyRunning',
-  not_run: 'authoring.publishVerifyNotRun',
-  missing: 'authoring.publishVerifyMissing',
-  unknown: '',
-}
 // The CLI can run for up to 20 minutes; progress comes from polling, not the request.
 const POLL_INTERVAL_MS = 3000
 /** Consecutive failed polls tolerated before polling stops and asks for a refresh. */
@@ -218,7 +225,12 @@ const CONFIRM_MODES: Record<PublishMode, string> = {
   market_notify: 'authoring.publishConfirmMarket',
 }
 
-const props = defineProps<{ projectId: string }>()
+const props = defineProps<{
+  projectId: string
+  /** plugin.toml name and description: the defaults of a new Market draft. */
+  pluginName: string
+  pluginDescription: string
+}>()
 const { t } = useI18n()
 const describeError = useProjectErrorMessage()
 const loading = ref(false)
@@ -229,47 +241,27 @@ const task = ref<PublishTask | null>(null)
 const taskWatched = ref(false)
 const taskError = ref('')
 const canceling = ref(false)
-const submissionState = ref<SubmissionPanelState>({ phase: null, marketPluginId: null })
+const submissionState = ref<SubmissionPanelState>({
+  phase: null,
+  marketPluginId: null,
+  resolvedCommit: null,
+})
 let disposed = false
 let pollTimer: ReturnType<typeof setTimeout> | undefined
 let pollFailures = 0
 let reloadQueued = false
 let queuedFresh = false
 
+const flow = computed(() =>
+  status.value
+    ? publishFlow({ status: status.value, submission: submissionState.value, task: task.value })
+    : null
+)
+const text = (message: FlowMessage) => t(`authoring.${message.key}`, message.params ?? {})
 const taskActive = computed(() => !!task.value && publishTaskActive(task.value))
 const taskFinishedAt = computed(() =>
   task.value?.finished_at ? formatRunTimestamp(task.value.finished_at, true) : ''
 )
-const releaseReady = computed(
-  () =>
-    status.value?.remote?.release.state === 'published' &&
-    !status.value.remote.release.missing_assets.length
-)
-/** The server gate for the github modes (plugin_publish_tasks._local_gate), mirrored. */
-const canStartGithub = computed(() => {
-  const current = status.value
-  const repo = current?.repository
-  if (!current || !repo) return false
-  return (
-    repo.is_repository &&
-    !!repo.github_repository &&
-    repo.worktree_clean === true &&
-    repo.head_pushed === true &&
-    current.actions[RELEASE_WORKFLOW_PATH] === 'CURRENT' &&
-    !(repo.tag_exists && repo.tag_at_head === false) &&
-    current.remote?.visibility !== 'private'
-  )
-})
-/** market_notify needs only the GitHub repository and a complete published release. */
-const canNotifyMarket = computed(
-  () => !!status.value?.repository.github_repository && releaseReady.value
-)
-const remoteWarning = computed(() => {
-  const remote = status.value?.remote
-  if (!remote) return ''
-  if (remote.rate_limited) return t('authoring.publishRateLimited')
-  return remote.reachable ? '' : t('authoring.publishRemoteUnreachable')
-})
 
 // Repository creation: offered only when the project is a git repo with no
 // origin yet. A foreign (non-GitHub) origin is reported instead.
@@ -277,10 +269,6 @@ const creatingRepo = ref(false)
 const createdRepoUrl = ref('')
 const repoManualSteps = ref<string[]>([])
 const repoCreateError = ref('')
-const canCreateRepo = computed(() => {
-  const repo = status.value?.repository
-  return !!repo && repo.is_repository && !repo.github_repository && repo.origin_url === null
-})
 
 async function createRepo() {
   if (creatingRepo.value) return
@@ -467,146 +455,6 @@ async function confirmCancel() {
     canceling.value = false
   }
 }
-
-/** Why the remote read gave no answer, for a step whose remote fact is unknown. */
-function remoteUnknownDetail(remote: PublishRemoteState | null) {
-  return remote ? t('authoring.publishRemoteUnknown') : ''
-}
-
-/** Local git facts first: they need no network and decide what the user does next. */
-function localRepositoryProblem(current: PublishStatus): string {
-  const repo: PublishRepositoryState = current.repository
-  if (!repo.is_repository) return t('authoring.publishRepoNoGit')
-  if (!repo.github_repository) {
-    return repo.origin_url
-      ? t('authoring.publishRepoForeignOrigin', { url: repo.origin_url })
-      : t('authoring.publishRepoNoGithub')
-  }
-  if (repo.worktree_clean !== true) {
-    return repo.dirty_paths.length
-      ? t('authoring.publishRepoUncommittedFiles', { files: repo.dirty_paths.join(', ') })
-      : t('authoring.publishRepoUncommitted')
-  }
-  if (!repo.head) return t('authoring.publishRepoNoCommits')
-  if (repo.detached) return t('authoring.publishRepoDetached')
-  if (repo.head_pushed !== true) {
-    const branch = repo.branch ?? ''
-    if (!repo.upstream) return t('authoring.publishRepoNoUpstream', { branch })
-    if (!repo.upstream.startsWith('origin/')) {
-      return t('authoring.publishRepoUpstreamNotOrigin', { upstream: repo.upstream, branch })
-    }
-    return t('authoring.publishRepoUnpushed')
-  }
-  if (repo.tag_exists && repo.tag_at_head === false) {
-    return t('authoring.publishRepoTagElsewhere', { tag: repo.tag })
-  }
-  if (current.actions[RELEASE_WORKFLOW_PATH] !== 'CURRENT') {
-    return t('authoring.publishRepoReleaseWorkflow')
-  }
-  return ''
-}
-
-function repositoryStep(current: PublishStatus): Pick<Step, 'state' | 'detail'> {
-  const problem = localRepositoryProblem(current)
-  if (problem) return { state: 'todo', detail: problem }
-  const remote = current.remote
-  if (!remote || remote.visibility === 'unknown') {
-    return { state: 'unknown', detail: remoteUnknownDetail(remote) }
-  }
-  if (remote.visibility !== 'public') {
-    return { state: 'todo', detail: t('authoring.publishRepoNotPublic') }
-  }
-  return {
-    state: 'done',
-    detail: t('authoring.publishRepoReady', { repo: current.repository.github_repository }),
-  }
-}
-
-function verifyStep(remote: PublishRemoteState | null): Pick<Step, 'state' | 'detail'> {
-  if (!remote || remote.verify === 'unknown') {
-    return { state: 'unknown', detail: remoteUnknownDetail(remote) }
-  }
-  return {
-    state: remote.verify === 'success' ? 'done' : remote.verify === 'running' ? 'waiting' : 'todo',
-    detail: t(VERIFY_DETAILS[remote.verify]),
-  }
-}
-
-function releaseStep(remote: PublishRemoteState | null, tag: string): Pick<Step, 'state' | 'detail'> {
-  if (!remote || remote.release.state === 'unknown') {
-    return { state: 'unknown', detail: remoteUnknownDetail(remote) }
-  }
-  if (remote.release.state === 'missing') {
-    if (remote.tag === 'elsewhere') {
-      return { state: 'todo', detail: t('authoring.publishRemoteTagElsewhere', { tag }) }
-    }
-    if (remote.tag === 'at_head') {
-      return { state: 'waiting', detail: t('authoring.publishReleaseBuilding', { tag }) }
-    }
-    return { state: 'todo', detail: t('authoring.publishReleaseMissing', { tag }) }
-  }
-  const missing = remote.release.missing_assets
-  if (missing.length) {
-    return { state: 'todo', detail: t('authoring.publishReleaseAssets', { tag, assets: missing.join(', ') }) }
-  }
-  return { state: 'done', detail: t('authoring.publishReleaseReady', { tag }) }
-}
-
-function submissionStep(): Pick<Step, 'state' | 'detail'> {
-  const phase = submissionState.value.phase
-  if (phase === 'approved') return { state: 'done', detail: '' }
-  if (phase === 'submitted' || phase === 'in_review') return { state: 'waiting', detail: '' }
-  if (phase === null && !releaseReady.value) {
-    return { state: 'waiting', detail: t('authoring.submissionStepDetailLater') }
-  }
-  // No submission yet, a draft, a request for changes, or a closed one to redo.
-  return { state: 'todo', detail: '' }
-}
-
-function marketStep(): Pick<Step, 'state' | 'detail'> {
-  const id = submissionState.value.marketPluginId
-  return id === null
-    ? { state: 'waiting', detail: t('authoring.marketVersionStepDetailLater') }
-    : { state: 'done', detail: t('authoring.marketVersionListed', { id }) }
-}
-
-const steps = computed<Step[]>(() => {
-  const current = status.value
-  if (!current) return []
-  const { remote } = current
-  return [
-    { id: 'repository', title: t('authoring.publishStepRepository'), ...repositoryStep(current) },
-    { id: 'verify', title: t('authoring.publishStepVerify'), ...verifyStep(remote) },
-    { id: 'release', title: t('authoring.publishStepRelease'), ...releaseStep(remote, current.repository.tag) },
-    { id: 'submission', title: t('authoring.publishStepSubmission'), ...submissionStep() },
-    { id: 'market', title: t('authoring.publishStepMarket'), ...marketStep() },
-  ]
-})
-
-/** The first step the user can act on; an unknown one only when nothing is actionable. */
-const currentStepId = computed(
-  () =>
-    (steps.value.find((step) => step.state === 'todo') ??
-      steps.value.find((step) => step.state === 'unknown'))?.id ?? ''
-)
-
-const notes = computed(() => {
-  const current = status.value
-  if (!current) return []
-  const result: string[] = []
-  // release.yml is a publish blocker and is reported on the repository step.
-  const outdated = Object.entries(current.actions)
-    .filter(([file, state]) => file !== RELEASE_WORKFLOW_PATH && state !== 'CURRENT')
-    .map(([file]) => file)
-  if (outdated.length) {
-    result.push(t('authoring.publishActionsOutdated', { files: outdated.join(', ') }))
-  }
-  const repoName = current.repository.github_repository?.split('/')[1]
-  if (repoName && repoName.toLowerCase() !== `n.e.k.o_plugin_${current.plugin_id}`.toLowerCase()) {
-    result.push(t('authoring.publishNameNote', { id: current.plugin_id }))
-  }
-  return result
-})
 </script>
 
 <style scoped>

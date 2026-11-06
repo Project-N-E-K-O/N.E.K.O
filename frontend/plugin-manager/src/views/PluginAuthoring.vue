@@ -84,6 +84,8 @@
             ref="publishPanel"
             :key="current.project_id"
             :project-id="current.project_id"
+            :plugin-name="current.name ?? ''"
+            :plugin-description="current.description ?? ''"
           />
         </el-tab-pane>
       </el-tabs>

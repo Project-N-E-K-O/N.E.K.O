@@ -10,16 +10,19 @@ vi.mock('./marketBridge', async (importOriginal) => ({
 import {
   MarketSubmissionError,
   createSubmissionDraft,
+  createSubmissionRevision,
+  getSubmissionWorkspace,
   listMarketSubmissions,
   listMarketZones,
   marketSubmissionUrl,
-  previewSubmissionRepository,
+  preflightSubmission,
   submissionMatchesRepository,
   submissionPhase,
   submitSubmission,
   updateSubmissionDraft,
   withdrawSubmission,
   type MarketSubmission,
+  type PreflightResult,
 } from './marketSubmissions'
 
 afterEach(() => {
@@ -56,6 +59,7 @@ function submission(overrides: Partial<MarketSubmission> = {}): MarketSubmission
     terminal_kind: null,
     plugin_id: null,
     current_snapshot: {
+      id: 11,
       repo_url: 'https://github.com/owner/repo',
       repo_owner: 'owner',
       repo_name: 'repo',
@@ -94,12 +98,56 @@ describe('write endpoints', () => {
     expect(JSON.parse(init.body as string)).toEqual(payload)
   })
 
-  it('posts the repository preview body', async () => {
-    fetchBridge.mockResolvedValue(jsonResponse(200, { identity_status: 'matched', workflow_status: 'available', warnings: [] }))
-    await previewSubmissionRepository({ repo_url: 'https://github.com/o/r', submitted_ref: 'main' })
+  it('posts the full draft to preflight and returns the Market verdict as is', async () => {
+    // Shape of publication_preflight.submission_preflight's return value.
+    const verdict: PreflightResult = {
+      ready: false,
+      issues: [
+        {
+          code: 'invalid_input',
+          field: 'plugin_slug',
+          message: 'plugin ID does not match plugin.toml',
+          current: 'demo',
+          expected: 'demo_plugin',
+          remedy: 'correct the fields',
+        },
+      ],
+      preview: null,
+      normalized_icon_url: null,
+    }
+    fetchBridge.mockResolvedValue(jsonResponse(200, verdict))
+    const payload = { repo_url: 'https://github.com/o/r', plugin_name: 'demo', plugin_slug: 'demo', tags: ['工具'] }
+    await expect(preflightSubmission(payload)).resolves.toEqual(verdict)
     const [path, init] = fetchBridge.mock.calls[0]!
-    expect(path).toBe('/market/submissions/repository-preview')
-    expect(JSON.parse(init.body as string)).toEqual({ repo_url: 'https://github.com/o/r', submitted_ref: 'main' })
+    expect(path).toBe('/market/submissions/preflight')
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(init.body as string)).toEqual(payload)
+  })
+
+  it('posts a revision with its base snapshot and note', async () => {
+    fetchBridge.mockResolvedValue(jsonResponse(200, { id: 152, status: 'submitted' }))
+    const body = {
+      base_snapshot_id: 11,
+      note: 'fix lint',
+      submitted_ref: 'a'.repeat(40),
+      resolved_commit: 'a'.repeat(40),
+    }
+    await createSubmissionRevision(152, body)
+    const [path, init] = fetchBridge.mock.calls[0]!
+    expect(path).toBe('/market/submissions/152/revision')
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(init.body as string)).toEqual(body)
+  })
+
+  it('reads the workspace with a plain GET', async () => {
+    const workspace = {
+      overview: { action_required: true, current_feedback_action_count: 2, next_actor: 'author' },
+    }
+    fetchBridge.mockResolvedValue(jsonResponse(200, workspace))
+    await expect(getSubmissionWorkspace(152)).resolves.toEqual(workspace)
+    expect(fetchBridge).toHaveBeenCalledWith('/market/submissions/152/workspace', undefined, {
+      retryOnForbidden: false,
+    })
   })
 
   it('puts a draft update, and posts submit and withdraw with an empty body', async () => {

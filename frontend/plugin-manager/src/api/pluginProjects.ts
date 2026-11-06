@@ -184,6 +184,15 @@ export type PublishMode = 'github_and_market' | 'github' | 'market_notify'
 /** Lifecycle of one `neko-plugin publish` background task. */
 export type PublishTaskStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled'
 
+/** The Market's answer to a release notification, from the CLI's `[MARKET] status=` line. */
+export type MarketPublicationStatus =
+  | 'published'
+  | 'already_published'
+  | 'pending_review'
+  | 'approved'
+  | 'superseded'
+  | 'rejected'
+
 export interface PublishTask {
   task_id: string
   project_id: string
@@ -191,6 +200,10 @@ export interface PublishTask {
   status: PublishTaskStatus
   message: string
   release_url: string
+  /** Null until the run notified the Market. */
+  market_status: MarketPublicationStatus | null
+  /** The Market's release review candidate, when it answered with one. */
+  market_candidate_id: number | null
   /** Bounded tail of the CLI output. */
   log: string[]
   started_at: number | null

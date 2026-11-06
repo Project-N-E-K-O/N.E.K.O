@@ -24,6 +24,8 @@ export interface MarketSubmission {
   /** The Market plugin row id; null until the submission is approved. */
   plugin_id: number | null
   current_snapshot?: {
+    /** The `base_snapshot_id` a new revision must name. */
+    id: number
     repo_url: string
     repo_owner: string | null
     /** The bare repository name, not `owner/repo`. */
@@ -54,21 +56,47 @@ export interface MarketSubmissionPage {
   total_pages: number
 }
 
-/** Response of `POST /repository-preview`. */
+/** Market `RepositoryPreview`, as `POST /preflight` returns it; only the fields the workbench reads. */
 export interface RepositoryPreview {
   identity_status: SubmissionIdentityStatus
   workflow_status: SubmissionWorkflowStatus
-  repository_plugin_id?: string | null
   /** The manifest's Market plugin ID; null when no readable plugin.toml was found. */
   plugin_id?: string | null
   plugin_name?: string | null
   description?: string | null
   short_description?: string | null
   license_name?: string | null
+  /** The full 40-hex commit the ref resolved to. */
   resolved_commit: string
   submitted_ref: string
+  commit_url: string
   /** Localized by the Market. */
   warnings: string[]
+}
+
+/** One problem found by `POST /preflight` (Market `publication_preflight.issue`). */
+export interface PreflightIssue {
+  /** Always `invalid_input` today. */
+  code: string
+  /** The draft field the problem is about, e.g. `plugin_slug` or `tags`. */
+  field: string
+  /** Localized by the Market. */
+  message: string
+  /** Truncated to 255 characters; empty when not applicable. */
+  current: string
+  expected: string
+  /** Localized by the Market. */
+  remedy: string
+}
+
+/** Response of `POST /preflight`; it never authorizes a later write. */
+export interface PreflightResult {
+  ready: boolean
+  issues: PreflightIssue[]
+  /** Null when the repository could not be read. */
+  preview: RepositoryPreview | null
+  /** The raw icon URL the Market would store; null without an `icon_url`. */
+  normalized_icon_url: string | null
 }
 
 /** Fields the Market's `SubmissionDraftCreate` accepts (it forbids extras). */
@@ -78,15 +106,20 @@ export interface SubmissionDraftCreate {
   plugin_name: string
   /** The Market plugin ID; required, and must already be a valid ID. */
   plugin_slug: string
+  /** The directory holding plugin.toml; `''` is the repository root. */
+  plugin_directory?: string
   /** A slug from {@link listMarketZones}; a new plugin is not approved without one. */
   zone_slug?: string
   /** A new plugin is not approved without at least one tag. */
   tags?: string[]
   description?: string
+  /** At most {@link SHORT_DESCRIPTION_MAX_LENGTH} characters. */
   short_description?: string
   submitted_ref?: string
   resolved_commit?: string
+  commit_url?: string
   license_name?: string
+  metadata?: Record<string, unknown>
 }
 
 /** The subset of the Market's `SubmissionDraftUpdate` the workbench changes. */
@@ -98,8 +131,30 @@ export interface SubmissionDraftUpdate {
   resolved_commit?: string
 }
 
+/** Market `SubmissionRevisionCreate`: the draft-update fields plus the base and a note. */
+export interface SubmissionRevisionCreate extends SubmissionDraftUpdate {
+  /** Must be the submission's `current_snapshot.id`, or the Market answers 409. */
+  base_snapshot_id: number
+  /** 1 to {@link SUBMISSION_NOTE_MAX_LENGTH} characters after trimming. */
+  note: string
+}
+
+/** Market `SubmissionWorkspace`; only `overview` is typed. */
+export interface SubmissionWorkspace {
+  overview: {
+    action_required: boolean
+    /** Reviewer feedback in the current round that waits for the author. */
+    current_feedback_action_count: number
+    next_actor: string
+  }
+}
+
 /** `SubmissionDraftCreate.plugin_name` max_length on the Market. */
 export const PLUGIN_NAME_MAX_LENGTH = 100
+/** `SubmissionDraftCreate.short_description` max_length on the Market. */
+export const SHORT_DESCRIPTION_MAX_LENGTH = 255
+/** `SubmissionRevisionCreate.note` max_length on the Market. */
+export const SUBMISSION_NOTE_MAX_LENGTH = 1000
 /** The Market's own forms let an author pick at most this many tags. */
 export const SUBMISSION_TAGS_MAX = 5
 
@@ -226,12 +281,12 @@ export function listMarketSubmissions(repository: string): Promise<MarketSubmiss
   return call(`/market/submissions/mine?${query.toString()}`)
 }
 
-/** Preview the Market's view of a repository before creating or refreshing a draft. */
-export function previewSubmissionRepository(payload: {
-  repo_url: string
-  submitted_ref?: string
-}): Promise<RepositoryPreview> {
-  return call('/market/submissions/repository-preview', jsonInit('POST', payload))
+/**
+ * Check a complete draft without writing anything: schema, identity against
+ * plugin.toml at the resolved commit, zone and tags. Always 200 when signed in.
+ */
+export function preflightSubmission(payload: SubmissionDraftCreate): Promise<PreflightResult> {
+  return call('/market/submissions/preflight', jsonInit('POST', payload))
 }
 
 export function createSubmissionDraft(payload: SubmissionDraftCreate): Promise<MarketSubmission> {
@@ -243,6 +298,18 @@ export function updateSubmissionDraft(
   payload: SubmissionDraftUpdate
 ): Promise<MarketSubmission> {
   return call(submissionPath(id, 'draft'), jsonInit('PUT', payload))
+}
+
+/** Send a new snapshot of a submitted submission; drafts use {@link updateSubmissionDraft}. */
+export function createSubmissionRevision(
+  id: number,
+  payload: SubmissionRevisionCreate
+): Promise<MarketSubmission> {
+  return call(submissionPath(id, 'revision'), jsonInit('POST', payload))
+}
+
+export function getSubmissionWorkspace(id: number): Promise<SubmissionWorkspace> {
+  return call(submissionPath(id, 'workspace'))
 }
 
 export function submitSubmission(id: number): Promise<MarketSubmission> {
@@ -297,6 +364,9 @@ export const RESUBMITTABLE_PHASES: readonly SubmissionPhase[] = [
   'closed',
 ]
 
+/** Phases that take a new revision (`status` submitted or in_review). */
+export const REVISABLE_PHASES: readonly SubmissionPhase[] = ['submitted', 'in_review', 'author_action']
+
 /** Map the Market's status, decision, terminal kind and next actor onto one phase. */
 export function submissionPhase(item: MarketSubmission): SubmissionPhase {
   if (item.status === 'closed') {
@@ -317,6 +387,8 @@ export interface SubmissionPanelState {
   phase: SubmissionPhase | null
   /** The approved Market plugin row id, when there is one. */
   marketPluginId: number | null
+  /** `current_snapshot.resolved_commit`: the commit under review, or the approved one. */
+  resolvedCommit: string | null
 }
 
 /** The submission's page on the Market web site (a HashRouter app). */
