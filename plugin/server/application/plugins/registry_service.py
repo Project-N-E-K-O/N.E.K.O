@@ -1518,7 +1518,7 @@ class PluginRegistryService:
                 )
                 if ctx is not None:
                     record = _build_discovery_record_from_context(ctx)
-            elif record is None:
+            elif record is None and not was_project:
                 discovery = _discover_registry_snapshot_sync(
                     roots, read_cache=read_cache
                 )

@@ -241,3 +241,52 @@ def test_plugin_config_access_follows_the_project_source(tmp_path):
     # An unknown external path is never treated as a plugin source.
     state.plugins["mine"] = {"id": "mine", "config_path": str(source / "plugin.toml")}
     assert config_routes._config_snapshot_sync("mine") is None
+
+
+@pytest.mark.asyncio
+async def test_config_write_wait_budget_expires_without_a_later_mutation(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from plugin.server.routes import config as config_routes
+    from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    writes = []
+
+    @serialized_plugin_operation
+    async def hold_lock():
+        entered.set()
+        await release.wait()
+
+    async def write(**kwargs):
+        writes.append(kwargs)
+
+    monkeypatch.setattr(config_routes, "_OPERATION_WAIT_BUDGET_SECONDS", 0.01)
+    holding = asyncio.create_task(hold_lock())
+    await entered.wait()
+    try:
+        with pytest.raises(ServerDomainError) as caught:
+            await config_routes._dispatch_config(SimpleNamespace(method="PUT"), write, plugin_id="demo")
+        assert caught.value.code == "PLUGIN_OPERATION_BUSY"
+        assert caught.value.status_code == 409
+    finally:
+        release.set()
+        await holding
+    await asyncio.sleep(0)
+    assert writes == []
+
+
+@pytest.mark.asyncio
+async def test_invalid_project_refresh_does_not_replace_it_with_an_installed_plugin(isolated, tmp_path):
+    source = scaffold(tmp_path / "projects", "same_id")
+    record = store.add_record(source)
+    meta = project_meta(source, record.project_id)
+    state.plugins["same_id"] = meta
+    (source / "plugin.toml").write_text("invalid TOML [", encoding="utf-8")
+    scaffold(isolated, "same_id")
+
+    with pytest.raises(ServerDomainError) as caught:
+        await registry_service.PluginRegistryService().refresh_plugin("same_id")
+    assert caught.value.code == "PLUGIN_CONFIG_NOT_FOUND"
+    assert state.plugins["same_id"] is meta
+    assert store.list_records()[0].project_id == record.project_id

@@ -99,6 +99,14 @@ def test_workflow_mount_build_and_evidence_use_actual_selected_plugin(tmp_path, 
         external = repo / "external-program/main.py"
         external.parent.mkdir()
         external.write_text("import os\n", encoding="utf-8")
+    # init now creates a repository. Model the workflow's checked-out commit,
+    # with one repository at the caller root instead of an unborn nested repo.
+    (source / ".git").rename(tmp_path / "scaffold-git")
+    for command in (["init"], ["add", "."], ["commit", "-qm", "workflow fixture"]):
+        subprocess.run(
+            ["git", "-c", "user.name=Workflow Test", "-c", "user.email=workflow@example.com", *command],
+            cwd=repo, env=env, capture_output=True, text=True, encoding="utf-8", check=True,
+        )
     neko = tmp_path / "neko"
     neko.mkdir()
     mounted = execute(mode, "Mount plugin into N.E.K.O tree", tmp_path, env)

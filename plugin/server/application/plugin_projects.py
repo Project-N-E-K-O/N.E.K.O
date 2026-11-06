@@ -580,6 +580,8 @@ async def remove_project(project_id: str) -> None:
             await _remove_locked(project_id)
     except PluginOperationBusy as exc:
         raise _busy_error(exc) from exc
+    except TimeoutError as exc:
+        raise project_error(Code.PLUGIN_OPERATION_BUSY, str(exc), 409) from exc
 
 
 def pick_project_directory(start_path: str, title: str) -> str | None:

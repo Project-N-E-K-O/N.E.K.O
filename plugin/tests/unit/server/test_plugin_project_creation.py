@@ -833,7 +833,8 @@ async def test_active_project_operations_prevent_removal(app, tmp_path, operatio
         assert store.list_records()[0].project_id == created["project_id"]
 
 
-def test_removal_keeps_the_record_when_the_runtime_write_lock_is_unavailable(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_removal_keeps_the_record_when_the_runtime_write_lock_is_unavailable(app, tmp_path, monkeypatch):
     record = store.add_record(_scaffold(tmp_path, "locked"))
 
     class Unavailable:
@@ -846,6 +847,11 @@ def test_removal_keeps_the_record_when_the_runtime_write_lock_is_unavailable(tmp
     monkeypatch.setattr(runtime_state, "acquire_plugins_write_lock", Unavailable)
     with pytest.raises(TimeoutError):
         service._remove_project_entry_sync(record.project_id)
+    assert store.list_records()[0].project_id == record.project_id
+    async with client(app) as http:
+        response = await http.delete(f"/plugin-projects/{record.project_id}")
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "PLUGIN_OPERATION_BUSY"
     assert store.list_records()[0].project_id == record.project_id
 
 

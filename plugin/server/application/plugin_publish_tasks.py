@@ -77,6 +77,7 @@ class _Task:
     updated_at: float = field(default_factory=time.time)
     finished_at: float | None = None
     cancel_requested: bool = False
+    stop_requested: bool = False
     process: subprocess.Popen[str] | None = None
 
 
@@ -353,16 +354,22 @@ def _prune() -> None:
 def _stream(task: _Task, argv: list[str], cwd: Path) -> tuple[int | None, str]:
     """Run the CLI to completion, collecting its output. Called in a thread."""
     with _lock:
-        if task.cancel_requested:
+        if task.cancel_requested or task.stop_requested:
             return None, ""
-        try:
-            process = start_cli(argv, cwd=cwd, merge_stderr=True)
-        except OSError as exc:
-            return None, f"publish command could not start: {exc}"
-        task.process = process
-        task.status = "running"
-        task.started_at = time.time()
-        task.updated_at = task.started_at
+    try:
+        process = start_cli(argv, cwd=cwd, merge_stderr=True)
+    except OSError as exc:
+        return None, f"publish command could not start: {exc}"
+    with _lock:
+        stopped_before_registration = task.cancel_requested or task.stop_requested
+        if not stopped_before_registration:
+            task.process = process
+            task.status = "running"
+            task.started_at = time.time()
+            task.updated_at = task.started_at
+    if stopped_before_registration:
+        terminate_process_tree(process)
+        return None, ""
     assert process.stdout is not None
     while line := process.stdout.readline(_LOG_LINE_CHARS + 1):
         with _lock:
@@ -376,6 +383,8 @@ def _stream(task: _Task, argv: list[str], cwd: Path) -> tuple[int | None, str]:
 
 def _terminate(task: _Task) -> None:
     with _lock:
+        # A timeout can request termination while process creation is in flight.
+        task.stop_requested = True
         process = task.process
     if process is not None:
         terminate_process_tree(process)

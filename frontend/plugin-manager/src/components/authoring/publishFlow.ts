@@ -237,8 +237,10 @@ function releaseStep(facts: PublishFlowFacts, releaseReady: boolean): Omit<Publi
 /** The Market's answer to the latest task's release notification, when it carries one. */
 function marketAnswer(task: PublishTask | null, repository: string | null, tag: string): Omit<PublishStep, 'id' | 'warning'> | null {
   if (!task?.market_status || !repository) return null
-  const suffix = `/releases/tag/${tag}`
-  if (!task.release_url.endsWith(suffix)) return null
+  const suffix = [tag, encodeURIComponent(tag)]
+    .map(value => `/releases/tag/${value}`)
+    .find(value => task.release_url.endsWith(value))
+  if (!suffix) return null
   if (task.release_url.slice(0, -suffix.length).toLowerCase() !== `https://github.com/${repository}`.toLowerCase()) return null
   const candidate = task.market_candidate_id ?? ''
   switch (task.market_status) {

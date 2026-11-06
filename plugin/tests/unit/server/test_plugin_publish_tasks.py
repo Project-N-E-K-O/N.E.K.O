@@ -681,3 +681,37 @@ async def test_publish_waits_for_a_precheck_of_the_same_project(
             break
         await asyncio.sleep(0.02)
     assert record.project_id not in commands._busy
+
+
+@pytest.mark.parametrize("stop", ["cancel", "timeout"])
+async def test_slow_spawn_does_not_block_polling_and_termination_reaps_the_child(tmp_path, monkeypatch, stop):
+    task = tasks._Task("slow-spawn", "project", "github")
+    entered, release = threading.Event(), threading.Event()
+    child = _scripted_process([])(["ignored"])
+    terminated = []
+
+    def start(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return child
+
+    monkeypatch.setattr(tasks, "start_cli", start)
+    monkeypatch.setattr(tasks, "terminate_process_tree", terminated.append)
+    with tasks._lock:
+        tasks._tasks[task.task_id] = task
+        tasks._latest[task.project_id] = task.task_id
+    streaming = asyncio.create_task(asyncio.to_thread(tasks._stream, task, ["ignored"], tmp_path))
+    assert await asyncio.to_thread(entered.wait, 2)
+    try:
+        snapshot = await asyncio.wait_for(asyncio.to_thread(tasks.latest_publish_task, task.project_id), 1)
+        assert snapshot["status"] == "queued"
+        if stop == "cancel":
+            await tasks.cancel_publish(task.project_id, task.task_id)
+        else:
+            await asyncio.to_thread(tasks._terminate, task)
+    finally:
+        release.set()
+        result = await streaming
+    assert result == (None, "")
+    assert terminated == [child]
+    assert task.process is None
