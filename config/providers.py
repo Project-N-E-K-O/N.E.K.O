@@ -28,6 +28,7 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
 
 
 # ────────────────────────────────────────────────────────────────
@@ -88,8 +89,13 @@ EXTRA_BODY_OPENROUTER_THINKING = {"reasoning": {"effort": "low"}}
 # "Reasoning is mandatory for this endpoint and cannot be disabled."。
 # Observed minimal uses 0 thinking tokens, replacing none; focused cognition still switches to low.
 # Observed (2026-10-07): google/gemini-3.5-flash / 3.6-flash / 3.8-flash reject none;
-# 3.1-flash-lite / 3-flash-preview still accept none, remaining in EXTRA_BODY_OPENROUTER.
+# 3.1-flash-lite / 3-flash-preview still accept none.
 EXTRA_BODY_OPENROUTER_MINIMAL = {"reasoning": {"effort": "minimal"}}
+# Router-bound efforts follow the upstream floor in UPSTREAM_REASONING_FLOOR (owner-confirmed
+# 2026-11-05: the floor is the vendor's rule, so every router must respect it even when one
+# accepts a lower value): Gemini 3.x bottoms out at low (no none / minimal), gemini-2.5-flash at
+# minimal. At low the focused-cognition form equals the regular form, so it has no enable pair.
+EXTRA_BODY_OPENROUTER_LOW = {"reasoning": {"effort": "low"}}
 
 # MiniMax reasoning_split controls only thinking output format, not enablement; M2.x always
 # reasons internally and cannot disable it. True puts thoughts in reasoning_details; False/omitted embeds <think>
@@ -210,19 +216,23 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "gemini-3.6-flash": EXTRA_BODY_GEMINI_3,
     "gemini-3.8-flash": EXTRA_BODY_GEMINI_3,
     # OpenRouter format (provider/model): unified reasoning parameter.
-    "google/gemini-2.5-flash": EXTRA_BODY_OPENROUTER,
+    "google/gemini-2.5-flash": EXTRA_BODY_OPENROUTER_MINIMAL,
     "google/gemini-2.5-flash-lite": EXTRA_BODY_OPENROUTER,
-    "google/gemini-3-flash-preview": EXTRA_BODY_OPENROUTER,
-    "google/gemini-3.1-flash-lite": EXTRA_BODY_OPENROUTER,
-    "google/gemini-3.5-flash": EXTRA_BODY_OPENROUTER_MINIMAL,
-    "google/gemini-3.6-flash": EXTRA_BODY_OPENROUTER_MINIMAL,
-    "google/gemini-3.8-flash": EXTRA_BODY_OPENROUTER_MINIMAL,
+    "google/gemini-3-flash-preview": EXTRA_BODY_OPENROUTER_LOW,
+    "google/gemini-3.1-flash-lite": EXTRA_BODY_OPENROUTER_LOW,
+    "google/gemini-3.5-flash": EXTRA_BODY_OPENROUTER_LOW,
+    "google/gemini-3.6-flash": EXTRA_BODY_OPENROUTER_LOW,
+    "google/gemini-3.8-flash": EXTRA_BODY_OPENROUTER_LOW,
     "qwen/qwen3.5-9b": EXTRA_BODY_OPENROUTER,
 }
 
 
-def get_extra_body(model: str) -> dict | None:
+def get_extra_body(model: str, base_url: str | None = None) -> dict | None:
     """Return the extra_body config for the given model name.
+
+    ``base_url`` lets a router host map its own model id onto the registered
+    upstream id (see ``ROUTER_REASONING``); without it the lookup is by model
+    name only.
 
     Returns:
         The matching extra_body dict; an empty dict when the model needs no
@@ -230,14 +240,14 @@ def get_extra_body(model: str) -> dict | None:
     """
     if not model:
         return None
-    return MODELS_EXTRA_BODY_MAP.get(model, {})
+    return MODELS_EXTRA_BODY_MAP.get(resolve_router_model(model, base_url), {})
 
 
-def get_agent_extra_body(model: str) -> dict | None:
+def get_agent_extra_body(model: str, base_url: str | None = None) -> dict | None:
     """Return extra_body for Agent calls based on a single global switch."""
     if not AGENT_USE_EXTRA_BODY:
         return None
-    return get_extra_body(model)
+    return get_extra_body(model, base_url)
 
 
 # Focused cognition (thinking on) converts each provider's thinking-off extra_body to its thinking-on form.
@@ -267,7 +277,7 @@ MODELS_FOCUS_EXTRA_BODY_MAP: dict[str, dict] = {
 }
 
 
-def focus_extra_body(model: str) -> dict | None:
+def focus_extra_body(model: str, base_url: str | None = None) -> dict | None:
     """extra_body for a Focus (thinking-on) turn.
 
     Regular turns send the provider's thinking-DISABLED extra_body (see
@@ -291,11 +301,190 @@ def focus_extra_body(model: str) -> dict | None:
     Returns ``None`` when the model has no registered extra_body."""
     if not model:
         return None
-    enabled = MODELS_FOCUS_EXTRA_BODY_MAP.get(model)
+    enabled = MODELS_FOCUS_EXTRA_BODY_MAP.get(resolve_router_model(model, base_url))
     # deepcopy: enabled is a shared module-level constant, possibly nested
     # (Gemini's thinking_config); a caller mutating the result must not poison
     # the registry. Cheap — focus_extra_body runs once per focus turn.
     return copy.deepcopy(enabled) if enabled else None
+
+
+# Lowest reasoning effort each upstream vendor allows (owner-confirmed 2026-11-05). It is the
+# vendor's rule, so every router-bound effort respects it even where a router accepts lower:
+# Claude has no none / minimal, Gemini 3.x bottoms out at low (no none / minimal),
+# gemini-2.5-flash at minimal, gpt-5-nano at minimal. Matched on the upstream id with any
+# router prefix ("google/", "gemini/", "anthropic/") stripped; unlisted models have no floor.
+REASONING_EFFORT_ORDER: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+UPSTREAM_REASONING_FLOOR: dict[str, str] = {
+    "gemini-2.5-flash": "minimal",
+    "gpt-5-nano": "minimal",
+}
+UPSTREAM_REASONING_FLOOR_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("claude-", "low"),
+    ("gemini-3", "low"),
+)
+
+
+def reasoning_effort_floor(model: str) -> str | None:
+    """Lowest effort the model's upstream vendor accepts, or ``None`` if unrestricted."""
+    upstream = (model or "").rsplit("/", 1)[-1]
+    floor = UPSTREAM_REASONING_FLOOR.get(upstream)
+    if floor is not None:
+        return floor
+    for prefix, prefix_floor in UPSTREAM_REASONING_FLOOR_PREFIXES:
+        if upstream.startswith(prefix):
+            return prefix_floor
+    return None
+
+
+def clamp_reasoning_effort(model: str, effort: str) -> str:
+    """Raise ``effort`` to the model's upstream floor; unknown levels pass through."""
+    floor = reasoning_effort_floor(model)
+    if floor is None or effort not in REASONING_EFFORT_ORDER:
+        return effort
+    if REASONING_EFFORT_ORDER.index(effort) < REASONING_EFFORT_ORDER.index(floor):
+        return floor
+    return effort
+
+
+@dataclass(frozen=True)
+class RouterReasoningConfig:
+    """How one router host expects thinking to be expressed.
+
+    The registry (``MODELS_EXTRA_BODY_MAP``) stays keyed by upstream / OpenRouter
+    ids; a router row maps its own ids onto those entries and translates the
+    registered body into the router's wire form."""
+
+    # Router id prefixes stripped to find the registered upstream id.
+    strip_prefixes: tuple[str, ...] = ()
+    # Map dotted versions (claude-sonnet-5.5) onto the registered hyphen form.
+    dotted_versions: bool = False
+    # Router-to-registry renames applied after prefix stripping.
+    model_aliases: dict[str, str] = field(default_factory=dict)
+    # Translate OpenRouter's reasoning:{effort} into a top-level reasoning_effort.
+    reasoning_to_top_level: bool = False
+    # Router id -> (regular, focus) top-level reasoning_effort replacing the registered body.
+    efforts: dict[str, tuple[str, str]] = field(default_factory=dict)
+
+
+# Opper (api.opper.ai/v3/compat) honours only top-level reasoning_effort: thinking.type,
+# extra_body.google.thinking_config, reasoning.effort and enable_thinking all return 200 but are
+# ignored. Router id -> (regular, focus) effort, replacing the registered Google-dialect forms;
+# gemini/-prefixed ids (the Opper catalogue form) resolve to the same registry entries.
+# Observed (2026-11-05), then raised to UPSTREAM_REASONING_FLOOR:
+#   - gemini-2.5-flash (bare id) ignores none / minimal (~2200 reasoning tokens on a hard prompt);
+#     low is the lowest that works (~800). gemini/gemini-2.5-flash honours minimal (~0 tokens).
+#   - 2.5-flash-lite reaches 0 with none. 3.x accepts none and low (3.8-flash returns 400 on
+#     minimal); the floor puts them at low.
+#   - Claude is not listed: 4.x does not think by default, 5.x keeps thinking under every effort
+#     and thinking.type, and low turns thinking on for 4.x, so nothing is sent.
+OPPER_REASONING_EFFORT: dict[str, tuple[str, str]] = {
+    "gemini-2.5-flash": ("low", "low"),
+    "gemini/gemini-2.5-flash": ("minimal", "low"),
+    "gemini-2.5-flash-lite": ("none", "low"),
+    "gemini/gemini-2.5-flash-lite": ("none", "low"),
+    "gemini-3-flash-preview": ("low", "low"),
+    "gemini/gemini-3-flash-preview": ("low", "low"),
+    "gemini-3.1-flash-lite": ("low", "low"),
+    "gemini/gemini-3.1-flash-lite": ("low", "low"),
+    "gemini-3.5-flash": ("low", "low"),
+    "gemini/gemini-3.5-flash": ("low", "low"),
+    "gemini-3.6-flash": ("low", "low"),
+    "gemini/gemini-3.6-flash": ("low", "low"),
+    "gemini-3.8-flash": ("low", "low"),
+    "gemini/gemini-3.8-flash": ("low", "low"),
+}
+
+# Hostname -> router row. OpenRouter needs none: its dialect is the registry's own form.
+#   - Requesty documents a top-level reasoning_effort (https://docs.requesty.ai/features/reasoning).
+#   - OrcaRouter passes each vendor's native knob through unchanged (official integration note,
+#     2026-11-05): top-level reasoning_effort for OpenAI, a thinking block for Anthropic; OpenRouter's
+#     reasoning:{...} and enable_thinking are ignored. Its Claude ids use OpenRouter naming
+#     (anthropic/claude-sonnet-5.5), so they resolve to the native entries and send the native
+#     thinking body. Not live-tested on Claude (paid models returned 402); verified only on the
+#     free deepseek/deepseek-v4-flash-free, where thinking:{type:disabled} reached 0 reasoning tokens.
+#     Its DeepSeek ids (deepseek/deepseek-v4-flash) resolve to the native DeepSeek entries the same
+#     way; the free variant thinks by default and maps onto deepseek-v4-flash.
+_REQUESTY_REASONING = RouterReasoningConfig(reasoning_to_top_level=True)
+_OPPER_REASONING = RouterReasoningConfig(strip_prefixes=("gemini/",), efforts=OPPER_REASONING_EFFORT)
+_ORCAROUTER_REASONING = RouterReasoningConfig(
+    strip_prefixes=("anthropic/", "deepseek/"),
+    dotted_versions=True,
+    model_aliases={
+        "claude-haiku-4-5": "claude-haiku-4-5-20251001",
+        "deepseek-v4-flash-free": "deepseek-v4-flash",
+    },
+)
+ROUTER_REASONING: dict[str, RouterReasoningConfig] = {
+    "router.requesty.ai": _REQUESTY_REASONING,
+    "router.eu.requesty.ai": _REQUESTY_REASONING,
+    "api.opper.ai": _OPPER_REASONING,
+    "api.orcarouter.ai": _ORCAROUTER_REASONING,
+}
+
+
+def router_reasoning_config(base_url: str | None) -> RouterReasoningConfig | None:
+    """Router row for an endpoint, matched on the exact hostname."""
+    return ROUTER_REASONING.get(urlsplit(str(base_url or "")).hostname or "")
+
+
+def resolve_router_model(model: str, base_url: str | None) -> str:
+    """Registry id for ``model`` as named on ``base_url``'s router.
+
+    Returns ``model`` unchanged when it is registered as is, when the endpoint
+    is not a router in ``ROUTER_REASONING``, or when no registered id matches."""
+    config = router_reasoning_config(base_url)
+    if config is None or not model or model in MODELS_EXTRA_BODY_MAP:
+        return model
+    for prefix in config.strip_prefixes:
+        if model.startswith(prefix):
+            upstream = model[len(prefix):]
+            if config.dotted_versions:
+                upstream = upstream.replace(".", "-")
+            upstream = config.model_aliases.get(upstream, upstream)
+            if upstream in MODELS_EXTRA_BODY_MAP:
+                return upstream
+    return model
+
+
+def rewrite_router_reasoning(
+    base_url: str | None, model: str, extra_body: dict | None,
+) -> tuple[dict | None, str | None]:
+    """Translate a registered thinking body into a router's top-level ``reasoning_effort``.
+
+    Applies the endpoint's ``ROUTER_REASONING`` row: OpenRouter's
+    ``reasoning:{effort}`` becomes a top-level effort, or, for models in the
+    row's ``efforts`` table, the model's registered regular (thinking-off) or
+    focus (thinking-on) knob is replaced by the effort for that mode. The
+    returned effort is raised to the upstream floor. Other keys are preserved,
+    an explicit ``reasoning_effort`` already in ``extra_body`` wins, and the
+    input dict is never mutated. Returns ``(extra_body, None)`` when nothing
+    applies."""
+    config = router_reasoning_config(base_url)
+    if config is None or not extra_body:
+        return extra_body, None
+    effort = None
+    if config.reasoning_to_top_level:
+        reasoning = extra_body.get("reasoning")
+        if isinstance(reasoning, dict) and set(reasoning) == {"effort"}:
+            extra_body = dict(extra_body)
+            extra_body.pop("reasoning")
+            effort = extra_body.pop("reasoning_effort", reasoning["effort"])
+    efforts = config.efforts.get(model)
+    if efforts:
+        upstream = resolve_router_model(model, base_url)
+        forms = (
+            (MODELS_EXTRA_BODY_MAP.get(upstream), efforts[0]),
+            (MODELS_FOCUS_EXTRA_BODY_MAP.get(upstream), efforts[1]),
+        )
+        for form, form_effort in forms:
+            if form and all(k in extra_body and extra_body[k] == v for k, v in form.items()):
+                extra_body = {k: v for k, v in extra_body.items() if k not in form}
+                if "reasoning_effort" not in extra_body:
+                    effort = form_effort
+                break
+    if effort is None:
+        return extra_body, None
+    return extra_body, clamp_reasoning_effort(model, effort)
 
 
 # Background memory calls intentionally enabling thinking (review, signal detection, refine, reflection synthesis, etc.) normally omit

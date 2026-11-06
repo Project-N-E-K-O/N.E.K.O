@@ -71,6 +71,7 @@ from config.prompts.prompts_sys import (
     AGENT_TASK_STATUS_QUEUED,
     AGENT_TASKS_HEADER,
     AGENT_TASKS_NOTICE,
+    normalize_sys_prompt_locale,
 )
 from utils.language_utils import normalize_language_code, is_supported_language_code
 from utils.llm_tool_leak_filter import strip_tool_call_leaks
@@ -226,7 +227,8 @@ class NotifyMixin:
 
     async def _build_initial_prompt(self) -> str:
         """Build the system prompt and inject active task summary when agent is enabled."""
-        _lang = normalize_language_code(self.user_language, format="short")
+        # prompts_sys keys: zh / zh-TW / en ... A short code would fold zh-TW into zh.
+        _lang = normalize_sys_prompt_locale(self.user_language)
         if self._is_agent_enabled():
             # Keep the current wrapper structure but revert prompt semantics:
             # do not distinguish browser/computer/plugin in the initial capability text.
@@ -273,6 +275,10 @@ class NotifyMixin:
         # readers need the same key or user bans never arrive.
         # system prompt，codex P2）。
         _directives_key = self.lanlan_name or "default"
+        # The directive / topic blocks below take the full locale, not _lang above
+        # (a prompts_sys key): prompts_directives normalizes it internally, and a
+        # short code would already have collapsed zh-TW into zh before it got there.
+        _directives_lang = normalize_language_code(self.user_language, format="full")
 
         # ── Explicit user topic-ban injection ──
         # Users' past-three-day 别再提 X / stop saying X instructions are already visible
@@ -285,7 +291,7 @@ class NotifyMixin:
 
             prompt += get_user_directives_manager().render_prompt_block(
                 _directives_key,
-                _lang,
+                _directives_lang,
             )
         except Exception as _exc:  # pragma: no cover - defensive
             logger.debug(
@@ -306,7 +312,7 @@ class NotifyMixin:
             anti_repeat_corpus = get_anti_repeat_corpus()
             await anti_repeat_corpus.apreload(_directives_key)
             topics = anti_repeat_corpus.top_recent_topics(_directives_key)
-            topic_block = render_recent_topics_block(topics, _lang)
+            topic_block = render_recent_topics_block(topics, _directives_lang)
             prompt += topic_block
             if topic_block:
                 from memory.anti_repeat_effects import (
@@ -393,7 +399,8 @@ class NotifyMixin:
             logger.debug("[UserDirectives] pending flag read failed: %s", exc)
             return
         try:
-            _lang = normalize_language_code(self.user_language, format='short')
+            # Full, not short: same reason as _build_initial_prompt's _directives_lang.
+            _lang = normalize_language_code(self.user_language, format='full')
             # Render the **entire active list**, not newly extracted terms only, matching
             # _build_initial_prompt injection. Incremental-only injection makes session bans depend on
             # which were just uttered, differing from
@@ -552,7 +559,7 @@ class NotifyMixin:
             active = [t for t in tasks if t.get("status") in ("running", "queued")]
             if not active:
                 return ""
-            _lang = normalize_language_code(self.user_language, format="short")
+            _lang = normalize_sys_prompt_locale(self.user_language)
             lines = []
             for t in active:
                 params = t.get("params") or {}

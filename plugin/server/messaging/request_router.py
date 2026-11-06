@@ -20,6 +20,7 @@ from plugin.core.zmq_transport import pack_rpc_payload, unpack_rpc_payload
 from plugin.logging_config import get_logger
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.messaging.handlers.registry import build_request_handlers
+from plugin.settings import PluginRpcQuotas, get_plugin_rpc_quotas
 
 logger = get_logger("server.messaging.request_router")
 
@@ -34,14 +35,32 @@ def _domain_error(exc: Exception) -> object | None:
     return None
 
 
+def _plugin_call_target(request: Mapping[str, object]) -> str | None:
+    if request.get("type") != "PLUGIN_TO_PLUGIN":
+        return None
+    target = request.get("to_plugin")
+    if not isinstance(target, str) or not target.strip():
+        return None
+    return target.strip()
+
+
+def _new_dispatcher(handlers, quotas: PluginRpcQuotas) -> RpcDispatcher:
+    return RpcDispatcher(
+        handlers,
+        max_in_flight_per_owner=quotas.max_in_flight_per_plugin,
+        target_of=_plugin_call_target,
+        max_in_flight_per_target=quotas.max_in_flight_per_target_plugin,
+        error_mapper=_domain_error,
+        logger=logger,
+    )
+
+
 class PluginRouter:
     """Own routing lifetime; correlation and execution belong to the RPC runtime."""
 
     def __init__(self) -> None:
         self._handlers = build_request_handlers()
-        self._dispatcher = RpcDispatcher(
-            self._handlers, error_mapper=_domain_error, logger=logger
-        )
+        self._dispatcher = _new_dispatcher(self._handlers, get_plugin_rpc_quotas())
         self._router_task: asyncio.Task | None = None
         self._busy_replies: set[asyncio.Task] = set()
         self._shutdown_event = asyncio.Event()
@@ -69,12 +88,16 @@ class PluginRouter:
         if self._stop_task is not None and not self._stop_task.done():
             raise RpcClosedError("Plugin router is stopping")
         self._shutdown_event = asyncio.Event()
-        self._dispatcher = RpcDispatcher(
-            self._handlers, error_mapper=_domain_error, logger=logger
-        )
+        quotas = get_plugin_rpc_quotas()
+        self._dispatcher = _new_dispatcher(self._handlers, quotas)
         self._stop_task = None
         self._queue = state.plugin_comm_queue
-        self._ingress = ControlIngress(self._queue, self._dispatch_control)
+        self._ingress = ControlIngress(
+            self._queue,
+            self._dispatch_control,
+            max_queued_per_connection=quotas.max_queued_per_plugin,
+            logger=logger,
+        )
         state.plugin_control_ingress = self._ingress
         self._router_task = asyncio.create_task(
             self._router_loop(), name="plugin-router-loop"
@@ -199,6 +222,11 @@ class PluginRouter:
         task = asyncio.create_task(self._send_busy(request))
         self._busy_replies.add(task)
         task.add_done_callback(self._busy_replies.discard)
+        # The reply keeps its request's queue share, so one plugin's pending
+        # replies stay within its own quota and cannot use up the shared budget.
+        ingress = self._ingress
+        if ingress is not None and ingress.retain(request):
+            task.add_done_callback(lambda _task: ingress.release(request))
 
     async def _send_busy(self, request: Mapping[str, object]) -> None:
         try:

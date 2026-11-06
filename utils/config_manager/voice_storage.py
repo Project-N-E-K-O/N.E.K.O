@@ -601,20 +601,26 @@ class VoiceStorageMixin(ImportedVoiceStorageMixin):
 
         return result
 
+    def _current_voice_storage_key(self) -> str:
+        """Return the bucket that listing, validation and deletion read for the current TTS config."""
+        tts_config = self.get_model_api_config('tts_custom')
+        if self._is_local_tts_storage_active(tts_config):
+            return '__LOCAL_TTS__'
+        return tts_config.get('api_key', '') or self.get_core_config().get('AUDIO_API_KEY', '')
+
     @voice_storage_transaction
     def save_voice_for_current_api(self, voice_id, voice_data):
-        """Save a voice for the current AUDIO_API_KEY"""
-        core_config = self.get_core_config()
-        audio_api_key = core_config.get('AUDIO_API_KEY', '')
+        """Save a voice into the bucket the current TTS config lists from."""
+        storage_key = self._current_voice_storage_key()
 
-        if not audio_api_key:
+        if not storage_key:
             raise ValueError("未配置 AUDIO_API_KEY")
 
         voice_storage = self._load_voice_storage_for_write()
-        if audio_api_key not in voice_storage:
-            voice_storage[audio_api_key] = {}
+        if storage_key not in voice_storage:
+            voice_storage[storage_key] = {}
 
-        voice_storage[audio_api_key][voice_id] = voice_data
+        voice_storage[storage_key][voice_id] = voice_data
         self.save_voice_storage(voice_storage)
 
     @voice_storage_transaction
@@ -742,17 +748,8 @@ class VoiceStorageMixin(ImportedVoiceStorageMixin):
                 del voice_storage[storage_key][voice_id]
                 self.save_voice_storage(voice_storage)
                 return True
-        
-        tts_config = self.get_model_api_config('tts_custom')
-        is_local_tts = self._is_local_tts_storage_active(tts_config)
 
-        if is_local_tts:
-            api_key = '__LOCAL_TTS__'
-        else:
-            api_key = tts_config.get('api_key', '')
-            if not api_key:
-                core_config = self.get_core_config()
-                api_key = core_config.get('AUDIO_API_KEY', '')
+        api_key = self._current_voice_storage_key()
 
         if not api_key:
             return False

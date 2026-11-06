@@ -649,6 +649,7 @@ class _StreamingMixin:
     @staticmethod
     def _focus_stream_overrides(
         thinking_on: bool, model: str, base_max_tokens: int | None = None,
+        base_url: str | None = None,
     ) -> dict:
         """Per-call streaming overrides for a Focus turn.
 
@@ -684,7 +685,7 @@ class _StreamingMixin:
         if not thinking_on:
             return {}
         from config.providers import focus_extra_body, get_extra_body
-        fb = focus_extra_body(model)
+        fb = focus_extra_body(model, base_url)
         overrides: dict = {"extra_body": fb}
         # Headroom only when Focus actually enables thinking for this provider:
         # ``fb is None`` ⇒ no thinking-enable override at all (unknown model);
@@ -696,7 +697,7 @@ class _StreamingMixin:
         if (
             base_max_tokens is not None
             and fb is not None
-            and fb != get_extra_body(model)
+            and fb != get_extra_body(model, base_url)
         ):
             overrides["max_completion_tokens"] = base_max_tokens + FOCUS_THINKING_EXTRA_TOKENS
         return overrides
@@ -1321,7 +1322,7 @@ class _StreamingMixin:
                         # summary-mode lift / vision switch), ``None`` stays
                         # uncapped.
                         _focus_overrides = self._focus_stream_overrides(
-                            thinking_on, self.model,
+                            thinking_on, self.model, base_url=getattr(self, "base_url", None),
                             base_max_tokens=(
                                 getattr(getattr(self, "llm", None), "max_completion_tokens", None)
                             ),

@@ -1142,6 +1142,9 @@
         "compactExportHistory": "대화 기록",
         "compactHistoryToggleOpen": "대화 기록 보이기",
         "compactHistoryToggleClose": "대화 기록 숨기기",
+    "clearScreen": "화면 지우기",
+    "clearScreenDone": "화면을 지웠습니다",
+    "clearScreenHint": "현재 메시지만 화면에서 숨깁니다. 대화 기록과 기억은 유지됩니다.",
     "compactHistoryExport": "대화 기록 내보내기",
         "compactExportControlsCollapse": "선택 도구 숨기기",
         "compactExportControlsExpand": "선택 도구 보이기",
@@ -1416,6 +1419,7 @@
             "openrouter": "OpenRouter(모델 통합 플랫폼)",
             "orcarouter": "OrcaRouter(Claude 게이트웨이)",
             "requesty": "Requesty(모델 라우터)",
+            "opper": "Opper(EU AI 게이트웨이)",
             "vllm_omni": "vLLM-Omni (TTS)",
             "gptsovits": "GPT-SoVITS (자체 호스팅)"
         },
@@ -1492,6 +1496,7 @@
             "openrouter": "OpenRouter",
             "orcarouter": "OrcaRouter",
             "requesty": "Requesty",
+            "opper": "Opper",
             "vllm_omni": "vLLM-Omni(TTS)"
         },
         "freeVersionNoApiKey": "무료 버전에는 API 키가 필요하지 않습니다.",

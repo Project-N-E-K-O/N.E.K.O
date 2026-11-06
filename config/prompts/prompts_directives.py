@@ -168,7 +168,7 @@ _TRIM_TRAIL_TOKENS_ANY = ("please", "porfa", "porfavor")
 
 
 def _norm_lang(lang: str) -> str:
-    """Normalize a lang code (``zh-CN`` → ``zh``, ``pt-BR`` → ``pt``, etc.).
+    """Normalize a lang code to a template key (``zh-CN`` → ``zh``, ``zh-TW`` → ``zh-TW``, ``pt-BR`` → ``pt``).
 
     The render functions in this module resolve templates by exact dict key; if the
     upstream passes ``user_language`` through unchanged (with a region suffix),
@@ -182,6 +182,14 @@ def _norm_lang(lang: str) -> str:
     render functions fall back to English); when the resolver is unbound, degrade to
     a local split fallback.
 
+    Traditional Chinese branches off *before* that short normalization, same as
+    ``utils.slop_filter._resolve_slop_lang_key``: ``format='short'`` collapses
+    zh-TW / zh-Hant / zh-HK / tchinese to ``zh``, which handed Traditional users the
+    Simplified templates and left every ``'zh-TW'`` row in this module unreachable.
+    Only that branch is special-cased; every other input keeps the original path.
+    The script has to survive until it gets here, so callers pass a full locale or a
+    prompt key — a short ``zh`` from upstream has already lost it.
+
     ⚠️ This helper serves the i18n **template rendering** path (unknown → en). If you
     need an "unknown → Chinese" fallback (e.g. the contract of
     ``scan_negative_keywords``), do not reuse this helper; write a local strip — see
@@ -189,6 +197,8 @@ def _norm_lang(lang: str) -> str:
     """
     if not lang:
         return 'en'
+    if normalize_prompt_locale(lang) == 'zh-TW':
+        return 'zh-TW'
     try:
         from config._runtime import normalize_language_code as _nlc
         out = _nlc(lang, format='short') or lang
@@ -2268,7 +2278,7 @@ def render_directives_block(terms: List[str], lang: str) -> str:
     """Render the active term list into a system-prompt block (with leading newlines).
 
     Empty list → returns "" (callers concat directly, no emptiness check needed).
-    ``lang`` accepts full locales (``zh-CN`` etc.), normalized internally to a short code.
+    ``lang`` accepts full locales (``zh-CN`` / ``zh-TW`` etc.), normalized internally to a template key.
     """
     if not terms:
         return ""
@@ -2529,9 +2539,10 @@ def render_regen_avoid_instruction(terms: List[str], lang: str, master_name: str
     short = _norm_lang(lang)
     template = PROACTIVE_REGEN_AVOID_INSTRUCTION.get(short) or PROACTIVE_REGEN_AVOID_INSTRUCTION['en']
     # Bracket words individually, clearly separating avoided terms (「」 for CJK, double quotes elsewhere),
-    # then join using locale-specific list separators.
-    lq, rq = ("「", "」") if short in ("zh", "ja") else ('"', '"')
-    sep = "、" if short in ("zh", "ja") else ", "
+    # then join using locale-specific list separators. Traditional Chinese uses 「」 and 、 natively too.
+    cjk_quotes = short in ("zh", "zh-TW", "ja")
+    lq, rq = ("「", "」") if cjk_quotes else ('"', '"')
+    sep = "、" if cjk_quotes else ", "
     quoted_terms = sep.join(f"{lq}{t}{rq}" for t in terms)
     return template.format(
         terms=quoted_terms,
@@ -2793,7 +2804,9 @@ Retorne JSON válido. Se não houver alvo específico, retorne {"targets": []}. 
 
 
 def get_negative_target_check_prompt(lang: str = "zh") -> str:
-    return _loc(NEGATIVE_TARGET_CHECK_PROMPT, lang)
+    # Through _norm_lang like the render functions above: a bare _loc only matches exact keys,
+    # so zh-Hant / zh-HK fell back to the Simplified row and zh-CN warned on every call.
+    return _loc(NEGATIVE_TARGET_CHECK_PROMPT, _norm_lang(lang))
 
 
 # =====================================================================

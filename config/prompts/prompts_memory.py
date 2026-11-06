@@ -1587,6 +1587,11 @@ def render_profile_rename_event_context(
 # =====================================================================
 
 # ---------- fact_extraction_prompt → i18n dict ----------
+# The correction/update bullet (mirrored in the batch and AI-aware tables) only
+# asks Stage-1 to emit the NEW state and name the claim it supersedes. Retiring
+# the old fact is left to memory/fact_dedup.py: naming the old value keeps the
+# pair inside the near-dup detector's overlap window, and the arbiter's
+# ``replace`` action then archives the stale row.
 
 FACT_EXTRACTION_PROMPT = {
     "zh": """从以下对话中提取关于 {LANLAN_NAME} 和 {MASTER_NAME} 的重要事实信息。
@@ -1596,6 +1601,7 @@ FACT_EXTRACTION_PROMPT = {
 - 忽略闲聊、寒暄、模糊的内容
 - 忽略AI幻觉、胡言乱语(gibberish)、无意义的编造内容，只提取对话中有真实依据的事实
 - 每条事实必须是一个独立的原子陈述
+- 纠正/更新：如果对话明确纠正了之前说过的某件事，或说明某件事的状态变了（如"我的围巾其实是珊瑚色的""我现在不喝咖啡了"），要把**新状态**提取为一条事实，并在事实文本里写清它取代了什么旧说法（如"{MASTER_NAME}的围巾是珊瑚色（更正了之前说的薄荷色）""{MASTER_NAME}现在不喝咖啡了（以前喝）"）；对话里没提到旧说法时，注明这是更正后的说法即可，不要编造旧说法。以下都不算纠正：假设、第三人的说法、{LANLAN_NAME}的猜测、说的其实是另一个对象
 - entity 标注为 "master"(关于{MASTER_NAME})、"neko"(关于{LANLAN_NAME})或 "relationship"(关于两人关系)
 
 importance 评分 1-10，评分指引（请按此打分，不要泛泛都打 7）：
@@ -1651,6 +1657,7 @@ pin / pin_ttl_days（可选 — 是否放进「重要事实常驻区」）：
 - 忽略閒聊、寒暄、模糊的內容
 - 忽略 AI 幻覺、胡言亂語(gibberish)、無意義的編造內容，只擷取對話中有真實依據的事實
 - 每條事實必須是一個獨立的原子陳述
+- 糾正/更新：如果對話明確糾正了之前說過的某件事，或說明某件事的狀態變了（如「我的圍巾其實是珊瑚色的」「我現在不喝咖啡了」），要把**新狀態**擷取為一條事實，並在事實文字裡寫清它取代了什麼舊說法（如「{MASTER_NAME}的圍巾是珊瑚色（更正了之前說的薄荷色）」「{MASTER_NAME}現在不喝咖啡了（以前喝）」）；對話裡沒提到舊說法時，註明這是更正後的說法即可，不要編造舊說法。以下都不算糾正：假設、第三人的說法、{LANLAN_NAME}的猜測、說的其實是另一個對象
 - entity 標註為 "master"(關於{MASTER_NAME})、"neko"(關於{LANLAN_NAME})或 "relationship"(關於兩人關係)
 
 importance 評分 1-10，評分指引（請按此打分，不要泛泛都打 7）：
@@ -1702,6 +1709,7 @@ Requirements:
 - Ignore small talk, greetings, and vague content
 - Ignore AI hallucinations, gibberish, and meaningless fabricated content — only extract facts grounded in the actual conversation
 - Each fact must be an independent atomic statement
+- Corrections / updates: if the conversation explicitly corrects something said earlier, or says the state of something has changed (e.g. "my scarf is actually coral", "I don't drink coffee anymore"), extract the **new state** as a fact and state in the fact text which earlier claim it replaces (e.g. "{MASTER_NAME}'s scarf is coral (corrects the earlier claim that it was mint)", "{MASTER_NAME} no longer drinks coffee (used to)"); if the earlier claim does not appear in the conversation, just note that this is a correction — do not invent the earlier claim. None of these count as a correction: hypotheticals, a third party's claims, {LANLAN_NAME}'s guesses, or a statement that is actually about a different thing
 - Mark entity as "master" (about {MASTER_NAME}), "neko" (about {LANLAN_NAME}), or "relationship" (about the relationship)
 
 Rate importance 1-10 using this rubric (please calibrate — don't default everyone to 7):
@@ -1753,6 +1761,7 @@ Return as a JSON array (empty array if nothing is worth extracting):
 - 雑談、挨拶、曖昧な内容は無視
 - AIの幻覚（ハルシネーション）、意味不明な発言、根拠のない作り話は無視し、実際の会話に基づいた事実のみを抽出
 - 各事実は独立した原子的な文であること
+- 訂正・更新：会話の中で以前に言ったことが明確に訂正された場合、または何かの状態が変わったと述べられた場合（例：「私のマフラーは実はコーラル色」「もうコーヒーは飲んでいない」）、**新しい状態**を事実として抽出し、それがどの以前の内容を置き換えるのかを事実テキストに明記すること（例：「{MASTER_NAME}のマフラーはコーラル色（以前のミント色という内容を訂正）」「{MASTER_NAME}は今はコーヒーを飲まない（以前は飲んでいた）」）。以前の内容が会話に出てこない場合は、訂正後の内容であることだけを書き添え、以前の内容をでっち上げないこと。次のものは訂正とみなさない：仮定、第三者の発言、{LANLAN_NAME}の推測、実は別の対象についての話
 - entity は "master"({MASTER_NAME}について)、"neko"({LANLAN_NAME}について)、または "relationship"(二人の関係について) と記載
 
 importance は 1-10 で評価。以下の基準で丁寧に分布させること（全部 7 にしない）：
@@ -1804,6 +1813,7 @@ pin / pin_ttl_days（任意 — 「重要事実の常駐エリア」に入れる
 - 잡담, 인사, 모호한 내용은 무시
 - AI 환각(hallucination), 의미 없는 말, 근거 없는 조작된 내용은 무시하고, 실제 대화에 근거한 사실만 추출
 - 각 사실은 독립적인 원자적 진술이어야 함
+- 정정/갱신: 대화에서 이전에 말한 내용을 명확히 정정하거나 어떤 것의 상태가 바뀌었다고 말한 경우(예: "내 목도리는 사실 코랄색이야", "이제 커피 안 마셔"), **새로운 상태**를 하나의 사실로 추출하고, 그것이 어떤 이전 내용을 대체하는지 사실 텍스트에 분명히 적을 것(예: "{MASTER_NAME}의 목도리는 코랄색(이전에 민트색이라고 한 내용을 정정)", "{MASTER_NAME}은(는) 이제 커피를 마시지 않음(예전에는 마셨음)"). 이전 내용이 대화에 나오지 않으면 정정된 내용이라는 것만 적고, 이전 내용을 지어내지 말 것. 다음은 정정으로 보지 않음: 가정, 제3자의 말, {LANLAN_NAME}의 추측, 실제로는 다른 대상에 관한 말
 - entity는 "master"({MASTER_NAME}에 대해), "neko"({LANLAN_NAME}에 대해), 또는 "relationship"(두 사람의 관계에 대해)로 표기
 
 importance는 1-10으로 평가. 다음 기준으로 세심하게 분포시키세요 (모두 7로 기본 설정하지 말 것):
@@ -1855,6 +1865,7 @@ pin / pin_ttl_days (선택 — "중요 사실 상주 구역"에 넣을지 여부
 - Игнорируйте болтовню, приветствия и расплывчатое содержание
 - Игнорируйте галлюцинации ИИ, бессмыслицу и бессодержательный вымысел — извлекайте только факты, подтверждённые реальным диалогом
 - Каждый факт должен быть независимым атомарным утверждением
+- Исправления / обновления: если в беседе явно исправляется сказанное ранее или сообщается, что состояние чего-то изменилось (например, «мой шарф на самом деле коралловый», «я больше не пью кофе»), извлеките **новое состояние** как факт и укажите в тексте факта, какое прежнее утверждение он заменяет (например, «Шарф у {MASTER_NAME} коралловый (исправляет прежнее утверждение, что он мятный)», «{MASTER_NAME} больше не пьёт кофе (раньше пил)»); если прежнего утверждения в беседе нет, просто отметьте, что это исправление, — не выдумывайте прежнее утверждение. Исправлением НЕ считаются: предположения, слова третьих лиц, догадки {LANLAN_NAME}, высказывания, которые на самом деле о другом предмете
 - Отмечайте entity как "master" (о {MASTER_NAME}), "neko" (о {LANLAN_NAME}) или "relationship" (об отношениях)
 
 Оценка importance 1-10 по следующему критерию (распределяйте осознанно, не ставьте всем 7):
@@ -1906,6 +1917,7 @@ Requisitos:
 - Ignora charla casual, saludos y contenido vago
 - Ignora alucinaciones de IA, texto sin sentido y contenido inventado sin valor; extrae solo hechos con base real en la conversación
 - Cada hecho debe ser una declaración atómica independiente
+- Correcciones / actualizaciones: si la conversación corrige explícitamente algo dicho antes, o indica que el estado de algo cambió (p. ej., "mi bufanda en realidad es color coral", "ya no tomo café"), extrae el **nuevo estado** como un hecho y deja claro en el texto del hecho qué afirmación anterior reemplaza (p. ej., "La bufanda de {MASTER_NAME} es color coral (corrige lo dicho antes, que era verde menta)", "{MASTER_NAME} ya no toma café (antes sí)"); si la afirmación anterior no aparece en la conversación, basta con indicar que es una corrección; no inventes la afirmación anterior. No cuentan como corrección: hipótesis, lo que dice un tercero, las suposiciones de {LANLAN_NAME} ni lo que en realidad trata de otro objeto
 - Marca entity como "master" (sobre {MASTER_NAME}), "neko" (sobre {LANLAN_NAME}) o "relationship" (sobre la relación)
 
 Califica importance de 1 a 10 con esta guía (calibra, no pongas todo en 7):
@@ -1957,6 +1969,7 @@ Requisitos:
 - Ignore conversa casual, cumprimentos e conteúdo vago
 - Ignore alucinações de IA, texto sem sentido e conteúdo inventado sem valor; extraia apenas fatos com base real na conversa
 - Cada fato deve ser uma declaração atômica independente
+- Correções / atualizações: se a conversa corrige explicitamente algo dito antes, ou diz que o estado de algo mudou (ex.: "meu cachecol na verdade é coral", "não tomo mais café"), extraia o **novo estado** como um fato e deixe claro no texto do fato qual afirmação anterior ele substitui (ex.: "O cachecol de {MASTER_NAME} é coral (corrige o que foi dito antes, que era verde-menta)", "{MASTER_NAME} não toma mais café (antes tomava)"); se a afirmação anterior não aparecer na conversa, basta indicar que é uma correção — não invente a afirmação anterior. Não contam como correção: hipóteses, o que um terceiro diz, suposições de {LANLAN_NAME} ou algo que na verdade se refere a outro objeto
 - Marque entity como "master" (sobre {MASTER_NAME}), "neko" (sobre {LANLAN_NAME}) ou "relationship" (sobre a relação)
 
 Avalie importance de 1 a 10 usando este guia (calibre, não coloque tudo como 7):
@@ -2032,6 +2045,7 @@ FACT_EXTRACTION_BATCH_PROMPT = {
 - 只提取重要且明确的事实（偏好、习惯、身份、关系动态等）
 - 忽略闲聊、寒暄、模糊的内容；忽略幻觉、胡言乱语、无意义的编造内容
 - 每条事实必须是一个独立的原子陈述
+- 纠正/更新：如果发言人明确纠正了自己之前说过的某件事，或说明某件事的状态变了（如"我的围巾其实是珊瑚色的""我现在不喝咖啡了"），要把**新状态**提取为一条事实，并在事实文本里写清它取代了什么旧说法（如"X 的围巾是珊瑚色（更正了之前说的薄荷色）""X 现在不喝咖啡了（以前喝）"）；段内没提到旧说法时，注明这是更正后的说法即可，不要编造旧说法。以下都不算纠正：假设、第三人的说法、{LANLAN_NAME}的猜测、说的其实是另一个对象
 - 事实只能来自对应段的发言人自己的消息；**绝不跨段合并**，无法确定属于哪一段的信息直接不要输出
 - 各段发言人是与 {LANLAN_NAME} 聊天的群成员，不是 {LANLAN_NAME} 本人
 
@@ -2068,6 +2082,7 @@ event_when（可选 — 事件发生时间，一律用相对时间，绝不写�
 - 只擷取重要且明確的事實（偏好、習慣、身分、關係動態等）
 - 忽略閒聊、寒暄、模糊的內容；忽略幻覺、胡言亂語、無意義的編造內容
 - 每條事實必須是一個獨立的原子陳述
+- 糾正/更新：如果發言人明確糾正了自己之前說過的某件事，或說明某件事的狀態變了（如「我的圍巾其實是珊瑚色的」「我現在不喝咖啡了」），要把**新狀態**擷取為一條事實，並在事實文字裡寫清它取代了什麼舊說法（如「X 的圍巾是珊瑚色（更正了之前說的薄荷色）」「X 現在不喝咖啡了（以前喝）」）；段內沒提到舊說法時，註明這是更正後的說法即可，不要編造舊說法。以下都不算糾正：假設、第三人的說法、{LANLAN_NAME}的猜測、說的其實是另一個對象
 - 事實只能來自對應段的發言人自己的訊息；**絕不跨段合併**，無法確定屬於哪一段的資訊直接不要輸出
 - 各段發言人是與 {LANLAN_NAME} 聊天的群組成員，不是 {LANLAN_NAME} 本人
 
@@ -2104,6 +2119,7 @@ Requirements:
 - Only extract important and clear facts (preferences, habits, identity, relationship dynamics, etc.)
 - Ignore small talk, greetings, vague content, hallucinations, gibberish, and fabricated content
 - Each fact must be an independent atomic statement
+- Corrections / updates: if the speaker explicitly corrects something they said earlier, or says the state of something has changed (e.g. "my scarf is actually coral", "I don't drink coffee anymore"), extract the **new state** as a fact and state in the fact text which earlier claim it replaces (e.g. "X's scarf is coral (corrects the earlier claim that it was mint)", "X no longer drinks coffee (used to)"); if the earlier claim does not appear in the segment, just note that this is a correction — do not invent the earlier claim. None of these count as a correction: hypotheticals, a third party's claims, {LANLAN_NAME}'s guesses, or a statement that is actually about a different thing
 - A fact may only come from its own segment's speaker; NEVER merge across segments. If you cannot tell which segment something belongs to, do not output it at all
 - The speakers are group members chatting with {LANLAN_NAME}; none of them is {LANLAN_NAME}
 
@@ -2140,6 +2156,7 @@ Return a JSON array with **exactly one object per segment**, in segment order:
 - 重要かつ明確な事実のみを抽出（好み、習慣、アイデンティティ、関係の動態など）
 - 雑談、挨拶、曖昧な内容、幻覚、意味不明な発言、根拠のない作り話は無視
 - 各事実は独立した原子的な文であること
+- 訂正・更新：発言者が自分の以前の発言を明確に訂正した場合、または何かの状態が変わったと述べた場合（例：「私のマフラーは実はコーラル色」「もうコーヒーは飲んでいない」）、**新しい状態**を事実として抽出し、それがどの以前の内容を置き換えるのかを事実テキストに明記すること（例：「X のマフラーはコーラル色（以前のミント色という内容を訂正）」「X は今はコーヒーを飲まない（以前は飲んでいた）」）。以前の内容がセグメント内に出てこない場合は、訂正後の内容であることだけを書き添え、以前の内容をでっち上げないこと。次のものは訂正とみなさない：仮定、第三者の発言、{LANLAN_NAME}の推測、実は別の対象についての話
 - 事実は対応するセグメントの発言者自身のメッセージからのみ抽出すること。**セグメントをまたいで統合してはならない**。どのセグメントに属するか判断できない情報は出力しないこと
 - 各発言者は {LANLAN_NAME} とチャットしているグループメンバーであり、{LANLAN_NAME} 本人ではない
 
@@ -2176,6 +2193,7 @@ event_when（任意 — 事件発生時刻、必ず相対時間で、絶対日�
 - 중요하고 명확한 사실만 추출 (선호, 습관, 정체성, 관계 동태 등)
 - 잡담, 인사, 모호한 내용, 환각, 의미 없는 말, 조작된 내용은 무시
 - 각 사실은 독립적인 원자적 진술이어야 함
+- 정정/갱신: 발언자가 자신이 이전에 말한 내용을 명확히 정정하거나 어떤 것의 상태가 바뀌었다고 말한 경우(예: "내 목도리는 사실 코랄색이야", "이제 커피 안 마셔"), **새로운 상태**를 하나의 사실로 추출하고, 그것이 어떤 이전 내용을 대체하는지 사실 텍스트에 분명히 적을 것(예: "X의 목도리는 코랄색(이전에 민트색이라고 한 내용을 정정)", "X은(는) 이제 커피를 마시지 않음(예전에는 마셨음)"). 이전 내용이 세그먼트에 나오지 않으면 정정된 내용이라는 것만 적고, 이전 내용을 지어내지 말 것. 다음은 정정으로 보지 않음: 가정, 제3자의 말, {LANLAN_NAME}의 추측, 실제로는 다른 대상에 관한 말
 - 사실은 해당 세그먼트 발언자 본인의 메시지에서만 추출할 것; **세그먼트를 넘나들며 병합 금지**. 어느 세그먼트에 속하는지 판단할 수 없는 정보는 출력하지 말 것
 - 각 발언자는 {LANLAN_NAME}과 채팅하는 그룹 멤버이며, {LANLAN_NAME} 본인이 아님
 
@@ -2212,6 +2230,7 @@ event_when (선택 — 사건 발생 시간; 반드시 상대 시간으로, 절�
 - Извлекайте только важные и чёткие факты (предпочтения, привычки, личность, динамика отношений и т.д.)
 - Игнорируйте болтовню, приветствия, расплывчатое содержание, галлюцинации, бессмыслицу и вымысел
 - Каждый факт должен быть независимым атомарным утверждением
+- Исправления / обновления: если участник явно исправляет сказанное им ранее или сообщает, что состояние чего-то изменилось (например, «мой шарф на самом деле коралловый», «я больше не пью кофе»), извлеките **новое состояние** как факт и укажите в тексте факта, какое прежнее утверждение он заменяет (например, «Шарф у X коралловый (исправляет прежнее утверждение, что он мятный)», «X больше не пьёт кофе (раньше пил)»); если прежнего утверждения в сегменте нет, просто отметьте, что это исправление, — не выдумывайте прежнее утверждение. Исправлением НЕ считаются: предположения, слова третьих лиц, догадки {LANLAN_NAME}, высказывания, которые на самом деле о другом предмете
 - Факт может исходить только из сообщений участника своего сегмента; НИКОГДА не объединяйте между сегментами. Если непонятно, к какому сегменту относится информация — не выводите её вовсе
 - Все участники — члены группы, беседующие с {LANLAN_NAME}; никто из них не является {LANLAN_NAME}
 
@@ -2248,6 +2267,7 @@ Requisitos:
 - Extrae solo hechos importantes y claros (preferencias, hábitos, identidad, dinámica de relación, etc.)
 - Ignora charla casual, saludos, contenido vago, alucinaciones, texto sin sentido y contenido inventado
 - Cada hecho debe ser una declaración atómica independiente
+- Correcciones / actualizaciones: si el hablante corrige explícitamente algo que dijo antes, o indica que el estado de algo cambió (p. ej., "mi bufanda en realidad es color coral", "ya no tomo café"), extrae el **nuevo estado** como un hecho y deja claro en el texto del hecho qué afirmación anterior reemplaza (p. ej., "La bufanda de X es color coral (corrige lo dicho antes, que era verde menta)", "X ya no toma café (antes sí)"); si la afirmación anterior no aparece en el segmento, basta con indicar que es una corrección; no inventes la afirmación anterior. No cuentan como corrección: hipótesis, lo que dice un tercero, las suposiciones de {LANLAN_NAME} ni lo que en realidad trata de otro objeto
 - Un hecho solo puede venir de los mensajes del hablante de su propio segmento; NUNCA combines entre segmentos. Si no puedes determinar a qué segmento pertenece algo, no lo emitas
 - Los hablantes son miembros del grupo conversando con {LANLAN_NAME}; ninguno es {LANLAN_NAME}
 
@@ -2284,6 +2304,7 @@ Requisitos:
 - Extraia apenas fatos importantes e claros (preferências, hábitos, identidade, dinâmica da relação etc.)
 - Ignore conversa casual, cumprimentos, conteúdo vago, alucinações, texto sem sentido e conteúdo inventado
 - Cada fato deve ser uma declaração atômica independente
+- Correções / atualizações: se o falante corrige explicitamente algo que disse antes, ou diz que o estado de algo mudou (ex.: "meu cachecol na verdade é coral", "não tomo mais café"), extraia o **novo estado** como um fato e deixe claro no texto do fato qual afirmação anterior ele substitui (ex.: "O cachecol de X é coral (corrige o que foi dito antes, que era verde-menta)", "X não toma mais café (antes tomava)"); se a afirmação anterior não aparecer no segmento, basta indicar que é uma correção — não invente a afirmação anterior. Não contam como correção: hipóteses, o que um terceiro diz, suposições de {LANLAN_NAME} ou algo que na verdade se refere a outro objeto
 - Um fato só pode vir das mensagens do falante do seu próprio segmento; NUNCA combine entre segmentos. Se não conseguir determinar a qual segmento algo pertence, não o emita
 - Os falantes são membros do grupo conversando com {LANLAN_NAME}; nenhum deles é {LANLAN_NAME}
 
@@ -2367,6 +2388,7 @@ FACT_EXTRACTION_AI_AWARE_PROMPT = {
 - 忽略闲聊、寒暄、模糊的内容
 - 忽略AI幻觉、胡言乱语(gibberish)、无意义的编造内容，只提取对话中有真实依据的事实
 - 每条事实必须是一个独立的原子陈述
+- 纠正/更新：如果对话明确纠正了之前说过的某件事，或说明某件事的状态变了（如"我的围巾其实是珊瑚色的""我现在不喝咖啡了"），要把**新状态**提取为一条事实，并在事实文本里写清它取代了什么旧说法（如"{MASTER_NAME}的围巾是珊瑚色（更正了之前说的薄荷色）""{MASTER_NAME}现在不喝咖啡了（以前喝）"）；对话里没提到旧说法时，注明这是更正后的说法即可，不要编造旧说法。以下都不算纠正：假设、第三人的说法、{LANLAN_NAME}的猜测、说的其实是另一个对象
 - entity 标注为 "master"(关于{MASTER_NAME})、"neko"(关于{LANLAN_NAME})或 "relationship"(关于两人关系)
 - importance 1-10，规则与基础抽取一致（10 = 关键长期信息；8-9 = 长期稳定核心；6-7 = 普通偏好/日常；5 = 次要观察；1-4 = 弱相关线索）
 - event_when 可选，相对时间格式 `{"start": {"offset": <int>, "unit": "<unit>"}, "end": {...}}`；无时间线索写 null
@@ -2403,6 +2425,7 @@ FACT_EXTRACTION_AI_AWARE_PROMPT = {
 - 忽略閒聊、寒暄、模糊的內容
 - 忽略 AI 幻覺、胡言亂語(gibberish)、無意義的編造內容，只擷取對話中有真實依據的事實
 - 每條事實必須是一個獨立的原子陳述
+- 糾正/更新：如果對話明確糾正了之前說過的某件事，或說明某件事的狀態變了（如「我的圍巾其實是珊瑚色的」「我現在不喝咖啡了」），要把**新狀態**擷取為一條事實，並在事實文字裡寫清它取代了什麼舊說法（如「{MASTER_NAME}的圍巾是珊瑚色（更正了之前說的薄荷色）」「{MASTER_NAME}現在不喝咖啡了（以前喝）」）；對話裡沒提到舊說法時，註明這是更正後的說法即可，不要編造舊說法。以下都不算糾正：假設、第三人的說法、{LANLAN_NAME}的猜測、說的其實是另一個對象
 - entity 標註為 "master"(關於{MASTER_NAME})、"neko"(關於{LANLAN_NAME})或 "relationship"(關於兩人關係)
 - importance 1-10，規則與基礎擷取一致（10 = 關鍵長期資訊；8-9 = 長期穩定核心；6-7 = 普通偏好/日常；5 = 次要觀察；1-4 = 弱相關線索）
 - event_when 選填，相對時間格式 `{"start": {"offset": <int>, "unit": "<unit>"}, "end": {...}}`；無時間線索寫 null
@@ -2436,6 +2459,7 @@ Requirements:
 - Only extract important and clear facts (preferences, habits, identity, relationship dynamics)
 - Ignore small talk, greetings, vague content, AI hallucinations / gibberish
 - Each fact is an independent atomic statement
+- Corrections / updates: if the conversation explicitly corrects something said earlier, or says the state of something has changed (e.g. "my scarf is actually coral", "I don't drink coffee anymore"), extract the **new state** as a fact and state in the fact text which earlier claim it replaces (e.g. "{MASTER_NAME}'s scarf is coral (corrects the earlier claim that it was mint)", "{MASTER_NAME} no longer drinks coffee (used to)"); if the earlier claim does not appear in the conversation, just note that this is a correction — do not invent the earlier claim. None of these count as a correction: hypotheticals, a third party's claims, {LANLAN_NAME}'s guesses, or a statement that is actually about a different thing
 - entity ∈ "master" / "neko" / "relationship"
 - importance 1-10, same rubric as base extraction
 - event_when optional, relative time format; null if no time cue
@@ -2469,6 +2493,7 @@ Return as a JSON array (empty array if nothing worth additionally extracting):
 - 重要かつ明確な事実のみ抽出（好み、習慣、アイデンティティ、関係の動態など）
 - 雑談、挨拶、曖昧な内容、AI 幻覚は無視
 - 各事実は独立した原子的な文
+- 訂正・更新：会話の中で以前に言ったことが明確に訂正された場合、または何かの状態が変わったと述べられた場合（例：「私のマフラーは実はコーラル色」「もうコーヒーは飲んでいない」）、**新しい状態**を事実として抽出し、それがどの以前の内容を置き換えるのかを事実テキストに明記すること（例：「{MASTER_NAME}のマフラーはコーラル色（以前のミント色という内容を訂正）」「{MASTER_NAME}は今はコーヒーを飲まない（以前は飲んでいた）」）。以前の内容が会話に出てこない場合は、訂正後の内容であることだけを書き添え、以前の内容をでっち上げないこと。次のものは訂正とみなさない：仮定、第三者の発言、{LANLAN_NAME}の推測、実は別の対象についての話
 - entity ∈ "master" / "neko" / "relationship"
 - importance 1-10（基本抽出と同じ基準）
 - event_when は任意、相対時間形式、時間の手がかりがなければ null
@@ -2502,6 +2527,7 @@ Return as a JSON array (empty array if nothing worth additionally extracting):
 - 중요하고 명확한 사실만 추출
 - 잡담, 인사, 모호한 내용, AI 환각 무시
 - 각 사실은 독립적인 원자적 진술
+- 정정/갱신: 대화에서 이전에 말한 내용을 명확히 정정하거나 어떤 것의 상태가 바뀌었다고 말한 경우(예: "내 목도리는 사실 코랄색이야", "이제 커피 안 마셔"), **새로운 상태**를 하나의 사실로 추출하고, 그것이 어떤 이전 내용을 대체하는지 사실 텍스트에 분명히 적을 것(예: "{MASTER_NAME}의 목도리는 코랄색(이전에 민트색이라고 한 내용을 정정)", "{MASTER_NAME}은(는) 이제 커피를 마시지 않음(예전에는 마셨음)"). 이전 내용이 대화에 나오지 않으면 정정된 내용이라는 것만 적고, 이전 내용을 지어내지 말 것. 다음은 정정으로 보지 않음: 가정, 제3자의 말, {LANLAN_NAME}의 추측, 실제로는 다른 대상에 관한 말
 - entity ∈ "master" / "neko" / "relationship"
 - importance 1-10 (기본 추출과 동일 기준)
 - event_when 선택, 상대 시간 형식, 시간 단서 없으면 null
@@ -2535,6 +2561,7 @@ Return as a JSON array (empty array if nothing worth additionally extracting):
 - Извлекайте только важные и чёткие факты
 - Игнорируйте болтовню, приветствия, расплывчатое содержание, галлюцинации ИИ
 - Каждый факт — независимое атомарное утверждение
+- Исправления / обновления: если в беседе явно исправляется сказанное ранее или сообщается, что состояние чего-то изменилось (например, «мой шарф на самом деле коралловый», «я больше не пью кофе»), извлеките **новое состояние** как факт и укажите в тексте факта, какое прежнее утверждение он заменяет (например, «Шарф у {MASTER_NAME} коралловый (исправляет прежнее утверждение, что он мятный)», «{MASTER_NAME} больше не пьёт кофе (раньше пил)»); если прежнего утверждения в беседе нет, просто отметьте, что это исправление, — не выдумывайте прежнее утверждение. Исправлением НЕ считаются: предположения, слова третьих лиц, догадки {LANLAN_NAME}, высказывания, которые на самом деле о другом предмете
 - entity ∈ "master" / "neko" / "relationship"
 - importance 1-10 (те же критерии, что и базовое извлечение)
 - event_when необязательно, относительное время; null если нет временного маркера
@@ -2568,6 +2595,7 @@ Requisitos:
 - Extrae solo hechos importantes y claros
 - Ignora charla casual, saludos, contenido vago, alucinaciones de IA
 - Cada hecho es una declaración atómica independiente
+- Correcciones / actualizaciones: si la conversación corrige explícitamente algo dicho antes, o indica que el estado de algo cambió (p. ej., "mi bufanda en realidad es color coral", "ya no tomo café"), extrae el **nuevo estado** como un hecho y deja claro en el texto del hecho qué afirmación anterior reemplaza (p. ej., "La bufanda de {MASTER_NAME} es color coral (corrige lo dicho antes, que era verde menta)", "{MASTER_NAME} ya no toma café (antes sí)"); si la afirmación anterior no aparece en la conversación, basta con indicar que es una corrección; no inventes la afirmación anterior. No cuentan como corrección: hipótesis, lo que dice un tercero, las suposiciones de {LANLAN_NAME} ni lo que en realidad trata de otro objeto
 - entity ∈ "master" / "neko" / "relationship"
 - importance 1-10 (mismo baremo que extracción base)
 - event_when opcional, tiempo relativo; null si no hay pista temporal
@@ -2601,6 +2629,7 @@ Requisitos:
 - Extraia apenas fatos importantes e claros
 - Ignore conversa casual, cumprimentos, conteúdo vago, alucinações de IA
 - Cada fato é uma declaração atômica independente
+- Correções / atualizações: se a conversa corrige explicitamente algo dito antes, ou diz que o estado de algo mudou (ex.: "meu cachecol na verdade é coral", "não tomo mais café"), extraia o **novo estado** como um fato e deixe claro no texto do fato qual afirmação anterior ele substitui (ex.: "O cachecol de {MASTER_NAME} é coral (corrige o que foi dito antes, que era verde-menta)", "{MASTER_NAME} não toma mais café (antes tomava)"); se a afirmação anterior não aparecer na conversa, basta indicar que é uma correção — não invente a afirmação anterior. Não contam como correção: hipóteses, o que um terceiro diz, suposições de {LANLAN_NAME} ou algo que na verdade se refere a outro objeto
 - entity ∈ "master" / "neko" / "relationship"
 - importance 1-10 (mesmo critério da extração base)
 - event_when opcional, tempo relativo; null se não houver pista temporal

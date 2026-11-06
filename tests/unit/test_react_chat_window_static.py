@@ -2725,11 +2725,33 @@ def test_compact_history_layout_contract_avoids_jitter_feedback():
     assert "max-height: inherit;" in panel_block
 
 
+def _reduced_motion_media_blocks(styles: str) -> list[str]:
+    # Balanced-brace extraction: features may append their own reduced-motion block after the shared one.
+    marker = "@media (prefers-reduced-motion: reduce)"
+    blocks = []
+    start = styles.find(marker)
+    while start != -1:
+        depth = 0
+        for i in range(styles.index("{", start), len(styles)):
+            if styles[i] == "{":
+                depth += 1
+            elif styles[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    blocks.append(styles[start:i + 1])
+                    break
+        start = styles.find(marker, start + len(marker))
+    return blocks
+
+
 def test_compact_history_reduced_motion_closing_hides_immediately():
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
 
-    reduced_motion_block = styles.rsplit("@media (prefers-reduced-motion: reduce)", 1)[1]
-    assert '.compact-input-tool-fan[data-compact-tool-wheel-charge-rattle="weak"]' in reduced_motion_block
+    weak_rattle = '.compact-input-tool-fan[data-compact-tool-wheel-charge-rattle="weak"]'
+    matching_blocks = [block for block in _reduced_motion_media_blocks(styles) if weak_rattle in block]
+    assert len(matching_blocks) == 1, "expected exactly one reduced-motion block covering the tool fan"
+    reduced_motion_block = matching_blocks[0]
+    assert weak_rattle in reduced_motion_block
     assert '.compact-input-tool-fan[data-compact-tool-wheel-charge-rattle="strong"]' in reduced_motion_block
     rattle_block = css_block(
         reduced_motion_block,

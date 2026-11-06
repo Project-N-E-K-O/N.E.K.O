@@ -985,11 +985,15 @@ class CompressedRecentHistoryManager:
         return self._cached_disk_history(lanlan_name)
 
     def _read_history_locked(
-        self, file_path, lanlan_name, expected_generation=None,
+        self, file_path, lanlan_name, expected_generation=None, lock_timeout=None,
     ) -> list:
-        """Read one character's history under the file lock. Run me in a worker thread."""
+        """Read one character's history under the file lock. Run me in a worker thread.
+
+        ``lock_timeout`` raises ``recent_file.RecentFileLockTimeout`` instead of
+        waiting longer for the lock.
+        """
         with recent_file.recent_file_access(
-            file_path, expected_generation=expected_generation,
+            file_path, expected_generation=expected_generation, timeout=lock_timeout,
         ) as file_path:
             status, history = self._load_history_unlocked(file_path, lanlan_name)
             pending = recent_file.get_recent_pending_unlocked(file_path)
@@ -1734,7 +1738,14 @@ class CompressedRecentHistoryManager:
             admission_generation,
         )
 
-    async def update_history(self, new_messages, lanlan_name, detailed=False, compress=True, on_compress_done=None):
+    async def update_history(
+        self, new_messages, lanlan_name, detailed=False, compress=True, on_compress_done=None,
+        preempted=None,
+    ):
+        """``preempted``: optional future; once it resolves, a summary in progress is abandoned
+        like a failed one (the messages are already persisted and ``on_compress_done`` hands
+        the snapshot to background compression). Callers holding the settle lock pass it so a
+        cold-start /new_dialog does not wait for the summary LLM (#3601)."""
         # Ordinary writes carry no visit-diary idempotency key (only append_keyed stamps it server-side); strip caller-supplied keys.
         recent_file.strip_idempotency_metadata(new_messages)
         file_path, admission_generation = self._capture_recent_operation_admission(
@@ -1823,10 +1834,11 @@ class CompressedRecentHistoryManager:
                     return
                 # Compression LLM runs **outside lock**: seconds to tens of seconds inside critical section would
                 # also block /cache.
-                compressed_result = await self.compress_history(
+                compressed_result = await self._compress_unless_preempted(
                     compression_input,
                     lanlan_name,
                     detailed,
+                    preempted,
                 )
                 if compressed_result is None:
                     logger.warning(
@@ -2236,6 +2248,29 @@ class CompressedRecentHistoryManager:
         ).format(summary=summary)
         return SystemMessage(content=memo_text), summary
 
+    async def _compress_unless_preempted(self, messages, lanlan_name, detailed, preempted):
+        """Run compress_history, returning None if ``preempted`` resolves first."""
+        if preempted is None:
+            return await self.compress_history(messages, lanlan_name, detailed)
+        if preempted.done():
+            logger.info(f"[RecentHistory] {lanlan_name} 有新会话在等待，本轮摘要转后台")
+            return None
+        compress_task = asyncio.ensure_future(
+            self.compress_history(messages, lanlan_name, detailed)
+        )
+        try:
+            await asyncio.wait({compress_task, preempted}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            # Cancellation of this caller (or a preemption) must not leave the LLM call running.
+            if not compress_task.done():
+                compress_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await compress_task
+        if compress_task.cancelled():
+            logger.info(f"[RecentHistory] {lanlan_name} 有新会话在等待，本轮摘要中断并转后台")
+            return None
+        return compress_task.result()
+
     async def _notify_compress_done(
         self, callback, lanlan_name, snapshot, ok, detailed, admission_generation,
     ):
@@ -2536,25 +2571,46 @@ class CompressedRecentHistoryManager:
         except recent_file.RecentFileDeletedError:
             return []
 
-    async def aget_recent_history(self, lanlan_name, *, include_admission=False):
+    async def aget_recent_history(
+        self, lanlan_name, *, include_admission=False, lock_timeout=None,
+    ):
         file_path, admission_generation = self._capture_recent_operation_admission(
             lanlan_name,
         )
-        try:
-            _, _, _, _, _, _, _, _, recent_log = await self._config_manager.aget_character_data()
-            self.log_file_path = recent_log
-        except Exception as e:
-            logger.error(f"获取角色配置失败: {e}")
+        deadline = None if lock_timeout is None else time.monotonic() + lock_timeout
+
+        def _read_before_deadline():
+            # Measured when the worker actually starts, so a read that queued or waited on
+            # the config first does not get a fresh full lock budget and outlive the caller.
+            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+            return self._read_history_locked(
+                file_path, lanlan_name, admission_generation, remaining,
+            )
 
         try:
-            history = await asyncio.to_thread(
-                self._read_history_locked,
-                file_path,
-                lanlan_name,
-                admission_generation,
-            )
+            # With lock_timeout, one deadline covers everything that can queue on the default
+            # executor (the config read and the locked read), not only the lock wait itself.
+            async with asyncio.timeout(lock_timeout):
+                try:
+                    _, _, _, _, _, _, _, _, recent_log = await self._config_manager.aget_character_data()
+                    self.log_file_path = recent_log
+                except Exception as e:
+                    logger.error(f"获取角色配置失败: {e}")
+
+                history = await asyncio.to_thread(_read_before_deadline)
         except recent_file.RecentFileDeletedError:
             history = []
+        except recent_file.RecentFileLockTimeout:
+            raise
+        except TimeoutError as e:
+            from utils.stall_report import report_stall
+            report_stall(
+                f"读取 {lanlan_name} 的近期历史 {lock_timeout}s 内未完成（线程池排队或等锁），放弃等待",
+                loop=asyncio.get_running_loop(),
+            )
+            raise recent_file.RecentFileLockTimeout(
+                f"recent history read exceeded {lock_timeout}s: {file_path}"
+            ) from e
         if include_admission:
             return history, admission_generation
         return history

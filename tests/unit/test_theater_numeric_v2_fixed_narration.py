@@ -428,7 +428,7 @@ async def test_review_output_fits_all_refs_and_restores_literal_ids(monkeypatch,
     budget = 0
     monkeypatch.setattr(evaluator, '_model_config', config)
     monkeypatch.setattr(evaluator, 'create_chat_llm_async', factory)
-    monkeypatch.setattr(evaluator, 'focus_extra_body', lambda _: {'enable_thinking': True})
+    monkeypatch.setattr(evaluator, 'focus_extra_body', lambda *_: {'enable_thinking': True})
     result = await evaluator.NumericV2MetricEvaluator(object()).validate_transition_offer(
         engine=engine, session=session, message='（将铭牌放入读取器）' + evidence,
         actor_performance={'performance': ACTION, 'suggested_inputs': []}, dispute_review=disputed)
