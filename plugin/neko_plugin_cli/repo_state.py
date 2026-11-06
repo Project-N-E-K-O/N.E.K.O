@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -69,24 +70,57 @@ def git_output(plugin_dir: Path, *args: str, strip: bool = True) -> str | None:
     return completed.stdout.strip() if strip else completed.stdout
 
 
-def _porcelain_paths(output: str) -> list[str]:
-    return [line[3:] for line in output.splitlines() if len(line) > 3]
+@dataclass(frozen=True)
+class _BranchStatus:
+    """``git status --porcelain=v2 --branch`` for tracked files."""
+
+    head: str | None
+    branch: str | None
+    upstream: str | None
+    # True when HEAD is neither ahead of nor behind its upstream.
+    level_with_upstream: bool
+    tracked_paths: list[str]
 
 
-def worktree_dirty_paths(plugin_dir: Path) -> list[str] | None:
-    """Paths that keep the worktree from being clean, or None when git fails.
-
-    Tracked changes always count, including sync work dirs that were committed
-    by accident. Untracked files count unless git ignores them or they are a
-    dependency-sync work dir.
-    """
-    tracked = git_output(
-        plugin_dir, "status", "--porcelain", "--untracked-files=no", strip=False
+def _branch_status(plugin_dir: Path) -> _BranchStatus | None:
+    output = git_output(
+        plugin_dir, "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=no", strip=False
     )
-    every = git_output(
+    if output is None:
+        return None
+    head = branch = upstream = None
+    level = False
+    paths: list[str] = []
+    records = iter(output.split("\0"))
+    for record in records:
+        if record.startswith("# branch.oid "):
+            oid = record.removeprefix("# branch.oid ")
+            head = None if oid == "(initial)" else oid
+        elif record.startswith("# branch.head "):
+            name = record.removeprefix("# branch.head ")
+            branch = None if name == "(detached)" else name
+        elif record.startswith("# branch.upstream "):
+            upstream = record.removeprefix("# branch.upstream ")
+        elif record.startswith("# branch.ab "):
+            level = record.removeprefix("# branch.ab ") == "+0 -0"
+        elif record[:2] in {"1 ", "u "}:
+            # The path is the last field and may itself contain spaces.
+            fields = 9 if record.startswith("1 ") else 11
+            paths.append(record.split(" ", fields - 1)[-1])
+        elif record.startswith("2 "):
+            paths.append(record.split(" ", 9)[-1])
+            # A rename record is followed by the original path.
+            next(records, None)
+    return _BranchStatus(head, branch, upstream, level, paths)
+
+
+def _untracked_paths(plugin_dir: Path) -> list[str] | None:
+    """Untracked, not-ignored files, except dependency-sync work dirs."""
+    output = git_output(
         plugin_dir,
         "status",
         "--porcelain",
+        "-z",
         "--untracked-files=all",
         "--",
         ".",
@@ -99,13 +133,28 @@ def worktree_dirty_paths(plugin_dir: Path) -> list[str] | None:
         ),
         strip=False,
     )
-    if tracked is None or every is None:
+    if output is None:
         return None
-    paths: list[str] = []
-    for path in [*_porcelain_paths(tracked), *_porcelain_paths(every)]:
-        if path not in paths:
-            paths.append(path)
+    return [record[3:] for record in output.split("\0") if record.startswith("?? ")]
+
+
+def _dirty_paths(status: _BranchStatus | None, untracked: list[str] | None) -> list[str] | None:
+    # Tracked changes always count, including sync work dirs committed by accident.
+    if status is None or untracked is None:
+        return None
+    paths = list(status.tracked_paths)
+    paths.extend(path for path in untracked if path not in paths)
     return paths
+
+
+def worktree_dirty_paths(plugin_dir: Path) -> list[str] | None:
+    """Paths that keep the worktree from being clean, or None when git fails.
+
+    Tracked changes always count, including sync work dirs that were committed
+    by accident. Untracked files count unless git ignores them or they are a
+    dependency-sync work dir.
+    """
+    return _dirty_paths(_branch_status(plugin_dir), _untracked_paths(plugin_dir))
 
 
 def committed_file_sizes(repository_root: Path) -> list[tuple[str, int]] | None:
@@ -144,26 +193,28 @@ def read_repo_state(plugin_dir: Path, *, version: str) -> RepoState:
     if not (plugin_dir / ".git").exists():
         return RepoState(git_available=True, is_repository=False, tag=tag)
 
-    raw_origin = git_output(plugin_dir, "remote", "get-url", "origin") or None
+    # Each git process costs ~0.2 s on Windows; the four reads are independent.
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        origin_read = pool.submit(git_output, plugin_dir, "remote", "get-url", "origin")
+        status_read = pool.submit(_branch_status, plugin_dir)
+        untracked_read = pool.submit(_untracked_paths, plugin_dir)
+        tag_read = pool.submit(
+            git_output, plugin_dir, "rev-parse", "--verify", "--quiet", f"refs/tags/{tag}^{{commit}}"
+        )
+    raw_origin = origin_read.result() or None
+    status = status_read.result()
+    tag_commit = tag_read.result()
+    dirty = _dirty_paths(status, untracked_read.result())
+
     origin_url = strip_url_credentials(raw_origin) if raw_origin else None
-    head = git_output(plugin_dir, "rev-parse", "HEAD") or None
-    branch = git_output(plugin_dir, "symbolic-ref", "--short", "-q", "HEAD") or None
+    head = status.head if status else None
+    branch = status.branch if status else None
     detached = bool(head) and branch is None
-    upstream = (
-        git_output(plugin_dir, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
-        or None
-        if branch
-        else None
-    )
+    upstream = status.upstream if status and branch else None
     head_pushed: bool | None = None
     if head and upstream:
         remote, _, remote_branch = upstream.partition("/")
-        if remote != "origin" or not remote_branch:
-            head_pushed = False
-        else:
-            head_pushed = git_output(plugin_dir, "rev-parse", "@{upstream}") == head
-    dirty = worktree_dirty_paths(plugin_dir)
-    tag_commit = git_output(plugin_dir, "rev-parse", "--verify", "--quiet", f"refs/tags/{tag}^{{commit}}")
+        head_pushed = remote == "origin" and bool(remote_branch) and status.level_with_upstream
     return RepoState(
         git_available=True,
         is_repository=True,

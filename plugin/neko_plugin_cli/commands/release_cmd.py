@@ -12,7 +12,7 @@ import sys
 import zipfile
 from pathlib import Path, PurePosixPath
 
-from ..core import inspect_package, build_plugin
+from .. import core
 from ..core.plugin_source import load_plugin_source
 from ..paths import CliDefaults
 from ..plugin_import_alias import PLUGIN_ID_ENV, PLUGIN_SOURCE_ENV
@@ -138,8 +138,8 @@ def handle_release_check(args: argparse.Namespace) -> int:
         target_dir = Path(args.target_dir).expanduser().resolve()
         target_dir.mkdir(parents=True, exist_ok=True)
         package_path = target_dir / f"{source.plugin_id}.neko-plugin"
-        build_result = build_plugin(plugin_dir, package_path)
-        inspect_result = inspect_package(build_result.package_path)
+        build_result = core.build_plugin(plugin_dir, package_path)
+        inspect_result = core.inspect_package(build_result.package_path)
         if inspect_result.payload_hash_verified is not True:
             print("[FAIL] package payload hash verification failed", file=sys.stderr)
             return 1

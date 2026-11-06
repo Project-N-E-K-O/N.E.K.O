@@ -150,3 +150,19 @@ def test_committed_file_sizes_lists_the_head_tree(tmp_path):
 def test_committed_file_sizes_is_none_without_a_commit(tmp_path):
     _git(tmp_path, "init")
     assert committed_file_sizes(tmp_path) is None
+
+
+
+def test_dirty_paths_name_renamed_and_spaced_files(tmp_path):
+    _repository(tmp_path)
+    (tmp_path / "old name.py").write_text("x = 1\n", encoding="utf-8")
+    _git(tmp_path, "add", "old name.py")
+    _git(tmp_path, "commit", "-m", "add")
+    _git(tmp_path, "mv", "old name.py", "new name.py")
+    (tmp_path / "plugin.toml").write_text("[plugin]\nid = 'x'\n", encoding="utf-8")
+    (tmp_path / "notes draft.md").write_text("todo\n", encoding="utf-8")
+
+    state = read_repo_state(tmp_path, version="0.1.0")
+
+    assert state.worktree_clean is False
+    assert set(state.dirty_paths) == {"new name.py", "plugin.toml", "notes draft.md"}

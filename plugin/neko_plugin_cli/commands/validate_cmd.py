@@ -10,11 +10,6 @@ import re
 import stat
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from plugin.core.python_dependencies import (
-    collect_project_python_requirements,
-    find_missing_python_requirements,
-    split_host_provided_requirements,
-)
 from plugin._types.plugin_types import (
     SUPPORTED_PLUGIN_TYPES,
     format_plugin_type_choice_error,
@@ -1061,6 +1056,13 @@ def _check_pyproject_dependency_layout(
     package_type: str,
     issues: list[tuple[str, str]],
 ) -> None:
+    # plugin.core loads the plugin runtime state; keep it off CLI start-up.
+    from plugin.core.python_dependencies import (
+        collect_project_python_requirements,
+        find_missing_python_requirements,
+        split_host_provided_requirements,
+    )
+
     python_requirements = collect_project_python_requirements(pyproject_toml)
     external_requirements, _host_requirements = split_host_provided_requirements(python_requirements)
     if not external_requirements:
