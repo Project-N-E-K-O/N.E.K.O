@@ -94,7 +94,15 @@ def _coerce_row_timestamp(value: object) -> datetime | None:
                 return None
     else:
         return None
-    return parsed.astimezone().replace(tzinfo=None) if parsed.tzinfo is not None else parsed
+    if parsed.tzinfo is None:
+        return parsed
+    try:
+        return parsed.astimezone().replace(tzinfo=None)
+    except (OverflowError, OSError, ValueError):
+        # Out of range once shifted (year 1 at +14:00), or before the epoch
+        # on Windows, where local conversion goes through the C runtime. One
+        # such cell must cost one timestamp, not the whole history read.
+        return None
 
 
 _ANTI_REPEAT_RESPONSE_ID_KEY = "anti_repeat_response_id"

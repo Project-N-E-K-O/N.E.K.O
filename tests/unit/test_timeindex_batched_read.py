@@ -247,6 +247,35 @@ def test_latest_assistant_timestamps_stay_aligned_with_messages(
     ]
 
 
+@pytest.mark.parametrize(
+    "stamp",
+    ["0001-01-01T00:00:00+14:00", "9999-12-31T23:59:59-14:00", "1960-01-01T00:00:00+00:00"],
+    ids=["year-1-ahead", "year-9999-behind", "before-epoch"],
+)
+def test_an_unconvertible_timestamp_costs_one_cell_not_the_read(
+    timeindex_module,
+    tmp_path,
+    stamp,
+):
+    """Converting an offset to local time can fail; the row keeps its text."""
+    rows = [
+        {"session_id": "1", "message": _stored_message("ai", "odd"), "timestamp": stamp},
+        {
+            "session_id": "2",
+            "message": _stored_message("ai", "fine"),
+            "timestamp": "2026-01-01 10:00:00.000000",
+        },
+    ]
+    manager, engine = _create_manager(timeindex_module, tmp_path, rows)
+    try:
+        result = manager.retrieve_latest_assistant_texts("cat", 10)
+    finally:
+        engine.dispose()
+
+    assert sorted(result.messages) == ["fine", "odd"]
+    assert len(result.timestamps) == len(result.messages)
+
+
 def test_latest_assistant_texts_include_null_timestamps_across_pages(
     timeindex_module,
     tmp_path,
