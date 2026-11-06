@@ -1,3 +1,4 @@
+import { ChatScreenVisibilityProvider, useChatScreenVisibility } from './ChatScreenVisibility';
 import {
   useState,
   useEffect,
@@ -893,12 +894,12 @@ export default function ChatWindowRoot(props: ChatWindowProps) {
     props.chatSurfaceMode === 'full',
   );
   return (
-    <>
+    <ChatScreenVisibilityProvider messages={props.messages || defaultMessages}>
       {props.chatSurfaceMode === 'full'
         ? <FullChatSurface {...props} />
         : <CompactChatApp {...props} />}
       <NekoTooltipLayer />
-    </>
+    </ChatScreenVisibilityProvider>
   );
 }
 
@@ -973,6 +974,7 @@ function CompactChatApp({
   _rollbackKey,
   _avatarToolDeactivationKey,
 }: ChatWindowProps) {
+  const { hiddenMessageIds } = useChatScreenVisibility();
   useCompactToolWheelAudioPreload();
   const localAvatarToolCatalog = useLocalAvatarToolCatalog();
   const toolIconItems = localAvatarToolCatalog.registry.items;
@@ -1067,6 +1069,26 @@ function CompactChatApp({
   const [compactSpeechFallbackRevealActive, setCompactSpeechFallbackRevealActive] = useState(false);
   const [speechPlaybackState, setSpeechPlaybackState] = useState<SpeechPlaybackState | null>(null);
   const [compactCaptionState, setCompactCaptionState] = useState<CompactCaptionState | null>(null);
+  useEffect(() => {
+    const resetCompactPreview = (event: Event) => {
+      setCompactCaptionState(null);
+      compactSpeechPreviewIdRef.current = '';
+      compactSpeechPreviewTextRef.current = '';
+      compactSpeechPreviewTurnIdRef.current = '';
+      const detail = (event as CustomEvent).detail;
+      // An empty host replacement also starts a fresh conversation. Keep the
+      // turn guard during ordinary snapshots, which may contain stale streams.
+      if (event.type === 'react-chat-window:messages-cleared'
+        || detail?.conversationReset === true
+        || (event.type === 'react-chat-window:set-messages'
+          && Array.isArray(detail?.messages) && detail.messages.length === 0)) {
+        setCompactAssistantStreamingGap(null);
+      }
+    };
+    const events = ['react-chat-window:messages-cleared', 'react-chat-window:set-messages', 'react-chat-window:messages-replaced'];
+    events.forEach(name => window.addEventListener(name, resetCompactPreview));
+    return () => events.forEach(name => window.removeEventListener(name, resetCompactPreview));
+  }, []);
   const [compactAssistantStreamingGap, setCompactAssistantStreamingGap] = useState<{
     turnId: string;
     acceptStreaming: boolean;
@@ -1458,8 +1480,8 @@ function CompactChatApp({
   const compactChoiceLayerOpen = isCompactSurface && compactSurfaceChoicesVisible;
   const compactExportSelectedCount = compactExportSelectedIds.size;
   const compactExportSelectableMessages = useMemo(
-    () => messages.filter(isCompactExportMessageSelectable),
-    [messages],
+    () => messages.filter(message => !hiddenMessageIds.has(message.id) && isCompactExportMessageSelectable(message)),
+    [messages, hiddenMessageIds],
   );
   const compactExportSelectableIds = useMemo(
     () => new Set(compactExportSelectableMessages.map(message => message.id)),
@@ -1792,12 +1814,16 @@ function CompactChatApp({
     }
   }, [compactExportSelectedIds, compactExportSelectableIds]);
   const surfaceModeClassName = `chat-surface-mode-${chatSurfaceMode}`;
-  const compactMessagePreviewFromMessages = useMemo(() => getCompactMessagePreview(messages), [messages]);
+  const compactMessagePreviewFromMessages = useMemo(
+    () => getCompactMessagePreview(messages.filter(message => !hiddenMessageIds.has(message.id))),
+    [messages, hiddenMessageIds],
+  );
   const compactCaptionPreview = useMemo<CompactMessagePreview | null>(() => {
     if (!compactCaptionState?.turnId || !compactCaptionState.text) {
       return null;
     }
     const captionMessageId = `compact-caption:${compactCaptionState.turnId}`;
+    if (hiddenMessageIds.has(captionMessageId)) return null;
     return {
       messageId: captionMessageId,
       turnStartId: captionMessageId,
@@ -1809,7 +1835,7 @@ function CompactChatApp({
       isAssistant: true,
       isGuide: false,
     };
-  }, [compactCaptionState]);
+  }, [compactCaptionState, hiddenMessageIds]);
   // 小剧场演绎统一写入历史气泡，胶囊只保留玩家输入职责，不再承担旁白或对白预览。
   const compactMessagePreview = theaterActive
     ? null
@@ -1836,6 +1862,7 @@ function CompactChatApp({
     && !compactMessagePreview
     && !compactSuppressAssistantFallback
     && !!compactSpeechPreviewIdRef.current
+    && !hiddenMessageIds.has(compactSpeechPreviewIdRef.current)
     && !!compactSpeechPreviewTextRef.current;
   const compactSpeechModeActive = compactPreservedSpeechActive
     || (!compactSuppressAssistantFallback
