@@ -102,6 +102,7 @@ except ImportError:
     )
     _warn_once(__name__)
 from memory._reflection.schema import normalize_reflection, refine_reflection_id
+from memory.introspection import is_permanently_suppressed
 from memory.scopes import MemorySubject, entry_matches_subject, subject_from_entry
 from memory.temporal import explicit_event_window, to_naive_local
 from utils.language_utils import language_context
@@ -328,7 +329,12 @@ def gather_scoped_refine_buckets(
             return
         # Exclude suppressed entries: rendering deliberately routes them to 'do not mention proactively'; merged
         # results are ordinarily visible, so merging suppressed content would remove suppression.
-        if entry.get('protected') or entry.get('suppress') or not entry.get('id'):
+        if (
+            entry.get('protected')
+            or entry.get('suppress')
+            or is_permanently_suppressed(entry)
+            or not entry.get('id')
+        ):
             return
         subject = subject_from_entry(entry)
         if subject is None:
@@ -776,6 +782,7 @@ def _valid_merge_source_ids(
             or sid in consumed
             or by_id[sid].get('protected')
             or by_id[sid].get('suppress')
+            or is_permanently_suppressed(by_id[sid])
             or by_id[sid].get('text') != cluster_text_by_id.get(sid)
         ):
             return []

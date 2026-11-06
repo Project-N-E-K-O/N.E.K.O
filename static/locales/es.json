@@ -1142,6 +1142,9 @@
         "compactExportHistory": "Historial",
         "compactHistoryToggleOpen": "Mostrar historial",
         "compactHistoryToggleClose": "Ocultar historial",
+    "clearScreen": "Limpiar pantalla",
+    "clearScreenDone": "Pantalla limpia",
+    "clearScreenHint": "Oculta los mensajes existentes en esta pantalla. Se conservan el historial y la memoria.",
     "compactHistoryExport": "Exportar historial de conversación",
         "compactExportControlsCollapse": "Ocultar controles de selección",
         "compactExportControlsExpand": "Mostrar controles de selección",
@@ -1416,6 +1419,7 @@
             "openrouter": "OpenRouter (agregador de modelos)",
             "orcarouter": "OrcaRouter (pasarela de Claude)",
             "requesty": "Requesty (enrutador de modelos)",
+            "opper": "Opper (pasarela de IA en la UE)",
             "vllm_omni": "vLLM-Omni (TTS)",
             "gptsovits": "GPT-SoVITS (autoalojado)"
         },
@@ -1492,6 +1496,7 @@
             "openrouter": "OpenRouter (agregador de modelos)",
             "orcarouter": "OrcaRouter (pasarela de Claude)",
             "requesty": "Requesty (enrutador de modelos)",
+            "opper": "Opper (pasarela de IA en la UE)",
             "vllm_omni": "vLLM-Omni (TTS)"
         },
         "freeVersionNoApiKey": "La versión gratuita no requiere clave API",

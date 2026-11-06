@@ -411,8 +411,7 @@ async function checkEmotionRetiresPendingNative({ reject = false, residentExpres
     const { manager } = fixture();
     manager.currentModel.internalModel.motionManager.expressionManager = native;
     manager.currentModel.expression = expression;
-    // Keep the independent motion slot occupied so this checks expression cancellation.
-    manager.hasActiveActionMotion = () => true;
+    manager.hasActiveActionMotion = () => false;
     let old, next;
     try {
         old = manager.playExpression('happy', 'happy.exp3.json');

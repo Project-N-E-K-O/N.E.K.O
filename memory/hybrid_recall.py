@@ -867,6 +867,7 @@ def _invalidate_pool_cache(path: str | None = None) -> None:
 #   id                                   _drop_archive_overlap, result rendering
 #   text                                 _hard_filter, _bm25_rank, rendering
 #   score / suppress / suppressed /
+#     permanent_suppression /
 #     protected / target_type / status   MemoryRecallReranker._hard_filter
 #   subject_kind / subject_id / scope    memory.scopes.filter_entries_for_subjects
 #   entity                               result rendering
@@ -886,7 +887,8 @@ def _invalidate_pool_cache(path: str | None = None) -> None:
 # drift apart unnoticed.
 _ARCHIVE_RECALL_KEYS = frozenset({
     'id', 'text',
-    'score', 'suppress', 'suppressed', 'protected', 'target_type', 'status',
+    'score', 'suppress', 'suppressed', 'permanent_suppression',
+    'protected', 'target_type', 'status',
     'subject_kind', 'subject_id', 'scope',
     'entity',
     'created_at', 'event_start_at', 'event_end_at',

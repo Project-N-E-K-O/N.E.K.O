@@ -416,6 +416,9 @@ def test_every_character_scoped_route_is_classified_for_the_fence():
         # persistence already has durable outbox retries. A deferrable write is not worth a visible
         # hard session-start failure. Include in the JSON-side-write follow-up.
         ("/new_dialog/{lanlan_name}", "GET"),
+        # Cold-start control: only marks in-memory summary preemption for the character; writes
+        # nothing and must not fail a session start while the character is being published.
+        ("/preempt_summary/{lanlan_name}", "POST"),
         # Cancels tasks without writing character files, particularly needed during deletion.
         ("/cancel_correction/{lanlan_name}", "POST"),
         # It establishes the fence itself and cannot be blocked by its own fence.
@@ -557,6 +560,9 @@ def test_every_memory_server_background_spawn_is_drainable():
         ("runtime.py", "ensure_memory_server_runtime_initialized"),
         # Register by character in compress_backup_tasks for cancel_character_derived_tasks to drain.
         ("review.py", "_on_compress_done"),
+        # Weekly introspection: registered by character in review.introspection_tasks,
+        # drained the same way (test_character_release_cancels_a_running_introspection).
+        ("refine_loops.py", "_run_introspection_tick"),
     }
 
     def _callee_name(node):

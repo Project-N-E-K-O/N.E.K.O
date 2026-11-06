@@ -973,7 +973,9 @@ class PinnedFactStore:
             text, since=since, until=_format_date(entry["expire_at"]), lang=lang,
         )
 
-    def render_prompt_block(self, name: str, lang: str, *, now: Optional[float] = None) -> str:
+    def render_prompt_block(
+        self, name: str, lang: str, *, now: Optional[float] = None, tag=None,
+    ) -> str:
         """The ``### `` sections for the private-chat prompt; "" when nothing is live.
 
         Facts come first, then the open commitments under their own header,
@@ -983,6 +985,11 @@ class PinnedFactStore:
         included) the least recently updated entries are left out. The kept
         ones render in file order, so an unchanged section renders
         byte-identically between sessions.
+
+        ``tag(entry)`` (introspection's line numbers) is called once per
+        rendered entry, in the order the lines appear across the sections,
+        and goes right after the list marker. The budget is measured without
+        it, so a numbered render keeps exactly the entries the plain one does.
         """
         ts = float(now if now is not None else _now())
         active = self.get_active(name, now=ts)
@@ -1020,7 +1027,8 @@ class PinnedFactStore:
         sections = []
         for key in keys:
             body = [
-                lines[e["id"]] for e in active
+                "- " + tag(e) + lines[e["id"]][2:] if tag else lines[e["id"]]
+                for e in active
                 if section_of[e["id"]] == key and e["id"] in kept_ids
             ]
             if body:
@@ -1028,9 +1036,11 @@ class PinnedFactStore:
         return "\n\n".join(sections)
 
     async def arender_prompt_block(
-        self, name: str, lang: str, *, now: Optional[float] = None,
+        self, name: str, lang: str, *, now: Optional[float] = None, tag=None,
     ) -> str:
-        return await asyncio.to_thread(self.render_prompt_block, name, lang, now=now)
+        return await asyncio.to_thread(
+            self.render_prompt_block, name, lang, now=now, tag=tag,
+        )
 
     def get_due_commitment(
         self, name: str, *, now: Optional[float] = None,

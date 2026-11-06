@@ -31,6 +31,7 @@ from config import (
 )
 
 from memory.evidence import evidence_score
+from memory.introspection import is_permanently_suppressed
 
 from utils.cloudsave_runtime import assert_cloudsave_writable
 
@@ -513,6 +514,14 @@ class PromotionMergeMixin:
                     f"skip"
                 )
                 return 'no_longer_eligible'
+            if (await self._aretired_from_promotion(lanlan_name))(current):
+                # Promoting it would write its text back into persona as a
+                # fresh, unflagged entry — undoing the suppression.
+                logger.info(
+                    f"[Promote] {lanlan_name}/{R['id']}: retired by "
+                    f"introspection (itself or its persona line); skip"
+                )
+                return 'no_longer_eligible'
             if evidence_score(current, now) < EVIDENCE_PROMOTED_THRESHOLD:
                 logger.info(
                     f"[Promote] {lanlan_name}/{R['id']}: evidence_score "
@@ -578,6 +587,7 @@ class PromotionMergeMixin:
                     if (
                         isinstance(e, dict)
                         and not e.get('protected')
+                        and not is_permanently_suppressed(e)
                         and entry_matches_subject(e, memory_subject)
                     ):
                         # A section can contain entries from multiple scopes (section keys omit
@@ -592,6 +602,9 @@ class PromotionMergeMixin:
             and entry_matches_subject(r, memory_subject)
             and r.get('status') in ('confirmed', 'promoted')
             and r.get('id') != R.get('id')
+            # Retired entries are neither merge targets nor evidence that
+            # R is already covered.
+            and not is_permanently_suppressed(r)
         ]
 
         try:
@@ -635,6 +648,16 @@ class PromotionMergeMixin:
                     f"during LLM await (now "
                     f"{current2.get('status') if current2 else 'gone'!r}); "
                     f"discarding LLM decision={action!r} without persona write"
+                )
+                return 'no_longer_eligible'
+            if (await self._aretired_from_promotion(lanlan_name))(current2):
+                # Introspection retired it (or its persona line) during the
+                # LLM await; suppression changes neither status nor score,
+                # so the checks around this one cannot see it.
+                logger.info(
+                    f"[Promote] {lanlan_name}/{R['id']}: retired by "
+                    f"introspection during LLM await; discarding LLM "
+                    f"decision={action!r}"
                 )
                 return 'no_longer_eligible'
             if (
@@ -682,6 +705,9 @@ class PromotionMergeMixin:
                 if (
                     current3 is None
                     or current3.get('status') != 'confirmed'
+                    # Introspection may retire it (or its persona line) while
+                    # the LLM was thinking; neither status nor score changes.
+                    or (await self._aretired_from_promotion(lanlan_name))(current3)
                     or (
                         memory_subject is not None
                         and (
@@ -781,6 +807,13 @@ class PromotionMergeMixin:
                     f"{target_entry_id} not found in persona; skip"
                 )
                 return 'invalid_target'
+            if is_permanently_suppressed(target_entry):
+                # Merging into a retired entry would hide R's content with it.
+                logger.warning(
+                    f"[Promote] {lanlan_name}/{R['id']}: merge target "
+                    f"{target_entry_id} is permanently suppressed; refuse"
+                )
+                return 'invalid_target'
             if not entry_matches_subject(target_entry, memory_subject):
                 # The LLM may hallucinate an entry ID in another domain because global lookup is unbounded; merging
                 # would overwrite that entry with this domain's text across isolation boundaries, so revalidate and reject it.
@@ -797,6 +830,9 @@ class PromotionMergeMixin:
                 if (
                     current3 is None
                     or current3.get('status') != 'confirmed'
+                    # Introspection may retire it (or its persona line) while
+                    # the LLM was thinking; neither status nor score changes.
+                    or (await self._aretired_from_promotion(lanlan_name))(current3)
                     or (
                         memory_subject is not None
                         and (

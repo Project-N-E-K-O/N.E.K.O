@@ -29,6 +29,7 @@ from config import (
 )
 
 from memory.evidence import evidence_score
+from memory.introspection import is_permanently_suppressed
 
 
 
@@ -225,6 +226,25 @@ class PromotionMixin:
         if rid:
             promoted_ids.append(rid)
 
+    async def _aretired_from_promotion(self, lanlan_name: str):
+        """A predicate: is this reflection retired by introspection, itself or
+        behind the persona line it repeats?
+
+        Promoting either would write the retired text back into persona as a
+        fresh, unflagged entry (``aadd_fact`` skips retired entries). The
+        second follows the render's own rule (``retired_persona_hides``): a
+        stale line with only newer facts behind it is the way back and stays
+        promotable. Persona unreadable: everything counts as retired, so the
+        promotion waits for the next round.
+        """
+        try:
+            persona = await self._persona_manager.aget_persona(lanlan_name)
+        except Exception as e:
+            logger.warning(f"[Promote] {lanlan_name}: 读取人格失败，本轮不升格: {e}")
+            return lambda _reflection: True
+        hides = self._persona_manager.retired_persona_hides(persona or {})
+        return lambda reflection: is_permanently_suppressed(reflection) or bool(hides(reflection))
+
     async def aauto_promote_time_driven(
         self, lanlan_name: str, *, scoped_only: bool = False,
     ) -> int:
@@ -304,8 +324,13 @@ class PromotionMixin:
             # Pass 2: confirmed → promoted/denied by confirmed_at age
             # Newly confirmed Pass-1 entries have confirmed_at=now, age zero, below
             # fourteen-day thresholds; no reflection pending->promoted in one pass.
+            retired = await self._aretired_from_promotion(lanlan_name)
             for r in reflections:
                 if r.get('status') != 'confirmed':
+                    continue
+                if retired(r):
+                    # Same rule as the score-driven path: promotion would
+                    # copy the retired text into persona unflagged.
                     continue
                 promote_subject = subject_from_entry(r)
                 if scoped_only and promote_subject is None:

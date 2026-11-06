@@ -36,6 +36,8 @@ from utils.cloudsave_runtime import assert_cloudsave_writable
 from utils.file_utils import atomic_write_json_async, read_json_async
 
 
+from memory.introspection import is_permanently_suppressed
+
 from memory.stop_names import (
     acollect_stop_names,
     collect_stop_names,
@@ -181,6 +183,10 @@ class FactsMixin:
         is deliberately kept out of the ordinary Memory log, so the
         rejection line records lengths instead of excerpts."""
         for existing in section_facts:
+            if is_permanently_suppressed(existing):
+                # A retired entry must not absorb a new fact through a
+                # correction: the new text would inherit its suppression.
+                continue
             if isinstance(existing, dict):
                 old_text = existing.get('text', '')
                 is_card = existing.get('source') == 'character_card'
@@ -590,8 +596,9 @@ class FactsMixin:
 
         Audit only: evidence stays untouched, so restating an entry never
         raises its render priority. Returns False when the entry is gone,
-        protected, outside ``subject``'s isolation domain, or no longer
-        reads ``expected_text`` (the wording the skip decision was made on).
+        protected, permanently suppressed, outside ``subject``'s isolation
+        domain, or no longer reads ``expected_text`` (the wording the skip
+        decision was made on).
         """
         from memory._reflection.schema import merge_covered_fact_ids
         from memory.scopes import entry_matches_subject
@@ -605,6 +612,7 @@ class FactsMixin:
             if (
                 entry is None
                 or entry.get('protected')
+                or is_permanently_suppressed(entry)
                 or entry.get('text') != expected_text
                 or not entry_matches_subject(entry, subject)
             ):
@@ -673,7 +681,9 @@ class FactsMixin:
         consumes the freshest target state.
 
         Returns: 'merged' on success, 'noop' if already merged, 'not_found'
-        if `target_entry_id` is missing from the persona.
+        if `target_entry_id` is missing from the persona or permanently
+        suppressed (merging into a retired entry would hide the reflection
+        with it, and the caller would still mark it merged).
         """
         from memory.event_log import (
             EVT_PERSONA_ENTRY_UPDATED,
@@ -696,6 +706,14 @@ class FactsMixin:
                 logger.warning(
                     f"[Persona] {name}: amerge_into 找不到 target_entry_id="
                     f"{target_entry_id}"
+                )
+                return 'not_found'
+            if is_permanently_suppressed(target_entry):
+                # The caller checked an unlocked snapshot; introspection may
+                # have retired the target since.
+                logger.warning(
+                    f"[Persona] {name}: amerge_into 目标 target_entry_id="
+                    f"{target_entry_id} 已被永久压制"
                 )
                 return 'not_found'
 

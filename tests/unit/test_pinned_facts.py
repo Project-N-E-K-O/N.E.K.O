@@ -1241,21 +1241,23 @@ def test_only_the_private_new_dialog_renders_the_pinned_section():
             scanned += 1
             if names := _functions_referencing(tree, "pinned_fact_store"):
                 touching_store[rel] = names
-            if names := _functions_referencing(tree, "_render_pinned_facts_block"):
+            if names := _functions_referencing(tree, "arender_injected_memory"):
                 calling_render[rel] = names
     assert scanned > 100
-    # runtime.py only builds and wires it; routes.py renders it for
-    # /new_dialog and hands one due promise to proactive chat (private chat
-    # too); the idle loop runs the daily check and the private post-turn
-    # flow records mentions, neither of which renders anything.
+    # runtime.py only builds and wires it; /new_dialog hands it to the shared
+    # private-chat render, and weekly introspection (private memory only)
+    # reviews that same render. routes.py also hands one due promise to
+    # proactive chat (private chat too); the idle loop runs the daily check
+    # and the private post-turn flow records mentions, neither of which
+    # renders anything.
     assert touching_store == {
         "app/memory_server/runtime.py": {
             "reload_memory_components", "ensure_memory_server_runtime_initialized",
         },
         "app/memory_server/routes.py": {
-            "_render_pinned_facts_block", "_due_commitment_topic",
-            "_record_surfaced_commitments",
+            "_new_dialog", "_due_commitment_topic", "_record_surfaced_commitments",
         },
+        "app/memory_server/refine_loops.py": {"_run_introspection_for_character"},
         "app/memory_server/evidence_loops.py": {"_review_pinned_facts"},
         "app/memory_server/post_turn.py": {"_record_pinned_mentions"},
     }

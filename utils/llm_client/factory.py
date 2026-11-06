@@ -71,7 +71,7 @@ def create_chat_llm(
     cache_kw = get_cache_kwargs(base_url)
 
     if extra_body is _SENTINEL:
-        resolved = get_extra_body(model)
+        resolved = get_extra_body(model, base_url)
         extra_body = resolved or None
 
     if is_anthropic:

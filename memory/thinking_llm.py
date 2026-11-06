@@ -120,30 +120,32 @@ async def aclose_quietly(llm, call_label: str) -> None:
 
 async def ainvoke_thinking(
     api_config: dict, prompt: Any, *, timeout: float, call_label: str,
+    output_caps: tuple[int, ...] | None = None,
 ) -> tuple[Any, int]:
     """Run one thinking-on memory call; return ``(response, output_cap_used)``.
 
-    ``prompt`` must already be input-budgeted by the caller. Exceptions other
-    than the cap rejection propagate unchanged, as they did at each call site.
+    ``prompt`` must already be input-budgeted by the caller. ``output_caps``
+    is the ladder walked down while the endpoint rejects a cap (a 400 naming
+    the token field, raised before anything is generated); by default the
+    shared thinking allowance, then the shared guard. Any other exception,
+    and a rejection of the last step, propagates unchanged.
     """
-    output_cap = MEMORY_THINKING_OUTPUT_MAX_TOKENS
-    llm = await _acreate(api_config, timeout=timeout, output_cap=output_cap)
-    try:
+    caps = output_caps or (MEMORY_THINKING_OUTPUT_MAX_TOKENS, LLM_OUTPUT_GUARD_MAX_TOKENS)
+    for step, output_cap in enumerate(caps):
+        llm = await _acreate(api_config, timeout=timeout, output_cap=output_cap)
         try:
             response = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # caller passes an already budgeted prompt.
         except Exception as cap_error:
-            if not output_cap_rejected(cap_error):
+            if step + 1 >= len(caps) or not output_cap_rejected(cap_error):
                 raise
             logger.info(
                 f"[MemoryThinking] {call_label}: 模型拒绝 {output_cap} 输出额度，"
-                f"改用 {LLM_OUTPUT_GUARD_MAX_TOKENS} 重试"
+                f"改用 {caps[step + 1]} 重试"
             )
+            continue
+        finally:
             await aclose_quietly(llm, call_label)
-            output_cap = LLM_OUTPUT_GUARD_MAX_TOKENS
-            llm = await _acreate(api_config, timeout=timeout, output_cap=output_cap)
-            response = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # same budgeted prompt, lower output cap.
-    finally:
-        await aclose_quietly(llm, call_label)
+        break
 
     if response_hit_output_limit(response, output_cap):
         logger.warning(
