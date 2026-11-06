@@ -63,11 +63,13 @@ def test_opper_gemini_regular_and_focus_wire_payloads(model):
 
 @pytest.mark.unit
 def test_opper_effort_table_matches_measurements_and_floor():
-    """Pin the measured choices: bare 2.5-flash ignores none / minimal, 3.x sits on the low floor."""
+    """Pin the measured choices: bare 2.5-flash ignores none / minimal, 3.x sits on minimal, 3.8 on low."""
     table = P.OPPER_REASONING_EFFORT
     assert table['gemini-2.5-flash'] == ('low', 'low')
     assert table['gemini/gemini-2.5-flash'] == ('minimal', 'low')
     assert table['gemini-3.8-flash'] == table['gemini/gemini-3.8-flash'] == ('low', 'low')
+    for upstream in ('gemini-3-flash-preview', 'gemini-3.1-flash-lite', 'gemini-3.5-flash', 'gemini-3.6-flash'):
+        assert table[upstream] == table['gemini/' + upstream] == ('minimal', 'low')
     for model, efforts in table.items():
         assert P.resolve_router_model(model, OPPER) in P.MODELS_EXTRA_BODY_MAP
         for effort in efforts:
@@ -209,8 +211,11 @@ def test_anthropic_dotted_ids_untouched_off_orcarouter(endpoint):
     ('claude-sonnet-5-5', 'none', 'low'),
     ('anthropic/claude-haiku-4.5', 'minimal', 'low'),
     ('gemini-3.8-flash', 'minimal', 'low'),
-    ('google/gemini-3.5-flash', 'none', 'low'),
-    ('gemini/gemini-3-flash-preview', 'none', 'low'),
+    ('google/gemini-3.8-flash', 'none', 'low'),
+    ('google/gemini-3.5-flash', 'none', 'minimal'),
+    ('gemini/gemini-3-flash-preview', 'none', 'minimal'),
+    ('gemini-3.6-flash', 'minimal', 'minimal'),
+    ('gemini-3.5-flash-lite', 'none', 'minimal'),
     ('gemini-2.5-flash', 'none', 'minimal'),
     ('gemini-2.5-flash-lite', 'none', 'none'),
     ('gpt-5-nano', 'none', 'minimal'),
@@ -241,6 +246,14 @@ def test_requesty_clamps_effort_below_floor():
         params = client._params([], extra_body={'reasoning': {'effort': 'none'}})
         assert params['reasoning_effort'] == 'low'
         assert 'extra_body' not in params
+        params = client._params([], extra_body={'reasoning': {'effort': 'minimal'}})
+        assert params['reasoning_effort'] == 'low'
+    finally:
+        client.close()
+    client = create_chat_llm('google/gemini-3.5-flash', REQUESTY, 'test-key')
+    try:
+        assert client._params([])['reasoning_effort'] == 'minimal'
+        assert client._params([], extra_body={'reasoning': {'effort': 'none'}})['reasoning_effort'] == 'minimal'
     finally:
         client.close()
 
