@@ -384,6 +384,9 @@ def handle_create_repo(args: argparse.Namespace) -> int:
     existing_origin = _existing_origin_url(plugin_dir)
     if existing_origin is not None:
         repository = parse_github_repository_remote(existing_origin)
+        if repository and args.owner and repository.split("/", 1)[0].casefold() != args.owner.casefold():
+            print(f"[FAIL] origin belongs to {repository.split('/', 1)[0]}, not requested owner {args.owner}", file=sys.stderr)
+            return 1
         if repository and repository.rsplit("/", 1)[-1].casefold() == repo_name.casefold():
             print(
                 "[OK] "

@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import json
 import math
+import os
 import re
 import stat
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -22,6 +23,7 @@ from plugin.sdk.shared.core.push_message_schema import (
 )
 
 from plugin.utils.source_paths import iter_plugin_python_files
+from ..core.build_rules import reraise_walk_error
 from ..core.plugin_source import load_plugin_source
 from ..core.toml_utils import load_toml
 
@@ -1118,11 +1120,13 @@ def _check_symlink_tree(plugin_dir: Path, issues: list[tuple[str, str]]) -> None
     # the checkout before dependency sync, so vendor/ (which pip may populate
     # with link wrappers) and .git/ are out of scope here too.
     try:
-        links = [
-            path
-            for path in plugin_dir.rglob("*")
-            if path.is_symlink() and path.relative_to(plugin_dir).parts[0] not in {"vendor", ".git"}
-        ]
+        links = []
+        for root, directories, files in os.walk(plugin_dir, onerror=reraise_walk_error, followlinks=False):
+            base = Path(root)
+            if base == plugin_dir:
+                directories[:] = [name for name in directories if name not in {"vendor", ".git"}]
+                files = [name for name in files if name not in {"vendor", ".git"}]
+            links.extend(base / name for name in (*directories, *files) if (base / name).is_symlink())
     except OSError as exc:
         issues.append(("warning", f"plugin source tree could not be scanned for links: {exc}"))
         return

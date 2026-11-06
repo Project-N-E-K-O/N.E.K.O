@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -77,9 +78,11 @@ def create_project(
     target_dir = target_dir.absolute()
     parent = target_dir.parent.resolve()
     created = False
+    created_identity = None
     try:
         target_dir.mkdir(parents=True, exist_ok=False)
         created = True
+        created_identity = target_dir.stat()
         for relative, content in files.items():
             path = target_dir / relative
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -94,6 +97,8 @@ def create_project(
             and target_dir.is_dir()
             and not target_dir.is_symlink()
             and target_dir.resolve().parent == parent
+            and created_identity is not None
+            and os.path.samestat(created_identity, target_dir.stat())
         ):
             shutil.rmtree(target_dir)
         raise

@@ -176,13 +176,11 @@ def _is_builtin_source_plugin_dir(plugin_dir: Path, defaults: CliDefaults) -> bo
 def _repository_root(plugin_dir: Path, defaults: CliDefaults) -> Path | None:
     """The git repository that holds the plugin source, or None.
 
-    The plugin may sit in a subdirectory of its repository. A plugin at
-    ``<checkout>/plugin/plugins/<id>`` belongs to that N.E.K.O tree, whether
-    it is the checkout running the CLI or the one Market CI copies the plugin
-    (and any ``.git`` it carries) into; it has no repository of its own to judge.
+    Plugins in this CLI checkout's built-in root are CI mounts, even when
+    the copied source carries a .git directory. Other repositories may use
+    the same plugin/plugins layout and must still be diagnosed normally.
     """
-    parent = plugin_dir.resolve().parent
-    if parent.name == "plugins" and parent.parent.name == "plugin":
+    if _is_builtin_source_plugin_dir(plugin_dir, defaults):
         return None
     toplevel = git_output(plugin_dir, "rev-parse", "--show-toplevel")
     if not toplevel:
@@ -398,15 +396,16 @@ def _diagnose_market_source_archive(repository_root: Path) -> list[Issue]:
             )
         )
     total = sum(size for _, size in files)
-    if total > _MARKET_MAX_ARCHIVE_BYTES:
+    # Git blob sizes are expanded sizes, not the compressed GitHub ZIP size.
+    if total > _MARKET_MAX_EXPANDED_BYTES:
         mib = f"{total / (1024 * 1024):.1f} MiB"
         issues.append(
             (
                 "error",
                 _tri(
-                    f"the Market rejects a source archive over 32 MiB; committed files total {mib}",
-                    f"Market 拒绝超过 32 MiB 的源码包；已提交文件共 {mib}",
-                    f"Market は 32 MiB を超えるソースアーカイブを拒否します。コミット済みファイルの合計: {mib}",
+                    f"the Market rejects a expanded source files over 128 MiB; committed files total {mib}",
+                    f"Market 拒绝展开后超过 128 MiB 的源码；已提交文件共 {mib}",
+                    f"Market は 展開後 128 MiB を超えるソースを拒否します。コミット済みファイルの合計: {mib}",
                 ),
             )
         )
@@ -521,17 +520,17 @@ def _run_tests(plugin_dir: Path, *, plugin_id: str, defaults: CliDefaults, skip_
         # CI runs the tests from plugin/plugins/<id> of a N.E.K.O checkout, where
         # pytest picks up that checkout's pytest.ini; use the same configuration.
         command += ["-c", str(pytest_ini), "--rootdir", str(defaults.repo_root)]
-        if (defaults.plugin_root / "plugins" / plugin_id).resolve() != plugin_dir.resolve():
-            # Out of tree: import plugin.plugins.<id> from here instead of a mount.
-            command += ["-p", "plugin.neko_plugin_cli.plugin_import_alias"]
-            env = {
-                **os.environ,
-                "PYTHONPATH": os.pathsep.join(
-                    filter(None, [str(defaults.repo_root), os.environ.get("PYTHONPATH")])
-                ),
-                PLUGIN_ID_ENV: plugin_id,
-                PLUGIN_SOURCE_ENV: str(plugin_dir),
-            }
+    if (defaults.plugin_root / "plugins" / plugin_id).resolve() != plugin_dir.resolve():
+        # Out of tree: import plugin.plugins.<id> from here instead of a mount.
+        command += ["-p", "plugin.neko_plugin_cli.plugin_import_alias"]
+        env = {
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join(
+                filter(None, [str(defaults.repo_root), os.environ.get("PYTHONPATH")])
+            ),
+            PLUGIN_ID_ENV: plugin_id,
+            PLUGIN_SOURCE_ENV: str(plugin_dir),
+        }
     completed = subprocess.run(
         [*command, str(tests_dir)],
         cwd=plugin_dir,

@@ -141,6 +141,12 @@ def test_already_configured_origin_is_accepted_without_creating(tmp_path, monkey
     assert "already configured" in capsys.readouterr().out
 
 
+def test_explicit_owner_must_match_an_existing_origin(tmp_path, monkeypatch):
+    plugin_dir = _make_plugin_dir(tmp_path / "plugins")
+    monkeypatch.setattr(init_cmd, "_existing_origin_url", lambda _: "https://github.com/other/n.e.k.o_plugin_demo_repo.git")
+    assert init_cmd.handle_create_repo(_args(plugin_dir, owner="requested")) == 1
+
+
 def test_a_mismatched_origin_is_refused(tmp_path, monkeypatch, capsys):
     plugin_dir = _make_plugin_dir(tmp_path / "plugins")
     monkeypatch.setattr(

@@ -56,9 +56,9 @@ else:
 
 def main(argv: list[str] | None = None) -> int:
     # Console entry points and piped editor tasks need the same multilingual output.
-    for stream in (sys.stdout, sys.stderr):
-        if isinstance(stream, io.TextIOWrapper):
-            stream.reconfigure(encoding="utf-8")
+    for stream, original in ((sys.stdout, sys.__stdout__), (sys.stderr, sys.__stderr__)):
+        if stream is original and isinstance(stream, io.TextIOWrapper):
+            stream.reconfigure(encoding="utf-8", errors=stream.errors)
     parser = build_parser()
     args = parser.parse_args(argv)
 

@@ -19,6 +19,18 @@ pytestmark = pytest.mark.plugin_unit
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
+def test_embedded_cli_does_not_reconfigure_redirected_standard_streams(monkeypatch):
+    import io
+    import sys
+
+    stream = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="backslashreplace")
+    monkeypatch.setattr(sys, "stdout", stream)
+    with pytest.raises(SystemExit):
+        neko_plugin_cli.main(["--help"])
+    assert stream.encoding == "cp1252"
+    assert stream.errors == "backslashreplace"
+
+
 def _make_plugin_dir(tmp_path: Path, plugin_id: str = "pre_demo") -> Path:
     plugin_dir = tmp_path / plugin_id
     plugin_dir.mkdir(parents=True, exist_ok=True)

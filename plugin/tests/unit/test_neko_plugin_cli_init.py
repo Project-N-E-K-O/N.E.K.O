@@ -18,6 +18,25 @@ from plugin.neko_plugin_cli.paths import CliDefaults
 pytestmark = pytest.mark.plugin_unit
 
 
+def test_creation_rollback_preserves_a_replacement_directory(tmp_path):
+    from plugin.neko_plugin_cli.core.project import create_project
+    from plugin.neko_plugin_cli.templates.generator import PluginSpec
+
+    target = tmp_path / "replacement_demo"
+    original = tmp_path / "original"
+
+    def replace_then_fail(*args, **kwargs):
+        assert target.resolve().parent == tmp_path.resolve()
+        target.rename(original)
+        target.mkdir()
+        (target / "user.txt").write_text("keep", encoding="utf-8")
+        raise RuntimeError("git failed after replacement")
+
+    with pytest.raises(RuntimeError):
+        create_project(PluginSpec("replacement_demo"), target, repo_root=None, git_runner=replace_then_fail)
+    assert (target / "user.txt").read_text(encoding="utf-8") == "keep"
+
+
 @pytest.fixture(autouse=True)
 def _isolate_github_actions_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep the release checks from reading the CI job's own repo and ref.
@@ -661,7 +680,8 @@ def test_market_plugin_id_is_limited_to_100_characters() -> None:
         ([(f"f{index}.py", 1) for index in range(5000)], "more than 5000 files and directories, got 5001"),
         # Each file is in its own directory, so the directories count too.
         ([(f"d{index}/f.py", 1) for index in range(2500)], "got 5001"),
-        ([(f"cover{index}.png", 2 * 1024 * 1024) for index in range(17)], "committed files total 34.0 MiB"),
+        ([(f"cover{index}.png", 2 * 1024 * 1024) for index in range(17)], None),
+        ([(f"cover{index}.png", 2 * 1024 * 1024) for index in range(65)], "committed files total 130.0 MiB"),
         ([(f"cover{index}.png", 2 * 1024 * 1024) for index in range(16)], None),
     ],
 )

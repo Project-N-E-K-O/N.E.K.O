@@ -437,6 +437,24 @@ def test_validate_does_not_descend_into_skipped_dirs(tmp_path: Path, monkeypatch
     )
 
 
+def test_symlink_validation_prunes_the_excluded_root_directories(tmp_path, monkeypatch):
+    import os
+    from plugin.neko_plugin_cli.commands import validate_cmd
+
+    for name in ("vendor", ".git"):
+        (tmp_path / name / "deep").mkdir(parents=True)
+    original = os.scandir
+
+    def scan(path):
+        assert Path(path) not in {tmp_path / "vendor", tmp_path / ".git"}
+        return original(path)
+
+    monkeypatch.setattr(os, "scandir", scan)
+    issues = []
+    validate_cmd._check_symlink_tree(tmp_path, issues)
+    assert issues == []
+
+
 def test_validate_plugin_dir_accepts_install_declaration_and_i18n_directory(
     tmp_path: Path,
 ) -> None:
@@ -2022,6 +2040,7 @@ def test_repository_diagnosis_only_warns_without_own_repository(tmp_path: Path) 
 def test_release_check_ignores_the_git_state_of_a_plugin_mounted_in_a_neko_tree(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    monkeypatch,
 ) -> None:
     # Market CI copies the plugin, together with any .git it carries, into
     # plugin/plugins/<id> of a N.E.K.O checkout; that copy is not a checkout to judge.
@@ -2030,6 +2049,11 @@ def test_release_check_ignores_the_git_state_of_a_plugin_mounted_in_a_neko_tree(
     mounted = tmp_path / "neko" / "plugin" / "plugins" / "mounted_demo"
     shutil.copytree(source, mounted)
     capsys.readouterr()
+    from plugin.neko_plugin_cli.paths import CliDefaults
+    root = tmp_path / "neko"
+    monkeypatch.setattr(neko_plugin_cli, "resolve_default_paths", lambda: CliDefaults(
+        root / "plugin", root / "target", root / "plugin/plugins", root / "profiles",
+    ))
 
     assert _release_check(mounted, tmp_path / "target") == 0
     assert "uncommitted or untracked" not in capsys.readouterr().err
@@ -2151,3 +2175,33 @@ def test_release_check_runs_out_of_tree_tests_like_ci(tmp_path: Path) -> None:
     )
     # Nothing was written into the N.E.K.O checkout to make the import work.
     assert not (neko_plugin_cli.resolve_default_paths().plugins_root / "pytest_demo").exists()
+
+
+def test_external_repository_can_use_a_plugin_plugins_subdirectory(tmp_path):
+    from plugin.neko_plugin_cli.commands import release_cmd
+    root = tmp_path / "external"
+    source = root / "plugin" / "plugins" / "demo"
+    source.mkdir(parents=True)
+    subprocess.run(["git", "init", str(root)], check=True, capture_output=True)
+    defaults = neko_plugin_cli.resolve_default_paths()
+    assert release_cmd._repository_root(source, defaults) == root.resolve()
+
+
+def test_external_test_import_hook_does_not_require_a_checkout_pytest_ini(tmp_path, monkeypatch):
+    from plugin.neko_plugin_cli.commands import release_cmd
+    from plugin.neko_plugin_cli.paths import CliDefaults
+    source = tmp_path / "demo"
+    (source / "tests").mkdir(parents=True)
+    root = tmp_path / "checkout"
+    root.mkdir()
+    defaults = CliDefaults(root / "plugin", root / "target", root / "plugin/plugins", root / "profiles")
+    calls = []
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, "")
+    monkeypatch.setattr(release_cmd.subprocess, "run", run)
+    assert release_cmd._run_tests(source, plugin_id="demo", defaults=defaults, skip_tests=False) == "passed"
+    command, kwargs = calls[0]
+    assert "-c" not in command
+    assert command[command.index("-p") + 1] == "plugin.neko_plugin_cli.plugin_import_alias"
+    assert kwargs["env"][release_cmd.PLUGIN_SOURCE_ENV] == str(source)

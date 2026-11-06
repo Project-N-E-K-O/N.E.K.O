@@ -178,9 +178,9 @@ def committed_file_sizes(repository_root: Path) -> list[tuple[str, int]] | None:
 
 
 def strip_url_credentials(url: str) -> str:
-    """Drop ``user[:password]@`` from an http(s) remote URL; other forms are returned as is."""
+    """Drop user information from HTTP(S) and SSH URLs; leave scp-style remotes unchanged."""
     parts = urlsplit(url)
-    if parts.scheme not in {"http", "https"} or "@" not in parts.netloc:
+    if parts.scheme not in {"http", "https", "ssh"} or "@" not in parts.netloc:
         return url
     return urlunsplit(parts._replace(netloc=parts.netloc.rsplit("@", 1)[1]))
 

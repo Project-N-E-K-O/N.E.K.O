@@ -70,6 +70,14 @@ def test_credentials_in_the_origin_url_are_not_reported(tmp_path):
     assert state.github_repository == "owner/repo"
 
 
+def test_ssh_origin_credentials_are_not_reported(tmp_path):
+    _repository(tmp_path)
+    _git(tmp_path, "remote", "add", "origin", "ssh://user:secret@github.com/owner/repo.git")
+    state = read_repo_state(tmp_path, version="0.1.0")
+    assert state.origin_url == "ssh://github.com/owner/repo.git"
+    assert "secret" not in repr(state)
+
+
 def test_untracked_and_tracked_changes_both_dirty_the_worktree(tmp_path):
     _repository(tmp_path)
     (tmp_path / "notes.txt").write_text("untracked", encoding="utf-8")
