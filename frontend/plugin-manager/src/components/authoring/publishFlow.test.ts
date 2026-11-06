@@ -52,7 +52,7 @@ function status(
             reachable: true,
             visibility: 'public',
             verify: 'success',
-            release: { state: 'missing', missing_assets: [] },
+            release: { state: 'missing', missing_assets: [], workflow: 'unknown' as const, ready: false },
             tag: 'missing',
             ...overrides.remote,
           },
@@ -85,7 +85,7 @@ const task = (overrides: Partial<PublishTask> = {}): PublishTask => ({
   ...overrides,
 })
 
-const published = { release: { state: 'published' as const, missing_assets: [] } }
+const published = { release: { state: 'published' as const, missing_assets: [], workflow: 'success' as const, ready: true } }
 
 function step(flow: ReturnType<typeof publishFlow>, id: PublishStepId) {
   return flow.steps.find((item) => item.id === id)!
@@ -278,7 +278,7 @@ describe('publishFlow', () => {
           reachable: false,
           visibility: 'unknown',
           verify: 'unknown',
-          release: { state: 'unknown', missing_assets: [] },
+          release: { state: 'unknown', missing_assets: [], workflow: 'unknown' as const, ready: false },
           tag: 'unknown',
         },
       }),
@@ -309,6 +309,19 @@ describe('publishFlow', () => {
 describe('publishFlow action blockers', () => {
   const severities = (flow: ReturnType<typeof publishFlow>, mode: keyof typeof flow.blockers) =>
     flow.blockers[mode].map((item) => [item.severity, item.step, item.reason.key])
+
+  it.each(['running', 'failure', 'not_run', 'unknown'] as const)(
+    'waits for the release workflow: %s, even with complete assets', (workflow) => {
+      const flow = flowOf({
+        status: status({ remote: { release: {
+          state: 'published', missing_assets: [], workflow, ready: false,
+        } } }),
+        submission: approved(), task: null,
+      })
+      expect(step(flow, 'release').state).not.toBe('done')
+      expect(flow.blockers.market_notify.some((item) => item.severity === 'hard')).toBe(true)
+    }
+  )
 
   it('has no blocker for the recommended next action', () => {
     const release = flowOf({ status: status(), submission: approved(), task: null })
@@ -351,7 +364,7 @@ describe('publishFlow action blockers', () => {
 
   it('needs approval and a complete Release before notifying the Market', () => {
     const flow = flowOf({
-      status: status({ remote: { release: { state: 'published', missing_assets: ['a.zip'] } } }),
+      status: status({ remote: { release: { state: 'published', missing_assets: ['a.zip'], workflow: 'success' as const, ready: false } } }),
       submission: submission({ phase: 'in_review' }),
       task: null,
     })

@@ -21,6 +21,13 @@ from plugin.server.application.plugins._env_budgets import env_seconds
 from plugin.server.domain.plugin_project_errors import ProjectErrorCode as Code
 from plugin.server.domain.plugin_project_errors import project_error
 from plugin.server.infrastructure import authoring_project_store as store
+from plugin.utils.github_release import (
+    WorkflowState,
+    missing_release_assets,
+    release_ready,
+    select_release_run,
+    workflow_run_state as _run_state,
+)
 from plugin.utils.http_imports import ensure_httpx
 
 _GITHUB_API = "https://api.github.com"
@@ -44,9 +51,11 @@ _client: tuple[asyncio.AbstractEventLoop, object] | None = None
 class RemoteReleaseState(TypedDict):
     state: Literal["published", "missing", "unknown"]
     missing_assets: list[str]
+    workflow: WorkflowState
+    ready: bool
 
 
-VerifyState = Literal["success", "failure", "running", "not_run", "missing", "unknown"]
+VerifyState = WorkflowState
 RemoteTagState = Literal["missing", "at_head", "elsewhere", "unknown"]
 
 
@@ -102,21 +111,15 @@ def _json_object(response) -> dict[str, object]:
     return payload if isinstance(payload, dict) else {}
 
 
-def _run_state(run: object) -> VerifyState:
-    if not isinstance(run, dict):
-        return "not_run"
-    if run.get("status") != "completed":
-        return "running"
-    return "success" if run.get("conclusion") == "success" else "failure"
-
-
 def _unknown(*, rate_limited: bool = False) -> RemoteGithubState:
     return {
         "rate_limited": rate_limited,
         "reachable": True,
         "visibility": "unknown",
         "verify": "unknown",
-        "release": {"state": "unknown", "missing_assets": []},
+        "release": {
+            "state": "unknown", "missing_assets": [], "workflow": "unknown", "ready": False,
+        },
         "tag": "unknown",
     }
 
@@ -126,7 +129,7 @@ def _is_final(result: RemoteGithubState) -> bool:
     return (
         result["verify"] in {"success", "failure"}
         and release["state"] == "published"
-        and not release["missing_assets"]
+        and release["ready"]
     )
 
 
@@ -208,29 +211,31 @@ async def _read(repository: str, head: str | None, tag: str, plugin_id: str) -> 
         if response is None:
             return
         if response.status_code == 404:
-            result["release"] = {"state": "missing", "missing_assets": []}
+            result["release"] = {
+                "state": "missing", "missing_assets": [], "workflow": "unknown", "ready": False,
+            }
             return
-        assets = _json_object(response).get("assets")
-        ready = {
-            asset.get("name")
-            for asset in (assets if isinstance(assets, list) else [])
-            if isinstance(asset, dict)
-            and asset.get("state") == "uploaded"
-            and isinstance(asset.get("size"), int)
-            and asset["size"] > 0
-        }
-        # Same asset names ``neko-plugin publish`` waits for.
-        expected = (
-            f"{plugin_id}.neko-plugin",
-            f"{plugin_id}.market-release-check.txt",
-            "market-evidence.json",
-        )
+        missing = missing_release_assets(_json_object(response), plugin_id)
+        workflow: WorkflowState = "unknown"
+        # The existing Release belongs to its remote tag, even if local HEAD moved on.
+        tag_commit = await tag_read
+        if tag_commit:
+            response = await get(
+                f"/repos/{repository}/actions/workflows/release.yml/runs?head_sha={tag_commit}"
+            )
+            if response is not None:
+                workflow = (
+                    "missing" if response.status_code == 404
+                    else _run_state(select_release_run(_json_object(response), tag))
+                )
         result["release"] = {
             "state": "published",
-            "missing_assets": [name for name in expected if name not in ready],
+            "missing_assets": missing,
+            "workflow": workflow,
+            "ready": release_ready(missing, workflow),
         }
 
-    async def read_tag() -> None:
+    async def read_tag() -> str | None:
         response = await get(f"/repos/{repository}/git/ref/tags/{quote(tag, safe='')}")
         if response is None:
             return
@@ -249,8 +254,10 @@ async def _read(repository: str, head: str | None, tag: str, plugin_id: str) -> 
         commit = target.get("sha")
         if isinstance(commit, str) and head:
             result["tag"] = "at_head" if commit == head else "elsewhere"
+        return commit if isinstance(commit, str) else None
 
-    reads = [read_visibility(), read_release(), read_tag()]
+    tag_read = asyncio.create_task(read_tag())
+    reads = [read_visibility(), read_release(), tag_read]
     if head:
         reads.append(read_verify())
     await asyncio.gather(*reads)

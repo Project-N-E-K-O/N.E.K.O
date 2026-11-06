@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from plugin.neko_plugin_cli import cli as neko_plugin_cli
+from plugin.utils.github_release import release_asset_is_downloadable
 from plugin.neko_plugin_cli.commands import publish_cmd
 from plugin.neko_plugin_cli.paths import CliDefaults
 from plugin.neko_plugin_cli.templates.generator import (
@@ -1426,10 +1427,10 @@ def test_release_asset_is_ready_only_after_github_marks_it_uploaded() -> None:
         "browser_download_url": "https://example.invalid/publish_demo.neko-plugin",
     }
 
-    assert publish_cmd._release_asset_is_downloadable(asset) is False
+    assert release_asset_is_downloadable(asset) is False
 
     asset["state"] = "uploaded"
-    assert publish_cmd._release_asset_is_downloadable(asset) is True
+    assert release_asset_is_downloadable(asset) is True
 
 
 def test_publish_market_surfaces_stable_market_error(

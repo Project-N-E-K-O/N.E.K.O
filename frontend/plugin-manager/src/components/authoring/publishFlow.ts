@@ -201,6 +201,15 @@ function releaseState(remote: PublishRemoteState | null, tag: string): Omit<Publ
   if (missing.length) {
     return { state: 'todo', detail: message('publishReleaseAssets', { tag, assets: missing.join(', ') }) }
   }
+  if (!remote.release.ready) {
+    if (remote.release.workflow === 'failure' || remote.release.workflow === 'missing') {
+      return { state: 'todo', detail: message('publishReleaseWorkflowFailed', { tag }) }
+    }
+    if (remote.release.workflow === 'unknown') {
+      return { state: 'unknown', detail: remoteUnknown(remote) }
+    }
+    return { state: 'waiting', detail: message('publishReleaseBuilding', { tag }) }
+  }
   return { state: 'done', detail: message('publishReleaseReady', { tag }) }
 }
 
@@ -441,7 +450,7 @@ export function publishFlow(facts: PublishFlowFacts): PublishFlow {
   const { status, submission } = facts
   const repo = status.repository
   const remote = status.remote
-  const releaseReady = remote?.release.state === 'published' && !remote.release.missing_assets.length
+  const releaseReady = remote?.release.ready === true
   const approved = submission.phase === 'approved'
   const submissionState = submission.phase ? SUBMISSION_STATES[submission.phase] : 'todo'
   const answer = marketAnswer(facts.task, repo.tag)

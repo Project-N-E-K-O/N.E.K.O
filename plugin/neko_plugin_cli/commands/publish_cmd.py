@@ -14,6 +14,13 @@ from urllib.parse import quote
 
 import httpx
 
+from plugin.utils.github_release import (
+    missing_release_assets,
+    release_ready,
+    select_release_run,
+    workflow_run_state,
+)
+
 from ..core.build_rules import VENDOR_SYNC_GLOBS
 from ..core.lint import ruff_command
 from ..core.plugin_source import load_plugin_source
@@ -28,8 +35,6 @@ _MARKET_PUBLICATION_URL = (
     "https://market.project-neko.cn/api/v1/release-publications"
 )
 _GITHUB_API_URL = "https://api.github.com"
-_RELEASE_CHECK_SUFFIX = ".market-release-check.txt"
-_MARKET_EVIDENCE_NAME = "market-evidence.json"
 _RELEASE_RUFF_TIMEOUT_SECONDS = 120
 # Unauthenticated callers get 60 GitHub API requests per hour per IP.
 _RELEASE_POLL_SECONDS = 15.0
@@ -894,27 +899,12 @@ def _release_run(
     # wait then ends at its timeout.
     if response.status_code != 200:
         return None
-    payload = response.json()
-    runs = payload.get("workflow_runs") if isinstance(payload, dict) else None
-    return next(
-        (
-            run
-            for run in (runs if isinstance(runs, list) else [])
-            if isinstance(run, dict)
-            and run.get("head_branch") == tag
-            and run.get("event") in {"push", "workflow_dispatch"}
-        ),
-        None,
-    )
+    return select_release_run(response.json(), tag)
 
 
 def _raise_if_release_run_failed(run: dict | None, *, tag: str) -> None:
     """Fail fast when the release workflow run for ``tag`` finished without success."""
-    if (
-        run is None
-        or run.get("status") != "completed"
-        or run.get("conclusion") == "success"
-    ):
+    if workflow_run_state(run) != "failure":
         return
     conclusion = run.get("conclusion")
     run_url = run.get("html_url") or ""
@@ -953,12 +943,7 @@ def _wait_for_release(
         f"{quote(tag, safe='')}"
     )
     deadline = time.monotonic() + max(timeout, 0)
-    expected_assets = (
-        f"{plugin_id}.neko-plugin",
-        f"{plugin_id}{_RELEASE_CHECK_SUFFIX}",
-        _MARKET_EVIDENCE_NAME,
-    )
-    unready_assets = list(expected_assets)
+    unready_assets = missing_release_assets({}, plugin_id)
     with httpx.Client(timeout=30.0) as client:
         while True:
             assets_ready = False
@@ -982,22 +967,7 @@ def _wait_for_release(
                             "GitHub Release レスポンスに html_url がありません",
                         )
                     )
-                assets = payload.get("assets")
-                assets_by_name = (
-                    {
-                        asset.get("name"): asset
-                        for asset in assets
-                        if isinstance(asset, dict)
-                        and isinstance(asset.get("name"), str)
-                    }
-                    if isinstance(assets, list)
-                    else {}
-                )
-                unready_assets = [
-                    name
-                    for name in expected_assets
-                    if not _release_asset_is_downloadable(assets_by_name.get(name))
-                ]
+                unready_assets = missing_release_assets(payload, plugin_id)
                 assets_ready = not unready_assets
             elif response.status_code != 404:
                 raise RuntimeError(
@@ -1019,7 +989,7 @@ def _wait_for_release(
             # The Market refuses a release whose workflow run has not
             # completed with success (release_fetcher.py), and uploading the
             # assets is not the run's last step.
-            if assets_ready and run is not None and run.get("status") == "completed":
+            if assets_ready and release_ready(unready_assets, workflow_run_state(run)):
                 return release_url
             if time.monotonic() >= deadline:
                 if assets_ready:
@@ -1050,22 +1020,6 @@ def _wait_for_release(
                     )
                 )
             time.sleep(min(_RELEASE_POLL_SECONDS, max(deadline - time.monotonic(), 0)))
-
-
-def _release_asset_is_downloadable(asset: object) -> bool:
-    if not isinstance(asset, dict):
-        return False
-    size = asset.get("size")
-    state = asset.get("state")
-    download_url = asset.get("browser_download_url")
-    return (
-        state == "uploaded"
-        and isinstance(size, int)
-        and not isinstance(size, bool)
-        and size > 0
-        and isinstance(download_url, str)
-        and bool(download_url.strip())
-    )
 
 
 def _git(plugin_dir: Path, *args: str) -> str:

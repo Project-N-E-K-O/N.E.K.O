@@ -46,9 +46,11 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
 
 from plugin.core.state import state
 from plugin.logging_config import get_logger
-from plugin.utils.source_paths import is_vendor_sync_path
+from plugin.utils.source_paths import (
+    PYTHON_SOURCE_EXCLUDED_DIR_NAMES as _EXCLUDED_DIR_NAMES,
+    is_vendor_sync_path,
+)
 from plugin.server.application.plugins.project_sources import (
-    SOURCE_EXCLUDED_DIR_NAMES,
     preflight_source,
 )
 from plugin.server.application.plugins.lifecycle_service import (
@@ -99,8 +101,6 @@ _RESTART_DRAIN_SECONDS = PLUGIN_STARTUP_TIMEOUT + _RESTART_DRAIN_OVERHEAD_SECOND
 # timeout start_plugin records once it has read the config is picked up.
 _DRAIN_RECHECK_SECONDS = 1.0
 _BUSY_RETRY_SECONDS = 1.0
-# Share the source-preflight directory exclusions; their .py files are not plugin source.
-_EXCLUDED_DIR_NAMES = SOURCE_EXCLUDED_DIR_NAMES
 
 
 @dataclass(slots=True)

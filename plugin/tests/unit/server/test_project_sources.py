@@ -35,6 +35,35 @@ def project_meta(source: Path, project_id: str = "p1") -> dict:
     }
 
 
+def test_cli_and_reload_scan_the_same_plugin_python_files(tmp_path, monkeypatch):
+    from plugin.neko_plugin_cli.commands.validate_cmd import _plugin_python_files
+    from plugin.utils.source_paths import PYTHON_SOURCE_EXCLUDED_DIR_NAMES
+
+    source = scaffold(tmp_path, "scan_demo")
+    original = set(_plugin_python_files(source))
+    for name in (*PYTHON_SOURCE_EXCLUDED_DIR_NAMES, ".vendor.backup-0123abcd"):
+        folder = source / name
+        folder.mkdir(exist_ok=True)
+        (folder / "dependency.py").write_text("broken syntax !\n", encoding="utf-8")
+    owned = source / ".vendor.backup-notes"
+    owned.mkdir()
+    (owned / "owned.py").write_text("VALUE = 1\n", encoding="utf-8")
+    upper = source / "extra.PY"
+    upper.write_text("VALUE = 1\n", encoding="utf-8")
+    expected = original | {owned / "owned.py", upper}
+    assert set(_plugin_python_files(source)) == expected
+    monkeypatch.setattr(registry_service, "_build_discovery_payload", lambda *_a, **_kw: {})
+    project_sources.preflight_source(source, "scan_demo")
+    from plugin.server.application.plugins.hot_reload_service import _signature_sync
+
+    assert set(_signature_sync(source)) == {
+        path.relative_to(source).as_posix() for path in expected
+    } | {"plugin.toml"}
+    upper.write_text("broken syntax !\n", encoding="utf-8")
+    with pytest.raises(ValueError):
+        project_sources.preflight_source(source, "scan_demo")
+
+
 @pytest.fixture(autouse=True)
 def isolated(monkeypatch, tmp_path):
     installed = tmp_path / "installed"

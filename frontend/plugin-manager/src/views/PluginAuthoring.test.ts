@@ -168,7 +168,7 @@ function publishStatus(overrides: {
             reachable: true,
             visibility: 'public',
             verify: 'success',
-            release: { state: 'missing', missing_assets: [] },
+            release: { state: 'missing', missing_assets: [], workflow: 'unknown' as const, ready: false },
             tag: 'missing',
             ...overrides.remote,
           },
@@ -515,7 +515,7 @@ describe('authoring workbench backed by the server project list', () => {
     api.route.query = { project: 'p1' }
     api.listPluginProjects.mockResolvedValue([listed])
     api.getPluginProjectPublishStatus.mockResolvedValue(
-      publishStatus({ remote: { release: { state: 'published', missing_assets: [] } } })
+      publishStatus({ remote: { release: { state: 'published', missing_assets: [], workflow: 'success' as const, ready: true } } })
     )
     approvedSubmission()
     const container = await mount()
@@ -551,7 +551,7 @@ describe('authoring workbench backed by the server project list', () => {
     api.route.query = { project: 'p1' }
     api.listPluginProjects.mockResolvedValue([listed])
     api.getPluginProjectPublishStatus.mockResolvedValue(
-      publishStatus({ remote: { release: { state: 'published', missing_assets: [] } } })
+      publishStatus({ remote: { release: { state: 'published', missing_assets: [], workflow: 'success' as const, ready: true } } })
     )
     api.getPluginProjectPublishTask.mockResolvedValue(
       publishTask({
@@ -579,7 +579,7 @@ describe('authoring workbench backed by the server project list', () => {
     api.route.query = { project: 'p1' }
     api.listPluginProjects.mockResolvedValue([listed])
     api.getPluginProjectPublishStatus.mockResolvedValue(
-      publishStatus({ remote: { release: { state: 'published', missing_assets: [] } } })
+      publishStatus({ remote: { release: { state: 'published', missing_assets: [], workflow: 'success' as const, ready: true } } })
     )
     api.fetchMarketPluginVersions.mockResolvedValue([
       { id: 3, plugin_id: 7, version: 'v0.1.0' },
@@ -975,7 +975,7 @@ describe('authoring workbench backed by the server project list', () => {
           reachable: false,
           visibility: 'unknown',
           verify: 'unknown',
-          release: { state: 'unknown', missing_assets: [] },
+          release: { state: 'unknown', missing_assets: [], workflow: 'unknown' as const, ready: false },
           tag: 'unknown',
         },
       })

@@ -244,6 +244,12 @@ def _verified_release_url(gate: _Gate, remote: RemoteGithubState) -> str:
             f"release assets are incomplete: {', '.join(release['missing_assets'])}",
             409,
         )
+    if not release["ready"]:
+        raise project_error(
+            Code.PUBLISH_NOT_READY,
+            f"release workflow for {gate.tag} is {release['workflow']}; it must complete successfully",
+            409,
+        )
     return f"https://github.com/{gate.repository}/releases/tag/{quote(gate.tag, safe='')}"
 
 

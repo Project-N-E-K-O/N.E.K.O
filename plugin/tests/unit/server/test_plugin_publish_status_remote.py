@@ -13,6 +13,7 @@ from tests.fake_clock import patch_module_clock
 
 BASE = '/repos/owner/repo'
 VERIFY = BASE + '/actions/workflows/verify.yml/runs'
+RELEASE_WORKFLOW = BASE + '/actions/workflows/release.yml/runs'
 RELEASE = BASE + '/releases/tags/v1.0.0'
 TAG_REF = BASE + '/git/ref/tags/v1.0.0'
 HEAD = 'a' * 40
@@ -77,11 +78,11 @@ def _read(head=HEAD, *, fresh=False):
 
 
 def _runs(status, conclusion=None):
-    return (200, {'workflow_runs': [{'status': status, 'conclusion': conclusion}]}, None)
+    return (200, {'workflow_runs': [{'status': status, 'conclusion': conclusion, 'head_branch': 'v1.0.0', 'event': 'push'}]}, None)
 
 
 def _asset(name, *, state='uploaded', size=10):
-    return {'name': name, 'state': state, 'size': size}
+    return {'name': name, 'state': state, 'size': size, 'browser_download_url': f'https://github.com/owner/repo/{name}'}
 
 
 def _release(*assets):
@@ -95,6 +96,7 @@ def _tag_ref(sha, kind='commit'):
 FINAL = {
     BASE: PUBLIC,
     VERIFY: _runs('completed', 'success'),
+    RELEASE_WORKFLOW: _runs('completed', 'success'),
     RELEASE: _release(*[_asset(name) for name in ASSETS]),
     TAG_REF: _tag_ref(HEAD),
 }
@@ -107,11 +109,40 @@ def test_public_repository_with_passing_verify_and_complete_release(monkeypatch)
         'reachable': True,
         'visibility': 'public',
         'verify': 'success',
-        'release': {'state': 'published', 'missing_assets': []},
+        'release': {'state': 'published', 'missing_assets': [], 'workflow': 'success', 'ready': True},
         'tag': 'at_head',
     }
     # Only the public GitHub API is ever contacted.
     assert {request.url.host for request in github.requests} == {'api.github.com'}
+
+
+@pytest.mark.parametrize(('status', 'conclusion', 'expected'), [
+    ('in_progress', None, 'running'),
+    ('completed', 'failure', 'failure'),
+    ('completed', 'success', 'success'),
+])
+def test_release_readiness_requires_its_tag_workflow(monkeypatch, status, conclusion, expected):
+    _serve(monkeypatch, {**FINAL, RELEASE_WORKFLOW: _runs(status, conclusion)})
+    release = _read()['release']
+    assert release['workflow'] == expected
+    assert release['ready'] is (expected == 'success')
+
+
+@pytest.mark.parametrize('local_head', [None, 'b' * 40])
+def test_release_workflow_uses_the_remote_tag_commit(monkeypatch, local_head):
+    github = _serve(monkeypatch, FINAL)
+    assert _read(head=local_head)['release']['ready'] is True
+    request = next(r for r in github.requests if r.url.path == RELEASE_WORKFLOW)
+    assert request.url.params['head_sha'] == HEAD
+
+
+def test_release_requires_downloadable_assets_and_a_matching_tag_run(monkeypatch):
+    asset = {**_asset(ASSETS[0]), 'browser_download_url': ''}
+    _serve(monkeypatch, {**FINAL, RELEASE: _release(asset, *[_asset(n) for n in ASSETS[1:]])})
+    assert _read()['release']['missing_assets'] == [ASSETS[0]]
+    _reset()
+    _serve(monkeypatch, {**FINAL, RELEASE_WORKFLOW: (200, {'workflow_runs': []}, None)})
+    assert _read()['release']['ready'] is False
 
 
 def test_missing_repository_workflow_release_and_tag_are_reported_as_such(monkeypatch):
@@ -119,7 +150,7 @@ def test_missing_repository_workflow_release_and_tag_are_reported_as_such(monkey
     result = _read()
     assert result['visibility'] == 'not_found'
     assert result['verify'] == 'missing'
-    assert result['release'] == {'state': 'missing', 'missing_assets': []}
+    assert result['release'] == {'state': 'missing', 'missing_assets': [], 'workflow': 'unknown', 'ready': False}
     assert result['tag'] == 'missing'
     assert result['rate_limited'] is False
     assert result['reachable'] is True
@@ -169,6 +200,7 @@ def test_release_assets_that_are_not_uploaded_or_empty_count_as_missing(monkeypa
     _serve(
         monkeypatch,
         {
+            **FINAL,
             RELEASE: _release(
                 _asset(ASSETS[0]),
                 _asset(ASSETS[1], state='starter'),
@@ -179,7 +211,7 @@ def test_release_assets_that_are_not_uploaded_or_empty_count_as_missing(monkeypa
     assert _read()['release'] == {
         'state': 'published',
         'missing_assets': [ASSETS[1], ASSETS[2]],
-    }
+        'workflow': 'success', 'ready': False}
 
 
 @pytest.mark.parametrize('entry', [LIMITED, (429, {}, None)])
@@ -189,7 +221,7 @@ def test_rate_limit_leaves_remote_steps_unknown_and_is_not_cached(monkeypatch, e
     assert result['rate_limited'] is True
     assert result['visibility'] == 'unknown'
     assert result['verify'] == 'unknown'
-    assert result['release'] == {'state': 'unknown', 'missing_assets': []}
+    assert result['release'] == {'state': 'unknown', 'missing_assets': [], 'workflow': 'unknown', 'ready': False}
     assert result['tag'] == 'unknown'
     first = len(github.requests)
     _read()
@@ -218,19 +250,19 @@ def test_forbidden_without_an_exhausted_quota_is_not_a_rate_limit(monkeypatch):
 def test_final_answers_are_cached_per_repository_commit_and_tag(monkeypatch):
     github = _serve(monkeypatch, FINAL)
     first = _read()
-    assert len(github.requests) == 4
+    assert len(github.requests) == 5
     assert _read() == first
-    assert len(github.requests) == 4
+    assert len(github.requests) == 5
     # Another commit is a different question.
     _read(head='b' * 40)
-    assert len(github.requests) == 8
+    assert len(github.requests) == 10
 
 
 def test_fresh_bypasses_the_cache(monkeypatch):
     github = _serve(monkeypatch, FINAL)
     _read()
     _read(fresh=True)
-    assert len(github.requests) == 8
+    assert len(github.requests) == 10
 
 
 @pytest.mark.parametrize(
@@ -240,6 +272,9 @@ def test_fresh_bypasses_the_cache(monkeypatch):
         {**FINAL, VERIFY: _runs('in_progress')},
         # Verify run not created yet right after a push.
         {**FINAL, VERIFY: (200, {'workflow_runs': []}, None)},
+        # Uploaded assets do not make a running or failed release workflow final.
+        {**FINAL, RELEASE_WORKFLOW: _runs('in_progress')},
+        {**FINAL, RELEASE_WORKFLOW: _runs('completed', 'failure')},
         # Release not created yet, or still uploading.
         {**FINAL, RELEASE: (404, {}, None)},
         {**FINAL, RELEASE: _release(_asset(ASSETS[0]))},
@@ -250,11 +285,12 @@ def test_answers_that_can_still_change_are_kept_only_briefly(monkeypatch, routes
     clock = [1000.0]
     patch_module_clock(monkeypatch, publish_status, monotonic=lambda: clock[0])
     _read()
+    first = len(github.requests)
     _read()
-    assert len(github.requests) == 4
+    assert len(github.requests) == first
     clock[0] += publish_status._CHANGING_CACHE_SECONDS + 1
     _read()
-    assert len(github.requests) == 8
+    assert len(github.requests) == 2 * first
 
 
 def test_network_failures_are_unreachable_and_not_cached(monkeypatch):
@@ -292,7 +328,7 @@ def test_concurrent_reads_of_one_release_share_one_set_of_requests(monkeypatch):
 
     first, second = asyncio.run(both())
     assert first == second
-    assert len(github.requests) == 4
+    assert len(github.requests) == 5
 
 
 def test_verify_is_not_read_without_a_head_commit(monkeypatch):

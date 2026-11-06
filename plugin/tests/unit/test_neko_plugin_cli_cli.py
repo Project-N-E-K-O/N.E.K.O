@@ -417,14 +417,16 @@ def test_validate_does_not_descend_into_skipped_dirs(tmp_path: Path, monkeypatch
     (plugin_dir / "pkg").mkdir()
     (plugin_dir / "pkg" / "mod.py").write_text("x = 1\n", encoding="utf-8")
     visited = []
-    real_walk = validate_cmd.os.walk
+    import os
+
+    real_walk = os.walk
 
     def walk(top, *args, **kwargs):
         for entry in real_walk(top, *args, **kwargs):
             visited.append(Path(entry[0]).relative_to(plugin_dir))
             yield entry
 
-    monkeypatch.setattr(validate_cmd.os, "walk", walk)
+    monkeypatch.setattr(os, "walk", walk)
     files = validate_cmd._plugin_python_files(plugin_dir)
 
     assert plugin_dir / "pkg" / "mod.py" in files
@@ -2124,6 +2126,15 @@ def test_release_check_runs_out_of_tree_tests_like_ci(tmp_path: Path) -> None:
     tests_dir = plugin_dir / "tests"
     entry = (plugin_dir / "plugin.toml").read_text(encoding="utf-8").split('entry = "', 1)[1].split('"', 1)[0]
     module, class_name = entry.split(":")
+    canonical = module.removeprefix("plugin.")
+    (plugin_dir / "helper.py").write_text("VALUE = object()\n", encoding="utf-8")
+    # Both names must resolve identically even during initial conftest loading.
+    (tests_dir / "conftest.py").write_text(
+        "import importlib\n"
+        f"assert importlib.import_module('{module}') is importlib.import_module('{canonical}')\n"
+        f"assert importlib.import_module('{module}.helper') is importlib.import_module('{canonical}.helper')\n",
+        encoding="utf-8",
+    )
     (tests_dir / "test_ci_alignment.py").write_text(
         f"from {module} import {class_name}\n\n\n"
         "async def test_async_runs_in_auto_mode():\n"

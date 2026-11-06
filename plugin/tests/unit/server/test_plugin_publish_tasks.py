@@ -85,7 +85,7 @@ _REMOTE = {
     "reachable": True,
     "visibility": "public",
     "verify": "success",
-    "release": {"state": "missing", "missing_assets": []},
+    "release": {"state": "missing", "missing_assets": [], 'workflow': 'unknown', 'ready': False},
     "tag": "missing",
 }
 
@@ -305,7 +305,7 @@ async def test_market_notify_verifies_the_release_before_asking(
     async def remote_missing(*_args, fresh=False):
         return {
             **_REMOTE,
-            "release": {"state": "missing", "missing_assets": []},
+            "release": {"state": "missing", "missing_assets": [], 'workflow': 'unknown', 'ready': False},
         }
 
     monkeypatch.setattr(tasks, "read_remote_github", remote_missing)
@@ -320,7 +320,7 @@ async def test_market_notify_verifies_the_release_before_asking(
     async def remote_published(*_args, fresh=False):
         return {
             **_REMOTE,
-            "release": {"state": "published", "missing_assets": []},
+            "release": {"state": "published", "missing_assets": [], 'workflow': 'success', 'ready': True},
             "tag": "at_head",
         }
 
@@ -483,7 +483,7 @@ async def test_market_notify_skips_local_checks_and_reads_the_release_fresh(
         worktree_clean=False,
         dirty_paths=("wip.py",),
         head_pushed=False,
-        remote={"release": {"state": "published", "missing_assets": []}},
+        remote={"release": {"state": "published", "missing_assets": [], 'workflow': 'success', 'ready': True}},
     )
     monkeypatch.setattr(tasks.subprocess, "Popen", _scripted_process(["[OK] Market published"]))
     async with client(app) as http:
@@ -497,13 +497,27 @@ async def test_market_notify_skips_local_checks_and_reads_the_release_fresh(
 
 async def test_market_notify_on_an_unreachable_github_says_so(app, tmp_path, monkeypatch):
     record = store.add_record(tmp_path)
-    _ready_gate(monkeypatch, tmp_path, remote={"reachable": False, "release": {"state": "unknown", "missing_assets": []}})
+    _ready_gate(monkeypatch, tmp_path, remote={"reachable": False, "release": {"state": "unknown", "missing_assets": [], 'workflow': 'unknown', 'ready': False}})
     async with client(app) as http:
         response = await http.post(
             f"/plugin-projects/{record.project_id}/publish", json={"mode": "market_notify"}
         )
     assert response.status_code == 409
     assert "could not be reached" in response.json()["detail"]["message"]
+
+
+@pytest.mark.parametrize("workflow", ["running", "failure", "unknown", "not_run"])
+async def test_market_notify_waits_for_a_successful_release_workflow(app, tmp_path, monkeypatch, workflow):
+    record = store.add_record(tmp_path)
+    _ready_gate(monkeypatch, tmp_path, remote={"release": {
+        "state": "published", "missing_assets": [], "workflow": workflow, "ready": False,
+    }})
+    async with client(app) as http:
+        response = await http.post(
+            f"/plugin-projects/{record.project_id}/publish", json={"mode": "market_notify"}
+        )
+    assert response.status_code == 409
+    assert "must complete successfully" in response.json()["detail"]["message"]
 
 
 async def test_github_publish_gives_the_cli_a_release_wait_inside_the_server_budget(

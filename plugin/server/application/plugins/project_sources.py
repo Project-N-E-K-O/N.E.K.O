@@ -9,7 +9,6 @@ never start automatically and they are imported from their own directory.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,14 +18,9 @@ from plugin.core.entry_points import (
     normalize_plugin_entry_point,
 )
 from plugin.server.domain.normalization import is_valid_plugin_id
-from plugin.utils.source_paths import is_vendor_sync_path
+from plugin.utils.source_paths import iter_plugin_python_files
 
 PROJECT_SOURCE = "project"
-# Directories whose ``.py`` files are not plugin-owned source. Shared by the
-# reload preflight and the hot-reload watcher so both judge the same files.
-SOURCE_EXCLUDED_DIR_NAMES = frozenset(
-    {"vendor", ".venv", ".git", "__pycache__", "node_modules"}
-)
 
 
 @dataclass(frozen=True)
@@ -136,29 +130,14 @@ def preflight_source(source_dir: Path, plugin_id: str) -> None:
     if payload.get("runtime_load_state") == "failed":
         raise ValueError(str(payload.get("runtime_load_error_message")))
 
-    def walk_error(exc: OSError) -> None:
-        raise ValueError(str(exc)) from exc
-
-    for root, directories, files in os.walk(source_dir, onerror=walk_error, followlinks=False):
-        directories[:] = [
-            name
-            for name in directories
-            if name not in SOURCE_EXCLUDED_DIR_NAMES
-            # `neko-plugin sync` staging/backup trees at the plugin root hold
-            # (possibly half-written) third-party code, like vendor/.
-            and not (Path(root) == source_dir and is_vendor_sync_path(Path(name)))
-        ]
-        for name in files:
-            if not name.lower().endswith(".py"):
-                continue
-            path = Path(root) / name
+    try:
+        for path in iter_plugin_python_files(source_dir):
             relative = path.relative_to(source_dir)
             if not path.resolve().is_relative_to(source_dir):
                 raise ValueError(f"Python source escapes the project directory: {relative}")
-            try:
-                compile(path.read_bytes(), str(path), "exec")
-            except (SyntaxError, OSError) as exc:
-                raise ValueError(str(exc)) from exc
+            compile(path.read_bytes(), str(path), "exec")
+    except (SyntaxError, OSError) as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def list_project_sources_sync() -> tuple[list[ProjectSource], list[ProjectSourceFailure]]:

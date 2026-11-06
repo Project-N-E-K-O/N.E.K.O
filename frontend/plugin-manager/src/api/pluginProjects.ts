@@ -141,7 +141,13 @@ export interface PublishRemoteState {
   reachable: boolean
   visibility: 'public' | 'private' | 'not_found' | 'unknown'
   verify: 'success' | 'failure' | 'running' | 'not_run' | 'missing' | 'unknown'
-  release: { state: 'published' | 'missing' | 'unknown'; missing_assets: string[] }
+  release: {
+    state: 'published' | 'missing' | 'unknown'
+    missing_assets: string[]
+    workflow: 'success' | 'failure' | 'running' | 'not_run' | 'missing' | 'unknown'
+    /** Complete downloadable assets and a successful tag release workflow. */
+    ready: boolean
+  }
   /** Remote tag v<version> compared with the local HEAD. */
   tag: 'missing' | 'at_head' | 'elsewhere' | 'unknown'
 }
