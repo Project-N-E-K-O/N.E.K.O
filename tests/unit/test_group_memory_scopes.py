@@ -751,6 +751,9 @@ async def test_scoped_promotion_is_idempotent_after_partial_commit():
     engine = PromotionMixin.__new__(PromotionMixin)
     engine._persona_manager = SimpleNamespace(
         aensure_persona=mixin._persona_manager.aensure_persona,
+        aget_persona=mixin._persona_manager.aensure_persona,
+        # Nothing here is retired by introspection.
+        retired_persona_hides=lambda persona: (lambda reflection: False),
         aadd_fact=AsyncMock(
             return_value=PersonaManager.FACT_QUEUED_CORRECTION,
         ),

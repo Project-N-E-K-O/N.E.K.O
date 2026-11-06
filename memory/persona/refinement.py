@@ -28,6 +28,7 @@ from datetime import datetime
 
 
 from memory.facts import safe_int_field
+from memory.introspection import is_permanently_suppressed
 
 
 
@@ -54,6 +55,182 @@ class RefinementMixin:
         import hashlib
         salt = datetime.now().isoformat()
         return f"per_{hashlib.sha1(f'{text}|{salt}'.encode('utf-8')).hexdigest()[:16]}"
+
+    def _apply_refine_modify(
+        self, src: dict, new_text: str, reason: str, now_iso: str,
+    ) -> None:
+        """Rewrite ``src`` in place; the old text goes to ``version_history``.
+
+        Shared by refine ``modify`` and introspection ``rewrite``.
+        """
+        from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
+        old_text = src.get('text', '')
+        prior_history = src.get('version_history') or []
+        src['text'] = new_text
+        src['version_history'] = (
+            list(prior_history) + [{
+                'text': old_text,
+                'replaced_at': now_iso,
+                'reason': reason,
+                'source_fact_id': None,
+            }]
+        )[-_VH_MAX:]
+        self._invalidate_token_count_cache(src)
+        self._invalidate_embedding_cache(src)
+
+    def _build_refine_merge_entry(
+        self, srcs: list[dict], text: str, now_iso: str,
+        *, reason: str = 'refine_merge',
+    ) -> dict:
+        """One new entry replacing ``srcs``; their texts go to its
+        ``version_history`` and their evidence is inherited.
+
+        Shared by refine ``merge`` and introspection ``merge``.
+        """
+        from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
+        from memory.evidence import merged_evidence_state
+
+        merged = self._normalize_entry(text)
+        # Unique ID (as split), or section_by_id collapses entries.
+        merged['id'] = self._refine_persona_id(text)
+        merged['version_history'] = [
+            {
+                'text': src.get('text', ''),
+                'replaced_at': now_iso,
+                'reason': reason,
+                'source_fact_id': None,
+            }
+            for src in srcs
+        ][-_VH_MAX:]
+        merged.update(merged_evidence_state(srcs))
+        inherited_source = None
+        inherited_source_id = None
+        for src in srcs:
+            if inherited_source is None:
+                inherited_source = src.get('source')
+                inherited_source_id = src.get('source_id')
+        merged['source'] = inherited_source or 'unknown'
+        merged['source_id'] = inherited_source_id
+        return merged
+
+    async def aapply_introspection_actions(
+        self, name: str, actions: list[dict],
+    ) -> dict:
+        """Apply introspection actions already checked against the number map.
+
+        Each action names its targets as ``(entry_id, text_at_render)``
+        inside ``action['entity']``. Under the lock every target must still
+        exist with that exact text, be neither protected nor already
+        suppressed, and not be claimed by an earlier action of this batch;
+        otherwise the whole action is skipped as stale — the model judged
+        text that is no longer there.
+
+        ``suppress`` is event-sourced (``EVT_PERSONA_SUPPRESSED``, replayed
+        by the reconciler); ``rewrite`` / ``merge`` reuse the refine
+        helpers and are saved together at the end. A merge deletes nothing:
+        its sources stay, permanently suppressed with ``merged_into``.
+
+        Returns ``{'applied': n, 'stale': m}``.
+        """
+        from memory.event_log import EVT_PERSONA_SUPPRESSED
+        from memory.introspection import (
+            ACTION_MERGE,
+            ACTION_REWRITE,
+            ACTION_SUPPRESS,
+            PERMANENT_SUPPRESSION_KEY,
+            build_permanent_suppression,
+        )
+
+        applied = 0
+        stale = 0
+        async with self._get_alock(name):
+            persona = await self._aensure_persona_locked(name)
+            now_iso = datetime.now().isoformat()
+            consumed: set[tuple[str, str]] = set()
+            dirty = False
+            for act in actions:
+                entity = act.get('entity')
+                section = persona.get(entity)
+                facts = section.get('facts') if isinstance(section, dict) else None
+                srcs: list[dict] = []
+                for entry_id, text in act.get('targets') or ():
+                    src = (
+                        self._find_entry_in_section(facts, entry_id)
+                        if isinstance(facts, list) else None
+                    )
+                    if (
+                        src is None
+                        or (entity, entry_id) in consumed
+                        or src.get('protected')
+                        or is_permanently_suppressed(src)
+                        or src.get('text') != text
+                    ):
+                        srcs = []
+                        break
+                    srcs.append(src)
+                if not srcs:
+                    stale += 1
+                    continue
+                verb = act.get('action')
+                reason = f"introspection: {act.get('reason') or verb}"
+                if verb == ACTION_SUPPRESS:
+                    src = srcs[0]
+                    marker = build_permanent_suppression(
+                        act.get('reason') or verb, now_iso, issue=act.get('issue'),
+                    )
+                    if self._event_log is None:
+                        src[PERMANENT_SUPPRESSION_KEY] = marker
+                        dirty = True
+                    else:
+                        def _sync_load(_n, _persona=persona):
+                            # Lock held, cache current: same pattern as aapply_signal.
+                            return _persona
+
+                        def _sync_mutate(_view, _src=src, _marker=marker):
+                            _src[PERMANENT_SUPPRESSION_KEY] = _marker
+
+                        await self._event_log.arecord_and_save(
+                            name, EVT_PERSONA_SUPPRESSED, {
+                                'entity_key': entity,
+                                'entry_id': src.get('id'),
+                                PERMANENT_SUPPRESSION_KEY: marker,
+                            },
+                            sync_load_view=_sync_load,
+                            sync_mutate_view=_sync_mutate,
+                            sync_save_view=self._sync_save_persona_view,
+                        )
+                elif verb == ACTION_REWRITE:
+                    self._apply_refine_modify(srcs[0], act['text'], reason, now_iso)
+                    dirty = True
+                elif verb == ACTION_MERGE:
+                    if any(src.get('suppress') for src in srcs):
+                        # A source in mention cooldown would leave the
+                        # do-not-mention section early as a fresh entry.
+                        stale += 1
+                        continue
+                    merged = self._build_refine_merge_entry(
+                        srcs, act['text'], now_iso, reason=reason,
+                    )
+                    # Sources stay on disk, retired, rather than deleted: the
+                    # merged entry's version_history keeps only the last few
+                    # texts, so a large merge would otherwise lose the rest.
+                    # Written with the merged entry in one save, not as
+                    # separate suppression events, so the two cannot diverge.
+                    for src in srcs:
+                        src[PERMANENT_SUPPRESSION_KEY] = build_permanent_suppression(
+                            act.get('reason') or verb, now_iso,
+                            merged_into=merged['id'],
+                        )
+                    facts.append(merged)
+                    dirty = True
+                else:
+                    stale += 1
+                    continue
+                consumed.update((entity, src.get('id')) for src in srcs)
+                applied += 1
+            if dirty:
+                await self.asave_persona(name, persona)
+        return {'applied': applied, 'stale': stale}
 
     async def apply_refine_actions(
         self,
@@ -111,7 +288,9 @@ class RefinementMixin:
                     if not src_id or src_id not in cluster_ids or src_id in consumed:
                         continue
                     src = section_by_id.get(src_id)
-                    if not src or src.get('protected'):
+                    # A source suppressed since the cluster was gathered must
+                    # not come back as fresh, unflagged pieces.
+                    if not src or src.get('protected') or is_permanently_suppressed(src):
                         continue
                     produce = act_obj.get('produce')
                     if not isinstance(produce, list) or len(produce) < 2:
@@ -153,6 +332,14 @@ class RefinementMixin:
                     src_ids_raw = act_obj.get('source_ids') or []
                     if not isinstance(src_ids_raw, list):
                         continue
+                    if any(
+                        is_permanently_suppressed(section_by_id.get(sid))
+                        for sid in src_ids_raw
+                    ):
+                        # The merged text was written from every source,
+                        # retired one included: dropping that source and
+                        # keeping the text would bring its content back.
+                        continue
                     valid_ids = [
                         sid for sid in src_ids_raw
                         if sid in cluster_ids
@@ -168,71 +355,9 @@ class RefinementMixin:
                     text = str(produce.get('text', '')).strip()
                     if not text:
                         continue
-                    merged = self._normalize_entry(text)
-                    # Unique ID (as split), or section_by_id collapses entries.
-                    merged['id'] = self._refine_persona_id(text)
-                    history = []
-                    # Inherit all evidence state, not only reinforcement
-                    # and user_fact_reinforce_count; otherwise disputation /
-                    # rein_last_signal_at / disp_last_signal_at /
-                    # sub_zero_days reset to defaults, hiding counterevidence and archive countdowns.
-                    # （CodeRabbit Major #1392）。
-                    max_rein = 0.0
-                    max_disp = 0.0
-                    max_user_count = 0
-                    max_sub_zero_days = 0
-                    latest_rein_signal_at: str | None = None
-                    latest_disp_signal_at: str | None = None
-                    latest_sub_zero_increment: str | None = None
-                    inherited_source = None
-                    inherited_source_id = None
-                    for sid in valid_ids:
-                        src = section_by_id[sid]
-                        history.append({
-                            'text': src.get('text', ''),
-                            'replaced_at': now_iso,
-                            'reason': 'refine_merge',
-                            'source_fact_id': None,
-                        })
-                        max_rein = max(max_rein, float(src.get('reinforcement', 0) or 0))
-                        max_disp = max(max_disp, float(src.get('disputation', 0) or 0))
-                        max_user_count = max(
-                            max_user_count,
-                            int(src.get('user_fact_reinforce_count', 0) or 0),
-                        )
-                        max_sub_zero_days = max(
-                            max_sub_zero_days,
-                            int(src.get('sub_zero_days', 0) or 0),
-                        )
-                        # ISO timestamps compare chronologically; take latest.
-                        for key, current in (
-                            ('rein_last_signal_at', latest_rein_signal_at),
-                            ('disp_last_signal_at', latest_disp_signal_at),
-                            ('sub_zero_last_increment_date', latest_sub_zero_increment),
-                        ):
-                            v = src.get(key)
-                            if v and (current is None or v > current):
-                                if key == 'rein_last_signal_at':
-                                    latest_rein_signal_at = v
-                                elif key == 'disp_last_signal_at':
-                                    latest_disp_signal_at = v
-                                else:
-                                    latest_sub_zero_increment = v
-                        if inherited_source is None:
-                            inherited_source = src.get('source')
-                            inherited_source_id = src.get('source_id')
-                    from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
-                    merged['version_history'] = history[-_VH_MAX:]
-                    merged['reinforcement'] = max_rein
-                    merged['disputation'] = max_disp
-                    merged['user_fact_reinforce_count'] = max_user_count
-                    merged['sub_zero_days'] = max_sub_zero_days
-                    merged['rein_last_signal_at'] = latest_rein_signal_at
-                    merged['disp_last_signal_at'] = latest_disp_signal_at
-                    merged['sub_zero_last_increment_date'] = latest_sub_zero_increment
-                    merged['source'] = inherited_source or 'unknown'
-                    merged['source_id'] = inherited_source_id
-                    produced.append(merged)
+                    produced.append(self._build_refine_merge_entry(
+                        [section_by_id[sid] for sid in valid_ids], text, now_iso,
+                    ))
                     consumed.update(valid_ids)
                     applied += 1
 
@@ -241,7 +366,7 @@ class RefinementMixin:
                     if not src_id or src_id not in cluster_ids or src_id in consumed:
                         continue
                     src = section_by_id.get(src_id)
-                    if not src or src.get('protected'):
+                    if not src or src.get('protected') or is_permanently_suppressed(src):
                         continue
                     produce = act_obj.get('produce')
                     if not isinstance(produce, dict):
@@ -250,20 +375,7 @@ class RefinementMixin:
                     if not new_text:
                         continue
                     reason = str(act_obj.get('reason') or 'refine_modify')
-                    from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
-                    old_text = src.get('text', '')
-                    prior_history = src.get('version_history') or []
-                    src['text'] = new_text
-                    src['version_history'] = (
-                        list(prior_history) + [{
-                            'text': old_text,
-                            'replaced_at': now_iso,
-                            'reason': reason,
-                            'source_fact_id': None,
-                        }]
-                    )[-_VH_MAX:]
-                    self._invalidate_token_count_cache(src)
-                    self._invalidate_embedding_cache(src)
+                    self._apply_refine_modify(src, new_text, reason, now_iso)
                     applied += 1
 
                 elif act == 'discard':
@@ -271,7 +383,7 @@ class RefinementMixin:
                     if not src_id or src_id not in cluster_ids or src_id in consumed:
                         continue
                     src = section_by_id.get(src_id)
-                    if not src or src.get('protected'):
+                    if not src or src.get('protected') or is_permanently_suppressed(src):
                         continue
                     consumed.add(src_id)
                     applied += 1

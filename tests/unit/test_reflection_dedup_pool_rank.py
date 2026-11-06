@@ -4,7 +4,7 @@ Persona-drift stopgap guards.
 
   - promotion merge pool: ranked by similarity to R (evidence fallback) before
     the whole-line token cut, so recently appended near-duplicates are seen
-  - REFLECTION_PROMPT: concrete-event wording, watermark literals kept,
+  - REFLECTION_PROMPT: relationship patterns rather than event accounts, watermark literals kept,
     existing-impressions slot present in every locale
   - synthesis duplicate check: nearest same-subject impressions shown, a valid
     skip absorbs the batch without a new reflection and without evidence,
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -306,7 +306,7 @@ async def test_similarity_embeds_queries_but_only_reads_cached_candidates():
 # ── 2. reflection prompt wording ─────────────────────────────────────
 
 
-def test_reflection_prompt_locales_are_concrete_and_keep_watermarks():
+def test_reflection_prompt_locales_keep_watermarks():
     from config.prompts.prompts_memory import (
         REFLECTION_EXISTING_IMPRESSIONS_NOTE,
         REFLECTION_PROMPT,
@@ -330,6 +330,36 @@ def test_reflection_prompt_locales_are_concrete_and_keep_watermarks():
     # The pattern tie-break stays.
     assert "拿不准时请倾向选 pattern" in REFLECTION_PROMPT["zh"]
     assert "When unsure, prefer pattern" in REFLECTION_PROMPT["en"]
+
+
+def test_reflection_prompt_asks_for_patterns_not_event_accounts():
+    """A reflection sums up how the two relate; what happened once is a fact.
+    The ban on hollow labels and its bad example stay."""
+    from config.prompts.prompts_memory import REFLECTION_PROMPT as PROMPT
+
+    for lang, level in {'zh': '某一次事件的经过', 'zh-TW': '某一次事件的經過', 'en': 'the account of a single event', 'ja': 'ある一回の出来事の経緯', 'ko': '어느 한 번의 사건 경위', 'ru': 'рассказ об одном событии', 'es': 'el relato de un solo suceso', 'pt': 'o relato de um único acontecimento'}.items():
+        text = PROMPT[lang]
+        assert level in text, lang
+        for old in {'zh': ['写清发生了什么', '必须落在具体的事和原话上'], 'zh-TW': ['寫清發生了什麼', '必須落在具體的事和原話上'], 'en': ['state what actually happened', 'must rest on a concrete event'], 'ja': ['実際に何があったかを書くこと', '具体的な出来事と実際の言葉に基づくこと'], 'ko': ['실제로 무슨 일이 있었는지를 쓰세요', '구체적인 사건과 실제 한 말에 근거해야'], 'ru': ['что именно произошло, а не абстрактный вывод', 'должны опираться на конкретное событие'], 'es': ['lo que realmente pasó, no una conclusión abstracta', 'deben apoyarse en un suceso concreto'], 'pt': ['o que realmente aconteceu, não uma conclusão abstrata', 'devem se apoiar em um acontecimento concreto']}[lang]:
+            assert old not in text, (lang, old)
+    assert '"形成了……默契/模式"' in PROMPT['zh'] and '反例：「两人形成了互相关心的默契」' in PROMPT['zh']
+    assert 'formed a tacit understanding / pattern of' in PROMPT['en']
+    # The output template models the field too.
+    for lang, old in {
+        'zh': '具体发生了什么（主语写名字）', 'zh-TW': '具體發生了什麼（主語寫名字）',
+        'en': 'what concretely happened', 'ja': '具体的に何があったか', 'ko': '구체적으로 무슨 일이 있었는지',
+        'ru': 'что конкретно произошло', 'es': 'qué pasó concretamente', 'pt': 'o que aconteceu concretamente',
+    }.items():
+        assert old not in PROMPT[lang], lang
+    # A new instance of a known pattern is covered, not a new reflection.
+    from config.prompts.prompts_memory import REFLECTION_EXISTING_IMPRESSIONS_NOTE as NOTE
+    for lang, old in {
+        'zh': '新的事、新的原话', 'zh-TW': '新的事、新的原話', 'en': 'a new event, new words actually said',
+        'ja': '新しい出来事、新しい実際の発言', 'ko': '새로운 사건, 새로 한 말', 'ru': 'новое событие, новые реально сказанные слова',
+        'es': 'un suceso nuevo, palabras nuevas', 'pt': 'um acontecimento novo, palavras novas',
+    }.items():
+        assert old not in NOTE[lang], lang
+        assert '"skip": true' in NOTE[lang] and '"covered_by"' in NOTE[lang], lang
 
 
 # ── 3. synthesis duplicate check ─────────────────────────────────────
@@ -457,8 +487,10 @@ async def test_synthesis_without_vectors_keeps_old_prompt_and_ignores_skip(tmp_p
     assert "{EXISTING_IMPRESSIONS_BLOCK}" not in prompt
     assert "======以上为事实======\n\n请基于这些事实" in prompt
     assert len(created) == 1
-    # Nothing extra is loaded when vectors are off: same work as before.
-    persona_reads.assert_not_awaited()
+    # The existing-impressions block loads nothing when vectors are off; the
+    # two persona reads are the retired-restatement check (identical text)
+    # and its recheck under the save lock.
+    assert persona_reads.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -586,6 +618,322 @@ async def test_synthesis_skip_falls_back_when_target_rewritten_meanwhile(tmp_pat
     else:
         old = (await pm.aget_persona(CHAR))["relationship"]["facts"][0]
     assert "covered_fact_ids" not in old
+
+
+def _retired(issue: str | None = None) -> dict:
+    marker = {"at": datetime.now().isoformat(timespec="seconds"), "reason": "空洞"}
+    if issue:
+        marker["issue"] = issue
+    return {"permanent_suppression": marker}
+
+
+@pytest.mark.asyncio
+async def test_existing_impressions_leave_out_permanently_suppressed_entries(tmp_path):
+    """An entry introspection retired no longer reaches the model; offering it
+    as "already covered" would swallow a fresh fact into a hollow line."""
+    tmpdir = str(tmp_path)
+    _write_json(tmpdir, "reflections.json", [
+        _reflection("ref_live", "主人睡前说晚安"),
+        _reflection("ref_retired", "两人睡前道晚安形成了默契", **_retired()),
+    ])
+    _write_json(tmpdir, "persona.json", {"relationship": {"facts": [
+        _persona_entry("p_live", "主人睡前对小天说晚安"),
+        _persona_entry("p_retired", "道晚安体现了两人的纽带", **_retired()),
+    ]}})
+    _fs, _pm, re = _install(tmpdir)
+    with _patch_vectors(_FakeEmbeddingService()):
+        _block, candidates = await re._build_existing_impressions_block(
+            CHAR, _facts(), subject=None, prompt_lang="zh",
+        )
+    assert set(candidates) == {"reflection.ref_live", "persona.relationship.p_live"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["reflection", "persona"])
+async def test_synthesis_skip_falls_back_when_target_suppressed_meanwhile(tmp_path, kind):
+    """Introspection may retire the target while the LLM judges the batch:
+    the skip is rechecked under the lock and the batch becomes a normal new
+    reflection instead of vanishing into a suppressed line."""
+    tmpdir = str(tmp_path)
+    _write_json(tmpdir, "facts.json", _facts())
+    if kind == "reflection":
+        _write_json(tmpdir, "reflections.json", [
+            _reflection("ref_old", "主人每晚睡前都会对小天说晚安"),
+        ])
+        key = "reflection.ref_old"
+    else:
+        _write_json(tmpdir, "persona.json", {"relationship": {"facts": [
+            _persona_entry("prom_night", "主人睡前会对小天说晚安"),
+        ]}})
+        key = "persona.relationship.prom_night"
+    _fs, pm, re = _install(tmpdir)
+    answer = {
+        "skip": True, "covered_by": key,
+        "entity": "relationship", "relation_type": "dynamic",
+        "reflection": "主人连着几晚睡前对小天说晚安",
+        "temporal_scope": "pattern", "event_when": None,
+    }
+
+    async def _llm_target_retired(api_config, prompt, **_kw):
+        assert key in prompt, "夹具失效：目标没有进候选"
+        if kind == "reflection":
+            rows = _read_json(tmpdir, "reflections.json")
+            rows[0].update(_retired())
+            _write_json(tmpdir, "reflections.json", rows)
+        else:
+            persona = await pm.aget_persona(CHAR)
+            persona["relationship"]["facts"][0].update(_retired())
+        return SimpleNamespace(content=json.dumps(answer, ensure_ascii=False)), 0
+
+    with _patch_vectors(_FakeEmbeddingService()), \
+         patch("memory.thinking_llm.ainvoke_thinking", _llm_target_retired), \
+         patch("utils.language_utils.get_global_language", return_value="zh"):
+        created = await re.synthesize_reflections(CHAR)
+
+    assert len(created) == 1, "目标被压制后应退回正常新增"
+    if kind == "reflection":
+        old = {r["id"]: r for r in _read_json(tmpdir, "reflections.json")}["ref_old"]
+    else:
+        old = (await pm.aget_persona(CHAR))["relationship"]["facts"][0]
+    assert "covered_fact_ids" not in old
+
+
+def _new_reflection_answer(text: str) -> dict:
+    return {
+        "entity": "relationship", "relation_type": "dynamic",
+        "reflection": text, "temporal_scope": "pattern", "event_when": None,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["reflection", "persona"])
+async def test_synthesis_restating_a_retired_line_is_stored_retired(tmp_path, kind):
+    """A new reflection that restates a line introspection retired would sit
+    in the prompt until next week's run; it is stored already suppressed,
+    and its facts are still absorbed (they stay recallable as facts)."""
+    tmpdir = str(tmp_path)
+    facts = _facts()
+    _write_json(tmpdir, "facts.json", facts)
+    if kind == "reflection":
+        _write_json(tmpdir, "reflections.json", [
+            _reflection("ref_hollow", "两人睡前道晚安形成了默契", **_retired("hollow")),
+        ])
+        key = "reflection.ref_hollow"
+    else:
+        _write_json(tmpdir, "persona.json", {"relationship": {"facts": [
+            _persona_entry("p_hollow", "睡前道晚安体现了两人的纽带", **_retired("hollow")),
+        ]}})
+        key = "persona.relationship.p_hollow"
+    _fs, _pm, re = _install(tmpdir)
+    answer = _new_reflection_answer("两人每晚互道晚安形成了深厚默契")
+    with _patch_vectors(_FakeEmbeddingService()), _llm(answer, []), \
+         patch("utils.language_utils.get_global_language", return_value="zh"):
+        created = await re.synthesize_reflections(CHAR)
+
+    assert len(created) == 1
+    stored = {r["id"]: r for r in _read_json(tmpdir, "reflections.json")}[created[0]["id"]]
+    assert stored["permanent_suppression"]["restates"] == key
+    assert all(f["absorbed"] for f in _read_json(tmpdir, "facts.json"))
+
+
+@pytest.mark.asyncio
+async def test_synthesis_unrelated_to_retired_lines_stays_live(tmp_path):
+    """The check is near-paraphrase only: a retired line on another topic
+    leaves the new reflection alone."""
+    tmpdir = str(tmp_path)
+    _write_json(tmpdir, "facts.json", _facts())
+    _write_json(tmpdir, "reflections.json", [
+        _reflection("ref_hollow", "两人喝咖啡形成了默契", **_retired("hollow")),
+    ])
+    _fs, _pm, re = _install(tmpdir)
+    answer = _new_reflection_answer("主人连着几晚睡前对小天说晚安")
+    with _patch_vectors(_FakeEmbeddingService()), _llm(answer, []), \
+         patch("utils.language_utils.get_global_language", return_value="zh"):
+        created = await re.synthesize_reflections(CHAR)
+
+    assert len(created) == 1
+    stored = {r["id"]: r for r in _read_json(tmpdir, "reflections.json")}[created[0]["id"]]
+    assert "permanent_suppression" not in stored
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("issue", ["stale", "contradiction", "card_conflict", None])
+async def test_restating_a_line_retired_as_stale_is_new_information(tmp_path, issue):
+    """A line retired as outdated, contradicted or off-card (or with no issue
+    recorded) can become true again: the same words backed by fresh facts
+    are kept live."""
+    tmpdir = str(tmp_path)
+    _write_json(tmpdir, "facts.json", _facts())
+    _write_json(tmpdir, "reflections.json", [
+        _reflection("ref_old", "主人每晚睡前都会对小天说晚安", **_retired(issue)),
+    ])
+    _fs, _pm, re = _install(tmpdir)
+    answer = _new_reflection_answer("主人每晚睡前都会对小天说晚安")
+    with _patch_vectors(_FakeEmbeddingService()), _llm(answer, []), \
+         patch("utils.language_utils.get_global_language", return_value="zh"):
+        created = await re.synthesize_reflections(CHAR)
+
+    assert len(created) == 1
+    stored = {r["id"]: r for r in _read_json(tmpdir, "reflections.json")}[created[0]["id"]]
+    assert "permanent_suppression" not in stored
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("times, expected", [
+    (["2026-10-01T09:00:00", "2026-09-15T08:00:00+00:00", "2026-10-20T10:00:00",
+      "2026-10-02T00:00:00", "2026-10-03T00:00:00"],
+     datetime.fromisoformat("2026-09-15T08:00:00+00:00").astimezone().replace(tzinfo=None)),
+    (["2026-10-01T09:00:00", None, "2026-10-20T10:00:00",
+      "2026-10-02T00:00:00", "2026-10-03T00:00:00"], None),
+])
+async def test_synthesis_records_when_its_oldest_fact_was_noted(tmp_path, times, expected):
+    """The render reopens a line retired as stale only for a reflection whose
+    every fact postdates the retirement, so synthesis records the oldest
+    fact's time (its own created_at is just when synthesis ran); one fact
+    without a time leaves it unknown."""
+    tmpdir = str(tmp_path)
+    facts = _facts()
+    for row, at in zip(facts, times):
+        if at:
+            row["created_at"] = at
+    _write_json(tmpdir, "facts.json", facts)
+    _fs, _pm, re = _install(tmpdir)
+    with _patch_vectors(_FakeEmbeddingService()), _llm(_new_reflection_answer("两人每晚互道晚安"), []), \
+         patch("utils.language_utils.get_global_language", return_value="zh"):
+        created = await re.synthesize_reflections(CHAR)
+
+    stored = {r["id"]: r for r in _read_json(tmpdir, "reflections.json")}[created[0]["id"]]
+    assert stored["source_facts_oldest_at"] == (expected.isoformat() if expected else None)
+
+
+def _stale_since(days: int, issue: str = "stale") -> dict:
+    at = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+    return {"permanent_suppression": {"at": at, "reason": "x", "issue": issue}}
+
+
+def _facts_since(days: int) -> str:
+    return (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+
+
+@pytest.mark.asyncio
+async def test_existing_impressions_leave_out_reflections_hidden_behind_a_retired_persona_line(tmp_path):
+    """A reflection the render hides because it repeats a retired persona
+    line is no live impression: offering it as "already covered" would
+    swallow the very facts that would bring a stale line back."""
+    tmpdir = str(tmp_path)
+    _write_json(tmpdir, "reflections.json", [
+        _reflection("ref_old", "主人住在北京", source_facts_oldest_at=_facts_since(5)),
+        _reflection("ref_new", "主人住在北京", source_facts_oldest_at=_facts_since(1)),
+        _reflection("ref_hollow", "两人形成了默契", source_facts_oldest_at=_facts_since(1)),
+        _reflection("ref_live", "主人睡前说晚安"),
+    ])
+    _write_json(tmpdir, "persona.json", {"relationship": {"facts": [
+        _persona_entry("p_stale", "主人住在北京", **_stale_since(3)),
+        # Retired for its wording: hidden even with facts newer than that.
+        _persona_entry("p_hollow", "两人形成了默契", **_stale_since(3, "hollow")),
+    ]}})
+    _fs, _pm, re = _install(tmpdir)
+    with _patch_vectors(_FakeEmbeddingService()):
+        _block, candidates = await re._build_existing_impressions_block(
+            CHAR, _facts(), subject=None, prompt_lang="zh",
+        )
+    assert set(candidates) == {"reflection.ref_new", "reflection.ref_live"}
+
+
+@pytest.mark.asyncio
+async def test_synthesis_skip_falls_back_when_its_line_is_retired_in_persona_meanwhile(tmp_path):
+    """Introspection may retire the persona line a candidate repeats while
+    the LLM judges the batch; the render then hides the candidate, so the
+    recheck under the lock turns the skip into a normal new reflection."""
+    tmpdir = str(tmp_path)
+    _write_json(tmpdir, "facts.json", _facts())
+    text = "主人每晚睡前都会对小天说晚安"
+    _write_json(tmpdir, "reflections.json", [_reflection("ref_old", text)])
+    _fs, pm, re = _install(tmpdir)
+    answer = {
+        "skip": True, "covered_by": "reflection.ref_old",
+        "entity": "relationship", "relation_type": "dynamic",
+        "reflection": "主人连着几晚睡前对小天说晚安",
+        "temporal_scope": "pattern", "event_when": None,
+    }
+
+    async def _llm_line_retired(api_config, prompt, **_kw):
+        assert "reflection.ref_old" in prompt, "夹具失效：目标没有进候选"
+        persona = await pm.aget_persona(CHAR)
+        persona.setdefault("relationship", {}).setdefault("facts", []).append(
+            _persona_entry("p_line", text, **_stale_since(0)),
+        )
+        return SimpleNamespace(content=json.dumps(answer, ensure_ascii=False)), 0
+
+    with _patch_vectors(_FakeEmbeddingService()), \
+         patch("memory.thinking_llm.ainvoke_thinking", _llm_line_retired), \
+         patch("utils.language_utils.get_global_language", return_value="zh"):
+        created = await re.synthesize_reflections(CHAR)
+
+    assert len(created) == 1, "目标被渲染隐藏后应退回正常新增"
+    old = {r["id"]: r for r in _read_json(tmpdir, "reflections.json")}["ref_old"]
+    assert "covered_fact_ids" not in old
+
+
+@pytest.mark.asyncio
+async def test_restatement_retired_after_the_check_is_caught_at_save(tmp_path):
+    """Introspection can retire a matching line between the unlocked
+    restatement check and the save; the save rechecks the entries retired
+    since and stores the new reflection retired."""
+    tmpdir = str(tmp_path)
+    _write_json(tmpdir, "facts.json", _facts())
+    text = "两人睡前道晚安形成了默契"
+    _fs, _pm, re = _install(tmpdir)
+    original = re._afind_retired_restatement
+
+    async def _check_then_retire(*args, **kwargs):
+        outcome = await original(*args, **kwargs)
+        _write_json(tmpdir, "reflections.json", [
+            _reflection("ref_late", text, **_retired("hollow")),
+        ])
+        return outcome
+
+    with _patch_vectors(_FakeEmbeddingService()), _llm(_new_reflection_answer(text), []), \
+         patch.object(re, "_afind_retired_restatement", _check_then_retire), \
+         patch("utils.language_utils.get_global_language", return_value="zh"):
+        created = await re.synthesize_reflections(CHAR)
+
+    assert len(created) == 1
+    stored = {r["id"]: r for r in _read_json(tmpdir, "reflections.json")}[created[0]["id"]]
+    assert stored["permanent_suppression"]["restates"] == "reflection.ref_late"
+
+
+def test_refine_modify_that_absorbs_facts_forgets_the_evidence_time():
+    from memory.reflection import ReflectionEngine
+
+    kept = {"text": "a", "source_facts_oldest_at": "2026-11-01T00:00:00"}
+    ReflectionEngine._apply_refine_modify(kept, "b", "r", "2026-11-04T00:00:00")
+    absorbed = {"text": "a", "source_facts_oldest_at": "2026-11-01T00:00:00"}
+    ReflectionEngine._apply_refine_modify(
+        absorbed, "b", "r", "2026-11-04T00:00:00", absorbed_fact_ids=["f9"],
+    )
+
+    assert kept["source_facts_oldest_at"] == "2026-11-01T00:00:00"
+    assert absorbed["source_facts_oldest_at"] is None, "吸收了年龄不明的事实，不能再当作新证据"
+
+
+@pytest.mark.asyncio
+async def test_retired_restatement_without_vectors_matches_identical_text_only(tmp_path):
+    tmpdir = str(tmp_path)
+    _write_json(tmpdir, "reflections.json", [
+        _reflection("ref_hollow", "两人睡前道晚安形成了默契", **_retired("hollow")),
+        _reflection("ref_live", "主人睡前说晚安"),
+    ])
+    _fs, _pm, re = _install(tmpdir)
+    with _patch_vectors(_FakeEmbeddingService(available=False)):
+        same, seen = await re._afind_retired_restatement(CHAR, " 两人睡前道晚安形成了默契 ")
+        similar, _ = await re._afind_retired_restatement(CHAR, "两人每晚互道晚安形成了深厚默契")
+        live, _ = await re._afind_retired_restatement(CHAR, "主人睡前说晚安")
+
+    assert same == "reflection.ref_hollow"
+    assert similar is None, "没有向量时只认完全相同的文本"
+    assert live is None, "只比对被压制的条目"
+    assert seen == {"reflection.ref_hollow"}, "返回本次比对过的候选，供保存时只复查新增的"
 
 
 @pytest.mark.asyncio
