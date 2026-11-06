@@ -10,6 +10,7 @@ import type {
   CreatedPluginProject,
   PublishStatus,
   PublishTask,
+  Toolchain,
 } from '@/api/pluginProjects'
 import { RELEASE_WORKFLOW_PATH } from '@/api/pluginProjects'
 
@@ -27,8 +28,21 @@ const api = vi.hoisted(() => ({
   getPluginProjectPublishTask: vi.fn(),
   startPluginProjectPublish: vi.fn(),
   cancelPluginProjectPublishTask: vi.fn(),
+  getPluginToolchain: vi.fn(),
+  buildPluginCli: vi.fn(),
+  downloadPluginPackage: vi.fn(),
+  fetchMarketPluginVersions: vi.fn(),
   push: vi.fn(),
   route: { query: {} as Record<string, string> },
+}))
+vi.mock('@/api/pluginCli', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api/pluginCli')>()),
+  buildPluginCli: api.buildPluginCli,
+  downloadPluginPackage: api.downloadPluginPackage,
+}))
+vi.mock('@/api/market', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api/market')>()),
+  fetchMarketPluginVersions: api.fetchMarketPluginVersions,
 }))
 vi.mock('@/api/pluginProjects', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/api/pluginProjects')>()),
@@ -45,6 +59,7 @@ vi.mock('@/api/pluginProjects', async (importOriginal) => ({
   getPluginProjectPublishTask: api.getPluginProjectPublishTask,
   startPluginProjectPublish: api.startPluginProjectPublish,
   cancelPluginProjectPublishTask: api.cancelPluginProjectPublishTask,
+  getPluginToolchain: api.getPluginToolchain,
 }))
 vi.mock('vue-router', () => ({
   useRoute: () => api.route,
@@ -115,12 +130,14 @@ const listed: AuthoringProject = {
   entry: created.entry,
   loaded: true,
   running: false,
+  problem: null,
 }
 /** A project whose local and remote state passes every publish gate, without a release. */
 function publishStatus(overrides: {
   repository?: Partial<PublishStatus['repository']>
   remote?: Partial<NonNullable<PublishStatus['remote']>> | null
   actions?: PublishStatus['actions']
+  workspace?: PublishStatus['workspace']
 } = {}): PublishStatus {
   return {
     plugin_id: listed.plugin_id!,
@@ -155,6 +172,7 @@ function publishStatus(overrides: {
             tag: 'missing',
             ...overrides.remote,
           },
+    workspace: overrides.workspace ?? null,
   }
 }
 const publishTask = (overrides: Partial<PublishTask> = {}): PublishTask => ({
@@ -204,6 +222,13 @@ function approvedSubmission(commit = 'abc') {
   })
 }
 const taskNotFound = { response: { data: { detail: { code: 'PUBLISH_TASK_NOT_FOUND' } } } }
+const readyToolchain = (overrides: Partial<Toolchain> = {}): Toolchain => ({
+  git: { installed: true, version: '2.55.0', user_name: 'Dev', user_email: 'dev@example.com' },
+  uv: { installed: true, version: '0.12.18' },
+  gh: { installed: true, version: '2.101.0', authenticated: true, login: 'octocat' },
+  source_checkout: true,
+  ...overrides,
+})
 const NativeMutationObserver = globalThis.MutationObserver
 let cleanup: (() => void) | undefined
 
@@ -277,12 +302,21 @@ async function openTab(container: HTMLElement, index: number) {
 }
 
 async function openPublish(container: HTMLElement) {
-  await openTab(container, 2)
+  await openTab(container, 1)
   return container.querySelector('.authoring-publish')!
 }
 
+function messageBox() {
+  return document.querySelector('.el-message-box')
+}
+
+/** The five publish steps, without the step-0 toolchain page. */
 function steps() {
-  return [...document.querySelectorAll('.authoring-publish-step')]
+  return [...document.querySelectorAll('.authoring-publish-step:not([data-step="toolchain"])')]
+}
+
+function page(id: string) {
+  return document.querySelector(`.authoring-publish-step[data-step="${id}"]`) as HTMLElement
 }
 
 async function settle() {
@@ -312,6 +346,10 @@ beforeEach(() => {
   api.pickProjectDirectory.mockResolvedValue('E:/Projects')
   // Never having published is the normal state the publish tab expects.
   api.getPluginProjectPublishTask.mockRejectedValue(taskNotFound)
+  // The Market's version list is unread unless a test answers it.
+  api.fetchMarketPluginVersions.mockResolvedValue(null)
+  // A machine with every publishing tool, unless a test says otherwise.
+  api.getPluginToolchain.mockResolvedValue(readyToolchain())
   market.authenticated = false
   market.listMarketSubmissions.mockResolvedValue({ items: [] })
   market.listMarketZones.mockResolvedValue([{ id: 'game', name: 'Game' }])
@@ -394,6 +432,26 @@ describe('authoring workbench backed by the server project list', () => {
     expect(api.openProjectDirectory).toHaveBeenCalledWith(listed.source_dir)
     await click(en.openPluginPage)
     expect(api.push).toHaveBeenCalledWith('/plugins/hello_world')
+    await click(en.viewLogs)
+    expect(api.push).toHaveBeenCalledWith('/logs/hello_world')
+  })
+
+  it.each([
+    ['load_failed', "No module named 'x'", en.statusLoadFailed, en.loadFailedHint],
+    ['reload_failed', null, en.statusReloadFailed, en.reloadFailedHint],
+    ['startup_degraded', 'startup failed', en.statusStartupDegraded, en.startupDegradedHint],
+  ] as const)('shows the runtime problem %s instead of a plain status', async (problem, error, tag, hint) => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([
+      { ...listed, problem, error, running: problem === 'startup_degraded' },
+    ])
+    const container = await mount()
+    expect(container.querySelector('.authoring-header .el-tag')!.textContent).toContain(tag)
+    expect(document.body.textContent).toContain(hint)
+    const details = container.querySelector('details.authoring-diagnostic')
+    if (error) expect(details!.textContent).toContain(error)
+    else expect(details).toBeNull()
+    expect(buttons(en.viewLogs)).toHaveLength(1)
   })
 
   it('shows every project field on one page with the status beside the title', async () => {
@@ -401,7 +459,7 @@ describe('authoring workbench backed by the server project list', () => {
     api.listPluginProjects.mockResolvedValue([listed])
     const container = await mount()
     const tabs = [...container.querySelectorAll('.authoring-tabs > .el-tabs__header [role="tab"]')]
-    expect(tabs.map((tab) => tab.textContent)).toEqual([en.tabOverview, en.precheckTab, en.publishTab])
+    expect(tabs.map((tab) => tab.textContent)).toEqual([en.tabOverview, en.publishTab])
     expect(tabs[0]?.getAttribute('aria-selected')).toBe('true')
     const header = container.querySelector('.authoring-header')!
     expect(header.textContent).toContain(listed.name)
@@ -437,11 +495,20 @@ describe('authoring workbench backed by the server project list', () => {
     expect(release!.textContent).toContain(en.publishStatusWaiting)
     expect(release!.textContent).toContain(en.publishReleaseAfterApproval)
     expect(marketVersion!.textContent).toContain(en.marketVersionStepDetailLater)
-    // Nothing is published before the Market approves the submission.
-    expect(buttons(en.publishRunGithubMarket)).toHaveLength(0)
-    expect(buttons(en.publishRunGithub)).toHaveLength(0)
+    // Later steps can be previewed; they point back at the step to finish first.
+    expect(release!.textContent).toContain(
+      'Step 3 (Market submission) comes first. You can look around here now and come back later.'
+    )
+    expect(repository!.textContent).not.toContain('comes first')
+    // The buttons stay clickable; the page explains what is missing on click.
+    expect(buttons(en.publishRunGithubMarket)).toHaveLength(1)
+    expect(buttons(en.publishRunGithub)).toHaveLength(1)
+    expect(buttons(en.publishRefresh)).toHaveLength(1)
     expect(pane.textContent).toContain('.github/workflows/verify.yml')
     expect(pane.textContent).toContain('n.e.k.o_plugin_hello_world')
+    // The local check now lives in the verify step, with its CI note up front.
+    expect(verify!.textContent).toContain(en.precheckRun)
+    expect(verify!.textContent).toContain(en.precheckCiNote)
   })
 
   it('carries the real submission panel state into the submission and Market steps', async () => {
@@ -500,10 +567,35 @@ describe('authoring workbench backed by the server project list', () => {
     const container = await mount()
     await openPublish(container)
     expect(steps()[4]!.textContent).toContain(detail)
-    expect(buttons(en.publishRunMarket)).toHaveLength(0)
+    // The Market already answered: notifying again is a soft blocker that asks first.
+    await click(en.publishRunMarket)
+    await settle()
+    expect(messageBox()?.textContent).toContain(en.publishSoftTitle)
+    expect(messageBox()?.textContent).toContain(en.publishContinueAnyway)
+    expect(api.startPluginProjectPublish).not.toHaveBeenCalled()
   })
 
-  it('offers the full publish only after the second confirmation', async () => {
+  it('reads a listed version from the Market after the server forgot the task', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(
+      publishStatus({ remote: { release: { state: 'published', missing_assets: [] } } })
+    )
+    api.fetchMarketPluginVersions.mockResolvedValue([
+      { id: 3, plugin_id: 7, version: 'v0.1.0' },
+      { id: 4, plugin_id: 7, version: 'v0.2.0' },
+    ])
+    approvedSubmission()
+    const container = await mount()
+    await openPublish(container)
+    expect(api.fetchMarketPluginVersions).toHaveBeenCalledWith(7)
+    const marketVersion = steps()[4]!
+    expect(marketVersion.textContent).toContain(en.publishStatusDone)
+    expect(marketVersion.textContent).toContain(en.marketVersionListed)
+    expect(marketVersion.textContent).not.toContain('comes first')
+  })
+
+  it('starts the full publish after the second confirmation, with its task in the Release step', async () => {
     api.route.query = { project: 'p1' }
     api.listPluginProjects.mockResolvedValue([listed])
     api.getPluginProjectPublishStatus.mockResolvedValue(publishStatus())
@@ -511,17 +603,253 @@ describe('authoring workbench backed by the server project list', () => {
     approvedSubmission()
     const container = await mount()
     await openPublish(container)
-    // No release yet, so the full flow is offered, not the Market-only one.
-    expect(buttons(en.publishRunMarket)).toHaveLength(0)
+    // Each step carries its own actions.
+    expect(steps()[3]!.textContent).toContain(en.publishRunGithubMarket)
+    expect(steps()[4]!.textContent).toContain(en.publishRunMarket)
     await click(en.publishRunGithubMarket)
     await settle()
     expect(api.startPluginProjectPublish).not.toHaveBeenCalled()
     await click(en.publishConfirmTitle, { last: true })
     await settle()
     expect(api.startPluginProjectPublish).toHaveBeenCalledWith('p1', 'github_and_market')
-    expect(container.querySelector('.authoring-publish-task')?.textContent).toContain(
+    expect(steps()[3]!.querySelector('.authoring-publish-task')?.textContent).toContain(
       en.publishTaskQueued
     )
+    expect(steps()[4]!.querySelector('.authoring-publish-task')).toBeNull()
+  })
+
+  it('explains a hard blocker and runs nothing: Market notify before a Release', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(publishStatus())
+    approvedSubmission()
+    const container = await mount()
+    await openPublish(container)
+    await click(en.publishRunMarket)
+    await settle()
+    const box = messageBox()!
+    expect(box.textContent).toContain(en.publishBlockedTitle)
+    expect(box.textContent).toContain('Release v0.2.0 does not exist yet.')
+    // No way to continue: only going to the step or closing.
+    expect(box.textContent).not.toContain(en.publishContinueAnyway)
+    expect(box.textContent).not.toContain(en.publishConfirmTitle)
+    const focus = vi.fn()
+    const heading = steps()[3]!.querySelector('h3') as HTMLElement
+    heading.focus = focus
+    await click('Go to step 4: GitHub Release', { last: true })
+    await settle()
+    expect(focus).toHaveBeenCalled()
+    expect(api.startPluginProjectPublish).not.toHaveBeenCalled()
+  })
+
+  it('suggests the earlier step on a soft blocker, and continuing still runs', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(publishStatus())
+    api.startPluginProjectPublish.mockResolvedValue(publishTask({ mode: 'github' }))
+    const container = await mount()
+    await openPublish(container)
+    // Not approved: a Release alone works, so it is soft.
+    await click(en.publishRunGithub)
+    await settle()
+    expect(messageBox()?.textContent).toContain(en.publishSoftNotApproved)
+    // Going back runs nothing.
+    await click('Go to step 3: Market submission', { last: true })
+    await settle()
+    expect(api.startPluginProjectPublish).not.toHaveBeenCalled()
+    // Continuing reaches the usual publish confirmation.
+    await click(en.publishRunGithub)
+    await settle()
+    await click(en.publishContinueAnyway, { last: true })
+    await settle()
+    expect(api.startPluginProjectPublish).not.toHaveBeenCalled()
+    await click(en.publishConfirmTitle, { last: true })
+    await settle()
+    expect(api.startPluginProjectPublish).toHaveBeenCalledWith('p1', 'github')
+  })
+
+  it('treats the full publish before approval as a hard blocker', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(publishStatus())
+    const container = await mount()
+    await openPublish(container)
+    await click(en.publishRunGithubMarket)
+    await settle()
+    expect(messageBox()?.textContent).toContain(en.publishBlockedNotApproved)
+    expect(messageBox()?.textContent).not.toContain(en.publishContinueAnyway)
+    expect(api.startPluginProjectPublish).not.toHaveBeenCalled()
+  })
+
+  it('moves focus to a section when its step node is clicked', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(publishStatus())
+    const container = await mount()
+    await openPublish(container)
+    const nodes = [...container.querySelectorAll('.authoring-stepper__node')] as HTMLElement[]
+    // Step 0 (tools) and the five publish steps.
+    expect(nodes.map((node) => node.getAttribute('data-step'))).toEqual([
+      'toolchain',
+      'repository',
+      'verify',
+      'submission',
+      'release',
+      'market',
+    ])
+    expect(nodes[3]!.getAttribute('aria-current')).toBe('step')
+    nodes[5]!.click()
+    await flush()
+    expect(document.activeElement).toBe(steps()[4]!.querySelector('h3'))
+  })
+
+  it('shows one step per page, opening on the step to act on', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(publishStatus())
+    const container = await mount()
+    await openPublish(container)
+    const visible = () => steps().filter((item) => (item as HTMLElement).style.display !== 'none')
+    expect(visible().map((item) => item.getAttribute('data-step'))).toEqual(['submission'])
+    expect(container.querySelector('.authoring-publish-pager')!.textContent).toContain('Step 3 of 5')
+    await click('Next: GitHub Release')
+    expect(visible().map((item) => item.getAttribute('data-step'))).toEqual(['release'])
+    const nodes = [...container.querySelectorAll('.authoring-stepper__node')] as HTMLElement[]
+    expect(nodes[4]!.getAttribute('aria-current')).toBe('step')
+    // The step to act on keeps its own marker while another page is shown.
+    expect(nodes[3]!.className).toContain('authoring-stepper__node--current')
+    await click('Previous: Market submission')
+    await click('Previous: Verification workflow')
+    await click('Previous: Public repository')
+    await click('Previous: Prepare tools')
+    const allPages = [...document.querySelectorAll('.authoring-publish-step')] as HTMLElement[]
+    const shown = allPages.filter((item) => item.style.display !== 'none')
+    expect(shown.map((item) => item.getAttribute('data-step'))).toEqual(['toolchain'])
+    expect(container.querySelector('.authoring-publish-pager')!.textContent).toContain('Step 0 of 5')
+    expect(buttons('Previous: Prepare tools')).toHaveLength(0)
+    // A page the user picked stays put through a refresh.
+    await click(en.publishRefresh)
+    expect(page('toolchain').style.display).not.toBe('none')
+  })
+
+  it('opens on step 0 while a required tool is missing, with how to install it', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(publishStatus())
+    api.getPluginToolchain.mockResolvedValue(
+      readyToolchain({
+        uv: { installed: false, version: null },
+        gh: { installed: true, version: '2.101.0', authenticated: false, login: null },
+      })
+    )
+    const container = await mount()
+    await openPublish(container)
+    const tools = page('toolchain')
+    expect(tools.style.display).not.toBe('none')
+    expect(tools.querySelector('h3')!.textContent).toContain('0. Prepare tools')
+    const uv = tools.querySelector('[data-tool="uv"]')!
+    expect(uv.textContent).toContain(en.toolMissing)
+    expect(uv.textContent).toContain(en.toolRequired)
+    // A missing tool opens with its install commands.
+    expect(uv.querySelector('details')!.open).toBe(true)
+    expect(uv.textContent).toContain('astral.sh/uv/install.ps1')
+    const account = tools.querySelector('[data-tool="githubAccount"]')!
+    expect(account.textContent).toContain(en.toolSignedOut)
+    expect(account.textContent).toContain('gh auth login')
+    const git = tools.querySelector('[data-tool="git"]')!
+    expect(git.textContent).toContain('Ready · 2.55.0')
+    expect(git.querySelector('details')!.open).toBe(false)
+    // Publishing without uv is refused and points back to step 0.
+    await click('Next: Public repository')
+    await click('Next: Verification workflow')
+    await click('Next: Market submission')
+    await click('Next: GitHub Release')
+    await click(en.publishRunGithub)
+    await settle()
+    expect(messageBox()?.textContent).toContain('uv is not set up on this computer (step 0).')
+    await click('Go to step 0: Prepare tools', { last: true })
+    await settle()
+    expect(page('toolchain').style.display).not.toBe('none')
+    expect(api.startPluginProjectPublish).not.toHaveBeenCalled()
+  })
+
+  it('lists uncommitted files and recent commits on the repository page', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(
+      publishStatus({
+        repository: { worktree_clean: false, dirty_paths: ['main.py', 'notes.txt'], head: 'abc1234def' },
+        workspace: {
+          changes: [
+            { path: 'main.py', kind: 'modified' },
+            { path: 'notes.txt', kind: 'untracked' },
+          ],
+          changes_total: 2,
+          commits: [
+            { sha: 'abc1234def', author: 'Dev', timestamp: 1_700_000_000, subject: 'local work', pushed: false },
+            { sha: 'fff0000aaa', author: 'Dev', timestamp: 1_699_000_000, subject: 'first', pushed: true },
+          ],
+          ahead: 1,
+          behind: 0,
+        },
+      })
+    )
+    const container = await mount()
+    await openPublish(container)
+    const workspace = page('repository').querySelector('.authoring-workspace')!
+    expect(workspace.textContent).toContain(en.workspaceTitle)
+    expect(workspace.textContent).toContain('main.py')
+    expect(workspace.textContent).toContain(en.workspaceChangeModified)
+    expect(workspace.textContent).toContain(en.workspaceChangeUntracked)
+    expect(workspace.textContent).toContain('1 commit(s) not pushed')
+    const commits = [...workspace.querySelectorAll('.authoring-workspace__commits li')]
+    expect(commits.map((item) => item.querySelector('.authoring-workspace__subject')!.textContent)).toEqual([
+      'local work',
+      'first',
+    ])
+    expect(commits[0]!.textContent).toContain('abc1234')
+    expect(commits[0]!.textContent).toContain('HEAD')
+    expect(commits[0]!.textContent).toContain(en.workspaceNotPushed)
+    expect(commits[1]!.textContent).not.toContain(en.workspaceNotPushed)
+  })
+
+  it('explains every page for beginners, with the project filled into its commands', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(publishStatus())
+    const container = await mount()
+    await openPublish(container)
+    for (const id of ['toolchain', 'repository', 'verify', 'submission', 'release', 'market']) {
+      const guide = page(id).querySelector('.authoring-guide')
+      expect(guide, `guide on ${id}`).toBeTruthy()
+      expect(guide!.querySelector('.authoring-guide__summary')!.textContent!.length).toBeGreaterThan(40)
+      expect(guide!.querySelectorAll('.authoring-guide__section').length).toBeGreaterThan(1)
+    }
+    const repository = page('repository').querySelector('.authoring-guide')!.textContent
+    expect(repository).toContain('git push -u origin main')
+    expect(repository).toContain('n.e.k.o_plugin_hello_world')
+    expect(page('release').querySelector('.authoring-guide')!.textContent).toContain('v0.2.0')
+    expect(page('verify').querySelector('.authoring-guide')!.textContent).toContain(
+      'https://github.com/owner/hello_world/actions'
+    )
+    // Unfilled placeholders never leak into the text.
+    expect(container.querySelector('.authoring-publish')!.textContent).not.toMatch(/\{(repo|tag|version|branch|pluginId|dir)\}/)
+  })
+
+  it('opens the page a blocker dialog points to', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(publishStatus())
+    approvedSubmission()
+    const container = await mount()
+    await openPublish(container)
+    await click('Next: Market version')
+    await click(en.publishRunMarket)
+    await settle()
+    await click('Go to step 4: GitHub Release', { last: true })
+    await settle()
+    const shown = steps().filter((item) => (item as HTMLElement).style.display !== 'none')
+    expect(shown.map((item) => item.getAttribute('data-step'))).toEqual(['release'])
   })
 
   it('shows the server reason after a refused publish', async () => {
@@ -542,7 +870,8 @@ describe('authoring workbench backed by the server project list', () => {
     await settle()
     await click(en.publishConfirmTitle, { last: true })
     await settle()
-    const text = container.querySelector('.authoring-publish')!.textContent
+    // The refusal shows in the step whose button was pressed.
+    const text = steps()[3]!.textContent
     expect(text).toContain(en.publishNotReady)
     expect(text).toContain('release assets are incomplete: a.zip')
   })
@@ -558,10 +887,12 @@ describe('authoring workbench backed by the server project list', () => {
     )
     const container = await mount()
     await openPublish(container)
-    expect(buttons(en.publishRunGithubMarket)).toHaveLength(0)
-    expect(buttons(en.publishRunMarket)).toHaveLength(0)
     expect(buttons(en.publishCreateRepo)).toHaveLength(1)
     expect(steps()[0]!.textContent).toContain(en.publishRepoNoGithub)
+    await click(en.publishRunGithubMarket)
+    await settle()
+    expect(messageBox()?.textContent).toContain(en.publishRepoNoGithub)
+    expect(api.startPluginProjectPublish).not.toHaveBeenCalled()
   })
 
   it('names a non-GitHub origin instead of offering to create a repository', async () => {
@@ -617,17 +948,21 @@ describe('authoring workbench backed by the server project list', () => {
       publishStatus({ remote: { visibility: 'private' } }),
       en.publishRepoNotPublic,
     ],
-  ])('offers no GitHub publish when %s', async (_, status, detail) => {
+  ])('refuses the GitHub publish with the reason when %s', async (_, status, detail) => {
     api.route.query = { project: 'p1' }
     api.listPluginProjects.mockResolvedValue([listed])
     api.getPluginProjectPublishStatus.mockResolvedValue(status)
     approvedSubmission()
     const container = await mount()
     await openPublish(container)
-    expect(buttons(en.publishRunGithubMarket)).toHaveLength(0)
-    expect(buttons(en.publishRunGithub)).toHaveLength(0)
     expect(steps()[0]!.textContent).toContain(en.publishStatusTodo)
     expect(steps()[0]!.textContent).toContain(detail)
+    await click(en.publishRunGithub)
+    await settle()
+    expect(messageBox()?.textContent).toContain(en.publishBlockedTitle)
+    expect(messageBox()?.textContent).toContain(detail)
+    expect(messageBox()?.textContent).not.toContain(en.publishContinueAnyway)
+    expect(api.startPluginProjectPublish).not.toHaveBeenCalled()
   })
 
   it('reports local git problems even when GitHub cannot be read', async () => {
@@ -773,9 +1108,10 @@ describe('authoring workbench backed by the server project list', () => {
     expect(api.getPluginProjectPublishStatus).toHaveBeenLastCalledWith('p1', true)
   })
 
-  it('runs the pre-release check and renders the CI gate report', async () => {
+  it('runs the pre-release check in the verify step and renders the CI gate report', async () => {
     api.route.query = { project: 'p1' }
     api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(publishStatus())
     api.precheckPluginProject.mockResolvedValue({
       plugin_id: listed.plugin_id,
       version: listed.version,
@@ -789,12 +1125,14 @@ describe('authoring workbench backed by the server project list', () => {
       ],
     })
     const container = await mount()
-    const tabs = [...container.querySelectorAll('.authoring-tabs > .el-tabs__header [role="tab"]')]
-    ;(tabs[1] as HTMLElement).click()
-    await flush()
+    const publish = await openPublish(container)
     await click(en.precheckRun)
     expect(api.precheckPluginProject).toHaveBeenCalledWith('p1')
-    const pane = container.querySelector('.authoring-precheck')!
+    expect(publish.querySelector('[data-step="verify"] .authoring-precheck')).toBeTruthy()
+    const precheck = container.querySelector('.authoring-precheck')!
+    expect(precheck.textContent).toContain(en.precheckStageFailed)
+    expect(precheck.textContent).toContain(en.precheckSeverityWarning)
+    const pane = precheck
     expect(pane.textContent).toContain(en.precheckFailed)
     expect(pane.textContent).toContain(en.precheckStageSync)
     expect(pane.textContent).toContain('vendor drift')
@@ -865,6 +1203,78 @@ describe('authoring workbench backed by the server project list', () => {
     await mount()
     expect(document.body.textContent).toContain(en.notLoaded)
     expect(buttons(en.openPluginPage)).toHaveLength(0)
+  })
+
+  it('says why the runtime did not load a readable project', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([
+      {
+        ...listed,
+        loaded: false,
+        problem: 'id_taken',
+        error: "Plugin ID 'hello_world' is provided by D:/plugins/hello_world/plugin.toml",
+      },
+    ])
+    const container = await mount()
+    expect(document.body.textContent).toContain(en.unloadedIdTaken.replace('{id}', 'hello_world'))
+    expect(container.querySelector('details.authoring-diagnostic')!.textContent).toContain(
+      'D:/plugins/hello_world/plugin.toml'
+    )
+  })
+
+  it('does not blame a valid project when the plugin system is off', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([
+      { ...listed, loaded: false, problem: 'runtime_inactive', error: null },
+    ])
+    const container = await mount()
+    const notice = container.querySelector('.authoring-details .el-alert')!
+    expect(notice.textContent).toContain(en.unloadedRuntimeInactive)
+    expect(notice.textContent).not.toContain('plugin.toml')
+    // Informational, not a warning about the project.
+    expect(notice.className).toContain('el-alert--info')
+    expect(container.querySelector('.authoring-header')!.textContent).toContain(
+      en.statusRuntimeInactive
+    )
+    expect(container.querySelector('details.authoring-diagnostic')).toBeNull()
+  })
+
+  it('builds the project package from its source and downloads it', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([{ ...listed, loaded: false }])
+    api.buildPluginCli.mockResolvedValue({
+      built: [{ package_path: 'D:/packages/hello_world.neko-plugin' }],
+      built_count: 1,
+      failed: [],
+      failed_count: 0,
+      ok: true,
+    })
+    await mount()
+    await click(en.buildPackage)
+    expect(api.buildPluginCli).toHaveBeenCalledWith({
+      mode: 'single',
+      plugin_ref: { root_id: 'project', directory_name: 'hello_world' },
+    })
+    expect(api.downloadPluginPackage).toHaveBeenCalledWith('D:/packages/hello_world.neko-plugin')
+    await settle()
+    expect(document.body.textContent).toContain(en.buildPackageDone)
+  })
+
+  it('reports a failed build and downloads nothing', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.buildPluginCli.mockResolvedValue({
+      built: [],
+      built_count: 0,
+      failed: [{ plugin: 'hello_world', error: 'entry module is missing' }],
+      failed_count: 1,
+      ok: false,
+    })
+    await mount()
+    await click(en.buildPackage)
+    await settle()
+    expect(api.downloadPluginPackage).not.toHaveBeenCalled()
+    expect(document.body.textContent).toContain(`${en.buildPackageFailed} entry module is missing`)
   })
 
   it('localizes plugin ID conflicts when adding a project', async () => {

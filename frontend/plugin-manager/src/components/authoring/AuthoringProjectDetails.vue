@@ -1,15 +1,9 @@
 <template>
   <div class="authoring-details">
     <el-alert
-      v-if="project.status !== 'ok'"
-      :title="
-        t(
-          project.status === 'missing'
-            ? 'authoring.statusMissingHint'
-            : 'authoring.statusInvalidHint'
-        )
-      "
-      type="warning"
+      v-if="notice"
+      :title="t(`authoring.${notice}`, { id: project.plugin_id ?? '' })"
+      :type="project.problem === 'runtime_inactive' ? 'info' : 'warning'"
       :closable="false"
       show-icon
     >
@@ -21,15 +15,24 @@
     <section class="authoring-details-panel">
       <header class="authoring-details-header">
         <h3>{{ t('authoring.projectInfo') }}</h3>
-        <el-button
-          v-if="!editing"
-          :icon="Edit"
-          type="primary"
-          text
-          :disabled="project.status !== 'ok'"
-          @click="startEditing"
-          >{{ t('common.edit') }}</el-button
-        >
+        <div v-if="!editing">
+          <el-button
+            :icon="Download"
+            text
+            :loading="packing"
+            :disabled="project.status !== 'ok'"
+            @click="buildPackage"
+            >{{ t('authoring.buildPackage') }}</el-button
+          >
+          <el-button
+            :icon="Edit"
+            type="primary"
+            text
+            :disabled="project.status !== 'ok'"
+            @click="startEditing"
+            >{{ t('common.edit') }}</el-button
+          >
+        </div>
       </header>
       <el-alert v-if="saveError" :title="saveError" type="error" :closable="false" show-icon />
       <form v-if="editing" class="authoring-form authoring-details-form" @submit.prevent="save">
@@ -117,13 +120,26 @@
 import { computed, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { Edit } from '@element-plus/icons-vue'
+import { Download, Edit } from '@element-plus/icons-vue'
+import { buildPluginCli, downloadPluginPackage } from '@/api/pluginCli'
 import {
   updatePluginProjectMetadata,
   type AuthoringProject,
   type PluginProjectMetadata,
 } from '@/api/pluginProjects'
 import { useProjectErrorMessage } from '@/composables/useAuthoringProjects'
+import { formatHttpError } from '@/utils/request'
+
+const PROBLEM_HINTS = {
+  id_taken: 'unloadedIdTaken',
+  source_rejected: 'unloadedSourceRejected',
+  config_rejected: 'unloadedConfigRejected',
+  runtime_inactive: 'unloadedRuntimeInactive',
+  not_registered: 'unloadedNotRegistered',
+  load_failed: 'loadFailedHint',
+  reload_failed: 'reloadFailedHint',
+  startup_degraded: 'startupDegradedHint',
+} as const
 
 const props = defineProps<{ project: AuthoringProject }>()
 const emit = defineEmits<{ updated: [project: AuthoringProject] }>()
@@ -132,6 +148,7 @@ const describeError = useProjectErrorMessage()
 const editing = ref(false)
 const saving = ref(false)
 const saveError = ref('')
+const packing = ref(false)
 const draft = reactive<PluginProjectMetadata>({
   name: '',
   version: '',
@@ -139,6 +156,46 @@ const draft = reactive<PluginProjectMetadata>({
   description: '',
 })
 const canSave = computed(() => !saving.value && !!draft.name.trim() && !!draft.version.trim())
+/** The one problem the overview reports, as an `authoring.` key. */
+const notice = computed(() => {
+  const project = props.project
+  if (project.status === 'missing') return 'statusMissingHint'
+  if (project.status === 'invalid') return 'statusInvalidHint'
+  return project.problem ? PROBLEM_HINTS[project.problem] : null
+})
+
+/** Build the project's .neko-plugin from its current source and download it; running or not. */
+async function buildPackage() {
+  const pluginId = props.project.plugin_id
+  if (!pluginId || packing.value) return
+  packing.value = true
+  try {
+    const result = await buildPluginCli({
+      mode: 'single',
+      // A project folder is named after its plugin ID.
+      plugin_ref: { root_id: 'project', directory_name: pluginId },
+    })
+    const [built] = result.built
+    if (!built) {
+      const detail = result.failed[0]?.error
+      ElMessage.error(
+        detail
+          ? `${t('authoring.buildPackageFailed')} ${detail}`
+          : t('authoring.buildPackageFailed')
+      )
+      return
+    }
+    downloadPluginPackage(built.package_path)
+    ElMessage.success(t('authoring.buildPackageDone'))
+  } catch (error) {
+    const detail = formatHttpError(error)
+    ElMessage.error(
+      detail ? `${t('authoring.buildPackageFailed')} ${detail}` : t('authoring.buildPackageFailed')
+    )
+  } finally {
+    packing.value = false
+  }
+}
 
 function startEditing() {
   Object.assign(draft, {

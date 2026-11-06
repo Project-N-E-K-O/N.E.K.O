@@ -71,12 +71,6 @@
         @updated="onUpdated"
         @conflict="onConflict"
       />
-
-      <div class="authoring-precheck-actions">
-        <el-button :icon="Refresh" :loading="loading" @click="reload()">
-          {{ t('authoring.publishRefresh') }}
-        </el-button>
-      </div>
     </template>
   </div>
 </template>
@@ -84,7 +78,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Refresh, User } from '@element-plus/icons-vue'
+import { User } from '@element-plus/icons-vue'
 import AuthoringSubmissionDraft from '@/components/authoring/AuthoringSubmissionDraft.vue'
 import AuthoringSubmissionStatus from '@/components/authoring/AuthoringSubmissionStatus.vue'
 import { describeSubmissionError } from '@/components/authoring/submissionErrors'
@@ -261,6 +255,8 @@ onMounted(() => {
   void loadZones()
 })
 onUnmounted(stopMarketAuthPolling)
+/** The publish page's single Refresh re-reads the submission through this. */
+defineExpose({ reload: () => reload(submission.value?.id) })
 </script>
 
 <style scoped>

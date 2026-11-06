@@ -11,14 +11,18 @@
  */
 import {
   RELEASE_WORKFLOW_PATH,
+  type PublishMode,
   type PublishRemoteState,
   type PublishStatus,
   type PublishTask,
+  type Toolchain,
 } from '@/api/pluginProjects'
 import type { SubmissionPanelState, SubmissionPhase } from '@/api/marketSubmissions'
 import type { AuthoringMessageKey } from '@/i18n/authoring'
 
 export type PublishStepId = 'repository' | 'verify' | 'submission' | 'release' | 'market'
+/** Step 0 prepares the machine; it is a page of the publish tab, not a publish step. */
+export type PublishPageId = 'toolchain' | PublishStepId
 export type PublishStepState = 'done' | 'todo' | 'waiting' | 'unknown'
 
 /** An i18n key under `authoring.` with its parameters. */
@@ -37,14 +41,63 @@ export interface PublishStep {
 export interface PublishFlowFacts {
   status: PublishStatus
   submission: SubmissionPanelState
-  /** The latest publish task, or null when the project never published. */
+  /** The latest publish task, or null when the project never published or the server forgot it. */
   task: PublishTask | null
+  /** Whether the Market's public version list has this Release's tag; null when it was not read. */
+  marketListed: boolean | null
+  /** The publishing tools of this machine; null or absent when they were not read. */
+  toolchain?: Toolchain | null
+}
+
+/**
+ * Why a publish action is not the recommended move right now. The action stays
+ * clickable; the panel explains the blocker first.
+ */
+export interface ActionBlocker {
+  /** soft: it works, with a worse outcome; hard: the server refuses it or it does lasting harm. */
+  severity: 'soft' | 'hard'
+  /** The page to finish first, or null when the reason is about the action itself. */
+  step: PublishPageId | null
+  reason: FlowMessage
+}
+
+export const PUBLISH_STEP_ORDER: readonly PublishStepId[] = [
+  'repository',
+  'verify',
+  'submission',
+  'release',
+  'market',
+]
+/** Every page of the publish tab; a page's number is its index (step 0 prepares the machine). */
+export const PUBLISH_PAGE_ORDER: readonly PublishPageId[] = ['toolchain', ...PUBLISH_STEP_ORDER]
+
+export type ToolId = 'git' | 'gitIdentity' | 'uv' | 'gh' | 'githubAccount' | 'sourceCheckout'
+
+export interface ToolCheck {
+  id: ToolId
+  /** ok: ready; missing: install or set it up; unknown: not read yet. */
+  state: 'ok' | 'missing' | 'unknown'
+  /** The version, account or name to show once it is ready. */
+  value: string | null
+  /** A missing tool keeps some action from working at all. */
+  required: boolean
+}
+
+export interface ToolchainPage {
+  state: PublishStepState
+  tools: ToolCheck[]
 }
 
 export interface PublishFlow {
   steps: PublishStep[]
-  /** The first step to act on; an unknown one only when nothing is actionable. */
-  currentStepId: PublishStepId | null
+  /** Step 0: the tools this machine needs; `unknown` until they are read. */
+  toolchain: ToolchainPage
+  /** Per publish mode: hard blockers first, then soft ones, each in step order. */
+  blockers: Record<PublishMode, ActionBlocker[]>
+  /** For a later page that is not done: the current one, which is better finished first. */
+  prerequisites: Partial<Record<PublishStepId, PublishPageId>>
+  /** The first page to act on; an unknown one only when nothing is actionable. */
+  currentStepId: PublishPageId | null
   /** HEAD once it is on its origin branch, so the Market can resolve it. */
   pushedHead: string | null
   /** No origin at all: the workbench can create the GitHub repository. */
@@ -196,11 +249,14 @@ function marketAnswer(task: PublishTask | null, tag: string): Omit<PublishStep, 
 }
 
 function marketStep(
+  listed: boolean | null,
   answer: Omit<PublishStep, 'id' | 'warning'> | null,
   approved: boolean,
   releaseReady: boolean,
   tag: string
 ): Omit<PublishStep, 'id' | 'warning'> {
+  // The Market's own list outlives the task the server keeps in memory.
+  if (listed) return { state: 'done', detail: message('marketVersionListed') }
   if (answer) return answer
   if (!approved) return { state: 'waiting', detail: message('marketVersionStepDetailLater') }
   return releaseReady
@@ -242,6 +298,162 @@ function remoteWarning(remote: PublishRemoteState | null): FlowMessage | null {
   return remote.reachable ? null : message('publishRemoteUnreachable')
 }
 
+const hard = (step: PublishPageId | null, reason: FlowMessage): ActionBlocker => ({
+  severity: 'hard',
+  step,
+  reason,
+})
+const soft = (step: PublishPageId | null, reason: FlowMessage): ActionBlocker => ({
+  severity: 'soft',
+  step,
+  reason,
+})
+
+interface BlockerFacts {
+  status: PublishStatus
+  submission: PublishFlowFacts['submission']
+  approved: boolean
+  releaseReady: boolean
+  /** The Market already answered for this tag, or lists it. */
+  marketDone: boolean
+}
+
+/**
+ * The tag-and-Release modes. Hard: the server gate (`_local_gate`,
+ * `_remote_release_blockers`) refuses, the Release already exists, or the
+ * Market would refuse the notification after the tag is pushed. Soft: the
+ * Release works but is unlikely to be listed at once.
+ */
+function githubBlockers(facts: BlockerFacts, notify: boolean): ActionBlocker[] {
+  const { status, submission, approved, releaseReady } = facts
+  const repo = status.repository
+  const remote = status.remote
+  const result: ActionBlocker[] = []
+  const local = localRepositoryProblem(status)
+  if (local) result.push(hard('repository', local))
+  else if (remote?.visibility === 'private' || remote?.visibility === 'not_found') {
+    result.push(hard('repository', message('publishRepoNotPublic')))
+  }
+  if (remote?.tag === 'elsewhere') {
+    result.push(hard('release', message('publishRemoteTagElsewhere', { tag: repo.tag })))
+  }
+  if (releaseReady) result.push(hard('market', message('publishBlockedReleaseExists', { tag: repo.tag })))
+  if (!approved) {
+    result.push(
+      notify
+        ? hard('submission', message('publishBlockedNotApproved'))
+        : soft('submission', message('publishSoftNotApproved'))
+    )
+  }
+  if (remote && remote.verify !== 'success' && remote.verify !== 'unknown') {
+    result.push(soft('verify', message(VERIFY_DETAILS[remote.verify])))
+  }
+  const head = repo.head
+  const resolved = submission.resolvedCommit
+  if (approved && head && resolved && head.toLowerCase() !== resolved.toLowerCase()) {
+    result.push(
+      soft(null, message('publishReleaseCommitDiffers', {
+        head: shortCommit(head),
+        approved: shortCommit(resolved),
+      }))
+    )
+  }
+  return result
+}
+
+/** The Market-only mode: the server needs a GitHub origin and a complete Release; the Market an approval. */
+function marketBlockers(facts: BlockerFacts): ActionBlocker[] {
+  const { status, approved, releaseReady, marketDone } = facts
+  const repo = status.repository
+  const result: ActionBlocker[] = []
+  if (!repo.is_repository || !repo.github_repository) {
+    result.push(hard('repository', localRepositoryProblem(status) ?? message('publishRepoNoGithub')))
+  }
+  if (!approved) result.push(hard('submission', message('publishBlockedNotApproved')))
+  if (!releaseReady) {
+    const release = releaseState(status.remote, repo.tag)
+    result.push(hard('release', release.detail ?? message('publishRemoteUnknown')))
+  }
+  if (marketDone) result.push(soft(null, message('publishSoftAlreadyAnswered', { tag: repo.tag })))
+  return result
+}
+
+const bySeverity = (blockers: ActionBlocker[]) => [
+  ...blockers.filter((item) => item.severity === 'hard'),
+  ...blockers.filter((item) => item.severity === 'soft'),
+]
+
+/**
+ * Step 0. Required: git (the plugin's own repository, commits need an author),
+ * uv (`uvx` runs the pinned ruff in checks and `publish`) and a N.E.K.O source
+ * checkout (the server runs the CLI from it). gh is recommended: it creates the
+ * repository and signs GitHub reads in; without it those are done by hand.
+ */
+function toolchainPage(toolchain: Toolchain | null | undefined): ToolchainPage {
+  const check = (
+    id: ToolId,
+    ready: boolean | undefined,
+    value: string | null | undefined,
+    required: boolean
+  ): ToolCheck => ({
+    id,
+    state: ready === undefined ? 'unknown' : ready ? 'ok' : 'missing',
+    value: ready ? (value ?? null) : null,
+    required,
+  })
+  const git = toolchain?.git
+  const gh = toolchain?.gh
+  const identityReady = git ? git.installed && !!git.user_name && !!git.user_email : undefined
+  const tools = [
+    check('git', git?.installed, git?.version, true),
+    check('gitIdentity', identityReady, `${git?.user_name} <${git?.user_email}>`, true),
+    check('uv', toolchain?.uv.installed, toolchain?.uv.version, true),
+    check('gh', gh?.installed, gh?.version, false),
+    check('githubAccount', gh ? gh.authenticated : undefined, gh?.login, false),
+    check('sourceCheckout', toolchain?.source_checkout, null, true),
+  ]
+  const state: PublishStepState = !toolchain
+    ? 'unknown'
+    : tools.some((tool) => tool.required && tool.state === 'missing')
+      ? 'todo'
+      : 'done'
+  return { state, tools }
+}
+
+/** A required tool that is missing makes every publish mode fail on the server or in the CLI. */
+function toolchainBlockers(page: ToolchainPage, mode: PublishMode): ActionBlocker[] {
+  // Notifying the Market runs no ruff, so it does not need uv.
+  const needed: ToolId[] =
+    mode === 'market_notify' ? ['git', 'sourceCheckout'] : ['git', 'uv', 'sourceCheckout']
+  return page.tools
+    .filter((tool) => needed.includes(tool.id) && tool.state === 'missing')
+    .map((tool) => hard('toolchain', message('publishToolMissingBlocker', { tool: TOOL_NAMES[tool.id] })))
+}
+
+/** Product names, not translated. */
+export const TOOL_NAMES: Record<ToolId, string> = {
+  git: 'Git',
+  gitIdentity: 'Git user.name / user.email',
+  uv: 'uv',
+  gh: 'GitHub CLI (gh)',
+  githubAccount: 'GitHub',
+  sourceCheckout: 'N.E.K.O',
+}
+
+/** Each later step that is not done yet points at the current page. */
+function prerequisites(
+  steps: PublishStep[],
+  current: PublishPageId | null
+): Partial<Record<PublishStepId, PublishPageId>> {
+  const result: Partial<Record<PublishStepId, PublishPageId>> = {}
+  if (!current) return result
+  const from = PUBLISH_PAGE_ORDER.indexOf(current)
+  for (const step of steps) {
+    if (PUBLISH_PAGE_ORDER.indexOf(step.id) > from && step.state !== 'done') result[step.id] = current
+  }
+  return result
+}
+
 export function publishFlow(facts: PublishFlowFacts): PublishFlow {
   const { status, submission } = facts
   const repo = status.repository
@@ -256,18 +468,38 @@ export function publishFlow(facts: PublishFlowFacts): PublishFlow {
     // The submission panel inside this step explains its own state.
     { id: 'submission', state: submissionState, detail: null, warning: null },
     { id: 'release', ...releaseStep(facts, releaseReady) },
-    { id: 'market', warning: null, ...marketStep(answer, approved, releaseReady, repo.tag) },
+    { id: 'market', warning: null, ...marketStep(facts.marketListed, answer, approved, releaseReady, repo.tag) },
   ]
-  const current =
-    steps.find((step) => step.state === 'todo') ?? steps.find((step) => step.state === 'unknown')
+  const tools = toolchainPage(facts.toolchain)
+  // A missing required tool comes before every step; an unread toolchain does not.
+  const current: { id: PublishPageId } | undefined =
+    tools.state === 'todo'
+      ? { id: 'toolchain' }
+      : (steps.find((step) => step.state === 'todo') ?? steps.find((step) => step.state === 'unknown'))
+  const blockerFacts: BlockerFacts = {
+    status,
+    submission,
+    approved,
+    releaseReady,
+    marketDone: !!answer || facts.marketListed === true,
+  }
+  const blockers = (mode: PublishMode, own: ActionBlocker[]) =>
+    bySeverity([...toolchainBlockers(tools, mode), ...own])
   return {
     steps,
+    toolchain: tools,
+    blockers: {
+      github_and_market: blockers('github_and_market', githubBlockers(blockerFacts, true)),
+      github: blockers('github', githubBlockers(blockerFacts, false)),
+      market_notify: blockers('market_notify', marketBlockers(blockerFacts)),
+    },
+    prerequisites: prerequisites(steps, current?.id ?? null),
     currentStepId: current?.id ?? null,
     pushedHead: repo.head_pushed === true ? repo.head : null,
     canCreateRepository: repo.is_repository && !repo.github_repository && repo.origin_url === null,
     canPublishGithub: approved && !releaseReady && localPublishGate(status),
-    // Notifying again after an answer gets the same answer back.
-    canNotifyMarket: approved && releaseReady && !answer && !!repo.github_repository,
+    // Notifying again after an answer, or once listed, gets the same answer back.
+    canNotifyMarket: approved && releaseReady && !answer && !facts.marketListed && !!repo.github_repository,
     remoteWarning: remoteWarning(remote),
     notes: notes(status),
   }

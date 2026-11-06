@@ -50,6 +50,23 @@ logger = get_logger("server.application.plugin_projects")
 
 PluginType = Literal["plugin", "adapter"]
 ProjectStatus = Literal["ok", "missing", "invalid"]
+# What keeps a readable project from working. Not loaded: its plugin ID belongs
+# to another plugin, the directory fails the project-source rules, the runtime
+# refuses its manifest, the plugin system is not running (an embedded server
+# before user plugins are switched on), or it is running but has not picked the
+# project up. Loaded: the registry marked its code unloadable (missing
+# dependency, entry or syntax error), the last automatic reload stopped it and
+# could not start it again, or it runs with a failed startup hook.
+ProjectProblem = Literal[
+    "id_taken",
+    "source_rejected",
+    "config_rejected",
+    "runtime_inactive",
+    "not_registered",
+    "load_failed",
+    "reload_failed",
+    "startup_degraded",
+]
 
 
 @dataclass(frozen=True)
@@ -93,7 +110,8 @@ class AuthoringProject:
     source_dir: str
     added_at: str
     status: ProjectStatus
-    # English diagnostic for ``invalid``; the UI localizes by ``status``.
+    # English diagnostic for ``invalid`` and for a ``problem``, when one is
+    # known; the UI localizes by ``status`` and ``problem``.
     error: str | None
     plugin_id: str | None
     name: str | None
@@ -105,6 +123,8 @@ class AuthoringProject:
     # Whether the runtime currently provides the plugin from this project.
     loaded: bool
     running: bool
+    # Set only for a readable (``ok``) project.
+    problem: ProjectProblem | None
 
 
 def source_repo_root() -> Path | None:
@@ -216,19 +236,125 @@ async def create_and_register_project(
     return CreatedProject(**asdict(created), project_id=project.project_id)
 
 
-def _runtime_state(record: store.ProjectRecord, plugin_id: str | None) -> tuple[bool, bool]:
-    from plugin.server.application.plugins.lifecycle_service import plugin_is_running_sync
+@dataclass(frozen=True)
+class _RuntimeState:
+    loaded: bool
+    running: bool
+    problem: ProjectProblem | None = None
+    error: str | None = None
 
-    if plugin_id is None:
-        return False, False
+
+def _loaded_state(plugin_id: str, meta: dict) -> _RuntimeState:
+    """The runtime facts the plugin pages also show, read from the same registry entry."""
+    from plugin.server.application.plugins.lifecycle_service import (
+        plugin_is_running_sync,
+        plugin_needs_hot_reload_recovery,
+    )
+
+    running = plugin_is_running_sync(plugin_id)
+    if meta.get("runtime_load_state") == "failed":
+        return _RuntimeState(
+            loaded=True,
+            running=running,
+            problem="load_failed",
+            error=_optional_string(meta.get("runtime_load_error_message")),
+        )
+    if not running and plugin_needs_hot_reload_recovery(plugin_id):
+        # The watcher keeps no reason; the plugin log has it.
+        return _RuntimeState(loaded=True, running=False, problem="reload_failed")
+    if running and meta.get("runtime_startup_state") == "degraded":
+        return _RuntimeState(
+            loaded=True,
+            running=True,
+            problem="startup_degraded",
+            error=_optional_string(meta.get("runtime_startup_error")),
+        )
+    return _RuntimeState(loaded=True, running=running)
+
+
+def _runtime_state(record: store.ProjectRecord, plugin_id: str) -> _RuntimeState:
     with state.acquire_plugins_read_lock():
         meta = state.plugins.get(plugin_id)
-    loaded = (
+    if (
         project_source_dir(meta) == record.source_dir
         and isinstance(meta, dict)
         and meta.get("project_id") == record.project_id
+    ):
+        return _loaded_state(plugin_id, meta)
+    # Discovery skips a project for one of these reasons, in this order
+    # (``registry_service._discover_registry_snapshot_sync``).
+    if isinstance(meta, dict):
+        owner = project_source_dir(meta) or meta.get("config_path") or "another plugin"
+        return _RuntimeState(
+            loaded=False,
+            running=False,
+            problem="id_taken",
+            error=f"Plugin ID '{plugin_id}' is provided by {owner}",
+        )
+    try:
+        inspect_source_directory(record.source_dir)
+    except ValueError as exc:
+        return _RuntimeState(loaded=False, running=False, problem="source_rejected", error=str(exc))
+    manifest_error = _manifest_error(record.source_dir, plugin_id)
+    if manifest_error is not None:
+        return _RuntimeState(
+            loaded=False, running=False, problem="config_rejected", error=manifest_error
+        )
+    # The manifest is valid, so only an absent registry explains it: an
+    # embedded plugin server answers HTTP before its plugin system starts
+    # (agent_server starts it when user plugins are switched on).
+    from plugin.server.lifecycle import lifecycle_running
+
+    if not lifecycle_running():
+        return _RuntimeState(loaded=False, running=False, problem="runtime_inactive")
+    return _RuntimeState(loaded=False, running=False, problem="not_registered")
+
+
+class _CapturingLogger:
+    """Collects what the runtime's manifest parser reports, instead of logging it."""
+
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    def _keep(self, message: object, *args: object, **_kwargs: object) -> None:
+        try:
+            self.messages.append(str(message).format(*args))
+        except (IndexError, KeyError, ValueError):
+            self.messages.append(" ".join(str(item) for item in (message, *args)))
+
+    error = warning = _keep
+
+    def _drop(self, *_args: object, **_kwargs: object) -> None:
+        return None
+
+    debug = info = exception = _drop
+
+    def __getattr__(self, _name: str):
+        # Any other logging call the parser makes is dropped, never an AttributeError.
+        return self._drop
+
+
+def _manifest_error(source_dir: Path, plugin_id: str) -> str | None:
+    """Why the runtime would refuse ``plugin.toml``, with its own words; None when it accepts it."""
+    from plugin.core.registry import _parse_single_plugin_config
+    from plugin.server.application.plugins.registry_service import (
+        _build_discovery_record_from_context,
     )
-    return loaded, loaded and plugin_is_running_sync(plugin_id)
+
+    captured = _CapturingLogger()
+    try:
+        ctx = _parse_single_plugin_config(
+            source_dir / "plugin.toml", set(), captured, materialize_runtime_config=False
+        )
+        if ctx is not None and ctx.pid == plugin_id:
+            _build_discovery_record_from_context(ctx)
+    except Exception as exc:  # noqa: BLE001 - any refusal is reported, never raised
+        return f"{type(exc).__name__}: {exc}"
+    if ctx is None:
+        return "; ".join(captured.messages) or "plugin.toml could not be parsed or validated"
+    if ctx.pid != plugin_id:
+        return f"plugin.toml declares id '{ctx.pid}', expected '{plugin_id}'"
+    return None
 
 
 def _optional_string(value: object) -> str | None:
@@ -249,6 +375,7 @@ def _view(record: store.ProjectRecord) -> AuthoringProject:
         ),
         "loaded": False,
         "running": False,
+        "problem": None,
     }
     if not record.source_dir.is_dir():
         return AuthoringProject(**common, **empty, status="missing", error=None)
@@ -259,13 +386,14 @@ def _view(record: store.ProjectRecord) -> AuthoringProject:
     table = source.plugin_toml.get("plugin")
     table = table if isinstance(table, dict) else {}
     author = table.get("author")
-    loaded, running = _runtime_state(record, source.plugin_id)
+    runtime = _runtime_state(record, source.plugin_id)
     return AuthoringProject(
         **common,
-        loaded=loaded,
-        running=running,
+        loaded=runtime.loaded,
+        running=runtime.running,
+        problem=runtime.problem,
         status="ok",
-        error=None,
+        error=runtime.error,
         plugin_id=source.plugin_id,
         name=source.name,
         description=_optional_string(table.get("description")),

@@ -28,6 +28,13 @@
               >
               <el-button
                 v-if="current.loaded"
+                :icon="Document"
+                :disabled="busy"
+                @click="openLogs(current)"
+                >{{ t('authoring.viewLogs') }}</el-button
+              >
+              <el-button
+                v-if="current.loaded"
                 type="primary"
                 :icon="Position"
                 :disabled="busy"
@@ -76,9 +83,6 @@
             @updated="onProjectUpdated"
           />
         </el-tab-pane>
-        <el-tab-pane :label="t('authoring.precheckTab')" name="precheck">
-          <AuthoringProjectPrecheck :key="current.project_id" :project-id="current.project_id" />
-        </el-tab-pane>
         <el-tab-pane :label="t('authoring.publishTab')" name="publish" lazy>
           <AuthoringProjectPublish
             ref="publishPanel"
@@ -86,6 +90,7 @@
             :project-id="current.project_id"
             :plugin-name="current.name ?? ''"
             :plugin-description="current.description ?? ''"
+            :source-dir="current.source_dir"
           />
         </el-tab-pane>
       </el-tabs>
@@ -115,6 +120,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   ArrowLeft,
   Delete,
+  Document,
   FolderAdd,
   FolderOpened,
   Plus,
@@ -126,7 +132,6 @@ import EmptyState from '@/components/common/EmptyState.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import AuthoringProjectList from '@/components/authoring/AuthoringProjectList.vue'
 import AuthoringProjectDetails from '@/components/authoring/AuthoringProjectDetails.vue'
-import AuthoringProjectPrecheck from '@/components/authoring/AuthoringProjectPrecheck.vue'
 import AuthoringProjectPublish from '@/components/authoring/AuthoringProjectPublish.vue'
 import AuthoringProjectStatus from '@/components/authoring/AuthoringProjectStatus.vue'
 import AuthoringHelpDrawer from '@/components/authoring/AuthoringHelpDrawer.vue'
@@ -169,6 +174,10 @@ onMounted(refresh)
 // visit mounts the pane, which reads on its own.
 watch(activeTab, (tab) => {
   if (tab === 'publish') void publishPanel.value?.reload()
+})
+// Another project opens on its overview, not on the tab the last one was left on.
+watch(requestedProject, () => {
+  activeTab.value = 'overview'
 })
 
 function openProject(projectId: string) {
@@ -222,6 +231,10 @@ function openFolder(project: AuthoringProject) {
 
 function openPluginPage(project: AuthoringProject) {
   if (project.plugin_id) void router.push(`/plugins/${encodeURIComponent(project.plugin_id)}`)
+}
+
+function openLogs(project: AuthoringProject) {
+  if (project.plugin_id) void router.push(`/logs/${encodeURIComponent(project.plugin_id)}`)
 }
 
 async function confirmRemove(project: AuthoringProject) {

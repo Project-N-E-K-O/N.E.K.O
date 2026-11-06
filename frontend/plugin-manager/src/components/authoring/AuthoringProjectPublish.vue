@@ -1,5 +1,25 @@
 <template>
-  <div class="authoring-publish">
+  <div ref="root" class="authoring-publish">
+    <AuthoringPublishStepper
+      v-if="flow"
+      :steps="pagerSteps"
+      :current-step-id="flow.currentStepId"
+      :selected-step-id="activeStep"
+      :titles="STEP_TITLES"
+      :state-labels="STATE_LABELS"
+      @select="goToStep"
+    >
+      <template #actions>
+        <el-button :icon="Refresh" :loading="loading" @click="refresh">
+          {{ t('authoring.publishRefresh') }}
+        </el-button>
+      </template>
+    </AuthoringPublishStepper>
+    <div v-else class="authoring-precheck-actions">
+      <el-button :icon="Refresh" :loading="loading" @click="refresh">
+        {{ t('authoring.publishRefresh') }}
+      </el-button>
+    </div>
     <el-alert v-if="requestError" :title="requestError" type="error" :closable="false" show-icon />
     <el-alert
       v-if="flow?.remoteWarning"
@@ -8,179 +28,172 @@
       :closable="false"
       show-icon
     />
-    <div class="authoring-precheck-actions">
-      <el-button :icon="Refresh" :loading="loading" @click="refresh">
-        {{ t('authoring.publishRefresh') }}
-      </el-button>
-      <el-button
-        v-if="flow?.canPublishGithub"
-        type="primary"
-        :icon="Position"
-        :disabled="taskActive"
-        @click="confirmPublish('github_and_market')"
-      >
-        {{ t('authoring.publishRunGithubMarket') }}
-      </el-button>
-      <el-button
-        v-if="flow?.canPublishGithub"
-        :disabled="taskActive"
-        @click="confirmPublish('github')"
-      >
-        {{ t('authoring.publishRunGithub') }}
-      </el-button>
-      <el-button
-        v-if="flow?.canNotifyMarket"
-        type="primary"
-        :icon="Position"
-        :disabled="taskActive"
-        @click="confirmPublish('market_notify')"
-      >
-        {{ t('authoring.publishRunMarket') }}
-      </el-button>
-      <el-button
-        v-if="taskActive"
-        :icon="CircleClose"
-        :loading="canceling"
-        @click="confirmCancel"
-      >
-        {{ t('authoring.publishCancelTask') }}
-      </el-button>
-    </div>
     <el-alert v-if="taskError" :title="taskError" type="error" :closable="false" show-icon />
-    <section v-if="task" class="authoring-publish-task">
-      <h4>
-        <el-tag size="small" :type="TASK_TAG_TYPES[task.status]">
-          {{ t(TASK_LABELS[task.status]) }}
-        </el-tag>
-        <span v-if="taskFinishedAt" class="authoring-muted authoring-small">{{
-          t('authoring.publishTaskLastRun', { time: taskFinishedAt })
-        }}</span>
-        <span v-if="task.message" class="authoring-small">{{ task.message }}</span>
-        <a
-          v-if="task.status === 'succeeded' && task.release_url"
-          class="authoring-small"
-          href="#"
-          @click.prevent="openExternalUrl(task.release_url)"
-          >{{ task.release_url }}</a
-        >
-      </h4>
-      <!-- Only a failure watched here opens the log; an earlier run stays collapsed. -->
-      <details v-if="task.log.length" :open="task.status === 'failed' && taskWatched">
-        <summary>{{ t('authoring.publishTaskLog') }}</summary>
-        <pre>{{ task.log.join('\n') }}</pre>
-      </details>
-    </section>
     <el-skeleton v-if="!status && loading" class="authoring-publish-steps" :rows="5" animated />
-    <ol v-if="status && flow" class="authoring-publish-steps">
-      <li
-        v-for="step in flow.steps"
+    <!-- One step per page. Every page stays mounted (v-show): the submission
+         page feeds the flow, and a check report survives paging away. -->
+    <div v-if="status && flow" class="authoring-publish-steps">
+      <section
+        v-show="activeStep === 'toolchain'"
+        :id="sectionId('toolchain')"
+        class="authoring-publish-step"
+        :class="{ 'authoring-publish-step--current': flow.currentStepId === 'toolchain' }"
+        data-step="toolchain"
+        :aria-labelledby="`${sectionId('toolchain')}-title`"
+      >
+        <header class="authoring-publish-step__header">
+          <el-tag size="small" :type="TAG_TYPES[flow.toolchain.state]">
+            {{ t(STATE_LABELS[flow.toolchain.state]) }}
+          </el-tag>
+          <h3
+            :id="`${sectionId('toolchain')}-title`"
+            :ref="(el) => setHeading('toolchain', el)"
+            tabindex="-1"
+          >
+            0. {{ t(STEP_TITLES.toolchain) }}
+          </h3>
+        </header>
+        <AuthoringPublishGuide page-id="toolchain" :params="guideParams" :open="guideOpen('toolchain')" />
+        <AuthoringPublishToolchain :page="flow.toolchain" :error="toolchainError" />
+      </section>
+      <section
+        v-for="(step, index) in flow.steps"
+        v-show="step.id === activeStep"
+        :id="sectionId(step.id)"
         :key="step.id"
         class="authoring-publish-step"
-        :class="{
-          'authoring-publish-step--current': step.id === flow.currentStepId,
-          'authoring-publish-step--pending':
-            flow.currentStepId &&
-            step.id !== flow.currentStepId &&
-            step.state !== 'done' &&
-            step.id !== 'submission',
-        }"
+        :class="{ 'authoring-publish-step--current': step.id === flow.currentStepId }"
+        :data-step="step.id"
+        :aria-labelledby="`${sectionId(step.id)}-title`"
       >
-        <el-tag size="small" :type="TAG_TYPES[step.state]">{{ t(STATE_LABELS[step.state]) }}</el-tag>
-        <div>
-          <strong>{{ t(STEP_TITLES[step.id]) }}</strong>
-          <p v-if="step.detail" class="authoring-muted authoring-small">{{ text(step.detail) }}</p>
-          <el-alert
-            v-if="step.warning"
-            :title="text(step.warning)"
-            type="warning"
-            :closable="false"
-            show-icon
-          />
-          <template v-if="step.id === 'repository'">
-            <div v-if="flow.canCreateRepository" class="authoring-precheck-actions">
-              <el-button
-                type="primary"
-                :icon="Plus"
-                :loading="creatingRepo"
-                @click="createRepo"
-              >
-                {{ creatingRepo ? t('authoring.publishCreatingRepo') : t('authoring.publishCreateRepo') }}
-              </el-button>
-            </div>
-            <el-alert
-              v-if="createdRepoUrl"
-              :title="t('authoring.publishRepoCreated', { repo: createdRepoUrl })"
-              type="success"
-              :closable="false"
-              show-icon
-            />
-            <el-alert
-              v-if="repoManualSteps.length"
-              :title="t('authoring.publishRepoManualTitle')"
-              type="info"
-              :closable="false"
-              show-icon
-            >
-              <p class="authoring-small">{{ t('authoring.publishRepoManualHint') }}</p>
-              <pre class="authoring-publish-manual">{{ repoManualSteps.join('\n') }}</pre>
-            </el-alert>
-            <el-alert
-              v-if="repoCreateError"
-              :title="repoCreateError"
-              type="error"
-              :closable="false"
-              show-icon
-            />
-          </template>
-          <AuthoringProjectSubmission
-            v-if="step.id === 'submission'"
-            :github-repository="status.repository.github_repository"
-            :plugin-id="status.plugin_id"
-            :plugin-name="pluginName"
-            :plugin-description="pluginDescription"
-            :pushed-head="flow.pushedHead"
-            @state="submissionState = $event"
-          />
-        </div>
-      </li>
-    </ol>
-    <ul v-if="flow?.notes.length" class="authoring-publish-notes">
-      <li v-for="note in flow.notes" :key="note.key" class="authoring-muted authoring-small">
-        {{ text(note) }}
-      </li>
-    </ul>
+        <header class="authoring-publish-step__header">
+          <el-tag size="small" :type="TAG_TYPES[step.state]">{{ t(STATE_LABELS[step.state]) }}</el-tag>
+          <h3
+            :id="`${sectionId(step.id)}-title`"
+            :ref="(el) => setHeading(step.id, el)"
+            tabindex="-1"
+          >
+            {{ index + 1 }}. {{ t(STEP_TITLES[step.id]) }}
+          </h3>
+        </header>
+        <AuthoringPublishGuide :page-id="step.id" :params="guideParams" :open="guideOpen(step.id)" />
+        <p
+          v-if="flow.prerequisites[step.id]"
+          class="authoring-publish-step__prerequisite authoring-small"
+        >
+          {{ t('authoring.publishPrerequisite', stepRef(flow.prerequisites[step.id]!)) }}
+          <el-button link type="primary" size="small" @click="goToStep(flow.prerequisites[step.id]!)">
+            {{ t('authoring.publishGoToStep', stepRef(flow.prerequisites[step.id]!)) }}
+          </el-button>
+        </p>
+        <p v-if="step.detail" class="authoring-muted authoring-small">{{ text(step.detail) }}</p>
+        <el-alert
+          v-if="step.warning"
+          :title="text(step.warning)"
+          type="warning"
+          :closable="false"
+          show-icon
+        />
+        <AuthoringPublishWorkspace
+          v-if="step.id === 'repository'"
+          :repository="status.repository"
+          :workspace="status.workspace ?? null"
+        />
+        <AuthoringPublishRepository
+          v-if="step.id === 'repository'"
+          :project-id="projectId"
+          :can-create="flow.canCreateRepository"
+          :notes="flow.notes"
+          @created="load({ fresh: true })"
+        />
+        <AuthoringProjectPrecheck v-else-if="step.id === 'verify'" :project-id="projectId" />
+        <AuthoringProjectSubmission
+          v-else-if="step.id === 'submission'"
+          ref="submissionPanel"
+          :github-repository="status.repository.github_repository"
+          :plugin-id="status.plugin_id"
+          :plugin-name="pluginName"
+          :plugin-description="pluginDescription"
+          :pushed-head="flow.pushedHead"
+          @state="submissionState = $event"
+        />
+        <AuthoringPublishRelease
+          v-else-if="step.id === 'release'"
+          :modes="GITHUB_MODES"
+          :task="taskFor(GITHUB_MODES)"
+          :any-task-active="taskActive"
+          :watched="taskWatched"
+          :canceling="canceling"
+          :error="startErrorFor(GITHUB_MODES)"
+          @run="run"
+          @cancel="confirmCancel"
+        />
+        <AuthoringPublishRelease
+          v-else-if="step.id === 'market'"
+          :modes="MARKET_MODES"
+          :task="taskFor(MARKET_MODES)"
+          :any-task-active="taskActive"
+          :watched="taskWatched"
+          :canceling="canceling"
+          :error="startErrorFor(MARKET_MODES)"
+          @run="run"
+          @cancel="confirmCancel"
+        />
+      </section>
+      <footer class="authoring-publish-pager">
+        <el-button v-if="previousStep" :icon="ArrowLeft" @click="goToStep(previousStep)">
+          {{ t('authoring.publishPreviousStep', stepRef(previousStep)) }}
+        </el-button>
+        <span class="authoring-publish-pager__count authoring-muted authoring-small">
+          {{ t('authoring.publishPageCount', { n: activeIndex, total: PUBLISH_PAGE_ORDER.length - 1 }) }}
+        </span>
+        <el-button v-if="nextStep" @click="goToStep(nextStep)">
+          {{ t('authoring.publishNextStep', stepRef(nextStep)) }}
+          <el-icon class="el-icon--right"><ArrowRight /></el-icon>
+        </el-button>
+      </footer>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, h, nextTick, onMounted, onUnmounted, ref, watch, type ComponentPublicInstance } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { CircleClose, Plus, Position, Refresh } from '@element-plus/icons-vue'
+import { ArrowLeft, ArrowRight, Refresh } from '@element-plus/icons-vue'
+import AuthoringProjectPrecheck from '@/components/authoring/AuthoringProjectPrecheck.vue'
 import AuthoringProjectSubmission from '@/components/authoring/AuthoringProjectSubmission.vue'
+import AuthoringPublishGuide from '@/components/authoring/AuthoringPublishGuide.vue'
+import AuthoringPublishRelease from '@/components/authoring/AuthoringPublishRelease.vue'
+import AuthoringPublishRepository from '@/components/authoring/AuthoringPublishRepository.vue'
+import AuthoringPublishStepper from '@/components/authoring/AuthoringPublishStepper.vue'
+import AuthoringPublishToolchain from '@/components/authoring/AuthoringPublishToolchain.vue'
+import AuthoringPublishWorkspace from '@/components/authoring/AuthoringPublishWorkspace.vue'
 import {
+  PUBLISH_PAGE_ORDER,
   publishFlow,
+  type ActionBlocker,
   type FlowMessage,
-  type PublishStepId,
+  type PublishPageId,
   type PublishStepState,
 } from '@/components/authoring/publishFlow'
+import type { GuideParams } from '@/components/authoring/publishGuide'
 import {
   cancelPluginProjectPublishTask,
-  createPluginProjectRepo,
   getPluginProjectPublishStatus,
   getPluginProjectPublishTask,
+  getPluginToolchain,
   projectErrorCode,
   publishTaskActive,
   startPluginProjectPublish,
   type PublishMode,
   type PublishStatus,
   type PublishTask,
-  type PublishTaskStatus,
+  type Toolchain,
 } from '@/api/pluginProjects'
 import type { SubmissionPanelState } from '@/api/marketSubmissions'
+import { fetchMarketPluginVersions } from '@/api/market'
 import { useProjectErrorMessage } from '@/composables/useAuthoringProjects'
-import { openExternalUrl } from '@/utils/openExternal'
-import { formatRunTimestamp } from '@/utils/runDisplay'
 
 const TAG_TYPES: Record<PublishStepState, 'success' | 'warning' | 'info'> = {
   done: 'success',
@@ -194,27 +207,16 @@ const STATE_LABELS: Record<PublishStepState, string> = {
   waiting: 'authoring.publishStatusWaiting',
   unknown: 'authoring.publishStatusUnknown',
 }
-const STEP_TITLES: Record<PublishStepId, string> = {
+const STEP_TITLES: Record<PublishPageId, string> = {
+  toolchain: 'authoring.publishStepToolchain',
   repository: 'authoring.publishStepRepository',
   verify: 'authoring.publishStepVerify',
   submission: 'authoring.publishStepSubmission',
   release: 'authoring.publishStepRelease',
   market: 'authoring.publishStepMarket',
 }
-const TASK_TAG_TYPES: Record<PublishTaskStatus, 'success' | 'danger' | 'warning' | 'info'> = {
-  queued: 'info',
-  running: 'warning',
-  succeeded: 'success',
-  failed: 'danger',
-  canceled: 'info',
-}
-const TASK_LABELS: Record<PublishTaskStatus, string> = {
-  queued: 'authoring.publishTaskQueued',
-  running: 'authoring.publishTaskRunning',
-  succeeded: 'authoring.publishTaskSucceeded',
-  failed: 'authoring.publishTaskFailed',
-  canceled: 'authoring.publishTaskCanceled',
-}
+const GITHUB_MODES: PublishMode[] = ['github_and_market', 'github']
+const MARKET_MODES: PublishMode[] = ['market_notify']
 // The CLI can run for up to 20 minutes; progress comes from polling, not the request.
 const POLL_INTERVAL_MS = 3000
 /** Consecutive failed polls tolerated before polling stops and asks for a refresh. */
@@ -230,22 +232,33 @@ const props = defineProps<{
   /** plugin.toml name and description: the defaults of a new Market draft. */
   pluginName: string
   pluginDescription: string
+  /** The project folder, filled into the guide's commands. */
+  sourceDir?: string
 }>()
 const { t } = useI18n()
 const describeError = useProjectErrorMessage()
+const root = ref<HTMLElement>()
 const loading = ref(false)
 const status = ref<PublishStatus | null>(null)
 const requestError = ref('')
 const task = ref<PublishTask | null>(null)
 /** True once this panel saw the task active, so its outcome is news, not history. */
 const taskWatched = ref(false)
+/** Polling a task failed; shown once for the page. */
 const taskError = ref('')
+/** A refused start, shown in the step of the mode that was refused. */
+const startError = ref<{ mode: PublishMode; message: string } | null>(null)
 const canceling = ref(false)
 const submissionState = ref<SubmissionPanelState>({
   phase: null,
   marketPluginId: null,
   resolvedCommit: null,
 })
+// Inside v-for, a template ref collects into an array.
+const submissionPanel = ref<InstanceType<typeof AuthoringProjectSubmission>[]>([])
+/** Whether the Market lists this Release; read from the Market, not from the task. */
+const marketListed = ref<boolean | null>(null)
+let marketReads = 0
 let disposed = false
 let pollTimer: ReturnType<typeof setTimeout> | undefined
 let pollFailures = 0
@@ -254,46 +267,87 @@ let queuedFresh = false
 
 const flow = computed(() =>
   status.value
-    ? publishFlow({ status: status.value, submission: submissionState.value, task: task.value })
+    ? publishFlow({
+        status: status.value,
+        submission: submissionState.value,
+        task: task.value,
+        marketListed: marketListed.value,
+        toolchain: toolchain.value,
+      })
     : null
+)
+/** Step 0 joins the five publish steps in the step bar. */
+const pagerSteps = computed(() =>
+  flow.value
+    ? [
+        { id: 'toolchain' as const, state: flow.value.toolchain.state, detail: null, warning: null },
+        ...flow.value.steps,
+      ]
+    : []
 )
 const text = (message: FlowMessage) => t(`authoring.${message.key}`, message.params ?? {})
 const taskActive = computed(() => !!task.value && publishTaskActive(task.value))
-const taskFinishedAt = computed(() =>
-  task.value?.finished_at ? formatRunTimestamp(task.value.finished_at, true) : ''
-)
+const stepRef = (id: PublishPageId) => ({
+  n: PUBLISH_PAGE_ORDER.indexOf(id),
+  step: t(STEP_TITLES[id]),
+})
+const taskFor = (modes: PublishMode[]) =>
+  task.value && modes.includes(task.value.mode) ? task.value : null
+const startErrorFor = (modes: PublishMode[]) =>
+  startError.value && modes.includes(startError.value.mode) ? startError.value.message : ''
+/** Values the beginner guide fills into its commands and paths. */
+const guideParams = computed<GuideParams>(() => ({
+  repo: status.value?.repository.github_repository ?? undefined,
+  tag: status.value?.repository.tag,
+  version: status.value?.version,
+  branch: status.value?.repository.branch ?? 'main',
+  pluginId: status.value?.plugin_id,
+  dir: props.sourceDir,
+}))
+/** The guide starts open on a page with something to do, folded on a finished one. */
+function guideOpen(id: PublishPageId) {
+  const current = flow.value
+  if (!current) return true
+  const state = id === 'toolchain' ? current.toolchain.state : current.steps.find((s) => s.id === id)?.state
+  return state !== 'done'
+}
 
-// Repository creation: offered only when the project is a git repo with no
-// origin yet. A foreign (non-GitHub) origin is reported instead.
-const creatingRepo = ref(false)
-const createdRepoUrl = ref('')
-const repoManualSteps = ref<string[]>([])
-const repoCreateError = ref('')
-
-async function createRepo() {
-  if (creatingRepo.value) return
-  creatingRepo.value = true
-  createdRepoUrl.value = ''
-  repoManualSteps.value = []
-  repoCreateError.value = ''
+// Step 0: the publishing tools of this machine, read once per panel and on Refresh.
+const toolchain = ref<Toolchain | null>(null)
+const toolchainError = ref('')
+async function loadToolchain() {
+  toolchainError.value = ''
   try {
-    const result = await createPluginProjectRepo(props.projectId)
-    if (disposed) return
-    if (result.status === 'created') {
-      createdRepoUrl.value = result.repository_url
-      await load({ fresh: true })
-    } else if (result.status === 'manual') {
-      // gh is unavailable: surface the steps the CLI printed so the user can
-      // create the repository by hand, then refresh.
-      repoManualSteps.value = result.log
-    } else {
-      repoCreateError.value = result.log.join('\n') || describeError(null, 'repoCreateFailed')
-    }
+    const next = await getPluginToolchain(props.projectId)
+    if (!disposed) toolchain.value = next
   } catch (error) {
-    repoCreateError.value = describeError(error, 'repoCreateFailed')
-  } finally {
-    creatingRepo.value = false
+    if (!disposed) toolchainError.value = describeError(error, 'toolchainLoadFailed')
   }
+}
+
+// Paging: one page is shown at a time. It opens on the page to act on and
+// follows it as the facts change, until the user picks a page themselves.
+const pickedStep = ref<PublishPageId | null>(null)
+const activeStep = computed<PublishPageId>(
+  () => pickedStep.value ?? flow.value?.currentStepId ?? 'toolchain'
+)
+const activeIndex = computed(() => PUBLISH_PAGE_ORDER.indexOf(activeStep.value))
+const previousStep = computed(() => PUBLISH_PAGE_ORDER[activeIndex.value - 1] ?? null)
+const nextStep = computed(() => PUBLISH_PAGE_ORDER[activeIndex.value + 1] ?? null)
+
+// A page change moves focus to the page heading, so keyboard and screen reader
+// users land on the new content, and brings the page top into view.
+const headings = new Map<PublishPageId, HTMLElement>()
+function setHeading(id: PublishPageId, el: Element | ComponentPublicInstance | null) {
+  if (el instanceof HTMLElement) headings.set(id, el)
+  else headings.delete(id)
+}
+const sectionId = (id: PublishPageId) => `authoring-publish-${props.projectId}-${id}`
+async function goToStep(id: PublishPageId) {
+  pickedStep.value = id
+  await nextTick()
+  root.value?.scrollIntoView?.({ block: 'nearest' })
+  headings.get(id)?.focus({ preventScroll: true })
 }
 
 /**
@@ -322,8 +376,33 @@ async function load(options: { fresh?: boolean } = {}) {
     reloadQueued = false
     queuedFresh = false
     await load({ fresh })
+    return
   }
+  await loadMarketListing()
 }
+
+/**
+ * Read whether the approved plugin's public version list has this Release's
+ * tag (the Market stores the tag as the version). Only the newest read
+ * counts; a failed read, or a plugin the Market does not list yet, is null.
+ */
+async function loadMarketListing() {
+  const read = ++marketReads
+  const pluginId = submissionState.value.marketPluginId
+  const tag = status.value?.repository.tag
+  if (pluginId === null || !tag) {
+    marketListed.value = null
+    return
+  }
+  const versions = await fetchMarketPluginVersions(pluginId)
+  if (disposed || read !== marketReads) return
+  marketListed.value = versions ? versions.some((item) => item.version === tag) : null
+}
+// The submission panel finds the approved plugin after the status is read.
+watch(
+  () => submissionState.value.marketPluginId,
+  () => void loadMarketListing()
+)
 
 function applyTask(next: PublishTask) {
   task.value = next
@@ -389,14 +468,19 @@ async function pollTask() {
   if (!publishTaskActive(next)) await load({ fresh: true })
 }
 
-/** The explicit Refresh: bypass the server's GitHub cache and re-read the task. */
+/** The one Refresh: tools, GitHub (past the server cache), the task and the Market submission. */
 function refresh() {
-  return Promise.all([load({ fresh: true }), loadTask()])
+  return Promise.all([
+    load({ fresh: true }),
+    loadTask(),
+    loadToolchain(),
+    submissionPanel.value[0]?.reload(),
+  ])
 }
 
 /** Re-read when the user returns to the tab; GitHub answers may stay cached. */
 function reload() {
-  return Promise.all([load(), loadTask()])
+  return Promise.all([load(), loadTask(), loadToolchain()])
 }
 
 onMounted(reload)
@@ -405,6 +489,76 @@ onUnmounted(() => {
   stopPolling()
 })
 defineExpose({ reload })
+
+function reasonList(blockers: ActionBlocker[], intro: string) {
+  return h('div', { class: 'authoring-publish-gate' }, [
+    h('p', intro),
+    h('ul', blockers.map((item) => h('li', text(item.reason)))),
+  ])
+}
+
+/** A hard blocker: nothing runs; the dialog can take the user to the step to finish. */
+async function explainHard(blockers: ActionBlocker[]) {
+  const target = blockers.find((item) => item.step)?.step ?? null
+  try {
+    await ElMessageBox.confirm(
+      reasonList(blockers, t('authoring.publishBlockedIntro')),
+      t('authoring.publishBlockedTitle'),
+      {
+        type: 'error',
+        confirmButtonText: target ? t('authoring.publishGoToStep', stepRef(target)) : t('common.close'),
+        showCancelButton: !!target,
+        cancelButtonText: t('common.close'),
+      }
+    )
+  } catch {
+    return
+  }
+  if (target) await goToStep(target)
+}
+
+/** Soft blockers: going back is the suggested answer, continuing is allowed. */
+async function confirmSoft(blockers: ActionBlocker[]): Promise<boolean> {
+  const target = blockers.find((item) => item.step)?.step ?? null
+  const body = reasonList(blockers, t('authoring.publishSoftIntro'))
+  if (!target) {
+    try {
+      await ElMessageBox.confirm(body, t('authoring.publishSoftTitle'), {
+        type: 'warning',
+        confirmButtonText: t('authoring.publishContinueAnyway'),
+        cancelButtonText: t('common.cancel'),
+      })
+      return true
+    } catch {
+      return false
+    }
+  }
+  try {
+    await ElMessageBox.confirm(body, t('authoring.publishSoftTitle'), {
+      type: 'warning',
+      confirmButtonText: t('authoring.publishGoToStep', stepRef(target)),
+      cancelButtonText: t('authoring.publishContinueAnyway'),
+      distinguishCancelAndClose: true,
+    })
+  } catch (action) {
+    // "Continue anyway" is the cancel button; closing the box does nothing.
+    return action === 'cancel'
+  }
+  await goToStep(target)
+  return false
+}
+
+/** Every publish button is clickable; what is missing is explained before anything runs. */
+async function run(mode: PublishMode) {
+  const current = flow.value
+  if (!current || taskActive.value) return
+  const blockers = current.blockers[mode]
+  const hardOnes = blockers.filter((item) => item.severity === 'hard')
+  if (hardOnes.length) return explainHard(hardOnes)
+  const softOnes = blockers.filter((item) => item.severity === 'soft')
+  if (softOnes.length && !(await confirmSoft(softOnes))) return
+  await confirmPublish(mode)
+}
 
 async function confirmPublish(mode: PublishMode) {
   const tag = status.value?.repository.tag ?? ''
@@ -421,11 +575,13 @@ async function confirmPublish(mode: PublishMode) {
   } catch {
     return
   }
+  startError.value = null
   try {
     const started = await startPluginProjectPublish(props.projectId, mode)
     if (!disposed) applyTask(started)
   } catch (error) {
-    taskError.value = describeError(error, 'publishStartFailed')
+    // The server gate stays authoritative; its reason shows in the step that was refused.
+    startError.value = { mode, message: describeError(error, 'publishStartFailed') }
   }
 }
 
@@ -458,81 +614,67 @@ async function confirmCancel() {
 </script>
 
 <style scoped>
-.authoring-publish-manual {
-  margin: var(--spacing-xs) 0 0;
-  padding: var(--spacing-sm);
-  border-radius: var(--radius-control);
-  background: var(--surface-inset);
-  color: var(--el-text-color-regular);
-  font:
-    12px/1.7 ui-monospace,
-    SFMono-Regular,
-    Menlo,
-    Consolas,
-    monospace;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.authoring-publish-task {
-  margin-top: var(--spacing-md);
-  padding: var(--spacing-sm) var(--spacing-md);
-  border: 1px solid var(--surface-border);
-  border-radius: var(--radius-panel);
-  background: var(--surface-inset);
-}
-.authoring-publish-task h4 {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--spacing-sm);
-  margin: 0;
-}
-.authoring-publish-task details pre {
-  margin: var(--spacing-xs) 0 0;
-  max-height: 240px;
-  overflow: auto;
-  padding: var(--spacing-sm);
-  border-radius: var(--radius-control);
-  background: var(--surface-inset);
-  color: var(--el-text-color-regular);
-  font:
-    12px/1.7 ui-monospace,
-    SFMono-Regular,
-    Menlo,
-    Consolas,
-    monospace;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.authoring-publish-steps {
-  list-style: none;
-  margin: var(--spacing-md) 0 0;
-  padding: 0;
+.authoring-publish {
   display: flex;
   flex-direction: column;
   gap: var(--spacing-sm);
+  max-width: 960px;
+}
+.authoring-publish-steps {
+  margin: var(--spacing-sm) 0 0;
 }
 .authoring-publish-step {
   display: flex;
-  align-items: flex-start;
-  gap: var(--spacing-sm);
-  padding: var(--spacing-sm) var(--spacing-md);
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-md);
   border: 1px solid var(--surface-border);
   border-radius: var(--radius-panel);
   background: var(--surface-inset);
 }
+.authoring-publish-pager {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-md);
+}
+.authoring-publish-pager__count {
+  flex: 1;
+  text-align: center;
+}
+.authoring-publish-pager .el-button + .el-button {
+  margin-left: 0;
+}
 .authoring-publish-step p {
-  margin: var(--spacing-xs) 0 0;
+  margin: 0;
 }
 .authoring-publish-step--current {
   border-left: 3px solid var(--el-color-primary);
   background: var(--surface-raised, var(--surface-inset));
 }
-.authoring-publish-step--pending {
-  opacity: 0.62;
+.authoring-publish-step__header {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
 }
-.authoring-publish-notes {
-  margin: var(--spacing-md) 0 0;
-  padding-left: var(--spacing-md);
+.authoring-publish-step__header h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+.authoring-publish-step__header h3:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+.authoring-publish-step__prerequisite {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--spacing-xs);
+  padding: 6px var(--spacing-sm);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--el-color-info) 10%, transparent);
+  color: var(--el-text-color-regular);
 }
 </style>

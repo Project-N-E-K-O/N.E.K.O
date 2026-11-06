@@ -231,3 +231,149 @@ def read_repo_state(plugin_dir: Path, *, version: str) -> RepoState:
         tag_exists=bool(tag_commit),
         tag_at_head=(tag_commit == head) if tag_commit and head else None,
     )
+
+
+# How many recent commits and changed files the workbench lists.
+_WORKSPACE_COMMITS_SHOWN = 10
+_WORKSPACE_CHANGES_SHOWN = 50
+
+
+@dataclass(frozen=True)
+class WorkspaceChange:
+    path: str
+    # modified, added, deleted, renamed, untracked or conflicted.
+    kind: str
+
+
+@dataclass(frozen=True)
+class WorkspaceCommit:
+    sha: str
+    author: str
+    # Unix seconds of the author date.
+    timestamp: int
+    subject: str
+    # False when the commit is not on the upstream yet; None without an upstream.
+    pushed: bool | None
+
+
+@dataclass(frozen=True)
+class WorkspaceLog:
+    """What the author changed and committed, for the workbench workspace panel."""
+
+    # The paths that keep the worktree from being clean, as ``publish`` counts them.
+    changes: tuple[WorkspaceChange, ...]
+    changes_total: int
+    commits: tuple[WorkspaceCommit, ...]
+    # Commits on HEAD but not on the upstream, and the reverse; None without an upstream.
+    ahead: int | None
+    behind: int | None
+
+
+def _change_kind(code: str) -> str:
+    if code == "??":
+        return "untracked"
+    if "U" in code or code in {"AA", "DD"}:
+        return "conflicted"
+    if "R" in code:
+        return "renamed"
+    if "D" in code:
+        return "deleted"
+    if "A" in code or "C" in code:
+        return "added"
+    return "modified"
+
+
+def _change_kinds(plugin_dir: Path) -> dict[str, str]:
+    """``git status`` codes by path; a rename is listed under its new path."""
+    output = git_output(plugin_dir, "status", "--porcelain", "-z", "--untracked-files=all", strip=False)
+    kinds: dict[str, str] = {}
+    if output is None:
+        return kinds
+    records = iter(output.split("\0"))
+    for record in records:
+        if len(record) < 4:
+            continue
+        code, path = record[:2], record[3:]
+        kinds[path] = _change_kind(code)
+        if "R" in code or "C" in code:
+            # The original path follows a rename or copy record.
+            next(records, None)
+    return kinds
+
+
+def _recent_commits(plugin_dir: Path) -> list[tuple[str, str, int, str]]:
+    # Unit and record separators cannot appear in a subject line.
+    output = git_output(
+        plugin_dir,
+        "log",
+        f"-n{_WORKSPACE_COMMITS_SHOWN}",
+        "--format=%H%x1f%an%x1f%at%x1f%s%x1e",
+        strip=False,
+    )
+    commits: list[tuple[str, str, int, str]] = []
+    for record in (output or "").split("\x1e"):
+        fields = record.strip("\n").split("\x1f")
+        if len(fields) != 4:
+            continue
+        sha, author, stamp, subject = fields
+        commits.append((sha, author, int(stamp) if stamp.isdigit() else 0, subject))
+    return commits
+
+
+def _unpushed_commits(plugin_dir: Path, upstream: str) -> set[str] | None:
+    output = git_output(plugin_dir, "rev-list", f"{upstream}..HEAD")
+    return None if output is None else set(output.split())
+
+
+def _ahead_behind(plugin_dir: Path, upstream: str) -> tuple[int, int] | None:
+    output = git_output(plugin_dir, "rev-list", "--left-right", "--count", f"HEAD...{upstream}")
+    parts = (output or "").split()
+    if len(parts) != 2 or not all(part.isdigit() for part in parts):
+        return None
+    return int(parts[0]), int(parts[1])
+
+
+def read_workspace_log(plugin_dir: Path, state: RepoState) -> WorkspaceLog | None:
+    """Recent commits and uncommitted changes of the plugin's own repository.
+
+    ``state`` comes from :func:`read_repo_state`, which already decided which
+    paths make the worktree dirty; this only adds how each one changed. None
+    when there is no repository to read.
+    """
+    if not state.is_repository:
+        return None
+    upstream = state.upstream
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        kinds_read = pool.submit(_change_kinds, plugin_dir)
+        dirty_read = pool.submit(worktree_dirty_paths, plugin_dir)
+        commits_read = pool.submit(_recent_commits, plugin_dir) if state.head else None
+        unpushed_read = (
+            pool.submit(_unpushed_commits, plugin_dir, upstream) if upstream and state.head else None
+        )
+        counts_read = (
+            pool.submit(_ahead_behind, plugin_dir, upstream) if upstream and state.head else None
+        )
+    kinds = kinds_read.result()
+    dirty = dirty_read.result() or []
+    unpushed = unpushed_read.result() if unpushed_read else None
+    counts = counts_read.result() if counts_read else None
+    commits = tuple(
+        WorkspaceCommit(
+            sha=sha,
+            author=author,
+            timestamp=stamp,
+            subject=subject,
+            pushed=None if unpushed is None else sha not in unpushed,
+        )
+        for sha, author, stamp, subject in (commits_read.result() if commits_read else [])
+    )
+    return WorkspaceLog(
+        changes=tuple(
+            WorkspaceChange(path, kinds.get(path, "modified"))
+            for path in dirty[:_WORKSPACE_CHANGES_SHOWN]
+        ),
+        changes_total=len(dirty),
+        commits=commits,
+        ahead=counts[0] if counts else None,
+        behind=counts[1] if counts else None,
+    )

@@ -13,6 +13,7 @@ from plugin.server.application import plugin_projects as service
 from plugin.server.application import plugin_publish_status as publish_status
 from plugin.server.application import plugin_publish_tasks as publish_tasks
 from plugin.server.application import plugin_repo_tasks as repo_tasks
+from plugin.server.application import plugin_toolchain as toolchain
 from plugin.server.application.plugin_projects import (
     AuthoringProject,
     CreatedProject,
@@ -157,6 +158,14 @@ async def open_project_directory(body: DirectoryRequest):
 async def precheck_plugin_project(project_id: str):
     # The CLI runs the Market CI gates; the report passes through verbatim.
     return await _call(service.precheck_project(project_id))
+
+
+@router.get("/{project_id}/toolchain")
+async def plugin_project_toolchain(project_id: str):
+    # Read-only and local: which of git, uv, gh are installed, the git identity
+    # a commit in this project gets, and whether gh is signed in. Never returns
+    # a token, only whether one is stored.
+    return await _call(asyncio.to_thread(toolchain.read_project_toolchain, project_id))
 
 
 @router.get("/{project_id}/publish-status")

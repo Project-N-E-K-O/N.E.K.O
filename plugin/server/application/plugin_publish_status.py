@@ -16,7 +16,7 @@ from typing import Literal, NamedTuple, TypedDict
 from urllib.parse import quote
 
 from plugin.neko_plugin_cli.core.plugin_source import load_plugin_source
-from plugin.neko_plugin_cli.repo_state import RepoState, read_repo_state
+from plugin.neko_plugin_cli.repo_state import RepoState, read_repo_state, read_workspace_log
 from plugin.server.application.plugins._env_budgets import env_seconds
 from plugin.server.domain.plugin_project_errors import ProjectErrorCode as Code
 from plugin.server.domain.plugin_project_errors import project_error
@@ -294,14 +294,21 @@ async def get_publish_status(project_id: str, *, fresh: bool = False) -> dict[st
     local = await asyncio.to_thread(read_local_status, project_id)
     state = local.repository
     remote = None
+    workspace_read = asyncio.to_thread(read_workspace_log, local.source_dir, state)
     if state.github_repository:
-        remote = await read_remote_github(
-            state.github_repository, state.head, state.tag, local.plugin_id, fresh=fresh
+        remote, workspace = await asyncio.gather(
+            read_remote_github(
+                state.github_repository, state.head, state.tag, local.plugin_id, fresh=fresh
+            ),
+            workspace_read,
         )
+    else:
+        workspace = await workspace_read
     return {
         "plugin_id": local.plugin_id,
         "version": local.version,
         "repository": asdict(state),
         "actions": local.actions,
         "remote": remote,
+        "workspace": asdict(workspace) if workspace else None,
     }

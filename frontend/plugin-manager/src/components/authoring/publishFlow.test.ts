@@ -1,16 +1,26 @@
 import { describe, expect, it } from 'vitest'
-import { RELEASE_WORKFLOW_PATH, type PublishStatus, type PublishTask } from '@/api/pluginProjects'
+import {
+  RELEASE_WORKFLOW_PATH,
+  type PublishStatus,
+  type PublishTask,
+  type Toolchain,
+} from '@/api/pluginProjects'
 import type { SubmissionPanelState } from '@/api/marketSubmissions'
-import { publishFlow, type PublishStepId } from './publishFlow'
+import { publishFlow, type PublishFlowFacts, type PublishStepId } from './publishFlow'
 
 const HEAD = 'a'.repeat(40)
 const APPROVED = 'b'.repeat(40)
+
+/** The flow for these facts; the Market's version list is unread unless a test passes it. */
+const flowOf = (facts: Omit<PublishFlowFacts, 'marketListed'> & Partial<PublishFlowFacts>) =>
+  publishFlow({ marketListed: null, ...facts })
 
 function status(
   overrides: {
     repository?: Partial<PublishStatus['repository']>
     remote?: Partial<NonNullable<PublishStatus['remote']>> | null
     actions?: PublishStatus['actions']
+    workspace?: PublishStatus['workspace']
   } = {}
 ): PublishStatus {
   return {
@@ -46,6 +56,7 @@ function status(
             tag: 'missing',
             ...overrides.remote,
           },
+    workspace: overrides.workspace ?? null,
   }
 }
 
@@ -82,7 +93,7 @@ function step(flow: ReturnType<typeof publishFlow>, id: PublishStepId) {
 
 describe('publishFlow', () => {
   it('orders the steps repository, verify, submission, release, market', () => {
-    const flow = publishFlow({ status: status(), submission: submission(), task: null })
+    const flow = flowOf({ status: status(), submission: submission(), task: null })
     expect(flow.steps.map((item) => item.id)).toEqual([
       'repository',
       'verify',
@@ -93,7 +104,7 @@ describe('publishFlow', () => {
   })
 
   it('makes the submission the current step before approval; the Release waits for it', () => {
-    const flow = publishFlow({ status: status(), submission: submission(), task: null })
+    const flow = flowOf({ status: status(), submission: submission(), task: null })
     expect(flow.currentStepId).toBe('submission')
     expect(step(flow, 'release')).toMatchObject({
       state: 'waiting',
@@ -117,12 +128,12 @@ describe('publishFlow', () => {
     ['rejected', 'todo'],
     ['withdrawn', 'todo'],
   ] as const)('shows a %s submission as %s', (phase, state) => {
-    const flow = publishFlow({ status: status(), submission: submission({ phase }), task: null })
+    const flow = flowOf({ status: status(), submission: submission({ phase }), task: null })
     expect(step(flow, 'submission').state).toBe(state)
   })
 
   it('offers the GitHub Release once the submission is approved', () => {
-    const flow = publishFlow({ status: status(), submission: approved(), task: null })
+    const flow = flowOf({ status: status(), submission: approved(), task: null })
     expect(flow.currentStepId).toBe('release')
     expect(step(flow, 'release')).toMatchObject({
       state: 'todo',
@@ -134,7 +145,7 @@ describe('publishFlow', () => {
   })
 
   it('warns that a Release from another commit than the approved one goes to human review', () => {
-    const flow = publishFlow({ status: status(), submission: approved(APPROVED), task: null })
+    const flow = flowOf({ status: status(), submission: approved(APPROVED), task: null })
     expect(step(flow, 'release').warning).toEqual({
       key: 'publishReleaseCommitDiffers',
       params: { head: 'aaaaaaa', approved: 'bbbbbbb' },
@@ -142,7 +153,7 @@ describe('publishFlow', () => {
   })
 
   it('drops the commit warning once the Release exists', () => {
-    const flow = publishFlow({
+    const flow = flowOf({
       status: status({ remote: published }),
       submission: approved(APPROVED),
       task: null,
@@ -151,7 +162,7 @@ describe('publishFlow', () => {
   })
 
   it('asks to notify the Market for an approved plugin with a complete Release', () => {
-    const flow = publishFlow({ status: status({ remote: published }), submission: approved(), task: null })
+    const flow = flowOf({ status: status({ remote: published }), submission: approved(), task: null })
     expect(flow.currentStepId).toBe('market')
     expect(step(flow, 'market').detail).toEqual({ key: 'marketVersionNotify', params: { tag: 'v0.2.0' } })
     expect(flow.canNotifyMarket).toBe(true)
@@ -159,7 +170,7 @@ describe('publishFlow', () => {
   })
 
   it('never offers the Market notification before approval, even with a Release', () => {
-    const flow = publishFlow({
+    const flow = flowOf({
       status: status({ remote: published }),
       submission: submission({ phase: 'in_review' }),
       task: null,
@@ -175,7 +186,7 @@ describe('publishFlow', () => {
     ['rejected', 'todo', { key: 'marketVersionRejected', params: { candidate: 12 } }],
     ['superseded', 'waiting', { key: 'marketVersionSuperseded' }],
   ] as const)('shows the Market answer %s', (marketStatus, state, detail) => {
-    const flow = publishFlow({
+    const flow = flowOf({
       status: status({ remote: published }),
       submission: approved(),
       task: task({ market_status: marketStatus, market_candidate_id: 12 }),
@@ -185,7 +196,7 @@ describe('publishFlow', () => {
   })
 
   it('reads a rejection from a failed full run, which keeps no release URL', () => {
-    const flow = publishFlow({
+    const flow = flowOf({
       status: status({ remote: published }),
       submission: approved(),
       task: task({ mode: 'github_and_market', status: 'failed', release_url: '', market_status: 'rejected' }),
@@ -194,7 +205,7 @@ describe('publishFlow', () => {
   })
 
   it('ignores the Market answer of an earlier version', () => {
-    const flow = publishFlow({
+    const flow = flowOf({
       status: status({ remote: published }),
       submission: approved(),
       task: task({
@@ -205,8 +216,40 @@ describe('publishFlow', () => {
     expect(step(flow, 'market').detail?.key).toBe('marketVersionNotify')
   })
 
+  it('reads a listed version from the Market when no task survived', () => {
+    const flow = flowOf({
+      status: status({ remote: published }),
+      submission: approved(),
+      task: null,
+      marketListed: true,
+    })
+    expect(step(flow, 'market')).toMatchObject({ state: 'done', detail: { key: 'marketVersionListed' } })
+    expect(flow.canNotifyMarket).toBe(false)
+  })
+
+  it('prefers the Market list over an older answer for the same Release', () => {
+    const flow = flowOf({
+      status: status({ remote: published }),
+      submission: approved(),
+      task: task({ market_status: 'pending_review', market_candidate_id: 12 }),
+      marketListed: true,
+    })
+    expect(step(flow, 'market').state).toBe('done')
+  })
+
+  it('still offers the notification when the Market does not list the Release', () => {
+    const flow = flowOf({
+      status: status({ remote: published }),
+      submission: approved(),
+      task: null,
+      marketListed: false,
+    })
+    expect(step(flow, 'market').detail?.key).toBe('marketVersionNotify')
+    expect(flow.canNotifyMarket).toBe(true)
+  })
+
   it('reports local git problems first and gates the GitHub publish on them', () => {
-    const flow = publishFlow({
+    const flow = flowOf({
       status: status({ repository: { head_pushed: false } }),
       submission: approved(),
       task: null,
@@ -218,18 +261,18 @@ describe('publishFlow', () => {
   })
 
   it('passes the full pushed HEAD to the submission', () => {
-    const flow = publishFlow({ status: status(), submission: submission(), task: null })
+    const flow = flowOf({ status: status(), submission: submission(), task: null })
     expect(flow.pushedHead).toBe(HEAD)
   })
 
   it('offers repository creation only without any origin', () => {
     const none = status({ repository: { origin_url: null, github_repository: null }, remote: null })
-    expect(publishFlow({ status: none, submission: submission(), task: null }).canCreateRepository).toBe(true)
+    expect(flowOf({ status: none, submission: submission(), task: null }).canCreateRepository).toBe(true)
     const foreign = status({
       repository: { origin_url: 'https://gitee.com/o/r.git', github_repository: null },
       remote: null,
     })
-    const flow = publishFlow({ status: foreign, submission: submission(), task: null })
+    const flow = flowOf({ status: foreign, submission: submission(), task: null })
     expect(flow.canCreateRepository).toBe(false)
     expect(step(flow, 'repository').detail).toEqual({
       key: 'publishRepoForeignOrigin',
@@ -238,7 +281,7 @@ describe('publishFlow', () => {
   })
 
   it('marks remote facts unknown when GitHub cannot be read', () => {
-    const flow = publishFlow({
+    const flow = flowOf({
       status: status({
         remote: {
           reachable: false,
@@ -257,7 +300,7 @@ describe('publishFlow', () => {
   })
 
   it('notes outdated workflows and the repository name the CLI expects', () => {
-    const flow = publishFlow({
+    const flow = flowOf({
       status: status({
         repository: { github_repository: 'owner/hello' },
         actions: { [RELEASE_WORKFLOW_PATH]: 'CURRENT', '.github/workflows/verify.yml': 'UPGRADE' },
@@ -269,5 +312,171 @@ describe('publishFlow', () => {
       { key: 'publishActionsOutdated', params: { files: '.github/workflows/verify.yml' } },
       { key: 'publishNameNote', params: { id: 'hello_world' } },
     ])
+  })
+})
+
+describe('publishFlow action blockers', () => {
+  const severities = (flow: ReturnType<typeof publishFlow>, mode: keyof typeof flow.blockers) =>
+    flow.blockers[mode].map((item) => [item.severity, item.step, item.reason.key])
+
+  it('has no blocker for the recommended next action', () => {
+    const release = flowOf({ status: status(), submission: approved(), task: null })
+    expect(release.blockers.github_and_market).toEqual([])
+    expect(release.blockers.github).toEqual([])
+    const market = flowOf({ status: status({ remote: published }), submission: approved(), task: null })
+    expect(market.blockers.market_notify).toEqual([])
+  })
+
+  it('agrees with the visible flags when nothing blocks', () => {
+    for (const facts of [
+      { status: status(), submission: approved(), task: null },
+      { status: status({ remote: published }), submission: approved(), task: null },
+      { status: status({ repository: { worktree_clean: false } }), submission: approved(), task: null },
+    ]) {
+      const flow = flowOf(facts)
+      expect(flow.blockers.github.length === 0).toBe(flow.canPublishGithub)
+      expect(flow.blockers.market_notify.length === 0).toBe(flow.canNotifyMarket)
+    }
+  })
+
+  it('lets a Release alone run before approval, but not the full run that notifies the Market', () => {
+    const flow = flowOf({ status: status(), submission: submission(), task: null })
+    expect(severities(flow, 'github')).toEqual([['soft', 'submission', 'publishSoftNotApproved']])
+    expect(severities(flow, 'github_and_market')).toEqual([
+      ['hard', 'submission', 'publishBlockedNotApproved'],
+    ])
+  })
+
+  it('puts every local git problem the server gate refuses first, as hard', () => {
+    const flow = flowOf({
+      status: status({ repository: { head_pushed: false }, remote: { verify: 'failure' } }),
+      submission: submission(),
+      task: null,
+    })
+    expect(severities(flow, 'github')).toEqual([
+      ['hard', 'repository', 'publishRepoUnpushed'],
+      ['soft', 'submission', 'publishSoftNotApproved'],
+      ['soft', 'verify', 'publishVerifyFailed'],
+    ])
+  })
+
+  it('refuses a second Release for a version that already has one', () => {
+    const flow = flowOf({ status: status({ remote: published }), submission: approved(), task: null })
+    expect(severities(flow, 'github')).toEqual([['hard', 'market', 'publishBlockedReleaseExists']])
+  })
+
+  it('warns, without blocking, when HEAD is not the approved commit', () => {
+    const flow = flowOf({ status: status(), submission: approved(APPROVED), task: null })
+    expect(severities(flow, 'github')).toEqual([['soft', null, 'publishReleaseCommitDiffers']])
+  })
+
+  it('needs approval and a complete Release before notifying the Market', () => {
+    const flow = flowOf({
+      status: status({ remote: { release: { state: 'published', missing_assets: ['a.zip'] } } }),
+      submission: submission({ phase: 'in_review' }),
+      task: null,
+    })
+    expect(severities(flow, 'market_notify')).toEqual([
+      ['hard', 'submission', 'publishBlockedNotApproved'],
+      ['hard', 'release', 'publishReleaseAssets'],
+    ])
+  })
+
+  it('only asks before notifying again once the Market listed the version', () => {
+    const flow = flowOf({
+      status: status({ remote: published }),
+      submission: approved(),
+      task: null,
+      marketListed: true,
+    })
+    expect(severities(flow, 'market_notify')).toEqual([['soft', null, 'publishSoftAlreadyAnswered']])
+  })
+
+  it('points later unfinished steps at the current one', () => {
+    const flow = flowOf({ status: status(), submission: submission(), task: null })
+    expect(flow.currentStepId).toBe('submission')
+    expect(flow.prerequisites).toEqual({ release: 'submission', market: 'submission' })
+    const done = flowOf({
+      status: status({ remote: published }),
+      submission: approved(),
+      task: null,
+      marketListed: true,
+    })
+    expect(done.prerequisites).toEqual({})
+  })
+})
+
+describe('publishFlow step 0 (toolchain)', () => {
+  const ready = (): Toolchain => ({
+    git: { installed: true, version: '2.55.0', user_name: 'Dev', user_email: 'dev@example.com' },
+    uv: { installed: true, version: '0.12.18' },
+    gh: { installed: true, version: '2.101.0', authenticated: true, login: 'octocat' },
+    source_checkout: true,
+  })
+  const tool = (flow: ReturnType<typeof publishFlow>, id: string) =>
+    flow.toolchain.tools.find((item) => item.id === id)!
+
+  it('is unknown until read, and does not take the current page', () => {
+    const flow = flowOf({ status: status(), submission: submission(), task: null })
+    expect(flow.toolchain.state).toBe('unknown')
+    expect(flow.currentStepId).toBe('submission')
+    expect(flow.blockers.github).toEqual([
+      { severity: 'soft', step: 'submission', reason: { key: 'publishSoftNotApproved' } },
+    ])
+  })
+
+  it('is done with every required tool, showing versions and the account', () => {
+    const flow = flowOf({ status: status(), submission: approved(), task: null, toolchain: ready() })
+    expect(flow.toolchain.state).toBe('done')
+    expect(tool(flow, 'git').value).toBe('2.55.0')
+    expect(tool(flow, 'gitIdentity').value).toBe('Dev <dev@example.com>')
+    expect(tool(flow, 'githubAccount').value).toBe('octocat')
+    expect(flow.blockers.github).toEqual([])
+  })
+
+  it('becomes the current page and a hard blocker when a required tool is missing', () => {
+    const flow = flowOf({
+      status: status(),
+      submission: approved(),
+      task: null,
+      toolchain: { ...ready(), uv: { installed: false, version: null } },
+    })
+    expect(flow.toolchain.state).toBe('todo')
+    expect(flow.currentStepId).toBe('toolchain')
+    // Later unfinished steps point back at step 0; finished ones do not.
+    expect(flow.prerequisites).toEqual({ release: 'toolchain', market: 'toolchain' })
+    expect(flow.blockers.github[0]).toEqual({
+      severity: 'hard',
+      step: 'toolchain',
+      reason: { key: 'publishToolMissingBlocker', params: { tool: 'uv' } },
+    })
+    // Notifying the Market runs no ruff, so it does not need uv.
+    const market = flowOf({
+      status: status({ remote: published }),
+      submission: approved(),
+      task: null,
+      toolchain: { ...ready(), uv: { installed: false, version: null } },
+    })
+    expect(market.blockers.market_notify).toEqual([])
+  })
+
+  it('treats a missing git identity as required, and gh as recommended only', () => {
+    const noIdentity = flowOf({
+      status: status(),
+      submission: approved(),
+      task: null,
+      toolchain: { ...ready(), git: { ...ready().git, user_email: null } },
+    })
+    expect(tool(noIdentity, 'gitIdentity').state).toBe('missing')
+    expect(noIdentity.toolchain.state).toBe('todo')
+    const noGh = flowOf({
+      status: status(),
+      submission: approved(),
+      task: null,
+      toolchain: { ...ready(), gh: { installed: false, version: null, authenticated: false, login: null } },
+    })
+    expect(tool(noGh, 'gh')).toMatchObject({ state: 'missing', required: false })
+    expect(noGh.toolchain.state).toBe('done')
+    expect(noGh.blockers.github).toEqual([])
   })
 })

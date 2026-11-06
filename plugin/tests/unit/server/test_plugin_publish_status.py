@@ -38,6 +38,8 @@ def test_project_without_a_repository_skips_every_remote_read(monkeypatch, tmp_p
     assert result["repository"]["tag"] == "v0.1.0"
     assert result["remote"] is None
     assert set(result["actions"].values()) == {"ADD"}
+    # Without its own repository there is no workspace history to show.
+    assert result["workspace"] is None
 
 
 

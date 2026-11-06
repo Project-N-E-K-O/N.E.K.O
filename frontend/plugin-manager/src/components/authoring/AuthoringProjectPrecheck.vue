@@ -12,7 +12,7 @@
       <el-button type="primary" :icon="VideoPlay" :loading="running" @click="run">
         {{ t(running ? 'authoring.precheckRunning' : 'authoring.precheckRun') }}
       </el-button>
-      <span v-if="report" class="authoring-muted authoring-small">
+      <span class="authoring-muted authoring-small">
         {{ t('authoring.precheckCiNote') }}
       </span>
     </div>
@@ -21,7 +21,7 @@
       <ul v-if="report.environment_issues.length">
         <li v-for="([severity, message], index) in report.environment_issues" :key="index">
           <el-tag size="small" :type="severity === 'error' ? 'danger' : 'warning'">{{
-            severity.toUpperCase()
+            t(severity === 'error' ? 'authoring.precheckSeverityError' : 'authoring.precheckSeverityWarning')
           }}</el-tag>
           <span>{{ message }}</span>
         </li>
@@ -97,8 +97,8 @@ function stageTitleKey(name: StageName) {
 }
 
 function stageLabel(stage: StageView) {
-  if (stage.state === 'passed') return 'OK'
-  return stage.state === 'failed' ? 'FAIL' : t('authoring.precheckSkipped')
+  if (stage.state === 'passed') return t('authoring.precheckStagePassed')
+  return stage.state === 'failed' ? t('authoring.precheckStageFailed') : t('authoring.precheckSkipped')
 }
 
 function stageTagType(state: StageState) {

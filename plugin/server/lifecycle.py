@@ -123,6 +123,14 @@ class ServerLifecycleService:
         # mid-teardown would race the shutdown it is being torn down by.
         self._hot_reload_service = hot_reload_service
         self._hot_reload_started = False
+        # True between a completed ``startup`` and the next ``shutdown``. An
+        # embedded server answers HTTP before then (agent_server starts the
+        # lifecycle only when user plugins are switched on), with an empty registry.
+        self._running = False
+
+    @property
+    def running(self) -> bool:
+        return self._running
 
     @staticmethod
     def _get_plugin_hosts_snapshot() -> dict[str, object]:
@@ -474,6 +482,7 @@ class ServerLifecycleService:
             )
 
     async def startup(self) -> None:
+        self._running = False
         # A short shutdown wait may leave an old shielded reload alive. Drain it
         # while both gates remain closed before admitting the next server run.
         await self._hot_reload_service.wait_for_stopped()
@@ -531,6 +540,8 @@ class ServerLifecycleService:
 
         # No-op on shutdown: PLUGIN_HOT_RELOAD defaults to false and must be explicitly enabled.
         self._hot_reload_started = self._hot_reload_service.start()
+        # Discovery has run: the registry now reflects the plugin sources.
+        self._running = True
         try:
             emit_lifecycle_event({"type": "server_startup_ready", "plugin_id": "server", "time": now_iso()})
         except Exception as exc:
@@ -960,6 +971,7 @@ class ServerLifecycleService:
         async with _held(self._delivery_path_lock):
             self._delivery_path_shutting_down = True
             self._delivery_path_started = False
+        self._running = False
         try:
             result = await asyncio.wait_for(self._shutdown_internal(), timeout=PLUGIN_SHUTDOWN_TOTAL_TIMEOUT)
         except asyncio.TimeoutError:
@@ -1041,6 +1053,11 @@ atexit.register(_final_log_flush)
 
 async def startup() -> None:
     await _service.startup()
+
+
+def lifecycle_running() -> bool:
+    """Whether the plugin system has started and discovered the plugin sources."""
+    return _service.running
 
 
 async def shutdown() -> None:

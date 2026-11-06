@@ -54,6 +54,19 @@ export interface AuthoringProject {
   /** Whether the runtime provides the plugin from this project. */
   loaded: boolean
   running: boolean
+  /** What keeps a readable project from working; `error` carries the diagnostic when one is known. */
+  problem:
+    | 'id_taken'
+    | 'source_rejected'
+    | 'config_rejected'
+    /** The plugin system is not running, so nothing is loaded (not a project fault). */
+    | 'runtime_inactive'
+    /** The plugin system runs but has not picked the project up; a registry refresh does. */
+    | 'not_registered'
+    | 'load_failed'
+    | 'reload_failed'
+    | 'startup_degraded'
+    | null
 }
 
 const config = {
@@ -144,7 +157,49 @@ export interface PublishStatus {
   /** Standard GitHub Actions files keyed by path. */
   actions: Record<string, 'ADD' | 'CURRENT' | 'UPGRADE' | 'CONFLICT'>
   remote: PublishRemoteState | null
+  /** Recent commits and uncommitted changes; null without the plugin's own repository. */
+  workspace: WorkspaceLog | null
 }
+
+export type WorkspaceChangeKind =
+  | 'modified'
+  | 'added'
+  | 'deleted'
+  | 'renamed'
+  | 'untracked'
+  | 'conflicted'
+
+export interface WorkspaceLog {
+  /** The paths that keep the worktree from being clean (the first 50). */
+  changes: { path: string; kind: WorkspaceChangeKind }[]
+  changes_total: number
+  /** The 10 latest commits of HEAD, newest first. */
+  commits: {
+    sha: string
+    author: string
+    /** Unix seconds. */
+    timestamp: number
+    subject: string
+    /** Whether the upstream has it; null without an upstream. */
+    pushed: boolean | null
+  }[]
+  /** Commits not on the upstream yet, and upstream commits not here; null without one. */
+  ahead: number | null
+  behind: number | null
+}
+
+/** The publishing tools of the machine running the server. Local reads only. */
+export interface Toolchain {
+  git: { installed: boolean; version: string | null; user_name: string | null; user_email: string | null }
+  uv: { installed: boolean; version: string | null }
+  gh: { installed: boolean; version: string | null; authenticated: boolean; login: string | null }
+  /** Checks, repository creation and publishing need a N.E.K.O source checkout. */
+  source_checkout: boolean
+}
+
+/** The publishing tools of the machine running the server, seen from the project folder. Local reads only. */
+export const getPluginToolchain = (projectId: string): Promise<Toolchain> =>
+  get(`/plugin-projects/${encodeURIComponent(projectId)}/toolchain`, config)
 
 /** `fresh` bypasses the server's GitHub cache (an explicit refresh); rate limits still apply. */
 export const getPluginProjectPublishStatus = (

@@ -15,7 +15,7 @@ from plugin import settings
 from plugin.neko_plugin_cli.core import project as creator
 from plugin.server.application import plugin_projects as service
 from plugin.core.state import state as runtime_state
-from plugin.server.application.plugins import lifecycle_service, operation_lock
+from plugin.server.application.plugins import lifecycle_service, operation_lock, registry_service
 from plugin.server.infrastructure import authoring_project_store as store
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.domain.plugin_project_errors import ProjectErrorCode
@@ -469,6 +469,7 @@ async def test_created_project_is_listed_from_its_live_manifest(app, tmp_path):
                 "entry": created["entry"],
                 "loaded": True,
                 "running": False,
+                "problem": None,
             }
         ]
         manifest = Path(created["project_dir"]) / "plugin.toml"
@@ -549,6 +550,143 @@ async def test_installed_plugins_keep_their_plugin_ids(app, tmp_path, monkeypatc
         response = await http.post("/plugin-projects/register", json={"source_dir": str(project)})
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "PROJECT_PLUGIN_ID_CONFLICT"
+
+
+async def _rediscover_from_scratch() -> None:
+    """Discover every source into an empty registry, as a server start does."""
+    runtime_state.plugins.clear()
+    await registry_service.PluginRegistryService().refresh_registry()
+
+
+@pytest.mark.asyncio
+async def test_a_project_shadowed_by_a_later_install_says_why_it_is_not_loaded(
+    app, tmp_path, monkeypatch
+):
+    async with client(app) as http:
+        projects = tmp_path / "projects"
+        projects.mkdir()
+        created = await _create(http, projects)
+        installed_root = tmp_path / "installed"
+        installed = _scaffold(installed_root, created["plugin_id"])
+        monkeypatch.setattr(settings, "PLUGIN_CONFIG_ROOTS", (installed_root,))
+        monkeypatch.setattr(registry_service, "PLUGIN_CONFIG_ROOTS", (installed_root,))
+        await _rediscover_from_scratch()
+        [listed] = (await http.get("/plugin-projects")).json()
+    assert (listed["status"], listed["loaded"], listed["problem"]) == (
+        "ok",
+        False,
+        "id_taken",
+    )
+    assert str(installed / "plugin.toml") in listed["error"]
+
+
+@pytest.mark.asyncio
+async def test_a_project_the_source_rules_reject_says_why_it_is_not_loaded(app, tmp_path):
+    async with client(app) as http:
+        created = await _create(http, tmp_path)
+        manifest = Path(created["project_dir"]) / "plugin.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace(
+                created["entry"], f"plugins.{created['plugin_id']}.absent:Plugin"
+            ),
+            encoding="utf-8",
+        )
+        await _rediscover_from_scratch()
+        [listed] = (await http.get("/plugin-projects")).json()
+    assert (listed["status"], listed["loaded"], listed["problem"]) == (
+        "ok",
+        False,
+        "source_rejected",
+    )
+    assert "Entry Python source not found" in listed["error"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("lifecycle_running", "problem"),
+    [
+        # An embedded server before user plugins are switched on: nothing is
+        # registered, and the valid project is not blamed for it.
+        (False, "runtime_inactive"),
+        (True, "not_registered"),
+    ],
+)
+async def test_a_valid_project_missing_from_the_registry_is_not_called_invalid(
+    app, tmp_path, monkeypatch, lifecycle_running, problem
+):
+    from plugin.server import lifecycle
+
+    async with client(app) as http:
+        await _create(http, tmp_path)
+        # Empty registry, as an embedded server's before its lifecycle starts.
+        runtime_state.plugins.clear()
+        monkeypatch.setattr(lifecycle, "lifecycle_running", lambda: lifecycle_running)
+        [listed] = (await http.get("/plugin-projects")).json()
+    assert (listed["status"], listed["loaded"], listed["problem"]) == ("ok", False, problem)
+    assert listed["error"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_refused_manifest_reports_the_runtime_reason(app, tmp_path, monkeypatch):
+    from plugin.core import registry as core_registry
+    from plugin.server import lifecycle
+
+    def refuse(path, _processed, logger, **_kwargs):
+        logger.error("Failed to parse plugin config {}: {}", path, "Invalid value (at line 3)")
+        return None
+
+    async with client(app) as http:
+        await _create(http, tmp_path)
+        # A running plugin system whose manifest parser refuses the project.
+        runtime_state.plugins.clear()
+        monkeypatch.setattr(lifecycle, "lifecycle_running", lambda: True)
+        monkeypatch.setattr(core_registry, "_parse_single_plugin_config", refuse)
+        [listed] = (await http.get("/plugin-projects")).json()
+    assert (listed["loaded"], listed["problem"]) == (False, "config_rejected")
+    # The runtime's own words, not a generic sentence.
+    assert "Invalid value (at line 3)" in listed["error"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("running", "meta", "hot_reload_failed", "problem", "error"),
+    [
+        (
+            False,
+            {"runtime_load_state": "failed", "runtime_load_error_message": "No module named 'x'"},
+            False,
+            "load_failed",
+            "No module named 'x'",
+        ),
+        (False, {}, True, "reload_failed", None),
+        (
+            True,
+            {"runtime_startup_state": "degraded", "runtime_startup_error": "startup failed"},
+            False,
+            "startup_degraded",
+            "startup failed",
+        ),
+        (True, {"runtime_startup_state": "ready"}, False, None, None),
+    ],
+)
+async def test_a_loaded_project_reports_the_runtime_problem_the_plugin_pages_see(
+    app, tmp_path, monkeypatch, running, meta, hot_reload_failed, problem, error
+):
+    async with client(app) as http:
+        created = await _create(http, tmp_path)
+        plugin_id = created["plugin_id"]
+        runtime_state.plugins[plugin_id].update(meta)
+        monkeypatch.setattr(lifecycle_service, "plugin_is_running_sync", lambda _pid: running)
+        monkeypatch.setattr(
+            lifecycle_service, "_hot_reload_failed", {plugin_id} if hot_reload_failed else set()
+        )
+        [listed] = (await http.get("/plugin-projects")).json()
+    assert (listed["loaded"], listed["running"], listed["problem"], listed["error"]) == (
+        True,
+        running,
+        problem,
+        error,
+    )
 
 
 @pytest.mark.asyncio

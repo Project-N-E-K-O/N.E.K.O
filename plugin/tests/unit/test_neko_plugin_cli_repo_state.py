@@ -166,3 +166,62 @@ def test_dirty_paths_name_renamed_and_spaced_files(tmp_path):
 
     assert state.worktree_clean is False
     assert set(state.dirty_paths) == {"new name.py", "plugin.toml", "notes draft.md"}
+
+
+def test_workspace_log_lists_changes_by_kind_and_recent_commits(tmp_path):
+    from plugin.neko_plugin_cli.repo_state import read_workspace_log
+
+    _repository(tmp_path)
+    (tmp_path / "main.py").write_text("print(1)\n", encoding="utf-8")
+    _git(tmp_path, "add", "main.py")
+    _git(tmp_path, "commit", "-m", "add entry")
+    (tmp_path / "main.py").write_text("print(2)\n", encoding="utf-8")
+    (tmp_path / "notes.txt").write_text("todo\n", encoding="utf-8")
+    _git(tmp_path, "rm", "-q", "plugin.toml")
+    state = read_repo_state(tmp_path, version="0.1.0")
+    log = read_workspace_log(tmp_path, state)
+    assert log is not None
+    assert {(change.path, change.kind) for change in log.changes} == {
+        ("main.py", "modified"),
+        ("notes.txt", "untracked"),
+        ("plugin.toml", "deleted"),
+    }
+    assert log.changes_total == 3
+    assert [commit.subject for commit in log.commits] == ["add entry", "init"]
+    assert log.commits[0].sha == state.head
+    assert log.commits[0].author == "test"
+    assert log.commits[0].timestamp > 0
+    # No upstream: whether a commit is pushed is unknown, not false.
+    assert log.commits[0].pushed is None
+    assert log.ahead is None and log.behind is None
+
+
+def test_workspace_log_marks_commits_not_on_the_upstream(tmp_path):
+    from plugin.neko_plugin_cli.repo_state import read_workspace_log
+
+    remote = tmp_path / "remote.git"
+    work = tmp_path / "work"
+    work.mkdir()
+    _git(tmp_path, "init", "--bare", str(remote))
+    _repository(work)
+    _git(work, "remote", "add", "origin", str(remote))
+    _git(work, "push", "-u", "origin", "HEAD:main")
+    _git(work, "branch", "--set-upstream-to=origin/main")
+    (work / "a.txt").write_text("a\n", encoding="utf-8")
+    _git(work, "add", "a.txt")
+    _git(work, "commit", "-m", "local only")
+    state = read_repo_state(work, version="0.1.0")
+    log = read_workspace_log(work, state)
+    assert log is not None
+    assert [(commit.subject, commit.pushed) for commit in log.commits] == [
+        ("local only", False),
+        ("init", True),
+    ]
+    assert (log.ahead, log.behind) == (1, 0)
+    assert log.changes == ()
+
+
+def test_workspace_log_is_none_without_a_repository(tmp_path):
+    from plugin.neko_plugin_cli.repo_state import read_workspace_log
+
+    assert read_workspace_log(tmp_path, read_repo_state(tmp_path, version="0.1.0")) is None
