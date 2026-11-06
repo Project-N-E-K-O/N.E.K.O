@@ -24,7 +24,7 @@
             "storageChanged": "后端数据目录已切换，请重新打开头像编辑器后再保存。"
         }
     },
-    "chatSync": {"setupNeedsSave":"“{{name}}”的同步设置需要处理，请检查角色后重新保存。","title":"聊天同步","close":"关闭","pending":"已登记待上传 {{originals}} 条；待发送删除 {{deletions}} 项。","working":"正在处理…","loginRequired":"请登录社区账号后重试。","unknownTime":"原发生时间未知","userLabel":"你","profileConflict":"请选择要使用的人设版本","profileRenamePending":"确认角色改名","profileLocal":"本机版本","profileRemote":"云端版本","profileUseLocal":"上传本机版本","profileUseRemote":"使用云端版本","profileRenameConfirm":"将“{{oldName}}”改名为“{{newName}}”，并使用完整云端人设？","profileChanged":"人设已变化或同步暂不可用。两份版本均保留，请重新查看。","profileUploadConfirm":"是否上传“{{name}}”刚保存的人设？","profileUnsupported":"人设中有暂不支持同步的字段，本机保存已保留。","profileSaveFailed":"人设同步未完成，本机保存与两份版本均保留。","profileName":"名称","profileNickname":"昵称","profileSetting":"原始设定","profileStyle":"说话风格","cloudImport":"从云端新建角色","cloudEmpty":"云端暂无角色。","cloudProfileEmpty":"这个云端角色尚未发布人设。","cloudCreate":"在本机新建这个角色","cloudExisting":"本机已有“{{name}}”，保留其当前同步状态。","cloudCreated":"已新建并绑定“{{name}}”。","cloudNameConflict":"本机已有同名角色，请先为本机角色改名，或取消导入。","profileNeedsBinding":"请在角色编辑页开启同步开关并保存，以关联此角色。","writerRecoveryRequired":"本机同步需要核验，旧任务已暂停，本地聊天仍可继续。","recoverWriter":"核验并恢复同步","recoveryChecked":"核验完成。请在角色编辑页开启同步开关并保存，继续同步角色与历史聊天。","recoveryCloudCopiesKept":"有 {{count}} 条之前在本机删除的记录无法再同步删除到云端；云端如有这些记录，会继续保留。","moreOptions":"更多设置","newRoleSync":"角色资料与近期记忆","newSyncFailed":"角色已保存在本机，同步设置尚未完成。请稍后重试。","syncChoiceSaved":"角色已保存，同步设置已更新。","recoverWriterHelp":"了解核验与恢复同步","recoverWriterTooltip":"恢复备份、复制同步数据或写入中断，导致旧同步状态无法确认时，核对账号、角色绑定与云端记录，避免重复上传或恢复已删除的聊天。正常使用无需操作。","recoveryNotRequired":"当前无需核验。","errorDetail":"{{message}} 错误代码：{{code}}。","errorAccountMismatch":"当前云端身份与此角色保存的归属不一致。请核对社区账号；若一直是同一账号，需要核查并修复旧绑定，重复重试无法解决。本地聊天已保留。","errorWriterRecovery":"旧同步状态尚未核验。请打开“更多设置”，点击“核验并恢复同步”；成功后重新保存已开启同步的角色。","errorSessionChanged":"操作期间登录状态发生变化。请确认当前社区账号后重试。","errorSessionUnavailable":"暂时无法核验已保存的登录状态。请检查网络后重试；若仍失败，请在账号页面重新登录。","errorNetwork":"无法连接同步服务或请求超时。请检查网络后重试；本地聊天和待办已保留。","errorRetryLater":"同步服务正在限流或等待重试。请稍后重试，连续点击不会缩短等待时间。","errorServiceRejected":"同步服务拒绝了请求。请稍后重试；若持续失败，请反馈此错误代码以核查服务状态。","errorBindingChanged":"角色或同步绑定已变化。请重新打开角色编辑页，确认角色和同步开关后保存。","errorProfileChanged":"保存后的角色设定已变化。请重新打开角色编辑页，确认设定后再次保存同步设置。","errorUnknown":"无法完成同步。请检查网络并重新打开“更多设置”重试；若仍失败，请反馈失败的操作步骤。本地聊天和待办已保留。"},
+    "chatSync": {"setupNeedsSave":"“{{name}}”的同步设置需要处理，请检查角色后重新保存。","title":"聊天同步","close":"关闭","pending":"已登记待上传 {{originals}} 条；待发送删除 {{deletions}} 项。","working":"正在处理…","loginRequired":"请登录社区账号后重试。","unknownTime":"原发生时间未知","userLabel":"你","profileConflict":"请选择要使用的人设版本","profileRenamePending":"确认角色改名","profileLocal":"本机版本","profileRemote":"云端版本","profileUseLocal":"上传本机版本","profileUseRemote":"使用云端版本","profileRenameConfirm":"将“{{oldName}}”改名为“{{newName}}”，并使用完整云端人设？","profileChanged":"人设已变化或同步暂不可用。两份版本均保留，请重新查看。","profileUploadConfirm":"是否上传“{{name}}”刚保存的人设？","profileUnsupported":"人设中有暂不支持同步的字段，本机保存已保留。","profileSaveFailed":"人设同步未完成，本机保存与两份版本均保留。","profileName":"名称","profileNickname":"昵称","profileSetting":"原始设定","profileStyle":"说话风格","cloudImport":"从云端新建角色","cloudEmpty":"云端暂无角色。","cloudProfileEmpty":"这个云端角色尚未发布人设。","cloudCreate":"在本机新建这个角色","cloudExisting":"本机已有“{{name}}”，保留其当前同步状态。","cloudCreated":"已新建并绑定“{{name}}”。","cloudNameConflict":"本机已有同名角色，请先为本机角色改名，或取消导入。","profileNeedsBinding":"请在角色编辑页开启同步开关并保存，以关联此角色。","writerRecoveryRequired":"本机同步需要核验，旧任务已暂停，本地聊天仍可继续。","recoverWriter":"核验并恢复同步","recoveryChecked":"核验完成。请在角色编辑页开启同步开关并保存，继续同步角色与历史聊天。","recoveryCloudCopiesKept":"有 {{count}} 条之前在本机删除的记录无法再同步删除到云端；云端如有这些记录，会继续保留。","moreOptions":"更多设置","newRoleSync":"角色资料与近期记忆","newSyncFailed":"角色已保存在本机，同步设置尚未完成。请稍后重试。","syncChoiceSaved":"角色已保存，同步设置已更新。","recoverWriterHelp":"了解核验与恢复同步","recoverWriterTooltip":"恢复备份、复制同步数据或写入中断，导致旧同步状态无法确认时，核对账号、角色绑定与云端记录，避免重复上传或恢复已删除的聊天。正常使用无需操作。","recoveryNotRequired":"当前无需核验。","errorDetail":"{{message}} 错误代码：{{code}}。","errorAccountMismatch":"当前云端身份与此角色保存的归属不一致。请核对社区账号；若一直是同一账号，需要核查并修复旧绑定，重复重试无法解决。本地聊天已保留。","errorWriterRecovery":"旧同步状态尚未核验。请打开“更多设置”，点击“核验并恢复同步”；成功后重新保存已开启同步的角色。","errorSessionChanged":"操作期间登录状态发生变化。请确认当前社区账号后重试。","errorSessionUnavailable":"暂时无法核验已保存的登录状态。请检查网络后重试；若仍失败，请在账号页面重新登录。","errorNetwork":"无法连接同步服务或请求超时。请检查网络后重试；本地聊天和待办已保留。","errorRetryLater":"同步服务正在限流或等待重试。请稍后重试，连续点击不会缩短等待时间。","errorServiceRejected":"同步服务拒绝了请求。请稍后重试；若持续失败，请反馈此错误代码以核查服务状态。","errorBindingChanged":"角色或同步绑定已变化。请重新打开角色编辑页，确认角色和同步开关后保存。","errorProfileChanged":"保存后的角色设定已变化。请重新打开角色编辑页，确认设定后再次保存同步设置。","errorUnknown":"无法完成同步。请检查网络并重新打开“更多设置”重试；若仍失败，请反馈失败的操作步骤。本地聊天和待办已保留。","errorLongTermCapacity":"本次长期记忆快照超过 20,000 条，未进行同步。本地记忆完整保留，将在后续记忆更新后再试。","errorLongTermPending":"长期记忆等待处理：尚有云端快照未能应用。本地记忆和云端证据均保留，本地上传暂缓，将按现有规则重试。","errorArchiveSubject":"长期记忆同步已暂停：旧画像归档缺少可核验的主体信息。本地记录均保留，请从含主体信息或原始事件的备份恢复后重试。"},
     "instanceAccess": {"title":"连接 NEKO 实例","description":"输入服务器所有者提供的实例访问凭证，此设备将记住连接 30 天。","key":"实例访问凭证","connect":"连接","failed":"连接未获授权，请检查凭证后重试。","httpsRequired":"请使用 HTTPS 或可信的 HTTPS 隧道安全连接。","insecureWarning":"当前连接未加密（HTTP），同一网络路径上的人可能看到访问凭证和会话。条件允许时请使用 HTTPS。"},
     "common": {
         "load": "加载",
@@ -1142,7 +1142,7 @@
         "compactExportHistory": "历史对话",
         "compactHistoryToggleOpen": "展开历史对话",
         "compactHistoryToggleClose": "收起历史对话",
-    "compactHistoryExport": "导出历史对话",
+        "compactHistoryExport": "导出历史对话",
         "compactExportControlsCollapse": "隐藏选择栏",
         "compactExportControlsExpand": "显示选择栏",
         "exportAction": "导出",
@@ -1190,7 +1190,10 @@
         "exportSelectAll": "全选",
         "exportSelectNone": "取消",
         "exportSelectInvert": "反选",
-        "exportSelectionCount": "已选 {{selected}} / 共 {{total}}"
+        "exportSelectionCount": "已选 {{selected}} / 共 {{total}}",
+        "imageUnavailable": "图片暂时无法打开。",
+        "openImage": "查看图片",
+        "closeImage": "关闭"
     },
     "voiceControl": {
         "startVoice": "开始语音",
@@ -5790,7 +5793,7 @@
             "drawCalls": "Draw Calls"
         }
     },
-     "badminton": {
+    "badminton": {
          "title": "羽毛球挑战 - Badminton",
          "exit": "退出",
          "loading": {
@@ -6285,7 +6288,7 @@
         "sdkUnavailable": "小游戏组件加载失败，请关闭页面后重试。",
         "runtimeStartFailed": "比赛没能启动，请稍后再试一次。"
     },
-   "soccer": {
+    "soccer": {
         "settings": {
             "button": "设置",
             "title": "游戏设置",
@@ -6419,7 +6422,7 @@
             "hint": "关闭后，玩家输入、NEKO直接回应、事件回应、赛后摘要和后续续接都不会进入或引用记忆。"
         }
     },
-  "watchTogether": {
+    "watchTogether": {
         "automatic": "自动陪看",
         "stopWatching": "停止陪看",
         "resizeAvatar": "调整猫娘大小",
@@ -7229,5 +7232,12 @@
         "informationExcluded": "此反馈通道不上传完整聊天记录、录音文件或屏幕截图。",
         "informationNote": "“我知道了”仅关闭说明，不改变上传设置。",
         "informationClose": "我知道了"
+    },
+    "cloudModel": {
+        "conflict": "两端都修改了模型，请选择保留哪个版本。",
+        "useCloud": "采用云端模型",
+        "keepLocal": "保留本机选择",
+        "failed": "模型未能加载，已保留原来的选择。",
+        "retry": "重试"
     }
 }

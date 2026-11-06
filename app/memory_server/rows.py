@@ -160,7 +160,7 @@ def _extract_role_tagged_messages_from_rows(rows: list) -> list[dict]:
     accepts a list; a str gets silently swallowed into []).
     """
     out: list[dict] = []
-    for _, _, msg_json in rows:
+    for ts_raw, session_id, msg_json in rows:
         try:
             msg = json.loads(msg_json) if isinstance(msg_json, str) else msg_json
             if not isinstance(msg, dict):
@@ -194,7 +194,10 @@ def _extract_role_tagged_messages_from_rows(rows: list) -> list[dict]:
                 continue
             if not text.strip():
                 continue
-            out.append({'type': msg_type, 'data': {'content': text}})
+            from memory.long_term_sync import original_message_source
+            identity, millis = original_message_source(msg, session_id, ts_raw)
+            source = {'memory_source_id': identity, **({'memory_source_created_at': millis} if millis is not None else {})}
+            out.append({'type': msg_type, 'data': {'content': text, 'additional_kwargs': source}})
         except (json.JSONDecodeError, TypeError):
             continue
     return out

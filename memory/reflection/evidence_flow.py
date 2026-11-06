@@ -379,11 +379,14 @@ class EvidenceFlowMixin:
         """Like aload_reflections(include_archived=True) but also keeps
         `merged` entries. Needed for aapply_signal + score-driven promote
         paths — we need to reach any non-active reflection by id as well."""
+        from memory.long_term_sync import require_consistent_views, consistent_view_read
+        require_consistent_views(os.path.join(self._config_manager.memory_dir, name))
         path = self._reflections_path(name)
         if not await asyncio.to_thread(os.path.exists, path):
             return []
         try:
-            data = await read_json_async(path)
+            with consistent_view_read(path):
+                data = await read_json_async(path)
         except (json.JSONDecodeError, OSError) as e:
             logger.warning(f"[Reflection] 加载失败: {e}")
             return []

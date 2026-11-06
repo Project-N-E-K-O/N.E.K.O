@@ -1531,13 +1531,13 @@ async def test_extraction_prompt_uses_speaker_label(tmp_path):
 
     with patch("memory.facts.get_global_language_full", return_value="zh"):
         await fs._allm_extract_facts("Neko", [msg])
-        assert "主人 | 我对花生过敏" in captured["prompt"]
+        assert "[SOURCE 1] human (主人) | 我对花生过敏" in captured["prompt"]
 
         await fs._allm_extract_facts(
             "Neko", [msg], speaker_label="Alice(12345)",
         )
-    assert "Alice(12345) | 我对花生过敏" in captured["prompt"]
-    assert "主人 | 我对花生过敏" not in captured["prompt"]
+    assert "[SOURCE 1] human (Alice(12345)) | 我对花生过敏" in captured["prompt"]
+    assert "[SOURCE 1] human (主人) | 我对花生过敏" not in captured["prompt"]
     assert "{MASTER_NAME}" not in captured["prompt"]
 
 
