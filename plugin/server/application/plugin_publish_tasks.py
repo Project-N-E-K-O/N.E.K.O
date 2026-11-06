@@ -484,8 +484,7 @@ def _finalize(
         else:
             task.status = "failed"
             task.message = _failure_message(task, returncode)
-        if task.status == "succeeded":
-            task.release_url = _extract_release_url(task) or task.release_url
+        task.release_url = _extract_release_url(task) or task.release_url
         # A rejected notification exits 1, so the status is read on failure too.
         task.market_status, task.market_candidate_id = _extract_market_result(task)
         task.finished_at = time.time()

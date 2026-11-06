@@ -189,13 +189,13 @@ describe('publishFlow', () => {
     expect(step(flow, 'market')).toMatchObject({ state, detail })
   })
 
-  it('reads a rejection from a failed full run, which keeps no release URL', () => {
+  it('ignores a Market outcome without a release URL to identify its version', () => {
     const flow = flowOf({
       status: status({ remote: published }),
       submission: approved(),
       task: task({ mode: 'github_and_market', status: 'failed', release_url: '', market_status: 'rejected' }),
     })
-    expect(step(flow, 'market').state).toBe('todo')
+    expect(step(flow, 'market').detail?.key).toBe('marketVersionNotify')
   })
 
   it('ignores the Market answer of an earlier version', () => {

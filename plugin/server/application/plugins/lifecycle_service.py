@@ -1768,6 +1768,15 @@ class PluginLifecycleService:
                     )
                 )
             )
+            if (
+                await asyncio.to_thread(_project_source_dir_sync, plugin_id) is not None
+                and await asyncio.to_thread(host_obj.is_alive)
+            ):
+                raise _to_domain_error(
+                    code="PLUGIN_STOP_FAILED",
+                    message="Project plugin process is still running; registration was retained",
+                    status_code=409, plugin_id=plugin_id, error_type="PluginStillRunning",
+                )
             await asyncio.to_thread(_pop_plugin_host_sync, plugin_id)
             await asyncio.to_thread(_remove_event_handlers_sync, plugin_id)
             # Clear any LLM tools the plugin had registered with

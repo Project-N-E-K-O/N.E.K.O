@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import math
-import os
 from pathlib import Path
 import subprocess
 import sys
@@ -14,6 +13,7 @@ from urllib.parse import quote
 
 import httpx
 
+from plugin.utils.github_auth import github_headers as _github_headers
 from plugin.utils.github_release import (
     missing_release_assets,
     release_ready,
@@ -38,7 +38,6 @@ _GITHUB_API_URL = "https://api.github.com"
 _RELEASE_RUFF_TIMEOUT_SECONDS = 120
 # Unauthenticated callers get 60 GitHub API requests per hour per IP.
 _RELEASE_POLL_SECONDS = 15.0
-_GH_TOKEN_TIMEOUT_SECONDS = 20
 _DIRTY_PATHS_SHOWN = 5
 # The Market answers these while its verification job is queued or running.
 _MARKET_RETRY_STATUSES = frozenset({429, 503})
@@ -761,37 +760,8 @@ def _local_tag_commit(plugin_dir: Path, tag: str) -> str | None:
     return completed.stdout.strip()
 
 
-def _gh_auth_token() -> str | None:
-    """The token of the user's ``gh auth login``, or None when gh cannot give one."""
-    try:
-        completed = subprocess.run(
-            ["gh", "auth", "token"],
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=_GH_TOKEN_TIMEOUT_SECONDS,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    token = completed.stdout.strip()
-    return token if completed.returncode == 0 and token else None
 
 
-def _github_headers() -> dict[str, str]:
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "neko-plugin",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-    token = (
-        os.environ.get("GH_TOKEN")
-        or os.environ.get("GITHUB_TOKEN")
-        or _gh_auth_token()
-    )
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    return headers
 
 
 def _rate_limit_wait(response: httpx.Response) -> float | None:

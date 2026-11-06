@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from plugin.neko_plugin_cli import cli as neko_plugin_cli
+from plugin.utils import github_auth
 from plugin.utils.github_release import release_asset_is_downloadable
 from plugin.neko_plugin_cli.commands import publish_cmd
 from plugin.neko_plugin_cli.paths import CliDefaults
@@ -50,14 +51,14 @@ def release_ruff_process(
     return state
 
 
-_real_gh_auth_token = publish_cmd._gh_auth_token
+_real_gh_auth_token = github_auth.gh_auth_token
 
 
 @pytest.fixture(autouse=True)
 def offline_github(monkeypatch: pytest.MonkeyPatch) -> None:
     # Never read the developer's real gh login or reach GitHub in tests; a
     # test that expects HTTP traffic installs its own client.
-    monkeypatch.setattr(publish_cmd, "_gh_auth_token", lambda: None)
+    monkeypatch.setattr(github_auth, "gh_auth_token", lambda: None)
     monkeypatch.setattr(publish_cmd.httpx, "Client", lambda **_: _RecordingClient())
 
 
@@ -1466,7 +1467,7 @@ def test_github_headers_fall_back_to_gh_login(
 ) -> None:
     monkeypatch.delenv("GH_TOKEN", raising=False)
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-    monkeypatch.setattr(publish_cmd, "_gh_auth_token", lambda: "gh-login-token")
+    monkeypatch.setattr(github_auth, "gh_auth_token", lambda: "gh-login-token")
 
     assert publish_cmd._github_headers()["Authorization"] == "Bearer gh-login-token"
 
@@ -1493,7 +1494,7 @@ def test_gh_auth_token_reads_the_gh_login(
     monkeypatch.setattr(publish_cmd.subprocess, "run", run)
 
     assert _real_gh_auth_token() == expected
-    assert calls[0]["command"] == ["gh", "auth", "token"]
+    assert calls[0]["command"] == ["gh", "auth", "token", "--hostname", "github.com"]
     assert calls[0]["encoding"] == "utf-8"
 
 

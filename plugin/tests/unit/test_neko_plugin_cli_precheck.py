@@ -132,6 +132,30 @@ def test_precheck_stops_after_a_failing_gate(monkeypatch: pytest.MonkeyPatch, tm
     assert len(calls) == 1
 
 
+def test_child_stages_can_import_the_checkout_from_the_plugin_directory(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    monkeypatch.chdir(REPO_ROOT / "plugin")
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    monkeypatch.setattr(precheck_cmd, "_stage_argv", lambda *_a: [
+        sys.executable, "-S", "-c", "import plugin; print(plugin.__file__)",
+    ])
+    args = SimpleNamespace(_defaults=SimpleNamespace(repo_root=REPO_ROOT))
+    result = precheck_cmd._run_stage("lint", ".", args, capture=True)
+    assert result.passed
+    assert str(REPO_ROOT / "plugin" / "__init__.py") in result.output
+
+
+def test_release_check_output_stays_relative_to_the_callers_directory(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    monkeypatch.chdir(tmp_path)
+    args = SimpleNamespace(target_dir="reports", skip_tests=False)
+    command = precheck_cmd._stage_argv("release-check", "/plugin", args)
+    assert command[command.index("--target-dir") + 1] == str(tmp_path / "reports")
+
+
 def test_precheck_json_report_keeps_its_shape_when_the_directory_is_unknown(
     tmp_path: Path, capsys
 ) -> None:

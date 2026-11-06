@@ -236,9 +236,7 @@ function releaseStep(facts: PublishFlowFacts, releaseReady: boolean): Omit<Publi
 
 /** The Market's answer to the latest task's release notification, when it carries one. */
 function marketAnswer(task: PublishTask | null, tag: string): Omit<PublishStep, 'id' | 'warning'> | null {
-  if (!task?.market_status) return null
-  // A run for an earlier version says nothing about this one. A failed full run keeps no URL.
-  if (task.release_url && !task.release_url.endsWith(`/tag/${tag}`)) return null
+  if (!task?.market_status || !task.release_url.endsWith(`/tag/${tag}`)) return null
   const candidate = task.market_candidate_id ?? ''
   switch (task.market_status) {
     case 'published':

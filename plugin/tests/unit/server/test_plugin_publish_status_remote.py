@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from plugin.server.application import plugin_publish_status as publish_status
+from plugin.utils import github_auth
 from tests.fake_clock import patch_module_clock
 
 BASE = '/repos/owner/repo'
@@ -48,6 +49,7 @@ def _isolated(monkeypatch):
     _reset()
     monkeypatch.delenv('GH_TOKEN', raising=False)
     monkeypatch.delenv('GITHUB_TOKEN', raising=False)
+    monkeypatch.setattr(github_auth, 'gh_auth_token', lambda: None)
     yield
     _reset()
 
@@ -347,3 +349,20 @@ def test_token_is_sent_only_when_configured(monkeypatch):
     _read(fresh=True)
     assert github.requests
     assert all(request.headers['authorization'] == 'Bearer secret' for request in github.requests)
+
+
+def test_status_uses_the_same_stored_gh_credentials_as_publishing(monkeypatch):
+    monkeypatch.setattr(github_auth, 'gh_auth_token', lambda: 'stored-gh-token')
+    github = _serve(monkeypatch, {BASE: PUBLIC})
+    _read()
+    assert all(r.headers['authorization'] == 'Bearer stored-gh-token' for r in github.requests)
+
+
+def test_signing_in_does_not_wait_out_the_anonymous_rate_limit(monkeypatch):
+    reset = str(int(time.time()) + 600)
+    github = _serve(monkeypatch, {BASE: (403, {}, {'x-ratelimit-remaining': '0', 'x-ratelimit-reset': reset})})
+    assert _read()['rate_limited'] is True
+    monkeypatch.setattr(github_auth, 'gh_auth_token', lambda: 'stored-gh-token')
+    github.routes.clear()
+    github.routes.update(FINAL)
+    assert _read(fresh=True)['release']['ready'] is True

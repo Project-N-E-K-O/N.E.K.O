@@ -119,16 +119,22 @@ def terminate_process_tree(process: subprocess.Popen[str]) -> None:
     try:
         process.wait(timeout=5)
     except subprocess.TimeoutExpired:
-        for child in children:
-            try:
-                child.kill()
-            except psutil.Error:
-                pass
         try:
             process.kill()
             process.wait(timeout=5)
         except (OSError, subprocess.TimeoutExpired):  # pragma: no cover - escalation best-effort
             logger.warning("CLI subprocess did not exit after kill: pid={}", process.pid)
+    # Children may outlive a parent that exits promptly on terminate.
+    if not children:
+        return
+    _, alive = psutil.wait_procs(children, timeout=5)
+    for child in alive:
+        try:
+            child.kill()
+        except psutil.Error:
+            pass
+    if alive:
+        psutil.wait_procs(alive, timeout=5)
 
 
 async def run_cli(

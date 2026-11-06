@@ -767,6 +767,45 @@ async def test_a_project_that_does_not_stop_stays_registered(app, tmp_path, monk
 
 
 @pytest.mark.asyncio
+async def test_a_project_host_that_survives_shutdown_is_retained(app, tmp_path, monkeypatch):
+    class Host:
+        async def start(self, **kwargs):
+            pass
+
+        async def shutdown(self, **kwargs):
+            pass
+
+        def is_alive(self):
+            return True
+
+    host = Host()
+    monkeypatch.setattr(runtime_state, "plugin_hosts", {})
+    monkeypatch.setattr(lifecycle_service, "emit_lifecycle_event", lambda event: None)
+    async with client(app) as http:
+        created = await _create(http, tmp_path)
+        runtime_state.plugin_hosts["project_example"] = host
+        removed = await http.delete(f"/plugin-projects/{created['project_id']}")
+    assert removed.status_code == 409
+    assert removed.json()["detail"]["code"] == "PROJECT_STOP_FAILED"
+    assert runtime_state.plugin_hosts["project_example"] is host
+    assert store.list_records()[0].project_id == created["project_id"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["publish", "precheck", "create-repo"])
+async def test_active_project_operations_prevent_removal(app, tmp_path, operation):
+    from plugin.server.application.plugin_project_commands import project_operation
+
+    async with client(app) as http:
+        created = await _create(http, tmp_path)
+        with project_operation(created["project_id"], operation):
+            removed = await http.delete(f"/plugin-projects/{created['project_id']}")
+        assert removed.status_code == 409
+        assert removed.json()["detail"]["code"] == "PLUGIN_OPERATION_BUSY"
+        assert store.list_records()[0].project_id == created["project_id"]
+
+
+@pytest.mark.asyncio
 async def test_corrupt_store_is_reported_and_never_overwritten(app, tmp_path):
     path = store.store_path()
     path.parent.mkdir(parents=True, exist_ok=True)

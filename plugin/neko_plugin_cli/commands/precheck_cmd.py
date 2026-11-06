@@ -19,6 +19,7 @@ import json
 import subprocess
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 from ..core.lint import RUFF_LINT_SPEC
 from ..core.plugin_source import load_plugin_source
@@ -88,7 +89,7 @@ def _stage_argv(stage: str, plugin_dir_arg: str, args: argparse.Namespace) -> li
         plugin_dir_arg,
         "--release",
         "--target-dir",
-        str(args.target_dir),
+        str(Path(args.target_dir).expanduser().resolve()),
         *(["--skip-tests"] if args.skip_tests else []),
     ]
 
@@ -99,6 +100,9 @@ def _run_stage(stage: str, plugin_dir_arg: str, args: argparse.Namespace, *, cap
             _stage_argv(stage, plugin_dir_arg, args),
             text=True,
             capture_output=capture,
+            cwd=args._defaults.repo_root,
+            encoding="utf-8",
+            errors="replace",
         )
     except OSError as exc:
         # A missing interpreter or executor is a gate failure, not a crash.

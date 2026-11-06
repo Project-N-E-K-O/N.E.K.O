@@ -568,7 +568,8 @@ async def register_project(source_dir: str) -> AuthoringProject:
 async def remove_project(project_id: str) -> None:
     """Stop and unload the project's plugin, then forget it. Files are kept."""
     try:
-        await _remove_locked(project_id)
+        with project_operation(project_id, "remove"):
+            await _remove_locked(project_id)
     except PluginOperationBusy as exc:
         raise _busy_error(exc) from exc
 

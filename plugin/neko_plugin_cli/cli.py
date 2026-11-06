@@ -18,6 +18,7 @@ Shell completion (requires ``shtab``)::
 from __future__ import annotations
 
 import argparse
+import io
 import sys
 import textwrap
 from pathlib import Path
@@ -54,6 +55,10 @@ else:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Console entry points and piped editor tasks need the same multilingual output.
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper):
+            stream.reconfigure(encoding="utf-8")
     parser = build_parser()
     args = parser.parse_args(argv)
 

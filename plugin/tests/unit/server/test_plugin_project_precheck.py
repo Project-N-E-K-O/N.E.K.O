@@ -161,6 +161,27 @@ def test_cli_children_run_in_utf8_mode(monkeypatch):
     assert env["PYTHONIOENCODING"] == "utf-8"
 
 
+def test_terminating_cli_waits_for_children_even_when_parent_exits(monkeypatch):
+    from types import SimpleNamespace
+
+    killed = []
+    child = SimpleNamespace(terminate=lambda: None, kill=lambda: killed.append("child"))
+    waits = []
+
+    def wait_procs(children, timeout):
+        waits.append(children)
+        return ([], children) if len(waits) == 1 else (children, [])
+
+    monkeypatch.setattr(commands, "psutil", SimpleNamespace(
+        Process=lambda _pid: SimpleNamespace(children=lambda recursive: [child]),
+        Error=psutil.Error, wait_procs=wait_procs,
+    ))
+    parent = SimpleNamespace(poll=lambda: None, pid=123, terminate=lambda: None, wait=lambda timeout: 0)
+    commands.terminate_process_tree(parent)
+    assert killed == ["child"]
+    assert waits == [[child], [child]]
+
+
 
 @pytest.mark.asyncio
 async def test_run_cli_decodes_utf8_output(tmp_path):

@@ -346,6 +346,7 @@ async def test_market_notify_verifies_the_release_before_asking(
         (["[OK] GitHub Release ready", "[MARKET] status=published"], 0, "succeeded", "published", None),
         (["[MARKET] status=pending_review candidate=17"], 0, "succeeded", "pending_review", 17),
         (["[MARKET] status=rejected candidate=9"], 1, "failed", "rejected", 9),
+        (["[OK] GitHub Release ready: https://github.com/owner/repo/releases/tag/v0.1.0", "[MARKET] status=rejected candidate=9"], 1, "failed", "rejected", 9),
         (["[OK] done"], 0, "succeeded", None, None),
     ],
 )
@@ -364,6 +365,8 @@ async def test_the_task_reports_the_market_status_line(
     assert latest["status"] == status
     assert latest["market_status"] == market_status
     assert latest["market_candidate_id"] == candidate
+    if any("https://github.com/owner/repo/releases/tag/v0.1.0" in line for line in lines):
+        assert latest["release_url"] == "https://github.com/owner/repo/releases/tag/v0.1.0"
     if returncode:
         # A rejection keeps the existing failure message; there is no [FAIL] line here.
         assert latest["message"] == "publish exited with code 1"

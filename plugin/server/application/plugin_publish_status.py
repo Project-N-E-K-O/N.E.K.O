@@ -8,7 +8,6 @@ here pushes, tags or notifies the Market.
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -21,6 +20,7 @@ from plugin.server.application.plugins._env_budgets import env_seconds
 from plugin.server.domain.plugin_project_errors import ProjectErrorCode as Code
 from plugin.server.domain.plugin_project_errors import project_error
 from plugin.server.infrastructure import authoring_project_store as store
+from plugin.utils.github_auth import github_headers
 from plugin.utils.github_release import (
     WorkflowState,
     missing_release_assets,
@@ -45,6 +45,7 @@ _cache: dict[tuple[str, str, str, str], tuple[float, RemoteGithubState]] = {}
 _inflight: dict[tuple[str, str, str, str], asyncio.Future[RemoteGithubState]] = {}
 # Monotonic time until which GitHub said the quota is spent.
 _rate_limited_until = 0.0
+_rate_limit_credential: int | None = None
 _client: tuple[asyncio.AbstractEventLoop, object] | None = None
 
 
@@ -146,23 +147,21 @@ def _shared_client(httpx):
     return _client[1]
 
 
-async def _read(repository: str, head: str | None, tag: str, plugin_id: str) -> RemoteGithubState:
+async def _read(
+    repository: str, head: str | None, tag: str, plugin_id: str,
+    *, headers: dict[str, str] | None = None,
+) -> RemoteGithubState:
     httpx = await ensure_httpx()
     client = _shared_client(httpx)
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "neko-plugin",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    if headers is None:
+        headers = await asyncio.to_thread(github_headers)
     result = _unknown()
     definitive = True
 
     async def get(path: str):
         nonlocal definitive
         global _rate_limited_until
+        global _rate_limit_credential
         try:
             response = await client.get(f"{_GITHUB_API}{path}", headers=headers)
         except httpx.HTTPError:
@@ -171,6 +170,7 @@ async def _read(repository: str, head: str | None, tag: str, plugin_id: str) -> 
             return None
         limited = response.headers.get("x-ratelimit-remaining") == "0"
         if response.status_code == 429 or (response.status_code == 403 and limited):
+            _rate_limit_credential = hash(headers.get("Authorization", ""))
             result["rate_limited"] = True
             definitive = False
             reset = response.headers.get("x-ratelimit-reset", "")
@@ -280,11 +280,15 @@ async def read_remote_github(
         cached = _cache.get(key)
         if cached is not None and time.monotonic() < cached[0]:
             return cached[1]
+    headers = None
     if time.monotonic() < _rate_limited_until:
-        return _unknown(rate_limited=True)
+        headers = await asyncio.to_thread(github_headers)
+        # Signing in must not keep waiting out the anonymous quota.
+        if hash(headers.get("Authorization", "")) == _rate_limit_credential:
+            return _unknown(rate_limited=True)
     pending = _inflight.get(key)
     if pending is None or pending.get_loop() is not asyncio.get_running_loop():
-        pending = asyncio.ensure_future(_read(repository, head, tag, plugin_id))
+        pending = asyncio.ensure_future(_read(repository, head, tag, plugin_id, headers=headers))
         _inflight[key] = pending
 
         def forget(done: asyncio.Future[RemoteGithubState]) -> None:
