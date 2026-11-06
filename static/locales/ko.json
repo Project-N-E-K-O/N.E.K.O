@@ -5321,6 +5321,7 @@
         }
     },
     "music": {
+        "noExactRecording": "곡 제목과 아티스트가 모두 일치하는 음원을 찾지 못했습니다.",
         "recommendation": {
             "title": "음악 추천",
             "pending": "이 노래를 들어 볼까요?",

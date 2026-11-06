@@ -70,7 +70,7 @@ from utils.icebreaker_route_state import (
     finalize_icebreaker_route,
     get_active_icebreaker_route_session_id,
 )
-from main_logic.music_playback import handle_music_playback_state
+from main_logic.music_playback import handle_music_playback_state, clear_music_playback_connection
 
 
 _VOICE_BINARY_MAGIC = b"NEKO"
@@ -991,6 +991,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     handle_music_playback_state(
                         session_manager[lanlan_name],
                         message,
+                        websocket=websocket,
                     )
                     continue
                 if _is_voice_path_message(message) and _owns_voice_connection():
@@ -1669,6 +1670,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 handle_music_playback_state(
                     session_manager[lanlan_name],
                     message,
+                    websocket=websocket,
                 )
 
             elif action in ("voice_play_start", "voice_play_end"):
@@ -1770,6 +1772,8 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             logger.debug("[capture_bridge] unmark on disconnect failed: %s", exc)
         # Security: lanlan_name may disappear after rename/deletion.
         async with _lock:
+            if lanlan_name in session_manager:
+                clear_music_playback_connection(session_manager[lanlan_name], websocket)
             session_id = get_session_id()
             is_current = session_id.get(lanlan_name) == this_session_id
             # Drop this socket's own voice registration first: teardown must

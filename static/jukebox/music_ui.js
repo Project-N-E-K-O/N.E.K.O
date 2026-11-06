@@ -277,6 +277,9 @@
             && previousContext.recommendationId === (options.recommendationId || '')
             && previousContext.url === String(track.url || '');
         return {
+            characterName: String(window.lanlan_config?.lanlan_name || ''),
+            neteaseId: track.neteaseId,
+            queueTicket: track.queueTicket || '',
             playbackId: playbackId || '',
             token: token,
             lifecycleStartedAt: getMusicLifecycleTimestamp(),
@@ -340,24 +343,36 @@
         }
     }
 
+    // Retain terminal receipts independently of the player: its UI may be
+    // destroyed before the character's socket reconnects.
+    const pendingMusicTerminalReports = new Map();
+
+    function sendMusicPlaybackReport(report) {
+        if (report.characterName !== String(window.lanlan_config?.lanlan_name || '')) return false;
+        const socket = window.appState?.socket;
+        if (!socket || typeof socket.send !== 'function') return false;
+        if (socket.readyState !== 1 && typeof socket.readyState !== 'undefined') return false;
+        try {
+            socket.send(JSON.stringify(report.payload));
+            return true;
+        } catch (_) { return false; }
+    }
+
     function reportMusicPlaybackState(state, track, playbackContext, failureReason) {
         reportRecommendationPlaybackState(state, playbackContext, failureReason);
-        try {
-            const appState = window.appState;
-            const socket = appState && appState.socket;
-            if (!socket || typeof socket.send !== 'function') return;
-            if (socket.readyState !== 1 && typeof socket.readyState !== 'undefined') return;
-            const context = playbackContext || createMusicPlaybackReportContext(
-                getCurrentMusicPlaybackId(),
-                currentMusicPlaybackContext,
-                track,
-                latestMusicRequestToken
-            );
-            const currentTrack = track || context.track || {};
-            socket.send(JSON.stringify({
+        const context = playbackContext || createMusicPlaybackReportContext(
+            getCurrentMusicPlaybackId(), currentMusicPlaybackContext, track, latestMusicRequestToken
+        );
+        const currentTrack = track || context.track || {};
+        const report = {
+            characterName: context.characterName,
+            payload: {
                 action: 'music_playback_state',
                 state: state,
                 playback_id: context.playbackId,
+                netease_id: context.neteaseId,
+                queue_ticket: context.queueTicket || '',
+                queue_closed: failureReason === 'closed',
                 playback_window_id: MUSIC_COORD_SENDER_ID,
                 playback_started_at: context.lifecycleStartedAt,
                 source: context.source,
@@ -368,9 +383,18 @@
                     name: String(currentTrack.name || '').slice(0, 120),
                     artist: String(currentTrack.artist || '').slice(0, 120)
                 }
-            }));
-            context.lastReportedState = state;
-        } catch (_) { /* best-effort playback awareness */ }
+            }
+        };
+        const key = JSON.stringify([context.characterName, context.playbackId, context.queueTicket]);
+        const terminal = state === 'ended' || state === 'error';
+        if (sendMusicPlaybackReport(report)) {
+            pendingMusicTerminalReports.delete(key);
+        } else if (terminal) {
+            const previous = pendingMusicTerminalReports.get(key);
+            // An explicit close must supersede an undelivered ended/error.
+            if (!previous?.payload.queue_closed) pendingMusicTerminalReports.set(key, report);
+        }
+        context.lastReportedState = state;
     }
 
     function reportMusicPlaybackFailureIfNeeded(playbackContext, failureReason, deferFailureUi) {
@@ -2421,11 +2445,26 @@
     };
 
 
+    window.closeNeteasePlayer = () => {
+        if (localPlayer?._musicPlaybackReportContext?.neteaseId) closeLocalMusicPlayer();
+    };
+
     function closeLocalMusicPlayer() {
         recordMusicCloseFeedback(playbackStartedAt);
         playbackStartedAt = 0;
-        destroyMusicPlayer(true, true, true);
+        destroyMusicPlayer(true, true, true, false, true);
     }
+
+    window.addEventListener('neko:music-socket-open', (event) => {
+        if (event.detail?.socket !== window.appState?.socket) return;
+        for (const [key, report] of pendingMusicTerminalReports) {
+            if (sendMusicPlaybackReport(report)) pendingMusicTerminalReports.delete(key);
+        }
+        const context = localPlayer && localPlayer._musicPlaybackReportContext;
+        const audio = localPlayer && localPlayer.audio;
+        if (!context?.playbackStarted || !audio || audio.ended || localPlayer._destroying || localPlayer._loadError) return;
+        reportMusicPlaybackState(audio.paused ? 'paused' : 'playing', null, context);
+    });
 
     function releaseMusicPlayerInstance(player) {
         if (!player) return;
@@ -2458,7 +2497,8 @@
         removeDOM = true,
         fullTeardown = false,
         updateToken = false,
-        preserveMusicCard = false
+        preserveMusicCard = false,
+        userClosed = false
     ) => {
         // 播放器销毁即结束当前曲目生命周期，清起播时间戳，避免残留到下一首
         playbackStartedAt = 0;
@@ -2467,10 +2507,13 @@
         if (
             fullTeardown
             && terminalReportContext
-            && (['playing', 'paused'].includes(terminalReportContext.lastReportedState)
+            && ((userClosed && terminalReportContext.queueTicket)
+                || ['playing', 'paused'].includes(terminalReportContext.lastReportedState)
                 || ['playing', 'paused'].includes(terminalReportContext.recommendationLastState))
         ) {
-            reportMusicPlaybackState('ended', null, terminalReportContext);
+            // Automatic cleanup releases the old UI, not the pending queue.
+            const context = userClosed ? terminalReportContext : { ...terminalReportContext, queueTicket: '' };
+            reportMusicPlaybackState('ended', null, context, userClosed ? 'closed' : '');
         }
         // 重要：销毁播放器意味着取消所有正在进行的异步加载令牌
         // 只有在 fullTeardown (手动关闭) 或明确要求时才更新 token
@@ -2913,6 +2956,8 @@
                     if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
                     autoDestroyTimer = setTimeout(() => {
                         if (localPlayer === boundPlayer && boundPlayer._latestToken === tokenAtEvent) {
+                            // A paused queue remains resumable instead of discarding its player.
+                            if (reportContext.queueTicket && !boundPlayer.audio.ended) return;
                             destroyMusicPlayer(true, true, true);
                         }
                     }, MUSIC_CONFIG.timeouts.paused);

@@ -1000,7 +1000,10 @@
         return !hasLocalMusicOwnerOrPending() && (hasRemoteMusicLeaderHint() || hasMusicPlayUrlClaim(key));
     }
 
-    async function dispatchMusicPlayUrlResponse(response, reason) {
+    // A stop/new track also invalidates a secondary window still waiting to claim playback.
+    let musicPlayCommandEpoch = 0;
+    async function dispatchMusicPlayUrlResponse(response, reason, epoch) {
+        if (epoch !== musicPlayCommandEpoch) return false;
         if (!response || !response.url || typeof window.dispatchMusicPlay !== 'function') {
             return false;
         }
@@ -1009,13 +1012,16 @@
             name: response.name || 'Plugin Music',
             artist: response.artist || 'External',
             url: response.url,
+            neteaseId: response.netease_id,
+            queueTicket: response.queue_ticket || '',
             cover: response.cover || undefined
         };
         var dispatchResult;
         try {
             dispatchResult = await window.dispatchMusicPlay(track, {
                 source: 'music_play_url',
-                reason: reason || 'websocket'
+                reason: reason || 'websocket',
+                getCancellationReason: () => epoch !== musicPlayCommandEpoch ? 'superseded' : ''
             });
         } catch (error) {
             console.warn('[Music] music_play_url 播放派发失败，未发布跨窗口 claim:', error, {
@@ -1053,6 +1059,7 @@
         }
 
         var key = getMusicPlayUrlClaimKey(response);
+        const epoch = ++musicPlayCommandEpoch;
         getMusicPlayUrlCoordChannel();
 
         // chat.html 是独立聊天窗口时默认作为从窗口，给主窗口一个很短的
@@ -1068,7 +1075,7 @@
                         console.log('[Music] 跳过 music_play_url：其他窗口已接管播放');
                         return;
                     }
-                    dispatchMusicPlayUrlResponse(response, 'chat-fallback');
+                    dispatchMusicPlayUrlResponse(response, 'chat-fallback', epoch);
                 }, MUSIC_PLAY_URL_SECONDARY_CONFIRM_MS);
             }, getMusicPlayUrlFollowerGraceMs());
             return;
@@ -1079,7 +1086,7 @@
             return;
         }
 
-        dispatchMusicPlayUrlResponse(response, 'websocket');
+        dispatchMusicPlayUrlResponse(response, 'websocket', epoch);
     }
 
     // 多窗口分发形态下同一条 WS 消息会被 RAW_MESSAGE 转发给多个窗口，chat 窗口和
@@ -3017,6 +3024,10 @@
                     S._conversationLanguageClearPending = null;
                 }
             }
+
+            window.dispatchEvent(new CustomEvent('neko:music-socket-open', {
+                detail: { socket: _thisSocket }
+            }));
 
             window.dispatchEvent(new CustomEvent('voice-input-socket-open', {
                 detail: { socket: _thisSocket }
@@ -6123,6 +6134,9 @@
                     }
 
                 // -------- music play url --------
+                } else if (response.type === 'netease_stop') {
+                    musicPlayCommandEpoch++;
+                    if (window.closeNeteasePlayer) window.closeNeteasePlayer();
                 } else if (response.type === 'music_play_url') {
                     handleMusicPlayUrlResponse(response);
 

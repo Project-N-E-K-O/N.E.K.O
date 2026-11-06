@@ -683,84 +683,15 @@
         var musicRegex = /\[play_music:\s*({[\s\S]*?})\]/g;
         var match;
 
-        function levenshteinDistance(a, b) {
-            if (!a || !b) return 999;
-            a = a.toLowerCase();
-            b = b.toLowerCase();
-            if (a === b) return 0;
-            var matrix = [];
-            for (var i = 0; i <= b.length; i++) {
-                matrix[i] = [i];
-            }
-            for (var j = 0; j <= a.length; j++) {
-                matrix[0][j] = j;
-            }
-            for (var i = 1; i <= b.length; i++) {
-                for (var j = 1; j <= a.length; j++) {
-                    if (b.charAt(i - 1) === a.charAt(j - 1)) {
-                        matrix[i][j] = matrix[i - 1][j - 1];
-                    } else {
-                        matrix[i][j] = Math.min(
-                            matrix[i - 1][j - 1] + 1,
-                            matrix[i][j - 1] + 1,
-                            matrix[i - 1][j] + 1
-                        );
-                    }
-                }
-            }
-            return matrix[b.length][a.length];
-        }
-
-        function calculateSimilarity(a, b) {
-            if (!a || !b) return 0;
-            a = a.toLowerCase().trim();
-            b = b.toLowerCase().trim();
-            if (a === b) return 100;
-            var distance = levenshteinDistance(a, b);
-            var maxLen = Math.max(a.length, b.length);
-            return Math.max(0, Math.round((1 - distance / maxLen) * 100));
-        }
-
-        function findBestMatch(tracks, targetName, targetArtist) {
-            if (!tracks || tracks.length === 0) return null;
-            
-            var scoredTracks = tracks.map(function(track) {
-                var nameScore = calculateSimilarity(track.name, targetName);
-                var artistScore = targetArtist ? calculateSimilarity(track.artist, targetArtist) : 50;
-                var totalScore = nameScore * 0.6 + artistScore * 0.4;
-                
-                if (targetArtist && track.artist) {
-                    var artistLower = track.artist.toLowerCase();
-                    var targetArtistLower = targetArtist.toLowerCase();
-                    if (artistLower.includes(targetArtistLower) || targetArtistLower.includes(artistLower)) {
-                        totalScore += 20;
-                    }
-                }
-                
-                if (track.name && targetName) {
-                    var nameLower = track.name.toLowerCase();
-                    var targetNameLower = targetName.toLowerCase();
-                    if (nameLower.includes(targetNameLower) || targetNameLower.includes(nameLower)) {
-                        totalScore += 15;
-                    }
-                }
-                
-                return {
-                    track: track,
-                    score: Math.min(totalScore, 100),
-                    nameScore: nameScore,
-                    artistScore: artistScore
-                };
+        function findExactRecording(tracks, targetName, targetArtist) {
+            const normalize = value => String(value || '').normalize('NFKC').trim().toLowerCase().replace(/\s+/g, ' ');
+            const title = normalize(targetName);
+            const artist = normalize(targetArtist);
+            return tracks.find(track => {
+                if (normalize(track.name) !== title) return false;
+                const credits = normalize(track.artist);
+                return !artist || credits === artist || credits.split(' / ').includes(artist);
             });
-            
-            scoredTracks.sort(function(a, b) { return b.score - a.score; });
-            
-            console.log('[Music] 匹配结果排序:');
-            scoredTracks.slice(0, 3).forEach(function(item, idx) {
-                console.log('  #' + (idx + 1) + ' ' + item.track.name + ' - ' + item.track.artist + ' (总分:' + item.score + ', 歌名:' + item.nameScore + ', 歌手:' + item.artistScore + ')');
-            });
-            
-            return scoredTracks[0].track;
         }
 
         while ((match = musicRegex.exec(text)) !== null) {
@@ -804,10 +735,10 @@
                     }
 
                     if (result.data && result.data.length > 0) {
-                        var realTrack = findBestMatch(result.data, aiTrackInfo.name, aiTrackInfo.artist);
+                        var realTrack = findExactRecording(result.data, aiTrackInfo.name, aiTrackInfo.artist);
                         if (!realTrack) {
-                            console.warn('[Music] 智能匹配失败，使用第一条结果');
-                            realTrack = result.data[0];
+                            if (window.showStatusToast) window.showStatusToast(window.safeT ? window.safeT('music.noExactRecording', '没有找到歌名与歌手相符的版本。') : '没有找到歌名与歌手相符的版本。', 3000);
+                            continue;
                         }
                         console.log('[Music] 指令搜歌最终选择:', realTrack.name, '-', realTrack.artist);
 

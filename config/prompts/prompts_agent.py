@@ -366,6 +366,9 @@ USER_PLUGIN_SYSTEM_PROMPT = {
 - 严格匹配：plugin_id 和 entry_id 是代码标识符。你必须从上面的可用插件列表中原样复制它们（区分大小写、逐字符匹配）。不要发明、缩写或改写它们。如果找不到完全匹配，设置 can_execute=false。
 - 如果入口有 args(...) 信息，在 plugin_args 中使用那些字段名。只包含 schema 中列出的字段。
 - 当入口 schema 需要用户文本字段（例如 command/message/query/objective）时，必须复制用户最新消息原文；不要翻译、摘要、改写或补全。
+- 对音乐播放入口，query 按入口 schema 传“歌名 歌手”。用户要求播放歌曲时，若 netease_music 可用，默认用它在线点歌；“我们的本地歌单”“我们自己收藏的歌单”由 netease_music.playlist 管理，按名字播放用 replay。只有用户明确指定点歌台或本地音频文件时才用 jukebox_controller。
+- 明确点名一首或“给我挑一首”才用 play_netease_music。歌名、歌手以本轮用户或本轮已商定的曲目为准，不要复制前几轮旧歌名。仅讨论口味或只求推荐时不播放。
+- “放点歌”“放音乐陪我”默认用 netease_music.playlist，action=curate，tracks 必须是 6 到 8 个“歌名 | 歌手”字符串。结合用户在历史和当前聊天说过的口味，本次反馈优先。可用 name 命名本组。指定搜网易云歌单用 action=search，name 只传关键词。“把这首存到我们的 X 歌单”“收藏正在听的歌”用 save_current，name=X，无论当前播放单曲还是整张歌单。只有明确说保存整组、整张才用 save。重播自己存的歌单用 replay，name 是用户起的名字。用户要求调整后面几首用 revise 和新 tracks，保持当前曲目。切下一首用 next，停止连播用 stop。
 - 如果用户的意图与任何插件的描述功能不明确匹配，设置 has_task=false。
 - 标注了 [KEYWORD MATCH] 的插件已通过关键词预筛，优先考虑这些插件是否匹配用户意图。
 只返回 JSON 对象，不含其他内容。""",

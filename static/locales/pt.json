@@ -5321,6 +5321,7 @@
         }
     },
     "music": {
+        "noExactRecording": "Nenhuma gravação corresponde ao título e ao artista.",
         "recommendation": {
             "title": "Recomendação de música",
             "pending": "Quer ouvir esta música?",

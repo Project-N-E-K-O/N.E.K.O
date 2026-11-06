@@ -2164,7 +2164,12 @@ class DirectTaskExecutor:
             # Reuse cache in ordinary turns; refetch only when lifecycle signals / TTL indicate possible changes.
             plugins = await self.plugin_list_provider(force_refresh=False)
         if user_plugin_enabled and plugins:
-            parallel_tasks.append(('up', self._assess_user_plugin(conversation, plugins, lang=lang)))
+            plugin_conversation = conversation
+            if not proactive and self._find_plugin_entry(plugins, "netease_music", "playlist")[1]:
+                from brain.music_preferences import playlist_context
+
+                plugin_conversation = await playlist_context(conversation, latest_user_request, lanlan_name)
+            parallel_tasks.append(('up', self._assess_user_plugin(plugin_conversation, plugins, lang=lang)))
 
         # Unified channel evaluation: qwenpaw / browser / computer.
         has_any_unified = qwenpaw_available or browser_available or cu_available
