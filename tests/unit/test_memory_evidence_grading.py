@@ -142,6 +142,10 @@ def test_reinforcement_capped_on_read_and_on_write():
     snap = compute_evidence_snapshot(legacy, {"disputation": 1.0}, now.isoformat(), "user_rebut")
     assert snap["reinforcement"] == pytest.approx(EVIDENCE_REINFORCEMENT_CAP)
 
+    # A negative delta on an over-cap legacy value still counts (not 159.8 -> cap).
+    snap = compute_evidence_snapshot(legacy, {"reinforcement": -0.2}, now.isoformat(), "user_ignore")
+    assert snap["reinforcement"] == pytest.approx(EVIDENCE_REINFORCEMENT_CAP - 0.2)
+
 
 def test_capped_entry_is_overturned_by_a_few_rebuttals():
     """At 160 a rebuttal of 1.0 could never move the line; at the cap three do."""
@@ -339,6 +343,18 @@ def test_split_and_merge_carry_source_counts_and_confirmations():
     legacy = build_merge_reflection([other, _reflection("c", "t")], [], {"text": "m"},
                                     "master", now, **kwargs)
     assert "fact_source_counts" not in legacy
+
+    # Backing from the user's own words survives too (it used to reset to 0,
+    # which would hold the merged line back again).
+    from memory.evidence import awaits_user_signal
+
+    backed = _reflection("d", "t", counts=AI_ONLY, user_facts=2)
+    for produced in (
+        build_split_reflection(backed, {"text": "x"}, "master", now, split_count=2, **kwargs),
+        build_merge_reflection([backed, other], [], {"text": "m"}, "master", now, **kwargs),
+    ):
+        assert produced["user_fact_reinforce_count"] == 2
+        assert awaits_user_signal(produced) is False
 
 
 @pytest.mark.asyncio

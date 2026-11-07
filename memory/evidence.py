@@ -281,8 +281,9 @@ def compute_evidence_snapshot(
       with §3.5.3's "archive more aggressively" idea: positive accumulation
       is also lifelong, while decay still follows rein_last_signal_at).
     Cap:
-      the new reinforcement is clamped to EVIDENCE_REINFORCEMENT_CAP, so
-      any write also brings an over-cap legacy value down to it.
+      the stored value is clamped to EVIDENCE_REINFORCEMENT_CAP before the
+      delta applies, and the result again, so any write also brings an
+      over-cap legacy value down and a negative delta still counts.
     Explicit confirmations:
       ``user_confirm_count`` counts ``source='user_confirm'`` reinforces;
       with ``user_fact_reinforce_count`` it tells ``awaits_user_signal``
@@ -294,7 +295,11 @@ def compute_evidence_snapshot(
     """
     rein_delta = float(delta.get("reinforcement", 0.0) or 0.0)
     disp_delta = float(delta.get("disputation", 0.0) or 0.0)
-    new_rein = float(entry.get("reinforcement", 0.0) or 0.0) + rein_delta
+    # Clamp the stored value first: an over-cap legacy value (written before
+    # the cap) would otherwise swallow a negative delta (160 - 0.2 -> cap).
+    new_rein = min(
+        float(entry.get("reinforcement", 0.0) or 0.0), EVIDENCE_REINFORCEMENT_CAP,
+    ) + rein_delta
     new_disp = float(entry.get("disputation", 0.0) or 0.0) + disp_delta
     if new_disp < 0:
         new_disp = 0.0

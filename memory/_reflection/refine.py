@@ -12,17 +12,20 @@ def _carry_user_backing(target: dict, srcs: list[dict], extra_facts=()) -> dict:
     """Carry the evidence-source accounting a produced reflection inherits.
 
     ``fact_source_counts`` is summed (absent when a source predates it, see
-    ``merge_fact_source_counts``) and ``user_confirm_count`` keeps the
-    maximum, so a split or merge neither invents nor drops the user's backing
-    that ``memory.evidence.awaits_user_signal`` checks.
+    ``merge_fact_source_counts``); both backing counters,
+    ``user_confirm_count`` and ``user_fact_reinforce_count``, keep the
+    maximum (the rule ``memory.evidence.merged_evidence_state`` uses), so a
+    split or merge neither invents nor drops the user's backing that
+    ``memory.evidence.awaits_user_signal`` checks.
     """
     counts = merge_fact_source_counts(srcs, extra_facts)
     if counts is not None:
         target["fact_source_counts"] = counts
-    target["user_confirm_count"] = max(
-        (int(src.get("user_confirm_count", 0) or 0) for src in srcs),
-        default=0,
-    )
+    for key in ("user_confirm_count", "user_fact_reinforce_count"):
+        target[key] = max(
+            (int(src.get(key, 0) or 0) for src in srcs),
+            default=0,
+        )
     return target
 
 
