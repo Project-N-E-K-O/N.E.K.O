@@ -1,51 +1,14 @@
 import { modelApiMessages } from '../model-api'
 import { modelBindingsMessages } from '../model-bindings'
+import { authoringMessages } from '../authoring'
 
 /**
  * Paquete de idioma español
  */
 export default {
+  authoring: authoringMessages['es'],
   modelApi: modelApiMessages['es'],
   modelBindings: modelBindingsMessages['es'],
-  development: {
-    guidePurpose: "Esta interfaz no desarrolla plugins por ti con un solo clic. Ayuda a empaquetar código existente en plugins importables con un clic y a continuar su desarrollo.",
-    navTitle: "Plugins en desarrollo",
-    guideButton: "Guía de uso",
-    guideTitle: "Empieza a desarrollar tu plugin",
-    guideIntro: "Vincula tu carpeta de código para desarrollar, depurar y empaquetar plugins sin clonar el repositorio principal de N.E.K.O.",
-    guideLoadTitle: "Carga el código fuente",
-    guideLoadBody: "Activa el modo de desarrollo, elige una carpeta con plugin.toml, valídala y cárgala. Las rutas introducidas en el navegador pertenecen al equipo del servidor.",
-    guideReloadTitle: "Edita y recarga",
-    guideReloadBody: "Guarda los cambios en tu editor y pulsa Recargar. La lista de puntos de entrada mostrará las descripciones actualizadas. Tras reiniciar la aplicación, inicia manualmente los plugins de desarrollo.",
-    guideBuildTitle: "Empaqueta y comparte",
-    guideBuildBody: "Genera un paquete .neko-plugin incluso con el plugin detenido. Impórtalo y verifícalo en otro entorno antes de compartirlo.",
-    guideData: "Eliminar la asociación detiene el plugin y borra su registro, conservando el código y los datos de ejecución. Desactivar el modo de desarrollo detiene los plugins, pero conserva las asociaciones.",
-    guideReopen: "Puedes volver a abrir esta guía desde el botón Guía de uso en la parte superior derecha.",
-    guideDismiss: "Entendido",
-    sourcePlaceholder: "Elige una carpeta de plugin que contenga plugin.toml",
-    previewHint: "Valida la carpeta para revisar los datos del plugin antes de cargarlo.",
-    title: "Modo de desarrollo",
-    load: "Cargar plugin sin empaquetar",
-    hint: "Carga el código fuente que has desarrollado para empaquetar e importar el plugin o seguir desarrollándolo.",
-    badge: "En desarrollo",
-    entry: "Punto de entrada",
-    openSource: "Abrir carpeta del código",
-    start: "Iniciar",
-    stop: "Detener",
-    reload: "Recargar",
-    logs: "Registros",
-    build: "Crear paquete",
-    rebind: "Cambiar carpeta",
-    remove: "Eliminar vínculo",
-    pathHint: "Introduce una carpeta de código de la máquina que ejecuta el backend de N.E.K.O. No se admite subir carpetas desde el navegador.",
-    path: "Carpeta del código",
-    choose: "Elegir carpeta",
-    valid: "Validación completada",
-    validate: "Validar",
-    failed: "Error en la operación",
-    built: "Paquete creado. Las pruebas funcionales y la revisión del mercado se realizan por separado.",
-    removeHint: "¿Detener el plugin y eliminar el vínculo? Se conservarán el código y los datos de ejecución.",
-  },
   common: {
     chooseLanguage: "Elegir idioma",
     surfaceLanguagePending: "El idioma de la aplicación cambió. Se conserva el idioma del panel para proteger el trabajo sin guardar.",
@@ -591,6 +554,7 @@ export default {
         manual: 'Manual',
         imported: 'Importado',
         market: 'Mercado',
+        project: 'Banco de trabajo',
         unknown: 'Desconocido',
       },
       // v2: Market release channel values displayed on SourceDetailRow.
@@ -653,7 +617,7 @@ export default {
     autoStartHint: 'Iniciar automáticamente cuando se abra N.E.K.O. Iniciar o detener manualmente no cambia esta opción.',
     autoStartDisabledHint: 'Este complemento está deshabilitado. Activar el inicio automático también lo habilitará para la próxima apertura, sin iniciarlo ahora.',
     autoStartBlockedHint: 'La opción está activada, pero el complemento está deshabilitado o pendiente de aprobación y no se iniciará al abrir N.E.K.O. Desactívala y actívala de nuevo para habilitar y aprobar el inicio automático.',
-    autoStartUnsupportedDevelopment: 'Los plugins en desarrollo no se inician automáticamente. Inícialos manualmente.',
+    autoStartUnsupportedProject: 'Los proyectos del banco de trabajo nunca se inician automáticamente. Inícialos manualmente.',
     fetchFailed: 'Error al obtener los plugins',
     pluginType: 'Tipo',
     pluginTypeNormal: 'Plugin',

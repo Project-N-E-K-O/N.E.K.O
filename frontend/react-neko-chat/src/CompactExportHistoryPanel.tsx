@@ -974,6 +974,7 @@ export default function CompactExportHistoryPanel({
 
   return (
     <section
+      {...(choiceLayerAbove ? { inert: '' } : {})}
       className={clsx('compact-export-history-anchor', {
         'under-choice-prompt': choiceLayerAbove,
         'has-preview': previewOpen,
