@@ -8,6 +8,7 @@ export type PendingDisplayRequest = {
   resolve: (result: PluginDisplayResult) => void
   confirm: () => void
   decline: () => void
+  fail: (reason: string) => boolean
   cancelled?: boolean
   finished?: Promise<void>
 }
@@ -36,5 +37,6 @@ export function usePluginDisplayDialog() {
     applying: readonly(displayApplying),
     confirm: () => pendingDisplayRequest.value?.confirm(),
     decline: () => pendingDisplayRequest.value?.decline(),
+    captureLoadFailure: () => pendingDisplayRequest.value?.fail,
   }
 }

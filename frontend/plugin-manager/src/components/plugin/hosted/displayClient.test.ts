@@ -3,16 +3,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Window } from 'happy-dom'
 import { readFileSync } from 'node:fs'
 import { buildUiKitBundle } from './uiKitBundle'
+import type { PluginDisplayApi, PluginDisplayState } from '../../../../../../plugin/sdk/hosted-ui'
 
 const runtimeSource = buildUiKitBundle().runtime
-import type { PluginDisplayApi } from '../../../../../../plugin/sdk/hosted-ui'
-
 const staticSource = readFileSync(
   new URL('../../../../../../static/plugin-ui-sdk/display.js', import.meta.url),
   'utf8'
 )
 const windows: Window[] = []
-function client(kind: 'static' | 'tsx') {
+type Request = { requestId: string; documentId: string; connectionId: string; method?: string }
+function client(kind: 'static' | 'tsx', ambientModule?: { exports: object }) {
   const child = new Window({
     url: kind === 'static' ? 'https://host.example/plugin/example/ui/' : 'about:blank',
   })
@@ -32,48 +32,52 @@ function client(kind: 'static' | 'tsx') {
     'setTimeout',
     'clearTimeout',
     'module',
-    `${source}\nreturn ${kind === 'static' ? 'window.NekoPluginDisplay' : 'window.NekoUiKit.api.display'};`
+    source +
+      '\nreturn ' +
+      (kind === 'static' ? 'window.NekoPluginDisplay' : 'window.NekoUiKit.api.display') +
+      ';'
   )(
     child,
     child.document,
     parent,
     child.setTimeout.bind(child),
     child.clearTimeout.bind(child),
-    undefined
+    ambientModule
   ) as PluginDisplayApi
-  function respond(
-    request: { requestId?: string; documentId?: string },
-    result: unknown,
-    documentId = request.documentId
-  ) {
+  function receive(data: object) {
     child.dispatchEvent(
-      new child.MessageEvent('message', {
-        source: parent,
-        origin: parent.location.origin,
-        data: { ...request, type: 'neko-hosted-surface-response', documentId, ok: true, result },
-      })
+      new child.MessageEvent('message', { source: parent, origin: parent.location.origin, data })
     )
   }
-  return { child, parent, api, post, respond }
+  function connect(
+    connectionId = 'host-1',
+    state: PluginDisplayState = { mode: 'normal', supportedModes: ['focus'] }
+  ) {
+    receive({ type: 'neko-plugin-display-connect', connectionId })
+    const ready = post.mock.calls.at(-1)![0] as Request
+    receive({
+      type: 'neko-plugin-display-connected',
+      documentId: ready.documentId,
+      connectionId,
+      state,
+    })
+    return { documentId: ready.documentId, connectionId }
+  }
+  function show(state?: PluginDisplayState) {
+    child.dispatchEvent(new child.Event('pageshow'))
+    return connect('host-1', state)
+  }
+  function respond(request: Request, result: unknown, extra: object = {}) {
+    receive({ ...request, type: 'neko-hosted-surface-response', ok: true, result, ...extra })
+  }
+  return { child, api, post, receive, connect, show, respond }
 }
-afterEach(() => {
-  windows.splice(0).forEach((window) => window.close())
-})
+afterEach(() => windows.splice(0).forEach((window) => window.close()))
 
 describe('shared display document lifecycle', () => {
-  const kind = 'static' as const
-  it('exits focus on iframe Escape and respects a locally handled Escape', async () => {
-    const { child, api, post, respond } = client(kind)
-    child.dispatchEvent(new child.Event('pageshow'))
-    child.dispatchEvent(new child.KeyboardEvent('keydown', { key: 'Escape' }))
-    await Promise.resolve()
-    expect(post).toHaveBeenCalledTimes(1)
-    const entering = api.requestMode('focus')
-    respond(post.mock.calls.at(-1)![0] as { requestId: string; documentId: string }, {
-      status: 'applied',
-      state: { mode: 'focus', supportedModes: ['focus'] },
-    })
-    await entering
+  it('exits manual focus on unhandled Escape, respects handled Escape, and sends only one pending exit', async () => {
+    const { child, post, show, respond } = client('static')
+    show({ mode: 'focus', supportedModes: ['focus'] })
     post.mockClear()
     const handled = new child.KeyboardEvent('keydown', { key: 'Escape', cancelable: true })
     child.dispatchEvent(handled)
@@ -81,58 +85,95 @@ describe('shared display document lifecycle', () => {
     await Promise.resolve()
     expect(post).not.toHaveBeenCalled()
     child.dispatchEvent(new child.KeyboardEvent('keydown', { key: 'Escape' }))
-    await Promise.resolve()
-    const exit = post.mock.calls.at(-1)![0] as { requestId: string; documentId: string }
-    expect(exit).toMatchObject({ method: 'display.exit' })
-    respond(exit, { status: 'applied', state: { mode: 'normal', supportedModes: ['focus'] } })
-    child.dispatchEvent(new child.KeyboardEvent('keydown', { key: 'Escape' }))
+    child.dispatchEvent(new child.KeyboardEvent('keydown', { key: 'Escape', repeat: true }))
     await Promise.resolve()
     expect(post).toHaveBeenCalledTimes(1)
+    expect(post.mock.calls[0]![0]).toMatchObject({
+      method: 'display.exit',
+      payload: { reason: 'escape' },
+    })
+    respond(post.mock.calls[0]![0] as Request, {
+      status: 'failed',
+      state: { mode: 'focus', supportedModes: ['focus'] },
+    })
+    for (let i = 0; i < 4; i++) await Promise.resolve()
+    child.dispatchEvent(new child.KeyboardEvent('keydown', { key: 'Escape' }))
+    await Promise.resolve()
+    expect(post).toHaveBeenCalledTimes(2)
+    respond(post.mock.calls[1]![0] as Request, {
+      status: 'applied',
+      state: { mode: 'normal', supportedModes: ['focus'] },
+    })
   })
-  it('disposes an active document even without a pending display request', () => {
-    const { child, post } = client(kind)
-    child.dispatchEvent(new child.Event('pageshow'))
-    const { documentId } = post.mock.calls[0]![0] as { documentId: string }
-    post.mockClear()
-    child.dispatchEvent(new child.Event('pagehide'))
-    expect(post).toHaveBeenCalledWith(
-      { type: 'neko-plugin-display-dispose', documentId },
-      'https://host.example'
-    )
-  })
-  it('cancels confirmation but rejects a disposed readonly query with AbortError', async () => {
-    const { child, api } = client(kind)
-    child.dispatchEvent(new child.Event('pageshow'))
+  it('disposes a document, cancels confirmation, and aborts readonly queries', async () => {
+    const { child, api, post, show } = client('static')
+    const identity = show()
     const confirmation = api.requestMode('fullscreen')
     const query = api.getState()
     const rejected = expect(query).rejects.toMatchObject({ name: 'AbortError' })
     child.dispatchEvent(new child.Event('pagehide'))
+    expect(post).toHaveBeenLastCalledWith(
+      { type: 'neko-plugin-display-dispose', ...identity },
+      'https://host.example'
+    )
     expect((await confirmation).status).toBe('cancelled')
     await rejected
+  })
+  it('installs the classic-script API even when a browser page has CommonJS globals', () => {
+    const exports = {}
+    const ambient = { exports }
+    const { api } = client('static', ambient)
+    expect(api.requestMode).toBeTypeOf('function')
+    expect(ambient.exports).toBe(exports)
   })
 })
 
 describe.each(['static', 'tsx'] as const)('%s display client adapter', (kind) => {
-  it('queues early requests until pageshow and ignores replies from an old document', async () => {
-    const { child, api, post, respond } = client(kind)
-    const promise = api.requestMode('focus')
+  it('queues requests until the host acknowledges and ignores stale document replies', async () => {
+    const { child, api, post, connect, respond } = client(kind)
+    const pending = api.requestMode('focus')
     expect(post).not.toHaveBeenCalled()
     child.dispatchEvent(new child.Event('pageshow'))
-    expect(post).toHaveBeenCalledTimes(2)
-    const ready = post.mock.calls[0]![0]
-    const request = post.mock.calls[1]![0] as { requestId: string; documentId: string }
-    expect(ready).toMatchObject({
-      type: 'neko-plugin-display-ready',
-      documentId: request.documentId,
-    })
+    expect(post).toHaveBeenCalledTimes(1)
+    connect()
+    const request = post.mock.calls.at(-1)![0] as Request
+    expect(request).toMatchObject({ method: 'display.requestMode', connectionId: 'host-1' })
     let settled = false
-    void promise.then(() => {
+    void pending.then(() => {
       settled = true
     })
-    respond(request, { status: 'applied' }, 'old-document')
+    respond(request, { status: 'applied' }, { documentId: 'old-document' })
     await Promise.resolve()
     expect(settled).toBe(false)
     respond(request, { status: 'applied', state: { mode: 'focus', supportedModes: ['focus'] } })
-    expect((await promise).status).toBe('applied')
+    expect((await pending).status).toBe('applied')
+  })
+  it('reconnects after a host load reset and releases requests from the old connection', async () => {
+    const { api, post, show, connect, respond } = client(kind)
+    show()
+    const old = api.requestMode('focus')
+    connect('host-2')
+    expect((await old).status).toBe('cancelled')
+    const query = api.getState()
+    const request = post.mock.calls.at(-1)![0] as Request
+    let settled = false
+    void query.then(() => {
+      settled = true
+    })
+    respond(request, { mode: 'focus', supportedModes: ['focus'] }, { connectionId: 'host-1' })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    respond(request, { mode: 'normal', supportedModes: ['focus'] })
+    expect((await query).mode).toBe('normal')
+  })
+  it('refreshes state listeners when a cached document resumes', () => {
+    const { child, api, show, connect } = client(kind)
+    const listener = vi.fn()
+    api.onStateChange(listener)
+    show({ mode: 'focus', supportedModes: ['focus'] })
+    child.dispatchEvent(new child.Event('pagehide'))
+    child.dispatchEvent(new child.Event('pageshow'))
+    connect('host-2', { mode: 'normal', supportedModes: ['focus'] })
+    expect(listener).toHaveBeenLastCalledWith({ mode: 'normal', supportedModes: ['focus'] })
   })
 })

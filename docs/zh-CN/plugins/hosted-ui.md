@@ -564,6 +564,7 @@ document.getElementById("expand").onclick = () => NekoPluginDisplay.requestMode(
 - 确认请求不使用普通 action 超时，由用户确认、取消或文档销毁结束。
 - 其他功能占用全屏或原生转换尚未结束时返回 `busy`；原生操作失败返回 `failed`，不自动切换其他模式。
 - 退出恢复会话前布局；用户通过宿主明确退出专注时，保留其选择的普通布局。
+- 客户端在宿主加载握手完成后才发送请求；重新连接会同步状态监听器，包括缓存文档恢复。
 - 切换 panel、导航或替换文档会结束旧会话。客户端在 `pageshow` / `pagehide` 登记和释放文档，忽略旧响应；文档销毁时，待处理的 `getState()` 以 `AbortError` 拒绝。
 
 桌面全屏需要配套 Electron 宿主支持；此 API 不提供原生窗口尺寸调整或最大化能力。

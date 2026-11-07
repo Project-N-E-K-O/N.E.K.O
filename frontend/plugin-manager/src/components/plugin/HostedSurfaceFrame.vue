@@ -115,9 +115,13 @@ const display = usePluginDisplayFrame({
   active: () => props.active && props.surface.kind === 'panel' && props.surface.available !== false,
   identity: () => `${props.pluginId}:${props.surface.kind}:${props.surface.id}:${props.surface.mode}:${props.surface.entry}:${props.surface.url}`,
   name: () => props.pluginId,
-  notify: (state, documentId) => {
+  connect: (connectionId) => {
     const origin = trustedIframeOrigin.value === 'null' ? '*' : trustedIframeOrigin.value
-    iframeRef.value?.contentWindow?.postMessage({ type: 'neko-plugin-display-state', documentId, state }, origin)
+    iframeRef.value?.contentWindow?.postMessage({ type: 'neko-plugin-display-connect', connectionId }, origin)
+  },
+  notify: (state, documentId, connectionId) => {
+    const origin = trustedIframeOrigin.value === 'null' ? '*' : trustedIframeOrigin.value
+    iframeRef.value?.contentWindow?.postMessage({ type: 'neko-plugin-display-state', documentId, connectionId, state }, origin)
   },
 })
 const iframeKey = ref(0)
@@ -320,7 +324,7 @@ function normalizeHostedBridgeError(caught: any): HostedBridgeError {
 }
 
 function handleLoad() {
-  display.invalidateDocument()
+  display.connectDocument()
   if (props.surface.mode === 'static') {
     staticSurfaceReady.value = true
     flushStaticSurfaceMessages()

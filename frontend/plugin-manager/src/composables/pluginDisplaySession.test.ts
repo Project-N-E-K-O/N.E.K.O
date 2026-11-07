@@ -74,6 +74,18 @@ describe('plugin display sessions', () => {
     expect((await promise).status).toBe('declined')
     expect(value.focused()).toBe(false)
   })
+  it('releases a failed dialog load and ignores an old failure after a new request starts', async () => {
+    const value = owner()
+    const request = requestDisplay(value, 'focus')
+    const fail = usePluginDisplayDialog().captureLoadFailure()!
+    expect(fail('chunk load failed')).toBe(true)
+    expect(await request).toMatchObject({ status: 'failed', reason: 'chunk load failed' })
+    const retry = requestDisplay(value, 'focus')
+    expect(fail('late failure')).toBe(false)
+    expect(usePluginDisplayDialog().visible.value).toBe(true)
+    confirmDisplay()
+    expect((await retry).status).toBe('applied')
+  })
   it('starts fullscreen synchronously on confirmation and preserves prior manual focus', async () => {
     const value = owner(true)
     const promise = requestDisplay(value, 'fullscreen')

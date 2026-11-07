@@ -8,7 +8,7 @@ export function buildUiKitBundle() {
     // The static SDK stays a standalone classic script. Capture its factory
     // locally when embedding it into the opaque-origin hosted document.
     runtime: `const createPluginDisplayClient = (function () {
-const module = { exports: {} };
+const module = { exports: {}, nekoPluginDisplayFactoryOnly: true };
 ${displayClient}
 return module.exports;
 })();

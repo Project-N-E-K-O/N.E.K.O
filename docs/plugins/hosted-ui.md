@@ -567,6 +567,7 @@ A static page opened without a parent host returns `unsupported`.
 - Confirmation has no ordinary action timeout; confirmation, dismissal, or document teardown finishes it.
 - Another fullscreen owner or an unfinished native transition returns `busy`; native failure returns `failed` without a mode fallback.
 - Exit restores the layout from before the session; an explicit host focus exit keeps the chosen normal layout.
+- The client waits for the host load handshake before sending requests; reconnecting refreshes state listeners, including cached-document restores.
 - Panel changes, navigation, and document replacement end the old session. Clients register/dispose on `pageshow` / `pagehide`; stale replies are ignored, and disposed `getState()` queries reject with `AbortError`.
 
 Desktop fullscreen requires matching Electron host support. Native window resize/maximize APIs are not exposed.

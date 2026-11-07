@@ -124,15 +124,23 @@ export function cancelDisplayOwner(owner: DisplayOwner, { restoreFocus = true } 
     restoreSession(session, restoreFocus)
   }
 }
-export async function exitDisplay(owner: DisplayOwner): Promise<PluginDisplayResult> {
+export async function exitDisplay(
+  owner: DisplayOwner,
+  { restoreFocus = true } = {}
+): Promise<PluginDisplayResult> {
   if (session && session.owner !== owner) return displayResult(owner, 'busy')
   const previousSession = session
   const previousTransition = transition?.owner === owner ? transition : null
-  if (pending.value?.owner === owner || transition?.owner === owner) cancelDisplayOwner(owner)
+  if (pending.value?.owner === owner || transition?.owner === owner)
+    cancelDisplayOwner(owner, { restoreFocus })
   try {
     await exitFullscreenTarget(previousSession?.target ?? owner.target())
     await previousTransition?.finished
-    restoreSession(previousSession)
+    restoreSession(previousSession, restoreFocus)
+    if (!restoreFocus) {
+      owner.setFocused(false)
+      notifyDisplayOwner(owner)
+    }
     return displayResult(owner, 'applied')
   } catch (error) {
     return displayResult(owner, 'failed', String(error))
@@ -149,7 +157,20 @@ export function requestDisplay(owner: DisplayOwner, mode: unknown): Promise<Plug
   if (document.fullscreenElement && document.fullscreenElement !== owner.target())
     return Promise.resolve(displayResult(owner, 'busy', 'another_fullscreen_owner'))
   return new Promise((resolve) => {
-    pending.value = { owner, mode, resolve, confirm: confirmDisplay, decline: declineDisplay }
+    const request: Pending = {
+      owner,
+      mode,
+      resolve,
+      confirm: confirmDisplay,
+      decline: declineDisplay,
+      fail: (reason) => {
+        if (pending.value !== request || applying.value) return false
+        pending.value = null
+        resolve(displayResult(owner, 'failed', reason))
+        return true
+      },
+    }
+    pending.value = request
   })
 }
 export function declineDisplay() {

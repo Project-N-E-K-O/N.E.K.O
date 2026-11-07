@@ -20,20 +20,25 @@ export function providePluginDisplayPage(focused: Ref<boolean>, name: () => stri
 type DisplayMessage = {
   type?: unknown
   documentId?: unknown
+  connectionId?: unknown
   requestId?: unknown
   method?: unknown
-  payload?: { mode?: unknown }
+  payload?: { mode?: unknown; reason?: unknown }
 }
 export function usePluginDisplayFrame(options: {
   target: Ref<HTMLElement | null>
   active: () => boolean
   identity: () => string
   name: () => string
-  notify: (state: PluginDisplayState, documentId: string) => void
+  notify: (state: PluginDisplayState, documentId: string, connectionId: string) => void
+  connect: (connectionId: string) => void
 }) {
   const page = inject(displayPageKey, null)
   let documentId: string | null = null
+  let announced = false
   let epoch = 0
+  const newConnectionId = () => `display-host-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  let connectionId = newConnectionId()
   let interactiveRequest: DisplayMessage | null = null
   const owner: DisplayOwner = {
     target: () => options.target.value,
@@ -44,15 +49,25 @@ export function usePluginDisplayFrame(options: {
       if (page) page.focused.value = value
     },
     notify: (state) => {
-      if (documentId) options.notify(state, documentId)
+      if (documentId) options.notify(state, documentId, connectionId)
     },
   }
   const owned = computed(() => ownsDisplaySession(owner))
-  function invalidateDocument() {
+  function releaseDocument() {
     epoch++
     documentId = null
     interactiveRequest = null
     cancelDisplayOwner(owner)
+  }
+  function invalidateDocument() {
+    releaseDocument()
+    connectionId = newConnectionId()
+  }
+  function connectDocument() {
+    invalidateDocument()
+    // Only negotiate with documents that use the display SDK. Ordinary
+    // hosted action traffic does not need an extra bridge message.
+    if (announced) options.connect(connectionId)
   }
   // Host identity changes invalidate before replacement; iframe load/pageshow
   // separately cover navigation within a surviving WindowProxy.
@@ -60,7 +75,10 @@ export function usePluginDisplayFrame(options: {
     () => [options.identity(), options.active()],
     (current, previous) => {
       if (current[0] !== previous[0]) invalidateDocument()
-      else if (current[1] !== previous[1]) cancelDisplayOwner(owner)
+      else if (current[1] !== previous[1]) {
+        cancelDisplayOwner(owner)
+        notifyDisplayOwner(owner)
+      }
     },
     { flush: 'sync' }
   )
@@ -73,15 +91,17 @@ export function usePluginDisplayFrame(options: {
       notifyDisplayOwner(owner)
     })
   onBeforeUnmount(invalidateDocument)
-  async function handle(data: { method?: unknown; payload?: { mode?: unknown } }) {
+  async function handle(data: DisplayMessage) {
     if (data.method === 'display.getState') return getDisplayState(owner)
     if (data.method === 'display.requestMode') return requestDisplay(owner, data.payload?.mode)
-    if (data.method === 'display.exit') return exitDisplay(owner)
+    if (data.method === 'display.exit')
+      return exitDisplay(owner, { restoreFocus: data.payload?.reason !== 'escape' })
     return displayResult(owner, 'unsupported', 'unknown_method')
   }
   return {
     owned,
     invalidateDocument,
+    connectDocument,
     // Call only after the frame's existing source + origin checks. A document
     // announces itself after pageshow (after the parent's iframe load reset).
     // WindowProxy is reused by same-frame reloads, so source alone is not a
@@ -92,19 +112,36 @@ export function usePluginDisplayFrame(options: {
         typeof data.documentId === 'string' &&
         data.documentId
       ) {
+        announced = true
+        if (data.connectionId !== connectionId) {
+          options.connect(connectionId)
+          return true
+        }
         if (documentId !== data.documentId) {
-          invalidateDocument()
+          releaseDocument()
           documentId = data.documentId
         }
+        reply({
+          type: 'neko-plugin-display-connected',
+          documentId,
+          connectionId,
+          state: getDisplayState(owner),
+        })
         return true
       }
       if (data.type === 'neko-plugin-display-dispose') {
-        if (data.documentId === documentId) invalidateDocument()
+        if (data.documentId === documentId && data.connectionId === connectionId)
+          invalidateDocument()
         return true
       }
-      if (data.type === 'neko-hosted-surface-cancel' && data.documentId) {
-        if (data.documentId === documentId && data.requestId === interactiveRequest?.requestId)
-          cancelDisplayOwner(owner)
+      if (
+        data.type === 'neko-hosted-surface-cancel' &&
+        interactiveRequest !== null &&
+        data.documentId === documentId &&
+        data.connectionId === connectionId &&
+        data.requestId === interactiveRequest?.requestId
+      ) {
+        cancelDisplayOwner(owner)
         return true
       }
       if (
@@ -116,18 +153,21 @@ export function usePluginDisplayFrame(options: {
       if (
         !documentId ||
         data.documentId !== documentId ||
+        data.connectionId !== connectionId ||
         typeof data.requestId !== 'string' ||
         !data.requestId
       )
         return true
       const requestEpoch = epoch
       const requestDocument = documentId
+      const requestConnection = connectionId
       const respond = (value: unknown) => {
         if (epoch === requestEpoch && documentId === requestDocument)
           reply({
             type: 'neko-hosted-surface-response',
             requestId: data.requestId,
             documentId: requestDocument,
+            connectionId: requestConnection,
             ok: true,
             result: value,
           })

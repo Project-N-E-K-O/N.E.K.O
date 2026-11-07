@@ -91,7 +91,8 @@ const display = usePluginDisplayFrame({
   active: () => hasUI.value && !loading.value && !error.value,
   identity: () => `${props.pluginId}:${iframeGeneration.value}`,
   name: () => props.pluginId,
-  notify: (state, documentId) => iframeRef.value?.contentWindow?.postMessage({ type: 'neko-plugin-display-state', documentId, state }, expectedOrigin),
+  connect: (connectionId) => iframeRef.value?.contentWindow?.postMessage({ type: 'neko-plugin-display-connect', connectionId }, expectedOrigin),
+  notify: (state, documentId, connectionId) => iframeRef.value?.contentWindow?.postMessage({ type: 'neko-plugin-display-state', documentId, connectionId, state }, expectedOrigin),
 })
 
 const uiUrl = computed(() => {
@@ -146,7 +147,7 @@ function isCurrentIframeEvent(event: Event) {
 
 function onIframeLoad(event: Event) {
   if (!isCurrentIframeEvent(event)) return
-  display.invalidateDocument()
+  display.connectDocument()
   loading.value = false
   error.value = null
   iframeReady.value = true

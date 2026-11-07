@@ -1,7 +1,7 @@
-/* Shared display client. Classic scripts install the static API; the hosted
- * bundle imports the same factory through its local CommonJS wrapper. */
+/* Shared display client. Hosted embedding selects factory-only mode explicitly. */
 (function (factory) {
-  if (typeof module === 'object' && module.exports) {
+  if (typeof module === 'object' && module && module.exports &&
+      (typeof window === 'undefined' || module.nekoPluginDisplayFactoryOnly)) {
     module.exports = factory;
   } else if (!window.NekoPluginDisplay) {
     window.NekoPluginDisplay = factory({ origin: window.location.origin });
@@ -10,38 +10,75 @@
   'use strict';
   const origin = options.origin;
   const reportError = options.reportError || ((scope, error) => console.error('[plugin-display]', scope, error));
-  const documentId = `display-document-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const documentId = 'display-document-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+  let shown = false;
   let ready = false;
+  let connectionId = null;
   let displayMode = 'normal';
+  let escapeExit = null;
   const requests = new Map();
   const listeners = new Set();
+  function publish(state) {
+    displayMode = state.mode;
+    for (const listener of listeners) {
+      try { listener(state); } catch (error) { reportError('display.state', error); }
+    }
+  }
+  function send(pending) {
+    pending.sent = true;
+    pending.message.connectionId = connectionId;
+    window.parent.postMessage(pending.message, origin);
+  }
+  function cancelRequests(sentOnly) {
+    for (const [requestId, pending] of requests) {
+      if (sentOnly && !pending.sent) continue;
+      requests.delete(requestId);
+      if (pending.timer !== null) clearTimeout(pending.timer);
+      if (pending.message.method === 'display.getState') pending.reject(new DOMException('Plugin display connection was disposed', 'AbortError'));
+      else pending.resolve({ status: 'cancelled', state: { mode: 'normal', supportedModes: [] } });
+    }
+  }
   function request(method, payload) {
     if (window.parent === window) {
       const state = { mode: 'normal', supportedModes: [] };
       return Promise.resolve(method === 'display.getState' ? state : { status: 'unsupported', state });
     }
-    const requestId = `display-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const requestId = 'display-' + Date.now() + '-' + Math.random().toString(36).slice(2);
     return new Promise((resolve, reject) => {
       const timer = method === 'display.requestMode' ? null : setTimeout(() => {
         requests.delete(requestId);
         reject(new Error('Plugin display host did not respond'));
       }, 30000);
-      const pending = { resolve, reject, timer, message: { type: 'neko-hosted-surface-request', documentId, requestId, method, payload }, sent: ready };
+      const pending = { resolve, reject, timer, message: { type: 'neko-hosted-surface-request', documentId, requestId, method, payload }, sent: false };
       requests.set(requestId, pending);
-      if (ready) window.parent.postMessage(pending.message, origin);
+      if (ready) send(pending);
     });
+  }
+  function announceDocument() {
+    if (!shown || window.parent === window) return;
+    window.parent.postMessage({ type: 'neko-plugin-display-ready', documentId, connectionId }, origin);
   }
   window.addEventListener('message', event => {
     if (event.source !== window.parent || event.origin !== origin) return;
     const data = event.data;
-    if (!data || typeof data !== 'object' || data.documentId !== documentId) return;
-    if (data.type === 'neko-plugin-display-state') {
-      displayMode = data.state.mode;
-      for (const listener of listeners) {
-        try { listener(data.state); } catch (error) { reportError('display.state', error); }
+    if (!data || typeof data !== 'object') return;
+    if (data.type === 'neko-plugin-display-connect' && typeof data.connectionId === 'string') {
+      if (connectionId !== data.connectionId) {
+        ready = false;
+        cancelRequests(true);
+        connectionId = data.connectionId;
       }
+      announceDocument();
       return;
     }
+    if (data.documentId !== documentId || data.connectionId !== connectionId) return;
+    if (data.type === 'neko-plugin-display-connected') {
+      ready = true;
+      for (const pending of requests.values()) if (!pending.sent) send(pending);
+      publish(data.state);
+      return;
+    }
+    if (data.type === 'neko-plugin-display-state') { publish(data.state); return; }
     if (data.type !== 'neko-hosted-surface-response') return;
     const pending = requests.get(data.requestId);
     if (!pending) return;
@@ -50,40 +87,32 @@
     if (data.ok) {
       displayMode = (data.result.state || data.result).mode;
       pending.resolve(data.result);
-    }
-    else pending.reject(new Error(data.error || 'Plugin display request failed'));
+    } else pending.reject(new Error(data.error || 'Plugin display request failed'));
   });
-  function announceDocument() {
-    ready = true;
-    if (window.parent === window) return;
-    window.parent.postMessage({ type: 'neko-plugin-display-ready', documentId }, origin);
-    for (const pending of requests.values()) {
-      if (!pending.sent) { pending.sent = true; window.parent.postMessage(pending.message, origin); }
-    }
+  function showDocument() {
+    shown = true;
+    ready = false;
+    announceDocument();
   }
-  // Parent iframe load resets the old document before child pageshow runs.
-  // Queue early component/script requests until that boundary has passed.
-  window.addEventListener('pageshow', announceDocument);
-  // Keyboard events inside an iframe do not bubble to the host page.
+  window.addEventListener('pageshow', showDocument);
+  // Iframe keyboard events do not bubble to the host. One held Escape must
+  // not enqueue a second exit behind a new interactive request.
   window.addEventListener('keydown', event => {
     if (event.key !== 'Escape') return;
     queueMicrotask(() => {
-      if (!event.defaultPrevented && displayMode === 'focus') {
-        request('display.exit', {}).catch(error => reportError('display.exit', error));
+      if (!event.defaultPrevented && displayMode === 'focus' && !escapeExit) {
+        escapeExit = request('display.exit', { reason: 'escape' })
+          .catch(error => reportError('display.exit', error))
+          .finally(() => { escapeExit = null; });
       }
     });
   });
-  if (document.readyState === 'complete') announceDocument();
+  if (document.readyState === 'complete') showDocument();
   window.addEventListener('pagehide', () => {
+    shown = false;
     ready = false;
-    window.parent.postMessage({ type: 'neko-plugin-display-dispose', documentId }, origin);
-    for (const [requestId, pending] of requests) {
-      window.parent.postMessage({ type: 'neko-hosted-surface-cancel', documentId, requestId }, origin);
-      if (pending.timer !== null) clearTimeout(pending.timer);
-      if (pending.message.method === 'display.getState') pending.reject(new DOMException('Plugin document was disposed', 'AbortError'));
-      else pending.resolve({ status: 'cancelled', state: { mode: 'normal', supportedModes: [] } });
-    }
-    requests.clear();
+    window.parent.postMessage({ type: 'neko-plugin-display-dispose', documentId, connectionId }, origin);
+    cancelRequests(false);
   });
   return {
     getState: () => request('display.getState', {}),
