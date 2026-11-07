@@ -5706,6 +5706,7 @@
             "ssl_error": "SSL 证书验证失败",
             "ws_error": "WebSocket 连接失败",
             "missing_params": "缺少必要参数",
+            "output_limit": "测试请求的输出额度不足",
             "unknown": "未知错误",
             "backend_unavailable": "后端服务不可用",
             "invalid_response": "响应格式错误"

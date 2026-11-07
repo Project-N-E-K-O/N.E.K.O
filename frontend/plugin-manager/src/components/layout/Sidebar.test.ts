@@ -152,7 +152,7 @@ describe('Sidebar navigation', () => {
     routeState.path = '/plugins/demo'
     const mounted = await mountSidebar()
     expect(Array.from(mounted.container.querySelectorAll('[data-to]')).slice(0, 7).map((element) => element.getAttribute('data-to'))).toEqual([
-      '/', '/plugins', '/knowledge', '/model-api', '/runs', '/logs/_server', '/development',
+      '/', '/plugins', '/knowledge', '/model-api', '/runs', '/logs/_server', '/workbench',
     ])
     expect(getByRole(mounted.container, 'button', { name: 'nav.plugins' }).getAttribute('aria-current')).toBe('page')
     getByRole(mounted.container, 'button', { name: 'nav.collapseSidebar' }).click()

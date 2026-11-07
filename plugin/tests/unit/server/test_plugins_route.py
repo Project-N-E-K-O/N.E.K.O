@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
@@ -194,7 +196,6 @@ async def test_auto_start_route_writes_preference_without_lifecycle_calls(
     async def _must_not_run(*_args, **_kwargs):
         raise AssertionError("auto-start route must not start or stop the plugin")
 
-    monkeypatch.setattr(route_module, "registration_for_plugin_sync", lambda _pid: None)
     monkeypatch.setattr(route_module.lifecycle_service, "set_plugin_auto_start", _set_plugin_auto_start)
     monkeypatch.setattr(route_module.lifecycle_service, "start_plugin", _must_not_run)
     monkeypatch.setattr(route_module.lifecycle_service, "stop_plugin", _must_not_run)
@@ -232,14 +233,14 @@ async def test_auto_start_route_rejects_untrusted_or_tokenless_browser(
 
 
 @pytest.mark.asyncio
-async def test_auto_start_route_rejects_development_plugins(
+async def test_auto_start_route_rejects_workbench_projects(
     plugin_route_test_app: FastAPI,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def _must_not_run(*_args, **_kwargs):
-        raise AssertionError("development plugins must not get an auto-start preference")
+        raise AssertionError("workbench projects must not get an auto-start preference")
 
-    monkeypatch.setattr(route_module, "registration_for_plugin_sync", lambda _pid: object())
+    monkeypatch.setattr(route_module, "_project_source_dir_sync", lambda _pid: Path("/projects/demo"))
     monkeypatch.setattr(route_module.lifecycle_service, "set_plugin_auto_start", _must_not_run)
 
     transport = ASGITransport(app=plugin_route_test_app)
@@ -247,7 +248,7 @@ async def test_auto_start_route_rejects_development_plugins(
         response = await client.put("/plugin/demo/auto-start", json={"auto_start": True})
 
     assert response.status_code == 409
-    assert response.headers["X-Error-Code"] == "DEVELOPMENT_AUTO_START_UNSUPPORTED"
+    assert response.headers["X-Error-Code"] == "PLUGIN_PROJECT_AUTO_START_UNSUPPORTED"
 
 
 @pytest.mark.asyncio
@@ -258,7 +259,6 @@ async def test_auto_start_route_preserves_domain_error_shape(
     async def _set_plugin_auto_start(_plugin_id: str, _auto_start: bool) -> dict[str, object]:
         raise ServerDomainError(code="PLUGIN_NOT_FOUND", message="Plugin 'demo' not found", status_code=404)
 
-    monkeypatch.setattr(route_module, "registration_for_plugin_sync", lambda _pid: None)
     monkeypatch.setattr(route_module.lifecycle_service, "set_plugin_auto_start", _set_plugin_auto_start)
 
     transport = ASGITransport(app=plugin_route_test_app)

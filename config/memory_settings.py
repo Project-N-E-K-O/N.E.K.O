@@ -134,13 +134,23 @@ PERSONA_RENDER_ENCODING = "o200k_base"   # tiktoken encoding
 # they expire. The original fact still goes through the ordinary pipeline;
 # expiry only takes it out of the resident section.
 PINNED_FACT_TTL_TIERS_DAYS = (3, 14, 90, 365)
-"""The only lifetimes a pinned fact can have, in days.
+"""The only lifetimes a pinned fact can have, in days, counted from when it was
+said. The tier is a hard ceiling: an entry leaves the section when it runs out,
+and neither a model decision nor a date can keep it longer (a renewal starts a
+new lifetime from the later mention).
 - 3: things happening right now (a cold, working late tonight).
 - 14: near-term plans (an exam next week, a business trip).
 - 90: a phase of life (a new job, studying for an exam, recovering from an injury).
 - 365: long-lived but changeable (an allergy, a birthday, how the user wants to be called).
 - A dated event takes the smallest tier that still covers the end of the event;
-  memory/pinned_facts.py:snap_ttl_days rounds any other value up the same way."""
+  memory/pinned_facts.py:snap_ttl_days rounds any other value up the same way.
+  An entry with a known end (``event_when.end``) leaves PINNED_FACT_DUE_GRACE_DAYS
+  after it, so an exam is not carried for the rest of its tier."""
+
+PINNED_FACT_DUE_GRACE_DAYS = 1
+"""How long a dated entry stays after its event ends: ``expire_at`` is
+``min(tier ceiling, event end + this)``. One day covers an end given at day
+granularity whose time of day is unknown."""
 
 PINNED_FACT_DEFAULT_TTL_DAYS = 14
 """Tier used when the model sets ``pin`` but gives no usable ``pin_ttl_days``.
@@ -176,7 +186,56 @@ newer change."""
 
 PINNED_FACT_RESOLVE_MODEL_TIER = "correction"
 """Model tier of the add / replace / renew / remove decision, the same tier and
-thinking mode as persona correction resolution."""
+thinking mode as persona correction resolution. The same call may also retire
+entries that are over (fulfilled, no longer valid, or past their date)."""
+
+PINNED_FACT_REVIEW_INTERVAL_HOURS = 24
+"""The idle-time check that retires finished entries runs at most this often per
+character, and only when the section is not empty and no model has looked at
+the whole section (an admission resolve or an earlier check) within it."""
+
+PINNED_FACT_REVIEW_MODEL_TIER = "summary"
+"""Model tier of the idle-time check, called without thinking: it only answers
+retire or keep per entry, quoting the conversation as evidence."""
+
+PINNED_FACT_REVIEW_LOOKBACK_DAYS = 7
+"""How far back the idle-time check reads the conversation: from the oldest
+live entry's noted time, but never further back than this."""
+
+PINNED_FACT_REVIEW_CONVERSATION_MAX_TOKENS = 2000
+"""Token budget of the conversation in the idle-time check; over it, the
+oldest messages are left out."""
+
+PINNED_FACT_REVIEW_MESSAGE_MAX_TOKENS = 150
+"""Per-message cap in the idle-time check, so one long message cannot take the
+whole conversation budget."""
+
+PINNED_FACT_RETIRE_REASON_MAX_TOKENS = 40
+"""Cap on the reason a model gives for retiring an entry, kept in the history
+for diagnosis and never rendered."""
+
+PINNED_COMMITMENT_DUE_SOON_DAYS = 2
+"""An open commitment due within this many days (or already due, while it is
+still in the section) is offered to proactive chat as its first cue."""
+
+PINNED_COMMITMENT_SURFACE_COOLDOWN_HOURS = 12
+"""After proactive chat was offered a commitment, the same one is not offered
+again for this long, so she does not bring up one promise in every round."""
+
+PINNED_MENTION_COOLDOWN_HOURS = 24
+"""Once a reply of the character's brings up a pinned entry, it renders under
+"recently mentioned" (remembered, not to be raised on her own initiative) for
+this long, and a commitment in that cooldown is not offered to proactive chat.
+A mention while the cooldown still runs extends it; one after it ran out
+doubles the next cooldown, so a matter raised every so often is raised ever
+more rarely."""
+
+PINNED_MENTION_COOLDOWN_MAX_HOURS = 168
+"""Cap on the doubling mention cooldown (a week)."""
+
+PINNED_COMMITMENT_DUE_LEAD_HOURS = 12
+"""A dated commitment's mention cooldown ends at the latest this long before
+it is due, so having mentioned a promise never keeps it from being kept."""
 
 # ── Overall cap for scoped (group) L10 core memory ──────────────────────────
 # Per-subject budgets stop competition but not total growth: rendering five

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import shutil
 import subprocess
@@ -13,8 +14,10 @@ from plugin._types.plugin_types import SCAFFOLDABLE_PLUGIN_TYPES
 
 from ..paths import CliDefaults
 from ..repo_action_migration import ActionFileStatus, migrate_github_actions
-from ..templates.generator import PluginSpec, generate_plugin, generate_repo_support_files
+from ..repo_state import git_output
+from ..templates.generator import PluginSpec, generate_repo_support_files
 from ..core.plugin_source import load_plugin_source
+from ..core.project import create_project
 from ._resolve import parse_github_repository_remote
 
 _MARKET_PLUGIN_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -60,9 +63,9 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
     parser.add_argument(
         "--remote",
         help=_tri(
-            "Add a matching GitHub repository as origin",
-            "将匹配的 GitHub 仓库添加为 origin",
-            "一致する GitHub リポジトリを origin として追加",
+            "Add a GitHub repository as origin (recommended name: n.e.k.o_plugin_<id>)",
+            "将 GitHub 仓库添加为 origin（推荐名称：n.e.k.o_plugin_<id>）",
+            "GitHub リポジトリを origin として追加（推奨名：n.e.k.o_plugin_<id>）",
         ),
     )
     parser.set_defaults(handler=handle, _defaults=defaults)
@@ -91,13 +94,45 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
         ),
     )
     setup_parser.add_argument("--overwrite", action="store_true", help="Overwrite existing support files")
-    setup_parser.add_argument("--git", action="store_true", help="Initialize a git repository if this plugin directory is not already inside one")
+    setup_parser.add_argument("--git", action="store_true", help="Initialize a git repository if this plugin directory does not have its own")
     setup_parser.add_argument("--remote", help="Add a git remote named origin after --git initialization")
     setup_parser.add_argument("--no-readme", action="store_true", help="Do not generate README.md")
     setup_parser.add_argument("--no-tests", action="store_true", help="Do not generate tests/test_smoke.py")
     setup_parser.add_argument("--no-gitignore", action="store_true", help="Do not generate .gitignore")
     setup_parser.add_argument("--no-vscode", action="store_true", help="Do not generate VSCode settings and tasks")
     setup_parser.set_defaults(handler=handle_setup_repo, _defaults=defaults)
+
+    create_repo_parser = subparsers.add_parser(
+        "create-repo",
+        help=_tri(
+            "Create the plugin's GitHub repository with gh and wire it as origin",
+            "用 gh 创建插件的 GitHub 仓库并设为 origin",
+            "gh でプラグインの GitHub リポジトリを作成し origin に設定",
+        ),
+    )
+    create_repo_parser.add_argument(
+        "plugin",
+        help="Plugin directory name under plugin/plugins or explicit plugin path",
+    )
+    create_repo_parser.add_argument("--plugins-root", help="Plugin root directory (default: N.E.K.O/plugin/plugins)")
+    create_repo_parser.add_argument(
+        "--owner",
+        help=_tri(
+            "GitHub owner for the new repository (default: the gh account)",
+            "新仓库的 GitHub 拥有者（默认：gh 登录账号）",
+            "新しいリポジトリの GitHub オーナー（既定値：gh のログインアカウント）",
+        ),
+    )
+    create_repo_parser.add_argument(
+        "--private",
+        action="store_true",
+        help=_tri(
+            "Create a private repository (the Market requires a public one to publish)",
+            "创建私有仓库（发布到 Market 需要公开仓库）",
+            "プライベートリポジトリを作成（Market 公開には公開リポジトリが必要）",
+        ),
+    )
+    create_repo_parser.set_defaults(handler=handle_create_repo, _defaults=defaults)
 
 
 def handle(args: argparse.Namespace) -> int:
@@ -143,17 +178,31 @@ def handle(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-    if args.remote and not _remote_matches_plugin(args.remote, plugin_id=plugin_id):
-        print(
-            "[FAIL] "
-            + _tri(
-                f"remote must be a GitHub repository named {_market_repo_name(plugin_id)}",
-                f"remote 必须是名为 {_market_repo_name(plugin_id)} 的 GitHub 仓库",
-                f"remote は {_market_repo_name(plugin_id)} という名前の GitHub リポジトリである必要があります",
-            ),
-            file=sys.stderr,
-        )
-        return 1
+    repo_name = _market_repo_name(plugin_id)
+    if args.remote:
+        remote_repository = parse_github_repository_remote(args.remote)
+        if remote_repository is None:
+            print(
+                "[FAIL] "
+                + _tri(
+                    "remote must be a GitHub repository",
+                    "remote 必须是 GitHub 仓库",
+                    "remote は GitHub リポジトリである必要があります",
+                ),
+                file=sys.stderr,
+            )
+            return 1
+        remote_name = remote_repository.rsplit("/", 1)[-1]
+        if remote_name.casefold() != repo_name.casefold():
+            print(
+                "[WARNING] "
+                + _tri(
+                    f"the recommended repository name is {repo_name}; the Market also accepts {remote_name}",
+                    f"推荐的仓库名为 {repo_name}；Market 也接受 {remote_name}",
+                    f"推奨リポジトリ名は {repo_name} です。Market は {remote_name} も受け付けます",
+                )
+            )
+        repo_name = remote_name
 
     spec = PluginSpec(
         plugin_id=plugin_id,
@@ -163,22 +212,12 @@ def handle(args: argparse.Namespace) -> int:
         features=["entry_point"],
         create_github_actions=True,
     )
-    target_created = False
     try:
-        target_dir.mkdir(parents=True, exist_ok=False)
-        target_created = True
-        created = generate_plugin(
-            spec,
-            target_dir,
-            repo_root=defaults.repo_root,
+        created = create_project(
+            spec, target_dir, repo_root=defaults.repo_root,
+            remote=args.remote, git_runner=_run_git,
         )
-        _run_git(["init"], cwd=target_dir)
-        _run_git(["symbolic-ref", "HEAD", "refs/heads/main"], cwd=target_dir)
-        if args.remote:
-            _run_git(["remote", "add", "origin", args.remote], cwd=target_dir)
     except Exception as exc:
-        if target_created and target_dir.exists():
-            shutil.rmtree(target_dir)
         print(
             "[FAIL] "
             + _tri(
@@ -201,7 +240,7 @@ def handle(args: argparse.Namespace) -> int:
     for path in created:
         print(f"  └── {path.relative_to(target_dir)}")
     print(f"\n  {_tri('plugin', '插件', 'プラグイン')}: {plugin_id}")
-    print(f"  {_tri('repository', '仓库', 'リポジトリ')}: {_market_repo_name(plugin_id)}")
+    print(f"  {_tri('repository', '仓库', 'リポジトリ')}: {repo_name}")
     print(f"  {_tri('entry', '入口', 'エントリ')}: {spec.entry_point}")
     print(f"  Git: {_tri('initialized (main)', '已初始化（main）', '初期化済み（main）')}")
     if args.remote:
@@ -210,9 +249,9 @@ def handle(args: argparse.Namespace) -> int:
         print(
             "  " + _tri("next", "下一步", "次の手順") + ": "
             + _tri(
-                "add the matching GitHub repository as origin",
-                "将匹配的 GitHub 仓库添加为 origin",
-                "一致する GitHub リポジトリを origin として追加してください",
+                f"add the GitHub repository (recommended name: {repo_name}) as origin",
+                f"将 GitHub 仓库（推荐名称：{repo_name}）添加为 origin",
+                f"GitHub リポジトリ（推奨名：{repo_name}）を origin として追加してください",
             )
         )
     return 0
@@ -318,7 +357,7 @@ def handle_setup_repo(args: argparse.Namespace) -> int:
         if args.remote:
             print(f"  remote: {args.remote}")
     elif args.git:
-        print("  git:    skipped (already inside an existing repository)")
+        print("  git:    skipped (the plugin directory already has its own repository)")
     return 0
 
 
@@ -326,13 +365,317 @@ def _market_repo_name(plugin_id: str) -> str:
     return f"{_MARKET_REPO_PREFIX}{plugin_id}"
 
 
-def _remote_matches_plugin(remote: str, *, plugin_id: str) -> bool:
-    repository = parse_github_repository_remote(remote)
+# Exit code the UI reads as "gh cannot do this; show the manual steps" rather
+# than a hard failure. 0 = done, 1 = failed, 3 = manual fallback needed.
+MANUAL_FALLBACK_EXIT = 3
+
+
+def handle_create_repo(args: argparse.Namespace) -> int:
+    defaults: CliDefaults = args._defaults
+    try:
+        plugin_dir = _resolve_existing_plugin_dir(args.plugin, args=args, defaults=defaults)
+        source = load_plugin_source(plugin_dir)
+    except Exception as exc:
+        print(f"[FAIL] {exc}", file=sys.stderr)
+        return 1
+
+    repo_name = _market_repo_name(source.plugin_id)
+
+    existing_origin = _existing_origin_url(plugin_dir)
+    if existing_origin is not None:
+        repository = parse_github_repository_remote(existing_origin)
+        if repository and args.owner and repository.split("/", 1)[0].casefold() != args.owner.casefold():
+            print(f"[FAIL] origin belongs to {repository.split('/', 1)[0]}, not requested owner {args.owner}", file=sys.stderr)
+            return 1
+        if repository and repository.rsplit("/", 1)[-1].casefold() == repo_name.casefold():
+            print(
+                "[OK] "
+                + _tri(
+                    f"repository already configured: {repository}",
+                    f"仓库已配置：{repository}",
+                    f"リポジトリは既に設定済み：{repository}",
+                )
+            )
+            _print_push_next_step(plugin_dir)
+            return 0
+        print(
+            "[FAIL] "
+            + _tri(
+                f"git remote 'origin' already points to {existing_origin}; "
+                f"expected a repository named {repo_name}",
+                f"Git 远程 'origin' 已指向 {existing_origin}；应为名为 {repo_name} 的仓库",
+                f"Git リモート 'origin' は既に {existing_origin} を指しています；{repo_name} という名前のリポジトリが必要です",
+            ),
+            file=sys.stderr,
+        )
+        return 1
+
+    if not _gh_available() or not _gh_authenticated():
+        _print_manual_repo_steps(plugin_dir, repo_name=repo_name)
+        return MANUAL_FALLBACK_EXIT
+
+    owner = args.owner or _gh_default_owner()
+    if not owner:
+        _print_manual_repo_steps(plugin_dir, repo_name=repo_name)
+        return MANUAL_FALLBACK_EXIT
+    slug = f"{owner}/{repo_name}"
+
+    try:
+        _initialize_git_repo(plugin_dir)
+        try:
+            _gh_create_repository(plugin_dir, slug=slug, private=args.private)
+        except _RepositoryNameTaken:
+            # A retry after a timed-out or half-failed create finds the
+            # caller's own empty repository; wire it instead of failing.
+            if not _adopt_empty_repository(plugin_dir, slug=slug):
+                print(
+                    "[FAIL] "
+                    + _tri(
+                        f"a GitHub repository named {slug} already exists and is not "
+                        "an empty repository you administer; choose a different owner or delete it first",
+                        f"名为 {slug} 的 GitHub 仓库已存在，且不是由你管理的空仓库；请换一个拥有者或先删除它",
+                        f"{slug} という GitHub リポジトリが既に存在し、あなたが管理する空のリポジトリではありません；"
+                        "別のオーナーを選ぶか先に削除してください",
+                    ),
+                    file=sys.stderr,
+                )
+                return 1
+    except RuntimeError as exc:
+        print(f"[FAIL] {exc}", file=sys.stderr)
+        return 1
+
+    origin = _existing_origin_url(plugin_dir)
+    repository = parse_github_repository_remote(origin) if origin else None
     if repository is None:
+        print(
+            "[FAIL] "
+            + _tri(
+                "the repository was created but origin was not wired to it",
+                "仓库已创建，但 origin 未正确关联",
+                "リポジトリは作成されましたが origin が正しく設定されていません",
+            ),
+            file=sys.stderr,
+        )
+        return 1
+    print(
+        "[OK] "
+        + _tri(
+            f"repository ready: https://github.com/{repository}",
+            f"仓库已就绪：https://github.com/{repository}",
+            f"リポジトリの準備完了：https://github.com/{repository}",
+        )
+    )
+    _print_push_next_step(plugin_dir)
+    return 0
+
+
+class _RepositoryNameTaken(RuntimeError):
+    """The GitHub repository name already exists."""
+
+
+def _has_own_repository(plugin_dir: Path) -> bool:
+    # The same rule as ``publish``: a parent checkout (such as N.E.K.O
+    # itself) is never the plugin's repository.
+    return (plugin_dir / ".git").exists()
+
+
+def _existing_origin_url(plugin_dir: Path) -> str | None:
+    if not _has_own_repository(plugin_dir):
+        return None
+    return git_output(plugin_dir, "remote", "get-url", "origin") or None
+
+
+def _git_command(plugin_dir: Path, arguments: str) -> str:
+    return f'git -C "{plugin_dir}" {arguments}'
+
+
+def _current_branch(plugin_dir: Path) -> str:
+    branch = (
+        git_output(plugin_dir, "symbolic-ref", "--short", "-q", "HEAD")
+        if _has_own_repository(plugin_dir)
+        else None
+    )
+    return branch or "main"
+
+
+def _first_commit_steps(plugin_dir: Path) -> list[str]:
+    """Commands that give the plugin its own repository with a first commit, when missing."""
+    if _has_own_repository(plugin_dir):
+        if git_output(plugin_dir, "rev-parse", "--verify", "-q", "HEAD"):
+            return []
+        steps = []
+    else:
+        steps = [_git_command(plugin_dir, "init -b main")]
+    return [
+        *steps,
+        _git_command(plugin_dir, "add -A"),
+        _git_command(plugin_dir, 'commit -m "Initial commit"'),
+    ]
+
+
+def _print_push_next_step(plugin_dir: Path) -> None:
+    """Name the push that gives the branch the origin upstream ``publish`` requires.
+
+    create-repo never pushes: what to commit and when to push stays the
+    user's decision, and ``publish`` re-checks that HEAD is pushed anyway.
+    """
+    if _has_own_repository(plugin_dir) and git_output(
+        plugin_dir, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"
+    ):
+        return
+    print(
+        "  "
+        + _tri("next", "下一步", "次の手順")
+        + ": "
+        + _tri(
+            "push the branch to set its upstream:",
+            "推送当前分支以设置上游分支：",
+            "ブランチを push して上流ブランチを設定します：",
+        )
+    )
+    for command in [
+        *_first_commit_steps(plugin_dir),
+        _git_command(plugin_dir, f"push -u origin {_current_branch(plugin_dir)}"),
+    ]:
+        print(f"       {command}")
+
+
+def _gh_available() -> bool:
+    return shutil.which("gh") is not None
+
+
+def _gh_authenticated() -> bool:
+    try:
+        completed = subprocess.run(
+            ["gh", "auth", "status"],
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=20,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
-    return repository.rsplit("/", 1)[-1].casefold() == _market_repo_name(
-        plugin_id
-    ).casefold()
+    return completed.returncode == 0
+
+
+def _gh_default_owner() -> str | None:
+    try:
+        completed = subprocess.run(
+            ["gh", "api", "user", "--jq", ".login"],
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=20,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    owner = completed.stdout.strip()
+    return owner or None
+
+
+def _gh_repository_view(slug: str) -> dict[str, object] | None:
+    try:
+        completed = subprocess.run(
+            ["gh", "repo", "view", slug, "--json", "isEmpty,viewerPermission,url"],
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=20,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    try:
+        payload = json.loads(completed.stdout)
+    except ValueError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _adopt_empty_repository(plugin_dir: Path, *, slug: str) -> bool:
+    """Wire ``slug`` as origin when it is an empty repository the caller administers."""
+    view = _gh_repository_view(slug)
+    if (
+        view is None
+        or view.get("isEmpty") is not True
+        or view.get("viewerPermission") != "ADMIN"
+        or not isinstance(view.get("url"), str)
+    ):
+        return False
+    _run_git(["remote", "add", "origin", view["url"]], cwd=plugin_dir)
+    print(
+        "[OK] "
+        + _tri(
+            f"reusing your existing empty repository {slug}",
+            f"复用你已有的空仓库 {slug}",
+            f"既存の空リポジトリ {slug} を再利用します",
+        )
+    )
+    return True
+
+
+def _gh_create_repository(plugin_dir: Path, *, slug: str, private: bool) -> None:
+    visibility = "--private" if private else "--public"
+    try:
+        completed = subprocess.run(
+            ["gh", "repo", "create", slug, visibility, "--source", ".", "--remote", "origin"],
+            cwd=plugin_dir,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=120,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("gh executable not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("gh repo create timed out after 120 seconds") from exc
+    if completed.returncode == 0:
+        return
+    output = (completed.stdout or "").strip()
+    if "already exists" in output.casefold() or "name already exists" in output.casefold():
+        raise _RepositoryNameTaken(slug)
+    raise RuntimeError(output or f"gh repo create {slug} failed")
+
+
+def _print_manual_repo_steps(plugin_dir: Path, *, repo_name: str) -> None:
+    """Steps to create the repository by hand when gh cannot do it."""
+    print(
+        "[MANUAL] "
+        + _tri(
+            "GitHub CLI (gh) is not available or not signed in; create the repository manually:",
+            "GitHub CLI（gh）不可用或未登录；请手动创建仓库：",
+            "GitHub CLI（gh）が利用できないかサインインしていません。手動でリポジトリを作成してください：",
+        )
+    )
+    print(
+        "  1. "
+        + _tri(
+            f"Create a GitHub repository named {repo_name} (public).",
+            f"在 GitHub 上创建名为 {repo_name} 的公开仓库。",
+            f"GitHub で {repo_name} という公開リポジトリを作成します。",
+        )
+    )
+    print(
+        "  2. "
+        + _tri(
+            "Copy its URL, then wire it as origin and push:",
+            "复制其 URL，然后将其设为 origin 并推送：",
+            "その URL をコピーして origin に設定し、push します：",
+        )
+    )
+    for command in [
+        *_first_commit_steps(plugin_dir),
+        _git_command(plugin_dir, "remote add origin <repository-url>"),
+        _git_command(plugin_dir, f"push -u origin {_current_branch(plugin_dir)}"),
+    ]:
+        print(f"       {command}")
 
 
 def _resolve_plugins_root(args: argparse.Namespace, *, defaults: CliDefaults) -> Path:
@@ -356,12 +699,12 @@ def _resolve_existing_plugin_dir(raw: str, *, args: argparse.Namespace, defaults
 
 
 def _initialize_git_repo(target_dir: Path, *, remote: str | None = None) -> bool:
-    existing_git = _find_parent_git_dir(target_dir)
-    if existing_git is not None:
+    if _has_own_repository(target_dir):
         if remote:
-            raise RuntimeError("--remote can only be used when initializing a new git repository")
+            raise RuntimeError(_existing_repository_remote_message(target_dir, remote))
         return False
     _run_git(["init"], cwd=target_dir)
+    _run_git(["symbolic-ref", "HEAD", "refs/heads/main"], cwd=target_dir)
     if remote:
         _run_git(["remote", "add", "origin", remote], cwd=target_dir)
     return True
@@ -370,22 +713,19 @@ def _initialize_git_repo(target_dir: Path, *, remote: str | None = None) -> bool
 def _preflight_git_request(target_dir: Path, *, initialize_git: bool, remote: str | None = None) -> None:
     if not initialize_git:
         return
-    existing_git = _find_parent_git_dir(target_dir)
-    if existing_git is not None:
+    if _has_own_repository(target_dir):
         if remote:
-            raise RuntimeError("--remote can only be used when initializing a new git repository")
+            raise RuntimeError(_existing_repository_remote_message(target_dir, remote))
         return
     if shutil.which("git") is None:
         raise RuntimeError("git executable not found; install git or omit --git")
 
 
-def _find_parent_git_dir(path: Path) -> Path | None:
-    current = path.resolve()
-    for candidate in (current, *current.parents):
-        git_dir = candidate / ".git"
-        if git_dir.exists():
-            return git_dir
-    return None
+def _existing_repository_remote_message(target_dir: Path, remote: str) -> str:
+    return (
+        "--remote can only be used when initializing a new git repository; "
+        f"to add origin to the existing one run: {_git_command(target_dir, f'remote add origin {remote}')}"
+    )
 
 
 def _run_git(command: list[str], *, cwd: Path) -> None:
@@ -396,7 +736,8 @@ def _run_git(command: list[str], *, cwd: Path) -> None:
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
         )
     except FileNotFoundError as exc:
         raise RuntimeError("git executable not found; install git or omit --git") from exc

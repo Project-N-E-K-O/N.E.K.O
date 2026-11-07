@@ -1,5 +1,8 @@
 <template>
-  <div class="plugin-ui-frame" :class="{ loading, error: !!error }" :style="frameStyle">
+  <div ref="displayTarget" class="plugin-ui-frame" :class="{ loading, error: !!error }" :style="frameStyle">
+    <div v-if="display.owned.value" class="plugin-display-exit">
+      <el-button data-testid="display-exit" @click="display.exit">{{ t('plugins.display.exit') }}</el-button>
+    </div>
     <div v-if="loading" class="loading-overlay">
       <el-icon class="is-loading" :size="32">
         <Loading />
@@ -47,6 +50,7 @@ import { useI18n } from 'vue-i18n'
 import { Loading, WarningFilled, InfoFilled } from '@element-plus/icons-vue'
 import { get } from '@/api'
 import { PANEL_FILL_HEIGHT } from '@/utils/constants'
+import { usePluginDisplayFrame } from '@/composables/usePluginDisplay'
 
 const props = withDefaults(defineProps<{
   pluginId: string
@@ -81,6 +85,15 @@ const pendingSurfaceMessages: unknown[] = []
 const maxPendingSurfaceMessages = 100
 let currentRequestId = 0
 const expectedOrigin = window.location.origin
+const displayTarget = ref<HTMLElement | null>(null)
+const display = usePluginDisplayFrame({
+  target: displayTarget,
+  active: () => hasUI.value && !loading.value && !error.value,
+  identity: () => `${props.pluginId}:${iframeGeneration.value}`,
+  name: () => props.pluginId,
+  connect: (connectionId) => iframeRef.value?.contentWindow?.postMessage({ type: 'neko-plugin-display-connect', connectionId }, expectedOrigin),
+  notify: (state, documentId, connectionId) => iframeRef.value?.contentWindow?.postMessage({ type: 'neko-plugin-display-state', documentId, connectionId, state }, expectedOrigin),
+})
 
 const uiUrl = computed(() => {
   if (!props.pluginId) return ''
@@ -134,6 +147,7 @@ function isCurrentIframeEvent(event: Event) {
 
 function onIframeLoad(event: Event) {
   if (!isCurrentIframeEvent(event)) return
+  display.connectDocument()
   loading.value = false
   error.value = null
   iframeReady.value = true
@@ -171,6 +185,9 @@ function handleMessage(event: MessageEvent) {
   
   // 处理来自插件 UI 的消息
   const data = event.data
+  if (data && typeof data === 'object' && display.handleMessage(data, message => {
+    iframeRef.value?.contentWindow?.postMessage(message, expectedOrigin)
+  })) return
   if (data && typeof data === 'object' && data.type === 'plugin-ui-message') {
     emit('message', data.payload)
   } else if (data && typeof data === 'object' && data.type === 'neko-study-open-surface') {
@@ -252,6 +269,8 @@ watch(() => props.pluginId, () => {
 
 <style scoped>
 .plugin-ui-frame {
+  display: flex;
+  flex-direction: column;
   position: relative;
   width: 100%;
   min-height: 0;
@@ -262,11 +281,16 @@ watch(() => props.pluginId, () => {
 }
 
 .plugin-iframe {
+  flex: 1 1 0;
+  min-height: 0;
   width: 100%;
   height: 100%;
   border: none;
   display: block;
 }
+
+.plugin-ui-frame:fullscreen { height: 100% !important; background: var(--el-bg-color); }
+.plugin-display-exit { flex: none; padding: 6px 10px; text-align: right; background: var(--el-bg-color); }
 
 .loading-overlay,
 .error-overlay,

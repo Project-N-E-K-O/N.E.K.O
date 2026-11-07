@@ -5706,6 +5706,7 @@
             "ssl_error": "SSL certificate verification failed",
             "ws_error": "WebSocket connection failed",
             "missing_params": "Missing required parameters",
+            "output_limit": "The test request output budget is too small",
             "unknown": "Unknown error",
             "backend_unavailable": "Backend service unavailable",
             "invalid_response": "Invalid response format"
