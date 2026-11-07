@@ -193,11 +193,21 @@ class PluginSourceResolver:
         refs: list[PluginCliPluginRef | dict[str, Any]] | None = None,
         specifiers: list[str] | None = None,
     ) -> list[ResolvedPluginSource]:
+        snapshot: tuple[list[Path], list[ProjectSourceFailure]] | None = None
+
+        def project_sources() -> tuple[list[Path], list[ProjectSourceFailure]]:
+            nonlocal snapshot
+            if snapshot is None:
+                snapshot = self._project_sources()
+            return snapshot
+
+        # One lazy snapshot per bulk resolution; explicit managed refs do not read it.
+        resolver = PluginSourceResolver(self.policy, project_sources=project_sources)
         out: list[ResolvedPluginSource] = []
         for ref in refs or []:
-            out.append(self.resolve_plugin_ref(ref))
+            out.append(resolver.resolve_plugin_ref(ref))
         for specifier in specifiers or []:
-            out.append(self.resolve_string(specifier))
+            out.append(resolver.resolve_string(specifier))
         return out
 
     def list_plugins_with_failures(self) -> tuple[list[ResolvedPluginSource], list[ProjectSourceFailure]]:

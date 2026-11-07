@@ -1997,7 +1997,10 @@ class PluginCliService:
 
             built: list[dict[str, object]] = []
             failed: list[dict[str, object]] = [
-                {"plugin": f"project/{failure.source_dir.name}", "error": failure.error}
+                {
+                    "plugin": f"project/{failure.source_dir.name}",
+                    "error": f"Project {failure.project_id} ({failure.source_dir}): {failure.error}",
+                }
                 for failure in source_failures
             ]
             output_stems = self._output_stems_for_sources(sources)
@@ -2078,18 +2081,20 @@ class PluginCliService:
             from plugin.server.application.plugins.project_sources import list_project_sources_sync
             incoming_ids = set(getattr(plan, "bundle_plugin_ids", ()) or (plan.plugin_id,))
             try:
-                projects, _failures = list_project_sources_sync()
+                projects, failures = list_project_sources_sync()
             except ServerDomainError:
                 # Like managed discovery, installation does not depend on a
                 # readable workbench store. Preserve it for repair; all package,
                 # target and installed-identity checks still apply.
                 logger.warning("Ignoring unreadable workbench store during managed install planning")
-                projects = []
-            conflicts = [item for item in projects if item.plugin_id in incoming_ids]
+                projects, failures = [], []
+            conflicts = [item.source_dir for item in projects if item.plugin_id in incoming_ids]
+            # Registered directories reserve their ID even while their source is invalid.
+            conflicts.extend(item.source_dir for item in failures if item.source_dir.name in incoming_ids)
             if conflicts:
                 plan = replace(plan, action="blocked", confirmation_token="", reason="project_source_conflict")
                 result = asdict(plan)
-                result["project_sources"] = [str(item.source_dir) for item in conflicts]
+                result["project_sources"] = [str(path) for path in conflicts]
                 return result
             return asdict(plan)
         except Exception as exc:

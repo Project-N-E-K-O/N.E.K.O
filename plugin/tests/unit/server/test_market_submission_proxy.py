@@ -548,3 +548,24 @@ def test_submission_language_header_preserves_ascii_lists_and_skips_non_ascii(mo
     )
     assert response.status_code == 200
     assert upstream.requests[0].headers.get("accept-language") == expected
+
+
+def test_a_failed_refresh_after_401_stops_without_replaying_the_request(monkeypatch):
+    client, upstream, _ = _install(
+        monkeypatch, lambda request, attempt: httpx.Response(401, json={"detail": "token expired"})
+    )
+    refreshes = []
+
+    async def ensure(*, force_refresh=False, rejected_access_token=None):
+        if force_refresh:
+            refreshes.append(rejected_access_token)
+            return None
+        return _VERIFIED_TOKEN
+
+    monkeypatch.setattr(market_bridge, "_ensure_valid_oauth_token", ensure)
+    response = client.get("/market/submissions/mine", params=_BRIDGE)
+    assert response.status_code == 401
+    assert response.json()["code"] == "market_auth_rejected"
+    assert refreshes == [_ACCESS_TOKEN]
+    assert len(upstream.requests) == 1
+    assert upstream.requests[0].headers["authorization"] == f"Bearer {_ACCESS_TOKEN}"

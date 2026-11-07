@@ -347,8 +347,66 @@ async def test_unreadable_project_store_still_fails_all_builds_but_not_explicit_
     def broken():
         raise ServerDomainError(code="PROJECT_STORE_INVALID", message="broken store", status_code=500)
     monkeypatch.setattr(store, "list_records", broken)
-    with pytest.raises(ServerDomainError):
+    with pytest.raises(ServerDomainError) as caught:
         await PluginCliService().build(mode="all")
+    assert caught.value.code == "PROJECT_STORE_INVALID"
+    with pytest.raises(ServerDomainError) as caught:
+        await PluginCliService().build(mode="selected", plugin_refs=[{"root_id": "project", "directory_name": "demo"}])
+    assert caught.value.code == "PROJECT_STORE_INVALID"
     result = await PluginCliService().build(mode="single", plugin_ref={"root_id": "builtin", "directory_name": "builtin_demo"})
     assert result["ok"] is True
     assert result["built_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_all_build_failures_identify_projects_with_the_same_directory_name(tmp_path, monkeypatch):
+    from plugin.server.application.plugin_cli.service import PluginCliService
+
+    policy = PluginCliPathPolicy(
+        builtin_plugins_root=tmp_path / "builtin", user_plugins_root=tmp_path / "user",
+        package_artifacts_root=tmp_path / "packages", package_profiles_root=tmp_path / "profiles",
+    )
+    records = [store.add_record(tmp_path / parent / "missing") for parent in ["first", "second"]]
+    monkeypatch.setattr(PluginCliService, "_path_policy", lambda self: policy)
+    result = await PluginCliService().build(mode="all")
+    assert result["failed_count"] == 2
+    for record, failure in zip(records, result["failed"], strict=True):
+        assert failure["plugin"] == "project/missing"
+        assert record.project_id in failure["error"]
+        assert str(record.source_dir) in failure["error"]
+        assert "does not exist or is not accessible" in failure["error"]
+
+
+@pytest.mark.parametrize("broken", ["missing", "manifest"])
+def test_install_plans_keep_failed_project_ids_reserved(tmp_path, monkeypatch, broken):
+    from plugin.neko_plugin_cli.core.build import PluginBuilder
+    from plugin.server.application.plugin_cli.service import PluginCliService
+
+    policy = PluginCliPathPolicy(
+        builtin_plugins_root=tmp_path / "builtin", user_plugins_root=tmp_path / "user",
+        package_artifacts_root=tmp_path / "packages", package_profiles_root=tmp_path / "profiles",
+    )
+    package_source = scaffold(tmp_path / "package-source", "demo")
+    package = policy.package_artifacts_root / "demo.neko-plugin"
+    PluginBuilder(source_only_roots=(package_source,)).build_plugin(package_source, package)
+    project = tmp_path / "projects" / "demo"
+    if broken == "manifest":
+        scaffold(project.parent, "demo")
+        (project / "plugin.toml").write_text("invalid TOML [", encoding="utf-8")
+    store.add_record(project)
+    monkeypatch.setattr(PluginCliService, "_path_policy", lambda self: policy)
+    monkeypatch.setattr(PluginCliService, "_apply_installed_package_identity", lambda self, plan, **kwargs: plan)
+
+    service = PluginCliService()
+    result = service._plan_install_sync(package=str(package), plugins_root=None, profiles_root=None)
+    assert result["action"] == "blocked"
+    assert result["reason"] == "project_source_conflict"
+    assert result["project_sources"] == [str(project)]
+    assert not (policy.user_plugins_root / "demo").exists()
+    unrelated = store.add_record(tmp_path / "projects" / "unrelated")
+    monkeypatch.setattr(store, "list_records", lambda: [unrelated])
+    assert service._plan_install_sync(package=str(package), plugins_root=None, profiles_root=None)["action"] == "install"
+    def unreadable():
+        raise ServerDomainError(code="PROJECT_STORE_INVALID", message="broken store", status_code=500)
+    monkeypatch.setattr(store, "list_records", unreadable)
+    assert service._plan_install_sync(package=str(package), plugins_root=None, profiles_root=None)["action"] == "install"
