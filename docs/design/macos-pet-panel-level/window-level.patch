@@ -1,0 +1,31 @@
+diff --git a/src/window-manager.js b/src/window-manager.js
+--- a/src/window-manager.js
++++ b/src/window-manager.js
+@@ -1084,6 +1084,11 @@
+   if (process.platform === 'darwin' && !isStreamerMode) {
+     winOptions.type = 'panel';
+   }
++  // AppKit starts panels at floating level even when Electron reports isAlwaysOnTop() === false.
++  // main.js loads appConfig and injects the coordinator before createAllWindows.
++  const startPanelAtNormalLevel = winOptions.type === 'panel' && _topCoordinator?.isEnabled?.() === false;
++  const showPanelAfterLevelReset = startPanelAtNormalLevel && winOptions.show !== false;
++  if (startPanelAtNormalLevel) winOptions.show = false;
+ 
+   // Linux transparent Pet windows must stay focusable so the compositor can
+   // deliver real button events inside the setShape/XShape input region. niri's
+@@ -1094,6 +1099,7 @@
+   }
+ 
+   petWindow = new BrowserWindow(winOptions);
++  if (startPanelAtNormalLevel) petWindow.setAlwaysOnTop(false);
+   if (typeof installManagedLinuxWindowListVisibility === 'function') {
+     installManagedLinuxWindowListVisibility(petWindow, 'pet', { isStreamerMode, log });
+   }
+@@ -1155,6 +1161,7 @@
+   // [multi-display-persist] 记录 Pet 所在屏（move/resize 防抖保存），供下次启动恢复。
+   // 拖拽期/修复期的瞬时尺寸不影响：findSavedDisplay 用中心点判屏，落点屏即正确屏。
+   enablePositionPersistence(petWindow, 'pet');
++  if (showPanelAfterLevelReset) petWindow.showInactive();
+ 
+   if (useWaylandPetPhysicalCropStartupGate) {
+     log('[WaylandPetPhysicalCrop] Pet will remain hidden until cropped bounds and renderer crop state are verified');
