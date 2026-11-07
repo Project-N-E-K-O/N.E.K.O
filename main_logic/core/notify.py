@@ -326,6 +326,38 @@ class NotifyMixin:
                 _exc,
             )
 
+        # ── Habitual-phrase avoid-list injection ──
+        # Topics above are WHAT she keeps talking about; this is HOW she keeps
+        # saying it: phrases reused across several sessions, mined without any
+        # model call by the memory server's idle job (memory.habitual_phrases).
+        # Read-only here — the stored file is the whole input, nothing is mined
+        # on the session-start path. Follows the "natural expression" switch,
+        # the user's opt-out for repetitive wording. Session start only: a
+        # mid-session system injection makes realtime voice swallow the whole
+        # reply (see _inject_pending_user_directives).
+        try:
+            from memory.habitual_phrases import get_habitual_phrase_store
+            from config.prompts.prompts_directives import render_habitual_phrases_block
+            from utils.slop_filter import is_slop_filter_enabled
+
+            if await asyncio.to_thread(is_slop_filter_enabled):
+                phrases = await get_habitual_phrase_store().aprompt_phrases(
+                    _directives_key, _directives_lang,
+                )
+                phrase_block = render_habitual_phrases_block(phrases, _directives_lang)
+                prompt += phrase_block
+                if phrase_block:
+                    from memory.anti_repeat_effects import (
+                        record_anti_repeat_phrase_hint,
+                    )
+
+                    record_anti_repeat_phrase_hint(_directives_key)
+        except Exception as _exc:  # pragma: no cover - defensive
+            logger.debug(
+                "[HabitualPhrases] avoid-list injection skipped: %s",
+                _exc,
+            )
+
         return prompt
 
     async def _inject_pending_user_directives(self) -> None:
