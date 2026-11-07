@@ -5661,6 +5661,7 @@
             "ssl_error": "SSL証明書の検証に失敗しました",
             "ws_error": "WebSocket接続に失敗しました",
             "missing_params": "必須パラメータが不足しています",
+            "output_limit": "テストリクエストの出力上限が不足しています",
             "unknown": "不明なエラー",
             "backend_unavailable": "バックエンドサービスが利用できません",
             "invalid_response": "レスポンス形式が不正です"

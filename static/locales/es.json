@@ -5661,6 +5661,7 @@
             "ssl_error": "Error al verificar el certificado SSL",
             "ws_error": "Error de conexión WebSocket",
             "missing_params": "Faltan parámetros obligatorios",
+            "output_limit": "El límite de salida de la solicitud de prueba es insuficiente",
             "unknown": "Error desconocido",
             "backend_unavailable": "Servicio backend no disponible",
             "invalid_response": "Formato de respuesta no válido"
