@@ -4636,7 +4636,9 @@ def _make_callback_media_manager(offline_session):
     mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
     mgr._is_agent_enabled = Mock(return_value=False)
     mgr.agent_flags = {}
-    mgr._fire_task = Mock()
+    # This double records scheduling without starting background work; consume
+    # the coroutine so tests do not retain an unawaited task body.
+    mgr._fire_task = Mock(side_effect=lambda coro: coro.close())
     mgr.pending_agent_callbacks = []
     mgr.pending_extra_replies = []
     mgr.user_language = "zh-CN"

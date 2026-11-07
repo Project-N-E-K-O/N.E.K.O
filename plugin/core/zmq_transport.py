@@ -33,6 +33,8 @@ Channel tags
 from __future__ import annotations
 
 import asyncio
+from collections import deque
+import math
 import json
 import os
 import pickle
@@ -353,6 +355,70 @@ if hasattr(os, "register_at_fork"):
     _TRANSPORT_CREDENTIAL_FORK_HOOK_REGISTERED = True
 
 
+# Limits apply only to new bounded RPC results and BUS_CHANGE observations.
+_DOWNLINK_FRAME_MAX = 2 * 1024 * 1024
+_DOWNLINK_HOST_BYTES = 8 * 1024 * 1024
+_DOWNLINK_GLOBAL_BYTES = 32 * 1024 * 1024
+_DOWNLINK_HOST_ITEMS = 128
+_DOWNLINK_GLOBAL_ITEMS = 1024
+_DOWNLINK_TREE_NODES = 250_000
+_DOWNLINK_TREE_DEPTH = 32
+_downlink_credit_lock = threading.Lock()
+_downlink_global_bytes = 0
+_downlink_global_items = 0
+
+
+class DownlinkCapacityError(RuntimeError):
+    """A bounded response cannot be accepted by the shared downlink."""
+
+
+def validate_bounded_downlink(value: Any) -> None:
+    """Bound work before first serialization, rejecting non-JSON trees."""
+    stack = [(value, 0)]
+    nodes = 0
+    size = 0
+    while stack:
+        item, depth = stack.pop()
+        nodes += 1
+        if nodes > _DOWNLINK_TREE_NODES or depth > _DOWNLINK_TREE_DEPTH:
+            raise DownlinkCapacityError("Downlink value exceeds structural limit")
+        if item is None or isinstance(item, bool):
+            size += 5
+        elif isinstance(item, int):
+            if item.bit_length() > 1024:
+                raise DownlinkCapacityError("Downlink integer exceeds limit")
+            size += len(str(item))
+        elif isinstance(item, float):
+            if not math.isfinite(item):
+                raise DownlinkCapacityError("Downlink number is not finite")
+            size += 32
+        elif isinstance(item, str):
+            if len(item) > _DOWNLINK_FRAME_MAX:
+                raise DownlinkCapacityError("Downlink value exceeds frame limit")
+            # Both wire encodings carry UTF-8 strings without JSON escaping.
+            # Count in C; scanning every character here would stall the receive
+            # loop before STOP can even reach the priority queue.
+            size += len(item.encode('utf-8')) + 5
+        elif isinstance(item, (list, tuple)):
+            size += 2 + len(item)
+            if len(item) > _DOWNLINK_TREE_NODES - nodes:
+                raise DownlinkCapacityError("Downlink value exceeds structural limit")
+            stack.extend((child, depth + 1) for child in item)
+        elif isinstance(item, dict):
+            size += 2 + 2 * len(item)
+            if len(item) * 2 > _DOWNLINK_TREE_NODES - nodes:
+                raise DownlinkCapacityError("Downlink value exceeds structural limit")
+            for key, child in item.items():
+                if not isinstance(key, str):
+                    raise DownlinkCapacityError("Downlink key is not a string")
+                stack.append((key, depth + 1))
+                stack.append((child, depth + 1))
+        else:
+            raise DownlinkCapacityError("Downlink value is not a JSON tree")
+        if size > _DOWNLINK_FRAME_MAX:
+            raise DownlinkCapacityError("Downlink value exceeds frame limit")
+
+
 class HostTransport:
     """Async ZMQ transport for the host (main-process) side.
 
@@ -371,7 +437,9 @@ class HostTransport:
         # Downlink: host → child (PUSH/PULL)
         self._dl_sock = self._ctx.socket(zmq.PUSH)
         self._dl_sock.setsockopt(zmq.LINGER, _LINGER_MS)
-        self._dl_sock.setsockopt(zmq.SNDHWM, 5000)
+        # Keep bulk observations out of a deep opaque socket queue; application
+        # scheduling can prioritize STOP only before libzmq accepts a frame.
+        self._dl_sock.setsockopt(zmq.SNDHWM, 8)
         self._dl_sock.bind("tcp://127.0.0.1:*")
         self.downlink_endpoint: str = self._dl_sock.getsockopt(zmq.LAST_ENDPOINT).decode()
 
@@ -418,6 +486,12 @@ class HostTransport:
         self.image_uplink_endpoint: str = self._img_sock.getsockopt(zmq.LAST_ENDPOINT).decode()
 
         self._closed = False
+        self._downlink_priority = deque()
+        self._downlink_bulk = deque()
+        self._downlink_bytes = 0
+        self._downlink_items = 0
+        self._downlink_drain_task = None
+        self._downlink_owner_loop = None
 
     def clear_inherited_credentials(self) -> None:
         """Erase this transport's copied credential in a forked child."""
@@ -430,12 +504,126 @@ class HostTransport:
     # ── send helpers ─────────────────────────────────────────────
 
     async def send_command(self, msg: dict) -> None:
-        """Send a command on the downlink."""
-        await self._dl_sock.send(pickle.dumps((CH_CMD, msg)))
+        """Send commands, giving unsent lifecycle traffic priority over bulk."""
+        bounded = msg.get("type") == "BUS_CHANGE" and msg.get("bus") == "conversations"
+        await self._enqueue_downlink(CH_CMD, msg, bounded=bounded)
 
-    async def send_response(self, msg: dict) -> None:
-        """Send a plugin-to-plugin response on the downlink."""
-        await self._dl_sock.send(pickle.dumps((CH_RESP, msg)))
+    async def send_response(self, msg: dict, *, bounded: bool = False) -> None:
+        await self._enqueue_downlink(CH_RESP, msg, bounded=bounded)
+
+    def _release_downlink(self, item) -> None:
+        global _downlink_global_bytes, _downlink_global_items
+        if not item['bounded'] or item['released']:
+            return
+        item['released'] = True
+        size = len(item['frame'])
+        with _downlink_credit_lock:
+            self._downlink_bytes -= size
+            self._downlink_items -= 1
+            _downlink_global_bytes -= size
+            _downlink_global_items -= 1
+
+    async def _enqueue_downlink(self, channel: str, msg: dict, *, bounded: bool) -> None:
+        global _downlink_global_bytes, _downlink_global_items
+        if self._closed:
+            raise RuntimeError("Downlink is closed")
+        if bounded:
+            validate_bounded_downlink(msg)
+        frame = pickle.dumps((channel, msg))
+        if bounded and len(frame) > _DOWNLINK_FRAME_MAX:
+            raise DownlinkCapacityError("Downlink frame exceeds limit")
+        loop = asyncio.get_running_loop()
+        if self._downlink_owner_loop is None or (
+            self._downlink_owner_loop.is_closed() and
+            not self._downlink_priority and not self._downlink_bulk
+        ):
+            self._downlink_owner_loop = loop
+        elif self._downlink_owner_loop is not loop:
+            raise RuntimeError("Downlink is bound to another event loop")
+        future = loop.create_future()
+        observation = channel == CH_CMD and msg.get("type") == "BUS_CHANGE"
+        item = {'frame': frame, 'future': future, 'bounded': bounded,
+                'observation': observation, 'released': False, 'sending': False}
+        if bounded:
+            while True:
+                with _downlink_credit_lock:
+                    available = not (
+                        self._downlink_bytes + len(frame) > _DOWNLINK_HOST_BYTES or
+                        self._downlink_items >= _DOWNLINK_HOST_ITEMS or
+                        _downlink_global_bytes + len(frame) > _DOWNLINK_GLOBAL_BYTES or
+                        _downlink_global_items >= _DOWNLINK_GLOBAL_ITEMS
+                    )
+                    if available:
+                        self._downlink_bytes += len(frame)
+                        self._downlink_items += 1
+                        _downlink_global_bytes += len(frame)
+                        _downlink_global_items += 1
+                if available:
+                    break
+                # Observations are best effort: evict the oldest unsent local
+                # observation, never a request result. Its caller sees failure
+                # and can invalidate the affected view.
+                old = next((entry for entry in self._downlink_bulk
+                            if entry['observation'] and not entry['sending']), None) if observation else None
+                if old is None:
+                    raise DownlinkCapacityError("Downlink capacity exhausted")
+                self._downlink_bulk.remove(old)
+                self._release_downlink(old)
+                if not old['future'].done():
+                    old['future'].set_exception(DownlinkCapacityError("Observation evicted"))
+        queue = self._downlink_bulk if bounded else self._downlink_priority
+        queue.append(item)
+        if self._downlink_drain_task is None or self._downlink_drain_task.done():
+            self._downlink_drain_task = asyncio.create_task(self._drain_downlink())
+        try:
+            await future
+        finally:
+            if not future.done():
+                future.cancel()
+            # Cancelled senders immediately give their credits back. The drain
+            # skips their entries before touching the socket.
+            if future.cancelled() and not item['sending']:
+                try:
+                    queue.remove(item)
+                except ValueError:
+                    pass
+                self._release_downlink(item)
+
+    async def _drain_downlink(self) -> None:
+        try:
+            while self._downlink_priority or self._downlink_bulk:
+                queue = self._downlink_priority if self._downlink_priority else self._downlink_bulk
+                item = queue[0]
+                future = item['future']
+                if future.done():
+                    queue.popleft()
+                    self._release_downlink(item)
+                    continue
+                try:
+                    item['sending'] = True
+                    await self._dl_sock.send(item['frame'], flags=zmq.DONTWAIT)
+                except zmq.Again:
+                    item['sending'] = False
+                    # Never hold an awaited socket send: reselect priority after
+                    # a short yield, so a blocked bulk frame cannot pin STOP.
+                    await asyncio.sleep(0.005)
+                    continue
+                except Exception as exc:
+                    item['sending'] = False
+                    if item in queue:
+                        queue.remove(item)
+                    self._release_downlink(item)
+                    if not future.done():
+                        future.set_exception(exc)
+                else:
+                    item['sending'] = False
+                    if item in queue:
+                        queue.remove(item)
+                    self._release_downlink(item)
+                    if not future.done():
+                        future.set_result(None)
+        finally:
+            self._downlink_drain_task = None
 
     # ── recv helper ──────────────────────────────────────────────
 
@@ -496,6 +684,26 @@ class HostTransport:
         if self._closed:
             return
         self._closed = True
+        def close_pending():
+            task = self._downlink_drain_task
+            if task is not None and not task.done():
+                task.cancel()
+            for item in list(self._downlink_priority) + list(self._downlink_bulk):
+                self._release_downlink(item)
+                if not item['future'].done():
+                    item['future'].set_exception(RuntimeError("Downlink is closed"))
+            self._downlink_priority.clear()
+            self._downlink_bulk.clear()
+
+        owner = self._downlink_owner_loop
+        try:
+            current = asyncio.get_running_loop()
+        except RuntimeError:
+            current = None
+        if owner is not None and owner is not current and owner.is_running():
+            owner.call_soon_threadsafe(close_pending)
+        else:
+            close_pending()
         for sock in (
             self._dl_sock,
             self._ul_sock,
