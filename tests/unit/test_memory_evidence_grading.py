@@ -171,6 +171,11 @@ def _write_facts(tmpdir: str, character: str, facts: list[dict]) -> None:
         json.dump(facts, f, ensure_ascii=False)
 
 
+def _stored_facts(tmp_path) -> list[dict]:
+    with open(os.path.join(str(tmp_path), "小天", "facts.json"), encoding="utf-8") as f:
+        return json.load(f)
+
+
 def _fact(fid: str, text: str, importance: int, source: str | None) -> dict:
     fact = {"id": fid, "text": text, "entity": "master",
             "importance": importance, "absorbed": False}
@@ -234,7 +239,7 @@ async def test_synthesis_counts_only_the_facts_the_reflection_rests_on(tmp_path)
     assert reflection["reinforcement"] == 0.0
     assert awaits_user_signal(reflection) is True
     assert reflection["source_fact_ids"] == ["ai0", "ai1", "ai2"]
-    stored = json.load(open(os.path.join(str(tmp_path), "小天", "facts.json"), encoding="utf-8"))
+    stored = _stored_facts(tmp_path)
     assert all(f["absorbed"] for f in stored)
 
 
@@ -380,7 +385,7 @@ async def test_synthesis_writes_one_line_per_topic_up_to_the_cap(tmp_path):
     assert all(r["synthesis_batch_id"] == batch_id for r in created)
     stored = await engine.aload_reflections("小天")
     assert {r["id"] for r in stored} == {r["id"] for r in created}
-    facts_on_disk = json.load(open(os.path.join(str(tmp_path), "小天", "facts.json"), encoding="utf-8"))
+    facts_on_disk = _stored_facts(tmp_path)
     assert all(f["absorbed"] for f in facts_on_disk)
 
 
@@ -401,7 +406,7 @@ async def test_synthesized_batch_is_not_written_twice(tmp_path):
         tmp_path, facts, [_line("不该写入", [1])], engine=engine,
     )
     assert created == [] and calls == []
-    facts_on_disk = json.load(open(os.path.join(str(tmp_path), "小天", "facts.json"), encoding="utf-8"))
+    facts_on_disk = _stored_facts(tmp_path)
     assert all(f["absorbed"] for f in facts_on_disk)
 
 
