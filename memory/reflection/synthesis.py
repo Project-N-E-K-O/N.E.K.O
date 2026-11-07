@@ -24,7 +24,11 @@ from datetime import datetime, timedelta
 
 
 
-from memory.evidence import initial_reinforcement_from_importance
+from memory.evidence import (
+    count_fact_sources,
+    initial_reinforcement_from_importance,
+    is_ai_disclosure,
+)
 
 
 
@@ -102,6 +106,17 @@ def _detect_synthesis_prompt_language(text: str) -> str:
         text,
         ui_language=get_global_language_full(),
     )
+
+
+def _synthesis_fact_line(fact: dict, ai_mark: str) -> str:
+    """One fact line of the synthesis prompt.
+
+    The AI's own statements carry ``ai_mark`` so the model can tell them from
+    what the user said; REFLECTION_PROMPT says they are no evidence of the
+    user's traits or of how the two get along.
+    """
+    mark = ai_mark if is_ai_disclosure(fact) else ''
+    return f"- {fact.get('text', '')}{mark} (importance: {fact.get('importance', 5)})"
 
 
 class SynthesisMixin:
@@ -334,7 +349,9 @@ class SynthesisMixin:
         prompt_lang = _detect_synthesis_prompt_language(
             self._synthesis_locale_text(unabsorbed),
         )
-        facts_text = "\n".join(f"- {f['text']} (importance: {f.get('importance', 5)})" for f in unabsorbed)
+        from config.prompts.prompts_memory import get_reflection_ai_disclosure_mark
+        ai_mark = get_reflection_ai_disclosure_mark(prompt_lang)
+        facts_text = "\n".join(_synthesis_fact_line(f, ai_mark) for f in unabsorbed)
         related_block = await self._build_related_context_block(
             lanlan_name,
             unabsorbed,
@@ -489,11 +506,15 @@ class SynthesisMixin:
         # starting scores without many user confirmations before CONFIRMED thresholds.
         # Bypass aapply_signal: synthesis has no event log. Initialize dictionaries
         # directly; synthesis is not event-sourced and initial values are ground truth.
-        max_importance = max(
-            (safe_importance(f) for f in unabsorbed),
-            default=5,
+        # Only the user's facts earn a head start: the AI's own statements are
+        # no evidence, so a batch of them alone starts at 0.
+        user_facts = [f for f in unabsorbed if not is_ai_disclosure(f)]
+        initial_rein = (
+            initial_reinforcement_from_importance(
+                max(safe_importance(f) for f in user_facts),
+            )
+            if user_facts else 0.0
         )
-        initial_rein = initial_reinforcement_from_importance(max_importance)
 
         # Schema v2: event_start/end are ISO anchors shared by facts/reflections.
         # Fallbacks depend on temporal_scope:
@@ -518,6 +539,10 @@ class SynthesisMixin:
             'entity': reflection_entity,
             'status': 'pending',  # pending | confirmed | denied | promoted | archived
             'source_fact_ids': source_fact_ids,
+            # How many of those facts are the user's and how many the AI's
+            # own (memory.evidence.awaits_user_signal holds back a reflection
+            # resting only on the latter).
+            'fact_source_counts': count_fact_sources(unabsorbed),
             'source_facts_oldest_at': _oldest_fact_time(unabsorbed),
             'created_at': now_iso,
             'feedback': None,
@@ -724,11 +749,12 @@ class SynthesisMixin:
         if not related:
             return ""
 
-        related_text = "\n".join(
-            f"- {f.get('text', '')} (importance: {f.get('importance', 5)})"
-            for f in related
+        from config.prompts.prompts_memory import (
+            get_reflection_ai_disclosure_mark,
+            get_reflection_related_context_note,
         )
-        from config.prompts.prompts_memory import get_reflection_related_context_note
+        ai_mark = get_reflection_ai_disclosure_mark(prompt_lang)
+        related_text = "\n".join(_synthesis_fact_line(f, ai_mark) for f in related)
         return (
             "======以下为相关历史背景======\n"
             f"{related_text}\n"

@@ -35,7 +35,7 @@ from config import (
     SCOPED_RENDER_TOTAL_MAX_TOKENS,
 )
 
-from memory.evidence import evidence_score
+from memory.evidence import awaits_user_signal, evidence_score
 from memory.introspection import (
     KIND_PERSONA,
     KIND_REFLECTION,
@@ -592,6 +592,12 @@ class RenderingMixin:
         ``retired_hides`` (``retired_persona_hides``) also drops the ones
         repeating a persona line introspection retired.
 
+        A pending reflection resting only on the AI's own words, with no
+        backing from the user yet (``awaits_user_signal``), is not shown
+        either: the chat model would otherwise read the AI's self-talk as an
+        impression of the user. Proactive followups still pick it, since the
+        user's reply there is how it can be confirmed.
+
         Blank-rejection goes through `_renderable_text`, the same single
         definition the persona split and the suppressed section use (those
         two plus this one are its only callers — the protected cap used to
@@ -625,6 +631,8 @@ class RenderingMixin:
             if not cls._renderable_text(r):
                 continue
             if is_permanently_suppressed(r):
+                continue
+            if r.get('status') == 'pending' and awaits_user_signal(r):
                 continue
             text = r.get('text', '')
             if text in suppressed_text_set:

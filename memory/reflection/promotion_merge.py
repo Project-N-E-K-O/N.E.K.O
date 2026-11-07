@@ -721,12 +721,18 @@ class PromotionMergeMixin:
                     )
                 ):
                     return 'no_longer_eligible'
+                counts_kwargs = (
+                    {'fact_source_counts': current3['fact_source_counts']}
+                    if isinstance(current3.get('fact_source_counts'), dict)
+                    else {}
+                )
                 result = await self._persona_manager.aadd_fact(
                     lanlan_name, current3.get('text', ''),
                     entity=target_entity or 'master',
                     source='reflection', source_id=current3['id'],
                     speaker_provenance=current3,
                     **promote_kwargs,
+                    **counts_kwargs,
                 )
             if result == self._persona_manager.FACT_ADDED:
                 await self._arecord_state_change(

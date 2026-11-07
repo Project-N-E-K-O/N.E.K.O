@@ -124,6 +124,8 @@ Evidence can come from several paths:
 
 Direct user feedback has a different weight from inferred fact-to-memory relationships. Promotion and archival decisions therefore use the accumulated evidence rather than treating any single LLM extraction as immediately authoritative.
 
+Evidence is also graded by source. What the character said itself (facts with source `ai_disclosure`) is marked as such in the synthesis prompt and is no evidence of the user's traits or of how the two get along. A new reflection's head-start score counts only the user's facts, and every reflection records how many of its facts are the user's and how many the character's. A reflection resting only on the character's own words is not confirmed or promoted by score, and is left out of the chat context while tentative, until the user backs it: an explicit confirmation, or a reinforcement from the user's own words. The character may still bring it up, which is how the user gets to confirm it. A reply that only goes on with the topic, without agreeing, counts as `engaged`: a small positive signal that is not backing. Reinforcement is capped (`EVIDENCE_REINFORCEMENT_CAP`), so a strong entry can still be overturned by a few rebuttals, and the synthesis, promotion-merge, refine and introspection prompts avoid absolute wording such as "always" or "never".
+
 The lifecycle is approximately:
 
 ```text
@@ -146,7 +148,7 @@ The `powerful_memory_enabled` field in `core_config.json` is hot-read by the mem
 
 | Capability | Enabled | Disabled |
 |---|---|---|
-| Fact extraction | Batched Stage 1 extraction after enough user turns or an idle trigger; Stage 2 maps new facts to evidence signals | Per-turn Stage 1 fallback keeps basic fact accumulation working; Stage 2 is paused |
+| Fact extraction | Batched Stage 1 extraction after enough user turns or an idle trigger; Stage 2 maps new facts to evidence signals | Per-turn Stage 1 fallback over the user's messages keeps basic fact accumulation working (a turn without a user message extracts nothing); Stage 2 is paused |
 | AI-disclosure facts | Periodic AI-aware extraction from user-engaged windows | Paused |
 | Reflection synthesis | Runs | Runs |
 | Feedback on surfaced reflections | Runs | Runs |

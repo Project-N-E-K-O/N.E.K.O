@@ -103,6 +103,7 @@ class EvidenceFlowMixin:
                 'disp_last_signal_at': snapshot['disp_last_signal_at'],
                 'sub_zero_days': snapshot['sub_zero_days'],
                 'user_fact_reinforce_count': snapshot['user_fact_reinforce_count'],
+                'user_confirm_count': snapshot['user_confirm_count'],
                 'source': source,
             }
 
@@ -116,6 +117,7 @@ class EvidenceFlowMixin:
                 entry['disp_last_signal_at'] = snapshot['disp_last_signal_at']
                 entry['sub_zero_days'] = snapshot['sub_zero_days']
                 entry['user_fact_reinforce_count'] = snapshot['user_fact_reinforce_count']
+                entry['user_confirm_count'] = snapshot['user_confirm_count']
 
             def _sync_save(n: str, view):
                 # Gate write behind the same cloudsave check as

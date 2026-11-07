@@ -49,6 +49,7 @@ EVIDENCE_SNAPSHOT_FIELDS: tuple[str, ...] = (
     "disp_last_signal_at",
     "sub_zero_days",
     "user_fact_reinforce_count",
+    "user_confirm_count",
 )
 
 # Deterministic anchor for simulations so traces are reproducible.

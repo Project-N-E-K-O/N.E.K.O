@@ -44,6 +44,11 @@ ARCHIVE_FILE_MAX_ENTRIES = 500       # Maximum entries per archive shard.
 
 # §3.1.5 Ignored penalty.
 IGNORED_REINFORCEMENT_DELTA = -0.2   # check_feedback ignored → reinforcement += delta
+# check_feedback engaged: the user went on with the observation's topic, or let
+# it stand, without saying yes. Some weight, but not an explicit user signal
+# (memory.evidence.awaits_user_signal does not count it): chatting on cannot
+# confirm a reflection that rests only on the AI's own words.
+USER_ENGAGED_DELTA = 0.3
 
 # §3.1.8 Delta weights by signal source (v1.2.1 direct vs indirect).
 # Direct signals (explicit surfaced-reflection responses / negative-keyword hits) weight1.0;
@@ -61,6 +66,13 @@ USER_KEYWORD_REBUT_DELTA = 1.0       # Keywords + LLM target validation (direct 
 # Default first2 signals0.5 each; from third,0.5 +0.5 bonus=1.0.
 USER_FACT_REINFORCE_COMBO_THRESHOLD = 2   # Active when count > threshold.
 USER_FACT_REINFORCE_COMBO_BONUS = 0.5     # Extra weight per signal above threshold.
+
+# Upper bound on reinforcement, applied both when it is read and when it is
+# written, so stored values above it count as the cap at once. Uncapped, combo
+# reinforcement reached 160, and a user rebuttal (USER_REBUT_DELTA) could no
+# longer move the entry. Above EVIDENCE_PROMOTED_THRESHOLD so promotion keeps
+# its room; protected entries still score inf.
+EVIDENCE_REINFORCEMENT_CAP = 3.0
 
 # §3.4.3 Background signal-extraction triggers.
 EVIDENCE_SIGNAL_CHECK_ENABLED = True             # Independent switch.

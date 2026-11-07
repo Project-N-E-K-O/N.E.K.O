@@ -63,6 +63,10 @@ _EVIDENCE_SNAPSHOT_KEYS = (
 # preserves the backoff window / dead-letter logic.
 _REFLECTION_EVIDENCE_SNAPSHOT_KEYS = _EVIDENCE_SNAPSHOT_KEYS + (
     'last_promote_attempt_at', 'promote_attempt_count',
+    # Explicit user confirmations: lets a reflection resting only on the AI's
+    # own words through the promotion gate (memory.evidence.awaits_user_signal),
+    # so it must survive a crash between event append and view save.
+    'user_confirm_count',
 )
 _PERSONA_ENTRY_SNAPSHOT_KEYS = _EVIDENCE_SNAPSHOT_KEYS + (
     'merged_from_ids',
