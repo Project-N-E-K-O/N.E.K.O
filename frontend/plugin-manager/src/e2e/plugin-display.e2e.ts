@@ -29,7 +29,7 @@ document.getElementById('exit').onclick = () => NekoPluginDisplay.exit();
 NekoPluginDisplay.onStateChange(state => document.getElementById('mode').textContent = state.mode);
 </script></body></html>`
 
-async function fixture(page: Page, kind: 'static' | 'hosted-tsx' | 'legacy', detail = false) {
+async function fixture(page: Page, kind: 'static' | 'hosted-tsx' | 'legacy', detail = false, panelSource = source) {
   await page.addInitScript(() => localStorage.setItem('locale', 'en-US'))
   await page.routeWebSocket('**/*', () => {})
   await stubCorePluginManagerApis(page)
@@ -42,7 +42,7 @@ async function fixture(page: Page, kind: 'static' | 'hosted-tsx' | 'legacy', det
   await page.route('**/plugin/display_demo/ui-info', route => route.fulfill({ json: { has_ui: true } }))
   await page.route('**/plugin/display_demo/ui/**', route => route.fulfill({ contentType: 'text/html', body: html }))
   await page.route('**/plugin-ui-sdk/display.js', route => route.fulfill({ contentType: 'application/javascript', body: client }))
-  await page.route('**/plugin/display_demo/hosted-ui/source*', route => route.fulfill({ json: { source } }))
+  await page.route('**/plugin/display_demo/hosted-ui/source*', route => route.fulfill({ json: { source: panelSource } }))
   await page.route('**/plugin/display_demo/hosted-ui/context*', route => route.fulfill({ json: {
     plugin, state: {}, actions: [], entries: [], config: { schema: {}, value: {}, readonly: true }, warnings: [],
   } }))
@@ -280,4 +280,32 @@ test('a timed out confirmation load releases the request and a fresh request can
     await expect(frame.locator('#status')).toHaveText('applied')
     await page.getByTestId('display-exit').click()
   } finally { release() }
+})
+
+test('native Escape closes a hosted Modal before leaving focus mode', async ({ page }) => {
+  const panelSource = `import { Page, Button, Input, Modal, useState, useEffect } from '@neko/plugin-ui'
+export default function Panel(props) {
+  const [open, setOpen] = useState(false)
+  const [mode, setMode] = useState('normal')
+  useEffect(() => props.api.display.onStateChange(state => setMode(state.mode)), [])
+  return <Page>
+    <Button onClick={() => props.api.display.requestMode('focus')}>Focus</Button>
+    <Button onClick={() => setOpen(true)}>Open modal</Button>
+    <Modal title="Local modal" open={open} onClose={() => setOpen(false)}><Input /></Modal>
+    <p id="mode">{mode}</p>
+  </Page>
+}`
+  const frame = await fixture(page, 'hosted-tsx', false, panelSource)
+  await frame.getByRole('button', { name: 'Focus', exact: true }).click()
+  await page.getByTestId('display-confirm').click()
+  await expect(frame.locator('#mode')).toHaveText('focus')
+  await frame.getByRole('button', { name: 'Open modal', exact: true }).click()
+  await expect(frame.getByRole('dialog', { name: 'Local modal' })).toBeVisible()
+  await frame.getByRole('textbox').press('Escape')
+  await expect(frame.getByRole('dialog', { name: 'Local modal' })).toBeHidden()
+  await expect(page.locator('.app-sidebar')).toBeHidden()
+  await expect(frame.locator('#mode')).toHaveText('focus')
+  await frame.getByRole('button', { name: 'Focus', exact: true }).press('Escape')
+  await expect(page.locator('.app-sidebar')).toBeVisible()
+  await expect(frame.locator('#mode')).toHaveText('normal')
 })

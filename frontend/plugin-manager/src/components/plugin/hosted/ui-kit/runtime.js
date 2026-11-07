@@ -1251,7 +1251,10 @@ function Modal(props) {
     if (props.lockScroll !== false) document.body.style.overflow = 'hidden';
     window.setTimeout(() => focusFirstModalControl(modalRef.current), 0);
     const onKeyDown = (event) => {
-      if (event.key === 'Escape' && closeOnEscape && typeof props.onClose === 'function') props.onClose();
+      if (event.key === 'Escape' && closeOnEscape && typeof props.onClose === 'function') {
+        event.preventDefault();
+        props.onClose();
+      }
       trapModalFocus(event, modalRef.current);
     };
     window.addEventListener('keydown', onKeyDown);

@@ -98,14 +98,19 @@
   // Iframe keyboard events do not bubble to the host. One held Escape must
   // not enqueue a second exit behind a new interactive request.
   window.addEventListener('keydown', event => {
-    if (event.key !== 'Escape') return;
-    queueMicrotask(() => {
-      if (!event.defaultPrevented && displayMode === 'focus' && !escapeExit) {
-        escapeExit = request('display.exit', { reason: 'escape' })
-          .catch(error => reportError('display.exit', error))
-          .finally(() => { escapeExit = null; });
-      }
-    });
+    if (event.key !== 'Escape' || displayMode !== 'focus' || escapeExit) return;
+    const keyConnection = connectionId;
+    // Native keyboard dispatch can run microtasks between window listeners.
+    // Let the entire event finish so a later plugin modal can consume Escape.
+    escapeExit = new Promise(resolve => {
+      window.setTimeout(() => {
+        if (event.defaultPrevented || displayMode !== 'focus' || !ready || connectionId !== keyConnection) { resolve(); return; }
+        request('display.exit', { reason: 'escape' }).then(resolve, error => {
+          reportError('display.exit', error);
+          resolve();
+        });
+      }, 0);
+    }).finally(() => { escapeExit = null; });
   });
   if (document.readyState === 'complete') showDocument();
   window.addEventListener('pagehide', () => {

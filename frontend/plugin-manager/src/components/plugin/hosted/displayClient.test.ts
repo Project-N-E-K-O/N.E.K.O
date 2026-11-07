@@ -74,6 +74,8 @@ function client(kind: 'static' | 'tsx', ambientModule?: { exports: object }) {
 }
 afterEach(() => windows.splice(0).forEach((window) => window.close()))
 
+const flushKeyboard = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+
 describe('shared display document lifecycle', () => {
   it('exits manual focus on unhandled Escape, respects handled Escape, and sends only one pending exit', async () => {
     const { child, post, show, respond } = client('static')
@@ -82,11 +84,11 @@ describe('shared display document lifecycle', () => {
     const handled = new child.KeyboardEvent('keydown', { key: 'Escape', cancelable: true })
     child.dispatchEvent(handled)
     handled.preventDefault()
-    await Promise.resolve()
+    await flushKeyboard()
     expect(post).not.toHaveBeenCalled()
     child.dispatchEvent(new child.KeyboardEvent('keydown', { key: 'Escape' }))
     child.dispatchEvent(new child.KeyboardEvent('keydown', { key: 'Escape', repeat: true }))
-    await Promise.resolve()
+    await flushKeyboard()
     expect(post).toHaveBeenCalledTimes(1)
     expect(post.mock.calls[0]![0]).toMatchObject({
       method: 'display.exit',
@@ -96,9 +98,9 @@ describe('shared display document lifecycle', () => {
       status: 'failed',
       state: { mode: 'focus', supportedModes: ['focus'] },
     })
-    for (let i = 0; i < 4; i++) await Promise.resolve()
+    await flushKeyboard()
     child.dispatchEvent(new child.KeyboardEvent('keydown', { key: 'Escape' }))
-    await Promise.resolve()
+    await flushKeyboard()
     expect(post).toHaveBeenCalledTimes(2)
     respond(post.mock.calls[1]![0] as Request, {
       status: 'applied',
@@ -118,6 +120,35 @@ describe('shared display document lifecycle', () => {
     )
     expect((await confirmation).status).toBe('cancelled')
     await rejected
+  })
+  it('does not apply a deferred Escape to a replacement connection', async () => {
+    const { child, post, show, connect, respond } = client('static')
+    show({ mode: 'focus', supportedModes: ['focus'] })
+    child.dispatchEvent(new child.KeyboardEvent('keydown', { key: 'Escape' }))
+    connect('host-2', { mode: 'focus', supportedModes: ['focus'] })
+    post.mockClear()
+    await flushKeyboard()
+    expect(post).not.toHaveBeenCalled()
+    child.dispatchEvent(new child.KeyboardEvent('keydown', { key: 'Escape' }))
+    await flushKeyboard()
+    expect(post).toHaveBeenCalledOnce()
+    respond(post.mock.calls[0]![0] as Request, {
+      status: 'applied',
+      state: { mode: 'normal', supportedModes: ['focus'] },
+    })
+  })
+  it('leaves a fullscreen Escape to the browser when the host restores prior focus', async () => {
+    const { child, post, show, receive } = client('static')
+    const identity = show({ mode: 'fullscreen', supportedModes: ['focus', 'fullscreen'] })
+    post.mockClear()
+    child.dispatchEvent(new child.KeyboardEvent('keydown', { key: 'Escape' }))
+    receive({
+      type: 'neko-plugin-display-state',
+      ...identity,
+      state: { mode: 'focus', supportedModes: ['focus', 'fullscreen'] },
+    })
+    await flushKeyboard()
+    expect(post).not.toHaveBeenCalled()
   })
   it('installs the classic-script API even when a browser page has CommonJS globals', () => {
     const exports = {}

@@ -62,11 +62,8 @@ export function usePluginDisplayFrame(options: {
   function invalidateDocument() {
     releaseDocument()
     connectionId = newConnectionId()
-  }
-  function connectDocument() {
-    invalidateDocument()
-    // Only negotiate with documents that use the display SDK. Ordinary
-    // hosted action traffic does not need an extra bridge message.
+    // Metadata can invalidate a connection without replacing the iframe.
+    // Reconnect an advertised SDK even when no load/pageshow event follows.
     if (announced) options.connect(connectionId)
   }
   // Host identity changes invalidate before replacement; iframe load/pageshow
@@ -90,7 +87,7 @@ export function usePluginDisplayFrame(options: {
         cancelDisplayOwner(owner, { restoreFocus: false })
       notifyDisplayOwner(owner)
     })
-  onBeforeUnmount(invalidateDocument)
+  onBeforeUnmount(releaseDocument)
   async function handle(data: DisplayMessage) {
     if (data.method === 'display.getState') return getDisplayState(owner)
     if (data.method === 'display.requestMode') return requestDisplay(owner, data.payload?.mode)
@@ -101,7 +98,7 @@ export function usePluginDisplayFrame(options: {
   return {
     owned,
     invalidateDocument,
-    connectDocument,
+    connectDocument: invalidateDocument,
     // Call only after the frame's existing source + origin checks. A document
     // announces itself after pageshow (after the parent's iframe load reset).
     // WindowProxy is reused by same-frame reloads, so source alone is not a

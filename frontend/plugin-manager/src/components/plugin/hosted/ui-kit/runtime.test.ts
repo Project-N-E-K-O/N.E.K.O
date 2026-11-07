@@ -1176,7 +1176,7 @@ describe('hosted ui runtime', () => {
     expect(modal).not.toBeNull()
     expect(modal.dataset.size).toBe('lg')
     expect(document.body.style.overflow).toBe('hidden')
-    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(fireEvent.keyDown(window, { key: 'Escape' })).toBe(false)
     await flushMicrotasks()
     expect(document.querySelector('.neko-modal')).toBeNull()
     expect(document.body.style.overflow).toBe(previousOverflow)

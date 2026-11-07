@@ -65,6 +65,38 @@ afterEach(async () => {
 })
 
 describe('plugin display frame documents', () => {
+  it.each(['explicit reset', 'identity refresh'] as const)(
+    'reconnects a surviving document after %s without an iframe load',
+    async (change) => {
+      const { display, metadata, register, connect, reply } = mountFrame()
+      const old = register('surviving-document')
+      connect.mockClear()
+      if (change === 'explicit reset') display.invalidateDocument()
+      else metadata.value = { id: 'changed-identity' }
+      expect(connect).toHaveBeenCalledOnce()
+      const connectionId = connect.mock.calls[0]![0]
+      expect(connectionId).not.toBe(old.connectionId)
+      display.handleMessage(
+        { type: 'neko-plugin-display-ready', documentId: old.documentId, connectionId },
+        reply
+      )
+      reply.mockClear()
+      display.handleMessage(
+        {
+          type: 'neko-hosted-surface-request',
+          documentId: old.documentId,
+          connectionId,
+          requestId: 'after-metadata',
+          method: 'display.requestMode',
+          payload: { mode: 'focus' },
+        },
+        reply
+      )
+      confirmDisplay()
+      await vi.waitFor(() => expect(reply).toHaveBeenCalledOnce())
+      expect(reply.mock.calls[0]![0].result.status).toBe('applied')
+    }
+  )
   it('preserves equivalent metadata and publishes availability changes without an owned session', async () => {
     const { focused, metadata, active, register, send, reply, notify } = mountFrame()
     register('initial')
