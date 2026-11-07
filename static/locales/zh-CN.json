@@ -2298,7 +2298,7 @@
         "habitualStatusSwitchOff": "「自然表达」开关已关闭，目前不会注入。",
         "habitualStatusStale": "列表已超过 {{days}} 天没有更新，目前不会注入。",
         "habitualStatusLanguage": "列表是按另一种语言统计的，和当前语言不一致，目前不会注入。",
-        "habitualStatusReviewOff": "「强力记忆」已关闭：新候选不会交给模型复核，只按规则压制。",
+        "habitualStatusReviewOff": "「强力记忆模式」已关闭：新候选不会交给模型复核，只按规则压制。",
         "habitualStatusReviewFailed": "上次模型复核没有成功，没判断过的候选暂时按规则压制。",
         "habitualComputedAt": "上次计算：{{time}}　预计下次：{{next}}",
         "habitualWindow": "统计范围：最近 {{replies}} 条回复，{{sessions}} 次聊天（{{from}} 至 {{to}}）",

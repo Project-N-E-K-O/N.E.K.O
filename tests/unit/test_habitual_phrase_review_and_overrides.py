@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -105,7 +106,8 @@ def _write(store, entries, *, now=None, name=_NAME):
     ts = datetime.now().timestamp() if now is None else now
     reviews = {e["normalized_phrase"]: e["review"] for e in entries if e.get("review")}
     payload = build_payload(entries, {}, language="zh-CN", now=ts, reviews=reviews)
-    assert store.write(name, payload)
+    written = store.write(name, payload)
+    assert written
 
 
 def _read_file(tmp_path, filename=HABITUAL_PHRASES_FILENAME, name=_NAME) -> dict:
@@ -319,14 +321,16 @@ def _stored_entry(env) -> dict:
 async def test_a_kept_verdict_releases_the_phrase_and_is_reused(loop_env):
     env = loop_env
     env.review.return_value = ({_PHRASE: _review("normal", at=env.now)}, 1)
-    assert await env.loop._arefresh_habitual_phrases_one(_NAME, now=env.now)
+    written = await env.loop._arefresh_habitual_phrases_one(_NAME, now=env.now)
+    assert written
     entry = _stored_entry(env)
     assert entry["state"] == "kept" and not entry["suppressed"]
     assert _read_file(env.tmp_path)["review"]["status"] == "ok"
     assert env.store.prompt_phrases(_NAME, "zh", now=env.now) == []
 
     later = env.now + HABITUAL_PHRASE_REFRESH_INTERVAL_SECONDS + 1
-    assert await env.loop._arefresh_habitual_phrases_one(_NAME, now=later)
+    written = await env.loop._arefresh_habitual_phrases_one(_NAME, now=later)
+    assert written
     env.review.assert_awaited_once()
     assert _stored_entry(env)["state"] == "kept", "the cached verdict still decides"
     assert _read_file(env.tmp_path)["review"]["status"] == "not_needed"
@@ -336,10 +340,12 @@ async def test_a_kept_verdict_releases_the_phrase_and_is_reused(loop_env):
 async def test_an_old_verdict_is_asked_again(loop_env):
     env = loop_env
     env.review.return_value = ({_PHRASE: _review("normal", at=env.now)}, 1)
-    assert await env.loop._arefresh_habitual_phrases_one(_NAME, now=env.now)
+    written = await env.loop._arefresh_habitual_phrases_one(_NAME, now=env.now)
+    assert written
     much_later = env.now + HABITUAL_PHRASE_REVIEW_MAX_AGE_SECONDS + 1
     env.review.return_value = ({_PHRASE: _review("habit", at=much_later)}, 1)
-    assert await env.loop._arefresh_habitual_phrases_one(_NAME, now=much_later)
+    written = await env.loop._arefresh_habitual_phrases_one(_NAME, now=much_later)
+    assert written
     assert env.review.await_count == 2
     assert _stored_entry(env)["state"] == "habit"
 
@@ -348,7 +354,8 @@ async def test_an_old_verdict_is_asked_again(loop_env):
 async def test_a_habit_verdict_suppresses(loop_env):
     env = loop_env
     env.review.return_value = ({_PHRASE: _review("habit", at=env.now)}, 1)
-    assert await env.loop._arefresh_habitual_phrases_one(_NAME, now=env.now)
+    written = await env.loop._arefresh_habitual_phrases_one(_NAME, now=env.now)
+    assert written
     assert _stored_entry(env)["state"] == "habit"
     assert env.store.prompt_phrases(_NAME, "zh", now=env.now) == [_PHRASE]
 
@@ -357,7 +364,8 @@ async def test_a_habit_verdict_suppresses(loop_env):
 async def test_with_the_review_off_the_rules_alone_decide(loop_env):
     env = loop_env
     env.enabled.return_value = False
-    assert await env.loop._arefresh_habitual_phrases_one(_NAME, now=env.now)
+    written = await env.loop._arefresh_habitual_phrases_one(_NAME, now=env.now)
+    assert written
     env.review.assert_not_awaited()
     assert _read_file(env.tmp_path)["review"]["status"] == "disabled"
     entry = _stored_entry(env)
@@ -373,7 +381,8 @@ async def test_a_failed_review_falls_back_to_the_rules(loop_env, outcome):
         env.review.side_effect = RuntimeError("down")
     else:
         env.review.return_value = ({}, 1)
-    assert await env.loop._arefresh_habitual_phrases_one(_NAME, now=env.now)
+    written = await env.loop._arefresh_habitual_phrases_one(_NAME, now=env.now)
+    assert written
     assert _read_file(env.tmp_path)["review"]["status"] == "failed"
     assert _stored_entry(env)["state"] == "unreviewed"
     assert env.store.prompt_phrases(_NAME, "zh", now=env.now) == [_PHRASE]
@@ -383,7 +392,8 @@ async def test_a_failed_review_falls_back_to_the_rules(loop_env, outcome):
 async def test_a_phrase_the_user_suppressed_is_not_sent_for_review(loop_env):
     env = loop_env
     env.store.update_override(_NAME, _PHRASE, "suppress", now=env.now)
-    assert await env.loop._arefresh_habitual_phrases_one(_NAME, now=env.now)
+    written = await env.loop._arefresh_habitual_phrases_one(_NAME, now=env.now)
+    assert written
     env.review.assert_not_awaited()
     assert _stored_entry(env)["state"] == "forced"
 
@@ -392,7 +402,8 @@ async def test_a_phrase_the_user_suppressed_is_not_sent_for_review(loop_env):
 async def test_an_allowed_phrase_and_any_phrase_holding_it_stop_being_candidates(loop_env):
     env = loop_env
     env.store.update_override(_NAME, "加油", "allow", now=env.now)
-    assert await env.loop._arefresh_habitual_phrases_one(_NAME, now=env.now)
+    written = await env.loop._arefresh_habitual_phrases_one(_NAME, now=env.now)
+    assert written
     assert _read_file(env.tmp_path)["entries"] == []
     env.review.assert_not_awaited()
 
@@ -403,8 +414,10 @@ async def test_a_requested_recompute_skips_the_cadence_but_not_the_one_at_a_time
 
     env = loop_env
     _write(env.store, [_entry("早上好呀朋友")], now=env.now - 60)
-    assert not await env.loop._arefresh_habitual_phrases_one(_NAME, now=env.now)
-    assert (await env.loop.recompute_habitual_phrases(_NAME)) == {"success": True, "written": True}
+    written = await env.loop._arefresh_habitual_phrases_one(_NAME, now=env.now)
+    assert not written
+    result = await env.loop.recompute_habitual_phrases(_NAME)
+    assert result == {"success": True, "written": True}
     assert [e["phrase"] for e in _read_file(env.tmp_path)["entries"]] == [_PHRASE]
 
     env.loop._refreshing.add(_NAME)
@@ -412,7 +425,8 @@ async def test_a_requested_recompute_skips_the_cadence_but_not_the_one_at_a_time
         with pytest.raises(HTTPException) as raised:
             await env.loop.recompute_habitual_phrases(_NAME)
         assert raised.value.status_code == 409
-        assert not await env.loop._arefresh_habitual_phrases_one(_NAME, now=env.now, force=True)
+        written = await env.loop._arefresh_habitual_phrases_one(_NAME, now=env.now, force=True)
+        assert not written
     finally:
         env.loop._refreshing.discard(_NAME)
 
@@ -437,10 +451,26 @@ def test_allow_suppress_and_clear_are_exclusive():
     assert overrides == Overrides()
 
 
-@pytest.mark.parametrize(("phrase", "action"), [("  ", "allow"), ("！？", "allow"), ("x" * 65, "allow"), (_PHRASE, "drop")])
+@pytest.mark.parametrize(("phrase", "action"), [("  ", "allow"), ("！？", "allow"), ("x" * (hp._MAX_OVERRIDE_PHRASE_CHARACTERS + 1), "allow"), (_PHRASE, "drop")])
 def test_bad_override_input_is_refused(phrase, action):
     with pytest.raises(ValueError):
         apply_override(Overrides(), phrase, action, now=1.0)
+
+
+def test_the_longest_phrase_the_miner_shows_can_still_be_chosen():
+    """Eight long words: a shown candidate must never be refused by the override."""
+    phrase = " ".join(["extraordinarily"] * 8)
+    assert len(phrase) > 64
+    overrides = apply_override(Overrides(), phrase, "allow", now=1.0)
+    assert overrides.allowed_phrases() == [phrase]
+
+
+def test_user_choices_travel_with_cloud_saves_but_the_mined_list_does_not():
+    """The choices cannot be rebuilt from history; the mined list is recomputed."""
+    from utils.cloudsave_runtime import MANAGED_MEMORY_FILENAMES
+
+    assert HABITUAL_PHRASE_OVERRIDES_FILENAME in MANAGED_MEMORY_FILENAMES
+    assert HABITUAL_PHRASES_FILENAME not in MANAGED_MEMORY_FILENAMES
 
 
 def test_overrides_are_normalized_and_bounded():
@@ -511,6 +541,39 @@ def test_a_phrase_the_user_suppressed_is_the_last_one_the_token_budget_cuts(tmp_
     assert kept == [phrases[-1], phrases[0]], "ranked last, but the user's choice is kept first"
 
 
+def test_two_quick_choices_both_survive(tmp_path, monkeypatch):
+    """Two clicks (or two windows) at once: neither may start from the other's old file."""
+    store = _store(tmp_path)
+    real_read = store.read_overrides
+    second_reading = threading.Event()
+    order: list[int] = []
+    guard = threading.Lock()
+
+    def slow_read(name):
+        with guard:
+            order.append(len(order))
+            first = order[-1] == 0
+        if not first:
+            second_reading.set()
+        result = real_read(name)
+        if first:
+            # Give a racing update the chance to read the same old file.
+            second_reading.wait(0.5)
+        return result
+
+    monkeypatch.setattr(store, "read_overrides", slow_read)
+    phrases = ["早上好呀朋友", "记得多喝热水"]
+    threads = [
+        threading.Thread(target=store.update_override, args=(_NAME, phrase, "allow"))
+        for phrase in phrases
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5)
+    assert sorted(real_read(_NAME).allowed_phrases()) == sorted(phrases)
+
+
 @pytest.mark.parametrize("content", ["not json", "[]", '{"allowed": "x", "suppressed": [1, {"phrase": 2}]}'])
 def test_a_damaged_overrides_file_reads_as_no_choices(tmp_path, content):
     store = _store(tmp_path)
@@ -571,6 +634,25 @@ async def test_the_panel_shows_switches_rules_and_states(router_env):
     assert panel["next_refresh_at"] == pytest.approx(now + HABITUAL_PHRASE_REFRESH_INTERVAL_SECONDS)
     assert panel["injected"] == [_PHRASE]
     assert panel["entries"][0]["state"] == "unreviewed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("session_language", "matches"),
+    [("en", False), ("zh-TW", True), (None, True)],
+    ids=["last-session-in-english", "last-session-in-chinese", "no-session-yet"],
+)
+async def test_the_panel_checks_the_list_against_her_last_session_language(
+    router_env, monkeypatch, session_language, matches,
+):
+    """The session start checks the session's language, not the global one."""
+    env = router_env
+    cm, _ = (await env.router._resolve_memory_character(_NAME))[0]
+    monkeypatch.setattr(cm, "_read_durable_prompt_locale", lambda _name: session_language)
+    _write(env.store, [_entry(_PHRASE)])
+    panel = await env.router.get_habitual_phrases(_NAME)
+    assert panel["language_matches"] is matches
+    assert panel["injected"] == ([_PHRASE] if matches else [])
 
 
 @pytest.mark.asyncio
@@ -659,6 +741,15 @@ def test_the_browser_announces_the_target_the_panel_listens_for():
     assert "new CustomEvent('neko:habitual-phrases-target'" in browser
     assert "notifyHabitualPhrasePanel(true)" in browser, "opening the panel reloads it"
     assert "addEventListener('neko:habitual-phrases-target'" in script
+
+
+@pytest.mark.parametrize("lang", ["zh-CN", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"])
+def test_status_lines_name_the_switches_as_the_settings_label_them(lang):
+    """The user has to find the switch the status line points at."""
+    locale = json.loads((_REPO_ROOT / "static" / "locales" / f"{lang}.json").read_text(encoding="utf-8"))
+    memory = locale["memory"]
+    assert memory["strongMemory"] in memory["habitualStatusReviewOff"]
+    assert locale["settings"]["toggles"]["slopFilter"] in memory["habitualStatusSwitchOff"]
 
 
 def test_every_panel_string_exists_in_all_eight_locales_and_none_is_dead():

@@ -175,7 +175,7 @@
             lines.push({ text: translate('memory.habitualStatusNone', 'The next chat will open without a habitual-phrase reminder.') });
         }
         if (!switches.review) {
-            lines.push({ text: translate('memory.habitualStatusReviewOff', '"Powerful Memory" is off: new candidates are not reviewed by the model and are suppressed by the rules alone.') });
+            lines.push({ text: translate('memory.habitualStatusReviewOff', '"Powerful Memory Mode" is off: new candidates are not reviewed by the model and are suppressed by the rules alone.') });
         } else if (review.status === 'failed') {
             lines.push({ tone: 'warning', text: translate('memory.habitualStatusReviewFailed', 'The last model review did not succeed; unjudged candidates are suppressed by the rules for now.') });
         }

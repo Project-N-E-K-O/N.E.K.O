@@ -1192,6 +1192,27 @@ async def _resolve_memory_character(raw_name: str):
     return (config_manager, character_name), None
 
 
+async def _ahabitual_phrase_language(config_manager, character_name: str) -> str:
+    """The language the next session start most likely checks the list against.
+
+    The character's last session language (``prompt_locale.json``), which the
+    recompute also mines in; the global language only when none was recorded.
+    A session started in another language can still differ, which the panel
+    cannot know ahead of time.
+    """
+    from utils.language_utils import get_global_language_full
+
+    reader = getattr(config_manager, "_read_durable_prompt_locale", None)
+    if callable(reader):
+        try:
+            selected = await asyncio.to_thread(reader, character_name)
+        except OSError:
+            selected = None
+        if isinstance(selected, str) and selected:
+            return selected
+    return get_global_language_full()
+
+
 async def _habitual_phrase_panel(config_manager, character_name: str) -> dict:
     """What the memory browser shows for one character's avoid list."""
     from config import (
@@ -1204,11 +1225,10 @@ async def _habitual_phrase_panel(config_manager, character_name: str) -> dict:
         HABITUAL_PHRASE_SESSION_GAP_SECONDS,
     )
     from memory.habitual_phrases import get_habitual_phrase_store
-    from utils.language_utils import get_global_language_full
     from utils.slop_filter import is_slop_filter_enabled
 
     described = await get_habitual_phrase_store().adescribe(
-        character_name, get_global_language_full(),
+        character_name, await _ahabitual_phrase_language(config_manager, character_name),
     )
     try:
         async with _memory_toggle_write_lock:

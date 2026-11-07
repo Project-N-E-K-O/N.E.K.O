@@ -2298,7 +2298,7 @@
         "habitualStatusSwitchOff": "“Natural Expression” is off, so nothing is injected.",
         "habitualStatusStale": "The list has not been updated in over {{days}} days, so it is not injected.",
         "habitualStatusLanguage": "The list was mined in another language than the current one, so it is not injected.",
-        "habitualStatusReviewOff": "“Powerful Memory” is off: new candidates are not reviewed by the model and are suppressed by the rules alone.",
+        "habitualStatusReviewOff": "“Powerful Memory Mode” is off: new candidates are not reviewed by the model and are suppressed by the rules alone.",
         "habitualStatusReviewFailed": "The last model review did not succeed; unjudged candidates are suppressed by the rules for now.",
         "habitualComputedAt": "Last computed: {{time}} · Next expected: {{next}}",
         "habitualWindow": "Based on the latest {{replies}} replies over {{sessions}} conversations ({{from}} to {{to}})",

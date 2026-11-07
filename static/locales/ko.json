@@ -2298,7 +2298,7 @@
         "habitualStatusSwitchOff": "'자연스러운 표현'이 꺼져 있어 주입되지 않습니다.",
         "habitualStatusStale": "목록이 {{days}}일 넘게 갱신되지 않아 주입되지 않습니다.",
         "habitualStatusLanguage": "목록이 현재와 다른 언어로 집계되어 주입되지 않습니다.",
-        "habitualStatusReviewOff": "'강력한 기억'이 꺼져 있어 새 후보는 모델 검토 없이 규칙만으로 억제됩니다.",
+        "habitualStatusReviewOff": "'강력 기억 모드'가 꺼져 있어 새 후보는 모델 검토 없이 규칙만으로 억제됩니다.",
         "habitualStatusReviewFailed": "지난번 모델 검토가 성공하지 못해, 판단되지 않은 후보는 당분간 규칙으로 억제됩니다.",
         "habitualComputedAt": "마지막 계산: {{time}} · 다음 예정: {{next}}",
         "habitualWindow": "집계 범위: 최근 답변 {{replies}}개, 대화 {{sessions}}번 ({{from}} ~ {{to}})",

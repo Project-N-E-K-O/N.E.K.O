@@ -151,7 +151,9 @@ _MAX_EXCERPTS = 2
 _REVIEW_CACHE_MAX = 200
 # Phrases kept per override list; the oldest go first past this.
 _OVERRIDES_MAX = 100
-_MAX_OVERRIDE_PHRASE_CHARACTERS = 64
+# As long as the memory browser route accepts: a shown phrase of eight long
+# words must stay something the user can allow or suppress.
+_MAX_OVERRIDE_PHRASE_CHARACTERS = 200
 # What she puts in quotes or title marks is a name, a title or someone else's
 # words, never her own habit. ASCII single quotes are left out: apostrophes.
 _REPLY_QUOTE_RE = re.compile(
@@ -551,9 +553,9 @@ def _build_exclusions(
     quoted = list(dict.fromkeys(quoted_texts))
     raw_terms = [term for term in protected_terms if isinstance(term, str)]
     for match in _CARD_QUOTE_RE.finditer(card_text or ""):
-        quoted = next(group for group in match.groups() if group is not None)
-        if len(_compact(quoted)) <= _MAX_CARD_TERM_CHARACTERS:
-            raw_terms.append(quoted)
+        card_quote = next(group for group in match.groups() if group is not None)
+        if len(_compact(card_quote)) <= _MAX_CARD_TERM_CHARACTERS:
+            raw_terms.append(card_quote)
     terms: dict[tuple[tuple[str, ...], str], None] = {}
     for term in raw_terms:
         compact = _compact(term)
@@ -1344,14 +1346,18 @@ class HabitualPhraseStore:
     ) -> Overrides:
         """Record the user's decision on ``phrase``; raises ValueError for bad input.
 
-        The memory browser is this file's only writer, so a read-modify-write
-        under the file lock cannot interleave with the background recompute,
-        which only reads it.
+        The memory browser is this file's only writer; the background
+        recompute only reads it. The whole read-modify-write holds a
+        per-character lock of its own (the file lock is not reentrant and is
+        taken separately by the read and the write), so two quick clicks, or
+        two open windows, cannot each start from the same old file and drop
+        the other's decision.
         """
         ts = float(now if now is not None else time.time())
-        updated = apply_override(self.read_overrides(name), phrase, action, now=ts)
-        if not self._write_json(name, HABITUAL_PHRASE_OVERRIDES_FILENAME, updated.as_dict()):
-            raise OSError("overrides not saved")
+        with _file_lock(f"{name}/{HABITUAL_PHRASE_OVERRIDES_FILENAME}#update"):
+            updated = apply_override(self.read_overrides(name), phrase, action, now=ts)
+            if not self._write_json(name, HABITUAL_PHRASE_OVERRIDES_FILENAME, updated.as_dict()):
+                raise OSError("overrides not saved")
         return updated
 
     async def aupdate_override(

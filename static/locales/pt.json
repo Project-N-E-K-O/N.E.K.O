@@ -2298,7 +2298,7 @@
         "habitualStatusSwitchOff": "«Expressão natural» está desligada, então nada é injetado.",
         "habitualStatusStale": "A lista está há mais de {{days}} dias sem atualização, então não é injetada.",
         "habitualStatusLanguage": "A lista foi extraída em outro idioma diferente do atual, então não é injetada.",
-        "habitualStatusReviewOff": "«Memória potente» está desligada: novas candidatas não são revisadas pelo modelo e são suprimidas só pelas regras.",
+        "habitualStatusReviewOff": "«Modo de memória reforçada» está desligado: novas candidatas não são revisadas pelo modelo e são suprimidas só pelas regras.",
         "habitualStatusReviewFailed": "A última revisão do modelo não deu certo; as candidatas não avaliadas são suprimidas pelas regras por enquanto.",
         "habitualComputedAt": "Último cálculo: {{time}} · Próximo previsto: {{next}}",
         "habitualWindow": "Com base nas últimas {{replies}} respostas em {{sessions}} conversas ({{from}} a {{to}})",

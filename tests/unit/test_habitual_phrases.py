@@ -301,6 +301,15 @@ def test_quoting_a_phrase_once_excludes_its_unquoted_uses_too():
     assert _compute(quoted_once) == []
 
 
+def test_a_quote_in_her_card_does_not_switch_off_the_reply_quote_rule():
+    """Both kinds of quote at once: the card's must not replace the replies'."""
+    unquoted = _sessions(*[["星光下的约定。"]] * HABITUAL_PHRASE_MIN_SESSIONS)
+    quoted_once = unquoted + [TimedReply("你说的「星光下的约定」是什么？", unquoted[-1].at + _GAP)]
+    card_text, terms = card_text_from_character({"说话习惯": "爱用「哼」开头"})
+    assert _phrases(_compute(unquoted, card_text=card_text, protected_terms=terms)) == ["星光下的约定"]
+    assert _compute(quoted_once, card_text=card_text, protected_terms=terms) == []
+
+
 # ── 3. Size, ranking, fragments, token budget ────────────────────────────
 
 _DISTINCT_PHRASES = [

@@ -2298,7 +2298,7 @@
         "habitualStatusSwitchOff": "「自然表達」開關已關閉，目前不會注入。",
         "habitualStatusStale": "清單已超過 {{days}} 天沒有更新，目前不會注入。",
         "habitualStatusLanguage": "清單是按另一種語言統計的，和目前語言不一致，目前不會注入。",
-        "habitualStatusReviewOff": "「強力記憶」已關閉：新候選不會交給模型複核，只按規則壓制。",
+        "habitualStatusReviewOff": "「強力記憶模式」已關閉：新候選不會交給模型複核，只按規則壓制。",
         "habitualStatusReviewFailed": "上次模型複核沒有成功，沒判斷過的候選暫時按規則壓制。",
         "habitualComputedAt": "上次計算：{{time}}　預計下次：{{next}}",
         "habitualWindow": "統計範圍：最近 {{replies}} 條回覆，{{sessions}} 次聊天（{{from}} 至 {{to}}）",

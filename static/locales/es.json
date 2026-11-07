@@ -2298,7 +2298,7 @@
         "habitualStatusSwitchOff": "«Expresión natural» está desactivada, así que no se inyecta nada.",
         "habitualStatusStale": "La lista lleva más de {{days}} días sin actualizarse, así que no se inyecta.",
         "habitualStatusLanguage": "La lista se extrajo en otro idioma distinto del actual, así que no se inyecta.",
-        "habitualStatusReviewOff": "«Memoria potente» está desactivada: los candidatos nuevos no los revisa el modelo y se suprimen solo por las reglas.",
+        "habitualStatusReviewOff": "«Modo de memoria reforzada» está desactivado: los candidatos nuevos no los revisa el modelo y se suprimen solo por las reglas.",
         "habitualStatusReviewFailed": "La última revisión del modelo no tuvo éxito; los candidatos sin evaluar se suprimen por las reglas por ahora.",
         "habitualComputedAt": "Último cálculo: {{time}} · Próximo previsto: {{next}}",
         "habitualWindow": "Según las últimas {{replies}} respuestas en {{sessions}} conversaciones ({{from}} a {{to}})",

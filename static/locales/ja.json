@@ -2298,7 +2298,7 @@
         "habitualStatusSwitchOff": "「自然な表現」がオフのため、注入されません。",
         "habitualStatusStale": "リストが {{days}} 日以上更新されていないため、注入されません。",
         "habitualStatusLanguage": "リストは現在とは別の言語で集計されたため、注入されません。",
-        "habitualStatusReviewOff": "「強力な記憶」がオフのため、新しい候補はモデルの確認を受けず、ルールだけで抑制されます。",
+        "habitualStatusReviewOff": "「強化メモリモード」がオフのため、新しい候補はモデルの確認を受けず、ルールだけで抑制されます。",
         "habitualStatusReviewFailed": "前回のモデル確認は成功しませんでした。未判定の候補はひとまずルールで抑制されます。",
         "habitualComputedAt": "前回の計算：{{time}}　次回の予定：{{next}}",
         "habitualWindow": "集計範囲：直近 {{replies}} 件の返答、{{sessions}} 回の会話（{{from}} ～ {{to}}）",
