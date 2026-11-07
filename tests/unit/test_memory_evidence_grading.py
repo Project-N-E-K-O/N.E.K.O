@@ -549,9 +549,19 @@ _ABSOLUTE_RULE = {
     "MEMORY_REFINE_PROMPT", "MEMORY_INTROSPECTION_PROMPT",
 ])
 def test_absolute_words_rule_in_every_language(name):
-    import config.prompts.prompts_memory as prompts
+    from config.prompts.prompts_memory import (
+        MEMORY_INTROSPECTION_PROMPT,
+        MEMORY_REFINE_PROMPT,
+        PROMOTION_MERGE_PROMPT,
+        REFLECTION_PROMPT,
+    )
 
-    table = getattr(prompts, name)
+    table = {
+        "REFLECTION_PROMPT": REFLECTION_PROMPT,
+        "PROMOTION_MERGE_PROMPT": PROMOTION_MERGE_PROMPT,
+        "MEMORY_REFINE_PROMPT": MEMORY_REFINE_PROMPT,
+        "MEMORY_INTROSPECTION_PROMPT": MEMORY_INTROSPECTION_PROMPT,
+    }[name]
     assert set(table) == set(LANGS)
     for lang in LANGS:
         assert _ABSOLUTE_RULE[lang] in table[lang], (name, lang)
