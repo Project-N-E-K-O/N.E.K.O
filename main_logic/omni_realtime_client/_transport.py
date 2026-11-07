@@ -3705,6 +3705,7 @@ class _TransportMixin:
                         if early is not None:
                             pending_text = self._output_transcript_buffer[early[1]:]
                             if self._bind_unannounced_voice_response(early[0]) and pending_text:
+                                self._current_response_transcript = pending_text
                                 self._is_first_transcript_chunk = False
                                 await self._emit_pending_output_transcript((pending_text, True))
                                 if await retire_if_replaced():

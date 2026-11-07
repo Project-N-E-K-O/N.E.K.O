@@ -970,8 +970,11 @@ async def test_distinct_voice_output_before_input_transcript_can_finish_after_ca
         assert host.calls == ["response_done", "sid_rotate"]
         assert client._response_arbiter.has_live_response
 
+        socket.feed({"type": "response.audio_transcript.delta", "response_id": "successor", "delta": " continues"})
         socket.feed({"type": "response.done", "response": {"id": "successor", "status": "completed"}})
         await _settle()
+        assert deliveries == [("new reply", True), (" continues", False)]
+        assert client._recent_responses == ["new reply continues"]
         assert host.calls == ["response_done", "sid_rotate"] * 2
         assert not client._response_arbiter.has_live_response
     finally:
