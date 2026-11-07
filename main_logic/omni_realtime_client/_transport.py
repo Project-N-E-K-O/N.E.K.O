@@ -2525,6 +2525,7 @@ class _TransportMixin:
         response_id = _response_id_text(event.get("response_id"))
         if self._cancelled_voice_successor_has_input:
             # Actual output following new input may reuse the cancelled ID.
+            # A delayed fragment from the cancelled reply can look identical.
             self._bind_unannounced_voice_response(response_id)
         elif (
             not self._announces_responses
@@ -3290,6 +3291,8 @@ class _TransportMixin:
                             del self._recent_response_terminal_ids[:-_RECENT_RESPONSE_TERMINAL_LIMIT]
                     tracked = self._current_response_id
                     tracked_text = None if tracked is None else str(tracked)
+                    # With a reused ID, a duplicate terminal can look identical
+                    # to the successor's terminal. Let a matching ID finish.
                     if (
                         event_response_id is not None
                         and event_response_id != tracked_text
