@@ -3540,6 +3540,189 @@ html.neko-window-maximized .chat-item + .chat-item::before {
     display: none;
 }
 
+/* Habitual-phrase section of the insights panel (memory_habitual_phrases.js). */
+.memory-habitual {
+    display: grid;
+    gap: 8px;
+    padding: 10px;
+    border: 1px solid var(--memory-divider);
+    border-radius: var(--memory-radius-row);
+    background: var(--memory-surface-subtle);
+}
+
+.memory-habitual-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.memory-habitual-header h4 {
+    margin: 0;
+    color: var(--memory-text);
+    font-size: var(--memory-font-body);
+}
+
+.memory-habitual button {
+    flex: 0 0 auto;
+    min-height: 30px;
+    padding: 4px 10px;
+    border: 1px solid var(--memory-border);
+    border-radius: var(--memory-radius-control);
+    background: var(--memory-surface);
+    color: var(--memory-accent-foreground);
+    font-size: var(--memory-font-caption);
+    font-weight: var(--memory-font-weight-strong);
+    cursor: pointer;
+}
+
+.memory-habitual button:disabled {
+    cursor: not-allowed;
+    opacity: 0.48;
+}
+
+.memory-habitual-logic {
+    color: var(--memory-text-secondary);
+    font-size: var(--memory-font-caption);
+    line-height: 1.55;
+}
+
+.memory-habitual-logic summary {
+    color: var(--memory-accent-foreground);
+    cursor: pointer;
+}
+
+.memory-habitual-logic ul {
+    margin: 6px 0 0;
+    padding-left: 18px;
+}
+
+.memory-habitual-status p {
+    margin: 0;
+    color: var(--memory-text-secondary);
+    font-size: var(--memory-font-control);
+    line-height: 1.55;
+}
+
+.memory-habitual-status p.is-active {
+    color: var(--memory-accent-foreground);
+    font-weight: var(--memory-font-weight-strong);
+}
+
+.memory-habitual-status p.is-warning {
+    color: var(--memory-warning);
+}
+
+.memory-habitual-status p.is-error {
+    color: var(--memory-danger);
+}
+
+.memory-habitual-list,
+.memory-habitual-allowed ul {
+    display: grid;
+    gap: 6px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.memory-habitual-entry {
+    display: grid;
+    gap: 4px;
+    padding: 8px 10px;
+    border: 1px solid var(--memory-divider);
+    border-left-width: 3px;
+    border-radius: var(--memory-radius-control);
+    background: var(--memory-surface);
+}
+
+.memory-habitual-entry.is-suppressed {
+    border-left-color: var(--memory-accent);
+}
+
+.memory-habitual-entry.is-released {
+    border-left-color: var(--memory-divider);
+}
+
+.memory-habitual-entry-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 6px;
+}
+
+.memory-habitual-phrase {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    color: var(--memory-text);
+    font-size: var(--memory-font-control);
+}
+
+.memory-habitual-badge {
+    padding: 1px 8px;
+    border-radius: var(--memory-radius-pill);
+    background: var(--memory-divider);
+    color: var(--memory-text-secondary);
+    font-size: var(--memory-font-caption);
+}
+
+.memory-habitual-entry.is-suppressed .memory-habitual-badge {
+    background: var(--memory-accent-soft);
+    color: var(--memory-accent-foreground);
+}
+
+.memory-habitual-entry[data-state="allowed"] .memory-habitual-badge {
+    background: var(--memory-success-soft);
+    color: var(--memory-success);
+}
+
+.memory-habitual-meta,
+.memory-habitual-reason,
+.memory-habitual-empty {
+    margin: 0;
+    color: var(--memory-text-secondary);
+    font-size: var(--memory-font-caption);
+    line-height: 1.5;
+}
+
+.memory-habitual-excerpts {
+    display: grid;
+    gap: 2px;
+}
+
+.memory-habitual-excerpt {
+    overflow-wrap: anywhere;
+    color: var(--memory-text-tertiary);
+    font-size: var(--memory-font-caption);
+    line-height: 1.5;
+}
+
+.memory-habitual-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
+}
+
+.memory-habitual-allowed[hidden] {
+    display: none;
+}
+
+.memory-habitual-allowed h5 {
+    margin: 4px 0 6px;
+    color: var(--memory-text-secondary);
+    font-size: var(--memory-font-caption);
+    font-weight: var(--memory-font-weight-strong);
+}
+
+.memory-habitual-allowed-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
 .memory-insights-card button {
     flex: 0 0 auto;
     min-height: 30px;

@@ -192,12 +192,13 @@ HABITUAL_PHRASE_SOURCE_REPLY_LIMIT = 200
   several days and a heavy user's spans several sittings; mining stays well inside the
   miner's occurrence budget at typical reply lengths."""
 
-HABITUAL_PHRASE_MIN_SESSIONS = 3
+HABITUAL_PHRASE_MIN_SESSIONS = 4
 """Minimum distinct sessions a phrase must appear in to count as a habit.
 - Purpose: the cross-session criterion; a burst of repetition inside one session
   never qualifies however dense it is.
-- Rationale: the miner's own distinct-message floor is 3; requiring the same number of
-  separate sittings is what turns "repeated a lot" into "repeated across time"."""
+- Rationale: measured on local history, 3 let through what recurs for a few days and
+  then stops: a topic being discussed, a stream viewer's name, a plugin's thank-you
+  line. 4 drops those at the cost of noticing a real habit one session later."""
 
 HABITUAL_PHRASE_SESSION_GAP_SECONDS = 1800.0
 """Silence between two replies that starts a new session for the criterion above.
@@ -207,9 +208,30 @@ HABITUAL_PHRASE_SESSION_GAP_SECONDS = 1800.0
   is always a new session once the gap is crossed."""
 
 HABITUAL_PHRASE_MAX_ITEMS = 8
-"""Most phrases kept per character, ranked by sessions, then days, then occurrences.
-- Purpose: caps both the stored list and the session-start prompt list.
+"""Most phrases suppressed at once per character, in rank order (sessions, days, occurrences).
+- Purpose: caps the session-start prompt list.
 - Rationale: a short list the model can actually honour; more turns into noise."""
+
+HABITUAL_PHRASE_CANDIDATE_POOL = 16
+"""Ranked candidates the rules hand on to the review; the suppressed list is drawn from them.
+- Purpose: room for the review to turn some down and still fill HABITUAL_PHRASE_MAX_ITEMS,
+  and the list the memory browser shows with each one's verdict.
+- Rationale: twice the suppressed cap; the review then judges at most this many new phrases
+  per recompute, in one call."""
+
+HABITUAL_PHRASE_REVIEW_INPUT_MAX_TOKENS = 1600
+"""Token budget for the candidate block of the review prompt (phrases plus quoted excerpts).
+- Purpose: whole candidates past the budget are left unjudged until the next recompute.
+- Rationale: 16 candidates with two short excerpts each fit with room to spare."""
+
+HABITUAL_PHRASE_REVIEW_CARD_MAX_TOKENS = 400
+"""Token budget for the character card shown to the review, which judges against it."""
+
+HABITUAL_PHRASE_REVIEW_MAX_AGE_SECONDS = 30 * 86400.0
+"""How long a review verdict is reused before the phrase is judged again.
+- Purpose: verdicts are cached per phrase, so a daily recompute only asks about new ones.
+- Rationale: a month lets a phrase whose use has changed be seen afresh without paying for
+  the same judgement every day."""
 
 HABITUAL_PHRASE_PROMPT_MAX_TOKENS = 160
 """Token budget for the whole rendered avoid-list block (header, items and closing line).

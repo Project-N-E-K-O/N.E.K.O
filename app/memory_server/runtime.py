@@ -108,6 +108,8 @@ _CHARACTER_SCOPED_WRITE_OPS = frozenset({
     "theater/forget",
     # Retracting a declined archive capsule writes recent and the time index too.
     "theater/retract",
+    # The memory browser's "recompute now" rewrites habitual_phrases.json.
+    "habitual_phrases/recompute",
 })
 _admitted_character_context: ContextVar[frozenset[str]] = ContextVar(
     "admitted_character_context",

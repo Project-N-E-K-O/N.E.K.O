@@ -169,7 +169,7 @@ The memory-server startup hook scans pending outbox records and spawns replay ta
 - reflection synthesis;
 - persona and reflection refinement;
 - below-zero evidence tracking and archive sweeps;
-- an about-daily, idle-only recompute of each character's habitual-phrase avoid list (local n-gram mining, no model call);
+- an about-daily, idle-only recompute of each character's habitual-phrase avoid list (local n-gram mining, then one summary-tier call that judges only candidates without a recent verdict, gated by both the powerful-memory and natural-expression switches);
 - slow migration of legacy fact/reflection event-time schemas;
 - optional embedding warmup and backfill.
 
@@ -186,7 +186,8 @@ The default per-character directory contains the following durable data. Some fi
 | `time_indexed.db` | Raw chronological conversation rows in `time_indexed_original`; the legacy compressed table may also exist |
 | `facts.json`, `facts_archive.json` | Active facts and older absorbed facts |
 | `pinned_facts.json` | Pinned important facts with their expiry, plus a bounded history of replaced, removed, expired and evicted entries |
-| `habitual_phrases.json` | Phrases the character reused across several recent sessions, with counts and first/last-seen times; replaced wholesale on each recompute and read at session start as an avoid list |
+| `habitual_phrases.json` | Phrases the character reused across several recent sessions, with counts, first/last-seen times, short excerpts, the model's verdict and the resulting suppression state, plus a cache of recent verdicts; replaced wholesale on each recompute and read at session start as an avoid list |
+| `habitual_phrase_overrides.json` | Phrases the user allowed or suppressed in the memory browser; written only from there, and applied to the stored list whenever it is read |
 | `reflections.json`, `surfaced.json` | Active reflections and user-feedback/surfacing state |
 | `reflection_archive/` | Sharded archived reflections |
 | `persona.json`, `persona_corrections.json` | Persona view and queued contradiction decisions |

@@ -16,15 +16,23 @@
 """Background recompute of the habitual-phrase avoid list.
 
 For every character, mines the latest replies for wording she reuses across
-sessions (``memory/habitual_phrases.py``) and stores the list that the next
-session start reads. No model call and no network. A round runs only while
-memory is idle, a character is recomputed at most once per
-``HABITUAL_PHRASE_REFRESH_INTERVAL_SECONDS``, and nothing on the startup or
-session-start path waits for any of it.
+sessions (``memory/habitual_phrases.py``), has the model judge the candidates
+it has no fresh verdict for, and stores the list that the next session start
+reads. A round runs only while memory is idle, a character is recomputed at
+most once per ``HABITUAL_PHRASE_REFRESH_INTERVAL_SECONDS``, and nothing on the
+startup or session-start path waits for any of it.
+
+The review runs only while both "powerful memory" (the switch every newer
+memory model call follows) and "natural expression" (the avoid list's own
+switch) are on; otherwise, and when the call fails, unjudged candidates are
+decided by the rules alone. The memory browser can also ask for a recompute
+of one character right away, through the internal route below.
 """
 
 import asyncio
 import time
+
+from fastapi import HTTPException
 
 from config import (
     HABITUAL_PHRASE_REFRESH_INTERVAL_SECONDS,
@@ -32,9 +40,11 @@ from config import (
 )
 from memory.habitual_phrases import (
     TimedReply,
+    areview_candidates,
     build_payload,
     card_text_from_character,
     compute_entries,
+    fresh_reviews,
     get_habitual_phrase_store,
 )
 from memory.stop_names import acollect_stop_names
@@ -46,8 +56,13 @@ from . import gates, runtime
 from ._shared import logger, validate_lanlan_name
 from .gates import _INITIAL_DELAY_HABITUAL_PHRASES
 from .locale_state import get_character_prompt_locale
+from .runtime import app
 
 HABITUAL_PHRASE_POLL_INTERVAL = 600  # Seconds between idle checks; a due character is rare.
+
+# Characters being recomputed right now. The background round and a click in
+# the memory browser must not both rewrite one file from two readings.
+_refreshing: set[str] = set()
 
 
 async def _aresolve_mining_language(name: str) -> str | None:
@@ -59,8 +74,19 @@ async def _aresolve_mining_language(name: str) -> str | None:
         return None
 
 
-async def _arefresh_habitual_phrases_one(raw_name: str, *, now: float) -> bool:
-    """Recompute one character's list when it is due. Returns whether it was written."""
+async def _areview_enabled() -> bool:
+    """Whether the model may judge: powerful memory and natural expression both on."""
+    from utils.slop_filter import is_slop_filter_enabled
+
+    if not await gates._ais_powerful_memory_enabled():
+        return False
+    return bool(await asyncio.to_thread(is_slop_filter_enabled))
+
+
+async def _arefresh_habitual_phrases_one(
+    raw_name: str, *, now: float, force: bool = False,
+) -> bool:
+    """Recompute one character's list when it is due (or ``force``). Returns whether it was written."""
     try:
         name = validate_lanlan_name(raw_name)
     except Exception:
@@ -69,9 +95,25 @@ async def _arefresh_habitual_phrases_one(raw_name: str, *, now: float) -> bool:
         # The file and time index are keyed by the raw characters.json key
         # everywhere else; an alias that normalizes differently is skipped.
         return False
+    if name in _refreshing:
+        return False
+    # Claimed before the first await, so two callers cannot both get past.
+    _refreshing.add(name)
+    try:
+        return await _arefresh_claimed(name, now=now, force=force)
+    finally:
+        _refreshing.discard(name)
+
+
+async def _arefresh_claimed(name: str, *, now: float, force: bool) -> bool:
+    """Body of ``_arefresh_habitual_phrases_one``; the caller holds ``name`` in ``_refreshing``."""
     store = get_habitual_phrase_store()
     stored = await store.aread(name)
-    if stored is not None and 0 <= now - stored["computed_at"] < HABITUAL_PHRASE_REFRESH_INTERVAL_SECONDS:
+    if (
+        not force
+        and stored is not None
+        and 0 <= now - stored["computed_at"] < HABITUAL_PHRASE_REFRESH_INTERVAL_SECONDS
+    ):
         return False
     time_manager = runtime.time_manager
     if time_manager is None:
@@ -95,34 +137,103 @@ async def _arefresh_habitual_phrases_one(raw_name: str, *, now: float) -> bool:
             (catgirl_data or {}).get(name), (prompt_map or {}).get(name, ""),
         )
         names = await acollect_stop_names(runtime._config_manager, name)
+        overrides = await store.aread_overrides(name)
         replies = [
             TimedReply(text, at)
             for text, at in zip(history.messages, history.timestamps)
             if at is not None
         ]
+        # An allowed phrase is a protected term from here on: it, and any
+        # phrase holding it, never even becomes a candidate again.
         entries, source = await asyncio.to_thread(
             compute_entries,
             replies,
             language=language,
             card_text=card_text,
-            protected_terms=[*names, *card_terms],
+            protected_terms=[*names, *card_terms, *overrides.allowed_phrases()],
         )
-        written = await store.awrite(
-            name, build_payload(entries, source, language=language, now=now),
+        reviews = fresh_reviews(stored, now=now)
+        forced = overrides.suppressed_keys()
+        pending = [
+            entry for entry in entries
+            if entry["normalized_phrase"] not in reviews
+            and entry["normalized_phrase"] not in forced
+        ]
+        review_status, reviewed = "not_needed", 0
+        if pending:
+            if not await _areview_enabled():
+                review_status = "disabled"
+            else:
+                try:
+                    verdicts, asked = await areview_candidates(
+                        pending,
+                        ai_name=name,
+                        card_text=card_text,
+                        language=language,
+                        config_manager=runtime._config_manager,
+                        now=now,
+                    )
+                except Exception as e:  # noqa: BLE001 — the rules alone decide this time
+                    review_status = "failed"
+                    logger.warning(
+                        f"[HabitualPhrases] {name}: 模型判定失败，本次未判定的候选按规则压制: "
+                        f"{type(e).__name__}"
+                    )
+                else:
+                    reviewed = len(verdicts)
+                    reviews.update(verdicts)
+                    review_status = "ok" if verdicts or not asked else "failed"
+                    if verdicts:
+                        # Her own words: console only, never the log file.
+                        print(
+                            f"[HabitualPhrases] {name} 判定: "
+                            + " | ".join(
+                                f"{entry['phrase']}={verdicts[entry['normalized_phrase']]['verdict']}"
+                                for entry in pending
+                                if entry["normalized_phrase"] in verdicts
+                            )
+                        )
+        payload = build_payload(
+            entries, source,
+            language=language, now=now,
+            reviews=reviews, review_status=review_status, reviewed=reviewed,
+            overrides=overrides,
         )
+        written = await store.awrite(name, payload)
     except MaintenanceModeError:
         return False
     finally:
         runtime._end_character_request(name, lease)
     if written:
+        suppressed = [entry for entry in payload["entries"] if entry["suppressed"]]
         logger.info(
-            "[HabitualPhrases] %s: 重算完成，%d 条口癖（分析 %d 条回复，%d 个会话）",
-            name, len(entries), source["analyzed_reply_count"], source["session_count"],
+            "[HabitualPhrases] %s: 重算完成，候选 %d 条，压制 %d 条，新判定 %d 条（%s）"
+            "（分析 %d 条回复，%d 个会话）",
+            name, len(entries), len(suppressed), reviewed, review_status,
+            source["analyzed_reply_count"], source["session_count"],
         )
-        if entries:
+        if suppressed:
             # Her own words: console only, never the log file.
-            print(f"[HabitualPhrases] {name}: " + " | ".join(e["phrase"] for e in entries))
+            print(f"[HabitualPhrases] {name}: " + " | ".join(e["phrase"] for e in suppressed))
     return written
+
+
+@app.post("/internal/memory/{lanlan_name}/habitual_phrases/recompute")
+async def recompute_habitual_phrases(lanlan_name: str):
+    """Recompute one character's avoid list now, for the memory browser.
+
+    Unlike the background round this skips the daily cadence and the idle
+    gate: the user asked for it. It still takes the character lease and never
+    runs twice at once for one character.
+    """
+    try:
+        name = validate_lanlan_name(lanlan_name)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid lanlan_name") from exc
+    if name in _refreshing:
+        raise HTTPException(status_code=409, detail="already recomputing")
+    written = await _arefresh_habitual_phrases_one(name, now=time.time(), force=True)
+    return {"success": True, "written": bool(written)}
 
 
 async def _arefresh_habitual_phrases_once() -> None:

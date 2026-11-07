@@ -76,6 +76,13 @@ def _sessions(*sessions: list[str], start: datetime = _T0) -> list[TimedReply]:
     return replies
 
 
+# One tail per session, so a line shared by all of them recurs in exactly
+# HABITUAL_PHRASE_MIN_SESSIONS sessions and nothing else does.
+_FOLLOW_UPS = ["还有别的事吗？", "快去睡觉吧！", "下次早点说。", "明天见啦。", "先这样吧。", "回头再聊。"]
+assert len(_FOLLOW_UPS) >= HABITUAL_PHRASE_MIN_SESSIONS
+_FOLLOW_UPS = _FOLLOW_UPS[:HABITUAL_PHRASE_MIN_SESSIONS]
+
+
 def _phrases(entries) -> list[str]:
     return [entry["phrase"] for entry in entries]
 
@@ -148,6 +155,25 @@ def test_many_messages_in_too_few_sessions_still_do_not_count():
     assert _compute(two_sittings) == []
 
 
+def test_one_session_short_of_the_minimum_is_not_a_habit():
+    """Found on real history: three sittings still listed topics of one week."""
+    assert HABITUAL_PHRASE_MIN_SESSIONS >= 4
+    short = _sessions(*[["今天也要加油哦。"]] * (HABITUAL_PHRASE_MIN_SESSIONS - 1))
+    assert _compute(short) == []
+
+
+def test_each_entry_carries_short_excerpts_of_where_she_said_it():
+    replies = _sessions(*[[f"{tail}今天也要加油哦。再见。"] for tail in _FOLLOW_UPS])
+    (entry,) = _compute(replies)
+    excerpts = entry["excerpts"]
+    assert 1 <= len(excerpts) <= hp._MAX_EXCERPTS
+    assert len(set(excerpts)) == len(excerpts)
+    for excerpt in excerpts:
+        assert "今天也要加油哦" in excerpt
+        assert len(excerpt) <= len("今天也要加油哦") + 2 * hp._EXCERPT_CONTEXT_CHARACTERS
+    assert any(excerpt != "今天也要加油哦" for excerpt in excerpts), "context around it is kept"
+
+
 def test_days_are_counted_from_reply_dates():
     replies = [
         TimedReply("今天也要加油哦。", _T0 + timedelta(days=day, hours=hour))
@@ -168,31 +194,31 @@ def test_replies_without_a_time_are_left_out():
 # ── 2. Exclusions ─────────────────────────────────────────────────────────
 
 
-def _three_sessions(text):
+def _in_enough_sessions(text):
     return _sessions(*[[text]] * HABITUAL_PHRASE_MIN_SESSIONS)
 
 
 def test_a_phrase_written_into_the_card_is_hers():
-    replies = _three_sessions("今天也要加油哦。")
+    replies = _in_enough_sessions("今天也要加油哦。")
     assert _phrases(_compute(replies)) == ["今天也要加油哦"]
     assert _compute(replies, card_text="一句话台词：今天也要加油哦~") == []
 
 
 def test_a_phrase_written_into_the_system_prompt_is_hers():
-    replies = _three_sessions("今天也要加油哦。")
+    replies = _in_enough_sessions("今天也要加油哦。")
     card_text, _terms = card_text_from_character({"性别": "女"}, "你常说今天也要加油哦。")
     assert _compute(replies, card_text=card_text) == []
 
 
 def test_a_quoted_card_tic_excludes_every_phrase_carrying_it():
-    replies = _three_sessions("知道了喵。")
+    replies = _in_enough_sessions("知道了喵。")
     assert _phrases(_compute(replies)) == ["知道了喵"]
     card_text, terms = card_text_from_character({"说话风格": "句尾总要带上「喵~」这个字"})
     assert _compute(replies, card_text=card_text, protected_terms=terms) == []
 
 
 def test_a_short_card_value_excludes_every_phrase_carrying_it():
-    replies = _three_sessions("本喵觉得不错。")
+    replies = _in_enough_sessions("本喵觉得不错。")
     assert _phrases(_compute(replies)) == ["本喵觉得不错"]
     card_text, terms = card_text_from_character({"自称": "本喵", "性别": "女"})
     assert "本喵" in terms
@@ -201,16 +227,16 @@ def test_a_short_card_value_excludes_every_phrase_carrying_it():
 
 @pytest.mark.parametrize("name", ["小天", "碳基生物"])
 def test_names_and_nicknames_are_never_listed(name):
-    replies = _three_sessions(f"{name}最喜欢你了。")
+    replies = _in_enough_sessions(f"{name}最喜欢你了。")
     assert _phrases(_compute(replies)) == [f"{name}最喜欢你了"]
     assert _compute(replies, protected_terms=[name]) == []
 
 
 def test_latin_names_match_whole_words_only():
-    replies = _three_sessions("I will always be here for you.")
+    replies = _in_enough_sessions("I will always be here for you.")
     listed = _compute(replies, language="en", protected_terms=["Al"])
     assert listed, "'Al' must not cut into 'always'"
-    named = _three_sessions("Thanks Bob for being here.")
+    named = _in_enough_sessions("Thanks Bob for being here.")
     assert _compute(named, language="en", protected_terms=["Bob"]) == []
 
 
@@ -232,8 +258,47 @@ def test_reserved_card_fields_are_not_her_card():
     [" https://example.com/page", " 看这个 `print(1)`", " www.example.com"],
 )
 def test_replies_carrying_code_or_a_url_contribute_nothing(suffix):
-    replies = _three_sessions(f"今天也要加油哦{suffix}")
+    replies = _in_enough_sessions(f"今天也要加油哦{suffix}")
     assert _compute(replies) == []
+
+
+@pytest.mark.parametrize(
+    ("language", "line"),
+    [
+        ("zh-CN", "就是因为这样。"),
+        ("zh-CN", "我们一起吧。"),
+        ("zh-TW", "就是因為這樣。"),
+        ("en", "you know what I mean."),
+    ],
+)
+def test_a_phrase_made_only_of_function_words_is_never_listed(language, line):
+    """Found on real history: most false hits were everyday grammar, not her habits."""
+    assert _compute(_in_enough_sessions(line), language=language) == []
+
+
+@pytest.mark.parametrize(
+    ("language", "line", "expected"),
+    [
+        ("zh-CN", "我们一起去吃火锅吧。", "我们一起去吃火锅吧"),
+        ("en", "do you know what I mean by pumpkin.", "do you know what i mean by pumpkin"),
+    ],
+)
+def test_one_content_word_is_enough_to_stay_a_candidate(language, line, expected):
+    (entry,) = _compute(_in_enough_sessions(line), language=language)
+    assert entry["normalized_phrase"] == expected
+
+
+def test_a_phrase_she_puts_in_quotes_is_never_listed():
+    """A title or a remark she quotes is the thing talked about, not how she talks."""
+    replies = _sessions(*[[f"“星光下的约定”{tail}"] for tail in _FOLLOW_UPS])
+    assert _compute(replies) == []
+
+
+def test_quoting_a_phrase_once_excludes_its_unquoted_uses_too():
+    unquoted = _sessions(*[["星光下的约定。"]] * HABITUAL_PHRASE_MIN_SESSIONS)
+    assert _phrases(_compute(unquoted)) == ["星光下的约定"]
+    quoted_once = unquoted + [TimedReply("你说的「星光下的约定」是什么？", unquoted[-1].at + _GAP)]
+    assert _compute(quoted_once) == []
 
 
 # ── 3. Size, ranking, fragments, token budget ────────────────────────────
@@ -244,7 +309,7 @@ _DISTINCT_PHRASES = [
 ]
 
 
-def test_list_is_capped_and_ranked_by_sessions():
+def test_candidates_are_capped_and_ranked_by_sessions():
     sessions = []
     total = HABITUAL_PHRASE_MIN_SESSIONS + len(_DISTINCT_PHRASES)
     for index in range(total):
@@ -253,9 +318,11 @@ def test_list_is_capped_and_ranked_by_sessions():
             for rank, phrase in enumerate(_DISTINCT_PHRASES)
             if index < HABITUAL_PHRASE_MIN_SESSIONS + rank
         ])
-    entries = _compute(_sessions(*sessions))
-    assert len(entries) == HABITUAL_PHRASE_MAX_ITEMS
-    expected = list(reversed(_DISTINCT_PHRASES))[:HABITUAL_PHRASE_MAX_ITEMS]
+    cap = len(_DISTINCT_PHRASES) - 2
+    assert len(_compute(_sessions(*sessions))) == len(_DISTINCT_PHRASES), "within the default pool"
+    entries = _compute(_sessions(*sessions), max_items=cap)
+    assert len(entries) == cap
+    expected = list(reversed(_DISTINCT_PHRASES))[:cap]
     assert _phrases(entries) == expected
     counts = [entry["session_count"] for entry in entries]
     assert counts == sorted(counts, reverse=True)
@@ -264,8 +331,7 @@ def test_list_is_capped_and_ranked_by_sessions():
 def test_one_catchphrase_is_one_entry_not_its_fragments():
     sentence = "哼才不是因为担心你呢"
     assert len(sentence) > 8, "longer than the miner's largest window"
-    follow_ups = ["还有别的事吗？", "快去睡觉吧！", "下次早点说。"]
-    entries = _compute(_sessions(*[[f"{sentence}。{tail}"] for tail in follow_ups]))
+    entries = _compute(_sessions(*[[f"{sentence}。{tail}"] for tail in _FOLLOW_UPS]))
     assert _phrases(entries) == [sentence], (
         "shifted windows of one catchphrase must come back as that one phrase"
     )
@@ -275,9 +341,9 @@ def test_one_catchphrase_is_one_entry_not_its_fragments():
 @pytest.mark.parametrize(
     "texts",
     [
-        ["好呀今天也要加油哦。", "嗯今天也要加油哦。", "今天也要加油哦！"],
-        ["好呀今天也要加油哦。", "嗯嗯今天也要加油哦。", "哈哈今天也要加油哦。"],
-        ["今天也要加油哦好吗", "今天也要加油哦对吧", "今天也要加油哦是不"],
+        ["好呀今天也要加油哦。", "嗯今天也要加油哦。", "今天也要加油哦！", "今天也要加油哦。"],
+        ["好呀今天也要加油哦。", "嗯嗯今天也要加油哦。", "哈哈今天也要加油哦。", "呜呜今天也要加油哦。"],
+        ["今天也要加油哦好吗", "今天也要加油哦对吧", "今天也要加油哦是不", "今天也要加油哦行吗"],
     ],
     ids=["boundary", "left-neighbours-differ", "right-neighbours-differ"],
 )
@@ -296,12 +362,12 @@ def test_an_excluded_catchphrase_still_claims_its_tail():
     """
     line = "碳基生物" + "今天我们一起去公园散步看花吃冰淇淋然后回家"
     assert len(line) > 2 * hp._MAX_PHRASE_CHARACTERS - 8
-    replies = _three_sessions(line)
+    replies = _in_enough_sessions(line)
     assert _compute(replies, protected_terms=["碳基生物"]) == []
 
 
 def test_a_name_at_the_edge_of_a_long_phrase_is_still_caught():
-    replies = _three_sessions("碳基生物今天最喜欢你了。")
+    replies = _in_enough_sessions("碳基生物今天最喜欢你了。")
     assert _phrases(_compute(replies)) == ["碳基生物今天最喜欢你了"]
     assert _compute(replies, protected_terms=["碳基生物"]) == []
 
@@ -317,8 +383,7 @@ def test_a_name_at_the_edge_of_a_long_phrase_is_still_caught():
 def test_a_name_beyond_the_shown_part_still_excludes_the_line(line):
     """Exclusion judges the whole shared line, not the 16 characters it would show."""
     assert len(line) > hp._MAX_PHRASE_CHARACTERS
-    follow_ups = ["还有别的事吗？", "快去睡觉吧！", "下次早点说。"]
-    replies = _sessions(*[[f"{line}。{tail}"] for tail in follow_ups])
+    replies = _sessions(*[[f"{line}。{tail}"] for tail in _FOLLOW_UPS])
     assert _compute(replies), "without the name protected the line is a habit"
     assert _compute(replies, protected_terms=["碳基生物"]) == []
 
@@ -327,8 +392,7 @@ def test_a_line_longer_than_the_growth_cap_is_still_one_entry():
     """Windows far apart on one long line grow into overlapping spans: one entry."""
     line = "今天我们一起去公园散步看花吃冰淇淋然后回家"
     assert len(line) > hp._MAX_PHRASE_CHARACTERS
-    follow_ups = ["还有别的事吗？", "快去睡觉吧！", "下次早点说。"]
-    entries = _compute(_sessions(*[[f"{line}。{tail}"] for tail in follow_ups]))
+    entries = _compute(_sessions(*[[f"{line}。{tail}"] for tail in _FOLLOW_UPS]))
     assert len(entries) == 1
     assert entries[0]["phrase"] in line
     assert len(entries[0]["phrase"]) == hp._MAX_PHRASE_CHARACTERS
@@ -345,14 +409,14 @@ def test_a_fragment_used_more_widely_than_its_excluded_parent_is_still_listed():
 
 
 def test_word_phrases_are_deduplicated_by_shared_words():
-    entries = _compute(_three_sessions("you know what I mean."), language="en")
+    entries = _compute(_in_enough_sessions("my sweet little pumpkin pie."), language="en")
     assert len(entries) == 1
-    assert entries[0]["normalized_phrase"] == "you know what i mean"
+    assert entries[0]["normalized_phrase"] == "my sweet little pumpkin pie"
 
 
 def test_korean_word_and_character_windows_of_one_phrase_are_one_entry():
     """Korean is mined both ways; the character window must not come back on its own."""
-    entries = _compute(_three_sessions("정말 고마워요."), language="ko")
+    entries = _compute(_in_enough_sessions("정말 고마워요."), language="ko")
     assert _phrases(entries) == ["정말 고마워요"]
 
 
@@ -448,7 +512,7 @@ async def test_the_job_rewrites_a_damaged_file_instead_of_failing_on_it(tmp_path
     from app.memory_server import habitual_phrase_loop, runtime
 
     store = _store(tmp_path)
-    cm, time_manager = _loop_runtime(tmp_path, [_three_sessions("今天也要加油哦。")])
+    cm, time_manager = _loop_runtime(tmp_path, [_in_enough_sessions("今天也要加油哦。")])
     monkeypatch.setattr(habitual_phrase_loop, "get_habitual_phrase_store", lambda: store)
     monkeypatch.setattr(habitual_phrase_loop, "get_character_prompt_locale", lambda _n: "zh-CN")
     monkeypatch.setattr(runtime, "_config_manager", cm)
@@ -477,7 +541,7 @@ def test_a_reply_repeated_verbatim_does_not_rescan_per_fragment(monkeypatch):
 
     rng = random.Random(7)
     text = "".join(chr(rng.randint(0x4E00, 0x4E00 + 3000)) for _ in range(1990))
-    replies = _three_sessions(text)
+    replies = _in_enough_sessions(text)
     grows, splits = [], []
     real_grow, real_split = hp._maximal_phrase, hp._MessageUnits.of
     monkeypatch.setattr(hp, "_maximal_phrase", lambda *a: grows.append(1) or real_grow(*a))
@@ -492,14 +556,34 @@ def test_a_reply_repeated_verbatim_does_not_rescan_per_fragment(monkeypatch):
 def test_each_reply_is_split_once_for_all_its_phrases(monkeypatch):
     """Phrases mined from the same replies reuse one split of each reply."""
     reply = "。".join(_DISTINCT_PHRASES) + "。"
-    replies = _three_sessions(reply)
+    replies = _in_enough_sessions(reply)
     splits = []
     real_split = hp._MessageUnits.of
     monkeypatch.setattr(
         hp._MessageUnits, "of", classmethod(lambda cls, *a: splits.append(1) or real_split(*a)),
     )
-    assert len(_compute(replies)) == HABITUAL_PHRASE_MAX_ITEMS
+    assert len(_compute(replies)) == len(_DISTINCT_PHRASES)
     assert len(splits) <= len(replies)
+
+
+@pytest.mark.parametrize(
+    ("texts", "expected"),
+    [
+        (
+            ["终于舍得来了。", "终于舍得来看我。", "终于舍得来啦。", "终于舍得来呀。", "终于舍得回来。"],
+            ["终于舍得"],
+        ),
+        (
+            ["快老实交代清楚。", "快老实交代一下。", "快老实交代行踪。", "快老实交代吧。", "老实交代吗。"],
+            ["老实交代"],
+        ),
+    ],
+    ids=["one-more-char-after", "one-more-char-before"],
+)
+def test_a_phrase_one_unit_wider_than_a_listed_one_is_not_listed_again(texts, expected):
+    """Found on real history: tics listed twice, once a character wider."""
+    entries = _compute(_sessions(*[[text] for text in texts]))
+    assert _phrases(entries) == expected
 
 
 def test_a_second_habit_fused_onto_the_first_is_kept():
@@ -540,7 +624,7 @@ async def test_a_recompute_drops_a_phrase_she_stopped_using(tmp_path, monkeypatc
     from app.memory_server import habitual_phrase_loop, runtime
 
     store = _store(tmp_path)
-    replies_box = [_three_sessions("今天也要加油哦。")]
+    replies_box = [_in_enough_sessions("今天也要加油哦。")]
     cm, time_manager = _loop_runtime(tmp_path, replies_box)
     monkeypatch.setattr(habitual_phrase_loop, "get_habitual_phrase_store", lambda: store)
     monkeypatch.setattr(habitual_phrase_loop, "get_character_prompt_locale", lambda _n: "zh-CN")
@@ -566,7 +650,7 @@ async def test_a_fresh_list_is_not_recomputed(tmp_path, monkeypatch):
     from app.memory_server import habitual_phrase_loop, runtime
 
     store = _store(tmp_path)
-    cm, time_manager = _loop_runtime(tmp_path, [_three_sessions("今天也要加油哦。")])
+    cm, time_manager = _loop_runtime(tmp_path, [_in_enough_sessions("今天也要加油哦。")])
     monkeypatch.setattr(habitual_phrase_loop, "get_habitual_phrase_store", lambda: store)
     monkeypatch.setattr(habitual_phrase_loop, "get_character_prompt_locale", lambda _n: "zh-CN")
     monkeypatch.setattr(runtime, "_config_manager", cm)
