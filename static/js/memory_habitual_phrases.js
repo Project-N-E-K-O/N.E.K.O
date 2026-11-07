@@ -13,7 +13,6 @@
 (function () {
     'use strict';
 
-    const SUPPRESSING_STATES = new Set(['forced', 'habit', 'unreviewed']);
     const VERDICT_KEYS = {
         normal: ['memory.habitualVerdictNormal', 'an ordinary expression'],
         topic: ['memory.habitualVerdictTopic', 'a topic'],
