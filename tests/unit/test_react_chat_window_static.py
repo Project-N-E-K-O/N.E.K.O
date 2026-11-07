@@ -2590,15 +2590,21 @@ def test_compact_history_resize_bar_is_draggable_and_persisted():
     assert "new CustomEvent('neko:compact-interaction-geometry-refresh')" in app_source
 
 
-def test_compact_visit_system_prompts_remain_legible_in_both_themes():
+def test_compact_visit_system_prompts_follow_choice_dimming_in_both_themes():
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
 
-    # The choice layer may dim ordinary history, but it must not dim its two
-    # actionable visit system cards (visit finished / save to diary).
+    # Visit finished / save to diary cards follow the same choice-layer dimming
+    # as ordinary history messages, while retaining their theme-aware contrast.
     assert ".compact-export-history-anchor.under-choice-prompt .compact-export-history-scroll," not in styles
-    assert ".compact-export-history-anchor.under-choice-prompt .compact-export-history-message:not(.is-system) {" in styles
-    assert ".compact-export-history-anchor.under-choice-prompt .compact-export-history-message.is-system {" in styles
-    assert "opacity: 1;\n  filter: none;" in styles
+    dimmed_message_block = css_block(
+        styles,
+        ".compact-export-history-anchor.under-choice-prompt .compact-export-history-message {",
+        ".compact-export-history-anchor.under-choice-prompt .compact-export-history-bubble,",
+    )
+    assert "opacity: 0.32;" in dimmed_message_block
+    assert "filter: blur(1.5px);" in dimmed_message_block
+    assert ".compact-export-history-anchor.under-choice-prompt .compact-export-history-message:not(.is-system)" not in styles
+    assert ".compact-export-history-anchor.under-choice-prompt .compact-export-history-message.is-system" not in styles
 
     light_system_block = css_block(
         styles,
