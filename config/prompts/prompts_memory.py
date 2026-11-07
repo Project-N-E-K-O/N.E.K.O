@@ -2970,8 +2970,10 @@ REFLECTION_PROMPT = {
 - 例 2：事实中"今天感冒了" → {"start": {"offset": 0, "unit": "day"}, "end": null}
 - 例 3：长期"喜欢咖啡"（pattern） → null
 
+最后在 based_on 里填写这条记忆实际依据的事实编号（上面事实列表里方括号中的数字），只填真正用到的。
+
 请以 JSON 格式返回，字段顺序保持如下：
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "概括出的特点、偏好或相处方式（主语写名字）", "temporal_scope": "pattern", "event_when": null}""",
+{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "概括出的特点、偏好或相处方式（主语写名字）", "temporal_scope": "pattern", "event_when": null, "based_on": [1, 3]}""",
     "zh-TW": """以下是關於 {LANLAN_NAME} 和 {MASTER_NAME} 的一系列已擷取事實：
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
@@ -3019,8 +3021,10 @@ REFLECTION_PROMPT = {
 - 例 2：事實中「今天感冒了」→ {"start": {"offset": 0, "unit": "day"}, "end": null}
 - 例 3：長期「喜歡咖啡」（pattern）→ null
 
+最後在 based_on 裡填寫這條記憶實際依據的事實編號（上面事實列表裡方括號中的數字），只填真正用到的。
+
 請以 JSON 格式回傳，欄位順序保持如下：
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "概括出的特點、偏好或相處方式（主語寫名字）", "temporal_scope": "pattern", "event_when": null}""",
+{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "概括出的特點、偏好或相處方式（主語寫名字）", "temporal_scope": "pattern", "event_when": null, "based_on": [1, 3]}""",
     "en": """Below are a series of extracted facts about {LANLAN_NAME} and {MASTER_NAME}:
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
@@ -3068,8 +3072,10 @@ Step 5: Annotate event_when (always use RELATIVE TIME, never absolute dates)
 - Example 2: "got a cold today" → {"start": {"offset": 0, "unit": "day"}, "end": null}
 - Example 3: long-term "loves coffee" (pattern) → null
 
+Finally, list in based_on the numbers of the facts this memory actually rests on (the bracketed numbers in the fact list above); include only the ones you really used.
+
 Return JSON with fields in this exact order:
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "the trait, preference or way of relating, summed up (name the actors)", "temporal_scope": "pattern", "event_when": null}""",
+{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "the trait, preference or way of relating, summed up (name the actors)", "temporal_scope": "pattern", "event_when": null, "based_on": [1, 3]}""",
     "ja": """以下は {LANLAN_NAME} と {MASTER_NAME} に関する一連の抽出済み事実です：
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
@@ -3115,8 +3121,10 @@ Return JSON with fields in this exact order:
 - 事実に時間の手掛かりが一切ない場合（「最近」のような暗示すらない場合）は event_when 全体を null にする（システムが作成時刻でフォールバック）
 - 例：「先週月曜に登山」→ {"start": {"offset": -1, "unit": "week"}, "end": {"offset": -1, "unit": "week"}}
 
+最後に、この記憶が実際に根拠としている事実の番号（上の事実リストの角括弧内の数字）を based_on に入れてください。実際に使ったものだけを入れること。
+
 JSON 形式で返してください。フィールドの順序は以下の通り保ってください：
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "まとめた特徴・好み・接し方（主語は名前で）", "temporal_scope": "pattern", "event_when": null}""",
+{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "まとめた特徴・好み・接し方（主語は名前で）", "temporal_scope": "pattern", "event_when": null, "based_on": [1, 3]}""",
     "ko": """다음은 {LANLAN_NAME}과 {MASTER_NAME}에 대해 추출된 일련의 사실입니다:
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
@@ -3162,8 +3170,10 @@ JSON 形式で返してください。フィールドの順序は以下の通り
 - 사실에 시간 단서가 전혀 없으면("최근" 같은 암시조차 없으면) event_when 전체를 null로 (시스템이 생성 시각으로 폴백)
 - 예: "지난 월요일에 등산" → {"start": {"offset": -1, "unit": "week"}, "end": {"offset": -1, "unit": "week"}}
 
+마지막으로 이 기억이 실제로 근거로 삼은 사실의 번호(위 사실 목록의 대괄호 안 숫자)를 based_on에 적으세요. 실제로 사용한 것만 적으세요.
+
 JSON 형식으로 반환하며, 필드 순서는 다음과 같이 유지하세요:
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "정리한 특징·취향·지내는 방식 (주어는 이름으로)", "temporal_scope": "pattern", "event_when": null}""",
+{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "정리한 특징·취향·지내는 방식 (주어는 이름으로)", "temporal_scope": "pattern", "event_when": null, "based_on": [1, 3]}""",
     "ru": """Ниже представлена серия извлечённых фактов о {LANLAN_NAME} и {MASTER_NAME}:
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
@@ -3209,8 +3219,10 @@ JSON 형식으로 반환하며, 필드 순서는 다음과 같이 유지하세�
 - Если в фактах нет никаких временных меток (даже намёков вроде "недавно"), всё event_when = null (система подставит время создания)
 - Пример: "ходил в горы в прошлый понедельник" → {"start": {"offset": -1, "unit": "week"}, "end": {"offset": -1, "unit": "week"}}
 
+В конце перечислите в based_on номера фактов, на которых это воспоминание действительно основано (числа в квадратных скобках в списке фактов выше); указывайте только реально использованные.
+
 Верните в формате JSON, сохраняя порядок полей:
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "обобщённая черта, предпочтение или манера общения (исполнители названы по имени)", "temporal_scope": "pattern", "event_when": null}""",
+{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "обобщённая черта, предпочтение или манера общения (исполнители названы по имени)", "temporal_scope": "pattern", "event_when": null, "based_on": [1, 3]}""",
     "es": """A continuación hay una serie de hechos extraídos sobre {LANLAN_NAME} y {MASTER_NAME}:
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
@@ -3256,8 +3268,10 @@ Paso 5: Anota event_when con TIEMPO RELATIVO (prohibidas fechas absolutas)
 - Si los hechos no contienen ninguna pista temporal (ni siquiera insinuaciones como "recientemente"), escribe event_when como null (el sistema usa el tiempo de creación)
 - Ej.: "fui de excursión el lunes pasado" → {"start": {"offset": -1, "unit": "week"}, "end": {"offset": -1, "unit": "week"}}
 
+Por último, indica en based_on los números de los hechos en los que este recuerdo se basa realmente (los números entre corchetes de la lista de hechos de arriba); incluye solo los que de verdad usaste.
+
 Devuelve JSON con los campos en este orden exacto:
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "el rasgo, la preferencia o la forma de tratarse, resumidos (con el nombre de quien actúa)", "temporal_scope": "pattern", "event_when": null}""",
+{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "el rasgo, la preferencia o la forma de tratarse, resumidos (con el nombre de quien actúa)", "temporal_scope": "pattern", "event_when": null, "based_on": [1, 3]}""",
     "pt": """Abaixo há uma série de fatos extraídos sobre {LANLAN_NAME} e {MASTER_NAME}:
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
@@ -3303,8 +3317,10 @@ Passo 5: Anote event_when com TEMPO RELATIVO (datas absolutas proibidas)
 - Se os fatos não tiverem nenhuma pista temporal (nem insinuações como "recentemente"), escreva event_when como null (o sistema usa o horário de criação)
 - Ex.: "fui escalar segunda-feira passada" → {"start": {"offset": -1, "unit": "week"}, "end": {"offset": -1, "unit": "week"}}
 
+Por fim, informe em based_on os números dos fatos em que esta memória realmente se baseia (os números entre colchetes na lista de fatos acima); inclua só os que você de fato usou.
+
 Retorne JSON com os campos nesta ordem exata:
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "o traço, a preferência ou a forma de se tratar, resumidos (com o nome de quem age)", "temporal_scope": "pattern", "event_when": null}""",
+{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "o traço, a preferência ou a forma de se tratar, resumidos (com o nome de quem age)", "temporal_scope": "pattern", "event_when": null, "based_on": [1, 3]}""",
 }
 
 

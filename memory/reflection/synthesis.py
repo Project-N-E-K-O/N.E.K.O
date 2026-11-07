@@ -108,15 +108,44 @@ def _detect_synthesis_prompt_language(text: str) -> str:
     )
 
 
-def _synthesis_fact_line(fact: dict, ai_mark: str) -> str:
+def _synthesis_fact_line(fact: dict, ai_mark: str, number: int | None = None) -> str:
     """One fact line of the synthesis prompt.
 
     The AI's own statements carry ``ai_mark`` so the model can tell them from
     what the user said; REFLECTION_PROMPT says they are no evidence of the
-    user's traits or of how the two get along.
+    user's traits or of how the two get along. Lines of the batch itself are
+    numbered so the model can name the ones it used (``based_on``); related
+    background lines are not.
     """
     mark = ai_mark if is_ai_disclosure(fact) else ''
-    return f"- {fact.get('text', '')}{mark} (importance: {fact.get('importance', 5)})"
+    prefix = f"[{number}] " if number is not None else ''
+    return f"- {prefix}{fact.get('text', '')}{mark} (importance: {fact.get('importance', 5)})"
+
+
+def _supporting_facts(based_on, facts: list[dict]) -> list[dict]:
+    """The facts a synthesized reflection rests on, by the model's ``based_on``.
+
+    ``based_on`` holds 1-based numbers of the numbered fact list. Unusable
+    entries are ignored; with none usable (field missing, older prompt, bad
+    shape) the whole batch counts, as before the field existed. Only the
+    head-start score and ``fact_source_counts`` use this; the reflection
+    still absorbs the whole batch (``source_fact_ids``).
+    """
+    if not isinstance(based_on, list):
+        return list(facts)
+    picked: list[dict] = []
+    seen: set[int] = set()
+    for item in based_on:
+        if isinstance(item, bool) or (isinstance(item, float) and not item.is_integer()):
+            continue
+        try:
+            n = int(item)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= n <= len(facts) and n not in seen:
+            seen.add(n)
+            picked.append(facts[n - 1])
+    return picked or list(facts)
 
 
 class SynthesisMixin:
@@ -351,7 +380,10 @@ class SynthesisMixin:
         )
         from config.prompts.prompts_memory import get_reflection_ai_disclosure_mark
         ai_mark = get_reflection_ai_disclosure_mark(prompt_lang)
-        facts_text = "\n".join(_synthesis_fact_line(f, ai_mark) for f in unabsorbed)
+        facts_text = "\n".join(
+            _synthesis_fact_line(f, ai_mark, number)
+            for number, f in enumerate(unabsorbed, 1)
+        )
         related_block = await self._build_related_context_block(
             lanlan_name,
             unabsorbed,
@@ -399,6 +431,7 @@ class SynthesisMixin:
                 logger.warning(f"[Reflection] LLM 返回非 dict: {type(result)}")
                 await self._abump_synth_backoff(lanlan_name, backoff_key, "non-dict response")
                 return []
+            supporting = _supporting_facts(result.get('based_on'), unabsorbed)
             skip_key = self._synthesis_skip_key(result, impression_candidates)
             if skip_key is None and result.get('skip') is True:
                 logger.info(
@@ -506,9 +539,10 @@ class SynthesisMixin:
         # starting scores without many user confirmations before CONFIRMED thresholds.
         # Bypass aapply_signal: synthesis has no event log. Initialize dictionaries
         # directly; synthesis is not event-sourced and initial values are ground truth.
-        # Only the user's facts earn a head start: the AI's own statements are
-        # no evidence, so a batch of them alone starts at 0.
-        user_facts = [f for f in unabsorbed if not is_ai_disclosure(f)]
+        # Only the user's facts among those the reflection rests on earn a head
+        # start: the AI's own statements are no evidence, and an unrelated
+        # user fact elsewhere in the batch is no evidence for this line.
+        user_facts = [f for f in supporting if not is_ai_disclosure(f)]
         initial_rein = (
             initial_reinforcement_from_importance(
                 max(safe_importance(f) for f in user_facts),
@@ -539,10 +573,11 @@ class SynthesisMixin:
             'entity': reflection_entity,
             'status': 'pending',  # pending | confirmed | denied | promoted | archived
             'source_fact_ids': source_fact_ids,
-            # How many of those facts are the user's and how many the AI's
-            # own (memory.evidence.awaits_user_signal holds back a reflection
+            # How many of the facts it rests on (``based_on``, else the whole
+            # batch) are the user's and how many the AI's own
+            # (memory.evidence.awaits_user_signal holds back a reflection
             # resting only on the latter).
-            'fact_source_counts': count_fact_sources(unabsorbed),
+            'fact_source_counts': count_fact_sources(supporting),
             'source_facts_oldest_at': _oldest_fact_time(unabsorbed),
             'created_at': now_iso,
             'feedback': None,

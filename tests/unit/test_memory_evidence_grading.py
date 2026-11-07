@@ -179,17 +179,20 @@ def _fact(fid: str, text: str, importance: int, source: str | None) -> dict:
     return fact
 
 
-async def _synthesize(tmp_path, facts):
+async def _synthesize(tmp_path, facts, based_on=None):
     _ev, _fs, _pm, engine, _cm = _install(str(tmp_path))
     _write_facts(str(tmp_path), "小天", facts)
     prompts: list[str] = []
+    answer = {"entity": "master", "relation_type": "preference",
+              "reflection": "主人喜欢在夜里听歌", "temporal_scope": "pattern",
+              "event_when": None}
+    if based_on is not None:
+        answer["based_on"] = based_on
 
     async def _fake_thinking(_api, prompt, **_kw):
         prompts.append(prompt)
         resp = MagicMock()
-        resp.content = '{"entity": "master", "relation_type": "preference", ' \
-                       '"reflection": "主人喜欢在夜里听歌", "temporal_scope": "pattern", ' \
-                       '"event_when": null}'
+        resp.content = json.dumps(answer, ensure_ascii=False)
         return resp, None
 
     with patch("memory.thinking_llm.ainvoke_thinking", _fake_thinking), \
@@ -212,6 +215,35 @@ async def test_synthesis_marks_ai_facts_and_seeds_from_user_facts_only(tmp_path)
     # user's importance-7 fact counts.
     assert reflection["reinforcement"] == pytest.approx(0.2)
     assert reflection["fact_source_counts"] == {"user": 1, "ai": 5}
+
+
+@pytest.mark.asyncio
+async def test_synthesis_counts_only_the_facts_the_reflection_rests_on(tmp_path):
+    """An unrelated user fact elsewhere in the batch is no backing: with
+    ``based_on`` naming only the AI's statements, the line starts at 0 and
+    waits for the user, though it still absorbs the whole batch."""
+    from memory.evidence import awaits_user_signal
+
+    facts = [_fact(f"ai{i}", f"小天说自己喜欢夜曲{i}", 10, "ai_disclosure") for i in range(5)]
+    facts.append(_fact("u1", "主人下周要出差", 9, "user_observation"))
+    reflection, prompt = await _synthesize(tmp_path, facts, based_on=[1, 2, "3"])
+
+    assert "- [6] 主人下周要出差 (importance: 9)" in prompt
+    assert reflection["fact_source_counts"] == {"user": 0, "ai": 3}
+    assert reflection["reinforcement"] == 0.0
+    assert awaits_user_signal(reflection) is True
+    assert sorted(reflection["source_fact_ids"]) == sorted(f["id"] for f in facts)
+
+
+@pytest.mark.asyncio
+async def test_synthesis_without_usable_based_on_counts_the_whole_batch(tmp_path):
+    facts = [_fact(f"ai{i}", f"小天说自己喜欢夜曲{i}", 10, "ai_disclosure") for i in range(5)]
+    facts.append(_fact("u1", "主人晚上会听歌", 9, "user_observation"))
+    reflection, _prompt = await _synthesize(
+        tmp_path, facts, based_on=["x", 0, 99, True, 1.5, None],
+    )
+    assert reflection["fact_source_counts"] == {"user": 1, "ai": 5}
+    assert reflection["reinforcement"] == pytest.approx(0.6)
 
 
 @pytest.mark.asyncio
@@ -534,6 +566,9 @@ def test_reflection_prompt_explains_the_ai_mark_in_every_language():
         mark = REFLECTION_AI_DISCLOSURE_MARK[lang]
         assert "{LANLAN_NAME}" in mark, lang
         assert mark.strip() in REFLECTION_PROMPT[lang], lang
+        # Asked for in the instructions and present in the JSON template.
+        assert REFLECTION_PROMPT[lang].count("based_on") >= 2, lang
+        assert '"based_on": [' in REFLECTION_PROMPT[lang], lang
 
 
 # The words each language uses for "absolute wording" in the rule.
