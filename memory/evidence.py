@@ -40,6 +40,7 @@ from config import (
     EVIDENCE_DISP_HALF_LIFE_DAYS,
     EVIDENCE_PROMOTED_THRESHOLD,
     EVIDENCE_REIN_HALF_LIFE_DAYS,
+    EVIDENCE_REINFORCEMENT_CAP,
     USER_FACT_REINFORCE_COMBO_BONUS,
     USER_FACT_REINFORCE_COMBO_THRESHOLD,
 )
@@ -52,6 +53,10 @@ __all__ = [
     "maybe_mark_sub_zero",
     "initial_reinforcement_from_importance",
     "compute_evidence_snapshot",
+    "is_ai_disclosure",
+    "count_fact_sources",
+    "merge_fact_source_counts",
+    "awaits_user_signal",
 ]
 
 # Note: RFC §3.10 funnel analytics (`funnel_counts`) lives in the sibling
@@ -67,6 +72,78 @@ __all__ = [
 # where EVIDENCE_SOURCE_USER_FACT is defined (evidence.py is loaded earlier
 # in the memory package graph).
 _SOURCE_USER_FACT = "user_fact"
+# check_feedback "confirmed" (EVIDENCE_SOURCE_USER_CONFIRM), same reason.
+_SOURCE_USER_CONFIRM = "user_confirm"
+
+# Fact ``source`` of the AI's own statements (memory.facts.FactStore._SOURCE_VALUES).
+_FACT_SOURCE_AI = "ai_disclosure"
+
+
+def is_ai_disclosure(fact: dict) -> bool:
+    """Whether a fact records the AI's own words rather than the user's.
+
+    A fact without ``source`` predates the field and counts as the user's,
+    the same default the fact store applies.
+    """
+    return isinstance(fact, dict) and fact.get("source") == _FACT_SOURCE_AI
+
+
+def count_fact_sources(facts) -> dict:
+    """``{'user': n, 'ai': m}`` for the facts a reflection is built on."""
+    ai = sum(1 for f in facts or () if is_ai_disclosure(f))
+    total = sum(1 for f in facts or () if isinstance(f, dict))
+    return {"user": total - ai, "ai": ai}
+
+
+def merge_fact_source_counts(entries, extra_facts=()) -> dict | None:
+    """Source counts of an entry built from ``entries`` plus ``extra_facts``.
+
+    None when any entry has no counts (it predates them): a partial sum
+    would claim a mix nobody counted, and no counts means no gate.
+    """
+    total = {"user": 0, "ai": 0}
+    for entry in entries or ():
+        counts = entry.get("fact_source_counts") if isinstance(entry, dict) else None
+        if not isinstance(counts, dict):
+            return None
+        for key in total:
+            try:
+                total[key] += max(int(counts.get(key, 0) or 0), 0)
+            except (TypeError, ValueError):
+                return None
+    extra = count_fact_sources(extra_facts)
+    for key in total:
+        total[key] += extra[key]
+    return total
+
+
+def awaits_user_signal(entry: dict) -> bool:
+    """Whether a reflection rests only on the AI's own words and the user has
+    not backed it yet.
+
+    Such a reflection is not confirmed or promoted by score and is not shown
+    in the chat prompt while pending; the AI may still bring it up, which is
+    how the user gets to confirm it. Backing means an explicit confirmation
+    (``user_confirm_count``) or a reinforcement from the user's own words
+    (``user_fact_reinforce_count``); an "engaged" reply does not count.
+    Entries without ``fact_source_counts`` predate the accounting and are
+    never held back.
+    """
+    if not isinstance(entry, dict):
+        return False
+    counts = entry.get("fact_source_counts")
+    if not isinstance(counts, dict):
+        return False
+    try:
+        user = int(counts.get("user", 0) or 0)
+        ai = int(counts.get("ai", 0) or 0)
+        confirms = int(entry.get("user_confirm_count", 0) or 0)
+        reinforces = int(entry.get("user_fact_reinforce_count", 0) or 0)
+    except (TypeError, ValueError):
+        return False
+    if user > 0 or ai <= 0:
+        return False
+    return confirms <= 0 and reinforces <= 0
 
 
 # Compact tuple-based tiers avoid an if chain: [(importance_threshold, rein), ...].
@@ -128,8 +205,11 @@ def effective_reinforcement(entry: dict, now: datetime) -> float:
     Independent timestamps: `rein_last_signal_at` is only reset when the
     reinforcement side is touched; `disp` events do not affect this
     computation (§3.1.1).
+
+    Stored values above ``EVIDENCE_REINFORCEMENT_CAP`` (written before the
+    cap existed) count as the cap.
     """
-    r = float(entry.get("reinforcement", 0.0) or 0.0)
+    r = min(float(entry.get("reinforcement", 0.0) or 0.0), EVIDENCE_REINFORCEMENT_CAP)
     if r == 0.0:
         return r
     age = _age_days(entry.get("rein_last_signal_at"), now)
@@ -200,10 +280,17 @@ def compute_evidence_snapshot(
       The count is never reset (the combo accumulates for life, symmetric
       with §3.5.3's "archive more aggressively" idea: positive accumulation
       is also lifelong, while decay still follows rein_last_signal_at).
+    Cap:
+      the new reinforcement is clamped to EVIDENCE_REINFORCEMENT_CAP, so
+      any write also brings an over-cap legacy value down to it.
+    Explicit confirmations:
+      ``user_confirm_count`` counts ``source='user_confirm'`` reinforces;
+      with ``user_fact_reinforce_count`` it tells ``awaits_user_signal``
+      whether the user ever backed the entry. Reflection-only in practice.
 
     Returns a dict containing:
       reinforcement, disputation, rein_last_signal_at, disp_last_signal_at,
-      sub_zero_days, user_fact_reinforce_count
+      sub_zero_days, user_fact_reinforce_count, user_confirm_count
     """
     rein_delta = float(delta.get("reinforcement", 0.0) or 0.0)
     disp_delta = float(delta.get("disputation", 0.0) or 0.0)
@@ -220,6 +307,11 @@ def compute_evidence_snapshot(
         new_count += 1
         if new_count > USER_FACT_REINFORCE_COMBO_THRESHOLD:
             new_rein += USER_FACT_REINFORCE_COMBO_BONUS
+    new_rein = min(new_rein, EVIDENCE_REINFORCEMENT_CAP)
+
+    confirm_count = int(entry.get("user_confirm_count", 0) or 0)
+    if source == _SOURCE_USER_CONFIRM and rein_delta > 0:
+        confirm_count += 1
 
     return {
         "reinforcement": new_rein,
@@ -230,6 +322,7 @@ def compute_evidence_snapshot(
             else entry.get("disp_last_signal_at"),
         "sub_zero_days": int(entry.get("sub_zero_days", 0) or 0),
         "user_fact_reinforce_count": new_count,
+        "user_confirm_count": confirm_count,
     }
 
 
@@ -273,6 +366,12 @@ def merged_evidence_state(sources: list[dict]) -> dict:
             value = src.get(key)
             if value and (state[key] is None or value > state[key]):
                 state[key] = value
+    # Reflection-only counter: carried when a source has it, so a merge
+    # keeps the user's confirmation; persona entries never get the key.
+    if any("user_confirm_count" in src for src in sources):
+        state["user_confirm_count"] = max(
+            int(src.get("user_confirm_count", 0) or 0) for src in sources
+        )
     return state
 
 
