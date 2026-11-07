@@ -118,6 +118,30 @@ function createWindow(pathname) {
     };
 }
 
+for (const attemptConsumed of [false, true, undefined]) {
+    test(`policy attempt_consumed=${attemptConsumed} preserves ordinary text backoff semantics`, async () => {
+        channels.length = 0; queue.length = 0; clock.now = 1_000_000;
+        const pet = createWindow('/');
+        let requests = 0;
+        pet.window.fetch = async () => { requests++; return { ok: true, status: 200,
+            json: async () => ({ success: true, action: 'pass', ...(attemptConsumed === undefined ? {} : { attempt_consumed: attemptConsumed }) }) }; };
+        pet.window.scheduleProactiveChat();
+        clock.now += pet.scheduledDelay(); await pet.fire();
+        assert.equal(requests, 1, 'the real trigger must reach the server response');
+        assert.equal(pet.appState.proactiveChatBackoffLevel, attemptConsumed === false ? 0 : 1);
+    });
+}
+
+test('a voice policy pass does not consume the no-response quota', async () => {
+    channels.length = 0; queue.length = 0; clock.now = 1_000_000;
+    const pet = createWindow('/'); let requests = 0;
+    pet.appState.isRecording = true; pet.appState._voiceProactiveNoResponseCount = 3;
+    pet.window.fetch = async () => { requests++; return { ok: true, status: 200,
+        json: async () => ({ success: true, action: 'pass', attempt_consumed: false }) }; };
+    pet.window.scheduleProactiveChat(); clock.now += pet.scheduledDelay(); await pet.fire();
+    assert.equal(requests, 1); assert.equal(pet.appState._voiceProactiveNoResponseCount, 3);
+});
+
 test('持续输入会刷新判定窗口，到期后才搭话', async () => {
     channels.length = 0;
     queue.length = 0;

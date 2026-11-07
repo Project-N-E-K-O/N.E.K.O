@@ -16,6 +16,7 @@
 """HTTP adapters and compatibility exports for proactive chat."""
 
 import asyncio
+import sqlite3
 from typing import Any
 
 from fastapi import Request
@@ -40,7 +41,7 @@ from main_logic.proactive_chat.music_recommendation import (
 )
 from main_logic.proactive_chat.music_refusal import record_music_card_choice
 from utils.theater_activity import is_theater_active
-from main_routers.recommendation_router import capture_owner, attach_music_recommendation, attach_proactive_recommendations
+from main_routers.recommendation_router import capture_owner, capture_policy, attach_music_recommendation, attach_proactive_recommendations
 
 from ..shared_state import get_config_manager, get_session_manager
 from ._shared import _validate_local_mutation_request, logger, router
@@ -192,8 +193,20 @@ async def proactive_chat(request: Request):
         try:
             recommendation_owner = await capture_owner()
         except Exception as exc:
-            recommendation_owner = None
             logger.warning("Recommendation identity unavailable: %s", type(exc).__name__)
+            return JSONResponse(_proactive_error_body(
+                PROACTIVE_REASON_ERROR_INTERNAL, error="recommendation_policy_unavailable", attempt_consumed=False,
+            ), status_code=503)
+        recommendation_policy = None
+        recommendation_character_uid = None
+        if recommendation_owner is not None:
+            try:
+                recommendation_policy, recommendation_character_uid = await capture_policy(lanlan_name, recommendation_owner)
+            except (OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
+                logger.warning("Recommendation policy unavailable: %s", type(exc).__name__)
+                return JSONResponse(_proactive_error_body(
+                    PROACTIVE_REASON_ERROR_INTERNAL, error="recommendation_policy_unavailable", attempt_consumed=False,
+                ), status_code=503)
         result = await proactive_service.handle_proactive_chat(
             command,
             config_manager=config_manager,
@@ -205,17 +218,20 @@ async def proactive_chat(request: Request):
             push_mini_game_invite_options=_push_mini_game_invite_options,
             push_mini_game_invite_resolved=_push_mini_game_invite_resolved,
             meme_proxy_candidate_fetchable=_meme_proxy_candidate_fetchable,
+            recommendation_policy=recommendation_policy,
         )
         try:
             if recommendation_owner is not None:
-                await attach_music_recommendation(result.body, recommendation_owner, lanlan_name)
+                await attach_music_recommendation(result.body, recommendation_owner, lanlan_name,
+                                                  character_uid=recommendation_character_uid)
         except Exception as exc:
             # Delivery already committed. Evidence failure must not replay the
             # dialogue or silently restore autoplay on the client.
             logger.warning("Music recommendation registration failed: %s", type(exc).__name__)
         try:
             if recommendation_owner is not None:
-                await attach_proactive_recommendations(result.body, recommendation_owner, lanlan_name)
+                await attach_proactive_recommendations(result.body, recommendation_owner, lanlan_name,
+                                                       character_uid=recommendation_character_uid)
         except Exception as exc:
             logger.warning("Proactive recommendation registration failed: %s", type(exc).__name__)
         return _adapt_result(result)

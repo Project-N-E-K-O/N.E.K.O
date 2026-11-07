@@ -18,7 +18,7 @@
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from config import MEMORY_SERVER_PORT
 from config.prompts.prompts_proactive import build_proactive_action_note
@@ -28,6 +28,7 @@ from .contracts import (
     PROACTIVE_REASON_CHAT_DELIVERED,
     PROACTIVE_REASON_DELIVERY_FAILED,
     PROACTIVE_REASON_DELIVERY_PREEMPTED,
+    PROACTIVE_REASON_PASS_USER_COOLDOWN,
     ProactiveChatResult,
     _ensure_proactive_reason_code,
     _proactive_chat_body,
@@ -225,11 +226,31 @@ async def _commit_proactive_delivery(
     master_name: str,
     log: logging.Logger | None = None,
     round_id: str | None = None,
+    delivery_allowed: Callable[[], bool] | None = None,
 ) -> DeliveryCommit:
     """Build, feed, and atomically finish one proactive delivery."""
     active_logger = log or logger
     # The TTS/commit critical sections recheck round ownership themselves.
     delivery_round = {"expected_round_id": round_id} if round_id is not None else {}
+    policy_kwargs = {"delivery_allowed": delivery_allowed} if delivery_allowed is not None else {}
+
+    async def policy_rejected(*, discard_audio: bool = False) -> DeliveryCommit:
+        if discard_audio:
+            try:
+                await mgr.discard_proactive_delivery(
+                    expected_speech_id=proactive_sid, **delivery_round,
+                )
+            except Exception as exc:
+                # Publication is already denied. A cleanup failure must never
+                # fall through to handle_new_message and rotate a user's SID.
+                active_logger.warning("[%s] rejected proactive audio cleanup failed: %s", lanlan_name, exc)
+        return DeliveryCommit(result=ProactiveChatResult(body=_proactive_pass_body(
+            PROACTIVE_REASON_PASS_USER_COOLDOWN, attempt_consumed=False,
+            message="recommendation policy changed before publication",
+        )), delivery=None)
+
+    if delivery_allowed is not None and not delivery_allowed():
+        return await policy_rejected()
     has_music_topic = "music" in active_channels
     primary_channel, source_links = build_proactive_response(
         source_tag,
@@ -303,7 +324,10 @@ async def _commit_proactive_delivery(
             expected_speech_id=proactive_sid,
             expected_user_engagement_time=expected_user_engagement_time,
             **delivery_round,
+            **policy_kwargs,
         )
+        if delivery_allowed is not None and not delivery_allowed():
+            return await policy_rejected(discard_audio=tts_accepted is not False)
         if tts_accepted is False and _proactive_feed_rejected_for_takeover(
             mgr,
             proactive_sid,
@@ -339,6 +363,7 @@ async def _commit_proactive_delivery(
             source_tag=delivered_tag,
             vision_screenshot_b64=staged_screenshot,
             **delivery_round,
+            **policy_kwargs,
         )
     except Exception as exc:
         active_logger.warning(
@@ -364,6 +389,8 @@ async def _commit_proactive_delivery(
         )
 
     if not committed:
+        if delivery_allowed is not None and not delivery_allowed():
+            return await policy_rejected(discard_audio=tts_accepted is not False)
         active_logger.info(
             "[%s] 主动搭话被用户接管，短路下游写入（topic/memory/response）",
             lanlan_name,

@@ -37,6 +37,10 @@ def test_real_committed_route_preserves_dialogue_but_grants_only_registered_card
     async def committed(*args, **kwargs):
         if outcome == "owner_changed":
             snapshot["local_user_id"] = "replacement"
+        elif outcome == "database":
+            # Policy admission reads the database before generation. This case
+            # models registration failing after dialogue already committed.
+            db_path.write_bytes(b"Existing unreadable database must be preserved")
         return ProactiveChatResult(body=dict(body))
 
     # Only upstream generation is isolated. Identity capture/recheck, registry
@@ -47,8 +51,6 @@ def test_real_committed_route_preserves_dialogue_but_grants_only_registered_card
         monkeypatch.setattr(RecommendationStore, "MAX_RECOMMENDATIONS", 1)
         routes._operate(lambda store, owner: store.create(owner, "Neko", "older-turn",
                         {"name": "Older", "artist": "Artist", "url": "https://media.example/old"}, {}))
-    elif outcome == "database":
-        db_path.write_bytes(b"Existing unreadable database must be preserved")
 
     result = http.post("/api/proactive_chat", json={"enabled_modes": ["meme"]})
     assert result.status_code == 200

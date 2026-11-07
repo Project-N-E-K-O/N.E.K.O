@@ -19,6 +19,10 @@ from pathlib import Path
 from typing import Literal, get_args
 from urllib.parse import urlsplit
 
+from services.proactive_feedback.rules import (
+    POLICY_RETENTION_SECONDS, apply_policy_decision, canonical_category,
+)
+
 
 RecommendationEventKind = Literal["shown", "accepted", "skipped", "playing", "paused", "ended", "stopped", "failed"]
 RECOMMENDATION_EVENT_KINDS = frozenset(get_args(RecommendationEventKind))
@@ -103,6 +107,7 @@ class RecommendationStore:
                 playback_id TEXT, listened_seconds REAL NOT NULL,
                 position_seconds REAL NOT NULL, reason TEXT NOT NULL)""")
             self._sync_schema(db)
+            self._policy_schema(db)
             if self.protocol_version == 2:
                 self._v2_schema(db)
             db.execute("PRAGMA user_version=2")
@@ -115,6 +120,130 @@ class RecommendationStore:
             raise
         finally:
             db.close()
+
+    @staticmethod
+    def _policy_schema(db):
+        # Operational preferences have their own lifetime, not the telemetry
+        # spool/ACK/clear-generation lifetime. Existing facts are not replayed.
+        db.execute("""CREATE TABLE IF NOT EXISTS recommendation_policy (
+            owner TEXT NOT NULL, character_uid TEXT NOT NULL, category TEXT NOT NULL,
+            revision INTEGER NOT NULL, cooldown_until REAL NOT NULL,
+            decline_count REAL NOT NULL, updated_at REAL NOT NULL,
+            PRIMARY KEY(owner,character_uid,category))""")
+        db.execute("""CREATE TABLE IF NOT EXISTS recommendation_policy_offers (
+            recommendation_id TEXT PRIMARY KEY REFERENCES recommendations(id) ON DELETE CASCADE,
+            character_uid TEXT NOT NULL, category TEXT NOT NULL,
+            policy_revision INTEGER NOT NULL)""")
+        db.execute("""CREATE TABLE IF NOT EXISTS recommendation_policy_owners (
+            owner TEXT PRIMARY KEY, account_incarnation TEXT NOT NULL)""")
+        # One bounded sequence survives expiry of per-role projections. A new
+        # refusal must outrank a still-live process's pre-GC cached revision.
+        db.execute("""CREATE TABLE IF NOT EXISTS recommendation_policy_sequence (
+            singleton INTEGER PRIMARY KEY CHECK(singleton=1), revision INTEGER NOT NULL)""")
+        if not db.execute("SELECT 1 FROM recommendation_policy_sequence WHERE singleton=1").fetchone():
+            db.execute("""INSERT INTO recommendation_policy_sequence
+                SELECT 1,coalesce(max(revision),0) FROM recommendation_policy""")
+
+    @staticmethod
+    def _policy_snapshot(db, owner, character_uid):
+        rows = db.execute("""SELECT category,revision,cooldown_until,decline_count,updated_at
+            FROM recommendation_policy WHERE owner=? AND character_uid=?""",
+            (owner["key"], character_uid)).fetchall()
+        return {row["category"]: {key: row[key] for key in
+                ("revision", "cooldown_until", "decline_count", "updated_at")} for row in rows}
+
+    def get_policy(self, owner: dict, character_uid: str, *, control: dict | None = None) -> dict:
+        """Read the local operational projection, independently of cloud custody."""
+        return self.get_policy_context(owner, character_uid, control=control)["policy"]
+
+    def get_policy_context(self, owner: dict, character_uid: str, *, control: dict | None = None) -> dict:
+        """Bind an immutable policy read to its known account instance.
+
+        A missing live capture provider during bootstrap does not erase the
+        persisted account identity. A fresh verified replacement hides the old
+        projection without turning this query into an implicit delete command.
+        """
+        with self._transaction() as db:
+            if self.protocol_version == 2 and control is not None:
+                saved = db.execute("SELECT snapshot FROM feedback_v2_controls WHERE owner=?",
+                                   (owner["key"],)).fetchone()
+                previous = json.loads(saved[0]) if saved else None
+                revision = control.get("binding_revision")
+                if previous and type(revision) is int and revision < previous.get("binding_revision", 0):
+                    # A cancelled refresh may have committed SQL before its
+                    # live capture provider received the replacement binding.
+                    control = previous
+            old = db.execute("SELECT account_incarnation FROM recommendation_policy_owners WHERE owner=?",
+                             (owner["key"],)).fetchone()
+            persisted = old[0] if old else None
+            incarnation = (control or {}).get("account_incarnation")
+            if not isinstance(incarnation, str) or not incarnation:
+                incarnation = persisted
+            policy = {} if persisted and persisted != incarnation else self._policy_snapshot(db, owner, character_uid)
+            return {"policy": policy, "account_incarnation": incarnation}
+
+    @staticmethod
+    def _policy_observe_incarnation(db, owner, control):
+        incarnation = (control or {}).get("account_incarnation")
+        if not isinstance(incarnation, str) or not incarnation:
+            return
+        old = db.execute("SELECT account_incarnation FROM recommendation_policy_owners WHERE owner=?",
+                         (owner["key"],)).fetchone()
+        if old and old[0] != incarnation:
+            db.execute("DELETE FROM recommendation_policy WHERE owner=?", (owner["key"],))
+            # Late actions on cards from the previous account cannot acquire
+            # the replacement account's projection, even at the same revision.
+            db.execute("""DELETE FROM recommendation_policy_offers WHERE recommendation_id IN
+                (SELECT id FROM recommendations WHERE owner=?)""", (owner["key"],))
+        db.execute("INSERT OR REPLACE INTO recommendation_policy_owners VALUES (?,?)",
+                   (owner["key"], incarnation))
+
+    def _policy_bind_offer(self, db, owner, recommendation_id, character_uid, category, control=None):
+        category = canonical_category(category)
+        if character_uid is None or category is None:
+            return
+        if not isinstance(character_uid, str) or not re.fullmatch(r"[a-f0-9]{32}", character_uid):
+            raise FeedbackConflict("invalid_character_uid")
+        now = time.time()
+        db.execute("""DELETE FROM recommendation_policy WHERE rowid IN
+            (SELECT rowid FROM recommendation_policy WHERE updated_at<? AND cooldown_until<=?
+             ORDER BY updated_at LIMIT 256)""", (now - POLICY_RETENTION_SECONDS, now))
+        if self.protocol_version == 2:
+            persisted = db.execute("SELECT snapshot FROM feedback_v2_controls WHERE owner=?",
+                                   (owner["key"],)).fetchone()
+            self._policy_observe_incarnation(db, owner, json.loads(persisted[0]) if persisted else control)
+        state = self._policy_snapshot(db, owner, character_uid).get(category)
+        db.execute("INSERT INTO recommendation_policy_offers VALUES (?,?,?,?)",
+                   (recommendation_id, character_uid, category, state["revision"] if state else 0))
+
+    def _policy_result(self, db, row, event, applied):
+        result = self._result(row, event, applied)
+        offer = db.execute("SELECT * FROM recommendation_policy_offers WHERE recommendation_id=?",
+                           (row["id"],)).fetchone()
+        if offer is None:
+            return result
+        owner = {"key": row["owner"]}
+        snapshot = self._policy_snapshot(db, owner, offer["character_uid"])
+        if applied:
+            updated = apply_policy_decision(snapshot.get(offer["category"]), event["kind"],
+                now=time.time(), offer_revision=offer["policy_revision"], reason=event.get("reason", ""))
+            if updated is not None:
+                db.execute("UPDATE recommendation_policy_sequence SET revision=revision+1 WHERE singleton=1")
+                updated["revision"] = db.execute(
+                    "SELECT revision FROM recommendation_policy_sequence WHERE singleton=1").fetchone()[0]
+                db.execute("""INSERT INTO recommendation_policy VALUES (?,?,?,?,?,?,?)
+                    ON CONFLICT(owner,character_uid,category) DO UPDATE SET
+                    revision=excluded.revision,cooldown_until=excluded.cooldown_until,
+                    decline_count=excluded.decline_count,updated_at=excluded.updated_at""",
+                    (row["owner"], offer["character_uid"], offer["category"], updated["revision"],
+                     updated["cooldown_until"], updated["decline_count"], updated["updated_at"]))
+                snapshot[offer["category"]] = updated
+        result["policy_character_uid"] = offer["character_uid"]
+        result["policy"] = snapshot
+        incarnation = db.execute("SELECT account_incarnation FROM recommendation_policy_owners WHERE owner=?",
+                                 (row["owner"],)).fetchone()
+        result["policy_account_incarnation"] = incarnation[0] if incarnation else None
+        return result
 
     @staticmethod
     def _sync_schema(db):
@@ -253,9 +382,9 @@ class RecommendationStore:
                 "position_seconds": saved["position_seconds"], "reason": reason,
                 "measurement_version": "media-played-union-v1"}
 
-    def create(self, owner: dict, character: str, turn_id: str, track: dict, settings: dict, *, category: str = "music", control: dict | None = None):
+    def create(self, owner: dict, character: str, turn_id: str, track: dict, settings: dict, *, category: str = "music", control: dict | None = None, character_uid: str | None = None):
         if self.protocol_version == 2:
-            return self._create_v2(owner, character, turn_id, track, settings, category=category, control=control)
+            return self._create_v2(owner, character, turn_id, track, settings, category=category, control=control, character_uid=character_uid)
         now = time.time()
         recommendation_id = str(uuid.uuid4())
         # Media URLs may be signed. Evidence stores content metadata, never
@@ -278,6 +407,7 @@ class RecommendationStore:
             )
             row = db.execute("SELECT * FROM recommendations WHERE id=?", (recommendation_id,)).fetchone()
             self._enqueue(db, owner, "recommendation", recommendation_id, self._recommendation_payload(row))
+            self._policy_bind_offer(db, owner, recommendation_id, character_uid, category, control)
         return {"id": recommendation_id, "track": track, "state": "pending",
                 "expires_at": now + self.TTL_SECONDS}
 
@@ -311,10 +441,10 @@ class RecommendationStore:
             if old:
                 if old["recommendation_id"] != recommendation_id or old["kind"] != kind:
                     raise FeedbackConflict("feedback_event_collision")
-                return self._result(row, event, False)
+                return self._policy_result(db, row, event, False)
             if kind in {"accepted", "skipped"}:
                 if row["decision"] is not None:
-                    return self._result(row, event, False)
+                    return self._policy_result(db, row, event, False)
                 if now > row["expires_at"]:
                     raise FeedbackConflict("recommendation_expired")
                 db.execute("UPDATE recommendations SET decision=?, decision_event=?, state=? WHERE id=?",
@@ -328,12 +458,12 @@ class RecommendationStore:
                 if row["playback_id"] and row["playback_id"] != playback_id:
                     raise FeedbackConflict("playback_owner_changed")
                 if row["state"] in {"ended", "stopped", "failed"}:
-                    return self._result(row, event, False)
+                    return self._policy_result(db, row, event, False)
                 db.execute("UPDATE recommendations SET state=?, playback_id=? WHERE id=?",
                            (kind, playback_id, recommendation_id))
             elif db.execute("SELECT 1 FROM recommendation_events WHERE recommendation_id=? AND kind='shown'",
                             (recommendation_id,)).fetchone():
-                return self._result(row, event, False)
+                return self._policy_result(db, row, event, False)
             if self._awaiting_ack(db, "event") >= self.MAX_EVENTS:
                 raise FeedbackConflict("feedback_capacity_reached")
             db.execute("""INSERT INTO recommendation_events
@@ -360,7 +490,7 @@ class RecommendationStore:
             saved = db.execute("SELECT * FROM recommendation_events WHERE event_id=?", (event["event_id"],)).fetchone()
             self._enqueue(db, owner, "event", saved["event_id"], self._event_payload(saved))
             row = db.execute("SELECT * FROM recommendations WHERE id=?", (recommendation_id,)).fetchone()
-            return self._result(row, event, True)
+            return self._policy_result(db, row, event, True)
 
     @staticmethod
     def _result(row, event, applied):
@@ -700,6 +830,7 @@ class RecommendationStore:
                 if any(snapshot.get(key) != previous.get(key) for key in self._BINDING_FIELDS):
                     raise FeedbackConflict("feedback_binding_revision_collision")
             db.execute("INSERT OR REPLACE INTO feedback_v2_controls VALUES (?,?)", (owner["key"], _canonical(snapshot)))
+            self._policy_observe_incarnation(db, owner, snapshot)
             binding_changed = previous and any(snapshot.get(key) != previous.get(key) for key in self._BINDING_FIELDS)
             if previous and any(snapshot.get(key) != previous.get(key)
                                 for key in ("account_incarnation", "clear_generation")):
@@ -882,7 +1013,7 @@ class RecommendationStore:
                 return "held", "time_unproven"
         return "ready", ""
 
-    def _create_v2(self, owner, character, turn_id, track, settings, *, category, control):
+    def _create_v2(self, owner, character, turn_id, track, settings, *, category, control, character_uid=None):
         now = time.time()
         offer_id = str(uuid.uuid4())
         source = urlsplit(track.get("url", "")).hostname or ""
@@ -899,6 +1030,7 @@ class RecommendationStore:
                 VALUES (?,?,?,?,?,?,?,?,?,?)""", (offer_id, owner["key"], owner.get("user_id"), owner.get("community"),
                     character, turn_id, _canonical(metadata), _canonical(settings), now, now + self.TTL_SECONDS))
             db.execute("INSERT INTO feedback_v2_offers(offer_id,context,expires_at) VALUES (?,?,?)", (offer_id, _canonical(context), now + self.TTL_SECONDS))
+            self._policy_bind_offer(db, owner, offer_id, character_uid, category, control)
         return {"id": offer_id, "track": track, "state": "pending", "expires_at": now + self.TTL_SECONDS,
                 "offer_context": context}
 
@@ -984,6 +1116,7 @@ class RecommendationStore:
             persisted = db.execute("SELECT snapshot FROM feedback_v2_controls WHERE owner=?", (owner["key"],)).fetchone()
             if persisted:
                 control = json.loads(persisted[0])
+            self._policy_observe_incarnation(db, owner, control)
             row = db.execute("SELECT * FROM recommendations WHERE id=? AND owner=?", (recommendation_id, owner["key"])).fetchone()
             if row is None:
                 raise FeedbackConflict("recommendation_not_found")
@@ -1007,7 +1140,7 @@ class RecommendationStore:
             if saved:
                 if saved["recommendation_id"] != recommendation_id or saved["v2_hash"] != event_hash:
                     raise FeedbackConflict("feedback_event_collision")
-                result = self._result(row, original, False)
+                result = self._policy_result(db, row, original, False)
                 result["telemetry"] = json.loads(saved["v2_custody"])
                 state, reason = self._v2_classify(owner, original, control, proof)
                 if state == "discarded":
@@ -1018,7 +1151,7 @@ class RecommendationStore:
             if existing and existing[0] != event_hash:
                 raise FeedbackConflict("feedback_event_collision")
             if existing:
-                result = self._result(row, original, False)
+                result = self._policy_result(db, row, original, False)
                 result["telemetry"] = self._v2_custody(db, owner, original, proof, event_hash, category, control, recommendation_id)
                 received = db.execute("SELECT created_at FROM feedback_v2_spool WHERE owner=? AND event_id=?",
                                       (owner["key"], original["event_id"])).fetchone()
@@ -1088,7 +1221,7 @@ class RecommendationStore:
                 # already committed decision into a fresh statistic.
                 custody = {"event_id": original["event_id"], "payload_hash": event_hash, "status": "discarded", "reason": "already_applied"}
             row = db.execute("SELECT * FROM recommendations WHERE id=?", (recommendation_id,)).fetchone()
-            result = self._result(row, original, applied)
+            result = self._policy_result(db, row, original, applied)
             result["telemetry"] = custody
             if ((applied or kind == "measurement")
                     and custody.get("reason") not in {"binding_changed", "capacity_reached"}):

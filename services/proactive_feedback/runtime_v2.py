@@ -10,7 +10,7 @@ import uuid
 
 import httpx
 
-from services.proactive_feedback import host
+from services.proactive_feedback import host, policy
 from services.proactive_feedback.protocol import canonical_bytes, valid_receipt
 from services.proactive_feedback.runtime import ProactiveFeedbackRuntime, SettingsAcknowledgementPending, SyncFailure
 from portalocker.exceptions import LockException
@@ -145,7 +145,13 @@ class ProactiveFeedbackRuntimeV2(ProactiveFeedbackRuntime):
         with self.attribution_context() as current_owner:
             if self._closing or current_owner != owner:
                 raise SyncFailure("session_changed")
-            return self.store.apply_control(owner, control)
+            applied = self.store.apply_control(owner, control)
+            if applied:
+                # SQLite has committed this verified account transition. Retire
+                # live delivery leases before this worker returns, even if its
+                # asyncio waiter is cancelled during the control transaction.
+                policy.registry.observe(self.store.path, owner, incarnation=control["account_incarnation"])
+            return applied
 
     def _record_failure(self, code, owner=None):
         self._control_state = code

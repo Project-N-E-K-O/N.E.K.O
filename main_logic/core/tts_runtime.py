@@ -1311,13 +1311,18 @@ class TtsRuntimeMixin:
         if still_owned is None or still_owned():
             self._drain_tts_responses(interrupt[1])
 
-    async def _finish_tts_clear(self, interrupt) -> None:
+    async def _finish_tts_clear(self, interrupt, still_owned=None) -> None:
         """The last step of ``_clear_tts_pipeline``, given what
-        ``_interrupt_tts_now`` returned: the pending caches."""
+        ``_interrupt_tts_now`` returned: the pending caches.
+
+        A caller-owned cleanup may additionally guard the turn after lock waiting.
+        """
         if interrupt is None:
             return
         runtime, response_queue, pending_chunks, session, speech_id, _interrupted = interrupt
         async with self.tts_cache_lock:
+            if still_owned is not None and not still_owned():
+                return
             owns_queues = (runtime is getattr(self, "_tts_runtime", None)
                            and response_queue is self.tts_response_queue)
             owns_transferred_replay = (

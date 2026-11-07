@@ -50,15 +50,23 @@ async function run(){
     require(path.join(pcRoot,'src/ipc-router.js')).setupIPCRouter({getWindows:()=>({pet:owner,chat:follower}),log(){}});
     await follower.loadURL(url+'?follower=1');await waitFor(follower,'window.smokeReady');
     await owner.loadURL(url+'?follower=1');await waitFor(owner,'window.smokeReady');
-    await owner.webContents.executeJavaScript("for(const item of [...window.smokeContentRecommendations].reverse()){if(item.category==='meme'){item.content.title='表情包_2';item.content.source='斗图啦';}window.nekoRecommendations.offer(item,'content-'+item.category)}");
+    await owner.webContents.executeJavaScript(`for(const item of [...window.smokeContentRecommendations].reverse()){
+        if(item.category==='meme'){item.content.title='表情包_2';item.content.source='斗图啦';}
+        const turnId='content-'+item.id;
+        if(item.category==='vision'&&!item.content.url)window.__nekoMirrorChatAppend(window.reactChatWindowHost,{
+            id:'screen-line-'+item.id,role:'assistant',author:'Neko',time:'',turnId,
+            blocks:[{type:'text',text:item.content.title}]});
+        window.nekoRecommendations.offer(item,turnId);
+    }`);
     stage='all-source-cards-mirror';
-    await waitFor(follower,"document.querySelectorAll('.proactive-recommendation-card').length===8");
+    await waitFor(follower,"document.querySelectorAll('.proactive-recommendation-card').length===6 && document.querySelectorAll('.screen-observation-exposure').length===2");
+    assert.equal(await follower.webContents.executeJavaScript("!!document.querySelector('[data-proactive-category=vision]')"),false,'direct screen observations use their spoken line without a duplicate card');
     stage='retired-placeholder-replay';
     await owner.webContents.executeJavaScript(`for(const category of ['chat','news'])window.__nekoMirrorChatAppend(window.reactChatWindowHost,{
         id:'retired-'+category,role:'assistant',author:'Neko',time:'',blocks:[{
             type:'proactive_recommendation',recommendationId:crypto.randomUUID(),category,
             state:category==='chat'?'accepted':'pending',content:{title:'',source:'',url:''}}]});`);
-    await waitFor(follower,"document.querySelectorAll('.proactive-recommendation-card').length===8");
+    await waitFor(follower,"document.querySelectorAll('.proactive-recommendation-card').length===6");
     assert.equal(await follower.webContents.executeJavaScript("!!document.querySelector('[data-proactive-category=chat]')"),false);
     assert.equal(await follower.webContents.executeJavaScript("!!document.querySelector('[data-message-id^=retired-]')"),false,'retired cards do not leave empty history rows');
     await follower.webContents.executeJavaScript("document.querySelector('[data-proactive-category=\"news\"]').scrollIntoView({block:'start',behavior:'instant'})");
@@ -66,7 +74,15 @@ async function run(){
     assert.equal(await owner.webContents.executeJavaScript("fetch('/api/proactive/recommendations/events',{headers:{'X-CSRF-Token':'smoke-token'}}).then(r=>r.json()).then(x=>x.events.some(e=>e.kind==='accepted'))"),false,'direct delivery must not fabricate acceptance');
     stage='late-window-replay';
     await follower.loadURL(url+'?follower=1&late=1');
-    await waitFor(follower,"window.smokeReady && document.querySelectorAll('.proactive-recommendation-card').length===8");
+    await waitFor(follower,'window.smokeReady');
+    // Recommendation snapshots replay cards; ordinary dialogue is loaded from
+    // chat history by the real host. Supply that history separately on reload.
+    await follower.webContents.executeJavaScript(`for(const item of window.smokeContentRecommendations){
+        if(item.category==='vision'&&!item.content.url)window.reactChatWindowHost.appendMessage({
+            id:'screen-line-'+item.id,role:'assistant',author:'Neko',time:'',turnId:'content-'+item.id,
+            blocks:[{type:'text',text:item.content.title}]});
+    }`);
+    await waitFor(follower,"window.smokeReady && document.querySelectorAll('.proactive-recommendation-card').length===6 && document.querySelectorAll('.screen-observation-exposure').length===2");
     await owner.webContents.executeJavaScript("window.setSmokeSurfaceMode('compact')");
     await waitFor(owner,"!!document.querySelector('.compact-proactive-recommendation-prompt [data-proactive-category=\"news\"]')");
     await capture(owner,'.compact-proactive-recommendation-prompt','content-compact-bubble.png');
@@ -79,7 +95,9 @@ async function run(){
     for(const item of seeds){
         stage='deliver-'+item.category;
         const selector=`[data-recommendation-id="${item.id}"]`;
-        await follower.webContents.executeJavaScript(`document.querySelector(${JSON.stringify(selector)}).scrollIntoView({block:'center',behavior:'instant'})`);
+        const directScreen=item.category==='vision'&&!item.content.url;
+        const visibleSelector=directScreen?`[data-message-id="screen-line-${item.id}"]`:selector;
+        await follower.webContents.executeJavaScript(`document.querySelector(${JSON.stringify(visibleSelector)}).scrollIntoView({block:'center',behavior:'instant'})`);
         await waitFor(follower,`fetch('/api/proactive/recommendations/events',{headers:{'X-CSRF-Token':'smoke-token'}}).then(r=>r.json()).then(x=>x.events.some(e=>e.recommendation_id===${JSON.stringify(item.id)}&&e.kind==='shown'))`);
         if(item.category==='meme' || (item.category==='vision' && !item.content.url)){
             assert.equal(await follower.webContents.executeJavaScript(`!!document.querySelector('${selector} .proactive-recommendation-actions')`),false,'direct material has no acceptance step');
@@ -89,7 +107,8 @@ async function run(){
                 await click(follower,selector+' .proactive-recommendation-preview-toggle');
                 await waitFor(owner,`!document.querySelector('${selector} img')`);
             }else{
-                await capture(follower,selector,'screen-full-direct.png');
+                assert.equal(await follower.webContents.executeJavaScript(`document.body.innerText.split(${JSON.stringify(item.content.title)}).length-1`),1,'the spoken screen line appears once');
+                fs.writeFileSync(path.join(output,'screen-full-direct.png'),(await follower.webContents.capturePage()).toPNG());
             }
             continue;
         }
@@ -98,6 +117,11 @@ async function run(){
             await Promise.all([click(owner,selector+' button'),click(follower,selector+' button')]);
         }else await click(follower,selector+(decision==='skipped'?' button:nth-child(2)':' button'));
         await waitFor(follower,`fetch('/api/proactive/recommendations/events',{headers:{'X-CSRF-Token':'smoke-token'}}).then(r=>r.json()).then(x=>x.events.some(e=>e.recommendation_id===${JSON.stringify(item.id)}&&e.kind===${JSON.stringify(decision)}))`);
+        if(item.category==='news'){
+            await waitFor(follower,`document.querySelector('${selector} [role=status]')?.textContent===window.t('proactiveCard.skipped')`);
+            await follower.webContents.executeJavaScript(`document.querySelector('${selector}').scrollIntoView({block:'center',behavior:'instant'});new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
+            await capture(follower,selector,'content-news-skipped.png');
+        }
     }
     stage='durable-categorized-evidence';
     const data=await follower.webContents.executeJavaScript("fetch('/api/proactive/recommendations/events',{headers:{'X-CSRF-Token':'smoke-token'}}).then(r=>r.json())");

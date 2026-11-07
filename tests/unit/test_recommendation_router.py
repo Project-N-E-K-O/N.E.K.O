@@ -8,6 +8,9 @@ from fastapi.testclient import TestClient
 
 from main_routers import recommendation_router as routes
 from main_routers.system_router import _shared
+from utils.config_manager.reserved_schema import set_reserved
+
+UID = "a" * 32
 
 
 @pytest.fixture
@@ -21,7 +24,12 @@ def client(tmp_path, monkeypatch):
             yield
     monkeypatch.setattr(routes.host, "saved_session_snapshot", lambda: dict(snapshot))
     monkeypatch.setattr(routes.host, "saved_session_writer_fence", fence)
-    monkeypatch.setattr(routes, "get_config_manager", lambda: SimpleNamespace(get_runtime_config_path=lambda name: tmp_path / name))
+    profile = {}
+    set_reserved(profile, "character_uid", UID)
+    monkeypatch.setattr(routes, "get_config_manager", lambda: SimpleNamespace(
+        get_runtime_config_path=lambda name: tmp_path / name,
+        load_characters=lambda: {"猫娘": {"Neko": profile}},
+    ))
     monkeypatch.setattr(routes, "load_global_conversation_settings", lambda: {"proactiveMusicEnabled": True})
     monkeypatch.setattr(_shared, "AUTOSTART_CSRF_TOKEN", "test-token")
     app = FastAPI()
@@ -35,7 +43,7 @@ async def create():
     body = {"success": True, "action": "chat", "source_mode": "music", "turn_id": "turn",
             "source_links": [{"title": "Song", "artist": "Artist", "url": "https://example.com/a.mp3"}]}
     owner = await routes.capture_owner()
-    await routes.attach_music_recommendation(body, owner, "Neko")
+    await routes.attach_music_recommendation(body, owner, "Neko", character_uid=UID)
     return body["music_recommendation"]["id"]
 
 
@@ -109,7 +117,7 @@ async def test_disabled_second_window_does_not_erase_saved_content_acceptance(cl
     http, _ = client
     body = {"success": True, "action": "chat", "source_mode": category,
             "source_links": [{"title": "Shared source", "url": "https://example.com/story", "mode": category}]}
-    await routes.attach_proactive_recommendations(body, await routes.capture_owner(), "Neko")
+    await routes.attach_proactive_recommendations(body, await routes.capture_owner(), "Neko", character_uid=UID)
     rec = body["proactive_recommendations"][0]
     endpoint = f"/api/proactive/recommendations/{rec['id']}/events"
     accepted = http.post(endpoint, json={"event_id": "window-a", "kind": "accepted"})
@@ -132,7 +140,7 @@ async def test_account_replacement_during_generation_does_not_reassign_recommend
     old_owner = await routes.capture_owner()
     snapshot["local_user_id"] = "b"
     body = {"success": True, "action": "chat", "source_mode": "music", "source_links": [{"url": "https://example.com/a.mp3"}]}
-    await routes.attach_music_recommendation(body, old_owner, "Neko")
+    await routes.attach_music_recommendation(body, old_owner, "Neko", character_uid=UID)
     assert body["music_recommendation"] is None
 
 
@@ -142,7 +150,7 @@ async def test_content_register_decide_and_export_with_the_correct_category(clie
     http, _ = client
     body = {'success': True, 'action': 'chat', 'source_mode': category, 'turn_id': 'source-turn',
             'source_links': [{'title': 'A topic', 'url': 'https://example.com/content?token=private', 'mode': category}]}
-    await routes.attach_proactive_recommendations(body, await routes.capture_owner(), 'Neko')
+    await routes.attach_proactive_recommendations(body, await routes.capture_owner(), 'Neko', character_uid=UID)
     rec = body['proactive_recommendations'][0]
     assert rec['category'] == category
     endpoint = f"/api/proactive/recommendations/{rec['id']}/events"
@@ -161,14 +169,14 @@ async def test_content_permissions_owner_and_screen_privacy(client, monkeypatch)
             'response_text': 'private conversation', 'screenshot_data': 'private screen',
             'source_links': [{'title': 'A source', 'url': 'https://example.com/source', 'mode': 'vision'}]}
     owner = await routes.capture_owner()
-    await routes.attach_proactive_recommendations(body, owner, 'Neko')
+    await routes.attach_proactive_recommendations(body, owner, 'Neko', character_uid=UID)
     rec = body['proactive_recommendations'][0]
     assert 'private' not in str(rec)
     endpoint = f"/api/proactive/recommendations/{rec['id']}/events"
     monkeypatch.setattr(routes, 'load_global_conversation_settings', lambda: {'proactiveVisionEnabled': False})
     assert http.post(endpoint, json={'event_id': 'accept', 'kind': 'accepted'}).json()['error_code'] == 'recommendation_disabled'
     snapshot['local_user_id'] = 'replacement'
-    await routes.attach_proactive_recommendations(body, owner, 'Neko')
+    await routes.attach_proactive_recommendations(body, owner, 'Neko', character_uid=UID)
     assert body['proactive_recommendations'] == []
 
 
@@ -179,13 +187,13 @@ async def test_content_registration_is_bounded_safe_and_does_not_duplicate_music
             'source_links': [{'url': 'javascript:alert(1)'}, {'url': 'https://name:secret@example.com'},
                              {'url': 'https://music.example/song', 'artist': 'Music'},
                              *[{'url': f'https://example.com/{index}', 'mode': 'news'} for index in range(8)]]}
-    await routes.attach_proactive_recommendations(body, await routes.capture_owner(), 'Neko')
+    await routes.attach_proactive_recommendations(body, await routes.capture_owner(), 'Neko', character_uid=UID)
     assert len(body['proactive_recommendations']) == 3
     assert {item['category'] for item in body['proactive_recommendations']} == {'news'}
     assert not any('music.example' in item['content']['url'] for item in body['proactive_recommendations'])
     for channel in ['mini_game', 'work_break_game_invite']:
         invitation = {'success': True, 'action': 'chat', 'channel': channel}
-        await routes.attach_proactive_recommendations(invitation, await routes.capture_owner(), 'Neko')
+        await routes.attach_proactive_recommendations(invitation, await routes.capture_owner(), 'Neko', character_uid=UID)
         assert 'proactive_recommendations' not in invitation
 
 
@@ -195,7 +203,7 @@ async def test_dialogue_without_material_never_creates_a_placeholder_card_or_rec
     http, _ = client
     body = {'success': True, 'action': 'chat', 'response_text': 'Delivered dialogue',
             'source_mode': category, 'source_links': [{'url': 'javascript:alert(1)'}]}
-    await routes.attach_proactive_recommendations(body, await routes.capture_owner(), 'Neko')
+    await routes.attach_proactive_recommendations(body, await routes.capture_owner(), 'Neko', character_uid=UID)
     assert body['proactive_recommendations'] == []
     assert body['response_text'] == 'Delivered dialogue'
     def count(store, owner):
@@ -208,7 +216,7 @@ async def test_dialogue_without_material_never_creates_a_placeholder_card_or_rec
 @pytest.mark.asyncio
 async def test_unclassified_real_link_uses_web_instead_of_generic_topic(client):
     body = {'success': True, 'action': 'chat', 'source_links': [{'title': 'A real source', 'url': 'https://example.com/story'}]}
-    await routes.attach_proactive_recommendations(body, await routes.capture_owner(), 'Neko')
+    await routes.attach_proactive_recommendations(body, await routes.capture_owner(), 'Neko', character_uid=UID)
     assert body['proactive_recommendations'][0]['category'] == 'web'
 
 
@@ -218,7 +226,7 @@ async def test_committed_screen_observation_has_feedback_without_retaining_scree
     body = {'success': True, 'action': 'chat', 'source_mode': 'chat', 'turn_id': 'visual-turn',
             'screen_observation': {'text': 'Private screen observation'}, 'source_links': []}
     owner = await routes.capture_owner()
-    await routes.attach_proactive_recommendations(body, owner, 'Neko')
+    await routes.attach_proactive_recommendations(body, owner, 'Neko', character_uid=UID)
     rec = body['proactive_recommendations'][0]
     assert rec['category'] == 'vision'
     assert rec['content'] == {'title': 'Private screen observation', 'source': '', 'url': ''}
@@ -237,7 +245,7 @@ async def test_committed_screen_observation_has_feedback_without_retaining_scree
             return str([tuple(row) for row in db.execute('SELECT * FROM recommendations')])
     assert 'Private screen observation' not in await routes.asyncio.to_thread(routes._operate, stored)
     snapshot['local_user_id'] = 'replacement'
-    await routes.attach_proactive_recommendations(body, owner, 'Neko')
+    await routes.attach_proactive_recommendations(body, owner, 'Neko', character_uid=UID)
     assert body['proactive_recommendations'] == []
 
 
@@ -254,7 +262,7 @@ async def test_v2_actual_route_handoff_uses_original_json_hash_and_claims_dispat
     monkeypatch.setattr(routes, "_control", lambda owner: snapshot)
     body = {"success": True, "action": "chat", "source_mode": "music", "turn_id": "fixture",
             "source_links": [{"title": "Fixture", "artist": "Fixture", "url": "https://example.com/fixture"}]}
-    await routes.attach_music_recommendation(body, await routes.capture_owner(), "Fixture")
+    await routes.attach_music_recommendation(body, await routes.capture_owner(), "Fixture", character_uid=UID)
     card = body["music_recommendation"]
     value = {"event_id": "fixture-accept", "kind": "accepted", "occurred_at": 1,
              "listened_seconds": 0, "position_seconds": 0,

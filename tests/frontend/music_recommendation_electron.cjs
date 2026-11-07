@@ -94,6 +94,20 @@ async function run() {
     await follower.webContents.executeJavaScript("document.querySelectorAll('.music-recommendation-card')[0].querySelectorAll('button')[1].click()");
     await waitFor(owner,"document.querySelectorAll('.music-recommendation-card')[0].textContent.includes('这次先不听')");
     for (const win of windows) assert.equal(await win.webContents.executeJavaScript("document.querySelectorAll('audio').length"),0,'skip never creates audio');
+    stage = 'durable-rejection-policy-across-partitions';
+    const readPolicy = win => win.webContents.executeJavaScript("fetch('/api/smoke/policy').then(r=>r.json())");
+    const rejectedPolicy = await readPolicy(owner);
+    assert.ok(rejectedPolicy.music.cooldown_until > Date.now()/1000, 'the rejection commits a music cooldown');
+    assert.deepEqual(await readPolicy(follower), rejectedPolicy, 'both isolated partitions read one policy');
+    await follower.webContents.executeJavaScript(`(async () => {
+        const data=await fetch('/api/proactive/recommendations/events',{headers:{'X-CSRF-Token':'smoke-token'}}).then(r=>r.json());
+        const row=data.events.find(e=>e.kind==='skipped');
+        const response=await fetch('/api/proactive/recommendations/'+row.recommendation_id+'/events',{
+            method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':'smoke-token'},
+            body:JSON.stringify({event_id:row.event_id,kind:'skipped',occurred_at:row.occurred_at})});
+        if(!response.ok)throw Error('retry refused');
+    })()`);
+    assert.deepEqual(await readPolicy(owner), rejectedPolicy, 'retrying the original rejection never extends its cooldown');
     stage = 'automatic-countdown-play-pause-resume-ended';
     await waitFor(follower,"fetch('/api/proactive/recommendations/events', {headers:{'X-CSRF-Token':'smoke-token'}}).then(r=>r.json()).then(r=>r.events.some(e=>e.kind==='accepted' && e.reason==='countdown_elapsed'))");
     const deadline = Date.now() + 10000;
