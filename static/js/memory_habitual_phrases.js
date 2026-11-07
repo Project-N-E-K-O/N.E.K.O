@@ -51,6 +51,16 @@
         return (window.i18n && window.i18n.language) || undefined;
     }
 
+    // What the chat client falls back to for a character with no stored
+    // conversation language; the server uses it to predict the next session.
+    function uiLanguage() {
+        try {
+            if (window.i18next && window.i18next.language) return window.i18next.language;
+            if (window.i18n && window.i18n.language) return window.i18n.language;
+        } catch (_) { /* fall through */ }
+        return '';
+    }
+
     function formatTime(seconds) {
         if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) return '—';
         const date = new Date(seconds * 1000);
@@ -356,7 +366,8 @@
         showMessage(translate('memory.habitualLoading', 'Loading habitual phrases…'));
         try {
             const response = await fetch('/api/memory/habitual_phrases?character_name='
-                + encodeURIComponent(target));
+                + encodeURIComponent(target)
+                + '&ui_language=' + encodeURIComponent(uiLanguage()));
             const data = await readPanel(response);
             if (id !== requestId) return;
             panel = data;
@@ -378,7 +389,9 @@
             const response = await fetch(url, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(Object.assign({ character_name: name }, body))
+                body: JSON.stringify(Object.assign(
+                    { character_name: name, ui_language: uiLanguage() || null }, body
+                ))
             });
             const data = await readPanel(response);
             if (id !== requestId || name !== target) return;

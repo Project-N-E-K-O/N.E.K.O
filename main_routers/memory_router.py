@@ -35,7 +35,7 @@ import re
 import json
 from contextlib import suppress
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
 from urllib.parse import quote
 
 import httpx
@@ -1152,10 +1152,12 @@ class HabitualPhraseOverrideRequest(BaseModel):
     character_name: str
     phrase: str = Field(min_length=1, max_length=200)
     action: Literal["allow", "suppress", "clear"]
+    ui_language: Optional[str] = Field(default=None, max_length=32)
 
 
 class HabitualPhraseRecomputeRequest(BaseModel):
     character_name: str
+    ui_language: Optional[str] = Field(default=None, max_length=32)
 
 
 async def _resolve_memory_character(raw_name: str):
@@ -1192,15 +1194,23 @@ async def _resolve_memory_character(raw_name: str):
     return (config_manager, character_name), None
 
 
-async def _ahabitual_phrase_language(config_manager, character_name: str) -> str:
+async def _ahabitual_phrase_language(
+    config_manager, character_name: str, ui_language: Optional[str] = None,
+) -> str:
     """The language the next session start most likely checks the list against.
 
-    The character's last session language (``prompt_locale.json``), which the
-    recompute also mines in; the global language only when none was recorded.
-    A session started in another language can still differ, which the panel
-    cannot know ahead of time.
+    The same order the chat client resolves its conversation language in:
+    the character's stored language (``prompt_locale.json``, which the
+    recompute also mines in), else the client's own UI language, which the
+    memory browser passes along; the server's global language only when
+    neither is known. It is still a prediction: a session opened from a
+    window in another language checks against that one.
     """
-    from utils.language_utils import get_global_language_full
+    from utils.language_utils import (
+        get_global_language_full,
+        is_supported_language_code,
+        normalize_language_code,
+    )
 
     reader = getattr(config_manager, "_read_durable_prompt_locale", None)
     if callable(reader):
@@ -1210,10 +1220,14 @@ async def _ahabitual_phrase_language(config_manager, character_name: str) -> str
             selected = None
         if isinstance(selected, str) and selected:
             return selected
+    if is_supported_language_code(ui_language):
+        return normalize_language_code(str(ui_language), format="full")
     return get_global_language_full()
 
 
-async def _habitual_phrase_panel(config_manager, character_name: str) -> dict:
+async def _habitual_phrase_panel(
+    config_manager, character_name: str, ui_language: Optional[str] = None,
+) -> dict:
     """What the memory browser shows for one character's avoid list."""
     from config import (
         HABITUAL_PHRASE_CANDIDATE_POOL,
@@ -1228,7 +1242,8 @@ async def _habitual_phrase_panel(config_manager, character_name: str) -> dict:
     from utils.slop_filter import is_slop_filter_enabled
 
     described = await get_habitual_phrase_store().adescribe(
-        character_name, await _ahabitual_phrase_language(config_manager, character_name),
+        character_name,
+        await _ahabitual_phrase_language(config_manager, character_name, ui_language),
     )
     try:
         async with _memory_toggle_write_lock:
@@ -1264,14 +1279,14 @@ async def _habitual_phrase_panel(config_manager, character_name: str) -> dict:
 
 
 @router.get('/habitual_phrases')
-async def get_habitual_phrases(character_name: str):
+async def get_habitual_phrases(character_name: str, ui_language: Optional[str] = None):
     """The avoid list as the next session start will use it, with the reasons."""
     try:
         resolved, error = await _resolve_memory_character(character_name)
         if error is not None:
             return error
         config_manager, name = resolved
-        return await _habitual_phrase_panel(config_manager, name)
+        return await _habitual_phrase_panel(config_manager, name, ui_language)
     except Exception as exc:
         logger.warning("Habitual phrase panel unavailable: %s", type(exc).__name__)
         return JSONResponse(
@@ -1298,7 +1313,7 @@ async def override_habitual_phrase(request: HabitualPhraseOverrideRequest):
                 {"success": False, "error": "invalid phrase"}, status_code=422,
             )
         logger.info("Habitual phrase override saved for %s: %s", name, request.action)
-        return await _habitual_phrase_panel(config_manager, name)
+        return await _habitual_phrase_panel(config_manager, name, request.ui_language)
     except MaintenanceModeError:
         return JSONResponse(
             {"success": False, "error": "memory is being restored; try again shortly"},
@@ -1337,7 +1352,7 @@ async def recompute_habitual_phrases(request: HabitualPhraseRecomputeRequest):
                 {"success": False, "error": "recompute unavailable"},
                 status_code=503 if response.status_code not in {404, 422} else response.status_code,
             )
-        return await _habitual_phrase_panel(config_manager, name)
+        return await _habitual_phrase_panel(config_manager, name, request.ui_language)
     except Exception as exc:
         logger.warning("Habitual phrase recompute failed: %s", type(exc).__name__)
         return JSONResponse(

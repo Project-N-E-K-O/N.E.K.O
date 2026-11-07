@@ -656,6 +656,30 @@ async def test_the_panel_checks_the_list_against_her_last_session_language(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stored", "ui_language", "matches"),
+    [(None, "en", False), (None, "zh-TW", True), ("zh-CN", "en", True), (None, "xx", True)],
+    ids=["ui-in-english", "ui-in-chinese", "stored-language-wins", "unknown-ui-falls-back"],
+)
+async def test_without_a_stored_language_the_panel_predicts_with_the_ui_language(
+    router_env, monkeypatch, stored, ui_language, matches,
+):
+    """The chat client falls back to its UI language, not the server's global one."""
+    env = router_env
+    cm, _ = (await env.router._resolve_memory_character(_NAME))[0]
+    monkeypatch.setattr(cm, "_read_durable_prompt_locale", lambda _name: stored)
+    _write(env.store, [_entry(_PHRASE)])
+    panel = await env.router.get_habitual_phrases(_NAME, ui_language=ui_language)
+    assert panel["language_matches"] is matches
+    allowed = await env.router.override_habitual_phrase(
+        env.router.HabitualPhraseOverrideRequest(
+            character_name=_NAME, phrase="早上好呀朋友", action="allow", ui_language=ui_language,
+        ),
+    )
+    assert allowed["language_matches"] is matches
+
+
+@pytest.mark.asyncio
 async def test_an_override_is_saved_and_the_panel_comes_back_updated(router_env):
     env = router_env
     _write(env.store, [_entry(_PHRASE)])
