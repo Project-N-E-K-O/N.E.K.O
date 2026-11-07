@@ -41,6 +41,7 @@ from plugin.server.infrastructure.runtime_overrides import (
     set_runtime_auto_start_override,
 )
 from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
+from plugin.server.application.plugins.project_sources import ProjectSourceFailure
 from plugin.server.application.plugin_cli.install_plan import (
     REPLACEMENT_ACTIONS,
     PluginInstallPlan,
@@ -1943,7 +1944,7 @@ class PluginCliService:
         try:
             policy = self._path_policy()
             target_root = policy.package_artifacts_root
-            sources = self._resolve_plugin_sources(
+            sources, source_failures = self._resolve_plugin_sources(
                 mode=mode,
                 plugin=plugin,
                 plugins=plugins or [],
@@ -1995,7 +1996,10 @@ class PluginCliService:
                 }
 
             built: list[dict[str, object]] = []
-            failed: list[dict[str, object]] = []
+            failed: list[dict[str, object]] = [
+                {"plugin": f"project/{failure.source_dir.name}", "error": failure.error}
+                for failure in source_failures
+            ]
             output_stems = self._output_stems_for_sources(sources)
             for source, plugin_dir in zip(sources, plugin_dirs, strict=True):
                 output_path = (
@@ -2525,27 +2529,27 @@ class PluginCliService:
         plugins: list[str],
         plugin_ref: dict[str, Any] | None,
         plugin_refs: list[dict[str, Any]],
-    ) -> list[ResolvedPluginSource]:
+    ) -> tuple[list[ResolvedPluginSource], list[ProjectSourceFailure]]:
         resolver = self._resolver()
         if mode == "all":
-            sources = resolver.list_plugins()
-            if not sources:
+            sources, failures = resolver.list_plugins_with_failures()
+            if not sources and not failures:
                 roots = ", ".join(f"{root_id}={root}" for root_id, root in self._path_policy().build_source_roots)
                 raise FileNotFoundError(f"No plugin.toml files found under builtin or user plugin roots ({roots})")
-            return sources
+            return sources, failures
 
         if mode == "single":
             if plugin_ref is not None:
-                return [resolver.resolve_plugin_ref(plugin_ref)]
+                return [resolver.resolve_plugin_ref(plugin_ref)], []
             if plugin:
-                return [resolver.resolve_string(plugin)]
+                return [resolver.resolve_string(plugin)], []
             raise ValueError("Please provide plugin_ref or plugin when mode=single")
 
         if mode in {"selected", "bundle"}:
             if plugin_refs:
-                return [resolver.resolve_plugin_ref(item) for item in plugin_refs]
+                return [resolver.resolve_plugin_ref(item) for item in plugin_refs], []
             if plugins:
-                return [resolver.resolve_string(item) for item in plugins]
+                return [resolver.resolve_string(item) for item in plugins], []
             raise ValueError(f"Please provide plugin_refs or plugins when mode={mode}")
 
         raise ValueError("Unsupported build mode")

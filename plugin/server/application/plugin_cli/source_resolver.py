@@ -8,6 +8,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable, Literal
 
 from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
+from plugin.server.application.plugins.project_sources import ProjectSourceFailure
 
 # ``project``: a workbench project, an external source outside the managed roots.
 PluginSourceRootId = Literal["builtin", "user", "project"]
@@ -60,10 +61,10 @@ def _require_safe_directory_name(value: str) -> str:
     return directory_name
 
 
-def _registered_project_dirs() -> list[Path]:
+def _registered_project_sources() -> tuple[list[Path], list[ProjectSourceFailure]]:
     from plugin.server.application.plugins.project_sources import list_project_sources_sync
-    sources, _failures = list_project_sources_sync()
-    return [source.source_dir for source in sources]
+    sources, failures = list_project_sources_sync()
+    return [source.source_dir for source in sources], failures
 
 
 class PluginSourceResolver:
@@ -72,13 +73,18 @@ class PluginSourceResolver:
     def __init__(
         self,
         policy: PluginCliPathPolicy,
-        project_dirs: Callable[[], list[Path]] = _registered_project_dirs,
+        project_sources: Callable[[], tuple[list[Path], list[ProjectSourceFailure]]] = _registered_project_sources,
     ) -> None:
         self.policy = policy
-        self._project_dirs = project_dirs
+        self._project_sources = project_sources
 
     def list_plugins(self) -> list[ResolvedPluginSource]:
-        return self._scan_sources()
+        sources, _failures = self.list_plugins_with_failures()
+        return sources
+
+    def _project_dirs(self) -> list[Path]:
+        directories, _failures = self._project_sources()
+        return directories
 
     def resolve_plugin_ref(self, ref: PluginCliPluginRef | dict[str, Any]) -> ResolvedPluginSource:
         if isinstance(ref, PluginCliPluginRef):
@@ -127,7 +133,7 @@ class PluginSourceResolver:
             return self.resolve_absolute_path(candidate)
 
         matches: dict[tuple[str, str], ResolvedPluginSource] = {}
-        for source in self._scan_sources():
+        for source in self.list_plugins():
             if source.directory_name == value or source.plugin_id == value:
                 matches[(source.root_id, source.directory_name)] = source
 
@@ -194,7 +200,7 @@ class PluginSourceResolver:
             out.append(self.resolve_string(specifier))
         return out
 
-    def _scan_sources(self) -> list[ResolvedPluginSource]:
+    def list_plugins_with_failures(self) -> tuple[list[ResolvedPluginSource], list[ProjectSourceFailure]]:
         sources: list[ResolvedPluginSource] = []
         for root_id, root in self.policy.build_source_roots:
             if not root.exists() or not root.is_dir():
@@ -223,7 +229,8 @@ class PluginSourceResolver:
                         plugin_dir=child.resolve(strict=False),
                     )
                 )
-        for project_dir in self._project_dirs():
+        project_dirs, failures = self._project_sources()
+        for project_dir in project_dirs:
             sources.append(
                 ResolvedPluginSource(
                     root_id="project",
@@ -232,7 +239,7 @@ class PluginSourceResolver:
                     plugin_dir=project_dir,
                 )
             )
-        return sorted(sources, key=self._source_sort_key)
+        return sorted(sources, key=self._source_sort_key), failures
 
     def _project_source(self, directory_name: str) -> ResolvedPluginSource:
         # Project directories are named after their plugin IDs, which are unique.

@@ -292,6 +292,7 @@ def test_a_401_triggers_one_refresh_and_retry(monkeypatch):
     assert len(upstream.requests) == 2
     # The retry asks the token store to refresh past the rejected credential.
     assert ensured == [_ACCESS_TOKEN]
+    assert upstream.requests[0].headers["authorization"] == f"Bearer {_ACCESS_TOKEN}"
     assert upstream.requests[1].headers["authorization"] == "Bearer refreshed-access-token"
 
 
@@ -476,6 +477,7 @@ def test_new_routes_refresh_once_on_a_401(monkeypatch, method, path):
     assert response.status_code == 200
     assert len(upstream.requests) == 2
     assert ensured == [_ACCESS_TOKEN]
+    assert upstream.requests[0].headers["authorization"] == f"Bearer {_ACCESS_TOKEN}"
     assert upstream.requests[1].headers["authorization"] == "Bearer refreshed-access-token"
 
 

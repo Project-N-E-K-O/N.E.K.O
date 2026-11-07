@@ -91,14 +91,14 @@ def test_the_first_project_owns_a_plugin_id(tmp_path):
 
 
 def test_build_source_enumeration_reports_a_broken_project_store(monkeypatch):
-    from plugin.server.application.plugin_cli.source_resolver import _registered_project_dirs
+    from plugin.server.application.plugin_cli.source_resolver import _registered_project_sources
 
     def broken():
         raise ServerDomainError(code="PROJECT_STORE_INVALID", message="broken store", status_code=500)
 
     monkeypatch.setattr(store, "list_records", broken)
     with pytest.raises(ServerDomainError) as caught:
-        _registered_project_dirs()
+        _registered_project_sources()
     assert caught.value.code == "PROJECT_STORE_INVALID"
 
 
@@ -205,7 +205,7 @@ def test_build_sources_include_projects(tmp_path):
         package_artifacts_root=tmp_path / "packages",
         package_profiles_root=tmp_path / "profiles",
     )
-    resolver = PluginSourceResolver(policy, project_dirs=lambda: [source])
+    resolver = PluginSourceResolver(policy, project_sources=lambda: ([source], []))
 
     listed = resolver.list_plugins()
     assert [(item.root_id, item.plugin_id, item.plugin_dir) for item in listed] == [
@@ -290,3 +290,65 @@ async def test_invalid_project_refresh_does_not_replace_it_with_an_installed_plu
     assert caught.value.code == "PLUGIN_CONFIG_NOT_FOUND"
     assert state.plugins["same_id"] is meta
     assert store.list_records()[0].project_id == record.project_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("valid_sources", [False, True])
+async def test_build_all_reports_invalid_projects_and_builds_valid_sources(tmp_path, monkeypatch, valid_sources):
+    from plugin.server.application.plugin_cli.service import PluginCliService
+
+    policy = PluginCliPathPolicy(
+        builtin_plugins_root=tmp_path / "builtin",
+        user_plugins_root=tmp_path / "user",
+        package_artifacts_root=tmp_path / "packages",
+        package_profiles_root=tmp_path / "profiles",
+    )
+    missing = tmp_path / "projects" / "missing"
+    broken = scaffold(tmp_path / "projects", "broken")
+    (broken / "plugin.toml").write_text("invalid TOML [", encoding="utf-8")
+    store.add_record(missing)
+    store.add_record(broken)
+    if valid_sources:
+        scaffold(policy.builtin_plugins_root, "builtin_demo")
+        scaffold(policy.user_plugins_root, "user_demo")
+        store.add_record(scaffold(tmp_path / "projects", "good"))
+    monkeypatch.setattr(PluginCliService, "_path_policy", lambda self: policy)
+
+    result = await PluginCliService().build(mode="all")
+
+    assert result["ok"] is False
+    assert result["failed_count"] == 2
+    assert {failure["plugin"] for failure in result["failed"]} == {"project/missing", "project/broken"}
+    assert all(failure["error"] for failure in result["failed"])
+    expected = ["builtin_demo", "user_demo", "good"] if valid_sources else []
+    assert [built["plugin_id"] for built in result["built"]] == expected
+    assert result["built_count"] == len(expected)
+    assert all(Path(built["package_path"]).is_file() for built in result["built"])
+    assert len(store.list_records()) == (3 if valid_sources else 2)
+    if valid_sources:
+        single = await PluginCliService().build(mode="single", plugin_ref={"root_id": "builtin", "directory_name": "builtin_demo"})
+        selected = await PluginCliService().build(mode="selected", plugin_refs=[{"root_id": "project", "directory_name": "good"}])
+        assert single["ok"] is True and single["failed"] == []
+        assert selected["ok"] is True and selected["failed"] == []
+
+
+@pytest.mark.asyncio
+async def test_unreadable_project_store_still_fails_all_builds_but_not_explicit_managed_builds(tmp_path, monkeypatch):
+    from plugin.server.application.plugin_cli.service import PluginCliService
+
+    policy = PluginCliPathPolicy(
+        builtin_plugins_root=tmp_path / "builtin",
+        user_plugins_root=tmp_path / "user",
+        package_artifacts_root=tmp_path / "packages",
+        package_profiles_root=tmp_path / "profiles",
+    )
+    scaffold(policy.builtin_plugins_root, "builtin_demo")
+    monkeypatch.setattr(PluginCliService, "_path_policy", lambda self: policy)
+    def broken():
+        raise ServerDomainError(code="PROJECT_STORE_INVALID", message="broken store", status_code=500)
+    monkeypatch.setattr(store, "list_records", broken)
+    with pytest.raises(ServerDomainError):
+        await PluginCliService().build(mode="all")
+    result = await PluginCliService().build(mode="single", plugin_ref={"root_id": "builtin", "directory_name": "builtin_demo"})
+    assert result["ok"] is True
+    assert result["built_count"] == 1
