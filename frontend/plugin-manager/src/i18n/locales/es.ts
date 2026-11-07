@@ -494,6 +494,16 @@ export default {
     actualSources: 'Descargando desde {sources}',
   },
   plugins: {
+    display: {
+      fullscreenTitle: "¿Entrar en pantalla completa?",
+      focusTitle: "¿Entrar en modo de concentración?",
+      fullscreenBody: "El plugin «{plugin}» solicita mostrar este panel a pantalla completa. Usa el botón de salida o Esc para volver.",
+      focusBody: "El plugin «{plugin}» solicita ampliar el panel ocultando la barra lateral y los controles de la página.",
+      enterFullscreen: "Entrar en pantalla completa",
+      enterFocus: "Entrar en modo de concentración",
+      exit: "Salir de la vista ampliada",
+    },
+
     listLoadFailed: "No se pudo cargar la lista de plugins. Inténtalo de nuevo.",
     noMatches: "No hay plugins que coincidan",
     clearFilters: "Borrar filtros",

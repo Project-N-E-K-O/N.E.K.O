@@ -494,6 +494,16 @@ export default {
     actualSources: 'Downloading from {sources}',
   },
   plugins: {
+    display: {
+      fullscreenTitle: "Enter fullscreen?",
+      focusTitle: "Enter focus mode?",
+      fullscreenBody: "Plugin “{plugin}” requests fullscreen for this panel. Use the exit button or Esc to return.",
+      focusBody: "Plugin “{plugin}” requests more space for this panel by hiding the sidebar and page controls.",
+      enterFullscreen: "Enter fullscreen",
+      enterFocus: "Enter focus mode",
+      exit: "Exit expanded display",
+    },
+
     listLoadFailed: "Could not load the plugin list. Please retry.",
     noMatches: "No matching plugins",
     clearFilters: "Clear filters",

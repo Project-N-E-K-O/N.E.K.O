@@ -494,6 +494,16 @@ export default {
     actualSources: '实际线路：{sources}',
   },
   plugins: {
+    display: {
+      fullscreenTitle: "进入全屏显示？",
+      focusTitle: "进入专注模式？",
+      fullscreenBody: "插件「{plugin}」请求全屏显示当前面板。可通过退出按钮或 Esc 返回。",
+      focusBody: "插件「{plugin}」请求扩大当前面板，暂时隐藏侧栏和页面操作区。",
+      enterFullscreen: "进入全屏",
+      enterFocus: "进入专注模式",
+      exit: "退出扩大显示",
+    },
+
     listLoadFailed: "插件列表加载失败，请重试",
     noMatches: "没有匹配的插件",
     clearFilters: "清除筛选",

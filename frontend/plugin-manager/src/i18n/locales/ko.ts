@@ -494,6 +494,16 @@ export default {
     actualSources: '다운로드 경로: {sources}',
   },
   plugins: {
+    display: {
+      fullscreenTitle: "전체 화면으로 전환할까요?",
+      focusTitle: "집중 모드로 전환할까요?",
+      fullscreenBody: "플러그인 “{plugin}”이 패널 전체 화면 표시를 요청합니다. 종료 버튼이나 Esc로 돌아갈 수 있습니다.",
+      focusBody: "플러그인 “{plugin}”이 사이드바와 페이지 도구를 숨겨 패널을 확대하도록 요청합니다.",
+      enterFullscreen: "전체 화면 시작",
+      enterFocus: "집중 모드 시작",
+      exit: "확대 표시 종료",
+    },
+
     listLoadFailed: "플러그인 목록을 불러오지 못했습니다. 다시 시도해 주세요.",
     noMatches: "일치하는 플러그인이 없습니다",
     clearFilters: "필터 지우기",

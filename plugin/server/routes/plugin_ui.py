@@ -290,6 +290,13 @@ def _get_mime_type(file_path: Path) -> str:
     return mime_map.get(suffix, "application/octet-stream")
 
 
+@router.get("/plugin-ui-sdk/display.js")
+async def plugin_display_sdk():
+    """Shared, framework-free display client for static plugin pages."""
+    sdk_file = Path(__file__).resolve().parents[3] / "static" / "plugin-ui-sdk" / "display.js"
+    return FileResponse(sdk_file, media_type="application/javascript", headers={"Cache-Control": "no-cache"})
+
+
 @router.get("/plugin/{plugin_id}/ui")
 @router.get("/plugin/{plugin_id}/ui/")
 async def plugin_ui_index(plugin_id: str):
