@@ -5800,6 +5800,9 @@ class FactStore:
         if extracted is None:
             return None
         if not extracted:
+            # A run that found nothing new is data too: how often path B
+            # adds nothing. Failures (None, above) stay unlogged here.
+            self._log_path_b_labels(lanlan_name, [], [])
             return []
         persisted = await self._apersist_new_facts(
             lanlan_name, extracted, default_source='ai_disclosure', subject=subject,

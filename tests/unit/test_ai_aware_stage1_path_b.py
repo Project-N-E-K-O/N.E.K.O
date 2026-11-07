@@ -1878,3 +1878,22 @@ async def test_path_a_rows_carry_no_extraction_path():
     with patch.object(fs, 'aload_facts', AsyncMock(return_value=[])):
         new_facts = await fs._apersist_new_facts('悠怡', extracted)
     assert 'extraction_path' not in new_facts[0]
+
+
+@pytest.mark.unit
+async def test_path_b_logs_runs_that_add_nothing_but_not_failures():
+    """An empty result is logged with zero counts (how often path B adds
+    nothing); a failed run (None) is not counted as one."""
+    from memory import facts as facts_module
+
+    fs = _make_fact_store()
+    log = MagicMock()
+    with patch.object(facts_module, 'logger', log):
+        fs._allm_extract_facts_with_known_pool = AsyncMock(return_value=[])
+        assert await fs.aextract_facts_with_known_pool('悠怡', [], []) == []
+        fs._allm_extract_facts_with_known_pool = AsyncMock(return_value=None)
+        assert await fs.aextract_facts_with_known_pool('悠怡', [], []) is None
+    lines = [c.args[0] for c in log.info.call_args_list if '[PathB]' in str(c.args[0])]
+    assert lines == [
+        "[PathB] 悠怡: 模型标注 用户 0 / 猫娘自述 0 / 未标 0；新写入 用户 0 / 猫娘自述 0"
+    ]
