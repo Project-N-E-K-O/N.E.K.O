@@ -1897,3 +1897,34 @@ async def test_path_b_logs_runs_that_add_nothing_but_not_failures():
     assert lines == [
         "[PathB] 悠怡: 模型标注 用户 0 / 猫娘自述 0 / 未标 0；新写入 用户 0 / 猫娘自述 0"
     ]
+
+
+@pytest.mark.unit
+async def test_path_b_label_count_survives_unhashable_source():
+    """A malformed item with a list/dict ``source`` counts as unlabeled
+    instead of crashing the path-B call."""
+    from memory import facts as facts_module
+
+    fs = _make_fact_store()
+    log = MagicMock()
+    with patch.object(facts_module, 'logger', log):
+        fs._log_path_b_labels('悠怡', [{'source': []}, {'source': {}}, 'bare'], [])
+    lines = [c.args[0] for c in log.info.call_args_list if '[PathB]' in str(c.args[0])]
+    assert lines == [
+        "[PathB] 悠怡: 模型标注 用户 0 / 猫娘自述 0 / 未标 3；新写入 用户 0 / 猫娘自述 0"
+    ]
+
+
+@pytest.mark.unit
+async def test_apersist_unhashable_source_falls_back_to_default():
+    """A fact with text but a list ``source`` is stored with the default
+    source instead of aborting the batch."""
+    fs = _make_fact_store()
+    fs.asave_facts = AsyncMock(return_value=None)
+    extracted = [
+        {'text': '博士喜欢咖啡', 'importance': 7, 'entity': 'master', 'source': []},
+        {'text': '博士周末去爬山', 'importance': 7, 'entity': 'master'},
+    ]
+    with patch.object(fs, 'aload_facts', AsyncMock(return_value=[])):
+        new_facts = await fs._apersist_new_facts('悠怡', extracted, default_source='ai_disclosure')
+    assert [f['source'] for f in new_facts] == ['ai_disclosure', 'ai_disclosure']

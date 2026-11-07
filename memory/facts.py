@@ -3937,7 +3937,9 @@ class FactStore:
 
             # Source resolution: explicit LLM source first + whitelist + default fallback.
             raw_source = fact.get('source')
-            if raw_source in self._SOURCE_VALUES:
+            # Type first: a list/dict source is unhashable and would abort the
+            # whole batch; it falls back to the default like any other junk.
+            if isinstance(raw_source, str) and raw_source in self._SOURCE_VALUES:
                 source = raw_source
             else:
                 source = default_source
@@ -5830,7 +5832,10 @@ class FactStore:
         labels = {'user_observation': 0, 'ai_disclosure': 0, 'unlabeled': 0}
         for item in extracted:
             source = item.get('source') if isinstance(item, dict) else None
-            labels[source if source in self._SOURCE_VALUES else 'unlabeled'] += 1
+            # A list or dict source is unhashable: check the type first, or a
+            # malformed item would crash the whole path-B call.
+            known = isinstance(source, str) and source in self._SOURCE_VALUES
+            labels[source if known else 'unlabeled'] += 1
         written = {'user_observation': 0, 'ai_disclosure': 0}
         for fact in persisted or ():
             if isinstance(fact, dict) and fact.get('source') in written:
