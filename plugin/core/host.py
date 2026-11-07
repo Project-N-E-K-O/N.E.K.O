@@ -14,7 +14,6 @@ import socket
 import sys
 import threading
 import time
-import types
 import uuid
 import weakref
 from datetime import datetime, timezone
@@ -37,6 +36,7 @@ from plugin.core.entry_executor import EntryExecutor, execute_entry_command
 from plugin.core.entry_points import normalize_plugin_entry_point
 from plugin.core.model_gateway_access import model_gateway_access
 from plugin.core.state import state
+from plugin.core.source_imports import ensure_plugins_namespace as _ensure_plugins_namespace
 from plugin.logging_config import logger
 from plugin.sdk import PERSIST_ATTR
 
@@ -457,29 +457,6 @@ def _is_target_module_missing(exc: ModuleNotFoundError, module_path: str) -> boo
     missing_name = getattr(exc, "name", None)
     return bool(missing_name and (missing_name == module_path or module_path.startswith(f"{missing_name}.")))
 
-
-def _ensure_plugins_namespace(plugin_root: Path, logger: Any) -> None:
-    """Create a namespace without exposing sibling installations."""
-
-    existing = sys.modules.get("plugins")
-    if existing is None or getattr(existing, "__path__", None) is None:
-        module = types.ModuleType("plugins")
-        module.__package__ = "plugins"
-        module.__path__ = []
-        module.__spec__ = importlib.machinery.ModuleSpec("plugins", loader=None, is_package=True)
-        if module.__spec__ is not None:
-            module.__spec__.submodule_search_locations = module.__path__
-        sys.modules["plugins"] = module
-        logger.info("[Plugin Process] Created plugins namespace for: {}", plugin_root)
-        return
-
-    existing.__path__ = []
-    spec = getattr(existing, "__spec__", None)
-    if spec is None:
-        spec = importlib.machinery.ModuleSpec("plugins", loader=None, is_package=True)
-        existing.__spec__ = spec
-    spec.submodule_search_locations = existing.__path__
-    logger.debug("[Plugin Process] Cleared inherited plugins namespace search paths")
 
 def _evict_plugin_module_tree(plugin_module_path: str) -> None:
     """Remove one synthetic plugin package without disturbing its siblings."""

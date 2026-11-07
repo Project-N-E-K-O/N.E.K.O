@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping
 from datetime import datetime
 
@@ -8,6 +9,11 @@ from plugin.server.domain.errors import ServerDomainError
 
 DEFAULT_TIMEOUT_SECONDS = 5.0
 MAX_TIMEOUT_SECONDS = 60.0
+_PLUGIN_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+def is_valid_plugin_id(value: str) -> bool:
+    return _PLUGIN_ID_PATTERN.fullmatch(value) is not None
 
 
 def _coerce_positive_finite(value: object) -> float | None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import zipfile
 from pathlib import Path
@@ -9,8 +10,10 @@ from pathlib import Path
 import pytest
 
 from plugin.neko_plugin_cli import cli as neko_plugin_cli
-from plugin.neko_plugin_cli.commands import init_cmd
+from plugin.neko_plugin_cli.commands import init_cmd, release_cmd
+from plugin.neko_plugin_cli.commands._resolve import parse_github_repository_remote
 from plugin.neko_plugin_cli.commands.validate_cmd import validate_plugin_dir
+from plugin.neko_plugin_cli.core.toml_utils import load_toml
 from plugin.neko_plugin_cli.paths import CliDefaults
 from plugin.neko_plugin_cli.templates.generator import PluginSpec, generate_plugin
 
@@ -53,6 +56,15 @@ def _make_plugin_dir(tmp_path: Path, plugin_id: str = "cli_demo") -> Path:
         encoding="utf-8",
     )
     return plugin_dir
+
+
+def _commit_all(repo: Path) -> None:
+    """Commit the scaffold: check --release rejects files CI would not check out."""
+    for args in (
+        ["add", "-A"],
+        ["-c", "user.name=CLI Test", "-c", "user.email=cli@example.com", "commit", "-qm", "scaffold"],
+    ):
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
 
 
 def _tamper_package(package_path: Path, target_name: str) -> None:
@@ -405,14 +417,16 @@ def test_validate_does_not_descend_into_skipped_dirs(tmp_path: Path, monkeypatch
     (plugin_dir / "pkg").mkdir()
     (plugin_dir / "pkg" / "mod.py").write_text("x = 1\n", encoding="utf-8")
     visited = []
-    real_walk = validate_cmd.os.walk
+    import os
+
+    real_walk = os.walk
 
     def walk(top, *args, **kwargs):
         for entry in real_walk(top, *args, **kwargs):
             visited.append(Path(entry[0]).relative_to(plugin_dir))
             yield entry
 
-    monkeypatch.setattr(validate_cmd.os, "walk", walk)
+    monkeypatch.setattr(os, "walk", walk)
     files = validate_cmd._plugin_python_files(plugin_dir)
 
     assert plugin_dir / "pkg" / "mod.py" in files
@@ -421,6 +435,24 @@ def test_validate_does_not_descend_into_skipped_dirs(tmp_path: Path, monkeypatch
         path.parts and path.parts[0] in {".vendor.backup-0a1b2c3d", "vendor", ".venv"}
         for path in visited
     )
+
+
+def test_symlink_validation_prunes_the_excluded_root_directories(tmp_path, monkeypatch):
+    import os
+    from plugin.neko_plugin_cli.commands import validate_cmd
+
+    for name in ("vendor", ".git"):
+        (tmp_path / name / "deep").mkdir(parents=True)
+    original = os.scandir
+
+    def scan(path):
+        assert Path(path) not in {tmp_path / "vendor", tmp_path / ".git"}
+        return original(path)
+
+    monkeypatch.setattr(os, "scandir", scan)
+    issues = []
+    validate_cmd._check_symlink_tree(tmp_path, issues)
+    assert issues == []
 
 
 def test_validate_plugin_dir_accepts_install_declaration_and_i18n_directory(
@@ -1336,6 +1368,7 @@ def test_init_adapter_can_build_market_release_package(
         )
         == 0
     )
+    _commit_all(plugin_dir)
     monkeypatch.setenv(
         "GITHUB_REPOSITORY",
         "alice/n.e.k.o_plugin_adapter_demo",
@@ -1775,6 +1808,7 @@ def test_market_release_check_enforces_repo_and_tag_conventions(
         )
         == 0
     )
+    _commit_all(tmp_path / "n.e.k.o_plugin_market_demo")
 
     monkeypatch.setenv("GITHUB_REPOSITORY", "alice/n.e.k.o_plugin_market_demo")
     monkeypatch.setenv("GITHUB_REF_NAME", "v0.1.0")
@@ -1852,12 +1886,12 @@ def test_market_release_check_rejects_legacy_non_market_plugin_id(
     assert "Market plugin ID must match ^[a-z][a-z0-9_]*$" in error
 
 
-def test_setup_repo_git_skips_when_inside_existing_repo(
+def test_setup_repo_git_skips_when_plugin_has_its_own_repo(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     plugin_dir = _make_plugin_dir(tmp_path / "repo")
-    (tmp_path / "repo" / ".git").mkdir()
+    (plugin_dir / ".git").mkdir()
     calls: list[list[str]] = []
 
     def fake_run_git(command: list[str], *, cwd: Path) -> None:
@@ -1870,37 +1904,62 @@ def test_setup_repo_git_skips_when_inside_existing_repo(
     assert calls == []
 
 
-def test_git_remote_requires_new_repository(tmp_path: Path) -> None:
+def test_setup_repo_git_initializes_plugin_inside_a_parent_repo(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A parent checkout (such as N.E.K.O itself) is not the plugin's repository.
     plugin_dir = _make_plugin_dir(tmp_path / "repo")
     (tmp_path / "repo" / ".git").mkdir()
+    calls: list[tuple[list[str], Path]] = []
 
-    with pytest.raises(RuntimeError, match="--remote"):
+    def fake_run_git(command: list[str], *, cwd: Path) -> None:
+        calls.append((command, cwd))
+
+    monkeypatch.setattr(init_cmd, "_run_git", fake_run_git)
+
+    assert init_cmd._initialize_git_repo(plugin_dir) is True
+
+    assert calls == [
+        (["init"], plugin_dir),
+        (["symbolic-ref", "HEAD", "refs/heads/main"], plugin_dir),
+    ]
+
+
+def test_git_remote_requires_new_repository(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path / "repo")
+    (plugin_dir / ".git").mkdir()
+
+    with pytest.raises(RuntimeError, match="--remote") as exc_info:
         init_cmd._initialize_git_repo(plugin_dir, remote="https://example.invalid/demo.git")
+
+    assert "remote add origin https://example.invalid/demo.git" in str(exc_info.value)
 
 
 def test_git_preflight_remote_fails_before_writing_files(tmp_path: Path) -> None:
-    target_dir = tmp_path / "repo" / "demo_plugin"
-    (tmp_path / "repo" / ".git").mkdir(parents=True)
+    plugin_dir = _make_plugin_dir(tmp_path / "repo")
+    (plugin_dir / ".git").mkdir()
+    before = sorted(path.name for path in plugin_dir.iterdir())
 
     with pytest.raises(RuntimeError, match="--remote"):
         init_cmd._preflight_git_request(
-            target_dir,
+            plugin_dir,
             initialize_git=True,
             remote="https://example.invalid/demo.git",
         )
 
-    assert not target_dir.exists()
+    assert sorted(path.name for path in plugin_dir.iterdir()) == before
 
 
-def test_git_preflight_skips_git_binary_check_inside_existing_repo(
+def test_git_preflight_skips_git_binary_check_when_plugin_has_its_own_repo(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    target_dir = tmp_path / "repo" / "demo_plugin"
-    (tmp_path / "repo" / ".git").mkdir(parents=True)
+    plugin_dir = _make_plugin_dir(tmp_path / "repo")
+    (plugin_dir / ".git").mkdir()
     monkeypatch.setattr(init_cmd.shutil, "which", lambda _: None)
 
-    init_cmd._preflight_git_request(target_dir, initialize_git=True)
+    init_cmd._preflight_git_request(plugin_dir, initialize_git=True)
 
 
 def test_validate_walk_raises_on_an_unreadable_subtree(tmp_path: Path, monkeypatch) -> None:
@@ -1921,3 +1980,228 @@ def test_validate_walk_raises_on_an_unreadable_subtree(tmp_path: Path, monkeypat
     monkeypatch.setattr(os, "scandir", scandir)
     with pytest.raises(OSError):
         validate_cmd._plugin_python_files(plugin_dir)
+
+
+
+def _init_committed(tmp_path: Path, plugin_id: str = "gate_demo") -> Path:
+    plugin_dir = tmp_path / f"n.e.k.o_plugin_{plugin_id}"
+    assert neko_plugin_cli.main(["init", plugin_id, "--output", str(plugin_dir)]) == 0
+    _commit_all(plugin_dir)
+    return plugin_dir
+
+
+def _release_check(plugin_dir: Path, target: Path, *extra: str) -> int:
+    return neko_plugin_cli.main(
+        ["check", str(plugin_dir), "--release", "--skip-tests", "--target-dir", str(target), *extra]
+    )
+
+
+def test_release_check_rejects_files_ci_would_not_check_out(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _init_committed(tmp_path)
+    assert _release_check(plugin_dir, tmp_path / "target-clean") == 0
+    capsys.readouterr()
+
+    subprocess.run(["git", "rm", "-q", "--cached", "README.md"], cwd=plugin_dir, check=True)
+
+    assert _release_check(plugin_dir, tmp_path / "target") == 1
+    err = capsys.readouterr().err
+    assert "[ERROR] git working tree has uncommitted or untracked files: README.md" in err
+    assert "CI checks the pushed commit" in err
+
+    # Plain check stays a diagnosis: the same state is only a warning.
+    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
+    assert "[WARNING] git working tree has uncommitted or untracked files: README.md" in capsys.readouterr().out
+
+
+def test_release_check_rejects_a_scaffold_without_any_commit(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = tmp_path / "n.e.k.o_plugin_fresh_demo"
+    assert neko_plugin_cli.main(["init", "fresh_demo", "--output", str(plugin_dir)]) == 0
+
+    assert _release_check(plugin_dir, tmp_path / "target") == 1
+    assert "[ERROR] git working tree has uncommitted or untracked files: .github/" in capsys.readouterr().err
+
+
+def test_repository_diagnosis_only_warns_without_own_repository(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    defaults = neko_plugin_cli.resolve_default_paths()
+
+    for release in (False, True):
+        assert release_cmd._diagnose_repository(plugin_dir, defaults=defaults, release=release) == [
+            ("warning", "plugin source directory does not have its own git repository")
+        ]
+
+
+def test_release_check_ignores_the_git_state_of_a_plugin_mounted_in_a_neko_tree(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch,
+) -> None:
+    # Market CI copies the plugin, together with any .git it carries, into
+    # plugin/plugins/<id> of a N.E.K.O checkout; that copy is not a checkout to judge.
+    source = tmp_path / "n.e.k.o_plugin_mounted_demo"
+    assert neko_plugin_cli.main(["init", "mounted_demo", "--output", str(source)]) == 0
+    mounted = tmp_path / "neko" / "plugin" / "plugins" / "mounted_demo"
+    shutil.copytree(source, mounted)
+    capsys.readouterr()
+    from plugin.neko_plugin_cli.paths import CliDefaults
+    root = tmp_path / "neko"
+    monkeypatch.setattr(neko_plugin_cli, "resolve_default_paths", lambda: CliDefaults(
+        root / "plugin", root / "target", root / "plugin/plugins", root / "profiles",
+    ))
+
+    assert _release_check(mounted, tmp_path / "target") == 0
+    assert "uncommitted or untracked" not in capsys.readouterr().err
+
+
+def test_release_check_enforces_market_plugin_id_without_market_release(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _init_committed(tmp_path, "id_demo")
+    plugin_toml = plugin_dir / "plugin.toml"
+    plugin_toml.write_text(
+        plugin_toml.read_text(encoding="utf-8").replace('id = "id_demo"', 'id = "IdDemo"'),
+        encoding="utf-8",
+    )
+    _commit_all(plugin_dir)
+
+    assert _release_check(plugin_dir, tmp_path / "target") == 1
+    assert "Market plugin ID must match ^[a-z][a-z0-9_]*$, got IdDemo" in capsys.readouterr().err
+
+
+def test_market_release_reads_origin_and_release_workflow_at_repository_root(tmp_path: Path) -> None:
+    repo = tmp_path / "monorepo"
+    plugin_dir = _make_plugin_dir(repo / "plugins")
+    (repo / ".github" / "workflows").mkdir(parents=True)
+    (repo / ".github" / "workflows" / "release.yml").write_text("on: push\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "https://github.com/alice/n.e.k.o_plugin_cli_demo.git"],
+        cwd=repo,
+        check=True,
+    )
+    defaults = neko_plugin_cli.resolve_default_paths()
+
+    root = release_cmd._repository_root(plugin_dir, defaults)
+    assert root == repo.resolve()
+    issues = release_cmd._diagnose_market_release(
+        plugin_dir,
+        repository_root=root,
+        plugin_id="cli_demo",
+        version="0.0.1",
+        github_repository="",
+        ref_name="v0.0.1",
+    )
+    assert [issue for issue in issues if issue[0] == "error"] == []
+
+
+@pytest.mark.parametrize(
+    ("remote", "expected"),
+    [
+        ("https://user@github.com/o/n.e.k.o_plugin_a", "o/n.e.k.o_plugin_a"),
+        ("https://x-access-token:abc@github.com/o/repo.git", "o/repo"),
+        ("git@github.com:o/repo.git/", "o/repo"),
+        ("ssh://user@github.com/o/repo.git", "o/repo"),
+        ("https://github.com/o/n.e.k.o_plugin_a.git", "o/n.e.k.o_plugin_a"),
+        ("https://user@evil.example/github.com/o/repo", None),
+        ("https://a@b@github.com/o/repo", None),
+    ],
+)
+def test_parse_github_repository_remote_accepts_userinfo(remote: str, expected: str | None) -> None:
+    assert parse_github_repository_remote(remote) == expected
+
+
+def test_load_toml_names_a_utf8_bom(tmp_path: Path) -> None:
+    path = tmp_path / "plugin.toml"
+    path.write_bytes(b"\xef\xbb\xbf[plugin]\nid = \"x\"\n")
+
+    with pytest.raises(ValueError, match="starts with a UTF-8 BOM; save it as UTF-8 without BOM"):
+        load_toml(path)
+
+
+def test_validator_reads_gitignore_and_json_saved_with_a_bom(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "n.e.k.o_plugin_bom_demo"
+    assert neko_plugin_cli.main(["init", "bom_demo", "--output", str(plugin_dir)]) == 0
+    for relative in (".gitignore", ".vscode/settings.json"):
+        path = plugin_dir / relative
+        path.write_bytes(b"\xef\xbb\xbf" + path.read_bytes())
+
+    messages = [message for _severity, message in validate_plugin_dir(plugin_dir, strict=True)]
+    assert not [message for message in messages if message.startswith(".gitignore should include")]
+    assert not [message for message in messages if ".vscode/settings.json" in message]
+
+
+def test_scaffold_has_no_lifecycle_warnings(tmp_path: Path) -> None:
+    # Lifecycle hooks are optional at runtime (plugin/core/host.py runs them only when defined).
+    plugin_dir = tmp_path / "n.e.k.o_plugin_quiet_demo"
+    assert neko_plugin_cli.main(["init", "quiet_demo", "--output", str(plugin_dir)]) == 0
+
+    assert not [message for _severity, message in validate_plugin_dir(plugin_dir, strict=True) if "@lifecycle" in message]
+
+
+def test_release_check_runs_out_of_tree_tests_like_ci(tmp_path: Path) -> None:
+    plugin_dir = _init_committed(tmp_path, "pytest_demo")
+    tests_dir = plugin_dir / "tests"
+    entry = (plugin_dir / "plugin.toml").read_text(encoding="utf-8").split('entry = "', 1)[1].split('"', 1)[0]
+    module, class_name = entry.split(":")
+    canonical = module.removeprefix("plugin.")
+    (plugin_dir / "helper.py").write_text("VALUE = object()\n", encoding="utf-8")
+    # Both names must resolve identically even during initial conftest loading.
+    (tests_dir / "conftest.py").write_text(
+        "import importlib\n"
+        f"assert importlib.import_module('{module}') is importlib.import_module('{canonical}')\n"
+        f"assert importlib.import_module('{module}.helper') is importlib.import_module('{canonical}.helper')\n",
+        encoding="utf-8",
+    )
+    (tests_dir / "test_ci_alignment.py").write_text(
+        f"from {module} import {class_name}\n\n\n"
+        "async def test_async_runs_in_auto_mode():\n"
+        f"    assert {class_name}\n",
+        encoding="utf-8",
+    )
+    _commit_all(plugin_dir)
+
+    assert (
+        neko_plugin_cli.main(
+            ["check", str(plugin_dir), "--release", "--target-dir", str(tmp_path / "target")]
+        )
+        == 0
+    )
+    # Nothing was written into the N.E.K.O checkout to make the import work.
+    assert not (neko_plugin_cli.resolve_default_paths().plugins_root / "pytest_demo").exists()
+
+
+def test_external_repository_can_use_a_plugin_plugins_subdirectory(tmp_path):
+    from plugin.neko_plugin_cli.commands import release_cmd
+    root = tmp_path / "external"
+    source = root / "plugin" / "plugins" / "demo"
+    source.mkdir(parents=True)
+    subprocess.run(["git", "init", str(root)], check=True, capture_output=True)
+    defaults = neko_plugin_cli.resolve_default_paths()
+    assert release_cmd._repository_root(source, defaults) == root.resolve()
+
+
+def test_external_test_import_hook_does_not_require_a_checkout_pytest_ini(tmp_path, monkeypatch):
+    from plugin.neko_plugin_cli.commands import release_cmd
+    from plugin.neko_plugin_cli.paths import CliDefaults
+    source = tmp_path / "demo"
+    (source / "tests").mkdir(parents=True)
+    root = tmp_path / "checkout"
+    root.mkdir()
+    defaults = CliDefaults(root / "plugin", root / "target", root / "plugin/plugins", root / "profiles")
+    calls = []
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, "")
+    monkeypatch.setattr(release_cmd.subprocess, "run", run)
+    assert release_cmd._run_tests(source, plugin_id="demo", defaults=defaults, skip_tests=False) == "passed"
+    command, kwargs = calls[0]
+    assert "-c" not in command
+    assert command[command.index("-p") + 1] == "plugin.neko_plugin_cli.plugin_import_alias"
+    assert kwargs["env"][release_cmd.PLUGIN_SOURCE_ENV] == str(source)

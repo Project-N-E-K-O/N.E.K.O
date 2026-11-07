@@ -1,51 +1,14 @@
 import { modelApiMessages } from '../model-api'
 import { modelBindingsMessages } from '../model-bindings'
+import { authoringMessages } from '../authoring'
 
 /**
  * 繁體中文語言包
  */
 export default {
+  authoring: authoringMessages['zh-TW'],
   modelApi: modelApiMessages['zh-TW'],
   modelBindings: modelBindingsMessages['zh-TW'],
-  development: {
-    guidePurpose: "此介面不提供一鍵式外掛開發，而是協助開發者將既有原始碼一鍵打包為可匯入的外掛，並支援持續開發。",
-    navTitle: "開發外掛",
-    guideButton: "使用說明",
-    guideTitle: "開始開發你的外掛",
-    guideIntro: "無需 clone N.E.K.O 主儲存庫：關聯自己的原始碼資料夾，即可開發、除錯並打包分享。",
-    guideLoadTitle: "載入原始碼目錄",
-    guideLoadBody: "開啟開發模式，選擇包含 plugin.toml 的資料夾，驗證後載入。網頁端輸入的路徑屬於執行後端的機器。",
-    guideReloadTitle: "修改後手動重新載入",
-    guideReloadBody: "使用自己的編輯器修改並儲存，再點擊「重新載入」。入口清單會顯示更新後的說明；應用程式重啟後需手動啟動開發外掛。",
-    guideBuildTitle: "打包並分享",
-    guideBuildBody: "點擊「打包」產生 .neko-plugin 安裝套件，停止狀態也能打包。請在另一套環境匯入並驗證後再分享。",
-    guideData: "「移除關聯」會停止外掛並解除登記，保留原始碼與執行資料。關閉開發模式也會停止外掛，但保留目錄關聯。",
-    guideReopen: "關閉後，可隨時點擊頁面右上方的「使用說明」再次查看。",
-    guideDismiss: "知道了",
-    sourcePlaceholder: "選擇包含 plugin.toml 的外掛資料夾",
-    previewHint: "驗證後將在這裡顯示外掛資訊，確認無誤後即可載入。",
-    title: "開發模式",
-    load: "載入未封裝外掛",
-    hint: "開發完成後載入原始碼，可以打包並匯入外掛，也可以繼續開發。",
-    badge: "開發中",
-    entry: "進入點",
-    openSource: "開啟原始碼目錄",
-    start: "啟動",
-    stop: "停止",
-    reload: "重新載入",
-    logs: "日誌",
-    build: "封裝",
-    rebind: "重新選擇目錄",
-    remove: "移除關聯",
-    pathHint: "請輸入執行 N.E.K.O 後端的電腦上的原始碼目錄。瀏覽器上傳資料夾不適用於原地開發。",
-    path: "原始碼目錄",
-    choose: "選擇資料夾",
-    valid: "驗證通過",
-    validate: "驗證",
-    failed: "操作失敗",
-    built: "安裝包已產生；功能測試與市集審核需另行完成。",
-    removeHint: "停止外掛並移除關聯？原始碼和執行資料會保留。",
-  },
   common: {
     chooseLanguage: "選擇語言",
     surfaceLanguagePending: "應用語言已變更。為保留未儲存內容，此面板暫時保留原語言。",
@@ -581,6 +544,7 @@ export default {
         manual: '手動',
         imported: '匯入',
         market: '市集',
+        project: '工作台',
         unknown: '未知',
       },
       // v2: Market release channel values displayed on SourceDetailRow.
@@ -643,7 +607,7 @@ export default {
     autoStartHint: 'N.E.K.O 啟動時自動啟動此外掛。手動啟動或停止不會改變此設定。',
     autoStartDisabledHint: '此外掛目前已停用。開啟自動啟動會同時啟用它，讓它下次啟動時執行，但不會立即啟動。',
     autoStartBlockedHint: '偏好已開啟，但外掛被停用或仍待核准，下次不會自動啟動。關閉再開啟可啟用並核准自動啟動。',
-    autoStartUnsupportedDevelopment: '開發外掛不會自動啟動，請手動啟動。',
+    autoStartUnsupportedProject: '工作台專案不會自動啟動，請手動啟動。',
     fetchFailed: '取得外掛列表失敗',
     pluginType: '類型',
     pluginTypeNormal: '外掛',

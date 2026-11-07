@@ -187,11 +187,12 @@ describe('PluginAutoStartSwitch', () => {
     app.unmount()
   })
 
-  it('shows a read-only switch for development plugins', async () => {
-    const { app, button } = mount(false, { source: 'development' })
+  it('shows a read-only switch for workbench projects', async () => {
+    const { app, button, root } = mount(false, { source: 'project' })
     await flushPromises()
 
     expect(button().disabled).toBe(true)
+    expect(root.textContent).toContain('plugins.autoStartUnsupportedProject')
     button().click()
     await flushPromises()
     expect(apiMocks.setPluginAutoStart).not.toHaveBeenCalled()
