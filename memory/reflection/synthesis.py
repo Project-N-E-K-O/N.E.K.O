@@ -753,6 +753,9 @@ class SynthesisMixin:
             # (memory.evidence.awaits_user_signal holds back a reflection
             # resting only on the latter), and which facts that covers
             # (refine dedupes against it, memory.evidence.counted_fact_ids).
+            # On a new line it equals source_fact_ids; it is kept separate
+            # because refine and merge grow the two differently, and lines
+            # written while source_fact_ids was the whole batch rely on it.
             'fact_source_counts': count_fact_sources(supporting),
             'counted_fact_ids': supporting_ids,
             'source_facts_oldest_at': _oldest_fact_time(supporting),
