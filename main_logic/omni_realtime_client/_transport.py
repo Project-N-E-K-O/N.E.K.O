@@ -88,6 +88,7 @@ _STUCK_RELEASE_STEP_TIMEOUT = 0.5
 # arrives right behind its original, so this only has to outlive the events
 # interleaved between them; it is a leak guard, not a history.
 _USAGE_RECORDED_ID_LIMIT = 32
+_RECENT_RESPONSE_TERMINAL_LIMIT = 32
 _INPUT_ROUTE_IDENTITY_ITEM_LIMIT = 8
 # ``None`` is a valid route owner (no active game route), so the "nothing to
 # freeze" answer needs its own sentinel.
@@ -564,14 +565,6 @@ class _TransportMixin:
         # after a reconnect would otherwise have the new session's first turns
         # suppressed as already-billed duplicates.
         self._usage_recorded_ids = []
-        # Same lifetime as the id bookkeeping above, and for the same
-        # reason: a reconnect may reach a different upstream.
-        self._announces_responses = False
-        self._cancelled_voice_successor_sid = None
-        self._cancelled_voice_successor_has_input = False
-        self._cancelled_voice_response_id = None
-        self._cancelled_voice_early_output = None
-        self._recovered_voice_response = False
         # Same lifetime, same reason: the quarantine is lowered only by a
         # response.created on THIS socket, so a replacement connection to a
         # never-announcing upstream would never clear it. Unreachable today
@@ -2467,6 +2460,7 @@ class _TransportMixin:
         self._cancelled_voice_successor_has_input = False
         self._cancelled_voice_response_id = None
         self._cancelled_voice_early_output = None
+        self._cancelled_voice_started_item_id = None
         self._recovered_voice_response = False
         self._current_response_id = response_id
         arbiter = getattr(self, "_response_arbiter", None)
@@ -2540,11 +2534,15 @@ class _TransportMixin:
             and not self._print_input_transcript
             and (event_type in _VOICE_AUDIO_DELTAS or event_type in _VOICE_TRANSCRIPT_DELTAS)
         ):
-            # Before input is accepted, a reused or missing ID could be the
-            # cancelled reply's tail. Only remember distinct, identifiable
-            # output, and keep its slice of the existing transcript buffer.
+            # Before input is accepted, only remember identifiable output
+            # with no known terminal. Keep its slice of the transcript buffer.
             early = self._cancelled_voice_early_output
-            if self._cancelled_voice_response_id is None or response_id in (None, self._cancelled_voice_response_id):
+            if (
+                self._cancelled_voice_response_id is None
+                or response_id is None
+                or response_id == self._cancelled_voice_response_id
+                or response_id in self._recent_response_terminal_ids
+            ):
                 self._cancelled_voice_early_output = None
             elif early is None or early[0] != response_id:
                 self._cancelled_voice_early_output = (response_id, len(self._output_transcript_buffer))
@@ -2793,6 +2791,7 @@ class _TransportMixin:
                         self._cancelled_voice_successor_has_input = False
                         self._cancelled_voice_response_id = cancelled_response_id
                         self._cancelled_voice_early_output = None
+                        self._cancelled_voice_started_item_id = None
 
     async def _on_arbiter_stuck_release(
         self, reason: str, response_id: str | None = None
@@ -3279,6 +3278,16 @@ class _TransportMixin:
                         response = event.get("response")
                         if isinstance(response, dict):
                             event_response_id = _response_id_text(response.get("id"))
+                    known_terminal = False
+                    if (
+                        event_type == "response.done"
+                        and event_response_id is not None
+                        and not self._announces_responses
+                    ):
+                        known_terminal = event_response_id in self._recent_response_terminal_ids
+                        if not known_terminal:
+                            self._recent_response_terminal_ids.append(event_response_id)
+                            del self._recent_response_terminal_ids[:-_RECENT_RESPONSE_TERMINAL_LIMIT]
                     tracked = self._current_response_id
                     tracked_text = None if tracked is None else str(tracked)
                     if (
@@ -3294,24 +3303,13 @@ class _TransportMixin:
                         # which have no server VAD — no speech-id rotation,
                         # which is what silences every turn after the first.
                         #
-                        # Same reasoning as the arbiter's: a terminal for an id
-                        # this connection has never seen announced cannot be
-                        # another response's, because there is no other
-                        # response to have announced it. The latch is per
-                        # connection and set only by response.created, so on
-                        # any announcing provider this condition is false from
-                        # its first turn onward and the stale filter behaves
-                        # exactly as before.
-                        # The voice recovery path also binds an actual output
-                        # ID. Only terminals use that extra correlation, as
-                        # the proxy may use different IDs for tool events.
+                        # For an unannounced recovered reply, reject known
+                        # old terminals. The observed trace used the same ID
+                        # for output and terminal, but the proxy can omit IDs
+                        # and we have no equality contract for unknown IDs.
                         and (
                             self._announces_responses
-                            or (
-                                self._recovered_voice_response
-                                and event_type == "response.done"
-                                and tracked_text is not None
-                            )
+                            or (self._recovered_voice_response and known_terminal)
                         )
                         # A mismatched function/terminal ID alone does not
                         # enter this branch: the observed Lanlan/livestream
@@ -3499,8 +3497,8 @@ class _TransportMixin:
                     )
                     terminal_event = event
                     if self._recovered_voice_response:
-                        # Release the exact registration, even when only one
-                        # of the proxy's start evidence and terminal has an ID.
+                        # Release the registration even if the terminal omits
+                        # the ID or uses a different ID than the output did.
                         terminal_event = {
                             **event,
                             "response": {
@@ -3600,6 +3598,13 @@ class _TransportMixin:
                     self.note_user_turn_started()
                     self._ensure_voice_handoff_audio_timeline()
                     self._voice_handoff_server_item_id = event.get("item_id")
+                    started_item_id = _response_id_text(event.get("item_id"))
+                    if (
+                        self._cancelled_voice_successor_sid is not None
+                        and started_item_id is not None
+                        and started_item_id not in self._raw_speech_started_scoped_item_ids
+                    ):
+                        self._cancelled_voice_started_item_id = started_item_id
                     self._note_raw_speech_started_scope(event.get("item_id"))
                     self._speech_started_total += 1
                     logger.info("Speech detected")
@@ -3660,6 +3665,7 @@ class _TransportMixin:
                     self._client_vad_last_speech_time = _now
                     self._user_recent_activity_time = _now
                 elif event_type == "conversation.item.input_audio_transcription.completed":
+                    transcript_item_id = _response_id_text(event.get("item_id"))
                     already_scoped = self._raw_transcript_was_already_scoped(
                         event.get("item_id")
                     )
@@ -3681,7 +3687,17 @@ class _TransportMixin:
                             return
                     if (
                         self._cancelled_voice_successor_sid is not None
-                        and not already_scoped and transcript_accepted
+                        and transcript_accepted
+                        # Scope dedupes the tool-generation advance. A
+                        # speech_started observed after cancellation can
+                        # independently prove this is the new utterance.
+                        and (
+                            not already_scoped
+                            or (
+                                transcript_item_id is not None
+                                and transcript_item_id == self._cancelled_voice_started_item_id
+                            )
+                        )
                         and isinstance(transcript, str) and transcript.strip()
                     ):
                         self._cancelled_voice_successor_has_input = True
@@ -4001,6 +4017,13 @@ class _TransportMixin:
         self._gemini_cancelled_terminal_id = None
         self._raw_speech_started_scope_pending_transcript = False
         self._raw_speech_started_scoped_item_ids = []
+        self._announces_responses = False
+        self._cancelled_voice_successor_sid = None
+        self._cancelled_voice_successor_has_input = False
+        self._cancelled_voice_response_id = None
+        self._cancelled_voice_early_output = None
+        self._cancelled_voice_started_item_id = None
+        self._recent_response_terminal_ids = []
         # Provider response identity and interruption state belong to the
         # retired connection. Some raw proxies never announce responses, so a
         # stale interrupt would mute the replacement for its entire lifetime,
