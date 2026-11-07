@@ -3688,9 +3688,11 @@ class _TransportMixin:
                     if (
                         self._cancelled_voice_successor_sid is not None
                         and transcript_accepted
-                        # Scope dedupes the tool-generation advance. A
-                        # speech_started observed after cancellation can
-                        # independently prove this is the new utterance.
+                        # Scope dedupes the tool-generation advance. To use
+                        # a scoped transcript here, require its matching
+                        # speech_started after the cancelled response.done.
+                        # Earlier starts may belong to the interrupted turn
+                        # or its successor.
                         and (
                             not already_scoped
                             or (
