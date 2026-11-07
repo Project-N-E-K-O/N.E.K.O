@@ -531,6 +531,16 @@ export default {
     actualSources: '實際線路：{sources}',
   },
   plugins: {
+    display: {
+      fullscreenTitle: "進入全螢幕顯示？",
+      focusTitle: "進入專注模式？",
+      fullscreenBody: "外掛「{plugin}」要求全螢幕顯示目前面板。可透過退出按鈕或 Esc 返回。",
+      focusBody: "外掛「{plugin}」要求擴大目前面板，暫時隱藏側欄和頁面操作區。",
+      enterFullscreen: "進入全螢幕",
+      enterFocus: "進入專注模式",
+      exit: "退出擴大顯示",
+    },
+
     listLoadFailed: "外掛清單載入失敗，請重試",
     noMatches: "沒有相符的外掛",
     clearFilters: "清除篩選",

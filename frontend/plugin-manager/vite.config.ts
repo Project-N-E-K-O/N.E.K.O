@@ -55,9 +55,8 @@ export default defineConfig({
   server: {
     port: 5173,
     fs: {
-      // 允许访问父目录（更安全的替代方案，而不是完全禁用严格模式）
-      // 这样可以访问项目根目录之外的必要文件，同时保持文件系统的安全防护
-      allow: ['..']
+      // Hosted runtime 内嵌共享显示客户端，只额外开放 SDK 目录。
+      allow: ['..', fileURLToPath(new URL('../../static/plugin-ui-sdk', import.meta.url))]
     },
     proxy: {
       // Hosted surfaces open the main model-settings page through the parent
@@ -80,6 +79,11 @@ export default defineConfig({
         secure: false
       },
       // 代理所有插件服务器 API 请求
+      '/plugin-ui-sdk/': {
+        target: BACKEND_TARGET,
+        changeOrigin: true,
+        secure: false
+      },
       '/plugin/': {
         target: BACKEND_TARGET,
         changeOrigin: true,

@@ -531,6 +531,16 @@ export default {
     actualSources: 'Baixando de {sources}',
   },
   plugins: {
+    display: {
+      fullscreenTitle: "Entrar em tela cheia?",
+      focusTitle: "Entrar no modo de foco?",
+      fullscreenBody: "O plugin “{plugin}” solicita tela cheia para este painel. Use o botão de saída ou Esc para voltar.",
+      focusBody: "O plugin “{plugin}” solicita ampliar o painel ocultando a barra lateral e os controles da página.",
+      enterFullscreen: "Entrar em tela cheia",
+      enterFocus: "Entrar no modo de foco",
+      exit: "Sair da exibição ampliada",
+    },
+
     listLoadFailed: "Não foi possível carregar a lista de plugins. Tente novamente.",
     noMatches: "Nenhum plugin correspondente",
     clearFilters: "Limpar filtros",

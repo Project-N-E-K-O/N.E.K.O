@@ -1,5 +1,6 @@
 <template>
   <div class="app-root">
+    <PluginDisplayDialog v-if="displayDialogLoaded" />
     <div class="window-titlebar">
       <div class="titlebar-left">
         <img src="@/assets/paw.png" alt="" class="titlebar-paw" draggable="false" />
@@ -93,6 +94,7 @@ import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch,
 import MotionTransition from '@/motion/MotionTransition.vue'
 import Sidebar from './Sidebar.vue'
 import Header from './Header.vue'
+import { usePluginDisplayDialog } from '@/composables/usePluginDisplayDialog'
 import { useI18n } from 'vue-i18n'
 import { useConnectionStore } from '@/stores/connection'
 import { useWorkspaceFocus } from '@/composables/useWorkspaceFocus'
@@ -101,6 +103,16 @@ const { t } = useI18n()
 const connectionStore = useConnectionStore()
 const { focused: workspaceFocused } = useWorkspaceFocus()
 const sidebarCollapsed = ref(false)
+
+const PluginDisplayDialog = defineAsyncComponent(
+  () => import('@/components/plugin/PluginDisplayDialog.vue'),
+)
+const { visible: displayDialogVisible } = usePluginDisplayDialog()
+const displayDialogLoaded = ref(false)
+// Keep it mounted after the first request so closing transitions can finish.
+watch(displayDialogVisible, (visible) => {
+  if (visible) displayDialogLoaded.value = true
+}, { immediate: true })
 
 // The update check, its popup and the install-progress UI stay off the
 // cold-start path (payload-budget e2e): the store is imported when the boot

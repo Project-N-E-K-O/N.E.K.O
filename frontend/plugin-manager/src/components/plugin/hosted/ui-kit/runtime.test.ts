@@ -3,7 +3,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent } from '@testing-library/dom'
 import fc from 'fast-check'
-import runtimeSource from './runtime.js?raw'
+import { buildUiKitBundle } from '../uiKitBundle'
+
+const runtimeSource = buildUiKitBundle().runtime
 
 declare global {
   interface Window {

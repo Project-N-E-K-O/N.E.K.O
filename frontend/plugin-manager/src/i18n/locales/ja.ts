@@ -531,6 +531,16 @@ export default {
     actualSources: 'ダウンロード元：{sources}',
   },
   plugins: {
+    display: {
+      fullscreenTitle: "全画面表示にしますか？",
+      focusTitle: "集中モードにしますか？",
+      fullscreenBody: "プラグイン「{plugin}」がパネルの全画面表示を要求しています。終了ボタンまたは Esc で戻れます。",
+      focusBody: "プラグイン「{plugin}」がサイドバーとページ操作を隠してパネルを広げることを要求しています。",
+      enterFullscreen: "全画面表示",
+      enterFocus: "集中モードにする",
+      exit: "拡大表示を終了",
+    },
+
     listLoadFailed: "プラグイン一覧を読み込めませんでした。もう一度お試しください。",
     noMatches: "一致するプラグインはありません",
     clearFilters: "フィルターをクリア",

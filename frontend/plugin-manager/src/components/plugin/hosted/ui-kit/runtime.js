@@ -2013,6 +2013,10 @@ function requestHost(method, payload, options) {
   });
 }
 const api = {
+  display: createPluginDisplayClient({
+    origin: __hostedContextOrigin,
+    reportError: reportHostedRuntimeError,
+  }),
   // Async handlers lose the synchronous DOM event scope after an await. They
   // can explicitly preserve the attribution for this one action with
   // { userInitiated: true }, without making unrelated background calls noisy.
