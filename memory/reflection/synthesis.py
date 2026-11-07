@@ -500,6 +500,7 @@ class SynthesisMixin:
                         lanlan_name, impression_candidates[draft['skip_key']],
                         sorted(f['id'] for f in draft['supporting']),
                         subject=memory_subject,
+                        facts=draft['supporting'],
                     )
                     covered_any = covered_any or draft['covered']
         new_drafts: list[dict] = []
@@ -1146,6 +1147,7 @@ class SynthesisMixin:
 
     async def _arecord_covered_facts_locked(
         self, lanlan_name: str, target: dict, fact_ids: list[str], *, subject=None,
+        facts: list[dict] | tuple = (),
     ) -> bool:
         """Attach a skipped fact batch to the impression that covers it.
 
@@ -1155,6 +1157,12 @@ class SynthesisMixin:
         Returns False when the target is no longer an eligible impression,
         including when refinement or a correction rewrote its text while the
         LLM was judging the old wording.
+
+        ``facts`` (the dicts behind ``fact_ids``) join a reflection target's
+        ``fact_source_counts`` when not counted yet: the user restating an
+        impression that rested only on the AI's words is the user's backing
+        for it (``memory.evidence.awaits_user_signal``). Reinforcement stays
+        untouched, as for any restatement.
         """
         if target['kind'] == 'persona':
             return await self._persona_manager.arecord_covered_facts(
@@ -1181,7 +1189,22 @@ class SynthesisMixin:
             or not entry_matches_subject(entry, subject)
         ):
             return False
-        if merge_covered_fact_ids(entry, fact_ids):
+        changed = merge_covered_fact_ids(entry, fact_ids)
+        if isinstance(entry.get('fact_source_counts'), dict):
+            from memory.evidence import counted_fact_ids, merge_fact_source_counts
+            already = counted_fact_ids(entry)
+            new_facts = [
+                f for f in facts
+                if isinstance(f, dict) and f.get('id') and f['id'] not in already
+            ]
+            counts = merge_fact_source_counts([entry], new_facts) if new_facts else None
+            if counts is not None:
+                entry['fact_source_counts'] = counts
+                entry['counted_fact_ids'] = sorted(
+                    already | {f['id'] for f in new_facts}
+                )
+                changed = True
+        if changed:
             # Full-view write (promoted rows included) under the reflection
             # lock, same as the state-change path; asave_reflections only
             # takes the active list.

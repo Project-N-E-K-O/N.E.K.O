@@ -416,7 +416,7 @@ async def test_synthesis_skips_a_restated_line_and_keeps_the_rest(tmp_path):
     target = {"kind": "reflection", "id": "ref_old", "text": "主人睡前听歌"}
     covered_calls: list[list[str]] = []
 
-    async def _covered(_name, tgt, fact_ids, *, subject=None):
+    async def _covered(_name, tgt, fact_ids, *, subject=None, facts=()):
         covered_calls.append(list(fact_ids))
         return tgt is target
 
@@ -434,6 +434,42 @@ async def test_synthesis_skips_a_restated_line_and_keeps_the_rest(tmp_path):
     assert covered_calls == [["f1", "f2"]]
     assert [r["text"] for r in created] == ["主人在认真学日语"]
     assert created[0]["source_fact_ids"] == ["f3", "f4"]
+
+
+@pytest.mark.asyncio
+async def test_user_restating_an_ai_only_line_backs_it(tmp_path):
+    """The user's words restating a pending line that rested only on the AI's
+    own: synthesis skips it as covered, and those words now count as the
+    user's backing (it is no longer held back). No score is added."""
+    from memory.evidence import awaits_user_signal
+
+    _ev, _fs, _pm, engine, _cm = _install(str(tmp_path))
+    old = _reflection("r_old", "小天觉得主人睡前离不开歌", counts={"user": 0, "ai": 3})
+    old.update(source_fact_ids=["a1", "a2", "a3"], counted_fact_ids=["a1", "a2", "a3"])
+    await engine.asave_reflections("小天", [old])
+    target = {"kind": "reflection", "id": "r_old", "text": "小天觉得主人睡前离不开歌"}
+    engine._build_existing_impressions_block = AsyncMock(
+        return_value=("[r_old] 小天觉得主人睡前离不开歌\n", {"r_old": target}),
+    )
+    answer = [_line("", [1, 5], skip=True, covered_by="r_old")]
+    created, _calls, _engine = await _synthesize_answer(tmp_path, _topic_facts(), answer, engine=engine)
+
+    assert created == []
+    [row] = [r for r in await engine._aload_reflections_full("小天") if r["id"] == "r_old"]
+    assert row["fact_source_counts"] == {"user": 1, "ai": 4}
+    assert row["counted_fact_ids"] == ["a1", "a2", "a3", "f1", "f5"]
+    assert set(row["covered_fact_ids"]) == {"f1", "f5"}
+    assert awaits_user_signal(row) is False
+    assert row["reinforcement"] == 0.0
+
+    # The same facts covered again are not counted twice.
+    facts = {f["id"]: f for f in _topic_facts()}
+    async with engine._get_alock("小天"):
+        assert await engine._arecord_covered_facts_locked(
+            "小天", target, ["f1", "f5"], facts=[facts["f1"], facts["f5"]],
+        )
+    [row] = [r for r in await engine._aload_reflections_full("小天") if r["id"] == "r_old"]
+    assert row["fact_source_counts"] == {"user": 1, "ai": 4}
 
 
 @pytest.mark.asyncio
