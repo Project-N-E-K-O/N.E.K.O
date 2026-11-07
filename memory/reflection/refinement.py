@@ -118,21 +118,29 @@ class RefinementMixin:
         Shared by refine ``modify`` and introspection ``rewrite`` — the
         reflection twin of ``PersonaManager._apply_refine_modify``.
         ``absorbed_facts`` are the dicts behind ``absorbed_fact_ids`` when
-        known; new ones join ``fact_source_counts``.
+        known; the ones not yet counted join ``fact_source_counts``. A fact of
+        the absorbed batch the line did not rest on (``based_on``) is in
+        ``source_fact_ids`` but not counted, so dedupe is by
+        ``counted_fact_ids``.
         """
+        from memory.evidence import counted_fact_ids, merge_fact_source_counts
+
         absorbed = list(absorbed_fact_ids)
         old_text = src.get('text', '')
         src['text'] = new_text
         existing_sources = list(src.get('source_fact_ids') or [])
+        already_counted = counted_fact_ids(src)
         new_facts = [
             f for f in absorbed_facts
-            if isinstance(f, dict) and f.get('id') not in existing_sources
+            if isinstance(f, dict) and f.get('id') not in already_counted
         ]
         if new_facts and isinstance(src.get('fact_source_counts'), dict):
-            from memory.evidence import merge_fact_source_counts
             counts = merge_fact_source_counts([src], new_facts)
             if counts is not None:
                 src['fact_source_counts'] = counts
+                src['counted_fact_ids'] = sorted(
+                    already_counted | {f['id'] for f in new_facts if f.get('id')}
+                )
         src['source_fact_ids'] = sorted(set(existing_sources + absorbed))
         if absorbed:
             # Facts of unknown age joined: the line is no longer known to
@@ -390,10 +398,10 @@ class RefinementMixin:
                     if not text:
                         continue
                     merge_srcs = [refl_by_id[sid] for sid in valid_refl_ids]
-                    already_counted = {
-                        fid for src in merge_srcs
-                        for fid in (src.get('source_fact_ids') or [])
-                    }
+                    from memory.evidence import counted_fact_ids
+                    already_counted: set[str] = set()
+                    for merge_src in merge_srcs:
+                        already_counted |= counted_fact_ids(merge_src)
                     new_refl = self._build_merge_reflection(
                         merge_srcs,
                         valid_fact_sources, produce, entity, now,

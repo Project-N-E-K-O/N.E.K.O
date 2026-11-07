@@ -578,6 +578,9 @@ class SynthesisMixin:
             # (memory.evidence.awaits_user_signal holds back a reflection
             # resting only on the latter).
             'fact_source_counts': count_fact_sources(supporting),
+            # Which facts those counts cover: refine dedupes against this,
+            # since source_fact_ids is the whole batch (memory.evidence.counted_fact_ids).
+            'counted_fact_ids': sorted(f['id'] for f in supporting),
             'source_facts_oldest_at': _oldest_fact_time(unabsorbed),
             'created_at': now_iso,
             'feedback': None,

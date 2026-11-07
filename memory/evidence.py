@@ -56,6 +56,7 @@ __all__ = [
     "is_ai_disclosure",
     "count_fact_sources",
     "merge_fact_source_counts",
+    "counted_fact_ids",
     "awaits_user_signal",
 ]
 
@@ -93,6 +94,23 @@ def count_fact_sources(facts) -> dict:
     ai = sum(1 for f in facts or () if is_ai_disclosure(f))
     total = sum(1 for f in facts or () if isinstance(f, dict))
     return {"user": total - ai, "ai": ai}
+
+
+def counted_fact_ids(entry: dict) -> set[str]:
+    """Ids of the facts already in ``entry``'s ``fact_source_counts``.
+
+    Synthesis counts only the facts a reflection rests on (``based_on``)
+    while ``source_fact_ids`` keeps the whole absorbed batch, so a later
+    refine that absorbs another fact of that batch must dedupe against this,
+    not against ``source_fact_ids``. Entries without the record counted the
+    whole of ``source_fact_ids``.
+    """
+    if not isinstance(entry, dict):
+        return set()
+    ids = entry.get("counted_fact_ids")
+    if not isinstance(ids, list):
+        ids = entry.get("source_fact_ids") or []
+    return {fid for fid in ids if isinstance(fid, str)}
 
 
 def merge_fact_source_counts(entries, extra_facts=()) -> dict | None:

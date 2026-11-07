@@ -236,6 +236,68 @@ async def test_synthesis_counts_only_the_facts_the_reflection_rests_on(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_refine_counts_a_batch_fact_the_synthesis_left_out(tmp_path):
+    """The batch's user fact sits in ``source_fact_ids`` without being counted
+    (``based_on`` named only the AI's words). When a refine later absorbs it
+    into the line, it must count: dedupe is by ``counted_fact_ids``."""
+    from memory.evidence import awaits_user_signal
+    from memory.refine import annotate_entry
+
+    facts = [_fact(f"ai{i}", f"小天说自己喜欢夜曲{i}", 10, "ai_disclosure") for i in range(5)]
+    user_fact = _fact("u1", "主人说夜里会听小天推荐的歌", 8, "user_observation")
+    facts.append(user_fact)
+    _ev, _fs, _pm, engine, _cm = _install(str(tmp_path))
+    _write_facts(str(tmp_path), "小天", facts)
+
+    async def _fake_thinking(_api, _prompt, **_kw):
+        resp = MagicMock()
+        resp.content = json.dumps({
+            "entity": "master", "relation_type": "preference",
+            "reflection": "小天喜欢夜曲", "temporal_scope": "pattern",
+            "event_when": None, "based_on": [1, 2],
+        }, ensure_ascii=False)
+        return resp, None
+
+    with patch("memory.thinking_llm.ainvoke_thinking", _fake_thinking), \
+         patch("utils.language_utils.get_global_language", return_value="zh"):
+        [reflection] = await engine.synthesize_reflections("小天")
+    assert reflection["counted_fact_ids"] == ["ai0", "ai1"]
+    assert "u1" in reflection["source_fact_ids"]
+    assert awaits_user_signal(reflection) is True
+
+    cluster = [
+        annotate_entry(reflection, type_="reflection", entity="master"),
+        annotate_entry(user_fact, type_="fact", entity="master"),
+    ]
+    actions = [{"action": "modify", "source_id": reflection["id"],
+                "absorbed_from_fact_ids": ["u1"],
+                "produce": {"text": "小天喜欢夜曲，主人也会听"}, "reason": "x"}]
+    assert await engine.apply_refine_actions("小天", "master", cluster, actions, "h") == 1
+    [row] = [r for r in await engine._aload_reflections_full("小天") if r["id"] == reflection["id"]]
+    assert row["fact_source_counts"] == {"user": 1, "ai": 2}
+    assert row["counted_fact_ids"] == ["ai0", "ai1", "u1"]
+    assert awaits_user_signal(row) is False
+
+    # A refine merge dedupes the same way.
+    r_a = _reflection("r_a", "小天觉得夜曲好听", counts={"user": 0, "ai": 2})
+    r_a.update(source_fact_ids=["a1", "a2", "u2"], counted_fact_ids=["a1", "a2"])
+    r_b = _reflection("r_b", "小天睡前爱哼歌", counts={"user": 0, "ai": 1})
+    r_b.update(source_fact_ids=["a3"], counted_fact_ids=["a3"])
+    await engine.asave_reflections("小天", [r_a, r_b])
+    u2 = {"id": "u2", "text": "主人说睡前会听歌", "importance": 7}
+    cluster = [annotate_entry(r, type_="reflection", entity="master") for r in (r_a, r_b)]
+    cluster.append(annotate_entry(u2, type_="fact", entity="master"))
+    actions = [{"action": "merge", "source_ids": ["r_a", "r_b"], "absorbed_from_fact_ids": ["u2"],
+                "produce": {"text": "小天和主人睡前都听歌", "relation_type": "habit",
+                            "temporal_scope": "pattern"}}]
+    assert await engine.apply_refine_actions("小天", "master", cluster, actions, "h2") == 1
+    merged = next(r for r in await engine._aload_reflections_full("小天")
+                  if r["text"] == "小天和主人睡前都听歌")
+    assert merged["fact_source_counts"] == {"user": 1, "ai": 3}
+    assert merged["counted_fact_ids"] == ["a1", "a2", "a3", "u2"]
+
+
+@pytest.mark.asyncio
 async def test_synthesis_without_usable_based_on_counts_the_whole_batch(tmp_path):
     facts = [_fact(f"ai{i}", f"小天说自己喜欢夜曲{i}", 10, "ai_disclosure") for i in range(5)]
     facts.append(_fact("u1", "主人晚上会听歌", 9, "user_observation"))
