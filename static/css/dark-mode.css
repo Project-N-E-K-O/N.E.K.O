@@ -1863,6 +1863,10 @@ html[data-theme="dark"].subtitle-window-host body.subtitle-window-host {
   background: #383838;
 }
 
+[data-theme="dark"] .model-item input:disabled ~ label {
+  color: #b0b0b0;
+}
+
 /* ===== 子页面：Live2D 参数编辑器 ===== */
 [data-theme="dark"] .parameter-group {
   background: #2d2d2d;
