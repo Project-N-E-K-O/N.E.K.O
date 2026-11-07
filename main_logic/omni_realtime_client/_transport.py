@@ -63,6 +63,10 @@ _VOICE_RESPONSE_DELTAS = frozenset({
 _VOICE_RESPONSE_TRANSCRIPT_ENDS = frozenset({
     "response.audio_transcript.done", "response.output_audio_transcript.done",
 })
+_VOICE_AUDIO_DELTAS = frozenset({"response.audio.delta", "response.output_audio.delta"})
+_VOICE_TRANSCRIPT_DELTAS = frozenset({
+    "response.audio_transcript.delta", "response.output_audio_transcript.delta",
+})
 
 
 class _RealtimeEventOwnerRetired(ConnectionError):
@@ -565,6 +569,8 @@ class _TransportMixin:
         self._announces_responses = False
         self._cancelled_voice_successor_sid = None
         self._cancelled_voice_successor_has_input = False
+        self._cancelled_voice_response_id = None
+        self._cancelled_voice_early_output = None
         self._recovered_voice_response = False
         # Same lifetime, same reason: the quarantine is lowered only by a
         # response.created on THIS socket, so a replacement connection to a
@@ -2459,6 +2465,8 @@ class _TransportMixin:
 
         self._cancelled_voice_successor_sid = None
         self._cancelled_voice_successor_has_input = False
+        self._cancelled_voice_response_id = None
+        self._cancelled_voice_early_output = None
         self._recovered_voice_response = False
         self._current_response_id = response_id
         arbiter = getattr(self, "_response_arbiter", None)
@@ -2483,7 +2491,7 @@ class _TransportMixin:
         self._output_transcript_buffer = ""
         self._current_response_transcript = ""
 
-    def _recover_unannounced_voice_response(self, event: dict[str, Any]) -> None:
+    def _bind_unannounced_voice_response(self, response_id: str | None) -> bool:
         """Bind a native reply after a cancelled proxy response rotated Core's ID."""
         pending_sid = self._cancelled_voice_successor_sid
         if (
@@ -2494,25 +2502,56 @@ class _TransportMixin:
             or self._interrupted
             or self._response_arbiter.has_live_response
         ):
-            return
+            return False
+        if self._read_host_turn_id() != pending_sid:
+            # A different local turn has since taken the ID we reserved.
+            self._cancelled_voice_successor_sid = None
+            self._cancelled_voice_successor_has_input = False
+            self._cancelled_voice_early_output = None
+            return False
+        self._response_arbiter.notify_native_response_started(response_id)
+        self._begin_response_lifecycle(response_id)
+        self._recovered_voice_response = True
+        return True
+
+    def _observe_unannounced_voice_output(self, event: dict[str, Any]) -> None:
         event_type = event.get("type")
         if event_type in _VOICE_RESPONSE_DELTAS:
             content = event.get("delta")
         elif event_type in _VOICE_RESPONSE_TRANSCRIPT_ENDS:
+            if not self._cancelled_voice_successor_has_input:
+                # The normal transcript-end path drains the buffer below.
+                self._cancelled_voice_early_output = None
+                return
             content = event.get("transcript")
         else:
             return
         if not isinstance(content, str) or not content:
             return
-        if self._read_host_turn_id() != pending_sid:
-            # A different local turn has since taken the ID we reserved.
-            self._cancelled_voice_successor_sid = None
-            self._cancelled_voice_successor_has_input = False
-            return
-        # This proxy can reuse its cancelled response's ID. The new user
-        # transcript followed by actual output is the start evidence.
-        self._begin_response_lifecycle(_response_id_text(event.get("response_id")))
-        self._recovered_voice_response = True
+        response_id = _response_id_text(event.get("response_id"))
+        if self._cancelled_voice_successor_has_input:
+            # Actual output following new input may reuse the cancelled ID.
+            self._bind_unannounced_voice_response(response_id)
+        elif (
+            not self._announces_responses
+            and not self._skip_until_next_response
+            and not self._interrupted
+            and not self._response_arbiter.has_live_response
+            and not self._print_input_transcript
+            and (event_type in _VOICE_AUDIO_DELTAS or event_type in _VOICE_TRANSCRIPT_DELTAS)
+        ):
+            # Before input is accepted, a reused or missing ID could be the
+            # cancelled reply's tail. Only remember distinct, identifiable
+            # output, and keep its slice of the existing transcript buffer.
+            early = self._cancelled_voice_early_output
+            if self._cancelled_voice_response_id is None or response_id in (None, self._cancelled_voice_response_id):
+                self._cancelled_voice_early_output = None
+            elif early is None or early[0] != response_id:
+                self._cancelled_voice_early_output = (response_id, len(self._output_transcript_buffer))
+        elif self._cancelled_voice_early_output is not None:
+            # Output that can already stream to Core no longer belongs to
+            # the buffered slice we were holding for the input transcript.
+            self._cancelled_voice_early_output = None
 
     def _read_host_turn_id(self) -> str | None:
         """Sample the host's live speech id, or None for "no answer".
@@ -2555,6 +2594,7 @@ class _TransportMixin:
         connection_still_ours: Callable[[], bool] | None = None,
         carry_host_turn_forward: bool = False,
         recover_cancelled_voice: bool = False,
+        cancelled_response_id: str | None = None,
     ) -> None:
         """Tell the host this turn is over.
 
@@ -2751,6 +2791,8 @@ class _TransportMixin:
                         self._current_turn_host_id = previous_sid
                         self._cancelled_voice_successor_sid = next_sid
                         self._cancelled_voice_successor_has_input = False
+                        self._cancelled_voice_response_id = cancelled_response_id
+                        self._cancelled_voice_early_output = None
 
     async def _on_arbiter_stuck_release(
         self, reason: str, response_id: str | None = None
@@ -3217,8 +3259,8 @@ class _TransportMixin:
                         self._begin_response_lifecycle(
                             _response_id_text(event.get("response_id"))
                         )
-                if self._cancelled_voice_successor_has_input:
-                    self._recover_unannounced_voice_response(event)
+                if self._cancelled_voice_successor_sid is not None:
+                    self._observe_unannounced_voice_output(event)
 
                 # A cancelled response can still emit buffered events after a
                 # replacement response has become current.  Providers that
@@ -3455,9 +3497,18 @@ class _TransportMixin:
                         if isinstance(response, dict)
                         else ""
                     )
-                    finalize_response = (
-                        self._response_arbiter.notify_response_terminal(event)
-                    )
+                    terminal_event = event
+                    if self._recovered_voice_response:
+                        # Release the exact registration, even when only one
+                        # of the proxy's start evidence and terminal has an ID.
+                        terminal_event = {
+                            **event,
+                            "response": {
+                                **(response if isinstance(response, dict) else {}),
+                                "id": self._current_response_id,
+                            },
+                        }
+                    finalize_response = self._response_arbiter.notify_response_terminal(terminal_event)
                     self._response_done_total += 1
                     self._last_response_done_time = time.time()
                     # Parse realtime API token usage.
@@ -3470,9 +3521,13 @@ class _TransportMixin:
                         # moved on, discard the reservation and let the
                         # normal host-ownership check handle the terminal.
                         if self._read_host_turn_id() == pending_sid:
+                            early = self._cancelled_voice_early_output
+                            if early is not None and event_response_id in (None, early[0]):
+                                self._cancelled_voice_early_output = None
                             continue
                         self._cancelled_voice_successor_sid = None
                         self._cancelled_voice_successor_has_input = False
+                        self._cancelled_voice_early_output = None
                     self._clear_turn_response_state()
                     # On response completion, check repetition.
                     await self._record_response_repetition(
@@ -3506,6 +3561,7 @@ class _TransportMixin:
                         carry_host_turn_forward=response_status
                         in {"", "completed", "success", "succeeded"},
                         recover_cancelled_voice=response_status in {"canceled", "cancelled"},
+                        cancelled_response_id=event_response_id,
                     )
                     if await retire_if_replaced():
                         return
@@ -3629,6 +3685,14 @@ class _TransportMixin:
                         and isinstance(transcript, str) and transcript.strip()
                     ):
                         self._cancelled_voice_successor_has_input = True
+                        early = self._cancelled_voice_early_output
+                        if early is not None:
+                            pending_text = self._output_transcript_buffer[early[1]:]
+                            if self._bind_unannounced_voice_response(early[0]) and pending_text:
+                                self._is_first_transcript_chunk = False
+                                await self._emit_pending_output_transcript((pending_text, True))
+                                if await retire_if_replaced():
+                                    return
                 elif event_type in ["response.audio_transcript.done", "response.output_audio_transcript.done"]:
                     self._print_input_transcript = False
                     # [ISSUE4b] Voice-without-text fix. Audio deltas and transcript

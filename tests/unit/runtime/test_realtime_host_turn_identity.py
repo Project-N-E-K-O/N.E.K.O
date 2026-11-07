@@ -798,14 +798,22 @@ async def test_abnormal_terminal_does_not_carry_host_turn_forward(status):
 @pytest.mark.unit
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("response_id", "transcript_done"),
-    [("cancelled", False), ("successor", False), (None, False), ("successor", True)],
-    ids=["reused-id", "new-id", "idless-delta", "transcript-done"],
+    ("response_id", "output_event"),
+    [
+        ("cancelled", "response.audio_transcript.delta"),
+        ("successor", "response.audio_transcript.delta"),
+        (None, "response.audio_transcript.delta"),
+        ("successor", "response.audio_transcript.done"),
+        ("successor", "response.audio.delta"),
+        ("successor", "response.output_audio.delta"),
+    ],
+    ids=["reused-id", "new-id", "idless-delta", "transcript-done", "audio-only", "output-audio-only"],
 )
-async def test_unannounced_voice_reply_recovers_after_cancelled_terminal(response_id, transcript_done):
+async def test_unannounced_voice_reply_recovers_after_cancelled_terminal(response_id, output_event):
     """The free proxy can reuse the cancelled id and omit response.created."""
     host = _Host()
     deliveries = []
+    audio = []
 
     async def rotate():
         host.calls.append("sid_rotate")
@@ -814,6 +822,9 @@ async def test_unannounced_voice_reply_recovers_after_cancelled_terminal(respons
     async def deliver(_text, first):
         deliveries.append((host.speech_id, first))
 
+    async def deliver_audio(data):
+        audio.append((host.speech_id, data))
+
     async def transcribe(text):
         return text != "discarded"
 
@@ -821,6 +832,7 @@ async def test_unannounced_voice_reply_recovers_after_cancelled_terminal(respons
     client = _free_client(
         host, get_host_turn_id=host.read_speech_id,
         on_output_transcript=deliver, on_input_transcript=transcribe,
+        on_audio_delta=deliver_audio,
     )
     socket = _RecordingSocket()
     client.ws = socket
@@ -852,23 +864,67 @@ async def test_unannounced_voice_reply_recovers_after_cancelled_terminal(respons
 
         transcript("new input")
         terminal("cancelled", "cancelled")  # An end event alone cannot acquire the new Core turn.
-        if transcript_done:
-            socket.feed({"type": "response.audio_transcript.done", "response_id": response_id, "transcript": "reply"})
+        audio_only = output_event in {"response.audio.delta", "response.output_audio.delta"}
+        if output_event == "response.audio_transcript.done":
+            socket.feed({"type": output_event, "response_id": response_id, "transcript": "reply"})
+        elif audio_only:
+            socket.feed({"type": output_event, "response_id": response_id, "delta": "AA=="})
         else:
             delta(response_id)
         if response_id is not None:
             terminal("old-other-id")  # A different old response cannot close the recovered reply.
         await _settle()
-        assert deliveries == [("sid-2", True)]
+        assert deliveries == ([] if audio_only else [("sid-2", True)])
+        assert audio == ([("sid-2", b"\x00")] if audio_only else [])
         assert len(host.calls) == 4
+        assert client._response_arbiter.has_live_response
+        if audio_only:
+            queued = await client._response_arbiter.enqueue(source="tool_result")
+            await _settle()
+            assert not queued.sent.done()
+            await client._response_arbiter.cancel_ticket(queued, wait=False)
 
         terminal(response_id or "successor")
         transcript("following input")
         delta("following")
         terminal("following")
         await _settle()
-        assert deliveries == [("sid-2", True), ("sid-3", True)]
+        assert deliveries == ([("sid-3", True)] if audio_only else [("sid-2", True), ("sid-3", True)])
         assert host.calls == ["response_done", "sid_rotate"] * 4
+        assert not client._response_arbiter.has_live_response
+    finally:
+        socket.finish()
+        await asyncio.wait_for(receive_loop, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_distinct_voice_output_before_input_transcript_can_finish_after_cancellation():
+    host = _Host()
+    deliveries = []
+
+    async def deliver(text, first):
+        deliveries.append((text, first))
+
+    client = _free_client(host, get_host_turn_id=host.read_speech_id, on_output_transcript=deliver)
+    socket = _RecordingSocket()
+    client.ws = socket
+    receive_loop = asyncio.create_task(client.handle_messages())
+    try:
+        socket.feed({"type": "response.done", "response": {"id": "cancelled", "status": "cancelled"}})
+        socket.feed({"type": "response.audio_transcript.delta", "response_id": "cancelled", "delta": "old tail"})
+        socket.feed({"type": "response.audio_transcript.delta", "response_id": "successor", "delta": "new reply"})
+        socket.feed({"type": "conversation.item.input_audio_transcription.completed", "transcript": "new input"})
+        socket.feed({"type": "response.done", "response": {"id": "cancelled", "status": "completed"}})
+        await _settle()
+        assert deliveries == [("new reply", True)]
+        assert host.calls == ["response_done", "sid_rotate"]
+        assert client._response_arbiter.has_live_response
+
+        socket.feed({"type": "response.done", "response": {"id": "successor", "status": "completed"}})
+        await _settle()
+        assert host.calls == ["response_done", "sid_rotate"] * 2
+        assert not client._response_arbiter.has_live_response
     finally:
         socket.finish()
         await asyncio.wait_for(receive_loop, timeout=1)

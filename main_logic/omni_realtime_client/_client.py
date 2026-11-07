@@ -267,6 +267,8 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._current_turn_host_id: str | None = None
         self._cancelled_voice_successor_sid: str | None = None
         self._cancelled_voice_successor_has_input = False
+        self._cancelled_voice_response_id: str | None = None
+        self._cancelled_voice_early_output: tuple[str, int] | None = None
         self._recovered_voice_response = False
         self._realtime_protocol_capabilities = (
             resolve_realtime_protocol_capabilities(
