@@ -622,6 +622,16 @@ REFLECTION_SYNTHESIS_FACTS_MAX = 20
   loop currently has no count limit, making this the only protection.
 - Rationale: 30 entries × average 50 tokens = 1500 tokens, sufficient for synthesis."""
 
+REFLECTION_SYNTHESIS_MAX_PER_BATCH = 3
+"""Most reflections one synthesis call may write.
+- Purpose: a batch of up to REFLECTION_SYNTHESIS_FACTS_MAX facts often spans
+  unrelated topics; with one reflection per call the other topics were
+  absorbed along with it and never synthesized. REFLECTION_PROMPT asks for at
+  most this many, one per topic, and extra objects in the answer are dropped.
+- Rationale: 3 covers the topics a 20-fact batch usually spans while keeping
+  the output (each line ≤ REFLECTION_TEXT_MAX_TOKENS) and the pending pool's
+  growth bounded."""
+
 MEMORY_REFLECTION_SYNTHESIS_INTERVAL_SECONDS = 180
 """Polling interval in seconds for ``_periodic_reflection_synthesis_loop``.
 - Purpose: periodically call ``reflection_engine.synthesize_reflections`` per character.

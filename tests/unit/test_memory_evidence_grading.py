@@ -221,7 +221,8 @@ async def test_synthesis_marks_ai_facts_and_seeds_from_user_facts_only(tmp_path)
 async def test_synthesis_counts_only_the_facts_the_reflection_rests_on(tmp_path):
     """An unrelated user fact elsewhere in the batch is no backing: with
     ``based_on`` naming only the AI's statements, the line starts at 0 and
-    waits for the user, though it still absorbs the whole batch."""
+    waits for the user. It lists only those facts; the whole batch is still
+    absorbed."""
     from memory.evidence import awaits_user_signal
 
     facts = [_fact(f"ai{i}", f"小天说自己喜欢夜曲{i}", 10, "ai_disclosure") for i in range(5)]
@@ -232,14 +233,17 @@ async def test_synthesis_counts_only_the_facts_the_reflection_rests_on(tmp_path)
     assert reflection["fact_source_counts"] == {"user": 0, "ai": 3}
     assert reflection["reinforcement"] == 0.0
     assert awaits_user_signal(reflection) is True
-    assert sorted(reflection["source_fact_ids"]) == sorted(f["id"] for f in facts)
+    assert reflection["source_fact_ids"] == ["ai0", "ai1", "ai2"]
+    stored = json.load(open(os.path.join(str(tmp_path), "小天", "facts.json"), encoding="utf-8"))
+    assert all(f["absorbed"] for f in stored)
 
 
 @pytest.mark.asyncio
 async def test_refine_counts_a_batch_fact_the_synthesis_left_out(tmp_path):
-    """The batch's user fact sits in ``source_fact_ids`` without being counted
-    (``based_on`` named only the AI's words). When a refine later absorbs it
-    into the line, it must count: dedupe is by ``counted_fact_ids``."""
+    """The batch's user fact is absorbed without being counted (``based_on``
+    named only the AI's words). When a refine later absorbs it into the line,
+    it must count: dedupe is by ``counted_fact_ids``, and a line written before
+    per-line ``source_fact_ids`` (the whole batch) has it there uncounted."""
     from memory.evidence import awaits_user_signal
     from memory.refine import annotate_entry
 
@@ -262,7 +266,6 @@ async def test_refine_counts_a_batch_fact_the_synthesis_left_out(tmp_path):
          patch("utils.language_utils.get_global_language", return_value="zh"):
         [reflection] = await engine.synthesize_reflections("小天")
     assert reflection["counted_fact_ids"] == ["ai0", "ai1"]
-    assert "u1" in reflection["source_fact_ids"]
     assert awaits_user_signal(reflection) is True
 
     cluster = [
@@ -306,6 +309,126 @@ async def test_synthesis_without_usable_based_on_counts_the_whole_batch(tmp_path
     )
     assert reflection["fact_source_counts"] == {"user": 1, "ai": 5}
     assert reflection["reinforcement"] == pytest.approx(0.6)
+
+
+# ── several reflections per synthesis call ──────────────────────────
+
+
+def _line(text: str, based_on, **extra) -> dict:
+    line = {"entity": "master", "relation_type": "preference", "reflection": text,
+            "temporal_scope": "pattern", "event_when": None, "based_on": based_on}
+    line.update(extra)
+    return line
+
+
+async def _synthesize_answer(tmp_path, facts, answer, engine=None):
+    if engine is None:
+        _ev, _fs, _pm, engine, _cm = _install(str(tmp_path))
+    _write_facts(str(tmp_path), "小天", facts)
+    calls: list[str] = []
+
+    async def _fake_thinking(_api, prompt, **_kw):
+        calls.append(prompt)
+        resp = MagicMock()
+        resp.content = json.dumps(answer, ensure_ascii=False)
+        return resp, None
+
+    with patch("memory.thinking_llm.ainvoke_thinking", _fake_thinking), \
+         patch("utils.language_utils.get_global_language", return_value="zh"):
+        created = await engine.synthesize_reflections("小天")
+    return created, calls, engine
+
+
+def _topic_facts() -> list[dict]:
+    return [
+        _fact("f1", "主人每天晚上听歌", 8, "user_observation"),
+        _fact("f2", "主人睡前一定要听歌", 7, "user_observation"),
+        _fact("f3", "主人在学日语", 8, "user_observation"),
+        _fact("f4", "主人每周上两次日语课", 7, "user_observation"),
+        _fact("f5", "小天说自己怕打雷", 9, "ai_disclosure"),
+        _fact("f6", "小天说下雨天会躲进被子", 6, "ai_disclosure"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_synthesis_writes_one_line_per_topic_up_to_the_cap(tmp_path):
+    from config import REFLECTION_SYNTHESIS_MAX_PER_BATCH
+    from memory.evidence import awaits_user_signal
+    from memory.reflection import _reflection_id_from_facts
+
+    facts = _topic_facts()
+    answer = [
+        _line("主人睡前习惯听歌", [1, 2]),
+        _line("主人在认真学日语", [3, 4]),
+        _line("小天怕打雷", [5, 6], entity="neko", relation_type="self_awareness"),
+        _line("多出来的第四条", [1]),
+    ]
+    created, calls, engine = await _synthesize_answer(tmp_path, facts, answer)
+
+    assert len(calls) == 1
+    assert len(created) == REFLECTION_SYNTHESIS_MAX_PER_BATCH == 3
+    by_text = {r["text"]: r for r in created}
+    assert by_text["主人睡前习惯听歌"]["source_fact_ids"] == ["f1", "f2"]
+    assert by_text["主人在认真学日语"]["source_fact_ids"] == ["f3", "f4"]
+    assert by_text["小天怕打雷"]["fact_source_counts"] == {"user": 0, "ai": 2}
+    assert awaits_user_signal(by_text["小天怕打雷"]) is True
+    assert by_text["主人睡前习惯听歌"]["reinforcement"] == pytest.approx(0.4)
+
+    batch_id = _reflection_id_from_facts(sorted(f["id"] for f in facts))
+    assert created[0]["id"] == batch_id
+    assert len({r["id"] for r in created}) == 3
+    assert all(r["synthesis_batch_id"] == batch_id for r in created)
+    stored = await engine.aload_reflections("小天")
+    assert {r["id"] for r in stored} == {r["id"] for r in created}
+    facts_on_disk = json.load(open(os.path.join(str(tmp_path), "小天", "facts.json"), encoding="utf-8"))
+    assert all(f["absorbed"] for f in facts_on_disk)
+
+
+@pytest.mark.asyncio
+async def test_synthesized_batch_is_not_written_twice(tmp_path):
+    """A batch already written (found by synthesis_batch_id, not only by the
+    first line's id) skips the model and just absorbs the facts again."""
+    from memory.reflection import _reflection_id_from_facts
+
+    _ev, _fs, _pm, engine, _cm = _install(str(tmp_path))
+    facts = _topic_facts()
+    batch_id = _reflection_id_from_facts(sorted(f["id"] for f in facts))
+    earlier = _reflection("ref_other", "主人在认真学日语")
+    earlier["synthesis_batch_id"] = batch_id
+    await engine.asave_reflections("小天", [earlier])
+
+    created, calls, _engine = await _synthesize_answer(
+        tmp_path, facts, [_line("不该写入", [1])], engine=engine,
+    )
+    assert created == [] and calls == []
+    facts_on_disk = json.load(open(os.path.join(str(tmp_path), "小天", "facts.json"), encoding="utf-8"))
+    assert all(f["absorbed"] for f in facts_on_disk)
+
+
+@pytest.mark.asyncio
+async def test_synthesis_skips_a_restated_line_and_keeps_the_rest(tmp_path):
+    _ev, _fs, _pm, engine, _cm = _install(str(tmp_path))
+    target = {"kind": "reflection", "id": "ref_old", "text": "主人睡前听歌"}
+    covered_calls: list[list[str]] = []
+
+    async def _covered(_name, tgt, fact_ids, *, subject=None):
+        covered_calls.append(list(fact_ids))
+        return tgt is target
+
+    engine._build_existing_impressions_block = AsyncMock(
+        return_value=("[ref_old] 主人睡前听歌\n", {"ref_old": target}),
+    )
+    engine._arecord_covered_facts_locked = _covered
+    answer = [
+        _line("", [1, 2], skip=True, covered_by="ref_old"),
+        _line("主人在认真学日语", [3, 4]),
+        _line("主人在认真学日语", [3]),  # same line twice is one memory
+    ]
+    created, _calls, _engine = await _synthesize_answer(tmp_path, _topic_facts(), answer, engine=engine)
+
+    assert covered_calls == [["f1", "f2"]]
+    assert [r["text"] for r in created] == ["主人在认真学日语"]
+    assert created[0]["source_fact_ids"] == ["f3", "f4"]
 
 
 @pytest.mark.asyncio
@@ -631,6 +754,9 @@ def test_reflection_prompt_explains_the_ai_mark_in_every_language():
         # Asked for in the instructions and present in the JSON template.
         assert REFLECTION_PROMPT[lang].count("based_on") >= 2, lang
         assert '"based_on": [' in REFLECTION_PROMPT[lang], lang
+        # Several memories per call: an array template and the cap stated.
+        assert '\n[{"entity": ' in REFLECTION_PROMPT[lang], lang
+        assert "3" in REFLECTION_PROMPT[lang].split("{EXISTING_IMPRESSIONS_BLOCK}")[1][:200], lang
 
 
 # The words each language uses for "absolute wording" in the rule.

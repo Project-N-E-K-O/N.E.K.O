@@ -2929,7 +2929,7 @@ REFLECTION_PROMPT = {
 {FACTS}
 ======以上为事实======
 
-{EXISTING_IMPRESSIONS_BLOCK}请基于这些事实，整理出一条记忆（reflection）：概括出有信息量的特点、偏好或相处方式，不要写成某一次事件的经过，也不要下空泛的结论。请按以下五步思考：
+{EXISTING_IMPRESSIONS_BLOCK}请基于这些事实，整理出记忆（reflection），最多 3 条：每条概括出有信息量的特点、偏好或相处方式，不要写成某一次事件的经过，也不要下空泛的结论。请按以下五步思考：
 
 第一步：判断这条记忆主要关于谁（entity）
 - "master": 主要关于 {MASTER_NAME} 的个人特征
@@ -2970,17 +2970,19 @@ REFLECTION_PROMPT = {
 - 例 2：事实中"今天感冒了" → {"start": {"offset": 0, "unit": "day"}, "end": null}
 - 例 3：长期"喜欢咖啡"（pattern） → null
 
-最后在 based_on 里填写这条记忆实际依据的事实编号（上面事实列表里方括号中的数字），只填真正用到的。
+这批事实如果涉及几个互不相关的话题，可以分别写成几条记忆，最多 3 条，每条都按上面五步单独处理；同一个特点、偏好或相处方式只写一条，信息不够撑起一条记忆的话题不要硬写。
 
-请以 JSON 格式返回，字段顺序保持如下：
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "概括出的特点、偏好或相处方式（主语写名字）", "temporal_scope": "pattern", "event_when": null, "based_on": [1, 3]}""",
+最后在每条记忆的 based_on 里填写它实际依据的事实编号（上面事实列表里方括号中的数字），只填真正用到的。
+
+请以 JSON 数组返回，每条记忆一个对象，字段顺序保持如下：
+[{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "概括出的特点、偏好或相处方式（主语写名字）", "temporal_scope": "pattern", "event_when": null, "based_on": [1, 3]}]""",
     "zh-TW": """以下是關於 {LANLAN_NAME} 和 {MASTER_NAME} 的一系列已擷取事實：
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
 {FACTS}
 ======以上为事实======
 
-{EXISTING_IMPRESSIONS_BLOCK}請根據這些事實，整理出一條記憶（reflection）：概括出有資訊量的特點、偏好或相處方式，不要寫成某一次事件的經過，也不要下空泛的結論。請按以下五步思考：
+{EXISTING_IMPRESSIONS_BLOCK}請根據這些事實，整理出記憶（reflection），最多 3 條：每條概括出有資訊量的特點、偏好或相處方式，不要寫成某一次事件的經過，也不要下空泛的結論。請按以下五步思考：
 
 第一步：判斷這條記憶主要關於誰（entity）
 - "master": 主要關於 {MASTER_NAME} 的個人特徵
@@ -3021,17 +3023,19 @@ REFLECTION_PROMPT = {
 - 例 2：事實中「今天感冒了」→ {"start": {"offset": 0, "unit": "day"}, "end": null}
 - 例 3：長期「喜歡咖啡」（pattern）→ null
 
-最後在 based_on 裡填寫這條記憶實際依據的事實編號（上面事實列表裡方括號中的數字），只填真正用到的。
+這批事實如果涉及幾個互不相關的話題，可以分別寫成幾條記憶，最多 3 條，每條都按上面五步單獨處理；同一個特點、偏好或相處方式只寫一條，資訊不夠撐起一條記憶的話題不要硬寫。
 
-請以 JSON 格式回傳，欄位順序保持如下：
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "概括出的特點、偏好或相處方式（主語寫名字）", "temporal_scope": "pattern", "event_when": null, "based_on": [1, 3]}""",
+最後在每條記憶的 based_on 裡填寫它實際依據的事實編號（上面事實列表裡方括號中的數字），只填真正用到的。
+
+請以 JSON 陣列回傳，每條記憶一個物件，欄位順序保持如下：
+[{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "概括出的特點、偏好或相處方式（主語寫名字）", "temporal_scope": "pattern", "event_when": null, "based_on": [1, 3]}]""",
     "en": """Below are a series of extracted facts about {LANLAN_NAME} and {MASTER_NAME}:
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
 {FACTS}
 ======以上为事实======
 
-{EXISTING_IMPRESSIONS_BLOCK}Based on these facts, write one memory (reflection): sum up an informative trait, preference or way of relating — not the account of a single event, and not an empty conclusion. Follow these five steps:
+{EXISTING_IMPRESSIONS_BLOCK}Based on these facts, write memories (reflections), at most 3: each sums up an informative trait, preference or way of relating — not the account of a single event, and not an empty conclusion. Follow these five steps:
 
 Step 1: Determine which entity the memory primarily concerns
 - "master": primarily about {MASTER_NAME}'s personal traits
@@ -3072,17 +3076,19 @@ Step 5: Annotate event_when (always use RELATIVE TIME, never absolute dates)
 - Example 2: "got a cold today" → {"start": {"offset": 0, "unit": "day"}, "end": null}
 - Example 3: long-term "loves coffee" (pattern) → null
 
-Finally, list in based_on the numbers of the facts this memory actually rests on (the bracketed numbers in the fact list above); include only the ones you really used.
+If the facts cover several unrelated topics, write a separate memory for each, at most 3, working through the five steps for each one; write each trait, preference or way of relating only once, and skip topics without enough information to carry a memory.
 
-Return JSON with fields in this exact order:
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "the trait, preference or way of relating, summed up (name the actors)", "temporal_scope": "pattern", "event_when": null, "based_on": [1, 3]}""",
+Finally, list in each memory's based_on the numbers of the facts it actually rests on (the bracketed numbers in the fact list above); include only the ones you really used.
+
+Return a JSON array with one object per memory, fields in this exact order:
+[{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "the trait, preference or way of relating, summed up (name the actors)", "temporal_scope": "pattern", "event_when": null, "based_on": [1, 3]}]""",
     "ja": """以下は {LANLAN_NAME} と {MASTER_NAME} に関する一連の抽出済み事実です：
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
 {FACTS}
 ======以上为事实======
 
-{EXISTING_IMPRESSIONS_BLOCK}これらの事実に基づき、記憶（reflection）を 1 つ書いてください：情報量のある特徴・好み・接し方をまとめ、ある一回の出来事の経緯や空虚な結論にはしないこと。次の 5 ステップで進めてください：
+{EXISTING_IMPRESSIONS_BLOCK}これらの事実に基づき、記憶（reflection）を最大 3 つ書いてください：それぞれ情報量のある特徴・好み・接し方をまとめ、ある一回の出来事の経緯や空虚な結論にはしないこと。次の 5 ステップで進めてください：
 
 ステップ 1：この記憶が主に誰についてのものか判断する（entity）
 - "master": 主に {MASTER_NAME} の個人的特徴について
@@ -3121,17 +3127,19 @@ Return JSON with fields in this exact order:
 - 事実に時間の手掛かりが一切ない場合（「最近」のような暗示すらない場合）は event_when 全体を null にする（システムが作成時刻でフォールバック）
 - 例：「先週月曜に登山」→ {"start": {"offset": -1, "unit": "week"}, "end": {"offset": -1, "unit": "week"}}
 
-最後に、この記憶が実際に根拠としている事実の番号（上の事実リストの角括弧内の数字）を based_on に入れてください。実際に使ったものだけを入れること。
+事実が互いに関係のない複数の話題にまたがる場合は、話題ごとに別の記憶として書いてよく（最大 3 つ）、それぞれ上の五つのステップで処理してください。同じ特徴・好み・接し方は 1 回だけ書き、記憶にするだけの情報がない話題は無理に書かないこと。
 
-JSON 形式で返してください。フィールドの順序は以下の通り保ってください：
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "まとめた特徴・好み・接し方（主語は名前で）", "temporal_scope": "pattern", "event_when": null, "based_on": [1, 3]}""",
+最後に、各記憶が実際に根拠としている事実の番号（上の事実リストの角括弧内の数字）をその記憶の based_on に入れてください。実際に使ったものだけを入れること。
+
+記憶ごとに 1 つのオブジェクトを入れた JSON 配列で返してください。フィールドの順序は以下の通り保ってください：
+[{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "まとめた特徴・好み・接し方（主語は名前で）", "temporal_scope": "pattern", "event_when": null, "based_on": [1, 3]}]""",
     "ko": """다음은 {LANLAN_NAME}과 {MASTER_NAME}에 대해 추출된 일련의 사실입니다:
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
 {FACTS}
 ======以上为事实======
 
-{EXISTING_IMPRESSIONS_BLOCK}이 사실들을 바탕으로 기억(reflection) 하나를 작성해 주세요: 정보가 담긴 특징·취향·지내는 방식을 정리하고, 어느 한 번의 사건 경위나 공허한 결론으로 쓰지 마세요. 다음 다섯 단계를 따르세요:
+{EXISTING_IMPRESSIONS_BLOCK}이 사실들을 바탕으로 기억(reflection)을 최대 3개 작성해 주세요: 각각 정보가 담긴 특징·취향·지내는 방식을 정리하고, 어느 한 번의 사건 경위나 공허한 결론으로 쓰지 마세요. 다음 다섯 단계를 따르세요:
 
 1단계: 이 기억이 주로 누구에 대한 것인지 판단합니다 (entity)
 - "master": 주로 {MASTER_NAME}의 개인적 특성에 대해
@@ -3170,17 +3178,19 @@ JSON 形式で返してください。フィールドの順序は以下の通り
 - 사실에 시간 단서가 전혀 없으면("최근" 같은 암시조차 없으면) event_when 전체를 null로 (시스템이 생성 시각으로 폴백)
 - 예: "지난 월요일에 등산" → {"start": {"offset": -1, "unit": "week"}, "end": {"offset": -1, "unit": "week"}}
 
-마지막으로 이 기억이 실제로 근거로 삼은 사실의 번호(위 사실 목록의 대괄호 안 숫자)를 based_on에 적으세요. 실제로 사용한 것만 적으세요.
+사실들이 서로 관련 없는 여러 주제에 걸쳐 있다면 주제마다 별도의 기억으로 작성해도 됩니다(최대 3개). 각각 위의 다섯 단계를 따로 거치세요. 같은 특징·취향·지내는 방식은 한 번만 쓰고, 기억 하나를 이룰 만큼 정보가 없는 주제는 억지로 쓰지 마세요.
 
-JSON 형식으로 반환하며, 필드 순서는 다음과 같이 유지하세요:
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "정리한 특징·취향·지내는 방식 (주어는 이름으로)", "temporal_scope": "pattern", "event_when": null, "based_on": [1, 3]}""",
+마지막으로 각 기억이 실제로 근거로 삼은 사실의 번호(위 사실 목록의 대괄호 안 숫자)를 그 기억의 based_on에 적으세요. 실제로 사용한 것만 적으세요.
+
+기억마다 객체 하나씩 담은 JSON 배열로 반환하며, 필드 순서는 다음과 같이 유지하세요:
+[{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "정리한 특징·취향·지내는 방식 (주어는 이름으로)", "temporal_scope": "pattern", "event_when": null, "based_on": [1, 3]}]""",
     "ru": """Ниже представлена серия извлечённых фактов о {LANLAN_NAME} и {MASTER_NAME}:
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
 {FACTS}
 ======以上为事实======
 
-{EXISTING_IMPRESSIONS_BLOCK}На основе этих фактов напишите одно воспоминание (reflection): обобщите содержательную черту, предпочтение или манеру общения — не рассказ об одном событии и не пустой вывод. Выполните пять шагов:
+{EXISTING_IMPRESSIONS_BLOCK}На основе этих фактов напишите воспоминания (reflection), не больше 3: в каждом обобщите содержательную черту, предпочтение или манеру общения — не рассказ об одном событии и не пустой вывод. Выполните пять шагов:
 
 Шаг 1: Определите, к кому это воспоминание относится в первую очередь (entity)
 - "master": в основном о личных качествах {MASTER_NAME}
@@ -3219,17 +3229,19 @@ JSON 형식으로 반환하며, 필드 순서는 다음과 같이 유지하세�
 - Если в фактах нет никаких временных меток (даже намёков вроде "недавно"), всё event_when = null (система подставит время создания)
 - Пример: "ходил в горы в прошлый понедельник" → {"start": {"offset": -1, "unit": "week"}, "end": {"offset": -1, "unit": "week"}}
 
-В конце перечислите в based_on номера фактов, на которых это воспоминание действительно основано (числа в квадратных скобках в списке фактов выше); указывайте только реально использованные.
+Если факты касаются нескольких не связанных между собой тем, напишите по отдельному воспоминанию на каждую тему, не больше 3, и пройдите пять шагов для каждого; каждую черту, предпочтение или манеру общения пишите только один раз, а темы без достаточной информации для воспоминания пропускайте.
 
-Верните в формате JSON, сохраняя порядок полей:
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "обобщённая черта, предпочтение или манера общения (исполнители названы по имени)", "temporal_scope": "pattern", "event_when": null, "based_on": [1, 3]}""",
+В конце перечислите в based_on каждого воспоминания номера фактов, на которых оно действительно основано (числа в квадратных скобках в списке фактов выше); указывайте только реально использованные.
+
+Верните JSON-массив, по одному объекту на воспоминание, сохраняя порядок полей:
+[{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "обобщённая черта, предпочтение или манера общения (исполнители названы по имени)", "temporal_scope": "pattern", "event_when": null, "based_on": [1, 3]}]""",
     "es": """A continuación hay una serie de hechos extraídos sobre {LANLAN_NAME} y {MASTER_NAME}:
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
 {FACTS}
 ======以上为事实======
 
-{EXISTING_IMPRESSIONS_BLOCK}Con base en estos hechos, escribe un solo recuerdo (reflection): resume un rasgo, una preferencia o una forma de tratarse que aporte información, no el relato de un solo suceso ni una conclusión vacía. Sigue estos cinco pasos:
+{EXISTING_IMPRESSIONS_BLOCK}Con base en estos hechos, escribe recuerdos (reflection), como máximo 3: cada uno resume un rasgo, una preferencia o una forma de tratarse que aporte información, no el relato de un solo suceso ni una conclusión vacía. Sigue estos cinco pasos:
 
 Paso 1: Determina a qué entidad se refiere principalmente el recuerdo
 - "master": principalmente sobre rasgos personales de {MASTER_NAME}
@@ -3268,17 +3280,19 @@ Paso 5: Anota event_when con TIEMPO RELATIVO (prohibidas fechas absolutas)
 - Si los hechos no contienen ninguna pista temporal (ni siquiera insinuaciones como "recientemente"), escribe event_when como null (el sistema usa el tiempo de creación)
 - Ej.: "fui de excursión el lunes pasado" → {"start": {"offset": -1, "unit": "week"}, "end": {"offset": -1, "unit": "week"}}
 
-Por último, indica en based_on los números de los hechos en los que este recuerdo se basa realmente (los números entre corchetes de la lista de hechos de arriba); incluye solo los que de verdad usaste.
+Si los hechos abarcan varios temas sin relación entre sí, escribe un recuerdo distinto para cada uno, como máximo 3, siguiendo los cinco pasos para cada uno; escribe cada rasgo, preferencia o forma de tratarse una sola vez y omite los temas sin información suficiente para un recuerdo.
 
-Devuelve JSON con los campos en este orden exacto:
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "el rasgo, la preferencia o la forma de tratarse, resumidos (con el nombre de quien actúa)", "temporal_scope": "pattern", "event_when": null, "based_on": [1, 3]}""",
+Por último, indica en el based_on de cada recuerdo los números de los hechos en los que se basa realmente (los números entre corchetes de la lista de hechos de arriba); incluye solo los que de verdad usaste.
+
+Devuelve un array JSON con un objeto por recuerdo y los campos en este orden exacto:
+[{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "el rasgo, la preferencia o la forma de tratarse, resumidos (con el nombre de quien actúa)", "temporal_scope": "pattern", "event_when": null, "based_on": [1, 3]}]""",
     "pt": """Abaixo há uma série de fatos extraídos sobre {LANLAN_NAME} e {MASTER_NAME}:
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
 {FACTS}
 ======以上为事实======
 
-{EXISTING_IMPRESSIONS_BLOCK}Com base nesses fatos, escreva uma única memória (reflection): resuma um traço, uma preferência ou uma forma de se tratar que traga informação, não o relato de um único acontecimento nem uma conclusão vazia. Siga estes cinco passos:
+{EXISTING_IMPRESSIONS_BLOCK}Com base nesses fatos, escreva memórias (reflection), no máximo 3: cada uma resume um traço, uma preferência ou uma forma de se tratar que traga informação, não o relato de um único acontecimento nem uma conclusão vazia. Siga estes cinco passos:
 
 Passo 1: Determine a qual entidade a memória se refere principalmente
 - "master": principalmente sobre características pessoais de {MASTER_NAME}
@@ -3317,10 +3331,12 @@ Passo 5: Anote event_when com TEMPO RELATIVO (datas absolutas proibidas)
 - Se os fatos não tiverem nenhuma pista temporal (nem insinuações como "recentemente"), escreva event_when como null (o sistema usa o horário de criação)
 - Ex.: "fui escalar segunda-feira passada" → {"start": {"offset": -1, "unit": "week"}, "end": {"offset": -1, "unit": "week"}}
 
-Por fim, informe em based_on os números dos fatos em que esta memória realmente se baseia (os números entre colchetes na lista de fatos acima); inclua só os que você de fato usou.
+Se os fatos abrangem vários temas sem relação entre si, escreva uma memória separada para cada um, no máximo 3, seguindo os cinco passos para cada uma; escreva cada traço, preferência ou forma de se tratar uma única vez e omita os temas sem informação suficiente para uma memória.
 
-Retorne JSON com os campos nesta ordem exata:
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "o traço, a preferência ou a forma de se tratar, resumidos (com o nome de quem age)", "temporal_scope": "pattern", "event_when": null, "based_on": [1, 3]}""",
+Por fim, informe no based_on de cada memória os números dos fatos em que ela realmente se baseia (os números entre colchetes na lista de fatos acima); inclua só os que você de fato usou.
+
+Retorne um array JSON com um objeto por memória e os campos nesta ordem exata:
+[{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "o traço, a preferência ou a forma de se tratar, resumidos (com o nome de quem age)", "temporal_scope": "pattern", "event_when": null, "based_on": [1, 3]}]""",
 }
 
 
@@ -3343,28 +3359,28 @@ REFLECTION_RELATED_CONTEXT_NOTE = {
 # back to an ordinary new reflection built from them.
 REFLECTION_EXISTING_IMPRESSIONS_NOTE = {
     "zh": """上面是已经记下的印象，方括号里是 id。写之前先对照：
-- 如果这批事实没有超出其中某一条的新信息（只是同一个特点、偏好或相处方式又多了一个例子，或换个说法又出现了一次），请在返回的 JSON 最前面加上 "skip": true 和 "covered_by": "<那一条的 id，照方括号里的原样抄写>"，其余字段照常填写。
+- 如果这批事实没有超出其中某一条的新信息（只是同一个特点、偏好或相处方式又多了一个例子，或换个说法又出现了一次），请在这条记忆的 JSON 对象最前面加上 "skip": true 和 "covered_by": "<那一条的 id，照方括号里的原样抄写>"，其余字段照常填写。
 - 只有当这批事实带来了新的特点、偏好或相处方式，或者改变了已有的说法时，才不加这两个字段，照常写一条新记忆。""",
     "zh-TW": """上面是已經記下的印象，方括號裡是 id。寫之前先對照：
-- 如果這批事實沒有超出其中某一條的新資訊（只是同一個特點、偏好或相處方式又多了一個例子，或換個說法又出現了一次），請在回傳的 JSON 最前面加上 "skip": true 和 "covered_by": "<那一條的 id，照方括號裡的原樣抄寫>"，其餘欄位照常填寫。
+- 如果這批事實沒有超出其中某一條的新資訊（只是同一個特點、偏好或相處方式又多了一個例子，或換個說法又出現了一次），請在這條記憶的 JSON 物件最前面加上 "skip": true 和 "covered_by": "<那一條的 id，照方括號裡的原樣抄寫>"，其餘欄位照常填寫。
 - 只有當這批事實帶來了新的特點、偏好或相處方式，或者改變了已有的說法時，才不加這兩個欄位，照常寫一條新記憶。""",
     "en": """Above are impressions already on record; each id is in square brackets. Check them before writing:
-- If this batch of facts adds nothing beyond one of them (just one more instance of the same trait, preference or way of relating, or the same thing again in different words), put "skip": true and "covered_by": "<that entry's id, copied exactly from the brackets>" at the start of the returned JSON, and still fill in every other field as usual.
+- If this batch of facts adds nothing beyond one of them (just one more instance of the same trait, preference or way of relating, or the same thing again in different words), put "skip": true and "covered_by": "<that entry's id, copied exactly from the brackets>" at the start of that memory's JSON object, and still fill in every other field as usual.
 - Only when the facts bring a new trait, preference or way of relating, or change what is already on record, leave these two fields out and write a new memory as usual.""",
     "ja": """上は既に記録済みの印象で、角括弧内が id です。書く前に照らし合わせてください：
-- この事実群がそのうちどれか 1 件を超える新しい情報を含まない場合（同じ特徴・好み・接し方の例がもう一つ増えただけ、または言い方を変えて再び現れただけの場合）、返す JSON の先頭に "skip": true と "covered_by": "<その項目の id、角括弧内をそのまま書き写す>" を加え、その他のフィールドも通常どおり埋めてください。
+- この事実群がそのうちどれか 1 件を超える新しい情報を含まない場合（同じ特徴・好み・接し方の例がもう一つ増えただけ、または言い方を変えて再び現れただけの場合）、その記憶の JSON オブジェクトの先頭に "skip": true と "covered_by": "<その項目の id、角括弧内をそのまま書き写す>" を加え、その他のフィールドも通常どおり埋めてください。
 - 新しい特徴・好み・接し方が分かった場合、または既存の記述が変わる場合に限り、この 2 つのフィールドは加えず、通常どおり新しい記憶を書いてください。""",
     "ko": """위는 이미 기록된 인상이며, 대괄호 안이 id입니다. 쓰기 전에 먼저 대조하세요:
-- 이번 사실들이 그중 어느 한 항목을 넘어서는 새로운 정보가 없다면 (같은 특징·취향·지내는 방식의 예가 하나 더 늘었을 뿐이거나 표현만 바뀌어 다시 나타난 것이라면), 반환하는 JSON 맨 앞에 "skip": true 와 "covered_by": "<그 항목의 id, 대괄호 안을 그대로 옮겨 쓰기>"를 넣고, 나머지 필드도 평소대로 채우세요.
+- 이번 사실들이 그중 어느 한 항목을 넘어서는 새로운 정보가 없다면 (같은 특징·취향·지내는 방식의 예가 하나 더 늘었을 뿐이거나 표현만 바뀌어 다시 나타난 것이라면), 그 기억의 JSON 객체 맨 앞에 "skip": true 와 "covered_by": "<그 항목의 id, 대괄호 안을 그대로 옮겨 쓰기>"를 넣고, 나머지 필드도 평소대로 채우세요.
 - 새로운 특징·취향·지내는 방식이 드러났거나 기존 서술이 바뀌는 경우에만 이 두 필드를 넣지 말고 평소대로 새 기억을 작성하세요.""",
     "ru": """Выше — уже записанные впечатления, id указан в квадратных скобках. Сверьтесь с ними перед тем, как писать:
-- Если эта партия фактов не добавляет ничего сверх одного из них (лишь ещё один пример той же черты, предпочтения или манеры общения, либо то же самое другими словами), поставьте в начало возвращаемого JSON "skip": true и "covered_by": "<id этой записи, скопированный из скобок без изменений>", а остальные поля всё равно заполните как обычно.
+- Если эта партия фактов не добавляет ничего сверх одного из них (лишь ещё один пример той же черты, предпочтения или манеры общения, либо то же самое другими словами), поставьте в начало JSON-объекта этого воспоминания "skip": true и "covered_by": "<id этой записи, скопированный из скобок без изменений>", а остальные поля всё равно заполните как обычно.
 - Только если факты показывают новую черту, предпочтение или манеру общения либо меняют уже записанное, не добавляйте эти два поля и напишите новое воспоминание как обычно.""",
     "es": """Arriba están las impresiones ya registradas; cada id va entre corchetes. Compáralas antes de escribir:
-- Si este lote de hechos no aporta nada más allá de una de ellas (solo un ejemplo más del mismo rasgo, preferencia o forma de tratarse, o lo mismo dicho con otras palabras), pon "skip": true y "covered_by": "<el id de esa entrada, copiado tal cual de los corchetes>" al principio del JSON devuelto, y aun así rellena todos los demás campos como de costumbre.
+- Si este lote de hechos no aporta nada más allá de una de ellas (solo un ejemplo más del mismo rasgo, preferencia o forma de tratarse, o lo mismo dicho con otras palabras), pon "skip": true y "covered_by": "<el id de esa entrada, copiado tal cual de los corchetes>" al principio del objeto JSON de ese recuerdo, y aun así rellena todos los demás campos como de costumbre.
 - Solo si los hechos muestran un rasgo, una preferencia o una forma de tratarse nuevos, o cambian lo que ya consta, no añadas estos dos campos y escribe un recuerdo nuevo como de costumbre.""",
     "pt": """Acima estão as impressões já registradas; cada id fica entre colchetes. Compare antes de escrever:
-- Se este lote de fatos não acrescenta nada além de uma delas (apenas mais um exemplo do mesmo traço, preferência ou forma de se tratar, ou a mesma coisa com outras palavras), coloque "skip": true e "covered_by": "<o id dessa entrada, copiado exatamente dos colchetes>" no início do JSON retornado e, mesmo assim, preencha todos os outros campos normalmente.
+- Se este lote de fatos não acrescenta nada além de uma delas (apenas mais um exemplo do mesmo traço, preferência ou forma de se tratar, ou a mesma coisa com outras palavras), coloque "skip": true e "covered_by": "<o id dessa entrada, copiado exatamente dos colchetes>" no início do objeto JSON dessa memória e, mesmo assim, preencha todos os outros campos normalmente.
 - Somente se os fatos mostrarem um traço, uma preferência ou uma forma de se tratar novos, ou mudarem o que já está registrado, não adicione esses dois campos e escreva uma nova memória normalmente.""",
 }
 

@@ -54,7 +54,7 @@ Fact scheduling depends on the powerful-memory switch described below. In either
 
 ### 4. Synthesize reflections
 
-`memory/reflection/` periodically groups enough unabsorbed facts into a higher-level reflection. The reflection ID is derived from its source fact IDs, so retrying the same batch is idempotent. A successful synthesis writes a `pending` reflection and marks its source facts as absorbed.
+`memory/reflection/` periodically groups enough unabsorbed facts into higher-level reflections. One call may write up to `REFLECTION_SYNTHESIS_MAX_PER_BATCH` (3) reflections, one per unrelated topic of the batch; each lists the facts it rests on as its source facts. The batch ID is derived from the batch's fact IDs and stored on every reflection of the batch, so retrying the same batch is idempotent. A successful synthesis writes `pending` reflections and marks the whole batch as absorbed.
 
 Reflections carry their own evidence, entity, lifecycle status, and optional event-time ontology. A reflection can remain tentative, become confirmed, be promoted or merged into persona, be denied, or eventually be archived. Reflection synthesis runs as a memory-server background service and does not depend on the memory-browser page or proactive-chat frontend being open.
 
