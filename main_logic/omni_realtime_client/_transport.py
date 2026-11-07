@@ -55,6 +55,14 @@ from ._protocol_capabilities import (
 
 
 _ATTACHED_TRANSPORT = object()
+_VOICE_RESPONSE_DELTAS = frozenset({
+    "response.text.delta", "response.output_text.delta",
+    "response.audio.delta", "response.output_audio.delta",
+    "response.audio_transcript.delta", "response.output_audio_transcript.delta",
+})
+_VOICE_RESPONSE_TRANSCRIPT_ENDS = frozenset({
+    "response.audio_transcript.done", "response.output_audio_transcript.done",
+})
 
 
 class _RealtimeEventOwnerRetired(ConnectionError):
@@ -513,17 +521,18 @@ class _TransportMixin:
         self._reset_input_route_identity_stream()
         return identity
 
-    async def _deliver_input_transcript(self, transcript: str, *, item_id: object = None) -> None:
+    async def _deliver_input_transcript(self, transcript: str, *, item_id: object = None) -> bool:
         identity = self._take_input_route_identity(item_id)
         routed_callback = getattr(self, "on_input_transcript_with_route", None)
         if callable(routed_callback):
-            await routed_callback(
+            result = await routed_callback(
                 transcript,
                 source_game_route_identity=identity,
             )
-            return
+            return result is not False
         if self.on_input_transcript:
-            await self.on_input_transcript(transcript)
+            return (await self.on_input_transcript(transcript)) is not False
+        return True
 
     async def connect(self, instructions: str, native_audio=True) -> None:
         """Establish WebSocket connection with the Realtime API."""
@@ -554,6 +563,9 @@ class _TransportMixin:
         # Same lifetime as the id bookkeeping above, and for the same
         # reason: a reconnect may reach a different upstream.
         self._announces_responses = False
+        self._cancelled_voice_successor_sid = None
+        self._cancelled_voice_successor_has_input = False
+        self._recovered_voice_response = False
         # Same lifetime, same reason: the quarantine is lowered only by a
         # response.created on THIS socket, so a replacement connection to a
         # never-announcing upstream would never clear it. Unreachable today
@@ -2437,6 +2449,7 @@ class _TransportMixin:
         self._is_responding = False
         self._current_response_id = None
         self._current_item_id = None
+        self._recovered_voice_response = False
         self._skip_until_next_response = False
         # Clear interruption flags at response end so next-round text.delta cannot be blocked.
         self._interrupted = False
@@ -2444,6 +2457,9 @@ class _TransportMixin:
     def _begin_response_lifecycle(self, response_id: Any) -> None:
         """Apply the host-side state shared by all accepted start evidence."""
 
+        self._cancelled_voice_successor_sid = None
+        self._cancelled_voice_successor_has_input = False
+        self._recovered_voice_response = False
         self._current_response_id = response_id
         arbiter = getattr(self, "_response_arbiter", None)
         self._current_response_source = (
@@ -2466,6 +2482,37 @@ class _TransportMixin:
         self._is_first_text_chunk = self._is_first_transcript_chunk = True
         self._output_transcript_buffer = ""
         self._current_response_transcript = ""
+
+    def _recover_unannounced_voice_response(self, event: dict[str, Any]) -> None:
+        """Bind a native reply after a cancelled proxy response rotated Core's ID."""
+        pending_sid = self._cancelled_voice_successor_sid
+        if (
+            pending_sid is None
+            or not self._cancelled_voice_successor_has_input
+            or self._announces_responses
+            or self._skip_until_next_response
+            or self._interrupted
+            or self._response_arbiter.has_live_response
+        ):
+            return
+        event_type = event.get("type")
+        if event_type in _VOICE_RESPONSE_DELTAS:
+            content = event.get("delta")
+        elif event_type in _VOICE_RESPONSE_TRANSCRIPT_ENDS:
+            content = event.get("transcript")
+        else:
+            return
+        if not isinstance(content, str) or not content:
+            return
+        if self._read_host_turn_id() != pending_sid:
+            # A different local turn has since taken the ID we reserved.
+            self._cancelled_voice_successor_sid = None
+            self._cancelled_voice_successor_has_input = False
+            return
+        # This proxy can reuse its cancelled response's ID. The new user
+        # transcript followed by actual output is the start evidence.
+        self._begin_response_lifecycle(_response_id_text(event.get("response_id")))
+        self._recovered_voice_response = True
 
     def _read_host_turn_id(self) -> str | None:
         """Sample the host's live speech id, or None for "no answer".
@@ -2507,6 +2554,7 @@ class _TransportMixin:
         still_ours: Callable[[], bool] | None = None,
         connection_still_ours: Callable[[], bool] | None = None,
         carry_host_turn_forward: bool = False,
+        recover_cancelled_voice: bool = False,
     ) -> None:
         """Tell the host this turn is over.
 
@@ -2671,6 +2719,12 @@ class _TransportMixin:
             )
             return
         if not self._has_server_vad and self.on_sid_rotate:
+            recover_cancelled_voice = (
+                recover_cancelled_voice
+                and not self._announces_responses
+                and self._realtime_protocol_capabilities.accepts_id_bearing_content_start
+            )
+            previous_sid = self._read_host_turn_id() if recover_cancelled_voice else None
             try:
                 await self.on_sid_rotate()
             except asyncio.CancelledError:
@@ -2686,6 +2740,17 @@ class _TransportMixin:
                     self._current_turn_host_id = self._read_host_turn_id()
                     self._is_first_text_chunk = True
                     self._is_first_transcript_chunk = True
+                elif recover_cancelled_voice and (
+                    connection_still_ours is None or connection_still_ours()
+                ):
+                    next_sid = self._read_host_turn_id()
+                    if previous_sid is not None and next_sid is not None and next_sid != previous_sid:
+                        # Keep the old ownership until a successor produces
+                        # output, including when the cancelled response never
+                        # announced a start and we had no saved snapshot.
+                        self._current_turn_host_id = previous_sid
+                        self._cancelled_voice_successor_sid = next_sid
+                        self._cancelled_voice_successor_has_input = False
 
     async def _on_arbiter_stuck_release(
         self, reason: str, response_id: str | None = None
@@ -3152,6 +3217,8 @@ class _TransportMixin:
                         self._begin_response_lifecycle(
                             _response_id_text(event.get("response_id"))
                         )
+                if self._cancelled_voice_successor_has_input:
+                    self._recover_unannounced_voice_response(event)
 
                 # A cancelled response can still emit buffered events after a
                 # replacement response has become current.  Providers that
@@ -3193,7 +3260,17 @@ class _TransportMixin:
                         # any announcing provider this condition is false from
                         # its first turn onward and the stale filter behaves
                         # exactly as before.
-                        and self._announces_responses
+                        # The voice recovery path also binds an actual output
+                        # ID. Only terminals use that extra correlation, as
+                        # the proxy may use different IDs for tool events.
+                        and (
+                            self._announces_responses
+                            or (
+                                self._recovered_voice_response
+                                and event_type == "response.done"
+                                and tracked_text is not None
+                            )
+                        )
                         # A mismatched function/terminal ID alone does not
                         # enter this branch: the observed Lanlan/livestream
                         # trace never announced response.created. Its original
@@ -3387,6 +3464,15 @@ class _TransportMixin:
                     self._record_response_usage(event.get("response"))
                     if finalize_response is False:
                         continue
+                    pending_sid = self._cancelled_voice_successor_sid
+                    if pending_sid is not None:
+                        # A terminal cannot claim a reserved ID. If Core has
+                        # moved on, discard the reservation and let the
+                        # normal host-ownership check handle the terminal.
+                        if self._read_host_turn_id() == pending_sid:
+                            continue
+                        self._cancelled_voice_successor_sid = None
+                        self._cancelled_voice_successor_has_input = False
                     self._clear_turn_response_state()
                     # On response completion, check repetition.
                     await self._record_response_repetition(
@@ -3419,6 +3505,7 @@ class _TransportMixin:
                         connection_still_ours=receive_owner_is_current,
                         carry_host_turn_forward=response_status
                         in {"", "completed", "success", "succeeded"},
+                        recover_cancelled_voice=response_status in {"canceled", "cancelled"},
                     )
                     if await retire_if_replaced():
                         return
@@ -3528,13 +3615,20 @@ class _TransportMixin:
                         self.note_user_turn_started()
                     self._print_input_transcript = True
                     transcript = event.get("transcript", "")
+                    transcript_accepted = True
                     if self.on_input_transcript or self.on_input_transcript_with_route:
-                        await self._deliver_input_transcript(
+                        transcript_accepted = await self._deliver_input_transcript(
                             transcript,
                             item_id=event.get("item_id"),
                         )
                         if await retire_if_replaced():
                             return
+                    if (
+                        self._cancelled_voice_successor_sid is not None
+                        and not already_scoped and transcript_accepted
+                        and isinstance(transcript, str) and transcript.strip()
+                    ):
+                        self._cancelled_voice_successor_has_input = True
                 elif event_type in ["response.audio_transcript.done", "response.output_audio_transcript.done"]:
                     self._print_input_transcript = False
                     # [ISSUE4b] Voice-without-text fix. Audio deltas and transcript
