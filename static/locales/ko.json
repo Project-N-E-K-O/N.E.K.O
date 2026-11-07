@@ -5661,6 +5661,7 @@
             "ssl_error": "SSL 인증서 확인 실패",
             "ws_error": "WebSocket 연결 실패",
             "missing_params": "필수 매개변수가 누락되었습니다",
+            "output_limit": "테스트 요청의 출력 한도가 부족합니다",
             "unknown": "알 수 없는 오류",
             "backend_unavailable": "백엔드 서비스를 사용할 수 없습니다",
             "invalid_response": "응답 형식이 잘못되었습니다"
