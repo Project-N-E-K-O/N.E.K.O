@@ -737,7 +737,7 @@ export const authoringMessages = {
     helpChecks: '讀懂檢查結果',
     helpPublish: '分享你的外掛',
     helpStartBody:
-      '優先使用工作台的「新建插件」。下方命令用於原始碼版，請在 N.E.K.O 根目錄執行；--output 指定原始碼目錄，目錄名須與插件 ID 一致。',
+      '優先使用工作台的「新增外掛」。下方命令用於原始碼版，請在 N.E.K.O 根目錄執行；--output 指定原始碼目錄，目錄名須與外掛 ID 一致。',
     helpChecksBody:
       '錯誤會阻止對應流程，警告需要結合實際判斷。靜態檢查通過後，仍需測試入口與 Hosted UI。每份報告都對應一份原始碼快照。',
     helpPublishBody:

@@ -169,3 +169,8 @@ describe('projectErrorCode', () => {
     expect(errorMessageKey('UNKNOWN_CODE')).toBeUndefined()
   })
 })
+
+
+it.each([null, undefined])('treats an absent project error %s as having no code', (error) => {
+  expect(projectErrorCode(error)).toBeUndefined()
+})

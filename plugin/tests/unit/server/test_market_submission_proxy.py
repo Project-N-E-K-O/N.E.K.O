@@ -64,7 +64,8 @@ def _install(monkeypatch, responder, *, token=_VERIFIED_TOKEN):
     ensured: list[str | None] = []
 
     async def fake_ensure(*, force_refresh=False, rejected_access_token=None):
-        ensured.append(rejected_access_token)
+        if force_refresh:
+            ensured.append(rejected_access_token)
         if force_refresh and rejected_access_token is not None and token:
             return {**token, "access_token": "refreshed-access-token"}
         return token
@@ -290,7 +291,7 @@ def test_a_401_triggers_one_refresh_and_retry(monkeypatch):
     assert response.status_code == 200
     assert len(upstream.requests) == 2
     # The retry asks the token store to refresh past the rejected credential.
-    assert ensured[-1] == _ACCESS_TOKEN
+    assert ensured == [_ACCESS_TOKEN]
     assert upstream.requests[1].headers["authorization"] == "Bearer refreshed-access-token"
 
 
@@ -474,7 +475,7 @@ def test_new_routes_refresh_once_on_a_401(monkeypatch, method, path):
     response = client.request(method, path, params=_BRIDGE, json={} if method == "POST" else None)
     assert response.status_code == 200
     assert len(upstream.requests) == 2
-    assert ensured[-1] == _ACCESS_TOKEN
+    assert ensured == [_ACCESS_TOKEN]
     assert upstream.requests[1].headers["authorization"] == "Bearer refreshed-access-token"
 
 
@@ -533,3 +534,15 @@ def test_submission_forwards_the_selected_language_on_initial_request_and_retry(
     if method == "POST":
         assert upstream.requests[1].headers["content-type"] == "application/json"
         assert json.loads(upstream.requests[1].content) == {"plugin_slug": "demo"}
+
+
+@pytest.mark.parametrize(
+    "language,expected", [(b"en-US,en;q=0.8", "en-US,en;q=0.8"), (b"en-US,\xff;q=0.5", None)]
+)
+def test_submission_language_header_preserves_ascii_lists_and_skips_non_ascii(monkeypatch, language, expected):
+    client, upstream, _ = _install(monkeypatch, _ok(_EMPTY_PAGE))
+    response = client.get(
+        "/market/submissions/mine", params=_BRIDGE, headers=[(b"Accept-Language", language)]
+    )
+    assert response.status_code == 200
+    assert upstream.requests[0].headers.get("accept-language") == expected

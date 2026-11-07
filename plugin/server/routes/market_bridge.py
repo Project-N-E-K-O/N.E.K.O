@@ -944,7 +944,8 @@ async def _proxy_market_submission(
                 break
         access_token = token_data["access_token"]
         headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
-        if language := request.headers.get("accept-language"):
+        language = request.headers.get("accept-language")
+        if language and language.isascii():
             headers["Accept-Language"] = language
         if forward_body:
             headers["Content-Type"] = "application/json"

@@ -18,6 +18,7 @@ const api = vi.hoisted(() => ({
   listPluginProjects: vi.fn(),
   previewPluginProject: vi.fn(),
   createPluginProject: vi.fn(),
+  createPluginProjectRepo: vi.fn(),
   registerPluginProject: vi.fn(),
   removePluginProject: vi.fn(),
   pickProjectDirectory: vi.fn(),
@@ -49,6 +50,7 @@ vi.mock('@/api/pluginProjects', async (importOriginal) => ({
   listPluginProjects: api.listPluginProjects,
   previewPluginProject: api.previewPluginProject,
   createPluginProject: api.createPluginProject,
+  createPluginProjectRepo: api.createPluginProjectRepo,
   registerPluginProject: api.registerPluginProject,
   removePluginProject: api.removePluginProject,
   pickProjectDirectory: api.pickProjectDirectory,
@@ -1455,4 +1457,23 @@ it('documents the explicit external project path for each follow-up CLI command'
       : `${command} "<parent-directory>/<plugin_id>"`
     expect(commands).toContain(expected)
   }
+})
+
+
+it('shows and retranslates the repository failure fallback when the CLI returns no log', async () => {
+  api.route.query = { project: 'p1' }
+  api.listPluginProjects.mockResolvedValue([listed])
+  api.getPluginProjectPublishStatus.mockResolvedValue(publishStatus({
+    repository: { origin_url: null, github_repository: null }, remote: null,
+  }))
+  api.createPluginProjectRepo.mockResolvedValue({ status: 'failed', repository_url: '', log: [], finished_at: 1 })
+  const container = await mount()
+  await openPublish(container)
+  await settle()
+  await click(en.publishCreateRepo)
+  expect(document.body.textContent).toContain(en.repoCreateFailed)
+  switchLocale('zh-CN')
+  await flush()
+  expect(document.body.textContent).toContain(authoringMessages['zh-CN'].repoCreateFailed)
+  expect(document.body.textContent).not.toContain(en.repoCreateFailed)
 })

@@ -315,6 +315,7 @@ export const PLUGIN_ID_PATTERN = /^[a-z][a-z0-9_]*$/
 
 /** Reads the code from either `detail.code` (workbench) or the `X-Error-Code` header (plugin APIs). */
 export function projectErrorCode(error: unknown): string | undefined {
+  if (error == null) return undefined
   return readErrorCode(error as AxiosError) || undefined
 }
 
