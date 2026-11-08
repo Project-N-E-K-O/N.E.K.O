@@ -55,6 +55,34 @@ test('host replacement distinguishes an empty reset from an ordinary snapshot', 
   assert.equal(events.at(-1).type, 'react-chat-window:messages-cleared');
 });
 
+test('desktop history restore keeps the destination streaming bubble and newer local messages', () => {
+  const { I, window, events } = fixture();
+  const live = message('local-reply', {
+    role: 'assistant', status: 'streaming', turnId: 'turn-1', createdAt: 20, sortKey: 20,
+    blocks: [{ type: 'text', text: 'Partial' }],
+  });
+  I.setMessages([
+    message('stale', { createdAt: 5, sortKey: 5 }),
+    live,
+    message('new-local', { createdAt: 40, sortKey: 40 }),
+  ]);
+  window.currentTurnGeminiBubbles = [{ dataset: { reactChatMessageId: live.id } }];
+
+  I.restoreChatHistory({ updatedAt: 30, messages: [
+    message('saved-user', { createdAt: 10, sortKey: 10 }),
+    { ...live, id: 'other-window-reply', blocks: [{ type: 'text', text: 'Partial response' }] },
+  ] });
+
+  assert.deepEqual(Array.from(I.state.messages, row => row.id), ['saved-user', 'local-reply', 'new-local']);
+  assert.equal(I.state.messages[1].blocks[0].text, 'Partial response');
+  assert.equal(I.state.messages[1].status, 'streaming');
+  assert.equal(events.at(-1).type, 'react-chat-window:messages-replaced');
+  assert.equal(events.at(-1).detail.historyRestore, true);
+  assert.equal(events.at(-1).detail.conversationReset, false);
+  I.updateMessage(live.id, { status: 'sent' });
+  assert.equal(I.state.messages[1].status, 'sent');
+});
+
 function message(id = 'user-1', extra = {}) {
   return { id, role: 'user', author: 'You', time: '10:00', status: 'sent',
     blocks: [{ type: 'text', text: `hello ${id}` }], ...extra };
