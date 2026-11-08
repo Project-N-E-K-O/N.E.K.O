@@ -1967,6 +1967,8 @@
 
     I.restoreChatHistory = function restoreChatHistory(snapshot) {
         if (!Array.isArray(snapshot?.messages) || !Number.isFinite(snapshot.updatedAt)) return;
+        var resetAt = Number.isFinite(snapshot.resetAt) ? snapshot.resetAt
+            : (snapshot.messages.length ? 0 : snapshot.updatedAt);
         var currentBubbles = new Map();
         (window.currentTurnGeminiBubbles || []).forEach(function (bubble) {
             var id = bubble?.dataset?.reactChatMessageId;
@@ -1974,22 +1976,24 @@
         });
         // Preserve the destination adapter's references to bubbles it is still streaming.
         var liveMessages = I.state.messages.filter(function (message) {
-            return currentBubbles.has(message.id);
+            return message.createdAt > resetAt && currentBubbles.has(message.id);
         });
         var liveById = new Map(liveMessages.map(function (message) { return [message.id, message]; }));
         var snapshotIds = new Set(snapshot.messages.map(function (message) { return message.id; }));
         var unmatchedLive = liveMessages.filter(function (message) { return !snapshotIds.has(message.id); });
         var unmatchedSaved = snapshot.messages.filter(function (message) { return !liveById.has(message.id); });
-        var ambiguousLiveIds = new Set();
+        var mergeMessages = window.mergeMessagesEnabled ?? window.appState?.mergeMessagesEnabled;
 
         function hasMatchingReplyPrefix(saved, live) {
             if (saved.role !== 'assistant' || live.role !== 'assistant'
+                    || saved.status !== 'streaming' || live.status !== 'streaming'
                     || !saved.turnId || saved.turnId !== live.turnId) return false;
             var savedText = saved.blocks.length === 1 && saved.blocks[0].text;
             var liveText = live.blocks.length === 1 && live.blocks[0].text;
             return typeof savedText === 'string' && savedText.length > 0
                 && typeof liveText === 'string' && liveText.length > 0
-                && (liveText.startsWith(savedText) || savedText.startsWith(liveText));
+                && (savedText === liveText || (mergeMessages
+                    && (liveText.startsWith(savedText) || savedText.startsWith(liveText))));
         }
 
         var messages = snapshot.messages.map(function (saved) {
@@ -2000,8 +2004,6 @@
                     return hasMatchingReplyPrefix(message, candidates[0]);
                 }).length === 1) {
                     live = candidates[0];
-                } else {
-                    candidates.forEach(function (message) { ambiguousLiveIds.add(message.id); });
                 }
             }
             if (live) {
@@ -2017,12 +2019,12 @@
             return saved;
         });
         var savedIds = new Set(messages.map(function (message) { return message.id; }));
+        var isHandoff = Number.isFinite(snapshot.handoffStartedAt);
         replaceMessages(messages.concat(I.state.messages.filter(function (message) {
-            var liveWithNoUniqueMatch = message.status === 'streaming' && ambiguousLiveIds.has(message.id);
-            var arrivedDuringHandoff = snapshot.messages.length && Number.isFinite(snapshot.handoffStartedAt)
-                && message.createdAt >= snapshot.handoffStartedAt;
-            return !savedIds.has(message.id)
-                && (message.createdAt > snapshot.updatedAt || arrivedDuringHandoff || liveWithNoUniqueMatch);
+            if (savedIds.has(message.id) || message.createdAt <= resetAt) return false;
+            var liveReply = message.role === 'assistant' && message.status === 'streaming' && liveById.has(message.id);
+            return message.createdAt > snapshot.updatedAt || (isHandoff && message.createdAt >= snapshot.handoffStartedAt)
+                || (liveReply && (isHandoff || snapshot.messages.length > 0));
         })), true);
     };
 

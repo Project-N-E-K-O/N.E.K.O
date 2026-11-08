@@ -117,6 +117,7 @@ test('desktop history restore keeps saved attachments and the longer local text 
 
 test('desktop history restore keeps distinct replies when a streaming prefix has multiple matches', () => {
   const { I, window } = fixture();
+  window.mergeMessagesEnabled = true;
   const live = message('local-reply', {
     role: 'assistant', status: 'streaming', turnId: 'turn-1', createdAt: 20, sortKey: 20,
     blocks: [{ type: 'text', text: 'Hello again, friend' }],
@@ -124,14 +125,55 @@ test('desktop history restore keeps distinct replies when a streaming prefix has
   I.setMessages([live]);
   window.currentTurnGeminiBubbles = [{ dataset: { reactChatMessageId: live.id } }];
   I.restoreChatHistory({ updatedAt: 30, messages: [
-    { ...live, id: 'first-reply', sortKey: 10, status: 'sent', blocks: [{ type: 'text', text: 'Hello' }] },
-    { ...live, id: 'second-reply', sortKey: 15, status: 'sent', blocks: [{ type: 'text', text: 'Hello again' }] },
+    { ...live, id: 'first-reply', sortKey: 10, blocks: [{ type: 'text', text: 'Hello' }] },
+    { ...live, id: 'second-reply', sortKey: 15, blocks: [{ type: 'text', text: 'Hello again' }] },
   ] });
 
   assert.deepEqual(Array.from(I.state.messages, row => row.id), ['first-reply', 'second-reply', live.id]);
   assert.equal(I.state.messages[0].blocks[0].text, 'Hello');
   assert.equal(I.state.messages[1].blocks[0].text, 'Hello again');
   assert.equal(I.updateMessage(live.id, { status: 'sent' }).status, 'sent');
+});
+
+test('desktop history restore does not assign one saved prefix to either of two live replies', () => {
+  const { I, window } = fixture();
+  window.mergeMessagesEnabled = true;
+  const live = ['Hello again', 'Hello there'].map((text, index) => message(`live-${index}`, {
+    role: 'assistant', status: 'streaming', turnId: 'turn-1', createdAt: 20 + index, sortKey: 20 + index,
+    blocks: [{ type: 'text', text }],
+  }));
+  I.setMessages(live);
+  window.currentTurnGeminiBubbles = live.map(row => ({ dataset: { reactChatMessageId: row.id } }));
+  I.restoreChatHistory({ updatedAt: 30, messages: [
+    { ...live[0], id: 'saved', sortKey: 10, blocks: [{ type: 'text', text: 'Hello' }] },
+  ] });
+  assert.deepEqual(Array.from(I.state.messages, row => [row.id, row.blocks[0].text]), [
+    ['saved', 'Hello'], ['live-0', 'Hello again'], ['live-1', 'Hello there'],
+  ]);
+});
+
+test('desktop history restore keeps an unmatched live reply separate from a completed reply', () => {
+  const { I, window } = fixture({ withAdapter: true });
+  window.appendMessage('Hello again', 'gemini', true);
+  const live = I.state.messages[0];
+  I.restoreChatHistory({ updatedAt: live.createdAt + 10, messages: [
+    { ...live, id: 'completed', sortKey: live.sortKey - 1, status: 'sent', blocks: [{ type: 'text', text: 'Hello' }] },
+  ] });
+  assert.deepEqual(Array.from(I.state.messages, row => row.id), ['completed', live.id]);
+  window.appendMessage(', friend', 'gemini', false);
+  assert.deepEqual(Array.from(I.state.messages, row => row.blocks[0].text), ['Hello', 'Hello again, friend']);
+});
+
+test('an empty desktop handoff keeps new local messages while an explicit reset discards older ones', () => {
+  const { I } = fixture();
+  I.setMessages([
+    message('during-handoff', { createdAt: 40, sortKey: 40 }),
+    message('after-reset', { createdAt: 47, sortKey: 47 }),
+  ]);
+  I.restoreChatHistory({ updatedAt: 50, handoffStartedAt: 30, resetAt: 0, messages: [] });
+  assert.deepEqual(Array.from(I.state.messages, row => row.id), ['during-handoff', 'after-reset']);
+  I.restoreChatHistory({ updatedAt: 50, handoffStartedAt: 30, resetAt: 45, messages: [] });
+  assert.deepEqual(Array.from(I.state.messages, row => row.id), ['after-reset']);
 });
 
 function message(id = 'user-1', extra = {}) {
