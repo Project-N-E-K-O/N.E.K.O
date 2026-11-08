@@ -20,7 +20,7 @@ def run_script(assertions: str) -> None:
         const vm = require('node:vm');
         const assert = require('node:assert/strict');
         // Like a real document, a load event with no registered listener does nothing.
-        const documentEvents = {DOMContentLoaded(){}}, windowEvents = {}, intervals = [];
+        const documentEvents = {DOMContentLoaded(){}}, windowEvents = {}, intervals = [], dispatchedEvents = [];
         function element() {
             return {children:[],events:{},dataset:{},open:false, setAttribute(){},
                 appendChild(child){this.children.push(child);}, addEventListener(name,callback){this.events[name]=callback;},
@@ -34,7 +34,7 @@ def run_script(assertions: str) -> None:
                 showModal(){this.open=true;},close(){this.open=false;}};
         }
         const headerButton=element(), body=element();
-        global.window = { addEventListener(name,callback) {windowEvents[name]=callback;}, dispatchEvent(){return true;}, confirm(){return true;},
+        global.window = { addEventListener(name,callback) {windowEvents[name]=callback;}, dispatchEvent(event){dispatchedEvents.push(event);return true;}, confirm(){return true;},
             setInterval(callback,delay){intervals.push({callback,delay});return intervals.length;},clearInterval(){},
             lanlan_config: { lanlan_name: 'Neko' }, t(key,values) { return values && values.name ? key+':'+values.name
                 :values && typeof values.count==='number'?key+':'+values.count:key; } };
@@ -398,7 +398,7 @@ def test_unchanged_recent_display_keeps_the_real_host_window_and_pending_feedbac
         const host=window.reactChatWindowHost;
         host.getState=()=>({messages:I.state.messages.map(I.cloneMessage)});
         let updates=0,reads=0;
-        host.setMessages=messages=>{updates++;return I.setMessages(messages);};
+        host.setMessages=(messages,options)=>{updates++;return I.setMessages(messages,options);};
         const local=[
             {id:'local-user',role:'user',author:'User',createdAt:5000,time:'10:00',status:'sent',
                 blocks:[{type:'text',text:'local question'}]},
@@ -414,8 +414,11 @@ def test_unchanged_recent_display_keeps_the_real_host_window_and_pending_feedbac
             ?{characters:[{displayName:'Neko',characterSyncId:original.characterSyncId,binding:{enabled:true}}]}
             :(reads++,{originals})});
         const flush=()=>new Promise(resolve=>setImmediate(resolve));
+        const replacedDetail=()=>dispatchedEvents.filter(event=>event.type==='react-chat-window:messages-replaced').at(-1).detail;
+        assert.equal(replacedDetail().keepClearedScreen,false,'ordinary host replacements still end a visual clear');
         documentEvents.DOMContentLoaded();await flush();
         assert.equal(reads,1);assert.equal(updates,1);
+        assert.equal(replacedDetail().keepClearedScreen,true,'a sync refresh must not undo a visual clear');
         assert.equal(I.state.messages.length,50);
         assert.equal(I.state.messages[0].blocks[0].text,'received '+(RECEIVED_COUNT-47));
         assert.deepEqual(I.state.messages.slice(-3).map(message=>message.id),

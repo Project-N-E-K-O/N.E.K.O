@@ -34,7 +34,10 @@ export function ChatScreenVisibilityProvider({ messages, children }: {
   const [hiddenTurnIds, setHiddenTurnIds] = useState<ReadonlySet<string>>(EMPTY_HIDDEN_IDS);
   useEffect(() => {
     // A real host reset starts a new conversation; a visual clear never emits it.
-    const reset = () => {
+    const reset = (event: Event) => {
+      // A sync refresh keeps every message ID, so a visual clear outlives it.
+      const detail = (event as CustomEvent).detail;
+      if (detail?.keepClearedScreen === true && detail?.conversationReset !== true) return;
       captionTurnRef.current = '';
       setHiddenMessageIds(EMPTY_HIDDEN_IDS);
       setHiddenTurnIds(EMPTY_HIDDEN_IDS);

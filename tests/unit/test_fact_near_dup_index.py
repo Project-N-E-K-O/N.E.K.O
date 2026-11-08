@@ -2188,6 +2188,20 @@ async def test_invalid_candidate_source_does_not_drop_valid_batch_members(tmp_pa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('bad_source', [[], {}])
+async def test_unhashable_candidate_source_falls_back_without_losing_the_batch(tmp_path, bad_source):
+    from utils.llm_client import HumanMessage
+    h = _harness(tmp_path, [])
+    messages = [HumanMessage(content='I enjoy tea', additional_kwargs={'memory_source_id': 'raw-user', 'memory_source_created_at': 1000})]
+    rows = await h._apersist_new_facts('小天', [
+        {'entity': 'master', 'text': 'Enjoys tea', 'source_indices': [1], 'source': bad_source},
+        {'entity': 'master', 'text': 'Likes green tea', 'source_indices': [1]},
+    ], source_messages=messages)
+    assert [(row['text'], row['source']) for row in rows] == [
+        ('Enjoys tea', 'user_observation'), ('Likes green tea', 'user_observation')]
+
+
+@pytest.mark.asyncio
 async def test_source_accepted_reports_pre_dedup_candidates_that_passed_source_checks(tmp_path):
     from utils.llm_client import HumanMessage, AIMessage
     h = _harness(tmp_path, [])

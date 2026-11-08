@@ -78,7 +78,7 @@ def test_status_exposes_saved_uid_and_local_pause(local_client):
         "binding": {"ownerId": OWNER, "bindingId": "d" * 32, "enabled": False, "generation": 3,
                     "pendingOriginals": 0, "pendingDeletions": 0, "cursor": 0, "hasSealedBatch": False,
                     "localOnlyOriginals": 0,
-                    "lastSyncError": None, "writerRecoveryRequired": False, "profile": None},
+                    "lastSyncError": None, "writerRecoveryRequired": False, "localMemoryDiagnostics": [], "profile": None},
     }]
 
 
@@ -93,6 +93,22 @@ def test_status_defaults_an_unconfigured_role_to_off(local_client, choices, expe
     role = client.get('/api/chat-sync/status').json()['characters'][0]
     assert role['syncEnabled'] is expected and role['syncPending'] is False
     assert role['binding'] is None
+
+
+def test_status_route_carries_local_memory_diagnostics(local_client):
+    """The settings page explains a paused long-term sync from this field."""
+    from unittest.mock import AsyncMock
+    client, runtime = local_client
+    state = client.get('/api/chat-sync/status').json()
+    runtime.status = AsyncMock(return_value={
+        'bindings': [{'character_uid': UID, 'owner_id': OWNER, 'binding_id': 'd' * 32, 'enabled': 1, 'generation': 1,
+                      'pendingOriginals': 0, 'pendingDeletions': 0, 'cursor': 0, 'hasSealedBatch': False,
+                      'localOnlyOriginals': 0, 'localMemoryDiagnostics': ['long_term_memory_capacity_exceeded']}],
+        'syncChoices': {}, 'syncPendingChoices': {},
+        'serviceUrl': state['serviceUrl'], 'deviceId': state['deviceId'],
+    })
+    binding = client.get('/api/chat-sync/status').json()['characters'][0]['binding']
+    assert binding['localMemoryDiagnostics'] == ['long_term_memory_capacity_exceeded']
 
 
 def test_status_preserves_a_paused_roles_durable_pending_on_choice(local_client):

@@ -1907,7 +1907,7 @@
         return hadVisibleState;
     }
 
-    I.setMessages = function setMessages(messages) {
+    I.setMessages = function setMessages(messages, options) {
         cancelMessageReactions();
         // Compute fallback start past any explicit sortKey in incoming batch
         var maxIncomingSortKey = Array.isArray(messages)
@@ -1936,7 +1936,10 @@
         }
         I.invalidatePendingGalgameRequest();
         window.dispatchEvent(new CustomEvent('react-chat-window:messages-replaced', {
-            detail: { conversationReset: I.state.messages.length === 0 }
+            detail: {
+                conversationReset: I.state.messages.length === 0,
+                keepClearedScreen: !!(options && options.keepClearedScreen)
+            }
         }));
         I.renderWindow();
         return I.state.messages;

@@ -3644,7 +3644,7 @@ class FactStore:
         if memory_subject is None and (retirements or source_messages):
             extracted = [{**candidate,
                 'entity': candidate.get('entity') if candidate.get('entity') in ('master', 'neko', 'relationship') else 'master',
-                'source': candidate.get('source') if candidate.get('source') in self._SOURCE_VALUES else default_source}
+                'source': candidate.get('source') if isinstance(candidate.get('source'), str) and candidate.get('source') in self._SOURCE_VALUES else default_source}
                 if isinstance(candidate, dict) else candidate for candidate in extracted]
         matches = {}
         if retirements:

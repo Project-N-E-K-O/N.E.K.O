@@ -124,6 +124,8 @@ async def status(runtime: Runtime):
             # Only fixed adapter codes are exposed, never remote response text.
             "lastSyncError": binding.get("lastSyncError"),
             "writerRecoveryRequired": binding.get("writerRecoveryRequired", False),
+            # Fixed local codes: capacity, archive subject or inbox waiting states.
+            "localMemoryDiagnostics": binding.get("localMemoryDiagnostics", []),
             # Profile revision hints contain no raw settings or credential data.
             "profile": binding.get("profile"),
         }

@@ -1532,7 +1532,7 @@ def test_long_term_sync_exports_retired_rows_as_superseded():
     assert rows[('persona', 'p2')]['status'] == 'superseded'
     assert rows[('persona', 'p2')]['supersededById'] == 'p9'
     assert rows[('reflection', 'r1')]['status'] == 'superseded'
-    assert 'status' not in rows[('persona', 'p3')] and rows[('reflection', 'r2')].get('status') != 'superseded'
+    assert 'status' not in rows[('persona', 'p3')] and rows[('reflection', 'r2')]['status'] == 'confirmed'
 
 
 def test_long_term_sync_peer_cannot_revive_or_duplicate_a_local_retirement():

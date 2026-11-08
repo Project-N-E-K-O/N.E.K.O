@@ -374,7 +374,7 @@
                 // The host sorts by explicit keys, including keys retained by local split bubbles.
                 return Object.assign({}, message, { sortKey: index });
             });
-            if (displaySnapshot(current) !== displaySnapshot(merged)) host.setMessages(merged);
+            if (displaySnapshot(current) !== displaySnapshot(merged)) host.setMessages(merged, { keepClearedScreen: true });
         } finally {
             displayFlight = false;
             if (displayPending) { displayPending = false; refreshRecentDisplay().catch(function () {}); }
