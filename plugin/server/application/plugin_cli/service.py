@@ -9,6 +9,7 @@ import threading
 import tomllib
 import uuid
 import zipfile
+from concurrent.futures import CancelledError as BuildCancelled
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, BinaryIO, Literal
@@ -1986,6 +1987,8 @@ class PluginCliService:
 
         claimed_projects = prepared.claimed_projects
         try:
+            if cancelled is not None and cancelled.is_set():
+                raise BuildCancelled("Plugin build canceled")
             policy = self._path_policy()
             target_root = policy.package_artifacts_root
             sources, source_failures = prepared.sources, prepared.failures
@@ -1995,7 +1998,8 @@ class PluginCliService:
             builder = PluginBuilder(
                 source_only_roots=tuple(
                     source.plugin_dir for source in sources if source.root_id == "project"
-                )
+                ),
+                cancelled=cancelled.is_set if cancelled is not None else None,
             )
             resolved_target_dir = Path(target_dir).expanduser().resolve() if target_dir else target_root
             _require_within(resolved_target_dir, target_root, field="target_dir")
@@ -2043,6 +2047,8 @@ class PluginCliService:
             ]
             output_stems = self._output_stems_for_sources(sources)
             for source, plugin_dir in zip(sources, plugin_dirs, strict=True):
+                if cancelled is not None and cancelled.is_set():
+                    raise BuildCancelled("Plugin build canceled")
                 output_path = (
                     _require_within(Path(out).expanduser().resolve(), target_root, field="out")
                     if out
@@ -2056,6 +2062,8 @@ class PluginCliService:
                     )
                     built.append(result.model_dump(mode="json"))
                 except Exception as exc:
+                    if isinstance(exc, BuildCancelled):
+                        raise
                     failed.append({"plugin": f"{source.root_id}/{source.directory_name}", "error": str(exc)})
 
             return {
@@ -2065,6 +2073,8 @@ class PluginCliService:
                 "failed_count": len(failed),
                 "ok": not failed,
             }
+        except BuildCancelled:
+            raise
         except Exception as exc:
             raise self._domain_error_from_exception(exc, action="build") from exc
         finally:

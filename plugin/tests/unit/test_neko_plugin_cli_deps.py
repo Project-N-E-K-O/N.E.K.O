@@ -2187,7 +2187,10 @@ def test_sync_reports_invalid_dynamic_type_without_touching_vendor(tmp_path, cap
 
 @pytest.mark.parametrize("mode", ["ordinary", "linked", "mounted"])
 @pytest.mark.parametrize("clean", [True, False])
-def test_sync_detects_declarations_changed_during_install_before_committing_vendor(tmp_path, monkeypatch, mode, clean):
+@pytest.mark.parametrize("with_expected_revision", [True, False])
+def test_sync_detects_declarations_changed_during_install_before_committing_vendor(
+    tmp_path, monkeypatch, mode, clean, with_expected_revision,
+):
     from plugin.neko_plugin_cli.core import vendor_sync
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
@@ -2214,9 +2217,10 @@ def test_sync_detects_declarations_changed_during_install_before_committing_vend
         return subprocess.CompletedProcess(command, 0, stdout="ok")
 
     messages = []
+    revision_options = {"expected_revision": expected} if with_expected_revision else {}
     assert vendor_sync.sync_vendor(
-        plugin_dir, clean=clean, expected_revision=expected, uv_executable="uv",
-        installer_runner=install, report=messages.append,
+        plugin_dir, clean=clean, uv_executable="uv",
+        installer_runner=install, report=messages.append, **revision_options,
     ) == 1
     assert any("pyproject.toml changed" in line for line in messages)
     assert (vendor / "old.py").read_text() == "old"
@@ -2229,7 +2233,10 @@ def test_sync_detects_declarations_changed_during_install_before_committing_vend
 
 
 @pytest.mark.parametrize("mode", ["linked", "mounted"])
-def test_non_clean_in_place_checks_revision_immediately_before_installer_writes(tmp_path, monkeypatch, mode):
+@pytest.mark.parametrize("with_expected_revision", [True, False])
+def test_non_clean_in_place_checks_revision_immediately_before_installer_writes(
+    tmp_path, monkeypatch, mode, with_expected_revision,
+):
     from plugin.neko_plugin_cli.core import vendor_sync
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
@@ -2253,10 +2260,11 @@ def test_non_clean_in_place_checks_revision_immediately_before_installer_writes(
             pyproject.write_text('[project]\ndependencies = []\n', encoding="utf-8")
 
     messages = []
+    revision_options = {"expected_revision": expected} if with_expected_revision else {}
     assert vendor_sync.sync_vendor(
-        plugin_dir, clean=False, expected_revision=expected, uv_executable="uv", progress=progress,
+        plugin_dir, clean=False, uv_executable="uv", progress=progress,
         installer_runner=lambda *args, **kwargs: pytest.fail("stale in-place install must not write"),
-        report=messages.append,
+        report=messages.append, **revision_options,
     ) == 1
     assert any("pyproject.toml changed" in line for line in messages)
     assert (vendor / "old.py").read_text() == "old"

@@ -32,6 +32,7 @@ export function useProjectPythonPackages(
   let alive = true
   let generation = 0
   let request = 0
+  let refreshingTerminalSnapshot = false
   let timer: ReturnType<typeof setTimeout> | undefined
   const terminalNotifications = new Set<string>()
   const current = (id: string, seq: number) => alive && projectId.value === id && generation === seq
@@ -56,6 +57,7 @@ export function useProjectPythonPackages(
     if (replaceDraft) resetDraft(next)
     snapshot.value = next
     task.value = next.task
+    refreshingTerminalSnapshot = !!next.task && !pythonTaskActive(next.task) && !!next.operation
     schedule()
     notifyTerminalTask(next.task, notifyTask)
   }
@@ -73,12 +75,17 @@ export function useProjectPythonPackages(
     } catch (cause) {
       if (current(id, seq) && req === request) error.value = cause
     } finally {
-      if (current(id, seq) && req === request) loading.value = false
+      if (current(id, seq) && req === request) {
+        loading.value = false
+        schedule()
+      }
     }
   }
   function schedule() {
     resetTimer()
-    if (active.value && alive) timer = setTimeout(() => void poll(), 1000)
+    if (!alive) return
+    if (active.value) timer = setTimeout(() => void poll(), 1000)
+    else if (refreshingTerminalSnapshot) timer = setTimeout(() => void reload(), 1000)
   }
   async function poll() {
     const id = projectId.value
@@ -92,6 +99,7 @@ export function useProjectPythonPackages(
       task.value = next
       error.value = null
       if (!pythonTaskActive(next)) {
+        refreshingTerminalSnapshot = true
         await reload()
         if (current(id, seq)) notifyTerminalTask(next)
       }
@@ -117,6 +125,7 @@ export function useProjectPythonPackages(
       const next = await startProjectPythonTask(id, operation, snapshot.value.revision)
       if (current(id, seq)) {
         task.value = next
+        refreshingTerminalSnapshot = !pythonTaskActive(next)
         schedule()
         notifyTerminalTask(next)
         return true
@@ -161,6 +170,7 @@ export function useProjectPythonPackages(
       const next = await cancelProjectPythonTask(id, task.value.task_id)
       if (current(id, seq)) {
         task.value = next
+        refreshingTerminalSnapshot = !pythonTaskActive(next)
         await reload()
         if (current(id, seq)) notifyTerminalTask(next)
       }
@@ -176,6 +186,7 @@ export function useProjectPythonPackages(
       generation += 1
       request += 1
       resetTimer()
+      refreshingTerminalSnapshot = false
       terminalNotifications.clear()
       snapshot.value = null
       task.value = null

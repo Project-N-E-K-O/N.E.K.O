@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from tempfile import gettempdir
 from typing import Callable, NamedTuple, Protocol
@@ -108,11 +108,11 @@ def sync_vendor(
 
     The runner controls only external installer execution; locks, staging, recovery,
     and safe directory replacement stay identical for CLI and background tasks.
-    An expected revision is checked under the dependency lock against the same
-    file bytes used to parse declarations, before any installer can run. It is
-    checked again before committing staged vendor contents. Non-clean in-place
-    installs check before and after their writes, without rollback. External
-    editors can still race the final check and commit.
+    A caller's expected revision is checked under the dependency lock against
+    the same bytes used to parse declarations. Every sync retains that initial
+    revision and checks it before committing staged vendor contents. Non-clean
+    in-place installs check before and after their writes, without rollback.
+    External editors can still race the final check and commit.
     """
     args = VendorSyncOptions(python, project_root, clean, discard_backups,
                              installer_runner, uv_executable, allow_pip_fallback, report, progress, check_cancelled,
@@ -145,9 +145,11 @@ def sync_vendor(
 
             pyproject_path = plugin_dir / "pyproject.toml"
             raw = pyproject_path.read_bytes() if pyproject_path.is_file() else None
-            if expected_revision is not None and pyproject_revision(raw) != expected_revision:
+            initial_revision = pyproject_revision(raw)
+            if expected_revision is not None and initial_revision != expected_revision:
                 emit("[FAIL] pyproject.toml changed; refresh before synchronizing dependencies", file=sys.stderr)
                 return 1
+            args = replace(args, expected_revision=initial_revision)
             declared_deps = _dependencies_from_project(tomllib.loads(raw.decode("utf-8"))) if raw is not None else None
             external_deps = _filter_external(declared_deps or [])
 

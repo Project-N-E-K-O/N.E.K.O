@@ -444,3 +444,29 @@ def test_inspection_reports_invalid_dynamic_field_as_a_project_error(tmp_path, d
     with pytest.raises(PythonPackagesError) as error:
         inspect_python_packages(project)
     assert error.value.code == "PYTHON_PACKAGES_PROJECT_INVALID"
+
+
+@pytest.mark.parametrize("invalid", [
+    "legacy ???", 'legacy; python_version ~= "not-a-version"', 'legacy; "feature" in dependency_groups',
+])
+@pytest.mark.parametrize("old_count", [1, 2])
+def test_save_cannot_add_copies_of_legacy_invalid_declarations(tmp_path, invalid, old_count):
+    project = _project(tmp_path, '[project]\ndependencies = ' + json.dumps([invalid] * old_count) + '\n')
+    path = project / "pyproject.toml"
+    original = path.read_bytes()
+    with pytest.raises(PythonPackagesError) as error:
+        save_python_requirements(project, [invalid] * (old_count + 1), inspect_python_packages(project)["revision"])
+    assert error.value.code == "PYTHON_PACKAGES_REQUIREMENTS_INVALID"
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("invalid", [
+    "legacy ???", 'legacy; python_version ~= "not-a-version"', 'legacy; "feature" in dependency_groups',
+])
+@pytest.mark.parametrize("old_count", [1, 2])
+@pytest.mark.parametrize("remove_one", [False, True])
+def test_save_can_keep_or_reduce_original_invalid_declaration_occurrences(tmp_path, invalid, old_count, remove_one):
+    project = _project(tmp_path, '[project]\ndependencies = ' + json.dumps([invalid] * old_count) + '\n')
+    declarations = [invalid] * (old_count - remove_one) + ["valid-package"]
+    saved = save_python_requirements(project, declarations, inspect_python_packages(project)["revision"])
+    assert [item["requirement"] for item in saved["requirements"]] == declarations

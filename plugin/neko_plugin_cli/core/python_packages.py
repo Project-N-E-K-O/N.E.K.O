@@ -10,6 +10,7 @@ import json
 import os
 import re
 import tempfile
+from collections import Counter
 from importlib import metadata
 from pathlib import Path
 
@@ -293,13 +294,15 @@ def save_python_requirements(plugin_dir: Path, requirements: list[str], revision
             if not isinstance(requirements, list) or any(not isinstance(item, str) for item in requirements):
                 raise PythonPackagesError("PYTHON_PACKAGES_REQUIREMENTS_INVALID", "requirements must be a list of strings")
             seen: set[str] = set()
+            legacy_remaining = Counter(old_requirements)
             for item in requirements:
                 try:
                     parsed = Requirement(item)
                 except InvalidRequirement as exc:
                     # Preserve unsupported legacy declarations verbatim, but
                     # never allow the UI to introduce or edit them.
-                    if item in old_requirements:
+                    if legacy_remaining[item] > 0:
+                        legacy_remaining[item] -= 1
                         continue
                     raise PythonPackagesError("PYTHON_PACKAGES_REQUIREMENTS_INVALID", str(exc)) from exc
                 if parsed.url and item not in old_requirements:
@@ -307,7 +310,8 @@ def save_python_requirements(plugin_dir: Path, requirements: list[str], revision
                 try:
                     requirement_applies(parsed, parsed.extras)
                 except ValueError as exc:
-                    if item in old_requirements:
+                    if legacy_remaining[item] > 0:
+                        legacy_remaining[item] -= 1
                         continue
                     raise PythonPackagesError("PYTHON_PACKAGES_REQUIREMENTS_INVALID", str(exc)) from exc
                 parsed.name = canonicalize_distribution_name(parsed.name)

@@ -4,8 +4,11 @@ from __future__ import annotations
 import asyncio
 import multiprocessing
 import os
+import shutil
 import subprocess
 import sys
+import threading
+from concurrent.futures import CancelledError as BuildCancelled
 from types import SimpleNamespace
 
 import pytest
@@ -20,6 +23,7 @@ from plugin.server.application import plugin_projects as projects
 from plugin.server.application import plugin_publish_tasks as publish
 from plugin.server.application import plugin_repo_tasks as repositories
 from plugin.server.application.plugin_cli.service import PluginCliService
+from plugin.server.application.plugin_cli.source_resolver import ResolvedPluginSource
 from plugin.server.application.plugins import lifecycle_service as lifecycle
 from plugin.server.application.plugins import operation_lock
 from plugin.server.domain.errors import ServerDomainError
@@ -244,6 +248,164 @@ def test_running_host_matches_source_alias_and_ignores_missing_old_path(project,
     state.plugins["unrelated"] = {"source_dir": str(tmp_path)}
     state.plugin_hosts["unrelated"] = SimpleNamespace(is_alive=lambda: True)
     assert packages._running(project.source_dir) is False
+
+
+@pytest.mark.asyncio
+async def test_cancelled_build_stops_before_remaining_projects_and_releases_leases(project, tmp_path, monkeypatch):
+    from plugin.neko_plugin_cli.core import build
+
+    second_dir = tmp_path / "runtime_second"
+    create_project(PluginSpec("runtime_second", quick_start=True), second_dir, repo_root=None)
+    second = store.add_record(second_dir)
+    sources = [ResolvedPluginSource("project", item.source_dir.name, item.source_dir.name, item.source_dir)
+               for item in (project, second)]
+    entered = threading.Event()
+    finish = threading.Event()
+    signals = []
+    built = []
+
+    class Builder:
+        def __init__(self, **kwargs):
+            pass
+
+        def build_plugin(self, directory, *args, **kwargs):
+            built.append(directory)
+            if len(built) == 1:
+                entered.set()
+                assert finish.wait(5)
+            return SimpleNamespace(model_dump=lambda **kwargs: {})
+
+    service = PluginCliService()
+    original = service._build_sync
+
+    def worker(**kwargs):
+        signals.append(kwargs["cancelled"])
+        return original(**kwargs)
+
+    monkeypatch.setattr(service, "_path_policy", lambda: SimpleNamespace(package_artifacts_root=tmp_path / "artifacts"))
+    monkeypatch.setattr(service, "_resolve_plugin_sources", lambda **kwargs: (sources, []))
+    monkeypatch.setattr(service, "_build_sync", worker)
+    monkeypatch.setattr(build, "PluginBuilder", Builder)
+    request = asyncio.create_task(service.build(mode="all"))
+    try:
+        assert await asyncio.to_thread(entered.wait, 3)
+        request.cancel()
+        assert await asyncio.to_thread(signals[0].wait, 3)
+        assert commands.project_operation_name(project.project_id) == "build"
+        assert commands.project_operation_name(second.project_id) == "build"
+        finish.set()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        assert built == [project.source_dir]
+        assert commands.project_operation_name(project.project_id) is None
+        assert commands.project_operation_name(second.project_id) is None
+    finally:
+        finish.set()
+        await asyncio.gather(request, return_exceptions=True)
+
+
+@pytest.mark.parametrize("bundle", [False, True])
+@pytest.mark.parametrize("keep_staging", [False, True])
+def test_builder_cancellation_preserves_staging_policy_and_stops_next_stage(
+    project, tmp_path, monkeypatch, bundle, keep_staging,
+):
+    from plugin.neko_plugin_cli.core import build
+
+    canceled = threading.Event()
+    builder = build.PluginBuilder(cancelled=canceled.is_set)
+    paths = []
+    copied = []
+    probed = []
+    original_create = build.BuildPaths.create
+    original_copy = builder.copy_plugin_runtime_files
+
+    def create(cls, **kwargs):
+        result = original_create(**kwargs)
+        paths.append(result.staging_root)
+        return result
+
+    def copy(source_dir, *args, **kwargs):
+        result = original_copy(source_dir, *args, **kwargs)
+        copied.append(source_dir)
+        canceled.set()
+        return result
+
+    monkeypatch.setattr(build.BuildPaths, "create", classmethod(create))
+    monkeypatch.setattr(builder, "copy_plugin_runtime_files", copy)
+    monkeypatch.setattr(build, "write_packaged_metadata", lambda **kwargs: probed.append(kwargs))
+    artifact = tmp_path / "canceled.neko-plugin"
+    with pytest.raises(BuildCancelled):
+        if bundle:
+            second_dir = tmp_path / "runtime_second"
+            create_project(PluginSpec("runtime_second", quick_start=True), second_dir, repo_root=None)
+            builder.build_bundle([project.source_dir, second_dir], artifact, keep_staging=keep_staging)
+        else:
+            builder.build_plugin(project.source_dir, artifact, keep_staging=keep_staging)
+    assert copied == [project.source_dir]
+    assert probed == []
+    try:
+        assert len(paths) == 1 and paths[0].exists() == keep_staging
+        assert not artifact.exists()
+    finally:
+        for path in paths:
+            shutil.rmtree(path, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["create-repo", "precheck", "publish"])
+async def test_removed_project_is_rechecked_after_waiting_for_lease(project, monkeypatch, operation):
+    entered = asyncio.Event()
+    runs = []
+
+    async def run_cli(*args, **kwargs):
+        runs.append(operation)
+        return subprocess.CompletedProcess([], 0, '{"passed": true}', "")
+
+    async def repository_worker(*args, **kwargs):
+        runs.append(operation)
+        return {"status": "created"}
+
+    async def publish_worker(task, *args):
+        runs.append(operation)
+        task.status = "succeeded"
+        commands.release_project(task.project_id)
+
+    monkeypatch.setattr(projects, "source_repo_root", lambda: project.source_dir.parent)
+    monkeypatch.setattr(projects, "run_cli", run_cli)
+    monkeypatch.setattr(repositories, "_run", repository_worker)
+    monkeypatch.setattr(publish, "_run_task", publish_worker)
+
+    async def invoke():
+        entered.set()
+        if operation == "create-repo":
+            return await repositories.create_repository(project.project_id)
+        if operation == "precheck":
+            return await projects.precheck_project(project.project_id)
+        task = publish._Task("removed-project-publish", project.project_id, "github")
+        gate = publish._Gate(project.source_dir.parent, project.source_dir, "runtime_demo", "owner/repo", None, "v1")
+        return await publish._queue_publish(task, [], gate, 30)
+
+    request = None
+    try:
+        async with operation_lock.plugin_operation_lock.hold():
+            request = asyncio.create_task(invoke())
+            await asyncio.wait_for(entered.wait(), 3)
+            await asyncio.sleep(0.05)
+            store.remove_record(project.project_id)
+        with pytest.raises(ServerDomainError) as error:
+            await request
+        assert error.value.code == "PROJECT_NOT_FOUND"
+        assert runs == []
+        assert commands.project_operation_name(project.project_id) is None
+    finally:
+        if request is not None and not request.done():
+            request.cancel()
+            await asyncio.gather(request, return_exceptions=True)
+        if publish._workers:
+            await asyncio.gather(*publish._workers.values())
+        publish._tasks.clear()
+        publish._active.clear()
+        publish._latest.clear()
 
 
 @pytest.mark.asyncio

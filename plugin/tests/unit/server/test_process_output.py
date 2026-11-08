@@ -1,5 +1,6 @@
 """Pipe polling retires exited commands without dropping their final output."""
 
+import os
 from types import SimpleNamespace
 
 from plugin.server.infrastructure import process_output as module
@@ -55,3 +56,21 @@ def test_exit_drains_buffered_snapshot_without_following_later_helper_output(mon
     result = "".join(module.iter_process_output(process, checkpoint=lambda: None))
     assert result == payload.decode() + "parent-last\n"
     assert reads == [module._CHUNK_BYTES, module._CHUNK_BYTES, len(b"parent-last\n")]
+
+
+def test_real_pipe_snapshot_keeps_unread_bytes_after_writer_closes():
+    read_fd, write_fd = os.pipe()
+    with os.fdopen(read_fd, "rb", buffering=0) as stream, os.fdopen(write_fd, "wb", buffering=0) as writer:
+        if os.name == "nt":
+            read_ready, available = module._windows_pipe_reader(stream.fileno())
+        else:
+            available = lambda: module._posix_buffered_bytes(stream.fileno())
+            read_ready = lambda limit: os.read(stream.fileno(), limit)
+        payload = b"p" * 1024
+        writer.write(payload)
+        assert available() == len(payload)
+        assert read_ready(113) == payload[:113]
+        writer.close()
+        assert available() == len(payload) - 113
+        assert read_ready(len(payload)) == payload[113:]
+        assert available() == 0
