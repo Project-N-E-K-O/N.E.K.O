@@ -9,7 +9,8 @@ type ExternalProbe = {
   electronShell?: { openExternal: (url: string) => void }
 }
 
-appearanceTest.use({ appLocale: 'zh-CN' })
+// Native background-tab navigation uses the full browser rather than headless shell.
+appearanceTest.use({ appLocale: 'zh-CN', channel: 'chromium' })
 
 async function prepareTutorial(page: Page, electron: boolean) {
   await page.route('**/plugin-projects', route => route.fulfill({ json: [] }))
