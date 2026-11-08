@@ -25,10 +25,14 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   release:
+    permissions:
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.build-output.outputs.artifact-id }}
     runs-on: ubuntu-latest
     env:
       PLUGIN_ID: ${{ inputs.plugin-id }}
@@ -43,6 +47,10 @@ jobs:
         run: |
           if [[ ! "$PLUGIN_ID" =~ ^[a-z][a-z0-9_]*$ ]]; then
             echo "Invalid plugin id: $PLUGIN_ID" >&2
+            exit 1
+          fi
+          if [[ "$NEKO_REPOSITORY" != "Project-N-E-K-O/N.E.K.O" ]]; then
+            echo "Market releases require the official N.E.K.O builder" >&2
             exit 1
           fi
           if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then
@@ -229,18 +237,50 @@ jobs:
           )
           PY
 
-      - name: Upload Market evidence
-        uses: actions/upload-artifact@v4
+      - name: Upload build output for isolated signing
+        id: build-output
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: ${{ env.PLUGIN_ID }}-market-evidence
-          path: neko/plugin/neko_plugin_cli/target/market-evidence.json
-
-      - name: Create GitHub Release
-        if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v2
-        with:
-          fail_on_unmatched_files: true
-          files: |
+          name: market-build-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          path: |
             neko/plugin/neko_plugin_cli/target/${{ env.MARKET_PACKAGE_NAME }}
             neko/plugin/neko_plugin_cli/target/${{ env.PLUGIN_ID }}.market-release-check.txt
             neko/plugin/neko_plugin_cli/target/market-evidence.json
+
+  attest:
+    needs: release
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      # No checkout, install, or execution of plugin-controlled code in this job.
+      - name: Download exact build output
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.release.outputs.artifact-id }}
+          path: signed-output
+          merge-multiple: true
+
+      - name: Attest package and exact Market evidence bytes
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
+        with:
+          subject-path: |
+            signed-output/*.neko-plugin
+            signed-output/market-evidence.json
+
+      - name: Upload Market evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ inputs.plugin-id }}-market-evidence
+          path: signed-output/market-evidence.json
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
+        with:
+          fail_on_unmatched_files: true
+          files: signed-output/*
