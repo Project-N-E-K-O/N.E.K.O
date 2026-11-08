@@ -70,8 +70,10 @@ def iter_process_output(
             exited = process.poll() is not None
             chunk = read_ready()
             if chunk is None:
-                if process.poll() is not None:
+                if exited:
                     break
+                # If the child exited during this wait, peek again after the
+                # next poll observes exit so its final bytes are not lost.
                 continue
             if not chunk:
                 break
