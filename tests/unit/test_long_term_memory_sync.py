@@ -1883,6 +1883,11 @@ def test_first_import_counts_a_retained_local_upgrade_as_the_users_fact():
     assert result['reflections'][0]['fact_source_counts'] == {'user': 1, 'ai': 0}
     assert not awaits_user_signal(result['reflections'][0])
 
+    # An interrupted archive write can leave an older copy; the active row is the one that holds.
+    interrupted = {**existing, 'archive': [fact]}
+    result = import_document(incoming, interrupted, baseline=baseline['entries'])
+    assert result['reflections'][0]['fact_source_counts'] == {'user': 1, 'ai': 0}
+
 
 def test_dropped_citations_stay_dropped_after_a_reimport():
     """A source upgrade without a citation removes the character lines as proof;
