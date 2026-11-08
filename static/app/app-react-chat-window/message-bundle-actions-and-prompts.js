@@ -1956,13 +1956,11 @@
     function mergeChatHistoryReplyBlocks(savedBlocks, liveBlocks) {
         var savedText = savedBlocks[0];
         var liveText = liveBlocks[0];
-        if (savedText?.type !== 'text' || typeof savedText.text !== 'string'
-                || liveText?.type !== 'text' || typeof liveText.text !== 'string') {
-            return savedBlocks.length ? savedBlocks : liveBlocks;
-        }
-        var text = savedText.text.startsWith(liveText.text) ? savedText : liveText;
-        var extras = savedBlocks.length > 1 ? savedBlocks : liveBlocks;
-        return [text].concat(extras.slice(1));
+        if (liveText?.type !== 'text' || typeof liveText.text !== 'string') return liveBlocks.length ? liveBlocks : savedBlocks;
+        var hasSavedText = savedText?.type === 'text' && typeof savedText.text === 'string';
+        var text = hasSavedText && savedText.text.startsWith(liveText.text) ? savedText : liveText;
+        var extras = liveBlocks.length > 1 ? liveBlocks.slice(1) : savedBlocks.slice(hasSavedText ? 1 : 0);
+        return [text].concat(extras);
     }
 
     I.restoreChatHistory = function restoreChatHistory(snapshot) {
@@ -2328,12 +2326,14 @@
         return normalized;
     }
 
-    I.updateMessage = function updateMessage(messageId, patch) {
+    I.updateMessage = function updateMessage(messageId, patch, options) {
         var updatedMessage = null;
         var bubble = window.currentGeminiMessage;
         if (patch?.status === 'streaming' && Array.isArray(patch.blocks)
                 && bubble?.dataset?.reactChatMessageId === String(messageId) && bubble.restoredHistoryBlocks) {
-            var blocks = mergeChatHistoryReplyBlocks(bubble.restoredHistoryBlocks, patch.blocks);
+            // Text-only stream chunks leave attachments intact. An explicit block array replaces them.
+            var blocks = options?.streamText
+                ? mergeChatHistoryReplyBlocks(bubble.restoredHistoryBlocks, patch.blocks) : patch.blocks;
             bubble.restoredHistoryBlocks = blocks;
             patch = Object.assign({}, patch, { blocks: blocks });
         }

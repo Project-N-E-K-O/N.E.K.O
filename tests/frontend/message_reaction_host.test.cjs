@@ -113,6 +113,16 @@ test('desktop history restore keeps saved attachments and the longer local text 
   assert.equal(I.state.messages[0].id, live.id);
   assert.equal(I.state.messages[0].blocks[0].text, 'Local reply continues');
   assert.equal(I.state.messages[0].blocks[1].url, image.url);
+
+  const link = { type: 'link', label: 'Source', url: 'https://example.test/source' };
+  I.updateMessage(live.id, { status: 'streaming', blocks: [I.state.messages[0].blocks[0], link] });
+  assert.deepEqual(Array.from(I.state.messages[0].blocks, block => block.type), ['text', 'link']);
+  window.appendMessage(' again', 'gemini', false);
+  assert.equal(I.state.messages[0].blocks[0].text, 'Local reply continues again');
+  assert.equal(I.state.messages[0].blocks[1].url, link.url);
+
+  I.updateMessage(live.id, { status: 'streaming', blocks: [I.state.messages[0].blocks[0]] });
+  assert.equal(I.state.messages[0].blocks.length, 1);
 });
 
 test('desktop history restore keeps distinct replies when a streaming prefix has multiple matches', () => {

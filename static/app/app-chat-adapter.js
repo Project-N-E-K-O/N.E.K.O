@@ -686,7 +686,7 @@
                 avatarUrl: updatedMsg.avatarUrl,
                 blocks: updatedMsg.blocks,
                 status: 'streaming'
-            });
+            }, { streamText: true });
         }
     }
 
@@ -962,7 +962,7 @@
                         avatarUrl: updatedMsg.avatarUrl,
                         blocks: updatedMsg.blocks,
                         status: 'streaming'
-                    });
+                    }, { streamText: true });
                 }
             }
 
