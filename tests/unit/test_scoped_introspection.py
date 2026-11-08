@@ -338,13 +338,12 @@ def test_scoped_state_gives_up_after_retries_and_drops_gone_subjects():
         key, "t3", "fp", True, 2, frozenset({key}), state,
     )
     assert gave_up
-    assert json.loads(state[key]) == {"at": "t3", "fp": "fp"}
+    assert json.loads(state[key]) == {"at": "t3", "fp": None}, (
+        "重试用完不算查过：下周不管内容变没变都要再查"
+    )
 
 
-@pytest.mark.asyncio
-async def test_tick_reviews_a_scoped_subject_once_its_content_changes(
-    tmp_path, maint_state, monkeypatch,
-):
+async def _scoped_tick_env(tmp_path, maint_state, monkeypatch, run):
     from app.memory_server import refine_loops, runtime
     from memory import introspection
 
@@ -363,8 +362,104 @@ async def test_tick_reviews_a_scoped_subject_once_its_content_changes(
     monkeypatch.setattr(refine_loops, 'aget_subject_prompt_locale', AsyncMock(return_value=None))
     monkeypatch.setattr(maint_state, '_is_idle', lambda: True)
     monkeypatch.setattr(maint_state, '_ais_powerful_memory_enabled', AsyncMock(return_value=True))
-    run = AsyncMock(return_value=introspection.IntrospectionResult(rounds=1))
     monkeypatch.setattr(introspection, 'arun_introspection', run)
+    return env
+
+
+async def _add_impression(env, rid: str, subject=GROUP) -> None:
+    rows = await env.engine._aload_reflections_full(NAME)
+    rows.append(env.engine._normalize_reflection({
+        "id": rid, "text": f"新印象 {rid}", "entity": subject.kind,
+        "status": "confirmed", "source_fact_ids": [], "created_at": _now_iso(),
+        "reinforcement": 0.1, "rein_last_signal_at": _now_iso(),
+        **subject.as_entry_fields(),
+    }))
+    await env.engine.asave_reflections(NAME, rows)
+
+
+async def _fingerprint(subject) -> str:
+    from app.memory_server.refine_loops import _scoped_introspection_subjects
+
+    return {s.key: fp for s, fp in await _scoped_introspection_subjects(NAME)}[subject.key]
+
+
+def _week_later(maint_state, subject) -> dict:
+    """Age the subject's last review by eight days; returns its state."""
+    from app.memory_server.refine_loops import (
+        _scoped_introspection_state,
+        _scoped_introspection_state_key,
+    )
+
+    key = _scoped_introspection_state_key(subject)
+    state = _scoped_introspection_state(maint_state._maint_state[NAME], key)
+    state["at"] = (datetime.now() - timedelta(days=8)).isoformat()
+    maint_state._maint_state[NAME][key] = json.dumps(state)
+    return state
+
+
+@pytest.mark.asyncio
+async def test_content_written_during_a_review_still_counts_as_new(
+    tmp_path, maint_state, monkeypatch,
+):
+    """The review records the content it was given, not what is there once
+    the model has answered: an impression synthesized meanwhile was never
+    shown to it."""
+    from app.memory_server import refine_loops
+    from memory import introspection
+
+    holder = {}
+
+    async def _run(*_a, subject, **_kw):
+        await _add_impression(holder["env"], "written_meanwhile", subject)
+        return introspection.IntrospectionResult(rounds=1)
+
+    env = await _scoped_tick_env(tmp_path, maint_state, monkeypatch, _run)
+    holder["env"] = env
+    before = await _fingerprint(GROUP)
+    await refine_loops._run_scoped_introspection_for_subject(NAME, GROUP)
+
+    state = _week_later(maint_state, GROUP)
+    assert state["fp"] == before
+    after = await _fingerprint(GROUP)
+    assert after != before
+    assert refine_loops._scoped_introspection_due(
+        maint_state._maint_view(NAME), GROUP, after, datetime.now(),
+    ), "检查期间新写入的印象，下周还要查"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["final", "transient"])
+async def test_a_review_that_did_not_complete_is_retried_next_week(
+    tmp_path, maint_state, monkeypatch, failure,
+):
+    from app.memory_server import refine_loops
+    from config import MEMORY_INTROSPECTION_RETRY_BACKOFF_SECONDS as LADDER
+    from memory import introspection
+
+    run = AsyncMock(return_value=introspection.IntrospectionResult(
+        failure=failure, failure_reason="x",
+    ))
+    await _scoped_tick_env(tmp_path, maint_state, monkeypatch, run)
+    attempts = 1 if failure == "final" else len(LADDER) + 1
+    for _ in range(attempts):
+        await refine_loops._run_scoped_introspection_for_subject(NAME, GROUP)
+
+    state = _week_later(maint_state, GROUP)
+    assert state["fp"] is None and "n" not in state
+    assert refine_loops._scoped_introspection_due(
+        maint_state._maint_view(NAME), GROUP, await _fingerprint(GROUP), datetime.now(),
+    ), "没查成的，下周不管内容变没变都要再查"
+
+
+@pytest.mark.asyncio
+async def test_tick_reviews_a_scoped_subject_once_its_content_changes(
+    tmp_path, maint_state, monkeypatch,
+):
+    from app.memory_server import refine_loops
+    from memory import introspection
+
+    run = AsyncMock(return_value=introspection.IntrospectionResult(rounds=1))
+    env = await _scoped_tick_env(tmp_path, maint_state, monkeypatch, run)
 
     # The private review is not due: only scoped subjects remain.
     maint_state._maint_state.setdefault(NAME, {})['introspection_last_run_at'] = _now_iso()
@@ -385,14 +480,7 @@ async def test_tick_reviews_a_scoped_subject_once_its_content_changes(
     assert run.await_count == 2
 
     # New content in one group: that group is reviewed again.
-    rows = await env.engine._aload_reflections_full(NAME)
-    rows.append(env.engine._normalize_reflection({
-        "id": "g9", "text": "群里新来了一只猫", "entity": "group_chat",
-        "status": "confirmed", "source_fact_ids": [], "created_at": _now_iso(),
-        "reinforcement": 0.1, "rein_last_signal_at": _now_iso(),
-        **GROUP.as_entry_fields(),
-    }))
-    await env.engine.asave_reflections(NAME, rows)
+    await _add_impression(env, "g9")
     await refine_loops._run_introspection_tick()
     assert run.await_count == 3
     assert run.await_args.kwargs["subject"].key == GROUP.key
