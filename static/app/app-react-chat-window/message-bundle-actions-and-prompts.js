@@ -1967,6 +1967,9 @@
         if (!Array.isArray(snapshot?.messages) || !Number.isFinite(snapshot.updatedAt)) return;
         var resetAt = Number.isFinite(snapshot.resetAt) ? snapshot.resetAt
             : (snapshot.messages.length ? 0 : snapshot.updatedAt);
+        function clearedByReset(message) {
+            return resetAt > 0 && message.createdAt <= resetAt;
+        }
         var currentBubbles = new Map();
         (window.currentTurnGeminiBubbles || []).forEach(function (bubble) {
             var id = bubble?.dataset?.reactChatMessageId;
@@ -1974,7 +1977,7 @@
         });
         // Preserve the destination adapter's references to bubbles it is still streaming.
         var liveMessages = I.state.messages.filter(function (message) {
-            return message.createdAt > resetAt && currentBubbles.has(message.id);
+            return !clearedByReset(message) && currentBubbles.has(message.id);
         });
         var liveById = new Map(liveMessages.map(function (message) { return [message.id, message]; }));
         var snapshotIds = new Set(snapshot.messages.map(function (message) { return message.id; }));
@@ -2019,7 +2022,7 @@
         var savedIds = new Set(messages.map(function (message) { return message.id; }));
         var isHandoff = Number.isFinite(snapshot.handoffStartedAt);
         replaceMessages(messages.concat(I.state.messages.filter(function (message) {
-            if (savedIds.has(message.id) || message.createdAt <= resetAt) return false;
+            if (savedIds.has(message.id) || clearedByReset(message)) return false;
             var liveReply = message.role === 'assistant' && message.status === 'streaming' && liveById.has(message.id);
             return message.createdAt > snapshot.updatedAt || (isHandoff && message.createdAt >= snapshot.handoffStartedAt)
                 || (liveReply && (isHandoff || snapshot.messages.length > 0));

@@ -175,13 +175,18 @@ test('desktop history restore keeps an unmatched live reply separate from a comp
 });
 
 test('an empty desktop handoff keeps new local messages while an explicit reset discards older ones', () => {
-  const { I } = fixture();
+  const { I, window } = fixture({ withAdapter: true });
+  window.appendMessage('Already streaming', 'gemini', true);
+  const live = I.state.messages[0];
   I.setMessages([
+    { ...live, createdAt: 0, sortKey: 0 },
     message('during-handoff', { createdAt: 40, sortKey: 40 }),
     message('after-reset', { createdAt: 47, sortKey: 47 }),
   ]);
   I.restoreChatHistory({ updatedAt: 50, handoffStartedAt: 30, resetAt: 0, messages: [] });
-  assert.deepEqual(Array.from(I.state.messages, row => row.id), ['during-handoff', 'after-reset']);
+  assert.deepEqual(Array.from(I.state.messages, row => row.id), [live.id, 'during-handoff', 'after-reset']);
+  window.appendMessage(' continues', 'gemini', false);
+  assert.equal(I.state.messages[0].blocks[0].text, 'Already streaming continues');
   I.restoreChatHistory({ updatedAt: 50, handoffStartedAt: 30, resetAt: 45, messages: [] });
   assert.deepEqual(Array.from(I.state.messages, row => row.id), ['after-reset']);
 });
