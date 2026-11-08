@@ -929,7 +929,10 @@ class RenderingMixin:
         # one the persona section would get, without a display name (only
         # persona sections store one).
         for marker, impressions in list(scoped_impressions.items()):
-            subject = subject_from_entry(impressions[0])
+            # The heading names the bucket's marker: for a person with
+            # several accounts that is the primary one, whichever account
+            # the impressions themselves were written under.
+            subject = self._subject_of_marker(marker) or subject_from_entry(impressions[0])
             lines = _impression_lines(marker)
             if not lines or subject is None:
                 continue
@@ -1096,6 +1099,18 @@ class RenderingMixin:
         if include_legacy_private:
             slots.append(None)
         return tuple(slots)
+
+    @staticmethod
+    def _subject_of_marker(marker):
+        """The subject a ``(key, scope)`` bucket marker stands for, or None."""
+        from memory.scopes import MemorySubject
+
+        try:
+            key, scope = marker
+            kind, subject_id = str(key).split(':', 1)
+            return MemorySubject(kind, subject_id, scope)
+        except Exception:  # noqa: BLE001 - a malformed marker falls back to the entry
+            return None
 
     @staticmethod
     def _section_group_keys(persona: dict, marker_aliases: dict | None) -> dict:

@@ -620,3 +620,37 @@ def test_own_words_addendum_in_every_language(lang):
     for token in ("{LANLAN_NAME}", '"ai_disclosure"', '"user_observation"', "`source`"):
         assert token in text, (lang, token)
     assert "{MASTER_NAME}" not in text
+
+
+@pytest.mark.asyncio
+async def test_impressions_of_a_secondary_account_head_under_the_primary(tmp_path):
+    """A person with two accounts gets one heading, named by the primary
+    account, even when every impression was written under the other one."""
+    from config.prompts.prompts_memory import get_scoped_persona_section_header
+    from memory.scopes import ParticipantGroup
+
+    env = _install(str(tmp_path))
+    primary = MemorySubject.participant("qq", "1001")
+    secondary = MemorySubject.participant("qq", "2002")
+    await env.engine.asave_reflections(NAME, [
+        env.engine._normalize_reflection(_scoped("s1", subject=secondary, text="她爱聊猫")),
+        env.engine._normalize_reflection(_scoped(
+            "s2", subject=secondary, text="她周末常在线", reinforcement=0.9,
+        )),
+    ])
+    group = ParticipantGroup.of(primary, [primary, secondary])
+    pending = await env.engine.aget_pending_reflections(
+        NAME, subjects=[primary, secondary], include_legacy_private=False,
+    )
+    confirmed = await env.engine.aget_confirmed_reflections(
+        NAME, subjects=[primary, secondary], include_legacy_private=False,
+    )
+    with patch("utils.language_utils.get_global_language_full", return_value="zh"):
+        rendered = await env.pm.arender_persona_markdown(
+            NAME, pending, confirmed, subjects=[primary, secondary],
+            include_legacy_private=False, participant_groups=[group],
+        )
+        header = get_scoped_persona_section_header(primary.kind, primary.subject_id, "zh")
+    assert rendered.count("### ") == 1
+    assert rendered.startswith(f"### {header}")
+    assert secondary.subject_id not in rendered

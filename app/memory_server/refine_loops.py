@@ -815,18 +815,21 @@ async def _next_scoped_introspection_subject(name: str, now: datetime):
 
 def _mutate_scoped_introspection(
     key: str, stamp: str, fingerprint: str | None, transient_failure: bool,
-    max_retries: int, live_keys: frozenset, state: dict,
+    max_retries: int, live_keys: frozenset | None, state: dict,
 ) -> tuple[bool, bool]:
     """Mutator: record how one subject's review ended; returns whether a
     transient failure used up the retries. ``fingerprint`` is the content
     the review was given, None when it did not complete; a cycle given up
     after transient failures records none either. Drops the state of
-    subjects that no longer have reviewable memory."""
-    for stale_key in [
-        k for k in state
-        if k.startswith(_SCOPED_INTROSPECTION_PREFIX) and k not in live_keys
-    ]:
-        state.pop(stale_key, None)
+    subjects that no longer have reviewable memory; ``live_keys`` None
+    (memory could not be read) drops nothing, or every other subject would
+    look never reviewed."""
+    if live_keys is not None:
+        for stale_key in [
+            k for k in state
+            if k.startswith(_SCOPED_INTROSPECTION_PREFIX) and k not in live_keys
+        ]:
+            state.pop(stale_key, None)
     current = _scoped_introspection_state(state, key)
     gave_up = False
     if transient_failure:
@@ -846,13 +849,14 @@ def _mutate_scoped_introspection(
     return True, gave_up
 
 
-async def _ascoped_introspection_fingerprints(name: str) -> dict:
-    """``state key -> content fingerprint`` of every reviewable subject."""
+async def _ascoped_introspection_fingerprints(name: str) -> dict | None:
+    """``state key -> content fingerprint`` of every reviewable subject;
+    None when the memory could not be read."""
     try:
         subjects = await _scoped_introspection_subjects(name)
     except Exception as e:  # noqa: BLE001
         logger.debug(f"[Introspection] {name}: 读取群聊记忆失败: {e}")
-        subjects = []
+        return None
     return {_scoped_introspection_state_key(s): fp for s, fp in subjects}
 
 
@@ -868,7 +872,7 @@ async def _astamp_scoped_introspection(
 
     fingerprints = await _ascoped_introspection_fingerprints(name)
     key = _scoped_introspection_state_key(subject)
-    live_keys = frozenset(fingerprints) | {key}
+    live_keys = None if fingerprints is None else frozenset(fingerprints) | {key}
     return await gates._amutate_maint_state(
         name,
         functools.partial(
@@ -899,7 +903,7 @@ async def _run_scoped_introspection_for_subject(character: str, subject) -> None
             f"解析失败，使用角色 locale: {locale_error}"
         )
     # What the review is given, fixed before it runs (see _astamp_scoped_introspection).
-    before = (await _ascoped_introspection_fingerprints(character)).get(
+    before = (await _ascoped_introspection_fingerprints(character) or {}).get(
         _scoped_introspection_state_key(subject),
     )
     try:

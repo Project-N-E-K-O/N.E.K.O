@@ -484,3 +484,24 @@ async def test_tick_reviews_a_scoped_subject_once_its_content_changes(
     await refine_loops._run_introspection_tick()
     assert run.await_count == 3
     assert run.await_args.kwargs["subject"].key == GROUP.key
+
+
+@pytest.mark.asyncio
+async def test_unreadable_memory_keeps_the_other_subjects_state(maint_state, monkeypatch):
+    """Recording one subject's review while the memory cannot be read must
+    not take every other subject for gone: they would all look never
+    reviewed and be sent to the model again."""
+    from app.memory_server import refine_loops
+
+    other = refine_loops._scoped_introspection_state_key(OTHER_GROUP)
+    maint_state._maint_state.setdefault(NAME, {})[other] = json.dumps({"at": "t0", "fp": "fp0"})
+    monkeypatch.setattr(
+        refine_loops, "_scoped_introspection_subjects",
+        AsyncMock(side_effect=OSError("busy")),
+    )
+    await refine_loops._astamp_scoped_introspection(
+        NAME, GROUP, transient_failure=False, reviewed_fingerprint="fp1",
+    )
+    state = maint_state._maint_state[NAME]
+    assert json.loads(state[other]) == {"at": "t0", "fp": "fp0"}
+    assert json.loads(state[refine_loops._scoped_introspection_state_key(GROUP)])["fp"] == "fp1"
