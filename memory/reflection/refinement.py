@@ -175,6 +175,11 @@ class RefinementMixin:
         ``merged_into``.
         Reflections have no event type for suppression, so all three write
         straight to the view, as refine does.
+        A scoped review's actions carry ``subject``: every target must still
+        be stamped with it (all of a kind's reflections share one
+        ``entity``), and a merged reflection gets the stamp and the speaker
+        provenance; its observation days and source counts come with the
+        shared merge builder. A rewrite is no new sighting.
 
         Returns ``{'applied': n, 'stale': m}``.
         """
@@ -185,6 +190,8 @@ class RefinementMixin:
             PERMANENT_SUPPRESSION_KEY,
             build_permanent_suppression,
         )
+
+        from memory.scopes import entry_matches_subject
 
         applied = 0
         stale = 0
@@ -210,6 +217,10 @@ class RefinementMixin:
                         # A sync may move a row to another subject keeping
                         # its id and text; the model judged the old one.
                         or ('entity' in act and src.get('entity') != act['entity'])
+                        or (
+                            act.get('subject') is not None
+                            and not entry_matches_subject(src, act['subject'])
+                        )
                     ):
                         srcs = []
                         break
@@ -240,6 +251,15 @@ class RefinementMixin:
                     # dropping a source's disputation or decay clock here
                     # could lift a disputed line to promotion.
                     merged.update(merged_evidence_state(srcs))
+                    if act.get('subject') is not None:
+                        # Unstamped rows fail closed on scoped reads; a
+                        # scoped line is confirmed on creation.
+                        from memory.speaker_trust import provenance_of_entries
+                        merged.update(provenance_of_entries(srcs))
+                        merged.update(act['subject'].as_entry_fields())
+                        if merged.get('status') == 'confirmed':
+                            merged.setdefault('confirmed_at', now_iso)
+                            merged['auto_confirmed'] = True
                     merged['modification_history'] = [
                         {
                             'old_text': src.get('text', ''),

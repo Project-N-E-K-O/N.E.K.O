@@ -38,6 +38,25 @@ EVIDENCE_ARCHIVE_THRESHOLD = -2.0    # score ≤ -2 → archive_candidate
 WEAK_MEMORY_AUTO_CONFIRM_DAYS = 7   # pending → confirmed, measured from created_at.
 WEAK_MEMORY_AUTO_PROMOTE_DAYS = 7   # confirmed → promoted, measured from confirmed_at.
 
+# Scoped (group / member / cross-group person) reflections into scoped persona.
+# They get no feedback, so only being seen again lets one in: on at least this
+# many distinct days, by the record dates of the facts behind it that are not
+# the character's own words, and at least this many days after the first of
+# them. Strong memory only: with it off nothing cleans up after a promotion
+# (correction queue, scoped refine, introspection), so none happens.
+SCOPED_PROMOTION_MIN_OBSERVED_DAYS = 4
+SCOPED_PROMOTION_MIN_AGE_DAYS = 30
+# Reinforcement a scoped reflection gains each time others' words are seen to
+# restate it again (synthesis judges a batch covered by it, or scoped refine
+# merges it with another such line); the decay clock restarts too. Equal to the
+# highest synthesis head start (importance 10, memory.evidence), so a line just
+# seen again ranks above every fresh one and keeps its place in the per-subject
+# render budget. Capped by EVIDENCE_REINFORCEMENT_CAP like every reinforcement.
+SCOPED_REOBSERVED_REINFORCEMENT = 0.8
+# How many observation days a scoped reflection keeps (the first one and the
+# latest ones); the promotion gate needs the count and the first day only.
+SCOPED_OBSERVED_DAYS_MAX = 64
+
 # §3.5.3 Archival (sub_zero_days counts + shard-size cap).
 EVIDENCE_ARCHIVE_DAYS = 14           # Archive after this many accumulated sub_zero days.
 ARCHIVE_FILE_MAX_ENTRIES = 500       # Maximum entries per archive shard.

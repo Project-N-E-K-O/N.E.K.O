@@ -65,6 +65,7 @@ from memory.timeindex import (
     FACT_NEAR_DUP_ENQUEUE_TIMEOUT_SECONDS,
 )
 from memory.scopes import (
+    SUBJECT_GROUP_CHAT,
     MemorySubject,
     coerce_subject,
     entry_matches_subject,
@@ -2972,6 +2973,7 @@ class FactStore:
         parse_max_retries: int | None = None,
         failure_info: dict | None = None,
         before_attempt: Callable[[], Awaitable[None]] | None = None,
+        label_own_words: bool = False,
     ) -> list[dict] | None:
         """Stage-1: pure extraction. Prompt carries no existing observations
         to avoid self-cycling (the LLM quoting an existing reflection back as a
@@ -2991,7 +2993,13 @@ class FactStore:
         legacy prompt assumes the human speaker IS the master — true for
         private admin chats, wrong for group-member batches, whose speaker
         would otherwise have their statements extracted as facts about the
-        master (Codex P2)."""
+        master (Codex P2).
+
+        ``label_own_words``: a group-chat history that contains the
+        character's own messages; the model also marks each fact's
+        ``source`` (``ai_disclosure`` for the character's words), which
+        persistence honours. Without it every fact counts as the others'
+        words."""
         _, _, _, _, name_mapping, _, _, _, _ = await self._config_manager.aget_character_data()
         name_mapping['ai'] = lanlan_name
         if speaker_label:
@@ -3005,8 +3013,14 @@ class FactStore:
             ui_language=get_global_language_full(),
         )
 
+        template = get_fact_extraction_prompt(prompt_lang)
+        if label_own_words:
+            from config.prompts.prompts_memory import (
+                get_fact_extraction_group_source_addendum,
+            )
+            template += get_fact_extraction_group_source_addendum(prompt_lang)
         prompt = (
-            get_fact_extraction_prompt(prompt_lang)
+            template
             .replace('{CONVERSATION}', conversation_text)
             .replace('{LANLAN_NAME}', lanlan_name)
             .replace('{MASTER_NAME}', name_mapping.get('human', '主人'))
@@ -3361,6 +3375,17 @@ class FactStore:
             if entity_id:
                 prov['speaker_entity_id'] = entity_id
         return prov or None
+
+    @staticmethod
+    def group_history_has_own_words(messages, subject) -> bool:
+        """Whether a scoped history is a group chat that includes the
+        character's own messages, the case ``label_own_words`` is for."""
+        memory_subject = coerce_subject(subject)
+        return (
+            memory_subject is not None
+            and memory_subject.kind == SUBJECT_GROUP_CHAT
+            and any(getattr(m, 'type', '') == 'ai' for m in messages or ())
+        )
 
     async def extract_facts_batch(
         self, segments: list[dict], lanlan_name: str,
@@ -5038,6 +5063,7 @@ class FactStore:
         speaker_provenance: dict | None = None,
         reconciled_facts: list[dict] | None = None,
         conversation_at: datetime | None = None,
+        label_own_words: bool = False,
     ) -> list[dict]:
         """Stage-1-only backward-compat entry.
 
@@ -5059,8 +5085,8 @@ class FactStore:
         permanently drop the batch (Codex P1). A genuine empty extraction
         still returns [].
 
-        ``speaker_label`` is forwarded to the extraction prompt — see
-        :meth:`_allm_extract_facts`.
+        ``speaker_label`` and ``label_own_words`` are forwarded to the
+        extraction prompt — see :meth:`_allm_extract_facts`.
 
         ``speaker_provenance``: stamped onto newly created user_observation facts
         (speaker_label / speaker_trust / speaker_id); AI
@@ -5084,6 +5110,7 @@ class FactStore:
             lanlan_name, messages,
             treat_malformed_as_failure=fail_closed,
             speaker_label=speaker_label,
+            label_own_words=label_own_words,
         )
         if extracted is None and fail_closed:
             raise FactExtractionFailed(

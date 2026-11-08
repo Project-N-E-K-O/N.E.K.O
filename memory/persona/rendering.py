@@ -814,6 +814,44 @@ class RenderingMixin:
             if ek:
                 per_entity[ek].append(entry)
 
+        # Split confirmed reflections into active vs past at render time.
+        # Past = derived (state/episode beyond TTL) or stored 'past'. Pending
+        # reflections do not participate in past splitting (pending already means uncertain;
+        # signals either reinforce it to confirmed or low scores archive it,
+        # so another stale downgrade is unnecessary).
+        from memory.scopes import persona_subject_from_section, subject_from_entry
+        from memory.temporal import (
+            is_past_for_render as _is_past,
+            time_since_label as _time_label,
+        )
+        now_for_past = datetime.now()
+        active_confirmed: list[dict] = []
+        past_confirmed: list[dict] = []
+        for r in trimmed_confirmed_reflections:
+            if not r.get('text'):
+                continue
+            (past_confirmed if _is_past(r, now=now_for_past) else active_confirmed).append(r)
+        # Scoped impressions render under their subject's own heading, next
+        # to its persona lines: one render can hold the group and several
+        # people, and a single flat list would not say whose impression a
+        # line is. Legacy (private) ones keep the shared section below.
+        scoped_impressions: dict = defaultdict(list)
+        legacy_active_confirmed: list[dict] = []
+        for r in active_confirmed:
+            subject = subject_from_entry(r)
+            if subject is None:
+                legacy_active_confirmed.append(r)
+            else:
+                scoped_impressions[
+                    self._subject_bucket_marker(subject, marker_aliases)
+                ].append(r)
+
+        def _impression_lines(marker) -> list[str]:
+            return [
+                f"- {_tag(KIND_REFLECTION, r)}{r.get('text', '')}"
+                for r in scoped_impressions.pop(marker, ())
+            ]
+
         # Fold sections that belong to the same PARTICIPANT into one heading.
         # Without this a person with two accounts gets two ``### `` blocks whose
         # ids are both rewritten to the primary — the model would read the same
@@ -855,6 +893,13 @@ class RenderingMixin:
                 section_meta = persona.get(primary_key, {})
                 subject_kind = section_meta.get('subject_kind')
                 subject_id = section_meta.get('subject_id')
+                section_subject = persona_subject_from_section(
+                    primary_key, section_meta,
+                ) if isinstance(section_meta, dict) else None
+                if section_subject is not None:
+                    lines.extend(_impression_lines(
+                        self._subject_bucket_marker(section_subject, marker_aliases)
+                    ))
                 if subject_kind in (
                     'group_chat', 'participant', 'group_participant',
                 ):
@@ -879,6 +924,26 @@ class RenderingMixin:
                     header = _headers.get(primary_key, primary_key)
                 sections.append(f"### {header}\n" + "\n".join(lines))
 
+        # Subjects whose impressions have no persona section to join (most
+        # scoped impressions stay impressions): their own heading, the same
+        # one the persona section would get, without a display name (only
+        # persona sections store one).
+        for marker, impressions in list(scoped_impressions.items()):
+            # The heading names the bucket's marker: for a person with
+            # several accounts that is the primary one, whichever account
+            # the impressions themselves were written under.
+            subject = self._subject_of_marker(marker) or subject_from_entry(impressions[0])
+            lines = _impression_lines(marker)
+            if not lines or subject is None:
+                continue
+            from config.prompts.prompts_memory import (
+                get_scoped_persona_section_header,
+            )
+            header = get_scoped_persona_section_header(
+                subject.kind, subject.subject_id, render_lang,
+            )
+            sections.append(f"### {header}\n" + "\n".join(lines))
+
         if trimmed_pending_reflections:
             lines = [f"- {_tag(KIND_REFLECTION, r)}{r.get('text', '')}"
                      for r in trimmed_pending_reflections
@@ -896,25 +961,11 @@ class RenderingMixin:
                     + "\n".join(lines)
                 )
 
-        # Split confirmed reflections into active vs past at render time.
-        # Past = derived (state/episode beyond TTL) or stored 'past'. Pending
-        # reflections do not participate in past splitting (pending already means uncertain;
-        # signals either reinforce it to confirmed or low scores archive it,
-        # so another stale downgrade is unnecessary).
-        from memory.temporal import (
-            is_past_for_render as _is_past,
-            time_since_label as _time_label,
-        )
-        now_for_past = datetime.now()
-        active_confirmed: list[dict] = []
-        past_confirmed: list[dict] = []
-        for r in trimmed_confirmed_reflections:
-            if not r.get('text'):
-                continue
-            (past_confirmed if _is_past(r, now=now_for_past) else active_confirmed).append(r)
-
-        if active_confirmed:
-            lines = [f"- {_tag(KIND_REFLECTION, r)}{r.get('text', '')}" for r in active_confirmed]
+        if legacy_active_confirmed:
+            lines = [
+                f"- {_tag(KIND_REFLECTION, r)}{r.get('text', '')}"
+                for r in legacy_active_confirmed
+            ]
             sections.append(
                 "### "
                 + get_persona_section_header(
@@ -1048,6 +1099,18 @@ class RenderingMixin:
         if include_legacy_private:
             slots.append(None)
         return tuple(slots)
+
+    @staticmethod
+    def _subject_of_marker(marker):
+        """The subject a ``(key, scope)`` bucket marker stands for, or None."""
+        from memory.scopes import MemorySubject
+
+        try:
+            key, scope = marker
+            kind, subject_id = str(key).split(':', 1)
+            return MemorySubject(kind, subject_id, scope)
+        except Exception:  # noqa: BLE001 - a malformed marker falls back to the entry
+            return None
 
     @staticmethod
     def _section_group_keys(persona: dict, marker_aliases: dict | None) -> dict:

@@ -113,6 +113,25 @@ class RefinementMixin:
         merged['source_id'] = inherited_source_id
         return merged
 
+    @staticmethod
+    def _stamp_scoped_merge(merged: dict, srcs: list[dict], subject) -> None:
+        """What a merged scoped persona entry must carry, as in scoped refine.
+
+        The subject stamp (scoped reads fail closed on unstamped rows), the
+        speaker provenance, and every upstream reflection id (the time-driven
+        promotion's idempotency check looks for them).
+        """
+        from memory.speaker_trust import provenance_of_entries
+
+        upstream_ids: list = []
+        for src in srcs:
+            for upstream in [src.get('source_id')] + list(src.get('merged_source_ids') or []):
+                if upstream and upstream not in upstream_ids:
+                    upstream_ids.append(upstream)
+        merged['merged_source_ids'] = upstream_ids
+        merged.update(provenance_of_entries(srcs))
+        merged.update(subject.as_entry_fields())
+
     async def aapply_introspection_actions(
         self, name: str, actions: list[dict],
     ) -> dict:
@@ -130,6 +149,12 @@ class RefinementMixin:
         helpers and are saved together at the end. A merge deletes nothing:
         its sources stay, permanently suppressed with ``merged_into``.
 
+        A scoped review's actions carry ``subject``: every target must still
+        be stamped with it (a section key leaves the scope out, so the
+        section alone does not say whose entry it is), and a merged entry
+        gets the stamp, the speaker provenance and the upstream reflection
+        ids its sources had.
+
         Returns ``{'applied': n, 'stale': m}``.
         """
         from memory.event_log import EVT_PERSONA_SUPPRESSED
@@ -141,6 +166,8 @@ class RefinementMixin:
             build_permanent_suppression,
         )
 
+        from memory.scopes import entry_matches_subject
+
         applied = 0
         stale = 0
         async with self._get_alock(name):
@@ -150,6 +177,7 @@ class RefinementMixin:
             dirty = False
             for act in actions:
                 entity = act.get('entity')
+                subject = act.get('subject')
                 section = persona.get(entity)
                 facts = section.get('facts') if isinstance(section, dict) else None
                 srcs: list[dict] = []
@@ -164,6 +192,10 @@ class RefinementMixin:
                         or src.get('protected')
                         or is_permanently_suppressed(src)
                         or src.get('text') != text
+                        or (
+                            subject is not None
+                            and not entry_matches_subject(src, subject)
+                        )
                     ):
                         srcs = []
                         break
@@ -211,6 +243,8 @@ class RefinementMixin:
                     merged = self._build_refine_merge_entry(
                         srcs, act['text'], now_iso, reason=reason,
                     )
+                    if subject is not None:
+                        self._stamp_scoped_merge(merged, srcs, subject)
                     # Sources stay on disk, retired, rather than deleted: the
                     # merged entry's version_history keeps only the last few
                     # texts, so a large merge would otherwise lose the rest.

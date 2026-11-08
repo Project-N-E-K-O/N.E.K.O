@@ -4576,3 +4576,48 @@ async def test_recheck_reports_only_the_segments_it_newly_fenced(env):
     env.fs._bump_subject_forget_generation(NAME, coerce_subject(PART))    # Segment 1 is newly cleared now.
     # Report only newly blocked segment 1, without adding segment 0 to the fallback again.
     assert routes._mark_items_forgotten_during_generation(NAME, staging, contexts, baseline) == {1}
+
+
+# ── whole-group digest: the character's own lines get labelled ─────────────
+
+
+@pytest.mark.parametrize("keyed", [True, False])
+async def test_group_digest_with_own_lines_labels_sources(env, keyed):
+    """A group digest that includes the character's own messages asks the
+    model for each fact's source; the label is stored, so the character's
+    own words never count as the group's (memory.evidence.others_fact_days)."""
+    prompts: list[str] = []
+
+    async def _llm(prompt, lanlan_name, **kwargs):
+        prompts.append(prompt)
+        return [
+            {"text": "Neko 家铺了地毯", "importance": 5, "source": "ai_disclosure"},
+            {"text": "对方的猫喜欢软地毯", "importance": 5, "source": "user_observation"},
+        ]
+
+    env.fs._allm_call_with_retries = _llm
+    history = json.dumps([
+        {"role": "user", "content": "[对方的猫] 这个地毯好软"},
+        {"role": "assistant", "content": "我家铺了地毯哦"},
+    ])
+    body = _single_body(KEY_GROUP if keyed else None, input_history=history)
+    await _post(env, body)
+
+    assert len(prompts) == 1 and "`source`" in prompts[0]
+    sources = {row["text"]: row.get("source") for row in _facts_of(env, GROUP)}
+    assert sources == {
+        "Neko 家铺了地毯": "ai_disclosure", "对方的猫喜欢软地毯": "user_observation",
+    }
+
+
+@pytest.mark.parametrize("keyed", [True, False])
+async def test_group_digest_without_own_lines_keeps_the_plain_prompt(env, keyed):
+    prompts: list[str] = []
+
+    async def _llm(prompt, lanlan_name, **kwargs):
+        prompts.append(prompt)
+        return list(SINGLE_FACTS)
+
+    env.fs._allm_call_with_retries = _llm
+    await _post(env, _single_body(KEY_GROUP if keyed else None))
+    assert len(prompts) == 1 and "`source`" not in prompts[0]
