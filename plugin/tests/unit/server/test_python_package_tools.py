@@ -82,7 +82,7 @@ def test_wheel_selection_uses_runtime_tags_and_pinned_version():
 
 
 def _wheel_download(
-    monkeypatch, *, invalid_digest=False, origin="https://files.pythonhosted.org/uv.whl", on_chunk=None, timeouts=None,
+    monkeypatch, *, invalid_digest=False, origin="https://files.pythonhosted.org/uv.whl", on_chunk=None, timeouts=None, split_chunks=False,
 ):
     binary_name = "uv.exe" if sys.platform == "win32" else "uv"
     archive_bytes = io.BytesIO()
@@ -114,9 +114,12 @@ def _wheel_download(
             pass
 
         def iter_bytes(self):
-            if on_chunk is not None:
-                on_chunk(self.data)
-            yield self.data
+            midpoint = len(self.data) // 2
+            chunks = [self.data[:midpoint], self.data[midpoint:]] if split_chunks else [self.data]
+            for chunk in chunks:
+                if on_chunk is not None:
+                    on_chunk(chunk)
+                yield chunk
 
     class Client:
         def __init__(self, **_kwargs):
@@ -234,9 +237,11 @@ def test_packaged_capabilities_recognize_prepared_tools_without_running_them(too
 @pytest.mark.parametrize("phase", ["metadata", "wheel"])
 def test_download_checks_task_budget_between_chunks(tools, monkeypatch, phase):
     expired = False
+    received = []
 
     def on_chunk(data):
         nonlocal expired
+        received.append(data)
         if (data.startswith(b"{") and phase == "metadata") or (data.startswith(b"PK") and phase == "wheel"):
             expired = True
 
@@ -244,11 +249,12 @@ def test_download_checks_task_budget_between_chunks(tools, monkeypatch, phase):
         if expired:
             raise TimeoutError("The dependency task exceeded its time budget")
 
-    binary_name = _wheel_download(monkeypatch, on_chunk=on_chunk)
+    binary_name = _wheel_download(monkeypatch, on_chunk=on_chunk, split_chunks=True)
     with pytest.raises(TimeoutError, match="time budget"):
         module._download_uv(
             tools / binary_name, lambda _line: None, threading.Event(), check_cancelled=checkpoint,
         )
+    assert len(received) == (1 if phase == "metadata" else 3)
     assert not (tools / binary_name).exists()
     assert list(tools.glob(".uv-*")) == []
 
