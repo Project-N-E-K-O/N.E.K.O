@@ -38,3 +38,10 @@ def test_generated_callers_allow_attestation_permissions():
     assert '  id-token: write\n  attestations: write' in release
     caller = (ROOT / 'plugin/plugins/lifekit/.github/workflows/release.yml').read_text()
     assert '  id-token: write\n  attestations: write' in caller
+
+
+def test_retries_replace_only_the_published_evidence_artifact():
+    sign = workflow()['jobs']['attest']
+    upload = next(step for step in sign['steps'] if step['name'] == 'Upload Market evidence')
+    assert upload['with']['overwrite'] is True
+    assert sign['timeout-minutes'] == 10

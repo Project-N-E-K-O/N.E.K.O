@@ -249,6 +249,7 @@ jobs:
             neko/plugin/neko_plugin_cli/target/market-evidence.json
 
   attest:
+    timeout-minutes: 10
     needs: release
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
@@ -276,6 +277,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ${{ inputs.plugin-id }}-market-evidence
+          overwrite: true
           path: signed-output/market-evidence.json
           if-no-files-found: error
 
