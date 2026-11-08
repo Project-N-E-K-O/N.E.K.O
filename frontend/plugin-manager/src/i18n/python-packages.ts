@@ -3,10 +3,7 @@ const en = {
   title: 'Python packages',
   requirements: 'Project dependencies',
   installed: 'Installed packages',
-  hint: 'Dependencies are installed into this project’s vendor directory. Plugins continue to use the host Python interpreter.',
   sync: 'Sync from declarations',
-  syncHint:
-    'Rebuilds vendor from all declarations and may update packages within their version constraints, including related dependencies.',
   check: 'Check dependencies',
   add: 'Add package',
   edit: 'Edit declaration',
@@ -70,9 +67,6 @@ const en = {
   removed: 'Removed',
   updated: 'Version changed',
   checks: 'Dependency checks',
-  metadataNote:
-    'Checks inspect package metadata and declared dependencies. Test the plugin’s actual features after syncing.',
-  market: 'Market publishing restrictions',
   noFindings: 'No issues found in this check.',
   technical: 'Technical details',
   actionFailed: 'Could not complete the dependency operation.',
@@ -97,9 +91,7 @@ const messages = {
     title: 'Python 软件包',
     requirements: '项目依赖',
     installed: '已安装的软件包',
-    hint: '依赖安装到当前项目的 vendor 目录；插件继续使用宿主 Python 解释器。',
     sync: '按声明同步',
-    syncHint: '根据全部声明重建 vendor，可能更新版本范围内的软件包及其关联依赖。',
     check: '检查依赖',
     add: '添加软件包',
     edit: '编辑声明',
@@ -159,8 +151,6 @@ const messages = {
     removed: '移除',
     updated: '版本变化',
     checks: '依赖检查',
-    metadataNote: '检查软件包元数据和依赖声明；同步后请测试插件的实际功能。',
-    market: 'Market 发布限制',
     noFindings: '本次检查未发现问题。',
     technical: '技术详情',
     actionFailed: '依赖操作未能完成。',
@@ -178,9 +168,7 @@ const messages = {
     title: 'Python 套件',
     requirements: '專案依賴',
     installed: '已安裝的套件',
-    hint: '依賴安裝到目前專案的 vendor 目錄；外掛繼續使用宿主 Python 解譯器。',
     sync: '依宣告同步',
-    syncHint: '根據全部宣告重建 vendor，可能更新版本範圍內的套件及其關聯依賴。',
     check: '檢查依賴',
     add: '新增套件',
     edit: '編輯宣告',
@@ -240,8 +228,6 @@ const messages = {
     removed: '移除',
     updated: '版本變化',
     checks: '依賴檢查',
-    metadataNote: '檢查套件中繼資料和依賴宣告；同步後請測試外掛的實際功能。',
-    market: 'Market 發佈限制',
     noFindings: '本次檢查未發現問題。',
     technical: '技術詳情',
     actionFailed: '依賴操作未能完成。',
@@ -259,10 +245,7 @@ const messages = {
     title: 'Python パッケージ',
     requirements: 'プロジェクトの依存関係',
     installed: 'インストール済みパッケージ',
-    hint: '依存関係はプロジェクトの vendor ディレクトリにインストールされます。プラグインはホストの Python を使用します。',
     sync: '宣言に合わせて同期',
-    syncHint:
-      'すべての宣言から vendor を再構築します。関連する依存関係も含め、指定範囲内でバージョンが更新される場合があります。',
     check: '依存関係を確認',
     add: 'パッケージを追加',
     edit: '宣言を編集',
@@ -326,9 +309,6 @@ const messages = {
     removed: '削除',
     updated: 'バージョン変更',
     checks: '依存関係の確認',
-    metadataNote:
-      'パッケージのメタデータと宣言を確認します。同期後は実際の機能もテストしてください。',
-    market: 'Market 公開の制限',
     noFindings: 'この確認では問題は見つかりませんでした。',
     technical: '技術的な詳細',
     actionFailed: '依存関係の操作を完了できませんでした。',
@@ -347,10 +327,7 @@ const messages = {
     title: 'Python 패키지',
     requirements: '프로젝트 의존성',
     installed: '설치된 패키지',
-    hint: '의존성은 프로젝트의 vendor 디렉터리에 설치됩니다. 플러그인은 호스트 Python 인터프리터를 사용합니다.',
     sync: '선언에 맞춰 동기화',
-    syncHint:
-      '모든 선언에서 vendor를 다시 구성합니다. 관련 의존성을 포함해 버전 범위 내의 패키지가 업데이트될 수 있습니다.',
     check: '의존성 확인',
     add: '패키지 추가',
     edit: '선언 편집',
@@ -413,9 +390,6 @@ const messages = {
     removed: '제거',
     updated: '버전 변경',
     checks: '의존성 검사',
-    metadataNote:
-      '패키지 메타데이터와 선언을 검사합니다. 동기화 후 실제 플러그인 기능을 테스트하세요.',
-    market: 'Market 게시 제한',
     noFindings: '이번 검사에서 문제가 발견되지 않았습니다.',
     technical: '기술 세부 정보',
     actionFailed: '의존성 작업을 완료하지 못했습니다.',
@@ -434,10 +408,7 @@ const messages = {
     title: 'Пакеты Python',
     requirements: 'Зависимости проекта',
     installed: 'Установленные пакеты',
-    hint: 'Зависимости устанавливаются в каталог vendor проекта. Плагины используют интерпретатор Python хоста.',
     sync: 'Синхронизировать по декларациям',
-    syncHint:
-      'Пересоздаёт vendor по всем декларациям. Пакеты и их зависимости могут обновиться в пределах заданных версий.',
     check: 'Проверить зависимости',
     add: 'Добавить пакет',
     edit: 'Изменить декларацию',
@@ -501,9 +472,6 @@ const messages = {
     removed: 'Удалён',
     updated: 'Изменена версия',
     checks: 'Проверки зависимостей',
-    metadataNote:
-      'Проверяются метаданные пакетов и декларации. После синхронизации протестируйте функции плагина.',
-    market: 'Ограничения публикации в Market',
     noFindings: 'Эта проверка не выявила проблем.',
     technical: 'Технические подробности',
     actionFailed: 'Не удалось выполнить операцию с зависимостями.',
@@ -522,10 +490,7 @@ const messages = {
     title: 'Paquetes Python',
     requirements: 'Dependencias del proyecto',
     installed: 'Paquetes instalados',
-    hint: 'Las dependencias se instalan en el directorio vendor del proyecto. Los plugins usan el intérprete Python del anfitrión.',
     sync: 'Sincronizar según declaraciones',
-    syncHint:
-      'Reconstruye vendor a partir de todas las declaraciones. Puede actualizar paquetes y dependencias relacionadas dentro de sus límites de versión.',
     check: 'Comprobar dependencias',
     add: 'Añadir paquete',
     edit: 'Editar declaración',
@@ -590,9 +555,6 @@ const messages = {
     removed: 'Eliminado',
     updated: 'Versión modificada',
     checks: 'Comprobaciones de dependencias',
-    metadataNote:
-      'Comprueba metadatos y dependencias declaradas. Prueba las funciones reales del plugin después de sincronizar.',
-    market: 'Restricciones de publicación en Market',
     noFindings: 'Esta comprobación no detectó problemas.',
     technical: 'Detalles técnicos',
     actionFailed: 'No se pudo completar la operación de dependencias.',
@@ -613,10 +575,7 @@ const messages = {
     title: 'Pacotes Python',
     requirements: 'Dependências do projeto',
     installed: 'Pacotes instalados',
-    hint: 'As dependências são instaladas no diretório vendor do projeto. Os plugins usam o interpretador Python do host.',
     sync: 'Sincronizar pelas declarações',
-    syncHint:
-      'Recria vendor com todas as declarações. Pode atualizar pacotes e dependências relacionadas dentro dos limites de versão.',
     check: 'Verificar dependências',
     add: 'Adicionar pacote',
     edit: 'Editar declaração',
@@ -680,9 +639,6 @@ const messages = {
     removed: 'Removido',
     updated: 'Versão alterada',
     checks: 'Verificações de dependências',
-    metadataNote:
-      'Verifica metadados e dependências declaradas. Teste as funções reais do plugin após sincronizar.',
-    market: 'Restrições de publicação no Market',
     noFindings: 'Esta verificação não encontrou problemas.',
     technical: 'Detalhes técnicos',
     actionFailed: 'Não foi possível concluir a operação de dependências.',
@@ -707,8 +663,7 @@ const editorMessages = {
     extras: 'Extras (comma separated)',
     marker: 'Environment condition',
     fullDeclaration: 'Full declaration',
-    notChecked:
-      'Not checked yet. Run Check dependencies to inspect package closure and Market restrictions.',
+    notChecked: 'Not checked yet.',
     setupRequired:
       'The first sync downloads installation tools and a compatible Python interpreter into application data.',
     formatUnsupported:
@@ -723,7 +678,7 @@ const editorMessages = {
     extras: 'Extras（逗号分隔）',
     marker: '环境条件',
     fullDeclaration: '完整声明',
-    notChecked: '尚未检查。请执行“检查依赖”，检查关联依赖及 Market 发布限制。',
+    notChecked: '尚未检查。',
     setupRequired: '首次同步会下载所需安装工具和兼容的 Python 解释器，保存到应用数据目录。',
     formatUnsupported: '当前依赖文件布局不支持网页编辑。请在编辑器修改 pyproject.toml 后刷新。',
     fileFailed: '无法读取或写入依赖文件，详见技术详情。',
@@ -735,7 +690,7 @@ const editorMessages = {
     extras: 'Extras（逗號分隔）',
     marker: '環境條件',
     fullDeclaration: '完整宣告',
-    notChecked: '尚未檢查。請執行「檢查依賴」，檢查關聯依賴及 Market 發佈限制。',
+    notChecked: '尚未檢查。',
     setupRequired: '首次同步會下載安裝工具和相容的 Python 解譯器，儲存在應用資料目錄。',
     formatUnsupported: '目前依賴檔案布局不支援網頁編輯。請在編輯器修改 pyproject.toml 後重新整理。',
     fileFailed: '無法讀取或寫入依賴檔案，詳見技術詳情。',
@@ -747,8 +702,7 @@ const editorMessages = {
     extras: 'Extras（カンマ区切り）',
     marker: '環境条件',
     fullDeclaration: '完全な宣言',
-    notChecked:
-      'まだ確認していません。「依存関係を確認」で間接依存と Market の制限を確認してください。',
+    notChecked: 'まだ確認していません。',
     setupRequired:
       '初回同期では、インストールツールと互換性のある Python をダウンロードしてアプリのデータ領域に保存します。',
     formatUnsupported:
@@ -763,8 +717,7 @@ const editorMessages = {
     extras: 'Extras (쉼표로 구분)',
     marker: '환경 조건',
     fullDeclaration: '전체 선언',
-    notChecked:
-      '아직 검사하지 않았습니다. 의존성 확인을 실행하여 관련 의존성과 Market 제한을 검사하세요.',
+    notChecked: '아직 확인하지 않았습니다.',
     setupRequired:
       '첫 동기화에서 설치 도구와 호환 Python을 내려받아 앱 데이터 디렉터리에 저장합니다.',
     formatUnsupported:
@@ -779,8 +732,7 @@ const editorMessages = {
     extras: 'Extras (через запятую)',
     marker: 'Условие среды',
     fullDeclaration: 'Полная декларация',
-    notChecked:
-      'Проверка ещё не выполнена. Проверьте зависимости, чтобы увидеть транзитивные зависимости и ограничения Market.',
+    notChecked: 'Проверка ещё не выполнена.',
     setupRequired:
       'При первой синхронизации инструменты установки и совместимый Python загружаются в каталог данных приложения.',
     formatUnsupported:
@@ -796,8 +748,7 @@ const editorMessages = {
     extras: 'Extras (separados por comas)',
     marker: 'Condición de entorno',
     fullDeclaration: 'Declaración completa',
-    notChecked:
-      'Aún no se ha comprobado. Comprueba las dependencias transitivas y restricciones de Market.',
+    notChecked: 'Aún no se ha comprobado.',
     setupRequired:
       'La primera sincronización descarga herramientas y un Python compatible en el directorio de datos de la aplicación.',
     formatUnsupported:
@@ -813,8 +764,7 @@ const editorMessages = {
     extras: 'Extras (separados por vírgulas)',
     marker: 'Condição de ambiente',
     fullDeclaration: 'Declaração completa',
-    notChecked:
-      'Ainda não verificado. Verifique as dependências transitivas e as restrições do Market.',
+    notChecked: 'Ainda não verificado.',
     setupRequired:
       'A primeira sincronização baixa ferramentas e um Python compatível no diretório de dados do aplicativo.',
     formatUnsupported:
@@ -831,7 +781,6 @@ const findingMessages = {
     pythonVersionMismatch: 'This package requires a different Python version.',
     dependencyMissing: 'A related dependency is missing.',
     dependencyVersionMismatch: 'A related dependency has an incompatible version.',
-    marketProhibited: 'This file is prohibited by the current Market publishing rules.',
     unknownIssue: 'A dependency issue needs attention.',
   },
   'zh-CN': {
@@ -839,7 +788,6 @@ const findingMessages = {
     pythonVersionMismatch: '此软件包要求其他 Python 版本。',
     dependencyMissing: '缺少关联依赖。',
     dependencyVersionMismatch: '关联依赖版本不满足要求。',
-    marketProhibited: '当前 Market 发布规则禁止此文件。',
     unknownIssue: '发现需要处理的依赖问题。',
   },
   'zh-TW': {
@@ -847,7 +795,6 @@ const findingMessages = {
     pythonVersionMismatch: '此套件需要其他 Python 版本。',
     dependencyMissing: '缺少關聯依賴。',
     dependencyVersionMismatch: '關聯依賴版本不符。',
-    marketProhibited: '目前 Market 發佈規則禁止此檔案。',
     unknownIssue: '發現需要處理的依賴問題。',
   },
   ja: {
@@ -855,7 +802,6 @@ const findingMessages = {
     pythonVersionMismatch: 'このパッケージには別の Python バージョンが必要です。',
     dependencyMissing: '関連する依存関係がありません。',
     dependencyVersionMismatch: '関連する依存関係のバージョンが一致しません。',
-    marketProhibited: 'このファイルは現在の Market 公開規則で禁止されています。',
     unknownIssue: '対応が必要な依存関係の問題があります。',
   },
   ko: {
@@ -863,7 +809,6 @@ const findingMessages = {
     pythonVersionMismatch: '이 패키지는 다른 Python 버전이 필요합니다.',
     dependencyMissing: '관련 의존성이 없습니다.',
     dependencyVersionMismatch: '관련 의존성의 버전이 맞지 않습니다.',
-    marketProhibited: '현재 Market 게시 규칙에서 금지하는 파일입니다.',
     unknownIssue: '확인이 필요한 의존성 문제가 있습니다.',
   },
   ru: {
@@ -871,7 +816,6 @@ const findingMessages = {
     pythonVersionMismatch: 'Пакет требует другую версию Python.',
     dependencyMissing: 'Отсутствует связанная зависимость.',
     dependencyVersionMismatch: 'Версия связанной зависимости несовместима.',
-    marketProhibited: 'Этот файл запрещён текущими правилами публикации Market.',
     unknownIssue: 'Обнаружена проблема с зависимостями.',
   },
   es: {
@@ -879,7 +823,6 @@ const findingMessages = {
     pythonVersionMismatch: 'Este paquete requiere otra versión de Python.',
     dependencyMissing: 'Falta una dependencia relacionada.',
     dependencyVersionMismatch: 'La versión de una dependencia relacionada no es compatible.',
-    marketProhibited: 'Las reglas actuales de publicación de Market prohíben este archivo.',
     unknownIssue: 'Hay un problema de dependencias que requiere atención.',
   },
   pt: {
@@ -887,7 +830,6 @@ const findingMessages = {
     pythonVersionMismatch: 'Este pacote exige outra versão de Python.',
     dependencyMissing: 'Falta uma dependência relacionada.',
     dependencyVersionMismatch: 'A versão de uma dependência relacionada é incompatível.',
-    marketProhibited: 'As regras atuais de publicação do Market proíbem este arquivo.',
     unknownIssue: 'Há um problema de dependências que requer atenção.',
   },
 }

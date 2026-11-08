@@ -1,6 +1,5 @@
 <template>
   <div class="python-packages" data-testid="project-dependencies">
-    <p class="authoring-muted">{{ t('pythonPackages.hint') }}</p>
     <el-alert v-if="error" :title="errorText" type="error" :closable="false" show-icon>
       <details v-if="diagnostic" class="authoring-diagnostic">
         <summary>{{ t('pythonPackages.technical') }}</summary>
@@ -74,7 +73,6 @@
           t('common.refresh')
         }}</el-button>
       </div>
-      <p class="authoring-muted authoring-small">{{ t('pythonPackages.syncHint') }}</p>
       <section class="authoring-details-panel">
         <h3>{{ t('pythonPackages.requirements') }} ({{ draft.length }})</h3>
         <p v-if="!draft.length" class="authoring-muted">{{ t('pythonPackages.noRequirements') }}</p>
@@ -203,21 +201,9 @@
       </section>
       <section class="authoring-details-panel">
         <h3>{{ t('pythonPackages.checks') }}</h3>
-        <p class="authoring-small authoring-muted">{{ t('pythonPackages.metadataNote') }}</p>
         <ul v-if="inspection.issues.length">
           <li v-for="(issue, index) in inspection.issues" :key="index">
             {{ issueLabel(issue) }} <code>{{ issue.package }} {{ issue.requirement }}</code>
-            <details v-if="issue.message">
-              <summary>{{ t('pythonPackages.technical') }}</summary>
-              <pre>{{ issue.message }}</pre>
-            </details>
-          </li>
-        </ul>
-        <p v-else>{{ t(checked ? 'pythonPackages.noFindings' : 'pythonPackages.notChecked') }}</p>
-        <h4>{{ t('pythonPackages.market') }}</h4>
-        <ul v-if="inspection.market_issues.length">
-          <li v-for="(issue, index) in inspection.market_issues" :key="index">
-            {{ issueLabel(issue) }} <code>{{ issue.path }}</code>
             <details v-if="issue.message">
               <summary>{{ t('pythonPackages.technical') }}</summary>
               <pre>{{ issue.message }}</pre>
@@ -473,7 +459,6 @@ function issueLabel(issue: PythonPackageIssue) {
     python_version_mismatch: 'pythonVersionMismatch',
     dependency_missing: 'dependencyMissing',
     dependency_version_mismatch: 'dependencyVersionMismatch',
-    market_prohibited_file: 'marketProhibited',
   }
   return t(
     'pythonPackages.' + (Object.hasOwn(keys, issue.code) ? keys[issue.code] : 'unknownIssue')

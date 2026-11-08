@@ -341,8 +341,13 @@ describe('project dependency management', () => {
           result: {
             after: {
               ...state(),
-              market_issues: [
-                { code: 'NATIVE', message: 'Native extension detected', path: 'lib.so' },
+              issues: [
+                {
+                  code: 'dependency_missing',
+                  package: 'httpx',
+                  requirement: 'missing-lib>=1',
+                  message: 'Required package is missing',
+                },
               ],
             },
             changes: [],
@@ -351,7 +356,7 @@ describe('project dependency management', () => {
       })
     )
     await click('Refresh')
-    expect(document.body.textContent).toContain('Native extension detected')
+    expect(document.body.textContent).toContain('Required package is missing')
     api.getProjectPythonPackages.mockResolvedValue(
       state({
         revision: 'r2',

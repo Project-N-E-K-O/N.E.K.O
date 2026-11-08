@@ -195,7 +195,7 @@ appearanceTest(
       0
     )
     await panel.getByRole('button', { name: 'Check dependencies', exact: true }).click()
-    await expect(panel.getByText('vendor/native.so', { exact: true })).toBeVisible()
+    await expect(panel.getByText('vendor/native.so', { exact: true })).toHaveCount(0)
     await expect(panel.getByText(/missing-child>=1/).first()).toBeVisible()
     expect(requests).toEqual(['save', 'check'])
     await page.screenshot({ path: '/tmp/neko-dependencies-desktop.png', fullPage: true })
@@ -217,7 +217,7 @@ appearanceTest(
     await panel.getByPlaceholder('Search installed packages').fill('related')
     await expect(panel.locator('.python-package-details')).toHaveCount(1)
     await sync.click()
-    await expect(panel.getByText('vendor/native.so', { exact: true })).toBeVisible()
+    await expect(panel.getByText(/missing-child>=1/).first()).toBeVisible()
     await expect
       .poll(() =>
         panel.evaluate((element) => {
