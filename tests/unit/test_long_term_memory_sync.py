@@ -1868,6 +1868,22 @@ def test_first_import_counts_the_facts_the_snapshot_carries():
     assert 'fact_source_counts' not in next(row for row in kept if row['id'] == 'ai-only')
 
 
+def test_first_import_counts_a_retained_local_upgrade_as_the_users_fact():
+    """A pending local upgrade outlives the import, so the older remote label must not count."""
+    from memory.evidence import awaits_user_signal
+    fact = {'id': 'f1', 'text': 'likes tea', 'entity': 'neko', 'source': 'ai_disclosure', 'hash': 'x', 'created_at': '2026-10-01T00:00:00'}
+    views = {'persona': {}, 'facts': [fact], 'archive': [], 'reflections': []}
+    baseline = export_document(views, 3000)
+    incoming = deepcopy(baseline)
+    incoming['entries'].append({'kind': 'reflection', 'subject': 'neko', 'id': 'r1', 'text': 'new line',
+                                'metadata': {'createdAt': 1000, 'status': 'pending', 'sourceFactIds': ['f1']}})
+    existing = {**views, 'facts': [{**fact, 'source': 'user_observation'}]}
+    result = import_document(incoming, existing, baseline=baseline['entries'])
+    assert result['facts'][0]['source'] == 'user_observation'
+    assert result['reflections'][0]['fact_source_counts'] == {'user': 1, 'ai': 0}
+    assert not awaits_user_signal(result['reflections'][0])
+
+
 def test_dropped_citations_stay_dropped_after_a_reimport():
     """A source upgrade without a citation removes the character lines as proof;
     the copy kept from the import must not publish them under the user's source."""

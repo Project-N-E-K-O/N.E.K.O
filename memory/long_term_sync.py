@@ -485,6 +485,9 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None, 
                  and (not isinstance(row.get('id'), str)
                       or (row.get('entity'), row.get('id')) not in incoming_reflections)))]
     incoming_fact_sources = {row['id']: _incoming_fact_source(row) for row in incoming['entries'] if row['kind'] == 'fact'}
+    # Local edits still pending stay after this import, so their source is the one that holds.
+    incoming_fact_sources.update({row['id']: row.get('source') for row in result['facts'] + result['archive']
+                                  if isinstance(row, dict) and row.get('id') and private(row)})
     for row in incoming['entries']:
         kind, subject, meta = row['kind'], row['subject'], row['metadata']
         if (kind, subject, row['id']) in pending or (kind, subject, row['id']) in locally_retired:
