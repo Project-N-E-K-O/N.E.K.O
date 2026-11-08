@@ -287,7 +287,7 @@ async function mount() {
 }
 
 function buttons(text: string) {
-  return [...document.querySelectorAll('button')].filter(
+  return [...document.querySelectorAll<HTMLElement>('button, a.el-button')].filter(
     (element) => element.textContent?.trim() === text
   )
 }
@@ -1468,6 +1468,11 @@ it.each([
   await mount()
   switchLocale(language)
   await flush()
+  const link = buttons(authoringMessages[language].help)[0] as HTMLAnchorElement
+  expect(link.tagName).toBe('A')
+  expect(link.href).toBe(url)
+  expect(link.target).toBe('_blank')
+  expect(link.rel).toBe('noopener noreferrer')
   await click(authoringMessages[language].help)
   expect(open).toHaveBeenCalledExactlyOnceWith(url, '_blank', 'noopener,noreferrer')
   expect(document.querySelector('.el-drawer')).toBeNull()
@@ -1479,6 +1484,9 @@ it('uses the newly applied locale when the tutorial is opened again', async () =
   await click(en.help)
   switchLocale('ja')
   await flush()
+  expect((buttons(authoringMessages.ja.help)[0] as HTMLAnchorElement).href).toBe(
+    'https://project-neko.online/ja/plugins/'
+  )
   await click(authoringMessages.ja.help)
   expect(open.mock.calls.map(([url]) => url)).toEqual([
     'https://project-neko.online/plugins/',

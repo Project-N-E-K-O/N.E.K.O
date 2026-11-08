@@ -51,7 +51,14 @@
               >
             </template>
             <template v-else-if="!requestedProject">
-              <el-button :icon="Reading" @click="openTutorial">{{
+              <el-button
+                tag="a"
+                :href="tutorialUrl"
+                target="_blank"
+                rel="noopener noreferrer"
+                :icon="Reading"
+                @click.prevent="openExternalUrl(tutorialUrl)"
+              >{{
                 t('authoring.help')
               }}</el-button>
               <el-button :icon="FolderAdd" :disabled="busy" @click="addExisting">{{
@@ -162,6 +169,15 @@ const current = computed(() =>
 const headerTitle = computed(() =>
   current.value ? projectTitle(current.value) : t('authoring.title')
 )
+const tutorialUrl = computed(() => {
+  // The docs currently provide Chinese, Japanese and English (at the root).
+  const prefix = ['zh-CN', 'zh-TW'].includes(locale.value)
+    ? '/zh-CN'
+    : locale.value === 'ja'
+      ? '/ja'
+      : ''
+  return `https://project-neko.online${prefix}/plugins/`
+})
 const activeTab = ref('overview')
 const createVisible = ref(false)
 const busy = ref(false)
@@ -184,15 +200,6 @@ function openProject(projectId: string) {
 }
 function goHome() {
   void router.push({ path: '/workbench' })
-}
-function openTutorial() {
-  // The docs currently provide Chinese, Japanese and English (at the root).
-  const prefix = ['zh-CN', 'zh-TW'].includes(locale.value)
-    ? '/zh-CN'
-    : locale.value === 'ja'
-      ? '/ja'
-      : ''
-  openExternalUrl(`https://project-neko.online${prefix}/plugins/`)
 }
 function onProjectUpdated(updated: AuthoringProject) {
   projects.value = projects.value.map((project) =>
