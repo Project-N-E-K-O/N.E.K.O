@@ -191,6 +191,11 @@ async def test_scoped_run_reviews_one_subject_and_keeps_the_stamp(tmp_path):
         )
 
     assert result.applied == 3
+    # What the model was shown, line by line (the scheduler compares it
+    # with the store to tell whether the review saw everything).
+    assert ("reflection", "g1", "群里成为了大家的庇护所") in result.shown
+    assert ("persona", "p1", "群里周五一起打游戏") in result.shown
+    assert not any(entry_id in ("o1", "q1", "c1", "m1") for _k, entry_id, _t in result.shown)
     prompt = fake.prompts[0]
     assert "self_words" in prompt and "self_rule" not in prompt
     assert "主人" not in prompt, "群聊自省不提私聊用户"
@@ -366,6 +371,15 @@ async def _scoped_tick_env(tmp_path, maint_state, monkeypatch, run):
     return env
 
 
+async def _saw_everything(*_a, subject, **_kw):
+    """A completed review that was shown every line of the subject."""
+    from app.memory_server.refine_loops import _scoped_introspection_contents
+    from memory import introspection
+
+    entries = {s.key: e for s, _fp, e in await _scoped_introspection_contents(NAME)}
+    return introspection.IntrospectionResult(rounds=1, shown=set(entries[subject.key]))
+
+
 async def _add_impression(env, rid: str, subject=GROUP) -> None:
     rows = await env.engine._aload_reflections_full(NAME)
     rows.append(env.engine._normalize_reflection({
@@ -456,9 +470,8 @@ async def test_tick_reviews_a_scoped_subject_once_its_content_changes(
     tmp_path, maint_state, monkeypatch,
 ):
     from app.memory_server import refine_loops
-    from memory import introspection
 
-    run = AsyncMock(return_value=introspection.IntrospectionResult(rounds=1))
+    run = AsyncMock(side_effect=_saw_everything)
     env = await _scoped_tick_env(tmp_path, maint_state, monkeypatch, run)
 
     # The private review is not due: only scoped subjects remain.
@@ -496,7 +509,7 @@ async def test_unreadable_memory_keeps_the_other_subjects_state(maint_state, mon
     other = refine_loops._scoped_introspection_state_key(OTHER_GROUP)
     maint_state._maint_state.setdefault(NAME, {})[other] = json.dumps({"at": "t0", "fp": "fp0"})
     monkeypatch.setattr(
-        refine_loops, "_scoped_introspection_subjects",
+        refine_loops, "_scoped_introspection_contents",
         AsyncMock(side_effect=OSError("busy")),
     )
     await refine_loops._astamp_scoped_introspection(
@@ -505,3 +518,54 @@ async def test_unreadable_memory_keeps_the_other_subjects_state(maint_state, mon
     state = maint_state._maint_state[NAME]
     assert json.loads(state[other]) == {"at": "t0", "fp": "fp0"}
     assert json.loads(state[refine_loops._scoped_introspection_state_key(GROUP)])["fp"] == "fp1"
+
+
+@pytest.mark.asyncio
+async def test_a_line_the_review_did_not_see_is_checked_next_week(
+    tmp_path, maint_state, monkeypatch,
+):
+    """An impression in mention cooldown is not in the injected block, so
+    the review never saw it; when the cooldown ends nothing in the store
+    has to change, yet it must still be checked: the subject is due again
+    a week later even with the same content."""
+    from app.memory_server import refine_loops
+    from memory.introspection import RenderAnnotator, arender_scoped_injected_memory
+
+    holder = {}
+
+    async def _real_view(*_a, subject, **_kw):
+        # What the model is shown: the numbered render of this subject.
+        annotator = RenderAnnotator(mark_persona=True)
+        await arender_scoped_injected_memory(
+            holder["env"].pm, holder["env"].engine, NAME, [subject], annotator=annotator,
+        )
+        from memory import introspection
+
+        return introspection.IntrospectionResult(rounds=1, shown={
+            (line.kind, line.entry_id, line.text) for line in annotator.lines.values()
+        })
+
+    env = await _scoped_tick_env(tmp_path, maint_state, monkeypatch, _real_view)
+    holder["env"] = env
+    rows = await env.engine._aload_reflections_full(NAME)
+    for row in rows:
+        if row["id"] == "g2":
+            row["suppress"] = True
+            row["suppressed_at"] = _now_iso()
+    await env.engine.asave_reflections(NAME, rows)
+
+    await refine_loops._run_scoped_introspection_for_subject(NAME, GROUP)
+    state = _week_later(maint_state, GROUP)
+    assert state.get("partial") is True
+    assert refine_loops._scoped_introspection_due(
+        maint_state._maint_view(NAME), GROUP, await _fingerprint(GROUP), datetime.now(),
+    ), "没看到的印象（冷却中、被预算挤掉）下周还要查"
+
+    # Shown everything: a week later with the same content, nothing to do.
+    await refine_loops._run_scoped_introspection_for_subject(NAME, OTHER_GROUP)
+    state = _week_later(maint_state, OTHER_GROUP)
+    assert "partial" not in state
+    assert not refine_loops._scoped_introspection_due(
+        maint_state._maint_view(NAME), OTHER_GROUP,
+        await _fingerprint(OTHER_GROUP), datetime.now(),
+    )

@@ -485,6 +485,11 @@ class IntrospectionResult:
     # week); see classify_model_failure.
     failure: str | None = None
     failure_reason: str = ''
+    # ``(kind, entry_id, text)`` of every numbered line some round showed the
+    # model in full: what the review actually saw. A line in mention
+    # cooldown, outside the render budget or cut by the input budget is not
+    # in it.
+    shown: set = field(default_factory=set)
 
     @property
     def completed(self) -> bool:
@@ -681,6 +686,9 @@ async def arun_introspection(
         prompt, shown_lines = _build_prompt(
             memory_text, ai_name=name, master_name=master_name,
             lines=annotator.lines, scoped=scoped,
+        )
+        result.shown.update(
+            (line.kind, line.entry_id, line.text) for line in shown_lines.values()
         )
         try:
             raw_actions, ran_out = await _ainvoke(

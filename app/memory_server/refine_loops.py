@@ -686,11 +686,13 @@ async def _run_introspection_for_character(character: str) -> None:
 #
 # One state value per subject in the character's maintenance map, a JSON
 # string (the map holds scalars only): when its last review ended ("at"), a
-# fingerprint of the content that review was given ("fp"), and the
-# transient-failure count and time ("n", "fail_at"). A subject is due when it
-# was never reviewed, or a week has passed since and its content differs from
-# what was reviewed (new impressions, a promotion, a merge, or the review's own
-# edits, which are checked once more); same retry ladder as the private
+# fingerprint of the content that review was given ("fp"), whether the model
+# was shown only part of it ("partial"), and the transient-failure count and
+# time ("n", "fail_at"). A subject is due when it was never reviewed, or a
+# week has passed since and its content differs from what was reviewed (new
+# impressions, a promotion, a merge, or the review's own edits, which are
+# checked once more) or the review did not see all of it (a line in mention
+# cooldown, outside the render budget); same retry ladder as the private
 # review. A review that did not complete records no fingerprint, so the next
 # week reviews the subject whatever its content.
 
@@ -714,9 +716,21 @@ def _scoped_introspection_state(view, key: str) -> dict:
 
 async def _scoped_introspection_subjects(name: str) -> list[tuple]:
     """``(subject, content fingerprint)`` of every scoped subject with
-    reviewable memory: active impressions and editable persona lines,
-    retired ones left out. An archived subject's rows have moved out of
-    both stores, so it does not appear."""
+    reviewable memory; see ``_scoped_introspection_contents``."""
+    return [
+        (subject, fingerprint)
+        for subject, fingerprint, _entries in await _scoped_introspection_contents(name)
+    ]
+
+
+async def _scoped_introspection_contents(name: str) -> list[tuple]:
+    """``(subject, content fingerprint, entries)`` of every scoped subject
+    with reviewable memory: active impressions and editable persona lines,
+    retired ones left out. ``entries`` holds ``(kind, id, text)`` as the
+    review's numbered lines name them (``IntrospectionResult.shown``). An
+    archived subject's rows have moved out of both stores, so it does not
+    appear."""
+    from memory.introspection import KIND_PERSONA, KIND_REFLECTION
     from memory.introspection import is_permanently_suppressed
     from memory.scopes import SCOPED_PERSONA_PREFIX, subject_from_entry
 
@@ -732,10 +746,14 @@ async def _scoped_introspection_subjects(name: str) -> list[tuple]:
         subject = subject_from_entry(entry)
         if subject is None:
             return
-        _subject, lines = content.setdefault(
-            (subject.key, subject.scope), (subject, []),
+        _subject, lines, entries = content.setdefault(
+            (subject.key, subject.scope), (subject, [], set()),
         )
         lines.append(f"{kind}:{entry.get('id')}:{entry.get('text')}")
+        entries.add((
+            KIND_PERSONA if kind == 'p' else KIND_REFLECTION,
+            str(entry.get('id') or ''), str(entry.get('text') or ''),
+        ))
 
     for section_key, section in (persona or {}).items():
         if not (
@@ -761,8 +779,9 @@ async def _scoped_introspection_subjects(name: str) -> list[tuple]:
         (
             subject,
             hashlib.sha256("\n".join(sorted(lines)).encode('utf-8')).hexdigest()[:16],
+            frozenset(entries),
         )
-        for subject, lines in content.values()
+        for subject, lines, entries in content.values()
     ]
 
 
@@ -776,7 +795,7 @@ def _scoped_introspection_due(view, subject, fingerprint: str, now: datetime) ->
     last_run = _parse_maint_time(state.get('at'), now)
     if last_run is not None and (
         (now - last_run).total_seconds() < MEMORY_INTROSPECTION_INTERVAL_SECONDS
-        or state.get('fp') == fingerprint
+        or (state.get('fp') == fingerprint and not state.get('partial'))
     ):
         return False
     try:
@@ -816,6 +835,7 @@ async def _next_scoped_introspection_subject(name: str, now: datetime):
 def _mutate_scoped_introspection(
     key: str, stamp: str, fingerprint: str | None, transient_failure: bool,
     max_retries: int, live_keys: frozenset | None, state: dict,
+    partial: bool = False,
 ) -> tuple[bool, bool]:
     """Mutator: record how one subject's review ended; returns whether a
     transient failure used up the retries. ``fingerprint`` is the content
@@ -845,29 +865,36 @@ def _mutate_scoped_introspection(
         gave_up = True
         # Not reviewed: wait for next week, then review whatever is there.
         fingerprint = None
-    state[key] = json.dumps({'at': stamp, 'fp': fingerprint}, ensure_ascii=False)
+    record = {'at': stamp, 'fp': fingerprint}
+    if partial and fingerprint is not None:
+        record['partial'] = True
+    state[key] = json.dumps(record, ensure_ascii=False)
     return True, gave_up
 
 
 async def _ascoped_introspection_fingerprints(name: str) -> dict | None:
-    """``state key -> content fingerprint`` of every reviewable subject;
-    None when the memory could not be read."""
+    """``state key -> (content fingerprint, entries)`` of every reviewable
+    subject; None when the memory could not be read."""
     try:
-        subjects = await _scoped_introspection_subjects(name)
+        contents = await _scoped_introspection_contents(name)
     except Exception as e:  # noqa: BLE001
         logger.debug(f"[Introspection] {name}: 读取群聊记忆失败: {e}")
         return None
-    return {_scoped_introspection_state_key(s): fp for s, fp in subjects}
+    return {
+        _scoped_introspection_state_key(s): (fp, entries)
+        for s, fp, entries in contents
+    }
 
 
 async def _astamp_scoped_introspection(
     name: str, subject, *, transient_failure: bool,
-    reviewed_fingerprint: str | None,
+    reviewed_fingerprint: str | None, partial: bool = False,
 ) -> bool:
     """Record how a review ended. ``reviewed_fingerprint`` is the content
     the review started from, taken before it ran, never re-read afterwards:
     an impression written while the model was answering was not shown to it
-    and must still count as new."""
+    and must still count as new. ``partial``: some of that content never
+    reached the model."""
     from config import MEMORY_INTROSPECTION_RETRY_BACKOFF_SECONDS
 
     fingerprints = await _ascoped_introspection_fingerprints(name)
@@ -879,6 +906,7 @@ async def _astamp_scoped_introspection(
             _mutate_scoped_introspection, key, datetime.now().isoformat(),
             reviewed_fingerprint, transient_failure,
             len(MEMORY_INTROSPECTION_RETRY_BACKOFF_SECONDS), live_keys,
+            partial=partial,
         ),
     )
 
@@ -903,9 +931,9 @@ async def _run_scoped_introspection_for_subject(character: str, subject) -> None
             f"解析失败，使用角色 locale: {locale_error}"
         )
     # What the review is given, fixed before it runs (see _astamp_scoped_introspection).
-    before = (await _ascoped_introspection_fingerprints(character) or {}).get(
-        _scoped_introspection_state_key(subject),
-    )
+    before, before_entries = (
+        await _ascoped_introspection_fingerprints(character) or {}
+    ).get(_scoped_introspection_state_key(subject), (None, frozenset()))
     try:
         with language_context(selected_locale) if selected_locale else nullcontext():
             result = await arun_introspection(
@@ -924,8 +952,11 @@ async def _run_scoped_introspection_for_subject(character: str, subject) -> None
     gave_up = await _astamp_scoped_introspection(
         character, subject,
         transient_failure=result.failure == FAILURE_TRANSIENT,
-        # Only a completed review counts as having seen the content.
+        # Only a completed review counts as having seen the content, and
+        # only what it was shown: a line in mention cooldown or outside the
+        # render budget is checked again next week.
         reviewed_fingerprint=before if result.completed else None,
+        partial=bool(before_entries - result.shown),
     )
     logger.info(
         f"[Introspection] {character} [{subject.kind}/{subject.subject_id}]: 结束 "
