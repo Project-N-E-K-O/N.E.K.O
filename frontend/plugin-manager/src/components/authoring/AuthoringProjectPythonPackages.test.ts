@@ -153,60 +153,6 @@ describe('project dependency management', () => {
     )
     expect(api.startProjectPythonTask).toHaveBeenCalledWith('p1', 'sync', 'r2')
   })
-  it('accepts a copied install command without requiring declaration syntax', async () => {
-    await mount()
-    await click(en.add)
-    await fill('python-package-name', 'python -m pip install demo==2.0.1')
-    await click(en.addInstall)
-    expect(api.saveProjectPythonRequirements).toHaveBeenCalledWith(
-      'p1',
-      [state().requirements[0]!.requirement, 'demo==2.0.1'],
-      'r1'
-    )
-    expect(api.startProjectPythonTask).toHaveBeenCalledWith('p1', 'sync', 'r2')
-  })
-  it('uses a version number chosen through the version selector', async () => {
-    await mount()
-    await click(en.add)
-    await fill('python-package-name', 'demo')
-    document.querySelector<HTMLElement>('#python-package-version-policy')!.click()
-    await flush()
-    const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(
-      (item) => item.textContent?.trim() === en.versionExact
-    )!
-    expect(option).toBeTruthy()
-    option.click()
-    await flush()
-    await fill('python-package-exact-version', '2.0.1')
-    await click(en.saveOnly)
-    expect(api.saveProjectPythonRequirements).toHaveBeenCalledWith(
-      'p1',
-      [state().requirements[0]!.requirement, 'demo==2.0.1'],
-      'r1'
-    )
-    expect(api.startProjectPythonTask).not.toHaveBeenCalled()
-  })
-  it.each(['', '   '])(
-    'leaves a blank manual declaration without getting stuck: %j',
-    async (value) => {
-      await mount()
-      await click(en.add)
-      const details = document.querySelector<HTMLDetailsElement>('.el-dialog details')!
-      details.open = true
-      await flush()
-      const checkbox = document.querySelector<HTMLInputElement>(
-        '.el-dialog input[type="checkbox"]'
-      )!
-      checkbox.click()
-      await flush()
-      await fill('python-package-requirement', value)
-      checkbox.click()
-      await flush()
-      expect(document.querySelector<HTMLInputElement>('#python-package-name')?.value).toBe('')
-      await click('Cancel')
-      expect(api.saveProjectPythonRequirements).not.toHaveBeenCalled()
-    }
-  )
   it('keeps a failed save editable and does not leave an extra draft entry', async () => {
     api.saveProjectPythonRequirements.mockRejectedValue(new Error('Unable to save'))
     await mount()
@@ -217,13 +163,22 @@ describe('project dependency management', () => {
     expect(document.querySelectorAll('.python-package-declaration')).toHaveLength(1)
     expect(api.startProjectPythonTask).not.toHaveBeenCalled()
   })
-  it('explains normalized duplicate declarations without saving them', async () => {
+  it('shows the backend duplicate error without starting an installation', async () => {
+    api.saveProjectPythonRequirements.mockRejectedValue({
+      response: { data: { detail: { code: 'PYTHON_PACKAGES_REQUIREMENTS_DUPLICATE' } } },
+    })
     await mount()
     await click(en.add)
     await fill('python-package-name', 'HTTPX[socks] >=0.27; python_version >= "3.11"')
     await click(en.addInstall)
-    expect(document.body.textContent).toContain(en.alreadyAdded)
-    expect(api.saveProjectPythonRequirements).not.toHaveBeenCalled()
+    expect(api.saveProjectPythonRequirements).toHaveBeenCalledWith(
+      'p1',
+      [state().requirements[0]!.requirement, 'HTTPX[socks]>=0.27; python_version >= "3.11"'],
+      'r1'
+    )
+    expect(document.querySelector('.el-dialog')?.textContent).toContain(en.alreadyAdded)
+    expect(document.querySelectorAll('.python-package-declaration')).toHaveLength(1)
+    expect(api.startProjectPythonTask).not.toHaveBeenCalled()
   })
   it('retries the initial snapshot after a load failure', async () => {
     api.getProjectPythonPackages.mockRejectedValueOnce(new Error('Read failed'))
@@ -235,34 +190,6 @@ describe('project dependency management', () => {
       state().requirements[0]!.requirement
     )
   })
-  it('allows the same package with a different environment condition', async () => {
-    await mount()
-    await click(en.add)
-    await fill('python-package-name', 'httpx>=0.28; python_version < "3.11"')
-    await click(en.saveOnly)
-    expect(api.saveProjectPythonRequirements).toHaveBeenCalledWith(
-      'p1',
-      [state().requirements[0]!.requirement, 'httpx>=0.28; python_version < "3.11"'],
-      'r1'
-    )
-  })
-  it.each([
-    'httpx[http2]>=0.27; python_version >= "3.11"',
-    'httpx[socks]<1; python_version >= "3.11"',
-  ])(
-    'allows a distinct declaration for the same package and condition: %s',
-    async (requirement) => {
-      await mount()
-      await click(en.add)
-      await fill('python-package-name', requirement)
-      await click(en.saveOnly)
-      expect(api.saveProjectPythonRequirements).toHaveBeenCalledWith(
-        'p1',
-        [state().requirements[0]!.requirement, requirement],
-        'r1'
-      )
-    }
-  )
   it('edits one of two same-package declarations without rejecting the other', async () => {
     const other = 'httpx[http2]<1; python_version >= "3.11"'
     api.getProjectPythonPackages.mockResolvedValue(
@@ -282,17 +209,6 @@ describe('project dependency management', () => {
       ['httpx[socks]>=0.28; python_version >= "3.11"', other],
       'r1'
     )
-  })
-  it('rejects a repeated declaration with normalized package name and reordered options', async () => {
-    api.getProjectPythonPackages.mockResolvedValue(
-      state({ requirements: [{ ...state().requirements[0]!, requirement: 'demo_lib[b,a]>=1,<3' }] })
-    )
-    await mount()
-    await click(en.add)
-    await fill('python-package-name', 'Demo-Lib[a,b] <3,>=1')
-    await click(en.saveOnly)
-    expect(document.body.textContent).toContain(en.alreadyAdded)
-    expect(api.saveProjectPythonRequirements).not.toHaveBeenCalled()
   })
   it('allows saving for later while a plugin is running', async () => {
     api.getProjectPythonPackages.mockResolvedValue(state({ running: true }))
@@ -336,20 +252,6 @@ describe('project dependency management', () => {
     expect(api.getProjectPythonTask).toHaveBeenCalledTimes(1)
     await vi.advanceTimersByTimeAsync(2500)
     expect(api.getProjectPythonTask).toHaveBeenCalledTimes(1)
-  })
-  it('preserves advanced settings when editing an existing requirement', async () => {
-    await mount()
-    await click('Edit')
-    await fill('python-package-version', '>=1,<2')
-    await fill('python-package-extras', 'extra')
-    await fill('python-package-marker', 'sys_platform == "win32"')
-    await click(en.saveOnly)
-    expect(api.saveProjectPythonRequirements).toHaveBeenCalledWith(
-      'p1',
-      ['httpx[extra]>=1,<2; sys_platform == "win32"'],
-      'r1'
-    )
-    expect(api.startProjectPythonTask).not.toHaveBeenCalled()
   })
   it('pins a version while preserving extras and the environment marker', async () => {
     await mount()

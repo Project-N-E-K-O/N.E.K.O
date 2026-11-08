@@ -342,21 +342,18 @@ def test_save_refuses_to_replace_a_symlinked_pyproject(tmp_path):
 
 
 def test_save_refuses_a_project_replaced_while_acquiring_its_lock(tmp_path, monkeypatch):
-    from contextlib import contextmanager
-    from plugin.neko_plugin_cli.core import python_packages
-
     project = _project(tmp_path, '[project]\ndependencies = ["old"]\n')
     revision = inspect_python_packages(project)["revision"]
     moved = tmp_path / "moved"
+    real_lock = vendor_sync.portalocker.Lock
 
-    @contextmanager
-    def lock(directory):
-        directory.rename(moved)
-        directory.mkdir()
-        (directory / "pyproject.toml").write_bytes((moved / "pyproject.toml").read_bytes())
-        yield
+    def lock(*args, **kwargs):
+        project.rename(moved)
+        project.mkdir()
+        (project / "pyproject.toml").write_bytes((moved / "pyproject.toml").read_bytes())
+        return real_lock(*args, **kwargs)
 
-    monkeypatch.setattr(python_packages, "dependency_lock", lock)
+    monkeypatch.setattr(vendor_sync.portalocker, "Lock", lock)
     with pytest.raises(PythonPackagesError) as error:
         save_python_requirements(project, ["new"], revision)
     assert error.value.code == "PYTHON_PACKAGES_REVISION_CONFLICT"
@@ -387,13 +384,14 @@ def test_save_rechecks_external_editor_changes_after_staging(tmp_path, monkeypat
 @pytest.mark.parametrize("declarations", [
     ["demo_lib>=1", "Demo-Lib>=1"],
     ["demo[extra_feature]>=1", "Demo[EXTRA.Feature]>=1"],
+    ["demo_lib[b,a]>=1,<3", "Demo-Lib[a,b] <3,>=1"],
 ])
 def test_save_rejects_normalized_duplicate_distribution_names_and_extras(tmp_path, declarations):
     project = _project(tmp_path, '[project]\ndependencies = []\n')
     original = (project / "pyproject.toml").read_bytes()
     with pytest.raises(PythonPackagesError) as error:
         save_python_requirements(project, declarations, inspect_python_packages(project)["revision"])
-    assert error.value.code == "PYTHON_PACKAGES_REQUIREMENTS_INVALID"
+    assert error.value.code == "PYTHON_PACKAGES_REQUIREMENTS_DUPLICATE"
     assert (project / "pyproject.toml").read_bytes() == original
 
 

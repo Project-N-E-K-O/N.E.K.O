@@ -25,7 +25,7 @@ from plugin.core.python_dependencies import (
 
 from .python_package_graph import build_dependency_graph, requirement_applies, requirement_status
 from .toml_utils import tomllib
-from .vendor_sync import _lock_identity, dependency_lock, pyproject_revision, read_pyproject_bytes
+from .vendor_sync import DependencyDirectoryChanged, dependency_lock, pyproject_revision, read_pyproject_bytes
 
 
 class PythonPackagesError(ValueError):
@@ -165,16 +165,19 @@ _PROJECT_HEADER = re.compile(r"(?m)^[ \t]*\[[ \t]*(?:project|\"project\"|'projec
 _DEPENDENCIES_KEY = re.compile(r"(?m)^[ \t]*(?:dependencies|\"dependencies\"|'dependencies')[ \t]*=[ \t]*")
 
 
-def _array_end(text: str, start: int) -> int:
-    """Locate an already-validated TOML array without interpreting its strings."""
+def _scan_dependency_array(text: str, start: int) -> tuple[int, list[str]]:
+    """Locate a validated TOML array and retain comments outside its strings."""
     if start >= len(text) or text[start] != "[":
         raise PythonPackagesError("PYTHON_PACKAGES_FORMAT_UNSUPPORTED", "dependencies must use an array assignment")
+    comments: list[str] = []
     pos = start + 1
     while pos < len(text):
         char = text[pos]
         if char == "#":
             end = text.find("\n", pos)
-            pos = len(text) if end == -1 else end + 1
+            end = len(text) if end == -1 else end
+            comments.append(text[pos:end].rstrip("\r"))
+            pos = end
         elif char in "\"'":
             quote = char * (3 if text.startswith(char * 3, pos) else 1)
             pos += len(quote)
@@ -187,7 +190,7 @@ def _array_end(text: str, start: int) -> int:
                 else:
                     pos += 1
         elif char == "]":
-            return pos + 1
+            return pos + 1, comments
         else:
             pos += 1
     raise PythonPackagesError("PYTHON_PACKAGES_FORMAT_UNSUPPORTED", "Cannot locate the dependencies array")
@@ -205,10 +208,8 @@ def _edit_requirements(text: str, data: dict, requirements: list[str]) -> str:
         match = _DEPENDENCIES_KEY.search(text, header.end())
         if match and (next_table is None or match.start() < header.end() + next_table.start()):
             start = match.end()
-            end = _array_end(text, start)
+            end, comments = _scan_dependency_array(text, start)
             # Keep comments from within a multiline array as standalone comments.
-            # Requirement strings cannot contain a newline, but may contain '#'.
-            comments = _array_comments(text[start:end])
             replacement = value
             if comments:
                 replacement += newline + newline.join(comments)
@@ -222,33 +223,6 @@ def _edit_requirements(text: str, data: dict, requirements: list[str]) -> str:
     raise PythonPackagesError("PYTHON_PACKAGES_FORMAT_UNSUPPORTED", "Edit project.dependencies in your editor first; this TOML layout cannot be changed losslessly")
 
 
-def _array_comments(text: str) -> list[str]:
-    """Keep comments while replacing requirement strings, including quoted '#'."""
-    comments: list[str] = []
-    pos = 0
-    while pos < len(text):
-        if text[pos] == "#":
-            end = text.find("\n", pos)
-            end = len(text) if end < 0 else end
-            comments.append(text[pos:end].rstrip("\r"))
-            pos = end
-        elif text[pos] in "\"'":
-            char = text[pos]
-            quote = char * (3 if text.startswith(char * 3, pos) else 1)
-            pos += len(quote)
-            while pos < len(text):
-                if char == '"' and text[pos] == "\\":
-                    pos += 2
-                elif text.startswith(quote, pos):
-                    pos += len(quote)
-                    break
-                else:
-                    pos += 1
-        else:
-            pos += 1
-    return comments
-
-
 def save_python_requirements(plugin_dir: Path, requirements: list[str], revision: str) -> dict:
     """Serialize workbench writes and reject revisions stale at the final read.
 
@@ -258,10 +232,7 @@ def save_python_requirements(plugin_dir: Path, requirements: list[str], revision
     plugin_dir = Path(plugin_dir)
     path = plugin_dir / "pyproject.toml"
     try:
-        project_identity = _lock_identity(plugin_dir)
         with dependency_lock(plugin_dir):
-            if _lock_identity(plugin_dir) != project_identity:
-                raise PythonPackagesError("PYTHON_PACKAGES_REVISION_CONFLICT", "Project directory changed; reload before saving")
             if path.is_symlink():
                 raise PythonPackagesError("PYTHON_PACKAGES_FORMAT_UNSUPPORTED", "pyproject.toml is a symbolic link; edit its target in your editor")
             raw, data, old_requirements = _read_project(plugin_dir)
@@ -284,7 +255,7 @@ def save_python_requirements(plugin_dir: Path, requirements: list[str], revision
                 parsed.extras = {canonicalize_distribution_name(extra) for extra in parsed.extras}
                 identity = str(parsed)
                 if identity in seen:
-                    raise PythonPackagesError("PYTHON_PACKAGES_REQUIREMENTS_INVALID", f"Duplicate requirement: {item}")
+                    raise PythonPackagesError("PYTHON_PACKAGES_REQUIREMENTS_DUPLICATE", f"Duplicate requirement: {item}")
                 seen.add(identity)
             updated = _edit_requirements(raw.decode("utf-8") if raw is not None else "", data, requirements)
             try:
@@ -312,6 +283,8 @@ def save_python_requirements(plugin_dir: Path, requirements: list[str], revision
                 os.replace(staged, path)
             finally:
                 staged.unlink(missing_ok=True)
+    except DependencyDirectoryChanged as exc:
+        raise PythonPackagesError("PYTHON_PACKAGES_REVISION_CONFLICT", "Project directory changed; reload before saving") from exc
     except portalocker.exceptions.LockException as exc:
         raise PythonPackagesError("PYTHON_PACKAGES_BUSY", "A dependency operation is already running for this project") from exc
     except OSError as exc:

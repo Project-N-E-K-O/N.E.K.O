@@ -1363,7 +1363,7 @@ def test_plugin_dir_replaced_before_the_lock_is_refused(tmp_path, monkeypatch, c
     )
 
     assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)) == 1
-    assert "was replaced while the sync started" in capsys.readouterr().err
+    assert "was replaced while acquiring its dependency lock" in capsys.readouterr().err
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="directory junctions are Windows-only")

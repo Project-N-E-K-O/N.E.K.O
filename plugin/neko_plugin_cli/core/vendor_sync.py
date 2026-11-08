@@ -10,6 +10,8 @@ import subprocess
 import sys
 import time
 import uuid
+from contextlib import contextmanager
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from pathlib import Path
 from tempfile import gettempdir
@@ -69,10 +71,21 @@ def _checkpoint(args: VendorSyncOptions, phase: str) -> None:
         args.progress(phase)
 
 
-def dependency_lock(plugin_dir: Path) -> portalocker.Lock:
-    """Serialize declaration writes and vendor syncs for the same directory."""
-    name = hashlib.sha256(_lock_identity(plugin_dir)).hexdigest()
-    return portalocker.Lock(_lock_dir() / f"neko-plugin-sync-{name}.lock", timeout=0)
+class DependencyDirectoryChanged(ValueError):
+    """The project path no longer names the directory whose lock was acquired."""
+
+
+@contextmanager
+def dependency_lock(plugin_dir: Path) -> Iterator[None]:
+    """Serialize dependency operations and verify the locked project identity."""
+    identity = _lock_identity(plugin_dir)
+    name = hashlib.sha256(identity).hexdigest()
+    # Persistent lock files live outside the plugin: unlinking one would let
+    # concurrent operations lock different inodes for the same directory.
+    with portalocker.Lock(_lock_dir() / f"neko-plugin-sync-{name}.lock", timeout=0):
+        if _lock_identity(plugin_dir) != identity:
+            raise DependencyDirectoryChanged(f"{plugin_dir} was replaced while acquiring its dependency lock; retry.")
+        yield
 
 
 def pyproject_revision(raw: bytes | None) -> str:
@@ -131,24 +144,9 @@ def sync_vendor(
     emit = _diagnostic_emitter(report)
     _checkpoint(args, "preparing")
     vendor_dir = plugin_dir / "vendor"
-    # Keep a persistent OS lock file outside the plugin. Unlinking lock files
-    # can let waiting processes lock different inodes for the same plugin.
-    plugin_identity = _lock_identity(plugin_dir)
-    lock_name = hashlib.sha256(plugin_identity).hexdigest()
     staging_dir: Path | None = None
     try:
-        # Inside the try: an unusable lock dir reports like any other OSError.
-        lock_path = _lock_dir() / f"neko-plugin-sync-{lock_name}.lock"
-        with portalocker.Lock(lock_path, timeout=0):
-            # The lock is the directory sampled above; if the path now names
-            # another one (renamed and replaced), another sync may hold its
-            # lock, so touch nothing.
-            if _lock_identity(plugin_dir) != plugin_identity:
-                emit(
-                    f"[FAIL] {plugin_dir} was replaced while the sync started; retry.",
-                    file=sys.stderr,
-                )
-                return 1
+        with dependency_lock(plugin_dir):
             # Holding the lock means no other sync of this plugin by this user
             # is running, so this user's staging dirs were left by killed runs.
             _remove_stale_staging(plugin_dir)
