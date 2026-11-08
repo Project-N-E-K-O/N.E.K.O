@@ -62,7 +62,7 @@ from plugin.server.application.plugins.source_switch import (
     SourceSwitchRequest,
     switch_builtin_source,
 )
-from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
+from plugin.server.application.plugins.operation_lock import PluginOperationBusy, serialized_plugin_operation
 from plugin.server.application.plugin_cli.source_resolver import (
     PluginSourceResolver,
     ResolvedPluginSource,
@@ -74,6 +74,7 @@ from plugin.settings import (
     USER_PLUGIN_CONFIG_ROOT,
     USER_PLUGIN_PACKAGES_ROOT,
 )
+from plugin.utils.asyncio_utils import await_cancellation_safe
 
 _PLUGIN_ROOT = Path(__file__).resolve().parents[3]
 # Deprecated compatibility anchors. Package-management code below resolves
@@ -197,6 +198,13 @@ class _StagedBuiltinOverride:
     plugin_dir: Path
 
 
+@dataclass
+class _BuildSources:
+    sources: list[ResolvedPluginSource]
+    failures: list[ProjectSourceFailure]
+    claimed_projects: list[str]
+
+
 def _require_within(path: Path, root: Path, *, field: str) -> Path:
     resolved = path.resolve()
     try:
@@ -241,27 +249,64 @@ class PluginCliService:
         package_description: str | None = None,
         version: str | None = None,
     ) -> dict[str, object]:
+        from plugin.server.application.plugin_project_commands import release_project
+
         cancelled = threading.Event()
+        prepared = _BuildSources([], [], [])
         try:
-            return await asyncio.to_thread(
-                self._build_sync,
-                mode=mode,
-                plugin=plugin,
-                plugins=plugins,
-                plugin_ref=plugin_ref,
-                plugin_refs=plugin_refs,
-                cancelled=cancelled,
-                out=out,
-                target_dir=target_dir,
-                keep_staging=keep_staging,
-                bundle_id=bundle_id,
-                package_name=package_name,
-                package_description=package_description,
-                version=version,
+            await self._prepare_build_sources(
+                prepared, mode=mode, plugin=plugin, plugins=plugins or [],
+                plugin_ref=plugin_ref, plugin_refs=plugin_refs or [],
             )
+        except BaseException as exc:
+            for project_id in prepared.claimed_projects:
+                release_project(project_id)
+            if isinstance(exc, PluginOperationBusy):
+                raise ServerDomainError(code="PLUGIN_OPERATION_BUSY", message=str(exc), status_code=409) from exc
+            raise
+        execution = asyncio.create_task(asyncio.to_thread(
+            self._build_sync,
+            prepared=prepared,
+            mode=mode,
+            cancelled=cancelled,
+            out=out,
+            target_dir=target_dir,
+            keep_staging=keep_staging,
+            bundle_id=bundle_id,
+            package_name=package_name,
+            package_description=package_description,
+            version=version,
+        ))
+        try:
+            return await asyncio.shield(execution)
         except asyncio.CancelledError:
             cancelled.set()
+            # The prepared leases now belong to the worker. Keep it alive even
+            # if cancellation arrived while its executor job was still queued.
+            try:
+                await await_cancellation_safe(execution)
+            except Exception:
+                pass
             raise
+
+    @serialized_plugin_operation
+    async def _prepare_build_sources(self, prepared: _BuildSources, **selection: Any) -> None:
+        await asyncio.to_thread(self._prepare_build_sources_sync, prepared, **selection)
+
+    def _prepare_build_sources_sync(self, prepared: _BuildSources, **selection: Any) -> None:
+        from plugin.server.application.plugin_project_commands import claim_project
+        from plugin.server.infrastructure.authoring_project_store import list_records
+
+        try:
+            prepared.sources, prepared.failures = self._resolve_plugin_sources(**selection)
+            project_dirs = {source.plugin_dir for source in prepared.sources if source.root_id == "project"}
+            if project_dirs:
+                for record in list_records():
+                    if record.source_dir in project_dirs:
+                        claim_project(record.project_id, "build")
+                        prepared.claimed_projects.append(record.project_id)
+        except Exception as exc:
+            raise self._domain_error_from_exception(exc, action="build") from exc
 
     async def inspect(self, *, package: str) -> dict[str, object]:
         return await asyncio.to_thread(self._inspect_sync, package=package)
@@ -1925,11 +1970,8 @@ class PluginCliService:
     def _build_sync(
         self,
         *,
+        prepared: _BuildSources,
         mode: str,
-        plugin: str | None,
-        plugins: list[str] | None,
-        plugin_ref: dict[str, Any] | None,
-        plugin_refs: list[dict[str, Any]] | None,
         out: str | None,
         target_dir: str | None,
         keep_staging: bool,
@@ -1940,27 +1982,14 @@ class PluginCliService:
         cancelled: threading.Event | None = None,
     ) -> dict[str, object]:
         from plugin.neko_plugin_cli.core.build import PluginBuilder
-        from plugin.server.application.plugin_project_commands import claim_project, release_project
-        from plugin.server.infrastructure.authoring_project_store import list_records
+        from plugin.server.application.plugin_project_commands import release_project
 
-        claimed_projects: list[str] = []
+        claimed_projects = prepared.claimed_projects
         try:
             policy = self._path_policy()
             target_root = policy.package_artifacts_root
-            sources, source_failures = self._resolve_plugin_sources(
-                mode=mode,
-                plugin=plugin,
-                plugins=plugins or [],
-                plugin_ref=plugin_ref,
-                plugin_refs=plugin_refs or [],
-            )
+            sources, source_failures = prepared.sources, prepared.failures
             plugin_dirs = [source.plugin_dir for source in sources]
-            project_dirs = {source.plugin_dir for source in sources if source.root_id == "project"}
-            if project_dirs:
-                for record in list_records():
-                    if record.source_dir in project_dirs:
-                        claim_project(record.project_id, "build")
-                        claimed_projects.append(record.project_id)
             # Workbench projects live outside the plugin roots, so metadata probing
             # imports them from their own directory, as the runtime does.
             builder = PluginBuilder(

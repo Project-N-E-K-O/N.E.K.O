@@ -179,6 +179,8 @@ def test_packaged_setup_uses_managed_interpreter_and_checks_host_match(tools, mo
     def runner(cmd, *, label, env=None):
         nonlocal find_count
         calls.append((cmd, label, env))
+        if cmd[1:] == ["--version"]:
+            return subprocess.CompletedProcess(cmd, 0, f"uv {module._UV_VERSION}\n")
         if cmd[1:3] == ["python", "find"]:
             find_count += 1
             return subprocess.CompletedProcess(cmd, 1 if find_count == 1 else 0, "" if find_count == 1 else python_path)
@@ -191,13 +193,14 @@ def test_packaged_setup_uses_managed_interpreter_and_checks_host_match(tools, mo
     assert result.uv_executable == "/existing/uv"
     assert result.allow_pip_fallback is False
     assert result.env == {"UV_PYTHON_INSTALL_DIR": str(tools / "python")}
-    assert len(calls) == 4
-    assert "--system" in calls[0][0]
-    assert "--no-bin" in calls[1][0]
-    assert "--no-registry" in calls[1][0]
+    assert len(calls) == 5
+    assert calls[0][0] == ["/existing/uv", "--version"]
+    assert "--system" in calls[1][0]
+    assert "--no-bin" in calls[2][0]
+    assert "--no-registry" in calls[2][0]
     assert any(arg.startswith(f"cpython-{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}-")
-               and arg.endswith(module._host_architecture()) for arg in calls[1][0])
-    assert all(call[2] == result.env for call in calls)
+               and arg.endswith(module._host_architecture()) for arg in calls[2][0])
+    assert all(call[2] == result.env for call in calls[1:])
 
 
 def test_packaged_setup_rejects_an_interpreter_mismatch(tools):
@@ -302,10 +305,51 @@ def test_download_requests_cap_io_timeout_by_remaining_budget(tools, monkeypatch
         clock[0] += 1
 
     binary_name = _wheel_download(monkeypatch, on_chunk=advance, timeouts=timeouts)
-    module._download_uv(tools / binary_name, lambda _line: None, threading.Event(), deadline=102.0)
-    assert timeouts[1:] == [((2.0,), {"connect": 2.0}), ((1.0,), {"connect": 1.0})]
+    module._download_uv(tools / binary_name, lambda _line: None, threading.Event(), deadline=103.0)
+    assert timeouts[1:] == [((3.0,), {"connect": 3.0}), ((2.0,), {"connect": 2.0})]
 
 
 @pytest.mark.parametrize(("machine", "architecture"), [("arm64", "aarch64"), ("x86_64", "x86_64")])
 def test_macos_universal_interpreter_uses_running_architecture(machine, architecture):
     assert module._python_architecture("macosx-11.0-universal2", machine) == architecture
+
+
+def test_packaged_setup_replaces_unsupported_system_uv(tools, monkeypatch):
+    monkeypatch.setattr(module, "_is_packaged", lambda: True)
+    monkeypatch.setattr(module, "_find_uv", lambda: "/old/system/uv")
+    cached = module._cached_uv()
+    selected = []
+
+    def download(destination, *_args, **_kwargs):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"pinned uv")
+
+    def prepare(uv, *_args, **_kwargs):
+        selected.append(uv)
+        return module.PackageTools("managed-python", uv)
+
+    monkeypatch.setattr(module, "_download_uv", download)
+    monkeypatch.setattr(module, "_prepare_packaged_python", prepare)
+    module.prepare_package_tools(
+        lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0, "uv 0.3.0\n"),
+        lambda _line: None, threading.Event(),
+    )
+    assert selected == [str(cached)]
+    assert cached.is_file()
+
+
+def test_download_enforces_deadline_without_callback(tools, monkeypatch):
+    from tests.fake_clock import patch_module_clock
+
+    clock = [100.0]
+    patch_module_clock(monkeypatch, module, monotonic=lambda: clock[0])
+
+    def expire_on_wheel(data):
+        if data.startswith(b"PK"):
+            clock[0] = 200.0
+
+    binary_name = _wheel_download(monkeypatch, on_chunk=expire_on_wheel)
+    with pytest.raises(TimeoutError, match="time budget"):
+        module._download_uv(tools / binary_name, lambda _line: None, threading.Event(), deadline=150.0)
+    assert not (tools / binary_name).exists()
+    assert list(tools.glob(".uv-*")) == []

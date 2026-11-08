@@ -22,6 +22,7 @@ import portalocker
 import psutil
 
 from plugin.logging_config import get_logger
+from plugin.server.application.plugins.operation_lock import PluginOperationBusy, serialized_plugin_operation
 from plugin.server.domain.plugin_project_errors import ProjectErrorCode as Code
 from plugin.server.domain.plugin_project_errors import project_error
 from plugin.utils.asyncio_utils import await_cancellation_safe
@@ -142,14 +143,15 @@ def require_plugin_project_available(plugin_id: str) -> None:
         meta = state.plugins.get(plugin_id)
         project_id = meta.get("project_id") if isinstance(meta, dict) else None
         source_dir = meta.get("source_dir") if isinstance(meta, dict) else None
-    if not isinstance(project_id, str):
+    if not isinstance(project_id, str) or isinstance(source_dir, str):
         from plugin.server.infrastructure import authoring_project_store as store
+        from plugin.server.application.plugins.project_sources import same_source_directory
 
         records = store.list_records()
         if isinstance(source_dir, str):
             project_id = next((
-                item.project_id for item in records if str(item.source_dir) == source_dir
-            ), None)
+                item.project_id for item in records if same_source_directory(item.source_dir, source_dir)
+            ), project_id)
         elif meta is None and records:
             # A registered project can be started before registry discovery has
             # populated state.plugins. Resolve its identity without importing it.
@@ -161,6 +163,32 @@ def require_plugin_project_available(plugin_id: str) -> None:
             ), None)
     if isinstance(project_id, str):
         require_project_available(project_id)
+
+
+@serialized_plugin_operation
+async def _claim_project_for_operation(
+    project_id: str, operation: str, acquired: threading.Event,
+) -> None:
+    await asyncio.to_thread(claim_project, project_id, operation)
+    acquired.set()
+
+
+async def acquire_project(project_id: str, operation: str) -> None:
+    """Reserve a project after pending lifecycle mutations have completed.
+
+    The lifecycle lock covers only reservation, never the network command.
+    Cancellation releases only a lease this invocation actually acquired.
+    """
+    await asyncio.to_thread(require_project_available, project_id)
+    acquired = threading.Event()
+    try:
+        await _claim_project_for_operation(project_id, operation, acquired)
+    except BaseException as exc:
+        if acquired.is_set():
+            release_project(project_id)
+        if isinstance(exc, PluginOperationBusy):
+            raise project_error(Code.PLUGIN_OPERATION_BUSY, str(exc), 409) from exc
+        raise
 
 
 class project_operation:
@@ -179,6 +207,12 @@ class project_operation:
         claim_project(self._project_id, self._operation)
 
     def __exit__(self, *_exc: object) -> None:
+        release_project(self._project_id)
+
+    async def __aenter__(self) -> None:
+        await acquire_project(self._project_id, self._operation)
+
+    async def __aexit__(self, *_exc: object) -> None:
         release_project(self._project_id)
 
 

@@ -402,3 +402,45 @@ def test_save_rechecks_external_editor_changes_after_staging(tmp_path, monkeypat
     assert error.value.code == "PYTHON_PACKAGES_REVISION_CONFLICT"
     assert path.read_text() == changed
     assert not list(project.glob(".python-packages-*"))
+
+
+@pytest.mark.parametrize("invalid", [
+    'legacy; python_version ~= "not-a-version"', 'legacy; "feature" in dependency_groups',
+])
+def test_save_keeps_unchanged_legacy_markers_that_cannot_be_evaluated(tmp_path, invalid):
+    project = _project(tmp_path, '[project]\ndependencies = ' + json.dumps([invalid]) + '\n')
+    saved = save_python_requirements(project, [invalid, "new-package"], inspect_python_packages(project)["revision"])
+    assert [row["requirement"] for row in saved["requirements"]] == [invalid, "new-package"]
+    assert saved["requirements"][0]["status"] == "invalid_metadata"
+
+
+@pytest.mark.parametrize("declarations", [
+    ["demo_lib>=1", "Demo-Lib>=1"],
+    ["demo[extra_feature]>=1", "Demo[EXTRA.Feature]>=1"],
+])
+def test_save_rejects_normalized_duplicate_distribution_names_and_extras(tmp_path, declarations):
+    project = _project(tmp_path, '[project]\ndependencies = []\n')
+    original = (project / "pyproject.toml").read_bytes()
+    with pytest.raises(PythonPackagesError) as error:
+        save_python_requirements(project, declarations, inspect_python_packages(project)["revision"])
+    assert error.value.code == "PYTHON_PACKAGES_REQUIREMENTS_INVALID"
+    assert (project / "pyproject.toml").read_bytes() == original
+
+
+@pytest.mark.parametrize("declarations", [
+    ["demo_lib>=1", "Demo-Lib<3"],
+    ['demo; python_version < "3.11"', 'Demo; python_version >= "3.11"'],
+    ["demo[feature_one]", "Demo[feature_two]"],
+])
+def test_save_preserves_distinct_specifiers_markers_and_extras(tmp_path, declarations):
+    project = _project(tmp_path, '[project]\ndependencies = []\n')
+    saved = save_python_requirements(project, declarations, inspect_python_packages(project)["revision"])
+    assert [row["requirement"] for row in saved["requirements"]] == declarations
+
+
+@pytest.mark.parametrize("dynamic", ["false", '"dependencies"', "[false]", "{}"])
+def test_inspection_reports_invalid_dynamic_field_as_a_project_error(tmp_path, dynamic):
+    project = _project(tmp_path, '[project]\ndynamic = ' + dynamic + '\ndependencies = []\n')
+    with pytest.raises(PythonPackagesError) as error:
+        inspect_python_packages(project)
+    assert error.value.code == "PYTHON_PACKAGES_PROJECT_INVALID"

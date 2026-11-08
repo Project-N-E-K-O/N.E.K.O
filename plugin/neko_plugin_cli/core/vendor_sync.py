@@ -45,6 +45,7 @@ class VendorSyncOptions:
     report: Callable[[str], None] | None
     progress: Callable[[str], None] | None
     check_cancelled: Callable[[], None] | None
+    expected_revision: str | None = None
 
 
 def find_uv() -> str | None:
@@ -79,6 +80,15 @@ def pyproject_revision(raw: bytes | None) -> str:
     return hashlib.sha256(b"missing" if raw is None else b"file\0" + raw).hexdigest()
 
 
+def _check_sync_revision(plugin_dir: Path, expected_revision: str | None) -> None:
+    if expected_revision is None:
+        return
+    path = plugin_dir / "pyproject.toml"
+    raw = path.read_bytes() if path.is_file() else None
+    if pyproject_revision(raw) != expected_revision:
+        raise ValueError("pyproject.toml changed; refresh before synchronizing dependencies")
+
+
 def sync_vendor(
     plugin_dir: Path,
     *,
@@ -99,10 +109,14 @@ def sync_vendor(
     The runner controls only external installer execution; locks, staging, recovery,
     and safe directory replacement stay identical for CLI and background tasks.
     An expected revision is checked under the dependency lock against the same
-    file bytes used to parse declarations, before any installer can run.
+    file bytes used to parse declarations, before any installer can run. It is
+    checked again before committing staged vendor contents. Non-clean in-place
+    installs check before and after their writes, without rollback. External
+    editors can still race the final check and commit.
     """
     args = VendorSyncOptions(python, project_root, clean, discard_backups,
-                             installer_runner, uv_executable, allow_pip_fallback, report, progress, check_cancelled)
+                             installer_runner, uv_executable, allow_pip_fallback, report, progress, check_cancelled,
+                             expected_revision)
     emit = _diagnostic_emitter(report)
     _checkpoint(args, "preparing")
     vendor_dir = plugin_dir / "vendor"
@@ -301,6 +315,7 @@ def sync_vendor(
                 )
                 return 1
             _checkpoint(args, "replacing")
+            _check_sync_revision(plugin_dir, args.expected_revision)
             if not _replace_vendor(vendor_dir, staging_dir, report=report):
                 return 1
             # A complete successful sync supersedes retained backups.
@@ -459,6 +474,7 @@ def _sync_in_place(
     _remove_stale_staging(vendor_dir)
     if not args.clean:
         _checkpoint(args, "installing")
+        _check_sync_revision(vendor_dir.parent, args.expected_revision)
         exit_code = _install_to_vendor(
             external_deps, vendor_dir=vendor_dir, python=args.python,
             project_root=args.project_root, installer_runner=args.installer_runner,
@@ -466,6 +482,7 @@ def _sync_in_place(
         )
         if exit_code != 0:
             return exit_code
+        _check_sync_revision(vendor_dir.parent, args.expected_revision)
         if not _same_target(vendor_dir, identity):
             # The install may have gone to the new target; say so.
             return _report_vendor_changed(vendor_dir, args.report)
@@ -543,6 +560,7 @@ def _sync_in_place(
             return _report_vendor_changed(vendor_dir, args.report)
         _clean_vendor(staging_dir)
         _checkpoint(args, "replacing")
+        _check_sync_revision(vendor_dir.parent, args.expected_revision)
         return _refill_in_place(vendor_dir, staging_dir, identity, report=args.report)
     finally:
         # Through a retargeted vendor/ this path names a directory in the
@@ -754,7 +772,10 @@ def _dependencies_from_project(data: dict) -> list[str] | None:
     project = data.get("project")
     if not isinstance(project, dict):
         return None
-    if "dependencies" in project.get("dynamic", []):
+    dynamic = project.get("dynamic", [])
+    if not isinstance(dynamic, list) or any(not isinstance(item, str) for item in dynamic):
+        raise ValueError("pyproject.toml project.dynamic must be a list of strings")
+    if "dependencies" in dynamic:
         raise ValueError("Dynamic project.dependencies are unsupported; edit their source in your editor")
     deps = project.get("dependencies")
     if deps is not None and (

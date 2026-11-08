@@ -50,6 +50,9 @@ distribution metadata does not exercise imports and runtime paths.
 ## Task lifetime and tools
 
 Tasks have bounded logs, real execution stages, a time budget and cancellation.
+Preparation checks the deadline between streamed chunks and caps request I/O
+timeouts by the remaining budget. An already pending network read can take up to
+its bounded timeout (at most 10 seconds) before that checkpoint runs.
 The browser reconnects to the current task after navigation or refresh. Task
 history is in server memory; after a server restart, disk contents remain the
 source of truth. Canceling terminates installer subprocess trees. The existing
@@ -62,7 +65,9 @@ CPython interpreter in application data. If uv is missing, an explicit sync can
 download a pinned-version uv wheel from PyPI, verify its integrity against the
 SHA-256 returned by PyPI HTTPS metadata, and extract only the executable and
 licenses. Python preparation uses `--no-bin --no-registry`, so it
-does not register a system interpreter. Opening the tab performs no downloads.
+does not register a system interpreter. Packaged sync checks a system uv against
+the tested minimum version and prepares the pinned version when it is too old.
+Opening the tab performs no downloads or version-probe subprocesses.
 
 The installer bootstrap trusts PyPI HTTPS metadata and artifacts served from
 `files.pythonhosted.org`. The digest checks downloaded bytes against that

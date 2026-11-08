@@ -114,5 +114,5 @@ def _first_https_github_url(log: list[str]) -> str:
 async def create_repository(project_id: str, *, private: bool = False) -> dict[str, object]:
     """Run ``neko-plugin create-repo`` for a project and return its outcome."""
     source_dir = _record_source_dir(project_id)
-    with project_operation(project_id, "create-repo"):
+    async with project_operation(project_id, "create-repo"):
         return await _run(source_dir, private=private)

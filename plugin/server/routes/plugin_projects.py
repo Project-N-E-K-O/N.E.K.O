@@ -23,7 +23,7 @@ from plugin.server.application.plugin_projects import (
     ProjectPreview,
 )
 from plugin.server.application.plugins._env_budgets import env_seconds
-from plugin.server.application.plugins.operation_lock import bounded_operation_wait
+from plugin.server.application.plugins.operation_lock import PluginOperationBusy, bounded_operation_wait
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.auth import require_admin
 from plugin.server.infrastructure.mutation_auth import PluginMutationGuardedRoute
@@ -121,6 +121,8 @@ async def _call(awaitable):
         raise HTTPException(
             exc.status_code, {"code": exc.code, "message": exc.message}
         ) from exc
+    except PluginOperationBusy as exc:
+        raise HTTPException(409, {"code": "PLUGIN_OPERATION_BUSY", "message": str(exc)}) from exc
 
 
 @router.get("", response_model=list[AuthoringProject])
@@ -229,8 +231,8 @@ async def read_project_python_packages(project_id: str):
 
 @mutation_router.put("/{project_id}/python-packages/requirements")
 async def save_project_python_requirements(project_id: str, body: PythonRequirementsRequest):
-    return await _call(asyncio.to_thread(
-        python_packages.save_requirements, project_id, body.requirements, body.revision
+    return await _call(python_packages.save_project_requirements(
+        project_id, body.requirements, body.revision
     ))
 
 

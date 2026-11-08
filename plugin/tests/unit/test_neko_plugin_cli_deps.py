@@ -2123,6 +2123,7 @@ def test_sync_parses_the_same_bytes_checked_against_expected_revision(tmp_path, 
     commands = []
 
     def install(command, **kwargs):
+        assert reads == [path]
         commands.append(command)
         return subprocess.CompletedProcess(command, 0, stdout="ok")
 
@@ -2130,7 +2131,7 @@ def test_sync_parses_the_same_bytes_checked_against_expected_revision(tmp_path, 
         plugin_dir, expected_revision=expected, uv_executable="uv",
         installer_runner=install,
     ) == 0
-    assert reads == [path]
+    assert reads == [path, path]
     assert commands[0][-1] == "httpx>=0.27"
 
 
@@ -2167,6 +2168,97 @@ def test_refill_closes_staging_descriptor_when_trash_creation_fails(tmp_path, mo
     assert len(opened) == 1
     with pytest.raises(OSError):
         os.fstat(opened[0])
+    assert (vendor / "old.py").read_text() == "old"
+
+
+@pytest.mark.parametrize("dynamic", ["false", '"dependencies"', "[false]", "{}"])
+def test_sync_reports_invalid_dynamic_type_without_touching_vendor(tmp_path, capsys, dynamic):
+    from plugin.neko_plugin_cli.core import vendor_sync
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    (plugin_dir / "pyproject.toml").write_text('[project]\ndynamic = ' + dynamic + '\n', encoding="utf-8")
+    vendor = plugin_dir / "vendor"
+    vendor.mkdir()
+    (vendor / "old.py").write_text("old")
+    assert vendor_sync.sync_vendor(plugin_dir) == 1
+    assert "project.dynamic must be a list of strings" in capsys.readouterr().err
+    assert (vendor / "old.py").read_text() == "old"
+
+
+@pytest.mark.parametrize("mode", ["ordinary", "linked", "mounted"])
+@pytest.mark.parametrize("clean", [True, False])
+def test_sync_detects_declarations_changed_during_install_before_committing_vendor(tmp_path, monkeypatch, mode, clean):
+    from plugin.neko_plugin_cli.core import vendor_sync
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    pyproject = plugin_dir / "pyproject.toml"
+    expected = vendor_sync.pyproject_revision(pyproject.read_bytes())
+    vendor = plugin_dir / "vendor"
+    if mode == "linked":
+        target = tmp_path / "shared-vendor"
+        target.mkdir()
+        if sys.platform == "win32":
+            subprocess.run(["cmd", "/c", "mklink", "/J", str(vendor), str(target)], check=True, capture_output=True)
+        else:
+            vendor.symlink_to(target, target_is_directory=True)
+    else:
+        vendor.mkdir()
+        if mode == "mounted":
+            monkeypatch.setattr(vendor_sync, "_is_mount_point", lambda path: path == vendor)
+    (vendor / "old.py").write_text("old")
+
+    def install(command, **kwargs):
+        directory = Path(command[command.index("--target") + 1])
+        (directory / "new.py").write_text("new")
+        pyproject.write_text('[project]\ndependencies = []\n', encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, stdout="ok")
+
+    messages = []
+    assert vendor_sync.sync_vendor(
+        plugin_dir, clean=clean, expected_revision=expected, uv_executable="uv",
+        installer_runner=install, report=messages.append,
+    ) == 1
+    assert any("pyproject.toml changed" in line for line in messages)
+    assert (vendor / "old.py").read_text() == "old"
+    if mode == "ordinary" or clean:
+        assert not (vendor / "new.py").exists()
+    else:
+        # A non-clean linked/mounted install writes in place without rollback;
+        # its changed declarations must still prevent a success report.
+        assert (vendor / "new.py").read_text() == "new"
+
+
+@pytest.mark.parametrize("mode", ["linked", "mounted"])
+def test_non_clean_in_place_checks_revision_immediately_before_installer_writes(tmp_path, monkeypatch, mode):
+    from plugin.neko_plugin_cli.core import vendor_sync
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    pyproject = plugin_dir / "pyproject.toml"
+    expected = vendor_sync.pyproject_revision(pyproject.read_bytes())
+    vendor = plugin_dir / "vendor"
+    if mode == "linked":
+        target = tmp_path / "shared-vendor"
+        target.mkdir()
+        if sys.platform == "win32":
+            subprocess.run(["cmd", "/c", "mklink", "/J", str(vendor), str(target)], check=True, capture_output=True)
+        else:
+            vendor.symlink_to(target, target_is_directory=True)
+    else:
+        vendor.mkdir()
+        monkeypatch.setattr(vendor_sync, "_is_mount_point", lambda path: path == vendor)
+    (vendor / "old.py").write_text("old")
+
+    def progress(phase):
+        if phase == "installing":
+            pyproject.write_text('[project]\ndependencies = []\n', encoding="utf-8")
+
+    messages = []
+    assert vendor_sync.sync_vendor(
+        plugin_dir, clean=False, expected_revision=expected, uv_executable="uv", progress=progress,
+        installer_runner=lambda *args, **kwargs: pytest.fail("stale in-place install must not write"),
+        report=messages.append,
+    ) == 1
+    assert any("pyproject.toml changed" in line for line in messages)
     assert (vendor / "old.py").read_text() == "old"
 
 

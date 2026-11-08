@@ -128,7 +128,8 @@ async function mount() {
   const container = document.createElement('div')
   document.body.append(container)
   const props = reactive({ project })
-  app = createApp({ render: () => h(Panel, props) })
+  const changed = vi.fn()
+  app = createApp({ render: () => h(Panel, { ...props, onChanged: changed }) })
   app
     .use(ElementPlus)
     .use(
@@ -151,7 +152,7 @@ async function mount() {
     )
     .mount(container)
   await flush()
-  return { container, props }
+  return { container, props, changed }
 }
 async function click(text: string) {
   const button = [...document.querySelectorAll<HTMLButtonElement>('button')].find(
@@ -558,6 +559,73 @@ describe('project dependency management', () => {
     await click(en.cancel)
     expect(api.cancelProjectPythonTask).toHaveBeenCalledWith('p1', 't1')
     expect(api.startProjectPythonTask).not.toHaveBeenCalled()
+  })
+  it.each(['succeeded', 'failed', 'canceled'] as const)(
+    'notifies once when refresh observes a %s task before polling',
+    async (status) => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+      const finished = task({ status, phase: 'finished' })
+      api.getProjectPythonPackages
+        .mockResolvedValueOnce(state({ task: task() }))
+        .mockResolvedValue(state({ task: finished }))
+      const { changed } = await mount()
+      await click('Refresh')
+      expect(changed).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(2500)
+      expect(api.getProjectPythonTask).not.toHaveBeenCalled()
+      await click('Refresh')
+      expect(changed).toHaveBeenCalledTimes(1)
+      api.getProjectPythonPackages.mockResolvedValue(
+        state({ task: { ...finished, task_id: 'another-task' } })
+      )
+      await click('Refresh')
+      expect(changed).toHaveBeenCalledTimes(2)
+    }
+  )
+  it('does not repeat the terminal notification when an earlier poll finishes after refresh', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    const finished = task({ status: 'failed', phase: 'finished' })
+    api.getProjectPythonPackages
+      .mockResolvedValueOnce(state({ task: task() }))
+      .mockResolvedValue(state({ task: finished }))
+    let resolve!: (value: PythonPackagesTask) => void
+    api.getProjectPythonTask.mockReturnValueOnce(
+      new Promise((done) => {
+        resolve = done
+      })
+    )
+    const { changed } = await mount()
+    await vi.advanceTimersByTimeAsync(1000)
+    await flush()
+    expect(api.getProjectPythonTask).toHaveBeenCalledTimes(1)
+    await click('Refresh')
+    expect(changed).toHaveBeenCalledTimes(1)
+    resolve(finished)
+    await flush()
+    expect(changed).toHaveBeenCalledTimes(1)
+  })
+  it('does not repeat the notification for a canceled task returned by refresh', async () => {
+    const finished = task({ status: 'canceled', phase: 'finished' })
+    api.getProjectPythonPackages
+      .mockResolvedValueOnce(state({ task: task() }))
+      .mockResolvedValue(state({ task: finished }))
+    const { changed } = await mount()
+    await click(en.cancel)
+    expect(changed).toHaveBeenCalledTimes(1)
+    await click('Refresh')
+    expect(changed).toHaveBeenCalledTimes(1)
+  })
+  it('combines save and terminal snapshot changes into one notification', async () => {
+    const finished = task({ status: 'failed', phase: 'finished' })
+    const saved = state({ revision: 'r2', task: finished })
+    api.saveProjectPythonRequirements.mockResolvedValue(saved)
+    const { changed } = await mount()
+    await click(en.pin)
+    await click(en.save)
+    expect(changed).toHaveBeenCalledTimes(1)
+    api.getProjectPythonPackages.mockResolvedValue(saved)
+    await click('Refresh')
+    expect(changed).toHaveBeenCalledTimes(1)
   })
   it('distinguishes unchecked state from full check results and rejects stale findings', async () => {
     await mount()

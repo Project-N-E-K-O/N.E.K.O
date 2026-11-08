@@ -40,7 +40,7 @@ from plugin.server.application.plugin_project_commands import (
 from plugin.server.application.plugin_projects import source_repo_root
 from plugin.server.application.plugins._env_budgets import env_seconds
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
-from plugin.server.application.plugins.project_sources import inspect_source_directory
+from plugin.server.application.plugins.project_sources import inspect_source_directory, same_source_directory
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.domain.plugin_project_errors import ProjectErrorCode as Code
 from plugin.server.domain.plugin_project_errors import project_error
@@ -111,10 +111,11 @@ def _project(project_id: str) -> tuple[Path, str]:
 def _running(source_dir: Path) -> bool:
     # A project whose ID collides with an installed plugin does not own its host.
     with state.acquire_plugins_read_lock():
-        identities = [
-            identity for identity, meta in state.plugins.items()
-            if isinstance(meta, dict) and meta.get("source_dir") == str(source_dir)
+        sources = [
+            (identity, meta["source_dir"]) for identity, meta in state.plugins.items()
+            if isinstance(meta, dict) and isinstance(meta.get("source_dir"), str)
         ]
+    identities = [identity for identity, directory in sources if same_source_directory(directory, source_dir)]
     with state.acquire_plugin_hosts_read_lock():
         hosts = [state.plugin_hosts.get(identity) for identity in identities]
     return any(host is not None and host.is_alive() for host in hosts)
@@ -155,6 +156,11 @@ def save_requirements(project_id: str, requirements: list[str], revision: str) -
         except PythonPackagesError as exc:
             raise _domain_error(exc) from exc
     return read_packages(project_id)
+
+
+@serialized_plugin_operation
+async def save_project_requirements(project_id: str, requirements: list[str], revision: str) -> dict:
+    return await asyncio.to_thread(save_requirements, project_id, requirements, revision)
 
 
 @serialized_plugin_operation

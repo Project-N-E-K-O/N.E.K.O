@@ -48,6 +48,9 @@ def _read_project(plugin_dir: Path) -> tuple[bytes | None, dict, list[str]]:
     project = data.get("project", {})
     if not isinstance(project, dict):
         raise PythonPackagesError("PYTHON_PACKAGES_PROJECT_INVALID", "[project] must be a table")
+    dynamic = project.get("dynamic", [])
+    if not isinstance(dynamic, list) or any(not isinstance(item, str) for item in dynamic):
+        raise PythonPackagesError("PYTHON_PACKAGES_PROJECT_INVALID", "project.dynamic must be a list of strings")
     requirements = project.get("dependencies", [])
     if not isinstance(requirements, list) or any(not isinstance(item, str) for item in requirements):
         raise PythonPackagesError("PYTHON_PACKAGES_REQUIREMENTS_INVALID", "project.dependencies must be a list of strings")
@@ -304,7 +307,11 @@ def save_python_requirements(plugin_dir: Path, requirements: list[str], revision
                 try:
                     requirement_applies(parsed, parsed.extras)
                 except ValueError as exc:
+                    if item in old_requirements:
+                        continue
                     raise PythonPackagesError("PYTHON_PACKAGES_REQUIREMENTS_INVALID", str(exc)) from exc
+                parsed.name = canonicalize_distribution_name(parsed.name)
+                parsed.extras = {canonicalize_distribution_name(extra) for extra in parsed.extras}
                 identity = str(parsed)
                 if identity in seen:
                     raise PythonPackagesError("PYTHON_PACKAGES_REQUIREMENTS_INVALID", f"Duplicate requirement: {item}")

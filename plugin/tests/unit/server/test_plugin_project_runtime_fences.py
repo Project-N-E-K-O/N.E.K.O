@@ -6,6 +6,7 @@ import multiprocessing
 import os
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,6 +16,10 @@ from plugin.neko_plugin_cli.core.project import create_project
 from plugin.neko_plugin_cli.templates.generator import PluginSpec
 from plugin.server.application import plugin_project_commands as commands
 from plugin.server.application import plugin_project_python_packages as packages
+from plugin.server.application import plugin_projects as projects
+from plugin.server.application import plugin_publish_tasks as publish
+from plugin.server.application import plugin_repo_tasks as repositories
+from plugin.server.application.plugin_cli.service import PluginCliService
 from plugin.server.application.plugins import lifecycle_service as lifecycle
 from plugin.server.application.plugins import operation_lock
 from plugin.server.domain.errors import ServerDomainError
@@ -130,6 +135,115 @@ def test_reading_operation_does_not_create_lease_files(project):
     path = commands._project_lease_path(project.project_id)
     assert commands.project_operation_name(project.project_id) is None
     assert not path.parent.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["precheck", "create-repo", "remove", "save", "build", "publish"])
+async def test_authoring_reservations_wait_for_lifecycle_lock(project, monkeypatch, operation):
+    """Every lease entry waits before claiming, including the CLI build worker."""
+    entered = asyncio.Event()
+
+    async def run_cli(*args, **kwargs):
+        assert not operation_lock._operation_lock_is_held_by_current_task()
+        return subprocess.CompletedProcess([], 0, '{"passed": true}', "")
+
+    async def create_repository(*args, **kwargs):
+        assert not operation_lock._operation_lock_is_held_by_current_task()
+        return {"status": "created"}
+
+    async def publish_worker(task, *args):
+        assert not operation_lock._operation_lock_is_held_by_current_task()
+        task.status = "succeeded"
+        commands.release_project(task.project_id)
+
+    monkeypatch.setattr(projects, "source_repo_root", lambda: project.source_dir.parent)
+    monkeypatch.setattr(projects, "run_cli", run_cli)
+    monkeypatch.setattr(repositories, "_run", create_repository)
+    monkeypatch.setattr(publish, "_run_task", publish_worker)
+    builder = PluginCliService()
+    monkeypatch.setattr(builder, "_resolve_plugin_sources", lambda **kwargs: ([SimpleNamespace(
+        root_id="project", plugin_dir=project.source_dir,
+    )], []))
+
+    def build_worker(*, prepared, **kwargs):
+        assert commands.project_operation_name(project.project_id) == "build"
+        for project_id in prepared.claimed_projects:
+            commands.release_project(project_id)
+        return {"ok": True}
+
+    monkeypatch.setattr(builder, "_build_sync", build_worker)
+    before = packages.read_packages(project.project_id)
+
+    async def invoke():
+        entered.set()
+        if operation == "precheck":
+            return await projects.precheck_project(project.project_id)
+        if operation == "create-repo":
+            return await repositories.create_repository(project.project_id)
+        if operation == "remove":
+            return await projects.remove_project(project.project_id)
+        if operation == "save":
+            return await packages.save_project_requirements(project.project_id, [], before["revision"])
+        if operation == "build":
+            return await builder.build(mode="all")
+        task = publish._Task("runtime-fence-publish", project.project_id, "github")
+        gate = publish._Gate(project.source_dir.parent, project.source_dir, "runtime_demo", "owner/repo", None, "v1")
+        return await publish._queue_publish(task, [], gate, 30)
+
+    request = None
+    try:
+        async with operation_lock.plugin_operation_lock.hold():
+            request = asyncio.create_task(invoke())
+            await asyncio.wait_for(entered.wait(), 3)
+            # Give the attempted request time to reach the held lifecycle lock.
+            await asyncio.sleep(0.05)
+            assert commands.project_operation_name(project.project_id) is None
+            assert not request.done()
+        await asyncio.wait_for(request, 5)
+        workers = list(publish._workers.values())
+        if workers:
+            await asyncio.gather(*workers)
+        assert commands.project_operation_name(project.project_id) is None
+    finally:
+        if request is not None and not request.done():
+            request.cancel()
+            await asyncio.gather(request, return_exceptions=True)
+        publish._tasks.clear()
+        publish._active.clear()
+        publish._latest.clear()
+
+
+@pytest.mark.asyncio
+async def test_canceling_queued_reservation_does_not_release_another_owner(project):
+    async with operation_lock.plugin_operation_lock.hold():
+        request = asyncio.create_task(commands.acquire_project(project.project_id, "precheck"))
+        await asyncio.sleep(0.05)
+        commands.claim_project(project.project_id, "existing-operation")
+        request.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        assert commands.project_operation_name(project.project_id) == "existing-operation"
+
+
+def test_running_host_matches_source_alias_and_ignores_missing_old_path(project, tmp_path, monkeypatch):
+    alias = tmp_path / "source-alias"
+    try:
+        alias.symlink_to(project.source_dir, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"Directory symlinks are unavailable: {exc}")
+    monkeypatch.setattr(state, "plugins", {"old_identity": {"source_dir": str(alias)}})
+    monkeypatch.setattr(state, "plugin_hosts", {"old_identity": SimpleNamespace(is_alive=lambda: True)})
+    assert packages._running(project.source_dir) is True
+    commands.claim_project(project.project_id, "python-packages-sync")
+    with pytest.raises(ServerDomainError) as error:
+        commands.require_plugin_project_available("old_identity")
+    assert error.value.code == "PLUGIN_OPERATION_BUSY"
+    alias.unlink()
+    # No directory identity survives in an invalid pathname. Do not pretend to
+    # recover a moved host from its string, or count an unrelated live host.
+    state.plugins["unrelated"] = {"source_dir": str(tmp_path)}
+    state.plugin_hosts["unrelated"] = SimpleNamespace(is_alive=lambda: True)
+    assert packages._running(project.source_dir) is False
 
 
 @pytest.mark.asyncio

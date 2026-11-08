@@ -33,6 +33,7 @@ export function useProjectPythonPackages(
   let generation = 0
   let request = 0
   let timer: ReturnType<typeof setTimeout> | undefined
+  const terminalNotifications = new Set<string>()
   const current = (id: string, seq: number) => alive && projectId.value === id && generation === seq
   const resetTimer = () => {
     if (timer) clearTimeout(timer)
@@ -44,11 +45,19 @@ export function useProjectPythonPackages(
     baseline.value = [...draft.value]
     revision.value = next.revision
   }
-  function applySnapshot(next: PythonPackagesSnapshot, replaceDraft: boolean) {
+  function notifyTerminalTask(next: PythonPackagesTask | null, notify = true) {
+    if (!next || pythonTaskActive(next)) return
+    const key = `${next.task_id}:${next.status}`
+    if (terminalNotifications.has(key)) return
+    terminalNotifications.add(key)
+    if (notify) onChanged()
+  }
+  function applySnapshot(next: PythonPackagesSnapshot, replaceDraft: boolean, notifyTask = true) {
     if (replaceDraft) resetDraft(next)
     snapshot.value = next
     task.value = next.task
     schedule()
+    notifyTerminalTask(next.task, notifyTask)
   }
   async function reload(discardDraft = false) {
     const id = projectId.value
@@ -84,7 +93,7 @@ export function useProjectPythonPackages(
       error.value = null
       if (!pythonTaskActive(next)) {
         await reload()
-        if (current(id, seq)) onChanged()
+        if (current(id, seq)) notifyTerminalTask(next)
       }
     } catch (cause) {
       if (current(id, seq)) {
@@ -109,6 +118,7 @@ export function useProjectPythonPackages(
       if (current(id, seq)) {
         task.value = next
         schedule()
+        notifyTerminalTask(next)
         return true
       }
     } catch (cause) {
@@ -130,7 +140,8 @@ export function useProjectPythonPackages(
       // An earlier refresh must not restore its snapshot after this write.
       request += 1
       loading.value = false
-      applySnapshot(next, true)
+      // The save notification also covers any terminal task in this snapshot.
+      applySnapshot(next, true, false)
       onChanged()
     } catch (cause) {
       if (current(id, seq)) error.value = cause
@@ -151,7 +162,7 @@ export function useProjectPythonPackages(
       if (current(id, seq)) {
         task.value = next
         await reload()
-        onChanged()
+        if (current(id, seq)) notifyTerminalTask(next)
       }
     } catch (cause) {
       if (current(id, seq)) error.value = cause
@@ -165,6 +176,7 @@ export function useProjectPythonPackages(
       generation += 1
       request += 1
       resetTimer()
+      terminalNotifications.clear()
       snapshot.value = null
       task.value = null
       draft.value = []

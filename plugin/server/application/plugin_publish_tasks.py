@@ -38,6 +38,7 @@ from plugin.server.application.plugin_publish_status import (
     read_remote_github,
 )
 from plugin.server.application.plugins._env_budgets import env_seconds
+from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
 from plugin.server.domain.plugin_project_errors import ProjectErrorCode as Code
 from plugin.server.domain.plugin_project_errors import project_error
 
@@ -289,6 +290,14 @@ async def start_publish(project_id: str, mode: PublishMode) -> dict[str, object]
     task = _Task(
         task_id=uuid4().hex, project_id=project_id, mode=mode, release_url=release_url
     )
+    return await _queue_publish(task, argv, gate, budget)
+
+
+@serialized_plugin_operation
+async def _queue_publish(task: _Task, argv: list[str], gate: _Gate, budget: float) -> dict[str, object]:
+    # Reserve and register under the lifecycle lock; all GitHub I/O above and
+    # the publication worker below run outside this short critical section.
+    project_id = task.project_id
     with _lock:
         active_id = _active.get(project_id)
         active = _tasks.get(active_id) if active_id else None
