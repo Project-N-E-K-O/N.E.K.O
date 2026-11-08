@@ -34,7 +34,10 @@ export function ChatScreenVisibilityProvider({ messages, children }: {
   const [hiddenTurnIds, setHiddenTurnIds] = useState<ReadonlySet<string>>(EMPTY_HIDDEN_IDS);
   useEffect(() => {
     // A real host reset starts a new conversation; a visual clear never emits it.
-    const reset = () => {
+    const reset = (event: Event) => {
+      const detail = (event as CustomEvent).detail;
+      if (event.type === 'react-chat-window:messages-replaced'
+        && detail?.historyRestore === true && detail.conversationReset === false) return;
       captionTurnRef.current = '';
       setHiddenMessageIds(EMPTY_HIDDEN_IDS);
       setHiddenTurnIds(EMPTY_HIDDEN_IDS);

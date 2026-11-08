@@ -1908,7 +1908,7 @@
         return hadVisibleState;
     }
 
-    I.setMessages = function setMessages(messages) {
+    function replaceMessages(messages, historyRestore) {
         cancelMessageReactions();
         // Compute fallback start past any explicit sortKey in incoming batch
         var maxIncomingSortKey = Array.isArray(messages)
@@ -1937,11 +1937,18 @@
         }
         I.invalidatePendingGalgameRequest();
         window.dispatchEvent(new CustomEvent('react-chat-window:messages-replaced', {
-            detail: { conversationReset: I.state.messages.length === 0 }
+            detail: {
+                conversationReset: I.state.messages.length === 0,
+                historyRestore: historyRestore === true
+            }
         }));
         I.renderWindow();
         return I.state.messages;
     }
+
+    I.setMessages = function setMessages(messages) {
+        return replaceMessages(messages);
+    };
 
     I.restoreChatHistory = function restoreChatHistory(snapshot) {
         var currentBubbleIds = new Set((window.currentTurnGeminiBubbles || []).map(function (bubble) {
@@ -1974,9 +1981,9 @@
             return saved;
         });
         var savedIds = new Set(messages.map(function (message) { return message.id; }));
-        I.setMessages(messages.concat(I.state.messages.filter(function (message) {
+        replaceMessages(messages.concat(I.state.messages.filter(function (message) {
             return message.createdAt > snapshot.updatedAt && !savedIds.has(message.id);
-        })));
+        })), true);
     };
 
     I.setComposerHidden = function setComposerHidden(hidden) {

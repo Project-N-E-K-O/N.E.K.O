@@ -87,6 +87,25 @@ describe('visual-only chat clearing', () => {
     expect(fresh.container.querySelector('.message-list')).toHaveTextContent('Original history');
   });
 
+  it('keeps cleared rows hidden when the desktop restores chat history', () => {
+    const old = message('old', 'Cleared history');
+    const fresh = message('new', 'Message from the other window');
+    const { container, rerender } = render(<App chatSurfaceMode="full" messages={[old]} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Clear screen' }));
+    act(() => window.dispatchEvent(new CustomEvent('react-chat-window:messages-replaced', {
+      detail: { conversationReset: false, historyRestore: true },
+    })));
+    rerender(<App chatSurfaceMode="full" messages={[old, fresh]} />);
+    const history = container.querySelector('.message-list');
+    expect(history).not.toHaveTextContent('Cleared history');
+    expect(history).toHaveTextContent('Message from the other window');
+
+    act(() => window.dispatchEvent(new CustomEvent('react-chat-window:messages-replaced', {
+      detail: { conversationReset: true, historyRestore: true },
+    })));
+    expect(history).toHaveTextContent('Cleared history');
+  });
+
   it('does not export an invisible preselected message after clearing', async () => {
     const messages = [message('export-original', 'Keep this in the export')];
     const buildPreview = vi.fn().mockResolvedValue({ previewKind: 'empty' });
