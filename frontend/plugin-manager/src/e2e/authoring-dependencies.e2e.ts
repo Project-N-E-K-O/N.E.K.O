@@ -230,3 +230,43 @@ appearanceTest(
     await page.screenshot({ path: '/tmp/neko-dependencies-narrow.png', fullPage: true })
   }
 )
+
+appearanceTest(
+  'empty full declaration can return to the basic form and cancel',
+  async ({ page }) => {
+    const requests = await dependencyFixture(page)
+    await page.goto(`${PREVIEW_ORIGIN}/ui/workbench?project=dependency-project`)
+    await page.getByRole('tab', { name: 'Dependencies', exact: true }).click()
+    const panel = page.getByTestId('project-dependencies')
+    await panel.getByRole('button', { name: 'Add package', exact: true }).click()
+    const dialog = page.getByRole('dialog')
+    await expect(dialog.locator('#python-package-name')).toBeVisible()
+    await dialog.getByText('Full declaration', { exact: true }).click()
+    await expect(dialog.locator('#python-package-requirement')).toBeVisible()
+    await expect(dialog.getByRole('checkbox')).toBeChecked()
+    await dialog.getByText('Full declaration', { exact: true }).click()
+    await expect(dialog.getByRole('checkbox')).not.toBeChecked({ timeout: 2000 })
+    await expect(dialog.locator('#python-package-name')).toBeVisible()
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+    await expect(dialog).not.toBeVisible()
+    expect(requests).toEqual([])
+  }
+)
+
+appearanceTest(
+  'cancel closes the empty full declaration editor without changing dependencies',
+  async ({ page }) => {
+    const requests = await dependencyFixture(page)
+    await page.goto(`${PREVIEW_ORIGIN}/ui/workbench?project=dependency-project`)
+    await page.getByRole('tab', { name: 'Dependencies', exact: true }).click()
+    const panel = page.getByTestId('project-dependencies')
+    await panel.getByRole('button', { name: 'Add package', exact: true }).click()
+    const dialog = page.getByRole('dialog')
+    await dialog.getByText('Full declaration', { exact: true }).click()
+    await expect(dialog.locator('#python-package-requirement')).toBeVisible()
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+    await expect(dialog).not.toBeVisible()
+    await expect(panel.locator('.python-package-declaration')).toHaveCount(1)
+    expect(requests).toEqual([])
+  }
+)

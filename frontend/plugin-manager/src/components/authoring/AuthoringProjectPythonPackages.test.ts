@@ -164,6 +164,50 @@ afterEach(() => {
   vi.useRealTimers()
 })
 describe('project dependency management', () => {
+  it.each(['', '   '])(
+    'returns to the basic form after clearing the full declaration to %j',
+    async (value) => {
+      await mount()
+      await click(en.add)
+      await fill('python-package-name', 'demo')
+      await fill('python-package-version', '>=2')
+      const checkbox = document.querySelector<HTMLInputElement>(
+        '.el-dialog input[type="checkbox"]'
+      )!
+      checkbox.click()
+      await flush()
+      expect(document.querySelector<HTMLInputElement>('#python-package-requirement')?.value).toBe(
+        'demo>=2'
+      )
+      await fill('python-package-requirement', value)
+      checkbox.click()
+      await flush()
+      expect(checkbox.checked).toBe(false)
+      expect(document.querySelector<HTMLInputElement>('#python-package-name')?.value).toBe('')
+      expect(document.querySelector<HTMLInputElement>('#python-package-version')?.value).toBe('')
+      expect(document.querySelector<HTMLInputElement>('#python-package-extras')?.value).toBe('')
+      expect(document.querySelector<HTMLInputElement>('#python-package-marker')?.value).toBe('')
+      await click('Cancel')
+      expect(api.saveProjectPythonRequirements).not.toHaveBeenCalled()
+    }
+  )
+  it('returns to the basic form with a populated full declaration', async () => {
+    await mount()
+    await click(en.add)
+    const checkbox = document.querySelector<HTMLInputElement>('.el-dialog input[type="checkbox"]')!
+    checkbox.click()
+    await flush()
+    await fill('python-package-requirement', 'demo[extra]>=2; sys_platform == "win32"')
+    checkbox.click()
+    await flush()
+    expect(checkbox.checked).toBe(false)
+    expect(document.querySelector<HTMLInputElement>('#python-package-name')?.value).toBe('demo')
+    expect(document.querySelector<HTMLInputElement>('#python-package-version')?.value).toBe('>=2')
+    expect(document.querySelector<HTMLInputElement>('#python-package-extras')?.value).toBe('extra')
+    expect(document.querySelector<HTMLInputElement>('#python-package-marker')?.value).toBe(
+      'sys_platform == "win32"'
+    )
+  })
   it('retains a newly added unsaved declaration when reopening its editor', async () => {
     await mount()
     await click(en.add)

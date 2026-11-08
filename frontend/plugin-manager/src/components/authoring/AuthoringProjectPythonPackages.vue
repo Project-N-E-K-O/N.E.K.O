@@ -444,6 +444,13 @@ function changeDeclarationMode(value: boolean | string | number) {
     rawDeclaration.value = simpleDeclaration.value
     return
   }
+  if (!rawDeclaration.value.trim()) {
+    packageName.value = ''
+    packageVersion.value = ''
+    packageExtras.value = ''
+    packageMarker.value = ''
+    return
+  }
   const parsed = /^\s*([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[([^\]]*)\])?\s*([^;]*?)(?:;\s*(.*))?$/.exec(
     rawDeclaration.value
   )
