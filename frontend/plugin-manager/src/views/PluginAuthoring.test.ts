@@ -760,6 +760,7 @@ describe('authoring workbench backed by the server project list', () => {
       readyToolchain({
         uv: { installed: false, version: null },
         gh: { installed: true, version: '2.101.0', authenticated: false, login: null },
+        source_checkout: false,
       })
     )
     const container = await mount()
@@ -767,6 +768,10 @@ describe('authoring workbench backed by the server project list', () => {
     const tools = page('toolchain')
     expect(tools.style.display).not.toBe('none')
     expect(tools.querySelector('h3')!.textContent).toContain('0. Prepare tools')
+    expect([...tools.querySelectorAll('[data-tool]')].map((item) => item.getAttribute('data-tool'))).toEqual([
+      'git', 'gitIdentity', 'uv', 'gh', 'githubAccount',
+    ])
+    expect(tools.textContent).not.toContain('git clone')
     const uv = tools.querySelector('[data-tool="uv"]')!
     expect(uv.textContent).toContain(en.toolMissing)
     expect(uv.textContent).toContain(en.toolRequired)
