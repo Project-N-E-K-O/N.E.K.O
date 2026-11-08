@@ -28,7 +28,7 @@ from config import (
     EVIDENCE_PROMOTED_THRESHOLD,
 )
 
-from memory.evidence import evidence_score
+from memory.evidence import awaits_user_signal, evidence_score
 from memory.introspection import is_permanently_suppressed
 
 
@@ -74,6 +74,8 @@ class PromotionMixin:
             if r.get('status') != 'pending':
                 continue
             if evidence_score(r, now) < EVIDENCE_CONFIRMED_THRESHOLD:
+                continue
+            if awaits_user_signal(r):
                 continue
             r['status'] = 'confirmed'
             r['confirmed_at'] = now.isoformat()
@@ -153,6 +155,14 @@ class PromotionMixin:
                 continue
             if evidence_score(r, now) < EVIDENCE_PROMOTED_THRESHOLD:
                 continue
+            if awaits_user_signal(r):
+                # Rests only on the AI's own words and the user never backed
+                # it: score alone does not write it into persona.
+                logger.debug(
+                    f"[Promote] {lanlan_name}/{r.get('id')}: 只有 AI 自述、"
+                    f"没有用户信号，暂不升格"
+                )
+                continue
             try:
                 outcome = await self._apromote_with_merge(lanlan_name, r)
                 attempts += 1
@@ -193,6 +203,11 @@ class PromotionMixin:
                 # descriptors fail closed without advancement.
                 continue
             if evidence_score(r, now) < EVIDENCE_CONFIRMED_THRESHOLD:
+                continue
+            if awaits_user_signal(r):
+                # Only the AI's own words behind it and no confirmation from
+                # the user (an "engaged" reply adds score but not backing):
+                # stays pending, still eligible to be brought up.
                 continue
             r['status'] = 'confirmed'
             r['confirmed_at'] = now.isoformat()

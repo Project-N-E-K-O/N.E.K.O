@@ -68,6 +68,12 @@ from ._shared import (
     REFLECTION_COOLDOWN_MINUTES,
 )
 
+# Verdicts REFLECTION_FEEDBACK_PROMPT asks for, and the only ones written to
+# surfaced.json or turned into evidence (app/memory_server/post_turn.py).
+# "engaged" = went on with the topic or let it stand, without saying yes.
+REFLECTION_FEEDBACK_KINDS = frozenset({'confirmed', 'engaged', 'denied', 'ignored'})
+
+
 class SurfacingMixin:
     @staticmethod
     def _in_window(ts_str: str, cutoff: datetime) -> bool:
@@ -423,7 +429,7 @@ class SurfacingMixin:
             return None  # Unlike [] (no feedback), None means the call failed.
 
         # Update surfaced records (whitelist valid feedback values)
-        _VALID_FEEDBACK = {'confirmed', 'denied', 'ignored'}
+        _VALID_FEEDBACK = REFLECTION_FEEDBACK_KINDS
         for fb in feedbacks:
             if not isinstance(fb, dict):
                 continue

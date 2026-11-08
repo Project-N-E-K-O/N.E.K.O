@@ -119,6 +119,7 @@ EVIDENCE_SOURCE_USER_FACT = "user_fact"            # Stage-2 signal (§3.4)
 EVIDENCE_SOURCE_USER_CONFIRM = "user_confirm"      # check_feedback confirmed
 EVIDENCE_SOURCE_USER_REBUT = "user_rebut"          # check_feedback denied
 EVIDENCE_SOURCE_USER_IGNORE = "user_ignore"        # check_feedback ignored
+EVIDENCE_SOURCE_USER_ENGAGE = "user_engage"        # check_feedback engaged (chatted on, no yes)
 EVIDENCE_SOURCE_USER_KEYWORD_REBUT = "user_keyword_rebut"  # negative-keyword hook
 EVIDENCE_SOURCE_MIGRATION_SEED = "migration_seed"  # §5 one-shot migration
 EVIDENCE_SOURCE_PROMOTE_MERGE = "promote_merge"    # persona.entry_updated
@@ -126,6 +127,7 @@ EVIDENCE_SOURCE_PROMOTE_MERGE = "promote_merge"    # persona.entry_updated
 ALL_EVIDENCE_SOURCES: frozenset[str] = frozenset({
     EVIDENCE_SOURCE_USER_FACT, EVIDENCE_SOURCE_USER_CONFIRM,
     EVIDENCE_SOURCE_USER_REBUT, EVIDENCE_SOURCE_USER_IGNORE,
+    EVIDENCE_SOURCE_USER_ENGAGE,
     EVIDENCE_SOURCE_USER_KEYWORD_REBUT, EVIDENCE_SOURCE_MIGRATION_SEED,
     EVIDENCE_SOURCE_PROMOTE_MERGE,
 })

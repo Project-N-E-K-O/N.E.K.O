@@ -28,13 +28,16 @@ from functools import wraps
 from config import (
     IGNORED_REINFORCEMENT_DELTA,
     USER_CONFIRM_DELTA,
+    USER_ENGAGED_DELTA,
     USER_REBUT_DELTA,
 )
 from memory.event_log import (
     EVIDENCE_SOURCE_USER_CONFIRM,
+    EVIDENCE_SOURCE_USER_ENGAGE,
     EVIDENCE_SOURCE_USER_IGNORE,
     EVIDENCE_SOURCE_USER_REBUT,
 )
+from memory.reflection.surfacing import REFLECTION_FEEDBACK_KINDS
 from memory.outbox import OP_POST_TURN_SIGNALS
 from memory.message_sources import is_theater_memory_message
 
@@ -413,13 +416,20 @@ async def _run_post_turn_signals(
     # `if not powerful_enabled: continue`); skipping here too leaves facts.json
     # with no update path, regression caught by chatgpt-codex-connector on PR #1346.
     # OFF mode retains legacy per-turn Stage-1 for basic fact accumulation.
-    # Gate excludes pure theater batches only; all other inputs, including ordinary AI-only batches
-    # such as unanswered proactive speech, still extract ai_disclosure facts as before theater support.
-    theater_only_batch = bool(messages) and not ordinary_messages
-    if not powerful_enabled and not theater_only_batch:
+    # Only the user's own messages go in, like ON mode's path A: the basic
+    # prompt has no source field, so every fact it returns is stored as the
+    # user's (user_observation), and the AI's lines would turn its own words
+    # into "the user said". A batch with no user message (unanswered proactive
+    # speech, pure theater) extracts nothing: what the user never engaged with
+    # does not become memory.
+    if not powerful_enabled and user_msgs:
+        user_messages = [
+            message for message in ordinary_messages
+            if getattr(message, 'type', '') == 'human'
+        ]
         try:
             await runtime.fact_store.extract_facts(
-                ordinary_messages, lanlan_name, conversation_at=conversation_at,
+                user_messages, lanlan_name, conversation_at=conversation_at,
             )
         except Exception as e:
             logger.warning(f"[MemoryServer] OFF-mode 事实提取失败: {e}")
@@ -458,11 +468,13 @@ async def _run_post_turn_signals(
                         continue
                     rid = fb.get('reflection_id')
                     kind = fb.get('feedback')
-                    if rid and kind in ('confirmed', 'denied', 'ignored'):
+                    if rid and kind in REFLECTION_FEEDBACK_KINDS:
                         fb_map[rid] = kind
 
                 # RFC §3.1.5: confirmed → reinforcement += 1; denied →
-                # disputation += 1; ignored → reinforcement += -0.2.
+                # disputation += 1; ignored → reinforcement += -0.2;
+                # engaged (chatted on without a yes) → reinforcement += 0.3,
+                # which is not the user's backing (awaits_user_signal).
                 # pending→confirmed/denied state transitions happen in the
                 # score-driven auto_promote_stale path (not here).
                 #
@@ -478,6 +490,9 @@ async def _run_post_turn_signals(
                     if kind == 'confirmed':
                         delta = {'reinforcement': USER_CONFIRM_DELTA}
                         source = EVIDENCE_SOURCE_USER_CONFIRM
+                    elif kind == 'engaged':
+                        delta = {'reinforcement': USER_ENGAGED_DELTA}
+                        source = EVIDENCE_SOURCE_USER_ENGAGE
                     elif kind == 'denied':
                         delta = {'disputation': USER_REBUT_DELTA}
                         source = EVIDENCE_SOURCE_USER_REBUT
