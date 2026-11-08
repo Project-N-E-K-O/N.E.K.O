@@ -1958,19 +1958,35 @@
         var liveMessages = I.state.messages.filter(function (message) {
             return currentBubbleIds.has(message.id);
         });
-        var matchedIds = new Set();
+        var liveById = new Map(liveMessages.map(function (message) { return [message.id, message]; }));
+        var snapshotIds = new Set(snapshot.messages.map(function (message) { return message.id; }));
+        var unmatchedLive = liveMessages.filter(function (message) { return !snapshotIds.has(message.id); });
+        var unmatchedSaved = snapshot.messages.filter(function (message) { return !liveById.has(message.id); });
+        var ambiguousLiveIds = new Set();
+
+        function hasMatchingReplyPrefix(saved, live) {
+            if (saved.role !== 'assistant' || live.role !== 'assistant'
+                    || !saved.turnId || saved.turnId !== live.turnId) return false;
+            var savedText = saved.blocks.length === 1 && saved.blocks[0].text;
+            var liveText = live.blocks.length === 1 && live.blocks[0].text;
+            return typeof savedText === 'string' && savedText.length > 0
+                && typeof liveText === 'string' && liveText.length > 0
+                && (liveText.startsWith(savedText) || savedText.startsWith(liveText));
+        }
+
         var messages = snapshot.messages.map(function (saved) {
-            var live = liveMessages.find(function (message) {
-                if (matchedIds.has(message.id)) return false;
-                if (saved.id === message.id) return true;
-                if (saved.role !== 'assistant' || !saved.turnId || saved.turnId !== message.turnId) return false;
-                var savedText = saved.blocks.length === 1 && saved.blocks[0].text;
-                var liveText = message.blocks.length === 1 && message.blocks[0].text;
-                return typeof savedText === 'string' && typeof liveText === 'string'
-                    && (liveText.startsWith(savedText) || savedText.startsWith(liveText));
-            });
+            var live = liveById.get(saved.id);
+            if (!live) {
+                var candidates = unmatchedLive.filter(function (message) { return hasMatchingReplyPrefix(saved, message); });
+                if (candidates.length === 1 && unmatchedSaved.filter(function (message) {
+                    return hasMatchingReplyPrefix(message, candidates[0]);
+                }).length === 1) {
+                    live = candidates[0];
+                } else {
+                    candidates.forEach(function (message) { ambiguousLiveIds.add(message.id); });
+                }
+            }
             if (live) {
-                matchedIds.add(live.id);
                 var keepSavedText = live.blocks[0]?.text?.length < saved.blocks[0]?.text?.length;
                 return Object.assign({}, live, {
                     blocks: keepSavedText ? saved.blocks : live.blocks,
@@ -1981,8 +1997,11 @@
             return saved;
         });
         var savedIds = new Set(messages.map(function (message) { return message.id; }));
+        var preserveLocalAfter = snapshot.messages.length && snapshot.handoffStartedAt
+            ? Math.min(snapshot.updatedAt, snapshot.handoffStartedAt) : snapshot.updatedAt;
         replaceMessages(messages.concat(I.state.messages.filter(function (message) {
-            return message.createdAt > snapshot.updatedAt && !savedIds.has(message.id);
+            var liveWithNoUniqueMatch = message.status === 'streaming' && ambiguousLiveIds.has(message.id);
+            return !savedIds.has(message.id) && (message.createdAt > preserveLocalAfter || liveWithNoUniqueMatch);
         })), true);
     };
 

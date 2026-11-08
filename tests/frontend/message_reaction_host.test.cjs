@@ -68,7 +68,7 @@ test('desktop history restore keeps the destination streaming bubble and newer l
   ]);
   window.currentTurnGeminiBubbles = [{ dataset: { reactChatMessageId: live.id } }];
 
-  I.restoreChatHistory({ updatedAt: 30, messages: [
+  I.restoreChatHistory({ updatedAt: 50, handoffStartedAt: 30, messages: [
     message('saved-user', { createdAt: 10, sortKey: 10 }),
     { ...live, id: 'other-window-reply', blocks: [{ type: 'text', text: 'Partial response' }] },
   ] });
@@ -81,6 +81,25 @@ test('desktop history restore keeps the destination streaming bubble and newer l
   assert.equal(events.at(-1).detail.conversationReset, false);
   I.updateMessage(live.id, { status: 'sent' });
   assert.equal(I.state.messages[1].status, 'sent');
+});
+
+test('desktop history restore keeps distinct replies when a streaming prefix has multiple matches', () => {
+  const { I, window } = fixture();
+  const live = message('local-reply', {
+    role: 'assistant', status: 'streaming', turnId: 'turn-1', createdAt: 20, sortKey: 20,
+    blocks: [{ type: 'text', text: 'Hello again, friend' }],
+  });
+  I.setMessages([live]);
+  window.currentTurnGeminiBubbles = [{ dataset: { reactChatMessageId: live.id } }];
+  I.restoreChatHistory({ updatedAt: 30, messages: [
+    { ...live, id: 'first-reply', sortKey: 10, status: 'sent', blocks: [{ type: 'text', text: 'Hello' }] },
+    { ...live, id: 'second-reply', sortKey: 15, status: 'sent', blocks: [{ type: 'text', text: 'Hello again' }] },
+  ] });
+
+  assert.deepEqual(Array.from(I.state.messages, row => row.id), ['first-reply', 'second-reply', live.id]);
+  assert.equal(I.state.messages[0].blocks[0].text, 'Hello');
+  assert.equal(I.state.messages[1].blocks[0].text, 'Hello again');
+  assert.equal(I.updateMessage(live.id, { status: 'sent' }).status, 'sent');
 });
 
 function message(id = 'user-1', extra = {}) {
