@@ -7526,11 +7526,12 @@ margin-top: 10px;
 [data-theme="dark"] .catgirl-panel-right .field-row-wrapper label,
 [data-theme="dark"] .catgirl-panel-right .language-preference-label,
 [data-theme="dark"] .card-meta-title,
+[data-theme="dark"] .card-meta-origin-badge,
 [data-theme="dark"] .live2d-link {
     color: #7dd3fc;
 }
 
-[data-theme="dark"] .card-meta-origin-badge {
+[data-theme="dark"] .card-meta-origin-badge:is(.origin-self, .origin-imported, .origin-steam, .origin-molili) {
     color: #0f172a;
 }
 
