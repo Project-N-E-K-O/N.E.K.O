@@ -138,6 +138,24 @@ def test_cancellation_after_archive_commit_does_not_reclassify_successful_build(
     assert list(package.parent.iterdir()) == [package]
 
 
+def test_archive_export_accepts_a_long_valid_output_filename(tmp_path):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "payload.txt").write_text("new payload")
+    destination = tmp_path / "dist"
+    destination.mkdir()
+    package = destination / ("a" * 238 + ".neko-plugin")
+    try:
+        package.write_bytes(b"previous package")
+    except OSError as exc:
+        pytest.skip(f"Filesystem cannot create this long output filename: {exc}")
+
+    PluginBuilder().export_package(staging, package)
+    with zipfile.ZipFile(package) as archive:
+        assert archive.read("payload.txt") == b"new payload"
+    assert list(destination.iterdir()) == [package]
+
+
 def _make_plugin_dir(tmp_path: Path, plugin_id: str = "demo_plugin") -> Path:
     plugin_dir = tmp_path / plugin_id
     plugin_dir.mkdir(parents=True, exist_ok=True)

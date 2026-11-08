@@ -470,7 +470,7 @@ class PluginBuilder:
             for path in staging_root.rglob("*")
             if not path.is_dir()
         ]
-        with tempfile.TemporaryDirectory(prefix=f".{package_path.name}.", dir=package_path.parent) as output:
+        with tempfile.TemporaryDirectory(prefix=".neko-export-", dir=package_path.parent) as output:
             # Let ordinary archive creation apply the current umask, without
             # changing process-wide state or inheriting mkstemp's fixed 0600.
             temporary = Path(output) / "archive.tmp"
