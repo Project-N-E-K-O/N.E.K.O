@@ -306,6 +306,7 @@
     }
 
     I.renderWindow = function renderWindow() {
+        if (window.nekoChatHistory) window.nekoChatHistory.publish();
         var overlay = I.getOverlay();
         if (!overlay || overlay.hidden) return;
         if (!I.mounted && I.getCurrentChatSurfaceMode() === 'compact') {
@@ -1941,6 +1942,42 @@
         I.renderWindow();
         return I.state.messages;
     }
+
+    I.restoreChatHistory = function restoreChatHistory(snapshot) {
+        var currentBubbleIds = new Set((window.currentTurnGeminiBubbles || []).map(function (bubble) {
+            return bubble && bubble.dataset && bubble.dataset.reactChatMessageId;
+        }));
+        // Preserve the destination adapter's references to bubbles it is still streaming.
+        var liveMessages = I.state.messages.filter(function (message) {
+            return currentBubbleIds.has(message.id);
+        });
+        var matchedIds = new Set();
+        var messages = snapshot.messages.map(function (saved) {
+            var live = liveMessages.find(function (message) {
+                if (matchedIds.has(message.id)) return false;
+                if (saved.id === message.id) return true;
+                if (saved.role !== 'assistant' || !saved.turnId || saved.turnId !== message.turnId) return false;
+                var savedText = saved.blocks.length === 1 && saved.blocks[0].text;
+                var liveText = message.blocks.length === 1 && message.blocks[0].text;
+                return typeof savedText === 'string' && typeof liveText === 'string'
+                    && (liveText.startsWith(savedText) || savedText.startsWith(liveText));
+            });
+            if (live) {
+                matchedIds.add(live.id);
+                var keepSavedText = live.blocks[0]?.text?.length < saved.blocks[0]?.text?.length;
+                return Object.assign({}, live, {
+                    blocks: keepSavedText ? saved.blocks : live.blocks,
+                    sortKey: saved.sortKey
+                });
+            }
+            if (saved.status === 'streaming') return Object.assign({}, saved, { status: 'sent' });
+            return saved;
+        });
+        var savedIds = new Set(messages.map(function (message) { return message.id; }));
+        I.setMessages(messages.concat(I.state.messages.filter(function (message) {
+            return message.createdAt > snapshot.updatedAt && !savedIds.has(message.id);
+        })));
+    };
 
     I.setComposerHidden = function setComposerHidden(hidden) {
         var next = !!hidden;
