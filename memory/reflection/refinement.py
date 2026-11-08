@@ -89,10 +89,13 @@ class RefinementMixin:
         produce: dict,
         entity: str,
         now: datetime,
+        *,
+        absorbed_facts: list[dict] | tuple = (),
     ) -> dict:
         """Build a reflection produced by merge; merges source_fact_ids (including
         absorbed_from_fact_ids), status takes the highest (promoted > confirmed >
-        pending), reinforcement takes the max."""
+        pending), reinforcement takes the max. ``absorbed_facts`` (the fact
+        dicts, when known) join the evidence-source accounting."""
         return build_merge_reflection(
             srcs,
             fact_source_ids,
@@ -101,22 +104,43 @@ class RefinementMixin:
             now,
             id_factory=self._refine_reflection_id,
             normalizer=self._normalize_reflection,
+            absorbed_facts=list(absorbed_facts),
         )
 
     @staticmethod
     def _apply_refine_modify(
         src: dict, new_text: str, reason: str, now_iso: str,
         *, absorbed_fact_ids: list[str] | tuple = (),
+        absorbed_facts: list[dict] | tuple = (),
     ) -> None:
         """Rewrite ``src`` in place; the old text goes to ``modification_history``.
 
         Shared by refine ``modify`` and introspection ``rewrite`` — the
         reflection twin of ``PersonaManager._apply_refine_modify``.
+        ``absorbed_facts`` are the dicts behind ``absorbed_fact_ids`` when
+        known; the ones not yet counted join ``fact_source_counts``. A fact of
+        the absorbed batch the line did not rest on (``based_on``) is in
+        ``source_fact_ids`` but not counted, so dedupe is by
+        ``counted_fact_ids``.
         """
+        from memory.evidence import counted_fact_ids, merge_fact_source_counts
+
         absorbed = list(absorbed_fact_ids)
         old_text = src.get('text', '')
         src['text'] = new_text
         existing_sources = list(src.get('source_fact_ids') or [])
+        already_counted = counted_fact_ids(src)
+        new_facts = [
+            f for f in absorbed_facts
+            if isinstance(f, dict) and f.get('id') not in already_counted
+        ]
+        if new_facts and isinstance(src.get('fact_source_counts'), dict):
+            counts = merge_fact_source_counts([src], new_facts)
+            if counts is not None:
+                src['fact_source_counts'] = counts
+                src['counted_fact_ids'] = sorted(
+                    already_counted | {f['id'] for f in new_facts if f.get('id')}
+                )
         src['source_fact_ids'] = sorted(set(existing_sources + absorbed))
         if absorbed:
             # Facts of unknown age joined: the line is no longer known to
@@ -269,12 +293,13 @@ class RefinementMixin:
             and e.get(REFINE_TYPE_KEY) == 'reflection'
             and e.get('id')
         }
-        cluster_fact_ids = {
-            e.get('id') for e in cluster
+        cluster_facts = {
+            e.get('id'): e for e in cluster
             if isinstance(e, dict)
             and e.get(REFINE_TYPE_KEY) == 'fact'
             and e.get('id')
         }
+        cluster_fact_ids = set(cluster_facts)
 
         async with self._get_alock(name):
             reflections = await self.aload_reflections(name)
@@ -372,9 +397,18 @@ class RefinementMixin:
                     text = str(produce.get('text', '')).strip()
                     if not text:
                         continue
+                    merge_srcs = [refl_by_id[sid] for sid in valid_refl_ids]
+                    from memory.evidence import counted_fact_ids
+                    already_counted: set[str] = set()
+                    for merge_src in merge_srcs:
+                        already_counted |= counted_fact_ids(merge_src)
                     new_refl = self._build_merge_reflection(
-                        [refl_by_id[sid] for sid in valid_refl_ids],
+                        merge_srcs,
                         valid_fact_sources, produce, entity, now,
+                        absorbed_facts=[
+                            cluster_facts[fid] for fid in dict.fromkeys(valid_fact_sources)
+                            if fid not in already_counted
+                        ],
                     )
                     produced.append(new_refl)
                     consumed.update(valid_refl_ids)
@@ -403,6 +437,10 @@ class RefinementMixin:
                     self._apply_refine_modify(
                         src, new_text, reason, now_iso,
                         absorbed_fact_ids=valid_fact_sources,
+                        absorbed_facts=[
+                            cluster_facts[fid]
+                            for fid in dict.fromkeys(valid_fact_sources)
+                        ],
                     )
                     applied += 1
 

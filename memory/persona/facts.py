@@ -341,14 +341,18 @@ class FactsMixin:
     async def aadd_fact(self, name: str, text: str, entity: str = 'master',
                         source: str = 'manual', source_id: str | None = None,
                         subject=None,
-                        speaker_provenance: dict | None = None) -> str:
+                        speaker_provenance: dict | None = None,
+                        fact_source_counts: dict | None = None) -> str:
         """P2.a.2: character-level asyncio.Lock serializes add_fact /
         resolve_corrections / record_mentions, preventing persona.json write races.
 
         Note: _aqueue_correction is invoked while already inside this lock, and
         its standalone lock is an asyncio.Lock (reentrant? no — asyncio.Lock is
         not reentrant) → so inside the lock we call the **unlocked** version of
-        _aqueue_correction."""
+        _aqueue_correction.
+
+        ``fact_source_counts`` (a promoted reflection's user / AI fact counts)
+        is recorded on the new entry as is; nothing reads it for behavior."""
         from memory.scopes import coerce_subject
         memory_subject = coerce_subject(subject)
         if memory_subject is not None:
@@ -403,10 +407,13 @@ class FactsMixin:
                 )
                 return self.FACT_QUEUED_CORRECTION
 
-            section_facts.append(self._build_fact_entry(
+            entry = self._build_fact_entry(
                 text, source, source_id, subject=memory_subject,
                 speaker_provenance=speaker_provenance,
-            ))
+            )
+            if isinstance(fact_source_counts, dict):
+                entry['fact_source_counts'] = dict(fact_source_counts)
+            section_facts.append(entry)
             await self.asave_persona(name, persona)
             return self.FACT_ADDED
 

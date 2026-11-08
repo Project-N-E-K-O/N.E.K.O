@@ -24,7 +24,11 @@ from datetime import datetime, timedelta
 
 
 
-from memory.evidence import initial_reinforcement_from_importance
+from memory.evidence import (
+    count_fact_sources,
+    initial_reinforcement_from_importance,
+    is_ai_disclosure,
+)
 
 
 
@@ -101,6 +105,74 @@ def _detect_synthesis_prompt_language(text: str) -> str:
     return detect_prompt_language_with_ascii_fallback(
         text,
         ui_language=get_global_language_full(),
+    )
+
+
+def _synthesis_fact_line(fact: dict, ai_mark: str, number: int | None = None) -> str:
+    """One fact line of the synthesis prompt.
+
+    The AI's own statements carry ``ai_mark`` so the model can tell them from
+    what the user said; REFLECTION_PROMPT says they are no evidence of the
+    user's traits or of how the two get along. Lines of the batch itself are
+    numbered so the model can name the ones it used (``based_on``); related
+    background lines are not.
+    """
+    mark = ai_mark if is_ai_disclosure(fact) else ''
+    prefix = f"[{number}] " if number is not None else ''
+    return f"- {prefix}{fact.get('text', '')}{mark} (importance: {fact.get('importance', 5)})"
+
+
+def _supporting_facts(based_on, facts: list[dict]) -> list[dict]:
+    """The facts a synthesized reflection rests on, by the model's ``based_on``.
+
+    ``based_on`` holds 1-based numbers of the numbered fact list. Unusable
+    entries are ignored; with none usable (field missing, older prompt, bad
+    shape) the whole batch counts, as before the field existed. Only the
+    head-start score and ``fact_source_counts`` use this; the reflection
+    still absorbs the whole batch (``source_fact_ids``).
+    """
+    if not isinstance(based_on, list):
+        return list(facts)
+    picked: list[dict] = []
+    seen: set[int] = set()
+    for item in based_on:
+        if isinstance(item, bool) or (isinstance(item, float) and not item.is_integer()):
+            continue
+        try:
+            n = int(item)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= n <= len(facts) and n not in seen:
+            seen.add(n)
+            picked.append(facts[n - 1])
+    return picked or list(facts)
+
+
+def _synthesis_items(result, limit: int) -> list[dict]:
+    """The memory objects of a synthesis answer, at most ``limit``.
+
+    REFLECTION_PROMPT asks for a JSON array; a single object (the older
+    format) or ``{"reflections": [...]}`` is accepted too. Non-objects drop.
+    """
+    if isinstance(result, dict):
+        inner = result.get('reflections')
+        items = inner if isinstance(inner, list) else [result]
+    elif isinstance(result, list):
+        items = result
+    else:
+        return []
+    return [item for item in items if isinstance(item, dict)][:max(int(limit), 1)]
+
+
+def _from_batch(reflection, batch_id: str) -> bool:
+    """Whether ``reflection`` was synthesized from the batch ``batch_id``.
+
+    Lines written before a call could yield several carry the batch id as
+    their own id; newer ones also record it as ``synthesis_batch_id``.
+    """
+    return isinstance(reflection, dict) and (
+        reflection.get('id') == batch_id
+        or reflection.get('synthesis_batch_id') == batch_id
     )
 
 
@@ -289,7 +361,7 @@ class SynthesisMixin:
         # Unlocked advisory checks avoid unnecessary inference; final
         # locked dedup repeats against concurrent writes during LLM calls.
         existing_reflections = await self.aload_reflections(lanlan_name)
-        existing = next((r for r in existing_reflections if r.get('id') == rid), None)
+        existing = next((r for r in existing_reflections if _from_batch(r, rid)), None)
         if existing is not None:
             await self._fact_store.amark_absorbed(lanlan_name, source_fact_ids)
             logger.info(
@@ -334,7 +406,12 @@ class SynthesisMixin:
         prompt_lang = _detect_synthesis_prompt_language(
             self._synthesis_locale_text(unabsorbed),
         )
-        facts_text = "\n".join(f"- {f['text']} (importance: {f.get('importance', 5)})" for f in unabsorbed)
+        from config.prompts.prompts_memory import get_reflection_ai_disclosure_mark
+        ai_mark = get_reflection_ai_disclosure_mark(prompt_lang)
+        facts_text = "\n".join(
+            _synthesis_fact_line(f, ai_mark, number)
+            for number, f in enumerate(unabsorbed, 1)
+        )
         related_block = await self._build_related_context_block(
             lanlan_name,
             unabsorbed,
@@ -356,7 +433,6 @@ class SynthesisMixin:
         prompt = prompt.replace('{LANLAN_NAME}', lanlan_name)
         prompt = prompt.replace('{MASTER_NAME}', master_name)
 
-        skip_key = None
         try:
             set_call_type("memory_reflection")
             api_config = await self._config_manager.aget_model_api_config('summary')
@@ -367,7 +443,10 @@ class SynthesisMixin:
             # No business retries: one call terminal; outer try/except returns [].
             # Explicit thinking benefits creative/structured synthesis, ontology-field
             # consistency, and reflection quality. Budget/fallback: memory.thinking_llm.
-            from config import MEMORY_LLM_HARD_TIMEOUT_SECONDS
+            from config import (
+                MEMORY_LLM_HARD_TIMEOUT_SECONDS,
+                REFLECTION_SYNTHESIS_MAX_PER_BATCH,
+            )
             from memory.thinking_llm import ainvoke_thinking
             resp, _ = await ainvoke_thinking(  # noqa: LLM_INPUT_BUDGET  # prompt assembled from token-capped memory components (REFLECTION_*/RECALL_* budgets in the prompt builder).
                 api_config, prompt,
@@ -378,78 +457,34 @@ class SynthesisMixin:
             if raw.startswith("```"):
                 raw = raw.replace("```json", "").replace("```", "").strip()
             result = robust_json_loads(raw)
-            if not isinstance(result, dict):
-                logger.warning(f"[Reflection] LLM 返回非 dict: {type(result)}")
+            items = _synthesis_items(result, REFLECTION_SYNTHESIS_MAX_PER_BATCH)
+            if not items:
+                logger.warning(f"[Reflection] LLM 返回里没有记忆对象: {type(result)}")
                 await self._abump_synth_backoff(lanlan_name, backoff_key, "non-dict response")
                 return []
-            skip_key = self._synthesis_skip_key(result, impression_candidates)
-            if skip_key is None and result.get('skip') is True:
-                logger.info(
-                    f"[Reflection] {lanlan_name}: skip 指向的 id 不在候选集合里，"
-                    f"按正常新增处理"
+            drafts = [
+                draft for draft in (
+                    self._parse_synthesis_draft(
+                        lanlan_name, item, unabsorbed, impression_candidates,
+                        memory_subject,
+                    )
+                    for item in items
                 )
-            reflection_text = result.get('reflection', '')
-            if not isinstance(reflection_text, str):
-                if skip_key is None:
-                    logger.warning(f"[Reflection] reflection 字段非 str: {type(reflection_text)}")
-                    await self._abump_synth_backoff(lanlan_name, backoff_key, "reflection field non-str")
-                    return []
-                # A valid skip needs no text; it only matters if the skip
-                # target vanishes below, and then empty text is a failure.
-                reflection_text = ''
-            reflection_text = reflection_text.strip()
-            semantic_entity = result.get('entity', 'relationship')
-            if semantic_entity not in ('master', 'neko', 'relationship'):
-                semantic_entity = 'relationship'
-            reflection_entity = (
-                memory_subject.kind if memory_subject is not None
-                else semantic_entity
-            )
-
-            # Ontology fields (RFC §3). Missing fields are tolerated — we
-            # only enforce consistency when the LLM does fill them in, so
-            # older prompts stay compatible. Validation failure degrades
-            # to null (soft fail) rather than dropping the whole reflection.
-            rel_type = result.get('relation_type')
-            if rel_type is not None and not isinstance(rel_type, str):
-                rel_type = None
-            temporal = result.get('temporal_scope')
-            if temporal is not None and not isinstance(temporal, str):
-                temporal = None
-            subject = result.get('subject')
-            if subject is not None and not isinstance(subject, str):
-                subject = None
-            # Schema v2: LLM outputs relative event_when_raw (offset+unit),
-            # resolved against created_at. Missing whole/start/end sections are possible;
-            # normalize_event_when converts malformed values to None.
-            from memory.temporal import normalize_event_when as _norm_when
-            event_when_raw = _norm_when(result.get('event_when'))
-
-            ok, reason = _validate_reflection_ontology(
-                semantic_entity, rel_type, temporal, reflection_text,
-            )
-            if not ok:
-                logger.info(
-                    f"[Reflection] ontology 验证不通过({reason})，降级为 null: "
-                    f"entity={reflection_entity} rel_type={rel_type}"
-                )
-                # Strip the entire ontology tuple — keeping `subject` while
-                # dropping the rest would leave a half-structured record
-                # (no class but still a subject label), which downstream
-                # grouping/filtering can't interpret consistently.
-                rel_type = None
-                temporal = None
-                subject = None
+                if draft is not None
+            ]
         except Exception as e:
             logger.warning(f"[Reflection] 合成失败: {e}")
             await self._abump_synth_backoff(lanlan_name, backoff_key, f"LLM/parse exception: {e}")
             return []
 
-        if skip_key is not None:
-            # The batch restates an existing impression: absorb the facts and
-            # point that impression at them, but create nothing and add no
-            # evidence (re-scoring restated lines is what let hollow
-            # relationship sentences crowd the render budget).
+        # A memory that restates an existing impression: point that impression
+        # at the facts it rests on, but create nothing and add no evidence
+        # (re-scoring restated lines is what let hollow relationship sentences
+        # crowd the render budget). Recorded in its own lock section before the
+        # new lines, which reload the view.
+        covered_any = False
+        skips = [draft for draft in drafts if draft['skip_key'] is not None]
+        if skips:
             async with self._get_alock(lanlan_name):
                 if self._subject_forget_overlapped(
                     lanlan_name, memory_subject, forget_epoch,
@@ -460,40 +495,230 @@ class SynthesisMixin:
                         f"{memory_subject.scope}; dropping late skip"
                     )
                     return []
-                covered = await self._arecord_covered_facts_locked(
-                    lanlan_name, impression_candidates[skip_key],
-                    source_fact_ids, subject=memory_subject,
+                for draft in skips:
+                    draft['covered'] = await self._arecord_covered_facts_locked(
+                        lanlan_name, impression_candidates[draft['skip_key']],
+                        sorted(f['id'] for f in draft['supporting']),
+                        subject=memory_subject,
+                        facts=draft['supporting'],
+                    )
+                    covered_any = covered_any or draft['covered']
+        new_drafts: list[dict] = []
+        seen_texts: set[str] = set()
+        for draft in drafts:
+            if draft.get('covered'):
+                logger.info(
+                    f"[Reflection] {lanlan_name}: {len(draft['supporting'])} 条事实已被 "
+                    f"{draft['skip_key']} 覆盖，不新增反思"
                 )
-            if covered:
+                continue
+            if draft['skip_key'] is not None:
+                logger.info(
+                    f"[Reflection] {lanlan_name}: skip 目标 {draft['skip_key']} "
+                    f"已不再有效，按正常新增处理"
+                )
+            # Two objects with the same line are one memory.
+            if draft['text'] and draft['text'] not in seen_texts:
+                seen_texts.add(draft['text'])
+                new_drafts.append(draft)
+
+        if not new_drafts:
+            if covered_any:
                 await self._aclear_synth_backoff(lanlan_name, backoff_key)
                 await self._fact_store.amark_absorbed(lanlan_name, source_fact_ids)
-                logger.info(
-                    f"[Reflection] {lanlan_name}: {len(source_fact_ids)} 条事实已被 "
-                    f"{skip_key} 覆盖，不新增反思"
-                )
                 return []
-            logger.info(
-                f"[Reflection] {lanlan_name}: skip 目标 {skip_key} 已不再有效，"
-                f"按正常新增处理"
-            )
-
-        if not reflection_text:
             await self._abump_synth_backoff(lanlan_name, backoff_key, "empty reflection text")
             return []
 
-        # Create pending reflection, ID determined from source_fact_ids at function entry.
         now = datetime.now()
         now_iso = now.isoformat()
+        built = []
+        for index, draft in enumerate(new_drafts):
+            # The first line keeps the batch id (what older code wrote, so
+            # its idempotency check still recognizes the batch); the others
+            # derive theirs from it. All carry synthesis_batch_id.
+            reflection_id = (
+                rid if index == 0
+                else _reflection_id_from_facts(source_fact_ids + [f"#{index}"])
+            )
+            reflection = self._build_synthesized_reflection(
+                draft, reflection_id, rid, now, memory_subject,
+            )
+            # A restatement of a line introspection retired is stored already
+            # retired: it would otherwise sit in the prompt until next week's run.
+            # Checked before the lock -- it may embed the new text; the save
+            # rechecks only entries retired since.
+            restated, restatement_seen = await self._afind_retired_restatement(
+                lanlan_name, draft['text'], subject=memory_subject,
+            )
+            if restated is not None:
+                self._store_as_restatement(lanlan_name, reflection, restated, now_iso)
+            built.append((reflection, draft['text'], restated, restatement_seen))
 
+        # ── Lock only reload + deduplicated append + save ──
+        created: list[dict] = []
+        async with self._get_alock(lanlan_name):
+            if self._subject_forget_overlapped(
+                lanlan_name, memory_subject, forget_epoch,
+            ):
+                # The source facts were erased while the LLM was in flight.
+                # A late result must not recreate an immediately recallable
+                # scoped reflection after the forget response.
+                logger.info(
+                    f"[Reflection] {lanlan_name}: subject forget overlapped "
+                    f"synthesis for {memory_subject.key}/"
+                    f"{memory_subject.scope}; dropping late result"
+                )
+                return []
+            # Reload against concurrent synthesis during inference, deduplicating IDs/appending current lists.
+            reflections = await self.aload_reflections(lanlan_name)
+            if any(_from_batch(r, rid) for r in reflections):
+                logger.info(
+                    f"[Reflection] {lanlan_name}: 批次 {rid} 已被并发 synth 写入，跳过重复 append"
+                )
+            else:
+                for reflection, text, restated, restatement_seen in built:
+                    if restated is None:
+                        # Introspection may have retired a matching line after the
+                        # unlocked check; reflections are retired under this lock.
+                        restated = await self._arecheck_retired_restatement(
+                            lanlan_name, text, reflections, restatement_seen,
+                            subject=memory_subject,
+                        )
+                        if restated is not None:
+                            self._store_as_restatement(
+                                lanlan_name, reflection, restated, now_iso,
+                            )
+                    reflections.append(reflection)
+                    created.append(reflection)
+                await self.asave_reflections(lanlan_name, reflections)
+
+        # Reflection persisted by us or another writer: clear the full-set synthesis
+        # backoff outside locks; _aclear_synth_backoff acquires its own, avoiding
+        # reentrant deadlock.
+        await self._aclear_synth_backoff(lanlan_name, backoff_key)
+
+        # Always mark_absorbed idempotently, covering crashes after save before this step.
+        # The whole batch is absorbed, including facts no line rested on.
+        # fact_store owns locks; reflection locking unnecessary.
+        await self._fact_store.amark_absorbed(lanlan_name, source_fact_ids)
+
+        # Concurrent branches persisted another object's version: return nothing
+        # rather than unpersisted ghost reflections (returns are reflections
+        # created by this call).
+        for reflection in created:
+            # Never logger-log reflection text (privacy); local print fallback only. Scoped
+            # group/member text never even enters stdout, often collected as application
+            # logs and thus exporting scoped private data.
+            logger.info(
+                f"[Reflection] {lanlan_name}: 合成了新反思 {reflection['id']} "
+                f"(len={len(reflection['text'])} chars)"
+            )
+            if memory_subject is None:
+                print(f"[Reflection] {lanlan_name}: 新反思 {reflection['id']}: {reflection['text'][:50]}...")
+        return created
+
+    def _parse_synthesis_draft(
+        self, lanlan_name: str, item: dict, unabsorbed: list[dict],
+        impression_candidates: dict, memory_subject,
+    ) -> dict | None:
+        """One memory object of a synthesis answer, validated; None to drop it.
+
+        ``supporting`` is the facts it rests on (``based_on``, else the whole
+        batch); ``skip_key`` is the existing impression it restates, if any.
+        """
+        supporting = _supporting_facts(item.get('based_on'), unabsorbed)
+        skip_key = self._synthesis_skip_key(item, impression_candidates)
+        if skip_key is None and item.get('skip') is True:
+            logger.info(
+                f"[Reflection] {lanlan_name}: skip 指向的 id 不在候选集合里，"
+                f"按正常新增处理"
+            )
+        reflection_text = item.get('reflection', '')
+        if not isinstance(reflection_text, str):
+            if skip_key is None:
+                logger.warning(f"[Reflection] reflection 字段非 str: {type(reflection_text)}")
+                return None
+            # A valid skip needs no text; it only matters if the skip
+            # target vanishes, and then an empty text is dropped.
+            reflection_text = ''
+        reflection_text = reflection_text.strip()
+        semantic_entity = item.get('entity', 'relationship')
+        if semantic_entity not in ('master', 'neko', 'relationship'):
+            semantic_entity = 'relationship'
+        reflection_entity = (
+            memory_subject.kind if memory_subject is not None
+            else semantic_entity
+        )
+
+        # Ontology fields (RFC §3). Missing fields are tolerated — we
+        # only enforce consistency when the LLM does fill them in, so
+        # older prompts stay compatible. Validation failure degrades
+        # to null (soft fail) rather than dropping the whole reflection.
+        rel_type = item.get('relation_type')
+        if rel_type is not None and not isinstance(rel_type, str):
+            rel_type = None
+        temporal = item.get('temporal_scope')
+        if temporal is not None and not isinstance(temporal, str):
+            temporal = None
+        subject_label = item.get('subject')
+        if subject_label is not None and not isinstance(subject_label, str):
+            subject_label = None
+        # Schema v2: LLM outputs relative event_when_raw (offset+unit),
+        # resolved against created_at. Missing whole/start/end sections are possible;
+        # normalize_event_when converts malformed values to None.
+        from memory.temporal import normalize_event_when as _norm_when
+        event_when_raw = _norm_when(item.get('event_when'))
+
+        ok, reason = _validate_reflection_ontology(
+            semantic_entity, rel_type, temporal, reflection_text,
+        )
+        if not ok:
+            logger.info(
+                f"[Reflection] ontology 验证不通过({reason})，降级为 null: "
+                f"entity={reflection_entity} rel_type={rel_type}"
+            )
+            # Strip the entire ontology tuple — keeping `subject` while
+            # dropping the rest would leave a half-structured record
+            # (no class but still a subject label), which downstream
+            # grouping/filtering can't interpret consistently.
+            rel_type = None
+            temporal = None
+            subject_label = None
+        return {
+            'skip_key': skip_key,
+            'text': reflection_text,
+            'entity': reflection_entity,
+            'relation_type': rel_type,
+            'temporal_scope': temporal,
+            'subject': subject_label,
+            'event_when_raw': event_when_raw,
+            'supporting': supporting,
+        }
+
+    def _build_synthesized_reflection(
+        self, draft: dict, reflection_id: str, batch_id: str, now: datetime,
+        memory_subject,
+    ) -> dict:
+        """A new reflection from one parsed memory of a synthesis answer."""
+        from memory.facts import safe_importance
+
+        now_iso = now.isoformat()
+        supporting = draft['supporting']
         # Importance-based reinforcement seeds give key-event reflections positive
         # starting scores without many user confirmations before CONFIRMED thresholds.
         # Bypass aapply_signal: synthesis has no event log. Initialize dictionaries
         # directly; synthesis is not event-sourced and initial values are ground truth.
-        max_importance = max(
-            (safe_importance(f) for f in unabsorbed),
-            default=5,
+        # Only the user's facts among those the reflection rests on earn a head
+        # start: the AI's own statements are no evidence, and an unrelated
+        # user fact elsewhere in the batch is no evidence for this line.
+        user_facts = [f for f in supporting if not is_ai_disclosure(f)]
+        initial_rein = (
+            initial_reinforcement_from_importance(
+                max(safe_importance(f) for f in user_facts),
+            )
+            if user_facts else 0.0
         )
-        initial_rein = initial_reinforcement_from_importance(max_importance)
 
         # Schema v2: event_start/end are ISO anchors shared by facts/reflections.
         # Fallbacks depend on temporal_scope:
@@ -504,21 +729,37 @@ class SynthesisMixin:
             compute_event_timestamps as _compute_ts,
         )
         from config import MEMORY_SCHEMA_VERSION_CURRENT as _SCHEMA_V
+        temporal = draft['temporal_scope']
         _needs_end = temporal in ('state', 'episode')
         event_start_at, event_end_at = _compute_ts(
-            event_when_raw,
+            draft['event_when_raw'],
             now_iso,
             fallback_start=True,
             fallback_end=_needs_end,
         )
 
+        supporting_ids = sorted(f['id'] for f in supporting)
         reflection = self._normalize_reflection({
-            'id': rid,
-            'text': reflection_text,
-            'entity': reflection_entity,
+            'id': reflection_id,
+            'text': draft['text'],
+            'entity': draft['entity'],
             'status': 'pending',  # pending | confirmed | denied | promoted | archived
-            'source_fact_ids': source_fact_ids,
-            'source_facts_oldest_at': _oldest_fact_time(unabsorbed),
+            # The facts this line rests on (``based_on``, else the whole
+            # batch); the whole batch is absorbed either way.
+            'source_fact_ids': supporting_ids,
+            # The batch it was synthesized from: lines of one batch share it,
+            # and the idempotency checks look for it.
+            'synthesis_batch_id': batch_id,
+            # How many of those facts are the user's and how many the AI's own
+            # (memory.evidence.awaits_user_signal holds back a reflection
+            # resting only on the latter), and which facts that covers
+            # (refine dedupes against it, memory.evidence.counted_fact_ids).
+            # On a new line it equals source_fact_ids; it is kept separate
+            # because refine and merge grow the two differently, and lines
+            # written while source_fact_ids was the whole batch rely on it.
+            'fact_source_counts': count_fact_sources(supporting),
+            'counted_fact_ids': supporting_ids,
+            'source_facts_oldest_at': _oldest_fact_time(supporting),
             'created_at': now_iso,
             'feedback': None,
             'next_eligible_at': (now + timedelta(minutes=REFLECTION_COOLDOWN_MINUTES)).isoformat(),
@@ -527,17 +768,17 @@ class SynthesisMixin:
             # Ontology (RFC §3). May be None if the model omitted them or
             # validation demoted them. Callers that want to filter or group
             # by relation_type should treat None as "uncategorized".
-            'relation_type': rel_type,
+            'relation_type': draft['relation_type'],
             'temporal_scope': temporal,
-            'subject': subject,
+            'subject': draft['subject'],
             # Schema v2 event timing (memory/temporal.py)
-            'event_when_raw': event_when_raw,
+            'event_when_raw': draft['event_when_raw'],
             'event_start_at': event_start_at,
             'event_end_at': event_end_at,
             'schema_version': _SCHEMA_V,
         })
         from memory.speaker_trust import provenance_of_entries
-        reflection.update(provenance_of_entries(unabsorbed))
+        reflection.update(provenance_of_entries(supporting))
         if memory_subject is not None:
             reflection.update(memory_subject.as_entry_fields())
             # Simplified group memory: scoped reflections bypass evidence confirmation. Group/member
@@ -558,73 +799,7 @@ class SynthesisMixin:
             if float(reflection.get('reinforcement') or 0.0) <= 0.0:
                 reflection['reinforcement'] = 0.1
                 reflection['rein_last_signal_at'] = now_iso
-
-        # A restatement of a line introspection retired is stored already
-        # retired: it would otherwise sit in the prompt until next week's run.
-        # Checked before the lock -- it may embed the new text; the save
-        # rechecks only entries retired since.
-        restated, restatement_seen = await self._afind_retired_restatement(
-            lanlan_name, reflection_text, subject=memory_subject,
-        )
-        if restated is not None:
-            self._store_as_restatement(lanlan_name, reflection, restated, now_iso)
-
-        # ── Lock only reload + deduplicated append + save ──
-        async with self._get_alock(lanlan_name):
-            if self._subject_forget_overlapped(
-                lanlan_name, memory_subject, forget_epoch,
-            ):
-                # The source facts were erased while the LLM was in flight.
-                # A late result must not recreate an immediately recallable
-                # scoped reflection after the forget response.
-                logger.info(
-                    f"[Reflection] {lanlan_name}: subject forget overlapped "
-                    f"synthesis for {memory_subject.key}/"
-                    f"{memory_subject.scope}; dropping late result"
-                )
-                return []
-            # Reload against concurrent synthesis during inference, deduplicating IDs/appending current lists.
-            reflections = await self.aload_reflections(lanlan_name)
-            if restated is None:
-                # Introspection may have retired a matching line after the
-                # unlocked check; reflections are retired under this lock.
-                restated = await self._arecheck_retired_restatement(
-                    lanlan_name, reflection_text, reflections, restatement_seen,
-                    subject=memory_subject,
-                )
-                if restated is not None:
-                    self._store_as_restatement(lanlan_name, reflection, restated, now_iso)
-            created = False
-            if any(r.get('id') == rid for r in reflections):
-                logger.info(
-                    f"[Reflection] {lanlan_name}: reflection {rid} 已被并发 synth 写入，跳过重复 append"
-                )
-            else:
-                reflections.append(reflection)
-                await self.asave_reflections(lanlan_name, reflections)
-                created = True
-
-        # Reflection persisted by us or another writer: clear the full-set synthesis
-        # backoff outside locks; _aclear_synth_backoff acquires its own, avoiding
-        # reentrant deadlock.
-        await self._aclear_synth_backoff(lanlan_name, backoff_key)
-
-        # Always mark_absorbed idempotently, covering crashes after save before this step.
-        # fact_store owns locks; reflection locking unnecessary.
-        await self._fact_store.amark_absorbed(lanlan_name, source_fact_ids)
-
-        if not created:
-            # Concurrent branches persisted another object's version. Returning our memory copy creates
-            # unpersisted ghost reflections potentially differing from disk, violating
-            # returns-are-reflections-created-by-this-call semantics.
-            return []
-        # Never logger-log reflection text (privacy); local print fallback only. Scoped
-        # group/member text never even enters stdout, often collected as application
-        # logs and thus exporting scoped private data.
-        logger.info(f"[Reflection] {lanlan_name}: 合成了新反思 {rid} (len={len(reflection_text)} chars)")
-        if memory_subject is None:
-            print(f"[Reflection] {lanlan_name}: 新反思 {rid}: {reflection_text[:50]}...")
-        return [reflection]
+        return reflection
 
     async def _build_related_context_block(
         self,
@@ -724,11 +899,12 @@ class SynthesisMixin:
         if not related:
             return ""
 
-        related_text = "\n".join(
-            f"- {f.get('text', '')} (importance: {f.get('importance', 5)})"
-            for f in related
+        from config.prompts.prompts_memory import (
+            get_reflection_ai_disclosure_mark,
+            get_reflection_related_context_note,
         )
-        from config.prompts.prompts_memory import get_reflection_related_context_note
+        ai_mark = get_reflection_ai_disclosure_mark(prompt_lang)
+        related_text = "\n".join(_synthesis_fact_line(f, ai_mark) for f in related)
         return (
             "======以下为相关历史背景======\n"
             f"{related_text}\n"
@@ -971,6 +1147,7 @@ class SynthesisMixin:
 
     async def _arecord_covered_facts_locked(
         self, lanlan_name: str, target: dict, fact_ids: list[str], *, subject=None,
+        facts: list[dict] | tuple = (),
     ) -> bool:
         """Attach a skipped fact batch to the impression that covers it.
 
@@ -980,6 +1157,12 @@ class SynthesisMixin:
         Returns False when the target is no longer an eligible impression,
         including when refinement or a correction rewrote its text while the
         LLM was judging the old wording.
+
+        ``facts`` (the dicts behind ``fact_ids``) join a reflection target's
+        ``fact_source_counts`` when not counted yet: the user restating an
+        impression that rested only on the AI's words is the user's backing
+        for it (``memory.evidence.awaits_user_signal``). Reinforcement stays
+        untouched, as for any restatement.
         """
         if target['kind'] == 'persona':
             return await self._persona_manager.arecord_covered_facts(
@@ -1006,7 +1189,22 @@ class SynthesisMixin:
             or not entry_matches_subject(entry, subject)
         ):
             return False
-        if merge_covered_fact_ids(entry, fact_ids):
+        changed = merge_covered_fact_ids(entry, fact_ids)
+        if isinstance(entry.get('fact_source_counts'), dict):
+            from memory.evidence import counted_fact_ids, merge_fact_source_counts
+            already = counted_fact_ids(entry)
+            new_facts = [
+                f for f in facts
+                if isinstance(f, dict) and f.get('id') and f['id'] not in already
+            ]
+            counts = merge_fact_source_counts([entry], new_facts) if new_facts else None
+            if counts is not None:
+                entry['fact_source_counts'] = counts
+                entry['counted_fact_ids'] = sorted(
+                    already | {f['id'] for f in new_facts}
+                )
+                changed = True
+        if changed:
             # Full-view write (promoted rows included) under the reflection
             # lock, same as the state-change path; asave_reflections only
             # takes the active list.

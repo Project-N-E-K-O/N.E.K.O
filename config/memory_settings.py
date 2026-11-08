@@ -44,6 +44,11 @@ ARCHIVE_FILE_MAX_ENTRIES = 500       # Maximum entries per archive shard.
 
 # §3.1.5 Ignored penalty.
 IGNORED_REINFORCEMENT_DELTA = -0.2   # check_feedback ignored → reinforcement += delta
+# check_feedback engaged: the user went on with the observation's topic, or let
+# it stand, without saying yes. Some weight, but not an explicit user signal
+# (memory.evidence.awaits_user_signal does not count it): chatting on cannot
+# confirm a reflection that rests only on the AI's own words.
+USER_ENGAGED_DELTA = 0.3
 
 # §3.1.8 Delta weights by signal source (v1.2.1 direct vs indirect).
 # Direct signals (explicit surfaced-reflection responses / negative-keyword hits) weight1.0;
@@ -61,6 +66,13 @@ USER_KEYWORD_REBUT_DELTA = 1.0       # Keywords + LLM target validation (direct 
 # Default first2 signals0.5 each; from third,0.5 +0.5 bonus=1.0.
 USER_FACT_REINFORCE_COMBO_THRESHOLD = 2   # Active when count > threshold.
 USER_FACT_REINFORCE_COMBO_BONUS = 0.5     # Extra weight per signal above threshold.
+
+# Upper bound on reinforcement, applied both when it is read and when it is
+# written, so stored values above it count as the cap at once. Uncapped, combo
+# reinforcement reached 160, and a user rebuttal (USER_REBUT_DELTA) could no
+# longer move the entry. Above EVIDENCE_PROMOTED_THRESHOLD so promotion keeps
+# its room; protected entries still score inf.
+EVIDENCE_REINFORCEMENT_CAP = 3.0
 
 # §3.4.3 Background signal-extraction triggers.
 EVIDENCE_SIGNAL_CHECK_ENABLED = True             # Independent switch.
@@ -668,6 +680,16 @@ REFLECTION_SYNTHESIS_FACTS_MAX = 20
 - Upstream: prolonged unabsorbed facts accumulate; the outer aget_unabsorbed_facts
   loop currently has no count limit, making this the only protection.
 - Rationale: 30 entries × average 50 tokens = 1500 tokens, sufficient for synthesis."""
+
+REFLECTION_SYNTHESIS_MAX_PER_BATCH = 3
+"""Most reflections one synthesis call may write.
+- Purpose: a batch of up to REFLECTION_SYNTHESIS_FACTS_MAX facts often spans
+  unrelated topics; with one reflection per call the other topics were
+  absorbed along with it and never synthesized. REFLECTION_PROMPT asks for at
+  most this many, one per topic, and extra objects in the answer are dropped.
+- Rationale: 3 covers the topics a 20-fact batch usually spans while keeping
+  the output (each line ≤ REFLECTION_TEXT_MAX_TOKENS) and the pending pool's
+  growth bounded."""
 
 MEMORY_REFLECTION_SYNTHESIS_INTERVAL_SECONDS = 180
 """Polling interval in seconds for ``_periodic_reflection_synthesis_loop``.

@@ -2985,7 +2985,7 @@ REFLECTION_PROMPT = {
 {FACTS}
 ======以上为事实======
 
-{EXISTING_IMPRESSIONS_BLOCK}请基于这些事实，整理出一条记忆（reflection）：概括出有信息量的特点、偏好或相处方式，不要写成某一次事件的经过，也不要下空泛的结论。请按以下五步思考：
+{EXISTING_IMPRESSIONS_BLOCK}请基于这些事实，整理出记忆（reflection），最多 3 条：每条概括出有信息量的特点、偏好或相处方式，不要写成某一次事件的经过，也不要下空泛的结论。请按以下五步思考：
 
 第一步：判断这条记忆主要关于谁（entity）
 - "master": 主要关于 {MASTER_NAME} 的个人特征
@@ -3005,6 +3005,8 @@ REFLECTION_PROMPT = {
 - 不下空泛结论、不加评价尾巴：禁止"形成了……默契/模式""体现了……""意味着……""说明了……""两人之间存在……纽带/羁绊""关系更加……"这类句子
   - 反例：「两人形成了互相关心的默契」
   - 正例：「{MASTER_NAME} 不舒服的时候，{LANLAN_NAME} 会隔一会儿就问一句"好点没"」
+- 标了「（{LANLAN_NAME}自述）」的事实只是 {LANLAN_NAME} 自己说过的话，不能当作 {MASTER_NAME} 的特点或两人相处方式的依据
+- 除非多条事实都这么说，否则不要用「总是／从不／每次／一定」这类绝对的说法
 - 简洁清晰，不得超过 150 字
 - **不要在 reflection 文本里使用"今天/刚刚/最近/这周/近期"等相对时间词** —— 具体时间靠 event_when 字段记录，文本保持中性叙事（例如"某次"、"那段时间"、"当时"）
 
@@ -3024,15 +3026,19 @@ REFLECTION_PROMPT = {
 - 例 2：事实中"今天感冒了" → {"start": {"offset": 0, "unit": "day"}, "end": null}
 - 例 3：长期"喜欢咖啡"（pattern） → null
 
-请以 JSON 格式返回，字段顺序保持如下：
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "概括出的特点、偏好或相处方式（主语写名字）", "temporal_scope": "pattern", "event_when": null}""",
+这批事实如果涉及几个互不相关的话题，可以分别写成几条记忆，最多 3 条，每条都按上面五步单独处理；同一个特点、偏好或相处方式只写一条，信息不够撑起一条记忆的话题不要硬写。
+
+最后在每条记忆的 based_on 里填写它实际依据的事实编号（上面事实列表里方括号中的数字），只填真正用到的。
+
+请以 JSON 数组返回，每条记忆一个对象，字段顺序保持如下：
+[{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "概括出的特点、偏好或相处方式（主语写名字）", "temporal_scope": "pattern", "event_when": null, "based_on": [1, 3]}]""",
     "zh-TW": """以下是關於 {LANLAN_NAME} 和 {MASTER_NAME} 的一系列已擷取事實：
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
 {FACTS}
 ======以上为事实======
 
-{EXISTING_IMPRESSIONS_BLOCK}請根據這些事實，整理出一條記憶（reflection）：概括出有資訊量的特點、偏好或相處方式，不要寫成某一次事件的經過，也不要下空泛的結論。請按以下五步思考：
+{EXISTING_IMPRESSIONS_BLOCK}請根據這些事實，整理出記憶（reflection），最多 3 條：每條概括出有資訊量的特點、偏好或相處方式，不要寫成某一次事件的經過，也不要下空泛的結論。請按以下五步思考：
 
 第一步：判斷這條記憶主要關於誰（entity）
 - "master": 主要關於 {MASTER_NAME} 的個人特徵
@@ -3052,6 +3058,8 @@ REFLECTION_PROMPT = {
 - 不下空泛結論、不加評價尾巴：禁止「形成了……默契/模式」「體現了……」「意味著……」「說明了……」「兩人之間存在……紐帶/羈絆」「關係更加……」這類句子
   - 反例：「兩人形成了互相關心的默契」
   - 正例：「{MASTER_NAME} 不舒服的時候，{LANLAN_NAME} 會隔一會兒就問一句『好點沒』」
+- 標了「（{LANLAN_NAME}自述）」的事實只是 {LANLAN_NAME} 自己說過的話，不能當作 {MASTER_NAME} 的特點或兩人相處方式的依據
+- 除非多條事實都這麼說，否則不要用「總是／從不／每次／一定」這類絕對的說法
 - 簡潔清晰，不得超過 150 字
 - **不要在 reflection 文字裡使用「今天/剛剛/最近/這週/近期」等相對時間詞** —— 具體時間由 event_when 欄位紀錄，文字保持中性敘事（例如「某次」、「那段時間」、「當時」）
 
@@ -3071,15 +3079,19 @@ REFLECTION_PROMPT = {
 - 例 2：事實中「今天感冒了」→ {"start": {"offset": 0, "unit": "day"}, "end": null}
 - 例 3：長期「喜歡咖啡」（pattern）→ null
 
-請以 JSON 格式回傳，欄位順序保持如下：
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "概括出的特點、偏好或相處方式（主語寫名字）", "temporal_scope": "pattern", "event_when": null}""",
+這批事實如果涉及幾個互不相關的話題，可以分別寫成幾條記憶，最多 3 條，每條都按上面五步單獨處理；同一個特點、偏好或相處方式只寫一條，資訊不夠撐起一條記憶的話題不要硬寫。
+
+最後在每條記憶的 based_on 裡填寫它實際依據的事實編號（上面事實列表裡方括號中的數字），只填真正用到的。
+
+請以 JSON 陣列回傳，每條記憶一個物件，欄位順序保持如下：
+[{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "概括出的特點、偏好或相處方式（主語寫名字）", "temporal_scope": "pattern", "event_when": null, "based_on": [1, 3]}]""",
     "en": """Below are a series of extracted facts about {LANLAN_NAME} and {MASTER_NAME}:
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
 {FACTS}
 ======以上为事实======
 
-{EXISTING_IMPRESSIONS_BLOCK}Based on these facts, write one memory (reflection): sum up an informative trait, preference or way of relating — not the account of a single event, and not an empty conclusion. Follow these five steps:
+{EXISTING_IMPRESSIONS_BLOCK}Based on these facts, write memories (reflections), at most 3: each sums up an informative trait, preference or way of relating — not the account of a single event, and not an empty conclusion. Follow these five steps:
 
 Step 1: Determine which entity the memory primarily concerns
 - "master": primarily about {MASTER_NAME}'s personal traits
@@ -3099,6 +3111,8 @@ Requirements:
 - No empty conclusions and no evaluative tail. Forbidden: "formed a tacit understanding / pattern of...", "reflects...", "means...", "shows that...", "a bond exists between the two...", "their relationship grew closer"
   - Bad: "The two formed a tacit habit of caring for each other"
   - Good: "Whenever {MASTER_NAME} feels unwell, {LANLAN_NAME} keeps asking 'feeling better yet?'"
+- Facts marked "(said by {LANLAN_NAME})" are only {LANLAN_NAME}'s own words; do not treat them as evidence of {MASTER_NAME}'s traits or of how the two get along
+- Unless several facts say so, do not use absolute words such as "always / never / every time / definitely"
 - Be concise and clear; the reflection MUST NOT exceed 150 words
 - **Do NOT use relative time words like "today / just now / recently / this week" in the reflection text** — specific timing lives in event_when; keep the prose neutral (e.g. "on one occasion", "during that period", "at that time")
 
@@ -3118,15 +3132,19 @@ Step 5: Annotate event_when (always use RELATIVE TIME, never absolute dates)
 - Example 2: "got a cold today" → {"start": {"offset": 0, "unit": "day"}, "end": null}
 - Example 3: long-term "loves coffee" (pattern) → null
 
-Return JSON with fields in this exact order:
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "the trait, preference or way of relating, summed up (name the actors)", "temporal_scope": "pattern", "event_when": null}""",
+If the facts cover several unrelated topics, write a separate memory for each, at most 3, working through the five steps for each one; write each trait, preference or way of relating only once, and skip topics without enough information to carry a memory.
+
+Finally, list in each memory's based_on the numbers of the facts it actually rests on (the bracketed numbers in the fact list above); include only the ones you really used.
+
+Return a JSON array with one object per memory, fields in this exact order:
+[{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "the trait, preference or way of relating, summed up (name the actors)", "temporal_scope": "pattern", "event_when": null, "based_on": [1, 3]}]""",
     "ja": """以下は {LANLAN_NAME} と {MASTER_NAME} に関する一連の抽出済み事実です：
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
 {FACTS}
 ======以上为事实======
 
-{EXISTING_IMPRESSIONS_BLOCK}これらの事実に基づき、記憶（reflection）を 1 つ書いてください：情報量のある特徴・好み・接し方をまとめ、ある一回の出来事の経緯や空虚な結論にはしないこと。次の 5 ステップで進めてください：
+{EXISTING_IMPRESSIONS_BLOCK}これらの事実に基づき、記憶（reflection）を最大 3 つ書いてください：それぞれ情報量のある特徴・好み・接し方をまとめ、ある一回の出来事の経緯や空虚な結論にはしないこと。次の 5 ステップで進めてください：
 
 ステップ 1：この記憶が主に誰についてのものか判断する（entity）
 - "master": 主に {MASTER_NAME} の個人的特徴について
@@ -3146,6 +3164,8 @@ Return JSON with fields in this exact order:
 - 空虚な結論や評価の締めくくりを付けないこと。「〜という暗黙の了解／パターンが形成された」「〜を体現している」「〜を意味する」「〜を示している」「二人の間には〜の絆がある」「関係がより深まった」のような文は禁止
   - 悪い例：「二人はお互いを気遣う暗黙の了解を形成した」
   - 良い例：「{MASTER_NAME} の具合が悪いと、{LANLAN_NAME} は何度も『もう良くなった？』と聞く」
+- 「（{LANLAN_NAME}本人の発言）」と付いた事実は {LANLAN_NAME} 自身が言ったことにすぎず、{MASTER_NAME} の特徴や二人の接し方の根拠にしてはならない
+- 複数の事実がそう示していない限り、「いつも／決して／毎回／必ず」のような断定的な言い方を使わないこと
 - 簡潔かつ明瞭で、150 字を超えてはならない
 - **reflection 本文に「今日／さっき／最近／今週」等の相対時間表現を入れないこと** —— 具体的な時間は event_when に記録し、本文は中性的な語り（「ある時」「その頃」等）にすること
 
@@ -3163,15 +3183,19 @@ Return JSON with fields in this exact order:
 - 事実に時間の手掛かりが一切ない場合（「最近」のような暗示すらない場合）は event_when 全体を null にする（システムが作成時刻でフォールバック）
 - 例：「先週月曜に登山」→ {"start": {"offset": -1, "unit": "week"}, "end": {"offset": -1, "unit": "week"}}
 
-JSON 形式で返してください。フィールドの順序は以下の通り保ってください：
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "まとめた特徴・好み・接し方（主語は名前で）", "temporal_scope": "pattern", "event_when": null}""",
+事実が互いに関係のない複数の話題にまたがる場合は、話題ごとに別の記憶として書いてよく（最大 3 つ）、それぞれ上の五つのステップで処理してください。同じ特徴・好み・接し方は 1 回だけ書き、記憶にするだけの情報がない話題は無理に書かないこと。
+
+最後に、各記憶が実際に根拠としている事実の番号（上の事実リストの角括弧内の数字）をその記憶の based_on に入れてください。実際に使ったものだけを入れること。
+
+記憶ごとに 1 つのオブジェクトを入れた JSON 配列で返してください。フィールドの順序は以下の通り保ってください：
+[{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "まとめた特徴・好み・接し方（主語は名前で）", "temporal_scope": "pattern", "event_when": null, "based_on": [1, 3]}]""",
     "ko": """다음은 {LANLAN_NAME}과 {MASTER_NAME}에 대해 추출된 일련의 사실입니다:
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
 {FACTS}
 ======以上为事实======
 
-{EXISTING_IMPRESSIONS_BLOCK}이 사실들을 바탕으로 기억(reflection) 하나를 작성해 주세요: 정보가 담긴 특징·취향·지내는 방식을 정리하고, 어느 한 번의 사건 경위나 공허한 결론으로 쓰지 마세요. 다음 다섯 단계를 따르세요:
+{EXISTING_IMPRESSIONS_BLOCK}이 사실들을 바탕으로 기억(reflection)을 최대 3개 작성해 주세요: 각각 정보가 담긴 특징·취향·지내는 방식을 정리하고, 어느 한 번의 사건 경위나 공허한 결론으로 쓰지 마세요. 다음 다섯 단계를 따르세요:
 
 1단계: 이 기억이 주로 누구에 대한 것인지 판단합니다 (entity)
 - "master": 주로 {MASTER_NAME}의 개인적 특성에 대해
@@ -3191,6 +3215,8 @@ JSON 形式で返してください。フィールドの順序は以下の通り
 - 공허한 결론이나 평가성 꼬리말을 붙이지 마세요. "~하는 암묵적인 합의/패턴이 형성되었다", "~을 보여준다", "~을 의미한다", "~을 드러낸다", "두 사람 사이에는 ~한 유대가 있다", "관계가 더 깊어졌다" 같은 문장은 금지
   - 나쁜 예: "두 사람은 서로를 챙기는 암묵적인 합의를 형성했다"
   - 좋은 예: "{MASTER_NAME}가 몸이 안 좋을 때면 {LANLAN_NAME}는 몇 번이고 '좀 나아졌어?'라고 묻는다"
+- "({LANLAN_NAME} 본인의 말)"이 붙은 사실은 {LANLAN_NAME}이 스스로 한 말일 뿐이므로, {MASTER_NAME}의 특징이나 두 사람이 지내는 방식의 근거로 삼지 마세요
+- 여러 사실이 그렇게 말하지 않는 한 "항상/절대/매번/반드시" 같은 단정적인 표현을 쓰지 마세요
 - 간결하고 명확하게, 150자를 초과해서는 안 됩니다
 - **reflection 본문에 "오늘/방금/최근/이번 주" 등 상대 시간 표현을 쓰지 마세요** —— 구체적 시간은 event_when에 기록하고, 본문은 중립적 서술 ("어느 시기에", "그 무렵" 등) 유지
 
@@ -3208,15 +3234,19 @@ JSON 形式で返してください。フィールドの順序は以下の通り
 - 사실에 시간 단서가 전혀 없으면("최근" 같은 암시조차 없으면) event_when 전체를 null로 (시스템이 생성 시각으로 폴백)
 - 예: "지난 월요일에 등산" → {"start": {"offset": -1, "unit": "week"}, "end": {"offset": -1, "unit": "week"}}
 
-JSON 형식으로 반환하며, 필드 순서는 다음과 같이 유지하세요:
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "정리한 특징·취향·지내는 방식 (주어는 이름으로)", "temporal_scope": "pattern", "event_when": null}""",
+사실들이 서로 관련 없는 여러 주제에 걸쳐 있다면 주제마다 별도의 기억으로 작성해도 됩니다(최대 3개). 각각 위의 다섯 단계를 따로 거치세요. 같은 특징·취향·지내는 방식은 한 번만 쓰고, 기억 하나를 이룰 만큼 정보가 없는 주제는 억지로 쓰지 마세요.
+
+마지막으로 각 기억이 실제로 근거로 삼은 사실의 번호(위 사실 목록의 대괄호 안 숫자)를 그 기억의 based_on에 적으세요. 실제로 사용한 것만 적으세요.
+
+기억마다 객체 하나씩 담은 JSON 배열로 반환하며, 필드 순서는 다음과 같이 유지하세요:
+[{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "정리한 특징·취향·지내는 방식 (주어는 이름으로)", "temporal_scope": "pattern", "event_when": null, "based_on": [1, 3]}]""",
     "ru": """Ниже представлена серия извлечённых фактов о {LANLAN_NAME} и {MASTER_NAME}:
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
 {FACTS}
 ======以上为事实======
 
-{EXISTING_IMPRESSIONS_BLOCK}На основе этих фактов напишите одно воспоминание (reflection): обобщите содержательную черту, предпочтение или манеру общения — не рассказ об одном событии и не пустой вывод. Выполните пять шагов:
+{EXISTING_IMPRESSIONS_BLOCK}На основе этих фактов напишите воспоминания (reflection), не больше 3: в каждом обобщите содержательную черту, предпочтение или манеру общения — не рассказ об одном событии и не пустой вывод. Выполните пять шагов:
 
 Шаг 1: Определите, к кому это воспоминание относится в первую очередь (entity)
 - "master": в основном о личных качествах {MASTER_NAME}
@@ -3236,6 +3266,8 @@ JSON 형식으로 반환하며, 필드 순서는 다음과 같이 유지하세�
 - Без пустых выводов и оценочных концовок. Запрещены фразы вроде «сложилось молчаливое взаимопонимание / сложился паттерн…», «это отражает…», «это означает…», «это показывает…», «между ними существует связь…», «их отношения стали ближе»
   - Плохо: «Между ними сложилось молчаливое взаимопонимание и забота друг о друге»
   - Хорошо: «Когда {MASTER_NAME} нездоровится, {LANLAN_NAME} то и дело спрашивает: „Уже лучше?“»
+- Факты с пометкой "(со слов {LANLAN_NAME})" — лишь собственные слова {LANLAN_NAME}; не считайте их свидетельством черт {MASTER_NAME} или того, как они общаются
+- Если на это не указывают несколько фактов, не используйте абсолютные слова вроде "всегда / никогда / каждый раз / обязательно"
 - Сжато и ясно; длина НЕ должна превышать 150 слов
 - **Не используйте в тексте reflection относительные слова времени "сегодня / только что / недавно / на этой неделе"** —— конкретное время фиксируется в event_when, текст держите нейтральным ("однажды", "в тот период")
 
@@ -3253,15 +3285,19 @@ JSON 형식으로 반환하며, 필드 순서는 다음과 같이 유지하세�
 - Если в фактах нет никаких временных меток (даже намёков вроде "недавно"), всё event_when = null (система подставит время создания)
 - Пример: "ходил в горы в прошлый понедельник" → {"start": {"offset": -1, "unit": "week"}, "end": {"offset": -1, "unit": "week"}}
 
-Верните в формате JSON, сохраняя порядок полей:
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "обобщённая черта, предпочтение или манера общения (исполнители названы по имени)", "temporal_scope": "pattern", "event_when": null}""",
+Если факты касаются нескольких не связанных между собой тем, напишите по отдельному воспоминанию на каждую тему, не больше 3, и пройдите пять шагов для каждого; каждую черту, предпочтение или манеру общения пишите только один раз, а темы без достаточной информации для воспоминания пропускайте.
+
+В конце перечислите в based_on каждого воспоминания номера фактов, на которых оно действительно основано (числа в квадратных скобках в списке фактов выше); указывайте только реально использованные.
+
+Верните JSON-массив, по одному объекту на воспоминание, сохраняя порядок полей:
+[{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "обобщённая черта, предпочтение или манера общения (исполнители названы по имени)", "temporal_scope": "pattern", "event_when": null, "based_on": [1, 3]}]""",
     "es": """A continuación hay una serie de hechos extraídos sobre {LANLAN_NAME} y {MASTER_NAME}:
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
 {FACTS}
 ======以上为事实======
 
-{EXISTING_IMPRESSIONS_BLOCK}Con base en estos hechos, escribe un solo recuerdo (reflection): resume un rasgo, una preferencia o una forma de tratarse que aporte información, no el relato de un solo suceso ni una conclusión vacía. Sigue estos cinco pasos:
+{EXISTING_IMPRESSIONS_BLOCK}Con base en estos hechos, escribe recuerdos (reflection), como máximo 3: cada uno resume un rasgo, una preferencia o una forma de tratarse que aporte información, no el relato de un solo suceso ni una conclusión vacía. Sigue estos cinco pasos:
 
 Paso 1: Determina a qué entidad se refiere principalmente el recuerdo
 - "master": principalmente sobre rasgos personales de {MASTER_NAME}
@@ -3281,6 +3317,8 @@ Requisitos:
 - Sin conclusiones vacías ni coletillas valorativas. Prohibido: "se formó una complicidad / un patrón de...", "refleja...", "significa...", "demuestra que...", "existe un vínculo entre ambos...", "su relación se volvió más cercana"
   - Mal: "Entre los dos se formó una complicidad de cuidarse mutuamente"
   - Bien: "Cuando {MASTER_NAME} se siente mal, {LANLAN_NAME} le pregunta a cada rato: '¿ya estás mejor?'"
+- Los hechos marcados con "(dicho por {LANLAN_NAME})" son solo palabras de {LANLAN_NAME}; no los tomes como prueba de los rasgos de {MASTER_NAME} ni de cómo se tratan los dos
+- Salvo que varios hechos lo indiquen, no uses palabras absolutas como "siempre / nunca / cada vez / sin falta"
 - Sé conciso y claro; la reflexión NO debe superar 150 palabras
 - **No uses palabras relativas de tiempo "hoy / hace un momento / recientemente / esta semana" en el texto** —— el tiempo concreto se registra en event_when; mantén la prosa neutra ("en una ocasión", "durante ese período")
 
@@ -3298,15 +3336,19 @@ Paso 5: Anota event_when con TIEMPO RELATIVO (prohibidas fechas absolutas)
 - Si los hechos no contienen ninguna pista temporal (ni siquiera insinuaciones como "recientemente"), escribe event_when como null (el sistema usa el tiempo de creación)
 - Ej.: "fui de excursión el lunes pasado" → {"start": {"offset": -1, "unit": "week"}, "end": {"offset": -1, "unit": "week"}}
 
-Devuelve JSON con los campos en este orden exacto:
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "el rasgo, la preferencia o la forma de tratarse, resumidos (con el nombre de quien actúa)", "temporal_scope": "pattern", "event_when": null}""",
+Si los hechos abarcan varios temas sin relación entre sí, escribe un recuerdo distinto para cada uno, como máximo 3, siguiendo los cinco pasos para cada uno; escribe cada rasgo, preferencia o forma de tratarse una sola vez y omite los temas sin información suficiente para un recuerdo.
+
+Por último, indica en el based_on de cada recuerdo los números de los hechos en los que se basa realmente (los números entre corchetes de la lista de hechos de arriba); incluye solo los que de verdad usaste.
+
+Devuelve un array JSON con un objeto por recuerdo y los campos en este orden exacto:
+[{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "el rasgo, la preferencia o la forma de tratarse, resumidos (con el nombre de quien actúa)", "temporal_scope": "pattern", "event_when": null, "based_on": [1, 3]}]""",
     "pt": """Abaixo há uma série de fatos extraídos sobre {LANLAN_NAME} e {MASTER_NAME}:
 
 {RELATED_CONTEXT_BLOCK}======以下为事实======
 {FACTS}
 ======以上为事实======
 
-{EXISTING_IMPRESSIONS_BLOCK}Com base nesses fatos, escreva uma única memória (reflection): resuma um traço, uma preferência ou uma forma de se tratar que traga informação, não o relato de um único acontecimento nem uma conclusão vazia. Siga estes cinco passos:
+{EXISTING_IMPRESSIONS_BLOCK}Com base nesses fatos, escreva memórias (reflection), no máximo 3: cada uma resume um traço, uma preferência ou uma forma de se tratar que traga informação, não o relato de um único acontecimento nem uma conclusão vazia. Siga estes cinco passos:
 
 Passo 1: Determine a qual entidade a memória se refere principalmente
 - "master": principalmente sobre características pessoais de {MASTER_NAME}
@@ -3326,6 +3368,8 @@ Requisitos:
 - Sem conclusões vazias nem arremates avaliativos. Proibido: "formou-se uma cumplicidade / um padrão de...", "reflete...", "significa...", "demonstra que...", "existe um vínculo entre os dois...", "a relação ficou mais próxima"
   - Ruim: "Os dois formaram uma cumplicidade de cuidar um do outro"
   - Bom: "Quando {MASTER_NAME} não está bem, {LANLAN_NAME} pergunta a toda hora: 'já está melhor?'"
+- Fatos marcados com "(dito por {LANLAN_NAME})" são apenas palavras de {LANLAN_NAME}; não os use como prova dos traços de {MASTER_NAME} nem de como os dois se tratam
+- A menos que vários fatos digam isso, não use palavras absolutas como "sempre / nunca / toda vez / com certeza"
 - Seja conciso e claro; a reflexão NÃO deve exceder 150 palavras
 - **Não use palavras de tempo relativo "hoje / agora mesmo / recentemente / esta semana" no texto** —— o tempo concreto fica em event_when; mantenha a prosa neutra ("em certa ocasião", "naquele período")
 
@@ -3343,8 +3387,12 @@ Passo 5: Anote event_when com TEMPO RELATIVO (datas absolutas proibidas)
 - Se os fatos não tiverem nenhuma pista temporal (nem insinuações como "recentemente"), escreva event_when como null (o sistema usa o horário de criação)
 - Ex.: "fui escalar segunda-feira passada" → {"start": {"offset": -1, "unit": "week"}, "end": {"offset": -1, "unit": "week"}}
 
-Retorne JSON com os campos nesta ordem exata:
-{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "o traço, a preferência ou a forma de se tratar, resumidos (com o nome de quem age)", "temporal_scope": "pattern", "event_when": null}""",
+Se os fatos abrangem vários temas sem relação entre si, escreva uma memória separada para cada um, no máximo 3, seguindo os cinco passos para cada uma; escreva cada traço, preferência ou forma de se tratar uma única vez e omita os temas sem informação suficiente para uma memória.
+
+Por fim, informe no based_on de cada memória os números dos fatos em que ela realmente se baseia (os números entre colchetes na lista de fatos acima); inclua só os que você de fato usou.
+
+Retorne um array JSON com um objeto por memória e os campos nesta ordem exata:
+[{"entity": "master/neko/relationship", "relation_type": "preference", "reflection": "o traço, a preferência ou a forma de se tratar, resumidos (com o nome de quem age)", "temporal_scope": "pattern", "event_when": null, "based_on": [1, 3]}]""",
 }
 
 
@@ -3367,28 +3415,28 @@ REFLECTION_RELATED_CONTEXT_NOTE = {
 # back to an ordinary new reflection built from them.
 REFLECTION_EXISTING_IMPRESSIONS_NOTE = {
     "zh": """上面是已经记下的印象，方括号里是 id。写之前先对照：
-- 如果这批事实没有超出其中某一条的新信息（只是同一个特点、偏好或相处方式又多了一个例子，或换个说法又出现了一次），请在返回的 JSON 最前面加上 "skip": true 和 "covered_by": "<那一条的 id，照方括号里的原样抄写>"，其余字段照常填写。
+- 如果这批事实没有超出其中某一条的新信息（只是同一个特点、偏好或相处方式又多了一个例子，或换个说法又出现了一次），请在这条记忆的 JSON 对象最前面加上 "skip": true 和 "covered_by": "<那一条的 id，照方括号里的原样抄写>"，其余字段照常填写。
 - 只有当这批事实带来了新的特点、偏好或相处方式，或者改变了已有的说法时，才不加这两个字段，照常写一条新记忆。""",
     "zh-TW": """上面是已經記下的印象，方括號裡是 id。寫之前先對照：
-- 如果這批事實沒有超出其中某一條的新資訊（只是同一個特點、偏好或相處方式又多了一個例子，或換個說法又出現了一次），請在回傳的 JSON 最前面加上 "skip": true 和 "covered_by": "<那一條的 id，照方括號裡的原樣抄寫>"，其餘欄位照常填寫。
+- 如果這批事實沒有超出其中某一條的新資訊（只是同一個特點、偏好或相處方式又多了一個例子，或換個說法又出現了一次），請在這條記憶的 JSON 物件最前面加上 "skip": true 和 "covered_by": "<那一條的 id，照方括號裡的原樣抄寫>"，其餘欄位照常填寫。
 - 只有當這批事實帶來了新的特點、偏好或相處方式，或者改變了已有的說法時，才不加這兩個欄位，照常寫一條新記憶。""",
     "en": """Above are impressions already on record; each id is in square brackets. Check them before writing:
-- If this batch of facts adds nothing beyond one of them (just one more instance of the same trait, preference or way of relating, or the same thing again in different words), put "skip": true and "covered_by": "<that entry's id, copied exactly from the brackets>" at the start of the returned JSON, and still fill in every other field as usual.
+- If this batch of facts adds nothing beyond one of them (just one more instance of the same trait, preference or way of relating, or the same thing again in different words), put "skip": true and "covered_by": "<that entry's id, copied exactly from the brackets>" at the start of that memory's JSON object, and still fill in every other field as usual.
 - Only when the facts bring a new trait, preference or way of relating, or change what is already on record, leave these two fields out and write a new memory as usual.""",
     "ja": """上は既に記録済みの印象で、角括弧内が id です。書く前に照らし合わせてください：
-- この事実群がそのうちどれか 1 件を超える新しい情報を含まない場合（同じ特徴・好み・接し方の例がもう一つ増えただけ、または言い方を変えて再び現れただけの場合）、返す JSON の先頭に "skip": true と "covered_by": "<その項目の id、角括弧内をそのまま書き写す>" を加え、その他のフィールドも通常どおり埋めてください。
+- この事実群がそのうちどれか 1 件を超える新しい情報を含まない場合（同じ特徴・好み・接し方の例がもう一つ増えただけ、または言い方を変えて再び現れただけの場合）、その記憶の JSON オブジェクトの先頭に "skip": true と "covered_by": "<その項目の id、角括弧内をそのまま書き写す>" を加え、その他のフィールドも通常どおり埋めてください。
 - 新しい特徴・好み・接し方が分かった場合、または既存の記述が変わる場合に限り、この 2 つのフィールドは加えず、通常どおり新しい記憶を書いてください。""",
     "ko": """위는 이미 기록된 인상이며, 대괄호 안이 id입니다. 쓰기 전에 먼저 대조하세요:
-- 이번 사실들이 그중 어느 한 항목을 넘어서는 새로운 정보가 없다면 (같은 특징·취향·지내는 방식의 예가 하나 더 늘었을 뿐이거나 표현만 바뀌어 다시 나타난 것이라면), 반환하는 JSON 맨 앞에 "skip": true 와 "covered_by": "<그 항목의 id, 대괄호 안을 그대로 옮겨 쓰기>"를 넣고, 나머지 필드도 평소대로 채우세요.
+- 이번 사실들이 그중 어느 한 항목을 넘어서는 새로운 정보가 없다면 (같은 특징·취향·지내는 방식의 예가 하나 더 늘었을 뿐이거나 표현만 바뀌어 다시 나타난 것이라면), 그 기억의 JSON 객체 맨 앞에 "skip": true 와 "covered_by": "<그 항목의 id, 대괄호 안을 그대로 옮겨 쓰기>"를 넣고, 나머지 필드도 평소대로 채우세요.
 - 새로운 특징·취향·지내는 방식이 드러났거나 기존 서술이 바뀌는 경우에만 이 두 필드를 넣지 말고 평소대로 새 기억을 작성하세요.""",
     "ru": """Выше — уже записанные впечатления, id указан в квадратных скобках. Сверьтесь с ними перед тем, как писать:
-- Если эта партия фактов не добавляет ничего сверх одного из них (лишь ещё один пример той же черты, предпочтения или манеры общения, либо то же самое другими словами), поставьте в начало возвращаемого JSON "skip": true и "covered_by": "<id этой записи, скопированный из скобок без изменений>", а остальные поля всё равно заполните как обычно.
+- Если эта партия фактов не добавляет ничего сверх одного из них (лишь ещё один пример той же черты, предпочтения или манеры общения, либо то же самое другими словами), поставьте в начало JSON-объекта этого воспоминания "skip": true и "covered_by": "<id этой записи, скопированный из скобок без изменений>", а остальные поля всё равно заполните как обычно.
 - Только если факты показывают новую черту, предпочтение или манеру общения либо меняют уже записанное, не добавляйте эти два поля и напишите новое воспоминание как обычно.""",
     "es": """Arriba están las impresiones ya registradas; cada id va entre corchetes. Compáralas antes de escribir:
-- Si este lote de hechos no aporta nada más allá de una de ellas (solo un ejemplo más del mismo rasgo, preferencia o forma de tratarse, o lo mismo dicho con otras palabras), pon "skip": true y "covered_by": "<el id de esa entrada, copiado tal cual de los corchetes>" al principio del JSON devuelto, y aun así rellena todos los demás campos como de costumbre.
+- Si este lote de hechos no aporta nada más allá de una de ellas (solo un ejemplo más del mismo rasgo, preferencia o forma de tratarse, o lo mismo dicho con otras palabras), pon "skip": true y "covered_by": "<el id de esa entrada, copiado tal cual de los corchetes>" al principio del objeto JSON de ese recuerdo, y aun así rellena todos los demás campos como de costumbre.
 - Solo si los hechos muestran un rasgo, una preferencia o una forma de tratarse nuevos, o cambian lo que ya consta, no añadas estos dos campos y escribe un recuerdo nuevo como de costumbre.""",
     "pt": """Acima estão as impressões já registradas; cada id fica entre colchetes. Compare antes de escrever:
-- Se este lote de fatos não acrescenta nada além de uma delas (apenas mais um exemplo do mesmo traço, preferência ou forma de se tratar, ou a mesma coisa com outras palavras), coloque "skip": true e "covered_by": "<o id dessa entrada, copiado exatamente dos colchetes>" no início do JSON retornado e, mesmo assim, preencha todos os outros campos normalmente.
+- Se este lote de fatos não acrescenta nada além de uma delas (apenas mais um exemplo do mesmo traço, preferência ou forma de se tratar, ou a mesma coisa com outras palavras), coloque "skip": true e "covered_by": "<o id dessa entrada, copiado exatamente dos colchetes>" no início do objeto JSON dessa memória e, mesmo assim, preencha todos os outros campos normalmente.
 - Somente se os fatos mostrarem um traço, uma preferência ou uma forma de se tratar novos, ou mudarem o que já está registrado, não adicione esses dois campos e escreva uma nova memória normalmente.""",
 }
 
@@ -3399,6 +3447,26 @@ def get_reflection_prompt(lang: str = "zh") -> str:
 
 def get_reflection_related_context_note(lang: str = "zh") -> str:
     return _loc(REFLECTION_RELATED_CONTEXT_NOTE, lang)
+
+
+# Appended to the AI's own statements (fact source ai_disclosure) in the
+# synthesis fact lists. REFLECTION_PROMPT quotes the same mark when it says
+# such facts are no evidence of the user's traits or of how the two get along;
+# tests/unit/test_memory_evidence_grading.py keeps the two in step.
+REFLECTION_AI_DISCLOSURE_MARK = {
+    "zh": "（{LANLAN_NAME}自述）",
+    "zh-TW": "（{LANLAN_NAME}自述）",
+    "en": " (said by {LANLAN_NAME})",
+    "ja": "（{LANLAN_NAME}本人の発言）",
+    "ko": " ({LANLAN_NAME} 본인의 말)",
+    "ru": " (со слов {LANLAN_NAME})",
+    "es": " (dicho por {LANLAN_NAME})",
+    "pt": " (dito por {LANLAN_NAME})",
+}
+
+
+def get_reflection_ai_disclosure_mark(lang: str = "zh") -> str:
+    return _loc(REFLECTION_AI_DISCLOSURE_MARK, lang)
 
 
 def get_reflection_existing_impressions_note(lang: str = "zh") -> str:
@@ -3704,7 +3772,8 @@ REFLECTION_FEEDBACK_PROMPT = {
 {messages}
 
 对于每条观察，判断：
-- confirmed: 用户明确同意、默认接受、或继续相关话题
+- confirmed: 用户明确同意或肯定这条观察（例如「对」「是啊，我就是这样」）
+- engaged: 用户没有明确表态，但默认接受，或顺着这个话题继续聊
 - denied: 用户明确否认或纠正
 - ignored: 用户没有回应这条观察
 
@@ -3720,7 +3789,8 @@ REFLECTION_FEEDBACK_PROMPT = {
 {messages}
 
 對於每條觀察，判斷：
-- confirmed: 使用者明確同意、默許接受、或繼續相關話題
+- confirmed: 使用者明確同意或肯定這條觀察（例如「對」「是啊，我就是這樣」）
+- engaged: 使用者沒有明確表態，但默許接受，或順著這個話題繼續聊
 - denied: 使用者明確否認或糾正
 - ignored: 使用者沒有回應這條觀察
 
@@ -3736,7 +3806,8 @@ User's recent messages:
 {messages}
 
 For each observation, determine:
-- confirmed: user explicitly agreed, tacitly accepted, or continued the related topic
+- confirmed: user explicitly agreed with or affirmed the observation (e.g. "yes", "right, that's me")
+- engaged: user did not clearly take a position, but tacitly accepted it or went on with the related topic
 - denied: user explicitly denied or corrected it
 - ignored: user did not respond to this observation
 
@@ -3752,7 +3823,8 @@ Output only a JSON array, nothing else.
 {messages}
 
 各観察について判断：
-- confirmed: ユーザーが明確に同意、暗黙的に受け入れ、または関連トピックを続行
+- confirmed: ユーザーが明確に同意・肯定した（例：「そう」「うん、まさにそれ」）
+- engaged: ユーザーは明確に態度を示していないが、暗黙的に受け入れた、または関連トピックを続けた
 - denied: ユーザーが明確に否定または訂正
 - ignored: ユーザーがこの観察に応答しなかった
 
@@ -3768,7 +3840,8 @@ JSON配列のみを出力し、他の内容は出力しないでください。
 {messages}
 
 각 관찰에 대해 판단:
-- confirmed: 사용자가 명확히 동의, 묵시적으로 수용, 또는 관련 주제를 계속함
+- confirmed: 사용자가 명확히 동의하거나 긍정함 (예: "맞아", "응, 내가 그래")
+- engaged: 사용자가 명확히 입장을 밝히지는 않았지만 묵시적으로 수용했거나 관련 주제를 이어감
 - denied: 사용자가 명확히 부인하거나 수정함
 - ignored: 사용자가 이 관찰에 응답하지 않음
 
@@ -3784,7 +3857,8 @@ JSON 배열만 출력하고 다른 내용은 출력하지 마세요.
 {messages}
 
 Для каждого наблюдения определите:
-- confirmed: пользователь явно согласился, молчаливо принял или продолжил связанную тему
+- confirmed: пользователь явно согласился или подтвердил (например, "да", "точно, это про меня")
+- engaged: пользователь явно не высказался, но молчаливо принял или продолжил связанную тему
 - denied: пользователь явно отрицал или исправил
 - ignored: пользователь не отреагировал на это наблюдение
 
@@ -3800,7 +3874,8 @@ Mensajes recientes del usuario:
 {messages}
 
 Para cada observación, determina:
-- confirmed: el usuario estuvo claramente de acuerdo, la aceptó tácitamente o continuó el tema relacionado
+- confirmed: el usuario estuvo claramente de acuerdo o la afirmó (p. ej., "sí", "así soy yo")
+- engaged: el usuario no tomó una postura clara, pero la aceptó tácitamente o siguió con el tema relacionado
 - denied: el usuario la negó o corrigió claramente
 - ignored: el usuario no respondió a esta observación
 
@@ -3816,7 +3891,8 @@ Mensagens recentes do usuário:
 {messages}
 
 Para cada observação, determine:
-- confirmed: o usuário concordou claramente, aceitou tacitamente ou continuou o tópico relacionado
+- confirmed: o usuário concordou claramente ou a afirmou (ex.: "sim", "é, sou assim")
+- engaged: o usuário não se posicionou claramente, mas a aceitou tacitamente ou continuou o tópico relacionado
 - denied: o usuário negou ou corrigiu claramente
 - ignored: o usuário não respondeu a esta observação
 
@@ -3861,6 +3937,8 @@ PROMOTION_MERGE_PROMPT = {
 - merge_into：和某条现有 persona entry 语义相近，应合并。返回 target_id（**必须**来自上面"现有印象池"区里的 persona.* 条目，不要合并到 reflection 条目）和合并后的文本。
 - reject：和现有某条明确矛盾且 R 证据弱于对方，不应收录。返回 reason。
 
+写 merged_text 时，除非原有几条都这么说，否则不要用「总是／从不／每次／一定」这类绝对的说法。
+
 只输出合法 JSON，不要任何额外文本：
 {{"action": "promote_fresh", "reason": "为什么独立收录"}}
 或
@@ -3883,6 +3961,8 @@ PROMOTION_MERGE_PROMPT = {
 - promote_fresh：作為新 persona fact 獨立收錄（和現有任何條目都不重複、不矛盾）
 - merge_into：和某條現有 persona entry 語意相近，應合併。回傳 target_id（**必須**來自上面「現有印象池」區裡的 persona.* 條目，不要合併到 reflection 條目）和合併後的文字。
 - reject：和現有某條明確矛盾且 R 證據弱於對方，不應收錄。回傳 reason。
+
+寫 merged_text 時，除非原有幾條都這麼說，否則不要用「總是／從不／每次／一定」這類絕對的說法。
 
 只輸出合法 JSON，不要任何額外文字：
 {{"action": "promote_fresh", "reason": "為什麼獨立收錄"}}
@@ -3907,6 +3987,8 @@ Decide whether R should be:
 - merge_into: semantically close to one existing persona entry — merge them. Return `target_id` (which **MUST** be one of the `persona.*` entries listed above; never merge into a `reflection.*` entry) and the merged text.
 - reject: directly contradicts an existing entry whose evidence is stronger than R; do not record. Return `reason`.
 
+When writing merged_text, do not use absolute words such as "always / never / every time / definitely" unless the entries being merged all say so.
+
 Output only valid JSON — no extra text:
 {{"action": "promote_fresh", "reason": "why standalone"}}
 or
@@ -3929,6 +4011,8 @@ R をどう扱うか判断してください：
 - promote_fresh：新たな persona fact として独立収録（上のどの項目とも重複・矛盾しない）。
 - merge_into：既存の persona エントリと意味的に近いので統合。`target_id` を返す（**必ず**上の "現有印象池" にある `persona.*` を選ぶこと。`reflection.*` への統合は禁止）、統合後の本文も返す。
 - reject：既存のいずれかと明確に矛盾し R の証拠の方が弱い場合は収録しない。`reason` を返す。
+
+merged_text を書くときは、統合する各項目がいずれもそう述べていない限り、「いつも／決して／毎回／必ず」のような断定的な言い方を使わないこと。
 
 合法な JSON のみを出力し、追加テキストは禁止：
 {{"action": "promote_fresh", "reason": "独立収録の理由"}}
@@ -3953,6 +4037,8 @@ R을 어떻게 처리할지 판단하세요:
 - merge_into: 기존 persona 항목과 의미가 가까워 병합. `target_id` (반드시 위의 "现有印象池"에서 `persona.*` 항목 중 하나여야 함; `reflection.*`로의 병합은 금지)와 병합된 텍스트를 반환.
 - reject: 기존의 어떤 항목과 명확히 모순되며 R의 근거가 더 약한 경우, 수록하지 않음. `reason`을 반환.
 
+merged_text를 쓸 때, 합치는 항목들이 모두 그렇게 말하지 않는 한 "항상/절대/매번/반드시" 같은 단정적인 표현을 쓰지 마세요.
+
 유효한 JSON만 출력하고 추가 텍스트는 출력하지 마세요:
 {{"action": "promote_fresh", "reason": "독립 수록 이유"}}
 또는
@@ -3975,6 +4061,8 @@ R을 어떻게 처리할지 판단하세요:
 - promote_fresh: записать как новый отдельный persona-факт (не дублирует и не противоречит ничему выше).
 - merge_into: семантически близок одной существующей persona-записи — объединить. Верните `target_id` (**обязательно** один из `persona.*` записей выше; объединение в `reflection.*` запрещено) и итоговый текст.
 - reject: явно противоречит существующей записи, чьи свидетельства сильнее R; не записывать. Верните `reason`.
+
+В merged_text не используйте абсолютные слова вроде "всегда / никогда / каждый раз / обязательно", если так не говорят все объединяемые записи.
 
 Выводите только валидный JSON, без лишнего текста:
 {{"action": "promote_fresh", "reason": "почему отдельная запись"}}
@@ -3999,6 +4087,8 @@ Decide si R debe ser:
 - merge_into: semánticamente cercana a una entrada persona existente; combínalas. Devuelve `target_id` (que **DEBE** ser una de las entradas `persona.*` listadas arriba; nunca combines en una entrada `reflection.*`) y el texto combinado.
 - reject: contradice directamente una entrada existente con evidencia más fuerte que R; no la registres. Devuelve `reason`.
 
+Al escribir merged_text, no uses palabras absolutas como "siempre / nunca / cada vez / sin falta" salvo que todas las entradas fusionadas lo digan.
+
 Devuelve solo JSON válido, sin texto extra:
 {{"action": "promote_fresh", "reason": "por qué es independiente"}}
 o
@@ -4021,6 +4111,8 @@ Decida se R deve ser:
 - promote_fresh: registrada como um novo persona fact independente (não duplica nem contradiz nada acima).
 - merge_into: semanticamente próxima de uma entrada persona existente; combine-as. Retorne `target_id` (que **DEVE** ser uma das entradas `persona.*` listadas acima; nunca combine em uma entrada `reflection.*`) e o texto combinado.
 - reject: contradiz diretamente uma entrada existente cuja evidência é mais forte que R; não registre. Retorne `reason`.
+
+Ao escrever merged_text, não use palavras absolutas como "sempre / nunca / toda vez / com certeza", a menos que todas as entradas unidas digam isso.
 
 Retorne apenas JSON válido, sem texto extra:
 {{"action": "promote_fresh", "reason": "por que é independente"}}
@@ -5897,6 +5989,7 @@ MEMORY_REFINE_PROMPT = {
 - merge / split 后产出新条目继承原 entity；reflection 还需提供 relation_type 和 temporal_scope，persona 不需要
 - modify / discard 必须给 reason（用于审计 history）
 - 同一 source_id 不能同时出现在多个 action 里
+- 产出的新文本，除非群组里多条都这么说，否则不要用「总是／从不／每次／一定」这类绝对的说法
 
 JSON 输出格式：
 [
@@ -5931,6 +6024,7 @@ JSON 输出格式：
 - merge / split 後產出新條目繼承原 entity；reflection 還需提供 relation_type 和 temporal_scope，persona 不需要
 - modify / discard 必須給 reason（用於稽核 history）
 - 同一 source_id 不能同時出現在多個 action 裡
+- 產出的新文字，除非群組裡多條都這麼說，否則不要用「總是／從不／每次／一定」這類絕對的說法
 
 JSON 輸出格式：
 [
@@ -5966,6 +6060,7 @@ Constraints:
 - produced entries from merge / split inherit the original entity; reflections also require relation_type and temporal_scope, persona entries do not
 - modify / discard MUST include a reason field (used for audit history)
 - the same source_id cannot appear in multiple actions
+- in produced text, do not use absolute words such as "always / never / every time / definitely" unless several entries in the cluster say so
 
 JSON output format:
 [
@@ -6001,6 +6096,7 @@ JSON output format:
 - merge / split で生成された新エントリは元の entity を継承。reflection は relation_type と temporal_scope も指定が必要、persona は不要
 - modify / discard は必ず reason フィールドを含む（履歴監査用）
 - 同じ source_id は複数のアクションに同時に出現してはならない
+- 生成するテキストでは、クラスタ内の複数の項目がそう示していない限り、「いつも／決して／毎回／必ず」のような断定的な言い方を使わない
 
 JSON 出力フォーマット：
 [
@@ -6036,6 +6132,7 @@ JSON 出力フォーマット：
 - merge / split으로 생성된 새 항목은 원본 entity를 상속. reflection은 relation_type과 temporal_scope도 필요, persona는 불필요
 - modify / discard는 반드시 reason 필드를 포함 (감사 이력용)
 - 동일한 source_id는 여러 액션에 동시에 나타날 수 없음
+- 생성하는 텍스트에서는 클러스터의 여러 항목이 그렇게 말하지 않는 한 "항상/절대/매번/반드시" 같은 단정적인 표현을 쓰지 않음
 
 JSON 출력 포맷:
 [
@@ -6071,6 +6168,7 @@ JSON 출력 포맷:
 - записи, созданные в результате merge / split, наследуют исходный entity; reflection также требуют relation_type и temporal_scope, persona — нет
 - modify / discard ДОЛЖНЫ содержать поле reason (используется для аудита истории)
 - один source_id не может появляться в нескольких действиях одновременно
+- в создаваемом тексте не используйте абсолютные слова вроде "всегда / никогда / каждый раз / обязательно", если на это не указывают несколько записей кластера
 
 Формат вывода JSON:
 [
@@ -6106,6 +6204,7 @@ Restricciones:
 - las entradas producidas por merge / split heredan el entity original; las reflections además requieren relation_type y temporal_scope, las persona no
 - modify / discard DEBEN incluir un campo reason (usado para el historial de auditoría)
 - el mismo source_id no puede aparecer en múltiples acciones
+- en el texto producido, no uses palabras absolutas como "siempre / nunca / cada vez / sin falta" salvo que varias entradas del grupo lo digan
 
 Formato de salida JSON:
 [
@@ -6141,6 +6240,7 @@ Restrições:
 - entradas produzidas por merge / split herdam o entity original; reflections também requerem relation_type e temporal_scope, persona não
 - modify / discard DEVEM incluir um campo reason (usado para histórico de auditoria)
 - o mesmo source_id não pode aparecer em múltiplas ações
+- no texto produzido, não use palavras absolutas como "sempre / nunca / toda vez / com certeza", a menos que várias entradas do grupo digam isso
 
 Formato de saída JSON:
 [
@@ -6209,6 +6309,7 @@ MEMORY_INTROSPECTION_PROMPT = {
 - 每个操作都要写 reason
 - suppress 必须写 issue，取上面清单里对应问题的方括号代号
 - 改写与合并后的文本沿用原条目的语言
+- 改写与合并后的文本不要用「总是／从不／每次／一定」这类绝对的说法
 - 不需要任何操作时，返回空数组 []
 
 只输出 JSON 数组：
@@ -6248,6 +6349,7 @@ MEMORY_INTROSPECTION_PROMPT = {
 - 每個操作都要寫 reason
 - suppress 必須寫 issue，取上面清單裡對應問題的方括號代號
 - 改寫與合併後的文字沿用原條目的語言
+- 改寫與合併後的文字不要用「總是／從不／每次／一定」這類絕對的說法
 - 不需要任何操作時，回傳空陣列 []
 
 只輸出 JSON 陣列：
@@ -6287,6 +6389,7 @@ Constraints:
 - every action needs a reason
 - every suppress needs an issue: the bracketed code of the matching problem in the list above
 - rewritten and merged text keeps the language of the original entries
+- rewritten and merged text does not use absolute words such as "always / never / every time / definitely"
 - if nothing needs to change, return an empty array []
 
 Output only a JSON array:
@@ -6326,6 +6429,7 @@ Output only a JSON array:
 - すべての操作に reason を書く
 - suppress には必ず issue を書く：上のリストで該当する問題の角括弧内のコード
 - 書き換え・統合後のテキストは元のエントリの言語のままにする
+- 書き換え・統合後のテキストでは「いつも／決して／毎回／必ず」のような断定的な言い方を使わない
 - 操作が不要なら空配列 [] を返す
 
 JSON 配列だけを出力：
@@ -6365,6 +6469,7 @@ JSON 配列だけを出力：
 - 모든 작업에 reason을 씀
 - suppress에는 반드시 issue를 씀: 위 목록에서 해당 문제의 대괄호 코드
 - 고쳐 쓰거나 합친 텍스트는 원래 항목의 언어를 유지
+- 고쳐 쓰거나 합친 텍스트에서는 "항상/절대/매번/반드시" 같은 단정적인 표현을 쓰지 않음
 - 작업이 필요 없으면 빈 배열 []을 반환
 
 JSON 배열만 출력:
@@ -6404,6 +6509,7 @@ JSON 배열만 출력:
 - у каждого действия должно быть поле reason
 - у каждого suppress должно быть поле issue: код в квадратных скобках из списка выше
 - переписанный и объединённый текст сохраняет язык исходных записей
+- в переписанном и объединённом тексте не используйте абсолютные слова вроде "всегда / никогда / каждый раз / обязательно"
 - если ничего менять не нужно, верните пустой массив []
 
 Выведите только JSON-массив:
@@ -6443,6 +6549,7 @@ Restricciones:
 - cada acción necesita un reason
 - cada suppress necesita un issue: el código entre corchetes del problema correspondiente en la lista de arriba
 - el texto reescrito o fusionado conserva el idioma de las entradas originales
+- el texto reescrito o fusionado no usa palabras absolutas como "siempre / nunca / cada vez / sin falta"
 - si no hace falta cambiar nada, devuelve un array vacío []
 
 Devuelve solo un array JSON:
@@ -6482,6 +6589,7 @@ Restrições:
 - toda ação precisa de um reason
 - todo suppress precisa de um issue: o código entre colchetes do problema correspondente na lista acima
 - o texto reescrito ou unido mantém o idioma das entradas originais
+- o texto reescrito ou unido não usa palavras absolutas como "sempre / nunca / toda vez / com certeza"
 - se nada precisar mudar, retorne um array vazio []
 
 Retorne apenas um array JSON:
