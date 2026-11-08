@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from plugin.neko_plugin_cli.core.project import PLUGIN_ID_PATTERN
 from plugin.server.application import plugin_projects as service
+from plugin.server.application import plugin_project_python_packages as python_packages
 from plugin.server.application import plugin_publish_status as publish_status
 from plugin.server.application import plugin_publish_tasks as publish_tasks
 from plugin.server.application import plugin_repo_tasks as repo_tasks
@@ -95,6 +96,18 @@ class CreateRepoRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     private: bool = False
+
+
+class PythonRequirementsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    requirements: list[str] = Field(max_length=512)
+    revision: str = Field(min_length=1, max_length=128)
+
+
+class PythonPackageTaskRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation: Literal["sync", "check"]
+    revision: str = Field(min_length=1, max_length=128)
 
 
 async def _call(awaitable):
@@ -207,6 +220,33 @@ async def cancel_plugin_project_publish_task(project_id: str, task_id: str):
 async def remove_plugin_project(project_id: str):
     await _call(service.remove_project(project_id))
     return OkResponse()
+
+
+@router.get("/{project_id}/python-packages")
+async def read_project_python_packages(project_id: str):
+    return await _call(asyncio.to_thread(python_packages.read_packages, project_id))
+
+
+@mutation_router.put("/{project_id}/python-packages/requirements")
+async def save_project_python_requirements(project_id: str, body: PythonRequirementsRequest):
+    return await _call(asyncio.to_thread(
+        python_packages.save_requirements, project_id, body.requirements, body.revision
+    ))
+
+
+@mutation_router.post("/{project_id}/python-packages/tasks", status_code=202)
+async def start_project_python_package_task(project_id: str, body: PythonPackageTaskRequest):
+    return await _call(python_packages.start_task(project_id, body.operation, body.revision))
+
+
+@router.get("/{project_id}/python-packages/tasks/{task_id}")
+async def read_project_python_package_task(project_id: str, task_id: str):
+    return await _call(asyncio.to_thread(python_packages.read_task, project_id, task_id))
+
+
+@mutation_router.post("/{project_id}/python-packages/tasks/{task_id}/cancel")
+async def cancel_project_python_package_task(project_id: str, task_id: str):
+    return await _call(python_packages.cancel_task(project_id, task_id))
 
 
 router.include_router(mutation_router)

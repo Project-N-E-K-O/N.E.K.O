@@ -1,4 +1,7 @@
+import { pythonPackageMessages } from './python-packages'
 const en = {
+  dependenciesRunning: pythonPackageMessages['en-US'].running,
+  dependenciesTaskMissing: pythonPackageMessages['en-US'].taskMissing,
   title: 'Plugin studio',
   newProject: 'New plugin',
   search: 'Search projects…',
@@ -360,6 +363,8 @@ export type AuthoringMessageKey = keyof typeof en
 export const authoringMessages = {
   'en-US': en,
   'zh-CN': {
+    dependenciesRunning: pythonPackageMessages['zh-CN'].running,
+    dependenciesTaskMissing: pythonPackageMessages['zh-CN'].taskMissing,
     title: '插件制作工作台',
     newProject: '新建插件',
     search: '搜索名称、ID 或简介…',
@@ -708,6 +713,8 @@ export const authoringMessages = {
     submissionWorkspaceLoadFailed: '无法读取 Market 审核意见。',
   },
   'zh-TW': {
+    dependenciesRunning: pythonPackageMessages['zh-TW'].running,
+    dependenciesTaskMissing: pythonPackageMessages['zh-TW'].taskMissing,
     title: '外掛製作工作台',
     newProject: '新增外掛',
     search: '搜尋名稱、ID 或簡介…',
@@ -1056,6 +1063,8 @@ export const authoringMessages = {
     submissionWorkspaceLoadFailed: '無法讀取 Market 審核意見。',
   },
   ja: {
+    dependenciesRunning: pythonPackageMessages['ja'].running,
+    dependenciesTaskMissing: pythonPackageMessages['ja'].taskMissing,
     title: 'プラグイン制作',
     newProject: '新規プラグイン',
     search: 'プロジェクトを検索…',
@@ -1414,6 +1423,8 @@ export const authoringMessages = {
     submissionWorkspaceLoadFailed: 'Market のレビュー意見を読み込めませんでした。',
   },
   ko: {
+    dependenciesRunning: pythonPackageMessages['ko'].running,
+    dependenciesTaskMissing: pythonPackageMessages['ko'].taskMissing,
     title: '플러그인 제작실',
     newProject: '새 플러그인',
     search: '프로젝트 검색…',
@@ -1768,6 +1779,8 @@ export const authoringMessages = {
     submissionWorkspaceLoadFailed: 'Market 검토 의견을 읽을 수 없습니다.',
   },
   ru: {
+    dependenciesRunning: pythonPackageMessages['ru'].running,
+    dependenciesTaskMissing: pythonPackageMessages['ru'].taskMissing,
     title: 'Мастерская плагинов',
     newProject: 'Новый плагин',
     search: 'Поиск проектов…',
@@ -2125,6 +2138,8 @@ export const authoringMessages = {
     submissionWorkspaceLoadFailed: 'Не удалось прочитать отзывы проверки Market.',
   },
   es: {
+    dependenciesRunning: pythonPackageMessages['es'].running,
+    dependenciesTaskMissing: pythonPackageMessages['es'].taskMissing,
     title: 'Taller de plugins',
     newProject: 'Nuevo plugin',
     search: 'Buscar proyectos…',
@@ -2481,6 +2496,8 @@ export const authoringMessages = {
     submissionWorkspaceLoadFailed: 'No se pudieron leer los comentarios de revisión del Market.',
   },
   pt: {
+    dependenciesRunning: pythonPackageMessages['pt'].running,
+    dependenciesTaskMissing: pythonPackageMessages['pt'].taskMissing,
     title: 'Oficina de plugins',
     newProject: 'Novo plugin',
     search: 'Pesquisar projetos…',

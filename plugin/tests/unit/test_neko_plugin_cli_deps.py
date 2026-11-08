@@ -11,7 +11,7 @@ import sys
 
 import pytest
 
-from plugin.neko_plugin_cli.commands.deps_cmd import (
+from plugin.neko_plugin_cli.core.vendor_sync import (
     _clean_vendor,
     _filter_external,
     _find_uv as real_find_uv,
@@ -19,15 +19,16 @@ from plugin.neko_plugin_cli.commands.deps_cmd import (
     _windows_known_folder as real_windows_known_folder,
     _read_dependencies,
     _replace_vendor,
-    handle_sync,
 )
+
+from plugin.neko_plugin_cli.commands.deps_cmd import handle_sync
 
 
 @pytest.fixture(autouse=True)
 def _private_lock_dir(monkeypatch, tmp_path_factory):
     """Keep sync locks out of the real home/temp; tests that fake another
     uid would otherwise hit the real lock dir's ownership check."""
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     locks = tmp_path_factory.mktemp("locks")
     monkeypatch.setattr(deps_cmd, "_lock_dir", lambda: locks)
@@ -37,7 +38,7 @@ def _private_lock_dir(monkeypatch, tmp_path_factory):
 def _no_host_installer_settings(monkeypatch):
     """Keep the developer's own uv/pip settings, and whether uv is on this
     machine, out of these tests: uv is "found" unless a test says otherwise."""
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     for name in list(os.environ):
         if name.upper() == "UV" or name.upper().startswith(("PIP_", "UV_")):
@@ -48,7 +49,7 @@ def _no_host_installer_settings(monkeypatch):
 @pytest.mark.parametrize("uv_found", [True, False])
 @pytest.mark.parametrize("error_type", [FileNotFoundError, PermissionError])
 def test_installer_start_failure_is_reported(tmp_path, monkeypatch, capsys, uv_found, error_type):
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     if not uv_found:
         monkeypatch.setattr(deps_cmd, "_find_uv", lambda: None)
@@ -72,7 +73,7 @@ def test_uv_reads_the_neko_project_without_leaving_this_directory(tmp_path, monk
     # N.E.K.O (`uv run --project <N.E.K.O>`) must still use N.E.K.O's indexes.
     # --project names it while relative paths (requirements, --python, PATH
     # entries, UV_CONFIG_FILE) keep resolving from here, as on main.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     root = tmp_path / "neko"
     root.mkdir()
@@ -102,7 +103,7 @@ def test_uv_reads_the_neko_project_without_leaving_this_directory(tmp_path, monk
 
 def test_uv_from_uv_run_is_preferred_over_path(tmp_path, monkeypatch):
     # `uv run` exports UV; uv may not be on PATH (pipx, `py -m uv`).
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     uv_exe = str(tmp_path / "tools" / "uv.exe")
     monkeypatch.setenv("UV", uv_exe)
@@ -113,7 +114,7 @@ def test_uv_from_uv_run_is_preferred_over_path(tmp_path, monkeypatch):
 
 def test_relative_uv_is_made_absolute(tmp_path, monkeypatch):
     # uv runs in the N.E.K.O project root; UV=./bin/uv means this directory.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     monkeypatch.chdir(tmp_path)
     relative = os.path.join(".", "bin", "uv")
@@ -125,7 +126,7 @@ def test_relative_uv_is_made_absolute(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("uv_value", [None, "uv", "/no/such/uv"])
 def test_bare_or_missing_uv_value_falls_back_to_path(tmp_path, monkeypatch, uv_value):
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     on_path = str(tmp_path / "bin" / "uv.exe")
     if uv_value is not None:
@@ -136,7 +137,7 @@ def test_bare_or_missing_uv_value_falls_back_to_path(tmp_path, monkeypatch, uv_v
 
 
 def test_uv_not_found_anywhere(monkeypatch):
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     monkeypatch.setattr(deps_cmd.shutil, "which", lambda name: None)
     assert real_find_uv() is None
@@ -149,7 +150,7 @@ def _cmd_name(command):
 
 
 def test_overlapping_sync_rejected_across_processes(tmp_path, monkeypatch):
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     # The child process uses the real lock dir; so must this one.
     monkeypatch.setattr(deps_cmd, "_lock_dir", real_lock_dir)
@@ -211,7 +212,7 @@ def test_recovery_marker_write_failure_rolls_back_before_swap(tmp_path, monkeypa
 def test_default_clean_never_discards_a_pending_backup(tmp_path, monkeypatch, capsys, discard_backups):
     # publish always syncs with clean=True; only an explicit `sync --clean`
     # (discard_backups) may drop the only complete copy of the old vendor/.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     (plugin_dir / "vendor").mkdir()
@@ -238,7 +239,7 @@ def test_success_cleanup_skips_only_another_users_live_swap(tmp_path, monkeypatc
     # The lock is per user. A backup another user is mid-swap on (their
     # pending marker) is left alone; a finished leftover is cleaned whoever
     # owns it.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     (plugin_dir / "vendor").mkdir()
@@ -264,7 +265,7 @@ def test_success_cleanup_skips_only_another_users_live_swap(tmp_path, monkeypatc
 def test_own_interrupted_swap_on_another_users_vendor_is_not_foreign(tmp_path, monkeypatch):
     # Renaming vendor/ keeps its owner (user A) on the backup; the syncing
     # user (B) is identified by the pending marker they created.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     backup = plugin_dir / ".vendor.backup-0000aaaa"
@@ -337,7 +338,7 @@ def test_failed_first_rename_leaves_no_marker(tmp_path, monkeypatch):
 
 
 def test_vendor_that_is_a_file_is_refused_before_any_change(tmp_path, monkeypatch, capsys):
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     (plugin_dir / "vendor").write_text("not a directory")
@@ -354,7 +355,7 @@ def test_vendor_that_is_a_file_is_refused_before_any_change(tmp_path, monkeypatc
 
 
 def test_swapped_by_other_user_tolerates_a_vanished_marker(tmp_path, monkeypatch):
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     monkeypatch.setattr(deps_cmd.os, "getuid", lambda: 12345, raising=False)
     assert deps_cmd._swapped_by_other_user(tmp_path / ".vendor.backup-0000abcd") is False
@@ -364,7 +365,7 @@ def test_swapped_by_other_user_tolerates_a_vanished_marker(tmp_path, monkeypatch
 def test_another_users_pending_backup_blocks_with_a_usable_hint(tmp_path, monkeypatch, capsys, clean):
     # --clean cannot clear it (it is never removed here), so the hint must
     # not send the user in a loop.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     (plugin_dir / "vendor").mkdir()
@@ -389,11 +390,12 @@ def test_another_users_pending_backup_blocks_with_a_usable_hint(tmp_path, monkey
 def test_lock_name_accepts_an_undecodable_plugin_path(tmp_path, monkeypatch):
     # A POSIX file name may hold bytes that decode to surrogate escapes;
     # strict UTF-8 encoding of the identity would raise before the lock.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = tmp_path / "plugin-\udcff"
+    from plugin.neko_plugin_cli.commands import deps_cmd as cli_deps_cmd
     monkeypatch.setattr(
-        deps_cmd, "resolve_plugin_dir_candidate", lambda plugin, defaults: plugin_dir
+        cli_deps_cmd, "resolve_plugin_dir_candidate", lambda plugin, defaults: plugin_dir
     )
     # Printing such a name is a separate matter (a strict UTF-8 stdout);
     # only the lock is under test here.
@@ -408,7 +410,7 @@ def test_lock_name_accepts_an_undecodable_plugin_path(tmp_path, monkeypatch):
 def test_swapped_backup_with_a_new_mount_is_not_deleted(tmp_path, monkeypatch):
     # vendor/ is checked for mounts before the install, but one can be added
     # before the swap; recheck right before deleting the swapped backup.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     vendor = tmp_path / "vendor"
     staging = tmp_path / ".vendor.staging-0000abcd"
@@ -425,7 +427,7 @@ def test_swapped_backup_with_a_new_mount_is_not_deleted(tmp_path, monkeypatch):
 
 
 def test_successful_retry_cleans_retained_backup(tmp_path, monkeypatch):
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     backup = plugin_dir / ".vendor.backup-0000aaaa"
@@ -440,7 +442,7 @@ def test_successful_retry_cleans_retained_backup(tmp_path, monkeypatch):
 
 
 def test_non_clean_retry_refuses_orphaned_backup(tmp_path, monkeypatch, capsys):
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     backup = plugin_dir / ".vendor.backup-0000aaaa"
@@ -484,7 +486,7 @@ def test_rollback_never_deletes_a_vendor_that_reappeared(tmp_path, monkeypatch, 
 
 
 def test_failed_rollback_rename_leaves_backup_that_blocks_retry(tmp_path, monkeypatch, capsys):
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     vendor = plugin_dir / "vendor"
@@ -525,7 +527,7 @@ def test_failed_rollback_rename_leaves_backup_that_blocks_retry(tmp_path, monkey
 def test_linked_vendor_is_synced_in_place(tmp_path, monkeypatch, capsys, clean):
     # Renaming would turn the link to another disk into a real directory;
     # install through it instead, as before the swap existed.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     real_vendor = tmp_path / "other_disk_vendor"
@@ -566,7 +568,7 @@ def test_linked_vendor_is_synced_in_place(tmp_path, monkeypatch, capsys, clean):
 
 @pytest.mark.skipif(sys.platform != "win32", reason="directory junctions are Windows-only")
 def test_non_clean_sync_refuses_nested_junction_before_copying(tmp_path, monkeypatch, capsys):
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     vendor = plugin_dir / "vendor"
@@ -590,7 +592,7 @@ def test_non_clean_sync_refuses_nested_junction_before_copying(tmp_path, monkeyp
 
 
 def test_unusable_lock_dir_fails_with_a_message_not_a_traceback(tmp_path, monkeypatch, capsys):
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
 
@@ -605,7 +607,7 @@ def test_unusable_lock_dir_fails_with_a_message_not_a_traceback(tmp_path, monkey
 def test_lock_location_ignores_per_process_cache_settings(tmp_path, monkeypatch):
     # Two syncs by one user with different XDG_CACHE_HOME must still share
     # one lock, or both would run and one could delete the other's staging.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     import types
 
@@ -628,7 +630,7 @@ def test_uid_without_account_record_uses_the_shared_fallback(tmp_path, monkeypat
     # let two processes with different HOME values take different locks.
     import types
 
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     def unknown(uid):
         raise KeyError(uid)
@@ -650,7 +652,7 @@ def test_uid_without_account_record_uses_the_shared_fallback(tmp_path, monkeypat
 
 @pytest.mark.parametrize("tmp_usable", [True, False])
 def test_shared_tmp_prefers_a_usable_posix_tmp(tmp_path, monkeypatch, tmp_usable):
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     other = tmp_path / "tmpdir"
     monkeypatch.setattr(deps_cmd, "gettempdir", lambda: str(other))
@@ -668,7 +670,7 @@ def test_shared_tmp_prefers_a_usable_posix_tmp(tmp_path, monkeypatch, tmp_usable
 def test_mount_found_in_finished_staging_stops_the_sync(tmp_path, monkeypatch, capsys):
     # _clean_vendor would recurse into it and the swap would expose it as
     # vendor/; keep staging as it is and leave vendor/ alone.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     vendor = plugin_dir / "vendor"
@@ -697,7 +699,7 @@ def test_mount_found_in_finished_staging_stops_the_sync(tmp_path, monkeypatch, c
 def test_posix_lock_dir_is_a_private_cache_dir(tmp_path, monkeypatch):
     # Not directly in a shared, sticky /tmp, where another user could
     # pre-create the lock file and block this user's syncs for good.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     cache = tmp_path / "cache"
     me = tmp_path.stat().st_uid
@@ -709,7 +711,7 @@ def test_posix_lock_dir_is_a_private_cache_dir(tmp_path, monkeypatch):
 
 
 def test_posix_lock_dir_falls_back_to_a_per_user_temp_dir(tmp_path, monkeypatch):
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     unusable = tmp_path / "not-a-dir"
     unusable.write_text("x")  # e.g. a read-only or broken home cache
@@ -724,7 +726,7 @@ def test_posix_lock_dir_falls_back_to_a_per_user_temp_dir(tmp_path, monkeypatch)
 
 
 def test_posix_lock_dir_refuses_a_fallback_owned_by_someone_else(tmp_path, monkeypatch):
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     unusable = tmp_path / "not-a-dir"
     unusable.write_text("x")
@@ -745,7 +747,7 @@ def test_posix_lock_dir_refuses_a_fallback_owned_by_someone_else(tmp_path, monke
 def test_package_data_named_like_a_marker_survives_sync(tmp_path, monkeypatch, as_dir):
     # The recovery marker lives beside the backup, never inside vendor/, so
     # a package's own top-level path of any name is left alone.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
 
@@ -766,7 +768,7 @@ def test_package_data_named_like_a_marker_survives_sync(tmp_path, monkeypatch, a
 
 def test_stale_staging_of_another_user_is_left_alone(tmp_path, monkeypatch):
     # The sync lock is per user, so another user's staging may be live.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     stale = tmp_path / ".vendor.staging-0000dddd"
     stale.mkdir()
@@ -780,7 +782,7 @@ def test_stale_staging_of_another_user_is_left_alone(tmp_path, monkeypatch):
 
 
 def test_parse_mountinfo_points_unescapes_octal():
-    from plugin.neko_plugin_cli.commands.deps_cmd import _parse_mountinfo_points
+    from plugin.neko_plugin_cli.core.vendor_sync import _parse_mountinfo_points
 
     lines = [
         "22 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n",
@@ -790,7 +792,7 @@ def test_parse_mountinfo_points_unescapes_octal():
 
 
 def test_mountinfo_does_not_flag_vendor_itself_or_outside_mounts(tmp_path, monkeypatch):
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     vendor = tmp_path / "vendor"
     (vendor / "pkg").mkdir(parents=True)
@@ -804,7 +806,7 @@ def test_mountinfo_does_not_flag_vendor_itself_or_outside_mounts(tmp_path, monke
 
 
 def test_stale_staging_that_vanishes_is_skipped(tmp_path, monkeypatch, capsys):
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     gone = tmp_path / ".vendor.staging-0000eeee"
     gone.mkdir()
@@ -831,7 +833,7 @@ def test_stale_staging_that_vanishes_is_skipped(tmp_path, monkeypatch, capsys):
 @pytest.mark.parametrize("clean", [False, True])
 def test_sync_refuses_mount_point_inside_vendor(tmp_path, monkeypatch, capsys, clean, detected_by):
     # Removing the old vendor/ backup would delete the mounted tree's files.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     mount = plugin_dir / "vendor" / "pkg" / "mnt"
@@ -867,7 +869,7 @@ def test_sync_refuses_mount_point_inside_vendor(tmp_path, monkeypatch, capsys, c
 def test_leftover_work_dir_with_mount_is_not_deleted(
     tmp_path, monkeypatch, capsys, kind, where, detected_by,
 ):
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     (plugin_dir / "vendor").mkdir()
@@ -896,7 +898,7 @@ def test_leftover_work_dir_with_mount_is_not_deleted(
 
 
 def test_plugin_dirs_that_only_share_the_prefix_are_never_touched(tmp_path, monkeypatch):
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     own = [plugin_dir / ".vendor.staging-assets", plugin_dir / ".vendor.backup-notes"]
@@ -930,7 +932,7 @@ def test_generated_gitignore_anchors_sync_dirs_to_plugin_root():
 def test_failed_install_keeps_staging_with_a_mount_inside(tmp_path, monkeypatch):
     # The install ran inside staging; a mount there must not be emptied by
     # the cleanup of a failed sync.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     monkeypatch.setattr(
@@ -949,7 +951,7 @@ def test_failed_install_keeps_staging_with_a_mount_inside(tmp_path, monkeypatch)
 @pytest.mark.parametrize("clean", [False, True])
 def test_sync_installs_into_a_mounted_vendor_root_in_place(tmp_path, monkeypatch, capsys, clean):
     # A mount point (a Docker volume) can not be renamed; install into it.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     vendor = plugin_dir / "vendor"
@@ -975,7 +977,7 @@ def test_sync_installs_into_a_mounted_vendor_root_in_place(tmp_path, monkeypatch
 
 def test_in_place_clean_refuses_a_mount_inside(tmp_path, monkeypatch, capsys):
     # Emptying vendor/ recurses; a mount inside it would lose its files.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     vendor = plugin_dir / "vendor"
@@ -996,7 +998,7 @@ def test_in_place_clean_refuses_a_mount_inside(tmp_path, monkeypatch, capsys):
 @pytest.mark.parametrize("reason", ["nested", "no-mount-table"])
 def test_in_place_cleanup_skips_a_tree_with_a_mount_inside(tmp_path, monkeypatch, capsys, reason):
     # Removing caches recurses; it must not reach into a mount inside vendor/.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     vendor = plugin_dir / "vendor"
@@ -1023,7 +1025,7 @@ def test_in_place_cleanup_skips_a_tree_with_a_mount_inside(tmp_path, monkeypatch
 def test_mount_in_in_place_clean_staging_stops_before_cleanup(tmp_path, monkeypatch, capsys):
     # _clean_vendor recurses: a mount that appeared in staging during the
     # install must not lose its caches, nor be moved into vendor/.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     vendor = plugin_dir / "vendor"
@@ -1061,7 +1063,7 @@ def test_in_place_clean_rechecks_vendor_before_emptying(tmp_path, monkeypatch, c
     # The install can take minutes; vendor/ may change under it.
     import shutil
 
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     vendor = plugin_dir / "vendor"
@@ -1111,7 +1113,7 @@ def test_in_place_clean_rechecks_vendor_before_emptying(tmp_path, monkeypatch, c
 
 def test_in_place_sync_refuses_a_vendor_retargeted_after_locking(tmp_path, monkeypatch, capsys):
     # The lock was taken for one target; vendor/ now leads elsewhere.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     vendor = tmp_path / "vendor"
     vendor.mkdir()
@@ -1120,14 +1122,18 @@ def test_in_place_sync_refuses_a_vendor_retargeted_after_locking(tmp_path, monke
     monkeypatch.setattr(
         deps_cmd.subprocess, "run", lambda *args, **kwargs: pytest.fail("installer must not run")
     )
-    args = TestTransactionalDependencyInstall()._args(tmp_path, tmp_path)
+    args = deps_cmd.VendorSyncOptions(
+        python="target-python", project_root=tmp_path, clean=False,
+        discard_backups=False, installer_runner=None, uv_executable=None,
+        allow_pip_fallback=True, report=None, progress=None, check_cancelled=None,
+    )
 
     assert deps_cmd._sync_in_place(vendor, ["httpx"], args, deps_cmd._vendor_target(other)) == 1
     assert "changed during the sync" in capsys.readouterr().err
 
 
 def test_non_clean_in_place_install_reports_a_retarget_during_it(tmp_path, monkeypatch, capsys):
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     vendor = plugin_dir / "vendor"
@@ -1148,7 +1154,7 @@ def test_non_clean_in_place_install_reports_a_retarget_during_it(tmp_path, monke
 
 def test_non_clean_sync_without_linux_mount_table_does_not_copy_vendor(tmp_path, monkeypatch, capsys):
     # copytree would follow a bind mount ismount() misses into the package.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     vendor = plugin_dir / "vendor"
@@ -1174,7 +1180,7 @@ def test_non_clean_sync_without_linux_mount_table_does_not_copy_vendor(tmp_path,
 
 
 def test_open_dir_path_has_no_retargetable_fallback(monkeypatch):
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     def no_proc(path):
         raise OSError(2, "no /proc")
@@ -1186,7 +1192,7 @@ def test_open_dir_path_has_no_retargetable_fallback(monkeypatch):
 
 def test_swap_path_skips_recursive_cleanup_without_linux_mount_table(tmp_path, monkeypatch, capsys):
     # ismount() misses a same-filesystem bind mount the cleanup would enter.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     monkeypatch.setattr(deps_cmd.sys, "platform", "linux")
@@ -1214,7 +1220,7 @@ def test_swap_path_skips_recursive_cleanup_without_linux_mount_table(tmp_path, m
 
 def test_installer_bin_that_is_a_mount_point_is_left(tmp_path, monkeypatch, capsys):
     # Its files belong to the mounted tree, even when there are only files.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -1229,7 +1235,7 @@ def test_installer_bin_that_is_a_mount_point_is_left(tmp_path, monkeypatch, caps
 
 def test_in_place_sync_without_linux_mount_table_keeps_vendor_bin(tmp_path, monkeypatch, capsys):
     # vendor/ is the user's tree; its bin/ may be a bind mount ismount misses.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     vendor = plugin_dir / "vendor"
@@ -1250,7 +1256,7 @@ def test_in_place_sync_without_linux_mount_table_keeps_vendor_bin(tmp_path, monk
 
 
 def test_installer_bin_with_a_directory_inside_is_left(tmp_path, capsys):
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     (tmp_path / "bin" / "sub").mkdir(parents=True)
     (tmp_path / "bin" / "sub" / "keep").write_text("keep")
@@ -1266,7 +1272,7 @@ def test_installer_bin_with_a_directory_inside_is_left(tmp_path, capsys):
 @pytest.mark.parametrize("points_at", ["plugin", "parent"])
 def test_vendor_leading_to_the_plugin_or_a_parent_is_refused(tmp_path, monkeypatch, capsys, clean, points_at):
     # vendor -> .. would have the refill move the plugin aside and delete it.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     target = plugin_dir if points_at == "plugin" else tmp_path
@@ -1287,7 +1293,7 @@ def test_vendor_leading_to_the_plugin_or_a_parent_is_refused(tmp_path, monkeypat
 
 def test_zero_inode_vendor_target_is_also_compared_by_path(tmp_path):
     # samestat alone takes any directory on the device for a zero-inode one.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     zero = os.stat_result((0o40755, 0, 1, 1, 0, 0, 0, 0, 0, 0))
     target = deps_cmd._VendorTarget(zero, str(tmp_path / "a"))
@@ -1299,7 +1305,7 @@ def test_zero_inode_vendor_target_is_also_compared_by_path(tmp_path):
 def test_zero_inode_targets_are_compared_by_path(tmp_path, monkeypatch):
     # Some filesystems report st_ino 0 for every directory; identity alone
     # would call a separate shared vendor target "the plugin".
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = tmp_path / "plugin"
     plugin_dir.mkdir()
@@ -1319,7 +1325,7 @@ def test_zero_inode_targets_are_compared_by_path(tmp_path, monkeypatch):
 def test_windows_refill_pins_the_junction_against_retargeting(tmp_path, monkeypatch):
     # Without directory handles, the link itself is held open so another
     # process can not delete or retarget it mid-refill.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     target = tmp_path / "target"
     target.mkdir()
@@ -1348,7 +1354,7 @@ def test_windows_refill_pins_the_junction_against_retargeting(tmp_path, monkeypa
 
 
 def test_plugin_dir_replaced_before_the_lock_is_refused(tmp_path, monkeypatch, capsys):
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     samples = iter([b"1:1", b"2:2"])
@@ -1364,7 +1370,7 @@ def test_plugin_dir_replaced_before_the_lock_is_refused(tmp_path, monkeypatch, c
 @pytest.mark.skipif(sys.platform != "win32", reason="directory junctions are Windows-only")
 def test_plugins_sharing_a_vendor_target_share_a_lock(tmp_path, monkeypatch, capsys):
     # Two plugins linking vendor/ to one target are one writer's business.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     shared = tmp_path / "shared_vendor"
     shared.mkdir()
@@ -1400,7 +1406,7 @@ def test_plugins_sharing_a_vendor_target_share_a_lock(tmp_path, monkeypatch, cap
 def test_in_place_refill_leaves_another_users_staging(tmp_path, monkeypatch):
     # The lock is per user: another user's staging in a shared target may be
     # a live install.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     vendor = tmp_path / "vendor"
     vendor.mkdir()
@@ -1437,7 +1443,7 @@ def test_in_place_refill_leaves_another_users_staging(tmp_path, monkeypatch):
 def test_in_place_refill_keeps_old_contents_with_a_new_mount(tmp_path, monkeypatch, capsys):
     # A mount added under vendor/ while the install ran must not be deleted:
     # the old contents are moved aside and checked right before deletion.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     vendor = tmp_path / "vendor"
     (vendor / "oldpkg").mkdir(parents=True)
@@ -1457,7 +1463,7 @@ def test_in_place_refill_keeps_old_contents_with_a_new_mount(tmp_path, monkeypat
 
 def test_unfinished_refill_trash_blocks_and_is_not_deleted(tmp_path, monkeypatch, capsys):
     # It holds the only copy of the old entries a failed refill moved.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     vendor = plugin_dir / "vendor"
@@ -1479,7 +1485,7 @@ def test_unfinished_refill_trash_blocks_and_is_not_deleted(tmp_path, monkeypatch
 
 @pytest.mark.skipif(sys.platform == "win32", reason="directory-handle refill is POSIX only")
 def test_refill_trash_is_marked_until_the_refill_completes(tmp_path, monkeypatch):
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     vendor = tmp_path / "vendor"
     vendor.mkdir()
@@ -1508,7 +1514,7 @@ def test_refill_trash_is_marked_until_the_refill_completes(tmp_path, monkeypatch
 
 
 def test_zero_inode_vendor_replacement_is_told_apart_by_creation_time(tmp_path, monkeypatch):
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     vendor = tmp_path / "vendor"
     vendor.mkdir()
@@ -1525,7 +1531,7 @@ def test_zero_inode_vendor_replacement_is_told_apart_by_creation_time(tmp_path, 
 
 def test_swap_refuses_a_vendor_replaced_during_the_install(tmp_path, monkeypatch, capsys):
     # Moving the replacement aside would hand it to backup cleanup.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     vendor = plugin_dir / "vendor"
@@ -1548,7 +1554,7 @@ def test_swap_refuses_a_vendor_replaced_during_the_install(tmp_path, monkeypatch
 
 def test_failed_in_place_clean_keeps_the_old_dependencies(tmp_path, monkeypatch, capsys):
     # publish always cleans; a resolver failure must not empty vendor/.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     vendor = plugin_dir / "vendor"
@@ -1571,7 +1577,7 @@ def test_failed_in_place_clean_keeps_the_old_dependencies(tmp_path, monkeypatch,
 def test_in_place_sync_removes_staging_left_inside_vendor(tmp_path, monkeypatch, clean):
     # A killed in-place --clean leaves its staging dir inside vendor/, which
     # would otherwise ship with the plugin.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     vendor = plugin_dir / "vendor"
@@ -1592,7 +1598,7 @@ def test_in_place_sync_removes_staging_left_inside_vendor(tmp_path, monkeypatch,
 def test_in_place_clean_rechecks_the_mount_table_after_the_install(tmp_path, monkeypatch, capsys):
     # The table can vanish during the install; staging may then hold a bind
     # mount ismount() misses, and the cleanup recurses.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     vendor = plugin_dir / "vendor"
@@ -1619,7 +1625,7 @@ def test_in_place_clean_rechecks_the_mount_table_after_the_install(tmp_path, mon
 
 def test_in_place_clean_without_linux_mount_table_is_refused(tmp_path, monkeypatch, capsys):
     # ismount() misses a same-filesystem bind mount; emptying could follow it.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     vendor = plugin_dir / "vendor"
@@ -1638,7 +1644,7 @@ def test_in_place_clean_without_linux_mount_table_is_refused(tmp_path, monkeypat
 
 
 def test_failed_in_place_install_is_reported(tmp_path, monkeypatch, capsys):
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     vendor = plugin_dir / "vendor"
@@ -1659,7 +1665,7 @@ def test_failed_in_place_install_is_reported(tmp_path, monkeypatch, capsys):
 def test_orphan_pending_marker_is_removed(tmp_path, monkeypatch, owner):
     # Left by a run killed between creating the marker and the rename, or by
     # a rollback that could not delete it; nothing else would remove it.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     orphan = tmp_path / ".vendor.backup-0000abcd.pending"
     orphan.touch()
@@ -1687,7 +1693,7 @@ def test_orphan_pending_marker_is_removed(tmp_path, monkeypatch, owner):
 def test_unwritable_private_lock_dir_falls_back(tmp_path, monkeypatch):
     # An existing read-only dir (mode 0500, a read-only mount) must not be
     # returned: every lock open would fail.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     cache = tmp_path / "cache"
     private = cache / "neko-plugin" / "sync-locks"
@@ -1709,7 +1715,7 @@ def test_unwritable_private_lock_dir_falls_back(tmp_path, monkeypatch):
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink and permission bits")
 def test_symlinked_lock_dir_is_not_used_or_chmodded(tmp_path, monkeypatch):
     # chmod would follow the link and close a shared directory to others.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     shared = tmp_path / "shared"
     shared.mkdir()
@@ -1729,7 +1735,7 @@ def test_symlinked_lock_dir_is_not_used_or_chmodded(tmp_path, monkeypatch):
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
 def test_lock_dir_that_is_open_to_others_is_closed(tmp_path, monkeypatch):
     # mkdir(mode=0o700) leaves an existing, world-writable dir as it is.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     cache = tmp_path / "cache"
     locks = cache / "neko-plugin" / "sync-locks"
@@ -1744,7 +1750,7 @@ def test_lock_dir_that_is_open_to_others_is_closed(tmp_path, monkeypatch):
 def test_linux_without_mount_table_keeps_leftovers(tmp_path, monkeypatch, capsys):
     # ismount() misses same-filesystem bind mounts, so without
     # /proc/self/mountinfo nothing can be ruled out: keep, do not rmtree.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     leftover = tmp_path / ".vendor.backup-0000cccc"
     (leftover / "pkg").mkdir(parents=True)
@@ -1759,7 +1765,7 @@ def test_linux_without_mount_table_keeps_leftovers(tmp_path, monkeypatch, capsys
 def test_no_dependency_sync_still_cleans_finished_backups(tmp_path, monkeypatch):
     # A finished swap whose backup could not be deleted must not linger
     # forever just because the plugin has no dependencies now.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     (plugin_dir / "pyproject.toml").write_text(
@@ -1776,7 +1782,7 @@ def test_no_dependency_sync_still_cleans_finished_backups(tmp_path, monkeypatch)
 
 
 def test_stale_staging_cleanup_failure_warns(tmp_path, monkeypatch, capsys):
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     stale = tmp_path / ".vendor.staging-0000bbbb"
     stale.mkdir()
@@ -1792,7 +1798,7 @@ def test_stale_staging_cleanup_failure_warns(tmp_path, monkeypatch, capsys):
 def test_non_clean_retry_refuses_partial_vendor_with_pending_backup(
     tmp_path, monkeypatch, capsys
 ):
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     vendor = plugin_dir / "vendor"
@@ -1815,7 +1821,7 @@ def test_non_clean_retry_refuses_partial_vendor_with_pending_backup(
 
 
 def test_successful_sync_warns_when_retained_backup_cleanup_fails(tmp_path, monkeypatch, capsys):
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     vendor = plugin_dir / "vendor"
@@ -1844,7 +1850,7 @@ def test_successful_sync_warns_when_retained_backup_cleanup_fails(tmp_path, monk
 
 
 def test_non_clean_sync_preserves_links_including_dangling(tmp_path, monkeypatch):
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     vendor = plugin_dir / "vendor"
@@ -1949,7 +1955,7 @@ class TestHandleSync:
         plugin_dir = self._make_plugin(tmp_path)
 
         fake_result = subprocess.CompletedProcess(args=[], returncode=0, stdout="ok\n")
-        with patch("plugin.neko_plugin_cli.commands.deps_cmd.subprocess.run", return_value=fake_result) as mock_run:
+        with patch("plugin.neko_plugin_cli.core.vendor_sync.subprocess.run", return_value=fake_result) as mock_run:
             import argparse
             from plugin.neko_plugin_cli.paths import CliDefaults
 
@@ -2060,7 +2066,7 @@ class TestTransactionalDependencyInstall:
             calls.append(command)
             return subprocess.CompletedProcess(command, 0, stdout="ok\n")
 
-        monkeypatch.setattr("plugin.neko_plugin_cli.commands.deps_cmd.subprocess.run", fake_run)
+        monkeypatch.setattr("plugin.neko_plugin_cli.core.vendor_sync.subprocess.run", fake_run)
 
         assert handle_sync(self._args(plugin_dir, tmp_path)) == 0
         assert len(calls) == 1
@@ -2073,13 +2079,13 @@ class TestTransactionalDependencyInstall:
     ) -> None:
         plugin_dir = TestHandleSync()._make_plugin(tmp_path)
         calls: list[list[str]] = []
-        monkeypatch.setattr("plugin.neko_plugin_cli.commands.deps_cmd._find_uv", lambda: None)
+        monkeypatch.setattr("plugin.neko_plugin_cli.core.vendor_sync._find_uv", lambda: None)
 
         def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
             calls.append(command)
             return subprocess.CompletedProcess(command, 0, stdout="ok\n")
 
-        monkeypatch.setattr("plugin.neko_plugin_cli.commands.deps_cmd.subprocess.run", fake_run)
+        monkeypatch.setattr("plugin.neko_plugin_cli.core.vendor_sync.subprocess.run", fake_run)
 
         assert handle_sync(self._args(plugin_dir, tmp_path)) == 0
         assert len(calls) == 1
@@ -2104,7 +2110,7 @@ class TestTransactionalDependencyInstall:
             calls.append(command)
             return subprocess.CompletedProcess(command, 2, stdout="uv resolver error\n")
 
-        monkeypatch.setattr("plugin.neko_plugin_cli.commands.deps_cmd.subprocess.run", fake_run)
+        monkeypatch.setattr("plugin.neko_plugin_cli.core.vendor_sync.subprocess.run", fake_run)
 
         assert handle_sync(self._args(plugin_dir, tmp_path)) == 1
         assert len(calls) == 1
@@ -2124,9 +2130,9 @@ class TestTransactionalDependencyInstall:
         vendor.mkdir()
         marker = vendor / "old.txt"
         marker.write_text("keep", encoding="utf-8")
-        monkeypatch.setattr("plugin.neko_plugin_cli.commands.deps_cmd._find_uv", lambda: None)
+        monkeypatch.setattr("plugin.neko_plugin_cli.core.vendor_sync._find_uv", lambda: None)
         monkeypatch.setattr(
-            "plugin.neko_plugin_cli.commands.deps_cmd.subprocess.run",
+            "plugin.neko_plugin_cli.core.vendor_sync.subprocess.run",
             lambda command, **kwargs: subprocess.CompletedProcess(
                 command, 1, stdout="target-python: No module named pip\n"
             ),
@@ -2154,11 +2160,11 @@ class TestTransactionalDependencyInstall:
         marker = vendor / "old.txt"
         marker.write_text("keep", encoding="utf-8")
         monkeypatch.setattr(
-            "plugin.neko_plugin_cli.commands.deps_cmd.shutil.which",
+            "plugin.neko_plugin_cli.core.vendor_sync.shutil.which",
             lambda name: "uv" if name == "uv" else None,
         )
         monkeypatch.setattr(
-            "plugin.neko_plugin_cli.commands.deps_cmd.subprocess.run",
+            "plugin.neko_plugin_cli.core.vendor_sync.subprocess.run",
             lambda command, **kwargs: subprocess.CompletedProcess(
                 command, 2, stdout="download failed\\n"
             ),
@@ -2175,7 +2181,7 @@ class TestTransactionalDependencyInstall:
         vendor.mkdir()
         (vendor / "stale.py").write_text("stale", encoding="utf-8")
         monkeypatch.setattr(
-            "plugin.neko_plugin_cli.commands.deps_cmd.shutil.which",
+            "plugin.neko_plugin_cli.core.vendor_sync.shutil.which",
             lambda name: "uv" if name == "uv" else None,
         )
 
@@ -2185,7 +2191,7 @@ class TestTransactionalDependencyInstall:
             return subprocess.CompletedProcess(command, 0, stdout="ok\\n")
 
         monkeypatch.setattr(
-            "plugin.neko_plugin_cli.commands.deps_cmd.subprocess.run", install
+            "plugin.neko_plugin_cli.core.vendor_sync.subprocess.run", install
         )
         assert handle_sync(self._args(plugin_dir, tmp_path, clean=True)) == 0
         assert (vendor / "fresh.py").exists()
@@ -2196,7 +2202,7 @@ class TestTransactionalDependencyInstall:
     ) -> None:
         plugin_dir = TestHandleSync()._make_plugin(tmp_path)
         monkeypatch.setattr(
-            "plugin.neko_plugin_cli.commands.deps_cmd.shutil.which",
+            "plugin.neko_plugin_cli.core.vendor_sync.shutil.which",
             lambda name: "uv" if name == "uv" else None,
         )
 
@@ -2212,7 +2218,7 @@ class TestTransactionalDependencyInstall:
             return subprocess.CompletedProcess(command, 0, stdout="ok\\n")
 
         monkeypatch.setattr(
-            "plugin.neko_plugin_cli.commands.deps_cmd.subprocess.run", install
+            "plugin.neko_plugin_cli.core.vendor_sync.subprocess.run", install
         )
         assert handle_sync(self._args(plugin_dir, tmp_path, clean=True)) == 0
         vendor = plugin_dir / "vendor"
@@ -2230,7 +2236,7 @@ class TestTransactionalDependencyInstall:
         vendor.mkdir()
         (vendor / "extra.py").write_text("keep", encoding="utf-8")
         monkeypatch.setattr(
-            "plugin.neko_plugin_cli.commands.deps_cmd.shutil.which", lambda name: "uv" if name == "uv" else None
+            "plugin.neko_plugin_cli.core.vendor_sync.shutil.which", lambda name: "uv" if name == "uv" else None
         )
 
         def install(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
@@ -2239,7 +2245,7 @@ class TestTransactionalDependencyInstall:
             return subprocess.CompletedProcess(command, 0, stdout="ok")
 
         monkeypatch.setattr(
-            "plugin.neko_plugin_cli.commands.deps_cmd.subprocess.run", install
+            "plugin.neko_plugin_cli.core.vendor_sync.subprocess.run", install
         )
         assert handle_sync(
             TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path)
@@ -2291,7 +2297,7 @@ class TestTransactionalDependencyInstall:
         stale.mkdir()
         (stale / "big_dependency.py").write_text("x", encoding="utf-8")
         monkeypatch.setattr(
-            "plugin.neko_plugin_cli.commands.deps_cmd.subprocess.run",
+            "plugin.neko_plugin_cli.core.vendor_sync.subprocess.run",
             lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout="ok"),
         )
 
@@ -2308,7 +2314,7 @@ class TestTransactionalDependencyInstall:
 
         plugin_dir = TestHandleSync()._make_plugin(tmp_path)
         monkeypatch.setattr(
-            "plugin.neko_plugin_cli.commands.deps_cmd.subprocess.run",
+            "plugin.neko_plugin_cli.core.vendor_sync.subprocess.run",
             lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout="ok"),
         )
         old_umask = os.umask(0o022)
@@ -2321,7 +2327,7 @@ class TestTransactionalDependencyInstall:
 
 def test_lock_identity_is_the_directory_not_its_name(tmp_path, monkeypatch):
     # Two paths to one directory (bind-mount aliases) must share one lock.
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     plugin_dir = tmp_path / "plugin"
     plugin_dir.mkdir()
@@ -2343,7 +2349,7 @@ def test_windows_lock_dir_ignores_per_process_temp(tmp_path, monkeypatch):
     # one could delete the other's live staging dir as stale.
     import tempfile
 
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     monkeypatch.delattr(deps_cmd.os, "getuid", raising=False)
     monkeypatch.setattr(deps_cmd, "_windows_known_folder", lambda folder_id: tmp_path / "local")
@@ -2359,7 +2365,7 @@ def test_windows_lock_dir_ignores_per_process_temp(tmp_path, monkeypatch):
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows shell API")
 def test_windows_local_appdata_comes_from_the_shell_not_the_environment(tmp_path, monkeypatch):
-    from plugin.neko_plugin_cli.commands import deps_cmd
+    from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "per-process"))
     local = real_windows_known_folder(deps_cmd._FOLDERID_LOCAL_APPDATA)

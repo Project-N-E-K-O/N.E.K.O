@@ -1,3 +1,4 @@
+import { pythonPackageMessages } from '@/i18n/python-packages'
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, markRaw, nextTick } from 'vue'
@@ -64,6 +65,8 @@ vi.mock('@/api/pluginProjects', async (importOriginal) => ({
   getPluginToolchain: api.getPluginToolchain,
 }))
 vi.mock('vue-router', () => ({
+  onBeforeRouteLeave: vi.fn(),
+  onBeforeRouteUpdate: vi.fn(),
   useRoute: () => api.route,
   useRouter: () => ({ push: api.push }),
 }))
@@ -254,6 +257,7 @@ async function mount() {
       messages: {
         'en-US': {
           authoring: en,
+          pythonPackages: pythonPackageMessages['en-US'],
           plugins: { typePlugin: 'Plugin', typeAdapter: 'Adapter' },
           common: {
             cancel: 'Cancel',
@@ -267,6 +271,7 @@ async function mount() {
         },
         'zh-CN': {
           authoring: authoringMessages['zh-CN'],
+          pythonPackages: pythonPackageMessages['zh-CN'],
           plugins: { typePlugin: '插件', typeAdapter: '适配器' },
           common: { cancel: '取消', close: '关闭', edit: '编辑', save: '保存' },
           status: { running: '运行中', stopped: '已停止' },
@@ -313,7 +318,7 @@ async function openTab(container: HTMLElement, index: number) {
 }
 
 async function openPublish(container: HTMLElement) {
-  await openTab(container, 1)
+  await openTab(container, 2)
   return container.querySelector('.authoring-publish')!
 }
 
@@ -470,7 +475,7 @@ describe('authoring workbench backed by the server project list', () => {
     api.listPluginProjects.mockResolvedValue([listed])
     const container = await mount()
     const tabs = [...container.querySelectorAll('.authoring-tabs > .el-tabs__header [role="tab"]')]
-    expect(tabs.map((tab) => tab.textContent)).toEqual([en.tabOverview, en.publishTab])
+    expect(tabs.map((tab) => tab.textContent)).toEqual([en.tabOverview, pythonPackageMessages['en-US'].tab, en.publishTab])
     expect(tabs[0]?.getAttribute('aria-selected')).toBe('true')
     const header = container.querySelector('.authoring-header')!
     expect(header.textContent).toContain(listed.name)

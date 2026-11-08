@@ -1063,6 +1063,9 @@ class PluginLifecycleService:
             operation_scope.require_active()
         elif not _operation_lock_is_held_by_current_task():
             raise RuntimeError("Plugin startup requires the operation lock")
+        from plugin.server.application.plugin_project_commands import require_plugin_project_available
+
+        await asyncio.to_thread(require_plugin_project_available, plugin_id)
         _hot_reload_failed.discard(plugin_id)
         if _operations_shutting_down:
             # Shutdown has begun: starting plugins now could place them after the host snapshot, creating orphan processes
@@ -2007,6 +2010,9 @@ class PluginLifecycleService:
         reload's start phase would restart it and persist autostart intent, silently turning a code change into
         a change to the user's startup intent.
         """
+        from plugin.server.application.plugin_project_commands import require_plugin_project_available
+
+        await asyncio.to_thread(require_plugin_project_available, plugin_id)
         _emit_lifecycle_event(event_type="plugin_reload_requested", plugin_id=plugin_id)
         if not only_if_running:
             _hot_reload_failed.discard(plugin_id)
@@ -2100,6 +2106,9 @@ class PluginLifecycleService:
                 )
                 break
             try:
+                from plugin.server.application.plugin_project_commands import require_plugin_project_available
+
+                await asyncio.to_thread(require_plugin_project_available, plugin_id)
                 await _preflight_project_source(plugin_id)
             except ServerDomainError as exc:
                 # Keep the last working project instance when edits are

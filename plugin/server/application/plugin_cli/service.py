@@ -1940,7 +1940,10 @@ class PluginCliService:
         cancelled: threading.Event | None = None,
     ) -> dict[str, object]:
         from plugin.neko_plugin_cli.core.build import PluginBuilder
+        from plugin.server.application.plugin_project_commands import claim_project, release_project
+        from plugin.server.infrastructure.authoring_project_store import list_records
 
+        claimed_projects: list[str] = []
         try:
             policy = self._path_policy()
             target_root = policy.package_artifacts_root
@@ -1952,6 +1955,12 @@ class PluginCliService:
                 plugin_refs=plugin_refs or [],
             )
             plugin_dirs = [source.plugin_dir for source in sources]
+            project_dirs = {source.plugin_dir for source in sources if source.root_id == "project"}
+            if project_dirs:
+                for record in list_records():
+                    if record.source_dir in project_dirs:
+                        claim_project(record.project_id, "build")
+                        claimed_projects.append(record.project_id)
             # Workbench projects live outside the plugin roots, so metadata probing
             # imports them from their own directory, as the runtime does.
             builder = PluginBuilder(
@@ -2029,6 +2038,9 @@ class PluginCliService:
             }
         except Exception as exc:
             raise self._domain_error_from_exception(exc, action="build") from exc
+        finally:
+            for project_id in claimed_projects:
+                release_project(project_id)
 
     def _inspect_sync(self, *, package: str) -> dict[str, object]:
         try:

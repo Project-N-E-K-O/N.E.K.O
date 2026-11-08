@@ -1,3 +1,4 @@
+import { pythonPackageMessages } from '../python-packages'
 import { modelApiMessages } from '../model-api'
 import { modelBindingsMessages } from '../model-bindings'
 import { authoringMessages } from '../authoring'
@@ -6,6 +7,7 @@ import { authoringMessages } from '../authoring'
  * Paquete de idioma español
  */
 export default {
+  pythonPackages: pythonPackageMessages['es'],
   authoring: authoringMessages['es'],
   modelApi: modelApiMessages['es'],
   modelBindings: modelBindingsMessages['es'],

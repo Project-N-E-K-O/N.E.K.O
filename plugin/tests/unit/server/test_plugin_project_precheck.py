@@ -215,3 +215,74 @@ def _process_or_none(pid):
         return psutil.Process(pid)
     except psutil.NoSuchProcess:
         return None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocked_phase", ["spawn", "termination"])
+async def test_run_cli_cancellation_drains_slow_process_operations_without_blocking_loop(
+    tmp_path, monkeypatch, blocked_phase,
+):
+    import asyncio
+    import threading
+
+    entered = threading.Event()
+    unblock = threading.Event()
+    spawned = threading.Event()
+    processes = []
+    original_start = commands.start_cli
+    original_terminate = commands.terminate_process_tree
+
+    def start(*args, **kwargs):
+        if blocked_phase == "spawn":
+            entered.set()
+            assert unblock.wait(5)
+        process = original_start(*args, **kwargs)
+        processes.append(process)
+        spawned.set()
+        return process
+
+    def terminate(process):
+        if blocked_phase == "termination":
+            entered.set()
+            assert unblock.wait(5)
+        original_terminate(process)
+
+    monkeypatch.setattr(commands, "start_cli", start)
+    monkeypatch.setattr(commands, "terminate_process_tree", terminate)
+    request = asyncio.create_task(commands.run_cli(
+        [sys.executable, "-c", "import time; time.sleep(60)"], cwd=tmp_path, timeout=30,
+    ))
+    try:
+        if blocked_phase == "termination":
+            assert await asyncio.to_thread(spawned.wait, 3)
+            # The runner has received its process and is waiting for output.
+            await asyncio.sleep(0)
+            request.cancel()
+        assert await asyncio.to_thread(entered.wait, 3)
+        # This heartbeat cannot run if process creation or reaping blocks the loop.
+        ticked = False
+        async def heartbeat():
+            nonlocal ticked
+            await asyncio.sleep(0)
+            ticked = True
+        await asyncio.wait_for(heartbeat(), 0.5)
+        assert ticked
+        request.cancel()
+        await asyncio.sleep(0)
+        request.cancel()
+        unblock.set()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        assert len(processes) == 1
+        assert processes[0].poll() is not None
+    finally:
+        unblock.set()
+        if not request.done():
+            request.cancel()
+            try:
+                await request
+            except asyncio.CancelledError:
+                pass
+        for process in processes:
+            if process.poll() is None:
+                await asyncio.to_thread(original_terminate, process)

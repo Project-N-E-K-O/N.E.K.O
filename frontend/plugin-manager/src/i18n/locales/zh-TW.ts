@@ -1,3 +1,4 @@
+import { pythonPackageMessages } from '../python-packages'
 import { modelApiMessages } from '../model-api'
 import { modelBindingsMessages } from '../model-bindings'
 import { authoringMessages } from '../authoring'
@@ -6,6 +7,7 @@ import { authoringMessages } from '../authoring'
  * 繁體中文語言包
  */
 export default {
+  pythonPackages: pythonPackageMessages['zh-TW'],
   authoring: authoringMessages['zh-TW'],
   modelApi: modelApiMessages['zh-TW'],
   modelBindings: modelBindingsMessages['zh-TW'],
