@@ -219,12 +219,36 @@ def test_common_answer_shapes_are_accepted(raw):
         {"id": True, "verdict": "habit"},
         {"id": 1, "verdict": "maybe"},
         {"id": 1},
+        {"id": 1, "verdict": ["habit"]},
+        {"id": 1, "verdict": {"habit": 1}},
         "habit",
     ],
-    ids=["id-not-shown", "bool-id", "unknown-verdict", "no-verdict", "not-an-object"],
+    ids=[
+        "id-not-shown", "bool-id", "unknown-verdict", "no-verdict",
+        "list-verdict", "object-verdict", "not-an-object",
+    ],
 )
 def test_malformed_verdicts_are_dropped(item):
     assert parse_review_verdicts(json.dumps([item]), _SHOWN, now=1.0) == {}
+
+
+@pytest.mark.parametrize("bad", [[], ["habit"], {"habit": 1}], ids=["empty-list", "list", "object"])
+def test_a_stored_verdict_of_the_wrong_type_is_dropped_not_raised(tmp_path, bad):
+    """A damaged verdict reads as no verdict, so the file stays readable and replaceable."""
+    store = _store(tmp_path)
+    _write(store, [_entry(_PHRASE, review=_review("normal"))])
+    payload = _read_file(tmp_path)
+    payload["entries"][0]["review"]["verdict"] = bad
+    payload["reviews"][_PHRASE]["verdict"] = bad
+    (Path(tmp_path) / _NAME / HABITUAL_PHRASES_FILENAME).write_text(
+        json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+    )
+    stored = store.read(_NAME)
+    assert stored is not None
+    assert stored["entries"][0]["review"] is None
+    assert _PHRASE not in stored["reviews"]
+    # With no verdict the rules decide again, so the phrase is suppressed.
+    assert store.prompt_phrases(_NAME, "zh") == [_PHRASE]
 
 
 @pytest.mark.parametrize("raw", ["", "not json at all", "null", "42", '{"id": 1}'])

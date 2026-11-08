@@ -914,7 +914,13 @@ def _suppressed_phrases(entries: Sequence[Mapping[str, Any]]) -> list[str]:
 
 
 def _normalize_review(raw: Any) -> Optional[Dict[str, Any]]:
-    if not isinstance(raw, dict) or raw.get("verdict") not in VERDICTS:
+    """A well-formed verdict, or None. Never raises on a damaged file or answer.
+
+    The type check comes before the set lookup: an unhashable verdict such as
+    a list would raise there and make every later read of the file fail.
+    """
+    verdict = raw.get("verdict") if isinstance(raw, dict) else None
+    if not isinstance(verdict, str) or verdict not in VERDICTS:
         return None
     reason = raw.get("reason")
     return {
