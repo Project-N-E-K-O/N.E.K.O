@@ -125,6 +125,8 @@ export function useProjectPythonPackages(
     try {
       const next = await startProjectPythonTask(id, operation, snapshot.value.revision)
       if (current(id, seq)) {
+        request += 1
+        loading.value = false
         task.value = next
         snapshotRefreshPending = !pythonTaskActive(next)
         schedule()

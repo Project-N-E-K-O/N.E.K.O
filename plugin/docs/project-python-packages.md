@@ -30,6 +30,11 @@ until the task has reconciled the resulting vendor and plugin metadata. Starting
 reloading, building, publishing, prechecking and removing that project respect the
 reservation. Other projects can continue to operate.
 
+Project-operation locks do not track live plugin hosts in other server instances
+or recover a moved source from a stale path. When sharing the same source across
+instances, stop every host using it and keep them stopped until synchronization
+finishes. Cross-instance host-lifetime coordination is outside this feature.
+
 ## Inspection and checks
 
 The initial view reads local declaration and distribution metadata only. It

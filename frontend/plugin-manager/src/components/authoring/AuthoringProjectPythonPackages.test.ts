@@ -479,6 +479,30 @@ describe('project dependency management', () => {
       'r2'
     )
   })
+  it('keeps a newly started task when an older refresh completes', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    await mount()
+    let resolve!: (value: PythonPackagesSnapshot) => void
+    api.getProjectPythonPackages.mockReturnValueOnce(
+      new Promise((done) => {
+        resolve = done
+      })
+    )
+    await click('Refresh')
+    const button = (label: string) =>
+      [...document.querySelectorAll<HTMLButtonElement>('button')].find(
+        (item) => item.textContent?.trim() === label
+      )!
+    await click(en.sync)
+    resolve(state())
+    await flush()
+    expect(button(en.sync).disabled).toBe(true)
+    expect(button('Refresh').classList.contains('is-loading')).toBe(false)
+    expect(document.body.textContent).toContain('Installing httpx')
+    await vi.advanceTimersByTimeAsync(1000)
+    await flush()
+    expect(api.getProjectPythonTask).toHaveBeenCalledWith('p1', 't1')
+  })
   it('saves and syncs an empty declaration list after removing the final dependency', async () => {
     await mount()
     await click(en.remove)
