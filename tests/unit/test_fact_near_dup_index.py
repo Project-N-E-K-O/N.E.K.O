@@ -2188,6 +2188,32 @@ async def test_invalid_candidate_source_does_not_drop_valid_batch_members(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_user_observation_cited_to_a_later_character_line_is_rejected_whatever_comes_first(tmp_path):
+    from utils.llm_client import HumanMessage, AIMessage
+    h = _harness(tmp_path, [])
+    messages = [HumanMessage(content='I enjoy tea'),
+                AIMessage(content='Maybe swimming', additional_kwargs={'memory_source_id': 'raw-ai', 'memory_source_created_at': 1001})]
+    rows = await h._apersist_new_facts('小天', [{'entity': 'master', 'text': 'Invented', 'source_indices': [1, 2]}],
+                                       source_messages=messages)
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_source_upgrade_without_a_citation_drops_the_character_lines_as_proof(tmp_path):
+    from utils.llm_client import AIMessage
+    h = _harness(tmp_path, [])
+    messages = [AIMessage(content='I like tea', additional_kwargs={'memory_source_id': 'raw-ai', 'memory_source_created_at': 1001})]
+    [row] = await h._apersist_new_facts('小天', [{'entity': 'neko', 'text': 'Likes tea', 'source': 'ai_disclosure', 'source_indices': [1]}],
+                                        source_messages=messages)
+    assert row['source_message_ids'] == ['raw-ai']
+    await h._apersist_new_facts('小天', [{'entity': 'neko', 'text': 'Likes tea', 'source': 'user_observation'}],
+                                source_messages=messages)
+    [stored] = await h.aload_facts('小天')
+    assert stored['source'] == 'user_observation'
+    assert 'source_message_ids' not in stored and 'source_created_at' not in stored
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('bad_source', [[], {}])
 async def test_unhashable_candidate_source_falls_back_without_losing_the_batch(tmp_path, bad_source):
     from utils.llm_client import HumanMessage

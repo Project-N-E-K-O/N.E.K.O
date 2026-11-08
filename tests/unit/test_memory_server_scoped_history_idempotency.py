@@ -3783,6 +3783,23 @@ async def test_unusable_target_epochs_are_422(env, body, detail):
     assert _tombstones(env) == {}
 
 
+async def test_forget_refuses_while_a_snapshot_journal_cannot_be_recovered(env, monkeypatch):
+    """Recovering that journal later would restore what the erase removed."""
+    from app.memory_server import long_term_sync as native
+    from memory.long_term_sync import LongTermMemoryRecoveryRequired
+
+    async def unrecoverable(name):
+        raise LongTermMemoryRecoveryRequired()
+
+    monkeypatch.setattr(native, "recover_pending_snapshot", unrecoverable)
+    req = env.routes.ScopedForgetRequest.model_validate({"subject": GROUP})
+    with pytest.raises(HTTPException) as excinfo:
+        await env.routes.forget_scoped_subject(NAME, req)
+    assert excinfo.value.status_code == 503
+    assert excinfo.value.detail == "long_term_memory_recovery_required"
+    assert _tombstones(env) == {}
+
+
 def test_target_epochs_reject_negative_values(env):
     with pytest.raises(Exception):
         env.routes.ScopedForgetRequest.model_validate(

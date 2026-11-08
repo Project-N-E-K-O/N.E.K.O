@@ -476,6 +476,26 @@ async def test_over_capacity_capture_retains_memory_and_receipt_then_recovers_on
 
 
 @pytest.mark.asyncio
+async def test_recover_pending_snapshot_settles_the_journal_or_raises(owner, monkeypatch):
+    from app.memory_server import long_term_sync as native
+    from memory.long_term_sync import JOURNAL, LongTermMemoryRecoveryRequired
+    await native.recover_pending_snapshot('Neko')
+    atomic_write_json(owner.directory / FILES['facts'], [{'id': 'scoped', 'text': 'forget me'}])
+    atomic_write_json(owner.directory / JOURNAL, {'version': 1, 'phase': 'pending', 'before': {FILES['facts']: '[]'},
+                                                  'receipt': {'filename': 'a' * 32 + '-' + 'b' * 16 + '.json', 'before': None}})
+    await native.recover_pending_snapshot('Neko')
+    assert not (owner.directory / JOURNAL).exists()
+    assert json.loads((owner.directory / FILES['facts']).read_text(encoding='utf-8')) == []
+
+    atomic_write_json(owner.directory / JOURNAL, {'version': 1, 'phase': 'pending', 'before': {FILES['facts']: '[]'}, 'receipt': {'filename': 'a' * 32 + '-' + 'b' * 16 + '.json', 'before': None}})
+    def fail(name):
+        raise LongTermMemoryRecoveryRequired()
+    monkeypatch.setattr(native, '_recover_snapshot', fail)
+    with pytest.raises(LongTermMemoryRecoveryRequired):
+        await native.recover_pending_snapshot('Neko')
+
+
+@pytest.mark.asyncio
 async def test_conflicting_retirement_inbox_never_blocks_later_local_events(owner):
     import hashlib
     from memory.event_log import EVT_FACT_ADDED
@@ -1814,6 +1834,59 @@ def test_import_keeps_local_accounting_outside_the_protocol():
     for field in ('fact_source_counts', 'counted_fact_ids', 'source_facts_oldest_at'):
         assert field not in moved
     assert moved['user_confirm_count'] == 2
+
+
+def test_first_import_counts_the_facts_the_snapshot_carries():
+    """An AI-only line new to this device must not count as backed."""
+    from memory.evidence import awaits_user_signal
+    entries = [
+        {'kind': 'fact', 'subject': 'neko', 'id': 'f-ai', 'text': 'ai line', 'metadata': {'createdAt': 1000, 'source': 'ai_disclosure'}},
+        {'kind': 'fact', 'subject': 'master', 'id': 'f-user', 'text': 'user line', 'metadata': {'createdAt': 1000, 'source': 'user_observation'}},
+    ]
+    def reflection(rid, facts):
+        return {'kind': 'reflection', 'subject': 'neko', 'id': rid, 'text': rid,
+                'metadata': {'createdAt': 1000, 'status': 'pending', 'sourceFactIds': facts}}
+    incoming = {'schemaVersion': 2, 'completedAt': 3000, 'evidence': {'retirements': [], 'confirmations': []}, 'entries': entries + [
+        reflection('ai-only', ['f-ai']), reflection('backed', ['f-ai', 'f-user']), reflection('unknown', ['f-ai', 'f-gone']),
+    ]}
+    existing = {'persona': {}, 'facts': [], 'archive': [], 'reflections': []}
+    rows = {row['id']: row for row in import_document(incoming, existing)['reflections']}
+    assert rows['ai-only']['fact_source_counts'] == {'user': 0, 'ai': 1}
+    assert rows['ai-only']['counted_fact_ids'] == ['f-ai']
+    assert awaits_user_signal(rows['ai-only'])
+    assert rows['backed']['fact_source_counts'] == {'user': 1, 'ai': 1}
+    assert not awaits_user_signal(rows['backed'])
+    # A fact the snapshot does not carry cannot be counted, so the line stays unaccounted.
+    assert 'fact_source_counts' not in rows['unknown']
+
+    # A local row from before the accounting stays unaccounted too.
+    legacy = {'id': 'ai-only', 'text': 'ai-only', 'entity': 'neko', 'status': 'pending', 'source_fact_ids': ['f-ai']}
+    kept = import_document(incoming, {**existing, 'reflections': [legacy]})['reflections']
+    assert 'fact_source_counts' not in next(row for row in kept if row['id'] == 'ai-only')
+
+
+def test_event_when_uses_the_native_field_through_a_roundtrip():
+    when = {'start': {'offset': -1, 'unit': 'day'}, 'end': None}
+    fact = {'id': 'f1', 'text': 'went hiking', 'entity': 'master', 'source': 'user_observation',
+            'hash': 'x', 'created_at': '2026-10-01T00:00:00', 'event_when_raw': when}
+    views = {'persona': {}, 'facts': [fact], 'archive': [], 'reflections': []}
+    exported = export_document(views, 3000)
+    assert exported['entries'][0]['metadata']['eventWhen'] == when
+    fresh = {'persona': {}, 'facts': [], 'archive': [], 'reflections': []}
+    assert import_document(exported, fresh)['facts'][0]['event_when_raw'] == when
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('subject,role,resolved', [('neko', 'human', True), ('neko', 'ai', True),
+                                                   ('master', 'human', True), ('master', 'ai', False)])
+async def test_correction_time_accepts_the_roles_that_may_correct_the_subject(subject, role, resolved):
+    from memory.long_term_sync import resolve_retirement_cutoffs
+    identity = 'sync:' + 'c' * 32
+    row = {'id': 'r1', 'subject': subject, 'sourceMessageIds': ['old'], 'retiredBySourceMessageIds': [identity]}
+    async def lookup(ids):
+        return {identity: (role, 2000)}
+    [result] = await resolve_retirement_cutoffs([row], [], lookup=lookup)
+    assert result.get('retiredThroughAt') == (2000 if resolved else None)
 
 
 def test_formal_archives_roundtrip_and_keep_scoped_partitions(tmp_path):

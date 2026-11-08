@@ -569,6 +569,15 @@ async def consume(uid):
         return await _complete_file_commit(commit)
 
 
+async def recover_pending_snapshot(name):
+    """Finish an interrupted snapshot; raises LongTermMemoryRecoveryRequired while it cannot."""
+    if not getattr(runtime._config_manager, 'app_docs_dir', None):
+        return
+    if await asyncio.to_thread((Path(runtime._config_manager.memory_dir) / name / JOURNAL).is_file):
+        async with _views_locked(name):
+            await _complete_file_commit(_recover_snapshot, name)
+
+
 async def consume_for_name(name):
     try:
         if not getattr(runtime._config_manager, 'app_docs_dir', None):
@@ -585,8 +594,7 @@ async def consume_for_name(name):
         if not journal and uid is None:
             return False
         if journal:
-            async with _views_locked(name):
-                await _complete_file_commit(_recover_snapshot, name)
+            await recover_pending_snapshot(name)
         if uid:
             return await consume(uid)
     except LongTermMemoryRecoveryRequired:

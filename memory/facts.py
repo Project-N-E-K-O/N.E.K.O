@@ -4142,6 +4142,12 @@ class FactStore:
                         ))
                         existing['source'] = 'user_observation'
                         existing['signal_processed'] = memory_subject is not None
+                        if not source_provenance.get(id(fact), {}).get('source_message_ids'):
+                            # Without its own citation the claim keeps no proof at all:
+                            # the character lines must not read as the user's source.
+                            stale_proof = {key: existing.pop(key) for key in ('source_message_ids', 'source_created_at') if key in existing}
+                            if stale_proof:
+                                source_snapshots.append((existing, stale_proof))
                         # If confirmation comes from external import, attach external_import provenance too;
                         # SHA hit followed by immediate continue would miss the label (external_import semantics reset
                         # signal_processed=True and skip Stage-2) (Codex P2).

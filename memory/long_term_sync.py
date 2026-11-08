@@ -11,6 +11,7 @@ from pathlib import Path
 import sys
 from uuid import uuid4
 
+from memory.evidence import count_fact_sources
 from memory.introspection import PERMANENT_SUPPRESSION_KEY, is_permanently_suppressed
 from utils.long_term_memory_protocol import MAX_ENTRIES, document, head
 from utils.recent_memory_protocol import canonical
@@ -284,7 +285,7 @@ def export_document(views, completed_at, *, source_evidence=None):
                                   ('source_created_at', 'sourceCreatedAt'), ('archived_at', 'archivedAt'),
                                   ('voided_at', 'voidedAt'), ('confirmed_at', 'confirmedAt')]:
             if native.get(original) is not None: metadata[portable] = timestamp(native[original])
-        for original, portable in [('event_when', 'eventWhen'), ('status', 'status'), ('relation_type', 'relationType'),
+        for original, portable in [('event_when_raw', 'eventWhen'), ('status', 'status'), ('relation_type', 'relationType'),
                                   ('temporal_scope', 'temporalScope')]:
             if native.get(original) is not None: metadata[portable] = deepcopy(native[original])
         if native.get('version_history') is not None:
@@ -480,6 +481,7 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None, 
              or (incoming['schemaVersion'] == 1 and row.get('status') not in ('confirmed', 'promoted')
                  and (not isinstance(row.get('id'), str)
                       or (row.get('entity'), row.get('id')) not in incoming_reflections)))]
+    incoming_fact_sources = {row['id']: _incoming_fact_source(row) for row in incoming['entries'] if row['kind'] == 'fact'}
     for row in incoming['entries']:
         kind, subject, meta = row['kind'], row['subject'], row['metadata']
         if (kind, subject, row['id']) in pending or (kind, subject, row['id']) in locally_retired:
@@ -503,7 +505,7 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None, 
         for original, portable in [('event_start_at', 'eventStartAt'), ('event_end_at', 'eventEndAt'), ('source_created_at', 'sourceCreatedAt'),
                                   ('confirmed_at', 'confirmedAt'), ('archived_at', 'archivedAt'), ('voided_at', 'voidedAt')]:
             if portable in meta: native[original] = iso(meta[portable])
-        for original, portable in [('event_when', 'eventWhen'), ('relation_type', 'relationType'), ('temporal_scope', 'temporalScope')]:
+        for original, portable in [('event_when_raw', 'eventWhen'), ('relation_type', 'relationType'), ('temporal_scope', 'temporalScope')]:
             if portable in meta: native[original] = deepcopy(meta[portable])
         if kind == 'persona':
             if 'versionHistory' in meta:
@@ -537,7 +539,7 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None, 
             else:
                 result['persona'][subject]['facts'].append(native)
         elif kind == 'fact':
-            native.update(entity=subject, source=meta.get('source', 'ai_disclosure' if subject == 'neko' else 'user_observation'),
+            native.update(entity=subject, source=_incoming_fact_source(row),
                           importance=meta.get('importance', 5), absorbed=bool(meta.get('absorbed')), signal_processed=True,
                           hash=hashlib.sha256(row['text'].encode()).hexdigest()[:16])
             previous = local_facts.get((subject, row['id']), {})
@@ -582,6 +584,12 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None, 
                 for field in ('source_facts_oldest_at', 'fact_source_counts', 'counted_fact_ids'):
                     if field in previous:
                         native[field] = deepcopy(previous[field])
+            elif native['source_fact_ids'] and all(fid in incoming_fact_sources for fid in native['source_fact_ids']):
+                # New to this device: count the facts the snapshot carries, or an
+                # AI-only line would count as backed and promote without the user.
+                native['fact_source_counts'] = count_fact_sources(
+                    [{'source': incoming_fact_sources[fid]} for fid in native['source_fact_ids']])
+                native['counted_fact_ids'] = sorted(native['source_fact_ids'])
             # Explicit confirmations are not in the protocol either; like the
             # reinforce count they belong to the row, whatever its current wording.
             if 'user_confirm_count' in previous:
@@ -592,6 +600,10 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None, 
                 result['reflections'].append(native)
     return result
 
+
+
+def _incoming_fact_source(row):
+    return row['metadata'].get('source', 'ai_disclosure' if row['subject'] == 'neko' else 'user_observation')
 
 
 def _append_archive(views, key, entry, completed):
@@ -720,8 +732,10 @@ async def resolve_retirement_cutoffs(retirements, messages, lookup=None):
     for row in unresolved:
         ids = row['retiredBySourceMessageIds']
         if all(len(known.get(identity, ())) == 1 for identity in ids):
-            expected_role = 'ai' if row['subject'] == 'neko' else 'human'
-            times = [at for identity in ids for role, at in known[identity] if role == expected_role]
+            # The user may correct what the character said about itself; only the
+            # user can correct a fact about the user or the relationship.
+            roles = ('ai', 'human') if row['subject'] == 'neko' else ('human',)
+            times = [at for identity in ids for role, at in known[identity] if role in roles]
             if times:
                 updates[row['id']] = max(times)
     if not updates:
@@ -816,21 +830,16 @@ def fact_source_evidence(retirements, fact, entity, source_messages, *, source='
         type(index) is int and 1 <= index <= len(source_messages) for index in indices)
     selected = [source_messages[index - 1] for index in dict.fromkeys(indices)] if valid else []
     proofs = []
-    misattributed = False
+    # A misattributed user observation is rejected whatever it matches; retrying the
+    # whole batch cannot make a character line prove a user fact.
+    if source == 'user_observation' and any(getattr(message, 'type', '') not in ('human', 'user') for message in selected):
+        return None
     for message in selected:
-        if source == 'user_observation' and getattr(message, 'type', '') not in ('human', 'user'):
-            proofs = []
-            misattributed = True
-            break
         identity, at = trusted_message_source(message)
         if not identity:
             proofs = []
             break
         proofs.append((identity, at))
-    # A misattributed user observation is rejected whatever it matches; retrying the
-    # whole batch cannot make a character line prove a user fact.
-    if misattributed:
-        return None
     if matching and not proofs:
         if any(trusted_message_source(message)[0] for message in source_messages or []):
             raise FactExtractionFailed('retired_assertion_source_unavailable')

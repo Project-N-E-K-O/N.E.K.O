@@ -6272,6 +6272,14 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest, *, 
         )
     subject = req.subject.to_domain()
     _validate_target_epochs(req, subject)
+    # A pending snapshot journal restores its before-image when recovered, which
+    # would bring back whatever this erase removes. Settle it first or refuse.
+    from memory.long_term_sync import LongTermMemoryRecoveryRequired
+    from .long_term_sync import recover_pending_snapshot
+    try:
+        await recover_pending_snapshot(lanlan_name)
+    except LongTermMemoryRecoveryRequired as error:
+        raise HTTPException(status_code=503, detail="long_term_memory_recovery_required") from error
     from memory import trust_store as _trust_store
     if not _trust_store.trust_snapshot().loaded:
         # FAIL CLOSED. With the pool unreadable the fan-out set is unknown, and
