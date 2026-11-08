@@ -1370,6 +1370,7 @@ def test_plugin_dir_replaced_before_the_lock_is_refused(tmp_path, monkeypatch, c
 @pytest.mark.skipif(sys.platform != "win32", reason="directory junctions are Windows-only")
 def test_plugins_sharing_a_vendor_target_share_a_lock(tmp_path, monkeypatch, capsys):
     # Two plugins linking vendor/ to one target are one writer's business.
+    from plugin.neko_plugin_cli.commands import deps_cmd as sync_cmd
     from plugin.neko_plugin_cli.core import vendor_sync as deps_cmd
 
     shared = tmp_path / "shared_vendor"
@@ -1385,7 +1386,7 @@ def test_plugins_sharing_a_vendor_target_share_a_lock(tmp_path, monkeypatch, cap
                        check=True, capture_output=True)
         plugins.append(plugin_dir)
     monkeypatch.setattr(
-        deps_cmd, "resolve_plugin_dir_candidate", lambda plugin, defaults: Path(plugin)
+        sync_cmd, "resolve_plugin_dir_candidate", lambda plugin, defaults: Path(plugin)
     )
     nested = []
 
@@ -1906,7 +1907,7 @@ class TestHelpers:
     def test_read_dependencies_missing_field(self, tmp_path: Path) -> None:
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text('[project]\nname = "test"\n', encoding="utf-8")
-        assert _read_dependencies(pyproject) == []
+        assert _read_dependencies(pyproject) is None
 
     def test_filter_external(self) -> None:
         deps = ["httpx>=0.27", "N.E.K.O", "pydantic>=2.0"]
@@ -2010,6 +2011,44 @@ class TestHandleSync:
         )
         exit_code = handle_sync(args)
         assert exit_code == 0
+
+
+@pytest.mark.parametrize("clean", [False, True])
+@pytest.mark.parametrize(
+    "pyproject_content",
+    [None, '[tool.neko]\n', '[project]\nname = "my_plugin"\n'],
+    ids=["missing-pyproject", "missing-project", "missing-dependencies"],
+)
+def test_sync_without_dependency_declaration_preserves_vendor(tmp_path, monkeypatch, clean, pyproject_content):
+    from plugin.neko_plugin_cli.core import vendor_sync
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    pyproject = plugin_dir / "pyproject.toml"
+    if pyproject_content is None:
+        pyproject.unlink()
+    else:
+        pyproject.write_text(pyproject_content, encoding="utf-8")
+    vendor = plugin_dir / "vendor"
+    vendor.mkdir()
+    (vendor / "manual.py").write_text("manual dependency", encoding="utf-8")
+    monkeypatch.setattr(
+        vendor_sync, "_install_to_vendor", lambda *args, **kwargs: pytest.fail("no declaration to install")
+    )
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path, clean=clean)) == 0
+    assert (vendor / "manual.py").read_text(encoding="utf-8") == "manual dependency"
+
+
+@pytest.mark.parametrize("clean", [False, True])
+def test_sync_explicit_empty_dependencies_only_clears_vendor_when_clean(tmp_path, clean):
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    (plugin_dir / "pyproject.toml").write_text('[project]\ndependencies = []\n', encoding="utf-8")
+    vendor = plugin_dir / "vendor"
+    vendor.mkdir()
+    (vendor / "manual.py").write_text("manual dependency", encoding="utf-8")
+
+    assert handle_sync(TestTransactionalDependencyInstall()._args(plugin_dir, tmp_path, clean=clean)) == 0
+    assert (vendor / "manual.py").exists() is (not clean)
 
 
 @pytest.mark.parametrize("clean", [False, True])

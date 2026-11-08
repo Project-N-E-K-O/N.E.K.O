@@ -12,7 +12,11 @@ import {
 } from '@/api/projectPythonPackages'
 
 /** Project-owned draft and task session. A response from an old project never changes the new one. */
-export function useProjectPythonPackages(projectId: Ref<string>, onChanged: () => void) {
+export function useProjectPythonPackages(
+  projectId: Ref<string>,
+  onChanged: () => void,
+  editing: Ref<boolean>
+) {
   const snapshot = shallowRef<PythonPackagesSnapshot | null>(null)
   const task = shallowRef<PythonPackagesTask | null>(null)
   const draft = ref<string[]>([])
@@ -35,12 +39,13 @@ export function useProjectPythonPackages(projectId: Ref<string>, onChanged: () =
     timer = undefined
   }
 
+  function resetDraft(next: PythonPackagesSnapshot) {
+    draft.value = next.requirements.map((item) => item.requirement)
+    baseline.value = [...draft.value]
+    revision.value = next.revision
+  }
   function applySnapshot(next: PythonPackagesSnapshot, replaceDraft: boolean) {
-    if (replaceDraft) {
-      draft.value = next.requirements.map((item) => item.requirement)
-      baseline.value = [...draft.value]
-      revision.value = next.revision
-    }
+    if (replaceDraft) resetDraft(next)
     snapshot.value = next
     task.value = next.task
     schedule()
@@ -53,7 +58,9 @@ export function useProjectPythonPackages(projectId: Ref<string>, onChanged: () =
     error.value = null
     try {
       const next = await getProjectPythonPackages(id)
-      if (current(id, seq) && req === request) applySnapshot(next, discardDraft || !dirty.value)
+      if (current(id, seq) && req === request) {
+        applySnapshot(next, discardDraft || (!dirty.value && !editing.value))
+      }
     } catch (cause) {
       if (current(id, seq) && req === request) error.value = cause
     } finally {
@@ -120,6 +127,9 @@ export function useProjectPythonPackages(projectId: Ref<string>, onChanged: () =
     try {
       const next = await saveProjectPythonRequirements(id, [...draft.value], revision.value)
       if (!current(id, seq)) return false
+      // An earlier refresh must not restore its snapshot after this write.
+      request += 1
+      loading.value = false
       applySnapshot(next, true)
       onChanged()
     } catch (cause) {
@@ -167,6 +177,11 @@ export function useProjectPythonPackages(projectId: Ref<string>, onChanged: () =
     },
     { immediate: true }
   )
+  watch([editing, projectId], ([isEditing, id], [, previousId]) => {
+    if (id === previousId && !isEditing && !dirty.value && snapshot.value) {
+      resetDraft(snapshot.value)
+    }
+  })
   onBeforeUnmount(() => {
     alive = false
     resetTimer()

@@ -121,9 +121,13 @@ def read_package_tools() -> dict[str, object]:
     }
 
 
-def _check_cancel(cancel_event: threading.Event) -> None:
+def _check_cancel(
+    cancel_event: threading.Event, check_cancelled: Callable[[], None] | None = None,
+) -> None:
     if cancel_event.is_set():
         raise CancelledError("Python package task canceled")
+    if check_cancelled is not None:
+        check_cancelled()
 
 
 def _select_uv_wheel(metadata: dict, compatible_tags: list | None = None) -> dict:
@@ -145,8 +149,12 @@ def _select_uv_wheel(metadata: dict, compatible_tags: list | None = None) -> dic
     return min(matches, key=lambda match: match[0])[1]
 
 
-def _download_uv(destination: Path, log: Callable[[str], None], cancel_event: threading.Event) -> None:
+def _download_uv(
+    destination: Path, log: Callable[[str], None], cancel_event: threading.Event,
+    *, check_cancelled: Callable[[], None] | None = None,
+) -> None:
     """Extract only uv and its licenses from a pinned, SHA-256 checked wheel."""
+    _check_cancel(cancel_event, check_cancelled)
     httpx = load_httpx()
     log(f"Preparing uv {_UV_VERSION}")
     with httpx.Client(timeout=httpx.Timeout(10.0, connect=5.0), follow_redirects=False) as client:
@@ -154,10 +162,11 @@ def _download_uv(destination: Path, log: Callable[[str], None], cancel_event: th
             response.raise_for_status()
             metadata_bytes = bytearray()
             for chunk in response.iter_bytes():
-                _check_cancel(cancel_event)
+                _check_cancel(cancel_event, check_cancelled)
                 metadata_bytes.extend(chunk)
                 if len(metadata_bytes) > 2 * 1024 * 1024:
                     raise RuntimeError("Dependency installer metadata exceeds its size limit")
+        _check_cancel(cancel_event, check_cancelled)
         wheel = _select_uv_wheel(json.loads(metadata_bytes))
         address = urlsplit(wheel["url"])
         if address.scheme != "https" or address.hostname != "files.pythonhosted.org":
@@ -173,7 +182,7 @@ def _download_uv(destination: Path, log: Callable[[str], None], cancel_event: th
             with client.stream("GET", wheel["url"]) as response, archive_path.open("wb") as output:
                 response.raise_for_status()
                 for chunk in response.iter_bytes():
-                    _check_cancel(cancel_event)
+                    _check_cancel(cancel_event, check_cancelled)
                     received += len(chunk)
                     if received > _MAX_WHEEL_BYTES:
                         raise RuntimeError("Dependency installer download exceeds its size limit")
@@ -188,7 +197,7 @@ def _download_uv(destination: Path, log: Callable[[str], None], cancel_event: th
                     raise RuntimeError("Dependency installer executable exceeds its size limit")
                 with archive.open(member) as source, binary.open("wb") as output:
                     while chunk := source.read(65536):
-                        _check_cancel(cancel_event)
+                        _check_cancel(cancel_event, check_cancelled)
                         output.write(chunk)
                 for name in archive.namelist():
                     if ".dist-info/licenses/" in name and not name.endswith("/"):
@@ -196,12 +205,15 @@ def _download_uv(destination: Path, log: Callable[[str], None], cancel_event: th
                         if license_info.file_size <= 1024 * 1024:
                             license_path = destination.parent / f"{Path(name).name}.txt"
                             license_path.write_bytes(archive.read(name))
-            _check_cancel(cancel_event)
+            _check_cancel(cancel_event, check_cancelled)
             binary.chmod(0o755)
             os.replace(binary, destination)
 
 
-def _prepare_packaged_python(uv: str, run_command: CommandRunner, cancel_event: threading.Event) -> PackageTools:
+def _prepare_packaged_python(
+    uv: str, run_command: CommandRunner, cancel_event: threading.Event,
+    *, check_cancelled: Callable[[], None] | None = None,
+) -> PackageTools:
     python_root = _tools_root() / "python"
     env = {"UV_PYTHON_INSTALL_DIR": str(python_root)}
     # python_full_version markers must resolve as they do in the host, not
@@ -210,7 +222,7 @@ def _prepare_packaged_python(uv: str, run_command: CommandRunner, cancel_event: 
     find = [uv, "python", "find", "--system", "--no-project", "--managed-python", "--no-python-downloads", request]
     found = run_command(find, label="Locate compatible Python", env=env)
     if found.returncode:
-        _check_cancel(cancel_event)
+        _check_cancel(cancel_event, check_cancelled)
         installed = run_command(
             [uv, "python", "install", request, "--install-dir", str(python_root), "--no-bin", "--no-registry"],
             label="Prepare compatible Python", env=env,
@@ -232,6 +244,7 @@ def _prepare_packaged_python(uv: str, run_command: CommandRunner, cancel_event: 
         raise RuntimeError("The dependency interpreter does not match the running host")
     from utils.file_utils import atomic_write_json
 
+    _check_cancel(cancel_event, check_cancelled)
     atomic_write_json(_tools_root() / "python.json", {
         "executable": python, "environment": build_environment(), "python_version": list(sys.version_info[:3]),
     })
@@ -240,9 +253,10 @@ def _prepare_packaged_python(uv: str, run_command: CommandRunner, cancel_event: 
 
 def prepare_package_tools(
     run_command: CommandRunner, log: Callable[[str], None], cancel_event: threading.Event,
+    *, check_cancelled: Callable[[], None] | None = None,
 ) -> PackageTools:
     """Called in the dependency task's worker thread, after explicit sync."""
-    _check_cancel(cancel_event)
+    _check_cancel(cancel_event, check_cancelled)
     uv = _available_uv()
     if not _is_packaged() and (uv or _pip_available()):
         return PackageTools(sys.executable, uv)
@@ -252,20 +266,21 @@ def prepare_package_tools(
     root.mkdir(parents=True, exist_ok=True)
     lock = portalocker.Lock(root / ".prepare.lock", timeout=0)
     while True:
-        _check_cancel(cancel_event)
+        _check_cancel(cancel_event, check_cancelled)
         try:
             lock.acquire()
             break
         except portalocker.exceptions.LockException:
             cancel_event.wait(0.1)
     try:
+        _check_cancel(cancel_event, check_cancelled)
         uv = _available_uv()
         if uv is None:
             target = _cached_uv()
-            _download_uv(target, log, cancel_event)
+            _download_uv(target, log, cancel_event, check_cancelled=check_cancelled)
             uv = str(target)
         if _is_packaged():
-            return _prepare_packaged_python(uv, run_command, cancel_event)
+            return _prepare_packaged_python(uv, run_command, cancel_event, check_cancelled=check_cancelled)
         return PackageTools(sys.executable, uv)
     finally:
         lock.release()

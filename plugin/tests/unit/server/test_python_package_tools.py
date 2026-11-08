@@ -81,7 +81,9 @@ def test_wheel_selection_uses_runtime_tags_and_pinned_version():
         module._select_uv_wheel(metadata, [Tag("py3", "none", "macosx_11_0_arm64")])
 
 
-def _wheel_download(monkeypatch, *, invalid_digest=False, origin="https://files.pythonhosted.org/uv.whl"):
+def _wheel_download(
+    monkeypatch, *, invalid_digest=False, origin="https://files.pythonhosted.org/uv.whl", on_chunk=None,
+):
     binary_name = "uv.exe" if sys.platform == "win32" else "uv"
     archive_bytes = io.BytesIO()
     with zipfile.ZipFile(archive_bytes, "w") as archive:
@@ -112,6 +114,8 @@ def _wheel_download(monkeypatch, *, invalid_digest=False, origin="https://files.
             pass
 
         def iter_bytes(self):
+            if on_chunk is not None:
+                on_chunk(self.data)
             yield self.data
 
     class Client:
@@ -219,3 +223,25 @@ def test_packaged_capabilities_recognize_prepared_tools_without_running_them(too
     assert result["setup_required"] is False
     python.unlink()
     assert module.read_package_tools()["setup_required"] is True
+
+
+@pytest.mark.parametrize("phase", ["metadata", "wheel"])
+def test_download_checks_task_budget_between_chunks(tools, monkeypatch, phase):
+    expired = False
+
+    def on_chunk(data):
+        nonlocal expired
+        if (data.startswith(b"{") and phase == "metadata") or (data.startswith(b"PK") and phase == "wheel"):
+            expired = True
+
+    def checkpoint():
+        if expired:
+            raise TimeoutError("The dependency task exceeded its time budget")
+
+    binary_name = _wheel_download(monkeypatch, on_chunk=on_chunk)
+    with pytest.raises(TimeoutError, match="time budget"):
+        module._download_uv(
+            tools / binary_name, lambda _line: None, threading.Event(), check_cancelled=checkpoint,
+        )
+    assert not (tools / binary_name).exists()
+    assert list(tools.glob(".uv-*")) == []

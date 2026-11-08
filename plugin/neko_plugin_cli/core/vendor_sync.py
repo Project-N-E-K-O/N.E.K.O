@@ -122,11 +122,8 @@ def sync_vendor(
             _remove_orphan_markers(plugin_dir)
 
             pyproject_path = plugin_dir / "pyproject.toml"
-            external_deps = (
-                _filter_external(_read_dependencies(pyproject_path))
-                if pyproject_path.is_file()
-                else []
-            )
+            declared_deps = _read_dependencies(pyproject_path) if pyproject_path.is_file() else None
+            external_deps = _filter_external(declared_deps or [])
 
             # A user's explicit `sync --clean` may discard an unreconciled
             # backup, but only when an install rebuilds vendor/; the
@@ -160,7 +157,9 @@ def sync_vendor(
                 )
                 return 1
 
-            if not external_deps and (not args.clean or not pyproject_path.is_file()):
+            if not external_deps and (not args.clean or declared_deps is None):
+                # Missing declarations do not authorize replacing a manually
+                # maintained vendor/; an explicitly empty list does.
                 # Leftovers of finished swaps would otherwise never go away.
                 _remove_retained_backups(plugin_dir)
                 emit(f"[OK] {plugin_dir.name}: no external dependencies to sync")
@@ -727,19 +726,20 @@ def _empty_directory(directory: Path, *, keep: str) -> None:
             child.unlink()
 
 
-def _read_dependencies(pyproject_path: Path) -> list[str]:
+def _read_dependencies(pyproject_path: Path) -> list[str] | None:
+    """Read declarations, keeping an absent field distinct from an empty list."""
     with pyproject_path.open("rb") as f:
         data = tomllib.load(f)
     project = data.get("project")
     if not isinstance(project, dict):
-        return []
+        return None
     deps = project.get("dependencies")
     if deps is not None and (
         not isinstance(deps, list) or any(not isinstance(item, str) for item in deps)
     ):
         raise ValueError("pyproject.toml project.dependencies must be a list of strings")
     if not isinstance(deps, list):
-        return []
+        return None
     return [str(d).strip() for d in deps if isinstance(d, str) and str(d).strip()]
 
 

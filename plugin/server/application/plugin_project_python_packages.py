@@ -312,7 +312,10 @@ def _execute(task: _Task) -> dict:
         has_external = any(row["status"] != "host_provided" for row in task.before["requirements"])
         options = {}
         if has_external:
-            tools = prepare_package_tools(runner, lambda line: _log(task, line), task.cancel_event)
+            tools = prepare_package_tools(
+                runner, lambda line: _log(task, line), task.cancel_event,
+                check_cancelled=lambda: _check_stop(task),
+            )
             options = {
                 "python": tools.python, "uv_executable": tools.uv_executable,
                 "allow_pip_fallback": tools.allow_pip_fallback,

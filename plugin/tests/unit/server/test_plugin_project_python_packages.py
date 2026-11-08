@@ -125,7 +125,7 @@ async def test_sync_uses_injected_tools_and_shared_transaction(record, monkeypat
     before = packages.save_requirements(record.project_id, ["httpx"], before["revision"])
     seen = []
     monkeypatch.setattr(packages, "source_repo_root", lambda: None)
-    monkeypatch.setattr(packages, "prepare_package_tools", lambda *args: SimpleNamespace(
+    monkeypatch.setattr(packages, "prepare_package_tools", lambda *args, **kwargs: SimpleNamespace(
         python="managed-python", uv_executable="managed-uv", allow_pip_fallback=False, env={},
     ))
 
@@ -240,7 +240,7 @@ async def test_offline_wheel_install_through_task_and_cleanup(record, tmp_path, 
         archive.writestr("workbench_demo-1.0.0.dist-info/RECORD", "")
     pyproject = record.source_dir / "pyproject.toml"
     pyproject.write_text(f'[project]\nname="package_demo"\nversion="0.1.0"\ndependencies=["workbench-demo @ {wheel.as_uri()}"]\n')
-    monkeypatch.setattr(packages, "prepare_package_tools", lambda *args: SimpleNamespace(
+    monkeypatch.setattr(packages, "prepare_package_tools", lambda *args, **kwargs: SimpleNamespace(
         python=sys.executable, uv_executable=uv, allow_pip_fallback=False, env={"UV_OFFLINE": "1"},
     ))
     from plugin.server.application.plugins.registry_service import PluginRegistryService
@@ -326,7 +326,7 @@ async def test_request_cancellation_during_preparation_releases_lease(record, mo
 async def test_cancel_after_vendor_commit_still_refreshes_actual_state(record, monkeypatch):
     before = packages.read_packages(record.project_id)
     before = packages.save_requirements(record.project_id, ["commit-demo"], before["revision"])
-    monkeypatch.setattr(packages, "prepare_package_tools", lambda *args: SimpleNamespace(
+    monkeypatch.setattr(packages, "prepare_package_tools", lambda *args, **kwargs: SimpleNamespace(
         python=sys.executable, uv_executable="uv", allow_pip_fallback=False, env={},
     ))
     def sync(directory, **kwargs):
@@ -419,3 +419,30 @@ async def test_cancel_during_os_spawn_reaps_process_and_closes_output(record, mo
     assert processes[0].stdout.closed
     assert packages._tasks[result["task_id"]].process is None
     assert commands.project_operation_name(record.project_id) is None
+
+
+@pytest.mark.asyncio
+async def test_tool_setup_lock_obeys_task_budget_and_releases_project(record, monkeypatch, tmp_path):
+    import portalocker
+
+    from plugin.server.infrastructure import python_package_tools as tools
+
+    root = tmp_path / "shared-tools"
+    root.mkdir()
+    monkeypatch.setattr(tools, "_tools_root", lambda: root)
+    monkeypatch.setattr(tools, "_is_packaged", lambda: False)
+    monkeypatch.setattr(tools, "_find_uv", lambda: None)
+    monkeypatch.setattr(tools, "_pip_available", lambda: False)
+    monkeypatch.setattr(packages, "env_seconds", lambda *args: 0.05)
+    before = packages.read_packages(record.project_id)
+    before = packages.save_requirements(record.project_id, ["httpx"], before["revision"])
+    with portalocker.Lock(root / ".prepare.lock", timeout=0):
+        task = await packages.start_task(record.project_id, "sync", before["revision"])
+        try:
+            result = await asyncio.wait_for(finish(task), timeout=1)
+            assert result["status"] == "failed", result
+            assert "time budget" in result["message"]
+            assert commands.project_operation_name(record.project_id) is None
+            assert not (record.source_dir / "vendor").exists()
+        finally:
+            await packages.shutdown_tasks()

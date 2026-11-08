@@ -306,7 +306,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, toRef } from 'vue'
+import { computed, onBeforeUnmount, ref, toRef, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessageBox } from 'element-plus'
@@ -323,6 +323,10 @@ const props = defineProps<{ project: AuthoringProject }>()
 const emit = defineEmits<{ changed: [] }>()
 const { t } = useI18n()
 const projectId = computed(() => props.project.project_id)
+const editorVisible = ref(false)
+watch(projectId, () => {
+  editorVisible.value = false
+})
 const {
   snapshot,
   task,
@@ -338,9 +342,8 @@ const {
   save,
   run,
   cancel,
-} = useProjectPythonPackages(toRef(projectId), () => emit('changed'))
+} = useProjectPythonPackages(toRef(projectId), () => emit('changed'), editorVisible)
 const stopping = ref(false)
-const editorVisible = ref(false)
 const editorIndex = ref<number | null>(null)
 const rawDeclaration = ref('')
 const fullDeclaration = ref(false)

@@ -358,6 +358,111 @@ describe('project dependency management', () => {
       'r1'
     )
   })
+  it('preserves the editor target and original revision when an earlier refresh completes', async () => {
+    await mount()
+    let resolve!: (value: PythonPackagesSnapshot) => void
+    api.getProjectPythonPackages.mockReturnValueOnce(
+      new Promise((done) => {
+        resolve = done
+      })
+    )
+    await click('Refresh')
+    await click('Edit')
+    await fill('python-package-version', '>=1,<2')
+    resolve(
+      state({
+        revision: 'external',
+        requirements: [{ ...state().requirements[0]!, requirement: 'anyio>=4', name: 'anyio' }],
+      })
+    )
+    await flush()
+    await click(en.saveOnly)
+    expect(api.saveProjectPythonRequirements).toHaveBeenCalledWith(
+      'p1',
+      ['httpx[socks]>=1,<2; python_version >= "3.11"'],
+      'r1'
+    )
+  })
+  it('aligns an unchanged draft with the latest refresh after canceling the editor', async () => {
+    await mount()
+    let resolve!: (value: PythonPackagesSnapshot) => void
+    api.getProjectPythonPackages.mockReturnValueOnce(
+      new Promise((done) => {
+        resolve = done
+      })
+    )
+    await click('Refresh')
+    await click('Edit')
+    await fill('python-package-version', '>=1,<2')
+    resolve(
+      state({
+        revision: 'external',
+        requirements: [{ ...state().requirements[0]!, requirement: 'anyio>=4', name: 'anyio' }],
+      })
+    )
+    await flush()
+    await click('Cancel')
+    expect(document.querySelector('.python-package-declaration code')?.textContent).toBe('anyio>=4')
+    await click('Edit')
+    expect(document.querySelector<HTMLInputElement>('#python-package-name')?.value).toBe('anyio')
+    await click(en.saveOnly)
+    expect(api.saveProjectPythonRequirements).toHaveBeenCalledWith('p1', ['anyio>=4'], 'external')
+  })
+  it('retains unsaved draft changes and their revision when canceling after a refresh', async () => {
+    await mount()
+    await click(en.pin)
+    let resolve!: (value: PythonPackagesSnapshot) => void
+    api.getProjectPythonPackages.mockReturnValueOnce(
+      new Promise((done) => {
+        resolve = done
+      })
+    )
+    await click('Refresh')
+    await click('Edit')
+    resolve(
+      state({
+        revision: 'external',
+        requirements: [{ ...state().requirements[0]!, requirement: 'anyio>=4', name: 'anyio' }],
+      })
+    )
+    await flush()
+    await click('Cancel')
+    expect(document.querySelector('.python-package-declaration code')?.textContent).toBe(
+      'httpx[socks]==0.28.1; python_version >= "3.11"'
+    )
+    await click(en.save)
+    expect(api.saveProjectPythonRequirements).toHaveBeenCalledWith(
+      'p1',
+      ['httpx[socks]==0.28.1; python_version >= "3.11"'],
+      'r1'
+    )
+  })
+  it('does not replace a saved declaration with an older in-flight refresh', async () => {
+    await mount()
+    let resolve!: (value: PythonPackagesSnapshot) => void
+    api.getProjectPythonPackages.mockReturnValueOnce(
+      new Promise((done) => {
+        resolve = done
+      })
+    )
+    await click('Refresh')
+    await click('Edit')
+    await fill('python-package-version', '>=1,<2')
+    await click(en.saveOnly)
+    resolve(state())
+    await flush()
+    expect(document.querySelector('.python-package-declaration code')?.textContent).toBe(
+      'httpx[socks]>=1,<2; python_version >= "3.11"'
+    )
+    await click('Edit')
+    await fill('python-package-version', '>=2,<3')
+    await click(en.saveOnly)
+    expect(api.saveProjectPythonRequirements).toHaveBeenLastCalledWith(
+      'p1',
+      ['httpx[socks]>=2,<3; python_version >= "3.11"'],
+      'r2'
+    )
+  })
   it('saves and syncs an empty declaration list after removing the final dependency', async () => {
     await mount()
     await click(en.remove)
@@ -419,6 +524,29 @@ describe('project dependency management', () => {
     )
     await click('Refresh')
     expect(document.body.textContent).toContain(en.notChecked)
+  })
+  it('ends the previous project editing session before loading new declarations', async () => {
+    const { props } = await mount()
+    await click('Edit')
+    await fill('python-package-version', '>=1,<2')
+    api.getProjectPythonPackages.mockResolvedValue(
+      state({
+        revision: 'p2-revision',
+        requirements: [{ ...state().requirements[0]!, requirement: 'anyio>=4', name: 'anyio' }],
+      })
+    )
+    props.project = { ...project, project_id: 'p2' }
+    await flush()
+    expect(document.querySelector('.python-package-declaration code')?.textContent).toBe('anyio>=4')
+    expect(api.saveProjectPythonRequirements).not.toHaveBeenCalled()
+    await click('Edit')
+    expect(document.querySelector<HTMLInputElement>('#python-package-name')?.value).toBe('anyio')
+    await click(en.saveOnly)
+    expect(api.saveProjectPythonRequirements).toHaveBeenCalledWith(
+      'p2',
+      ['anyio>=4'],
+      'p2-revision'
+    )
   })
   it('ignores the previous project response after switching projects', async () => {
     let resolve!: (value: PythonPackagesSnapshot) => void
