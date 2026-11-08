@@ -28,6 +28,9 @@ from memory.evidence import (
     count_fact_sources,
     initial_reinforcement_from_importance,
     is_ai_disclosure,
+    merge_observed_days,
+    observed_days,
+    others_fact_days,
 )
 
 
@@ -483,6 +486,7 @@ class SynthesisMixin:
         # crowd the render budget). Recorded in its own lock section before the
         # new lines, which reload the view.
         covered_any = False
+        reobserved: list[str] = []
         skips = [draft for draft in drafts if draft['skip_key'] is not None]
         if skips:
             async with self._get_alock(lanlan_name):
@@ -501,8 +505,11 @@ class SynthesisMixin:
                         sorted(f['id'] for f in draft['supporting']),
                         subject=memory_subject,
                         facts=draft['supporting'],
+                        reobserved=reobserved,
                     )
                     covered_any = covered_any or draft['covered']
+        for reflection_id in dict.fromkeys(reobserved):
+            await self._areinforce_reobserved(lanlan_name, reflection_id)
         new_drafts: list[dict] = []
         seen_texts: set[str] = set()
         for draft in drafts:
@@ -791,6 +798,10 @@ class SynthesisMixin:
             reflection['status'] = 'confirmed'
             reflection['confirmed_at'] = now_iso
             reflection['auto_confirmed'] = True
+            # The days it was seen in others' words, the scoped promotion
+            # gate (memory.evidence.scoped_promotion_ready); empty when it
+            # rests only on the character's own words.
+            reflection['observed_days'] = others_fact_days(supporting)
             # Confirmed rendering (_filter_active_confirmed) requires evidence_score
             # strictly >0, but scoped reflections never receive evidence. Importance≤6
             # batches seed 0.0, hiding reflections from group /scoped_context until
@@ -1148,6 +1159,7 @@ class SynthesisMixin:
     async def _arecord_covered_facts_locked(
         self, lanlan_name: str, target: dict, fact_ids: list[str], *, subject=None,
         facts: list[dict] | tuple = (),
+        reobserved: list[str] | None = None,
     ) -> bool:
         """Attach a skipped fact batch to the impression that covers it.
 
@@ -1162,7 +1174,13 @@ class SynthesisMixin:
         ``fact_source_counts`` when not counted yet: the user restating an
         impression that rested only on the AI's words is the user's backing
         for it (``memory.evidence.awaits_user_signal``). Reinforcement stays
-        untouched, as for any restatement.
+        untouched, as for any restatement -- except for a scoped reflection:
+        new facts not in the character's own words add their record days to
+        its ``observed_days`` (the promotion gate) and its id to
+        ``reobserved``, and the caller then reinforces it
+        (``_areinforce_reobserved``), so a line seen again keeps its place in
+        the per-subject render budget. A group gives no feedback; being seen
+        again is the only evidence it has.
         """
         if target['kind'] == 'persona':
             return await self._persona_manager.arecord_covered_facts(
@@ -1189,9 +1207,28 @@ class SynthesisMixin:
             or not entry_matches_subject(entry, subject)
         ):
             return False
+        from memory.evidence import counted_fact_ids, merge_fact_source_counts
+        # Facts this line already took in (counted, or covered by an earlier
+        # skip of the same batch): a rerun after a crash is no new sighting.
+        seen_before = counted_fact_ids(entry) | {
+            fid for fid in entry.get('covered_fact_ids') or ()
+            if isinstance(fid, str)
+        }
         changed = merge_covered_fact_ids(entry, fact_ids)
+        if subject is not None:
+            new_days = others_fact_days([
+                f for f in facts
+                if isinstance(f, dict) and f.get('id')
+                and f['id'] not in seen_before
+            ])
+            if new_days:
+                days = merge_observed_days(observed_days(entry), new_days)
+                if days != entry.get('observed_days'):
+                    entry['observed_days'] = days
+                    changed = True
+                if reobserved is not None:
+                    reobserved.append(entry['id'])
         if isinstance(entry.get('fact_source_counts'), dict):
-            from memory.evidence import counted_fact_ids, merge_fact_source_counts
             already = counted_fact_ids(entry)
             new_facts = [
                 f for f in facts
@@ -1218,6 +1255,25 @@ class SynthesisMixin:
                 indent=2, ensure_ascii=False,
             )
         return True
+
+    async def _areinforce_reobserved(self, lanlan_name: str, reflection_id: str) -> None:
+        """Reinforce a scoped reflection others' words restated again.
+
+        Through the evidence signal path (event logged, decay clock restarts,
+        capped like every reinforcement); best-effort like every signal.
+        """
+        from config import SCOPED_REOBSERVED_REINFORCEMENT
+        from memory.event_log import EVIDENCE_SOURCE_SCOPED_REOBSERVED
+        try:
+            await self.aapply_signal(
+                lanlan_name, reflection_id,
+                {'reinforcement': SCOPED_REOBSERVED_REINFORCEMENT},
+                EVIDENCE_SOURCE_SCOPED_REOBSERVED,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"[Reflection] {lanlan_name}/{reflection_id}: 重新看到后加分失败: {e}"
+            )
 
     def _subject_forget_overlapped(
         self, lanlan_name: str, memory_subject, forget_epoch,

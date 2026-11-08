@@ -416,7 +416,7 @@ async def test_synthesis_skips_a_restated_line_and_keeps_the_rest(tmp_path):
     target = {"kind": "reflection", "id": "ref_old", "text": "主人睡前听歌"}
     covered_calls: list[list[str]] = []
 
-    async def _covered(_name, tgt, fact_ids, *, subject=None, facts=()):
+    async def _covered(_name, tgt, fact_ids, *, subject=None, facts=(), reobserved=None):
         covered_calls.append(list(fact_ids))
         return tgt is target
 

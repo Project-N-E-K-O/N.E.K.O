@@ -41,8 +41,13 @@ Suppression here is permanent (``permanent_suppression``), unlike the 5-hour
 mention cooldown ``suppress``: the entry stays on disk but stops reaching the
 model through every path — render, recall, promotion and refine.
 
-Only the legacy (private chat) render is reviewed; group / participant scoped
-subjects are out of scope for now.
+Scoped subjects (a group, a member of a group, a person met across groups)
+get the same review one subject at a time (``subject=``): the block
+``/scoped_context`` injects for that subject (``arender_scoped_injected_memory``),
+reviewed with MEMORY_INTROSPECTION_SCOPED_PROMPT. A group gives no feedback,
+so this is what weeds out its hollow or contradictory lines and the
+character's own words taken for the group's traits; every action is checked
+against the subject the model saw before it is applied.
 """
 
 from __future__ import annotations
@@ -87,11 +92,16 @@ _REASON_MAX_CHARS = 200
 ISSUE_CODES = frozenset({
     'contradiction', 'redundant', 'hollow', 'self_rule', 'unclear', 'stale',
     'card_conflict',
+    # Scoped review: the character's own words taken for a trait of the
+    # group or person.
+    'self_words',
 })
 # Problems in the wording itself: a later line that says the same is just as
 # wrong. Stale / contradicted / card-conflicting lines are left out on purpose
 # -- fresh facts can make the same sentence true again.
-_RESTATEMENT_BLOCKING_ISSUES = frozenset({'hollow', 'redundant', 'self_rule', 'unclear'})
+_RESTATEMENT_BLOCKING_ISSUES = frozenset({
+    'hollow', 'redundant', 'self_rule', 'unclear', 'self_words',
+})
 
 
 def is_permanently_suppressed(entry) -> bool:
@@ -178,11 +188,16 @@ class RenderAnnotator:
     them by) are numbered too, so the model can cite them as a reference and
     an action aimed at one is counted as a rejection rather than as an
     unknown number.
+
+    ``mark_persona`` (scoped review) tags editable persona lines ``[n P]``:
+    a subject's persona lines and impressions share one heading there, and
+    a merge must stay within one kind.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, mark_persona: bool = False) -> None:
         self.lines: dict[int, AnnotatedLine] = {}
         self._section_of: dict[int, str] = {}
+        self._mark_persona = mark_persona
 
     def bind_persona(self, persona_view: dict) -> None:
         for section_key, section in persona_view.items():
@@ -213,7 +228,11 @@ class RenderAnnotator:
             text=str(entry.get('text') or ''),
             readonly=readonly,
         )
-        return f"[{number} RO] " if readonly else f"[{number}] "
+        if readonly:
+            return f"[{number} RO] "
+        if self._mark_persona and kind == KIND_PERSONA:
+            return f"[{number} P] "
+        return f"[{number}] "
 
     def has_editable_lines(self) -> bool:
         return any(not line.readonly for line in self.lines.values())
@@ -282,6 +301,38 @@ async def arender_injected_memory(
     return InjectedMemory(pinned=pinned, persona=persona)
 
 
+async def arender_scoped_injected_memory(
+    persona_manager, reflection_engine, name: str, subjects,
+    *, participant_groups=None, annotator: RenderAnnotator | None = None,
+) -> str:
+    """The persona + reflection block ``/scoped_context`` injects for
+    ``subjects``.
+
+    The single definition the route and the scoped review both call, the
+    scoped twin of ``arender_injected_memory``: same suppression refresh, same
+    reflection selection (only these subjects, never private rows), same
+    render.
+    """
+    try:
+        await reflection_engine.aupdate_suppressions(name)
+    except Exception as e:
+        logger.warning(f"[scoped] 刷新 reflection suppression 失败: {e}")
+    pending = await reflection_engine.aget_pending_reflections(
+        name, subjects=subjects, include_legacy_private=False,
+    )
+    confirmed = await reflection_engine.aget_confirmed_reflections(
+        name, subjects=subjects, include_legacy_private=False,
+    )
+    extra = {'annotator': annotator} if annotator is not None else {}
+    return await persona_manager.arender_persona_markdown(
+        name, pending, confirmed,
+        subjects=subjects,
+        include_legacy_private=False,
+        participant_groups=participant_groups,
+        **extra,
+    )
+
+
 # ── action validation ───────────────────────────────────────────────
 
 
@@ -302,7 +353,7 @@ _NUMBER_RE = re.compile(r'\d+')
 # as instructions.
 _DELIMITER_RUN_RE = re.compile(r'={6,}')
 # A numbered bullet as the render writes it: the tag opens its own line.
-_TAG_LINE_RE = re.compile(r'(?m)^[ \t]*- \[(\d+)( RO)?\] ')
+_TAG_LINE_RE = re.compile(r'(?m)^[ \t]*- \[(\d+)(?: P)?( RO)?\] ')
 # The time label older reflections carry between the tag and the text.
 _TIME_LABEL_RE = re.compile(r'\[[^\]\n]*\] ')
 
@@ -518,14 +569,21 @@ def _shown_lines(
 
 def _build_prompt(
     memory_text: str, *, ai_name: str, master_name: str,
-    lines: dict[int, AnnotatedLine],
+    lines: dict[int, AnnotatedLine], scoped: bool = False,
 ) -> tuple[str, dict[int, AnnotatedLine]]:
-    """The prompt, and the numbered lines it shows in full."""
+    """The prompt, and the numbered lines it shows in full.
+
+    ``scoped``: one group / person's block, reviewed with the scoped prompt,
+    which names nobody from the private chat.
+    """
     from config import (
         MEMORY_INTROSPECTION_INPUT_MAX_TOKENS,
         MEMORY_INTROSPECTION_MAX_ACTIONS_PER_ROUND,
     )
-    from config.prompts.prompts_memory import get_memory_introspection_prompt
+    from config.prompts.prompts_memory import (
+        get_memory_introspection_prompt,
+        get_memory_introspection_scoped_prompt,
+    )
     from utils.language_utils import (
         detect_prompt_language_with_ascii_fallback,
         get_global_language_full,
@@ -541,8 +599,12 @@ def _build_prompt(
     lang = detect_prompt_language_with_ascii_fallback(
         memory_text, ui_language=get_global_language_full(),
     )
+    template = (
+        get_memory_introspection_scoped_prompt(lang) if scoped
+        else get_memory_introspection_prompt(lang)
+    )
     prompt = (
-        get_memory_introspection_prompt(lang)
+        template
         .replace('{AI_NAME}', ai_name)
         .replace('{MASTER_NAME}', master_name)
         .replace('{MAX_ACTIONS}', str(MEMORY_INTROSPECTION_MAX_ACTIONS_PER_ROUND))
@@ -575,9 +637,14 @@ async def _ainvoke(config_manager, prompt: str, *, name: str, round_no: int):
 
 async def arun_introspection(
     name: str, *, persona_manager, reflection_engine, config_manager,
-    pinned_fact_store=None,
+    pinned_fact_store=None, subject=None,
 ) -> IntrospectionResult:
-    """Review and correct one character's injected memory, up to N rounds."""
+    """Review and correct one character's injected memory, up to N rounds.
+
+    ``subject``: review that scoped subject's block instead of the private
+    one; every action carries the subject, and the apply step skips a target
+    no longer stamped with it.
+    """
     from config import (
         MEMORY_INTROSPECTION_MAX_ACTIONS_PER_ROUND,
         MEMORY_INTROSPECTION_MAX_ROUNDS,
@@ -590,19 +657,30 @@ async def arun_introspection(
     lang = _normalize_memory_prompt_lang(get_global_language_full())
 
     result = IntrospectionResult()
-    _, _, _, _, name_mapping, _, _, _, _ = await config_manager.aget_character_data()
-    master_name = name_mapping.get('human', '主人')
+    scoped = subject is not None
+    if scoped:
+        # The scoped prompt names nobody from the private chat.
+        master_name = ''
+    else:
+        _, _, _, _, name_mapping, _, _, _, _ = await config_manager.aget_character_data()
+        master_name = name_mapping.get('human', '主人')
     for round_no in range(1, MEMORY_INTROSPECTION_MAX_ROUNDS + 1):
-        annotator = RenderAnnotator()
-        memory_text = (await arender_injected_memory(
-            persona_manager, reflection_engine, name,
-            pinned_fact_store=pinned_fact_store, lang=lang, annotator=annotator,
-        )).text
+        annotator = RenderAnnotator(mark_persona=scoped)
+        if scoped:
+            memory_text = await arender_scoped_injected_memory(
+                persona_manager, reflection_engine, name, [subject],
+                annotator=annotator,
+            )
+        else:
+            memory_text = (await arender_injected_memory(
+                persona_manager, reflection_engine, name,
+                pinned_fact_store=pinned_fact_store, lang=lang, annotator=annotator,
+            )).text
         if not annotator.has_editable_lines():
             break
         prompt, shown_lines = _build_prompt(
             memory_text, ai_name=name, master_name=master_name,
-            lines=annotator.lines,
+            lines=annotator.lines, scoped=scoped,
         )
         try:
             raw_actions, ran_out = await _ainvoke(
@@ -632,9 +710,15 @@ async def arun_introspection(
             max_actions=MEMORY_INTROSPECTION_MAX_ACTIONS_PER_ROUND,
         )
         result.rejected.update(plan.rejected)
+        if scoped:
+            for action in plan.persona + plan.reflection:
+                action['subject'] = subject
         applied = 0
         if plan.size:
-            _print_plan(name, round_no, plan)
+            if not scoped:
+                # Group / member text stays out of stdout as it does in
+                # synthesis: it is collected as application logs.
+                _print_plan(name, round_no, plan)
             outcomes = []
             if plan.persona:
                 outcomes.append(await persona_manager.aapply_introspection_actions(
