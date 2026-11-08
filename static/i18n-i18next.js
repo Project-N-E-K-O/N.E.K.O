@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // Add the connectivity output_limit error message in all eight languages.
-    const LOCALE_VERSION = '2026-11-07-connectivity-output-limit';
+    // Add the habitual-phrase panel strings in all eight languages, merged with the latest main locales.
+    const LOCALE_VERSION = '2026-11-08-habitual-phrase-panel-main-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

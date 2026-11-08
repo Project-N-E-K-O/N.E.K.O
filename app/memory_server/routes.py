@@ -86,7 +86,7 @@ from utils.natural_expression_candidates import (
     normalize_language,
 )
 
-from . import gates, locale_state, outbox_infra, post_turn, review, runtime
+from . import gates, habitual_phrase_loop, locale_state, outbox_infra, post_turn, review, runtime
 from ._shared import logger, validate_lanlan_name
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from .rows import _has_human_messages
@@ -8075,6 +8075,9 @@ async def _new_dialog(
         return PlainTextResponse("")
 
     if not has_explicit_language:
+        # This session speaks its request (UI) language; the habitual-phrase
+        # miner follows it. Noted in memory only, never persisted.
+        habitual_phrase_loop.note_session_render_language(lanlan_name, render_language)
         try:
             durable_language = await asyncio.to_thread(
                 locale_state.get_character_prompt_locale,

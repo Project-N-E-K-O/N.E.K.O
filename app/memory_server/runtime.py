@@ -108,6 +108,8 @@ _CHARACTER_SCOPED_WRITE_OPS = frozenset({
     "theater/forget",
     # Retracting a declined archive capsule writes recent and the time index too.
     "theater/retract",
+    # The memory browser's "recompute now" rewrites habitual_phrases.json.
+    "habitual_phrases/recompute",
 })
 _admitted_character_context: ContextVar[frozenset[str]] = ContextVar(
     "admitted_character_context",
@@ -1107,7 +1109,14 @@ async def _bootstrap_embedding_worker() -> None:
 
 
 async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
-    from . import evidence_loops, outbox_infra, refine_loops, routes, signal_extraction
+    from . import (
+        evidence_loops,
+        habitual_phrase_loop,
+        outbox_infra,
+        refine_loops,
+        routes,
+        signal_extraction,
+    )
 
     global recent_history_manager, settings_manager, time_manager, fact_store
     global persona_manager, reflection_engine, cursor_store, outbox, event_log, reconciler
@@ -1307,6 +1316,8 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             _spawn_background_task(evidence_loops._periodic_archive_sweep_loop())
             # events.ndjson applied-history pruning; first round 300 s after startup.
             _spawn_background_task(evidence_loops._periodic_event_log_compact_loop())
+            # Habitual-phrase avoid list: local mining only, idle-gated, about daily per character.
+            _spawn_background_task(habitual_phrase_loop._periodic_habitual_phrase_loop())
             _spawn_background_task(routes._periodic_new_dialog_qps_log_loop())
             if MEMORY_RECHECK_ENABLED:
                 _spawn_background_task(evidence_loops._periodic_slow_memory_recheck_loop())

@@ -127,6 +127,11 @@ MANAGED_MEMORY_FILENAMES = (
     # be remembered, so it travels with facts.json. Its store keeps no cache,
     # so an apply that rewrites it needs no eviction hook.
     "pinned_facts.json",
+    # The user's allow / suppress choices on the habitual-phrase avoid list
+    # (memory/habitual_phrases.py). Unlike habitual_phrases.json, which is
+    # recomputed from time_indexed.db, they cannot be rebuilt. The store reads
+    # the file on every use, so an apply that rewrites it needs no eviction hook.
+    "habitual_phrase_overrides.json",
     "prompt_locale.json",
     "scoped_prompt_locales.json",
     "persona.json",

@@ -2361,6 +2361,82 @@ def render_recent_topics_block(terms: List[str], lang: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Habitual-phrase avoid list: wording she keeps reusing across sessions.
+# ---------------------------------------------------------------------------
+# Source: memory.habitual_phrases.HabitualPhraseStore.prompt_phrases, a file the
+# memory server recomputes in the background without any model call. Injected
+# right after RECENT_TOPIC_HINT_PROMPT_BLOCK at session start only: realtime
+# voice swallows a mid-session system injection (see notify.py).
+#
+# Topics are WHAT she talks about; these are HOW she says it. The closing line
+# asks for different wording, never a different meaning, and deliberately
+# offers no sample replacement: a model handed an example line repeats the
+# example instead.
+
+HABITUAL_PHRASE_AVOID_PROMPT_BLOCK = {
+    'zh': (
+        "\n\n[你最近在好几次对话里反复用到的说法（{n}项）]\n"
+        "{items}\n"
+        "这些说法最近用得太多了，想表达同样的意思时换种说法。"
+    ),
+    'zh-TW': (
+        "\n\n[你最近在好幾次對話裡反覆用到的說法（{n}項）]\n"
+        "{items}\n"
+        "這些說法最近用得太多了，想表達同樣的意思時換個說法。"
+    ),
+    'en': (
+        "\n\n[Phrases you've reused across several recent conversations ({n})]\n"
+        "{items}\n"
+        "These phrases have been used too much lately; when you mean the same "
+        "thing, say it a different way."
+    ),
+    'ja': (
+        "\n\n[最近いくつもの会話で繰り返し使っている言い回し（{n}件）]\n"
+        "{items}\n"
+        "これらの言い回しは最近使いすぎています。同じことを伝えるときは、"
+        "別の言い方で表現してください。"
+    ),
+    'ko': (
+        "\n\n[최근 여러 대화에서 반복해서 쓴 표현 ({n}개)]\n"
+        "{items}\n"
+        "이 표현들은 최근에 너무 자주 썼습니다. 같은 뜻을 전할 때는 "
+        "다른 말로 표현해 보세요."
+    ),
+    'ru': (
+        "\n\n[Фразы, которые вы повторяли в нескольких недавних разговорах "
+        "({n} шт.)]\n"
+        "{items}\n"
+        "В последнее время эти фразы звучат слишком часто; когда хотите "
+        "сказать то же самое, выразите это по-другому."
+    ),
+    'es': (
+        "\n\n[Expresiones que repetiste en varias conversaciones recientes "
+        "({n} elemento(s))]\n"
+        "{items}\n"
+        "Últimamente usas demasiado estas expresiones; cuando quieras decir "
+        "lo mismo, dilo de otra manera."
+    ),
+    'pt': (
+        "\n\n[Expressões que você repetiu em várias conversas recentes "
+        "({n} item(ns))]\n"
+        "{items}\n"
+        "Essas expressões têm sido usadas demais ultimamente; quando quiser "
+        "dizer a mesma coisa, diga de outro jeito."
+    ),
+}
+
+
+def render_habitual_phrases_block(phrases: List[str], lang: str) -> str:
+    """Render the habitual-phrase avoid list into a system-prompt fragment; empty list → ""."""
+    if not phrases:
+        return ""
+    short = _norm_lang(lang)
+    template = HABITUAL_PHRASE_AVOID_PROMPT_BLOCK.get(short) or HABITUAL_PHRASE_AVOID_PROMPT_BLOCK['en']
+    items = "\n".join(f"- {p}" for p in phrases)
+    return template.format(items=items, n=len(phrases))
+
+
+# ---------------------------------------------------------------------------
 # Proactive regeneration instructions for resampling.
 # ---------------------------------------------------------------------------
 # When BM25 total exceeds REGEN_THRESHOLD, main_routers/system_router injects
