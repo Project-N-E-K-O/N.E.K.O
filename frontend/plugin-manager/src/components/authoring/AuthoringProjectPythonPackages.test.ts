@@ -164,74 +164,106 @@ afterEach(() => {
   vi.useRealTimers()
 })
 describe('project dependency management', () => {
+  it('adds and installs a named package with automatic version selection', async () => {
+    await mount()
+    await click(en.add)
+    const dialog = document.querySelector('.el-dialog')!
+    expect(dialog.querySelector('details')?.open).toBe(false)
+    expect(dialog.textContent).not.toContain('PEP 508')
+    expect(dialog.textContent).not.toContain('Declaration preview')
+    await fill('python-package-name', 'demo')
+    await click(en.addInstall)
+    expect(api.saveProjectPythonRequirements).toHaveBeenCalledWith(
+      'p1',
+      [state().requirements[0]!.requirement, 'demo'],
+      'r1'
+    )
+    expect(api.startProjectPythonTask).toHaveBeenCalledWith('p1', 'sync', 'r2')
+  })
+  it('accepts a copied install command without requiring declaration syntax', async () => {
+    await mount()
+    await click(en.add)
+    await fill('python-package-name', 'python -m pip install demo==2.0.1')
+    await click(en.addInstall)
+    expect(api.saveProjectPythonRequirements).toHaveBeenCalledWith(
+      'p1',
+      [state().requirements[0]!.requirement, 'demo==2.0.1'],
+      'r1'
+    )
+    expect(api.startProjectPythonTask).toHaveBeenCalledWith('p1', 'sync', 'r2')
+  })
+  it('uses a version number chosen through the version selector', async () => {
+    await mount()
+    await click(en.add)
+    await fill('python-package-name', 'demo')
+    document.querySelector<HTMLElement>('#python-package-version-policy')!.click()
+    await flush()
+    const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(
+      (item) => item.textContent?.trim() === en.versionExact
+    )!
+    expect(option).toBeTruthy()
+    option.click()
+    await flush()
+    await fill('python-package-exact-version', '2.0.1')
+    await click(en.saveOnly)
+    expect(api.saveProjectPythonRequirements).toHaveBeenCalledWith(
+      'p1',
+      [state().requirements[0]!.requirement, 'demo==2.0.1'],
+      'r1'
+    )
+    expect(api.startProjectPythonTask).not.toHaveBeenCalled()
+  })
   it.each(['', '   '])(
-    'returns to the basic form after clearing the full declaration to %j',
+    'leaves a blank manual declaration without getting stuck: %j',
     async (value) => {
       await mount()
       await click(en.add)
-      await fill('python-package-name', 'demo')
-      await fill('python-package-version', '>=2')
+      const details = document.querySelector<HTMLDetailsElement>('.el-dialog details')!
+      details.open = true
+      await flush()
       const checkbox = document.querySelector<HTMLInputElement>(
         '.el-dialog input[type="checkbox"]'
       )!
       checkbox.click()
       await flush()
-      expect(document.querySelector<HTMLInputElement>('#python-package-requirement')?.value).toBe(
-        'demo>=2'
-      )
       await fill('python-package-requirement', value)
       checkbox.click()
       await flush()
-      expect(checkbox.checked).toBe(false)
       expect(document.querySelector<HTMLInputElement>('#python-package-name')?.value).toBe('')
-      expect(document.querySelector<HTMLInputElement>('#python-package-version')?.value).toBe('')
-      expect(document.querySelector<HTMLInputElement>('#python-package-extras')?.value).toBe('')
-      expect(document.querySelector<HTMLInputElement>('#python-package-marker')?.value).toBe('')
       await click('Cancel')
       expect(api.saveProjectPythonRequirements).not.toHaveBeenCalled()
     }
   )
-  it('returns to the basic form with a populated full declaration', async () => {
-    await mount()
-    await click(en.add)
-    const checkbox = document.querySelector<HTMLInputElement>('.el-dialog input[type="checkbox"]')!
-    checkbox.click()
-    await flush()
-    await fill('python-package-requirement', 'demo[extra]>=2; sys_platform == "win32"')
-    checkbox.click()
-    await flush()
-    expect(checkbox.checked).toBe(false)
-    expect(document.querySelector<HTMLInputElement>('#python-package-name')?.value).toBe('demo')
-    expect(document.querySelector<HTMLInputElement>('#python-package-version')?.value).toBe('>=2')
-    expect(document.querySelector<HTMLInputElement>('#python-package-extras')?.value).toBe('extra')
-    expect(document.querySelector<HTMLInputElement>('#python-package-marker')?.value).toBe(
-      'sys_platform == "win32"'
-    )
-  })
-  it('retains a newly added unsaved declaration when reopening its editor', async () => {
+  it('keeps a failed save editable and does not leave an extra draft entry', async () => {
+    api.saveProjectPythonRequirements.mockRejectedValue(new Error('Unable to save'))
     await mount()
     await click(en.add)
     await fill('python-package-name', 'demo')
-    await fill('python-package-version', '>=2')
-    await click('Save')
-    const edits = [...document.querySelectorAll<HTMLButtonElement>('button')].filter(
-      (button) => button.textContent?.trim() === 'Edit'
-    )
-    edits[1]!.click()
-    await flush()
-    expect(document.querySelector<HTMLInputElement>('#python-package-requirement')?.value).toBe(
-      'demo>=2'
-    )
-    await fill('python-package-requirement', 'demo==3')
-    await click('Save')
-    const changed = [...document.querySelectorAll<HTMLButtonElement>('button')].filter(
-      (button) => button.textContent?.trim() === 'Edit'
-    )
-    changed[1]!.click()
-    await flush()
-    expect(document.querySelector<HTMLInputElement>('#python-package-requirement')?.value).toBe(
-      'demo==3'
-    )
+    await click(en.saveOnly)
+    expect(document.querySelector<HTMLInputElement>('#python-package-name')?.value).toBe('demo')
+    expect(document.querySelectorAll('.python-package-declaration')).toHaveLength(1)
+    expect(api.startProjectPythonTask).not.toHaveBeenCalled()
+  })
+  it('explains duplicate packages instead of adding a conflicting requirement', async () => {
+    await mount()
+    await click(en.add)
+    await fill('python-package-name', 'HTTPX')
+    await click(en.addInstall)
+    expect(document.body.textContent).toContain(en.alreadyAdded)
+    expect(api.saveProjectPythonRequirements).not.toHaveBeenCalled()
+  })
+  it('allows saving for later while a plugin is running', async () => {
+    api.getProjectPythonPackages.mockResolvedValue(state({ running: true }))
+    await mount()
+    await click(en.add)
+    await fill('python-package-name', 'demo')
+    const install = [...document.querySelectorAll<HTMLButtonElement>('button')].find(
+      (item) => item.textContent?.trim() === en.addInstall
+    )!
+    expect(install.disabled).toBe(true)
+    await click(en.saveOnly)
+    expect(api.saveProjectPythonRequirements).toHaveBeenCalled()
+    expect(api.startProjectPythonTask).not.toHaveBeenCalled()
   })
   it.each(['failed', 'canceled'] as const)(
     'does not treat a %s task as a successful full check',
@@ -263,18 +295,16 @@ describe('project dependency management', () => {
     await vi.advanceTimersByTimeAsync(2500)
     expect(api.getProjectPythonTask).toHaveBeenCalledTimes(1)
   })
-  it('saves a named package with extras and an environment condition', async () => {
+  it('preserves advanced settings when editing an existing requirement', async () => {
     await mount()
-    await click(en.add)
-    await fill('python-package-name', 'demo')
+    await click('Edit')
     await fill('python-package-version', '>=1,<2')
     await fill('python-package-extras', 'extra')
     await fill('python-package-marker', 'sys_platform == "win32"')
-    await click('Save')
-    await click(en.save)
+    await click(en.saveOnly)
     expect(api.saveProjectPythonRequirements).toHaveBeenCalledWith(
       'p1',
-      [state().requirements[0]!.requirement, 'demo[extra]>=1,<2; sys_platform == "win32"'],
+      ['httpx[extra]>=1,<2; sys_platform == "win32"'],
       'r1'
     )
     expect(api.startProjectPythonTask).not.toHaveBeenCalled()
@@ -292,15 +322,13 @@ describe('project dependency management', () => {
   })
   it('keeps the original revision and draft across a refresh after an external edit', async () => {
     await mount()
-    await click('Edit')
-    await fill('python-package-version', '==0.27.0')
-    await click('Save')
+    await click(en.pin)
     api.getProjectPythonPackages.mockResolvedValue(state({ revision: 'external' }))
     await click('Refresh')
     await click(en.save)
     expect(api.saveProjectPythonRequirements).toHaveBeenCalledWith(
       'p1',
-      ['httpx[socks]==0.27.0; python_version >= "3.11"'],
+      ['httpx[socks]==0.28.1; python_version >= "3.11"'],
       'r1'
     )
   })

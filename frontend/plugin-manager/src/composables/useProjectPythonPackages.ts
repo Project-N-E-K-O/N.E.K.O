@@ -112,23 +112,24 @@ export function useProjectPythonPackages(projectId: Ref<string>, onChanged: () =
     return false
   }
   async function save(andSync = false) {
-    if (busy.value || !snapshot.value) return
+    if (busy.value || !snapshot.value) return false
     const id = projectId.value
     const seq = generation
     saving.value = true
     error.value = null
     try {
       const next = await saveProjectPythonRequirements(id, [...draft.value], revision.value)
-      if (!current(id, seq)) return
+      if (!current(id, seq)) return false
       applySnapshot(next, true)
       onChanged()
     } catch (cause) {
       if (current(id, seq)) error.value = cause
-      return
+      return false
     } finally {
       if (current(id, seq)) saving.value = false
     }
     if (andSync && current(id, seq)) await run('sync')
+    return current(id, seq)
   }
   async function cancel() {
     if (!task.value || !active.value || saving.value) return

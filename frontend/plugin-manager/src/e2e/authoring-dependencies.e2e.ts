@@ -175,25 +175,18 @@ appearanceTest(
     await expect(panel.getByText('demo-lib>=1', { exact: true })).toBeVisible()
     await panel.getByRole('button', { name: 'Edit', exact: true }).click()
     const dialog = page.getByRole('dialog')
-    // The complete-declaration editor is also available for existing constraints.
-    const declaration = dialog.locator('#python-package-requirement')
-    if (!(await declaration.isVisible())) {
-      await dialog.getByText('Full declaration', { exact: true }).click()
-    }
-    await declaration.fill('demo-lib>=2')
-    await dialog.getByRole('button', { name: 'Save', exact: true }).click()
+    await dialog.locator('.el-select').click()
+    await page.getByRole('option', { name: 'Use a specific version', exact: true }).click()
+    await dialog.locator('#python-package-exact-version').fill('2.0.0')
+    await dialog.getByRole('button', { name: 'Save only', exact: true }).click()
     await expect(
-      panel.locator('.python-package-declaration').getByText('demo-lib>=2', { exact: true })
+      panel.locator('.python-package-declaration').getByText('demo-lib==2.0.0', { exact: true })
     ).toBeVisible()
     await page.getByRole('tab', { name: 'Overview', exact: true }).click()
     await page.getByRole('tab', { name: 'Dependencies', exact: true }).click()
     await expect(
-      panel.locator('.python-package-declaration').getByText('demo-lib>=2', { exact: true })
+      panel.locator('.python-package-declaration').getByText('demo-lib==2.0.0', { exact: true })
     ).toBeVisible()
-    await panel.getByRole('button', { name: 'Save declarations', exact: true }).click()
-    await expect(panel.getByRole('button', { name: 'Save declarations', exact: true })).toHaveCount(
-      0
-    )
     await panel.getByRole('button', { name: 'Check dependencies', exact: true }).click()
     await expect(panel.getByText('vendor/native.so', { exact: true })).toHaveCount(0)
     await expect(panel.getByText(/missing-child>=1/).first()).toBeVisible()
@@ -210,7 +203,7 @@ appearanceTest(
     await page.goto(`${PREVIEW_ORIGIN}/ui/workbench?project=dependency-project`)
     await page.getByRole('tab', { name: 'Dependencies', exact: true }).click()
     const panel = page.getByTestId('project-dependencies')
-    const sync = panel.getByRole('button', { name: 'Sync from declarations', exact: true })
+    const sync = panel.getByRole('button', { name: 'Install / update', exact: true })
     await expect(sync).toBeDisabled()
     await panel.getByRole('button', { name: 'Stop plugin', exact: true }).click()
     await expect(sync).toBeEnabled()
@@ -241,10 +234,11 @@ appearanceTest(
     await panel.getByRole('button', { name: 'Add package', exact: true }).click()
     const dialog = page.getByRole('dialog')
     await expect(dialog.locator('#python-package-name')).toBeVisible()
-    await dialog.getByText('Full declaration', { exact: true }).click()
+    await dialog.getByText('Advanced settings', { exact: true }).click()
+    await dialog.getByText('Edit manually (advanced)', { exact: true }).click()
     await expect(dialog.locator('#python-package-requirement')).toBeVisible()
     await expect(dialog.getByRole('checkbox')).toBeChecked()
-    await dialog.getByText('Full declaration', { exact: true }).click()
+    await dialog.getByText('Edit manually (advanced)', { exact: true }).click()
     await expect(dialog.getByRole('checkbox')).not.toBeChecked({ timeout: 2000 })
     await expect(dialog.locator('#python-package-name')).toBeVisible()
     await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
@@ -262,7 +256,8 @@ appearanceTest(
     const panel = page.getByTestId('project-dependencies')
     await panel.getByRole('button', { name: 'Add package', exact: true }).click()
     const dialog = page.getByRole('dialog')
-    await dialog.getByText('Full declaration', { exact: true }).click()
+    await dialog.getByText('Advanced settings', { exact: true }).click()
+    await dialog.getByText('Edit manually (advanced)', { exact: true }).click()
     await expect(dialog.locator('#python-package-requirement')).toBeVisible()
     await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
     await expect(dialog).not.toBeVisible()
@@ -270,3 +265,51 @@ appearanceTest(
     expect(requests).toEqual([])
   }
 )
+
+appearanceTest.describe('beginner package installation', () => {
+  appearanceTest.use({ appLocale: 'zh-CN' })
+  appearanceTest(
+    'installs a package by name with advanced settings collapsed',
+    async ({ page }) => {
+      const requests = await dependencyFixture(page)
+      await page.goto(`${PREVIEW_ORIGIN}/ui/workbench?project=dependency-project`)
+      await page.getByRole('tab', { name: '依赖', exact: true }).click()
+      await page.getByRole('button', { name: '添加软件包', exact: true }).click()
+      const dialog = page.getByRole('dialog')
+      await expect(dialog.getByText('自动选择（推荐）', { exact: true })).toBeVisible()
+      await expect(dialog.getByText('手动输入（高级）', { exact: true })).not.toBeVisible()
+      await expect(dialog.locator('#python-package-requirement')).toHaveCount(0)
+      await dialog.locator('#python-package-name').fill('new-package')
+      await dialog.screenshot({
+        path: '/tmp/neko-dependencies-beginner-dialog.png',
+        animations: 'disabled',
+      })
+      await dialog.getByRole('button', { name: '添加并安装', exact: true }).click()
+      await expect(dialog).not.toBeVisible()
+      await expect(page.getByRole('heading', { name: /依赖任务/ })).toBeVisible()
+      expect(requests).toEqual(['save', 'sync'])
+    }
+  )
+  appearanceTest(
+    'pasting an install command selects its version before one-click installation',
+    async ({ page }) => {
+      const requests = await dependencyFixture(page)
+      await page.goto(`${PREVIEW_ORIGIN}/ui/workbench?project=dependency-project`)
+      await page.getByRole('tab', { name: '依赖', exact: true }).click()
+      await page.getByRole('button', { name: '添加软件包', exact: true }).click()
+      const dialog = page.getByRole('dialog')
+      await dialog.locator('#python-package-name').evaluate((element) => {
+        const clipboardData = new DataTransfer()
+        clipboardData.setData('text', 'pip install another-package==2.0.1')
+        element.dispatchEvent(
+          new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData })
+        )
+      })
+      await expect(dialog.locator('#python-package-name')).toHaveValue('another-package')
+      await expect(dialog.locator('#python-package-exact-version')).toHaveValue('2.0.1')
+      await dialog.getByRole('button', { name: '添加并安装', exact: true }).click()
+      await expect(dialog).not.toBeVisible()
+      expect(requests).toEqual(['save', 'sync'])
+    }
+  )
+})
