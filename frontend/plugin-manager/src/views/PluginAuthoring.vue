@@ -51,7 +51,7 @@
               >
             </template>
             <template v-else-if="!requestedProject">
-              <el-button :icon="Reading" @click="helpVisible = true">{{
+              <el-button :icon="Reading" @click="openTutorial">{{
                 t('authoring.help')
               }}</el-button>
               <el-button :icon="FolderAdd" :disabled="busy" @click="addExisting">{{
@@ -108,7 +108,6 @@
       />
     </el-card>
     <CreatePluginDialog v-model:visible="createVisible" @created="onCreated" />
-    <AuthoringHelpDrawer v-model:visible="helpVisible" />
   </div>
 </template>
 
@@ -134,8 +133,8 @@ import AuthoringProjectList from '@/components/authoring/AuthoringProjectList.vu
 import AuthoringProjectDetails from '@/components/authoring/AuthoringProjectDetails.vue'
 import AuthoringProjectPublish from '@/components/authoring/AuthoringProjectPublish.vue'
 import AuthoringProjectStatus from '@/components/authoring/AuthoringProjectStatus.vue'
-import AuthoringHelpDrawer from '@/components/authoring/AuthoringHelpDrawer.vue'
 import CreatePluginDialog from '@/components/authoring/CreatePluginDialog.vue'
+import { openExternalUrl } from '@/utils/openExternal'
 import {
   projectTitle,
   useAuthoringProjects,
@@ -149,7 +148,7 @@ import {
   type CreatedPluginProject,
 } from '@/api/pluginProjects'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const router = useRouter()
 const route = useRoute()
 const errorMessage = useProjectErrorMessage()
@@ -165,7 +164,6 @@ const headerTitle = computed(() =>
 )
 const activeTab = ref('overview')
 const createVisible = ref(false)
-const helpVisible = ref(false)
 const busy = ref(false)
 const projectList = ref<InstanceType<typeof AuthoringProjectList>>()
 const publishPanel = ref<InstanceType<typeof AuthoringProjectPublish>>()
@@ -186,6 +184,15 @@ function openProject(projectId: string) {
 }
 function goHome() {
   void router.push({ path: '/workbench' })
+}
+function openTutorial() {
+  // The docs currently provide Chinese, Japanese and English (at the root).
+  const prefix = ['zh-CN', 'zh-TW'].includes(locale.value)
+    ? '/zh-CN'
+    : locale.value === 'ja'
+      ? '/ja'
+      : ''
+  openExternalUrl(`https://project-neko.online${prefix}/plugins/`)
 }
 function onProjectUpdated(updated: AuthoringProject) {
   projects.value = projects.value.map((project) =>
