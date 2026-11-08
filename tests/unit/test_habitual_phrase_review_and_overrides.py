@@ -463,6 +463,81 @@ def test_the_recompute_route_is_inside_the_character_write_fence():
     assert runtime._character_write_name_from_path(path, "GET") is None
 
 
+@pytest.mark.asyncio
+async def test_without_an_explicit_language_the_miner_follows_the_latest_session(loop_env, monkeypatch):
+    """A session with no explicit locale speaks its UI language; the list must be mined in it.
+
+    The server's global language can differ (an English system with a Chinese
+    UI); a list mined in it would never be injected.
+    """
+    env = loop_env
+    monkeypatch.setattr(env.loop, "get_character_prompt_locale", lambda _n: None)
+    monkeypatch.setattr(env.loop, "get_global_language_full", lambda: "en")
+    monkeypatch.setattr(env.loop, "_session_render_languages", {})
+    assert await env.loop._aresolve_mining_language(_NAME) == "en"
+
+    env.loop.note_session_render_language(_NAME, "zh-CN")
+    env.loop.note_session_render_language(_NAME, "not-a-language")
+    assert await env.loop._aresolve_mining_language(_NAME) == "zh-CN"
+    assert await env.loop._arefresh_habitual_phrases_one(_NAME, now=env.now)
+    assert _read_file(env.tmp_path)["language"] == "zh-CN"
+    assert env.store.prompt_phrases(_NAME, "zh", now=env.now) == [_PHRASE]
+
+    # The durable session locale still comes first.
+    monkeypatch.setattr(env.loop, "get_character_prompt_locale", lambda _n: "zh-TW")
+    assert await env.loop._aresolve_mining_language(_NAME) == "zh-TW"
+
+
+@pytest.mark.asyncio
+async def test_a_language_change_makes_a_fresh_list_due(loop_env, monkeypatch):
+    env = loop_env
+    _write(env.store, [_entry("早上好呀朋友")], now=env.now - 60)
+    assert not await env.loop._arefresh_habitual_phrases_one(_NAME, now=env.now)
+
+    monkeypatch.setattr(env.loop, "get_character_prompt_locale", lambda _n: "zh-TW")
+    assert await env.loop._arefresh_habitual_phrases_one(_NAME, now=env.now)
+    assert _read_file(env.tmp_path)["language"] == "zh-TW"
+
+
+@pytest.mark.asyncio
+async def test_new_dialog_notes_the_ui_language_for_the_miner_without_persisting_it(monkeypatch):
+    from app.memory_server import habitual_phrase_loop, locale_state, routes, runtime
+
+    class StopAfterLocale(RuntimeError):
+        pass
+
+    class Lock:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    class ConfigManager:
+        async def aload_characters(self):
+            return {"猫娘": {"Neko": {}}}
+
+        async def aget_character_data(self):
+            return ("Master", None, None, None, {}, None, None, None, None)
+
+    def activate(_language):
+        raise StopAfterLocale
+
+    write_locale = AsyncMock()
+    monkeypatch.setattr(habitual_phrase_loop, "_session_render_languages", {})
+    monkeypatch.setattr(runtime, "_config_manager", ConfigManager())
+    monkeypatch.setattr(runtime, "_get_settle_lock", lambda _name: Lock())
+    monkeypatch.setattr(locale_state, "get_character_prompt_locale", lambda _name: None)
+    monkeypatch.setattr(routes, "_write_new_dialog_locale", write_locale)
+    monkeypatch.setattr(routes, "_activate_request_language", activate)
+
+    with pytest.raises(StopAfterLocale):
+        await routes._new_dialog("Neko", None, "ja")
+
+    assert habitual_phrase_loop._session_render_languages == {"Neko": "ja"}
+    write_locale.assert_not_awaited()
+
+
 # ── 4. Overrides ──────────────────────────────────────────────────────────
 
 

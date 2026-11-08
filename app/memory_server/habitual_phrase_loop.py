@@ -49,7 +49,11 @@ from memory.habitual_phrases import (
 )
 from memory.stop_names import acollect_stop_names
 from utils.cloudsave_runtime import MaintenanceModeError
-from utils.language_utils import get_global_language_full
+from utils.language_utils import (
+    get_global_language_full,
+    is_supported_language_code,
+    normalize_language_code,
+)
 from utils.natural_expression_candidates import CandidateMinerError, normalize_language
 
 from . import gates, runtime
@@ -64,12 +68,28 @@ HABITUAL_PHRASE_POLL_INTERVAL = 600  # Seconds between idle checks; a due charac
 # the memory browser must not both rewrite one file from two readings.
 _refreshing: set[str] = set()
 
+# The latest session's request (UI) language per character, noted by
+# /new_dialog when the session has no explicit language. Such a session speaks
+# this language, and the session start only injects a list mined in the same
+# one, so the miner follows it rather than the server's global language.
+# Memory only: it is a fallback, never a preference, and a restart forgets it.
+_session_render_languages: dict[str, str] = {}
+
+
+def note_session_render_language(name: str, language: str | None) -> None:
+    """Remember the language a session without an explicit locale speaks."""
+    if is_supported_language_code(language):
+        _session_render_languages[name] = normalize_language_code(str(language), format="full")
+
 
 async def _aresolve_mining_language(name: str) -> str | None:
-    """The miner language tag for this character's latest session locale."""
+    """The miner language tag: the durable session locale, else the latest
+    session's UI language, else the global language."""
     selected = await asyncio.to_thread(get_character_prompt_locale, name)
     try:
-        return normalize_language(selected or get_global_language_full())
+        return normalize_language(
+            selected or _session_render_languages.get(name) or get_global_language_full()
+        )
     except CandidateMinerError:
         return None
 
@@ -109,12 +129,6 @@ async def _arefresh_claimed(name: str, *, now: float, force: bool) -> bool:
     """Body of ``_arefresh_habitual_phrases_one``; the caller holds ``name`` in ``_refreshing``."""
     store = get_habitual_phrase_store()
     stored = await store.aread(name)
-    if (
-        not force
-        and stored is not None
-        and 0 <= now - stored["computed_at"] < HABITUAL_PHRASE_REFRESH_INTERVAL_SECONDS
-    ):
-        return False
     time_manager = runtime.time_manager
     if time_manager is None:
         return False
@@ -124,6 +138,15 @@ async def _arefresh_claimed(name: str, *, now: float, force: bool) -> bool:
     try:
         language = await _aresolve_mining_language(name)
         if language is None:
+            return False
+        if (
+            not force
+            and stored is not None
+            # A list mined in another language than the next session will
+            # speak is never injected, so a language change makes it due.
+            and stored["language"] == language
+            and 0 <= now - stored["computed_at"] < HABITUAL_PHRASE_REFRESH_INTERVAL_SECONDS
+        ):
             return False
         history = await time_manager.aretrieve_latest_assistant_texts(
             name, HABITUAL_PHRASE_SOURCE_REPLY_LIMIT,
