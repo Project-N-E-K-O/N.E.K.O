@@ -1939,7 +1939,10 @@
         window.dispatchEvent(new CustomEvent('react-chat-window:messages-replaced', {
             detail: {
                 conversationReset: I.state.messages.length === 0,
-                historyRestore: historyRestore === true
+                historyRestore: historyRestore === true,
+                streamingTurnIds: historyRestore ? I.state.messages.filter(function (message) {
+                    return message.role === 'assistant' && message.status === 'streaming' && message.turnId;
+                }).map(function (message) { return message.turnId; }) : undefined
             }
         }));
         I.renderWindow();
@@ -1950,13 +1953,28 @@
         return replaceMessages(messages);
     };
 
+    function mergeChatHistoryReplyBlocks(savedBlocks, liveBlocks) {
+        var savedText = savedBlocks[0];
+        var liveText = liveBlocks[0];
+        if (savedText?.type !== 'text' || typeof savedText.text !== 'string'
+                || liveText?.type !== 'text' || typeof liveText.text !== 'string') {
+            return savedBlocks.length ? savedBlocks : liveBlocks;
+        }
+        var text = savedText.text.startsWith(liveText.text) ? savedText : liveText;
+        var extras = savedBlocks.length > 1 ? savedBlocks : liveBlocks;
+        return [text].concat(extras.slice(1));
+    }
+
     I.restoreChatHistory = function restoreChatHistory(snapshot) {
-        var currentBubbleIds = new Set((window.currentTurnGeminiBubbles || []).map(function (bubble) {
-            return bubble && bubble.dataset && bubble.dataset.reactChatMessageId;
-        }));
+        if (!Array.isArray(snapshot?.messages) || !Number.isFinite(snapshot.updatedAt)) return;
+        var currentBubbles = new Map();
+        (window.currentTurnGeminiBubbles || []).forEach(function (bubble) {
+            var id = bubble?.dataset?.reactChatMessageId;
+            if (id) currentBubbles.set(id, bubble);
+        });
         // Preserve the destination adapter's references to bubbles it is still streaming.
         var liveMessages = I.state.messages.filter(function (message) {
-            return currentBubbleIds.has(message.id);
+            return currentBubbles.has(message.id);
         });
         var liveById = new Map(liveMessages.map(function (message) { return [message.id, message]; }));
         var snapshotIds = new Set(snapshot.messages.map(function (message) { return message.id; }));
@@ -1987,9 +2005,11 @@
                 }
             }
             if (live) {
-                var keepSavedText = live.blocks[0]?.text?.length < saved.blocks[0]?.text?.length;
+                var blocks = mergeChatHistoryReplyBlocks(saved.blocks, live.blocks);
+                // The adapter may still be catching up with the restored text on its own socket.
+                if (live.status === 'streaming') currentBubbles.get(live.id).restoredHistoryBlocks = blocks;
                 return Object.assign({}, live, {
-                    blocks: keepSavedText ? saved.blocks : live.blocks,
+                    blocks: blocks,
                     sortKey: saved.sortKey
                 });
             }
@@ -1997,11 +2017,12 @@
             return saved;
         });
         var savedIds = new Set(messages.map(function (message) { return message.id; }));
-        var preserveLocalAfter = snapshot.messages.length && snapshot.handoffStartedAt
-            ? Math.min(snapshot.updatedAt, snapshot.handoffStartedAt) : snapshot.updatedAt;
         replaceMessages(messages.concat(I.state.messages.filter(function (message) {
             var liveWithNoUniqueMatch = message.status === 'streaming' && ambiguousLiveIds.has(message.id);
-            return !savedIds.has(message.id) && (message.createdAt > preserveLocalAfter || liveWithNoUniqueMatch);
+            var arrivedDuringHandoff = snapshot.messages.length && Number.isFinite(snapshot.handoffStartedAt)
+                && message.createdAt >= snapshot.handoffStartedAt;
+            return !savedIds.has(message.id)
+                && (message.createdAt > snapshot.updatedAt || arrivedDuringHandoff || liveWithNoUniqueMatch);
         })), true);
     };
 
@@ -2307,6 +2328,13 @@
 
     I.updateMessage = function updateMessage(messageId, patch) {
         var updatedMessage = null;
+        var bubble = window.currentGeminiMessage;
+        if (patch?.status === 'streaming' && Array.isArray(patch.blocks)
+                && bubble?.dataset?.reactChatMessageId === String(messageId) && bubble.restoredHistoryBlocks) {
+            var blocks = mergeChatHistoryReplyBlocks(bubble.restoredHistoryBlocks, patch.blocks);
+            bubble.restoredHistoryBlocks = blocks;
+            patch = Object.assign({}, patch, { blocks: blocks });
+        }
 
         I.state.messages = I.state.messages.map(function (message, index) {
             if (String(message.id) !== String(messageId)) return message;

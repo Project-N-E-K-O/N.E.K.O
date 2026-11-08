@@ -88,22 +88,52 @@ describe('visual-only chat clearing', () => {
   });
 
   it('keeps cleared rows hidden when the desktop restores chat history', () => {
-    const old = message('old', 'Cleared history');
+    const old = { ...message('old', 'Cleared history'), turnId: 'cleared-turn' };
+    const continuation = { ...message('continuation', 'Continued cleared reply'), turnId: old.turnId };
     const fresh = message('new', 'Message from the other window');
     const { container, rerender } = render(<App chatSurfaceMode="full" messages={[old]} />);
     fireEvent.click(screen.getByRole('button', { name: 'Clear screen' }));
     act(() => window.dispatchEvent(new CustomEvent('react-chat-window:messages-replaced', {
       detail: { conversationReset: false, historyRestore: true },
     })));
-    rerender(<App chatSurfaceMode="full" messages={[old, fresh]} />);
+    rerender(<App chatSurfaceMode="full" messages={[old, continuation, fresh]} />);
     const history = container.querySelector('.message-list');
     expect(history).not.toHaveTextContent('Cleared history');
+    expect(history).not.toHaveTextContent('Continued cleared reply');
     expect(history).toHaveTextContent('Message from the other window');
 
     act(() => window.dispatchEvent(new CustomEvent('react-chat-window:messages-replaced', {
       detail: { conversationReset: true, historyRestore: true },
     })));
     expect(history).toHaveTextContent('Cleared history');
+  });
+
+  it('retains a live compact caption through desktop restore and can still clear it', async () => {
+    vi.useFakeTimers();
+    try {
+      const old = message('old', 'Old reply');
+      const { container, rerender } = render(<App messages={[old]} />);
+      const caption = () => container.querySelector('.compact-chat-capsule-text');
+      const updateCaption = (text: string) => act(() => window.dispatchEvent(new CustomEvent('neko-compact-caption-update', {
+        detail: { turnId: 'live-turn', text },
+      })));
+      fireEvent.click(screen.getByRole('button', { name: 'Clear screen' }));
+      updateCaption('X');
+      await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+      expect(caption()).toHaveTextContent('X');
+
+      act(() => window.dispatchEvent(new CustomEvent('react-chat-window:messages-replaced', {
+        detail: { conversationReset: false, historyRestore: true, streamingTurnIds: ['live-turn'] },
+      })));
+      // The new row has no turn ID. Clear must remember the turn from the caption event.
+      rerender(<App messages={[old, message('new', 'Restored row')]} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+      expect(caption()).toHaveTextContent('X');
+      fireEvent.click(screen.getByRole('button', { name: 'Clear screen' }));
+      updateCaption('XY');
+      await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+      expect(caption()).not.toHaveTextContent('X');
+    } finally { vi.useRealTimers(); }
   });
 
   it('does not export an invisible preselected message after clearing', async () => {

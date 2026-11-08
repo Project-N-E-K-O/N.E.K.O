@@ -7,9 +7,11 @@ const test = require('node:test');
 const base = path.join(__dirname, '../../static/app/app-react-chat-window');
 const sources = ['geometry-and-messages.js', 'message-bundle-actions-and-prompts.js']
   .map(file => fs.readFileSync(path.join(base, file), 'utf8'));
+const adapterSources = ['app-chat-text-utils.js', 'app-chat-adapter.js']
+  .map(file => fs.readFileSync(path.join(base, '..', file), 'utf8'));
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
-function fixture() {
+function fixture({ withAdapter = false } = {}) {
   const calls = [];
   const events = [];
   const timers = new Map();
@@ -23,12 +25,13 @@ function fixture() {
   const window = {
     __appReactChatWindowParts: I,
     appState: { lanlan_name: 'Neko' },
+    addEventListener() {},
     dispatchEvent(event) { events.push(event); return true; },
     _lastSubmittedRequestId: 'test-request',
     nekoLocalMutationSecurity: { async getMutationHeaders() { return { 'X-CSRF-Token': 'test-csrf' }; } },
   };
   const ctx = vm.createContext({
-    window, console, Date, AbortController,
+    window, console, Date, AbortController, document: { addEventListener() {} },
     CustomEvent: class { constructor(type, options = {}) { this.type = type; this.detail = options.detail; } },
     setTimeout(fn) { const id = ++timerId; timers.set(id, fn); return id; },
     clearTimeout(id) { timers.delete(id); },
@@ -41,6 +44,12 @@ function fixture() {
   for (const source of sources) vm.runInContext(source, ctx);
   I.renderWindow = () => {};
   I.invalidatePendingGalgameRequest = () => false;
+  if (withAdapter) {
+    window.reactChatWindowHost = I;
+    window.mergeMessagesEnabled = true;
+    window._nekoAssistantTurnId = 'turn-1';
+    for (const source of adapterSources) vm.runInContext(source, ctx);
+  }
   return { I, window, calls, events, expire() { for (const fn of [...timers.values()]) fn(); } };
 }
 
@@ -56,7 +65,7 @@ test('host replacement distinguishes an empty reset from an ordinary snapshot', 
 });
 
 test('desktop history restore keeps the destination streaming bubble and newer local messages', () => {
-  const { I, window, events } = fixture();
+  const { I, window, events } = fixture({ withAdapter: true });
   const live = message('local-reply', {
     role: 'assistant', status: 'streaming', turnId: 'turn-1', createdAt: 20, sortKey: 20,
     blocks: [{ type: 'text', text: 'Partial' }],
@@ -64,9 +73,11 @@ test('desktop history restore keeps the destination streaming bubble and newer l
   I.setMessages([
     message('stale', { createdAt: 5, sortKey: 5 }),
     live,
-    message('new-local', { createdAt: 40, sortKey: 40 }),
+    message('new-local', { role: 'assistant', status: 'streaming', turnId: 'turn-2', createdAt: 30, sortKey: 40 }),
   ]);
   window.currentTurnGeminiBubbles = [{ dataset: { reactChatMessageId: live.id } }];
+  window.currentGeminiMessage = window.currentTurnGeminiBubbles[0];
+  window._geminiTurnFullText = 'Partial';
 
   I.restoreChatHistory({ updatedAt: 50, handoffStartedAt: 30, messages: [
     message('saved-user', { createdAt: 10, sortKey: 10 }),
@@ -79,8 +90,29 @@ test('desktop history restore keeps the destination streaming bubble and newer l
   assert.equal(events.at(-1).type, 'react-chat-window:messages-replaced');
   assert.equal(events.at(-1).detail.historyRestore, true);
   assert.equal(events.at(-1).detail.conversationReset, false);
-  I.updateMessage(live.id, { status: 'sent' });
-  assert.equal(I.state.messages[1].status, 'sent');
+  assert.deepEqual(Array.from(events.at(-1).detail.streamingTurnIds), ['turn-1', 'turn-2']);
+  window.appendMessage(' res', 'gemini', false);
+  assert.equal(I.state.messages[1].blocks[0].text, 'Partial response');
+  window.appendMessage('ponse continued', 'gemini', false);
+  assert.equal(I.state.messages[1].id, live.id);
+  assert.equal(I.state.messages[1].blocks[0].text, 'Partial response continued');
+  assert.equal(I.updateMessage('new-local', { status: 'sent' }).status, 'sent');
+});
+
+test('desktop history restore keeps saved attachments and the longer local text across a live continuation', () => {
+  const { I, window } = fixture({ withAdapter: true });
+  window.appendMessage('Local reply', 'gemini', true);
+  const live = I.state.messages[0];
+  const image = { type: 'image', url: 'https://example.test/reply.png' };
+  I.restoreChatHistory({ updatedAt: Date.now(), messages: [
+    { ...live, blocks: [{ type: 'text', text: 'Local' }, image] },
+  ] });
+  assert.equal(I.state.messages[0].blocks[0].text, 'Local reply');
+  assert.equal(I.state.messages[0].blocks[1].url, image.url);
+  window.appendMessage(' continues', 'gemini', false);
+  assert.equal(I.state.messages[0].id, live.id);
+  assert.equal(I.state.messages[0].blocks[0].text, 'Local reply continues');
+  assert.equal(I.state.messages[0].blocks[1].url, image.url);
 });
 
 test('desktop history restore keeps distinct replies when a streaming prefix has multiple matches', () => {
