@@ -266,7 +266,10 @@ def export_document(views, completed_at, *, source_evidence=None):
         metadata = {**deepcopy(native.get('_sync_metadata') or {}), 'sourceSyncId': native.get('source_sync_id') or f'desktop:{key}'[:200],
                     'createdAt': timestamp(native.get('created_at')), 'updatedAt': timestamp(native.get('updated_at') or native.get('created_at'))}
         if kind == 'fact':
+            # The native row owns its proof: a copy kept from an earlier import
+            # must not republish citations this device has since dropped.
             metadata.pop('sourceCreatedAt', None)
+            metadata.pop('sourceMessageIds', None)
         for original, portable in EVIDENCE_FIELDS.items():
             if native.get(original) is not None:
                 metadata[portable] = timestamp(native[original]) if portable.endswith('At') else native[original]
@@ -584,9 +587,12 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None, 
                 for field in ('source_facts_oldest_at', 'fact_source_counts', 'counted_fact_ids'):
                     if field in previous:
                         native[field] = deepcopy(previous[field])
-            elif native['source_fact_ids'] and all(fid in incoming_fact_sources for fid in native['source_fact_ids']):
-                # New to this device: count the facts the snapshot carries, or an
-                # AI-only line would count as backed and promote without the user.
+            elif (native['status'] == 'pending' and native['source_fact_ids']
+                  and all(fid in incoming_fact_sources for fid in native['source_fact_ids'])):
+                # New to this device and still pending: count the facts the snapshot
+                # carries, or an AI-only line would count as backed and promote without
+                # the user. A confirmed line already passed this gate on its sender,
+                # and the confirmation that let it through is not in the protocol.
                 native['fact_source_counts'] = count_fact_sources(
                     [{'source': incoming_fact_sources[fid]} for fid in native['source_fact_ids']])
                 native['counted_fact_ids'] = sorted(native['source_fact_ids'])

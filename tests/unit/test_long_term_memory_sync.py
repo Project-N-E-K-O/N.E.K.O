@@ -1843,11 +1843,12 @@ def test_first_import_counts_the_facts_the_snapshot_carries():
         {'kind': 'fact', 'subject': 'neko', 'id': 'f-ai', 'text': 'ai line', 'metadata': {'createdAt': 1000, 'source': 'ai_disclosure'}},
         {'kind': 'fact', 'subject': 'master', 'id': 'f-user', 'text': 'user line', 'metadata': {'createdAt': 1000, 'source': 'user_observation'}},
     ]
-    def reflection(rid, facts):
+    def reflection(rid, facts, status='pending'):
         return {'kind': 'reflection', 'subject': 'neko', 'id': rid, 'text': rid,
-                'metadata': {'createdAt': 1000, 'status': 'pending', 'sourceFactIds': facts}}
+                'metadata': {'createdAt': 1000, 'status': status, 'sourceFactIds': facts}}
     incoming = {'schemaVersion': 2, 'completedAt': 3000, 'evidence': {'retirements': [], 'confirmations': []}, 'entries': entries + [
         reflection('ai-only', ['f-ai']), reflection('backed', ['f-ai', 'f-user']), reflection('unknown', ['f-ai', 'f-gone']),
+        reflection('confirmed', ['f-ai'], 'confirmed'),
     ]}
     existing = {'persona': {}, 'facts': [], 'archive': [], 'reflections': []}
     rows = {row['id']: row for row in import_document(incoming, existing)['reflections']}
@@ -1858,11 +1859,31 @@ def test_first_import_counts_the_facts_the_snapshot_carries():
     assert not awaits_user_signal(rows['backed'])
     # A fact the snapshot does not carry cannot be counted, so the line stays unaccounted.
     assert 'fact_source_counts' not in rows['unknown']
+    # The sender's confirmation is not in the protocol; holding the line back here would strand it.
+    assert not awaits_user_signal(rows['confirmed'])
 
     # A local row from before the accounting stays unaccounted too.
     legacy = {'id': 'ai-only', 'text': 'ai-only', 'entity': 'neko', 'status': 'pending', 'source_fact_ids': ['f-ai']}
     kept = import_document(incoming, {**existing, 'reflections': [legacy]})['reflections']
     assert 'fact_source_counts' not in next(row for row in kept if row['id'] == 'ai-only')
+
+
+def test_dropped_citations_stay_dropped_after_a_reimport():
+    """A source upgrade without a citation removes the character lines as proof;
+    the copy kept from the import must not publish them under the user's source."""
+    fact = {'id': 'f1', 'text': 'likes tea', 'entity': 'neko', 'source': 'ai_disclosure', 'hash': 'x',
+            'created_at': '2026-10-01T00:00:00', 'source_message_ids': ['raw-ai'], 'source_created_at': '2026-10-01T00:00:00'}
+    views = {'persona': {}, 'facts': [fact], 'archive': [], 'reflections': []}
+    imported = import_document(export_document(views, 3000), {'persona': {}, 'facts': [], 'archive': [], 'reflections': []})
+    row = imported['facts'][0]
+    assert row['_sync_metadata']['sourceMessageIds'] == ['raw-ai']
+    assert export_document(imported, 3000)['entries'][0]['metadata']['sourceMessageIds'] == ['raw-ai']
+    row['source'] = 'user_observation'
+    row.pop('source_message_ids')
+    row.pop('source_created_at', None)
+    metadata = export_document(imported, 3000)['entries'][0]['metadata']
+    assert metadata['source'] == 'user_observation'
+    assert 'sourceMessageIds' not in metadata and 'sourceCreatedAt' not in metadata
 
 
 def test_event_when_uses_the_native_field_through_a_roundtrip():
