@@ -57,7 +57,8 @@
                 target="_blank"
                 rel="noopener noreferrer"
                 :icon="Reading"
-                @click.prevent="openExternalUrl(tutorialUrl)"
+                @click="handleExternalLinkClick($event, tutorialUrl)"
+                @auxclick.middle="handleExternalLinkClick($event, tutorialUrl)"
               >{{
                 t('authoring.help')
               }}</el-button>
@@ -141,7 +142,7 @@ import AuthoringProjectDetails from '@/components/authoring/AuthoringProjectDeta
 import AuthoringProjectPublish from '@/components/authoring/AuthoringProjectPublish.vue'
 import AuthoringProjectStatus from '@/components/authoring/AuthoringProjectStatus.vue'
 import CreatePluginDialog from '@/components/authoring/CreatePluginDialog.vue'
-import { openExternalUrl } from '@/utils/openExternal'
+import { handleExternalLinkClick } from '@/utils/openExternal'
 import {
   projectTitle,
   useAuthoringProjects,

@@ -1463,7 +1463,7 @@ it.each([
   ['ru', 'https://project-neko.online/plugins/'],
   ['es', 'https://project-neko.online/plugins/'],
   ['pt', 'https://project-neko.online/plugins/'],
-] as const)('opens the tutorial in a browser tab for the active %s locale', async (language, url) => {
+] as const)('keeps native tutorial navigation for the active %s locale', async (language, url) => {
   const open = vi.spyOn(window, 'open').mockReturnValue(null)
   await mount()
   switchLocale(language)
@@ -1473,14 +1473,17 @@ it.each([
   expect(link.href).toBe(url)
   expect(link.target).toBe('_blank')
   expect(link.rel).toBe('noopener noreferrer')
-  await click(authoringMessages[language].help)
-  expect(open).toHaveBeenCalledExactlyOnceWith(url, '_blank', 'noopener,noreferrer')
+  const event = new MouseEvent('click', { bubbles: true, cancelable: true })
+  expect(link.dispatchEvent(event)).toBe(true)
+  expect(event.defaultPrevented).toBe(false)
+  expect(open).not.toHaveBeenCalled()
   expect(document.querySelector('.el-drawer')).toBeNull()
 })
 
 it('uses the newly applied locale when the tutorial is opened again', async () => {
   const open = vi.spyOn(window, 'open').mockReturnValue(null)
   await mount()
+  expect((buttons(en.help)[0] as HTMLAnchorElement).href).toBe('https://project-neko.online/plugins/')
   await click(en.help)
   switchLocale('ja')
   await flush()
@@ -1488,13 +1491,24 @@ it('uses the newly applied locale when the tutorial is opened again', async () =
     'https://project-neko.online/ja/plugins/'
   )
   await click(authoringMessages.ja.help)
-  expect(open.mock.calls.map(([url]) => url)).toEqual([
-    'https://project-neko.online/plugins/',
-    'https://project-neko.online/ja/plugins/',
-  ])
+  expect(open).not.toHaveBeenCalled()
 })
 
-it('opens the tutorial in the system browser through the Electron bridge', async () => {
+it('preserves native middle-click navigation for the tutorial in browsers', async () => {
+  const open = vi.spyOn(window, 'open').mockReturnValue(null)
+  await mount()
+  const link = buttons(en.help)[0] as HTMLAnchorElement
+  const event = new MouseEvent('auxclick', { button: 1, bubbles: true, cancelable: true })
+  expect(link.dispatchEvent(event)).toBe(true)
+  expect(event.defaultPrevented).toBe(false)
+  expect(link.href).toBe('https://project-neko.online/plugins/')
+  expect(open).not.toHaveBeenCalled()
+})
+
+it.each([
+  ['click', 0],
+  ['auxclick', 1],
+] as const)('routes tutorial %s to the system browser in Electron', async (type, button) => {
   const openExternal = vi.fn()
   Object.defineProperty(window, 'electronShell', { value: { openExternal }, configurable: true })
   const open = vi.spyOn(window, 'open')
@@ -1502,10 +1516,31 @@ it('opens the tutorial in the system browser through the Electron bridge', async
     await mount()
     switchLocale('zh-CN')
     await flush()
-    await click(authoringMessages['zh-CN'].help)
+    const link = buttons(authoringMessages['zh-CN'].help)[0]!
+    const event = new MouseEvent(type, { button, bubbles: true, cancelable: true })
+    expect(link.dispatchEvent(event)).toBe(false)
+    expect(event.defaultPrevented).toBe(true)
     expect(openExternal).toHaveBeenCalledExactlyOnceWith('https://project-neko.online/zh-CN/plugins/')
     expect(open).not.toHaveBeenCalled()
     expect(document.querySelector('.el-drawer')).toBeNull()
+  } finally {
+    Reflect.deleteProperty(window, 'electronShell')
+  }
+})
+
+it('leaves the tutorial context menu available in Electron', async () => {
+  const openExternal = vi.fn()
+  Object.defineProperty(window, 'electronShell', { value: { openExternal }, configurable: true })
+  const open = vi.spyOn(window, 'open')
+  try {
+    await mount()
+    const link = buttons(en.help)[0] as HTMLAnchorElement
+    const event = new MouseEvent('auxclick', { button: 2, bubbles: true, cancelable: true })
+    expect(link.dispatchEvent(event)).toBe(true)
+    expect(event.defaultPrevented).toBe(false)
+    expect(link.href).toBe('https://project-neko.online/plugins/')
+    expect(openExternal).not.toHaveBeenCalled()
+    expect(open).not.toHaveBeenCalled()
   } finally {
     Reflect.deleteProperty(window, 'electronShell')
   }
