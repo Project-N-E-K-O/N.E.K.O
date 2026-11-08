@@ -3800,6 +3800,29 @@ async def test_forget_refuses_while_a_snapshot_journal_cannot_be_recovered(env, 
     assert _tombstones(env) == {}
 
 
+async def test_forget_refuses_a_snapshot_journal_left_after_its_first_check(env, monkeypatch):
+    """A snapshot commit can fail between the entry check and the erase lock."""
+    from app.memory_server import long_term_sync as native
+    from memory.long_term_sync import JOURNAL
+    directory = os.path.join(env.runtime._config_manager.memory_dir, NAME)
+    os.makedirs(directory, exist_ok=True)
+
+    async def journal_appears_after_the_check(name):
+        with open(os.path.join(directory, JOURNAL), "w", encoding="utf-8") as handle:
+            json.dump({"version": 1, "phase": "pending"}, handle)
+
+    monkeypatch.setattr(native, "recover_pending_snapshot", journal_appears_after_the_check)
+    forget = AsyncMock(return_value={})
+    monkeypatch.setattr(env.runtime.fact_store, "aforget_subject", forget)
+    req = env.routes.ScopedForgetRequest.model_validate({"subject": GROUP})
+    with pytest.raises(HTTPException) as excinfo:
+        await env.routes.forget_scoped_subject(NAME, req)
+    assert excinfo.value.status_code == 503
+    assert excinfo.value.detail == "long_term_memory_recovery_required"
+    forget.assert_not_awaited()
+    assert not env.runtime._reload_lock.locked()
+
+
 def test_target_epochs_reject_negative_values(env):
     with pytest.raises(Exception):
         env.routes.ScopedForgetRequest.model_validate(

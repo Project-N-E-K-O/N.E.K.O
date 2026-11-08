@@ -6273,8 +6273,9 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest, *, 
     subject = req.subject.to_domain()
     _validate_target_epochs(req, subject)
     # A pending snapshot journal restores its before-image when recovered, which
-    # would bring back whatever this erase removes. Settle it first or refuse.
-    from memory.long_term_sync import LongTermMemoryRecoveryRequired
+    # would bring back whatever this erase removes. Settle it first or refuse;
+    # the erase checks again once it holds the lock snapshot commits take.
+    from memory.long_term_sync import LongTermMemoryRecoveryRequired, require_consistent_views
     from .long_term_sync import recover_pending_snapshot
     try:
         await recover_pending_snapshot(lanlan_name)
@@ -6406,6 +6407,10 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest, *, 
     # arguments ("delete canonical last") are not enough.
     await runtime._reload_lock.acquire()
     try:
+        await asyncio.to_thread(
+            require_consistent_views,
+            os.path.join(runtime._config_manager.memory_dir, lanlan_name),
+        )
         for target in erase_targets:
             lock = runtime.fact_store._get_subject_forget_transaction_lock(
                 lanlan_name, target,
@@ -6506,6 +6511,8 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest, *, 
             )
     except _ForgetAlreadyErased:
         raise
+    except LongTermMemoryRecoveryRequired as exc:
+        raise HTTPException(status_code=503, detail="long_term_memory_recovery_required") from exc
     except Exception as exc:
         logger.error(f"[scoped_forget] {lanlan_name}: 删除失败: {exc}")
         raise HTTPException(
