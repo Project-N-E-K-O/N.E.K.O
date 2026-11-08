@@ -125,6 +125,39 @@ test('desktop history restore keeps saved attachments and the longer local text 
   assert.equal(I.state.messages[0].blocks.length, 1);
 });
 
+test('a partial music command cannot overwrite the longer text restored during streaming', () => {
+  const { I, window } = fixture({ withAdapter: true });
+  window.appendMessage('Hello', 'gemini', true);
+  const live = I.state.messages[0];
+  I.restoreChatHistory({ updatedAt: Date.now(), messages: [
+    { ...live, blocks: [{ type: 'text', text: 'Hello world' }] },
+  ] });
+  window.appendMessage(' [pla', 'gemini', false);
+  assert.equal(I.state.messages[0].blocks[0].text, 'Hello world');
+  window.appendMessage('y_music:Song]', 'gemini', false);
+  assert.equal(I.state.messages[0].blocks[0].text, 'Hello world');
+  window.appendMessage('world', 'gemini', false);
+  window.appendMessage(' [pla', 'gemini', false);
+  assert.equal(I.state.messages[0].blocks[0].text, 'Hello world [pla');
+  window.appendMessage('nt]', 'gemini', false);
+  assert.equal(I.state.messages[0].blocks[0].text, 'Hello world [plant]');
+});
+
+test('realistic structured streaming keeps the local text and restored attachment', () => {
+  const { I, window } = fixture({ withAdapter: true });
+  window.mergeMessagesEnabled = false;
+  window.appendMessage('## Local heading', 'gemini', true);
+  const live = I.state.messages[0];
+  const image = { type: 'image', url: 'https://example.test/structured.png' };
+  I.restoreChatHistory({ updatedAt: Date.now(), messages: [
+    { ...live, blocks: [{ type: 'text', text: '## Other heading' }, image] },
+  ] });
+  window.appendMessage(' continued', 'gemini', false);
+  assert.equal(I.state.messages[0].id, live.id);
+  assert.equal(I.state.messages[0].blocks[0].text, '## Local heading continued');
+  assert.equal(I.state.messages[0].blocks[1].url, image.url);
+});
+
 test('desktop history restore keeps distinct replies when a streaming prefix has multiple matches', () => {
   const { I, window } = fixture();
   window.mergeMessagesEnabled = true;
