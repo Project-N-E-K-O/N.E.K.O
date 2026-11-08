@@ -121,45 +121,18 @@
           <el-button :disabled="busy" @click="discard">{{ t('pythonPackages.reload') }}</el-button>
         </div>
       </section>
-      <section class="authoring-details-panel">
-        <h3>{{ t('pythonPackages.installed') }} ({{ snapshot.installed.length }})</h3>
-        <div class="python-packages-filters">
-          <el-input
-            v-model="search"
-            :placeholder="t('pythonPackages.search')"
-            :aria-label="t('pythonPackages.search')"
-            clearable
-          />
-          <el-select v-model="filter" :aria-label="t('pythonPackages.installed')">
-            <el-option
-              v-for="kind in ['all', 'direct', 'other'] as const"
-              :key="kind"
-              :value="kind"
-              :label="t(`pythonPackages.${kind}`)"
-            />
-          </el-select>
-        </div>
-        <p class="authoring-small authoring-muted">{{ t('pythonPackages.otherHint') }}</p>
-        <p v-if="!filteredPackages.length" class="authoring-muted">
-          {{ t('pythonPackages.empty') }}
-        </p>
-        <details v-for="pkg in filteredPackages" :key="pkg.name" class="python-package-details">
-          <summary>
-            <strong>{{ pkg.name }}</strong> <code>{{ pkg.version }}</code> ·
-            {{ t(pkg.direct ? 'pythonPackages.direct' : 'pythonPackages.other') }}
-          </summary>
-          <p v-if="pkg.summary">{{ pkg.summary }}</p>
-          <p>
-            {{ t('pythonPackages.requiresPython') }}: <code>{{ pkg.requires_python || '—' }}</code>
-          </p>
-          <h4>{{ t('pythonPackages.requiresDist') }}</h4>
-          <ul>
-            <li v-for="req in pkg.requires_dist" :key="req">
-              <code>{{ req }}</code>
-            </li>
-          </ul>
-        </details>
-      </section>
+      <PythonPackageExplorer
+        v-if="snapshot.dependency_graph"
+        :graph="snapshot.dependency_graph"
+        :packages="snapshot.installed"
+      />
+      <el-alert
+        v-else
+        :title="t('pythonPackages.graphUnavailable')"
+        type="info"
+        :closable="false"
+        show-icon
+      />
       <section v-if="task" class="authoring-details-panel" aria-live="polite">
         <h3>
           {{ t('pythonPackages.task') }} ·
@@ -345,6 +318,7 @@ import { stopPlugin } from '@/api/plugins'
 import { useProjectPythonPackages } from '@/composables/useProjectPythonPackages'
 import { formatHttpError } from '@/utils/request'
 import { parsePythonPackageInput, pythonVersionPolicy } from '@/utils/pythonPackageInput'
+import PythonPackageExplorer from './PythonPackageExplorer.vue'
 const props = defineProps<{ project: AuthoringProject }>()
 const emit = defineEmits<{ changed: [] }>()
 const { t } = useI18n()
@@ -365,8 +339,6 @@ const {
   run,
   cancel,
 } = useProjectPythonPackages(toRef(projectId), () => emit('changed'))
-const search = ref('')
-const filter = ref<'all' | 'direct' | 'other'>('all')
 const stopping = ref(false)
 const editorVisible = ref(false)
 const editorIndex = ref<number | null>(null)
@@ -424,14 +396,6 @@ const canSync = computed(
     !snapshot.value.running &&
     !busy.value &&
     !stopping.value
-)
-const filteredPackages = computed(
-  () =>
-    snapshot.value?.installed.filter(
-      (pkg) =>
-        pkg.name.toLowerCase().includes(search.value.toLowerCase()) &&
-        (filter.value === 'all' || pkg.direct === (filter.value === 'direct'))
-    ) ?? []
 )
 const elapsed = computed(() =>
   Math.max(
@@ -717,21 +681,6 @@ defineExpose({ reload, dirty })
   gap: 6px;
   flex: 1 1 260px;
   min-width: 0;
-}
-.python-packages-filters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-.python-packages-filters .el-input {
-  flex: 1 1 200px;
-}
-.python-packages-filters .el-select {
-  width: 200px;
-}
-.python-package-details {
-  padding: 12px 0;
-  border-bottom: 1px solid var(--el-border-color-lighter);
 }
 summary {
   cursor: pointer;

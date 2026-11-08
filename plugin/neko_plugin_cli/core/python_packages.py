@@ -11,7 +11,6 @@ import json
 import os
 import re
 import tempfile
-from collections import deque
 from importlib import metadata
 from pathlib import Path
 
@@ -23,10 +22,10 @@ from packaging.version import Version
 
 from plugin.core.python_dependencies import (
     canonicalize_distribution_name,
-    is_host_provided_requirement,
 )
 
 from .market_files import market_rejects_file
+from .python_package_graph import build_dependency_graph, requirement_status
 from .toml_utils import tomllib
 from .vendor_sync import dependency_lock
 
@@ -61,12 +60,6 @@ def _read_project(plugin_dir: Path) -> tuple[bytes | None, dict, list[str]]:
     return raw, data, requirements
 
 
-def _applies(requirement: Requirement, extras: set[str] | None = None) -> bool:
-    return requirement.marker is None or any(
-        requirement.marker.evaluate({"extra": extra}) for extra in ({""} | (extras or set()))
-    )
-
-
 def _installed(plugin_dir: Path) -> tuple[list[dict], list[dict]]:
     rows: list[dict] = []
     issues: list[dict] = []
@@ -80,6 +73,8 @@ def _installed(plugin_dir: Path) -> tuple[list[dict], list[dict]]:
                 version = dist.metadata.get("Version")
                 if not name or not version:
                     raise ValueError("distribution metadata must contain Name and Version")
+                if Requirement(name).name != name:
+                    raise ValueError("distribution metadata Name must be a package name")
                 Version(version)
                 rows.append({
                     "name": name,
@@ -104,20 +99,6 @@ def _installed(plugin_dir: Path) -> tuple[list[dict], list[dict]]:
     return rows, issues
 
 
-def _requirement_status(requirement: Requirement, installed: dict[str, dict]) -> tuple[str, str | None]:
-    row = installed.get(canonicalize_distribution_name(requirement.name))
-    version = row["version"] if row else None
-    if not _applies(requirement):
-        return "not_applicable", version
-    if is_host_provided_requirement(str(requirement)):
-        return "host_provided", version
-    if row is None:
-        return "missing", None
-    if requirement.specifier and Version(version) not in requirement.specifier:
-        return "version_mismatch", version
-    return "satisfied", version
-
-
 def inspect_python_packages(plugin_dir: Path) -> dict:
     """Read declarations and vendor inventory; perform no network or imports."""
     plugin_dir = Path(plugin_dir)
@@ -134,7 +115,7 @@ def inspect_python_packages(plugin_dir: Path) -> dict:
                                  "marker": None, "editable": False, "status": "invalid_metadata",
                                  "installed_version": None})
             continue
-        status, version = _requirement_status(parsed, by_name)
+        status, version = requirement_status(parsed, by_name)
         declarations.append({"requirement": text, "name": parsed.name, "specifier": str(parsed.specifier),
                              "extras": sorted(parsed.extras), "marker": str(parsed.marker) if parsed.marker else None,
                              "editable": parsed.url is None, "status": status, "installed_version": version})
@@ -147,10 +128,12 @@ def inspect_python_packages(plugin_dir: Path) -> dict:
     direct_names = {canonicalize_distribution_name(row["name"]) for row in declarations}
     for row in installed:
         row["direct"] = canonicalize_distribution_name(row["name"]) in direct_names
+    graph, graph_issues = build_dependency_graph(installed, declarations)
+    issues.extend(graph_issues)
     return {
         "revision": _revision(raw), "requirements": declarations, "installed": installed,
         "issues": issues, "market_issues": [], "vendor_path": str(plugin_dir / "vendor"),
-        "pyproject_path": str(plugin_dir / "pyproject.toml"),
+        "pyproject_path": str(plugin_dir / "pyproject.toml"), "dependency_graph": graph,
     }
 
 
@@ -163,20 +146,10 @@ def check_python_packages(plugin_dir: Path) -> dict:
     plugin_dir = Path(plugin_dir)
     snapshot = inspect_python_packages(plugin_dir)
     installed = {canonicalize_distribution_name(row["name"]): row for row in snapshot["installed"]}
-    queue: deque[Requirement] = deque()
-    for row in snapshot["requirements"]:
-        if row["status"] in {"satisfied", "version_mismatch"}:
-            queue.append(Requirement(row["requirement"]))
-    visited: set[tuple[str, tuple[str, ...]]] = set()
-    reported: set[tuple[str, str, str]] = set()
-    while queue:
-        parent = queue.popleft()
-        name = canonicalize_distribution_name(parent.name)
-        key = (name, tuple(sorted(parent.extras)))
-        if key in visited or name not in installed:
+    for node in snapshot["dependency_graph"]["nodes"]:
+        row = installed.get(node["id"])
+        if row is None:
             continue
-        visited.add(key)
-        row = installed[name]
         requires_python = row["requires_python"]
         if requires_python:
             try:
@@ -185,24 +158,14 @@ def check_python_packages(plugin_dir: Path) -> dict:
                                                "message": f"{row['name']} requires Python {requires_python}"})
             except InvalidSpecifier as exc:
                 snapshot["issues"].append({"code": "invalid_metadata", "package": row["name"], "message": str(exc)})
-        for text in row["requires_dist"]:
-            try:
+        for edge in node["dependencies"]:
+            for text in edge["requirements"]:
                 child = Requirement(text)
-            except InvalidRequirement as exc:
-                snapshot["issues"].append({"code": "invalid_metadata", "package": row["name"], "message": str(exc)})
-                continue
-            if not _applies(child, parent.extras) or is_host_provided_requirement(text):
-                continue
-            # The parent activates child extras; after marker evaluation the
-            # child's version check must not reevaluate that marker without them.
-            child.marker = None
-            status, _version = _requirement_status(child, installed)
-            issue_key = (name, text, status)
-            if status in {"missing", "version_mismatch"} and issue_key not in reported:
-                reported.add(issue_key)
-                snapshot["issues"].append({"code": f"dependency_{status}", "package": row["name"],
-                                           "requirement": text, "message": f"{row['name']} requires {text}: {status.replace('_', ' ')}"})
-            queue.append(child)
+                child.marker = None
+                status, _version = requirement_status(child, installed)
+                if status in {"missing", "version_mismatch"}:
+                    snapshot["issues"].append({"code": f"dependency_{status}", "package": row["name"],
+                                               "requirement": text, "message": f"{row['name']} requires {text}: {status.replace('_', ' ')}"})
     _raw, project, _requirements = _read_project(plugin_dir)
     rules = load_build_rules(project)
     vendor = plugin_dir / "vendor"

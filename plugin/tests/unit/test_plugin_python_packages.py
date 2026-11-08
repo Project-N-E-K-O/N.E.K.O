@@ -76,6 +76,66 @@ def test_closure_reports_missing_transitive_dependency_and_python_constraint(tmp
     assert codes == {"dependency_missing", "python_version_mismatch"}
 
 
+def test_graph_preserves_shared_dependencies_and_unrelated_installed_packages(tmp_path):
+    project = _project(tmp_path, '[project]\ndependencies = ["alpha", "beta"]\n')
+    _distribution(project, "alpha", "1.0", "Requires-Dist: shared>=1")
+    _distribution(project, "beta", "1.0", "Requires-Dist: shared>=1")
+    _distribution(project, "shared", "1.5")
+    _distribution(project, "standalone", "1.0", "Requires-Dist: helper")
+    _distribution(project, "helper", "1.0")
+    graph = inspect_python_packages(project)["dependency_graph"]
+    nodes = {node["id"]: node for node in graph["nodes"]}
+    assert graph["roots"] == ["alpha", "beta"]
+    assert graph["other_roots"] == ["standalone"]
+    assert nodes["shared"]["required_by"] == ["alpha", "beta"]
+    assert nodes["alpha"]["dependencies"] == [{"id": "shared", "requirements": ["shared>=1"], "status": "satisfied"}]
+
+
+def test_graph_uses_active_extras_markers_and_missing_nodes(tmp_path):
+    project = _project(tmp_path, '[project]\ndependencies = ["demo[socks]", "skipped; python_version < \'2\'"]\n')
+    _distribution(project, "demo", "1.0", 'Requires-Dist: socks_lib>=2; extra == "socks"',
+                  'Requires-Dist: inactive; python_version < "2"', 'Requires-Dist: unselected; extra == "other"')
+    graph = inspect_python_packages(project)["dependency_graph"]
+    nodes = {node["id"]: node for node in graph["nodes"]}
+    assert graph["roots"] == ["demo"]
+    assert set(nodes) == {"demo", "socks-lib"}
+    assert nodes["socks-lib"]["version"] is None
+    assert nodes["socks-lib"]["status"] == "missing"
+    assert nodes["socks-lib"]["required_by"] == ["demo"]
+
+
+def test_graph_keeps_a_disconnected_cycle_reachable_without_recursive_data(tmp_path):
+    project = _project(tmp_path, '[project]\ndependencies = []\n')
+    _distribution(project, "alpha", "1.0", "Requires-Dist: beta")
+    _distribution(project, "beta", "1.0", "Requires-Dist: alpha")
+    graph = inspect_python_packages(project)["dependency_graph"]
+    assert graph["roots"] == []
+    assert graph["other_roots"] == ["alpha"]
+    assert len(graph["nodes"]) == 2
+    assert {node["id"]: node["required_by"] for node in graph["nodes"]} == {"alpha": ["beta"], "beta": ["alpha"]}
+
+
+def test_graph_reports_requirement_conflicts_on_the_installed_node(tmp_path):
+    project = _project(tmp_path, '[project]\ndependencies = ["alpha>=2", "beta"]\n')
+    _distribution(project, "alpha", "1.0", "Requires-Dist: child>=2")
+    _distribution(project, "beta", "1.0", "Requires-Dist: child<2")
+    _distribution(project, "child", "1.0")
+    graph = inspect_python_packages(project)["dependency_graph"]
+    nodes = {node["id"]: node for node in graph["nodes"]}
+    assert nodes["alpha"]["declarations"] == ["alpha>=2"]
+    assert nodes["alpha"]["status"] == "version_mismatch"
+    assert nodes["child"]["status"] == "version_mismatch"
+    assert nodes["child"]["required_by"] == ["alpha", "beta"]
+
+
+def test_graph_reports_invalid_distribution_names_without_breaking_inventory(tmp_path):
+    project = _project(tmp_path, '[project]\ndependencies = []\n')
+    _distribution(project, "not a package name", "1.0")
+    snapshot = inspect_python_packages(project)
+    assert snapshot["dependency_graph"]["nodes"] == []
+    assert snapshot["issues"][0]["code"] == "invalid_metadata"
+
+
 def test_market_check_uses_signatures_and_build_exclusions(tmp_path):
     project = _project(tmp_path, '[project]\ndependencies = []\n[tool.neko.build]\nexclude = ["vendor/excluded.so"]\n')
     vendor = project / "vendor"

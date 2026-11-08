@@ -30,6 +30,13 @@ The initial view reads local declaration and distribution metadata only. It
 distinguishes direct requirements from other installed packages; the latter can
 include transitive dependencies and manually installed packages.
 
+Installed packages are explored through a searchable dependency tree and a
+separate details pane. The server resolves active environment markers and extras
+once into an adjacency graph; the frontend expands paths lazily, marks shared
+packages and stops cycles at an ancestor reference. Packages outside the declared
+dependency closure remain accessible as other installed roots. Narrow screens
+stack the tree above the details.
+
 An explicit check walks active dependency metadata, including extras and markers,
 and applies the existing Market file restrictions to vendor files selected for
 packaging. A successful check is tied to its declaration revision and installed

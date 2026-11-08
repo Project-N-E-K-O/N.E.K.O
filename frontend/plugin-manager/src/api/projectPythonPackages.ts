@@ -31,10 +31,31 @@ export interface PythonPackageIssue {
   requirement?: string
   path?: string
 }
+export interface PythonDependencyEdge {
+  id: string
+  requirements: string[]
+  status: 'satisfied' | 'missing' | 'version_mismatch'
+}
+export interface PythonDependencyNode {
+  id: string
+  name: string
+  version: string | null
+  direct: boolean
+  declarations: string[]
+  status: 'satisfied' | 'missing' | 'version_mismatch'
+  dependencies: PythonDependencyEdge[]
+  required_by: string[]
+}
+export interface PythonDependencyGraph {
+  roots: string[]
+  other_roots: string[]
+  nodes: PythonDependencyNode[]
+}
 export interface PythonPackagesSnapshot {
   revision: string
   requirements: PythonRequirement[]
   installed: InstalledPythonPackage[]
+  dependency_graph: PythonDependencyGraph
   issues: PythonPackageIssue[]
   market_issues: PythonPackageIssue[]
   vendor_path: string
