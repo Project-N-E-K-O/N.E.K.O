@@ -27,7 +27,7 @@ from plugin.core.python_dependencies import (
 from .market_files import market_file_exceeds_size_limit, market_rejects_file
 from .python_package_graph import build_dependency_graph, requirement_applies, requirement_status
 from .toml_utils import tomllib
-from .vendor_sync import _lock_identity, dependency_lock, pyproject_revision
+from .vendor_sync import _lock_identity, dependency_lock, pyproject_revision, read_pyproject_bytes
 
 
 class PythonPackagesError(ValueError):
@@ -42,7 +42,7 @@ class PythonPackagesError(ValueError):
 def _read_project(plugin_dir: Path) -> tuple[bytes | None, dict, list[str]]:
     path = plugin_dir / "pyproject.toml"
     try:
-        raw = path.read_bytes() if path.exists() else None
+        raw = read_pyproject_bytes(path)
         data = tomllib.loads(raw.decode("utf-8")) if raw is not None else {}
     except (OSError, ValueError) as exc:
         raise PythonPackagesError("PYTHON_PACKAGES_PROJECT_INVALID", str(exc)) from exc
@@ -338,7 +338,7 @@ def save_python_requirements(plugin_dir: Path, requirements: list[str], revision
                     os.fsync(file_obj.fileno())
                 if path.exists():
                     os.chmod(staged, path.stat().st_mode & 0o777)
-                current = path.read_bytes() if path.exists() else None
+                current = read_pyproject_bytes(path)
                 if pyproject_revision(current) != revision:
                     raise PythonPackagesError("PYTHON_PACKAGES_REVISION_CONFLICT", "pyproject.toml changed; reload before saving")
                 if path.is_symlink():

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import subprocess
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -470,3 +471,62 @@ def test_save_can_keep_or_reduce_original_invalid_declaration_occurrences(tmp_pa
     declarations = [invalid] * (old_count - remove_one) + ["valid-package"]
     saved = save_python_requirements(project, declarations, inspect_python_packages(project)["revision"])
     assert [item["requirement"] for item in saved["requirements"]] == declarations
+
+
+@pytest.mark.parametrize("kind", ["directory", "fifo", "device-link"])
+@pytest.mark.parametrize("operation", ["inspect", "sync"])
+def test_non_regular_pyproject_has_a_clear_error_without_reading_it(tmp_path, monkeypatch, kind, operation):
+    project = _project(tmp_path, '[project]\ndependencies = []\n')
+    path = project / "pyproject.toml"
+    path.unlink()
+    if kind == "directory":
+        path.mkdir()
+    elif kind == "fifo":
+        if not hasattr(os, "mkfifo"):
+            pytest.skip("named pipes require POSIX")
+        os.mkfifo(path)
+    else:
+        if os.name == "nt":
+            pytest.skip("device-file symlink requires POSIX")
+        path.symlink_to(os.devnull)
+    real_read_bytes = Path.read_bytes
+
+    def read_bytes(candidate):
+        if candidate == path:
+            pytest.fail("non-regular pyproject must not be opened (a FIFO would block)")
+        return real_read_bytes(candidate)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    vendor = project / "vendor"
+    vendor.mkdir()
+    (vendor / "manual.py").write_text("manual")
+    if operation == "inspect":
+        with pytest.raises(PythonPackagesError, match="must be a regular file") as error:
+            inspect_python_packages(project)
+        assert error.value.code == "PYTHON_PACKAGES_PROJECT_INVALID"
+    else:
+        locks = tmp_path / "locks"
+        locks.mkdir()
+        monkeypatch.setattr(vendor_sync, "_lock_dir", lambda: locks)
+        messages = []
+        assert vendor_sync.sync_vendor(project, report=messages.append) == 1
+        assert any("must be a regular file" in line for line in messages)
+    assert (vendor / "manual.py").read_text() == "manual"
+
+
+def test_regular_file_pyproject_symlink_keeps_inspection_and_sync_revisions_consistent(tmp_path, monkeypatch):
+    project = _project(tmp_path, '[project]\ndependencies = []\n')
+    path = project / "pyproject.toml"
+    shared = tmp_path / "shared.toml"
+    path.replace(shared)
+    try:
+        path.symlink_to(shared)
+    except OSError:
+        pytest.skip("symlink creation requires OS permission")
+    locks = tmp_path / "locks"
+    locks.mkdir()
+    monkeypatch.setattr(vendor_sync, "_lock_dir", lambda: locks)
+    revision = inspect_python_packages(project)["revision"]
+    assert revision == vendor_sync.pyproject_revision(shared.read_bytes())
+    assert vendor_sync.sync_vendor(project, expected_revision=revision, clean=False) == 0
+    assert path.is_symlink()

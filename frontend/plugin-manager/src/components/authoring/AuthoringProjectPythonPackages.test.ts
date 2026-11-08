@@ -639,6 +639,58 @@ describe('project dependency management', () => {
     expect(changed).toHaveBeenCalledTimes(1)
     expect(api.getProjectPythonTask).toHaveBeenCalledTimes(1)
   })
+  it.each(['initial', 'after-terminal'] as const)(
+    'keeps refreshing a busy project without a task on %s snapshot',
+    async (timing) => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+      const busyWithoutTask = state({ task: null, operation: 'python-packages-sync' })
+      if (timing === 'after-terminal') {
+        api.getProjectPythonPackages.mockResolvedValueOnce(
+          state({ task: task(), operation: 'python-packages-sync' })
+        )
+        api.getProjectPythonTask.mockResolvedValue(task({ status: 'failed', phase: 'finished' }))
+      }
+      api.getProjectPythonPackages.mockResolvedValueOnce(busyWithoutTask).mockResolvedValue(state())
+      const { changed } = await mount()
+      if (timing === 'after-terminal') {
+        await vi.advanceTimersByTimeAsync(1000)
+        await flush()
+      }
+      const sync = [...document.querySelectorAll<HTMLButtonElement>('button')].find(
+        (button) => button.textContent?.trim() === en.sync
+      )!
+      expect(sync.disabled).toBe(true)
+      await vi.advanceTimersByTimeAsync(1000)
+      await flush()
+      expect(sync.disabled).toBe(false)
+      const reads = timing === 'after-terminal' ? 3 : 2
+      expect(api.getProjectPythonPackages).toHaveBeenCalledTimes(reads)
+      expect(changed).toHaveBeenCalledTimes(timing === 'after-terminal' ? 1 : 0)
+      await vi.advanceTimersByTimeAsync(2500)
+      expect(api.getProjectPythonPackages).toHaveBeenCalledTimes(reads)
+    }
+  )
+  it('retries a failed snapshot after the server forgets the task', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    api.getProjectPythonPackages
+      .mockResolvedValueOnce(state({ task: task(), operation: 'python-packages-sync' }))
+      .mockRejectedValueOnce(new Error('Read failed'))
+      .mockResolvedValueOnce(state({ task: null, operation: 'python-packages-sync' }))
+      .mockResolvedValue(state())
+    api.getProjectPythonTask.mockRejectedValue({
+      response: { data: { detail: { code: 'PYTHON_PACKAGES_TASK_NOT_FOUND' } } },
+    })
+    const { changed } = await mount()
+    await vi.advanceTimersByTimeAsync(3000)
+    await flush()
+    const sync = [...document.querySelectorAll<HTMLButtonElement>('button')].find(
+      (button) => button.textContent?.trim() === en.sync
+    )!
+    expect(sync.disabled).toBe(false)
+    expect(api.getProjectPythonPackages).toHaveBeenCalledTimes(4)
+    expect(api.getProjectPythonTask).toHaveBeenCalledTimes(1)
+    expect(changed).not.toHaveBeenCalled()
+  })
   it('does not carry terminal snapshot retries into the next project', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
     api.getProjectPythonPackages

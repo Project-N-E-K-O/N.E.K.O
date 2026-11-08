@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 import shutil
+import stat
 import tempfile
 import zipfile
 from collections.abc import Callable
@@ -180,9 +181,7 @@ class PluginBuilder:
                 if out_file is not None
                 else source.plugin_dir.parent / source.default_package_name
             )
-            self._check_cancelled()
             self.export_package(paths.staging_root, package_path)
-            self._check_cancelled()
             return self.build_result(
                 package_id=source.plugin_id,
                 package_type="plugin",
@@ -264,9 +263,7 @@ class PluginBuilder:
                 if out_file is not None
                 else sources[0].plugin_dir.parent / f"{resolved_bundle_id}-{resolved_version}.neko-bundle"
             )
-            self._check_cancelled()
             self.export_package(paths.staging_root, package_path)
-            self._check_cancelled()
             return self.build_result(
                 package_id=resolved_bundle_id,
                 package_type="bundle",
@@ -473,9 +470,24 @@ class PluginBuilder:
             for path in staging_root.rglob("*")
             if not path.is_dir()
         ]
-        with zipfile.ZipFile(package_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            for arcname, path in sorted(file_entries, key=lambda item: item[0]):
-                archive.write(path, arcname=arcname)
+        with tempfile.TemporaryDirectory(prefix=f".{package_path.name}.", dir=package_path.parent) as output:
+            # Let ordinary archive creation apply the current umask, without
+            # changing process-wide state or inheriting mkstemp's fixed 0600.
+            temporary = Path(output) / "archive.tmp"
+            with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for arcname, path in sorted(file_entries, key=lambda item: item[0]):
+                    self._check_cancelled()
+                    archive.write(path, arcname=arcname)
+            try:
+                mode = stat.S_IMODE(package_path.stat().st_mode)
+            except FileNotFoundError:
+                pass
+            else:
+                temporary.chmod(mode)
+            # This is the commit point. Observe cancellation before replacing
+            # the old package; no further cancellation check follows commit.
+            self._check_cancelled()
+            temporary.replace(package_path)
 
     def compute_payload_hash(self, payload_dir: Path) -> str:
         """Compute SHA-256 over all files under *payload_dir*.

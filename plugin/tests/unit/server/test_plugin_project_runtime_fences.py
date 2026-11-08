@@ -262,11 +262,12 @@ async def test_cancelled_build_stops_before_remaining_projects_and_releases_leas
     entered = threading.Event()
     finish = threading.Event()
     signals = []
+    cancel_checks = []
     built = []
 
     class Builder:
         def __init__(self, **kwargs):
-            pass
+            cancel_checks.append(kwargs["cancelled"])
 
         def build_plugin(self, directory, *args, **kwargs):
             built.append(directory)
@@ -289,8 +290,10 @@ async def test_cancelled_build_stops_before_remaining_projects_and_releases_leas
     request = asyncio.create_task(service.build(mode="all"))
     try:
         assert await asyncio.to_thread(entered.wait, 3)
+        assert cancel_checks[0]() is False
         request.cancel()
         assert await asyncio.to_thread(signals[0].wait, 3)
+        assert cancel_checks[0]() is True
         assert commands.project_operation_name(project.project_id) == "build"
         assert commands.project_operation_name(second.project_id) == "build"
         finish.set()

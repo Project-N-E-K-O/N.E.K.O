@@ -80,11 +80,22 @@ def pyproject_revision(raw: bytes | None) -> str:
     return hashlib.sha256(b"missing" if raw is None else b"file\0" + raw).hexdigest()
 
 
+def read_pyproject_bytes(path: Path) -> bytes | None:
+    """Read a regular TOML file (including a regular-file symlink), or absence."""
+    try:
+        mode = path.stat().st_mode
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(mode):
+        raise OSError(f"{path} must be a regular file")
+    return path.read_bytes()
+
+
 def _check_sync_revision(plugin_dir: Path, expected_revision: str | None) -> None:
     if expected_revision is None:
         return
     path = plugin_dir / "pyproject.toml"
-    raw = path.read_bytes() if path.is_file() else None
+    raw = read_pyproject_bytes(path)
     if pyproject_revision(raw) != expected_revision:
         raise ValueError("pyproject.toml changed; refresh before synchronizing dependencies")
 
@@ -144,7 +155,7 @@ def sync_vendor(
             _remove_orphan_markers(plugin_dir)
 
             pyproject_path = plugin_dir / "pyproject.toml"
-            raw = pyproject_path.read_bytes() if pyproject_path.is_file() else None
+            raw = read_pyproject_bytes(pyproject_path)
             initial_revision = pyproject_revision(raw)
             if expected_revision is not None and initial_revision != expected_revision:
                 emit("[FAIL] pyproject.toml changed; refresh before synchronizing dependencies", file=sys.stderr)
@@ -765,9 +776,8 @@ def _empty_directory(directory: Path, *, keep: str) -> None:
 
 def _read_dependencies(pyproject_path: Path) -> list[str] | None:
     """Read declarations, keeping an absent field distinct from an empty list."""
-    with pyproject_path.open("rb") as f:
-        data = tomllib.load(f)
-    return _dependencies_from_project(data)
+    raw = read_pyproject_bytes(pyproject_path)
+    return _dependencies_from_project(tomllib.loads(raw.decode("utf-8"))) if raw is not None else None
 
 
 def _dependencies_from_project(data: dict) -> list[str] | None:

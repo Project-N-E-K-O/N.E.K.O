@@ -32,7 +32,7 @@ export function useProjectPythonPackages(
   let alive = true
   let generation = 0
   let request = 0
-  let refreshingTerminalSnapshot = false
+  let snapshotRefreshPending = false
   let timer: ReturnType<typeof setTimeout> | undefined
   const terminalNotifications = new Set<string>()
   const current = (id: string, seq: number) => alive && projectId.value === id && generation === seq
@@ -57,7 +57,7 @@ export function useProjectPythonPackages(
     if (replaceDraft) resetDraft(next)
     snapshot.value = next
     task.value = next.task
-    refreshingTerminalSnapshot = !!next.task && !pythonTaskActive(next.task) && !!next.operation
+    snapshotRefreshPending = !pythonTaskActive(next.task) && !!next.operation
     schedule()
     notifyTerminalTask(next.task, notifyTask)
   }
@@ -85,7 +85,7 @@ export function useProjectPythonPackages(
     resetTimer()
     if (!alive) return
     if (active.value) timer = setTimeout(() => void poll(), 1000)
-    else if (refreshingTerminalSnapshot) timer = setTimeout(() => void reload(), 1000)
+    else if (snapshotRefreshPending) timer = setTimeout(() => void reload(), 1000)
   }
   async function poll() {
     const id = projectId.value
@@ -99,7 +99,7 @@ export function useProjectPythonPackages(
       task.value = next
       error.value = null
       if (!pythonTaskActive(next)) {
-        refreshingTerminalSnapshot = true
+        snapshotRefreshPending = true
         await reload()
         if (current(id, seq)) notifyTerminalTask(next)
       }
@@ -107,6 +107,7 @@ export function useProjectPythonPackages(
       if (current(id, seq)) {
         if (projectErrorCode(cause) === 'PYTHON_PACKAGES_TASK_NOT_FOUND') {
           task.value = null
+          snapshotRefreshPending = true
           resetTimer()
           await reload()
         } else error.value = cause
@@ -125,7 +126,7 @@ export function useProjectPythonPackages(
       const next = await startProjectPythonTask(id, operation, snapshot.value.revision)
       if (current(id, seq)) {
         task.value = next
-        refreshingTerminalSnapshot = !pythonTaskActive(next)
+        snapshotRefreshPending = !pythonTaskActive(next)
         schedule()
         notifyTerminalTask(next)
         return true
@@ -170,7 +171,7 @@ export function useProjectPythonPackages(
       const next = await cancelProjectPythonTask(id, task.value.task_id)
       if (current(id, seq)) {
         task.value = next
-        refreshingTerminalSnapshot = !pythonTaskActive(next)
+        snapshotRefreshPending = !pythonTaskActive(next)
         await reload()
         if (current(id, seq)) notifyTerminalTask(next)
       }
@@ -186,7 +187,7 @@ export function useProjectPythonPackages(
       generation += 1
       request += 1
       resetTimer()
-      refreshingTerminalSnapshot = false
+      snapshotRefreshPending = false
       terminalNotifications.clear()
       snapshot.value = null
       task.value = null
