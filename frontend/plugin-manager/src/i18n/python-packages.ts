@@ -952,6 +952,7 @@ const beginnerMessages = {
 }
 const treeMessages = {
   'en-US': {
+    searchLimited: 'Search results limited. Refine your search.',
     dependencyTree: 'Dependency tree',
     sharedDependency: 'Shared',
     cycleReference: 'Already above',
@@ -965,6 +966,7 @@ const treeMessages = {
     selectPackage: 'Select a package on the left to see its details.',
   },
   'zh-CN': {
+    searchLimited: '搜索结果已截断，请缩小搜索范围。',
     dependencyTree: '依赖关系',
     sharedDependency: '共用',
     cycleReference: '已在上层',
@@ -978,6 +980,7 @@ const treeMessages = {
     selectPackage: '点击左侧的软件包查看详情。',
   },
   'zh-TW': {
+    searchLimited: '搜尋結果已截斷，請縮小搜尋範圍。',
     dependencyTree: '依賴關係',
     sharedDependency: '共用',
     cycleReference: '已在上層',
@@ -991,6 +994,7 @@ const treeMessages = {
     selectPackage: '點選左側套件查看詳情。',
   },
   ja: {
+    searchLimited: '検索結果を一部省略しました。検索を絞り込んでください。',
     dependencyTree: '依存関係ツリー',
     sharedDependency: '共有',
     cycleReference: '上位に表示済み',
@@ -1004,6 +1008,7 @@ const treeMessages = {
     selectPackage: '左側のパッケージを選択すると詳細が表示されます。',
   },
   ko: {
+    searchLimited: '검색 결과가 일부 생략되었습니다. 검색 범위를 좁혀 주세요.',
     dependencyTree: '의존성 트리',
     sharedDependency: '공유',
     cycleReference: '상위에 표시됨',
@@ -1017,6 +1022,7 @@ const treeMessages = {
     selectPackage: '왼쪽 패키지를 선택하면 상세 정보를 볼 수 있습니다.',
   },
   ru: {
+    searchLimited: 'Результаты сокращены. Уточните поиск.',
     dependencyTree: 'Дерево зависимостей',
     sharedDependency: 'Общая',
     cycleReference: 'Уже выше',
@@ -1030,6 +1036,7 @@ const treeMessages = {
     selectPackage: 'Выберите пакет слева, чтобы увидеть подробности.',
   },
   es: {
+    searchLimited: 'Resultados limitados. Acota la búsqueda.',
     dependencyTree: 'Árbol de dependencias',
     sharedDependency: 'Compartida',
     cycleReference: 'Ya aparece arriba',
@@ -1043,6 +1050,7 @@ const treeMessages = {
     selectPackage: 'Selecciona un paquete a la izquierda para ver sus detalles.',
   },
   pt: {
+    searchLimited: 'Resultados limitados. Refine a busca.',
     dependencyTree: 'Árvore de dependências',
     sharedDependency: 'Compartilhada',
     cycleReference: 'Já aparece acima',

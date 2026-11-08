@@ -14,10 +14,14 @@ inspection and transactional synchronization implementation.
   resolve to newer versions, including related dependencies.
 - Remove a declaration and synchronize to remove packages no longer needed.
   An explicitly empty dependency list also clears the old vendor contents.
+  A missing declaration preserves hand-maintained vendor files; dynamic dependency
+  declarations are rejected before synchronization.
 - Existing URL, Git and local source declarations are retained verbatim; change
   these in an editor. Unsupported lossless TOML layouts are reported explicitly.
 - Declaration writes preserve surrounding TOML content and comments, use the
-  dependency filesystem lock and reject stale file revisions.
+  dependency filesystem lock and reject stale file revisions. Symlinked project
+  files must be edited externally. Revision checks detect external edits through
+  the final read; editors that do not use this lock can still write after it.
 
 Stop the project's plugin before synchronizing. The project remains reserved
 until the task has reconciled the resulting vendor and plugin metadata. Starting,
@@ -55,9 +59,16 @@ or mounted vendors retain their documented in-place update limitations.
 Source servers use their Python interpreter and existing uv, with the existing
 pip fallback when uv is unavailable. A packaged server prepares a matching
 CPython interpreter in application data. If uv is missing, an explicit sync can
-download a pinned uv wheel from PyPI, verify its SHA-256 and extract only the
-executable and licenses. Python preparation uses `--no-bin --no-registry`, so it
+download a pinned-version uv wheel from PyPI, verify its integrity against the
+SHA-256 returned by PyPI HTTPS metadata, and extract only the executable and
+licenses. Python preparation uses `--no-bin --no-registry`, so it
 does not register a system interpreter. Opening the tab performs no downloads.
+
+The installer bootstrap trusts PyPI HTTPS metadata and artifacts served from
+`files.pythonhosted.org`. The digest checks downloaded bytes against that
+metadata; it is not a digest embedded in this repository or an independent
+signature. Packaged interpreter requests include the running host process
+architecture, which is also checked before installing plugin dependencies.
 
 ## Implementation
 

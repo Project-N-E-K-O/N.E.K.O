@@ -11,10 +11,10 @@
         />
         <el-tree
           :key="treeKey"
-          :data="rootItems"
+          :data="searchResults?.items ?? rootItems"
           :props="treeProps"
           node-key="key"
-          lazy
+          :lazy="!search.trim()"
           :load="loadChildren"
           :default-expanded-keys="[...expandedKeys]"
           :default-expand-all="!!search.trim()"
@@ -53,6 +53,9 @@
             </span>
           </template>
         </el-tree>
+        <p v-if="searchResults?.truncated" class="authoring-small authoring-muted">
+          {{ t('pythonPackages.searchLimited') }}
+        </p>
       </aside>
       <article
         class="package-explorer-details"
@@ -139,6 +142,7 @@ interface TreeItem {
   leaf: boolean
   cycle: boolean
   status: string
+  children?: TreeItem[]
 }
 const props = defineProps<{ graph: PythonDependencyGraph; packages: InstalledPythonPackage[] }>()
 const { t } = useI18n()
@@ -190,7 +194,7 @@ function item(id: string, path: string[], status = 'satisfied'): TreeItem {
     path: next,
     leaf: cycle || !children.length,
     cycle,
-    status: node.status !== 'satisfied' ? node.status : status,
+    status: path.length ? status : node.status,
   }
 }
 const rootItems = computed(() =>
@@ -198,6 +202,38 @@ const rootItems = computed(() =>
     .filter((id) => visibleIds.value.has(id))
     .map((id) => item(id, []))
 )
+// Shared dependencies can produce exponentially many paths during automatic expansion.
+const MAX_SEARCH_ITEMS = 500
+const searchResults = computed(() => {
+  if (!search.value.trim()) return null
+  let remaining = MAX_SEARCH_ITEMS
+  let truncated = false
+  function branch(id: string, path: string[], status?: string): TreeItem | null {
+    if (!remaining) {
+      truncated = true
+      return null
+    }
+    remaining -= 1
+    const result = item(id, path, status)
+    result.children = []
+    if (!result.leaf) {
+      for (const edge of nodes.value.get(id)!.dependencies) {
+        if (!visibleIds.value.has(edge.id)) continue
+        const child = branch(edge.id, result.path, edge.status)
+        if (!child) break
+        result.children.push(child)
+      }
+    }
+    return result
+  }
+  const items: TreeItem[] = []
+  for (const root of rootItems.value) {
+    const result = branch(root.id, [])
+    if (!result) break
+    items.push(result)
+  }
+  return { items, truncated }
+})
 function loadChildren(
   node: { level: number; data: TreeItem },
   resolve: (children: TreeItem[]) => void

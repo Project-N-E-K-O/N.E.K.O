@@ -14,11 +14,14 @@ import hashlib
 import importlib.util
 import json
 import os
+import platform
 from pathlib import Path
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import threading
+import time
 from typing import Protocol
 from urllib.parse import urlsplit
 import zipfile
@@ -66,13 +69,35 @@ def _find_uv() -> str | None:
     return find_uv()
 
 
+def _python_architecture(platform_tag: str, machine: str | None = None) -> str:
+    architecture = platform_tag.rsplit("-", 1)[-1].lower()
+    if architecture in {"universal2", "universal", "intel", "fat", "fat3", "fat64"} and machine:
+        architecture = machine.lower()
+    return {
+        "amd64": "x86_64", "arm64": "aarch64", "win32": "x86",
+        "i386": "x86", "i686": "x86", "armv7l": "armv7",
+        "ppc64le": "powerpc64le", "riscv64": "riscv64gc",
+    }.get(architecture, architecture)
+
+
+def _host_architecture() -> str:
+    # sysconfig describes the running interpreter, including emulated Windows
+    # or macOS processes; platform.machine() can describe the native machine.
+    return _python_architecture(
+        sysconfig.get_platform(), platform.machine() if sys.platform == "darwin" else None,
+    )
+
+
 def _cached_uv() -> Path:
     environment = build_environment()
     name = "uv.exe" if sys.platform == "win32" else "uv"
-    return _tools_root() / "uv" / _UV_VERSION / f"{environment['os']}-{environment['arch']}" / name
+    return _tools_root() / "uv" / _UV_VERSION / f"{environment['os']}-{_host_architecture()}" / name
 
 
 def _available_uv() -> str | None:
+    cached = _cached_uv()
+    if _is_packaged() and cached.is_file():
+        return str(cached)
     installed = _find_uv()
     if installed:
         return installed
@@ -91,6 +116,7 @@ def _prepared_python() -> str | None:
         if (
             record["environment"] == build_environment()
             and record.get("python_version") == list(sys.version_info[:3])
+            and record.get("python_architecture") == _host_architecture()
             and isinstance(python, str)
             and Path(python).is_file()
         ):
@@ -110,7 +136,7 @@ def read_package_tools() -> dict[str, object]:
     return {
         "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
         "platform": sys.platform,
-        "architecture": build_environment()["arch"],
+        "architecture": _host_architecture(),
         "python_executable": prepared_python,
         "installer": "uv" if uv else "pip" if pip else None,
         "installer_path": uv or (sys.executable if pip else None),
@@ -149,16 +175,29 @@ def _select_uv_wheel(metadata: dict, compatible_tags: list | None = None) -> dic
     return min(matches, key=lambda match: match[0])[1]
 
 
+def _download_timeout(httpx, deadline: float | None):
+    remaining = 10.0 if deadline is None else deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("The dependency task exceeded its time budget")
+    return httpx.Timeout(min(10.0, remaining), connect=min(5.0, remaining))
+
+
 def _download_uv(
     destination: Path, log: Callable[[str], None], cancel_event: threading.Event,
-    *, check_cancelled: Callable[[], None] | None = None,
+    *, check_cancelled: Callable[[], None] | None = None, deadline: float | None = None,
 ) -> None:
-    """Extract only uv and its licenses from a pinned, SHA-256 checked wheel."""
+    """Extract pinned-version uv, checking integrity against PyPI's SHA-256.
+
+    PyPI HTTPS metadata and its files.pythonhosted.org artifacts are trusted;
+    the digest is supplied by PyPI, rather than embedded as a trust anchor.
+    """
     _check_cancel(cancel_event, check_cancelled)
     httpx = load_httpx()
     log(f"Preparing uv {_UV_VERSION}")
     with httpx.Client(timeout=httpx.Timeout(10.0, connect=5.0), follow_redirects=False) as client:
-        with client.stream("GET", f"https://pypi.org/pypi/uv/{_UV_VERSION}/json") as response:
+        with client.stream(
+            "GET", f"https://pypi.org/pypi/uv/{_UV_VERSION}/json", timeout=_download_timeout(httpx, deadline),
+        ) as response:
             response.raise_for_status()
             metadata_bytes = bytearray()
             for chunk in response.iter_bytes():
@@ -179,7 +218,9 @@ def _download_uv(
             archive_path = Path(temporary) / "uv.whl"
             digest = hashlib.sha256()
             received = 0
-            with client.stream("GET", wheel["url"]) as response, archive_path.open("wb") as output:
+            with client.stream(
+                "GET", wheel["url"], timeout=_download_timeout(httpx, deadline),
+            ) as response, archive_path.open("wb") as output:
                 response.raise_for_status()
                 for chunk in response.iter_bytes():
                     _check_cancel(cancel_event, check_cancelled)
@@ -218,7 +259,10 @@ def _prepare_packaged_python(
     env = {"UV_PYTHON_INSTALL_DIR": str(python_root)}
     # python_full_version markers must resolve as they do in the host, not
     # against a newer patch release with the same extension-module ABI.
-    request = f"cpython@{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    platform_name = {"win32": "windows", "darwin": "macos"}.get(sys.platform, sys.platform)
+    architecture = _host_architecture()
+    version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    request = f"cpython-{version}-{platform_name}-{architecture}"
     find = [uv, "python", "find", "--system", "--no-project", "--managed-python", "--no-python-downloads", request]
     found = run_command(find, label="Locate compatible Python", env=env)
     if found.returncode:
@@ -234,26 +278,28 @@ def _prepare_packaged_python(
         raise RuntimeError("The dependency installer could not locate compatible Python")
     python = found.stdout.strip().splitlines()[-1]
     probe = run_command(
-        [python, "-c", "import json,sys,struct; print(json.dumps([list(sys.version_info[:3]),sys.platform,struct.calcsize('P')]))"],
+        [python, "-c", "import json,sys,struct,sysconfig,platform; print(json.dumps([list(sys.version_info[:3]),sys.platform,struct.calcsize('P'),sysconfig.get_platform(),platform.machine() if sys.platform == 'darwin' else None]))"],
         label="Check compatible Python", env=env,
     )
     import struct
 
     expected = [list(sys.version_info[:3]), sys.platform, struct.calcsize("P")]
-    if probe.returncode or json.loads(probe.stdout) != expected:
+    identity = json.loads(probe.stdout) if not probe.returncode else []
+    if identity[:3] != expected or len(identity) != 5 or _python_architecture(identity[3], identity[4]) != architecture:
         raise RuntimeError("The dependency interpreter does not match the running host")
     from utils.file_utils import atomic_write_json
 
     _check_cancel(cancel_event, check_cancelled)
     atomic_write_json(_tools_root() / "python.json", {
         "executable": python, "environment": build_environment(), "python_version": list(sys.version_info[:3]),
+        "python_architecture": architecture,
     })
     return PackageTools(python, uv, allow_pip_fallback=False, env=env)
 
 
 def prepare_package_tools(
     run_command: CommandRunner, log: Callable[[str], None], cancel_event: threading.Event,
-    *, check_cancelled: Callable[[], None] | None = None,
+    *, check_cancelled: Callable[[], None] | None = None, deadline: float | None = None,
 ) -> PackageTools:
     """Called in the dependency task's worker thread, after explicit sync."""
     _check_cancel(cancel_event, check_cancelled)
@@ -277,7 +323,7 @@ def prepare_package_tools(
         uv = _available_uv()
         if uv is None:
             target = _cached_uv()
-            _download_uv(target, log, cancel_event, check_cancelled=check_cancelled)
+            _download_uv(target, log, cancel_event, check_cancelled=check_cancelled, deadline=deadline)
             uv = str(target)
         if _is_packaged():
             return _prepare_packaged_python(uv, run_command, cancel_event, check_cancelled=check_cancelled)

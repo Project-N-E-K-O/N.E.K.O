@@ -1140,6 +1140,9 @@ class PluginLifecycleService:
                         error_type=str(exc.details.get("error_type", "RegistryRefreshFailed")) if isinstance(exc.details, dict) else "RegistryRefreshFailed",
                     ) from exc
 
+        # Refresh can discover a project or change its effective plugin ID.
+        # Recheck the resolved identity before reading dependencies or spawning.
+        await asyncio.to_thread(require_plugin_project_available, current_plugin_id)
         project_dir = await asyncio.to_thread(_project_source_dir_sync, current_plugin_id)
         registered_meta = await asyncio.to_thread(_get_plugin_meta_sync, current_plugin_id)
         config_path = await asyncio.to_thread(_resolve_registered_config_path_sync, registered_meta)

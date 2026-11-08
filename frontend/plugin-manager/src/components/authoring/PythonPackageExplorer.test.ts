@@ -162,6 +162,57 @@ describe('installed package dependency explorer', () => {
       en.missing
     )
   })
+  it('shows each incoming edge status without overriding it with the shared node status', async () => {
+    const value = graph()
+    value.nodes[1]!.dependencies[0] = {
+      id: 'shared',
+      requirements: ['shared>=3'],
+      status: 'version_mismatch',
+    }
+    value.nodes[2]!.status = 'version_mismatch'
+    value.roots.push('shared')
+    await mount(value)
+    const rows = [...document.querySelectorAll<HTMLElement>('[data-package-id="shared"]')]
+    expect(rows).toHaveLength(3)
+    expect(rows[0]!.textContent).not.toContain(en.incompatible)
+    expect(rows[0]!.textContent).toContain('2.0')
+    expect(rows[1]!.textContent).toContain(en.incompatible)
+    expect(rows[2]!.textContent).toContain(en.incompatible)
+  })
+  it('bounds search rendering when a small graph shares dependencies across many paths', async () => {
+    const value: PythonDependencyGraph = { roots: ['root'], other_roots: [], nodes: [] }
+    const levels = [
+      ['root'],
+      ...Array.from({ length: 8 }, (_, n) => [`level-${n}-a`, `level-${n}-b`]),
+      ['needle'],
+    ]
+    levels.forEach((ids, depth) =>
+      ids.forEach((id) =>
+        value.nodes.push({
+          id,
+          name: id,
+          version: '1',
+          direct: depth === 0,
+          status: 'satisfied',
+          declarations: depth === 0 ? ['root'] : [],
+          dependencies: (levels[depth + 1] ?? []).map((child) => ({
+            id: child,
+            requirements: [child],
+            status: 'satisfied',
+          })),
+          required_by: levels[depth - 1] ?? [],
+        })
+      )
+    )
+    await mount(value)
+    const input = document.querySelector<HTMLInputElement>('input')!
+    input.value = 'needle'
+    input.dispatchEvent(new Event('input'))
+    await flush()
+    expect(document.querySelectorAll('[data-package-id]').length).toBeLessThanOrEqual(500)
+    expect(document.body.textContent).toContain('Search results limited. Refine your search.')
+    expect(document.querySelector('[data-package-id="needle"]')).toBeTruthy()
+  })
   it('clears stale details when the installed graph becomes empty', async () => {
     const props = await mount()
     props.graph = { roots: [], other_roots: [], nodes: [] }

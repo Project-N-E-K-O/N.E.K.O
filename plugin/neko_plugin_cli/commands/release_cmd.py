@@ -15,6 +15,7 @@ from pathlib import Path, PurePosixPath
 from .. import core
 from ..core.market_files import (
     MARKET_BINARY_SUFFIXES as _MARKET_BINARY_SUFFIXES,
+    market_file_exceeds_size_limit,
     market_rejects_file,
 )
 from ..core.plugin_source import load_plugin_source
@@ -36,18 +37,9 @@ _MARKET_MAX_VERSION_CHARS = 50
 # Limits of the Market's security scan of the source archive GitHub builds for
 # the release commit (N.E.K.O-PluginMarket app/services/plugin_security.py).
 _MARKET_MAX_ARCHIVE_BYTES = 32 * 1024 * 1024
-_MARKET_MAX_FILE_BYTES = 2 * 1024 * 1024
 _MARKET_MAX_ARCHIVE_ENTRIES = 5000
 # The release package is also scanned, unpacked in memory.
 _MARKET_MAX_EXPANDED_BYTES = 128 * 1024 * 1024
-# The scan streams media and model files instead of reading them, so the
-# per-file limit does not apply to them.
-_MARKET_ASSET_SUFFIXES = frozenset(
-    {
-        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".mp3", ".mp4", ".wav",
-        ".woff", ".woff2", ".ttf", ".onnx", ".pt", ".safetensors", ".gguf",
-    }
-)
 
 
 def _tri(english: str, chinese: str, japanese: str) -> str:
@@ -356,8 +348,7 @@ def _diagnose_market_source_archive(repository_root: Path) -> list[Issue]:
     oversized = [
         path
         for path, size in files
-        if size > _MARKET_MAX_FILE_BYTES
-        and PurePosixPath(path).suffix.lower() not in _MARKET_BINARY_SUFFIXES | _MARKET_ASSET_SUFFIXES
+        if market_file_exceeds_size_limit(path, size)
     ]
     if oversized:
         shown = _shown_paths(oversized)
@@ -430,12 +421,11 @@ def _diagnose_market_package(package_path: Path) -> list[Issue]:
         binaries: list[str] = []
         oversized: list[str] = []
         for entry in files:
-            suffix = PurePosixPath(entry.filename).suffix.lower()
             with archive.open(entry) as member:
                 prefix = member.read(512)
             if market_rejects_file(entry.filename, prefix):
                 binaries.append(entry.filename)
-            elif suffix not in _MARKET_ASSET_SUFFIXES and entry.file_size > _MARKET_MAX_FILE_BYTES:
+            elif market_file_exceeds_size_limit(entry.filename, entry.file_size):
                 oversized.append(entry.filename)
         expanded = sum(entry.file_size for entry in files)
     if binaries:

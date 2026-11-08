@@ -6,7 +6,6 @@ the surrounding TOML text and refuse layouts that cannot be edited losslessly.
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 import os
 import re
@@ -24,10 +23,10 @@ from plugin.core.python_dependencies import (
     canonicalize_distribution_name,
 )
 
-from .market_files import market_rejects_file
-from .python_package_graph import build_dependency_graph, requirement_status
+from .market_files import market_file_exceeds_size_limit, market_rejects_file
+from .python_package_graph import build_dependency_graph, requirement_applies, requirement_status
 from .toml_utils import tomllib
-from .vendor_sync import dependency_lock
+from .vendor_sync import _lock_identity, dependency_lock, pyproject_revision
 
 
 class PythonPackagesError(ValueError):
@@ -37,11 +36,6 @@ class PythonPackagesError(ValueError):
         self.code = code
         self.message = message
         super().__init__(message)
-
-
-def _revision(raw: bytes | None) -> str:
-    # Missing and present-but-empty are distinct revisions.
-    return hashlib.sha256(b"missing" if raw is None else b"file\0" + raw).hexdigest()
 
 
 def _read_project(plugin_dir: Path) -> tuple[bytes | None, dict, list[str]]:
@@ -109,13 +103,13 @@ def inspect_python_packages(plugin_dir: Path) -> dict:
     for text in requirements:
         try:
             parsed = Requirement(text)
-        except InvalidRequirement as exc:
+            status, version = requirement_status(parsed, by_name)
+        except ValueError as exc:
             issues.append({"code": "invalid_requirement", "requirement": text, "message": str(exc)})
             declarations.append({"requirement": text, "name": text, "specifier": "", "extras": [],
                                  "marker": None, "editable": False, "status": "invalid_metadata",
                                  "installed_version": None})
             continue
-        status, version = requirement_status(parsed, by_name)
         declarations.append({"requirement": text, "name": parsed.name, "specifier": str(parsed.specifier),
                              "extras": sorted(parsed.extras), "marker": str(parsed.marker) if parsed.marker else None,
                              "editable": parsed.url is None, "status": status, "installed_version": version})
@@ -131,14 +125,14 @@ def inspect_python_packages(plugin_dir: Path) -> dict:
     graph, graph_issues = build_dependency_graph(installed, declarations)
     issues.extend(graph_issues)
     return {
-        "revision": _revision(raw), "requirements": declarations, "installed": installed,
+        "revision": pyproject_revision(raw), "requirements": declarations, "installed": installed,
         "issues": issues, "market_issues": [], "vendor_path": str(plugin_dir / "vendor"),
         "pyproject_path": str(plugin_dir / "pyproject.toml"), "dependency_graph": graph,
     }
 
 
 def check_python_packages(plugin_dir: Path) -> dict:
-    """Check the active dependency closure and files selected for packaging."""
+    """Check active requirements of all installed packages and packaged files."""
     # Packaging policy is needed only for an explicit check. Keep the HTTP
     # startup path free of the packaging stack, like the CLI service itself.
     from .build_rules import load_build_rules, should_skip_path, walk_plugin_tree
@@ -179,6 +173,9 @@ def check_python_packages(plugin_dir: Path) -> dict:
             if market_rejects_file(path.name, prefix):
                 snapshot["market_issues"].append({"code": "market_prohibited_file", "path": relative.as_posix(),
                                                   "message": f"Market rejects {relative.as_posix()}"})
+            elif market_file_exceeds_size_limit(path.name, path.stat().st_size):
+                snapshot["market_issues"].append({"code": "market_file_too_large", "path": relative.as_posix(),
+                                                  "message": f"Market rejects files over 2 MiB: {relative.as_posix()}"})
     return snapshot
 
 
@@ -271,13 +268,22 @@ def _array_comments(text: str) -> list[str]:
 
 
 def save_python_requirements(plugin_dir: Path, requirements: list[str], revision: str) -> dict:
-    """Compare-and-swap only project.dependencies, using the sync OS lock."""
+    """Serialize workbench writes and reject revisions stale at the final read.
+
+    External editors do not take this lock; their writes after that final read
+    cannot be made atomic with our replacement without their cooperation.
+    """
     plugin_dir = Path(plugin_dir)
     path = plugin_dir / "pyproject.toml"
     try:
+        project_identity = _lock_identity(plugin_dir)
         with dependency_lock(plugin_dir):
+            if _lock_identity(plugin_dir) != project_identity:
+                raise PythonPackagesError("PYTHON_PACKAGES_REVISION_CONFLICT", "Project directory changed; reload before saving")
+            if path.is_symlink():
+                raise PythonPackagesError("PYTHON_PACKAGES_FORMAT_UNSUPPORTED", "pyproject.toml is a symbolic link; edit its target in your editor")
             raw, data, old_requirements = _read_project(plugin_dir)
-            if _revision(raw) != revision:
+            if pyproject_revision(raw) != revision:
                 raise PythonPackagesError("PYTHON_PACKAGES_REVISION_CONFLICT", "pyproject.toml changed; reload before saving")
             if "dependencies" in data.get("project", {}).get("dynamic", []):
                 raise PythonPackagesError("PYTHON_PACKAGES_FORMAT_UNSUPPORTED", "Dependencies are supplied dynamically; edit their source in your editor")
@@ -295,6 +301,10 @@ def save_python_requirements(plugin_dir: Path, requirements: list[str], revision
                     raise PythonPackagesError("PYTHON_PACKAGES_REQUIREMENTS_INVALID", str(exc)) from exc
                 if parsed.url and item not in old_requirements:
                     raise PythonPackagesError("PYTHON_PACKAGES_REQUIREMENT_SOURCE_UNSUPPORTED", "Add URL, Git or local dependencies in your editor")
+                try:
+                    requirement_applies(parsed, parsed.extras)
+                except ValueError as exc:
+                    raise PythonPackagesError("PYTHON_PACKAGES_REQUIREMENTS_INVALID", str(exc)) from exc
                 identity = str(parsed)
                 if identity in seen:
                     raise PythonPackagesError("PYTHON_PACKAGES_REQUIREMENTS_INVALID", f"Duplicate requirement: {item}")
@@ -318,8 +328,10 @@ def save_python_requirements(plugin_dir: Path, requirements: list[str], revision
                 if path.exists():
                     os.chmod(staged, path.stat().st_mode & 0o777)
                 current = path.read_bytes() if path.exists() else None
-                if _revision(current) != revision:
+                if pyproject_revision(current) != revision:
                     raise PythonPackagesError("PYTHON_PACKAGES_REVISION_CONFLICT", "pyproject.toml changed; reload before saving")
+                if path.is_symlink():
+                    raise PythonPackagesError("PYTHON_PACKAGES_FORMAT_UNSUPPORTED", "pyproject.toml is a symbolic link; edit its target in your editor")
                 os.replace(staged, path)
             finally:
                 staged.unlink(missing_ok=True)

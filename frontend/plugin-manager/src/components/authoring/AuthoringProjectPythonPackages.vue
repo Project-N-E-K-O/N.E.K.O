@@ -6,6 +6,9 @@
         <pre>{{ diagnostic }}</pre>
       </details>
     </el-alert>
+    <el-button v-if="!snapshot && error" :icon="Refresh" :loading="loading" @click="reload()">{{
+      t('common.refresh')
+    }}</el-button>
     <el-skeleton v-if="!snapshot && loading" :rows="5" animated />
     <template v-if="snapshot">
       <details class="python-packages-environment">
@@ -546,6 +549,28 @@ function issueLabel(issue: PythonPackageIssue) {
     'pythonPackages.' + (Object.hasOwn(keys, issue.code) ? keys[issue.code] : 'unknownIssue')
   )
 }
+function declarationIdentity(value: string) {
+  const parsed = parsePythonPackageInput(value)
+  if (!parsed) return null
+  const normalizeName = (name: string) =>
+    name
+      .trim()
+      .toLowerCase()
+      .replace(/[-_.]+/g, '-')
+  return JSON.stringify({
+    name: normalizeName(parsed.name),
+    extras: [...new Set(parsed.extras.split(',').map(normalizeName).filter(Boolean))].sort(),
+    specifier: [
+      ...new Set(
+        parsed.specifier
+          .split(',')
+          .map((part) => part.replace(/\s+/g, ''))
+          .filter(Boolean)
+      ),
+    ].sort(),
+    marker: parsed.marker.trim(),
+  })
+}
 async function applyEdit(install: boolean) {
   if (busy.value || (install && !canSync.value)) return
   editorError.value = ''
@@ -562,17 +587,11 @@ async function applyEdit(install: boolean) {
   }
   const value = editorValue.value.trim()
   if (!canSubmit.value) return
-  const name = parsePythonPackageInput(value)
-    ?.name.toLowerCase()
-    .replace(/[-_.]+/g, '-')
+  const identity = declarationIdentity(value)
   if (
-    name &&
+    identity &&
     draft.value.some(
-      (item, index) =>
-        index !== editorIndex.value &&
-        parsePythonPackageInput(item)
-          ?.name.toLowerCase()
-          .replace(/[-_.]+/g, '-') === name
+      (item, index) => index !== editorIndex.value && declarationIdentity(item) === identity
     )
   ) {
     editorError.value = 'alreadyAdded'
@@ -640,7 +659,7 @@ function beforeUnload(event: BeforeUnloadEvent) {
 }
 window.addEventListener('beforeunload', beforeUnload)
 onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
-defineExpose({ reload, dirty })
+defineExpose({ reload, dirty, confirmDiscard })
 </script>
 
 <style scoped>

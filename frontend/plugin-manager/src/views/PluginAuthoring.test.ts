@@ -22,6 +22,8 @@ const api = vi.hoisted(() => ({
   createPluginProjectRepo: vi.fn(),
   registerPluginProject: vi.fn(),
   removePluginProject: vi.fn(),
+  getProjectPythonPackages: vi.fn(),
+  saveProjectPythonRequirements: vi.fn(),
   pickProjectDirectory: vi.fn(),
   openProjectDirectory: vi.fn(),
   updatePluginProjectMetadata: vi.fn(),
@@ -63,6 +65,11 @@ vi.mock('@/api/pluginProjects', async (importOriginal) => ({
   startPluginProjectPublish: api.startPluginProjectPublish,
   cancelPluginProjectPublishTask: api.cancelPluginProjectPublishTask,
   getPluginToolchain: api.getPluginToolchain,
+}))
+vi.mock('@/api/projectPythonPackages', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api/projectPythonPackages')>()),
+  getProjectPythonPackages: api.getProjectPythonPackages,
+  saveProjectPythonRequirements: api.saveProjectPythonRequirements,
 }))
 vi.mock('vue-router', () => ({
   onBeforeRouteLeave: vi.fn(),
@@ -266,6 +273,8 @@ async function mount() {
             loading: 'Loading',
             edit: 'Edit',
             save: 'Save',
+            refresh: 'Refresh',
+            confirm: 'Confirm',
           },
           status: { running: 'Running', stopped: 'Stopped' },
         },
@@ -1401,6 +1410,62 @@ describe('authoring workbench backed by the server project list', () => {
     await settle()
     expect(api.removePluginProject).toHaveBeenCalledWith('p1')
     expect(api.push).toHaveBeenCalledWith({ path: '/workbench' })
+  })
+
+  it('keeps unsaved dependency changes when the removal discard prompt is canceled', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getProjectPythonPackages.mockResolvedValue({
+      revision: 'r1',
+      requirements: [
+        {
+          requirement: 'demo>=1',
+          name: 'demo',
+          specifier: '>=1',
+          extras: [],
+          marker: null,
+          editable: true,
+          status: 'satisfied',
+          installed_version: '1.2.0',
+        },
+      ],
+      installed: [],
+      dependency_graph: { roots: [], other_roots: [], nodes: [] },
+      issues: [],
+      market_issues: [],
+      vendor_path: '/demo/vendor',
+      pyproject_path: '/demo/pyproject.toml',
+      vendor_exists: true,
+      running: false,
+      operation: null,
+      task: null,
+      environment: {
+        python_version: '3.11.14',
+        python_executable: '/python',
+        platform: 'Linux',
+        architecture: 'x86_64',
+        installer: 'uv',
+        installer_path: '/uv',
+        packaged: false,
+        can_sync: true,
+        setup_required: false,
+        reason: null,
+      },
+    })
+    const container = await mount()
+    await openTab(container, 1)
+    await click(pythonPackageMessages['en-US'].pin)
+    await click(en.removeProject)
+    await settle()
+    expect(messageBox()?.textContent).toContain(pythonPackageMessages['en-US'].discard)
+    await click('Cancel', { last: true })
+    await settle()
+    expect(api.removePluginProject).not.toHaveBeenCalled()
+    expect(api.saveProjectPythonRequirements).not.toHaveBeenCalled()
+    expect(container.querySelector('.python-package-declaration code')?.textContent).toBe(
+      'demo==1.2.0'
+    )
+    expect(api.push).not.toHaveBeenCalled()
   })
 
   it('keeps the project when removal is cancelled', async () => {

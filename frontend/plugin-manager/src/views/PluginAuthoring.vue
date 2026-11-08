@@ -261,6 +261,7 @@ function openLogs(project: AuthoringProject) {
 }
 
 async function confirmRemove(project: AuthoringProject) {
+  if (dependenciesPanel.value && !(await dependenciesPanel.value.confirmDiscard())) return
   try {
     await ElMessageBox.confirm(
       t('authoring.removeConfirm', { name: projectTitle(project), path: project.source_dir }),

@@ -270,11 +270,80 @@ describe('project dependency management', () => {
     expect(document.querySelectorAll('.python-package-declaration')).toHaveLength(1)
     expect(api.startProjectPythonTask).not.toHaveBeenCalled()
   })
-  it('explains duplicate packages instead of adding a conflicting requirement', async () => {
+  it('explains normalized duplicate declarations without saving them', async () => {
     await mount()
     await click(en.add)
-    await fill('python-package-name', 'HTTPX')
+    await fill('python-package-name', 'HTTPX[socks] >=0.27; python_version >= "3.11"')
     await click(en.addInstall)
+    expect(document.body.textContent).toContain(en.alreadyAdded)
+    expect(api.saveProjectPythonRequirements).not.toHaveBeenCalled()
+  })
+  it('retries the initial snapshot after a load failure', async () => {
+    api.getProjectPythonPackages.mockRejectedValueOnce(new Error('Read failed'))
+    await mount()
+    expect(document.body.textContent).toContain(en.actionFailed)
+    await click('Refresh')
+    expect(api.getProjectPythonPackages).toHaveBeenCalledTimes(2)
+    expect(document.querySelector('.python-package-declaration code')?.textContent).toBe(
+      state().requirements[0]!.requirement
+    )
+  })
+  it('allows the same package with a different environment condition', async () => {
+    await mount()
+    await click(en.add)
+    await fill('python-package-name', 'httpx>=0.28; python_version < "3.11"')
+    await click(en.saveOnly)
+    expect(api.saveProjectPythonRequirements).toHaveBeenCalledWith(
+      'p1',
+      [state().requirements[0]!.requirement, 'httpx>=0.28; python_version < "3.11"'],
+      'r1'
+    )
+  })
+  it.each([
+    'httpx[http2]>=0.27; python_version >= "3.11"',
+    'httpx[socks]<1; python_version >= "3.11"',
+  ])(
+    'allows a distinct declaration for the same package and condition: %s',
+    async (requirement) => {
+      await mount()
+      await click(en.add)
+      await fill('python-package-name', requirement)
+      await click(en.saveOnly)
+      expect(api.saveProjectPythonRequirements).toHaveBeenCalledWith(
+        'p1',
+        [state().requirements[0]!.requirement, requirement],
+        'r1'
+      )
+    }
+  )
+  it('edits one of two same-package declarations without rejecting the other', async () => {
+    const other = 'httpx[http2]<1; python_version >= "3.11"'
+    api.getProjectPythonPackages.mockResolvedValue(
+      state({
+        requirements: [
+          state().requirements[0]!,
+          { ...state().requirements[0]!, requirement: other },
+        ],
+      })
+    )
+    await mount()
+    await click('Edit')
+    await fill('python-package-version', '>=0.28')
+    await click(en.saveOnly)
+    expect(api.saveProjectPythonRequirements).toHaveBeenCalledWith(
+      'p1',
+      ['httpx[socks]>=0.28; python_version >= "3.11"', other],
+      'r1'
+    )
+  })
+  it('rejects a repeated declaration with normalized package name and reordered options', async () => {
+    api.getProjectPythonPackages.mockResolvedValue(
+      state({ requirements: [{ ...state().requirements[0]!, requirement: 'demo_lib[b,a]>=1,<3' }] })
+    )
+    await mount()
+    await click(en.add)
+    await fill('python-package-name', 'Demo-Lib[a,b] <3,>=1')
+    await click(en.saveOnly)
     expect(document.body.textContent).toContain(en.alreadyAdded)
     expect(api.saveProjectPythonRequirements).not.toHaveBeenCalled()
   })

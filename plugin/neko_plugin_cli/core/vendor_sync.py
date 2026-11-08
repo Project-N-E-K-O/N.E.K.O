@@ -74,6 +74,11 @@ def dependency_lock(plugin_dir: Path) -> portalocker.Lock:
     return portalocker.Lock(_lock_dir() / f"neko-plugin-sync-{name}.lock", timeout=0)
 
 
+def pyproject_revision(raw: bytes | None) -> str:
+    """Identify a pyproject snapshot, distinguishing a missing file from an empty one."""
+    return hashlib.sha256(b"missing" if raw is None else b"file\0" + raw).hexdigest()
+
+
 def sync_vendor(
     plugin_dir: Path,
     *,
@@ -87,11 +92,14 @@ def sync_vendor(
     report: Callable[[str], None] | None = None,
     progress: Callable[[str], None] | None = None,
     check_cancelled: Callable[[], None] | None = None,
+    expected_revision: str | None = None,
 ) -> int:
     """Install declared packages without exposing an incomplete ordinary vendor tree.
 
     The runner controls only external installer execution; locks, staging, recovery,
     and safe directory replacement stay identical for CLI and background tasks.
+    An expected revision is checked under the dependency lock against the same
+    file bytes used to parse declarations, before any installer can run.
     """
     args = VendorSyncOptions(python, project_root, clean, discard_backups,
                              installer_runner, uv_executable, allow_pip_fallback, report, progress, check_cancelled)
@@ -122,7 +130,11 @@ def sync_vendor(
             _remove_orphan_markers(plugin_dir)
 
             pyproject_path = plugin_dir / "pyproject.toml"
-            declared_deps = _read_dependencies(pyproject_path) if pyproject_path.is_file() else None
+            raw = pyproject_path.read_bytes() if pyproject_path.is_file() else None
+            if expected_revision is not None and pyproject_revision(raw) != expected_revision:
+                emit("[FAIL] pyproject.toml changed; refresh before synchronizing dependencies", file=sys.stderr)
+                return 1
+            declared_deps = _dependencies_from_project(tomllib.loads(raw.decode("utf-8"))) if raw is not None else None
             external_deps = _filter_external(declared_deps or [])
 
             # A user's explicit `sync --clean` may discard an unreconciled
@@ -360,8 +372,8 @@ def _contains_plugin(target: os.stat_result, vendor_dir: Path, plugin_dir: Path)
     return False
 
 
-def _report_vendor_changed(vendor_dir: Path) -> int:
-    print(
+def _report_vendor_changed(vendor_dir: Path, report: Callable[[str], None] | None = None) -> int:
+    _diagnostic_emitter(report)(
         f"[FAIL] {vendor_dir} changed during the sync (retargeted, or a mount "
         "appeared inside); not touching it further. Check it and retry.",
         file=sys.stderr,
@@ -432,7 +444,7 @@ def _sync_in_place(
         file=sys.stderr,
     )
     if not _same_target(vendor_dir, identity):
-        return _report_vendor_changed(vendor_dir)
+        return _report_vendor_changed(vendor_dir, args.report)
     unfinished = _unfinished_refills(vendor_dir)
     if unfinished:
         locations = ", ".join(str(path) for path in unfinished)
@@ -456,7 +468,7 @@ def _sync_in_place(
             return exit_code
         if not _same_target(vendor_dir, identity):
             # The install may have gone to the new target; say so.
-            return _report_vendor_changed(vendor_dir)
+            return _report_vendor_changed(vendor_dir, args.report)
         # _clean_vendor's recursive searches would cross a mount or junction
         # inside and delete caches and bin/ in that external tree.
         if sys.platform.startswith("linux") and _linux_mount_points() is None:
@@ -499,7 +511,7 @@ def _sync_in_place(
         )
         return 1
     if not _same_target(vendor_dir, identity):
-        return _report_vendor_changed(vendor_dir)
+        return _report_vendor_changed(vendor_dir, args.report)
     staging_dir = vendor_dir / f"{VENDOR_SYNC_STAGING_PREFIX}{_short_token()}"
     staging_dir.mkdir()
     try:
@@ -514,7 +526,7 @@ def _sync_in_place(
         # Every later step reaches staging through vendor/; after a retarget
         # that path names a directory in the new target.
         if not _same_target(vendor_dir, identity):
-            return _report_vendor_changed(vendor_dir)
+            return _report_vendor_changed(vendor_dir, args.report)
         # As in the swap path: _clean_vendor recurses, and the move would
         # carry a mount into vendor/; stop if one appeared during the install.
         mounted = _find_mount(staging_dir)
@@ -528,10 +540,10 @@ def _sync_in_place(
         if sys.platform.startswith("linux") and _linux_mount_points() is None:
             # The table was readable before the install; without it now a
             # same-filesystem bind mount in staging can not be ruled out.
-            return _report_vendor_changed(vendor_dir)
+            return _report_vendor_changed(vendor_dir, args.report)
         _clean_vendor(staging_dir)
         _checkpoint(args, "replacing")
-        return _refill_in_place(vendor_dir, staging_dir, identity)
+        return _refill_in_place(vendor_dir, staging_dir, identity, report=args.report)
     finally:
         # Through a retargeted vendor/ this path names a directory in the
         # new target; leave ours for the next sync of that target instead.
@@ -555,7 +567,10 @@ _DIR_FD_OPS = (
 )
 
 
-def _refill_in_place(vendor_dir: Path, staging_dir: Path, identity: _VendorTarget) -> int:
+def _refill_in_place(
+    vendor_dir: Path, staging_dir: Path, identity: _VendorTarget,
+    *, report: Callable[[str], None] | None = None,
+) -> int:
     """Replace vendor/'s contents with staging's, in the directory the
     install ran in.
 
@@ -566,7 +581,7 @@ def _refill_in_place(vendor_dir: Path, staging_dir: Path, identity: _VendorTarge
     such calls; there the check runs right before the path-based deletion.)
     """
     def changed() -> int:
-        return _report_vendor_changed(vendor_dir)
+        return _report_vendor_changed(vendor_dir, report)
 
     if _find_foreign_subdir(vendor_dir, junctions=False) is not None:
         return changed()
@@ -596,26 +611,28 @@ def _refill_in_place(vendor_dir: Path, staging_dir: Path, identity: _VendorTarge
             staging_fd = os.open(staging_dir.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
         except OSError:
             return changed()
-        # Move the old contents aside by rename (no recursion), refill, and
-        # only then delete them: the mount check right before that deletion
-        # sees a mount added while the install ran, as for a swapped backup.
-        trash = f"{VENDOR_SYNC_STAGING_PREFIX}{_short_token()}"
-        os.mkdir(trash, dir_fd=fd)
-        trash_fd = os.open(trash, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
         try:
-            # Until the refill is complete this dir holds the only copy of
-            # what was moved into it; the marker keeps a later sync from
-            # taking it for disposable staging.
-            os.close(os.open(_REFILL_MARKER, os.O_CREAT | os.O_WRONLY, dir_fd=trash_fd))
-            for name in os.listdir(fd):
-                if name in {staging_dir.name, trash} or _others_staging(name, fd):
-                    continue
-                os.rename(name, name, src_dir_fd=fd, dst_dir_fd=trash_fd)
-            for name in os.listdir(staging_fd):
-                os.rename(name, name, src_dir_fd=staging_fd, dst_dir_fd=fd)
-            os.unlink(_REFILL_MARKER, dir_fd=trash_fd)
+            # Move the old contents aside by rename (no recursion), refill, and
+            # only then delete them: the mount check right before that deletion
+            # sees a mount added while the install ran, as for a swapped backup.
+            trash = f"{VENDOR_SYNC_STAGING_PREFIX}{_short_token()}"
+            os.mkdir(trash, dir_fd=fd)
+            trash_fd = os.open(trash, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            try:
+                # Until the refill is complete this dir holds the only copy of
+                # what was moved into it; the marker keeps a later sync from
+                # taking it for disposable staging.
+                os.close(os.open(_REFILL_MARKER, os.O_CREAT | os.O_WRONLY, dir_fd=trash_fd))
+                for name in os.listdir(fd):
+                    if name in {staging_dir.name, trash} or _others_staging(name, fd):
+                        continue
+                    os.rename(name, name, src_dir_fd=fd, dst_dir_fd=trash_fd)
+                for name in os.listdir(staging_fd):
+                    os.rename(name, name, src_dir_fd=staging_fd, dst_dir_fd=fd)
+                os.unlink(_REFILL_MARKER, dir_fd=trash_fd)
+            finally:
+                os.close(trash_fd)
         finally:
-            os.close(trash_fd)
             os.close(staging_fd)
         # The mount table is checked under the path the open handle really
         # has, so a later retarget of vendor/ can not point the check away.
@@ -730,9 +747,15 @@ def _read_dependencies(pyproject_path: Path) -> list[str] | None:
     """Read declarations, keeping an absent field distinct from an empty list."""
     with pyproject_path.open("rb") as f:
         data = tomllib.load(f)
+    return _dependencies_from_project(data)
+
+
+def _dependencies_from_project(data: dict) -> list[str] | None:
     project = data.get("project")
     if not isinstance(project, dict):
         return None
+    if "dependencies" in project.get("dynamic", []):
+        raise ValueError("Dynamic project.dependencies are unsupported; edit their source in your editor")
     deps = project.get("dependencies")
     if deps is not None and (
         not isinstance(deps, list) or any(not isinstance(item, str) for item in deps)
@@ -740,7 +763,11 @@ def _read_dependencies(pyproject_path: Path) -> list[str] | None:
         raise ValueError("pyproject.toml project.dependencies must be a list of strings")
     if not isinstance(deps, list):
         return None
-    return [str(d).strip() for d in deps if isinstance(d, str) and str(d).strip()]
+    from packaging.requirements import Requirement
+
+    for requirement in deps:
+        Requirement(requirement)
+    return [requirement.strip() for requirement in deps]
 
 
 def _filter_external(deps: list[str]) -> list[str]:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import subprocess
+import json
 from pathlib import Path
 
 import pytest
@@ -295,3 +296,109 @@ def test_task_report_receives_lock_failure_without_global_output_redirection(tmp
         assert vendor_sync.sync_vendor(project, report=messages.append) == 1
     assert len(messages) == 1
     assert "already in progress" in messages[0]
+
+
+@pytest.mark.parametrize("requirement", [
+    'demo; python_version ~= "not-a-version"', 'demo; "feature" in dependency_groups',
+])
+def test_save_rejects_marker_evaluation_errors_before_writing(tmp_path, requirement):
+    project = _project(tmp_path, '[project]\ndependencies = []\n')
+    original = (project / "pyproject.toml").read_bytes()
+    with pytest.raises(PythonPackagesError) as error:
+        save_python_requirements(project, [requirement],
+                                 inspect_python_packages(project)["revision"])
+    assert error.value.code == "PYTHON_PACKAGES_REQUIREMENTS_INVALID"
+    assert (project / "pyproject.toml").read_bytes() == original
+
+
+@pytest.mark.parametrize("invalid", [
+    'broken; python_version ~= "not-a-version"', 'broken; "feature" in dependency_groups',
+])
+def test_inventory_reports_marker_evaluation_errors_and_keeps_valid_packages(tmp_path, invalid):
+    project = _project(tmp_path, '[project]\ndependencies = ' + json.dumps([invalid, "demo"]) + '\n')
+    _distribution(project, "demo", "1.0", f"Requires-Dist: {invalid}")
+    snapshot = check_python_packages(project)
+    assert snapshot["requirements"][0]["status"] == "invalid_metadata"
+    assert snapshot["requirements"][1]["status"] == "satisfied"
+    assert {issue["code"] for issue in snapshot["issues"]} == {"invalid_requirement", "invalid_metadata"}
+    assert [node["id"] for node in snapshot["dependency_graph"]["nodes"]] == ["demo"]
+
+
+def test_checks_include_manually_installed_packages_outside_declared_closure(tmp_path):
+    project = _project(tmp_path, '[project]\ndependencies = ["demo"]\n')
+    _distribution(project, "demo", "1.0")
+    _distribution(project, "manual", "1.0", "Requires-Dist: missing", "Requires-Python: <2")
+    snapshot = check_python_packages(project)
+    assert snapshot["dependency_graph"]["other_roots"] == ["manual"]
+    assert {(issue["code"], issue["package"]) for issue in snapshot["issues"]} == {
+        ("dependency_missing", "manual"), ("python_version_mismatch", "manual"),
+    }
+
+
+def test_market_check_uses_release_size_limit_and_asset_exemptions(tmp_path):
+    project = _project(tmp_path, '[project]\ndependencies = []\n[tool.neko.build]\nexclude=["vendor/excluded.txt"]\n')
+    vendor = project / "vendor"
+    vendor.mkdir()
+    for name in ("large.txt", "excluded.txt", "model.onnx", "image.png", "boundary.txt"):
+        with (vendor / name).open("wb") as stream:
+            stream.truncate(2 * 1024 * 1024 + (name != "boundary.txt"))
+    assert [issue["path"] for issue in check_python_packages(project)["market_issues"]] == ["vendor/large.txt"]
+
+
+def test_save_refuses_to_replace_a_symlinked_pyproject(tmp_path):
+    project = _project(tmp_path, '[project]\ndependencies = ["old"]\n')
+    path = project / "pyproject.toml"
+    shared = tmp_path / "shared.toml"
+    path.replace(shared)
+    try:
+        path.symlink_to(shared)
+    except OSError:
+        pytest.skip("symlink creation requires OS permission")
+    with pytest.raises(PythonPackagesError) as error:
+        save_python_requirements(project, ["new"], inspect_python_packages(project)["revision"])
+    assert error.value.code == "PYTHON_PACKAGES_FORMAT_UNSUPPORTED"
+    assert path.is_symlink()
+    assert tomllib.loads(shared.read_text())["project"]["dependencies"] == ["old"]
+
+
+def test_save_refuses_a_project_replaced_while_acquiring_its_lock(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from plugin.neko_plugin_cli.core import python_packages
+
+    project = _project(tmp_path, '[project]\ndependencies = ["old"]\n')
+    revision = inspect_python_packages(project)["revision"]
+    moved = tmp_path / "moved"
+
+    @contextmanager
+    def lock(directory):
+        directory.rename(moved)
+        directory.mkdir()
+        (directory / "pyproject.toml").write_bytes((moved / "pyproject.toml").read_bytes())
+        yield
+
+    monkeypatch.setattr(python_packages, "dependency_lock", lock)
+    with pytest.raises(PythonPackagesError) as error:
+        save_python_requirements(project, ["new"], revision)
+    assert error.value.code == "PYTHON_PACKAGES_REVISION_CONFLICT"
+    assert tomllib.loads((project / "pyproject.toml").read_text())["project"]["dependencies"] == ["old"]
+
+
+def test_save_rechecks_external_editor_changes_after_staging(tmp_path, monkeypatch):
+    from plugin.neko_plugin_cli.core import python_packages
+
+    project = _project(tmp_path, '[project]\ndependencies = ["old"]\n')
+    revision = inspect_python_packages(project)["revision"]
+    path = project / "pyproject.toml"
+    changed = '[project]\ndependencies = ["editor-change"]\n'
+    real_fsync = python_packages.os.fsync
+
+    def fsync(descriptor):
+        real_fsync(descriptor)
+        path.write_text(changed, encoding="utf-8")
+
+    monkeypatch.setattr(python_packages.os, "fsync", fsync)
+    with pytest.raises(PythonPackagesError) as error:
+        save_python_requirements(project, ["new"], revision)
+    assert error.value.code == "PYTHON_PACKAGES_REVISION_CONFLICT"
+    assert path.read_text() == changed
+    assert not list(project.glob(".python-packages-*"))

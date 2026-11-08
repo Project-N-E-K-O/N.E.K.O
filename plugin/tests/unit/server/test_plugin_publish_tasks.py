@@ -41,14 +41,16 @@ def isolated_state(monkeypatch, tmp_path_factory):
         tasks._active.clear()
         tasks._latest.clear()
         tasks._workers.clear()
-    commands._busy.clear()
+    for project_id in list(commands._busy):
+        commands.release_project(project_id)
     yield state_dir
     with tasks._lock:
         tasks._tasks.clear()
         tasks._active.clear()
         tasks._latest.clear()
         tasks._workers.clear()
-    commands._busy.clear()
+    for project_id in list(commands._busy):
+        commands.release_project(project_id)
 
 
 @pytest.fixture

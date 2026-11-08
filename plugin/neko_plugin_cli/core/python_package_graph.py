@@ -3,16 +3,21 @@ from __future__ import annotations
 
 from collections import deque
 
-from packaging.requirements import InvalidRequirement, Requirement
+from packaging.requirements import Requirement
 from packaging.version import Version
 
 from plugin.core.python_dependencies import canonicalize_distribution_name, is_host_provided_requirement
 
 
 def requirement_applies(requirement: Requirement, extras: set[str] | None = None) -> bool:
-    return requirement.marker is None or any(
-        requirement.marker.evaluate({"extra": extra}) for extra in ({""} | (extras or set()))
-    )
+    try:
+        return requirement.marker is None or any(
+            requirement.marker.evaluate({"extra": extra}) for extra in ({""} | (extras or set()))
+        )
+    except KeyError as exc:
+        # Set-valued lock-file markers (extras/dependency_groups) parse, but
+        # are unavailable in project/distribution metadata's marker context.
+        raise ValueError(f"Marker variable is unavailable for project dependencies: {exc.args[0]}") from exc
 
 
 def requirement_status(requirement: Requirement, installed: dict[str, dict]) -> tuple[str, str | None]:
@@ -83,12 +88,13 @@ def build_dependency_graph(installed: list[dict], declarations: list[dict]) -> t
             for text in distributions[parent_id]["requires_dist"]:
                 try:
                     child = Requirement(text)
-                except InvalidRequirement as exc:
+                    applies = requirement_applies(child, parent.extras)
+                except ValueError as exc:
                     if (parent_id, text) not in invalid:
                         invalid.add((parent_id, text))
                         issues.append({"code": "invalid_metadata", "package": parent.name, "message": str(exc)})
                     continue
-                if not requirement_applies(child, parent.extras) or is_host_provided_requirement(text):
+                if not applies or is_host_provided_requirement(text):
                     continue
                 child_id = node(child.name)
                 child.marker = None

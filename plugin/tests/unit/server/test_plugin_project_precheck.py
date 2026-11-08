@@ -42,9 +42,11 @@ def isolated_state(monkeypatch, tmp_path_factory):
         operation_lock, "_operation_file_lock_path", lambda: state / "operation.lock"
     )
     monkeypatch.setattr(runtime_state, "plugins", {})
-    commands._busy.clear()
+    for project_id in list(commands._busy):
+        commands.release_project(project_id)
     yield state
-    commands._busy.clear()
+    for project_id in list(commands._busy):
+        commands.release_project(project_id)
 
 
 @pytest.fixture
@@ -273,8 +275,11 @@ async def test_run_cli_cancellation_drains_slow_process_operations_without_block
         unblock.set()
         with pytest.raises(asyncio.CancelledError):
             await request
-        assert len(processes) == 1
-        assert processes[0].poll() is not None
+        if blocked_phase == "spawn":
+            assert not processes
+        else:
+            assert len(processes) == 1
+            assert processes[0].poll() is not None
     finally:
         unblock.set()
         if not request.done():
@@ -286,3 +291,42 @@ async def test_run_cli_cancellation_drains_slow_process_operations_without_block
         for process in processes:
             if process.poll() is None:
                 await asyncio.to_thread(original_terminate, process)
+
+
+@pytest.mark.asyncio
+async def test_run_cli_cancellation_retires_queued_creation(tmp_path, monkeypatch):
+    import asyncio
+    import threading
+
+    from utils import process_creation
+
+    creation_lock = threading.Lock()
+    creation_lock.acquire()
+    monkeypatch.setattr(process_creation, "_creation_lock", creation_lock)
+    entered = threading.Event()
+    original_start = commands.start_cli
+
+    def start(*args, **kwargs):
+        entered.set()
+        return original_start(*args, **kwargs)
+
+    monkeypatch.setattr(commands, "start_cli", start)
+    marker = tmp_path / "unexpected-launch"
+    request = asyncio.create_task(commands.run_cli(
+        [sys.executable, "-c", "from pathlib import Path; Path('unexpected-launch').touch()"],
+        cwd=tmp_path, timeout=30,
+    ))
+    try:
+        assert await asyncio.to_thread(entered.wait, 3)
+        request.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(request, 2)
+        # Still owning the creation lock proves cancellation did not wait for it.
+        assert creation_lock.locked()
+        assert not marker.exists()
+    finally:
+        creation_lock.release()
+        if not request.done():
+            request.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await request

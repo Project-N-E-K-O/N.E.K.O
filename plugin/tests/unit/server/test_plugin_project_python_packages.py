@@ -34,12 +34,14 @@ def isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(operation_lock, "_operation_file_lock_path", lambda: tmp_path / "operation.lock")
     monkeypatch.setattr(state, "plugins", {})
     monkeypatch.setattr(state, "plugin_hosts", {})
-    commands._busy.clear()
+    for project_id in list(commands._busy):
+        commands.release_project(project_id)
     packages._tasks.clear()
     packages._latest.clear()
     packages._workers.clear()
     yield
-    commands._busy.clear()
+    for project_id in list(commands._busy):
+        commands.release_project(project_id)
 
 
 @pytest.fixture
@@ -446,3 +448,124 @@ async def test_tool_setup_lock_obeys_task_budget_and_releases_project(record, mo
             assert not (record.source_dir / "vendor").exists()
         finally:
             await packages.shutdown_tasks()
+
+
+@pytest.mark.asyncio
+async def test_command_preserves_long_protocol_line_and_redacts_before_log_truncation(record):
+    import time
+
+    task = packages._Task("protocol", record.project_id, "check", record.source_dir, "package_demo", {})
+    task.deadline = time.monotonic() + 10
+    path = "p" * 700
+    result = await asyncio.to_thread(packages._command, task, [
+        sys.executable, "-c",
+        "print('p'*700); print('x'*480+'https://user:'+'s'*120+'@index.example/simple')",
+    ], label="protocol")
+    assert result.stdout.splitlines()[0] == path
+    assert "user:" not in "\n".join(task.log)
+    assert "s" * 20 not in result.stdout
+    assert "[redacted]@index.example" in result.stdout
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("continuous_output", [False, True])
+async def test_command_finishes_after_parent_exits_with_inherited_stdout(record, tmp_path, continuous_output):
+    import psutil
+    import time
+
+    pidfile = tmp_path / "helper.pid"
+    helper = "import os,time,pathlib; pathlib.Path(" + repr(str(pidfile)) + ").write_text(str(os.getpid())); time.sleep(30)"
+    if continuous_output:
+        helper = helper.replace("time.sleep(30)", "\nwhile True: print('helper',flush=True); time.sleep(0.001)")
+    parent = (
+        "import subprocess,sys,time,pathlib; "
+        "subprocess.Popen([sys.executable,'-c'," + repr(helper) + "]); "
+        "p=pathlib.Path(" + repr(str(pidfile)) + "); "
+        "\nwhile not p.exists(): time.sleep(0.01)\nprint('parent-done',flush=True)"
+    )
+    task = packages._Task("pipe", record.project_id, "check", record.source_dir, "package_demo", {})
+    task.deadline = time.monotonic() + 5
+    execution = asyncio.create_task(asyncio.to_thread(
+        packages._command, task, [sys.executable, "-u", "-c", parent], label="inherited pipe",
+    ))
+    try:
+        result = await asyncio.wait_for(asyncio.shield(execution), timeout=2)
+        assert result.returncode == 0
+        assert "parent-done" in result.stdout
+        assert task.process is None
+    finally:
+        if pidfile.exists():
+            try:
+                child = psutil.Process(int(pidfile.read_text()))
+                child.kill()
+                child.wait(timeout=3)
+            except (psutil.NoSuchProcess, psutil.TimeoutExpired):
+                pass
+        task.cancel_event.set()
+        await asyncio.gather(execution, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_sync_refuses_any_live_host_using_the_project_source(record, monkeypatch):
+    monkeypatch.setattr(state, "plugins", {"previous_plugin_id": {
+        "source_dir": str(record.source_dir),
+    }})
+    monkeypatch.setattr(state, "plugin_hosts", {"previous_plugin_id": SimpleNamespace(is_alive=lambda: True)})
+    snapshot = packages.read_packages(record.project_id)
+    assert snapshot["running"] is True
+    with pytest.raises(ServerDomainError) as error:
+        await packages.start_task(record.project_id, "sync", snapshot["revision"])
+    assert error.value.code == "PYTHON_PACKAGES_RUNNING"
+    assert commands.project_operation_name(record.project_id) is None
+
+
+@pytest.mark.asyncio
+async def test_empty_sync_checks_revision_at_declaration_read_before_installing(record, monkeypatch):
+    from plugin.neko_plugin_cli.core import vendor_sync
+    from plugin.server.application.plugins.registry_service import PluginRegistryService
+
+    vendor = record.source_dir / "vendor"
+    vendor.mkdir()
+    (vendor / "manual.py").write_text("manual dependency")
+    initial = packages.read_packages(record.project_id)
+    attempts = []
+    original_sync = packages.sync_vendor
+
+    def changed_before_locked_read(directory, **kwargs):
+        (directory / "pyproject.toml").write_text('[project]\ndependencies=["httpx"]\n')
+        return original_sync(directory, **kwargs)
+
+    def install(*args, **kwargs):
+        attempts.append(args)
+        return 0
+
+    async def refresh(_self, _plugin_id):
+        return {}
+
+    monkeypatch.setattr(packages, "sync_vendor", changed_before_locked_read)
+    monkeypatch.setattr(vendor_sync, "_install_to_vendor", install)
+    monkeypatch.setattr(PluginRegistryService, "refresh_plugin", refresh)
+    result = await finish(await packages.start_task(record.project_id, "sync", initial["revision"]))
+    assert result["status"] == "failed", result
+    assert attempts == []
+    assert (vendor / "manual.py").read_text() == "manual dependency"
+    assert commands.project_operation_name(record.project_id) is None
+
+
+@pytest.mark.asyncio
+async def test_command_omits_oversized_lines_without_exposing_credential_prefixes(record):
+    import time
+
+    task = packages._Task("large", record.project_id, "check", record.source_dir, "package_demo", {})
+    task.deadline = time.monotonic() + 10
+    result = await asyncio.to_thread(packages._command, task, [
+        sys.executable, "-c", "print('https://secret-user:'+'s'*100000+'@index.example'); print('done')",
+    ], label="large line")
+    assert result.stdout.strip() == "done"
+    assert "secret-user" not in "\n".join(task.log)
+    assert "s" * 20 not in "\n".join(task.log)
+    assert any("omitted" in line for line in task.log)
+
+
+def test_incomplete_authentication_url_is_not_retained_at_pipe_cutoff():
+    assert packages._redact("download https://user:secret", incomplete=True) == "download https://[redacted]"

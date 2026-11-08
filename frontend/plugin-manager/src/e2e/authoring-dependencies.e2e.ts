@@ -259,6 +259,49 @@ appearanceTest(
   }
 )
 
+appearanceTest('unsaved dependency changes survive a tab switch and refresh', async ({ page }) => {
+  const requests = await dependencyFixture(page)
+  await page.goto(`${PREVIEW_ORIGIN}/ui/workbench?project=dependency-project`)
+  await page.getByRole('tab', { name: 'Dependencies', exact: true }).click()
+  const panel = page.getByTestId('project-dependencies')
+  await panel.getByRole('button', { name: 'Lock current version', exact: true }).click()
+  await expect(panel.getByRole('button', { name: 'Save changes', exact: true })).toBeVisible()
+  await page.getByRole('tab', { name: 'Overview', exact: true }).click()
+  const reloaded = page.waitForResponse(
+    (response) =>
+      response.url().endsWith('/plugin-projects/dependency-project/python-packages') &&
+      response.ok()
+  )
+  await page.getByRole('tab', { name: 'Dependencies', exact: true }).click()
+  await reloaded
+  await expect(
+    panel.locator('.python-package-declaration').getByText('demo-lib==1.2.0', { exact: true })
+  ).toBeVisible()
+  await expect(panel.getByRole('button', { name: 'Save changes', exact: true })).toBeVisible()
+  expect(requests).toEqual([])
+})
+
+appearanceTest(
+  'canceling project removal preserves the unsaved dependency draft',
+  async ({ page }) => {
+    const requests = await dependencyFixture(page)
+    await page.goto(`${PREVIEW_ORIGIN}/ui/workbench?project=dependency-project`)
+    await page.getByRole('tab', { name: 'Dependencies', exact: true }).click()
+    const panel = page.getByTestId('project-dependencies')
+    await panel.getByRole('button', { name: 'Lock current version', exact: true }).click()
+    await page.getByRole('button', { name: 'Remove from workbench', exact: true }).click()
+    const confirmation = page.getByRole('dialog', { name: 'Dependencies', exact: true })
+    await expect(confirmation).toContainText('Discard unsaved dependency changes?')
+    await confirmation.getByRole('button', { name: 'Cancel', exact: true }).click()
+    await expect(panel.getByRole('button', { name: 'Save changes', exact: true })).toBeVisible()
+    await expect(
+      panel.locator('.python-package-declaration').getByText('demo-lib==1.2.0', { exact: true })
+    ).toBeVisible()
+    await expect(page.getByRole('tab', { name: 'Dependencies', exact: true })).toBeVisible()
+    expect(requests).toEqual([])
+  }
+)
+
 appearanceTest(
   'running plugins can be stopped before dependency sync and narrow controls remain usable',
   async ({ page }) => {

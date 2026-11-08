@@ -33,6 +33,7 @@ from plugin.server.application.plugin_project_commands import (
     project_operation,
     project_operation_name,
     release_project,
+    require_project_available,
     start_cli,
     terminate_process_tree,
 )
@@ -44,6 +45,7 @@ from plugin.server.domain.errors import ServerDomainError
 from plugin.server.domain.plugin_project_errors import ProjectErrorCode as Code
 from plugin.server.domain.plugin_project_errors import project_error
 from plugin.server.infrastructure import authoring_project_store as store
+from plugin.server.infrastructure.process_output import iter_process_output
 from plugin.server.infrastructure.python_package_tools import prepare_package_tools, read_package_tools
 from utils import process_creation
 
@@ -53,6 +55,8 @@ _TERMINAL = frozenset({"succeeded", "failed", "canceled"})
 _MAX_TASKS = 64
 _LOG_LINES = 200
 _LOG_CHARS = 500
+_MAX_COMMAND_LINE_CHARS = 64 * 1024
+_MAX_COMMAND_OUTPUT_CHARS = 1024 * 1024
 
 
 @dataclass
@@ -104,14 +108,16 @@ def _project(project_id: str) -> tuple[Path, str]:
     return record.source_dir, metadata.plugin_id
 
 
-def _running(plugin_id: str, source_dir: Path) -> bool:
+def _running(source_dir: Path) -> bool:
     # A project whose ID collides with an installed plugin does not own its host.
     with state.acquire_plugins_read_lock():
-        meta = state.plugins.get(plugin_id)
-        owns = isinstance(meta, dict) and meta.get("source_dir") == str(source_dir)
+        identities = [
+            identity for identity, meta in state.plugins.items()
+            if isinstance(meta, dict) and meta.get("source_dir") == str(source_dir)
+        ]
     with state.acquire_plugin_hosts_read_lock():
-        host = state.plugin_hosts.get(plugin_id)
-    return bool(owns and host is not None and host.is_alive())
+        hosts = [state.plugin_hosts.get(identity) for identity in identities]
+    return any(host is not None and host.is_alive() for host in hosts)
 
 
 def _snapshot(task: _Task) -> dict:
@@ -136,7 +142,7 @@ def read_packages(project_id: str) -> dict:
         current = _snapshot(task) if task else None
     return {
         **result, "vendor_exists": (directory / "vendor").is_dir(),
-        "running": _running(plugin_id, directory), "environment": read_package_tools(),
+        "running": _running(directory), "environment": read_package_tools(),
         "task": current, "operation": project_operation_name(project_id),
     }
 
@@ -152,7 +158,13 @@ def save_requirements(project_id: str, requirements: list[str], revision: str) -
 
 
 @serialized_plugin_operation
-async def _prepare_task(project_id: str, operation: Operation, revision: str) -> _Task:
+async def _prepare_task(
+    project_id: str, operation: Operation, revision: str, lease_acquired: threading.Event,
+) -> _Task:
+    # Reserve under the same operation lock as the complete stop/start cycle.
+    # Otherwise a waiting task can claim between reload's check and restart.
+    await asyncio.to_thread(claim_project, project_id, f"python-packages-{operation}")
+    lease_acquired.set()
     before = await asyncio.to_thread(read_packages, project_id)
     if before["revision"] != revision:
         raise ServerDomainError(
@@ -173,13 +185,15 @@ async def _prepare_task(project_id: str, operation: Operation, revision: str) ->
 
 
 async def start_task(project_id: str, operation: Operation, revision: str) -> dict:
-    # Own the lease outside the cancellation-shielded global operation. If the
-    # HTTP request goes away while waiting/preparing, its caller still releases it.
-    claim_project(project_id, f"python-packages-{operation}")
+    # Reject an existing lease promptly, then reserve atomically with lifecycle
+    # operations. Track actual ownership across the cancellation-shielded call.
+    await asyncio.to_thread(require_project_available, project_id)
+    lease_acquired = threading.Event()
     try:
-        task = await _prepare_task(project_id, operation, revision)
+        task = await _prepare_task(project_id, operation, revision, lease_acquired)
     except BaseException:
-        release_project(project_id)
+        if lease_acquired.is_set():
+            release_project(project_id)
         raise
     with _lock:
         _prune()
@@ -223,9 +237,13 @@ def _log(task: _Task, line: str) -> None:
         task.updated_at = time.time()
 
 
-def _redact(message: str) -> str:
+def _redact(message: str, *, incomplete: bool = False) -> str:
     # Installation diagnostics can include an authenticated private index URL.
-    return re.sub(r"(https?://)[^\s/@]+(?::[^\s/@]*)?@", r"\1[redacted]@", message)
+    message = re.sub(r"(https?://)[^\s/@]+(?::[^\s/@]*)?@", r"\1[redacted]@", message)
+    if incomplete:
+        # A bounded pipe drain may end inside userinfo, before its final @.
+        message = re.sub(r"(https?://)[^\s]*$", r"\1[redacted]", message)
+    return message
 
 
 def _phase(task: _Task, phase: str) -> None:
@@ -270,24 +288,48 @@ def _command(task: _Task, argv: list[str], *, label: str, env: dict[str, str] | 
         with _lock:
             task.process = None
         raise _Canceled("The dependency task was canceled")
-    # The timer also ends a silent installer whose stdout reader is blocked.
-    timer = threading.Timer(max(0.01, task.deadline - time.monotonic()), terminate_process_tree, [process])
-    timer.daemon = True
-    timer.start()
-    output: deque[str] = deque(maxlen=_LOG_LINES)
+    output: deque[str] = deque()
+    output_chars = 0
+    pending = ""
+    discarding_line = False
+
+    def record(line: str, *, incomplete: bool = False) -> None:
+        nonlocal output_chars
+        # Keep complete machine-readable lines separately from the short UI
+        # log. Redact before either capture or display truncates the line.
+        safe = _redact(line, incomplete=incomplete)
+        output.append(safe)
+        output_chars += len(safe)
+        while len(output) > _LOG_LINES or output_chars > _MAX_COMMAND_OUTPUT_CHARS:
+            output_chars -= len(output.popleft())
+        _log(task, safe)
+
     try:
-        assert process.stdout is not None
-        while line := process.stdout.readline(_LOG_CHARS + 1):
-            output.append(line[:_LOG_CHARS])
-            _log(task, line)
-            # Bound retained memory even when an installer writes a huge line.
-            while line and not line.endswith("\n"):
-                line = process.stdout.readline(_LOG_CHARS + 1)
-        code = process.wait()
+        for chunk in iter_process_output(process, checkpoint=lambda: _check_stop(task)):
+            parts = chunk.splitlines(keepends=True)
+            for part in parts:
+                complete = part.endswith(("\n", "\r"))
+                if not discarding_line:
+                    pending += part
+                    if len(pending) > _MAX_COMMAND_LINE_CHARS:
+                        # Never retain a prefix of an oversized URL: its @ may
+                        # occur beyond the capture boundary and expose secrets.
+                        pending = ""
+                        discarding_line = True
+                        _log(task, "A command output line exceeded the capture limit and was omitted")
+                if complete:
+                    if not discarding_line:
+                        record(pending)
+                    pending = ""
+                    discarding_line = False
+        if pending and not discarding_line:
+            record(pending, incomplete=True)
+        while process.poll() is None:
+            _check_stop(task)
+            task.cancel_event.wait(0.05)
         _check_stop(task)
-        return subprocess.CompletedProcess(argv, code, "".join(output), "")
+        return subprocess.CompletedProcess(argv, process.returncode, "".join(output), "")
     finally:
-        timer.cancel()
         if process.poll() is None:
             terminate_process_tree(process)
         if process.stdout is not None:
@@ -310,11 +352,11 @@ def _execute(task: _Task) -> dict:
     if task.operation == "sync":
         runner = lambda argv, **kwargs: _command(task, argv, **kwargs)
         has_external = any(row["status"] != "host_provided" for row in task.before["requirements"])
-        options = {}
+        options = {"installer_runner": runner}
         if has_external:
             tools = prepare_package_tools(
                 runner, lambda line: _log(task, line), task.cancel_event,
-                check_cancelled=lambda: _check_stop(task),
+                check_cancelled=lambda: _check_stop(task), deadline=task.deadline,
             )
             options = {
                 "python": tools.python, "uv_executable": tools.uv_executable,
@@ -327,7 +369,8 @@ def _execute(task: _Task) -> dict:
         _phase(task, "installing")
         task.vendor_touched = True
         code = sync_vendor(
-            task.source_dir, project_root=source_repo_root(), clean=True, **options,
+            task.source_dir, project_root=source_repo_root(), clean=True,
+            expected_revision=task.before["revision"], **options,
             report=lambda message: _log(task, message),
             progress=lambda phase: _phase(task, phase),
             check_cancelled=lambda: _check_stop(task),
