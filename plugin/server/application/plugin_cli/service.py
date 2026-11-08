@@ -1980,14 +1980,14 @@ class PluginCliService:
         package_name: str | None,
         package_description: str | None,
         version: str | None,
-        cancelled: threading.Event | None = None,
+        cancelled: threading.Event,
     ) -> dict[str, object]:
         from plugin.neko_plugin_cli.core.build import PluginBuilder
         from plugin.server.application.plugin_project_commands import release_project
 
         claimed_projects = prepared.claimed_projects
         try:
-            if cancelled is not None and cancelled.is_set():
+            if cancelled.is_set():
                 raise BuildCancelled("Plugin build canceled")
             policy = self._path_policy()
             target_root = policy.package_artifacts_root
@@ -1999,7 +1999,7 @@ class PluginCliService:
                 source_only_roots=tuple(
                     source.plugin_dir for source in sources if source.root_id == "project"
                 ),
-                cancelled=cancelled.is_set if cancelled is not None else None,
+                cancelled=cancelled.is_set,
             )
             resolved_target_dir = Path(target_dir).expanduser().resolve() if target_dir else target_root
             _require_within(resolved_target_dir, target_root, field="target_dir")
@@ -2047,7 +2047,7 @@ class PluginCliService:
             ]
             output_stems = self._output_stems_for_sources(sources)
             for source, plugin_dir in zip(sources, plugin_dirs, strict=True):
-                if cancelled is not None and cancelled.is_set():
+                if cancelled.is_set():
                     raise BuildCancelled("Plugin build canceled")
                 output_path = (
                     _require_within(Path(out).expanduser().resolve(), target_root, field="out")

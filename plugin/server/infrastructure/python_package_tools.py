@@ -150,11 +150,11 @@ def read_package_tools() -> dict[str, object]:
 
 def _check_cancel(
     cancel_event: threading.Event,
-    *, deadline: float | None = None,
+    *, deadline: float,
 ) -> None:
     if cancel_event.is_set():
         raise CancelledError("Python package task canceled")
-    if deadline is not None and time.monotonic() >= deadline:
+    if time.monotonic() >= deadline:
         raise TimeoutError("The dependency task exceeded its time budget")
 
 
@@ -177,8 +177,8 @@ def _select_uv_wheel(metadata: dict, compatible_tags: list | None = None) -> dic
     return min(matches, key=lambda match: match[0])[1]
 
 
-def _download_timeout(httpx, deadline: float | None):
-    remaining = 10.0 if deadline is None else deadline - time.monotonic()
+def _download_timeout(httpx, deadline: float):
+    remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise TimeoutError("The dependency task exceeded its time budget")
     return httpx.Timeout(min(10.0, remaining), connect=min(5.0, remaining))
@@ -186,7 +186,7 @@ def _download_timeout(httpx, deadline: float | None):
 
 def _download_uv(
     destination: Path, log: Callable[[str], None], cancel_event: threading.Event,
-    *, deadline: float | None = None,
+    *, deadline: float,
 ) -> None:
     """Extract pinned-version uv, checking integrity against PyPI's SHA-256.
 
@@ -255,7 +255,7 @@ def _download_uv(
 
 def _prepare_packaged_python(
     uv: str, run_command: CommandRunner, cancel_event: threading.Event,
-    *, deadline: float | None = None,
+    *, deadline: float,
 ) -> PackageTools:
     python_root = _tools_root() / "python"
     env = {"UV_PYTHON_INSTALL_DIR": str(python_root)}
@@ -314,7 +314,7 @@ def _compatible_system_uv(uv: str, run_command: CommandRunner) -> bool:
 
 def prepare_package_tools(
     run_command: CommandRunner, log: Callable[[str], None], cancel_event: threading.Event,
-    *, deadline: float | None = None,
+    *, deadline: float,
 ) -> PackageTools:
     """Called in the dependency task's worker thread, after explicit sync."""
     _check_cancel(cancel_event, deadline=deadline)

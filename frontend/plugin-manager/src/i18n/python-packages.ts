@@ -870,7 +870,6 @@ const treeMessages = {
     noKnownParent: 'No parent package is recorded.',
     packageNeeds: 'Depends on',
     noDependencies: 'No other dependencies.',
-    graphUnavailable: 'Restart N.E.K.O to load the new dependency view.',
     selectPackage: 'Select a package on the left to see its details.',
   },
   'zh-CN': {
@@ -884,7 +883,6 @@ const treeMessages = {
     noKnownParent: '没有记录其他软件包使用它。',
     packageNeeds: '它需要的软件包',
     noDependencies: '没有其他依赖。',
-    graphUnavailable: '请重启 N.E.K.O 以加载新的依赖关系视图。',
     selectPackage: '点击左侧的软件包查看详情。',
   },
   'zh-TW': {
@@ -898,7 +896,6 @@ const treeMessages = {
     noKnownParent: '沒有記錄其他套件使用它。',
     packageNeeds: '它需要的套件',
     noDependencies: '沒有其他依賴。',
-    graphUnavailable: '請重新啟動 N.E.K.O 以載入新的依賴關係檢視。',
     selectPackage: '點選左側套件查看詳情。',
   },
   ja: {
@@ -912,7 +909,6 @@ const treeMessages = {
     noKnownParent: '利用元パッケージの記録はありません。',
     packageNeeds: '必要なパッケージ',
     noDependencies: '他の依存関係はありません。',
-    graphUnavailable: '新しい依存関係ビューを読み込むには N.E.K.O を再起動してください。',
     selectPackage: '左側のパッケージを選択すると詳細が表示されます。',
   },
   ko: {
@@ -926,7 +922,6 @@ const treeMessages = {
     noKnownParent: '이 패키지를 사용하는 다른 패키지 기록이 없습니다.',
     packageNeeds: '필요한 패키지',
     noDependencies: '다른 의존성이 없습니다.',
-    graphUnavailable: '새 의존성 보기를 불러오려면 N.E.K.O를 다시 시작하세요.',
     selectPackage: '왼쪽 패키지를 선택하면 상세 정보를 볼 수 있습니다.',
   },
   ru: {
@@ -940,7 +935,6 @@ const treeMessages = {
     noKnownParent: 'Нет записей об использующих пакетах.',
     packageNeeds: 'Требуемые пакеты',
     noDependencies: 'Других зависимостей нет.',
-    graphUnavailable: 'Перезапустите N.E.K.O, чтобы загрузить новое дерево зависимостей.',
     selectPackage: 'Выберите пакет слева, чтобы увидеть подробности.',
   },
   es: {
@@ -954,7 +948,6 @@ const treeMessages = {
     noKnownParent: 'No hay un paquete padre registrado.',
     packageNeeds: 'Paquetes necesarios',
     noDependencies: 'No hay otras dependencias.',
-    graphUnavailable: 'Reinicia N.E.K.O para cargar la nueva vista de dependencias.',
     selectPackage: 'Selecciona un paquete a la izquierda para ver sus detalles.',
   },
   pt: {
@@ -968,7 +961,6 @@ const treeMessages = {
     noKnownParent: 'Nenhum pacote pai registrado.',
     packageNeeds: 'Pacotes necessários',
     noDependencies: 'Não há outras dependências.',
-    graphUnavailable: 'Reinicie N.E.K.O para carregar a nova visualização de dependências.',
     selectPackage: 'Selecione um pacote à esquerda para ver os detalhes.',
   },
 }

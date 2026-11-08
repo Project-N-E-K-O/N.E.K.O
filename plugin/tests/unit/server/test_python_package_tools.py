@@ -11,6 +11,7 @@ import struct
 import subprocess
 import sys
 import threading
+import time
 from types import SimpleNamespace
 import zipfile
 
@@ -44,6 +45,7 @@ def test_source_uses_current_interpreter_and_existing_uv_without_setup(tools, mo
         lambda *_args, **_kwargs: pytest.fail("source tools need no child process"),
         lambda _line: None,
         threading.Event(),
+        deadline=time.monotonic() + 60,
     )
     assert result == module.PackageTools(sys.executable, "/existing/uv")
     assert not tools.exists()
@@ -51,7 +53,7 @@ def test_source_uses_current_interpreter_and_existing_uv_without_setup(tools, mo
 
 def test_source_keeps_existing_pip_fallback(tools, monkeypatch):
     monkeypatch.setattr(module, "_pip_available", lambda: True)
-    result = module.prepare_package_tools(lambda *_args, **_kwargs: None, lambda _line: None, threading.Event())
+    result = module.prepare_package_tools(lambda *_args, **_kwargs: None, lambda _line: None, threading.Event(), deadline=time.monotonic() + 60)
     assert result.python == sys.executable
     assert result.uv_executable is None
     assert result.allow_pip_fallback is True
@@ -62,7 +64,7 @@ def test_canceled_setup_never_downloads_or_creates_tools(tools):
     canceled = threading.Event()
     canceled.set()
     with pytest.raises(CancelledError):
-        module.prepare_package_tools(lambda *_args, **_kwargs: None, lambda _line: None, canceled)
+        module.prepare_package_tools(lambda *_args, **_kwargs: None, lambda _line: None, canceled, deadline=time.monotonic() + 60)
     assert not tools.exists()
 
 
@@ -147,7 +149,7 @@ def _wheel_download(
 def test_download_verifies_wheel_and_extracts_only_uv_and_licenses(tools, monkeypatch):
     binary_name = _wheel_download(monkeypatch)
     destination = tools / binary_name
-    module._download_uv(destination, lambda _line: None, threading.Event())
+    module._download_uv(destination, lambda _line: None, threading.Event(), deadline=time.monotonic() + 60)
     assert destination.read_bytes() == b"uv-executable"
     assert (tools / "LICENSE-MIT.txt").read_bytes() == b"license"
     assert sorted(path.name for path in tools.iterdir()) == ["LICENSE-MIT.txt", binary_name]
@@ -157,7 +159,7 @@ def test_checksum_failure_leaves_no_executable_or_partial_archive(tools, monkeyp
     binary_name = _wheel_download(monkeypatch, invalid_digest=True)
     destination = tools / binary_name
     with pytest.raises(RuntimeError, match="checksum"):
-        module._download_uv(destination, lambda _line: None, threading.Event())
+        module._download_uv(destination, lambda _line: None, threading.Event(), deadline=time.monotonic() + 60)
     assert not destination.exists()
     assert list(tools.glob(".uv-*")) == []
 
@@ -165,7 +167,7 @@ def test_checksum_failure_leaves_no_executable_or_partial_archive(tools, monkeyp
 def test_download_rejects_an_unexpected_origin(tools, monkeypatch):
     binary_name = _wheel_download(monkeypatch, origin="https://other.example/uv.whl")
     with pytest.raises(RuntimeError, match="origin"):
-        module._download_uv(tools / binary_name, lambda _line: None, threading.Event())
+        module._download_uv(tools / binary_name, lambda _line: None, threading.Event(), deadline=time.monotonic() + 60)
     assert not tools.exists()
 
 
@@ -188,7 +190,7 @@ def test_packaged_setup_uses_managed_interpreter_and_checks_host_match(tools, mo
             return subprocess.CompletedProcess(cmd, 0, "")
         return subprocess.CompletedProcess(cmd, 0, json.dumps([list(sys.version_info[:3]), sys.platform, struct.calcsize("P"), module.sysconfig.get_platform(), module.platform.machine() if sys.platform == "darwin" else None]))
 
-    result = module.prepare_package_tools(runner, lambda _line: None, threading.Event())
+    result = module.prepare_package_tools(runner, lambda _line: None, threading.Event(), deadline=time.monotonic() + 60)
     assert result.python == python_path
     assert result.uv_executable == "/existing/uv"
     assert result.allow_pip_fallback is False
@@ -208,7 +210,7 @@ def test_packaged_setup_rejects_an_interpreter_mismatch(tools):
         return subprocess.CompletedProcess(cmd, 0, "/python" if "find" in cmd else "[[0, 0], \"other\", 0]")
 
     with pytest.raises(RuntimeError, match="does not match"):
-        module._prepare_packaged_python("/uv", runner, threading.Event())
+        module._prepare_packaged_python("/uv", runner, threading.Event(), deadline=time.monotonic() + 60)
 
 
 def test_packaged_capabilities_do_not_report_host_binary_as_python(tools, monkeypatch):
@@ -286,7 +288,7 @@ def test_packaged_setup_rejects_other_architecture_with_same_pointer_size(tools,
         return subprocess.CompletedProcess(cmd, 0, data)
 
     with pytest.raises(RuntimeError, match="does not match"):
-        module._prepare_packaged_python("/uv", runner, threading.Event())
+        module._prepare_packaged_python("/uv", runner, threading.Event(), deadline=time.monotonic() + 60)
     assert not (tools / "python.json").exists()
 
 
@@ -329,6 +331,7 @@ def test_packaged_setup_replaces_unsupported_system_uv(tools, monkeypatch):
     module.prepare_package_tools(
         lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0, "uv 0.3.0\n"),
         lambda _line: None, threading.Event(),
+        deadline=time.monotonic() + 60,
     )
     assert selected == [str(cached)]
     assert cached.is_file()

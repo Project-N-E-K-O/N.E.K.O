@@ -124,18 +124,7 @@
           <el-button :disabled="busy" @click="discard">{{ t('pythonPackages.reload') }}</el-button>
         </div>
       </section>
-      <PythonPackageExplorer
-        v-if="snapshot.dependency_graph"
-        :graph="snapshot.dependency_graph"
-        :packages="snapshot.installed"
-      />
-      <el-alert
-        v-else
-        :title="t('pythonPackages.graphUnavailable')"
-        type="info"
-        :closable="false"
-        show-icon
-      />
+      <PythonPackageExplorer :graph="snapshot.dependency_graph" :packages="snapshot.installed" />
       <section v-if="task" class="authoring-details-panel" aria-live="polite">
         <h3>
           {{ t('pythonPackages.task') }} ·

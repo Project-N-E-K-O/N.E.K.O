@@ -98,6 +98,8 @@ async def test_routes_read_save_revision_and_check(app, record):
         assert response.status_code == 202, response.text
         task = await finish(response.json())
         assert task["status"] == "succeeded", task
+        assert set(task["result"]) == {"after", "changes"}
+        assert set(task["result"]["after"]) == {"revision", "installed", "issues"}
         assert task["result"]["after"]["issues"]
         snapshot = (await http.get(base)).json()
         assert snapshot["task"]["task_id"] == task["task_id"]
@@ -317,12 +319,12 @@ async def test_request_cancellation_during_preparation_releases_lease(record, mo
     before = packages.read_packages(record.project_id)
     entered = threading.Event()
     unblock = threading.Event()
-    original = packages.read_packages
-    def blocked(project_id):
+    original = packages.inspect_python_packages
+    def blocked(directory):
         entered.set()
         assert unblock.wait(5)
-        return original(project_id)
-    monkeypatch.setattr(packages, "read_packages", blocked)
+        return original(directory)
+    monkeypatch.setattr(packages, "inspect_python_packages", blocked)
     request = asyncio.create_task(packages.start_task(record.project_id, "check", before["revision"]))
     assert await asyncio.to_thread(entered.wait, 3)
     request.cancel()

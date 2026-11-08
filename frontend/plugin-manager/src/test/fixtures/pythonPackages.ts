@@ -3,6 +3,7 @@ import type {
   PythonDependencyGraph,
   PythonDependencyNode,
   PythonPackagesSnapshot,
+  PythonPackagesTask,
   PythonRequirement,
 } from '@/api/projectPythonPackages'
 
@@ -117,6 +118,25 @@ export function pythonPackagesSnapshot(
     },
     task: null,
     operation: null,
+    ...overrides,
+  }
+}
+
+export function pythonPackagesTask(
+  overrides: Partial<PythonPackagesTask> = {}
+): PythonPackagesTask {
+  return {
+    task_id: 't1',
+    project_id: 'p1',
+    operation: 'sync',
+    status: 'running',
+    phase: 'installing',
+    message: '',
+    log: ['Installing httpx'],
+    started_at: Date.now() / 1000,
+    updated_at: Date.now() / 1000,
+    finished_at: null,
+    result: null,
     ...overrides,
   }
 }

@@ -88,10 +88,7 @@ export interface PythonPackagesTask {
   finished_at: number | null
   updated_at: number
   result: {
-    after: Pick<
-      PythonPackagesSnapshot,
-      'revision' | 'requirements' | 'installed' | 'issues'
-    >
+    after: Pick<PythonPackagesSnapshot, 'revision' | 'installed' | 'issues'>
     changes?: { name: string; before: string | null; after: string | null }[]
   } | null
 }

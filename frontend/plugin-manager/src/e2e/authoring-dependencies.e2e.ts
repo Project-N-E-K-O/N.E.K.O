@@ -129,7 +129,10 @@ async function dependencyFixture(page: Page, running = false, sharedDependencies
         status: 'succeeded' as const,
         phase: 'finished' as const,
         finished_at: Date.now() / 1000,
-        result: { before: snapshot, after, changes: [] },
+        result: {
+          after: { revision: after.revision, installed: after.installed, issues: after.issues },
+          changes: [],
+        },
       }
       snapshot = { ...snapshot, task, operation: null }
       await route.fulfill({ json: task })

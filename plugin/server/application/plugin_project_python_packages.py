@@ -132,12 +132,16 @@ def _snapshot(task: _Task) -> dict:
         }
 
 
-def read_packages(project_id: str) -> dict:
+def _read_project_packages(project_id: str) -> tuple[Path, str, dict]:
     directory, plugin_id = _project(project_id)
     try:
         result = inspect_python_packages(directory)
     except PythonPackagesError as exc:
         raise _domain_error(exc) from exc
+    return directory, plugin_id, result
+
+
+def _with_project_state(project_id: str, directory: Path, result: dict) -> dict:
     with _lock:
         task = _tasks.get(_latest.get(project_id, ""))
         current = _snapshot(task) if task else None
@@ -148,14 +152,19 @@ def read_packages(project_id: str) -> dict:
     }
 
 
+def read_packages(project_id: str) -> dict:
+    directory, _plugin_id, result = _read_project_packages(project_id)
+    return _with_project_state(project_id, directory, result)
+
+
 def save_requirements(project_id: str, requirements: list[str], revision: str) -> dict:
     with project_operation(project_id, "python-packages-save"):
         directory, _plugin_id = _project(project_id)
         try:
-            save_python_requirements(directory, requirements, revision)
+            result = save_python_requirements(directory, requirements, revision)
         except PythonPackagesError as exc:
             raise _domain_error(exc) from exc
-    return read_packages(project_id)
+    return _with_project_state(project_id, directory, result)
 
 
 @serialized_plugin_operation
@@ -171,22 +180,18 @@ async def _prepare_task(
     # Otherwise a waiting task can claim between reload's check and restart.
     await asyncio.to_thread(claim_project, project_id, f"python-packages-{operation}")
     lease_acquired.set()
-    before = await asyncio.to_thread(read_packages, project_id)
+    directory, plugin_id, before = await asyncio.to_thread(_read_project_packages, project_id)
     if before["revision"] != revision:
         raise ServerDomainError(
             code="PYTHON_PACKAGES_REVISION_CONFLICT",
             message="pyproject.toml changed; refresh the dependencies before continuing",
             status_code=409,
         )
-    directory, plugin_id = await asyncio.to_thread(_project, project_id)
-    if operation == "sync" and before["running"]:
+    if operation == "sync" and await asyncio.to_thread(_running, directory):
         raise project_error(
             Code.PYTHON_PACKAGES_RUNNING,
             "Stop the project's plugin before synchronizing its Python packages", 409,
         )
-    before = {key: value for key, value in before.items() if key not in {
-        "task", "operation", "environment", "running", "vendor_exists",
-    }}
     return _Task(uuid4().hex, project_id, operation, directory, plugin_id, before)
 
 
@@ -344,13 +349,17 @@ def _command(task: _Task, argv: list[str], *, label: str, env: dict[str, str] | 
             task.process = None
 
 
-def _changes(before: dict, after: dict) -> list[dict]:
+def _task_result(before: dict, after: dict) -> dict:
     old = {item["name"]: item["version"] for item in before["installed"]}
     new = {item["name"]: item["version"] for item in after["installed"]}
-    return [
+    changes = [
         {"name": name, "before": old.get(name), "after": new.get(name)}
         for name in sorted(old.keys() | new.keys()) if old.get(name) != new.get(name)
     ]
+    return {
+        "after": {key: after[key] for key in ("revision", "installed", "issues")},
+        "changes": changes,
+    }
 
 
 def _execute(task: _Task) -> dict:
@@ -384,7 +393,7 @@ def _execute(task: _Task) -> dict:
     _phase(task, "checking")
     after = check_python_packages(task.source_dir)
     _check_stop(task)
-    return {"before": task.before, "after": after, "changes": _changes(task.before, after)}
+    return _task_result(task.before, after)
 
 
 async def _run(task: _Task) -> None:
@@ -426,7 +435,7 @@ async def _run(task: _Task) -> None:
             try:
                 if task.result is None:
                     after = await asyncio.to_thread(inspect_python_packages, task.source_dir)
-                    task.result = {"before": task.before, "after": after, "changes": _changes(task.before, after)}
+                    task.result = _task_result(task.before, after)
                 from plugin.server.application.plugins.registry_service import PluginRegistryService
 
                 await PluginRegistryService().refresh_plugin(task.plugin_id)
