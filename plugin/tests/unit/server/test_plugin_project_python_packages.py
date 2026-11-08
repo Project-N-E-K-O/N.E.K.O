@@ -173,7 +173,7 @@ async def test_busy_save_precheck_remove_and_runtime_fences(record, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_cancel_holds_lease_until_worker_exits(record, monkeypatch):
+async def test_cancel_holds_lease_until_worker_exits(app, record, monkeypatch):
     ready = threading.Event()
     exited = threading.Event()
     def execute(task):
@@ -186,7 +186,16 @@ async def test_cancel_holds_lease_until_worker_exits(record, monkeypatch):
     task = await packages.start_task(record.project_id, "sync", snapshot["revision"])
     assert await asyncio.to_thread(ready.wait, 3)
     assert commands.project_operation_name(record.project_id) == "python-packages-sync"
-    await packages.cancel_task(record.project_id, task["task_id"])
+    base = f"/plugin-projects/{record.project_id}/python-packages/tasks/{task['task_id']}"
+    async with client(app) as http:
+        wrong_project = f"/plugin-projects/missing/python-packages/tasks/{task['task_id']}"
+        assert (await http.get(wrong_project)).status_code == 404
+        assert (await http.post(wrong_project + "/cancel")).status_code == 404
+        response = await http.get(base)
+        assert response.status_code == 200, response.text
+        assert response.json()["task_id"] == task["task_id"]
+        response = await http.post(base + "/cancel")
+        assert response.status_code == 200, response.text
     result = await finish(task)
     assert result["status"] == "canceled"
     assert exited.is_set()

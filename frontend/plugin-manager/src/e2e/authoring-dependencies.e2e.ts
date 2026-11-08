@@ -1,6 +1,12 @@
+import {
+  pythonPackagesSnapshot,
+  pythonDependencyGraph,
+  pythonDependencyNode,
+  installedPythonPackages,
+} from '../test/fixtures/pythonPackages'
 import { expect, type Page } from '@playwright/test'
 import { appearanceTest, PREVIEW_ORIGIN } from './plugin-manager-test-helpers'
-import type { PythonPackagesSnapshot, PythonPackagesTask } from '../api/projectPythonPackages'
+import type { PythonPackagesTask } from '../api/projectPythonPackages'
 
 async function dependencyFixture(page: Page, running = false, sharedDependencies = false) {
   const project = {
@@ -20,120 +26,33 @@ async function dependencyFixture(page: Page, running = false, sharedDependencies
     running,
     problem: null,
   }
-  let snapshot: PythonPackagesSnapshot = {
+  let snapshot = pythonPackagesSnapshot({
     revision: 'initial',
-    requirements: [
-      {
-        requirement: 'demo-lib>=1',
-        name: 'demo-lib',
-        specifier: '>=1',
-        extras: [],
-        marker: null,
-        status: 'satisfied',
-        installed_version: '1.2.0',
-        editable: true,
-      },
-    ],
-    installed: [
-      {
-        name: 'demo-lib',
-        version: '1.2.0',
-        direct: true,
-        requires_python: '>=3.11',
-        requires_dist: ['related-lib>=2'],
-        summary: 'A project dependency',
-      },
-      {
-        name: 'related-lib',
-        version: '2.0.0',
-        direct: false,
-        requires_python: null,
-        requires_dist: [],
-        summary: 'A related dependency',
-      },
-    ],
-    issues: [],
-    dependency_graph: {
-      roots: ['demo-lib'],
-      other_roots: [],
-      nodes: [
-        {
-          id: 'demo-lib',
-          name: 'demo-lib',
-          version: '1.2.0',
-          direct: true,
-          status: 'satisfied',
-          declarations: ['demo-lib>=1'],
-          dependencies: [
-            { id: 'related-lib', requirements: ['related-lib>=2'], status: 'satisfied' },
-          ],
-          required_by: [],
-        },
-        {
-          id: 'related-lib',
-          name: 'related-lib',
-          version: '2.0.0',
-          direct: false,
-          status: 'satisfied',
-          declarations: [],
-          dependencies: [],
-          required_by: ['demo-lib'],
-        },
-      ],
-    },
-    market_issues: [],
+    running,
     vendor_path: `${project.source_dir}/vendor`,
     pyproject_path: `${project.source_dir}/pyproject.toml`,
-    vendor_exists: true,
-    running,
-    environment: {
-      python_version: '3.11.14',
-      python_executable: '/python',
-      platform: 'linux',
-      architecture: 'x86_64',
-      installer: 'uv',
-      installer_path: '/uv',
-      packaged: false,
-      can_sync: true,
-      reason: null,
-      setup_required: false,
-    },
-    task: null,
-    operation: null,
-  }
+  })
   if (sharedDependencies) {
-    snapshot.dependency_graph.roots.push('second-parent')
-    snapshot.dependency_graph.other_roots.push('standalone')
-    snapshot.dependency_graph.nodes
-      .find((node) => node.id === 'related-lib')!
-      .required_by.push('second-parent')
-    snapshot.dependency_graph.nodes
-      .find((node) => node.id === 'related-lib')!
-      .dependencies.push({ id: 'leaf-lib', requirements: ['leaf-lib>=1'], status: 'satisfied' })
-    for (const id of ['second-parent', 'leaf-lib', 'standalone']) {
-      const dependencies =
-        id === 'second-parent'
-          ? [{ id: 'related-lib', requirements: ['related-lib>=2'], status: 'satisfied' as const }]
-          : []
-      snapshot.dependency_graph.nodes.push({
-        id,
-        name: id,
-        version: '1.0.0',
-        direct: id === 'second-parent',
-        status: 'satisfied',
-        declarations: id === 'second-parent' ? [id] : [],
-        dependencies,
-        required_by: id === 'leaf-lib' ? ['related-lib'] : [],
-      })
-      snapshot.installed.push({
-        name: id,
-        version: '1.0.0',
-        direct: id === 'second-parent',
-        requires_python: null,
-        requires_dist: dependencies.flatMap((edge) => edge.requirements),
-        summary: `Package information for ${id}`,
-      })
-    }
+    const graph = pythonDependencyGraph(
+      ['demo-lib', 'second-parent'],
+      [
+        ...snapshot.dependency_graph.nodes.map((node) =>
+          node.id === 'related-lib'
+            ? {
+                ...node,
+                dependencies: [
+                  { id: 'leaf-lib', requirements: ['leaf-lib>=1'], status: 'satisfied' as const },
+                ],
+              }
+            : node
+        ),
+        pythonDependencyNode('second-parent', ['related-lib'], { declarations: ['second-parent'] }),
+        pythonDependencyNode('leaf-lib'),
+        pythonDependencyNode('standalone'),
+      ],
+      ['standalone']
+    )
+    snapshot = { ...snapshot, dependency_graph: graph, installed: installedPythonPackages(graph) }
   }
   const requests: string[] = []
   await page.route('**/plugin-projects', (route) =>
@@ -196,13 +115,6 @@ async function dependencyFixture(page: Page, running = false, sharedDependencies
     async (route) => {
       const after = {
         ...snapshot,
-        market_issues: [
-          {
-            code: 'market_prohibited_file',
-            message: 'Market rejects vendor/native.so',
-            path: 'vendor/native.so',
-          },
-        ],
         issues: [
           {
             code: 'dependency_missing',
@@ -252,7 +164,6 @@ appearanceTest(
       panel.locator('.python-package-declaration').getByText('demo-lib==2.0.0', { exact: true })
     ).toBeVisible()
     await panel.getByRole('button', { name: 'Check dependencies', exact: true }).click()
-    await expect(panel.getByText('vendor/native.so', { exact: true })).toHaveCount(0)
     await expect(panel.getByText(/missing-child>=1/).first()).toBeVisible()
     expect(requests).toEqual(['save', 'check'])
     await page.screenshot({ path: '/tmp/neko-dependencies-desktop.png', fullPage: true })
@@ -331,47 +242,31 @@ appearanceTest(
   }
 )
 
-appearanceTest(
-  'empty full declaration can return to the basic form and cancel',
-  async ({ page }) => {
-    const requests = await dependencyFixture(page)
-    await page.goto(`${PREVIEW_ORIGIN}/ui/workbench?project=dependency-project`)
-    await page.getByRole('tab', { name: 'Dependencies', exact: true }).click()
-    const panel = page.getByTestId('project-dependencies')
-    await panel.getByRole('button', { name: 'Add package', exact: true }).click()
-    const dialog = page.getByRole('dialog')
-    await expect(dialog.locator('#python-package-name')).toBeVisible()
-    await dialog.getByText('Advanced settings', { exact: true }).click()
-    await dialog.getByText('Edit manually (advanced)', { exact: true }).click()
-    await expect(dialog.locator('#python-package-requirement')).toBeVisible()
-    await expect(dialog.getByRole('checkbox')).toBeChecked()
-    await dialog.getByText('Edit manually (advanced)', { exact: true }).click()
-    await expect(dialog.getByRole('checkbox')).not.toBeChecked({ timeout: 2000 })
-    await expect(dialog.locator('#python-package-name')).toBeVisible()
-    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
-    await expect(dialog).not.toBeVisible()
-    expect(requests).toEqual([])
-  }
-)
-
-appearanceTest(
-  'cancel closes the empty full declaration editor without changing dependencies',
-  async ({ page }) => {
-    const requests = await dependencyFixture(page)
-    await page.goto(`${PREVIEW_ORIGIN}/ui/workbench?project=dependency-project`)
-    await page.getByRole('tab', { name: 'Dependencies', exact: true }).click()
-    const panel = page.getByTestId('project-dependencies')
-    await panel.getByRole('button', { name: 'Add package', exact: true }).click()
-    const dialog = page.getByRole('dialog')
-    await dialog.getByText('Advanced settings', { exact: true }).click()
-    await dialog.getByText('Edit manually (advanced)', { exact: true }).click()
-    await expect(dialog.locator('#python-package-requirement')).toBeVisible()
-    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
-    await expect(dialog).not.toBeVisible()
-    await expect(panel.locator('.python-package-declaration')).toHaveCount(1)
-    expect(requests).toEqual([])
-  }
-)
+for (const returnToBasic of [true, false]) {
+  appearanceTest(
+    `empty full declaration can cancel ${returnToBasic ? 'after returning to the basic form' : 'directly'}`,
+    async ({ page }) => {
+      const requests = await dependencyFixture(page)
+      await page.goto(`${PREVIEW_ORIGIN}/ui/workbench?project=dependency-project`)
+      await page.getByRole('tab', { name: 'Dependencies', exact: true }).click()
+      const panel = page.getByTestId('project-dependencies')
+      await panel.getByRole('button', { name: 'Add package', exact: true }).click()
+      const dialog = page.getByRole('dialog')
+      await dialog.getByText('Advanced settings', { exact: true }).click()
+      await dialog.getByText('Edit manually (advanced)', { exact: true }).click()
+      await expect(dialog.locator('#python-package-requirement')).toBeVisible()
+      if (returnToBasic) {
+        await dialog.getByText('Edit manually (advanced)', { exact: true }).click()
+        await expect(dialog.getByRole('checkbox')).not.toBeChecked()
+        await expect(dialog.locator('#python-package-name')).toBeVisible()
+      }
+      await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+      await expect(dialog).not.toBeVisible()
+      await expect(panel.locator('.python-package-declaration')).toHaveCount(1)
+      expect(requests).toEqual([])
+    }
+  )
+}
 
 appearanceTest.describe('beginner package installation', () => {
   appearanceTest.use({ appLocale: 'zh-CN' })

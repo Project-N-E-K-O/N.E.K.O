@@ -13,11 +13,6 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 from .. import core
-from ..core.market_files import (
-    MARKET_BINARY_SUFFIXES as _MARKET_BINARY_SUFFIXES,
-    market_file_exceeds_size_limit,
-    market_rejects_file,
-)
 from ..core.plugin_source import load_plugin_source
 from ..paths import CliDefaults
 from ..plugin_import_alias import PLUGIN_ID_ENV, PLUGIN_SOURCE_ENV
@@ -37,9 +32,30 @@ _MARKET_MAX_VERSION_CHARS = 50
 # Limits of the Market's security scan of the source archive GitHub builds for
 # the release commit (N.E.K.O-PluginMarket app/services/plugin_security.py).
 _MARKET_MAX_ARCHIVE_BYTES = 32 * 1024 * 1024
+_MARKET_MAX_FILE_BYTES = 2 * 1024 * 1024
 _MARKET_MAX_ARCHIVE_ENTRIES = 5000
 # The release package is also scanned, unpacked in memory.
 _MARKET_MAX_EXPANDED_BYTES = 128 * 1024 * 1024
+# File starts the scan treats as a binary whatever the file is called.
+_MARKET_BINARY_SIGNATURES = (
+    b"MZ", b"\x7fELF", b"PK\x03\x04", b"PK\x05\x06", b"\x1f\x8b",
+    b"7z\xbc\xaf\x27\x1c", b"Rar!", b"\x28\xb5\x2f\xfd", b"\x00asm", b"BZh", b"\xfd7zXZ\x00",
+    b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf", b"\xce\xfa\xed\xfe", b"\xcf\xfa\xed\xfe",
+)
+_MARKET_BINARY_SUFFIXES = frozenset(
+    {
+        ".exe", ".dll", ".pyd", ".so", ".dylib", ".wasm", ".zip", ".whl", ".pyc",
+        ".tar", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar", ".neko-plugin", ".neko-bundle",
+    }
+)
+# The scan streams media and model files instead of reading them, so the
+# per-file limit does not apply to them.
+_MARKET_ASSET_SUFFIXES = frozenset(
+    {
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".mp3", ".mp4", ".wav",
+        ".woff", ".woff2", ".ttf", ".onnx", ".pt", ".safetensors", ".gguf",
+    }
+)
 
 
 def _tri(english: str, chinese: str, japanese: str) -> str:
@@ -348,7 +364,8 @@ def _diagnose_market_source_archive(repository_root: Path) -> list[Issue]:
     oversized = [
         path
         for path, size in files
-        if market_file_exceeds_size_limit(path, size)
+        if size > _MARKET_MAX_FILE_BYTES
+        and PurePosixPath(path).suffix.lower() not in _MARKET_BINARY_SUFFIXES | _MARKET_ASSET_SUFFIXES
     ]
     if oversized:
         shown = _shown_paths(oversized)
@@ -421,11 +438,16 @@ def _diagnose_market_package(package_path: Path) -> list[Issue]:
         binaries: list[str] = []
         oversized: list[str] = []
         for entry in files:
+            suffix = PurePosixPath(entry.filename).suffix.lower()
             with archive.open(entry) as member:
                 prefix = member.read(512)
-            if market_rejects_file(entry.filename, prefix):
+            if (
+                suffix in _MARKET_BINARY_SUFFIXES
+                or prefix.startswith(_MARKET_BINARY_SIGNATURES)
+                or prefix[257:262] == b"ustar"
+            ):
                 binaries.append(entry.filename)
-            elif market_file_exceeds_size_limit(entry.filename, entry.file_size):
+            elif suffix not in _MARKET_ASSET_SUFFIXES and entry.file_size > _MARKET_MAX_FILE_BYTES:
                 oversized.append(entry.filename)
         expanded = sum(entry.file_size for entry in files)
     if binaries:

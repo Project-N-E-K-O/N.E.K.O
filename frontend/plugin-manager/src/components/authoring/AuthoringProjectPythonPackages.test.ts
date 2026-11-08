@@ -1,4 +1,10 @@
 // @vitest-environment happy-dom
+import {
+  pythonPackagesSnapshot,
+  pythonRequirement,
+  pythonDependencyGraph,
+  pythonDependencyNode,
+} from '@/test/fixtures/pythonPackages'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, h, nextTick, reactive } from 'vue'
 import { createI18n } from 'vue-i18n'
@@ -23,86 +29,26 @@ vi.mock('@/api/plugins', () => ({ stopPlugin: api.stopPlugin }))
 vi.mock('vue-router', () => ({ onBeforeRouteLeave: vi.fn(), onBeforeRouteUpdate: vi.fn() }))
 const en = pythonPackageMessages['en-US']
 const project = { project_id: 'p1', plugin_id: 'demo' } as AuthoringProject
-const state = (overrides: Partial<PythonPackagesSnapshot> = {}): PythonPackagesSnapshot => ({
-  revision: 'r1',
-  requirements: [
-    {
-      requirement: 'httpx[socks]>=0.27; python_version >= "3.11"',
-      name: 'httpx',
-      extras: ['socks'],
-      specifier: '>=0.27',
-      marker: 'python_version >= "3.11"',
-      editable: true,
-      status: 'satisfied',
-      installed_version: '0.28.1',
-    },
-  ],
-  installed: [
-    {
-      name: 'httpx',
-      version: '0.28.1',
-      direct: true,
-      requires_dist: ['anyio'],
-      requires_python: '>=3.8',
-      summary: 'HTTP client',
-    },
-    {
-      name: 'anyio',
-      version: '4.0',
-      direct: false,
-      requires_dist: [],
-      requires_python: '>=3.8',
-      summary: '',
-    },
-  ],
-  dependency_graph: {
-    roots: ['httpx'],
-    other_roots: [],
-    nodes: [
-      {
-        id: 'httpx',
-        name: 'httpx',
-        version: '0.28.1',
-        direct: true,
-        status: 'satisfied',
-        declarations: ['httpx[socks]>=0.27; python_version >= "3.11"'],
-        dependencies: [{ id: 'anyio', requirements: ['anyio'], status: 'satisfied' }],
-        required_by: [],
-      },
-      {
-        id: 'anyio',
-        name: 'anyio',
-        version: '4.0',
-        direct: false,
-        status: 'satisfied',
-        declarations: [],
-        dependencies: [],
-        required_by: ['httpx'],
-      },
+const state = (overrides: Partial<PythonPackagesSnapshot> = {}) =>
+  pythonPackagesSnapshot({
+    requirements: [
+      pythonRequirement('httpx', {
+        requirement: 'httpx[socks]>=0.27; python_version >= "3.11"',
+        extras: ['socks'],
+        specifier: '>=0.27',
+        marker: 'python_version >= "3.11"',
+        installed_version: '0.28.1',
+      }),
     ],
-  },
-  issues: [],
-  market_issues: [],
-  vendor_path: '/demo/vendor',
-  pyproject_path: '/demo/pyproject.toml',
-  vendor_exists: true,
-  running: false,
-  environment: {
-    python_version: '3.11.9',
-    python_executable: '/python',
-    platform: 'Linux',
-    architecture: 'x64',
-    installer: 'uv',
-    installer_path: '/uv',
-    packaged: false,
-    can_sync: true,
-    setup_required: false,
-    reason: null,
-  },
-  task: null,
-  operation: null,
-  ...overrides,
-})
+    dependency_graph: pythonDependencyGraph(
+      ['httpx'],
+      [
+        pythonDependencyNode('httpx', ['anyio'], { version: '0.28.1' }),
+        pythonDependencyNode('anyio', [], { version: '4.0' }),
+      ]
+    ),
+    ...overrides,
+  })
 const task = (overrides: Partial<PythonPackagesTask> = {}): PythonPackagesTask => ({
   task_id: 't1',
   project_id: 'p1',

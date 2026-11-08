@@ -169,7 +169,7 @@ def sync_vendor(
             # no-dependency path has nothing to reconcile it with. Callers
             # that clean by default (publish) pass discard_backups=False, so
             # the only full copy of the old vendor/ is never dropped silently.
-            discard_backups = getattr(args, "discard_backups", args.clean)
+            discard_backups = args.discard_backups
             unreconciled = _unreconciled_backups(plugin_dir, vendor_dir)
             # A backup another user is mid-swap on is never removed here, so
             # --clean cannot clear it; say how to instead.
@@ -772,12 +772,6 @@ def _empty_directory(directory: Path, *, keep: str) -> None:
             shutil.rmtree(child)
         else:
             child.unlink()
-
-
-def _read_dependencies(pyproject_path: Path) -> list[str] | None:
-    """Read declarations, keeping an absent field distinct from an empty list."""
-    raw = read_pyproject_bytes(pyproject_path)
-    return _dependencies_from_project(tomllib.loads(raw.decode("utf-8"))) if raw is not None else None
 
 
 def _dependencies_from_project(data: dict) -> list[str] | None:

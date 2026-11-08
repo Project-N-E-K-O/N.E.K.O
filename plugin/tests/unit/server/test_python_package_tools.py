@@ -239,24 +239,20 @@ def test_packaged_capabilities_recognize_prepared_tools_without_running_them(too
 
 @pytest.mark.parametrize("phase", ["metadata", "wheel"])
 def test_download_checks_task_budget_between_chunks(tools, monkeypatch, phase):
-    expired = False
+    from tests.fake_clock import patch_module_clock
+
+    clock = [100.0]
+    patch_module_clock(monkeypatch, module, monotonic=lambda: clock[0])
     received = []
 
     def on_chunk(data):
-        nonlocal expired
         received.append(data)
         if (data.startswith(b"{") and phase == "metadata") or (data.startswith(b"PK") and phase == "wheel"):
-            expired = True
-
-    def checkpoint():
-        if expired:
-            raise TimeoutError("The dependency task exceeded its time budget")
+            clock[0] = 200.0
 
     binary_name = _wheel_download(monkeypatch, on_chunk=on_chunk, split_chunks=True)
     with pytest.raises(TimeoutError, match="time budget"):
-        module._download_uv(
-            tools / binary_name, lambda _line: None, threading.Event(), check_cancelled=checkpoint,
-        )
+        module._download_uv(tools / binary_name, lambda _line: None, threading.Event(), deadline=150.0)
     assert len(received) == (1 if phase == "metadata" else 3)
     assert not (tools / binary_name).exists()
     assert list(tools.glob(".uv-*")) == []
@@ -336,20 +332,3 @@ def test_packaged_setup_replaces_unsupported_system_uv(tools, monkeypatch):
     )
     assert selected == [str(cached)]
     assert cached.is_file()
-
-
-def test_download_enforces_deadline_without_callback(tools, monkeypatch):
-    from tests.fake_clock import patch_module_clock
-
-    clock = [100.0]
-    patch_module_clock(monkeypatch, module, monotonic=lambda: clock[0])
-
-    def expire_on_wheel(data):
-        if data.startswith(b"PK"):
-            clock[0] = 200.0
-
-    binary_name = _wheel_download(monkeypatch, on_chunk=expire_on_wheel)
-    with pytest.raises(TimeoutError, match="time budget"):
-        module._download_uv(tools / binary_name, lambda _line: None, threading.Event(), deadline=150.0)
-    assert not (tools / binary_name).exists()
-    assert list(tools.glob(".uv-*")) == []

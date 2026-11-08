@@ -138,17 +138,6 @@ def test_graph_reports_invalid_distribution_names_without_breaking_inventory(tmp
     assert snapshot["issues"][0]["code"] == "invalid_metadata"
 
 
-def test_market_check_uses_signatures_and_build_exclusions(tmp_path):
-    project = _project(tmp_path, '[project]\ndependencies = []\n[tool.neko.build]\nexclude = ["vendor/excluded.so"]\n')
-    vendor = project / "vendor"
-    vendor.mkdir()
-    (vendor / "extension.txt").write_bytes(b"\x7fELFexecutable")
-    (vendor / "excluded.so").write_bytes(b"binary")
-    (vendor / "__pycache__").mkdir()
-    (vendor / "__pycache__" / "cache.pyc").write_bytes(b"cache")
-    assert [row["path"] for row in check_python_packages(project)["market_issues"]] == ["vendor/extension.txt"]
-
-
 def test_save_preserves_comments_and_other_tables(tmp_path):
     original = '''# User configuration
 [project] # Keep this comment
@@ -336,16 +325,6 @@ def test_checks_include_manually_installed_packages_outside_declared_closure(tmp
     }
 
 
-def test_market_check_uses_release_size_limit_and_asset_exemptions(tmp_path):
-    project = _project(tmp_path, '[project]\ndependencies = []\n[tool.neko.build]\nexclude=["vendor/excluded.txt"]\n')
-    vendor = project / "vendor"
-    vendor.mkdir()
-    for name in ("large.txt", "excluded.txt", "model.onnx", "image.png", "boundary.txt"):
-        with (vendor / name).open("wb") as stream:
-            stream.truncate(2 * 1024 * 1024 + (name != "boundary.txt"))
-    assert [issue["path"] for issue in check_python_packages(project)["market_issues"]] == ["vendor/large.txt"]
-
-
 def test_save_refuses_to_replace_a_symlinked_pyproject(tmp_path):
     project = _project(tmp_path, '[project]\ndependencies = ["old"]\n')
     path = project / "pyproject.toml"
@@ -405,16 +384,6 @@ def test_save_rechecks_external_editor_changes_after_staging(tmp_path, monkeypat
     assert not list(project.glob(".python-packages-*"))
 
 
-@pytest.mark.parametrize("invalid", [
-    'legacy; python_version ~= "not-a-version"', 'legacy; "feature" in dependency_groups',
-])
-def test_save_keeps_unchanged_legacy_markers_that_cannot_be_evaluated(tmp_path, invalid):
-    project = _project(tmp_path, '[project]\ndependencies = ' + json.dumps([invalid]) + '\n')
-    saved = save_python_requirements(project, [invalid, "new-package"], inspect_python_packages(project)["revision"])
-    assert [row["requirement"] for row in saved["requirements"]] == [invalid, "new-package"]
-    assert saved["requirements"][0]["status"] == "invalid_metadata"
-
-
 @pytest.mark.parametrize("declarations", [
     ["demo_lib>=1", "Demo-Lib>=1"],
     ["demo[extra_feature]>=1", "Demo[EXTRA.Feature]>=1"],
@@ -447,30 +416,18 @@ def test_inspection_reports_invalid_dynamic_field_as_a_project_error(tmp_path, d
     assert error.value.code == "PYTHON_PACKAGES_PROJECT_INVALID"
 
 
-@pytest.mark.parametrize("invalid", [
-    "legacy ???", 'legacy; python_version ~= "not-a-version"', 'legacy; "feature" in dependency_groups',
-])
-@pytest.mark.parametrize("old_count", [1, 2])
-def test_save_cannot_add_copies_of_legacy_invalid_declarations(tmp_path, invalid, old_count):
-    project = _project(tmp_path, '[project]\ndependencies = ' + json.dumps([invalid] * old_count) + '\n')
+@pytest.mark.parametrize("invalid", ["legacy ???", 'legacy; python_version ~= "not-a-version"'])
+def test_save_requires_valid_target_declarations_and_can_remove_invalid_ones(tmp_path, invalid):
+    project = _project(tmp_path, '[project]\ndependencies = ' + json.dumps([invalid]) + '\n')
     path = project / "pyproject.toml"
     original = path.read_bytes()
+    revision = inspect_python_packages(project)["revision"]
     with pytest.raises(PythonPackagesError) as error:
-        save_python_requirements(project, [invalid] * (old_count + 1), inspect_python_packages(project)["revision"])
+        save_python_requirements(project, [invalid, "new-package"], revision)
     assert error.value.code == "PYTHON_PACKAGES_REQUIREMENTS_INVALID"
     assert path.read_bytes() == original
-
-
-@pytest.mark.parametrize("invalid", [
-    "legacy ???", 'legacy; python_version ~= "not-a-version"', 'legacy; "feature" in dependency_groups',
-])
-@pytest.mark.parametrize("old_count", [1, 2])
-@pytest.mark.parametrize("remove_one", [False, True])
-def test_save_can_keep_or_reduce_original_invalid_declaration_occurrences(tmp_path, invalid, old_count, remove_one):
-    project = _project(tmp_path, '[project]\ndependencies = ' + json.dumps([invalid] * old_count) + '\n')
-    declarations = [invalid] * (old_count - remove_one) + ["valid-package"]
-    saved = save_python_requirements(project, declarations, inspect_python_packages(project)["revision"])
-    assert [item["requirement"] for item in saved["requirements"]] == declarations
+    saved = save_python_requirements(project, ["new-package"], revision)
+    assert [row["requirement"] for row in saved["requirements"]] == ["new-package"]
 
 
 @pytest.mark.parametrize("kind", ["directory", "fifo", "device-link"])

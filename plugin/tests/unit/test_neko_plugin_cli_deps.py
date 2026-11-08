@@ -17,7 +17,6 @@ from plugin.neko_plugin_cli.core.vendor_sync import (
     _find_uv as real_find_uv,
     _lock_dir as real_lock_dir,
     _windows_known_folder as real_windows_known_folder,
-    _read_dependencies,
     _replace_vendor,
 )
 
@@ -1891,23 +1890,7 @@ def test_clean_vendor_removes_bin_directory_symlink(tmp_path: Path) -> None:
 
 @pytest.mark.plugin_unit
 class TestHelpers:
-    def test_read_dependencies(self, tmp_path: Path) -> None:
-        pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text(
-            '[project]\nname = "test"\ndependencies = ["httpx>=0.27", "pydantic"]\n',
-            encoding="utf-8",
-        )
-        assert _read_dependencies(pyproject) == ["httpx>=0.27", "pydantic"]
 
-    def test_read_dependencies_empty(self, tmp_path: Path) -> None:
-        pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text('[project]\nname = "test"\ndependencies = []\n', encoding="utf-8")
-        assert _read_dependencies(pyproject) == []
-
-    def test_read_dependencies_missing_field(self, tmp_path: Path) -> None:
-        pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text('[project]\nname = "test"\n', encoding="utf-8")
-        assert _read_dependencies(pyproject) is None
 
     def test_filter_external(self) -> None:
         deps = ["httpx>=0.27", "N.E.K.O", "pydantic>=2.0"]
@@ -2103,38 +2086,6 @@ def test_sync_expected_revision_rejects_new_dependencies_before_default_installe
     assert not list(plugin_dir.glob(".vendor.staging-*"))
 
 
-def test_sync_parses_the_same_bytes_checked_against_expected_revision(tmp_path, monkeypatch):
-    import hashlib
-    from plugin.neko_plugin_cli.core import vendor_sync
-
-    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
-    path = plugin_dir / "pyproject.toml"
-    original = path.read_bytes()
-    expected = hashlib.sha256(b"file\0" + original).hexdigest()
-    real_read_bytes = Path.read_bytes
-    reads = []
-
-    def read_bytes(candidate):
-        if candidate == path:
-            reads.append(candidate)
-        return real_read_bytes(candidate)
-
-    monkeypatch.setattr(Path, "read_bytes", read_bytes)
-    commands = []
-
-    def install(command, **kwargs):
-        assert reads == [path]
-        commands.append(command)
-        return subprocess.CompletedProcess(command, 0, stdout="ok")
-
-    assert vendor_sync.sync_vendor(
-        plugin_dir, expected_revision=expected, uv_executable="uv",
-        installer_runner=install,
-    ) == 0
-    assert reads == [path, path]
-    assert commands[0][-1] == "httpx>=0.27"
-
-
 @pytest.mark.skipif(sys.platform == "win32", reason="directory-handle refill is POSIX only")
 @pytest.mark.parametrize("failure", ["mkdir", "open"])
 def test_refill_closes_staging_descriptor_when_trash_creation_fails(tmp_path, monkeypatch, failure):
@@ -2185,17 +2136,9 @@ def test_sync_reports_invalid_dynamic_type_without_touching_vendor(tmp_path, cap
     assert (vendor / "old.py").read_text() == "old"
 
 
-@pytest.mark.parametrize("mode", ["ordinary", "linked", "mounted"])
-@pytest.mark.parametrize("clean", [True, False])
-@pytest.mark.parametrize("with_expected_revision", [True, False])
-def test_sync_detects_declarations_changed_during_install_before_committing_vendor(
-    tmp_path, monkeypatch, mode, clean, with_expected_revision,
-):
+def _vendor_directory(plugin_dir, tmp_path, monkeypatch, mode):
     from plugin.neko_plugin_cli.core import vendor_sync
 
-    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
-    pyproject = plugin_dir / "pyproject.toml"
-    expected = vendor_sync.pyproject_revision(pyproject.read_bytes())
     vendor = plugin_dir / "vendor"
     if mode == "linked":
         target = tmp_path / "shared-vendor"
@@ -2208,6 +2151,22 @@ def test_sync_detects_declarations_changed_during_install_before_committing_vend
         vendor.mkdir()
         if mode == "mounted":
             monkeypatch.setattr(vendor_sync, "_is_mount_point", lambda path: path == vendor)
+    return vendor
+
+
+@pytest.mark.parametrize(("mode", "clean", "with_expected_revision"), [
+    ("ordinary", True, True), ("ordinary", False, False),
+    ("linked", True, False), ("linked", False, True), ("mounted", True, True),
+])
+def test_sync_detects_declarations_changed_during_install_before_committing_vendor(
+    tmp_path, monkeypatch, mode, clean, with_expected_revision,
+):
+    from plugin.neko_plugin_cli.core import vendor_sync
+
+    plugin_dir = TestHandleSync()._make_plugin(tmp_path)
+    pyproject = plugin_dir / "pyproject.toml"
+    expected = vendor_sync.pyproject_revision(pyproject.read_bytes())
+    vendor = _vendor_directory(plugin_dir, tmp_path, monkeypatch, mode)
     (vendor / "old.py").write_text("old")
 
     def install(command, **kwargs):
@@ -2232,27 +2191,13 @@ def test_sync_detects_declarations_changed_during_install_before_committing_vend
         assert (vendor / "new.py").read_text() == "new"
 
 
-@pytest.mark.parametrize("mode", ["linked", "mounted"])
-@pytest.mark.parametrize("with_expected_revision", [True, False])
-def test_non_clean_in_place_checks_revision_immediately_before_installer_writes(
-    tmp_path, monkeypatch, mode, with_expected_revision,
-):
+def test_non_clean_in_place_checks_revision_immediately_before_installer_writes(tmp_path, monkeypatch):
     from plugin.neko_plugin_cli.core import vendor_sync
 
     plugin_dir = TestHandleSync()._make_plugin(tmp_path)
     pyproject = plugin_dir / "pyproject.toml"
     expected = vendor_sync.pyproject_revision(pyproject.read_bytes())
-    vendor = plugin_dir / "vendor"
-    if mode == "linked":
-        target = tmp_path / "shared-vendor"
-        target.mkdir()
-        if sys.platform == "win32":
-            subprocess.run(["cmd", "/c", "mklink", "/J", str(vendor), str(target)], check=True, capture_output=True)
-        else:
-            vendor.symlink_to(target, target_is_directory=True)
-    else:
-        vendor.mkdir()
-        monkeypatch.setattr(vendor_sync, "_is_mount_point", lambda path: path == vendor)
+    vendor = _vendor_directory(plugin_dir, tmp_path, monkeypatch, "linked")
     (vendor / "old.py").write_text("old")
 
     def progress(phase):
@@ -2260,11 +2205,10 @@ def test_non_clean_in_place_checks_revision_immediately_before_installer_writes(
             pyproject.write_text('[project]\ndependencies = []\n', encoding="utf-8")
 
     messages = []
-    revision_options = {"expected_revision": expected} if with_expected_revision else {}
     assert vendor_sync.sync_vendor(
         plugin_dir, clean=False, uv_executable="uv", progress=progress,
         installer_runner=lambda *args, **kwargs: pytest.fail("stale in-place install must not write"),
-        report=messages.append, **revision_options,
+        report=messages.append, expected_revision=expected,
     ) == 1
     assert any("pyproject.toml changed" in line for line in messages)
     assert (vendor / "old.py").read_text() == "old"

@@ -362,16 +362,13 @@ def _execute(task: _Task) -> dict:
         if has_external:
             tools = prepare_package_tools(
                 runner, lambda line: _log(task, line), task.cancel_event,
-                check_cancelled=lambda: _check_stop(task), deadline=task.deadline,
+                deadline=task.deadline,
             )
             options = {
                 "python": tools.python, "uv_executable": tools.uv_executable,
                 "allow_pip_fallback": tools.allow_pip_fallback,
                 "installer_runner": lambda argv, **kwargs: runner(argv, env=tools.env, **kwargs),
             }
-        current = inspect_python_packages(task.source_dir)
-        if current["revision"] != task.before["revision"]:
-            raise RuntimeError("pyproject.toml changed while preparing the task; refresh and retry")
         _phase(task, "installing")
         task.vendor_touched = True
         code = sync_vendor(

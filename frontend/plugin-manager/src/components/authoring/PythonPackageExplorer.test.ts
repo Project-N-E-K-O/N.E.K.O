@@ -1,70 +1,30 @@
 // @vitest-environment happy-dom
+import {
+  pythonDependencyGraph,
+  pythonDependencyNode,
+  installedPythonPackages,
+} from '@/test/fixtures/pythonPackages'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createApp, h, nextTick, reactive } from 'vue'
 import { createI18n } from 'vue-i18n'
 import ElementPlus from 'element-plus'
 import Explorer from './PythonPackageExplorer.vue'
 import { pythonPackageMessages } from '@/i18n/python-packages'
-import type { InstalledPythonPackage, PythonDependencyGraph } from '@/api/projectPythonPackages'
+import type { PythonDependencyGraph } from '@/api/projectPythonPackages'
 
 const en = pythonPackageMessages['en-US']
 function graph(): PythonDependencyGraph {
-  return {
-    roots: ['alpha', 'beta'],
-    other_roots: ['standalone'],
-    nodes: [
-      {
-        id: 'alpha',
-        name: 'alpha',
-        version: '1.0',
-        direct: true,
-        status: 'satisfied',
-        declarations: ['alpha>=1'],
-        dependencies: [{ id: 'shared', requirements: ['shared>=1'], status: 'satisfied' }],
-        required_by: [],
-      },
-      {
-        id: 'beta',
-        name: 'beta',
-        version: '1.0',
-        direct: true,
-        status: 'satisfied',
-        declarations: ['beta'],
-        dependencies: [{ id: 'shared', requirements: ['shared'], status: 'satisfied' }],
-        required_by: [],
-      },
-      {
-        id: 'shared',
-        name: 'shared',
-        version: '2.0',
-        direct: false,
-        status: 'satisfied',
-        declarations: [],
-        dependencies: [{ id: 'leaf', requirements: ['leaf'], status: 'satisfied' }],
-        required_by: ['alpha', 'beta'],
-      },
-      {
-        id: 'leaf',
-        name: 'leaf',
-        version: '3.0',
-        direct: false,
-        status: 'satisfied',
-        declarations: [],
-        dependencies: [],
-        required_by: ['shared'],
-      },
-      {
-        id: 'standalone',
-        name: 'standalone',
-        version: '1.0',
-        direct: false,
-        status: 'satisfied',
-        declarations: [],
-        dependencies: [],
-        required_by: [],
-      },
+  return pythonDependencyGraph(
+    ['alpha', 'beta'],
+    [
+      pythonDependencyNode('alpha', ['shared'], { declarations: ['alpha>=1'] }),
+      pythonDependencyNode('beta', ['shared'], { declarations: ['beta'] }),
+      pythonDependencyNode('shared', ['leaf'], { version: '2.0' }),
+      pythonDependencyNode('leaf', [], { version: '3.0' }),
+      pythonDependencyNode('standalone'),
     ],
-  }
+    ['standalone']
+  )
 }
 let app: ReturnType<typeof createApp> | undefined
 async function flush() {
@@ -74,16 +34,7 @@ async function flush() {
   }
 }
 async function mount(value = graph()) {
-  const packages: InstalledPythonPackage[] = value.nodes
-    .filter((node) => node.version)
-    .map((node) => ({
-      name: node.name,
-      version: node.version!,
-      direct: node.direct,
-      summary: `Summary for ${node.name}`,
-      requires_python: '>=3.11',
-      requires_dist: node.dependencies.flatMap((edge) => edge.requirements),
-    }))
+  const packages = installedPythonPackages(value)
   const props = reactive({ graph: value, packages })
   const host = document.createElement('div')
   document.body.append(host)

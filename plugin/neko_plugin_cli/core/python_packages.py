@@ -10,13 +10,12 @@ import json
 import os
 import re
 import tempfile
-from collections import Counter
 from importlib import metadata
 from pathlib import Path
 
 import portalocker
 from packaging.markers import default_environment
-from packaging.requirements import InvalidRequirement, Requirement
+from packaging.requirements import Requirement
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import Version
 
@@ -24,7 +23,6 @@ from plugin.core.python_dependencies import (
     canonicalize_distribution_name,
 )
 
-from .market_files import market_file_exceeds_size_limit, market_rejects_file
 from .python_package_graph import build_dependency_graph, requirement_applies, requirement_status
 from .toml_utils import tomllib
 from .vendor_sync import _lock_identity, dependency_lock, pyproject_revision, read_pyproject_bytes
@@ -130,17 +128,13 @@ def inspect_python_packages(plugin_dir: Path) -> dict:
     issues.extend(graph_issues)
     return {
         "revision": pyproject_revision(raw), "requirements": declarations, "installed": installed,
-        "issues": issues, "market_issues": [], "vendor_path": str(plugin_dir / "vendor"),
+        "issues": issues, "vendor_path": str(plugin_dir / "vendor"),
         "pyproject_path": str(plugin_dir / "pyproject.toml"), "dependency_graph": graph,
     }
 
 
 def check_python_packages(plugin_dir: Path) -> dict:
-    """Check active requirements of all installed packages and packaged files."""
-    # Packaging policy is needed only for an explicit check. Keep the HTTP
-    # startup path free of the packaging stack, like the CLI service itself.
-    from .build_rules import load_build_rules, should_skip_path, walk_plugin_tree
-
+    """Check active requirements of all installed packages."""
     plugin_dir = Path(plugin_dir)
     snapshot = inspect_python_packages(plugin_dir)
     installed = {canonicalize_distribution_name(row["name"]): row for row in snapshot["installed"]}
@@ -164,22 +158,6 @@ def check_python_packages(plugin_dir: Path) -> dict:
                 if status in {"missing", "version_mismatch"}:
                     snapshot["issues"].append({"code": f"dependency_{status}", "package": row["name"],
                                                "requirement": text, "message": f"{row['name']} requires {text}: {status.replace('_', ' ')}"})
-    _raw, project, _requirements = _read_project(plugin_dir)
-    rules = load_build_rules(project)
-    vendor = plugin_dir / "vendor"
-    if vendor.is_dir():
-        for path in walk_plugin_tree(vendor):
-            relative = path.relative_to(plugin_dir)
-            if not path.is_file() or should_skip_path(relative, is_dir=False, rules=rules):
-                continue
-            with path.open("rb") as file_obj:
-                prefix = file_obj.read(512)
-            if market_rejects_file(path.name, prefix):
-                snapshot["market_issues"].append({"code": "market_prohibited_file", "path": relative.as_posix(),
-                                                  "message": f"Market rejects {relative.as_posix()}"})
-            elif market_file_exceeds_size_limit(path.name, path.stat().st_size):
-                snapshot["market_issues"].append({"code": "market_file_too_large", "path": relative.as_posix(),
-                                                  "message": f"Market rejects files over 2 MiB: {relative.as_posix()}"})
     return snapshot
 
 
@@ -294,26 +272,14 @@ def save_python_requirements(plugin_dir: Path, requirements: list[str], revision
             if not isinstance(requirements, list) or any(not isinstance(item, str) for item in requirements):
                 raise PythonPackagesError("PYTHON_PACKAGES_REQUIREMENTS_INVALID", "requirements must be a list of strings")
             seen: set[str] = set()
-            legacy_remaining = Counter(old_requirements)
             for item in requirements:
                 try:
                     parsed = Requirement(item)
-                except InvalidRequirement as exc:
-                    # Preserve unsupported legacy declarations verbatim, but
-                    # never allow the UI to introduce or edit them.
-                    if legacy_remaining[item] > 0:
-                        legacy_remaining[item] -= 1
-                        continue
+                    requirement_applies(parsed, parsed.extras)
+                except ValueError as exc:
                     raise PythonPackagesError("PYTHON_PACKAGES_REQUIREMENTS_INVALID", str(exc)) from exc
                 if parsed.url and item not in old_requirements:
                     raise PythonPackagesError("PYTHON_PACKAGES_REQUIREMENT_SOURCE_UNSUPPORTED", "Add URL, Git or local dependencies in your editor")
-                try:
-                    requirement_applies(parsed, parsed.extras)
-                except ValueError as exc:
-                    if legacy_remaining[item] > 0:
-                        legacy_remaining[item] -= 1
-                        continue
-                    raise PythonPackagesError("PYTHON_PACKAGES_REQUIREMENTS_INVALID", str(exc)) from exc
                 parsed.name = canonicalize_distribution_name(parsed.name)
                 parsed.extras = {canonicalize_distribution_name(extra) for extra in parsed.extras}
                 identity = str(parsed)

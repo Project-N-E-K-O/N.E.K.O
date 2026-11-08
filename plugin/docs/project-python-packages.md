@@ -18,6 +18,8 @@ inspection and transactional synchronization implementation.
   declarations are rejected before synchronization.
 - Existing URL, Git and local source declarations are retained verbatim; change
   these in an editor. Unsupported lossless TOML layouts are reported explicitly.
+- Invalid declarations can be inspected, but must be removed or corrected before
+  saving the dependency list.
 - Declaration writes preserve surrounding TOML content and comments, use the
   dependency filesystem lock and reject stale file revisions. Symlinked project
   files must be edited externally. Revision checks detect external edits through
@@ -41,9 +43,8 @@ packages and stops cycles at an ancestor reference. Packages outside the declare
 dependency closure remain accessible as other installed roots. Narrow screens
 stack the tree above the details.
 
-An explicit check walks active dependency metadata, including extras and markers,
-and applies the existing Market file restrictions to vendor files selected for
-packaging. A successful check is tied to its declaration revision and installed
+An explicit check walks active dependency metadata, including extras and markers.
+A successful check is tied to its declaration revision and installed
 inventory. Test the plugin's actual functions after changing dependencies:
 distribution metadata does not exercise imports and runtime paths.
 
@@ -81,7 +82,6 @@ architecture, which is also checked before installing plugin dependencies.
   lossless declaration updates.
 - `plugin/neko_plugin_cli/core/vendor_sync.py`: shared synchronization, filesystem
   ownership, staging and replacement; the CLI is a thin adapter.
-- `plugin/neko_plugin_cli/core/market_files.py`: shared Market file rules.
 - `plugin/server/application/plugin_project_python_packages.py`: project identity,
   task lifetime, cancellation and runtime reconciliation.
 - `plugin/server/infrastructure/python_package_tools.py`: installer discovery and

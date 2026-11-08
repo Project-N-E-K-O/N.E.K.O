@@ -57,7 +57,6 @@ export interface PythonPackagesSnapshot {
   installed: InstalledPythonPackage[]
   dependency_graph: PythonDependencyGraph
   issues: PythonPackageIssue[]
-  market_issues: PythonPackageIssue[]
   vendor_path: string
   pyproject_path: string
   vendor_exists: boolean
@@ -91,7 +90,7 @@ export interface PythonPackagesTask {
   result: {
     after: Pick<
       PythonPackagesSnapshot,
-      'revision' | 'requirements' | 'installed' | 'issues' | 'market_issues'
+      'revision' | 'requirements' | 'installed' | 'issues'
     >
     changes?: { name: string; before: string | null; after: string | null }[]
   } | null

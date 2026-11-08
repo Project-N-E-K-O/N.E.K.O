@@ -1,5 +1,6 @@
-import { pythonPackageMessages } from '@/i18n/python-packages'
 // @vitest-environment happy-dom
+import { pythonPackagesSnapshot, pythonRequirement } from '@/test/fixtures/pythonPackages'
+import { pythonPackageMessages } from '@/i18n/python-packages'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, markRaw, nextTick } from 'vue'
 import { createI18n } from 'vue-i18n'
@@ -1415,43 +1416,13 @@ describe('authoring workbench backed by the server project list', () => {
   it('keeps unsaved dependency changes when the removal discard prompt is canceled', async () => {
     api.route.query = { project: 'p1' }
     api.listPluginProjects.mockResolvedValue([listed])
-    api.getProjectPythonPackages.mockResolvedValue({
-      revision: 'r1',
-      requirements: [
-        {
-          requirement: 'demo>=1',
-          name: 'demo',
-          specifier: '>=1',
-          extras: [],
-          marker: null,
-          editable: true,
-          status: 'satisfied',
-          installed_version: '1.2.0',
-        },
-      ],
+    api.getProjectPythonPackages.mockResolvedValue(pythonPackagesSnapshot({
+      requirements: [pythonRequirement('demo', {
+        requirement: 'demo>=1', specifier: '>=1', installed_version: '1.2.0',
+      })],
       installed: [],
       dependency_graph: { roots: [], other_roots: [], nodes: [] },
-      issues: [],
-      market_issues: [],
-      vendor_path: '/demo/vendor',
-      pyproject_path: '/demo/pyproject.toml',
-      vendor_exists: true,
-      running: false,
-      operation: null,
-      task: null,
-      environment: {
-        python_version: '3.11.14',
-        python_executable: '/python',
-        platform: 'Linux',
-        architecture: 'x86_64',
-        installer: 'uv',
-        installer_path: '/uv',
-        packaged: false,
-        can_sync: true,
-        setup_required: false,
-        reason: null,
-      },
-    })
+    }))
     const container = await mount()
     await openTab(container, 1)
     await click(pythonPackageMessages['en-US'].pin)
