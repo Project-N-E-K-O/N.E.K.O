@@ -155,7 +155,7 @@ HABITUAL_PHRASE_REVIEW_PROMPT = {
 
 拿不准时选 normal：宁可漏掉一个口癖，也不要让她回避正常说法。
 
-每条都写一句 reason 说明理由，不要写替换说法或示范台词。
+每条都写一句 reason 说明理由，不要写替换说法或示范台词。reason 会单独显示给用户看，不要用编号提到别的候选。
 
 只输出 JSON 数组，每个编号出现一次：
 [
@@ -184,7 +184,7 @@ HABITUAL_PHRASE_REVIEW_PROMPT = {
 
 拿不準時選 normal：寧可漏掉一個口癖，也不要讓她迴避正常說法。
 
-每條都寫一句 reason 說明理由，不要寫替換說法或示範台詞。
+每條都寫一句 reason 說明理由，不要寫替換說法或示範台詞。reason 會單獨顯示給使用者看，不要用編號提到別的候選。
 
 只輸出 JSON 陣列，每個編號出現一次：
 [
@@ -213,7 +213,7 @@ Give each candidate one verdict:
 
 When unsure, choose normal: missing a habit is better than making her avoid ordinary words.
 
-Write a one-sentence reason for each; do not suggest replacement wording or sample lines.
+Write a one-sentence reason for each; do not suggest replacement wording or sample lines. Each reason is shown to the user on its own, so do not refer to other candidates by number.
 
 Output only a JSON array, each id exactly once:
 [
@@ -242,7 +242,7 @@ Output only a JSON array, each id exactly once:
 
 迷ったら normal を選んでください。口癖を一つ見逃すほうが、普通の言葉を避けさせるよりましです。
 
-それぞれ reason に一文で理由を書いてください。言い換え案や例文は書かないでください。
+それぞれ reason に一文で理由を書いてください。言い換え案や例文は書かないでください。reason は一件ずつユーザーに表示されるので、ほかの候補を番号で指さないでください。
 
 JSON 配列だけを出力し、各番号は一度ずつ使ってください。
 [
@@ -271,7 +271,7 @@ JSON 配列だけを出力し、各番号は一度ずつ使ってください。
 
 확신이 서지 않으면 normal을 고르세요. 말버릇 하나를 놓치는 편이 평범한 말을 피하게 만드는 것보다 낫습니다.
 
-각 후보마다 reason에 이유를 한 문장으로 쓰세요. 바꿔 말할 표현이나 예시 대사는 쓰지 마세요.
+각 후보마다 reason에 이유를 한 문장으로 쓰세요. 바꿔 말할 표현이나 예시 대사는 쓰지 마세요. reason은 사용자에게 하나씩 따로 보이므로 다른 후보를 번호로 가리키지 마세요.
 
 JSON 배열만 출력하고, 각 번호는 한 번씩만 쓰세요.
 [
@@ -300,7 +300,7 @@ JSON 배열만 출력하고, 각 번호는 한 번씩만 쓰세요.
 
 Если сомневаетесь, выбирайте normal: лучше пропустить привычку, чем заставить её избегать обычных слов.
 
-Для каждого кандидата напишите reason одним предложением; не предлагайте замен и примерных реплик.
+Для каждого кандидата напишите reason одним предложением; не предлагайте замен и примерных реплик. Каждый reason показывается пользователю отдельно, поэтому не ссылайтесь на другие кандидаты по номеру.
 
 Выведите только JSON-массив, каждый номер ровно один раз:
 [
@@ -329,7 +329,7 @@ Da a cada candidata un veredicto:
 
 Si dudas, elige normal: es mejor dejar pasar una muletilla que hacer que evite palabras normales.
 
-Escribe una razón de una sola frase en reason para cada una; no propongas otras palabras ni frases de ejemplo.
+Escribe una razón de una sola frase en reason para cada una; no propongas otras palabras ni frases de ejemplo. Cada reason se le muestra al usuario por separado, así que no te refieras a otras candidatas por su número.
 
 Devuelve solo un array JSON, con cada id exactamente una vez:
 [
@@ -358,7 +358,7 @@ Dê a cada candidata um veredito:
 
 Na dúvida, escolha normal: é melhor deixar passar um bordão do que fazê-la evitar palavras normais.
 
-Escreva em reason uma razão de uma frase para cada uma; não sugira outras palavras nem falas de exemplo.
+Escreva em reason uma razão de uma frase para cada uma; não sugira outras palavras nem falas de exemplo. Cada reason é mostrada ao usuário separadamente, então não se refira a outras candidatas pelo número.
 
 Devolva apenas um array JSON, com cada id exatamente uma vez:
 [
