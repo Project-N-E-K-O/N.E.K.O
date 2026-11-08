@@ -765,6 +765,30 @@ async def test_remote_replacement_preserves_local_edits_and_deletions_against_pu
 
 
 @pytest.mark.asyncio
+async def test_unpublished_local_retirement_is_still_published_after_a_remote_replacement(owner):
+    """Introspection retired p1 here and a remote snapshot arrives before the
+    retirement is published: it survives the import and stays out of the
+    receipt baseline, so the next capture publishes it as superseded."""
+    await stage(owner)
+    assert await owner.native.consume(UID)
+    current = read_views(owner.directory)
+    current['persona']['master']['facts'][0]['permanent_suppression'] = {
+        'at': datetime.now().isoformat(), 'reason': 'hollow', 'issue': 'hollow',
+    }
+    atomic_write_json(owner.directory / 'persona.json', current['persona'])
+    await stage(owner, completed=3000, revision=2)
+    assert await owner.native.consume(UID)
+
+    assert 'permanent_suppression' in read_views(owner.directory)['persona']['master']['facts'][0]
+    receipt = owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())
+    assert {r['id']: r['metadata'] for r in receipt['nativeEntries']}['p1'].get('status') != 'superseded'
+    assert owner.native._capture('Neko', False)
+    captured = owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())
+    assert {r['id']: r['metadata'] for r in captured['document']['entries']}['p1']['status'] == 'superseded'
+    assert not owner.native._capture('Neko', False)
+
+
+@pytest.mark.asyncio
 async def test_remote_still_replaces_unchanged_published_entries(owner):
     await stage(owner)
     assert await owner.native.consume(UID)
@@ -1736,6 +1760,60 @@ def test_archived_memory_replacement_retains_local_coverage_audit(kind, active_d
     assert restored[0]['covered_fact_ids'] == (['active-audit'] if active_duplicate else ['archive-audit'])
     assert 'covered_fact_ids' not in json.dumps(export_document(result, 3000))
     assert existing == before
+
+
+@pytest.mark.parametrize('kind', ['persona', 'reflection'])
+def test_import_keeps_a_retired_row_that_was_already_archived(kind):
+    """An archived row retired by introspection stays on this device: the
+    snapshot entry for it is skipped, so dropping the local copy would lose it."""
+    entry = {'id': 'archived', 'text': 'retired impression', 'source': 'reflection',
+             'entity_key' if kind == 'persona' else 'entity': 'master', 'status': 'confirmed',
+             'archived_at': '2026-10-01T00:00:00',
+             'permanent_suppression': {'at': '2026-10-02T00:00:00', 'reason': 'hollow', 'issue': 'hollow'}}
+    field = 'personaArchives' if kind == 'persona' else 'reflectionArchives'
+    existing = {'persona': {}, 'facts': [], 'archive': [], 'reflections': [], field: {'old.json': [entry]}}
+    incoming = export_document(existing, 3000)
+    result = import_document(incoming, existing)
+    assert [row['id'] for rows in result[field].values() for row in rows] == ['archived']
+    assert 'permanent_suppression' in result[field]['old.json'][0]
+
+
+def test_import_keeps_local_accounting_outside_the_protocol():
+    """Source counts decide whether an AI-only line waits for the user; dropping
+    them on import would make every synced line count as backed."""
+    fact = {'id': 'f1', 'text': 'shared experience', 'entity': 'neko', 'source': 'ai_disclosure',
+            'extraction_path': 'path_b', 'hash': 'x', 'created_at': '2026-10-01T00:00:00'}
+    persona = {'id': 'p1', 'text': 'learned preference', 'source': 'reflection', 'source_id': 'r0',
+               'fact_source_counts': {'user': 0, 'ai': 2}}
+    reflection = {'id': 'r1', 'text': 'confirmed impression', 'entity': 'neko', 'status': 'confirmed',
+                  'source_fact_ids': ['f1'], 'fact_source_counts': {'user': 0, 'ai': 1},
+                  'counted_fact_ids': ['f1'], 'user_confirm_count': 2,
+                  'source_facts_oldest_at': '2026-10-01T00:00:00'}
+    existing = {'persona': {'master': {'facts': [persona]}}, 'facts': [fact], 'archive': [], 'reflections': [reflection]}
+    incoming = export_document(existing, 3000)
+    result = import_document(incoming, existing)
+    assert result['facts'][0]['extraction_path'] == 'path_b'
+    assert result['persona']['master']['facts'][0]['fact_source_counts'] == {'user': 0, 'ai': 2}
+    kept = result['reflections'][0]
+    assert kept['fact_source_counts'] == {'user': 0, 'ai': 1}
+    assert kept['counted_fact_ids'] == ['f1']
+    assert kept['user_confirm_count'] == 2
+    assert kept['source_facts_oldest_at'] == '2026-10-01T00:00:00'
+    # None of it reaches the wire.
+    wire = json.dumps(export_document(result, 3000))
+    for field in ('fact_source_counts', 'counted_fact_ids', 'user_confirm_count', 'extraction_path', 'source_facts_oldest_at'):
+        assert field not in wire
+
+    # A peer's rewrite may rest on other facts: the accounting no longer holds,
+    # while an explicit confirmation still belongs to the row.
+    rewritten = deepcopy(incoming)
+    row = next(row for row in rewritten['entries'] if row['kind'] == 'reflection')
+    row['text'] = 'rewritten impression'
+    row['metadata']['sourceFactIds'] = ['f1', 'f2']
+    moved = import_document(rewritten, existing)['reflections'][0]
+    for field in ('fact_source_counts', 'counted_fact_ids', 'source_facts_oldest_at'):
+        assert field not in moved
+    assert moved['user_confirm_count'] == 2
 
 
 def test_formal_archives_roundtrip_and_keep_scoped_partitions(tmp_path):

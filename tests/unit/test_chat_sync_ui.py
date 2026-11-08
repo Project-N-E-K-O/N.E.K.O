@@ -34,7 +34,7 @@ def run_script(assertions: str) -> None:
                 showModal(){this.open=true;},close(){this.open=false;}};
         }
         const headerButton=element(), body=element();
-        global.window = { addEventListener(name,callback) {windowEvents[name]=callback;}, confirm(){return true;},
+        global.window = { addEventListener(name,callback) {windowEvents[name]=callback;}, dispatchEvent(){return true;}, confirm(){return true;},
             setInterval(callback,delay){intervals.push({callback,delay});return intervals.length;},clearInterval(){},
             lanlan_config: { lanlan_name: 'Neko' }, t(key,values) { return values && values.name ? key+':'+values.name
                 :values && typeof values.count==='number'?key+':'+values.count:key; } };

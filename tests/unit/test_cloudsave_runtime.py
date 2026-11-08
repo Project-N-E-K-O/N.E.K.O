@@ -2491,6 +2491,35 @@ def test_export_snapshot_includes_pinned_facts(tmp_path):
 
 
 @pytest.mark.unit
+def test_export_snapshot_includes_habitual_phrase_overrides(tmp_path):
+    # The user's allow / suppress choices on the habitual-phrase avoid list
+    # cannot be rebuilt from history, so a device change or restore must bring
+    # them along; the mined list itself is recomputed and stays local.
+    cm = _make_config_manager(tmp_path)
+
+    from memory.habitual_phrases import (
+        HABITUAL_PHRASE_OVERRIDES_FILENAME,
+        HABITUAL_PHRASES_FILENAME,
+    )
+    from utils.cloudsave_runtime import export_local_cloudsave_snapshot
+
+    _write_runtime_state(cm, character_name="小满")
+    payload = {
+        "version": 1,
+        "allowed": [{"phrase": "下不为例", "normalized_phrase": "下不为例", "at": 1.0}],
+        "suppressed": [],
+    }
+    character_dir = Path(cm.memory_dir) / "小满"
+    atomic_write_json(character_dir / HABITUAL_PHRASE_OVERRIDES_FILENAME, payload, ensure_ascii=False, indent=2)
+    atomic_write_json(character_dir / HABITUAL_PHRASES_FILENAME, {"entries": []}, ensure_ascii=False, indent=2)
+    export_local_cloudsave_snapshot(cm)
+
+    staged = cm.cloudsave_dir / "characters" / "小满" / "memory"
+    assert json.loads((staged / HABITUAL_PHRASE_OVERRIDES_FILENAME).read_text(encoding="utf-8")) == payload
+    assert not (staged / HABITUAL_PHRASES_FILENAME).exists()
+
+
+@pytest.mark.unit
 def test_export_snapshot_includes_prompt_locale_sidecars(tmp_path):
     cm = _make_config_manager(tmp_path)
 

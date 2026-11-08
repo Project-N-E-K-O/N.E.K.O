@@ -191,6 +191,23 @@
                             <select id="memory-insights-character-select"></select>
                             <strong id="memory-insights-character" data-i18n="memory.repetitionInsightsNoCharacter" hidden>尚未选择角色</strong>
                         </label>
+                        <section id="memory-habitual" class="memory-habitual" aria-labelledby="memory-habitual-title">
+                            <div class="memory-habitual-header">
+                                <h4 id="memory-habitual-title" data-i18n="memory.habitualTitle">口癖压制</h4>
+                                <button type="button" id="memory-habitual-recompute" data-i18n="memory.habitualRecompute" disabled>立即重新计算</button>
+                            </div>
+                            <p class="memory-insights-description" data-i18n="memory.habitualDescription">她在好几次聊天里反复用到的说法，会在每次聊天开头提醒她换个说法表达。你可以逐条放行，或强制压制模型没压制的说法。</p>
+                            <details class="memory-habitual-logic">
+                                <summary data-i18n="memory.habitualLogicSummary">压制规则说明</summary>
+                                <ul id="memory-habitual-logic-list"></ul>
+                            </details>
+                            <div id="memory-habitual-status" class="memory-habitual-status" role="status" aria-live="polite"></div>
+                            <ul id="memory-habitual-list" class="memory-habitual-list"></ul>
+                            <div id="memory-habitual-allowed" class="memory-habitual-allowed" hidden>
+                                <h5 data-i18n="memory.habitualAllowedTitle">已放行的说法（它们和包含它们的说法都不会被压制）</h5>
+                                <ul id="memory-habitual-allowed-list"></ul>
+                            </div>
+                        </section>
                         <div class="memory-insights-fields">
                             <label for="memory-insights-language">
                                 <span data-i18n="memory.repetitionInsightsLanguage">回复内容语言</span>
@@ -516,6 +533,7 @@
     </div>
     <script src="/static/app/app-storage-location.js?v={{ static_asset_version }}" data-storage-location-auto-start="false"></script>
     <script src="/static/js/memory_browser.js?v={{ static_asset_version }}"></script>
+    <script src="/static/js/memory_habitual_phrases.js?v={{ static_asset_version }}"></script>
 
 
     <script src="/static/tutorial/core/guide-helpers.js?v={{ static_asset_version }}"></script>

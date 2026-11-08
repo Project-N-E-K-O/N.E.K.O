@@ -418,8 +418,11 @@ def _write_snapshot_locked(name, payload, *, check_only=False):
             source_evidence = _snapshot_source_evidence(name, existing, remote['document'])
             views = import_document(remote['document'], existing, baseline=local['nativeEntries'] if local else [], source_evidence=source_evidence)
             # Retained local edits have not been published. Keep them outside the
-            # receipt baseline so a later completed organization still captures them.
-            native_entries = export_document(import_document(remote['document'], existing), remote['completedAt'], source_evidence=source_evidence)['entries']
+            # receipt baseline so a later completed organization still captures them;
+            # so are retirements the remote does not carry as superseded yet.
+            native_entries = export_document(import_document(
+                remote['document'], existing, keep_unpublished_retirements=False,
+            ), remote['completedAt'], source_evidence=source_evidence)['entries']
             files = view_files(views)
             before = {relative: (directory / relative).read_text(encoding='utf-8')
                       if (directory / relative).is_file() else None for relative in files}

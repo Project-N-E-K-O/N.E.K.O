@@ -2332,6 +2332,20 @@
             // everything around it is disabled.
             if (control) control.disabled = repetitionInsightsBusy || !ready;
         });
+        notifyHabitualPhrasePanel(false);
+    }
+
+    // The habitual-phrase section (memory_habitual_phrases.js) follows the same
+    // target and the same storage / import locks as the analyzer around it.
+    // `reload` asks it to refetch even when neither changed: the panel opened.
+    function notifyHabitualPhrasePanel(reload) {
+        document.dispatchEvent(new CustomEvent('neko:habitual-phrases-target', {
+            detail: {
+                name: repetitionInsightsTarget(),
+                ready: !memoryStorageLimited && !window._memoryImportInProgress,
+                reload: !!reload
+            }
+        }));
     }
 
     function setRepetitionInsightsBusy(busy) {
@@ -3124,7 +3138,10 @@
         activeMemoryAuxiliaryPanel = name;
         memoryAuxiliaryPanelOpener = opener || trigger;
         document.body.classList.add('memory-aux-panel-open');
-        if (name === 'insights') syncRepetitionInsightsControls();
+        if (name === 'insights') {
+            syncRepetitionInsightsControls();
+            notifyHabitualPhrasePanel(true);
+        }
         if (name === 'visit') openVisitMemoryPanel();
         panel.focus({ preventScroll: true });
     }

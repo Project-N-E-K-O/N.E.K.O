@@ -1833,3 +1833,98 @@ async def test_duplicate_disk_rows_block_the_unseal_exemption(tmp_path):
     assert persisted[0]['signal_processed'] is True, (
         "磁盘上同 id 还有一行已升级并消费，纸条不该放行回写"
     )
+
+
+# ── path-B source labels: marked and counted for auditing ───────────
+
+
+@pytest.mark.unit
+async def test_path_b_marks_its_rows_and_logs_the_model_labels():
+    """Path B stamps the rows it writes, keeps the model's own labels (the
+    owner chose to observe them before changing anything), and logs how many
+    the model labeled user / AI / not at all."""
+    from memory import facts as facts_module
+
+    fs = _make_fact_store()
+    fs.asave_facts = AsyncMock(return_value=None)
+    fs._aadmit_pinned_candidates = AsyncMock(return_value=None)
+    fs._allm_extract_facts_with_known_pool = AsyncMock(return_value=[
+        {'text': '博士喜欢咖啡', 'importance': 7, 'entity': 'master',
+         'source': 'user_observation'},
+        {'text': '悠怡说自己怕打雷', 'importance': 6, 'entity': 'neko',
+         'source': 'ai_disclosure'},
+        {'text': '悠怡觉得秋天好看', 'importance': 6, 'entity': 'neko'},
+    ])
+    log = MagicMock()
+    with patch.object(fs, 'aload_facts', AsyncMock(return_value=[])), \
+         patch.object(facts_module, 'logger', log):
+        persisted = await fs.aextract_facts_with_known_pool('悠怡', [], [])
+
+    assert [f['source'] for f in persisted] == [
+        'user_observation', 'ai_disclosure', 'ai_disclosure',
+    ]
+    assert all(f['extraction_path'] == facts_module.EXTRACTION_PATH_B for f in persisted)
+    lines = [c.args[0] for c in log.info.call_args_list if '[PathB]' in str(c.args[0])]
+    assert lines == [
+        "[PathB] 悠怡: 模型标注 用户 1 / 猫娘自述 1 / 未标 1；新写入 用户 1 / 猫娘自述 2"
+    ]
+
+
+@pytest.mark.unit
+async def test_path_a_rows_carry_no_extraction_path():
+    fs = _make_fact_store()
+    fs.asave_facts = AsyncMock(return_value=None)
+    extracted = [{'text': '博士喜欢咖啡', 'importance': 7, 'entity': 'master'}]
+    with patch.object(fs, 'aload_facts', AsyncMock(return_value=[])):
+        new_facts = await fs._apersist_new_facts('悠怡', extracted)
+    assert 'extraction_path' not in new_facts[0]
+
+
+@pytest.mark.unit
+async def test_path_b_logs_runs_that_add_nothing_but_not_failures():
+    """An empty result is logged with zero counts (how often path B adds
+    nothing); a failed run (None) is not counted as one."""
+    from memory import facts as facts_module
+
+    fs = _make_fact_store()
+    log = MagicMock()
+    with patch.object(facts_module, 'logger', log):
+        fs._allm_extract_facts_with_known_pool = AsyncMock(return_value=[])
+        assert await fs.aextract_facts_with_known_pool('悠怡', [], []) == []
+        fs._allm_extract_facts_with_known_pool = AsyncMock(return_value=None)
+        assert await fs.aextract_facts_with_known_pool('悠怡', [], []) is None
+    lines = [c.args[0] for c in log.info.call_args_list if '[PathB]' in str(c.args[0])]
+    assert lines == [
+        "[PathB] 悠怡: 模型标注 用户 0 / 猫娘自述 0 / 未标 0；新写入 用户 0 / 猫娘自述 0"
+    ]
+
+
+@pytest.mark.unit
+async def test_path_b_label_count_survives_unhashable_source():
+    """A malformed item with a list/dict ``source`` counts as unlabeled
+    instead of crashing the path-B call."""
+    from memory import facts as facts_module
+
+    fs = _make_fact_store()
+    log = MagicMock()
+    with patch.object(facts_module, 'logger', log):
+        fs._log_path_b_labels('悠怡', [{'source': []}, {'source': {}}, 'bare'], [])
+    lines = [c.args[0] for c in log.info.call_args_list if '[PathB]' in str(c.args[0])]
+    assert lines == [
+        "[PathB] 悠怡: 模型标注 用户 0 / 猫娘自述 0 / 未标 3；新写入 用户 0 / 猫娘自述 0"
+    ]
+
+
+@pytest.mark.unit
+async def test_apersist_unhashable_source_falls_back_to_default():
+    """A fact with text but a list ``source`` is stored with the default
+    source instead of aborting the batch."""
+    fs = _make_fact_store()
+    fs.asave_facts = AsyncMock(return_value=None)
+    extracted = [
+        {'text': '博士喜欢咖啡', 'importance': 7, 'entity': 'master', 'source': []},
+        {'text': '博士周末去爬山', 'importance': 7, 'entity': 'master'},
+    ]
+    with patch.object(fs, 'aload_facts', AsyncMock(return_value=[])):
+        new_facts = await fs._apersist_new_facts('悠怡', extracted, default_source='ai_disclosure')
+    assert [f['source'] for f in new_facts] == ['ai_disclosure', 'ai_disclosure']

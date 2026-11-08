@@ -11,6 +11,7 @@ from pathlib import Path
 import sys
 from uuid import uuid4
 
+from memory.introspection import PERMANENT_SUPPRESSION_KEY, is_permanently_suppressed
 from utils.long_term_memory_protocol import MAX_ENTRIES, document, head
 from utils.recent_memory_protocol import canonical
 
@@ -332,6 +333,13 @@ def export_document(views, completed_at, *, source_evidence=None):
                 metadata['evidenceReviewedAt'] = timestamp(native['confirmed_at'])
             if native.get('promoted_at'):
                 metadata['promotedAt'] = timestamp(native['promoted_at'])
+        if kind in ('persona', 'reflection') and is_permanently_suppressed(native):
+            # Retired by introspection on this device: peers drop it instead
+            # of injecting it, and this device keeps its own row (see import).
+            metadata['status'] = 'superseded'
+            marker = native[PERMANENT_SUPPRESSION_KEY]
+            if isinstance(marker, dict) and marker.get('merged_into'):
+                metadata['supersededById'] = str(marker['merged_into'])[:200]
         identity = (kind, subject, key)
         if kind == 'fact':
             if archived and native.get('arbitration_archived_at'):
@@ -378,7 +386,7 @@ def validate_retirement_subjects(previous, incoming):
         subjects[row['id']] = row['subject']
 
 
-def import_document(incoming, existing, *, baseline=None, source_evidence=None):
+def import_document(incoming, existing, *, baseline=None, source_evidence=None, keep_unpublished_retirements=True):
     incoming = document(incoming)
     validate_retirement_subjects(existing.get('sync', {}).get('evidence', {}).get('retirements', []),
                                  incoming.get('evidence', {}).get('retirements', []))
@@ -431,10 +439,30 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None):
         native = value if isinstance(value, dict) else {'text': str(value)}
         return (kind, subject, _entry_id(subject, native)) in pending
 
+    # Rows introspection retired here stay as they are: a snapshot carries
+    # them as superseded (or, from a peer that has not seen the retirement,
+    # live), and neither may replace, duplicate or delete this device's row.
+    locally_retired = (
+        {('persona', subject, key) for (subject, key), row in local_persona.items()
+         if is_permanently_suppressed(row)}
+        | {('reflection', subject, key) for (subject, key), row in local_reflections.items()
+           if is_permanently_suppressed(row)}
+    )
+    if not keep_unpublished_retirements:
+        # A receipt baseline holds only what the remote already carries: a
+        # retirement it does not carry as superseded is unpublished and has
+        # to stay a difference, or the next capture never publishes it.
+        locally_retired &= {(row['kind'], row['subject'], row['id']) for row in incoming['entries']
+                            if row['metadata'].get('status') == 'superseded'}
+
+    def retired(kind, subject, value):
+        return isinstance(value, dict) and (kind, subject, _entry_id(subject, value)) in locally_retired
+
     # Keep static character-card entries and scoped/group partitions on this device.
     for subject in SUBJECTS:
         section = result['persona'].setdefault(subject, {})
         section['facts'] = [row for row in section.get('facts', []) if retained('persona', subject, row)
+                            or retired('persona', subject, row)
                             or (isinstance(row, dict) and (not private(row) or row.get('source') == 'character_card'))]
     for field in ('facts', 'archive'):
         result[field] = [row for row in result[field] if isinstance(row, dict)
@@ -442,17 +470,19 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None):
                               or retained('fact', row.get('entity'), row))]
     for key, kind, subject_key in [('personaArchives', 'persona', 'entity_key'), ('reflectionArchives', 'reflection', 'entity')]:
         result[key] = {relative: [row for row in rows if not private(row) or row.get(subject_key) not in SUBJECTS
-                      or row.get('source') == 'character_card' or retained(kind, row.get(subject_key), row)]
+                      or row.get('source') == 'character_card' or retained(kind, row.get(subject_key), row)
+                      or retired(kind, row.get(subject_key), row)]
                       for relative, rows in result.get(key, {}).items()}
     incoming_reflections = {(row['subject'], row['id']) for row in incoming['entries'] if row['kind'] == 'reflection'}
     result['reflections'] = [row for row in result['reflections'] if isinstance(row, dict)
         and (not private(row) or row.get('entity') not in SUBJECTS or retained('reflection', row.get('entity'), row)
+             or retired('reflection', row.get('entity'), row)
              or (incoming['schemaVersion'] == 1 and row.get('status') not in ('confirmed', 'promoted')
                  and (not isinstance(row.get('id'), str)
                       or (row.get('entity'), row.get('id')) not in incoming_reflections)))]
     for row in incoming['entries']:
         kind, subject, meta = row['kind'], row['subject'], row['metadata']
-        if (kind, subject, row['id']) in pending:
+        if (kind, subject, row['id']) in pending or (kind, subject, row['id']) in locally_retired:
             continue
         formally_archived = kind != 'fact' and (meta.get('archivedAt') is not None or meta.get('archived'))
         arbitrated = kind == 'fact' and meta.get('archived') and meta.get('archivedAt') is not None and meta.get('status') in ('retracted', 'superseded')
@@ -485,8 +515,10 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None):
             native.update(source='reflection' if sources else 'manual', source_id=sources[0] if sources else native['source_sync_id'],
                           merged_from_ids=list(sources[1:]))
             previous = local_persona.get((subject, row['id']), {})
-            if previous.get('text') == native['text'] and 'covered_fact_ids' in previous:
-                native['covered_fact_ids'] = deepcopy(previous['covered_fact_ids'])
+            if previous.get('text') == native['text']:
+                for field in ('covered_fact_ids', 'fact_source_counts'):
+                    if field in previous:
+                        native[field] = deepcopy(previous[field])
             if 'protected' in previous:
                 native.setdefault('protected', previous['protected'])
             # The protocol omits receiver-only state and external-import ledgers.
@@ -509,6 +541,8 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None):
                           importance=meta.get('importance', 5), absorbed=bool(meta.get('absorbed')), signal_processed=True,
                           hash=hashlib.sha256(row['text'].encode()).hexdigest()[:16])
             previous = local_facts.get((subject, row['id']), {})
+            if previous.get('text') == native['text'] and previous.get('extraction_path'):
+                native['extraction_path'] = previous['extraction_path']
             if previous.get('text') == native['text'] and previous.get('external_import'):
                 native['external_import'] = deepcopy(previous['external_import'])
                 if previous.get('hash'):
@@ -535,6 +569,23 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None):
                 native['confirmed_at'] = iso(meta.get('evidenceReviewedAt', incoming['completedAt']))
             if meta.get('promotedAt'):
                 native['promoted_at'] = iso(meta['promotedAt'])
+            # The synthesis-time evidence age and fact accounting are this device's
+            # record and not part of the protocol; a snapshot of the same row must
+            # not drop them (without the age a line retired as stale stays hidden,
+            # without the counts an AI-only line counts as backed). They only hold
+            # for the same text on the same facts: a peer's rewrite may rest on
+            # older ones.
+            if (
+                previous.get('text') == native['text']
+                and sorted(previous.get('source_fact_ids') or []) == sorted(native['source_fact_ids'])
+            ):
+                for field in ('source_facts_oldest_at', 'fact_source_counts', 'counted_fact_ids'):
+                    if field in previous:
+                        native[field] = deepcopy(previous[field])
+            # Explicit confirmations are not in the protocol either; like the
+            # reinforce count they belong to the row, whatever its current wording.
+            if 'user_confirm_count' in previous:
+                native['user_confirm_count'] = previous['user_confirm_count']
             if formally_archived:
                 _append_archive(result, 'reflectionArchives', native, incoming['completedAt'])
             else:

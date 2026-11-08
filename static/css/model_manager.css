@@ -2696,6 +2696,7 @@ body.model-manager-page #pngtuber-container .pngtuber-image {
     align-items: center;
     padding: 10px;
     background: #fff;
+    color: #333;
     border-radius: 6px;
     margin-bottom: 8px;
     border: 1px solid #ddd;
@@ -2722,7 +2723,10 @@ body.model-manager-page #pngtuber-container .pngtuber-image {
     flex: 1;
     cursor: pointer;
     font-size: 14px;
-    color: #333;
+}
+
+.model-item input:disabled ~ label {
+    color: #666;
 }
 
 .model-item .model-source {

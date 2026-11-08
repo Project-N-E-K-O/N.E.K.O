@@ -1,9 +1,15 @@
-"""Paths reserved for plugin dependency synchronization work files."""
+"""Plugin-owned Python source paths and dependency synchronization work paths."""
 
 from __future__ import annotations
 
+import os
 import re
+from collections.abc import Iterator
 from pathlib import Path
+
+PYTHON_SOURCE_EXCLUDED_DIR_NAMES = frozenset(
+    {"vendor", ".venv", "venv", ".git", "__pycache__", "node_modules"}
+)
 
 # `neko-plugin sync` swaps vendor/ through sibling work directories at the
 # plugin root. Each one holds a full third-party tree and is never plugin
@@ -54,3 +60,22 @@ def is_vendor_sync_path(relative_path: Path) -> bool:
     return len(parts) > 1 and parts[0] == "vendor" and bool(
         _VENDOR_SYNC_STAGING_RE.fullmatch(parts[1])
     )
+
+
+def iter_plugin_python_files(plugin_dir: Path) -> Iterator[Path]:
+    """Walk plugin-owned Python files, pruning tool and sync directories before descent."""
+
+    def walk_error(exc: OSError) -> None:
+        raise exc
+
+    for root, directories, files in os.walk(plugin_dir, onerror=walk_error, followlinks=False):
+        base = Path(root)
+        directories[:] = [
+            name
+            for name in directories
+            if name not in PYTHON_SOURCE_EXCLUDED_DIR_NAMES
+            and not is_vendor_sync_path((base / name).relative_to(plugin_dir))
+        ]
+        for name in files:
+            if name.lower().endswith(".py"):
+                yield base / name

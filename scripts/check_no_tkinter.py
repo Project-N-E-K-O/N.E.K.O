@@ -61,8 +61,8 @@ What goes where (rule of thumb)
 -------------------------------
 * **Directory / file pickers** → Electron's `dialog` module (renderer
   → main IPC). For non-Electron contexts (raw `index.html` in browser,
-  CLI scripts) fall back to the platform-native bridges already in
-  `main_routers/storage_location_router.py`: PowerShell on Windows,
+  CLI scripts) fall back to the platform-native bridges in
+  `utils/native_directory.py`: PowerShell on Windows,
   osascript on macOS, zenity/kdialog/yad on Linux. None of those open
   Tk; they shell out to the OS dialog. If the native bridge fails,
   surface `_DirectoryPickerUnavailable` to the frontend and let the
@@ -278,7 +278,7 @@ def main(argv: list[str] | None = None) -> int:
             "deployment, headless CI). Reach for Electron's `dialog` / "
             "`desktopCapturer` / a renderer-side React modal instead; if Electron "
             "isn't available in the context (raw browser, CLI script), use the "
-            "platform-native shell bridges in storage_location_router.py "
+            "platform-native shell bridges in utils/native_directory.py "
             "(PowerShell / osascript / zenity-kdialog-yad) and surface "
             "`_DirectoryPickerUnavailable` on failure rather than falling back to "
             "Tk. Past incident proving this matters: PR #1014's Windows tk "

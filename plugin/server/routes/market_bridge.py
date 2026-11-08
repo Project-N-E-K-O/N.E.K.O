@@ -17,6 +17,7 @@ import errno
 import hashlib
 import hmac
 import json
+import re
 import secrets
 import time
 import tomllib
@@ -805,6 +806,344 @@ async def market_catalog_plugin(request: Request, plugin_id: str) -> Response:
     return await _proxy_market_catalog(
         request,
         f"/plugins/{quote(plugin_id, safe='')}",
+    )
+
+
+@router.get("/catalog/api/v1/zones")
+async def market_catalog_zones(request: Request) -> Response:
+    """Proxy the Market's public zone list; the submission form picks one from it."""
+
+    return await _proxy_market_catalog(request, "/zones")
+
+
+# -- Review submission proxy --
+#
+# The publish workbench drives the Market review flow (preflight, draft,
+# submit, revision, workspace, withdraw) through these routes. They reuse the
+# same desktop OAuth login the Market download already uses: the access token
+# is attached as a server-side ``Authorization: Bearer`` header and never
+# reaches the browser, exactly like ``_report_market_install_best_effort``. Every call must carry
+# the bridge token (``_verify_token``, as the other ``/market`` write endpoints
+# require) and come from the local plugin manager: a remote Market page paired
+# through ``/token-exchange`` holds the token too, but must not act on the
+# Market as this desktop's signed-in user.
+_SUBMISSION_RESPONSE_HEADERS = _CATALOG_RESPONSE_HEADERS
+_SUBMISSION_ID_PATTERN = re.compile(r"\A(?:[0-9]{1,19}|[0-9a-fA-F-]{8,36})\Z")
+# The Market ``/mine`` query parameters; anything else (notably the bridge
+# ``token``) stays local.
+_SUBMISSION_MINE_QUERY_PARAMS = ("q", "status", "decision", "page", "page_size")
+
+
+def _validated_submission_id(submission_id: str) -> str:
+    """Accept only a numeric id or a uuid; refuse anything that could reshape the path."""
+    if not _SUBMISSION_ID_PATTERN.match(submission_id):
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "market_submission_id_invalid", "message": "invalid submission id"},
+        )
+    return submission_id
+
+
+async def _authenticated_market_token() -> dict[str, Any]:
+    """Return a valid desktop OAuth token, or raise the local 409 the UI localizes.
+
+    ``market_auth_required`` and ``market_auth_pending`` (the login has not yet
+    resolved its account subject) are decided here, before anything is
+    forwarded, so an unauthenticated workbench never reaches the Market with an
+    empty Authorization header.
+    """
+    token_data = await _ensure_valid_oauth_token()
+    if not token_data or not token_data.get("access_token"):
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "market_auth_required", "message": "Market login is required"},
+        )
+    if not _oauth_subject_is_verified(token_data):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "market_auth_pending",
+                "message": "the Market login has not finished resolving the account",
+            },
+        )
+    return token_data
+
+
+async def _email_unverified_response(access_token: str) -> JSONResponse | None:
+    """Return ``market_email_unverified`` when a Market 403 came from its email gate.
+
+    ``require_verified_user`` answers 403 with a localized string, the same
+    shape as the route's ownership 403s, so the text cannot tell them apart.
+    That dependency runs before the route body, so for a user whose Market
+    account reports ``email_verified: false`` the 403 is the email gate.
+    """
+    user = await _fetch_market_user(access_token)
+    if user is None or user.get("email_verified") is not False:
+        return None
+    return JSONResponse(
+        status_code=409,
+        content={
+            "detail": "the Market account email is not verified",
+            "code": "market_email_unverified",
+        },
+    )
+
+
+async def _proxy_market_submission(
+    request: Request,
+    *,
+    method: str,
+    upstream_path: str,
+    query: tuple[str, ...] = (),
+    forward_body: bool = False,
+    requires_verified_email: bool = False,
+) -> Response:
+    """Proxy one authenticated review-submission call to the Market.
+
+    The request carries the server-held access token; the browser only ever
+    sends the bridge token, verified here. Only the ``query`` parameters named
+    by the caller are forwarded. A single 401 triggers one refresh-and-retry
+    (the pattern the OAuth endpoints use). An auth, network or redirect
+    failure returns only a local code; so does a 403 from the Market's email
+    gate when ``requires_verified_email`` names a ``require_verified_user``
+    route. Any other business 4xx/5xx the Market authored is passed through
+    unchanged (status + body) so the UI can localize by its ``code`` and show
+    its ``detail``.
+    """
+    _verify_token(
+        request.query_params.get("token"),
+        authorization=request.headers.get("authorization"),
+    )
+    _require_local_bridge_token_access(request)
+    base_url = _normalized_base_url(MARKET_API_URL)
+    if not base_url:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": "Market submissions are not configured",
+                "code": "market_submission_not_configured",
+            },
+        )
+
+    body = await request.body() if forward_body else None
+    upstream_url = f"{base_url}/api/v1/review/submissions{upstream_path}"
+    forwarded_query = [
+        (name, value) for name, value in request.query_params.multi_items() if name in query
+    ]
+    if forwarded_query:
+        upstream_url = f"{upstream_url}?{urlencode(forwarded_query)}"
+
+    httpx = await ensure_httpx()
+    rejected_token: str | None = None
+    started_at = time.monotonic()
+    for attempt in range(2):
+        token_data = await _authenticated_market_token()
+        if rejected_token is not None:
+            token_data = await _ensure_valid_oauth_token(force_refresh=True, rejected_access_token=rejected_token)
+            if not token_data or not token_data.get("access_token"):
+                break
+        access_token = token_data["access_token"]
+        headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
+        language = request.headers.get("accept-language")
+        if language and language.isascii():
+            headers["Accept-Language"] = language
+        if forward_body:
+            headers["Content-Type"] = "application/json"
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(15.0, connect=3.0),
+                follow_redirects=False,
+            ) as client:
+                upstream = await client.request(
+                    method, upstream_url, headers=headers, content=body
+                )
+        except httpx.HTTPError as exc:
+            elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
+            logger.warning(
+                "[market-submission] request failed "
+                "category={} status=unavailable request_id=unavailable "
+                "elapsed_ms={} origin={}",
+                _market_auth_network_failure_category(exc),
+                elapsed_ms,
+                _market_api_log_origin(),
+            )
+            return JSONResponse(
+                status_code=502,
+                content={
+                    "detail": "Market submissions are temporarily unavailable",
+                    "code": "market_submission_unavailable",
+                },
+            )
+
+        if upstream.status_code == 401:
+            # A rejected credential never passes its upstream body through: the
+            # first time, refresh once and retry; a second rejection means the
+            # saved login is no longer usable and must be re-done.
+            logger.info(
+                "[market-submission] request rejected "
+                "category=credential_rejected status=401 request_id={} "
+                "elapsed_ms={} origin={}",
+                _safe_market_request_id(upstream.headers.get("x-request-id")),
+                max(0, round((time.monotonic() - started_at) * 1000)),
+                _market_api_log_origin(),
+            )
+            if attempt == 0:
+                rejected_token = access_token
+                continue
+            break
+
+        if 300 <= upstream.status_code < 400:
+            logger.warning(
+                "[market-submission] request failed "
+                "category=redirect_rejected status={} request_id={} origin={}",
+                upstream.status_code,
+                _safe_market_request_id(upstream.headers.get("x-request-id")),
+                _market_api_log_origin(),
+            )
+            return JSONResponse(
+                status_code=502,
+                content={
+                    "detail": "Market submissions returned an unsafe redirect",
+                    "code": "market_submission_redirect_rejected",
+                },
+            )
+
+        if upstream.status_code == 403 and requires_verified_email:
+            unverified = await _email_unverified_response(access_token)
+            if unverified is not None:
+                logger.info(
+                    "[market-submission] request rejected "
+                    "category=email_unverified status=403 request_id={} origin={}",
+                    _safe_market_request_id(upstream.headers.get("x-request-id")),
+                    _market_api_log_origin(),
+                )
+                return unverified
+
+        if upstream.status_code >= 400:
+            elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
+            logger.warning(
+                "[market-submission] request failed "
+                "category={} status={} request_id={} elapsed_ms={} origin={}",
+                _market_auth_http_failure_category(upstream.status_code),
+                upstream.status_code,
+                _safe_market_request_id(upstream.headers.get("x-request-id")),
+                elapsed_ms,
+                _market_api_log_origin(),
+            )
+
+        response_headers = {
+            name: value
+            for name, value in upstream.headers.items()
+            if name.lower() in _SUBMISSION_RESPONSE_HEADERS
+        }
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            headers=response_headers,
+        )
+
+    # Both attempts saw a rejected credential; the login must be re-done.
+    return JSONResponse(
+        status_code=401,
+        content={
+            "detail": "Market rejected the login credential",
+            "code": "market_auth_rejected",
+        },
+    )
+
+
+@router.get("/submissions/mine")
+async def market_submission_mine(request: Request) -> Response:
+    return await _proxy_market_submission(
+        request, method="GET", upstream_path="/mine", query=_SUBMISSION_MINE_QUERY_PARAMS
+    )
+
+
+@router.post("/submissions/preflight")
+async def market_submission_preflight(request: Request) -> Response:
+    # The Market takes an untyped dict here, so the body is forwarded as sent.
+    return await _proxy_market_submission(
+        request,
+        method="POST",
+        upstream_path="/preflight",
+        forward_body=True,
+        requires_verified_email=True,
+    )
+
+
+@router.post("/submissions/repository-preview")
+async def market_submission_repository_preview(request: Request) -> Response:
+    return await _proxy_market_submission(
+        request,
+        method="POST",
+        upstream_path="/repository-preview",
+        forward_body=True,
+        requires_verified_email=True,
+    )
+
+
+@router.post("/submissions/drafts")
+async def market_submission_create_draft(request: Request) -> Response:
+    return await _proxy_market_submission(
+        request,
+        method="POST",
+        upstream_path="/drafts",
+        forward_body=True,
+        requires_verified_email=True,
+    )
+
+
+@router.put("/submissions/{submission_id}/draft")
+async def market_submission_update_draft(request: Request, submission_id: str) -> Response:
+    return await _proxy_market_submission(
+        request,
+        method="PUT",
+        upstream_path=f"/{_validated_submission_id(submission_id)}/draft",
+        forward_body=True,
+        requires_verified_email=True,
+    )
+
+
+@router.post("/submissions/{submission_id}/submit")
+async def market_submission_submit(request: Request, submission_id: str) -> Response:
+    return await _proxy_market_submission(
+        request,
+        method="POST",
+        upstream_path=f"/{_validated_submission_id(submission_id)}/submit",
+        forward_body=True,
+        requires_verified_email=True,
+    )
+
+
+@router.post("/submissions/{submission_id}/revision")
+async def market_submission_create_revision(request: Request, submission_id: str) -> Response:
+    return await _proxy_market_submission(
+        request,
+        method="POST",
+        upstream_path=f"/{_validated_submission_id(submission_id)}/revision",
+        forward_body=True,
+        requires_verified_email=True,
+    )
+
+
+@router.get("/submissions/{submission_id}/workspace")
+async def market_submission_workspace(request: Request, submission_id: str) -> Response:
+    # A login-only Market route; no query parameter is forwarded.
+    return await _proxy_market_submission(
+        request,
+        method="GET",
+        upstream_path=f"/{_validated_submission_id(submission_id)}/workspace",
+    )
+
+
+@router.post("/submissions/{submission_id}/withdraw")
+async def market_submission_withdraw(request: Request, submission_id: str) -> Response:
+    # The Market withdraw route needs only a login, not a verified email.
+    return await _proxy_market_submission(
+        request,
+        method="POST",
+        upstream_path=f"/{_validated_submission_id(submission_id)}/withdraw",
+        forward_body=True,
     )
 
 
