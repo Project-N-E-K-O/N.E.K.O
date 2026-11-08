@@ -13,7 +13,7 @@ _CHUNK_BYTES = 65536
 _POLL_SECONDS = 0.05
 
 
-def _windows_pipe_reader(fd: int) -> Callable[[], bytes | None]:
+def _windows_pipe_reader(fd: int) -> tuple[Callable[[int], bytes | None], Callable[[], int]]:
     import ctypes
     from ctypes import wintypes
     import msvcrt
@@ -25,19 +25,33 @@ def _windows_pipe_reader(fd: int) -> Callable[[], bytes | None]:
     peek.restype = wintypes.BOOL
     handle = wintypes.HANDLE(msvcrt.get_osfhandle(fd))
 
-    def read_ready() -> bytes | None:
+    def buffered_bytes() -> int:
         available = wintypes.DWORD()
         if not peek(handle, None, 0, None, ctypes.byref(available), None):
             error = ctypes.get_last_error()
             if error in (109, 232):  # broken pipe / closing pipe
-                return b""
+                return 0
             raise ctypes.WinError(error)
-        if available.value:
-            return os.read(fd, min(available.value, _CHUNK_BYTES))
+        return available.value
+
+    def read_ready(limit: int) -> bytes | None:
+        available = buffered_bytes()
+        if available:
+            return os.read(fd, min(available, limit))
         time.sleep(_POLL_SECONDS)
         return None
 
-    return read_ready
+    return read_ready, buffered_bytes
+
+
+def _posix_buffered_bytes(fd: int) -> int:
+    import array
+    import fcntl
+    import termios
+
+    pending = array.array("i", [0])
+    fcntl.ioctl(fd, termios.FIONREAD, pending, True)
+    return pending[0]
 
 
 def iter_process_output(
@@ -53,35 +67,39 @@ def iter_process_output(
     fd = process.stdout.fileno()
     selector = None
     if os.name == "nt":
-        read_ready = _windows_pipe_reader(fd)
+        read_ready, buffered_bytes = _windows_pipe_reader(fd)
     else:
         selector = selectors.DefaultSelector()
         selector.register(fd, selectors.EVENT_READ)
 
-        def read_ready() -> bytes | None:
+        def read_ready(limit: int) -> bytes | None:
             if selector.select(_POLL_SECONDS):
-                return os.read(fd, _CHUNK_BYTES)
+                return os.read(fd, limit)
             return None
 
+        buffered_bytes = lambda: _posix_buffered_bytes(fd)
+
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    remaining: int | None = None
     try:
         while True:
             checkpoint()
-            exited = process.poll() is not None
-            chunk = read_ready()
-            if chunk is None:
-                if exited:
+            if remaining is None and process.poll() is not None:
+                # Freeze the ready-byte count once. Pipe capacity may exceed a
+                # chunk, while later writes from helpers must not extend it.
+                remaining = buffered_bytes()
+                if not remaining:
                     break
-                # If the child exited during this wait, peek again after the
-                # next poll observes exit so its final bytes are not lost.
+            chunk = read_ready(_CHUNK_BYTES if remaining is None else min(_CHUNK_BYTES, remaining))
+            if chunk is None:
                 continue
             if not chunk:
                 break
             yield decoder.decode(chunk)
-            # Drain at most one bounded chunk after observing exit. A helper
-            # that writes continuously must not extend the command lifetime.
-            if exited:
-                break
+            if remaining is not None:
+                remaining -= len(chunk)
+                if not remaining:
+                    break
         tail = decoder.decode(b"", final=True)
         if tail:
             yield tail
