@@ -444,6 +444,18 @@ def test_the_same_note_is_not_added_beside_itself():
     assert _plan(_complaint(), notes=[live]).rejected == {"same_as_live": 1}
 
 
+@pytest.mark.parametrize("outcome", ["card_conflict", "stale"])
+def test_a_note_cannot_be_retired_and_added_back_in_one_answer(outcome):
+    live = _note(avoid="被反驳时立刻退让")
+    plan = _plan(
+        {"action": "retire", "id": "N1", "outcome": outcome},
+        _complaint(),
+        notes=[live],
+    )
+    assert len(plan.retired) == 1 and not plan.added
+    assert plan.rejected == {"same_as_live": 1}
+
+
 def test_a_note_retired_for_conflicting_with_the_card_does_not_come_back():
     retired = [{"avoid": "被反驳时立刻退让", "direction": "x", "outcome": "card_conflict", "at": _NOW - 86400}]
     assert _plan(_complaint(), retired=retired).rejected == {"card_conflict_again": 1}

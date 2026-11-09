@@ -571,7 +571,9 @@ def plan_note_actions(
     gone = {str(item[0]["id"]) for item in plan.retired}
     staying = [note for note in notes if str(note["id"]) not in gone]
     live = Counter(str(note["kind"]) for note in staying)
-    live_keys = {_compact(str(note["avoid"])) for note in staying}
+    # Every note the model was shown, the ones it is retiring included: a note
+    # retired and added back in one answer would come out with a fresh lifetime.
+    live_keys = {_compact(str(note["avoid"])) for note in notes}
     conflicted = {
         _compact(str(item.get("avoid") or "")) for item in retired
         if item.get("outcome") == OUTCOME_CARD_CONFLICT
