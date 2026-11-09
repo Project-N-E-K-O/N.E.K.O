@@ -1034,5 +1034,12 @@
         isMounted: function () { return I.mounted; }
     });
 
+    if (window.nekoChatHistory) {
+        window.nekoChatHistory.connect({
+            getMessages: function () { return I.state.messages; },
+            restore: I.restoreChatHistory
+        });
+    }
+
     delete window.__appReactChatWindowParts;
 })();

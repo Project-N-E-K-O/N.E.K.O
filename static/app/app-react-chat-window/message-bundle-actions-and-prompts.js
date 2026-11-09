@@ -306,6 +306,7 @@
     }
 
     I.renderWindow = function renderWindow() {
+        if (window.nekoChatHistory) window.nekoChatHistory.publish();
         var overlay = I.getOverlay();
         if (!overlay || overlay.hidden) return;
         if (!I.mounted && I.getCurrentChatSurfaceMode() === 'compact') {
@@ -1907,7 +1908,7 @@
         return hadVisibleState;
     }
 
-    I.setMessages = function setMessages(messages, options) {
+    function replaceMessages(messages, historyRestore, keepClearedScreen) {
         cancelMessageReactions();
         // Compute fallback start past any explicit sortKey in incoming batch
         var maxIncomingSortKey = Array.isArray(messages)
@@ -1938,12 +1939,102 @@
         window.dispatchEvent(new CustomEvent('react-chat-window:messages-replaced', {
             detail: {
                 conversationReset: I.state.messages.length === 0,
-                keepClearedScreen: !!(options && options.keepClearedScreen)
+                keepClearedScreen: keepClearedScreen === true,
+                historyRestore: historyRestore === true,
+                streamingTurnIds: historyRestore ? I.state.messages.filter(function (message) {
+                    return message.role === 'assistant' && message.status === 'streaming' && message.turnId;
+                }).map(function (message) { return message.turnId; }) : undefined
             }
         }));
         I.renderWindow();
         return I.state.messages;
     }
+
+    I.setMessages = function setMessages(messages, options) {
+        return replaceMessages(messages, false, !!(options && options.keepClearedScreen));
+    };
+
+    function mergeChatHistoryReplyBlocks(savedBlocks, liveBlocks, pendingMusicCommand) {
+        var savedText = savedBlocks[0];
+        var liveText = liveBlocks[0];
+        if (liveText?.type !== 'text' || typeof liveText.text !== 'string') return liveBlocks.length ? liveBlocks : savedBlocks;
+        var hasSavedText = savedText?.type === 'text' && typeof savedText.text === 'string';
+        var prefix = liveText.text;
+        if (pendingMusicCommand && prefix.endsWith(pendingMusicCommand)) {
+            prefix = prefix.slice(0, -pendingMusicCommand.length).trimEnd();
+        }
+        var keepSavedText = hasSavedText && savedText.text.startsWith(prefix)
+            && (prefix === liveText.text || savedText.text.length > prefix.length);
+        var text = keepSavedText ? savedText : liveText;
+        var extras = liveBlocks.length > 1 ? liveBlocks.slice(1) : savedBlocks.slice(hasSavedText ? 1 : 0);
+        return [text].concat(extras);
+    }
+
+    I.restoreChatHistory = function restoreChatHistory(snapshot) {
+        if (!Array.isArray(snapshot?.messages) || !Number.isFinite(snapshot.updatedAt)) return;
+        var resetAt = Number.isFinite(snapshot.resetAt) ? snapshot.resetAt
+            : (snapshot.messages.length ? 0 : snapshot.updatedAt);
+        function clearedByReset(message) {
+            return resetAt > 0 && message.createdAt <= resetAt;
+        }
+        var currentBubbles = new Map();
+        (window.currentTurnGeminiBubbles || []).forEach(function (bubble) {
+            var id = bubble?.dataset?.reactChatMessageId;
+            if (id) currentBubbles.set(id, bubble);
+        });
+        // Preserve the destination adapter's references to bubbles it is still streaming.
+        var liveMessages = I.state.messages.filter(function (message) {
+            return !clearedByReset(message) && currentBubbles.has(message.id);
+        });
+        var liveById = new Map(liveMessages.map(function (message) { return [message.id, message]; }));
+        var snapshotIds = new Set(snapshot.messages.map(function (message) { return message.id; }));
+        var unmatchedLive = liveMessages.filter(function (message) { return !snapshotIds.has(message.id); });
+        var unmatchedSaved = snapshot.messages.filter(function (message) { return !liveById.has(message.id); });
+        var mergeMessages = window.mergeMessagesEnabled ?? window.appState?.mergeMessagesEnabled;
+
+        function hasMatchingReplyPrefix(saved, live) {
+            if (saved.role !== 'assistant' || live.role !== 'assistant'
+                    || saved.status !== 'streaming' || live.status !== 'streaming'
+                    || !saved.turnId || saved.turnId !== live.turnId) return false;
+            var savedText = saved.blocks.length === 1 && saved.blocks[0].text;
+            var liveText = live.blocks.length === 1 && live.blocks[0].text;
+            return typeof savedText === 'string' && savedText.length > 0
+                && typeof liveText === 'string' && liveText.length > 0
+                && (savedText === liveText || (mergeMessages
+                    && (liveText.startsWith(savedText) || savedText.startsWith(liveText))));
+        }
+
+        var messages = snapshot.messages.map(function (saved) {
+            var live = liveById.get(saved.id);
+            if (!live) {
+                var candidates = unmatchedLive.filter(function (message) { return hasMatchingReplyPrefix(saved, message); });
+                if (candidates.length === 1 && unmatchedSaved.filter(function (message) {
+                    return hasMatchingReplyPrefix(message, candidates[0]);
+                }).length === 1) {
+                    live = candidates[0];
+                }
+            }
+            if (live) {
+                var blocks = mergeChatHistoryReplyBlocks(saved.blocks, live.blocks);
+                // The adapter may still be catching up with the restored text on its own socket.
+                if (live.status === 'streaming') currentBubbles.get(live.id).restoredHistoryBlocks = blocks;
+                return Object.assign({}, live, {
+                    blocks: blocks,
+                    sortKey: saved.sortKey
+                });
+            }
+            if (saved.status === 'streaming') return Object.assign({}, saved, { status: 'sent' });
+            return saved;
+        });
+        var savedIds = new Set(messages.map(function (message) { return message.id; }));
+        var isHandoff = Number.isFinite(snapshot.handoffStartedAt);
+        replaceMessages(messages.concat(I.state.messages.filter(function (message) {
+            if (savedIds.has(message.id) || clearedByReset(message)) return false;
+            var liveReply = message.role === 'assistant' && message.status === 'streaming' && liveById.has(message.id);
+            return message.createdAt > snapshot.updatedAt || (isHandoff && message.createdAt >= snapshot.handoffStartedAt)
+                || (liveReply && (isHandoff || snapshot.messages.length > 0));
+        })), true);
+    };
 
     I.setComposerHidden = function setComposerHidden(hidden) {
         var next = !!hidden;
@@ -2246,8 +2337,17 @@
         return normalized;
     }
 
-    I.updateMessage = function updateMessage(messageId, patch) {
+    I.updateMessage = function updateMessage(messageId, patch, options) {
         var updatedMessage = null;
+        var bubble = window.currentGeminiMessage;
+        if (patch?.status === 'streaming' && Array.isArray(patch.blocks)
+                && bubble?.dataset?.reactChatMessageId === String(messageId) && bubble.restoredHistoryBlocks) {
+            // Text-only stream chunks leave attachments intact. An explicit block array replaces them.
+            var blocks = options?.streamText
+                ? mergeChatHistoryReplyBlocks(bubble.restoredHistoryBlocks, patch.blocks, options.pendingMusicCommand) : patch.blocks;
+            bubble.restoredHistoryBlocks = blocks;
+            patch = Object.assign({}, patch, { blocks: blocks });
+        }
 
         I.state.messages = I.state.messages.map(function (message, index) {
             if (String(message.id) !== String(messageId)) return message;
