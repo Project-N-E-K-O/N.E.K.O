@@ -1129,10 +1129,10 @@ caps on character-card and do-not-mention lines); this only bites when a
 very large character card outgrows that sum."""
 
 # ---- Memory: weekly behavior review (memory/behavior_notes.py) ----
-# After a character's weekly introspection, one correction-tier call reads her
-# recent replies against her card and the user's own words, and leaves a few
-# short notes ("less of X; try Y") for the next session start. Evidence is
-# counted by code from the lines the model cites, never taken from its word.
+# After a character's weekly introspection, one correction-tier call looks for what
+# keeps recurring in her replies, against her card and the user's own words, and
+# leaves a few short notes ("less of X; try Y") at the end of the next /new_dialog.
+# Evidence is counted by code from the lines the model cites, never taken from its word.
 
 MEMORY_BEHAVIOR_REVIEW_WINDOW_SECONDS = 30 * 24 * 3600
 """How far back the conversation sample reaches. Older feedback no longer counts,
@@ -1172,17 +1172,17 @@ MEMORY_BEHAVIOR_NOTE_TTL_SECONDS = 21 * 24 * 3600
 MEMORY_BEHAVIOR_NOTE_MAX_PER_KIND = {"style": 3, "drift": 2}
 """Live notes per kind, kept ones included; an add past this is rejected."""
 
-MEMORY_BEHAVIOR_NOTE_AVOID_MAX_TOKENS = 40
+MEMORY_BEHAVIOR_NOTE_AVOID_MAX_TOKENS = 60
 """Longer "avoid" text is rejected, not cut: a clipped note can change its meaning."""
 
-MEMORY_BEHAVIOR_NOTE_DIRECTION_MAX_TOKENS = 30
+MEMORY_BEHAVIOR_NOTE_DIRECTION_MAX_TOKENS = 60
 """Longer "direction" text is rejected, not cut, for the same reason."""
 
 MEMORY_BEHAVIOR_NOTE_CORRECTED_MIN_SESSIONS = 2
 """Sittings in the sample since a note's last renewal before it may be retired as
 corrected. Fewer than this cannot show that the pattern has really stopped."""
 
-MEMORY_BEHAVIOR_NOTES_PROMPT_MAX_TOKENS = 300
+MEMORY_BEHAVIOR_NOTES_PROMPT_MAX_TOKENS = 400
 """Token budget for the whole injected block; whole notes drop until it fits."""
 
 MEMORY_BEHAVIOR_NOTE_EVIDENCE_GATES = {

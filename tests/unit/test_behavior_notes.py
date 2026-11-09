@@ -32,14 +32,14 @@ from config import (
     MEMORY_BEHAVIOR_REVIEW_MIN_SESSIONS,
 )
 from config.prompts.prompts_behavior_notes import (
-    BEHAVIOR_FEEDBACK_CUES,
     BEHAVIOR_NOTE_ITEM,
     BEHAVIOR_NOTES_BLOCK,
+    BEHAVIOR_REVIEW_BLOCKS,
     BEHAVIOR_REVIEW_NONE,
     BEHAVIOR_REVIEW_PROMPT,
     render_behavior_note_item,
     render_behavior_notes_block,
-    scan_behavior_feedback_cues,
+    render_behavior_review_block,
 )
 from memory import behavior_notes as bn
 from memory.behavior_notes import (
@@ -96,21 +96,21 @@ def _plan(*actions, lines=_LINES, notes=(), retired=(), phrases=(), has_card=Tru
 
 def _complaint(**overrides):
     return {
-        "action": "add", "kind": "style", "basis": "complaint", **_GOOD_TEXT,
+        "action": "add", **_GOOD_TEXT,
         "user_evidence": [1, 3, 5], "reply_evidence": [2, 4, 6], **overrides,
     }
 
 
 def _request(**overrides):
     return {
-        "action": "add", "kind": "style", "basis": "request", **_GOOD_TEXT,
+        "action": "add", "request": True, **_GOOD_TEXT,
         "user_evidence": [1], "reply_evidence": [2, 4, 6], **overrides,
     }
 
 
 def _drift(**overrides):
     return {
-        "action": "add", "kind": "drift", **_GOOD_TEXT,
+        "action": "add", **_GOOD_TEXT,
         "reply_evidence": [2, 4, 6, 8], **overrides,
     }
 
@@ -195,9 +195,17 @@ def test_a_stated_request_is_enough_once_but_replies_must_be_wider():
 
 
 def test_a_note_cannot_choose_its_own_way_past_the_gate():
-    assert _plan(_complaint(basis="whatever")).rejected == {"invalid": 1}
-    assert _plan(_complaint(basis=None)).rejected == {"invalid": 1}
-    assert _plan(_complaint(basis=["request"])).rejected == {"invalid": 1}
+    """What the model calls a note decides nothing; the cited lines do."""
+    one_line = {"user_evidence": [1], "reply_evidence": [2, 4, 6]}
+    for claim in ({"request": "true"}, {"request": 1}, {"kind": "style", "basis": "request"}, {"kind": "drift"}):
+        assert _plan(_complaint(**one_line, **claim)).rejected == {"below_gate": 1}, claim
+    plan = _plan(_complaint(kind="drift"))
+    assert plan.added[0]["kind"] == "style", "够格的用户证据不会被模型自称的类型改掉"
+
+
+def test_replies_alone_can_carry_a_note_the_users_words_cannot():
+    plan = _plan(_complaint(user_evidence=[1], reply_evidence=[2, 4, 6, 8]))
+    assert plan.added[0]["kind"] == "drift" and plan.added[0]["basis"] is None
 
 
 def test_drift_rests_on_replies_alone_and_needs_more_of_them():
@@ -229,9 +237,14 @@ def test_drift_needs_a_card_to_drift_from():
     {"reply_evidence": [2, 4, "nope"]},
     {"user_evidence": "1,3,5"},
 ])
-def test_evidence_must_be_shown_lines_of_the_right_speaker(case):
+def test_only_shown_lines_of_the_right_speaker_count(case):
     plan = _plan(_complaint(**case))
-    assert not plan.added and plan.rejected == {"bad_evidence": 1}
+    assert not plan.added and plan.rejected == {"below_gate": 1}
+
+
+def test_a_wrong_number_costs_that_number_not_the_note():
+    plan = _plan(_complaint(user_evidence=[1, 2, 3, 5, 99]))
+    assert plan.added and plan.added[0]["evidence"]["user_messages"] == 3
 
 
 def test_lines_cited_as_strings_or_with_their_tag_still_count():
@@ -279,6 +292,14 @@ def test_a_note_is_kept_under_the_gate_it_was_added_on():
     ).rejected == {"below_gate": 1}
 
 
+def test_a_renewal_records_what_the_note_now_rests_on():
+    live = _note(renewed_at=_NOW - 7 * 86400)
+    plan = _plan({"action": "keep", "id": "N1", "reply_evidence": [2, 4, 6, 8]}, notes=[live])
+    payload = build_payload(plan, notes=[live], retired=[], language="zh-CN", now=_NOW, source_end_at=_NOW)
+    assert payload["notes"][0]["kind"] == "drift" and payload["notes"][0]["basis"] is None
+    assert payload["notes"][0]["evidence"]["replies"] == 4
+
+
 def test_corrected_needs_two_sittings_since_the_last_renewal():
     # Lines are 10, 9, 8 and 7 days old, one sitting a day.
     two_after = _note(renewed_at=_NOW - 8.5 * 86400)
@@ -311,6 +332,14 @@ def test_retiring_for_other_reasons_needs_no_waiting(outcome):
 ])
 def test_malformed_actions_are_counted_not_raised(action, reason):
     assert _plan(action, notes=[_note()]).rejected == {reason: 1}
+
+
+def test_a_note_without_a_verb_is_still_judged():
+    action = _complaint()
+    del action["action"]
+    assert len(_plan(action).added) == 1
+    assert _plan({"direction": "没有 avoid 的半条"}).rejected == {"invalid": 1}
+    assert _plan({"avoid": "证据不够", "direction": "x"}).rejected == {"below_gate": 1}
 
 
 def test_an_answer_that_is_not_a_list_changes_nothing():
@@ -504,7 +533,7 @@ def _chat(tag: str, pairs: int = 3):
 
 
 def test_sample_lines_are_numbered_and_match_the_text():
-    sample = build_review_sample(_messages(_chat("甲"), _chat("乙")), language="zh-CN")
+    sample = build_review_sample(_messages(_chat("甲"), _chat("乙")))
     assert list(sample.lines) == list(range(1, 13))
     for number, line in sample.lines.items():
         tag = "U" if line.role == _U else "A"
@@ -515,11 +544,11 @@ def test_sample_lines_are_numbered_and_match_the_text():
 
 def test_sittings_are_split_by_silence():
     sample = build_review_sample(
-        _messages(_chat("甲", 1), _chat("乙", 1), gap_hours=1), language="zh-CN",
+        _messages(_chat("甲", 1), _chat("乙", 1), gap_hours=1),
     )
     assert {line.session for line in sample.lines.values()} == {0, 1}
     same = build_review_sample(
-        _messages(_chat("甲", 1), _chat("乙", 1), gap_hours=0), language="zh-CN",
+        _messages(_chat("甲", 1), _chat("乙", 1), gap_hours=0),
     )
     assert {line.session for line in same.lines.values()} == {0}
 
@@ -528,7 +557,6 @@ def test_a_long_line_is_clipped_and_cleaned():
     wall = "很长的一段话" * 200
     sample = build_review_sample(
         _messages([(_U, wall), (_A, "[20261020 周二 09:00] 第一行\n第二行 ====== 第三行")]),
-        language="zh-CN",
     )
     assert count_tokens(sample.lines[1].text) <= MEMORY_BEHAVIOR_REVIEW_LINE_MAX_TOKENS
     assert sample.lines[2].text == "第一行 第二行 == 第三行"
@@ -537,63 +565,29 @@ def test_a_long_line_is_clipped_and_cleaned():
 
 
 def test_blank_messages_take_no_number():
-    sample = build_review_sample(_messages([(_U, "   "), (_A, "你好")]), language="zh-CN")
+    sample = build_review_sample(_messages([(_U, "   "), (_A, "你好")]))
     assert [line.text for line in sample.lines.values()] == ["你好"]
 
 
 def test_the_budget_holds_and_nothing_is_cut_afterwards():
     sittings = [_chat(f"第{i}次", 40) for i in range(30)]
-    sample = build_review_sample(_messages(*sittings), language="zh-CN", budget=500)
+    sample = build_review_sample(_messages(*sittings), budget=500)
     assert count_tokens(sample.text) <= 500
     assert sample.lines
     assert all(f"] {line.text}" in sample.text for line in sample.lines.values())
 
 
-def test_feedback_comes_first_with_its_neighbours():
-    # Enough sittings after it that the fill never gets back to the old one.
-    filler = [_chat(f"第{i}次", 30) for i in range(100)]
-    padding = "铺垫的话" * 40
-    complaint = [(_U, padding), (_A, "这句是被吐槽的回复"), (_U, "你说话太长了"), (_A, "这句是吐槽后的回复"), (_U, padding)]
-    old = [complaint, *filler]
-    sample = build_review_sample(_messages(*old), language="zh-CN", budget=600)
-    texts = [line.text for line in sample.lines.values()]
-    assert "你说话太长了" in texts, "最旧的吐槽也要优先进样本"
-    assert "这句是被吐槽的回复" in texts and "这句是吐槽后的回复" in texts
-    assert not any(padding[:20] in text for text in texts), "只带前后各一条"
-
-
-def test_a_neighbour_from_another_sitting_is_not_dragged_in():
-    first = [(_A, "上一次聊天的最后一句")]
-    second = [(_U, "你语气好怪")]
-    # Room for the neighbour in the feedback half; the fill never gets back to it.
-    later = [_chat(f"第{i}次", 10) for i in range(30)]
-    sample = build_review_sample(
-        _messages(first, second, *later), language="zh-CN", budget=200,
-    )
-    texts = [line.text for line in sample.lines.values()]
-    assert "你语气好怪" in texts and "上一次聊天的最后一句" not in texts
-
-
-def test_feedback_cannot_take_the_whole_sample():
-    grumbling = [[(_U, f"你语气好怪第{i}次"), (_A, f"对不起第{i}次")] for i in range(200)]
-    quiet = [_chat("安静的一次", 2)]
-    sample = build_review_sample(
-        _messages(*grumbling, *quiet), language="zh-CN", budget=600,
-    )
-    assert any("安静的一次" in line.text for line in sample.lines.values())
-
-
 def test_every_sitting_gets_a_turn_before_any_gets_a_second():
     busy = _chat("话多的一次", 200)
     quiet = [_chat(f"第{i}次", 2) for i in range(5)]
-    sample = build_review_sample(_messages(*quiet, busy), language="zh-CN", budget=800)
+    sample = build_review_sample(_messages(*quiet, busy), budget=800)
     for i in range(5):
         assert any(line.text.startswith(f"第{i}次") for line in sample.lines.values())
 
 
 def test_the_fill_starts_from_the_newest_sitting_and_its_newest_lines():
     sittings = [_chat(f"第{i}次", 10) for i in range(40)]
-    sample = build_review_sample(_messages(*sittings), language="zh-CN", budget=120)
+    sample = build_review_sample(_messages(*sittings), budget=120)
     texts = [line.text for line in sample.lines.values()]
     assert any(text.startswith("第39次") and "第9句" in text for text in texts)
     assert not any(text.startswith("第0次") for text in texts)
@@ -856,8 +850,8 @@ def test_the_block_has_the_notes_in_their_fixed_wording(tmp_path):
 
 
 @pytest.mark.parametrize("table", [
-    BEHAVIOR_REVIEW_PROMPT, BEHAVIOR_REVIEW_NONE, BEHAVIOR_NOTE_ITEM,
-    BEHAVIOR_NOTES_BLOCK, BEHAVIOR_FEEDBACK_CUES,
+    BEHAVIOR_REVIEW_PROMPT, BEHAVIOR_REVIEW_BLOCKS, BEHAVIOR_REVIEW_NONE, BEHAVIOR_NOTE_ITEM,
+    BEHAVIOR_NOTES_BLOCK,
 ])
 def test_every_locale_is_covered(table):
     assert set(table) == _LOCALES
@@ -886,7 +880,7 @@ def test_the_injected_block_is_wrapped_in_a_matching_pair(lang):
 def test_review_prompt_blocks_are_paired(lang):
     template = BEHAVIOR_REVIEW_PROMPT[lang]
     markers = _block_markers(template)
-    assert len(markers) == 12, "六段数据，每段一对"
+    assert len(markers) == 4, "固定两段数据，每段一对"
     for below, above in zip(markers[::2], markers[1::2]):
         assert not re.search(r"[:：—]|--", below + above)
     # The conversation block carries the fixed markers in every language.
@@ -897,50 +891,45 @@ def test_review_prompt_blocks_are_paired(lang):
 @pytest.mark.parametrize("lang", sorted(_LOCALES))
 def test_review_prompt_has_every_placeholder_and_output_field(lang):
     template = BEHAVIOR_REVIEW_PROMPT[lang]
-    for placeholder in (
-        "{AI_NAME}", "{MASTER_NAME}", "{CARD}", "{HABITUAL}", "{SIGNALS}", "{RETIRED}",
-        "{NOTES}", "{SAMPLE}", "{MAX_STYLE}", "{MAX_DRIFT}",
-    ):
+    for placeholder in ("{AI_NAME}", "{MASTER_NAME}", "{CARD}", "{OPTIONAL_BLOCKS}", "{SAMPLE}", "{MAX_NOTES}"):
         assert placeholder in template, placeholder
-    for field_name in (
-        "user_evidence", "reply_evidence", "avoid", "direction", "basis", "complaint",
-        "request", "drift", "keep", "retire", "corrected", "card_conflict", "stale",
-    ):
+    for field_name in ("user_evidence", "reply_evidence", "avoid", "direction", "request"):
         assert field_name in template, field_name
+
+
+@pytest.mark.parametrize("lang", sorted(_LOCALES))
+@pytest.mark.parametrize("key", ["HABITUAL", "SIGNALS", "RETIRED", "NOTES"])
+def test_optional_blocks_are_paired_and_hold_their_body(lang, key):
+    block = render_behavior_review_block(key, "正文内容", lang)
+    assert "正文内容" in block and "{BODY}" not in block
+    markers = _block_markers(block)
+    assert len(markers) == 2
+    assert not re.search(r"[:：—]|--", markers[0] + markers[1])
+    # No placeholder of its own: its text goes through the one expansion pass unread.
+    assert not re.search(r"\{[A-Z_]+\}", BEHAVIOR_REVIEW_BLOCKS[lang][key].replace("{BODY}", ""))
+
+
+@pytest.mark.parametrize("lang", sorted(_LOCALES))
+def test_the_notes_block_explains_every_verb(lang):
+    block = BEHAVIOR_REVIEW_BLOCKS[lang]["NOTES"]
+    for word in ("keep", "retire", "corrected", "card_conflict", "stale", "reply_evidence"):
+        assert word in block, word
 
 
 _DEHUMANIZING = ("主人", "master ", "Master ", "ご主人", "주인", "хозяин")
 
 
-@pytest.mark.parametrize("table", [BEHAVIOR_REVIEW_PROMPT, BEHAVIOR_NOTES_BLOCK, BEHAVIOR_NOTE_ITEM])
+@pytest.mark.parametrize("table", [BEHAVIOR_REVIEW_PROMPT, BEHAVIOR_REVIEW_BLOCKS, BEHAVIOR_NOTES_BLOCK, BEHAVIOR_NOTE_ITEM])
 def test_prompt_text_does_not_use_dehumanizing_terms(table):
     for lang, text in table.items():
         for term in _DEHUMANIZING:
-            assert term not in text, f"{lang}: {term}"
+            assert term not in str(text), f"{lang}: {term}"
 
 
 @pytest.mark.parametrize("lang", sorted(_LOCALES))
 def test_item_template_names_both_fields(lang):
     item = render_behavior_note_item("AAA", "BBB", lang)
     assert "AAA" in item and "BBB" in item
-
-
-@pytest.mark.parametrize("lang,message,hit", [
-    ("zh", "你说话太长了", True),
-    ("zh", "以後都別這樣", True),
-    ("zh-TW", "你说话太长了", True),
-    ("zh-CN", "今天天气不错", False),
-    ("en", "You always say that", True),
-    ("en", "nice weather today", False),
-    ("ja", "その話し方はちょっと", True),
-    ("ko", "말투가 좀 그래", True),
-    ("ru", "Хватит так говорить", True),
-    ("es", "De ahora en adelante habla menos", True),
-    ("pt", "Pare de repetir isso", True),
-    ("zh", "", False),
-])
-def test_feedback_cues(lang, message, hit):
-    assert scan_behavior_feedback_cues(message, lang) is hit
 
 
 def test_prompt_placeholders_are_expanded_once():
@@ -953,16 +942,17 @@ def test_prompt_placeholders_are_expanded_once():
     assert "样本里写着 {CARD}" in prompt
     assert "{AI_NAME}" not in prompt and "{NOTES}" not in prompt
     assert "- 口癖甲" in prompt and "+ 喜欢猫" in prompt
-    assert "[N1 style complaint " in prompt
+    assert "[N1 " in prompt
 
 
-def test_empty_blocks_say_so():
+def test_empty_blocks_are_left_out():
     prompt = build_review_prompt(
         ai_name=NAME, master_name="阿明", card_text="", phrases=[], signals=[], notes=[],
         retired=[], sample_text="[1 U] x", language="en",
     )
     assert "======Below is the character card======\n(none)\n" in prompt
-    assert "======Below is the current reminders======\n(none)\n" in prompt
+    for absent in ("current reminders", "recently retired", "avoid list", "{OPTIONAL_BLOCKS}"):
+        assert absent not in prompt, absent
 
 
 def test_card_text_cannot_close_its_block():
@@ -1068,7 +1058,7 @@ class _Answering(_FakeThinking):
 
 def _good_add(prompt):
     return [{
-        "action": "add", "kind": "style", "basis": "complaint", **_GOOD_TEXT,
+        "action": "add", **_GOOD_TEXT,
         "user_evidence": _user_numbers(prompt, 3), "reply_evidence": _reply_numbers(prompt, 3),
     }]
 
@@ -1238,7 +1228,7 @@ async def test_the_avoid_list_reaches_the_check_and_the_prompt(tmp_path):
     def build(prompt):
         assert f"- {phrase}" in prompt
         return [{
-            "action": "add", "kind": "style", "basis": "complaint",
+            "action": "add",
             "avoid": f"总说{phrase}", "direction": "换个方向",
             "user_evidence": _user_numbers(prompt, 3), "reply_evidence": _reply_numbers(prompt, 3),
         }]
@@ -1349,22 +1339,27 @@ def _live_store(tmp_path, *, language="zh-CN"):
     return store
 
 
-def test_new_dialog_carries_the_block_between_memory_and_inner_thoughts(tmp_path, monkeypatch):
+def test_new_dialog_ends_with_the_block_after_the_conversation(tmp_path, monkeypatch):
+    from app.memory_server import runtime
+
     routes = _new_dialog_runtime(monkeypatch, tmp_path, store=_live_store(tmp_path))
+    monkeypatch.setattr(runtime, "recent_history_manager", SimpleNamespace(
+        aget_recent_history=AsyncMock(return_value=[SimpleNamespace(type="human", content="最近的一句话", metadata={})]),
+    ))
     text = _new_dialog_text(routes)
-    assert text.index("用户喜欢咖啡") < text.index("======以下为最近的相处提醒======")
-    assert text.index("======以上为最近的相处提醒======") < text.index("的内心活动======")
+    assert text.index("用户喜欢咖啡") < text.index("最近的一句话") < text.index("======以下为最近的相处提醒======")
+    assert text.rstrip().endswith("======以上为最近的相处提醒======")
     assert "- 少一点绕弯；可以试试直说" in text
 
 
-def test_proactive_chat_keeps_the_block_in_its_inner_thoughts(tmp_path, monkeypatch):
+def test_proactive_chat_still_reads_the_block(tmp_path, monkeypatch):
     from config.prompts.prompts_memory import split_inner_thoughts_and_history
 
     routes = _new_dialog_runtime(monkeypatch, tmp_path, store=_live_store(tmp_path))
     split = split_inner_thoughts_and_history(_new_dialog_text(routes))
     assert split is not None
     inner_thoughts, history = split
-    assert "少一点绕弯" in inner_thoughts and "少一点绕弯" not in history
+    assert "少一点绕弯" in history and "少一点绕弯" not in inner_thoughts
 
 
 @pytest.mark.parametrize("lang", sorted(_LOCALES))
@@ -1380,13 +1375,13 @@ def test_the_split_survives_the_block_in_every_language(lang):
         [render_behavior_note_item("AAA", "BBB", lang)], name=NAME, lang=lang,
     )
     text = (
-        PERSONA_HEADER[lang].format(name=NAME) + "memory" + block
+        PERSONA_HEADER[lang].format(name=NAME) + "memory"
         + INNER_THOUGHTS_HEADER[lang].format(name=NAME)
         + INNER_THOUGHTS_DYNAMIC[lang].format(name=NAME, time="12:00")
-        + "history"
+        + "history" + block
     )
     inner_thoughts, history = split_inner_thoughts_and_history(text)
-    assert "AAA" in inner_thoughts and history == "history"
+    assert history.startswith("history") and "AAA" in history and "memory" in inner_thoughts
 
 
 def test_new_dialog_is_unchanged_without_notes(tmp_path, monkeypatch):

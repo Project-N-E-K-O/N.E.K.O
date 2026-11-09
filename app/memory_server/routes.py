@@ -8232,12 +8232,6 @@ async def _new_dialog(
                 + "\n"
             )
 
-        # Reminders from the weekly behavior review. Here rather than in the
-        # session prompt so that every way she starts talking reads them: a
-        # session start, a hot swap and voice as well as proactive chat, which
-        # keeps only this text's part before the inner-thoughts sentence.
-        result += await _arender_behavior_notes(lanlan_name, _lang)
-
         # ── [Dynamic section] Inner thoughts (changes each time) ──
         result += _loc(INNER_THOUGHTS_HEADER, _lang).format(name=lanlan_name)
         result += _loc(INNER_THOUGHTS_DYNAMIC, _lang).format(
@@ -8290,6 +8284,14 @@ async def _new_dialog(
                 result += _loc(CHAT_HOLIDAY_CONTEXT, _lang).format(holiday=holiday_name)
         except Exception as e:
             logger.debug(f"Holiday context injection skipped: {e}")
+
+        # Reminders from the weekly behavior review. In this text rather than the
+        # session prompt so that every way she starts talking reads them: a session
+        # start, a hot swap and voice as well as proactive chat. Last, after the
+        # conversation: measured on real reopenings, the same note placed before
+        # the history barely changed anything, since the history right after it
+        # shows her doing the very thing and she follows that instead.
+        result += await _arender_behavior_notes(lanlan_name, _lang)
 
         return PlainTextResponse(result)
 

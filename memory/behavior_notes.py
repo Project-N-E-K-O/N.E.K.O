@@ -22,13 +22,15 @@ edits the card by hand. This module runs one model call after each weekly
 introspection, over a numbered sample of recent conversation, and leaves at
 most a handful of reminders for the next session start.
 
-- **Two kinds of note.** ``style``: a reaction the user complained about across
-  sittings (``complaint``) or asked once and clearly to change for good
-  (``request``). ``drift``: a way of talking that departs from her card, needing
-  no complaint, since the card is what the note steers back to.
+- **It looks for what recurs.** The model reads a fair sample of the conversation
+  and names a way of talking that keeps coming back, when it departs from her
+  card, the user objected to it, or it has plainly become a routine. Her card's
+  own personality does not count. A sample suits this: whatever really recurs
+  shows up many times over, and what shows up once is what this leaves alone.
 - **Code counts the evidence.** The model cites sample line numbers; sittings and
-  days are computed here from those lines. A line cited as the user's must be a
-  user line, so her own words can never pass for the user's opinion.
+  days are computed here from those lines, and they decide what the note rests
+  on: the user's words if they suffice (``style``), else replies alone (``drift``).
+  Only user lines count as the user's, so her own words never pass for an opinion.
 - **No lines to recite.** A note says what to do less of and in which direction,
   never what to say. Quotation marks, and any run copied from a reply or from the
   habitual-phrase list, are rejected rather than cut.
@@ -93,9 +95,8 @@ from config.prompts.prompts_behavior_notes import (
     get_behavior_review_prompt,
     render_behavior_note_item,
     render_behavior_notes_block,
-    scan_behavior_feedback_cues,
+    render_behavior_review_block,
 )
-from config.prompts.prompts_directives import scan_negative_keywords
 from memory.habitual_phrases import (
     _REPLY_STAMP_RE,
     _SPACED_LANGUAGES,
@@ -151,7 +152,7 @@ KIND_STYLE = "style"
 KIND_DRIFT = "drift"
 BASIS_COMPLAINT = "complaint"
 BASIS_REQUEST = "request"
-# A drift note has no basis to choose; it reads its gate under this key.
+# A note resting on replies alone reads its gate under this key.
 _BASIS_DRIFT = "drift"
 
 ACTION_ADD = "add"
@@ -167,7 +168,6 @@ _OUTCOMES = frozenset({OUTCOME_CORRECTED, OUTCOME_CARD_CONFLICT, OUTCOME_STALE})
 REJECT_INVALID = "invalid"
 REJECT_UNKNOWN_ID = "unknown_id"
 REJECT_DUPLICATE = "duplicate_target"
-REJECT_BAD_EVIDENCE = "bad_evidence"
 REJECT_BELOW_GATE = "below_gate"
 REJECT_SCRIPTED = "scripted"
 REJECT_TOO_LONG = "too_long"
@@ -242,9 +242,6 @@ class ReviewSample:
     text: str
     lines: Mapping[int, SampleLine]
 
-    def replies(self) -> list[str]:
-        return [line.text for line in self.lines.values() if line.role == ROLE_REPLY]
-
 
 def _clean_line(text: str) -> str:
     body = _REPLY_STAMP_RE.sub("", text or "", count=1)
@@ -254,49 +251,22 @@ def _clean_line(text: str) -> str:
 
 
 def _pick_sample_indices(
-    messages: Sequence[ReviewMessage],
     sessions: Sequence[int],
     texts: Sequence[str],
     *,
-    language: str,
     budget: int,
 ) -> set[int]:
     """Which messages enter the sample.
 
-    Stretches where the user seems to be talking about how she talks come first,
-    newest first and capped at half the budget, each with the line before and
-    after it. The rest goes round the sittings, newest sitting first and each
-    from its newest line back, so a quiet week is not outweighed by one long
-    evening and drift, which needs replies from several sittings, can be seen.
+    Round the sittings, newest first and each from its newest line back, so what
+    the model sees shows how she usually talks and one long evening cannot crowd
+    out the rest. A way of talking that truly recurs turns up in a fair sample
+    many times over; one that does not is not what this review is looking for.
     """
     costs = [count_tokens(text) + _LINE_OVERHEAD_TOKENS for text in texts]
     picked: set[int] = set()
     opened: set[int] = set()
     used = 0
-
-    def take(index: int, limit: int) -> bool:
-        nonlocal used
-        if index in picked:
-            return True
-        cost = costs[index] + (0 if sessions[index] in opened else _SESSION_HEADER_TOKENS)
-        if used + cost > limit:
-            return False
-        picked.add(index)
-        opened.add(sessions[index])
-        used += cost
-        return True
-
-    for hit in range(len(messages) - 1, -1, -1):
-        message = messages[hit]
-        if message.role != ROLE_USER or not (
-            scan_negative_keywords(message.text, language)
-            or scan_behavior_feedback_cues(message.text, language)
-        ):
-            continue
-        for index in (hit, hit - 1, hit + 1):
-            if 0 <= index < len(messages) and sessions[index] == sessions[hit]:
-                take(index, budget // 2)
-
     by_session: dict[int, list[int]] = {}
     for index, session in enumerate(sessions):
         by_session.setdefault(session, []).append(index)
@@ -306,15 +276,19 @@ def _pick_sample_indices(
             taken = 0
             while queue and taken < _FILL_LINES_PER_ROUND:
                 index = queue.pop()
-                if index not in picked and take(index, budget):
-                    taken += 1
+                cost = costs[index] + (0 if sessions[index] in opened else _SESSION_HEADER_TOKENS)
+                if used + cost > budget:
+                    continue
+                picked.add(index)
+                opened.add(sessions[index])
+                used += cost
+                taken += 1
     return picked
 
 
 def build_review_sample(
     messages: Iterable[ReviewMessage],
     *,
-    language: str,
     budget: int = MEMORY_BEHAVIOR_REVIEW_SAMPLE_MAX_TOKENS,
 ) -> ReviewSample:
     """Number a budgeted selection of ``messages`` for the prompt.
@@ -333,7 +307,7 @@ def build_review_sample(
     ordered = [message for message, _text in usable]
     texts = [text for _message, text in usable]
     sessions = _sessions_of(ordered, HABITUAL_PHRASE_SESSION_GAP_SECONDS)
-    picked = _pick_sample_indices(ordered, sessions, texts, language=language, budget=budget)
+    picked = _pick_sample_indices(sessions, texts, budget=budget)
 
     rendered: list[str] = []
     lines: dict[int, SampleLine] = {}
@@ -373,19 +347,18 @@ class EvidenceCount:
         )
 
 
-def _count_cited(raw: Any, lines: Mapping[int, SampleLine], role: str) -> Optional[EvidenceCount]:
-    """Evidence behind the cited numbers; None when any is not a shown line of ``role``."""
-    if raw is None:
-        return EvidenceCount()
-    if not isinstance(raw, list):
-        return None
+def _count_cited(raw: Any, lines: Mapping[int, SampleLine], role: str) -> EvidenceCount:
+    """Evidence behind the cited numbers. Only shown lines of ``role`` count.
+
+    A wrong number costs that number, not the note: what matters is that her own
+    words can never be counted as the user's, not that the model cited perfectly.
+    """
     cited: dict[int, SampleLine] = {}
-    for item in raw:
+    for item in raw if isinstance(raw, list) else ():
         number = _parse_number(item)
         line = lines.get(number) if number is not None else None
-        if line is None or line.role != role:
-            return None
-        cited[line.number] = line
+        if line is not None and line.role == role:
+            cited[line.number] = line
     return EvidenceCount(
         messages=len(cited),
         sessions=len({line.session for line in cited.values()}),
@@ -448,8 +421,8 @@ class _ScriptGuard:
 @dataclass
 class NotePlan:
     added: list[dict] = field(default_factory=list)
-    # Note id → the evidence summary it was renewed on.
-    renewed: dict[str, dict[str, int]] = field(default_factory=dict)
+    # Note id → the kind, basis and evidence summary it was renewed on.
+    renewed: dict[str, dict[str, Any]] = field(default_factory=dict)
     # ``(note, outcome, reason)``.
     retired: list[tuple[dict, str, str]] = field(default_factory=list)
     rejected: Counter = field(default_factory=Counter)
@@ -477,22 +450,41 @@ def _check_note_text(
     return None
 
 
-def _count_gated(
-    action: Mapping[str, Any], basis: str, lines: Mapping[int, SampleLine],
-) -> tuple[Optional[dict[str, int]], Optional[str]]:
-    """``(evidence summary, None)``, or ``(None, rejection reason)`` under ``basis``'s gate."""
-    gate = _gate_for(basis)
-    # A drift note rests on replies alone, so nothing cited as the user's is read.
-    user = (
-        EvidenceCount() if basis == _BASIS_DRIFT
-        else _count_cited(action.get("user_evidence"), lines, ROLE_USER)
-    )
+@dataclass(frozen=True)
+class _Judged:
+    kind: str
+    basis: Optional[str]
+    evidence: dict[str, int]
+
+
+def _judge_evidence(
+    action: Mapping[str, Any],
+    lines: Mapping[int, SampleLine],
+    *,
+    has_card: bool,
+    held_request: bool = False,
+) -> _Judged | str:
+    """What the cited lines support, or the reason they support nothing.
+
+    The model does not choose the kind: it says what recurs and cites the lines,
+    and code sorts the note by what those lines can carry. The user's own words
+    first, then replies alone, which are only meaningful against a card.
+    """
+    user = _count_cited(action.get("user_evidence"), lines, ROLE_USER)
     reply = _count_cited(action.get("reply_evidence"), lines, ROLE_REPLY)
-    if user is None or reply is None:
-        return None, REJECT_BAD_EVIDENCE
-    if not user.meets(gate["user"]) or not reply.meets(gate["reply"]):
-        return None, REJECT_BELOW_GATE
-    return _evidence_summary(user, reply), None
+    evidence = _evidence_summary(user, reply)
+
+    def passes(basis: str) -> bool:
+        gate = _gate_for(basis)
+        return user.meets(gate["user"]) and reply.meets(gate["reply"])
+
+    if (action.get("request") is True or held_request) and passes(BASIS_REQUEST):
+        return _Judged(KIND_STYLE, BASIS_REQUEST, evidence)
+    if passes(BASIS_COMPLAINT):
+        return _Judged(KIND_STYLE, BASIS_COMPLAINT, evidence)
+    if passes(_BASIS_DRIFT):
+        return _Judged(KIND_DRIFT, None, evidence) if has_card else REJECT_NO_CARD
+    return REJECT_BELOW_GATE
 
 
 def plan_note_actions(
@@ -518,6 +510,10 @@ def plan_note_actions(
     by_verb: dict[str, list[dict]] = {ACTION_RETIRE: [], ACTION_KEEP: [], ACTION_ADD: []}
     for action in raw_actions if isinstance(raw_actions, list) else ():
         verb = action.get("action") if isinstance(action, dict) else None
+        if verb is None and isinstance(action, dict) and action.get("avoid"):
+            # The model wrote a note and left the verb out; its evidence is checked
+            # all the same.
+            verb = ACTION_ADD
         bucket = by_verb.get(verb) if isinstance(verb, str) else None
         if bucket is None:
             plan.rejected[REJECT_INVALID] += 1
@@ -558,12 +554,16 @@ def plan_note_actions(
         note = target(action)
         if note is None:
             continue
-        evidence, problem = _count_gated(action, _basis_of(note), lines)
-        if evidence is None:
-            plan.rejected[problem] += 1
+        judged = _judge_evidence(
+            action, lines, has_card=has_card, held_request=note.get("basis") == BASIS_REQUEST,
+        )
+        if isinstance(judged, str):
+            plan.rejected[judged] += 1
             continue
         used.add(str(note["id"]))
-        plan.renewed[str(note["id"])] = evidence
+        plan.renewed[str(note["id"])] = {
+            "kind": judged.kind, "basis": judged.basis, "evidence": judged.evidence,
+        }
 
     guard = _ScriptGuard(
         [line.text for line in lines.values() if line.role == ROLE_REPLY], phrases, language,
@@ -580,31 +580,17 @@ def plan_note_actions(
     }
     next_number = _next_note_number(notes)
     for action in by_verb[ACTION_ADD]:
-        kind = action.get("kind")
-        if kind == KIND_STYLE:
-            basis = action.get("basis")
-            if not isinstance(basis, str) or basis not in (BASIS_COMPLAINT, BASIS_REQUEST):
-                plan.rejected[REJECT_INVALID] += 1
-                continue
-        elif kind == KIND_DRIFT:
-            if not has_card:
-                # The card is the whole baseline; without one there is nothing to drift from.
-                plan.rejected[REJECT_NO_CARD] += 1
-                continue
-            basis = _BASIS_DRIFT
-        else:
-            plan.rejected[REJECT_INVALID] += 1
-            continue
         avoid = _collapse(action.get("avoid"))
         direction = _collapse(action.get("direction"))
         problem = _check_note_text(avoid, direction, guard)
         if problem is not None:
             plan.rejected[problem] += 1
             continue
-        evidence, problem = _count_gated(action, basis, lines)
-        if evidence is None:
-            plan.rejected[problem] += 1
+        judged = _judge_evidence(action, lines, has_card=has_card)
+        if isinstance(judged, str):
+            plan.rejected[judged] += 1
             continue
+        kind = judged.kind
         key = _compact(avoid)
         if key in live_keys:
             plan.rejected[REJECT_SAME_AS_LIVE] += 1
@@ -620,22 +606,16 @@ def plan_note_actions(
         plan.added.append({
             "id": f"N{next_number}",
             "kind": kind,
-            "basis": None if kind == KIND_DRIFT else basis,
+            "basis": judged.basis,
             "avoid": avoid,
             "direction": direction,
             "created_at": float(now),
             "renewed_at": float(now),
             "expires_at": float(now) + MEMORY_BEHAVIOR_NOTE_TTL_SECONDS,
-            "evidence": evidence,
+            "evidence": judged.evidence,
         })
         next_number += 1
     return plan
-
-
-def _basis_of(note: Mapping[str, Any]) -> str:
-    if note.get("kind") == KIND_DRIFT:
-        return _BASIS_DRIFT
-    return BASIS_REQUEST if note.get("basis") == BASIS_REQUEST else BASIS_COMPLAINT
 
 
 def _next_note_number(notes: Sequence[Mapping[str, Any]]) -> int:
@@ -667,7 +647,7 @@ def build_payload(
         if note_id in plan.renewed:
             updated["renewed_at"] = float(now)
             updated["expires_at"] = float(now) + MEMORY_BEHAVIOR_NOTE_TTL_SECONDS
-            updated["evidence"] = plan.renewed[note_id]
+            updated.update(plan.renewed[note_id])
         kept.append(updated)
     newly_retired = [
         {
@@ -923,12 +903,8 @@ def _day_label(epoch: float) -> str:
 
 
 def _note_line(note: Mapping[str, Any], language: str) -> str:
-    tags = [str(note["id"]), str(note["kind"])]
-    if note.get("kind") == KIND_STYLE:
-        tags.append(_basis_of(note))
-    tags.append(_day_label(float(note["renewed_at"])))
     item = render_behavior_note_item(_defang(note["avoid"]), _defang(note["direction"]), language)
-    return f"[{' '.join(tags)}] {item}"
+    return f"[{note['id']} {_day_label(float(note['renewed_at']))}] {item}"
 
 
 def _retired_line(item: Mapping[str, Any], language: str) -> str:
@@ -950,28 +926,35 @@ def build_review_prompt(
     sample_text: str,
     language: str,
 ) -> str:
-    none = get_behavior_review_none(language)
     card = truncate_to_tokens(
         _defang((card_text or "").strip()), MEMORY_BEHAVIOR_REVIEW_CARD_MAX_TOKENS,
     )
+    # A block with nothing in it is left out, not spelled out as empty.
+    optional = [
+        render_behavior_review_block(key, body, language)
+        for key, body in (
+            ("HABITUAL", "\n".join(f"- {_defang(phrase)}" for phrase in phrases)),
+            ("SIGNALS", "\n".join(signals)),
+            ("RETIRED", "\n".join(
+                _retired_line(item, language)
+                for item in retired[:MEMORY_BEHAVIOR_REVIEW_RETIRED_SHOWN]
+            )),
+            ("NOTES", "\n".join(_note_line(note, language) for note in notes)),
+        )
+        if body
+    ]
     values = {
         "AI_NAME": ai_name,
         "MASTER_NAME": master_name,
-        "CARD": card or none,
-        "HABITUAL": "\n".join(f"- {_defang(phrase)}" for phrase in phrases) or none,
-        "SIGNALS": "\n".join(signals) or none,
-        "RETIRED": "\n".join(
-            _retired_line(item, language) for item in retired[:MEMORY_BEHAVIOR_REVIEW_RETIRED_SHOWN]
-        ) or none,
-        "NOTES": "\n".join(_note_line(note, language) for note in notes) or none,
-        "SAMPLE": sample_text or none,
-        "MAX_STYLE": str(MEMORY_BEHAVIOR_NOTE_MAX_PER_KIND[KIND_STYLE]),
-        "MAX_DRIFT": str(MEMORY_BEHAVIOR_NOTE_MAX_PER_KIND[KIND_DRIFT]),
+        "CARD": card or get_behavior_review_none(language),
+        "OPTIONAL_BLOCKS": "".join(optional),
+        "SAMPLE": sample_text or get_behavior_review_none(language),
+        "MAX_NOTES": str(sum(MEMORY_BEHAVIOR_NOTE_MAX_PER_KIND.values())),
     }
-    # One pass, so a placeholder spelled inside the card or a reply is not
+    # One pass, so a placeholder spelled inside the card, a reply or a note is not
     # expanded in turn.
     return re.sub(
-        r"\{(AI_NAME|MASTER_NAME|CARD|HABITUAL|SIGNALS|RETIRED|NOTES|SAMPLE|MAX_STYLE|MAX_DRIFT)\}",
+        r"\{(AI_NAME|MASTER_NAME|CARD|OPTIONAL_BLOCKS|SAMPLE|MAX_NOTES)\}",
         lambda match: values[match.group(1)],
         get_behavior_review_prompt(language),
     )
@@ -1130,7 +1113,7 @@ async def arun_behavior_review(
         result.skipped = SKIP_TOO_FEW
         return result
 
-    sample = await asyncio.to_thread(build_review_sample, messages, language=language)
+    sample = await asyncio.to_thread(build_review_sample, messages)
     notes = _live_notes(stored["notes"], now=ts) if same_language else []
     retired = _recent_retired(stored["retired"], now=ts) if same_language else []
     character = await config_manager.aget_character_data()
