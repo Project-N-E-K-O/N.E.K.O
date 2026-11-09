@@ -36,6 +36,10 @@ def collect_model_cache(sync):
                 if value.startswith(prefix):
                     value = str(Path(root) / unquote(value[len(prefix):]))
                     break
+            else:
+                # The model manager saves catalog paths relative to the model root.
+                if not value.startswith('/') and not Path(value).is_absolute():
+                    value = str(Path(config.live2d_dir) / unquote(value))
             paths.add(Path(value).resolve())
 
         def selection(value):

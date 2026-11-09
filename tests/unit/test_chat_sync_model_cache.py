@@ -48,18 +48,21 @@ def bundle(runtime, config, name='one'):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('reference', ['none', 'role', 'selection', 'candidate', 'conflict', 'pending', 'failed', 'error'])
+@pytest.mark.parametrize('reference', ['none', 'role', 'relative_role', 'selection', 'relative_selection', 'candidate', 'conflict', 'pending', 'failed', 'error'])
 async def test_collection_preserves_references_from_every_role_and_task(cache_runtime, reference):
     runtime, config = cache_runtime
     record, upload, downloaded, installed = bundle(runtime, config)
     root = installed.parent
     path = '/user_live2d/' + installed.relative_to(config.live2d_dir).as_posix()
+    # The model manager saves a catalog path relative to the model root.
+    if reference.startswith('relative_'):
+        path = installed.relative_to(config.live2d_dir).as_posix()
     state = {'revision': 1, 'selection': ''}
-    if reference == 'role':
+    if reference in ('role', 'relative_role'):
         raw = {}
         set_reserved(raw, 'avatar', 'live2d', 'model_path', path)
         config.characters['猫娘']['Other'] = raw
-    elif reference == 'selection':
+    elif reference in ('selection', 'relative_selection'):
         state['selection'] = canonical(['live2d', path]).decode()
     elif reference in ('candidate', 'conflict', 'pending'):
         state[reference] = {'record': record, 'path': path}
@@ -71,7 +74,7 @@ async def test_collection_preserves_references_from_every_role_and_task(cache_ru
     # A different domain must protect shared caches too.
     await commit(runtime.models.store.put, 'other-domain', state)
     await asyncio.to_thread(runtime.models.cleanup_cache, force=True)
-    assert root.exists() is (reference in ('role', 'selection', 'candidate', 'conflict', 'pending'))
+    assert root.exists() is (reference in ('role', 'relative_role', 'selection', 'relative_selection', 'candidate', 'conflict', 'pending'))
     assert downloaded.exists() is (reference in ('candidate', 'conflict', 'pending'))
     assert Path(upload['path']).exists() is (reference == 'pending')
     assert (config.live2d_dir / 'originals' / 'one' / 'model.moc3').read_bytes() == b'MOC3one'
