@@ -292,12 +292,25 @@ def test_a_note_is_kept_under_the_gate_it_was_added_on():
     ).rejected == {"below_gate": 1}
 
 
-def test_a_renewal_records_what_the_note_now_rests_on():
+def test_a_renewal_updates_the_evidence_but_not_the_kind():
+    """A kind that changed here could push the other kind past its cap."""
     live = _note(renewed_at=_NOW - 7 * 86400)
     plan = _plan({"action": "keep", "id": "N1", "reply_evidence": [2, 4, 6, 8]}, notes=[live])
     payload = build_payload(plan, notes=[live], retired=[], language="zh-CN", now=_NOW, source_end_at=_NOW)
-    assert payload["notes"][0]["kind"] == "drift" and payload["notes"][0]["basis"] is None
+    assert payload["notes"][0]["kind"] == "style" and payload["notes"][0]["basis"] == "complaint"
     assert payload["notes"][0]["evidence"]["replies"] == 4
+
+
+def test_renewing_cannot_push_a_kind_past_its_cap():
+    live = [_note(f"N{i}", avoid=f"旧的第{i}种") for i in range(1, 4)]
+    live += [_note(f"N{i}", kind="drift", avoid=f"旧的第{i}种") for i in range(4, 6)]
+    plan = _plan(
+        {"action": "keep", "id": "N4", "user_evidence": [1, 3, 5], "reply_evidence": [2, 4, 6]},
+        notes=live,
+    )
+    payload = build_payload(plan, notes=live, retired=[], language="zh-CN", now=_NOW, source_end_at=_NOW)
+    kinds = [note["kind"] for note in payload["notes"]]
+    assert kinds.count("style") == 3 and kinds.count("drift") == 2
 
 
 def test_corrected_needs_two_sittings_since_the_last_renewal():

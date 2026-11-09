@@ -421,8 +421,9 @@ class _ScriptGuard:
 @dataclass
 class NotePlan:
     added: list[dict] = field(default_factory=list)
-    # Note id → the kind, basis and evidence summary it was renewed on.
-    renewed: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Note id → the evidence summary it was renewed on. A renewal never changes a
+    # note's kind, so it cannot push a kind past its cap.
+    renewed: dict[str, dict[str, int]] = field(default_factory=dict)
     # ``(note, outcome, reason)``.
     retired: list[tuple[dict, str, str]] = field(default_factory=list)
     rejected: Counter = field(default_factory=Counter)
@@ -561,9 +562,7 @@ def plan_note_actions(
             plan.rejected[judged] += 1
             continue
         used.add(str(note["id"]))
-        plan.renewed[str(note["id"])] = {
-            "kind": judged.kind, "basis": judged.basis, "evidence": judged.evidence,
-        }
+        plan.renewed[str(note["id"])] = judged.evidence
 
     guard = _ScriptGuard(
         [line.text for line in lines.values() if line.role == ROLE_REPLY], phrases, language,
@@ -647,7 +646,7 @@ def build_payload(
         if note_id in plan.renewed:
             updated["renewed_at"] = float(now)
             updated["expires_at"] = float(now) + MEMORY_BEHAVIOR_NOTE_TTL_SECONDS
-            updated.update(plan.renewed[note_id])
+            updated["evidence"] = plan.renewed[note_id]
         kept.append(updated)
     newly_retired = [
         {
