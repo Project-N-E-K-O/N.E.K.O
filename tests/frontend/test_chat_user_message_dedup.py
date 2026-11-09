@@ -118,7 +118,8 @@ def test_cloud_model_failure_toast_survives_a_failed_saved_model_reload(mock_pag
 
 
 @pytest.mark.frontend
-def test_capsule_history_keeps_session_bubbles_without_sync_backfill(mock_page: Page, running_server: str):
+@pytest.mark.parametrize('entrypoint', ['/', '/chat'])
+def test_capsule_history_keeps_session_bubbles_without_sync_backfill(mock_page: Page, running_server: str, entrypoint):
     sync_reads = []
     role_name = ''
 
@@ -127,14 +128,24 @@ def test_capsule_history_keeps_session_bubbles_without_sync_backfill(mock_page: 
         if path != '/wake':
             sync_reads.append(path)
         route.fulfill(json={'characters': [{'displayName': role_name, 'characterSyncId': 'c' * 32,
-            'binding': {'cursor': 1}}], 'originals': [{
+            'binding': {'enabled': True, 'cursor': 1}}], 'originals': [{
             'messageId': 'a' * 32, 'role': 'user', 'text': 'archived original must stay out',
             'originalTime': '1791540000123',
         }]})
 
     mock_page.route('**/api/chat-sync/**', sync_api)
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
-    mock_page.goto(f'{running_server}/chat', wait_until='domcontentloaded')
+    mock_page.add_init_script("""(() => {
+        const schedule = window.setInterval.bind(window);
+        window.syncRefreshPolls = [];
+        window.setInterval = (callback, delay, ...args) => {
+            if (delay === 30000 && callback.name === 'flushMemoryRefresh') {
+                window.syncRefreshPolls.push(callback);
+            }
+            return schedule(callback, delay, ...args);
+        };
+    })();""")
+    mock_page.goto(f'{running_server}{entrypoint}', wait_until='domcontentloaded')
     mock_page.wait_for_function('() => window.reactChatWindowHost && window.appState')
     # The shared fixture has no model assets; release its unrelated model-manager gate.
     mock_page.evaluate("""() => {
@@ -148,234 +159,61 @@ def test_capsule_history_keeps_session_bubbles_without_sync_backfill(mock_page: 
     mock_page.evaluate("""() => {
         const host = window.reactChatWindowHost;
         host.setChatSurfaceMode('compact');
+        // An open choice layer disables the clear-screen button used below.
+        host.setGalgameModeEnabled(false);
         host.setMessages([
-            {id:'session-user',role:'user',author:'User',time:'10:00',blocks:[{type:'text',text:'current question'}]},
-            {id:'session-reply-1',role:'assistant',author:'Neko',time:'10:01',blocks:[{type:'text',text:'first reply bubble'}]},
-            {id:'session-reply-2',role:'assistant',author:'Neko',time:'10:01',blocks:[{type:'text',text:'second reply bubble'}]},
+            {id:'session-user',role:'user',author:'User',time:'10:00',createdAt:3000,sortKey:0,blocks:[{type:'text',text:'current question'}]},
+            {id:'session-reply-1',role:'assistant',author:'Neko',time:'10:01',createdAt:1000,sortKey:1,blocks:[{type:'text',text:'first reply bubble'}]},
+            {id:'session-reply-2',role:'assistant',author:'Neko',time:'10:01',createdAt:2000,sortKey:2,blocks:[{type:'text',text:'second reply bubble'}]},
         ]);
         host.setCompactHistoryOpen(true);
+        // The host fills in author and avatar once the character profile loads; compare what sync could change.
+        window.syncComparableMessages = () => host.getState().messages.map(
+            ({id, role, createdAt, sortKey, blocks}) => ({id, role, createdAt, sortKey, blocks}));
+        window.dispatchSyncDisplayTriggers = () => {
+            document.dispatchEvent(new Event('neko:chat-sync-history-changed'));
+            document.dispatchEvent(new Event('visibilitychange'));
+            window.dispatchEvent(new Event('pageshow'));
+            window.dispatchEvent(new Event('voice-input-socket-open'));
+            window.dispatchEvent(new Event('neko-assistant-turn-end'));
+            window.dispatchEvent(new Event('neko-realistic-queue-idle'));
+            window.dispatchEvent(new Event('neko-speech-playback-state'));
+            window.dispatchEvent(new Event('voice-input-lifecycle-changed'));
+            window.syncRefreshPolls.forEach(callback => callback());
+        };
     }""")
     history = mock_page.locator('.compact-export-history-anchor[data-compact-export-history-open="true"]')
     rows = history.locator('.compact-export-history-message')
     expect(rows).to_have_count(3)
     expected_ids = ['session-user', 'session-reply-1', 'session-reply-2']
     assert rows.evaluate_all('(items) => items.map(item => item.dataset.compactExportHistoryMessageId)') == expected_ids
-    mock_page.evaluate("""() => {
-        window.dispatchEvent(new Event('voice-input-socket-open'));
-        window.dispatchEvent(new CustomEvent('neko-assistant-turn-end', {detail:{turnId:'previous-turn'}}));
-        document.dispatchEvent(new Event('visibilitychange'));
-    }""")
-    # Cover the retired five-second original-history poll as well as the immediate hooks.
-    mock_page.wait_for_timeout(5200)
+    before = mock_page.evaluate('() => window.syncComparableMessages()')
+    assert mock_page.evaluate('() => window.syncRefreshPolls.length') == 1
+    mock_page.evaluate('() => window.dispatchSyncDisplayTriggers()')
+    mock_page.wait_for_timeout(500)
     expect(rows).to_have_count(3)
     expect(history).to_contain_text('current question')
     expect(history).to_contain_text('first reply bubble')
     expect(history).to_contain_text('second reply bubble')
     expect(history).not_to_contain_text('archived original must stay out')
     assert rows.evaluate_all('(items) => items.map(item => item.dataset.compactExportHistoryMessageId)') == expected_ids
-    # Character-profile observations still use /status; no chat-original read is allowed.
-    assert all(path == '/status' for path in sync_reads)
-
-
-@pytest.mark.frontend
-@pytest.mark.parametrize('role,body,visible', [
-    ('user', 'phone caption', 'phone caption'),
-    ('assistant', '[20261023 Fri 13:25] phone caption', 'phone caption'),
-    ('assistant', '[20261023 星期五 13:25]phone caption', 'phone caption'),
-    ('user', '[20261023 Fri 13:25] phone caption', '[20261023 Fri 13:25] phone caption'),
-])
-def test_received_recent_text_ignores_media_without_replacing_local_bubbles(mock_page: Page, running_server: str, role, body, visible):
-    role_name = ''
-    uid, identity = 'c' * 32, 'a' * 32
-    media = {}
-    originals = [{'messageId': identity, 'role': role, 'text': body, 'originalTime': '1791540000123'}]
-    def sync_api(route):
-        path = route.request.url.split('/api/chat-sync', 1)[1]
-        if path == '/status':
-            route.fulfill(json={'characters': [{'displayName': role_name, 'characterSyncId': uid, 'binding': {'enabled': True}}]})
-        elif path.endswith('/recent-display'):
-            route.fulfill(json={'characterSyncId': uid, 'originals': originals, 'media': media, 'localMedia': {}})
-        elif path.endswith('/history'):
-            pytest.fail('Recent display must never backfill the original archive')
-        else:
-            route.fulfill(json={})
-    mock_page.route('**/api/chat-sync/**', sync_api)
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
-    mock_page.goto(f'{running_server}/chat', wait_until='domcontentloaded')
-    mock_page.wait_for_function('() => window.reactChatWindowHost && window.appState')
+    assert mock_page.evaluate('() => window.syncComparableMessages()') == before
+    # A visual clear keeps the host messages, so sync events must not bring the rows back.
+    mock_page.locator('.chat-clear-screen-button').click()
+    expect(rows).to_have_count(0)
+    mock_page.evaluate('() => window.dispatchSyncDisplayTriggers()')
+    mock_page.wait_for_timeout(500)
+    expect(rows).to_have_count(0)
+    assert mock_page.evaluate('() => window.syncComparableMessages()') == before
     mock_page.evaluate("""() => {
-        window.isMainUIHiddenByModelManager = () => false;
-        document.body.classList.remove('neko-main-ui-hidden-by-model-manager');
-        window.reactChatWindowHost.openWindow();
+        window.reactChatWindowHost.clearMessages();
+        window.dispatchSyncDisplayTriggers();
     }""")
-    mock_page.wait_for_function('() => window.reactChatWindowHost.isMounted()')
-    role_name = mock_page.evaluate('() => window.lanlan_config.lanlan_name')
-    mock_page.evaluate("""() => {
-        window.appState.proactiveChatEnabled = false;
-        window.appState.assistantTurnAwaitingBubble = false;
-        window.appState.assistantTurnId = null;
-        window._lastSubmittedRequestId = null;
-        window.reactChatWindowHost.setMessages([{id:'local-session',role:'assistant',author:'Neko',time:'10:00',
-            blocks:[{type:'text',text:'existing local bubble'}]}]);
-        document.dispatchEvent(new Event('neko:chat-sync-history-changed'));
-    }""")
-    mock_page.wait_for_function("expected => window.reactChatWindowHost.getState().messages.some(m => m.blocks.some(b => b.text === expected))", arg=visible)
-    assert originals[0]['text'] == body
-    assert mock_page.evaluate("() => window.reactChatWindowHost.getState().messages.find(m => m.id.startsWith('sync-recent-')).createdAt") == 1791540000123
-    assert mock_page.evaluate("() => window.reactChatWindowHost.getState().messages.filter(m => m.id === 'local-session').length") == 1
-    media[identity] = {'attachments': [{'id': 'd' * 32, 'type': 'image', 'title': '',
-        'original': {'url': 'https://images.example/sent.gif'}, 'thumbnail': None}]}
-    # Wait for refreshed text before checking that legacy media fields stay ignored.
-    originals[0]['text'] = body + ' refreshed'
-    mock_page.evaluate("() => document.dispatchEvent(new Event('neko:chat-sync-history-changed'))")
-    mock_page.wait_for_function("expected => window.reactChatWindowHost.getState().messages.some(m => m.blocks.some(b => b.text === expected))", arg=visible + ' refreshed')
-    assert mock_page.evaluate("() => window.reactChatWindowHost.getState().messages.find(m => m.id.startsWith('sync-recent-')).blocks") == [
-        {'type': 'text', 'text': visible + ' refreshed'},
-    ]
-    assert mock_page.evaluate("() => window.reactChatWindowHost.getState().messages.find(m => m.id === 'local-session').blocks") == [
-        {'type': 'text', 'text': 'existing local bubble'},
-    ]
-    originals.clear()
-    mock_page.evaluate("() => document.dispatchEvent(new Event('neko:chat-sync-history-changed'))")
-    mock_page.wait_for_function("() => window.reactChatWindowHost.getState().messages.length === 1")
-    assert mock_page.evaluate("() => window.reactChatWindowHost.getState().messages[0].id") == 'local-session'
-
-
-@pytest.mark.frontend
-def test_recent_display_preserves_order_with_existing_local_sort_keys(mock_page: Page, running_server: str):
-    uid, role_name = 'c' * 32, ''
-
-    def sync_api(route):
-        path = route.request.url.split('/api/chat-sync', 1)[1]
-        if path == '/status':
-            route.fulfill(json={'characters': [{'displayName': role_name, 'characterSyncId': uid,
-                                               'binding': {'enabled': True}}]})
-        elif path.endswith('/recent-display'):
-            route.fulfill(json={'characterSyncId': uid, 'media': {}, 'localMedia': {}, 'originals': [
-                {'messageId': 'a' * 32, 'role': 'user', 'text': 'ORDER_01', 'originalTime': '1000'},
-                {'messageId': 'b' * 32, 'role': 'user', 'text': 'ORDER_03', 'originalTime': '3000'},
-            ]})
-        else:
-            route.fulfill(json={})
-
-    mock_page.route('**/api/chat-sync/**', sync_api)
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
-    mock_page.goto(f'{running_server}/chat', wait_until='domcontentloaded')
-    mock_page.wait_for_function('() => window.reactChatWindowHost && window.appState')
-    mock_page.evaluate("""() => {
-        window.appState.proactiveChatEnabled = false;
-        window.isMainUIHiddenByModelManager = () => false;
-        document.body.classList.remove('neko-main-ui-hidden-by-model-manager');
-        window.reactChatWindowHost.openWindow();
-    }""")
-    mock_page.wait_for_function('() => window.reactChatWindowHost.isMounted()')
-    role_name = mock_page.evaluate('() => window.lanlan_config.lanlan_name')
-    mock_page.evaluate("""() => {
-        const host = window.reactChatWindowHost;
-        host.setMessages([{id:'local-two',role:'user',author:'User',time:'00:02',
-            createdAt:2000,sortKey:0,blocks:[{type:'text',text:'ORDER_02'}]}]);
-        host.setChatSurfaceMode('compact');
-        host.setCompactHistoryOpen(true);
-        document.dispatchEvent(new Event('neko:chat-sync-history-changed'));
-    }""")
-    rows = mock_page.locator('.compact-export-history-message')
-    expect(rows).to_have_count(3)
-    expected = ['ORDER_01', 'ORDER_02', 'ORDER_03']
-    assert rows.evaluate_all('(items) => items.map(item => item.textContent.match(/ORDER_0[123]/)[0])') == expected
-    mock_page.evaluate("""() => {
-        window.syncDisplayUpdates = 0;
-        const host = window.reactChatWindowHost;
-        const original = host.setMessages;
-        host.setMessages = (...args) => { window.syncDisplayUpdates++; return original(...args); };
-        document.dispatchEvent(new Event('neko:chat-sync-history-changed'));
-    }""")
-    mock_page.wait_for_timeout(300)
-    assert mock_page.evaluate('() => window.syncDisplayUpdates') == 0
-    assert rows.evaluate_all('(items) => items.map(item => item.textContent.match(/ORDER_0[123]/)[0])') == expected
-
-
-@pytest.mark.frontend
-@pytest.mark.parametrize('page_path', ['/chat', '/chat_full'])
-def test_unchanged_recent_display_does_not_replace_the_host_window(mock_page: Page, running_server: str, page_path):
-    uid, role_name = 'c' * 32, ''
-    originals = [{'messageId': str(index).zfill(32), 'role': 'user', 'text': f'received {index}',
-                  'originalTime': str(1000 + index)} for index in range(200)]
-
-    def sync_api(route):
-        path = route.request.url.split('/api/chat-sync', 1)[1]
-        if path == '/status':
-            route.fulfill(json={'characters': [{'displayName': role_name, 'characterSyncId': uid,
-                                               'binding': {'enabled': True}}]})
-        elif path.endswith('/recent-display'):
-            route.fulfill(json={'characterSyncId': uid, 'originals': originals})
-        else:
-            route.fulfill(json={})
-
-    mock_page.route('**/api/chat-sync/**', sync_api)
-    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
-    mock_page.goto(f'{running_server}{page_path}', wait_until='domcontentloaded')
-    mock_page.wait_for_function('() => window.reactChatWindowHost && window.appState')
-    mock_page.evaluate("""() => {
-        window.appState.proactiveChatEnabled = false;
-        window.appState.assistantTurnAwaitingBubble = false;
-        window.appState.assistantTurnId = null;
-        window.isMainUIHiddenByModelManager = () => false;
-        document.body.classList.remove('neko-main-ui-hidden-by-model-manager');
-        window.reactChatWindowHost.openWindow();
-    }""")
-    mock_page.wait_for_function('() => window.reactChatWindowHost.isMounted()')
-    role_name = mock_page.evaluate('() => window.lanlan_config.lanlan_name')
-    mock_page.evaluate("""() => {
-        const host = window.reactChatWindowHost;
-        host.setMessages([
-            {id:'local-user',role:'user',author:'User',createdAt:5000,time:'10:00',status:'sent',
-                blocks:[{type:'text',text:'local question'}]},
-            {id:'local-split-1',role:'assistant',author:'Neko',createdAt:5001,time:'10:01',status:'sent',
-                blocks:[{type:'text',text:'first local bubble'}]},
-            {id:'local-split-2',role:'assistant',author:'Neko',createdAt:5002,time:'10:01',status:'sent',
-                blocks:[{type:'text',text:'second local bubble'}]},
-        ]);
-        host.setChatSurfaceMode('compact');
-        host.setCompactHistoryOpen(true);
-        document.dispatchEvent(new Event('neko:chat-sync-history-changed'));
-    }""")
-    rows = mock_page.locator('.compact-export-history-message')
-    expect(rows).to_have_count(50)
-    assert mock_page.evaluate('window.reactChatWindowHost.getState().messages[0].blocks[0].text') == 'received 153'
-    assert mock_page.evaluate('window.reactChatWindowHost.getState().messages.slice(-3).map(message=>message.id)') == [
-        'local-user', 'local-split-1', 'local-split-2',
-    ]
-    mock_page.evaluate("""() => {
-        window.syncDisplayUpdates=0;
-        const host=window.reactChatWindowHost, original=host.setMessages;
-        host.setMessages=(...args)=>{window.syncDisplayUpdates++;return original(...args);};
-    }""")
-    with mock_page.expect_response('**/api/chat-sync/characters/*/recent-display') as response:
-        mock_page.evaluate("document.dispatchEvent(new Event('neko:chat-sync-history-changed'))")
-    response.value.finished()
-    mock_page.evaluate('async()=>{await new Promise(requestAnimationFrame);await new Promise(requestAnimationFrame);}')
-    assert mock_page.evaluate('window.syncDisplayUpdates') == 0
-    originals[-1]['text'] = 'changed visible message'
-    mock_page.evaluate("document.dispatchEvent(new Event('neko:chat-sync-history-changed'))")
-    mock_page.wait_for_function("window.reactChatWindowHost.getState().messages.at(-4).blocks[0].text==='changed visible message'")
-    assert mock_page.evaluate('window.syncDisplayUpdates') == 1
-    assert mock_page.evaluate('window.reactChatWindowHost.getState().messages.slice(-3).map(message=>message.blocks[0].text)') == [
-        'local question', 'first local bubble', 'second local bubble',
-    ]
-    mock_page.evaluate("""() => {
-        window._lastSubmittedRequestId='new-local-pending';
-        window.reactChatWindowHost.appendMessage({id:'new-local-user',role:'user',author:'User',
-            createdAt:6000,time:'10:02',status:'sent',blocks:[{type:'text',text:'a new local question'}]});
-        window.syncPendingReaction=window.captureMessageReactionTarget('new-local-pending');
-    }""")
-    assert mock_page.evaluate('!!window.syncPendingReaction')
-    with mock_page.expect_response('**/api/chat-sync/characters/*/recent-display') as response:
-        mock_page.evaluate("document.dispatchEvent(new Event('neko:chat-sync-history-changed'))")
-    response.value.finished()
-    mock_page.evaluate('async()=>{await new Promise(requestAnimationFrame);await new Promise(requestAnimationFrame);}')
-    assert mock_page.evaluate('window.syncDisplayUpdates') == 1
-    mock_page.evaluate("window.applyMessageReactionFromEmotion(window.syncPendingReaction,{reaction:{emoji:'😊',author:window.lanlan_config.lanlan_name}})")
-    assert mock_page.evaluate('window.reactChatWindowHost.getState().messages.at(-1).reaction.emoji') == '😊'
+    mock_page.wait_for_timeout(500)
+    expect(rows).to_have_count(0)
+    assert mock_page.evaluate('() => window.reactChatWindowHost.getState().messages') == []
+    # Account/model status reads remain valid; synchronized text must never be fetched for display.
+    assert not any(path.endswith(('/history', '/recent-display')) for path in sync_reads)
 
 
 def _open_react_chat_page(mock_page: Page, running_server: str) -> None:

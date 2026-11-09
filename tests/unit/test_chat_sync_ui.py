@@ -290,54 +290,6 @@ def test_model_confirmation_transport_loss_keeps_renderer_success_retryable(lost
     """.replace('LOSS', json.dumps(lost_confirmation)))
 
 
-@pytest.mark.parametrize('received_count', [1, 200])
-def test_unknown_time_messages_follow_receive_order_and_keep_the_window_stable(received_count):
-    run_script(r"""(async()=>{
-        const local=Array.from({length:50},(_,i)=>({id:'local-'+i,createdAt:1000+i,status:'sent',blocks:[]}));
-        let messages=local.slice(),writes=0;
-        const records=Array.from({length:COUNT},(_,i)=>({...original,messageId:i.toString(16).padStart(32,'0'),text:'phone '+i,originalTime:null}));
-        const host=window.reactChatWindowHost={maxMessages:50,getState:()=>({messages}),setMessages:value=>{writes++;messages=value;}};
-        document.visibilityState='visible';
-        global.fetch=async(path)=>({ok:true,json:async()=>path.endsWith('/status')?{characters:[{
-            displayName:'Neko',characterSyncId:original.characterSyncId,binding:{enabled:true}}]}:{originals:records}});
-        windowEvents['neko-assistant-turn-end']();
-        for(let i=0;i<12;i++)await new Promise(resolve=>setImmediate(resolve));
-        assert.equal(messages.length,host.maxMessages);
-        const received=messages.filter(message=>message.id.startsWith('sync-recent-'));
-        assert.equal(received.length,Math.min(COUNT,50));
-        assert.equal(received.at(-1).blocks[0].text,'phone '+(COUNT-1));
-        assert(received.every(message=>message.createdAt===0&&message.time==='chatSync.unknownTime'));
-        const snapshot=JSON.stringify(messages);
-        windowEvents['neko-assistant-turn-end']();
-        for(let i=0;i<12;i++)await new Promise(resolve=>setImmediate(resolve));
-        assert.equal(JSON.stringify(messages),snapshot);
-        assert.equal(writes,1);
-        records.push({...original,messageId:'f'.repeat(32),text:'new arrival',originalTime:null});
-        windowEvents['neko-assistant-turn-end']();
-        for(let i=0;i<12;i++)await new Promise(resolve=>setImmediate(resolve));
-        assert.equal(messages.at(-1).blocks[0].text,'new arrival');
-        assert.equal(messages.length,50);
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace('COUNT', str(received_count)))
-
-
-@pytest.mark.parametrize('received_count', [50, 200])
-def test_synced_epoch_zero_remains_a_known_original_time(received_count):
-    run_script(r"""(async()=>{
-        let messages=[];
-        window.reactChatWindowHost={maxMessages:50,getState:()=>({messages}),setMessages:value=>{messages=value;}};
-        document.visibilityState='visible';
-        const records=Array.from({length:COUNT},(_,i)=>({...original,messageId:i.toString(16).padStart(32,'0'),originalTime:'0'}));
-        global.fetch=async(path)=>({ok:true,json:async()=>path.endsWith('/status')?{characters:[{
-            displayName:'Neko',characterSyncId:original.characterSyncId,binding:{enabled:true}}]}:{originals:records}});
-        windowEvents['neko-assistant-turn-end']();
-        for(let i=0;i<12;i++)await new Promise(resolve=>setImmediate(resolve));
-        assert.equal(messages.length,50);
-        assert(messages.every(message=>message.createdAt===0&&message.time===new Date(0).toLocaleString()));
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace('COUNT', str(received_count)))
-
-
 def test_model_flight_and_action_error_in_a_real_chromium_page():
     from playwright.sync_api import sync_playwright
     with sync_playwright() as playwright:
@@ -383,147 +335,6 @@ def test_model_flight_and_action_error_in_a_real_chromium_page():
         assert page.get_by_role('button', name='cloudModel.useCloud', exact=True).is_enabled()
         assert not errors
         browser.close()
-
-
-@pytest.mark.parametrize('received_count', [50, 200])
-def test_unchanged_recent_display_keeps_the_real_host_window_and_pending_feedback(received_count):
-    """Comparing an uncropped batch must not replace the host's existing 50-message window."""
-    run_script(r"""(async()=>{
-        const I=window.__appReactChatWindowParts={_sortKeySeq:0,
-            state:{messages:[],_galgameRequestSeq:0},renderWindow(){}};
-        for(const name of ['geometry-and-messages.js','message-bundle-actions-and-prompts.js']){
-            vm.runInThisContext(fs.readFileSync(HOST_PARTS+'/'+name,'utf8'));
-        }
-        I.renderWindow=()=>{};
-        const host=window.reactChatWindowHost;
-        host.getState=()=>({messages:I.state.messages.map(I.cloneMessage)});
-        let updates=0,reads=0;
-        host.setMessages=(messages,options)=>{updates++;return I.setMessages(messages,options);};
-        const local=[
-            {id:'local-user',role:'user',author:'User',createdAt:5000,time:'10:00',status:'sent',
-                blocks:[{type:'text',text:'local question'}]},
-            {id:'local-split-1',role:'assistant',author:'Neko',createdAt:5001,time:'10:01',status:'sent',
-                blocks:[{type:'text',text:'first local bubble'}]},
-            {id:'local-split-2',role:'assistant',author:'Neko',createdAt:5002,time:'10:01',status:'sent',
-                blocks:[{type:'text',text:'second local bubble'}]},
-        ];
-        I.setMessages(local);
-        const originals=Array.from({length:RECEIVED_COUNT},(_,index)=>({...original,
-            messageId:String(index).padStart(32,'0'),text:'received '+index,originalTime:String(1000+index)}));
-        global.fetch=async path=>({ok:true,json:async()=>path.endsWith('/status')
-            ?{characters:[{displayName:'Neko',characterSyncId:original.characterSyncId,binding:{enabled:true}}]}
-            :(reads++,{originals})});
-        const flush=()=>new Promise(resolve=>setImmediate(resolve));
-        const replacedDetail=()=>dispatchedEvents.filter(event=>event.type==='react-chat-window:messages-replaced').at(-1).detail;
-        assert.equal(replacedDetail().keepClearedScreen,false,'ordinary host replacements still end a visual clear');
-        documentEvents.DOMContentLoaded();await flush();
-        assert.equal(reads,1);assert.equal(updates,1);
-        assert.equal(replacedDetail().keepClearedScreen,true,'a sync refresh must not undo a visual clear');
-        assert.equal(I.state.messages.length,50);
-        assert.equal(I.state.messages[0].blocks[0].text,'received '+(RECEIVED_COUNT-47));
-        assert.deepEqual(I.state.messages.slice(-3).map(message=>message.id),
-            ['local-user','local-split-1','local-split-2']);
-        window._lastSubmittedRequestId='pending-reaction';
-        I.updateMessage('local-user',{status:'sent'});
-        const target=window.captureMessageReactionTarget('pending-reaction');
-        assert.ok(target);
-        I.state.galgameOptions=[{id:'keep-options'}];
-        const sequence=I.state._galgameRequestSeq;
-        const poll=intervals.find(interval=>interval.delay===30000).callback;
-        poll();await flush();
-        assert.equal(reads,2);assert.equal(updates,1,'unchanged host window must not be replaced');
-        assert.equal(I.state._galgameRequestSeq,sequence);
-        assert.deepEqual(I.state.galgameOptions,[{id:'keep-options'}]);
-        window.applyMessageReactionFromEmotion(target,{reaction:{emoji:'😊',author:'Neko'}});
-        assert.equal(I.state.messages.find(message=>message.id==='local-user').reaction.emoji,'😊');
-        originals[0].text='changed outside the display window';poll();await flush();
-        assert.equal(updates,1);
-        originals[RECEIVED_COUNT-1].text='changed visible message';poll();await flush();
-        assert.equal(updates,2);
-        assert.equal(I.state.messages.at(-4).blocks[0].text,'changed visible message');
-        assert.deepEqual(I.state.messages.slice(-3).map(message=>message.blocks[0].text),
-            ['local question','first local bubble','second local bubble']);
-        const beforeAppend=updates;
-        window._lastSubmittedRequestId='new-local-pending';
-        I.appendMessage({id:'new-local-user',role:'user',author:'User',createdAt:6000,time:'10:02',status:'sent',
-            blocks:[{type:'text',text:'a new local question'}]});
-        const appendedTarget=window.captureMessageReactionTarget('new-local-pending');
-        assert.ok(appendedTarget);
-        I.state.galgameOptions=[{id:'local-post-turn-options'}];
-        const appendedSequence=I.state._galgameRequestSeq;
-        poll();await flush();
-        assert.equal(updates,beforeAppend,'appended local sort keys must not replace unchanged content');
-        assert.equal(I.state._galgameRequestSeq,appendedSequence);
-        assert.deepEqual(I.state.galgameOptions,[{id:'local-post-turn-options'}]);
-        window.applyMessageReactionFromEmotion(appendedTarget,{reaction:{emoji:'😊',author:'Neko'}});
-        assert.equal(I.state.messages.at(-1).reaction.emoji,'😊');
-        const reorderedId='sync-recent-'+original.characterSyncId+'-'+originals[RECEIVED_COUNT-1].messageId;
-        I.updateMessage(reorderedId,{sortKey:-1});
-        assert.equal(I.state.messages[0].id,reorderedId);
-        poll();await flush();
-        assert.equal(updates,beforeAppend+1,'an actual order change must still refresh');
-        assert.equal(I.state.messages.at(-5).id,reorderedId);
-        assert.deepEqual(I.state.messages.slice(-4).map(message=>message.blocks[0].text),
-            ['local question','first local bubble','second local bubble','a new local question']);
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace('HOST_PARTS', json.dumps(str(ROOT / 'static/app/app-react-chat-window')))
-        .replace('RECEIVED_COUNT', str(received_count)))
-
-
-@pytest.mark.parametrize('phase', ['status', 'recent'])
-@pytest.mark.parametrize('change', ['switching', 'returned', 'new_disabled'])
-def test_late_recent_display_cannot_repopulate_chat_after_switch_cleanup(phase, change):
-    run_script(r"""(async()=>{
-        let release, reads=0, updates=0, messages=[];
-        window.appState={isSwitchingCatgirl:false,_switchAttemptCounter:1};
-        window.reactChatWindowHost={maxMessages:50,getState:()=>({messages}),setMessages:value=>{updates++;messages=value;}};
-        global.fetch=async path=>{
-            reads++;
-            const value=path.endsWith('/status')
-                ?{characters:[{displayName:'Neko',characterSyncId:original.characterSyncId,binding:{enabled:true}}]}
-                :{originals:[original]};
-            if((PHASE==='status'&&path.endsWith('/status'))||(PHASE==='recent'&&path.endsWith('/recent-display'))){
-                return await new Promise(resolve=>{release=()=>resolve({ok:true,json:async()=>value});});
-            }
-            return{ok:true,json:async()=>value};
-        };
-        const flush=()=>new Promise(resolve=>setImmediate(resolve));
-        documentEvents.DOMContentLoaded();await flush();
-        assert.equal(typeof release,'function');
-        window.appState.isSwitchingCatgirl=true;
-        window.appState._switchAttemptCounter++;
-        messages=[];
-        if(CHANGE==='returned')window.appState.isSwitchingCatgirl=false;
-        if(CHANGE==='new_disabled'){
-            window.lanlan_config.lanlan_name='Other';
-            window.appState.isSwitchingCatgirl=false;
-        }
-        const before=reads;release();await flush();
-        assert.equal(updates,0);
-        assert.deepEqual(messages,[]);
-        assert.equal(reads,before);
-        window.lanlan_config.lanlan_name='Other';window.appState.isSwitchingCatgirl=false;
-        global.fetch=async path=>{
-            assert(path.endsWith('/status'));
-            return{ok:true,json:async()=>({characters:[{displayName:'Other',binding:{enabled:false}}]})};
-        };
-        intervals.find(interval=>interval.delay===30000).callback();await flush();
-        assert.equal(updates,0);assert.deepEqual(messages,[]);
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace('PHASE', json.dumps(phase)).replace('CHANGE', json.dumps(change)))
-
-
-def test_recent_display_does_not_start_while_the_character_is_switching():
-    run_script(r"""(async()=>{
-        window.appState={isSwitchingCatgirl:true,_switchAttemptCounter:1};
-        window.reactChatWindowHost={maxMessages:50,getState:()=>({messages:[]}),setMessages(){throw new Error('stale update');}};
-        let requests=0;
-        global.fetch=async()=>{requests++;throw new Error('unexpected request');};
-        documentEvents.DOMContentLoaded();
-        await new Promise(resolve=>setImmediate(resolve));
-        assert.equal(requests,0);
-    })().catch(error=>{console.error(error);process.exitCode=1;});
-    """)
 
 
 @pytest.mark.parametrize('code,key', [
@@ -907,30 +718,42 @@ def test_sync_locale_namespace_is_complete(locale):
     assert "{{count}}" in actual["recoveryCloudCopiesKept"]
 
 
-@pytest.mark.parametrize('trigger', ['connect', 'foreground', 'turn_end'])
-def test_capsule_history_is_not_restored_or_reordered_by_sync_events(trigger):
+@pytest.mark.parametrize('trigger', ['connect', 'foreground', 'turn_end', 'history_changed',
+                                     'poll', 'queue_idle', 'playback', 'voice_end'])
+@pytest.mark.parametrize('cleared', [False, True])
+def test_capsule_history_is_not_restored_or_reordered_by_sync_events(trigger, cleared):
     run_script(r"""(async()=>{
         const trigger=TRIGGER,requests=[];
-        const current=[{id:'live-user',role:'user',createdAt:3,blocks:[{type:'text',text:'same'}]},
-            {id:'live-assistant',role:'assistant',status:'streaming',turnId:'live-turn',createdAt:1,
+        const current=CLEARED?[]:[{id:'live-user',role:'user',createdAt:3,sortKey:0,blocks:[{type:'text',text:'same'}]},
+            {id:'live-assistant',role:'assistant',status:'sent',createdAt:1,sortKey:1,
                 blocks:[{type:'text',text:'split reply'},{type:'image',url:'local-image'}]}];
         const before=JSON.stringify(current);
+        let replacements=0;
+        document.visibilityState='visible';
         window.reactChatWindowHost={getState:()=>({messages:current}),
-            setMessages(){throw new Error('Sync cannot replace chat history');},
+            setMessages(){replacements++;},
             appendMessage(){throw new Error('Sync cannot replay chat bubbles');}};
         global.fetch=async(path,options)=>{
-            requests.push(path);assert.equal(path,'/api/chat-sync/wake');assert.equal(options.method,'POST');
-            return {ok:true,json:async()=>({scheduled:true})};
+            requests.push(path);
+            if(path.endsWith('/wake'))assert.equal(options.method,'POST');
+            return {ok:true,json:async()=>({scheduled:true,characters:[{displayName:'Neko',
+                characterSyncId:original.characterSyncId,binding:{enabled:true}}],originals:[original]})};
         };
         documentEvents.DOMContentLoaded();
+        await new Promise(resolve=>setImmediate(resolve));
         assert.deepEqual(intervals.map(item=>item.delay),[30000]);
-        if(trigger==='foreground')await windowEvents.pageshow();
-        else if(trigger==='connect'&&windowEvents['voice-input-socket-open'])await windowEvents['voice-input-socket-open']();
-        else if(trigger==='turn_end'&&windowEvents['neko-assistant-turn-end'])await windowEvents['neko-assistant-turn-end']({detail:{turnId:'live-turn'}});
+        const events={connect:'voice-input-socket-open',turn_end:'neko-assistant-turn-end',
+            queue_idle:'neko-realistic-queue-idle',playback:'neko-speech-playback-state',voice_end:'voice-input-lifecycle-changed'};
+        if(trigger==='foreground')await Promise.all([documentEvents.visibilitychange(),windowEvents.pageshow()]);
+        else if(trigger==='history_changed')await documentEvents['neko:chat-sync-history-changed']();
+        else if(trigger==='poll')intervals.forEach(item=>item.callback());
+        else await windowEvents[events[trigger]]();
+        await new Promise(resolve=>setImmediate(resolve));
         assert.deepEqual(requests,trigger==='foreground'?['/api/chat-sync/wake']:[]);
+        assert.equal(replacements,0);
         assert.equal(JSON.stringify(current),before);
     })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace('TRIGGER', json.dumps(trigger)))
+    """.replace('TRIGGER', json.dumps(trigger)).replace('CLEARED', json.dumps(cleared)))
 
 
 @pytest.mark.parametrize('original_id', [None, 'a' * 32])
