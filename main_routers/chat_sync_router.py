@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import re
 import sqlite3
 from typing import Annotated, Literal
@@ -171,28 +170,6 @@ async def history(character_uid: str, runtime: Runtime):
     originals = await runtime.history(character_uid)
     return {"characterSyncId": character_uid, "originals": originals,
             "localReplies": await runtime.local_replies(character_uid)}
-
-
-@router.get("/characters/{character_uid}/recent-display")
-async def recent_display(character_uid: str, runtime: Runtime):
-    """Render received recent messages without replaying local session bubbles or archives."""
-    await _character(character_uid)
-    binding = await asyncio.to_thread(runtime.state.binding, character_uid)
-    if runtime.recent_memory is None or not binding or not binding["enabled"]:
-        return {"characterSyncId": character_uid, "originals": []}
-    originals = await runtime.history(character_uid)
-    from services.chat_sync.source import ChatOriginalSource
-    source_path = runtime.state.path.parent / "sources.sqlite3"
-    local_ids = set()
-    if source_path.is_file():
-        source = await asyncio.to_thread(ChatOriginalSource, source_path)
-        local_ids = await asyncio.to_thread(source.stored_ids, character_uid)
-    return {"characterSyncId": character_uid,
-            "originals": [row for row in originals if row["messageId"] not in local_ids]}
-
-
-
-
 
 
 @router.get("/characters/{character_uid}/model-sync")

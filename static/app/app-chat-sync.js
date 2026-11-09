@@ -283,11 +283,6 @@
 
     var pendingMemoryName = null;
     var memoryRefreshFlight = false;
-    var displayFlight = false;
-    var displayPending = false;
-    var displayPrefix = 'sync-recent-';
-    var displayReceiptUid = null;
-    var displayReceiptOrder = new Map();
 
     function liveCharacterName() {
         return window.lanlan_config && window.lanlan_config.lanlan_name || window._currentCatgirl || '';
@@ -304,81 +299,6 @@
             || ((host && host.getState().messages) || []).some(function (message) {
                 return message.status === 'sending' || (message.status === 'streaming' && !completed.has(message.turnId));
             });
-    }
-
-    function recentMessage(record, name, uid) {
-        var body = record.role === 'assistant'
-            ? record.text.replace(/^\[\d{8} [^\]\s]+ \d{2}:\d{2}\][ \t]*/, '') : record.text;
-        var blocks = body ? [{ type: 'text', text: body }] : [];
-        if (!blocks.length) return null;
-        var timestamp = record.originalTime === null ? null : Number(record.originalTime);
-        if (!Number.isSafeInteger(timestamp)) timestamp = null;
-        return { id: displayPrefix + uid + '-' + record.messageId, role: record.role,
-            author: record.role === 'assistant' ? name : text('userLabel'),
-            time: timestamp === null ? text('unknownTime') : new Date(timestamp).toLocaleString(),
-            createdAt: timestamp === null ? 0 : timestamp, status: 'sent', blocks: blocks };
-    }
-
-    function displaySnapshot(messages) {
-        // Array order captures display ordering; append sort keys are internal bookkeeping.
-        return JSON.stringify(messages.map(function (message) {
-            return [message.id, message.role, message.author, message.time, message.createdAt,
-                message.status, message.blocks];
-        }));
-    }
-
-    async function refreshRecentDisplay() {
-        var host = window.reactChatWindowHost;
-        if (!host || typeof host.getState !== 'function' || typeof host.setMessages !== 'function'
-                || window.appState?.isSwitchingCatgirl || document.visibilityState === 'hidden' || liveChatBusy(host)) return;
-        if (displayFlight) { displayPending = true; return; }
-        displayFlight = true;
-        try {
-            var name = liveCharacterName();
-            var switchAttempt = window.appState?._switchAttemptCounter || 0;
-            function isCurrentRole() {
-                return liveCharacterName() === name && !window.appState?.isSwitchingCatgirl &&
-                    (window.appState?._switchAttemptCounter || 0) === switchAttempt;
-            }
-            var state = await api('/status');
-            var role = (state.characters || []).find(function (item) { return item.displayName === name; });
-            if (!role || !role.binding || !role.binding.enabled || !isCurrentRole()) return;
-            var uid = role.characterSyncId;
-            var result = await api('/characters/' + uid + '/recent-display');
-            if (!isCurrentRole() || window.reactChatWindowHost !== host || liveChatBusy(host)) return;
-            var received = result.originals.map(function (record) { return recentMessage(record, name, uid); }).filter(Boolean);
-            // The endpoint supplies only received recent messages. Local split bubbles stay owned by the chat host.
-            var current = host.getState().messages || [];
-            var local = current.filter(function (message) { return !message.id.startsWith(displayPrefix); });
-            var unknown = new Set(result.originals.filter(function (record) {
-                return record.originalTime === null || !Number.isSafeInteger(Number(record.originalTime));
-            }).map(function (record) { return displayPrefix + uid + '-' + record.messageId; }));
-            if (displayReceiptUid !== uid) { displayReceiptUid = uid; displayReceiptOrder.clear(); }
-            var latestPosition = Math.max(0, ...local.concat(received).map(function (message) {
-                return typeof message.createdAt === 'number' ? message.createdAt : 0;
-            }), ...displayReceiptOrder.values());
-            var receiptOrder = new Map();
-            received.forEach(function (message) {
-                if (unknown.has(message.id)) receiptOrder.set(message.id,
-                    displayReceiptOrder.has(message.id) ? displayReceiptOrder.get(message.id) : ++latestPosition);
-            });
-            // Display positions are receipt order only; original times remain unknown.
-            displayReceiptOrder = receiptOrder;
-            function position(message) {
-                return receiptOrder.has(message.id) ? receiptOrder.get(message.id)
-                    : typeof message.createdAt === 'number' ? message.createdAt : Infinity;
-            }
-            var merged = local.concat(received).sort(function (a, b) {
-                return position(a) - position(b);
-            }).slice(-host.maxMessages).map(function (message, index) {
-                // The host sorts by explicit keys, including keys retained by local split bubbles.
-                return Object.assign({}, message, { sortKey: index });
-            });
-            if (displaySnapshot(current) !== displaySnapshot(merged)) host.setMessages(merged, { keepClearedScreen: true });
-        } finally {
-            displayFlight = false;
-            if (displayPending) { displayPending = false; refreshRecentDisplay().catch(function () {}); }
-        }
     }
 
     function requestMemoryRefresh(name) {
@@ -402,31 +322,27 @@
         }).finally(function () { memoryRefreshFlight = false; });
     }
 
-    function refreshReceived() {
-        flushMemoryRefresh();
-        refreshRecentDisplay().catch(function () { /* The next committed hint or local poll retries. */ });
-    }
-    window.addEventListener('voice-input-socket-open', refreshReceived);
-    window.addEventListener('neko-assistant-turn-end', refreshReceived);
-    window.addEventListener('neko-realistic-queue-idle', refreshReceived);
-    window.addEventListener('neko-speech-playback-state', refreshReceived);
-    window.addEventListener('voice-input-lifecycle-changed', refreshReceived);
+    window.addEventListener('voice-input-socket-open', flushMemoryRefresh);
+    window.addEventListener('neko-assistant-turn-end', flushMemoryRefresh);
+    window.addEventListener('neko-realistic-queue-idle', flushMemoryRefresh);
+    window.addEventListener('neko-speech-playback-state', flushMemoryRefresh);
+    window.addEventListener('voice-input-lifecycle-changed', flushMemoryRefresh);
 
     async function foregroundCatchup() {
         // The local bridge owns credentials and all enabled roles. A foreground
         // wake does not perform manual sync or bypass durable retry fences.
         if (foregroundWakeRunning || document.visibilityState === 'hidden' || !document.getElementById('react-chat-window-root')) return;
         foregroundWakeRunning = true;
-        try { await api('/wake', 'POST'); await refreshReadyModel(); await refreshRecentDisplay(); } catch (_) { /* Local chat stays usable. */ }
+        try { await api('/wake', 'POST'); await refreshReadyModel(); } catch (_) { /* Local chat stays usable. */ }
         finally { foregroundWakeRunning = false; }
     }
     document.addEventListener('neko:chat-sync-history-changed', function () {
-        refreshReceived();
+        flushMemoryRefresh();
         return refreshReadyModel().catch(function () { /* A later foreground wake retries. */ });
     });
     document.addEventListener('DOMContentLoaded', function () {
-        refreshReceived();
-        window.setInterval(refreshReceived, 30000);
+        flushMemoryRefresh();
+        window.setInterval(flushMemoryRefresh, 30000);
         if (!window.live2dManager || typeof window.handleModelReload !== 'function') return;
         refreshReadyModel().catch(function () {});
         window.setInterval(function () {
