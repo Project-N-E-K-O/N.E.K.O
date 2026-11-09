@@ -658,7 +658,10 @@ class DesktopChatSyncRuntime:
                 await asyncio.to_thread(self.scheduler.success, domain, "model")
             except AutomaticRoleInactive:
                 continue
-            except (OSError, ValueError, sqlite3.Error) as exc:
+            except Exception as exc:
+                # Model packages also fail outside the adapter vocabulary (BadZipFile,
+                # DecompressionBombError, KeyError). Left uncaught they skip the retry
+                # gate and repeat on every poll; failure() stores only a fixed code.
                 if getattr(exc, "status_code", None) == 404:
                     await asyncio.to_thread(self.scheduler.success, domain, "model")
                 else:

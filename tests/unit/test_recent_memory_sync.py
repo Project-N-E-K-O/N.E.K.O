@@ -298,6 +298,100 @@ def test_review_same_role_neighbors_keep_their_own_identity(review_identity_case
     assert [message.metadata for message in saved] == [original[index].metadata for index in (0, 2, 5)]
 
 
+@pytest.mark.parametrize('kept, sources', [
+    ((0, 2), [2, 0]),  # Two unchanged same-role rows naming each other.
+    ((0, 2, 4), [2, 4, 0]),  # The same swap as a three-row cycle.
+    ((0,), [2]),  # Row 2 is not kept, so nothing else accounts for the index.
+])
+def test_review_verbatim_text_cannot_claim_another_rows_identity(review_identity_case, kept, sources):
+    from utils.llm_client import HumanMessage, messages_to_dict
+
+    original = _identified_review_messages()
+    corrected = [HumanMessage(original[index].content) for index in kept]
+    status, saved, _ = review_identity_case(original, corrected, source_indexes=sources)
+    assert status == 'failed'
+    assert messages_to_dict(saved) == messages_to_dict(original)
+
+
+def test_review_verbatim_swap_is_reported_as_an_invalid_source():
+    from memory.recent import _resolve_review_sources
+    from utils.llm_client import HumanMessage
+
+    original = _identified_review_messages()
+    corrected = [HumanMessage('user-A'), HumanMessage('user-B')]
+    with pytest.raises(ValueError, match='^invalid_review_sources$'):
+        _resolve_review_sources(original, corrected, [2, 0], strict=True)
+    assert _resolve_review_sources(original, corrected, [2, 0], strict=False) == [None, None]
+
+
+def test_review_verbatim_swap_without_sync_projection_stays_unknown(review_identity_case):
+    from utils.llm_client import HumanMessage
+
+    original = _unsynced_typed_review_messages()
+    corrected = [HumanMessage('user-A'), HumanMessage('user-B')]
+    status, saved, _ = review_identity_case(original, corrected, source_indexes=[2, 0])
+    assert status == 'patched'
+    assert [message.content for message in saved] == ['user-A', 'user-B']
+    assert all('chat_original_source' not in (message.metadata or {}) for message in saved)
+
+
+def test_review_rejected_index_cannot_be_reinferred_and_frees_its_row(review_identity_case):
+    """The mislabeled position stays unknown; the row it named stays open to an omitted index."""
+    from utils.llm_client import HumanMessage
+
+    original = _unsynced_typed_review_messages()[:3]
+    corrected = [HumanMessage('user-B'), HumanMessage('user-A')]
+    status, saved, _ = review_identity_case(original, corrected, source_indexes=[0, None])
+    assert status == 'patched'
+    assert 'chat_original_source' not in (saved[0].metadata or {})
+    assert saved[1].metadata == original[0].metadata
+
+
+def test_review_verbatim_reorder_with_own_indexes_keeps_identity(review_identity_case):
+    from utils.llm_client import HumanMessage, AIMessage
+
+    original = _identified_review_messages()
+    corrected = [HumanMessage('user-B'), AIMessage('reply-A'), HumanMessage('user-A'), AIMessage('reply-B')]
+    status, saved, _ = review_identity_case(original, corrected, source_indexes=[2, 1, 0, 3])
+    assert status == 'patched'
+    assert [message.content for message in saved] == ['user-B', 'reply-A', 'user-A', 'reply-B']
+    assert [message.metadata for message in saved] == [original[index].metadata for index in (2, 1, 0, 3)]
+
+
+def test_review_rewrite_may_match_a_row_that_stays_verbatim(review_identity_case):
+    """Normalizing a repeat to a neighbor's wording is a rewrite: that neighbor keeps its own text."""
+    from utils.llm_client import HumanMessage
+
+    original = _identified_review_messages()
+    corrected = [HumanMessage('user-B'), HumanMessage('user-B')]
+    status, saved, _ = review_identity_case(original, corrected, source_indexes=[0, 2])
+    assert status == 'patched'
+    assert [message.content for message in saved] == ['user-B', 'user-B']
+    assert [message.metadata for message in saved] == [original[0].metadata, original[2].metadata]
+
+
+def test_review_rewrite_matching_another_role_is_not_a_mislabel(review_identity_case):
+    from utils.llm_client import HumanMessage, messages_to_dict
+
+    original = _identified_review_messages()
+    status, saved, _ = review_identity_case(original, [HumanMessage('reply-A')], source_indexes=[0])
+    assert status == 'patched'
+    assert messages_to_dict(saved)[0]['data']['content'] == 'reply-A'
+    assert saved[0].metadata == original[0].metadata
+
+
+def test_review_equal_text_rows_may_exchange_indexes(review_identity_case):
+    """Equal rows are indistinguishable, so this is not the different-content swap."""
+    from utils.llm_client import HumanMessage
+
+    original = _identified_review_messages()
+    original[0].content = original[2].content = 'same user text'
+    corrected = [HumanMessage('same user text'), HumanMessage('same user text')]
+    status, saved, _ = review_identity_case(original, corrected, source_indexes=[2, 0])
+    assert status == 'patched'
+    assert [message.metadata for message in saved] == [original[2].metadata, original[0].metadata]
+
+
 def test_review_keeps_concurrent_append_and_theater_capsule(review_identity_case):
     from utils.llm_client import HumanMessage, AIMessage, SystemMessage, messages_to_dict
 

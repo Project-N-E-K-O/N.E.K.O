@@ -369,6 +369,10 @@ def _resolve_review_sources(snapshot, corrected_messages, source_indexes=None, *
 
     ``strict`` rejects any malformed or invalid explicit index. Otherwise such a
     position stays unknown: it is never inferred and never borrows another row's source.
+
+    Text copied verbatim from a snapshot row proves that row, so an index naming a
+    different row is invalid too: accepting it would swap the two rows' sync identities.
+    Rewrites are unaffected unless their new text equals a row no output kept verbatim.
     """
     if source_indexes is not None and len(source_indexes) != len(corrected_messages):
         if strict:
@@ -388,6 +392,22 @@ def _resolve_review_sources(snapshot, corrected_messages, source_indexes=None, *
             unknown.add(position)
             continue
         used.add(source)
+    contents = [_review_message_content(original) for original in snapshot]
+    kept_verbatim = {source for source, message in zip(sources, corrected_messages, strict=True)
+                     if source is not None and contents[source] == _review_message_content(message)}
+    for position, source in enumerate(sources):
+        if source is None:
+            continue
+        message = corrected_messages[position]
+        content = _review_message_content(message)
+        if contents[source] != content and any(
+                index not in kept_verbatim and original.type == message.type and contents[index] == content
+                for index, original in enumerate(snapshot)):
+            if strict:
+                raise ValueError('invalid_review_sources')
+            sources[position] = None
+            unknown.add(position)
+            used.discard(source)
     # Legacy responses can omit indices. Only unique matches prove an identity.
     for position, message in enumerate(corrected_messages):
         if sources[position] is not None or position in unknown:

@@ -1,7 +1,11 @@
 """Live2D binding, renderer admission and verified package transfer."""
+import asyncio
+from contextlib import closing
 import hashlib
 import json
+import zipfile
 import httpx
+from PIL import Image
 import pytest
 from tests.chat_sync_writer_fixture import isolated_chat_sync_writer  # noqa: F401
 from tests.unit.test_chat_sync_runtime import BINDING, DOMAIN, OWNER, UID, SyntheticService, setup_runtime
@@ -97,6 +101,87 @@ async def test_automatic_model_pass_checks_only_the_selected_role_and_catches_up
         await runtime.request_catchup()
         await runtime._automatic_models(runtime.state.bindings(), presence)
         assert service.capabilities == 3
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('error', [
+    zipfile.BadZipFile('synthetic private path'),
+    Image.DecompressionBombError('synthetic private path'),
+    KeyError('synthetic private path'),
+], ids=lambda error: type(error).__name__)
+async def test_automatic_model_failure_outside_adapter_vocabulary_records_the_retry_gate(tmp_path, error):
+    runtime, service, _ = setup_runtime(tmp_path, ModelService())
+
+    class Adapter:
+        failure = error
+
+        async def read(self, _uid):
+            if self.failure is not None:
+                raise self.failure
+            return {'name': 'Synthetic', 'kind': 'live2d', 'path': '', 'selection': '["live2d",""]'}
+
+    adapter = Adapter()
+    runtime.models.adapter = adapter
+    cleanups = []
+    cleanup = runtime.models.cleanup_cache
+    runtime.models.cleanup_cache = lambda **kwargs: (cleanups.append(kwargs), cleanup(**kwargs))[1]
+
+    async def current_character():
+        return UID
+
+    runtime.current_character_uid_provider = current_character
+    key = DOMAIN.key()
+    try:
+        await runtime.configure('https://sync.test')
+        await runtime.enable(UID, 'Synthetic')
+        presence = await runtime.session_presence_provider()
+        bindings = runtime.state.bindings()
+        generation = bindings[0]['generation']
+        cleanups.clear()
+        await runtime._automatic_models(bindings, presence)
+
+        with closing(runtime.scheduler._connect()) as conn:
+            task = conn.execute("SELECT * FROM scheduler_tasks WHERE domain=? AND channel='model'", (key,)).fetchone()
+        assert (task['failures'], task['blocked_generation']) == (1, generation)
+        assert task['last_error'] == 'chat_sync_unavailable'
+        assert runtime.scheduler.last_error(key) == 'chat_sync_unavailable'
+        # The pass still reaches its own cleanup after the failure.
+        assert len(cleanups) >= 2
+        # A hint only clears the poll interval: the failure itself keeps the role out.
+        runtime.scheduler.request_check(key, 'model')
+        assert runtime.scheduler.ready(key, 'model', generation, presence) is False
+        # The existing retry control reopens it.
+        adapter.failure = None
+        runtime.scheduler.retry_model(key)
+        await runtime._automatic_models(bindings, presence)
+        assert runtime.scheduler.last_error(key) is None
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_automatic_model_pass_does_not_swallow_cancellation(tmp_path):
+    runtime, _, _ = setup_runtime(tmp_path, ModelService())
+
+    class Adapter:
+        async def read(self, _uid):
+            raise asyncio.CancelledError()
+
+    runtime.models.adapter = Adapter()
+
+    async def current_character():
+        return UID
+
+    runtime.current_character_uid_provider = current_character
+    try:
+        await runtime.configure('https://sync.test')
+        await runtime.enable(UID, 'Synthetic')
+        presence = await runtime.session_presence_provider()
+        with pytest.raises(asyncio.CancelledError):
+            await runtime._automatic_models(runtime.state.bindings(), presence)
+        assert runtime.scheduler.last_error(DOMAIN.key()) is None
     finally:
         await runtime.close()
 
