@@ -32,10 +32,20 @@ from utils.conversation_settings_constants import (
     MAX_SAFE_CONVERSATION_SETTINGS_REVISION,
 )
 from utils.file_utils import atomic_write_json
+from utils.logger_config import get_module_logger
 from utils.preferences_store_lock import (
     PREFERENCES_THREAD_LOCK as _PREFERENCES_THREAD_LOCK,
     PREFERENCES_LOCK_TIMEOUT_SECONDS as _PREFERENCES_LOCK_TIMEOUT_SECONDS,
     preferences_store_lock,
+)
+from utils.preferences_sanitize import (
+    GLOBAL_CONVERSATION_KEY,
+    _MAX_SAFE_INT,
+    _NUMERIC_KEYS,
+    _PARAMETERS_MAX_KEY_LENGTH,
+    _sanitize_preferences_entries,
+    is_finite_json_number,
+    sanitize_preferences_payload,
 )
 from utils.preferences_audit import (
     JOURNAL_KEY as _SETTINGS_JOURNAL_KEY,
@@ -51,6 +61,8 @@ from utils.preferences_audit import (
 
 # Initialize the configuration manager
 _config_manager = get_config_manager()
+
+logger = get_module_logger(__name__)
 
 
 def _get_preferences_read_path() -> str:
@@ -86,9 +98,15 @@ def _locked_preferences_store(*, attribute=True, audit_origin="user"):
 # User-preferences file path from the configuration manager
 PREFERENCES_FILE = _get_active_preferences_path()
 
+
 def load_user_preferences() -> List[Dict[str, Any]]:
     """
     Load user preferences
+
+    The decoded entries are sanitised in memory (see the M-001 block above): a
+    ``NaN`` / ``Infinity`` that survived a previous bad write is dropped here so
+    that readers -- and the HTTP response built from them -- stay usable. The file
+    is *not* rewritten; the next ordinary save persists the cleaned view.
 
     Returns:
         List[Dict[str, Any]]: list of per-model preference entries; empty list when the file is missing or unreadable
@@ -102,11 +120,11 @@ def load_user_preferences() -> List[Dict[str, Any]]:
                 # Legacy compatibility: convert dictionary format to list format
                 if isinstance(data, dict):
                     if 'model_path' in data and 'position' in data and 'scale' in data:
-                        return _without_settings_journal([data])
+                        return _sanitize_preferences_entries(_without_settings_journal([data]))
                     else:
                         return []
                 elif isinstance(data, list):
-                    return _without_settings_journal(data)
+                    return _sanitize_preferences_entries(_without_settings_journal(data))
                 else:
                     return []
     except Exception as e:
@@ -131,7 +149,13 @@ def _save_user_preferences_unlocked(preferences: List[Dict[str, Any]]) -> None:
     previous = _load_preferences_data_for_write_unlocked()
     committed = _prepare_atomic_preferences(previous, preferences)
     # Settings and their journal share one temp-file + os.replace commit.
-    atomic_write_json(PREFERENCES_FILE, committed, ensure_ascii=False, indent=2)
+    # allow_nan=False (M-001 / P0-1a): NaN / Infinity are not valid JSON and would
+    # poison the file for every later read. json.dumps() raises before
+    # atomic_write_text() touches the target, so a rejected write leaves the
+    # existing file byte-identical.
+    atomic_write_json(
+        PREFERENCES_FILE, committed, ensure_ascii=False, indent=2, allow_nan=False
+    )
 
 
 def save_user_preferences(preferences: List[Dict[str, Any]]) -> bool:
@@ -244,8 +268,16 @@ def _update_model_preferences_unlocked(model_path: str, position: Dict[str, floa
             elif 'parameters' in existing_pref:
                 # Retain existing parameters
                 new_model_pref['parameters'] = existing_pref['parameters']
-            if parameters_mode is None and 'parameters_mode' in existing_pref:
+            if (
+                parameters_mode is None
+                and 'parameters_mode' in existing_pref
+                and 'parameters' in new_model_pref
+            ):
                 # Position/scale saves must not revive the legacy directory mirror.
+                # ``parameters_mode`` is a promise that ``parameters`` is a complete
+                # snapshot, so it may only travel together with the parameters it
+                # describes: copying it alone would persist an entry that can never
+                # pass ``validate_model_preferences`` again (M-001 / B-2).
                 new_model_pref['parameters_mode'] = existing_pref['parameters_mode']
             # Handle monitor information
             if display is not None:
@@ -326,39 +358,120 @@ def get_preferred_model_path() -> Optional[str]:
             return pref.get('model_path')
     return None
 
+_MAX_MODEL_PATH_LENGTH = 4096
+
+
+def _numeric_mapping_is_valid(
+    value: Any,
+    *,
+    required_keys: tuple = (),
+    positive_keys: tuple = (),
+) -> bool:
+    """Validate a JSON mapping of numbers (``position``, ``scale``, ...).
+
+    Only keys listed in :data:`_NUMERIC_KEYS` are treated as numbers; anything
+    else is ignored so that a future extra field cannot turn this into a false
+    rejection. Every numeric key present must be a finite JSON number, and the
+    ``positive_keys`` subset must also be strictly positive.
+    """
+    if not isinstance(value, dict):
+        return False
+    for key in required_keys:
+        if key not in value:
+            return False
+    for key, item in value.items():
+        if key not in _NUMERIC_KEYS:
+            continue
+        if not is_finite_json_number(item):
+            return False
+        if key in positive_keys and item <= 0:
+            return False
+    return True
+
+
 def validate_model_preferences(preferences: Dict[str, Any]) -> bool:
     """
     Validate that model preferences contain the required fields
-    
+
+    The numeric contract lives here, in the service, and not only in the three
+    browser clients: they all guard ``position``/``scale`` with
+    ``Number.isFinite`` while ``parameters`` values reach the file unguarded, and
+    a non-finite number is what poisoned ``user_preferences.json`` in the first
+    place (M-001).
+
     Args:
         preferences (Dict[str, Any]): model preferences to validate
-        
+
     Returns:
         bool: True when valid, False otherwise
     """
-    required_fields = ['model_path', 'position', 'scale']
-    
-    # Check required fields
-    for field in required_fields:
-        if field not in preferences:
+    if not isinstance(preferences, dict):
+        return False
+
+    model_path = preferences.get('model_path')
+    if (
+        not isinstance(model_path, str)
+        or not model_path
+        or len(model_path) > _MAX_MODEL_PATH_LENGTH
+        or '\x00' in model_path
+    ):
+        return False
+
+    # position / scale are mandatory and carry the placement of the model.
+    if not _numeric_mapping_is_valid(preferences.get('position'), required_keys=('x', 'y')):
+        return False
+    # A scale of zero or less makes the model disappear; no client produces one.
+    if not _numeric_mapping_is_valid(
+        preferences.get('scale'), required_keys=('x', 'y'), positive_keys=('x', 'y')
+    ):
+        return False
+
+    # Optional mappings: validate whatever numeric keys they carry. An explicit
+    # JSON null is treated as "absent", which is how these were always accepted.
+    for field in ('rotation', 'camera_position', 'display'):
+        if field in preferences and preferences[field] is not None and not _numeric_mapping_is_valid(preferences[field]):
             return False
-    
-    # Check that position and scale contain required subfields
-    if not isinstance(preferences.get('position'), dict) or 'x' not in preferences['position'] or 'y' not in preferences['position']:
+
+    # viewport is meaningless without both dimensions, so require them when present.
+    if (
+        'viewport' in preferences
+        and preferences['viewport'] is not None
+        and not _numeric_mapping_is_valid(
+            preferences['viewport'],
+            required_keys=('width', 'height'),
+            positive_keys=('width', 'height'),
+        )
+    ):
         return False
-    
-    if not isinstance(preferences.get('scale'), dict) or 'x' not in preferences['scale'] or 'y' not in preferences['scale']:
-        return False
-    
-    # parameters is optional, but must be a dictionary when present
-    if 'parameters' in preferences and not isinstance(preferences['parameters'], dict):
-        return False
+
+    # parameters is optional, but must be a dictionary of finite numbers when present
+    if 'parameters' in preferences:
+        parameters = preferences['parameters']
+        if not isinstance(parameters, dict):
+            return False
+        for key, value in parameters.items():
+            if (
+                not isinstance(key, str)
+                or len(key) > _PARAMETERS_MAX_KEY_LENGTH
+                or not is_finite_json_number(value)
+            ):
+                return False
 
     if 'parameters_mode' in preferences and (
         preferences['parameters_mode'] != 'replace' or 'parameters' not in preferences
     ):
         return False
-    
+
+    # The checks above only know the documented numeric keys. Anything else in
+    # the request (an unknown key inside ``position``, a nested value, a new
+    # top-level field) still reaches the strict writer, which would refuse it and
+    # turn bad input into a 500. Apply the writer's own rule to the whole payload
+    # so every non-finite number is a validation failure, i.e. a 400.
+    try:
+        json.dumps(preferences, allow_nan=False)
+    except (TypeError, ValueError):
+        return False
+
     return True
 
 def move_model_to_top(model_path: str) -> bool:
@@ -413,7 +526,6 @@ def _move_model_to_top_unlocked(model_path: str) -> bool:
 
 # ========== Global conversation settings (localStorage synchronized backup) ==========
 
-GLOBAL_CONVERSATION_KEY = "__global_conversation__"
 
 _CONVERSATION_SETTINGS_REVISION_KEY = "_conversation_settings_revision"
 _CONVERSATION_SETTINGS_ASR_DECISION_KEY = "_independent_asr_decision"
@@ -789,7 +901,14 @@ async def ais_privacy_mode_enabled() -> bool:
 
 
 def _load_preferences_data_for_write_unlocked() -> List[Dict[str, Any]]:
-    """Load the latest write-root snapshot while the caller holds the lock."""
+    """Load the latest write-root snapshot while the caller holds the lock.
+
+    The snapshot is sanitised before it is handed back (M-001): every global
+    settings writer below reads this file, modifies one entry and writes the
+    whole payload again with ``allow_nan=False``. A model entry poisoned by an
+    older build would otherwise make that write fail forever, so the read heals
+    it in memory -- nothing is written here, and which file is read is unchanged.
+    """
     global PREFERENCES_FILE
     write_path = _get_preferences_write_path()
     read_path = _get_preferences_read_path()
@@ -805,11 +924,7 @@ def _load_preferences_data_for_write_unlocked() -> List[Dict[str, Any]]:
         PREFERENCES_FILE = write_path
         data = []
 
-    if isinstance(data, dict):
-        return [data]
-    if isinstance(data, list):
-        return data
-    return []
+    return sanitize_preferences_payload(data)
 
 
 def save_global_conversation_settings_versioned(

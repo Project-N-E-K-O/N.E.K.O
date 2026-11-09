@@ -54,7 +54,7 @@ Fact scheduling depends on the powerful-memory switch described below. In either
 
 ### 4. Synthesize reflections
 
-`memory/reflection/` periodically groups enough unabsorbed facts into a higher-level reflection. The reflection ID is derived from its source fact IDs, so retrying the same batch is idempotent. A successful synthesis writes a `pending` reflection and marks its source facts as absorbed.
+`memory/reflection/` periodically groups enough unabsorbed facts into higher-level reflections. One call may write up to `REFLECTION_SYNTHESIS_MAX_PER_BATCH` (3) reflections, one per unrelated topic of the batch; each lists the facts it rests on as its source facts. The batch ID is derived from the batch's fact IDs and stored on every reflection of the batch, so retrying the same batch is idempotent. A successful synthesis writes `pending` reflections and marks the whole batch as absorbed.
 
 Reflections carry their own evidence, entity, lifecycle status, and optional event-time ontology. A reflection can remain tentative, become confirmed, be promoted or merged into persona, be denied, or eventually be archived. Reflection synthesis runs as a memory-server background service and does not depend on the memory-browser page or proactive-chat frontend being open.
 
@@ -62,7 +62,15 @@ Reflections carry their own evidence, entity, lifecycle status, and optional eve
 
 Persona entries are grouped by entity. The built-in entities are `master`, `neko`, and `relationship`, while the storage format permits additional entity sections. Character-card-derived entries are marked as protected and are not removed by evidence decay or archive sweeps.
 
-With powerful memory enabled, promotion is evidence-driven. A confirmed reflection that reaches the promotion threshold goes through a correction-tier merge decision: the result may become a new persona entry, merge into existing persona knowledge, be rejected, or queue a contradiction for later resolution. With powerful memory disabled, a configurable age-based fallback confirms and promotes reflections without the merge LLM.
+With powerful memory enabled, promotion is evidence-driven. A confirmed reflection that reaches the promotion threshold goes through a correction-tier merge decision: the result may become a new persona entry, merge into existing persona knowledge, be rejected, or queue a contradiction for later resolution. With powerful memory disabled, a configurable age-based fallback confirms and promotes reflections without the merge LLM. That fallback does not advance a reflection the user turned against (net score below zero), nor one resting only on the character's own words without the user's backing, the two things the score-driven path holds back too.
+
+Group and member (scoped) memory gets no feedback, so it rests on facts and reflections and rarely reaches persona:
+
+- A scoped reflection is confirmed as soon as it is synthesized. It is written into its subject's persona only with powerful memory enabled, after it was seen in others' words on `SCOPED_PROMOTION_MIN_OBSERVED_DAYS` (4) distinct days, the first `SCOPED_PROMOTION_MIN_AGE_DAYS` (30) days ago. A day counts by the record date of a fact behind it; the character's own words do not count. One resting only on the character's own words never promotes until others' words back it. A promotion that lands in the correction queue is final: the arbitration decides what reaches persona.
+- Being seen again means a new batch is judged a restatement of it in synthesis, or scoped refine merges two lines each backed by others' words. Each time it gains `SCOPED_REOBSERVED_REINFORCEMENT` (0.8, the highest synthesis head start) and its decay clock restarts, so a line seen again ranks above every fresh one in its subject's render budget. Private-chat restatements still add no score.
+- Fact extraction of a whole-group history that includes the character's own messages asks the model to mark each fact's source, so the character's own words are stored as `ai_disclosure` rather than as the group's. Per-speaker segments hold no lines of the character and use the plain prompt.
+- Scoped reflections render under their subject's own heading (the group, or the person), next to that subject's persona lines.
+- With powerful memory enabled, the weekly introspection also reviews each scoped subject on its own: the block `/scoped_context` injects for it, a week after the last review and only if its content changed. It may suppress, rewrite or merge lines (persona lines with persona lines, impressions with impressions), including a long-standing line a newer impression contradicts, and checks for the character's own words taken for the group's or the person's traits. Every action is checked against the subject before it is applied.
 
 ## Recall subsystem and automatic context
 
@@ -124,6 +132,8 @@ Evidence can come from several paths:
 
 Direct user feedback has a different weight from inferred fact-to-memory relationships. Promotion and archival decisions therefore use the accumulated evidence rather than treating any single LLM extraction as immediately authoritative.
 
+Evidence is also graded by source. What the character said itself (facts with source `ai_disclosure`) is marked as such in the synthesis prompt and is no evidence of the user's traits or of how the two get along. The synthesis model also names which facts of the batch the reflection rests on (`based_on`); the head-start score counts only the user's facts among those, and every reflection records how many of them are the user's and how many the character's. When the model names none usable, the whole batch counts. A reflection resting only on the character's own words is not confirmed or promoted by score, and is left out of the standing chat context while tentative, until the user backs it: an explicit confirmation, or a reinforcement from the user's own words. The character may still raise it proactively, which is how the user gets to confirm it, and explicit memory recall can still return it. The age-based lifecycle (powerful memory disabled, and group or member reflections in either mode) checks this backing too. A reply that only goes on with the topic, without agreeing, counts as `engaged`: a small positive signal that is not backing. Reinforcement is capped (`EVIDENCE_REINFORCEMENT_CAP`), so a strong entry can still be overturned by a few rebuttals, and the synthesis, promotion-merge, refine and introspection prompts avoid absolute wording such as "always" or "never".
+
 The lifecycle is approximately:
 
 ```text
@@ -146,12 +156,12 @@ The `powerful_memory_enabled` field in `core_config.json` is hot-read by the mem
 
 | Capability | Enabled | Disabled |
 |---|---|---|
-| Fact extraction | Batched Stage 1 extraction after enough user turns or an idle trigger; Stage 2 maps new facts to evidence signals | Per-turn Stage 1 fallback keeps basic fact accumulation working; Stage 2 is paused |
+| Fact extraction | Batched Stage 1 extraction after enough user turns or an idle trigger; Stage 2 maps new facts to evidence signals | Per-turn Stage 1 fallback over the user's messages keeps basic fact accumulation working (a turn without a user message extracts nothing); Stage 2 is paused |
 | AI-disclosure facts | Periodic AI-aware extraction from user-engaged windows | Paused |
 | Reflection synthesis | Runs | Runs |
 | Feedback on surfaced reflections | Runs | Runs |
 | Periodic rebuttal and negative-keyword target checks | Runs | Paused |
-| Promotion | Evidence score plus merge decision | Configurable age-based confirmation and promotion, without merge LLM |
+| Promotion | Evidence score plus merge decision; group and member reflections after enough days seen | Configurable age-based confirmation and promotion, without merge LLM; group and member reflections are not promoted |
 | Persona contradictions, vector-assisted fact dedup, persona/reflection refinement | Runs when work and dependencies are available | Queued or paused until re-enabled |
 | Recent compression and recent-history review | Runs; review has its own `recent_memory_auto_review` switch | Runs; review has its own switch |
 | Explicit recall, archive sweep, migrations, schema recheck | Available independently of this switch | Available independently of this switch |
@@ -168,7 +178,9 @@ The memory-server startup hook scans pending outbox records and spawns replay ta
 - recent compression, recent-history review, fact dedup, and contradiction resolution during idle periods;
 - reflection synthesis;
 - persona and reflection refinement;
+- weekly introspection of the private block and of each group or member subject;
 - below-zero evidence tracking and archive sweeps;
+- an about-daily, idle-only recompute of each character's habitual-phrase avoid list (local n-gram mining, then one summary-tier call that judges only candidates without a recent verdict, gated by both the powerful-memory and natural-expression switches);
 - slow migration of legacy fact/reflection event-time schemas;
 - optional embedding warmup and backfill.
 
@@ -185,6 +197,8 @@ The default per-character directory contains the following durable data. Some fi
 | `time_indexed.db` | Raw chronological conversation rows in `time_indexed_original`; the legacy compressed table may also exist |
 | `facts.json`, `facts_archive.json` | Active facts and older absorbed facts |
 | `pinned_facts.json` | Pinned important facts with their expiry, plus a bounded history of replaced, removed, expired and evicted entries |
+| `habitual_phrases.json` | Phrases the character reused across several recent sessions, with counts, first/last-seen times, short excerpts, the model's verdict and the resulting suppression state, plus a cache of recent verdicts; replaced wholesale on each recompute and read at session start as an avoid list |
+| `habitual_phrase_overrides.json` | Phrases the user allowed or suppressed in the memory browser; written only from there, and applied to the stored list whenever it is read |
 | `reflections.json`, `surfaced.json` | Active reflections and user-feedback/surfacing state |
 | `reflection_archive/` | Sharded archived reflections |
 | `persona.json`, `persona_corrections.json` | Persona view and queued contradiction decisions |

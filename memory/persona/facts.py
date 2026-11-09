@@ -36,6 +36,8 @@ from utils.cloudsave_runtime import assert_cloudsave_writable
 from utils.file_utils import atomic_write_json_async, read_json_async
 
 
+from memory.introspection import is_permanently_suppressed
+
 from memory.stop_names import (
     acollect_stop_names,
     collect_stop_names,
@@ -181,6 +183,10 @@ class FactsMixin:
         is deliberately kept out of the ordinary Memory log, so the
         rejection line records lengths instead of excerpts."""
         for existing in section_facts:
+            if is_permanently_suppressed(existing):
+                # A retired entry must not absorb a new fact through a
+                # correction: the new text would inherit its suppression.
+                continue
             if isinstance(existing, dict):
                 old_text = existing.get('text', '')
                 is_card = existing.get('source') == 'character_card'
@@ -335,14 +341,18 @@ class FactsMixin:
     async def aadd_fact(self, name: str, text: str, entity: str = 'master',
                         source: str = 'manual', source_id: str | None = None,
                         subject=None,
-                        speaker_provenance: dict | None = None) -> str:
+                        speaker_provenance: dict | None = None,
+                        fact_source_counts: dict | None = None) -> str:
         """P2.a.2: character-level asyncio.Lock serializes add_fact /
         resolve_corrections / record_mentions, preventing persona.json write races.
 
         Note: _aqueue_correction is invoked while already inside this lock, and
         its standalone lock is an asyncio.Lock (reentrant? no — asyncio.Lock is
         not reentrant) → so inside the lock we call the **unlocked** version of
-        _aqueue_correction."""
+        _aqueue_correction.
+
+        ``fact_source_counts`` (a promoted reflection's user / AI fact counts)
+        is recorded on the new entry as is; nothing reads it for behavior."""
         from memory.scopes import coerce_subject
         memory_subject = coerce_subject(subject)
         if memory_subject is not None:
@@ -397,10 +407,13 @@ class FactsMixin:
                 )
                 return self.FACT_QUEUED_CORRECTION
 
-            section_facts.append(self._build_fact_entry(
+            entry = self._build_fact_entry(
                 text, source, source_id, subject=memory_subject,
                 speaker_provenance=speaker_provenance,
-            ))
+            )
+            if isinstance(fact_source_counts, dict):
+                entry['fact_source_counts'] = dict(fact_source_counts)
+            section_facts.append(entry)
             await self.asave_persona(name, persona)
             return self.FACT_ADDED
 
@@ -590,8 +603,9 @@ class FactsMixin:
 
         Audit only: evidence stays untouched, so restating an entry never
         raises its render priority. Returns False when the entry is gone,
-        protected, outside ``subject``'s isolation domain, or no longer
-        reads ``expected_text`` (the wording the skip decision was made on).
+        protected, permanently suppressed, outside ``subject``'s isolation
+        domain, or no longer reads ``expected_text`` (the wording the skip
+        decision was made on).
         """
         from memory._reflection.schema import merge_covered_fact_ids
         from memory.scopes import entry_matches_subject
@@ -605,6 +619,7 @@ class FactsMixin:
             if (
                 entry is None
                 or entry.get('protected')
+                or is_permanently_suppressed(entry)
                 or entry.get('text') != expected_text
                 or not entry_matches_subject(entry, subject)
             ):
@@ -673,7 +688,9 @@ class FactsMixin:
         consumes the freshest target state.
 
         Returns: 'merged' on success, 'noop' if already merged, 'not_found'
-        if `target_entry_id` is missing from the persona.
+        if `target_entry_id` is missing from the persona or permanently
+        suppressed (merging into a retired entry would hide the reflection
+        with it, and the caller would still mark it merged).
         """
         from memory.event_log import (
             EVT_PERSONA_ENTRY_UPDATED,
@@ -696,6 +713,14 @@ class FactsMixin:
                 logger.warning(
                     f"[Persona] {name}: amerge_into 找不到 target_entry_id="
                     f"{target_entry_id}"
+                )
+                return 'not_found'
+            if is_permanently_suppressed(target_entry):
+                # The caller checked an unlocked snapshot; introspection may
+                # have retired the target since.
+                logger.warning(
+                    f"[Persona] {name}: amerge_into 目标 target_entry_id="
+                    f"{target_entry_id} 已被永久压制"
                 )
                 return 'not_found'
 

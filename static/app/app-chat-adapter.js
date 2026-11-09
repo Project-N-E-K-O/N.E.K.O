@@ -363,20 +363,24 @@
 
     // ======================== 音乐指令清洗（从 app-chat.js 复刻） ========================
 
+    function findPendingMusicCommand(text) {
+        var match = text.match(/\[[^\]]*$/);
+        if (!match) return null;
+        var partial = match[0].toLowerCase();
+        var command = '[play_music:';
+        return partial.startsWith(command) || command.startsWith(partial) ? match : null;
+    }
+
     function cleanMusicFromChunk(rawText) {
         var s = normalizeGeminiText(rawText);
         if (window._pendingMusicCommand) {
             s = window._pendingMusicCommand + s;
             window._pendingMusicCommand = '';
         }
-        var m = s.match(/\[[^\]]*$/);
+        var m = findPendingMusicCommand(s);
         if (m) {
-            var partial = m[0].toLowerCase();
-            var target = '[play_music:';
-            if (partial.startsWith(target) || target.startsWith(partial)) {
-                window._pendingMusicCommand = m[0];
-                s = s.slice(0, m.index);
-            }
+            window._pendingMusicCommand = m[0];
+            s = s.slice(0, m.index);
         }
         return s.replace(/\[play_music:[^\]]*(\]|$)/g, '');
     }
@@ -686,7 +690,7 @@
                 avatarUrl: updatedMsg.avatarUrl,
                 blocks: updatedMsg.blocks,
                 status: 'streaming'
-            });
+            }, { streamText: true, pendingMusicCommand: window._pendingMusicCommand });
         }
     }
 
@@ -849,37 +853,18 @@
                 window._pendingMusicCommand = '';
             }
 
-            var incoming = normalizeGeminiText(text);
-
-            // 未闭合的音乐指令片段
-            if (window._pendingMusicCommand) {
-                incoming = window._pendingMusicCommand + incoming;
-                window._pendingMusicCommand = '';
-            }
-            var openBracketMatch = incoming.match(/\[[^\]]*$/);
-            if (openBracketMatch) {
-                var partialText = openBracketMatch[0];
-                var normalizedPartial = normalizeGeminiText(partialText).toLowerCase();
-                var targetPrefix = '[play_music:';
-                if (normalizedPartial.startsWith(targetPrefix) || targetPrefix.startsWith(normalizedPartial)) {
-                    window._pendingMusicCommand = partialText;
-                    incoming = incoming.slice(0, openBracketMatch.index);
-                }
-            }
+            var incoming = cleanMusicFromChunk(text);
 
             var prev = typeof window._realisticGeminiBuffer === 'string' ? window._realisticGeminiBuffer : '';
             var combined = prev + incoming;
             combined = combined.replace(/\[play_music:[^\]]*(\]|$)/g, '');
 
-            var fullTurnText = (typeof window._geminiTurnFullText === 'string' ? window._geminiTurnFullText : '')
-                .replace(/\[play_music:[^\]]*(\]|$)/g, '');
-
             // structured text detection
-            if (looksLikeStructuredRichText(fullTurnText) || looksLikeStructuredRichText(combined)) {
+            if (looksLikeStructuredRichText(streamingText) || looksLikeStructuredRichText(combined)) {
                 window._structuredGeminiStreaming = true;
                 window._realisticGeminiBuffer = combined;
                 window._realisticGeminiQueue = [];
-                renderStructuredGeminiMessage(fullTurnText || combined);
+                renderStructuredGeminiMessage(streamingText || combined);
                 return;
             }
 
@@ -951,10 +936,9 @@
             // 场景 B: 气泡已存在，追加更新（_geminiTurnFullText 是 per-segment
             // 累积，已在 startNewSegment 处重置过，不需要再 slice）。
             else if (window.currentGeminiMessage && host) {
-                var fullMergeText = (window._geminiTurnFullText || '').replace(/\[play_music:[^\]]*(\]|$)/g, '');
                 var existingId = window.currentGeminiMessage.dataset.reactChatMessageId;
                 var stableTime = window.currentGeminiMessage._stableTime || getCurrentTimeString();
-                var updatedMsg = buildMessage(existingId, 'assistant', getCurrentAssistantName(), stableTime, fullMergeText, 'streaming');
+                var updatedMsg = buildMessage(existingId, 'assistant', getCurrentAssistantName(), stableTime, streamingText, 'streaming');
                 if (updatedMsg) {
                     host.updateMessage(existingId, {
                         author: updatedMsg.author,
@@ -962,7 +946,7 @@
                         avatarUrl: updatedMsg.avatarUrl,
                         blocks: updatedMsg.blocks,
                         status: 'streaming'
-                    });
+                    }, { streamText: true, pendingMusicCommand: window._pendingMusicCommand });
                 }
             }
 

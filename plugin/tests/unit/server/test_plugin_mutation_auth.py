@@ -21,8 +21,6 @@ pytestmark = pytest.mark.plugin_unit
 @pytest.fixture
 def app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     """Small app that uses the production routes and the real access guard."""
-    monkeypatch.setattr(route_module, "registration_for_plugin_sync", lambda _plugin_id: None)
-    monkeypatch.setattr(route_module, "list_registration_records_sync", lambda: [])
     app = FastAPI()
     register_exception_handlers(app)
     app.include_router(route_module.router)

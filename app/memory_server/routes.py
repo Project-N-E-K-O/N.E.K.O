@@ -78,6 +78,7 @@ from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writa
 from memory.external_markdown_import import MAX_ENTRIES, MAX_ENTRY_CHARS
 from memory.outbox import OP_PERSIST_PROMPT_LOCALE
 from memory.persona.fusion import ExternalMemoryImportTooLargeError
+from memory.pinned_facts import due_date as pinned_due_date
 from utils.natural_expression_candidates import (
     CandidateMinerError,
     SourceMessage,
@@ -85,7 +86,7 @@ from utils.natural_expression_candidates import (
     normalize_language,
 )
 
-from . import gates, locale_state, outbox_infra, post_turn, review, runtime
+from . import gates, habitual_phrase_loop, locale_state, outbox_infra, post_turn, review, runtime
 from ._shared import logger, validate_lanlan_name
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from .rows import _has_human_messages
@@ -1136,31 +1137,80 @@ async def _safe_auto_promote(lanlan_name: str) -> None:
         logger.debug(f"[ReflectAPI] {lanlan_name}: 后台 auto_promote 失败: {e}")
 
 
+async def _due_commitment_topic(lanlan_name: str) -> dict | None:
+    """The open promise proactive chat may lead with, ``{id, text, due}``; None if none.
+
+    At most one: due soon and not offered lately (see
+    PinnedFactStore.get_due_commitment). Like the pinned section itself it
+    is private-chat content, and proactive chat speaks in the private chat.
+    """
+    store = runtime.pinned_fact_store
+    if store is None:
+        return None
+    try:
+        entry = await store.aget_due_commitment(lanlan_name)
+    except Exception as e:
+        logger.debug(f"[ReflectAPI] {lanlan_name}: 承诺读取失败: {type(e).__name__}")
+        return None
+    if entry is None:
+        return None
+    return {"id": entry["id"], "text": entry["text"], "due": pinned_due_date(entry)}
+
+
+async def _record_surfaced_commitments(lanlan_name: str, pinned_ids: list[str]) -> bool:
+    """Start the offer cooldown of the promises proactive chat was given; True once written."""
+    store = runtime.pinned_fact_store
+    if store is None or not pinned_ids:
+        return False
+    try:
+        written = await store.amark_surfaced(lanlan_name, pinned_ids)
+    except Exception as e:
+        logger.debug(f"[ReflectAPI] {lanlan_name}: 承诺 surfaced 记录失败: {type(e).__name__}")
+        return False
+    return bool(written)
+
+
 @app.get("/followup_topics/{lanlan_name}")
 async def api_followup_topics(lanlan_name: str):
-    """Get follow-up topic candidates (does not mark them surfaced; the caller must call /record_surfaced afterwards)."""
+    """Get follow-up topic candidates (does not mark them surfaced; the caller must call /record_surfaced afterwards).
+
+    ``commitment`` is the open promise due soonest, offered ahead of the
+    reflection topics; its id comes back through /record_surfaced like theirs.
+    """
     lanlan_name = validate_lanlan_name(lanlan_name)
     try:
         topics = await runtime.reflection_engine.aget_followup_topics(lanlan_name)
     except Exception as e:
         logger.debug(f"[ReflectAPI] {lanlan_name}: get_followup_topics 失败: {e}")
         topics = []
-    return {"topics": topics}
+    return {"topics": topics, "commitment": await _due_commitment_topic(lanlan_name)}
 
 
 @app.post("/record_surfaced/{lanlan_name}")
 async def api_record_surfaced(request: Request, lanlan_name: str):
-    """Record which reflections this proactive chat mentioned, refreshing the cooldown."""
+    """Record which reflections this proactive chat mentioned, refreshing the cooldown.
+
+    ``commitment_ids`` (the promise from /followup_topics, when it was
+    offered) start that promise's own offer cooldown in the pinned section;
+    ``commitments_recorded`` tells the caller whether that write landed, so
+    a failed one is retried with the delivery record.
+    """
     lanlan_name = validate_lanlan_name(lanlan_name)
     body = await request.json()
+    result: dict[str, object] = {"ok": True}
+    commitment_ids = body.get("commitment_ids") or []
+    if commitment_ids:
+        result["commitments_recorded"] = isinstance(commitment_ids, list) and await _record_surfaced_commitments(
+            lanlan_name, commitment_ids,
+        )
     reflection_ids = body.get("reflection_ids", [])
     if not reflection_ids:
-        return {"ok": True}
+        return result
     try:
         await runtime.reflection_engine.arecord_surfaced(lanlan_name, reflection_ids)
     except Exception as e:
         logger.debug(f"[ReflectAPI] {lanlan_name}: record_surfaced 失败: {e}")
-    return {"ok": True}
+    return result
 
 
 @app.post("/cache/{lanlan_name}")
@@ -3048,6 +3098,9 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
                 "speaker_provenance": speaker_provenance,
                 "speaker_label": speaker_label,
                 "messages": input_history,
+                "label_own_words": FactStore.group_history_has_own_words(
+                    input_history, subject,
+                ),
                 "trust_state": trust_state,
             }],
         )
@@ -3102,6 +3155,9 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
             speaker_label=speaker_label,
             speaker_provenance=speaker_provenance,
             reconciled_facts=reconciled_facts,
+            label_own_words=FactStore.group_history_has_own_words(
+                input_history, subject,
+            ),
         )
     except FactExtractionFailed as exc:
         raise HTTPException(
@@ -4191,6 +4247,7 @@ async def _generate_keyed_facts(
             context["messages"],
             treat_malformed_as_failure=True,
             speaker_label=context.get("speaker_label"),
+            label_own_words=bool(context.get("label_own_words")),
         )
         if extracted is None:
             raise failure
@@ -6093,30 +6150,16 @@ async def _get_scoped_context(lanlan_name: str, req: ScopedContextRequest):
     # holds. Authorization uses the flattened expansion, while rendering gets
     # the participant groups so budget, heading and id stay one-per-person.
     groups, subjects = _fold_request_subjects(req.subjects)
-    # Suppression expiry only occurs in aupdate_suppressions, previously called only by
-    # legacy /get_settings and /new_dialog. Group-only deployments never reach
-    # them, making scoped reflections permanently invisible after their first suppression.
-    try:
-        await runtime.reflection_engine.aupdate_suppressions(lanlan_name)
-    except Exception as exc:
-        logger.warning(f"[scoped] 刷新 reflection suppression 失败: {exc}")
-    pending_reflections = await runtime.reflection_engine.aget_pending_reflections(
-        lanlan_name,
-        subjects=subjects,
-        include_legacy_private=False,
-    )
-    confirmed_reflections = await runtime.reflection_engine.aget_confirmed_reflections(
-        lanlan_name,
-        subjects=subjects,
-        include_legacy_private=False,
-    )
-    rendered = await runtime.persona_manager.arender_persona_markdown(
-        lanlan_name,
-        pending_reflections,
-        confirmed_reflections,
-        subjects=subjects,
-        include_legacy_private=False,
-        participant_groups=groups,
+    # The render the weekly scoped review reads too (one definition, so the
+    # two cannot drift). It refreshes suppressions first: their expiry only
+    # happens there, and group-only deployments never reach /new_dialog, so
+    # without it a scoped reflection stays invisible after its first
+    # suppression.
+    from memory.introspection import arender_scoped_injected_memory
+
+    rendered = await arender_scoped_injected_memory(
+        runtime.persona_manager, runtime.reflection_engine, lanlan_name,
+        subjects, participant_groups=groups,
     )
     return PlainTextResponse(rendered)
 
@@ -7997,25 +8040,6 @@ outbox_infra.register_outbox_handler(
 )
 
 
-async def _render_pinned_facts_block(lanlan_name: str, lang: str) -> str:
-    """The pinned-fact section of the private-chat prompt; "" when there is none.
-
-    Read on every call, so a session start or a hot-swap prompt rebuild picks
-    up entries admitted since the previous one. A failure costs only this
-    section, never the rest of the long-term memory.
-    """
-    store = runtime.pinned_fact_store
-    if store is None:
-        return ""
-    try:
-        return await store.arender_prompt_block(lanlan_name, lang)
-    except Exception as e:
-        logger.warning(
-            f"[MemoryServer] {lanlan_name}: pinned-fact render failed: {type(e).__name__}"
-        )
-        return ""
-
-
 async def _new_dialog(
     lanlan_name: str,
     language: str | None = None,
@@ -8044,6 +8068,9 @@ async def _new_dialog(
         return PlainTextResponse("")
 
     if not has_explicit_language:
+        # This session speaks its request (UI) language; the habitual-phrase
+        # miner follows it. Noted in memory only, never persisted.
+        habitual_phrase_loop.note_session_render_language(lanlan_name, render_language)
         try:
             durable_language = await asyncio.to_thread(
                 locale_state.get_character_prompt_locale,
@@ -8159,24 +8186,21 @@ async def _new_dialog(
         # is read after entry, so reenter context before nested renderers that may read
         # global language; explicit _lang still serves table-driven strings in this function.
         with language_context(_activate_request_language(language)):
-            # Inject pending + confirmed reflections into context too (labeled sections).
-            try:
-                await runtime.reflection_engine.aupdate_suppressions(lanlan_name)
-            except Exception as e:
-                logger.debug(f"[MemoryServer] reflection suppress 刷新失败: {e}")
-            pending_reflections = await runtime.reflection_engine.aget_pending_reflections(lanlan_name)
-            confirmed_reflections = await runtime.reflection_engine.aget_confirmed_reflections(lanlan_name)
+            # Pinned important facts (their own section, ahead of the persona
+            # sections; private chat only, no scoped renderer reads them) and
+            # persona + pending/confirmed reflections (labeled sections).
+            # Shared with weekly introspection, which must review exactly
+            # this block. Read on every call, so a session start or a hot-swap
+            # prompt rebuild picks up entries admitted since the previous one.
+            from memory.introspection import arender_injected_memory
             result = _loc(PERSONA_HEADER, _lang).format(name=lanlan_name)
-            persona_md = await runtime.persona_manager.arender_persona_markdown(
-                lanlan_name, pending_reflections, confirmed_reflections,
+            injected = await arender_injected_memory(
+                runtime.persona_manager, runtime.reflection_engine, lanlan_name,
+                pinned_fact_store=runtime.pinned_fact_store, lang=_lang,
             )
-        # Pinned important facts: their own section, ahead of the persona
-        # sections. Private chat only; no scoped renderer calls this.
-        pinned_block = await _render_pinned_facts_block(lanlan_name, _lang)
-        if pinned_block:
-            result += pinned_block + "\n\n"
-        if persona_md:
-            result += persona_md
+        result += injected.pinned_prefix
+        if injected.persona:
+            result += injected.persona
         else:
             # Compatibility fallback: old settings (natural-language format).
             # get_settings uses open() + json.load(); offload to avoid blocking (cold fallback, but multi-file IO when triggered).

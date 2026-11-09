@@ -233,8 +233,11 @@ def _write_snapshot_locked(name, payload, *, check_only=False):
             existing = read_views(directory)
             views = import_document(remote['document'], existing, baseline=local['nativeEntries'] if local else [])
             # Retained local edits have not been published. Keep them outside the
-            # receipt baseline so a later completed organization still captures them.
-            native_entries = export_document(import_document(remote['document'], existing), remote['completedAt'])['entries']
+            # receipt baseline so a later completed organization still captures them;
+            # so are retirements the remote does not carry as superseded yet.
+            native_entries = export_document(import_document(
+                remote['document'], existing, keep_unpublished_retirements=False,
+            ), remote['completedAt'])['entries']
             before = {directory / filename: (directory / filename).read_text(encoding='utf-8')
                       if (directory / filename).is_file() else None for filename in FILES.values()}
             receipt_path = adapter.local_path(binding)

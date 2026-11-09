@@ -7,7 +7,7 @@ all paths as explicit parameters.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 
@@ -23,6 +23,12 @@ class CliDefaults:
     @property
     def repo_root(self) -> Path:
         return self.plugin_root.parent
+
+    def with_plugins_root(self, plugins_root: str | None) -> CliDefaults:
+        """Return these defaults with a ``--plugins-root`` override applied when given."""
+        if not plugins_root:
+            return self
+        return replace(self, plugins_root=Path(plugins_root).expanduser().resolve())
 
 
 def resolve_default_paths(*, cli_root: Path | None = None) -> CliDefaults:

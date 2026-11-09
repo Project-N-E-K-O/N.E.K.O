@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // Add the visit invitation capacity-limit error message (#3584).
-    const LOCALE_VERSION = '2026-11-04-visit-invitation-capacity';
+    // Refresh all eight locale caches for exact NetEase recording feedback.
+    const LOCALE_VERSION = '2026-11-09-netease-exact-recording';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

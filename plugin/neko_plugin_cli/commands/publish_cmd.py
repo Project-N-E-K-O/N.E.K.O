@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import math
-import os
 from pathlib import Path
 import subprocess
 import sys
@@ -14,10 +13,20 @@ from urllib.parse import quote
 
 import httpx
 
+from plugin.utils.github_auth import github_headers as _github_headers
+from plugin.utils.github_release import (
+    missing_release_assets,
+    release_ready,
+    select_release_run,
+    workflow_run_state,
+)
+
 from ..core.build_rules import VENDOR_SYNC_GLOBS
+from ..core.lint import ruff_command
 from ..core.plugin_source import load_plugin_source
 from ..paths import CliDefaults
 from ..repo_action_migration import ActionFileStatus, migrate_github_actions
+from ..repo_state import git_output, worktree_dirty_paths
 from ..templates.generator import PluginSpec
 from . import deps_cmd, release_cmd
 from ._resolve import parse_github_repository_remote, resolve_plugin_dir_candidate
@@ -25,9 +34,19 @@ from ._resolve import parse_github_repository_remote, resolve_plugin_dir_candida
 _MARKET_PUBLICATION_URL = (
     "https://market.project-neko.cn/api/v1/release-publications"
 )
-_RELEASE_CHECK_SUFFIX = ".market-release-check.txt"
-_MARKET_EVIDENCE_NAME = "market-evidence.json"
+_GITHUB_API_URL = "https://api.github.com"
 _RELEASE_RUFF_TIMEOUT_SECONDS = 120
+# Unauthenticated callers get 60 GitHub API requests per hour per IP.
+_RELEASE_POLL_SECONDS = 15.0
+_DIRTY_PATHS_SHOWN = 5
+# The Market answers these while its verification job is queued or running.
+_MARKET_RETRY_STATUSES = frozenset({429, 503})
+_MARKET_DEFAULT_RETRY_SECONDS = 5.0
+_MARKET_MAX_RETRY_SECONDS = 60
+_MARKET_NETWORK_RETRY_SECONDS = 5.0
+_MARKET_REVIEW_STATUSES = frozenset(
+    {"pending_review", "approved", "superseded", "rejected"}
+)
 
 
 def _tri(english: str, chinese: str, japanese: str) -> str:
@@ -103,9 +122,19 @@ def register(
         type=_finite_timeout,
         default=900.0,
         help=_tri(
-            "Seconds to wait for the GitHub Release assets (default: 900)",
-            "等待 GitHub Release 资产上传完成的秒数（默认：900）",
-            "GitHub Release アセットのアップロード完了を待つ秒数（既定値：900）",
+            "Seconds to wait for the GitHub Release and its workflow run (default: 900)",
+            "等待 GitHub Release 及其工作流运行完成的秒数（默认：900）",
+            "GitHub Release とそのワークフロー実行の完了を待つ秒数（既定値：900）",
+        ),
+    )
+    parser.add_argument(
+        "--market-wait",
+        type=_finite_timeout,
+        default=1800.0,
+        help=_tri(
+            "Seconds to keep retrying while the Market is still verifying the release (default: 1800)",
+            "Market 仍在核验 Release 时持续重试的秒数（默认：1800）",
+            "Market が Release を検証中の間、再試行を続ける秒数（既定値：1800）",
         ),
     )
     parser.set_defaults(handler=handle, _defaults=defaults)
@@ -124,7 +153,7 @@ def handle(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
-        return _notify_market(args.target)
+        return _notify_market(args.target, wait=args.market_wait)
 
     if args.mode_or_plugin == "github":
         plugin = args.target or "."
@@ -158,7 +187,7 @@ def handle(args: argparse.Namespace) -> int:
         f"[OK] GitHub Release ready: {release_url} / "
         f"GitHub Release 已就绪 / GitHub Release の準備完了"
     )
-    return _notify_market(release_url)
+    return _notify_market(release_url, wait=args.market_wait)
 
 
 def _run_github_phase(args: argparse.Namespace, plugin: str) -> str | None:
@@ -169,36 +198,90 @@ def _run_github_phase(args: argparse.Namespace, plugin: str) -> str | None:
             timeout=args.timeout,
         )
     except (OSError, RuntimeError, ValueError, httpx.HTTPError) as exc:
+        # Git errors span several lines and the cause is usually on the last
+        # one; keep them on the single [FAIL] line callers read.
+        detail = " | ".join(
+            line.strip() for line in str(exc).splitlines() if line.strip()
+        )
         print(
-            f"[FAIL] {_tri('GitHub publication failed', 'GitHub 发布失败', 'GitHub への公開に失敗')}: {exc}",
+            f"[FAIL] {_tri('GitHub publication failed', 'GitHub 发布失败', 'GitHub への公開に失敗')}: {detail}",
             file=sys.stderr,
         )
         return None
 
 
-def _notify_market(release_url: str) -> int:
-    try:
-        with httpx.Client(timeout=30.0) as client:
-            response = client.post(
-                _MARKET_PUBLICATION_URL,
-                json={"release_url": release_url},
-            )
-    except httpx.HTTPError as exc:
-        print(
-            f"[FAIL] {_tri('Market publication request failed', 'Market 发布请求失败', 'Market 公開リクエストに失敗')}: {exc}",
-            file=sys.stderr,
-        )
-        return 1
+def _notify_market(release_url: str, *, wait: float) -> int:
+    """POST the release to the Market, retrying while it is still verifying.
 
+    The Market answers 503 (scan queued or running) or 429 with Retry-After
+    until its verification job finishes; re-posting the same body re-attaches
+    to that job (N.E.K.O-PluginMarket .github/workflows/notify-market-release.yml).
+    """
+    deadline = time.monotonic() + max(wait, 0)
+    waiting_reason: str | None = None
+    with httpx.Client(timeout=30.0) as client:
+        while True:
+            try:
+                response = client.post(
+                    _MARKET_PUBLICATION_URL,
+                    json={"release_url": release_url},
+                )
+            except httpx.HTTPError as exc:
+                reason = f"{_tri('Market publication request failed', 'Market 发布请求失败', 'Market 公開リクエストに失敗')}: {exc}"
+                delay = _MARKET_NETWORK_RETRY_SECONDS
+            else:
+                payload = _response_object(response)
+                if response.status_code not in _MARKET_RETRY_STATUSES:
+                    return _report_market_response(response.status_code, payload)
+                code = payload.get("code") or f"http_{response.status_code}"
+                reason = f"{code}: {payload.get('detail') or ''}".rstrip(": ")
+                delay = _market_retry_delay(response)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                print(
+                    f"[FAIL] {_tri('Market publication failed', 'Market 发布失败', 'Market への公開に失敗')}: "
+                    f"{reason}; "
+                    + _tri(
+                        f"still not accepted after {wait:.0f} s; run neko-plugin publish market {release_url} again later",
+                        f"{wait:.0f} 秒后仍未完成；请稍后再次运行 neko-plugin publish market {release_url}",
+                        f"{wait:.0f} 秒経っても完了していません。後で neko-plugin publish market {release_url} を再実行してください",
+                    ),
+                    file=sys.stderr,
+                )
+                return 1
+            if reason != waiting_reason:
+                waiting_reason = reason
+                print(
+                    "[WAIT] "
+                    + _tri(
+                        f"Market is still verifying the release, retrying ({reason})",
+                        f"Market 仍在核验此 Release，正在重试（{reason}）",
+                        f"Market はまだ Release を検証中です。再試行します（{reason}）",
+                    ),
+                    flush=True,
+                )
+            time.sleep(min(delay, remaining))
+
+
+def _response_object(response: httpx.Response) -> dict:
     try:
         payload = response.json()
     except ValueError:
-        payload = {}
-    if not isinstance(payload, dict):
-        payload = {}
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
-    if response.status_code not in {200, 201}:
-        code = payload.get("code") or f"http_{response.status_code}"
+
+def _market_retry_delay(response: httpx.Response) -> float:
+    retry_after = response.headers.get("retry-after", "")
+    if not retry_after.isdigit():
+        return _MARKET_DEFAULT_RETRY_SECONDS
+    return float(min(max(int(retry_after), 1), _MARKET_MAX_RETRY_SECONDS))
+
+
+def _report_market_response(status_code: int, payload: dict) -> int:
+    """Print the ``[MARKET] status=...`` line for a final Market answer."""
+    if status_code not in {200, 201, 202}:
+        code = payload.get("code") or f"http_{status_code}"
         detail = payload.get("detail") or _tri(
             "Market rejected the release",
             "Market 拒绝了此 Release",
@@ -212,13 +295,23 @@ def _notify_market(release_url: str) -> int:
         return 1
 
     status = payload.get("status")
-    version = payload.get("version") or {}
+    version = payload.get("version")
     version_name = version.get("version") if isinstance(version, dict) else None
-    expected = (response.status_code, status) in {
-        (201, "published"),
-        (200, "already_published"),
-    }
-    if not expected or not isinstance(version_name, str) or not version_name:
+    candidate = payload.get("candidate")
+    candidate_id = candidate.get("id") if isinstance(candidate, dict) else None
+    if status_code == 202:
+        expected = (
+            status in _MARKET_REVIEW_STATUSES
+            and isinstance(candidate_id, int)
+            and not isinstance(candidate_id, bool)
+        )
+    else:
+        expected = (
+            (status_code, status) in {(201, "published"), (200, "already_published")}
+            and isinstance(version_name, str)
+            and bool(version_name)
+        )
+    if not expected:
         print(
             "[FAIL] "
             + _tri(
@@ -230,15 +323,54 @@ def _notify_market(release_url: str) -> int:
         )
         return 1
 
-    if status == "already_published":
+    print(f"[MARKET] status={status}" + (f" candidate={candidate_id}" if status_code == 202 else ""))
+    if status == "published":
+        print(
+            f"[OK] Market published v{version_name} / "
+            f"Market 发布成功 v{version_name} / Market 公開完了 v{version_name}"
+        )
+    elif status == "already_published":
         print(
             f"[OK] Market already published v{version_name} / "
             f"Market 已发布 v{version_name} / Market 公開済み v{version_name}"
         )
+    elif status == "rejected":
+        print(
+            "[FAIL] "
+            + _tri(
+                "the Market rejected this exact release before; publish a new version",
+                "Market 之前已拒绝过这个完全相同的 Release；请发布新版本",
+                "Market はこれと同一の Release を以前に拒否しました。新しいバージョンを公開してください",
+            ),
+            file=sys.stderr,
+        )
+        return 1
+    elif status == "pending_review":
+        print(
+            "[OK] "
+            + _tri(
+                "Market accepted the release; it is waiting for a Market reviewer",
+                "Market 已接收此 Release，正在等待 Market 审核员审核",
+                "Market は Release を受け付けました。Market のレビュアーによる審査待ちです",
+            )
+        )
+    elif status == "approved":
+        print(
+            "[OK] "
+            + _tri(
+                "a Market reviewer already approved this release",
+                "Market 审核员已批准此 Release",
+                "Market のレビュアーはこの Release を承認済みです",
+            )
+        )
     else:
         print(
-            f"[OK] Market published v{version_name} / "
-            f"Market 发布成功 v{version_name} / Market 公開完了 v{version_name}"
+            "[OK] "
+            + _tri(
+                "a newer release of this version replaced this one in Market review",
+                "此版本的更新 Release 已在 Market 审核中取代了这一个",
+                "このバージョンの新しい Release が Market の審査でこれを置き換えました",
+            )
         )
     return 0
 
@@ -304,11 +436,15 @@ def _publish_github(
     head = _git(plugin_dir, "rev-parse", "HEAD")
     _ensure_head_pushed(plugin_dir, head=head)
     _ensure_release_ruff_passes(plugin_dir)
+    headers = _github_headers()
+    _ensure_public_repository(repository, headers=headers)
     _ensure_remote_tag(plugin_dir, tag=tag, head=head)
     return _wait_for_release(
         repository,
         plugin_id=source.plugin_id,
         tag=tag,
+        head=head,
+        headers=headers,
         timeout=timeout,
     )
 
@@ -350,52 +486,76 @@ def _ensure_clean_worktree(plugin_dir: Path) -> None:
                 "プラグインのソースディレクトリに専用 Git リポジトリがありません",
             )
         )
-    # Untracked sync work dirs are not plugin source. Keep checking tracked
-    # changes (including accidentally committed sync work dirs).
-    if _git(plugin_dir, "status", "--porcelain", "--untracked-files=no") or _git(
-        plugin_dir, "status", "--porcelain", "--", ".",
-        # A wildcard pathspec matches whole paths: exclude each work dir
-        # itself and everything under it.
-        *(
-            f":(top,exclude){pattern}{suffix}"
-            for pattern in VENDOR_SYNC_GLOBS
-            for suffix in ("", "/*")
-        ),
-    ):
+    dirty = worktree_dirty_paths(plugin_dir)
+    if dirty is None:
         raise RuntimeError(
             _tri(
-                "git working tree has uncommitted changes",
-                "Git 工作区存在未提交的修改",
-                "Git ワークツリーに未コミットの変更があります",
+                "git status failed",
+                "无法读取 Git 工作区状态",
+                "Git ワークツリーの状態を読み取れません",
+            )
+        )
+    if dirty:
+        shown = ", ".join(dirty[:_DIRTY_PATHS_SHOWN])
+        if len(dirty) > _DIRTY_PATHS_SHOWN:
+            shown += f", … (+{len(dirty) - _DIRTY_PATHS_SHOWN})"
+        raise RuntimeError(
+            _tri(
+                f"git working tree has uncommitted changes: {shown}",
+                f"Git 工作区存在未提交的修改：{shown}",
+                f"Git ワークツリーに未コミットの変更があります：{shown}",
             )
         )
 
 
 def _ensure_head_pushed(plugin_dir: Path, *, head: str) -> None:
-    upstream = _git(
+    branch = git_output(plugin_dir, "symbolic-ref", "--short", "-q", "HEAD")
+    if not branch:
+        raise RuntimeError(
+            _tri(
+                "HEAD is detached; check out the branch to publish from",
+                "HEAD 处于分离状态；请先切换到要发布的分支",
+                "HEAD がデタッチ状態です。公開するブランチをチェックアウトしてください",
+            )
+        )
+    set_upstream = f"git push -u origin {branch}"
+    upstream = git_output(
         plugin_dir,
         "rev-parse",
         "--abbrev-ref",
         "--symbolic-full-name",
         "@{upstream}",
     )
-    remote, separator, branch = upstream.partition("/")
-    if separator != "/" or remote != "origin" or not branch:
+    if not upstream:
         raise RuntimeError(
             _tri(
-                "the current branch must track an origin branch",
-                "当前分支必须跟踪 origin 上的分支",
-                "現在のブランチは origin のブランチを追跡する必要があります",
+                f"branch {branch} has no upstream; run {set_upstream}",
+                f"分支 {branch} 没有上游分支；请运行 {set_upstream}",
+                f"ブランチ {branch} に上流ブランチがありません。{set_upstream} を実行してください",
             )
         )
-    output = _git(plugin_dir, "ls-remote", "origin", f"refs/heads/{branch}")
-    remote_head = output.split(maxsplit=1)[0] if output else None
-    if remote_head != head:
+    remote, _, remote_branch = upstream.partition("/")
+    if remote != "origin" or not remote_branch:
         raise RuntimeError(
             _tri(
-                "HEAD is not pushed to its origin branch; push the branch first",
-                "HEAD 尚未推送到 origin 分支；请先推送当前分支",
-                "HEAD が origin ブランチに push されていません。先にブランチを push してください",
+                f"branch {branch} tracks {upstream}, not an origin branch; run {set_upstream}",
+                f"分支 {branch} 跟踪的是 {upstream}，不是 origin 上的分支；请运行 {set_upstream}",
+                f"ブランチ {branch} は origin ではなく {upstream} を追跡しています。{set_upstream} を実行してください",
+            )
+        )
+    output = _git(plugin_dir, "ls-remote", "origin", f"refs/heads/{remote_branch}")
+    remote_head = output.split(maxsplit=1)[0] if output else None
+    if remote_head != head:
+        push = (
+            f"git push origin {branch}"
+            if remote_branch == branch
+            else f"git push origin {branch}:{remote_branch}"
+        )
+        raise RuntimeError(
+            _tri(
+                f"HEAD is not pushed to origin/{remote_branch}; run {push}",
+                f"HEAD 尚未推送到 origin/{remote_branch}；请运行 {push}",
+                f"HEAD が origin/{remote_branch} に push されていません。{push} を実行してください",
             )
         )
 
@@ -403,26 +563,16 @@ def _ensure_head_pushed(plugin_dir: Path, *, head: str) -> None:
 def _ensure_release_ruff_passes(plugin_dir: Path) -> None:
     try:
         completed = subprocess.run(
-            [
-                "uvx",
-                "ruff==0.12.4",
-                "check",
-                "--ignore-noqa",
-                "--isolated",
-                "--target-version",
-                "py311",
-                "--line-length",
-                "120",
-                "--select",
-                "E4,E7,E9,F,I",
-                "--exclude",
+            ruff_command(
+                ".",
+                respect_gitignore=True,
                 # "./" anchors the sync work dirs to the plugin root, matching
                 # the build rules; a bare pattern would match at any depth.
-                ",".join(["vendor", *(f"./{pattern}" for pattern in VENDOR_SYNC_GLOBS)]),
-                ".",
-            ],
+                extra_excludes=tuple(f"./{pattern}" for pattern in VENDOR_SYNC_GLOBS),
+            ),
             cwd=plugin_dir,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             timeout=_RELEASE_RUFF_TIMEOUT_SECONDS,
@@ -531,22 +681,31 @@ def _ensure_remote_tag(plugin_dir: Path, *, tag: str, head: str) -> None:
     remote_commit = _remote_tag_commit(plugin_dir, tag)
     if remote_commit:
         if remote_commit != head:
+            # The Market keeps every version it has seen, including yanked
+            # ones, so moving the tag cannot publish this commit as that version.
             raise RuntimeError(
                 _tri(
-                    f"remote tag {tag} points to {remote_commit[:12]}, not HEAD {head[:12]}",
-                    f"远程 tag {tag} 指向 {remote_commit[:12]}，不是 HEAD {head[:12]}",
-                    f"リモート tag {tag} は {remote_commit[:12]} を指し、HEAD {head[:12]} ではありません",
+                    f"remote tag {tag} points to {remote_commit[:12]}, not HEAD {head[:12]}; "
+                    "a new version number is needed: bump the version in plugin.toml",
+                    f"远程 tag {tag} 指向 {remote_commit[:12]}，不是 HEAD {head[:12]}；"
+                    "需要新的版本号：请提升 plugin.toml 中的版本号",
+                    f"リモート tag {tag} は {remote_commit[:12]} を指し、HEAD {head[:12]} ではありません。"
+                    "新しいバージョン番号が必要です：plugin.toml のバージョンを上げてください",
                 )
             )
         return
 
     local = _local_tag_commit(plugin_dir, tag)
     if local and local != head:
+        delete = f"git tag -d {tag}"
         raise RuntimeError(
             _tri(
-                f"local tag {tag} points to {local[:12]}, not HEAD {head[:12]}",
-                f"本地 tag {tag} 指向 {local[:12]}，不是 HEAD {head[:12]}",
-                f"ローカル tag {tag} は {local[:12]} を指し、HEAD {head[:12]} ではありません",
+                f"local tag {tag} points to {local[:12]}, not HEAD {head[:12]}; "
+                f"bump the version in plugin.toml, or delete the tag ({delete})",
+                f"本地 tag {tag} 指向 {local[:12]}，不是 HEAD {head[:12]}；"
+                f"请提升 plugin.toml 中的版本号，或删除该 tag（{delete}）",
+                f"ローカル tag {tag} は {local[:12]} を指し、HEAD {head[:12]} ではありません。"
+                f"plugin.toml のバージョンを上げるか、tag を削除してください（{delete}）",
             )
         )
     if not local:
@@ -581,7 +740,8 @@ def _local_tag_commit(plugin_dir: Path, tag: str) -> str | None:
     completed = subprocess.run(
         ["git", "rev-parse", "--verify", "--quiet", f"refs/tags/{tag}^{{commit}}"],
         cwd=plugin_dir,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
@@ -600,36 +760,164 @@ def _local_tag_commit(plugin_dir: Path, tag: str) -> str | None:
     return completed.stdout.strip()
 
 
+
+
+
+
+def _rate_limit_wait(response: httpx.Response) -> float | None:
+    """Seconds until GitHub accepts requests again, or None when not rate limited."""
+    if response.status_code not in {403, 429}:
+        return None
+    retry_after = response.headers.get("retry-after", "")
+    if retry_after.isdigit():
+        return float(retry_after)
+    reset = response.headers.get("x-ratelimit-reset", "")
+    if response.headers.get("x-ratelimit-remaining") != "0" or not reset.isdigit():
+        return None
+    return max(int(reset) - time.time(), 0.0) + 1.0
+
+
+def _github_get(
+    client: httpx.Client,
+    url: str,
+    *,
+    headers: dict[str, str],
+    deadline: float,
+) -> httpx.Response:
+    """GET from the GitHub API, waiting out a rate limit that resets before ``deadline``."""
+    while True:
+        response = client.get(url, headers=headers)
+        wait = _rate_limit_wait(response)
+        if wait is None:
+            return response
+        if time.monotonic() + wait > deadline:
+            seconds = math.ceil(wait)
+            raise RuntimeError(
+                _tri(
+                    f"GitHub API rate limit reached (resets in {seconds} s); "
+                    "sign in with gh auth login or set GH_TOKEN",
+                    f"已达到 GitHub API 速率限制（{seconds} 秒后重置）；"
+                    "请运行 gh auth login 登录或设置 GH_TOKEN",
+                    f"GitHub API のレート制限に達しました（{seconds} 秒後にリセット）。"
+                    "gh auth login でサインインするか GH_TOKEN を設定してください",
+                )
+            )
+        time.sleep(wait)
+
+
+def _ensure_public_repository(repository: str, *, headers: dict[str, str]) -> None:
+    """Refuse before tagging when the Market could not read the repository."""
+    with httpx.Client(timeout=30.0) as client:
+        response = _github_get(
+            client,
+            f"{_GITHUB_API_URL}/repos/{repository}",
+            headers=headers,
+            deadline=time.monotonic(),
+        )
+    if response.status_code == 404:
+        raise RuntimeError(
+            _tri(
+                f"GitHub repository {repository} is not visible (private or missing); "
+                "the Market needs a public repository",
+                f"GitHub 仓库 {repository} 不可见（私有或不存在）；Market 需要公开仓库",
+                f"GitHub リポジトリ {repository} が見えません（非公開または存在しません）。"
+                "Market には公開リポジトリが必要です",
+            )
+        )
+    if response.status_code != 200:
+        raise RuntimeError(
+            _tri(
+                f"GitHub repository lookup returned HTTP {response.status_code}",
+                f"查询 GitHub 仓库返回 HTTP {response.status_code}",
+                f"GitHub リポジトリの照会が HTTP {response.status_code} を返しました",
+            )
+        )
+    payload = response.json()
+    if not isinstance(payload, dict) or payload.get("private") is not False:
+        raise RuntimeError(
+            _tri(
+                f"GitHub repository {repository} is private; "
+                "the Market needs a public repository",
+                f"GitHub 仓库 {repository} 是私有仓库；Market 需要公开仓库",
+                f"GitHub リポジトリ {repository} は非公開です。Market には公開リポジトリが必要です",
+            )
+        )
+
+
+def _release_run(
+    client: httpx.Client,
+    repository: str,
+    *,
+    tag: str,
+    head: str,
+    headers: dict[str, str],
+    deadline: float,
+) -> dict | None:
+    """The newest release workflow run for ``tag`` at ``head``, or None when there is none yet.
+
+    The Market accepts a run started by the tag push, or a manual dispatch on
+    the tag (N.E.K.O-PluginMarket app/services/release_fetcher.py).
+    """
+    response = _github_get(
+        client,
+        f"{_GITHUB_API_URL}/repos/{repository}/actions/workflows/release.yml/runs"
+        f"?head_sha={head}",
+        headers=headers,
+        deadline=deadline,
+    )
+    # Unreadable Actions (disabled, no permission) leave the run unknown; the
+    # wait then ends at its timeout.
+    if response.status_code != 200:
+        return None
+    return select_release_run(response.json(), tag)
+
+
+def _raise_if_release_run_failed(run: dict | None, *, tag: str) -> None:
+    """Fail fast when the release workflow run for ``tag`` finished without success."""
+    if workflow_run_state(run) != "failure":
+        return
+    conclusion = run.get("conclusion")
+    run_url = run.get("html_url") or ""
+    raise RuntimeError(
+        _tri(
+            f"release workflow for {tag} concluded {conclusion}: {run_url}; "
+            "fix it and re-run the workflow, or bump the version",
+            f"{tag} 的发布工作流结果为 {conclusion}：{run_url}；"
+            "请修复后重新运行该工作流，或提升版本号",
+            f"{tag} のリリースワークフローの結果は {conclusion} です：{run_url}。"
+            "修正してワークフローを再実行するか、バージョンを上げてください",
+        )
+    )
+
+
 def _wait_for_release(
     repository: str,
     *,
     plugin_id: str,
     tag: str,
+    head: str,
+    headers: dict[str, str],
     timeout: float,
 ) -> str:
+    print(
+        "[WAIT] "
+        + _tri(
+            f"waiting for GitHub Release {tag}",
+            f"正在等待 GitHub Release {tag}",
+            f"GitHub Release {tag} を待機しています",
+        ),
+        flush=True,
+    )
     api_url = (
-        f"https://api.github.com/repos/{repository}/releases/tags/"
+        f"{_GITHUB_API_URL}/repos/{repository}/releases/tags/"
         f"{quote(tag, safe='')}"
     )
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "neko-plugin",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-
     deadline = time.monotonic() + max(timeout, 0)
-    expected_assets = (
-        f"{plugin_id}.neko-plugin",
-        f"{plugin_id}{_RELEASE_CHECK_SUFFIX}",
-        _MARKET_EVIDENCE_NAME,
-    )
-    unready_assets = list(expected_assets)
+    unready_assets = missing_release_assets({}, plugin_id)
     with httpx.Client(timeout=30.0) as client:
         while True:
-            response = client.get(api_url, headers=headers)
+            assets_ready = False
+            response = _github_get(client, api_url, headers=headers, deadline=deadline)
             if response.status_code == 200:
                 payload = response.json()
                 if not isinstance(payload, dict):
@@ -649,34 +937,42 @@ def _wait_for_release(
                             "GitHub Release レスポンスに html_url がありません",
                         )
                     )
-                assets = payload.get("assets")
-                assets_by_name = (
-                    {
-                        asset.get("name"): asset
-                        for asset in assets
-                        if isinstance(asset, dict)
-                        and isinstance(asset.get("name"), str)
-                    }
-                    if isinstance(assets, list)
-                    else {}
+                unready_assets = missing_release_assets(payload, plugin_id)
+                assets_ready = not unready_assets
+            elif response.status_code != 404:
+                raise RuntimeError(
+                    _tri(
+                        f"GitHub Release lookup returned HTTP {response.status_code}",
+                        f"查询 GitHub Release 返回 HTTP {response.status_code}",
+                        f"GitHub Release の照会が HTTP {response.status_code} を返しました",
+                    )
                 )
-                unready_assets = [
-                    name
-                    for name in expected_assets
-                    if not _release_asset_is_downloadable(assets_by_name.get(name))
-                ]
-                if not unready_assets:
-                    return release_url
-            if response.status_code != 404:
-                if response.status_code != 200:
+            run = _release_run(
+                client,
+                repository,
+                tag=tag,
+                head=head,
+                headers=headers,
+                deadline=deadline,
+            )
+            _raise_if_release_run_failed(run, tag=tag)
+            # The Market refuses a release whose workflow run has not
+            # completed with success (release_fetcher.py), and uploading the
+            # assets is not the run's last step.
+            if assets_ready and release_ready(unready_assets, workflow_run_state(run)):
+                return release_url
+            if time.monotonic() >= deadline:
+                if assets_ready:
+                    run_state = run.get("status") if run is not None else "not found"
                     raise RuntimeError(
                         _tri(
-                            f"GitHub Release lookup returned HTTP {response.status_code}",
-                            f"查询 GitHub Release 返回 HTTP {response.status_code}",
-                            f"GitHub Release の照会が HTTP {response.status_code} を返しました",
+                            f"timed out waiting for the release workflow run for {tag} to succeed "
+                            f"(run: {run_state}); check GitHub Actions",
+                            f"等待 {tag} 的发布工作流成功超时（运行状态：{run_state}）；请检查 GitHub Actions",
+                            f"{tag} のリリースワークフローの成功待機がタイムアウトしました"
+                            f"（実行状態：{run_state}）。GitHub Actions を確認してください",
                         )
                     )
-            if time.monotonic() >= deadline:
                 if response.status_code == 200:
                     missing = ", ".join(unready_assets)
                     raise RuntimeError(
@@ -693,30 +989,15 @@ def _wait_for_release(
                         f"GitHub Release {tag} の待機がタイムアウトしました。GitHub Actions を確認してください",
                     )
                 )
-            time.sleep(min(5.0, max(deadline - time.monotonic(), 0)))
-
-
-def _release_asset_is_downloadable(asset: object) -> bool:
-    if not isinstance(asset, dict):
-        return False
-    size = asset.get("size")
-    state = asset.get("state")
-    download_url = asset.get("browser_download_url")
-    return (
-        state == "uploaded"
-        and isinstance(size, int)
-        and not isinstance(size, bool)
-        and size > 0
-        and isinstance(download_url, str)
-        and bool(download_url.strip())
-    )
+            time.sleep(min(_RELEASE_POLL_SECONDS, max(deadline - time.monotonic(), 0)))
 
 
 def _git(plugin_dir: Path, *args: str) -> str:
     completed = subprocess.run(
         ["git", *args],
         cwd=plugin_dir,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
@@ -737,7 +1018,8 @@ def _git_config_values(plugin_dir: Path, key: str) -> list[str]:
     completed = subprocess.run(
         ["git", "config", "--get-all", key],
         cwd=plugin_dir,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )

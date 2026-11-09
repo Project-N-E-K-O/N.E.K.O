@@ -180,7 +180,7 @@ async def test_fact_approval_uses_one_existing_call_and_existing_output_allowanc
 
     monkeypatch.setattr(evaluator, "_model_config", config)
     monkeypatch.setattr(evaluator, "create_chat_llm_async", factory)
-    monkeypatch.setattr(evaluator, "focus_extra_body", lambda _: {"enable_thinking": True})
+    monkeypatch.setattr(evaluator, "focus_extra_body", lambda *_: {"enable_thinking": True})
     # Claims need their own output allowance even if the scene has no pending body facts.
     monkeypatch.setattr(evaluator, "_pending_completion_facts", lambda *_: [])
     review = await evaluator.NumericV2MetricEvaluator(object()).validate_transition_offer(
@@ -352,7 +352,7 @@ async def test_actor_fact_approval_uses_same_call_budget_and_no_new_thinking_set
         calls.append(kwargs)
         return Client()
 
-    def unexpected_thinking(_):
+    def unexpected_thinking(*_):
         raise AssertionError("ordinary fact approval must not enable thinking")
 
     monkeypatch.setattr(evaluator, "_model_config", config)

@@ -65,6 +65,7 @@ from memory.timeindex import (
     FACT_NEAR_DUP_ENQUEUE_TIMEOUT_SECONDS,
 )
 from memory.scopes import (
+    SUBJECT_GROUP_CHAT,
     MemorySubject,
     coerce_subject,
     entry_matches_subject,
@@ -87,6 +88,11 @@ if TYPE_CHECKING:
     from memory.timeindex import TimeIndexedMemory
 
 logger = get_module_logger(__name__, "Memory")
+
+# ``extraction_path`` stamped on facts the AI-aware pass (path B) writes. Path
+# B lets the model label each fact's source itself; the marker lets those
+# labels be audited later against the conversation (who really said it).
+EXTRACTION_PATH_B = "path_b"
 
 
 def _detect_fact_extraction_prompt_language(
@@ -2967,6 +2973,7 @@ class FactStore:
         parse_max_retries: int | None = None,
         failure_info: dict | None = None,
         before_attempt: Callable[[], Awaitable[None]] | None = None,
+        label_own_words: bool = False,
     ) -> list[dict] | None:
         """Stage-1: pure extraction. Prompt carries no existing observations
         to avoid self-cycling (the LLM quoting an existing reflection back as a
@@ -2986,7 +2993,13 @@ class FactStore:
         legacy prompt assumes the human speaker IS the master — true for
         private admin chats, wrong for group-member batches, whose speaker
         would otherwise have their statements extracted as facts about the
-        master (Codex P2)."""
+        master (Codex P2).
+
+        ``label_own_words``: a group-chat history that contains the
+        character's own messages; the model also marks each fact's
+        ``source`` (``ai_disclosure`` for the character's words), which
+        persistence honours. Without it every fact counts as the others'
+        words."""
         _, _, _, _, name_mapping, _, _, _, _ = await self._config_manager.aget_character_data()
         name_mapping['ai'] = lanlan_name
         if speaker_label:
@@ -3000,8 +3013,14 @@ class FactStore:
             ui_language=get_global_language_full(),
         )
 
+        template = get_fact_extraction_prompt(prompt_lang)
+        if label_own_words:
+            from config.prompts.prompts_memory import (
+                get_fact_extraction_group_source_addendum,
+            )
+            template += get_fact_extraction_group_source_addendum(prompt_lang)
         prompt = (
-            get_fact_extraction_prompt(prompt_lang)
+            template
             .replace('{CONVERSATION}', conversation_text)
             .replace('{LANLAN_NAME}', lanlan_name)
             .replace('{MASTER_NAME}', name_mapping.get('human', '主人'))
@@ -3357,6 +3376,17 @@ class FactStore:
                 prov['speaker_entity_id'] = entity_id
         return prov or None
 
+    @staticmethod
+    def group_history_has_own_words(messages, subject) -> bool:
+        """Whether a scoped history is a group chat that includes the
+        character's own messages, the case ``label_own_words`` is for."""
+        memory_subject = coerce_subject(subject)
+        return (
+            memory_subject is not None
+            and memory_subject.kind == SUBJECT_GROUP_CHAT
+            and any(getattr(m, 'type', '') == 'ai' for m in messages or ())
+        )
+
     async def extract_facts_batch(
         self, segments: list[dict], lanlan_name: str,
     ) -> list[dict]:
@@ -3569,6 +3599,7 @@ class FactStore:
         reconciled_facts: list[dict] | None = None,
         effect_keys: list[str | None] | None = None,
         visit_origin: dict | None = None,
+        extraction_path: str | None = None,
     ) -> list[dict]:
         # Collect near-duplicate pairs under lock, submit only afterward: submission needs
         # FactDedupResolver's per-character lock, while aresolve reverses the order,
@@ -3615,6 +3646,10 @@ class FactStore:
                     {"visit_origin": visit_origin}
                     if visit_origin is not None else {}
                 ),
+                **(
+                    {"extraction_path": extraction_path}
+                    if extraction_path is not None else {}
+                ),
             )
         if near_dup_pairs:
             await self._aenqueue_near_dup_pairs(lanlan_name, near_dup_pairs)
@@ -3656,6 +3691,7 @@ class FactStore:
         near_dup_pairs_out: list | None = None,
         effect_keys: list[str | None] | None = None,
         visit_origin: dict | None = None,
+        extraction_path: str | None = None,
     ) -> list[dict]:
         """Dedup (SHA-256 + FTS5) + persist. importance < 5 facts are KEPT
         (RFC §3.1.3)—downstream `get_unabsorbed_facts(min_importance=5)`
@@ -3926,7 +3962,9 @@ class FactStore:
 
             # Source resolution: explicit LLM source first + whitelist + default fallback.
             raw_source = fact.get('source')
-            if raw_source in self._SOURCE_VALUES:
+            # Type first: a list/dict source is unhashable and would abort the
+            # whole batch; it falls back to the default like any other junk.
+            if isinstance(raw_source, str) and raw_source in self._SOURCE_VALUES:
                 source = raw_source
             else:
                 source = default_source
@@ -4215,6 +4253,11 @@ class FactStore:
                 # Visit save-as-diary facts (only visit_facts passes this parameter; never read model-provided fields):
                 # stamp new rows only, never upgrade exact-dedup existing facts. absorbed=True prevents reflection synthesis.
                 self._apply_visit_origin(fact_entry, visit_origin)
+            if extraction_path is not None:
+                # Which extraction pass wrote the row (EXTRACTION_PATH_B for
+                # the AI-aware pass). New rows only, like visit_origin; an
+                # exact-dedup hit keeps the existing row's marker or none.
+                fact_entry['extraction_path'] = extraction_path
             if effect_key is not None:
                 fact_entry['effect_key'] = effect_key
                 existing_effect_keys.add(effect_key)
@@ -4522,6 +4565,7 @@ class FactStore:
         Per RFC §3.4.2 coverage rule:
           - all confirmed + promoted reflections (most recent first)
           - all non-protected persona entries
+          (entries introspection retired are left out of both)
 
         Scale control (§3.4.2 end):
           - When ``new_facts`` is provided, the pool is routed through
@@ -4555,10 +4599,18 @@ class FactStore:
         # from failed pool parts. Let errors raise instead, so drain callers
         # catch and skip marking, retrying next idle round.
         # NegKW caller (memory_server.py) already catches errors independently, unaffected.
+        from memory.introspection import is_permanently_suppressed
+
         if reflection_engine is not None:
             all_refl = await reflection_engine._aload_reflections_full(lanlan_name)
             for r in all_refl:
                 if r.get('status') not in ('confirmed', 'promoted'):
+                    continue
+                if is_permanently_suppressed(r):
+                    # Retired by introspection: no longer worth a slot in
+                    # the evidence prompt. Excluded here, at the source,
+                    # because the rebuilt pool rows do not carry the flag
+                    # and some callers skip the hard filter.
                     continue
                 pool.append({
                     'id': f"reflection.{r.get('id', '')}",
@@ -4597,6 +4649,8 @@ class FactStore:
                     if entry.get('protected'):
                         # protected = character_card; evidence always
                         # inf, so applying signals has no meaning. Skip.
+                        continue
+                    if is_permanently_suppressed(entry):
                         continue
                     pool.append({
                         'id': f"persona.{entity_key}.{entry.get('id', '')}",
@@ -5009,6 +5063,7 @@ class FactStore:
         speaker_provenance: dict | None = None,
         reconciled_facts: list[dict] | None = None,
         conversation_at: datetime | None = None,
+        label_own_words: bool = False,
     ) -> list[dict]:
         """Stage-1-only backward-compat entry.
 
@@ -5030,8 +5085,8 @@ class FactStore:
         permanently drop the batch (Codex P1). A genuine empty extraction
         still returns [].
 
-        ``speaker_label`` is forwarded to the extraction prompt — see
-        :meth:`_allm_extract_facts`.
+        ``speaker_label`` and ``label_own_words`` are forwarded to the
+        extraction prompt — see :meth:`_allm_extract_facts`.
 
         ``speaker_provenance``: stamped onto newly created user_observation facts
         (speaker_label / speaker_trust / speaker_id); AI
@@ -5055,6 +5110,7 @@ class FactStore:
             lanlan_name, messages,
             treat_malformed_as_failure=fail_closed,
             speaker_label=speaker_label,
+            label_own_words=label_own_words,
         )
         if extracted is None and fail_closed:
             raise FactExtractionFailed(
@@ -5747,7 +5803,10 @@ class FactStore:
         - Uses the new prompt (``FACT_EXTRACTION_AI_AWARE_PROMPT``) instead of the basic one
         - The prompt adds a known-pool section + trust-tier guidance + a source-field output requirement
         - Persists with default_source='ai_disclosure' (a source explicitly emitted by the LLM still wins)
-        - No Stage-2 (path B by design never enters the evidence loop)
+        - No Stage-2 in this call. Facts the model labels user_observation are
+          still written with signal_processed=False, so the next path-A Stage-2
+          drain uses them as the user's evidence; rows are stamped
+          ``extraction_path=EXTRACTION_PATH_B`` so those labels can be audited
 
         Returns:
             - ``None``: Stage-1 terminal failure — retries exhausted / LLM
@@ -5770,10 +5829,15 @@ class FactStore:
         if extracted is None:
             return None
         if not extracted:
+            # A run that found nothing new is data too: how often path B
+            # adds nothing. Failures (None, above) stay unlogged here.
+            self._log_path_b_labels(lanlan_name, [], [])
             return []
         persisted = await self._apersist_new_facts(
             lanlan_name, extracted, default_source='ai_disclosure', subject=subject,
+            extraction_path=EXTRACTION_PATH_B,
         )
+        self._log_path_b_labels(lanlan_name, extracted, persisted)
         if coerce_subject(subject) is None:
             # Same private-only rule and source default as the persistence above:
             # a fact without an explicit user_observation source is never pinned.
@@ -5782,6 +5846,33 @@ class FactStore:
                 conversation_at=conversation_at,
             )
         return persisted
+
+    def _log_path_b_labels(
+        self, lanlan_name: str, extracted: list, persisted: list[dict],
+    ) -> None:
+        """Log how path B's model labeled the facts it returned, and what was
+        written: the data for deciding whether its own ``source`` labels can
+        be trusted (owner decision 2026-11-07: observe before changing them).
+
+        ``unlabeled`` facts (no valid ``source``) fall back to ``ai_disclosure``.
+        """
+        labels = {'user_observation': 0, 'ai_disclosure': 0, 'unlabeled': 0}
+        for item in extracted:
+            source = item.get('source') if isinstance(item, dict) else None
+            # A list or dict source is unhashable: check the type first, or a
+            # malformed item would crash the whole path-B call.
+            known = isinstance(source, str) and source in self._SOURCE_VALUES
+            labels[source if known else 'unlabeled'] += 1
+        written = {'user_observation': 0, 'ai_disclosure': 0}
+        for fact in persisted or ():
+            if isinstance(fact, dict) and fact.get('source') in written:
+                written[fact['source']] += 1
+        logger.info(
+            f"[PathB] {lanlan_name}: 模型标注 用户 {labels['user_observation']} / "
+            f"猫娘自述 {labels['ai_disclosure']} / 未标 {labels['unlabeled']}；"
+            f"新写入 用户 {written['user_observation']} / "
+            f"猫娘自述 {written['ai_disclosure']}"
+        )
 
     async def _allm_extract_facts_with_known_pool(
         self,
