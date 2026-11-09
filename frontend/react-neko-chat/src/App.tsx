@@ -1071,11 +1071,15 @@ function CompactChatApp({
   const [compactCaptionState, setCompactCaptionState] = useState<CompactCaptionState | null>(null);
   useEffect(() => {
     const resetCompactPreview = (event: Event) => {
-      setCompactCaptionState(null);
-      compactSpeechPreviewIdRef.current = '';
-      compactSpeechPreviewTextRef.current = '';
-      compactSpeechPreviewTurnIdRef.current = '';
       const detail = (event as CustomEvent).detail;
+      const streamingTurnIds = detail?.historyRestore === true && detail.conversationReset === false
+        && Array.isArray(detail.streamingTurnIds) ? detail.streamingTurnIds : [];
+      setCompactCaptionState(current => current && !current.isEnded && streamingTurnIds.includes(current.turnId) ? current : null);
+      if (!streamingTurnIds.includes(compactSpeechPreviewTurnIdRef.current)) {
+        compactSpeechPreviewIdRef.current = '';
+        compactSpeechPreviewTextRef.current = '';
+        compactSpeechPreviewTurnIdRef.current = '';
+      }
       // An empty host replacement also starts a fresh conversation. Keep the
       // turn guard during ordinary snapshots, which may contain stale streams.
       if (event.type === 'react-chat-window:messages-cleared'
