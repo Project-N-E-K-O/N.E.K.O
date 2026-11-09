@@ -393,8 +393,11 @@ def _resolve_review_sources(snapshot, corrected_messages, source_indexes=None, *
             continue
         used.add(source)
     contents = [_review_message_content(original) for original in snapshot]
-    kept_verbatim = {source for source, message in zip(sources, corrected_messages, strict=True)
-                     if source is not None and contents[source] == _review_message_content(message)}
+    # An omitted index still keeps its row when its text matches it; invalid positions keep nothing.
+    kept_verbatim = {index for position, message in enumerate(corrected_messages) if position not in unknown
+                     for index, original in enumerate(snapshot)
+                     if sources[position] in (None, index) and original.type == message.type
+                     and contents[index] == _review_message_content(message)}
     for position, source in enumerate(sources):
         if source is None:
             continue

@@ -370,6 +370,36 @@ def test_review_rewrite_may_match_a_row_that_stays_verbatim(review_identity_case
     assert [message.metadata for message in saved] == [original[0].metadata, original[2].metadata]
 
 
+def test_review_rewrite_may_match_a_row_an_omitted_index_keeps_verbatim(review_identity_case):
+    from utils.llm_client import HumanMessage
+
+    original = _identified_review_messages()
+    corrected = [HumanMessage('user-B'), HumanMessage('user-B')]
+    status, saved, _ = review_identity_case(original, corrected, source_indexes=[0, None])
+    assert status == 'patched'
+    assert [message.content for message in saved] == ['user-B', 'user-B']
+    assert [message.metadata for message in saved] == [original[0].metadata, original[2].metadata]
+
+
+def test_review_omitted_index_of_another_role_does_not_keep_a_row():
+    from memory.recent import _resolve_review_sources
+    from utils.llm_client import HumanMessage, AIMessage
+
+    original = _identified_review_messages()
+    corrected = [HumanMessage('user-B'), AIMessage('user-B')]
+    with pytest.raises(ValueError, match='^invalid_review_sources$'):
+        _resolve_review_sources(original, corrected, [0, None], strict=True)
+
+
+def test_review_malformed_position_does_not_keep_a_row():
+    from memory.recent import _MALFORMED_REVIEW_SOURCE, _resolve_review_sources
+    from utils.llm_client import HumanMessage
+
+    original = _identified_review_messages()
+    corrected = [HumanMessage('user-B'), HumanMessage('user-B')]
+    assert _resolve_review_sources(original, corrected, [0, _MALFORMED_REVIEW_SOURCE], strict=False) == [None, None]
+
+
 def test_review_rewrite_matching_another_role_is_not_a_mislabel(review_identity_case):
     from utils.llm_client import HumanMessage, messages_to_dict
 
