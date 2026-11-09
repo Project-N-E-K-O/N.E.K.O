@@ -398,7 +398,7 @@ class FactDedupResolver:
         return True
 
     async def aenqueue_candidates(
-        self, name: str, pairs: list[dict],
+        self, name: str, pairs: list[dict], *, on_persisted=None,
     ) -> int:
         """Append candidate (candidate_id, existing_id, …) pairs to
         the queue. Returns count actually appended (de-duped against
@@ -434,7 +434,7 @@ class FactDedupResolver:
                 for p in pairs
             )
             live_facts_by_id: dict[object, list[dict]] = {}
-            if has_scoped_pairs:
+            if has_scoped_pairs or on_persisted is not None:
                 live_facts = await self._fact_store.aload_facts(name)
                 for row in live_facts:
                     if isinstance(row, dict) and row.get('id') is not None:
@@ -471,6 +471,7 @@ class FactDedupResolver:
                 )
                 if (
                     key in existing_keys
+                    or (on_persisted is not None and (pair_rows[0] or {}).get('_near_dup_pending', {}).get('existing_id') != p.get('existing_id'))
                     or key[0] is None
                     or key[1] is None
                     or self._fact_store._subject_forget_fields_are_active(
@@ -520,7 +521,8 @@ class FactDedupResolver:
                 existing_keys.add(key)
                 appended += 1
             if scrubbed and not appended:
-                await self._asave_pending(name, existing)
+                if not await self._asave_pending(name, existing):
+                    return 0
             if appended:
                 if not await self._asave_pending(name, existing):
                     # Maintenance-mode skip: the queue file was NOT
@@ -535,6 +537,9 @@ class FactDedupResolver:
                     "[FactDedup] %s: 入队 %d 对候选（队列总长 %d）",
                     name, appended, len(existing),
                 )
+            if on_persisted is not None:
+                # Keep resolution behind the durable handoff acknowledgement. Lock order is resolver -> facts.
+                await on_persisted()
         return appended
 
     async def aforget_subject(self, name: str, subject) -> dict:
@@ -851,7 +856,11 @@ class FactDedupResolver:
         about to remove and removing them, which would lose new pairs
         that landed mid-call.
         """
+        if not await self._fact_store.aretry_pending_near_dups(name):
+            return 0
         async with self._get_alock(name):
+            if any(isinstance(row, dict) and row.get('_near_dup_pending') for row in await self._fact_store.aload_facts(name)):
+                return 0
             return await self._aresolve_locked(
                 name,
                 prompt_locale_resolver=prompt_locale_resolver,

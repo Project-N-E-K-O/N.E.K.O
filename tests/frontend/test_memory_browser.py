@@ -38,6 +38,65 @@ def _request_json(route):
     return post_data_json() if callable(post_data_json) else post_data_json
 
 
+@pytest.mark.frontend
+@pytest.mark.parametrize('timezone,known,epoch', [
+    ('Asia/Shanghai', '[20261103 Tue 10:26]', '[19700101 Thu 08:00]'),
+    ('America/New_York', '[20261102 Mon 21:26]', '[19691231 Wed 19:00]'),
+])
+def test_recent_memory_sync_time_is_display_only(mock_page, running_server, seed_memory_file, timezone, known, epoch):
+    rows = [
+        {'type': 'system', 'data': {'content': 'memo'}},
+        {'type': 'human', 'data': {'content': 'user text', 'metadata': {'recent_memory_time': '1793672815630'}}},
+        {'type': 'ai', 'data': {'content': '[20261103 Tue 10:26] local reply',
+                              'metadata': {'recent_memory_time': '0'}}},
+        {'type': 'ai', 'data': {'content': 'synced nested reply',
+                              'metadata': {'recent_memory_time': '1793672815630'}}},
+        {'role': 'assistant', 'content': 'synced flat reply', 'metadata': {'recent_memory_time': '1793672815630'}},
+        {'type': 'ai', 'data': {'content': 'epoch reply', 'metadata': {'recent_memory_time': '0'}}},
+        {'type': 'ai', 'data': {'content': 'missing time'}},
+        {'type': 'ai', 'metadata': {}, 'data': {'content': 'top metadata takes precedence',
+                                              'metadata': {'recent_memory_time': '1793672815630'}}},
+    ]
+    for invalid in (None, '', '-1', 'NaN', '1e3', 0, False, '9007199254740992', '8640000000000001'):
+        rows.append({'type': 'ai', 'data': {'content': 'unknown time ' + repr(invalid),
+                                          'metadata': {'recent_memory_time': invalid}}})
+    seed_memory_file.write_text(json.dumps(rows), encoding='utf-8')
+    original_bytes = seed_memory_file.read_bytes()
+    context = mock_page.context.browser.new_context(timezone_id=timezone)
+    try:
+        _install_ready_memory_browser_routes(context, seed_memory_file)
+        posts = []
+
+        def save(route):
+            posts.append(_request_json(route))
+            route.fulfill(json={'success': True, 'need_refresh': False, 'fingerprint': 'next', 'identity_token': 'token'})
+
+        context.route('**/api/memory/recent_file/save', save)
+        page = context.new_page()
+        page.goto(f'{running_server}/memory_browser', wait_until='domcontentloaded')
+        rendered = page.locator('#memory-chat-edit .chat-item')
+        expect(rendered).to_have_count(len(rows))
+        expect(rendered.nth(1).locator('.chat-time')).to_have_count(0)
+        for index, label in [(2, '[20261103 Tue 10:26]'), (3, known), (4, known), (5, epoch)]:
+            expect(rendered.nth(index).locator('.chat-time')).to_have_text(label)
+        expect(rendered.nth(3).locator('.chat-bubble')).to_have_text('synced nested reply')
+        for index in range(6, len(rows)):
+            expect(rendered.nth(index).locator('.chat-time')).to_have_count(0)
+        assert seed_memory_file.read_bytes() == original_bytes
+        page.locator('#memory-chat-edit .memo-textarea').first.fill('edited memo')
+        page.locator('#save-memory-btn').click()
+        expect(page.locator('#memory-unsaved-status')).to_be_hidden()
+        assert len(posts) == 1
+        saved = posts[0]['chat']
+        assert all('displayTime' not in item for item in saved)
+        assert [item['text'] for item in saved[1:]] == [
+            item['data']['content'] if 'data' in item else item['content'] for item in rows[1:]
+        ]
+        assert seed_memory_file.read_bytes() == original_bytes
+    finally:
+        context.close()
+
+
 def _assert_tutorial_reset_notice(page: Page, message: str) -> None:
     notice = page.locator(".tutorial-reset-notice-backdrop")
     expect(notice).to_be_visible()

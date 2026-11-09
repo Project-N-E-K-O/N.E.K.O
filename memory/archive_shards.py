@@ -464,7 +464,7 @@ def archive_copy_fingerprint(entry: dict) -> str:
     )
 
 
-def shard_entry_index_sync(archive_dir: str) -> dict[str, frozenset[str]] | None:
+def shard_entry_index_sync(archive_dir: str, *, by_subject: bool = False) -> dict[str | tuple[str, str | None], frozenset[str]] | None:
     """Map entry id -> fingerprints of the copies held by this archive dir.
 
     Reads every valid shard file (the same name filter the appenders use,
@@ -475,12 +475,15 @@ def shard_entry_index_sync(archive_dir: str) -> dict[str, frozenset[str]] | None
     caller then cannot prove a copy exists and must keep its own. Read-only
     -- repairing shards here would race the live archive path, which
     appends after releasing the journal lock.
+    ``by_subject`` keys persona copies by (id, subject), retaining missing
+    subjects as None so one complete duplicate cannot authorize losing the
+    only subject evidence of an incomplete copy. The default is unchanged.
     """
     try:
         shard_files = _list_shard_files(archive_dir)
     except OSError:
         return None
-    index: dict[str, set[str]] = {}
+    index: dict[str | tuple[str, str | None], set[str]] = {}
     for fn, _, _ in shard_files:
         try:
             data = read_json_tolerating_replace(os.path.join(archive_dir, fn))
@@ -494,7 +497,9 @@ def shard_entry_index_sync(archive_dir: str) -> dict[str, frozenset[str]] | None
             entry_id = item.get("id")
             if not isinstance(entry_id, str) or not entry_id:
                 continue
-            index.setdefault(entry_id, set()).add(archive_copy_fingerprint(item))
+            subject = item.get('entity_key')
+            key = (entry_id, subject if isinstance(subject, str) and subject else None) if by_subject else entry_id
+            index.setdefault(key, set()).add(archive_copy_fingerprint(item))
     return {entry_id: frozenset(fps) for entry_id, fps in index.items()}
 
 

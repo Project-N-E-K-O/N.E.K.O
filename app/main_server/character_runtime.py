@@ -2191,9 +2191,11 @@ async def switch_current_catgirl_fast():
     voice_id / thread state is completely unchanged. So this **only refreshes
     globals** and does no per-k work at all.
 
-    Wall clock: one aget_character_data (~a few ms) and that's everything.
+    Refresh globals and signal an existing sync host; network work remains outside this call.
     """
     await _refresh_character_globals()
+    from services.chat_sync.runtime import wake_desktop_chat_sync_scheduler
+    wake_desktop_chat_sync_scheduler(_config_manager)
     logger.info(f"[fast-switch] 已刷新 globals，当前猫娘: {her_name}")
 
 

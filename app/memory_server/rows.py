@@ -160,8 +160,8 @@ def _extract_role_tagged_messages_from_rows(rows: list) -> list[dict]:
     accepts a list; a str gets silently swallowed into []).
     """
     return [
-        {'type': msg_type, 'data': {'content': text}}
-        for _, msg_type, text in _iter_role_tagged_rows(rows)
+        {'type': msg_type, 'data': {'content': text, 'additional_kwargs': source}}
+        for _, msg_type, text, source in _iter_role_tagged_rows(rows)
     ]
 
 
@@ -173,7 +173,7 @@ def _extract_timed_role_messages_from_rows(rows: list) -> list[dict]:
     the shape ``PinnedFactStore.areview`` reads the conversation in.
     """
     out: list[dict] = []
-    for ts_raw, msg_type, text in _iter_role_tagged_rows(rows):
+    for ts_raw, msg_type, text, _ in _iter_role_tagged_rows(rows):
         ts = _coerce_db_ts(ts_raw)
         if ts is not None:
             out.append({'at': ts.timestamp(), 'role': msg_type, 'text': text})
@@ -181,8 +181,8 @@ def _extract_timed_role_messages_from_rows(rows: list) -> list[dict]:
 
 
 def _iter_role_tagged_rows(rows: list):
-    """Yield ``(raw timestamp, 'human'|'ai', text)`` for the rows memory may read."""
-    for ts_raw, _, msg_json in rows:
+    """Yield ``(raw timestamp, 'human'|'ai', text, source metadata)`` for the rows memory may read."""
+    for ts_raw, session_id, msg_json in rows:
         try:
             msg = json.loads(msg_json) if isinstance(msg_json, str) else msg_json
             if not isinstance(msg, dict):
@@ -216,9 +216,12 @@ def _iter_role_tagged_rows(rows: list):
                 continue
             if not text.strip():
                 continue
+            from memory.long_term_sync import original_message_source
+            identity, millis = original_message_source(msg, session_id, ts_raw)
+            source = {'memory_source_id': identity, **({'memory_source_created_at': millis} if millis is not None else {})}
         except (json.JSONDecodeError, TypeError):
             continue
-        yield ts_raw, msg_type, text
+        yield ts_raw, msg_type, text, source
 
 
 def _trim_to_user_msg_bracket(message_dicts: list[dict]) -> list[dict]:
