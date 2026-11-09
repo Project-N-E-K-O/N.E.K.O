@@ -33,7 +33,7 @@ import traceback
 from io import BytesIO
 import httpx
 from PIL import Image
-from config import get_agent_extra_body, COMPUTER_USE_MAX_TOKENS, LLM_PING_MAX_TOKENS, MAIN_SERVER_PORT
+from config import get_agent_extra_body, COMPUTER_USE_MAX_TOKENS, LLM_PING_MAX_TOKENS, MAIN_SERVER_PORT, OPENAI_CONNECTIVITY_TEST_MAX_TOKENS
 from utils.config_manager import get_config_manager
 from utils.llm_client import create_chat_llm, ChatOpenAI
 from utils.logger_config import get_module_logger
@@ -1028,7 +1028,11 @@ class ComputerUseAdapter:
                 # request won't clip the latter's budget or timeout.
                 resp = self._llm_client.invoke_raw(
                     [{"role": "user", "content": "ok"}],
-                    max_completion_tokens=LLM_PING_MAX_TOKENS,
+                    # Responses rejects the legacy five-token probe budget.
+                    max_completion_tokens=(
+                        OPENAI_CONNECTIVITY_TEST_MAX_TOKENS
+                        if provider_type == "chatgpt" else LLM_PING_MAX_TOKENS
+                    ),
                     extra_body=extra or None,
                     timeout=timeout_s,
                 )
