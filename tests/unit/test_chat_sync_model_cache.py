@@ -157,6 +157,19 @@ async def test_role_retirement_collects_only_the_committed_unreferenced_upload(c
 
 
 @pytest.mark.asyncio
+async def test_collection_keeps_a_staged_upload_named_relative_to_the_working_directory(cache_runtime, monkeypatch):
+    runtime, config = cache_runtime
+    record, upload, downloaded, installed = bundle(runtime, config)
+    package = Path(upload['path']).resolve()
+    monkeypatch.chdir(package.parent)
+    state = {'revision': 1, 'selection': '', 'pending': {'file': {**upload, 'path': package.name}}}
+    _, _, commit = await runtime._bound_transport(UID)
+    await commit(runtime.models.store.put, 'other-domain', state)
+    await asyncio.to_thread(runtime.models.cleanup_cache, force=True)
+    assert package.exists()
+
+
+@pytest.mark.asyncio
 async def test_readable_model_root_does_not_pin_an_unrelated_writable_cache(cache_runtime, tmp_path):
     runtime, config = cache_runtime
     _, _, _, installed = bundle(runtime, config)

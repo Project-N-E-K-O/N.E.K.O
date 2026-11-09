@@ -773,6 +773,7 @@ async def verify_retired_assertions(retirements, extracted, messages, request, *
     from utils.language_utils import get_global_language_full
     from utils.tokenize import acount_tokens
     matched, batch = {}, []
+    cites_correction = set()
 
     async def review(pairs):
         lines = '\n'.join(f'[{index}] candidate: {json.dumps(fact["text"], ensure_ascii=False)} | existing: {json.dumps(row["text"], ensure_ascii=False)}'
@@ -798,6 +799,10 @@ async def verify_retired_assertions(retirements, extracted, messages, request, *
             seen.add(decision['index'])
             if decision['action'] != 'keep_both':
                 fact, row = pairs[decision['index']]
+                # A fact from the correction that replaces the old one is the new
+                # value; only one that means the same restates what was retired.
+                if decision['action'] == 'replace' and (id(fact), row['id']) in cites_correction:
+                    continue
                 matched.setdefault(id(fact), set()).add(row['id'])
 
     now = timestamp(datetime.now().isoformat())
@@ -816,9 +821,8 @@ async def verify_retired_assertions(retirements, extracted, messages, request, *
             if (row.get('subject') != fact.get('entity', 'master') or not isinstance(row.get('text'), str)
                     or _assertion_text(row['text']) == _assertion_text(fact['text'])):
                 continue
-            # A fact cited to the correction states the new value, not the retired one.
             if ids & set(row.get('retiredBySourceMessageIds') or []):
-                continue
+                cites_correction.add((id(fact), row['id']))
             cutoff = row.get('retiredThroughAt')
             if (latest is not None and not ids.issubset(row.get('sourceMessageIds', []))
                     and not (cutoff is not None and cutoff <= now and latest <= cutoff)

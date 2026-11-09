@@ -2212,7 +2212,8 @@ async def test_user_observation_with_one_unusable_citation_is_still_checked_agai
 
 
 @pytest.mark.asyncio
-async def test_a_fact_cited_to_the_correction_is_not_reviewed_as_the_retired_assertion():
+@pytest.mark.parametrize('action,restates', [('replace', False), ('keep_both', False), ('merge', True)])
+async def test_a_fact_cited_to_the_correction_only_counts_when_it_means_the_retired_assertion(action, restates):
     from memory.long_term_sync import verify_retired_assertions
     from utils.llm_client import HumanMessage
     identity = 'sync:' + 'c' * 32
@@ -2220,9 +2221,9 @@ async def test_a_fact_cited_to_the_correction_is_not_reviewed_as_the_retired_ass
                   'retiredBySourceMessageIds': [identity], 'retiredThroughAt': 2000, 'retiredThroughAtFromCorrection': True}
     messages = [HumanMessage(content='Actually coral', additional_kwargs={'memory_source_id': identity, 'memory_source_created_at': 2000})]
     corrected = {'entity': 'master', 'text': 'Favorite color is coral', 'source_indices': [1]}
-    request = AsyncMock(side_effect=AssertionError('the correction must not be reviewed against what it retired'))
-    assert await verify_retired_assertions([retirement], [corrected], messages, request, default_source='user_observation') == {}
-    request.assert_not_awaited()
+    request = AsyncMock(return_value=[{'index': 0, 'action': action}])
+    matched = await verify_retired_assertions([retirement], [corrected], messages, request, default_source='user_observation')
+    assert matched == ({id(corrected): {'r1'}} if restates else {})
 
 
 @pytest.mark.asyncio
