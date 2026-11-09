@@ -402,6 +402,16 @@ function _cleanupNekoIdleArtTransition(art) {
         clearTimeout(art.__nekoIdleTransitionTimer);
         art.__nekoIdleTransitionTimer = 0;
     }
+    if (typeof art.__nekoIdleTransitionPreloadCancel === 'function') {
+        try { art.__nekoIdleTransitionPreloadCancel(); } catch (_) {}
+    }
+    art.__nekoIdleTransitionPreloadCancel = null;
+    if (art.__nekoIdleTransitionPreload) {
+        art.__nekoIdleTransitionPreload.onload = null;
+        art.__nekoIdleTransitionPreload.onerror = null;
+        try { art.__nekoIdleTransitionPreload.removeAttribute('src'); } catch (_) {}
+    }
+    art.__nekoIdleTransitionPreload = null;
     if (art.__nekoIdleTransitionNext) {
         // 丢弃过渡临时 <img> 前先清空 src，让 Blink 立即释放动画资源的解码帧缓存
         // （MEM_MAPPED 共享内存）。否则每次 idle 美术过渡都 createElement 一个新 <img>

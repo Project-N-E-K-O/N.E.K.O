@@ -1958,13 +1958,46 @@ function _setNekoIdleReturnArtSource(art, nextSrc, tier, options = {}) {
     nextArt.draggable = false;
     nextArt.setAttribute('data-neko-idle-tier', tier);
 
-    const finish = () => {
+    let playbackReady = null;
+    if (playbackSrc !== nextSrc) {
+        const preload = document.createElement('img');
+        playbackReady = new Promise((resolve) => {
+            let settled = false;
+            const settle = (ready) => {
+                if (settled) return;
+                settled = true;
+                resolve(ready);
+            };
+            preload.onload = () => settle(true);
+            preload.onerror = () => settle(false);
+            art.__nekoIdleTransitionPreloadCancel = () => settle(false);
+        });
+        art.__nekoIdleTransitionPreload = preload;
+        preload.src = playbackSrc;
+    }
+
+    const commit = () => {
+        if (art.__nekoIdleTransitionTo !== nextSrc) return;
         _clearNekoIdleGifPlaybackSource(art);
         art.removeAttribute(_NEKO_IDLE_CAT1_PLAY_FINISHING_ATTR);
         art.src = playbackSrc;
         _cleanupNekoIdleArtTransition(art);
         _syncNekoIdleCat1QuestionMarkKeyboardAvailabilityForArt(art, tier, playbackSrc);
         notifyTransitionEnd();
+    };
+    const finish = () => {
+        if (!playbackReady) {
+            commit();
+            return;
+        }
+        playbackReady.then((ready) => {
+            if (art.__nekoIdleTransitionTo !== nextSrc) return;
+            if (!ready) {
+                _cleanupNekoIdleArtTransition(art);
+                return;
+            }
+            commit();
+        });
     };
 
     art.__nekoIdleTransitionNext = nextArt;

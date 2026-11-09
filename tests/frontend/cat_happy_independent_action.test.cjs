@@ -481,6 +481,93 @@ test('animation restart URLs preserve the canonical asset and version while chan
   );
 });
 
+test('the shared fade keeps its next art until the restarted main image has loaded', async () => {
+  const source = between(
+    PRESENTATION_SOURCE,
+    'function _setNekoIdleReturnArtSource',
+    'function _playNekoIdleHoverArt',
+    'return art transition',
+  );
+  const timers = [];
+  const created = [];
+  let transitionEnds = 0;
+  const button = {
+    appendChild(node) { node.parentNode = this; },
+    removeChild(node) { node.parentNode = null; },
+    classList: { add() {}, remove() {} },
+  };
+  const attributes = new Map([['src', 'sleep.webp?v=1']]);
+  const art = {
+    closest: () => button,
+    getAttribute: (name) => attributes.get(name) || '',
+    setAttribute: (name, value) => attributes.set(name, String(value)),
+    removeAttribute: (name) => attributes.delete(name),
+  };
+  Object.defineProperty(art, 'src', {
+    get: () => attributes.get('src') || '',
+    set: (value) => attributes.set('src', String(value)),
+  });
+  const context = vm.createContext({
+    Promise,
+    document: {
+      createElement() {
+        const node = {
+          setAttribute() {},
+          removeAttribute(name) { if (name === 'src') this.src = ''; },
+        };
+        created.push(node);
+        return node;
+      },
+    },
+    _NEKO_IDLE_CAT1_PLAY_FINISHING_ATTR: 'data-finishing',
+    _NEKO_IDLE_RETURN_TRANSITION_MS: 300,
+    _buildNekoIdleAnimationRestartUrl: (src, token) => `${src}&entry=${token}`,
+    _clearNekoIdleHoverPlayback() {},
+    _clearNekoIdleGifPlaybackSource() {},
+    _shouldReduceNekoIdleMotion: () => false,
+    _syncNekoIdleCat1QuestionMarkKeyboardAvailabilityForArt() {},
+    _cleanupNekoIdleArtTransition(target) {
+      if (typeof target.__nekoIdleTransitionPreloadCancel === 'function') {
+        target.__nekoIdleTransitionPreloadCancel();
+      }
+      target.__nekoIdleTransitionPreloadCancel = null;
+      target.__nekoIdleTransitionPreload = null;
+      target.__nekoIdleTransitionNext = null;
+      target.__nekoIdleTransitionTo = '';
+    },
+    setTimeout(callback, delay) {
+      timers.push({ callback, delay });
+      return timers.length;
+    },
+  });
+  vm.runInContext(source, context, { filename: PRESENTATION_PATH });
+  context._setNekoIdleReturnArtSource(
+    art,
+    'scared.webp?v=1',
+    'cat1',
+    {
+      animate: true,
+      restartAnimation: true,
+      playbackToken: 1,
+      onTransitionEnd: () => { transitionEnds += 1; },
+    },
+  );
+  assert.equal(created.length, 2, 'one visible fade image and one detached preload image');
+  assert.equal(created[0].src, 'scared.webp?v=1');
+  assert.equal(created[1].src, 'scared.webp?v=1&entry=1');
+  assert.equal(attributes.get('src'), 'sleep.webp?v=1');
+
+  timers[0].callback();
+  await flush();
+  assert.equal(attributes.get('src'), 'sleep.webp?v=1', 'the old main art stays until preload is ready');
+  assert.equal(transitionEnds, 0);
+
+  created[1].onload();
+  await flush();
+  assert.equal(attributes.get('src'), 'scared.webp?v=1&entry=1');
+  assert.equal(transitionEnds, 1);
+});
+
 test('interrupted animated entry releases the action instead of reporting an unseen cycle as done', async () => {
   const h = harness();
   assert.equal(h.context._playNekoIdleCat1VisualAction(
