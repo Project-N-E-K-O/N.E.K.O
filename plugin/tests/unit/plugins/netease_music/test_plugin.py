@@ -611,6 +611,108 @@ async def test_queue_natural_end_is_once_and_saved_ids_survive_new_instance(tmp_
 
 
 @pytest.mark.asyncio
+async def test_missing_replay_reports_exact_names_without_replacing_current_queue(tmp_path):
+    from plugin.plugins.netease_music.playlists import Queue
+
+    provider = _Provider()
+    plugin, pushes, _ = _make_plugin(provider)
+    queue = Queue("Current", [_song(), _song(2)], cursor=1, ticket="a" * 32)
+    plugin._queues = {"lanlan:Mika": queue}
+    plugin.data_path = lambda: tmp_path
+    library = {"夜读": [[3, "Song", "Artist"]], "点歌台精选": [[4, "Other", "Band"]]}
+    plugin._write_library("Mika", library)
+    plugin._write_library("Other", {"Other character's private list": [[9, "Private", "Band"]]})
+
+    result = await plugin.playlist("replay", name="夜读歌单", _ctx=_ctx())
+
+    data = result["finish"]["data"]
+    assert data["status"] == "playlist_not_found"
+    assert data["requested_name"] == "夜读歌单"
+    assert data["names"] == ["夜读", "点歌台精选"]
+    assert "夜读歌单" in data["summary"] and "点歌台精选" in data["summary"]
+    assert "private" not in data["summary"]
+    assert data["confirmation_submitted"] is True
+    assert pushes[0]["ai_behavior"] == "respond"
+    assert _action(pushes[0])["type"] == "text"
+    assert provider.resolve_calls == [] and not provider.closed
+    assert plugin._queues["lanlan:Mika"] is queue
+    assert (queue.cursor, queue.ticket) == (1, "a" * 32)
+    assert plugin._library("Mika") == library
+
+    # The failed lookup must leave the playing queue able to advance.
+    await plugin.playlist_terminal(queue.ticket, "ended", _ctx=_ctx())
+    assert provider.resolve_calls == [2]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name,status", [("", "playlist_name_required"), ("Missing", "playlist_not_found")])
+async def test_missing_replay_handles_empty_library_and_failed_receipt(tmp_path, name, status):
+    provider = _Provider()
+    plugin, pushes, _ = _make_plugin(provider, receipts=[{"submitted": False}])
+    plugin._queues = {}
+    plugin.data_path = lambda: tmp_path
+
+    result = await plugin.playlist("replay", name=name, _ctx=_ctx(language="en"))
+
+    data = result["finish"]["data"]
+    assert data["status"] == status
+    assert data["names"] == []
+    assert data["confirmation_submitted"] is False
+    assert "playlist." not in data["summary"]
+    assert "saved local playlist" in data["summary"].lower()
+    assert provider.resolve_calls == [] and not provider.closed
+    assert plugin._queues == {}
+    assert len(pushes) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name,song_id", [("夜读", 1), ("夜读歌单", 2), ("点歌台", 3)])
+async def test_replay_preserves_literal_saved_names(tmp_path, name, song_id):
+    provider = _Provider()
+    plugin, _, _ = _make_plugin(provider)
+    plugin._queues = {}
+    plugin.data_path = lambda: tmp_path
+    plugin._write_library("Mika", {
+        "夜读": [[1, "First", "Artist"]],
+        "夜读歌单": [[2, "Second", "Artist"]],
+        "点歌台": [[3, "Third", "Artist"]],
+    })
+
+    await plugin.playlist("replay", name=name, _ctx=_ctx())
+
+    assert provider.resolve_calls == [song_id]
+    assert plugin._queues["lanlan:Mika"].name == name
+
+
+@pytest.mark.asyncio
+async def test_superseded_missing_replay_does_not_send_stale_suggestions(tmp_path, monkeypatch):
+    import threading
+
+    plugin, pushes, _ = _make_plugin(_Provider())
+    plugin._queues = {}
+    plugin.data_path = lambda: tmp_path
+    entered = threading.Event()
+    release = threading.Event()
+
+    def delayed_library(target):
+        entered.set()
+        assert release.wait(timeout=5)
+        return {}
+
+    monkeypatch.setattr(plugin, "_library", delayed_library)
+    pending = asyncio.create_task(plugin.playlist("replay", name="Missing", _ctx=_ctx()))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        await plugin.playlist("stop", _ctx=_ctx())
+    finally:
+        release.set()
+    result = await pending
+
+    assert result["finish"]["data"]["status"] == "superseded"
+    assert [_action(push)["type"] for push in pushes] == ["ui_action"]
+
+
+@pytest.mark.asyncio
 async def test_curated_revise_preserves_current_and_rejects_mismatched_artist():
     rows = [_song(song_id=i, name=str(i), artist="Band") for i in (1, 2, 3)]
     provider = _Provider(candidates=rows)

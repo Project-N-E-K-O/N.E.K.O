@@ -190,6 +190,27 @@ class PlaylistMixin:
         generation = (
             self._session_generations.get(key) if editing else self._begin_request(key)
         )
+        replay_rows = None
+        if action == "replay":
+            library = await asyncio.to_thread(self._library, target)
+            if not self._is_current(key, generation):
+                return await self._finish_silent("superseded")
+            if not name or name not in library:
+                names = list(library)
+                message = t("playlist.not_found", name=name) if name else t("playlist.replay_need_name")
+                message += "\n" + (t("playlist.list", names=", ".join(names)) if names else t("playlist.empty"))
+                receipt = self._note(target, message, ai_behavior="respond")
+                return await self.finish(
+                    data={
+                        "status": "playlist_not_found" if name else "playlist_name_required",
+                        "requested_name": name,
+                        "names": names,
+                        "summary": message,
+                        "confirmation_submitted": self._submitted(receipt),
+                    },
+                    delivery="silent",
+                )
+            replay_rows = [SongCandidate(*row) for row in library[name]]
         if q and action == "next":
             q.ticket = ""
         async with self._new_provider() as provider:
@@ -198,8 +219,7 @@ class PlaylistMixin:
             if action == "search" and name:
                 name, rows = await provider.playlist(name)
             elif action == "replay" and name:
-                library = await asyncio.to_thread(self._library, target)
-                rows = [SongCandidate(*row) for row in library.get(name, [])]
+                rows = replay_rows
             elif action in ("curate", "revise"):
                 rows = await self._curated_tracks(provider, tracks or [])
                 name = name or t("playlist.curated", character=target)

@@ -31,5 +31,7 @@
   "playlist.playing": "《{name}》 · {count} 首，依序播放。",
   "playlist.paused": "連續四首無法播放，已暫停。說「下一首」可繼續。",
   "playlist.ended": "《{name}》已播畢。",
-  "entry.playlist.description": "陪伴連播用 curate，依聊天與音樂偏好選 6 至 8 首，tracks 每項為「歌名 | 歌手」。search 用 name 搜尋網易雲公開歌單；revise 替換未播放曲目，不打斷當前歌曲；save_current 將已確認的當前歌曲加入指定本地歌單並去重；save 儲存整個佇列；replay 重播已儲存的歌單；list 列出收藏；next 下一首；stop 停止。"
+  "entry.playlist.description": "陪伴連播用 curate，依聊天與音樂偏好選 6 至 8 首，tracks 每項為「歌名 | 歌手」。search 用 name 搜尋網易雲公開歌單；revise 替換未播放曲目，不打斷當前歌曲；save_current 將已確認的當前歌曲加入指定本地歌單並去重；save 儲存整個佇列；replay 重播已儲存的歌單；list 列出收藏；next 下一首；stop 停止。",
+  "playlist.not_found": "找不到名為《{name}》的本機歌單，請使用已儲存的完整名稱。",
+  "playlist.replay_need_name": "請告訴我要重播哪張本機歌單。"
 }

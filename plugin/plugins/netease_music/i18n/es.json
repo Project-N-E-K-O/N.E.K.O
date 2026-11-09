@@ -31,5 +31,7 @@
   "playlist.playing": "Reproduciendo {name} en orden ({count} canciones).",
   "playlist.paused": "Cuatro canciones no disponibles. Di «siguiente» para continuar.",
   "playlist.ended": "Fin de la lista {name}.",
-  "entry.playlist.description": "Usa curate para elegir 6–8 canciones según la conversación y los gustos; cada elemento de tracks es «título | artista». search busca listas públicas por name. revise cambia las próximas canciones sin interrumpir la actual. save_current añade la canción confirmada a una lista local sin duplicados. save guarda toda la cola, replay reproduce una lista guardada, list muestra las listas, next avanza y stop detiene."
+  "entry.playlist.description": "Usa curate para elegir 6–8 canciones según la conversación y los gustos; cada elemento de tracks es «título | artista». search busca listas públicas por name. revise cambia las próximas canciones sin interrumpir la actual. save_current añade la canción confirmada a una lista local sin duplicados. save guarda toda la cola, replay reproduce una lista guardada, list muestra las listas, next avanza y stop detiene.",
+  "playlist.not_found": "No se encontró ninguna lista local guardada llamada «{name}». Usa el nombre exacto con el que se guardó.",
+  "playlist.replay_need_name": "¿Qué lista local guardada quieres volver a reproducir?"
 }
