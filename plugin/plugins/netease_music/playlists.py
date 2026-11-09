@@ -129,6 +129,7 @@ class PlaylistMixin:
                     ],
                 },
                 "name": {"type": "string", "maxLength": 100},
+                "name_confirmed": {"type": "boolean"},
                 "tracks": {
                     "type": "array",
                     "maxItems": 24,
@@ -140,7 +141,7 @@ class PlaylistMixin:
         },
         timeout=90,
     )
-    async def playlist(self, action, name="", tracks=None, _ctx=None):
+    async def playlist(self, action, name="", tracks=None, name_confirmed=False, _ctx=None):
         locale = self._locale(_ctx or {})
         t = partial(self.i18n.t, locale=locale)
         target = self._target_lanlan(_ctx or {})
@@ -148,6 +149,10 @@ class PlaylistMixin:
             return Err(SdkError(t("playlist.target")))
         key = self._session_key(target)
         q = self._queues.get(key)
+        choices = getattr(self, "_playlist_name_choices", {})
+        self._playlist_name_choices = choices
+        pending_choice = choices.get(key) if action == "list" else choices.pop(key, None)
+        previous_generation = self._session_generations.get(key)
         name = str(name or "").strip()[:100]
         if action == "list":
             names = list(await asyncio.to_thread(self._library, target))
@@ -195,6 +200,28 @@ class PlaylistMixin:
             library = await asyncio.to_thread(self._library, target)
             if not self._is_current(key, generation):
                 return await self._finish_silent("superseded")
+            candidates = [candidate for candidate in library if candidate in {
+                name, name + "歌单", name[:-2] if name.endswith("歌单") else name,
+            }]
+            confirmed_choice = (
+                name_confirmed is True
+                and name in candidates
+                and pending_choice == (previous_generation, tuple(candidates))
+            )
+            if len(candidates) > 1 and not confirmed_choice:
+                choices[key] = (generation, tuple(candidates))
+                message = t("playlist.ambiguous", names=", ".join(candidates))
+                receipt = self._note(target, message, ai_behavior="respond")
+                return await self.finish(
+                    data={
+                        "status": "playlist_name_ambiguous",
+                        "requested_name": name,
+                        "names": candidates,
+                        "summary": message,
+                        "confirmation_submitted": self._submitted(receipt),
+                    },
+                    delivery="silent",
+                )
             if not name or name not in library:
                 names = list(library)
                 message = t("playlist.not_found", name=name) if name else t("playlist.replay_need_name")

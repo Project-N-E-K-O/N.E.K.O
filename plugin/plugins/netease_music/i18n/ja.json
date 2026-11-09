@@ -33,5 +33,6 @@
   "playlist.ended": "「{name}」の再生が終了しました。",
   "entry.playlist.description": "BGM は curate で会話と音楽の好みから6〜8曲を選び、tracks に「曲名 | アーティスト」を指定。search は name で公開プレイリストを検索。revise は再生中の曲を止めず後続曲を変更。save_current は確認済みの現在の曲を指定したローカルリストに重複なく追加。save はキュー全体を保存、replay は保存済みリストを再生、list は一覧、next は次の曲、stop は停止。",
   "playlist.not_found": "「{name}」というローカルプレイリストは見つかりませんでした。保存した正確な名前を指定してください。",
-  "playlist.replay_need_name": "どの保存済みローカルプレイリストを再生しますか？"
+  "playlist.replay_need_name": "どの保存済みローカルプレイリストを再生しますか？",
+  "playlist.ambiguous": "該当する可能性のある保存済みプレイリストが複数あります：{names}。再生する正確な名前を選んでください。"
 }

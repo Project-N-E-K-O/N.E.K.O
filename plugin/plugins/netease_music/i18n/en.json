@@ -33,5 +33,6 @@
   "playlist.ended": "Reached the end of {name}.",
   "entry.playlist.description": "Use curate for background music: choose 6–8 tracks from chat and music preferences, each as “title | artist”. Use search with a name to find a public NetEase playlist. revise replaces upcoming tracks without interrupting the current song. save_current appends the confirmed current song to a named local playlist, deduplicating IDs. Use save only to save the whole queue, replay for a saved playlist, list to list saved playlists, next to skip, and stop to end playback.",
   "playlist.not_found": "No saved local playlist named “{name}” was found. Please use its exact saved name.",
-  "playlist.replay_need_name": "Which saved local playlist would you like to replay?"
+  "playlist.replay_need_name": "Which saved local playlist would you like to replay?",
+  "playlist.ambiguous": "More than one saved playlist could match: {names}. Please choose the exact name to replay."
 }

@@ -678,10 +678,57 @@ async def test_replay_preserves_literal_saved_names(tmp_path, name, song_id):
         "点歌台": [[3, "Third", "Artist"]],
     })
 
-    await plugin.playlist("replay", name=name, _ctx=_ctx())
+    if name in ("夜读", "夜读歌单"):
+        await plugin.playlist("replay", name=name, _ctx=_ctx())
+        assert provider.resolve_calls == []
+    await plugin.playlist("replay", name=name, name_confirmed=True, _ctx=_ctx())
 
     assert provider.resolve_calls == [song_id]
     assert plugin._queues["lanlan:Mika"].name == name
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requested", ["夜读", "夜读歌单"])
+@pytest.mark.parametrize("premature_confirmation", [False, True])
+async def test_colliding_replay_names_require_selection_before_playing(tmp_path, requested, premature_confirmation):
+    provider = _Provider()
+    plugin, pushes, _ = _make_plugin(provider)
+    plugin._queues = {}
+    plugin.data_path = lambda: tmp_path
+    plugin._write_library("Mika", {
+        "夜读": [[1, "First", "Artist"]],
+        "夜读歌单": [[2, "Second", "Artist"]],
+        "Other": [[3, "Third", "Artist"]],
+    })
+
+    result = await plugin.playlist("replay", name=requested, name_confirmed=premature_confirmation, _ctx=_ctx())
+
+    assert result["finish"]["data"]["status"] == "playlist_name_ambiguous"
+    assert result["finish"]["data"]["names"] == ["夜读", "夜读歌单"]
+    assert provider.resolve_calls == []
+    assert not provider.closed
+    assert pushes[0]["ai_behavior"] == "respond"
+    assert plugin._queues == {}
+
+    await plugin.playlist("replay", name="夜读歌单", name_confirmed=True, _ctx=_ctx())
+    assert provider.resolve_calls == [2]
+    assert plugin._queues["lanlan:Mika"].name == "夜读歌单"
+
+
+@pytest.mark.asyncio
+async def test_stop_invalidates_pending_playlist_name_choice(tmp_path):
+    provider = _Provider()
+    plugin, _, _ = _make_plugin(provider)
+    plugin._queues = {}
+    plugin.data_path = lambda: tmp_path
+    plugin._write_library("Mika", {"夜读": [[1, "First", "Artist"]], "夜读歌单": [[2, "Second", "Artist"]]})
+    await plugin.playlist("replay", name="夜读", _ctx=_ctx())
+    await plugin.playlist("stop", _ctx=_ctx())
+
+    result = await plugin.playlist("replay", name="夜读歌单", name_confirmed=True, _ctx=_ctx())
+
+    assert result["finish"]["data"]["status"] == "playlist_name_ambiguous"
+    assert provider.resolve_calls == []
 
 
 @pytest.mark.asyncio

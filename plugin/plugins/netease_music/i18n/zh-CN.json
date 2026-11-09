@@ -33,5 +33,6 @@
   "playlist.ended": "《{name}》已到末尾，没有更多可播放曲目。",
   "entry.playlist.description": "放点歌、陪伴连播默认 curate：结合聊天和音乐偏好记忆选 6 至 8 首，tracks 为字符串数组，每项「歌名 | 歌手」。搜网易云现成歌单用 search，name 传关键词。revise 按新偏好替换尚未播放的曲目，不打断当前歌；save_current 将此刻播放器确认的一首追加到指定本地歌单，自动去重；仅在明确保存整张播放队列时用 save；replay 重放“我们自己的本地歌单”或已收藏的 name；list 列出收藏；next 下一首；stop 停止。",
   "playlist.not_found": "没有找到名为《{name}》的本地歌单，请使用已保存的完整名称。",
-  "playlist.replay_need_name": "请告诉我要重播哪张本地歌单。"
+  "playlist.replay_need_name": "请告诉我要重播哪张本地歌单。",
+  "playlist.ambiguous": "找到多个可能的本地歌单：{names}。请明确选择要重播的完整名称。"
 }

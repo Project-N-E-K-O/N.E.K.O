@@ -110,6 +110,9 @@
             "maxLength": 100,
             "type": "string"
           },
+          "name_confirmed": {
+            "type": "boolean"
+          },
           "tracks": {
             "items": {
               "maxLength": 150,
@@ -344,6 +347,9 @@
           "name": {
             "maxLength": 100,
             "type": "string"
+          },
+          "name_confirmed": {
+            "type": "boolean"
           },
           "tracks": {
             "items": {
@@ -644,6 +650,9 @@
             "maxLength": 100,
             "type": "string"
           },
+          "name_confirmed": {
+            "type": "boolean"
+          },
           "tracks": {
             "items": {
               "maxLength": 150,
@@ -771,7 +780,7 @@
   },
   "schema_version": 4,
   "sdk_version": "0.1.0",
-  "source_bytes": 106120,
+  "source_bytes": 109099,
   "source_files": [
     "README.md",
     "__init__.py",
@@ -792,5 +801,5 @@
     "provider.py",
     "ui/panel.tsx"
   ],
-  "source_sha256": "704843558275d581052fdf3cb41d880a2fed61060ade3a65c7c403ad4ccceafd"
+  "source_sha256": "ec557bd06dabbccd1ffc3efe7bfdbba35f164ddd38557de19d02a7f3c9b1bbf1"
 }
