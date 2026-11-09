@@ -252,6 +252,9 @@ class ToolCallingMixin:
             metadata={"source": "builtin"},
         )
         self.tool_registry.register(recall_tool, replace=True)
+        from main_logic.screen_inspection import build_tools as build_screen_tools
+        for tool in build_screen_tools(self):
+            self.tool_registry.register(tool, replace=True)
         self._register_public_knowledge_tool()
 
     # ------------------------------------------------------------------

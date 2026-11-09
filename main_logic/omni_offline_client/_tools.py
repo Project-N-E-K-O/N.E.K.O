@@ -116,7 +116,18 @@ class _ToolingMixin(_TurnContextMixin):
         # The synthetic context blocks are not the user's turn: the screen
         # projection still cuts its head right after the real user message.
         projected = self._projected_dialog_messages(messages, context_ids=context_ids)
-        return self._seat_tool_rounds(projected)
+        result = self._seat_tool_rounds(projected)
+        source = getattr(self, '_screen_inspection_last_source', None)
+        if source and any(tool.name == 'read_current_screen'
+                          for tool in (getattr(self, '_tool_definitions', ()) or ())):
+            # The previous turn's image slots have been released. Keep the source
+            # as a hint, but explicitly require new evidence for visual follow-ups.
+            # This is request-only: do not accumulate notices in saved history.
+            import json
+            from config.prompts.prompts_screen_inspection import text as screen_text
+            notice = screen_text('followup', self._tool_image_locale())
+            result = [*result, {'role': 'system', 'content': notice + '\n' + json.dumps(source, ensure_ascii=False)}]
+        return result
 
     def _turn_request_view(self, overrides):
         """Pop a tool loop's turn parameters from ``overrides``.
@@ -855,12 +866,17 @@ class _ToolingMixin(_TurnContextMixin):
                 used_count += 1
                 used_b64_bytes += len(url.rsplit(",", 1)[-1])
 
+        # Screen inspection needs overview + window + crop + one re-check.
+        # Other tools retain their existing image-count and byte budgets.
+        image_limit = (4 if result.name in {
+            'read_current_screen', 'read_screen_window', 'zoom_screen_region',
+        } else _TOOL_IMAGE_TURN_MAX_COUNT)
         content = []
         omitted_count = 0
         for img in images:
             image_b64_bytes = len(img.data_b64)
             if (
-                used_count >= _TOOL_IMAGE_TURN_MAX_COUNT
+                used_count >= image_limit
                 or used_b64_bytes + image_b64_bytes
                 > _TOOL_IMAGE_TURN_MAX_B64_BYTES
             ):

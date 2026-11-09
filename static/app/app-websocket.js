@@ -5391,6 +5391,15 @@
                     })();
 
                 // -------- request_screenshot (existing path, unrelated to capture bridge) --------
+                } else if (response.type === 'request_screen_inspection') {
+                    import('/static/app/app-screen-inspection.js')
+                        .then(mod => mod.handleScreenInspection(response, S, _thisSocket))
+                        .catch(() => {
+                            if (_thisSocket === S.socket && _thisSocket.readyState === WebSocket.OPEN) {
+                                _thisSocket.send(JSON.stringify({action: 'screen_inspection_response',
+                                    request_id: response.request_id, success: false, error: 'capture_failed'}));
+                            }
+                        });
                 } else if (response.type === 'request_screenshot') {
                     (async function () {
                         function sendScreenshotReply(reply) {

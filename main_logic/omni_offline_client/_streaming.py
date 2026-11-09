@@ -1514,7 +1514,8 @@ class _StreamingMixin:
                                         continue  # Buffer not full; await more chunks.
 
                                 for idx, char in enumerate(truncated_content):
-                                    if char == '|':
+                                    # Visual titles/code can contain literal pipes.
+                                    if char == '|' and not (has_images or _turn_tool_image_slots):
                                         pipe_count += 1
                                         if pipe_count >= 2:
                                             truncated_content = truncated_content[:idx]
@@ -1732,7 +1733,8 @@ class _StreamingMixin:
                                     flush_text = prefix_buffer[lanlan_match:]
                                 # fence + length guard
                                 for idx, char in enumerate(flush_text):
-                                    if char == '|':
+                                    # Visual titles/code can contain literal pipes.
+                                    if char == '|' and not (has_images or _turn_tool_image_slots):
                                         pipe_count += 1
                                         if pipe_count >= 2:
                                             flush_text = flush_text[:idx]
