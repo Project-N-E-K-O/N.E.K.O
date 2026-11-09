@@ -38,14 +38,14 @@ def test_aliases_only_cover_removed_files_and_point_at_existing_ones():
         assert (STATIC_DIR / current).is_file(), current
 
 
-def test_aliases_point_at_the_same_named_registry_resource():
+def test_aliases_point_at_the_same_stemmed_registry_resource():
     # New registry media without a retired twin need no alias; only check that
-    # every alias lands on a live registry URL with the same file name.
+    # every alias lands on a live registry URL for the same logical asset.
     registry = (STATIC_DIR / "avatar/avatar-ui-buttons/cat-resource-registry.js").read_text(encoding="utf-8")
     registry_paths = set(re.findall(r"/static/(assets/cat-resources/[^'\"]+)", registry))
     for legacy, current in LEGACY_STATIC_ASSET_ALIASES.items():
         assert current in registry_paths, current
-        assert Path(legacy).name == Path(current).name, legacy
+        assert Path(legacy).stem == Path(current).stem, legacy
 
 
 def test_resolver_accepts_windows_separators_and_leaves_other_paths_alone():
@@ -77,6 +77,7 @@ def test_main_server_static_root_keeps_cache_policy_for_aliased_urls():
     response = TestClient(app).get(f"/static/{legacy}?v=1760000000")
     assert response.status_code == 200
     assert response.content == (STATIC_DIR / LEGACY_STATIC_ASSET_ALIASES[legacy]).read_bytes()
+    assert response.headers["content-type"] == "image/webp"
     assert response.headers["cache-control"] == "public, max-age=31536000, immutable"
 
 

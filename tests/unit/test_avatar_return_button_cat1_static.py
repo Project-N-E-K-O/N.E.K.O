@@ -37,8 +37,8 @@ APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui"
 APP_REACT_CHAT_WINDOW_PATH = PROJECT_ROOT / "static" / "app" / "app-react-chat-window"
 APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app" / "app-interpage"
 INDEX_CSS_PATH = PROJECT_ROOT / "static" / "css" / "index.css"
-CAT1_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "idle" / "cat-idle-cat1.gif"
-CAT1_PLAY_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "action" / "cat-idle-cat-play-1.gif"
+CAT1_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "idle" / "cat-idle-cat1.webp"
+CAT1_PLAY_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "action" / "cat-idle-cat-play-1.webp"
 CAT1_EAT_SOUND_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "voice" / "dev_neko" / "action" / "cat1-voice-eat.mp3"
 CAT1_CHAT_HISS_STICKER_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "thought-items" / "cat1-chat-angry.gif"
 CAT1_CHAT_HISS_SOUND_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "voice" / "dev_neko" / "interaction" / "cat1-voice-chat-angry.mp3"
@@ -50,7 +50,7 @@ def test_cat1_return_button_visual_contract_is_present():
 
     assert "neko:auto-goodbye:state-change" in source
     assert "data-neko-idle-tier" in source
-    assert "/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat1.gif" in source
+    assert "/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat1.webp" in source
 
     create_return_block = source.split("ManagerPrototype.createReturnButton = function()", 1)[1].split(
         "ManagerPrototype._setupReturnButtonDrag",
@@ -172,7 +172,7 @@ def test_cat1_play_action_module_is_independent_from_eat_action():
     assert "getAppearance('action.cat1.play_yarn', { random: false })" in chat_source
     assert "resource.metadata.wideArt !== true" in chat_source
     assert "isIdleCat1CompactMirrorWideArt(src)" in chat_source
-    assert "src.indexOf('/static/assets/neko-idle/cat-idle-cat-play-1.gif')" not in chat_source
+    assert "src.indexOf('/static/assets/neko-idle/cat-idle-cat-play-1.webp')" not in chat_source
     assert '.neko-idle-cat1-compact-mirror[data-neko-cat1-wide-art="true"] .neko-idle-cat1-compact-mirror-art' in css
     assert "body[data-neko-ball-drag] .neko-idle-return-btn.is-cat1-playing > .neko-idle-return-art" in app_ui_source
     assert "width:175%!important" in app_ui_source
