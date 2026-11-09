@@ -136,7 +136,7 @@ function javascriptFilesUnder(directory) {
 function visualSource() {
   return between(
     ACTIONS_SOURCE,
-    'const _NEKO_IDLE_CAT1_VISUAL_ACTION_PROFILES',
+    'function _shouldResumeNekoIdleJourneyAfterActionTakeover',
     'function _getNekoIdleCat1StretchActionState',
     'visual action kernel',
   );
@@ -212,7 +212,10 @@ function harness(options = {}) {
     _pauseNekoIdleCat1Journey: () => { journeyCalls.pause += 1; journey.paused = true; },
     _resumeNekoIdleCat1Journey: () => { journeyCalls.resume += 1; journey.paused = false; },
     _scheduleNekoIdleCat1JourneySync: () => { journeyCalls.sync += 1; },
-    _clearNekoIdleHoverPlayback: () => { cleanup.hover += 1; },
+    _clearNekoIdleHoverPlayback: (target) => {
+      cleanup.hover += 1;
+      if (target) target.__nekoIdleHoverPausedJourney = false;
+    },
     _cleanupNekoIdleArtTransition: () => { cleanup.transition += 1; },
     _clearNekoIdleGifPlaybackSource: () => { cleanup.playback += 1; },
     _setNekoIdleReturnArtSource: (target, src, tier, sourceOptions) => {
@@ -365,6 +368,27 @@ test('each visual action owns one audited cycle, restores directly and restarts 
     assert.equal(JSON.stringify({ button: h.button.style, container: h.container.style, art: h.art.style }), before,
       `${key} changes no layout or transform style`);
   }
+});
+
+test('visual action takes over a hover-owned walking pause and resumes it after finishing', async () => {
+  const h = harness();
+  h.journey.paused = true;
+  h.art.__nekoIdleHoverPausedJourney = true;
+  assert.equal(h.play('happy'), true);
+  await flush();
+  h.timers[0].callback();
+  assert.equal(h.journeyCalls.resume, 1);
+  assert.equal(h.journey.paused, false);
+});
+
+test('visual action does not resume a walking pause owned by another subsystem', async () => {
+  const h = harness();
+  h.journey.paused = true;
+  assert.equal(h.play('happy'), true);
+  await flush();
+  h.timers[0].callback();
+  assert.equal(h.journeyCalls.resume, 0);
+  assert.equal(h.journey.paused, true);
 });
 
 test('animated visual entry starts its full animation cycle only after the shared tier fade completes', async () => {
@@ -602,6 +626,7 @@ test('CAT2 and CAT3 right-click demote to CAT1 and request scared with the share
       _NEKO_CAT_MIND_ACTION_RESULTS: { DONE: 'done' },
       _isNekoIdleThoughtBubbleEventHit: () => false,
       _isNekoGoodbyeIdleBallButton: () => false,
+      _isNekoCatMindTransitionActive: () => false,
       _normalizeNekoIdleReturnTier: (value) => value,
     };
     vm.createContext(context);
@@ -624,6 +649,44 @@ test('CAT2 and CAT3 right-click demote to CAT1 and request scared with the share
     assert.equal(requests[0].animateEntry, true);
     assert.deepEqual([event.prevented, event.stopped], [1, 1]);
   }
+});
+
+test('sleep-tier right-click stays atomic while a transition hard gate is active', () => {
+  const source = between(
+    RETURN_SOURCE,
+    'const _NEKO_IDLE_CAT1_VISUAL_ACTION_OTHER_RANDOM_REQUESTS',
+    'Object.assign(AvatarButtonMixin.methods',
+    'sleep-tier scared contextmenu',
+  );
+  let demotions = 0;
+  let requests = 0;
+  const context = {
+    window: {
+      nekoAutoGoodbye: { demoteVisualTierToCat1() { demotions += 1; return true; } },
+      NekoCatIdlePresentation: { requestCat1Scared() { requests += 1; return true; } },
+    },
+    _NEKO_IDLE_TIER_CAT1: 'cat1',
+    _NEKO_IDLE_TIER_CAT2: 'cat2',
+    _NEKO_IDLE_TIER_CAT3: 'cat3',
+    _NEKO_CAT_MIND_ACTION_RESULTS: { DONE: 'done' },
+    _isNekoIdleThoughtBubbleEventHit: () => false,
+    _isNekoGoodbyeIdleBallButton: () => false,
+    _isNekoCatMindTransitionActive: () => true,
+    _normalizeNekoIdleReturnTier: (value) => value,
+  };
+  vm.createContext(context);
+  vm.runInContext(source, context, { filename: RETURN_PATH });
+  const event = {
+    button: 2, prevented: 0, stopped: 0,
+    preventDefault() { this.prevented += 1; },
+    stopPropagation() { this.stopped += 1; },
+  };
+  assert.equal(context._handleNekoIdleSleepTierScaredContextMenu(
+    { getAttribute: () => 'cat2' }, event,
+  ), false);
+  assert.equal(demotions, 0);
+  assert.equal(requests, 0);
+  assert.deepEqual([event.prevented, event.stopped], [0, 0]);
 });
 
 test('individual visual APIs stay presentation-only while Cat Mind uses grouped random and timed actions', () => {

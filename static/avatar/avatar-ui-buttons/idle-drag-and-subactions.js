@@ -410,6 +410,7 @@ function _clearNekoIdleHoverPlayback(art) {
     art.__nekoIdleHoverSrc = '';
     art.__nekoIdleHoverTier = '';
     art.__nekoIdleHoverStartedAt = 0;
+    art.__nekoIdleHoverPausedJourney = false;
 }
 
 function _applyNekoIdleGifPlaybackRate(art, baseSrc, rate) {

@@ -18,6 +18,14 @@ from utils.static_asset_aliases import (
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STATIC_DIR = REPO_ROOT / "static"
 
+CANONICAL_RETIRED_GIF_PATHS = {
+    "assets/cat-resources/appearance/dev_neko/action/cat-idle-cat-play-1.gif",
+    "assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-eat.gif",
+    *(f"assets/cat-resources/appearance/dev_neko/click/cat-idle-cat{tier}-click.gif" for tier in range(1, 4)),
+    *(f"assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-{index}.gif" for index in range(1, 6)),
+    *(f"assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat{tier}.gif" for tier in range(1, 4)),
+}
+
 
 class _AliasStaticFiles(LegacyStaticAssetAliasMixin, StaticFiles):
     pass
@@ -36,6 +44,23 @@ def test_aliases_only_cover_removed_files_and_point_at_existing_ones():
         # A real file at the old path would be silently shadowed by the alias.
         assert not (STATIC_DIR / legacy).exists(), legacy
         assert (STATIC_DIR / current).is_file(), current
+
+
+def test_all_retired_canonical_gif_urls_have_webp_aliases():
+    assert CANONICAL_RETIRED_GIF_PATHS <= LEGACY_STATIC_ASSET_ALIASES.keys()
+    for legacy in CANONICAL_RETIRED_GIF_PATHS:
+        assert LEGACY_STATIC_ASSET_ALIASES[legacy] == f"{legacy[:-4]}.webp"
+
+
+def test_sample_pngtuber_manifest_labels_migrated_webp_assets_correctly():
+    import json
+
+    model_path = STATIC_DIR / "pngtuber-test/sample-pngtuber-model/model.json"
+    manifest = json.loads(model_path.read_text(encoding="utf-8"))["asset_manifest"]
+    migrated = [entry for entry in manifest if str(entry.get("file", "")).endswith(".webp")]
+    assert len(migrated) == 7
+    assert all(entry.get("format") == "webp" for entry in migrated)
+    assert all("GIF" not in entry.get("purpose", "") for entry in migrated)
 
 
 def test_aliases_point_at_the_same_stemmed_registry_resource():

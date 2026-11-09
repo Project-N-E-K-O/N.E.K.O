@@ -117,6 +117,12 @@ function createRuntime(randomValues = [], semanticActionId = '', options = {}) {
     }));
     flush();
   };
+  const observeAt = (type, timestamp, detail = {}, source = 'test') => {
+    win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {
+      detail: { type, source, tier: 'cat1', timestamp, detail },
+    }));
+    flush();
+  };
   const tick = (elapsedMs = 30 * 1000) => {
     now += elapsedMs;
     observe('cat_elapsed', { elapsedMs }, 'cat-mind-clock');
@@ -138,6 +144,7 @@ function createRuntime(randomValues = [], semanticActionId = '', options = {}) {
     requests,
     providerCalls,
     observe,
+    observeAt,
     tick,
     flush,
     randomCalls: () => randomCalls,
@@ -304,6 +311,29 @@ test('inactive sad uses the global idle anchor, owns the 13-minute CAT1 tick, an
   assert.equal(state.cat1InactiveSadStartedForIdleEpisode, false);
   assert.equal(state.clock.lastUserInteractionAt, runtime.now());
   assert.equal(runtime.requests.length, 1, 'activity resets the policy without creating another action request');
+});
+
+test('stale interaction observations cannot rewind or rearm the inactive-sad episode', () => {
+  const baseline = 1000;
+  const runtime = createRuntime([], '', {
+    autoLastInteractionAt: baseline,
+    entryDelayMs: 10 * 60 * 1000,
+    sadAllowed: true,
+  });
+  runtime.tick(3 * 60 * 1000);
+  const request = runtime.requests[0];
+  startRequest(runtime, request, 'inactive-sad-stale-observation-run');
+
+  runtime.observeAt('cat_hover_reaction', baseline - 1, {}, 'stale-hover');
+  runtime.observeAt('cat_hover_reaction', baseline, {}, 'equal-hover');
+  let state = runtime.win.nekoCatMind.getState();
+  assert.equal(state.clock.lastUserInteractionAt, baseline);
+  assert.equal(state.cat1InactiveSadStartedForIdleEpisode, true);
+
+  runtime.observeAt('cat_hover_reaction', runtime.now() + 1, {}, 'fresh-hover');
+  state = runtime.win.nekoCatMind.getState();
+  assert.equal(state.clock.lastUserInteractionAt, runtime.now() + 1);
+  assert.equal(state.cat1InactiveSadStartedForIdleEpisode, false);
 });
 
 test('inactive sad retries after provider rejection and only becomes one-shot after started', () => {

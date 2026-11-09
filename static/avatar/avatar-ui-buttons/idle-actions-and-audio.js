@@ -151,11 +151,8 @@ function _playNekoIdleCat1EatAction(button) {
     _cancelNekoIdleCat1PlayAction(button, { restoreArt: false });
     const state = _getNekoIdleCat1EatActionState(button);
     const journey = button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey;
-    const shouldResumeJourney = !!(journey &&
-        !journey.paused &&
-        journey.profile &&
-        journey.substate === journey.profile.walkingSubstate);
-    if (journey) {
+    const shouldResumeJourney = _shouldResumeNekoIdleJourneyAfterActionTakeover(art, journey);
+    if (shouldResumeJourney && !journey.paused) {
         _pauseNekoIdleCat1Journey(button);
     }
 
@@ -240,6 +237,13 @@ function _playNekoIdleCat1EatAction(button) {
     }
     finishIfReady();
     return true;
+}
+
+function _shouldResumeNekoIdleJourneyAfterActionTakeover(art, journey) {
+    return !!(journey &&
+        journey.profile &&
+        journey.substate === journey.profile.walkingSubstate &&
+        (!journey.paused || (art && art.__nekoIdleHoverPausedJourney === true)));
 }
 
 const _NEKO_IDLE_CAT1_VISUAL_ACTION_PROFILES = Object.freeze({
@@ -537,11 +541,8 @@ function _playNekoIdleCat1VisualAction(button, actionKey, options = {}) {
 
     const state = _getNekoIdleCat1VisualActionState(button);
     const journey = button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey;
-    const shouldResumeJourney = !!(journey &&
-        !journey.paused &&
-        journey.profile &&
-        journey.substate === journey.profile.walkingSubstate);
-    if (shouldResumeJourney) {
+    const shouldResumeJourney = _shouldResumeNekoIdleJourneyAfterActionTakeover(art, journey);
+    if (shouldResumeJourney && !journey.paused) {
         _pauseNekoIdleCat1Journey(button);
     }
 
@@ -776,11 +777,8 @@ function _playNekoIdleCat1StretchAction(button, options = {}) {
 
     const state = _getNekoIdleCat1StretchActionState(button);
     const journey = button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey;
-    const shouldResumeJourney = !!(journey &&
-        !journey.paused &&
-        journey.profile &&
-        journey.substate === journey.profile.walkingSubstate);
-    if (shouldResumeJourney) {
+    const shouldResumeJourney = _shouldResumeNekoIdleJourneyAfterActionTakeover(art, journey);
+    if (shouldResumeJourney && !journey.paused) {
         _pauseNekoIdleCat1Journey(button);
     }
 
@@ -1226,11 +1224,8 @@ function _playNekoIdleCat1PlayAction(button) {
     _cancelNekoIdleCat1PlayAction(button, { restoreArt: false });
     const state = _getNekoIdleCat1PlayActionState(button);
     const journey = button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey;
-    const shouldResumeJourney = !!(journey &&
-        !journey.paused &&
-        journey.profile &&
-        journey.substate === journey.profile.walkingSubstate);
-    if (journey) {
+    const shouldResumeJourney = _shouldResumeNekoIdleJourneyAfterActionTakeover(art, journey);
+    if (shouldResumeJourney && !journey.paused) {
         _pauseNekoIdleCat1Journey(button);
     }
 

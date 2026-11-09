@@ -541,6 +541,7 @@ function _attachNekoCatMindProviderDiagnostics(actionId, decision, context = {})
     ];
     if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_EAT_SNACK ||
         actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN ||
+        actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_IDLE_RANDOM ||
         actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_INACTIVE_SAD) {
         checks.push({ id: 'return_art_ready', passed: facts.hasArt });
     }

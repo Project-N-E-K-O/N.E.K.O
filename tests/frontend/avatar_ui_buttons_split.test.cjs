@@ -234,6 +234,42 @@ test('Cat Mind dry-run applies the resource preflight to every registered action
     assert.deepEqual(requests, actionIds);
 });
 
+test('idle-random missing-art diagnostics match the provider rejection', () => {
+    const { window, context } = loadMixin();
+    const container = { style: { display: 'block' }, getAttribute: () => '' };
+    const button = {
+        __nekoIdleCat1Journey: { profile: { idleSubstate: 'idle' }, substate: 'idle', actionSettled: true },
+        querySelector: () => null,
+    };
+    window.NekoCatResourceRegistry = {
+        getActionCapabilities: () => ({ available: true, reason: 'allowed' }),
+    };
+    Object.assign(context, {
+        _findNekoCatMindVisibleButtonForTier: () => button,
+        _getNekoIdleReturnContainerFromButton: () => container,
+        _getActiveNekoIdleReturnTier: () => 'cat1',
+        _isNekoCatMindButtonContainerVisible: () => true,
+        _isAnyNekoCatMindReturnPending: () => false,
+        _isNekoCatMindTransitionActive: () => false,
+        _isNekoIdleCompactSurfaceDragging: () => false,
+        _isAnyNekoIdleCat1IndependentActionActive: () => false,
+        _isNekoCatMindAudioActionActive: () => false,
+        _isNekoIdleCat1EdgePeekActive: () => false,
+        _isNekoIdleReturnDragActionBlocking: () => false,
+        _isAnyNekoIdleReturnDragActionBlocking: () => false,
+    });
+
+    const decision = window.NekoCatMindActionProviders.dryRun('cat1_idle_random');
+    assert.equal(decision.allowed, false);
+    assert.equal(decision.reason, 'missing_art');
+    assert.deepEqual(
+        Array.from(decision.detail.checks)
+            .filter((check) => check.id === 'return_art_ready')
+            .map((check) => ({ id: check.id, passed: check.passed })),
+        [{ id: 'return_art_ready', passed: false }],
+    );
+});
+
 test('visual-only actions stay callable presentations without becoming Cat Mind actions', () => {
     const { window, context } = loadMixin();
     const requests = [];

@@ -2010,6 +2010,7 @@ function _playNekoIdleHoverArt(art, tier, options = {}) {
     if (subactionState && subactionState.profile === profile) {
         _cancelNekoIdleCat1PairMove(subactionState);
     }
+    const hoverPausedJourney = !!(useSubactionInteractive && !subactionState.paused);
     if (useSubactionInteractive) {
         _pauseNekoIdleCat1Journey(button);
     }
@@ -2034,6 +2035,7 @@ function _playNekoIdleHoverArt(art, tier, options = {}) {
     art.__nekoIdleHoverSrc = clickSrc;
     art.__nekoIdleHoverTier = normalizedTier;
     art.__nekoIdleHoverStartedAt = Date.now();
+    art.__nekoIdleHoverPausedJourney = hoverPausedJourney;
     art.src = clickSrc;
     _syncNekoIdleCat1QuestionMarkKeyboardAvailabilityForArt(art, normalizedTier, clickSrc);
     dispatchHoverObservation();
@@ -2063,6 +2065,7 @@ function _finishNekoIdleHoverArtAfterPlayback(art, tier) {
         art.__nekoIdleHoverTimer = setTimeout(() => {
             if ((art.__nekoIdleHoverToken || 0) !== token) return;
             if (art.__nekoIdleHoverTier !== normalizedTier) return;
+            const resumeJourney = art.__nekoIdleHoverPausedJourney === true;
             art.__nekoIdleHoverTimer = 0;
             art.__nekoIdleHoverSrc = '';
             art.__nekoIdleHoverTier = '';
@@ -2074,7 +2077,9 @@ function _finishNekoIdleHoverArtAfterPlayback(art, tier) {
                 { animate: false, keepHoverPlayback: true }
             );
             _clearNekoIdleHoverPlayback(art);
-            _resumeNekoIdleCat1Journey(_getNekoIdleReturnButtonFromArt(art));
+            if (resumeJourney) {
+                _resumeNekoIdleCat1Journey(_getNekoIdleReturnButtonFromArt(art));
+            }
             _scheduleNekoIdleCat1JourneySync(_getNekoIdleReturnButtonFromArt(art));
         }, delayMs);
     });

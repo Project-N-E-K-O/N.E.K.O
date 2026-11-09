@@ -2675,8 +2675,11 @@
             recordReturnEpisodeInteraction();
         }
         if (resetsCat1InactiveSad(observation.type)) {
-            runtimeState.clock.lastUserInteractionAt = observation.timestamp;
-            runtimeState.scheduler.cat1InactiveSadStartedForIdleEpisode = false;
+            var previousInteractionAt = Number(runtimeState.clock.lastUserInteractionAt) || 0;
+            if (observation.timestamp > previousInteractionAt) {
+                runtimeState.clock.lastUserInteractionAt = observation.timestamp;
+                runtimeState.scheduler.cat1InactiveSadStartedForIdleEpisode = false;
+            }
         }
         addRecentEvent(observation);
         if (shouldScheduleDecisionForObservation(observation)) {

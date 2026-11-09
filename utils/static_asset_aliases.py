@@ -15,6 +15,19 @@ _CAT_VOICE = "assets/cat-resources/voice/dev_neko"
 
 # Old -> new paths, relative to static/ with POSIX separators. Register only files actually removed.
 LEGACY_STATIC_ASSET_ALIASES: dict[str, str] = {
+    f"{_CAT_APPEARANCE}/idle/cat-idle-cat1.gif": f"{_CAT_APPEARANCE}/idle/cat-idle-cat1.webp",
+    f"{_CAT_APPEARANCE}/idle/cat-idle-cat2.gif": f"{_CAT_APPEARANCE}/idle/cat-idle-cat2.webp",
+    f"{_CAT_APPEARANCE}/idle/cat-idle-cat3.gif": f"{_CAT_APPEARANCE}/idle/cat-idle-cat3.webp",
+    f"{_CAT_APPEARANCE}/click/cat-idle-cat1-click.gif": f"{_CAT_APPEARANCE}/click/cat-idle-cat1-click.webp",
+    f"{_CAT_APPEARANCE}/click/cat-idle-cat2-click.gif": f"{_CAT_APPEARANCE}/click/cat-idle-cat2-click.webp",
+    f"{_CAT_APPEARANCE}/click/cat-idle-cat3-click.gif": f"{_CAT_APPEARANCE}/click/cat-idle-cat3-click.webp",
+    f"{_CAT_APPEARANCE}/drag/cat-idle-cat-move-1.gif": f"{_CAT_APPEARANCE}/drag/cat-idle-cat-move-1.webp",
+    f"{_CAT_APPEARANCE}/drag/cat-idle-cat-move-2.gif": f"{_CAT_APPEARANCE}/drag/cat-idle-cat-move-2.webp",
+    f"{_CAT_APPEARANCE}/drag/cat-idle-cat-move-3.gif": f"{_CAT_APPEARANCE}/drag/cat-idle-cat-move-3.webp",
+    f"{_CAT_APPEARANCE}/drag/cat-idle-cat-move-4.gif": f"{_CAT_APPEARANCE}/drag/cat-idle-cat-move-4.webp",
+    f"{_CAT_APPEARANCE}/drag/cat-idle-cat-move-5.gif": f"{_CAT_APPEARANCE}/drag/cat-idle-cat-move-5.webp",
+    f"{_CAT_APPEARANCE}/action/cat-idle-cat1-eat.gif": f"{_CAT_APPEARANCE}/action/cat-idle-cat1-eat.webp",
+    f"{_CAT_APPEARANCE}/action/cat-idle-cat-play-1.gif": f"{_CAT_APPEARANCE}/action/cat-idle-cat-play-1.webp",
     "assets/neko-idle/cat-idle-cat1.gif": f"{_CAT_APPEARANCE}/idle/cat-idle-cat1.webp",
     "assets/neko-idle/cat-idle-cat2.gif": f"{_CAT_APPEARANCE}/idle/cat-idle-cat2.webp",
     "assets/neko-idle/cat-idle-cat3.gif": f"{_CAT_APPEARANCE}/idle/cat-idle-cat3.webp",

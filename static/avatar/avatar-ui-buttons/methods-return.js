@@ -137,6 +137,7 @@ function _handleNekoIdleSleepTierScaredContextMenu(button, event) {
     if (_isNekoGoodbyeIdleBallButton(button)) return false;
     const tier = _normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier'));
     if (tier !== _NEKO_IDLE_TIER_CAT2 && tier !== _NEKO_IDLE_TIER_CAT3) return false;
+    if (_isNekoCatMindTransitionActive(button)) return false;
 
     const presentation = window.NekoCatIdlePresentation;
     const request = presentation && presentation.requestCat1Scared;

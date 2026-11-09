@@ -68,50 +68,50 @@
     {
       "file": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-1.webp",
       "role": "drag_image",
-      "format": "gif",
+      "format": "webp",
       "purpose": "Built-in hold/drag visual feedback fallback used while the PNGTuber image is dragged or pinch-moved."
     },
     {
       "file": "/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat2.webp",
       "role": "variant_idle_image",
       "variant": "cat2",
-      "format": "gif",
-      "purpose": "Alternate idle GIF for variant switching tests."
+      "format": "webp",
+      "purpose": "Alternate idle WebP for variant switching tests."
     },
     {
       "file": "/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat2-click.webp",
       "role": "variant_talking_and_click_image",
       "variant": "cat2",
-      "format": "gif",
-      "purpose": "Alternate talking GIF for variant switching tests."
+      "format": "webp",
+      "purpose": "Alternate talking WebP for variant switching tests."
     },
     {
       "file": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-2.webp",
       "role": "variant_drag_image",
       "variant": "cat2",
-      "format": "gif",
-      "purpose": "Alternate drag GIF for hold/drag feedback tests."
+      "format": "webp",
+      "purpose": "Alternate drag WebP for hold/drag feedback tests."
     },
     {
       "file": "/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat3.webp",
       "role": "variant_idle_image",
       "variant": "cat3",
-      "format": "gif",
-      "purpose": "Third idle GIF variant for variant switching tests."
+      "format": "webp",
+      "purpose": "Third idle WebP variant for variant switching tests."
     },
     {
       "file": "/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat3-click.webp",
       "role": "variant_talking_and_click_image",
       "variant": "cat3",
-      "format": "gif",
-      "purpose": "Third talking GIF variant for variant switching tests."
+      "format": "webp",
+      "purpose": "Third talking WebP variant for variant switching tests."
     },
     {
       "file": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-3.webp",
       "role": "variant_drag_image",
       "variant": "cat3",
-      "format": "gif",
-      "purpose": "Third drag GIF variant for hold/drag feedback tests."
+      "format": "webp",
+      "purpose": "Third drag WebP variant for hold/drag feedback tests."
     },
     {
       "file": "/static/assets/cat-resources/appearance/dev_neko/movement/cat-idle-cat4-1.gif",

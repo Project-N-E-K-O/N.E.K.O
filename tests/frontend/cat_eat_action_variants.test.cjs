@@ -58,7 +58,20 @@ function classList() {
   };
 }
 
-function harness(randomAt = () => 0) {
+function createEventedAudio() {
+  const listeners = new Map();
+  return {
+    duration: 1,
+    currentTime: 0,
+    addEventListener(type, listener) { listeners.set(type, listener); },
+    emit(type) {
+      const listener = listeners.get(type);
+      if (listener) listener();
+    },
+  };
+}
+
+function harness(randomAt = () => 0, options = {}) {
   let randomCalls = 0;
   const math = Object.create(Math);
   math.random = () => {
@@ -81,14 +94,23 @@ function harness(randomAt = () => 0) {
   const artWrites = [];
   const mirrorWrites = [];
   const durationReads = [];
+  const timers = [];
+  const results = [];
   const context = {
     Math: math,
     Date,
     Number,
     Object,
     Promise,
-    setTimeout: () => 1,
-    clearTimeout: () => {},
+    setTimeout(callback, delay) {
+      const timer = { id: timers.length + 1, callback, delay, cleared: false };
+      timers.push(timer);
+      return timer.id;
+    },
+    clearTimeout(id) {
+      const timer = timers.find((entry) => entry.id === id);
+      if (timer) timer.cleared = true;
+    },
     _NEKO_IDLE_CAT1_EAT_ASSET_SLOTS: EAT_SLOTS,
     _NEKO_IDLE_TIER_NONE: 'none',
     _NEKO_IDLE_TIER_CAT1: 'cat1',
@@ -127,13 +149,15 @@ function harness(randomAt = () => 0) {
     },
     _getNekoIdleAnimationDurationMs(url) {
       durationReads.push(url);
+      if (Number.isFinite(options.durationMs)) return Promise.resolve(options.durationMs);
       return new Promise(() => {});
     },
-    _playNekoIdleSound: () => null,
+    _playNekoIdleSound: () => options.audio || null,
+    _getNekoIdleAudioRemainingMs: () => 1000,
     _getNekoCatVoiceUrl: () => 'eat.mp3?v=1',
     _stopNekoIdleSoundAudio: () => {},
-    _getNekoCatMindCancelResult: () => 'interrupted',
-    _reportNekoCatMindStateActionResult: () => {},
+    _getNekoCatMindCancelResult: (reason, finished) => reason === finished ? 'done' : 'interrupted',
+    _reportNekoCatMindStateActionResult: (_state, result, detail) => results.push({ result, detail }),
     _syncNekoIdleCat1AmbientSoundForTier: () => {},
     _getNekoIdleReturnCurrentArtUrl: () => 'idle.gif?v=1',
     _resumeNekoIdleCat1Journey: () => {},
@@ -150,6 +174,8 @@ function harness(randomAt = () => 0) {
     artWrites,
     mirrorWrites,
     durationReads,
+    timers,
+    results,
     randomCalls: () => randomCalls,
   };
 }
@@ -207,6 +233,31 @@ test('one accepted eat run locks one variant for art, mirror, duration and activ
   assert.equal(h.mirrorWrites.at(-1).url, 'idle.gif?v=1');
   assert.equal(h.context._getNekoIdleCat1EatActionAssetUrl(h.button), '');
   assert.equal(h.button.__nekoIdleCat1EatActionState.assetUrl, '');
+});
+
+test('eat finishes only after both the selected animation and audio complete', async () => {
+  for (const firstCompletion of ['audio', 'animation']) {
+    const audio = createEventedAudio();
+    const h = harness(() => 0.5, { audio, durationMs: 5000 });
+    assert.equal(h.context._playNekoIdleCat1EatAction(h.button), true);
+    await Promise.resolve();
+    await Promise.resolve();
+    const state = h.button.__nekoIdleCat1EatActionState;
+    const animationTimer = h.timers.find((timer) => timer.id === state.timer);
+    assert.ok(animationTimer, 'animation completion timer');
+
+    if (firstCompletion === 'audio') audio.emit('ended');
+    else animationTimer.callback();
+    assert.equal(state.active, true, `${firstCompletion} alone must not finish the run`);
+    assert.equal(h.results.length, 0);
+
+    if (firstCompletion === 'audio') animationTimer.callback();
+    else audio.emit('ended');
+    assert.equal(state.active, false);
+    assert.equal(h.results.length, 1);
+    assert.equal(h.results[0].result, 'done');
+    assert.equal(h.results[0].detail.reason, 'cat1-eat-action-finished');
+  }
 });
 
 test('rejected eat requests do not consume a random selection', () => {
