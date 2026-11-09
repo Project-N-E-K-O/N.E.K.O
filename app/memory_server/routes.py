@@ -8055,6 +8055,24 @@ outbox_infra.register_outbox_handler(
 )
 
 
+async def _arender_behavior_notes(name: str, lang: str) -> str:
+    """The behavior-note block, under the user's "natural expression" switch.
+
+    A read of one small file; nothing is computed on the session-start path, and
+    a failure costs only this block.
+    """
+    from memory.behavior_notes import get_behavior_note_store
+    from utils.slop_filter import is_slop_filter_enabled
+
+    try:
+        if not await asyncio.to_thread(is_slop_filter_enabled):
+            return ""
+        return await get_behavior_note_store().aprompt_block(name, lang)
+    except Exception as e:
+        logger.warning(f"[BehaviorNotes] {name}: 提醒注入跳过: {type(e).__name__}")
+        return ""
+
+
 async def _new_dialog(
     lanlan_name: str,
     language: str | None = None,
@@ -8281,6 +8299,14 @@ async def _new_dialog(
                 result += _loc(CHAT_HOLIDAY_CONTEXT, _lang).format(holiday=holiday_name)
         except Exception as e:
             logger.debug(f"Holiday context injection skipped: {e}")
+
+        # Reminders from the weekly behavior review. In this text rather than the
+        # session prompt so that every way she starts talking reads them: a session
+        # start, a hot swap and voice as well as proactive chat. Last, after the
+        # conversation: measured on real reopenings, the same note placed before
+        # the history barely changed anything, since the history right after it
+        # shows her doing the very thing and she follows that instead.
+        result += await _arender_behavior_notes(lanlan_name, _lang)
 
         return PlainTextResponse(result)
 
