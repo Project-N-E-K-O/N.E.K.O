@@ -556,3 +556,107 @@ def test_completed_response_without_usage_still_supports_raw_contract():
     state = ResponseState()
     state.feed(event)
     assert state.raw("test").usage.total_tokens == 0
+
+
+@pytest.mark.parametrize('failure', ['timeout', 'server_error', 'always_timeout', 'denied'])
+def test_logout_retries_transient_revocation_and_always_clears_tokens(store, monkeypatch, failure):
+    calls = []
+    delays = []
+
+    def handler(req):
+        if req.method == 'GET':
+            return httpx.Response(200, json={'revocation_endpoint': auth.ISSUER + '/revoke'})
+        calls.append(parse_qs(req.content.decode()))
+        if failure == 'always_timeout' or (failure == 'timeout' and len(calls) == 1):
+            raise httpx.ReadTimeout('private-refresh-token', request=req)
+        if failure == 'denied':
+            return httpx.Response(400)
+        return httpx.Response(503 if failure == 'server_error' and len(calls) == 1 else 200)
+
+    monkeypatch.setattr(auth, 'http_client', lambda: httpx.Client(transport=httpx.MockTransport(handler)))
+    from tests.fake_clock import patch_module_clock
+    patch_module_clock(monkeypatch, auth, sleep=delays.append)
+    assert store.sign_out('issued-1') is (failure in ('timeout', 'server_error'))
+    assert len(calls) == (1 if failure == 'denied' else 2)
+    assert delays == ([] if failure == 'denied' else [0.5])
+    assert all(call['client_id'] == ['issued-1'] and call['token'] == ['test-refresh'] for call in calls)
+    assert store.status()['active'] is None
+    assert 'refresh_token' not in store.registration('issued-1')[1]
+
+
+def test_response_params_preserve_tools_formats_and_per_call_budget(store):
+    tool = {'type': 'function', 'function': {'name': 'lookup', 'parameters': {'type': 'object', 'properties': {}}}}
+    client = ChatChatGPT(model='test', credential_store=store, tools=[tool], max_completion_tokens=512)
+    try:
+        params = client._response_params('Reply with JSON', max_completion_tokens=64,
+            tool_choice={'type': 'function', 'function': {'name': 'lookup'}},
+            response_format={'type': 'json_schema', 'json_schema': {'name': 'answer', 'schema': {'type': 'object'}}})
+        assert params['tools'] == [{'type': 'function', 'strict': False, **tool['function']}]
+        assert params['tool_choice'] == {'type': 'function', 'name': 'lookup'}
+        assert params['text']['format']['type'] == 'json_schema'
+        assert params['max_output_tokens'] == 64
+        next_params = client._response_params('Reply with JSON', tools=[], response_format={'type': 'json_object'})
+        assert next_params['max_output_tokens'] == 512
+        assert 'tools' not in next_params and 'tool_choice' not in next_params
+        assert next_params['text'] == {'format': {'type': 'json_object'}}
+    finally:
+        client.close()
+
+
+@pytest.mark.asyncio
+async def test_account_mutations_reject_pending_login_and_clear_stale_login_error(store, monkeypatch):
+    import threading
+    from types import SimpleNamespace
+    from fastapi import FastAPI
+    from main_routers.config_router import chatgpt
+
+    monkeypatch.setattr(chatgpt, 'get_store', lambda: store)
+    attempt = SimpleNamespace(done=threading.Event(), status='pending', error='')
+    monkeypatch.setattr(chatgpt, '_attempt', attempt)
+    app = FastAPI()
+    app.include_router(chatgpt.router)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=('127.0.0.1', 123)),
+            base_url='http://127.0.0.1:48999', headers={'X-Neko-ChatGPT': '1'}) as client:
+        for action in ('select', 'logout', 'login'):
+            response = await client.post('/api/config/chatgpt/' + action, json={'account_id': 'issued-1'})
+            assert response.status_code == 400
+        assert store.access_token() == 'test-access'
+        attempt.done.set()
+        attempt.status = 'failed'
+        attempt.error = 'Previous login was denied'
+        response = await client.post('/api/config/chatgpt/select', json={'account_id': 'issued-1'})
+        assert response.status_code == 200
+        status = (await client.get('/api/config/chatgpt/status')).json()
+        assert status['active'] == 'issued-1'
+        assert status['login_status'] == 'idle' and status['error'] == ''
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['async', 'sync'])
+async def test_sdk_raised_stream_limit_error_is_safe_and_not_retried(store, mode):
+    from openai import AsyncOpenAI, OpenAI
+
+    calls = []
+    def handler(req):
+        calls.append(req)
+        event = {'type': 'error', 'error': {'code': 'subscription_sharing_usage_limit_exceeded', 'message': 'private upstream details'}}
+        return httpx.Response(200, headers={'content-type': 'text/event-stream'}, text='data: ' + json.dumps(event) + '\n\n')
+
+    client = ChatChatGPT(model='test', credential_store=store)
+    try:
+        if mode == 'async':
+            await client._aclient.close()
+            client._aclient = AsyncOpenAI(api_key='placeholder', max_retries=0,
+                http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+            with pytest.raises(ChatGPTResponseError, match='plan usage') as error:
+                await client.ainvoke_raw('hi')
+        else:
+            client._client.close()
+            client._client = OpenAI(api_key='placeholder', max_retries=0,
+                http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+            with pytest.raises(ChatGPTResponseError, match='plan usage') as error:
+                client.invoke_raw('hi')
+        assert 'private upstream details' not in str(error.value)
+        assert len(calls) == 1
+    finally:
+        await client.aclose()

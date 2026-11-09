@@ -229,18 +229,24 @@ class CredentialStore:
                         ):
                             raise ValueError("Invalid revocation endpoint")
                         for attempt in range(2):
-                            response = client.post(
-                                endpoint,
-                                data={
-                                    "token": account["refresh_token"],
-                                    "token_type_hint": "refresh_token",
-                                    "client_id": account["client_id"],
-                                },
-                            )
-                            confirmed = response.status_code == 200
-                            if confirmed or response.status_code < 500:
-                                break
-                            time.sleep(0.5 * (attempt + 1))
+                            try:
+                                response = client.post(
+                                    endpoint,
+                                    data={
+                                        "token": account["refresh_token"],
+                                        "token_type_hint": "refresh_token",
+                                        "client_id": account["client_id"],
+                                    },
+                                )
+                                confirmed = response.status_code == 200
+                                if confirmed or response.status_code < 500:
+                                    break
+                            except httpx.TransportError:
+                                # Keep the rotating credential until the bounded
+                                # retry finishes, including ambiguous timeouts.
+                                pass
+                            if attempt == 0:
+                                time.sleep(0.5)
                 except (httpx.HTTPError, ValueError, KeyError):
                     pass
             for key in (

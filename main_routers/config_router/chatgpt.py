@@ -89,12 +89,16 @@ async def chatgpt_login(body: AccountRequest):
 
 
 def _change_account(action, account_id):
+    global _attempt
     with _lock:
         if _attempt and not _attempt.done.is_set():
             raise ChatGPTAuthError(
                 "Complete the pending ChatGPT sign-in before changing accounts."
             )
-        return getattr(get_store(), action)(account_id)
+        result = getattr(get_store(), action)(account_id)
+        # A past failed/expired login must not mask a successful account change.
+        _attempt = None
+        return result
 
 
 @router.post("/chatgpt/select", dependencies=[Depends(local_settings)])

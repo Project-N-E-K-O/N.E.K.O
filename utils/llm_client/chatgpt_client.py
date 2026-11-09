@@ -275,11 +275,19 @@ class ChatChatGPT(ChatOpenAI):
         try:
             async for event in stream:
                 yield event
+        except Exception as exc:
+            # The SDK can raise APIError for an SSE error before yielding it.
+            self._raise_auth_or_limit(exc)
+            raise
         finally:
             await stream.close()
 
     @staticmethod
     def _raise_auth_or_limit(exc):
+        if str(getattr(exc, "code", "") or "").startswith("subscription_sharing_"):
+            raise ChatGPTResponseError(
+                "ChatGPT plan usage is unavailable or its limit was reached. Check ChatGPT Settings → Usage."
+            ) from None
         status = getattr(exc, "status_code", None) or getattr(
             getattr(exc, "response", None), "status_code", None
         )
