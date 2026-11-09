@@ -2054,7 +2054,8 @@ class TranslationService:
         try:
             config = await self.config_manager.aget_model_api_config('emotion')
 
-            if not config.get('api_key') or not config.get('model') or not config.get('base_url'):
+            if (not config.get('model') or not config.get('base_url')
+                    or (not config.get('api_key') and config.get('provider_type') != 'chatgpt')):
                 logger.warning("翻译服务：API配置不完整（缺少 api_key、model 或 base_url），无法进行翻译")
                 return None
 

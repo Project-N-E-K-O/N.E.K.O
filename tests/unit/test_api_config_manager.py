@@ -2489,3 +2489,18 @@ def test_chatgpt_slot_uses_oauth_without_borrowing_core_key(config_manager):
     assert config_manager.get_core_config()['AUDIO_API_KEY'] == 'sk-audio-only'
     from utils.api_config_loader import get_assist_api_providers_for_frontend
     assert 'chatgpt' not in {p['key'] for p in get_assist_api_providers_for_frontend()}
+
+
+@pytest.mark.parametrize('provider_type,expected_ready', [
+    ('chatgpt', True), ('openai_compatible', False),
+])
+def test_agent_readiness_accepts_oauth_without_api_key(
+    config_manager, monkeypatch, provider_type, expected_ready,
+):
+    monkeypatch.setattr(config_manager, 'get_model_api_config', lambda _: {
+        'model': 'account-selected-model', 'base_url': 'https://api.openai.com/v1',
+        'api_key': '', 'provider_type': provider_type,
+    })
+    ready, reasons = config_manager.is_agent_api_ready()
+    assert ready is expected_ready
+    assert bool(reasons) is not expected_ready

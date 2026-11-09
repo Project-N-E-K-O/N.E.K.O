@@ -2140,10 +2140,11 @@ class CoreConfigMixin:
     def is_agent_api_ready(self) -> tuple[bool, list[str]]:
         """
         Agent mode readiness check:
-        - a usable AGENT_MODEL (model/url/api_key) is required
+        - AGENT_MODEL and URL are required; API-key providers also need a key.
+          ChatGPT resolves OAuth credentials at request time, including session validation.
         - whether it is free (quota counting / frontend hints) is decided separately by
           is_agent_free() and is unrelated to this check: readiness only cares whether the
-          model/url/key trio is filled in and a request can be made. free-access is a valid
+          provider configuration is filled in. free-access is a valid
           placeholder token for the truly free agent and should pass the gate; dirty configs
           (placeholder key against a self-paid endpoint) are caught downstream by 401, not here.
         """
@@ -2154,7 +2155,7 @@ class CoreConfigMixin:
         if not (agent_api.get('base_url') or '').strip():
             reasons.append("Agent API URL 未配置")
         api_key = (agent_api.get('api_key') or '').strip()
-        if not api_key:
+        if not api_key and agent_api.get('provider_type') != 'chatgpt':
             reasons.append("Agent API Key 未配置或不可用")
         return len(reasons) == 0, reasons
 

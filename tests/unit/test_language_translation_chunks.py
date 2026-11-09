@@ -42,8 +42,11 @@ def test_translation_token_chunks_do_not_depend_on_truncated_decode(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("provider_type,api_key", [
+    ("openai_compatible", "test-key"), ("chatgpt", ""),
+])
 async def test_translation_service_llm_client_creation_is_single_flight(
-    monkeypatch,
+    monkeypatch, provider_type, api_key,
 ) -> None:
     class _ConfigManager:
         async def aget_model_api_config(self, _group, *, core_config=None):
@@ -51,7 +54,8 @@ async def test_translation_service_llm_client_creation_is_single_flight(
 
         def get_model_api_config(self, _group: str) -> dict[str, str]:
             return {
-                "api_key": "test-key",
+                "api_key": api_key,
+                "provider_type": provider_type,
                 "base_url": "https://example.invalid/v1",
                 "model": "test-model",
             }
