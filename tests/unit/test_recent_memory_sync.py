@@ -1,5 +1,6 @@
 """Recent-memory exchange must never enumerate or erase original archives."""
 
+from contextlib import closing
 from copy import deepcopy
 import hashlib
 import json
@@ -967,6 +968,109 @@ async def test_incomplete_local_file_is_neither_uploaded_nor_overwritten_by_sync
     assert path.read_text() == broken
     assert server.requests == uploads
     assert sync.state(DOMAIN.key())['base'] == base
+
+
+@pytest.mark.parametrize('broken', [b'', b'[{"type":"human","data":{"content":"cut o', b'{"not":"a list"}', b'\xff\xfe\xff'])
+def test_unreadable_reports_damaged_content_without_touching_it(devices, broken):
+    sync, path, _, _ = devices('damaged', [row('human', 'old chat')])
+    assert sync.adapter.unreadable('Role') is False
+    path.write_bytes(broken)
+    assert sync.adapter.unreadable('Role') is True
+    assert path.read_bytes() == broken
+    path.write_text(json.dumps([row('human', 'repaired')]))
+    assert sync.adapter.unreadable('Role') is False
+
+
+def test_unreadable_says_nothing_when_the_content_was_not_inspected(devices, monkeypatch):
+    from utils import recent_file
+
+    sync, path, _, _ = devices('not-inspected', [row('human', 'old chat')])
+    path.unlink()
+    assert sync.adapter.unreadable('Role') is False, 'a missing file is an empty history'
+    path.write_text('{')
+
+    def access(error):
+        def raising(*args, **kwargs):
+            raise error
+        return raising
+
+    with monkeypatch.context() as patch:
+        patch.setattr('memory.recent_sync.recent_file_access', access(recent_file.RecentFileLockTimeout('busy')))
+        assert sync.adapter.unreadable('Role') is False
+    with monkeypatch.context() as patch:
+        patch.setattr('memory.recent_sync.recent_file_access', access(recent_file.RecentFileDeletedError('gone')))
+        assert sync.adapter.unreadable('Role') is False
+    with monkeypatch.context() as patch:
+        patch.setattr(sync.adapter, 'path', access(ValueError('invalid name')))
+        assert sync.adapter.unreadable('Role') is False
+
+
+@pytest.mark.asyncio
+async def test_status_reports_a_damaged_file_and_clears_once_repaired(tmp_path, monkeypatch):
+    """The notice must not leave the block a recorded failure would: repair alone resumes sync."""
+    import httpx
+    from tests.unit.test_chat_sync_runtime import SyntheticService, setup_runtime
+
+    monkeypatch.setattr('memory.recent_sync.assert_cloudsave_writable', lambda *args, **kwargs: None)
+    path = tmp_path / 'memory' / 'Neko' / 'recent.json'
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps([row('human', 'current chat')]))
+    remote = Server()
+
+    class RecentService(SyntheticService):
+        async def request(self, request):
+            if request.url.path.endswith(('/recent-memory', '/recent-memory/view')):
+                return httpx.Response(200, json=await remote.request(request.method, request.url.path, request.content or None))
+            return await super().request(request)
+
+    service = RecentService()
+    service.owner = OWNER
+    adapter = RecentMemoryAdapter(SimpleNamespace(memory_dir=tmp_path / 'memory', project_memory_dir=tmp_path / 'memory'))
+    runtime, _, _ = setup_runtime(tmp_path, service, recent_memory_adapter=adapter)
+    code = 'recent_memory_file_unreadable'
+
+    async def diagnostics():
+        return (await runtime.status())['bindings'][0]['localMemoryDiagnostics']
+
+    try:
+        await runtime.configure('https://sync.test')
+        await runtime.enable(UID, 'Neko')
+        presence = await runtime.session_presence_provider()
+        assert await diagnostics() == []
+        await runtime._channel_pass(UID, 'pull', presence=presence)
+        uploads = list(remote.requests)
+        path.write_text('[{"cut')
+        assert await diagnostics() == [code]
+        assert path.read_text() == '[{"cut'
+        # Sync still refuses the file, and neither the refusal nor the status read records a failure.
+        with pytest.raises(ValueError):
+            await runtime._channel_pass(UID, 'pull', presence=presence)
+        assert runtime.scheduler.last_error(DOMAIN.key()) is None
+        assert remote.requests == uploads
+        # A paused role is not reported on.
+        await runtime.pause(UID)
+        assert await diagnostics() == []
+        await runtime.enable(UID, 'Neko')
+        assert await diagnostics() == [code]
+        # A role whose name cannot be resolved must not break the whole status read.
+        resolve = runtime.recent_character_name
+
+        async def failing(_uid):
+            raise OSError('synthetic characters read failure')
+
+        runtime.recent_character_name = failing
+        assert await diagnostics() == []
+        runtime.recent_character_name = resolve
+
+        path.write_text(json.dumps([row('human', 'current chat'), row('human', 'written after the repair')]))
+        assert await diagnostics() == []
+        runtime.scheduler.request_check(DOMAIN.key(), 'pull')
+        with closing(runtime.scheduler._connect()) as conn, conn:
+            conn.execute("UPDATE scheduler_tasks SET retry_at=0 WHERE domain=? AND channel='pull'", (DOMAIN.key(),))
+        result = await runtime._channel_pass(UID, 'pull', presence=presence)
+        assert result is not None and result['uploaded'] >= 1
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.asyncio

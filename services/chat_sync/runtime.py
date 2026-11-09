@@ -1134,7 +1134,8 @@ class DesktopChatSyncRuntime:
             binding["lastSyncError"] = await asyncio.to_thread(
                 self.scheduler.last_error, ChatDomain(binding["owner_id"], binding["character_uid"]).key(),
             )
-            binding["localMemoryDiagnostics"] = await asyncio.to_thread(self._local_memory_diagnostics, binding)
+            recent_name = await self._recent_diagnostic_name(binding)
+            binding["localMemoryDiagnostics"] = await asyncio.to_thread(self._local_memory_diagnostics, binding, recent_name)
             profile = await asyncio.to_thread(self.profiles.store.status, ChatDomain(binding["owner_id"], binding["character_uid"]).key())
             # Local UI polling sees only revision flags; full retained candidates
             # are returned by the explicit per-character profile controls.
@@ -1147,12 +1148,24 @@ class DesktopChatSyncRuntime:
                 "syncPendingChoices": await asyncio.to_thread(self.state.pending_choices, await asyncio.to_thread(self.writer.epoch)),
                 "syncChoices": await asyncio.to_thread(self.state.choices), "writerRecoveryRequired": False}
 
-    def _local_memory_diagnostics(self, binding):
+    async def _recent_diagnostic_name(self, binding):
+        """A role that cannot be resolved simply has no recent-file diagnostic."""
+        if not binding['enabled'] or self.recent_memory is None or self.recent_character_name is None:
+            return None
+        try:
+            return await self.recent_character_name(binding['character_uid'])
+        except (ValueError, OSError):
+            return None
+
+    def _local_memory_diagnostics(self, binding, recent_name=None):
         """Observe retained local staging without retrying or altering evidence."""
         if not binding['enabled']:
             return []
         domain = ChatDomain(binding['owner_id'], binding['character_uid']).key()
         diagnostics = self.scheduler.local_memory_diagnostics(domain)
+        # Checked live rather than through scheduler.failure, whose block would outlast a repair.
+        if recent_name is not None and self.recent_memory.adapter.unreadable(recent_name):
+            diagnostics.append('recent_memory_file_unreadable')
         try:
             if self.long_term_memory is not None and self.long_term_memory.adapter.incoming_path(binding['character_uid']).is_file():
                 diagnostics.append('long_term_memory_incoming_pending')

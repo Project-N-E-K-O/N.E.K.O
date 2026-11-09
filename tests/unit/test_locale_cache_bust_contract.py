@@ -548,7 +548,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "f65d072f02bbb3f8345d1c315abbf77e1a8c5fc0f2874ef40a58270fe55b642e"
+LOCALE_KEY_SIGNATURE = "fcee9d2bb387eeb59939d55fed555b3ef123887070c45bed19d32a88a1785ab3"
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "

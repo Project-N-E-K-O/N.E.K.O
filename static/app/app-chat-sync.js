@@ -30,6 +30,7 @@
             long_term_archive_subject_unavailable: 'errorArchiveSubject',
             recent_write_receipt_conflict: 'errorRecentWriteUnconfirmed',
             invalid_recent_write_receipt: 'errorRecentWriteUnconfirmed',
+            recent_memory_file_unreadable: 'errorRecentFileUnreadable',
             chat_sync_retry_later: 'errorRetryLater',
             chat_sync_service_rejected: 'errorServiceRejected',
             chat_sync_binding_changed: 'errorBindingChanged',

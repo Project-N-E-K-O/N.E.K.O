@@ -346,6 +346,7 @@ def test_model_flight_and_action_error_in_a_real_chromium_page():
     ('long_term_archive_subject_unavailable', 'errorArchiveSubject'),
     ('recent_write_receipt_conflict', 'errorRecentWriteUnconfirmed'),
     ('invalid_recent_write_receipt', 'errorRecentWriteUnconfirmed'),
+    ('recent_memory_file_unreadable', 'errorRecentFileUnreadable'),
     ('private token from an unknown error', 'errorUnknown'),
 ])
 def test_recovery_failure_explains_the_actual_error_and_next_step(code, key):
