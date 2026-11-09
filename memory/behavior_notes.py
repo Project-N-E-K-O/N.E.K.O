@@ -53,8 +53,17 @@ words::
       "source_end_at": <time of the newest message reviewed>,
       "notes": [{"id", "kind", "basis", "avoid", "direction", "created_at",
                  "renewed_at", "expires_at", "evidence"}],
-      "retired": [{"avoid", "direction", "outcome", "at"}]
+      "retired": [{"avoid", "direction", "outcome", "at"}],
+      "history": [{"at", "language", "model", "prompt", "sample", "source_end_at",
+                   "added", "renewed", "retired", "lapsed", "rejected", "live"}]
     }
+
+``history`` is the update record: one entry per completed review, oldest first, so
+how a note came and went can be traced after the fact. It is written here and read
+by people only, never by the prompt or the session block. Entries carry the note
+text of what was added, counts, reason codes, and the times of the cited messages,
+which point back into the local conversation store. They never carry conversation
+text, the model's free-text reasons, or the text of a rejected note.
 
 Logging: conversation and note text go to stdout only; ``logger`` records counts.
 """
@@ -62,6 +71,7 @@ Logging: conversation and note text go to stdout only; ``logger`` records counts
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -187,6 +197,11 @@ _REASON_MAX_CHARS = 200
 _FUTURE_SKEW_SECONDS = 86400.0
 # Retired notes kept on file; the prompt shows MEMORY_BEHAVIOR_REVIEW_RETIRED_SHOWN.
 _RETIRED_MAX = 24
+# Update-record entries kept on file: about half a year of weekly reviews.
+_HISTORY_MAX = 26
+# Cited message times kept per role in one entry; the gates need far fewer.
+_HISTORY_CITED_MAX = 12
+_HISTORY_MODEL_MAX_CHARS = 80
 
 # Per-line bookkeeping in the sample budget: the "[123 U] " tag and the newline.
 _LINE_OVERHEAD_TOKENS = 8
@@ -338,6 +353,8 @@ class EvidenceCount:
     messages: int = 0
     sessions: int = 0
     days: int = 0
+    # When the cited messages were said, for the update record.
+    times: tuple[float, ...] = ()
 
     def meets(self, gate: Sequence[int]) -> bool:
         return (
@@ -363,6 +380,7 @@ def _count_cited(raw: Any, lines: Mapping[int, SampleLine], role: str) -> Eviden
         messages=len(cited),
         sessions=len({line.session for line in cited.values()}),
         days=len({line.day for line in cited.values()}),
+        times=tuple(sorted(line.at for line in cited.values())),
     )
 
 
@@ -427,6 +445,8 @@ class NotePlan:
     # ``(note, outcome, reason)``.
     retired: list[tuple[dict, str, str]] = field(default_factory=list)
     rejected: Counter = field(default_factory=Counter)
+    # Note id → when the messages cited for it were said, by role.
+    cited: dict[str, dict[str, list[float]]] = field(default_factory=dict)
 
     @property
     def changes(self) -> int:
@@ -456,6 +476,7 @@ class _Judged:
     kind: str
     basis: Optional[str]
     evidence: dict[str, int]
+    cited: dict[str, list[float]]
 
 
 def _judge_evidence(
@@ -474,17 +495,21 @@ def _judge_evidence(
     user = _count_cited(action.get("user_evidence"), lines, ROLE_USER)
     reply = _count_cited(action.get("reply_evidence"), lines, ROLE_REPLY)
     evidence = _evidence_summary(user, reply)
+    cited = {
+        "user": list(user.times[:_HISTORY_CITED_MAX]),
+        "reply": list(reply.times[:_HISTORY_CITED_MAX]),
+    }
 
     def passes(basis: str) -> bool:
         gate = _gate_for(basis)
         return user.meets(gate["user"]) and reply.meets(gate["reply"])
 
     if (action.get("request") is True or held_request) and passes(BASIS_REQUEST):
-        return _Judged(KIND_STYLE, BASIS_REQUEST, evidence)
+        return _Judged(KIND_STYLE, BASIS_REQUEST, evidence, cited)
     if passes(BASIS_COMPLAINT):
-        return _Judged(KIND_STYLE, BASIS_COMPLAINT, evidence)
+        return _Judged(KIND_STYLE, BASIS_COMPLAINT, evidence, cited)
     if passes(_BASIS_DRIFT):
-        return _Judged(KIND_DRIFT, None, evidence) if has_card else REJECT_NO_CARD
+        return _Judged(KIND_DRIFT, None, evidence, cited) if has_card else REJECT_NO_CARD
     return REJECT_BELOW_GATE
 
 
@@ -563,6 +588,7 @@ def plan_note_actions(
             continue
         used.add(str(note["id"]))
         plan.renewed[str(note["id"])] = judged.evidence
+        plan.cited[str(note["id"])] = judged.cited
 
     guard = _ScriptGuard(
         [line.text for line in lines.values() if line.role == ROLE_REPLY], phrases, language,
@@ -613,6 +639,7 @@ def plan_note_actions(
             "expires_at": float(now) + MEMORY_BEHAVIOR_NOTE_TTL_SECONDS,
             "evidence": judged.evidence,
         })
+        plan.cited[f"N{next_number}"] = judged.cited
         next_number += 1
     return plan
 
@@ -626,6 +653,47 @@ def _next_note_number(notes: Sequence[Mapping[str, Any]]) -> int:
     return highest + 1
 
 
+def _history_entry(
+    plan: NotePlan,
+    *,
+    live: Sequence[Mapping[str, Any]],
+    lapsed: Sequence[str],
+    run: Mapping[str, Any],
+    language: str,
+    now: float,
+    source_end_at: float,
+) -> dict[str, Any]:
+    """What one completed review did. See the module docstring for what stays out."""
+    return {
+        "at": float(now),
+        "language": language,
+        **run,
+        "source_end_at": float(source_end_at),
+        "added": [
+            {
+                "id": note["id"],
+                "kind": note["kind"],
+                "basis": note["basis"],
+                "avoid": note["avoid"],
+                "direction": note["direction"],
+                "evidence": note["evidence"],
+                "cited": plan.cited.get(str(note["id"]), {}),
+            }
+            for note in plan.added
+        ],
+        "renewed": [
+            {"id": note_id, "evidence": evidence, "cited": plan.cited.get(note_id, {})}
+            for note_id, evidence in plan.renewed.items()
+        ],
+        "retired": [
+            {"id": note["id"], "outcome": outcome} for note, outcome, _reason in plan.retired
+        ],
+        "lapsed": list(lapsed),
+        "rejected": dict(plan.rejected),
+        "live": [note["id"] for note in live],
+    }
+
+
 def build_payload(
     plan: NotePlan,
     *,
@@ -634,8 +702,16 @@ def build_payload(
     language: str,
     now: float,
     source_end_at: float,
+    history: Sequence[Mapping[str, Any]] = (),
+    lapsed: Sequence[str] = (),
+    run: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
-    """The file content after a completed review."""
+    """The file content after a completed review.
+
+    ``lapsed`` names the notes on file that left without a decision: expired, or
+    written in a language this review does not speak. ``run`` is what the update
+    record says about the call itself.
+    """
     dropped = {str(item[0]["id"]) for item in plan.retired}
     kept: list[dict] = []
     for note in notes:
@@ -657,13 +733,24 @@ def build_payload(
         }
         for note, outcome, _reason in plan.retired
     ]
+    live = kept + plan.added
+    entry = _history_entry(
+        plan,
+        live=live,
+        lapsed=lapsed,
+        run=run or {},
+        language=language,
+        now=now,
+        source_end_at=source_end_at,
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "language": language,
         "reviewed_at": float(now),
         "source_end_at": float(source_end_at),
-        "notes": kept + plan.added,
+        "notes": live,
         "retired": _recent_retired([*retired, *newly_retired], now=now)[:_RETIRED_MAX],
+        "history": [*history, entry][-_HISTORY_MAX:],
     }
 
 
@@ -721,6 +808,16 @@ def _normalize_retired(raw: Any) -> Optional[Dict[str, Any]]:
     return {"avoid": avoid, "direction": direction, "outcome": outcome, "at": at}
 
 
+def _normalize_history(raw: Any) -> list[dict]:
+    """The readable entries of the update record. A damaged one costs only itself."""
+    if not isinstance(raw, list):
+        return []
+    return [
+        dict(entry) for entry in raw
+        if isinstance(entry, dict) and _as_time(entry.get("at")) is not None
+    ]
+
+
 def _normalize_payload(raw: Any) -> Optional[Dict[str, Any]]:
     """A readable payload, or None for an absent, foreign or damaged one. Never raises."""
     if not isinstance(raw, dict) or raw.get("schema_version") != SCHEMA_VERSION:
@@ -746,6 +843,7 @@ def _normalize_payload(raw: Any) -> Optional[Dict[str, Any]]:
         "source_end_at": source_end_at,
         "notes": [n for n in (_normalize_note(item) for item in raw_notes) if n is not None],
         "retired": [r for r in (_normalize_retired(item) for item in raw_retired) if r is not None],
+        "history": _normalize_history(raw.get("history")),
     }
 
 
@@ -1020,7 +1118,7 @@ async def _aread_phrases(name: str, language: str) -> list[str]:
 
 
 async def _ainvoke(config_manager, prompt: str, *, name: str):
-    """One model call: ``(actions or None, output_ran_out)``."""
+    """One model call: ``(actions or None, output_ran_out, model name)``."""
     from config import MEMORY_INTROSPECTION_OUTPUT_CAPS, MEMORY_LLM_HARD_TIMEOUT_SECONDS
     from memory.thinking_llm import ainvoke_thinking, response_hit_output_limit
     from utils.token_tracker import set_call_type
@@ -1036,7 +1134,7 @@ async def _ainvoke(config_manager, prompt: str, *, name: str):
         output_caps=MEMORY_INTROSPECTION_OUTPUT_CAPS,
     )
     actions = parse_actions(getattr(resp, 'content', '') or '')
-    return actions, response_hit_output_limit(resp, cap)
+    return actions, response_hit_output_limit(resp, cap), str(api_config.get('model') or '')
 
 
 # ── the run ─────────────────────────────────────────────────────────
@@ -1053,6 +1151,35 @@ class BehaviorReviewResult:
     # None, FAILURE_TRANSIENT or FAILURE_FINAL; see classify_model_failure.
     failure: Optional[str] = None
     failure_reason: str = ''
+
+
+def _run_record(
+    sample: ReviewSample,
+    *,
+    model: str,
+    language: str,
+    message_count: int,
+    sitting_count: int,
+) -> dict[str, Any]:
+    """The update record's account of the call: counts and identifiers, no text.
+
+    ``prompt`` fingerprints the fixed template, before anything is filled in, so a
+    later reader can tell which wording produced an entry.
+    """
+    template = get_behavior_review_prompt(language)
+    roles = Counter(line.role for line in sample.lines.values())
+    return {
+        "model": model[:_HISTORY_MODEL_MAX_CHARS],
+        "prompt": hashlib.sha256(template.encode("utf-8")).hexdigest()[:12],
+        "sample": {
+            "messages": message_count,
+            "sittings": sitting_count,
+            "lines": len(sample.lines),
+            "user_lines": roles[ROLE_USER],
+            "reply_lines": roles[ROLE_REPLY],
+            "from": min((line.at for line in sample.lines.values()), default=None),
+        },
+    }
 
 
 def _print_plan(name: str, plan: NotePlan, language: str) -> None:
@@ -1134,7 +1261,7 @@ async def arun_behavior_review(
         language=language,
     )
     try:
-        raw_actions, ran_out = await _ainvoke(config_manager, prompt, name=name)
+        raw_actions, ran_out, model = await _ainvoke(config_manager, prompt, name=name)
     except Exception as exc:  # noqa: BLE001 — classified; the caller schedules the retry
         result.failure = classify_model_failure(exc)
         result.failure_reason = type(exc).__name__
@@ -1161,6 +1288,7 @@ async def arun_behavior_review(
         now=ts,
     )
     result.rejected.update(plan.rejected)
+    in_force = {note["id"] for note in notes}
     payload = build_payload(
         plan,
         notes=notes,
@@ -1168,6 +1296,18 @@ async def arun_behavior_review(
         language=language,
         now=ts,
         source_end_at=newest_at,
+        history=stored["history"] if stored is not None else (),
+        lapsed=[
+            note["id"] for note in (stored["notes"] if stored is not None else ())
+            if note["id"] not in in_force
+        ],
+        run=_run_record(
+            sample,
+            model=model,
+            language=language,
+            message_count=len(messages),
+            sitting_count=sitting_count,
+        ),
     )
     if not await store.awrite(name, payload):
         # Fenced by a rename / delete, or the disk refused: nothing took effect.

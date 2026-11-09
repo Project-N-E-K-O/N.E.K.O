@@ -1688,3 +1688,268 @@ def test_the_tick_goes_through_the_registered_loop():
 def test_stored_paths_use_the_character_directory(tmp_path):
     store = _store(tmp_path)
     assert store._file_path(NAME) == os.path.join(str(tmp_path), NAME, BEHAVIOR_NOTES_FILENAME)
+
+
+# ── the update record ───────────────────────────────────────────────
+
+
+def _evidence_for(prompt):
+    return {"user_evidence": _user_numbers(prompt, 3), "reply_evidence": _reply_numbers(prompt, 3)}
+
+
+def _new_talk(day: int):
+    """Messages that end after the previous review, so the next one is not skipped."""
+    return [
+        *_enough_messages(),
+        ReviewMessage(datetime.fromtimestamp(_NOW) + timedelta(days=day), _U, f"第{day}天的新话"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_record_follows_a_note_from_add_to_renewal_to_retirement(tmp_path):
+    env = _env(tmp_path)
+    await _review(env, _Answering(_good_add))
+    history = env.store.read(NAME)["history"]
+    assert len(history) == 1
+    first = history[0]
+    assert first["at"] == _NOW and first["language"] == "zh-CN" and first["model"] == "fake"
+    assert first["source_end_at"] == _enough_messages()[-1].at.timestamp()
+    added = first["added"][0]
+    assert added["id"] == "N1" and added["kind"] == "style" and added["basis"] == "complaint"
+    assert added["avoid"] == _GOOD_TEXT["avoid"] and added["direction"] == _GOOD_TEXT["direction"]
+    assert added["evidence"]["user_messages"] == 3 and added["evidence"]["replies"] == 3
+    assert first["live"] == ["N1"] and first["renewed"] == [] and first["retired"] == []
+    assert first["lapsed"] == [] and first["rejected"] == {}
+
+    keep = _Answering(lambda prompt: [{"action": "keep", "id": "N1", **_evidence_for(prompt)}])
+    await _review(env, keep, _new_talk(1), now=_NOW + 2 * 86400)
+    second = env.store.read(NAME)["history"][-1]
+    assert second["added"] == [] and second["live"] == ["N1"]
+    assert [item["id"] for item in second["renewed"]] == ["N1"]
+    assert second["renewed"][0]["evidence"]["user_messages"] == 3
+    assert second["renewed"][0]["cited"]["user"], "延期也要留下这次引用的消息时间"
+
+    retire = [{"action": "retire", "id": "N1", "outcome": "stale", "reason": "不再适用"}]
+    await _review(env, json.dumps(retire, ensure_ascii=False), _new_talk(3), now=_NOW + 4 * 86400)
+    stored = env.store.read(NAME)
+    third = stored["history"][-1]
+    assert third["retired"] == [{"id": "N1", "outcome": "stale"}] and third["live"] == []
+    assert third["lapsed"] == [], "撤掉是一次决定，不算自然过期"
+    assert len(stored["history"]) == 3, "新记录接在旧记录后面，不覆盖"
+    assert [entry["at"] for entry in stored["history"]] == [_NOW, _NOW + 2 * 86400, _NOW + 4 * 86400]
+
+
+@pytest.mark.asyncio
+async def test_the_record_says_what_the_run_worked_from(tmp_path):
+    env = _env(tmp_path)
+    base = _enough_messages()
+    # One extra reply, so a mix-up between the two counts shows.
+    messages = [*base, ReviewMessage(base[-1].at + timedelta(minutes=1), _A, "多出来的一句回复")]
+    fake = _Answering(_good_add)
+    await _review(env, fake, messages)
+    entry = env.store.read(NAME)["history"][0]
+    sample = entry["sample"]
+    assert sample["reply_lines"] == sample["user_lines"] + 1
+    assert sample["messages"] == len(messages)
+    assert sample["sittings"] == MEMORY_BEHAVIOR_REVIEW_MIN_SESSIONS + 3
+    shown_user = len(re.findall(r"\[\d+ U\]", fake.prompts[0]))
+    shown_reply = len(re.findall(r"\[\d+ A\]", fake.prompts[0]))
+    assert sample["user_lines"] == shown_user and sample["reply_lines"] == shown_reply
+    assert sample["lines"] == shown_user + shown_reply
+    assert sample["from"] == messages[0].at.timestamp()
+
+
+@pytest.mark.asyncio
+async def test_the_prompt_fingerprint_changes_with_the_wording_and_nothing_else(tmp_path):
+    first, second = _env(tmp_path / "a"), _env(tmp_path / "b")
+    await _review(first, _Answering(_good_add))
+    other_talk = _messages(*[_chat(f"别的{i}", 3) for i in range(6)], start=datetime.fromtimestamp(_NOW) - timedelta(days=7), gap_hours=24)
+    await _review(second, "[]", other_talk)
+    print_a = first.store.read(NAME)["history"][0]["prompt"]
+    assert re.fullmatch(r"[0-9a-f]{12}", print_a)
+    assert second.store.read(NAME)["history"][0]["prompt"] == print_a, "对话不同、模板相同时指纹必须相同"
+
+    third = _env(tmp_path / "c")
+    with patch.object(bn, "get_behavior_review_prompt", return_value="改过的模板 {SAMPLE}"):
+        await _review(third, "[]")
+    assert third.store.read(NAME)["history"][0]["prompt"] != print_a
+
+
+@pytest.mark.asyncio
+async def test_the_cited_times_point_at_messages_of_the_right_speaker(tmp_path):
+    env = _env(tmp_path)
+    messages = _enough_messages()
+
+    def cited_backwards(prompt):
+        action = _good_add(prompt)[0]
+        return [{
+            **action,
+            "user_evidence": action["user_evidence"][::-1],
+            "reply_evidence": action["reply_evidence"][::-1],
+        }]
+
+    await _review(env, _Answering(cited_backwards), messages)
+    cited = env.store.read(NAME)["history"][0]["added"][0]["cited"]
+    user_times = {message.at.timestamp() for message in messages if message.role == _U}
+    reply_times = {message.at.timestamp() for message in messages if message.role == _A}
+    assert len(cited["user"]) == 3 and set(cited["user"]) <= user_times
+    assert len(cited["reply"]) == 3 and set(cited["reply"]) <= reply_times
+    assert cited["user"] == sorted(cited["user"]), "写乱序的行号也按时间存"
+
+
+def test_the_record_keeps_a_model_name_short():
+    sample = bn.build_review_sample(_enough_messages())
+    record = bn._run_record(
+        sample, model="m" * 500, language="zh-CN", message_count=1, sitting_count=1,
+    )
+    assert record["model"] == "m" * bn._HISTORY_MODEL_MAX_CHARS
+
+
+def test_a_long_citation_list_stays_bounded():
+    lines = {
+        number: _line(number, _U if number % 2 else _A, number % 5, number % 5)
+        for number in range(1, 200)
+    }
+    plan = _plan(_complaint(
+        user_evidence=[n for n in lines if n % 2], reply_evidence=[n for n in lines if not n % 2],
+    ), lines=lines)
+    cited = plan.cited[plan.added[0]["id"]]
+    assert len(cited["user"]) == bn._HISTORY_CITED_MAX
+    assert len(cited["reply"]) == bn._HISTORY_CITED_MAX
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_kept_nothing_is_still_recorded(tmp_path):
+    env = _env(tmp_path)
+    await _review(env, json.dumps([{"action": "add", **_GOOD_TEXT, "user_evidence": [1]}], ensure_ascii=False))
+    entry = env.store.read(NAME)["history"][0]
+    assert entry["added"] == [] and entry["live"] == []
+    assert entry["rejected"] == {bn.REJECT_BELOW_GATE: 1}, "没留下提醒时要能看出是被什么挡掉的"
+
+
+@pytest.mark.asyncio
+async def test_a_note_that_expired_is_recorded_as_lapsed(tmp_path):
+    env = _env(tmp_path)
+    expired = _note("N7", renewed_at=_NOW - MEMORY_BEHAVIOR_NOTE_TTL_SECONDS - 1)
+    held = _note("N8", avoid="另一条")
+    _save(env.store, _payload([expired, held], source_end_at=_NOW - 30 * 86400))
+    await _review(env, "[]")
+    entry = env.store.read(NAME)["history"][-1]
+    assert entry["lapsed"] == ["N7"] and entry["live"] == ["N8"]
+
+
+@pytest.mark.asyncio
+async def test_the_record_survives_a_language_change(tmp_path):
+    env = _env(tmp_path)
+    await _review(env, _Answering(_good_add))
+    await _review(env, "[]", language="en", now=_NOW + 3600)
+    stored = env.store.read(NAME)
+    assert [entry["language"] for entry in stored["history"]] == ["zh-CN", "en"]
+    assert stored["history"][-1]["lapsed"] == ["N1"], "换语言丢掉的提醒也要有记录"
+    assert stored["notes"] == []
+
+
+@pytest.mark.asyncio
+async def test_only_a_completed_review_leaves_an_entry(tmp_path):
+    env = _env(tmp_path)
+    await _review(env, _Answering(_good_add))
+    await _review(env, "[]", _enough_messages(), now=_NOW + 3600)
+    assert len(env.store.read(NAME)["history"]) == 1, "没有新对话不算一次"
+    await _review(env, ConnectionError("down"), _new_talk(1), now=_NOW + 2 * 86400)
+    await _review(env, "这不是 JSON", _new_talk(1), now=_NOW + 2 * 86400)
+    assert len(env.store.read(NAME)["history"]) == 1, "失败的调用留在日志和重试状态里"
+
+
+@pytest.mark.asyncio
+async def test_the_record_keeps_only_the_newest_entries(tmp_path):
+    env = _env(tmp_path)
+    old = [{"at": _NOW - 1000 + index, "added": []} for index in range(bn._HISTORY_MAX)]
+    _save(env.store, _payload([], source_end_at=_NOW - 30 * 86400, history=old))
+    await _review(env, "[]")
+    history = env.store.read(NAME)["history"]
+    assert len(history) == bn._HISTORY_MAX
+    assert history[0]["at"] == _NOW - 999 and history[-1]["at"] == _NOW
+
+
+@pytest.mark.parametrize("damaged", ["不是列表", 3, None, {"at": 1}])
+def test_a_damaged_record_never_costs_the_notes(tmp_path, damaged):
+    store = _store(tmp_path)
+    _save(store, _payload([_note()], history=damaged))
+    stored = store.read(NAME)
+    assert stored["history"] == []
+    assert [note["id"] for note in stored["notes"]] == ["N1"]
+
+
+def test_a_damaged_entry_costs_only_itself(tmp_path):
+    store = _store(tmp_path)
+    _save(store, _payload([_note()], history=["坏的", {"at": "坏的"}, {"added": []}, {"at": _NOW}]))
+    assert store.read(NAME)["history"] == [{"at": _NOW}]
+
+
+def test_a_file_without_a_record_still_reads(tmp_path):
+    store = _store(tmp_path)
+    _save(store, _payload([_note()]))
+    assert store.read(NAME)["history"] == []
+    assert "说话太绕弯" in store.prompt_block(NAME, "zh", now=_NOW)
+
+
+@pytest.mark.asyncio
+async def test_no_conversation_text_reaches_the_record(tmp_path):
+    env = _env(tmp_path)
+    messages = _messages(
+        *[_chat(f"私密对话标记{i}", 3) for i in range(6)],
+        start=datetime.fromtimestamp(_NOW) - timedelta(days=7),
+        gap_hours=24,
+    )
+    env.reflections.aload_reflections = AsyncMock(return_value=[
+        {"text": "私密印象标记", "user_confirm_count": 1, "status": "confirmed"},
+    ])
+
+    def answer(prompt):
+        return [
+            {**_good_add(prompt)[0], "reason": "私密理由标记"},
+            {"action": "add", "avoid": "私密被拒文字标记", "direction": "私密被拒方向标记", "user_evidence": [1]},
+        ]
+
+    fake = _Answering(answer)
+    await _review(env, fake, messages)
+    for present in ("私密对话标记", "私密印象标记", "嘴硬但心软", "阿明"):
+        assert present in fake.prompts[0], f"前提：模型确实看到了 {present}"
+    raw = json.dumps(env.store.read(NAME)["history"], ensure_ascii=False)
+    assert _GOOD_TEXT["avoid"] in raw, "前提：留下的提醒文字在记录里"
+    for secret in ("私密对话标记", "私密印象标记", "私密理由标记", "私密被拒", "嘴硬但心软", "阿明", "你是小天"):
+        assert secret not in raw, secret
+
+
+@pytest.mark.asyncio
+async def test_a_retirement_reason_stays_out_of_the_record(tmp_path):
+    env = _env(tmp_path)
+    await _review(env, _Answering(_good_add))
+    retire = [{"action": "retire", "id": "N1", "outcome": "stale", "reason": "用户说过私密理由标记"}]
+    await _review(env, json.dumps(retire, ensure_ascii=False), _new_talk(1), now=_NOW + 2 * 86400)
+    assert "私密理由标记" not in json.dumps(env.store.read(NAME)["history"], ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_the_record_reaches_neither_the_session_nor_the_next_review(tmp_path):
+    # A note that lapsed lives on only in the record. If the record were read back,
+    # a note could outlive its expiry and feed the very habit it was written from.
+    env = _env(tmp_path)
+    await _review(env, _Answering(lambda prompt: [{
+        "action": "add", "avoid": "已过期提醒的专属文字", "direction": "已过期方向的专属文字",
+        **_evidence_for(prompt),
+    }]))
+    assert "已过期提醒的专属文字" in env.store.prompt_block(NAME, "zh", now=_NOW), "前提：生效时读得到"
+
+    later = _NOW + MEMORY_BEHAVIOR_NOTE_TTL_SECONDS + 3600
+    assert env.store.prompt_block(NAME, "zh", now=later) == ""
+    newer = [
+        *_enough_messages(),
+        ReviewMessage(datetime.fromtimestamp(later) - timedelta(hours=1), _U, "过了很久的新话"),
+    ]
+    _result, fake = await _review(env, "[]", newer, now=later)
+    assert fake.prompts and "已过期提醒的专属文字" not in fake.prompts[0]
+    stored = env.store.read(NAME)
+    assert stored["history"][-1]["lapsed"] == ["N1"]
+    assert "已过期提醒的专属文字" in json.dumps(stored["history"], ensure_ascii=False)
+    assert env.store.prompt_block(NAME, "zh", now=later) == ""
