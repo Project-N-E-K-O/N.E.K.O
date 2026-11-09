@@ -1,6 +1,7 @@
 """Retired built-in media URLs keep resolving after the cat-resources move."""
 from __future__ import annotations
 
+import mimetypes
 import re
 from pathlib import Path
 
@@ -36,6 +37,10 @@ def client():
     app = FastAPI()
     app.mount("/static", _AliasStaticFiles(directory=str(STATIC_DIR)), name="static")
     return TestClient(app)
+
+
+def test_webp_mime_type_is_registered_independently_of_the_host_os():
+    assert mimetypes.guess_type("cat-idle-cat1.webp")[0] == "image/webp"
 
 
 def test_aliases_only_cover_removed_files_and_point_at_existing_ones():

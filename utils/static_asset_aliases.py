@@ -10,6 +10,13 @@ of answering 404.
 """
 from __future__ import annotations
 
+import mimetypes
+
+# Windows' system MIME registry does not consistently know animated WebP.
+# StaticFiles delegates Content-Type detection to this table, so register the
+# standard type explicitly for both canonical and aliased cat asset URLs.
+mimetypes.add_type("image/webp", ".webp")
+
 _CAT_APPEARANCE = "assets/cat-resources/appearance/dev_neko"
 _CAT_VOICE = "assets/cat-resources/voice/dev_neko"
 
