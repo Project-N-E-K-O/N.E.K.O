@@ -64,6 +64,12 @@ def create_chat_llm(
             means "auto-resolve from model name"; ``None`` means "no extra_body".
         **kw: Forwarded to the selected client class.
     """
+    if provider_type == "chatgpt":
+        from .chatgpt_client import ChatChatGPT
+        return ChatChatGPT(model=model, base_url=base_url, streaming=streaming,
+                          max_completion_tokens=max_completion_tokens, max_tokens=max_tokens,
+                          timeout=timeout, tools=tools, tool_choice=tool_choice, **kw)
+
     from config.providers import get_cache_kwargs, get_extra_body
 
     is_anthropic = _is_anthropic_endpoint(base_url, provider_type)

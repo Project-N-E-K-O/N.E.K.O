@@ -98,6 +98,10 @@ DEFAULT_CORE_API_PROFILES = {
 }
 
 DEFAULT_ASSIST_API_PROFILES = {
+    "chatgpt": {
+        "OPENROUTER_URL": "https://api.openai.com/v1",
+        "PROVIDER_TYPE": "chatgpt",
+    },
     'free': {
         'OPENROUTER_URL': "https://www.lanlan.tech/text/v1",
         'CONVERSATION_MODEL': "free-model",

@@ -191,6 +191,8 @@ def _assist_only_key_fields() -> list[tuple[str, str]]:
         set(catalog['assist_api_providers'])
         - set(catalog['core_api_providers'])
         - {'vllm_omni'}
+        - {key for key, profile in catalog['assist_api_providers'].items()
+           if profile.get('auth_type') == 'oauth'}
     )
     registry = catalog['api_key_registry']
     return [(p, registry[p]['config_field']) for p in sorted(providers)]
@@ -821,3 +823,31 @@ def test_disabled_image_fields_require_strings(config_manager, core_config_route
     assert result["success"] is False
     assert result["error"] == "Image settings must be strings"
     assert config_manager.load_json_config("core_config.json", {}) == original
+
+
+@pytest.mark.unit
+def test_chatgpt_save_pins_origin_and_discards_api_key(config_manager, core_config_router):
+    _write_core_config(config_manager, {'coreApi': 'qwen', 'coreApiKey': 'audio-key', 'assistApi': 'qwen'})
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest({
+        'enableCustomApi': True, 'conversationModelProvider': 'chatgpt',
+        'conversationModelId': 'account-model', 'conversationModelUrl': 'https://attacker.test',
+        'conversationModelApiKey': 'old-api-key',
+    })))
+    assert result['success'] is True
+    saved = config_manager.load_json_config('core_config.json', {})
+    assert saved['conversationModelUrl'] == 'https://api.openai.com/v1'
+    assert saved['conversationModelApiKey'] == ''
+    assert saved['coreApiKey'] == 'audio-key'
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('slot,model', [('conversation', ''), ('tts', 'model'), ('omni', 'model'), ('image', 'model')])
+def test_chatgpt_save_rejects_missing_model_and_unsupported_slots(config_manager, core_config_router, slot, model):
+    original = {'coreApi': 'qwen', 'coreApiKey': 'audio-key', 'assistApi': 'qwen'}
+    _write_core_config(config_manager, original)
+    result = asyncio.run(core_config_router.update_core_config(_FakeRequest({
+        'enableCustomApi': True, f'{slot}ModelProvider': 'chatgpt',
+        f'{slot}ModelId': model, f'{slot}ModelUrl': 'https://api.openai.com/v1',
+    })))
+    assert result['success'] is False
+    assert config_manager.load_json_config('core_config.json', {}) == original

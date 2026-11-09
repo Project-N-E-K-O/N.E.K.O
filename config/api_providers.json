@@ -102,6 +102,16 @@
       "vision_model": "qwen3.8-omni-flash",
       "agent_model": "qwen3.8-flash"
     },
+    "chatgpt": {
+      "key": "chatgpt",
+      "name": "ChatGPT (subscription)",
+      "description": "Continue with ChatGPT in API settings; uses your ChatGPT plan",
+      "provider_type": "chatgpt",
+      "auth_type": "oauth",
+      "model_slot_only": true,
+      "supported_model_types": ["conversation", "summary", "gameMain", "gameSummary", "correction", "emotion", "vision", "agent"],
+      "openrouter_url": "https://api.openai.com/v1"
+    },
     "openai": {
       "key": "openai",
       "name": "OpenAI",

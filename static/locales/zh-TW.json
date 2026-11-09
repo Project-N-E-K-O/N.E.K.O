@@ -1303,6 +1303,23 @@
         "connectionError": "連接錯誤"
     },
     "api": {
+    "chatgpt": {
+      "description": "使用 ChatGPT 訂閱額度進行文字對話和圖像理解。語音辨識與語音合成繼續使用各自的服務商。",
+      "account": "ChatGPT 帳號",
+      "login": "Continue with ChatGPT",
+      "add": "新增帳號",
+      "logout": "登出所選帳號",
+      "instructions": "登入後，在進階選項中啟用自訂 API，將模型服務商設為 ChatGPT (subscription)，從模型清單選擇模型，然後儲存設定。",
+      "usage": "查看 ChatGPT 用量與權限",
+      "managed": "透過 ChatGPT 登入管理",
+      "noAccount": "尚未新增帳號",
+      "pending": "請在瀏覽器中完成登入。",
+      "expired": "登入已逾時，請重試。",
+      "connected": "已連接 ChatGPT，請選擇模型並儲存設定。",
+      "signedOut": "尚未連接 ChatGPT。",
+      "failed": "ChatGPT 連線失敗。",
+      "revocationUnconfirmed": "已在本機登出。遠端撤銷未確認，請在 ChatGPT 設定中中斷此應用程式。"
+    },
     "imageModelConfig": "圖片生成",
     "imageModelExamplePlaceholder": "例如 gpt-image-2、wanx2.1-t2i-turbo",
     "imageModelApiKeyPlaceholder": "自訂端點金鑰；預設服務商使用 API 管理簿金鑰",

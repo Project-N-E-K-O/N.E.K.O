@@ -1303,6 +1303,23 @@
         "connectionError": "Error de conexión"
     },
     "api": {
+    "chatgpt": {
+      "description": "Usa tu plan de ChatGPT para conversaciones de texto y comprensión de imágenes. El reconocimiento y la síntesis de voz conservan sus propios proveedores.",
+      "account": "Cuenta de ChatGPT",
+      "login": "Continue with ChatGPT",
+      "add": "Añadir cuenta",
+      "logout": "Cerrar sesión de la cuenta seleccionada",
+      "instructions": "Tras iniciar sesión, activa la API personalizada en los ajustes avanzados. Elige ChatGPT (subscription) como proveedor, selecciona un modelo disponible y guarda los ajustes.",
+      "usage": "Uso y permisos de ChatGPT",
+      "managed": "Gestionado mediante el inicio de sesión de ChatGPT",
+      "noAccount": "No hay cuentas guardadas",
+      "pending": "Completa el inicio de sesión en el navegador.",
+      "expired": "El inicio de sesión ha caducado. Inténtalo de nuevo.",
+      "connected": "ChatGPT conectado. Elige un modelo y guarda los ajustes.",
+      "signedOut": "ChatGPT no está conectado.",
+      "failed": "No se pudo conectar con ChatGPT.",
+      "revocationUnconfirmed": "Sesión local cerrada. Desconecta la aplicación en los ajustes de ChatGPT para confirmar la revocación remota."
+    },
     "imageModelConfig": "Generación de imágenes",
     "imageModelExamplePlaceholder": "Ej.: gpt-image-2, wanx2.1-t2i-turbo",
     "imageModelApiKeyPlaceholder": "Clave del endpoint personalizado; los proveedores usan el registro de claves API",

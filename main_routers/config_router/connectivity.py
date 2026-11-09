@@ -559,7 +559,7 @@ def _looks_like_anthropic_messages_url(url: str | None) -> bool:
 
 def _normalize_provider_type(profile: dict[str, Any] | None, url: str | None = None) -> str:
     provider_type = str((profile or {}).get("provider_type") or "openai_compatible").strip().lower()
-    if provider_type not in ("openai_compatible", "anthropic", "websocket", "tts"):
+    if provider_type not in ("openai_compatible", "anthropic", "websocket", "tts", "chatgpt"):
         return "openai_compatible"
     if provider_type == "openai_compatible" and _looks_like_anthropic_messages_url(url):
         return "anthropic"
@@ -609,6 +609,18 @@ async def _test_connectivity_candidates(
                 )
             else:
                 result = {"success": False, "error": "不支持的 TTS 探测协议", "error_code": "unsupported"}
+        elif provider_type == "chatgpt":
+            from config import OPENAI_CONNECTIVITY_TEST_MAX_TOKENS
+            from utils.llm_client.chatgpt_client import ChatChatGPT
+            client = await asyncio.to_thread(ChatChatGPT, base_url=candidate_url, model=model,
+                                 max_completion_tokens=OPENAI_CONNECTIVITY_TEST_MAX_TOKENS, timeout=15)
+            try:
+                await client.ainvoke("Reply OK.")
+                result = {"success": True, "message": "ChatGPT connected"}
+            except Exception:
+                result = {"success": False, "error": "ChatGPT request failed. Check sign-in, model and plan usage.", "error_code": "chatgpt_unavailable"}
+            finally:
+                await client.aclose()
         elif provider_type == "anthropic":
             result = await _test_anthropic(candidate_url, api_key, model=model, is_free=is_free)
         else:

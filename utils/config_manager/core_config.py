@@ -1869,7 +1869,7 @@ class CoreConfigMixin:
 
         def _normalize_provider_type_value(value: object) -> str:
             provider_type = str(value or 'openai_compatible').strip().lower()
-            if provider_type not in ('openai_compatible', 'anthropic', 'websocket'):
+            if provider_type not in ('openai_compatible', 'anthropic', 'websocket', 'chatgpt'):
                 return 'openai_compatible'
             return provider_type
 

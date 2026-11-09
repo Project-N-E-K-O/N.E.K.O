@@ -1267,6 +1267,8 @@ function getTtsProviderMeta(pk) {
 function isProviderCapableForModelType(providerKey, modelType) {
     const pk = String(providerKey || '').trim();
     if (!pk || pk === 'custom' || pk.startsWith('follow_')) return true;
+    const supportedTypes = getProviderInfo(pk).supported_model_types;
+    if (Array.isArray(supportedTypes) && !supportedTypes.includes(modelType)) return false;
 
     if (modelType === 'omni') {
         // 实时全模态槽不提供任何具名服务商，只留「跟随」与「自定义」。
@@ -1331,7 +1333,7 @@ function getProviderType(providerKey, fallback = 'openai_compatible') {
     const providerType = String(profile.provider_type || profile.providerType || fallback || 'openai_compatible')
         .trim()
         .toLowerCase();
-    return ['openai_compatible', 'anthropic', 'websocket', 'tts'].includes(providerType)
+    return ['openai_compatible', 'anthropic', 'websocket', 'tts', 'chatgpt'].includes(providerType)
         ? providerType
         : 'openai_compatible';
 }
@@ -1694,6 +1696,11 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
         }
         const bookKey = getEffectiveAssistKey(provider, null, { useTokenPlan: false });
         setKeyReadonly(keyInput, bookKey, provider);
+        if (pInfo.auth_type === 'oauth' && keyInput) {
+            setMaskedInput(keyInput, '');
+            keyInput.placeholder = window.t ? window.t('api.chatgpt.managed') : 'Managed by ChatGPT sign-in';
+            removeKeyBookLink(keyInput);
+        }
     }
     if (modelType === 'tts') {
         updateTtsProviderFieldVisibility(provider);
