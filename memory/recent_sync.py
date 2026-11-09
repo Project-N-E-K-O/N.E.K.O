@@ -151,7 +151,9 @@ class RecentMemoryAdapter:
                 if index not in owned:
                     projected.insert(min(index, len(projected)), row)
             write_recent_payload_unlocked(resolved, projected, receipt=receipt)
+            # Only a replacement verified against its staged hash may advance the sync base:
+            # a base holding rows the file lacks would upload them as user deletions.
+            if receipt is not None and not read_recent_write_receipt_unlocked(resolved, *receipt):
+                return False
             set_recent_pending_unlocked(resolved, [])
-            if receipt is not None:
-                read_recent_write_receipt_unlocked(resolved, *receipt)
             return True

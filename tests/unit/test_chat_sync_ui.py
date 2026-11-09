@@ -533,6 +533,8 @@ def test_recent_display_does_not_start_while_the_character_is_switching():
     ('chat_sync_retry_later', 'errorRetryLater'),
     ('chat_sync_session_changed', 'errorSessionChanged'),
     ('long_term_archive_subject_unavailable', 'errorArchiveSubject'),
+    ('recent_write_receipt_conflict', 'errorRecentWriteUnconfirmed'),
+    ('invalid_recent_write_receipt', 'errorRecentWriteUnconfirmed'),
     ('private token from an unknown error', 'errorUnknown'),
 ])
 def test_recovery_failure_explains_the_actual_error_and_next_step(code, key):

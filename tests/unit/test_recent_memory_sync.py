@@ -870,6 +870,167 @@ def test_uncertain_native_receipt_blocks_sync_but_allows_a_local_save(tmp_path):
             recent_file.read_recent_write_receipt_unlocked(resolved, *receipt)
 
 
+def test_failed_replacement_keeps_the_old_file_and_a_clean_retry(devices, monkeypatch):
+    """A write interrupted after the temp file is complete still leaves only the old content."""
+    sync, path, _, _ = devices('interrupted', [row('human', 'old chat')])
+    local = sync.adapter.read('Role')
+    before = path.read_bytes()
+    receipt = ('domain', '1' * 32)
+
+    def busy(*args):
+        raise OSError('synthetic replace failure')
+
+    with monkeypatch.context() as patch:
+        patch.setattr('utils.file_utils._replace_with_busy_retry', busy)
+        with pytest.raises(OSError, match='synthetic replace failure'):
+            sync.adapter.apply('Role', [entry('c', 'download')], local['fingerprint'], receipt=receipt)
+    assert path.read_bytes() == before
+    assert sorted(item.name for item in path.parent.iterdir() if item.name.endswith('.tmp')) == []
+    assert sync.adapter.applied('Role', receipt) is False
+    assert sync.adapter.apply('Role', [entry('c', 'download')], local['fingerprint'], receipt=('domain', '2' * 32)) is True
+    assert sync.adapter.read('Role')['entries'][0]['text'] == 'download'
+
+
+@pytest.mark.asyncio
+async def test_unverified_replacement_never_advances_the_sync_base(devices, monkeypatch):
+    """Otherwise the next diff would upload the rows the file never received as deletions."""
+    from utils import recent_file
+
+    sync, path, _, _ = devices('unverified', [row('human', 'old chat')])
+    server = Server()
+    await sync.sync(DOMAIN, 'Role', server.request, commit)
+    base = sync.state(DOMAIN.key())['base']
+    uploads = list(server.requests)
+    server.rows = server.rows + [entry('c', 'from another device')]
+    before = path.read_bytes()
+    real_write = recent_file.atomic_write_json
+
+    def lost_replacement(target, payload, **kwargs):
+        if Path(target) != path:
+            real_write(target, payload, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(recent_file, 'atomic_write_json', lost_replacement)
+        result = await sync.sync(DOMAIN, 'Role', server.request, commit)
+    assert result['hasMore'] is True and result['changed'] is False
+    assert path.read_bytes() == before
+    assert sync.state(DOMAIN.key())['base'] == base
+    await sync.sync(DOMAIN, 'Role', server.request, commit)
+    assert server.requests == uploads
+    assert {item['text'] for item in sync.adapter.read('Role')['entries']} == {'old chat', 'from another device'}
+
+
+@pytest.mark.asyncio
+async def test_truncated_replacement_blocks_upload_and_keeps_the_base(devices, monkeypatch):
+    """If bytes ever land incomplete, the hash check stops the base and nothing reaches the cloud."""
+    from utils import recent_file
+
+    sync, path, _, _ = devices('truncated-write', [row('human', 'old chat')])
+    server = Server()
+    await sync.sync(DOMAIN, 'Role', server.request, commit)
+    base = sync.state(DOMAIN.key())['base']
+    uploads = list(server.requests)
+    server.rows = server.rows + [entry('c', 'from another device')]
+
+    real_write = recent_file.atomic_write_json
+
+    def truncated(target, payload, **kwargs):
+        if Path(target) != path:
+            real_write(target, payload, **kwargs)
+        else:
+            path.write_text(json.dumps(payload, **kwargs)[:10], encoding='utf-8')
+
+    with monkeypatch.context() as patch:
+        patch.setattr(recent_file, 'atomic_write_json', truncated)
+        with pytest.raises(ValueError, match='^recent_write_receipt_conflict$'):
+            await sync.sync(DOMAIN, 'Role', server.request, commit)
+    landed = path.read_bytes()
+    assert sync.state(DOMAIN.key())['base'] == base
+    with pytest.raises(ValueError, match='^recent_write_receipt_conflict$'):
+        await sync.sync(DOMAIN, 'Role', server.request, commit)
+    assert server.requests == uploads
+    assert path.read_bytes() == landed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('broken', ['', '[{"type":"human","data":{"content":"cut o'])
+async def test_incomplete_local_file_is_neither_uploaded_nor_overwritten_by_sync(devices, broken):
+    sync, path, _, _ = devices('incomplete-local', [row('human', 'old chat')])
+    server = Server()
+    await sync.sync(DOMAIN, 'Role', server.request, commit)
+    base = sync.state(DOMAIN.key())['base']
+    uploads = list(server.requests)
+    server.rows = server.rows + [entry('c', 'from another device')]
+    path.write_text(broken)
+    with pytest.raises(ValueError):
+        await sync.sync(DOMAIN, 'Role', server.request, commit)
+    assert path.read_text() == broken
+    assert server.requests == uploads
+    assert sync.state(DOMAIN.key())['base'] == base
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('broken_sidecar, code', [
+    (False, 'recent_write_receipt_conflict'),
+    (True, 'invalid_recent_write_receipt'),
+])
+async def test_unconfirmed_write_stays_blocked_and_reports_its_real_cause(tmp_path, monkeypatch, broken_sidecar, code):
+    """Reporting is the chosen response: neither re-enabling nor a local save releases the block."""
+    import httpx
+    from contextlib import closing
+    from services.chat_sync.writer import store_connection
+    from tests.unit.test_chat_sync_runtime import SyntheticService, setup_runtime
+    from utils import recent_file
+
+    monkeypatch.setattr('memory.recent_sync.assert_cloudsave_writable', lambda *args, **kwargs: None)
+    path = tmp_path / 'memory' / 'Neko' / 'recent.json'
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps([row('human', 'current chat')]))
+    remote = Server()
+
+    class RecentService(SyntheticService):
+        recent_requests = 0
+
+        async def request(self, request):
+            if request.url.path.endswith(('/recent-memory', '/recent-memory/view')):
+                self.recent_requests += 1
+                return httpx.Response(200, json=await remote.request(request.method, request.url.path, request.content or None))
+            return await super().request(request)
+
+    service = RecentService()
+    service.owner = OWNER
+    adapter = RecentMemoryAdapter(SimpleNamespace(memory_dir=tmp_path / 'memory', project_memory_dir=tmp_path / 'memory'))
+    runtime, _, _ = setup_runtime(tmp_path, service, recent_memory_adapter=adapter)
+    key, token = DOMAIN.key(), '1' * 32
+    try:
+        await runtime.configure('https://sync.test')
+        await runtime.enable(UID, 'Neko')
+        presence = await runtime.session_presence_provider()
+        with recent_file.recent_file_access(path) as resolved:
+            recent_file.write_recent_payload_unlocked(resolved, [row('human', 'downloaded')], receipt=(key, token))
+        with closing(store_connection(runtime.recent_memory.path)) as conn, conn:
+            conn.execute('INSERT OR REPLACE INTO recent_memory_apply VALUES(?,?,?,?)', (key, token, '[]', 1))
+        path.write_text(json.dumps([row('human', 'restored outside the writer')]))
+        if broken_sidecar:
+            Path(recent_file.recent_sidecar_path(path, recent_file._write_receipts_filename(path))).write_text('{')
+
+        with pytest.raises(ValueError, match=f'^{code}$'):
+            await runtime._channel_pass(UID, 'pull', presence=presence)
+        assert runtime.scheduler.last_error(key) == code
+        status = await runtime.status()
+        assert status['bindings'][0]['lastSyncError'] == code
+        await runtime.pause(UID)
+        await runtime.enable(UID, 'Neko')
+        with pytest.raises(ValueError, match=f'^{code}$'):
+            await runtime._channel_pass(UID, 'pull', presence=presence)
+        recent_file.write_recent_payload(path, [row('human', 'normal local save still works')])
+        assert json.loads(path.read_text())[0]['data']['content'] == 'normal local save still works'
+        assert service.recent_requests == 0
+        assert remote.requests == []
+    finally:
+        await runtime.close()
+
+
 @pytest.mark.asyncio
 async def test_recovered_download_keeps_shared_ids_out_of_a_later_exclusion(devices, monkeypatch):
     sync, _, _, _ = devices('excluded-after-failure', [])

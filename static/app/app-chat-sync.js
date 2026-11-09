@@ -28,6 +28,8 @@
             long_term_memory_capacity_exceeded: 'errorLongTermCapacity',
             long_term_memory_incoming_pending: 'errorLongTermPending',
             long_term_archive_subject_unavailable: 'errorArchiveSubject',
+            recent_write_receipt_conflict: 'errorRecentWriteUnconfirmed',
+            invalid_recent_write_receipt: 'errorRecentWriteUnconfirmed',
             chat_sync_retry_later: 'errorRetryLater',
             chat_sync_service_rejected: 'errorServiceRejected',
             chat_sync_binding_changed: 'errorBindingChanged',
