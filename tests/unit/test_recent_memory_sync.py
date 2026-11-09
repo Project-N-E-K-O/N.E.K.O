@@ -381,6 +381,41 @@ def test_review_rewrite_may_match_a_row_an_omitted_index_keeps_verbatim(review_i
     assert [message.metadata for message in saved] == [original[0].metadata, original[2].metadata]
 
 
+def test_review_omitted_index_cannot_keep_a_row_an_explicit_index_rewrote(review_identity_case):
+    """The omitted copy of user-B must not shield index 0, nor inherit user-C's identity."""
+    from memory.recent import _resolve_review_sources
+    from utils.llm_client import HumanMessage, messages_to_dict
+
+    original = _identified_review_messages()
+    corrected = [HumanMessage('user-B'), HumanMessage('user-B'), HumanMessage('edited user-B')]
+    status, saved, _ = review_identity_case(original, corrected, source_indexes=[0, None, 2])
+    assert status == 'failed'
+    assert messages_to_dict(saved) == messages_to_dict(original)
+    assert _resolve_review_sources(original, corrected, [0, None, 2], strict=False) == [None, None, 2]
+
+
+def test_review_elimination_cannot_give_a_rewritten_rows_text_another_identity(review_identity_case):
+    from memory.recent import _resolve_review_sources
+    from utils.llm_client import HumanMessage, messages_to_dict
+
+    original = _identified_review_messages()[:3]
+    corrected = [HumanMessage('user-B'), HumanMessage('edited user-B')]
+    assert _resolve_review_sources(original, corrected, [None, 2], strict=True) == [None, 2]
+    status, saved, _ = review_identity_case(original, corrected, source_indexes=[None, 2])
+    assert status == 'failed'
+    assert messages_to_dict(saved) == messages_to_dict(original)
+
+
+@pytest.mark.parametrize('indexes', [[2, None, 1], None])
+def test_review_elimination_still_resolves_a_rewrite_matching_a_kept_row(indexes):
+    from memory.recent import _resolve_review_sources
+    from utils.llm_client import HumanMessage, AIMessage
+
+    original = _identified_review_messages()[:3]
+    corrected = [HumanMessage('user-B'), HumanMessage('user-B'), AIMessage('reply-A')]
+    assert _resolve_review_sources(original, corrected, indexes, strict=True) == [2, 0, 1]
+
+
 def test_review_omitted_index_of_another_role_does_not_keep_a_row():
     from memory.recent import _resolve_review_sources
     from utils.llm_client import HumanMessage, AIMessage
