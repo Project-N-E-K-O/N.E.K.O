@@ -8040,6 +8040,24 @@ outbox_infra.register_outbox_handler(
 )
 
 
+async def _arender_behavior_notes(name: str, lang: str) -> str:
+    """The behavior-note block, under the user's "natural expression" switch.
+
+    A read of one small file; nothing is computed on the session-start path, and
+    a failure costs only this block.
+    """
+    from memory.behavior_notes import get_behavior_note_store
+    from utils.slop_filter import is_slop_filter_enabled
+
+    try:
+        if not await asyncio.to_thread(is_slop_filter_enabled):
+            return ""
+        return await get_behavior_note_store().aprompt_block(name, lang)
+    except Exception as e:
+        logger.warning(f"[BehaviorNotes] {name}: 提醒注入跳过: {type(e).__name__}")
+        return ""
+
+
 async def _new_dialog(
     lanlan_name: str,
     language: str | None = None,
@@ -8213,6 +8231,12 @@ async def _new_dialog(
                 )
                 + "\n"
             )
+
+        # Reminders from the weekly behavior review. Here rather than in the
+        # session prompt so that every way she starts talking reads them: a
+        # session start, a hot swap and voice as well as proactive chat, which
+        # keeps only this text's part before the inner-thoughts sentence.
+        result += await _arender_behavior_notes(lanlan_name, _lang)
 
         # ── [Dynamic section] Inner thoughts (changes each time) ──
         result += _loc(INNER_THOUGHTS_HEADER, _lang).format(name=lanlan_name)

@@ -1231,6 +1231,39 @@ class TimeIndexedMemory:
             self.retrieve_original_by_timeframe, lanlan_name, start_time, end_time, limit_rows
         )
 
+    def retrieve_latest_original_since(self, lanlan_name, start_time, limit_rows: int) -> list:
+        """The newest ``limit_rows`` raw rows from ``start_time`` on, oldest first.
+
+        ``retrieve_original_by_timeframe`` applies its LIMIT to an ascending scan,
+        so a long window hands back its OLDEST rows. A caller that wants what was
+        said lately needs the other end. Returns ``[(timestamp, session_id,
+        message), ...]``, ``[]`` when the character has no database. A failed read
+        raises, so a caller can tell it from a character with nothing to read.
+        """
+        if limit_rows < 1:
+            raise ValueError("limit_rows must be greater than zero")
+        table_name = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
+        # Held for the whole read: see retrieve_latest_assistant_texts.
+        with self._get_engine_lock(lanlan_name):
+            if not self._ensure_engine_exists(lanlan_name, readonly=True):
+                return []
+            with self.engines[lanlan_name].connect() as conn:
+                rows = conn.execute(
+                    text(
+                        f"SELECT timestamp, session_id, message FROM {table_name} "
+                        "WHERE timestamp >= :start_time "
+                        "ORDER BY timestamp DESC, rowid DESC LIMIT :limit_rows"
+                    ),
+                    {"start_time": start_time, "limit_rows": int(limit_rows)},
+                ).fetchall()
+        rows.reverse()
+        return rows
+
+    async def aretrieve_latest_original_since(self, lanlan_name, start_time, limit_rows: int) -> list:
+        return await asyncio.to_thread(
+            self.retrieve_latest_original_since, lanlan_name, start_time, limit_rows
+        )
+
     def retrieve_latest_assistant_texts(
         self,
         lanlan_name: str,
