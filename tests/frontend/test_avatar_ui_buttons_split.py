@@ -381,6 +381,9 @@ def test_cat_right_click_routes_cat1_weighted_pool_and_sleep_tiers_to_scared_dem
                     return true;
                 },
                 requestCat1Scared: (options = {}) => {
+                    if (typeof options.prepareCat1 === 'function' && options.prepareCat1() !== true) {
+                        return false;
+                    }
                     window.__cat1VisualActionRequests.push('scared');
                     window.__scaredRequestOptions = options;
                     return true;

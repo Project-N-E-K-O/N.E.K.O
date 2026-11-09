@@ -387,6 +387,7 @@ function _getNekoIdleCat1VisualActionState(button) {
             actionKey: '',
             token: 0,
             timer: 0,
+            entryTimer: 0,
             resumeJourney: false,
             presentationOnTerminal: null
         };
@@ -494,6 +495,10 @@ function _cancelNekoIdleCat1VisualAction(button, options = {}) {
         clearTimeout(state.timer);
         state.timer = 0;
     }
+    if (state.entryTimer) {
+        clearTimeout(state.entryTimer);
+        state.entryTimer = 0;
+    }
     _setNekoIdleCat1VisualActionClass(button, null);
     _restoreNekoIdleCat1VisualActionArt(button, state, options);
     state.resumeJourney = false;
@@ -523,7 +528,10 @@ function _playNekoIdleCat1VisualAction(button, actionKey, options = {}) {
     if (!button) return false;
     if (_isNekoIdleDesktopWindowInteractionActionActive(button)) return false;
     if (_isNekoIdleCat1PlaygroundEntryOrDropActive(button)) return false;
-    if (_normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier')) !== _NEKO_IDLE_TIER_CAT1) return false;
+    const currentTier = _normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier'));
+    const prepareCat1 = currentTier !== _NEKO_IDLE_TIER_CAT1 && actionKey === 'scared' &&
+        typeof options.prepareCat1 === 'function' ? options.prepareCat1 : null;
+    if (currentTier !== _NEKO_IDLE_TIER_CAT1 && !prepareCat1) return false;
     if (_isNekoIdleReturnDragActionBlocking(button) || _isAnyNekoIdleReturnDragActionBlocking()) return false;
     if (_isNekoIdleCompactSurfaceDragging()) return false;
     if (_isNekoCatMindReturnPending(button) || _isAnyNekoCatMindReturnPending()) return false;
@@ -538,6 +546,10 @@ function _playNekoIdleCat1VisualAction(button, actionKey, options = {}) {
     if (!art) return false;
     const actionSrc = _getNekoIdleCat1VisualActionAssetUrlForSlot(profile.slot);
     if (!actionSrc) return false;
+    if (prepareCat1) {
+        if (prepareCat1() !== true) return false;
+        if (_normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier')) !== _NEKO_IDLE_TIER_CAT1) return false;
+    }
 
     const state = _getNekoIdleCat1VisualActionState(button);
     const journey = button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey;
@@ -560,7 +572,16 @@ function _playNekoIdleCat1VisualAction(button, actionKey, options = {}) {
     const token = state.token;
 
     _setNekoIdleCat1VisualActionClass(button, profile);
+    let finishSchedulingStarted = false;
     const scheduleActionFinish = () => {
+        if (finishSchedulingStarted) return;
+        const currentState = button.__nekoIdleCat1VisualActionState;
+        if (!currentState || !currentState.active || currentState.actionKey !== actionKey || currentState.token !== token) return;
+        finishSchedulingStarted = true;
+        if (currentState.entryTimer) {
+            clearTimeout(currentState.entryTimer);
+            currentState.entryTimer = 0;
+        }
         const startedAt = Date.now();
         _getNekoIdleAnimationDurationMs(actionSrc).then((durationMs) => {
             const latestState = button.__nekoIdleCat1VisualActionState;
@@ -574,6 +595,7 @@ function _playNekoIdleCat1VisualAction(button, actionKey, options = {}) {
         });
     };
     if (options.animateEntry === true) {
+        state.entryTimer = setTimeout(scheduleActionFinish, _NEKO_IDLE_RETURN_TRANSITION_MS);
         _setNekoIdleReturnArtSource(art, actionSrc, _NEKO_IDLE_TIER_CAT1, {
             animate: true,
             onTransitionEnd: scheduleActionFinish
@@ -850,7 +872,10 @@ function _requestNekoIdleCat1HissStretchPresentation() {
 function _requestNekoIdleCat1VisualActionPresentation(actionKey, options = {}) {
     const profile = _getNekoIdleCat1VisualActionProfile(actionKey);
     if (!profile || !_isNekoCatActionResourceAvailable(profile.capability)) return false;
-    const button = _findNekoIdleCat1PresentationButton();
+    const preparedButton = actionKey === 'scared' && typeof options.prepareCat1 === 'function'
+        ? options.button
+        : null;
+    const button = preparedButton || _findNekoIdleCat1PresentationButton();
     return !!(button && _playNekoIdleCat1VisualAction(button, actionKey, options));
 }
 

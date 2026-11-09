@@ -112,8 +112,9 @@ function _getNekoIdleReturnDragContinuousVirtualPoint(
     };
 }
 
-// Temporary manual-acceptance adapter. CAT1 right-clicks are independent
-// weighted samples; they do not retain sequence state between interactions.
+// Formal manual context-menu adapter. These user-requested presentation-only
+// actions are independent weighted samples and deliberately bypass Cat Mind's
+// autonomous scoring/cooldown state.
 const _NEKO_IDLE_CAT1_VISUAL_ACTION_OTHER_RANDOM_REQUESTS = Object.freeze([
     'requestCat1Cosplay1',
     'requestCat1Change',
@@ -145,14 +146,17 @@ function _handleNekoIdleSleepTierScaredContextMenu(button, event) {
     if (typeof request !== 'function' || !autoGoodbye ||
         typeof autoGoodbye.demoteVisualTierToCat1 !== 'function') return false;
 
-    const demoted = autoGoodbye.demoteVisualTierToCat1(
-        'cat-contextmenu-demotion',
-        'cat1-scared-action'
-    ) === true;
-    if (!demoted) return false;
+    const started = request.call(presentation, {
+        animateEntry: true,
+        button,
+        prepareCat1: () => autoGoodbye.demoteVisualTierToCat1(
+            'cat-contextmenu-demotion',
+            'cat1-scared-action'
+        ) === true
+    }) === true;
+    if (!started) return false;
     event.preventDefault();
     event.stopPropagation();
-    request.call(presentation, { animateEntry: true });
     return true;
 }
 
@@ -168,9 +172,11 @@ function _handleNekoIdleCat1VisualActionRandomContextMenu(button, event) {
     const request = presentation && presentation[requestName];
     if (typeof request !== 'function') return false;
 
+    const started = request.call(presentation) === true;
+    if (!started) return false;
     event.preventDefault();
     event.stopPropagation();
-    return request.call(presentation) === true;
+    return true;
 }
 
 Object.assign(AvatarButtonMixin.methods, {

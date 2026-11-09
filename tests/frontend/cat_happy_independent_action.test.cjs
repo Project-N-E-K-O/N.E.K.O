@@ -191,6 +191,7 @@ function harness(options = {}) {
   const keyBySlot = Object.fromEntries(Object.entries(CASES).map(([key, entry]) => [entry.slot, key]));
   const context = {
     window: {}, Date: { now: () => 1000 }, _NEKO_IDLE_TIER_CAT1: 'cat1',
+    _NEKO_IDLE_RETURN_TRANSITION_MS: 300,
     _isNekoCatActionResourceAvailable: (key) => capabilities.has(key),
     _getNekoIdleCat1VisualActionAssetUrlForSlot: (slot) => urls[keyBySlot[slot]] || '',
     _isNekoIdleDesktopWindowInteractionActionActive: () => gates.desktop,
@@ -403,12 +404,53 @@ test('animated visual entry starts its full animation cycle only after the share
   assert.equal(h.sources[0].options.animate, true);
   assert.equal(typeof h.sources[0].options.onTransitionEnd, 'function');
   await flush();
-  assert.equal(h.timers.length, 0, 'the scared cycle does not run underneath the fade');
+  assert.equal(h.timers.length, 1, 'only the transition watchdog runs underneath the fade');
+  assert.equal(h.timers[0].delay, 300);
 
   h.sources[0].options.onTransitionEnd();
   await flush();
-  assert.equal(h.timers.length, 1);
-  assert.equal(h.timers[0].delay, CASES.scared.duration);
+  assert.equal(h.timers[0].cleared, true);
+  assert.equal(h.timers.length, 2);
+  assert.equal(h.timers[1].delay, CASES.scared.duration);
+});
+
+test('interrupted animated entry falls back to one full action cycle instead of staying active forever', async () => {
+  const h = harness();
+  assert.equal(h.context._playNekoIdleCat1VisualAction(
+    h.button,
+    'scared',
+    { animateEntry: true },
+  ), true);
+  const watchdog = h.timers[0];
+  watchdog.callback();
+  await flush();
+  const actionTimer = h.timers.find((timer) => timer.delay === CASES.scared.duration);
+  assert.ok(actionTimer, 'watchdog starts the audited action duration after an interrupted fade');
+  actionTimer.callback();
+  assert.equal(h.button.__nekoIdleCat1VisualActionState.active, false);
+});
+
+test('sleep-tier prepared visual action runs its hard gates before demotion', () => {
+  const h = harness();
+  h.gates.tier = 'cat2';
+  let prepares = 0;
+  assert.equal(h.context._playNekoIdleCat1VisualAction(h.button, 'scared', {
+    prepareCat1() {
+      prepares += 1;
+      h.gates.tier = 'cat1';
+      return true;
+    },
+  }), true);
+  assert.equal(prepares, 1);
+
+  const blocked = harness();
+  blocked.gates.tier = 'cat2';
+  blocked.gates.transition = true;
+  let blockedPrepares = 0;
+  assert.equal(blocked.context._playNekoIdleCat1VisualAction(blocked.button, 'scared', {
+    prepareCat1() { blockedPrepares += 1; return true; },
+  }), false);
+  assert.equal(blockedPrepares, 0);
 });
 
 test('shared runner keeps hard gates and late duration resolution cannot revive cancellation', async () => {
@@ -516,12 +558,13 @@ test('CAT1 right-click gives stroke 50% and splits the other 50% across five ind
   let tier = 'cat1';
   let bubble = false;
   let goodbye = false;
+  let requestAllowed = true;
   const requests = [];
   const presentation = {
-    requestCat1Stroke: () => { requests.push('requestCat1Stroke'); return true; },
+    requestCat1Stroke: () => { requests.push('requestCat1Stroke'); return requestAllowed; },
   };
   for (const requestName of expectedOtherRequests) {
-    presentation[requestName] = () => { requests.push(requestName); return true; };
+    presentation[requestName] = () => { requests.push(requestName); return requestAllowed; };
   }
   const context = {
     window: { NekoCatIdlePresentation: presentation },
@@ -584,6 +627,10 @@ test('CAT1 right-click gives stroke 50% and splits the other 50% across five ind
     assert.equal(requests.at(-1), expectedRequest, String(roll));
     assert.deepEqual([right.prevented, right.stopped], [1, 1]);
   }
+  requestAllowed = false;
+  const rejected = event(2);
+  assert.equal(context._handleNekoIdleCat1VisualActionRandomContextMenu(button, rejected), false);
+  assert.deepEqual([rejected.prevented, rejected.stopped], [0, 0]);
 
   assert.equal(requests.includes('requestCat1Scared'), false);
   assert.equal((RETURN_SOURCE.match(/addEventListener\(['"]contextmenu['"]/g) || []).length, 1);
@@ -616,7 +663,7 @@ test('CAT2 and CAT3 right-click demote to CAT1 and request scared with the share
         NekoCatIdlePresentation: {
           requestCat1Scared(options) {
             requests.push(options);
-            return true;
+            return options.prepareCat1() === true;
           },
         },
       },
@@ -647,8 +694,46 @@ test('CAT2 and CAT3 right-click demote to CAT1 and request scared with the share
     assert.equal(tier, 'cat1');
     assert.equal(requests.length, 1);
     assert.equal(requests[0].animateEntry, true);
+    assert.equal(requests[0].button, button);
+    assert.equal(typeof requests[0].prepareCat1, 'function');
     assert.deepEqual([event.prevented, event.stopped], [1, 1]);
   }
+});
+
+test('sleep-tier rejected request neither demotes nor consumes the context menu', () => {
+  const source = between(
+    RETURN_SOURCE,
+    'const _NEKO_IDLE_CAT1_VISUAL_ACTION_OTHER_RANDOM_REQUESTS',
+    'Object.assign(AvatarButtonMixin.methods',
+    'sleep-tier rejected contextmenu',
+  );
+  let demotions = 0;
+  const context = {
+    window: {
+      nekoAutoGoodbye: { demoteVisualTierToCat1() { demotions += 1; return true; } },
+      NekoCatIdlePresentation: { requestCat1Scared: () => false },
+    },
+    _NEKO_IDLE_TIER_CAT1: 'cat1',
+    _NEKO_IDLE_TIER_CAT2: 'cat2',
+    _NEKO_IDLE_TIER_CAT3: 'cat3',
+    _NEKO_CAT_MIND_ACTION_RESULTS: { DONE: 'done' },
+    _isNekoIdleThoughtBubbleEventHit: () => false,
+    _isNekoGoodbyeIdleBallButton: () => false,
+    _isNekoCatMindTransitionActive: () => false,
+    _normalizeNekoIdleReturnTier: (value) => value,
+  };
+  vm.createContext(context);
+  vm.runInContext(source, context, { filename: RETURN_PATH });
+  const event = {
+    button: 2, prevented: 0, stopped: 0,
+    preventDefault() { this.prevented += 1; },
+    stopPropagation() { this.stopped += 1; },
+  };
+  assert.equal(context._handleNekoIdleSleepTierScaredContextMenu(
+    { getAttribute: () => 'cat2' }, event,
+  ), false);
+  assert.equal(demotions, 0);
+  assert.deepEqual([event.prevented, event.stopped], [0, 0]);
 });
 
 test('sleep-tier right-click stays atomic while a transition hard gate is active', () => {
