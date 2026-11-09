@@ -1889,6 +1889,54 @@ def test_first_import_counts_a_retained_local_upgrade_as_the_users_fact():
     assert result['reflections'][0]['fact_source_counts'] == {'user': 1, 'ai': 0}
 
 
+def test_a_line_confirmed_by_the_sender_is_not_held_back_by_local_counts():
+    from memory.evidence import awaits_user_signal
+    fact = {'id': 'f1', 'text': 'ai line', 'entity': 'neko', 'source': 'ai_disclosure', 'hash': 'x', 'created_at': '2026-10-01T00:00:00'}
+    local = {'id': 'r1', 'text': 'line', 'entity': 'neko', 'status': 'pending', 'source_fact_ids': ['f1'],
+             'fact_source_counts': {'user': 0, 'ai': 1}, 'counted_fact_ids': ['f1'], 'source_facts_oldest_at': '2026-10-01T00:00:00'}
+    existing = {'persona': {}, 'facts': [fact], 'archive': [], 'reflections': [local]}
+    incoming = export_document(existing, 3000)
+    assert awaits_user_signal(import_document(incoming, existing)['reflections'][0])
+    next(row for row in incoming['entries'] if row['kind'] == 'reflection')['metadata']['status'] = 'confirmed'
+    row = import_document(incoming, existing)['reflections'][0]
+    assert not awaits_user_signal(row)
+    assert row['source_facts_oldest_at'] == '2026-10-01T00:00:00'
+
+
+@pytest.mark.parametrize('status', ['superseded', 'retracted'])
+def test_an_archived_retired_reflection_survives_a_reexport(status):
+    entry = {'kind': 'reflection', 'subject': 'neko', 'id': 'r1', 'text': 'old line',
+             'metadata': {'createdAt': 1000, 'status': status, 'archivedAt': 2000, 'sourceFactIds': []}}
+    incoming = {'schemaVersion': 2, 'completedAt': 3000, 'evidence': {'retirements': [], 'confirmations': []}, 'entries': [entry]}
+    imported = import_document(incoming, {'persona': {}, 'facts': [], 'archive': [], 'reflections': []})
+    [row] = export_document(imported, 4000)['entries']
+    assert row['id'] == 'r1' and row['metadata']['status'] == status
+
+
+def test_export_removes_repeated_source_ids_before_the_transfer_limit():
+    unique = [f'source-{index}' for index in range(150)]
+    fact = {'id': 'f1', 'text': 'likes tea', 'entity': 'master', 'source': 'user_observation', 'hash': 'x',
+            'created_at': '2026-10-01T00:00:00', 'source_message_ids': unique + unique}
+    [row] = export_document({'persona': {}, 'facts': [fact], 'archive': [], 'reflections': []}, 3000)['entries']
+    assert row['metadata']['sourceMessageIds'] == unique
+
+
+def test_a_consistent_read_detects_a_commit_right_after_its_journal_check(tmp_path, monkeypatch):
+    from memory import long_term_sync
+    from memory.long_term_sync import LongTermMemoryRecoveryRequired, advance_view_generation, consistent_view_read
+    original = long_term_sync.require_consistent_views
+    calls = []
+    def commit_after_first_check(directory):
+        original(directory)
+        calls.append(directory)
+        if len(calls) == 1:
+            advance_view_generation(directory)
+    monkeypatch.setattr(long_term_sync, 'require_consistent_views', commit_after_first_check)
+    with pytest.raises(LongTermMemoryRecoveryRequired):
+        with consistent_view_read(tmp_path / 'facts.json'):
+            pass
+
+
 def test_dropped_citations_stay_dropped_after_a_reimport():
     """A source upgrade without a citation removes the character lines as proof;
     the copy kept from the import must not publish them under the user's source."""

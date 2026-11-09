@@ -77,8 +77,8 @@ def advance_view_generation(directory):
 def consistent_view_read(path):
     """Reject reads spanning a snapshot commit or rollback, even after journal removal."""
     directory = Path(path).parent
-    require_consistent_views(directory)
     before = _view_generation(directory)
+    require_consistent_views(directory)
     def validate():
         require_consistent_views(directory)
         if before != _view_generation(directory):
@@ -304,7 +304,9 @@ def export_document(views, completed_at, *, source_evidence=None):
         if archived:
             metadata['archived'] = True
         if kind == 'fact':
-            sources = native.get('source_message_ids') or []
+            sources = list(dict.fromkeys(native.get('source_message_ids') or []))
+            if sources:
+                metadata['sourceMessageIds'] = sources
             if len(sources) > 200:
                 role = 'ai' if native.get('source') == 'ai_disclosure' else 'human'
                 def source_time(key):
@@ -329,7 +331,7 @@ def export_document(views, completed_at, *, source_evidence=None):
             if native.get('event_start_at') and ('eventAt' in metadata or not native.get('_sync_metadata')):
                 metadata['eventAt'] = timestamp(native['event_start_at'])
         if kind == 'reflection':
-            if native.get('status') not in ('pending', 'confirmed', 'promoted', 'promote_blocked', 'merged', 'denied', 'archived'):
+            if native.get('status') not in ('pending', 'confirmed', 'promoted', 'promote_blocked', 'merged', 'denied', 'archived', 'superseded', 'retracted'):
                 return
             metadata['sourceFactIds'] = list(native.get('source_fact_ids') or [])
             metadata['evidenceReview'] = native.get('_sync_metadata', {}).get('evidenceReview', 'supported')
@@ -587,7 +589,10 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None, 
                 previous.get('text') == native['text']
                 and sorted(previous.get('source_fact_ids') or []) == sorted(native['source_fact_ids'])
             ):
-                for field in ('source_facts_oldest_at', 'fact_source_counts', 'counted_fact_ids'):
+                # A line the sender confirmed passed this gate there, and that
+                # confirmation is not in the protocol: stale counts would hold it here.
+                confirmed_remotely = previous.get('status') == 'pending' and native['status'] != 'pending'
+                for field in ('source_facts_oldest_at',) if confirmed_remotely else ('source_facts_oldest_at', 'fact_source_counts', 'counted_fact_ids'):
                     if field in previous:
                         native[field] = deepcopy(previous[field])
             elif (native['status'] == 'pending' and native['source_fact_ids']
@@ -811,6 +816,9 @@ async def verify_retired_assertions(retirements, extracted, messages, request, *
             if (row.get('subject') != fact.get('entity', 'master') or not isinstance(row.get('text'), str)
                     or _assertion_text(row['text']) == _assertion_text(fact['text'])):
                 continue
+            # A fact cited to the correction states the new value, not the retired one.
+            if ids & set(row.get('retiredBySourceMessageIds') or []):
+                continue
             cutoff = row.get('retiredThroughAt')
             if (latest is not None and not ids.issubset(row.get('sourceMessageIds', []))
                     and not (cutoff is not None and cutoff <= now and latest <= cutoff)
@@ -835,13 +843,14 @@ def fact_source_evidence(retirements, fact, entity, source_messages, *, source='
     matching = [row for row in retirements if row.get('subject') == entity and isinstance(row.get('text'), str)
                 and (row['id'] in matched_ids or _assertion_text(row['text']) == _assertion_text(fact.get('text', '')))]
     indices = fact.get('source_indices')
-    valid = isinstance(indices, list) and bool(indices) and source_messages and all(
-        type(index) is int and 1 <= index <= len(source_messages) for index in indices)
-    selected = [source_messages[index - 1] for index in dict.fromkeys(indices)] if valid else []
+    in_range = [index for index in indices if type(index) is int and 1 <= index <= len(source_messages)] if (
+        isinstance(indices, list) and source_messages) else []
+    cited = [source_messages[index - 1] for index in dict.fromkeys(in_range)]
+    selected = cited if in_range and len(in_range) == len(indices) else []
     proofs = []
     # A misattributed user observation is rejected whatever it matches; retrying the
     # whole batch cannot make a character line prove a user fact.
-    if source == 'user_observation' and any(getattr(message, 'type', '') not in ('human', 'user') for message in selected):
+    if source == 'user_observation' and any(getattr(message, 'type', '') not in ('human', 'user') for message in cited):
         return None
     for message in selected:
         identity, at = trusted_message_source(message)

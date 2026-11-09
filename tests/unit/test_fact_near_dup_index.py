@@ -1707,11 +1707,11 @@ async def test_retirement_clock_repair_cannot_change_another_subject_with_the_sa
 async def test_unprovenanced_facts_use_only_exact_retirement_matching(tmp_path):
     _portable_retirement(tmp_path)
     h = _harness(tmp_path, [])
-    h._llm_request = AsyncMock(side_effect=AssertionError('unprovenanced facts must not trigger semantic review'))
+    h._allm_call_with_retries = AsyncMock(side_effect=AssertionError('unprovenanced facts must not trigger semantic review'))
     texts = ['用户喜欢红茶', 'The user likes black tea', 'The user has a round badge']
     rows = await h._apersist_new_facts('小天', [{'entity': 'master', 'text': text} for text in texts])
     assert [row['text'] for row in rows] == texts[1:]
-    h._llm_request.assert_not_awaited()
+    h._allm_call_with_retries.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -2196,6 +2196,33 @@ async def test_user_observation_cited_to_a_later_character_line_is_rejected_what
     rows = await h._apersist_new_facts('小天', [{'entity': 'master', 'text': 'Invented', 'source_indices': [1, 2]}],
                                        source_messages=messages)
     assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_user_observation_with_one_unusable_citation_is_still_checked_against_the_rest(tmp_path):
+    from utils.llm_client import HumanMessage, AIMessage
+    h = _harness(tmp_path, [])
+    messages = [HumanMessage(content='I enjoy tea', additional_kwargs={'memory_source_id': 'raw-user', 'memory_source_created_at': 1000}),
+                AIMessage(content='Maybe swimming', additional_kwargs={'memory_source_id': 'raw-ai', 'memory_source_created_at': 1001})]
+    rows = await h._apersist_new_facts('小天', [{'entity': 'master', 'text': 'Invented', 'source_indices': [2, 99]},
+                                               {'entity': 'master', 'text': 'Enjoys tea', 'source_indices': [1, 99]}],
+                                       source_messages=messages)
+    assert [row['text'] for row in rows] == ['Enjoys tea']
+    assert 'source_message_ids' not in rows[0]
+
+
+@pytest.mark.asyncio
+async def test_a_fact_cited_to_the_correction_is_not_reviewed_as_the_retired_assertion():
+    from memory.long_term_sync import verify_retired_assertions
+    from utils.llm_client import HumanMessage
+    identity = 'sync:' + 'c' * 32
+    retirement = {'id': 'r1', 'subject': 'master', 'text': 'Favorite color is blue', 'sourceMessageIds': ['old'],
+                  'retiredBySourceMessageIds': [identity], 'retiredThroughAt': 2000, 'retiredThroughAtFromCorrection': True}
+    messages = [HumanMessage(content='Actually coral', additional_kwargs={'memory_source_id': identity, 'memory_source_created_at': 2000})]
+    corrected = {'entity': 'master', 'text': 'Favorite color is coral', 'source_indices': [1]}
+    request = AsyncMock(side_effect=AssertionError('the correction must not be reviewed against what it retired'))
+    assert await verify_retired_assertions([retirement], [corrected], messages, request, default_source='user_observation') == {}
+    request.assert_not_awaited()
 
 
 @pytest.mark.asyncio
