@@ -66,6 +66,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: plugin-repo
+          persist-credentials: false
 
       - name: Checkout N.E.K.O
         id: neko
@@ -74,6 +75,7 @@ jobs:
           repository: ${{ env.NEKO_REPOSITORY }}
           ref: ${{ env.NEKO_REF }}
           path: neko
+          persist-credentials: false
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -254,6 +256,12 @@ jobs:
           if (package.parent != target or {entry.name for entry in entries} != expected
                   or any(entry.is_symlink() or not entry.is_file() for entry in entries)):
               raise SystemExit("Build output must contain exactly the selected package and its check output")
+          data = package.read_bytes()
+          report = (target / f"{plugin_id}.market-release-check.txt").read_text(encoding="utf-8")
+          checked = re.findall(r"^\s*package_sha256=([0-9a-f]{64})\s*$", report, re.MULTILINE)
+          if (checked != [hashlib.sha256(data).hexdigest()] or f"[OK] {plugin_id}:" not in report
+                  or re.search(r"^\s*payload_hash_verified=True\s*$", report, re.MULTILINE) is None):
+              raise SystemExit("Package does not match the one that passed the release check")
           if re.fullmatch(r"[0-9a-f]{40}", os.environ["NEKO_COMMIT"]) is None:
               raise SystemExit("N.E.K.O builder commit is missing")
           if os.environ.get("GITHUB_REF_TYPE") != "tag":
@@ -272,7 +280,8 @@ jobs:
               payload_hash = metadata.get("payload", {}).get("hash")
               if not isinstance(payload_hash, str) or len(payload_hash) != 64:
                   raise SystemExit("Package payload hash is missing")
-          data = package.read_bytes()
+          if re.findall(r"^\s*payload_hash=(\S+)\s*$", report, re.MULTILINE) != [payload_hash]:
+              raise SystemExit("Package does not match the one that passed the release check")
           evidence = {
               "schema_version": 1,
               "mode": os.environ["MARKET_MODE"],

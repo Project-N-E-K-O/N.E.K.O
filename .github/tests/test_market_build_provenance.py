@@ -76,13 +76,26 @@ def test_retries_replace_only_the_published_evidence_artifact():
     upload = next(step for step in sign['steps'] if step['name'] == 'Upload Market evidence')
     assert upload['with']['overwrite'] is True
     assert sign['timeout-minutes'] >= 30
-    templates = [jobs['release']['steps'][-1]['with']['name'], jobs['evidence']['steps'][-1]['with']['name'],
-                 upload['with']['name']]
     # Overwriting the build or signing input would break a later attest retry by artifact id.
-    for plugin_id in ('market', 'market_build', 'market_signing_input'):
-        context = {'github.run_id': '123', 'github.run_attempt': '1', 'inputs.plugin-id': plugin_id}
-        assert len({resolve(template, context) for template in templates}) == 3
     assert all('overwrite' not in job['steps'][-1]['with'] for job in (jobs['release'], jobs['evidence']))
+    # Valid plugin ids never contain '-', so the first '-' of the evidence name ends the id and
+    # the rest is fixed; the run-scoped names have a different fixed remainder for every id.
+    assert '[[ ! "$PLUGIN_ID" =~ ^[a-z][a-z0-9_]*$ ]]' in jobs['release']['steps'][0]['run']
+    context = {'github.run_id': '123', 'github.run_attempt': '1', 'inputs.plugin-id': 'a_plugin_id'}
+    remainders = {
+        resolve(jobs['release']['steps'][-1]['with']['name'], context).split('-', 1)[1],
+        resolve(jobs['evidence']['steps'][-1]['with']['name'], context).split('-', 1)[1],
+        resolve(upload['with']['name'], context).split('-', 1)[1],
+    }
+    assert remainders == {'build-123-1', 'signing-input-123-1', 'market-evidence'}
+    assert resolve(upload['with']['name'], context) == 'a_plugin_id-market-evidence'
+
+
+def test_checkouts_in_the_plugin_code_job_leave_no_credentials():
+    steps = workflow()['jobs']['release']['steps']
+    checkouts = [step for step in steps if step.get('uses', '').startswith('actions/checkout@')]
+    assert len(checkouts) == 2
+    assert all(step['with']['persist-credentials'] is False for step in checkouts)
 
 
 def resolve(template, context):

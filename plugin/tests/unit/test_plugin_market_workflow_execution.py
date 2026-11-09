@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -24,6 +25,14 @@ pytestmark = pytest.mark.plugin_unit
 def workflow(mode, job=None):
     jobs = yaml.safe_load((ROOT / f".github/workflows/plugin-market-{mode}.yml").read_text(encoding="utf-8"))["jobs"]
     return jobs[job or mode]
+
+
+def steps_of(mode, job):
+    return workflow(mode, job)["steps"]
+
+
+def resolve(template, context):
+    return re.sub(r"\$\{\{\s*([^}\s]+)\s*\}\}", lambda match: context[match.group(1)], template)
 
 
 def python_block(mode, name, job=None):
@@ -136,10 +145,17 @@ def test_workflow_mount_build_and_evidence_use_actual_selected_plugin(tmp_path, 
         (target / "voice_bridge.market-release-check.txt").write_text(checked.stdout, encoding="utf-8")
         renamed = execute(mode, "Name release package", neko, env)
         assert renamed.returncode == 0, renamed.stderr
-        output = tmp_path / "build-output"
+        # Follow the workflow's own upload paths and download directory.
+        context = {"inputs.plugin-id": "voice_bridge", "steps.mount.outputs.package-name": outputs["package-name"]}
+        paths = resolve(steps_of(mode, "release")[-1]["with"]["path"], context).splitlines()
+        uploaded = [tmp_path / path for path in paths if path.strip()]
+        download, write = steps_of(mode, "evidence")[:2]
+        assert write["name"] == "Write Market evidence" and "working-directory" not in write
+        assert f'Path("{download["with"]["path"]}")' in write["run"]
+        output = tmp_path / download["with"]["path"]
         output.mkdir()
-        for file in (outputs["package-name"], "voice_bridge.market-release-check.txt"):
-            (output / file).write_bytes((target / file).read_bytes())
+        for file in uploaded:
+            (output / file.name).write_bytes(file.read_bytes())
         env.update(MARKET_PLUGIN_DIRECTORY=outputs["plugin-directory"], MARKET_PACKAGE_NAME=outputs["package-name"])
         target, cwd = output, tmp_path
     else:
@@ -162,24 +178,34 @@ def test_workflow_mount_build_and_evidence_use_actual_selected_plugin(tmp_path, 
     steps = workflow(mode)["steps"]
     if mode == "release":
         assert "${{ steps.mount.outputs.package-name }}" in steps[-1]["with"]["path"]
-        assert workflow(mode, "attest")["steps"][-1]["with"]["files"] == "signed-output/*"
-        assert "${{ inputs.plugin-id }}-market-evidence" in str(workflow(mode, "attest")["steps"])
+        attest = steps_of(mode, "attest")
+        assert attest[-1]["with"]["files"] == "signed-output/*"
+        upload = next(step for step in attest if step["name"] == "Upload Market evidence")
+        assert upload["with"]["name"] == "${{ inputs.plugin-id }}-market-evidence"
     else:
         assert "${{ env.MARKET_PACKAGE_NAME }}" in steps[-1]["with"]["path"]
         assert "${{ env.PLUGIN_ID }}-market-evidence" in str(steps)
 
 
-def test_release_evidence_rejects_unexpected_build_output(tmp_path):
+@pytest.mark.parametrize("files,error", [
+    ({"voice_bridge.market-release-check.txt": "forged", "market-evidence.json": "forged"}, "exactly the selected package"),
+    # A package swapped after the check no longer matches the reported digest.
+    ({"voice_bridge.market-release-check.txt": f"[OK] voice_bridge: check passed\n  package_sha256={'0' * 64}\n"
+      "  payload_hash_verified=True\n"}, "passed the release check"),
+])
+def test_release_evidence_rejects_unexpected_build_output(tmp_path, files, error):
     output = tmp_path / "build-output"
     output.mkdir()
-    for file in ("voice_bridge.neko-plugin", "voice_bridge.market-release-check.txt", "market-evidence.json"):
-        (output / file).write_text("forged", encoding="utf-8")
+    for file, content in {"voice_bridge.neko-plugin": "forged", **files}.items():
+        (output / file).write_text(content, encoding="utf-8")
     env = {**environment(tmp_path, "release"), "MARKET_PLUGIN_DIRECTORY": "",
            "MARKET_PACKAGE_NAME": "voice_bridge.neko-plugin", "NEKO_COMMIT": "b" * 40}
     result = execute("release", "Write Market evidence", tmp_path, env, "evidence")
     assert result.returncode != 0
-    assert "exactly the selected package" in result.stderr
-    assert (output / "market-evidence.json").read_text(encoding="utf-8") == "forged"
+    assert error in result.stderr
+    evidence = output / "market-evidence.json"
+    # Rejection happens before anything is written: forged evidence stays forged, none is created.
+    assert (evidence.read_text(encoding="utf-8") if evidence.exists() else None) == files.get("market-evidence.json")
 
 
 @pytest.mark.parametrize("mode", ["verify", "release"])
