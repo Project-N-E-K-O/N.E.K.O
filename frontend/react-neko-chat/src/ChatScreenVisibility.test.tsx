@@ -223,6 +223,28 @@ describe('visual-only chat clearing', () => {
     expect(container.querySelector('.message-list')).toHaveTextContent('Replacement');
   });
 
+  it('keeps a visual clear through a sync refresh and shows only what arrives after it', () => {
+    const {container, rerender} = render(<App chatSurfaceMode="full" messages={[message('old', 'Old')]} />);
+    fireEvent.click(screen.getByRole('button', {name:'Clear screen'}));
+    act(() => window.dispatchEvent(new CustomEvent('react-chat-window:messages-replaced', {
+      detail:{conversationReset:false, keepClearedScreen:true},
+    })));
+    rerender(<App chatSurfaceMode="full" messages={[message('old', 'Old'), message('new', 'Arrived')]} />);
+    const list = container.querySelector('.message-list');
+    expect(list).toHaveTextContent('Arrived');
+    expect(list).not.toHaveTextContent('Old');
+  });
+
+  it('lets an emptied conversation end a visual clear even during a sync refresh', () => {
+    const {container, rerender} = render(<App chatSurfaceMode="full" messages={[message('id', 'Old')]} />);
+    fireEvent.click(screen.getByRole('button', {name:'Clear screen'}));
+    act(() => window.dispatchEvent(new CustomEvent('react-chat-window:messages-replaced', {
+      detail:{conversationReset:true, keepClearedScreen:true},
+    })));
+    rerender(<App chatSurfaceMode="full" messages={[message('id', 'Replacement')]} />);
+    expect(container.querySelector('.message-list')).toHaveTextContent('Replacement');
+  });
+
   it('hides caption events from the cleared turn but shows the next turn', async () => {
     vi.useFakeTimers();
     try {

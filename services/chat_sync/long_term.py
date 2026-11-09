@@ -4,7 +4,7 @@ from contextlib import closing
 
 from services.chat_sync.long_term_protocol import head, mutation
 from services.chat_sync.recent_protocol import canonical
-from services.chat_sync.writer import store_connection
+from services.chat_sync.writer import registered_writer, store_connection
 
 
 class LongTermMemorySync:
@@ -36,25 +36,33 @@ class LongTermMemorySync:
         state = await commit(self.state, key)
         local = await commit(self.adapter.read_local, binding, epoch)
         path = f'/v1/chat-sync/characters/{domain.character_uid}/long-term-memory'
-        if local and local['operationId'] != state['acknowledged'] and not local['operationId'].startswith('download:'):
+        if local and local['operationId'] != state['acknowledged'] and not local['operationId'].startswith(('download:', 'quarantined:')):
             body = canonical(mutation({'operationId': local['operationId'], 'document': local['document']}))
             receipt = await request('PUT', path, body)
             if (not isinstance(receipt, dict) or set(receipt) != {'ownerId', 'characterSyncId', 'operationId', 'revision', 'accepted'}
                     or receipt['ownerId'] != domain.owner_id or receipt['characterSyncId'] != domain.character_uid
                     or receipt['operationId'] != local['operationId'] or type(receipt['accepted']) is not bool
-                    or type(receipt['revision']) is not int or not 1 <= receipt['revision'] <= 9_007_199_254_740_991):
+                    or type(receipt['revision']) is not int or not (1 if receipt['accepted'] else 0) <= receipt['revision'] <= 9_007_199_254_740_991):
                 raise ValueError('invalid_long_term_memory')
             revision = receipt['revision'] if receipt['accepted'] else None
             await commit(self.acknowledge, key, local['operationId'], revision)
             if revision is not None:
                 state['revision'] = revision
         metadata = head(await request('GET', path + '?metadataOnly=true', None), domain.owner_id, domain.character_uid)
+        if metadata.get('expired'):
+            await commit(self._expire_incoming, binding, epoch, metadata)
+            await commit(self.applied, key, max(state['revision'], metadata['revision']))
+            return {'changed': False, 'hasMore': False}
         pending_auth = await commit(self.adapter.needs_reauthentication, binding, epoch, session_fingerprint)
-        if not metadata['revision'] or (metadata['revision'] == state['revision'] and not pending_auth):
+        if not metadata['revision'] or (metadata['revision'] <= state['revision'] and not pending_auth):
             return {'changed': False, 'hasMore': False}
         if not can_apply():
             return {'changed': False, 'hasMore': True}
         remote = head(await request('GET', path, None), domain.owner_id, domain.character_uid)
+        if remote.get('expired'):
+            await commit(self._expire_incoming, binding, epoch, remote)
+            await commit(self.applied, key, max(state['revision'], remote['revision']))
+            return {'changed': False, 'hasMore': False}
         if remote.get('document') is None or remote['revision'] < metadata['revision']:
             raise ValueError('invalid_long_term_memory')
         expected = local['operationId'] if local else None
@@ -64,3 +72,9 @@ class LongTermMemorySync:
         if staged:
             await commit(self.applied, key, remote['revision'])
         return {'changed': staged, 'hasMore': not staged}
+
+    def _expire_incoming(self, binding, epoch, expired):
+        writer = registered_writer(self.path.parent)
+        if writer is None:
+            raise ValueError('chat_sync_store_unregistered')
+        self.adapter.expire_incoming(binding, epoch, expired, require_epoch=writer.require_epoch)

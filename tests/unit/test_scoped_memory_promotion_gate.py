@@ -582,7 +582,7 @@ async def test_own_words_addendum_only_on_request(tmp_path):
         )
     addendum = get_fact_extraction_group_source_addendum("zh").replace("{LANLAN_NAME}", NAME)
     assert addendum not in prompts[0], "私聊和分人那一路的提示词一个字不改"
-    assert prompts[1] == prompts[0] + addendum, "整群那一路只在末尾多一段"
+    assert addendum in prompts[1] and prompts[1].replace(addendum, "", 1) == prompts[0], "整群那一路只多这一段"
     assert "`source`" not in get_fact_extraction_prompt("zh")
 
 

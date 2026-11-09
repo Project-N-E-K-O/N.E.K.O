@@ -114,16 +114,43 @@ def test_save_still_repairs_a_damaged_recent_file(editor, damaged):
 
 
 @pytest.mark.parametrize('openai_format', [False, True])
-def test_editor_preserves_server_projection_identity_and_timestamp(editor, openai_format):
+@pytest.mark.parametrize('role', ['human', 'ai'])
+@pytest.mark.parametrize('timestamp', ['1791534030123', '0', None])
+def test_editor_preserves_server_projection_identity_and_timestamp(editor, openai_format, role, timestamp):
     client, path, _, _ = editor
-    metadata = {'recent_memory_id': 'd' * 32, 'recent_memory_time': '1791534030123'}
-    original = ({'role': 'user', 'content': 'before', 'metadata': metadata} if openai_format else
-                {'type': 'human', 'data': {'content': 'before', 'metadata': metadata}})
+    metadata = {'recent_memory_id': 'd' * 32, 'recent_memory_time': timestamp}
+    original = ({'role': 'user' if role == 'human' else 'assistant', 'content': 'before', 'metadata': metadata} if openai_format else
+                {'type': role, 'data': {'content': 'before', 'metadata': metadata}})
     path.write_text(json.dumps([original]))
     loaded = client.get('/api/memory/recent_file', params={'filename': 'recent_Role.json'}).json()
     response = client.post('/api/memory/recent_file/save', json={
-        'filename': 'recent_Role.json', 'chat': [{'role': 'human', 'text': 'after', 'source_index': 0}],
+        'filename': 'recent_Role.json', 'chat': [{'role': role, 'text': 'after', 'source_index': 0}],
         'fingerprint': loaded['fingerprint'], 'identity_token': loaded['identity_token'],
     })
     assert response.status_code == 200 and response.json()['success']
-    assert json.loads(path.read_text())[0]['data']['metadata'] == metadata
+    saved = json.loads(path.read_text())
+    assert saved[0]['type'] == role and saved[0]['data']['content'] == 'after'
+    assert saved[0]['data']['metadata'] == metadata
+    reloaded = client.get('/api/memory/recent_file', params={'filename': 'recent_Role.json'})
+    assert reloaded.status_code == 200
+    assert json.loads(reloaded.json()['content']) == saved
+
+
+@pytest.mark.parametrize('first_role', ['human', 'ai'])
+def test_repeated_browser_source_does_not_duplicate_projection_identity(editor, first_role):
+    from memory.recent_sync import ID_KEY, TIME_KEY
+    client, path, _, _ = editor
+    path.write_text(json.dumps([{'type': 'human', 'data': {'content': 'source', 'additional_kwargs': {},
+        'metadata': {ID_KEY: 'a' * 32, TIME_KEY: '1000'}}}]))
+    loaded = client.get('/api/memory/recent_file', params={'filename': 'recent_Role.json'}).json()
+    response = client.post('/api/memory/recent_file/save', json={
+        'filename': 'recent_Role.json', 'chat': [
+            {'role': first_role, 'text': 'first', 'source_index': 0},
+            {'role': 'human', 'text': 'second', 'source_index': 0}],
+        'fingerprint': loaded['fingerprint'], 'identity_token': loaded['identity_token']})
+    assert response.status_code == 200
+    rows = json.loads(path.read_text())
+    from utils.llm_client import message_metadata
+    chosen = 0 if first_role == 'human' else 1
+    assert message_metadata(rows[chosen])[ID_KEY] == 'a' * 32
+    assert ID_KEY not in message_metadata(rows[1 - chosen])
