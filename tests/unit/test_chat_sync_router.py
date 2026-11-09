@@ -301,24 +301,6 @@ def test_status_and_routes_expose_no_account_character_policy(local_client):
     assert runtime.calls == []
 
 
-@pytest.mark.parametrize('broken_replies', [False, True])
-def test_recent_display_excludes_local_sources(local_client, tmp_path, monkeypatch, broken_replies):
-    from services.chat_sync import source
-    client, runtime = local_client
-    runtime.recent_memory = object()
-    runtime.state.path = tmp_path / 'state.sqlite3'
-    runtime.state.binding = lambda uid: {'owner_id': OWNER, 'enabled': 1}
-    (tmp_path / 'sources.sqlite3').touch()
-    monkeypatch.setattr(source, 'ChatOriginalSource', lambda path: SimpleNamespace(stored_ids=lambda uid: {'b' * 32}))
-    runtime.originals = [{'messageId': 'b' * 32, 'text': 'local'}, {'messageId': 'c' * 32, 'text': 'phone'}]
-    runtime.local_replies = AsyncMock(side_effect=ValueError('chat_source_integrity_error') if broken_replies else None)
-    result = client.get(f'/api/chat-sync/characters/{UID}/recent-display')
-    assert result.status_code == 200
-    assert result.json()['originals'] == [{'messageId': 'c' * 32, 'text': 'phone'}]
-    assert 'media' not in result.json() and 'localMedia' not in result.json()
-    runtime.local_replies.assert_not_awaited()
-
-
 @pytest.mark.parametrize('action', [[], {}, None, True, 1, '', 'unknown'])
 def test_model_action_rejects_invalid_types_without_resolving(local_client, action):
     client, runtime = local_client
@@ -359,12 +341,8 @@ def test_model_action_reports_controlled_errors_without_waking(local_client, err
     assert runtime.calls == []
 
 
-@pytest.mark.parametrize('recent,enabled', [(None, 1), (object(), 0)])
-def test_recent_display_never_reads_legacy_archive_or_paused_role(local_client, recent, enabled):
+def test_retired_recent_display_does_not_read_chat_history(local_client):
     client, runtime = local_client
-    runtime.recent_memory = recent
-    runtime.state.binding = lambda uid: {'enabled': enabled}
     result = client.get(f'/api/chat-sync/characters/{UID}/recent-display')
-    assert result.status_code == 200
-    assert result.json()['originals'] == []
+    assert result.status_code == 404
     assert runtime.calls == []
