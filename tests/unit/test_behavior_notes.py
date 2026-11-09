@@ -721,6 +721,11 @@ def _payload(notes, *, language="zh-CN", **overrides):
     }
 
 
+def _save(store, payload) -> None:
+    written = store.write(NAME, payload)
+    assert written
+
+
 def _write_raw(tmp_path, content: str):
     directory = tmp_path / NAME
     directory.mkdir(exist_ok=True)
@@ -729,7 +734,7 @@ def _write_raw(tmp_path, content: str):
 
 def test_a_written_file_reads_back(tmp_path):
     store = _store(tmp_path)
-    assert store.write(NAME, _payload([_note()]))
+    _save(store, _payload([_note()]))
     assert store.read(NAME)["notes"][0]["avoid"] == "说话太绕弯"
     assert (tmp_path / NAME / BEHAVIOR_NOTES_FILENAME).exists()
 
@@ -771,7 +776,8 @@ def test_damaged_notes_are_dropped_one_by_one(tmp_path):
 def test_a_write_during_a_rename_or_delete_is_dropped(tmp_path):
     store = _store(tmp_path)
     with patch("utils.character_memory.is_character_write_fenced", return_value=True):
-        assert store.write(NAME, _payload([_note()])) is False
+        written = store.write(NAME, _payload([_note()]))
+    assert written is False
     assert not (tmp_path / NAME / BEHAVIOR_NOTES_FILENAME).exists()
 
 
@@ -789,7 +795,7 @@ def test_a_lapsed_note_is_not_injected(tmp_path):
     store = _store(tmp_path)
     live = _note("N1", avoid="还有效的")
     lapsed = _note("N2", avoid="已过期的", renewed_at=_NOW - 22 * 86400)
-    assert store.write(NAME, _payload([live, lapsed]))
+    _save(store, _payload([live, lapsed]))
     block = store.prompt_block(NAME, "zh", now=_NOW)
     assert "还有效的" in block and "已过期的" not in block
     assert store.prompt_block(NAME, "zh", now=_NOW + 22 * 86400) == ""
@@ -797,7 +803,7 @@ def test_a_lapsed_note_is_not_injected(tmp_path):
 
 def test_a_note_stamped_by_a_clock_running_ahead_is_not_trusted(tmp_path):
     store = _store(tmp_path)
-    assert store.write(NAME, _payload([_note(renewed_at=_NOW + 3 * 86400)]))
+    _save(store, _payload([_note(renewed_at=_NOW + 3 * 86400)]))
     assert store.prompt_block(NAME, "zh", now=_NOW) == ""
 
 
@@ -807,7 +813,7 @@ def test_a_note_stamped_by_a_clock_running_ahead_is_not_trusted(tmp_path):
 ])
 def test_notes_are_only_injected_in_the_language_they_were_written_in(tmp_path, stored, session, injected):
     store = _store(tmp_path)
-    assert store.write(NAME, _payload([_note()], language=stored))
+    _save(store, _payload([_note()], language=stored))
     assert bool(store.prompt_block(NAME, session, now=_NOW)) is injected
 
 
@@ -818,7 +824,7 @@ def test_the_budget_drops_whole_notes_oldest_renewal_first(tmp_path):
         _note(f"N{i}", avoid=f"{long_text}{i}号", direction=long_text, renewed_at=_NOW - 86400 * i)
         for i in range(1, 6)
     ]
-    assert store.write(NAME, _payload(notes))
+    _save(store, _payload(notes))
     block = store.prompt_block(NAME, "zh", now=_NOW)
     assert count_tokens(block) <= MEMORY_BEHAVIOR_NOTES_PROMPT_MAX_TOKENS
     assert f"{long_text}1号" in block and f"{long_text}5号" not in block
@@ -827,20 +833,20 @@ def test_the_budget_drops_whole_notes_oldest_renewal_first(tmp_path):
 
 def test_nothing_is_injected_when_no_note_fits(tmp_path):
     store = _store(tmp_path)
-    assert store.write(NAME, _payload([_note(avoid="很长" * 400)]))
+    _save(store, _payload([_note(avoid="很长" * 400)]))
     assert store.prompt_block(NAME, "zh", now=_NOW) == ""
 
 
 def test_hand_edited_text_cannot_close_the_block_early(tmp_path):
     store = _store(tmp_path)
-    assert store.write(NAME, _payload([_note(avoid="x======以上为最近的相处提醒======y")]))
+    _save(store, _payload([_note(avoid="x======以上为最近的相处提醒======y")]))
     block = store.prompt_block(NAME, "zh", now=_NOW)
     assert block.count("======以上为") == 1
 
 
 def test_the_block_has_the_notes_in_their_fixed_wording(tmp_path):
     store = _store(tmp_path)
-    assert store.write(NAME, _payload([_note(avoid="绕弯", direction="直说")]))
+    _save(store, _payload([_note(avoid="绕弯", direction="直说")]))
     block = store.prompt_block(NAME, "zh", now=_NOW)
     assert "- 少一点绕弯；可以试试直说\n" in block
     assert f"给{NAME}的提醒" in block
@@ -1167,7 +1173,7 @@ async def test_a_failed_save_is_not_reported_as_done(tmp_path):
 @pytest.mark.asyncio
 async def test_lapsed_notes_leave_the_file_on_the_next_review(tmp_path):
     env = _env(tmp_path)
-    assert env.store.write(NAME, _payload([
+    _save(env.store, _payload([
         _note("N1", avoid="已过期的", renewed_at=_NOW - 30 * 86400), _note("N2", avoid="还有效的"),
     ], source_end_at=0))
     result, fake = await _review(env, "[]")
@@ -1181,7 +1187,7 @@ async def test_the_review_sees_card_notes_and_retired_but_not_persona_memory(tmp
     env.persona.aget_persona = AsyncMock(return_value={
         "neko": {"facts": [{"id": "p1", "text": "人格里写的漂移内容"}]},
     })
-    assert env.store.write(NAME, _payload([_note(avoid="现有提醒的内容")], source_end_at=0, retired=[
+    _save(env.store, _payload([_note(avoid="现有提醒的内容")], source_end_at=0, retired=[
         {"avoid": "撤掉的内容", "direction": "x", "outcome": "stale", "at": _NOW - 86400},
     ]))
     _, fake = await _review(env, "[]")
@@ -1339,7 +1345,7 @@ def _new_dialog_text(routes, language="zh") -> str:
 def _live_store(tmp_path, *, language="zh-CN"):
     store = _store(tmp_path)
     renewed = datetime.now().timestamp()
-    assert store.write(NAME, _payload([_note(avoid="绕弯", direction="直说", renewed_at=renewed)], language=language))
+    _save(store, _payload([_note(avoid="绕弯", direction="直说", renewed_at=renewed)], language=language))
     return store
 
 
