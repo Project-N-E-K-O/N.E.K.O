@@ -111,7 +111,7 @@ async def test_automatic_model_pass_checks_only_the_selected_role_and_catches_up
     Image.DecompressionBombError('synthetic private path'),
     KeyError('synthetic private path'),
 ], ids=lambda error: type(error).__name__)
-async def test_automatic_model_failure_outside_adapter_vocabulary_records_the_retry_gate(tmp_path, error):
+async def test_automatic_model_failure_outside_adapter_vocabulary_records_the_retry_gate(tmp_path, capsys, error):
     runtime, service, _ = setup_runtime(tmp_path, ModelService())
 
     class Adapter:
@@ -140,7 +140,11 @@ async def test_automatic_model_failure_outside_adapter_vocabulary_records_the_re
         bindings = runtime.state.bindings()
         generation = bindings[0]['generation']
         cleanups.clear()
+        capsys.readouterr()
         await runtime._automatic_models(bindings, presence)
+        output = capsys.readouterr().out
+        assert f'[chat-sync] model_step_unavailable {type(error).__name__}' in output
+        assert 'synthetic private path' not in output
 
         with closing(runtime.scheduler._connect()) as conn:
             task = conn.execute("SELECT * FROM scheduler_tasks WHERE domain=? AND channel='model'", (key,)).fetchone()
@@ -157,6 +161,32 @@ async def test_automatic_model_failure_outside_adapter_vocabulary_records_the_re
         runtime.scheduler.retry_model(key)
         await runtime._automatic_models(bindings, presence)
         assert runtime.scheduler.last_error(key) is None
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_expected_automatic_model_failure_stays_out_of_the_console(tmp_path, capsys):
+    runtime, _, _ = setup_runtime(tmp_path, ModelService())
+
+    class Adapter:
+        async def read(self, _uid):
+            raise ValueError('cloud_model_source_unavailable')
+
+    runtime.models.adapter = Adapter()
+
+    async def current_character():
+        return UID
+
+    runtime.current_character_uid_provider = current_character
+    try:
+        await runtime.configure('https://sync.test')
+        await runtime.enable(UID, 'Synthetic')
+        presence = await runtime.session_presence_provider()
+        capsys.readouterr()
+        await runtime._automatic_models(runtime.state.bindings(), presence)
+        assert 'model_step_unavailable' not in capsys.readouterr().out
+        assert runtime.scheduler.last_error(DOMAIN.key()) == 'chat_sync_unavailable'
     finally:
         await runtime.close()
 

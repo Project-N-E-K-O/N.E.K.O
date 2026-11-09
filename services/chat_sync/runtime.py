@@ -662,6 +662,9 @@ class DesktopChatSyncRuntime:
                 # Model packages also fail outside the adapter vocabulary (BadZipFile,
                 # DecompressionBombError, KeyError). Left uncaught they skip the retry
                 # gate and repeat on every poll; failure() stores only a fixed code.
+                if not isinstance(exc, (OSError, ValueError, sqlite3.Error)):
+                    # Only the class name: exception text may hold paths or signed URLs.
+                    print(f"[chat-sync] model_step_unavailable {type(exc).__name__}")
                 if getattr(exc, "status_code", None) == 404:
                     await asyncio.to_thread(self.scheduler.success, domain, "model")
                 else:
