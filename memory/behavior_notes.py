@@ -103,6 +103,7 @@ from config import (
 from config.prompts.prompts_behavior_notes import (
     get_behavior_review_none,
     get_behavior_review_prompt,
+    get_behavior_review_wording,
     render_behavior_note_item,
     render_behavior_notes_block,
     render_behavior_review_block,
@@ -1163,14 +1164,14 @@ def _run_record(
 ) -> dict[str, Any]:
     """The update record's account of the call: counts and identifiers, no text.
 
-    ``prompt`` fingerprints the fixed template, before anything is filled in, so a
+    ``prompt`` fingerprints the fixed wording, before anything is filled in, so a
     later reader can tell which wording produced an entry.
     """
-    template = get_behavior_review_prompt(language)
+    wording = get_behavior_review_wording(language)
     roles = Counter(line.role for line in sample.lines.values())
     return {
         "model": model[:_HISTORY_MODEL_MAX_CHARS],
-        "prompt": hashlib.sha256(template.encode("utf-8")).hexdigest()[:12],
+        "prompt": hashlib.sha256(wording.encode("utf-8")).hexdigest()[:12],
         "sample": {
             "messages": message_count,
             "sittings": sitting_count,

@@ -479,6 +479,18 @@ def get_behavior_review_prompt(lang: str | None) -> str:
     return _loc(BEHAVIOR_REVIEW_PROMPT, behavior_notes_locale(lang))
 
 
+def get_behavior_review_wording(lang: str | None) -> str:
+    """All the fixed wording a review is given, before anything is filled in."""
+    locale = behavior_notes_locale(lang)
+    blocks = _loc(BEHAVIOR_REVIEW_BLOCKS, locale)
+    return "\n".join([
+        _loc(BEHAVIOR_REVIEW_PROMPT, locale),
+        *(blocks[key] for key in sorted(blocks)),
+        _loc(BEHAVIOR_REVIEW_NONE, locale),
+        _loc(BEHAVIOR_NOTE_ITEM, locale),
+    ])
+
+
 def render_behavior_review_block(key: str, body: str, lang: str | None) -> str:
     table = _loc(BEHAVIOR_REVIEW_BLOCKS, behavior_notes_locale(lang))
     return table[key].replace("{BODY}", body)

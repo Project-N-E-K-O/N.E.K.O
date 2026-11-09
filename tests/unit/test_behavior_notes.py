@@ -31,6 +31,7 @@ from config import (
     MEMORY_BEHAVIOR_REVIEW_MIN_REPLIES,
     MEMORY_BEHAVIOR_REVIEW_MIN_SESSIONS,
 )
+from config.prompts import prompts_behavior_notes
 from config.prompts.prompts_behavior_notes import (
     BEHAVIOR_NOTE_ITEM,
     BEHAVIOR_NOTES_BLOCK,
@@ -1767,12 +1768,34 @@ async def test_the_prompt_fingerprint_changes_with_the_wording_and_nothing_else(
     await _review(second, "[]", other_talk)
     print_a = first.store.read(NAME)["history"][0]["prompt"]
     assert re.fullmatch(r"[0-9a-f]{12}", print_a)
-    assert second.store.read(NAME)["history"][0]["prompt"] == print_a, "对话不同、模板相同时指纹必须相同"
+    assert second.store.read(NAME)["history"][0]["prompt"] == print_a, "对话不同、固定文字相同时指纹必须相同"
 
-    third = _env(tmp_path / "c")
-    with patch.object(bn, "get_behavior_review_prompt", return_value="改过的模板 {SAMPLE}"):
-        await _review(third, "[]")
-    assert third.store.read(NAME)["history"][0]["prompt"] != print_a
+
+def _reworded(table_name: str) -> dict:
+    """The replacement entry for one locale, with its placeholders intact."""
+    table = getattr(prompts_behavior_notes, table_name)
+    locale = prompts_behavior_notes.behavior_notes_locale("zh-CN")
+    entry = table[locale]
+    if isinstance(entry, dict):
+        return {locale: {**entry, "NOTES": entry["NOTES"] + "改"}}
+    return {locale: entry + "改"}
+
+
+@pytest.mark.parametrize("table_name", [
+    "BEHAVIOR_REVIEW_PROMPT", "BEHAVIOR_REVIEW_BLOCKS", "BEHAVIOR_REVIEW_NONE", "BEHAVIOR_NOTE_ITEM",
+])
+def test_rewording_any_fixed_text_changes_the_fingerprint(table_name):
+    sample = bn.build_review_sample(_enough_messages())
+
+    def fingerprint():
+        return bn._run_record(
+            sample, model="m", language="zh-CN", message_count=1, sitting_count=1,
+        )["prompt"]
+
+    before = fingerprint()
+    with patch.dict(getattr(prompts_behavior_notes, table_name), _reworded(table_name)):
+        assert fingerprint() != before
+    assert fingerprint() == before
 
 
 @pytest.mark.asyncio
