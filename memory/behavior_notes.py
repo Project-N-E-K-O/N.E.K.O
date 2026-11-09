@@ -68,7 +68,7 @@ import time
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
+from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
 
 from config import (
     HABITUAL_PHRASE_SESSION_GAP_SECONDS,
