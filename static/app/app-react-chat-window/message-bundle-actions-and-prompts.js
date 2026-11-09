@@ -1908,7 +1908,7 @@
         return hadVisibleState;
     }
 
-    function replaceMessages(messages, historyRestore) {
+    function replaceMessages(messages, historyRestore, keepClearedScreen) {
         cancelMessageReactions();
         // Compute fallback start past any explicit sortKey in incoming batch
         var maxIncomingSortKey = Array.isArray(messages)
@@ -1939,6 +1939,7 @@
         window.dispatchEvent(new CustomEvent('react-chat-window:messages-replaced', {
             detail: {
                 conversationReset: I.state.messages.length === 0,
+                keepClearedScreen: keepClearedScreen === true,
                 historyRestore: historyRestore === true,
                 streamingTurnIds: historyRestore ? I.state.messages.filter(function (message) {
                     return message.role === 'assistant' && message.status === 'streaming' && message.turnId;
@@ -1949,8 +1950,8 @@
         return I.state.messages;
     }
 
-    I.setMessages = function setMessages(messages) {
-        return replaceMessages(messages);
+    I.setMessages = function setMessages(messages, options) {
+        return replaceMessages(messages, false, !!(options && options.keepClearedScreen));
     };
 
     function mergeChatHistoryReplyBlocks(savedBlocks, liveBlocks, pendingMusicCommand) {
@@ -2291,6 +2292,7 @@
     };
 
     var MAX_MESSAGES = 50;
+    window.reactChatWindowHost.maxMessages = MAX_MESSAGES;
 
     function getNextAppendSortKey() {
         var maxExistingSortKey = Array.isArray(I.state.messages)

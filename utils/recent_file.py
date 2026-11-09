@@ -14,7 +14,8 @@
 
 """Cross-process serialization for every read and write of ``<character>/recent.json``.
 
-This module is deliberately a leaf. ``memory``, ``main_routers`` and ``utils`` can all
+This module is deliberately a leaf: it uses ``utils.file_utils``, ``filelock``
+and standard-library primitives. ``memory``, ``main_routers`` and ``utils`` can all
 import it without dragging in the memory god-module and without inverting the
 dependency direction.
 
@@ -29,14 +30,14 @@ Both helpers block on file IO. Call them from a worker thread
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import math
 import os
 import re
 import stat
-import threading
 import tempfile
+import threading
 import time
 from contextlib import contextmanager
 from typing import Any, Iterator
@@ -73,6 +74,7 @@ __all__ = [
     "recent_file_locks",
     "read_recent_text",
     "read_recent_text_unlocked",
+    "read_recent_write_receipt_unlocked",
     "release_recent_file_locks",
     "restore_recent_deletions",
     "restore_recent_registry_state",
@@ -129,36 +131,42 @@ _STALL_REPORT_AFTER_SECONDS = 10.0
 # Deliberately avoid RLock: every *_unlocked helper requires caller ownership; reentrancy would merely hide
 # bugs where an inner nested RMW persists the outer transaction's partially modified state.
 class _RecentFileLock:
-    """Keep thread exclusion and extend the same critical section across processes."""
+    """Keep the nonreentrant thread gate and serialize independent services."""
 
     def __init__(self, path):
         self._path = path
         self._thread = threading.Lock()
         # Lock files must survive character moves/deletion without recreating
         # deleted directories or colliding when two character folders merge.
-        key = hashlib.sha256(os.path.realpath(path).encode('utf-8')).hexdigest()
+        key = hashlib.sha256(os.fsencode(os.path.realpath(path))).hexdigest()
         user = str(os.getuid()) if hasattr(os, 'getuid') else 'user'
         self._file = FileLock(os.path.join(tempfile.gettempdir(), f'neko-recent-locks-{user}', key + '.lock'), thread_local=False)
         # (thread ident, thread name, monotonic acquire time) of the current owner, for stall reports.
         self._holder: tuple[int, str, float] | None = None
 
-    def acquire(self, timeout: float | None = None) -> bool:
-        """Block until held; with ``timeout`` (seconds) return False instead of waiting longer."""
+    def acquire(self, blocking: bool = True, timeout: float | None = None) -> bool:
+        """Block until held; with ``timeout`` (seconds) or ``blocking=False`` return False instead of waiting longer."""
+        if not blocking:
+            timeout = 0.0
+        elif timeout is not None and timeout < 0:
+            timeout = None
         deadline = None if timeout is None else time.monotonic() + timeout
-        if not self._wait('thread', self._acquire_thread, deadline):
+        if not self._wait('thread', self._acquire_thread, deadline, report=blocking):
             return False
         # Recorded before the file stage: an in-process waiter must see this thread
         # as the holder even while it is still waiting on another process.
         current = threading.current_thread()
         self._holder = (current.ident, current.name, time.monotonic())
         try:
+            # Lock files must outlive renames and deletes, and acquiring a stale
+            # path must never recreate its character directory.
             directory = os.path.dirname(self._file.lock_file)
             os.makedirs(directory, mode=0o700, exist_ok=True)
             info = os.lstat(directory)
             if (not stat.S_ISDIR(info.st_mode) or (hasattr(os, 'getuid')
                     and (info.st_uid != os.getuid() or info.st_mode & 0o077))):
                 raise PermissionError(f'unsafe recent lock directory: {directory}')
-            if not self._wait('file', self._acquire_file, deadline):
+            if not self._wait('file', self._acquire_file, deadline, report=blocking):
                 self._holder = None
                 self._thread.release()
                 return False
@@ -178,8 +186,11 @@ class _RecentFileLock:
             return False
         return True
 
-    def _wait(self, stage, attempt, deadline) -> bool:
-        """Run one acquire stage, reporting once when it outlasts the stall threshold."""
+    def _wait(self, stage, attempt, deadline, *, report=True) -> bool:
+        """Run one acquire stage, reporting once when it outlasts the stall threshold.
+
+        Non-blocking probes pass ``report=False``: failing one is the expected answer, not a stall.
+        """
         started = time.monotonic()
         first = _STALL_REPORT_AFTER_SECONDS
         # Decided up front: a timed acquire may return a clock tick before the deadline.
@@ -188,7 +199,8 @@ class _RecentFileLock:
             first = max(0.0, deadline - started)
         if attempt(first):
             return True
-        self._report_stall(stage, time.monotonic() - started, timed_out=last_slice)
+        if report:
+            self._report_stall(stage, time.monotonic() - started, timed_out=last_slice)
         if last_slice:
             return False
         if deadline is None:
@@ -198,7 +210,8 @@ class _RecentFileLock:
             return False
         if attempt(remaining):
             return True
-        self._report_stall(stage, time.monotonic() - started, timed_out=True)
+        if report:
+            self._report_stall(stage, time.monotonic() - started, timed_out=True)
         return False
 
     def _report_stall(self, stage, waited, *, timed_out):
@@ -235,7 +248,7 @@ class _RecentFileLock:
         self.acquire()
         return self
 
-    def __exit__(self, *_):
+    def __exit__(self, *args):
         self.release()
 
 
@@ -276,7 +289,7 @@ def _resolve_key_unlocked(key: str) -> str:
 
 
 def recent_file_lock(path: Any) -> _RecentFileLock:
-    """Return the process-wide lock guarding one recent.json path."""
+    """Return the cross-process lock guarding one recent.json path."""
     with _LOCKS_GUARD:
         key = _resolve_key_unlocked(_lock_key(path))
         lock = _LOCKS.get(key)
@@ -375,8 +388,14 @@ def acquire_recent_file_locks(paths: list[Any]) -> list[_RecentFileLock]:
                     lock = _RecentFileLock(key)
                     _LOCKS[key] = lock
                 locks.append(lock)
-        for lock in locks:
-            lock.acquire()
+        acquired = []
+        try:
+            for lock in locks:
+                lock.acquire()
+                acquired.append(lock)
+        except BaseException:
+            release_recent_file_locks(acquired)
+            raise
         with _LOCKS_GUARD:
             latest_redirects = _redirect_keys_touching_unlocked(original_keys)
             latest_scope = original_keys | latest_redirects
@@ -602,7 +621,50 @@ def read_recent_text(path: Any, *, encoding: str = "utf-8") -> str:
         return read_recent_text_unlocked(resolved_path, encoding=encoding)
 
 
-def write_recent_payload_unlocked(path: Any, payload: Any) -> None:
+def _write_receipts_filename(path: Any) -> str:
+    return "." + os.path.basename(os.fspath(path)) + ".write-receipts.json"
+
+
+def _recent_text_hash_unlocked(path: Any) -> str | None:
+    try:
+        text = read_recent_text_unlocked(path)
+    except FileNotFoundError:
+        return None
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _resolve_recent_write_receipts_unlocked(path: Any) -> dict:
+    try:
+        with open(recent_sidecar_path(path, _write_receipts_filename(path)), encoding="utf-8") as handle:
+            receipts = json.load(handle)
+    except FileNotFoundError:
+        return {}
+    if not isinstance(receipts, dict) or any(
+        not isinstance(value, dict) or set(value) != {"token", "before", "after", "applied"}
+        or not isinstance(value["token"], str) or not isinstance(value["after"], str)
+        or (value["before"] is not None and not isinstance(value["before"], str))
+        or (value["applied"] is not None and type(value["applied"]) is not bool and value["applied"] != "conflict")
+        for value in receipts.values()
+    ):
+        raise ValueError("invalid_recent_write_receipt")
+    unresolved = [value for value in receipts.values() if value["applied"] is None]
+    if unresolved:
+        current = _recent_text_hash_unlocked(path)
+        for value in unresolved:
+            value["applied"] = current == value["after"] if current in (value["before"], value["after"]) else "conflict"
+        write_recent_sidecar_unlocked(path, _write_receipts_filename(path), receipts)
+    return receipts
+
+
+def read_recent_write_receipt_unlocked(path: Any, key: str, token: str) -> bool:
+    """Resolve a staged replacement before another writer can obscure its outcome."""
+    receipt = _resolve_recent_write_receipts_unlocked(path).get(key)
+    if receipt and receipt["token"] == token and receipt["applied"] == "conflict":
+        raise ValueError("recent_write_receipt_conflict")
+    return bool(receipt and receipt["token"] == token and receipt["applied"] is True)
+
+
+def write_recent_payload_unlocked(path: Any, payload: Any, *, receipt: tuple[str, str] | None = None) -> None:
     """Serialize and atomically replace the file. The caller MUST already hold the lock.
 
     ``atomic_write_json`` creates the parent directory itself, so callers do not
@@ -619,6 +681,21 @@ def write_recent_payload_unlocked(path: Any, payload: Any) -> None:
     written to the ``RETIRED_KEYS_FILENAME`` sidecar
     (:func:`retire_removed_keyed_entries`).
     """
+    # Seal a prior replacement before any ordinary local edit. The receipt is
+    # staged before os.replace, so a crash can be resolved from either file hash.
+    # Keep one receipt per consumer; later edits retain its completed outcome.
+    try:
+        receipts = _resolve_recent_write_receipts_unlocked(path)
+    except (OSError, ValueError):
+        if receipt is not None:
+            raise
+        receipts = None
+    if receipt is not None:
+        key, token = receipt
+        text = json.dumps(payload, indent=2, ensure_ascii=False)
+        receipts[key] = {"token": token, "before": _recent_text_hash_unlocked(path),
+                         "after": hashlib.sha256(text.encode("utf-8")).hexdigest(), "applied": None}
+        write_recent_sidecar_unlocked(path, _write_receipts_filename(path), receipts)
     retire_removed_keyed_entries(path, None, payload)
     atomic_write_json(path, payload, indent=2, ensure_ascii=False)
     with _LOCKS_GUARD:

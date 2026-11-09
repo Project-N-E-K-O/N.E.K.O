@@ -13,7 +13,7 @@ from utils.cloudsave_runtime import assert_cloudsave_writable
 from utils.llm_client import message_metadata, messages_to_dict
 from utils.recent_file import (
     get_recent_pending_unlocked, read_recent_text_unlocked, recent_file_access,
-    set_recent_pending_unlocked, write_recent_payload_unlocked,
+    read_recent_write_receipt_unlocked, set_recent_pending_unlocked, write_recent_payload_unlocked,
 )
 
 
@@ -73,7 +73,7 @@ def _project(rows, *, assign=False):
         metadata = message_metadata(row)
         proof = metadata.get("chat_original_source")
         proof = proof if isinstance(proof, dict) else {}
-        key = MEMO_ID if role == "memo" else metadata.get(ID_KEY) or proof.get("messageId")
+        key = MEMO_ID if role == "memo" else metadata.get(ID_KEY) or proof.get("recordId") or proof.get("messageId")
         try:
             identity(key)
             if key in seen or (role != "memo" and key == MEMO_ID):
@@ -87,7 +87,9 @@ def _project(rows, *, assign=False):
         original_time = metadata.get(TIME_KEY, proof.get("originalTime")) if role != 'memo' else None
         if (not isinstance(original_time, str) or not original_time.isascii() or not original_time.isdecimal()
                 or len(original_time) > 16 or int(original_time) > 9_007_199_254_740_991):
-            original_time = None
+            from memory.long_term_sync import original_source_time
+            millis = original_source_time(original_time)
+            original_time = str(millis) if millis is not None and millis >= 0 else None
         if assign and role != 'memo':
             _writable_metadata(row)[TIME_KEY] = original_time
         result.append({"id": key, "role": role, "text": _text(data), "originalTime": original_time})
@@ -116,7 +118,11 @@ class RecentMemoryAdapter:
                 set_recent_pending_unlocked(resolved, [])
             return {"entries": projected, "fingerprint": _fingerprint(rows)}
 
-    def apply(self, name, incoming, expected_fingerprint):
+    def applied(self, name, receipt):
+        with recent_file_access(self.path(name)) as resolved:
+            return read_recent_write_receipt_unlocked(resolved, *receipt)
+
+    def apply(self, name, incoming, expected_fingerprint, *, receipt=None):
         incoming = entries(incoming)
         path = self.path(name)
         with recent_file_access(path) as resolved:
@@ -144,6 +150,8 @@ class RecentMemoryAdapter:
             for index, row in enumerate(rows):
                 if index not in owned:
                     projected.insert(min(index, len(projected)), row)
-            write_recent_payload_unlocked(resolved, projected)
+            write_recent_payload_unlocked(resolved, projected, receipt=receipt)
             set_recent_pending_unlocked(resolved, [])
+            if receipt is not None:
+                read_recent_write_receipt_unlocked(resolved, *receipt)
             return True

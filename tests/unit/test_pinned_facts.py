@@ -1279,13 +1279,22 @@ def _fact_store(tmp_path):
     return fs, recorder
 
 
+def _persisting(rows, *, accept=lambda candidate: True):
+    """Stand-in persistence reporting which candidates passed its source checks."""
+    async def persist(name, extracted, **kwargs):
+        if kwargs.get("source_accepted") is not None:
+            kwargs["source_accepted"].extend(c for c in extracted if accept(c))
+        return rows
+    return AsyncMock(side_effect=persist)
+
+
 def test_stage1_and_stage2_entry_feeds_the_raw_result(tmp_path):
     fs, recorder = _fact_store(tmp_path)
     extracted = [_pin("主人下周三考试")]
     fs._allm_extract_facts = AsyncMock(return_value=extracted)
     # Dedup folded the fact into an existing row: nothing new persisted, but
     # the pinned entry still needs its renewal.
-    fs._apersist_new_facts = AsyncMock(return_value=[])
+    fs._apersist_new_facts = _persisting([])
     fs.aload_facts = AsyncMock(return_value=[])
 
     window_end = datetime(2026, 11, 1, 21, 30)
@@ -1299,13 +1308,33 @@ def test_stage1_and_stage2_entry_feeds_the_raw_result(tmp_path):
     )
 
 
+@pytest.mark.parametrize("entry", ["stage1", "extract_facts", "path_b"])
+def test_candidates_rejected_by_source_checks_never_reach_the_pinned_section(tmp_path, entry):
+    """A retired or misattributed candidate that persistence rejected must not be pinned."""
+    fs, recorder = _fact_store(tmp_path)
+    kept, rejected = _pin("主人下周三考试"), _pin("主人周五面试")
+    fs._allm_extract_facts = AsyncMock(return_value=[kept, rejected])
+    fs._allm_extract_facts_with_known_pool = AsyncMock(return_value=[kept, rejected])
+    fs._apersist_new_facts = _persisting([], accept=lambda candidate: candidate is kept)
+    fs.aload_facts = AsyncMock(return_value=[])
+
+    if entry == "stage1":
+        asyncio.run(fs.aextract_facts_and_detect_signals(_NAME, []))
+    elif entry == "extract_facts":
+        asyncio.run(fs.extract_facts([], _NAME))
+    else:
+        asyncio.run(fs.aextract_facts_with_known_pool(_NAME, [], []))
+
+    assert recorder.aadmit_extracted.await_args.args == (_NAME, [kept])
+
+
 def test_extract_facts_feeds_private_chat_only(tmp_path):
     from memory.scopes import MemorySubject
 
     fs, recorder = _fact_store(tmp_path)
     extracted = [_pin("主人下周三考试")]
     fs._allm_extract_facts = AsyncMock(return_value=extracted)
-    fs._apersist_new_facts = AsyncMock(return_value=[{"id": "f1"}])
+    fs._apersist_new_facts = _persisting([{"id": "f1"}])
 
     assert asyncio.run(fs.extract_facts([], _NAME)) == [{"id": "f1"}]
     recorder.aadmit_extracted.assert_awaited_once_with(
@@ -1325,7 +1354,7 @@ def test_path_b_feeds_private_chat_only_with_its_source_default(tmp_path):
     fs, recorder = _fact_store(tmp_path)
     extracted = [_pin("主人周五面试", source="user_observation")]
     fs._allm_extract_facts_with_known_pool = AsyncMock(return_value=extracted)
-    fs._apersist_new_facts = AsyncMock(return_value=[])
+    fs._apersist_new_facts = _persisting([])
 
     window_end = datetime(2026, 11, 1, 21, 30)
     asyncio.run(fs.aextract_facts_with_known_pool(
@@ -1347,7 +1376,7 @@ def test_admission_failure_never_breaks_extraction(tmp_path):
     fs, recorder = _fact_store(tmp_path)
     recorder.aadmit_extracted.side_effect = RuntimeError("disk full")
     fs._allm_extract_facts = AsyncMock(return_value=[_pin("主人下周三考试")])
-    fs._apersist_new_facts = AsyncMock(return_value=[{"id": "f1"}])
+    fs._apersist_new_facts = _persisting([{"id": "f1"}])
 
     assert asyncio.run(fs.extract_facts([], _NAME)) == [{"id": "f1"}]
 
@@ -1357,7 +1386,7 @@ def test_end_to_end_legacy_output_through_fact_store(tmp_path, monkeypatch):
     fs, _ = _fact_store(tmp_path)
     store = _store(tmp_path)
     fs.attach_pinned_fact_store(store)
-    fs._apersist_new_facts = AsyncMock(return_value=[])
+    fs._apersist_new_facts = _persisting([])
     fs._allm_extract_facts = AsyncMock(return_value=[
         {"text": "主人喜欢喝咖啡", "importance": 7, "entity": "master"},
     ])
