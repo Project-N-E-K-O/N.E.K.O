@@ -32,7 +32,7 @@ def http_client():
         timeout=30,
         follow_redirects=False,
         verify=_get_default_ssl_context(),
-        headers=ensure_user_agent(),
+        headers=ensure_user_agent({}),
     )
 
 

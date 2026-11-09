@@ -34,6 +34,13 @@ def tokens(**kw):
     }
 
 
+def test_real_auth_http_client_initializes_project_headers():
+    with auth.http_client() as client:
+        assert client.headers["User-Agent"]
+        assert not client.follow_redirects
+        assert client.timeout.connect == 30
+
+
 @pytest.fixture
 def store(tmp_path):
     result = CredentialStore(tmp_path / "credentials.json")
