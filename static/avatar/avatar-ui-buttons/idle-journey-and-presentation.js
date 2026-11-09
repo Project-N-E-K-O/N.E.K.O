@@ -1907,6 +1907,10 @@ function _resumeNekoIdleCat1Journey(button) {
 function _setNekoIdleReturnArtSource(art, nextSrc, tier, options = {}) {
     if (!art || !nextSrc) return;
 
+    const playbackSrc = options.restartAnimation === true
+        ? _buildNekoIdleAnimationRestartUrl(nextSrc, options.playbackToken)
+        : nextSrc;
+
     const notifyTransitionEnd = () => {
         if (typeof options.onTransitionEnd !== 'function') return;
         try { options.onTransitionEnd(); } catch (_) {}
@@ -1927,8 +1931,8 @@ function _setNekoIdleReturnArtSource(art, nextSrc, tier, options = {}) {
         _cleanupNekoIdleArtTransition(art);
         _clearNekoIdleGifPlaybackSource(art);
         art.removeAttribute(_NEKO_IDLE_CAT1_PLAY_FINISHING_ATTR);
-        art.src = nextSrc;
-        _syncNekoIdleCat1QuestionMarkKeyboardAvailabilityForArt(art, tier, nextSrc);
+        art.src = playbackSrc;
+        _syncNekoIdleCat1QuestionMarkKeyboardAvailabilityForArt(art, tier, playbackSrc);
         notifyTransitionEnd();
         return;
     }
@@ -1942,7 +1946,7 @@ function _setNekoIdleReturnArtSource(art, nextSrc, tier, options = {}) {
 
     const button = art.closest('.neko-idle-return-btn');
     if (!button) {
-        art.src = nextSrc;
+        art.src = playbackSrc;
         notifyTransitionEnd();
         return;
     }
@@ -1957,9 +1961,9 @@ function _setNekoIdleReturnArtSource(art, nextSrc, tier, options = {}) {
     const finish = () => {
         _clearNekoIdleGifPlaybackSource(art);
         art.removeAttribute(_NEKO_IDLE_CAT1_PLAY_FINISHING_ATTR);
-        art.src = nextSrc;
+        art.src = playbackSrc;
         _cleanupNekoIdleArtTransition(art);
-        _syncNekoIdleCat1QuestionMarkKeyboardAvailabilityForArt(art, tier, nextSrc);
+        _syncNekoIdleCat1QuestionMarkKeyboardAvailabilityForArt(art, tier, playbackSrc);
         notifyTransitionEnd();
     };
 
@@ -2173,7 +2177,10 @@ function _applyNekoIdleReturnPresentation(button, tier) {
             _setNekoIdleReturnDragActionArt(button, normalizedTier);
         } else if (visualActionActive && normalizedTier === _NEKO_IDLE_TIER_CAT1) {
             const visualActionSrc = _getNekoIdleCat1VisualActionAssetUrl(button);
-            if ((art.getAttribute('src') || '') !== visualActionSrc) {
+            if (!_isNekoIdleAnimationRestartUrlForSource(
+                art.getAttribute('src') || '',
+                visualActionSrc
+            )) {
                 _setNekoIdleReturnArtSource(
                     art,
                     visualActionSrc,

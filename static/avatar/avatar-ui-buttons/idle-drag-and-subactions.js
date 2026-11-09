@@ -369,6 +369,33 @@ function _getNekoIdleAnimationDurationMs(src) {
         : _getNekoIdleGifDurationMs(src);
 }
 
+function _buildNekoIdleAnimationRestartUrl(src, playbackToken) {
+    if (!src || !playbackToken) return src || '';
+    try {
+        const url = new URL(src, window.location.href);
+        if (!/\/static\/assets\/cat-resources\/appearance\/.+\.(?:gif|webp)$/i.test(url.pathname)) {
+            return src;
+        }
+        url.searchParams.set('entry', String(playbackToken));
+        return url.href;
+    } catch (_) {
+        return src;
+    }
+}
+
+function _isNekoIdleAnimationRestartUrlForSource(candidateSrc, baseSrc) {
+    if (!candidateSrc || !baseSrc) return false;
+    try {
+        const candidate = new URL(candidateSrc, window.location.href);
+        const base = new URL(baseSrc, window.location.href);
+        candidate.searchParams.delete('entry');
+        base.searchParams.delete('entry');
+        return candidate.href === base.href;
+    } catch (_) {
+        return candidateSrc === baseSrc;
+    }
+}
+
 function _cleanupNekoIdleArtTransition(art) {
     if (!art) return;
     if (art.__nekoIdleTransitionTimer) {

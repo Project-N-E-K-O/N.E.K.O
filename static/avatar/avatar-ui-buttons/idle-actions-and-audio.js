@@ -388,6 +388,7 @@ function _getNekoIdleCat1VisualActionState(button) {
             token: 0,
             timer: 0,
             entryTimer: 0,
+            entryPlaybackToken: 0,
             resumeJourney: false,
             presentationOnTerminal: null
         };
@@ -595,8 +596,14 @@ function _playNekoIdleCat1VisualAction(button, actionKey, options = {}) {
         });
     };
     if (options.animateEntry === true) {
+        // Chromium shares an animated-image timeline across elements using the
+        // same URL. Alternate two bounded URLs so the post-fade main art starts
+        // at frame zero without growing the decoded-image cache indefinitely.
+        state.entryPlaybackToken = (state.entryPlaybackToken % 2) + 1;
         _setNekoIdleReturnArtSource(art, actionSrc, _NEKO_IDLE_TIER_CAT1, {
             animate: true,
+            restartAnimation: true,
+            playbackToken: state.entryPlaybackToken,
             onTransitionEnd: scheduleActionFinish
         });
         if (!finishSchedulingStarted) {
@@ -605,7 +612,7 @@ function _playNekoIdleCat1VisualAction(button, actionKey, options = {}) {
                 if (!currentState || !currentState.active ||
                     currentState.actionKey !== actionKey || currentState.token !== token) return;
                 const currentSrc = art.getAttribute('src') || '';
-                if (currentSrc !== actionSrc) {
+                if (!_isNekoIdleAnimationRestartUrlForSource(currentSrc, actionSrc)) {
                     _cancelNekoIdleCat1VisualAction(button, {
                         restoreArt: false,
                         reason: profile.cancelledReason

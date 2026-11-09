@@ -6,9 +6,11 @@ const vm = require('node:vm');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const ACTIONS_PATH = path.join(ROOT, 'static/avatar/avatar-ui-buttons/idle-actions-and-audio.js');
+const DRAG_PATH = path.join(ROOT, 'static/avatar/avatar-ui-buttons/idle-drag-and-subactions.js');
 const RETURN_PATH = path.join(ROOT, 'static/avatar/avatar-ui-buttons/methods-return.js');
 const PRESENTATION_PATH = path.join(ROOT, 'static/avatar/avatar-ui-buttons/idle-journey-and-presentation.js');
 const ACTIONS_SOURCE = fs.readFileSync(ACTIONS_PATH, 'utf8');
+const DRAG_SOURCE = fs.readFileSync(DRAG_PATH, 'utf8');
 const RETURN_SOURCE = fs.readFileSync(RETURN_PATH, 'utf8');
 const PRESENTATION_SOURCE = fs.readFileSync(PRESENTATION_PATH, 'utf8');
 
@@ -207,6 +209,9 @@ function harness(options = {}) {
     _isNekoIdleCat1EdgePeekActive: () => gates.edge,
     _isAnyNekoIdleCat1IndependentActionActive: () => gates.independent,
     _isNekoCatMindAudioActionActive: () => gates.audio,
+    _isNekoIdleAnimationRestartUrlForSource: (candidate, base) => (
+      candidate === base || candidate.startsWith(`${base}&entry=`)
+    ),
     _getNekoIdleReturnContainerFromButton: () => container,
     _syncNekoIdleCat1QuestionMarkKeyboardAvailabilityForButton: () => {},
     _isNekoIdleReturnDragActionActive: () => false,
@@ -221,11 +226,14 @@ function harness(options = {}) {
     _cleanupNekoIdleArtTransition: () => { cleanup.transition += 1; },
     _clearNekoIdleGifPlaybackSource: () => { cleanup.playback += 1; },
     _setNekoIdleReturnArtSource: (target, src, tier, sourceOptions) => {
+      const playbackSrc = sourceOptions.restartAnimation
+        ? `${src}&entry=${sourceOptions.playbackToken}`
+        : src;
       if (sourceOptions.animate) {
         target.__nekoIdleTransitionTo = src;
         target.__nekoIdleTransitionNext = { src };
       } else {
-        target.src = src;
+        target.src = playbackSrc;
         target.__nekoIdleTransitionTo = '';
         target.__nekoIdleTransitionNext = null;
       }
@@ -410,12 +418,14 @@ test('animated visual entry starts its full animation cycle only after the share
   assert.equal(h.sources.length, 1);
   assert.equal(h.sources[0].src, CASES.scared.url);
   assert.equal(h.sources[0].options.animate, true);
+  assert.equal(h.sources[0].options.restartAnimation, true);
+  assert.equal(h.sources[0].options.playbackToken, 1);
   assert.equal(typeof h.sources[0].options.onTransitionEnd, 'function');
   await flush();
   assert.equal(h.timers.length, 1, 'only the transition watchdog runs underneath the fade');
   assert.equal(h.timers[0].delay, 300);
 
-  h.art.src = CASES.scared.url;
+  h.art.src = `${CASES.scared.url}&entry=1`;
   h.art.__nekoIdleTransitionTo = '';
   h.art.__nekoIdleTransitionNext = null;
   h.sources[0].options.onTransitionEnd();
@@ -423,6 +433,52 @@ test('animated visual entry starts its full animation cycle only after the share
   assert.equal(h.timers[0].cleared, true);
   assert.equal(h.timers.length, 2);
   assert.equal(h.timers[1].delay, CASES.scared.duration);
+});
+
+test('animated entry alternates two bounded playback URLs so the main art starts a fresh timeline', async () => {
+  const h = harness();
+  for (const expectedToken of [1, 2, 1]) {
+    assert.equal(h.context._playNekoIdleCat1VisualAction(
+      h.button,
+      'scared',
+      { animateEntry: true },
+    ), true);
+    const source = h.sources.at(-1);
+    assert.equal(source.options.playbackToken, expectedToken);
+    h.art.src = `${CASES.scared.url}&entry=${expectedToken}`;
+    source.options.onTransitionEnd();
+    await flush();
+    h.cancel({ restoreArt: false, reason: 'test-cleanup' });
+  }
+});
+
+test('animation restart URLs preserve the canonical asset and version while changing the cache key', () => {
+  const source = between(
+    DRAG_SOURCE,
+    'function _buildNekoIdleAnimationRestartUrl',
+    'function _cleanupNekoIdleArtTransition',
+    'animation restart URL helpers',
+  );
+  const context = vm.createContext({
+    URL,
+    window: { location: { href: 'https://localhost/avatar.html' } },
+  });
+  vm.runInContext(source, context, { filename: DRAG_PATH });
+  const base = '/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-scared.webp?v=7';
+  const restarted = context._buildNekoIdleAnimationRestartUrl(base, 2);
+  assert.equal(
+    restarted,
+    'https://localhost/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-scared.webp?v=7&entry=2',
+  );
+  assert.equal(context._isNekoIdleAnimationRestartUrlForSource(restarted, base), true);
+  assert.equal(context._isNekoIdleAnimationRestartUrlForSource(
+    restarted,
+    '/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-happy.webp?v=7',
+  ), false);
+  assert.equal(
+    context._buildNekoIdleAnimationRestartUrl('/static/assets/neko-idle/cat1-question-mark.png', 2),
+    '/static/assets/neko-idle/cat1-question-mark.png',
+  );
 });
 
 test('interrupted animated entry releases the action instead of reporting an unseen cycle as done', async () => {
@@ -544,6 +600,7 @@ test('presentation sync preserves the active visual animation instead of restart
     _isNekoIdleCat1PlayActionActive: () => false,
     _isNekoIdleCat1VisualActionActive: () => true,
     _getNekoIdleCat1VisualActionAssetUrl: () => 'touch.gif?v=1',
+    _isNekoIdleAnimationRestartUrlForSource: (candidate, base) => candidate === base,
     _setNekoIdleReturnArtSource: (_art, src, tier, options) => writes.push({
       src, tier, options: { ...options },
     }),
