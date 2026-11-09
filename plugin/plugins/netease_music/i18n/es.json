@@ -31,8 +31,12 @@
   "playlist.playing": "Reproduciendo {name} en orden ({count} canciones).",
   "playlist.paused": "Cuatro canciones no disponibles. Di «siguiente» para continuar.",
   "playlist.ended": "Fin de la lista {name}.",
-  "entry.playlist.description": "Usa curate para elegir 6–8 canciones según la conversación y los gustos; cada elemento de tracks es «título | artista». search busca listas públicas por name. revise cambia las próximas canciones sin interrumpir la actual. save_current añade la canción confirmada a una lista local sin duplicados. save guarda toda la cola, replay reproduce una lista guardada, list muestra las listas, next avanza y stop detiene.",
+  "entry.playlist.description": "Usa curate para elegir 6–8 canciones según la conversación y los gustos; cada elemento de tracks es «título | artista». search busca listas públicas por name. revise cambia las próximas canciones sin interrumpir la actual. save_current añade la canción confirmada a una lista local sin duplicados. save guarda toda la cola, replay reproduce una lista guardada, list muestra las listas, next avanza y stop detiene. Por defecto, marcar la canción como favorita en NetEase o añadirla a la lista indicada. Usar save_current/save solo para guardado local explícito. Respetar la cantidad solicitada.",
   "playlist.not_found": "No se encontró ninguna lista local guardada llamada «{name}». Usa el nombre exacto con el que se guardó.",
   "playlist.replay_need_name": "¿Qué lista local guardada quieres volver a reproducir?",
-  "playlist.ambiguous": "Varias listas guardadas podrían coincidir: {names}. Elige el nombre exacto que quieres reproducir."
+  "playlist.ambiguous": "Varias listas guardadas podrían coincidir: {names}. Elige el nombre exacto que quieres reproducir.",
+  "playlist.local_required": "El guardado local debe solicitarse explícitamente; se guarda en NetEase por defecto.",
+  "playlist.loading": "Cargando {song} de {artist}; la reproducción aún no está confirmada.",
+  "cloud.title": "Cuenta y biblioteca en la nube de NetEase",
+  "cloud.description": "Consultar cuenta, listas, favoritos, recomendaciones y artistas; reproducir listas y realizar cambios solicitados explícitamente."
 }

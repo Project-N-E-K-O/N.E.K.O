@@ -1295,6 +1295,12 @@ class DirectTaskExecutor:
         if lessons:
             system_prompt = f"{system_prompt}\n\n{lessons}"
 
+        if any(p.get("id") == "netease_music" for p in plugin_list):
+            system_prompt += ("\nMusic query fields are an exception to copying the user's message verbatim: "
+                              "extract only the song title and requested artist, preserving version qualifiers. "
+                              "Respect an explicit song count; use 6-8 only when no count is specified. "
+                              "Never select local-save actions without an explicit local-storage request.")
+
         user_prompt = f"Conversation:\n{conversation}"
 
         max_retries = 3
@@ -1555,6 +1561,8 @@ class DirectTaskExecutor:
         # Pre-filter: only keep plugins that have at least one Agent-visible entry.
         # This prevents hidden-entry-only plugins from leaking into Stage 1 (BM25 / keyword / coarse-screen).
         # Keep the full list for valid_entries_map so error reasons can distinguish "no visible entries" from "not found".
+        from brain.music_capabilities import scoped_music_catalog
+        plugin_list = scoped_music_catalog(plugin_list, self._extract_latest_user_intent(conversation), conversation)
         all_plugin_list = list(plugin_list)
         pre_filter_count = len(plugin_list)
         plugin_list = [p for p in plugin_list if self._agent_visible_plugin_entries(p)]
@@ -1649,6 +1657,11 @@ class DirectTaskExecutor:
 
         # Stage 2: full LLM assessment
         system_prompt = _loc(USER_PLUGIN_SYSTEM_PROMPT, lang).format(plugins_desc=plugins_desc)
+        if any(p.get("id") == "netease_music" and any(e.get("id") == "cloud_music" for e in p.get("entries", [])) for p in plugin_list):
+            system_prompt += ("\nUse the scoped cloud_music schema for this turn. Song saves default to NetEase: "
+                              "like the current song unless a cloud playlist is named; do not ask cloud versus local. "
+                              "Only an explicit local-storage request uses playlist.save/save_current. "
+                              "Never turn a query into playback or mutation. Preserve quoted playlist names exactly; remove unquoted surrounding labels, not parts of the name. For 把这首加入Bgm歌单 use playlist=Bgm; for 加入《Bgm歌单》 use playlist=Bgm歌单. Do not invent IDs.")
 
         user_prompt = f"Conversation:\n{conversation}\n\nUser intent (one-line): {user_intent}"
 
@@ -2163,6 +2176,26 @@ class DirectTaskExecutor:
         if user_plugin_enabled:
             # Reuse cache in ordinary turns; refetch only when lifecycle signals / TTL indicate possible changes.
             plugins = await self.plugin_list_provider(force_refresh=False)
+        if user_plugin_enabled and proactive:
+            from brain.proactive_music import proactive_music_query, proactive_music_block_reason
+            query = proactive_music_query(latest_user_request)
+            if query:
+                plugin, entry = self._find_plugin_entry(plugins, "netease_music", "play_netease_music")
+                if not entry or plugin.get("passive"):
+                    return TaskResult(task_id=task_id, has_task=False, reason="proactive_music_plugin_unavailable")
+                blocked = await proactive_music_block_reason(lanlan_name)
+                if blocked:
+                    logger.info("[ProactiveMusic] skipped: %s", blocked)
+                    return TaskResult(task_id=task_id, has_task=False, reason=blocked)
+                logger.info("[ProactiveMusic] routing explicit song offer to netease_music.play_netease_music")
+                return TaskResult(
+                    task_id=task_id, has_task=True,
+                    task_description="播放主动推荐的歌曲：" + query,
+                    execution_method="user_plugin", success=False,
+                    tool_name="netease_music", entry_id="play_netease_music",
+                    tool_args={"query": query}, reason="proactive_music_recommendation",
+                    latest_user_request=latest_user_request,
+                )
         if user_plugin_enabled and plugins:
             plugin_conversation = conversation
             if not proactive and self._find_plugin_entry(plugins, "netease_music", "playlist")[1]:
@@ -2442,6 +2475,13 @@ class DirectTaskExecutor:
                         reason=reason or "invalid_entry_id",
                     )
         # New run protocol: default path (POST /runs, return accepted immediately)
+        if reason == "proactive_music_recommendation":
+            from brain.proactive_music import proactive_music_block_reason
+            blocked = await proactive_music_block_reason(lanlan_name)
+            if blocked:
+                logger.info("[ProactiveMusic] dispatch skipped: %s", blocked)
+                return TaskResult(task_id=task_id, has_task=True, success=False,
+                    execution_method="user_plugin", reason=blocked, error=blocked)
         try:
             runs_endpoint = f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/runs"
 

@@ -321,6 +321,8 @@ async def dispatch(
                 _error_to_pass = (run_error or up_result.error) if not up_result.success else None
                 detail = parse_plugin_result(
                     run_data,
+                    plugin_id=plugin_id,
+                    entry_id=up_result.entry_id,
                     llm_result_fields=_llm_fields,
                     plugin_message=_plugin_msg,
                     error=_error_to_pass,
@@ -390,6 +392,8 @@ async def dispatch(
                                 status=None if _completed else up_terminal,
                                 source_kind="plugin",
                                 source_name=display_id,
+                                plugin_id=plugin_id,
+                                entry_id=entry_id,
                                 delivery_mode=_delivery_mode,
                                 result_kind=_result_kind if _completed else "task_result",
                                 expires_in_s=_expires_in_s if _completed else None,
@@ -424,6 +428,8 @@ async def dispatch(
                                 status="failed",
                                 source_kind="plugin",
                                 source_name=display_id,
+                                plugin_id=plugin_id,
+                                entry_id=entry_id,
                                 delivery_mode=_delivery_mode,
                             )
                         except Exception as emit_err:

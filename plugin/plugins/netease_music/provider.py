@@ -99,7 +99,7 @@ def select_first_exact_match(
         if not title:
             continue
         signatures = {title}
-        for raw_artist in _artist_names(candidate):
+        for raw_artist in (*_artist_names(candidate), candidate.artist):
             artist = _normalize_match(raw_artist)
             if artist:
                 signatures.add(f"{title} {artist}")

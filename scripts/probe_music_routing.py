@@ -23,15 +23,21 @@ def case(id, text, action=None, *, plugin="netease_music", entry="playlist", arg
 
 
 CASES = [
+    case("cloud_like", "收藏这首", "like", entry="cloud_music", args={"song": "current"}),
+    case("cloud_named", "收藏这首到Bgm歌单", "add", entry="cloud_music", args={"playlist": "Bgm", "song": "current"}),
+    case("cloud_account", "看看我的网易云账号", "account", entry="cloud_music"),
+    case("cloud_playlists", "列出我网易云收藏的歌单", "playlists", entry="cloud_music", args={"kind": "subscribed"}),
+    case("cloud_daily", "看看网易云今天的日推", "daily", entry="cloud_music"),
+
     case("local_replay", "播放我们的本地歌单夜读", "replay", args={"name": "夜读"}),
     case("saved_replay", "重播我们自己收藏的夜读歌单", ("list", "replay")),
     case("restart_replay", "刚重启完，继续播放之前保存的夜读歌单", ("list", "replay")),
     case("local_list", "列出我们的本地歌单", "list"),
-    case("saved_list", "我们自己收藏了哪些歌单？", "list"),
-    case("save_current", "把这首存到我们的夜读歌单", "save_current", args={"name": "夜读"}),
+    case("saved_list", "我们自己收藏了哪些本地歌单？", "list"),
+    case("save_current", "把这首存到我们的夜读歌单", "add", entry="cloud_music", args={"playlist": "夜读", "song": "current"}),
     case("save_current_local", "把正在听的歌加入本地歌单夜读", "save_current", args={"name": "夜读"}),
-    case("save_current_queue", "把这首加入夜读，不要保存整张歌单", "save_current", args={"name": "夜读"}, history=[("assistant", "正在播放网易云歌单中的第二首。")]),
-    case("save_whole", "把当前整张歌单保存为夜读", "save", args={"name": "夜读"}),
+    case("save_current_queue", "把这首加入本地歌单夜读，不要保存整张歌单", "save_current", args={"name": "夜读"}, history=[("assistant", "正在播放网易云歌单中的第二首。")]),
+    case("save_whole", "把当前整张歌单保存为本地歌单夜读", "save", args={"name": "夜读"}),
     case("search_public", "在网易云搜一个适合夜读的歌单并播放", "search", args={"name": "夜读"}),
     case("curate", "放点歌陪我看书，偏好轻柔民谣", "curate"),
     case("single", "播放周杰伦的晴天", entry="play_netease_music", args={"query_contains": ["晴天", "周杰伦"]}),

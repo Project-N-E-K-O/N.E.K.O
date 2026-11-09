@@ -1,8 +1,8 @@
 [plugin]
 type = "plugin"
 id = "netease_music"
-name = "网易云匿名点歌"
-description = "精确点歌、搜索网易云歌单连播、按聊天偏好编排和保存歌单。"
+name = "网易云音乐"
+description = "精确点歌、歌单连播、账号与云端音乐库、按需收藏管理。"
 short_description = "匿名搜索网易云歌曲，可使用插件内登录 Cookie 播放。"
 version = "0.1.0"
 entry = "plugin.plugins.netease_music:NeteaseMusicPlugin"

@@ -11,6 +11,7 @@ import httpx
 
 from plugin.sdk.plugin import Err, SdkError, plugin_entry, tr
 from utils.file_utils import atomic_write_json
+from utils.music_capability_context import requests_local_music
 
 from .models import SongCandidate
 from .provider import ProviderError, select_recording
@@ -26,6 +27,8 @@ class Queue:
     advancing_ticket: str = ""
     advance_epoch: int = 0
     pending_advance: tuple[int, int] | None = None
+    retry_ticket: str = ""
+    revision: int = 0
 
 
 class PlaylistMixin:
@@ -147,6 +150,8 @@ class PlaylistMixin:
         target = self._target_lanlan(_ctx or {})
         if not target:
             return Err(SdkError(t("playlist.target")))
+        if action in {"save", "save_current"} and not requests_local_music((_ctx or {}).get("latest_user_request")):
+            return await self.finish(data={"status": "blocked", "summary": t("playlist.local_required")}, delivery="proactive")
         key = self._session_key(target)
         q = self._queues.get(key)
         choices = getattr(self, "_playlist_name_choices", {})
@@ -176,22 +181,27 @@ class PlaylistMixin:
         if action == "stop":
             self._begin_request(key)
             if q:
-                q.ticket = ""
+                q.ticket = q.retry_ticket = ""
                 q.advancing_ticket = ""
                 q.advance_epoch += 1
                 q.cursor = len(q.tracks)
-            self.push_message(
+            receipt = self.push_message(
                 source="netease_music",
                 visibility=[],
                 ai_behavior="blind",
                 target_lanlan=target,
                 parts=[{"type": "ui_action", "action": "netease_stop"}],
             )
+            if not self._submitted(receipt):
+                return Err(SdkError(t("errors.delivery_failed")))
             return await self._finish_silent("stopped")
         if action in ("next", "revise") and not q:
             self._note(target, t("playlist.no_queue"))
             return await self._finish_silent("no_queue")
         editing = action == "revise"
+        if editing:
+            q.revision += 1
+        revision = q.revision if editing else None
         generation = (
             self._session_generations.get(key) if editing else self._begin_request(key)
         )
@@ -205,8 +215,10 @@ class PlaylistMixin:
             }]
             confirmed_choice = (
                 name_confirmed is True
-                and name in candidates
-                and pending_choice == (previous_generation, tuple(candidates))
+                and pending_choice is not None
+                and pending_choice[0] == previous_generation
+                and name in pending_choice[1]
+                and all(candidate in library for candidate in pending_choice[1])
             )
             if len(candidates) > 1 and not confirmed_choice:
                 choices[key] = (generation, tuple(candidates))
@@ -258,6 +270,8 @@ class PlaylistMixin:
                 self._note(target, t("playlist.no_results"))
                 return await self._finish_silent("no_results")
             if editing:
+                if q.revision != revision:
+                    return await self._finish_silent("superseded")
                 if not q.ticket:
                     self._note(target, t("playlist.no_queue"))
                     return await self._finish_silent("inactive")
@@ -329,12 +343,13 @@ class PlaylistMixin:
                     q.pending_advance = None
             if not still_playing_queue():
                 break
-            q.advancing_ticket = ""
             q.ticket = secrets.token_hex(16)
             if self._push_track(target, track, media, q.ticket):
+                q.advancing_ticket = q.retry_ticket = ""
                 return await self.finish(
                     data={
                         "status": "submitted",
+                        "summary": self.i18n.t("playlist.loading", locale=q.locale, song=track.name, artist=track.artist),
                         "position": q.cursor,
                         "total": len(q.tracks),
                         "song": self._candidate_data(track),
@@ -342,9 +357,11 @@ class PlaylistMixin:
                     delivery="silent",
                 )
             q.ticket = ""
+            q.cursor -= 1
+            q.retry_ticket = q.advancing_ticket
             return Err(SdkError(self.i18n.t("errors.delivery_failed", locale=q.locale)))
         if still_playing_queue():
-            q.ticket = ""
+            q.ticket = q.advancing_ticket = q.retry_ticket = ""
             self._note(
                 target, self.i18n.t("playlist.ended", locale=q.locale, name=q.name)
             )
@@ -369,11 +386,11 @@ class PlaylistMixin:
         if (
             not q
             or not ticket
-            or (ticket != q.ticket and not (reason == "closed" and ticket == q.advancing_ticket))
+            or (ticket != q.ticket and ticket != q.retry_ticket and not (reason == "closed" and ticket == q.advancing_ticket))
             or reason not in ("ended", "error", "closed")
         ):
             return await self._finish_silent("stale")
-        q.ticket = ""
+        q.ticket = q.retry_ticket = ""
         if self._session_generations.get(key) is None:
             return await self._finish_silent("stale")
         if reason == "closed":

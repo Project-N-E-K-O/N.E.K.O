@@ -139,6 +139,7 @@ def _build_callback_instruction(
     lanlan_name: str,
     master_name: str,
     passive: bool = False,
+    compact_music: bool = False,
 ) -> str:
     """Render a list of agent_task_callbacks into the LLM injection string.
 
@@ -183,6 +184,13 @@ def _build_callback_instruction(
     """
     if not callbacks:
         return ""
+    from utils.music_capability_context import is_music_evidence, compact_music_history
+    if compact_music:
+        callbacks = [
+            {**cb, "summary": compact_music_history(cb.get("summary") or cb.get("detail") or ""), "detail": ""}
+            if is_music_evidence(cb) and (cb.get("status") or "completed") == "completed" else cb
+            for cb in callbacks
+        ]
     from collections import OrderedDict
 
     lang = normalize_sys_prompt_locale(lang)
@@ -259,7 +267,8 @@ def _build_callback_instruction(
     # Total input budget: many callbacks accumulating must not blow up the turn.
     from utils.tokenize import truncate_to_tokens
     from config import AGENT_CALLBACK_TOTAL_MAX_TOKENS
-    return truncate_to_tokens(rendered, AGENT_CALLBACK_TOTAL_MAX_TOKENS)
+    limit = max(AGENT_CALLBACK_TOTAL_MAX_TOKENS, 3000) if any(is_music_evidence(cb) for cb in callbacks) else AGENT_CALLBACK_TOTAL_MAX_TOKENS
+    return truncate_to_tokens(rendered, limit)
 
 
 def _format_voice_swap_item(

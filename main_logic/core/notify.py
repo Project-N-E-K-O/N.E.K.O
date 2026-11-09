@@ -238,7 +238,7 @@ class NotifyMixin:
             #     capability_parts.append(_loc(AGENT_CAPABILITY_COMPUTER_USE, _lang))
             # if self.agent_flags.get('browser_use_enabled'):
             #     capability_parts.append(_loc(AGENT_CAPABILITY_BROWSER_USE, _lang))
-            # if self.agent_flags.get('user_plugin_enabled'):
+            # if getattr(self, 'agent_flags', {}).get('user_plugin_enabled'):
             #     capability_parts.append(_loc(AGENT_CAPABILITY_USER_PLUGIN_USE, _lang))
             # caps_text = (
             #     _loc(AGENT_CAPABILITY_SEPARATOR, _lang).join(capability_parts)
@@ -258,17 +258,10 @@ class NotifyMixin:
                 + self.lanlan_prompt
             )
         if self._is_agent_enabled():
-            # Plugin summary (with plugin ids) is intentionally disabled to avoid
-            # exposing implementation identifiers in the general agent prompt.
-            # Keep method call removed here for deterministic prompt content.
-            # Historical prompt merge kept for rollback:
-            # plugin_prompt, active_tasks_prompt = await asyncio.gather(
-            #     self._fetch_plugin_summary_prompt(),
-            #     self._fetch_active_agent_tasks_prompt(),
-            # )
-            # prompt += plugin_prompt
-            active_tasks_prompt = await self._fetch_active_agent_tasks_prompt()
-            prompt += active_tasks_prompt
+            plugin_prompt, active_tasks_prompt = await asyncio.gather(
+                self._fetch_plugin_summary_prompt(), self._fetch_active_agent_tasks_prompt(),
+            )
+            prompt += plugin_prompt + active_tasks_prompt
 
         # Record/query key: empty lanlan_name uses default, matching sinks
         # that write directives to default buckets for empty/default lanlan;
@@ -504,38 +497,20 @@ class NotifyMixin:
         )
 
     async def _fetch_plugin_summary_prompt(self) -> str:
-        """Plugin prompt segment is intentionally disabled for chat prompt minimalism."""
-        # This hook is kept for compatibility with older call sites.
-        # Disabled by product decision: do not include plugin IDs in agent prompt.
-        # Historical implementation kept for rollback:
-        # if not (self._is_agent_enabled() and self.agent_flags.get('user_plugin_enabled')):
-        #     return ""
-        # _lang = normalize_language_code(self.user_language, format='short')
-        # header = _loc(AGENT_PLUGINS_HEADER, _lang)
-        # count_tmpl = _loc(AGENT_PLUGINS_COUNT, _lang)
-        # try:
-        #     async with httpx.AsyncClient(timeout=httpx.Timeout(2.0, connect=1.0), proxy=None, trust_env=False) as client:
-        #         r = await client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins")
-        #         if r.status_code != 200:
-        #             return ""
-        #         data = r.json()
-        #         plugins = data.get("plugins", []) if isinstance(data, dict) else []
-        #         if not plugins:
-        #             return ""
-        #         if len(plugins) <= 5:
-        #             lines = []
-        #             for p in plugins:
-        #                 if not isinstance(p, dict):
-        #                     continue
-        #                 pid = p.get("id", "")
-        #                 if pid:
-        #                     lines.append(f"  - {pid}")
-        #             if lines:
-        #                 return header + "\n".join(lines) + "\n"
-        #         else:
-        #             return count_tmpl.format(count=len(plugins))
-        # except Exception as e:
-        #     logger.debug(f"Plugin summary retrieval failed; ignored: {e}")
+        """Expose a compact capability hint without entry schemas or catalogs."""
+        if not (self._is_agent_enabled() and getattr(self, 'agent_flags', {}).get('user_plugin_enabled')):
+            return ""
+        from config import USER_PLUGIN_SERVER_PORT
+        from utils.internal_http_client import get_internal_http_client
+        from utils.music_capability_context import music_capability_prompt
+        try:
+            response = await get_internal_http_client().get(
+                f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins/netease_music", timeout=1.5,
+            )
+            if response.status_code == 200:
+                return music_capability_prompt(response.json(), normalize_sys_prompt_locale(self.user_language))
+        except Exception as exc:
+            logger.debug("Music capability lookup skipped: %s", type(exc).__name__)
         return ""
 
     async def _fetch_active_agent_tasks_prompt(self) -> str:

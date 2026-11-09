@@ -42,6 +42,98 @@
     {
       "auto_start": false,
       "description": {
+        "$i18n": "cloud.description",
+        "default": "Read and maintain the NetEase cloud library on explicit request. Return only the requested page."
+      },
+      "event_key": "netease_music.cloud_music",
+      "event_type": "plugin_entry",
+      "id": "cloud_music",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "account",
+              "playlists",
+              "tracks",
+              "play",
+              "liked",
+              "daily",
+              "artists",
+              "create",
+              "add",
+              "remove",
+              "like",
+              "unlike"
+            ],
+            "type": "string"
+          },
+          "kind": {
+            "default": "all",
+            "enum": [
+              "all",
+              "created",
+              "subscribed"
+            ],
+            "type": "string"
+          },
+          "limit": {
+            "default": 20,
+            "maximum": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "maximum": 100000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "playlist": {
+            "description": "云端歌单精确名称或ID；liked=喜欢的音乐；daily=日推",
+            "maxLength": 100,
+            "type": "string"
+          },
+          "privacy": {
+            "default": true,
+            "type": "boolean"
+          },
+          "song": {
+            "description": "歌名 歌手或歌曲ID；current=正在听；queue=整组当前队列（仅add）",
+            "maxLength": 100,
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "llm_result_fields": [
+        "summary"
+      ],
+      "llm_result_schema": {
+        "properties": {
+          "summary": {}
+        },
+        "required": [
+          "summary"
+        ],
+        "type": "object"
+      },
+      "metadata": {},
+      "model_validate": true,
+      "name": {
+        "$i18n": "cloud.title",
+        "default": "NetEase account and cloud library"
+      },
+      "return_message": "",
+      "timeout": 120
+    },
+    {
+      "auto_start": false,
+      "description": {
         "$i18n": "entry.play.description",
         "default": "仅在用户明确要求播放或点播某首网易云歌曲时调用。将 query 整理为“歌名 歌手”，保留现场版、翻唱等版本限定。不要用于歌词或歌曲知识查询、泛推荐、歌单、暂停、停止、切歌或下一首。"
       },
@@ -219,6 +311,7 @@
   "entries_config_sha256": "",
   "entry_methods": {
     "clear_music_u": "clear_music_u",
+    "cloud_music": "cloud_music",
     "play_netease_music": "play_netease_music",
     "playlist": "playlist",
     "playlist_terminal": "playlist_terminal",
@@ -266,6 +359,105 @@
         "priority": 0
       },
       "timeout": null
+    },
+    "netease_music.cloud_music": {
+      "auto_start": false,
+      "description": {
+        "$i18n": "cloud.description",
+        "default": "Read and maintain the NetEase cloud library on explicit request. Return only the requested page."
+      },
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "extra": {},
+      "id": "cloud_music",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "account",
+              "playlists",
+              "tracks",
+              "play",
+              "liked",
+              "daily",
+              "artists",
+              "create",
+              "add",
+              "remove",
+              "like",
+              "unlike"
+            ],
+            "type": "string"
+          },
+          "kind": {
+            "default": "all",
+            "enum": [
+              "all",
+              "created",
+              "subscribed"
+            ],
+            "type": "string"
+          },
+          "limit": {
+            "default": 20,
+            "maximum": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "maximum": 100000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "playlist": {
+            "description": "云端歌单精确名称或ID；liked=喜欢的音乐；daily=日推",
+            "maxLength": 100,
+            "type": "string"
+          },
+          "privacy": {
+            "default": true,
+            "type": "boolean"
+          },
+          "song": {
+            "description": "歌名 歌手或歌曲ID；current=正在听；queue=整组当前队列（仅add）",
+            "maxLength": 100,
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "llm_result_fields": [
+        "summary"
+      ],
+      "llm_result_schema": {
+        "properties": {
+          "summary": {}
+        },
+        "required": [
+          "summary"
+        ],
+        "type": "object"
+      },
+      "metadata": {},
+      "model_validate": true,
+      "name": {
+        "$i18n": "cloud.title",
+        "default": "NetEase account and cloud library"
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": 120
     },
     "netease_music.play_netease_music": {
       "auto_start": false,
@@ -569,6 +761,105 @@
       },
       "timeout": null
     },
+    "netease_music:plugin_entry:cloud_music": {
+      "auto_start": false,
+      "description": {
+        "$i18n": "cloud.description",
+        "default": "Read and maintain the NetEase cloud library on explicit request. Return only the requested page."
+      },
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "extra": {},
+      "id": "cloud_music",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "account",
+              "playlists",
+              "tracks",
+              "play",
+              "liked",
+              "daily",
+              "artists",
+              "create",
+              "add",
+              "remove",
+              "like",
+              "unlike"
+            ],
+            "type": "string"
+          },
+          "kind": {
+            "default": "all",
+            "enum": [
+              "all",
+              "created",
+              "subscribed"
+            ],
+            "type": "string"
+          },
+          "limit": {
+            "default": 20,
+            "maximum": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "maximum": 100000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "playlist": {
+            "description": "云端歌单精确名称或ID；liked=喜欢的音乐；daily=日推",
+            "maxLength": 100,
+            "type": "string"
+          },
+          "privacy": {
+            "default": true,
+            "type": "boolean"
+          },
+          "song": {
+            "description": "歌名 歌手或歌曲ID；current=正在听；queue=整组当前队列（仅add）",
+            "maxLength": 100,
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "llm_result_fields": [
+        "summary"
+      ],
+      "llm_result_schema": {
+        "properties": {
+          "summary": {}
+        },
+        "required": [
+          "summary"
+        ],
+        "type": "object"
+      },
+      "metadata": {},
+      "model_validate": true,
+      "name": {
+        "$i18n": "cloud.title",
+        "default": "NetEase account and cloud library"
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": 120
+    },
     "netease_music:plugin_entry:play_netease_music": {
       "auto_start": false,
       "description": {
@@ -780,10 +1071,12 @@
   },
   "schema_version": 4,
   "sdk_version": "0.1.0",
-  "source_bytes": 109099,
+  "source_bytes": 139419,
   "source_files": [
     "README.md",
     "__init__.py",
+    "cloud.py",
+    "cloud_entry.py",
     "config.schema.json",
     "credential_ui.py",
     "credentials.py",
@@ -801,5 +1094,5 @@
     "provider.py",
     "ui/panel.tsx"
   ],
-  "source_sha256": "ec557bd06dabbccd1ffc3efe7bfdbba35f164ddd38557de19d02a7f3c9b1bbf1"
+  "source_sha256": "593232cd8e0371073c71fcd4a86ef80ce95a7a94fac74c534345d2c7c9d767d2"
 }

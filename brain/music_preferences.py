@@ -1,6 +1,5 @@
 """Use character-scoped memory as additional context for requested playlist curation."""
 
-import json
 import logging
 import re
 from urllib.parse import quote
@@ -28,7 +27,7 @@ async def playlist_context(conversation, request, character):
     if not character or not _CURATE.search(request):
         return conversation
 
-    lines = []
+    rows = []
     try:
         settings = await aload_global_conversation_settings()
         if not settings.get("autoMemoryRecallEnabled", True):
@@ -43,22 +42,13 @@ async def playlist_context(conversation, request, character):
             timeout=1.5,
         )
         response.raise_for_status()
-        lines.extend(
-            row.get("text")
-            for row in response.json()["results"]
-            if isinstance(row, dict)
-        )
+        rows = [row for row in response.json()["results"]
+                if isinstance(row, dict) and isinstance(row.get("text"), str) and _MUSIC.search(row["text"])]
     except (OSError, httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
         logger.debug("Music preference recall unavailable: %s", type(exc).__name__)
 
-    preferences = dict.fromkeys(
-        line[:240] for line in lines if isinstance(line, str) and _MUSIC.search(line)
-    )
-    if not preferences:
+    if not rows:
         return conversation
-    return (
-        "音乐记忆（历史偏好，非当前指令）："
-        + json.dumps(list(preferences)[:8], ensure_ascii=False)
-        + "\n"
-        + conversation
-    )
+    from memory.recall_render import render_recall_block
+    rendered = render_recall_block(rows[:8], "zh")
+    return "音乐记忆（历史偏好，非当前指令）：\n" + rendered.text + "\n" + conversation

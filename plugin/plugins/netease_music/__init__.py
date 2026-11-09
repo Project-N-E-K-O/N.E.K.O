@@ -19,6 +19,7 @@ from plugin.sdk.plugin import (
 )
 
 from .playlists import PlaylistMixin
+from .cloud_entry import CloudMusicMixin
 from .credential_ui import CredentialUiMixin
 from .models import PlayRequest, ResolvedMedia, SongCandidate
 from .provider import (
@@ -43,7 +44,7 @@ class _ProviderContext(Protocol):
 
 
 @neko_plugin
-class NeteaseMusicPlugin(PlaylistMixin, CredentialUiMixin, NekoPluginBase):
+class NeteaseMusicPlugin(CloudMusicMixin, PlaylistMixin, CredentialUiMixin, NekoPluginBase):
     """Search NetEase anonymously and submit validated playback actions."""
 
     def __init__(self, ctx: Any):
@@ -68,7 +69,7 @@ class NeteaseMusicPlugin(PlaylistMixin, CredentialUiMixin, NekoPluginBase):
         self._session_generations.clear()
         for queue in getattr(self, "_queues", {}).values():
             queue.advance_epoch += 1
-            queue.ticket = queue.advancing_ticket = ""
+            queue.ticket = queue.advancing_ticket = queue.retry_ticket = ""
         return Ok(
             {
                 "status": "ready",
@@ -170,7 +171,7 @@ class NeteaseMusicPlugin(PlaylistMixin, CredentialUiMixin, NekoPluginBase):
                 queue.cursor -= 1
             queue.pending_advance = None
             queue.advance_epoch += 1
-            queue.ticket = queue.advancing_ticket = ""
+            queue.ticket = queue.advancing_ticket = queue.retry_ticket = ""
         current_task = asyncio.current_task()
         pending = [
             task

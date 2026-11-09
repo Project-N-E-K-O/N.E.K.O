@@ -465,7 +465,16 @@ async def current_netease_track(lanlan_name: str):
         if getattr(manager, "websocket", None)
         else None
     )
-    return {"track": track}
+    from main_logic.proactive_chat.music_refusal import is_music_refusal_cooldown_active
+    state = getattr(manager, "_music_playback_event_key", None)
+    blocked = None
+    if not getattr(manager, "websocket", None):
+        blocked = "no_connected_player"
+    elif is_music_refusal_cooldown_active(lanlan_name) or getattr(manager, "_proactive_music_cooldown", False):
+        blocked = "music_cooldown"
+    elif state and state[1] in {"playing", "paused"}:
+        blocked = "player_occupied"
+    return {"track": track, "proactive_allowed": blocked is None, "proactive_block_reason": blocked}
 
 
 @router.get("/api/music/play/netease/{song_id}")

@@ -760,6 +760,7 @@ def test_the_entry_point_has_no_runtime_switch():
 # server's own route file defines it rather than calling it.
 _QUERY_MEMORY_ROUTE_DEFINITION = "app/memory_server/routes.py"
 _KNOWN_RECALL_CLIENTS = {
+    "brain/music_preferences.py",
     "main_logic/core/tool_calling.py",
 }
 

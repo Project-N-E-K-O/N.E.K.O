@@ -509,14 +509,18 @@ def _handle_proactive_analyze(messages, lanlan_name, lanlan_key, conversation_id
         return
     cap = max(0, int(AGENT_PROACTIVE_ANALYZE_MAX_PER_SESSION))
     used = int(Modules.proactive_analyze_count.get(lanlan_key, 0))
-    if used >= cap:
+    # Concrete song offers take a deterministic plugin route, spending no LLM
+    # assessment budget. Ordinary proactive analysis keeps its existing cap.
+    from brain.proactive_music import latest_proactive_music_query
+    music_offer = bool(Modules.agent_flags.get("user_plugin_enabled") and latest_proactive_music_query(messages))
+    if used >= cap and not music_offer:
         logger.info("[AgentAnalyze] skip proactive: per-session cap reached (%d/%d, lanlan=%s)", used, cap, lanlan_name)
         return
     # Reserve the slot + dedupe fp BEFORE dispatch so concurrent proactive events
     # can't both pass the cap check.
-    Modules.proactive_analyze_count[lanlan_key] = used + 1
+    Modules.proactive_analyze_count[lanlan_key] = used + (0 if music_offer else 1)
     Modules.last_proactive_assistant_fingerprint[lanlan_key] = fp
-    logger.info("[AgentAnalyze] proactive analyze accepted (%d/%d, lanlan=%s)", used + 1, cap, lanlan_name)
+    logger.info("[AgentAnalyze] proactive analyze accepted (%d/%d, music_offer=%s, lanlan=%s)", Modules.proactive_analyze_count[lanlan_key], cap, music_offer, lanlan_name)
     _create_tracked_task(_background_analyze_and_plan(
         messages, lanlan_name, conversation_id=conversation_id,
         external_intent=None, proactive=True, session_language=session_language,
@@ -1242,7 +1246,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                 _plugin_msg = str(res.result.get("message") or "") if isinstance(res.result, dict) else ""
                 _error_to_pass = (run_error or res.error) if not res.success else None
                 detail = parse_plugin_result(
-                    run_data,
+                    run_data, plugin_id=plugin_id, entry_id=entry_id,
                     llm_result_fields=_llm_fields,
                     plugin_message=_plugin_msg,
                     error=_error_to_pass,
@@ -1291,6 +1295,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                         status=_explicit_status,
                         source_kind="plugin",
                         source_name=display_id,
+                        plugin_id=plugin_id, entry_id=entry_id,
                         delivery_mode=_delivery_mode,
                         result_kind=_result_kind if _completed else "task_result",
                         expires_in_s=_expires_in_s if _completed else None,
@@ -1320,6 +1325,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                         status="cancelled",
                         source_kind="plugin",
                         source_name=display_id,
+                        plugin_id=plugin_id, entry_id=entry_id,
                         delivery_mode=_delivery_mode,
                     )
                 except Exception as emit_err:
@@ -1356,6 +1362,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                         status="failed",
                         source_kind="plugin",
                         source_name=display_id,
+                        plugin_id=plugin_id, entry_id=entry_id,
                         delivery_mode=_delivery_mode,
                     )
                 except Exception as emit_err:

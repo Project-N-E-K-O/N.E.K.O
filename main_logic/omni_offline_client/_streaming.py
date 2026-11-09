@@ -709,6 +709,7 @@ class _StreamingMixin:
         text: str,
         *,
         system_prefix: str | None = None,
+        system_prefix_history: str | None = None,
         system_prefix_images: Optional[list[str]] = None,
         turn_images: Optional[Sequence[str]] = None,
         # Capture channel for this turn's turn_images ("screen" / "camera"). Independent ASR frames
@@ -1101,7 +1102,12 @@ class _StreamingMixin:
             if history_replacement_text is not None
             else ""
         )
-        if history_replacement_text and _prefix_clean:
+        _prefix_history_only = system_prefix_history is not None and not history_replacement_text
+        if system_prefix_history is not None and _prefix_clean:
+            history_replacement_text = (
+                f"{system_prefix_history.strip()}\n\n{history_replacement_text or _user_text}"
+            ).strip()
+        elif history_replacement_text and _prefix_clean:
             history_replacement_text = f"{_prefix_clean}\n\n{history_replacement_text}"
         # Pending frame-bus snapshot; None means no frames (text-only turn) or already published.
         _pending_bus_frames = None
@@ -2346,7 +2352,16 @@ class _StreamingMixin:
                     _history, history_replacement_index, user_message,
                 )
                 if _replace_at >= 0:
-                    _history[_replace_at] = HumanMessage(content=history_replacement_text)
+                    replacement_content = history_replacement_text
+                    if _prefix_history_only and isinstance(user_message.content, list):
+                        # Retain user image/attachment blocks and their order.
+                        replacement_content = [
+                            {**block, "text": history_replacement_text}
+                            if isinstance(block, dict) and block.get("type") == "text"
+                            and block.get("text") == _user_text_with_prefix else block
+                            for block in user_message.content
+                        ]
+                    _history[_replace_at] = HumanMessage(content=replacement_content)
                     # This turn's resident knowledge blocks follow the replacement message.
                     self._rebind_resident_anchor(user_message, _history[_replace_at])
 

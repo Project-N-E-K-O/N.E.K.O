@@ -203,6 +203,8 @@ def parse_plugin_result(
     run_data: Any,
     *,
     llm_result_fields: Optional[Sequence[str]] = None,
+    plugin_id: str | None = None,
+    entry_id: str | None = None,
     plugin_message: str = "",
     error: Any = None,
     lang: str | None = None,
@@ -240,11 +242,14 @@ def parse_plugin_result(
     if not parts:
         return fallback
 
+    from utils.music_capability_context import music_result_token_limit
+    limit = music_result_token_limit(plugin_id, entry_id)
+
     # Single field: output its value directly, without the field name.
     if len(parts) == 1:
-        return _truncate(parts[0][1])
+        return _truncate(parts[0][1], limit)
 
-    return _truncate(", ".join(f"{k}: {v}" for k, v in parts))
+    return _truncate(", ".join(f"{k}: {v}" for k, v in parts), limit)
 
 
 # ── Push Message ───────────────────────────────────────────────────────

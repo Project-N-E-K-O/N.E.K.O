@@ -31,8 +31,12 @@
   "playlist.playing": "「{name}」全{count}曲を順に再生します。",
   "playlist.paused": "4曲続けて再生できず一時停止しました。「次の曲」で再開できます。",
   "playlist.ended": "「{name}」の再生が終了しました。",
-  "entry.playlist.description": "BGM は curate で会話と音楽の好みから6〜8曲を選び、tracks に「曲名 | アーティスト」を指定。search は name で公開プレイリストを検索。revise は再生中の曲を止めず後続曲を変更。save_current は確認済みの現在の曲を指定したローカルリストに重複なく追加。save はキュー全体を保存、replay は保存済みリストを再生、list は一覧、next は次の曲、stop は停止。",
+  "entry.playlist.description": "BGM は curate で会話と音楽の好みから6〜8曲を選び、tracks に「曲名 | アーティスト」を指定。search は name で公開プレイリストを検索。revise は再生中の曲を止めず後続曲を変更。save_current は確認済みの現在の曲を指定したローカルリストに重複なく追加。save はキュー全体を保存、replay は保存済みリストを再生、list は一覧、next は次の曲、stop は停止。 通常はNetEaseでお気に入り登録、または指定のクラウドプレイリストに追加します。save_current/saveはローカル保存の明示指定時のみ。指定曲数を優先します。",
   "playlist.not_found": "「{name}」というローカルプレイリストは見つかりませんでした。保存した正確な名前を指定してください。",
   "playlist.replay_need_name": "どの保存済みローカルプレイリストを再生しますか？",
-  "playlist.ambiguous": "該当する可能性のある保存済みプレイリストが複数あります：{names}。再生する正確な名前を選んでください。"
+  "playlist.ambiguous": "該当する可能性のある保存済みプレイリストが複数あります：{names}。再生する正確な名前を選んでください。",
+  "playlist.local_required": "ローカル保存には明示的な指定が必要です。通常はNetEaseに保存します。",
+  "playlist.loading": "{artist}の{song}を読み込み中です。再生はまだ確認されていません。",
+  "cloud.title": "NetEaseアカウントとクラウドライブラリ",
+  "cloud.description": "アカウント、クラウドプレイリスト、お気に入り、おすすめ、アーティストの確認、再生と明示的な收藏変更。"
 }

@@ -178,7 +178,7 @@ def test_manifest_is_default_off_and_has_no_keyword_trigger() -> None:
     plugin_meta = manifest["plugin"]
     assert plugin_meta["id"] == "netease_music"
     assert plugin_meta["entry"] == "plugin.plugins.netease_music:NeteaseMusicPlugin"
-    assert plugin_meta["name"] == "网易云匿名点歌"
+    assert plugin_meta["name"] == "网易云音乐"
     assert "歌单连播" in plugin_meta["description"]
     assert "keywords" not in plugin_meta
     assert manifest["plugin_runtime"] == {"enabled": False, "auto_start": False}
@@ -592,7 +592,7 @@ async def test_queue_natural_end_is_once_and_saved_ids_survive_new_instance(tmp_
     await plugin.playlist("search", name="indie", _ctx=_ctx())
     assert provider.resolve_calls == [11]
     ticket = _action(pushes[-1])["queue_ticket"]
-    await plugin.playlist("save", name="读书", _ctx=_ctx())
+    await plugin.playlist("save", name="读书", _ctx={**_ctx(), "latest_user_request": "保存到本地歌单"})
     assert "https:" not in plugin._library_file("Mika").read_text()
     await plugin.playlist_terminal(ticket, "ended", _ctx={"lanlan_name": "Other"})
     await plugin.playlist_terminal(ticket, "ended", _ctx=_ctx())
@@ -789,7 +789,7 @@ async def test_collect_current_song_preserves_library_and_reports_result(tmp_pat
     library = {"dreampop": [[4, "Existing", "Artist"]], "other": [[9, "Other", "Band"]]}
     plugin._write_library("Mika", library)
     for status in ("added", "already_saved", "not_saved"):
-        result = await plugin.playlist("save_current", name="dreampop", _ctx=_ctx())
+        result = await plugin.playlist("save_current", name="dreampop", _ctx={**_ctx(), "latest_user_request": "保存到本地歌单"})
         assert result["finish"]["data"]["status"] == status
         assert pushes[-1]["ai_behavior"] == "respond"
     library["dreampop"].append([7, "Current", "Band"])
@@ -893,7 +893,7 @@ async def test_collection_reports_failed_confirmation_without_losing_saved_track
     plugin._queues = {}
     plugin.data_path = lambda: tmp_path
     plugin._current_track = AsyncMock(return_value={'song_id':1, 'name':'晴天', 'artist':'周杰伦'})
-    result = await plugin.playlist('save_current', name='夜读', _ctx=_ctx())
+    result = await plugin.playlist('save_current', name='夜读', _ctx={**_ctx(), "latest_user_request": "保存到本地歌单"})
     assert result['finish']['data']['confirmation_submitted'] is False
     assert plugin._library('Mika')['夜读'] == [[1, '晴天', '周杰伦']]
 
@@ -985,3 +985,61 @@ async def test_old_resolution_cannot_rewind_a_new_advance_after_credential_chang
     assert q.cursor == 1 and q.ticket == ticket
     await plugin.playlist('next', _ctx=_ctx())
     assert calls == [1, 1, 2]
+
+
+@pytest.mark.asyncio
+async def test_failed_next_delivery_can_retry_same_terminal_ticket_once():
+    from plugin.plugins.netease_music.playlists import Queue
+    provider = _Provider()
+    player, pushes, _ = _make_plugin(provider, receipts=[{"submitted": False}, {"submitted": True}])
+    q = Queue('mix', [_song(1), _song(2)], cursor=1, ticket='a'*32)
+    player._queues = {'lanlan:Mika': q}
+    player._begin_request('lanlan:Mika')
+    await player.playlist_terminal('a'*32, 'ended', _ctx=_ctx())
+    assert q.cursor == 1 and q.retry_ticket == 'a'*32
+    await player.playlist_terminal('a'*32, 'ended', _ctx=_ctx())
+    assert q.cursor == 2 and q.ticket and not q.retry_ticket
+    duplicate = await player.playlist_terminal('a'*32, 'ended', _ctx=_ctx())
+    assert duplicate['finish']['data']['status'] == 'stale'
+    assert provider.resolve_calls == [2, 2]
+
+
+@pytest.mark.asyncio
+async def test_exhausted_queue_rejects_old_close_ticket():
+    from plugin.plugins.netease_music.playlists import Queue
+    player, _, _ = _make_plugin(_Provider())
+    q = Queue('mix', [_song(1)], cursor=1, ticket='a'*32)
+    player._queues = {'lanlan:Mika': q}
+    player._begin_request('lanlan:Mika')
+    await player.playlist_terminal('a'*32, 'ended', _ctx=_ctx())
+    generation = player._session_generations['lanlan:Mika']
+    assert not q.advancing_ticket
+    await player.playlist_terminal('a'*32, 'closed', _ctx=_ctx())
+    assert player._session_generations['lanlan:Mika'] == generation
+
+
+@pytest.mark.asyncio
+async def test_selected_name_uses_original_offered_group(tmp_path):
+    provider = _Provider()
+    player, _, _ = _make_plugin(provider)
+    player._queues = {}
+    player.data_path = lambda: tmp_path
+    player._write_library('Mika', {n: [[i, n, 'Artist']] for i,n in enumerate(['夜读','夜读歌单','夜读歌单歌单'],1)})
+    await player.playlist('replay', name='夜读', _ctx=_ctx())
+    await player.playlist('replay', name='夜读歌单', name_confirmed=True, _ctx=_ctx())
+    assert provider.resolve_calls == [2]
+
+
+def test_exact_query_accepts_complete_collaborative_credit():
+    from plugin.plugins.netease_music.provider import select_first_exact_match
+    song = _song(1, name='Song', artist='A / B')
+    assert select_first_exact_match('Song A / B', [song]) is song
+
+
+@pytest.mark.asyncio
+async def test_failed_stop_submission_is_an_error():
+    player, _, _ = _make_plugin(_Provider(), receipts=[{'submitted': False}])
+    player._queues = {}
+    result = await player.playlist('stop', _ctx=_ctx())
+    from plugin.sdk.plugin import Err
+    assert isinstance(result, Err)
