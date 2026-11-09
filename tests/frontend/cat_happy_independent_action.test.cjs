@@ -170,6 +170,7 @@ function harness(options = {}) {
   const art = options.hasArt === false ? null : {
     src: 'idle.gif?v=1',
     style: { transform: 'scaleX(-1)', width: '100%', height: '100%', objectFit: 'contain' },
+    getAttribute(name) { return name === 'src' ? this.src : null; },
   };
   const container = {
     style: { display: '', left: '12px', top: '24px', width: '122px', height: '122px', transform: 'none' },
@@ -220,7 +221,14 @@ function harness(options = {}) {
     _cleanupNekoIdleArtTransition: () => { cleanup.transition += 1; },
     _clearNekoIdleGifPlaybackSource: () => { cleanup.playback += 1; },
     _setNekoIdleReturnArtSource: (target, src, tier, sourceOptions) => {
-      target.src = src;
+      if (sourceOptions.animate) {
+        target.__nekoIdleTransitionTo = src;
+        target.__nekoIdleTransitionNext = { src };
+      } else {
+        target.src = src;
+        target.__nekoIdleTransitionTo = '';
+        target.__nekoIdleTransitionNext = null;
+      }
       sources.push({ src, tier, options: { ...sourceOptions } });
     },
     _syncNekoIdleCat1CompactMirrorReaction: (_button, _container, src, reason, artLayout) => (
@@ -407,6 +415,9 @@ test('animated visual entry starts its full animation cycle only after the share
   assert.equal(h.timers.length, 1, 'only the transition watchdog runs underneath the fade');
   assert.equal(h.timers[0].delay, 300);
 
+  h.art.src = CASES.scared.url;
+  h.art.__nekoIdleTransitionTo = '';
+  h.art.__nekoIdleTransitionNext = null;
   h.sources[0].options.onTransitionEnd();
   await flush();
   assert.equal(h.timers[0].cleared, true);
@@ -414,20 +425,27 @@ test('animated visual entry starts its full animation cycle only after the share
   assert.equal(h.timers[1].delay, CASES.scared.duration);
 });
 
-test('interrupted animated entry falls back to one full action cycle instead of staying active forever', async () => {
+test('interrupted animated entry releases the action instead of reporting an unseen cycle as done', async () => {
   const h = harness();
   assert.equal(h.context._playNekoIdleCat1VisualAction(
     h.button,
     'scared',
-    { animateEntry: true },
+    {
+      animateEntry: true,
+      onTerminal: (result, detail) => h.terminals.push({ result, detail }),
+    },
   ), true);
   const watchdog = h.timers[0];
+  h.art.__nekoIdleTransitionTo = '';
+  h.art.__nekoIdleTransitionNext = null;
   watchdog.callback();
   await flush();
-  const actionTimer = h.timers.find((timer) => timer.delay === CASES.scared.duration);
-  assert.ok(actionTimer, 'watchdog starts the audited action duration after an interrupted fade');
-  actionTimer.callback();
+  assert.equal(h.timers.some((timer) => timer.delay === CASES.scared.duration), false);
+  assert.equal(h.art.src, 'idle.gif?v=1', 'the interrupted fade never installed the action image');
   assert.equal(h.button.__nekoIdleCat1VisualActionState.active, false);
+  assert.equal(h.terminals.length, 1);
+  assert.equal(h.terminals[0].result, 'interrupted');
+  assert.equal(h.terminals[0].detail.reason, 'cat1-scared-action-cancelled');
 });
 
 test('sleep-tier prepared visual action runs its hard gates before demotion', () => {

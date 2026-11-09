@@ -243,11 +243,18 @@ def test_cat1_stretch_action_has_an_independent_runner():
 def test_cat1_pair_move_is_adapter_only_small_move_runner():
     source = _read_avatar_ui_buttons_source()
 
+    takeover_helper = source.split(
+        "function _shouldResumeNekoIdleJourneyAfterActionTakeover(art, journey)",
+        1,
+    )[1].split("const _NEKO_IDLE_CAT1_VISUAL_ACTION_PROFILES", 1)[0]
+    assert "journey.substate === journey.profile.walkingSubstate" in takeover_helper
+    assert "journey.profile.finishingSubstate" not in takeover_helper
+
     play_block = source.split("function _playNekoIdleCat1PlayAction(button)", 1)[1].split(
         "function _clearNekoIdleThoughtBubble",
         1,
     )[0]
-    assert "journey.substate === journey.profile.walkingSubstate" in play_block
+    assert "_shouldResumeNekoIdleJourneyAfterActionTakeover(art, journey)" in play_block
     assert "journey.profile.finishingSubstate" not in play_block
 
     pair_move_start_block = source.split("function _startNekoIdleCat1PairMove(button)", 1)[1].split(

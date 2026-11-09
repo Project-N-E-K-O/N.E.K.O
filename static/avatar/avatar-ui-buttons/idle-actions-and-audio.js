@@ -595,11 +595,26 @@ function _playNekoIdleCat1VisualAction(button, actionKey, options = {}) {
         });
     };
     if (options.animateEntry === true) {
-        state.entryTimer = setTimeout(scheduleActionFinish, _NEKO_IDLE_RETURN_TRANSITION_MS);
         _setNekoIdleReturnArtSource(art, actionSrc, _NEKO_IDLE_TIER_CAT1, {
             animate: true,
             onTransitionEnd: scheduleActionFinish
         });
+        if (!finishSchedulingStarted) {
+            state.entryTimer = setTimeout(() => {
+                const currentState = button.__nekoIdleCat1VisualActionState;
+                if (!currentState || !currentState.active ||
+                    currentState.actionKey !== actionKey || currentState.token !== token) return;
+                const currentSrc = art.getAttribute('src') || '';
+                if (currentSrc !== actionSrc) {
+                    _cancelNekoIdleCat1VisualAction(button, {
+                        restoreArt: false,
+                        reason: profile.cancelledReason
+                    });
+                    return;
+                }
+                scheduleActionFinish();
+            }, _NEKO_IDLE_RETURN_TRANSITION_MS);
+        }
     } else {
         _setNekoIdleReturnArtSource(art, actionSrc, _NEKO_IDLE_TIER_CAT1, { animate: false });
         scheduleActionFinish();
