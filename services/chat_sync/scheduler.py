@@ -196,6 +196,7 @@ class ChatSyncScheduler:
                 "chat_sync_session_changed", "chat_sync_session_unavailable", "chat_sync_unavailable",
                 "chat_sync_service_rejected", "chat_sync_retry_later", "invalid_chat_sync_response",
                 "chat_sync_local_ca_invalid", "chat_sync_local_ca_loopback_required",
+                "recent_write_receipt_conflict", "invalid_recent_write_receipt",
             }
             safe_code = code if code in safe_codes else "chat_sync_unavailable"
             conn.execute("UPDATE scheduler_tasks SET retry_at=?,failures=?,blocked_generation=?,"

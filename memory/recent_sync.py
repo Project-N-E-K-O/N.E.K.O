@@ -12,7 +12,7 @@ from utils.character_memory import list_character_recent_paths
 from utils.cloudsave_runtime import assert_cloudsave_writable
 from utils.llm_client import message_metadata, messages_to_dict
 from utils.recent_file import (
-    get_recent_pending_unlocked, read_recent_text_unlocked, recent_file_access,
+    RecentFileDeletedError, get_recent_pending_unlocked, read_recent_text_unlocked, recent_file_access,
     read_recent_write_receipt_unlocked, set_recent_pending_unlocked, write_recent_payload_unlocked,
 )
 
@@ -118,6 +118,22 @@ class RecentMemoryAdapter:
                 set_recent_pending_unlocked(resolved, [])
             return {"entries": projected, "fingerprint": _fingerprint(rows)}
 
+    def unreadable(self, name):
+        """Whether the file's content cannot be parsed. Read-only, so the answer clears once it can."""
+        try:
+            path = self.path(name)
+        except (OSError, ValueError):
+            return False
+        try:
+            with recent_file_access(path, timeout=1) as resolved:
+                _payload(resolved)
+        except ValueError:
+            return True
+        except (OSError, RecentFileDeletedError):
+            # A busy lock, an I/O failure or a removed character says nothing about the content.
+            return False
+        return False
+
     def applied(self, name, receipt):
         with recent_file_access(self.path(name)) as resolved:
             return read_recent_write_receipt_unlocked(resolved, *receipt)
@@ -151,7 +167,9 @@ class RecentMemoryAdapter:
                 if index not in owned:
                     projected.insert(min(index, len(projected)), row)
             write_recent_payload_unlocked(resolved, projected, receipt=receipt)
+            # Only a replacement verified against its staged hash may advance the sync base:
+            # a base holding rows the file lacks would upload them as user deletions.
+            if receipt is not None and not read_recent_write_receipt_unlocked(resolved, *receipt):
+                return False
             set_recent_pending_unlocked(resolved, [])
-            if receipt is not None:
-                read_recent_write_receipt_unlocked(resolved, *receipt)
             return True
