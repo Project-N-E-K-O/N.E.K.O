@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // Merge chat sync with the latest main locales (habitual phrase panel, clear screen).
-    const LOCALE_VERSION = '2026-11-09-sync-recent-file-unreadable';
+    // Add the Standard Compute assist API provider names in all eight languages.
+    const LOCALE_VERSION = '2026-11-09-standardcompute-assist-provider';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

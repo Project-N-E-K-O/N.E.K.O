@@ -1423,6 +1423,7 @@
             "orcarouter": "OrcaRouter(Claude 게이트웨이)",
             "requesty": "Requesty(모델 라우터)",
             "opper": "Opper(EU AI 게이트웨이)",
+            "standardcompute": "Standard Compute(모델 라우터)",
             "vllm_omni": "vLLM-Omni (TTS)",
             "gptsovits": "GPT-SoVITS (자체 호스팅)"
         },
@@ -1500,6 +1501,7 @@
             "orcarouter": "OrcaRouter",
             "requesty": "Requesty",
             "opper": "Opper",
+            "standardcompute": "Standard Compute",
             "vllm_omni": "vLLM-Omni(TTS)"
         },
         "freeVersionNoApiKey": "무료 버전에는 API 키가 필요하지 않습니다.",

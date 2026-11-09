@@ -18,6 +18,7 @@ _ASSIST_API_KEY_FIELDS = (
     'assistApiKeyOrcarouter',
     'assistApiKeyRequesty',
     'assistApiKeyOpper',
+    'assistApiKeyStandardcompute',
 )
 
 _MODEL_TYPES = (

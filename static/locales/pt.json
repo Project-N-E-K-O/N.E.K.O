@@ -1423,6 +1423,7 @@
             "orcarouter": "OrcaRouter (gateway do Claude)",
             "requesty": "Requesty (roteador de modelos)",
             "opper": "Opper (gateway de IA na UE)",
+            "standardcompute": "Standard Compute (roteador de modelos)",
             "vllm_omni": "vLLM-Omni (TTS)",
             "gptsovits": "GPT-SoVITS (auto-hospedado)"
         },
@@ -1500,6 +1501,7 @@
             "orcarouter": "OrcaRouter",
             "requesty": "Requesty",
             "opper": "Opper",
+            "standardcompute": "Standard Compute",
             "vllm_omni": "vLLM-Omni (TTS)"
         },
         "freeVersionNoApiKey": "A versão gratuita não requer chave API",
