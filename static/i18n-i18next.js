@@ -30,7 +30,7 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // Merge chat sync with the latest main locales (habitual phrase panel, clear screen).
-    const LOCALE_VERSION = '2026-11-09-sync-recent-write-unconfirmed';
+    const LOCALE_VERSION = '2026-11-09-sync-recent-file-unreadable';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
