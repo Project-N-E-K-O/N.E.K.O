@@ -158,6 +158,10 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Install DOM contract test dependencies
+        working-directory: frontend/react-neko-chat
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
       - name: Run frontend contract tests
         run: |
           node --test static/voice-identity.test.cjs static/voice-readiness.test.cjs
