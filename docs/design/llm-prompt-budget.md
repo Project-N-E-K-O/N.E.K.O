@@ -63,3 +63,14 @@ uv run pytest tests/unit/test_check_llm_budget.py -q
 最终装箱仍超限时，可将最新完整角色原文中确证保留的待确认邀约副本替换为 `story_so_far` 引用，撤下的旧邀请不适用；Review 的公开去向引文表若与最新完整回合的全部对白/旁白逐字一致，也可只替换副本为明确引用，程序验证仍使用完整原始引文表。Review 的接受授权邀约与最新历史回合编号、完整内容及顺序一致时，也可引用该历史原文；比对仅归一化历史已省略的默认猫娘说话人，其他差异保留副本。均保留玩家输入、状态、完整候选和最新历史，不提高容量或增加调用；仍超限继续拒绝发送。
 
 新增 LLM 调用时同时回答：输入各段上限是多少、输出上限是多少、timeout 是多少、失败如何降级、审计是否泄露正文。
+
+### Plugin assessment dialogue and schema projection
+
+`AGENT_PLUGIN_CONTEXT_MAX_TOKENS` caps the existing recent dialogue at 12,000 tokens
+before it reaches either semantic plugin-selection stage. The head/tail split is
+3,000/9,000, preserving the latest-request marker and recent corrections. This does
+not expand `AGENT_HISTORY_TURNS` or retrieve older history. Both stages use the same
+bounded text. `AGENT_PLUGIN_FIELD_DESCRIPTION_MAX_TOKENS` caps each projected schema
+property description at 80 tokens; the existing eight-property and enum caps remain.
+Semantic screening failure preserves the full visible catalog for final assessment;
+an explicit empty selection is still an empty selection.

@@ -185,6 +185,12 @@ AGENT_RECENT_CTX_TOTAL_TOKENS = 1000
 - Purpose: stop collecting subsequent messages after cumulative tokens exceed this value; drop partial final items.
 - Upstream: serialization of four capped messages."""
 
+AGENT_PLUGIN_CONTEXT_MAX_TOKENS = 12000
+"""Dialogue token ceiling shared by semantic plugin screening and planning."""
+
+AGENT_PLUGIN_FIELD_DESCRIPTION_MAX_TOKENS = 80
+"""Per-property description ceiling in the planner's schema projection."""
+
 AGENT_PLUGIN_DESC_BM25_THRESHOLD = 3000
 """plugins_desc token threshold enabling parallel stage1 BM25 + LLM coarse screening.
 - Purpose: go directly to stage2 at ≤ threshold; use two-stage screening above it.

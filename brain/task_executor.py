@@ -35,6 +35,8 @@ from config import (
     AGENT_HISTORY_TURNS,
     AGENT_RECENT_CTX_PER_ITEM_TOKENS,
     AGENT_RECENT_CTX_TOTAL_TOKENS,
+    AGENT_PLUGIN_CONTEXT_MAX_TOKENS,
+    AGENT_PLUGIN_FIELD_DESCRIPTION_MAX_TOKENS,
     AGENT_PLUGIN_DESC_BM25_THRESHOLD,
     AGENT_PLUGIN_SHORTDESC_MAX_TOKENS,
     AGENT_PLUGIN_COARSE_MAX_TOKENS,
@@ -58,6 +60,7 @@ from config.prompts.prompts_agent import (
     USER_PLUGIN_SYSTEM_PROMPT,
     USER_PLUGIN_COARSE_SCREEN_PROMPT,
 )
+from config.prompts.prompts_plugin_assessment import PLUGIN_CONTEXT_GUIDANCE
 from config.prompts.prompts_sys import _loc
 from utils.file_utils import atomic_write_json, robust_json_loads
 from plugin.settings import PLUGIN_EXECUTION_TIMEOUT
@@ -1407,6 +1410,7 @@ class DirectTaskExecutor:
 
     def _build_plugin_desc_lines(self, plugins: Any) -> list:
         """Build per-plugin description lines for LLM prompt."""
+        from utils.tokenize import truncate_to_tokens
         lines = []
         try:
             iterable = plugins.items() if isinstance(plugins, dict) else enumerate(plugins)
@@ -1450,7 +1454,14 @@ class DirectTaskExecutor:
                                                         )
                                                     else:
                                                         enum_hint = f" enum=[{inner}]"
-                                            fields.append(f"{fname}:{ftype}{enum_hint}")
+                                            description_hint = ""
+                                            description = fdef.get("description") if isinstance(fdef, dict) else None
+                                            if isinstance(description, str) and description.strip():
+                                                description = truncate_to_tokens(
+                                                    description.strip(), AGENT_PLUGIN_FIELD_DESCRIPTION_MAX_TOKENS,
+                                                )
+                                                description_hint = " description=" + json.dumps(description, ensure_ascii=False)
+                                            fields.append(f"{fname}:{ftype}{enum_hint}{description_hint}")
                                         required = schema.get("required", [])
                                         req_str = f" required={required}" if required else ""
                                         schema_hint = f" args({', '.join(fields)}{req_str})"
@@ -1499,10 +1510,12 @@ class DirectTaskExecutor:
             user_text=user_text,
         )
 
+        system_prompt += "\n" + _loc(PLUGIN_CONTEXT_GUIDANCE, lang)
+
         try:
             # Use emotion-tier latency-sensitive models such as qwen-flash; coarse screening needs
-            # speed and accurate JSON lists. BM25 / keyword hits provide fallback, so missing
-            # one or two coarse candidates cannot ruin the final decision.
+            # speed and accurate JSON lists. BM25 / keyword hits add candidates;
+            # a failed semantic screen falls back to the full visible catalog.
             llm = self._get_llm(temperature=0, max_completion_tokens=AGENT_PLUGIN_COARSE_MAX_TOKENS, tier="emotion")
             messages = [
                 {"role": "system", "content": system_prompt},
@@ -1514,11 +1527,14 @@ class DirectTaskExecutor:
             if text.startswith("```"):
                 text = text.replace("```json", "").replace("```", "").strip()
             ids = robust_json_loads(text)
-            if isinstance(ids, list):
-                return [str(i) for i in ids if isinstance(i, (str, int))]
+            if isinstance(ids, list) and all(isinstance(i, (str, int)) for i in ids):
+                return [str(i) for i in ids]
+            raise ValueError("Plugin coarse screening did not return an ID array")
         except Exception as e:
             logger.warning("[PluginFilter] Stage1 LLM coarse screen failed: %s", e)
-        return []
+            # Failure is not an empty semantic selection. The caller lets the
+            # final planning model evaluate all visible plugin candidates.
+            raise
 
     async def _assess_user_plugin(self, conversation: str, plugins: Any, lang: str = "en") -> UserPluginDecision:
         """
@@ -1567,7 +1583,13 @@ class DirectTaskExecutor:
                 plugin_id=None, plugin_args=None, reason="No active plugins",
             )
 
-        # Extract user intent for keyword / BM25 matching
+        # Both semantic stages see recent dialogue, without requiring a
+        # follow-up keyword match. Preserve the latest-request marker and tail.
+        from utils.tokenize import truncate_head_tail_tokens
+        conversation = truncate_head_tail_tokens(
+            conversation, AGENT_PLUGIN_CONTEXT_MAX_TOKENS // 4,
+            AGENT_PLUGIN_CONTEXT_MAX_TOKENS * 3 // 4,
+        )
         user_intent = self._extract_latest_user_intent(conversation)
 
         # Build full description
@@ -1612,7 +1634,7 @@ class DirectTaskExecutor:
                         bm25_top_k=10,
                     ),
                     self._stage1_llm_coarse_screen(
-                        user_intent or conversation, plugin_list, lang=lang,
+                        conversation, plugin_list, lang=lang,
                     ),
                 )
                 bm25_ids = {p.get("id") for p in bm25_filtered if isinstance(p, dict)}
@@ -1649,6 +1671,7 @@ class DirectTaskExecutor:
 
         # Stage 2: full LLM assessment
         system_prompt = _loc(USER_PLUGIN_SYSTEM_PROMPT, lang).format(plugins_desc=plugins_desc)
+        system_prompt += "\n" + _loc(PLUGIN_CONTEXT_GUIDANCE, lang)
 
         user_prompt = f"Conversation:\n{conversation}\n\nUser intent (one-line): {user_intent}"
 
