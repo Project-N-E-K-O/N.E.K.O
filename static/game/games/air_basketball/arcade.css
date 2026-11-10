@@ -1225,7 +1225,7 @@ body.is-mouse-stolen * { cursor: none !important; }
   .mouse-steal-hint { top: 54px; padding: 7px 11px; }
 }
 
-@media (max-width: 480px) {
+@media (max-width: 520px) {
   .match-header {
     flex-shrink: 0;
     height: auto;

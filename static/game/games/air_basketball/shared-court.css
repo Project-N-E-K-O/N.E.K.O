@@ -143,6 +143,11 @@
   backdrop-filter: blur(3px);
 }
 .pause-overlay[hidden] { display: none; }
+/* Keep both header rows usable when the pause layer covers the court. */
+body.is-match-paused .match-header {
+  position: relative;
+  z-index: 31;
+}
 body.is-match-paused,
 body.is-match-paused * { cursor: auto !important; }
 body.is-match-paused .mouse-steal-layer,
