@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 _ROOT = Path(__file__).resolve().parents[2]
 _spec = importlib.util.spec_from_file_location(
-    "neko_maintenance", _ROOT / "local-desktop-ui/maintain.py"
+    "neko_maintenance", _ROOT / "scripts/maintain_local.py"
 )
 maintain = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(maintain)

@@ -1,6 +1,6 @@
 # Maintaining a local integration branch
 
-`local-desktop-ui/maintain.py` keeps local commits and upstream history together
+`scripts/maintain_local.py` keeps local commits and upstream history together
 without replacing the checkout, automatically stashing changes, or publishing
 anything. It has no user-specific paths or account settings. It requires Python
 3.11, Git, and the official HTTPS repository as `origin`; build/verify also use
@@ -12,10 +12,10 @@ build output outside Git. Public PR branches should contain one reviewable
 feature, based on an identified official commit rather than the local branch.
 
 ```sh
-uv run --no-sync python local-desktop-ui/maintain.py status
-uv run --no-sync python local-desktop-ui/maintain.py backup --backups ../neko-backups
-uv run --no-sync python local-desktop-ui/maintain.py fetch
-uv run --no-sync python local-desktop-ui/maintain.py review
+uv run --no-sync python scripts/maintain_local.py status
+uv run --no-sync python scripts/maintain_local.py backup --backups ../neko-backups
+uv run --no-sync python scripts/maintain_local.py fetch
+uv run --no-sync python scripts/maintain_local.py review
 ```
 
 The backup contains a verified HEAD bundle, separate index/working patches, and
