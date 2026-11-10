@@ -1,0 +1,13 @@
+{
+  "description": "Portable maintenance smoke checks only. Extend this policy for your local features and every affected upstream path before deployment.",
+  "suites": [
+    {
+      "name": "maintenance",
+      "command": ["uv", "run", "--no-sync", "python", "-m", "pytest", "-q", "tests/unit/test_local_maintenance.py"]
+    },
+    {
+      "name": "whitespace",
+      "command": ["git", "diff", "--check", "origin/main...HEAD"]
+    }
+  ]
+}
