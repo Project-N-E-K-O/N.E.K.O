@@ -1193,6 +1193,13 @@ async def _handle_oauth_callback(
             status_code=400,
         )
 
+    if bind.get("error") == client_registration.LEGACY_REBIND_DETAIL:
+        return _callback_html(
+            "社区登录已完成",
+            "这台旧设备还没有本机证明，游客卡牌不会自动并入当前账号。"
+            "请联系管理员核对设备归属；核对并完成资产迁移后，回到 NEKO 重新登录一次即可写入证明。",
+            status_code=200,
+        )
     return _callback_html(
         "社区登录已完成",
         "可关闭此页，回到 NEKO 继续使用社区功能。",
@@ -1344,15 +1351,17 @@ async def _oauth_guest_bind(social_base: str, access_token: str) -> dict[str, An
                 "binding_challenge": challenge,
             }
 
+            def _detail(res) -> Any:
+                try:
+                    return res.json().get("detail")
+                except (ValueError, TypeError, AttributeError):
+                    return None
+
             async def _approve():
                 res = await client.post(
                     f"{base}/api/clients/bind-approval", json=approval_payload
                 )
-                try:
-                    detail = res.json().get("detail")
-                except (ValueError, TypeError, AttributeError):
-                    detail = None
-                return res, detail
+                return res, _detail(res)
 
             approval_res, approval_detail = await _approve()
             # First cloud call from this install can predate registration; the
@@ -1362,6 +1371,30 @@ async def _oauth_guest_bind(social_base: str, access_token: str) -> dict[str, An
                 approval_res.status_code, approval_detail
             ) and await client_registration.ensure_client_registered(base, force=True):
                 approval_res, approval_detail = await _approve()
+
+            if (
+                approval_res.status_code >= 400
+                and approval_detail == client_registration.LEGACY_REBIND_DETAIL
+            ):
+                # The cloud only stores this proof when the row is already bound
+                # to the signed-in account. A 409 means it is not ours: never
+                # retry it with another secret.
+                adopt_res = await client.post(
+                    f"{base}/api/clients/adopt-proof",
+                    headers=headers,
+                    json={"client_id": client_id, "client_proof": client_proof},
+                )
+                if adopt_res.status_code < 400:
+                    approval_res, approval_detail = await _approve()
+                elif _detail(adopt_res) == _BIND_OWNERSHIP_CONFLICT:
+                    bind["error"] = _BIND_OWNERSHIP_CONFLICT
+                    return bind
+                else:
+                    logger.info(
+                        "community_oauth: adopt-proof returned %s: %s",
+                        adopt_res.status_code,
+                        _detail(adopt_res),
+                    )
 
             if approval_res.status_code >= 400:
                 bind["error"] = approval_detail or f"http_{approval_res.status_code}"
@@ -1378,10 +1411,7 @@ async def _oauth_guest_bind(social_base: str, access_token: str) -> dict[str, An
             if bind_res.status_code < 400:
                 bind["bound"] = True
                 return bind
-            try:
-                bind["error"] = bind_res.json().get("detail") or f"http_{bind_res.status_code}"
-            except (ValueError, TypeError, AttributeError):
-                bind["error"] = f"http_{bind_res.status_code}"
+            bind["error"] = _detail(bind_res) or f"http_{bind_res.status_code}"
     except (httpx.HTTPError, OSError) as exc:
         bind["error"] = "cloud_unreachable"
         logger.info("community_oauth: guest bind failed: %s", exc)
