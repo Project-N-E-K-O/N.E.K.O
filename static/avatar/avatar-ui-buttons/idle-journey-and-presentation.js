@@ -1915,6 +1915,10 @@ function _setNekoIdleReturnArtSource(art, nextSrc, tier, options = {}) {
         if (typeof options.onTransitionEnd !== 'function') return;
         try { options.onTransitionEnd(); } catch (_) {}
     };
+    const notifyTransitionError = () => {
+        if (typeof options.onTransitionError !== 'function') return;
+        try { options.onTransitionError(); } catch (_) {}
+    };
 
     if (!options.keepHoverPlayback) {
         _clearNekoIdleHoverPlayback(art);
@@ -1976,8 +1980,12 @@ function _setNekoIdleReturnArtSource(art, nextSrc, tier, options = {}) {
         preload.src = playbackSrc;
     }
 
+    const ownsTransition = () => (
+        art.__nekoIdleTransitionNext === nextArt &&
+        art.__nekoIdleTransitionTo === nextSrc
+    );
     const commit = () => {
-        if (art.__nekoIdleTransitionTo !== nextSrc) return;
+        if (!ownsTransition()) return;
         _clearNekoIdleGifPlaybackSource(art);
         art.removeAttribute(_NEKO_IDLE_CAT1_PLAY_FINISHING_ATTR);
         art.src = playbackSrc;
@@ -1991,9 +1999,10 @@ function _setNekoIdleReturnArtSource(art, nextSrc, tier, options = {}) {
             return;
         }
         playbackReady.then((ready) => {
-            if (art.__nekoIdleTransitionTo !== nextSrc) return;
+            if (!ownsTransition()) return;
             if (!ready) {
                 _cleanupNekoIdleArtTransition(art);
+                notifyTransitionError();
                 return;
             }
             commit();

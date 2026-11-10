@@ -600,32 +600,48 @@ function _playNekoIdleCat1VisualAction(button, actionKey, options = {}) {
         // same URL. Alternate two bounded URLs so the post-fade main art starts
         // at frame zero without growing the decoded-image cache indefinitely.
         state.entryPlaybackToken = (state.entryPlaybackToken % 2) + 1;
+        const entryPlaybackToken = state.entryPlaybackToken;
+        const cancelFailedEntry = (restoreArt) => {
+            const currentState = button.__nekoIdleCat1VisualActionState;
+            if (!currentState || !currentState.active ||
+                currentState.actionKey !== actionKey || currentState.token !== token) return;
+            _cancelNekoIdleCat1VisualAction(button, {
+                restoreArt: restoreArt === true,
+                reason: profile.cancelledReason
+            });
+        };
         _setNekoIdleReturnArtSource(art, actionSrc, _NEKO_IDLE_TIER_CAT1, {
             animate: true,
             restartAnimation: true,
-            playbackToken: state.entryPlaybackToken,
-            onTransitionEnd: scheduleActionFinish
+            playbackToken: entryPlaybackToken,
+            onTransitionEnd: scheduleActionFinish,
+            onTransitionError: () => cancelFailedEntry(true)
         });
         if (!finishSchedulingStarted) {
+            const entryTransition = art.__nekoIdleTransitionNext;
             const entryDeadlineAt = Date.now() + Math.max(5000, _NEKO_IDLE_RETURN_TRANSITION_MS * 5);
             const verifyEntry = () => {
                 const currentState = button.__nekoIdleCat1VisualActionState;
                 if (!currentState || !currentState.active ||
                     currentState.actionKey !== actionKey || currentState.token !== token) return;
                 const currentSrc = art.getAttribute('src') || '';
-                if (art.__nekoIdleTransitionTo === actionSrc) {
+                if (art.__nekoIdleTransitionNext === entryTransition &&
+                    art.__nekoIdleTransitionTo === actionSrc) {
                     if (Date.now() >= entryDeadlineAt) {
                         _cleanupNekoIdleArtTransition(art);
+                        cancelFailedEntry(true);
+                        return;
                     } else {
                         currentState.entryTimer = setTimeout(verifyEntry, 50);
                         return;
                     }
                 }
-                if (!_isNekoIdleAnimationRestartUrlForSource(currentSrc, actionSrc)) {
-                    _cancelNekoIdleCat1VisualAction(button, {
-                        restoreArt: false,
-                        reason: profile.cancelledReason
-                    });
+                if (!_isNekoIdleAnimationRestartUrlForSource(
+                    currentSrc,
+                    actionSrc,
+                    entryPlaybackToken
+                )) {
+                    cancelFailedEntry(false);
                     return;
                 }
                 scheduleActionFinish();

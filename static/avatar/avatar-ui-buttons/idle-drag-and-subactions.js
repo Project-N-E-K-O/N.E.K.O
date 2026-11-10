@@ -383,16 +383,22 @@ function _buildNekoIdleAnimationRestartUrl(src, playbackToken) {
     }
 }
 
-function _isNekoIdleAnimationRestartUrlForSource(candidateSrc, baseSrc) {
+function _isNekoIdleAnimationRestartUrlForSource(candidateSrc, baseSrc, playbackToken = null) {
     if (!candidateSrc || !baseSrc) return false;
     try {
         const candidate = new URL(candidateSrc, window.location.href);
         const base = new URL(baseSrc, window.location.href);
+        if (playbackToken !== null && playbackToken !== undefined &&
+            candidate.searchParams.get('entry') !== String(playbackToken)) {
+            return false;
+        }
         candidate.searchParams.delete('entry');
         base.searchParams.delete('entry');
         return candidate.href === base.href;
     } catch (_) {
-        return candidateSrc === baseSrc;
+        return playbackToken === null || playbackToken === undefined
+            ? candidateSrc === baseSrc
+            : candidateSrc === _buildNekoIdleAnimationRestartUrl(baseSrc, playbackToken);
     }
 }
 

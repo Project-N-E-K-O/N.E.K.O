@@ -160,6 +160,7 @@ function harness(options = {}) {
   const terminals = [];
   const cleanup = { hover: 0, transition: 0, playback: 0 };
   const journeyCalls = { pause: 0, resume: 0, sync: 0 };
+  let nowMs = 1000;
   const gates = {
     desktop: false, playground: false, tier: 'cat1', drag: false, anyDrag: false,
     compactDrag: false, pending: false, anyPending: false, transition: false,
@@ -170,7 +171,7 @@ function harness(options = {}) {
   const durations = Object.fromEntries(Object.values(CASES).map((entry) => [entry.url, entry.duration]));
   let resolveDuration;
   const art = options.hasArt === false ? null : {
-    src: 'idle.gif?v=1',
+    src: options.artSrc || 'idle.gif?v=1',
     style: { transform: 'scaleX(-1)', width: '100%', height: '100%', objectFit: 'contain' },
     getAttribute(name) { return name === 'src' ? this.src : null; },
   };
@@ -193,7 +194,7 @@ function harness(options = {}) {
   };
   const keyBySlot = Object.fromEntries(Object.entries(CASES).map(([key, entry]) => [entry.slot, key]));
   const context = {
-    window: {}, Date: { now: () => 1000 }, _NEKO_IDLE_TIER_CAT1: 'cat1',
+    window: {}, Date: { now: () => nowMs }, _NEKO_IDLE_TIER_CAT1: 'cat1',
     _NEKO_IDLE_RETURN_TRANSITION_MS: 300,
     _isNekoCatActionResourceAvailable: (key) => capabilities.has(key),
     _getNekoIdleCat1VisualActionAssetUrlForSlot: (slot) => urls[keyBySlot[slot]] || '',
@@ -209,8 +210,10 @@ function harness(options = {}) {
     _isNekoIdleCat1EdgePeekActive: () => gates.edge,
     _isAnyNekoIdleCat1IndependentActionActive: () => gates.independent,
     _isNekoCatMindAudioActionActive: () => gates.audio,
-    _isNekoIdleAnimationRestartUrlForSource: (candidate, base) => (
-      candidate === base || candidate.startsWith(`${base}&entry=`)
+    _isNekoIdleAnimationRestartUrlForSource: (candidate, base, playbackToken = null) => (
+      playbackToken === null
+        ? candidate === base || candidate.startsWith(`${base}&entry=`)
+        : candidate === `${base}&entry=${playbackToken}`
     ),
     _getNekoIdleReturnContainerFromButton: () => container,
     _syncNekoIdleCat1QuestionMarkKeyboardAvailabilityForButton: () => {},
@@ -271,6 +274,7 @@ function harness(options = {}) {
     },
     cancel(cancelOptions) { context._cancelNekoIdleCat1VisualAction(button, cancelOptions); },
     resolveDuration(ms) { assert.equal(typeof resolveDuration, 'function'); resolveDuration(ms); },
+    setNow(ms) { nowMs = ms; },
   };
 }
 
@@ -471,6 +475,8 @@ test('animation restart URLs preserve the canonical asset and version while chan
     'https://localhost/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-scared.webp?v=7&entry=2',
   );
   assert.equal(context._isNekoIdleAnimationRestartUrlForSource(restarted, base), true);
+  assert.equal(context._isNekoIdleAnimationRestartUrlForSource(restarted, base, 2), true);
+  assert.equal(context._isNekoIdleAnimationRestartUrlForSource(restarted, base, 1), false);
   assert.equal(context._isNekoIdleAnimationRestartUrlForSource(
     restarted,
     '/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-happy.webp?v=7',
@@ -491,6 +497,7 @@ test('the shared fade keeps its next art until the restarted main image has load
   const timers = [];
   const created = [];
   let transitionEnds = 0;
+  let transitionErrors = 0;
   const button = {
     appendChild(node) { node.parentNode = this; },
     removeChild(node) { node.parentNode = null; },
@@ -559,6 +566,7 @@ test('the shared fade keeps its next art until the restarted main image has load
 
   timers[0].callback();
   await flush();
+  assert.equal(created[0].parentNode, button, 'the visible fade art stays mounted while preload is pending');
   assert.equal(attributes.get('src'), 'sleep.webp?v=1', 'the old main art stays until preload is ready');
   assert.equal(transitionEnds, 0);
 
@@ -566,6 +574,94 @@ test('the shared fade keeps its next art until the restarted main image has load
   await flush();
   assert.equal(attributes.get('src'), 'scared.webp?v=1&entry=1');
   assert.equal(transitionEnds, 1);
+
+  art.src = 'sleep.webp?v=1';
+  context._setNekoIdleReturnArtSource(art, 'scared.webp?v=1', 'cat1', {
+    animate: true,
+    restartAnimation: true,
+    playbackToken: 1,
+  });
+  timers[1].callback();
+  context._cleanupNekoIdleArtTransition(art);
+  context._setNekoIdleReturnArtSource(art, 'scared.webp?v=1', 'cat1', {
+    animate: true,
+    restartAnimation: true,
+    playbackToken: 2,
+    onTransitionError: () => { transitionErrors += 1; },
+  });
+  await flush();
+  assert.equal(
+    art.__nekoIdleTransitionNext,
+    created[4],
+    'a cancelled preload continuation cannot clear a newer transition for the same source',
+  );
+  created[5].onerror();
+  timers[2].callback();
+  await flush();
+  assert.equal(transitionErrors, 1);
+  assert.equal(art.__nekoIdleTransitionNext, null);
+});
+
+test('failed animated entry restores CAT1 art and resumes the paused journey', async () => {
+  const h = harness({ artSrc: 'sleep.gif?v=1' });
+  h.gates.tier = 'cat2';
+  assert.equal(h.context._playNekoIdleCat1VisualAction(h.button, 'scared', {
+    animateEntry: true,
+    prepareCat1() {
+      h.gates.tier = 'cat1';
+      return true;
+    },
+    onTerminal: (result, detail) => h.terminals.push({ result, detail }),
+  }), true);
+  assert.equal(h.journey.paused, true);
+
+  const source = h.sources[0];
+  assert.equal(typeof source.options.onTransitionError, 'function');
+  source.options.onTransitionError();
+  await flush();
+
+  assert.equal(h.art.src, 'idle.gif?v=1');
+  assert.equal(h.journey.paused, false);
+  assert.equal(h.button.__nekoIdleCat1VisualActionState.active, false);
+  assert.equal(h.terminals[0].result, 'interrupted');
+});
+
+test('timed-out animated entry restores CAT1 art and resumes the paused journey', async () => {
+  const h = harness({ artSrc: 'sleep.gif?v=1' });
+  h.gates.tier = 'cat2';
+  assert.equal(h.context._playNekoIdleCat1VisualAction(h.button, 'scared', {
+    animateEntry: true,
+    prepareCat1() {
+      h.gates.tier = 'cat1';
+      return true;
+    },
+  }), true);
+  assert.equal(h.journey.paused, true);
+
+  h.setNow(7000);
+  h.timers[0].callback();
+  await flush();
+
+  assert.equal(h.art.src, 'idle.gif?v=1');
+  assert.equal(h.journey.paused, false);
+  assert.equal(h.button.__nekoIdleCat1VisualActionState.active, false);
+});
+
+test('animated entry watchdog rejects a stale playback token', async () => {
+  const h = harness();
+  assert.equal(h.context._playNekoIdleCat1VisualAction(
+    h.button,
+    'scared',
+    { animateEntry: true },
+  ), true);
+  h.art.src = `${CASES.scared.url}&entry=2`;
+  h.art.__nekoIdleTransitionTo = '';
+  h.art.__nekoIdleTransitionNext = null;
+  h.timers[0].callback();
+  await flush();
+
+  assert.equal(h.button.__nekoIdleCat1VisualActionState.active, false);
+  assert.equal(h.timers.some((timer) => timer.delay === CASES.scared.duration), false);
 });
 
 test('interrupted animated entry releases the action instead of reporting an unseen cycle as done', async () => {
@@ -589,6 +685,7 @@ test('interrupted animated entry releases the action instead of reporting an uns
   assert.equal(h.terminals.length, 1);
   assert.equal(h.terminals[0].result, 'interrupted');
   assert.equal(h.terminals[0].detail.reason, 'cat1-scared-action-cancelled');
+  assert.equal(h.journey.paused, true, 'another presentation owns the paused journey');
 });
 
 test('sleep-tier prepared visual action runs its hard gates before demotion', () => {

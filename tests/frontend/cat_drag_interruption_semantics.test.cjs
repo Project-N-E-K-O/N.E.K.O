@@ -252,6 +252,7 @@ test('independent stretch runner and hiss entry keep hard gates and one owned li
     _syncNekoIdleCat1QuestionMarkKeyboardAvailabilityForButton: () => {},
     _isNekoIdleReturnDragActionActive: () => false,
     _getNekoIdleReturnCurrentArtUrl: () => 'idle.gif',
+    _shouldResumeNekoIdleJourneyAfterActionTakeover: () => false,
     _setNekoIdleReturnArtSource: (_art, src, tier, options) => artSources.push({ src, tier, options }),
     _resumeNekoIdleCat1Journey: () => {},
     _scheduleNekoIdleCat1JourneySync: () => { journeySyncs += 1; },
