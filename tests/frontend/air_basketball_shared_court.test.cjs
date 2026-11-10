@@ -1,7 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { readFileSync } = require('node:fs');
-const { execFileSync } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
 const path = require('node:path');
 
@@ -35,7 +34,8 @@ async function setup(width = 320, height = 500) {
 }
 
 function baselineClass() {
-  const baseline = execFileSync('git', ['show', '4177047b7:static/game/games/air_basketball/physics.js'], { cwd:root, encoding:'utf8' });
+  // The fixture is physics.js from 4177047b7, kept for comparison with Air Basketball 1.0.
+  const baseline = readFileSync(path.join(__dirname, 'fixtures', 'air_basketball_physics_v1.js'), 'utf8');
   return new Function(baseline.replaceAll('import.meta.url', JSON.stringify(pathToFileURL(physicsPath).href))
     .replace('export const clamp', 'const clamp').replace('export class ShotLane', 'class ShotLane')
     + '\nreturn ShotLane;')();
