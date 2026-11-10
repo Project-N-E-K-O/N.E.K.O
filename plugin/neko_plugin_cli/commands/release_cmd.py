@@ -94,6 +94,12 @@ def handle_check(args: argparse.Namespace) -> int:
     return 1 if errors else 0
 
 
+def _market_security_checks_enabled() -> bool:
+    # Market currently defaults to its pre-#191 review flow (344406f0).
+    # Keep the paused scanner available without blocking ordinary releases.
+    return os.environ.get("NEKO_PLUGIN_MARKET_SECURITY_CHECKS") == "1"
+
+
 def handle_release_check(args: argparse.Namespace) -> int:
     command_label = getattr(args, "_command_label", "check --release")
     try:
@@ -143,7 +149,10 @@ def handle_release_check(args: argparse.Namespace) -> int:
         if inspect_result.payload_hash_verified is not True:
             print("[FAIL] package payload hash verification failed", file=sys.stderr)
             return 1
-        package_issues = _diagnose_market_package(build_result.package_path)
+        package_issues = (
+            _diagnose_market_package(build_result.package_path)
+            if _market_security_checks_enabled() else []
+        )
         if package_issues:
             print(f"[FAIL] {source.plugin_id}: {command_label} built a package the Market rejects", file=sys.stderr)
             _print_issues(package_issues)
@@ -153,6 +162,7 @@ def handle_release_check(args: argparse.Namespace) -> int:
         return 1
 
     print(f"[OK] {source.plugin_id}: {command_label} passed")
+    print(f"  market_check_mode={'source-security' if _market_security_checks_enabled() else 'legacy'}")
     print(f"  version={source.version}")
     print(f"  package={build_result.package_path}")
     print(f"  package_sha256={_sha256_file(build_result.package_path)}")
@@ -335,7 +345,7 @@ def _diagnose_market_release(
     if not release_workflow.is_file():
         issues.append(("error", ".github/workflows/release.yml is missing"))
 
-    if repository_root is not None:
+    if repository_root is not None and _market_security_checks_enabled():
         issues.extend(_diagnose_market_source_archive(repository_root))
 
     return issues
