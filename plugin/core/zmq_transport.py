@@ -437,8 +437,10 @@ class HostTransport:
         # Downlink: host → child (PUSH/PULL)
         self._dl_sock = self._ctx.socket(zmq.PUSH)
         self._dl_sock.setsockopt(zmq.LINGER, _LINGER_MS)
-        # Keep bulk observations out of a deep opaque socket queue; application
-        # scheduling can prioritize STOP only before libzmq accepts a frame.
+        # A small host-side pipe keeps unsent frames in the application queue,
+        # where credits, eviction and STOP-before-bulk apply. It bounds only
+        # this side: the child's PULL keeps the default RCVHWM (1000 frames),
+        # so up to that many accepted frames can still sit ahead of STOP.
         self._dl_sock.setsockopt(zmq.SNDHWM, 8)
         self._dl_sock.bind("tcp://127.0.0.1:*")
         self.downlink_endpoint: str = self._dl_sock.getsockopt(zmq.LAST_ENDPOINT).decode()

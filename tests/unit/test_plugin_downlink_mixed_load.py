@@ -144,3 +144,45 @@ def test_bounded_validation_cpu_on_long_text():
     elapsed = time.perf_counter() - start
     print(f'long_text_validation_seconds={elapsed:.6f}')
     assert elapsed < 2
+
+
+@pytest.mark.asyncio
+async def test_stop_that_times_out_behind_legacy_backlog_is_still_delivered():
+    """The child PULL keeps its default RCVHWM, so ~1000 legacy frames fit on
+    the wire and the rest wait in the host queue ahead of STOP. The STOP send
+    timing out must not withdraw it: a child that catches up still gets it."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from plugin.core.communication import PluginCommunicationResourceManager
+
+    host = HostTransport()
+    child = ChildTransport(host.downlink_endpoint, host.uplink_endpoint, host.uplink_token,
+                           message_uplink_endpoint=host.message_uplink_endpoint,
+                           image_uplink_endpoint=host.image_uplink_endpoint)
+    tasks = []
+    try:
+        await host.send_command({'type': 'READY'})
+        assert (await asyncio.wait_for(child.recv_downlink(timeout_ms=2000), 3))[1]['type'] == 'READY'
+        tasks = [asyncio.create_task(host.send_command({
+            'type': 'BUS_CHANGE', 'bus': 'events', 'sub_id': str(i), 'op': 'add',
+            'delta': {'text': 'l' * 500},
+        })) for i in range(1500)]
+        await asyncio.sleep(.3)
+        assert host._downlink_priority  # the backlog reaches the host queue
+        manager = SimpleNamespace(transport=host, logger=MagicMock(), plugin_id='slow')
+        await PluginCommunicationResourceManager._send_stop_command_local(manager, timeout=.2)
+        manager.logger.warning.assert_called_once()  # the wait itself did time out
+        got_stop = False
+        for _ in range(1600):
+            frame = await asyncio.wait_for(child.recv_downlink(timeout_ms=2000), 3)
+            if frame is None:
+                break
+            if frame[1].get('type') == 'STOP':
+                got_stop = True
+                break
+        assert got_stop
+    finally:
+        host.close()
+        child.close()
+        await asyncio.gather(*tasks, return_exceptions=True)

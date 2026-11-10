@@ -460,8 +460,13 @@ class PluginCommunicationResourceManager:
         await self._run_on_owner_loop(self._send_stop_command_local(timeout))
 
     async def _send_stop_command_local(self, timeout: float = 0.5) -> None:
+        # A timeout only stops waiting. Cancelling the send would withdraw a
+        # STOP still queued behind a backlog; kept, it reaches a child that
+        # catches up, and transport.close() settles it otherwise.
+        stop_send = asyncio.ensure_future(self.transport.send_command({"type": "STOP"}))
+        stop_send.add_done_callback(lambda task: task.cancelled() or task.exception())
         try:
-            await asyncio.wait_for(self.transport.send_command({"type": "STOP"}), timeout=timeout)
+            await asyncio.wait_for(asyncio.shield(stop_send), timeout=timeout)
             self.logger.debug("Sent STOP to plugin {}", self.plugin_id)
         except asyncio.TimeoutError:
             self.logger.warning("Sending STOP to plugin {} timed out after {}s", self.plugin_id, timeout)
