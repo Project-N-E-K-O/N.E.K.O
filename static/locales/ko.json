@@ -24,7 +24,7 @@
             "storageChanged": "서버 데이터 디렉터리가 변경되었습니다. 아바타 편집기를 다시 연 후 저장하세요."
         }
     },
-    "chatSync": {"setupNeedsSave":"{{name}}의 동기화 설정을 확인한 후 캐릭터를 다시 저장하세요.","title":"채팅 동기화","close":"닫기","pending":"등록된 업로드 대기: {{originals}}개, 삭제 대기: {{deletions}}개.","working":"처리 중…","loginRequired":"커뮤니티 계정에 로그인한 후 다시 시도하세요.","unknownTime":"원래 시간 알 수 없음","userLabel":"나","profileConflict":"사용할 캐릭터 설정 선택","profileRenamePending":"캐릭터 이름 변경 확인","profileLocal":"이 기기의 설정","profileRemote":"클라우드 설정","profileUseLocal":"기기 설정 업로드","profileUseRemote":"클라우드 설정 사용","profileRenameConfirm":"{{oldName}}을(를) {{newName}}(으)로 바꾸고 클라우드 설정 전체를 사용할까요?","profileChanged":"설정이 바뀌었거나 동기화를 사용할 수 없습니다. 두 버전을 보관하고 다시 확인하세요.","profileUploadConfirm":"{{name}}의 저장한 설정을 업로드할까요?","profileUnsupported":"아직 동기화할 수 없는 항목이 있습니다. 기기에 저장한 내용은 유지됩니다.","profileSaveFailed":"설정 동기화를 완료하지 못했습니다. 저장한 내용과 두 버전은 유지됩니다.","profileName":"이름","profileNickname":"별명","profileSetting":"원본 설정","profileStyle":"말투","cloudImport":"클라우드에서 캐릭터 생성","cloudEmpty":"클라우드에 캐릭터가 없습니다.","cloudProfileEmpty":"이 캐릭터의 설정은 아직 게시되지 않았습니다.","cloudCreate":"이 기기에 생성","cloudExisting":"{{name}}이(가) 이미 있습니다. 현재 동기화 설정을 유지합니다.","cloudCreated":"{{name}}을(를) 생성하고 연결했습니다.","cloudNameConflict":"같은 이름의 캐릭터가 있습니다. 먼저 기기의 캐릭터 이름을 바꾸거나 가져오기를 취소하세요.","profileNeedsBinding":"캐릭터 편집 화면에서 동기화 스위치를 켜고 저장하여 캐릭터를 연결하세요.","writerRecoveryRequired":"이 설치의 확인이 필요하여 동기화가 일시 중지되었습니다. 로컬 채팅은 계속 사용할 수 있습니다.","recoverWriter":"확인 후 동기화 복구","recoveryChecked":"확인이 완료되었습니다. 캐릭터 편집 화면에서 동기화 스위치를 켜고 저장하면 캐릭터와 이전 채팅의 동기화를 계속할 수 있습니다.","recoveryCloudCopiesKept":"이 기기에서 이전에 삭제한 메시지 {{count}}개는 더 이상 클라우드에 삭제를 동기화할 수 없습니다. 클라우드에 사본이 있으면 그대로 유지됩니다.","moreOptions":"추가 설정","newRoleSync":"캐릭터 설정과 최근 기억","newSyncFailed":"캐릭터는 기기에 저장했습니다. 동기화 설정은 아직 완료되지 않았습니다. 나중에 다시 시도하세요.","syncChoiceSaved":"캐릭터를 저장하고 동기화 설정을 업데이트했습니다.","recoverWriterHelp":"동기화 확인 및 복구 안내","recoverWriterTooltip":"백업 복원, 동기화 데이터 복사 또는 쓰기 중단으로 이전 동기화 상태를 확인할 수 없을 때 사용합니다. 계정, 캐릭터 연결 및 클라우드 기록을 대조하여 중복 업로드나 삭제한 채팅의 복원을 방지합니다. 평소에는 조작할 필요가 없습니다.","recoveryNotRequired":"현재 확인이 필요하지 않습니다.","errorDetail":"{{message}} 오류 코드: {{code}}.","errorAccountMismatch":"현재 클라우드 ID가 이 캐릭터에 저장된 소유자와 다릅니다. 커뮤니티 계정을 확인하세요. 계속 같은 계정을 사용했다면 이전 연결을 조사하고 복구해야 하며, 반복 재시도로는 해결되지 않습니다. 로컬 채팅은 보존됩니다.","errorWriterRecovery":"이전 동기화 기록을 확인해야 합니다. 추가 설정에서 동기화 확인 및 복구를 실행하고, 성공하면 동기화를 켠 상태로 캐릭터를 다시 저장하세요.","errorSessionChanged":"작업 중 로그인 상태가 변경되었습니다. 현재 커뮤니티 계정을 확인하고 다시 시도하세요.","errorSessionUnavailable":"저장된 로그인 상태를 일시적으로 확인할 수 없습니다. 연결을 확인하고 다시 시도하세요. 계속 실패하면 계정 페이지에서 다시 로그인하세요.","errorNetwork":"동기화 서비스에 연결할 수 없거나 요청 시간이 초과되었습니다. 연결을 확인하고 다시 시도하세요. 로컬 채팅과 대기 작업은 보존됩니다.","errorRetryLater":"동기화 서비스가 요청을 제한하거나 재시도 대기 중입니다. 나중에 다시 시도하세요. 반복 클릭해도 대기 시간이 줄어들지 않습니다.","errorServiceRejected":"동기화 서비스가 요청을 거부했습니다. 나중에 다시 시도하고, 계속 실패하면 이 오류 코드를 알려 주세요.","errorBindingChanged":"캐릭터 또는 동기화 연결이 변경되었습니다. 편집기를 다시 열어 캐릭터와 동기화 스위치를 확인한 후 저장하세요.","errorProfileChanged":"저장된 캐릭터 설정이 변경되었습니다. 편집기를 다시 열어 설정을 확인하고 동기화 설정을 다시 저장하세요.","errorUnknown":"동기화를 완료할 수 없습니다. 연결을 확인하고 추가 설정을 다시 열어 재시도하세요. 계속 실패하면 실패한 작업 순서를 알려 주세요. 로컬 채팅과 대기 작업은 보존됩니다."},
+    "chatSync": {"setupNeedsSave":"{{name}}의 동기화 설정을 확인한 후 캐릭터를 다시 저장하세요.","title":"채팅 동기화","close":"닫기","pending":"등록된 업로드 대기: {{originals}}개, 삭제 대기: {{deletions}}개.","working":"처리 중…","loginRequired":"커뮤니티 계정에 로그인한 후 다시 시도하세요.","unknownTime":"원래 시간 알 수 없음","userLabel":"나","profileConflict":"사용할 캐릭터 설정 선택","profileRenamePending":"캐릭터 이름 변경 확인","profileLocal":"이 기기의 설정","profileRemote":"클라우드 설정","profileUseLocal":"기기 설정 업로드","profileUseRemote":"클라우드 설정 사용","profileRenameConfirm":"{{oldName}}을(를) {{newName}}(으)로 바꾸고 클라우드 설정 전체를 사용할까요?","profileChanged":"설정이 바뀌었거나 동기화를 사용할 수 없습니다. 두 버전을 보관하고 다시 확인하세요.","profileUploadConfirm":"{{name}}의 저장한 설정을 업로드할까요?","profileUnsupported":"아직 동기화할 수 없는 항목이 있습니다. 기기에 저장한 내용은 유지됩니다.","profileSaveFailed":"설정 동기화를 완료하지 못했습니다. 저장한 내용과 두 버전은 유지됩니다.","profileName":"이름","profileNickname":"별명","profileSetting":"원본 설정","profileStyle":"말투","cloudImport":"클라우드에서 캐릭터 생성","cloudEmpty":"클라우드에 캐릭터가 없습니다.","cloudProfileEmpty":"이 캐릭터의 설정은 아직 게시되지 않았습니다.","cloudCreate":"이 기기에 생성","cloudExisting":"{{name}}이(가) 이미 있습니다. 현재 동기화 설정을 유지합니다.","cloudCreated":"{{name}}을(를) 생성하고 연결했습니다.","cloudNameConflict":"같은 이름의 캐릭터가 있습니다. 먼저 기기의 캐릭터 이름을 바꾸거나 가져오기를 취소하세요.","profileNeedsBinding":"캐릭터 편집 화면에서 동기화 스위치를 켜고 저장하여 캐릭터를 연결하세요.","writerRecoveryRequired":"이 설치의 확인이 필요하여 동기화가 일시 중지되었습니다. 로컬 채팅은 계속 사용할 수 있습니다.","recoverWriter":"확인 후 동기화 복구","recoveryChecked":"확인이 완료되었습니다. 캐릭터 편집 화면에서 동기화 스위치를 켜고 저장하면 캐릭터와 이전 채팅의 동기화를 계속할 수 있습니다.","recoveryCloudCopiesKept":"이 기기에서 이전에 삭제한 메시지 {{count}}개는 더 이상 클라우드에 삭제를 동기화할 수 없습니다. 클라우드에 사본이 있으면 그대로 유지됩니다.","moreOptions":"추가 설정","newRoleSync":"캐릭터 설정과 최근 기억","newSyncFailed":"캐릭터는 기기에 저장했습니다. 동기화 설정은 아직 완료되지 않았습니다. 나중에 다시 시도하세요.","syncChoiceSaved":"캐릭터를 저장하고 동기화 설정을 업데이트했습니다.","recoverWriterHelp":"동기화 확인 및 복구 안내","recoverWriterTooltip":"백업 복원, 동기화 데이터 복사 또는 쓰기 중단으로 이전 동기화 상태를 확인할 수 없을 때 사용합니다. 계정, 캐릭터 연결 및 클라우드 기록을 대조하여 중복 업로드나 삭제한 채팅의 복원을 방지합니다. 평소에는 조작할 필요가 없습니다.","recoveryNotRequired":"현재 확인이 필요하지 않습니다.","errorDetail":"{{message}} 오류 코드: {{code}}.","errorAccountMismatch":"현재 클라우드 ID가 이 캐릭터에 저장된 소유자와 다릅니다. 커뮤니티 계정을 확인하세요. 계속 같은 계정을 사용했다면 이전 연결을 조사하고 복구해야 하며, 반복 재시도로는 해결되지 않습니다. 로컬 채팅은 보존됩니다.","errorWriterRecovery":"이전 동기화 기록을 확인해야 합니다. 추가 설정에서 동기화 확인 및 복구를 실행하고, 성공하면 동기화를 켠 상태로 캐릭터를 다시 저장하세요.","errorSessionChanged":"작업 중 로그인 상태가 변경되었습니다. 현재 커뮤니티 계정을 확인하고 다시 시도하세요.","errorSessionUnavailable":"저장된 로그인 상태를 일시적으로 확인할 수 없습니다. 연결을 확인하고 다시 시도하세요. 계속 실패하면 계정 페이지에서 다시 로그인하세요.","errorRecentWriteUnconfirmed":"이 캐릭터의 최근 기억 동기화가 중지되었습니다. 마지막 쓰기가 완료되었는지 확인할 수 없습니다. 채팅과 로컬 기억에는 영향이 없습니다.","errorRecentFileUnreadable":"이 캐릭터의 최근 기억 파일이 손상되어 읽을 수 없으므로 최근 기억 동기화를 일시 중지했습니다. 파일을 다시 읽을 수 있게 되면 자동으로 재개됩니다.","errorNetwork":"동기화 서비스에 연결할 수 없거나 요청 시간이 초과되었습니다. 연결을 확인하고 다시 시도하세요. 로컬 채팅과 대기 작업은 보존됩니다.","errorRetryLater":"동기화 서비스가 요청을 제한하거나 재시도 대기 중입니다. 나중에 다시 시도하세요. 반복 클릭해도 대기 시간이 줄어들지 않습니다.","errorServiceRejected":"동기화 서비스가 요청을 거부했습니다. 나중에 다시 시도하고, 계속 실패하면 이 오류 코드를 알려 주세요.","errorBindingChanged":"캐릭터 또는 동기화 연결이 변경되었습니다. 편집기를 다시 열어 캐릭터와 동기화 스위치를 확인한 후 저장하세요.","errorProfileChanged":"저장된 캐릭터 설정이 변경되었습니다. 편집기를 다시 열어 설정을 확인하고 동기화 설정을 다시 저장하세요.","errorUnknown":"동기화를 완료할 수 없습니다. 연결을 확인하고 추가 설정을 다시 열어 재시도하세요. 계속 실패하면 실패한 작업 순서를 알려 주세요. 로컬 채팅과 대기 작업은 보존됩니다.","errorLongTermCapacity":"이번 장기 기억 스냅샷은 20,000개 항목을 초과하여 동기화되지 않았습니다. 로컬 기억은 모두 유지됩니다. 이후 기억이 업데이트되면 다시 시도합니다.","errorLongTermPending":"장기 기억 처리 대기 중: 아직 적용되지 않은 클라우드 스냅샷이 있습니다. 로컬 기억과 클라우드 근거는 보존됩니다. 기존 재시도를 계속하는 동안 업로드는 대기합니다.","errorArchiveSubject":"장기 기억 동기화가 일시 중지되었습니다. 오래된 프로필 보관 기록의 대상이 확인되지 않습니다. 로컬 기록은 보존됩니다. 대상 정보나 원본 이벤트가 포함된 백업을 복원한 후 다시 시도하세요."},
     "instanceAccess": {"title":"NEKO 연결","description":"서버 소유자가 제공한 인스턴스 접근 키를 입력하세요. 이 기기는 연결을 30일 동안 기억합니다.","key":"인스턴스 접근 키","connect":"연결","failed":"연결이 거부되었습니다. 키를 확인하고 다시 시도하세요.","httpsRequired":"HTTPS 또는 신뢰할 수 있는 HTTPS 터널로 연결하세요.","insecureWarning":"이 연결은 암호화되지 않았습니다(HTTP). 같은 네트워크 경로의 다른 사람이 키와 세션을 볼 수 있습니다. 가능하면 HTTPS를 사용하세요."},
     "common": {
         "load": "로드",
@@ -1142,7 +1142,10 @@
         "compactExportHistory": "대화 기록",
         "compactHistoryToggleOpen": "대화 기록 보이기",
         "compactHistoryToggleClose": "대화 기록 숨기기",
-    "compactHistoryExport": "대화 기록 내보내기",
+        "clearScreen": "화면 지우기",
+        "clearScreenDone": "화면을 지웠습니다",
+        "clearScreenHint": "현재 메시지만 화면에서 숨깁니다. 대화 기록과 기억은 유지됩니다.",
+        "compactHistoryExport": "대화 기록 내보내기",
         "compactExportControlsCollapse": "선택 도구 숨기기",
         "compactExportControlsExpand": "선택 도구 보이기",
         "exportAction": "내보내기",
@@ -1190,7 +1193,10 @@
         "exportSelectAll": "모두 선택",
         "exportSelectNone": "해제",
         "exportSelectInvert": "반전",
-        "exportSelectionCount": "{{selected}} / {{total}} 선택됨"
+        "exportSelectionCount": "{{selected}} / {{total}} 선택됨",
+        "imageUnavailable": "이미지를 표시할 수 없습니다.",
+        "openImage": "이미지 열기",
+        "closeImage": "닫기"
     },
     "voiceControl": {
         "startVoice": "음성 시작",
@@ -1416,6 +1422,7 @@
             "openrouter": "OpenRouter(모델 통합 플랫폼)",
             "orcarouter": "OrcaRouter(Claude 게이트웨이)",
             "requesty": "Requesty(모델 라우터)",
+            "opper": "Opper(EU AI 게이트웨이)",
             "vllm_omni": "vLLM-Omni (TTS)",
             "gptsovits": "GPT-SoVITS (자체 호스팅)"
         },
@@ -1492,6 +1499,7 @@
             "openrouter": "OpenRouter",
             "orcarouter": "OrcaRouter",
             "requesty": "Requesty",
+            "opper": "Opper",
             "vllm_omni": "vLLM-Omni(TTS)"
         },
         "freeVersionNoApiKey": "무료 버전에는 API 키가 필요하지 않습니다.",
@@ -2279,6 +2287,51 @@
         "repetitionInsightsExportEmpty": "내보낼 후보가 없습니다.",
         "repetitionInsightsExported": "후보를 내보냈습니다. 이후 답변은 변경되지 않습니다.",
         "repetitionInsightsResetEffects": "효과 통계 지우기",
+        "habitualTitle": "말버릇 억제",
+        "habitualDescription": "여러 대화에서 반복해서 쓴 표현은 대화를 시작할 때마다 다른 말로 하도록 알려 줍니다. 하나씩 허용하거나, 모델이 남겨 둔 표현을 강제로 억제할 수 있습니다.",
+        "habitualRecompute": "지금 다시 계산",
+        "habitualRecomputing": "다시 계산하는 중입니다. 1~2분 걸릴 수 있습니다…",
+        "habitualLoading": "말버릇 억제 상태를 불러오는 중…",
+        "habitualLoadFailed": "말버릇 억제 상태를 불러오지 못했습니다. 잠시 후 다시 시도하세요.",
+        "habitualNoCharacter": "먼저 캐릭터를 선택하세요.",
+        "habitualNotComputed": "아직 계산되지 않았습니다. 기억 서비스가 한가할 때 자동으로 계산되며, '지금 다시 계산'을 눌러도 됩니다.",
+        "habitualEmpty": "지금은 억제할 말버릇이 발견되지 않았습니다.",
+        "habitualStatusActive": "다음 대화를 시작할 때 {{count}}개의 표현을 다른 말로 하도록 알려 줍니다.",
+        "habitualStatusNone": "다음 대화를 시작할 때 말버릇 알림은 들어가지 않습니다.",
+        "habitualStatusSwitchOff": "'자연스러운 표현'이 꺼져 있어 주입되지 않습니다.",
+        "habitualStatusStale": "목록이 {{days}}일 넘게 갱신되지 않아 주입되지 않습니다.",
+        "habitualStatusLanguage": "목록이 현재와 다른 언어로 집계되어 주입되지 않습니다.",
+        "habitualStatusReviewOff": "'강력 기억 모드'가 꺼져 있어 새 후보는 모델 검토 없이 규칙만으로 억제됩니다.",
+        "habitualStatusReviewFailed": "지난번 모델 검토가 성공하지 못해, 판단되지 않은 후보는 당분간 규칙으로 억제됩니다.",
+        "habitualComputedAt": "마지막 계산: {{time}} · 다음 예정: {{next}}",
+        "habitualWindow": "집계 범위: 최근 답변 {{replies}}개, 대화 {{sessions}}번 ({{from}} ~ {{to}})",
+        "habitualLogicSummary": "억제 방식 안내",
+        "habitualLogicCandidates": "같은 표현이 서로 다른 대화 {{sessions}}번 이상에 나와야 후보가 됩니다. 답변 사이가 {{gap}}분 넘게 벌어지면 새 대화로 봅니다.",
+        "habitualLogicExclusions": "캐릭터 설정에 적힌 표현, 양쪽의 이름과 별명, 그녀가 직접 따옴표로 언급한 내용, 흔한 기능어로만 이루어진 표현은 후보가 되지 않습니다.",
+        "habitualLogicReview": "후보가 정말 말버릇인지는 모델이 판단하며, 말버릇으로 판단된 것만 억제합니다. 아직 판단되지 않은 후보는 규칙으로 억제합니다.",
+        "habitualLogicLimits": "한 번에 최대 {{max}}개까지 억제하며, 알림 전체는 {{tokens}} 토큰을 넘지 않습니다. 한가할 때 약 {{hours}}시간마다 다시 계산하고, 더 이상 쓰지 않는 표현은 자동으로 해제됩니다. {{days}}일 넘게 갱신되지 않은 목록은 주입되지 않습니다.",
+        "habitualLogicOverrides": "사용자의 허용과 강제 억제는 모델의 판단보다 우선하며 다음 대화부터 적용됩니다. 표현을 허용하면 그 표현을 포함한 표현도 더 이상 억제되지 않습니다.",
+        "habitualStats": "대화 {{sessions}}번 · {{days}}일 · 총 {{count}}회 · 마지막 {{last}}",
+        "habitualStateHabit": "억제 중 · 모델이 말버릇으로 판단",
+        "habitualStateUnreviewed": "억제 중 · 아직 모델 검토 전",
+        "habitualStateForced": "억제 중 · 사용자가 지정",
+        "habitualStateKept": "억제 안 함 · 모델 판단: {{verdict}}",
+        "habitualStateAllowed": "허용됨",
+        "habitualStateOverCap": "억제 안 함 · 상한 {{max}}개 초과",
+        "habitualStateOverBudget": "억제 중 · 길이 제한을 넘어 다음 대화에는 포함되지 않음",
+        "habitualVerdictNormal": "평범한 표현",
+        "habitualVerdictTopic": "화제 내용",
+        "habitualVerdictName": "이름이나 제목",
+        "habitualVerdictCard": "캐릭터 설정",
+        "habitualReason": "모델의 이유: {{reason}}",
+        "habitualAllow": "허용",
+        "habitualSuppress": "강제로 억제",
+        "habitualClear": "내 설정 취소",
+        "habitualAllowedTitle": "허용한 표현 (이 표현과 이를 포함한 표현은 억제되지 않음)",
+        "habitualRestore": "억제 복원",
+        "habitualSaveFailed": "저장하지 못했습니다. 잠시 후 다시 시도하세요.",
+        "habitualRecomputeFailed": "다시 계산하지 못했습니다. 잠시 후 다시 시도하세요.",
+        "habitualRecomputeBusy": "이미 계산 중입니다. 잠시 기다려 주세요.",
         "repetitionInsightsSearch": "최종 잔여 표현 검색",
         "repetitionInsightsSearchPlaceholder": "표현 또는 규칙 ID 검색",
         "repetitionInsightsCoverageFilter": "규칙 적용",
@@ -5656,6 +5709,7 @@
             "ssl_error": "SSL 인증서 확인 실패",
             "ws_error": "WebSocket 연결 실패",
             "missing_params": "필수 매개변수가 누락되었습니다",
+            "output_limit": "테스트 요청의 출력 한도가 부족합니다",
             "unknown": "알 수 없는 오류",
             "backend_unavailable": "백엔드 서비스를 사용할 수 없습니다",
             "invalid_response": "응답 형식이 잘못되었습니다"
@@ -5788,7 +5842,7 @@
             "drawCalls": "Draw Calls"
         }
     },
-     "badminton": {
+    "badminton": {
          "title": "샷 챌린지 - Badminton",
          "exit": "나가기",
          "loading": {
@@ -6287,7 +6341,7 @@
         "sdkUnavailable": "미니게임을 불러오지 못했습니다. 페이지를 닫고 다시 시도해 주세요.",
         "runtimeStartFailed": "경기를 시작하지 못했습니다. 잠시 후 다시 시도해 주세요."
     },
-   "soccer": {
+    "soccer": {
         "settings": {
             "button": "설정",
             "title": "게임 설정",
@@ -6421,7 +6475,7 @@
             "hint": "꺼져 있으면 플레이어 입력, NEKO의 직접 응답, 이벤트 반응, 경기 후 요약, 이어지는 대화 모두 기억에 저장되거나 참조되지 않습니다."
         }
     },
-  "watchTogether": {
+    "watchTogether": {
         "automatic": "자동 함께 보기",
         "stopWatching": "시청 중지",
         "resizeAvatar": "캐릭터 크기 조절",
@@ -6859,9 +6913,27 @@
         }
     },
     "visit": {
+        "catScene": {
+            "title": "고양이 방문",
+            "active": "방문 중",
+            "ending": "방문을 종료하는 중…",
+            "reconnecting": "다시 연결하는 중…",
+            "wrapUp": "집에 갈 준비 중",
+            "myCat": "내 고양이",
+            "peerCat": "상대 고양이",
+            "returnModel": "모델로 돌아가기",
+            "controls": "내 고양이 동작",
+            "greet": "인사하기",
+            "play": "놀기",
+            "rest": "쉬기",
+            "exitConfirm": "고양이 방문을 종료할까요?",
+            "actionUnavailable": "고양이 동작을 잠시 사용할 수 없습니다",
+            "actionFailed": "동작 전송에 실패했습니다. 다시 시도해 주세요"
+        },
         "directInvite": {
             "decline": "거절",
             "accept": "수락",
+            "acceptCat": "고양이 방문 수락",
             "expired": "이 초대는 이미 만료되었습니다",
             "responseFailed": "거절 응답을 보내지 못했습니다. 다시 시도해 주세요",
             "unavailable": "지금은 아직 나갈 수 없어요. 다시 시도해 주세요"
@@ -6906,11 +6978,14 @@
             "desktopRequired": "지정 초대는 데스크톱용 Neko에서 보내 주세요",
             "preparingRoom": "{{name}}을(를) 위한 방을 준비하는 중…",
             "roomMissing": "지정 방문용 방을 받지 못했습니다",
+            "modeMismatch": "방문 생성에 실패했습니다. 다시 시도해 주세요",
             "sendFailed": "초대를 보내지 못했습니다. 잠시 후 다시 시도해 주세요",
             "invited": "{{name}}에게 방문 초대를 보냈습니다",
             "cancelFailed": "지금은 초대를 취소할 수 없습니다. 잠시 후 다시 시도해 주세요",
             "inviteLater": "나중에 초대",
             "invite": "초대하기",
+            "modelVisit": "모델 모습",
+            "catVisit": "고양이 모습",
             "justNow": "방금",
             "lastSeen": "마지막 접속 {{time}}",
             "offline": "오프라인",
@@ -7047,7 +7122,8 @@
         },
         "error": {
             "disabled": "'방문 허용'이 꺼져 있어요. 먼저 설정에서 켜 주세요",
-            "generic": "완료하지 못했어요. 잠시 후 다시 시도해 주세요",
+            "generic": "작업에 실패했습니다. 다시 시도해 주세요",
+            "otherVisitActive": "다른 방문이 있습니다. 먼저 종료해 주세요",
             "unreachable": "로컬 서비스에 연결할 수 없어요",
             "voiceSession": "음성 대화를 끝낸 뒤 방문해 주세요",
             "alreadyVisiting": "이미 방문 중이에요",
@@ -7231,5 +7307,12 @@
         "informationExcluded": "이 피드백 경로는 전체 채팅 기록, 녹음 파일 또는 스크린샷을 업로드하지 않습니다.",
         "informationNote": "“확인”은 안내만 닫으며 업로드 설정을 변경하지 않습니다.",
         "informationClose": "확인"
+    },
+    "cloudModel": {
+        "conflict": "두 기기에서 모델이 변경되었습니다. 사용할 버전을 선택하세요.",
+        "useCloud": "클라우드 모델 사용",
+        "keepLocal": "이 기기의 선택 유지",
+        "failed": "모델을 불러오지 못했습니다. 이전 선택을 유지합니다.",
+        "retry": "다시 시도"
     }
 }

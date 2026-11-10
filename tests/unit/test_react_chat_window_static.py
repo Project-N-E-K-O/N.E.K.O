@@ -2590,15 +2590,21 @@ def test_compact_history_resize_bar_is_draggable_and_persisted():
     assert "new CustomEvent('neko:compact-interaction-geometry-refresh')" in app_source
 
 
-def test_compact_visit_system_prompts_remain_legible_in_both_themes():
+def test_compact_visit_system_prompts_follow_choice_dimming_in_both_themes():
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
 
-    # The choice layer may dim ordinary history, but it must not dim its two
-    # actionable visit system cards (visit finished / save to diary).
+    # Visit finished / save to diary cards follow the same choice-layer dimming
+    # as ordinary history messages, while retaining their theme-aware contrast.
     assert ".compact-export-history-anchor.under-choice-prompt .compact-export-history-scroll," not in styles
-    assert ".compact-export-history-anchor.under-choice-prompt .compact-export-history-message:not(.is-system) {" in styles
-    assert ".compact-export-history-anchor.under-choice-prompt .compact-export-history-message.is-system {" in styles
-    assert "opacity: 1;\n  filter: none;" in styles
+    dimmed_message_block = css_block(
+        styles,
+        ".compact-export-history-anchor.under-choice-prompt .compact-export-history-message {",
+        ".compact-export-history-anchor.under-choice-prompt .compact-export-history-bubble,",
+    )
+    assert "opacity: 0.32;" in dimmed_message_block
+    assert "filter: blur(1.5px);" in dimmed_message_block
+    assert ".compact-export-history-anchor.under-choice-prompt .compact-export-history-message:not(.is-system)" not in styles
+    assert ".compact-export-history-anchor.under-choice-prompt .compact-export-history-message.is-system" not in styles
 
     light_system_block = css_block(
         styles,
@@ -2725,11 +2731,33 @@ def test_compact_history_layout_contract_avoids_jitter_feedback():
     assert "max-height: inherit;" in panel_block
 
 
+def _reduced_motion_media_blocks(styles: str) -> list[str]:
+    # Balanced-brace extraction: features may append their own reduced-motion block after the shared one.
+    marker = "@media (prefers-reduced-motion: reduce)"
+    blocks = []
+    start = styles.find(marker)
+    while start != -1:
+        depth = 0
+        for i in range(styles.index("{", start), len(styles)):
+            if styles[i] == "{":
+                depth += 1
+            elif styles[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    blocks.append(styles[start:i + 1])
+                    break
+        start = styles.find(marker, start + len(marker))
+    return blocks
+
+
 def test_compact_history_reduced_motion_closing_hides_immediately():
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
 
-    reduced_motion_block = styles.rsplit("@media (prefers-reduced-motion: reduce)", 1)[1]
-    assert '.compact-input-tool-fan[data-compact-tool-wheel-charge-rattle="weak"]' in reduced_motion_block
+    weak_rattle = '.compact-input-tool-fan[data-compact-tool-wheel-charge-rattle="weak"]'
+    matching_blocks = [block for block in _reduced_motion_media_blocks(styles) if weak_rattle in block]
+    assert len(matching_blocks) == 1, "expected exactly one reduced-motion block covering the tool fan"
+    reduced_motion_block = matching_blocks[0]
+    assert weak_rattle in reduced_motion_block
     assert '.compact-input-tool-fan[data-compact-tool-wheel-charge-rattle="strong"]' in reduced_motion_block
     rattle_block = css_block(
         reduced_motion_block,

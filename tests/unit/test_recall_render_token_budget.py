@@ -25,8 +25,9 @@ So the budget is no longer inferred from source shape. It is measured, on
 the single render path, by the behavioural tests below — oversized input in,
 ``count_tokens`` on what comes out. Two much cruder structural checks
 remain, and neither has to reason about execution: nobody but the entry
-point may call the recall label table, and every module that talks to
-``/query_memory`` must import the entry point.
+point may call the recall label table, and every prompt-rendering client of
+``/query_memory`` must import the entry point. Structured adapters are classified
+separately and retain their typed results.
 """
 
 from __future__ import annotations
@@ -757,15 +758,20 @@ def test_the_entry_point_has_no_runtime_switch():
 
 
 # Every module that talks to the structured recall endpoint. The memory
-# server's own route file defines it rather than calling it.
+# server's own route file defines it rather than calling it. SDK adapters
+# expose structured hits without constructing a model prompt and are classified
+# separately; they must not be forced to render away the structured result.
 _QUERY_MEMORY_ROUTE_DEFINITION = "app/memory_server/routes.py"
 _KNOWN_RECALL_CLIENTS = {
     "main_logic/core/tool_calling.py",
 }
+_STRUCTURED_RECALL_CLIENTS = {
+    "plugin/server/application/memory/__init__.py",
+}
 
 
 def test_every_query_memory_client_renders_through_the_entry_point():
-    """Whoever fetches recall results has to render them through the entry point.
+    """Classify each recall client; prompt renderers use the entry point.
 
     The complement of the label check: that one catches a renderer that
     wants tags, this one catches a renderer that does NOT. Dropping the
@@ -776,23 +782,25 @@ def test_every_query_memory_client_renders_through_the_entry_point():
     at 95x over budget). It cannot skip this one: it still has to ask the
     memory server for the results.
 
-    Membership is asserted by equality, so a new client is a loud failure
-    that has to come here and say what it renders through.
+    Membership is asserted by equality, so a new client must explicitly
+    declare whether it renders a prompt or returns structured hits.
     """
     sources = _repo_python_sources()
     clients = _files_with_url_literal(
         sources, "/query_memory",
     ) - {_QUERY_MEMORY_ROUTE_DEFINITION}
 
-    assert clients == _KNOWN_RECALL_CLIENTS, (
-        f"/query_memory 的调用方集合变了：新增 {sorted(clients - _KNOWN_RECALL_CLIENTS)}，"
-        f"消失 {sorted(_KNOWN_RECALL_CLIENTS - clients)}。\n"
-        f"新调用方请把结果交给 memory.recall_render.render_recall_block 渲染，"
-        f"再加进 _KNOWN_RECALL_CLIENTS"
+    classified = _KNOWN_RECALL_CLIENTS | _STRUCTURED_RECALL_CLIENTS
+    assert not _KNOWN_RECALL_CLIENTS & _STRUCTURED_RECALL_CLIENTS
+    assert clients == classified, (
+        f"/query_memory 的调用方集合变了：新增 {sorted(clients - classified)}，"
+        f"消失 {sorted(classified - clients)}。\n"
+        "请按实际用途分类：提示词调用方必须通过 recall_render 渲染；"
+        "纯结构化适配应保留结果并列入 _STRUCTURED_RECALL_CLIENTS。"
     )
     entry_module = _ENTRY_POINT[:-3].replace("/", ".")
     not_rendering = sorted(
-        rel for rel in clients if entry_module not in sources[rel]
+        rel for rel in _KNOWN_RECALL_CLIENTS if entry_module not in sources[rel]
     )
     assert not_rendering == [], (
         f"{not_rendering} 拿了召回结果却没走 {entry_module}——召回段就没有 token 上限了"

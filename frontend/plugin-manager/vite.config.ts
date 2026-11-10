@@ -55,9 +55,8 @@ export default defineConfig({
   server: {
     port: 5173,
     fs: {
-      // 允许访问父目录（更安全的替代方案，而不是完全禁用严格模式）
-      // 这样可以访问项目根目录之外的必要文件，同时保持文件系统的安全防护
-      allow: ['..']
+      // Hosted runtime 内嵌共享显示客户端，只额外开放 SDK 目录。
+      allow: ['..', fileURLToPath(new URL('../../static/plugin-ui-sdk', import.meta.url))]
     },
     proxy: {
       // Hosted surfaces open the main model-settings page through the parent
@@ -80,13 +79,23 @@ export default defineConfig({
         secure: false
       },
       // 代理所有插件服务器 API 请求
+      '/plugin-ui-sdk/': {
+        target: BACKEND_TARGET,
+        changeOrigin: true,
+        secure: false
+      },
+      '^/plugin-projects(?:/.*)?(?:\\?.*)?$': {
+        target: BACKEND_TARGET,
+        changeOrigin: true,
+        secure: false,
+      },
       '/plugin/': {
         target: BACKEND_TARGET,
         changeOrigin: true,
         secure: false
       },
       // Market Bridge API endpoints only. Keep the SPA route /market on Vite.
-      '^/market/(status|bridge-token|pair-code|install|installed|token-exchange|download-preferences|download-history/reset|catalog(?:/.*)?|oauth(?:/.*)?|tasks(?:/.*)?|knowledge(?:/.*)?)(?:\\?.*)?$': {
+      '^/market/(status|bridge-token|pair-code|install|installed|token-exchange|download-preferences|download-history/reset|catalog(?:/.*)?|oauth(?:/.*)?|tasks(?:/.*)?|knowledge(?:/.*)?|submissions(?:/.*)?)(?:\\?.*)?$': {
         target: BACKEND_TARGET,
         changeOrigin: true,
         secure: false,
@@ -108,11 +117,6 @@ export default defineConfig({
             if (sameOrigin) proxyReq.setHeader('origin', BACKEND_ORIGIN)
           })
         },
-      },
-      '^/plugins/development(?:/.*)?(?:\\?.*)?$': {
-        target: BACKEND_TARGET,
-        changeOrigin: true,
-        secure: false,
       },
       // 只代理精确匹配 /plugins 的 API 请求（不带路径参数）
       // 使用 bypass 函数区分 API 请求和前端路由

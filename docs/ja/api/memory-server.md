@@ -97,7 +97,11 @@ Memory Server は、メインサーバー、チャットランタイム、プロ
 
 ### `GET /new_dialog/{lanlan_name}`
 
-新しいモデルセッション用の `text/plain` コンテキストを返します。有効なキャラクターでは、persona、アクティブな pending/confirmed reflections、動的な内面コンテキスト、最近の履歴、会話間隔のヒント、祝日コンテキストをレンダリングします。同じキャラクターの `/renew` または `/settle` が進行中なら待機します。未知のキャラクターは空文字列です。
+新しいモデルセッション用の `text/plain` コンテキストを返します。有効なキャラクターでは、persona、アクティブな pending/confirmed reflections、動的な内面コンテキスト、最近の履歴、会話間隔のヒント、祝日コンテキストをレンダリングします。同じキャラクターの `/renew` または `/settle` が進行中なら待機します。`preempt_summary=true` を付けた場合（セッション開始や Offline VLM への引き継ぎなど、会話がこの応答を待つ場面）は待たずに、そのキャラクターで実行中の要約 LLM 呼び出しを中断してバックグラウンド圧縮に回します。未知のキャラクターは空文字列です。
+
+### `POST /preempt_summary/{lanlan_name}`
+
+キャラクターの要約 LLM 呼び出し（`/renew`、`/settle`、`/process`）を中断してバックグラウンド圧縮に回します。対象は実行中のものと、その後 10 秒以内（または `preempt_summary=true` の `/new_dialog` が終わるまで）に始まるものです。メインサーバーはコールドスタートの前にこれを呼び、要約の後ろで待っている自分の記憶書き込みを、`/new_dialog` が最近の履歴を読む前に届けようとします。これはベストエフォートです。メインサーバーはその書き込みを最大 1.5 秒だけ待ち、その後は `/new_dialog` を要求するため、その時点でまだ待っている書き込みは読み取りの後に届きます。`{"status":"ok"}` を返します。
 
 このエンドポイントは事実のセマンティック想起を実行しません。セマンティックまたは時間指定の想起は、モデルの `recall_memory` ツールが `/query_memory` を別途呼び出します。
 
@@ -194,18 +198,20 @@ reflection の合成を要求し、適用される自動昇格経路をスケジ
 表示済みとは記録せずに、プロアクティブチャットの話題候補を返します。
 
 ```json
-{ "topics": [] }
+{ "topics": [], "commitment": null }
 ```
 
-呼び出し側は、実際に使用した reflection ID を `/record_surfaced` に送信する必要があります。
+`commitment` は、常駐領域にあるキャラクターの未履行の約束のうち、2 日以内で最も早く期限が来るもので、`{"id": "pin_...", "text": "...", "due": "YYYY-MM-DD"}` の形をとります。該当がなければ `null` です。日付のない約束、12 時間以内に渡した約束、最近本人が口にした約束は返しません。
+
+呼び出し側は、実際に使用した reflection ID と、モデルに渡した約束 ID を `/record_surfaced` に送信する必要があります。
 
 ### `POST /record_surfaced/{lanlan_name}`
 
 ```json
-{ "reflection_ids": ["reflection_..."] }
+{ "reflection_ids": ["reflection_..."], "commitment_ids": ["pin_..."] }
 ```
 
-プロアクティブチャットで表示した reflections を記録し、クールダウンを更新します。空または省略された配列は no-op です。安定した応答は `{"ok":true}`。保存失敗はログに記録されますが、呼び出し側を失敗させません。
+プロアクティブチャットで表示した reflections を記録し、クールダウンを更新します。空または省略された配列は no-op です。応答は `{"ok":true}` で、`commitment_ids` が空でない場合は `commitments_recorded` も含みます。常駐領域がこの提示を実際に書き込んだときだけ `true` になり、呼び出し側はこれを見て約束を再送するかどうかを決めます。それ以外の保存失敗はログに記録されますが、呼び出し側を失敗させません。
 
 ### `POST /cancel_correction/{lanlan_name}`
 

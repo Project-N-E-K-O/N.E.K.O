@@ -20,18 +20,24 @@ handler at import time.
 """
 
 import asyncio
+import math
+import time
+from datetime import datetime
 from functools import wraps
 
 from config import (
     IGNORED_REINFORCEMENT_DELTA,
     USER_CONFIRM_DELTA,
+    USER_ENGAGED_DELTA,
     USER_REBUT_DELTA,
 )
 from memory.event_log import (
     EVIDENCE_SOURCE_USER_CONFIRM,
+    EVIDENCE_SOURCE_USER_ENGAGE,
     EVIDENCE_SOURCE_USER_IGNORE,
     EVIDENCE_SOURCE_USER_REBUT,
 )
+from memory.reflection.surfacing import REFLECTION_FEEDBACK_KINDS
 from memory.outbox import OP_POST_TURN_SIGNALS
 from memory.message_sources import is_theater_memory_message
 
@@ -180,6 +186,9 @@ async def _spawn_outbox_post_turn_signals(
             )
     payload = {
         'messages': messages_to_dict(messages),
+        # When the turn happened: a replay after a restart can run much
+        # later, and the pinned-fact section dates its entries by the turn.
+        'turn_at': time.time(),
     }
     if has_explicit_language:
         if locale_order is not None:
@@ -280,6 +289,7 @@ async def _run_post_turn_signals_after_locale_reservation(
     language: str | None = None,
     admission_order: int | None,
     locale_only: bool = False,
+    conversation_at: datetime | None = None,
 ):
     locale_order = await _wait_for_character_prompt_locale_order(
         lanlan_name,
@@ -291,6 +301,7 @@ async def _run_post_turn_signals_after_locale_reservation(
         language=language,
         locale_order=locale_order,
         locale_only=locale_only,
+        conversation_at=conversation_at,
     )
 
 
@@ -325,6 +336,14 @@ async def _resolve_corrections_with_subject_locale(lanlan_name: str) -> int:
     )
 
 
+async def _record_pinned_mentions(lanlan_name: str, ai_response: str) -> None:
+    """Start the mention cooldown of the pinned entries a reply of hers brought up."""
+    store = runtime.pinned_fact_store
+    if store is None or not ai_response:
+        return
+    await store.arecord_mentions(lanlan_name, ai_response)
+
+
 @_with_language_context
 async def _run_post_turn_signals(
     messages: list,
@@ -333,6 +352,7 @@ async def _run_post_turn_signals(
     language: str | None = None,
     locale_order: int | None = None,
     locale_only: bool = False,
+    conversation_at: datetime | None = None,
 ):
     """Background async: per-turn signals at every turn end. Failures are skipped silently.
 
@@ -342,7 +362,8 @@ async def _run_post_turn_signals(
       1. OFF-mode Stage-1 fallback — when powerful_memory is off the batch loop is
          fully stopped, and per-turn ``fact_store.extract_facts`` is the only
          fallback for fact extraction (not run in ON-mode; left to the batch loop)
-      2. repetition sniffing — local BM25, §2.6 5h-window suppress
+      2. repetition sniffing — local BM25, §2.6 5h-window suppress; 2b. the
+         same for the pinned section (its mention cooldown)
       3. check_feedback — detects user feedback on surfaced reflections (LLM runs
          only when surfaced has pending entries) + NEGATIVE_KEYWORDS hits trigger
          the LLM target check
@@ -395,12 +416,21 @@ async def _run_post_turn_signals(
     # `if not powerful_enabled: continue`); skipping here too leaves facts.json
     # with no update path, regression caught by chatgpt-codex-connector on PR #1346.
     # OFF mode retains legacy per-turn Stage-1 for basic fact accumulation.
-    # Gate excludes pure theater batches only; all other inputs, including ordinary AI-only batches
-    # such as unanswered proactive speech, still extract ai_disclosure facts as before theater support.
-    theater_only_batch = bool(messages) and not ordinary_messages
-    if not powerful_enabled and not theater_only_batch:
+    # Only the user's own messages go in, like ON mode's path A: the basic
+    # prompt has no source field, so every fact it returns is stored as the
+    # user's (user_observation), and the AI's lines would turn its own words
+    # into "the user said". A batch with no user message (unanswered proactive
+    # speech, pure theater) extracts nothing: what the user never engaged with
+    # does not become memory.
+    if not powerful_enabled and user_msgs:
+        user_messages = [
+            message for message in ordinary_messages
+            if getattr(message, 'type', '') == 'human'
+        ]
         try:
-            await runtime.fact_store.extract_facts(ordinary_messages, lanlan_name)
+            await runtime.fact_store.extract_facts(
+                user_messages, lanlan_name, conversation_at=conversation_at,
+            )
         except Exception as e:
             logger.warning(f"[MemoryServer] OFF-mode 事实提取失败: {e}")
 
@@ -417,6 +447,14 @@ async def _run_post_turn_signals(
         logger.warning(f"[MemoryServer] 复读嗅探失败: {e}")
 
     try:
+        # 2b. The same sniffing for the pinned section (private chat only, like
+        #     this whole flow): what she just brought up enters its mention
+        #     cooldown, so a resident fact or promise is not raised every turn.
+        await _record_pinned_mentions(lanlan_name, _extract_ai_response(ordinary_messages))
+    except Exception as e:
+        logger.warning(f"[MemoryServer] 常驻区复读嗅探失败: {type(e).__name__}")
+
+    try:
         # 3. Check user feedback on previously surfaced reflections and dispatch evidence signals.
         surfaced = await runtime.reflection_engine.aload_surfaced(lanlan_name)
         pending_surfaced = [s for s in surfaced if s.get('feedback') is None]
@@ -430,11 +468,13 @@ async def _run_post_turn_signals(
                         continue
                     rid = fb.get('reflection_id')
                     kind = fb.get('feedback')
-                    if rid and kind in ('confirmed', 'denied', 'ignored'):
+                    if rid and kind in REFLECTION_FEEDBACK_KINDS:
                         fb_map[rid] = kind
 
                 # RFC §3.1.5: confirmed → reinforcement += 1; denied →
-                # disputation += 1; ignored → reinforcement += -0.2.
+                # disputation += 1; ignored → reinforcement += -0.2;
+                # engaged (chatted on without a yes) → reinforcement += 0.3,
+                # which is not the user's backing (awaits_user_signal).
                 # pending→confirmed/denied state transitions happen in the
                 # score-driven auto_promote_stale path (not here).
                 #
@@ -450,6 +490,9 @@ async def _run_post_turn_signals(
                     if kind == 'confirmed':
                         delta = {'reinforcement': USER_CONFIRM_DELTA}
                         source = EVIDENCE_SOURCE_USER_CONFIRM
+                    elif kind == 'engaged':
+                        delta = {'reinforcement': USER_ENGAGED_DELTA}
+                        source = EVIDENCE_SOURCE_USER_ENGAGE
                     elif kind == 'denied':
                         delta = {'disputation': USER_REBUT_DELTA}
                         source = EVIDENCE_SOURCE_USER_REBUT
@@ -525,6 +568,19 @@ async def _run_post_turn_signals(
             logger.warning(f"[MemoryServer] 矛盾审视失败: {e}")
 
 
+def _payload_turn_time(payload: dict) -> datetime | None:
+    """The turn time a post-turn payload recorded; None for payloads that predate it."""
+    raw = payload.get('turn_at')
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    if not math.isfinite(raw) or raw <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(raw)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
 async def _outbox_post_turn_signals_handler(lanlan_name: str, payload: dict) -> None:
     """Outbox handler for OP_POST_TURN_SIGNALS: restore messages from the payload and run
     ``_run_post_turn_signals``.
@@ -554,10 +610,15 @@ async def _outbox_post_turn_signals_handler(lanlan_name: str, payload: dict) -> 
         render_language = None
     if not messages and not is_supported_language_code(language):
         return
+    # Only payloads that recorded their turn time pass it on; older ones
+    # carry no such information and are extracted as "now", as before.
+    turn_time = _payload_turn_time(payload)
+    dated = {'conversation_at': turn_time} if turn_time is not None else {}
     if payload.get('locale_order_deferred'):
         kwargs = {
             'language': language,
             'admission_order': payload.get('locale_admission_order'),
+            **dated,
         }
         if not messages:
             kwargs['locale_only'] = True
@@ -570,6 +631,7 @@ async def _outbox_post_turn_signals_handler(lanlan_name: str, payload: dict) -> 
     kwargs = {
         'language': language,
         'locale_order': payload.get('locale_order'),
+        **dated,
     }
     if render_language is not None:
         kwargs['render_language'] = render_language

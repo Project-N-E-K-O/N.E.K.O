@@ -192,3 +192,138 @@ class ConversationClient:
             max_count=max_count,
             timeout=timeout,
         )
+
+
+class ConversationV2Client:
+    """Message-plane wire adapter; decoding belongs to the SDK."""
+
+    def __init__(self, ctx: "PluginContext"):
+        self.ctx = ctx
+
+    def register_watcher(self, sub_id: str, watcher: Any) -> None:
+        self.ctx._register_conversation_watcher(sub_id, watcher)
+
+    def unregister_watcher(self, sub_id: str) -> None:
+        self.ctx._unregister_conversation_watcher(sub_id)
+
+    def activate_watcher(self, watcher: Any) -> None:
+        from plugin.core.bus.rev import activate_watcher
+
+        activate_watcher(watcher)
+
+    async def _request(self, op: str, args: Dict[str, Any], timeout: float) -> Any:
+        import math
+        import time
+        from plugin.core.message_plane_transport import format_rpc_error
+        from plugin.sdk.shared.models.exceptions import TransportError
+
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout must be a positive finite number")
+        deadline = time.monotonic() + timeout
+        cancelled = _threading.Event()
+        loop = asyncio.get_running_loop()
+        if not _v2_slots.acquire(blocking=False):
+            raise TransportError("conversations_v2 request capacity exhausted", code="BUSY")
+
+        def invoke():
+            response = None
+            try:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or cancelled.is_set():
+                    return None
+                response = _ensure_rpc(self.ctx).request_sync(op=op, args=args, timeout=remaining)
+                return response
+            finally:
+                _v2_slots.release()
+                if isinstance(response, dict) and response.get("ok") is True and not response.get("error"):
+                    from plugin.core.bus.rev import notify_conversation_read_capacity
+
+                    notify_conversation_read_capacity()
+
+        try:
+            future = loop.run_in_executor(None, invoke)
+        except BaseException:
+            _v2_slots.release()
+            raise
+        try:
+            response = await asyncio.wait_for(asyncio.shield(future), max(0, deadline - time.monotonic()))
+        except asyncio.TimeoutError as exc:
+            cancelled.set()
+            raise TimeoutError(f"message_plane {op} timed out after {timeout}s") from exc
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        if not isinstance(response, dict):
+            raise TimeoutError(f"message_plane {op} timed out after {timeout}s")
+        if not response.get("ok") or response.get("error"):
+            error = response.get("error")
+            code = error.get("code") if isinstance(error, dict) else None
+            details = error.get("details") if isinstance(error, dict) else None
+            raise TransportError(format_rpc_error(error), code=code, details=details)
+        return response.get("result")
+
+    async def get(
+        self,
+        *,
+        character: str | None = None,
+        role: str | None = None,
+        kind: str | None = None,
+        input_source: str | None = None,
+        origin_kind: str | None = None,
+        max_count: int = 50,
+        order: str = "asc",
+        since_ts: float | None = None,
+        timeout: float = 5.0,
+    ) -> list[dict[str, Any]]:
+        snapshot = await self.get_snapshot(
+            character=character, role=role, kind=kind, input_source=input_source,
+            origin_kind=origin_kind, max_count=max_count, order=order,
+            since_ts=since_ts, timeout=timeout,
+        )
+        return [{key: value for key, value in item.items() if key != "_revision"} for item in snapshot["items"]]
+
+    async def get_snapshot(
+        self,
+        *,
+        character: str | None = None,
+        role: str | None = None,
+        kind: str | None = None,
+        input_source: str | None = None,
+        origin_kind: str | None = None,
+        max_count: int = 50,
+        order: str = "asc",
+        since_ts: float | None = None,
+        timeout: float = 5.0,
+    ) -> dict[str, Any]:
+        from plugin.message_plane.protocol import ConversationGetArgs
+
+        values = {
+            "character": character,
+            "role": role,
+            "kind": kind,
+            "input_source": input_source,
+            "origin_kind": origin_kind,
+            "max_count": max_count,
+            "order": order,
+            "since_ts": since_ts,
+        }
+        args = ConversationGetArgs.model_validate(values).model_dump(exclude_none=True)
+        result = await self._request("bus.conversations.get", args, timeout)
+        if not isinstance(result, dict) or not isinstance(result.get("items"), list):
+            raise RuntimeError("invalid conversations_v2 response")
+        return result
+
+    async def get_message(self, message_id: str, *, timeout: float = 5.0) -> dict[str, Any] | None:
+        from plugin.message_plane.protocol import ConversationGetMessageArgs
+
+        args = ConversationGetMessageArgs(message_id=message_id).model_dump()
+        result = await self._request("bus.conversations.get_message", args, timeout)
+        if result is not None and not isinstance(result, dict):
+            raise RuntimeError("invalid conversations_v2 response")
+        return result
+
+
+import threading as _threading
+# Control RPC also borrows the default executor for queue.put(). Keep a slot
+# free even in Python 3.11's smallest standard default pool (five threads).
+_v2_slots = _threading.BoundedSemaphore(4)
