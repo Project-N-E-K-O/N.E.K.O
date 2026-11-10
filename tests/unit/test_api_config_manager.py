@@ -295,7 +295,7 @@ class TestRequestyResolution:
             'correction': 'google/gemini-2.5-flash',
             'emotion': 'google/gemini-2.5-flash-lite',
             'vision': 'google/gemini-2.5-flash',
-            'agent': 'google/gemini-3-flash-preview',
+            'agent': 'google/gemini-3.8-flash',
         }.items():
             resolved = config_manager.get_model_api_config(task)
             assert resolved['api_key'] == requesty_key, task

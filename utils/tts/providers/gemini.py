@@ -47,7 +47,7 @@ from utils.tts.native_voice_registry import (
 # gemini-2.5-flash-preview-tts shuts down on 2026-11-17; Google's listed replacement.
 # 3.8 TTS reads `text` verbatim (delivery hints go in speechMetadata.style) and
 # returns a WAV container by default, so the payload below asks for raw L16.
-GEMINI_TTS_MODEL = "gemini-3.8-flash-tts"
+GEMINI_TTS_MODEL = "gemini-3.8-flash-lite-tts"
 GEMINI_TTS_SAMPLE_RATE = 24000
 _GEMINI_TTS_STYLE = "natural, with a tone that fits the content"
 

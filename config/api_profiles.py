@@ -173,10 +173,10 @@ DEFAULT_ASSIST_API_PROFILES = {
         'OPENROUTER_URL': "https://generativelanguage.googleapis.com/v1beta/openai/",
         'CONVERSATION_MODEL': "gemini-3.1-flash-lite",
         'SUMMARY_MODEL': "gemini-2.5-flash",
-        'CORRECTION_MODEL': "gemini-3-flash-preview",
+        'CORRECTION_MODEL': "gemini-3.8-flash",
         'EMOTION_MODEL': "gemini-2.5-flash-lite",
         'VISION_MODEL': "gemini-3.1-flash-lite",
-        'AGENT_MODEL': "gemini-3.5-flash",
+        'AGENT_MODEL': "gemini-3.8-flash",
     },
     'kimi': {
         'OPENROUTER_URL': "https://api.moonshot.cn/v1",
@@ -223,7 +223,7 @@ DEFAULT_ASSIST_API_PROFILES = {
         'CORRECTION_MODEL': "deepseek/deepseek-v4-flash",
         'EMOTION_MODEL': "qwen/qwen3.5-9b",
         'VISION_MODEL': "google/gemini-2.5-flash",
-        'AGENT_MODEL': "google/gemini-3-flash-preview",
+        'AGENT_MODEL': "google/gemini-3.8-flash",
     },
     'orcarouter': {
         'OPENROUTER_URL': "https://api.orcarouter.ai/v1",
@@ -241,7 +241,7 @@ DEFAULT_ASSIST_API_PROFILES = {
         'CORRECTION_MODEL': "google/gemini-2.5-flash",
         'EMOTION_MODEL': "google/gemini-2.5-flash-lite",
         'VISION_MODEL': "google/gemini-2.5-flash",
-        'AGENT_MODEL': "google/gemini-3-flash-preview",
+        'AGENT_MODEL': "google/gemini-3.8-flash",
     },
     'opper': {
         'OPENROUTER_URL': "https://api.opper.ai/v3/compat",
