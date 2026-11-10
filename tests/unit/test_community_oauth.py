@@ -1770,7 +1770,7 @@ async def test_oauth_guest_bind_refuses_plaintext_proof_transport(monkeypatch):
 
     bind = await O._oauth_guest_bind("http://community.example", "platform-access")
 
-    assert bind == {"bound": False, "error": "client_proof_transport_refused"}
+    assert bind == {"bound": False, "error": "insecure_transport"}
 
 
 @pytest.mark.unit
@@ -1842,7 +1842,7 @@ async def test_oauth_callback_explains_legacy_client_without_proof(tmp_path, mon
 
     assert response.status_code == 200
     text = response.body.decode("utf-8")
-    assert "这台旧设备还没有本机证明" in text
+    assert "云端还没有这台旧设备的证明记录" in text
     assert "联系管理员" in text
 
 

@@ -1196,9 +1196,9 @@ async def _handle_oauth_callback(
     if bind.get("error") == client_registration.LEGACY_REBIND_DETAIL:
         return _callback_html(
             "社区登录已完成",
-            "这台旧设备还没有本机证明，游客卡牌暂时不会并入当前账号。"
+            "云端还没有这台旧设备的证明记录，游客卡牌暂时不会并入当前账号。"
             "可以先回到 NEKO 重新登录一次；如果仍然看到这条提示，请联系管理员核对设备归属，"
-            "完成资产迁移后再登录即可写入证明。",
+            "完成资产迁移后再登录即可补上证明。",
             status_code=200,
         )
     return _callback_html(
@@ -1319,7 +1319,7 @@ async def _oauth_guest_bind(social_base: str, access_token: str) -> dict[str, An
     base = social_base.rstrip("/")
     if not client_registration.proof_transport_allowed(base):
         logger.warning("community_oauth: refusing to send client_proof to %s", base)
-        bind["error"] = "client_proof_transport_refused"
+        bind["error"] = "insecure_transport"
         return bind
     credentials = await asyncio.to_thread(C._get_client_credentials)
     if not credentials:
