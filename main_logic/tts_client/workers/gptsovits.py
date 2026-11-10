@@ -20,6 +20,8 @@ import json
 import websockets
 import aiohttp
 import asyncio
+from dataclasses import dataclass, field
+from queue import Empty
 
 from config import GSV_VOICE_PREFIX
 from utils.config_manager import _as_bool, get_config_manager
@@ -114,6 +116,18 @@ def _gsv_should_drop_chunk(text: str) -> bool:
             has_unsanctioned = True
     return has_unsanctioned
 
+
+@dataclass(eq=False)
+class _GsvSpeech:
+    """One utterance owns its network work; the control queue never waits for it."""
+
+    speech_id: str
+    commands: asyncio.Queue = field(default_factory=asyncio.Queue)
+    task: asyncio.Task | None = None
+    cancelled: bool = False
+    ending: bool = False
+    closed: bool = False
+
 def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     """GPT-SoVITS TTS worker - uses the v3 WebSocket stream-input duplex mode
     
@@ -122,7 +136,7 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
         response_queue: multiprocess response queue sending audio data (also used for the ready signal)
         audio_api_key: API key (unused, kept for interface consistency)
         voice_id: v3 voice config ID, formatted as "voice_id" or "voice_id|advanced-params JSON"
-                  e.g.: "my_voice" or "my_voice|{\"speed\":1.2,\"text_lang\":\"all_zh\"}"
+                  e.g.: "my_voice" or "my_voice|{\"speed_factor\":1.2,\"text_lang\":\"all_zh\"}"
     
     Config (set via TTS_MODEL_URL):
         base_url: GPT-SoVITS API address, e.g. "http://127.0.0.1:9881"
@@ -171,21 +185,6 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
     else:
         v3_voice_id = raw_voice or "_default"
 
-    # Preload websockets State, accommodating different versions.
-    try:
-        from websockets.connection import State as _WsState
-    except (ImportError, AttributeError):
-        _WsState = None
-
-    def _ws_is_open(ws_conn):
-        """Check whether the WS connection is still open (compatible with websockets v14+/v16)"""
-        if ws_conn is None:
-            return False
-        if _WsState is not None:
-            return getattr(ws_conn, 'state', None) is _WsState.OPEN
-        # Fallback for older websockets versions.
-        return not getattr(ws_conn, 'closed', True)
-
     def _extract_pcm_from_wav(wav_bytes: bytes) -> tuple:
         """Extract PCM data and the sample rate from a WAV chunk"""
         if len(wav_bytes) < 44:
@@ -200,212 +199,213 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
         return pcm_data, src_rate
 
     async def async_worker():
-        """Async TTS worker main loop - WebSocket duplex mode"""
-        ws = None
-        receive_task = None
-        current_speech_id = None
-        resampler = None
-        # When close_session(send_end=True) returns, reception has ended normally after done or through
-        # cancellation. No more audio can enter this turn's queue; that is the actual audio-stream closure point.
-        audio_done = AudioDoneEmitter(response_queue)
+        current = None
+        live_speeches = set()
+        stopping = False
 
-        async def receive_loop(ws_conn):
-            """Independent receive coroutine: handles audio chunks and JSON messages returned by the WS"""
-            nonlocal resampler
-            try:
-                async for message in ws_conn:
-                    if isinstance(message, bytes):
-                        # Each binary frame is a complete WAV chunk with header.
-                        pcm_data, src_rate = _extract_pcm_from_wav(message)
-                        if pcm_data is not None and len(pcm_data) > 0:
-                            audio_array = np.frombuffer(pcm_data, dtype=np.int16)
-                            if src_rate != 48000:
-                                if resampler is None:
-                                    resampler = soxr.ResampleStream(src_rate, 48000, 1, dtype='float32')
-                                resampled_bytes = _resample_audio(audio_array, src_rate, 48000, resampler)
-                            else:
-                                resampled_bytes = audio_array.tobytes()
-                            response_queue.put(resampled_bytes)
-                    else:
-                        # JSON message for logging.
-                        try:
-                            msg = json.loads(message)
-                            msg_type = msg.get('type', '')
-                            if msg_type == 'sentence':
-                                # Never write raw TTS text through logger.
-                                _gsv_text = msg.get('text', '')
-                                logger.debug(f"[GPT-SoVITS v3] 合成 (len={len(_gsv_text)} chars)")
-                                print(f"[GPT-SoVITS v3] 合成: {_gsv_text[:30]}...")
-                            elif msg_type == 'sentence_done':
-                                logger.debug(f"[GPT-SoVITS v3] 句完成 (task={msg.get('task_id')}, chunks={msg.get('chunks_sent', '?')})")
-                            elif msg_type == 'done':
-                                logger.debug("[GPT-SoVITS v3] 会话完成")
-                            elif msg_type == 'error':
-                                error_msg = str(msg.get('message', ''))
-                                _enqueue_error(response_queue, f"[GPT-SoVITS v3] 服务端错误: {error_msg}")
-                            elif msg_type == 'flushed':
-                                logger.debug("[GPT-SoVITS v3] flush 完成")
-                        except json.JSONDecodeError:
-                            pass
-            except websockets.exceptions.ConnectionClosed:
-                logger.debug("[GPT-SoVITS v3] WS 连接已关闭")
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                _enqueue_error(response_queue, f"[GPT-SoVITS v3] 接收循环异常: {e}")
-
-        async def close_session(ws_conn, recv_task, send_end=True):
-            """Close the current WS session"""
-            nonlocal resampler
-            if send_end and _ws_is_open(ws_conn):
+        async def cleanup_socket(ws_conn, receiver=None, command=None):
+            for task in (command, receiver):
+                if task is None:
+                    continue
+                if not task.done():
+                    task.cancel()
                 try:
-                    await ws_conn.send(json.dumps({"cmd": "end"}))
-                    # Await done for at most 30 seconds, allowing inference to finish.
-                    await asyncio.wait_for(recv_task, timeout=30.0)
-                except (asyncio.TimeoutError, Exception):
-                    pass
-            if recv_task and not recv_task.done():
-                recv_task.cancel()
-                try:
-                    await recv_task
+                    await task
                 except (asyncio.CancelledError, Exception):
                     pass
-            if _ws_is_open(ws_conn):
+            if ws_conn is not None:
                 try:
                     await ws_conn.close()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("[GPT-SoVITS v3] WS 关闭失败: %s", exc)
+
+        async def finish_cleanup(ws_conn, receiver=None, command=None):
+            # A later interrupt may arrive during normal close. It must not
+            # cancel cleanup itself or strand an old socket/receiver.
+            cleanup = asyncio.create_task(cleanup_socket(ws_conn, receiver, command))
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                await cleanup
+                raise
+
+        async def open_socket():
+            ws_conn = await websockets.connect(WS_URL, ping_interval=None, max_size=10 * 1024 * 1024)
+            try:
+                safe_params = {k: v for k, v in extra_params.items() if k not in ("cmd", "voice_id")}
+                await ws_conn.send(json.dumps({"cmd": "init", "voice_id": v3_voice_id, **safe_params}))
+                ready = json.loads(await asyncio.wait_for(ws_conn.recv(), timeout=10.0))
+                if ready.get("type") != "ready":
+                    raise RuntimeError(f"init 失败: {ready}")
+                return ws_conn
+            except (asyncio.CancelledError, Exception):
+                await finish_cleanup(ws_conn)
+                raise
+
+        async def warmup():
+            ws_conn = None
+            try:
+                ws_conn = await open_socket()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("[GPT-SoVITS v3] 初始连接失败: %s", exc)
+                response_queue.put(("__ready__", False))
+                return False
+            finally:
+                await finish_cleanup(ws_conn)
+            if not stopping:
+                response_queue.put(("__ready__", True))
+            return True
+
+        def report_error(speech, error):
+            if not speech.cancelled:
+                # The manager already understands this marker. A retired turn's
+                # error must not be charged to a replacement speech_id either.
+                response_queue.put(("__tts_sentence_failed__", speech.speech_id, ""))
+                _enqueue_error(response_queue, f"[GPT-SoVITS v3] Worker 错误: {error}")
+
+        def put_pcm(speech, payload):
+            if payload and not speech.cancelled:
+                response_queue.put(("__audio__", speech.speech_id, payload))
+
+        async def receive_audio(speech, ws_conn):
             resampler = None
-
-        async def create_connection():
-            """Create a new WS connection and send init"""
-            nonlocal ws, receive_task, resampler
-            resampler = None
-
-            logger.debug(f"[GPT-SoVITS v3] 连接: {WS_URL}")
-            ws = await websockets.connect(WS_URL, ping_interval=None, max_size=10 * 1024 * 1024)
-
-            # Send init, merging advanced parameters while filtering reserved fields against overwrite.
-            safe_params = {k: v for k, v in extra_params.items() if k not in ("cmd", "voice_id")}
-            init_msg = {"cmd": "init", "voice_id": v3_voice_id, **safe_params}
-            await ws.send(json.dumps(init_msg))
-
-            # Await ready.
-            ready_msg = await asyncio.wait_for(ws.recv(), timeout=10.0)
-            ready_data = json.loads(ready_msg)
-            if ready_data.get('type') != 'ready':
-                raise RuntimeError(f"init 失败: {ready_data}")
-
-            logger.debug(f"[GPT-SoVITS v3] 会话就绪 (voice={v3_voice_id})")
-
-            # Start the receiver coroutine.
-            receive_task = asyncio.create_task(receive_loop(ws))
-            return ws
-
-        # -- Initial connection validation --
-        try:
-            await create_connection()
-            logger.info(f"[GPT-SoVITS v3] TTS 已就绪 (WS 双工模式): {WS_URL}")
-            logger.info(f"  voice_id: {v3_voice_id}")
-            response_queue.put(("__ready__", True))
-        except Exception as e:
-            logger.error(f"[GPT-SoVITS v3] 初始连接失败: {e}")
-            logger.error("请确保 GPT-SoVITS 服务已运行且端口正确")
-            response_queue.put(("__ready__", False))
-            return
-
-        # -- Main loop --
-        try:
-            loop = asyncio.get_running_loop()
-
-            while True:
+            source_rate = None
+            async for message in ws_conn:
+                if speech.cancelled:
+                    return False
+                if isinstance(message, bytes):
+                    pcm, source_rate = _extract_pcm_from_wav(message)
+                    if pcm:
+                        audio = np.frombuffer(pcm, dtype=np.int16)
+                        if source_rate != 48000:
+                            if resampler is None:
+                                resampler = soxr.ResampleStream(source_rate, 48000, 1, dtype='float32')
+                            pcm = _resample_audio(audio, source_rate, 48000, resampler)
+                        put_pcm(speech, pcm)
+                    continue
                 try:
-                    sid, tts_text = await loop.run_in_executor(None, request_queue.get)
-                except Exception:
-                    break
+                    message = json.loads(message)
+                except json.JSONDecodeError:
+                    continue
+                kind = message.get("type")
+                logger.debug("[GPT-SoVITS v3] event=%s speech_id=%s", kind, speech.speech_id)
+                if kind == "error":
+                    raise RuntimeError(f"服务端错误: {message.get('message', '')}")
+                if kind == "done":
+                    if resampler is not None and not speech.cancelled:
+                        tail = _resample_audio(np.empty(0, dtype=np.int16), source_rate, 48000,
+                                               resampler, last=True)
+                        put_pcm(speech, tail)
+                    return True
+            return False
 
+        async def run_speech(speech):
+            ws_conn = receiver = command = None
+            complete = False
+            audio_done = AudioDoneEmitter(response_queue)
+            try:
+                # Cancelling one utterance must not cancel shared initialization.
+                if not await asyncio.shield(startup):
+                    return
+                for attempt in range(3):
+                    try:
+                        ws_conn = await open_socket()
+                        break
+                    except Exception as exc:
+                        if attempt == 2:
+                            raise
+                        logger.warning("[GPT-SoVITS v3] 连接失败 (retry %s/3): %s", attempt + 1, exc)
+                        await asyncio.sleep(0.5 * (2 ** attempt))
+                receiver = asyncio.create_task(receive_audio(speech, ws_conn))
+                while not speech.cancelled:
+                    command = asyncio.create_task(speech.commands.get())
+                    done, _ = await asyncio.wait((command, receiver), return_when=asyncio.FIRST_COMPLETED)
+                    if receiver in done:
+                        await receiver  # Retrieve upstream errors before reporting an early close.
+                        raise RuntimeError("会话在文本结束前关闭")
+                    text = await command
+                    command = None
+                    if text is None:
+                        await ws_conn.send(json.dumps({"cmd": "end"}))
+                        try:
+                            complete = await asyncio.wait_for(receiver, timeout=30.0)
+                        except asyncio.TimeoutError as exc:
+                            raise RuntimeError("等待尾部音频超时（30秒）") from exc
+                        if not complete:
+                            raise RuntimeError("会话关闭但未收到 done")
+                        break
+                    await ws_conn.send(json.dumps({"cmd": "append", "data": text}))
+                    _record_tts_telemetry("gptsovits", len(text))
+                    logger.debug("[GPT-SoVITS v3] append (len=%s chars)", len(text))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                report_error(speech, exc)
+                # Mute before cancelling a failed receiver: a callback may already
+                # have taken a frame off the wire when cancellation arrives.
+                speech.cancelled = True
+            finally:
+                try:
+                    await finish_cleanup(ws_conn, receiver, command)
+                finally:
+                    speech.closed = True
+            if complete and not speech.cancelled:
+                audio_done.emit(speech.speech_id)
+
+        def retire(speech):
+            if speech is not None and not speech.cancelled and not speech.closed:
+                speech.cancelled = True
+                logger.debug("[GPT-SoVITS v3] interrupt speech_id=%s", speech.speech_id)
+                speech.task.cancel()
+
+        def speech_finished(speech, task):
+            speech.closed = True
+            live_speeches.discard(speech)
+            if not task.cancelled() and task.exception() is not None:
+                report_error(speech, task.exception())
+
+        startup = asyncio.create_task(warmup())
+        try:
+            while True:
+                if startup.done() and not startup.result():
+                    break
+                try:
+                    # Queue.get itself cannot be cancelled by asyncio. A bounded
+                    # idle wait lets startup failure retire the worker/executor.
+                    sid, text = await asyncio.to_thread(request_queue.get, timeout=0.1)
+                except Empty:
+                    continue
                 if sid == TTS_SHUTDOWN_SENTINEL:
                     break
-
                 if sid == "__interrupt__":
-                    # Interrupt: close immediately without sending end or waiting for inference.
-                    audio_done.begin_interrupt()  # Interrupted turns omit audio_done, using the separate cancellation channel.
-                    try:
-                        if _ws_is_open(ws):
-                            await close_session(ws, receive_task, send_end=False)
-                            ws = None
-                            receive_task = None
-                        current_speech_id = None
-                        audio_done.reset()
-                    finally:
-                        audio_done.end_interrupt()
+                    retire(current)
+                    current = None
                     continue
-
-                # speech_id changes -> interrupt the old session and create a new connection.
-                # On interruption, close directly without end to avoid waiting for inference.
-                if sid != current_speech_id and sid is not None:
-                    if _ws_is_open(ws):
-                        await close_session(ws, receive_task, send_end=False)
-                        ws = None
-                        receive_task = None
-                    current_speech_id = sid
-                    audio_done.reset()  # Reset audio_done deduplication for the new turn.
-                    for _retry in range(3):
-                        try:
-                            await create_connection()
-                            break
-                        except Exception as e:
-                            logger.warning(f"[GPT-SoVITS v3] 连接失败 (retry {_retry+1}/3): {e}")
-                            ws = None
-                            if _retry < 2:
-                                await asyncio.sleep(0.5 * (2 ** _retry))
-                    else:
-                        logger.error("[GPT-SoVITS v3] 连接重试耗尽，跳过当前文本")
-                        continue
-
                 if sid is None:
-                    # Normal completion: send end to close the session; v3 end automatically flushes remaining text.
-                    # Capture this turn's sid first: close_session yields, then current_speech_id must be cleared.
-                    finished_speech_id = current_speech_id
-                    if _ws_is_open(ws):
-                        await close_session(ws, receive_task, send_end=True)
-                        ws = None
-                        receive_task = None
-                        # Session closed and receiver stopped; this turn has no more audio.
-                        audio_done.emit(finished_speech_id)
-                    current_speech_id = None
+                    if current is not None and not current.cancelled and not current.closed and not current.ending:
+                        current.ending = True
+                        current.commands.put_nowait(None)
                     continue
-
-                if not tts_text or not tts_text.strip():
+                if not text or not text.strip() or _gsv_should_drop_chunk(text):
                     continue
-
-                # Kaomoji fallback: see _GSV_ALLOWED_PUNCT.
-                # Discard `=。=` `(╯°□°）╯` `^_^`; allow standalone `，` `。` `？` so
-                # server TextBuffer can split sentences.
-                if _gsv_should_drop_chunk(tts_text):
-                    continue
-
-                # Accumulate text fragments with append; v3 TextBuffer automatically splits on punctuation for inference.
-                if _ws_is_open(ws):
-                    try:
-                        await ws.send(json.dumps({"cmd": "append", "data": tts_text}))
-                        _record_tts_telemetry("gptsovits", len(tts_text))
-                        # Never write raw TTS text through logger.
-                        logger.debug(f"[GPT-SoVITS v3] append (len={len(tts_text)} chars)")
-                        print(f"[GPT-SoVITS v3] append: {tts_text[:30]}...")
-                    except Exception as e:
-                        logger.error(f"[GPT-SoVITS v3] 发送失败: {e}")
-                        ws = None
-                        receive_task = None
-                        current_speech_id = None
-
-        except Exception as e:
-            _enqueue_error(response_queue, f"[GPT-SoVITS v3] Worker 错误: {e}")
-            response_queue.put(("__ready__", False))
+                if current is None or current.speech_id != sid or current.cancelled or current.closed:
+                    retire(current)
+                    current = _GsvSpeech(sid)
+                    live_speeches.add(current)
+                    current.task = asyncio.create_task(run_speech(current))
+                    current.task.add_done_callback(lambda task, speech=current: speech_finished(speech, task))
+                if not current.ending:
+                    current.commands.put_nowait(text)
         finally:
-            # Cleanup.
-            if _ws_is_open(ws):
-                await close_session(ws, receive_task, send_end=False)
+            stopping = True
+            remaining = list(live_speeches)
+            for speech in remaining:
+                retire(speech)
+            if not startup.done():
+                startup.cancel()
+            await asyncio.gather(startup, *(speech.task for speech in remaining), return_exceptions=True)
 
     # Run the async worker.
     try:

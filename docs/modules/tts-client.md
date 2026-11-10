@@ -66,3 +66,11 @@ The TTS package therefore does not own session lifecycle, WebSocket delivery, or
 On interruption, the manager drains queued output, sends the interrupt sentinel, waits for worker acknowledgement where supported, drains late chunks, and clears pending speech IDs. Provider workers differ: some can cancel an upstream request, while others can only stop emitting or mute its eventual result. The contract does not promise that every remote API call is physically cancelled.
 
 Startup and synthesis failures are returned through control/error messages. The manager decides whether to retry, surface status, restart the worker, or disable that speech path. Voice-enrollment HTTP routes and persistence of cloned `voice_id` values are separate from the runtime TTS queue.
+
+### GPT-SoVITS utterance lifecycle
+
+The worker has one request-queue consumer. Each utterance owns an asyncio task for connecting, sending text, receiving audio, and draining completion. `(None, None)` only queues that utterance's end operation; control consumption continues throughout the up-to-30-second drain. A new speech ID or `__interrupt__` mutes the retired utterance before cancelling its network work and closing its socket. Connection, handshake, retry, and send waits are cancellable, and old cleanup cannot alter a replacement connection.
+
+PCM is always tagged as `("__audio__", original_speech_id, payload)`. Cancelled utterances suppress late audio, errors, and completion. Normal completion flushes the resampler tail before one `__audio_done__` for that ID; interruption discards the old tail and omits normal completion. Shutdown waits for receiver/socket cleanup. The initial readiness probe has no speech ID and emits no audio completion.
+
+These guarantees cover client-side connection cancellation and stale-output suppression. Physical inference cancellation still depends on Bridge and the host. `tests/unit/test_gptsovits_worker_lifecycle.py` drives the real worker with controlled sockets and event barriers, without local voices or running services.
