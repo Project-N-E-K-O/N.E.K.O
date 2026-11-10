@@ -1,14 +1,19 @@
 // Propagate the entry module's cache-busting query to every dependency.
 // Without this, browsers can combine a fresh game.js with stale child modules.
 const assetVersion = new URL(import.meta.url).search;
-const [i18nModule, physicsModule, avatarModule, sdkModule] = await Promise.all([
+const [i18nModule, physicsModule, avatarModule, sdkModule, sharedCourtModule, timersModule] = await Promise.all([
   import(`./i18n.js${assetVersion}`),
   import(`./physics.js${assetVersion}`),
   import(`./avatar.js${assetVersion}`),
-  import(`./sdk-bootstrap.js${assetVersion}`)
+  import(`./sdk-bootstrap.js${assetVersion}`),
+  import(`./shared-court.js${assetVersion}`),
+  import(`./match-timers.js${assetVersion}`)
 ]);
 const { applyTranslations, t, voiceLine, voiceLines } = i18nModule;
 const { ShotLane, clamp } = physicsModule;
+const { SharedCourt } = sharedCourtModule;
+const { MatchTimers } = timersModule;
+const matchTimers = new MatchTimers();
 const { initNekoAvatar, reactNeko, setAvatarUnavailableLabel } = avatarModule;
 const {
   airBasketballSdkReady,
@@ -76,10 +81,11 @@ const ACTION_BALANCE = Object.freeze({
   DISRUPTION_GRACE:3,
   MOUSE_MAX_PER_ROUND:2
 });
-// A real two-ball arcade machine can recycle balls aggressively because they do
-// not collide across two courts. Here hoop shots and prank shots share one
-// physical arena, so they also share one small activity budget.
-const NEKO_BALL_POOL = Object.freeze({ TOTAL:2, READY:1, MAX_ACTIVE:2, MAX_AIRBORNE:2 });
+// Eight shared balls start split between the collectors. The AI's own active
+// shot budget is independent of the number that roll into its collector.
+const INITIAL_BALLS_PER_SIDE = 4;
+const NEKO_BALL_POOL = Object.freeze({ TOTAL:INITIAL_BALLS_PER_SIDE, READY:INITIAL_BALLS_PER_SIDE,
+  MAX_ACTIVE:INITIAL_BALLS_PER_SIDE, MAX_AIRBORNE:INITIAL_BALLS_PER_SIDE });
 const NEKO_SHOT_DELAY = Object.freeze({ MIN:1.9, MAX:2.5, BUSY_BONUS:.45, PRANK_RECOVERY:1.4, RETURN_RETRY:.32 });
 const NEKO_STRENGTH = Object.freeze({
   BASE_ACCURACY:.76,
@@ -104,6 +110,7 @@ const makeNekoAttention = () => ({
 });
 const state = {
   running:false,
+  paused:false,
   mode:'timed',
   remaining:ROUND_SECONDS,
   elapsed:0,
@@ -138,8 +145,11 @@ const matchClock = byId('match-clock');
 const clockLabel = byId('clock-label');
 const clockUnit = byId('clock-unit');
 const guide = byId('player-guide');
+const shotHint = byId('shot-hint');
 const soundToggle = byId('sound-toggle');
 const stopMatchButton = byId('stop-match');
+const pauseMatchButton = byId('pause-match');
+const pauseOverlay = byId('pause-overlay');
 const focusFills = {
   player:byId('player-focus-fill'),
   neko:byId('neko-focus-fill')
@@ -171,12 +181,13 @@ let trackedCrossTransit = null;
 let nekoAiFrozen = false;
 let matchSequence = 0;
 const auxiliaryTransitBalls = new Set();
+const outsideBallOverlays = new Map();
 const pointerMemory = { x:window.innerWidth * .5, y:window.innerHeight * .55, seen:false };
 const mouseSteal = { active:false, x:0, y:0, targetX:0, targetY:0, lastX:null, lastY:null, struggle:0, startedAt:0, duration:0, escapeThreshold:500 };
 const comboTimers = { player:0, neko:0 };
 
 function beginNekoAction(action) {
-  if (state.nekoAction !== NEKO_ACTION.IDLE) return false;
+  if (state.paused || state.nekoAction !== NEKO_ACTION.IDLE) return false;
   state.nekoAction = action;
   state.neko.action = action;
   return true;
@@ -190,7 +201,7 @@ function endNekoAction(action) {
 }
 
 function beginPlayerAction(action) {
-  if (state.player.action !== NEKO_ACTION.IDLE || state.player.stagger > 0) return false;
+  if (state.paused || state.player.action !== NEKO_ACTION.IDLE || state.player.stagger > 0) return false;
   state.player.action = action;
   return true;
 }
@@ -369,6 +380,7 @@ function renderLocalizedState() {
   setNekoStatus(nekoStatusKey);
   renderClockLabels(state.mode);
   startButton.textContent = t(resultBoard.hidden ? 'start' : 'again');
+  pauseMatchButton.textContent = t(state.paused ? 'resume' : 'pause');
   renderStartCopy();
 }
 
@@ -431,8 +443,16 @@ function syncHud(side) {
   byId(`${side}-fever-fill`).closest('.fever-meter').classList.toggle('is-active', actor.fever > 0);
 }
 
-const playerLane = new ShotLane({ canvas:byId('player-court'), side:'player', onScore:data => nativeScored('player', data), onMiss:data => nativeMissed('player', data) });
+const playerLane = new ShotLane({ canvas:byId('player-court'), side:'player', onScore:(data, ball) => nativeScored('player', data, ball), onMiss:data => nativeMissed('player', data) });
 const nekoLane = new ShotLane({ canvas:byId('neko-court'), side:'neko', onScore:data => nativeScored('neko', data), onMiss:data => nativeMissed('neko', data) });
+const sharedCourt = new SharedCourt(playerLane, nekoLane);
+sharedCourt.onBoardImpact = () => sound(122, .07, 'triangle');
+playerLane.enableBallPool(INITIAL_BALLS_PER_SIDE);
+nekoLane.enableBallPool(INITIAL_BALLS_PER_SIDE);
+sharedCourt.onExit = (ball, lane) => {
+  state.crossCount += 1;
+  state.nekoAttention.crossThreat = NEKO_ATTENTION.CROSS_WINDOW;
+};
 const laneFor = side => side === 'player' ? playerLane : nekoLane;
 
 function clearTrackedGuestBall() {
@@ -446,7 +466,6 @@ function clearTrackedGuestBall() {
 
 function trackedGuestIsInteractive() {
   return !trackedGuestSuspended
-    && trackedGuestLane === nekoLane
     && Boolean(trackedGuestBall?.flying)
     && !trackedGuestBall?.expired
     && !trackedGuestBall?.inTransit;
@@ -500,17 +519,63 @@ function settleTrackedGuestBall() {
 // Once per frame (and on resize): move the page overlay onto the tracked ball.
 function syncTrackedGuestBall() {
   if (!settleTrackedGuestBall()) return;
-  const ball = trackedGuestBall;
-  const lane = trackedGuestLane;
+  if (trackedGuestLane.sharedCourt) {
+    const { left, right } = sharedCourt.bounds(trackedGuestLane);
+    const ball = trackedGuestBall;
+    const outside = ball.x - ball.r < left || ball.x + ball.r > right;
+    // Keep a resting/replaced ball in the actual court renderer. A separate
+    // fixed-position sprite is needed only when it travels outside the scene.
+    ball.pageOverlay = outside;
+    if (!outside) {
+      crossBall.classList.remove('is-crossing');
+      return;
+    }
+  }
+  positionPageBall(crossBall, trackedGuestBall, trackedGuestLane);
+}
+
+function positionPageBall(visual, ball, lane) {
   const rect = lane.canvas.getBoundingClientRect();
   const scaleX = rect.width / lane.width;
   const scaleY = rect.height / lane.height;
-  const size = clamp(ball.r * 2.46 * scaleX, 38, 64);
+  const spriteSize = lane.ballSpriteSize(ball.r) * scaleX;
+  const size = lane.sharedCourt ? spriteSize : clamp(spriteSize, 38, 64);
   const x = rect.left + ball.x * scaleX;
   const y = rect.top + ball.y * scaleY;
-  crossBall.style.setProperty('--cross-size', `${size}px`);
-  crossBall.style.transform = `translate3d(${x - size / 2}px,${y - size / 2}px,0) rotate(${ball.rotation || 0}rad)`;
-  crossBall.classList.add('is-crossing');
+  visual.style.setProperty('--cross-size', `${size}px`);
+  visual.style.transform = `translate3d(${x - size / 2}px,${y - size / 2}px,0) rotate(${ball.rotation || 0}rad)`;
+  visual.classList.add('is-crossing');
+}
+
+function syncOutsideBallOverlays() {
+  const active = new Set();
+  for (const lane of sharedCourt.lanes) for (const ball of [lane.ball, ...lane.guests]) {
+    if (!state.running || ball === trackedGuestBall || !ball.allowOuterExit
+        || (!ball.flying && ball.poolState !== 'returning') || ball.inTransit || ball.expired) continue;
+    const bounds = sharedCourt.bounds(lane);
+    if (ball.x - ball.r >= bounds.left && ball.x + ball.r <= bounds.right) continue;
+    active.add(ball);
+    let visual = outsideBallOverlays.get(ball);
+    if (!visual) {
+      visual = crossBall.cloneNode(false);
+      visual.removeAttribute('id');
+      visual.removeAttribute('style');
+      visual.classList.add('auxiliary-cross-ball', 'is-interactive');
+      visual.addEventListener('pointerdown', event => beginCourtInterference(lane, event, true));
+      visual.addEventListener('pointermove', event => { if (interferenceLane) moveCourtInterference(event); });
+      visual.addEventListener('pointerup', endInterference);
+      visual.addEventListener('pointercancel', endInterference);
+      document.body.appendChild(visual);
+      outsideBallOverlays.set(ball, visual);
+    }
+    ball.pageOverlay = true;
+    positionPageBall(visual, ball, lane);
+  }
+  for (const [ball, visual] of outsideBallOverlays) if (!active.has(ball)) {
+    visual.remove();
+    if (ball !== trackedGuestBall) ball.pageOverlay = false;
+    outsideBallOverlays.delete(ball);
+  }
 }
 
 function animateCross(direction, sourceLane, startY, targetLane, endY, duration, radius, motion, onArrive, elapsedSeconds = 0, onProgress = null) {
@@ -601,6 +666,11 @@ function clearTransits() {
     visual.remove();
   });
   auxiliaryTransitBalls.clear();
+  for (const [ball, visual] of outsideBallOverlays) {
+    ball.pageOverlay = false;
+    visual.remove();
+  }
+  outsideBallOverlays.clear();
   clearTrackedGuestBall();
 }
 
@@ -735,8 +805,9 @@ function crossScored(owner, targetSide, data) {
   callout(targetSide, t('crossScore'));
 }
 
-function nativeScored(laneSide, data) {
-  if (data.owner && data.owner !== laneSide) crossScored(data.owner, laneSide, data);
+function nativeScored(laneSide, data, ball) {
+  if (data.owner === 'neko' && ball?.nativeShot) scored('neko', data);
+  else if (data.owner && data.owner !== laneSide) crossScored(data.owner, laneSide, data);
   else scored(laneSide, data);
 }
 
@@ -781,9 +852,12 @@ function scored(side, { clean, crossCourt = false }) {
   if (actor.combo >= 2) showCombo(side, actor.combo, feverStarted || actor.fever > 0);
   else clearCombo(side);
   const newStage = stageForScore(actor.score);
-  if (newStage > actor.stage) {
+  const stageAdvanced = newStage > actor.stage;
+  if (stageAdvanced) {
     actor.stage = newStage;
     laneFor(side).setStage(newStage);
+  }
+  if (stageAdvanced && !sharedCourt.fixedHoop) {
     callout(side, `${t('stageUp')} ${newStage}`);
     sound(920, .24, 'triangle');
   } else {
@@ -817,43 +891,61 @@ function canvasPoint(event, lane=playerLane) {
   };
 }
 
-function syncAimTelemetry() {
-  const { power, angle } = playerLane.getAimTelemetry();
-  byId('player-power').textContent = power;
-  byId('player-angle').textContent = `${angle}°`;
-  byId('player-power-fill').style.width = `${power}%`;
-  byId('player-power-fill').classList.toggle('is-over', power > 88);
-}
-
 let interferencePointer = null;
 let interferenceLane = null;
+let interferencePointerId = null;
+let interferenceBall = null;
+let interferenceFromReady = false;
 
-function flyingBallNear(lane, point) {
-  return [lane.ball, ...lane.guests].some(ball => ball.flying && !ball.expired
-    && !ball.inTransit
-    && Math.hypot(point.x - ball.x, point.y - ball.y) < ball.r * 4.5);
+function ballNearPointer(lane, point) {
+  return [lane.ball, ...lane.guests].filter(ball => !ball.expired && !ball.inTransit
+    && !lane.isHeldBall(ball) && (ball.flying || lane.isReadyBall(ball)))
+    .map(ball => ({ lane, ball, distance:Math.hypot(point.x - ball.x, point.y - ball.y) / ball.r }))
+    .filter(candidate => candidate.distance < (candidate.ball.flying ? 4.5 : 2.5));
 }
 
 function beginCourtInterference(lane, event, nearBallOnly = false) {
-  if (!state.running || state.mouseStealActive || !hasFocus('player', 8)
-      || interferenceLane) return false;
+  if (!state.running || state.mouseStealActive
+      || interferenceLane || playerAimLane) return false;
+  // Either actor's balls can now occupy either half of the same court.
+  const nearby = sharedCourt.lanes.flatMap(candidate => ballNearPointer(candidate, canvasPoint(event, candidate)))
+    .sort((a, b) => a.distance - b.distance)[0];
+  if (nearby) lane = nearby.lane;
+  else if (nearBallOnly) return false;
   const point = canvasPoint(event, lane);
-  if (nearBallOnly && !flyingBallNear(lane, point)) return false;
+  if (nearby && lane.isReadyBall(nearby.ball)) return beginReadyThrow(lane, event);
+  if (!hasFocus('player', 8)) return false;
   if (!beginPlayerAction(NEKO_ACTION.PLAYER)) return false;
   interferencePointer = point;
   interferenceLane = lane;
+  interferencePointerId = event.pointerId;
+  interferenceBall = nearby?.ball || null;
+  interferenceFromReady = interferenceBall ? lane.isReadyBall(interferenceBall) : false;
+  if (interferenceFromReady) {
+    interferenceBall.dragged = true;
+    lane.selectReadyBall();
+  }
   event.currentTarget?.setPointerCapture?.(event.pointerId);
   lane.canvas.classList.add('is-interfering');
   return true;
 }
 
 function moveCourtInterference(event) {
+  if (event.pointerId !== interferencePointerId) return;
   if (!interferencePointer || !interferenceLane || !state.running || state.player.focus <= 0) return;
   const lane = interferenceLane;
+  if (interferenceBall && (!lane.ballPool.includes(interferenceBall)
+      || (interferenceFromReady ? !interferenceBall.dragged || !lane.isReadyBall(interferenceBall) : !interferenceBall.flying))) {
+    endInterference();
+    return;
+  }
   const point = canvasPoint(event, lane);
   const dx = point.x - interferencePointer.x;
   const dy = point.y - interferencePointer.y;
   const requestedCost = Math.hypot(dx, dy) * ACTION_BALANCE.JAM_DRAG_SCALE;
+  // Keep sub-threshold movement pending instead of dropping every tiny event.
+  // Otherwise a slow mouse drag never gets far enough to move the ball.
+  if (requestedCost <= 1) return;
   const cost = Math.min(requestedCost, state.player.focus);
   if (cost > 1 && spendFocus('player', cost)) {
     const appliedRatio = cost / requestedCost;
@@ -863,7 +955,7 @@ function moveCourtInterference(event) {
       x:interferencePointer.x + appliedDx,
       y:interferencePointer.y + appliedDy
     };
-    lane.interfere(appliedDx, appliedDy, appliedPoint);
+    lane.interfere(appliedDx, appliedDy, appliedPoint, interferenceBall);
     state.interferenceCount += 1;
     byId('neko-interference-hint').style.opacity = '.18';
     lane.canvas.closest('.machine-screen').classList.add('is-disrupted');
@@ -872,33 +964,83 @@ function moveCourtInterference(event) {
   interferencePointer = point;
 }
 
-function endInterference() {
+function endInterference(event) {
+  if (event && interferencePointerId !== null && event.pointerId !== interferencePointerId) return;
+  if (interferenceBall) interferenceBall.dragged = false;
   interferenceLane?.canvas.classList.remove('is-interfering');
   interferencePointer = null;
   interferenceLane = null;
+  interferencePointerId = null;
+  interferenceBall = null;
+  interferenceFromReady = false;
   endPlayerAction(NEKO_ACTION.PLAYER);
 }
 
+let playerAimPointer = null;
+let playerAimLane = null;
+let hasThrown = false;
+
+function syncShotHint(aimAllowed) {
+  const lane = playerAimLane;
+  const ball = lane?.heldBall;
+  if (!ball || (aimAllowed && hasThrown)) {
+    shotHint.hidden = true;
+    return;
+  }
+  const copy = t(aimAllowed ? 'shotFirstHint' : 'shotFocusLow');
+  if (shotHint.textContent !== copy) shotHint.textContent = copy;
+  const rect = lane.canvas.getBoundingClientRect();
+  const x = rect.left + ball.x * rect.width / lane.width;
+  const y = rect.top + (ball.y - ball.r - 24) * rect.height / lane.height;
+  shotHint.style.setProperty('--shot-hint-x', `${x}px`);
+  shotHint.style.top = `${y}px`;
+  shotHint.hidden = false;
+}
+
+function beginReadyThrow(lane, event) {
+  if (!state.running || state.mouseStealActive || playerAimLane
+      || !beginPlayerAction(NEKO_ACTION.HOOP)) return false;
+  if (!lane.beginAim(canvasPoint(event, lane), event.timeStamp)) {
+    endPlayerAction(NEKO_ACTION.HOOP);
+    return false;
+  }
+  playerAimLane = lane;
+  playerAimPointer = event.pointerId;
+  event.currentTarget?.setPointerCapture?.(event.pointerId);
+  lane.canvas.classList.add('aiming');
+  guide.style.opacity = '0';
+  return true;
+}
+
+function moveReadyAim(event) {
+  const lane = playerAimLane;
+  if (!lane?.heldBall) return;
+  // A quick bend can be inside a browser-coalesced pointer move. Preserve
+  // those real samples before applying the final visible pointer position.
+  for (const sample of event.getCoalescedEvents?.() || []) {
+    if (sample.timeStamp >= (lane.aimMotion?.samples.at(-1)?.time ?? -Infinity)) {
+      lane.moveAim(canvasPoint(sample, lane), sample.timeStamp);
+    }
+  }
+  lane.moveAim(canvasPoint(event, lane), event.timeStamp);
+}
+
 playerLane.canvas.addEventListener('pointerdown', event => {
-  if (!state.running || state.mouseStealActive) return;
-  if (beginCourtInterference(playerLane, event, true)) return;
-  if (!beginPlayerAction(NEKO_ACTION.HOOP)) return;
-  if (playerLane.beginAim(canvasPoint(event, playerLane))) {
-    playerLane.canvas.setPointerCapture?.(event.pointerId);
-    playerLane.canvas.classList.add('aiming');
-    playerLane.canvas.closest('.machine-screen').classList.add('is-aiming');
-    guide.style.opacity = '.18';
-    syncAimTelemetry();
-  } else endPlayerAction(NEKO_ACTION.HOOP);
+  if (!state.running || state.mouseStealActive || playerAimLane) return;
+  const point = canvasPoint(event, playerLane);
+  const pickingSupply = playerLane.ballPool.some(ball => playerLane.isReadyBall(ball)
+    && Math.hypot(point.x - ball.x, point.y - ball.y) <= ball.r * 2.5);
+  if (!pickingSupply && beginCourtInterference(playerLane, event, true)) return;
+  beginReadyThrow(playerLane, event);
 });
 playerLane.canvas.addEventListener('pointermove', event => {
   if (state.mouseStealActive) return;
-  if (interferenceLane === playerLane) {
+  if (interferenceLane) {
     moveCourtInterference(event);
     return;
   }
-  playerLane.moveAim(canvasPoint(event, playerLane));
-  syncAimTelemetry();
+  if (event.pointerId !== playerAimPointer) return;
+  moveReadyAim(event);
 });
 function shootPlayer(vx, vy) {
   if (!state.running || !hasFocus('player', ACTION_BALANCE.SHOT_COST)
@@ -919,37 +1061,78 @@ function releasePlayerShot() {
     return;
   }
   let shot = false;
-  if (hasFocus('player', ACTION_BALANCE.SHOT_COST)) shot = playerLane.releaseAim();
-  else playerLane.aim = null;
+  const lane = playerAimLane || playerLane;
+  if (hasFocus('player', ACTION_BALANCE.SHOT_COST)) shot = lane.releaseAim('player');
+  else lane.cancelAim();
+  playerAimPointer = null;
+  playerAimLane = null;
   if (shot) {
+    hasThrown = true;
     spendFocus('player', ACTION_BALANCE.SHOT_COST);
     state.player.attempts += 1;
     sound(210, .04, 'triangle');
   } else if (!hasFocus('player', ACTION_BALANCE.SHOT_COST)) {
     sound(125, .05, 'triangle');
   }
-  playerLane.canvas.classList.remove('aiming');
-  playerLane.canvas.closest('.machine-screen').classList.remove('is-aiming');
+  lane.canvas.classList.remove('aiming');
   endPlayerAction(NEKO_ACTION.HOOP);
 }
 
 function cancelPlayerAction() {
-  playerLane.aim = null;
-  playerLane.canvas.classList.remove('aiming');
-  playerLane.canvas.closest('.machine-screen').classList.remove('is-aiming');
+  for (const lane of sharedCourt.lanes) {
+    lane.cancelAim();
+    lane.canvas.classList.remove('aiming');
+  }
+  playerAimPointer = null;
+  playerAimLane = null;
   endInterference();
   avatarPointer = null;
   state.player.action = NEKO_ACTION.IDLE;
 }
-function releasePlayerPointer() {
-  if (interferenceLane === playerLane) endInterference();
-  else releasePlayerShot();
+function releasePlayerPointer(event) {
+  if (playerAimPointer !== null && event.pointerId !== playerAimPointer) return;
+  if (interferenceLane) {
+    if (Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) moveCourtInterference(event);
+    endInterference(event);
+  } else {
+    // Fast releases may reach a new position before another pointermove is
+    // delivered. Use the release position rather than the previous frame.
+    if (playerAimLane?.heldBall && Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) {
+      moveReadyAim(event);
+    }
+    releasePlayerShot();
+  }
 }
 playerLane.canvas.addEventListener('pointerup', releasePlayerPointer);
-playerLane.canvas.addEventListener('pointercancel', releasePlayerPointer);
+playerLane.canvas.addEventListener('pointercancel', event => {
+  if (interferenceLane) {
+    endInterference(event);
+    return;
+  }
+  if (playerAimPointer !== null && event.pointerId !== playerAimPointer) return;
+  cancelPlayerAction();
+});
+playerLane.canvas.addEventListener('lostpointercapture', event => {
+  if (event.pointerId === playerAimPointer) cancelPlayerAction();
+});
+// Release outside a canvas and interrupted capture must both unlock the next
+// grab. Ordinary bubbled pointerup events are harmless after local cleanup.
+document.addEventListener('lostpointercapture', event => {
+  if (event.pointerId === playerAimPointer) cancelPlayerAction();
+  else if (event.pointerId === interferencePointerId) endInterference(event);
+}, true);
+document.addEventListener('pointerup', event => {
+  if (event.pointerId === playerAimPointer) releasePlayerPointer(event);
+  else if (event.pointerId === interferencePointerId) endInterference(event);
+});
+document.addEventListener('pointercancel', event => {
+  if (event.pointerId === playerAimPointer) cancelPlayerAction();
+  else if (event.pointerId === interferencePointerId) endInterference(event);
+});
+window.addEventListener('blur', cancelPlayerAction);
 
 function syncMouseStealVisual() {
-  if (!mouseSteal.active) return;
+  if (!mouseSteal.active || state.paused) return;
   const dx = mouseSteal.x - mouseSteal.targetX;
   const dy = mouseSteal.y - mouseSteal.targetY;
   const length = Math.hypot(dx, dy);
@@ -966,7 +1149,7 @@ function endMouseSteal(escaped = false) {
     endNekoAction(NEKO_ACTION.MOUSE);
     return false;
   }
-  clearTimeout(mouseStealTimer);
+  matchTimers.clear(mouseStealTimer);
   mouseSteal.active = false;
   state.mouseStealActive = false;
   endNekoAction(NEKO_ACTION.MOUSE);
@@ -1035,7 +1218,7 @@ function beginMouseSteal() {
   speakNeko('voiceMouseSteal', { kind:'mouse-steal', interrupt:true });
   sound(440, .08, 'triangle');
   syncMouseStealVisual();
-  mouseStealTimer = setTimeout(() => endMouseSteal(false), mouseSteal.duration);
+  mouseStealTimer = matchTimers.set(() => endMouseSteal(false), mouseSteal.duration);
   return true;
 }
 
@@ -1048,7 +1231,7 @@ document.addEventListener('pointermove', event => {
   pointerMemory.x = event.clientX;
   pointerMemory.y = event.clientY;
   pointerMemory.seen = true;
-  if (!mouseSteal.active) return;
+  if (!mouseSteal.active || state.paused) return;
   const distance = Math.hypot(event.clientX - mouseSteal.lastX, event.clientY - mouseSteal.lastY);
   mouseSteal.struggle += Math.min(distance, 75);
   mouseSteal.lastX = event.clientX;
@@ -1060,7 +1243,7 @@ document.addEventListener('pointermove', event => {
 }, { capture:true, passive:true });
 
 document.addEventListener('pointerdown', () => {
-  if (!mouseSteal.active) return;
+  if (!mouseSteal.active || state.paused) return;
   mouseSteal.struggle += 95;
   if (mouseSteal.struggle >= mouseEscapeTarget()) endMouseSteal(true);
 }, { capture:true, passive:true });
@@ -1069,29 +1252,34 @@ nekoLane.canvas.addEventListener('pointerdown', event => {
   beginCourtInterference(nekoLane, event);
 });
 nekoLane.canvas.addEventListener('pointermove', event => {
-  if (interferenceLane === nekoLane) moveCourtInterference(event);
+  if (interferenceLane) moveCourtInterference(event);
+  else if (event.pointerId === playerAimPointer) {
+    moveReadyAim(event);
+  }
 });
-nekoLane.canvas.addEventListener('pointerup', () => {
-  if (interferenceLane === nekoLane) endInterference();
+nekoLane.canvas.addEventListener('pointerup', event => {
+  if (event.pointerId === playerAimPointer) releasePlayerPointer(event);
+  else if (interferenceLane) endInterference(event);
 });
-nekoLane.canvas.addEventListener('pointercancel', () => {
-  if (interferenceLane === nekoLane) endInterference();
+nekoLane.canvas.addEventListener('pointercancel', event => {
+  if (event.pointerId === playerAimPointer) cancelPlayerAction();
+  else if (interferenceLane) endInterference(event);
 });
 
 crossBall.addEventListener('pointerdown', event => {
   if (!crossBall.classList.contains('is-interactive')) return;
-  if (!beginCourtInterference(nekoLane, event, true)) return;
+  if (!beginCourtInterference(trackedGuestLane || nekoLane, event, true)) return;
   event.preventDefault();
   event.stopPropagation();
 });
 crossBall.addEventListener('pointermove', event => {
-  if (interferenceLane === nekoLane) moveCourtInterference(event);
+  if (interferenceLane) moveCourtInterference(event);
 });
-crossBall.addEventListener('pointerup', () => {
-  if (interferenceLane === nekoLane) endInterference();
+crossBall.addEventListener('pointerup', event => {
+  if (interferenceLane) endInterference(event);
 });
-crossBall.addEventListener('pointercancel', () => {
-  if (interferenceLane === nekoLane) endInterference();
+crossBall.addEventListener('pointercancel', event => {
+  if (interferenceLane) endInterference(event);
 });
 
 let avatarPointer = null;
@@ -1107,7 +1295,7 @@ function hitNeko(direction = 1, source = 'pointer') {
   lastAvatarHit = now;
   if (!ballImpact) spendFocus('player', cost);
   if (state.nekoCounterPending) {
-    clearTimeout(counterTimer);
+    matchTimers.clear(counterTimer);
     state.nekoCounterPending = false;
     playerLane.canvas.closest('.machine-screen').classList.remove('incoming-warning');
     refundFocus('neko', ACTION_BALANCE.PRANK_COST);
@@ -1123,8 +1311,9 @@ function hitNeko(direction = 1, source = 'pointer') {
     state.nekoAttention.revenge = NEKO_ATTENTION.REVENGE_WINDOW;
   }
   state.nextNekoDecision = Math.max(state.nextNekoDecision, .45);
-  if (nekoLane.ball.flying) {
-    const ball = nekoLane.ball;
+  const activeNekoBall = nekoLane.ballPool.find(ball => ball.flying);
+  if (activeNekoBall) {
+    const ball = activeNekoBall;
     nekoLane.interfere(direction * 20, 7, { x:ball.x, y:ball.y });
   }
   reactNeko('hit', direction);
@@ -1178,16 +1367,22 @@ function containTrackedBallAtViewportEdge(ball, court, scaleX, radius) {
 }
 
 function checkPlayerBallNekoHit() {
-  const ball = trackedGuestBall;
-  if (!ball || trackedGuestLane !== nekoLane || ball.expired) return;
-  const court = stepLayout(nekoLane.canvas, () => nekoLane.canvas.getBoundingClientRect());
-  const scaleX = court.width / nekoLane.width;
-  const scaleY = court.height / nekoLane.height;
+  for (const lane of sharedCourt.lanes) for (const ball of [lane.ball, ...lane.guests]) {
+    if (!ball.flying || ball.expired || ball.inTransit) continue;
+    checkBallNekoHit(ball, lane);
+  }
+}
+
+function checkBallNekoHit(ball, lane) {
+  const court = stepLayout(lane.canvas, () => lane.canvas.getBoundingClientRect());
+  const scaleX = court.width / lane.width;
+  const scaleY = court.height / lane.height;
   const x = court.left + ball.x * scaleX;
   const y = court.top + ball.y * scaleY;
   const radius = ball.r * Math.max(scaleX, scaleY) * 1.08;
   const canHitAvatar = ball.owner === 'player'
     && avatarIsReady()
+    && (ball.flight?.depth ?? 0) < .32
     && !ball.avatarHit
     && Math.hypot(ball.vx, ball.vy) >= 320;
   const hitbox = canHitAvatar
@@ -1199,7 +1394,7 @@ function checkPlayerBallNekoHit() {
     ball.vx = -Math.max(Math.abs(ball.vx) * .68, 360);
     ball.vy -= 150;
     ball.hitRim = true;
-    nekoLane.burst(ball.x, ball.y, 28);
+    lane.burst(ball.x, ball.y, 28);
     hitNeko(1, 'ball');
     return;
   }
@@ -1223,7 +1418,11 @@ nekoAvatar.addEventListener('pointerdown', event => {
 });
 
 nekoAvatar.addEventListener('pointermove', event => {
-  if (interferenceLane === nekoLane) {
+  if (event.pointerId === playerAimPointer) {
+    moveReadyAim(event);
+    return;
+  }
+  if (interferenceLane) {
     moveCourtInterference(event);
     return;
   }
@@ -1239,8 +1438,9 @@ function endAvatarHit() {
   avatarPointer = null;
   endPlayerAction(NEKO_ACTION.PLAYER);
 }
-function endAvatarPointer() {
-  if (interferenceLane === nekoLane) endInterference();
+function endAvatarPointer(event) {
+  if (event.pointerId === playerAimPointer) releasePlayerPointer(event);
+  else if (interferenceLane) endInterference(event);
   else endAvatarHit();
 }
 nekoAvatar.addEventListener('pointerup', endAvatarPointer);
@@ -1250,6 +1450,22 @@ function throwChaosBall(targetLane, owner, fromEdge = 'right', onArrive) {
   const sourceLane = targetLane === playerLane ? nekoLane : playerLane;
   const hoop = targetLane.getHoopPose();
   const radius = clamp(targetLane.width * .055, 16, 23);
+  if (targetLane.sharedCourt) {
+    const origin = sourceLane.readyForLaunch();
+    if (!origin) return;
+    const target = targetLane.ball;
+    const flight = .68 + Math.random() * .1;
+    const anticipation = target.flying ? flight * .36 : 0;
+    const depth = target.flight ? clamp(target.flight.depth + target.flight.vDepth * anticipation, 0, 1) : 0;
+    const x = target.x + sharedCourt.origin(targetLane) - sharedCourt.origin(sourceLane)
+      + target.vx * anticipation + (Math.random() - .5) * 42 * flight;
+    const y = target.y + target.vy * anticipation + (Math.random() - .5) * 28 * flight;
+    const guest = sourceLane.launchPoolBall(0, 0, { owner, spatial:{ seconds:flight, target:{ x, y, depth } } });
+    if (!guest) return;
+    state.crossCount += 1;
+    onArrive?.(guest);
+    return;
+  }
   const x = fromEdge === 'right' ? targetLane.width + radius + 2 : -radius - 2;
   const y = targetLane.height * (.68 + Math.random() * .1);
   const flight = .68 + Math.random() * .1;
@@ -1297,19 +1513,18 @@ function beginNekoPrank() {
       || !beginNekoAction(NEKO_ACTION.PLAYER)) return false;
   spendFocus('neko', ACTION_BALANCE.PRANK_COST);
   const playerScreen = playerLane.canvas.closest('.machine-screen');
-  clearTimeout(counterTimer);
+  matchTimers.clear(counterTimer);
   state.nekoCounterPending = true;
   setNekoStatus('nekoCountering');
   playerScreen.classList.add('incoming-warning');
   reactNeko('aim');
   sound(420, .05, 'triangle');
-  counterTimer = setTimeout(() => {
+  counterTimer = matchTimers.set(() => {
     state.nekoCounterPending = false;
     playerScreen.classList.remove('incoming-warning');
     if (!state.running) return;
     // The player may knock another Neko-owned ball loose during the warning.
-    // Recheck at release time so that this delayed prank cannot exceed the
-    // shared two-ball budget.
+    // Recheck at release time in case a contact used the ready supply.
     if (!nekoPrankInventoryReady()) {
       refundFocus('neko', ACTION_BALANCE.PRANK_COST);
       endNekoAction(NEKO_ACTION.PLAYER);
@@ -1336,6 +1551,7 @@ function runtimeSnapshot() {
   return {
     mode:state.mode,
     running:state.running,
+    paused:state.paused,
     elapsed:state.elapsed,
     remaining:state.remaining,
     score:{ player:state.player.score, ai:state.neko.score },
@@ -1360,7 +1576,15 @@ function resetMatch() {
   const currentMatch = ++matchSequence;
   const mode = selectedMode();
   const initialClock = mode === 'timed' ? ROUND_SECONDS : formatElapsed(0);
-  clearTimeout(counterTimer);
+  matchTimers.clearAll();
+  matchTimers.resume();
+  state.paused = false;
+  pauseOverlay.hidden = true;
+  pauseMatchButton.hidden = false;
+  pauseMatchButton.textContent = t('pause');
+  pauseMatchButton.setAttribute('aria-pressed', 'false');
+  document.body.classList.remove('is-match-paused');
+  matchTimers.clear(counterTimer);
   endMouseSteal(false);
   clearTransits();
   nekoAiFrozen = false;
@@ -1369,8 +1593,9 @@ function resetMatch() {
   Object.assign(state.player, makeActor(initialClock));
   Object.assign(state.neko, makeActor(initialClock));
   timerAccumulator = 0;
-  playerLane.resetBall();
-  nekoLane.resetBall();
+  sharedCourt.clock = 0;
+  sharedCourt.assembly.reset();
+  sharedCourt.resetBallPools();
   trackGuestBall(playerLane.ball, playerLane);
   playerLane.setStage(1);
   nekoLane.setStage(1);
@@ -1394,7 +1619,6 @@ function resetMatch() {
   void unlockGameAudio().catch(error => console.warn('[air_basketball] SDK audio unlock failed', error));
   syncFocus('player');
   syncFocus('neko');
-  syncAimTelemetry();
   void startGameRuntime({
     mode,
     gameStarted:true,
@@ -1425,11 +1649,17 @@ function abortMatchWithoutRuntime(matchId) {
 // Stop play without settling a result; shared by finishMatch and an aborted match.
 function stopMatchPlay() {
   state.running = false;
+  state.paused = false;
+  matchTimers.clearAll();
+  matchTimers.resume();
+  pauseOverlay.hidden = true;
+  pauseMatchButton.hidden = true;
+  document.body.classList.remove('is-match-paused');
   // Drop any held aim, drag or avatar pointer: a release after this point must
   // not shoot into the final score or leave interference locked for next match.
   cancelPlayerAction();
   endMouseSteal(false);
-  clearTimeout(counterTimer);
+  matchTimers.clear(counterTimer);
   clearTransits();
   state.nekoCounterPending = false;
   state.nekoAction = NEKO_ACTION.IDLE;
@@ -1499,29 +1729,39 @@ function nekoActiveBallCount() {
 }
 
 function nekoBallInventoryReady() {
-  return nekoActiveBallCount() < NEKO_BALL_POOL.MAX_ACTIVE;
+  return Boolean(nekoLane.readyForLaunch());
 }
 
 function nekoPrankInventoryReady() {
-  // A prank ball can knock the player's ready ball into play. Starting from an
-  // empty Neko budget leaves room for that collision without creating a third
-  // active basketball.
-  return nekoActiveBallCount() === 0;
+  return nekoBallInventoryReady();
 }
 
-function nekoShotInventoryReady() {
-  return !nekoLane.ball.flying
-    && !nekoLane.ball.inTransit
-    && nekoBallInventoryReady()
-    && nekoLane.countActiveGuestBalls({ owner:'neko', nativeShot:true }) < NEKO_BALL_POOL.MAX_AIRBORNE;
+function nekoShotSupply() {
+  const airborne = sharedCourt.poolBalls.filter(ball => (ball.flying || ball.inTransit)
+    && ball.owner === 'neko' && ball.nativeShot).length;
+  if (airborne >= NEKO_BALL_POOL.MAX_AIRBORNE) return null;
+
+  if (nekoLane.ballPool.some(ball => ball.poolState !== 'wedged')) {
+    const ball = nekoLane.readyForLaunch();
+    return ball && !nekoLane.ball.flying && !nekoLane.ball.inTransit ? { lane:nekoLane, ball } : null;
+  }
+
+  // An empty tray can stay empty indefinitely. Use a surplus ball in place,
+  // leaving the player's usual starting supply and any held ball alone.
+  const surplus = playerLane.ballPool.filter(ball => playerLane.isReadyBall(ball) && !playerLane.isHeldBall(ball));
+  if (surplus.length <= playerLane.poolCapacity) return null;
+  const ball = surplus.reduce((closest, candidate) => candidate.x > closest.x ? candidate : closest);
+  return { lane:playerLane, ball };
 }
 
 function shootNekoAtHoop(difficulty = .72) {
-  if (!state.running || !nekoShotInventoryReady()
+  if (!state.running
       || !hasFocus('neko', ACTION_BALANCE.SHOT_COST)
-      || state.neko.stagger > 0
-      || !beginNekoAction(NEKO_ACTION.HOOP)) return false;
-  const shot = nekoLane.releaseAutoShot(difficulty);
+      || state.neko.stagger > 0) return false;
+  const supply = nekoShotSupply();
+  if (!supply || !beginNekoAction(NEKO_ACTION.HOOP)) return false;
+  const { lane, ball } = supply;
+  const shot = lane.releaseAutoShot(difficulty, { ball, owner:'neko', fever:nekoLane.fever, stage:nekoLane.stage });
   if (shot) {
     spendFocus('neko', ACTION_BALANCE.SHOT_COST);
     state.neko.attempts += 1;
@@ -1554,7 +1794,7 @@ function nekoAttentionContext() {
   const clutch = state.mode === 'timed' && state.remaining <= 10;
   const serious = state.neko.score < state.player.score
     || (clutch && state.neko.score <= state.player.score);
-  const playerBallActive = playerLane.ball.flying && playerLane.ball.owner === 'player';
+  const playerBallActive = [playerLane.ball, ...playerLane.guests].some(ball => ball.flying && ball.owner === 'player');
   let prankReason = '';
   if (attention.revenge > 0) prankReason = 'revenge';
   else if (attention.crossThreat > 0) prankReason = 'cross';
@@ -1639,7 +1879,7 @@ function chooseNekoAction(forcedRoll = null) {
     && nekoPrankInventoryReady()
     && !nekoLane.ball.flying
     && !nekoLane.ball.inTransit;
-  const canShoot = nekoShotInventoryReady() && hasFocus('neko', ACTION_BALANCE.SHOT_COST);
+  const canShoot = Boolean(nekoShotSupply()) && hasFocus('neko', ACTION_BALANCE.SHOT_COST);
 
   const offenseOverdue = canShoot && state.nekoOffenseIdle >= NEKO_STRENGTH.OFFENSE_DROUGHT;
   let acted = false;
@@ -1679,8 +1919,16 @@ function chooseNekoAction(forcedRoll = null) {
 }
 
 function update(dt) {
+  const rightCourt = stepLayout(nekoLane.canvas, () => nekoLane.canvas.getBoundingClientRect());
+  const avatar = stepLayout(nekoAvatar, () => nekoAvatar.getBoundingClientRect());
+  sharedCourt.rightOpening = avatarIsReady() ? {
+    top:Math.max(0, (avatar.top - rightCourt.top) * nekoLane.height / rightCourt.height),
+    bottom:Math.min(nekoLane.height, (avatar.bottom - rightCourt.top) * nekoLane.height / rightCourt.height)
+  } : null;
+  sharedCourt.advance(dt, state.running);
   playerLane.update(dt, state.running);
   nekoLane.update(dt, state.running);
+  if (state.running) sharedCourt.collideBalls();
   checkPlayerBallNekoHit();
   settleTrackedGuestBall();
   if (!state.running) return;
@@ -1709,7 +1957,7 @@ function update(dt) {
 }
 
 function advanceMatchClock(frameSeconds) {
-  if (!state.running) return;
+  if (!state.running || state.paused) return;
   const realSeconds = Number.isFinite(frameSeconds) ? Math.max(0, frameSeconds) : 0;
   timerAccumulator += realSeconds;
   if (timerAccumulator >= 1) {
@@ -1751,7 +1999,7 @@ function playablePhysicsSeconds(frameSeconds) {
 function frame(now) {
   const frameSeconds = lastFrame ? (now - lastFrame) / 1000 : 0;
   lastFrame = now;
-  const plan = planPhysicsSteps(playablePhysicsSeconds(frameSeconds));
+  const plan = state.paused ? { steps:0, stepSeconds:0 } : planPhysicsSteps(playablePhysicsSeconds(frameSeconds));
   stepLayoutCache = new Map();
   try {
     for (let step = 0; step < plan.steps; step += 1) update(plan.stepSeconds);
@@ -1759,10 +2007,17 @@ function frame(now) {
     stepLayoutCache = null;
   }
   syncTrackedGuestBall();
+  syncOutsideBallOverlays();
+  const opening = sharedCourt.rightOpening;
+  const rightScreen = nekoLane.canvas.closest('.machine-screen');
+  rightScreen.style.setProperty('--shared-opening-top', `${opening ? opening.top / nekoLane.height * 100 : 100}%`);
+  rightScreen.style.setProperty('--shared-opening-bottom', `${opening ? opening.bottom / nekoLane.height * 100 : 100}%`);
   flushFrameSync();
   advanceMatchClock(frameSeconds);
-  playerLane.draw();
-  nekoLane.draw();
+  const aimAllowed = hasFocus('player', ACTION_BALANCE.SHOT_COST);
+  syncShotHint(aimAllowed);
+  playerLane.draw(aimAllowed);
+  nekoLane.draw(aimAllowed);
   requestAnimationFrame(frame);
 }
 
@@ -1777,6 +2032,7 @@ function resize() {
   const trackingPlayerNative = trackedGuestBall === playerLane.ball;
   playerLane.resize();
   nekoLane.resize();
+  sharedCourt.reprojectNonFlyingBalls();
   if (trackingPlayerNative && trackedGuestSuspended) trackedCrossTransit?.restart();
   else if (trackingPlayerNative) trackGuestBall(playerLane.ball, playerLane);
   syncTrackedGuestBall();
@@ -1784,6 +2040,25 @@ function resize() {
 window.addEventListener('resize', resize);
 startButton.addEventListener('click', resetMatch);
 stopMatchButton.addEventListener('click', finishMatch);
+function setMatchPaused(paused) {
+  if (!state.running || state.paused === paused) return;
+  cancelPlayerAction();
+  state.paused = paused;
+  document.body.classList.toggle('is-match-paused', paused);
+  if (paused) {
+    matchTimers.pause();
+    mouseSteal.pausedAt = performance.now();
+  } else {
+    if (mouseSteal.active) mouseSteal.startedAt += performance.now() - mouseSteal.pausedAt;
+    matchTimers.resume();
+  }
+  lastFrame = 0;
+  pauseOverlay.hidden = !paused;
+  pauseMatchButton.textContent = t(paused ? 'resume' : 'pause');
+  pauseMatchButton.setAttribute('aria-pressed', String(paused));
+}
+pauseMatchButton.addEventListener('click', () => setMatchPaused(!state.paused));
+byId('resume-match').addEventListener('click', () => setMatchPaused(false));
 document.querySelectorAll('input[name="match-mode"]').forEach(input => {
   input.addEventListener('change', () => {
     renderStartCopy();
@@ -1845,7 +2120,7 @@ function prepareIsolatedCrossTest() {
   nekoAiFrozen = true;
   playerLane.clearGuests();
   nekoLane.clearGuests();
-  Object.assign(nekoLane.ball, { owner:null, flying:false, inTransit:true });
+  for (const ball of nekoLane.ballPool) Object.assign(ball, { owner:null, flying:false, inTransit:true });
 }
 
 function setTrackedGuestForTest({ xRatio, yRatio, vx, vy, owner } = {}) {
@@ -1867,7 +2142,8 @@ if (pageParams.get('test_mode') === '1') window.AirBasketballMVP = Object.freeze
   start:resetMatch,
   getState:() => ({
     ...JSON.parse(JSON.stringify(state)),
-    playerBallFlying:playerLane.ball.flying,
+    ballPools:{ player:playerLane.poolSnapshot(), neko:nekoLane.poolSnapshot() },
+    playerBallFlying:playerLane.ballPool.some(ball => ball.flying),
     playerBallMotion:playerLane.ball.flying && !playerLane.ball.inTransit ? {
       x:playerLane.ball.x,
       y:playerLane.ball.y,
@@ -1893,6 +2169,13 @@ if (pageParams.get('test_mode') === '1') window.AirBasketballMVP = Object.freeze
     nekoBallPool:{ ...NEKO_BALL_POOL },
     actionBalance:{ ...ACTION_BALANCE },
     nekoAccuracy:nekoShotAccuracy(),
+    sharedCourt:{
+      fixedHoop:sharedCourt.fixedHoop,
+      width:sharedCourt.width,
+      playerHoop:playerLane.getHoopPose(),
+      nekoHoop:nekoLane.getHoopPose(),
+      rightOpening:sharedCourt.rightOpening
+    },
     avatarReady:avatarIsReady(),
     trackedGuestSuspended,
     crossBallInteractive:crossBall.classList.contains('is-interactive'),

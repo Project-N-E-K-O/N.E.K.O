@@ -32,53 +32,6 @@
 
 .stage-banner b { color: color-mix(in srgb,var(--accent),#47647a 28%); font-size: 11px; }
 
-.aim-panel {
-  position: absolute;
-  z-index: 4;
-  left: 50%;
-  bottom: 58px;
-  width: min(230px,72%);
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 9px;
-  opacity: 0;
-  transform: translateX(-50%) translateY(8px);
-  border: 1px solid rgba(255,255,255,.56);
-  border-radius: 12px;
-  background: rgba(249,253,255,.72);
-  box-shadow: 0 5px 14px rgba(50,106,140,.09);
-  backdrop-filter: blur(10px);
-  pointer-events: none;
-  transition: .16s;
-}
-
-.machine-screen.is-aiming .aim-panel { opacity: 1; transform: translateX(-50%) translateY(0); }
-.aim-panel div { min-width: 31px; display: grid; gap: 1px; }
-.aim-panel div:last-child { text-align: right; }
-.aim-panel span { color: #7991a2; font-size: 7px; letter-spacing: .08em; }
-.aim-panel b { color: #315f7f; font-size: 12px; font-variant-numeric: tabular-nums; }
-
-.aim-panel > i {
-  height: 6px;
-  overflow: hidden;
-  border-radius: 5px;
-  background: rgba(86,137,170,.12);
-}
-
-.aim-panel > i em {
-  display: block;
-  width: 0;
-  height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg,#66c5e9 0 70%,#f0c676 84%,#ef807b 100%);
-  box-shadow: 0 0 8px rgba(86,188,229,.45);
-  transition: width .04s linear;
-}
-
-.aim-panel > i em.is-over { box-shadow: 0 0 9px rgba(239,128,123,.62); }
-
 .fever-meter {
   position: absolute;
   z-index: 3;
@@ -114,7 +67,7 @@
 
 .fever-meter.is-active { color: #d46e76; text-shadow: 0 1px white; }
 .fever-meter.is-active em { animation: fever-glow .42s ease-in-out infinite alternate; }
-.machine-screen:has(.fever-meter.is-active) { box-shadow: inset 0 0 24px rgba(45,104,141,.11), 0 0 24px rgba(241,132,121,.28); }
+.arcade-floor:not(.shared-court) .machine-screen:has(.fever-meter.is-active) { box-shadow: inset 0 0 24px rgba(45,104,141,.11), 0 0 24px rgba(241,132,121,.28); }
 
 .rule-chips {
   display: flex;
@@ -190,9 +143,9 @@
   pointer-events: none;
 }
 
-.machine-screen.is-disrupted { animation: screen-jolt 240ms ease-out; }
-.machine-screen.combo-impact { animation: combo-screen-pulse 360ms ease-out; }
-.machine-screen.incoming-warning { animation: incoming-warning 540ms ease-in-out; }
+.arcade-floor:not(.shared-court) .machine-screen.is-disrupted { animation: screen-jolt 240ms ease-out; }
+.arcade-floor:not(.shared-court) .machine-screen.combo-impact { animation: combo-screen-pulse 360ms ease-out; }
+.arcade-floor:not(.shared-court) .machine-screen.incoming-warning { animation: incoming-warning 540ms ease-in-out; }
 
 .cross-ball {
   position: fixed;
@@ -305,8 +258,6 @@
   .interference-meter { left: 7px; bottom: 7px; width: 60px; }
   .stage-banner { top: 50px; right: 5px; }
   .fever-meter { top: 70px; left: 7px; width: 58px; }
-  .aim-panel { bottom: 42px; width: 86%; padding: 5px 6px; }
-  .aim-panel span { display: none; }
   .combo-burst { top: 34%; }
   .combo-burst strong { font-size: clamp(38px,10vw,58px); }
 }
