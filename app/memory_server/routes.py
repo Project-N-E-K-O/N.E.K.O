@@ -7750,8 +7750,11 @@ async def get_private_persona_snapshot(lanlan_name: str):
     manager = runtime.persona_manager
     if manager is None:
         raise HTTPException(status_code=503, detail="Memory components are not ready")
+    from memory.long_term_sync import LongTermMemoryRecoveryRequired
     try:
         return await manager.aget_private_persona_snapshot(lanlan_name)
+    except LongTermMemoryRecoveryRequired as exc:
+        raise HTTPException(status_code=503, detail="long_term_memory_recovery_required") from exc
     except OverflowError as exc:
         raise HTTPException(status_code=413, detail={
             "code": "MEMORY_RESPONSE_TOO_LARGE",

@@ -148,6 +148,7 @@ async def test_strict_cold_read_does_not_replace_corrupt_storage(tmp_path):
 @pytest.mark.asyncio
 async def test_route_maps_errors_and_uses_current_manager(monkeypatch):
     from app.memory_server import routes
+    from memory.long_term_sync import LongTermMemoryRecoveryRequired
 
     monkeypatch.setattr(routes.runtime, 'persona_manager', None)
     with pytest.raises(HTTPException) as error:
@@ -155,7 +156,8 @@ async def test_route_maps_errors_and_uses_current_manager(monkeypatch):
     assert error.value.status_code == 503
     for exc, status, code in [(ValueError(), 500, 'MEMORY_PROTOCOL_ERROR'),
                               (OverflowError(), 413, 'MEMORY_RESPONSE_TOO_LARGE'),
-                              (OSError(), 503, None)]:
+                              (OSError(), 503, None),
+                              (LongTermMemoryRecoveryRequired(), 503, None)]:
         manager = SimpleNamespace(aget_private_persona_snapshot=AsyncMock(side_effect=exc))
         monkeypatch.setattr(routes.runtime, 'persona_manager', manager)
         with pytest.raises(HTTPException) as error:
