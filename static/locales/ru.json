@@ -1423,6 +1423,7 @@
             "orcarouter": "OrcaRouter (шлюз Claude)",
             "requesty": "Requesty (маршрутизатор моделей)",
             "opper": "Opper (ИИ-шлюз в ЕС)",
+            "standardcompute": "Standard Compute (маршрутизатор моделей)",
             "vllm_omni": "vLLM-Omni (TTS)",
             "gptsovits": "GPT-SoVITS (свой сервер)"
         },
@@ -1500,6 +1501,7 @@
             "orcarouter": "OrcaRouter",
             "requesty": "Requesty",
             "opper": "Opper",
+            "standardcompute": "Standard Compute",
             "vllm_omni": "vLLM-Omni (TTS)"
         },
         "freeVersionNoApiKey": "Бесплатная версия не требует API Key",
