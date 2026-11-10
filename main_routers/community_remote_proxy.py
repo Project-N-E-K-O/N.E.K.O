@@ -234,6 +234,7 @@ def _visit_invitation_snapshot(base_url: str, notification_status: int, notifica
                 "actor_display_name": payload.get("actor_display_name") or "喵友",
                 "actor_avatar_url": _absolute_community_url(base_url, payload.get("actor_avatar_url")),
                 "visit_id": str(payload.get("visit_id") or ""),
+                "visit_mode": "cat" if payload.get("visit_mode") == "cat" else "model",
                 # Upgrade compatibility only; new directed invitations never carry a code.
                 "invite_code": str(payload.get("invite_code") or ""),
                 "expires_at": expires_at or None,
@@ -445,13 +446,16 @@ async def send_visit_invitation(request: Request):
         return JSONResponse({"detail": "invalid_payload"}, status_code=400)
     target = str(payload.get("target_user_id") or "") if isinstance(payload, dict) else ""
     visit_id = str(payload.get("visit_id") or "") if isinstance(payload, dict) else ""
+    visit_mode = payload.get("visit_mode", "model") if isinstance(payload, dict) else "model"
     try:
         uuid.UUID(target)
     except ValueError:
         return JSONResponse({"detail": "invalid_target_user"}, status_code=400)
     if VISIT_ID_RE.fullmatch(visit_id) is None:
         return JSONResponse({"detail": "invalid_visit_id"}, status_code=400)
-    upstream_payload = {"visit_id": visit_id}
+    if not isinstance(visit_mode, str) or visit_mode not in {"model", "cat"}:
+        return JSONResponse({"detail": "invalid_visit_mode"}, status_code=400)
+    upstream_payload = {"visit_id": visit_id, "visit_mode": visit_mode}
     expires_at = payload.get("expires_at")
     if isinstance(expires_at, (int, float)) and expires_at > 0:
         upstream_payload["expires_at"] = expires_at

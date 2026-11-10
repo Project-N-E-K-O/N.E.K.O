@@ -6926,9 +6926,27 @@
         }
     },
     "visit": {
+        "catScene": {
+            "title": "Visita felina",
+            "active": "Em visita",
+            "ending": "Saindo da visita…",
+            "reconnecting": "Reconectando…",
+            "wrapUp": "Preparando-se para voltar",
+            "myCat": "Meu gato",
+            "peerCat": "Gato da outra pessoa",
+            "returnModel": "Voltar ao modelo",
+            "controls": "Ações do meu gato",
+            "greet": "Cumprimentar",
+            "play": "Brincar",
+            "rest": "Descansar",
+            "exitConfirm": "Sair da visita felina?",
+            "actionUnavailable": "As ações do gato estão temporariamente indisponíveis",
+            "actionFailed": "Falha ao transmitir a ação. Tente novamente"
+        },
         "directInvite": {
             "decline": "Recusar",
             "accept": "Aceitar",
+            "acceptCat": "Aceitar visita felina",
             "expired": "Este convite já expirou",
             "responseFailed": "Não foi possível enviar a recusa. Tente de novo",
             "unavailable": "Ela ainda não pode sair agora. Tente de novo"
@@ -6973,11 +6991,14 @@
             "desktopRequired": "Envie convites diretos pelo app Neko para desktop",
             "preparingRoom": "Preparando uma sala para {{name}}…",
             "roomMissing": "Não foi possível obter a sala da visita direta",
+            "modeMismatch": "Falha ao criar a visita. Tente novamente",
             "sendFailed": "Não foi possível enviar o convite. Tente mais tarde",
             "invited": "Convite de visita enviado para {{name}}",
             "cancelFailed": "Não é possível cancelar o convite agora. Tente mais tarde",
             "inviteLater": "Convidar depois",
             "invite": "Convidar",
+            "modelVisit": "Forma de modelo",
+            "catVisit": "Forma de gato",
             "justNow": "agora mesmo",
             "lastSeen": "Online pela última vez {{time}}",
             "offline": "Offline",
@@ -7114,7 +7135,8 @@
         },
         "error": {
             "disabled": "\"Permitir visitas\" está desligado. Ative primeiro nas Configurações",
-            "generic": "Não deu certo. Tente mais tarde",
+            "generic": "A operação falhou. Tente novamente",
+            "otherVisitActive": "Já existe outra visita. Encerre-a primeiro",
             "unreachable": "Não foi possível acessar o serviço local",
             "voiceSession": "Encerre a conversa por voz antes da visita",
             "alreadyVisiting": "Ela já está em uma visita",
