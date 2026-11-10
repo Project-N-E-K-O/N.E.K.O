@@ -11,7 +11,7 @@ import shutil
 
 
 EXPRESSION = "expressions/listening.exp3.json"
-MODEL_ROOT = Path(__file__).parent / "models"
+MODEL_ROOT = Path(__file__).resolve().parents[1] / "local-desktop-ui/models"
 PROFILE_ROOT = MODEL_ROOT / "yui-common"
 
 

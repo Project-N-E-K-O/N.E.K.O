@@ -35,8 +35,8 @@ are published after the expressions. Repeated installation performs no writes.
 The installer is opt-in and accepts explicit model and backup paths:
 
 ```sh
-uv run --no-sync python local-desktop-ui/install_yui_profile.py --model path/to/yui-origin.model3.json --emotions
-uv run --no-sync python local-desktop-ui/install_yui_profile.py --model path/to/yui-origin.model3.json --emotions --apply --backups path/to/backups
+uv run --no-sync python scripts/install_yui_profile.py --model path/to/yui-origin.model3.json --emotions
+uv run --no-sync python scripts/install_yui_profile.py --model path/to/yui-origin.model3.json --emotions --apply --backups path/to/backups
 ```
 
 The first command only compares. After installation, reload the model. Repeat for

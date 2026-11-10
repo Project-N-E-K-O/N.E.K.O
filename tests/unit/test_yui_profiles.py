@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-TOOLS = Path(__file__).resolve().parents[2] / "local-desktop-ui"
+TOOLS = Path(__file__).resolve().parents[2] / "scripts"
 sys.path.insert(0, str(TOOLS))
 import install_yui_profile as profiles
 
