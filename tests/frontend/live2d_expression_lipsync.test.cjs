@@ -542,3 +542,47 @@ test(`real SDK timeout retires native until model reload and late ${lateResult} 
     native.destroy();
 });
 }
+
+
+for (const resume of [false, true]) {
+    test(`music controller revokes real SDK load on ${resume ? 'pause/resume ABA' : 'music stop'} before late completion`, async () => {
+        const { expressionManager: native, expression } = await realExpressionManager();
+        const gate = deferred(), entered = deferred();
+        const obsolete = native.createExpression({ Parameters: [{ Id: FORM, Value: 0.7, Blend: 'Overwrite' }] });
+        native.definitions[0] = { Name: 'listening', File: 'expressions/listening.exp3.json' };
+        native._loadExpression = () => { entered.resolve(); return gate.promise; };
+        const commits = [], commit = native._setExpression.bind(native);
+        native._setExpression = value => { commits.push(value); return commit(value); };
+        const { manager, context } = fixture();
+        manager.currentModel.internalModel.motionManager.expressionManager = native;
+        manager.currentModel.expression = expression;
+        manager.hasActiveActionMotion = () => false;
+        manager.fileReferences = { Expressions: native.definitions };
+        manager.resolveExpressionReferenceByFile = file => ({ name: 'listening', file });
+        let audible = true;
+        const listeners = {};
+        Object.assign(context.window, {
+            live2dManager: manager, lanlan_config: { model_type: 'live2d' },
+            isMusicAudible: () => audible,
+            addEventListener(type, fn) { (listeners[type] ||= []).push(fn); }, setInterval() {}, clearInterval() {}
+        });
+        vm.runInContext(fs.readFileSync(path.resolve(__dirname,
+            '../../static/avatar/avatar-music-listening.js'), 'utf8'), context);
+        const controller = context.window.nekoMusicListening;
+        const task = controller.tick();
+        try {
+            await entered.promise;
+            audible = false;
+            for (const fn of listeners['neko-music-playback-change'] || []) fn();
+            if (resume) { audible = true; for (const fn of listeners['neko-music-playback-change'] || []) fn(); }
+            gate.resolve(obsolete); await task;
+            assert.deepEqual(commits, [], 'a stopped request must never enter the actual SDK render queue');
+            assert.equal(native.queueManager._motions.length, 0);
+            assert.equal(!!manager._activeTransientExpression, false);
+            assert.equal(!!manager._manualExpressionListener, false);
+            assert.equal(!!manager._smoothResetListener, false);
+        } finally {
+            gate.resolve(obsolete); await task; native.destroy();
+        }
+    });
+}

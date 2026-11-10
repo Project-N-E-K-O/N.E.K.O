@@ -280,6 +280,7 @@
             characterName: String(window.lanlan_config?.lanlan_name || ''),
             neteaseId: track.neteaseId,
             queueTicket: track.queueTicket || '',
+            musicRequestId: track.musicRequestId || '',
             playbackId: playbackId || '',
             token: token,
             lifecycleStartedAt: getMusicLifecycleTimestamp(),
@@ -372,6 +373,7 @@
                 playback_id: context.playbackId,
                 netease_id: context.neteaseId,
                 queue_ticket: context.queueTicket || '',
+                music_request_id: context.musicRequestId || '',
                 queue_closed: failureReason === 'closed',
                 playback_window_id: MUSIC_COORD_SENDER_ID,
                 playback_started_at: context.lifecycleStartedAt,
@@ -487,6 +489,7 @@
                     if (sid === mirrorBarLeaderSender && !isCurrentMirrorPlayback(data)) return;
                     remoteMusicSenders.delete(sid);
                 }
+                notifyMusicPlaybackChange();
             };
             // 窗口关闭时通告一声 music_ended 并关闭 channel，避免对端等 30s TTL 才意识到我退出
             window.addEventListener('pagehide', (event) => {
@@ -575,6 +578,10 @@
     function applyChatMirror(data) {
         if (!data || typeof data !== 'object') return;
         if (data.target && data.target !== MUSIC_COORD_SENDER_ID) return;
+        if (data.type === 'listening_context_request' || data.type === 'listening_context_response') {
+            window.dispatchEvent(new CustomEvent('neko:listening-context', { detail: data }));
+            return;
+        }
         if (data.type === 'recommendation_request' || data.type === 'recommendation_snapshot' || data.type === 'recommendation_reset') {
             window.dispatchEvent(new CustomEvent('neko:chat-mirror', { detail: data }));
             return;
@@ -821,6 +828,7 @@
         const audio = localPlayer.audio;
         return {
             track: currentPlayingTrack ? {
+                id: currentPlayingTrack.id, source: currentPlayingTrack.source, tags: currentPlayingTrack.tags,
                 name: currentPlayingTrack.name,
                 artist: currentPlayingTrack.artist,
                 cover: currentPlayingTrack.cover,
@@ -828,6 +836,7 @@
             } : null,
             paused: audio ? !!audio.paused : true,
             ended: audio ? !!audio.ended : false,
+            buffering: !audio || audio.readyState < 3 || !!localPlayer._musicBuffering,
             currentTime: audio ? (audio.currentTime || 0) : 0,
             duration: audio && isFinite(audio.duration) ? (audio.duration || 0) : 0,
             volume: (typeof localPlayer.volume === 'function') ? (localPlayer.volume() || 0) : 0,
@@ -836,9 +845,14 @@
         };
     };
 
+    function notifyMusicPlaybackChange() {
+        window.dispatchEvent(new CustomEvent('neko-music-playback-change'));
+    }
+
     const emitBarState = () => {
         const state = computeCurrentBarState();
         if (!state) return;
+        notifyMusicPlaybackChange();
         broadcastBarState(state);
     };
 
@@ -859,6 +873,7 @@
         if (!trackInfo) return;
         broadcastBarState({
             track: {
+                id: trackInfo.id, source: trackInfo.source, tags: trackInfo.tags,
                 name: trackInfo.name,
                 artist: trackInfo.artist,
                 cover: trackInfo.cover,
@@ -1519,6 +1534,7 @@
         if (!state) return false;
         if (mirrorBarDestroyTimer) { clearTimeout(mirrorBarDestroyTimer); mirrorBarDestroyTimer = null; }
         mirrorBarLastState = state;
+        notifyMusicPlaybackChange();
 
         const track = state.track || {};
 
@@ -1655,6 +1671,7 @@
         mirrorBarElement = null;
         mirrorBarTrackSig = null;
         mirrorBarLastState = null;
+        notifyMusicPlaybackChange();
         clearMusicMountRelocationRetry();
         if (!musicBar || musicBar.dataset.mirror !== 'true') return;
         musicBar.dataset.skipMountRelocation = 'true';
@@ -1765,6 +1782,7 @@
             if (sender === mirrorBarLeaderSender && !isCurrentMirrorPlayback(payload)) return;
             remoteMusicSenders.delete(sender);
         }
+        notifyMusicPlaybackChange();
     }
 
     function applyMusicPlayerBridgeEvent(event) {
@@ -2557,6 +2575,7 @@
         if (!fullTeardown) clearManagedListeners();
         releaseMusicPlayerInstance(localPlayer);
         localPlayer = null;
+        notifyMusicPlaybackChange();
 
         if (removeDOM) {
             disconnectTitleMarqueeObserver();
@@ -2927,11 +2946,16 @@
                 // 【核心修复】使用闭包固定当前的播放器实例
                 const boundPlayer = localPlayer;
 
-                boundPlayer.on('play', () => {
+                // 'play' only means an attempt; 'playing' confirms decoded audio is ready.
+                boundPlayer.on('playing', () => {
                     const reportContext = getOwnedMusicPlaybackReportContext(boundPlayer, 'playing');
                     if (!reportContext) return;
+                    if (reportContext.lastReportedState === 'error') return;
+                    if (reportContext.stallTimer) clearTimeout(reportContext.stallTimer);
+                    reportContext.stallTimer = null;
                     reportContext.playbackStarted = true;
                     reportContext.mediaReady = true;
+                    boundPlayer._musicBuffering = false;
                     if (autoDestroyTimer) { clearTimeout(autoDestroyTimer); autoDestroyTimer = null; }
                     updatePlayBtnState(true);
                     autoplayBlocked = false;
@@ -2946,17 +2970,34 @@
                     startMusicHeartbeat();
                     emitBarState();
                 });
+                for (const event of ['waiting', 'stalled']) boundPlayer.on(event, () => {
+                    const context = getOwnedMusicPlaybackReportContext(boundPlayer, 'buffering');
+                    if (!context || !context.playbackStarted || boundPlayer.audio.paused) return;
+                    boundPlayer._musicBuffering = true;
+                    reportMusicPlaybackState('buffering', null, context);
+                    emitBarState();
+                    setMusicBarVisualState(musicBar, 'loading');
+                    const token = boundPlayer._latestToken;
+                    if (context.stallTimer) return;
+                    context.stallTimer = setTimeout(() => {
+                        if (localPlayer === boundPlayer && boundPlayer._latestToken === token
+                            && context.lastReportedState === 'buffering') {
+                            reportMusicPlaybackFailureIfNeeded(context, 'load_timeout', false);
+                            boundPlayer.audio.pause();
+                        }
+                    }, 15000);
+                });
                 boundPlayer.on('pause', () => {
                     const playbackState = boundPlayer.audio && boundPlayer.audio.ended ? 'ended' : 'paused';
                     const reportContext = getOwnedMusicPlaybackReportContext(boundPlayer, playbackState);
                     if (!reportContext) return;
+                    if (reportContext.lastReportedState === 'error') return;
                     if (!reportContext.mediaReady && reportContext.hasNextCandidate) return;
                     updatePlayBtnState(false);
                     const tokenAtEvent = boundPlayer._latestToken;
                     if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
                     autoDestroyTimer = setTimeout(() => {
                         if (localPlayer === boundPlayer && boundPlayer._latestToken === tokenAtEvent) {
-                            // A paused queue remains resumable instead of discarding its player.
                             if (reportContext.queueTicket && !boundPlayer.audio.ended) return;
                             destroyMusicPlayer(true, true, true);
                         }
@@ -3794,6 +3835,24 @@
     window.destroyMusicPlayer = destroyMusicPlayer;
     window.getMusicPlayerInstance = getMusicPlayerInstance;
     window.isMusicPlaying = isMusicPlaying;
+    // Actual playback only: occupancy also includes paused/pending owners.
+    // Mirrors carry the same state across Electron's separate chat partitions.
+    window.isMusicAudible = () => {
+        if (localPlayer) {
+            const state = computeCurrentBarState();
+            return !!(state && !state.paused && !state.ended && !state.loadError && !state.buffering);
+        }
+        const state = mirrorBarLastState;
+        const expires = remoteMusicSenders.get(mirrorBarLeaderSender) || 0;
+        return !!(state && mirrorBarLeaderSender && expires > Date.now()
+            && !state.initial && !state.paused && !state.ended && !state.loadError && !state.buffering);
+    };
+    window.getMusicPlaybackSnapshot = () => {
+        const state = localPlayer ? computeCurrentBarState() : mirrorBarLastState;
+        return { track: state?.track || null, playbackId: state?.playbackId || '',
+            paused: state?.paused !== false, ended: !!state?.ended,
+            audible: window.isMusicAudible(), source: localPlayer ? 'local' : 'mirror' };
+    };
     window.isMusicOccupied = isMusicOccupied;
     window.isMusicCooldown = isInMusicCooldown;
     window.getMusicCurrentTrack = getMusicCurrentTrack;

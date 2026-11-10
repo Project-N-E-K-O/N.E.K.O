@@ -1037,6 +1037,9 @@ class StreamingMixin:
                                 reply_tail_registry.prepare_reply(self, reply_turn, user_text=record_data)
                             observation_token = _reply_observation_owner.set(reply_turn)
                             try:
+                                if self.current_speech_id == new_user_sid:
+                                    from main_logic.listening_context import attach_listening_context
+                                    attach_listening_context(self, message, stream_text_kwargs)
                                 await self.session.stream_text(data, **stream_text_kwargs)
                             finally:
                                 _reply_observation_owner.reset(observation_token)

@@ -90,6 +90,7 @@ function createSurface(t, options = {}) {
                 this.audio.ended = false;
                 this.audio.paused = false;
                 this.emit('play');
+                if (this.audio.readyState >= 3) this.emit('playing');
                 return Promise.resolve();
             };
             this.audio.pause = () => {
@@ -604,6 +605,7 @@ test('hiding after music has started does not cancel playback while metadata is 
     r.show(); await s.advance(10100);
     const player = s.players[0];
     assert.equal(player.audio.paused, false);
+    player.emit('playing'); // Playback confirmation is distinct from the play attempt.
     Object.defineProperty(s.w.document, 'visibilityState', { get: () => 'hidden' });
     s.w.document.dispatchEvent(new s.w.Event('visibilitychange'));
     player.audio.dispatchEvent(new s.w.Event('loadedmetadata'));
@@ -1309,6 +1311,96 @@ test('non-full teardown releases the real keyboard shortcut before the next play
     assert.equal(oldCalls, 1);
     assert.equal(newCalls, 1, 'replacement player must receive the shortcut');
 });
+
+test('listening pose follows actual local playback, including buffering and pause', async t => {
+    const s = createSurface(t);
+    await (await s.start(true)).promise;
+    const player = s.players[0];
+    player.play();
+    assert.equal(s.w.isMusicAudible(), true);
+    player.emit('waiting');
+    assert.equal(s.w.isMusicAudible(), false);
+    player.emit('playing');
+    assert.equal(s.w.isMusicAudible(), true);
+    player.pause();
+    assert.equal(s.w.isMusicAudible(), false);
+    player.play();
+    assert.equal(s.w.isMusicAudible(), true);
+    s.w.destroyMusicPlayer(true, true, true);
+    assert.equal(s.w.isMusicAudible(), false);
+});
+
+test('listening pose uses cross-window playback state and expires stale owners', async t => {
+    const s = createSurface(t);
+    const state = {...endedState, paused:false, ended:false, currentTime:10, buffering:false};
+    s.receive(remoteEvent('coord', {coordType:'music_started', playbackId:state.playbackId}));
+    s.receive(remoteEvent('bar_state', state));
+    assert.equal(s.w.isMusicAudible(), true);
+    for (const patch of [{paused:true}, {buffering:true}, {ended:true}, {loadError:true}, {initial:true}]) {
+        s.receive(remoteEvent('bar_state', {...state, ...patch}));
+        assert.equal(s.w.isMusicAudible(), false);
+    }
+    s.receive(remoteEvent('bar_state', state));
+    assert.equal(s.w.isMusicAudible(), true);
+    await s.advance(31000);
+    assert.equal(s.w.isMusicAudible(), false);
+});
+
+test('local playback changes notify the avatar synchronously, before its next polling tick', async t => {
+    const s = createSurface(t); await (await s.start()).promise;
+    const player = s.players[0], observed = [];
+    s.w.addEventListener('neko-music-playback-change', () => observed.push(s.w.isMusicAudible()));
+    const expectImmediate = (action, value) => {
+        const before = observed.length; action();
+        assert.ok(observed.length > before, 'playback transition must notify without a timer');
+        assert.equal(observed.at(-1), value);
+    };
+    expectImmediate(() => player.play(), true);
+    expectImmediate(() => player.emit('waiting'), false);
+    expectImmediate(() => player.emit('playing'), true);
+    expectImmediate(() => player.pause(), false);
+    expectImmediate(() => player.play(), true);
+    expectImmediate(() => { player.audio.ended = true; player.emit('ended'); }, false);
+    expectImmediate(() => player.play(), true);
+    expectImmediate(() => s.w.destroyMusicPlayer(true, true, true), false);
+});
+
+test('cross-window playback changes notify the avatar synchronously on pause and end', async t => {
+    const s = createSurface(t), observed = [];
+    const state = {...endedState, paused:false, ended:false, currentTime:10, buffering:false};
+    s.w.addEventListener('neko-music-playback-change', () => observed.push(s.w.isMusicAudible()));
+    s.receive(remoteEvent('coord', {coordType:'music_started', playbackId:state.playbackId}));
+    const expectState = (patch, expected) => {
+        const before = observed.length;
+        s.receive(remoteEvent('bar_state', {...state, ...patch}));
+        assert.ok(observed.length > before);
+        assert.equal(observed.at(-1), expected);
+    };
+    expectState({}, true); expectState({paused:true}, false);
+    expectState({}, true); expectState({ended:true}, false);
+    expectState({}, true);
+    s.receive(remoteEvent('coord', {coordType:'music_ended', playbackId:state.playbackId}));
+    assert.equal(observed.at(-1), false);
+});
+
+for (const transport of ['ipc','broadcast']) test(`mood snapshot follows real ${transport} playback mirror`, async t => {
+    const {owner, follower} = pair(t, transport === 'broadcast' ? {channelHub:new Set()} : {});
+    const promise = owner.w.sendMusicMessageDetailed({id:123,source:'netease',name:'track',artist:'artist',
+        tags:['gentle'],url:'https://music.163.com/test.mp3'}, true);
+    await owner.advance(100); await promise; await flush();
+    const snapshot = follower.w.getMusicPlaybackSnapshot();
+    assert.equal(snapshot.audible,true);
+    assert.equal(snapshot.track.id,123);
+    assert.deepEqual(Array.from(snapshot.track.tags),['gentle']);
+    assert.equal(snapshot.playbackId,owner.w.getMusicPlaybackSnapshot().playbackId);
+    owner.players[0].audio.pause(); await flush();
+    assert.equal(follower.w.getMusicPlaybackSnapshot().audible,false);
+    await owner.players[0].audio.play(); await flush();
+    assert.equal(follower.w.getMusicPlaybackSnapshot().audible,true);
+    owner.w.destroyMusicPlayer(true,true,true); await flush();
+    assert.equal(follower.w.getMusicPlaybackSnapshot().audible,false);
+});
+
 
 for (const state of ['loading', 'ended']) {
   test(`closing a queued ${state} track reports queue cancellation`, async t => {

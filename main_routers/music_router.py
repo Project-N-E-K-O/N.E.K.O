@@ -534,3 +534,12 @@ async def play_netease_music(song_id: str):
     mark_audio_unavailable(fallback_url, candidate_url=f'/api/music/play/netease/{song_id_int}')
     logger.warning(f"[音乐播放] 歌曲 {song_id_int} 没有可用音源")
     return JSONResponse(content={"success": False, "error": "歌曲没有可用音源"}, status_code=502)
+
+
+# Isolated text classifier; playback never awaits this endpoint.
+from utils.music_mood import MoodTrack, classifier as music_mood_classifier
+
+
+@router.post("/api/music/mood")
+async def classify_music_mood(track: MoodTrack):
+    return await music_mood_classifier.classify(track)

@@ -19,13 +19,14 @@ from __future__ import annotations
 import asyncio
 import math
 import re
+import time
 from typing import Any
 
 from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Main")
 
-_PLAYBACK_STATES = frozenset({"playing", "paused", "ended", "error"})
+_PLAYBACK_STATES = frozenset({"playing", "paused", "ended", "error", "buffering"})
 _PLAYBACK_FAILURE_REASONS = frozenset(
     {
         "load_timeout",
@@ -99,6 +100,7 @@ async def _deliver_queue_terminal(target, ticket, reason):
 def clear_music_playback_connection(manager: Any, websocket: Any) -> None:
     if getattr(manager, "_music_playback_websocket", None) is websocket:
         manager._current_netease_track = None
+        manager._music_confirmed_state = None
         manager._music_playback_websocket = None
         manager._music_playback_event_key = None
 
@@ -151,7 +153,7 @@ def handle_music_playback_state(manager: Any, event: dict[str, Any], *, websocke
     song_id = event.get("netease_id")
     manager._current_netease_track = (
         {"song_id": song_id, "name": name, "artist": artist}
-        if state in ("playing", "paused")
+        if state in ("playing", "paused", "buffering")
         and event.get("source") == "music_play_url"
         and type(song_id) is int
         and song_id > 0
@@ -160,6 +162,7 @@ def handle_music_playback_state(manager: Any, event: dict[str, Any], *, websocke
         else None
     )
     manager._music_playback_websocket = websocket
+    manager._music_confirmed_state = {"state": state, "song_id": song_id, "name": name, "artist": artist, "confirmed_at": time.time()}
     ticket = event.get("queue_ticket")
     if event.get("source") == "music_play_url":
         logger.info("Music player confirmed: state=%s queue=%s", state, bool(ticket))
@@ -189,6 +192,7 @@ def handle_music_playback_state(manager: Any, event: dict[str, Any], *, websocke
     title = f"《{name}》" if name else "所选歌曲"
     by_artist = f"（{artist}）" if artist else ""
     facts = {
+        "buffering": f"{title}{by_artist}还在缓冲。",
         "playing": f"播放器已确认开始播放{title}{by_artist}。",
         "paused": f"播放器当前已暂停{title}{by_artist}。",
         "ended": f"播放器已结束播放{title}{by_artist}。",
