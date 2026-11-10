@@ -3458,11 +3458,16 @@ Live2DManager.prototype.installMouthOverride = function() {
                 }
             }
 
+            // Model profiles may shape the blink envelope/resting mouth only after
+            // the runtime writers. The resource validates model and ownership.
+            this._manualExpressionResource?.applyRuntime?.(currentCoreModel);
+
             // 注入点 3（渲染前最后姿态覆盖）：教程苏醒等短期动作在这里写入，
             // 确保不会被正脸锁、随机视线、眨眼或常驻表情在同一帧覆盖。
             if (typeof this._applyTemporaryPoseOverride === 'function') {
                 this._applyTemporaryPoseOverride(currentCoreModel);
             }
+            this._manualExpressionResource?.observeRuntime?.(currentCoreModel);
         } catch (e) {
             console.error('口型覆盖参数写入失败:', e);
         }
