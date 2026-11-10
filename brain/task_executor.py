@@ -1295,12 +1295,6 @@ class DirectTaskExecutor:
         if lessons:
             system_prompt = f"{system_prompt}\n\n{lessons}"
 
-        if any(p.get("id") == "netease_music" for p in plugin_list):
-            system_prompt += ("\nMusic query fields are an exception to copying the user's message verbatim: "
-                              "extract only the song title and requested artist, preserving version qualifiers. "
-                              "Respect an explicit song count; use 6-8 only when no count is specified. "
-                              "Never select local-save actions without an explicit local-storage request.")
-
         user_prompt = f"Conversation:\n{conversation}"
 
         max_retries = 3
@@ -1657,6 +1651,9 @@ class DirectTaskExecutor:
 
         # Stage 2: full LLM assessment
         system_prompt = _loc(USER_PLUGIN_SYSTEM_PROMPT, lang).format(plugins_desc=plugins_desc)
+        if any(p.get("id") == "netease_music" for p in plugins):
+            from config.prompts.prompts_music_assessment import MUSIC_QUERY_GUIDANCE
+            system_prompt += "\n" + MUSIC_QUERY_GUIDANCE
         if any(p.get("id") == "netease_music" and any(e.get("id") == "cloud_music" for e in p.get("entries", [])) for p in plugin_list):
             system_prompt += ("\nUse the scoped cloud_music schema for this turn. Song saves default to NetEase: "
                               "like the current song unless a cloud playlist is named; do not ask cloud versus local. "

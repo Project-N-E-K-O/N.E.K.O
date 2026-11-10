@@ -68,6 +68,9 @@ def fixture():
     [
         ("zh-CN", "掉了几滴眼泪"),
         ("zh-TW", "掉了幾滴眼淚"),
+        ("tchinese", "掉了幾滴眼淚"),
+        ("zh_Hant_HK", "掉了幾滴眼淚"),
+        ("schinese", "掉了几滴眼泪"),
         ("en", "shed a few tears"),
         ("ja", "数滴の涙"),
         ("fr", "shed a few tears"),
