@@ -3783,6 +3783,46 @@ async def test_unusable_target_epochs_are_422(env, body, detail):
     assert _tombstones(env) == {}
 
 
+async def test_forget_refuses_while_a_snapshot_journal_cannot_be_recovered(env, monkeypatch):
+    """Recovering that journal later would restore what the erase removed."""
+    from app.memory_server import long_term_sync as native
+    from memory.long_term_sync import LongTermMemoryRecoveryRequired
+
+    async def unrecoverable(name):
+        raise LongTermMemoryRecoveryRequired()
+
+    monkeypatch.setattr(native, "recover_pending_snapshot", unrecoverable)
+    req = env.routes.ScopedForgetRequest.model_validate({"subject": GROUP})
+    with pytest.raises(HTTPException) as excinfo:
+        await env.routes.forget_scoped_subject(NAME, req)
+    assert excinfo.value.status_code == 503
+    assert excinfo.value.detail == "long_term_memory_recovery_required"
+    assert _tombstones(env) == {}
+
+
+async def test_forget_refuses_a_snapshot_journal_left_after_its_first_check(env, monkeypatch):
+    """A snapshot commit can fail between the entry check and the erase lock."""
+    from app.memory_server import long_term_sync as native
+    from memory.long_term_sync import JOURNAL
+    directory = os.path.join(env.runtime._config_manager.memory_dir, NAME)
+    os.makedirs(directory, exist_ok=True)
+
+    async def journal_appears_after_the_check(name):
+        with open(os.path.join(directory, JOURNAL), "w", encoding="utf-8") as handle:
+            json.dump({"version": 1, "phase": "pending"}, handle)
+
+    monkeypatch.setattr(native, "recover_pending_snapshot", journal_appears_after_the_check)
+    forget = AsyncMock(return_value={})
+    monkeypatch.setattr(env.runtime.fact_store, "aforget_subject", forget)
+    req = env.routes.ScopedForgetRequest.model_validate({"subject": GROUP})
+    with pytest.raises(HTTPException) as excinfo:
+        await env.routes.forget_scoped_subject(NAME, req)
+    assert excinfo.value.status_code == 503
+    assert excinfo.value.detail == "long_term_memory_recovery_required"
+    forget.assert_not_awaited()
+    assert not env.runtime._reload_lock.locked()
+
+
 def test_target_epochs_reject_negative_values(env):
     with pytest.raises(Exception):
         env.routes.ScopedForgetRequest.model_validate(
@@ -4576,3 +4616,48 @@ async def test_recheck_reports_only_the_segments_it_newly_fenced(env):
     env.fs._bump_subject_forget_generation(NAME, coerce_subject(PART))    # Segment 1 is newly cleared now.
     # Report only newly blocked segment 1, without adding segment 0 to the fallback again.
     assert routes._mark_items_forgotten_during_generation(NAME, staging, contexts, baseline) == {1}
+
+
+# ── whole-group digest: the character's own lines get labelled ─────────────
+
+
+@pytest.mark.parametrize("keyed", [True, False])
+async def test_group_digest_with_own_lines_labels_sources(env, keyed):
+    """A group digest that includes the character's own messages asks the
+    model for each fact's source; the label is stored, so the character's
+    own words never count as the group's (memory.evidence.others_fact_days)."""
+    prompts: list[str] = []
+
+    async def _llm(prompt, lanlan_name, **kwargs):
+        prompts.append(prompt)
+        return [
+            {"text": "Neko 家铺了地毯", "importance": 5, "source": "ai_disclosure"},
+            {"text": "对方的猫喜欢软地毯", "importance": 5, "source": "user_observation"},
+        ]
+
+    env.fs._allm_call_with_retries = _llm
+    history = json.dumps([
+        {"role": "user", "content": "[对方的猫] 这个地毯好软"},
+        {"role": "assistant", "content": "我家铺了地毯哦"},
+    ])
+    body = _single_body(KEY_GROUP if keyed else None, input_history=history)
+    await _post(env, body)
+
+    assert len(prompts) == 1 and "`source`" in prompts[0]
+    sources = {row["text"]: row.get("source") for row in _facts_of(env, GROUP)}
+    assert sources == {
+        "Neko 家铺了地毯": "ai_disclosure", "对方的猫喜欢软地毯": "user_observation",
+    }
+
+
+@pytest.mark.parametrize("keyed", [True, False])
+async def test_group_digest_without_own_lines_keeps_the_plain_prompt(env, keyed):
+    prompts: list[str] = []
+
+    async def _llm(prompt, lanlan_name, **kwargs):
+        prompts.append(prompt)
+        return list(SINGLE_FACTS)
+
+    env.fs._allm_call_with_retries = _llm
+    await _post(env, _single_body(KEY_GROUP if keyed else None))
+    assert len(prompts) == 1 and "`source`" not in prompts[0]

@@ -69,6 +69,40 @@ class LatestAssistantTexts:
     # lose the alignment callers need to tell which analyzed replies are
     # linkable, and a partial set silently misrepresents the scope.
     response_ids: list[str | None] = field(default_factory=list)
+    # Aligned the same way: the row's stored time as a naive local datetime,
+    # ``None`` for a legacy row without one or a value that does not parse.
+    timestamps: list[datetime | None] = field(default_factory=list)
+
+
+def _coerce_row_timestamp(value: object) -> datetime | None:
+    """A stored ``timestamp`` cell as a naive LOCAL datetime, or None if unusable.
+
+    Rows written by this process are naive local time. A value carrying an
+    offset (import and migration paths) is converted to local time first:
+    dropping the offset alone would keep its foreign wall-clock time and put
+    the reply hours away from its neighbours.
+    """
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            try:
+                parsed = datetime.strptime(value, "%Y-%m-%d %H:%M:%S.%f")
+            except ValueError:
+                return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        return parsed
+    try:
+        return parsed.astimezone().replace(tzinfo=None)
+    except (OverflowError, OSError, ValueError):
+        # Out of range once shifted (year 1 at +14:00), or before the epoch
+        # on Windows, where local conversion goes through the C runtime. One
+        # such cell must cost one timestamp, not the whole history read.
+        return None
 
 
 _ANTI_REPEAT_RESPONSE_ID_KEY = "anti_repeat_response_id"
@@ -1197,6 +1231,77 @@ class TimeIndexedMemory:
             self.retrieve_original_by_timeframe, lanlan_name, start_time, end_time, limit_rows
         )
 
+    def retrieve_latest_original_since(self, lanlan_name, start_time, limit_rows: int) -> list:
+        """The newest ``limit_rows`` raw rows from ``start_time`` on, oldest first.
+
+        ``retrieve_original_by_timeframe`` applies its LIMIT to an ascending scan,
+        so a long window hands back its OLDEST rows. A caller that wants what was
+        said lately needs the other end. Returns ``[(timestamp, session_id,
+        message), ...]``, ``[]`` when the character has no database. A failed read
+        raises, so a caller can tell it from a character with nothing to read.
+        """
+        if limit_rows < 1:
+            raise ValueError("limit_rows must be greater than zero")
+        table_name = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
+        # Held for the whole read: see retrieve_latest_assistant_texts.
+        with self._get_engine_lock(lanlan_name):
+            if not self._ensure_engine_exists(lanlan_name, readonly=True):
+                return []
+            with self.engines[lanlan_name].connect() as conn:
+                rows = conn.execute(
+                    text(
+                        f"SELECT timestamp, session_id, message FROM {table_name} "
+                        "WHERE timestamp >= :start_time "
+                        "ORDER BY timestamp DESC, rowid DESC LIMIT :limit_rows"
+                    ),
+                    {"start_time": start_time, "limit_rows": int(limit_rows)},
+                ).fetchall()
+        rows.reverse()
+        return rows
+
+    async def aretrieve_latest_original_since(self, lanlan_name, start_time, limit_rows: int) -> list:
+        return await asyncio.to_thread(
+            self.retrieve_latest_original_since, lanlan_name, start_time, limit_rows
+        )
+
+    def get_original_source_evidence(self, lanlan_name: str, source_ids: list[str]) -> dict[str, tuple[str, int | float]]:
+        """Read original role/time evidence by identity, without interpreting message text."""
+        from memory.long_term_sync import original_message_source
+        from memory.message_sources import is_theater_memory_message
+        import re
+        wanted = {value for value in source_ids if re.fullmatch(r'(?:sync:[0-9a-f]{32}|desktop:[0-9a-f]{64})', value)}
+        if not wanted:
+            return {}
+        table = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
+        found = {}
+        ordered = sorted(wanted)
+        # Legacy hashes are derived from originals rather than embedded in them.
+        batches = [None] if any(value.startswith('desktop:') for value in wanted) else [
+            ordered[offset:offset + 32] for offset in range(0, len(ordered), 32)]
+        with self._get_engine_lock(lanlan_name):
+            if not self._ensure_engine_exists(lanlan_name, readonly=True):
+                return {}
+            with self.engines[lanlan_name].connect() as connection:
+                for batch in batches:
+                    params = {f'source_{index}': f'%{value[5:]}%' for index, value in enumerate(batch or [])}
+                    condition = ' WHERE ' + ' OR '.join(f'message LIKE :{key}' for key in params) if params else ''
+                    rows = connection.execute(text(f'SELECT timestamp,session_id,message FROM {table}{condition}'), params)
+                    for original_time, session_id, serialized in rows:
+                        try:
+                            stored = json.loads(serialized)
+                        except (json.JSONDecodeError, TypeError):
+                            continue
+                        if (not isinstance(stored, dict) or stored.get('type') not in ('human', 'ai')
+                                or is_theater_memory_message(stored)):
+                            continue
+                        identity, at = original_message_source(stored, session_id, original_time)
+                        if identity in wanted and at is not None:
+                            found.setdefault(identity, set()).add((stored['type'], at))
+        return {identity: next(iter(times)) for identity, times in found.items() if len(times) == 1}
+
+    async def aget_original_source_evidence(self, lanlan_name: str, source_ids: list[str]) -> dict[str, tuple[str, int | float]]:
+        return await asyncio.to_thread(self.get_original_source_evidence, lanlan_name, source_ids)
+
     def retrieve_latest_assistant_texts(
         self,
         lanlan_name: str,
@@ -1305,6 +1410,7 @@ class TimeIndexedMemory:
 
         cursor: tuple[object, int] | None = None
         records: list[tuple[str, str | None]] = []
+        record_timestamps: list[datetime | None] = []
         skipped_row_count = 0
         scanned_row_count = 0
         scan_budget = max(
@@ -1376,6 +1482,7 @@ class TimeIndexedMemory:
                     skipped_row_count += 1
                     continue
                 records.append(assistant_record)
+                record_timestamps.append(_coerce_row_timestamp(key[0]))
                 if len(records) >= limit:
                     break
             cursor = (keys[-1][0], int(keys[-1][1]))
@@ -1391,11 +1498,13 @@ class TimeIndexedMemory:
                 )
 
         records.reverse()
+        record_timestamps.reverse()
         return LatestAssistantTexts(
             [message for message, _response_id in records],
             True,
             skipped_row_count,
             [response_id for _message, response_id in records],
+            record_timestamps,
         )
 
     async def aretrieve_latest_assistant_texts(

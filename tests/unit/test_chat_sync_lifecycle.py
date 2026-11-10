@@ -15,6 +15,29 @@ from services.chat_sync import runtime as chat_sync_runtime
 from main_routers import proactive_feedback_router
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('existing', [False, True])
+async def test_fast_character_switch_wakes_only_the_existing_sync_host_after_refresh(tmp_path, monkeypatch, existing):
+    calls = []
+    config = SimpleNamespace(app_docs_dir=tmp_path)
+    directory = tmp_path / 'chat_sync'
+    runtime = SimpleNamespace(wake_scheduler=lambda: calls.append('wake'))
+    monkeypatch.setattr(chat_sync_runtime, '_runtimes', {directory: runtime} if existing else {})
+
+    async def refresh():
+        calls.append('refresh')
+
+    path = Path(__file__).resolve().parents[2] / 'app/main_server/character_runtime.py'
+    function = next(node for node in ast.parse(path.read_text(encoding='utf-8')).body
+                    if isinstance(node, ast.AsyncFunctionDef) and node.name == 'switch_current_catgirl_fast')
+    namespace = {'_refresh_character_globals': refresh, '_config_manager': config,
+                 'logger': Mock(), 'her_name': 'Synthetic'}
+    exec(compile(ast.Module(body=[function], type_ignores=[]), str(path), 'exec'), namespace)
+    await namespace['switch_current_catgirl_fast']()
+    assert calls == (['refresh', 'wake'] if existing else ['refresh'])
+    assert not directory.exists()
+
+
 def hooks(monkeypatch, *, blocked=False, fail_initialization=False):
     """Load only the real hooks, avoiding import-time application or user state."""
     path = Path(__file__).resolve().parents[2] / "app/main_server/__init__.py"

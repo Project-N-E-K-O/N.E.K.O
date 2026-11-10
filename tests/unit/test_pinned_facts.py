@@ -5,7 +5,8 @@ Contract groups:
 
 1. Candidates: only entries flagged ``pin`` become candidates; Stage-1 output
    from before the new fields existed yields none; lifetimes snap to the four
-   tiers; ai_disclosure facts are never pinned.
+   tiers; ai_disclosure facts are pinned only as promises (see
+   test_pinned_commitments.py).
 2. Admission into an empty section writes directly, without a model call.
 3. The four resolve actions (add / replace / renew / remove), validation of
    the ids the model returns, and the fallback when the model fails.
@@ -160,9 +161,9 @@ def test_candidates_need_pin_and_take_the_default_tier():
         "a bare string",
     ]
     assert pin_candidates_from_extracted(extracted) == [
-        {"text": "主人下周三考试", "entity": "master", "ttl_days": 14},
+        {"text": "主人下周三考试", "entity": "master", "ttl_days": 14, "kind": "fact"},
         {"text": "主人对花生过敏", "entity": "master",
-         "ttl_days": PINNED_FACT_DEFAULT_TTL_DAYS},
+         "ttl_days": PINNED_FACT_DEFAULT_TTL_DAYS, "kind": "fact"},
     ]
 
 
@@ -581,7 +582,7 @@ def test_mutation_holds_the_cloudsave_fence_across_read_and_write(tmp_path, monk
     )
     monkeypatch.setattr(
         store, "_write_unlocked",
-        lambda name, facts, history: (events.append("write"), real_write(name, facts, history))[1],
+        lambda name, *rest: (events.append("write"), real_write(name, *rest))[1],
     )
 
     store.apply_decisions(_NAME, [_candidate("主人周六去北京", 3)], [("add", None)], now=_T0)
@@ -1240,15 +1241,25 @@ def test_only_the_private_new_dialog_renders_the_pinned_section():
             scanned += 1
             if names := _functions_referencing(tree, "pinned_fact_store"):
                 touching_store[rel] = names
-            if names := _functions_referencing(tree, "_render_pinned_facts_block"):
+            if names := _functions_referencing(tree, "arender_injected_memory"):
                 calling_render[rel] = names
     assert scanned > 100
-    # runtime.py only builds and wires it; routes.py reads it in one helper.
+    # runtime.py only builds and wires it; /new_dialog hands it to the shared
+    # private-chat render, and weekly introspection (private memory only)
+    # reviews that same render. routes.py also hands one due promise to
+    # proactive chat (private chat too); the idle loop runs the daily check
+    # and the private post-turn flow records mentions, neither of which
+    # renders anything.
     assert touching_store == {
         "app/memory_server/runtime.py": {
             "reload_memory_components", "ensure_memory_server_runtime_initialized",
         },
-        "app/memory_server/routes.py": {"_render_pinned_facts_block"},
+        "app/memory_server/routes.py": {
+            "_new_dialog", "_due_commitment_topic", "_record_surfaced_commitments",
+        },
+        "app/memory_server/refine_loops.py": {"_run_introspection_for_character"},
+        "app/memory_server/evidence_loops.py": {"_review_pinned_facts"},
+        "app/memory_server/post_turn.py": {"_record_pinned_mentions"},
     }
     assert calling_render == {"app/memory_server/routes.py": {"_new_dialog"}}
 
@@ -1268,13 +1279,22 @@ def _fact_store(tmp_path):
     return fs, recorder
 
 
+def _persisting(rows, *, accept=lambda candidate: True):
+    """Stand-in persistence reporting which candidates passed its source checks."""
+    async def persist(name, extracted, **kwargs):
+        if kwargs.get("source_accepted") is not None:
+            kwargs["source_accepted"].extend(c for c in extracted if accept(c))
+        return rows
+    return AsyncMock(side_effect=persist)
+
+
 def test_stage1_and_stage2_entry_feeds_the_raw_result(tmp_path):
     fs, recorder = _fact_store(tmp_path)
     extracted = [_pin("主人下周三考试")]
     fs._allm_extract_facts = AsyncMock(return_value=extracted)
     # Dedup folded the fact into an existing row: nothing new persisted, but
     # the pinned entry still needs its renewal.
-    fs._apersist_new_facts = AsyncMock(return_value=[])
+    fs._apersist_new_facts = _persisting([])
     fs.aload_facts = AsyncMock(return_value=[])
 
     window_end = datetime(2026, 11, 1, 21, 30)
@@ -1288,13 +1308,33 @@ def test_stage1_and_stage2_entry_feeds_the_raw_result(tmp_path):
     )
 
 
+@pytest.mark.parametrize("entry", ["stage1", "extract_facts", "path_b"])
+def test_candidates_rejected_by_source_checks_never_reach_the_pinned_section(tmp_path, entry):
+    """A retired or misattributed candidate that persistence rejected must not be pinned."""
+    fs, recorder = _fact_store(tmp_path)
+    kept, rejected = _pin("主人下周三考试"), _pin("主人周五面试")
+    fs._allm_extract_facts = AsyncMock(return_value=[kept, rejected])
+    fs._allm_extract_facts_with_known_pool = AsyncMock(return_value=[kept, rejected])
+    fs._apersist_new_facts = _persisting([], accept=lambda candidate: candidate is kept)
+    fs.aload_facts = AsyncMock(return_value=[])
+
+    if entry == "stage1":
+        asyncio.run(fs.aextract_facts_and_detect_signals(_NAME, []))
+    elif entry == "extract_facts":
+        asyncio.run(fs.extract_facts([], _NAME))
+    else:
+        asyncio.run(fs.aextract_facts_with_known_pool(_NAME, [], []))
+
+    assert recorder.aadmit_extracted.await_args.args == (_NAME, [kept])
+
+
 def test_extract_facts_feeds_private_chat_only(tmp_path):
     from memory.scopes import MemorySubject
 
     fs, recorder = _fact_store(tmp_path)
     extracted = [_pin("主人下周三考试")]
     fs._allm_extract_facts = AsyncMock(return_value=extracted)
-    fs._apersist_new_facts = AsyncMock(return_value=[{"id": "f1"}])
+    fs._apersist_new_facts = _persisting([{"id": "f1"}])
 
     assert asyncio.run(fs.extract_facts([], _NAME)) == [{"id": "f1"}]
     recorder.aadmit_extracted.assert_awaited_once_with(
@@ -1314,7 +1354,7 @@ def test_path_b_feeds_private_chat_only_with_its_source_default(tmp_path):
     fs, recorder = _fact_store(tmp_path)
     extracted = [_pin("主人周五面试", source="user_observation")]
     fs._allm_extract_facts_with_known_pool = AsyncMock(return_value=extracted)
-    fs._apersist_new_facts = AsyncMock(return_value=[])
+    fs._apersist_new_facts = _persisting([])
 
     window_end = datetime(2026, 11, 1, 21, 30)
     asyncio.run(fs.aextract_facts_with_known_pool(
@@ -1336,7 +1376,7 @@ def test_admission_failure_never_breaks_extraction(tmp_path):
     fs, recorder = _fact_store(tmp_path)
     recorder.aadmit_extracted.side_effect = RuntimeError("disk full")
     fs._allm_extract_facts = AsyncMock(return_value=[_pin("主人下周三考试")])
-    fs._apersist_new_facts = AsyncMock(return_value=[{"id": "f1"}])
+    fs._apersist_new_facts = _persisting([{"id": "f1"}])
 
     assert asyncio.run(fs.extract_facts([], _NAME)) == [{"id": "f1"}]
 
@@ -1346,7 +1386,7 @@ def test_end_to_end_legacy_output_through_fact_store(tmp_path, monkeypatch):
     fs, _ = _fact_store(tmp_path)
     store = _store(tmp_path)
     fs.attach_pinned_fact_store(store)
-    fs._apersist_new_facts = AsyncMock(return_value=[])
+    fs._apersist_new_facts = _persisting([])
     fs._allm_extract_facts = AsyncMock(return_value=[
         {"text": "主人喜欢喝咖啡", "importance": 7, "entity": "master"},
     ])

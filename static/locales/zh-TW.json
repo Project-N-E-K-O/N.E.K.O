@@ -24,7 +24,7 @@
             "storageChanged": "後端資料目錄已切換，請重新開啟頭像編輯器後再儲存。"
         }
     },
-    "chatSync": {"setupNeedsSave":"「{{name}}」的同步設定需要處理，請檢查角色後重新儲存。","title":"聊天同步","close":"關閉","pending":"已登記待上傳 {{originals}} 則；待傳送刪除 {{deletions}} 項。","working":"正在處理…","loginRequired":"請登入社群帳號後重試。","unknownTime":"原發生時間未知","userLabel":"你","profileConflict":"請選擇要使用的人設版本","profileRenamePending":"確認角色改名","profileLocal":"本機版本","profileRemote":"雲端版本","profileUseLocal":"上傳本機版本","profileUseRemote":"使用雲端版本","profileRenameConfirm":"將「{{oldName}}」改名為「{{newName}}」，並使用完整雲端人設？","profileChanged":"人設已變更或同步暫不可用。兩份版本均保留，請重新查看。","profileUploadConfirm":"是否上傳「{{name}}」剛儲存的人設？","profileUnsupported":"人設中有暫不支援同步的欄位，本機儲存已保留。","profileSaveFailed":"人設同步未完成，本機儲存與兩份版本均保留。","profileName":"名稱","profileNickname":"暱稱","profileSetting":"原始設定","profileStyle":"說話風格","cloudImport":"從雲端新增角色","cloudEmpty":"雲端暫無角色。","cloudProfileEmpty":"這個雲端角色尚未發布人設。","cloudCreate":"在本機新增這個角色","cloudExisting":"本機已有「{{name}}」，保留其目前同步狀態。","cloudCreated":"已新增並綁定「{{name}}」。","cloudNameConflict":"本機已有同名角色，請先為本機角色改名，或取消匯入。","profileNeedsBinding":"請在角色編輯頁開啟同步開關並儲存，以關聯此角色。","writerRecoveryRequired":"本機同步需要核驗，舊任務已暫停，本機聊天仍可繼續。","recoverWriter":"核驗並恢復同步","recoveryChecked":"核驗完成。請在角色編輯頁開啟同步開關並儲存，繼續同步角色與歷史聊天。","recoveryCloudCopiesKept":"有 {{count}} 筆先前在本機刪除的記錄無法再同步刪除到雲端；雲端如有這些記錄，會繼續保留。","moreOptions":"更多設定","newRoleSync":"角色資料與近期記憶","newSyncFailed":"角色已儲存在本機，同步設定尚未完成。請稍後重試。","syncChoiceSaved":"角色已儲存，同步設定已更新。","recoverWriterHelp":"了解核驗與恢復同步","recoverWriterTooltip":"還原備份、複製同步資料或寫入中斷，導致舊同步狀態無法確認時，核對帳號、角色綁定與雲端記錄，避免重複上傳或還原已刪除的聊天。正常使用無需操作。","recoveryNotRequired":"目前無需核驗。","errorDetail":"{{message}} 錯誤代碼：{{code}}。","errorAccountMismatch":"目前雲端身分與此角色儲存的歸屬不一致。請核對社群帳號；若一直是同一帳號，需要檢查並修復舊綁定，重複重試無法解決。本機聊天已保留。","errorWriterRecovery":"舊同步狀態尚未核驗。請開啟「更多設定」，點擊「核驗並恢復同步」；成功後重新儲存已開啟同步的角色。","errorSessionChanged":"操作期間登入狀態已變更。請確認目前社群帳號後重試。","errorSessionUnavailable":"暫時無法核驗已儲存的登入狀態。請檢查網路後重試；若仍失敗，請在帳號頁面重新登入。","errorNetwork":"無法連線同步服務或請求逾時。請檢查網路後重試；本機聊天和待辦已保留。","errorRetryLater":"同步服務正在限制流量或等待重試。請稍後重試，連續點擊不會縮短等待時間。","errorServiceRejected":"同步服務拒絕了請求。請稍後重試；若持續失敗，請回報此錯誤代碼以檢查服務狀態。","errorBindingChanged":"角色或同步綁定已變更。請重新開啟角色編輯頁，確認角色與同步開關後儲存。","errorProfileChanged":"儲存後的角色設定已變更。請重新開啟角色編輯頁，確認設定後再次儲存同步設定。","errorUnknown":"無法完成同步。請檢查網路並重新開啟「更多設定」重試；若仍失敗，請回報失敗的操作步驟。本機聊天和待辦已保留。"},
+    "chatSync": {"setupNeedsSave":"「{{name}}」的同步設定需要處理，請檢查角色後重新儲存。","title":"聊天同步","close":"關閉","pending":"已登記待上傳 {{originals}} 則；待傳送刪除 {{deletions}} 項。","working":"正在處理…","loginRequired":"請登入社群帳號後重試。","unknownTime":"原發生時間未知","userLabel":"你","profileConflict":"請選擇要使用的人設版本","profileRenamePending":"確認角色改名","profileLocal":"本機版本","profileRemote":"雲端版本","profileUseLocal":"上傳本機版本","profileUseRemote":"使用雲端版本","profileRenameConfirm":"將「{{oldName}}」改名為「{{newName}}」，並使用完整雲端人設？","profileChanged":"人設已變更或同步暫不可用。兩份版本均保留，請重新查看。","profileUploadConfirm":"是否上傳「{{name}}」剛儲存的人設？","profileUnsupported":"人設中有暫不支援同步的欄位，本機儲存已保留。","profileSaveFailed":"人設同步未完成，本機儲存與兩份版本均保留。","profileName":"名稱","profileNickname":"暱稱","profileSetting":"原始設定","profileStyle":"說話風格","cloudImport":"從雲端新增角色","cloudEmpty":"雲端暫無角色。","cloudProfileEmpty":"這個雲端角色尚未發布人設。","cloudCreate":"在本機新增這個角色","cloudExisting":"本機已有「{{name}}」，保留其目前同步狀態。","cloudCreated":"已新增並綁定「{{name}}」。","cloudNameConflict":"本機已有同名角色，請先為本機角色改名，或取消匯入。","profileNeedsBinding":"請在角色編輯頁開啟同步開關並儲存，以關聯此角色。","writerRecoveryRequired":"本機同步需要核驗，舊任務已暫停，本機聊天仍可繼續。","recoverWriter":"核驗並恢復同步","recoveryChecked":"核驗完成。請在角色編輯頁開啟同步開關並儲存，繼續同步角色與歷史聊天。","recoveryCloudCopiesKept":"有 {{count}} 筆先前在本機刪除的記錄無法再同步刪除到雲端；雲端如有這些記錄，會繼續保留。","moreOptions":"更多設定","newRoleSync":"角色資料與近期記憶","newSyncFailed":"角色已儲存在本機，同步設定尚未完成。請稍後重試。","syncChoiceSaved":"角色已儲存，同步設定已更新。","recoverWriterHelp":"了解核驗與恢復同步","recoverWriterTooltip":"還原備份、複製同步資料或寫入中斷，導致舊同步狀態無法確認時，核對帳號、角色綁定與雲端記錄，避免重複上傳或還原已刪除的聊天。正常使用無需操作。","recoveryNotRequired":"目前無需核驗。","errorDetail":"{{message}} 錯誤代碼：{{code}}。","errorAccountMismatch":"目前雲端身分與此角色儲存的歸屬不一致。請核對社群帳號；若一直是同一帳號，需要檢查並修復舊綁定，重複重試無法解決。本機聊天已保留。","errorWriterRecovery":"舊同步狀態尚未核驗。請開啟「更多設定」，點擊「核驗並恢復同步」；成功後重新儲存已開啟同步的角色。","errorSessionChanged":"操作期間登入狀態已變更。請確認目前社群帳號後重試。","errorSessionUnavailable":"暫時無法核驗已儲存的登入狀態。請檢查網路後重試；若仍失敗，請在帳號頁面重新登入。","errorRecentWriteUnconfirmed":"此角色的近期記憶同步已停止：無法確認上一次寫入是否完整。聊天與本機記憶不受影響。","errorRecentFileUnreadable":"此角色的近期記憶檔案已損毀，無法讀取，近期記憶同步已暫停。檔案恢復可讀後會自動繼續。","errorNetwork":"無法連線同步服務或請求逾時。請檢查網路後重試；本機聊天和待辦已保留。","errorRetryLater":"同步服務正在限制流量或等待重試。請稍後重試，連續點擊不會縮短等待時間。","errorServiceRejected":"同步服務拒絕了請求。請稍後重試；若持續失敗，請回報此錯誤代碼以檢查服務狀態。","errorBindingChanged":"角色或同步綁定已變更。請重新開啟角色編輯頁，確認角色與同步開關後儲存。","errorProfileChanged":"儲存後的角色設定已變更。請重新開啟角色編輯頁，確認設定後再次儲存同步設定。","errorUnknown":"無法完成同步。請檢查網路並重新開啟「更多設定」重試；若仍失敗，請回報失敗的操作步驟。本機聊天和待辦已保留。","errorLongTermCapacity":"本次長期記憶快照超過 20,000 筆，未進行同步。本機記憶完整保留，將在後續記憶更新後重試。","errorLongTermPending":"長期記憶等待處理：尚有雲端快照未能套用。本機記憶和雲端證據均保留，本機上傳暫緩，將按現有規則重試。","errorArchiveSubject":"長期記憶同步已暫停：舊畫像封存缺少可核驗的主體資訊。本機記錄均保留，請從含主體資訊或原始事件的備份還原後重試。"},
     "instanceAccess": {"title":"連接 NEKO 實例","description":"輸入伺服器擁有者提供的實例存取憑證，此裝置將記住連接 30 天。","key":"實例存取憑證","connect":"連接","failed":"連接未獲授權，請檢查憑證後重試。","httpsRequired":"請使用 HTTPS 或可信的 HTTPS 通道安全連接。","insecureWarning":"目前連線未加密（HTTP），同一網路路徑上的人可能看到存取憑證和工作階段。條件允許時請使用 HTTPS。"},
     "common": {
         "load": "加載",
@@ -1142,7 +1142,10 @@
         "compactExportHistory": "歷史對話",
         "compactHistoryToggleOpen": "展開歷史對話",
         "compactHistoryToggleClose": "收起歷史對話",
-    "compactHistoryExport": "匯出歷史對話",
+        "clearScreen": "清空畫面",
+        "clearScreenDone": "已清空畫面",
+        "clearScreenHint": "僅隱藏目前已有訊息，保留聊天記錄與記憶。",
+        "compactHistoryExport": "匯出歷史對話",
         "compactExportControlsCollapse": "隱藏選擇列",
         "compactExportControlsExpand": "顯示選擇列",
         "exportAction": "匯出",
@@ -1190,7 +1193,10 @@
         "exportSelectAll": "全選",
         "exportSelectNone": "取消",
         "exportSelectInvert": "反選",
-        "exportSelectionCount": "已選 {{selected}} / 共 {{total}}"
+        "exportSelectionCount": "已選 {{selected}} / 共 {{total}}",
+        "imageUnavailable": "暫時無法開啟圖片。",
+        "openImage": "檢視圖片",
+        "closeImage": "關閉"
     },
     "voiceControl": {
         "startVoice": "開始語音",
@@ -2281,6 +2287,51 @@
         "repetitionInsightsExportEmpty": "沒有可匯出的候選。",
         "repetitionInsightsExported": "候選已匯出；角色之後的回覆不會因此改變。",
         "repetitionInsightsResetEffects": "清除效果統計",
+        "habitualTitle": "口癖壓制",
+        "habitualDescription": "她在好幾次聊天裡反覆用到的說法，會在每次聊天開頭提醒她換個說法表達。你可以逐條放行，或強制壓制模型沒壓制的說法。",
+        "habitualRecompute": "立即重新計算",
+        "habitualRecomputing": "正在重新計算，可能需要一兩分鐘…",
+        "habitualLoading": "正在讀取口癖壓制狀態…",
+        "habitualLoadFailed": "口癖壓制狀態讀取失敗，請稍後再試。",
+        "habitualNoCharacter": "請先選擇角色。",
+        "habitualNotComputed": "還沒有計算過。記憶服務空閒時會自動計算，也可以點「立即重新計算」。",
+        "habitualEmpty": "暫時沒有發現需要壓制的口癖。",
+        "habitualStatusActive": "下一次聊天開頭，會提醒她換個方式說這 {{count}} 條說法。",
+        "habitualStatusNone": "下一次聊天開頭不會注入任何口癖提醒。",
+        "habitualStatusSwitchOff": "「自然表達」開關已關閉，目前不會注入。",
+        "habitualStatusStale": "清單已超過 {{days}} 天沒有更新，目前不會注入。",
+        "habitualStatusLanguage": "清單是按另一種語言統計的，和目前語言不一致，目前不會注入。",
+        "habitualStatusReviewOff": "「強力記憶模式」已關閉：新候選不會交給模型複核，只按規則壓制。",
+        "habitualStatusReviewFailed": "上次模型複核沒有成功，沒判斷過的候選暫時按規則壓制。",
+        "habitualComputedAt": "上次計算：{{time}}　預計下次：{{next}}",
+        "habitualWindow": "統計範圍：最近 {{replies}} 條回覆，{{sessions}} 次聊天（{{from}} 至 {{to}}）",
+        "habitualLogicSummary": "壓制規則說明",
+        "habitualLogicCandidates": "同一個說法要在至少 {{sessions}} 次不同的聊天裡出現，才算候選；兩條回覆相隔超過 {{gap}} 分鐘就算新的一次聊天。",
+        "habitualLogicExclusions": "角色卡裡寫著的說法、雙方的名字和暱稱、她自己用引號提到的內容，以及全由常用虛詞組成的說法，都不會成為候選。",
+        "habitualLogicReview": "候選會交給模型判斷是不是真的口癖，只有判為口癖的才會壓制；模型還沒判斷過的候選按規則壓制。",
+        "habitualLogicLimits": "每次最多壓制 {{max}} 條，整段提醒不超過 {{tokens}} 個 token。大約每 {{hours}} 小時在空閒時重新計算一次，不再出現的說法會自動解除；超過 {{days}} 天沒更新的清單不會注入。",
+        "habitualLogicOverrides": "你的放行和強制壓制優先於模型的判斷，下一次聊天就生效。放行一條說法後，包含它的說法也不會再被壓制。",
+        "habitualStats": "{{sessions}} 次聊天 · {{days}} 天 · 共 {{count}} 次 · 最近一次 {{last}}",
+        "habitualStateHabit": "壓制中 · 模型判為口癖",
+        "habitualStateUnreviewed": "壓制中 · 尚未經模型複核",
+        "habitualStateForced": "壓制中 · 你強制壓制",
+        "habitualStateKept": "未壓制 · 模型判為{{verdict}}",
+        "habitualStateAllowed": "已放行",
+        "habitualStateOverCap": "未壓制 · 超出 {{max}} 條上限",
+        "habitualStateOverBudget": "壓制中 · 超出提示長度，下次聊天不會帶上",
+        "habitualVerdictNormal": "普通說法",
+        "habitualVerdictTopic": "話題內容",
+        "habitualVerdictName": "名字或標題",
+        "habitualVerdictCard": "角色設定",
+        "habitualReason": "模型理由：{{reason}}",
+        "habitualAllow": "放行",
+        "habitualSuppress": "強制壓制",
+        "habitualClear": "撤銷我的設定",
+        "habitualAllowedTitle": "已放行的說法（它們和包含它們的說法都不會被壓制）",
+        "habitualRestore": "恢復壓制",
+        "habitualSaveFailed": "儲存失敗，請稍後再試。",
+        "habitualRecomputeFailed": "重新計算失敗，請稍後再試。",
+        "habitualRecomputeBusy": "已經在計算中了，請稍候。",
         "repetitionInsightsSearch": "搜尋最終殘留",
         "repetitionInsightsSearchPlaceholder": "搜尋表達或規則 ID",
         "repetitionInsightsCoverageFilter": "規則覆蓋",
@@ -5658,6 +5709,7 @@
             "ssl_error": "SSL 憑證驗證失敗",
             "ws_error": "WebSocket 連接失敗",
             "missing_params": "缺少必要參數",
+            "output_limit": "測試請求的輸出額度不足",
             "unknown": "未知錯誤",
             "backend_unavailable": "後端服務不可用",
             "invalid_response": "回應格式錯誤"
@@ -5790,7 +5842,7 @@
             "drawCalls": "Draw Calls"
         }
     },
-     "badminton": {
+    "badminton": {
          "title": "羽毛球挑戰 - Badminton",
          "exit": "退出",
          "loading": {
@@ -6285,7 +6337,7 @@
         "sdkUnavailable": "小遊戲元件載入失敗，請關閉頁面後重試。",
         "runtimeStartFailed": "比賽沒能啟動，請稍後再試一次。"
     },
-   "soccer": {
+    "soccer": {
         "settings": {
             "button": "設定",
             "title": "遊戲設定",
@@ -6419,7 +6471,7 @@
             "hint": "關閉後，玩家輸入、NEKO直接回應、事件回應、賽後摘要和後續銜接都不會進入或引用記憶。"
         }
     },
-  "watchTogether": {
+    "watchTogether": {
         "automatic": "自動陪看",
         "stopWatching": "停止陪看",
         "resizeAvatar": "調整貓娘大小",
@@ -7229,5 +7281,12 @@
         "informationExcluded": "此回饋管道不上傳完整聊天記錄、錄音檔或螢幕截圖。",
         "informationNote": "「我知道了」僅關閉說明，不會變更上傳設定。",
         "informationClose": "我知道了"
+    },
+    "cloudModel": {
+        "conflict": "兩端都修改了模型，請選擇保留哪個版本。",
+        "useCloud": "採用雲端模型",
+        "keepLocal": "保留本機選擇",
+        "failed": "模型無法載入，已保留原來的選擇。",
+        "retry": "重試"
     }
 }

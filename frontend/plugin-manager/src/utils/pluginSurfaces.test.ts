@@ -38,7 +38,7 @@ const surface = (over: Partial<PluginUiSurface> & { id: string }): PluginUiSurfa
 const CASES: Array<{ name: string; list: PluginUiSurface[] }> = [
   { name: '空列表', list: [] },
   {
-    name: '只有 guide（内置 lifekit / game_agent_minecraft / wechat_integration 就这种）',
+    name: '只有 guide（内置 lifekit / game_agent_minecraft 就这种）',
     list: [
       surface({ id: 'g1', kind: 'guide', mode: 'hosted-tsx' }),
       surface({ id: 'g2', kind: 'docs', mode: 'markdown' }),

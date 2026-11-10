@@ -7531,6 +7531,10 @@ margin-top: 10px;
     color: #7dd3fc;
 }
 
+[data-theme="dark"] .card-meta-origin-badge:is(.origin-self, .origin-imported, .origin-steam, .origin-molili) {
+    color: #0f172a;
+}
+
 [data-theme="dark"] .card-meta-title {
     border-bottom-color: rgba(125, 211, 252, 0.18);
 }

@@ -16,10 +16,10 @@ from plugin.server.application.install_source import (
     InstallSourceManager, PluginDirectoryScanner, get_install_source_manager, set_global_manager,
 )
 from plugin.server.application.plugin_cli import service as cli
-from plugin.server.application.plugins import development
 from plugin.server.application.plugins.installation_transactions import replace, uninstall
 from plugin.server.infrastructure import autostart_approvals, config_paths, config_resolver
 from plugin.server.domain.errors import ServerDomainError
+from plugin.server.infrastructure import authoring_project_store
 
 pytestmark = pytest.mark.plugin_unit
 PLUGIN_ID = "profile_independence_demo"
@@ -56,7 +56,8 @@ def environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(settings, key, path)
     packages.mkdir()
     monkeypatch.setenv("NEKO_PLUGIN_OPERATION_LOCK_PATH", str(tmp_path / "operation.lock"))
-    monkeypatch.setattr(development, "list_registration_records_sync", lambda: [])
+    # Keep the real user workbench out of discovery and install planning.
+    monkeypatch.setattr(authoring_project_store, "list_records", lambda: [])
     monkeypatch.setattr(autostart_approvals, "_cache", set())
     monkeypatch.setattr(autostart_approvals, "_load_failed", False)
     monkeypatch.setattr(autostart_approvals, "_save_locked", lambda _value: True)

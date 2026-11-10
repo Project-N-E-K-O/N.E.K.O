@@ -449,3 +449,108 @@ def test_sync_navigation_copy_uses_saved_card_settings_instead_of_retired_action
         for key in ('setupNeedsSave', 'profileNeedsBinding'):
             assert locale['moreOptions'].casefold() not in locale[key].casefold(), (language, key)
 
+
+
+def test_retryable_setup_diagnostic_never_requests_resaving_the_card():
+    run_script(r"""(async()=>{
+        const messages=[];
+        window.showMessage=(text,kind)=>messages.push({text,kind});
+        window.nekoChatSync={describeError:error=>'reason:'+error};
+        response=()=>({characters:[{displayName:'Synthetic',characterSyncId:uid,
+            syncSetupDiagnostic:'chat_sync_login_required'}]});
+        await window.nekoCharacterProfileSync.poll();
+        await window.nekoCharacterProfileSync.poll();
+        assert.deepEqual(messages,[{text:'reason:chat_sync_login_required',kind:'warning'}]);
+        assert(!messages[0].text.includes('setupNeedsSave'));
+    })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
+@pytest.fixture
+def card_assist_form():
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.route('**/*', lambda route: route.abort())
+            page.set_content('<form id="synthetic-card"><textarea name="Personality">Quiet</textarea>'
+                             '<div class="add-field-area"></div></form>')
+            for script in ('reserved_fields_utils.js', 'character_card_manager/core-and-upload.js',
+                           'character_card_manager/card-companion.js', 'character_card_manager/master-profile.js'):
+                page.add_script_tag(path=str(ROOT / 'static/js' / script))
+            source = (ROOT / 'static/js/character_card_manager/card-form-and-actions.js').read_text(encoding='utf-8')
+            start = source.index("    {\n        const row = document.createElement('div');")
+            page.evaluate("""code => {
+                window.t = key => key;
+                const form = document.querySelector('form');
+                new Function('form', 'isNew', 'name', code)(form, true, 'Synthetic');
+            }""", source[start:source.index('    const btnArea', start)])
+            yield page
+        finally:
+            browser.close()
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+def test_card_assist_generation_cannot_read_or_change_sync_choice(card_assist_form, enabled):
+    result = card_assist_form.evaluate(r"""async enabled => {
+        const form = document.querySelector('form');
+        const toggle = form.querySelector('[role="switch"]');
+        const defaultChecked = toggle.checked;
+        toggle.checked = enabled;
+        const requests = [], messages = [];
+        window._companionSetBusy = () => {};
+        window._companionAppendTyping = () => ({remove() {}});
+        window._companionEnsureLiveForm = state => state.form.isConnected;
+        window._cardAssistFetch = async (path, body) => {
+            requests.push({path, body});
+            return {fields: {Personality: 'Friendly', chat_sync_enabled: true}};
+        };
+        window._cardAssistFlashRow = () => {};
+        window._companionRefreshFormSnapshot = () => {};
+        window._companionTryAutoSave = async () => {};
+        window._companionAppendAssistant = (_state, text) => messages.push(text);
+        window._companionAppendError = (_state, error) => {throw error;};
+        window._companionUpdateQuickAvailability = () => {};
+        const state = {form, isNew: true, originalName: '', description: 'Synthetic character',
+            collectedAnswers: {}, chatHistory: []};
+        await _companionRunGenerate(state);
+        // Chat/refine actions share the final form application boundary.
+        _cardAssistApplyToForm(form, {chat_sync_enabled: true}, ['chat_sync_enabled'], '', true);
+        return {defaultChecked, checked: toggle.checked, requests,
+            leakedFields: form.querySelectorAll('textarea[name="chat_sync_enabled"]').length,
+            personality: form.querySelector('textarea[name="Personality"]').value,
+            assistantContext: JSON.stringify(state.chatHistory), messages: messages.join('\n')};
+    }""", enabled)
+    assert result['defaultChecked'] is False
+    assert result['requests'][0]['body']['target_field_keys'] == ['Personality']
+    assert result['requests'][0]['body']['current_card'] == {'Personality': 'Quiet'}
+    assert result['checked'] is enabled
+    assert result['leakedFields'] == 0
+    assert result['personality'] == 'Friendly'
+    assert 'chat_sync_enabled' not in result['assistantContext']
+    assert 'chat_sync_enabled' not in result['messages']
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+def test_card_field_autosave_excludes_sync_control(card_assist_form, enabled):
+    result = card_assist_form.evaluate("""async enabled => {
+        const form = document.querySelector('form');
+        const toggle = form.querySelector('[role="switch"]');
+        toggle.checked = enabled;
+        const calls = [];
+        window.fetch = async (path, init) => {
+            calls.push({path, body: JSON.parse(init.body)});
+            return {ok: false};
+        };
+        await panelAutoSaveCatgirlField(form.querySelector('textarea'), 'Synthetic');
+        const callsAfterTextSave = calls.length;
+        await panelAutoSaveCatgirlField(toggle, 'Synthetic');
+        return {calls, callsAfterTextSave, checked: toggle.checked};
+    }""", enabled)
+    assert result['callsAfterTextSave'] == 1
+    assert len(result['calls']) == 1
+    assert result['calls'][0]['body']['Personality'] == 'Quiet'
+    assert 'chat_sync_enabled' not in result['calls'][0]['body']
+    assert result['checked'] is enabled

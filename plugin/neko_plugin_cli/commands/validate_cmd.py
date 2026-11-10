@@ -10,11 +10,6 @@ import re
 import stat
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from plugin.core.python_dependencies import (
-    collect_project_python_requirements,
-    find_missing_python_requirements,
-    split_host_provided_requirements,
-)
 from plugin._types.plugin_types import (
     SUPPORTED_PLUGIN_TYPES,
     format_plugin_type_choice_error,
@@ -27,7 +22,8 @@ from plugin.sdk.shared.core.push_message_schema import (
     format_push_message_v1_static_diagnostic,
 )
 
-from ..core.build_rules import is_vendor_sync_path, reraise_walk_error
+from plugin.utils.source_paths import iter_plugin_python_files
+from ..core.build_rules import reraise_walk_error
 from ..core.plugin_source import load_plugin_source
 from ..core.toml_utils import load_toml
 
@@ -122,6 +118,7 @@ def validate_plugin_dir(
 
     _check_gitignore(plugin_dir / ".gitignore", issues, strict=strict)
     _check_python_decorators(plugin_dir, issues)
+    _check_symlink_tree(plugin_dir, issues)
 
     return issues
 
@@ -795,12 +792,6 @@ def _check_entry_target(
     if expected_bases and actual_bases.isdisjoint(expected_bases):
         issues.append(("warning", f"plugin.entry class '{class_name}' should inherit one of: {', '.join(sorted(expected_bases))}"))
 
-    lifecycle_ids = _decorator_ids_in_class(class_node, "lifecycle")
-    if "startup" not in lifecycle_ids:
-        issues.append(("warning", "plugin.entry class should define @lifecycle(id=\"startup\")"))
-    if "shutdown" not in lifecycle_ids:
-        issues.append(("warning", "plugin.entry class should define @lifecycle(id=\"shutdown\")"))
-
 
 def _resolve_entry_module_path(plugin_dir: Path, plugin_id: str, module_name: str) -> Path | None:
     prefix = f"plugin.plugins.{plugin_id}"
@@ -818,24 +809,11 @@ def _resolve_entry_module_path(plugin_dir: Path, plugin_id: str, module_name: st
     return None
 
 
-_SKIPPED_SOURCE_DIRS = {"__pycache__", ".venv", "venv", "vendor"}
-
-
 def _plugin_python_files(plugin_dir: Path) -> list[Path]:
     """The plugin's own .py files. Skipped directories are pruned during the
     walk, not filtered afterwards: a retained sync backup or a venv may hold
     a large tree or a mount."""
-    found: list[Path] = []
-    for dirpath, dirnames, filenames in os.walk(plugin_dir, onerror=reraise_walk_error):
-        base = Path(dirpath)
-        dirnames[:] = [
-            name
-            for name in dirnames
-            if name not in _SKIPPED_SOURCE_DIRS
-            and not is_vendor_sync_path((base / name).relative_to(plugin_dir))
-        ]
-        found.extend(base / name for name in filenames if name.endswith(".py"))
-    return sorted(found)
+    return sorted(iter_plugin_python_files(plugin_dir))
 
 
 def _check_python_decorators(plugin_dir: Path, issues: list[tuple[str, str]]) -> None:
@@ -992,19 +970,6 @@ def _has_decorator(decorators: list[ast.expr], name: str) -> bool:
     return any(_decorator_name(item) == name for item in decorators)
 
 
-def _decorator_ids_in_class(class_node: ast.ClassDef, decorator_name: str) -> set[str]:
-    ids: set[str] = set()
-    for item in class_node.body:
-        if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        for decorator in item.decorator_list:
-            if _decorator_name(decorator) == decorator_name:
-                value = _decorator_keyword_string(decorator, "id")
-                if value:
-                    ids.add(value)
-    return ids
-
-
 def _decorator_keyword_string(decorator: ast.expr, keyword: str) -> str:
     value = _decorator_keyword_literal(decorator, keyword)
     return value.strip() if isinstance(value, str) else ""
@@ -1079,6 +1044,13 @@ def _check_pyproject_dependency_layout(
     package_type: str,
     issues: list[tuple[str, str]],
 ) -> None:
+    # plugin.core loads the plugin runtime state; keep it off CLI start-up.
+    from plugin.core.python_dependencies import (
+        collect_project_python_requirements,
+        find_missing_python_requirements,
+        split_host_provided_requirements,
+    )
+
     python_requirements = collect_project_python_requirements(pyproject_toml)
     external_requirements, _host_requirements = split_host_provided_requirements(python_requirements)
     if not external_requirements:
@@ -1114,7 +1086,8 @@ def _check_json_file(path: Path, label: str, issues: list[tuple[str, str]], *, s
         issues.append(("error" if strict else "warning", f"{label} is missing"))
         return
     try:
-        text = path.read_text(encoding="utf-8")
+        # utf-8-sig: Windows editors save a BOM, which json.loads rejects.
+        text = path.read_text(encoding="utf-8-sig")
     except UnicodeDecodeError as exc:
         issues.append(("error" if strict else "warning", f"{label} is not valid UTF-8: {exc}"))
         return
@@ -1130,7 +1103,8 @@ def _check_gitignore(path: Path, issues: list[tuple[str, str]], *, strict: bool)
         return
 
     try:
-        text = path.read_text(encoding="utf-8")
+        # utf-8-sig: a BOM would otherwise hide the first line from the checks below.
+        text = path.read_text(encoding="utf-8-sig")
     except UnicodeDecodeError as exc:
         issues.append(("error" if strict else "warning", f".gitignore is not valid UTF-8: {exc}"))
         return
@@ -1138,3 +1112,26 @@ def _check_gitignore(path: Path, issues: list[tuple[str, str]], *, strict: bool)
     for pattern in required_patterns:
         if not re.search(rf"(^|\n){re.escape(pattern)}($|\n)", text):
             issues.append(("warning", f".gitignore should include {pattern}"))
+
+
+def _check_symlink_tree(plugin_dir: Path, issues: list[tuple[str, str]]) -> None:
+    # Market CI rejects any symlink in the mounted source; report the same
+    # rule locally so the upload is not the first place it surfaces. CI scans
+    # the checkout before dependency sync, so vendor/ (which pip may populate
+    # with link wrappers) and .git/ are out of scope here too.
+    try:
+        links = []
+        for root, directories, files in os.walk(plugin_dir, onerror=reraise_walk_error, followlinks=False):
+            base = Path(root)
+            if base == plugin_dir:
+                directories[:] = [name for name in directories if name not in {"vendor", ".git"}]
+                files = [name for name in files if name not in {"vendor", ".git"}]
+            links.extend(base / name for name in (*directories, *files) if (base / name).is_symlink())
+    except OSError as exc:
+        issues.append(("warning", f"plugin source tree could not be scanned for links: {exc}"))
+        return
+    if not links:
+        return
+    shown = ", ".join(str(path.relative_to(plugin_dir)) for path in links[:5])
+    suffix = f" (+{len(links) - 5} more)" if len(links) > 5 else ""
+    issues.append(("error", f"plugin source must not contain symbolic links: {shown}{suffix}"))
