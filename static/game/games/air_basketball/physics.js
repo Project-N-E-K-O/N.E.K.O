@@ -345,11 +345,14 @@ export class ShotLane {
     }
     this.selectReadyBall();
     this.positionReadyBalls(1 - Math.exp(-dt * 18));
-    const contacts = this.ballPool.filter(ball => ball.flying || (ball === this.ball || ball.dragged) && this.isReadyBall(ball));
+    const contacts = this.ballPool.filter(ball => !ball.expired && !ball.inTransit
+      && (ball.flying || this.isReadyBall(ball) && (this.sharedCourt || ball === this.ball || ball.dragged)));
     for (let i = 0; i < contacts.length; i++) for (let j = i + 1; j < contacts.length; j++) {
       const a = contacts[i], b = contacts[j];
       if (!a.flying && !b.flying) continue;
-      if (this.collideBalls(a, b)) {
+      if (this.sharedCourt) {
+        this.sharedCourt.collidePair(this, a, this, b);
+      } else if (this.collideBalls(a, b)) {
         if (!a.flying) this.liftPoolBall(a, b);
         if (!b.flying) this.liftPoolBall(b, a);
       }

@@ -1224,3 +1224,20 @@ body.is-mouse-stolen * { cursor: none !important; }
   .neko-avatar { right: -13%; height: 52%; }
   .mouse-steal-hint { top: 54px; padding: 7px 11px; }
 }
+
+@media (max-width: 480px) {
+  .match-header {
+    flex-shrink: 0;
+    height: auto;
+    grid-template-columns: minmax(0, 1fr) auto 42px;
+    grid-template-rows: minmax(42px, auto) auto;
+    gap: 6px;
+  }
+
+  .match-header .header-actions {
+    grid-column: 1 / -1;
+    margin-right: 0;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+}

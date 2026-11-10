@@ -1117,25 +1117,96 @@ export class SharedCourt {
     }
   }
 
-  // Resolve pairs from different inventories once. Same-inventory contacts,
-  // possession changes and the existing activity budget remain owned by 1.0.
+  #collideFlightWithReady(lane, projectile, trayLane, ready) {
+    const flight = projectile.flight;
+    const radius = ready.r / this.width;
+    const roll = ready.roll || {
+      x:(ready.x + this.origin(trayLane)) / this.width - .5,
+      depth:0, height:Math.max(radius, this.heightAt(trayLane, ready.y, 0)), radius,
+      vx:0, vDepth:0, vHeight:0, phase:'tray', side:trayLane.side === 'player' ? -1 : 1
+    };
+    const dx = roll.x - flight.x, dz = roll.depth - flight.depth, dh = roll.height - flight.height;
+    const distance = Math.hypot(dx, dz, dh);
+    const diameter = flight.radius + roll.radius;
+    if (distance >= diameter) return;
+    const vx = flight.vx - roll.vx, vz = flight.vDepth - roll.vDepth, vh = flight.vHeight - roll.vHeight;
+    const normalLength = distance || Math.hypot(vx, vz, vh);
+    if (!normalLength) return;
+    const nx = (distance ? dx : vx) / normalLength;
+    const nz = (distance ? dz : vz) / normalLength;
+    const nh = (distance ? dh : vh) / normalLength;
+    const closing = vx * nx + vz * nz + vh * nh;
+    if (closing <= 0) return;
+
+    if (trayLane.heldBall === ready) trayLane.cancelAim();
+    ready.dragged = false;
+    const ownershipChanged = Boolean(projectile.owner && ready.owner !== projectile.owner);
+    ready.owner = projectile.owner || ready.owner;
+    const impulse = closing * .93;
+    const separation = (diameter - distance) / 2 + contactGap;
+    flight.x -= nx * separation;
+    flight.depth -= nz * separation;
+    flight.height -= nh * separation;
+    flight.vx -= nx * impulse;
+    flight.vDepth -= nz * impulse;
+    flight.vHeight -= nh * impulse;
+    roll.x += nx * separation;
+    roll.depth += nz * separation;
+    roll.height += nh * separation;
+    roll.vx += nx * impulse;
+    roll.vDepth += nz * impulse;
+    roll.vHeight += nh * impulse;
+
+    // The tray solver now owns this ball, including support and re-collection.
+    Object.assign(ready, { roll, poolState:'returning', shotBy:null });
+    roll.quiet = 0;
+    beginBallLook(ready);
+    this.returnBounds(trayLane, ready, roll);
+    this.projectFlight(trayLane, ready, roll);
+    this.projectFlight(lane, projectile);
+    projectile.hitRim = true;
+    lane.burst((projectile.x + ready.x + this.origin(trayLane) - this.origin(lane)) / 2,
+      (projectile.y + ready.y) / 2, 8);
+    if (!projectile.clashed) {
+      projectile.clashed = true;
+      lane.onBallClash?.({ owner:projectile.owner, ownershipChanged });
+    }
+  }
+
+  collidePair(lane, a, otherLane, b) {
+    // A ball may have entered the return solver earlier in this pair pass.
+    if ((!a.flying && !lane.isReadyBall(a)) || (!b.flying && !otherLane.isReadyBall(b))) return;
+    if (a.flying && a.flight && otherLane.ballPool && !b.flying) {
+      this.#collideFlightWithReady(lane, a, otherLane, b);
+      return;
+    }
+    if (b.flying && b.flight && lane.ballPool && !a.flying) {
+      this.#collideFlightWithReady(otherLane, b, lane, a);
+      return;
+    }
+    // The older projected path cannot resolve depth or stacked tray balls.
+    if ((!a.flying && a !== lane.ball && !a.dragged)
+        || (!b.flying && b !== otherLane.ball && !b.dragged)) return;
+    const offset = this.origin(otherLane) - this.origin(lane);
+    b.x += offset;
+    let collided;
+    try {
+      collided = lane.collideBalls(a, b);
+    } finally {
+      b.x -= offset;
+    }
+    if (!collided) return;
+    if (!a.flying) lane.liftPoolBall(a, b);
+    if (!b.flying) otherLane.liftPoolBall(b, a);
+  }
+
+  // Same-inventory pairs are handled in ShotLane.updateBallPool.
   collideBalls() {
     const [player, neko] = this.lanes;
-    const available = lane => [lane.ball, ...lane.guests].filter(ball =>
-      !ball.expired && !ball.inTransit && (!lane.ballPool || ball.flying || (ball === lane.ball || ball.dragged) && lane.isReadyBall(ball)));
+    const available = lane => (lane.ballPool || [lane.ball, ...lane.guests]).filter(ball =>
+      !ball.expired && !ball.inTransit && (!lane.ballPool || ball.flying || lane.isReadyBall(ball)));
     for (const a of available(player)) for (const b of available(neko)) {
-      if (!a.flying && !b.flying) continue;
-      b.x += player.width;
-      let collided;
-      try {
-        collided = player.collideBalls(a, b);
-      } finally {
-        b.x -= player.width;
-      }
-      if (collided) {
-        if (!a.flying) player.liftPoolBall(a, b);
-        if (!b.flying) neko.liftPoolBall(b, a);
-      }
+      if (a.flying || b.flying) this.collidePair(player, a, neko, b);
     }
     for (const lane of this.lanes) if (lane.ballPool) lane.selectReadyBall();
   }

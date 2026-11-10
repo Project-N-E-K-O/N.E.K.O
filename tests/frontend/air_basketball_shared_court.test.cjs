@@ -1727,3 +1727,54 @@ test('an overlapping projectile that is moving away cannot drop the held aim',as
   assert.deepEqual(player.getAimTelemetry(),before.telemetry);
   assert(player.releaseAim());assert(held.flying);
 });
+
+for (const across of [false, true]) {
+  test(`a spatial shot moves an unselected tray ball in the ${across ? 'other' : 'same'} inventory`, async () => {
+    const s = await setup();
+    const [player, neko] = s.lanes;
+    for (const lane of s.lanes) lane.enableBallPool(4);
+    const tray = across ? neko : player;
+    const ready = tray.ballPool[2];
+    const shot = player.launchPoolBall(0, 0, { spatial:{ vx:0, vy:-300 } });
+    assert.notEqual(ready, tray.ball);
+    const radius = ready.r / s.court.width;
+    Object.assign(shot.flight, {
+      x:(ready.x + s.court.origin(tray)) / s.court.width - .5,
+      depth:.055, height:Math.max(radius, s.court.heightAt(tray, ready.y, 0)) + .005,
+      vx:0, vDepth:-.5, vHeight:0
+    });
+    s.court.projectFlight(player, shot);
+    s.tick(1/240);
+    assert.equal(ready.poolState, 'returning');
+    assert(shot.flight.vDepth > -.25, 'the shot transfers momentum at contact');
+    settleCollection(s);
+    const balls = sharedPhysicalBalls(s);
+    assert.equal(new Set(balls).size, 8);
+    assert(balls.every(ball => ball.poolState === 'ready'));
+    assert(tray.ballPool.includes(ready));
+    assert(tray.beginAim({ x:ready.x, y:ready.y }));
+    assert.equal(tray.heldBall, ready);
+  });
+}
+
+test('screen overlap with a tray ball does not collide through depth and height', async () => {
+  const s = await setup();
+  const [player, neko] = s.lanes;
+  for (const lane of s.lanes) lane.enableBallPool(4);
+  const ready = neko.ballPool[1];
+  const shot = player.launchPoolBall(0, 0, { spatial:{ vx:0, vy:-300 } });
+  const radius = ready.r / s.court.width;
+  const depth = .061;
+  const trayX = ready.x + s.court.origin(neko);
+  Object.assign(shot.flight, {
+    x:trayX / s.court.width - .5,
+    depth, height:Math.max(radius, s.court.heightAt(neko, ready.y, 0)) + .037,
+    vx:0, vDepth:-.4, vHeight:-.2
+  });
+  s.court.projectFlight(player, shot);
+  assert(Math.hypot(shot.x - trayX, shot.y - ready.y) < shot.r + ready.r);
+  s.court.collideBalls();
+  assert.equal(ready.poolState, 'ready');
+  assert.equal(ready.roll, undefined);
+  assert.equal(shot.flight.vDepth, -.4);
+});

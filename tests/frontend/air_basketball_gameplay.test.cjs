@@ -680,3 +680,43 @@ test('low focus only sounds on release of a valid throw', async () => {
   assert.equal(h.api.getState().player.attempts, 5);
   assert.equal(lane.heldBall, null);
 });
+
+test('a shared-court shot freezes at the centre and crosses on resume without a transfer', async () => {
+  const h = await interferenceHarness();
+  const lane = h.playerLane;
+  const ball = lane.launchPoolBall(0, 0, {
+    spatial:{ seconds:.6, target:{ x:lane.width + 75, y:200, depth:.25 } }
+  });
+  for (let i = 0; i < 40 && ball.x < lane.width - 25; i++) h.advance(16);
+  assert(ball.flying && ball.x >= lane.width - 25 && ball.x < lane.width);
+  h.node('pause-match').emit('click');
+  const before = h.api.getState();
+  h.advance(3000);
+  assert.deepEqual(h.api.getState().ballPools, before.ballPools);
+  assert.equal(h.api.getState().crossCount, before.crossCount);
+  h.node('resume-match').emit('click');
+  h.advance(170);
+  assert(ball.flying && ball.x > lane.width);
+  assert(lane.ballPool.includes(ball));
+  assert.equal(ball.inTransit, false);
+  assert.equal(h.api.getState().crossCount, before.crossCount);
+});
+
+test('a launched Neko prank freezes and resumes in the shared physical court', async () => {
+  const h = await interferenceHarness();
+  assert(h.api.prankNeko());
+  h.advance(600);
+  const lane = h.nekoLane;
+  const ball = lane.ballPool.find(candidate => candidate.flying);
+  assert(ball?.flight);
+  h.node('pause-match').emit('click');
+  const before = h.api.getState();
+  const position = ball.x;
+  h.advance(3000);
+  assert.deepEqual(h.api.getState().ballPools, before.ballPools);
+  assert.equal(h.api.getState().crossCount, before.crossCount);
+  h.node('resume-match').emit('click');
+  h.advance(180);
+  assert.notEqual(ball.x, position);
+  assert.equal(h.api.getState().crossCount, before.crossCount);
+});
