@@ -198,6 +198,68 @@ async def test_retry_does_not_close_and_final_discard_closes_once(monkeypatch):
     assert facts[0][1]["reply_id"] == reply.observation_id
 
 
+_TRUNCATED_RECOVERY = '{"code":"RESPONSE_LENGTH_TRUNCATED","text":"kept sentence."}'
+
+
+async def test_truncation_recovery_closes_its_reply_as_completed(monkeypatch):
+    facts = []
+    monkeypatch.setattr(turn_module, "schedule_conversation_fact_observed_best_effort",
+                        lambda name, *, fact, payload: facts.append((fact, payload)))
+    manager = _core_manager()
+    reply = manager._begin_reply_turn(speech_id=manager.current_speech_id, request_id="r")
+    reply.session = manager.session
+    manager._active_text_request_id = "r"
+    await manager.handle_response_discarded(
+        "length", 2, 2, False, _TRUNCATED_RECOVERY, request_id="r", reply_turn=reply,
+    )
+    closed = [payload for fact, payload in facts if fact == "reply.closed"]
+    assert len(closed) == 1
+    assert closed[0]["reply_id"] == reply.observation_id
+    assert closed[0]["close_reason"] == "completed"
+
+
+async def test_truncation_recovery_closes_external_observation_as_completed(monkeypatch):
+    facts = []
+    monkeypatch.setattr(turn_module, "schedule_conversation_fact_observed_best_effort",
+                        lambda name, *, fact, payload: facts.append((fact, payload)))
+    manager = _core_manager()
+    observation = {
+        "reply_id": "external-reply", "origin": None, "lifecycle": "external_voice",
+        "started": True, "closed": False,
+    }
+    token = turn_module.conversation_reply_observation.set(observation)
+    try:
+        await manager.handle_response_discarded("length", 2, 2, False, _TRUNCATED_RECOVERY)
+    finally:
+        turn_module.conversation_reply_observation.reset(token)
+    closed = [payload for fact, payload in facts if fact == "reply.closed"]
+    assert len(closed) == 1
+    assert closed[0]["reply_id"] == "external-reply"
+    assert closed[0]["close_reason"] == "completed"
+
+
+async def test_truncation_recovery_cut_before_publishing_stays_discarded(monkeypatch):
+    facts = []
+    monkeypatch.setattr(turn_module, "schedule_conversation_fact_observed_best_effort",
+                        lambda name, *, fact, payload: facts.append((fact, payload)))
+    manager = _core_manager()
+    reply = manager._begin_reply_turn(speech_id=manager.current_speech_id, request_id="r")
+    reply.session = manager.session
+    manager._active_text_request_id = "r"
+
+    async def refused(*_args, **_kwargs):
+        # The recovery body never reaches the user.
+        return None
+
+    manager.send_lanlan_response = refused
+    await manager.handle_response_discarded(
+        "length", 2, 2, False, _TRUNCATED_RECOVERY, request_id="r", reply_turn=reply,
+    )
+    assert reply.observation_close_reason == "discarded"
+    closed = [payload for fact, payload in facts if fact == "reply.closed"]
+    assert all(payload["close_reason"] == "discarded" for payload in closed)
+
+
 async def test_proactive_client_uses_one_observed_identity_for_record(monkeypatch):
     import asyncio
     import main_logic.omni_offline_client._lifecycle as lifecycle_module

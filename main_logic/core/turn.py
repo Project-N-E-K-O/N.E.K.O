@@ -1639,12 +1639,17 @@ class TurnMixin:
             )
 
         logger.warning(f"[{self.lanlan_name}] 响应异常已丢弃 (reason={reason}, attempt={attempt}/{max_attempts}, will_retry={will_retry})")
+        # A truncation recovery turns this back into "completed" once its body
+        # is published (``_mark_recovery_published``); cut before that, the
+        # user saw nothing and the reply stays discarded.
+        external_observation = None
         if not will_retry:
             if reply_turn is not None:
                 reply_turn.observation_close_reason = "discarded"
             observation = conversation_reply_observation.get()
             if isinstance(observation, dict) and observation.get("lifecycle") in ("external_voice", "realtime", "proactive_direct"):
                 observation["close_reason"] = "discarded"
+                external_observation = observation
 
         # Detect final RESPONSE_TOO_LONG discard /RESPONSE_LENGTH_TRUNCATED recovery.
         _is_too_long_final = False
@@ -1788,6 +1793,13 @@ class TurnMixin:
                     reply_turn.reply_tail.completed = True
                     if getattr(reply_turn.reply_tail, "hooks", ()):
                         reply_turn.reply_tail.text = _truncated_text
+                # The truncated text is what the user got, so observers see
+                # this reply close as completed, not discarded.
+                if _truncated_text is not None:
+                    if reply_turn is not None:
+                        reply_turn.observation_close_reason = "completed"
+                    if external_observation is not None:
+                        external_observation["close_reason"] = "completed"
 
             try:
                 if _truncated_text is not None:
