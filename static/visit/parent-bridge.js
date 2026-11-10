@@ -1183,14 +1183,33 @@
         if (snap.active === false) {
           var endedVisit = state.visitId || state.closedVisitId;
           if (!endedVisit) return true;
-          applyStateChange({ type: 'visit_state_change', action: 'ended', visit_id: endedVisit, side: state.side }, true);
+          var endedFrame = { type: 'visit_state_change', action: 'ended', visit_id: endedVisit, side: state.side };
+          applyStateChange(endedFrame, true);
+          if (typeof win.nekoRestoreVisitStateToDisplay === 'function') {
+            try { win.nekoRestoreVisitStateToDisplay(endedFrame); } catch (_) { /* media cleanup already completed */ }
+          }
           return true;
         }
-        if (!snap.active || !snap.visit_id || !snap.side || snap.phase === 'ended' || snap.phase === 'ending') return false;
-        if (state.frame && (state.visitId !== snap.visit_id || state.side !== snap.side)) return false;
         var actionByPhase = { pending: 'pending', invite_ready: 'invite_ready', joining: 'joining', awaiting_accept: 'awaiting_accept', active: 'started', wrap_up: 'wrap_up' };
         var action = actionByPhase[snap.phase];
-        if (!action) return false;
+        if (!snap.active || !VISIT_ID_RE.test(snap.visit_id || '')
+            || (snap.side !== 'host' && snap.side !== 'guest') || !action) return false;
+        var replacedVisitId = state.visitId || state.closedVisitId;
+        var replacedVisit = replacedVisitId && replacedVisitId !== snap.visit_id;
+        if (replacedVisit) {
+          // BFCache 期间 Chat 可能已经结束旧场并开始新场。权威快照确认换场后，
+          // 先让旧传输页正常退房并清掉旧猫场景，否则后面的新 visit_id 会被过滤。
+          var replacedFrame = {
+            type: 'visit_state_change', action: 'ended',
+            visit_id: replacedVisitId, side: state.side
+          };
+          if (snap.cat_scene === 2) replacedFrame.reason = 'cat_replaced';
+          applyStateChange(replacedFrame, true);
+          if (typeof win.nekoRestoreVisitStateToDisplay === 'function') {
+            try { win.nekoRestoreVisitStateToDisplay(replacedFrame); } catch (_) { /* transport replacement still continues */ }
+          }
+        }
+        if (state.frame && state.side !== snap.side) return false;
         // 建 iframe 会清掉显隐 / 离家样式：先记下查询期间实时推来的值，建完再套回去
         var live = { hidden: !!state.peerHidden, away: !!state.away };
         if (state.frame) {
@@ -1199,6 +1218,20 @@
         } else {
           ensureFrame(snap.side, snap.visit_id);
           state.phase = snap.phase;
+        }
+        if (replacedVisit && typeof win.nekoRestoreVisitStateToDisplay === 'function') {
+          var recoveredFrame = {
+            type: 'visit_state_change', action: action,
+            visit_id: snap.visit_id, side: snap.side
+          };
+          if (snap.cat_scene === 2) recoveredFrame.cat_scene = 2;
+          if (snap.self_cat_asset === 'dev_neko' || snap.self_cat_asset === 'yui_neko') {
+            recoveredFrame.self_cat_asset = snap.self_cat_asset;
+          }
+          if (snap.peer_cat_asset === 'dev_neko' || snap.peer_cat_asset === 'yui_neko') {
+            recoveredFrame.peer_cat_asset = snap.peer_cat_asset;
+          }
+          try { win.nekoRestoreVisitStateToDisplay(recoveredFrame); } catch (_) { /* transport has already recovered */ }
         }
         // 查询期间实时通道推过的对端构图 / 显隐 / 出门比快照新：更新过的用实时值，没更新过的才用快照
         var room = snap.room || {};

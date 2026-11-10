@@ -845,6 +845,7 @@ function installPlaygroundSetting(r) {
   };
   r.context._forEachNekoIdleReturnButton = callback => callback(r.button);
   vm.runInContext(fs.readFileSync(path.join(avatar, 'idle-playground.js'), 'utf8'), r.context);
+  const startAfterYarnTargetReady = r.context._startNekoIdleCat1PlaygroundDropAfterYarnTargetReady;
   // Keep the real setting, visibility guard, entry event and entry handler.
   // The downstream lifecycle has separate physics tests.
   r.context._startNekoIdleCat1PlaygroundDropAfterYarnTargetReady = (button, detail) => {
@@ -852,7 +853,7 @@ function installPlaygroundSetting(r) {
     return true;
   };
   r.context._releaseAllNekoIdleCat1PlaygroundDropLifecycles = reason => releases.push(reason);
-  return { entries, releases, api: r.window.nekoIdleCat1Playground };
+  return { entries, releases, api: r.window.nekoIdleCat1Playground, startAfterYarnTargetReady };
 }
 
 test('manual gravity setting immediately enters visible CAT1 through the existing Playground entry', () => {
@@ -867,6 +868,124 @@ test('manual gravity setting immediately enters visible CAT1 through the existin
   api.setGravityCatEnabled(false);
   assert.equal(api.isGravityCatEnabled(), false);
   assert.deepEqual(releases, ['gravity-cat-disabled']);
+});
+
+test('cat visits keep local Playground gravity but register only the local cat body', () => {
+  const r = runtime();
+  installPlaygroundSetting(r);
+  const starts = [];
+  r.window.nekoVisitCatScene = { isActive: () => true };
+  r.context._clearNekoIdleCat1QuestionMark = () => {};
+  r.context._clearNekoIdleCat1PlaygroundQuestionBlockClone = () => {};
+  r.context._startNekoIdleCat1PlaygroundDrop = (button, detail, options) => {
+    starts.push({ button, detail, options });
+    return true;
+  };
+  r.emit('neko:idle-cat1-playground-entry-request', {
+    source: 'gravity-cat-setting', trigger: 'gravity-cat-setting',
+  });
+  assert.equal(starts.length, 1);
+  assert.equal(starts[0].button, r.button);
+  assert.equal(starts[0].options.catOnly, true);
+
+  // Run the registration itself: catOnly keeps the cat body and skips the chat yarn.
+  const dropState = { bodies: new Map(), entryQuestionBlockElement: null };
+  [
+    '_NEKO_IDLE_CAT1_PLAYGROUND_CAT_BODY_MASS', '_NEKO_IDLE_CAT1_PLAYGROUND_CAT_VISIBLE_INSET_RATIOS',
+    '_NEKO_IDLE_CAT1_PLAYGROUND_YARN_BODY_MASS', '_NEKO_IDLE_CAT1_PLAYGROUND_YARN_VISIBLE_INSET_RATIOS',
+  ].forEach((name) => { if (!(name in r.context)) r.context[name] = 1; });
+  r.context._getNekoIdleCat1PlaygroundDropState = () => dropState;
+  r.context._getNekoIdleReturnContainerFromButton = () => r.container;
+  r.context._createNekoIdleCat1PlaygroundPhysicsBody = (_kind, _element, options) => ({ id: options.id });
+  r.context._captureNekoIdleCat1PlaygroundStartPositions = () => ({});
+  r.context._getNekoIdleCat1PairMoveChatTarget = () => ({ mode: 'dom', shell: {}, rect: {} });
+  const register = r.context._registerNekoIdleCat1PlaygroundPhysicsBodies;
+  assert.equal(register(r.button, { catOnly: true }), true);
+  assert.deepEqual(Array.from(dropState.bodies.keys()), ['cat']);
+  register(r.button, {});
+  assert.equal(dropState.bodies.has('yarn'), true);
+});
+
+test('cat visit entry removes solo objects without resetting the running cat', () => {
+  const r = runtime();
+  const { api } = installPlaygroundSetting(r);
+  const removed = [];
+  const parent = { removeChild(element) { removed.push(element.id); } };
+  const cat = { id: 'cat', x: 321, y: 234, vx: 145, vy: -87, dragging: false };
+  const yarn = { id: 'yarn', element: { id: 'yarn' } };
+  const desktopYarn = { id: 'desktop-yarn', element: { id: 'desktop-yarn', parentNode: parent } };
+  const question = { id: 'question-block', element: { id: 'question-block', parentNode: parent } };
+  const state = r.button.__nekoIdleCat1PlaygroundDropState = {
+    active: true, released: false, bodies: new Map([
+      ['cat', cat], ['yarn', yarn], ['desktop-yarn', desktopYarn], ['question-block', question],
+    ]),
+    container: r.container, pointerBodyId: '', targetMode: 'desktop',
+    targetElement: desktopYarn.element, targetScreenRect: {}, entryQuestionBlockElement: question.element,
+  };
+  let stopped = 0, rebound = 0, restarted = 0;
+  r.context._stopNekoIdleCat1PlaygroundPhysics = () => { stopped++; };
+  r.context._clearNekoIdleCat1PlaygroundPointerListeners = () => {};
+  r.context._installNekoIdleCat1PlaygroundPointerListeners = () => { rebound++; };
+  r.context._startNekoIdleCat1PlaygroundPhysics = () => { restarted++; };
+  r.context._clearNekoIdleCat1QuestionMark = () => {};
+  r.context._clearNekoIdleCat1PlaygroundQuestionBlockClone = () => {};
+  r.context._releaseNekoIdleCat1PlaygroundQuestionBlockPointerHold = () => false;
+
+  assert.equal(api.enterVisitMode(), true);
+  assert.deepEqual(Array.from(state.bodies.keys()), ['cat']);
+  assert.equal(state.bodies.get('cat'), cat);
+  assert.deepEqual({ x: cat.x, y: cat.y, vx: cat.vx, vy: cat.vy }, { x: 321, y: 234, vx: 145, vy: -87 });
+  assert.deepEqual(removed.sort(), ['desktop-yarn', 'question-block']);
+  assert.equal(state.targetMode, 'none');
+  assert.equal(state.targetElement, null);
+  assert.equal(state.targetScreenRect, null);
+  assert.equal(state.entryQuestionBlockElement, null);
+  assert.deepEqual({ stopped, rebound, restarted }, { stopped: 1, rebound: 1, restarted: 1 });
+});
+
+test('cat visit entry cancels a pending solo target and starts cat-only immediately', () => {
+  const r = runtime();
+  const { api, startAfterYarnTargetReady } = installPlaygroundSetting(r);
+  const detail = { source: 'solo-playground', trigger: 'question-mark-entry' };
+  const starts = [];
+  r.context._getNekoIdleCat1PairMoveChatTarget = () => null;
+  r.context._requestNekoIdleCat1PlaygroundYarnTarget = () => true;
+  r.context._clearNekoIdleCat1QuestionMark = () => {};
+  r.context._setNekoIdleCat1QuestionMarkKeyboardTarget = () => {};
+  r.context._clearNekoIdleCat1PlaygroundQuestionBlockClone = () => {};
+  assert.equal(startAfterYarnTargetReady(r.button, detail), true);
+  assert.equal(r.button.__nekoIdleCat1PlaygroundPendingEntry.detail, detail);
+  r.context._startNekoIdleCat1PlaygroundDrop = (button, entryDetail, options) => {
+    starts.push({ button, entryDetail, options });
+    return true;
+  };
+
+  assert.equal(api.enterVisitMode(), true);
+  assert.equal(r.button.__nekoIdleCat1PlaygroundPendingEntry, null);
+  assert.equal(starts.length, 1);
+  assert.equal(starts[0].button, r.button);
+  assert.equal(starts[0].entryDetail, detail);
+  assert.equal(starts[0].options.catOnly, true);
+});
+
+test('the real Playground starter forwards catOnly to body registration', () => {
+  const r = runtime();
+  installPlaygroundSetting(r);
+  const registrations = [];
+  r.context._registerNekoIdleCat1PlaygroundPhysicsBodies = (button, options) => {
+    registrations.push({ button, options });
+    return true;
+  };
+  r.context._acquireNekoIdleCat1PlaygroundDropLifecycle = () => ({});
+  r.context._setNekoIdleCat1PlaygroundCatAirArt = () => {};
+  r.context._installNekoIdleCat1PlaygroundPointerListeners = () => {};
+  r.context._refreshNekoIdleCat1PlaygroundViewportBottom = () => {};
+  r.context._startNekoIdleCat1PlaygroundPhysics = () => {};
+  const start = r.context._startNekoIdleCat1PlaygroundDrop;
+  assert.equal(start(r.button, {}, { catOnly: true }), true);
+  assert.equal(start(r.button, {}), true);
+  assert.deepEqual(registrations.map((item) => item.options.catOnly), [true, false]);
+  assert.equal(registrations[0].button, r.button);
 });
 
 test('gravity preference on an ordinary model waits for active CAT1 and ignores a late entry after OFF', () => {
@@ -2559,6 +2678,40 @@ test('Windows cats outside Playground retain one native mouse or touch drag owne
     assert.equal(event.stopped, true, `${model}/${input}: native capture keeps ownership`);
     assert.equal(nativeStarts, 1, `${model}/${input}: native carrier must move`);
     assert.equal(dragStarts, 1, `${model}/${input}: DOM must not duplicate the drag`);
+  }
+});
+
+test('active cat visits leave mouse and touch dragging to the local cat DOM owner', () => {
+  for (const source of ['api', 'body-class']) for (const input of ['mouse', 'touch']) {
+    const r = runtime({ model: 'live2d' });
+    r.window.__NEKO_DESKTOP_RUNTIME__ = { platform: 'darwin' };
+    if (source === 'api') r.window.nekoVisitCatScene = { isActive: () => true };
+    const native = installDragProducer(r, 'native');
+    if (source === 'body-class') {
+      r.context.document.body.classList = {
+        contains: (name) => name === 'neko-visit-cat-scene-active',
+      };
+    }
+    const dom = installDragProducer(r, 'live2d', { fromCreation: true });
+    r.context.document.createElement = () => ({});
+    let nativeStarts = 0;
+    r.window.nekoPetDrag.start = () => { nativeStarts++; return true; };
+
+    const event = input === 'mouse' ? native.down(360, 260) : native.touchDown(360, 260);
+    assert.equal(event.stopped, undefined, `${source}/${input}: native capture must not stop the DOM owner`);
+    assert.equal(event.defaultPrevented, undefined, `${source}/${input}: native capture must not prevent the DOM owner`);
+    assert.equal(nativeStarts, 0, `${source}/${input}: the shared Pet carrier must not shrink`);
+    assert.equal(r.context.document.body.dataset.nekoBallDrag, undefined);
+
+    if (input === 'mouse') {
+      dom.down(360, 260);
+      r.advance(20); dom.move(390, 240); dom.up();
+    } else {
+      dom.touchDown(360, 260, event);
+      r.advance(20); dom.touchMove(390, 240); dom.touchUp();
+    }
+    r.frame(16); r.frame(16);
+    assert.equal(r.container.getAttribute('data-dragging'), 'false', `${source}/${input}: DOM drag still completes`);
   }
 });
 

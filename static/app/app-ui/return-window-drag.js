@@ -436,7 +436,23 @@
             return bounds;
         }
 
+        function isVisitCatSceneActiveForReturnBallDrag() {
+            try {
+                if (window.nekoVisitCatScene &&
+                    typeof window.nekoVisitCatScene.isActive === 'function' &&
+                    window.nekoVisitCatScene.isActive()) {
+                    return true;
+                }
+            } catch (_) {}
+            return !!(document.body && document.body.classList &&
+                document.body.classList.contains('neko-visit-cat-scene-active'));
+        }
+
         function beginDrag(screenX, screenY, event) {
+            // 猫形态串门中的两只猫共用同一个 Pet 页面。原生返回猫拖拽会把
+            // BrowserWindow 缩成单猫大小并隐藏其余 body 子节点，因此此时必须
+            // 让已有 DOM 拖拽只移动本方猫；退出串门后自动恢复原生跨屏拖拽。
+            if (isVisitCatSceneActiveForReturnBallDrag()) return;
             if (I.isIdleCat1PlaygroundActiveForReturnBallDesktopBridge()) return;
             const edgeButton = (container.classList && container.classList.contains('neko-idle-return-btn'))
                 ? container : (container.querySelector && container.querySelector('.neko-idle-return-btn'));
@@ -805,6 +821,7 @@
         }
 
         state.handleMouseDown = (event) => {
+            if (isVisitCatSceneActiveForReturnBallDrag()) return;
             if (event.button !== 0) {
                 event.preventDefault();
                 event.stopImmediatePropagation();
@@ -814,6 +831,7 @@
             beginDrag(event.screenX, event.screenY, event);
         };
         state.handlePointerDown = (event) => {
+            if (isVisitCatSceneActiveForReturnBallDrag()) return;
             const edgeButton = (container.classList && container.classList.contains('neko-idle-return-btn'))
                 ? container : (container.querySelector && container.querySelector('.neko-idle-return-btn'));
             if (window.NekoEdgePeekController && window.NekoEdgePeekController.shouldBlockReturnBallDrag(edgeButton, container)) {
@@ -841,6 +859,7 @@
             cancelActiveDrag('pointercancel');
         };
         state.handleTouchStart = (event) => {
+            if (isVisitCatSceneActiveForReturnBallDrag()) return;
             if (isThoughtBubbleEventTarget(event)) return;
             const edgeButton = (container.classList && container.classList.contains('neko-idle-return-btn'))
                 ? container : (container.querySelector && container.querySelector('.neko-idle-return-btn'));

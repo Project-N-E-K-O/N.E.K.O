@@ -43,6 +43,7 @@ These documents preserve design intent and implementation context. They are grou
 - [Floating avatar panel functions](./avatar-floating-panel-functions)
 - [Post-tutorial low-disruption chat branches](./avatar-floating-post-theater-chat-branches)
 - [CAT1 Playground Drop](./cat1-playground-drop-design)
+- [Cat-form visits: maintained product design](./cat-form-visits) — Chinese-only. The long-term baseline for the friend entry, visible flow, dual-cat ownership, host-authoritative shared world, exit behavior and regression acceptance.
 - [Focus / True-Name mode](./focus-truename-mode)
 - [Memory-browser particle dissolve](./memory-browser-particle-dissolve)
 - [Yui guide-system cursor hiding](./yui-guide-system-cursor-hiding)
