@@ -1,5 +1,6 @@
 """Recent-memory exchange must never enumerate or erase original archives."""
 
+from contextlib import closing
 from copy import deepcopy
 import hashlib
 import json
@@ -296,6 +297,165 @@ def test_review_same_role_neighbors_keep_their_own_identity(review_identity_case
     status, saved, _ = review_identity_case(original, [HumanMessage(original[index].content) for index in (0, 2, 5)])
     assert status == 'patched'
     assert [message.metadata for message in saved] == [original[index].metadata for index in (0, 2, 5)]
+
+
+@pytest.mark.parametrize('kept, sources', [
+    ((0, 2), [2, 0]),  # Two unchanged same-role rows naming each other.
+    ((0, 2, 4), [2, 4, 0]),  # The same swap as a three-row cycle.
+    ((0,), [2]),  # Row 2 is not kept, so nothing else accounts for the index.
+])
+def test_review_verbatim_text_cannot_claim_another_rows_identity(review_identity_case, kept, sources):
+    from utils.llm_client import HumanMessage, messages_to_dict
+
+    original = _identified_review_messages()
+    corrected = [HumanMessage(original[index].content) for index in kept]
+    status, saved, _ = review_identity_case(original, corrected, source_indexes=sources)
+    assert status == 'failed'
+    assert messages_to_dict(saved) == messages_to_dict(original)
+
+
+def test_review_verbatim_swap_is_reported_as_an_invalid_source():
+    from memory.recent import _resolve_review_sources
+    from utils.llm_client import HumanMessage
+
+    original = _identified_review_messages()
+    corrected = [HumanMessage('user-A'), HumanMessage('user-B')]
+    with pytest.raises(ValueError, match='^invalid_review_sources$'):
+        _resolve_review_sources(original, corrected, [2, 0], strict=True)
+    assert _resolve_review_sources(original, corrected, [2, 0], strict=False) == [None, None]
+
+
+def test_review_verbatim_swap_without_sync_projection_stays_unknown(review_identity_case):
+    from utils.llm_client import HumanMessage
+
+    original = _unsynced_typed_review_messages()
+    corrected = [HumanMessage('user-A'), HumanMessage('user-B')]
+    status, saved, _ = review_identity_case(original, corrected, source_indexes=[2, 0])
+    assert status == 'patched'
+    assert [message.content for message in saved] == ['user-A', 'user-B']
+    assert all('chat_original_source' not in (message.metadata or {}) for message in saved)
+
+
+def test_review_rejected_index_cannot_be_reinferred_and_frees_its_row(review_identity_case):
+    """The mislabeled position stays unknown; the row it named stays open to an omitted index."""
+    from utils.llm_client import HumanMessage
+
+    original = _unsynced_typed_review_messages()[:3]
+    corrected = [HumanMessage('user-B'), HumanMessage('user-A')]
+    status, saved, _ = review_identity_case(original, corrected, source_indexes=[0, None])
+    assert status == 'patched'
+    assert 'chat_original_source' not in (saved[0].metadata or {})
+    assert saved[1].metadata == original[0].metadata
+
+
+def test_review_verbatim_reorder_with_own_indexes_keeps_identity(review_identity_case):
+    from utils.llm_client import HumanMessage, AIMessage
+
+    original = _identified_review_messages()
+    corrected = [HumanMessage('user-B'), AIMessage('reply-A'), HumanMessage('user-A'), AIMessage('reply-B')]
+    status, saved, _ = review_identity_case(original, corrected, source_indexes=[2, 1, 0, 3])
+    assert status == 'patched'
+    assert [message.content for message in saved] == ['user-B', 'reply-A', 'user-A', 'reply-B']
+    assert [message.metadata for message in saved] == [original[index].metadata for index in (2, 1, 0, 3)]
+
+
+def test_review_rewrite_may_match_a_row_that_stays_verbatim(review_identity_case):
+    """Normalizing a repeat to a neighbor's wording is a rewrite: that neighbor keeps its own text."""
+    from utils.llm_client import HumanMessage
+
+    original = _identified_review_messages()
+    corrected = [HumanMessage('user-B'), HumanMessage('user-B')]
+    status, saved, _ = review_identity_case(original, corrected, source_indexes=[0, 2])
+    assert status == 'patched'
+    assert [message.content for message in saved] == ['user-B', 'user-B']
+    assert [message.metadata for message in saved] == [original[0].metadata, original[2].metadata]
+
+
+def test_review_rewrite_may_match_a_row_an_omitted_index_keeps_verbatim(review_identity_case):
+    from utils.llm_client import HumanMessage
+
+    original = _identified_review_messages()
+    corrected = [HumanMessage('user-B'), HumanMessage('user-B')]
+    status, saved, _ = review_identity_case(original, corrected, source_indexes=[0, None])
+    assert status == 'patched'
+    assert [message.content for message in saved] == ['user-B', 'user-B']
+    assert [message.metadata for message in saved] == [original[0].metadata, original[2].metadata]
+
+
+def test_review_omitted_index_cannot_keep_a_row_an_explicit_index_rewrote(review_identity_case):
+    """The omitted copy of user-B must not shield index 0, nor inherit user-C's identity."""
+    from memory.recent import _resolve_review_sources
+    from utils.llm_client import HumanMessage, messages_to_dict
+
+    original = _identified_review_messages()
+    corrected = [HumanMessage('user-B'), HumanMessage('user-B'), HumanMessage('edited user-B')]
+    status, saved, _ = review_identity_case(original, corrected, source_indexes=[0, None, 2])
+    assert status == 'failed'
+    assert messages_to_dict(saved) == messages_to_dict(original)
+    assert _resolve_review_sources(original, corrected, [0, None, 2], strict=False) == [None, None, 2]
+
+
+def test_review_elimination_cannot_give_a_rewritten_rows_text_another_identity(review_identity_case):
+    from memory.recent import _resolve_review_sources
+    from utils.llm_client import HumanMessage, messages_to_dict
+
+    original = _identified_review_messages()[:3]
+    corrected = [HumanMessage('user-B'), HumanMessage('edited user-B')]
+    assert _resolve_review_sources(original, corrected, [None, 2], strict=True) == [None, 2]
+    status, saved, _ = review_identity_case(original, corrected, source_indexes=[None, 2])
+    assert status == 'failed'
+    assert messages_to_dict(saved) == messages_to_dict(original)
+
+
+@pytest.mark.parametrize('indexes', [[2, None, 1], None])
+def test_review_elimination_still_resolves_a_rewrite_matching_a_kept_row(indexes):
+    from memory.recent import _resolve_review_sources
+    from utils.llm_client import HumanMessage, AIMessage
+
+    original = _identified_review_messages()[:3]
+    corrected = [HumanMessage('user-B'), HumanMessage('user-B'), AIMessage('reply-A')]
+    assert _resolve_review_sources(original, corrected, indexes, strict=True) == [2, 0, 1]
+
+
+def test_review_omitted_index_of_another_role_does_not_keep_a_row():
+    from memory.recent import _resolve_review_sources
+    from utils.llm_client import HumanMessage, AIMessage
+
+    original = _identified_review_messages()
+    corrected = [HumanMessage('user-B'), AIMessage('user-B')]
+    with pytest.raises(ValueError, match='^invalid_review_sources$'):
+        _resolve_review_sources(original, corrected, [0, None], strict=True)
+
+
+def test_review_malformed_position_does_not_keep_a_row():
+    from memory.recent import _MALFORMED_REVIEW_SOURCE, _resolve_review_sources
+    from utils.llm_client import HumanMessage
+
+    original = _identified_review_messages()
+    corrected = [HumanMessage('user-B'), HumanMessage('user-B')]
+    assert _resolve_review_sources(original, corrected, [0, _MALFORMED_REVIEW_SOURCE], strict=False) == [None, None]
+
+
+def test_review_rewrite_matching_another_role_is_not_a_mislabel(review_identity_case):
+    from utils.llm_client import HumanMessage, messages_to_dict
+
+    original = _identified_review_messages()
+    status, saved, _ = review_identity_case(original, [HumanMessage('reply-A')], source_indexes=[0])
+    assert status == 'patched'
+    assert messages_to_dict(saved)[0]['data']['content'] == 'reply-A'
+    assert saved[0].metadata == original[0].metadata
+
+
+def test_review_equal_text_rows_may_exchange_indexes(review_identity_case):
+    """Equal rows are indistinguishable, so this is not the different-content swap."""
+    from utils.llm_client import HumanMessage
+
+    original = _identified_review_messages()
+    original[0].content = original[2].content = 'same user text'
+    corrected = [HumanMessage('same user text'), HumanMessage('same user text')]
+    status, saved, _ = review_identity_case(original, corrected, source_indexes=[2, 0])
+    assert status == 'patched'
+    assert [message.metadata for message in saved] == [original[2].metadata, original[0].metadata]
 
 
 def test_review_keeps_concurrent_append_and_theater_capsule(review_identity_case):
@@ -709,6 +869,270 @@ def test_uncertain_native_receipt_blocks_sync_but_allows_a_local_save(tmp_path):
     with recent_file.recent_file_access(path) as resolved:
         with pytest.raises(ValueError, match='recent_write_receipt_conflict'):
             recent_file.read_recent_write_receipt_unlocked(resolved, *receipt)
+
+
+def test_failed_replacement_keeps_the_old_file_and_a_clean_retry(devices, monkeypatch):
+    """A write interrupted after the temp file is complete still leaves only the old content."""
+    sync, path, _, _ = devices('interrupted', [row('human', 'old chat')])
+    local = sync.adapter.read('Role')
+    before = path.read_bytes()
+    receipt = ('domain', '1' * 32)
+
+    def busy(*args):
+        raise OSError('synthetic replace failure')
+
+    with monkeypatch.context() as patch:
+        patch.setattr('utils.file_utils._replace_with_busy_retry', busy)
+        with pytest.raises(OSError, match='synthetic replace failure'):
+            sync.adapter.apply('Role', [entry('c', 'download')], local['fingerprint'], receipt=receipt)
+    assert path.read_bytes() == before
+    assert sorted(item.name for item in path.parent.iterdir() if item.name.endswith('.tmp')) == []
+    assert sync.adapter.applied('Role', receipt) is False
+    assert sync.adapter.apply('Role', [entry('c', 'download')], local['fingerprint'], receipt=('domain', '2' * 32)) is True
+    assert sync.adapter.read('Role')['entries'][0]['text'] == 'download'
+
+
+@pytest.mark.asyncio
+async def test_unverified_replacement_never_advances_the_sync_base(devices, monkeypatch):
+    """Otherwise the next diff would upload the rows the file never received as deletions."""
+    from utils import recent_file
+
+    sync, path, _, _ = devices('unverified', [row('human', 'old chat')])
+    server = Server()
+    await sync.sync(DOMAIN, 'Role', server.request, commit)
+    base = sync.state(DOMAIN.key())['base']
+    uploads = list(server.requests)
+    server.rows = server.rows + [entry('c', 'from another device')]
+    before = path.read_bytes()
+    real_write = recent_file.atomic_write_json
+
+    def lost_replacement(target, payload, **kwargs):
+        if Path(target) != path:
+            real_write(target, payload, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(recent_file, 'atomic_write_json', lost_replacement)
+        result = await sync.sync(DOMAIN, 'Role', server.request, commit)
+    assert result['hasMore'] is True and result['changed'] is False
+    assert path.read_bytes() == before
+    assert sync.state(DOMAIN.key())['base'] == base
+    await sync.sync(DOMAIN, 'Role', server.request, commit)
+    assert server.requests == uploads
+    assert {item['text'] for item in sync.adapter.read('Role')['entries']} == {'old chat', 'from another device'}
+
+
+@pytest.mark.asyncio
+async def test_truncated_replacement_blocks_upload_and_keeps_the_base(devices, monkeypatch):
+    """If bytes ever land incomplete, the hash check stops the base and nothing reaches the cloud."""
+    from utils import recent_file
+
+    sync, path, _, _ = devices('truncated-write', [row('human', 'old chat')])
+    server = Server()
+    await sync.sync(DOMAIN, 'Role', server.request, commit)
+    base = sync.state(DOMAIN.key())['base']
+    uploads = list(server.requests)
+    server.rows = server.rows + [entry('c', 'from another device')]
+
+    real_write = recent_file.atomic_write_json
+
+    def truncated(target, payload, **kwargs):
+        if Path(target) != path:
+            real_write(target, payload, **kwargs)
+        else:
+            path.write_text(json.dumps(payload, **kwargs)[:10], encoding='utf-8')
+
+    with monkeypatch.context() as patch:
+        patch.setattr(recent_file, 'atomic_write_json', truncated)
+        with pytest.raises(ValueError, match='^recent_write_receipt_conflict$'):
+            await sync.sync(DOMAIN, 'Role', server.request, commit)
+    landed = path.read_bytes()
+    assert sync.state(DOMAIN.key())['base'] == base
+    with pytest.raises(ValueError, match='^recent_write_receipt_conflict$'):
+        await sync.sync(DOMAIN, 'Role', server.request, commit)
+    assert server.requests == uploads
+    assert path.read_bytes() == landed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('broken', ['', '[{"type":"human","data":{"content":"cut o'])
+async def test_incomplete_local_file_is_neither_uploaded_nor_overwritten_by_sync(devices, broken):
+    sync, path, _, _ = devices('incomplete-local', [row('human', 'old chat')])
+    server = Server()
+    await sync.sync(DOMAIN, 'Role', server.request, commit)
+    base = sync.state(DOMAIN.key())['base']
+    uploads = list(server.requests)
+    server.rows = server.rows + [entry('c', 'from another device')]
+    path.write_text(broken)
+    with pytest.raises(ValueError):
+        await sync.sync(DOMAIN, 'Role', server.request, commit)
+    assert path.read_text() == broken
+    assert server.requests == uploads
+    assert sync.state(DOMAIN.key())['base'] == base
+
+
+@pytest.mark.parametrize('broken', [b'', b'[{"type":"human","data":{"content":"cut o', b'{"not":"a list"}', b'\xff\xfe\xff'])
+def test_unreadable_reports_damaged_content_without_touching_it(devices, broken):
+    sync, path, _, _ = devices('damaged', [row('human', 'old chat')])
+    assert sync.adapter.unreadable('Role') is False
+    path.write_bytes(broken)
+    assert sync.adapter.unreadable('Role') is True
+    assert path.read_bytes() == broken
+    path.write_text(json.dumps([row('human', 'repaired')]))
+    assert sync.adapter.unreadable('Role') is False
+
+
+def test_unreadable_says_nothing_when_the_content_was_not_inspected(devices, monkeypatch):
+    from utils import recent_file
+
+    sync, path, _, _ = devices('not-inspected', [row('human', 'old chat')])
+    path.unlink()
+    assert sync.adapter.unreadable('Role') is False, 'a missing file is an empty history'
+    path.write_text('{')
+
+    def access(error):
+        def raising(*args, **kwargs):
+            raise error
+        return raising
+
+    with monkeypatch.context() as patch:
+        patch.setattr('memory.recent_sync.recent_file_access', access(recent_file.RecentFileLockTimeout('busy')))
+        assert sync.adapter.unreadable('Role') is False
+    with monkeypatch.context() as patch:
+        patch.setattr('memory.recent_sync.recent_file_access', access(recent_file.RecentFileDeletedError('gone')))
+        assert sync.adapter.unreadable('Role') is False
+    with monkeypatch.context() as patch:
+        patch.setattr(sync.adapter, 'path', access(ValueError('invalid name')))
+        assert sync.adapter.unreadable('Role') is False
+
+
+@pytest.mark.asyncio
+async def test_status_reports_a_damaged_file_and_clears_once_repaired(tmp_path, monkeypatch):
+    """The notice must not leave the block a recorded failure would: repair alone resumes sync."""
+    import httpx
+    from tests.unit.test_chat_sync_runtime import SyntheticService, setup_runtime
+
+    monkeypatch.setattr('memory.recent_sync.assert_cloudsave_writable', lambda *args, **kwargs: None)
+    path = tmp_path / 'memory' / 'Neko' / 'recent.json'
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps([row('human', 'current chat')]))
+    remote = Server()
+
+    class RecentService(SyntheticService):
+        async def request(self, request):
+            if request.url.path.endswith(('/recent-memory', '/recent-memory/view')):
+                return httpx.Response(200, json=await remote.request(request.method, request.url.path, request.content or None))
+            return await super().request(request)
+
+    service = RecentService()
+    service.owner = OWNER
+    adapter = RecentMemoryAdapter(SimpleNamespace(memory_dir=tmp_path / 'memory', project_memory_dir=tmp_path / 'memory'))
+    runtime, _, _ = setup_runtime(tmp_path, service, recent_memory_adapter=adapter)
+    code = 'recent_memory_file_unreadable'
+
+    async def diagnostics():
+        return (await runtime.status())['bindings'][0]['localMemoryDiagnostics']
+
+    try:
+        await runtime.configure('https://sync.test')
+        await runtime.enable(UID, 'Neko')
+        presence = await runtime.session_presence_provider()
+        assert await diagnostics() == []
+        await runtime._channel_pass(UID, 'pull', presence=presence)
+        uploads = list(remote.requests)
+        path.write_text('[{"cut')
+        assert await diagnostics() == [code]
+        assert path.read_text() == '[{"cut'
+        # Sync still refuses the file, and neither the refusal nor the status read records a failure.
+        with pytest.raises(ValueError):
+            await runtime._channel_pass(UID, 'pull', presence=presence)
+        assert runtime.scheduler.last_error(DOMAIN.key()) is None
+        assert remote.requests == uploads
+        # A paused role is not reported on.
+        await runtime.pause(UID)
+        assert await diagnostics() == []
+        await runtime.enable(UID, 'Neko')
+        assert await diagnostics() == [code]
+        # A role whose name cannot be resolved must not break the whole status read.
+        resolve = runtime.recent_character_name
+
+        async def failing(_uid):
+            raise OSError('synthetic characters read failure')
+
+        runtime.recent_character_name = failing
+        assert await diagnostics() == []
+        runtime.recent_character_name = resolve
+
+        path.write_text(json.dumps([row('human', 'current chat'), row('human', 'written after the repair')]))
+        assert await diagnostics() == []
+        runtime.scheduler.request_check(DOMAIN.key(), 'pull')
+        with closing(runtime.scheduler._connect()) as conn, conn:
+            conn.execute("UPDATE scheduler_tasks SET retry_at=0 WHERE domain=? AND channel='pull'", (DOMAIN.key(),))
+        result = await runtime._channel_pass(UID, 'pull', presence=presence)
+        assert result is not None and result['uploaded'] >= 1
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('broken_sidecar, code', [
+    (False, 'recent_write_receipt_conflict'),
+    (True, 'invalid_recent_write_receipt'),
+])
+async def test_unconfirmed_write_stays_blocked_and_reports_its_real_cause(tmp_path, monkeypatch, broken_sidecar, code):
+    """Reporting is the chosen response: neither re-enabling nor a local save releases the block."""
+    import httpx
+    from contextlib import closing
+    from services.chat_sync.writer import store_connection
+    from tests.unit.test_chat_sync_runtime import SyntheticService, setup_runtime
+    from utils import recent_file
+
+    monkeypatch.setattr('memory.recent_sync.assert_cloudsave_writable', lambda *args, **kwargs: None)
+    path = tmp_path / 'memory' / 'Neko' / 'recent.json'
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps([row('human', 'current chat')]))
+    remote = Server()
+
+    class RecentService(SyntheticService):
+        recent_requests = 0
+
+        async def request(self, request):
+            if request.url.path.endswith(('/recent-memory', '/recent-memory/view')):
+                self.recent_requests += 1
+                return httpx.Response(200, json=await remote.request(request.method, request.url.path, request.content or None))
+            return await super().request(request)
+
+    service = RecentService()
+    service.owner = OWNER
+    adapter = RecentMemoryAdapter(SimpleNamespace(memory_dir=tmp_path / 'memory', project_memory_dir=tmp_path / 'memory'))
+    runtime, _, _ = setup_runtime(tmp_path, service, recent_memory_adapter=adapter)
+    key, token = DOMAIN.key(), '1' * 32
+    try:
+        await runtime.configure('https://sync.test')
+        await runtime.enable(UID, 'Neko')
+        presence = await runtime.session_presence_provider()
+        with recent_file.recent_file_access(path) as resolved:
+            recent_file.write_recent_payload_unlocked(resolved, [row('human', 'downloaded')], receipt=(key, token))
+        with closing(store_connection(runtime.recent_memory.path)) as conn, conn:
+            conn.execute('INSERT OR REPLACE INTO recent_memory_apply VALUES(?,?,?,?)', (key, token, '[]', 1))
+        path.write_text(json.dumps([row('human', 'restored outside the writer')]))
+        if broken_sidecar:
+            Path(recent_file.recent_sidecar_path(path, recent_file._write_receipts_filename(path))).write_text('{')
+
+        with pytest.raises(ValueError, match=f'^{code}$'):
+            await runtime._channel_pass(UID, 'pull', presence=presence)
+        assert runtime.scheduler.last_error(key) == code
+        status = await runtime.status()
+        assert status['bindings'][0]['lastSyncError'] == code
+        await runtime.pause(UID)
+        await runtime.enable(UID, 'Neko')
+        with pytest.raises(ValueError, match=f'^{code}$'):
+            await runtime._channel_pass(UID, 'pull', presence=presence)
+        recent_file.write_recent_payload(path, [row('human', 'normal local save still works')])
+        assert json.loads(path.read_text())[0]['data']['content'] == 'normal local save still works'
+        assert service.recent_requests == 0
+        assert remote.requests == []
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.asyncio

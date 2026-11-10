@@ -385,6 +385,21 @@ def test_last_error_ignores_rows_left_by_retired_body_and_marker_channels(tmp_pa
     assert scheduler.last_error("a") == "chat_sync_retry_later"
 
 
+@pytest.mark.parametrize("code", ["recent_write_receipt_conflict", "invalid_recent_write_receipt"])
+def test_unconfirmed_recent_write_keeps_its_code_and_blocks_the_channel(tmp_path, code):
+    scheduler = ChatSyncScheduler(tmp_path / "scheduler.sqlite3", clock=lambda: 1000)
+    scheduler.failure("a", "pull", 1, "session", ValueError(code))
+    assert scheduler.last_error("a") == code
+    scheduler.request_check("a", "pull")
+    assert scheduler.ready("a", "pull", 1, "session") is False
+
+
+def test_unknown_error_text_is_still_not_stored(tmp_path):
+    scheduler = ChatSyncScheduler(tmp_path / "scheduler.sqlite3", clock=lambda: 1000)
+    scheduler.failure("a", "pull", 1, "session", ValueError("private path C:/Users/someone/recent.json"))
+    assert scheduler.last_error("a") == "chat_sync_unavailable"
+
+
 # The scheduler_device shape every released version created before its unused
 # columns were dropped from new databases; wake_at had no default there.
 EARLIER_DEVICE_TABLE = """

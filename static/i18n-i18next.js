@@ -30,7 +30,7 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // Refresh merged sync and music locale keys together.
-    const LOCALE_VERSION = '2026-11-09-sync-netease-library';
+    const LOCALE_VERSION = '2026-11-10-music-context-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

@@ -834,5 +834,7 @@ async def test_every_exit_keeping_the_shown_text_completes_the_reply(monkeypatch
     else:
         client = _summary_client(monkeypatch, _SUMMARY_GIBBERISH_TAIL)
     tail = SimpleNamespace(completed=False, discard_attempt=lambda: None)
-    await client.stream_text("Q1", reply_owner=SimpleNamespace(reply_tail=tail))
+    owner = SimpleNamespace(reply_tail=tail, observation_close_reason="unknown")
+    await client.stream_text("Q1", reply_owner=owner)
     assert tail.completed
+    assert owner.observation_close_reason == "completed"

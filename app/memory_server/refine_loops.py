@@ -23,7 +23,8 @@ import functools
 import hashlib
 import json
 from contextlib import nullcontext
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 from config import (
     MEMORY_REFINE_CLUSTERS_PER_PASS,
@@ -34,6 +35,7 @@ from config import (
 
 from . import gates, review, runtime
 from ._shared import logger
+from .rows import _extract_visible_timed_messages_from_rows
 from utils.language_utils import language_context
 
 from .locale_state import (
@@ -544,6 +546,25 @@ _INTROSPECTION_LAST_FAILURE_KEY = 'introspection_last_failure_at'
 _INTROSPECTION_FAILURES_KEY = 'introspection_transient_failures'
 
 
+@dataclass(frozen=True)
+class _ReviewStateKeys:
+    """Where one weekly review keeps its clock in the maintenance map."""
+
+    last_run: str
+    last_failure: str
+    failures: str
+
+
+_INTROSPECTION_KEYS = _ReviewStateKeys(
+    _INTROSPECTION_LAST_RUN_KEY, _INTROSPECTION_LAST_FAILURE_KEY, _INTROSPECTION_FAILURES_KEY,
+)
+_BEHAVIOR_REVIEW_KEYS = _ReviewStateKeys(
+    'behavior_review_last_run_at',
+    'behavior_review_last_failure_at',
+    'behavior_review_transient_failures',
+)
+
+
 def _parse_maint_time(value, now: datetime) -> datetime | None:
     """A stored timestamp, or None when missing, malformed or in the future.
 
@@ -563,10 +584,7 @@ def _introspection_due(name: str, now: datetime) -> bool:
     """Never run → due now (the upgrade path); otherwise one interval after
     the last finished run, and after a transient failure not before its step
     of the backoff ladder has passed."""
-    from config import (
-        MEMORY_INTROSPECTION_INTERVAL_SECONDS,
-        MEMORY_INTROSPECTION_RETRY_BACKOFF_SECONDS,
-    )
+    from config import MEMORY_INTROSPECTION_INTERVAL_SECONDS
 
     view = gates._maint_view(name)
     last_run = _parse_maint_time(view.get(_INTROSPECTION_LAST_RUN_KEY), now)
@@ -575,11 +593,18 @@ def _introspection_due(name: str, now: datetime) -> bool:
         and (now - last_run).total_seconds() < MEMORY_INTROSPECTION_INTERVAL_SECONDS
     ):
         return False
+    return _retry_backoff_passed(view, _INTROSPECTION_KEYS, now)
+
+
+def _retry_backoff_passed(view, keys: "_ReviewStateKeys", now: datetime) -> bool:
+    """Whether the step of the retry ladder after a transient failure has passed."""
+    from config import MEMORY_INTROSPECTION_RETRY_BACKOFF_SECONDS
+
     try:
-        failures = int(view.get(_INTROSPECTION_FAILURES_KEY) or 0)
+        failures = int(view.get(keys.failures) or 0)
     except (TypeError, ValueError):
         failures = 0
-    last_failure = _parse_maint_time(view.get(_INTROSPECTION_LAST_FAILURE_KEY), now)
+    last_failure = _parse_maint_time(view.get(keys.last_failure), now)
     if failures > 0 and last_failure is not None:
         ladder = MEMORY_INTROSPECTION_RETRY_BACKOFF_SECONDS
         wait = ladder[min(failures, len(ladder)) - 1]
@@ -588,38 +613,42 @@ def _introspection_due(name: str, now: datetime) -> bool:
     return True
 
 
-def _finish_introspection_state(state: dict, stamp: str) -> None:
-    state[_INTROSPECTION_LAST_RUN_KEY] = stamp
-    state.pop(_INTROSPECTION_LAST_FAILURE_KEY, None)
-    state.pop(_INTROSPECTION_FAILURES_KEY, None)
+def _finish_review_state(keys: "_ReviewStateKeys", state: dict, stamp: str) -> None:
+    state[keys.last_run] = stamp
+    state.pop(keys.last_failure, None)
+    state.pop(keys.failures, None)
 
 
-def _mutate_introspection_finished(stamp: str, state: dict) -> tuple[bool, None]:
+def _mutate_review_finished(
+    keys: "_ReviewStateKeys", stamp: str, state: dict,
+) -> tuple[bool, None]:
     """Mutator: the run is over for this cycle, whether it succeeded or failed
     in a way a retry would not fix; the next run is a week away."""
-    _finish_introspection_state(state, stamp)
+    _finish_review_state(keys, state, stamp)
     return True, None
 
 
-def _mutate_introspection_transient_failure(
-    stamp: str, max_retries: int, state: dict,
+def _mutate_review_transient_failure(
+    keys: "_ReviewStateKeys", stamp: str, max_retries: int, state: dict,
 ) -> tuple[bool, bool]:
     """Mutator: count one transient failure. Past ``max_retries`` the cycle is
     given up and the next run waits for the weekly interval; returns whether
     that happened."""
     try:
-        failures = int(state.get(_INTROSPECTION_FAILURES_KEY) or 0) + 1
+        failures = int(state.get(keys.failures) or 0) + 1
     except (TypeError, ValueError):
         failures = 1
     if failures > max_retries:
-        _finish_introspection_state(state, stamp)
+        _finish_review_state(keys, state, stamp)
         return True, True
-    state[_INTROSPECTION_FAILURES_KEY] = failures
-    state[_INTROSPECTION_LAST_FAILURE_KEY] = stamp
+    state[keys.failures] = failures
+    state[keys.last_failure] = stamp
     return True, False
 
 
-async def _astamp_introspection(name: str, *, transient_failure: bool) -> bool:
+async def _astamp_review(
+    name: str, keys: "_ReviewStateKeys", *, transient_failure: bool,
+) -> bool:
     """Record how a run ended; True when a transient failure used up the
     retries and the cycle was given up."""
     from config import MEMORY_INTROSPECTION_RETRY_BACKOFF_SECONDS
@@ -627,16 +656,20 @@ async def _astamp_introspection(name: str, *, transient_failure: bool) -> bool:
     stamp = datetime.now().isoformat()
     if not transient_failure:
         await gates._amutate_maint_state(
-            name, functools.partial(_mutate_introspection_finished, stamp),
+            name, functools.partial(_mutate_review_finished, keys, stamp),
         )
         return False
     return await gates._amutate_maint_state(
         name,
         functools.partial(
-            _mutate_introspection_transient_failure, stamp,
+            _mutate_review_transient_failure, keys, stamp,
             len(MEMORY_INTROSPECTION_RETRY_BACKOFF_SECONDS),
         ),
     )
+
+
+async def _astamp_introspection(name: str, *, transient_failure: bool) -> bool:
+    return await _astamp_review(name, _INTROSPECTION_KEYS, transient_failure=transient_failure)
 
 
 async def _run_introspection_for_character(character: str) -> None:
@@ -680,6 +713,96 @@ async def _run_introspection_for_character(character: str) -> None:
     )
     if result.applied:
         queue_capture(character)
+
+
+# ── Weekly behavior review, right after the private introspection ──
+#
+# Due once per finished private introspection, so it keeps that weekly rhythm
+# without a second clock to fall out of step with, and needs no week of waiting
+# after an upgrade. It has its own retry state: a failure here must not rerun
+# the introspection, and one there must not keep this from its own retries.
+
+
+def _behavior_review_due(name: str, now: datetime) -> bool:
+    """A private introspection finished since this review last did."""
+    view = gates._maint_view(name)
+    last_introspection = _parse_maint_time(view.get(_INTROSPECTION_LAST_RUN_KEY), now)
+    if last_introspection is None:
+        return False
+    last_run = _parse_maint_time(view.get(_BEHAVIOR_REVIEW_KEYS.last_run), now)
+    if last_run is not None and last_run >= last_introspection:
+        return False
+    return _retry_backoff_passed(view, _BEHAVIOR_REVIEW_KEYS, now)
+
+
+async def _abehavior_review_enabled() -> bool:
+    """The review follows "natural expression", the user's opt-out for this area;
+    the tick has already checked powerful memory."""
+    from utils.slop_filter import is_slop_filter_enabled
+
+    return bool(await asyncio.to_thread(is_slop_filter_enabled))
+
+
+async def _aread_behavior_review_messages(character: str, now: datetime) -> list:
+    """The private conversation inside the review window, oldest first."""
+    from config import MEMORY_BEHAVIOR_REVIEW_ROW_LIMIT, MEMORY_BEHAVIOR_REVIEW_WINDOW_SECONDS
+    from memory.behavior_notes import ReviewMessage
+
+    since = now - timedelta(seconds=MEMORY_BEHAVIOR_REVIEW_WINDOW_SECONDS)
+    rows = await runtime.time_manager.aretrieve_latest_original_since(
+        character, since, MEMORY_BEHAVIOR_REVIEW_ROW_LIMIT,
+    )
+    return [
+        ReviewMessage(at=message['at'], role=message['role'], text=message['text'])
+        for message in _extract_visible_timed_messages_from_rows(rows)
+        # The row filter compares stored text; this compares the parsed time.
+        if message['at'] >= since
+    ]
+
+
+async def _run_behavior_review_for_character(character: str) -> None:
+    """One behavior review, then record when it ended and how.
+
+    As with introspection, a run cancelled midway records nothing.
+    """
+    from memory.behavior_notes import FAILURE_TRANSIENT, arun_behavior_review
+
+    from .habitual_phrase_loop import _aresolve_mining_language
+
+    pm = runtime.persona_manager
+    engine_ref = runtime.reflection_engine
+    if pm is None or engine_ref is None or runtime.time_manager is None:
+        return
+    try:
+        language = await _aresolve_mining_language(character)
+        if language is None:
+            await _astamp_review(character, _BEHAVIOR_REVIEW_KEYS, transient_failure=False)
+            return
+        messages = await _aread_behavior_review_messages(character, datetime.now())
+        result = await arun_behavior_review(
+            character,
+            messages=messages,
+            language=language,
+            config_manager=runtime._config_manager,
+            persona_manager=pm,
+            reflection_engine=engine_ref,
+        )
+    except Exception:
+        # Outside the model call (a history read or a save hitting a busy or
+        # read-only store): worth another try soon.
+        await _astamp_review(character, _BEHAVIOR_REVIEW_KEYS, transient_failure=True)
+        raise
+    gave_up = await _astamp_review(
+        character, _BEHAVIOR_REVIEW_KEYS,
+        transient_failure=result.failure == FAILURE_TRANSIENT,
+    )
+    logger.info(
+        f"[BehaviorNotes] {character}: 结束 skipped={result.skipped or None} "
+        f"added={result.added} renewed={result.renewed} retired={result.retired} "
+        f"rejected={dict(result.rejected)} "
+        f"failure={result.failure}({result.failure_reason})"
+        + ("，重试次数用完，等下一周期" if gave_up else "")
+    )
 
 
 # ── Weekly introspection of scoped subjects (groups, members, people) ──
@@ -971,7 +1094,8 @@ async def _run_scoped_introspection_for_subject(character: str, subject) -> None
 
 async def _run_introspection_tick() -> None:
     """Start at most one due review, and only while idle: a character's
-    private block, or else one of its scoped subjects."""
+    private block, or else her behavior review, or else one of her scoped
+    subjects."""
     if not gates._is_idle():
         return
     if not await gates._ais_powerful_memory_enabled():
@@ -985,10 +1109,15 @@ async def _run_introspection_tick() -> None:
     now = datetime.now()
     for name in catgirl_names:
         scoped_subject = None
+        behavior_review = False
         if not _introspection_due(name, now):
-            scoped_subject = await _next_scoped_introspection_subject(name, now)
-            if scoped_subject is None:
-                continue
+            behavior_review = (
+                _behavior_review_due(name, now) and await _abehavior_review_enabled()
+            )
+            if not behavior_review:
+                scoped_subject = await _next_scoped_introspection_subject(name, now)
+                if scoped_subject is None:
+                    continue
         # Spawn under the lock character release takes: a name already
         # retired (renamed / deleted) is skipped, and a run registered here
         # is cancelled and drained by the release instead of applying its
@@ -1009,7 +1138,11 @@ async def _run_introspection_tick() -> None:
             existing = review.introspection_tasks.get(name)
             if existing is not None and not existing.done():
                 return
-            if scoped_subject is None:
+            if behavior_review:
+                run = run_with_character_prompt_locale(
+                    name, _run_behavior_review_for_character, name,
+                )
+            elif scoped_subject is None:
                 run = run_with_character_prompt_locale(
                     name, _run_introspection_for_character, name,
                 )
