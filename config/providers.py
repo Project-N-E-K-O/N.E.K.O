@@ -80,7 +80,8 @@ EXTRA_BODY_GEMINI_THINKING = {"extra_body": {"google": {"thinking_config": {"thi
 EXTRA_BODY_GEMINI_3 = {"extra_body": {"google": {"thinking_config": {"thinking_level": "low", "include_thoughts": False}}}}
 # Gemini 3: keep lowest thinking level (low), exposing thoughts separately without mixing into content.
 EXTRA_BODY_GEMINI_3_THINKING = {"extra_body": {"google": {"thinking_config": {"thinking_level": "low", "include_thoughts": True}}}}
-# gemini-3.5-flash-lite already defaults to minimal (Google's 3.6 guide); low would raise it.
+# Flash-Lite models sit on minimal: gemini-3.5-flash-lite already defaults to it (Google's 3.6 guide)
+# and 3.1-flash-lite accepts it, so low would only add billed thinking tokens.
 # Focused cognition pairs with the same low form as the rest of Gemini 3.
 EXTRA_BODY_GEMINI_3_MINIMAL = {"extra_body": {"google": {"thinking_config": {"thinking_level": "minimal", "include_thoughts": False}}}}
 
@@ -215,7 +216,7 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "gemini-2.5-flash": EXTRA_BODY_GEMINI,
     "gemini-2.5-flash-lite": EXTRA_BODY_GEMINI,
     "gemini-3-flash-preview": EXTRA_BODY_GEMINI_3,
-    "gemini-3.1-flash-lite": EXTRA_BODY_GEMINI_3,
+    "gemini-3.1-flash-lite": EXTRA_BODY_GEMINI_3_MINIMAL,
     "gemini-3.5-flash": EXTRA_BODY_GEMINI_3,
     "gemini-3.5-flash-lite": EXTRA_BODY_GEMINI_3_MINIMAL,
     "gemini-3.6-flash": EXTRA_BODY_GEMINI_3,

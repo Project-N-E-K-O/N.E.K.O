@@ -87,9 +87,10 @@ def test_new_models_use_existing_dialect_constants():
     assert P.MODELS_EXTRA_BODY_MAP["qwen3.8-omni-flash"] is P.EXTRA_BODY_OPENAI
     assert P.MODELS_EXTRA_BODY_MAP["gemini-3.6-flash"] is P.EXTRA_BODY_GEMINI_3
     assert P.MODELS_EXTRA_BODY_MAP["gemini-3.8-flash"] is P.EXTRA_BODY_GEMINI_3
-    # 3.5-flash-lite defaults to minimal, so it stays there; Focus still flips to low.
-    assert P.MODELS_EXTRA_BODY_MAP["gemini-3.5-flash-lite"] is P.EXTRA_BODY_GEMINI_3_MINIMAL
-    assert P.MODELS_FOCUS_EXTRA_BODY_MAP["gemini-3.5-flash-lite"] is P.EXTRA_BODY_GEMINI_3_THINKING
+    # Flash-Lite sits on minimal; Focus still flips to low.
+    for model in ("gemini-3.1-flash-lite", "gemini-3.5-flash-lite"):
+        assert P.MODELS_EXTRA_BODY_MAP[model] is P.EXTRA_BODY_GEMINI_3_MINIMAL
+        assert P.MODELS_FOCUS_EXTRA_BODY_MAP[model] is P.EXTRA_BODY_GEMINI_3_THINKING
     assert P.MODELS_EXTRA_BODY_MAP["gemini-3.7-flash"] is P.EXTRA_BODY_GEMINI_3
     # OpenRouter Gemini sits on the upstream floor: minimal (Focus flips it to low) ...
     for model in (
