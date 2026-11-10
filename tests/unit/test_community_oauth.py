@@ -1760,6 +1760,20 @@ async def test_oauth_guest_bind_keeps_legacy_code_when_adopt_proof_times_out(mon
 
 
 @pytest.mark.unit
+async def test_oauth_guest_bind_refuses_plaintext_proof_transport(monkeypatch):
+    class _NoNetwork:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("client_proof must not leave over plaintext HTTP")
+
+    monkeypatch.setattr(O.httpx, "AsyncClient", _NoNetwork)
+    monkeypatch.setattr(C, "_get_client_credentials", lambda: ("local-client", "P" * 43))
+
+    bind = await O._oauth_guest_bind("http://community.example", "platform-access")
+
+    assert bind == {"bound": False, "error": "client_proof_transport_refused"}
+
+
+@pytest.mark.unit
 async def test_oauth_guest_bind_does_not_adopt_proof_on_proof_mismatch(monkeypatch):
     requests: list[httpx.Request] = []
 

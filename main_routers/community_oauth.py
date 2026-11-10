@@ -1196,8 +1196,9 @@ async def _handle_oauth_callback(
     if bind.get("error") == client_registration.LEGACY_REBIND_DETAIL:
         return _callback_html(
             "社区登录已完成",
-            "这台旧设备还没有本机证明，游客卡牌不会自动并入当前账号。"
-            "请联系管理员核对设备归属；核对并完成资产迁移后，回到 NEKO 重新登录一次即可写入证明。",
+            "这台旧设备还没有本机证明，游客卡牌暂时不会并入当前账号。"
+            "可以先回到 NEKO 重新登录一次；如果仍然看到这条提示，请联系管理员核对设备归属，"
+            "完成资产迁移后再登录即可写入证明。",
             status_code=200,
         )
     return _callback_html(
@@ -1301,6 +1302,13 @@ async def _bootstrap_session(social_base: str, access_token: str) -> dict[str, A
     return data
 
 
+def _response_detail(res: Any) -> Any:
+    try:
+        return res.json().get("detail")
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
 async def _oauth_guest_bind(social_base: str, access_token: str) -> dict[str, Any]:
     """Best-effort OAuth guest migration via binding challenge.
 
@@ -1308,13 +1316,17 @@ async def _oauth_guest_bind(social_base: str, access_token: str) -> dict[str, An
     but do not abort the login.
     """
     bind: dict[str, Any] = {"bound": False, "error": None}
+    base = social_base.rstrip("/")
+    if not client_registration.proof_transport_allowed(base):
+        logger.warning("community_oauth: refusing to send client_proof to %s", base)
+        bind["error"] = "client_proof_transport_refused"
+        return bind
     credentials = await asyncio.to_thread(C._get_client_credentials)
     if not credentials:
         bind["error"] = "client_not_registered"
         return bind
     client_id, client_proof = credentials
     headers = {"Authorization": f"Bearer {access_token}"}
-    base = social_base.rstrip("/")
 
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(_HTTP_TIMEOUT_SEC)) as client:
@@ -1324,13 +1336,10 @@ async def _oauth_guest_bind(social_base: str, access_token: str) -> dict[str, An
                 json={"client_id": client_id},
             )
             if challenge_res.status_code >= 400:
-                try:
-                    bind["error"] = (
-                        challenge_res.json().get("detail")
-                        or f"http_{challenge_res.status_code}"
-                    )
-                except (ValueError, TypeError, AttributeError):
-                    bind["error"] = f"http_{challenge_res.status_code}"
+                bind["error"] = (
+                    _response_detail(challenge_res)
+                    or f"http_{challenge_res.status_code}"
+                )
                 return bind
 
             try:
@@ -1351,17 +1360,11 @@ async def _oauth_guest_bind(social_base: str, access_token: str) -> dict[str, An
                 "binding_challenge": challenge,
             }
 
-            def _detail(res) -> Any:
-                try:
-                    return res.json().get("detail")
-                except (ValueError, TypeError, AttributeError):
-                    return None
-
             async def _approve():
                 res = await client.post(
                     f"{base}/api/clients/bind-approval", json=approval_payload
                 )
-                return res, _detail(res)
+                return res, _response_detail(res)
 
             approval_res, approval_detail = await _approve()
             # First cloud call from this install can predate registration; the
@@ -1390,16 +1393,18 @@ async def _oauth_guest_bind(social_base: str, access_token: str) -> dict[str, An
                     # the callback shows recovery guidance, not a generic outage.
                     logger.info("community_oauth: adopt-proof failed: %s", exc)
                 else:
+                    adopt_detail = _response_detail(adopt_res)
                     if adopt_res.status_code < 400:
                         approval_res, approval_detail = await _approve()
-                    elif _detail(adopt_res) == _BIND_OWNERSHIP_CONFLICT:
+                    elif adopt_detail == _BIND_OWNERSHIP_CONFLICT:
                         bind["error"] = _BIND_OWNERSHIP_CONFLICT
                         return bind
                     else:
-                        logger.info(
+                        log = logger.info if adopt_res.status_code == 409 else logger.warning
+                        log(
                             "community_oauth: adopt-proof returned %s: %s",
                             adopt_res.status_code,
-                            _detail(adopt_res),
+                            adopt_detail,
                         )
 
             if approval_res.status_code >= 400:
@@ -1417,7 +1422,7 @@ async def _oauth_guest_bind(social_base: str, access_token: str) -> dict[str, An
             if bind_res.status_code < 400:
                 bind["bound"] = True
                 return bind
-            bind["error"] = _detail(bind_res) or f"http_{bind_res.status_code}"
+            bind["error"] = _response_detail(bind_res) or f"http_{bind_res.status_code}"
     except (httpx.HTTPError, OSError) as exc:
         bind["error"] = "cloud_unreachable"
         logger.info("community_oauth: guest bind failed: %s", exc)
