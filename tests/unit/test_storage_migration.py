@@ -2015,7 +2015,9 @@ def test_storage_migration_preserves_install_records_for_kept_target_plugins(tmp
 
 
 @pytest.mark.unit
-def test_storage_migration_does_not_pair_copied_plugins_with_an_unrelated_lock(tmp_path):
+def test_storage_migration_does_not_pair_copied_plugins_with_an_unrelated_lock(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
     config_manager = _make_config_manager(tmp_path)
     source_root = config_manager.app_docs_dir
     target_root = tmp_path / "target-selected" / "N.E.K.O"
@@ -2026,6 +2028,11 @@ def test_storage_migration_does_not_pair_copied_plugins_with_an_unrelated_lock(t
     target_root.mkdir(parents=True)
     target_lock = target_root / "plugins.lock.json"
     target_lock.write_text('{"entries":[]}', encoding="utf-8")
+
+    def unexpected_copy(*_args, **_kwargs):
+        pytest.fail("an existing installation conflict must stop migration before staging")
+
+    monkeypatch.setattr(storage_migration_module, "_copy_and_verify_entry", unexpected_copy)
     create_pending_storage_migration(
         config_manager,
         source_root=source_root,
@@ -2040,6 +2047,72 @@ def test_storage_migration_does_not_pair_copied_plugins_with_an_unrelated_lock(t
     assert source_plugin.is_file()
     assert not (target_root / plugin_file).exists()
     assert target_lock.read_text(encoding="utf-8") == '{"entries":[]}'
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("pending_approval", [False, True])
+def test_reused_target_without_plugins_copies_installations_if_autostart_is_preserved(tmp_path, pending_approval):
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    plugin_file = ".neko-plugin-installations/plugins/example/plugin.toml"
+    source_plugin = source_root / plugin_file
+    source_plugin.parent.mkdir(parents=True)
+    source_plugin.write_text('[plugin]\nid = "example"\n', encoding="utf-8")
+    lock_file = source_root / "plugins.lock.json"
+    lock_file.write_text('{"entries":[{"plugin_id":"example"}]}', encoding="utf-8")
+    characters = target_root / "config" / "characters.json"
+    characters.parent.mkdir(parents=True)
+    characters.write_text('{"猫娘":{"Custom":{}}}', encoding="utf-8")
+    if pending_approval:
+        approvals = source_root / "config" / "plugin_autostart_pending.json"
+        approvals.parent.mkdir()
+        approvals.write_text('{"pending":["example"]}', encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager, source_root=source_root, target_root=target_root, selection_source="legacy",
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert characters.read_text(encoding="utf-8") == '{"猫娘":{"Custom":{}}}'
+    if pending_approval:
+        assert result["error_code"] == "plugin_installation_conflict"
+        assert not (target_root / plugin_file).exists()
+        assert approvals.is_file()
+    else:
+        assert result["completed"] is True
+        assert (target_root / plugin_file).read_bytes() == source_plugin.read_bytes()
+        assert (target_root / lock_file.name).read_bytes() == lock_file.read_bytes()
+
+
+@pytest.mark.unit
+def test_storage_migration_preserves_scoped_plugin_install_records(tmp_path, monkeypatch):
+    from plugin.server.application.install_source.manager import resolve_lock_path
+
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    execution_root = tmp_path / "external-plugins"
+    execution_root.mkdir()
+    monkeypatch.setenv("PLUGIN_CONFIG_ROOT", str(execution_root))
+    monkeypatch.delenv("NEKO_PLUGIN_INSTALL_LOCK_PATH", raising=False)
+    source_lock = resolve_lock_path(state_root=source_root / "plugins")
+    target_lock = resolve_lock_path(state_root=target_root / "plugins")
+    source_lock.parent.mkdir(parents=True, exist_ok=True)
+    source_lock.write_text('{"entries":[{"plugin_id":"example","channel":"market"}]}', encoding="utf-8")
+    unrelated = source_root / "plugins.example.lock.json"
+    unrelated.write_text("unrelated", encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager, source_root=source_root, target_root=target_root, selection_source="custom",
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is True
+    assert target_lock.name == source_lock.name
+    assert target_lock.read_bytes() == source_lock.read_bytes()
+    assert source_lock.name in result["payload"]["copied_entries"]
+    assert not (target_root / unrelated.name).exists()
 
 
 @pytest.mark.unit

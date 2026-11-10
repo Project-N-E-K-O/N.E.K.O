@@ -84,6 +84,7 @@ from utils.storage_migration import (
     is_storage_migration_pending,
     load_storage_migration,
     metadata_fingerprint,
+    migrated_runtime_entry_names,
     move_entry_without_overwrite,
     private_cleanup_entry_name,
     private_cleanup_name,
@@ -838,7 +839,11 @@ def _safe_path_size(path: Path) -> int:
 
 def _estimate_runtime_payload_bytes(source_root: Path) -> int:
     total = 0
-    for name in MIGRATED_RUNTIME_ENTRY_NAMES:
+    try:
+        entry_names = migrated_runtime_entry_names(source_root)
+    except OSError:
+        entry_names = MIGRATED_RUNTIME_ENTRY_NAMES
+    for name in entry_names:
         total += _safe_path_size(source_root / name)
     return total
 
@@ -1693,6 +1698,11 @@ def _cleanup_retained_runtime_root(
     # kept in it stay put.
     def _collect_remaining() -> tuple[str, ...]:
         leftovers = _private_cleanup_leftovers(retained_path)
+        try:
+            entry_names = migrated_runtime_entry_names(retained_path)
+        except OSError:
+            entry_names = MIGRATED_RUNTIME_ENTRY_NAMES
+            leftovers = None
         return tuple(
             dict.fromkeys(
                 # A v1 checkpoint also carries evidence for what was copied
@@ -1704,7 +1714,7 @@ def _cleanup_retained_runtime_root(
                     # Every migrated name counts here, a v1 checkpoint's too:
                     # one restored in the old root after its catch-up (a sync
                     # client) is data the cleanup must not pass over.
-                    for entry_name in dict.fromkeys([*MIGRATED_RUNTIME_ENTRY_NAMES, *proofs, *catch_up_skipped])
+                    for entry_name in dict.fromkeys([*entry_names, *proofs, *catch_up_skipped])
                     if _entry_may_exist(retained_path / entry_name)
                 ]
                 + [entry_name for entry_name, _private in leftovers or []]
