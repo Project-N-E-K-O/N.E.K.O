@@ -47,6 +47,12 @@ CONNECTIVITY_TEST_MAX_TOKENS = 1
 - Purpose: minimal request testing only API reachability.
 - Upstream: LLM output."""
 
+OPENAI_CONNECTIVITY_TEST_MAX_TOKENS = 64
+"""Output headroom for connectivity probes to the official OpenAI endpoint.
+- A one-token probe returned an output-limit HTTP 400 with gpt-5.6-luna.
+- 64 was verified with gpt-5.6-luna; it is a bounded probe budget, not a universal minimum.
+- Other providers retain CONNECTIVITY_TEST_MAX_TOKENS."""
+
 MCP_TOOL_RESULT_MAX_TOKENS = 1000
 """MCP tool-result token limit before returning results to the LLM.
 - Purpose: default mcp_adapter._truncate_llm_text limit; truncate and append \"...\" when exceeded.

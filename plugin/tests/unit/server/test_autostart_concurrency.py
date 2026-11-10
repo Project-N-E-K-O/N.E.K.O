@@ -103,7 +103,7 @@ def test_start_plugin_still_owns_the_lock_for_its_other_callers() -> None:
     """Counterpart guard: extracting body must preserve public-entry locking.
 
     Eight production start_plugin callers (HTTP, reload, install/uninstall/source-switch transactions,
-    development_service) rely on decorator acquisition.
+    workbench projects) rely on decorator acquisition.
     """
     assert getattr(module.PluginLifecycleService.start_plugin, "__wrapped__", None) is not None, (
         "start_plugin 不再被 @serialized_plugin_operation 装饰——其余调用方就此失去互斥"

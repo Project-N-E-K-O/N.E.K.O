@@ -14,7 +14,6 @@ import socket
 import sys
 import threading
 import time
-import types
 import uuid
 import weakref
 from datetime import datetime, timezone
@@ -37,6 +36,7 @@ from plugin.core.entry_executor import EntryExecutor, execute_entry_command
 from plugin.core.entry_points import normalize_plugin_entry_point
 from plugin.core.model_gateway_access import model_gateway_access
 from plugin.core.state import state
+from plugin.core.source_imports import ensure_plugins_namespace as _ensure_plugins_namespace
 from plugin.logging_config import logger
 from plugin.sdk import PERSIST_ATTR
 
@@ -107,7 +107,7 @@ def _refresh_child_storage_layout_env(logger_obj: Any) -> None:
 # Drop inherited host HTTP sockets after fork.
 # ============================================================================
 
-# Plugins use bare multiprocessing.Process, hence fork on POSIX; children inherit the entire
+# Where plugins use fork, children inherit the entire
 # host descriptor table, including HTTP listeners and every accepted browser connection.
 # Children never read them, and TCP disconnects only when the last reference closes;
 # closing host copies therefore sends no FIN. Browsers/internal httpx-pool callers retain
@@ -156,9 +156,7 @@ def _iter_open_fds() -> Iterator[int]:
     Fork inheritance applies only where per-process fd directories are enumerable: Linux /proc/self/fd,
     macOS/BSD fdescfs /dev/fd, both process-local numeric listings. Without either,
     enumerate nothing, typically Windows spawn where children re-execute without host descriptors.
-    macOS multiprocessing also defaults to spawn, but merged packaged mode explicitly
-    forks through app/main_server/__init__.py set_start_method,
-    making /dev/fd required coverage rather than optional support.
+    Raw forks can also run this hook on macOS, where /dev/fd is available.
     """
     for directory in ("/proc/self/fd", "/dev/fd"):
         try:
@@ -459,29 +457,6 @@ def _is_target_module_missing(exc: ModuleNotFoundError, module_path: str) -> boo
     missing_name = getattr(exc, "name", None)
     return bool(missing_name and (missing_name == module_path or module_path.startswith(f"{missing_name}.")))
 
-
-def _ensure_plugins_namespace(plugin_root: Path, logger: Any) -> None:
-    """Create a namespace without exposing sibling installations."""
-
-    existing = sys.modules.get("plugins")
-    if existing is None or getattr(existing, "__path__", None) is None:
-        module = types.ModuleType("plugins")
-        module.__package__ = "plugins"
-        module.__path__ = []
-        module.__spec__ = importlib.machinery.ModuleSpec("plugins", loader=None, is_package=True)
-        if module.__spec__ is not None:
-            module.__spec__.submodule_search_locations = module.__path__
-        sys.modules["plugins"] = module
-        logger.info("[Plugin Process] Created plugins namespace for: {}", plugin_root)
-        return
-
-    existing.__path__ = []
-    spec = getattr(existing, "__spec__", None)
-    if spec is None:
-        spec = importlib.machinery.ModuleSpec("plugins", loader=None, is_package=True)
-        existing.__spec__ = spec
-    spec.submodule_search_locations = existing.__path__
-    logger.debug("[Plugin Process] Cleared inherited plugins namespace search paths")
 
 def _evict_plugin_module_tree(plugin_module_path: str) -> None:
     """Remove one synthetic plugin package without disturbing its siblings."""
@@ -1612,6 +1587,9 @@ def _plugin_process_runner(
             # this instead of sending into a void (Codex).
             try:
                 ctx._downlink_ready.set()
+                from plugin.core.bus.rev import notify_receiver_ready
+
+                notify_receiver_ready()
             except Exception:
                 logger.exception("[Plugin Process] failed to mark downlink ready")
 
@@ -1892,7 +1870,12 @@ class PluginHost:
         # Only the three child->host uplinks carry tokens; downlinks carry no credentials.
         self.transport = HostTransport()
 
-        self._process_stop_event: Any = multiprocessing.Event()
+        context = multiprocessing
+        if sys.platform == "darwin" and multiprocessing.get_start_method() == "fork":
+            # The merged server selects fork. Native networking (e.g. getaddrinfo)
+            # can crash in a forked child of the multithreaded macOS host.
+            context = multiprocessing.get_context("spawn")
+        self._process_stop_event: Any = context.Event()
         self._startup_options: dict[str, object] = {"startup_failure": "warn"}
         self._model_gateway_token = ""
         self._model_gateway_starting = False
@@ -1903,7 +1886,7 @@ class PluginHost:
 
         # POSIX fork inherits all host fds; _close_inherited_host_sockets
         # drops HTTP sockets inside children, described above.
-        self.process = multiprocessing.Process(
+        self.process = context.Process(
             target=_plugin_process_runner,
             args=(
                 plugin_id,

@@ -45,7 +45,7 @@ from memory import (
     FactStore, PersonaManager, ReflectionEngine,
 )
 from memory.cursors import CursorStore
-from memory.event_log import EventLog, Reconciler
+from memory.event_log import EventLog, Reconciler, EVT_LONG_TERM_MEMORY_REPLACED
 from memory.evidence_handlers import register_evidence_handlers as _register_evidence_handlers
 from memory.outbox import Outbox
 from config import (
@@ -108,6 +108,8 @@ _CHARACTER_SCOPED_WRITE_OPS = frozenset({
     "theater/forget",
     # Retracting a declined archive capsule writes recent and the time index too.
     "theater/retract",
+    # The memory browser's "recompute now" rewrites habitual_phrases.json.
+    "habitual_phrases/recompute",
 })
 _admitted_character_context: ContextVar[frozenset[str]] = ContextVar(
     "admitted_character_context",
@@ -139,13 +141,18 @@ def _character_write_name_from_path(path: str, method: str) -> str | None:
             break
     if (
         raw_name is None
-        and method == "POST"
+        and method in {"POST", "GET"}
         and path.startswith(_CHARACTER_SCOPED_WRITE_PATH_PREFIX)
     ):
         segments = path[len(_CHARACTER_SCOPED_WRITE_PATH_PREFIX):].split("/")
         # Operation names may contain fixed subpaths but still match complete-string allowlists exactly.
         operation = "/".join(segments[1:])
-        if len(segments) >= 2 and operation in _CHARACTER_SCOPED_WRITE_OPS:
+        if len(segments) >= 2 and (
+            (method == "POST" and operation in _CHARACTER_SCOPED_WRITE_OPS)
+            # The private snapshot uses the normal ensure path, which may
+            # initialize, migrate or synchronize and save persona data.
+            or (method == "GET" and operation == "persona")
+        ):
             raw_name = segments[0]
     if not raw_name:
         return None
@@ -1107,7 +1114,14 @@ async def _bootstrap_embedding_worker() -> None:
 
 
 async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
-    from . import evidence_loops, outbox_infra, refine_loops, routes, signal_extraction
+    from . import (
+        evidence_loops,
+        habitual_phrase_loop,
+        outbox_infra,
+        refine_loops,
+        routes,
+        signal_extraction,
+    )
 
     global recent_history_manager, settings_manager, time_manager, fact_store
     global persona_manager, reflection_engine, cursor_store, outbox, event_log, reconciler
@@ -1307,6 +1321,8 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             _spawn_background_task(evidence_loops._periodic_archive_sweep_loop())
             # events.ndjson applied-history pruning; first round 300 s after startup.
             _spawn_background_task(evidence_loops._periodic_event_log_compact_loop())
+            # Habitual-phrase avoid list: local mining only, idle-gated, about daily per character.
+            _spawn_background_task(habitual_phrase_loop._periodic_habitual_phrase_loop())
             _spawn_background_task(routes._periodic_new_dialog_qps_log_loop())
             if MEMORY_RECHECK_ENABLED:
                 _spawn_background_task(evidence_loops._periodic_slow_memory_recheck_loop())
@@ -1316,6 +1332,8 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             _spawn_background_task(refine_loops._periodic_reflection_synthesis_loop())
             # Group-memory series 5/7: lightweight scoped refine cron.
             _spawn_background_task(refine_loops._periodic_scoped_refine_loop())
+            # Weekly introspection over the injected persona block.
+            _spawn_background_task(refine_loops._periodic_introspection_loop())
             # Keyed-write auxiliary data: expired staged leftovers and tombstones (key records retained permanently).
             # Background work does not block startup.
             from . import idempotency

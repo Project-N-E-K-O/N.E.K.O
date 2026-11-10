@@ -8,6 +8,7 @@ let _reservedFieldsReady = null;
 const SYSTEM_RESERVED_FIELDS_FALLBACK = ReservedFieldsUtils.SYSTEM_RESERVED_FIELDS_FALLBACK;
 const WORKSHOP_RESERVED_FIELDS_FALLBACK = ReservedFieldsUtils.WORKSHOP_RESERVED_FIELDS_FALLBACK;
 const FRONTEND_FORCE_HIDDEN_FIELDS = [
+    'chat_sync_enabled',
     'live2d_item_id',
     'live2d_idle_animation',
     '_reserved',

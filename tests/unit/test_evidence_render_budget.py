@@ -391,13 +391,15 @@ def test_score_trim_protected_inf_score_always_kept():
     win the sort and consume budget first. Phase 1 (split) keeps them
     out of trim entirely; this test validates the math contract that
     backs that split."""
+    from config import EVIDENCE_REINFORCEMENT_CAP
     from memory.evidence import evidence_score
 
     now = datetime.now()
     p = _entry('p1', 'protected', rein=0.0, protected=True)
     n = _entry('n1', 'normal', rein=10.0)
     assert evidence_score(p, now) == float('inf')
-    assert evidence_score(n, now) == 10.0
+    # A non-protected entry is capped however high its stored value.
+    assert evidence_score(n, now) == EVIDENCE_REINFORCEMENT_CAP
 
 
 @pytest.mark.asyncio

@@ -137,7 +137,7 @@ async def test_narrative_table_uses_one_existing_review_in_all_body_phases(monke
         calls.append(kwargs)
         return Client()
 
-    def unexpected_thinking(_):
+    def unexpected_thinking(*_):
         raise AssertionError("narrative approval must not enable thinking")
 
     monkeypatch.setattr(evaluator, "_model_config", config)

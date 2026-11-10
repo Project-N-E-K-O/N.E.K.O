@@ -2431,3 +2431,69 @@ async def test_stream_data_gets_a_turn_end_when_the_owner_keeps_changing(
         manager._emit_agent_callback_turn_end.assert_awaited_once_with(request_id)
     else:
         manager._emit_agent_callback_turn_end.assert_not_awaited()
+
+@pytest.mark.asyncio
+async def test_selected_text_observation_precedes_dispatch_and_keeps_original_text(monkeypatch):
+    from main_logic import agent_event_bus
+
+    manager = _ProtocolManager()
+    socket = _EventWebSocket([
+        {"action": "stream_data", "input_type": "text", "data": " raw ", "memory_text": "record", "request_id": "same"},
+        {"action": "stream_data", "input_type": "text", "data": " raw ", "request_id": "same"},
+        {"action": "stream_data", "input_type": "text", "data": 1},
+    ])
+    _install_protocol_endpoint(monkeypatch, manager=manager, websocket=socket)
+    events = []
+    def capture(name, *, fact, payload):
+        assert not manager.calls or manager.calls[-1][0] != 'stream_data' or len(events) == 1
+        events.append((name, fact, payload))
+        return True
+    monkeypatch.setattr(agent_event_bus, 'schedule_conversation_fact_observed_best_effort', capture)
+    await websocket_router.websocket_endpoint(socket, 'Lan')
+    await asyncio.sleep(0)
+    streams = [message for name, message in manager.calls if name == 'stream_data']
+    assert len(events) == 2 and len(streams) == 3
+    assert events[0][1] == 'input.submitted' and events[0][2]['text'] == ' raw '
+    assert events[0][2]['input_id'] == streams[0]['_conversation_input_id']
+    assert events[1][2]['input_id'] == streams[1]['_conversation_input_id']
+    assert events[0][2]['input_id'] != events[1][2]['input_id']
+    assert streams[0]['request_id'] == 'same' and streams[0]['memory_text'] == 'record'
+    assert '_conversation_input_id' not in streams[2]
+
+
+@pytest.mark.asyncio
+async def test_claimed_route_never_publishes_ordinary_text_observation(monkeypatch):
+    from main_logic import agent_event_bus
+    manager = _ProtocolManager()
+    socket = _EventWebSocket([{"action": "stream_data", "input_type": "text", "data": "secret"}])
+    _install_protocol_endpoint(monkeypatch, manager=manager, websocket=socket)
+    monkeypatch.setattr(websocket_router, 'route_external_stream_message', AsyncMock(return_value=external_route_registry.RouteClaim.CLAIMED))
+    capture = []
+    monkeypatch.setattr(agent_event_bus, 'schedule_conversation_fact_observed_best_effort', lambda *a, **kw: capture.append(kw))
+    await websocket_router.websocket_endpoint(socket, 'Lan')
+    assert capture == [] and not any(name == 'stream_data' for name, _ in manager.calls)
+
+
+@pytest.mark.asyncio
+async def test_synthetic_avatar_drop_text_is_dispatched_without_early_user_observation(monkeypatch):
+    from main_logic import agent_event_bus
+
+    manager = _ProtocolManager()
+    socket = _EventWebSocket([
+        {"action": "stream_data", "input_type": "text", "data": "synthetic prompt", "source": "avatar-drop"},
+        {"action": "stream_data", "input_type": "text", "data": "user text", "source": "react-chat-window"},
+    ])
+    _install_protocol_endpoint(monkeypatch, manager=manager, websocket=socket)
+    observed = []
+    monkeypatch.setattr(
+        agent_event_bus, "schedule_conversation_fact_observed_best_effort",
+        lambda name, *, fact, payload: observed.append((fact, payload)),
+    )
+    await websocket_router.websocket_endpoint(socket, "Lan")
+    await asyncio.sleep(0)
+    streams = [message for name, message in manager.calls if name == "stream_data"]
+    assert len(streams) == 2
+    assert streams[0]["data"] == "synthetic prompt"
+    assert "_conversation_input_id" not in streams[0]
+    assert [(fact, payload["text"]) for fact, payload in observed] == [("input.submitted", "user text")]
+    assert streams[1]["_conversation_input_id"] == observed[0][1]["input_id"]

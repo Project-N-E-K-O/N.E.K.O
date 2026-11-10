@@ -45,6 +45,7 @@ from plugin.server.routes import (
 )
 from plugin.server.routes.frontend import mount_static_files
 from plugin.server.routes.security import router as security_router
+from plugin.server.routes.plugin_projects import router as plugin_projects_router
 
 logger = get_logger("server.user_plugin_server")
 
@@ -359,6 +360,7 @@ def build_plugin_server_app(
         label="plugin install routes",
     )
     app.include_router(plugin_cli_router)
+    app.include_router(plugin_projects_router)
     app.include_router(llm_tools_router)
     # Before the bridge: its /market/knowledge/{path} catch-all would
     # otherwise answer the subscription routes with 404.

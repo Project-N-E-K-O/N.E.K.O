@@ -2332,6 +2332,20 @@
             // everything around it is disabled.
             if (control) control.disabled = repetitionInsightsBusy || !ready;
         });
+        notifyHabitualPhrasePanel(false);
+    }
+
+    // The habitual-phrase section (memory_habitual_phrases.js) follows the same
+    // target and the same storage / import locks as the analyzer around it.
+    // `reload` asks it to refetch even when neither changed: the panel opened.
+    function notifyHabitualPhrasePanel(reload) {
+        document.dispatchEvent(new CustomEvent('neko:habitual-phrases-target', {
+            detail: {
+                name: repetitionInsightsTarget(),
+                ready: !memoryStorageLimited && !window._memoryImportInProgress,
+                reload: !!reload
+            }
+        }));
     }
 
     function setRepetitionInsightsBusy(busy) {
@@ -3124,7 +3138,10 @@
         activeMemoryAuxiliaryPanel = name;
         memoryAuxiliaryPanelOpener = opener || trigger;
         document.body.classList.add('memory-aux-panel-open');
-        if (name === 'insights') syncRepetitionInsightsControls();
+        if (name === 'insights') {
+            syncRepetitionInsightsControls();
+            notifyHabitualPhrasePanel(true);
+        }
         if (name === 'visit') openVisitMemoryPanel();
         panel.focus({ preventScroll: true });
     }
@@ -4127,6 +4144,22 @@
         return !!metadata && typeof metadata === 'object' && metadata.source === THEATER_MEMORY_SOURCE;
     }
 
+    function formatRecentMemoryTime(item) {
+        let metadata = item.metadata;
+        if (!metadata || typeof metadata !== 'object') {
+            metadata = item.data && typeof item.data === 'object' ? item.data.metadata : null;
+        }
+        const raw = metadata && metadata.recent_memory_time;
+        if (typeof raw !== 'string' || !/^[0-9]{1,16}$/.test(raw)) return '';
+        const millis = Number(raw);
+        if (!Number.isSafeInteger(millis)) return '';
+        const date = new Date(millis);
+        if (!Number.isFinite(date.getTime())) return '';
+        const pad = value => String(value).padStart(2, '0');
+        const weekday = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][date.getDay()];
+        return `[${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())} ${weekday} ${pad(date.getHours())}:${pad(date.getMinutes())}]`;
+    }
+
     function setMemoryRowDeleteButtonsEnabled(enabled) {
         document.querySelectorAll('#memory-chat-edit .delete-btn').forEach(btn => {
             btn.disabled = !enabled;
@@ -5121,7 +5154,7 @@
                 conversationPosition += 1;
                 // 提取时间戳和正文，健壮处理
                 const m = msg.text.match(/^(\[[^\]]+\])([\s\S]*)$/);
-                const timeStr = m ? m[1] : '';
+                const timeStr = m ? m[1] : msg.displayTime || '';
                 const content = (m && m[2]) ? (m[2] || '').trim() : msg.text;
 
                 const contentWrapper = document.createElement('div');
@@ -5626,6 +5659,9 @@
                     // source_index 指向本次快照里的原始条目，服务端据此原样保留剧场胶囊。
                     chatItem.source_index = index;
                     chatItem.theater = isTheaterMemoryItem(item);
+                    if (chatItem.role === 'ai' && !chatItem.theater) {
+                        chatItem.displayTime = formatRecentMemoryTime(item);
+                    }
                     return chatItem;
                 }).filter(Boolean);
                 renderChatEdit();
@@ -5714,7 +5750,11 @@
             && memoryEditRevision === saveContentRevision
         );
         const savedRows = chatData.slice();
-        const saveChat = chatData.map(msg => ({ ...msg }));
+        const saveChat = chatData.map(msg => {
+            const saved = { ...msg };
+            delete saved.displayTime;
+            return saved;
+        });
         // 处理备忘录为空的情况
         const memoPrefix = window.t ? window.t('memory.previousMemo') : '先前对话的备忘录: ';
         const memoNone = window.t ? window.t('memory.memoNone') : '无。';

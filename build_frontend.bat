@@ -38,11 +38,13 @@ if not exist "%PM_DIR%" (
 
 echo [build_frontend] building plugin-manager...
 pushd "%PM_DIR%" >nul
-call npm ci
-if errorlevel 1 (
-  popd >nul
-  echo [build_frontend] npm ci failed for plugin-manager
-  exit /b 1
+if not exist "node_modules\.bin\vite.cmd" (
+  call npm ci
+  if errorlevel 1 (
+    popd >nul
+    echo [build_frontend] npm ci failed for plugin-manager
+    exit /b 1
+  )
 )
 call npm run build-only
 if errorlevel 1 (

@@ -8,10 +8,21 @@ except ModuleNotFoundError:  # pragma: no cover
     import tomli as tomllib  # type: ignore[no-redef]
 
 
+_UTF8_BOM = b"\xef\xbb\xbf"
+
+
 def load_toml(path: Path) -> dict[str, object]:
     try:
-        with path.open("rb") as file_obj:
-            data = tomllib.load(file_obj)
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise ValueError(f"failed to read TOML file '{path}': {exc}") from exc
+    # tomllib (and Market CI) reject a BOM with a bare "Invalid statement".
+    if raw.startswith(_UTF8_BOM):
+        raise ValueError(
+            f"TOML file '{path}' starts with a UTF-8 BOM; save it as UTF-8 without BOM"
+        )
+    try:
+        data = tomllib.loads(raw.decode("utf-8"))
     except Exception as exc:
         raise ValueError(
             f"failed to parse TOML file '{path}': {exc}"

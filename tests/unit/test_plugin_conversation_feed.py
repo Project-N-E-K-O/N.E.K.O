@@ -618,3 +618,11 @@ def test_response_source_requires_id_and_uninterrupted_owner(response_id, interr
         await arbiter.wait_until_idle(timeout=1)
 
     asyncio.run(scenario())
+
+@pytest.mark.asyncio
+async def test_input_id_is_carried_to_existing_user_message(published):
+    stub = _StubManager()
+    stub._publish_user_utterance_to_plugin_bus('record text', is_voice_source=False, input_id='input-one')
+    await stub.drain()
+    assert published[0]['metadata']['input_id'] == 'input-one'
+    assert published[0]['content'] == 'record text'
