@@ -2,6 +2,8 @@ import base64
 import io
 import wave
 
+import pytest
+
 from utils.tts.providers.gemini import (
     GEMINI_TTS_SAMPLE_RATE,
     build_gemini_tts_payload,
@@ -49,6 +51,22 @@ def test_extract_strips_wav_header() -> None:
         wav.writeframes(pcm)
 
     assert extract_gemini_tts_pcm(_response(buf.getvalue())) == pcm
+
+
+@pytest.mark.parametrize(
+    ("channels", "sample_width", "frame_rate"),
+    [(2, 2, GEMINI_TTS_SAMPLE_RATE), (1, 1, GEMINI_TTS_SAMPLE_RATE), (1, 2, 16000)],
+)
+def test_extract_rejects_unexpected_wav_format(channels: int, sample_width: int, frame_rate: int) -> None:
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wav:
+        wav.setnchannels(channels)
+        wav.setsampwidth(sample_width)
+        wav.setframerate(frame_rate)
+        wav.writeframes(b"\x00" * channels * sample_width * 4)
+
+    with pytest.raises(ValueError):
+        extract_gemini_tts_pcm(_response(buf.getvalue()))
 
 
 def test_extract_returns_none_without_audio() -> None:

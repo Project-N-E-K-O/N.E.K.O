@@ -273,7 +273,9 @@ def extract_gemini_tts_pcm(data: dict) -> bytes | None:
     """Return 16-bit mono PCM from a generateContent response, or None.
 
     Strips a RIFF header if one comes back anyway (WAV is 3.8 TTS's unary
-    default), so the header is never played as samples."""
+    default), so the header is never played as samples. Callers play the
+    result as mono 16-bit at GEMINI_TTS_SAMPLE_RATE, so any other WAV format
+    raises ValueError instead of playing back sped up or garbled."""
     candidates = data.get("candidates") or []
     if not candidates:
         return None
@@ -286,5 +288,8 @@ def extract_gemini_tts_pcm(data: dict) -> bytes | None:
     audio = base64.b64decode(audio_b64)
     if audio[:4] == b"RIFF":
         with wave.open(io.BytesIO(audio), "rb") as wav:
+            fmt = (wav.getnchannels(), wav.getsampwidth(), wav.getframerate())
+            if fmt != (1, 2, GEMINI_TTS_SAMPLE_RATE):
+                raise ValueError(f"unexpected Gemini TTS WAV format {fmt}")
             audio = wav.readframes(wav.getnframes())
     return audio or None
