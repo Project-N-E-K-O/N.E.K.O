@@ -10,7 +10,7 @@ const gameRoot = path.join(root, 'static/game/games/air_basketball');
 
 async function harness(mode = 'endless') {
   let now=0, serial=0;
-  const timers=new Map(), frames=[], routes=[];
+  const timers=new Map(), frames=[], routes=[], tones=[];
   const schedule=(fn,ms)=>{ const id=++serial; timers.set(id,{fn,due:now+ms}); return id; };
   const cancel=id=>timers.delete(id);
   const eventTarget=()=>({ listeners:{}, addEventListener(type,fn){ (this.listeners[type] ||= []).push(fn); }, emit(type,event={}){ for(const fn of this.listeners[type]||[])fn({currentTarget:this,preventDefault(){},stopPropagation(){},...event}); } });
@@ -61,7 +61,7 @@ async function harness(mode = 'endless') {
     configureGameRuntime:async()=>{},disposeGameSdk(){},
     endGameRuntime:async payload=>routes.push({end:payload}),
     startGameRuntime:async payload=>routes.push({start:payload}),
-    playGameTone:async()=>{},preloadNekoSpeech:async()=>({ok:true}),speakNekoSpeech:async()=>({ok:true}),
+    playGameTone:async frequency=>{ tones.push(frequency); },preloadNekoSpeech:async()=>({ok:true}),speakNekoSpeech:async()=>({ok:true}),
     unlockGameAudio:async()=>{},waitForNekoSpeechPlayback:async()=>{}
   };
   const dependencies=[
@@ -83,7 +83,7 @@ async function harness(mode = 'endless') {
       const frame=frames.shift();frame?.(now);
     }
   };
-  return {api:window.AirBasketballMVP,node,advance,routes,window,document,...lanes};
+  return {api:window.AirBasketballMVP,node,advance,routes,tones,window,document,...lanes};
 }
 
 test('the same four player balls remain visible through returns, possession changes and resize',async()=>{
@@ -625,4 +625,58 @@ test('a genuine miss is charged once to its shooter even after possession change
     assert.equal(state[otherSide].combo, 1);
     assert.equal(state.neko.shotMissStreak, side === 'neko' ? 1 : 0);
   }
+});
+
+test('the first-shot hint returns on replay and hides after the first throw of a match', async () => {
+  const h = await interferenceHarness();
+  const lane = h.playerLane;
+  const canvas = lane.canvas;
+  const hint = h.node('shot-hint');
+  const grab = () => {
+    const { x, y } = lane.readyForLaunch();
+    canvas.emit('pointerdown', { clientX:80 + x, clientY:100 + y, pointerId:1 });
+    assert(lane.heldBall);
+    h.advance(1);
+    return { x, y };
+  };
+  const { x, y } = grab();
+  assert.equal(hint.hidden, false);
+  canvas.emit('pointermove', { clientX:80 + x, clientY:100 + y - 150, pointerId:1 });
+  canvas.emit('pointerup', { pointerId:1 });
+  assert.equal(h.api.getState().player.attempts, 1);
+  grab();
+  assert.equal(hint.hidden, true);
+  h.node('stop-match').emit('click');
+  assert.equal(h.api.getState().running, false);
+  h.api.start();
+  assert.equal(h.api.getState().player.attempts, 0);
+  grab();
+  assert.equal(hint.hidden, false);
+});
+
+test('low focus only sounds on release of a valid throw', async () => {
+  const h = await interferenceHarness();
+  const lane = h.playerLane;
+  const canvas = lane.canvas;
+  for (let index = 0; index < 5; index++) {
+    assert(h.api.shootPlayer(0, -300));
+    lane.resetBallPool();
+  }
+  assert.equal(h.api.getState().player.focus, 10);
+  const lowFocusTones = () => h.tones.filter(frequency => frequency === 125).length;
+  const blank = { clientX:100, clientY:130, pointerId:1 };
+  canvas.emit('pointerdown', blank);
+  canvas.emit('pointerup', blank);
+  assert.equal(lowFocusTones(), 0);
+  const { x, y } = lane.readyForLaunch();
+  const grab = { clientX:80 + x, clientY:100 + y, pointerId:1 };
+  canvas.emit('pointerdown', grab);
+  assert(lane.heldBall);
+  canvas.emit('pointerup', grab);
+  assert.equal(lowFocusTones(), 0);
+  canvas.emit('pointerdown', grab);
+  canvas.emit('pointerup', { ...grab, clientY:grab.clientY - 150 });
+  assert.equal(lowFocusTones(), 1);
+  assert.equal(h.api.getState().player.attempts, 5);
+  assert.equal(lane.heldBall, null);
 });

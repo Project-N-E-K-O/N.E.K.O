@@ -978,12 +978,11 @@ function endInterference(event) {
 
 let playerAimPointer = null;
 let playerAimLane = null;
-let hasThrown = false;
 
 function syncShotHint(aimAllowed) {
   const lane = playerAimLane;
   const ball = lane?.heldBall;
-  if (!ball || (aimAllowed && hasThrown)) {
+  if (!ball || (aimAllowed && state.player.attempts > 0)) {
     shotHint.hidden = true;
     return;
   }
@@ -1060,19 +1059,20 @@ function releasePlayerShot() {
     cancelPlayerAction();
     return;
   }
+  const lane = playerAimLane;
+  if (!lane) return;
   let shot = false;
-  const lane = playerAimLane || playerLane;
   if (hasFocus('player', ACTION_BALANCE.SHOT_COST)) shot = lane.releaseAim('player');
-  else lane.cancelAim();
+  else {
+    if (lane.heldBall && lane.shotVector()) sound(125, .05, 'triangle');
+    lane.cancelAim();
+  }
   playerAimPointer = null;
   playerAimLane = null;
   if (shot) {
-    hasThrown = true;
     spendFocus('player', ACTION_BALANCE.SHOT_COST);
     state.player.attempts += 1;
     sound(210, .04, 'triangle');
-  } else if (!hasFocus('player', ACTION_BALANCE.SHOT_COST)) {
-    sound(125, .05, 'triangle');
   }
   lane.canvas.classList.remove('aiming');
   endPlayerAction(NEKO_ACTION.HOOP);
