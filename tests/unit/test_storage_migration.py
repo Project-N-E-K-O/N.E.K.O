@@ -1945,6 +1945,104 @@ def test_failed_checkpoint_never_drops_a_non_empty_backup(tmp_path):
 
 
 @pytest.mark.unit
+def test_storage_migration_keeps_installed_plugins_with_their_state(tmp_path):
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    exec_entry = ".neko-plugin-installations/plugins"
+    files = {
+        f"{exec_entry}/example/plugin.toml": b'[plugin]\nid = "example"\n',
+        f"{exec_entry}/example/__init__.py": b"class Example: pass\n",
+        "plugins.lock.json": b'{"entries":[{"plugin_id":"example","channel":"market"}]}',
+        "config/plugin_runtime_overrides.json": b'{"example":{"auto_start":true}}',
+        "config/plugin_autostart_pending.json": b'{"pending":["another_plugin"]}',
+        "plugins/example/config/plugin.toml": b'[plugin]\nsetting = "custom"\n',
+        "plugins/example/data/store.db": b"saved plugin data",
+    }
+    for name, data in files.items():
+        path = source_root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is True
+    for name, data in files.items():
+        assert (target_root / name).read_bytes() == data
+        assert (source_root / name).read_bytes() == data
+    assert {exec_entry, "plugins.lock.json", "config", "plugins"} <= result["payload"]["copied_entries"].keys()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("selection_source", ["custom", "legacy"])
+def test_storage_migration_preserves_install_records_for_kept_target_plugins(tmp_path, selection_source):
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    exec_entry = ".neko-plugin-installations/plugins"
+    target_plugin = target_root / exec_entry / "target_only" / "plugin.toml"
+    target_plugin.parent.mkdir(parents=True)
+    target_plugin.write_text('[plugin]\nid = "target_only"\n', encoding="utf-8")
+    target_lock = target_root / "plugins.lock.json"
+    target_lock.write_text('{"entries":[{"plugin_id":"target_only"}]}', encoding="utf-8")
+    source_root.mkdir(parents=True, exist_ok=True)
+    (source_root / "plugins.lock.json").write_text('{"entries":[]}', encoding="utf-8")
+    if selection_source == "legacy":
+        source_plugin = source_root / exec_entry / "source_only" / "plugin.toml"
+        source_plugin.parent.mkdir(parents=True)
+        source_plugin.write_text('[plugin]\nid = "source_only"\n', encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source=selection_source,
+        confirmed_existing_target_content=selection_source == "custom",
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is True
+    assert target_plugin.is_file()
+    assert not (target_root / exec_entry / "source_only").exists()
+    assert target_lock.read_text(encoding="utf-8") == '{"entries":[{"plugin_id":"target_only"}]}'
+    assert "plugins.lock.json" not in result["payload"]["copied_entries"]
+
+
+@pytest.mark.unit
+def test_storage_migration_does_not_pair_copied_plugins_with_an_unrelated_lock(tmp_path):
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    plugin_file = ".neko-plugin-installations/plugins/example/plugin.toml"
+    source_plugin = source_root / plugin_file
+    source_plugin.parent.mkdir(parents=True)
+    source_plugin.write_text('[plugin]\nid = "example"\n', encoding="utf-8")
+    target_root.mkdir(parents=True)
+    target_lock = target_root / "plugins.lock.json"
+    target_lock.write_text('{"entries":[]}', encoding="utf-8")
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+        confirmed_existing_target_content=True,
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["error_code"] == "plugin_installation_conflict"
+    assert source_plugin.is_file()
+    assert not (target_root / plugin_file).exists()
+    assert target_lock.read_text(encoding="utf-8") == '{"entries":[]}'
+
+
+@pytest.mark.unit
 def test_storage_migration_moves_pngtuber_watch_together_and_runtimes(tmp_path):
     """#3336: these held user data / downloads but were left in the old root."""
     config_manager = _make_config_manager(tmp_path)
@@ -1973,7 +2071,7 @@ def test_storage_migration_moves_pngtuber_watch_together_and_runtimes(tmp_path):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("entry_name", ["pngtuber", "watch_together", "runtimes", "embedding_models"])
+@pytest.mark.parametrize("entry_name", ["pngtuber", "watch_together", "runtimes", "embedding_models", ".neko-plugin-installations/plugins"])
 def test_migration_requires_confirmation_when_target_only_holds_entries_added_later(tmp_path, entry_name):
     """The cloud-save probe does not know these entries; the target is still not empty."""
     config = _make_config_manager(tmp_path)

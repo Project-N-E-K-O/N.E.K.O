@@ -4507,6 +4507,28 @@ def test_v1_migration_left_entries_are_copied_over_at_the_next_launch(tmp_path):
 
 
 @pytest.mark.unit
+def test_v1_catch_up_leaves_retained_plugin_installations_in_place(tmp_path):
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    plugin_file = ".neko-plugin-installations/plugins/example/plugin.toml"
+    source_plugin = source_root / plugin_file
+    source_plugin.parent.mkdir(parents=True)
+    source_plugin.write_text('[plugin]\nid = "example"\n', encoding="utf-8")
+    (source_root / "plugins.lock.json").write_text('{"entries":[]}', encoding="utf-8")
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    assert (target_root / "pngtuber" / "set" / "idle.png").is_file()
+    assert not (target_root / plugin_file).exists()
+    assert not (target_root / "plugins.lock.json").exists()
+    response = _cleanup_request(tmp_path, source_root)
+    assert response.status_code == 409, response.json()
+    assert response.json()["error_code"] == "retained_source_cleanup_incomplete"
+    assert source_plugin.is_file()
+    assert (source_root / "plugins.lock.json").is_file()
+
+
+@pytest.mark.unit
 def test_v1_catch_up_leaves_an_entry_the_new_root_already_has(tmp_path):
     source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
     (target_root / "pngtuber").mkdir()

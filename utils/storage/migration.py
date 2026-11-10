@@ -68,6 +68,8 @@ ACTIVE_STORAGE_MIGRATION_STATUSES = frozenset(
     }
 )
 
+_PLUGIN_INSTALLATION_ENTRIES = (".neko-plugin-installations/plugins", "plugins.lock.json")
+
 MIGRATED_RUNTIME_ENTRY_NAMES = (
     "config",
     "memory",
@@ -82,6 +84,8 @@ MIGRATED_RUNTIME_ENTRY_NAMES = (
     # every server stopped, exactly like memory's SQLite files.
     "knowledge",
     "plugins",
+    # Installed code and its source records live outside the plugin state tree.
+    *_PLUGIN_INSTALLATION_ENTRIES,
     "live2d",
     "vrm",
     "mmd",
@@ -121,6 +125,13 @@ V1_MIGRATED_RUNTIME_ENTRY_NAMES = (
     "card_faces",
     "jukebox",
     "avatar_tools",
+)
+
+# Completed migrations may already have different plugin approvals and code
+# at the target. Only move installed code as part of a full storage migration.
+_V1_CATCH_UP_ENTRIES = tuple(
+    name for name in MIGRATED_RUNTIME_ENTRY_NAMES
+    if name not in V1_MIGRATED_RUNTIME_ENTRY_NAMES and name not in _PLUGIN_INSTALLATION_ENTRIES
 )
 
 # Top-level runtime directories the app recreates by itself. They are not
@@ -1606,10 +1617,12 @@ def _entry_exists(path: Path) -> bool:
     return True
 
 
-def _iter_existing_runtime_entries(root: Path) -> list[str]:
+def _iter_existing_runtime_entries(
+    root: Path, names: tuple[str, ...] = MIGRATED_RUNTIME_ENTRY_NAMES,
+) -> list[str]:
     return [
         name
-        for name in MIGRATED_RUNTIME_ENTRY_NAMES
+        for name in names
         if _entry_exists(root / name)
     ]
 
@@ -2251,9 +2264,8 @@ def catch_up_v1_migration(config_manager, *, anchor_root: Path | str) -> list[st
     copied_entries = dict(copy_evidence_entries(payload.get("copied_entries")))
     candidates = [
         entry_name
-        for entry_name in MIGRATED_RUNTIME_ENTRY_NAMES
-        if entry_name not in V1_MIGRATED_RUNTIME_ENTRY_NAMES
-        and entry_name not in copied_entries
+        for entry_name in _V1_CATCH_UP_ENTRIES
+        if entry_name not in copied_entries
         and entry_parents_are_real_directories(source_root, entry_name)
         and _entry_exists(source_root / entry_name)
     ]
@@ -2382,9 +2394,8 @@ def catch_up_v1_migration(config_manager, *, anchor_root: Path | str) -> list[st
     # otherwise be neither copied nor named; the next launch takes it.
     turned_up = [
         entry_name
-        for entry_name in MIGRATED_RUNTIME_ENTRY_NAMES
-        if entry_name not in V1_MIGRATED_RUNTIME_ENTRY_NAMES
-        and entry_name not in copied_entries
+        for entry_name in _V1_CATCH_UP_ENTRIES
+        if entry_name not in copied_entries
         and entry_name not in skipped
         and entry_name not in candidates
         and _entry_exists(source_root / entry_name)
@@ -2418,7 +2429,7 @@ def v1_catch_up_unfinished_entries(payload: dict[str, Any] | None) -> list[str]:
         return []
     if str(payload.get("v1_catch_up_completed_at") or "").strip():
         return []
-    return [name for name in MIGRATED_RUNTIME_ENTRY_NAMES if name not in V1_MIGRATED_RUNTIME_ENTRY_NAMES]
+    return list(_V1_CATCH_UP_ENTRIES)
 
 
 def v1_catch_up_skipped_entries(payload: dict[str, Any] | None) -> list[str]:
@@ -2927,11 +2938,22 @@ def run_pending_storage_migration(
         _ensure_target_root_writable(target_root)
 
         source_snapshots: dict[str, dict[str, int | str]] = {}
-        existing_entries = _iter_existing_runtime_entries(source_root)
         # What the target holds before anything is staged: an entry appearing
         # while earlier (large) entries are being copied was never confirmed
         # for replacing either.
         target_entries_before_staging = set(_iter_existing_runtime_entries(target_root))
+        source_entries_before_staging = _iter_existing_runtime_entries(source_root)
+        excluded_source_entries: tuple[str, ...] = ()
+        plugin_exec_entry, plugin_lock_entry = _PLUGIN_INSTALLATION_ENTRIES
+        if use_existing_target:
+            # Keep the recovered target's installation and approval state together.
+            excluded_source_entries = _PLUGIN_INSTALLATION_ENTRIES
+        elif plugin_exec_entry in target_entries_before_staging and plugin_exec_entry not in source_entries_before_staging:
+            # A target-only install tree keeps its own source records.
+            excluded_source_entries = (plugin_lock_entry,)
+        source_entry_names = tuple(name for name in MIGRATED_RUNTIME_ENTRY_NAMES if name not in excluded_source_entries)
+        existing_entries = [name for name in source_entries_before_staging if name not in excluded_source_entries]
+        uncopied_install_entries = set(_PLUGIN_INSTALLATION_ENTRIES) - set(existing_entries)
         # And what each of them was: the confirmation covered that version,
         # not one a sync client writes while the source is being staged.
         # Taken so it still compares once the entry sits in the backup.
@@ -3090,7 +3112,14 @@ def run_pending_storage_migration(
         def _require_sources_unchanged(published: Collection[str] = ()) -> None:
             for entry_name, expected in moved_backup_fingerprints.items():
                 _require_backup_unchanged(entry_name, expected)
-            appeared = set(_iter_existing_runtime_entries(source_root)) - set(existing_entries)
+            if len(uncopied_install_entries) == 1 and any(
+                _entry_exists(target_root / name) for name in uncopied_install_entries
+            ):
+                raise StorageMigrationError(
+                    "plugin_installation_conflict",
+                    "迁移会混用新旧目录的插件程序和安装来源记录，请选择空目录后重试。",
+                )
+            appeared = set(_iter_existing_runtime_entries(source_root, source_entry_names)) - set(existing_entries)
             if appeared:
                 # Absent when the source was first listed, so never staged: the
                 # target would go live without it.
