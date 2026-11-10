@@ -80,6 +80,9 @@ EXTRA_BODY_GEMINI_THINKING = {"extra_body": {"google": {"thinking_config": {"thi
 EXTRA_BODY_GEMINI_3 = {"extra_body": {"google": {"thinking_config": {"thinking_level": "low", "include_thoughts": False}}}}
 # Gemini 3: keep lowest thinking level (low), exposing thoughts separately without mixing into content.
 EXTRA_BODY_GEMINI_3_THINKING = {"extra_body": {"google": {"thinking_config": {"thinking_level": "low", "include_thoughts": True}}}}
+# gemini-3.5-flash-lite already defaults to minimal (Google's 3.6 guide); low would raise it.
+# Focused cognition pairs with the same low form as the rest of Gemini 3.
+EXTRA_BODY_GEMINI_3_MINIMAL = {"extra_body": {"google": {"thinking_config": {"thinking_level": "minimal", "include_thoughts": False}}}}
 
 EXTRA_BODY_OPENROUTER = {"reasoning": {"effort": "none"}}
 # OpenRouter: effort none→low (enable thinking at minimum effort).
@@ -214,7 +217,7 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "gemini-3-flash-preview": EXTRA_BODY_GEMINI_3,
     "gemini-3.1-flash-lite": EXTRA_BODY_GEMINI_3,
     "gemini-3.5-flash": EXTRA_BODY_GEMINI_3,
-    "gemini-3.5-flash-lite": EXTRA_BODY_GEMINI_3,
+    "gemini-3.5-flash-lite": EXTRA_BODY_GEMINI_3_MINIMAL,
     "gemini-3.6-flash": EXTRA_BODY_GEMINI_3,
     "gemini-3.7-flash": EXTRA_BODY_GEMINI_3,
     "gemini-3.8-flash": EXTRA_BODY_GEMINI_3,
@@ -268,6 +271,7 @@ _THINKING_ENABLE_FORM: dict[int, dict] = {
     id(EXTRA_BODY_CLAUDE): EXTRA_BODY_CLAUDE_THINKING,
     id(EXTRA_BODY_GEMINI): EXTRA_BODY_GEMINI_THINKING,
     id(EXTRA_BODY_GEMINI_3): EXTRA_BODY_GEMINI_3_THINKING,
+    id(EXTRA_BODY_GEMINI_3_MINIMAL): EXTRA_BODY_GEMINI_3_THINKING,
     id(EXTRA_BODY_OPENROUTER): EXTRA_BODY_OPENROUTER_THINKING,
     id(EXTRA_BODY_OPENROUTER_MINIMAL): EXTRA_BODY_OPENROUTER_THINKING,
 }
