@@ -1124,11 +1124,12 @@ class CoreConfigMixin:
         config['ASSIST_API_KEY_CLAUDE'] = core_cfg.get('assistApiKeyClaude', '') or _fb('claude')
         config['ASSIST_API_KEY_OPENROUTER'] = core_cfg.get('assistApiKeyOpenrouter', '') or _fb('openrouter')
         config['ASSIST_API_KEY_ORCAROUTER'] = core_cfg.get('assistApiKeyOrcarouter', '') or _fb('orcarouter')
-        # Requesty, Opper and Atlas Cloud are assist-only; a realtime core key cannot
-        # authenticate their gateways and must not be sent to them.
+        # Requesty, Opper, Atlas Cloud and UberLLM are assist-only; a realtime core
+        # key cannot authenticate their gateways and must not be sent to them.
         config['ASSIST_API_KEY_REQUESTY'] = core_cfg.get('assistApiKeyRequesty', '')
         config['ASSIST_API_KEY_OPPER'] = core_cfg.get('assistApiKeyOpper', '')
         config['ASSIST_API_KEY_ATLASCLOUD'] = core_cfg.get('assistApiKeyAtlascloud', '')
+        config['ASSIST_API_KEY_UBERLLM'] = core_cfg.get('assistApiKeyUberllm', '')
 
         if core_cfg.get('mcpToken'):
             config['MCP_ROUTER_API_KEY'] = core_cfg['mcpToken']

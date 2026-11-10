@@ -1424,6 +1424,7 @@
             "requesty": "Requesty（模型路由，国内无法使用）",
             "opper": "Opper（欧洲 AI 网关，国内无法使用）",
             "atlascloud": "Atlas Cloud（模型聚合，国内版不支持）",
+            "uberllm": "UberLLM（模型网关，国内无法使用）",
             "vllm_omni": "vLLM-Omni（TTS）",
             "gptsovits": "GPT-SoVITS（自部署）"
         },
@@ -1502,6 +1503,7 @@
             "requesty": "Requesty",
             "opper": "Opper",
             "atlascloud": "Atlas Cloud",
+            "uberllm": "UberLLM",
             "vllm_omni": "vLLM-Omni（TTS）"
         },
         "freeVersionNoApiKey": "免费版无需API Key",
