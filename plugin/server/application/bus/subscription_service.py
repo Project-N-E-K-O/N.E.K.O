@@ -9,7 +9,7 @@ from plugin.settings import PLUGIN_LOG_BUS_SUBSCRIBE_REQUESTS
 
 logger = get_logger("server.application.bus.subscription")
 
-_SUPPORTED_BUSES = frozenset({"messages", "events", "lifecycle", "runs", "export"})
+_SUPPORTED_BUSES = frozenset({"messages", "events", "lifecycle", "runs", "export", "conversations"})
 
 
 def _normalize_bus_name(value: object) -> str:
@@ -66,6 +66,49 @@ def _normalize_timeout(value: object) -> float:
     return 5.0
 
 
+_CONVERSATION_RULES = frozenset({
+    "record", "message.updated", "input.submitted", "reply.started", "reply.updated",
+    "reply.closed", "playback.started", "playback.stopped",
+})
+
+
+def _conversation_subscription(
+    contract: object, rules: object, filters: object, view: object
+) -> tuple[list[str], dict[str, object], bool]:
+    from pydantic import ValidationError
+    from plugin.message_plane.protocol import ConversationGetArgs
+
+    def invalid(message: str) -> None:
+        raise ServerDomainError(code="INVALID_ARGUMENT", message=message, status_code=400, details={})
+
+    if contract != "conversations_v2":
+        invalid("unsupported conversation contract")
+    if not isinstance(rules, list) or not rules or any(not isinstance(x, str) or x not in _CONVERSATION_RULES for x in rules):
+        invalid("invalid conversation rules")
+    if not isinstance(view, bool):
+        invalid("view must be boolean")
+    if filters is None:
+        filters = {}
+    if not isinstance(filters, dict) or any(k not in {"character", "role", "kind", "input_source", "origin_kind"} for k in filters):
+        invalid("invalid conversation filters")
+    try:
+        ConversationGetArgs.model_validate(filters)
+    except ValidationError:
+        invalid("invalid conversation filters")
+    for rule in rules:
+        if rule.startswith("playback.") and any(k in filters for k in ("role", "kind", "input_source", "origin_kind")):
+            invalid("filters do not apply to playback")
+        if rule.startswith("reply.") and ("kind" in filters or "input_source" in filters or filters.get("role") not in (None, "assistant")):
+            invalid("filters do not apply to replies")
+        if rule == "input.submitted" and ("kind" in filters or "origin_kind" in filters or filters.get("role") not in (None, "user")):
+            invalid("filters do not apply to input")
+    if filters.get("role") == "user" and "origin_kind" in filters:
+        invalid("origin_kind does not apply to user messages")
+    if filters.get("role") in ("assistant", "instruction") and "input_source" in filters:
+        invalid("input_source applies to user messages")
+    return list(dict.fromkeys(rules)), dict(filters), view
+
+
 class BusSubscriptionService:
     def subscribe(
         self,
@@ -76,6 +119,9 @@ class BusSubscriptionService:
         rules: object,
         debounce_ms: object,
         timeout: object,
+        contract: object = None,
+        filters: object = None,
+        view: object = False,
     ) -> dict[str, object]:
         if not isinstance(from_plugin, str) or not from_plugin:
             raise ServerDomainError(
@@ -89,6 +135,15 @@ class BusSubscriptionService:
         normalized_deliver = _normalize_deliver(deliver)
         normalized_rules = _normalize_rules(rules)
         normalized_timeout = _normalize_timeout(timeout)
+        if normalized_bus == "conversations":
+            normalized_rules, normalized_filters, normalized_view = _conversation_subscription(
+                contract, rules, filters, view
+            )
+        elif contract is not None or filters is not None or view not in (False, None):
+            raise ServerDomainError(code="INVALID_ARGUMENT", message="invalid bus contract", status_code=400, details={})
+        else:
+            normalized_filters = {}
+            normalized_view = False
         sub_id = new_sub_id()
 
         info: dict[str, object] = {
@@ -99,10 +154,17 @@ class BusSubscriptionService:
             "debounce_ms": debounce_ms,
             "timeout": normalized_timeout,
         }
+        if normalized_bus == "conversations":
+            info.update(contract="conversations_v2", filters=normalized_filters, view=normalized_view)
 
         try:
             state.add_bus_subscription(normalized_bus, sub_id, info)
             current_rev = int(state.get_bus_rev(normalized_bus))
+        except OverflowError as exc:
+            raise ServerDomainError(
+                code="BUSY", message="Conversation subscription capacity exhausted",
+                status_code=429,
+            ) from exc
         except IO_RUNTIME_ERRORS as exc:
             logger.error(
                 "subscribe failed: from_plugin={}, bus={}, err_type={}, err={}",
@@ -152,7 +214,12 @@ class BusSubscriptionService:
             )
 
         try:
-            removed = bool(state.remove_bus_subscription(normalized_bus, sub_id))
+            if normalized_bus == "conversations":
+                removed = state.remove_bus_subscription(
+                    normalized_bus, sub_id, from_plugin=from_plugin,
+                )
+            else:
+                removed = bool(state.remove_bus_subscription(normalized_bus, sub_id))
         except IO_RUNTIME_ERRORS as exc:
             logger.error(
                 "unsubscribe failed: from_plugin={}, bus={}, sub_id={}, err_type={}, err={}",

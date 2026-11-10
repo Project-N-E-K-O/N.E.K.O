@@ -475,7 +475,9 @@ async def test_tick_reviews_a_scoped_subject_once_its_content_changes(
     env = await _scoped_tick_env(tmp_path, maint_state, monkeypatch, run)
 
     # The private review is not due: only scoped subjects remain.
-    maint_state._maint_state.setdefault(NAME, {})['introspection_last_run_at'] = _now_iso()
+    maint_state._maint_state.setdefault(NAME, {}).update(
+        introspection_last_run_at=_now_iso(), behavior_review_last_run_at=_now_iso(),
+    )
     reviewed = []
     for _ in range(3):
         await refine_loops._run_introspection_tick()

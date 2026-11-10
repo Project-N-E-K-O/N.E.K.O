@@ -2973,8 +2973,8 @@ def test_corrupt_optional_receipt_does_not_block_ordinary_save(tmp_path, broken)
     Path(recent_path).write_text(broken)
     with recent.recent_file_access(path) as resolved:
         recent.write_recent_payload_unlocked(resolved, [{'role': 'user', 'content': 'saved'}])
-        with pytest.raises((OSError, ValueError)):
+        with pytest.raises(ValueError, match='^invalid_recent_write_receipt$'):
             recent.read_recent_write_receipt_unlocked(resolved, 'domain', 'token')
-        with pytest.raises((OSError, ValueError)):
+        with pytest.raises(ValueError, match='^invalid_recent_write_receipt$'):
             recent.write_recent_payload_unlocked(resolved, [], receipt=('domain', 'token'))
     assert 'saved' in path.read_text()

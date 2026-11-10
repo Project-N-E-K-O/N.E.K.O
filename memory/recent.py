@@ -369,6 +369,11 @@ def _resolve_review_sources(snapshot, corrected_messages, source_indexes=None, *
 
     ``strict`` rejects any malformed or invalid explicit index. Otherwise such a
     position stays unknown: it is never inferred and never borrows another row's source.
+
+    Text copied verbatim from a snapshot row proves that row, so an index naming a
+    different row is invalid too: accepting it would swap the two rows' sync identities.
+    Rewrites are unaffected unless their new text equals a row no output kept verbatim.
+    Elimination obeys the same rule, so an omitted index cannot reach that swap either.
     """
     if source_indexes is not None and len(source_indexes) != len(corrected_messages):
         if strict:
@@ -388,6 +393,29 @@ def _resolve_review_sources(snapshot, corrected_messages, source_indexes=None, *
             unknown.add(position)
             continue
         used.add(source)
+    contents = [_review_message_content(original) for original in snapshot]
+    # An omitted index keeps a row only if no explicit index took it; invalid positions keep nothing.
+    kept_verbatim = {index for position, message in enumerate(corrected_messages) if position not in unknown
+                     for index, original in enumerate(snapshot)
+                     if (sources[position] == index or (sources[position] is None and index not in used))
+                     and original.type == message.type
+                     and contents[index] == _review_message_content(message)}
+
+    def names_another_row(message, source):
+        content = _review_message_content(message)
+        return contents[source] != content and any(
+            index not in kept_verbatim and original.type == message.type and contents[index] == content
+            for index, original in enumerate(snapshot))
+
+    for position, source in enumerate(sources):
+        if source is None:
+            continue
+        if names_another_row(corrected_messages[position], source):
+            if strict:
+                raise ValueError('invalid_review_sources')
+            sources[position] = None
+            unknown.add(position)
+            used.discard(source)
     # Legacy responses can omit indices. Only unique matches prove an identity.
     for position, message in enumerate(corrected_messages):
         if sources[position] is not None or position in unknown:
@@ -406,7 +434,7 @@ def _resolve_review_sources(snapshot, corrected_messages, source_indexes=None, *
         # Unknown positions still compete for the remaining rows; they are only never assigned one.
         unresolved = sum(source is None and corrected.type == message.type
                          for source, corrected in zip(sources, corrected_messages, strict=True))
-        if len(matches) == unresolved == 1:
+        if len(matches) == unresolved == 1 and not names_another_row(message, matches[0]):
             sources[position] = matches[0]
             used.add(matches[0])
     return sources

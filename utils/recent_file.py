@@ -639,6 +639,9 @@ def _resolve_recent_write_receipts_unlocked(path: Any) -> dict:
             receipts = json.load(handle)
     except FileNotFoundError:
         return {}
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        # A fixed code: decoder messages must not reach sync diagnostics.
+        raise ValueError("invalid_recent_write_receipt") from None
     if not isinstance(receipts, dict) or any(
         not isinstance(value, dict) or set(value) != {"token", "before", "after", "applied"}
         or not isinstance(value["token"], str) or not isinstance(value["after"], str)

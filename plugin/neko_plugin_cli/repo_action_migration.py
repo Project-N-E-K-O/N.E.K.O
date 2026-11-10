@@ -18,8 +18,9 @@ from .templates.generator import (
 )
 
 # Exact normalized fingerprints of the inline workflows emitted at PR base
-# d5f4b36 and the first thin callers emitted at a250623. Dynamic values are
-# normalized by _is_known_legacy_template before hashing.
+# d5f4b36, the first thin callers emitted at a250623, and the managed release
+# caller emitted before it requested attestation permissions. Dynamic values
+# are normalized by _is_known_legacy_template before hashing.
 _LEGACY_TEMPLATE_FINGERPRINTS = {
     Path(".github/workflows/verify.yml"): frozenset(
         {
@@ -31,6 +32,7 @@ _LEGACY_TEMPLATE_FINGERPRINTS = {
         {
             "620a86589cca4bca0be0ea04cb8dc276a5debd0f1dbc1013984c8c496cf6bec7",
             "5669fe1c13e944bc4e0ba20d0a3dc47626e68e80aa310ff1fae3973596b68e0c",
+            "b99cd95664a8df9a8c3708e343dcd322083df61e7b1a4a4668b779f4d23eea2a",
         }
     ),
 }
