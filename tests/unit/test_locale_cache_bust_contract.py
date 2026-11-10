@@ -66,6 +66,9 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-11-09-sync-recent-file-unreadable",
+        "2026-11-05-cat-visit-exit-confirmation",
+        "2026-11-05-cat-visit-opper-main-merge",
         "2026-11-09-sync-recent-write-unconfirmed",
         "2026-11-08-sync-main-merge-habitual-phrases",
         "2026-11-05-sync-main-merge-pinned-facts",
@@ -85,6 +88,10 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-11-06-chat-clear-screen",
         "2026-11-05-opper-assist-provider-main-merge",
         "2026-11-04-visit-invitation-capacity",
+        "2026-11-04-cat-visit-invitation-capacity-main-merge",
+        "2026-11-03-cat-visit-invitation-capacity-main-merge",
+        "2026-11-03-cat-visit-overseas-news-main-merge",
+        "2026-11-03-cat-visit-main-merge",
         "2026-10-22-pr3353-opper-assist-provider-main-rebase",
         "2026-11-03-sync-archive-subject-recovery",
         "2026-11-03-news-overseas-chat-sync-main-merge",
@@ -99,12 +106,14 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-30-chat-sync-recovery-cloud-copies-kept",
         "2026-10-30-chat-sync-profile-upload-key",
         "2026-10-30-chat-sync-retired-keys",
+        "2026-10-28-cat-visit-mode-mismatch",
         "2026-10-29-visit-invitation-input",
         "2026-10-30-voice-processing-host",
         "2026-10-30-voice-repair-recovery",
         "2026-10-30-local-audio-copy",
         "2026-10-28-pr3507-resource-setup-main-sync",
         "2026-10-28-social-hub-realtime-main-merge",
+        "2026-10-28-cat-visits",
         "2026-10-28-hide-nekoverse-entry",
         "2026-10-28-voice-resource-setup-ci-fix",
         "2026-10-27-voice-input-setup-main-rebase",
@@ -176,7 +185,6 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-16-chat-sync-cloud-delete-confirm",
         "2026-10-15-passive-turn-context",
         "2026-10-16-chat-sync-character-quota",
-        "2026-10-16-voice-activation-feedback",
         "2026-10-13-visit-pr12-main-merge-pr3415",
         "2026-10-13-visit-pr12-main-merge-day1-systray",
         "2026-10-13-pr3415-screen-source-main-merge-2",
@@ -196,7 +204,6 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-12-gravity-cat-settings",
         "2026-10-12-pr14a-debrief-pr3398-merge",
         "2026-10-12-visit-frame-badges-main-merge-2",
-        "2026-10-12-gravity-cat-settings",
         "2026-10-12-pr3398-main-merge",
         "2026-10-12-visit-frame-badges-merge",
         "2026-10-12-pr14a-debrief-ambiguous-names-merge",
@@ -282,7 +289,6 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-03-theater-air-basketball-main-merge",
 
         "2026-10-04-voice-readiness-review-main-merge",
-        "2026-10-04-external-route-registry-main-merge-round4",
         "2026-10-03-voice-readiness-model-picker-merge",
         "2026-10-04-storage-requesty-main-merge",
         "2026-10-03-voice-readiness-recovery",
@@ -291,21 +297,16 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-03-voice-readiness",
         "2026-10-03-storage-rollback-errors",
         "2026-10-04-external-route-registry-main-merge-round3",
-        "2026-10-04-storage-requesty-main-merge",
         "2026-10-01-theater-ordinary-chat-unavailable",
         "2026-10-01-click-guide-memory-reactivation",
         "2026-10-01-theater-screen-share-avatar-tools-main-merge",
         "2026-09-30-theater-suggestion-fill-copy",
         "2026-09-30-avatar-tool-pending-recovery-social-login-merge",
         "2026-09-30-theater-avatar-tools-main-merge",
-        "2026-10-03-storage-rollback-errors",
-        "2026-10-04-external-route-registry-main-merge-round3",
         "2026-10-03-external-route-registry-main-merge-round2",
         "2026-10-03-requesty-model-picker-main-merge",
         "2026-10-03-external-route-registry-main-merge",
-        "2026-10-03-model-picker-main-merge-round5",
         "2026-10-02-external-route-registry",
-        "2026-10-03-storage-rollback-errors",
         "2026-10-03-assist-key-tutorial-clarified",
         "2026-10-03-requesty-key-tutorial",
         "2026-10-03-requesty-main-merge",
@@ -315,10 +316,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-03-assist-model-id-removal",
         "2026-10-03-model-picker-url-hint",
         "2026-10-03-assist-model-picker",
-        "2026-10-03-theater-air-basketball-main-merge",
-        "2026-10-03-model-picker-main-merge-round5",
         "2026-10-03-requesty-air-basketball-main-merge",
-        "2026-10-01-click-guide-memory-reactivation",
         "2026-10-01-click-guide-review-main-merge",
         "2026-09-28-click-guide-review",
         "2026-09-28-click-guide-main-merge",
@@ -529,14 +527,11 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-09-30-social-login-prompt-voice-identity-merge",
         "2026-09-30-theater-social-settings-main-merge",
         "2026-09-29-click-guide-screen-source-merge",
-        "2026-09-30-avatar-tool-pending-recovery-social-login-merge",
         "2026-09-27-air-basketball-main-merge",
         "2026-10-02-air-basketball-main-merge",
         "2026-10-03-air-basketball-review-fixes",
         "2026-10-03-air-basketball-review-round2",
-        "2026-10-01-click-guide-memory-reactivation",
         "2026-10-01-theater-click-guide-memory-reactivation",
-        "2026-10-03-air-basketball-review-round3",
     }
 )
 
@@ -549,7 +544,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "fcee9d2bb387eeb59939d55fed555b3ef123887070c45bed19d32a88a1785ab3"
+LOCALE_KEY_SIGNATURE = "7a0ae6d7c75e59f35b13c1f1400cc73512e3bd61fc78d7120985badf1cee18b4"
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "

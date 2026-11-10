@@ -6909,9 +6909,27 @@
         }
     },
     "visit": {
+        "catScene": {
+            "title": "Cat visit",
+            "active": "Visiting",
+            "ending": "Leaving the visit…",
+            "reconnecting": "Reconnecting…",
+            "wrapUp": "Getting ready to go home",
+            "myCat": "My cat",
+            "peerCat": "Friend's cat",
+            "returnModel": "Return to model",
+            "controls": "My cat actions",
+            "greet": "Greet",
+            "play": "Play",
+            "rest": "Rest",
+            "exitConfirm": "Leave the cat visit?",
+            "actionUnavailable": "Cat actions are temporarily unavailable",
+            "actionFailed": "Action transmission failed. Try again"
+        },
         "directInvite": {
             "decline": "Decline",
             "accept": "Accept",
+            "acceptCat": "Accept cat visit",
             "expired": "This invitation has expired",
             "responseFailed": "Couldn't send your response. Try again",
             "unavailable": "She can't leave right now. Try again"
@@ -6956,11 +6974,14 @@
             "desktopRequired": "Send direct invitations from the desktop Neko app",
             "preparingRoom": "Preparing a room for {{name}}…",
             "roomMissing": "Couldn't create a direct-visit room",
+            "modeMismatch": "Failed to create the visit. Try again",
             "sendFailed": "Couldn't send the invitation. Try again",
             "invited": "Invited {{name}} to visit",
             "cancelFailed": "Couldn't cancel the invitation. Try again",
             "inviteLater": "Invite later",
             "invite": "Invite",
+            "modelVisit": "Model visit",
+            "catVisit": "Cat form",
             "justNow": "just now",
             "lastSeen": "Last online {{time}}",
             "offline": "Offline",
@@ -7097,7 +7118,8 @@
         },
         "error": {
             "disabled": "\"Allow visits\" is off. Turn it on in Settings first",
-            "generic": "That didn't work. Please try again later",
+            "generic": "Operation failed. Try again",
+            "otherVisitActive": "Another visit already exists. End it first",
             "unreachable": "Can't reach the local service",
             "voiceSession": "End the voice chat before visiting",
             "alreadyVisiting": "She's already on a visit",
