@@ -171,8 +171,8 @@ DEFAULT_ASSIST_API_PROFILES = {
     },
     'gemini': {
         'OPENROUTER_URL': "https://generativelanguage.googleapis.com/v1beta/openai/",
-        'CONVERSATION_MODEL': "gemini-3.1-flash-lite",
-        'SUMMARY_MODEL': "gemini-2.5-flash",
+        'CONVERSATION_MODEL': "gemini-3.5-flash-lite",
+        'SUMMARY_MODEL': "gemini-3.5-flash-lite",
         'CORRECTION_MODEL': "gemini-3.8-flash",
         'EMOTION_MODEL': "gemini-2.5-flash-lite",
         'VISION_MODEL': "gemini-3.1-flash-lite",
