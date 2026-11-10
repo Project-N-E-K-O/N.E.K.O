@@ -1379,22 +1379,28 @@ async def _oauth_guest_bind(social_base: str, access_token: str) -> dict[str, An
                 # The cloud only stores this proof when the row is already bound
                 # to the signed-in account. A 409 means it is not ours: never
                 # retry it with another secret.
-                adopt_res = await client.post(
-                    f"{base}/api/clients/adopt-proof",
-                    headers=headers,
-                    json={"client_id": client_id, "client_proof": client_proof},
-                )
-                if adopt_res.status_code < 400:
-                    approval_res, approval_detail = await _approve()
-                elif _detail(adopt_res) == _BIND_OWNERSHIP_CONFLICT:
-                    bind["error"] = _BIND_OWNERSHIP_CONFLICT
-                    return bind
-                else:
-                    logger.info(
-                        "community_oauth: adopt-proof returned %s: %s",
-                        adopt_res.status_code,
-                        _detail(adopt_res),
+                try:
+                    adopt_res = await client.post(
+                        f"{base}/api/clients/adopt-proof",
+                        headers=headers,
+                        json={"client_id": client_id, "client_proof": client_proof},
                     )
+                except (httpx.HTTPError, OSError) as exc:
+                    # The row is still known to lack a proof; keep that code so
+                    # the callback shows recovery guidance, not a generic outage.
+                    logger.info("community_oauth: adopt-proof failed: %s", exc)
+                else:
+                    if adopt_res.status_code < 400:
+                        approval_res, approval_detail = await _approve()
+                    elif _detail(adopt_res) == _BIND_OWNERSHIP_CONFLICT:
+                        bind["error"] = _BIND_OWNERSHIP_CONFLICT
+                        return bind
+                    else:
+                        logger.info(
+                            "community_oauth: adopt-proof returned %s: %s",
+                            adopt_res.status_code,
+                            _detail(adopt_res),
+                        )
 
             if approval_res.status_code >= 400:
                 bind["error"] = approval_detail or f"http_{approval_res.status_code}"

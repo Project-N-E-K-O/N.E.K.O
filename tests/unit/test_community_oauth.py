@@ -1732,6 +1732,34 @@ async def test_oauth_guest_bind_adopts_proof_for_legacy_client(
 
 
 @pytest.mark.unit
+async def test_oauth_guest_bind_keeps_legacy_code_when_adopt_proof_times_out(monkeypatch):
+    requests: list[httpx.Request] = []
+
+    def handle(request):
+        requests.append(request)
+        path = request.url.path
+        if path == "/api/auth/bind-client/challenge":
+            return httpx.Response(200, json={"binding_challenge": "C" * 43})
+        if path == "/api/clients/bind-approval":
+            return httpx.Response(403, json={"detail": "legacy_client_rebind_required"})
+        if path == "/api/clients/adopt-proof":
+            raise httpx.ReadTimeout("timed out", request=request)
+        raise AssertionError(f"unexpected {request.method} {request.url}")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    try:
+        monkeypatch.setattr(O.httpx, "AsyncClient", lambda **kwargs: client)
+        monkeypatch.setattr(C, "_get_client_credentials", lambda: ("local-client", "P" * 43))
+        bind = await O._oauth_guest_bind("https://community.example", "platform-access")
+    finally:
+        await client.aclose()
+
+    assert bind == {"bound": False, "error": "legacy_client_rebind_required"}
+    assert [r.url.path for r in requests].count("/api/clients/bind-approval") == 1
+    assert not any(r.url.path == "/api/auth/bind-client" for r in requests)
+
+
+@pytest.mark.unit
 async def test_oauth_guest_bind_does_not_adopt_proof_on_proof_mismatch(monkeypatch):
     requests: list[httpx.Request] = []
 
