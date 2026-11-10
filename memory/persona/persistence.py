@@ -698,6 +698,7 @@ class PersistenceMixin:
         This is a knowledge snapshot, not a render: it does not update mentions,
         suppression or evidence. Limits apply during construction, not afterwards.
         """
+        from memory.introspection import is_permanently_suppressed
         from memory.scopes import SCOPED_PERSONA_PREFIX, is_legacy_private_entry
 
         max_bytes = 1024 * 1024
@@ -734,7 +735,9 @@ class PersistenceMixin:
                         item = {'id': None, 'text': entry, 'source': 'unknown',
                                 'protected': False, 'suppressed': False}
                     elif isinstance(entry, dict):
-                        if not is_legacy_private_entry(entry):
+                        # Introspection retires entries in place (merged or
+                        # rejected); they are no longer current knowledge.
+                        if not is_legacy_private_entry(entry) or is_permanently_suppressed(entry):
                             continue
                         ident = entry.get('id')
                         text = entry.get('text', '')

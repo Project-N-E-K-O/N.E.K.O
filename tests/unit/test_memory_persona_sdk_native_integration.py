@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
@@ -35,6 +36,7 @@ async def test_private_persona_native_http_control_rpc_and_sdk(tmp_path, monkeyp
         '@subject/broken': {'facts': ['hidden']},
     }), encoding='utf-8')
     manager = PersonaManager.__new__(PersonaManager)
+    manager._config_manager = SimpleNamespace(memory_dir=str(tmp_path))
     manager._personas = {}
     manager._alocks = {}
     manager._alocks_guard = threading.Lock()

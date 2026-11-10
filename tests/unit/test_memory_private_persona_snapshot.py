@@ -57,6 +57,22 @@ async def test_snapshot_is_detached_private_and_preserves_retained_fields():
 
 
 @pytest.mark.asyncio
+async def test_snapshot_leaves_out_permanently_retired_entries():
+    from memory.introspection import PERMANENT_SUPPRESSION_KEY
+    manager = SnapshotManager({'master': {'facts': [
+        {'id': 'kept', 'text': 'current'},
+        {'id': 'merged', 'text': 'folded away',
+         PERMANENT_SUPPRESSION_KEY: {'at': '2026-11-01T00:00:00', 'reason': 'merged', 'merged_into': 'kept'}},
+    ]}, 'retired_only': {'facts': [
+        {'id': 'gone', 'text': 'rejected', PERMANENT_SUPPRESSION_KEY: {'at': '2026-11-01T00:00:00', 'reason': 'rejected'}},
+    ]}})
+    result = await manager.aget_private_persona_snapshot('cat')
+    assert result == {'sections': [{'entity': 'master', 'entries': [
+        {'id': 'kept', 'text': 'current', 'source': 'unknown', 'protected': False, 'suppressed': False},
+    ]}]}
+
+
+@pytest.mark.asyncio
 async def test_snapshot_observes_character_lock_and_empty_is_success():
     manager = SnapshotManager({'master': {'facts': ['before']}})
     async with manager.lock:
@@ -120,6 +136,7 @@ async def test_strict_cold_read_does_not_replace_corrupt_storage(tmp_path):
     path = tmp_path / 'persona.json'
     path.write_text('{broken', encoding='utf-8')
     manager = PersistenceMixin()
+    manager._config_manager = SimpleNamespace(memory_dir=str(tmp_path))
     manager._personas = {}
     manager._persona_path = lambda name: str(path)
     with pytest.raises(ValueError):
@@ -156,11 +173,12 @@ async def test_strict_cold_read_does_not_treat_stat_failure_as_absent(tmp_path, 
     path = tmp_path / 'persona.json'
     path.write_text('{"master":{"facts":["keep"]}}', encoding='utf-8')
     manager = PersistenceMixin()
+    manager._config_manager = SimpleNamespace(memory_dir=str(tmp_path))
     manager._personas = {}
     manager._persona_path = lambda name: str(path)
     def inaccessible(_path):
         raise PermissionError('storage temporarily inaccessible')
-    monkeypatch.setattr(persistence, 'os', SimpleNamespace(stat=inaccessible))
+    monkeypatch.setattr(persistence, 'os', SimpleNamespace(stat=inaccessible, path=persistence.os.path))
     with pytest.raises(PermissionError):
         await manager._aensure_persona_locked('cat', strict_read=True)
     assert path.read_text(encoding='utf-8') == '{"master":{"facts":["keep"]}}'
@@ -172,6 +190,7 @@ async def test_strict_cold_read_rejects_malformed_containers_before_migration(tm
     path = tmp_path / 'persona.json'
     path.write_text(contents, encoding='utf-8')
     manager = PersistenceMixin()
+    manager._config_manager = SimpleNamespace(memory_dir=str(tmp_path))
     manager._personas = {}
     manager._persona_path = lambda name: str(path)
     manager._async_migrate_from_settings = AsyncMock()
