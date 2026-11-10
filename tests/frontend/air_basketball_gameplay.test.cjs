@@ -560,3 +560,69 @@ test('a player-thrown opponent ball is credited to the player once when it score
   assert.equal(h.api.getState().player.makes,1);assert(h.api.getState().player.score>=2);
   assert.equal(h.api.getState().neko.makes,0);assert.equal(h.api.getState().neko.score,0);
 });
+
+test('a normal player basket scores the same from either tray', async () => {
+  for (const side of ['player', 'neko']) {
+    const h = await interferenceHarness();
+    const lane = side === 'player' ? h.playerLane : h.nekoLane;
+    const ball = lane.ballPool[0];
+    const canvas = lane.canvas;
+    const { left, top } = canvas.getBoundingClientRect();
+    const { x, y } = ball;
+    const hoop = lane.getHoopPose();
+    const dx = 200 * (hoop.x - x) / (y - hoop.rimY);
+    canvas.emit('pointerdown', { clientX:left + x, clientY:top + y, pointerId:1 });
+    canvas.emit('pointermove', { clientX:left + x + dx, clientY:top + y - 200, pointerId:1 });
+    canvas.emit('pointerup', { pointerId:1 });
+    assert(ball.flying);
+    lane.scoreBall(ball, data => lane.onScore(data, ball));
+    lane.beginBallReturn(ball);
+    const { player, neko } = h.api.getState();
+    assert.equal(player.score, 3);
+    assert.equal(player.makes, 1);
+    assert.equal(player.attempts, 1);
+    assert.equal(player.combo, 1);
+    assert.equal(neko.score, 0);
+  }
+});
+
+test('returning prank and collision balls do not interrupt a combo', async () => {
+  const h = await interferenceHarness();
+  const lane = h.nekoLane;
+  lane.onScore({ clean:true, owner:'neko' }, lane.ball);
+  const prank = lane.launchPoolBall(0, -200, { owner:'neko' });
+  assert(prank);
+  const bumped = lane.readyForLaunch();
+  lane.liftPoolBall(bumped, prank);
+  lane.beginBallReturn(prank);
+  lane.beginBallReturn(bumped);
+  const { neko } = h.api.getState();
+  assert.equal(neko.combo, 1);
+  assert.equal(neko.feverCharge, 1);
+  assert.equal(neko.shotMissStreak, 0);
+});
+
+test('a genuine miss is charged once to its shooter even after possession changes', async () => {
+  for (const side of ['player', 'neko']) {
+    const h = await interferenceHarness();
+    for (const lane of [h.playerLane, h.nekoLane]) {
+      lane.onScore({ clean:true, owner:lane.side }, lane.ball);
+    }
+    const lane = side === 'player' ? h.playerLane : h.nekoLane;
+    const otherSide = side === 'player' ? 'neko' : 'player';
+    assert(side === 'player' ? h.api.shootPlayer(0, -300) : h.api.shootNeko());
+    const shot = lane.ballPool.find(ball => ball.flying);
+    assert(shot);
+    shot.owner = otherSide;
+    const misses = [];
+    const onMiss = lane.onMiss;
+    lane.onMiss = data => { misses.push(data.owner); onMiss(data); };
+    lane.beginBallReturn(shot);
+    lane.beginBallReturn(shot);
+    assert.deepEqual(misses, [side]);
+    const state = h.api.getState();
+    assert.equal(state[side].combo, 0);
+    assert.equal(state[otherSide].combo, 1);
+    assert.equal(state.neko.shotMissStreak, side === 'neko' ? 1 : 0);
+  }
+});

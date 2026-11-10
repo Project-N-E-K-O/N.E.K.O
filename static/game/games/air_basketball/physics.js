@@ -262,14 +262,14 @@ export class ShotLane {
 
   launchPoolBall(vx, vy, {
     nativeShot = false, owner = this.side, fever = this.fever,
-    spatial = null, ball = this.readyForLaunch()
+    spatial = null, ball = this.readyForLaunch(), shotBy = null
   } = {}) {
     if (!this.ballPool?.includes(ball) || !this.isReadyBall(ball) || this.isHeldBall(ball)) return null;
     delete ball.roll;
     Object.assign(ball, {
       vx, vy, owner, fever, flying:true, inTransit:false, life:0,
       scored:false, hitRim:false, clashed:false, avatarHit:false,
-      nativeShot, allowOuterExit:false, poolState:'flying', poolSlot:null, readyPosition:null
+      nativeShot, shotBy, allowOuterExit:false, poolState:'flying', poolSlot:null, readyPosition:null
     });
     if (spatial && this.sharedCourt) this.sharedCourt.startFlight(this, ball, spatial);
     if (!this.heldBall) this.aim = null;
@@ -279,7 +279,10 @@ export class ShotLane {
 
   beginBallReturn(ball) {
     if (this.isHeldBall(ball)) return;
-    if (!ball.scored) this.onMiss?.({ owner:ball.owner });
+    // A collision can change possession without changing who took the shot.
+    const { shotBy } = ball;
+    ball.shotBy = null;
+    if (shotBy && !ball.scored) this.onMiss?.({ owner:shotBy });
     if (this.sharedCourt) {
       this.sharedCourt.beginReturn(this, ball);
       this.selectReadyBall();
@@ -302,7 +305,7 @@ export class ShotLane {
 
   liftPoolBall(ball, other) {
     delete ball.roll;
-    Object.assign(ball, { flying:true, poolState:'flying', life:0, scored:false });
+    Object.assign(ball, { flying:true, poolState:'flying', life:0, scored:false, shotBy:null });
     if (other.flight) this.sharedCourt.startFlight(this, ball);
   }
 
@@ -519,13 +522,13 @@ export class ShotLane {
     const vector = this.shotVector();
     this.cancelAim();
     if (vector && this.ballPool && this.sharedCourt) {
-      return Boolean(this.launchPoolBall(vector.vx, vector.vy, { owner, spatial:vector }));
+      return Boolean(this.launchPoolBall(vector.vx, vector.vy, { owner, shotBy:owner, spatial:vector }));
     }
     return vector ? this.shoot(vector.vx, vector.vy, owner) : false;
   }
 
   shoot(vx, vy, owner = this.side) {
-    if (this.ballPool) return Boolean(this.launchPoolBall(vx, vy, { owner }));
+    if (this.ballPool) return Boolean(this.launchPoolBall(vx, vy, { owner, shotBy:owner }));
     if (this.ball.flying || this.ball.inTransit) return false;
     Object.assign(this.ball, { vx, vy, owner, flying:true, inTransit:false, life:0, scored:false, hitRim:false });
     return true;
@@ -539,7 +542,7 @@ export class ShotLane {
     if (this.sharedCourt && this.ballPool) {
       const error = (Math.random() - .5) * ((1 - difficulty) * 360 + (stage - 1) * 7);
       const seconds = 1.32 + Math.random() * .12;
-      return this.launchPoolBall(0, 0, { ball, owner, fever, nativeShot:true, spatial:{ auto:true, seconds, error } });
+      return this.launchPoolBall(0, 0, { ball, owner, fever, nativeShot:true, shotBy:owner, spatial:{ auto:true, seconds, error } });
     }
     let flight = .98 + Math.random() * .06;
     const clock = this.sharedCourt?.clock ?? this.stageClock;
@@ -571,7 +574,7 @@ export class ShotLane {
     // instead of peaking a few pixels below the scoring sensor.
     const rimClearance = Math.min(10, ball.r * .5);
     const vy = (dy - rimClearance - .5 * gravity * flight * flight) / flight;
-    if (this.ballPool) return this.launchPoolBall(vx, vy, { ball, owner, fever, nativeShot:true });
+    if (this.ballPool) return this.launchPoolBall(vx, vy, { ball, owner, fever, nativeShot:true, shotBy:owner });
     return this.receiveGuestBall({
       x:ball.x, y:ball.y, r:ball.r, vx, vy, owner, fever, nativeShot:true
     });

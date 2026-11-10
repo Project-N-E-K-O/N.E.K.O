@@ -444,7 +444,7 @@ function syncHud(side) {
 }
 
 const playerLane = new ShotLane({ canvas:byId('player-court'), side:'player', onScore:(data, ball) => nativeScored('player', data, ball), onMiss:data => nativeMissed('player', data) });
-const nekoLane = new ShotLane({ canvas:byId('neko-court'), side:'neko', onScore:data => nativeScored('neko', data), onMiss:data => nativeMissed('neko', data) });
+const nekoLane = new ShotLane({ canvas:byId('neko-court'), side:'neko', onScore:(data, ball) => nativeScored('neko', data, ball), onMiss:data => nativeMissed('neko', data) });
 const sharedCourt = new SharedCourt(playerLane, nekoLane);
 sharedCourt.onBoardImpact = () => sound(122, .07, 'triangle');
 playerLane.enableBallPool(INITIAL_BALLS_PER_SIDE);
@@ -806,7 +806,7 @@ function crossScored(owner, targetSide, data) {
 }
 
 function nativeScored(laneSide, data, ball) {
-  if (data.owner === 'neko' && ball?.nativeShot) scored('neko', data);
+  if (ball?.shotBy && data.owner === ball.shotBy) scored(data.owner, data);
   else if (data.owner && data.owner !== laneSide) crossScored(data.owner, laneSide, data);
   else scored(laneSide, data);
 }
