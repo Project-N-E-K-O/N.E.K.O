@@ -1,6 +1,7 @@
 """One-time cleanup of old duplicate facts: nominate leniently, let the model decide, archive, never delete."""
 
 import json
+from datetime import datetime, timedelta, timezone
 import re
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -720,3 +721,14 @@ async def test_an_everyday_dedup_archive_after_an_interrupted_plan_is_not_claime
     assert marker['archived'] == {}
     from app.memory_server.legacy_dedup import restore
     assert await restore(NAME) == 0
+
+
+def test_ownership_compares_instants_not_wall_clock_text():
+    """The plan keeps an instant; an import may render the same instant in another zone."""
+    from memory.long_term_sync import timestamp
+    planned = timestamp('2026-11-11T10:00:00.123')
+    row = {'id': 'b', 'arbitration_archived_at': '2026-11-11T10:00:00.123', 'arbitration_reason': 'dedup_arbitration'}
+    shifted = {**row, 'arbitration_archived_at': datetime.fromtimestamp(planned / 1000, tz=timezone(timedelta(hours=-5))).isoformat()}
+    assert legacy_dedup.owned(row, {'b'}, [planned])
+    assert legacy_dedup.owned(shifted, {'b'}, [planned])
+    assert not legacy_dedup.owned({**row, 'arbitration_archived_at': '2026-11-11T10:00:01'}, {'b'}, [planned])

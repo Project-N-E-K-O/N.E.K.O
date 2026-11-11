@@ -320,7 +320,11 @@ async def run(name, *, still_idle=lambda: True):
     # The archive time is chosen here and recorded with the plan: a row this run
     # archives carries it, an everyday dedup archive of the same fact does not.
     stamp = datetime.now().isoformat(timespec='milliseconds')
-    marker = {**marker, 'archiving': {**(marker.get('archiving') or {}), **mapping}, 'stamps': [*stamps, stamp]}
+    # Kept as an instant (epoch milliseconds), not local wall time: a snapshot import
+    # renders the archive time in whatever time zone the device has by then.
+    from memory.long_term_sync import timestamp
+    marker = {**marker, 'archiving': {**(marker.get('archiving') or {}), **mapping},
+              'stamps': [*stamps, timestamp(stamp)]}
     await asyncio.to_thread(_save_marker, directory, marker)
     ours, stamps = set(marker['archiving']), marker['stamps']
     # Each folded fact points straight at the one that finally stands for it.
