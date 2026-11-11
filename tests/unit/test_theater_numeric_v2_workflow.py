@@ -450,6 +450,23 @@ async def test_tagged_repeated_output_stops_after_retry_and_records_guard(format
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("remaining", [0, 1])
+async def test_output_retry_respects_turn_budget_left_after_a_previous_generation(remaining):
+    class RejectingActor:
+        calls = 0
+
+        async def generate_turn(self, **kwargs):
+            self.calls += 1
+            raise NumericV2ActorOutputError("numeric_v2_actor_invalid_json")
+
+    actor = RejectingActor()
+    expected = "retry_budget_exhausted" if not remaining else "invalid_json"
+    with pytest.raises(NumericV2ActorOutputError, match=expected):
+        await _generate_actor_turn_with_output_retry(actor, remaining_attempts=remaining, retry_hint="只修原稿")
+    assert actor.calls == remaining
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("repetition_guard", ["earlier_session", "transition_source", "transition_target"])
 async def test_accepted_transition_allows_one_segment_repeat_retry_when_output_retry_is_disabled(
     repetition_guard: str,

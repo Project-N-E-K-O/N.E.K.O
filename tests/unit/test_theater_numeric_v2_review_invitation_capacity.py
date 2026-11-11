@@ -1,5 +1,4 @@
 """Exact latest invitation references retain authorization under Review capacity pressure."""
-from copy import deepcopy
 from dataclasses import replace
 import json
 
@@ -33,20 +32,22 @@ def build(case):
     return json.loads(messages[-1].content.split('：', 1)[1]), sum(evaluator.count_tokens(m.content) for m in messages)
 
 
-def test_latest_invitation_reference_only_under_pressure(monkeypatch, case):
+def test_invitation_is_deduplicated_before_budget_check(monkeypatch, case):
     before, tokens = build(case)
-    monkeypatch.setitem(NUMERIC_V2_ACTOR_BUDGET_PROFILES['economy'], 'formal_judge_input_max_tokens', tokens - 30)
-    after, packed = build(case)
-    expected = deepcopy(before)
-    expected['transition_authorization']['pending_invitation']['content'] = 'scene_context[-1].content中的完整原文（dialogue说话人为active_catgirl）'
-    assert after == expected
-    assert packed <= tokens - 30
-
-
-def test_exact_fit_retains_invitation_copy(monkeypatch, case):
-    before, tokens = build(case)
+    assert before['transition_authorization']['pending_invitation']['content'].startswith('scene_context[0].content')
     monkeypatch.setitem(NUMERIC_V2_ACTOR_BUDGET_PROFILES['economy'], 'formal_judge_input_max_tokens', tokens)
     assert build(case) == (before, tokens)
+
+
+def test_split_player_action_review_references_same_visible_invitation(case):
+    engine, session, kwargs = case
+    messages = evaluator._build_player_action_review_messages(
+        engine, session, player_input=kwargs['player_input'], actor_performance=kwargs['actor_performance'],
+        transition_outcome=kwargs['transition_outcome'], public_destination_quote='',
+        confirmed_acceptance=True, confirmed_silent_acceptance='',
+    )
+    payload = json.loads(messages[-1].content)
+    assert payload['pending_invitation'].startswith('latest_public_context[0].content')
 
 
 @pytest.mark.parametrize('change', ['revision', 'text', 'missing_content'])

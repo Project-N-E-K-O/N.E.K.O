@@ -1,6 +1,8 @@
 """Authored entry choices replace model suggestions only at public scene entry."""
 
+from contextlib import nullcontext
 from copy import deepcopy
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -18,7 +20,7 @@ DYNAMIC = ["（犹豫片刻）要我帮你寻找新店面吗？", "（摸出钱�
 
 
 def _actor(monkeypatch, payload):
-    config = SimpleNamespace(load_characters=lambda: {"当前猫娘": "Lan", "主人": {"昵称": "哥哥"}})
+    config = SimpleNamespace(load_characters=lambda: {"当前猫娘": "Lan", "猫娘": {"Lan": {}}, "主人": {"昵称": "哥哥"}})
     instance = NumericV2Actor(config)
     calls = []
 
@@ -185,3 +187,48 @@ async def test_terminal_still_clears_choices_even_if_uncompiled_field_is_present
         player_input=request.message, character_profile="温和克制。")
     assert result["suggested_inputs"] == []
     assert instance.suggestion_fill_attempt_count == 0 and len(calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("opening", [True, False])
+async def test_author_options_remove_generated_suggestions_from_entry_request(tmp_path, monkeypatch, opening):
+    calls = []
+    config = SimpleNamespace(load_characters=lambda: {"当前猫娘": "Lan", "猫娘": {"Lan": {}}, "主人": {"昵称": "哥哥"}})
+    instance = NumericV2Actor(config)
+
+    async def model_config(_):
+        return {"model": "qwen3.8-flash", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"}
+
+    async def client(*args, **kwargs):
+        return nullcontext(None)
+
+    async def invoke(_, messages, *, stage, response_format):
+        calls.append(stage)
+        system = messages[0].content
+        schema = response_format["json_schema"]["schema"]
+        assert "suggested_inputs 填空数组" in system
+        assert "一至三条可直接发送的玩家输入" not in system
+        assert "suggested_inputs" in schema["required"]
+        assert schema["properties"]["suggested_inputs"]["maxItems"] == 0
+        payload = {"scene_narration": "柜台旁亮着灯。", **_ordinary_payload()} if opening else _transition_payload()
+        payload["suggested_inputs"] = []
+        return SimpleNamespace(content=json.dumps(payload, ensure_ascii=False))
+
+    monkeypatch.setattr(instance, "_character_profile", lambda: "温和克制。")
+    monkeypatch.setattr(actor_module, "_model_config", model_config)
+    monkeypatch.setattr(actor_module, "create_chat_llm_async", client)
+    monkeypatch.setattr(actor_module, "invoke_with_usage", invoke)
+    if opening:
+        engine = _engine()
+        engine.nodes["start"]["story_beat"]["entry_player_inputs"] = SAFE
+        result = await instance.generate_opening(engine=engine, allow_suggestion_fill=True)
+    else:
+        runtime, current = await _setup(tmp_path)
+        request = TurnRequestV2("accept", current.session.revision, "好，我们去廊下。")
+        outcome = runtime.prepare_turn(current, request, (), transition_intent="accept")
+        result = await instance.generate_turn(
+            engine=runtime.engine, session=current.session, outcome=outcome,
+            player_input=request.message, allow_suggestion_fill=True,
+        )
+    assert result["suggested_inputs"] == SAFE
+    assert calls == ["actor"] and instance.suggestion_fill_attempt_count == 0

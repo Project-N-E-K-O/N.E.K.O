@@ -16,7 +16,7 @@ from services.theater_workshop.sdk.generation.quality import NumericV2QualityAss
 
 from .numeric_v2_fixture import numeric_v2_story
 from .test_numeric_v2_generation import (
-    _generation_setup, _quality_payload, _quality_story_context, _reviewed_fixture,
+    _generation_setup, _quality_payload, _quality_reply, _quality_story_context, _reviewed_fixture,
 )
 from .test_sdk_lifecycle import opened
 
@@ -146,10 +146,9 @@ def test_quality_revision_preserves_explicit_empty_delivery_and_existing_bridge(
     payload["issues"][0]["repair_targets"] = [{
         "node_id": node["id"], "field": "/outgoing_routes/0/transition_contract/must_deliver",
     }]
-    assessment = assessor._validated_assessment(
-        assessor._assessment_context(story, _generation_setup(), authoring), payload,
-    )
-    _reviewed_fixture(assessment)
+    context = assessor._assessment_context(story, _generation_setup(), authoring)
+    assessment = assessor._validated_assessment(context, payload)
+    _reviewed_fixture(assessment, context)
     calls = []
 
     def reply(messages, **options):
@@ -187,4 +186,66 @@ def test_quality_revision_keeps_shape_and_nonempty_item_checks(update):
     }]}]}
     with pytest.raises(QualityAssessmentError, match="invalid_quality_repair"):
         NumericV2QualityAssessor._apply_node_updates(story, payload, [node["id"]])
+    assert story == before
+
+
+@pytest.mark.parametrize("authorized", [False, True])
+def test_quality_removes_exact_duplicate_optional_bridge_only_when_approved(authorized):
+    story, authoring = _quality_story_context()
+    node = story["nodes"][0]
+    route = node["route_gates"][0]
+    target = next(row for row in story["nodes"] if row["id"] == route["target_node_id"])
+    route["transition_contract"].update(must_deliver=[], bridge_scene_narration=target["story_beat"]["opening_scene"])
+    before = deepcopy(story)
+    NumericV2Compiler().compile_v2_2(story)
+    payload = _quality_payload(weak_dimension="plot", target_node_id=node["id"])
+    field = {"node_id": node["id"], "field": "/outgoing_routes/0/transition_contract/bridge_scene_narration"}
+    if authorized:
+        payload["issues"][0].update(repair_targets=[field], modification_plan="删去和目标开场重复的旁白。")
+    fallback = _quality_reply(payload)
+
+    def reply(messages, **options):
+        request = json.loads(messages[1]["content"])
+        if options["operation"] == "numeric_v2_repair_plan_review":
+            assert request["removable_bridge_targets"] == ([field] if authorized else [])
+        if options["operation"] == "numeric_v2_quality_single_node_optimization":
+            assert "remove_bridge_scene_narration" in messages[0]["content"]
+            return json.dumps({"node_updates": [{"node_id": node["id"], "routes": [{
+                "route_id": route["id"], "transition_contract": {"remove_bridge_scene_narration": True},
+            }]}]})
+        return fallback(messages, **options)
+
+    assessor = NumericV2QualityAssessor(reply)
+    report = assessor.assess(story=story, setup=_generation_setup(), authoring=authoring)
+    assert report["issues"][0]["repairable"]
+    params = dict(story=story, setup=_generation_setup(), authoring=authoring, assessment=report, node_id=node["id"])
+    if authorized:
+        repaired = assessor.optimize_node(**params)
+        expected = deepcopy(before)
+        del expected["nodes"][0]["route_gates"][0]["transition_contract"]["bridge_scene_narration"]
+        assert repaired == expected
+        assert NumericV2Compiler().compile_v2_2(repaired).story == expected
+    else:
+        with pytest.raises(QualityAssessmentError, match="quality_repair_outside_plan"):
+            assessor.optimize_node(**params)
+    assert story == before
+
+
+@pytest.mark.parametrize("changes", [
+    {"must_deliver": ["独立的换幕结果"]},
+    {"bridge_scene_narration": "通道另一头响起警报。"},
+    {"fixed_entry_only": True},
+])
+def test_quality_cannot_remove_bridge_with_independent_delivery(changes):
+    story, _ = _quality_story_context()
+    node = story["nodes"][0]
+    route = node["route_gates"][0]
+    target = next(row for row in story["nodes"] if row["id"] == route["target_node_id"])
+    route["transition_contract"].update(must_deliver=[], bridge_scene_narration=target["story_beat"]["opening_scene"])
+    route["transition_contract"].update(changes)
+    patch = {"node_updates": [{"node_id": node["id"], "routes": [{"route_id": route["id"],
+        "transition_contract": {"must_deliver": [], "remove_bridge_scene_narration": True}}]}]}
+    before = deepcopy(story)
+    with pytest.raises(QualityAssessmentError, match="invalid_quality_repair"):
+        NumericV2QualityAssessor._apply_node_updates(story, patch, [node["id"]])
     assert story == before

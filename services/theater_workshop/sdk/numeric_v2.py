@@ -16,6 +16,8 @@ NUMERIC_V2_SCHEMA = "neko.story.numeric.v2"
 NUMERIC_V2_CONTRACT_VERSION = "v2.2"
 NUMERIC_V2_MIN_PER_TURN_LIMIT = 1
 NUMERIC_V2_MAX_PER_TURN_LIMIT = 5
+# Native v2.2 package limit; the standalone SDK checks it before asking the host to compile.
+NUMERIC_V2_MAX_FACT_KEYS = 64
 # Short theater fixes each act's hard minimum and soft ending at three turns, preventing target counts stretching length.
 DEFAULT_SCENE_MIN_TURNS = 3
 DEFAULT_SCENE_RECOMMENDED_TURNS = 3
@@ -34,6 +36,13 @@ _NON_ACTIONABLE_PLAYER_EXIT_PHRASES = (
     "自动发生",
     "被动等待",
 )
+
+
+def typed_completion_fact_count(scene: Mapping[str, Any]) -> int:
+    """Count facts that project to package keys, excluding fixed-narration receipts."""
+    facts = scene.get("completion_facts")
+    return sum(isinstance(fact, Mapping) and "fixed_narration_id" not in fact
+               for fact in facts) if isinstance(facts, list) else 0
 
 
 @dataclass(frozen=True)

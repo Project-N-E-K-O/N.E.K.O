@@ -390,5 +390,5 @@ async def test_actor_completion_handoff_uses_only_this_drafts_reviewed_quote(tmp
                                                      "evidence_quote": text, "description": texts["first"]}]
     # Missed-initiation check (+96) and the separate narrative table approval (+90)
     # share the existing Review; neither changes fact approval or SDK retries.
-    assert all(settings["max_completion_tokens"] == 536 and settings["max_retries"] == 0 for settings in client_settings)
+    assert all(settings["max_completion_tokens"] == 446 and settings["max_retries"] == 0 for settings in client_settings)
     assert await runtime.restore_session(current.session.session_id) == result.stored

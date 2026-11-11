@@ -191,6 +191,52 @@ def test_numeric_v2_fact_contract_accepts_only_explicit_typed_keys():
     assert compiled.story["fact_contract"] == story["fact_contract"]
 
 
+def test_player_handoff_item_requires_a_public_boolean_performance_fact():
+    story = numeric_v2_story()
+    key = "scene:start:box_received"
+    definition = {
+        "description": "旧友已接稳剑匣。",
+        "value_type": "bool",
+        "visibility": "public",
+        "evidence_source": "performance",
+        "player_handoff_item": ["剑匣", "木匣"],
+    }
+    story["fact_contract"] = {"facts": {key: definition}}
+
+    compiled = NumericV2Compiler().compile_v2_2(story)
+
+    assert compiled.story["fact_contract"]["facts"][key] == definition
+
+
+@pytest.mark.parametrize("changes", [
+    {"player_handoff_item": "剑匣"},
+    {"player_handoff_item": []},
+    {"player_handoff_item": ["剑匣", "木匣", "旧匣", "匣子", "小匣"]},
+    {"player_handoff_item": ["剑匣", "剑匣"]},
+    {"player_handoff_item": [""]},
+    {"player_handoff_item": ["  "]},
+    {"player_handoff_item": ["剑匣\n木匣"]},
+    {"player_handoff_item": [["剑匣"]]},
+    {"value_type": "string"},
+    {"visibility": "story"},
+    {"evidence_source": None},
+])
+def test_player_handoff_item_rejects_invalid_aliases_or_incompatible_facts(changes):
+    story = numeric_v2_story()
+    key = "scene:start:box_received"
+    definition = {"value_type": "bool", "visibility": "public", "evidence_source": "performance",
+                  "player_handoff_item": ["剑匣"], **changes}
+    if definition["evidence_source"] is None:
+        definition.pop("evidence_source")
+    story["fact_contract"] = {"facts": {key: definition}}
+
+    with pytest.raises(NumericV2CompileError) as caught:
+        NumericV2Compiler().compile_v2_2(story)
+
+    assert any(issue.code == "invalid_fact_contract_player_handoff_item"
+               and issue.path == f"fact_contract.facts.{key}.player_handoff_item" for issue in caught.value.issues)
+
+
 def test_numeric_v2_completion_contract_accepts_declared_typed_facts():
     """Act-completion conditions may reference only the fact contract and must retain the author's exact target values."""  # noqa: DOCSTRING_CJK
 

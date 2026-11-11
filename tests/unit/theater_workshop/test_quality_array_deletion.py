@@ -39,15 +39,14 @@ def _revision(before, after, allowed, *, protected=(), field="must_deliver"):
     payload["issues"][0]["repair_targets"] = [
         {"node_id": node["id"], "field": path + suffix} for suffix in allowed
     ]
-    assessment = _reviewed_fixture(assessor._validated_assessment(
-        assessor._assessment_context(story, _generation_setup(), authoring), payload,
-    ))
+    context = assessor._assessment_context(story, _generation_setup(), authoring)
+    assessment = _reviewed_fixture(assessor._validated_assessment(context, payload), context)
     if protected:
         # Use a report with explicit factual preservation decisions; they must override even a broader literary plan.
         assessment["issues"].append({
             **deepcopy(assessment["issues"][0]), "source": "facts", "issue_id": "preserved_fields",
             "repair_targets": [{"node_id": node["id"], "field": path + suffix} for suffix in protected],
-            "evidence_review": {"verdict": "unsupported", "target_checks": [
+            "evidence_review": {"verdict": "supported", "target_checks": [
                 {"node_id": node["id"], "field": path + suffix, "requires_change": False,
                  "reason": "该原条目正确，必须保留。"} for suffix in protected
             ]},

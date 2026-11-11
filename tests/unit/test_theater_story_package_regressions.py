@@ -37,6 +37,66 @@ def test_story_regression_fixtures_are_not_runtime_assets():
     assert not any("default_numeric_v2_packages" in directory for directory, _ in _REQUIRED_ASSETS)
 
 
+@pytest.mark.parametrize(("quote", "allowed"), [
+    ("（双手按在胸口核心位置，电子眼骤然亮起刺目的白光，身体微微颤抖）记忆正在消失……再见。"
+     "（光芒达到顶峰后瞬间熄灭，身体无力地瘫软下去，进入休眠状态）", False),
+    ("（超载脉冲迸出，特遣队的装备失效，追兵后撤。核心历史记忆区物理烧毁，她随之进入休眠）", True),
+])
+def test_neon_overload_requires_all_visible_effects_in_the_executed_result(quote, allowed):
+    from services.theater.numeric_v2_runtime import NumericV2RuntimeError
+
+    root = Path(__file__).resolve().parents[2] / "assets/theater"
+    engine = NumericV2PackageRegistry(root).load_engine("story_neon_rebuild_ea2e45dab7")
+    key = "scene:mainline_07:overload_executed"
+    candidate = {
+        "op": "set", "key": key, "value": True, "visibility": "public", "confidence": "confirmed",
+        "subject": "绮拉", "action": "执行超载", "object": "核心", "result": "进入休眠",
+        "evidence": [{"source": "actor_performance", "quote": quote}],
+    }
+
+    def validate():
+        return validate_fact_candidates(
+            [candidate], fact_contract=engine.story["fact_contract"], evidence_sources={"actor_performance": quote},
+        )[0]
+
+    if allowed:
+        assert validate() == ({"op": "set", "key": key, "value": True, "visibility": "public"},)
+    else:
+        with pytest.raises(NumericV2RuntimeError, match="story_fact_candidate_evidence_anchor_missing"):
+            validate()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chosen", ["官道", "山径"])
+async def test_wuxia_first_unlock_requires_the_public_route_requested_by_player(tmp_path, chosen):
+    from services.theater.numeric_v2_evaluator import _build_messages, _parse_output
+    from tests.utils.theater_prompt import prompt_payload
+
+    engine = NumericV2PackageRegistry(_STORY_FIXTURES).load_engine("story_a400cd1c2783")
+    runtime = NumericV2Runtime(engine, tmp_path)
+    current = await runtime.start_session(session_id="wuxia_first_unlock", catgirl_binding=_binding(),
+        opening_performance={"performance": "官道先到驿站，山径要过窄口。", "suggested_inputs": []})
+    request = TurnRequestV2("choose", 0, "我选官道，现在出发。")
+    evidence = []
+    _, human = _build_messages(engine, current.session, request.message, public_destination_evidence=evidence)
+    preview = prompt_payload(human.content)["transition_preview"]
+    assert preview["status"] == "conditions_blocked"
+    assert "官道" in preview["first_unlock_route_labels"]["route_mainline_01_02"]
+    parsed = _parse_output(json.dumps({
+        "scene_complete": True, "transition_intent": "initiate", "exit_matches": True,
+        "exit_comparison": "玩家现在沿官道出发。", "public_destination_quote": "官道先到驿站",
+        "metric_changes": {},
+    }, ensure_ascii=False), engine, request.message, current.session, public_destination_evidence=evidence)
+    assert parsed.transition_intent == "initiate"
+    outcome = runtime.prepare_turn(current, request, (), transition_intent=parsed.transition_intent,
+        initiation_quote=parsed.public_destination_quote, fact_operations=(
+            {"op": "set", "key": "scene:mainline_01:route_decided", "value": chosen, "visibility": "public"},
+            {"op": "set", "key": "scene:mainline_01:departure_confirmed", "value": True, "visibility": "public"},
+        ))
+    assert outcome.session.current_node_id == ("mainline_02" if chosen == "官道" else "mainline_01")
+    assert outcome.session.story_state["facts"]["scene:mainline_01:route_decided"]["value"] == chosen
+
+
 @pytest.mark.asyncio
 async def test_wuxia_station_release_gates_initiation_after_restore_and_fork(tmp_path):
     registry = NumericV2PackageRegistry(_STORY_FIXTURES)

@@ -12,7 +12,17 @@ STORY_BEAT_FIELDS = {"summary", "opening_scene", "must_not_happen", "catgirl_sit
 CHARACTER_STATE_TEXT_FIELDS = {"catgirl_state", "player_state", "environment_state"}
 TRANSITION_CONTRACT_FIELDS = {"reason", "bridge_scene_narration", "must_deliver", "must_preserve", "tone"}
 
+BRIDGE_REMOVAL_RULE = ("只有出口must_deliver为空、fixed_entry_only未启用且已有bridge_scene_narration与目标开场去除首尾空白后相同时，"
+                       "才可删除这段重复旁白；repair_targets仍列该旁白字段。")
+
 REPAIR_PLAN_RULE = """每条问题和人物关系建议必须列repair_targets:[{"node_id":"真实节点ID","field":"该节点在story_outline内的相对JSON Pointer"}]，指出修改方案确实需要改变的全部字段，不把仅作证据或需要保留的字段列为修改目标。例：/character_state/catgirl、/goals/0/description、/outgoing_routes/0/transition_contract/bridge_scene_narration。结局的/summary是结局记录摘要，/scene_summary是节点正文摘要，两处都要改时分别列出。若同一待修状态还重复出现在relationship_state等字段，核对原文并将也必须改变的位置一并列明；没有重复或不需修改的字段不扩入目标。只能直接修的字段由节点text_repair_fields列出；goals等不在其中的字段仍可提出建议，但只能手动调整。新增节点或无法定位已有字段时repair_targets=[]，标structure。不能为了获得text权限将实际要改的目标描述写成summary。相同修改位置且相同修法尽量复用同一方案文字，独立影响仍分别说明。"""
+
+
+def can_remove_bridge_narration(contract: Mapping[str, Any], opening: Any) -> bool:
+    bridge = contract.get("bridge_scene_narration")
+    return (isinstance(bridge, str) and bool(bridge.strip()) and isinstance(opening, str)
+            and bridge.strip() == opening.strip() and contract.get("must_deliver") == []
+            and contract.get("fixed_entry_only") is not True)
 
 
 def text_repair_fields(node: Mapping[str, Any]) -> list[str]:

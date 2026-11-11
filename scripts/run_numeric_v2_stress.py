@@ -166,6 +166,7 @@ def _dynamic_player_messages(
     recent_turns: Sequence[Mapping[str, Any]],
     off_topic_turn: bool,
     chat_only: bool = False,
+    actors: Mapping[str, str] | None = None,
 ) -> list[Any]:
     """Dynamic players see complete public enactments, never hidden values, nodes, or author direction."""  # noqa: DOCSTRING_CJK
 
@@ -213,6 +214,9 @@ def _dynamic_player_messages(
         "recent_visible_turns": visible_history,
         "latest_visible_performance": _visible_performance_text(latest_performance),
     }
+    if actors:
+        system_prompt += "actors.player是你扮演的玩家，actors.character是对话的角色；只写玩家自己的回应和动作，不与对方交换身份。"
+        data["actors"] = dict(actors)
     return _player_prompt(system_prompt, data)
 
 
@@ -309,6 +313,7 @@ class _DynamicPlayerGenerator:
         off_topic_turn: bool,
         chat_only: bool = False,
         transition_pending: bool = False,
+        actors: Mapping[str, str] | None = None,
     ) -> str:
         getter = (
             getattr(self.config_manager, "aget_model_api_config", None)
@@ -340,6 +345,7 @@ class _DynamicPlayerGenerator:
                 recent_turns=recent_turns,
                 off_topic_turn=off_topic_turn,
                 chat_only=chat_only,
+                actors=actors,
             )
             self.provider_call_count += 1
             response = await asyncio.wait_for(
@@ -1216,6 +1222,8 @@ async def _run_trace(
                     off_topic_turn=attempt_index % 17 == 5,
                     chat_only=strategy == "chat",
                     transition_pending=route_status == "transition_offered",
+                    actors={"player": str(current.session.catgirl_binding.get("player_address") or "玩家"),
+                            "character": str(current.session.catgirl_binding.get("catgirl_name") or "角色")},
                 )
                 player_input_generation = "model"
             except Exception as exc:
@@ -1750,7 +1758,6 @@ async def _stress_preflight(
             "budgets": dict(NUMERIC_V2_ACTOR_BUDGET_PROFILES[args.profile]),
             "entrypoint": "execute_numeric_v2_turn",
             "tts": False,
-            "background_narrative": False,
         },
         "packages": package_reports,
     }

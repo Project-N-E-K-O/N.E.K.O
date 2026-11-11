@@ -87,7 +87,8 @@ def test_new_branch_completion_uses_selected_results_not_the_final_goal():
 
 
 def test_real_generator_preserves_explicit_completion_and_exit_choice():
-    _, _, plan, result = _case()
+    project, service, plan, result = _case()
+    result["scenes"][0]["completion_facts"][1]["evidence_source"] = "performance"
     before = deepcopy(result)
     calls = []
     generator = NumericV2Generator()
@@ -102,9 +103,20 @@ def test_real_generator_preserves_explicit_completion_and_exit_choice():
     assert len(calls) == 1
     prompt = calls[0][0][0]["content"]
     assert "completion_facts" in prompt
+    example, _ = json.JSONDecoder().raw_decode(prompt.split("只输出 JSON object，不要 Markdown 或额外字段：\n", 1)[1])
+    assert "evidence_source" not in example["scenes"][0]["completion_facts"][0]
+    assert "玩家自主行动及由玩家单方作出的决定标 evidence_source=player_input" in prompt
     assert "trigger_fact_ids" in prompt
     assert "不能从最后一个感谢、回应或 ordered_goal 反推先前步骤已完成" in prompt
-    assert "fallback_offer/accept_input" in prompt
+    assert "fallback_offer 与 accept_input 公开邀约、明确接受同一新安排" in prompt
+
+    draft = service.finish_path(plan, actual)
+    story, _, _ = service.build_story(project, draft)
+    compiled = NumericV2Compiler(InProcessPackageGateway()).compile(story)
+    facts = compiled.story["fact_contract"]["facts"]
+    prefix = f"scene:{draft['scene_ids'][0]}:"
+    assert facts[prefix + "evidence_received"]["evidence_source"] == "performance"
+    assert "evidence_source" not in facts[prefix + "handoff_allowed"]
 
 
 def test_legacy_draft_is_readable_but_cannot_be_returned_by_fresh_generation():

@@ -71,9 +71,14 @@ def test_branch_prompt_preserves_diamond_prop_provenance_without_asserting_both_
     assert "不是已提交的演绎日志" in system["content"]
     assert "互斥路线" in system["content"]
     assert "node_id" in system["content"]
-    assert "fallback_offer 与 accept_input 只请求尚待决定的下一步" in system["content"]
-    assert "本幕动作已做或未做两种状态都不强制重做" in system["content"]
-    assert "opening_scene、桥段与角色状态须保持一致" in system["content"]
+    if operation == "generate_branch_path":
+        assert "fallback_offer 与 accept_input 公开邀约、明确接受同一新安排" in system["content"]
+        assert "目标开场不重做触发动作" in system["content"]
+        assert "与目标开场和状态一致" in system["content"]
+    else:
+        assert "summary、opening_scene 和三方状态核对同一时点" in system["content"]
+        assert "结局承接结果及演出角色对此的回应，不重演动作" in system["content"]
+        assert "fallback_offer" not in system["content"].split("# Role:", 1)[1]
 
 
 def test_node_enhancement_keeps_alternative_and_current_prop_plans_as_plans():
@@ -105,6 +110,6 @@ def test_node_enhancement_keeps_alternative_and_current_prop_plans_as_plans():
     assert "不是已提交的演绎日志" in system["content"]
     assert "互斥路线" in system["content"]
     assert "node_id" in system["content"]
-    assert "fallback_offer 与 accept_input 只请求尚待决定的下一步" in system["content"]
-    assert "本幕动作已做或未做两种状态都不强制重做" in system["content"]
-    assert "opening_scene、桥段与角色状态须保持一致" in system["content"]
+    assert "按各适用入路的桥段核对开场收笔和三方状态" in system["content"]
+    assert "已完成动作只承接结果" in system["content"]
+    assert "不把普通回合的预期结果提前写进入幕状态" in system["content"]

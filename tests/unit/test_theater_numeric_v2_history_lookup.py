@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from services.theater import numeric_v2_actor as actor
 from services.theater import numeric_v2_history as history
 from services.theater import numeric_v2_evaluator as evaluator
 from services.theater import numeric_v2_workflow as workflow
@@ -95,6 +96,38 @@ async def test_lookup_selects_real_records_and_reports_failures(monkeypatch, mod
     assert all(row in performance_history_records(_session()) for row in result['evidence'])
     if mode == 'found': assert result['evidence'][0]['text'] == '许可撤回，日记保密。'
     else: assert not result['evidence']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('older_pages_timeout', [False, True])
+async def test_lookup_prioritizes_latest_correction_and_returns_evidence_in_order(monkeypatch, older_pages_timeout):
+    session = _session()
+    records = performance_history_records(session)
+    grant = next(i for i, row in enumerate(records) if row['text'] == '我同意展示日记。')
+    revoke = next(i for i, row in enumerate(records) if row['text'] == '许可撤回，日记保密。')
+    filler = grant + 1
+    calls = []
+
+    class Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): return False
+        async def ainvoke(self, messages):
+            index = prompt_payload(messages[1].content)['records'][0]['id']
+            calls.append(index)
+            if older_pages_timeout and index != revoke:
+                await asyncio.Future()
+            return SimpleNamespace(content=json.dumps({'evidence_ids': [index] if index != filler else []}))
+
+    async def config(_): return {'model': 'test', 'base_url': 'http://invalid.test'}
+    async def factory(*args, **kwargs): return Client()
+    monkeypatch.setattr(history, '_pages', lambda *_: ([[{'id': i, **records[i]}] for i in (grant, filler, revoke)], False))
+    monkeypatch.setattr(history, '_model_config', config)
+    monkeypatch.setattr(history, 'create_chat_llm_async', factory)
+    monkeypatch.setattr(history, '_LOOKUP_TIMEOUT_SECONDS', .05)
+    result = await history.lookup_history(object(), session, '许可还有效吗？')
+    assert calls[0] == revoke
+    assert result['status'] == ('partial' if older_pages_timeout else 'found')
+    assert result['evidence'] == ([records[revoke]] if older_pages_timeout else [records[grant], records[revoke]])
 
 
 def test_lookup_evidence_rejects_foreign_text_and_prioritizes_original():
@@ -186,3 +219,15 @@ async def test_workflow_shares_one_lookup_across_rewrite_and_dispute(monkeypatch
     assert completed.stored.session.revision == 1
     assert 'history_lookup' not in json.dumps(completed.stored.session.to_dict())
     assert await NumericV2Runtime(engine, tmp_path).restore_session('lookup_flow') == completed.stored
+
+
+def test_bridge_retrieval_dedup_requires_exact_current_entrance_phase():
+    quote = "北侧楼梯通往档案室，门已打开。"
+    evidence = {"revision": 3, "source": "performance", "current_visit": False,
+                "current_entry_bridge": True, "text": quote}
+    old = {**evidence, "revision": 1, "current_entry_bridge": False}
+    current = {"revision": 3, "segments": [{"phase": "transition_bridge", "scene_narration": quote}]}
+    assert actor._remaining_history_evidence([current], [old, evidence]) == [old]
+    assert actor._remaining_history_evidence([], [evidence]) == [evidence]
+    opening_only = {**current, "segments": [{"phase": "target_opening", "scene_narration": quote}]}
+    assert actor._remaining_history_evidence([opening_only], [evidence]) == [evidence]

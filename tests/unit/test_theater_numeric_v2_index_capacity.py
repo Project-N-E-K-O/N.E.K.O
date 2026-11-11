@@ -4,11 +4,11 @@ from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
+from tests.utils.theater_prompt import serialized_prompt_tokens
 
 from services.theater.numeric_v2_actor import _fit_simple_turn_prompt_data
 from services.theater.numeric_v2_context import render_prompt_context
 from services.theater.numeric_v2_context import current_scene_history_index
-from utils.tokenize import count_tokens
 
 
 def _pack(evidence, *, limit=100000):
@@ -30,7 +30,7 @@ def test_complete_recent_source_is_kept_once_and_restores_a_fitting_prompt():
     older = dict(revision=9, source='performance', current_visit=True, field='performance',
                  text='此前约定的物品仍由玩家保管，没有交给角色。')
     reference = _pack([older])
-    limit = count_tokens('承接实际记录，不补造结果。') + count_tokens('资料：\n' + render_prompt_context(reference))
+    limit = serialized_prompt_tokens('承接实际记录，不补造结果。', '资料：\n' + render_prompt_context(reference))
     packed = _pack([latest, older], limit=limit)
     assert packed == reference
     assert packed['story_so_far'].count(latest['text']) == 1
@@ -74,8 +74,7 @@ def test_index_reselects_whole_sources_against_final_request_budget(with_retriev
                   history_rows=[rows[-1]], history_preselected=True)
     expected = _fit_simple_turn_prompt_data(**common, fact_index=lambda: selected,
                                            max_tokens=10000)
-    limit = count_tokens(common['system_prompt']) + count_tokens(
-        common['human_prefix'] + render_prompt_context(expected))
+    limit = serialized_prompt_tokens(common['system_prompt'], common['human_prefix'] + render_prompt_context(expected))
     original = deepcopy((session, common))
     retrieved = [dict(revision=0, source='performance', current_visit=False,
                       text='另一幕的旧背景说明。' * 90)] if with_retrieval else []

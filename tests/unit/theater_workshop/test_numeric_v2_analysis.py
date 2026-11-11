@@ -3,6 +3,8 @@ from services.theater_workshop.host import InProcessPackageGateway
 
 from copy import deepcopy
 
+import pytest
+
 from services.theater_workshop.sdk.numeric_v2 import NumericV2Compiler
 from services.theater_workshop.sdk.numeric_v2_analysis import analyze_numeric_v2_story
 from .numeric_v2_fixture import numeric_v2_story
@@ -10,6 +12,94 @@ from .numeric_v2_fixture import numeric_v2_story
 
 def _codes(story: dict) -> set[str]:
     return {warning.code for warning in analyze_numeric_v2_story(story)}
+
+
+_DUPLICATE_DISCLOSURE = "route_fact_duplicates_entry_narration"
+_DISCLOSURE = (
+    "已公开展示日记末页写明列车长返回故障车厢疏散乘客、没有续页，"
+    "且女主说明他回去救人并非抛下她，此后下落未记录。仅找到或翻开日记不能证明。"
+)
+
+
+def _entry_disclosure_story() -> dict:
+    story = numeric_v2_story()
+    node, ending = story["nodes"][:2]
+    story["nodes"] = [node, ending]
+    story["endings"] = story["endings"][:1]
+    key = "scene:start:truth_shared"
+    story["fact_contract"] = {"facts": {key: {
+        "description": _DISCLOSURE,
+        "evidence_source": "performance",
+        "value_type": "bool",
+        "visibility": "public",
+    }}}
+    node["completion_contract"] = {"all": [{"fixed_narration_id": "diary"}]}
+    node["story_beat"]["fixed_narrations"] = [{
+        "id": "diary",
+        "text": (
+            "日记最后一条写着：列车长当晚没有随首批人员撤离，而是返回故障车厢，疏散滞留乘客。"
+            "记录到此中断，后面没有续页。{{catgirl_name}}轻声说："
+            "“他不是丢下了我们，他是回去救人。后来去了哪儿，这本日记没有写。”"
+        ),
+        "trigger": {"type": "entry"},
+        "after": [],
+        "required_before_exit": True,
+    }]
+    node["route_gates"] = node["route_gates"][:1]
+    node["route_gates"][0]["conditions"] = {"all": [{"type": "fact_equals", "key": key, "value": True}]}
+    return story
+
+
+def test_required_entry_disclosure_route_gate_is_only_an_author_warning():
+    story = _entry_disclosure_story()
+    compiler = NumericV2Compiler(InProcessPackageGateway())
+    compiled = compiler.compile(story)
+    core = compiler.compile_core(story)
+
+    warnings = [warning for warning in compiled.warnings if warning.code == _DUPLICATE_DISCLOSURE]
+    assert len(warnings) == 1
+    assert warnings[0].path == "nodes[0].route_gates[0].conditions.all[0]"
+    assert "diary" in warnings[0].message and "scene:start:truth_shared" in warnings[0].message
+    assert compiled.json_bytes == core.json_bytes
+    assert compiled.package_hash == core.package_hash
+
+
+@pytest.mark.parametrize("requirement", [
+    "并且玩家理解了日记的意思",
+    "并且双方同意离开",
+    "并且玩家打开了门",
+    "且老谢把门推开",
+    "并且旧友接过并保管日记",
+    "随后两人会再核验日记",
+])
+def test_disclosure_warning_preserves_independent_followup_requirements(requirement):
+    story = _entry_disclosure_story()
+    fact = story["fact_contract"]["facts"]["scene:start:truth_shared"]
+    fact["description"] = _DISCLOSURE.split("。", 1)[0] + "，" + requirement + "。"
+
+    assert _DUPLICATE_DISCLOSURE not in _codes(story)
+
+
+def test_disclosure_warning_requires_the_text_and_same_scene_required_entry():
+    story = _entry_disclosure_story()
+    node = story["nodes"][0]
+    narration = node["story_beat"]["fixed_narrations"][0]
+    variations = (
+        {"text": "屋中只有湿漉漉的外套和一盏灯。"},
+        {"required_before_exit": False},
+        {"trigger": {"type": "condition", "condition": "玩家交出日记"}},
+        {"after": ["an_earlier_piece"]},
+    )
+    for change in variations:
+        node["story_beat"]["fixed_narrations"] = [{**narration, **change}]
+        assert _DUPLICATE_DISCLOSURE not in _codes(story), change
+
+    node["story_beat"]["fixed_narrations"] = [narration]
+    key = "scene:another_scene:truth_shared"
+    facts = story["fact_contract"]["facts"]
+    facts[key] = facts.pop("scene:start:truth_shared")
+    node["route_gates"][0]["conditions"]["all"][0]["key"] = key
+    assert _DUPLICATE_DISCLOSURE not in _codes(story)
 
 
 def test_full_story_analysis_keeps_recommended_turns_as_soft_pacing_warning():

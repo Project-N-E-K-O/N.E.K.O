@@ -2,10 +2,49 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 from typing import Any, Mapping
 
 
 MAX_CONTENT_BLOCKS = 16
+_DIRECT_SCENE_SPEECH = re.compile(
+    r"(?:^|(?<=[。！？\n”’」]))\s*(?P<lead>[^。！？：“”‘’「」\n]{2,45}?)"
+    r"(?:说道|说|回答道?|答道|接话道?|问道|开口道)\s*[：:]\s*(?P<speech>“[^”]+”|‘[^’]+’|「[^」]+」)"
+)
+_REPORTED_SCENE_SPEECH = re.compile(r"曾|刚才|此前|之前|先前|昨天|据说|听说|转述|回忆|提到过|说过|已经")
+
+
+def is_current_scene_speech(text: str, quote: str, *, excluded_speakers: tuple[str, ...] = ()) -> bool:
+    """Recognize explicit speech delivered in this narration, excluding retrospective attribution."""
+    start = text.find(quote)
+    if start < 0 or not quote:
+        return False
+    end = start + len(quote)
+    for match in _DIRECT_SCENE_SPEECH.finditer(text):
+        lead_start = match.start("lead")
+        inside_speech = match.start("speech") <= start and end <= match.end("speech")
+        includes_lead = start <= lead_start < end and not text[start:lead_start].strip("。！？ \n")
+        if not inside_speech and not includes_lead:
+            continue
+        lead = match["lead"].lstrip()
+        excluded = ("玩家", "你", "我", *excluded_speakers)
+        if _REPORTED_SCENE_SPEECH.search(lead) or any(name and lead.startswith(name) for name in excluded):
+            return False
+        return True
+    return False
+
+
+def performance_fingerprint(performance: Mapping[str, Any]) -> str:
+    """Bind a review to the exact delivered body, independently of suggestions."""
+    fields = {key: performance[key] for key in (
+        "performance", "scene_narration", "scene_update", "segments", "fixed_narrations",
+        "source_performance", "source_scene_narration", "bridge_scene_narration",
+        "target_performance", "target_scene_narration",
+    ) if key in performance}
+    return hashlib.sha256(json.dumps(fields, ensure_ascii=False, sort_keys=True,
+                                    separators=(",", ":")).encode()).hexdigest()
 
 
 def transition_source_dialogue_policy(dialogue_policy: str) -> str:

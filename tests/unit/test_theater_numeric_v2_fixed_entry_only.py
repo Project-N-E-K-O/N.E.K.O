@@ -12,6 +12,7 @@ import pytest
 
 from services.theater import numeric_v2_actor as actor
 from services.theater.numeric_v2_actor_output import NumericV2ActorOutputError, _parse_output
+from services.theater.numeric_v2_evaluator import _committed_completion_evidence
 from services.theater.numeric_v2_runtime import NumericV2Runtime, NumericV2Engine, TurnRequestV2
 from services.theater.numeric_v2_fixed_narration import validate_delivery
 from services.theater.numeric_v2_structured_output import actor_output_schema
@@ -166,7 +167,7 @@ async def _generate(monkeypatch, engine, session, outcome, *, reply=None, sugges
 
 
 @pytest.mark.asyncio
-async def test_flag_absent_keeps_old_transition_request_and_single_call(monkeypatch):
+async def test_flag_absent_generates_one_combined_entry_draft(monkeypatch):
     story = _story(flag=None)
     engine = NumericV2Engine.from_mapping(story)
     session = _advance(engine, _session(engine), "mainline_02")
@@ -176,7 +177,9 @@ async def test_flag_absent_keeps_old_transition_request_and_single_call(monkeypa
     assert _ENTRY_TEXT in request
     assert _TARGET_OPENING_MARKER in request
     assert calls[0]["kwargs"].get("fixed_entry_only") is False
-    assert len(calls) == 1
+    assert len(calls) == 1 and "entry_part" not in calls[0]["kwargs"]
+    assert calls[0]["kwargs"]["entry_narration"] is True
+    assert performance["segments"][2]["fixed_narrations"][0]["text"] == _ENTRY_TEXT
     assert performance["suggested_inputs"] == []
 
 
@@ -195,8 +198,15 @@ async def test_flag_true_hides_target_material_but_keeps_player_question(monkeyp
     assert _TARGET_OPENING_MARKER not in request
     assert "mainline_03" not in request
     assert "桥段只沿已公开的河岸小路移动。" in request
+    assert "请介绍入幕后才公开的内容时，source_performance填空，由程序原文接答" in request
+    assert "只在来源还有独立问题或即时动作必须回应时写来源表演" in request
+    assert "追问已获准的下一阶段内容也归程序原文，即使玩家用了问句" in request
+    assert "来源新问题先回答完整" not in request
+    assert "source_performance 由角色设定中的你承接来源幕尚未回应的内容" not in request
     # Target-scene staging rules and the old suggestion clause are replaced by source-only rules.
     assert "target_scene.opening_situation" not in request
+    assert "target_performance 在目标开场接话" not in request
+    assert "suggested_inputs 是玩家看到目标回应后的下一句" not in request
     assert "suggested_inputs 必须为空数组" in request
     assert calls[0]["kwargs"].get("fixed_entry_only") is True
 
@@ -206,6 +216,9 @@ def test_schema_constrains_target_fields_and_parser_rejects_nonempty():
     assert schema["properties"]["target_scene_narration"]["enum"] == [""]
     assert schema["properties"]["target_performance"]["enum"] == [""]
     assert schema["properties"]["suggested_inputs"]["maxItems"] == 0
+    instruction = actor._output_schema_instruction("transition_compact", fixed_entry_only=True)
+    assert "顶层必须包含以下六个字段" in instruction
+    assert all(f"{field}:" in instruction for field in schema["required"])
     legacy = actor_output_schema(transition_required=True)
     assert "enum" not in legacy["properties"]["target_performance"]
 
@@ -292,6 +305,7 @@ async def test_natural_ending_uses_standard_transition_and_adds_no_suggestion_ca
     performance, calls = await _generate(monkeypatch, engine, session, outcome)
     assert calls[0]["kwargs"].get("fixed_entry_only") is True
     assert calls[0]["kwargs"].get("natural_ending") is False
+    assert "请介绍入幕后才公开的内容时" not in _messages_text(calls[0]["messages"])
     assert performance["suggested_inputs"] == []
     assert len(calls) == 1
     assert [segment["phase"] for segment in performance["segments"]] == [
@@ -349,3 +363,78 @@ async def test_fixed_entry_only_commits_through_store_and_cold_restores(tmp_path
     assert stored.session.revision == 1
     assert stored.session.current_node_id == "mainline_02"
     assert json.dumps(stored.session.performance_history[-1], ensure_ascii=False).count(_ENTRY_TEXT) == 1
+
+
+@pytest.mark.asyncio
+async def test_builtin_catlamp_signal_room_delivers_diary_and_watch_before_choices(tmp_path, monkeypatch):
+    path = Path(__file__).resolve().parents[2] / "assets/theater/story_ccc0763441e3.json"
+    engine = NumericV2Engine.from_mapping(json.loads(path.read_text(encoding="utf-8")))
+    runtime = NumericV2Runtime(engine, tmp_path)
+    session = _session(engine)
+    await runtime.store.create(session)
+    stored = await runtime.restore_session(session.session_id)
+    for index, destination in enumerate(("mainline_02", "mainline_03", "mainline_04")):
+        outcome = runtime.prepare_turn(stored, TurnRequestV2(f"walk-{index}", stored.session.revision, "好，走吧。"),
+                                       (), transition_intent="initiate")
+        assert outcome.session.current_node_id == destination
+        prior = engine.finalize_transition_performance(outcome, {
+            "source_performance": "好。", "target_performance": "到了。", "suggested_inputs": [],
+            "bridge_scene_narration": "两人沿走廊走过去。", "target_scene_narration": "灯光照在墙上。",
+        }, target_opening="灯光照在墙上。")
+        stored = await runtime.commit_turn(outcome, prior)
+
+    choice = "好，那就按你说的，现在一起沿步道去旧信号小屋。"
+    outcome = runtime.prepare_turn(stored, TurnRequestV2("signal-room", stored.session.revision, choice),
+                                   (), transition_intent="initiate")
+    assert engine.completion_contract_satisfied(outcome.session) is False
+    departure = engine.nodes["mainline_05"]["route_gates"][0]["transition_contract"]["accept_input"]
+    before_display = engine.resolve_turn(
+        outcome.session, TurnRequestV2("before-diary", outcome.session.revision, departure),
+        (), transition_intent="initiate",
+    )
+    assert before_display.route is None
+    calls = []
+
+    async def fake_invoke(self, messages, **kwargs):
+        calls.append(_messages_text(messages))
+        assert kwargs["fixed_entry_only"] and kwargs["author_entry_choices"]
+        assert kwargs["target_dialogue_policy"] == "optional"
+        return _parse_output(json.dumps({
+            "source_scene_narration": "", "source_performance": "",
+            "bridge_scene_narration": "两人沿站台边的步道来到信号房门前。",
+            "target_scene_narration": "", "target_performance": "", "suggested_inputs": [],
+        }, ensure_ascii=False), transition_required=True, fixed_entry_only=True,
+            author_entry_choices=True, entry_narration=True,
+            source_dialogue_policy=kwargs["source_dialogue_policy"], target_dialogue_policy=kwargs["target_dialogue_policy"])
+
+    monkeypatch.setattr(actor.NumericV2Actor, "_invoke", fake_invoke)
+    performance = await actor.NumericV2Actor(config_manager=object()).generate_turn(
+        engine=engine, session=stored.session, outcome=outcome, player_input=choice, character_profile="安静克制。",
+    )
+    assert len(calls) == 1
+    assert "怀表" not in calls[0] and "返回故障车厢" not in calls[0]
+    assert "日记和怀表都在这里" not in calls[0]
+    target = performance["segments"][-1]
+    assert target["phase"] == "target_opening"
+    assert target["scene_narration"] == target["performance"] == ""
+    fixed, = target["fixed_narrations"]
+    assert fixed["id"] == "last_diary_entry"
+    assert fixed["text"].index("停摆的怀表") < fixed["text"].index("返回故障车厢")
+    assert fixed["text"].count("他不是丢下了我们") == 1
+    assert performance["suggested_inputs"] == engine.nodes["mainline_05"]["story_beat"]["entry_player_inputs"]
+    committed = await runtime.commit_turn(outcome, performance)
+    assert engine.completion_contract_satisfied(committed.session)
+    assert _committed_completion_evidence(engine, committed.session) == ({}, ())
+    assert await runtime.restore_session(session.session_id) == committed
+
+    stay = runtime.prepare_turn(
+        committed, TurnRequestV2("stay", committed.session.revision, "先在这里待一会儿。"),
+        (), scene_complete=True,
+    )
+    assert stay.route is None and stay.session.current_node_id == "mainline_05"
+    leave = runtime.prepare_turn(
+        committed, TurnRequestV2("leave", committed.session.revision, departure),
+        (), scene_complete=True, transition_intent="initiate",
+    )
+    assert leave.route["id"] == "route_mainline_05_06"
+    assert leave.session.current_node_id == "mainline_06"

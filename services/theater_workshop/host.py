@@ -77,20 +77,27 @@ class NekoWorkshopModel:
         quality_options = {}
         staged_writing = operation in {
             "numeric_v2_story_frame", "numeric_v2_chapter_generation", "numeric_v2_ending_generation"}
-        if (model == "qwen3.8-flash" and operation in {
-                "numeric_v2_fact_review", "numeric_v2_fact_evidence_review",
-                "numeric_v2_story_frame", "numeric_v2_chapter_generation", "numeric_v2_ending_generation"}
+        branch_writing = operation == "numeric_v2_branch_path"
+        focused_review = operation in {"numeric_v2_exit_fact_review", "numeric_v2_fact_evidence_review"}
+        if (model == "qwen3.8-flash" and (staged_writing or branch_writing or focused_review)
                 and response_format_for(settings, "workshop_quality", {}) is not None):
             from config.providers import focus_extra_body
 
-            # Author reasoning stays off the live performance path. Reserve
-            # output space for staged prose and keep native validation/retries.
-            response_format = None
-            budget = min(2048, max_tokens // 2) if staged_writing else 2048
+            # Reserve reasoning/output space for staged prose. Structured
+            # reviews retain their requested JSON mode.
+            if staged_writing:
+                response_format = None
+            budget = min(2048, max_tokens // 2) if staged_writing or branch_writing else 2048
             quality_options["extra_body"] = {**focus_extra_body(model), "thinking_budget": budget}
-        # Count the complete messages, including any original response supplied
-        # for one format correction. Never trim author facts to make them fit.
-        if count_tokens(json.dumps(messages, ensure_ascii=False)) > input_max_tokens:
+        # Count the exact request. A quality format retry can omit only its
+        # malformed completion excerpt, retaining the author input and correction.
+        input_tokens = count_tokens(json.dumps(messages, ensure_ascii=False))
+        if (input_tokens > input_max_tokens and operation in {
+                "numeric_v2_fact_review_format_repair", "numeric_v2_fact_evidence_review_format_repair"}
+                and [message.get("role") for message in messages] == ["system", "user", "assistant", "user"]):
+            messages = [*messages[:2], messages[-1]]
+            input_tokens = count_tokens(json.dumps(messages, ensure_ascii=False))
+        if input_tokens > input_max_tokens:
             raise WorkshopError("workshop_model_input_budget_exceeded")
         client = None
         # asyncio.to_thread copies the caller's context. Author prompts must not

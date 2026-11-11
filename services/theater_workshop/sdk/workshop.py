@@ -18,7 +18,7 @@ from .generation.numeric_v2 import NumericV2Generator, NumericV2GenerationError
 from .generation.quality import NumericV2QualityAssessor
 from .model import capture_usage
 from .numeric_v2 import NumericV2Compiler, normalize_metric_drafts, preset_metric_catalog
-from .numeric_v2_branch import NumericV2BranchService
+from .numeric_v2_branch import NumericV2BranchError, NumericV2BranchService
 from .numeric_v2_project_store import NumericV2ProjectStore, NumericV2RevisionConflictError, _setup_fields
 from .packages import PackageError, PublishCandidate
 from .readiness import assess_candidate_readiness
@@ -261,24 +261,20 @@ class TheaterWorkshop:
                     save_checkpoint=lambda state: self._store.record_generation_checkpoint(
                         project_id, base_revision=base_revision, checkpoint=state))
                 checkpoint = self._store.generation_checkpoint(project_id)
-                # Do not report generation success or replace the existing story with a package NEKO rejects.
-                self._compiler.compile(result["story"])
+            # Compile the exact package that would replace the current story,
+            # including resumed legacy outlines and the final project identity.
+            previous_story = project.get("story") or {}
+            previous_story_id = (previous_story.get("meta") or {}).get("story_id")
+            result["story"]["meta"]["story_id"] = previous_story_id or (
+                "story_" + project_id.removeprefix("project_"))
+            self._compiler.compile(result["story"])
         except NumericV2RevisionConflictError:
             raise
         except PackageError as error:
-            if checkpoint is not None and checkpoint.get("flow") == "staged.v1":
-                issues = list(error.details.get("issues") or [])
-                repairs = set()
-                frame_failed = False
-                for issue in issues:
-                    path = str(issue.get("path") or "")
-                    index = path[6:].split("]", 1)[0] if path.startswith("nodes[") else ""
-                    if index.isdigit() and int(index) <= len(checkpoint["candidate"]["mainline_chapters"]):
-                        repairs.add(int(index))
-                    else:
-                        frame_failed = True
-                checkpoint.update(stage="frame" if frame_failed or not repairs else "repair", repairs=sorted(repairs),
-                    native_issues=issues, issues=issues, phase_candidate=None)
+            if checkpoint is not None and checkpoint.get("flow") == "staged.v1" and checkpoint.get("stage") == "complete":
+                from .generation.staged import set_native_repair_phase
+
+                set_native_repair_phase(checkpoint, list(error.details.get("issues") or []))
             self._store.fail_generation(project_id, base_revision=base_revision,
                 error={"code": error.code, "details": error.details},
                 checkpoint=checkpoint, source_project=project)
@@ -301,12 +297,6 @@ class TheaterWorkshop:
             except Exception as persistence_error:
                 error.add_note(f"generation failure checkpoint not saved: {type(persistence_error).__name__}")
             raise
-        previous_story = project.get("story") or {}
-        previous_story_id = (previous_story.get("meta") or {}).get("story_id")
-        # Titles and introductions describe content, not project identity.
-        # Preserve existing package identities; namespace new generated projects.
-        result["story"]["meta"]["story_id"] = previous_story_id or (
-            "story_" + project_id.removeprefix("project_"))
         for field in ("relationship", "tone"):
             if field in (result.get("setup_updates") or {}):
                 setup[field] = result["setup_updates"][field]
@@ -360,7 +350,8 @@ class TheaterWorkshop:
                       "catgirl_situation", "transition_goal", "character_state", "acting_contract"):
             if field in enhancement:
                 beat[field] = deepcopy(enhancement[field])
-        beat.pop("must_happen", None)
+        if "goals" in enhancement:
+            beat.pop("must_happen", None)
         goals = beat.get("goals") or []
         current_goal_refs = {f"goal.{goal['id']}" for goal in goals if goal.get("id")}
         current_final_ref = f"goal.{goals[-1]['id']}" if goals and goals[-1].get("id") else None
@@ -379,6 +370,24 @@ class TheaterWorkshop:
                 if goals:
                     refs.append(f"goal.{goals[-1]['id']}")
                 contract["source_ids"] = list(dict.fromkeys(refs))
+        try:
+            self._compiler.compile_core(story)
+        except PackageError as error:
+            issues = error.details.get("issues")
+            if not issues:
+                raise
+            # An unfinished draft can retain its existing issues. Reject new
+            # compiler errors introduced by this edit before changing the project.
+            previous_issues = []
+            try:
+                self._compiler.compile_core(project["story"])
+            except PackageError as previous_error:
+                previous_issues = previous_error.details.get("issues")
+                if not previous_issues:
+                    raise
+            new_issues = [issue for issue in issues if issue not in previous_issues]
+            if new_issues:
+                raise NumericV2GenerationError("invalid_node_enhancement", issues=new_issues) from error
         return {"project": self._store.update(project_id, base_revision=base_revision,
                 changes={"story": story}), "node_id": node_id}
 
@@ -415,8 +424,30 @@ class TheaterWorkshop:
         plan = self._branch.prepare_path(project, **arguments,
                                         ending_draft=ending, confirmed_ending=request.ending.model_dump(exclude_unset=True)
                                         if request.ending else None)
-        generated = self._generator.generate_branch_path(context=plan["context"])
-        draft = self._branch.finish_path(plan, generated)
+        context = deepcopy(plan["context"])
+        for attempt in range(2):
+            try:
+                generated = self._generator.generate_branch_path(context=context)
+                issues = self._branch.path_validation_issues(plan, generated)
+                if issues:
+                    raise NumericV2BranchError(issues[0]["code"], {**issues[0], "issues": issues})
+                draft = self._branch.finish_path(plan, generated)
+                break
+            except (NumericV2GenerationError, NumericV2BranchError) as error:
+                if (attempt or isinstance(error, NumericV2GenerationError)
+                        and error.code != "invalid_model_json"):
+                    raise
+                context = deepcopy(plan["context"])
+                context["validation_feedback"] = {
+                    "code": error.code,
+                    "issues": (deepcopy(error.issues) if isinstance(error, NumericV2GenerationError)
+                               else deepcopy(error.details.get("issues")
+                                             or [{"code": error.code, **error.details}])),
+                }
+                self._branch._require_context_budget(context)
+                self._project(project_id, request.base_revision, story=True)
+                with self._store.transaction():
+                    pass
         return {"draft": self._store.save_branch_draft(project_id,
             base_revision=request.base_revision, draft=draft)}
 

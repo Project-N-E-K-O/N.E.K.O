@@ -126,6 +126,40 @@ def test_initiation_uses_updated_metrics_and_does_not_offer_unavailable_route():
     assert not result.session.transition_offered
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reselect", [False, True])
+async def test_live_initiation_cannot_apply_the_checked_request_to_a_different_scored_exit(tmp_path, reselect):
+    case = initiation_case(message="我们去阅览室吧。")
+    engine = case["engine"]
+    first_route = engine.nodes["start"]["route_gates"][0]
+    first_route["conditions"]["all"][0]["value"] = 21 if reselect else 30
+    runtime = NumericV2Runtime(engine, tmp_path)
+    current = await runtime.start_session(session_id="checked-exit", catgirl_binding=_binding(),
+        opening_performance=case["session"].opening_performance)
+    evidence = []
+    _, human = _build_messages(engine, current.session, case["message"], public_destination_evidence=evidence)
+    assert prompt_payload(human.content)["transition_preview"]["target_chapter_title"] == "阅览室"
+    evaluation = _parse_output(json.dumps({
+        "scene_complete": True, "transition_intent": "initiate", "exit_matches": True,
+        "exit_comparison": "两人沿公开走廊到阅览室。",
+        "public_destination_quote": "左侧走廊通往阅览室，通道已经开放。",
+        "metric_changes": {"trust": {"criterion_id": "trust.increase.1", "strength": "normal"}},
+    }, ensure_ascii=False), engine, case["message"], current.session, public_destination_evidence=evidence)
+    assert evaluation.transition_intent == "initiate"
+    request = TurnRequestV2("go", 0, case["message"])
+    outcome = runtime.prepare_turn(current, request, evaluation.metric_changes,
+                                   transition_intent=evaluation.transition_intent)
+    assert outcome.session.metrics["trust"] == 22
+    if reselect:
+        assert outcome.session.current_node_id == "start"
+        assert outcome.ledger_event["transition_intent"] == "unclear"
+        committed = await runtime.commit_turn(outcome, {"performance": "先把接下来的去向说清。", "suggested_inputs": []})
+        assert await runtime.restore_session("checked-exit") == committed
+    else:
+        assert outcome.session.current_node_id == "ending_leave"
+        assert outcome.ledger_event["transition_intent"] == "initiate"
+
+
 def test_initiation_reaches_actor_and_formal_guard_without_becoming_natural_ending():
     """An erroneous ending flag must not make the Actor mark an ordinary transition as a natural ending."""
     c = initiation_case(); engine,session = c['engine'],c['session']

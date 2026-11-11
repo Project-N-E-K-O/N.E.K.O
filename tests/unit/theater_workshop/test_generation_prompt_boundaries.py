@@ -220,6 +220,7 @@ def test_branch_ending_resolves_author_text_without_model_copying_or_input_mutat
     def reply(messages, **options):
         calls.append(options)
         assert json.loads(messages[1]['content']) == context
+        assert messages[1]['content'] == json.dumps(context, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
         return json.dumps(wire, ensure_ascii=False)
 
     generator.call_llm = reply

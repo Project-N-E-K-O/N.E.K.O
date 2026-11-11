@@ -15,7 +15,7 @@ def fixture(field="/character_state/catgirl"):
     raw = _quality_payload(weak_dimension="plot", target_node_id="mainline_01")
     raw["issues"][0]["repair_targets"] = [{"node_id": "mainline_01", "field": field}]
     report = assessor._validated_assessment(context, raw)
-    _reviewed_fixture(report)
+    _reviewed_fixture(report, context)
     return story, authoring, assessor, context, report
 
 
@@ -93,3 +93,33 @@ def test_single_repair_call_receives_one_plan_with_all_impacts():
     repaired = assessor.optimize_node(story=story, setup=_generation_setup(), authoring=authoring, assessment=report, node_id="mainline_01")
     assert repaired["nodes"][1:] == story["nodes"][1:]
     assert repaired["nodes"][0]["story_beat"]["opening_scene"] == story["nodes"][0]["story_beat"]["opening_scene"]
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_single_repair_requires_changes_for_every_approved_field(partial):
+    story, authoring, assessor, _, report = fixture()
+    report["issues"].append({**deepcopy(report["issues"][0]),
+                             "issue_id": "quality_issue_02", "modification_plan": "在开场补足环境信息。",
+                             "repair_targets": [{"node_id": "mainline_01", "field": "/opening_scene"}]})
+    before = deepcopy(story)
+
+    def reply(messages, **kwargs):
+        request = json.loads(messages[1]["content"])
+        assert {t["field"] for s in request["accepted_suggestions"] for t in s["repair_targets"]} == {
+            "/character_state/catgirl", "/opening_scene",
+        }
+        patch = {"character_state": {"catgirl_state": "女主双手空着。"}}
+        if not partial:
+            patch["opening_scene"] = "窗外下起了雨。"
+        return json.dumps({"node_updates": [{"node_id": "mainline_01", "story_beat": patch}]})
+
+    assessor.call_llm = reply
+    params = dict(story=story, setup=_generation_setup(), authoring=authoring, assessment=report, node_id="mainline_01")
+    if partial:
+        with pytest.raises(QualityAssessmentError, match="invalid_quality_repair"):
+            assessor.optimize_node(**params)
+    else:
+        repaired = assessor.optimize_node(**params)
+        assert repaired["nodes"][0]["story_beat"]["opening_scene"] == "窗外下起了雨。"
+        assert repaired["nodes"][0]["story_beat"]["character_state"]["catgirl_state"] == "女主双手空着。"
+    assert story == before

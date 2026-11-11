@@ -13,6 +13,7 @@ import uuid
 from .numeric_v2 import (
     _is_actionable_player_exit,
     _GOAL_DELIVERY_OUTPUTS,
+    NUMERIC_V2_MAX_FACT_KEYS,
     goals_to_package,
     acting_contract_to_package,
     has_dialogue_policy_conflict,
@@ -20,7 +21,9 @@ from .numeric_v2 import (
     valid_silent_choice,
     character_state_to_package,
     scene_turn_budget,
+    typed_completion_fact_count,
 )
+from .numeric_v2_analysis import entry_route_scope
 
 
 _GOAL_DELIVERY_OWNERS = {
@@ -45,6 +48,8 @@ _ACTING_ENUMS = {
 
 BRANCH_INPUT_TARGET_TOKENS = 12_000
 BRANCH_INPUT_HARD_LIMIT = 16_000
+# Match the native compiler's per-act limit without loading runtime modules in the SDK.
+_BRANCH_FIXED_NARRATION_TOKENS = 2_000
 _AUTHOR_INPUT_RESERVE_TOKENS = 4_000
 _CONTINUITY_ITEMS_PER_SCENE = 2
 # Author-side estimate for D7: assume normal progress of about 2 points per turn, with at most 8 additional turns per entry point.
@@ -71,14 +76,32 @@ class NumericV2BranchError(ValueError):
         self.details = deepcopy(dict(details or {}))
 
 
+def validate_branch_fixed_narrations(pieces: object, path: str) -> None:
+    """Reject a new branch preview that needs the paused condition review."""
+    if isinstance(pieces, list):
+        for index, piece in enumerate(pieces):
+            trigger = piece.get("trigger") if isinstance(piece, Mapping) else None
+            if isinstance(trigger, Mapping) and trigger.get("type") == "condition":
+                raise NumericV2BranchError("author_passage_condition_unsupported", {"path": f"{path}[{index}].trigger"})
+
+
+def validate_branch_original_budget(
+    texts: list[str], path: str, *, token_counter: Callable[[str], int] | None = None,
+) -> None:
+    if not texts:
+        return
+    if token_counter is None:
+        from utils.tokenize import count_tokens as token_counter
+
+    total = sum(token_counter(text) for text in texts)
+    if total > _BRANCH_FIXED_NARRATION_TOKENS:
+        raise NumericV2BranchError("fixed_narration_budget_exceeded", {
+            "path": path, "tokens": total, "limit": _BRANCH_FIXED_NARRATION_TOKENS,
+        })
+
+
 def _canonical(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
-def _estimate_tokens(value: Any) -> int:
-    """Estimate Chinese conservatively at one token per character; still check actual model capacity before calling it."""
-
-    return len(_canonical(value))
 
 
 def _opaque_key(prefix: str, *parts: Any) -> str:
@@ -180,6 +203,19 @@ class NumericV2BranchService:
         self._id_factory = id_factory or (lambda: uuid.uuid4().hex[:10])
         self._token_counter = token_counter
 
+    def _estimate_input_tokens(self, value: Any) -> int:
+        serialized = _canonical(value)
+        # Standalone clients without a tokenizer retain the conservative estimate.
+        return self._token_counter(serialized) if self._token_counter is not None else len(serialized)
+
+    def _validate_fixed_narrations(self, pieces: object, path: str) -> None:
+        validate_branch_fixed_narrations(pieces, path)
+        if isinstance(pieces, list):
+            validate_branch_original_budget([
+                piece["text"] for piece in pieces
+                if isinstance(piece, Mapping) and isinstance(piece.get("text"), str)
+            ], path, token_counter=self._token_counter)
+
     def options(self, project: Mapping[str, Any], source_node_id: str) -> dict[str, Any]:
         story = self._story(project)
         nodes = _nodes(story)
@@ -251,7 +287,7 @@ class NumericV2BranchService:
             project,
             source=source,
             original_route=original_route,
-            endpoint={"mode": "new_ending", "requested_result": direction},
+            endpoint={"mode": "new_ending"},
             skipped_nodes=[],
             continuity_items=[],
             condition_candidates=model_candidates,
@@ -259,7 +295,7 @@ class NumericV2BranchService:
             length=None,
         )
         context["condition_selection"] = deepcopy(selection)
-        self._require_context_budget(context)
+        estimate = self._require_context_budget(context)
         return {
             "kind": "ending",
             "base_revision": project.get("revision"),
@@ -271,7 +307,7 @@ class NumericV2BranchService:
             "condition_selection": selection,
             "condition_candidates": model_candidates,
             "context": context,
-            "estimated_input_tokens": _estimate_tokens(context),
+            "estimated_input_tokens": estimate,
         }
 
     def finish_ending(self, plan: Mapping[str, Any], model_result: Mapping[str, Any]) -> dict[str, Any]:
@@ -325,7 +361,10 @@ class NumericV2BranchService:
             selection = {"mode": "fixed", "key": (ending_draft.get("condition") or {}).get("key")}
             model_candidates = [deepcopy(dict(ending_draft.get("condition") or {}))]
             ending_draft_id = ending_draft.get("draft_id")
-            author_direction = str(direction or "").strip() or str(ending_draft.get("ending_direction") or "")
+            # The confirmed ending already contains the result and exact originals.
+            # Only a newly specified path direction belongs in the writer request.
+            path_direction = str(direction or "").strip()
+            author_direction = path_direction or str(ending_draft.get("ending_direction") or "")
             skipped_nodes: list[dict[str, Any]] = []
             continuity_items: list[dict[str, Any]] = []
             endpoint_node_id = None
@@ -333,6 +372,7 @@ class NumericV2BranchService:
             if endpoint_mode not in {"mainline", "existing_ending"}:
                 raise NumericV2BranchError("branch_endpoint_mode_invalid")
             author_direction = str(direction or "").strip()
+            path_direction = author_direction
             if not author_direction:
                 raise NumericV2BranchError("branch_direction_required")
             selection, model_candidates = self._normalize_condition_selection(
@@ -365,11 +405,15 @@ class NumericV2BranchService:
             skipped_nodes=skipped_nodes,
             continuity_items=continuity_items,
             condition_candidates=model_candidates,
-            direction=author_direction,
+            direction=path_direction,
             length=length,
         )
         context["condition_selection"] = deepcopy(selection)
-        self._require_context_budget(context)
+        if endpoint_mode == "mainline":
+            self._compact_rejoin_context(context)
+        else:
+            self._compact_ending_path_context(context)
+        estimate = self._require_context_budget(context)
         return {
             "kind": "path",
             "base_revision": project.get("revision"),
@@ -389,7 +433,7 @@ class NumericV2BranchService:
             "skipped_nodes": skipped_nodes,
             "continuity_items": continuity_items,
             "context": context,
-            "estimated_input_tokens": _estimate_tokens(context),
+            "estimated_input_tokens": estimate,
         }
 
     def finish_path(self, plan: Mapping[str, Any], model_result: Mapping[str, Any]) -> dict[str, Any]:
@@ -400,6 +444,8 @@ class NumericV2BranchService:
         continuity = normalized["continuity_handling"]
         continuity_by_key = {item["key"]: item for item in plan["continuity_items"]}
         for handling in continuity:
+            if handling["mode"] in ("covered", "route_only"):
+                continue
             item = continuity_by_key[handling["key"]]
             placement = handling["placement"]
             kind, raw_index = placement.split(":", 1)
@@ -407,7 +453,8 @@ class NumericV2BranchService:
             if kind == "scene":
                 goals = scenes[index]["ordered_goals"]
                 carried_goal = self._continuity_goal(item, has_previous=bool(goals))
-                if not any(goal.get("description") == carried_goal["description"] for goal in goals):
+                fields = ("description", "owner", "delivery_type", "evidence_mode", "anchors")
+                if not any(all(goal.get(field) == carried_goal[field] for field in fields) for goal in goals):
                     goals.append(carried_goal)
                 if len(goals) > 6:
                     raise NumericV2BranchError("branch_scene_goal_limit_exceeded")
@@ -415,7 +462,11 @@ class NumericV2BranchService:
                     goals, path=f"scenes[{index}].ordered_goals",
                 )
             else:
-                if (item.get("contract") or {}).get("owner") == "player":
+                contract = item.get("contract") or {}
+                if contract.get("owner") == "player" or (
+                    contract.get("evidence_mode") == "exact"
+                    and any(anchor not in item["text"] for anchor in contract.get("anchors", ()))
+                ):
                     raise NumericV2BranchError("branch_continuity_placement_invalid")
                 # The Runtime delivers continuity passages verbatim; merge the author's facts directly here to avoid
                 # disguising them as legacy must_deliver items or having the Actor write them on the fly.
@@ -505,23 +556,36 @@ class NumericV2BranchService:
         # Story. Missing fields are tolerated only for wholly legacy drafts.
         self.validate_completion_contracts(
             {"scenes": scenes, "transitions": transitions}, required=False,
+            typed_fact_budget=NUMERIC_V2_MAX_FACT_KEYS - len((story.get("fact_contract") or {}).get("facts") or {}),
         )
+        for index, scene in enumerate(scenes):
+            if isinstance(scene, Mapping):
+                self._validate_fixed_narrations(scene.get("fixed_narrations"), f"scenes[{index}].fixed_narrations")
         source_node_id = str(draft.get("source_node_id") or "")
         active_key_props = self._active_key_props(project, source_node_id)
         persisted_key_props = deepcopy(list((project.get("authoring") or {}).get("key_props") or []))
+        boundaries = list(dict.fromkeys(
+            str(item).strip() for item in (project.get("setup") or {}).get("content_boundaries") or []
+            if str(item).strip()
+        ))
 
         endpoint_node_id = draft.get("endpoint_node_id")
+        if draft.get("endpoint_mode") == "mainline":
+            order = list((project.get("authoring") or {}).get("mainline_node_ids") or [])
+            if source_node_id in order and endpoint_node_id in order:
+                missing = self._missing_rejoin_fact_keys(
+                    story, nodes, order[order.index(source_node_id) + 1:order.index(endpoint_node_id)],
+                    endpoint_node_id, self._upstream_node_ids(project, source_node_id),
+                )
+                if missing:
+                    raise NumericV2BranchError("branch_rejoin_skips_required_fact", {"fact_keys": missing})
         if draft.get("endpoint_mode") == "new_ending":
             ending = dict(draft.get("new_ending") or {})
+            self._validate_fixed_narrations(ending.get("fixed_narrations"), "new_ending.fixed_narrations")
             endpoint_node_id = draft.get("ending_node_id")
             ending_id = draft.get("ending_id")
             if not endpoint_node_id or not ending_id:
                 raise NumericV2BranchError("branch_draft_invalid")
-            boundaries = [
-                str(item).strip()
-                for item in (project.get("setup") or {}).get("content_boundaries") or []
-                if str(item).strip()
-            ]
             story.setdefault("endings", []).append({
                 "id": ending_id,
                 "title": ending["title"],
@@ -541,7 +605,8 @@ class NumericV2BranchService:
                         str(endpoint_node_id),
                         ending["ordered_goals"],
                     ),
-                    "must_not_happen": boundaries + [
+                    **({"content_boundaries": list(boundaries)} if boundaries else {}),
+                    "must_not_happen": [
                         f"不得逆转：{item}" for item in ending["irreversible_facts"]
                     ] + list(ending["character_state"]["scene_boundaries"]),
                     "catgirl_situation": self._character_scene_context(
@@ -558,8 +623,10 @@ class NumericV2BranchService:
                 "terminal": True,
                 "ending_id": ending_id,
             })
-        if endpoint_node_id not in _nodes(story):
+        endpoint_node = _nodes(story).get(endpoint_node_id)
+        if endpoint_node is None:
             raise NumericV2BranchError("branch_endpoint_changed")
+        self._validate_fixed_entry_transitions(transitions, scenes, endpoint_node.get("story_beat") or {})
 
         original_route["conditions"] = deepcopy(dict(draft["original_conditions"]))
         original_route["priority"] = 100
@@ -612,7 +679,7 @@ class NumericV2BranchService:
                 story.setdefault("fact_contract", {}).setdefault("facts", {})[key] = {
                     "value_type": fact["value_type"], "visibility": fact["visibility"],
                     "description": fact["description"].strip(),
-                    **({"evidence_source": "performance"} if "evidence_source" in fact else {}),
+                    **({"evidence_source": fact["evidence_source"]} if "evidence_source" in fact else {}),
                 }
                 completion_by_id[fact["id"]] = {"key": key, "equals": fact["target_value"]}
             # Like mainline chapters, only author-selected results govern completion
@@ -663,6 +730,7 @@ class NumericV2BranchService:
                     "opening_scene": scene["opening_scene"],
                     "narrative_focus": scene["narrative_focus"],
                     "goals": projected_goals,
+                    **({"content_boundaries": list(boundaries)} if boundaries else {}),
                     "must_not_happen": list(dict.fromkeys([
                         *deepcopy(scene["must_not_happen"]),
                         *scene["character_state"]["scene_boundaries"],
@@ -690,14 +758,14 @@ class NumericV2BranchService:
                         trigger_fact_ids=trigger_fact_ids,
                         fallback_offer=(
                             None
-                            if target_is_terminal
+                            if target_is_terminal or outgoing_transition.get("advance_on_completion") is True
                             else (
                                 str(outgoing_transition.get("fallback_offer") or "").strip() or None
                             )
                         ),
                         accept_input=(
                             None
-                            if target_is_terminal
+                            if target_is_terminal or outgoing_transition.get("advance_on_completion") is True
                             else (
                                 str(outgoing_transition["accept_input"]).strip()
                             )
@@ -1015,7 +1083,9 @@ class NumericV2BranchService:
                         continue
                     if target_id not in ancestors:
                         continue
-                    alternatives = self._condition_alternatives(route.get("conditions"), metric_schema, metric_id, value)
+                    alternatives = self._condition_alternatives(
+                        route.get("conditions"), metric_schema, metric_id, value, node,
+                    )
                     if alternatives is None:
                         unknown_reasons.append(f"condition_unknown:{route.get('id') or target_id}")
                         continue
@@ -1092,8 +1162,9 @@ class NumericV2BranchService:
         metric_schema: Mapping[str, Any],
         metric_id: str,
         current_value: int,
+        source_node: Mapping[str, Any] | None = None,
     ) -> list[int] | None:
-        """Project all/any metric_compare conditions into interpretable representative entrance values."""
+        """Project metric gates and exact local completion prerequisites for author-side pacing."""
 
         if not isinstance(conditions, Mapping):
             return None if conditions not in (None, {}) else [current_value]
@@ -1107,13 +1178,35 @@ class NumericV2BranchService:
             return None
         if not rows:
             return [current_value]
+        completed_here = {}
+        if mode == "all" and source_node is not None:
+            contract = source_node.get("completion_contract")
+            source_id = source_node.get("id")
+            if (
+                isinstance(source_id, str) and source_id and isinstance(contract, Mapping)
+                and set(contract) == {"all"} and isinstance(contract["all"], list)
+            ):
+                prefix = f"scene:{source_id}:"
+                completed_here = {
+                    row["key"]: row["equals"] for row in contract["all"]
+                    if isinstance(row, Mapping) and set(row) == {"key", "equals"}
+                    and isinstance(row["key"], str) and row["key"].startswith(prefix)
+                    and type(row["equals"]) in {bool, int, str}
+                }
         groups = [[row] for row in rows] if mode == "any" else [rows]
         values: list[int] = []
         for group in groups:
             value = current_value
             checks: list[tuple[str, int]] = []
             for raw in group:
-                if not isinstance(raw, Mapping) or raw.get("type") != "metric_compare":
+                if not isinstance(raw, Mapping):
+                    return None
+                if raw.get("type") == "fact_equals" and set(raw) == {"type", "key", "value"}:
+                    if isinstance(raw["key"], str) and raw["key"] in completed_here:
+                        required = completed_here[raw["key"]]
+                        if type(raw["value"]) is type(required) and raw["value"] == required:
+                            continue
+                if raw.get("type") != "metric_compare":
                     return None
                 condition_metric = str(raw.get("metric") or "")
                 if condition_metric not in metric_schema:
@@ -1372,27 +1465,31 @@ class NumericV2BranchService:
             ):
                 return [], "mainline_order_invalid"
         source_index = order.index(source_node_id)
+        upstream_ids = self._upstream_node_ids(project, source_node_id)
         targets: list[dict[str, Any]] = []
         for target_index in range(source_index + 1, len(order)):
             target_id = order[target_index]
             skipped, continuity = self._continuity(story, order, source_index, target_index)
-            minimum = max(
-                1,
-                len(skipped),
-                math.ceil(len(continuity) / _CONTINUITY_ITEMS_PER_SCENE),
-            )
+            required = sum(not item.get("optional") for item in continuity)
+            minimum = max(1, math.ceil(required / _CONTINUITY_ITEMS_PER_SCENE))
             available = minimum <= 3
             reason = None if available else "branch_continuity_exceeds_three_scenes"
+            missing = self._missing_rejoin_fact_keys(
+                story, nodes, order[source_index + 1:target_index], target_id, upstream_ids,
+            )
             estimate_context = {
                 "source": nodes[source_node_id],
                 "target": nodes[target_id],
                 "skipped": skipped,
                 "continuity": continuity,
             }
-            estimate = _estimate_tokens(estimate_context) + _AUTHOR_INPUT_RESERVE_TOKENS
+            estimate = self._estimate_input_tokens(estimate_context) + _AUTHOR_INPUT_RESERVE_TOKENS
             if estimate > BRANCH_INPUT_HARD_LIMIT:
                 available = False
                 reason = "branch_context_too_large"
+            if missing:
+                available = False
+                reason = "branch_rejoin_skips_required_fact"
             targets.append({
                 "node_id": target_id,
                 "title": nodes[target_id].get("chapter") or target_id,
@@ -1405,8 +1502,58 @@ class NumericV2BranchService:
                 "estimated_input_tokens": estimate,
                 "available": available,
                 "unavailable_reason": reason,
+                **({"blocking_fact_keys": missing} if missing else {}),
             })
         return targets, None
+
+    @staticmethod
+    def _missing_rejoin_fact_keys(
+        story: Mapping[str, Any], nodes: Mapping[str, Any], skipped_ids: list[str], target_id: str,
+        upstream_ids: set[str],
+    ) -> list[str]:
+        """Find skipped-scene facts that cut off every possible path after rejoining."""
+        if not skipped_ids:
+            return []
+        skipped_prefixes = tuple(f"scene:{node_id}:" for node_id in skipped_ids)
+        scoped_keys = {
+            key for key in (story.get("fact_contract") or {}).get("facts", ())
+            if key.startswith(skipped_prefixes)
+        }
+        if not scoped_keys:
+            return []
+        # A legacy node may write a fact named for another scene. Give each possible
+        # route the benefit of uncertain metrics, priorities and upstream fact values.
+        writers = {node_id: scoped_keys.intersection(
+            row.get("key") for row in (node.get("completion_contract") or {}).get("all", ())
+        ) for node_id, node in nodes.items()}
+        before_rejoin = set().union(*(writers[node_id] for node_id in upstream_ids.difference(skipped_ids)))
+        reached = {target_id: before_rejoin}
+        pending = [target_id]
+        blocked = {}
+        while pending:
+            node_id = pending.pop()
+            node = nodes[node_id]
+            routes = node.get("route_gates") or []
+            if node.get("type") == "ending" or node.get("terminal") is True or not routes:
+                return []
+            available = reached[node_id] | writers[node_id]
+            if node_id in skipped_ids:
+                # A later route can revisit this scene and establish its own local facts.
+                available.update(key for key in scoped_keys if key.startswith(f"scene:{node_id}:"))
+            blocked[node_id] = set()
+            for route in routes:
+                conditions = route["conditions"]
+                rows = conditions.get("any", conditions.get("all", ()))
+                missing = {row["key"] for row in rows if row["type"] == "fact_equals"
+                           and row["key"] in scoped_keys and row["key"] not in available}
+                if missing and ("all" in conditions or all(row.get("key") in missing for row in rows)):
+                    blocked[node_id].update(missing)
+                    continue
+                destination = route["target_node_id"]
+                if destination not in reached or not available.issubset(reached[destination]):
+                    reached[destination] = reached.get(destination, set()) | available
+                    pending.append(destination)
+        return sorted(set().union(*blocked.values()))
 
     def _continuity(
         self,
@@ -1423,10 +1570,20 @@ class NumericV2BranchService:
             "summary": (nodes[node_id].get("story_beat") or {}).get("summary") or "",
         } for node_id in skipped_ids]
         continuity: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for node_id in skipped_ids:
+        seen: set[tuple[str, str]] = set()
+        for node_id, skipped_node in zip(skipped_ids, skipped, strict=True):
             node = nodes[node_id]
             beat = node.get("story_beat") or {}
+            display_ids = {item.get("fixed_narration_id") for item in
+                           (node.get("completion_contract") or {}).get("all", ())
+                           if isinstance(item, Mapping)}
+            display_evidence = [
+                {key: deepcopy(piece[key]) for key in ("id", "text", "trigger")}
+                for piece in beat.get("fixed_narrations") or ()
+                if isinstance(piece, Mapping) and (piece.get("id") in display_ids or piece.get("required_before_exit") is True)
+            ]
+            if display_evidence:
+                skipped_node["display_evidence"] = display_evidence
             goals = beat.get("goals")
             if isinstance(goals, list):
                 for index, goal in enumerate(goals):
@@ -1442,6 +1599,7 @@ class NumericV2BranchService:
                         "goal",
                         index,
                         description,
+                        optional=evidence.get("mode") != "exact",
                         contract={
                             "owner": goal.get("owner"),
                             "delivery_type": delivery.get("type"),
@@ -1465,10 +1623,8 @@ class NumericV2BranchService:
                 None,
             )
             contract = (route or {}).get("transition_contract", {})
-            bridge = contract.get("bridge_scene_narration")
-            if bridge:
-                self._append_continuity(continuity, seen, node_id, "bridge", 0, bridge)
-            else:
+            # The original bridge belongs to the skipped route. Carry explicit legacy delivery only.
+            if not contract.get("bridge_scene_narration"):
                 for index, text in enumerate(contract.get("must_deliver") or []):
                     self._append_continuity(continuity, seen, node_id, "legacy_bridge", index, text)
         return skipped, continuity
@@ -1476,22 +1632,25 @@ class NumericV2BranchService:
     @staticmethod
     def _append_continuity(
         rows: list[dict[str, Any]],
-        seen: set[str],
+        seen: set[tuple[str, str]],
         node_id: str,
         kind: str,
         index: int,
         raw_text: Any,
         contract: Mapping[str, Any] | None = None,
+        *, optional: bool = False,
     ) -> None:
         text = str(raw_text or "").strip()
-        if not text or text in seen:
+        identity = (text, _canonical(contract or {}))
+        if not text or identity in seen:
             return
-        seen.add(text)
+        seen.add(identity)
         rows.append({
             "key": _opaque_key("continuity", node_id, kind, index, text),
             "text": text,
             "source_node_id": node_id,
             "contract": deepcopy(dict(contract or {})),
+            **({"optional": True} if optional else {}),
         })
 
     def _resolve_existing_endpoint(
@@ -1531,13 +1690,25 @@ class NumericV2BranchService:
         if not target:
             raise NumericV2BranchError("branch_rejoin_target_invalid")
         if not target["available"]:
-            raise NumericV2BranchError(str(target["unavailable_reason"] or "branch_rejoin_target_invalid"))
+            details = {"fact_keys": target["blocking_fact_keys"]} if target.get("blocking_fact_keys") else None
+            raise NumericV2BranchError(str(target["unavailable_reason"] or "branch_rejoin_target_invalid"), details)
+        exit_fact_conditions = {
+            route["id"]: deepcopy(route["conditions"]) for route in node.get("route_gates", ())
+            if any(row["type"] == "fact_equals"
+                   for row in route["conditions"].get("any", route["conditions"].get("all", ())))
+        }
+        exit_fact_keys = {row["key"] for conditions in exit_fact_conditions.values()
+                          for row in conditions.get("any", conditions.get("all", ())) if row["type"] == "fact_equals"}
+        definitions = (story.get("fact_contract") or {}).get("facts", {})
         return {
             "mode": mode,
             "node_id": endpoint_node_id,
             "title": target["title"],
             "summary": target["summary"],
             "story_beat": deepcopy(node.get("story_beat") or {}),
+            **({"exit_fact_conditions": exit_fact_conditions,
+                "exit_fact_definitions": {key: deepcopy(definitions[key]) for key in sorted(exit_fact_keys)
+                                          if key in definitions}} if exit_fact_conditions else {}),
             "skipped_nodes": deepcopy(target["skipped_nodes"]),
             "continuity_items": deepcopy(target["continuity_items"]),
             "allowed_lengths": list(target["allowed_lengths"]),
@@ -1619,7 +1790,16 @@ class NumericV2BranchService:
         state_arc = deepcopy((project.get("authoring") or {}).get("character_state_arc") or {})
         # The original ordinary ending plan is not an upstream fact for the new branch; the selected endpoint's state is supplied separately by endpoint.
         state_arc.pop("ending_stage", None)
-        upstream_ids = self._upstream_node_ids(project, str(source.get("id") or ""))
+        source_id = str(source.get("id") or "")
+        upstream_ids = self._upstream_node_ids(project, source_id)
+        relationship_arc = deepcopy((project.get("authoring") or {}).get("relationship_arc") or {})
+        new_ending = endpoint.get("mode") == "new_ending"
+        if new_ending and isinstance(relationship_arc.get("stages"), list):
+            relationship_arc["stages"] = [
+                stage for stage in relationship_arc["stages"]
+                if not isinstance(stage, Mapping) or not stage.get("node_id")
+                or stage["node_id"] in upstream_ids
+            ]
         state_arc["stages"] = [
             stage for stage in state_arc.get("stages") or []
             if isinstance(stage, Mapping) and stage.get("node_id") in upstream_ids
@@ -1631,24 +1811,60 @@ class NumericV2BranchService:
             stage.update(deepcopy(beat.get("character_state") or {}))
             if beat.get("acting_contract"):
                 stage["acting_contract"] = deepcopy(beat["acting_contract"])
+            if new_ending and stage.get("node_id") == source_id:
+                # The branch request also carries the source node's current Story state.
+                for key, value in (beat.get("character_state") or {}).items():
+                    if key not in {"node_id", "chapter_index", "acting_contract"} and stage.get(key) == value:
+                        stage.pop(key, None)
+                if beat.get("acting_contract") and stage.get("acting_contract") == beat["acting_contract"]:
+                    stage.pop("acting_contract", None)
+        definitions = (story.get("fact_contract") or {}).get("facts") or {}
+        source_facts = {row["key"]: deepcopy(definitions[row["key"]])
+                        for row in (source.get("completion_contract") or {}).get("all", ())
+                        if isinstance(row, Mapping) and row.get("key") in definitions}
+        source_context = deepcopy(dict(source))
+        endpoint_context = deepcopy(dict(endpoint))
+        if endpoint_id := endpoint_context.get("node_id"):
+            scope = entry_route_scope(story, endpoint_id)
+            fact_keys = set(scope["common_gate_facts"])
+            for entry in scope["routes"]:
+                fact_keys.update(entry["gate_facts"])
+            if fact_keys:
+                endpoint_context["existing_entry_scope"] = {
+                    **scope, "fact_definitions": {key: deepcopy(definitions[key]) for key in sorted(fact_keys)},
+                }
+        content_boundaries = deepcopy((project.get("setup") or {}).get("content_boundaries") or [])
+        for node in (source_context, endpoint_context):
+            beat = node.get("story_beat") or {}
+            if content_boundaries and beat.get("content_boundaries") == content_boundaries:
+                beat.pop("content_boundaries")
+        # The writer still sees the original bridge and all other delivery requirements.
+        # Only the prompt projection loses the copy of the bridge under must_deliver.
+        for route in source_context.get("route_gates") or ():
+            contract = route.get("transition_contract") or {}
+            bridge = contract.get("bridge_scene_narration")
+            deliveries = contract.get("must_deliver")
+            if bridge and isinstance(deliveries, list) and bridge in deliveries:
+                contract["must_deliver"] = [item for item in deliveries if item != bridge]
         return {
             "global": {
                 "intro": deepcopy(story.get("intro") or {}),
                 "catgirl_binding": deepcopy(story.get("catgirl_binding") or {}),
-                "content_boundaries": deepcopy((project.get("setup") or {}).get("content_boundaries") or []),
+                "content_boundaries": content_boundaries,
                 # The relationship arc constrains only the branch's relationship ceiling and continuity of knowledge; it does not enter the official Story Package.
-                "relationship_arc": deepcopy((project.get("authoring") or {}).get("relationship_arc") or {}),
+                "relationship_arc": relationship_arc,
                 "character_state_arc": state_arc,
                 "key_props": self._active_key_props(project, str(source.get("id") or "")),
             },
-            "source": deepcopy(dict(source)),
+            "source": source_context,
+            **({"source_completion_facts": source_facts} if source_facts else {}),
             "recent_upstream": self._recent_upstream(project, str(source.get("id") or "")),
             "original_exit": {
                 "target_title": target.get("chapter"),
                 "target_summary": (target.get("story_beat") or {}).get("summary"),
-                "transition_contract": deepcopy(original_route.get("transition_contract") or {}),
+                "route_id": original_route.get("id"),
             },
-            "endpoint": deepcopy(dict(endpoint)),
+            "endpoint": endpoint_context,
             "skipped_mainline": deepcopy(skipped_nodes),
             "continuity_items": deepcopy(continuity_items),
             "condition_candidates": public_candidates,
@@ -1657,6 +1873,8 @@ class NumericV2BranchService:
                 "direction": direction,
                 "scene_count": length,
                 "scene_expected_turns_target": 8,
+                **({"remaining_typed_fact_keys": NUMERIC_V2_MAX_FACT_KEYS -
+                    len((story.get("fact_contract") or {}).get("facts") or {})} if length is not None else {}),
             },
         }
 
@@ -1680,13 +1898,161 @@ class NumericV2BranchService:
         return result
 
     @staticmethod
-    def _require_context_budget(context: Mapping[str, Any]) -> None:
-        estimate = _estimate_tokens(context)
+    def _compact_branch_source_goals(source_beat: Mapping[str, Any]) -> None:
+        for goal in source_beat.get("goals") or ():
+            if not isinstance(goal, dict):
+                continue
+            if isinstance(goal.get("delivery"), Mapping):
+                goal["delivery"] = {key: value for key, value in goal["delivery"].items()
+                                    if key in {"type", "timing", "state_effects"}}
+            if isinstance(goal.get("evidence"), Mapping) and not goal["evidence"].get("anchors"):
+                goal.pop("evidence")
+
+    @staticmethod
+    def _compact_branch_conditions(context: dict[str, Any]) -> None:
+        context["condition_candidates"] = [
+            {key: candidate[key] for key in ("key", "label", "behavior_hint", "state_hint", "reachability")}
+            for candidate in context["condition_candidates"]
+        ]
+
+    @classmethod
+    def _compact_ending_path_context(cls, context: dict[str, Any]) -> None:
+        source, endpoint = context["source"], context["endpoint"]
+        source_beat = source.get("story_beat") or {}
+        cls._compact_branch_source_goals(source_beat)
+        beats = [source_beat]
+        if endpoint["mode"] == "existing_ending":
+            endpoint_beat = endpoint["story_beat"]
+            if endpoint.get("summary") == endpoint_beat.get("summary"):
+                endpoint.pop("summary", None)
+            beats.append(endpoint_beat)
+        else:
+            ending = endpoint["ending"]
+            if ending["summary"] == ending["opening_scene"]:
+                ending.pop("summary")
+            # The ending outcome is already in its visible opening and
+            # irreversible facts. Do not seed an earlier act with end poses.
+            ending.pop("catgirl_situation", None)
+            for field in ("catgirl_state", "player_state", "environment_state"):
+                ending["character_state"].pop(field, None)
+            # Keep the original route contract on source. Its target's future
+            # story is a different path from the already confirmed ending.
+            context["original_exit"].pop("target_summary", None)
+            global_context = context["global"]
+            source_id = source["id"]
+            source_state = source_beat.get("character_state") or {}
+            situation = source_beat.get("catgirl_situation")
+            state_text = "".join(source_state.get(key) or "" for key in (
+                "catgirl_state", "player_state", "environment_state",
+            ))
+            if state_text and isinstance(situation, str) and situation.startswith(state_text):
+                remainder = situation[len(state_text):].strip()
+                if remainder:
+                    source_beat["catgirl_situation"] = remainder
+                else:
+                    source_beat.pop("catgirl_situation")
+            if isinstance(source_beat.get("must_not_happen"), list):
+                source_beat["must_not_happen"] = [
+                    text for text in source_beat["must_not_happen"]
+                    if text not in global_context["content_boundaries"]
+                ]
+            relationship_arc = global_context["relationship_arc"]
+            if isinstance(relationship_arc.get("stages"), list):
+                relationship_arc["stages"] = [
+                    stage for stage in relationship_arc["stages"]
+                    if not isinstance(stage, Mapping) or not stage.get("node_id")
+                    or stage["node_id"] == source_id
+                ]
+            state_ids = {source_id, *(row["node_id"] for row in context["recent_upstream"])}
+            state_arc = global_context["character_state_arc"]
+            state_arc["stages"] = [stage for stage in state_arc["stages"] if stage["node_id"] in state_ids]
+        for beat in beats:
+            state = beat.get("character_state") or {}
+            if beat.get("catgirl_situation") == state.get("catgirl_state"):
+                beat.pop("catgirl_situation", None)
+            if isinstance(beat.get("must_not_happen"), list):
+                beat["must_not_happen"] = [text for text in beat["must_not_happen"]
+                                          if text not in (state.get("scene_boundaries") or ())]
+        for row in context["recent_upstream"]:
+            row["goals"] = [
+                {key: goal[key] for key in ("id", "owner", "description") if key in goal}
+                | ({"timing": delivery["timing"]} if (delivery := goal.get("delivery") or {}).get("timing") else {})
+                | ({"anchors": anchors} if (anchors := (goal.get("evidence") or {}).get("anchors")) else {})
+                for goal in row["goals"] if isinstance(goal, Mapping)
+            ]
+        cls._compact_branch_conditions(context)
+
+    @classmethod
+    def _compact_rejoin_context(cls, context: dict[str, Any]) -> None:
+        """Shrink the model copy, retaining the plans and Story Package used for apply."""
+        source, endpoint = context["source"], context["endpoint"]
+        source_beat = source.get("story_beat") or {}
+        endpoint_beat = endpoint["story_beat"]
+        cls._compact_branch_source_goals(source_beat)
+        # Keep event text without sending the target's full delivery schema.
+        if isinstance(endpoint_beat.get("goals"), list):
+            opening_goals, reserved_turn_events = [], []
+            for goal in endpoint_beat.pop("goals"):
+                description = goal.get("description") if isinstance(goal, Mapping) else None
+                if not isinstance(description, str) or not description:
+                    continue
+                delivery = goal.get("delivery")
+                if isinstance(delivery, Mapping) and delivery.get("timing") == "opening":
+                    opening_goals.append(description)
+                else:
+                    reserved_turn_events.append(description)
+                    evidence = goal.get("evidence")
+                    anchors = evidence.get("anchors") if isinstance(evidence, Mapping) else None
+                    if isinstance(anchors, list):
+                        reserved_turn_events.extend(anchor for anchor in anchors
+                                                    if isinstance(anchor, str) and anchor and anchor not in description)
+            if opening_goals:
+                endpoint_beat["opening_goal_descriptions"] = opening_goals
+            if reserved_turn_events:
+                endpoint_beat["reserved_turn_events"] = list(dict.fromkeys(reserved_turn_events))
+        for beat in (source_beat, endpoint_beat):
+            state = beat.get("character_state") or {}
+            boundaries = state.get("scene_boundaries") or ()
+            if isinstance(beat.get("must_not_happen"), list):
+                beat["must_not_happen"] = [row for row in beat["must_not_happen"] if row not in boundaries]
+            if beat.get("catgirl_situation") == state.get("catgirl_state"):
+                beat.pop("catgirl_situation", None)
+            if beat.get("summary"):
+                beat.pop("narrative_focus", None)
+        if source_beat.get("summary"):
+            source_beat.pop("transition_goal", None)
+
+        recent = context["recent_upstream"]
+        for row in recent:
+            row.pop("goals", None)
+        for row in recent[:-1]:
+            if row.get("summary"):
+                row.pop("opening_scene", None)
+
+        if endpoint.get("summary") == endpoint_beat.get("summary"):
+            endpoint.pop("summary", None)
+        exit_summary = context["original_exit"]
+        original_target = source["route_gates"][0].get("target_node_id")
+        target = next((row for row in [endpoint, *context["skipped_mainline"]]
+                       if row.get("node_id") == original_target), {})
+        for key in ("title", "summary"):
+            target_value = target.get(key, (target.get("story_beat") or {}).get(key))
+            if target_value is not None and target_value == exit_summary.get(f"target_{key}"):
+                exit_summary.pop(f"target_{key}")
+        for item in context["continuity_items"]:
+            contract = item.get("contract") or {}
+            if "description" in contract and contract["description"] == item["text"]:
+                contract.pop("description")
+        cls._compact_branch_conditions(context)
+
+    def _require_context_budget(self, context: Mapping[str, Any]) -> int:
+        estimate = self._estimate_input_tokens(context)
         if estimate > BRANCH_INPUT_HARD_LIMIT:
             raise NumericV2BranchError(
                 "branch_context_too_large",
                 {"estimated_input_tokens": estimate, "hard_limit": BRANCH_INPUT_HARD_LIMIT},
             )
+        return estimate
 
     @staticmethod
     def _fingerprint(project: Mapping[str, Any]) -> str:
@@ -1703,6 +2069,7 @@ class NumericV2BranchService:
         if not isinstance(candidate, Mapping):
             raise NumericV2BranchError("invalid_branch_ending")
         result = deepcopy(dict(candidate))
+        self._validate_fixed_narrations(result.get("fixed_narrations"), "ending.fixed_narrations")
         for field in ("title", "summary", "opening_scene", "catgirl_situation", "tone"):
             result[field] = self._required_text(result.get(field), f"ending.{field}")
         result["ordered_goals"] = self._validate_ordered_goals(
@@ -1748,6 +2115,51 @@ class NumericV2BranchService:
             raise NumericV2BranchError("invalid_branch_ending")
         return result
 
+    @staticmethod
+    def _completion_advance(transition: Mapping[str, Any], index: int, ordinary_exit: bool) -> bool:
+        continuation = transition.get("advance_on_completion", False)
+        if type(continuation) is not bool or (continuation is True and (
+            index == 0 or not ordinary_exit or "silent_choice" in transition
+            or any(transition.get(field) not in ("", None) for field in ("fallback_offer", "accept_input"))
+        )):
+            raise NumericV2BranchError("transition_completion_advance_invalid", {
+                "path": f"transitions[{index}].advance_on_completion",
+                "message": "advance_on_completion 仅用于支线内部进入普通幕，不用于 source 入口或结局；为 true 时邀约和接受须为空，且须省略整个 silent_choice 字段。",
+            })
+        return continuation
+
+    def path_validation_issues(self, plan: Mapping[str, Any], candidate: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """Collect independent goal, state and exit-mode errors before full normalization."""
+        if not isinstance(candidate, Mapping):
+            return []
+        scenes, transitions = candidate.get("scenes"), candidate.get("transitions")
+        if (not isinstance(scenes, list) or len(scenes) != plan["length"]
+                or not isinstance(transitions, list) or len(transitions) != plan["length"] + 1):
+            return []
+        issues = []
+        for index, scene in enumerate(scenes):
+            if not isinstance(scene, Mapping):
+                continue
+            goals = None
+            try:
+                goals = self._validate_ordered_goals(scene.get("ordered_goals"), path=f"scenes[{index}].ordered_goals")
+            except NumericV2BranchError as error:
+                issues.append({"code": error.code, **deepcopy(error.details)})
+            try:
+                self._validate_character_state(scene.get("character_state"), path=f"scenes[{index}].character_state",
+                                               cast_names=plan["context"]["global"]["intro"], ordered_goals=goals)
+            except NumericV2BranchError as error:
+                issues.append({"code": error.code, **deepcopy(error.details)})
+        for index, transition in enumerate(transitions):
+            if not isinstance(transition, Mapping):
+                continue
+            try:
+                self._completion_advance(transition, index,
+                                         index < len(scenes) or plan.get("endpoint_mode") == "mainline")
+            except NumericV2BranchError as error:
+                issues.append({"code": error.code, **deepcopy(error.details)})
+        return issues
+
     def _validate_path_result(
         self,
         plan: Mapping[str, Any],
@@ -1759,7 +2171,8 @@ class NumericV2BranchService:
         allowed = {"condition_key", "condition_reason", "scenes", "transitions", "continuity_handling"}
         if set(result).difference(allowed):
             raise NumericV2BranchError("invalid_branch_generation")
-        self.validate_completion_contracts(result, required=False)
+        self.validate_completion_contracts(result, required=False,
+            typed_fact_budget=(plan["context"].get("author_intent") or {}).get("remaining_typed_fact_keys"))
         result["condition_reason"] = self._required_text(result.get("condition_reason"), "condition_reason")
         available_prop_ids = {
             str(prop.get("id") or "")
@@ -1774,6 +2187,7 @@ class NumericV2BranchService:
             if not isinstance(raw, Mapping):
                 raise NumericV2BranchError("invalid_branch_generation")
             scene = deepcopy(dict(raw))
+            self._validate_fixed_narrations(scene.get("fixed_narrations"), f"scenes[{index}].fixed_narrations")
             for field in ("title", "summary", "opening_scene", "catgirl_situation", "transition_goal"):
                 scene[field] = self._required_text(scene.get(field), f"scenes[{index}].{field}")
             # New output can explicitly provide a narrative focus; if a legacy draft lacks one, fill it from the existing transition objective to keep the same runtime field.
@@ -1842,17 +2256,20 @@ class NumericV2BranchService:
             if not isinstance(raw, Mapping):
                 raise NumericV2BranchError("invalid_branch_generation")
             transition = deepcopy(dict(raw))
-            if "fixed_entry_only" in transition and not isinstance(transition["fixed_entry_only"], bool):
-                raise NumericV2BranchError("invalid_branch_generation",
-                    {"path": f"transitions[{index}].fixed_entry_only"})
             expected_from = "source" if index == 0 else f"scene:{index - 1}"
             expected_to = "endpoint" if index == plan["length"] else f"scene:{index}"
             if transition.get("from") != expected_from or transition.get("to") != expected_to:
                 raise NumericV2BranchError("branch_transition_chain_invalid")
-            for field in ("reason", "bridge_scene_narration", "tone"):
+            for field in ("reason", "tone"):
                 transition[field] = self._required_text(transition.get(field), f"transitions[{index}].{field}")
             ordinary_exit = index < len(normalized_scenes) or plan.get("endpoint_mode") == "mainline"
-            if ordinary_exit:
+            continuation = self._completion_advance(transition, index, ordinary_exit)
+            bridge = transition.get("bridge_scene_narration")
+            if (ordinary_exit and not continuation) or bridge != "":
+                transition["bridge_scene_narration"] = self._required_text(
+                    bridge, f"transitions[{index}].bridge_scene_narration",
+                )
+            if ordinary_exit and not continuation:
                 source_scene = normalized_scenes[index - 1] if index else None
                 completion_policy = source_policy if source_scene is None else final_dialogue_policy(
                     source_scene["character_state"]["acting_contract"]["dialogue_policy"],
@@ -1905,10 +2322,15 @@ class NumericV2BranchService:
                 ]))
             normalized_transitions.append(transition)
 
+        endpoint = plan.get("endpoint") or {}
+        author_ending = endpoint.get("ending")
+        self._validate_fixed_entry_transitions(normalized_transitions, normalized_scenes,
+            author_ending or endpoint.get("story_beat") or {}, author_ending=isinstance(author_ending, Mapping))
+
         handling = result.get("continuity_handling")
         if not isinstance(handling, list):
             raise NumericV2BranchError("branch_continuity_incomplete")
-        expected_keys = {item["key"] for item in plan["continuity_items"]}
+        expected = {item["key"]: item for item in plan["continuity_items"]}
         seen: set[str] = set()
         normalized_handling = []
         for raw in handling:
@@ -1916,16 +2338,34 @@ class NumericV2BranchService:
                 raise NumericV2BranchError("branch_continuity_incomplete")
             row = deepcopy(dict(raw))
             key = str(row.get("key") or "")
-            placement = str(row.get("placement") or "")
-            if key not in expected_keys or key in seen or row.get("mode") != "carried":
+            mode = row.get("mode")
+            if key not in expected or key in seen:
                 raise NumericV2BranchError("branch_continuity_incomplete")
-            if not self._valid_placement(placement, plan["length"]):
-                raise NumericV2BranchError("branch_continuity_placement_invalid")
+            item = expected[key]
+            optional = item.get("optional") is True
+            if mode != "carried" and (not optional or mode not in ("covered", "route_only", "uncertain")):
+                raise NumericV2BranchError("branch_continuity_incomplete")
+            if mode == "route_only":
+                row.pop("placement", None)
+            else:
+                placement = str(row.get("placement") or "")
+                if not self._valid_placement(placement, plan["length"]):
+                    raise NumericV2BranchError("branch_continuity_placement_invalid")
+                kind, index = placement.split(":", 1)
+                if mode == "covered":
+                    self._validate_covered_continuity(item, row.get("quote"), kind, int(index),
+                                                      normalized_scenes, normalized_transitions)
+                elif optional and kind != "scene":
+                    raise NumericV2BranchError("branch_continuity_placement_invalid")
             row["reason"] = self._required_text(row.get("reason"), "continuity.reason")
             seen.add(key)
             normalized_handling.append(row)
-        if seen != expected_keys:
+        if seen != expected.keys():
             raise NumericV2BranchError("branch_continuity_incomplete")
+        carry_count = sum(row["mode"] in ("carried", "uncertain") for row in normalized_handling)
+        minimum = math.ceil(carry_count / _CONTINUITY_ITEMS_PER_SCENE)
+        if minimum > plan["length"]:
+            raise NumericV2BranchError("branch_length_too_short", {"allowed_lengths": list(range(minimum, 4))})
         return {
             "condition_reason": result["condition_reason"],
             "scenes": normalized_scenes,
@@ -1934,7 +2374,54 @@ class NumericV2BranchService:
         }
 
     @staticmethod
-    def validate_completion_contracts(candidate: Mapping[str, Any], *, required: bool) -> None:
+    def _validate_covered_continuity(item, quote, kind, index, scenes, transitions) -> None:
+        contract = item["contract"]
+        owner = contract.get("owner")
+        texts = []
+        if kind == "scene":
+            scene = scenes[index]
+            texts = [goal["description"] for goal in scene["ordered_goals"]
+                     if goal["owner"] == owner and goal["delivery_type"] == contract.get("delivery_type")]
+            if owner in ("catgirl", "environment"):
+                texts.append(scene["opening_scene"])
+                pieces = scene.get("fixed_narrations")
+                if isinstance(pieces, list):
+                    texts.extend(piece["text"] for piece in pieces
+                                 if isinstance(piece, Mapping) and isinstance(piece.get("text"), str)
+                                 and isinstance(piece.get("trigger"), Mapping)
+                                 and piece["trigger"].get("type") == "entry")
+        elif owner in ("catgirl", "environment"):
+            texts.append(transitions[index]["bridge_scene_narration"])
+        if not isinstance(quote, str) or not quote.strip() or not any(quote in text for text in texts):
+            raise NumericV2BranchError("branch_continuity_evidence_invalid", {"key": item["key"]})
+
+    @staticmethod
+    def _validate_fixed_entry_transitions(transitions, scenes, endpoint_beat, *, author_ending=False) -> None:
+        """Check each new route's actual target before preview or application."""
+        for index, transition in enumerate(transitions):
+            if "fixed_entry_only" not in transition:
+                continue
+            path = f"transitions[{index}].fixed_entry_only"
+            fixed_entry = transition["fixed_entry_only"]
+            if not isinstance(fixed_entry, bool):
+                raise NumericV2BranchError("invalid_branch_generation", {"path": path})
+            if not fixed_entry:
+                continue
+            target = scenes[index] if index < len(scenes) else endpoint_beat
+            state = (target.get("character_state") or {}) if index < len(scenes) or author_ending else target
+            policy = (state.get("acting_contract") or {}).get("dialogue_policy")
+            pieces = target.get("fixed_narrations")
+            has_entry = isinstance(pieces, list) and any(
+                isinstance(piece, Mapping) and isinstance(piece.get("trigger"), Mapping)
+                and piece["trigger"].get("type") == "entry" for piece in pieces
+            )
+            if not has_entry or policy not in {"optional", "forbidden"}:
+                raise NumericV2BranchError("transition_fixed_entry_only_invalid", {"path": path})
+
+    @staticmethod
+    def validate_completion_contracts(
+        candidate: Mapping[str, Any], *, required: bool, typed_fact_budget: int | None = None,
+    ) -> None:
         """Validate mainline-shaped completion facts without inferring intent from prose.
 
         Fresh model output must declare the contract. Old saved drafts may omit it
@@ -1952,6 +2439,14 @@ class NumericV2BranchService:
                     or row.get("entry_prerequisite_fact_ids", []) != [])
                 for row in (transitions if isinstance(transitions, list) else []))
         )
+        if typed_fact_budget is not None and isinstance(scenes, list):
+            # Legacy drafts still compile a single synthetic completion key per scene.
+            used = sum(typed_completion_fact_count(scene) if "completion_facts" in scene else 1
+                       for scene in scenes if isinstance(scene, Mapping))
+            if used > typed_fact_budget:
+                raise NumericV2BranchError("fact_contract_limit_exceeded", {
+                    "path": "scenes", "remaining_typed_fact_keys": typed_fact_budget, "requested_typed_fact_keys": used,
+                })
         if not required and not explicit:
             return
 
@@ -1984,7 +2479,7 @@ class NumericV2BranchService:
                 fields = {"id", "description", "value_type", "target_value", "visibility"}
                 if not isinstance(fact, Mapping) or set(fact) not in (fields, fields | {"fixed_narration_id"}, fields | {"evidence_source"}):
                     reject(fact_path)
-                if "evidence_source" in fact and fact["evidence_source"] != "performance":
+                if "evidence_source" in fact and fact["evidence_source"] not in ("performance", "player_input"):
                     reject(f"{fact_path}.evidence_source")
                 fact_id = fact["id"]
                 if (not isinstance(fact_id, str)
@@ -2094,7 +2589,9 @@ class NumericV2BranchService:
     def _required_text(value: Any, path: str) -> str:
         text = str(value or "").strip()
         if not text:
-            raise NumericV2BranchError("invalid_branch_generation", {"path": path})
+            raise NumericV2BranchError("invalid_branch_generation", {
+                "path": path, "message": "该字段必须填写非空文本。",
+            })
         return text
 
     @classmethod
@@ -2121,7 +2618,10 @@ class NumericV2BranchService:
         ):
             state[field] = cls._required_text(state.get(field), f"{path}.{field}")
             if not state[field].startswith(prefix):
-                raise NumericV2BranchError("invalid_branch_generation", {"path": f"{path}.{field}"})
+                raise NumericV2BranchError("invalid_branch_generation", {
+                    "path": f"{path}.{field}", "expected_prefix": prefix,
+                    "message": f"该状态文本必须以“{prefix}”开头，保留原有主体与状态，不补造行动。",
+                })
         for field in ("continuity_from_previous", "scene_boundaries"):
             state[field] = cls._text_list(
                 state.get(field),
@@ -2226,11 +2726,13 @@ class NumericV2BranchService:
         accept_input: str | None = None,
     ) -> dict[str, Any]:
         bridge = str(transition["bridge_scene_narration"])
+        if not bridge and accept_input is not None:
+            raise NumericV2BranchError("invalid_branch_generation", {"path": "bridge_scene_narration"})
         contract = {
             "reason": transition["reason"],
-            "bridge_scene_narration": bridge,
+            **({"bridge_scene_narration": bridge} if bridge else {}),
             "source_ids": list(dict.fromkeys(source_ids)),
-            "must_deliver": [bridge],
+            "must_deliver": [bridge] if bridge else [],
             "must_preserve": deepcopy(transition["must_preserve"]),
             "tone": transition["tone"],
         }
@@ -2241,6 +2743,8 @@ class NumericV2BranchService:
             ))
         if "fixed_entry_only" in transition:
             contract["fixed_entry_only"] = transition["fixed_entry_only"]
+        if transition.get("advance_on_completion") is True:
+            contract["advance_on_completion"] = True
         # Invitations at ordinary-act exits are handled by the author-side contract and must not be assembled ad hoc by Runtime; routes whose endpoint is an ending
         # omit these two fields and continue to follow the contract that entering an ending concludes the story.
         if fallback_offer:
@@ -2294,7 +2798,10 @@ class NumericV2BranchService:
                 source not in _GOAL_SOURCE_REFS or (source == "previous_goal" and index == 0)
                 for source in sources
             ):
-                raise NumericV2BranchError("invalid_branch_generation", {"path": f"{goal_path}.sources"})
+                raise NumericV2BranchError("invalid_branch_generation", {
+                    "path": f"{goal_path}.sources",
+                    "message": "sources 只允许 opening、player_input、previous_goal；previous_goal 仅引用本幕更早的目标，首项目标不能使用它。",
+                })
             goal["owner"] = owner
             goal["delivery_type"] = delivery_type
             goal["evidence_mode"] = evidence_mode
@@ -2307,7 +2814,10 @@ class NumericV2BranchService:
                 if owner not in {"catgirl", "environment"}:
                     raise NumericV2BranchError("invalid_branch_generation", {"path": f"{goal_path}.timing"})
             if owner == "player" and "player_input" not in sources:
-                raise NumericV2BranchError("invalid_branch_generation", {"path": f"{goal_path}.sources"})
+                raise NumericV2BranchError("invalid_branch_generation", {
+                    "path": f"{goal_path}.sources",
+                    "message": "玩家目标的 sources 必须包含 player_input；previous_goal 只说明前项依据，不能代替玩家原话。",
+                })
             goal["timing"] = timing
             dialogue_policy = str(goal.get("dialogue_policy_after") or "unchanged")
             if dialogue_policy not in _DIALOGUE_POLICIES:

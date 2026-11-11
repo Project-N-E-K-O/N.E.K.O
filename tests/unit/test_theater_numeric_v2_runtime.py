@@ -772,6 +772,116 @@ def test_numeric_v2_fact_candidate_rejects_future_tense_evidence():
     assert finalized.session.story_state["facts"]["scene:start:sheltered"]["value"] is True
 
 
+@pytest.mark.parametrize(("description", "quote", "visible", "accepted"), [
+    (
+        "天文馆按规程完成闭馆，栀宁锁上大门，陆遥离开建筑",
+        "带你出去，然后我来锁门",
+        "走吧，我带你出去，然后我来锁门。",
+        False,
+    ),
+    (
+        "天文馆按规程完成闭馆，栀宁锁上大门，陆遥离开建筑",
+        "锁舌咔哒一声落进槽里",
+        "（跨出门槛，反手握住门把将沉重的木门缓缓合拢，锁舌咔哒一声落进槽里。拔出钥匙攥在掌心）",
+        True,
+    ),
+    (
+        "天文馆按规程完成闭馆，栀宁锁上大门，陆遥离开建筑",
+        "锁舌咔哒一声落进槽里，然后我来收钥匙",
+        "锁舌咔哒一声落进槽里，然后我来收钥匙。",
+        True,
+    ),
+    (
+        "双方完成闭馆分工，栀宁承诺负责锁门。",
+        "带你出去，然后我来锁门",
+        "走吧，我带你出去，然后我来锁门。",
+        True,
+    ),
+    ("已完成证物归还。", "然后我来归还证物", "然后我来归还证物。", False),
+    ("已完成交接并离开。", "然后我来交接了钥匙", "然后我来交接了钥匙。", True),
+    ("已完成抵达。", "然后我来到了档案室", "然后我来到了档案室。", True),
+    ("已完成此前的巡查。", "然后我来过档案室", "然后我来过档案室。", True),
+])
+def test_performance_fact_distinguishes_prospective_actor_assignment(description, quote, visible, accepted):
+    story = numeric_v2_story()
+    key = "scene:start:performed_result"
+    story["fact_contract"] = {"facts": {key: {
+        "value_type": "bool", "visibility": "public", "description": description, "evidence_source": "performance",
+    }}}
+    story["nodes"][0]["completion_contract"] = {"all": [{"key": key, "equals": True}]}
+    engine = NumericV2Engine.from_mapping(story)
+    session = engine.create_session(session_id="performed-result", catgirl_binding=_binding(), opening_performance=_opening())
+    outcome = engine.resolve_turn(session, TurnRequestV2("performed-turn", 0, "现在怎么样了？"), ())
+    candidates = [{"key": key, "value": True, "evidence_quote": quote}]
+    evidence_sources = {"actor_performance": visible}
+    if not accepted:
+        with pytest.raises(NumericV2RuntimeError, match="story_fact_candidate_evidence_not_completed"):
+            engine.finalize_actor_fact_candidates(session, outcome, candidates=candidates, evidence_sources=evidence_sources)
+        return
+    committed, _ = engine.finalize_actor_fact_candidates(
+        session, outcome, candidates=candidates, evidence_sources=evidence_sources,
+    )
+    assert engine.completion_contract_satisfied(committed.session)
+
+
+def test_performance_fact_requires_its_author_anchor_in_the_cited_text():
+    story = numeric_v2_story()
+    key = "scene:start:sheet_detached"
+    story["fact_contract"] = {"facts": {key: {
+        "value_type": "bool", "visibility": "public", "description": "所有选定的拓样均已揭下并摊稳。",
+        "evidence_source": "performance", "evidence_anchor": "揭下并摊稳",
+    }}}
+    story["nodes"][0]["completion_contract"] = {"all": [{"key": key, "equals": True}]}
+    engine = NumericV2Engine.from_mapping(story)
+    session = engine.create_session(session_id="anchor", catgirl_binding=_binding(), opening_performance=_opening())
+    outcome = engine.resolve_turn(session, TurnRequestV2("anchor-turn", 0, "就留这两块吧。"), ())
+    preparation = "（又展开一张纸盖住歪太阳的位置，指尖压住纸边固定）你按住这边，别让它跑偏了。"
+    completion = "（将选定的两张拓样逐一揭下并摊稳）好，两张都在这儿了。"
+    candidate = {"key": key, "value": True, "evidence_quote": preparation}
+    with pytest.raises(NumericV2RuntimeError, match="story_fact_candidate_evidence_anchor_missing"):
+        engine.finalize_actor_fact_candidates(session, outcome, candidates=[candidate],
+                                             evidence_sources={"actor_performance": preparation + completion})
+
+    committed, _ = engine.finalize_actor_fact_candidates(
+        session, outcome, candidates=[{**candidate, "evidence_quote": completion}],
+        evidence_sources={"actor_performance": preparation + completion},
+    )
+    assert engine.completion_contract_satisfied(committed.session)
+
+
+@pytest.mark.parametrize(("quote", "accepted"), [
+    ("线条从墙面浮到纸上，拓得挺实。", False),
+    ("把薄纸揭下来，托在手里。", False),
+    ("把薄纸揭下来，等你回来再摊平。", False),
+    ("先把薄纸揭下来，然后摊平在墙根？", False),
+    ("把薄纸摊平贴在墙上，从边上揭下胶带。", False),
+    ("把纸揭下来平铺在地上。", True),
+    ("将薄纸从墙面剥离，摊平在墙根的青苔上。", True),
+    ("从墙上取下拓样，平放在墙根。", True),
+])
+def test_grouped_evidence_anchor_requires_ordered_performed_actions(quote, accepted):
+    story = numeric_v2_story()
+    key = "scene:start:first_sheet"
+    story["fact_contract"] = {"facts": {key: {
+        "value_type": "bool", "visibility": "public", "description": "首张拓样已从墙面揭下并放稳。",
+        "evidence_source": "performance",
+        "evidence_anchor": [["揭下", "从墙面剥离", "从墙上取下"], ["平铺", "摊平", "平放"]],
+    }}}
+    story["nodes"][0]["completion_contract"] = {"all": [{"key": key, "equals": True}]}
+    engine = NumericV2Engine.from_mapping(story)
+    session = engine.create_session(session_id="grouped-anchor", catgirl_binding=_binding(), opening_performance=_opening())
+    outcome = engine.resolve_turn(session, TurnRequestV2("grouped-turn", 0, "我按住纸角。"), ())
+    candidate = {"key": key, "value": True, "evidence_quote": quote}
+    if not accepted:
+        with pytest.raises(NumericV2RuntimeError, match="story_fact_candidate_evidence_anchor_missing"):
+            engine.finalize_actor_fact_candidates(session, outcome, candidates=[candidate],
+                                                 evidence_sources={"actor_performance": quote})
+        return
+    committed, _ = engine.finalize_actor_fact_candidates(session, outcome, candidates=[candidate],
+                                                       evidence_sources={"actor_performance": quote})
+    assert engine.completion_contract_satisfied(committed.session)
+
+
 @pytest.mark.parametrize(
     "change",
     [

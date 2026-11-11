@@ -17,6 +17,7 @@ from services.theater.numeric_v2_runtime import NumericV2Engine, NumericV2Runtim
 from tests.unit.test_theater_numeric_v2_natural_ending import _engine
 from tests.unit.test_theater_numeric_v2_runtime import _binding
 from tests.unit.theater_workshop.test_sdk_lifecycle import opened
+from tests.utils.theater_prompt import prompt_payload
 
 
 def _sdk_engine(sdk, *, required, known, fixed_kind, player_author="林舟", literal_fixed=False):
@@ -102,6 +103,7 @@ async def _run_case(
         assert not kwargs.get("suggestions_only")
         assert not kwargs.get("transition_suggestions_only")
         requests.append(messages)
+        assert "entry_part" not in kwargs
         return deepcopy(candidate)
 
     async def unexpected_review(self, **kwargs):
@@ -125,15 +127,9 @@ async def _run_case(
         ensure_current_binding=lambda _: binding, before_commit=before_commit,
         diagnostics_sink=diagnostics,
     )
-    rewrite = check_delivery and missing
-    assert calls == {"evaluator": 1, "actor": 1 + int(rewrite), "review": 0}
-    assert diagnostics["semantic_rewrite_attempts"] == int(rewrite)
-    if rewrite:
-        assert diagnostics["contract_missing"]
-        assert diagnostics["contract_missing_after_rewrite"]
-        assert diagnostics["contract_missing_fallback"] is True
-    else:
-        assert not diagnostics.get("contract_missing")
+    assert calls == {"evaluator": 1, "actor": 1, "review": 0}
+    assert diagnostics["semantic_rewrite_attempts"] == 0
+    assert bool(diagnostics.get("contract_missing")) is (check_delivery and missing)
     assert current.session.player_address_known is known
     assert result.stored.session.player_address_known is (known or disclose)
     assert result.stored.session.current_node_id == "middle"
@@ -151,10 +147,15 @@ async def _run_case(
         assert pieces[0]["id"] == "register_visible"
         assert pieces[0]["bindings"]["player_name"] == ("哥哥" if known or disclose else "你")
     if disclose and not known:
-        # The first request was built before committing the disclosed nickname;
-        # the fixed original below can nevertheless use the native outcome.
-        assert "玩家的登记册" in requests[0][1].content
-        assert "哥哥的登记册" not in requests[0][1].content
+        # Dynamic author references keep the original knowledge projection;
+        # the scheduled original uses the same native outcome as the renderer.
+        sent = prompt_payload(requests[0][1].content)
+        scheduled = sent["transition"].pop("program_entry_delivery", None)
+        if pieces:
+            assert [piece["text"] for piece in scheduled["fixed_narrations"]] == [expected_fixed]
+        author_context = json.dumps(sent, ensure_ascii=False)
+        assert "玩家的登记册" in author_context
+        assert "哥哥的登记册" not in author_context
     assert candidate == original_candidate
     assert (engine.story, current, turn, binding) == original
     assert default_options() == default_snapshot

@@ -5,6 +5,7 @@ from dataclasses import asdict, replace
 import json
 
 import pytest
+from tests.utils.theater_prompt import serialized_prompt_tokens
 
 from services.theater import numeric_v2_actor as actor
 from services.theater.numeric_v2_runtime import TurnRequestV2
@@ -19,8 +20,7 @@ def _fit(data, **kwargs):
 
 
 def _tokens(data):
-    return actor.count_tokens("规则") + actor.count_tokens(
-        "原文：\n" + actor.render_prompt_context(data))
+    return serialized_prompt_tokens("规则", "原文：\n" + actor.render_prompt_context(data))
 
 
 def test_formal_request_does_not_present_previous_entry_as_target_output():

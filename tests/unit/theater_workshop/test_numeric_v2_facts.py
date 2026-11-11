@@ -2,7 +2,10 @@
 from copy import deepcopy
 import json
 import pytest
-from services.theater_workshop.sdk.generation.facts import build_fact_sources, validate_fact_review, node_fact_context
+from services.theater_workshop.sdk.generation.facts import (
+    build_fact_sources, validate_fact_review, node_fact_context, node_fact_review_context,
+    fact_review_tasks, fact_task_context,
+)
 
 
 def test_fact_request_preserves_chronological_reading_order_and_all_original_fields():
@@ -36,10 +39,137 @@ def test_fact_request_preserves_chronological_reading_order_and_all_original_fie
             return {key: restore(item) for key, item in value.items()}
         if isinstance(value, list): return [restore(item) for item in value]
         return value
-    assert restore(outline) == node_fact_context(assessor._assessment_context(story, _generation_setup(), authoring), "mainline_01")
+    context = assessor._assessment_context(story, _generation_setup(), authoring)
+    sent = restore(outline)
+    source = context["mainline"][0]
+    assert sent["mainline"] == [{**source, "outgoing_routes": [
+        {key: route[key] for key in ("id", "target_node_id", "conditions")}
+        for route in source["outgoing_routes"]]}]
+    assert sent["route_entries"][0]["entry"]["opening_scene"] == context["mainline"][1]["opening_scene"]
+    assert sent["entry_routes"] == []
+    assert sent["background"] == context["background"]
     assert story == before
 from services.theater_workshop.sdk.generation.quality import NumericV2QualityAssessor, QualityAssessmentError
-from .test_numeric_v2_generation import _quality_story_context, _generation_setup, _quality_payload, _quality_wire_payload, _reviewed_fixture
+from .test_numeric_v2_generation import (
+    _quality_story_context, _generation_setup, _quality_payload, _quality_wire_payload,
+    _reviewed_fixture, _fact_review_payload, _quality_reply, _literary_block_payload,
+)
+
+
+@pytest.mark.parametrize("mode", ["fixed_entry", "legacy_scene", "legacy_ending"])
+def test_fact_and_evidence_use_ingress_and_cite_the_legacy_opening_source(mode):
+    from services.theater.numeric_v2 import NumericV2Compiler
+    from services.theater.numeric_v2_context import scene_opening_text
+    from tests.unit.test_theater_numeric_v2_fixed_entry_only import _story
+    from .test_numeric_v2_evidence import review_payload
+    from .test_numeric_v2_generation import _quality_reply
+
+    fixed = mode == "fixed_entry"
+    ending = mode == "legacy_ending"
+    story = _story(flag=True if fixed else None, entry=fixed)
+    node_id = "ending_normal" if ending else "mainline_03"
+    node = next(row for row in story["nodes"] if row["id"] == node_id)
+    authoring = {"mainline_node_ids": [row["id"] for row in story["nodes"] if row["id"].startswith("mainline_")]}
+    opening = "玩家说：我决定把旧信交给你。"
+    beat = node["story_beat"]
+    field = "opening_scene" if fixed else "scene_summary" if ending else "summary"
+    if fixed:
+        beat["opening_scene"] = opening
+    else:
+        del beat["opening_scene"]
+        beat["summary"] = opening + "接下来要核对另一个线索。"
+    assert scene_opening_text(beat) == opening
+    assert NumericV2Compiler().compile_v2_2(story).story == story
+    calls = []
+    fallback = _quality_reply(_quality_payload())
+
+    def reply(messages, **options):
+        request = json.loads(messages[1]["content"])
+        operation = options["operation"]
+        if operation == "numeric_v2_fact_evidence_review" or (
+                operation == "numeric_v2_fact_review" and request["audit_task"]["kind"] == "node"
+                and request["checked_node_ids"] == [node_id]):
+            calls.append(operation)
+            outline = request["story_outline"]
+            assert request["start_node_id"] == story["start_node_id"]
+            projected = next(row for row in outline["endings" if ending else "mainline"] if row["id"] == node_id)
+            assert "fixed_entry_only=true的入边有待展示的entry旁白时，跳过普通开场" in messages[0]["content"]
+            assert "原文已展示的重访沿用普通开场" in messages[0]["content"]
+            if fixed:
+                if operation == "numeric_v2_fact_review":
+                    source = next(row for row in outline["entry_routes"] if row["source_node_id"] == "mainline_02")
+                    assert source["transition_contract"]["fixed_entry_only"] is True
+                else:
+                    source = next(row for row in outline["mainline"] if row["id"] == "mainline_02")
+                    assert source["outgoing_routes"][0]["transition_contract"]["fixed_entry_only"] is True
+                assert "opening_fallback_source" not in projected
+            else:
+                assert projected["opening_scene"] == ""
+                assert projected["opening_fallback_source"] == field
+            if operation == "numeric_v2_fact_review":
+                return json.dumps(_fact_review_payload(request, [{
+                    "category": "ownership", "severity": "major", "target_node_ids": [node_id],
+                    "problem": "开场替玩家决定交信。", "modification_plan": "去除代玩家决定。",
+                    "expected_result": "由玩家决定。", "preserve": [], "repair_scope": "text",
+                    "repair_targets": [{"node_id": node_id, "field": "/" + field}],
+                    "evidence_refs": [projected[field]["ref"], outline["characters"]["player_identity"]["ref"]],
+                }]))
+            issue, = request["proposed_issues"]
+            assert issue["evidence"][0]["path"].endswith("/" + field)
+            assert projected[field].startswith(opening)
+            return json.dumps(review_payload([issue], "unsupported" if fixed else "supported"))
+        return fallback(messages, **options)
+
+    report = NumericV2QualityAssessor(reply).assess(story=story, setup=_generation_setup(), authoring=authoring)
+    assert calls == ["numeric_v2_fact_review", "numeric_v2_fact_evidence_review"]
+    assert report["issues"][0]["evidence"][0]["quote"].startswith(opening)
+    assert report["issues"][0]["repairable"] is not fixed
+
+
+def test_fact_and_evidence_ignore_unexported_legacy_state_cache():
+    from services.theater.numeric_v2 import NumericV2Compiler
+    from .test_numeric_v2_evidence import review_payload
+    from .test_numeric_v2_generation import _quality_reply
+
+    story, authoring = _quality_story_context()
+    node = story["nodes"][0]
+    node_id = node["id"]
+    node["story_beat"]["opening_scene"] = "女主戴着红手套，拉开柜台抽屉。"
+    stale = {"node_id": node_id, **node["story_beat"].pop("character_state"), "catgirl_state": "女主没有戴手套。"}
+    authoring["character_state_arc"] = {"stages": [stale]}
+    before = deepcopy((story, authoring))
+    assert NumericV2Compiler().compile_v2_2(story).story == story
+    fallback = _quality_reply(_quality_payload())
+    calls = []
+
+    def model(messages, **options):
+        body = json.loads(messages[1]["content"])
+        operation = options["operation"]
+        assert stale["catgirl_state"] not in messages[1]["content"]
+        if (operation == "numeric_v2_fact_review" and body["audit_task"]["kind"] == "node"
+                and body["checked_node_ids"] == [node_id]):
+            calls.append(operation)
+            projected = body["story_outline"]["mainline"][0]
+            assert projected["character_state"]["catgirl"] == ""
+            return json.dumps(_fact_review_payload(body, [{
+                "category": "state", "severity": "major", "target_node_ids": [node_id],
+                "problem": "需要复核开场与摘要。", "modification_plan": "核实手套状态。", "expected_result": "两处相容。",
+                "preserve": [], "repair_scope": "text", "repair_targets": [{"node_id": node_id, "field": "/opening_scene"}],
+                "evidence_refs": [projected["opening_scene"]["ref"], projected["summary"]["ref"]],
+            }]))
+        if operation == "numeric_v2_fact_evidence_review":
+            calls.append(operation)
+            assert body["story_outline"]["mainline"][0]["character_state"]["catgirl"] == ""
+            assert body["proposed_issues"][0]["evidence"] == [
+                {"path": "/mainline/0/opening_scene"}, {"path": "/mainline/0/summary"},
+            ]
+            return json.dumps(review_payload(body["proposed_issues"], "unsupported"))
+        return fallback(messages, **options)
+
+    report = NumericV2QualityAssessor(model).assess(story=story, setup=_generation_setup(), authoring=authoring)
+    assert calls == ["numeric_v2_fact_review", "numeric_v2_fact_evidence_review"]
+    assert report["issues"][0]["repairable"] is False
+    assert (story, authoring) == before
 
 
 def test_node_fact_review_covers_all_nodes_and_reuses_original_evidence():
@@ -48,6 +178,8 @@ def test_node_fact_review_covers_all_nodes_and_reuses_original_evidence():
     authoring["key_props"][0]["extra"] = {"ref": "作者资料定位", "text": "这不是内部证据编号对象"}
     branch = deepcopy(story["nodes"][0])
     branch.update(id="state_check_branch", type="scene", route_gates=[])
+    for index, goal in enumerate(branch["story_beat"]["goals"]):
+        goal["id"] = f"state_check_branch_goal_{index:02d}"
     story["nodes"].append(branch)
     before = deepcopy(story)
     assessor = NumericV2QualityAssessor()
@@ -60,8 +192,11 @@ def test_node_fact_review_covers_all_nodes_and_reuses_original_evidence():
         if kwargs["operation"] == "numeric_v2_fact_review":
             request = json.loads(messages[1]["content"])
             focus, = request["checked_node_ids"]
-            captured.append(focus)
-            assert request["story_outline"] == node_fact_context(marked, focus)
+            task = request["audit_task"]
+            captured.append(task)
+            expected, dependencies = fact_task_context(full, marked, task)
+            assert request["story_outline"] == expected
+            assert request["dependency_originals"] == dependencies
             assert request["terminal_node_ids"] == [node["id"] for node in full["endings"]]
             node = next(node for node in [*request["story_outline"]["mainline"], *request["story_outline"]["endings"],
                 *(node for row in request["story_outline"]["branches"] for node in row["nodes"])] if node["id"] == focus)
@@ -70,9 +205,11 @@ def test_node_fact_review_covers_all_nodes_and_reuses_original_evidence():
 
     assessor.call_llm = capture
     report = assessor.assess(story=story, setup=_generation_setup(), authoring=authoring)
-    assert len(captured) == len(set(captured)) == len(story["nodes"])
-    assert set(captured) == {node["id"] for node in story["nodes"]}
-    assert report["fact_check"]["checked_node_ids"] == captured
+    assert captured == fact_review_tasks(full)
+    assert len({task["id"] for task in captured}) == len(captured)
+    assert {task["node_id"] for task in captured if task["kind"] == "node"} == {node["id"] for node in story["nodes"]}
+    assert report["fact_check"]["checked_tasks"] == [task["id"] for task in captured]
+    assert set(report["fact_check"]["checked_node_ids"]) == {node["id"] for node in story["nodes"]}
     assert story == before
 
 
@@ -224,24 +361,32 @@ def test_source_refs_reject_unknown_duplicate_or_model_supplied_quotes(case):
 def test_confirmed_fact_repair_receives_evidence_and_preserves_other_nodes():
     # Once the user selects nodes, original evidence accompanies suggestions into revision; scoring alone never triggers revision.
     story, authoring = _quality_story_context()
+    context = NumericV2QualityAssessor._assessment_context(story, _generation_setup(), authoring)
     before = deepcopy(story)
-    evidence = [{"path": "/mainline/0/opening_scene", "quote": "旧信"}]
+    opening = story["nodes"][0]["story_beat"]["opening_scene"].strip()
+    distant_opening = next(node["story_beat"]["opening_scene"].strip() for node in story["nodes"] if node["id"] == "mainline_04")
+    evidence = [{"path": "/mainline/0/opening_scene", "quote": opening},
+                {"path": "/mainline/0/opening_scene", "quote": "旧信"},
+                {"path": "/mainline/3/opening_scene", "quote": distant_opening}]
     assessment = {"repair_plan_version": 2, "issues": [{
         "repair_scope": "text", "repair_targets": [{"node_id": "mainline_01", "field": "/character_state/catgirl"}],
         "source": "facts", "repairable": True, "target_node_ids": ["mainline_01"],
         "evidence": evidence, "dimension": "plot", "problem": "状态描述待修正",
         "modification_plan": "仅修正女主当前状态", "expected_result": "与开场相符", "preserve": [],
     }]}
-    _reviewed_fixture(assessment)
+    _reviewed_fixture(assessment, context)
     # Include explicit completed-field review; legacy facts lacking review cannot execute.
     assessment["issues"][0]["evidence_review"] = {"verdict": "supported", "reason": "状态确有冲突", "target_checks": [{"node_id": "mainline_01", "field": "/character_state/catgirl", "requires_change": True, "reason": "仅状态需要改"}]}
     calls = []
     assessor = NumericV2QualityAssessor()
     def reply(messages, **kwargs):
         calls.append(kwargs["operation"])
-        suggestion = json.loads(messages[1]["content"])["accepted_suggestions"][0]
+        request = json.loads(messages[1]["content"])
+        suggestion = request["accepted_suggestions"][0]
         assert suggestion["source"] == "fact_check"
-        assert suggestion["evidence"] == evidence
+        assert suggestion["evidence"] == [{"path": evidence[0]["path"]}, *evidence[1:]]
+        assert request["story_outline"]["mainline"][0]["opening_scene"] == opening
+        assert request["story_outline"]["mainline"][3]["text_omitted"] is True
         return json.dumps({"node_updates": [{"node_id": "mainline_01", "story_beat": {
             "character_state": {"catgirl_state": "女主双手空着，旧信已放在桌上。"},
         }}]}, ensure_ascii=False)
@@ -296,18 +441,24 @@ def test_literature_cannot_erase_fact_issues_or_override_them_with_high_scores(c
     def reply(messages, **kwargs):
         calls.append(kwargs["operation"])
         if kwargs["operation"] == "numeric_v2_fact_review":
-            checked = json.loads(messages[1]["content"])["checked_node_ids"]
-            return json.dumps({**wire_fact, "checked_node_ids": checked,
-                               "issues": wire_fact["issues"] if checked == ["mainline_01"] else []}, ensure_ascii=False)
+            request = json.loads(messages[1]["content"])
+            return json.dumps(_fact_review_payload(request,
+                wire_fact["issues"] if request["audit_task"]["kind"] == "node"
+                and request["checked_node_ids"] == ["mainline_01"] else []), ensure_ascii=False)
         received = json.loads(messages[1]["content"])
         if kwargs["operation"] == "numeric_v2_fact_evidence_review":
             from .test_numeric_v2_evidence import review_payload
             return json.dumps(review_payload(received["proposed_issues"]))
-        assert received["fact_review"]["issues"][0]["evidence"] == issue["evidence"]
-        return json.dumps(_quality_wire_payload(_quality_payload()), ensure_ascii=False)
+        summary = received["fact_review"]["issues"][0]
+        assert summary["problem"] == issue["problem"] and summary["severity"] == issue["severity"]
+        assert "evidence" not in summary and "modification_plan" not in summary
+        return _quality_reply(_quality_payload())(messages, **kwargs)
     assessor.call_llm = reply
     result = assessor.assess(story=story, setup=_generation_setup(), authoring=authoring)
-    assert calls == [*["numeric_v2_fact_review"] * len(story["nodes"]), "numeric_v2_fact_evidence_review", "numeric_v2_quality_assessment"]
+    task_count = len(fact_review_tasks(context))
+    block_count = len(result["literary_coverage"]["blocks"])
+    assert calls == [*["numeric_v2_fact_review"] * task_count, "numeric_v2_fact_evidence_review",
+                     *["numeric_v2_literary_block"] * block_count, "numeric_v2_quality_assessment"]
     assert result["overall_score"] == 82
     assert result["passed"] is False
     assert result["fact_check"]["status"] == "complete"
@@ -327,7 +478,11 @@ def test_low_scores_can_share_fact_evidence_without_duplicate_repair_plans():
         payload["scores"][dimension].update(score=60, fact_issue_ids=["fact_issue_01"])
     wire = _quality_wire_payload(payload)
     before = deepcopy(wire)
-    assessor.call_llm = lambda *args, **kwargs: json.dumps(wire, ensure_ascii=False)
+    def reply(messages, **options):
+        if options["operation"] == "numeric_v2_literary_block":
+            return json.dumps(_literary_block_payload(json.loads(messages[1]["content"])))
+        return json.dumps(wire, ensure_ascii=False)
+    assessor.call_llm = reply
     report = assessor._assess_literature(context, {"issues": [{"issue_id": "fact_issue_01"}]})
     assert report["scores"]["plot"]["score"] == 60
     assert report["scores"]["plot"]["fact_issue_ids"] == ["fact_issue_01"]
@@ -352,7 +507,11 @@ def test_grouped_literature_rejects_incomplete_or_fabricated_basis(case):
     elif case == "missing_issues": del row["issues"]
     elif case == "extra_dimension": wire["scores"]["metrics"] = deepcopy(row)
     elif case == "mixed_issues": wire["issues"] = []
-    assessor.call_llm = lambda *args, **kwargs: json.dumps(wire, ensure_ascii=False)
+    def reply(messages, **options):
+        if options["operation"] == "numeric_v2_literary_block":
+            return json.dumps(_literary_block_payload(json.loads(messages[1]["content"])))
+        return json.dumps(wire, ensure_ascii=False)
+    assessor.call_llm = reply
     with pytest.raises(QualityAssessmentError):
         assessor._assess_literature(context, {"issues": [{"issue_id": "fact_issue_01"}]})
 
@@ -363,22 +522,26 @@ def test_failed_stage_stops_assessment_and_preserves_story(phase):
     before = deepcopy(story)
     assessor = NumericV2QualityAssessor()
     calls = []
+    tasks = fact_review_tasks(assessor._assessment_context(story, _generation_setup(), authoring))
+    failed_task_index = next(index for index, task in enumerate(tasks) if task["id"] == "node:mainline_02")
     def reply(messages, **kwargs):
         calls.append(kwargs["operation"])
         if phase == "evidence" and kwargs["operation"] == "numeric_v2_fact_review":
             from .test_numeric_v2_evidence import wire_fact
             request = json.loads(messages[1]["content"])
-            return json.dumps(wire_fact(request) if request["checked_node_ids"] == ["mainline_01"]
-                              else {"checked_node_ids": request["checked_node_ids"], "issues": []})
-        if kwargs["operation"] == "numeric_v2_fact_review" and (phase == "literature" or phase == "facts_second" and len(calls) == 1):
-            context = json.loads(messages[1]["content"])
-            return json.dumps({"checked_node_ids": context["checked_node_ids"], "issues": []})
+            return json.dumps(wire_fact(request) if request["audit_task"]["kind"] == "node"
+                              and request["checked_node_ids"] == ["mainline_01"]
+                              else _fact_review_payload(request))
+        if kwargs["operation"] == "numeric_v2_fact_review":
+            request = json.loads(messages[1]["content"])
+            if phase == "literature" or phase == "facts_second" and request["audit_task"]["id"] != "node:mainline_02":
+                return json.dumps(_fact_review_payload(request))
         return "{}"
     assessor.call_llm = reply
     with pytest.raises(QualityAssessmentError) as caught:
         assessor.assess(story=story, setup=_generation_setup(), authoring=authoring)
     assert caught.value.phase == ("facts" if phase == "facts_second" else phase)
-    assert len(calls) == (2 if phase == "facts" else 3 if phase == "facts_second" else len(story["nodes"]) + (2 if phase == "evidence" else 1))
+    assert len(calls) == (2 if phase == "facts" else failed_task_index + 2 if phase == "facts_second" else len(tasks) + 2)
     if phase == "facts_second":
         assert caught.value.provider_details["node_id"] == "mainline_02"
     assert story == before
@@ -393,19 +556,24 @@ def test_only_failed_node_gets_one_format_correction_and_technical_errors_do_not
     story, authoring = _quality_story_context()
     before = deepcopy(story)
     events = []
+    tasks = fact_review_tasks(NumericV2QualityAssessor._assessment_context(story, _generation_setup(), authoring))
+    failed_task_index = next(index for index, task in enumerate(tasks) if task["id"] == "node:mainline_02")
     original = _quality_reply(_quality_payload())
 
     def reply(messages, **options):
         operation = options["operation"]
-        checked = json.loads(messages[1]["content"]).get("checked_node_ids")
-        events.append((operation, checked))
-        if operation == "numeric_v2_fact_review" and checked == ["mainline_02"]:
-            return LLMCallFailure("timeout", error_code="model_timeout", exception_type="TimeoutError") if technical else '{"checked_node_ids": ["mainline_02"], "issues": "未转义"台词""}' if invalid_json else "{}"
+        request = json.loads(messages[1]["content"])
+        checked = request.get("checked_node_ids")
+        task_id = (request.get("audit_task") or {}).get("id")
+        events.append((operation, checked, task_id))
+        if operation == "numeric_v2_fact_review" and task_id == "node:mainline_02":
+            return LLMCallFailure("timeout", error_code="model_timeout", exception_type="TimeoutError") if technical else '{"checked_node_ids": ["mainline_02"], "issues": "未转义"台词""}' + "补充错误答复。" * 700 if invalid_json else "{}"
         if operation == "numeric_v2_fact_review_format_repair":
-            assert checked == ["mainline_02"] and messages[-2]["role"] == "assistant"
+            assert checked == ["mainline_02"] and [row["role"] for row in messages] == ["system", "user", "user"]
             assert ("line 1 column" if invalid_json else "incomplete_fact_review") in messages[-1]["content"]
+            assert all("省略中段" not in row["content"] for row in messages)
             assert options["max_retries"] == 1
-            return json.dumps({"checked_node_ids": checked, "issues": []})
+            return json.dumps(_fact_review_payload(request))
         return original(messages, **options)
 
     assessor = NumericV2QualityAssessor(reply)
@@ -413,10 +581,10 @@ def test_only_failed_node_gets_one_format_correction_and_technical_errors_do_not
         with pytest.raises(QualityAssessmentError, match="model_timeout") as caught:
             assessor.assess(story=story, setup=_generation_setup(), authoring=authoring)
         assert caught.value.provider_details["node_id"] == "mainline_02"
-        assert len(events) == 2
+        assert len(events) == failed_task_index + 1
     else:
         report = assessor.assess(story=story, setup=_generation_setup(), authoring=authoring)
         assert len(report["fact_check"]["checked_node_ids"]) == len(story["nodes"])
-        assert events.count(("numeric_v2_fact_review", ["mainline_01"])) == 1
-        assert events.count(("numeric_v2_fact_review_format_repair", ["mainline_02"])) == 1
+        assert events.count(("numeric_v2_fact_review", ["mainline_01"], "node:mainline_01")) == 1
+        assert events.count(("numeric_v2_fact_review_format_repair", ["mainline_02"], "node:mainline_02")) == 1
     assert story == before

@@ -73,7 +73,6 @@ async def _setup(tmp_path, monkeypatch, *, mode='natural', failure='source', per
             return []
 
         monkeypatch.setattr(wf.NumericV2MetricEvaluator, 'validate_transition_offer', review)
-        monkeypatch.setattr(wf.NumericV2NarrativeProposer, 'propose', propose)
     return runtime, current, calls, actor_messages
 
 

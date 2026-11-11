@@ -1,12 +1,14 @@
 """Route-choice fact projection preserves author literals without selecting for players."""
 
 from copy import deepcopy
+from dataclasses import replace
 import json
 from types import SimpleNamespace
 
 import pytest
 
 from services.theater import numeric_v2_evaluator as ev, numeric_v2_workflow as wf
+from services.theater import numeric_v2_options
 from services.theater.numeric_v2_evaluator import _build_messages, _parse_output
 from services.theater.numeric_v2_actor import _turn_messages
 from services.theater.numeric_v2_options import default_options
@@ -118,6 +120,137 @@ def test_noncompletion_route_choice_fact_can_enter_story_state():
                                 facts=outcome.session.story_state["facts"])["id"] == "to_leave"
 
 
+@pytest.mark.parametrize("value,allowed", [("山径", True), ("已抵达山顶", False)])
+def test_player_reply_cannot_replace_declared_stage_with_unregistered_result(value, allowed):
+    engine = NumericV2Engine.from_mapping(_story())
+    session = _session(engine)
+    message = "我选官道。"
+    selected = _parse_output(_evaluation("官道", message), engine, message, session)
+    outcome = engine.resolve_turn(session, TurnRequestV2("choose", 0, message), (),
+                                  fact_operations=selected.fact_operations)
+    message = "先走山径吧。"
+    result = _parse_output(_evaluation(value, message), engine, message, outcome.session)
+    assert [operation["value"] for operation in result.fact_operations] == ([value] if allowed else [])
+
+
+def test_committed_player_route_backfill_uses_packed_player_original_without_authorizing_departure(monkeypatch):
+    monkeypatch.setattr(numeric_v2_options, "MODEL_REVIEWS_ENABLED", False)
+    engine = NumericV2Engine.from_mapping(_story())
+    session = _session(engine)
+    old_choice = "（拿起木匣检查）稳妥起见，走官道吧。"
+    current_input = "（走到东侧第二间门前，掏出房号牌核对后推门而入）好，你也快点上来，别冻坏了。"
+    records = tuple({"revision": revision, "from_node_id": "start", "to_node_id": "start",
+                     "input_text": old_choice if revision == 1 else f"我在这里等候。{revision}",
+                     "performance": f"第{revision}次回应。" + "她在窗边望着远处落下的积雪。" * 20}
+                    for revision in range(1, 14))
+    session = replace(session, revision=13, node_turn_count=13, performance_history=records,
+                      story_state={**session.story_state, "revision": 13})
+    metric_award = {"result_revision": 1, "input_text": old_choice, "metric_changes": [
+        {"metric_id": "trust", "delta": 2, "criterion": "玩家兑现承诺"},
+    ]}
+    monkeypatch.setattr(ev, "history_evidence", lambda *args, **kwargs: [])
+    binding = {}
+    messages = _build_messages(engine, session, current_input, recent_ledger_events=(metric_award,),
+                               committed_player_route_evidence=binding)
+    packed = prompt_payload(messages[1].content)
+    assert all(row.get("revision") != 1 for row in packed["scene_context"])
+    assert packed["recent_metric_awards"][0]["input_text"] == old_choice
+    beat = packed["current_story_beat"]
+    assert beat["committed_player_route_evidence"] == {KEY: "recent_metric_awards[0].input_text"}
+    assert beat["fact_candidate_sources"].count("committed_player_input") == 1
+    assert messages[1].content.count(old_choice) == 1
+    assert "原选择在后续对话或本轮已撤回、改选时不按旧话补记" in messages[0].content
+    assert binding == {KEY: (old_choice,)}
+
+    payload = json.loads(_evaluation("官道", old_choice))
+    # Legacy player_input still means only the current R14 player message.
+    assert not _parse_output(json.dumps(payload), engine, current_input, session,
+                             committed_player_route_evidence=binding).fact_operations
+    claim = payload["fact_candidates"][0]
+    claim["evidence"][0]["source"] = "committed_player_input"
+    payload.update(transition_intent="initiate", exit_matches=True,
+                   exit_comparison="公开去向一致。", public_destination_quote=old_choice)
+    checked = _parse_output(json.dumps(payload), engine, current_input, session,
+                            committed_player_route_evidence=binding)
+    assert checked.fact_audit[0]["evidence"] == [{"source": "committed_player_input", "quote": old_choice}]
+    assert checked.transition_intent == "unclear" and checked.public_destination_quote == ""
+    outcome = engine.resolve_turn(session, TurnRequestV2("recovered", 13, current_input), (),
+                                  transition_intent=checked.transition_intent, fact_operations=checked.fact_operations)
+    assert outcome.session.story_state["facts"][KEY]["value"] == "官道"
+    assert outcome.route is None
+
+    for bad_value in ("山径", "unlisted"):
+        claim["value"] = bad_value
+        assert not _parse_output(json.dumps(payload), engine, current_input, session,
+                                 committed_player_route_evidence=binding).fact_operations
+    claim["value"] = "官道"
+    assert not _parse_output(json.dumps(payload), engine, current_input, session).fact_operations
+    assert not _parse_output(json.dumps(payload), engine, "我改走山径。", session,
+                             committed_player_route_evidence=binding).fact_operations
+    assert not _parse_output(json.dumps(payload), engine, current_input, outcome.session,
+                             committed_player_route_evidence=binding).fact_operations
+    claim["key"] = [KEY]
+    assert not _parse_output(json.dumps(payload), engine, current_input, session,
+                             committed_player_route_evidence=binding).fact_operations
+
+
+def test_committed_player_route_backfill_excludes_unretained_or_stale_originals():
+    engine = NumericV2Engine.from_mapping(_story())
+    initial = _session(engine)
+    earlier = (1, "稳妥起见，走官道吧。")
+    between = (2, "官道还是山径？")
+    later = (3, "这次走山径。")
+
+    def record(revision, message, source="start", target="start"):
+        return {"revision": revision, "input_text": message, "from_node_id": source, "to_node_id": target,
+                "performance": "我听到了。"}
+
+    session = replace(initial, revision=3, performance_history=(record(*earlier), record(*between), record(*later)))
+    assert ev._committed_player_route_evidence(engine, session, [earlier]) == {}
+    assert ev._committed_player_route_evidence(engine, session, [earlier, later]) == {KEY: (later[1],)}
+    assert ev._committed_player_route_evidence(engine, session, [(2, later[1])]) == {}
+    session = replace(session, performance_history=(record(*earlier), record(*between)))
+    assert ev._committed_player_route_evidence(engine, session, [earlier, between]) == {}
+    session = replace(session, performance_history=(record(*earlier), record(*between, source="other"),
+                                                    record(3, "继续等。")))
+    assert ev._committed_player_route_evidence(engine, session, [earlier, between]) == {}
+
+
+def test_committed_player_route_backfill_keeps_review_evidence_protocol(monkeypatch):
+    monkeypatch.setattr(numeric_v2_options, "MODEL_REVIEWS_ENABLED", True)
+    engine = NumericV2Engine.from_mapping(_story())
+    old_choice = "稳妥起见，走官道吧。"
+    session = _session(engine)
+    session = replace(session, revision=1, node_turn_count=1,
+                      story_state={**session.story_state, "revision": 1}, performance_history=(
+        {"revision": 1, "from_node_id": "start", "to_node_id": "start", "input_text": old_choice,
+         "performance": "我听到了。"},
+    ))
+    binding = {KEY: (old_choice,)}
+    system, human = _build_messages(engine, session, "我们先等等。", committed_player_route_evidence=binding)
+    beat = prompt_payload(human.content)["current_story_beat"]
+    assert old_choice in human.content
+    assert "committed_player_input" not in system.content
+    assert "committed_player_route_evidence" not in beat
+    assert "committed_player_input" not in beat["fact_candidate_sources"]
+    assert not binding
+
+
+def test_committed_player_route_backfill_never_admits_performance_only_facts():
+    story = _story()
+    story["fact_contract"]["facts"][KEY]["evidence_source"] = "performance"
+    engine = NumericV2Engine.from_mapping(story)
+    original = "我选官道。"
+    session = replace(_session(engine), revision=1, performance_history=(
+        {"revision": 1, "from_node_id": "start", "to_node_id": "start", "input_text": original},
+    ))
+    assert ev._committed_player_route_evidence(engine, session, [(1, original)]) == {}
+    payload = json.loads(_evaluation("官道", original))
+    payload["fact_candidates"][0]["evidence"][0]["source"] = "committed_player_input"
+    assert not _parse_output(json.dumps(payload), engine, "好。", session,
+                             committed_player_route_evidence={KEY: (original,)}).fact_operations
+
+
 def test_unknown_route_literal_is_not_silently_normalized_or_matched():
     engine = NumericV2Engine.from_mapping(_story())
     session = _session(engine)
@@ -191,6 +324,128 @@ def test_actor_sees_alternative_route_targets_without_turning_them_into_completi
     assert KEY not in outcome.session.story_state["facts"]
     assert outcome.route is None
     assert session == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("completion", [False, True])
+async def test_validated_evaluator_result_reaches_actor_before_commit_without_review(
+    tmp_path, monkeypatch, completion,
+):
+    from services.theater import numeric_v2_options
+    from services.theater.numeric_v2_actor_output import _parse_output as parse_actor
+    from tests.unit.test_theater_numeric_v2_unified_pacing import story_for
+
+    if completion:
+        story = story_for("长街")
+        key, value = "scene:start:done", True
+        story["nodes"][0]["route_gates"][1]["conditions"] = {
+            "all": [{"type": "fact_equals", "key": key, "value": value}],
+        }
+        message = "我已经登记完毕。"
+    else:
+        story = _story()
+        key, value = KEY, "山径"
+        message = "我改选山径。"
+    # These facts describe the player's own completed registration or choice,
+    # not a new agreement or an external result awaiting Actor delivery.
+    story["fact_contract"]["facts"][key]["evidence_source"] = "player_input"
+    engine = NumericV2Engine.from_mapping(story)
+    runtime = NumericV2Runtime(engine, tmp_path)
+    current = await runtime.start_session(
+        session_id="validated", catgirl_binding=_binding(),
+        opening_performance={"performance": "这里可以填写登记册或商量行进路线。", "suggested_inputs": []},
+    )
+    if not completion:
+        prepared = runtime.prepare_turn(current, TurnRequestV2("earlier", 0, "我选官道。"), (),
+            fact_operations=({"op": "set", "key": key, "value": "官道", "visibility": "public"},))
+        current = await runtime.commit_turn(prepared, {"performance": "官道的选择已经登记。", "suggested_inputs": []})
+
+    async def options():
+        return {name: name == "evaluator" for name in default_options()}
+
+    async def evaluate(self, **kwargs):
+        result = json.loads(_evaluation(value, message))
+        result["fact_candidates"][0]["key"] = key
+        result["scene_complete"] = completion
+        return _parse_output(json.dumps(result, ensure_ascii=False), engine, message, current.session)
+
+    async def invoke(self, messages, **kwargs):
+        assert await runtime.restore_session("validated") == current
+        data = prompt_payload(messages[1].content)
+        scene = data["current_scene"]
+        decoder = json.JSONDecoder()
+        if completion:
+            contract, _ = decoder.raw_decode(scene[scene.index("{", scene.index("结构化幕完成事实")):])
+            assert contract["status"] == "satisfied"
+            row, = contract["all"]
+            assert row["satisfied"] and not row["committed"]
+            assert "本轮确定性完成收束合同" in messages[0].content
+            assert "不要重复演出、重新检查或质疑这些已提交结果" not in messages[0].content
+        else:
+            routes, _ = decoder.raw_decode(scene[scene.index("[", scene.index("当前幕路线事实条件")):])
+            first, second = [route["facts"][0] for route in routes]
+            assert not first["satisfied"] and first["committed_value"] == "官道"
+            assert second["satisfied"]
+            row, = [row for row in (first, second) if row.get("validated_this_turn")]
+        assert row["validated_this_turn"] and row["validated_value"] == value
+        assert row["evidence"] == [{"source": "player_input", "quote_ref": "player_input"}]
+        assert "approved_this_turn" not in row
+        assert messages[1].content.count(message) == 1
+        return parse_actor(json.dumps({
+            "performance": "好，我明白了。", "transition_offer": "", "suggested_inputs": [], "fact_candidates": [],
+        }, ensure_ascii=False), dialogue_policy=kwargs["dialogue_policy"],
+            fact_candidates_expected=kwargs["fact_candidates_expected"],
+            suppress_transition_offer=kwargs["suppress_transition_offer"])
+
+    monkeypatch.setattr(numeric_v2_options, "MODEL_REVIEWS_ENABLED", False)
+    monkeypatch.setattr(wf, "aload_theater_module_options", options)
+    monkeypatch.setattr(wf.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(wf.NumericV2Actor, "_invoke", invoke)
+    monkeypatch.setattr(wf.NumericV2Actor, "_character_profile", lambda self: "温和。")
+    result = await wf.execute_numeric_v2_turn(
+        config_manager=object(), runtime=runtime, current=current,
+        turn=TurnRequestV2("reply", current.session.revision, message), ensure_current_binding=lambda _: _binding(),
+    )
+    assert result.stored.session.story_state["facts"][key]["value"] == value
+    assert result.diagnostics["completion_fact_review_calls"] == 1
+    assert await runtime.restore_session("validated") == result.stored
+
+
+def test_validated_historical_quote_is_shared_across_completion_route_and_retained_history():
+    from services.theater import numeric_v2_actor as actor
+    from tests.unit.test_theater_numeric_v2_unified_pacing import story_for, add_fact_selected_archive
+
+    story = story_for("长街")
+    key = "scene:start:done"
+    _, route = story["nodes"][0]["route_gates"]
+    route["conditions"] = {"all": [{"type": "fact_equals", "key": key, "value": True}]}
+    alternative = add_fact_selected_archive(story, route)
+    alternative["conditions"]["all"][0]["value"] = False
+    engine = NumericV2Engine.from_mapping(story)
+    quote = "柜台的登记员核对封条与交接单，盖下确认章。登记已经全部完成。"
+    session = engine.create_session(session_id="shared-proof", catgirl_binding=_binding(),
+                                    opening_performance={"performance": quote})
+    message = "好的，我知道了。"
+    outcome = engine.resolve_turn(session, TurnRequestV2("next", 0, message), ())
+    claim = {"op": "set", "key": key, "value": True, "visibility": "public", "validated_only": True,
+             "evidence": [{"source": "actor_performance", "quote": quote}]}
+    messages = _turn_messages(engine, session, outcome, message, "温和。", "小葵", "林舟",
+                              approved_completion_facts=(claim,))
+    data = prompt_payload(messages[1].content)
+    assert messages[1].content.count(quote) == 1
+    assert quote in data["story_so_far"]
+    assert data["current_scene"].count("倒数第1个完整回合") == 1
+
+    current_scene = json.dumps(claim["evidence"], ensure_ascii=False, separators=(",", ":"))
+    base = {"current_scene": current_scene, "story_so_far": ""}
+    history = [{"revision": 1, "player_input": "请核对封条。" * 70, "performance": quote},
+               {"revision": 2, "performance": "我记下了。"}]
+    fitted = actor._fit_simple_turn_prompt_data(
+        system_prompt="", human_prefix="", data=base, history_rows=history, max_tokens=180,
+        staged_history_quotes=(quote,),
+    )
+    assert quote not in fitted["story_so_far"]
+    assert fitted["current_scene"] == current_scene
 
 
 def test_actor_route_targets_do_not_disclose_hidden_global_or_other_scene_facts():
@@ -307,9 +562,10 @@ def test_source_only_fact_review_distinguishes_current_decision_from_npc_receipt
     assert "evaluator_fact_claims" in system
     assert "没有待审正文" in system
     assert "approved_actor_fact_indexes" not in system
-    assert "选择或承诺" in system
-    assert "不证明NPC" in system
-    assert "询问" in system and "考虑" in system and "有条件" in system
+    assert "目标仅要求已达成约定或当前决定" in system
+    assert "同意当前安排不替另一主体作出不同决定" in system
+    assert "目标要求实际操作或客观结果" in system
+    assert "暂时维持现状" in system and "尚待核实的条件不能被省略" in system
     assert KEY not in session.story_state["facts"]
     assert receipt_key not in session.story_state["facts"]
 
@@ -404,6 +660,9 @@ async def test_only_bodyless_source_approval_closes_new_fact_schema_channel(monk
         # 原有邀约接受扩展保留；本轮只能关闭无正文的前置审批通道。
         expected["properties"]["offer_acceptance_valid"] = {"type": "boolean"}
         expected["required"].append("offer_acceptance_valid")
+    elif mode == "ordinary_review":
+        expected["properties"]["offer_failure_code"] = {"type": "string", "enum": ["", "route_mismatch"]}
+        expected["required"].append("offer_failure_code")
     assert actual == expected
     assert data["evaluator_fact_claims"] == [{**claim, "index": 0}]
     assert data["player_input"] == message

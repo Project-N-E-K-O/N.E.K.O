@@ -19,6 +19,9 @@ from tests.unit.test_theater_numeric_v2_transition_history import _candidate
 GREETING = "（点头）你也回来了？好久不见。"
 CHOICE = "（停下）你选左边的房间，还是右边的房间？"
 CLOSING = "（微笑）好久不见。这一路辛苦了。"
+TASK = "明天记得回来交报告。"
+BARE_TASK = "明早把报告交到值班室。"
+POLITE_TASK = "请把报告交到值班室。"
 
 
 async def _setup(tmp_path, monkeypatch, *, mode="default", drafts=(GREETING,),
@@ -36,7 +39,7 @@ async def _setup(tmp_path, monkeypatch, *, mode="default", drafts=(GREETING,),
         runtime = NumericV2Runtime(engine, tmp_path)
         current = await runtime.start_session(session_id="ending-question-default", catgirl_binding=_binding(),
                                               opening_performance=case["session"].opening_performance if case else _opening())
-    calls = {"actor": 0, "terminal": [], "full": 0, "other_contract": 0}
+    calls = {"actor": 0, "terminal": [], "full": 0, "other_contract": 0, "retry_hints": [], "repair_contexts": []}
     diagnostics = {}
 
     async def options():
@@ -51,6 +54,8 @@ async def _setup(tmp_path, monkeypatch, *, mode="default", drafts=(GREETING,),
     async def generate(self, **kwargs):
         index = calls["actor"]
         calls["actor"] += 1
+        calls["retry_hints"].append(kwargs.get("retry_hint", ""))
+        calls["repair_contexts"].append(kwargs.get("draft_repair_context"))
         text = drafts[min(index, len(drafts) - 1)]
         if route == "ordinary":
             return {"performance": text, "suggested_inputs": [], "transition_offered": False}
@@ -63,7 +68,7 @@ async def _setup(tmp_path, monkeypatch, *, mode="default", drafts=(GREETING,),
         if not any("下一轮回答" in item for item in boundaries):
             calls["other_contract"] += 1
             return ()
-        # 通过真实投影检查每份草稿的全部可见段，不能沿用旧稿的批准结果。
+        # 通过真实投影检查每份不同草稿的全部可见段。
         assert kwargs["include_all_segments"] is True
         assert kwargs["terminal_input_closed"] is True
         visible = json.dumps(evaluator._context_content(kwargs["actor_performance"],
@@ -73,7 +78,7 @@ async def _setup(tmp_path, monkeypatch, *, mode="default", drafts=(GREETING,),
             raise evaluator.NumericV2EvaluatorError("numeric_v2_contract_check_timeout")
         if failure == "invalid":
             raise evaluator.NumericV2EvaluatorOutputError("numeric_v2_contract_check_invalid")
-        return tuple(boundaries) if CHOICE.split("）")[-1] in visible else ()
+        return tuple(boundaries) if any(text in visible for text in (CHOICE.split("）")[-1], TASK, BARE_TASK, POLITE_TASK)) else ()
 
     async def full_review(self, **kwargs):
         calls["full"] += 1
@@ -109,7 +114,8 @@ async def test_terminal_question_uses_same_semantic_boundary_under_each_mode(
         with pytest.raises(workflow.NumericV2ActorOutputError, match="terminal_new_question"):
             await execute()
         assert await NumericV2Runtime(runtime.engine, tmp_path).restore_session(current.session.session_id) == current
-        assert calls["actor"] == 2 and len(calls["terminal"]) == 2
+        assert calls["actor"] == 2 and len(calls["terminal"]) == 1
+        assert diagnostics["terminal_question_review_calls"] == 1
         assert calls["full"] == 0
         return
     result = await execute()
@@ -124,6 +130,29 @@ async def test_terminal_question_uses_same_semantic_boundary_under_each_mode(
     assert result.stored.session.revision == current.session.revision + 1
     assert result.stored.session.metrics == current.session.metrics
     assert await NumericV2Runtime(runtime.engine, tmp_path).restore_session(current.session.session_id) == result.stored
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("task", [TASK, BARE_TASK, POLITE_TASK])
+async def test_declarative_task_in_ending_is_checked_before_commit(tmp_path, monkeypatch, task):
+    runtime, current, calls, diagnostics, execute = await _setup(tmp_path, monkeypatch, drafts=(task, CLOSING))
+    result = await execute()
+    assert calls["actor"] == 2 and diagnostics["terminal_question_review_calls"] == 1
+    assert task in calls["terminal"][0]
+    assert task not in json.dumps(result.stored.session.to_dict(), ensure_ascii=False)
+    assert result.stored.session.status == "ended"
+
+
+@pytest.mark.asyncio
+async def test_terminal_directive_cue_does_not_reject_reported_history(tmp_path, monkeypatch):
+    text = "把信放回柜子后，她望向窗外。"
+    runtime, current, calls, diagnostics, execute = await _setup(
+        tmp_path, monkeypatch, drafts=(text,), field="target_scene_narration",
+    )
+    result = await execute()
+    assert calls["actor"] == diagnostics["terminal_question_review_calls"] == 1
+    assert text in calls["terminal"][0]
+    assert result.stored.session.status == "ended"
 
 
 @pytest.mark.asyncio
@@ -161,6 +190,51 @@ async def test_no_question_and_nonterminal_turns_add_no_terminal_check(tmp_path,
     if route == "transition":
         assert result.stored.session.current_node_id != current.session.current_node_id
     assert await NumericV2Runtime(runtime.engine, tmp_path).restore_session(current.session.session_id) == result.stored
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["source_performance", "bridge_scene_narration", "target_performance"])
+async def test_terminal_retry_gets_the_prior_text_and_its_editable_field(tmp_path, monkeypatch, field):
+    runtime, current, calls, _, execute = await _setup(
+        tmp_path, monkeypatch, field=field, drafts=(BARE_TASK, CLOSING),
+    )
+    result = await execute()
+    assert calls["actor"] == 2
+    hint = calls["retry_hints"][1]
+    assert all(phase in hint for phase in ("source_response", "transition_bridge", "target_opening"))
+    assert BARE_TASK in calls["terminal"][0]
+    assert calls["repair_contexts"][0] is None
+    material = calls["repair_contexts"][1]
+    assert material["draft"][field] == BARE_TASK
+    assert {item["field"] for item in material["issues"]} == {field}
+    assert BARE_TASK not in json.dumps(result.stored.session.to_dict(), ensure_ascii=False)
+    assert result.stored.session.status == "ended"
+    assert await runtime.restore_session(current.session.session_id) == result.stored
+
+
+@pytest.mark.asyncio
+async def test_terminal_and_bridge_issues_share_one_rewrite(tmp_path, monkeypatch):
+    runtime, current, calls, diagnostics, execute = await _setup(tmp_path, monkeypatch, drafts=(POLITE_TASK, CLOSING))
+    generate = workflow.NumericV2Actor.generate_turn
+    overlap = "窗边的铜灯已被罩上深蓝色的灯罩。"
+
+    async def generate_with_overlap(self, **kwargs):
+        performance = await generate(self, **kwargs)
+        if calls["actor"] == 1:
+            performance["segments"][1]["scene_narration"] = overlap
+            performance["segments"][2]["scene_narration"] = overlap
+        return performance
+
+    monkeypatch.setattr(workflow.NumericV2Actor, "generate_turn", generate_with_overlap)
+    result = await execute()
+    assert calls["actor"] == 2 and diagnostics["semantic_rewrite_attempts"] == 1
+    assert diagnostics["terminal_question_review_calls"] == 1
+    material = calls["repair_contexts"][1]
+    assert material["draft"]["target_performance"] == POLITE_TASK
+    assert {item["field"] for item in material["issues"]} == {"bridge_scene_narration", "target_performance"}
+    assert "过渡桥段提前包含" in calls["retry_hints"][1] and "尚待执行的新任务" in calls["retry_hints"][1]
+    assert result.stored.session.status == "ended"
+    assert await runtime.restore_session(current.session.session_id) == result.stored
 
 
 @pytest.mark.asyncio
@@ -205,6 +279,7 @@ def test_terminal_check_changes_only_its_system_contract_and_preserves_all_input
     assert [m.content for m in legacy] == [m.content for m in explicit_false]
     assert terminal[1].content == legacy[1].content
     assert "下一轮" in terminal[0].content
+    assert "执行新行动" in terminal[0].content and "已经说定的未来安排" in terminal[0].content
     assert "询问或未来计划的，不算已经发生" not in terminal[0].content
     assert "交互要求，一律不判违规" not in terminal[0].content
     assert "询问或未来计划的，不算已经发生" in legacy[0].content

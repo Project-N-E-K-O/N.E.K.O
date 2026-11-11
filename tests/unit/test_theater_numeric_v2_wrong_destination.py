@@ -3,7 +3,7 @@ import json
 import pytest
 
 from services.theater import numeric_v2_evaluator as ev, numeric_v2_workflow as workflow
-from services.theater.numeric_v2_actor import NumericV2ActorOutputError
+from services.theater.numeric_v2_actor import NumericV2ActorOutputError, _turn_messages
 from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2, MetricChangeV2
 from tests.unit.test_theater_numeric_v2_player_transition import initiation_case
 from tests.unit.test_theater_numeric_v2_runtime import _binding
@@ -34,6 +34,74 @@ async def _commit_invitation(runtime, current, text):
     outcome, performance = runtime.engine.finalize_transition_offer_state(outcome,
         {'performance': text, 'suggested_inputs': [], 'transition_offered': True}, new_offer=True)
     return await runtime.commit_turn(outcome, performance)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("intent,quote_kind", [
+    ("initiate", "original"), ("unclear", "original"), ("reject", "original"),
+    ("unclear", "partial"), ("unclear", "author_preview"),
+])
+async def test_unlatched_wrong_exit_is_only_a_current_turn_correction(tmp_path, monkeypatch, intent, quote_kind):
+    monkeypatch.setattr(workflow.numeric_v2_options, "MODEL_REVIEWS_ENABLED", False)
+    monkeypatch.setattr(workflow, "aload_theater_module_options",
+                        workflow.numeric_v2_options.aload_theater_module_options)
+    engine = initiation_case(public=False)["engine"]
+    runtime = NumericV2Runtime(engine, tmp_path)
+    current = await runtime.start_session(session_id="unlatched-wrong-exit", catgirl_binding=_binding(),
+        opening_performance={"performance": "手续办好了。", "suggested_inputs": []})
+    wrong_offer = "现在回我屋里把东西放稳当吧。"
+    reply = "好，那就先回你屋里放着。"
+    prior = runtime.prepare_turn(current, TurnRequestV2("prior", 0, "接下来呢？"), ())
+    current = await runtime.commit_turn(prior, {
+        "performance": f"这份东西先收着。{wrong_offer}", "suggested_inputs": [reply],
+        "transition_offered": False,
+    })
+    turn = TurnRequestV2("reply", current.session.revision, reply, "suggestion")
+    evidence = []
+    ev._build_messages(engine, current.session, reply, public_destination_evidence=evidence)
+    quote = {
+        "original": wrong_offer, "partial": "回我屋里",
+        "author_preview": "两人沿左侧走廊来到阅览室。",
+    }[quote_kind]
+    evaluation = ev._parse_output(json.dumps({
+        "scene_complete": True, "transition_intent": intent, "exit_matches": False,
+        "exit_comparison": "屋里与阅览室不相符。", "public_destination_quote": quote,
+        "metric_changes": {},
+    }), engine, reply, current.session, current.ledger_events, public_destination_evidence=evidence)
+    expected_quote = wrong_offer if intent != "reject" and quote_kind == "original" else ""
+    assert evaluation.wrong_exit_offer_quote == expected_quote
+    assert evaluation.public_destination_quote == ""
+    assert evaluation.exit_mismatch_reason == "屋里与阅览室不相符。"
+
+    async def evaluate(self, **kwargs):
+        return evaluation
+
+    async def generate(self, **kwargs):
+        assert kwargs["outcome"].route is None
+        assert kwargs.get("wrong_exit_offer_quote", "") == expected_quote
+        assert kwargs.get("exit_mismatch_reason") == evaluation.exit_mismatch_reason
+        messages = _turn_messages(
+            engine, current.session, kwargs["outcome"], reply, "安静。", "测试猫娘", "哥哥",
+            input_source=turn.input_source, recent_ledger_events=current.ledger_events,
+            wrong_exit_offer_quote=expected_quote,
+            exit_mismatch_reason=kwargs["exit_mismatch_reason"],
+        )
+        assert ("玩家同意旧安排的原话不授权出发" in messages[1].content) is bool(expected_quote)
+        assert "出口核对说明" in messages[1].content
+        assert "普通场内问答和合法局部动作照常承接" in messages[0].content
+        return {"performance": "我们先留在这里。", "suggested_inputs": [], "transition_offered": False}
+
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(workflow.NumericV2Actor, "generate_turn", generate)
+    monkeypatch.setattr(workflow.NumericV2Actor, "_character_profile", lambda self: "安静。")
+    result = await workflow.execute_numeric_v2_turn(
+        config_manager=object(), runtime=runtime, current=current, turn=turn,
+        ensure_current_binding=lambda _: _binding(),
+    )
+    assert result.stored.session.current_node_id == current.session.current_node_id
+    assert "wrong_exit_offer_quote" not in result.stored.ledger_events[-1]
+    assert "exit_mismatch_reason" not in result.stored.ledger_events[-1]
+    assert await runtime.restore_session(current.session.session_id) == result.stored
 
 
 @pytest.mark.parametrize('quote,rejected', [('', True), ('虚构的公开去向。', True), ('左侧走廊通往阅览室，通道已经开放。', False)])
@@ -139,13 +207,10 @@ async def test_wrong_destination_reuses_rewrite_and_commits_only_current_scene(t
         assert actor_nodes == ['ending_leave']
     else:
         assert result.stored.session.current_node_id == 'start'
-        assert actor_nodes == (
-            ['ending_leave', 'ending_leave', 'start']
-            if pre_review_rewrite else ['ending_leave', 'start']
-        )
+        assert actor_nodes == ['ending_leave', 'start']
         assert result.stored.ledger_events[-1]['transition_intent'] == 'unclear'
         assert result.diagnostics['transition_cancellations'] == 1
-        assert result.diagnostics['semantic_rewrite_attempts'] == (2 if pre_review_rewrite else 1)
+        assert result.diagnostics['semantic_rewrite_attempts'] == 1
         assert result.diagnostics['semantic_review_fallback'] is (ordinary_result in {'body', 'bad_offer'})
         assert '错误转场待审候选' not in str(result.stored)
         assert len(review_modes) == 3
@@ -239,6 +304,7 @@ def test_acceptance_authorization_requires_boolean_and_formal_acceptance_mode(va
 async def test_real_acceptance_review_call_supplies_original_invitation_and_parses_result(tmp_path, monkeypatch, disputed):
     """Use real packing and parsing for fast and dispute review; unknown-field fallback must not discard erroneous-acceptance cancellation decisions."""
     from types import SimpleNamespace
+    from tests.utils.theater_prompt import prompt_reference
     c = initiation_case(); engine = c['engine']
     runtime = NumericV2Runtime(engine, tmp_path)
     current = await runtime.start_session(session_id='accept', catgirl_binding=_binding(), opening_performance=c['session'].opening_performance)
@@ -270,7 +336,10 @@ async def test_real_acceptance_review_call_supplies_original_invitation_and_pars
     assert review.acceptance_authorized is False and review.body_violations == ('player_action',)
     assert len(calls) == 1
     data = json.loads(calls[0][1].content.split('：', 1)[1])
-    assert '去街市看看' in json.dumps(data['transition_authorization']['pending_invitation'], ensure_ascii=False)
+    invitation = data['transition_authorization']['pending_invitation']
+    assert invitation['revision'] == session.revision
+    reference = invitation['content'].split('中的', 1)[0]
+    assert any('去街市看看' in block['text'] for block in prompt_reference(data, reference))
     assert 'accept 标签不证明授权' in calls[0][0].content
     assert '额外操作或持物问题不否定已获准的转场' in calls[0][0].content
 

@@ -124,17 +124,9 @@ async def test_native_transition_checks_only_actual_delivery_and_replays_once(
         diagnostics_sink=diagnostics,
     )
 
-    needs_rewrite = check_delivery and delivery in {"condition", "missing"}
-    assert calls == {"evaluator": 1, "actor": 1 + int(needs_rewrite), "review": 0}
-    assert diagnostics["semantic_rewrite_attempts"] == int(needs_rewrite)
-    assert retry_hints[0] == ""
-    if needs_rewrite:
-        assert diagnostics["contract_missing"] == ["登记册"]
-        assert diagnostics["contract_missing_after_rewrite"] == ["登记册"]
-        assert diagnostics["contract_missing_fallback"] is True
-        assert "登记册" in retry_hints[1]
-    else:
-        assert not diagnostics.get("contract_missing")
+    assert calls == {"evaluator": 1, "actor": 1, "review": 0}
+    assert diagnostics["semantic_rewrite_attempts"] == 0
+    assert bool(diagnostics.get("contract_missing")) is (check_delivery and delivery in {"condition", "missing"})
     assert (engine.story, current, turn, binding) == original
     assert default_options() == default_snapshot
     assert result.stored.session.revision == 1

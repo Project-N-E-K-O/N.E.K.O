@@ -10,7 +10,7 @@ import pytest
 from services.theater import numeric_v2_evaluator as ev, numeric_v2_workflow as wf
 from services.theater.numeric_v2_options import default_options
 from services.theater.numeric_v2_runtime import NumericV2Engine, NumericV2Runtime, TurnRequestV2
-from tests.utils.theater_prompt import prompt_payload
+from tests.utils.theater_prompt import prompt_payload, prompt_reference
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 from tests.unit.test_theater_numeric_v2_pending_offer import _commit
 from tests.unit.test_theater_numeric_v2_runtime import _binding
@@ -25,6 +25,231 @@ QUOTE = ("既然你也愿意承担那两小时，那我们就按这个边界来�
 PERFORMANCE = "（看着张阿姨离去的背影，紧绷的肩膀稍微放松了一些，拿起笔在报名表的供应商栏签下名字）" + QUOTE
 MESSAGE = "（把试卷重新摊开）好，我就只负责那两小时的引导，其他时间照常复习。活动安排已经说清楚了，我们回到眼前的试卷吧。"
 DESCRIPTION = "双方确认各自的底线：Phone-local只负责提供定额甜点且不参与现场杂务；老谢若参与则仅负责指定时段的引导，不影响复习主线。"
+_review_story_evidence = ev.NumericV2MetricEvaluator.review_story_evidence
+
+
+@pytest.mark.asyncio
+async def test_batched_ending_review_binds_original_mixed_performance_and_excludes_bridge(monkeypatch):
+    engine = _engine()
+    session = _session(engine, "scene_entry")
+    requests = []
+
+    async def config(_):
+        return {"model": "test", "base_url": "https://test.invalid", "api_key": "test"}
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def ainvoke(self, messages, **kwargs):
+            requests.append(json.loads(messages[1].content))
+            return SimpleNamespace(content='{"source_ready":true,"target_ready":true,"approved_indexes":[0,1]}')
+
+    async def factory(*args, **kwargs):
+        return Client()
+
+    monkeypatch.setattr(ev, "_model_config", config)
+    monkeypatch.setattr(ev, "create_chat_llm_async", factory)
+    result = await _review_story_evidence(
+        ev.NumericV2MetricEvaluator(object()), engine=engine, session=session, message=MESSAGE,
+        claims=(_fact(quote=PERFORMANCE), _fact(quote="两人走进店里。")),
+        ending_route={"target_node_id": "ending_leave", "transition_contract": {}}, timeout_seconds=1,
+    )
+    assert result == ev.NumericV2StoryEvidenceReview((0,), True)
+    assert len(requests) == 1
+    assert requests[0]["scene_context"][-1]["content"] == [PERFORMANCE]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("quote_kind", ["original", "projected", "joined_fields"])
+async def test_historical_quote_keeps_original_representation_through_fact_review(monkeypatch, quote_kind):
+    engine = _engine()
+    engine.fact_contract[KEY].update(description="角色已按下按钮并现场展示仪表读数。", evidence_source="performance")
+    original = "（按下按钮）读数升至20。"
+    projected = "按下按钮\n读数升至20。"
+    assert projected not in original
+    session = _session(engine)
+    row = {**session.performance_history[-1], "scene_narration": "", "performance": original}
+    if quote_kind == "joined_fields":
+        row["scene_narration"] = "仪表亮起。"
+    session = replace(session, performance_history=(row,))
+    # A projection of action/dialogue is transport data, not a verbatim quotation of the performed original.
+    monkeypatch.setattr(ev, "history_evidence", lambda *args, **kwargs: [])
+    bank = []
+    ev._build_messages(engine, session, MESSAGE, committed_evidence=bank)
+    quote = {"original": original, "projected": projected, "joined_fields": "仪表亮起。\n" + original}[quote_kind]
+    candidate = _fact(quote=quote)
+    candidate.update(subject="角色", action="按下按钮", object="仪表", result="读数已呈现")
+    candidate["evidence"] = candidate["evidence"][:1]
+    initial = ev._parse_output(json.dumps({"scene_complete": False, "metric_changes": {},
+        "fact_candidates": [candidate]}, ensure_ascii=False), engine, MESSAGE, session, committed_evidence=bank)
+
+    async def config(_):
+        return {"model": "test", "base_url": "https://test.invalid", "api_key": "test"}
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def ainvoke(self, messages, **kwargs):
+            request = json.loads(messages[1].content)
+            assert request["scene_context"][-1]["content"] == (["仪表亮起。", original] if row["scene_narration"] else [original])
+            assert request["claims"][0]["evidence"][0]["quote"] == quote
+            return SimpleNamespace(content='{"approved_indexes":[0]}')
+
+    async def factory(*args, **kwargs):
+        return Client()
+
+    monkeypatch.setattr(ev, "_model_config", config)
+    monkeypatch.setattr(ev, "create_chat_llm_async", factory)
+    reviewed = await _review_story_evidence(ev.NumericV2MetricEvaluator(object()), engine=engine,
+        session=session, message=MESSAGE, claims=({**candidate, "description": engine.fact_contract[KEY]["description"]},),
+        timeout_seconds=1)
+    observed = (bool(initial.fact_operations), reviewed.approved_indexes == (0,))
+    # Both gates must accept the same literal source. Neither may elevate the synthetic projection to an original.
+    assert observed == (quote_kind == "original", quote_kind == "original")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("selected", [
+    None, "show_reading", "player_checks", "视觉体验已经完成。", "", "legacy", "player_only", "player_only_fact",
+])
+async def test_progress_review_receives_published_dialogue_and_returns_advice_without_authority(monkeypatch, selected):
+    blocked_departure = selected is not None
+    engine = _engine()
+    permission = "可调整眼前设备，现场展示读数变化。"
+    engine.nodes[NODE]["story_beat"].setdefault("acting_contract", {})["allowed_behaviors"] = [permission]
+    goals = [
+        {"id": "show_reading", "owner": "environment", "description": "仪表呈现读数变化。",
+         "delivery": {"source_ids": ["opening.device"], "output_field": "scene_update"}},
+        {"id": "player_checks", "owner": "player", "description": "玩家观察仪表并反馈。",
+         "delivery": {"source_ids": ["goal.show_reading"], "output_field": "player_input"}},
+    ]
+    if selected in {"player_only", "player_only_fact"}:
+        goals = goals[1:]
+    engine.nodes[NODE]["story_beat"]["goals"] = goals
+    if selected == "legacy":
+        engine.nodes[NODE]["story_beat"].pop("goals")
+    session = _session(engine, "older_scene_entry")
+    requests = []
+    reply_direction = "承接已经发生的动作，回应本轮请求。"
+    if blocked_departure:
+        reply_direction = selected
+    if selected in {"legacy", "player_only_fact"}:
+        reply_direction = KEY
+    elif selected == "player_only":
+        reply_direction = ""
+
+    async def config(_):
+        return {"model": "test", "base_url": "https://test.invalid", "api_key": "test"}
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def ainvoke(self, messages, **kwargs):
+            requests.append(json.loads(messages[1].content))
+            return SimpleNamespace(content=json.dumps({
+                "direction": reply_direction,
+            }, ensure_ascii=False))
+
+    async def factory(*args, **kwargs):
+        return Client()
+
+    monkeypatch.setattr(ev, "_model_config", config)
+    monkeypatch.setattr(ev, "create_chat_llm_async", factory)
+    kwargs = {"engine": engine, "session": session, "message": MESSAGE,
+              "claims": (), "review_progress": True, "blocked_departure": blocked_departure, "timeout_seconds": 1}
+    reviewer = ev.NumericV2MetricEvaluator(object())
+    if selected in {"player_checks", "视觉体验已经完成。", "player_only_fact"}:
+        with pytest.raises(ev.NumericV2EvaluatorError, match="numeric_v2_story_evidence_failed"):
+            await _review_story_evidence(reviewer, **kwargs)
+        return
+    result = await _review_story_evidence(reviewer, **kwargs)
+    request, = requests
+    assert [row["revision"] for row in request["scene_context"]] == [14, 15]
+    assert request["scene_context"][0]["player_input"] == ""
+    assert request["scene_context"][1]["player_input"] == "我们继续看眼前的试卷。"
+    assert "我先拿一支笔。" in str(request["scene_context"][1]["content"])
+    if blocked_departure:
+        assert {"player_input", "entry_cause", "exit_plan", "earlier_evidence"}.isdisjoint(request)
+        assert request["progress"]["allowed_behaviors"] == [permission]
+        assert request["progress"]["goals"] == ([] if selected == "legacy" else [
+            {"id": goal["id"], "owner": goal["owner"], "description": goal["description"],
+             "source_ids": goal["delivery"]["source_ids"]} for goal in goals
+        ])
+        expected_ids = [] if selected == "player_only" else ["show_reading"]
+        if selected == "legacy":
+            expected_ids = [KEY]
+        assert request["progress"]["direction_ids"] == expected_ids
+        expected = request["progress"]["pending_results"][0]["description"] if selected == "legacy" else (
+            goals[0]["description"] if selected == "show_reading" else "")
+    else:
+        assert request["player_input"] == MESSAGE
+        expected = "承接已经发生的动作，回应本轮请求。"
+    expected_task = None
+    if blocked_departure and reply_direction:
+        expected_task = {
+            "selected_id": reply_direction, "direction": expected,
+            "goals": request["progress"]["goals"],
+            "allowed_behaviors": [permission],
+            "pending_results": [row for row in request["progress"]["pending_results"] if row["required_this_scene"]],
+        }
+    assert result == ev.NumericV2StoryEvidenceReview(direction=expected, current_scene_task=expected_task)
+    assert request["progress"]["pending_results"][0]["key"] == KEY
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decision,quote,expected", [
+    ("accept", "好，我这就照做。", "accept"),
+    ("accept", "未说过的同意", "hold"),
+    ("reject", "我拒绝这个安排。", "reject"),
+    ("obsolete", "我先拿一支笔。", "obsolete"),
+    ("obsolete", "两人走进店里。", "hold"),
+    ("obsolete", "活动的安排还要商量。", "hold"),
+])
+async def test_invitation_review_requires_evidence_from_the_correct_source(monkeypatch, decision, quote, expected):
+    engine = _engine()
+    session = _session(engine, "older_scene_entry")
+
+    async def config(_):
+        return {"model": "test", "base_url": "https://test.invalid", "api_key": "test"}
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def ainvoke(self, messages, **kwargs):
+            request = json.loads(messages[1].content)
+            assert request["pending_offer_revision"] == 14
+            assert request["scene_context"][-1]["revision"] == 15
+            return SimpleNamespace(content=json.dumps({"offer_decision": decision,
+                "offer_quote": quote, "offer_reason": "依据实际原文核对。"}))
+
+    async def factory(*args, **kwargs):
+        return Client()
+
+    monkeypatch.setattr(ev, "_model_config", config)
+    monkeypatch.setattr(ev, "create_chat_llm_async", factory)
+    result = await _review_story_evidence(
+        ev.NumericV2MetricEvaluator(object()), engine=engine, session=session,
+        message="我拒绝这个安排。" if decision == "reject" else "好，我这就照做。",
+        claims=(), pending_offer="现在开始吗？", pending_offer_revision=14, timeout_seconds=1,
+    )
+    assert result.offer_decision == expected
+    assert result.offer_quote == (quote if expected != "hold" else "")
 
 
 def _engine():
@@ -91,6 +316,139 @@ def _data(messages):
     return prompt_payload(messages[1].content)
 
 
+@pytest.mark.parametrize("value_type,target,stored", [
+    ("bool", True, False), ("bool", False, True), ("int", 3, 2), ("string", "confirmed", "pending"),
+])
+@pytest.mark.parametrize("satisfied", [False, True])
+def test_existing_fact_history_is_bound_until_its_typed_target_is_satisfied(value_type, target, stored, satisfied):
+    engine = _engine()
+    engine.fact_contract[KEY]["value_type"] = value_type
+    engine.nodes[NODE]["completion_contract"]["all"] = [{"key": KEY, "equals": target}]
+    session = _session(engine)
+    session = replace(session, story_state={**session.story_state,
+        "facts": {KEY: {"value": target if satisfied else stored, "visibility": "public"}}})
+    before = deepcopy(session)
+    metadata, originals = ev._committed_completion_evidence(engine, session)
+    assert (KEY in metadata.get("allowed_keys", ())) is not satisfied
+    assert (PERFORMANCE in originals) is not satisfied
+    assert session == before
+
+
+def test_existing_false_fact_can_use_verbatim_history_without_becoming_approved():
+    engine = _engine()
+    session = _session(engine)
+    session = replace(session, story_state={**session.story_state,
+        "facts": {KEY: {"value": False, "visibility": "public"}}})
+    result = _parse(engine, session)
+    assert result.fact_operations == ({"op": "set", "key": KEY, "value": True, "visibility": "public"},)
+    assert result.fact_audit[0]["evidence"][0]["quote"] == QUOTE
+    assert session.story_state["facts"][KEY]["value"] is False
+
+
+@pytest.mark.parametrize("value_type,target,stored,value,accepted", [
+    ("int", 3, 2, 3, True), ("int", 3, 2, 4, False),
+    ("string", "confirmed", "pending", "confirmed", True),
+    ("string", "confirmed", "pending", "different", False),
+    ("bool", True, False, 1, False), ("int", 1, 0, True, False),
+])
+def test_existing_history_candidate_cannot_escape_its_typed_pending_value(value_type, target, stored, value, accepted):
+    engine = _engine()
+    engine.fact_contract[KEY]["value_type"] = value_type
+    engine.nodes[NODE]["completion_contract"]["all"] = [{"key": KEY, "equals": target}]
+    session = _session(engine)
+    session = replace(session, story_state={**session.story_state,
+        "facts": {KEY: {"value": stored, "visibility": "public"}}})
+    candidate = {**_fact(), "value": value}
+    result = _parse(engine, session, candidate)
+    assert bool(result.fact_operations) is accepted
+    if accepted:
+        assert type(result.fact_operations[0]["value"]) is type(target)
+        assert result.fact_operations[0]["value"] == target
+
+
+@pytest.mark.parametrize("retain_history", [False, True])
+def test_evaluator_performance_fact_source_matches_retained_originals(retain_history):
+    engine = _engine()
+    engine.fact_contract[KEY]["evidence_source"] = "performance"
+    session = _session(engine)
+    if not retain_history:
+        session = replace(session, performance_history=())
+    messages = ev._build_messages(engine, session, MESSAGE)
+    system = messages[0].content
+    data = _data(messages)
+    beat = data["current_story_beat"]
+    assert system.count("evidence.source 仅使用 fact_candidate_sources 列出的值") == 1
+    assert "history_evidence 的 performance 是检索标签，不能填入 evidence.source" in system
+    assert ("actor_performance" in beat["fact_candidate_sources"]) is retain_history
+    assert ("committed_fact_evidence" in data) is retain_history
+    assert (KEY in beat["fact_contract"]["facts"]) is retain_history
+    assert "prop:ready" in beat["fact_contract"]["facts"]
+    assert "player_input" in beat["fact_candidate_sources"]
+    assert "标注 evidence_source=performance 的事实只用此来源" in system
+
+
+def test_ending_request_lists_no_sources_for_already_recorded_performance_only_fact():
+    engine = _engine()
+    engine.fact_contract[KEY]["evidence_source"] = "performance"
+    for key in set(engine.fact_contract) - {KEY}:
+        del engine.fact_contract[key]
+    session = _session(engine)
+    session = replace(session, story_state={**session.story_state, "facts": {
+        KEY: {"value": True, "visibility": "public"},
+    }})
+    messages = ev._build_messages(engine, session, "已经放稳了。帮我拍一张吧。")
+    beat = _data(messages)["current_story_beat"]
+    assert beat["fact_contract"]["facts"] == {}
+    assert beat["fact_candidate_sources"] == []
+    assert beat["committed_fact_values"] == {KEY: True}
+    assert "玩家请角色执行收尾动作时，只写已获授权待演" in messages[0].content
+
+
+@pytest.mark.parametrize("description,quote,accepted", [
+    (
+        "小满在近处长桌上用折页夹将选定拓样实际装订成私人册并捧在手中",
+        "（低头把缺角猫和鱼骨那两张对齐叠好，用折页夹稳稳压住边角）去吧，我在这儿守着。"
+        "（抬头瞥了一眼空荡荡的院子入口，手指无意识地敲了敲桌面）别太急，纸我都理好了，就等你回来装订。",
+        False,
+    ),
+    ("工作人员已签收机器。", "机器放在台上了，等你到场后再签收。", False),
+    ("两人约定等玩家回来装订成册。", "纸我都理好了，就等你回来装订。", True),
+    ("小满实际装订成私人册并捧在手中。", "我已装订好这一本，就等你回来再装订。", True),
+    ("工作人员已签收机器。", "机器已签收。就等你回来装订。", True),
+])
+def test_historical_waiting_for_target_action_is_not_completed_evidence(description, quote, accepted):
+    engine = _engine()
+    engine.fact_contract[KEY]["description"] = description
+    session = engine.create_session(session_id="history-wait", catgirl_binding=_binding(),
+                                    opening_performance={"performance": quote})
+    candidate = _fact(quote=quote)
+    candidate["evidence"] = candidate["evidence"][:1]
+    result = _parse(engine, session, candidate)
+    assert bool(result.fact_operations) is accepted
+
+
+@pytest.mark.parametrize("quote,accepted", [
+    ("双方在报名表上签字。", True),
+    ("桌上有报名表。", False),
+])
+def test_author_evidence_anchor_must_be_in_the_historical_quote_itself(quote, accepted):
+    engine = _engine()
+    engine.fact_contract[KEY].update(evidence_source="performance", evidence_anchor="签字")
+    session = engine.create_session(session_id="anchor-history", catgirl_binding=_binding(),
+                                    opening_performance={"performance": "桌上有报名表。双方在报名表上签字。"})
+    originals = []
+    system, human = ev._build_messages(engine, session, MESSAGE, committed_evidence=originals)
+    assert ev._pending_completion_facts(engine, session)[0]["evidence_anchor"] == "签字"
+    fact = prompt_payload(human.content)["current_story_beat"]["fact_contract"]["facts"][KEY]
+    assert fact["evidence_anchor"] == "签字"
+    assert "同一实际结果引文须含完整短语" in system.content
+    candidate = _fact(quote=quote)
+    candidate["evidence"] = candidate["evidence"][:1]
+    result = ev._parse_output(json.dumps({"scene_complete": False, "metric_changes": {},
+        "fact_candidates": [candidate]}), engine, MESSAGE, session, committed_evidence=originals)
+    assert bool(result.fact_operations) is accepted
+
+
 def _reference_request(engine, session):
     """Bind model references to the same final request as the legacy originals."""
     originals, references = [], {}
@@ -124,8 +482,8 @@ def _assert_bound_sources(data, bank):
         index, field = suffix.split("].", 1)
         row = data[collection][int(index)]
         if collection == "scene_context":
-            assert field == "content"
-            referenced.append("\n".join(block["text"] for block in row[field]))
+            assert field.startswith("fact_originals[") or (field.startswith("content[") and field.endswith("].text"))
+            referenced.append(prompt_reference(data, reference))
         else:
             assert collection == "history_evidence" and field == "text"
             assert row["source"] == "performance" and row["current_visit"] is True
@@ -153,8 +511,17 @@ def test_request_reference_repairs_copy_failure_without_changing_canonical_evide
     broken = {**_fact(), "evidence": [{"source": "actor_performance", "quote": fragment + "……副联交给林舟。"}]}
     assert _parse(engine, session, broken).fact_operations == ()
     messages, originals, references = _reference_request(engine, session)
+    assert "提议不代替同意，双方选定须实际确认" in messages[0].content
     reference = _reference_id(references, fragment)
-    assert _data(messages)["fact_evidence_refs"][reference] == references[reference]["quote"]
+    data = _data(messages)
+    prefix, location = next((prefix, location) for prefix, location in data["fact_evidence_refs"].items()
+                        if reference.startswith(prefix))
+    assert reference in location["ids"]
+    assert location["revision"] == 0
+    assert "h编号不是回合号" in messages[0].content
+    source = prompt_reference(data, location["path"])
+    assert references[reference]["quote"] == ev._fact_evidence_units(source)[int(reference.removeprefix(prefix))]
+    assert references[reference]["quote"] not in json.dumps(data["fact_evidence_refs"], ensure_ascii=False)
     candidate = {**_fact(), "evidence": [{"ref": reference}]}
     result = _parse_references(engine, session, [candidate], originals, references)
     assert result.fact_operations == ({"op": "set", "key": KEY, "value": True, "visibility": "public"},)
@@ -185,6 +552,87 @@ def test_mixed_history_references_keep_true_results_separate_from_incomplete_wor
         for row in result.fact_audit)
     # Splitting for transport must not remove the full mixed original needed by semantic Review.
     assert any(text in original for original in originals)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["separate_refs", "joined_quote", "unknown_ref", "old_visit", "wrong_source"])
+async def test_multi_turn_completion_preserves_each_reference_through_native_review(monkeypatch, case):
+    engine = _engine()
+    description = "值班员已将保险绳和护目镜交由同伴使用。"
+    engine.fact_contract[KEY].update(description=description, evidence_source="performance")
+    delivered = ["值班员将保险绳交给同伴，同伴接住并系好。", "值班员把护目镜递给同伴，同伴接过戴好。"]
+    session = _session(engine, "older_turn")
+    session = replace(session, performance_history=tuple(
+        {**row, "scene_narration": "", "performance": text}
+        for row, text in zip(session.performance_history, delivered)
+    ))
+    _, originals, references = _reference_request(engine, session)
+    ids = [_reference_id(references, text) for text in delivered]
+    evidence = [dict(references[reference]) for reference in ids]
+    candidate = {**_fact(), "subject": "值班员", "action": "交付", "object": "保险绳和护目镜",
+                 "result": description, "evidence": [{"ref": reference} for reference in ids]}
+    if case == "joined_quote":
+        candidate["evidence"] = [{"source": "actor_performance", "quote": "\n".join(delivered)}]
+    elif case == "unknown_ref":
+        candidate["evidence"][-1] = {"ref": "never-issued-in-this-request"}
+    elif case == "wrong_source":
+        candidate["evidence"][-1] = {"source": "player_input", "quote": delivered[-1]}
+    elif case == "old_visit":
+        entry = {"revision": 17, "from_node_id": "other", "to_node_id": NODE,
+            "segments": [{"phase": "target_opening", "performance": "本次只核对站位，尚未交付设备。"}]}
+        session = replace(session, revision=17, story_state={**session.story_state, "revision": 17},
+            node_turn_count=0, performance_history=(*session.performance_history,
+                {"revision": 16, "from_node_id": NODE, "to_node_id": "other", "performance": "离开工作间。"}, entry))
+        _, originals, references = _reference_request(engine, session)
+        assert all(text not in original for text in delivered for original in originals)
+        # Even a stale reference map cannot restore originals excluded from the current visit.
+        references.update({f"stale-{index}": item for index, item in enumerate(evidence)})
+        candidate["evidence"] = [{"ref": f"stale-{index}"} for index in range(len(evidence))]
+    original = deepcopy(session)
+    parsed = _parse_references(engine, session, [candidate], originals, references)
+    if case != "separate_refs":
+        assert parsed.fact_operations == ()
+        assert parsed.fact_audit == ()
+        assert session == original
+        return
+    assert parsed.fact_audit[0]["evidence"] == evidence
+    assert parsed.fact_operations == ({"op": "set", "key": KEY, "value": True, "visibility": "public"},)
+    requests = []
+
+    async def config(_):
+        return {"model": "offline", "base_url": "https://test.invalid", "api_key": "test"}
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def ainvoke(self, messages, **kwargs):
+            request = json.loads(messages[1].content)
+            requests.append(request)
+            assert request["actor_evidence"] == ""
+            assert request["claims"][0]["evidence"] == evidence
+            history = [text for row in request["scene_context"] for text in row["content"]]
+            assert all(text in history for text in delivered)
+            assert "\n".join(delivered) not in history
+            # Approval is stubbed only to verify transport/provenance, not semantic sufficiency.
+            return SimpleNamespace(content='{"approved_indexes":[0]}')
+
+    async def factory(*args, **kwargs):
+        return Client()
+
+    monkeypatch.setattr(ev, "_model_config", config)
+    monkeypatch.setattr(ev, "create_chat_llm_async", factory)
+    claims = tuple({**audit, **operation, "description": description}
+                   for operation, audit in zip(parsed.fact_operations, parsed.fact_audit))
+    reviewed = await _review_story_evidence(ev.NumericV2MetricEvaluator(object()), engine=engine,
+        session=session, message=MESSAGE, claims=claims, timeout_seconds=1)
+    assert reviewed.approved_indexes == (0,)
+    assert len(requests) == 1
+    assert parsed.fact_audit[0]["evidence"] == evidence
+    assert session == original
 
 
 @pytest.mark.parametrize("invalid", ["unknown", "mixed", "non_target", "other_scene", "global"])
@@ -249,7 +697,8 @@ def test_registered_history_reference_cannot_create_an_unmapped_route_value():
     assert _parse_references(engine, session, [candidate], originals, references).fact_operations == ()
 
 
-def test_reference_tables_use_only_spare_budget_and_clear_reused_request_banks(monkeypatch):
+@pytest.mark.parametrize("keep_player_reference", [False, True])
+def test_reference_tables_use_only_spare_budget_and_clear_reused_request_banks(monkeypatch, keep_player_reference):
     from services.theater.numeric_v2_budget import NUMERIC_V2_ACTOR_BUDGET_PROFILES
 
     engine = _engine()
@@ -257,7 +706,9 @@ def test_reference_tables_use_only_spare_budget_and_clear_reused_request_banks(m
     baseline_originals = []
     baseline = ev._build_messages(engine, session, MESSAGE, committed_evidence=baseline_originals)
     data = _data(baseline)
-    data.pop("fact_evidence_refs", None)
+    player_reference = data.pop("fact_evidence_refs", {}).get("p")
+    if keep_player_reference:
+        data["fact_evidence_refs"] = {"p": player_reference}
     human_prefix = baseline[1].content.split("======以下为", 1)[0]
     baseline_contents = [baseline[0].content,
         human_prefix + ev.render_prompt_context(data)]
@@ -270,8 +721,43 @@ def test_reference_tables_use_only_spare_budget_and_clear_reused_request_banks(m
         committed_evidence=originals, fact_evidence_refs=references)
     assert [message.content for message in messages] == baseline_contents
     assert originals == baseline_originals
-    assert references == {}
-    assert "fact_evidence_refs" not in _data(messages)
+    assert "stale" not in references
+    assert bool(references) is keep_player_reference
+    assert all(reference.startswith("p") for reference in references)
+    assert _data(messages).get("fact_evidence_refs") == data.get("fact_evidence_refs")
+    assert "先按revision和path找到实际证据，再从该组ids选" in messages[0].content
+    assert "不自行拼编号" in messages[0].content
+    assert "不自行拼编号或用省略号拼引文" in messages[0].content
+    assert "h1.0" not in messages[0].content
+
+
+def test_runtime_fact_quotes_use_the_projection_in_the_final_request(monkeypatch):
+    from services.theater.numeric_v2_budget import NUMERIC_V2_ACTOR_BUDGET_PROFILES
+
+    engine = _engine()
+    session = _session(engine, "opening")
+    engine.nodes[session.current_node_id]["story_beat"]["narrative_summary"] = "按证据办理。"
+    monkeypatch.setattr(ev, "history_evidence", lambda *args, **kwargs: [])
+    runtime_evidence = []
+    messages = ev._build_messages(engine, session, MESSAGE, runtime_fact_evidence=runtime_evidence)
+    payload = _data(messages)
+    projection = payload["current_story_beat"]["runtime_scene_facts"]
+    quote = projection["facts"][0]["key"]
+    candidate = {**_fact(), "evidence": [{"source": "runtime_fact", "quote": quote}]}
+    response = json.dumps({"scene_complete": False, "metric_changes": {}, "fact_candidates": [candidate]})
+    assert ev._parse_output(response, engine, MESSAGE, session,
+                            runtime_fact_evidence=runtime_evidence[0]).fact_operations
+
+    payload.pop("fact_evidence_refs", None)
+    payload["current_story_beat"]["runtime_scene_facts"] = {"truncated": True, "scope": "omitted_for_capacity"}
+    prefix = messages[1].content.split("======以下为", 1)[0]
+    limit = ev.count_tokens(messages[0].content) + ev.count_tokens(prefix + ev.render_prompt_context(payload))
+    monkeypatch.setitem(NUMERIC_V2_ACTOR_BUDGET_PROFILES[session.actor_budget_profile],
+                        "evaluator_input_max_tokens", limit)
+    messages = ev._build_messages(engine, session, MESSAGE, runtime_fact_evidence=runtime_evidence)
+    assert quote not in messages[1].content and runtime_evidence == [""]
+    assert ev._parse_output(response, engine, MESSAGE, session,
+                            runtime_fact_evidence=runtime_evidence[0]).fact_operations == ()
 
 
 @pytest.mark.parametrize("phase", ["turn", "opening", "scene_entry",
@@ -404,7 +890,7 @@ def test_history_permission_requires_the_actual_request_bank_and_cannot_splice_r
 
 @pytest.mark.parametrize("case", ["wrong_revision", "missing_revision", "bool_revision", "entry", "entry_bridge",
     "entry_no_target", "entry_duplicate_target", "unplayed_opening",
-    "loop", "old_player_input", "new_draft", "already_committed", "committed_false",
+    "loop", "old_player_input", "new_draft", "already_committed",
     "noncompletion", "global", "other_scene", "uncompleted", "bad_subject", "bad_type",
     "bad_key_list", "bad_key_dict", "duplicate"])
 def test_committed_evidence_keeps_latest_visit_scope_and_existing_validation(case):
@@ -436,9 +922,9 @@ def test_committed_evidence_keeps_latest_visit_scope_and_existing_validation(cas
         session = replace(_session(engine, "opening"), opening_performance={"performance": "还要商量。"})
     elif case in {"old_player_input", "new_draft"}:
         fact["evidence"][0]["quote"] = row["input_text"] if case == "old_player_input" else "这是尚未播放的新稿。"
-    elif case in {"already_committed", "committed_false"}:
+    elif case == "already_committed":
         session = replace(session, story_state={**session.story_state,
-            "facts": {KEY: {"value": case == "already_committed", "visibility": "public"}}})
+            "facts": {KEY: {"value": True, "visibility": "public"}}})
     elif case in {"noncompletion", "global", "other_scene"}:
         fact["key"] = {"noncompletion": f"scene:{NODE}:other", "global": "prop:ready", "other_scene": "scene:ending_leave:done"}[case]
     elif case == "uncompleted":
@@ -487,10 +973,10 @@ def test_request_binds_retained_committed_rows_and_names_exact_sources(phase):
     messages = ev._build_messages(engine, session, MESSAGE, committed_evidence=bank)
     data = _data(messages)
     _assert_bound_sources(data, bank)
-    assert data["scene_context"][-1] == ev._current_scene_context(session)[-1]
+    assert data["scene_context"][-1] == ev._fact_scene_context(session)[-1]
     assert "player_input" in messages[0].content and "runtime_fact" in messages[0].content
-    assert "actor_performance" in messages[0].content and "不是本轮待生成稿" in messages[0].content
-    assert "subject" in messages[0].content and "不能自证" in messages[0].content
+    assert "actor_performance" in messages[0].content and "而非本轮草稿" in messages[0].content
+    assert "subject" in messages[0].content and "不自证" in messages[0].content
 
 
 @pytest.mark.parametrize("formal", [False, True])
@@ -509,7 +995,7 @@ def test_review_binds_previous_row_separately_from_new_actor_draft(formal, phase
         route_changed=formal, transition_outcome=outcome, committed_evidence=bank)
     data = _data(messages)
     _assert_bound_sources(data, bank)
-    assert data["scene_context"][-1] == ev._current_scene_context(session)[-1]
+    assert data["scene_context"][-1] == ev._fact_scene_context(session)[-1]
     assert "不是顶层 actor_performance 或 candidate_segments" in messages[0].content
     assert "引文存在不等于语义证明" in messages[0].content
     assert "只允许原 player_input 或 runtime_fact 引文证明；" not in messages[0].content
@@ -534,8 +1020,9 @@ def test_packing_retrieves_earlier_entry_and_binds_only_retained_originals(revie
     data = _data(messages)
     _assert_bound_sources(data, bank)
     assert any(QUOTE in source for source in bank)
-    assert f"scene_context[{len(data['scene_context']) - 1}].content" in data["committed_fact_evidence"]["content_refs"]
-    assert data["scene_context"][-1] == ev._current_scene_context(session)[-1]
+    assert any(ref.startswith(f"scene_context[{len(data['scene_context']) - 1}].content[")
+               for ref in data["committed_fact_evidence"]["content_refs"])
+    assert data["scene_context"][-1] == ev._fact_scene_context(session)[-1]
     assert all(row["revision"] != entry["revision"] for row in data["scene_context"])
     assert any(row["revision"] == entry["revision"] and row["current_visit"] is True
         and row["source"] == "performance" and QUOTE in row["text"]

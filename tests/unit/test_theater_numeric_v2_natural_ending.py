@@ -80,6 +80,217 @@ def test_builtin_neon_counterattack_route_does_not_require_overload():
 
 
 @pytest.mark.asyncio
+async def test_actor_can_deliver_last_fact_without_creating_an_ending_invitation(tmp_path, monkeypatch):
+    from services.theater import numeric_v2_evaluator as evaluator, numeric_v2_options as options, numeric_v2_workflow as workflow
+    from services.theater.numeric_v2_actor_output import _parse_output as parse_actor
+
+    story = numeric_v2_story()
+    key = "scene:start:done"
+    body = "柜台已核对最后一份登记。"
+    story["fact_contract"] = {"facts": {key: {
+        "value_type": "bool", "visibility": "public", "description": body,
+    }}}
+    story["nodes"][0]["completion_contract"] = {"all": [{"key": key, "equals": True}]}
+    engine = NumericV2Engine.from_mapping(story)
+    runtime = NumericV2Runtime(engine, tmp_path)
+    stored = await runtime.start_session(session_id="last_fact", catgirl_binding=_binding(),
+                                         opening_performance=_opening())
+
+    async def evaluate(*args, **kwargs):
+        return evaluator.NumericV2EvaluationResult((), False)
+
+    async def invoke(self, messages, **kwargs):
+        assert "在交付直接结果后依据 next_scene 提出具体未来行动" not in messages[0].content
+        assert "本轮 transition_offer 必须为空字符串" in messages[0].content
+        assert "不为结束追加邀请" in prompt_payload(messages[1].content)["next_scene"]
+        assert kwargs["suppress_transition_offer"] is True
+        return parse_actor(json.dumps({
+            "performance": body, "transition_offer": "那现在一起走吗？", "suggested_inputs": [],
+            "fact_candidates": [{"key": key, "value": True, "evidence_quote": body}],
+        }), dialogue_policy=kwargs["dialogue_policy"], suppress_transition_offer=kwargs["suppress_transition_offer"])
+
+    monkeypatch.setattr(options, "MODEL_REVIEWS_ENABLED", False)
+    monkeypatch.setattr(workflow, "aload_theater_module_options", options.aload_theater_module_options)
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(workflow.NumericV2Actor, "_invoke", invoke)
+    monkeypatch.setattr(workflow.NumericV2Actor, "_character_profile", lambda self: "温和。")
+    result = await workflow.execute_numeric_v2_turn(
+        config_manager=object(), runtime=runtime, current=stored,
+        turn=TurnRequestV2("last", 0, "请核对最后一份登记。"), ensure_current_binding=lambda _: _binding())
+    assert result.performance["performance"] == body
+    assert not result.stored.session.transition_offered
+    assert engine.completion_contract_satisfied(result.stored.session) is True
+    next_messages = _build_messages(engine, result.stored.session, "谢谢。", recent_ledger_events=result.stored.ledger_events)
+    assert "你是本轮结局判定器" in next_messages[0].content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["repair", "reject", "evaluator_claim", "handoff", "earlier_receipt", "earlier_offer"])
+async def test_authored_handoff_requires_player_action_before_body_and_fact_commit(tmp_path, monkeypatch, case):
+    from services.theater import numeric_v2_options as options, numeric_v2_workflow as workflow
+
+    story = numeric_v2_story()
+    key = "scene:start:delivered"
+    story["fact_contract"] = {"facts": {key: {
+        "value_type": "bool", "visibility": "public", "evidence_source": "performance",
+        "description": "旧友接稳剑匣。", "player_handoff_item": ["剑匣", "木匣"],
+    }}}
+    story["nodes"][0]["completion_contract"] = {"all": [{"key": key, "equals": True}]}
+    engine = NumericV2Engine.from_mapping(story)
+    runtime = NumericV2Runtime(engine, tmp_path)
+    current = await runtime.start_session(session_id="handoff", catgirl_binding=_binding(), opening_performance=_opening())
+    message = "（双手将剑匣递上前去）请查收。" if case == "handoff" else "（上前一步，轻轻叩响门扉）"
+    receipt = "旧友伸出双手稳稳接住剑匣。"
+    opening = "旧友听见敲门声，打开院门。"
+    calls = []
+    if case in {"earlier_receipt", "earlier_offer"}:
+        prior = runtime.prepare_turn(current, TurnRequestV2("earlier", 0, "（双手将剑匣递上前去）请查收。"), ())
+        current = await runtime.commit_turn(prior, {
+            "scene_narration": receipt if case == "earlier_receipt" else "旧友还在门里，没有接匣。",
+            "performance": "我等他回应。", "suggested_inputs": [],
+        })
+        message = "他还有话要说吗？"
+
+    async def evaluate(*args, **kwargs):
+        if case in {"evaluator_claim", "earlier_receipt", "earlier_offer"}:
+            return workflow.NumericV2EvaluationResult((), True, natural_ending_ready=(case == "evaluator_claim"), fact_operations=(
+                {"op": "set", "key": key, "value": True, "visibility": "public"},
+            ), fact_audit=(
+                ({"key": key, "evidence": [{"source": "actor_performance", "quote": receipt}]},)
+                if case == "earlier_receipt" else ()
+            ))
+        return workflow.NumericV2EvaluationResult((), False)
+
+    async def generate(self, **kwargs):
+        calls.append(kwargs["retry_hint"])
+        if case in {"evaluator_claim", "earlier_receipt", "earlier_offer"} or (case == "repair" and len(calls) == 2):
+            return {"scene_narration": opening, "performance": "他来开门了。", "suggested_inputs": []}
+        return {"scene_narration": receipt, "performance": "（看着你将剑匣递出）这下送到了。",
+                "suggested_inputs": [], "fact_candidates": ([{"key": key, "value": True, "evidence_quote": receipt}]
+                                                            if case != "reject" else [])}
+
+    monkeypatch.setattr(options, "MODEL_REVIEWS_ENABLED", False)
+    monkeypatch.setattr(workflow, "aload_theater_module_options", options.aload_theater_module_options)
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(workflow.NumericV2Actor, "generate_turn", generate)
+    monkeypatch.setattr(workflow.NumericV2Actor, "_character_profile", lambda self: "温和。")
+
+    async def run():
+        return await workflow.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+            turn=TurnRequestV2("deliver", current.session.revision, message), ensure_current_binding=lambda _: _binding())
+
+    if case == "reject":
+        with pytest.raises(workflow.NumericV2ActorOutputError, match="player_handoff_unverified"):
+            await run()
+        assert await runtime.restore_session(current.session.session_id) == current
+    else:
+        result = await run()
+        assert result.stored.session.status == "active"
+        assert result.performance["scene_narration"] == (receipt if case == "handoff" else opening)
+        assert result.stored.session.story_state["facts"].get(key, {}).get("value") is (
+            True if case in {"handoff", "earlier_receipt"} else None)
+        assert await runtime.restore_session(current.session.session_id) == result.stored
+    assert len(calls) == (2 if case in {"repair", "reject"} else 1)
+    if len(calls) == 2:
+        assert "玩家没有做出的递交" in calls[1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("guarded_handoff,explicit_source", [(False, False), (False, True), (True, True)])
+@pytest.mark.parametrize("evidence", ["source", "bridge", "target", "player", "wrong_value", "missing"])
+async def test_natural_ending_commits_only_the_result_actually_delivered_in_its_source(tmp_path, monkeypatch, evidence, guarded_handoff, explicit_source):
+    from services.theater import numeric_v2_evaluator as evaluator, numeric_v2_options as options, numeric_v2_workflow as workflow
+    from services.theater.numeric_v2_actor_output import _parse_output as parse_actor
+    from services.theater.numeric_v2_structured_output import actor_output_schema
+
+    story = numeric_v2_story()
+    key = "scene:start:delivered"
+    description = "旧友已经接过剑匣；玩家只递出剑匣时仍未交付。"
+    story["fact_contract"] = {"facts": {key: {"value_type": "bool", "visibility": "public",
+                                               "description": description, "evidence_source": "performance"}}}
+    if not explicit_source:
+        story["fact_contract"]["facts"][key].pop("evidence_source")
+    if guarded_handoff:
+        story["fact_contract"]["facts"][key]["player_handoff_item"] = ["剑匣"]
+    story["nodes"][0]["completion_contract"] = {"all": [{"key": key, "equals": True}]}
+    story["nodes"][2]["story_beat"]["acting_contract"] = {
+        "dialogue_policy": "optional", "cognition_state": "normal", "memory_state": "available",
+        "self_reference_mode": "persona_allowed", "persona_scope": "full",
+        "allowed_behaviors": [], "forbidden_behaviors": [],
+    }
+    engine = NumericV2Engine.from_mapping(story)
+    runtime = NumericV2Runtime(engine, tmp_path)
+    stored = await runtime.start_session(session_id="natural_fact", catgirl_binding=_binding(),
+                                         opening_performance=_opening())
+    player_input = "（将剑匣平稳递向门内伸出的手）有劳了。"
+    delivery = "门内伸出的手稳稳接住剑匣。"
+    calls = []
+
+    async def evaluate(*args, **kwargs):
+        calls.append("evaluator")
+        messages = _build_messages(engine, stored.session, player_input)
+        assert "若只待可确定的接收，由本轮来源段交付" in messages[0].content
+        assert "尚待演出的结果不写入 fact_candidates" in messages[0].content
+        return evaluator.NumericV2EvaluationResult((), True, natural_ending_ready=True)
+
+    async def invoke(self, messages, **kwargs):
+        calls.append("actor")
+        system = messages[0].content
+        assert system.count("必填顶层字段 fact_candidates:object[]") == 1
+        assert "顶层仅输出source_scene_narration" not in system
+        assert "只填写此处列出的转场字段" not in system
+        assert prompt_payload(messages[1].content)["transition"]["source_fact_targets"] == [
+            {"key": key, "value": True, "description": description},
+        ]
+        assert kwargs["transition_required"] and kwargs["single_ending_response"]
+        assert kwargs["fact_candidates_expected"]
+        schema = actor_output_schema(transition_required=True, single_ending_response=True, fact_candidates_expected=True)
+        assert "fact_candidates" in schema["required"]
+        payload = {
+            "source_scene_narration": delivery if evidence in {"source", "wrong_value", "missing"} else "",
+            "bridge_scene_narration": delivery if evidence == "bridge" else "雨停了。",
+            "target_scene_narration": delivery if evidence == "target" else "街灯照亮了积水。",
+            "response_phase": "none", "performance": "", "suggested_inputs": [],
+        }
+        if evidence != "missing":
+            payload["fact_candidates"] = [{"key": key, "value": evidence != "wrong_value",
+                                          "evidence_quote": player_input if evidence == "player" else delivery}]
+        return parse_actor(json.dumps(payload), **{key: kwargs[key] for key in (
+            "transition_required", "bridge_required", "natural_ending", "single_ending_response",
+            "source_dialogue_policy", "target_dialogue_policy", "fact_candidates_expected",
+        )})
+
+    monkeypatch.setattr(options, "MODEL_REVIEWS_ENABLED", False)
+    monkeypatch.setattr(workflow, "aload_theater_module_options", options.aload_theater_module_options)
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(workflow.NumericV2Actor, "_invoke", invoke)
+    monkeypatch.setattr(workflow.NumericV2Actor, "_character_profile", lambda self: "温和。")
+    async def run():
+        return await workflow.execute_numeric_v2_turn(
+            config_manager=object(), runtime=runtime, current=stored,
+            turn=TurnRequestV2("end", 0, player_input), ensure_current_binding=lambda _: _binding())
+
+    if guarded_handoff and evidence != "source":
+        with pytest.raises(workflow.NumericV2ActorOutputError, match="player_handoff_unverified"):
+            await run()
+        assert calls == ["evaluator", "actor"]
+        assert await runtime.restore_session(stored.session.session_id) == stored
+        return
+    result = await run()
+    assert result.stored.session.status == "ended"
+    assert result.stored.session.revision == 1
+    assert calls == ["evaluator", "actor"]
+    assert "fact_candidates" not in result.performance
+    expected = evidence == "source"
+    ledger = result.stored.ledger_events[-1]
+    assert ledger.get("fact_operations", []) == (
+        [{"op": "set", "key": key, "value": True, "visibility": "public"}] if expected else []
+    )
+    assert (key in result.stored.session.story_state["facts"]) is expected
+    assert await runtime.restore_session(stored.session.session_id) == result.stored
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('ordinary,offered,focused', [(False, False, True), (True, False, False), (False, True, False)])
 async def test_ending_prompt_scope_keeps_ordinary_and_pending_invitation_contracts(tmp_path, ordinary, offered, focused):
     from utils.tokenize import count_tokens
@@ -181,6 +392,7 @@ def test_natural_ending_actor_receives_authorization_without_fake_acceptance():
     messages = _turn_messages(engine, session, outcome, '谢谢。', '温和。', '小葵', '你')
     payload = prompt_payload(messages[1].content)
     assert payload['transition']['natural_ending'] is True
+    assert 'source_fact_targets' not in payload['transition']
     assert '不声称玩家接受了未提出的邀请' in messages[0].content
     # Same-turn authorization includes delivery of the final action and response, preserving unknown success and player decision boundaries.
     assert '先在来源回应完成玩家已授权的最后互动' in messages[0].content

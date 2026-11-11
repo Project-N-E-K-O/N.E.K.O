@@ -42,13 +42,7 @@ LARGE = {"revision": 2, "source": "performance", "current_visit": False,
 
 def _data(evidence):
     return {
-        "story_context": {"background": "封存室内未经签字不得开匣。",
-                          "narrative_state": {
-                              "current": {"player": {"box": {"value": "密封完好",
-                                  "source_event": "r8.player_input.1"}}},
-                              "last_known": {}, "recent_events": [],
-                              "projection": {"quotes_omitted": 0},
-                          }},
+        "story_context": {"background": "封存室内未经签字不得开匣。"},
         "acting_context": {"persona": "温和谨慎，有自己的主见。",
                            "acting_contract": {"memory_state": "available",
                                "forbidden_behaviors": ["不得代玩家开匣。"]}},
@@ -65,9 +59,10 @@ def _data(evidence):
 
 
 def _wire_tokens(data, *, system=SYSTEM, prefix=PREFIX):
-    return actor.count_tokens(system) + actor.count_tokens(
-        prefix + actor.render_prompt_context(data),
-    )
+    return actor.count_tokens(json.dumps([
+        {"role": "system", "content": system},
+        {"role": "user", "content": prefix + actor.render_prompt_context(data)},
+    ], ensure_ascii=False))
 
 
 def _expected(data, evidence):

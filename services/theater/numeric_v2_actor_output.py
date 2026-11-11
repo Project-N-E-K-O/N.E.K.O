@@ -8,13 +8,26 @@ import re
 from typing import Any, Mapping
 
 from .numeric_v2_json import strip_single_json_fence
-from .numeric_v2_performance import mixed_performance_blocks
+from .numeric_v2_performance import mixed_performance_blocks, valid_mixed_performance_policy
+from .numeric_v2_transition_text import is_placeholder_accept_input
 
 
 def _strip_inline_markdown(value: str) -> str:
     """Visible performance is a plain-text protocol; remove incidental inline Markdown markers from model output."""  # noqa: DOCSTRING_CJK
 
     return value.replace("**", "").replace("__", "").replace("`", "")
+
+
+def _without_standalone_transition_offer(body: str, offer: str, *, dialogue_policy: str) -> str | None:
+    """Keep a valid local body when a separately identified final invitation can be removed."""
+
+    if not offer or not body.endswith(offer):
+        return None
+    before = body.removesuffix(offer)
+    if not before.rstrip(" \t").endswith(("\n", "。", "！", "？", ".", "!", "?")):
+        return None
+    remaining = before.rstrip()
+    return remaining if valid_mixed_performance_policy({"performance": remaining}, dialogue_policy) else None
 
 
 class NumericV2ActorError(RuntimeError):
@@ -37,12 +50,13 @@ def _sentence_units(value: Any) -> list[str]:
         return []
     units: list[str] = []
     start = 0
-    for index, char in enumerate(text):
-        if char in "。！？!?\n":
-            unit = text[start:index + 1].strip()
-            if unit:
-                units.append(unit)
-            start = index + 1
+    # A closing quote belongs to the sentence it closes. It must not become
+    # a standalone unit that deduplication can remove from verbatim evidence.
+    for ending in re.finditer(r"""[。！？!?][”’」』）)"']*|\n""", text):
+        unit = text[start:ending.end()].strip()
+        if unit:
+            units.append(unit)
+        start = ending.end()
     tail = text[start:].strip()
     if tail:
         units.append(tail)
@@ -241,7 +255,7 @@ def _parse_actor_suggestions(
         if text in parsed:
             parse_counts["duplicate_item"] += 1
             continue
-        if "[" in text or "]" in text:
+        if "[" in text or "]" in text or is_placeholder_accept_input(text):
             parse_counts["placeholder_item"] += 1
             continue
         blocks = mixed_performance_blocks(text)
@@ -336,11 +350,13 @@ def _parse_output(
     *,
     opening_required: bool = False,
     transition_required: bool = False,
+    transition_tail_only: bool = False,
     bridge_required: bool = True,
     dialogue_policy: str = "required",
     source_dialogue_policy: str = "required",
     target_dialogue_policy: str = "required",
     natural_ending: bool = False,
+    single_ending_response: bool | None = None,
     entry_narration: bool = False,
     suggestions_only: bool = False,
     transition_suggestions_only: bool = False,
@@ -349,10 +365,19 @@ def _parse_output(
     fact_candidate_diagnostics: dict[str, int] | None = None,
     reinvitation_only: bool = False,
     fixed_entry_only: bool = False,
+    author_entry_choices: bool = False,
+    suppress_transition_offer: bool = False,
+    ordinary_entry_bridge: str = "",
     combined_evaluation: bool = False,
+    combined_history_lookup: bool = False,
+    entry_part: str = "",
+    entry_trigger_required: bool = False,
+    draft_provenance_sink: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Parse one Actor response into the only valid opening, ordinary-turn, or scene-transition shape."""  # noqa: DOCSTRING_CJK
 
+    if draft_provenance_sink is not None:
+        draft_provenance_sink.clear()
     if not isinstance(content, str) or not content.strip():
         raise NumericV2ActorOutputError("numeric_v2_actor_empty_output")
     try:
@@ -362,11 +387,53 @@ def _parse_output(
         raise NumericV2ActorOutputError("numeric_v2_actor_invalid_json") from exc
     if not isinstance(payload, dict):
         raise NumericV2ActorOutputError("numeric_v2_actor_fields_invalid")
+    entry_trigger = ""
+    if entry_trigger_required:
+        if (not transition_required or not entry_narration or natural_ending or single_ending_response
+                or fixed_entry_only or entry_part or opening_required or suggestions_only
+                or transition_suggestions_only or reinvitation_only):
+            raise NumericV2ActorOutputError("numeric_v2_actor_entry_trigger_mode_invalid")
+        entry_trigger = _parse_scene_narration(payload.pop("target_entry_trigger", None), allow_empty=True)
+    if entry_part:
+        if entry_part == "prefix":
+            required = {"bridge_scene_narration", "target_scene_narration"}
+            if not transition_tail_only:
+                required.add("source_performance")
+            optional = ({"source_scene_narration"} if not transition_tail_only else set())
+            optional |= {"fact_candidates"} if fact_candidates_expected else set()
+            if not required <= set(payload) <= required | optional:
+                raise NumericV2ActorOutputError("numeric_v2_actor_entry_fields_invalid")
+            result = {
+                "bridge_scene_narration": _parse_scene_narration(payload["bridge_scene_narration"], allow_empty=not bridge_required),
+                "target_scene_narration": _parse_scene_narration(payload["target_scene_narration"], allow_empty=True),
+            }
+            if not transition_tail_only:
+                result["source_performance"] = _parse_transition_performance(
+                    payload["source_performance"], dialogue_policy=source_dialogue_policy, allow_empty=True)
+                if "source_scene_narration" in payload:
+                    narration = _parse_scene_update(payload["source_scene_narration"])
+                    if narration:
+                        result["source_scene_narration"] = narration
+            if fact_candidates_expected:
+                result["fact_candidates"] = _parse_actor_fact_candidates(
+                    payload.get("fact_candidates"), expected=True, diagnostics=fact_candidate_diagnostics)
+            return result
+        if entry_part != "response" or set(payload) != {"target_performance", "suggested_inputs"}:
+            raise NumericV2ActorOutputError("numeric_v2_actor_entry_fields_invalid")
+        return {
+            "target_performance": _parse_transition_performance(
+                payload["target_performance"], dialogue_policy=target_dialogue_policy, allow_empty=True),
+            "suggested_inputs": [] if author_entry_choices else _parse_actor_suggestions(
+                payload["suggested_inputs"], diagnostics=suggestion_diagnostics),
+        }
     evaluation = None
     if combined_evaluation:
         evaluation = payload.pop("turn_evaluation", None)
+        required = {"scene_complete", "metric_changes", "fact_candidates"}
+        allowed = required | ({"history_query"} if combined_history_lookup else set())
         if (not isinstance(evaluation, dict)
-                or set(evaluation) != {"scene_complete", "metric_changes", "fact_candidates"}
+                or not required <= set(evaluation) <= allowed
+                or not isinstance(evaluation.get("history_query", ""), str)
                 or type(evaluation["scene_complete"]) is not bool
                 or not isinstance(evaluation["metric_changes"], dict)
                 or not isinstance(evaluation["fact_candidates"], list)):
@@ -383,7 +450,6 @@ def _parse_output(
             # 仅为 Runtime 既有表现结构补空容器，不取得推荐或事实的生成权限。
             "suggested_inputs": [],
         }
-    # Accept the legacy narrative_events field shape for body text, but do not parse or use it; the strict shape for supplemental recommendations is unchanged.
     if transition_suggestions_only:
         # Supplemental transition recommendations return an accepted path in its own field, and code deterministically places it first;
         # this prevents the model from sorting a deferment such as "check first / look again" as the default accepted path.
@@ -413,7 +479,7 @@ def _parse_output(
     if opening_required:
         expected_fields = {"scene_narration", "performance"}
         # If recommendation or transition fields are missing, make one lightweight supplemental recommendation call; keep any valid body text.
-        tolerated_fields = {*expected_fields, "suggested_inputs", "transition_offered", "narrative_events"}
+        tolerated_fields = {*expected_fields, "suggested_inputs", "transition_offered"}
         # Optional fields degrade independently (missing suggestions == an invalid
         # container, missing transition_offered == False), so any subset is safe.
         if not expected_fields <= set(payload) <= tolerated_fields:
@@ -426,7 +492,7 @@ def _parse_output(
                 dialogue_policy=dialogue_policy,
             ),
         }
-        result["suggested_inputs"] = _parse_actor_suggestions(
+        result["suggested_inputs"] = [] if author_entry_choices else _parse_actor_suggestions(
             payload.get("suggested_inputs"),
             diagnostics=suggestion_diagnostics,
         )
@@ -435,11 +501,21 @@ def _parse_output(
         )
         return result
     if transition_required:
-        if natural_ending and target_dialogue_policy in {"optional", "forbidden"}:
+        if transition_tail_only:
+            expected = {"bridge_scene_narration", "target_scene_narration", "target_performance", "suggested_inputs"}
+            if set(payload) != expected:
+                raise NumericV2ActorOutputError("numeric_v2_actor_transition_tail_invalid")
+            payload["source_performance"] = ""
+            single_ending_response = False
+        fact_fields = {"fact_candidates"} if fact_candidates_expected else set()
+        if single_ending_response is None:
+            single_ending_response = natural_ending and target_dialogue_policy in {"optional", "forbidden"}
+        if single_ending_response:
             if "response_phase" in payload:
                 fields = {"response_phase", "performance", "source_scene_narration",
                           "bridge_scene_narration", "target_scene_narration", "suggested_inputs"}
-                if (set(payload) != fields or payload["response_phase"] not in ("source_response", "target_opening", "none")
+                if (not fields <= set(payload) <= fields | fact_fields
+                        or payload["response_phase"] not in ("source_response", "target_opening", "none")
                         or not isinstance(payload["performance"], str)
                         or (payload["response_phase"] == "none" and payload["performance"].strip())):
                     raise NumericV2ActorOutputError("numeric_v2_actor_response_phase_invalid")
@@ -455,7 +531,7 @@ def _parse_output(
         # Runtime still determines stages and order; narration is generated from real history, and a missing field must not fall back to author text that could replay a scene.
         expected_fields = {"source_performance", "target_performance",
                            "bridge_scene_narration", "target_scene_narration"}
-        tolerated_fields = {*expected_fields, "suggested_inputs", "source_scene_narration", "narrative_events"}
+        tolerated_fields = {*expected_fields, "suggested_inputs", "source_scene_narration", *fact_fields}
         if not expected_fields.issubset(payload) or set(payload) - tolerated_fields:
             raise NumericV2ActorOutputError("numeric_v2_actor_transition_required")
         result = {
@@ -464,12 +540,16 @@ def _parse_output(
             ),
             "target_scene_narration": _parse_scene_narration(
                 payload.get("target_scene_narration"), allow_empty=entry_narration),
-            "source_performance": _parse_transition_performance(
+            "source_performance": "" if transition_tail_only else _parse_transition_performance(
                 payload.get("source_performance"),
                 dialogue_policy=source_dialogue_policy,
                 allow_empty=True,
             ),
         }
+        target_narration = result["target_scene_narration"]
+        if entry_trigger:
+            result["target_scene_narration"] = "\n".join(text for text in (
+                result["target_scene_narration"], entry_trigger) if text)
         result["target_performance"] = _parse_transition_performance(
             payload.get("target_performance"), dialogue_policy=target_dialogue_policy,
             allow_empty=natural_ending or entry_narration,
@@ -482,7 +562,7 @@ def _parse_output(
         if fixed_entry_only and payload.get("suggested_inputs", []) != []:
             # Check the raw container before recommendation normalization can drop invalid entries.
             raise NumericV2ActorOutputError("numeric_v2_actor_fixed_entry_only_fields_nonempty")
-        result["suggested_inputs"] = _parse_actor_suggestions(
+        result["suggested_inputs"] = [] if author_entry_choices else _parse_actor_suggestions(
             payload.get("suggested_inputs"),
             diagnostics=suggestion_diagnostics,
         )
@@ -494,6 +574,15 @@ def _parse_output(
             # Explicit author mode: the program delivers the whole target entry. Never
             # silently drop a model-written target segment; the bounded retry must fix it.
             raise NumericV2ActorOutputError("numeric_v2_actor_fixed_entry_only_fields_nonempty")
+        if fact_candidates_expected:
+            result["fact_candidates"] = _parse_actor_fact_candidates(
+                payload.get("fact_candidates"), expected=True, diagnostics=fact_candidate_diagnostics,
+            )
+        if entry_trigger_required and draft_provenance_sink is not None:
+            draft_provenance_sink.update(
+                target_scene_narration=target_narration,
+                target_entry_trigger=entry_trigger,
+            )
         return result
     required_fields = {"performance"}
     tolerated_fields = {
@@ -503,7 +592,6 @@ def _parse_output(
         "transition_offered",
         "transition_offer",
         "fact_candidates",
-        "narrative_events",
     }
     # Every optional field is parsed independently below and degrades on its own
     # when absent, so any combination of them is a valid ordinary-turn shape.
@@ -511,17 +599,47 @@ def _parse_output(
         raise NumericV2ActorOutputError("numeric_v2_actor_fields_invalid")
     body = payload.get("performance")
     offered = payload.get("transition_offered", False)
-    if "transition_offer" in payload:
+    published_offer = ""
+    blocked_offer_attempt = False
+    bridge_rejected = False
+    if suppress_transition_offer:
+        # A draft cannot publish an invitation when the program owns it or has no current exit.
+        raw_offer = payload.get("transition_offer")
+        blocked_offer_attempt = offered is True or bool(str(raw_offer or "").strip())
+        if isinstance(body, str) and isinstance(raw_offer, str) and raw_offer.strip():
+            body = _without_standalone_transition_offer(
+                _strip_inline_markdown(body.strip()), _strip_inline_markdown(raw_offer.strip()),
+                dialogue_policy=dialogue_policy,
+            ) or body
+        offered = False
+    elif "transition_offer" in payload:
         if not isinstance(payload["transition_offer"], str):
             raise NumericV2ActorOutputError("numeric_v2_actor_transition_offer_invalid")
         # Publish before deriving the existing flag. This proves delivery only;
         # it does not establish validity or authorize the player's next action.
-        offer = _strip_inline_markdown(payload["transition_offer"].strip())
-        offered = bool(offer)
+        offer = _strip_inline_markdown(payload["transition_offer"]).strip()
+        bridge = _strip_inline_markdown(ordinary_entry_bridge).strip()
+        bridge_rejected = blocked_offer_attempt = bool(offer and offer == bridge)
+        offered = bool(offer) and not bridge_rejected
         if isinstance(body, str):
             body = _strip_inline_markdown(body.strip())
-            if offer and offer not in body:
+            if blocked_offer_attempt:
+                # The bridge is a future result, not a request for consent.
+                body = _without_standalone_transition_offer(body, offer, dialogue_policy=dialogue_policy) or body
+            elif offered and offer not in body:
+                # The draft can put the same final invitation in both fields,
+                # with different wording in the preceding acknowledgment.
+                invitation = _sentence_units(offer)[-1]
+                if invitation.endswith(("？", "?")) and len(_normalized_comparison_text(invitation)) >= 12:
+                    for connector in ("", "那", "那么"):
+                        local_body = _without_standalone_transition_offer(
+                            body, connector + invitation, dialogue_policy=dialogue_policy,
+                        )
+                        if local_body is not None:
+                            body = local_body
+                            break
                 body = "\n".join(part for part in (body, offer) if part)
+            published_offer = offer if offered else ""
     result = {
         "performance": _parse_mixed_performance(
             body,
@@ -529,7 +647,7 @@ def _parse_output(
             require_narration=False,
             dialogue_policy=dialogue_policy,
         ),
-        "suggested_inputs": _parse_actor_suggestions(
+        "suggested_inputs": [] if blocked_offer_attempt else _parse_actor_suggestions(
             payload.get("suggested_inputs"),
             diagnostics=suggestion_diagnostics,
         ),
@@ -537,10 +655,13 @@ def _parse_output(
             offered
         ),
     }
-    if "transition_offer" in payload:
+    if "transition_offer" in payload and not bridge_rejected:
         # Workflow consumes this before delivery/history; old payloads retain
-        # their existing fallback behavior without a storage format migration.
+        # their existing fallback behavior. A rejected bridge also leaves the
+        # authored fallback eligible; it was neither a valid offer nor an omission.
         result["_transition_offer_provided"] = True
+    if published_offer:
+        result["_published_transition_offer"] = published_offer
     if "scene_update" in payload:
         # Runtime continues to use the existing scene_narration field, so the frontend and older Sessions need no new protocol branch.
         scene_update = _parse_scene_update(payload.get("scene_update"))

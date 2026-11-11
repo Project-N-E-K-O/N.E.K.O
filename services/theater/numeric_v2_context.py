@@ -8,7 +8,7 @@ import re
 from collections import Counter
 from typing import Any, Callable, Mapping, Sequence
 
-from utils.tokenize import count_tokens, truncate_to_tokens
+from utils.tokenize import count_tokens, truncate_head_tail_tokens, truncate_to_tokens
 
 from .numeric_v2_actor_output import _sentence_units
 from .numeric_v2_budget import numeric_v2_actor_budget, NUMERIC_V2_DEFAULT_ACTOR_BUDGET_PROFILE
@@ -78,34 +78,40 @@ def render_prompt_context(data: Mapping[str, Any]) -> str:
 
 
 # Interpret user confirmation using ordinary present-tense language; all three model types share the rule and must not require extra parentheses or perfective aspect.
-PLAYER_ACTION_LANGUAGE_RULE = (
-    "玩家行动按日常表达理解，不要求括号动作或‘已经’字样。"
-    "对象、工具与必要前提已明确具备时，‘行，我签’这类针对眼前动作的直接执行表态，"
-    "允许承接该动作及其直接反应；不能仅因写成对白就降为尚未行动。"
-    "‘我考虑签／准备签／打算签’、询问、假设和有条件的未来意愿仍不算完成；"
+PLAYER_DIRECT_ACTION_RULE = (
+    "玩家行动按日常表达理解。对象、工具与必要前提已具备时，针对眼前具体动作的直接执行表态已授权该动作，"
+    "正文可承接该动作及其直接结果；不要把执行表态误读为仅同意计划，也不要求括号动作或‘已经’字样。"
+    "考虑、准备、询问、假设和有条件的未来意愿仍不算完成。"
+)
+
+PLAYER_ACTION_EXECUTION_RULE = PLAYER_DIRECT_ACTION_RULE + (
     "尝试也不保证未知的成功结果。授权只限玩家明确表达的这项动作，"
     "不扩展到其他对象、额外操作或后续承诺，也不跳过既有的换幕确认。"
     # The user may confirm consecutive actions at the same location that can be performed in advance; node orchestration is not an extra physical prerequisite or player prohibition.
     "同一地点、对象工具及必要前提已经具备的连续动作，玩家本轮明确实施后应承接结果；"
     "不能仅因作者把该动作安排在下一节点，就否认已做动作或判为代做、阶段越界。"
-    "后续转场与开场按实际历史改写，保留结果，不再次要求执行，也不把物件退回操作前。"
-    "这不授权未知结果或违反作者明确禁令；普通换幕由玩家接受公开提议，"
-    "或玩家明确要求前往已公开的下一地点、开始已公开的下一阶段；询问、考虑或准备不算转场授权。"
-    # User confirmation: an implicit prerequisite in the input cannot override actual history; remind the user of the fact and preserve intent without pretending they already performed the prerequisite.
-    "玩家输入的动作前提若与已经发生的剧情冲突，角色自然提醒实际情况，保留其表达的意图；"
-    "不为顺从输入倒退物件状态或补造前置动作，也不交付依赖该错误前提的结果。"
-    "玩家从当前实际状态明确实施新的可行动作，是正常改变，不属于推翻历史。"
+    "换幕继续承接已完成结果，遵守作者明确禁令。"
+    "动作前提与事实冲突时，角色自然提醒实际情况并保留意图，不为顺从输入倒退物件状态或补造前置动作；"
+    "从实际状态实施的可行动作可正常改变现状。"
+)
+
+
+PLAYER_ACTION_LANGUAGE_RULE = PLAYER_ACTION_EXECUTION_RULE + (
+    "后续转场与开场按实际历史承接结果，不再次要求执行，也不把物件退回操作前。"
+    "普通换幕由玩家接受公开提议，或玩家明确要求前往已公开的下一地点、"
+    "开始已公开的下一阶段。询问、考虑或准备不算转场授权。"
 )
 
 
 # Action extraction is intentionally conservative; all three consumers share empty-value semantics, so an extraction miss must not become an action prohibition.
-PLAYER_ACTION_PROJECTION_RULE = (
-    "player_action_projection 是 Runtime 从 player_input 和已提交结果保守提取的辅助证据，不是完整行动清单。"
+PLAYER_ACTION_PROJECTION_SUMMARY = (
+    "player_action_projection 是辅助证据，不是完整行动清单；空值或 false 只表示未提取到对应证据，"
+    "仍按 player_input 和已提交历史核对。future_references 是未来约定。"
+)
+
+PLAYER_ACTION_PROJECTION_RULE = PLAYER_ACTION_PROJECTION_SUMMARY + (
     "confirmed_actions 仅承接各项证据支持的动作或结果；evidence_quote 是原文，不额外授权目的地或后续操作。"
-    "future_references 表示未来约定，不能当作已发生。"
-    "confirmed_actions 为空或 has_confirmed_player_action/player_left_current_scene 为 false 只表示未提取到对应证据，"
-    "仍按 player_input 和已提交历史核对。提问、准备、假设与尝试不证明完成；"
-    "不能推定未知成功、额外动作或跨阶段授权。"
+    "提问、准备、假设与尝试不证明完成；不能推定未知成功、额外动作或跨阶段授权。"
 )
 
 
@@ -119,7 +125,7 @@ SCENE_ENTRY_STATE_RULE = (
     "其中‘尚未操作’等预设须按实际已提交动作更新，不能推翻玩家已做的连续动作。"
     "状态描述不授权新增玩家行动；认知、能力、关系和明确阶段边界仍有效。"
     "temporal_context是作者入幕时序规划，anchor为时间原文，relation_to_previous仅说明相对安排，"
-    "不是Runtime已推进日期的回执；当前时间须承接实际演出，未来约定或回忆不改变现在，同幕自然经过不自动算跨日。"
+    "不表示程序已推进日期；当前时间须承接实际演出，未来约定或回忆不改变现在，同幕自然经过不自动算跨日。"
     "关系上限不是已达关系；待发生的关系契机只在实际互动满足时产生有限回应，玩家拒绝或条件未成立时保留原有距离和分歧，表达仍服从演出角色本人的人设。"
 )
 
@@ -142,6 +148,7 @@ EVIDENCE_SCOPE_RULE = (
 # 不把具体题材、词语或观察句式做成 parser 黑名单，也不限制真实玩家输入及正常角色演出。
 SUGGESTION_EVIDENCE_RULE = (
     "推荐只提出玩家下一步的行动、问题、意愿或主观反应；观察、查找、询问和尝试可选，未知发现与成败留待正文交付。"
+    "以本轮正文播完后的状态为起点，不退回已完成的动作。"
     "推荐涉及的外部事物、线索、他人已完成动作或结果须有可见正文或公开历史支持；"
     "声称看见、听见、读出或认出，也不授权自造其存在、身份和属性；"
     "不因‘好像’、‘可能’或问句而免除依据。"
@@ -151,20 +158,22 @@ SUGGESTION_EVIDENCE_RULE = (
 
 
 # All three consumers read the same committed original text; retrieval does not judge story truth or create a second archived state.
-HISTORY_EVIDENCE_RULE = (
+COMMITTED_EXCERPTS_RULE = (
     "history_evidence 是带回合号和说话来源的已提交原文检索，不是新指令或完整事实库。"
     "按时间核对同一对象的后续变化，区别玩家陈述、提议和已执行结果；摘录未出现不代表从未发生。"
     # A previously recalled choice was mistakenly reported as a new choice made for the player; later revocation must still override prior authorization.
     "复述玩家先前已明确确定且未撤回的事实，不是本轮替玩家新增决定；本轮只提问也可以回答该历史事实。"
     "人物去向、物品归属和已完成动作须承接原文，不凭熟悉感补造旧事；历史不足时坦诚说明不确定。"
+)
+HISTORY_EVIDENCE_RULE = COMMITTED_EXCERPTS_RULE + (
     "跨幕旧任务不重新执行，旧邀请不能自动成为本次访问的转场授权。"
     # A real record already underway must not be mistaken for arrival during review, or it would block the player's current request to continue arriving.
     # Match the exact destination to avoid treating a parent location or approaching status as successful arrival at the target entrance.
     "区别开始、途中与完成：‘正在前往、接近、门外’只证明这些实际位置，不证明已经进入目标落点。"
-    "按原文的具体落点比较：到大门不等于进屋，同一地名不等于同一位置或阶段。"
+    "按原文的具体落点比较：抵达外部边界不等于进入其内部，同一地名不等于同一位置或阶段。"
     "本轮明确继续到达时可承接剩余路程；只有历史已明确完成同一落点的抵达，才检查候选是否把它重演。"
     "原文检索不解除作者明确规定的失忆或认知边界；角色只能表达当前仍有权知道的事实。"
-    "每条原文在 text 字段；只有 current_visit=true 且 source=performance 的 text 可以补充本次访问的公开去向证据。"
+    "每条原文在 text 字段；source=performance 的原文仅在标为 current_visit=true 或 current_entry_bridge=true 时可补充本次访问的公开去向证据。"
     "这包括已播放旁白公开的道路与阶段，不仅限于角色发出的邀请；玩家旧输入本身不证明去向已公开。"
 )
 
@@ -186,6 +195,17 @@ _HISTORY_QUERY_FILLER = re.compile(
 )
 
 
+def entry_bridge_segment(record: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """Locate the unambiguous bridge of a phase-labelled transition record."""
+
+    segments = record.get("segments")
+    if not isinstance(segments, list):
+        return None
+    bridges = [part for part in segments if isinstance(part, Mapping) and part.get("phase") == "transition_bridge"]
+    openings = sum(isinstance(part, Mapping) and part.get("phase") == "target_opening" for part in segments)
+    return bridges[0] if len(bridges) == openings == 1 else None
+
+
 def performance_history_records(session: Any) -> list[dict[str, Any]]:
     """Project complete performances from the sole Session; exclude suggestions, author plans and uncommitted drafts, and create no separate archive."""
 
@@ -201,6 +221,7 @@ def performance_history_records(session: Any) -> list[dict[str, Any]]:
         ))
         # Player input and source responses in an entrance record belong to the previous scene; only the public opening belongs to the current visit.
         crossing = bool(record.get("from_node_id") != record.get("to_node_id"))
+        entry_bridge = entry_bridge_segment(record) if current and crossing else None
         text = str(record.get("input_text") or "").strip()
         if text:
             units.append({"revision": revision, "source": "player_input", "current_visit": current and not crossing, "text": text})
@@ -218,7 +239,8 @@ def performance_history_records(session: Any) -> list[dict[str, Any]]:
                 texts = ["\n".join(block["text"] for block in performance_content_blocks(part))]
             for text in texts:
                 if text:
-                    units.append({"revision": revision, "source": "performance", "current_visit": current and (not crossing or part.get("phase") == "target_opening"), "text": text})
+                    units.append({"revision": revision, "source": "performance", "current_visit": current and (not crossing or part.get("phase") == "target_opening"),
+                                  **({"current_entry_bridge": True} if part is entry_bridge else {}), "text": text})
     return units
 
 
@@ -371,6 +393,7 @@ def current_scene_history_index(
             units.append(dict(revision=revision, source="player_input", current_visit=True,
                               field="input_text", text=message))
         segments = record.get("segments")
+        entry_bridge = entry_bridge_segment(record) if crossing else None
         for part in segments if isinstance(segments, list) else [record]:
             # Entry bridge and opening are visible in this visit; the accepted input
             # and source response belong to the old scene and must not become new tasks.
@@ -396,7 +419,8 @@ def current_scene_history_index(
                     # its text. Retain it verbatim without claiming current-visit authority.
                     units.append(dict(revision=revision, source="performance",
                                       current_visit=not crossing or isinstance(segments, list),
-                                      field=field, text=text))
+                                      field=field, text=text,
+                                      **({"current_entry_bridge": True} if part is entry_bridge else {})))
     if not units:
         return None
 
@@ -443,16 +467,61 @@ def current_scene_history_index(
     return projection(selected)
 
 
+def silent_exit_allowed(node: Mapping[str, Any]) -> bool:
+    """Match the compiler's author-only exemption without changing live policy."""
+    if not isinstance(node.get("completion_contract"), Mapping):
+        return False
+    beat = node.get("story_beat") or {}
+    policy = (beat.get("acting_contract") or {}).get("dialogue_policy")
+    for goal in beat.get("goals") or []:
+        effects = (goal.get("delivery") or {}).get("state_effects") or {}
+        policy = effects.get("dialogue_policy", policy)
+    return policy == "forbidden"
+
+
+_ENTRY_ALTERNATIVE = re.compile(r'“[^”]*”|「[^」]*」|[（(]\s*或(?!许|者说|可)[^（）()\n]+[）)]')
+
+
+def public_entry_text(text: str) -> str:
+    """Project the common part of a legacy entry that contains a parenthetical author alternative."""
+    return _ENTRY_ALTERNATIVE.sub(lambda match: match[0] if match[0][0] in "“「" else "", text)
+
+
+def public_entry_alternatives(beat: Mapping[str, Any]) -> list[str]:
+    """Show discarded legacy options to the auditor only, never as played history."""
+    state = beat.get("character_state")
+    if not isinstance(state, Mapping):
+        state = {}
+    fields = (beat.get("opening_scene"), *(state.get(key) for key in
+              ("catgirl_state", "player_state", "environment_state")))
+    return list(dict.fromkeys(
+        match[0][1:-1].strip() for value in fields if isinstance(value, str)
+        for match in _ENTRY_ALTERNATIVE.finditer(value)
+        if match[0][0] in "（(" and count_tokens(match[0]) <= 48
+    ))[:3]
+
+
+def public_entry_state(beat: Mapping[str, Any]) -> dict[str, Any]:
+    state = beat.get("character_state")
+    if not isinstance(state, Mapping):
+        return {}
+    return {
+        key: public_entry_text(value) if key in {"catgirl_state", "player_state", "environment_state"}
+        and isinstance(value, str) else value
+        for key, value in state.items()
+    }
+
+
 def scene_opening_text(beat: Mapping[str, Any]) -> str:
     """Share the author's opening across playback, review and rewriting; fall back to the first summary or character-situation sentence for legacy packages."""
 
     opening = str(beat.get("opening_scene") or "").strip()
     if opening:
-        return opening
+        return public_entry_text(opening).strip()
     for value in (beat.get("summary"), beat.get("catgirl_situation")):
         sentences = _sentence_units(value)
         if sentences:
-            return sentences[0]
+            return public_entry_text(sentences[0]).strip()
     return ""
 
 
@@ -486,6 +555,37 @@ def current_scene_records(
         # Once the most recent boundary where the current node was entered is reached, do not mix earlier scenes into the current one.
         break
     return visit_records, entered_current_node
+
+
+def current_entry_cause(session: Any) -> dict[str, Any]:
+    """Project the actual crossing input separately from this visit's actions."""
+    records, entered = current_scene_records(session)
+    if not entered:
+        return {}
+    entry = records[-1]
+    if (not isinstance(entry.get("timeline_projection"), Mapping)
+            or entry.get("input_source") in {"reinvite", "accept_invitation"}):
+        return {}
+    original = entry.get("input_text")
+    if not isinstance(original, str) or not original.strip() or count_tokens(original) > 256:
+        return {}
+    # Entry history already carries the bridge and target opening. Other
+    # source-scene reactions are not evidence of this particular input.
+    return {"revision": entry["revision"], "source_player_input": original,
+            "scope": "上一幕入场依据，只承接后果，不重复执行或登记。"}
+
+
+def current_entry_fixed_narrations(session: Any) -> tuple[str, ...]:
+    """Read committed fixed text from this visit's actual entry, excluding source and bridge."""
+
+    records, entered = current_scene_records(session)
+    entry = records[-1]["segments"][-1] if entered and records[-1].get("segments") else (
+        {} if entered else session.opening_performance
+    )
+    return tuple(
+        item["text"] for item in entry.get("fixed_narrations", ())
+        if item.get("position") == "before" and item.get("node_id") == session.current_node_id
+    )
 
 
 _SCENE_FACT_KEY_RE = re.compile(
@@ -539,6 +639,33 @@ def project_scene_facts(
     }
 
 
+def public_player_fact_evidence(
+    session: Any, fact_contract: Mapping[str, Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Carry confirmed player values and legacy registration turns without interpreting old input."""
+    originals = {row["revision"]: row["input_text"] for row in session.performance_history
+                 if row.get("input_text") and "revision" in row}
+    rows = []
+    for key, fact in session.story_state["facts"].items():
+        definition = fact_contract.get(key, {})
+        if fact["visibility"] != "public" or definition.get("visibility") != "public":
+            continue
+        value, revision = fact["value"], fact["source_revision"]
+        recorded_choice = definition.get("evidence_source") == "player_input" and isinstance(value, str)
+        legacy = (value is True and not definition.get("evidence_source")
+                  and key.startswith("scene:") and not key.startswith(f"scene:{session.current_node_id}:"))
+        if recorded_choice or (legacy and revision in originals):
+            rows.append((recorded_choice, {"description": definition.get("description", ""), "value": value,
+                                           "revision": revision, "player_input": originals.get(revision, "")}))
+    result = []
+    for _, row in sorted(rows, key=lambda item: (item[0], item[1]["revision"]), reverse=True):
+        if count_tokens(json.dumps([*result, row], ensure_ascii=False)) <= 220:
+            result.append(row)
+        if len(result) == 3:
+            break
+    return result
+
+
 def scene_facts_prompt_text(session: Any) -> str:
     """Compress public scene events into short sentences and embed them in the existing history field without adding a new top-level prompt protocol."""  # noqa: DOCSTRING_CJK
 
@@ -552,7 +679,7 @@ def scene_facts_prompt_text(session: Any) -> str:
         for row in rows
     ]
     suffix = "（更早事件已截断）" if projection["truncated"] else ""
-    return "Runtime 已提交的场景事件：" + suffix + "\n" + "\n".join(lines)
+    return "程序已提交的场景事件：" + suffix + "\n" + "\n".join(lines)
 
 
 def scene_narrative_focus(beat: Mapping[str, Any]) -> str:
@@ -580,6 +707,22 @@ def scene_narrative_summary(beat: Mapping[str, Any]) -> str:
         if value:
             return value
     return ""
+
+
+def transition_delivery_references(contract: Mapping[str, Any]) -> dict[str, Any]:
+    """Reference a byte-identical bridge requirement on the wire, retaining its original list slot."""
+
+    projection = dict(contract)
+    bridge = contract.get("bridge_scene_narration")
+    required = contract.get("must_deliver")
+    if isinstance(bridge, str) and bridge and isinstance(required, list) and bridge in required:
+        projection["must_deliver"] = [
+            {"content_ref": "bridge_scene_narration"} if item == bridge else item for item in required
+        ]
+    return projection
+
+
+BRIDGE_DELIVERY_REFERENCE_RULE = "content_ref 取合同原文。"
 
 
 def pending_transition_record(
@@ -621,6 +764,45 @@ def pending_transition_record(
     return origin
 
 
+def recorded_transition_offer(record: Mapping[str, Any]) -> str:
+    """Return the exact published offer when the saved turn locates it."""
+    body = record.get("performance")
+    start = record.get("transition_offer_start")
+    if (record.get("transition_offer_presented") is not True
+            or not isinstance(body, str) or type(start) is not int):
+        return ""
+    if "transition_offer_end" in record:
+        end = record["transition_offer_end"]
+        if type(end) is int and 0 <= start < end <= len(body):
+            return body[start:end]
+    elif 0 < start < len(body) and body[start - 1] == "\n":
+        return body[start:]
+    return ""
+
+
+def recorded_silent_choice(
+    record: Mapping[str, Any] | None, ledger_events: Sequence[Mapping[str, Any]],
+) -> str | None:
+    """Return the published program button, or an empty string if its source lacks intact text."""
+
+    if record is None:
+        return None
+    revision = record.get("revision")
+    event = next((row for row in ledger_events if row.get("result_revision") == revision), {})
+    receipt = event.get("program_invitation")
+    silent_receipt = isinstance(receipt, Mapping) and receipt.get("silent") is True
+    if record.get("transition_offer_source") != "program_silent" and not silent_receipt:
+        return None
+    suggestions = record.get("suggested_inputs")
+    if (not isinstance(suggestions, list) or len(suggestions) != 1
+            or not isinstance(suggestions[0], str) or not suggestions[0].strip()):
+        return ""
+    button = suggestions[0]
+    if silent_receipt and (receipt.get("revision") != revision or receipt.get("accept_input") != button):
+        return ""
+    return button
+
+
 def pending_transition_performance(
     session: Any,
     *,
@@ -633,13 +815,20 @@ def pending_transition_performance(
     record = pending_transition_record(session, ledger_events=ledger_events, include_withdrawn=include_withdrawn)
     if record is None:
         return ""
-    # Invitations may appear only in narration; preserve the original mixed-body text and parentheses, with content-block parsing only for legacy records.
+    if offer := recorded_transition_offer(record):
+        return offer
+    # Legacy records may have narration-only or embedded invitations.
     if "performance" in record or "scene_narration" in record:
         performance = "\n".join(str(record.get(key) or "").strip()
             for key in ("scene_narration", "performance") if str(record.get(key) or "").strip())
     else:
         performance = " ".join(block["text"] for block in performance_content_blocks(record))
-    return truncate_to_tokens(performance, max_tokens=max_tokens)
+    if count_tokens(performance) <= max_tokens:
+        return performance
+    # Old records have no invitation offset. Favor the ending of the response,
+    # while keeping its opening in case the offer was embedded there.
+    head_tokens = max_tokens // 3
+    return truncate_head_tail_tokens(performance, head_tokens, max_tokens - head_tokens)
 
 
 _CONTRACT_PROP_PATTERN = re.compile(r"关键道具\s*[“\"]([^”\"]+)[”\"]|\[([a-z][a-z0-9_]{2,})\]")
@@ -671,6 +860,7 @@ def project_contract_boundaries(
         if isinstance(character_state, Mapping)
         else []
     )
+    content_boundaries = list(beat.get("content_boundaries") or [])
     forbidden_behaviors = (
         list(acting_contract.get("forbidden_behaviors") or [])
         if isinstance(acting_contract, Mapping)
@@ -694,6 +884,7 @@ def project_contract_boundaries(
         *(scene_boundaries if fact_only else []),
         *(opening_boundaries if fact_only else []),
         *(scene_boundaries if not fact_only else []),
+        *(content_boundaries if not fact_only else []),
         *(forbidden_behaviors if not fact_only else []),
         *(must_not_happen if not fact_only else []),
     ]
@@ -873,6 +1064,12 @@ def transition_bridge_leak_markers(
 
 
 _TIME_MARKER_PATTERN = re.compile(r"\d{1,2}\s*[:：]\s*\d{2}|\d{1,2}\s*月\s*\d{1,2}\s*[日号]")
+_POSSIBLE_OR_REPORTED_STAGE = re.compile(
+    r"[？?‘’“”\"]|如果|若是|准备|打算|想起|回忆|听说|问道|等到|之后|尚未|还没|没有|未曾|不能|不会|再出发"
+)
+_ARRIVAL_PLACE = re.compile(r"(?:抵达|到达|来到)了?([^，。！？；,.!?;\n]{2,20})")
+_ENTRY_ACTION = re.compile(r"推开[^，。！？]{0,12}门[，,]\s*[^，。！？]{0,12}让你(?:先)?进")
+_PLAYER_ENTRY_ACTION = re.compile(r"推(?:开[^，。！？]{0,12})?门[^，。！？]{0,8}进")
 
 
 def _time_markers(text: Any) -> set[str]:
@@ -903,17 +1100,78 @@ def _beat_source_text(beat: Mapping[str, Any]) -> str:
 
 
 def _visible_narration_text(performance: Mapping[str, Any]) -> str:
-    """Only narration asserts present facts; dialogue and buttons may legitimately propose an exit."""
+    """Narration and enacted character actions assert events; dialogue may propose them."""
+    return "\n".join(block["text"] for block in performance_content_blocks(performance)
+                     if block["type"] in {"narration", "action"})
 
-    parts: list[str] = []
-    if isinstance(performance.get("scene_narration"), str):
-        parts.append(performance["scene_narration"])
-    segments = performance.get("segments")
-    if isinstance(segments, (list, tuple)):
-        for segment in segments:
-            if isinstance(segment, Mapping) and isinstance(segment.get("scene_narration"), str):
-                parts.append(segment["scene_narration"])
-    return "\n".join(parts)
+
+def _premature_target_routes(
+    engine: Any, source: Mapping[str, Any], session: Any, outcome: Any,
+) -> tuple[tuple[Mapping[str, Any], ...], bool]:
+    """Prefer the selected route; unresolved exits are guard references, not route decisions."""
+
+    route_session = getattr(outcome, "session", None) or session
+    selected = engine.preview_route(str(source["id"]), getattr(route_session, "metrics", {}) or {},
+                                    facts=(getattr(route_session, "story_state", None) or {}).get("facts", {}))
+    if isinstance(selected, Mapping):
+        return (selected,), True
+    return tuple(route for route in source["route_gates"]
+                 if isinstance(route, Mapping)
+                 and isinstance(target := engine.nodes.get(str(route.get("target_node_id") or "")), Mapping)
+                 and target.get("type") != "ending" and target.get("terminal") is not True), False
+
+
+def _asserted_stage_narration(performance: Mapping[str, Any]) -> str:
+    return "\n".join(part for part in re.split(r"(?<=[。！？!?；;\n])", _visible_narration_text(performance))
+                     if not _POSSIBLE_OR_REPORTED_STAGE.search(part))
+
+
+def _blocked_arrival_marker(bridge: str, opening: str, source_opening: str,
+                            session: Any, performance: Mapping[str, Any], player_input: str) -> str:
+    """Require an authored landing place and positive, actually enacted stage evidence."""
+
+    source_setting = re.split(r"[“\":：]", source_opening, maxsplit=1)[0]
+    player_actions = re.findall(r"[（(]([^）)]*)[）)]", player_input)
+    for match in _ARRIVAL_PLACE.finditer(bridge):
+        place = match[1].rsplit("的", 1)[-1].strip()
+        if (not re.fullmatch(r"[\u3400-\u9fff]{2,10}", place) or not opening.startswith(place)
+                or place in source_setting):
+            continue
+        arrival = re.compile(rf"(?:(?:已经|已|刚)(?:经)?(?:抵达|到达|来到)|(?:抵达|到达|来到)了|到了){place}")
+        explicit_player_arrival = any(
+            re.search(rf"(?:抵达|到达|来到|到了|进入|走进|跨进|步入|走到|骑到)了?{place}", action)
+            and not _POSSIBLE_OR_REPORTED_STAGE.search(action) for action in player_actions
+        ) or bool(arrival.search(player_input) and not _POSSIBLE_OR_REPORTED_STAGE.search(player_input))
+        if explicit_player_arrival:
+            continue
+
+        def reached(draft: Mapping[str, Any]) -> str:
+            narration = _asserted_stage_narration(draft)
+            if arrival.search(narration):
+                return place
+            threshold = re.search(rf"{place}(?:入口|门口|门前|门外)", narration)
+            blocks = performance_content_blocks(draft)
+            if (threshold and any(b["type"] == "action" and "停在门外" in b["text"] for b in blocks)
+                    and any(b["type"] == "dialogue" and re.match(r"^到了(?:$|[，,。！!])", b["text"])
+                            for b in blocks)):
+                return threshold[0]
+            return ""
+
+        marker = reached(performance)
+        if marker:
+            return marker
+        # A generic door proves no location by itself. Only a directly preceding,
+        # already narrated arrival at this blocked destination can locate the door.
+        records, _ = current_scene_records(session)
+        if (records and records[0].get("from_node_id") == records[0].get("to_node_id")
+                and not any(_PLAYER_ENTRY_ACTION.search(action) and not _POSSIBLE_OR_REPORTED_STAGE.search(action)
+                            for action in player_actions)
+                and any(b["type"] == "action" and _ENTRY_ACTION.search(b["text"])
+                        for b in performance_content_blocks(performance))):
+            marker = reached(records[0])
+            if marker:
+                return marker
+    return ""
 
 
 def premature_target_markers(
@@ -927,7 +1185,8 @@ def premature_target_markers(
 
     The bridge text is projected as a not-yet-happened movement range so the actor can propose a
     concrete exit; it must not be played back as present narration (issue 2.141 B3). Returns an
-    empty tuple for transition turns, unknown exits, or markers the current scene already owns.
+    empty tuple for transition turns or markers the current scene already owns. With no selected exit,
+    require the narration to explicitly establish the candidate's clock time.
     """  # noqa: DOCSTRING_CJK
 
     ledger = getattr(outcome, "ledger_event", None) or {}
@@ -939,29 +1198,33 @@ def premature_target_markers(
     source = nodes.get(source_id)
     if not isinstance(source, Mapping) or not source.get("route_gates"):
         return ()
-    route_session = getattr(outcome, "session", None) or session
-    route = engine.preview_route(source_id, getattr(route_session, "metrics", {}) or {},
-                                 facts=(getattr(route_session, "story_state", None) or {}).get("facts", {}))
-    if not isinstance(route, Mapping):
+    routes, selected = _premature_target_routes(engine, source, session, outcome)
+    target_markers: set[str] = set()
+    for route in routes:
+        target = nodes.get(str(route.get("target_node_id") or ""))
+        if not isinstance(target, Mapping):
+            continue
+        contract = route.get("transition_contract")
+        contract = contract if isinstance(contract, Mapping) else {}
+        target_markers.update(_time_markers("\n".join((
+            scene_opening_text(target.get("story_beat") or {}),
+            str(contract.get("bridge_scene_narration") or ""),
+            str(contract.get("reason") or "") if selected else "",
+        ))))
+    if not target_markers:
         return ()
-    target = nodes.get(str(route.get("target_node_id") or ""))
-    if not isinstance(target, Mapping):
-        return ()
-    contract = route.get("transition_contract")
-    contract = contract if isinstance(contract, Mapping) else {}
-    target_text = "\n".join((
-        scene_opening_text(target.get("story_beat") or {}),
-        str(contract.get("bridge_scene_narration") or ""),
-        str(contract.get("reason") or ""),
-    ))
     allowed_text = "\n".join((
         _beat_source_text(source.get("story_beat") or {}),
-        str(player_input or ""),
+        "" if getattr(outcome, "departure_blocker", None) else str(player_input or ""),
         *(str(row.get("text") or "") for row in performance_history_records(session)),
     ))
-    narrated = _time_markers(_visible_narration_text(performance))
-    owned_by_target = _time_markers(target_text) - _time_markers(allowed_text)
-    return tuple(sorted(narrated & owned_by_target))
+    if selected:
+        narrated = _time_markers(_visible_narration_text(performance))
+    else:
+        narrated = _time_markers("\n".join(re.findall(
+            r"(?:时间来到|此刻是|时钟指向|钟表指向)\s*([^，。！？；\n]+)", _asserted_stage_narration(performance),
+        )))
+    return tuple(sorted(narrated & (target_markers - _time_markers(allowed_text))))
 
 
 def premature_target_scene_facts(
@@ -973,9 +1236,10 @@ def premature_target_scene_facts(
 ) -> tuple[str, ...]:
     """Return the exact opening fragment written in narration before the target scene has been entered.
 
-    Check only longer, locatable source fragments from the target-scene opening; player input, author facts from the source scene, and already committed
-    performance are excluded as known text. If Runtime already records entry into the target scene, allow it to be mentioned again so returning
-    to the scene is not mistaken for first arrival. Rewrites and synonymous paraphrases remain for model review; do not infer semantics here.
+    Check only longer, locatable source fragments from the target-scene opening. Source-scene facts and committed
+    performance are excluded as known text. Player input can support continuity only outside a hard departure block.
+    If Runtime already records entry into the target scene, allow it to be mentioned again so returning
+    to the scene is not mistaken for first arrival. An unresolved exit also checks a narrow form of explicitly enacted arrival.
     """  # noqa: DOCSTRING_CJK
 
     ledger = getattr(outcome, "ledger_event", None) or {}
@@ -987,23 +1251,14 @@ def premature_target_scene_facts(
     source = nodes.get(source_id)
     if not isinstance(source, Mapping) or not source.get("route_gates"):
         return ()
-    route_session = getattr(outcome, "session", None) or session
-    route = engine.preview_route(source_id, getattr(route_session, "metrics", {}) or {},
-                                 facts=(getattr(route_session, "story_state", None) or {}).get("facts", {}))
-    if not isinstance(route, Mapping):
-        return ()
-    target_id = str(route.get("target_node_id") or "")
-    target = nodes.get(target_id)
-    if not target_id or not isinstance(target, Mapping):
+    routes, selected = _premature_target_routes(engine, source, session, outcome)
+    if not routes:
         return ()
 
     # Fact projection proves only that scene entry already occurred; once an entry record exists, this check no longer treats returning to the opening as premature.
     state_facts = (getattr(session, "story_state", None) or {}).get("facts", {})
     scene_facts = project_scene_facts(session, max_facts=max(24, len(state_facts)))
-    target_entry_prefix = f"event:scene.entered:{target_id}:"
-    if any(str(row.get("key") or "").startswith(target_entry_prefix)
-           for row in scene_facts.get("facts", ())):
-        return ()
+    known_entries = tuple(str(row.get("key") or "") for row in scene_facts.get("facts", ()))
 
     def normalize(value: str) -> str:
         return re.sub(r"[\s，,。！？!?；;：:、‘’“”\"'（）()【】\[\]]+", "", value)
@@ -1018,17 +1273,32 @@ def premature_target_scene_facts(
             result.append(item)
         return tuple(result)
 
-    target_units = units(scene_opening_text(target.get("story_beat") or {}))
-    if not target_units:
-        return ()
+    allowed_player_input = "" if getattr(outcome, "departure_blocker", None) else str(player_input or "")
     allowed_text = "\n".join((
         _beat_source_text(source.get("story_beat") or {}),
-        str(player_input or ""),
+        allowed_player_input,
         *(str(row.get("text") or "") for row in performance_history_records(session)),
     ))
     allowed = normalize(allowed_text)
-    narrated = normalize(_visible_narration_text(performance))
-    return tuple(unit for unit in target_units if unit in narrated and unit not in allowed)
+    narrated = normalize(_visible_narration_text(performance) if selected else _asserted_stage_narration(performance))
+    markers: list[str] = []
+    for route in routes:
+        target_id = str(route.get("target_node_id") or "")
+        target = nodes.get(target_id)
+        if (not target_id or not isinstance(target, Mapping)
+                or any(key.startswith(f"event:scene.entered:{target_id}:") for key in known_entries)):
+            continue
+        opening = scene_opening_text(target.get("story_beat") or {})
+        markers.extend(unit for unit in units(opening) if unit in narrated and unit not in allowed)
+        if not selected:
+            contract = route.get("transition_contract")
+            marker = _blocked_arrival_marker(
+                str(contract.get("bridge_scene_narration") or "") if isinstance(contract, Mapping) else "",
+                opening, scene_opening_text(source.get("story_beat") or {}), session, performance, allowed_player_input,
+            )
+            if marker:
+                markers.append(marker)
+    return tuple(dict.fromkeys(markers))
 
 
 __all__ = [
@@ -1037,17 +1307,25 @@ __all__ = [
     "contract_required_names",
     "missing_contract_names",
     "transition_bridge_leak_markers",
+    "COMMITTED_EXCERPTS_RULE",
     "HISTORY_EVIDENCE_RULE",
     "history_evidence",
+    "PLAYER_DIRECT_ACTION_RULE",
+    "PLAYER_ACTION_EXECUTION_RULE",
     "PLAYER_ACTION_LANGUAGE_RULE",
     "premature_target_markers",
     "premature_target_scene_facts",
     "scene_opening_text",
     "current_scene_records",
+    "entry_bridge_segment",
     "project_scene_facts",
     "scene_facts_prompt_text",
     "pending_transition_performance",
     "pending_transition_record",
+    "recorded_transition_offer",
+    "recorded_silent_choice",
     "scene_narrative_focus",
     "scene_narrative_summary",
+    "transition_delivery_references",
+    "BRIDGE_DELIVERY_REFERENCE_RULE",
 ]

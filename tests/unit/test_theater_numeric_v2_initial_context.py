@@ -70,7 +70,7 @@ def test_continuing_initial_premise_is_relabelled_in_full_without_identity_or_hi
         assert "剧本身份：测试猫娘，经营花店、保留旧信的年轻女性。" in data["role"]
         assert "与玩家的当前关系：" in data["role"]
         history = data["story_so_far"]
-        assert chapter in data["next_scene"]
+        assert chapter not in data["next_scene"]
     assert "周末的午后，阳光落在桌上。" in history
     assert "剧本初始前情" in system and "不作为当前时地或重演动作" in system
     assert "章节标题只标示主题" in system
@@ -100,12 +100,14 @@ def test_current_player_turn_stays_last_without_rewriting_quoted_speech(context,
     assert data["player_input"] == message
     prefix = messages[1].content.split("\n", 1)[0]
     assert "玩家刚结束的发言" in prefix
-    assert "角色设定中的你" in prefix
-    assert "suggested_inputs 是玩家看到" in prefix
+    assert "角色设定中的你" in (prefix if formal else messages[0].content)
     if formal:
+        assert "suggested_inputs 是玩家看到" in prefix
         assert "source_performance" in prefix and "target_performance" in prefix
         assert data["transition"]["target_scene"]["opening_situation"] == story["nodes"][2]["story_beat"]["opening_scene"]
     else:
+        assert "suggested_inputs" not in prefix
+        assert "suggested_inputs" in messages[0].content
         # Entry is a past starting point; the actually committed indoor scene remains visible.
         assert "本幕首次入场时的开场设定" in data["current_scene"]
         assert "周末的午后，阳光落在桌上。" in data["story_so_far"]

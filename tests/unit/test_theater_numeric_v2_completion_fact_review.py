@@ -7,9 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from services.theater import numeric_v2_evaluator as ev
-from services.theater.numeric_v2_narrative_proposer import NumericV2NarrativeProposer
 from services.theater.numeric_v2_runtime import NumericV2Engine
-from tests.unit.test_theater_numeric_v2_narrative_review import _event
 from tests.unit.test_theater_numeric_v2_unified_pacing import story_for
 
 
@@ -34,7 +32,6 @@ def _context():
     candidate = {
         "performance": "我接过木匣。", "scene_narration": RESULT, "suggested_inputs": [],
         "fact_candidates": [{"key": KEY, "value": True, "evidence_quote": RESULT}],
-        "narrative_events": [_event()],
     }
     return engine, session, candidate
 
@@ -83,7 +80,6 @@ async def _capture(monkeypatch, *, mode=None, response=None, message=PLAYER,
     monkeypatch.setattr(ev, "_model_config", config)
     monkeypatch.setattr(ev, "create_chat_llm_async", factory)
     monkeypatch.setattr(ev, "invoke_with_usage", invoke)
-    monkeypatch.setattr(NumericV2NarrativeProposer, "propose", no_proposal)
     kwargs = {} if mode is None else {"completion_fact_review_only": mode}
     try:
         result = await ev.NumericV2MetricEvaluator(object()).validate_transition_offer(
@@ -111,7 +107,6 @@ async def test_completion_only_native_request_excludes_fixed_and_narrative_autho
         raise AssertionError("completion-only mode must not construct unrelated approvals")
 
     monkeypatch.setattr(ev, "review_candidates", forbidden)
-    monkeypatch.setattr(ev, "_narrative_review_events", forbidden)
     result, data, schema, messages, options = await _capture(monkeypatch, mode=True, response=_response())
     assert options["max_completion_tokens"] == 350
     assert data["player_input"] == PLAYER
@@ -130,48 +125,29 @@ async def test_completion_only_native_request_excludes_fixed_and_narrative_autho
 
 
 @pytest.mark.asyncio
-async def test_default_full_review_keeps_fixed_and_narrative_contracts(monkeypatch):
-    payload = _response(fixed_narration_triggers=[], approved_narrative_event_indexes=[0], narrative_review_complete=True)
-    implicit = await _capture(monkeypatch, response=payload)
-    explicit = await _capture(monkeypatch, mode=False, response=payload)
-    assert [m.content for m in implicit[3]] == [m.content for m in explicit[3]]
-    assert implicit[2] == explicit[2]
-    result, data, schema, _, options = implicit
-    assert options["max_completion_tokens"] > 350
-    assert data["fixed_narration_candidates"][0]["id"] == "0"
-    assert data["narrative_events"][0]["quote"] == "我接过木匣。"
-    assert {"fixed_narration_triggers", "approved_narrative_event_indexes", "narrative_review_complete"} <= set(schema["required"])
-    assert result.approved_narrative_event_indexes == (0,)
-    assert result.narrative_review_complete is True
+async def test_fact_only_request_keeps_decision_scope_without_unrelated_body_tasks(monkeypatch):
+    claim = {"key": KEY, "op": "set", "value": True, "visibility": "public",
+             "description": RESULT, "subject": "管事", "action": "核验", "object": "文书",
+             "result": "通行许可", "evidence": [{"source": "player_input", "quote": PLAYER}]}
+    _, data, schema, messages, _ = await _capture(monkeypatch, mode=True,
+        candidate_override={"suggested_inputs": []}, evaluator_fact_claims=(claim,),
+        response=_response(approved_actor_fact_indexes=[], approved_evaluator_fact_indexes=[]))
+    system = messages[0].content
+    assert system.count(ev._DECISION_SCOPE_RULE) == 1
+    assert "body_violations保持空数组" in system
+    assert "先不看 suggested_inputs 判正文与邀请" not in system
+    assert "offer_present只判断正文是否提出具体跨阶段行动" not in system
+    assert data["evaluator_fact_claims"][0]["description"] == RESULT
+    assert "approved_evaluator_fact_indexes" in schema["required"]
 
-    departure = PLAYER + "（推门离开，风铃轻响）明天见。"
-    full = await _capture(monkeypatch, response=payload, message=departure)
-    narrow = await _capture(monkeypatch, mode=True, message=departure,
-                            response=_response(scene_update_removal_safe=True))
-    assert full[1]["player_action_projection"]["player_left_current_scene"] is True
-    assert narrow[1]["player_action_projection"] == full[1]["player_action_projection"]
-    assert full[4]["max_completion_tokens"] == options["max_completion_tokens"] + 322
-    assert narrow[4]["max_completion_tokens"] == 350
-    for field in ("body_issues", "scene_update_removal_safe"):
-        assert field in full[2]["required"]
-        assert field in full[3][0].content
-    assert "body_issues" in narrow[2]["required"]
-    assert "body_issues" in narrow[3][0].content
-    assert "scene_update_removal_safe" not in narrow[2]["properties"]
-    assert narrow[0].scene_update_removal_safe is False
+
 
 
 @pytest.mark.asyncio
 async def test_completion_only_does_not_accept_unsolicited_narrative_approval(monkeypatch):
-    result, _, _, _, _ = await _capture(
-        monkeypatch, mode=True,
-        response=_response(approved_narrative_event_indexes=[0], narrative_review_complete=True),
-    )
-    assert result.fact_candidates == ({"key": KEY, "value": True, "evidence_quote": RESULT},)
-    assert result.approved_narrative_event_indexes == ()
-    assert result.narrative_review_complete is False
-    assert result.reviewed_narrative_events == ()
-    assert result.reviewed_narrative_body == ""
+    with pytest.raises(ev.NumericV2EvaluatorOutputError, match="fields_invalid"):
+        await _capture(monkeypatch, mode=True,
+            response=_response(approved_narrative_event_indexes=[0], narrative_review_complete=True))
 
 
 @pytest.mark.asyncio

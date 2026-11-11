@@ -43,13 +43,13 @@ async def _setup(tmp_path):
 async def _generate(monkeypatch,runtime,current,request,outcome,payload):
     actor=NumericV2Actor(object())
     calls=[]
-    async def invoke(*args,**kwargs):
+    async def invoke(messages,**kwargs):
         calls.append(kwargs)
         return deepcopy(payload)
     monkeypatch.setattr(actor,'_invoke',invoke)
     result=await actor.generate_turn(engine=runtime.engine,session=current.session,outcome=outcome,
         player_input=request.message,character_profile='沉稳克制。',allow_suggestion_fill=False)
-    assert len(calls)==1
+    assert len(calls) == 1 and "entry_part" not in calls[0]
     return result
 
 

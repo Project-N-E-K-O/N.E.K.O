@@ -26,12 +26,14 @@ def _case():
                 public_destination_quote=QUOTE)
 
 
-def _clients(monkeypatch, *, role=(), scene=(), fail=None, together=False):
+def _clients(monkeypatch, *, role=(), scene=(), fail=None, together=False, structured=True, authorized=True):
     seen, closed = [], []
     ready = asyncio.Event()
 
     async def config(_):
-        return dict(model='qwen3.8-flash', base_url='https://dashscope.aliyuncs.com/compatible-mode/v1')
+        if structured:
+            return dict(model='qwen3.8-flash', base_url='https://dashscope.aliyuncs.com/compatible-mode/v1')
+        return dict(model='offline', base_url='https://example.invalid')
 
     class Client:
         def __init__(self, options):
@@ -62,7 +64,7 @@ def _clients(monkeypatch, *, role=(), scene=(), fail=None, together=False):
                 data = json.loads(messages[1].content[messages[1].content.index('{'):])
                 if 'candidate_segments' in data:
                     body.update(delivery_matches_route='scene_boundary' not in scene,
-                                public_destination_quote=QUOTE, initiation_authorized=True)
+                                public_destination_quote=QUOTE, initiation_authorized=authorized)
             return SimpleNamespace(content=json.dumps(body))
 
     async def factory(*args, **kwargs):
@@ -142,6 +144,32 @@ async def test_ordinary_narration_uses_short_agency_review_and_preserves_veto(mo
     assert len(seen) == len(closed) == 2
     role, = [row for row in seen if row[0] == 'role']
     assert json.loads(role[1][1].content)['candidate_segments'][0]['scene_narration'] == '玩家自行取出了课本。'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('formal,authorized', [(False, True), (True, True), (True, False)])
+@pytest.mark.parametrize('keep_scene_violation', [False, True])
+async def test_unconstrained_scene_review_cannot_veto_player_agency(
+    monkeypatch, formal, authorized, keep_scene_violation,
+):
+    scene_violations = ('scene_boundary',) if keep_scene_violation else ()
+    seen, _ = _clients(monkeypatch, scene=('player_action', *scene_violations),
+                       structured=False, authorized=authorized)
+    case = _case()
+    if not formal:
+        case.update(route_changed=False, transition_outcome=None, public_destination_quote='')
+        case['actor_performance'] = {'performance': '收到。', 'scene_narration': '灯已经亮了。'}
+    result = await evaluator.NumericV2MetricEvaluator(object()).validate_transition_offer(**case)
+    assert set(result.body_violations) == set(scene_violations + (() if authorized else ('player_action',)))
+    if not result.body_violations:
+        assert result.failure_reason == ''
+    scene = next(row for row in seen if row[0] == 'scene')
+    assert 'response_format' not in scene[2]
+    prompt = scene[1][0].content
+    assert '正文替玩家新增未获授权的行动、决定或回应' not in prompt
+    assert 'player_return_after_departure' not in prompt
+    if not formal:
+        assert evaluator.PLAYER_DIRECT_ACTION_RULE in prompt
 
 
 def test_player_action_parser_never_turns_missing_or_foreign_verdicts_into_approval():

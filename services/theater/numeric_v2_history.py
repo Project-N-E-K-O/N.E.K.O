@@ -98,7 +98,11 @@ async def lookup_history(config_manager: Any, session: Any, query: str) -> dict[
                     # Record lookup failures must not masquerade as absent history; downstream may answer current input but must not invent missing past events.
                     errors.append(type(exc).__name__)
 
-        await asyncio.wait_for(asyncio.gather(*(read_page(page) for page in pages)), timeout=_LOOKUP_TIMEOUT_SECONDS)
+        # Start with later corrections before the shared timeout can cut off older pages.
+        # Keep each page and the returned evidence in their original chronological order.
+        await asyncio.wait_for(
+            asyncio.gather(*(read_page(page) for page in reversed(pages))), timeout=_LOOKUP_TIMEOUT_SECONDS,
+        )
     except Exception as exc:
         errors.append(type(exc).__name__)
     result["evidence"] = [records[index] for index in sorted(selected)]

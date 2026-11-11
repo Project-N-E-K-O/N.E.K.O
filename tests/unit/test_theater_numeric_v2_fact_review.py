@@ -137,7 +137,7 @@ def test_claims_and_restricted_evidence_survive_ordinary_and_formal_projection(f
     if with_claims:
         assert data["evaluator_fact_claims"] == [{**claims[0], "index": 0}]
         assert "未确认提议" in system
-        assert "不能用 Actor" in system
+        assert "不能用本次新生成的正文" in system
         assert "全部条件" in system
         assert "引文存在不等于" in system
     if formal:

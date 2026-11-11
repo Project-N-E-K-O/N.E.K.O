@@ -190,8 +190,6 @@ async def test_rejected_recovery_reuses_only_the_same_approved_ordinary_draft(
         assert {key: value for key, value in result.outcome.ledger_event.items()
                 if key != "narrative_record"} == prepare_calls[0].ledger_event
         # A separate empty proposal exists, but this mock Review never confirms it.
-        assert result.outcome.ledger_event["narrative_record"]["coverage"] == "unconfirmed"
-        assert result.outcome.ledger_event["narrative_record"]["events"] == []
         assert result.stored.session.current_node_id == "start"
         if scenario == "unsafe_button":
             assert result.performance["suggested_inputs"] == []

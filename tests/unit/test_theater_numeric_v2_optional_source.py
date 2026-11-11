@@ -162,6 +162,76 @@ async def test_single_ending_response_commits_restores_and_forks(tmp_path, phase
     assert await runtime.restore_session('single-fork') == fork
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("authored_bridge", [False, True])
+async def test_natural_ending_actor_reserves_two_deliveries_only_with_an_authored_bridge(
+        tmp_path, monkeypatch, authored_bridge):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from services.theater import numeric_v2_actor as actor
+
+    story = deepcopy(_engine().story)
+    source = story["nodes"][0]
+    target = story["nodes"][2]
+    target["story_beat"]["acting_contract"] = dict(
+        cognition_state="normal", memory_state="available", self_reference_mode="persona_allowed",
+        persona_scope="full", dialogue_policy="optional", allowed_behaviors=[], forbidden_behaviors=[])
+    source["story_beat"]["narrative_summary"] = "玩家发出最后信号后，猫娘拉下闸柄锁闭旧站。"
+    bridge = "旧站闭锁后，两人离开值班站，次日抵达家中。"
+    if authored_bridge:
+        source["route_gates"][1]["transition_contract"]["bridge_scene_narration"] = bridge
+        target["story_beat"]["opening_scene"] = "次日清晨，猫娘在家把旧站钥匙挂上钥匙架。"
+    else:
+        target["story_beat"]["opening_scene"] = "旧站闸门闭合，柜台上的灯仍亮着。"
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)
+    current = await runtime.start_session(session_id="ending-slots", catgirl_binding=_binding(),
+        opening_performance={"performance": "（望向闸门）我在等最后的信号。", "suggested_inputs": []})
+    request = TurnRequestV2("end", 0, "信号到了，请拉下闸柄。")
+    outcome = runtime.prepare_turn(current, request, (), scene_complete=True, natural_ending_ready=True)
+    assert outcome.session.status == "ended"
+
+    source_action = "（拉下闸柄锁闭旧站）"
+    target_action = "（将旧站钥匙挂上钥匙架）"
+    calls = []
+
+    async def config(_):
+        return {"model": "qwen3.8-flash", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"}
+
+    async def client(*args, **kwargs):
+        return nullcontext(None)
+
+    async def invoke(_, messages, *, stage, response_format):
+        calls.append(stage)
+        schema = response_format["json_schema"]["schema"]
+        assert ("response_phase" in schema["required"]) is not authored_bridge
+        assert ("最多写一份performance" in messages[0].content) is not authored_bridge
+        payload = {
+            "source_scene_narration": "",
+            "bridge_scene_narration": bridge if authored_bridge else "闸门落到底，站内的脚步声停下。",
+            "target_scene_narration": "晨光落在家中的窗边。" if authored_bridge else "柜台上的灯仍亮着。",
+            "suggested_inputs": [],
+        }
+        if authored_bridge:
+            assert "独立角色动作或回应分别在来源段和目标段交付" in messages[0].content
+            payload.update(source_performance=source_action, target_performance=target_action)
+        else:
+            payload.update(response_phase="source_response", performance=source_action)
+        return SimpleNamespace(content=json.dumps(payload, ensure_ascii=False))
+
+    monkeypatch.setattr(actor, "_model_config", config)
+    monkeypatch.setattr(actor, "create_chat_llm_async", client)
+    monkeypatch.setattr(actor, "invoke_with_usage", invoke)
+    result = await actor.NumericV2Actor(object()).generate_turn(
+        engine=runtime.engine, session=current.session, outcome=outcome, player_input=request.message,
+        character_profile="沉着。")
+    assert result["segments"][0]["performance"] == source_action
+    assert result["segments"][2]["performance"] == (target_action if authored_bridge else "")
+    assert calls == ["actor"]
+    committed = await runtime.commit_turn(outcome, result)
+    assert await runtime.restore_session("ending-slots") == committed
+
+
 def test_real_holdout10_empty_target_opening_is_no_response():
     parsed = _parse(deepcopy(REAL_HOLDOUT10_EMPTY_TARGET_OPENING), bridge_required=False,
                     natural_ending=True, target_dialogue_policy='optional')

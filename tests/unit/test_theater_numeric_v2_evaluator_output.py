@@ -1,5 +1,6 @@
 """Evaluator accepts a complete JSON fence without repairing ambiguous output."""
 
+from copy import deepcopy
 from dataclasses import replace
 import json
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ from services.theater.numeric_v2_evaluator import (
 )
 from services.theater.numeric_v2_runtime import NumericV2Engine
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
+from tests.unit.test_theater_numeric_v2_unified_pacing import story_for
 
 
 # Complete response captured in the ending probe: stop, 74 completion tokens.
@@ -97,11 +99,66 @@ def test_initiation_requires_exit_alignment_and_public_quote(engine, matches, co
                "public_destination_quote": "前面就是交付院落，我们可以过去。"}
     result = _parse_output(json.dumps(payload), engine, "带路吧。", session)
     assert result.transition_intent == intent
+    assert result.departure_attempt_observed is (intent == "initiate")
     for field in ("exit_matches", "exit_comparison"):
         incomplete = {key: value for key, value in payload.items() if key != field}
         assert _parse_output(json.dumps(incomplete), engine, "带路吧。", session).transition_intent == "unclear"
     payload["public_destination_quote"] = "尚未公开的另一处地点。"
-    assert _parse_output(json.dumps(payload), engine, "带路吧。", session).transition_intent == "unclear"
+    unverified = _parse_output(json.dumps(payload), engine, "带路吧。", session)
+    assert unverified.transition_intent == "unclear"
+    assert unverified.departure_attempt_observed is (intent == "initiate")
+
+
+@pytest.mark.parametrize("case", [
+    "exact", "unpublished", "unpacked", "old_visit", "missing_entry_boundary", "blocked", "multiple",
+    "pending", "withdrawn", "different_input", "incomplete", "mismatch", "wait", "other_target", "wrong_quote",
+])
+def test_exact_acceptance_can_use_only_a_current_published_fixed_entry_invitation(case):
+    offer = "我们现在聊聊你想怎么给反馈，好吗？"
+    acceptance = "好，我们现在就聊聊怎么给反馈。"
+    story = story_for("说好怎么尝")
+    start, middle = story["nodes"][0], story["nodes"][2]
+    ending_gate, route = start["route_gates"]
+    route["transition_contract"].update(fallback_offer=offer, accept_input=acceptance)
+    if case != "multiple":
+        middle["route_gates"][0]["conditions"] = deepcopy(route["conditions"])
+        middle["route_gates"].append(ending_gate)
+        start["route_gates"] = [route]
+    if case == "blocked":
+        route["conditions"] = {"all": [{"type": "fact_equals", "key": "scene:start:done", "value": True}]}
+    start["story_beat"]["fixed_narrations"] = [{
+        "id": "invitation", "text": f"她顿了顿：“{offer}”",
+        "trigger": {"type": "entry"}, "after": [], "required_before_exit": False,
+    }]
+    engine = NumericV2Engine.from_mapping(story)
+    session = engine.create_session(session_id="fixed_offer", catgirl_binding={"catgirl_name": "夏禾"},
+                                    opening_performance={"performance": "她在桌旁停了下来。"})
+    if case == "unpublished":
+        # A matching author contract and normal dialogue do not prove a fixed entry was shown.
+        session = replace(session, opening_performance={"performance": offer})
+    if case in {"old_visit", "missing_entry_boundary", "pending", "withdrawn"}:
+        record = {"revision": 1, "from_node_id": "start", "to_node_id": "start", "performance": "先聊聊吧。"}
+        if case == "old_visit":
+            record.update(from_node_id="elsewhere", segments=[{"phase": "target_opening", "performance": "再坐一会儿。"}])
+        if case in {"pending", "withdrawn"}:
+            record.update(transition_offered=True, transition_offer_presented=True)
+        session = replace(session, revision=2 if case == "missing_entry_boundary" else 1,
+                          transition_offered=case == "pending", performance_history=(record,))
+    packed = evaluator._current_scene_context(session) if case != "unpacked" else []
+    payload = {**json.loads(RESPONSE), "scene_complete": case != "incomplete", "exit_matches": case != "mismatch",
+               "transition_intent": "reject" if case == "wait" else "accept",
+               "transition_reply_target": "latest_interaction" if case == "other_target" else "unclear",
+               "public_destination_quote": "编造的另一句邀约。" if case == "wrong_quote" else ""}
+    message = "等等，过会儿再聊。" if case == "wait" else acceptance
+    if case == "different_input":
+        message = "好，我们现在就聊聊怎么给反馈！"
+    result = _parse_output(json.dumps(payload), engine, message, session, public_destination_evidence=packed)
+    if case == "exact":
+        assert result.transition_intent == "initiate"
+        assert result.public_destination_quote == offer
+    else:
+        assert result.transition_intent == ("reject" if case == "wait" else "unclear")
+        assert result.public_destination_quote == ""
 
 
 @pytest.mark.parametrize("field,value", [("exit_matches", "false"), ("exit_matches", 1), ("exit_comparison", [])])
@@ -611,9 +668,13 @@ async def test_offer_acceptance_uses_one_existing_review_request_with_opt_in_con
             completion_fact_review_only=completion_only, require_offer_acceptance=False,
         )
         assert [item.content for item in (system, human)] == [item.content for item in expected_messages]
-        assert schema == evaluator.review_output_schema(
+        expected_schema = evaluator.review_output_schema(
             display_suggestions=True, completion_fact_review_only=completion_only,
         )
+        if not completion_only:
+            expected_schema["properties"]["offer_failure_code"] = {"type": "string", "enum": ["", "route_mismatch"]}
+            expected_schema["required"].append("offer_failure_code")
+        assert schema == expected_schema
     assert result.offer_acceptance_valid is require_acceptance
 
 

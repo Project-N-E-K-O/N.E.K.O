@@ -120,7 +120,7 @@ async def test_model_cannot_enable_crop_during_fact_review(monkeypatch, pending_
 
         async def ainvoke(self, messages):
             if json.loads(messages[1].content[messages[1].content.index("{"):]).get("review_task") == "player_actions":
-                return SimpleNamespace(content='{"body_violations":[],"failure_reason":""}')
+                return SimpleNamespace(content='{"body_violations":["player_action"],"failure_reason":"未经授权。"}')
             assert ('"scene_update_removal_safe"' in messages[0].content) is not pending_facts
             return SimpleNamespace(content=json.dumps({
                 "offer_present": False, "valid": False, "body_violations": ["player_action"],

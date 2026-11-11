@@ -44,8 +44,8 @@ def test_time_plan_reaches_actor_and_review_without_rewriting_session(formal):
     else:
         assert "作者入幕时序规划：" in data["current_scene"]
         assert "次日清晨" in data["current_scene"] and "next_day" in data["current_scene"]
-    assert ("不是Runtime已推进日期的回执" if formal else
-            "temporal_context只规划入幕时序，不证明当前已经跨日") in messages[0].content
+    assert ("不表示程序已推进日期" if formal else
+            "temporal_context 和未来约定均不证明当前已跨日") in messages[0].content
     assert "关系上限不是已达关系" in messages[0].content
     assert session.to_dict() == before
     assert "temporal_context" not in json.dumps(review["scene_context"], ensure_ascii=False)

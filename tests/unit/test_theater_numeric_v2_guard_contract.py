@@ -179,8 +179,8 @@ def test_guard_no_offer_does_not_skip_body_or_button_checks():
 
     system = _messages(_BUTTON_ONLY_CANDIDATE)[0].content
     assert "没有提议也须检查正文" in system
-    assert system.index("4. suggestion_checks 中 decision=reject 的索引：逐条独立检查按钮") > system.index("3. valid")
-    assert "仅按钮首提时应列索引，offer_present 与 valid 都为 false" in system
+    assert system.index("4. suggestion_checks：按从 0 开始的索引逐条独立判定按钮") > system.index("3. valid")
+    assert "仅按钮首提时在 suggestion_checks 中标为 reject，offer_present 与 valid 都为 false" in system
 
 
 def test_guard_prompt_uses_actual_protocol_and_distinguishes_action_time():
@@ -190,20 +190,34 @@ def test_guard_prompt_uses_actual_protocol_and_distinguishes_action_time():
     example, _ = json.JSONDecoder().raw_decode(system[system.index("{"):])
     assert set(example) == {
         "offer_present", "offer_quote", "offer_kind", "valid", "body_violations", "suggestion_checks",
-        "failure_reason", "player_action_kind",
+        "failure_reason", "player_action_kind", "offer_failure_code",
     }
-    # Match the fixed field count to the actual example so an incorrect count does not prompt the model to invent or remove fields.
-    assert "固定八字段" in system and len(example) == 8
+    assert "按列出的字段和类型填写" in system
     assert not _parse_transition_judge_output(
         json.dumps(example), display_suggestions=tuple(_BUTTON_ONLY_CANDIDATE["suggested_inputs"]),
     ).body_violations
     assert "_preserved" not in system
-    assert "玩家已明确实施的同一动作可以被正文承接，不是 Actor 代做" in system
+    assert "玩家已明确实施的同一动作可以被正文承接，不属于替玩家行动" in system
     # Even after conversational execution rules enter the shared contract, attempts still cannot guarantee unknown outcomes.
     assert "尝试也不保证未知的成功结果" in system
     assert "历史另一次操作也不授权本次结果" in system
     assert "未来邀请即使请求立即开始也不是已执行" in system
     assert "current_scene 包含作者规划与边界，实际状态承接已提交开场、历史和本轮已实施动作" in system
+
+
+@pytest.mark.parametrize("code,valid,quote_matches,expected", [
+    ("route_mismatch", False, True, "route_mismatch"),
+    ("route_mismatch", True, True, ""),
+    ("route_mismatch", False, False, ""),
+    ("", False, True, ""),
+    ("unknown", False, True, ""),
+])
+def test_route_mismatch_code_requires_a_verified_invalid_offer(code, valid, quote_matches, expected):
+    quote = "我们去阅览室吧。"
+    review = _parse_transition_judge_output(json.dumps(_verdict(
+        offer_present=True, offer_quote=quote, valid=valid, offer_failure_code=code,
+    )), offer_evidence_text=quote if quote_matches else "正文没有这句邀请。")
+    assert review.offer_failure_code == expected
 
 
 def test_guard_requires_offer_quote_from_reviewed_body():

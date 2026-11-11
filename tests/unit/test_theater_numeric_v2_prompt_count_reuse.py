@@ -17,6 +17,10 @@ def _wire(data):
     return PREFIX + actor.render_prompt_context(data)
 
 
+def _serialized(data):
+    return json.dumps([{"role": "system", "content": SYSTEM}, {"role": "user", "content": _wire(data)}], ensure_ascii=False)
+
+
 def _data(formal, rows, message="现在继续。"):
     if formal:
         return {"recent_context": rows, "player_input": message,
@@ -58,9 +62,9 @@ def test_unchanged_prompt_is_encoded_once_per_fit(monkeypatch, formal):
 
     assert result == untouched
     assert data == untouched
-    assert Counter(calls)[SYSTEM] == 1
-    assert Counter(calls)[_wire(result)] == 1
-    assert diagnostics["final_tokens"] == original(SYSTEM) + original(_wire(result))
+    assert Counter(calls)[SYSTEM] == 0
+    assert Counter(calls)[_serialized(result)] == 1
+    assert diagnostics["final_tokens"] == original(_serialized(result))
     assert diagnostics["history_included_revisions"] == [3]
     assert diagnostics["history_dropped_revisions"] == []
 
@@ -75,13 +79,13 @@ def test_count_reuse_does_not_escape_the_current_fit(monkeypatch, formal):
         diagnostics = {}
         result = _pack(formal, _data(formal, rows, message), rows, 10000, diagnostics)
         assert result["player_input"] == message
-        assert diagnostics["final_tokens"] == original(SYSTEM) + original(_wire(result))
+        assert diagnostics["final_tokens"] == original(_serialized(result))
         results.append(result)
 
     counts = Counter(calls)
-    assert counts[SYSTEM] == 3
-    assert counts[_wire(results[0])] == 2
-    assert counts[_wire(results[1])] == 1
+    assert counts[SYSTEM] == 0
+    assert counts[_serialized(results[0])] == 2
+    assert counts[_serialized(results[1])] == 1
 
 
 @pytest.mark.parametrize("formal", [False, True])
@@ -94,8 +98,8 @@ def test_evicted_history_recounts_complete_new_prompt_and_keeps_latest_turn(monk
     untouched = deepcopy(data)
     expected = _data(formal, rows[-1:])
     original = actor.count_tokens
-    limit = original(SYSTEM) + original(_wire(expected))
-    assert original(SYSTEM) + original(_wire(data)) > limit
+    limit = original(_serialized(expected))
+    assert original(_serialized(data)) > limit
     calls, original = _observe_counts(monkeypatch)
     diagnostics = {}
 
@@ -106,51 +110,31 @@ def test_evicted_history_recounts_complete_new_prompt_and_keeps_latest_turn(monk
     assert diagnostics["history_included_revisions"] == [2]
     assert diagnostics["history_dropped_revisions"] == [1]
     assert diagnostics["final_tokens"] == limit
-    assert Counter(calls)[SYSTEM] == 1
-    assert Counter(calls)[_wire(data)] == 1
-    assert Counter(calls)[_wire(result)] == 1
+    assert Counter(calls)[SYSTEM] == 0
+    assert Counter(calls)[_serialized(data)] == 1
+    assert Counter(calls)[_serialized(result)] == 1
 
 
-@pytest.mark.parametrize("pressure", ["attribute_quote", "pending_offer"])
+@pytest.mark.parametrize("pressure", ["pending_offer"])
 def test_capacity_rewrites_recount_full_human_without_losing_contracts(monkeypatch, pressure):
     rows = [{"revision": 8, "player_input": "先留在原地。", "performance": "我也留在这里。"}]
     data = _data(False, rows)
     kwargs = {}
-    if pressure == "attribute_quote":
-        state = {
-            "current": {"player": {"position": {"value": "原地", "source_event": "r8.player_input.1",
-                "quote": "玩家仍留在原地，没有作出新承诺。" * 100}}},
-            "last_known": {},
-            "recent_events": [{"event_id": "r8.player_input.1", "quote": "先留在原地。"}],
-            "projection": {"quotes_omitted": 0},
-        }
-        marker = "\nnarrative_state（已提交动态叙事账本）："
-        data["current_scene"] += marker + json.dumps(state, ensure_ascii=False, separators=(",", ":"))
-        expected = deepcopy(data)
-        compact = deepcopy(state)
-        compact["current"]["player"]["position"].pop("quote")
-        compact["projection"]["quotes_omitted"] = 1
-        expected["current_scene"] = data["current_scene"].replace(
-            json.dumps(state, ensure_ascii=False, separators=(",", ":")),
-            json.dumps(compact, ensure_ascii=False, separators=(",", ":")),
-        )
-        kwargs["narrative_state"] = state
-    else:
-        offer = "（望向站台）要一起去长椅旁等通知吗？" * 12
-        rows[0]["performance"] = offer
-        data = _data(False, rows)
-        marker = "当前待确认提议原文（只证明此前说过，不证明安排正确）："
-        warning = "先核对原邀请，不得替玩家接受。"
-        data["pacing"] += marker + offer + warning
-        expected = deepcopy(data)
-        expected["pacing"] = expected["pacing"].replace(
-            marker + offer, marker + "见 story_so_far 中角色最新的完整原文。", 1,
-        )
-        kwargs["pending_offer_text"] = offer
+    offer = "（望向站台）要一起去长椅旁等通知吗？" * 12
+    rows[0]["performance"] = offer
+    data = _data(False, rows)
+    marker = "当前待确认提议原文（只证明此前说过，不证明安排正确）："
+    warning = "先核对原邀请，不得替玩家接受。"
+    data["pacing"] += marker + offer + warning
+    expected = deepcopy(data)
+    expected["pacing"] = expected["pacing"].replace(
+        marker + offer, marker + "见 story_so_far 中角色最新的完整原文。", 1,
+    )
+    kwargs["pending_offer_text"] = offer
     untouched = deepcopy((data, rows, kwargs))
     original = actor.count_tokens
-    limit = original(SYSTEM) + original(_wire(expected))
-    assert original(SYSTEM) + original(_wire(data)) > limit
+    limit = original(_serialized(expected))
+    assert original(_serialized(data)) > limit
     calls, original = _observe_counts(monkeypatch)
     diagnostics = {}
 
@@ -164,6 +148,6 @@ def test_capacity_rewrites_recount_full_human_without_losing_contracts(monkeypat
     assert diagnostics["history_included_revisions"] == [8]
     assert diagnostics["history_dropped_revisions"] == []
     assert diagnostics["final_tokens"] == limit
-    assert Counter(calls)[SYSTEM] == 1
-    assert Counter(calls)[_wire(data)] == 1
-    assert Counter(calls)[_wire(result)] == 1
+    assert Counter(calls)[SYSTEM] == 0
+    assert Counter(calls)[_serialized(data)] == (0 if kwargs.get("pending_offer_text") else 1)
+    assert Counter(calls)[_serialized(result)] == 1

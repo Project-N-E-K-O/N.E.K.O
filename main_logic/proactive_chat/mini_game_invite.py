@@ -393,7 +393,7 @@ async def _summarize_theater_invite(selected: dict[str, Any], invite_lang: str) 
                     SystemMessage(content=(
                         f"Summarize the story's public opening in {locale} for a character's invitation. "
                         f"Return only 1-2 short plain-text sentences, at most {limit} characters "
-                        "(aim for about 50 Chinese characters). Preserve the premise and hook without "
+                        "Preserve the premise and hook without "
                         "repeating the title, adding spoilers, inventing later events, or writing an invitation. "
                         "Preserve the characters' circumstances and freedom of action; do not invent "
                         "predicaments, commitments, or mysteries. Refer to the protagonists as the localized "

@@ -90,7 +90,7 @@ def test_evaluator_keeps_new_input_separate_from_old_player_and_character_text()
     assert sections["角色设定"] == {}
     assert sections["玩家本轮输入"] == {"player_input_revision": 1, "player_input": message}
     assert "scene_context" in sections["历史对话"]
-    assert "数值判定器，不续写剧情" in messages[0].content
+    assert "剧情进度和数值的判定器，不续写剧情" in messages[0].content
     assert session.to_dict() == before
 
 

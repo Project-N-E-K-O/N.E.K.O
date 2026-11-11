@@ -496,29 +496,6 @@ def test_first_bundled_install_obeys_write_fence_after_maintenance_was_cached(tm
     assert not (tmp_path / 'theater/numeric_v2/bundled_stories.json').exists()
 
 
-def test_speed_first_http_turn_does_not_schedule_or_wait_for_dynamic_ledger(tmp_path, monkeypatch):
-    from services.theater import numeric_v2_background_narrative as background, numeric_v2_options
-
-    monkeypatch.setattr(numeric_v2_options, 'MODEL_REVIEWS_ENABLED', False)
-    client = _client(tmp_path, monkeypatch)
-    calls = []
-    def unexpected(*args, **kwargs):
-        calls.append('ledger')
-        raise AssertionError('background ledger must stay disabled')
-    monkeypatch.setattr(background, 'schedule_narrative', unexpected)
-    monkeypatch.setattr(background, 'settle_before_input', unexpected)
-    with client:
-        assert client.post('/api/theater-numeric/session/start', json={
-            'story_id': 'numeric_v2_contract', 'session_id': 'ledger_disabled'}).status_code == 200
-        for revision in range(2):
-            result = client.post('/api/theater-numeric/session/input', json={
-                'story_id': 'numeric_v2_contract', 'session_id': 'ledger_disabled',
-                'client_turn_id': f'ledger_disabled_{revision}', 'base_revision': revision,
-                'message': '继续听你说。'})
-            assert result.status_code == 200, result.text
-    assert calls == []
-    saved = json.loads((tmp_path / 'theater/numeric_v2/sessions/ledger_disabled.json').read_text(encoding='utf-8'))
-    assert all('narrative_pending' not in event for event in saved['ledger_events'])
 
 def test_archive_binding_failure_returns_structured_json(tmp_path, monkeypatch):
     with _client(tmp_path, monkeypatch) as client:

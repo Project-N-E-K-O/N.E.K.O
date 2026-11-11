@@ -43,7 +43,12 @@ def test_program_entry_and_optional_speech_have_one_target_author():
     assert 'required仍须交付原文未承担的必要对白' in system
     assert '没有必要新反应时target_performance填空' not in system
     assert '固定旁白是程序独立播放的内容' not in system
-    assert json.dumps(FIXED, ensure_ascii=False) in system
+    data = prompt_payload(messages[1].content)
+    delivery = data['transition']['program_entry_delivery']
+    assert delivery['status'] == 'scheduled_this_draft'
+    assert delivery['fixed_narrations'][0]['text'] == FIXED
+    assert json.dumps(FIXED, ensure_ascii=False) not in system
+    assert sum(message.content.count(json.dumps(FIXED, ensure_ascii=False)) for message in messages) == 1
 
 
 def test_actor_keeps_narrated_player_state_and_own_changes_in_playback_order():
@@ -248,8 +253,8 @@ def test_actor_does_not_send_empty_narrative_ledger_or_scene_event_log():
     messages = actor._turn_messages(engine, session, outcome, '你好。', '温和', '猫娘', '玩家')
     data = _data(messages)
     assert 'narrative_state（' not in data['current_scene']
-    assert 'Runtime 已提交的场景事件' not in data['story_so_far']
-    assert actor._COMMITTED_NARRATIVE_STATE_RULE not in messages[0].content
+    assert '程序已提交的场景事件' not in data['story_so_far']
+    assert "动态账本" not in messages[0].content
 
 
 @pytest.mark.parametrize('simple', [False, True])

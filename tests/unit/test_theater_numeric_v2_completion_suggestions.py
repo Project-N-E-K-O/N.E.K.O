@@ -136,7 +136,6 @@ async def _setup(tmp_path, monkeypatch, *, actor_flag=True, author_offer=False,
     monkeypatch.setattr(wf.NumericV2MetricEvaluator, "evaluate", evaluate)
     monkeypatch.setattr(wf.NumericV2Actor, "generate_turn", generate)
     monkeypatch.setattr(wf.NumericV2Actor, "_character_profile", lambda self: "温和。")
-    monkeypatch.setattr(wf.NumericV2NarrativeProposer, "propose", no_proposal)
     monkeypatch.setattr(ev, "_model_config", config)
     monkeypatch.setattr(ev, "create_chat_llm_async", factory)
     monkeypatch.setattr(ev, "invoke_with_usage", invoke)
@@ -212,7 +211,6 @@ def _assert_no_new_authority(result):
     for value in (result.performance, result.stored.ledger_events[-1]):
         for field in ("program_invitation", "transition_offer_presented", "transition_offer_source"):
             assert field not in value
-    assert result.stored.ledger_events[-1]["narrative_record"]["coverage"] == "unrecorded"
 
 
 def _assert_reviewed_invitation_only(result, *, acceptance_receipt=True):
@@ -237,7 +235,6 @@ def _assert_reviewed_invitation_only(result, *, acceptance_receipt=True):
         assert receipt["offer"] == BODY.split("）", 1)[1]
     else:
         assert "program_invitation" not in event
-    assert result.stored.ledger_events[-1]["narrative_record"]["coverage"] == "unrecorded"
 
 
 @pytest.mark.asyncio

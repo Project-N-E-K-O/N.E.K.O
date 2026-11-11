@@ -13,6 +13,7 @@ from services.theater import numeric_v2_evaluator as evaluator
 from services.theater.numeric_v2 import MAX_ACTOR_PROMPT_FIELD_TOKENS, NumericV2Compiler
 from services.theater.numeric_v2_budget import numeric_v2_actor_budget
 from services.theater.numeric_v2_cast import NumericV2CastProjection
+from services.theater.numeric_v2_context import public_player_fact_evidence
 from services.theater.numeric_v2_runtime import NumericV2Engine, NumericV2Runtime, TurnRequestV2
 from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_runtime import _binding
@@ -73,6 +74,58 @@ def _projected(engine, values, address="你"):
     return NumericV2CastProjection.from_story(
         engine.story, player_name="玩家" if address == "你" else address, catgirl_name="Lan",
     ).value(values)
+
+
+def test_legacy_shared_opening_projects_common_state_to_transition_actor():
+    story = deepcopy(_story())
+    beat = story["nodes"][1]["story_beat"]
+    beat["opening_scene"] = "访客站在入口（或坐在另一间屋子）。他说：“要等一下（或者现在开始）？”"
+    beat["character_state"]["environment_state"] = "环境为等候区（或已转移到操作台）。"
+    engine = NumericV2Engine.from_mapping(story)
+    session = _session(engine)
+    message = "我们去下一处。"
+    outcome = engine.resolve_turn(session, TurnRequestV2("move", 0, message), (), transition_intent="initiate")
+    messages = actor._turn_messages(engine, session, outcome, message, "说话简短。", "Lan", "你")
+    target = _data(messages)["transition"]["target_scene"]
+    assert target["opening_situation"] == "访客站在入口。他说：“要等一下（或者现在开始）？”"
+    assert target["author_entry_plan"]["environment_state"] == "环境为等候区。"
+    assert "或坐在另一间屋子" in engine.nodes["mainline_02"]["story_beat"]["opening_scene"]
+
+
+@pytest.mark.asyncio
+async def test_optional_player_choice_crosses_shared_exit_and_restores(tmp_path):
+    story = deepcopy(_story())
+    key = "scene:mainline_01:method"
+    story["fact_contract"]["facts"][key] = {
+        "value_type": "string", "visibility": "public",
+        "description": "玩家选定的核对方式为现场查验或书面核验。", "evidence_source": "player_input",
+    }
+    engine = NumericV2Engine.from_mapping(story)
+    runtime = NumericV2Runtime(engine, tmp_path)
+    current = await runtime.start_session(session_id="optional-choice", catgirl_binding=_binding(),
+                                          opening_performance={"performance": "你想怎么核对？"})
+    message = "我选现场查验，我们去下一处。"
+    wire = {"scene_complete": False, "metric_changes": {}, "fact_candidates": [
+        {"op": "set", "key": key, "value": "现场查验", "visibility": "public", "confidence": "confirmed",
+         "subject": "玩家", "action": "选", "object": "现场查验", "result": "选定现场查验",
+         "evidence": [{"source": "player_input", "quote": "我选现场查验"}]},
+    ]}
+    evaluation = evaluator._parse_output(json.dumps(wire, ensure_ascii=False), engine, message, current.session)
+    assert key not in {row["key"] for row in engine.scene_fact_targets(current.session.current_node_id)}
+    assert evaluation.fact_operations[0]["value"] == "现场查验"
+    moved = runtime.prepare_turn(current, TurnRequestV2("move", 0, message), (),
+                                 transition_intent="initiate", fact_operations=evaluation.fact_operations)
+    assert moved.session.current_node_id == "mainline_02"
+    stored = await runtime.commit_turn(moved, engine.finalize_transition_performance(moved, {
+        "source_performance": "好，我们到桌边查验。", "bridge_scene_narration": "两人来到桌边。",
+        "target_scene_narration": "窗边有一张桌子。", "target_performance": "东西在这里。",
+        "suggested_inputs": [],
+    }, target_opening="窗边有一张桌子。"))
+    restored = await NumericV2Runtime(engine, tmp_path).restore_session("optional-choice")
+    assert restored == stored
+    rows = public_player_fact_evidence(restored.session, engine.fact_contract)
+    assert [(row["value"], row["player_input"]) for row in rows] == [("现场查验", message)]
+    assert _data(_request(engine, restored.session))["player_fact_evidence"] == rows
 
 
 @pytest.mark.asyncio

@@ -273,7 +273,8 @@ async def test_review_target_direction_waits_until_after_nonterminal_opening(tmp
     if intent == 'accept':
         original = data['transition_authorization']['pending_invitation']
         assert original['revision'] == stored.session.revision
-        assert invitation in json.dumps(original, ensure_ascii=False)
+        assert original['content'].startswith('scene_context[')
+        assert messages[1].content.count(invitation) == 1
     else:
         assert data['transition_authorization']['public_destination_quote'] == public_quote
     assert data['scene_context'][-1]['revision'] == stored.session.revision

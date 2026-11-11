@@ -8,7 +8,7 @@ import pytest
 from services.theater.numeric_v2_actor import _turn_messages
 from services.theater.numeric_v2_evaluator import _build_messages
 from services.theater.numeric_v2_runtime import NumericV2Engine, NumericV2Runtime, TurnRequestV2
-from tests.utils.theater_prompt import prompt_payload
+from tests.utils.theater_prompt import pending_transition_text, prompt_payload
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening
 
@@ -229,7 +229,7 @@ async def test_invalidated_invitation_is_shared_before_rewrite_and_review(tmp_pa
     messages = _turn_messages(runtime.engine, current.session, outcome, "好，走吧。", "温和。", "测试猫娘", "哥哥",
                              retry_hint="请更正邀请。",  recent_ledger_events=current.ledger_events)
     data = prompt_payload(messages[1].content)
-    assert "已确认去向错误并撤下的旧邀请原文：我们去便利店买热饮吧？" in data['pacing']
+    assert "已经撤下的旧邀请原文（历史资料）：我们去便利店买热饮吧？" in data['pacing']
     assert "当前待确认提议原文" not in data['pacing']
     messages = _build_transition_judge_messages(runtime.engine, outcome.session, player_input="好，走吧。",
         actor_performance={"performance": "那就走吧。"}, cancelled_transition=True, invalidated_invitation=True)[0]
@@ -273,9 +273,10 @@ async def test_pending_offer_survives_followups_restore_and_fork(tmp_path, narra
     forked = await runtime.fork_session_for_test(stored.session.session_id, session_id="pending_fork", through_revision=3)
     for current in (stored, restored, forked):
         messages = _build_messages(engine, current.session, "好，我们现在去长街。", recent_ledger_events=current.ledger_events)
-        pending = prompt_payload(messages[1].content)["pending_transition"]
-        assert invitation in pending["visible_performance"]
-        assert "不会很远" not in pending["visible_performance"]
+        payload = prompt_payload(messages[1].content)
+        pending = payload["pending_transition"]
+        assert invitation in pending_transition_text(payload)
+        assert "不会很远" not in pending_transition_text(payload)
         assert pending["suggested_inputs"] == original["suggested_inputs"]
         # Actor must see the same original proposal before and after retries; the ledger itself must not enter performance input.
         outcome = runtime.prepare_turn(current,
@@ -292,6 +293,63 @@ async def test_pending_offer_survives_followups_restore_and_fork(tmp_path, narra
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("offer_format", ["appended", "embedded", "legacy"])
+async def test_long_pending_offer_survives_real_history_packing(tmp_path, monkeypatch, offer_format):
+    from services.theater import numeric_v2_evaluator as ev, numeric_v2_options, numeric_v2_workflow as workflow
+    from services.theater.numeric_v2_actor_output import _parse_output
+    from services.theater.numeric_v2_budget import NUMERIC_V2_ACTOR_BUDGET_PROFILES
+    from tests.unit.test_theater_numeric_v2_unified_pacing import story_for
+
+    engine = NumericV2Engine.from_mapping(story_for("西侧档案室"))
+    runtime = NumericV2Runtime(engine, tmp_path)
+    stored = await runtime.start_session(session_id="long-offer", catgirl_binding=_binding(), opening_performance=_opening())
+    body = "我先说明登记流程。" + "双方只核对记录表，不改变手上的原件。" * 75
+    offer = "我们现在一起去西侧档案室，把蓝色封袋交给管理员，好吗？"
+    message = "好，我说的是你刚才提出的那个安排，照原计划走吧。"
+    if offer_format == "legacy":
+        stored = await _commit(runtime, stored, body + "\n" + offer, offer=True)
+    else:
+        async def options():
+            return {key: key == "evaluator" for key in numeric_v2_options.default_options()}
+
+        async def evaluate(self, **kwargs):
+            return ev.NumericV2EvaluationResult((), False)
+
+        async def invoke(self, messages, **kwargs):
+            text = body + "\n" + offer + "\n等你决定。" if offer_format == "embedded" else body
+            return _parse_output(json.dumps({"performance": text, "transition_offer": offer, "suggested_inputs": []}),
+                                 dialogue_policy=kwargs["dialogue_policy"])
+
+        monkeypatch.setattr(numeric_v2_options, "MODEL_REVIEWS_ENABLED", False)
+        monkeypatch.setattr(workflow, "aload_theater_module_options", options)
+        monkeypatch.setattr(workflow.NumericV2MetricEvaluator, "evaluate", evaluate)
+        monkeypatch.setattr(workflow.NumericV2Actor, "_invoke", invoke)
+        monkeypatch.setattr(workflow.NumericV2Actor, "_character_profile", lambda self: "温和。")
+        result = await workflow.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=stored,
+            turn=TurnRequestV2("offer", 0, "请先说明。"), ensure_current_binding=lambda _: _binding())
+        assert "transition_offer_start" not in result.performance
+        stored = await runtime.restore_session("long-offer")
+        assert stored.session.performance_history[-1]["transition_offer_start"] == len(body) + 1
+        assert stored.session.performance_history[-1]["transition_offer_end"] == len(body) + 1 + len(offer)
+
+    stored = await _commit(runtime, stored, "我先看看眼前的记录。" + "这里只讨论登记记录是否有更正。" * 58)
+    profile = NUMERIC_V2_ACTOR_BUDGET_PROFILES[stored.session.actor_budget_profile]
+    monkeypatch.setitem(profile, "evaluator_input_max_tokens", 7000)
+    engine.nodes["start"]["story_beat"]["narrative_summary"] = "本幕规划" + " 灯" * 900
+    diagnostics = {}
+    messages = _build_messages(engine, stored.session, message, recent_ledger_events=stored.ledger_events,
+                               diagnostics=diagnostics)
+    payload = prompt_payload(messages[1].content)
+    assert 1 in diagnostics["recent_dropped_revisions"] and diagnostics["final_tokens"] <= 7000
+    original = pending_transition_text(payload)
+    if offer_format == "legacy":
+        assert original.endswith(offer) and "…[省略中段]…" in original
+    else:
+        assert original == offer
+    assert messages[1].content.count(offer) == 1
+
+
+@pytest.mark.asyncio
 async def test_reject_then_new_offer_uses_new_origin_even_when_all_records_are_true(tmp_path):
     """When rejecting an old offer and proposing a new one in one turn, use the Ledger attitude boundary rather than the first continuous true flag."""
 
@@ -302,9 +360,59 @@ async def test_reject_then_new_offer_uses_new_origin_even_when_all_records_are_t
     stored = await _commit(runtime, stored, "那就改为结束今晚的谈话，好吗？", offer=True, intent="reject")
     stored = await _commit(runtime, stored, "你可以慢慢考虑。")
     assert all(record["transition_offered"] for record in stored.session.performance_history)
-    pending = prompt_payload(_build_messages(engine, stored.session, '好，那今晚到这里。', recent_ledger_events=stored.ledger_events)[1].content)["pending_transition"]
-    assert "结束今晚的谈话" in pending["visible_performance"]
-    assert "长街" not in pending["visible_performance"]
+    payload = prompt_payload(_build_messages(engine, stored.session, '好，那今晚到这里。', recent_ledger_events=stored.ledger_events)[1].content)
+    assert "结束今晚的谈话" in pending_transition_text(payload)
+    assert "长街" not in pending_transition_text(payload)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message,expected", [
+    ("就按银色汽笛的事情继续。", "unclear"),
+    ("我们现在就去长街找旧信。", "accept"),
+])
+async def test_delayed_acceptance_uses_the_saved_offer_span(tmp_path, message, expected):
+    from services.theater.numeric_v2_evaluator import _parse_output
+
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+    runtime = NumericV2Runtime(engine, tmp_path)
+    current = await runtime.start_session(session_id="precise_offer", catgirl_binding=_binding(), opening_performance=_opening())
+    draft = runtime.prepare_turn(current, TurnRequestV2("offer", 0, "先看看照片。"), ())
+    body = "墙上的银色汽笛只是旧照片。"
+    offer = "我们现在去长街找旧信，好吗？"
+    draft, performance = engine.finalize_transition_offer_state(draft, {
+        "performance": body + "\n" + offer, "transition_offer_start": len(body) + 1,
+        "suggested_inputs": ["我想再聊聊银色汽笛。"],
+    }, new_offer=True)
+    current = await runtime.commit_turn(draft, performance)
+    current = await _commit(runtime, current, "你慢慢看。")
+    current = await runtime.restore_session("precise_offer")
+    reply = json.dumps({"scene_complete": True, "metric_changes": {}, "transition_intent": "accept",
+        "transition_reply_target": "pending_transition", "exit_matches": True, "exit_comparison": "模型判为同向。"})
+    parsed = _parse_output(reply, engine, message, current.session, current.ledger_events)
+    assert parsed.transition_intent == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message,expected", [
+    ("（收起草稿）先核对名单吧，看完名单再决定。", "unclear"),
+    ("现在开始清点吧。等名单核对完，我们就走。", "unclear"),
+    ("等器材收好，我们再去长街。", "accept"),
+    ("先收好器材吧，收好再去长街。", "accept"),
+    ("好，我们照说好的去长街。", "accept"),
+])
+async def test_pending_acceptance_preserves_a_new_prerequisite(tmp_path, message, expected):
+    from services.theater.numeric_v2_evaluator import _parse_output
+
+    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+    runtime = NumericV2Runtime(engine, tmp_path)
+    current = await runtime.start_session(session_id="first-action", catgirl_binding=_binding(),
+                                          opening_performance=_opening())
+    current = await _commit(runtime, current, "然后呢？", offer=True,
+                            narration="先收好器材，等器材收好我们再去长街找旧信，好吗？")
+    reply = json.dumps({"scene_complete": True, "metric_changes": {}, "transition_intent": "accept",
+        "transition_reply_target": "pending_transition", "exit_matches": True, "exit_comparison": "模型判为同向。"})
+    result = _parse_output(reply, engine, message, current.session, current.ledger_events)
+    assert result.transition_intent == expected
 
 
 @pytest.mark.asyncio
@@ -321,8 +429,8 @@ async def test_withdrawn_offer_can_be_explicitly_accepted_without_reinviting(tmp
     assert not stored.session.transition_offered
     data = prompt_payload(_build_messages(engine, stored.session, '我改主意了，就按刚才说的走。', recent_ledger_events=stored.ledger_events)[1].content)
     assert data["pending_transition"]["status"] == "withdrawn"
-    assert "沿长街寻找旧信" in data["pending_transition"]["visible_performance"]
-    assert "我听着" not in data["pending_transition"]["visible_performance"]
+    assert "沿长街寻找旧信" in pending_transition_text(data)
+    assert "我听着" not in pending_transition_text(data)
     # Remain in the act without explicit acceptance; historical invitations alone cannot automatically reactivate an old invitation.
     waiting = runtime.prepare_turn(stored, TurnRequestV2("wait", 4, "再想想。"), (), transition_intent="unclear")
     assert waiting.session.current_node_id == stored.session.current_node_id

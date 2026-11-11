@@ -14,9 +14,64 @@ from tests.unit.test_theater_numeric_v2_silent_completion_offer import _story
 from tests.unit.test_theater_numeric_v2_transition_history import _candidate
 
 
+@pytest.mark.parametrize("input_source", ["freeform", "suggestion"])
+def test_silent_exit_prompt_leaves_the_invitation_to_the_program(input_source):
+    from services.theater.numeric_v2_actor import _turn_messages
+    from tests.utils.theater_prompt import prompt_payload
+
+    story = _story("scifi", policy="forbidden", effects=(None,))
+    story["nodes"][0]["route_gates"][1]["transition_contract"]["silent_choice"] = {
+        "destination": "观测舱入口", "arrangement": "继续旅程",
+    }
+    engine = NumericV2Engine.from_mapping(story)
+    session = engine.create_session(session_id="silent-prompt", catgirl_binding=_binding(),
+        opening_performance={"performance": "（望向出口）", "suggested_inputs": []})
+    session = engine.resolve_turn(session, TurnRequestV2("done", 0, "办好了。"), (),
+        fact_operations=({"op": "set", "key": "scene:start:done", "value": True, "visibility": "public"},)).session
+    request = TurnRequestV2("close", session.revision, "我在这里等你。", input_source)
+    outcome = engine.resolve_turn(session, request, ())
+    system, human = _turn_messages(engine, session, outcome, request.message, "沉着。", "小岚", "玩家",
+                                  input_source=input_source)
+
+    assert engine.completion_contract_satisfied(session) is True
+    assert "transition_offer 必须为空字符串" in system.content
+    assert "在 transition_offer 公开一个具体" not in system.content
+    assert "在交付直接结果后依据 next_scene 提出具体未来行动" not in system.content
+    assert "明确说明后果并提出确认" not in system.content
+    if input_source == "suggestion":
+        assert "交付本幕已获授权的行动及其直接结果，换幕仍由程序处理" in system.content
+    assert "由程序在完成条件满足后提供静默选择" in prompt_payload(human.content)["next_scene"]
+
+
+@pytest.mark.parametrize("turns", [1, 2])
+def test_silent_pacing_never_requests_an_offer_for_a_result_delivered_this_turn(turns):
+    from services.theater.numeric_v2_actor import _turn_messages
+    from tests.utils.theater_prompt import prompt_payload
+
+    story = _story("scifi", policy="forbidden", effects=(None,))
+    story["nodes"][0]["recommended_turns"] = 2
+    story["nodes"][0]["route_gates"][1]["transition_contract"]["silent_choice"] = {
+        "destination": "观测舱入口", "arrangement": "继续旅程",
+    }
+    engine = NumericV2Engine.from_mapping(story)
+    session = engine.create_session(session_id="silent-pacing", catgirl_binding=_binding(),
+        opening_performance={"performance": "（望向出口）", "suggested_inputs": []})
+    for revision in range(turns):
+        session = engine.resolve_turn(session, TurnRequestV2(f"wait-{revision}", revision, "我在看终端。"), ()).session
+    request = TurnRequestV2("deliver", session.revision, "请关闭最后一台终端。")
+    outcome = engine.resolve_turn(session, request, ())
+    system, human = _turn_messages(engine, session, outcome, request.message, "沉着。", "小岚", "玩家")
+    data = prompt_payload(human.content)
+    assert engine.completion_contract_satisfied(session) is False
+    assert "由程序在完成条件满足后提供静默选择" in data["next_scene"]
+    assert "不要自行写邀请或接受按钮" in system.content
+    assert "提出基于已发生事实的具体未来行动" not in data["pacing"]
+    assert "可以提出具体下一步" not in data["pacing"]
+
+
 async def setup(tmp_path, monkeypatch, *, genre="scifi", review=True, mode="on", complete=True,
-                binding=None, silent_choice=None):
-    story = _story(genre)
+                binding=None, silent_choice=None, policy="optional"):
+    story = _story(genre, policy=policy)
     destination = "观测舱入口" if genre == "scifi" else "石桥入口"
     accept = f"我同意前往{destination}，安排是：继续旅程。"
     contract = story["nodes"][0]["route_gates"][1]["transition_contract"]
@@ -64,7 +119,6 @@ async def setup(tmp_path, monkeypatch, *, genre="scifi", review=True, mode="on",
     monkeypatch.setattr(wf.NumericV2MetricEvaluator, "validate_transition_offer", review_offer)
     monkeypatch.setattr(wf.NumericV2Actor, "generate_turn", generate)
     monkeypatch.setattr(wf.NumericV2Actor, "_character_profile", lambda self: "温和。")
-    monkeypatch.setattr(wf.NumericV2NarrativeProposer, "propose", propose)
     return runtime, current, accept, calls
 
 
@@ -72,6 +126,120 @@ async def turn(runtime, current, key, message, source="freeform"):
     return await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2(key, current.session.revision, message, source),
         ensure_current_binding=lambda _: _binding())
+
+
+@pytest.mark.asyncio
+async def test_saved_gesture_offer_without_a_button_can_recover(tmp_path, monkeypatch):
+    runtime, current, accept, _ = await setup(tmp_path, monkeypatch, review=False, policy="forbidden")
+    request = TurnRequestV2("legacy-gesture", current.session.revision, "我在这等。")
+    draft = runtime.prepare_turn(current, request, ())
+    outcome, performance = runtime.engine.finalize_transition_offer_state(
+        draft, {"performance": "（指向门口）", "suggested_inputs": []}, new_offer=True,
+    )
+    # The real forbidden policy is needed to distinguish an invalid legacy
+    # action-only flag from an authored spoken or program invitation.
+    current = await runtime.commit_turn(outcome, performance)
+    assert current.session.transition_offered and not current.ledger_events[-1].get("program_invitation")
+    result = await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+        turn=TurnRequestV2("recover-gesture", current.session.revision, "我还在这里。"),
+        ensure_current_binding=lambda _: _binding())
+    assert result.performance["suggested_inputs"] == [accept]
+    assert result.stored.ledger_events[-1]["program_invitation"]["silent"] is True
+
+
+@pytest.mark.asyncio
+async def test_gesture_in_actor_offer_field_cannot_occupy_the_silent_button(tmp_path, monkeypatch):
+    from services.theater.numeric_v2_actor_output import _parse_output
+    from services.theater.numeric_v2_structured_output import actor_output_schema
+
+    real_generate = wf.NumericV2Actor.generate_turn
+    runtime, current, accept, _ = await setup(tmp_path, monkeypatch, review=False)
+    monkeypatch.setattr(wf.NumericV2Actor, "generate_turn", real_generate)
+
+    async def invoke(self, messages, **kwargs):
+        assert kwargs["suppress_transition_offer"] is True
+        assert actor_output_schema(suppress_transition_offer=True)["properties"]["transition_offer"]["enum"] == [""]
+        return _parse_output(json.dumps({
+            "performance": "（点头）", "transition_offer": "（抬手指向门口）", "suggested_inputs": [],
+        }), dialogue_policy=kwargs["dialogue_policy"], suppress_transition_offer=True)
+
+    monkeypatch.setattr(wf.NumericV2Actor, "_invoke", invoke)
+    result = await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+        turn=TurnRequestV2("silent-after-gesture", current.session.revision, "我就在这里等你。"),
+        ensure_current_binding=lambda _: _binding())
+    assert result.performance["performance"] == "（点头）"
+    assert result.performance["suggested_inputs"] == [accept]
+    assert result.stored.ledger_events[-1]["program_invitation"]["silent"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fact_in_offer_only", [False, True])
+@pytest.mark.parametrize("target_kind", ["silent", "ending"])
+@pytest.mark.parametrize("offer_separator", [None, "", " "])
+async def test_same_turn_fact_switch_replaces_the_old_offer(tmp_path, monkeypatch, fact_in_offer_only, target_kind, offer_separator):
+    from services.theater import numeric_v2_options
+    from services.theater.numeric_v2_actor_output import _parse_output
+
+    story = _story("scifi")
+    key = "scene:start:done"
+    routes = story["nodes"][0]["route_gates"]
+    normal = routes[1]
+    selected = deepcopy(normal)
+    selected.update(id="program_switch", priority=900,
+                  conditions={"all": [{"type": "fact_equals", "key": key, "value": True}]})
+    if target_kind == "silent":
+        selected["transition_contract"]["silent_choice"] = {"destination": "无声出口", "arrangement": "安静离开"}
+    else:
+        selected["target_node_id"] = routes[0]["target_node_id"]
+    old_offer = "现在一起去观测舱吗？"
+    normal["transition_contract"]["fallback_offer"] = old_offer
+    routes.append(selected)
+    engine = NumericV2Engine.from_mapping(story)
+    runtime = NumericV2Runtime(engine, tmp_path)
+    current = await runtime.start_session(session_id="silent-switch", catgirl_binding=_binding(),
+        opening_performance={"performance": "先处理眼前的事。", "suggested_inputs": []})
+    body = "眼前的事情已经处理完。"
+
+    async def options():
+        return {key: key == "evaluator" for key in default_options()}
+
+    async def evaluate(self, **kwargs):
+        return ev.NumericV2EvaluationResult((), False)
+
+    async def invoke(self, messages, **kwargs):
+        assert kwargs["suppress_transition_offer"] is False
+        return _parse_output(json.dumps({
+            "performance": body + offer_separator + old_offer if offer_separator is not None else body,
+            "transition_offer": old_offer, "suggested_inputs": [],
+            "fact_candidates": [{"key": key, "value": True, "evidence_quote": old_offer if fact_in_offer_only else body}],
+        }), dialogue_policy=kwargs["dialogue_policy"])
+
+    monkeypatch.setattr(numeric_v2_options, "MODEL_REVIEWS_ENABLED", False)
+    monkeypatch.setattr(wf, "aload_theater_module_options", options)
+    monkeypatch.setattr(wf.NumericV2MetricEvaluator, "evaluate", evaluate)
+    monkeypatch.setattr(wf.NumericV2Actor, "_invoke", invoke)
+    monkeypatch.setattr(wf.NumericV2Actor, "_character_profile", lambda self: "温和。")
+    result = await turn(runtime, current, "finish", "你看一下处理结果。")
+    assert "_published_transition_offer" not in result.performance
+    assert "_published_transition_offer" not in json.dumps(result.stored.ledger_events)
+    assert engine.completion_contract_satisfied(result.stored.session) is not fact_in_offer_only
+    if fact_in_offer_only:
+        assert result.performance["performance"] == body + ("\n" if offer_separator is None else offer_separator) + old_offer
+        assert "program_invitation" not in result.stored.ledger_events[-1]
+    elif target_kind == "silent":
+        assert result.performance["performance"] == body
+        assert result.performance["suggested_inputs"] == ["我同意前往无声出口，安排是：安静离开。"]
+        receipt = result.stored.ledger_events[-1]["program_invitation"]
+        assert receipt["silent"] is True and receipt["route_id"] == "program_switch"
+        assert await NumericV2Runtime(engine, tmp_path).restore_session("silent-switch") == result.stored
+    else:
+        from tests.utils.theater_prompt import prompt_payload
+
+        assert result.performance["performance"] == body and result.performance["suggested_inputs"] == []
+        assert result.stored.session.transition_offered is False
+        messages = ev._build_messages(engine, result.stored.session, "谢谢。", recent_ledger_events=result.stored.ledger_events)
+        data = prompt_payload(messages[1].content)
+        assert "natural_ending_context" in data["transition_preview"] and "pending_transition" not in data
 
 
 @pytest.mark.asyncio
@@ -159,6 +327,8 @@ async def test_completion_confirmed_this_turn_publishes_button_immediately(tmp_p
 @pytest.mark.asyncio
 @pytest.mark.parametrize("review", [False, True])
 async def test_expiry_never_auto_reissues_but_explicit_reinvitation_restores_only_button(tmp_path, monkeypatch, review):
+    from tests.utils.theater_prompt import prompt_payload
+
     runtime, current, accept, _ = await setup(tmp_path, monkeypatch, review=review)
     offered = await turn(runtime, current, "offer", "接下来呢？")
     expired = await turn(runtime, offered.stored, "follow", "先问个问题。")
@@ -174,6 +344,12 @@ async def test_expiry_never_auto_reissues_but_explicit_reinvitation_restores_onl
     assert revived.stored.session.node_turn_count == again.stored.session.node_turn_count
     restored = await runtime.restore_session("silent")
     assert restored == revived.stored
+    messages = ev._build_messages(runtime.engine, restored.session, "先留在这里吧。",
+                                  recent_ledger_events=restored.ledger_events)
+    pending = prompt_payload(messages[1].content)["pending_transition"]
+    assert pending == {"kind": "program_silent", "status": "active", "origin_revision": restored.session.revision,
+                       "immediately_previous": True, "suggested_inputs": [accept]}
+    assert "本轮没有可接受或拒绝的 pending_transition" not in messages[0].content
     fork = await runtime.fork_session_for_test("silent", session_id="revived-fork", through_revision=restored.session.revision)
     for stored, key in [(restored, "accept"), (fork, "fork-accept")]:
         accepted = await turn(runtime, stored, key, accept, "suggestion")
@@ -181,6 +357,59 @@ async def test_expiry_never_auto_reissues_but_explicit_reinvitation_restores_onl
         assert accepted.stored.ledger_events[-1]["source_transition_dialogue_policy"] == "forbidden"
         assert accepted.performance["segments"][0]["performance"] == "（望向出口）"
         assert await runtime.restore_session(stored.session.session_id) == accepted.stored
+
+
+@pytest.mark.asyncio
+async def test_published_silent_button_is_the_arrangement_in_followup_and_transition(tmp_path, monkeypatch):
+    from services.theater.numeric_v2_actor import _turn_messages
+    from tests.utils.theater_prompt import prompt_payload
+
+    runtime, current, accept, _ = await setup(tmp_path, monkeypatch, review=False, policy="forbidden")
+    offered = await turn(runtime, current, "offer", "我在终端旁边稍等。")
+    stored = offered.stored
+    gesture = stored.session.performance_history[-1]["performance"]
+    assert gesture and stored.ledger_events[-1]["program_invitation"]["accept_input"] == accept
+    followup = TurnRequestV2("follow", stored.session.revision, "前面的通道亮着灯吗？")
+    outcome = runtime.prepare_turn(stored, followup, ())
+    messages = _turn_messages(runtime.engine, stored.session, outcome, followup.message,
+        "沉着。", "小岚", "玩家", recent_ledger_events=stored.ledger_events)
+    data = prompt_payload(messages[1].content)
+    assert accept in data["pacing"] and gesture in data["story_so_far"]
+    assert gesture not in data["pacing"] and "待确认提议原文" not in data["pacing"]
+    assert "不自行生成接受按钮" in data["pacing"] and "第一条推荐才可接受" not in data["pacing"]
+    judged = ev._build_messages(runtime.engine, stored.session, followup.message,
+        recent_ledger_events=stored.ledger_events)
+    pending = prompt_payload(judged[1].content)["pending_transition"]
+    assert pending["suggested_inputs"] == [accept] and pending["kind"] == "program_silent"
+    assert "visible_performance" not in pending and "content_ref" not in pending
+    assert "读取 pending_transition.visible_performance" not in judged[0].content
+    assert "明确改主意接受该原邀请" not in judged[0].content
+
+    for text, verified, expected in ((accept, False, False), (accept, True, True),
+                                     (followup.message, True, False)):
+        system, human = ev._build_messages(runtime.engine, stored.session, text,
+            recent_ledger_events=stored.ledger_events, confirmed_silent_choice=verified)
+        data = prompt_payload(human.content)
+        silent = data["pending_transition"]
+        assert silent.get("confirmed_button_click", False) is expected
+        if text == accept:
+            assert silent["suggested_inputs_ref"] == "player_input"
+            assert "suggested_inputs" not in silent and data["player_input"] == accept
+            assert human.content.count(accept) == 1
+        else:
+            assert silent["suggested_inputs"] == [accept] and "suggested_inputs_ref" not in silent
+        choices = "accept|reject|unclear" if expected else "reject|unclear"
+        assert f'"transition_intent":"{choices}"' in system.content
+        assert "手打相同文字" in system.content and "不能改判 initiate 绕过点击" in system.content
+
+    request = TurnRequestV2("accept", stored.session.revision, accept, "suggestion")
+    outcome = runtime.prepare_turn(stored, request, (), transition_intent="accept")
+    assert outcome.session.current_node_id != stored.session.current_node_id
+    messages = _turn_messages(runtime.engine, stored.session, outcome, accept,
+        "沉着。", "小岚", "玩家", input_source="suggestion", recent_ledger_events=stored.ledger_events)
+    invitation = prompt_payload(messages[1].content)["transition"]["pending_invitation"]
+    assert invitation == {"kind": "program_silent", "revision": stored.session.revision,
+                          "accept_input_ref": "player_input"}
 
 
 @pytest.mark.asyncio
@@ -288,7 +517,8 @@ def test_workshop_prompts_make_silent_button_self_contained():
     from services.theater_workshop.sdk.generation.numeric_v2 import _BRANCH_PATH_PROMPT
     from services.theater_workshop.sdk.generation import numeric_v2
     from services.theater_workshop.sdk.generation import runtime_rules
-    assert "Runtime 据此生成完整按钮、不补台词" in _BRANCH_PATH_PROMPT
+    assert "destination 和 arrangement 各为至多30 tokens的非空单行" in _BRANCH_PATH_PROMPT
+    assert "程序生成按钮，accept_input 仍填写" in _BRANCH_PATH_PROMPT
     assert "Runtime 由两项生成完整按钮" in numeric_v2._MAINLINE_PROMPT
     assert "Runtime 由两项生成完整按钮" in numeric_v2._MAINLINE_CONTINUATION_PROMPT
     assert "独立说明具体去向和安排" in runtime_rules.SCORING_RUNTIME_RULES

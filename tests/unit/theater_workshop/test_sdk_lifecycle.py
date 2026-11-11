@@ -68,7 +68,8 @@ def setup_project(sdk):
         changes={"title": "旧信", "setup": _generation_setup()})
 
 
-def test_native_generation_failure_preserves_story_and_repairs_only_rejected_scene(opened, monkeypatch):
+@pytest.mark.parametrize("path_kind", ["index", "node_id", "old_node_id"])
+def test_native_generation_failure_preserves_story_and_repairs_only_rejected_scenes(opened, monkeypatch, path_kind):
     from services.theater_workshop.sdk import PackageError
 
     host, _ = opened
@@ -79,19 +80,34 @@ def test_native_generation_failure_preserves_story_and_repairs_only_rejected_sce
     original_compile = sdk._compiler.compile
     rejected = []
     calls = []
+    scene_issues = [{
+        "code": "invalid_native_field", "path": f"nodes[{index}].story_beat.opening_scene",
+        "message": f"第{index + 1}幕开场尚未通过正式编译。",
+    } for index in (1, 2)]
 
     def native_compile(story):
         if not rejected:
             rejected.append(True)
-            raise PackageError("numeric_v2_compile_failed", {"issues": [{
-                "code": "invalid_native_field", "path": "nodes[1].story_beat.opening_scene",
-                "message": "本幕开场尚未通过正式编译。",
-            }]})
+            if path_kind != "index":
+                invalid_story = deepcopy(story)
+                for index in (1, 2):
+                    invalid_story["nodes"][index]["route_gates"][0]["transition_contract"]["fixed_entry_only"] = True
+                try:
+                    return original_compile(invalid_story)
+                except PackageError as error:
+                    scene_issues[:] = error.details["issues"]
+                    assert [issue["path"].split(".")[1] for issue in scene_issues] == ["mainline_02", "mainline_03"]
+                    raise
+            raise PackageError("numeric_v2_compile_failed", {"issues": scene_issues})
         return original_compile(story)
 
     def model(messages, **options):
         context = json.loads(messages[1]["content"])
-        calls.append((options["operation"], context.get("chapter_index")))
+        index = context.get("chapter_index")
+        calls.append((options["operation"], index))
+        if options["operation"] == "numeric_v2_chapter_generation" and context["native_validation_issues"]:
+            assert context["native_validation_issues"] == [scene_issues[index - 2]]
+            assert context["issues"] == []
         return fixed_model(messages, **options)
 
     monkeypatch.setattr(sdk._compiler, "compile", native_compile)
@@ -102,13 +118,40 @@ def test_native_generation_failure_preserves_story_and_repairs_only_rejected_sce
     assert failed["story"] == project["story"]
     assert failed["revision"] == project["revision"]
     assert failed["generation_state"] == "failed"
-    assert failed["generation_checkpoint"]["remaining_issue_count"] == 1
-    assert sdk._store.generation_checkpoint(project["project_id"])["repairs"] == [1]
+    assert failed["generation_checkpoint"]["remaining_issue_count"] == 2
+    checkpoint = sdk._store.generation_checkpoint(project["project_id"])
+    assert checkpoint["repairs"] == [1, 2]
+    if path_kind == "old_node_id":
+        checkpoint.update(stage="frame", repairs=[])
+        sdk._store.record_generation_checkpoint(
+            project["project_id"], base_revision=project["revision"], checkpoint=checkpoint)
     calls.clear()
     recovered = sdk.generate(project["project_id"], base_revision=project["revision"])["project"]
-    assert calls == [("numeric_v2_chapter_generation", 2), ("numeric_v2_opening_state_extraction", None)]
+    assert calls == [
+        ("numeric_v2_chapter_generation", 2), ("numeric_v2_opening_state_extraction", None),
+        ("numeric_v2_chapter_generation", 3), ("numeric_v2_opening_state_extraction", None),
+    ]
     InProcessPackageGateway().compile(recovered["story"])
     assert recovered["generation_checkpoint"] is None
+
+
+def test_legacy_outline_is_compiled_before_replacing_the_existing_story(opened):
+    from services.theater_workshop.sdk import PackageError
+
+    host, _ = opened
+    sdk = host.sdk
+    project = setup_project(sdk)
+    project = sdk.update_project(project["project_id"], base_revision=project["revision"],
+                                 changes={"story": numeric_v2_story()})
+    outline = named_outline()
+    outline["story_protagonist"]["motivation"] = "她希望先核对旧信的来源。" * 55
+    sdk._store.record_generation_checkpoint(project["project_id"], base_revision=project["revision"],
+        checkpoint={"candidate": outline, "cast_names": NAMES})
+    with pytest.raises(PackageError, match="numeric_v2_compile_failed"):
+        sdk.generate(project["project_id"], base_revision=project["revision"])
+    failed = sdk.get_project(project["project_id"])
+    assert failed["story"] == project["story"]
+    assert failed["revision"] == project["revision"] and failed["generation_state"] == "failed"
 
 
 @pytest.mark.parametrize("legacy_checkpoint", [False, True])
@@ -379,10 +422,12 @@ builtins.__import__ = guarded
 import services.theater_workshop.sdk
 assert services.theater_workshop.sdk.TheaterWorkshop._instances == {}
 from services.theater_workshop.sdk.numeric_v2 import valid_silent_choice
+from services.theater_workshop.sdk.numeric_v2_branch import validate_branch_original_budget
 choice = {'destination': 'observatory', 'arrangement': 'read the records'}
 assert valid_silent_choice(choice, token_counter=lambda text: 30)
 assert not valid_silent_choice(choice, token_counter=lambda text: 31)
 assert not valid_silent_choice(choice)
+validate_branch_original_budget(['author passage'], 'fixed_narrations', token_counter=lambda text: 30)
 print('pure-sdk-import')
 """
     result = subprocess.run([sys.executable, "-c", script], cwd=tmp_path,
@@ -708,8 +753,10 @@ def test_model_requires_explicit_positive_input_budget_before_opening_client(mon
 
 
 @pytest.mark.parametrize("model_name,compatible,operation,focused", [
-    ("qwen3.8-flash", True, "numeric_v2_fact_review", True),
+    ("qwen3.8-flash", True, "numeric_v2_fact_review", False),
     ("qwen3.8-flash", True, "numeric_v2_fact_evidence_review", True),
+    ("qwen3.8-flash", True, "numeric_v2_exit_fact_review", True),
+    ("qwen3.8-flash", True, "numeric_v2_exit_fact_binding", False),
     ("qwen3.8-flash", True, "numeric_v2_story_frame", True),
     ("qwen3.8-flash", True, "numeric_v2_chapter_generation", True),
     ("qwen3.8-flash", True, "numeric_v2_ending_generation", True),
@@ -748,7 +795,8 @@ def test_workshop_flash_quality_mode_is_scoped_without_extra_retries(monkeypatch
     reply = model(messages, max_tokens=output_tokens, max_retries=1, response_format={"type": "json_object"},
                   thinking=None, operation=operation)
     assert reply.content == "{}"
-    assert calls == [None if focused else {"type": "json_object"}]
+    assert calls == [None if focused and operation not in {
+        "numeric_v2_exit_fact_review", "numeric_v2_fact_evidence_review"} else {"type": "json_object"}]
 
 
 @pytest.mark.parametrize("operation", ["numeric_v2_mainline_generation", "numeric_v2_quality_assessment"])
@@ -785,6 +833,46 @@ def test_model_counts_complete_input_and_never_truncates_it(monkeypatch, operati
     else:
         assert model(messages, **options).content == "{}"
         assert calls == ["create", "invoke", "close"]
+    assert messages == original
+
+
+@pytest.mark.parametrize("operation", ["numeric_v2_fact_review_format_repair", "numeric_v2_fact_evidence_review_format_repair"])
+@pytest.mark.parametrize("budget", ["full", "author_and_correction", "too_small"])
+def test_quality_format_retry_omits_only_malformed_excerpt_when_necessary(monkeypatch, operation, budget):
+    from types import SimpleNamespace
+    from services.theater_workshop.sdk.generation.quality import _format_repair_messages
+    from utils import llm_client
+    from utils.tokenize import count_tokens
+
+    author = [{"role": "system", "content": "保留完整作者合同。"},
+              {"role": "user", "content": "旧信的来源要完整保留。" * 50}]
+    messages = [*author, *_format_repair_messages("{" + "未闭合的响应。" * 700,
+                                                ValueError("invalid_json"), "核对原字段和全部结论。")]
+    original = deepcopy(messages)
+    correction_only = [*author, messages[-1]]
+    cap = count_tokens(json.dumps(messages if budget == "full" else correction_only, ensure_ascii=False))
+    calls = []
+
+    class Client:
+        def invoke(self, actual, **options):
+            calls.append(actual)
+            return SimpleNamespace(content="{}", response_metadata={})
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(llm_client, "create_chat_llm", lambda **options: Client())
+    model = NekoWorkshopModel({"model": "selected-model", "base_url": "https://example.invalid/v1",
+                               "max_input_tokens": cap - (budget == "too_small")})
+    options = dict(max_tokens=100, max_retries=1, response_format={"type": "json_object"},
+                   thinking=None, operation=operation)
+    if budget == "too_small":
+        with pytest.raises(WorkshopError, match="workshop_model_input_budget_exceeded"):
+            model(messages, **options)
+        assert calls == []
+    else:
+        assert model(messages, **options).content == "{}"
+        assert calls == [original if budget == "full" else correction_only]
     assert messages == original
 
 
@@ -865,6 +953,7 @@ def test_public_quality_revision_and_failure_preserve_previous_report(tmp_path):
 def test_public_branch_preview_explicit_application_and_idempotency(tmp_path, new_ending, author_save):
     from tests.unit.test_theater_numeric_v2_fixed_narration import _piece, REPORT
     fixed = [_piece("report", REPORT, entry=True)]
+    path_fixed = [_piece("receipt", "票据注明：封存清单已经交接。", entry=True)] if new_ending else fixed
     from .test_numeric_v2_branch import (
         branchable_project, _path_result_from_context, _ending_goal, _character_state,
     )
@@ -886,7 +975,7 @@ def test_public_branch_preview_explicit_application_and_idempotency(tmp_path, ne
                 "value_type": "bool", "target_value": True, "visibility": "public",
             }]
             path_result["transitions"][index + 1]["trigger_fact_ids"] = ["evidence_presented"]
-        path_result["scenes"][0]["fixed_narrations"] = fixed
+        path_result["scenes"][0]["fixed_narrations"] = path_fixed
         return json.dumps(path_result, ensure_ascii=False)
     host = open_workshop(TestConfig(tmp_path), model_call=model)
     try:
@@ -942,7 +1031,9 @@ def test_public_branch_preview_explicit_application_and_idempotency(tmp_path, ne
         assert applied["revision"] == revision + 1
         fixed_nodes = [n for n in applied["story"]["nodes"] if "fixed_narrations" in n["story_beat"]]
         assert len(fixed_nodes) == (2 if new_ending else 1)
-        assert all(n["story_beat"]["fixed_narrations"] == fixed for n in fixed_nodes)
+        assert next(n["story_beat"]["fixed_narrations"] for n in fixed_nodes if n["type"] == "scene") == path_fixed
+        if new_ending:
+            assert next(n["story_beat"]["fixed_narrations"] for n in fixed_nodes if n["type"] == "ending") == fixed
     finally:
         host.sdk.close()
 
@@ -1080,6 +1171,23 @@ def test_failed_model_usage_is_available_on_error(opened):
     assert caught.value.attempts == len(caught.value.usage) == 3
     assert all(record["usage_reported"] is False for record in caught.value.usage)
     assert host.sdk.get_project(project["project_id"])["generation_error"]["details"]["attempts"] == 3
+
+
+def test_import_and_export_preserve_the_bundled_player_handoff_item(opened):
+    host, _ = opened
+    repo = Path(__file__).resolve().parents[3]
+    story = json.loads((repo / "assets/theater/story_a400cd1c2783.json").read_text(encoding="utf-8"))
+    sdk = host.sdk
+    project = sdk.import_story(story)
+    project_id, revision = project["project_id"], project["revision"]
+    compiled = sdk.compile(project_id, base_revision=revision)
+    validated = sdk.validate(project_id, base_revision=revision)
+    exported = sdk.export(project_id, base_revision=validated["revision"])
+
+    key = "scene:mainline_04:sword_delivered"
+    assert project["story"]["fact_contract"]["facts"][key]["player_handoff_item"] == ["剑匣", "木匣"]
+    assert exported.package_hash == compiled["package_hash"]
+    assert exported.json_bytes == compiled["json_bytes"] == InProcessPackageGateway().compile(story).json_bytes
 
 
 def test_fixed_narration_generation_import_export_and_author_update(tmp_path):

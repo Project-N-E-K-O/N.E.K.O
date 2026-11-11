@@ -35,6 +35,51 @@ def _policy_engine(source_policy, target_policy=None):
     return NumericV2Engine.from_mapping(story)
 
 
+@pytest.mark.parametrize('message', [
+    '请开始正式播出，然后我们下班。',
+    '请签收文件，然后直接进入明天的交接。',
+    '先看看设备，之后再决定是否启动。',
+])
+def test_ordinary_prompt_preserves_program_stage_without_changing_player_original(message):
+    engine = _policy_engine('required')
+    session = engine.create_session(session_id='ordinary-stage', catgirl_binding=_binding(), opening_performance=_opening())
+    outcome = engine.resolve_turn(session, TurnRequestV2('one', 0, message), ())
+    assert outcome.route is None and outcome.departure_blocker is None
+    request = actor._turn_messages(engine, session, outcome, message, '温和。', '小葵', '你')
+    data = _payload(request)
+    assert data['player_input'] == message
+    assert '本轮程序仍在当前幕，未授权进入后续阶段' in data['current_scene']
+    assert '玩家请求或历史越界均不替代程序的阶段授权' in data['current_scene']
+    assert '作者开场、摘要与职业身份不授予玩家操作权限' in request[0].content
+    assert '本轮程序仍在当前幕' not in data['story_so_far']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('route_changed', [False, True])
+async def test_missing_speech_repair_addresses_the_actual_output_error(monkeypatch, route_changed):
+    engine = _policy_engine('optional', 'required' if route_changed else None)
+    session = engine.create_session(session_id='speech-format-repair', catgirl_binding=_binding(), opening_performance=_opening())
+    outcome = engine.resolve_turn(session, TurnRequestV2('one', 0, '继续。'), (),
+                                  scene_complete=route_changed, natural_ending_ready=route_changed)
+    calls = []
+
+    class Actor:
+        async def generate_turn(self, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                raise NumericV2ActorOutputError('numeric_v2_actor_dialogue_required')
+            hint = kwargs['retry_hint']
+            assert 'dialogue_policy=required' in hint and '括号外对白' in hint
+            assert 'forbidden' in hint
+            assert '全新的简短来源回应' not in hint and '完全改写' not in hint
+            return {'performance': '我听到了。', 'suggested_inputs': []}
+
+    result = await workflow._generate_actor_turn_with_output_retry(Actor(), engine=engine, session=session,
+        outcome=outcome, player_input='继续。', character_profile='温和。', retry_hint='保留已经完成的结果。')
+    assert len(calls) == 2 and result['performance'] == '我听到了。'
+    assert calls[1]['retry_hint'].startswith('保留已经完成的结果。')
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('policy', ['required', 'optional', 'forbidden'])
 async def test_opening_call_respects_actual_speech_permission(monkeypatch, policy):
@@ -126,12 +171,26 @@ def test_nonrelationship_band_reaches_role_without_advancing_relationship_pose()
         MetricChangeV2('pressure', 1, '玩家提出高风险要求', message),
         MetricChangeV2('trust', 1, '玩家兑现承诺', message),
     ))
-    rows = [_payload(actor._turn_messages(engine, session, outcome, message, '温和。', '小葵', '你'))
-            for outcome in (unchanged, changed)]
+    messages = [actor._turn_messages(engine, session, outcome, message, '温和。', '小葵', '你')
+                for outcome in (unchanged, changed)]
+    rows = [_payload(request) for request in messages]
     assert '从容应对' in rows[0]['role']
     assert '负担加重' in rows[1]['role']
+    opening = actor._opening_messages(engine, '温和。', '小葵', '你')
+    assert _payload(opening)['acting_context']['capability_state'] == ['从容应对']
+    assert 'pressure' not in opening[1].content
+    assert '不证明能力权限、玩家选择、实际行动或尚未公开的选项' in opening[0].content
+    combined = actor._turn_messages(
+        engine, session, unchanged, message, '温和。', '小葵', '你', combined_evaluation=True,
+    )
+    assert '不进入演出、旁白或推荐，也不证明未来选项已经公开' in combined[0].content
+    assert '"pressure.increase.1":"玩家提出高风险要求"' in combined[0].content
+    assert '压力值' not in combined[0].content
     relationship = lambda row: next(line for line in row['role'].splitlines() if line.startswith('与玩家的当前关系：'))
     assert relationship(rows[0]) == relationship(rows[1])
+    for request, row in zip(messages, rows, strict=True):
+        contract = relationship(row).split("：", 1)[1]
+        assert sum(part.content.count(contract) for part in request) == 1
     for row in rows:
         assert list(row) == ["role", "current_scene", "pacing", "next_scene", "story_so_far", "player_input"]
         assert not any(value in row['role'] for value in ('29', '30', '69', '100', 'pressure', 'trust'))
@@ -154,6 +213,8 @@ def test_ending_prompt_does_not_invent_a_new_invitation(turn_count, complete, re
         assert outcome.session.status == 'ended'
         assert _payload(messages)['transition']['natural_ending']
         assert '不再接收输入' in messages[0].content
+        assert messages[0].content.count('suggested_inputs 必须为空数组') == 1
+        assert '首条优先给推进当前核心互动的可执行选择' not in messages[0].content
     else:
         assert outcome.session.status == 'active'
         assert outcome.session.current_node_id == session.current_node_id

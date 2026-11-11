@@ -99,7 +99,6 @@ async def _setup(tmp_path, monkeypatch, *, scenario="valid", review=False):
     monkeypatch.setattr(wf.NumericV2MetricEvaluator, "validate_transition_offer", review_offer)
     monkeypatch.setattr(wf.NumericV2Actor, "generate_turn", generate)
     monkeypatch.setattr(wf.NumericV2Actor, "_character_profile", lambda self: "温和。")
-    monkeypatch.setattr(wf.NumericV2NarrativeProposer, "propose", propose)
     return runtime, current, calls
 
 

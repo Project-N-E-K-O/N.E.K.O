@@ -441,8 +441,6 @@ _INTERNAL_PERFORMANCE_FIELDS = frozenset({
     # values and internal node IDs. The page renders neither, so it stays server-side.
     "fact_projection",
     "timeline_projection",
-    "narrative_record",
-    "narrative_events",
 })
 
 
@@ -1132,8 +1130,6 @@ async def _submit_numeric_input_once(
                 config_manager,
             ),
             before_commit=lambda: _assert_commit_allowed(config_manager, *forget_scope),
-            # Speed-first release: no background extraction/review or next-turn ledger wait.
-            background_narrative=False,
         )
         outcome = workflow.outcome
         performance = workflow.performance

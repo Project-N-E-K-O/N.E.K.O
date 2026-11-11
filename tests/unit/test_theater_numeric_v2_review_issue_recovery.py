@@ -188,9 +188,9 @@ async def test_native_review_rewrites_a_located_rejection_before_commit(tmp_path
         turn=TurnRequestV2("located_veto_turn", 0, "我先考虑一下。"), ensure_current_binding=lambda _: _binding(),
     )
     assert counts == {"actor": 2, "review": 2}
-    # Workflow 原有漏判补查和账本同次审批分别预留 96/90 tokens；本次解析修复不改额度。
+    # 漏判补查仍预留96 tokens，删除账本审批后不再保留其90 tokens。
     assert all(request["timeout"] == evaluator.NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS
-               and request["max_retries"] == 0 and request["max_completion_tokens"] in {190, 512 + 96 + 90}
+               and request["max_retries"] == 0 and request["max_completion_tokens"] in {190, 512 + 96}
                for request in requests), requests
     assert result.performance["performance"] == safe
     assert len(result.stored.ledger_events) == len(current.ledger_events) + 1

@@ -71,7 +71,10 @@ def test_numbered_evidence_excludes_player_and_candidate(player_input):
     assert messages[0].content.startswith("本次先独立核对 JSON 开头的 missed_initiation_check")
     assert "顶层 player_input" in messages[0].content
     assert "顶层 next_scene_direction" in messages[0].content
-    assert "保留原八字段并增加 player_request_quote、missed_initiation 与 public_destination_index" in messages[0].content
+    system = messages[0].content
+    assert set(json.JSONDecoder().raw_decode(system[system.index("{"):])[0]) >= {
+        "player_request_quote", "missed_initiation", "public_destination_index",
+    }
 
 
 def test_recovery_checks_actual_entry_even_when_route_reason_only_names_preparation():

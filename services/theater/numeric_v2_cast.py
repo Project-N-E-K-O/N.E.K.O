@@ -34,7 +34,7 @@ def _identity_name(identity: Any) -> str:
 
 @dataclass(frozen=True, slots=True)
 class NumericV2CastProjection:
-    """Fixed at runtime: the player plays the male lead and the current neko plays the female lead."""  # noqa: DOCSTRING_CJK
+    """Bind the player and current character to their story roles without assigning genders."""  # noqa: DOCSTRING_CJK
 
     source_player_name: str
     source_catgirl_name: str
@@ -55,7 +55,8 @@ class NumericV2CastProjection:
             source_player_name=str(intro["player_name"]) if "player_name" in intro else _identity_name(intro.get("player_identity")),
             source_catgirl_name=str(intro["catgirl_name"]) if "catgirl_name" in intro else _identity_name(intro.get("catgirl_identity")),
             player_name=str(player_name or "你").strip() or "你",
-            catgirl_name=str(catgirl_name or "当前猫娘").strip() or "当前猫娘",
+            # Missing names are role references only; Actor generation requires a real card name.
+            catgirl_name=str(catgirl_name or "演出角色").strip() or "演出角色",
         )
 
     def text(self, value: Any) -> str:

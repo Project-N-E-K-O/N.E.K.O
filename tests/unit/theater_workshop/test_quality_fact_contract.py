@@ -6,19 +6,19 @@ import pytest
 
 from services.theater_workshop.host import NekoWorkshopModel
 from services.theater_workshop.sdk import WorkshopError
-from services.theater_workshop.sdk.generation.facts import build_fact_sources, validate_fact_review
+from services.theater_workshop.sdk.generation.facts import bind_contract_targets, build_contract_targets, build_fact_sources, validate_fact_review
 from services.theater_workshop.sdk.generation.quality import NumericV2QualityAssessor
 from services.theater_workshop.sdk.generation.repair import classify_repair
-from .test_numeric_v2_generation import _generation_setup, _quality_story_context
+from .test_numeric_v2_generation import _generation_setup, _quality_story_context, _fact_review_payload
 
 
 def _story_with_npc_result():
     story, authoring = _quality_story_context()
     key = "scene:mainline_01:station_passed"
-    story["fact_contract"] = {"facts": {key: {
+    story["fact_contract"]["facts"][key] = {
         "value_type": "bool", "visibility": "public",
         "description": "管事已经核验文书并公开准许通行；玩家请求和同伴佐证不算放行。",
-    }}}
+    }
     story["nodes"][0]["completion_contract"] = {"all": [{"key": key, "equals": True}]}
     return story, authoring, key
 
@@ -54,13 +54,18 @@ def test_fact_definition_quotes_resolve_to_original_contract_fields():
     assert marked["mainline"][0]["completion_contract"]["all"][0]["equals"] is True
     node_ids = NumericV2QualityAssessor._context_node_ids(context)
     refs = [definition["description"]["ref"], marked["mainline"][0]["opening_scene"]["ref"]]
-    payload = {"checked_node_ids": sorted(node_ids), "issues": [{
+    targets = build_contract_targets(context, node_ids)
+    for target in targets:
+        target["definition_ref"] = next(ref for ref, source in sources.items()
+                                        if source["path"] == target["definition_path"])
+    bind_contract_targets(targets, sources)
+    payload = _fact_review_payload({"checked_node_ids": sorted(node_ids), "contract_targets": targets, "story_outline": marked}, [{
         "category": "sequence", "severity": "major", "target_node_ids": ["mainline_01"],
         "problem": "开场结果与完成事实主体不一致。", "modification_plan": "对齐公开交付主体。",
         "expected_result": "按当前完成定义交付。", "preserve": [],
         "repair_scope": "text", "repair_targets": [{"node_id": "mainline_01", "field": "/opening_scene"}],
         "evidence_refs": refs,
-    }]}
+    }])
     review = validate_fact_review(context, payload, node_ids, evidence_sources=sources)
     assert review["issues"][0]["evidence"] == [
         {"path": f"/fact_contract/facts/{key}/description",

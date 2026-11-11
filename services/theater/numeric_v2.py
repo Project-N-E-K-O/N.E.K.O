@@ -75,6 +75,44 @@ _CHARACTER_STATE_SUBJECTS = {
 }
 _NEGATIVE_STATE_BOUNDARY_PREFIXES = ("不得", "禁止", "不能")
 
+
+def _valid_fact_evidence_phrase(phrase: Any) -> bool:
+    return (
+        isinstance(phrase, str)
+        and 1 <= len(phrase) <= 48
+        and phrase.strip() == phrase
+        and phrase.isprintable()
+    )
+
+
+def valid_fact_evidence_anchor(definition: Mapping[str, Any]) -> bool:
+    if definition.get("evidence_source") != "performance":
+        return False
+    anchor = definition.get("evidence_anchor")
+    if isinstance(anchor, str):
+        return _valid_fact_evidence_phrase(anchor)
+    return isinstance(anchor, list) and 1 <= len(anchor) <= 4 and all(
+        isinstance(group, list) and 1 <= len(group) <= 8
+        and all(_valid_fact_evidence_phrase(phrase) for phrase in group)
+        for group in anchor
+    )
+
+
+def valid_fact_player_handoff_item(definition: Mapping[str, Any]) -> bool:
+    """Validate literal item names for an opted-in, performed handoff result."""
+
+    items = definition.get("player_handoff_item")
+    return (
+        definition.get("value_type") == "bool"
+        and definition.get("visibility") == "public"
+        and definition.get("evidence_source") == "performance"
+        and isinstance(items, list)
+        and 1 <= len(items) <= 4
+        and all(isinstance(item, str) and item and item.isprintable() and item.strip() == item for item in items)
+        and len(set(items)) == len(items)
+    )
+
+
 @dataclass(frozen=True)
 class NumericV2Issue:
     """A stable contract issue returned to the author."""  # noqa: DOCSTRING_CJK
@@ -759,10 +797,17 @@ class NumericV2Compiler:
             if not isinstance(key, str) or not _FACT_CONTRACT_KEY_RE.fullmatch(key):
                 c.add("invalid_fact_contract_key", path, "事实键必须是安全且稳定的 ID。")
             definition = c.obj(raw, path)
-            if set(definition).difference({"value_type", "visibility", "description", "evidence_source"}):
-                c.add("unexpected_fact_contract_definition_field", path, "事实定义只允许 value_type、visibility、description 和可选 evidence_source。")
-            if "evidence_source" in definition and definition["evidence_source"] != "performance":
-                c.add("invalid_fact_contract_evidence_source", f"{path}.evidence_source", "限定来源时只允许 performance。")
+            if set(definition).difference({"value_type", "visibility", "description", "evidence_source",
+                                           "evidence_anchor", "player_handoff_item"}):
+                c.add("unexpected_fact_contract_definition_field", path,
+                      "事实定义只允许 value_type、visibility、description、evidence_source、evidence_anchor 和 player_handoff_item。")
+            if "evidence_source" in definition and definition["evidence_source"] not in ("performance", "player_input"):
+                c.add("invalid_fact_contract_evidence_source", f"{path}.evidence_source", "限定来源时只允许 performance 或 player_input。")
+            if "evidence_anchor" in definition and not valid_fact_evidence_anchor(definition):
+                c.add("invalid_fact_contract_evidence_anchor", f"{path}.evidence_anchor", "演出锚点须为 performance 来源，使用单个短语或最多四组短语。每组至多八项，每项 1 到 48 个可见字符。")
+            if "player_handoff_item" in definition and not valid_fact_player_handoff_item(definition):
+                c.add("invalid_fact_contract_player_handoff_item", f"{path}.player_handoff_item",
+                      "交接物品须列出一至四个不同的非空原文名称，仅用于 public 布尔事实且 evidence_source 为 performance。")
             if definition.get("value_type") not in _FACT_CONTRACT_VALUE_TYPES:
                 c.add(
                     "invalid_fact_contract_value_type",
@@ -858,6 +903,8 @@ class NumericV2Compiler:
                 allow_empty=False,
             )
         c.require_text_list(beat.get("must_not_happen"), f"{path}.must_not_happen", allow_empty=True)
+        if "content_boundaries" in beat:
+            c.require_text_list(beat["content_boundaries"], f"{path}.content_boundaries", allow_empty=True)
         if "opening_only_boundaries" in beat:
             opening_boundaries = c.require_text_list(
                 beat.get("opening_only_boundaries"),
@@ -1502,6 +1549,9 @@ class NumericV2Compiler:
     def _validate_transition(c: _Collector, value: Any, path: str) -> None:
         contract = c.obj(value, path)
         c.require_text(contract.get("reason"), f"{path}.reason")
+        if "advance_on_completion" in contract and type(contract["advance_on_completion"]) is not bool:
+            c.add("transition_completion_advance_invalid", f"{path}.advance_on_completion",
+                  "结果承接声明必须是布尔值。")
         if "accept_input_confirmation_only" in contract and not isinstance(contract["accept_input_confirmation_only"], bool):
             c.add("transition_confirmation_only_invalid", f"{path}.accept_input_confirmation_only",
                   "纯确认声明必须是布尔值。")
@@ -1682,6 +1732,15 @@ class NumericV2Compiler:
                         c.add("transition_confirmation_only_invalid",
                               f"nodes.{source_id}.route_gates[{route_index}].transition_contract.accept_input_confirmation_only",
                               "纯确认声明需要非空幕完成条件、作者邀请和接受输入，且不能用于静默出口或结局目标。")
+                if contract.get("advance_on_completion") is True:
+                    completion = node.get("completion_contract")
+                    if (terminal_target or not isinstance(completion, Mapping) or not completion.get("all")
+                            or any(field in contract for field in ("fallback_offer", "accept_input", "silent_choice"))
+                            or contract.get("accept_input_confirmation_only") is True):
+                        c.add("transition_completion_advance_invalid",
+                              f"nodes.{source_id}.route_gates[{route_index}].transition_contract.advance_on_completion",
+                              "结果承接需要非空幕完成条件和普通目标幕，不得同时声明邀约或接受输入。")
+                    continue
                 if "completion_contract" not in node or terminal_target:
                     continue
                 if policy != "forbidden":

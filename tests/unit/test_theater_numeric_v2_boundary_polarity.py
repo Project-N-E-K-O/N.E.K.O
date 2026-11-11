@@ -77,18 +77,24 @@ def test_default_and_narrow_fact_projection_preserve_original_text_order_and_fil
 
 @pytest.mark.parametrize("include_opening", [False, True])
 def test_actor_and_evaluator_share_explicit_public_projection(include_opening):
-    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+    story = numeric_v2_story()
+    beat = story["nodes"][0]["story_beat"]
+    neutral_rule = "最后一幕交付试饮杯后收束。"
+    beat["content_boundaries"] = [neutral_rule]
+    engine = NumericV2Engine.from_mapping(story)
     cast = NumericV2CastProjection.from_story(engine.story, catgirl_name="测试猫娘", player_name="哥哥")
     beat = {
         "opening_only_boundaries": ["不得提前公开秘密"],
         "must_not_happen": ["玩家帮助寻找新店面"],
         "acting_contract": {"forbidden_behaviors": ["接受经济援助"]},
+        "content_boundaries": engine.nodes["start"]["story_beat"]["content_boundaries"],
     }
     expected = (["不得提前公开秘密"] if include_opening else []) + [
-        "演出角色禁止行为：接受经济援助", "禁止发生的剧情：玩家帮助寻找新店面",
+        neutral_rule, "演出角色禁止行为：接受经济援助", "禁止发生的剧情：玩家帮助寻找新店面",
     ]
     assert actor._suggestion_hard_boundaries(cast, beat, include_opening_only=include_opening) == expected
     assert evaluator._actor_fact_boundaries(beat, include_opening_only=include_opening) == expected
+    assert neutral_rule not in contract_boundary_items({"story_beat": beat})
 
 
 @pytest.mark.parametrize("formal", [False, True])

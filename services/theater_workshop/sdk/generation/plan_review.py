@@ -4,20 +4,18 @@ from typing import Any, Mapping
 
 from .facts import _resolve_pointer
 from .evidence import effective_targets
-from .repair import context_nodes
-from .runtime_rules import SCORING_RUNTIME_RULES
+from .repair import BRIDGE_REMOVAL_RULE, context_nodes
 
-# Share the runtime contract with scoring and revision; the program still checks field permissions, and the model cannot change the rules.
 # Express individual scope and combination conflicts separately; declare each conflict once and protect both sides programmatically.
-PLAN_REVIEW_PROMPT = SCORING_RUNTIME_RULES + "\n\n" + """你是剧本修改方案的执行前复核员。只检查给定plans中的方案文字、repair_targets和preserve是否一致，不判断文学分数，不寻找新剧情缺陷，不替作者改稿，不删除原问题。
+PLAN_REVIEW_PROMPT = BRIDGE_REMOVAL_RULE + "\n\n" + """你是剧本修改方案的执行前复核员。只检查给定plans中的方案文字、repair_targets和preserve是否一致，不判断文学分数，不寻找新剧情缺陷，不替作者改稿，不删除原问题。保留玩家行动权及路线条件，目标规划不证明行动完成，固定原文由程序展示。
 
-story_outline为完整作者稿；各节点text_repair_fields是当前允许直接修订的文本字段。repair_targets是这次方案明确列出的修改位置。modification_plan或suggestion是方案正文；preserve是保留要求。protected_repair_targets中的字段必须原样保留。事实问题若有evidence_review，以复核确认需改的原字段为执行范围，requires_change=false必须保留，原方案中已被该复核否定的描述不作为新增修改命令。
+story_outline保留节点顺序、方案所列字段及明确受保护的原文。outgoing_routes按原顺序提供出口ID，未附合同的出口只用于定位。text_omitted=true的节点仅供定位；其他节点也可能省略与方案无关的字段，省略不代表原稿缺失。text_repair_fields列可直接修订的位置。modification_plan或suggestion是方案正文；preserve是保留要求。protected_repair_targets中的字段须原样保留。事实复核的requires_change=false只表示本条不改该字段，不能扩大修改命令。
 
-global_strengths_to_preserve是整份报告要求保留的优点，同样不能牺牲。
+global_strengths_to_preserve是整份报告要求保留的优点，同样不能牺牲。removable_bridge_targets列出程序已核实可删除的重复旁白位置；其他旁白如需修订，只能改写。
 
 字段职责（来自当前作者稿投影，不能互相代替）：
 - opening_scene：当幕唯一开场的演出文字。
-- character_state/catgirl：开场演完后的女主状态记录。
+- character_state/catgirl：开场演完后的演出角色状态记录。
 - character_state/player：开场演完后的玩家状态记录。
 - character_state/environment：开场演完后的环境与物件状态记录。
 - summary：当幕剧情概览；结局节点为结局摘要，scene_summary另指结局节点正文摘要。
@@ -31,7 +29,9 @@ global_strengths_to_preserve是整份报告要求保留的优点，同样不能�
 3. 方案与保留要求是否相容？“保持原文逐字不变”不允许润色；“保持动作事实、时间地点与顺序”允许改变表达。保留事实不等于保留每个字。
 4. 需要改goals、narrative_focus、acting_contract、图结构或其它不在text_repair_fields中的字段，不能直接执行。缺失字段或有冲突时指出原因，不补齐授权，不修改方案。如果输入不足以判断，标uncertain。
 
-5. 分开判断“单条方案”和“组合冲突”。只有一条方案时conflicts必须为空，本条内部矛盾只写入本条checks。checks只检查本条修改命令、字段权限及保留要求，不在checks里判断其他方案。conflicts统一记录整批方案之间的互斥要求：每对真实冲突只列一次，issue_ids恰好含双方ID，reason引用双方无法同时满足的要求。字段重叠、相同修法或相容润色不算冲突；同节点的建议会被一次修订统筹为一份补丁，不是依次执行多次。这些是合写同一份文本的要求，不是两个已生成的文本补丁。只判断要求能否同时成立，不判断编辑器锁、资源竞争或并发写入；不能因将来的两份候选句式可能不同就认定当前要求互斥。程序会让冲突双方都不可执行，无需模型再分别给双方填写冲突编号或修改局部状态。
+路线已明确允许多种完成方式时，承接修法应保留这些选择，收回桥段或入口未获保证的已然断言；不能靠新增硬门槛、强制合并分支或要求玩家补做原本可不做的动作来消除反例。一条方案若并列“删除选择或改桥段”等尚未选定的互斥修法，标uncertain，不将备选方案当作同时执行的命令。
+
+5. 分开判断“单条方案”和“组合冲突”。只有一条方案时conflicts必须为空，本条内部矛盾只写入本条checks。checks只检查本条修改命令、字段权限及保留要求，不在checks里判断其他方案。从plans中所有不同issue_id的组合检查互斥要求，同一issue_id不与自己比较。conflicts只记录真实冲突，每对只列一次，issue_ids恰好含双方ID，reason引用双方无法同时满足的要求。字段重叠、相同修法或相容润色不算冲突；同节点的建议会被一次修订统筹为一份补丁，不是依次执行多次。这些是合写同一份文本的要求，不是两个已生成的文本补丁。只判断要求能否同时成立，不判断编辑器锁、资源竞争或并发写入；不能因将来的两份候选句式可能不同就认定当前要求互斥。程序会让冲突双方都不可执行，无需模型再分别给双方填写冲突编号或修改局部状态。
 
 只输出JSON object。先填写conflicts，再逐个覆盖所有原issue_id的checks，各一次。checks.status仅表示单条方案的ready（字段完整且与本条保留要求相容）、blocked（明确缺项/本条冲突/结构修改）或uncertain（信息不足）；程序还会结合conflicts决定能否执行。即使两条单独都ready，只要组合冲突仍会同时被拦截。
 reason给具体原文依据，保留模型的单条复核说明与组合冲突说明。missing_targets只列本条正文确实要求而原清单遗漏的既有字段；明确子字段不扩大成父对象或兄弟字段，仅作证据或要求保留的字段不列。它们仅解释，不补授权。没有遗漏或组合冲突均用[]。checks不再输出conflicting_issue_ids。有跨方案冲突时，conflicts中的每项为{"issue_ids":["不同的原ID甲","不同的原ID乙"],"reason":"双方具体互斥要求"}；无真实互斥就使用空数组，不为填写此栏寻找冲突。

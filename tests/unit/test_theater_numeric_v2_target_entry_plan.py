@@ -112,7 +112,10 @@ async def test_runtime_formal_entry_plan_keeps_every_field_and_existing_knowledg
     role = data['acting_context']
     for key in ('acting_contract', 'target_acting_contract'):
         assert role[key]['allowed_behaviors'] == ['可查看外部封条，但未经玩家许可不得开匣。']
-        assert role[key]['assertable_self_facts'] == ['我负责自己的工具，不能据此取得玩家物品。']
+    assert role['acting_contract']['assertable_self_facts'] == ['我负责自己的工具，不能据此取得玩家物品。']
+    assert role['target_acting_contract']['assertable_self_facts'] == {
+        'same_as': 'acting_contract.assertable_self_facts',
+    }
     assert ('story_identity' in role) is not restricted
     assert ('story_role_context' in role) is not restricted
     assert role['target_acting_contract']['memory_state'] == ('partial' if restricted else 'available')

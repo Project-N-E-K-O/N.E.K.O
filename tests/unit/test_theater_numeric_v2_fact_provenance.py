@@ -46,7 +46,7 @@ def test_compiler_and_runtime_preserve_source_restriction():
     assert engine.compiled.story['fact_contract'] == _contract()
 
 
-@pytest.mark.parametrize('source', [None, '', 'player_input', ['performance'], True])
+@pytest.mark.parametrize('source', [None, '', 'actor_performance', ['performance'], True])
 def test_invalid_source_policy_is_rejected(source):
     contract = _contract()
     contract['facts'][KEY]['evidence_source'] = source
@@ -54,15 +54,30 @@ def test_invalid_source_policy_is_rejected(source):
         validate_fact_candidates([], fact_contract=contract, evidence_sources={})
 
 
-def test_workshop_mainline_exports_the_same_explicit_source_policy():
+@pytest.mark.parametrize("source", ["performance", "player_input"])
+def test_workshop_mainline_exports_the_same_explicit_source_policy(source):
     outline = _idea_outline()
     fact = outline['mainline_chapters'][0]['completion_facts'][0]
-    fact['evidence_source'] = 'performance'
+    fact['evidence_source'] = source
     assert not _validate_idea_outline(outline, minimum=3, maximum=6, scene_expected_turns_target=8)
     story = NumericV2Generator()._project_story(title='来源验证', original_idea='旧信',
         setup=numeric_v2_setup(), outline=outline, tone=['克制'])
     key = 'scene:mainline_01:' + fact['id']
-    assert NumericV2Engine.from_mapping(story).fact_contract[key]['evidence_source'] == 'performance'
+    assert NumericV2Engine.from_mapping(story).fact_contract[key]['evidence_source'] == source
+
+
+@pytest.mark.parametrize("source", ["player_input", "actor_performance", "runtime_fact"])
+def test_player_action_requires_player_original_even_when_other_sources_repeat_it(source):
+    contract = _contract(restricted=False)
+    contract["facts"][KEY].update(description="玩家已经打开门。", evidence_source="player_input")
+    text = "（我推开门）进来吧。"
+    candidates = [_candidate(quote=text, source=source)]
+    if source == "player_input":
+        operations, _ = validate_fact_candidates(candidates, fact_contract=contract, evidence_sources={source: text})
+        assert operations[0]["value"] is True
+    else:
+        with pytest.raises(NumericV2RuntimeError, match="evidence_source_not_allowed"):
+            validate_fact_candidates(candidates, fact_contract=contract, evidence_sources={source: text})
 
 
 def test_workshop_branch_exports_policy_without_restricting_player_choice():

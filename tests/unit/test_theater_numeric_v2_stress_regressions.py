@@ -187,7 +187,9 @@ async def test_terminal_question_check_does_not_replace_full_review_or_commit_un
             await workflow.execute_numeric_v2_turn(**kwargs)
         assert await runtime.restore_session('terminal_question') == current
         assert calls['actor'] == (1 if timeout else 2)
-        assert calls['narrow'] == (1 if timeout else 2)
+        # The stub returns the same visible draft on rewrite. The narrow
+        # verdict can be reused, while the independent review still runs.
+        assert calls['narrow'] == 1
         assert calls['review'] == (2 if full_review_rejects else 0)
     else:
         result = await workflow.execute_numeric_v2_turn(**kwargs)

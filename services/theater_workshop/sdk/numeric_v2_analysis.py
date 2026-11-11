@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from copy import deepcopy
+from difflib import SequenceMatcher
 from itertools import product
 import math
 import re
@@ -27,6 +28,11 @@ _ACTOR_WITNESS_SUBJECTS = ("猫娘", "女主", "新载体", "机体", "猫耳")
 # Player subjects and exclusion clauses do not mean the neko satisfies a condition merely by appearing in its text.
 _PLAYER_ACTOR_TOKENS = ("玩家", "男主", "你")
 _EXCLUSION_MARKERS = ("不算", "不作为", "不能算", "不表示", "不算作", "并非", "不能代替")
+_INDEPENDENT_DISCLOSURE_REQUIREMENT = re.compile(
+    r"玩家|男主|你|并且|且(?!女主说明|猫娘说明)|同时|同意|理解|确认|决定|选择|承诺|接受|拒绝|授权|"
+    r"接过|接稳|递出|递给|交接|交付|移交|交还|签字|操作|核验|"
+    r"随后|后续|接下来|下一轮|等到|如果|尚未"
+)
 
 
 @dataclass(frozen=True)
@@ -90,6 +96,72 @@ def _fixed_narration_witness_warnings(ordered_nodes: list[Mapping[str, Any]]) ->
                     "建议改用 entry 触发，或把条件绑定到玩家输入可验证的动作。"
                 ),
             ))
+    return warnings
+
+
+def _matches_entry_disclosure(description: str, original: str) -> bool:
+    """Recognize explicit display claims with substantial literal support, without inferring prose semantics."""
+
+    claim, _, exclusion = description.strip().removesuffix("。").partition("。")
+    if len(claim) > 200 or not claim.startswith("已公开展示") or _INDEPENDENT_DISCLOSURE_REQUIREMENT.search(claim):
+        return False
+    if exclusion and not re.fullmatch(r"(?:仅|只)[^。！？\n]+(?:不能证明|不足以证明|不算)", exclusion):
+        return False
+    claim_text = re.sub(r"[\W_]+", "", claim.removeprefix("已公开展示"))
+    original_text = re.sub(r"[\W_]+", "", original)
+    matches = SequenceMatcher(None, claim_text, original_text, autojunk=False).get_matching_blocks()
+    # Ignore scattered common characters; require an eight-character anchor and twelve literal characters overall.
+    return any(block.size >= 8 for block in matches) and sum(block.size for block in matches if block.size >= 4) >= 12
+
+
+def _entry_disclosure_gate_warnings(story: Mapping[str, Any], nodes: list[Mapping[str, Any]]) -> list[NumericV2AnalysisWarning]:
+    """Spot a narrow duplicate gate without declaring valid fact routes unreachable."""
+
+    contract = story.get("fact_contract")
+    facts = contract.get("facts") if isinstance(contract, Mapping) else None
+    if not isinstance(facts, Mapping):
+        return []
+    warnings: list[NumericV2AnalysisWarning] = []
+    for index, node in enumerate(nodes):
+        routes = node.get("route_gates") or []
+        if len(routes) != 1 or not isinstance(routes[0], Mapping):
+            continue
+        projected = _condition_rows(routes[0])
+        if projected is None or projected[0] != "all" or len(projected[1]) != 1:
+            continue
+        condition = projected[1][0]
+        key = condition.get("key")
+        if (condition.get("type") != "fact_equals" or condition.get("value") is not True
+                or not isinstance(key, str) or not key.startswith(f"scene:{node.get('id')}:")):
+            continue
+        fact = facts.get(key)
+        if (not isinstance(fact, Mapping) or fact.get("value_type") != "bool" or fact.get("visibility") != "public"
+                or fact.get("evidence_source") != "performance" or "evidence_anchor" in fact):
+            continue
+        beat = node.get("story_beat")
+        completion = node.get("completion_contract")
+        if not isinstance(beat, Mapping) or not isinstance(completion, Mapping):
+            continue
+        receipts = {row["fixed_narration_id"] for row in completion.get("all") or []
+                    if isinstance(row, Mapping) and isinstance(row.get("fixed_narration_id"), str)}
+        description = fact.get("description")
+        if not receipts or not isinstance(description, str):
+            continue
+        for piece in beat.get("fixed_narrations") or []:
+            if not isinstance(piece, Mapping) or not isinstance(piece.get("id"), str) or piece["id"] not in receipts:
+                continue
+            trigger, text = piece.get("trigger"), piece.get("text")
+            if (piece.get("required_before_exit") is not True or piece.get("after") != []
+                    or trigger != {"type": "entry"} or not isinstance(text, str)
+                    or not _matches_entry_disclosure(description, text)):
+                continue
+            warnings.append(NumericV2AnalysisWarning(
+                code="route_fact_duplicates_entry_narration",
+                path=f"nodes[{index}].route_gates[0].conditions.all[0]",
+                message=f"出口事实 {key!r} 疑似重复核验必显入幕旁白 {piece['id']!r} 已交付的披露。"
+                        "若没有独立的理解、授权或行动结果，可只用现有展示回执作为完成条件。",
+            ))
+            break
     return warnings
 
 
@@ -190,6 +262,33 @@ def _condition_rows(route: Mapping[str, Any]) -> tuple[str, list[Mapping[str, An
     if any(not isinstance(row, Mapping) for row in rows):
         return None
     return modes[0], list(rows)
+
+
+def entry_route_scope(story: Mapping[str, Any], target_id: str) -> dict[str, Any]:
+    """Group public fact predicates by what is required when each incoming edge is selected."""
+    definitions = (story.get("fact_contract") or {}).get("facts") or {}
+    routes = []
+    for node in story.get("nodes") or ():
+        for route in node.get("route_gates") or ():
+            if route.get("target_node_id") != target_id:
+                continue
+            mode, rows = _condition_rows(route) or ("all", [])
+            required = rows if mode == "all" or len(rows) == 1 else []
+            facts = {row["key"]: row["value"] for row in required
+                     if row.get("type") == "fact_equals" and type(row.get("value")) in (bool, int, str)
+                     and (definitions.get(row.get("key")) or {}).get("visibility") == "public"}
+            routes.append({"source_node_id": node.get("id"), "route_id": route.get("id"), "gate_facts": facts})
+    initial_entry = story.get("start_node_id") == target_id
+    common = {}
+    if routes and not initial_entry:
+        common = {
+            key: value for key, value in routes[0]["gate_facts"].items()
+            if all(type(other["gate_facts"].get(key)) is type(value)
+                   and other["gate_facts"].get(key) == value for other in routes[1:])
+        }
+    for route in routes:
+        route["gate_facts"] = {key: value for key, value in route["gate_facts"].items() if key not in common}
+    return {"initial_entry": initial_entry, "common_gate_facts": common, "routes": routes}
 
 
 def _conditions_match(route: Mapping[str, Any], values: Mapping[str, int]) -> bool | None:
@@ -704,7 +803,8 @@ def _analyze_numeric_v2_story(story: Mapping[str, Any]) -> tuple[NumericV2Analys
 
 def analyze_numeric_v2_story(story: Mapping[str, Any]) -> tuple[NumericV2AnalysisWarning, ...]:
     """Retain extreme reachability checks and estimate recommended pacing at two points per turn without changing runtime scoring."""
-    warnings = _analyze_numeric_v2_story(story)
+    ordered_nodes, _ = _nodes(story)
+    warnings = (*_analyze_numeric_v2_story(story), *_entry_disclosure_gate_warnings(story, ordered_nodes))
     definitions = _metric_definitions(story)
     if not definitions:
         return warnings

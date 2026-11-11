@@ -10,10 +10,9 @@ from jsonschema import Draft202012Validator
 from services.theater import numeric_v2_actor as actor
 from services.theater import numeric_v2_evaluator as evaluator
 from services.theater.numeric_v2_actor_output import _parse_output
-from services.theater.numeric_v2_narrative import parse_narrative_events
 from services.theater.numeric_v2_performance import content_blocks
 from services.theater.numeric_v2_structured_output import (
-    actor_output_schema, contract_output_schema, narrative_output_schema, review_output_schema, response_format_for,
+    actor_output_schema, contract_output_schema, review_output_schema, response_format_for,
 )
 from services.theater.numeric_v2_trace import text_trace_scope
 from services.theater.numeric_v2_usage import numeric_v2_usage_scope
@@ -193,92 +192,16 @@ def test_reinvitation_only_schema_does_not_request_story_state_updates():
          'suggested_inputs': ['好，现在去。'], 'scene_update': '门已经打开。', 'fact_candidates': []})
 
 
-def _narrative_event(phase='turn'):
-    return {'phase': phase, 'subject': 'character', 'kind': 'action',
-            'changes': [{'entity': 'environment:现场', 'attribute': 'condition', 'value': '可见'}],
-            'source': 'performance', 'quote': '现场可见。', 'known_to': ['player', 'character']}
 
 
-@pytest.mark.parametrize('field', ['subject', 'entity'])
-@pytest.mark.parametrize('reference,valid', [
-    ('player', True), ('character', True),
-    ('item:木匣', True), ('person:同伴', True), ('activity:收尾', True),
-    ('arrangement:见面', True), ('environment:门口', True),
-    ('item: 木匣 ', True), ('environment:甲:乙', True), ('environment::', True),
-    ('environment:门\n口', True), ('environment:门口\n', True),
-    ('item:' + '名' * 75, True), ('item:' + '名' * 76, False),
-    ('environment', False), ('environment:', False), ('environment: \t\n', False),
-    ('environment:　', False), ('unknown:名字', False),
-    ('player\n', False), ('character\n', False), (' player', False), ('player ', False),
-    ('', False),
-])
-def test_narrative_entity_references_match_parser_boundaries(field, reference, valid):
-    event = _narrative_event()
-    if field == 'subject':
-        event['subject'] = reference
-    else:
-        event['changes'][0]['entity'] = reference
-    payload = {'narrative_events': [event]}
-    schema_valid = Draft202012Validator(narrative_output_schema()).is_valid(payload)
-    parsed = parse_narrative_events([event])
-    assert (schema_valid, parsed is not None) == (valid, valid)
-    if valid:
-        assert parsed == [event]
 
 
-@pytest.mark.parametrize('flags,phase', [({}, 'turn'), ({'opening': True}, 'opening'),
-                                        ({'transition': True}, 'target_opening')])
-@pytest.mark.parametrize('reference,valid', [('environment:现场', True), ('environment', False)])
-def test_narrative_modes_enforce_existing_entity_contract(flags, phase, reference, valid):
-    event = _narrative_event(phase)
-    event['changes'][0]['entity'] = reference
-    candidate = {'narrative_events': [event]}
-    assert Draft202012Validator(narrative_output_schema(**flags)).is_valid(candidate) is valid
-    assert (parse_narrative_events([event]) is not None) is valid
 
 
-@pytest.mark.parametrize('flags,phase', [({}, 'turn'), ({'opening': True}, 'opening'),
-                                        ({'transition': True}, 'target_opening')])
-@pytest.mark.parametrize('entity,holder,valid', [
-    ('item:木匣', 'player', True), ('item:木匣', 'character', True),
-    ('item:木匣', 'none', True), ('item:木匣', 'person:受托人', True),
-    ('item: 木匣\n', 'person: 受托人\n', True),
-    ('item:' + '名' * 75, 'person:' + '名' * 73, True),
-    ('item:' + '名' * 76, 'player', False),
-    ('item:木匣', 'person:' + '名' * 74, False),
-    ('person:两匹马', 'character', False), ('character', 'player', False),
-    ('environment:门口', 'player', False), ('item: \t\n', 'player', False),
-    ('item:木匣', '你手中的剑匣', False), ('item:木匣', 'player\n', False),
-    ('item:木匣', 'person:　', False), ('item:木匣', 'activity:任务', False),
-])
-def test_narrative_holder_schema_matches_parser_contract(flags, phase, entity, holder, valid):
-    event = _narrative_event(phase)
-    event['changes'] = [{'entity': entity, 'attribute': 'holder', 'value': holder}]
-    assert Draft202012Validator(narrative_output_schema(**flags)).is_valid({'narrative_events': [event]}) is valid
-    assert (parse_narrative_events([event]) is not None) is valid
 
 
-@pytest.mark.parametrize('subject,holder', [('player', 'character'), ('character', 'player'),
-                                           ('character', 'person:受托人')])
-def test_narrative_holder_keeps_subject_object_and_recipient_separate(subject, holder):
-    event = _narrative_event()
-    event['subject'] = subject
-    event['changes'] = [{'entity': 'item:木匣', 'attribute': 'holder', 'value': holder}]
-    Draft202012Validator(narrative_output_schema()).validate({'narrative_events': [event]})
-    assert parse_narrative_events([event]) == [event]
 
 
-@pytest.mark.parametrize('attribute', ['position', 'location', 'condition', 'stage_result', 'unresolved',
-                                       'choice', 'commitment', 'arrangement', 'time', 'environment'])
-def test_narrative_non_holder_keeps_existing_entity_and_value_limits(attribute):
-    event = _narrative_event()
-    event['changes'] = [{'entity': 'character', 'attribute': attribute, 'value': '文' * 120}]
-    validator = Draft202012Validator(narrative_output_schema())
-    assert validator.is_valid({'narrative_events': [event]})
-    assert parse_narrative_events([event]) == [event]
-    event['changes'][0]['value'] += '文'
-    assert not validator.is_valid({'narrative_events': [event]})
-    assert parse_narrative_events([event]) is None
 
 
 @pytest.mark.parametrize('formal,confirmed', [(False, False), (True, False), (True, True)])
@@ -309,7 +232,7 @@ def test_review_schema_keeps_authorization_separate_from_body(formal, confirmed)
 @pytest.mark.asyncio
 async def test_review_attaches_schema_without_touching_evaluator_model_parameters(monkeypatch, dispute):
     seen = []
-    payload = {'offer_present': False, 'offer_quote': '', 'valid': False, 'body_violations': [], 'unsafe_suggestion_indexes': [], 'failure_reason': '', 'player_action_kind': '', 'offer_kind': ''}
+    payload = {'offer_present': False, 'offer_quote': '', 'valid': False, 'body_violations': [], 'unsafe_suggestion_indexes': [], 'failure_reason': '', 'player_action_kind': '', 'offer_kind': '', 'offer_failure_code': ''}
     class Client:
         async def __aenter__(self): return self
         async def __aexit__(self, *args): return False
@@ -386,6 +309,89 @@ def test_contract_schema_matches_existing_prompt_and_parser():
     assert set(schema['properties']) == set(example) == {'violated'}
     Draft202012Validator(schema).validate({'violated': []})
     assert evaluator._parse_contract_check_output('{"violated":[]}', ['不得移走物品。']) == ()
+
+
+def test_grounded_contract_schema_requires_only_one_premature_departure_finding():
+    field = 'premature_departure'
+    schema = contract_output_schema(grounded=True, check_route=True, check_departure=True)
+    assert set(schema['required']) == {'route_conflicts', field, 'violations'}
+    validator = Draft202012Validator(schema)
+    base = {'route_conflicts': [], 'violations': []}
+    finding = {'candidate_ref': 'c0', 'quote': '设备已启动。'}
+    validator.validate({**base, field: []})
+    validator.validate({**base, field: [finding]})
+    assert not validator.is_valid(base)
+    assert not validator.is_valid({**base, field: [finding, finding]})
+    assert not validator.is_valid({**base, field: [{**finding, 'prior_ref': 'd0'}]})
+    assert field not in contract_output_schema(grounded=True)['properties']
+    assert field not in contract_output_schema(check_departure=True)['properties']
+
+
+def test_contract_confirmation_requires_requested_premature_departure_finding():
+    field = 'premature_departure'
+    finding = {'candidate_ref': 'c0', 'quote': '设备已启动。'}
+    verdict = {'verdict': 'violation', 'reason': '原句已实施禁令中的动作。', 'clearance': []}
+    for many, base in ((False, verdict), (True, {'verdicts': [verdict]})):
+        schema = contract_output_schema(grounded=True, confirmation=True, confirmation_many=many,
+                                        check_route=True, check_departure=True)
+        assert set(schema['required']) == set(base) | {field, 'departure_clearance'}
+        validator = Draft202012Validator(schema)
+        clear = {**base, 'departure_clearance': []}
+        validator.validate({**clear, field: []})
+        validator.validate({**clear, field: [finding]})
+        clearance = {'reason': 'prospective', 'quote': '等检查完就可以启动。', 'prior_quote': ''}
+        validator.validate({**base, field: [], 'departure_clearance': [clearance]})
+        assert not validator.is_valid({**base, field: [], 'departure_clearance': [
+            {key: value for key, value in clearance.items() if key != 'prior_quote'},
+        ]})
+        assert not validator.is_valid(base)
+        assert not validator.is_valid({**base, field: []})
+        assert not validator.is_valid({**clear, field: [finding, finding]})
+        assert not validator.is_valid({**clear, field: [{**finding, 'prior_ref': 'd0'}]})
+        assert not validator.is_valid({**base, field: [], 'departure_clearance': [{**clearance, 'reason': 'unknown'}]})
+        assert not validator.is_valid({**base, field: [], 'departure_clearance': [clearance, clearance]})
+        legacy = contract_output_schema(grounded=True, confirmation=True, confirmation_many=many)
+        assert {field, 'departure_clearance'}.isdisjoint(legacy['properties'])
+        Draft202012Validator(legacy).validate(base)
+
+
+def test_high_risk_contract_requires_an_explicit_groundable_departure_scope():
+    schema = contract_output_schema(grounded=True, check_departure=True, check_departure_scope=True)
+    validator = Draft202012Validator(schema)
+    base = {"violations": []}
+    assert not validator.is_valid(base)
+    validator.validate({**base, "departure_scope": []})
+    local = {"scope": "current_scene", "candidate_ref": "c0", "quote": "先检查接头。"}
+    validator.validate({**base, "departure_scope": [local]})
+    assert not validator.is_valid({**base, "departure_scope": [{**local, "scope": "unknown"}]})
+    for scope in ("departed", "uncertain"):
+        validator.validate({**base, "departure_scope": [{**local, "scope": scope}]})
+    future = {"scope": "prospective", "candidate_ref": "c1", "quote": "校准通过后再离开。"}
+    validator.validate({**base, "departure_scope": [local, future]})
+    assert "departure_scope" not in contract_output_schema(grounded=True, check_departure=True)["properties"]
+    confirmation = contract_output_schema(grounded=True, confirmation=True, check_departure=True,
+                                          check_departure_scope=True)
+    verdict = {"verdict": "uncertain", "reason": "尚不能确认整稿范围。", "clearance": []}
+    confirmation_validator = Draft202012Validator(confirmation)
+    assert not confirmation_validator.is_valid(verdict)
+    confirmation_validator.validate({**verdict, "departure_scope": [local]})
+    for output in (schema, confirmation):
+        assert {"premature_departure", "departure_clearance"}.isdisjoint(output["properties"])
+
+
+@pytest.mark.parametrize('payload,valid', [
+    ({'verdict': 'violation', 'reason': '原句证实。', 'clearance': []}, True),
+    ({'verdict': 'clear', 'reason': '原句是尚未执行的提议。', 'clearance': [{'source_ref': 'c0', 'quote': '以后再做。'}]}, True),
+    ({'verdict': 'uncertain', 'reason': '证据不足。', 'clearance': []}, True),
+    ({'applicable': False, 'confirmed': True}, False),
+    ({'applicable': True, 'confirmed': False}, False),
+    ({'confirmed': True}, False),
+    ({'verdict': 'unknown', 'reason': '证据不足。', 'clearance': []}, False),
+    ({'verdict': 'clear', 'reason': '', 'clearance': []}, False),
+])
+def test_contract_confirmation_requires_an_independent_scope_verdict(payload, valid):
+    validator = Draft202012Validator(contract_output_schema(grounded=True, confirmation=True))
+    assert validator.is_valid(payload) is valid
 
 
 @pytest.mark.parametrize('supported', [False, True])

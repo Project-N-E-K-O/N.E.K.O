@@ -60,7 +60,7 @@ def test_actor_identity_instruction_does_not_use_framework_name(phase):
     prompt = _system_prompt(catgirl_name='测试猫娘', phase=phase)
     if phase == 'transition_compact':
         # A formal transition also generates NPC narration; neko identity remains determined by the dynamic character, not the implementation name.
-        assert '你的回应写入 performance，在场 NPC 的必要答复写入来源旁白' in prompt
+        assert '按下方合同填写角色回应，在场 NPC 的必要答复写入来源旁白' in prompt
         assert '你扮演的角色以角色设定中的姓名为准。' in prompt
     else:
         assert '你是下方角色设定中姓名所标明的角色' in prompt.split('。', 1)[0]

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 from services.theater.numeric_v2_budget import NUMERIC_V2_ACTOR_BUDGET_PROFILES
 import pytest
+from tests.utils.theater_prompt import serialized_prompt_tokens
 
 from services.theater import numeric_v2_actor
 from services.theater import numeric_v2_evaluator
@@ -30,10 +31,9 @@ from services.theater.numeric_v2_evaluator import _parse_output as _parse_evalua
 from services.theater.numeric_v2_context import (
     scene_narrative_focus,
 )
-from services.theater.numeric_v2_narrative import apply_narrative_record
 from services.theater.numeric_v2_runtime import NumericV2Engine, TurnRequestV2
 from services.theater.numeric_v2_workflow import _prefilter_suggestion_candidates
-from tests.utils.theater_prompt import prompt_payload
+from tests.utils.theater_prompt import pending_transition_text, prompt_payload
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_1_story, numeric_v2_story
 from tests.unit.test_theater_numeric_v2_natural_ending import _engine as _ending_engine
 
@@ -100,7 +100,7 @@ def test_actor_keeps_per_turn_action_projection_after_system_rules(formal):
     engine = _ending_engine()
     session = _session(engine)
     systems = []
-    marker = "\n本轮 Runtime 玩家动作结果投影（仅为约束，不是新增剧情）："
+    marker = "\n本轮玩家动作结果投影（仅为约束，不是新增剧情）："
     for player_input in ("我先看看。", "（推门离开）明天见。"):
         outcome = engine.resolve_turn(
             session, TurnRequestV2("prefix", 0, player_input), (),
@@ -113,8 +113,22 @@ def test_actor_keeps_per_turn_action_projection_after_system_rules(formal):
         assert system.count(marker) == 1
         prefix, projection = system.split(marker)
         assert projection.endswith("。")
-        assert json.loads(projection[:-1]) == project_player_action_result(player_input)
+        resolved = json.loads(projection[:-1])
+        has_input_ref = False
+        for row in (*resolved["confirmed_actions"], *resolved["future_references"]):
+            if row.pop("evidence_ref", None) == "player_input":
+                row["evidence_quote"] = player_input
+                has_input_ref = True
+        expected = project_player_action_result(player_input)
+        if not formal and expected["player_left_current_scene"]:
+            expected["confirmed_actions"] = []
+            expected["has_confirmed_player_action"] = False
+            expected.pop("player_left_current_scene")
+        assert resolved == expected
         assert _payload(messages)["player_input"] == player_input
+        if has_input_ref:
+            assert prefix.endswith("evidence_ref 取 player_input 原话。")
+            prefix = prefix.removesuffix("evidence_ref 取 player_input 原话。")
         systems.append(prefix)
     assert systems[0] == systems[1]
 
@@ -132,11 +146,15 @@ def test_actor_evidence_dedup_follows_final_retained_history(response, trim_hist
         {"revision": 1, "player_input": "旧话题。" * (300 if trim_history else 1), "performance": response},
         {"revision": 2, "player_input": "我记住了。", "performance": "请按刚才的约定来。"},
     ]
-    fitted = numeric_v2_actor._fit_simple_turn_prompt_data(
+    common = dict(
         system_prompt="承接历史。", human_prefix="上下文：\n",
         data=dict(role="猫娘", current_scene="场内", story_so_far="", pacing="回应", next_scene="", player_input="继续。"),
-        history_rows=history, max_tokens=240 if trim_history else 3000,
         evidence_records=evidence,
+    )
+    latest_only = numeric_v2_actor._fit_simple_turn_prompt_data(**common, history_rows=history[-1:], max_tokens=3000)
+    limit = serialized_prompt_tokens("承接历史。", "上下文：\n" + numeric_v2_actor.render_prompt_context(latest_only))
+    fitted = numeric_v2_actor._fit_simple_turn_prompt_data(
+        **common, history_rows=history, max_tokens=limit if trim_history else 3000,
     )
     text = fitted["story_so_far"]
     assert text.count(response) == 1
@@ -216,8 +234,13 @@ def test_partial_action_projection_keeps_raw_input_authority_in_every_consumer(p
         assert "只表示未提取到对应证据" in system
         assert "仍按 player_input 和已提交历史核对" in system
         assert "future_references" in system
-        assert "提问、准备、假设与尝试不证明完成" in system
-        assert "不能推定未知成功、额外动作或跨阶段授权" in system
+        if "【回应与行动】" in system:
+            assert "考虑、准备、询问、假设和有条件的未来意愿仍不算完成" in system
+            assert "尝试也不保证未知的成功结果" in system
+            assert "不扩展到其他对象、额外操作或后续承诺" in system
+        else:
+            assert "提问、准备、假设与尝试不证明完成" in system
+            assert "不能推定未知成功、额外动作或跨阶段授权" in system
         assert "投影没有列出的" not in system
         assert "投影未列出的" not in system
 
@@ -281,12 +304,12 @@ def test_numeric_v2_turn_prompt_keeps_six_fields_in_partition_order():
     assert "推荐 4 回合" in payload["pacing"]
     # Declare the general contract only in System; pacing no longer duplicates all fact/action rules.
     assert "推进当前核心因果" in messages[0].content
-    assert "玩家向在场 NPC 询问、递物或请求行动时" in messages[0].content
+    assert "在场NPC的问答、接物、拒绝或缺项在scene_update明写姓名或身份与具体回应" in messages[0].content
     assert "不能以神情或你的代答替代" in messages[0].content
-    assert "交付其答复、接收、拒绝或尚缺的信息" in messages[0].content
+    assert "NPC仍受自身权限和前提约束" in messages[0].content
     assert "不从检查、猜测或问句补造线索、技术、未知路径或成败" in messages[0].content
-    assert "同地点进入新时段、新阶段或结局收束" in messages[0].content
-    assert "动作可省略‘我’" in messages[0].content
+    assert "同地的新时段、阶段或结局" in messages[0].content
+    assert "‘我’可省略" in messages[0].content
     assert "一个完整的核心因果" not in payload["pacing"]
     assert payload["player_input"] == "我先听你把话说完。"
     assert "player_action_projection" in messages[0].content
@@ -295,16 +318,16 @@ def test_numeric_v2_turn_prompt_keeps_six_fields_in_partition_order():
     assert "先回应 player_input 的具体对象" in messages[0].content
     assert "performance 只写你的回应" in messages[0].content
     assert "当前幕已出现 NPC 的动作或回应，写入 scene_update" in messages[0].content
-    assert "提问、准备、假设与尝试不证明完成" in messages[0].content
+    assert "尝试也不保证未知的成功结果" in messages[0].content
     assert "未知或越界明确说明" in messages[0].content
     assert "未知或越界明确说明" in messages[0].content
     assert "不补玩家心理、发言、重要操作、选择、承诺或新交接" in messages[0].content
-    assert "performance是你的回应，不能互换" in messages[0].content
+    assert messages[0].content.count("performance 只写你的回应") == 1
     assert "不扩展到其他对象、额外操作或后续承诺" in messages[0].content
-    assert "已决定执行、无需新选择的连续过程一次交付完毕" in messages[0].content
+    assert "已决定且无需新选择的连续过程一次完成" in messages[0].content
     assert "真实选择" in messages[0].content
     assert "作者明确分阶段或禁止当前公开时不可合并" in messages[0].content
-    assert "未发生内容不能当作角色知识、环境事实或完成结果" in messages[0].content
+    assert "未发生内容不作知识、环境事实或完成结果" in messages[0].content
     assert "current_scene是作者规划" in messages[0].content
     assert "不把悬念、边缘追问变成新任务" in messages[0].content
     assert "核心结果成立后承接态度与已有出口" in messages[0].content
@@ -431,11 +454,11 @@ def test_numeric_v2_prompts_separate_direct_stage_attempt_from_its_result():
         player_input="我准备结束这里的互动。",
     )[0][0].content
 
-    assert "进入新地点、新时段或受明确禁令约束的阶段须等正式换幕" in actor_prompt
-    assert "也不再次要求执行" in actor_prompt
+    assert "新地点、时段或受禁令约束的阶段等正式换幕" in actor_prompt
+    assert "不再次要求执行" in actor_prompt
     assert "也不把物件退回操作前" in actor_prompt
-    assert "或玩家明确要求前往已公开的下一地点" in actor_prompt
-    assert "同地点连续动作可以演完" in actor_prompt
+    assert "普通换幕须接受或主动请求已公开安排" in actor_prompt
+    assert "同一地点、对象工具及必要前提已经具备的连续动作" in actor_prompt
     assert "边界前准备、提议与未来邀请不属已越界" in judge_prompt
     assert "新地点、新时段或受明确禁令约束的后续结果仍不能凭玩家尝试提前播放" in judge_prompt
     assert "同地可执行动作按玩家本轮授权承接，不因分节点安排误报" in judge_prompt
@@ -460,12 +483,12 @@ def test_numeric_v2_prompts_reject_assumed_new_stage_without_story_playbook():
         player_input="我跟上。",
     )[0][0].content
 
-    assert "也不得提前跨越正式换幕后的时间或地点" in actor_prompt
-    assert "进入新地点、新时段或受明确禁令约束的阶段须等正式换幕" in actor_prompt
+    assert "不把邀约当作接受、离开或抵达" in actor_prompt
+    assert "新地点、时段或受禁令约束的阶段等正式换幕" in actor_prompt
     assert "明确邀请进入其他地点/时段/阶段，即使方向错误也为 true" in judge_prompt
     assert "提议方向错误只影响 valid，不等于正文已经越界" in judge_prompt
     assert "valid 只核对这条邀请能否兑现既有出口" in judge_prompt
-    assert "Runtime 已按当前状态判定该出口可用" in judge_prompt
+    assert "程序已按当前状态判定该出口可用" in judge_prompt
     assert "作者方向、next_scene_direction 和按钮自身不能充当玩家已知证据" in judge_prompt
     # Independent opening facts are directly usable; acquisition processes still awaiting performance are not established facts.
     assert "获准角色行为不必先出现在历史中" in judge_prompt
@@ -490,8 +513,8 @@ def test_numeric_v2_prompts_match_boundaries_by_actor_object_action_and_stage():
         player_input="（完成手里的动作）好了。",
     )[0][0].content
 
-    assert "玩家已实施的幕内动作从外部回应开始" in actor_prompt
-    assert "不重演、不转给你重做" in actor_prompt
+    assert "正文可承接该动作及其直接结果" in actor_prompt
+    assert "不再次要求执行" in actor_prompt
     assert "先确定本次是谁对哪个对象实施了什么" in judge_prompt
     assert "只约束同一主体、对象、动作和阶段" in judge_prompt
     assert "当前角色或 NPC 自主执行各自行为均不属代做" in judge_prompt
@@ -518,8 +541,8 @@ def test_numeric_v2_prompts_do_not_treat_last_source_action_as_transition():
         player_input="我来完成当前动作。",
     )[0][0].content
 
-    assert "完成本幕最后一个普通行动只让出口成熟，结果成立后再提出跨阶段行动" in actor_prompt
-    assert "结果成立后再提出跨阶段行动" in actor_prompt
+    assert "普通行动完成只让出口成熟，不自动换场" in actor_prompt
+    assert "结果成立、有口头邀请权限且安排尚未公开时" in actor_prompt
     assert "只邀请执行出口之前的其他动作、仅完成前置条件、泛问或只有按钮提出都为 false" in judge_prompt
     assert "无正文提议时为 false" in judge_prompt
 
@@ -545,7 +568,7 @@ def test_numeric_v2_prompts_keep_prerequisites_and_future_offers_in_separate_fie
     )[0][0].content
 
     assert "前提须由指定主体公开成立" in actor_prompt
-    assert "其他主体、沉默或依赖动作不能代替" in actor_prompt
+    assert "不以其他主体、沉默或依赖动作代替" in actor_prompt
     assert "同一主体可在一轮内按可见先后完成前提与依赖动作" in actor_prompt
     assert "作者明确分阶段或禁止当前公开时不可合并" in actor_prompt
     assert "不能仅因作者把该动作安排在下一节点" in actor_prompt
@@ -570,9 +593,9 @@ def test_numeric_v2_actor_finishes_low_risk_micro_action_instead_of_stalling():
         phase="turn",
     )
 
-    assert "已决定执行、无需新选择的连续过程一次交付完毕" in actor_prompt
-    assert "遇到真实未决选择、未知成败或阶段边界才停下" in actor_prompt
-    assert "不为保持短句停在启动或等待" in actor_prompt
+    assert "已决定且无需新选择的连续过程一次完成" in actor_prompt
+    assert "真实选择、未知成败或阶段边界才暂停" in actor_prompt
+    assert "不停在启动或等待" in actor_prompt
 
 
 def test_numeric_v2_prompts_preserve_entity_ownership_across_the_turn():
@@ -626,7 +649,9 @@ def test_numeric_v2_actor_inputs_share_existing_pacing(player_input, stage):
     if stage == "soft_closure":
         assert "超过推荐展开长度" in payload["pacing"]
     if stage in {"uncompleted", "soft_closure"}:
-        assert "先回应玩家本轮的对白或情绪" in payload["pacing"]
+        assert "回应玩家" in payload["pacing"]
+        assert "按本幕边界交付已获授权的结果" in payload["pacing"]
+        assert "待确认的跨幕行动只商定做法" in payload["pacing"]
     suggested = _turn_messages(engine, session, outcome, player_input, "安静克制。", "测试猫娘", "哥哥",
         input_source="suggestion")
     assert "推荐承接合同" in suggested[0].content
@@ -697,7 +722,8 @@ def test_numeric_v2_retry_places_correction_last_without_progress_pressure():
         else:
             assert "按自然收束合同回应" in payload["pacing"]
             assert "本轮自然收束合同" in messages[0].content
-            assert "先回应玩家，再提出 next_scene 支持的具体跨阶段行动" in messages[0].content
+            assert "玩家明确暂缓或还有必须先答的独立问题时留在本幕" in messages[0].content
+            assert "其他情况在 transition_offer 提出 next_scene 支持的具体跨阶段行动" in messages[0].content
             assert "核心冲突尚未清楚时先交付关键事实" not in payload["pacing"]
 
 
@@ -992,7 +1018,9 @@ def test_numeric_v2_transition_prompt_preserves_causal_order_and_abstract_bounda
 
     assert "作者剧情方向是导演信息" in system
     assert "明确的因果先后不能倒置" in system
-    assert "target_scene.opening_situation是目标段整体依据" in system
+    assert "共用开场只交付与已提交历史及前段结果相容的状态" in system
+    assert "备用方案和道具用途不证明本路已启用" in system
+    assert "后段承接前段已完成结果，不重做或重分配归属" in system
     assert "环境/NPC与自身表演分别写目标旁白和target_performance" in system
     assert "作者只给出抽象状态或待确认事项时，不得自行具体化" in system
 
@@ -1256,7 +1284,7 @@ def test_numeric_v2_recommended_turn_is_not_a_forced_offer_countdown():
 def test_numeric_v2_soft_boundary_prefers_authored_fact_over_new_task_chain():
     """If the core conflict is absent at soft conclusion, directly enact author facts instead of continually adding investigation steps."""  # noqa: DOCSTRING_CJK
 
-    engine = NumericV2Engine.from_mapping(numeric_v2_story())
+    engine = _ending_engine(ordinary=True)
     session = replace(_session(engine), node_turn_count=3)
     outcome = engine.resolve_turn(
         session,
@@ -1303,8 +1331,8 @@ def test_numeric_v2_closure_prompt_keeps_unknown_boundary_without_special_invest
     )
     assert "交付顺序合同" not in _payload(messages)["pacing"]
     assert "关键能力、机制或结果未知时保持未知" in messages[0].content
-    assert "不复述玩家刚做过的动作" in messages[0].content
-    assert "提议须由已发生事实自然导向" in messages[0].content
+    assert "不复述玩家动作" in messages[0].content
+    assert "有事实依据的跨阶段邀请" in messages[0].content
 
 
 def test_numeric_v2_prefilters_unproven_result_suggestion_before_review():
@@ -1529,7 +1557,7 @@ def test_numeric_v2_turn_prompt_separates_opening_facts_from_scene_direction():
     assert next(line for line in payload["current_scene"].splitlines() if line.startswith("本幕首次入场时")).endswith("雨后的花店门口只有一盏昏黄路灯。")
     assert "本幕完整剧情方向（自然演绎，不是任务清单，也不是已发生事实）" in payload["current_scene"]
     assert "先观察门外" in payload["current_scene"]
-    assert "未发生内容不能当作角色知识、环境事实或完成结果" in messages[0].content
+    assert "未发生内容不作知识、环境事实或完成结果" in messages[0].content
 
 
 def test_numeric_v2_turn_prompt_keeps_ineligible_next_scene_unknown():
@@ -1556,7 +1584,7 @@ def test_numeric_v2_turn_prompt_keeps_ineligible_next_scene_unknown():
     ))
 
     assert payload["next_scene"] == (
-        "下一幕尚未确定；玩家接受具体转场提议后由 Runtime 决定。"
+        "当前没有可用出口；留在本幕交付已授权的结果，出口由程序结算。"
     )
 
 
@@ -1570,7 +1598,8 @@ def test_numeric_v2_turn_prompt_only_exposes_next_scene_direction():
         "summary_after_acceptance": "旧信与备用钥匙并排放在桌面上。",
     })
 
-    assert next_scene.startswith("接受后进入的下一互动阶段主题是《长街旧信》")
+    assert "下一互动阶段主题" not in next_scene
+    assert "沿着长街寻找旧信" in next_scene
     assert "本出口的来源前因与后续方向（不表示已经满足或已有邀请）：沿着长街寻找旧信。" in next_scene
     assert "接受当前转场提议后" not in next_scene
     assert "不是目标清单或固定动作" in next_scene
@@ -1703,41 +1732,54 @@ def test_actor_and_guard_share_actual_opening_fallback(opening, summary, expecte
 
 
 
-def test_numeric_v2_turn_prompt_allows_same_place_ending_closure():
-    """Give the Actor an actionable closure direction for ending nodes even without a change of location."""
+@pytest.mark.parametrize("node_turn_count", [0, 5])
+def test_numeric_v2_turn_prompt_allows_same_place_ending_closure(node_turn_count):
+    """Pending ending guidance leaves the player-owned action with the player at any pacing stage."""
 
     story = numeric_v2_story()
     # Retain one ending exit so ordinary turns can identify conclusion rather than an unresolved branch.
     # Select the 'leave' ending reachable from test initial trust, avoiding unreachable nodes.
     story["nodes"][0]["route_gates"] = story["nodes"][0]["route_gates"][1:]
+    direction = "旧友已接稳剑匣，押镖任务完成，留在当前地点收束。"
+    story["nodes"][0]["route_gates"][0]["transition_contract"]["reason"] = direction
+    story["nodes"][0]["story_beat"]["narrative_focus"] = "等待玩家亲手递交剑匣。"
     story["nodes"] = [
         node for node in story["nodes"] if node["id"] != "ending_stay"
     ]
     story["endings"] = [ending for ending in story["endings"] if ending["id"] == "leave"]
     engine = NumericV2Engine.from_mapping(story)
-    session = replace(_session(engine), node_turn_count=5)
+    session = replace(_session(engine), node_turn_count=node_turn_count)
+    message = "（上前一步，轻轻叩响门扉）"
     outcome = engine.resolve_turn(
         session,
-        TurnRequestV2("same_place_ending", session.revision, "我先陪你把日志看完。"),
+        TurnRequestV2("same_place_ending", session.revision, message),
         (),
         scene_complete=False,
     )
 
-    payload = _payload(_turn_messages(
+    messages = _turn_messages(
         engine,
         session,
         outcome,
-        "我先陪你把日志看完。",
+        message,
         "安静克制，习惯用短句回应。",
         "测试猫娘",
         "哥哥",
-    ))
+    )
+    payload = _payload(messages)
 
     # Endings may finish naturally; prompts no longer require an extra invitation to conclude.
     assert payload["next_scene"].startswith("下一阶段是结局余韵")
+    assert "只演前因已具备的角色或环境回应" in payload["next_scene"]
+    assert "下一步需要玩家作出选择或亲自操作时，留给玩家" in payload["next_scene"]
+    assert f"作者收束条件（仅说明何时可收束，不证明条件已成立）：{direction}" in payload["next_scene"]
     assert "不为结束追加邀请" in payload["next_scene"]
     assert "结局尚未获准" in payload["pacing"]
-    assert "不为结束追加邀请" in payload["pacing"]
+    assert "先交付本幕尚未成立的核心结果" not in payload["next_scene"]
+    assert "交付本幕尚待成立的结果" not in payload["pacing"]
+    assert "继续交付本幕结果与必要回应" not in messages[0].content
+    assert "等待玩家亲手递交剑匣" in messages[0].content
+    assert payload["player_input"] == message
     assert "雨停后的长街恢复了安静" not in payload["next_scene"]
     assert "不得提前描写结局独有的地点" in payload["next_scene"]
 
@@ -1789,7 +1831,7 @@ def test_numeric_v2_legacy_focus_prefers_scene_direction_over_opening():
 
 
 def test_numeric_v2_pending_transition_is_highlighted_for_recommendations():
-    """Project the concrete pending offer separately from long history so suggestions can see more than a boolean."""
+    """Point recommendations to the verbatim offer already present in history."""
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = replace(
@@ -1828,7 +1870,9 @@ def test_numeric_v2_pending_transition_is_highlighted_for_recommendations():
     ))
 
     assert "当前待确认提议原文" in payload["pacing"]
-    assert "沿着长街去找旧信" in payload["pacing"]
+    assert "见 story_so_far 中角色最新的完整原文" in payload["pacing"]
+    assert "沿着长街去找旧信" not in payload["pacing"]
+    assert payload["story_so_far"].count("沿着长街去找旧信") == 1
     assert "只有旧提议仍符合实际出口时" in payload["pacing"]
     assert "第一条推荐才可接受并亲自执行该提议" in payload["pacing"]
     assert "第二条拒绝、暂缓或留在本幕" in payload["pacing"]
@@ -1841,9 +1885,10 @@ def test_numeric_v2_simple_prompt_packing_drops_oldest_complete_history():
         {"revision": 2, "player_input": "旧回合二", "performance": "（动作）旧回复二"},
         {"revision": 3, "player_input": "最新回合", "performance": "（动作）最新回复"},
     ]
+    staged_quote = '{"source":"committed_player_input","quote":"旧回合一"}'
     data = {
         "role": "你是测试猫娘。",
-        "current_scene": "当前幕剧情方向。",
+        "current_scene": "当前幕剧情方向。" + staged_quote,
         "story_so_far": "",
         "pacing": "当前是第 3 回合，本幕推荐 4 回合。",
         "next_scene": "下一幕剧情方向。",
@@ -1852,20 +1897,43 @@ def test_numeric_v2_simple_prompt_packing_drops_oldest_complete_history():
 
     prefix = "以下四块是本回合演绎上下文：\n"
     latest_only = {**data, "story_so_far": numeric_v2_actor._story_so_far_text(history[-1:])}
-    budget = numeric_v2_actor.count_tokens("只回应玩家。") + numeric_v2_actor.count_tokens(
-        prefix + numeric_v2_actor.render_prompt_context(latest_only),
-    )
+    budget = serialized_prompt_tokens("只回应玩家。", prefix + numeric_v2_actor.render_prompt_context(latest_only))
+    retained_player_inputs = []
     fitted = numeric_v2_actor._fit_simple_turn_prompt_data(
         system_prompt="只回应玩家。",
         human_prefix=prefix,
         data=data,
         history_rows=history,
         max_tokens=budget,
+        retained_player_inputs=retained_player_inputs,
+        staged_player_history_quotes=("旧回合一",),
     )
 
     assert "旧回合一" not in fitted["story_so_far"]
     assert "最新回合" in fitted["story_so_far"]
     assert fitted["player_input"] == "我继续观察。"
+    assert retained_player_inputs == [(3, "最新回合")]
+    assert staged_quote in fitted["current_scene"]
+
+
+def test_numeric_v2_combined_player_evidence_is_source_bound_after_packing():
+    history = [{"revision": 7, "player_input": "我选官道。", "performance": "路线可以谈。"}]
+    retrieved = [
+        {"revision": 3, "source": "player_input", "current_visit": False, "text": "上一幕我也走官道。"},
+        {"revision": 5, "source": "performance", "current_visit": True, "text": "要选山径吗？"},
+        {"revision": 6, "source": "player_input", "current_visit": True, "text": "官道有什么补给？"},
+        {"revision": 7, "source": "player_input", "current_visit": True, "text": "我选官道。"},
+    ]
+    retained = []
+    fitted = numeric_v2_actor._fit_simple_turn_prompt_data(
+        system_prompt="只回应玩家。", human_prefix="", data={"story_so_far": "", "player_input": "先看风雪。"},
+        history_rows=history, max_tokens=1000, evidence_records=retrieved, retained_player_inputs=retained,
+    )
+    assert fitted["story_so_far"].count("我选官道。") == 1
+    assert "上一幕我也走官道。" in fitted["story_so_far"]
+    assert "要选山径吗？" in fitted["story_so_far"]
+    assert set(retained) == {(6, "官道有什么补给？"), (7, "我选官道。")}
+    assert len(retained) == 2
 
 
 def test_numeric_v2_scene_fact_index_keeps_early_committed_progress() -> None:
@@ -1965,9 +2033,7 @@ def test_numeric_v2_fact_index_is_budgeted_when_final_packing_drops_history():
         + json.dumps(index, ensure_ascii=False, separators=(",", ":"))
         + "\n\n最近完整对话：\n\n" + numeric_v2_actor._story_so_far_text(history[-1:])
     )
-    budget = numeric_v2_actor.count_tokens("回应玩家。") + numeric_v2_actor.count_tokens(
-        numeric_v2_actor.render_prompt_context({**data, "story_so_far": expected_history}),
-    )
+    budget = serialized_prompt_tokens("回应玩家。", numeric_v2_actor.render_prompt_context({**data, "story_so_far": expected_history}))
 
     fitted = numeric_v2_actor._fit_simple_turn_prompt_data(
         system_prompt="回应玩家。", human_prefix="", data=data,
@@ -2103,11 +2169,7 @@ def test_numeric_v2_simple_prompt_packing_drops_previous_scene_tail_first():
         "story_so_far": numeric_v2_actor._story_so_far_text(without_tail),
     }
     exact_budget = (
-        numeric_v2_actor.count_tokens(system_prompt)
-        + numeric_v2_actor.count_tokens(
-            human_prefix
-            + numeric_v2_actor.render_prompt_context(expected_data)
-        )
+        serialized_prompt_tokens(system_prompt, human_prefix + numeric_v2_actor.render_prompt_context(expected_data))
     )
 
     def unexpected_index():
@@ -2189,7 +2251,8 @@ def test_numeric_v2_actor_records_missing_expected_fact_candidates_without_rejec
     }
 
 
-def test_numeric_v2_turn_prompt_projects_completion_facts_without_claiming_missing_values():
+@pytest.mark.parametrize("combined", [False, True])
+def test_numeric_v2_turn_prompt_projects_completion_facts_without_claiming_missing_values(combined):
     """Completion contracts appear in director context; absent facts must not project as already failed or completed."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
@@ -2218,6 +2281,7 @@ def test_numeric_v2_turn_prompt_projects_completion_facts_without_claiming_missi
         "安静而可靠。",
         "测试猫娘",
         "哥哥",
+        combined_evaluation=combined,
     )
     payload = _payload(messages)
 
@@ -2225,12 +2289,102 @@ def test_numeric_v2_turn_prompt_projects_completion_facts_without_claiming_missi
     assert '"status":"pending"' in payload["current_scene"]
     assert '"committed":false' in payload["current_scene"]
     assert '"satisfied":false' in payload["current_scene"]
-    assert "本轮 performance 或 scene_update 已经明确演出的结果，必须逐项写入顶层 fact_candidates" in messages[0].content
-    assert "完成一项就登记一项，不等整幕完成" in messages[0].content
-    assert "顶层必须包含 fact_candidates:object[]" in messages[0].content
-    assert "每项必须且只能包含 key、value、evidence_quote" in messages[0].content
-    assert "也必须返回 fact_candidates:[]，不得省略字段" in messages[0].content
-    assert "不得为了满足完成条件而补造正文" in messages[0].content
+    system = messages[0].content
+    assert "完成一项就登记一项，不等整幕完成" in system
+    assert "准备、开始或部分完成不能证明整项完成" in system
+    assert "顶层必须包含 fact_candidates:object[]" in system
+    assert "不得为了满足完成条件而补造正文" in system
+    assert "evidence_anchor" not in system
+    assert "evidence_anchor" not in payload["current_scene"]
+    if combined:
+        assert system.count("只在 turn_evaluation.fact_candidates 中引用 player_input") == 1
+        assert "玩家本轮明确作出的选择（含路线）" in system
+        assert system.count("顶层 fact_candidates 只登记本轮 performance 或 scene_update") == 1
+        assert "补记未入账的本幕路线选择" not in system
+        assert "标注 evidence_source=performance 的事实只引用实际演出" in system
+        assert "没有本轮新确认事实" not in system
+        assert system.count("每项仅含 key、value、evidence_quote") == 1
+    else:
+        assert "实际证据表明该条描述的全部完成条件已成立" in system
+        assert "本轮 performance 或 scene_update 交付了该结果时，必须逐项写入顶层 fact_candidates" in system
+        assert "每项必须且只能包含 key、value、evidence_quote" in system
+        assert "也必须返回 fact_candidates:[]，不得省略字段" in system
+        assert "角色提议只证明提出；玩家同意或双方选定须核对玩家已表达的选择或同意" in system
+        assert "turn_evaluation" not in system
+
+
+def test_numeric_v2_route_choice_uses_the_retained_player_original():
+    story = numeric_v2_story()
+    key = "scene:start:route_choice"
+    story["fact_contract"] = {"facts": {
+        key: {"value_type": "string", "visibility": "public", "description": "玩家选定的道路。"},
+    }}
+    for gate, option in zip(story["nodes"][0]["route_gates"], ("官道", "山径")):
+        gate["conditions"] = {"all": [{"type": "fact_equals", "key": key, "value": option}]}
+    engine = NumericV2Engine.from_mapping(story)
+    session = _session(engine)
+    original = "我跟{{catgirl_name}}一起走官道。"
+    session = replace(session, revision=1, node_turn_count=1, story_state=_story_state_at(session, 1),
+                      performance_history=({"revision": 1, "from_node_id": "start", "to_node_id": "start",
+                                            "input_text": original, "performance": "路上的天气可能会变。"},))
+    message = "先看看外面的风雪。"
+    outcome = engine.resolve_turn(session, TurnRequestV2("look", 1, message), ())
+    retained = []
+    messages = _turn_messages(engine, session, outcome, message, "安静。", "小葵", "哥哥",
+                              combined_evaluation=True, combined_player_inputs=retained)
+    system = messages[0].content
+    assert system.count("仅在 turn_evaluation.fact_candidates 补记未入账的本幕路线选择") == 1
+    assert "本次到访时作出且未撤回或改变的完整玩家原话" in system
+    assert "角色先前给出的选项不是玩家选择，旧话也不授权本轮出发" in system
+    assert _payload(messages)["player_input"] == message
+    assert retained == [(1, original)]
+
+    claim = {"op": "set", "key": key, "value": "官道", "validated_only": True,
+             "evidence": [{"source": "committed_player_input", "quote": original}]}
+    messages = _turn_messages(engine, session, outcome, message, "安静。", "小葵", "哥哥",
+                              approved_completion_facts=(claim,))
+    data = _payload(messages)
+    assert original in data["story_so_far"]
+    assert original not in data["current_scene"]
+    assert '"source":"committed_player_input","quote_ref":"story_so_far 倒数第1个完整回合的玩家原话"' in data["current_scene"]
+    assert '"quote_ref":"player_input"' not in data["current_scene"]
+
+
+def test_numeric_v2_actor_fact_anchors_are_sent_once_for_pending_results():
+    story = numeric_v2_story()
+    facts = {
+        "scene:start:rescued": ("伤者已经脱困并由担架接稳。", "已平放在担架上"),
+        "scene:start:doors": ("两人已打开通道的两扇门。", "通道两扇门已打开"),
+    }
+    story["fact_contract"] = {"facts": {
+        key: {"value_type": "bool", "visibility": "public", "evidence_source": "performance",
+              "description": description, "evidence_anchor": anchor}
+        for key, (description, anchor) in facts.items()
+    }}
+    node = story["nodes"][0]
+    node["completion_contract"] = {"all": [{"key": "scene:start:rescued", "equals": True}]}
+    for route in node["route_gates"]:
+        route["conditions"]["all"].extend(
+            {"type": "fact_equals", "key": key, "value": True} for key in facts
+        )
+    engine = NumericV2Engine.from_mapping(story)
+    session = _session(engine)
+    turn = TurnRequestV2("anchors", 0, "现在怎么样？")
+    outcome = engine.resolve_turn(session, turn, ())
+    messages = _turn_messages(engine, session, outcome, turn.message, "温和。", "测试猫娘", "哥哥")
+    scene = _payload(messages)["current_scene"]
+    for _, anchor in facts.values():
+        assert scene.count(f'"evidence_anchor":"{anchor}"') == 1
+    assert "同一实际结果引文须包含完整短语" in messages[0].content
+
+    completed = engine.resolve_turn(session, turn, (), fact_operations=tuple(
+        {"op": "set", "key": key, "value": True, "visibility": "public"} for key in facts
+    )).session
+    next_turn = TurnRequestV2("anchors_completed", completed.revision, "我知道了。")
+    outcome = engine.resolve_turn(completed, next_turn, ())
+    messages = _turn_messages(engine, completed, outcome, next_turn.message, "温和。", "测试猫娘", "哥哥")
+    assert "evidence_anchor" not in messages[0].content
+    assert "evidence_anchor" not in _payload(messages)["current_scene"]
 
 
 @pytest.mark.parametrize("retry_hint", ["", "只修正本轮未提交回应，暂不提出跨幕邀请。"])
@@ -2307,6 +2461,7 @@ def reinvitation_actor_context():
     story = numeric_v2_story()
     story["nodes"][0]["story_beat"]["opening_scene"] = "雨后的花店门铃轻轻响起。"
     story["nodes"][0]["story_beat"]["narrative_summary"] = "在花店内把约定说清，再由玩家决定是否同行。"
+    story["nodes"][0]["story_beat"]["narrative_focus"] = "打开花店侧门，交付门外动静。"
     story["nodes"][0]["story_beat"]["must_not_happen"] = ["不得擅自拆开玩家保管的工具匣。"]
     story["fact_contract"] = {"facts": {
         "scene:start:done": {
@@ -2336,14 +2491,6 @@ def reinvitation_actor_context():
         "performance": invitation, "scene_narration": narration,
     },))
     # 真实已提交状态与原文共同保留，不能靠删除道具归属来压缩控制请求。
-    session = replace(session, narrative_state=apply_narrative_record(
-        None, {"schema": "numeric_v2_narrative_record_v2", "coverage": "confirmed_changes", "events": [{
-            "phase": "turn", "subject": "character", "kind": "speech",
-            "changes": [{"entity": "item:工具匣", "attribute": "holder", "value": "player"}],
-            "source": "scene_narration", "quote": "工具匣由你保管。", "known_to": ["player", "character"],
-        }], "proposal_count": 1}, revision=1, node_id="start", from_node_id="start",
-        performance={"performance": invitation, "scene_narration": narration}, message="",
-    ))
     outcome = engine.resolve_turn(
         session, TurnRequestV2("reinvite", 1, "", input_source="reinvite"), (),
     )
@@ -2367,8 +2514,6 @@ def test_reinvitation_actor_control_keeps_persona_history_and_readonly_facts(
     assert invitation in payload["story_so_far"]
     assert '"committed":true' in payload["current_scene"]
     assert '"status":"satisfied"' in payload["current_scene"]
-    assert '"item:工具匣"' in payload["current_scene"]
-    assert '"holder":{"value":"player"' in payload["current_scene"]
     assert "工具匣由你保管。" in payload["story_so_far"]
     assert payload["next_scene"]
     assert (engine.story, session, outcome) == before
@@ -2388,6 +2533,8 @@ def test_reinvitation_actor_control_keeps_persona_history_and_readonly_facts(
         assert "先完整回应 player_input，再结合 story_so_far 自然延展" not in system
         assert "本轮确定性完成收束合同" not in system
         assert "交付具体答复、拒绝、未知或尚缺的信息" not in system
+        assert "打开花店侧门" not in system
+        assert "再连贯交付前因已具备" not in system
         assert "顶层必须包含 fact_candidates:object[]" not in system
         assert "本幕完整剧情方向" not in payload["current_scene"]
         assert "只读" in payload["current_scene"]
@@ -3116,17 +3263,19 @@ def test_numeric_v2_compact_transition_suggestion_source_excludes_source_and_bri
     assert visible == "（翻开手账）你愿意谈谈真正想要的未来吗？"
 
 
-def test_numeric_v2_compact_transition_declares_sendable_suggestion_format():
+@pytest.mark.parametrize("entry_narration", [False, True])
+def test_numeric_v2_compact_transition_declares_sendable_suggestion_format(entry_narration):
     """Formal transitions and strict parsing share the same suggestion contract, rather than requiring string arrays and always refilling them."""
 
     system = numeric_v2_actor._system_prompt(
-        catgirl_name="测试猫娘", phase="transition_compact",
+        catgirl_name="测试猫娘", phase="transition_compact", entry_narration=entry_narration,
     )
 
     assert "非终局的 suggested_inputs 给出一至三条" in system
     assert "玩家对白、全角括号动作加对白或纯动作" in system and "“（保持安静）”" in system
     assert "不预演他人动作或成功结果" in system
-    assert "suggested_inputs 只承接最终可见的目标" in system
+    assert system.count("suggested_inputs 只承接最终可见的目标幕内容（含程序入幕原文）") == 1
+    assert "来源安排仍待回应且符合目标幕边界时才可延续" in system
 
 
 def test_numeric_v2_actor_preserves_valid_suggestions_after_route_change(monkeypatch):
@@ -3184,13 +3333,14 @@ def test_numeric_v2_actor_prompt_preserves_its_own_committed_proposals():
         phase="transition_compact",
     )
 
-    assert "story_so_far 是实际历史" in turn_prompt
-    assert "后续变化以实际已提交历史为准" in turn_prompt
+    assert "story_so_far是实际历史" in turn_prompt
+    assert "位置、持物、时间、分工与完成状态以实际历史为准" in turn_prompt
     assert "自己先前说错可以更正" in turn_prompt
     assert "已提交原文先证明谁说过什么、做过什么" in transition_prompt
     assert "已播放开场的动作只承接结果" in transition_prompt
     assert "suggested_inputs 只承接最终可见的目标" in transition_prompt
-    assert "三段共用最近实际原文确定的位置、同行分工、持物和完成状态" in transition_prompt
+    assert "三段按player_input与最近已提交原文承接位置、分工、持物和完成状态" in transition_prompt
+    assert "transition.reason与实际证据冲突时让位，不退回旧状态" in transition_prompt
     assert "current_scene是作者规划" in turn_prompt
 
 
@@ -3338,7 +3488,7 @@ def test_numeric_v2_evaluator_marks_pending_visible_transition_for_acceptance():
     )
     payload = prompt_payload(messages[1].content)
 
-    assert payload["pending_transition"]["visible_performance"] == (
+    assert pending_transition_text(payload) == (
         "（抬手指向门口）我们现在去外面看看，好吗？"
     )
     assert payload["pending_transition"]["suggested_inputs"] == [
@@ -3350,10 +3500,14 @@ def test_numeric_v2_evaluator_marks_pending_visible_transition_for_acceptance():
     assert payload["current_story_beat"]["runtime_scene_facts"]["facts"][0]["key"] == (
         "event:scene.entered:start:r0"
     )
-    assert "按语义判定，不得只匹配关键词" in messages[0].content
+    assert "同义改写可相符" in messages[0].content
+    assert "本轮明确去别处时" in messages[0].content
     assert "transition_reply_target" in messages[0].content
     assert "含糊的‘好／交给我／你去吧／继续’优先绑定最近一轮互动" in messages[0].content
     assert "以实质协助使提议中的下一阶段能够开始，也属于 accept" in messages[0].content
+    assert "本轮明确选定可以补足入口，不因已选而判不符" in messages[0].content
+    assert "同地新活动也需授权" in messages[0].content
+    assert "只回答问题或选方向而未同意开展则 unclear" in messages[0].content
 
 
 def test_numeric_v2_evaluator_distinguishes_followup_topic_shift_and_action():
@@ -3382,18 +3536,18 @@ def test_numeric_v2_evaluator_distinguishes_followup_topic_shift_and_action():
     system_prompt = messages[0].content
 
     assert '"transition_intent":"accept|initiate|reject|unclear"' in system_prompt
-    assert "追问提议的细节、条件或风险" in system_prompt
-    assert "必须判为 unclear；unclear 表示仍保留旧提议" in system_prompt
-    assert "换话题本身不表示拒绝，也不表示接受，判 unclear" in system_prompt
-    assert "reject 只表示撤下并清除旧提议" in system_prompt
-    assert "亲自开始实施同方向的下一步是 accept" in system_prompt
+    assert "追问细节/条件/风险" in system_prompt
+    assert "填unclear，保留提议但不作接受" in system_prompt
+    assert "换话题、追问细节/条件/风险、观察、犹豫或幕内旁支填unclear" in system_prompt
+    assert "只撤下旧提议，不推断敌意" in system_prompt
+    assert "亲自开始同一安排填accept而非initiate" in system_prompt
     assert "interaction_intent" not in system_prompt
     assert "核心变化及必要角色反应" in system_prompt
-    assert "不应被当作必须扩写的新任务" in system_prompt
+    assert "不增设任务" in system_prompt
     assert "达到或超过它时" in system_prompt
     assert "不要求逐项演完可选内容" in system_prompt
-    assert "同一个明确结果的因果单元" in system_prompt
-    assert "普通步骤不各自构成新的互动阶段" in system_prompt
+    assert "连续步骤服务同一结果" in system_prompt
+    assert "不拆新阶段" in system_prompt
 
 
 
@@ -3480,7 +3634,8 @@ def test_numeric_v2_actor_does_not_force_transition_offer_when_route_is_unresolv
 
     assert "必须在正文中提出一个基于当前已知事实的离开当前幕的具体下一步" not in payload["pacing"]
     assert "已获授权、没有新风险或真实选择的连续过程" in payload["pacing"]
-    assert "结果已经成立且自然出口成熟时" in payload["pacing"]
+    assert "已有结果时自然收住本幕互动" in payload["pacing"]
+    assert "提出基于已发生事实的具体未来行动" not in payload["pacing"]
 
 
 def test_numeric_v2_actor_overdue_focus_still_requires_mature_exit():
@@ -3550,7 +3705,7 @@ def test_numeric_v2_transition_judge_receives_visible_offer_and_scene_context():
     assert "1. body_violations：只列正文已写出的冲突" in messages[0].content
     assert "2. offer_present：先判断正文是否具体邀请玩家前往另一地点、时段或互动阶段" in messages[0].content
     assert "3. valid：无正文提议时为 false" in messages[0].content
-    assert "4. suggestion_checks 中 decision=reject 的索引：逐条独立检查按钮" in messages[0].content
+    assert "4. suggestion_checks：按从 0 开始的索引逐条独立判定按钮" in messages[0].content
     assert "5. failure_reason" in messages[0].content
     assert "不要求接受按钮" in messages[0].content
     assert "正文与推荐组合" not in messages[0].content
@@ -3610,7 +3765,7 @@ def test_numeric_v2_transition_judge_uses_route_reason_and_actual_nonending_entr
     assert "当前幕未授权的新地点、新时段或新互动阶段结果" in messages[0].content
     assert "当前角色或 NPC 自主执行各自行为均不属代做" in messages[0].content
     assert "证据支持的外部结果" in messages[0].content
-    assert "句尾的‘请检查／请清点’不会把前面第一人称陈述降为计划" in messages[0].content
+    assert "一句输入可以先实施动作再请求核对" in messages[0].content
     assert "不得在 failure_reason 中自我辩论" in messages[0].content
     assert "主体仍是该角色" in messages[0].content
 

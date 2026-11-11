@@ -11,7 +11,7 @@ from services.theater.numeric_v2 import NumericV2CompileError
 from services.theater.numeric_v2_actor import _opening_messages, _turn_messages
 from services.theater.numeric_v2_actor_output import _parse_output, NumericV2ActorOutputError
 from services.theater.numeric_v2_archive import _performance_memory_parts
-from services.theater.numeric_v2_context import history_evidence
+from services.theater.numeric_v2_context import history_evidence, prompt_data_block_payload
 from services.theater.numeric_v2_evaluator import (
     NumericV2EvaluationResult, NumericV2TransitionOfferReview,
     NumericV2EvaluatorOutputError,
@@ -51,8 +51,89 @@ def _engine():
     return NumericV2Engine.from_mapping(story)
 
 
+def test_disabled_condition_is_neither_an_actor_task_nor_a_completed_fact():
+    story = deepcopy(_engine().story)
+    story["nodes"][0]["completion_contract"] = {"all": [{"fixed_narration_id": "log"}]}
+    engine = NumericV2Engine.from_mapping(story)
+    session = engine.create_session(session_id="condition-paused", catgirl_binding=_binding(),
+                                    opening_performance=OPENING)
+    opening = _opening_messages(engine, "沉着。", "小岚", "玩家", condition_narrations_enabled=False)
+    assert prompt_data_block_payload(opening[0].content, "程序自动播放的入幕原文（不输出）")["text"] == REPORT
+    assert "铭牌已经放入读取器" not in opening[0].content
+    for enabled in (False, True):
+        outcome = engine.resolve_turn(session, TurnRequestV2("turn", 0, ACTION), (),
+                                      condition_narrations_enabled=enabled)
+        system, _ = _turn_messages(engine, session, outcome, ACTION, "沉着。", "小岚", "玩家")
+        assert ("铭牌已经放入读取器" in system.content) is enabled
+        assert ("反复要求玩家重新触发" in system.content) is not enabled
+        assert engine.completion_contract_satisfied(outcome.session) is False
+
+
 def _claims():
     return ({'id': 'log', 'evidence': '将铭牌放入读取器'},)
+
+
+@pytest.mark.asyncio
+async def test_catlamp_fixed_entry_offer_remains_public_without_repeating(tmp_path, monkeypatch):
+    from services.theater import numeric_v2_evaluator as evaluator, numeric_v2_options as options
+    from tests.unit.test_theater_numeric_v2_runtime import _opening
+    from tests.utils.theater_prompt import prompt_payload
+
+    story_file = Path(__file__).resolve().parents[2] / "assets/theater/story_ccc0763441e3.json"
+    engine = NumericV2Engine.from_mapping(json.loads(story_file.read_text(encoding="utf-8")))
+    runtime = NumericV2Runtime(engine, tmp_path)
+    stored = await runtime.start_session(session_id="catlamp", catgirl_binding=_binding(), opening_performance=_opening())
+    for step in range(2):
+        prepared = runtime.prepare_turn(stored, TurnRequestV2(f"enter-{step}", stored.session.revision, "我愿意继续。"),
+                                        (), transition_intent="initiate")
+        performance = engine.finalize_transition_performance(
+            prepared, _candidate(), target_opening="灯光落在桌面上。", bridge_scene_narration="两人穿过走廊。",
+        )
+        stored = await runtime.commit_turn(prepared, performance)
+    assert stored.session.current_node_id == "mainline_03"
+    assert engine.completion_contract_satisfied(stored.session) is True
+    assert not stored.session.transition_offered
+    fixed_offer = "今晚一起去旧站台看看，等末班车开走再出发，好吗？"
+
+    async def enabled_options():
+        return {key: key == "evaluator" for key in options.default_options()}
+
+    async def judge(*args, **kwargs):
+        return NumericV2EvaluationResult((), False)
+
+    async def invoke(self, messages, **kwargs):
+        assert fixed_offer in prompt_payload(messages[1].content)["story_so_far"]
+        assert "本次入幕原文已实际公开当前出口的邀约。只承接玩家的追问、暂缓或回应，transition_offer 留空" in messages[0].content
+        assert "在 transition_offer 公开一个具体的未来跨阶段行动" not in messages[0].content
+        return _parse_output(json.dumps({
+            "performance": "涂黑者和原因都不知道。",
+            "transition_offer": fixed_offer,
+            "suggested_inputs": ["好，末班车开走后我们去旧站台。"],
+        }, ensure_ascii=False), dialogue_policy=kwargs["dialogue_policy"])
+
+    monkeypatch.setattr(options, "MODEL_REVIEWS_ENABLED", False)
+    monkeypatch.setattr(workflow, "aload_theater_module_options", enabled_options)
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, "evaluate", judge)
+    monkeypatch.setattr(workflow.NumericV2Actor, "_invoke", invoke)
+    monkeypatch.setattr(workflow.NumericV2Actor, "_character_profile", lambda self: "沉着。")
+    result = await workflow.execute_numeric_v2_turn(
+        config_manager=object(), runtime=runtime, current=stored,
+        turn=TurnRequestV2("question", stored.session.revision, "这份记录被谁涂黑了？"),
+        ensure_current_binding=lambda _: _binding(),
+    )
+    assert result.performance["performance"] == "涂黑者和原因都不知道。"
+    assert not result.stored.session.transition_offered
+    restored = await runtime.restore_session("catlamp")
+    assert restored == result.stored
+    choice = "末班车开走后，一起出发去旧站台吧。"
+    evaluated = evaluator._parse_output(json.dumps({
+        "scene_complete": True, "metric_changes": {}, "transition_intent": "initiate",
+        "exit_matches": True, "exit_comparison": "末班车离站后同行去旧站台",
+        "public_destination_quote": fixed_offer,
+    }, ensure_ascii=False), engine, choice, restored.session, recent_ledger_events=restored.ledger_events)
+    next_turn = runtime.prepare_turn(restored, TurnRequestV2("accept", restored.session.revision, choice),
+                                     (), transition_intent=evaluated.transition_intent)
+    assert next_turn.session.current_node_id == "mainline_04"
 
 
 @pytest.mark.asyncio
@@ -81,6 +162,11 @@ async def test_new_actor_entry_keeps_verbatim_original_once_without_rewriting_pa
     original = deepcopy(candidate)
 
     async def invoke(*args, **kwargs):
+        if kwargs.get("entry_part") == "prefix":
+            return {key: deepcopy(value) for key, value in candidate.items()
+                    if key not in {"target_performance", "suggested_inputs"}}
+        if kwargs.get("entry_part") == "response":
+            return {key: deepcopy(candidate[key]) for key in ("target_performance", "suggested_inputs")}
         return deepcopy(candidate)
 
     monkeypatch.setattr(NumericV2Actor, '_invoke', invoke)
@@ -117,6 +203,11 @@ async def test_actor_rejects_long_entry_replay_hidden_behind_a_changed_sentence(
         candidate['target_performance'] = '（看向你）' + LONG_ENTRY
 
     async def invoke(*args, **kwargs):
+        if kwargs.get("entry_part") == "prefix":
+            return {key: deepcopy(value) for key, value in candidate.items()
+                    if key not in {"target_performance", "suggested_inputs"}}
+        if kwargs.get("entry_part") == "response":
+            return {key: deepcopy(candidate[key]) for key in ("target_performance", "suggested_inputs")}
         return deepcopy(candidate)
 
     monkeypatch.setattr(NumericV2Actor, '_invoke', invoke)
@@ -171,6 +262,43 @@ def test_entry_guard_allows_a_short_dated_record_with_ellipsis_as_a_partial_quot
     original = '记录只能读清“' + quote + '”，其余被墨迹遮盖，原因未知。她提出稍后再到旧站台观察。'
     assert not _replays_entry_original({'performance': '（指向纸页）记录上是“' + quote + '”，涂黑处的意思仍未知。',
         'fixed_narrations': [{'text': original, 'position': 'before'}]})
+
+
+@pytest.mark.parametrize('topic', ['recording', 'archive'])
+@pytest.mark.parametrize('quote_pair', [('“', '”'), ('「', '」'), ('『', '』'), ('"', '"')])
+@pytest.mark.parametrize('field', ['performance', 'scene_narration'])
+def test_entry_guard_compares_quote_forms_without_changing_output(topic, quote_pair, field):
+    from services.theater.numeric_v2_actor import _replays_entry_original
+
+    original = {
+        'recording': "音箱里先是一阵杂音。老人缓缓说道：'我是港口的守灯人。今晚我想为离家的孩子留一句话。你们最后一次值班时，请记得替我告诉他，门口的灯会一直亮着。'声音停下后，房间里只剩雨声。",
+        'archive': "卷宗的第一页记载：'观测站在暴雨前收到一封来信。值班员将它放入蓝色文件夹，没有填写回信记录。最后一张地图标出了旧码头的仓库，其他纸页仍待辨认。'纸张的右下角盖着一枚旧章。",
+    }[topic]
+    value = {'scene_narration': '桌边的灯还亮着。', 'performance': '我想先听听你的看法。',
+             'fixed_narrations': [{'text': original, 'position': 'before'}]}
+    value[field] = '（看向窗外）' + original.replace("'", quote_pair[0], 1).replace("'", quote_pair[1], 1)
+    before = deepcopy(value)
+    assert _replays_entry_original(value)
+    assert value == before
+
+
+@pytest.mark.parametrize('topic', ['recording', 'archive'])
+@pytest.mark.parametrize('kind', ['short_quote', 'new_response', 'after'])
+def test_quote_equivalence_does_not_reject_partial_quotes_or_new_responses(topic, kind):
+    from services.theater.numeric_v2_actor import _replays_entry_original
+
+    quote, rest, response = {
+        'recording': ('门口的灯会亮着', '老人说完这句话便关上了话筒，房间里只剩雨声。', '我想先听听你的看法。'),
+        'archive': ('蓝色文件夹', '卷宗里另附一张地图，其他纸页仍待辨认。', '地图上的仓库还没有查明，我们先把疑问记下。'),
+    }[topic]
+    original = "记录里写着：'" + quote + "'。" + rest
+    value = {'performance': '你提到“' + quote + '”，这点值得记下。' if kind == 'short_quote' else response,
+             'fixed_narrations': [{'text': original, 'position': 'after' if kind == 'after' else 'before'}]}
+    if kind == 'after':
+        value['performance'] = original.replace("'", '"')
+    before = deepcopy(value)
+    assert not _replays_entry_original(value)
+    assert value == before
 
 
 @pytest.mark.parametrize('mutation', [
@@ -254,7 +382,7 @@ def test_builtin_neon_log_is_delivered_on_entry_without_model_review(transitions
     result = engine.finalize_transition_performance(outcome, _candidate(), target_opening='监控镜头转向窗户。')
     target = result['segments'][2]
     pieces = target['fixed_narrations']
-    expected_ids = ['tracking_scene', piece_id] if node_id == 'mainline_05' else [piece_id]
+    expected_ids = ['tracking_scene', piece_id, 'service_exit_offer'] if node_id == 'mainline_05' else [piece_id]
     assert [piece['id'] for piece in pieces] == expected_ids
     piece = next(piece for piece in pieces if piece['id'] == piece_id)
     assert piece['position'] == 'before'

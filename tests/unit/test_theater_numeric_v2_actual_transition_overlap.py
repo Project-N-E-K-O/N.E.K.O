@@ -182,7 +182,6 @@ async def test_bridge_time_provenance_uses_only_latest_committed_source_narratio
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, "validate_transition_offer", review)
     monkeypatch.setattr(workflow.NumericV2Actor, "generate_turn", generate)
     monkeypatch.setattr(workflow.NumericV2Actor, "_character_profile", lambda self: "温和。")
-    monkeypatch.setattr(workflow.NumericV2NarrativeProposer, "propose", propose)
     diagnostics = {}
     kwargs = dict(
         config_manager=object(), runtime=runtime, current=current,

@@ -249,7 +249,7 @@ def test_all_recommendation_generators_share_observation_intent_and_result_bound
         )
     if phase == "turn":
         assert "未知发现与成败留给正文" in prompt
-        assert "涉及的外部事物、线索、他人已完成动作或结果须有可见正文或公开历史支持" in prompt
-        assert "可提出待商量的偏好或新安排，不能写成既定事实" in prompt
+        assert "须有可见正文或公开历史支持" in prompt
+        assert "不能写成既定事实" in prompt
     else:
         assert prompt.count(rule) == 1

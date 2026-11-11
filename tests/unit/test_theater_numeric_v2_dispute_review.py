@@ -72,11 +72,11 @@ async def test_rewrite_then_dispute_once_and_commit_latest_complete_reply(monkey
     repaired = rejected or offer_repaired_before_dispute or mode == 'release'
     if mode in {'reject', 'timeout', 'protocol'} or (formal and mode == 'invalid_offer'):
         with pytest.raises(workflow.NumericV2ActorOutputError, match='transition_review_failed'):
-            await workflow.execute_numeric_v2_turn(**kwargs, background_narrative=True)
+            await workflow.execute_numeric_v2_turn(**kwargs)
         assert await runtime.restore_session('dispute') == current
         assert len(generations) == 2
         return
-    result = await workflow.execute_numeric_v2_turn(**kwargs, background_narrative=(rejected and mode != 'invalid_offer'))
+    result = await workflow.execute_numeric_v2_turn(**kwargs)
     assert result.stored.session.revision == 1 and len(result.stored.ledger_events) == 1
     assert result.stored.session.metrics['trust'] == current.session.metrics['trust'] + 2
     assert result.stored.session.current_node_id == ('ending_leave' if formal else 'start')
@@ -108,7 +108,8 @@ async def test_rewrite_then_dispute_once_and_commit_latest_complete_reply(monkey
 
 
 @pytest.mark.asyncio
-async def test_ordinary_invalid_offer_repairs_before_dispute(monkeypatch, tmp_path):
+@pytest.mark.parametrize("code", ["", "route_mismatch"])
+async def test_ordinary_invalid_offer_repairs_before_dispute(monkeypatch, tmp_path, code):
     """On normal turns, rewrite first if only the invitation is invalid; once rewriting passes, do not wait for dispute review."""  # noqa: DOCSTRING_CJK
 
     engine = _engine()
@@ -139,7 +140,9 @@ async def test_ordinary_invalid_offer_repairs_before_dispute(monkeypatch, tmp_pa
             valid=valid,
             body_violations=(),
             unsafe_suggestion_indexes=(),
-            failure_reason='' if valid else '邀请未对应当前出口合同。',
+            failure_reason='' if valid else ('The invitation names a different destination.'
+                                              if code else '邀请去向与 next_scene_direction 不符。'),
+            offer_failure_code='' if valid else code,
         )
 
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
@@ -160,7 +163,8 @@ async def test_ordinary_invalid_offer_repairs_before_dispute(monkeypatch, tmp_pa
     assert len(reviews) == 2
     assert not any(call.get('dispute_review') for call in reviews)
     assert diagnostics['dispute_review_attempts'] == 0
-    assert diagnostics['dispute_review_deferred_offer_repair'] == 1
+    assert diagnostics['dispute_review_deferred_offer_repair'] == int(not code)
+    assert diagnostics['dispute_review_skipped_contract_offer'] == int(bool(code))
     assert result.performance['transition_offered'] is True
 
 
@@ -198,7 +202,7 @@ async def test_dispute_wait_does_not_consume_the_repair_review_budget(monkeypatc
     monkeypatch.setattr(workflow.NumericV2Actor, '_character_profile', lambda self: '温和。')
     request = dict(config_manager=object(), runtime=runtime, current=current,
                    turn=TurnRequestV2('one', 0, '我来帮你。'), ensure_current_binding=lambda _: _binding(),
-                   diagnostics_sink=diagnostics, background_narrative=True)
+                   diagnostics_sink=diagnostics)
     if repair_passes:
         result = await workflow.execute_numeric_v2_turn(**request)
         assert result.stored.session.revision == 1

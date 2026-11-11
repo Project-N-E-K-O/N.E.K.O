@@ -7,7 +7,7 @@ a natural-language interpreter and does not infer destinations, successful outco
 from __future__ import annotations
 
 import re
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 
 PLAYER_ACTION_PROJECTION_SCHEMA = "neko.script.player_action_projection.numeric.v1"
@@ -20,7 +20,7 @@ _ACTION_TERMS = (
     "签", "拿", "交", "放", "打开", "关上", "关闭", "填写", "报名", "参加",
     "接受", "拒绝", "选择", "开始", "继续", "离开", "回去", "回家", "前往",
     "进入", "出来", "走", "复习", "学习", "留下", "等待", "等", "检查", "核对",
-    "整理", "收拾", "确认", "按下", "接过", "还给", "递给", "读", "看",
+    "整理", "收拾", "确认", "按下", "接过", "还给", "递给", "端起", "读", "看",
 )
 _DEPARTURE_TERMS = (
     "先回去", "先回家", "先走", "走了", "离开这里", "离开", "回家",
@@ -32,9 +32,6 @@ _QUESTION_MARKERS = ("？", "?", "吗", "能不能", "可以吗", "要不要", "
 _UNCOMMITTED_MARKERS = (
     "想", "希望", "准备", "打算", "考虑", "计划", "可能", "也许", "如果", "尝试", "试试",
     "以后再", "有空再",
-)
-_COMPLETION_MARKERS = (
-    "已经", "已", "刚刚", "刚", "了", "吧", "好，", "好的，", "行，", "那我", "我就", "先",
 )
 _FUTURE_MARKERS = (
     "明天", "后天", "周一", "周二", "周三", "周四", "周五", "周六", "周日", "周天",
@@ -50,6 +47,22 @@ _SINGLE_ACTION_SUFFIXES = {
     "等": "待你一下到着",
     "读": "完着书到了",
 }
+_HANDOFF_GIVE = ("递给", "递出", "递上", "递向", "递过", "递到", "递交", "交给", "交出", "交到", "交还", "移交", "送还")
+_HANDOFF_RECEIVE = ("接过", "接稳", "接住", "接下", "接到", "收下", "收到")
+_HANDOFF_NON_ACTION = (
+    "建议", "不妨", "可以", "稍后", "等会", "拒绝", "将要", "还未", "明日", "翌日", "改日",
+    "再把", "再将", "我让", "我叫", "我请", "好不好",
+)
+_HANDOFF_CONDITIONAL = ("如果", "假如", "倘若", "只要", "等到", "等你", "等他", "等她", "等对方", "待你", "待他", "待她")
+_HANDOFF_OBSERVING = re.compile(r"(?:看着|看见|看到|望着|目送|瞧见|见到)")
+_HANDOFF_ADVERBS = r"(?:平稳|稳稳|慢慢|小心|轻轻|缓缓|双手|恭敬地)"
+_HANDOFF_ADVERB = re.compile(_HANDOFF_ADVERBS + r"+$")
+_HANDOFF_HOLDING = re.compile(r"^(?:我)?(?:双手|单手|伸手)?(?:托稳|托住|托起|捧起|捧稳|拿起|拿稳|握住)")
+_HANDOFF_OMITTED_OBJECT = re.compile(
+    _HANDOFF_ADVERBS + r"*(?:递向[^，,：:。！？]+|(?:递给|交给)(?:对方|你|他|她)|(?:递出|递上|交出)(?:去|了)?)"
+)
+_HANDOFF_SELF = re.compile(r"^(?:我们|我|咱们|那我)(?!们|的)")
+_HANDOFF_PLAYER_IN_PROSE = re.compile(r"^(?:你们|你|您)(?!们|的|手中|手里|怀中|怀里|身上)")
 
 
 # An immediately preceding negation, optionally with one or two modal characters (e.g. will not, has not again, never),
@@ -84,10 +97,11 @@ def _has_future_or_uncommitted_marker(text: str) -> bool:
     return any(marker in text for marker in _UNCOMMITTED_MARKERS)
 
 
-def _explicit_subject(text: str) -> bool:
+def _explicit_subject(text: str, *, allow_omitted: bool = False) -> bool:
     # Expressions such as going back to study or let's go directly omit the subject; "带我去" (take me there) asks
     # the neko to act and must not count as the player having moved.
-    return bool(re.search(r"(?:^|[，,。；;：:\s])(?:我|我们|咱们|先|那我|这就)", text))
+    subjects = "我|我们|咱们|那我" + ("|先|这就" if allow_omitted else "")
+    return bool(re.search(rf"(?:^|[，,。；;：:\s])(?:{subjects})(?!的)", text))
 
 
 def _has_unambiguous_nonplayer_subject(text: str, start: int) -> bool:
@@ -132,6 +146,85 @@ def _clauses(text: str) -> list[str]:
     ]
 
 
+def _handoff_clauses(text: str) -> list[tuple[str, bool, str]]:
+    clauses = []
+    for sentence in re.findall(r"[^。！？!?；;\n]+[。！？!?；;]?", text):
+        if sentence.lstrip(" （(").startswith(_HANDOFF_CONDITIONAL):
+            continue
+        for part in _clauses(sentence):
+            parenthetical = part.startswith(("（", "(")) and part.endswith(("）", ")"))
+            previous = ""
+            for clause in re.split(r"[，,：:]+", part[1:-1] if parenthetical else part):
+                clause = clause.strip()
+                if (clause and not _is_question(clause) and not _has_future_or_uncommitted_marker(clause)
+                        and not clause.startswith(("请", "麻烦", "劳烦"))
+                        and not any(word in clause for word in (*_HANDOFF_NON_ACTION, *_FUTURE_MARKERS))):
+                    clauses.append((clause, parenthetical, previous))
+                    previous = clause
+                else:
+                    previous = ""
+    return clauses
+
+
+def _handoff_action_prefixes(clause: str, item_names: Sequence[str], verbs: Sequence[str]) -> list[str]:
+    prefixes = []
+    for verb in verbs:
+        for start in _term_starts(clause, verb):
+            before, after = clause[:start].rstrip(), clause[start + len(verb):]
+            disposer = max(before.rfind("把"), before.rfind("将"))
+            pre_action = before[:disposer].rstrip() if disposer >= 0 else before
+            if (_negated_at(clause, start) or (disposer >= 0 and _negated_at(clause, disposer))
+                    or pre_action.endswith(("会", "再", "要", "应当", "须", "将"))):
+                continue
+            before_object = _HANDOFF_ADVERB.sub("", before)
+            after_object = re.split(r"(?:后便|然后|随后|并把|并将|后看|并看)", after, maxsplit=1)[0]
+            if any(name and (before_object.endswith(name) or (disposer < 0 and name in after_object))
+                   for name in item_names):
+                prefixes.append(before)
+    return prefixes
+
+
+def player_handoff_is_explicit(text: str, item_names: Sequence[str]) -> bool:
+    """Find a current first-person or role-action handoff of a declared item in player input."""
+    clauses = _handoff_clauses(text)
+    return any(
+        not _HANDOFF_OBSERVING.search(prefix)
+        and not _has_unambiguous_nonplayer_subject(clause, len(prefix))
+        and (_HANDOFF_SELF.match(prefix) or (parenthetical and (
+            not prefix or prefix.startswith(("把", "将", "双手", "伸手", "单手", "捧起", "托起"))
+        )))
+        for clause, parenthetical, _ in clauses
+        for prefix in _handoff_action_prefixes(clause, item_names, _HANDOFF_GIVE)
+    ) or any(
+        # The immediately preceding action can supply the object when both
+        # clauses belong to the same explicit player action in parentheses.
+        parenthetical
+        and (holding := _HANDOFF_HOLDING.match(previous)) is not None
+        and previous[holding.end():] in item_names
+        and _HANDOFF_OMITTED_OBJECT.fullmatch(clause)
+        for clause, parenthetical, previous in clauses
+    )
+
+
+def performed_player_handoff(text: str, item_names: Sequence[str], *, receipt_only: bool = False) -> bool:
+    """Find a prose assertion of the player's transfer or another character receiving the item."""
+    # Quoted dialogue and offers are not performed action. Actor directions and
+    # unquoted narration can directly assert an already completed receipt.
+    text = re.sub(r"“[^”]*”|‘[^’]*’|「[^」]*」|『[^』]*』|\"[^\"]*\"|'[^']*'", "", text)
+    for clause, _, _ in _handoff_clauses(text):
+        if clause.endswith("吧"):
+            continue
+        if not receipt_only and any(
+            _HANDOFF_PLAYER_IN_PROSE.match(_HANDOFF_OBSERVING.split(prefix)[-1].lstrip())
+            for prefix in _handoff_action_prefixes(clause, item_names, _HANDOFF_GIVE)
+        ):
+            return True
+        if any(not _HANDOFF_PLAYER_IN_PROSE.match(_HANDOFF_OBSERVING.split(prefix)[-1].lstrip())
+               for prefix in _handoff_action_prefixes(clause, item_names, _HANDOFF_RECEIVE)):
+            return True
+    return False
+
+
 def _is_parenthetical_action(clause: str) -> bool:
     return (
         len(clause) >= 2
@@ -143,6 +236,8 @@ def _is_parenthetical_action(clause: str) -> bool:
 
 def _explicit_action_clause(text: str, *, departure: bool = False) -> str:
     terms = _DEPARTURE_TERMS if departure else _ACTION_TERMS
+    conditional_sentences = [sentence for sentence in re.split(r"[。！？!?；;\n]+", text)
+                             if sentence.lstrip(" （(").startswith(_HANDOFF_CONDITIONAL)]
     for clause in _clauses(text):
         if departure:
             has_term = any(
@@ -158,12 +253,25 @@ def _explicit_action_clause(text: str, *, departure: bool = False) -> str:
                 for start in _term_starts(clause, term)
             )
         else:
-            has_term = bool(_action_term(clause))
+            action = _action_term(clause)
+            has_term = bool(action)
+            prefix = clause[:clause.find(action)] if action else ""
+            disposer = max(prefix.rfind("把"), prefix.rfind("将"))
+            if disposer >= 0:
+                prefix = prefix[:disposer]
+            # Requests and observations do not make the referenced actor's action the player's.
+            if (re.search(r"请|让|叫|麻烦|劳烦|拜托", prefix) or _HANDOFF_OBSERVING.search(prefix)
+                    or any(clause in sentence for sentence in conditional_sentences)
+                    or any(marker in clause for marker in _FUTURE_MARKERS)
+                    or any(_negated_at(clause, start)
+                           or re.search(r"(?:会|要|应当|须|将)$", clause[:start])
+                           for term in (*_ACTION_TERMS, "把", "将") for start in _term_starts(clause, term))):
+                continue
         if not has_term:
             continue
         if _is_question(clause) or _has_future_or_uncommitted_marker(clause):
             continue
-        if _explicit_subject(clause) or _is_parenthetical_action(clause):
+        if _explicit_subject(clause, allow_omitted=departure) or _is_parenthetical_action(clause):
             return clause
     return ""
 
@@ -186,15 +294,6 @@ def _exit_approach_clause(text: str) -> str:
         if has_player_approach and _explicit_action_clause(clause):
             return clause
     return ""
-
-
-def _action_is_explicit(text: str) -> bool:
-    clause = _explicit_action_clause(text)
-    if not clause:
-        return False
-    # "我签" / "好，我签" (I sign / okay, I sign) directly execute; other actions require a completed form or
-    # an explicit current-execution prefix, avoiding projection of wanting to sign as completed signing.
-    return any(marker in clause for marker in _COMPLETION_MARKERS) or _is_parenthetical_action(clause)
 
 
 def _future_reference(text: str) -> bool:
@@ -239,7 +338,7 @@ def project_player_action_result(
             "source": "player_input",
             "evidence_quote": _evidence(approach_clause),
         })
-    elif text and not confirmed and _action_is_explicit(action_clause):
+    elif text and not confirmed and action_clause:
         confirmed.append({
             "kind": "player_action",
             "status": "performed",
@@ -366,9 +465,23 @@ def player_action_projection_for_prompt(value: Any) -> dict[str, Any]:
     return projection
 
 
+def reference_player_action_input(projection: dict[str, Any], player_input: str) -> str:
+    """Replace exact copies in a detached prompt projection and explain any references."""
+
+    rule = ""
+    if player_input:
+        for row in (*projection["confirmed_actions"], *projection["future_references"]):
+            if row.get("source") == "player_input" and row.get("evidence_quote") == player_input:
+                row.pop("evidence_quote")
+                row["evidence_ref"] = "player_input"
+                rule = "evidence_ref 取 player_input 原话。"
+    return rule
+
+
 __all__ = [
     "PLAYER_ACTION_PROJECTION_SCHEMA",
     "normalize_player_action_projection",
     "player_action_projection_for_prompt",
+    "reference_player_action_input",
     "project_player_action_result",
 ]

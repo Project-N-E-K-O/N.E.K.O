@@ -9,7 +9,6 @@ import pytest
 from config.prompts import prompts_theater_pipeline as pipeline
 from services.theater import numeric_v2_actor as actor
 from services.theater import numeric_v2_evaluator as evaluator
-from services.theater import numeric_v2_narrative_proposer as proposer
 from services.theater.numeric_v2_runtime import TurnRequestV2
 from services.theater_workshop.sdk.generation import numeric_v2 as generation
 from services.theater_workshop.sdk.generation import staged
@@ -31,11 +30,11 @@ AMBIGUOUS_SUBJECTS = ("当前你", "你名", "你状态", "你全名", "自己�
     staged._ENDING_PROMPT, generation._MAINLINE_PROMPT,
     generation._MAINLINE_CONTINUATION_PROMPT, generation._NODE_ENHANCEMENT_PROMPT,
     generation._BRANCH_ENDING_PROMPT, generation._BRANCH_PATH_PROMPT,
-    SCORING_RUNTIME_RULES, proposer._SOURCE_SYSTEM, proposer._REVIEW_SYSTEM,
+    SCORING_RUNTIME_RULES,
     quality._ASSESSMENT_PROMPT, quality._NODE_OPTIMIZATION_PROMPT,
     FACT_REVIEW_PROMPT, EVIDENCE_REVIEW_PROMPT, PLAN_REVIEW_PROMPT, REPAIR_PLAN_RULE,
 ], ids=["frame", "state", "scene", "ending", "mainline", "continuation",
-        "enhancement", "branch_ending", "branch_path", "scoring", "ledger", "ledger_review",
+        "enhancement", "branch_ending", "branch_path", "scoring",
         "literature", "node_repair", "facts", "evidence", "plan_review", "repair_plan"])
 def test_non_actor_prompts_never_assign_the_character_identity_to_the_reader(prompt):
     for ambiguous in AMBIGUOUS_SUBJECTS:
@@ -112,24 +111,14 @@ def test_recommender_has_its_own_duty_and_preserves_visible_utterances(offered):
     assert performance["performance"] in data["visible_performance"]
 
 
-@pytest.mark.parametrize("source_refs", [False, True])
-def test_ledger_character_role_is_story_data_not_the_extractors_identity(source_refs):
-    _, session = _case()
-    messages = proposer._messages({"performance": "（收好盒子）放好了。"}, "请你保管。",
-                                 session, False, source_refs=source_refs)
-    data = json.loads(messages[1].content)
-    assert data["protagonists"]["character"]["role"] == "当前演出角色"
-    if source_refs:
-        assert "player是玩家，character是当前演出角色" in messages[0].content
-    else:
-        assert "你独立复核已交付正文的叙事账本候选" in messages[0].content
 
 
 def test_workshop_state_extraction_names_both_owners_explicitly():
     assert "catgirl_state以cast_names.catgirl_name的完整姓名开头" in pipeline._STATE_PROMPT
     assert "player_state以cast_names.player_name的完整姓名开头" in pipeline._STATE_PROMPT
     assert "你负责摘录，不是剧中人物" in pipeline._STATE_PROMPT
-    assert "catgirl_name 是女主姓名" in pipeline._FRAME_PROMPT
+    assert "catgirl_name 是演出角色姓名" in pipeline._FRAME_PROMPT
+    assert "catgirl/player 仅是协议槽位，不预设性别" in pipeline._FRAME_PROMPT
     assert "player_name 是玩家姓名" in pipeline._FRAME_PROMPT
 
 

@@ -5,6 +5,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from tests.utils.theater_prompt import serialized_prompt_tokens
 
 from services.theater import numeric_v2_actor as actor
 from services.theater.numeric_v2_context import history_evidence, performance_history_records
@@ -164,8 +165,8 @@ def test_spare_history_uses_exact_final_wire_budget_without_changing_baseline(fo
     extra = {**EXTRA, "text": '"\\\n' * 90 + EXTRA["text"]}
     baseline = _fit(formal, data, rows, 10000, {})
     expected = _fit(formal, data, rows, 10000, {}, evidence=[SEED, extra])
-    exact = count_tokens(SYSTEM) + count_tokens(_wire(expected))
-    assert exact > count_tokens(SYSTEM) + count_tokens(_wire(baseline))
+    exact = serialized_prompt_tokens(SYSTEM, _wire(expected))
+    assert exact > serialized_prompt_tokens(SYSTEM, _wire(baseline))
     calls = []
 
     def expand(retained, within_prompt):
@@ -184,7 +185,7 @@ def test_spare_history_uses_exact_final_wire_budget_without_changing_baseline(fo
     diagnostics = {}
     rejected = _fit(formal, data, rows, exact - 1, diagnostics, expander=expand)
     assert rejected == baseline
-    assert diagnostics["final_tokens"] == count_tokens(SYSTEM) + count_tokens(_wire(baseline))
+    assert diagnostics["final_tokens"] == serialized_prompt_tokens(SYSTEM, _wire(baseline))
     assert diagnostics["history_included_revisions"] == [5]
     assert (data, rows) == original
 
@@ -193,7 +194,7 @@ def test_spare_history_uses_exact_final_wire_budget_without_changing_baseline(fo
 def test_no_spare_capacity_keeps_whole_baseline_and_latest_turn(formal):
     data, rows = _packing_input(formal)
     baseline = _fit(formal, data, rows, 10000, {})
-    limit = count_tokens(SYSTEM) + count_tokens(_wire(baseline))
+    limit = serialized_prompt_tokens(SYSTEM, _wire(baseline))
     trials = []
 
     def expand(retained, within_prompt):
@@ -218,11 +219,11 @@ def test_expansion_never_evicts_an_older_turn_that_baseline_retained(formal):
     if formal:
         data["recent_context"] = rows
     baseline = _fit(formal, data, rows, 10000, {})
-    limit = count_tokens(SYSTEM) + count_tokens(_wire(baseline))
+    limit = serialized_prompt_tokens(SYSTEM, _wire(baseline))
     # 新原文若重走旧裁剪流程，可通过牺牲R4塞入；扩充不能使用这种空间。
     shorter_data = {**data, "recent_context": latest} if formal else data
     shorter = _fit(formal, shorter_data, latest, 10000, {}, evidence=[SEED, EXTRA])
-    assert count_tokens(SYSTEM) + count_tokens(_wire(shorter)) < limit
+    assert serialized_prompt_tokens(SYSTEM, _wire(shorter)) < limit
 
     def expand(retained, within_prompt):
         trial = [*retained, EXTRA]

@@ -8,6 +8,8 @@ import pytest
 from services.theater.numeric_v2_action_projection import (
     PLAYER_ACTION_PROJECTION_SCHEMA,
     normalize_player_action_projection,
+    performed_player_handoff,
+    player_handoff_is_explicit,
     project_player_action_result,
 )
 from services.theater.numeric_v2_actor import _turn_messages
@@ -85,6 +87,8 @@ def test_questions_and_plans_do_not_become_completed_actions():
         "我想回去复习。",
         "可以回去吗？",
         "我准备签字。",
+        "我准备端起盘子。",
+        "我可以端起盘子吗？",
         "如果有空再来。",
         "周六见吗？",
     ):
@@ -92,6 +96,128 @@ def test_questions_and_plans_do_not_become_completed_actions():
         assert projection["confirmed_actions"] == []
         assert projection["player_left_current_scene"] is False
         assert projection["future_references"] == []
+
+
+@pytest.mark.parametrize("message", [
+    "先把箱子里其余几件逐件拿出来给我看看。",
+    "先把文件打开给我看。",
+    "你先把东西拿出来。",
+    "我请你先把东西拿出来。",
+    "我让她先把东西拿出来。",
+    "我看着她把东西拿出来了。",
+    "我准备把东西拿出来。",
+    "如果她同意，我先把东西拿出来。",
+    "等你解释清楚，我才签。",
+    "我明天先把文件打开。",
+    "我会把东西拿出来。",
+    "我还没把东西拿出来。",
+    "我把东西拿出来了吗？",
+    "（她把东西拿出来了）",
+])
+def test_requests_and_other_subjects_do_not_become_performed_player_actions(message):
+    projection = project_player_action_result(message)
+
+    assert projection["confirmed_actions"] == []
+    assert projection["has_confirmed_player_action"] is False
+    assert projection["player_left_current_scene"] is False
+    assert projection["player_departure_pending"] is False
+
+
+@pytest.mark.parametrize("message", [
+    "我把东西拿出来给你看。",
+    "我现在把文件打开。",
+    "我先把东西拿出来。",
+    "（把东西拿出来放在桌上）",
+    "行，我签。",
+    "我现在在白色登记表上签字。",
+])
+def test_direct_player_execution_does_not_require_completed_tense(message):
+    projection = project_player_action_result(message)
+
+    assert len(projection["confirmed_actions"]) == 1
+    assert projection["confirmed_actions"][0]["kind"] == "player_action"
+    assert projection["confirmed_actions"][0]["status"] == "performed"
+    assert projection["has_confirmed_player_action"] is True
+
+
+def test_request_after_a_performed_player_clause_preserves_only_the_players_action():
+    projection = project_player_action_result("我已经拿出东西；请你检查。")
+
+    assert projection["confirmed_actions"] == [{
+        "kind": "player_action", "status": "performed", "source": "player_input",
+        "action_term": "拿", "evidence_quote": "我已经拿出东西",
+    }]
+
+
+@pytest.mark.parametrize("message", [
+    "（双手将剑匣递上前去，目光平稳）晚辈受镖局所托，特将此剑送还，请查收。",
+    "我把剑匣交给旧友。",
+    "我现在递交剑匣。",
+    "（把剑匣递向门内伸出的手）有劳了。",
+    "（把剑匣轻轻递给旧友）这印章还需要看吗？",
+    "（双手托稳剑匣，缓缓递向老者）请接好。",
+    "（拿起木匣，轻轻递给对方）",
+])
+def test_player_handoff_requires_actual_player_transfer_of_declared_item(message):
+    assert player_handoff_is_explicit(message, ("剑匣", "木匣"))
+
+
+@pytest.mark.parametrize("message", [
+    "（上前一步，轻轻叩响门扉）",
+    "（抱住剑匣，向他点头）请查收。",
+    "我准备把剑匣交给旧友。",
+    "我要把剑匣交给旧友。",
+    "我明天把剑匣交给旧友。",
+    "我把剑匣交给旧友吗？",
+    "我没有把剑匣交给旧友。",
+    "如果他开门，我把剑匣交给旧友。",
+    "等旧友过来，我再把剑匣递给他。",
+    "你把剑匣交给旧友。",
+    "把剑匣交给旧友。",
+    "我让小葵把剑匣交给旧友。",
+    "我看见旧友把剑匣递出。",
+    "（旧友把剑匣递出）",
+    "我把文书递给旧友并看一眼剑匣。",
+    "（抱着剑匣把文书递给旧友）",
+    "（双手托稳剑匣，旧友递向柜台）",
+    "（双手托稳剑匣）（缓缓递向老者）",
+    "（拿起木匣，缓缓递给老者文书）",
+    "（双手托稳剑匣，准备递向老者）",
+])
+def test_player_handoff_rejects_unperformed_other_actor_and_wrong_object(message):
+    assert not player_handoff_is_explicit(message, ("剑匣", "木匣"))
+
+
+@pytest.mark.parametrize("body", [
+    "（静立一旁，看着你将剑匣递出，直到对方双手接稳才微微颔首）这一路风雪兼程，总算送到了。",
+    "他目光越过小葵，落在你手中的木匣上，神色微动，随即伸出双手稳稳接住剑匣。",
+    "旧友双手接过你递上的完整剑匣。",
+    "旧友接过剑匣并邀请我们入内。",
+    "（接过木匣，向你致意）",
+])
+def test_handoff_body_claim_recognizes_player_transfer_and_character_receipt(body):
+    assert performed_player_handoff(body, ("剑匣", "木匣"))
+
+
+@pytest.mark.parametrize("body", [
+    "旧友拉开院门，伸出手等你。",
+    "你仍抱着剑匣，旧友走近一步。",
+    "请把剑匣交给旧友。",
+    "你把剑匣交给旧友吧。",
+    "你可以把剑匣交给旧友。",
+    "你会把剑匣交给旧友。",
+    "旧友明日接过剑匣。",
+    "旧友没有接过剑匣。",
+    "等你将剑匣递出，旧友接住剑匣。",
+    "旧友问：‘你能把剑匣递给我吗？’",
+    "旧友道：『你把剑匣递出，我就接过剑匣。』",
+    "旧友把剑匣交给你。",
+    "你接过剑匣。",
+    "旧友接过文书，目光落在剑匣上。",
+    "旧友接过文书后看着剑匣。",
+])
+def test_handoff_body_claim_ignores_proposals_and_unrelated_actions(body):
+    assert not performed_player_handoff(body, ("剑匣", "木匣"))
 
 
 @pytest.mark.parametrize("message", [
@@ -146,6 +272,17 @@ def test_action_term_and_evidence_come_from_the_validated_clause(message, term, 
     assert len(projection["confirmed_actions"]) == 1
     assert projection["confirmed_actions"][0]["action_term"] == term
     assert projection["confirmed_actions"][0]["evidence_quote"] == clause
+
+
+@pytest.mark.parametrize("message", ["（端起杯子喝了一口）有点酸。", "（端起托盘）准备好了。"])
+def test_raising_a_held_object_projects_the_players_actual_words(message):
+    projection = project_player_action_result(message)
+
+    assert projection["confirmed_actions"] == [{
+        "kind": "player_action", "status": "performed", "source": "player_input",
+        "action_term": "端起", "evidence_quote": message.split("）")[0] + "）",
+    }]
+    assert project_player_action_result("（她端起托盘）")["confirmed_actions"] == []
 
 
 def test_runtime_results_are_projected_without_claiming_player_success():
@@ -449,6 +586,10 @@ async def test_subject_attribution_reaches_prompts_and_survives_commit_restore_a
     assert projection["player_left_current_scene"] is False
     assert projection["player_departure_pending"] is False
     assert projection["confirmed_actions"][0]["action_term"] == "签"
+    expected_wire = deepcopy(projection)
+    wire_action = expected_wire["confirmed_actions"][0]
+    assert wire_action.pop("evidence_quote") == message
+    wire_action["evidence_ref"] = "player_input"
 
     # 使用正式 prompt builders，验证错误离场标志不会继续传给 Actor 或 Review；不调用模型。
     actor_messages = _turn_messages(
@@ -458,7 +599,7 @@ async def test_subject_attribution_reaches_prompts_and_survives_commit_restore_a
     actor_text = actor_messages[0].content
     projection_start = actor_text.index('{"schema":"neko.script.player_action_projection.numeric.v1"')
     actor_projection, _ = json.JSONDecoder().raw_decode(actor_text[projection_start:])
-    assert actor_projection == projection
+    assert actor_projection == expected_wire
     performance = {"performance": "（点头）签字收到了。", "suggested_inputs": []}
     review_messages, _ = _build_transition_judge_messages(
         runtime.engine, current.session, player_input=message,
@@ -466,7 +607,9 @@ async def test_subject_attribution_reaches_prompts_and_survives_commit_restore_a
     )
     review_text = review_messages[1].content
     review_data = json.loads(review_text[review_text.index("{"):])
-    assert review_data["player_action_projection"] == projection
+    assert review_data["player_input"] == message
+    assert review_data["player_action_projection"] == expected_wire
+    assert projection["confirmed_actions"][0]["evidence_quote"] == message
 
     committed = await runtime.commit_turn(outcome, performance)
     path = runtime.store._path(current.session.session_id)

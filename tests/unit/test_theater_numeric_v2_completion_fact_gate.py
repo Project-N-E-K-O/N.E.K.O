@@ -108,7 +108,6 @@ async def test_approved_npc_result_commits_before_new_exit_is_invited(tmp_path, 
     async def unexpected_narrative(self, **kwargs):
         raise AssertionError("completion approval must not start narrative extraction")
 
-    monkeypatch.setattr(wf.NumericV2NarrativeProposer, "propose", unexpected_narrative)
     result = await scenario._turn(runtime, current)
     assert calls == {"evaluator": 1, "actor": 1, "review": 1}
     assert result.performance["scene_narration"] == scenario.NPC_RESULT

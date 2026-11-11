@@ -1972,7 +1972,8 @@ async def test_theater_synopsis_is_one_bounded_call_with_public_premise(monkeypa
     factory.assert_awaited_once()
     assert factory.call_args.kwargs['max_retries'] == 0
     assert '公开前情' in seen[1].content
-    assert '50 Chinese characters' in seen[0].content
+    assert '1-2 short plain-text sentences' in seen[0].content
+    assert 'Chinese characters' not in seen[0].content
     public = json.loads(seen[1].content)
     assert count_tokens(public['title']) <= 256
     assert count_tokens(public['background']) <= 2048
