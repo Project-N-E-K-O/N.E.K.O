@@ -191,12 +191,14 @@ def _resolve_workshop_model_ref(
         packaged_parts = parts[1:]
     else:
         packaged_parts = parts[-2:]
-        if len(parts) == 1:
-            # Republished root-level MMDs sit under the original item's directory.
-            # The card can refer to that directory by its old Workshop URL or its package path.
-            source_id, _, source_path = card_model_ref.removeprefix("/workshop/").partition("/")
-            if source_id.isascii() and source_id.isdecimal() and source_path == parts[0]:
-                packaged_parts = [source_id, parts[0]]
+
+    if model_type == "mmd" and len(packaged_parts) == 1:
+        # Republished root-level MMDs sit under the original item's directory.
+        # The card can refer to that directory by its old Workshop URL or its package path.
+        filename = packaged_parts[0]
+        source_id, _, source_path = card_model_ref.removeprefix("/workshop/").partition("/")
+        if source_id.isascii() and source_id.isdecimal() and source_path == filename:
+            packaged_parts = [source_id, filename]
     if packaged_parts == parts:
         return model_ref
 

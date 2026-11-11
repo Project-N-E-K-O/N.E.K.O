@@ -5231,6 +5231,18 @@ async def test_sync_workshop_character_cards_persists_character_origin_metadata(
             None,
             "123/Avatar.pmx",
         ),
+        (
+            {
+                "档案名": "工坊本地MMD重新发布角色",
+                "model_type": "live3d",
+                "mmd": "/user_mmd/Avatar.pmx",
+            },
+            "mmd",
+            "/workshop/3671939765/Avatar.pmx",
+            "Avatar",
+            None,
+            "123/Avatar.pmx",
+        ),
     ),
 )
 async def test_sync_workshop_character_cards_persists_live3d_workshop_origin_metadata(
@@ -5322,7 +5334,13 @@ async def test_sync_workshop_character_cards_persists_live3d_workshop_origin_met
                 if republished_model_ref:
                     updated_card = {**card_payload, expected_model_field: republished_model_ref}
                     card_file.write_text(json.dumps(updated_card, ensure_ascii=False), encoding="utf-8")
+                    republished_file = installed_folder / republished_model_ref
+                    if republished_file != packaged_file:
+                        republished_file.parent.mkdir(parents=True, exist_ok=True)
+                        packaged_file.rename(republished_file)
+                    expected_model_ref = f"/workshop/3671939765/{republished_model_ref}"
                     original_file = installed_folder / old_model_ref.removeprefix("/workshop/3671939765/")
+                    original_file.parent.mkdir(parents=True, exist_ok=True)
                     original_file.touch()
                     with patch.object(cm, "asave_characters", wraps=cm.asave_characters) as save:
                         await workshop_router_module.sync_workshop_character_cards()
