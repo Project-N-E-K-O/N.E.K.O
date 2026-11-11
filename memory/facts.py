@@ -3961,7 +3961,10 @@ class FactStore:
                 from memory.recent import _await_recent_mutation_to_completion
                 await _await_recent_mutation_to_completion(save_repairs)
         source_provenance = {}
-        if memory_subject is None and (retirements or source_messages):
+        # A candidate brought back from the review queue carries its own proof; it is
+        # checked (and keeps its provenance) even with no retirements or messages left.
+        brought_proof = any(isinstance(candidate, dict) and STORED_PROOF in candidate for candidate in extracted)
+        if memory_subject is None and (retirements or source_messages or brought_proof):
             accepted = []
             accepted_effects = [] if effect_keys is not None else None
             for index, candidate in enumerate(extracted):

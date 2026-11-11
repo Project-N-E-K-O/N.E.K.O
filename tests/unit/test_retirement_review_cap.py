@@ -285,3 +285,19 @@ async def test_a_waiting_candidate_without_an_event_time_starts_when_it_is_saved
     [row] = await h._apersist_new_facts('小天', [], source_messages=[], progress_pass='a')
     # No explicit time: the start is storage metadata (equal to created_at), not an event window.
     assert row['event_start_at'] == row['created_at']
+
+
+@pytest.mark.asyncio
+async def test_a_drained_candidate_keeps_its_proof_when_no_retirements_are_left(tmp_path):
+    directory = tmp_path / '小天'
+    _retirements(directory, 25, ['sync:' + letter * 32 for letter in 'abc'])
+    h = _harness(tmp_path, [])
+    h._allm_call_with_retries = _reviewer([])
+    facts = [{'entity': 'master', 'text': f'新事实 {i}', 'source_indices': [i + 1]} for i in range(3)]
+    await h._apersist_new_facts('小天', facts, source_messages=[_trusted_sync_message(letter, 1000) for letter in 'abc'],
+                                progress_pass='a')
+    # A snapshot merge trims the evidence away before the next round.
+    (directory / 'long_term_portable.json').write_text(json.dumps({'evidence': {'retirements': [], 'confirmations': []}}),
+                                                       encoding='utf-8')
+    [row] = await h._apersist_new_facts('小天', [], source_messages=[], progress_pass='a')
+    assert row['source_message_ids'] == ['sync:' + 'c' * 32]
