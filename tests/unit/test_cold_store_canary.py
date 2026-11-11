@@ -218,7 +218,8 @@ async def canary(tmp_path):
         arbitration_archived_at=DAY, arbitration_reason="trust_preferred_existing",
         superseded_by="f_live",
     ))
-    assert cold_store.append(char_dir, [cold_fact]) == 1
+    written = cold_store.append(char_dir, [cold_fact])
+    assert written == 1
     append_to_shard_sync(re._reflections_archive_dir(NAME), [{
         "id": "r_cold", "text": TEXT_REFL_COLD, "entity": "master",
         # Deliberately a live-looking status: only the cold location keeps it out.

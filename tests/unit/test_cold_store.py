@@ -33,6 +33,11 @@ def _install(tmp_path):
     return install(str(tmp_path))
 
 
+def _read_json(path):
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
 def _fact(fid, text, **fields):
     return {"id": fid, "text": text, "entity": "master", "importance": 5, "tags": ["t"],
             "embedding": "AAAA", "hash": fid, "created_at": "2026-06-01T00:00:00",
@@ -54,8 +59,10 @@ def test_stub_drops_the_wording_and_keeps_a_hash():
 
 def test_append_is_idempotent_by_identity_and_status_follows_writes(tmp_path):
     identity = lambda row: row.get("id")  # noqa: E731
-    assert cold_store.append(str(tmp_path), [_fact("f1", "a"), _fact("f2", "b")], identity=identity) == 2
-    assert cold_store.append(str(tmp_path), [_fact("f1", "a again"), _fact("f3", "c")], identity=identity) == 1
+    written = cold_store.append(str(tmp_path), [_fact("f1", "a"), _fact("f2", "b")], identity=identity)
+    assert written == 2
+    written = cold_store.append(str(tmp_path), [_fact("f1", "a again"), _fact("f3", "c")], identity=identity)
+    assert written == 1
     assert [row["id"] for row in cold_store.status(str(tmp_path))] == ["f1", "f2", "f3"]
     assert all("text" not in row for row in cold_store.status(str(tmp_path)))
     # The cache follows a rewrite of the same shard.
@@ -129,7 +136,7 @@ async def test_a_copy_that_is_also_cold_reads_as_cold_and_leaves_at_the_next_sav
     assert [row["id"] for row in await fs.aload_facts(NAME)] == ["new"]
     assert [row["id"] for row in await fs.aload_facts_full(NAME)] == ["new"]
     await fs.asave_facts(NAME)
-    assert [row["id"] for row in json.load(open(fs._facts_path(NAME), encoding="utf-8"))] == ["new"]
+    assert [row["id"] for row in _read_json(fs._facts_path(NAME))] == ["new"]
 
 
 @pytest.mark.asyncio
@@ -145,7 +152,7 @@ async def test_migration_moves_demoted_archive_rows_once(tmp_path):
     with fs._get_lock(NAME):
         assert fs._migrate_cold_rows_locked(NAME) == 2
         assert fs._migrate_cold_rows_locked(NAME) == 0
-    assert [row["id"] for row in json.load(open(fs._facts_archive_path(NAME), encoding="utf-8"))] == ["abs"]
+    assert [row["id"] for row in _read_json(fs._facts_archive_path(NAME))] == ["abs"]
     assert sorted(row["id"] for row in cold_store.read_full(fs._character_dir(NAME))) == ["g1", "lose"]
 
 
@@ -157,7 +164,7 @@ async def test_migration_runs_in_the_archive_window_of_a_save(tmp_path):
     os.utime(fs._facts_archive_path(NAME), (0, 0))  # the 24h archive window is open
     fs._facts[NAME] = [_fact("live", "still here")]
     await fs.asave_facts(NAME)
-    assert json.load(open(fs._facts_archive_path(NAME), encoding="utf-8")) == []
+    assert _read_json(fs._facts_archive_path(NAME)) == []
     assert [row["id"] for row in cold_store.read_full(fs._character_dir(NAME))] == ["lose"]
 
 
@@ -367,4 +374,4 @@ def test_a_retried_group_restore_adds_each_row_once(tmp_path, monkeypatch):
         fs._restore_subject_facts(NAME, GROUP, "2026-08-01T00:00:00")
     fs._restore_subject_facts(NAME, GROUP, "2026-08-01T00:00:00")
     assert [fact["id"] for fact in fs._facts[NAME]] == ["g1"]
-    assert [fact["id"] for fact in json.load(open(fs._facts_path(NAME), encoding="utf-8"))] == ["g1"]
+    assert [fact["id"] for fact in _read_json(fs._facts_path(NAME))] == ["g1"]
