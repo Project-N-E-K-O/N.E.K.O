@@ -540,6 +540,34 @@ async def test_host_decides_permissions_when_it_offers_to(tmp_path: Path) -> Non
         await session.close()
 
 
+async def test_closing_stops_background_commands_before_it_waits_for_the_run(tmp_path: Path) -> None:
+    hold = asyncio.Event()
+
+    async def wait_forever() -> None:
+        await hold.wait()
+
+    llm = ScriptedLLM([[say("working"), wait_forever, finish()]])
+    session, events = await open_session(make_spec(tmp_path), llm)
+    stop_jobs = session.jobs.close
+    run_in_progress: list[bool] = []
+
+    def recording() -> None:
+        run_in_progress.append(session.running)
+        stop_jobs()
+
+    session.jobs.close = recording  # type: ignore[method-assign]
+    try:
+        session.prompt("take your time")
+        await events.wait_for(lambda event: event["type"] == "text")
+        await session.close()
+    finally:
+        hold.set()
+    # Told to stop first thing, while the run was still there; and once more
+    # after the run had ended, for anything it started while unwinding.
+    assert run_in_progress == [True, False]
+    assert events.of("ended")[-1]["reason"] == "closed"
+
+
 async def test_abort_cancels_a_pending_host_question(tmp_path: Path) -> None:
     asked = asyncio.Event()
     cancelled = asyncio.Event()

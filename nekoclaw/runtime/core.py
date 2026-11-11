@@ -180,6 +180,10 @@ class RuntimeCore:
             opening.set_result(None)
 
     def _text_command(self, session_id: str, command: str, text: str) -> None:
+        if self._shutting_down:
+            # New work would begin behind the back of the shutdown.
+            self._reject(session_id, command, "the runtime is shutting down")
+            return
         session = self._session(session_id, command)
         if session is None:
             return
@@ -220,20 +224,31 @@ class RuntimeCore:
     async def shutdown(self) -> None:
         """Close every session, including those still being created or closed.
 
-        A session on its way in is not in the table yet and one on its way out
-        has already left it, so both are waited for first: the former is then
-        closed with the rest, the latter finishes its own cleanup. Starts that
-        arrive meanwhile are rejected. Afterwards the core accepts sessions
-        again.
+        The sessions in the table start closing at once, which stops their
+        background commands first thing. A session on its way in is not in the
+        table yet and one on its way out has already left it; both are waited
+        for alongside: the former is closed as soon as it exists, the latter
+        finishes its own cleanup. New sessions and new work are rejected
+        meanwhile. Afterwards the core accepts sessions again.
+
+        A caller that stops waiting (a process that has to exit within a time
+        limit) therefore leaves no session behind that was never told to stop.
         """
         self._shutting_down = True
+        closes: set[asyncio.Future[None]] = set()
         try:
-            while self._starting or self._closing:
+            while True:
+                sessions = list(self._sessions.values())
+                self._sessions.clear()
+                closes.update(asyncio.ensure_future(session.close()) for session in sessions)
                 under_way = [*self._starting.values(), *self._closing.values()]
-                await asyncio.gather(*(asyncio.shield(future) for future in under_way))
-            sessions = list(self._sessions.values())
-            self._sessions.clear()
-            await asyncio.gather(*(session.close() for session in sessions), return_exceptions=True)
+                if not under_way:
+                    break
+                # Not awaited directly: giving up this wait must not cancel a
+                # future other callers share. A start that finishes puts its
+                # session in the table, hence the loop.
+                await asyncio.wait(under_way, return_when=asyncio.FIRST_COMPLETED)
+            await asyncio.gather(*closes, return_exceptions=True)
         finally:
             self._shutting_down = False
 

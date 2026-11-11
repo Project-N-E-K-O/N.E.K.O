@@ -15,8 +15,8 @@ from typing import Any
 import psutil
 import pytest
 
-from nekoclaw.runtime.core import InProcessRuntime
-from nekoclaw.runtime.host import HostCallbacks
+from nekoclaw.runtime.core import InProcessRuntime, RuntimeCore
+from nekoclaw.runtime.host import HostCallbacks, NoHost
 from nekoclaw.runtime.model import LLMClientProvider
 from nekoclaw.runtime.process import SubprocessRuntime
 from nekoclaw.runtime.protocol import FamiliarSpec, ModelConfig, parse_command, parse_event
@@ -398,6 +398,55 @@ async def test_commands_for_a_session_that_is_still_starting_wait_for_it(tmp_pat
         ]
     finally:
         await runtime.shutdown()
+
+
+async def test_shutdown_closes_existing_sessions_without_waiting_for_a_slow_start(tmp_path: Path) -> None:
+    order: list[str] = []
+    emitted: list[dict[str, Any]] = []
+    gate = asyncio.Event()
+
+    class Stub:
+        busy = False
+
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def prompt(self, text: str) -> None:
+            order.append(f"prompt {self.name}: {text}")
+
+        async def close(self) -> None:
+            order.append(f"close {self.name}")
+
+    async def open_session(spec, host, emit):  # noqa: ANN001, ANN202
+        del host, emit
+        if spec.session_id == "slow":
+            await gate.wait()
+        return Stub(spec.session_id)
+
+    core = RuntimeCore(NoHost(), emitted.append, open_session=open_session)
+    await core.start(make_spec(tmp_path, "ready"))
+    slow = asyncio.ensure_future(core.start(make_spec(tmp_path, "slow")))
+    await asyncio.sleep(0)
+    stopping = asyncio.ensure_future(core.shutdown())
+    await asyncio.sleep(0.05)
+    # The session that exists is told to stop right away, although another one
+    # is still being created and the shutdown as a whole is not finished.
+    assert order == ["close ready"] and not stopping.done()
+    # No new work is accepted meanwhile.
+    core.prompt("ready", "one more thing")
+    assert [(e["command"], e["message"]) for e in emitted if e["type"] == "error"] == [
+        ("prompt", "the runtime is shutting down")
+    ]
+
+    # A caller with a time limit gives up waiting. What existed was told to
+    # stop all the same, and nothing else was cancelled along with the wait.
+    stopping.cancel()
+    await asyncio.gather(stopping, return_exceptions=True)
+    gate.set()
+    await slow
+    assert core.session_ids == ["slow"]
+    await core.shutdown()
+    assert order == ["close ready", "close slow"]
 
 
 async def test_shutdown_waits_for_sessions_on_their_way_in_and_out(tmp_path: Path) -> None:

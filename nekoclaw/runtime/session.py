@@ -925,6 +925,10 @@ class FamiliarSession(SessionInbox):
         if self._closing:
             return
         self._closing = True
+        # Background commands are told to stop before anything is waited for.
+        # Should the caller give up half way (a runtime that has to exit within
+        # a time limit), they are at least no longer running.
+        self.jobs.close()
         task = self._run_task
         if task is not None:
             self._abort_requested = True
@@ -940,6 +944,7 @@ class FamiliarSession(SessionInbox):
         if self._abort_timer is not None:
             self._abort_timer.cancel()
             self._abort_timer = None
+        # Once more, for a command the run started while it was unwinding.
         self.jobs.close()
         await self.jobs.wait_closed()
         await self._recorder.close()
