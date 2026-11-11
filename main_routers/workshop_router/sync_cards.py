@@ -96,6 +96,7 @@ def _repair_workshop_model_binding(
         return False
     repaired_ref = _resolve_workshop_model_ref(
         installed_folder, old_ref, model_type, card_model_ref=card_model_ref,
+        expected_model_ref=model_ref,
     )
     if repaired_ref != model_ref:
         return False

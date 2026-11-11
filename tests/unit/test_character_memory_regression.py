@@ -5190,7 +5190,7 @@ async def test_sync_workshop_character_cards_persists_character_origin_metadata(
 @pytest.mark.parametrize(
     (
         "card_payload", "expected_model_field", "expected_model_ref", "expected_display_name",
-        "local_override", "republished_model_ref",
+        "local_override", "republished_model",
     ),
     (
         (
@@ -5229,7 +5229,7 @@ async def test_sync_workshop_character_cards_persists_character_origin_metadata(
             "/workshop/3671939765/123/Avatar.pmx",
             "Avatar",
             None,
-            "123/Avatar.pmx",
+            ("123/Avatar.pmx", "123/Avatar.pmx"),
         ),
         (
             {
@@ -5241,7 +5241,19 @@ async def test_sync_workshop_character_cards_persists_character_origin_metadata(
             "/workshop/3671939765/Avatar.pmx",
             "Avatar",
             None,
-            "123/Avatar.pmx",
+            ("123/Avatar.pmx", "123/Avatar.pmx"),
+        ),
+        (
+            {
+                "档案名": "工坊根目录MMD角色",
+                "model_type": "live3d",
+                "mmd": "/user_mmd/Avatar.pmx",
+            },
+            "mmd",
+            "/workshop/3671939765/Avatar.pmx",
+            "Avatar",
+            None,
+            ("/workshop/123/Avatar.pmx", "Avatar.pmx"),
         ),
     ),
 )
@@ -5251,7 +5263,7 @@ async def test_sync_workshop_character_cards_persists_live3d_workshop_origin_met
     expected_model_ref,
     expected_display_name,
     local_override,
-    republished_model_ref,
+    republished_model,
 ):
     from main_routers.workshop_router.meta import _build_subscriber_workshop_model_ref
     from utils.config_manager import get_reserved, set_reserved
@@ -5331,14 +5343,14 @@ async def test_sync_workshop_character_cards_persists_live3d_workshop_origin_met
                     set_reserved(payload, "avatar", "asset_source_id", "")
                 await cm.asave_characters(current_characters)
 
-                if republished_model_ref:
-                    updated_card = {**card_payload, expected_model_field: republished_model_ref}
+                if republished_model:
+                    updated_card_ref, updated_file_path = republished_model
+                    updated_card = {**card_payload, expected_model_field: updated_card_ref}
                     card_file.write_text(json.dumps(updated_card, ensure_ascii=False), encoding="utf-8")
-                    republished_file = installed_folder / republished_model_ref
-                    if republished_file != packaged_file:
-                        republished_file.parent.mkdir(parents=True, exist_ok=True)
-                        packaged_file.rename(republished_file)
-                    expected_model_ref = f"/workshop/3671939765/{republished_model_ref}"
+                    republished_file = installed_folder / updated_file_path
+                    republished_file.parent.mkdir(parents=True, exist_ok=True)
+                    republished_file.touch()
+                    expected_model_ref = f"/workshop/3671939765/{updated_file_path}"
                     original_file = installed_folder / old_model_ref.removeprefix("/workshop/3671939765/")
                     original_file.parent.mkdir(parents=True, exist_ok=True)
                     original_file.touch()

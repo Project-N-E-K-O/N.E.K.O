@@ -172,7 +172,12 @@ def _build_subscriber_workshop_model_ref(item_id: str | int, raw_model_ref: str)
 
 
 def _resolve_workshop_model_ref(
-    installed_folder: str, model_ref: str, model_type: str, *, card_model_ref: str = "",
+    installed_folder: str,
+    model_ref: str,
+    model_type: str,
+    *,
+    card_model_ref: str = "",
+    expected_model_ref: str | None = None,
 ) -> str:
     """Recover paths written by older 3D exporters when the referenced file is missing."""
     if not model_ref.startswith("/workshop/"):
@@ -192,27 +197,29 @@ def _resolve_workshop_model_ref(
     else:
         packaged_parts = parts[-2:]
 
+    candidates = [packaged_parts] if packaged_parts != parts else []
     if model_type == "mmd" and len(packaged_parts) == 1:
         # Republished root-level MMDs sit under the original item's directory.
         # The card can refer to that directory by its old Workshop URL or its package path.
         filename = packaged_parts[0]
         source_id, _, source_path = card_model_ref.removeprefix("/workshop/").partition("/")
         if source_id.isascii() and source_id.isdecimal() and source_path == filename:
-            packaged_parts = [source_id, filename]
-    if packaged_parts == parts:
+            candidates.append([source_id, filename])
+    if not candidates:
         return model_ref
 
     try:
         root = Path(installed_folder).resolve()
         original = root.joinpath(*parts).resolve()
-        packaged = root.joinpath(*packaged_parts).resolve()
-        if (
-            original.is_relative_to(root)
-            and not original.is_file()
-            and packaged.is_relative_to(root)
-            and packaged.is_file()
-        ):
-            return f"/workshop/{item_id}/{'/'.join(packaged_parts)}"
+        if not original.is_relative_to(root) or original.is_file():
+            return model_ref
+        for candidate in candidates:
+            candidate_ref = f"/workshop/{item_id}/{'/'.join(candidate)}"
+            if expected_model_ref is not None and candidate_ref != expected_model_ref:
+                continue
+            packaged = root.joinpath(*candidate).resolve()
+            if packaged.is_relative_to(root) and packaged.is_file():
+                return candidate_ref
     except (OSError, RuntimeError, ValueError):
         pass
     return model_ref
