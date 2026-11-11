@@ -6,6 +6,7 @@ import asyncio
 import time
 from sqlite3 import Error as SQLiteError
 from typing import Callable
+from uuid import uuid4
 
 from services.chat_audio_history import history_for_character
 from utils.external_route_registry import is_external_route_active
@@ -106,6 +107,7 @@ class AudioMessageMixin:
         record = AudioMessageRecord(digest, expires_at)
         self._audio_message_records[request_id] = record
         target = None
+        target_connection_generation = None
         reserved = False
         accepted = False
         reply_completed = False
@@ -193,6 +195,8 @@ class AudioMessageMixin:
                 ):
                     raise ConnectionError("superseded")
                 target = self.session
+                if target is not None:
+                    target_connection_generation = target._connection_generation
                 # Shares the admission lock with proactive/context delivery.
                 async with self._voice_proactive_inject_lock:
                     if (
@@ -207,6 +211,7 @@ class AudioMessageMixin:
                         return (
                             is_current() and self.session is target and self.is_active
                             and self._session_generation == operation.generation
+                            and target._connection_generation == target_connection_generation
                             and self.input_mode == AUDIO_MESSAGE_MODE
                             and not is_external_route_active(self.lanlan_name)
                             and not is_theater_active(self.lanlan_name)
@@ -216,6 +221,11 @@ class AudioMessageMixin:
                         memory_queue.put({
                             "type": "audio_message_memory_start", "request_id": request_id,
                             "context_version": getattr(memory_queue, "recent_context_version", 0),
+                            "original": {
+                                "recordId": uuid4().hex,
+                                "originalTime": str(int(submitted_at * 1000)),
+                                "character_uid": history.character_uid,
+                            },
                         })
                     await target.submit_audio_message(
                         pcm, request_id, is_current=owns_session, on_accepted=on_accepted,
@@ -229,7 +239,10 @@ class AudioMessageMixin:
             record.code = "unconfirmed"
             # Only retire this operation's session. A successor owns its own
             # connection and must never be closed by this delayed failure.
-            if target is not None and self.session is target:
+            if (
+                target is not None and self.session is target
+                and target._connection_generation == target_connection_generation
+            ):
                 self.request_end_session(by_server=True)
             if isinstance(exc, asyncio.CancelledError):
                 raise

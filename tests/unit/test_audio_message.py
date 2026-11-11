@@ -38,7 +38,7 @@ class Manager(AudioMessageMixin):
         self._voice_proactive_inject_lock = asyncio.Lock()
         self._starting_session_count = 0
         self._session_generation = 0
-        self.client = SimpleNamespace(submit_audio_message=AsyncMock())
+        self.client = SimpleNamespace(submit_audio_message=AsyncMock(), _connection_generation=0)
         self.request_end_session = Mock()
         self.reset_session_start_circuit = Mock()
         self.sync_message_queue = SimpleNamespace(put=Mock())
@@ -68,6 +68,24 @@ def isolated_history(tmp_path, monkeypatch):
     history = ChatAudioHistory(tmp_path, "local-yui")
     monkeypatch.setattr("main_logic.core.audio_message.history_for_character", AsyncMock(return_value=history))
     return history
+
+
+@pytest.mark.asyncio
+async def test_interrupted_audio_submit_does_not_retire_a_replacement_connection():
+    manager, socket = Manager(), SimpleNamespace(send_json=AsyncMock())
+
+    async def submit(*_args, is_current, **_kwargs):
+        assert is_current()
+        manager.client._connection_generation += 1
+        assert not is_current()
+        raise ConnectionError("recording connection replaced")
+
+    manager.client.submit_audio_message.side_effect = submit
+    await manager.submit_audio_message(message(), socket, is_current=lambda: True, save_local=True)
+
+    assert socket.send_json.await_args.args[0]["state"] == "failed"
+    assert socket.send_json.await_args.args[0]["code"] == "unconfirmed"
+    manager.request_end_session.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -520,6 +538,11 @@ async def test_real_arbiter_waits_for_audio_commit_before_exactly_one_response(
             assert isolated_history.receipt(payload["request_id"])["transcript"] == "Check tomorrow's schedule."
             assert client._audio_message_transcript.published_final
             manager.handle_input_transcript.assert_awaited_once()
+        if locked_transcript:
+            client.ws = Peer()
+            client._on_connection_attached()
+            await client._deliver_input_transcript("New connection", item_id="next-item")
+            client.on_input_transcript.assert_awaited_once_with("New connection")
         if uses_tool:
             turn_done.assert_awaited_once()
         assert sum(event["type"] == "response.create" for event in events) == (0 if reject else 2 if uses_tool else 1)
@@ -638,9 +661,10 @@ async def test_gemini_recording_has_one_start_audio_end_sequence(monkeypatch, tr
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("silent_completion", [False, True])
-async def test_gemini_audio_receipt_waits_for_reply_after_tools(monkeypatch, silent_completion):
+@pytest.mark.parametrize("continuation", ["text", "silent", "send-fails", "send-fails-after-reply", "send-fails-after-replacement"])
+async def test_gemini_audio_receipt_waits_for_reply_after_tools(monkeypatch, continuation):
     from google.genai import types
+    from main_logic.omni_realtime_client._audio import _GeminiAudioMessage
     from main_logic.tool_calling import ToolResult
     from tests.unit.test_realtime_tool_ownership import _GeminiSession, _gemini_response, _wait_for_tool_tasks
     from utils.token_tracker import TokenTracker
@@ -649,6 +673,7 @@ async def test_gemini_audio_receipt_waits_for_reply_after_tools(monkeypatch, sil
     monkeypatch.setattr(TokenTracker, "get_instance", lambda: SimpleNamespace(record=Mock()))
     entered, release, early_terminal = asyncio.Event(), asyncio.Event(), asyncio.Event()
     accepted, completed = AsyncMock(), AsyncMock()
+    replacement = _GeminiAudioMessage(asyncio.get_running_loop().create_future(), on_transcript=None)
 
     async def call_tool(call):
         entered.set()
@@ -666,6 +691,19 @@ async def test_gemini_audio_receipt_waits_for_reply_after_tools(monkeypatch, sil
             event or types.LiveServerMessage(server_content=types.LiveServerContent(**fields)),
             provider_session=peer, connection_generation=client._connection_generation,
         )
+
+    send_tool_response = peer.send_tool_response
+
+    async def send_tool(**fields):
+        await send_tool_response(**fields)
+        if continuation == "send-fails-after-reply":
+            await receive(output_transcription=types.Transcription(text="The result is ready."), turn_complete=True)
+        if continuation == "send-fails-after-replacement":
+            client._gemini_audio_message = replacement
+        if continuation.startswith("send-fails"):
+            raise ConnectionError("provider connection closed during the tool write")
+
+    peer.send_tool_response = send_tool
 
     async def send(**fields):
         if "activity_end" in fields:
@@ -688,18 +726,31 @@ async def test_gemini_audio_receipt_waits_for_reply_after_tools(monkeypatch, sil
         release.set()
         await _wait_for_tool_tasks(client)
         assert len(peer.tool_responses) == 1
-        await receive(turn_complete=True)
-        assert not task.done()
-        if silent_completion:
-            await receive(generation_complete=True)
+        if continuation == "send-fails-after-replacement":
+            assert not client._gemini_audio_message.outcome.done()
             assert not task.done()
+            return
+        if continuation == "send-fails":
+            with pytest.raises(ConnectionError, match="Gemini audio message"):
+                await asyncio.wait_for(asyncio.shield(task), 2)
+            accepted.assert_not_awaited()
+            completed.assert_not_awaited()
+            assert len(peer.tool_responses) == 1
+            return
+        if continuation != "send-fails-after-reply":
             await receive(turn_complete=True)
-        else:
-            await receive(output_transcription=types.Transcription(text="The result is ready."), turn_complete=True)
+            assert not task.done()
+            if continuation == "silent":
+                await receive(generation_complete=True)
+                assert not task.done()
+                await receive(turn_complete=True)
+            else:
+                await receive(output_transcription=types.Transcription(text="The result is ready."), turn_complete=True)
         await asyncio.wait_for(task, 2)
         accepted.assert_awaited_once()
         completed.assert_awaited_once()
     finally:
+        replacement.outcome.cancel()
         release.set()
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -711,7 +762,7 @@ async def test_gemini_audio_receipt_waits_for_reply_after_tools(monkeypatch, sil
     "boundary", [
         "session-retirement", "provider-final", "shutdown", "queued-session-end",
         "failed-before-send", "storage-startup-rejected", "publication-guard", "lost-cache-response",
-        "lost-session-end-response", "no-final", "no-transcript", "flush-failed",
+        "lost-session-end-response", "no-final", "no-transcript", "flush-failed", "clear-during-monitor",
     ],
 )
 async def test_gemini_audio_memory_uses_the_latest_transcript_before_its_reply(
@@ -729,6 +780,8 @@ async def test_gemini_audio_memory_uses_the_latest_transcript_before_its_reply(
     monkeypatch.setattr(TokenTracker, "get_instance", lambda: SimpleNamespace(record=Mock()))
     analyze = AsyncMock(return_value=True)
     monkeypatch.setattr(cross_server, "_publish_analyze_request_with_fallback", analyze)
+    save_original = AsyncMock(side_effect=lambda *_args, record_id, **_kwargs: record_id)
+    monkeypatch.setattr(cross_server, "save_original", save_original)
 
     monitor_blocked, release_monitor, drain_enqueued = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
@@ -743,6 +796,7 @@ async def test_gemini_audio_memory_uses_the_latest_transcript_before_its_reply(
 
     queue = SyncQueue()
     cached, monitor_end = asyncio.Event(), asyncio.Event()
+    settlements = asyncio.Queue()
     writes = []
     forwarded = []
     cache_attempts = 0
@@ -772,10 +826,14 @@ async def test_gemini_audio_memory_uses_the_latest_transcript_before_its_reply(
             cached.set()
             if loses_response:
                 raise httpx.ReadError("connection dropped after saving")
+        elif endpoint in {"settle", "process"}:
+            settlements.put_nowait((endpoint, messages))
         return True, "", None
 
     async def forward(_slot, event):
-        if event["type"] == "block_monitor":
+        if event["type"] == "block_monitor" or (
+            boundary == "clear-during-monitor" and event["type"] == "user_transcript"
+        ):
             monitor_blocked.set()
             await release_monitor.wait()
             return True
@@ -834,11 +892,21 @@ async def test_gemini_audio_memory_uses_the_latest_transcript_before_its_reply(
         await asyncio.wait_for(monitor_end.wait(), 2)
         assert [event["type"] for event in forwarded] == ["user_activity", "gemini_response", "turn end"]
         assert writes == []
+        save_original.assert_not_awaited()
 
         if not bounded:
             await receive(input_transcription=types.Transcription(
-                text="check tomorrow.", finished=True if boundary == "provider-final" else None,
+                text="check tomorrow.", finished=True if boundary in {"provider-final", "clear-during-monitor"} else None,
             ))
+        if boundary == "clear-during-monitor":
+            await asyncio.wait_for(monitor_blocked.wait(), 2)
+            queue.recent_context_version += 1
+            queue.put({"type": "system", "data": "session end"})
+            release_monitor.set()
+            assert await asyncio.wait_for(settlements.get(), 2) == ("settle", [])
+            assert writes == []
+            analyze.assert_not_awaited()
+            return
         if boundary != "no-transcript":
             assert isolated_history.receipt(payload["request_id"])["transcript"] == "Please check tomorrow."
         if boundary == "session-retirement":
@@ -865,9 +933,13 @@ async def test_gemini_audio_memory_uses_the_latest_transcript_before_its_reply(
         assert len(writes) == 1
         if boundary == "no-transcript":
             assert [role for role, _text in writes[0]] == ["assistant"]
+            save_original.assert_not_awaited()
         else:
             assert [role for role, _text in writes[0]] == ["user", "assistant"]
             assert writes[0][0][1] == "Please check tomorrow."
+            assert save_original.await_count == 1
+            assert save_original.await_args.args == ("Lan", "user", "Please check tomorrow.")
+            assert save_original.await_args.kwargs["character_uid"] == isolated_history.character_uid
         assert writes[0][-1][1].endswith("I'll look it up.")
         assert [event["type"] for event in forwarded].count("turn end") == 1
         if bounded:
@@ -875,7 +947,9 @@ async def test_gemini_audio_memory_uses_the_latest_transcript_before_its_reply(
             await receive(input_transcription=types.Transcription(text=" Late correction.", finished=True))
             assert isolated_history.receipt(payload["request_id"])["transcript"].endswith("Late correction.")
             assert len(writes) == 1
+            assert save_original.await_count == int(boundary != "no-transcript")
     finally:
+        release_monitor.set()
         connector.cancel()
         await asyncio.gather(connector, return_exceptions=True)
 

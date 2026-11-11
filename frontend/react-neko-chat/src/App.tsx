@@ -5479,7 +5479,7 @@ function CompactChatApp({
         // 的是宿主回调，切回 minimized 后才会复位 compactCollapsing。宿主没传回调时
         // 若仍 setCompactCollapsing(true)，模式永不变、collapsing 永不复位，蓝条/胶囊
         // 会一直卡在折叠样式（CodeRabbit Major）。所以缺回调时直接早退、不进折叠态。
-        if (!onCompactMinimizeRequest) {
+        if (!onCompactMinimizeRequest || audioMessageActiveRef.current) {
           return;
         }
         clearActiveAvatarToolSelection();
@@ -6613,7 +6613,7 @@ function CompactChatApp({
                         </button>
                       </>
                     )}
-                    {!composerHidden && audioMessageControl}
+                    {!composerHidden && !compactCollapsing && audioMessageControl}
                     {compactInputToolToggleButton}
                   </div>
                   {composerAttachmentPreviewNode}
