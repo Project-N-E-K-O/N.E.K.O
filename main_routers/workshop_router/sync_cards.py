@@ -41,6 +41,7 @@ import asyncio
 from pathlib import Path
 from fastapi.responses import JSONResponse
 from ..shared_state import get_config_manager, get_initialize_character_data
+from utils.asyncio_retirement import await_retirement
 from utils.cloudsave_runtime import MaintenanceModeError, is_write_fence_active
 from utils.file_utils import read_json_async
 from utils.config_manager import (
@@ -703,7 +704,7 @@ async def sync_workshop_character_cards(
                                 *actually_added_names,
                             )
                         else:
-                            await config_mgr.asave_characters(latest_characters)
+                            await await_retirement(config_mgr.asave_characters(latest_characters))
                     except MaintenanceModeError:
                         logger.info("sync_workshop_character_cards: 保存时进入维护态写围栏，跳过本轮同步并等待后续重试")
                         return _write_fence_blocked_result()

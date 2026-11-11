@@ -32,6 +32,7 @@ from ..shared_state import (
     get_config_manager,
     get_init_one_catgirl,
 )
+from utils.asyncio_retirement import await_retirement
 from utils.character_memory import character_config_mutation_lock
 from utils.config_manager import (
     get_reserved,
@@ -643,7 +644,7 @@ async def update_catgirl_l2d(name: str, request: Request):
                     'idle_animation',
                     live2d_idle_animation,
                 )
-                await _config_manager.asave_characters(characters)
+                await await_retirement(_config_manager.asave_characters(characters))
 
             if apply_runtime:
                 init_one_catgirl = get_init_one_catgirl()
@@ -1015,7 +1016,7 @@ async def update_catgirl_l2d(name: str, request: Request):
                     logger.debug(f"已保存角色 {name} 的模型 {live2d_model}，asset_source={resolved_asset_source or 'local_imported'}")
 
             # Save the configuration.
-            await _config_manager.asave_characters(characters)
+            await await_retirement(_config_manager.asave_characters(characters))
         # Telemetry: which avatar type the user actively picks (live2d / vrm / mmd / pngtuber).
         # Complements the startup snapshot, which misses a switch until the next launch.
         try:

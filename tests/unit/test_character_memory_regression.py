@@ -5383,6 +5383,67 @@ async def test_sync_workshop_character_cards_persists_live3d_workshop_origin_met
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_workshop_repair_cancellation_waits_for_config_save(tmp_path, monkeypatch):
+    from main_routers.workshop_router import sync_cards
+    from utils.config_manager import get_reserved, set_reserved
+
+    name = "工坊VRM角色"
+    item_id = "123"
+    old_ref = f"/workshop/{item_id}/user_vrm/Avatar.vrm"
+    character = {}
+    set_reserved(character, "character_origin", "source", "steam_workshop")
+    set_reserved(character, "character_origin", "source_id", item_id)
+    set_reserved(character, "character_origin", "model_ref", old_ref)
+    characters = {"猫娘": {name: character}}
+    (tmp_path / "Avatar.vrm").touch()
+    (tmp_path / "Avatar.chara.json").write_text(
+        json.dumps({"档案名": name, "vrm": "/user_vrm/Avatar.vrm"}),
+        encoding="utf-8",
+    )
+
+    lock = asyncio.Lock()
+    save_started = asyncio.Event()
+    finish_save = asyncio.Event()
+    saved = []
+
+    async def save_characters(data):
+        save_started.set()
+        await finish_save.wait()
+        saved.append(data)
+
+    config_mgr = SimpleNamespace(
+        aload_characters=AsyncMock(side_effect=lambda: copy.deepcopy(characters)),
+        asave_characters=save_characters,
+    )
+    monkeypatch.setattr(sync_cards, "_ugc_sync_lock", lock)
+    monkeypatch.setattr(sync_cards, "get_config_manager", lambda: config_mgr)
+    monkeypatch.setattr(sync_cards, "get_subscribed_workshop_items", AsyncMock(return_value={
+        "success": True,
+        "items": [{"publishedFileId": item_id, "installedFolder": str(tmp_path)}],
+    }))
+    monkeypatch.setattr(sync_cards, "is_write_fence_active", lambda _: False)
+    monkeypatch.setattr(sync_cards, "_load_deleted_character_names", lambda _: set())
+    monkeypatch.setattr(sync_cards, "_ensure_workshop_card_face_meta", lambda *_: False)
+
+    sync = asyncio.create_task(sync_cards.sync_workshop_character_cards())
+    try:
+        await asyncio.wait_for(save_started.wait(), timeout=5)
+        sync.cancel()
+        await asyncio.sleep(0)
+        assert lock.locked()
+        assert not sync.done()
+    finally:
+        finish_save.set()
+        outcome, = await asyncio.gather(sync, return_exceptions=True)
+
+    assert isinstance(outcome, asyncio.CancelledError)
+    assert not lock.locked()
+    assert len(saved) == 1
+    assert get_reserved(saved[0]["猫娘"][name], "character_origin", "model_ref") == f"/workshop/{item_id}/Avatar.vrm"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_delete_catgirl_returns_error_when_memory_cleanup_fails():
     with TemporaryDirectory() as td:
         cm = _make_config_manager(Path(td))
