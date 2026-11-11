@@ -23,6 +23,18 @@ from plugin.utils.source_paths import iter_plugin_python_files
 PROJECT_SOURCE = "project"
 
 
+def same_source_directory(left: str | Path, right: str | Path) -> bool:
+    """Compare existing source directories, including symlink and case aliases.
+
+    Missing paths carry no filesystem identity: a moved directory cannot be
+    recovered from an old pathname alone.
+    """
+    try:
+        return Path(left).samefile(right)
+    except OSError:
+        return False
+
+
 @dataclass(frozen=True)
 class SourceMetadata:
     plugin_id: str

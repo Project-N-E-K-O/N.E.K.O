@@ -15,6 +15,8 @@ import { formatHttpError } from '@/utils/request'
  * `authoring.*` message key; a test keeps both sides identical.
  */
 export const PROJECT_ERROR_MESSAGES = {
+  PYTHON_PACKAGES_RUNNING: 'dependenciesRunning',
+  PYTHON_PACKAGES_TASK_NOT_FOUND: 'dependenciesTaskMissing',
   INVALID_PARENT: 'invalidParent',
   INVALID_PLUGIN_ID: 'invalidId',
   PROJECT_EXISTS: 'directoryExists',

@@ -10,16 +10,23 @@ not just the direct child.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import subprocess
 import threading
+import time
 from pathlib import Path
+from typing import BinaryIO
 
+import portalocker
 import psutil
 
 from plugin.logging_config import get_logger
+from plugin.server.application.plugins.operation_lock import PluginOperationBusy, serialized_plugin_operation
 from plugin.server.domain.plugin_project_errors import ProjectErrorCode as Code
 from plugin.server.domain.plugin_project_errors import project_error
+from plugin.utils.asyncio_utils import await_cancellation_safe
+from utils import process_creation
 
 logger = get_logger("server.application.plugin_project_commands")
 
@@ -28,6 +35,36 @@ _TERMINATE_GRACE_SECONDS = 15.0
 _busy_lock = threading.Lock()
 # project_id -> name of the operation holding it.
 _busy: dict[str, str] = {}
+_project_leases: dict[str, BinaryIO] = {}
+
+
+def _project_lease_path(project_id: str) -> Path:
+    from plugin.settings import get_plugin_state_root
+
+    # The caller may not have resolved the record yet. Never use an API-supplied
+    # project ID as a filesystem path component.
+    key = hashlib.sha256(project_id.encode("utf-8")).hexdigest()
+    return get_plugin_state_root().parent / "project-operations" / f"{key}.lock"
+
+
+def _drop_inherited_project_leases() -> None:
+    try:
+        for handle in _project_leases.values():
+            # A forked plugin must not retain its parent's lease. Close its copy
+            # without LOCK_UN: an explicit unlock also unlocks the parent's flock.
+            handle.close()
+        _project_leases.clear()
+        _busy.clear()
+    finally:
+        _busy_lock.release()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(
+        before=_busy_lock.acquire,
+        after_in_parent=_busy_lock.release,
+        after_in_child=_drop_inherited_project_leases,
+    )
 
 
 def claim_project(project_id: str, operation: str) -> None:
@@ -40,12 +77,118 @@ def claim_project(project_id: str, operation: str) -> None:
                 f"{holder} is already running for project {project_id}",
                 409,
             )
+        path = _project_lease_path(project_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = path.open("a+b")
+        try:
+            portalocker.lock(handle, portalocker.LOCK_EX | portalocker.LOCK_NB)
+        except portalocker.AlreadyLocked:
+            handle.close()
+            raise project_error(
+                Code.PLUGIN_OPERATION_BUSY,
+                f"Another process is operating on project {project_id}",
+                409,
+            ) from None
+        except BaseException:
+            handle.close()
+            raise
+        _project_leases[project_id] = handle
         _busy[project_id] = operation
 
 
 def release_project(project_id: str) -> None:
     with _busy_lock:
+        handle = _project_leases.pop(project_id, None)
+        if handle is not None:
+            try:
+                portalocker.unlock(handle)
+            finally:
+                handle.close()
         _busy.pop(project_id, None)
+
+
+def project_operation_name(project_id: str) -> str | None:
+    with _busy_lock:
+        holder = _busy.get(project_id)
+        if holder is not None:
+            return holder
+        try:
+            handle = _project_lease_path(project_id).open("r+b")
+        except FileNotFoundError:
+            return None
+        with handle:
+            try:
+                portalocker.lock(handle, portalocker.LOCK_EX | portalocker.LOCK_NB)
+            except portalocker.AlreadyLocked:
+                return "Another process"
+            portalocker.unlock(handle)
+        return None
+
+
+def require_project_available(project_id: str) -> None:
+    holder = project_operation_name(project_id)
+    if holder is not None:
+        raise project_error(
+            Code.PLUGIN_OPERATION_BUSY,
+            f"{holder} is already running for project {project_id}",
+            409,
+        )
+
+
+def require_plugin_project_available(plugin_id: str) -> None:
+    """Fence runtime operations while an authoring operation changes its source."""
+    from plugin.core.state import state
+
+    with state.acquire_plugins_read_lock():
+        meta = state.plugins.get(plugin_id)
+        project_id = meta.get("project_id") if isinstance(meta, dict) else None
+        source_dir = meta.get("source_dir") if isinstance(meta, dict) else None
+    if not isinstance(project_id, str) or isinstance(source_dir, str):
+        from plugin.server.infrastructure import authoring_project_store as store
+        from plugin.server.application.plugins.project_sources import same_source_directory
+
+        records = store.list_records()
+        if isinstance(source_dir, str):
+            project_id = next((
+                item.project_id for item in records if same_source_directory(item.source_dir, source_dir)
+            ), project_id)
+        elif meta is None and records:
+            # A registered project can be started before registry discovery has
+            # populated state.plugins. Resolve its identity without importing it.
+            from plugin.server.application.plugins.project_sources import list_project_sources_sync
+
+            sources, _failures = list_project_sources_sync()
+            project_id = next((
+                item.project_id for item in sources if item.plugin_id == plugin_id
+            ), None)
+    if isinstance(project_id, str):
+        require_project_available(project_id)
+
+
+@serialized_plugin_operation
+async def _claim_project_for_operation(
+    project_id: str, operation: str, acquired: threading.Event,
+) -> None:
+    await asyncio.to_thread(claim_project, project_id, operation)
+    acquired.set()
+
+
+async def acquire_project(project_id: str, operation: str) -> None:
+    """Reserve a project after pending lifecycle mutations have completed.
+
+    The lifecycle lock covers only reservation, never the network command.
+    Cancellation releases only a lease this invocation actually acquired.
+    """
+    await asyncio.to_thread(require_project_available, project_id)
+    acquired = threading.Event()
+    try:
+        await _claim_project_for_operation(project_id, operation, acquired)
+    except BaseException as exc:
+        if acquired.is_set():
+            release_project(project_id)
+        if isinstance(exc, PluginOperationBusy):
+            raise project_error(Code.PLUGIN_OPERATION_BUSY, str(exc), 409) from exc
+        raise
 
 
 class project_operation:
@@ -66,6 +209,12 @@ class project_operation:
     def __exit__(self, *_exc: object) -> None:
         release_project(self._project_id)
 
+    async def __aenter__(self) -> None:
+        await acquire_project(self._project_id, self._operation)
+
+    async def __aexit__(self, *_exc: object) -> None:
+        release_project(self._project_id)
+
 
 def cli_child_env() -> dict[str, str]:
     # UTF-8 mode also makes the CLI decode its own git/ruff/pytest pipes as
@@ -78,16 +227,23 @@ def cli_child_env() -> dict[str, str]:
     }
 
 
-def start_cli(argv: list[str], *, cwd: Path, merge_stderr: bool) -> subprocess.Popen[str]:
-    return subprocess.Popen(
+def start_cli(
+    argv: list[str], *, cwd: Path, merge_stderr: bool,
+    env: dict[str, str] | None = None,
+    deadline: float | None = None,
+    cancel_event: threading.Event | None = None,
+) -> subprocess.Popen[str]:
+    return process_creation.popen(
         argv,
         cwd=cwd,
-        env=cli_child_env(),
+        env={**cli_child_env(), **(env or {})},
         text=True,
         encoding="utf-8",
         errors="replace",
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
+        deadline=deadline,
+        cancel_event=cancel_event,
     )
 
 
@@ -146,18 +302,49 @@ async def run_cli(
     once the tree was killed after ``timeout``. Cancelling the caller kills
     the tree too, so a server shutdown leaves nothing running.
     """
-    process = start_cli(argv, cwd=cwd, merge_stderr=merge_stderr)
+    deadline = time.monotonic() + timeout
+    cancel_event = threading.Event()
+    creation = asyncio.create_task(asyncio.to_thread(
+        start_cli, argv, cwd=cwd, merge_stderr=merge_stderr, deadline=deadline,
+        cancel_event=cancel_event,
+    ))
+    try:
+        process = await asyncio.shield(creation)
+    except asyncio.CancelledError:
+        cancel_event.set()
+        # Threaded OS creation cannot be undone by cancelling its awaiter. Keep
+        # ownership until it returns, then reap any process it allocated.
+        async def reap_creation() -> None:
+            try:
+                created = await creation
+            except Exception:
+                return
+            output = asyncio.create_task(asyncio.to_thread(created.communicate))
+            await _terminate_and_drain(created, output)
+
+        await await_cancellation_safe(asyncio.create_task(reap_creation()))
+        raise
+    except process_creation.ProcessCreationTimeout:
+        raise subprocess.TimeoutExpired(argv, timeout) from None
     communicate = asyncio.ensure_future(asyncio.to_thread(process.communicate))
     try:
-        stdout, stderr = await asyncio.wait_for(asyncio.shield(communicate), timeout)
+        stdout, stderr = await asyncio.wait_for(
+            asyncio.shield(communicate), max(0.0, deadline - time.monotonic())
+        )
     except TimeoutError:
-        await asyncio.to_thread(terminate_process_tree, process)
-        try:
-            await asyncio.wait_for(communicate, _TERMINATE_GRACE_SECONDS)
-        except TimeoutError:  # pragma: no cover - a killed tree closes its pipes
-            logger.warning("CLI pipes stayed open after terminate: pid={}", process.pid)
+        await await_cancellation_safe(asyncio.create_task(_terminate_and_drain(process, communicate)))
         raise subprocess.TimeoutExpired(argv, timeout) from None
     except asyncio.CancelledError:
-        terminate_process_tree(process)
+        await await_cancellation_safe(asyncio.create_task(_terminate_and_drain(process, communicate)))
         raise
     return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr or "")
+
+
+async def _terminate_and_drain(
+    process: subprocess.Popen[str], communicate: asyncio.Task,
+) -> None:
+    await asyncio.to_thread(terminate_process_tree, process)
+    try:
+        await asyncio.wait_for(asyncio.shield(communicate), _TERMINATE_GRACE_SECONDS)
+    except TimeoutError:  # pragma: no cover - a killed tree closes its pipes
+        logger.warning("CLI pipes stayed open after terminate: pid={}", process.pid)

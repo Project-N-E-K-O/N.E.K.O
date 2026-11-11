@@ -576,7 +576,7 @@ async def register_project(source_dir: str) -> AuthoringProject:
 async def remove_project(project_id: str) -> None:
     """Stop and unload the project's plugin, then forget it. Files are kept."""
     try:
-        with project_operation(project_id, "remove"):
+        async with project_operation(project_id, "remove"):
             await _remove_locked(project_id)
     except PluginOperationBusy as exc:
         raise _busy_error(exc) from exc
@@ -615,20 +615,17 @@ async def precheck_project(project_id: str) -> dict[str, object]:
             "Pre-release checks need a source checkout; they are unavailable in a packaged build.",
             503,
         )
-    record = next((item for item in store.list_records() if item.project_id == project_id), None)
-    if record is None:
-        raise project_error(Code.PROJECT_NOT_FOUND, f"unknown project: {project_id}", 404)
     budget = env_seconds("NEKO_PLUGIN_PRECHECK_BUDGET", 600.0)
-    argv = [
-        sys.executable,
-        "-m",
-        "plugin.neko_plugin_cli.cli",
-        "precheck",
-        str(record.source_dir),
-        "--json",
-    ]
     # ``sync --clean`` rewrites vendor/; never alongside a publish or create-repo.
-    with project_operation(project_id, "precheck"):
+    async with project_operation(project_id, "precheck"):
+        records = await asyncio.to_thread(store.list_records)
+        record = next((item for item in records if item.project_id == project_id), None)
+        if record is None:
+            raise project_error(Code.PROJECT_NOT_FOUND, f"unknown project: {project_id}", 404)
+        argv = [
+            sys.executable, "-m", "plugin.neko_plugin_cli.cli", "precheck",
+            str(record.source_dir), "--json",
+        ]
         try:
             completed = await run_cli(argv, cwd=root, timeout=budget)
         except subprocess.TimeoutExpired as exc:

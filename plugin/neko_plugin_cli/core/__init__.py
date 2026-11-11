@@ -19,7 +19,7 @@ _EXPORTS = {
 _SUBMODULES = frozenset({
     "archive_utils", "build", "build_rules", "bundle_analysis", "dependencies",
     "inspect", "install", "metadata_probe", "models", "normalize",
-    "plugin_source", "profile", "toml_utils",
+    "plugin_source", "profile", "toml_utils", "python_packages", "vendor_sync",
 })
 
 

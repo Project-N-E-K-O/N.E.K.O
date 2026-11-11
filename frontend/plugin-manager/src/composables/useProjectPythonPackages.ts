@@ -1,0 +1,231 @@
+import { computed, onBeforeUnmount, ref, shallowRef, watch, type Ref } from 'vue'
+import { projectErrorCode } from '@/api/pluginProjects'
+import {
+  cancelProjectPythonTask,
+  getProjectPythonPackages,
+  getProjectPythonTask,
+  pythonTaskActive,
+  saveProjectPythonRequirements,
+  startProjectPythonTask,
+  type PythonPackagesSnapshot,
+  type PythonPackagesTask,
+} from '@/api/projectPythonPackages'
+
+/** Project-owned draft and task session. A response from an old project never changes the new one. */
+export function useProjectPythonPackages(
+  projectId: Ref<string>,
+  onChanged: () => void,
+  editing: Ref<boolean>
+) {
+  const snapshot = shallowRef<PythonPackagesSnapshot | null>(null)
+  const task = shallowRef<PythonPackagesTask | null>(null)
+  const draft = ref<string[]>([])
+  const baseline = ref<string[]>([])
+  const revision = ref('')
+  const loading = ref(false)
+  const saving = ref(false)
+  const error = shallowRef<unknown>(null)
+  const clock = ref(Date.now())
+  const dirty = computed(() => JSON.stringify(draft.value) !== JSON.stringify(baseline.value))
+  const active = computed(() => pythonTaskActive(task.value))
+  const busy = computed(() => saving.value || active.value || !!snapshot.value?.operation)
+  let alive = true
+  let generation = 0
+  let request = 0
+  let snapshotRefreshPending = false
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const terminalNotifications = new Set<string>()
+  const current = (id: string, seq: number) => alive && projectId.value === id && generation === seq
+  const resetTimer = () => {
+    if (timer) clearTimeout(timer)
+    timer = undefined
+  }
+
+  function resetDraft(next: PythonPackagesSnapshot) {
+    draft.value = next.requirements.map((item) => item.requirement)
+    baseline.value = [...draft.value]
+    revision.value = next.revision
+  }
+  function notifyTerminalTask(next: PythonPackagesTask | null, notify = true) {
+    if (!next || pythonTaskActive(next)) return
+    const key = `${next.task_id}:${next.status}`
+    if (terminalNotifications.has(key)) return
+    terminalNotifications.add(key)
+    if (notify) onChanged()
+  }
+  function applySnapshot(next: PythonPackagesSnapshot, replaceDraft: boolean, notifyTask = true) {
+    if (replaceDraft) resetDraft(next)
+    snapshot.value = next
+    task.value = next.task
+    snapshotRefreshPending = !pythonTaskActive(next.task) && !!next.operation
+    schedule()
+    notifyTerminalTask(next.task, notifyTask)
+  }
+  async function reload(discardDraft = false) {
+    const id = projectId.value
+    const seq = generation
+    const req = ++request
+    loading.value = true
+    error.value = null
+    try {
+      const next = await getProjectPythonPackages(id)
+      if (current(id, seq) && req === request) {
+        applySnapshot(next, discardDraft || (!dirty.value && !editing.value))
+      }
+    } catch (cause) {
+      if (current(id, seq) && req === request) error.value = cause
+    } finally {
+      if (current(id, seq) && req === request) {
+        loading.value = false
+        schedule()
+      }
+    }
+  }
+  function schedule() {
+    resetTimer()
+    if (!alive) return
+    if (active.value) timer = setTimeout(() => void poll(), 1000)
+    else if (snapshotRefreshPending) timer = setTimeout(() => void reload(), 1000)
+  }
+  async function poll() {
+    const id = projectId.value
+    const seq = generation
+    const taskId = task.value?.task_id
+    if (!taskId) return
+    clock.value = Date.now()
+    try {
+      const next = await getProjectPythonTask(id, taskId)
+      if (!current(id, seq) || task.value?.task_id !== taskId) return
+      task.value = next
+      error.value = null
+      if (!pythonTaskActive(next)) {
+        snapshotRefreshPending = true
+        await reload()
+        if (current(id, seq)) notifyTerminalTask(next)
+      }
+    } catch (cause) {
+      if (current(id, seq)) {
+        if (projectErrorCode(cause) === 'PYTHON_PACKAGES_TASK_NOT_FOUND') {
+          task.value = null
+          snapshotRefreshPending = true
+          resetTimer()
+          await reload()
+        } else error.value = cause
+      }
+    } finally {
+      if (current(id, seq)) schedule()
+    }
+  }
+  async function run(operation: 'sync' | 'check') {
+    if (busy.value || !snapshot.value || dirty.value) return false
+    const id = projectId.value
+    const seq = generation
+    saving.value = true
+    error.value = null
+    try {
+      const next = await startProjectPythonTask(id, operation, snapshot.value.revision)
+      if (current(id, seq)) {
+        request += 1
+        loading.value = false
+        task.value = next
+        snapshotRefreshPending = !pythonTaskActive(next)
+        schedule()
+        notifyTerminalTask(next)
+        return true
+      }
+    } catch (cause) {
+      if (current(id, seq)) error.value = cause
+    } finally {
+      if (current(id, seq)) saving.value = false
+    }
+    return false
+  }
+  async function save(andSync = false) {
+    if (busy.value || !snapshot.value) return false
+    const id = projectId.value
+    const seq = generation
+    saving.value = true
+    error.value = null
+    try {
+      const next = await saveProjectPythonRequirements(id, [...draft.value], revision.value)
+      if (!current(id, seq)) return false
+      // An earlier refresh must not restore its snapshot after this write.
+      request += 1
+      loading.value = false
+      // The save notification also covers any terminal task in this snapshot.
+      applySnapshot(next, true, false)
+      onChanged()
+    } catch (cause) {
+      if (current(id, seq)) error.value = cause
+      return false
+    } finally {
+      if (current(id, seq)) saving.value = false
+    }
+    if (andSync && current(id, seq)) await run('sync')
+    return current(id, seq)
+  }
+  async function cancel() {
+    if (!task.value || !active.value || saving.value) return
+    const id = projectId.value
+    const seq = generation
+    saving.value = true
+    try {
+      const next = await cancelProjectPythonTask(id, task.value.task_id)
+      if (current(id, seq)) {
+        task.value = next
+        snapshotRefreshPending = !pythonTaskActive(next)
+        await reload()
+        if (current(id, seq)) notifyTerminalTask(next)
+      }
+    } catch (cause) {
+      if (current(id, seq)) error.value = cause
+    } finally {
+      if (current(id, seq)) saving.value = false
+    }
+  }
+  watch(
+    projectId,
+    () => {
+      generation += 1
+      request += 1
+      resetTimer()
+      snapshotRefreshPending = false
+      terminalNotifications.clear()
+      snapshot.value = null
+      task.value = null
+      draft.value = []
+      baseline.value = []
+      revision.value = ''
+      loading.value = false
+      saving.value = false
+      error.value = null
+      void reload()
+    },
+    { immediate: true }
+  )
+  watch([editing, projectId], ([isEditing, id], [, previousId]) => {
+    if (id === previousId && !isEditing && !dirty.value && snapshot.value) {
+      resetDraft(snapshot.value)
+    }
+  })
+  onBeforeUnmount(() => {
+    alive = false
+    resetTimer()
+  })
+  return {
+    snapshot,
+    task,
+    draft,
+    dirty,
+    active,
+    busy,
+    loading,
+    saving,
+    error,
+    clock,
+    reload,
+    save,
+    run,
+    cancel,
+  }
+}

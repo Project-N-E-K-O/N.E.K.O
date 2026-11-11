@@ -106,7 +106,12 @@
           :notes="flow.notes"
           @created="load({ fresh: true })"
         />
-        <AuthoringProjectPrecheck v-else-if="step.id === 'verify'" :project-id="projectId" />
+        <AuthoringProjectPrecheck
+          v-else-if="step.id === 'verify'"
+          :project-id="projectId"
+          :dependency-revision="dependencyRevision"
+          @dependencies="emit('dependencies')"
+        />
         <AuthoringProjectSubmission
           :key="status.repository.github_repository ?? ''"
           v-else-if="step.id === 'submission'"
@@ -236,7 +241,9 @@ const props = defineProps<{
   pluginDescription: string
   /** The project folder, filled into the guide's commands. */
   sourceDir?: string
+  dependencyRevision?: number
 }>()
+const emit = defineEmits<{ dependencies: [] }>()
 const { t } = useI18n()
 const describeError = useProjectErrorMessage()
 const root = ref<HTMLElement>()

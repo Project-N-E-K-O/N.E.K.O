@@ -38,8 +38,11 @@ from plugin.server.application.plugin_publish_status import (
     read_remote_github,
 )
 from plugin.server.application.plugins._env_budgets import env_seconds
+from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
+from plugin.server.application.plugins.project_sources import same_source_directory
 from plugin.server.domain.plugin_project_errors import ProjectErrorCode as Code
 from plugin.server.domain.plugin_project_errors import project_error
+from plugin.server.infrastructure import authoring_project_store as store
 
 logger = get_logger("server.application.plugin_publish_tasks")
 
@@ -289,6 +292,14 @@ async def start_publish(project_id: str, mode: PublishMode) -> dict[str, object]
     task = _Task(
         task_id=uuid4().hex, project_id=project_id, mode=mode, release_url=release_url
     )
+    return await _queue_publish(task, argv, gate, budget)
+
+
+@serialized_plugin_operation
+async def _queue_publish(task: _Task, argv: list[str], gate: _Gate, budget: float) -> dict[str, object]:
+    # Reserve and register under the lifecycle lock; all GitHub I/O above and
+    # the publication worker below run outside this short critical section.
+    project_id = task.project_id
     with _lock:
         active_id = _active.get(project_id)
         active = _tasks.get(active_id) if active_id else None
@@ -298,8 +309,15 @@ async def start_publish(project_id: str, mode: PublishMode) -> dict[str, object]
                 f"a publish task is already running for project {project_id}",
                 409,
             )
-        # Shared with precheck and create-repo: they touch the same tree.
-        claim_project(project_id, "publish")
+    # The remote gate was read before waiting for this lock. Recheck the
+    # registration after reserving it, before any publication worker can run.
+    await asyncio.to_thread(claim_project, project_id, "publish")
+    try:
+        await asyncio.to_thread(_require_publish_registration, project_id, gate.source_dir)
+    except BaseException:
+        release_project(project_id)
+        raise
+    with _lock:
         _prune()
         _tasks[task.task_id] = task
         _active[project_id] = task.task_id
@@ -311,6 +329,16 @@ async def start_publish(project_id: str, mode: PublishMode) -> dict[str, object]
     _workers[task.task_id] = worker
     worker.add_done_callback(lambda _done, task_id=task.task_id: _workers.pop(task_id, None))
     return snapshot
+
+
+def _require_publish_registration(project_id: str, source_dir: Path) -> None:
+    record = next((item for item in store.list_records() if item.project_id == project_id), None)
+    if record is None:
+        raise project_error(Code.PROJECT_NOT_FOUND, f"unknown project: {project_id}", 404)
+    if not record.source_dir.is_dir() or not same_source_directory(record.source_dir, source_dir):
+        raise project_error(
+            Code.PUBLISH_NOT_READY, "The project source changed; refresh publishing status", 409,
+        )
 
 
 def latest_publish_task(project_id: str) -> dict[str, object]:

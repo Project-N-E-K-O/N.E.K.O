@@ -73,14 +73,21 @@
         class="authoring-create-notice"
       />
       <LoadingSpinner v-if="!loaded && !loadError" :loading="true" />
-      <!-- The tab shell is a reserved extension point for future project
-           sections; the merged overview is its only pane for now. -->
       <el-tabs v-else-if="current" v-model="activeTab" class="authoring-tabs">
         <el-tab-pane :label="t('authoring.tabOverview')" name="overview">
           <AuthoringProjectDetails
             :key="current.project_id"
             :project="current"
             @updated="onProjectUpdated"
+            @dependencies="activeTab = 'dependencies'"
+          />
+        </el-tab-pane>
+        <el-tab-pane :label="t('pythonPackages.tab')" name="dependencies" lazy>
+          <AuthoringProjectPythonPackages
+            ref="dependenciesPanel"
+            :key="current.project_id"
+            :project="current"
+            @changed="onDependenciesChanged"
           />
         </el-tab-pane>
         <el-tab-pane :label="t('authoring.publishTab')" name="publish" lazy>
@@ -91,6 +98,8 @@
             :plugin-name="current.name ?? ''"
             :plugin-description="current.description ?? ''"
             :source-dir="current.source_dir"
+            :dependency-revision="dependencyRevision"
+            @dependencies="activeTab = 'dependencies'"
           />
         </el-tab-pane>
       </el-tabs>
@@ -132,6 +141,7 @@ import EmptyState from '@/components/common/EmptyState.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import AuthoringProjectList from '@/components/authoring/AuthoringProjectList.vue'
 import AuthoringProjectDetails from '@/components/authoring/AuthoringProjectDetails.vue'
+import AuthoringProjectPythonPackages from '@/components/authoring/AuthoringProjectPythonPackages.vue'
 import AuthoringProjectPublish from '@/components/authoring/AuthoringProjectPublish.vue'
 import AuthoringProjectStatus from '@/components/authoring/AuthoringProjectStatus.vue'
 import AuthoringHelpDrawer from '@/components/authoring/AuthoringHelpDrawer.vue'
@@ -164,16 +174,19 @@ const headerTitle = computed(() =>
   current.value ? projectTitle(current.value) : t('authoring.title')
 )
 const activeTab = ref('overview')
+const dependencyRevision = ref(0)
 const createVisible = ref(false)
 const helpVisible = ref(false)
 const busy = ref(false)
 const projectList = ref<InstanceType<typeof AuthoringProjectList>>()
+const dependenciesPanel = ref<InstanceType<typeof AuthoringProjectPythonPackages>>()
 const publishPanel = ref<InstanceType<typeof AuthoringProjectPublish>>()
 onMounted(refresh)
 // The lazy publish pane stays mounted across tab switches; coming back to it
 // re-reads the status (a commit or push may have happened meanwhile). The first
 // visit mounts the pane, which reads on its own.
 watch(activeTab, (tab) => {
+  if (tab === 'dependencies') void dependenciesPanel.value?.reload()
   if (tab === 'publish') void publishPanel.value?.reload()
 })
 // Another project opens on its overview, not on the tab the last one was left on.
@@ -191,6 +204,10 @@ function onProjectUpdated(updated: AuthoringProject) {
   projects.value = projects.value.map((project) =>
     project.project_id === updated.project_id ? updated : project
   )
+}
+function onDependenciesChanged() {
+  dependencyRevision.value += 1
+  void refresh()
 }
 async function onCreated(project: CreatedPluginProject) {
   ElMessage.success(t('authoring.creationComplete'))
@@ -244,6 +261,7 @@ function openLogs(project: AuthoringProject) {
 }
 
 async function confirmRemove(project: AuthoringProject) {
+  if (dependenciesPanel.value && !(await dependenciesPanel.value.confirmDiscard())) return
   try {
     await ElMessageBox.confirm(
       t('authoring.removeConfirm', { name: projectTitle(project), path: project.source_dir }),

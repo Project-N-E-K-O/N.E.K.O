@@ -1,4 +1,6 @@
 // @vitest-environment happy-dom
+import { pythonPackagesSnapshot, pythonRequirement } from '@/test/fixtures/pythonPackages'
+import { pythonPackageMessages } from '@/i18n/python-packages'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, markRaw, nextTick } from 'vue'
 import { createI18n } from 'vue-i18n'
@@ -21,6 +23,8 @@ const api = vi.hoisted(() => ({
   createPluginProjectRepo: vi.fn(),
   registerPluginProject: vi.fn(),
   removePluginProject: vi.fn(),
+  getProjectPythonPackages: vi.fn(),
+  saveProjectPythonRequirements: vi.fn(),
   pickProjectDirectory: vi.fn(),
   openProjectDirectory: vi.fn(),
   updatePluginProjectMetadata: vi.fn(),
@@ -63,7 +67,14 @@ vi.mock('@/api/pluginProjects', async (importOriginal) => ({
   cancelPluginProjectPublishTask: api.cancelPluginProjectPublishTask,
   getPluginToolchain: api.getPluginToolchain,
 }))
+vi.mock('@/api/projectPythonPackages', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api/projectPythonPackages')>()),
+  getProjectPythonPackages: api.getProjectPythonPackages,
+  saveProjectPythonRequirements: api.saveProjectPythonRequirements,
+}))
 vi.mock('vue-router', () => ({
+  onBeforeRouteLeave: vi.fn(),
+  onBeforeRouteUpdate: vi.fn(),
   useRoute: () => api.route,
   useRouter: () => ({ push: api.push }),
 }))
@@ -254,6 +265,7 @@ async function mount() {
       messages: {
         'en-US': {
           authoring: en,
+          pythonPackages: pythonPackageMessages['en-US'],
           plugins: { typePlugin: 'Plugin', typeAdapter: 'Adapter' },
           common: {
             cancel: 'Cancel',
@@ -262,11 +274,14 @@ async function mount() {
             loading: 'Loading',
             edit: 'Edit',
             save: 'Save',
+            refresh: 'Refresh',
+            confirm: 'Confirm',
           },
           status: { running: 'Running', stopped: 'Stopped' },
         },
         'zh-CN': {
           authoring: authoringMessages['zh-CN'],
+          pythonPackages: pythonPackageMessages['zh-CN'],
           plugins: { typePlugin: '插件', typeAdapter: '适配器' },
           common: { cancel: '取消', close: '关闭', edit: '编辑', save: '保存' },
           status: { running: '运行中', stopped: '已停止' },
@@ -313,7 +328,7 @@ async function openTab(container: HTMLElement, index: number) {
 }
 
 async function openPublish(container: HTMLElement) {
-  await openTab(container, 1)
+  await openTab(container, 2)
   return container.querySelector('.authoring-publish')!
 }
 
@@ -470,7 +485,7 @@ describe('authoring workbench backed by the server project list', () => {
     api.listPluginProjects.mockResolvedValue([listed])
     const container = await mount()
     const tabs = [...container.querySelectorAll('.authoring-tabs > .el-tabs__header [role="tab"]')]
-    expect(tabs.map((tab) => tab.textContent)).toEqual([en.tabOverview, en.publishTab])
+    expect(tabs.map((tab) => tab.textContent)).toEqual([en.tabOverview, pythonPackageMessages['en-US'].tab, en.publishTab])
     expect(tabs[0]?.getAttribute('aria-selected')).toBe('true')
     const header = container.querySelector('.authoring-header')!
     expect(header.textContent).toContain(listed.name)
@@ -1396,6 +1411,32 @@ describe('authoring workbench backed by the server project list', () => {
     await settle()
     expect(api.removePluginProject).toHaveBeenCalledWith('p1')
     expect(api.push).toHaveBeenCalledWith({ path: '/workbench' })
+  })
+
+  it('keeps unsaved dependency changes when the removal discard prompt is canceled', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getProjectPythonPackages.mockResolvedValue(pythonPackagesSnapshot({
+      requirements: [pythonRequirement('demo', {
+        requirement: 'demo>=1', specifier: '>=1', installed_version: '1.2.0',
+      })],
+      installed: [],
+      dependency_graph: { roots: [], other_roots: [], nodes: [] },
+    }))
+    const container = await mount()
+    await openTab(container, 1)
+    await click(pythonPackageMessages['en-US'].pin)
+    await click(en.removeProject)
+    await settle()
+    expect(messageBox()?.textContent).toContain(pythonPackageMessages['en-US'].discard)
+    await click('Cancel', { last: true })
+    await settle()
+    expect(api.removePluginProject).not.toHaveBeenCalled()
+    expect(api.saveProjectPythonRequirements).not.toHaveBeenCalled()
+    expect(container.querySelector('.python-package-declaration code')?.textContent).toBe(
+      'demo==1.2.0'
+    )
+    expect(api.push).not.toHaveBeenCalled()
   })
 
   it('keeps the project when removal is cancelled', async () => {

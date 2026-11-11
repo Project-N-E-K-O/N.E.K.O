@@ -41,14 +41,16 @@ def isolated_state(monkeypatch, tmp_path_factory):
         tasks._active.clear()
         tasks._latest.clear()
         tasks._workers.clear()
-    commands._busy.clear()
+    for project_id in list(commands._busy):
+        commands.release_project(project_id)
     yield state_dir
     with tasks._lock:
         tasks._tasks.clear()
         tasks._active.clear()
         tasks._latest.clear()
         tasks._workers.clear()
-    commands._busy.clear()
+    for project_id in list(commands._busy):
+        commands.release_project(project_id)
 
 
 @pytest.fixture
@@ -715,3 +717,62 @@ async def test_slow_spawn_does_not_block_polling_and_termination_reaps_the_child
     assert result == (None, "")
     assert terminated == [child]
     assert task.process is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["publish", "acquire"])
+@pytest.mark.parametrize("claim_fails", [False, True])
+async def test_request_cancellation_drains_inflight_project_claim(
+    isolated_state, monkeypatch, operation, claim_fails,
+):
+    """Cancellation cannot orphan a claim still running in the thread pool."""
+    project_id = "cancellation-during-claim"
+    entered = threading.Event()
+    finish_claim = threading.Event()
+    worker_finished = asyncio.Event()
+    original_claim = commands.claim_project
+
+    def delayed_claim(*args):
+        entered.set()
+        assert finish_claim.wait(5)
+        if claim_fails:
+            raise RuntimeError("claim failed")
+        original_claim(*args)
+
+    async def worker(task, *args):
+        commands.release_project(task.project_id)
+        worker_finished.set()
+
+    monkeypatch.setattr(commands, "claim_project", delayed_claim)
+    monkeypatch.setattr(tasks, "claim_project", delayed_claim)
+    monkeypatch.setattr(tasks, "_require_publish_registration", lambda *args: None)
+    monkeypatch.setattr(tasks, "_run_task", worker)
+    if operation == "publish":
+        task = tasks._Task("cancel-claim-task", project_id, "github")
+        gate = tasks._Gate(isolated_state, isolated_state, "demo", "owner/repo", None, "v1")
+        invocation = tasks._queue_publish(task, [], gate, 30)
+    else:
+        invocation = commands.acquire_project(project_id, "precheck")
+    request = asyncio.create_task(invocation)
+    try:
+        assert await asyncio.to_thread(entered.wait, 3)
+        request.cancel()
+        await asyncio.sleep(0)
+        request.cancel()
+        await asyncio.sleep(0)
+        assert not request.done()
+        finish_claim.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(request, 3)
+        if operation == "publish" and not claim_fails:
+            await asyncio.wait_for(worker_finished.wait(), 3)
+        else:
+            assert not worker_finished.is_set()
+        assert commands.project_operation_name(project_id) is None
+    finally:
+        finish_claim.set()
+        if not request.done():
+            request.cancel()
+        await asyncio.gather(request, return_exceptions=True)
+        if tasks._workers:
+            await asyncio.gather(*tasks._workers.values())

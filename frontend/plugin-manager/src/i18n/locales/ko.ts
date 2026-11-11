@@ -1,3 +1,4 @@
+import { pythonPackageMessages } from '../python-packages'
 import { modelApiMessages } from '../model-api'
 import { modelBindingsMessages } from '../model-bindings'
 import { authoringMessages } from '../authoring'
@@ -6,6 +7,7 @@ import { authoringMessages } from '../authoring'
  * 한국어 언어 팩
  */
 export default {
+  pythonPackages: pythonPackageMessages['ko'],
   authoring: authoringMessages['ko'],
   modelApi: modelApiMessages['ko'],
   modelBindings: modelBindingsMessages['ko'],

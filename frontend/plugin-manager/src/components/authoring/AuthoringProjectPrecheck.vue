@@ -12,6 +12,9 @@
       <el-button type="primary" :icon="VideoPlay" :loading="running" @click="run">
         {{ t(running ? 'authoring.precheckRunning' : 'authoring.precheckRun') }}
       </el-button>
+      <el-button @click="emit('dependencies')">{{
+        t('pythonPackages.openDependencies')
+      }}</el-button>
       <span class="authoring-muted authoring-small">
         {{ t('authoring.precheckCiNote') }}
       </span>
@@ -21,7 +24,11 @@
       <ul v-if="report.environment_issues.length">
         <li v-for="([severity, message], index) in report.environment_issues" :key="index">
           <el-tag size="small" :type="severity === 'error' ? 'danger' : 'warning'">{{
-            t(severity === 'error' ? 'authoring.precheckSeverityError' : 'authoring.precheckSeverityWarning')
+            t(
+              severity === 'error'
+                ? 'authoring.precheckSeverityError'
+                : 'authoring.precheckSeverityWarning'
+            )
           }}</el-tag>
           <span>{{ message }}</span>
         </li>
@@ -44,7 +51,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useLocalizedError } from '@/composables/useLocalizedError'
 import { VideoPlay } from '@element-plus/icons-vue'
@@ -60,13 +67,21 @@ type StageState = 'passed' | 'failed' | 'skipped'
 
 const STAGE_ORDER: StageName[] = ['lint', 'sync', 'release-check']
 
-const props = defineProps<{ projectId: string }>()
+const props = defineProps<{ projectId: string; dependencyRevision?: number }>()
+const emit = defineEmits<{ dependencies: [] }>()
 const { t } = useI18n()
 const describeError = useProjectErrorMessage()
 const running = ref(false)
 const report = ref<PrecheckReport | null>(null)
 const requestFailure = useLocalizedError(describeError, 'precheckFailedToRun')
 const requestError = requestFailure.message
+watch(
+  () => props.dependencyRevision,
+  () => {
+    report.value = null
+    requestFailure.clear()
+  }
+)
 
 interface StageView {
   name: StageName
@@ -100,7 +115,9 @@ function stageTitleKey(name: StageName) {
 
 function stageLabel(stage: StageView) {
   if (stage.state === 'passed') return t('authoring.precheckStagePassed')
-  return stage.state === 'failed' ? t('authoring.precheckStageFailed') : t('authoring.precheckSkipped')
+  return stage.state === 'failed'
+    ? t('authoring.precheckStageFailed')
+    : t('authoring.precheckSkipped')
 }
 
 function stageTagType(state: StageState) {
@@ -110,12 +127,19 @@ function stageTagType(state: StageState) {
 async function run() {
   if (running.value) return
   running.value = true
+  const projectId = props.projectId
+  const dependencyRevision = props.dependencyRevision
+  const current = () =>
+    props.projectId === projectId && props.dependencyRevision === dependencyRevision
   requestFailure.clear()
   try {
-    report.value = await precheckPluginProject(props.projectId)
+    const next = await precheckPluginProject(projectId)
+    if (current()) report.value = next
   } catch (error) {
-    report.value = null
-    requestFailure.set(error)
+    if (current()) {
+      report.value = null
+      requestFailure.set(error)
+    }
   } finally {
     running.value = false
   }

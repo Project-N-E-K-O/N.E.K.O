@@ -15,6 +15,7 @@ Outcomes mirror the CLI's exit codes:
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 import sys
 import time
@@ -113,6 +114,6 @@ def _first_https_github_url(log: list[str]) -> str:
 
 async def create_repository(project_id: str, *, private: bool = False) -> dict[str, object]:
     """Run ``neko-plugin create-repo`` for a project and return its outcome."""
-    source_dir = _record_source_dir(project_id)
-    with project_operation(project_id, "create-repo"):
+    async with project_operation(project_id, "create-repo"):
+        source_dir = await asyncio.to_thread(_record_source_dir, project_id)
         return await _run(source_dir, private=private)
