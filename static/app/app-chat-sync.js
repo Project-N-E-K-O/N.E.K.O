@@ -26,6 +26,8 @@
             chat_sync_unavailable: 'errorNetwork',
             chat_sync_pull_timeout: 'errorNetwork',
             long_term_memory_capacity_exceeded: 'errorLongTermCapacity',
+            long_term_memory_evidence_capacity_exceeded: 'errorLongTermEvidenceCapacity',
+            long_term_memory_evidence_trimmed: 'noticeLongTermEvidenceTrimmed',
             long_term_memory_incoming_pending: 'errorLongTermPending',
             long_term_archive_subject_unavailable: 'errorArchiveSubject',
             recent_write_receipt_conflict: 'errorRecentWriteUnconfirmed',

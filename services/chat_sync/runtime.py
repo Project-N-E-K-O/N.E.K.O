@@ -45,6 +45,8 @@ _BUILTIN_SERVICE_URL = "https://sync.nekotech.cn"
 _MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 _LOCAL_CA_ENV = "NEKO_CHAT_SYNC_LOCAL_CA_FILE"
 _RECENT_FALLBACK_SECONDS = 30
+# How long the sync panel says that the oldest evidence records were dropped.
+_EVIDENCE_TRIM_NOTICE_MS = 7 * 24 * 60 * 60 * 1000
 
 
 class AutomaticRoleInactive(Exception):
@@ -1173,6 +1175,11 @@ class DesktopChatSyncRuntime:
                 diagnostics.append('long_term_memory_incoming_pending')
         except OSError:
             pass
+        if self.long_term_memory is not None:
+            # A notice, not a failure: this device dropped its oldest evidence records.
+            trimmed = self.long_term_memory.adapter.evidence_trimmed_at(binding['character_uid'])
+            if trimmed is not None and 0 <= self.scheduler.clock() - trimmed < _EVIDENCE_TRIM_NOTICE_MS:
+                diagnostics.append('long_term_memory_evidence_trimmed')
         return diagnostics
 
     def _quarantined_status(self):

@@ -412,11 +412,15 @@ def test_sync_settings_explains_memory_diagnostics_alongside_transport_errors_wi
         global.fetch=async(path)=>{requests.push(path);return{ok:true,json:async()=>({characters:[{
             displayName:'Neko',characterSyncId:original.characterSyncId,
             binding:{lastSyncError:TRANSPORT||'long_term_memory_capacity_exceeded',localMemoryDiagnostics:[
-                'long_term_memory_capacity_exceeded','long_term_memory_incoming_pending']}
+                'long_term_memory_capacity_exceeded','long_term_memory_incoming_pending',
+                'long_term_memory_evidence_capacity_exceeded','long_term_memory_evidence_trimmed']}
         }]})};};
         await window.nekoChatSync.openSettings();
         const shown=body.children[0].querySelectorAll('*').find(node=>node.className==='chat-sync-status').textContent;
         assert(shown.includes('chatSync.errorLongTermCapacity'));
+        assert(shown.includes('chatSync.errorLongTermEvidenceCapacity'));
+        assert(shown.includes('long_term_memory_evidence_capacity_exceeded'));
+        assert(shown.includes('chatSync.noticeLongTermEvidenceTrimmed'));
         assert(shown.includes('long_term_memory_capacity_exceeded'));
         assert(shown.includes('chatSync.errorLongTermPending'));
         assert.equal(shown.split('chatSync.errorLongTermCapacity').length,2);
