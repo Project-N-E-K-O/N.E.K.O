@@ -639,7 +639,7 @@ async def test_batch_autostart_skips_denied_and_starts_undecided(
         return {"success": True, "plugin_id": plugin_id}
 
     lifecycle_service = lifecycle.PluginLifecycleService()
-    monkeypatch.setattr(lifecycle_service, "start_plugin", fake_start)
+    monkeypatch.setattr(lifecycle_service, "_start_plugin_under_lock", fake_start)
     result = await lifecycle_service.start_plugins_batch(
         ["undecided_plugin", "denied_plugin"], concurrency=1
     )

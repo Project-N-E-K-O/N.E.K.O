@@ -1615,9 +1615,9 @@ class PluginLifecycleService:
         """Start independent plugins concurrently, then dependents in order.
 
         Each concurrent wave excludes external mutations until its active
-        starts finish, then yields the operation lock to queued callers. Child
-        tasks use the undecorated implementation inside that scope. Serial
-        starts use the public entry point's cancellation-safe per-plugin lock.
+        starts finish, then yields the operation lock to queued callers. Both
+        wave members and serial starts check consent and start within their
+        existing operation lock scope.
         """
         limit = (
             PLUGIN_AUTOSTART_CONCURRENCY if concurrency is None else int(concurrency)
@@ -1644,7 +1644,7 @@ class PluginLifecycleService:
         async def _start_serial(plugin_id: str) -> bool:
             if await _skip_denied(plugin_id):
                 return False
-            await self.start_plugin(plugin_id, refresh_registry=refresh_registry)
+            await self._start_plugin_under_lock(plugin_id, refresh_registry=refresh_registry)
             return True
 
         async def _start_one(

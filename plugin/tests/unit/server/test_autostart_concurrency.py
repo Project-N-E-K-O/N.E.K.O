@@ -4,7 +4,7 @@ Measured serial startup of 12 plugins: 14871ms, 79% of cold start (``service.sta
 sum/max≈10.4, no overlap). Independent plugin processes avoid GIL limits; on 16 logical cores,
 12 concurrent cold starts took 1430ms (serial equivalent 8007ms, 5.6×), with individual slowdown only 1.92×.
 
-Each wave uses ``asyncio.gather`` on undecorated ``_start_plugin_under_lock`` under lock; sequential starts use public entry.
+Each wave uses ``asyncio.gather`` on ``_start_plugin_under_lock`` under lock. Sequential starts acquire one lock per plugin.
 Pin four properties easily lost in refactoring, causing hangs/silent failures,
 not merely slower performance:
 
