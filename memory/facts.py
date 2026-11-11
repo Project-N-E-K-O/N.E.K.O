@@ -3654,6 +3654,13 @@ class FactStore:
                 'entity': candidate.get('entity') if candidate.get('entity') in ('master', 'neko', 'relationship') else 'master',
                 'source': candidate.get('source') if isinstance(candidate.get('source'), str) and candidate.get('source') in self._SOURCE_VALUES else default_source}
                 if isinstance(candidate, dict) else candidate for candidate in extracted]
+        # The held-back proof and queue id are this device's own records. A model
+        # output carrying the same keys must not pass for one: drop them first.
+        from memory.long_term_sync import STORED_PROOF
+        from memory.retirement_review_queue import QUEUE_ID
+        extracted = [{key: value for key, value in candidate.items() if key not in (STORED_PROOF, QUEUE_ID)}
+                     if isinstance(candidate, dict) and (STORED_PROOF in candidate or QUEUE_ID in candidate) else candidate
+                     for candidate in extracted]
         # Candidates an earlier extraction held back come first, so the queue drains.
         review_queue = None
         if memory_subject is None and source_messages is not None:
@@ -5487,7 +5494,12 @@ class FactStore:
                 )
         if not extracted:
             if memory_subject is None:
-                await self.arecord_extraction_progress(lanlan_name, 'a', messages)
+                if isinstance(extracted, list):
+                    # Nothing new still drains candidates an earlier extraction held
+                    # back, and records progress the way a non-empty one does.
+                    await self._apersist_new_facts(lanlan_name, [], source_messages=messages, progress_pass='a')
+                else:
+                    await self.arecord_extraction_progress(lanlan_name, 'a', messages)
             return []
         source_accepted: list[dict] = []
         created = await self._apersist_new_facts(
@@ -6190,7 +6202,9 @@ class FactStore:
             # adds nothing. Failures (None, above) stay unlogged here.
             self._log_path_b_labels(lanlan_name, [], [])
             if coerce_subject(subject) is None:
-                await self.arecord_extraction_progress(lanlan_name, 'b', messages)
+                # Same as a non-empty run: held-back candidates drain, progress is recorded.
+                await self._apersist_new_facts(lanlan_name, [], default_source='ai_disclosure', source_messages=messages,
+                                               extraction_path=EXTRACTION_PATH_B, progress_pass='b')
             return []
         source_accepted: list[dict] = []
         persisted = await self._apersist_new_facts(

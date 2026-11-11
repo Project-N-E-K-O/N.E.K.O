@@ -336,3 +336,21 @@ async def test_a_batch_over_the_prompt_budget_is_split_and_an_oversized_pair_lef
         assert marker['archived'] == {'dup': 'old'}
     else:
         assert seen == [] and marker['archived'] == {}   # even one pair is too long: left as two facts
+
+
+@pytest.mark.asyncio
+async def test_a_fold_is_dropped_when_its_facts_changed_while_the_model_answered(memory):
+    directory, facts = memory
+    await _seed(directory, facts)
+    model = _Model([{'博士是一名主播', '博士是一名主播，会日常直播'}])
+
+    async def answer_while_sync_rewrites(prompt, *args, **kwargs):
+        decisions = await model(prompt)
+        # A snapshot lands meanwhile and rewrites the fact that was to stay.
+        row = next(row for row in facts._facts[NAME] if row['id'] == 'old')
+        row['text'] = '博士不再直播了'
+        await facts.asave_facts(NAME)
+        return decisions
+    marker = await _run(answer_while_sync_rewrites)
+    assert marker['archived'] == {}
+    assert {row['id'] for row in json.loads((directory / 'facts.json').read_text(encoding='utf-8'))} == {'old', 'dup', 'yes', 'no'}

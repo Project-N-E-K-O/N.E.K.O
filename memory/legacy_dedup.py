@@ -80,8 +80,38 @@ def nominate(rows, *, decode=None):
             if evidence is None:
                 continue
             older, newer = (first, second) if _created(first) <= _created(second) else (second, first)
-            pairs.append({'candidate': newer['id'], 'existing': older['id'], 'evidence': evidence})
+            pairs.append({'candidate': newer['id'], 'existing': older['id'], 'evidence': evidence,
+                          'fingerprints': {newer['id']: fingerprint(newer), older['id']: fingerprint(older)}})
     return pairs
+
+
+def fingerprint(row):
+    """What the model was shown of a fact; a decision holds only while it is unchanged."""
+    import hashlib
+    return hashlib.sha256(json.dumps([row.get('entity') or 'master', row.get('text')], ensure_ascii=False).encode()).hexdigest()[:16]
+
+
+def still_valid(folded, pairs, rows, archive):
+    """The folds whose two facts are still what the model judged.
+
+    A fold already applied (its fact archived by the cleanup, pointing at the
+    same survivor) stays valid; one whose fact was deleted, rewritten or
+    archived otherwise since the model answered is dropped, so both stay.
+    """
+    seen = {}
+    for pair in pairs:
+        seen.update(pair.get('fingerprints') or {})
+    applied = {row.get('id'): row.get('superseded_by') for row in archive
+               if isinstance(row, dict) and row.get('arbitration_archived_at')}
+
+    def unchanged(fact_id):
+        row = rows.get(fact_id)
+        if row is not None:
+            return fingerprint(row) == seen.get(fact_id)
+        # Gone from the live set only because this cleanup already folded it.
+        return fact_id in folded and applied.get(fact_id) == folded[fact_id]
+
+    return {loser: survivor for loser, survivor in folded.items() if unchanged(loser) and unchanged(survivor)}
 
 
 def pair_key(pair):

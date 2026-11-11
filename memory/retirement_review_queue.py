@@ -78,7 +78,8 @@ def commit(directory, queue_key, brought_ids, held_back, added, proof_key):
         else:
             path.unlink(missing_ok=True)
     waiting = {identity for row in kept for identity in row['candidate'].get(proof_key, {}).get('source_message_ids', [])}
+    # One message can yield several facts: it is read only once none of them still waits.
     done = [identity for row in settled
             for identity in map(_shared_identity, row['candidate'].get(proof_key, {}).get('source_message_ids', []))
-            if identity]
+            if identity and f'sync:{identity}' not in waiting]
     return waiting, list(dict.fromkeys(done))

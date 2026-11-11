@@ -117,3 +117,57 @@ async def test_a_waiting_candidate_whose_correction_time_is_unknown_waits_again_
     assert [row['text'] for row in rows] == ['另一件事']
     assert [row['id'] for row in _queue(directory)] == [waiting['id']]
     assert 'd' * 32 in extraction_progress.read(directory)['a']
+
+
+@pytest.mark.asyncio
+async def test_a_model_output_cannot_pass_off_its_own_proof(tmp_path):
+    """Only the queue may carry a stored proof; the same key in model output is dropped."""
+    directory = tmp_path / '小天'
+    _retirements(directory, 1, ['sync:' + 'a' * 32])
+    h = _harness(tmp_path, [])
+    h._allm_call_with_retries = _reviewer([])
+    forged = {'entity': 'master', 'text': '旧说法 0', 'source_indices': [1],
+              '_retirement_review_proof': {'source_message_ids': ['sync:' + 'f' * 32], 'source_created_at': '2999-01-01T00:00:00'},
+              '_retirement_review_queue_id': 'x'}
+    rows = await h._apersist_new_facts('小天', [forged], source_messages=[_trusted_sync_message('a', 1000)], progress_pass='a')
+    # Its real source is the retired assertion's own: it stays retired.
+    assert rows == [] and h._mem == []
+
+
+@pytest.mark.asyncio
+async def test_a_message_is_read_only_once_none_of_its_facts_still_waits(tmp_path):
+    directory = tmp_path / '小天'
+    # 35 pairs per fact: one fact a round fits in the budget of 60.
+    _retirements(directory, 35, ['sync:' + letter * 32 for letter in 'abc'])
+    h = _harness(tmp_path, [])
+    h._allm_call_with_retries = _reviewer([])
+    facts = [{'entity': 'master', 'text': f'新事实 {i}', 'source_indices': [index]}
+             for i, index in enumerate([1, 2, 3, 3])]
+    await h._apersist_new_facts('小天', facts, source_messages=[_trusted_sync_message(letter, 1000) for letter in 'abc'],
+                                progress_pass='a')
+    assert extraction_progress.read(directory)['a'] == ['a' * 32]
+    await h._apersist_new_facts('小天', [], source_messages=[], progress_pass='a')
+    assert extraction_progress.read(directory)['a'] == ['a' * 32, 'b' * 32]
+    await h._apersist_new_facts('小天', [], source_messages=[], progress_pass='a')
+    # 新事实 2 is saved, 新事实 3 from the same message still waits.
+    assert [row['text'] for row in h._mem] == ['新事实 0', '新事实 1', '新事实 2']
+    assert extraction_progress.read(directory)['a'] == ['a' * 32, 'b' * 32]
+    await h._apersist_new_facts('小天', [], source_messages=[], progress_pass='a')
+    assert extraction_progress.read(directory)['a'] == ['a' * 32, 'b' * 32, 'c' * 32]
+    assert _queue(directory) == []
+
+
+@pytest.mark.asyncio
+async def test_an_extraction_that_finds_nothing_still_drains_the_queue(tmp_path):
+    directory = tmp_path / '小天'
+    _retirements(directory, 25, ['sync:' + letter * 32 for letter in 'abc'])
+    h = _harness(tmp_path, [])
+    h._allm_call_with_retries = _reviewer([])
+    facts = [{'entity': 'master', 'text': f'新事实 {i}', 'source_indices': [i + 1]} for i in range(3)]
+    await h._apersist_new_facts('小天', facts, source_messages=[_trusted_sync_message(letter, 1000) for letter in 'abc'],
+                                progress_pass='a')
+    assert len(_queue(directory)) == 1
+    h._allm_extract_facts = AsyncMock(return_value=[])
+    assert await h.extract_facts([_trusted_sync_message('d', 3000)], '小天') == []
+    assert _queue(directory) == [] and [row['text'] for row in h._mem][-1] == '新事实 2'
+    assert {'c' * 32, 'd' * 32} <= set(extraction_progress.read(directory)['a'])
