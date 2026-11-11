@@ -15,7 +15,7 @@ MAX_BATCHES = 400
 _BATCH = re.compile(r'[0-9]{15}-[0-9a-f]{12}\.json')
 
 
-def enqueue(directory, entries, received_at):
+def keep_arrivals(directory, entries, received_at):
     """Keep newly arrived user and character lines; received_at is this device's own clock."""
     from utils.file_utils import atomic_write_json
     rows = [{'id': row['id'], 'role': row['role'], 'text': row['text'], 'originalTime': row.get('originalTime')}

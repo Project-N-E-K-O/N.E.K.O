@@ -43,7 +43,7 @@ def read(directory):
     return {name: [item for item in progress.get(name) or [] if isinstance(item, str)] for name in PASSES}
 
 
-def record(directory, passage, processed):
+def record_processed(directory, passage, processed):
     """Append newly processed identities; the caller holds the lock that guards facts.
 
     Returns whether anything was written. The oldest entries drop first, in

@@ -3748,7 +3748,7 @@ class FactStore:
             from utils.cloudsave_runtime import cloudsave_writable_transaction
             target = Path(directory) / extraction_progress.STATE_FILE
             with cloudsave_writable_transaction(self._config_manager, operation='save', target=target):
-                extraction_progress.record(directory, passage, processed)
+                extraction_progress.record_processed(directory, passage, processed)
         from memory.recent import _await_recent_mutation_to_completion
         await _await_recent_mutation_to_completion(save)
 

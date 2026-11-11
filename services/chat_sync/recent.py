@@ -75,8 +75,8 @@ class RecentMemorySync:
             conn.execute("DELETE FROM recent_memory_apply WHERE domain=? AND receipt=?", (domain, receipt))
 
     def _keep_received(self, uid, arrived):
-        from memory.received_messages import enqueue
-        enqueue(self.received_directory(uid), arrived, time.time_ns() // 1_000_000)
+        from memory.received_messages import keep_arrivals
+        keep_arrivals(self.received_directory(uid), arrived, time.time_ns() // 1_000_000)
 
     def recover_apply(self, domain, name):
         with closing(store_connection(self.path)) as conn:

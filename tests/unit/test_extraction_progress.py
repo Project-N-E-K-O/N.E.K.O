@@ -46,22 +46,22 @@ def test_record_keeps_order_skips_known_and_drops_the_oldest_first(tmp_path):
     assert extraction_progress.read(tmp_path) == {'a': [], 'b': []}
     (tmp_path / extraction_progress.STATE_FILE).write_text('[]', encoding='utf-8')
     assert extraction_progress.read(tmp_path) == {'a': [], 'b': []}
-    assert extraction_progress.record(tmp_path, 'a', [A, B, A])
-    assert not extraction_progress.record(tmp_path, 'a', [B])
-    assert extraction_progress.record(tmp_path, 'b', [C])
+    assert extraction_progress.record_processed(tmp_path, 'a', [A, B, A])
+    assert not extraction_progress.record_processed(tmp_path, 'a', [B])
+    assert extraction_progress.record_processed(tmp_path, 'b', [C])
     assert extraction_progress.read(tmp_path) == {'a': [A, B], 'b': [C]}
     many = [f'{index:032x}' for index in range(PROGRESS_MAX)]
-    assert extraction_progress.record(tmp_path, 'a', many)
+    assert extraction_progress.record_processed(tmp_path, 'a', many)
     assert extraction_progress.read(tmp_path)['a'] == many
     with pytest.raises(ValueError):
-        extraction_progress.record(tmp_path, 'c', [A])
+        extraction_progress.record_processed(tmp_path, 'c', [A])
 
 
 def test_record_leaves_the_rest_of_the_sync_state_alone(tmp_path):
     state = {'evidence': {'retirements': [{'id': 'old', 'subject': 'master', 'sourceMessageIds': ['s']}], 'confirmations': []},
              'dormantEntries': [], 'organizer': {'deviceId': 'd' * 32, 'renewedAt': 1, 'rank': 2}}
     (tmp_path / extraction_progress.STATE_FILE).write_text(json.dumps(state), encoding='utf-8')
-    extraction_progress.record(tmp_path, 'a', [A])
+    extraction_progress.record_processed(tmp_path, 'a', [A])
     assert json.loads((tmp_path / extraction_progress.STATE_FILE).read_text(encoding='utf-8')) == {
         **state, 'progress': {'a': [A], 'b': []}}
 
@@ -88,7 +88,7 @@ async def test_progress_is_written_inside_the_lock_that_guards_the_facts(tmp_pat
     """A snapshot is exported under this lock, so it never carries one without the other."""
     fs, _ = _install_factstore(str(tmp_path))
     seen = []
-    original = extraction_progress.record
+    original = extraction_progress.record_processed
 
     def recording(directory, passage, processed):
         facts = json.loads((Path(directory) / 'facts.json').read_text(encoding='utf-8'))
@@ -96,7 +96,7 @@ async def test_progress_is_written_inside_the_lock_that_guards_the_facts(tmp_pat
         return original(directory, passage, processed)
 
     extracted = [{'text': '主人喜欢绿茶', 'importance': 6, 'entity': 'master', 'source_indices': [1]}]
-    with patch.object(extraction_progress, 'record', new=recording), \
+    with patch.object(extraction_progress, 'record_processed', new=recording), \
             patch.object(fs, '_allm_extract_facts', new=AsyncMock(return_value=extracted)):
         await fs.aextract_facts_and_detect_signals(NAME, [message('我喜欢绿茶', A)])
     # The facts are already on disk when the progress over their messages is written.
@@ -156,7 +156,7 @@ async def test_progress_travels_in_the_snapshot_and_merges_with_what_another_dev
     from memory.long_term_sync import export_document, import_document, read_views
     directory = tmp_path / NAME
     directory.mkdir()
-    extraction_progress.record(directory, 'a', [A])
+    extraction_progress.record_processed(directory, 'a', [A])
     local = export_document(read_views(directory), 2000)
     assert local['progress'] == {'a': [A], 'b': []}
     remote = {**local, 'completedAt': 3000, 'progress': {'a': [B], 'b': [C]}}

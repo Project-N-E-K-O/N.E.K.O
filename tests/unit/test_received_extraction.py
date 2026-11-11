@@ -20,9 +20,9 @@ def line(identity, text, role='user', original_time='1000'):
 
 def test_arrivals_keep_only_spoken_lines_in_arrival_order(tmp_path):
     assert received_messages.batches(tmp_path / 'missing') == []
-    assert not received_messages.enqueue(tmp_path, [line('0' * 32, 'summary of older talk', role='memo'), line(A, '   ')], 5000)
-    assert received_messages.enqueue(tmp_path, [line(B, 'second arrival')], 9000)
-    assert received_messages.enqueue(tmp_path, [line(A, 'first arrival'), line(C, 'her reply', role='assistant')], 7000)
+    assert not received_messages.keep_arrivals(tmp_path, [line('0' * 32, 'summary of older talk', role='memo'), line(A, '   ')], 5000)
+    assert received_messages.keep_arrivals(tmp_path, [line(B, 'second arrival')], 9000)
+    assert received_messages.keep_arrivals(tmp_path, [line(A, 'first arrival'), line(C, 'her reply', role='assistant')], 7000)
     (tmp_path / 'not-a-batch.json').write_text('{}', encoding='utf-8')
     (tmp_path / f'{8000:015d}-{"0" * 12}.json').write_text('{broken', encoding='utf-8')
     pending = received_messages.batches(tmp_path)
@@ -34,7 +34,7 @@ def test_arrivals_keep_only_spoken_lines_in_arrival_order(tmp_path):
 def test_arrivals_are_bounded_by_dropping_the_oldest(tmp_path, monkeypatch):
     monkeypatch.setattr(received_messages, 'MAX_BATCHES', 3)
     for index in range(5):
-        received_messages.enqueue(tmp_path, [line(f'{index:032x}', f'line {index}')], 1000 + index)
+        received_messages.keep_arrivals(tmp_path, [line(f'{index:032x}', f'line {index}')], 1000 + index)
     assert [batch['receivedAt'] for batch in received_messages.batches(tmp_path)] == [1002, 1003, 1004]
 
 
@@ -97,7 +97,7 @@ def extractor(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_the_device_that_said_a_line_keeps_the_first_turn(extractor):
     delay = extractor.module.RECEIVED_EXTRACTION_DELAY_MS
-    received_messages.enqueue(extractor.directory, [line(A, 'I moved to Kyoto'), line(B, 'noted', 'assistant')], extractor.now)
+    received_messages.keep_arrivals(extractor.directory, [line(A, 'I moved to Kyoto'), line(B, 'noted', 'assistant')], extractor.now)
     extractor.checked = extractor.now + 1
     extractor.now += delay - 1
     assert await extractor.module.extract_received('Neko', UID) == 0
@@ -112,7 +112,7 @@ async def test_the_device_that_said_a_line_keeps_the_first_turn(extractor):
 @pytest.mark.asyncio
 async def test_nothing_is_extracted_until_a_snapshot_check_has_succeeded_since_the_arrival(extractor):
     delay = extractor.module.RECEIVED_EXTRACTION_DELAY_MS
-    received_messages.enqueue(extractor.directory, [line(A, 'I moved to Kyoto')], extractor.now)
+    received_messages.keep_arrivals(extractor.directory, [line(A, 'I moved to Kyoto')], extractor.now)
     arrived = extractor.now
     extractor.now += delay
     for checked in (None, arrived - 1):
@@ -126,13 +126,13 @@ async def test_nothing_is_extracted_until_a_snapshot_check_has_succeeded_since_t
 @pytest.mark.asyncio
 async def test_lines_the_other_device_already_read_are_not_sent_to_the_model(extractor):
     delay = extractor.module.RECEIVED_EXTRACTION_DELAY_MS
-    received_messages.enqueue(extractor.directory, [line(A, 'I moved to Kyoto'), line(B, 'I have a cat')], extractor.now)
+    received_messages.keep_arrivals(extractor.directory, [line(A, 'I moved to Kyoto'), line(B, 'I have a cat')], extractor.now)
     extractor.checked = extractor.now
     extractor.now += delay
     extractor.progress = {'a': [A], 'b': []}
     assert await extractor.module.extract_received('Neko', UID) == 1
     assert extractor.extracted == [['I have a cat']]
-    received_messages.enqueue(extractor.directory, [line(C, 'I like tea')], extractor.now)
+    received_messages.keep_arrivals(extractor.directory, [line(C, 'I like tea')], extractor.now)
     extractor.checked = extractor.now
     extractor.now += delay
     extractor.progress = {'a': [A, B, C], 'b': []}
@@ -145,7 +145,7 @@ async def test_lines_the_other_device_already_read_are_not_sent_to_the_model(ext
 @pytest.mark.asyncio
 async def test_a_clock_moved_backwards_only_delays_extraction(extractor):
     delay = extractor.module.RECEIVED_EXTRACTION_DELAY_MS
-    received_messages.enqueue(extractor.directory, [line(A, 'I moved to Kyoto')], extractor.now)
+    received_messages.keep_arrivals(extractor.directory, [line(A, 'I moved to Kyoto')], extractor.now)
     extractor.checked = extractor.now
     extractor.now -= 10 * delay
     assert await extractor.module.extract_received('Neko', UID) == 0
@@ -156,7 +156,7 @@ async def test_a_clock_moved_backwards_only_delays_extraction(extractor):
 async def test_a_failing_batch_is_retried_and_finally_given_up_without_blocking_later_ones(extractor):
     from memory.facts import FactExtractionFailed
     delay = extractor.module.RECEIVED_EXTRACTION_DELAY_MS
-    received_messages.enqueue(extractor.directory, [line(A, 'I moved to Kyoto')], extractor.now)
+    received_messages.keep_arrivals(extractor.directory, [line(A, 'I moved to Kyoto')], extractor.now)
     extractor.checked = extractor.now
     extractor.now += delay
     extractor.failure = FactExtractionFailed('synthetic')
