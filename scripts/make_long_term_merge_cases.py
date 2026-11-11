@@ -106,6 +106,15 @@ case('a correction made here outlives a remote deletion',
      expected([reflection('r1', 'enjoys loud evenings', versionHistory=[
          {'text': 'enjoys quiet evenings', 'replacedAt': 2000, 'reason': 'correction'}])]))
 
+five = [{'text': f'wording {index}', 'replacedAt': 1000 + index, 'reason': 'correction'} for index in range(5)]
+case('a sixth correction is new even though the history still holds five',
+     based([reflection('r1', 'wording 5', versionHistory=five)]),
+     document([reflection('r1', 'wording 6', versionHistory=[
+         *five[1:], {'text': 'wording 5', 'replacedAt': 2000, 'reason': 'correction'}])]),
+     document([]),
+     expected([reflection('r1', 'wording 6', versionHistory=[
+         *five[1:], {'text': 'wording 5', 'replacedAt': 2000, 'reason': 'correction'}])]))
+
 case('a fact only this device has is kept and retires nothing',
      based([shared]), document([shared, fact('new', 'has a cat', signalJudged=False)]), document([shared]),
      expected([shared, fact('new', 'has a cat', signalJudged=False)]))

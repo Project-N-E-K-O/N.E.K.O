@@ -22,6 +22,8 @@ from ._shared import logger
 RECEIVED_EXTRACTION_DELAY_MS = 15 * 60 * 1000
 CHECK_INTERVAL_SECONDS = 60
 MAX_FAILURES = 5
+# One model call reads at most this many arrivals; a backlog is worked off over several rounds.
+MAX_ENTRIES_PER_RUN = 40
 _INITIAL_DELAY_SECONDS = 150
 _failures = {}
 
@@ -58,9 +60,20 @@ async def extract_received(name, uid):
     if not due:
         return 0
     checked = await asyncio.to_thread(_snapshot_checked_at, uid)
-    if checked is None or checked < max(batch['receivedAt'] for batch in due):
-        # Progress published since these arrived has not been read yet.
+    # The check has to come after the wait is over: one made while the other device
+    # still had its turn says nothing about progress it published later.
+    due = [batch for batch in due if checked is not None and checked >= batch['receivedAt'] + RECEIVED_EXTRACTION_DELAY_MS]
+    if not due:
         return 0
+    # Oldest first and bounded, so a long offline backlog never becomes one input too
+    # large for the model, and a failure costs only the batches of this round.
+    taken, count = [], 0
+    for batch in due:
+        if taken and count + len(batch['entries']) > MAX_ENTRIES_PER_RUN:
+            break
+        taken.append(batch)
+        count += len(batch['entries'])
+    due = taken
     entries = list({row['id']: row for batch in due for row in batch['entries']}.values())
     messages = convert_to_messages(received_messages.message_dicts(entries))
     done = set((await runtime.fact_store.aextraction_progress(name))['a'])

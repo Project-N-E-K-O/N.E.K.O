@@ -10,6 +10,7 @@ import math
 
 SCHEMA_VERSION = 3
 PROGRESS_MAX = 2000
+EVIDENCE_MAX = 20000
 MAX_INTEGER = 9_007_199_254_740_991
 
 # A later lifecycle stage wins a contested wording; an equal one goes to the
@@ -53,14 +54,16 @@ def _key(row):
 
 
 def _corrections(row):
-    return sum(1 for item in row['metadata'].get('versionHistory') or [] if item.get('reason') == 'correction')
+    """Corrections by what they replaced and when: the history keeps only its last few, so a count cannot tell a new one."""
+    return {(item.get('text'), item.get('replacedAt')) for item in (row['metadata'].get('versionHistory') or [] if row else [])
+            if item.get('reason') == 'correction'}
 
 
 def _user_decided(local, base):
     """A confirmation or correction made here outlives a deletion made elsewhere."""
     before = base['metadata'] if base else {}
     return (local['metadata'].get('userConfirmCount', 0) > before.get('userConfirmCount', 0)
-            or _corrections(local) > (_corrections(base) if base else 0))
+            or bool(_corrections(local) - _corrections(base)))
 
 
 def _number(value):
@@ -255,11 +258,14 @@ def merge_documents(base, local, remote, completed_at):
     result = {
         'schemaVersion': SCHEMA_VERSION, 'completedAt': completed_at,
         'entries': [entries[key] for key in sorted(entries)],
+        # Two lists that each fit the protocol can join into one that does not; the
+        # oldest records go, or the merged snapshot could never be applied or uploaded.
         'evidence': {
             'retirements': _merge_records(old['evidence']['retirements'], local['evidence']['retirements'],
-                                          remote['evidence']['retirements'], 'id', merge_retirement),
+                                          remote['evidence']['retirements'], 'id', merge_retirement)[-EVIDENCE_MAX:],
             'confirmations': _merge_records(old['evidence']['confirmations'], local['evidence']['confirmations'],
-                                            remote['evidence']['confirmations'], 'fingerprint', lambda ours, yours: deepcopy(yours)),
+                                            remote['evidence']['confirmations'], 'fingerprint',
+                                            lambda ours, yours: deepcopy(yours))[-EVIDENCE_MAX:],
         },
         'progress': merge_progress(old['progress'], local['progress'], remote['progress']),
     }

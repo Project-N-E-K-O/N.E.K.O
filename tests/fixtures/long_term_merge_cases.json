@@ -989,6 +989,213 @@
    }
   },
   {
+   "name": "a sixth correction is new even though the history still holds five",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [
+      {
+       "kind": "reflection",
+       "subject": "relationship",
+       "id": "r1",
+       "text": "wording 5",
+       "metadata": {
+        "status": "pending",
+        "versionHistory": [
+         {
+          "text": "wording 0",
+          "replacedAt": 1000,
+          "reason": "correction"
+         },
+         {
+          "text": "wording 1",
+          "replacedAt": 1001,
+          "reason": "correction"
+         },
+         {
+          "text": "wording 2",
+          "replacedAt": 1002,
+          "reason": "correction"
+         },
+         {
+          "text": "wording 3",
+          "replacedAt": 1003,
+          "reason": "correction"
+         },
+         {
+          "text": "wording 4",
+          "replacedAt": 1004,
+          "reason": "correction"
+         }
+        ]
+       }
+      }
+     ],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "wording 5",
+      "metadata": {
+       "status": "pending",
+       "versionHistory": [
+        {
+         "text": "wording 0",
+         "replacedAt": 1000,
+         "reason": "correction"
+        },
+        {
+         "text": "wording 1",
+         "replacedAt": 1001,
+         "reason": "correction"
+        },
+        {
+         "text": "wording 2",
+         "replacedAt": 1002,
+         "reason": "correction"
+        },
+        {
+         "text": "wording 3",
+         "replacedAt": 1003,
+         "reason": "correction"
+        },
+        {
+         "text": "wording 4",
+         "replacedAt": 1004,
+         "reason": "correction"
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "wording 6",
+      "metadata": {
+       "status": "pending",
+       "versionHistory": [
+        {
+         "text": "wording 1",
+         "replacedAt": 1001,
+         "reason": "correction"
+        },
+        {
+         "text": "wording 2",
+         "replacedAt": 1002,
+         "reason": "correction"
+        },
+        {
+         "text": "wording 3",
+         "replacedAt": 1003,
+         "reason": "correction"
+        },
+        {
+         "text": "wording 4",
+         "replacedAt": 1004,
+         "reason": "correction"
+        },
+        {
+         "text": "wording 5",
+         "replacedAt": 2000,
+         "reason": "correction"
+        }
+       ]
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "wording 6",
+      "metadata": {
+       "status": "pending",
+       "versionHistory": [
+        {
+         "text": "wording 1",
+         "replacedAt": 1001,
+         "reason": "correction"
+        },
+        {
+         "text": "wording 2",
+         "replacedAt": 1002,
+         "reason": "correction"
+        },
+        {
+         "text": "wording 3",
+         "replacedAt": 1003,
+         "reason": "correction"
+        },
+        {
+         "text": "wording 4",
+         "replacedAt": 1004,
+         "reason": "correction"
+        },
+        {
+         "text": "wording 5",
+         "replacedAt": 2000,
+         "reason": "correction"
+        }
+       ]
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
    "name": "a fact only this device has is kept and retires nothing",
    "base": {
     "document": {

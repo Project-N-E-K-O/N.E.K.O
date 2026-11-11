@@ -256,7 +256,7 @@ def _capture(name, force, expected_uid=None, require_consumed=False):
         adapter = DesktopLongTermAdapter(runtime._config_manager)
         if require_consumed and adapter.incoming_path(uid).is_file():
             raise ValueError('long_term_memory_incoming_pending')
-        local = adapter.read_local(binding, epoch) or {'base': None, 'pending': None, 'unseenRevision': False}
+        local = adapter.read_local(binding, epoch) or {'base': None, 'pending': None, 'unseenRevision': False, 'sent': []}
         base, pending = local['base'], local['pending']
         newest = max([part['document']['completedAt'] for part in (base, pending) if part and part['document']] or [0])
         completed = max(time.time_ns() // 1_000_000, newest + 1)
@@ -281,13 +281,16 @@ def _capture(name, force, expected_uid=None, require_consumed=False):
             if not force and not _unpublished(document, base):
                 if pending is not None:
                     # The device returned to what the server holds; nothing waits for upload.
-                    adapter.write_local(binding, epoch, base=base, pending=None)
+                    # The dropped snapshot may still be in flight, so it stays recognizable.
+                    adapter.write_local(binding, epoch, base=base, pending=None, sent=[pending, *local['sent']])
                 return False
             if (not force and pending is not None and pending['baseRevision'] == revision
                     and same_content(pending['document'], document)):
                 # The frozen operation keeps retrying with identical bytes.
                 return False
-            adapter.write_local(binding, epoch, base=base,
+            # The replaced snapshot may be on its way to the server right now; it is kept
+            # so that its acceptance, or its return as the next revision, is recognized.
+            adapter.write_local(binding, epoch, base=base, sent=[pending, *local['sent']] if pending else local['sent'],
                                 pending={'operationId': uuid4().hex, 'baseRevision': revision, 'document': document})
         except OSError as error:
             raise ValueError('long_term_memory_save_failed') from error
@@ -614,7 +617,7 @@ def _write_snapshot_locked(name, payload, *, check_only=False):
         if _uid(name) != uid or _binding(uid) != binding:
             return False
         adapter = DesktopLongTermAdapter(runtime._config_manager)
-        local = adapter.read_local(binding, epoch) or {'base': None, 'pending': None, 'unseenRevision': False}
+        local = adapter.read_local(binding, epoch) or {'base': None, 'pending': None, 'unseenRevision': False, 'sent': []}
         base = local['base']
         applied = bool(base and base['revision'] == remote['revision'] and base['document'] == remote['document'])
         if base and base['revision'] >= remote['revision'] and not applied:
@@ -631,6 +634,17 @@ def _write_snapshot_locked(name, payload, *, check_only=False):
             # index commits. Repair from current views without replacing them.
             with runtime.fact_store._get_lock(name):
                 _replace_fact_index(name, read_views(Path(runtime._config_manager.memory_dir) / name))
+            return True
+        own = next((item for item in [*([local['pending']] if local['pending'] else []), *local['sent']]
+                    if same_content(item['document'], remote['document'])), None)
+        if own is not None:
+            # The published revision is a snapshot this device uploaded and never saw
+            # accepted (a lost reply, or a capture that replaced it mid-upload). It is
+            # already in the native views, so it becomes the base as it stands: merging
+            # it in again would add its increments a second time.
+            adapter.write_local(binding, epoch, pending=None, base={
+                'revision': remote['revision'], 'document': remote['document'], 'nativeEntries': own['document']['entries']})
+            _unpublished_after_apply.add(name)
             return True
         directory = Path(runtime._config_manager.memory_dir) / name
         assert_cloudsave_writable(runtime._config_manager, operation='sync', target=f'memory/{name}')

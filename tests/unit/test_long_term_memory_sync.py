@@ -977,7 +977,7 @@ async def test_runtime_uses_bound_long_term_lane_and_keeps_raw_chat_endpoints_id
     await owner.runtime._channel_pass(UID, 'long_term', presence=presence)
     assert [request.method for request in requests] == ['PUT', 'GET', 'GET']
     # The accepted upload is now the base the next merge starts from, and nothing waits for upload.
-    assert local_state(owner) == {'pending': None, 'unseenRevision': False, 'base': {
+    assert local_state(owner) == {'pending': None, 'unseenRevision': False, 'sent': [], 'base': {
         'revision': 1, 'document': local['document'], 'nativeEntries': local['document']['entries']}}
 
 
@@ -3076,7 +3076,8 @@ async def test_an_expired_revision_is_followed_and_the_next_upload_says_it_was_n
     fingerprint = (await owner.runtime._session())[1]
     await owner.runtime.long_term_memory.sync(*arguments, can_apply=lambda: True, session_fingerprint=fingerprint)
     state = local_state(owner)
-    assert state == {'base': {'revision': 7, 'document': None, 'nativeEntries': []}, 'pending': None, 'unseenRevision': True}
+    assert state == {'base': {'revision': 7, 'document': None, 'nativeEntries': []}, 'pending': None,
+                     'unseenRevision': True, 'sent': []}
     assert owner.native._capture('Neko', False)
     upload = local_state(owner)
     assert upload['unseenRevision'] is False and upload['pending']['baseRevision'] == 7
@@ -3097,7 +3098,7 @@ async def test_a_server_that_restarted_its_revisions_is_treated_as_having_no_sha
     assert local_state(owner)['base']['revision'] == 1
     server.revision, server.document = 0, None
     await server.exchange(owner)
-    assert local_state(owner) == {'base': None, 'pending': None, 'unseenRevision': False}
+    assert local_state(owner) == {'base': None, 'pending': None, 'unseenRevision': False, 'sent': []}
     assert owner.native._capture('Neko', False)
     await server.exchange(owner)
     assert server.revision == 1 and published_facts(server) == {'mine'}
@@ -3174,3 +3175,95 @@ def test_an_older_snapshot_keeps_the_local_confirmation_count():
     existing = {**empty, 'reflections': [{'id': 'ref', 'entity': 'master', 'text': 'worded here', 'status': 'confirmed',
                                           'user_confirm_count': 3}]}
     assert import_document(older, existing)['reflections'][0]['user_confirm_count'] == 3
+
+
+
+def _confirmed_reflection(confirmations):
+    return {'id': 'ref', 'entity': 'master', 'text': 'enjoys calm routines', 'status': 'confirmed',
+            'confirmed_at': '2026-11-02T00:00:00', 'created_at': '2026-11-01T00:00:00', 'source_fact_ids': [],
+            'user_confirm_count': confirmations}
+
+
+def _published_confirmations(server):
+    return next(row for row in server.document['entries'] if row['id'] == 'ref')['metadata']['userConfirmCount']
+
+
+@pytest.mark.asyncio
+async def test_a_capture_landing_during_an_upload_does_not_count_the_uploaded_change_twice(owner):
+    """Snapshot A is on its way when a capture replaces it with B; the server then accepts A."""
+    server = PublishingServer()
+    atomic_write_json(owner.directory / 'reflections.json', [_confirmed_reflection(0)])
+    assert owner.native._capture('Neko', True)
+    await server.exchange(owner)
+    atomic_write_json(owner.directory / 'reflections.json', [_confirmed_reflection(1)])
+    assert owner.native._capture('Neko', False)
+    first = local_state(owner)['pending']
+    plain = server.request
+
+    async def during_upload(method, path, body):
+        if method == 'PUT' and json.loads(body)['operationId'] == first['operationId']:
+            atomic_write_json(owner.directory / 'reflections.json', [_confirmed_reflection(2)])
+            assert owner.native._capture('Neko', False)
+        return await plain(method, path, body)
+    server.request = during_upload
+    await server.exchange(owner)
+    state = local_state(owner)
+    # What the server took is the base; the newer snapshot rests on it and waits its turn.
+    assert state['base']['revision'] == 2 and state['base']['document'] == first['document']
+    assert state['pending']['baseRevision'] == 2 and state['pending']['operationId'] != first['operationId']
+    assert not owner.adapter.incoming_path(UID).exists()
+    await server.exchange(owner)
+    assert server.revision == 3 and _published_confirmations(server) == 2
+    assert local_state(owner)['pending'] is None and not owner.native._capture('Neko', False)
+
+
+@pytest.mark.asyncio
+async def test_an_upload_whose_reply_was_lost_comes_back_as_this_devices_own_revision(owner):
+    """The server took snapshot A, the reply never arrived, and a capture replaced A before the retry."""
+    server = PublishingServer()
+    atomic_write_json(owner.directory / 'reflections.json', [_confirmed_reflection(0)])
+    assert owner.native._capture('Neko', True)
+    await server.exchange(owner)
+    atomic_write_json(owner.directory / 'reflections.json', [_confirmed_reflection(1)])
+    assert owner.native._capture('Neko', False)
+    plain = server.request
+    lost = [True]
+
+    async def lose_reply(method, path, body):
+        answer = await plain(method, path, body)
+        if method == 'PUT' and lost[0]:
+            lost[0] = False
+            raise OSError('reply lost')
+        return answer
+    server.request = lose_reply
+    with pytest.raises(OSError):
+        await server.exchange(owner)
+    assert server.revision == 2 and local_state(owner)['base']['revision'] == 1
+    atomic_write_json(owner.directory / 'reflections.json', [_confirmed_reflection(2)])
+    assert owner.native._capture('Neko', False)
+    # The retry is refused, and the revision fetched instead is the lost upload itself.
+    assert (await server.exchange(owner))['changed'] and server.revision == 2
+    before = (owner.directory / 'reflections.json').read_bytes()
+    assert await owner.native.consume(UID)
+    assert (owner.directory / 'reflections.json').read_bytes() == before
+    assert local_state(owner)['base']['revision'] == 2 and owner.republished == ['Neko']
+    assert owner.native._capture('Neko', False)
+    await server.exchange(owner)
+    assert server.revision == 3 and _published_confirmations(server) == 2
+
+
+def test_an_untouched_reflection_still_follows_its_facts_when_they_change():
+    """The snapshot only upgrades a fact to the user's own words; the line resting on it is no longer held back."""
+    from memory.evidence import awaits_user_signal
+    fact = {'id': 'f1', 'text': 'likes rain', 'entity': 'neko', 'source': 'ai_disclosure', 'hash': 'x', 'created_at': '2026-10-01T00:00:00'}
+    reflection = {'id': 'r1', 'text': 'line', 'entity': 'neko', 'status': 'pending', 'source_fact_ids': ['f1'],
+                  'fact_source_counts': {'user': 0, 'ai': 1}, 'counted_fact_ids': ['f1'], 'recheck_attempts': 1}
+    existing = {'persona': {}, 'facts': [fact], 'archive': [], 'reflections': [reflection]}
+    incoming = export_document(existing, 3000)
+    next(row for row in incoming['entries'] if row['id'] == 'f1')['metadata']['source'] = 'user_observation'
+    kept = merged_import(incoming, existing)['reflections'][0]
+    assert kept['fact_source_counts'] == {'user': 1, 'ai': 0} and not awaits_user_signal(kept)
+    # Everything else about the untouched row is still exactly as it was.
+    assert {**kept, 'fact_source_counts': reflection['fact_source_counts']} == reflection
+    unchanged = merged_import(export_document(existing, 3000), existing)['reflections'][0]
+    assert unchanged == reflection

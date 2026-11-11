@@ -66,6 +66,20 @@ def test_retirement_join_keeps_an_unproven_cutoff_only_when_neither_side_has_a_c
     assert merge_retirement({**old, 'retiredThroughAt': 5000}, proven)['retiredThroughAt'] == 2000
 
 
+def test_joined_evidence_never_exceeds_what_a_snapshot_may_carry(monkeypatch):
+    from memory import long_term_merge
+    monkeypatch.setattr(long_term_merge, 'EVIDENCE_MAX', 3)
+
+    def retired(prefix):
+        return [{'id': f'{prefix}{index}', 'subject': 'master', 'sourceMessageIds': ['s']} for index in range(3)]
+    mine = _document(evidence={'retirements': retired('here'), 'confirmations': []})
+    theirs = _document(evidence={'retirements': retired('there'), 'confirmations': []})
+    merged = merge_documents(None, mine, theirs, 9000)
+    # The published records come first, so they are the oldest and go first.
+    assert [row['id'] for row in merged['evidence']['retirements']] == ['here0', 'here1', 'here2']
+    assert document(merged) == merged
+
+
 def test_same_content_ignores_only_the_completion_time():
     assert same_content(_document(), {**_document(), 'completedAt': 2000})
     assert not same_content(_document(), _document(progress={'a': ['a' * 32], 'b': []}))

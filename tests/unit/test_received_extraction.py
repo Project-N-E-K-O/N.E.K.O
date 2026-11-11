@@ -100,7 +100,7 @@ def extractor(tmp_path, monkeypatch):
 async def test_the_device_that_said_a_line_keeps_the_first_turn(extractor):
     delay = FIFTEEN_MINUTES
     received_messages.keep_arrivals(extractor.directory, [line(A, 'I moved to Kyoto'), line(B, 'noted', 'assistant')], extractor.now)
-    extractor.checked = extractor.now + 1
+    extractor.checked = extractor.now + delay
     extractor.now += delay - 1
     assert await extractor.module.extract_received('Neko', UID) == 0
     assert extractor.extracted == [] and len(received_messages.batches(extractor.directory)) == 1
@@ -116,12 +116,14 @@ async def test_nothing_is_extracted_until_a_snapshot_check_has_succeeded_since_t
     delay = FIFTEEN_MINUTES
     received_messages.keep_arrivals(extractor.directory, [line(A, 'I moved to Kyoto')], extractor.now)
     arrived = extractor.now
-    extractor.now += delay
-    for checked in (None, arrived - 1):
+    extractor.now += delay + 60_000
+    # A check made while the other device still had its turn proves nothing about
+    # progress it published afterwards; only one after the wait counts.
+    for checked in (None, arrived - 1, arrived, arrived + delay - 1):
         extractor.checked = checked
         assert await extractor.module.extract_received('Neko', UID) == 0
     assert extractor.extracted == [] and len(received_messages.batches(extractor.directory)) == 1
-    extractor.checked = arrived
+    extractor.checked = arrived + delay
     assert await extractor.module.extract_received('Neko', UID) == 1
 
 
@@ -129,19 +131,42 @@ async def test_nothing_is_extracted_until_a_snapshot_check_has_succeeded_since_t
 async def test_lines_the_other_device_already_read_are_not_sent_to_the_model(extractor):
     delay = FIFTEEN_MINUTES
     received_messages.keep_arrivals(extractor.directory, [line(A, 'I moved to Kyoto'), line(B, 'I have a cat')], extractor.now)
-    extractor.checked = extractor.now
     extractor.now += delay
+    extractor.checked = extractor.now
     extractor.progress = {'a': [A], 'b': []}
     assert await extractor.module.extract_received('Neko', UID) == 1
     assert extractor.extracted == [['I have a cat']]
     received_messages.keep_arrivals(extractor.directory, [line(C, 'I like tea')], extractor.now)
-    extractor.checked = extractor.now
     extractor.now += delay
+    extractor.checked = extractor.now
     extractor.progress = {'a': [A, B, C], 'b': []}
     assert await extractor.module.extract_received('Neko', UID) == 0
     # Fully read elsewhere: no model call, nothing to publish, and the batch is still cleared.
     assert extractor.extracted == [['I have a cat']] and extractor.captures == ['Neko']
     assert received_messages.batches(extractor.directory) == []
+
+
+@pytest.mark.asyncio
+async def test_a_backlog_is_worked_off_in_bounded_rounds_and_a_failure_costs_only_its_round(extractor):
+    from memory.facts import FactExtractionFailed
+    delay = FIFTEEN_MINUTES
+    limit = extractor.module.MAX_ENTRIES_PER_RUN
+    for batch in range(3):
+        received_messages.keep_arrivals(extractor.directory, [
+            line(f'{batch:016x}{index:016x}', f'batch {batch} line {index}') for index in range(limit - 10)], extractor.now + batch)
+    extractor.now += delay + 10
+    extractor.checked = extractor.now
+    assert await extractor.module.extract_received('Neko', UID) == limit - 10
+    assert [len(texts) for texts in extractor.extracted] == [limit - 10]
+    assert extractor.extracted[0][0] == 'batch 0 line 0' and len(received_messages.batches(extractor.directory)) == 2
+    # The second round keeps failing: only its own batch is given up, the third is still read.
+    extractor.failure = FactExtractionFailed('synthetic')
+    for attempt in range(extractor.module.MAX_FAILURES):
+        await extractor.module.extract_received('Neko', UID)
+    assert len(received_messages.batches(extractor.directory)) == 1
+    extractor.failure = None
+    assert await extractor.module.extract_received('Neko', UID) == limit - 10
+    assert extractor.extracted[-1][0] == 'batch 2 line 0' and received_messages.batches(extractor.directory) == []
 
 
 @pytest.mark.asyncio
@@ -159,8 +184,8 @@ async def test_a_failing_batch_is_retried_and_finally_given_up_without_blocking_
     from memory.facts import FactExtractionFailed
     delay = FIFTEEN_MINUTES
     received_messages.keep_arrivals(extractor.directory, [line(A, 'I moved to Kyoto')], extractor.now)
-    extractor.checked = extractor.now
     extractor.now += delay
+    extractor.checked = extractor.now
     extractor.failure = FactExtractionFailed('synthetic')
     for attempt in range(extractor.module.MAX_FAILURES - 1):
         assert await extractor.module.extract_received('Neko', UID) == 0

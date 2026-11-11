@@ -663,6 +663,16 @@ def import_document(incoming, existing, *, merged=False, source_evidence=None, k
                 _append_archive(result, 'reflectionArchives', native, incoming['completedAt'])
             else:
                 result['reflections'].append(native)
+    # A row left untouched may still rest on facts this document changed: one upgraded
+    # to the user's own words, or withdrawn. Its counts follow the facts as they now stand.
+    kept = [*result['reflections'], *(row for subject in SUBJECTS for row in result['persona'].get(subject, {}).get('facts', []))]
+    for row in kept:
+        if not isinstance(row, dict) or not private(row) or not isinstance(row.get('fact_source_counts'), dict):
+            continue
+        counted = row.get('counted_fact_ids')
+        if isinstance(counted, list) and counted and all(fid in incoming_fact_sources for fid in counted):
+            row['fact_source_counts'] = count_fact_sources(
+                [{'source': incoming_fact_sources[fid]} for fid in counted if fid not in withdrawn_facts])
     return result
 
 
@@ -968,6 +978,11 @@ def fact_source_evidence(retirements, fact, entity, source_messages, *, source='
             return None
     return {'source_message_ids': ids, **({'source_created_at': iso(latest)} if latest is not None else {})}
 
+# How many replaced snapshots are remembered: enough for one upload in flight plus
+# a capture or two landing during it.
+SENT_SNAPSHOTS_KEPT = 3
+
+
 def _current_state(value):
     """Read a state file written before uploads carried a base revision.
 
@@ -1049,13 +1064,16 @@ class DesktopLongTermAdapter:
         if (value.get('epoch') != list(epoch) or value.get('ownerId') != binding['owner_id']
                 or value.get('characterSyncId') != binding['character_uid'] or value.get('serviceUrl') != binding['service_url']):
             return None
-        return {'base': value['base'], 'pending': value['pending'], 'unseenRevision': bool(value.get('unseenRevision'))}
+        return {'base': value['base'], 'pending': value['pending'], 'unseenRevision': bool(value.get('unseenRevision')),
+                'sent': list(value.get('sent') or [])}
 
-    def write_local(self, binding, epoch, *, base, pending, unseen_revision=False):
+    def write_local(self, binding, epoch, *, base, pending, unseen_revision=False, sent=()):
+        """sent keeps snapshots a newer capture replaced while their upload may still be in flight."""
         from utils.file_utils import atomic_write_json
         atomic_write_json(self.local_path(binding), {
             'ownerId': binding['owner_id'], 'characterSyncId': binding['character_uid'], 'serviceUrl': binding['service_url'],
             'epoch': list(epoch), 'base': base, 'pending': pending, 'unseenRevision': bool(unseen_revision),
+            'sent': list(sent)[:SENT_SNAPSHOTS_KEPT],
         }, ensure_ascii=False)
 
     def base_revision(self, binding, epoch):
@@ -1065,10 +1083,19 @@ class DesktopLongTermAdapter:
     def acknowledge(self, binding, epoch, operation, revision):
         """The accepted upload becomes the base every later merge starts from."""
         local = self.read_local(binding, epoch)
-        if not local or not local['pending'] or local['pending']['operationId'] != operation:
+        if not local:
             return False
-        uploaded = local['pending']['document']
-        self.write_local(binding, epoch, pending=None,
+        if local['pending'] and local['pending']['operationId'] == operation:
+            uploaded, waiting = local['pending']['document'], None
+        else:
+            # A capture replaced the snapshot while this upload was in flight. What the
+            # server took is still the base; the newer snapshot now rests on it, so only
+            # what it adds counts as unpublished and nothing is counted twice.
+            uploaded = next((item['document'] for item in local['sent'] if item['operationId'] == operation), None)
+            if uploaded is None:
+                return False
+            waiting = {**local['pending'], 'baseRevision': revision} if local['pending'] else None
+        self.write_local(binding, epoch, pending=waiting,
                          base={'revision': revision, 'document': uploaded, 'nativeEntries': uploaded['entries']})
         return True
 
@@ -1078,7 +1105,7 @@ class DesktopLongTermAdapter:
         if not local or not local['pending'] or local['pending']['operationId'] != operation:
             return False
         renewed = {**local['pending']['document'], 'completedAt': max(now, local['pending']['document']['completedAt'] + 1)}
-        self.write_local(binding, epoch, base=local['base'], unseen_revision=local['unseenRevision'],
+        self.write_local(binding, epoch, base=local['base'], unseen_revision=local['unseenRevision'], sent=local['sent'],
                          pending={**local['pending'], 'operationId': uuid4().hex, 'document': renewed})
         return True
 
@@ -1090,7 +1117,7 @@ class DesktopLongTermAdapter:
         A number below the base means the server lost its history: every local
         entry then counts as new.
         """
-        local = self.read_local(binding, epoch) or {'base': None, 'pending': None, 'unseenRevision': False}
+        local = self.read_local(binding, epoch) or {'base': None, 'pending': None, 'unseenRevision': False, 'sent': []}
         current = local['base']['revision'] if local['base'] else 0
         if revision == current:
             return False
