@@ -145,6 +145,8 @@ export interface PluginMeta {
   status?: string
   list_actions?: PluginListAction[]
   install_source?: PluginInstallSource
+  /** Registry source; `project` marks a workbench project, which never auto-starts. */
+  source?: string
   /** Present on summary cards; full detail responses may omit these derived values. */
   entry_count?: number
   dependency_count?: number

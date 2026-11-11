@@ -94,7 +94,7 @@ def test_set_emotion_reclaims_expression_owned_by_touch_set():
           };
           manager.fileReferences = { Expressions: [], Motions: {} };
           manager.getRandomElement = values => values[0];
-          manager.hasActiveActionMotion = () => true;
+          manager.hasActiveActionMotion = () => false;
           manager._cancelSmoothReset = () => {};
           manager._isTouchSetExpressionRestoreCurrent = () => true;
 

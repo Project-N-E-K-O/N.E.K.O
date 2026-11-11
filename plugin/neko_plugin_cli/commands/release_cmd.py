@@ -9,11 +9,14 @@ import re
 import shutil
 import subprocess
 import sys
-from pathlib import Path
+import zipfile
+from pathlib import Path, PurePosixPath
 
-from ..core import inspect_package, build_plugin
+from .. import core
 from ..core.plugin_source import load_plugin_source
 from ..paths import CliDefaults
+from ..plugin_import_alias import PLUGIN_ID_ENV, PLUGIN_SOURCE_ENV
+from ..repo_state import committed_file_sizes, git_output, worktree_dirty_paths
 from ._resolve import parse_github_repository_remote, resolve_plugin_dir_candidate
 from .validate_cmd import validate_plugin_dir
 
@@ -21,6 +24,38 @@ from .validate_cmd import validate_plugin_dir
 Issue = tuple[str, str]
 _MARKET_REPO_PREFIX = "n.e.k.o_plugin_"
 _MARKET_PLUGIN_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+_DIRTY_PATHS_SHOWN = 5
+_WORKTREE_NOT_COMMITTED = "git working tree has uncommitted or untracked files"
+# Market limits (N.E.K.O-PluginMarket app/core/plugin_identity.py, app/core/plugin_version.py).
+_MARKET_MAX_PLUGIN_ID_CHARS = 100
+_MARKET_MAX_VERSION_CHARS = 50
+# Limits of the Market's security scan of the source archive GitHub builds for
+# the release commit (N.E.K.O-PluginMarket app/services/plugin_security.py).
+_MARKET_MAX_ARCHIVE_BYTES = 32 * 1024 * 1024
+_MARKET_MAX_FILE_BYTES = 2 * 1024 * 1024
+_MARKET_MAX_ARCHIVE_ENTRIES = 5000
+# The release package is also scanned, unpacked in memory.
+_MARKET_MAX_EXPANDED_BYTES = 128 * 1024 * 1024
+# File starts the scan treats as a binary whatever the file is called.
+_MARKET_BINARY_SIGNATURES = (
+    b"MZ", b"\x7fELF", b"PK\x03\x04", b"PK\x05\x06", b"\x1f\x8b",
+    b"7z\xbc\xaf\x27\x1c", b"Rar!", b"\x28\xb5\x2f\xfd", b"\x00asm", b"BZh", b"\xfd7zXZ\x00",
+    b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf", b"\xce\xfa\xed\xfe", b"\xcf\xfa\xed\xfe",
+)
+_MARKET_BINARY_SUFFIXES = frozenset(
+    {
+        ".exe", ".dll", ".pyd", ".so", ".dylib", ".wasm", ".zip", ".whl", ".pyc",
+        ".tar", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar", ".neko-plugin", ".neko-bundle",
+    }
+)
+# The scan streams media and model files instead of reading them, so the
+# per-file limit does not apply to them.
+_MARKET_ASSET_SUFFIXES = frozenset(
+    {
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".mp3", ".mp4", ".wav",
+        ".woff", ".woff2", ".ttf", ".onnx", ".pt", ".safetensors", ".gguf",
+    }
+)
 
 
 def _tri(english: str, chinese: str, japanese: str) -> str:
@@ -30,7 +65,7 @@ def _tri(english: str, chinese: str, japanese: str) -> str:
 def handle_check(args: argparse.Namespace) -> int:
     command_label = getattr(args, "_command_label", "check")
     try:
-        defaults = _defaults_from_args(args, defaults=args._defaults)
+        defaults = args._defaults.with_plugins_root(getattr(args, "plugins_root", None))
         plugin_dir = resolve_plugin_dir_candidate(args.plugin, defaults=defaults)
         source = load_plugin_source(plugin_dir)
         issues = validate_plugin_dir(
@@ -41,7 +76,7 @@ def handle_check(args: argparse.Namespace) -> int:
                 defaults,
             ),
         )
-        issues.extend(_diagnose_repository(plugin_dir))
+        issues.extend(_diagnose_repository(plugin_dir, defaults=defaults))
     except Exception as exc:
         print(f"[FAIL] {command_label}: {exc}", file=sys.stderr)
         return 1
@@ -59,10 +94,16 @@ def handle_check(args: argparse.Namespace) -> int:
     return 1 if errors else 0
 
 
+def _market_security_checks_enabled() -> bool:
+    # Market currently defaults to its pre-#191 review flow (344406f0).
+    # Keep the paused scanner available without blocking ordinary releases.
+    return os.environ.get("NEKO_PLUGIN_MARKET_SECURITY_CHECKS") == "1"
+
+
 def handle_release_check(args: argparse.Namespace) -> int:
     command_label = getattr(args, "_command_label", "check --release")
     try:
-        defaults = _defaults_from_args(args, defaults=args._defaults)
+        defaults = args._defaults.with_plugins_root(getattr(args, "plugins_root", None))
         plugin_dir = resolve_plugin_dir_candidate(args.plugin, defaults=defaults)
         source = load_plugin_source(plugin_dir)
         issues = validate_plugin_dir(
@@ -73,36 +114,65 @@ def handle_release_check(args: argparse.Namespace) -> int:
                 defaults,
             ),
         )
+        # Both Market workflows reject such an ID before anything else runs.
+        issues.extend(_diagnose_market_plugin_id(source.plugin_id))
+        # CI builds the pushed commit, not the working tree.
+        issues.extend(_diagnose_repository(plugin_dir, defaults=defaults, release=True))
+        market_security_checks = _market_security_checks_enabled()
+        source_scanned = False
         if getattr(args, "market_release", False):
+            repository_root = _repository_root(plugin_dir, defaults)
             issues.extend(
                 _diagnose_market_release(
                     plugin_dir,
+                    repository_root=repository_root,
                     plugin_id=source.plugin_id,
                     version=source.version,
                     github_repository=getattr(args, "_release_repository", None),
                     ref_name=getattr(args, "_release_ref_name", None),
                 )
             )
+            if market_security_checks and repository_root is not None:
+                source_issues = _diagnose_market_source_archive(repository_root)
+                if source_issues is None:
+                    issues.append(("warning", "git ls-tree failed; Market source archive limits were not checked"))
+                else:
+                    issues.extend(source_issues)
+                    source_scanned = True
         errors = [issue for issue in issues if issue[0] == "error"]
         if errors:
             print(f"[FAIL] {source.plugin_id}: {command_label} blocked by validation errors", file=sys.stderr)
             _print_issues(issues, plugin_id=source.plugin_id, plugin_dir=plugin_dir, show_fixes=True)
             return 1
 
-        test_result = _run_tests(plugin_dir, skip_tests=args.skip_tests)
+        test_result = _run_tests(
+            plugin_dir,
+            plugin_id=source.plugin_id,
+            defaults=defaults,
+            skip_tests=args.skip_tests,
+        )
         target_dir = Path(args.target_dir).expanduser().resolve()
         target_dir.mkdir(parents=True, exist_ok=True)
         package_path = target_dir / f"{source.plugin_id}.neko-plugin"
-        build_result = build_plugin(plugin_dir, package_path)
-        inspect_result = inspect_package(build_result.package_path)
+        build_result = core.build_plugin(plugin_dir, package_path)
+        inspect_result = core.inspect_package(build_result.package_path)
         if inspect_result.payload_hash_verified is not True:
             print("[FAIL] package payload hash verification failed", file=sys.stderr)
             return 1
+        market_check_mode = "legacy"
+        if market_security_checks:
+            package_issues = _diagnose_market_package(build_result.package_path)
+            if package_issues:
+                print(f"[FAIL] {source.plugin_id}: {command_label} built a package the Market rejects", file=sys.stderr)
+                _print_issues(package_issues)
+                return 1
+            market_check_mode = "source-security" if source_scanned else "package-security"
     except Exception as exc:
         print(f"[FAIL] {command_label}: {exc}", file=sys.stderr)
         return 1
 
     print(f"[OK] {source.plugin_id}: {command_label} passed")
+    print(f"  market_check_mode={market_check_mode}")
     print(f"  version={source.version}")
     print(f"  package={build_result.package_path}")
     print(f"  package_sha256={_sha256_file(build_result.package_path)}")
@@ -115,18 +185,6 @@ def handle_release_check(args: argparse.Namespace) -> int:
     return 0
 
 
-def _defaults_from_args(args: argparse.Namespace, *, defaults: CliDefaults) -> CliDefaults:
-    plugins_root = getattr(args, "plugins_root", None)
-    if not plugins_root:
-        return defaults
-    return CliDefaults(
-        plugin_root=defaults.plugin_root,
-        target_dir=defaults.target_dir,
-        plugins_root=Path(plugins_root).expanduser().resolve(),
-        profiles_root=defaults.profiles_root,
-    )
-
-
 def _is_builtin_source_plugin_dir(plugin_dir: Path, defaults: CliDefaults) -> bool:
     built_in_plugins_root = (defaults.plugin_root / "plugins").resolve()
     return (
@@ -135,56 +193,96 @@ def _is_builtin_source_plugin_dir(plugin_dir: Path, defaults: CliDefaults) -> bo
     )
 
 
-def _diagnose_repository(plugin_dir: Path) -> list[Issue]:
-    issues: list[Issue] = []
+def _repository_root(plugin_dir: Path, defaults: CliDefaults) -> Path | None:
+    """The git repository that holds the plugin source, or None.
+
+    Plugins in this CLI checkout's built-in root are CI mounts, even when
+    the copied source carries a .git directory. Other repositories may use
+    the same plugin/plugins layout and must still be diagnosed normally.
+    """
+    if _is_builtin_source_plugin_dir(plugin_dir, defaults):
+        return None
+    toplevel = git_output(plugin_dir, "rev-parse", "--show-toplevel")
+    if not toplevel:
+        return None
+    root = Path(toplevel).resolve()
+    return None if root == defaults.repo_root.resolve() else root
+
+
+def _diagnose_repository(plugin_dir: Path, *, defaults: CliDefaults, release: bool = False) -> list[Issue]:
+    """Local git readiness; with ``release`` an uncommitted tree is an error."""
     if shutil.which("git") is None:
         return [("warning", "git executable not found")]
 
-    if not (plugin_dir / ".git").exists():
-        issues.append(("warning", "plugin source directory does not have its own git repository"))
-        return issues
+    repository_root = _repository_root(plugin_dir, defaults)
+    if repository_root is None:
+        return [("warning", "plugin source directory does not have its own git repository")]
 
-    remote = _run_git(["remote", "get-url", "origin"], cwd=plugin_dir)
-    if remote.returncode != 0 or not remote.stdout.strip():
+    issues: list[Issue] = []
+    # check --market-release reports a missing origin as an error itself.
+    if not release and not git_output(repository_root, "remote", "get-url", "origin"):
         issues.append(("warning", "git remote 'origin' is not configured"))
 
-    status = _run_git(["status", "--porcelain"], cwd=plugin_dir)
-    if status.returncode != 0:
+    dirty = worktree_dirty_paths(plugin_dir)
+    if dirty is None:
         issues.append(("warning", "git status failed"))
-    elif status.stdout.strip():
-        issues.append(("warning", "git working tree has uncommitted changes"))
-
+    elif dirty:
+        shown = _shown_paths(dirty)
+        issues.append(
+            (
+                "error" if release else "warning",
+                _tri(
+                    f"{_WORKTREE_NOT_COMMITTED}: {shown}",
+                    f"Git 工作区有未提交或未跟踪的文件：{shown}",
+                    f"Git 作業ツリーに未コミットまたは未追跡のファイルがあります: {shown}",
+                ),
+            )
+        )
     return issues
+
+
+def _diagnose_market_plugin_id(plugin_id: str) -> list[Issue]:
+    if len(plugin_id) > _MARKET_MAX_PLUGIN_ID_CHARS:
+        return [
+            (
+                "error",
+                _tri(
+                    f"Market plugin ID must be at most {_MARKET_MAX_PLUGIN_ID_CHARS} characters, got {len(plugin_id)}",
+                    f"Market 插件 ID 最多 {_MARKET_MAX_PLUGIN_ID_CHARS} 个字符，当前为 {len(plugin_id)} 个",
+                    f"Market プラグイン ID は {_MARKET_MAX_PLUGIN_ID_CHARS} 文字以内である必要があります。現在: {len(plugin_id)} 文字",
+                ),
+            )
+        ]
+    if _MARKET_PLUGIN_ID_RE.fullmatch(plugin_id) is not None:
+        return []
+    return [
+        (
+            "error",
+            _tri(
+                f"Market plugin ID must match ^[a-z][a-z0-9_]*$, got {plugin_id}",
+                f"Market 插件 ID 必须符合 ^[a-z][a-z0-9_]*$，当前为 {plugin_id}",
+                f"Market プラグイン ID は ^[a-z][a-z0-9_]*$ に一致する必要があります。現在値: {plugin_id}",
+            ),
+        )
+    ]
 
 
 def _diagnose_market_release(
     plugin_dir: Path,
     *,
+    repository_root: Path | None,
     plugin_id: str,
     version: str,
     github_repository: str | None = None,
     ref_name: str | None = None,
 ) -> list[Issue]:
     issues: list[Issue] = []
-    if _MARKET_PLUGIN_ID_RE.fullmatch(plugin_id) is None:
-        issues.append(
-            (
-                "error",
-                _tri(
-                    f"Market plugin ID must match ^[a-z][a-z0-9_]*$, got {plugin_id}",
-                    f"Market 插件 ID 必须符合 ^[a-z][a-z0-9_]*$，当前为 {plugin_id}",
-                    f"Market プラグイン ID は ^[a-z][a-z0-9_]*$ に一致する必要があります。現在値: {plugin_id}",
-                ),
-            )
-        )
     expected_repo = f"{_MARKET_REPO_PREFIX}{plugin_id}"
     if github_repository is None:
         github_repository = os.environ.get("GITHUB_REPOSITORY", "").strip()
     remote_url = ""
-    if (plugin_dir / ".git").exists():
-        remote = _run_git(["remote", "get-url", "origin"], cwd=plugin_dir)
-        if remote.returncode == 0:
-            remote_url = remote.stdout.strip()
+    if repository_root is not None:
+        remote_url = git_output(repository_root, "remote", "get-url", "origin") or ""
     repo_name: str | None = None
     if github_repository:
         parts = github_repository.split("/")
@@ -229,7 +327,19 @@ def _diagnose_market_release(
         )
 
     if repo_name is not None and repo_name.casefold() != expected_repo.casefold():
-        issues.append(("error", f"market repository name must be {expected_repo}, got {repo_name}"))
+        issues.append(("warning", f"recommended market repository name is {expected_repo}, got {repo_name}"))
+
+    if len(version) > _MARKET_MAX_VERSION_CHARS:
+        issues.append(
+            (
+                "error",
+                _tri(
+                    f"Market version must be at most {_MARKET_MAX_VERSION_CHARS} characters, got {len(version)}",
+                    f"Market 版本号最多 {_MARKET_MAX_VERSION_CHARS} 个字符，当前为 {len(version)} 个",
+                    f"Market のバージョンは {_MARKET_MAX_VERSION_CHARS} 文字以内である必要があります。現在: {len(version)} 文字",
+                ),
+            )
+        )
 
     if ref_name is None:
         ref_name = os.environ.get("GITHUB_REF_NAME", "").strip()
@@ -240,22 +350,208 @@ def _diagnose_market_release(
     else:
         issues.append(("warning", "GITHUB_REF_NAME is missing; tag/version alignment was not checked"))
 
-    release_workflow = plugin_dir / ".github" / "workflows" / "release.yml"
+    # CI reads release.yml at the repository root, also for a plugin in a subdirectory.
+    release_workflow = (repository_root or plugin_dir) / ".github" / "workflows" / "release.yml"
     if not release_workflow.is_file():
         issues.append(("error", ".github/workflows/release.yml is missing"))
 
     return issues
 
 
-def _run_tests(plugin_dir: Path, *, skip_tests: bool) -> str:
+def _diagnose_market_source_archive(repository_root: Path) -> list[Issue] | None:
+    """Check the Market source limits, or return None if git cannot list the files."""
+    files = committed_file_sizes(repository_root)
+    if files is None:
+        return None
+
+    issues: list[Issue] = []
+    binaries = [path for path, _ in files if PurePosixPath(path).suffix.lower() in _MARKET_BINARY_SUFFIXES]
+    if binaries:
+        shown = _shown_paths(binaries)
+        issues.append(
+            (
+                "error",
+                _tri(
+                    f"the Market rejects binary files in the repository: {shown}",
+                    f"Market 拒绝仓库中的二进制文件：{shown}",
+                    f"Market はリポジトリ内のバイナリファイルを拒否します: {shown}",
+                ),
+            )
+        )
+    oversized = [
+        path
+        for path, size in files
+        if size > _MARKET_MAX_FILE_BYTES
+        and PurePosixPath(path).suffix.lower() not in _MARKET_BINARY_SUFFIXES | _MARKET_ASSET_SUFFIXES
+    ]
+    if oversized:
+        shown = _shown_paths(oversized)
+        issues.append(
+            (
+                "error",
+                _tri(
+                    f"the Market rejects files over 2 MiB: {shown}",
+                    f"Market 拒绝超过 2 MiB 的文件：{shown}",
+                    f"Market は 2 MiB を超えるファイルを拒否します: {shown}",
+                ),
+            )
+        )
+    # GitHub's source zip holds one entry per file and per directory, under a
+    # top-level directory of its own.
+    directories = {parent for path, _ in files for parent in PurePosixPath(path).parents}
+    entries = len(files) + len(directories)
+    if entries > _MARKET_MAX_ARCHIVE_ENTRIES:
+        issues.append(
+            (
+                "error",
+                _tri(
+                    f"the Market rejects a source archive with more than {_MARKET_MAX_ARCHIVE_ENTRIES} "
+                    f"files and directories, got {entries}",
+                    f"Market 拒绝文件和目录总数超过 {_MARKET_MAX_ARCHIVE_ENTRIES} 的源码包，当前为 {entries}",
+                    f"Market はファイルとディレクトリが合計 {_MARKET_MAX_ARCHIVE_ENTRIES} を超えるソースアーカイブを拒否します。現在: {entries}",
+                ),
+            )
+        )
+    total = sum(size for _, size in files)
+    # Git blob sizes are expanded sizes, not the compressed GitHub ZIP size.
+    if total > _MARKET_MAX_EXPANDED_BYTES:
+        mib = f"{total / (1024 * 1024):.1f} MiB"
+        issues.append(
+            (
+                "error",
+                _tri(
+                    f"the Market rejects a expanded source files over 128 MiB; committed files total {mib}",
+                    f"Market 拒绝展开后超过 128 MiB 的源码；已提交文件共 {mib}",
+                    f"Market は 展開後 128 MiB を超えるソースを拒否します。コミット済みファイルの合計: {mib}",
+                ),
+            )
+        )
+    return issues
+
+
+def _diagnose_market_package(package_path: Path) -> list[Issue]:
+    """The Market's scan limits for the built release package.
+
+    Mirrors N.E.K.O-PluginMarket app/services/plugin_security.py ``_scan_archive``
+    and the package size check in app/services/release_security.py.
+    """
+    issues: list[Issue] = []
+    size = package_path.stat().st_size
+    if size > _MARKET_MAX_ARCHIVE_BYTES:
+        mib = f"{size / (1024 * 1024):.1f} MiB"
+        issues.append(
+            (
+                "error",
+                _tri(
+                    f"the Market rejects a package over 32 MiB; this package is {mib}",
+                    f"Market 拒绝超过 32 MiB 的插件包；当前包为 {mib}",
+                    f"Market は 32 MiB を超えるパッケージを拒否します。このパッケージ: {mib}",
+                ),
+            )
+        )
+    with zipfile.ZipFile(package_path) as archive:
+        entries = archive.infolist()
+        files = [entry for entry in entries if not entry.is_dir()]
+        binaries: list[str] = []
+        oversized: list[str] = []
+        for entry in files:
+            suffix = PurePosixPath(entry.filename).suffix.lower()
+            with archive.open(entry) as member:
+                prefix = member.read(512)
+            if (
+                suffix in _MARKET_BINARY_SUFFIXES
+                or prefix.startswith(_MARKET_BINARY_SIGNATURES)
+                or prefix[257:262] == b"ustar"
+            ):
+                binaries.append(entry.filename)
+            elif suffix not in _MARKET_ASSET_SUFFIXES and entry.file_size > _MARKET_MAX_FILE_BYTES:
+                oversized.append(entry.filename)
+        expanded = sum(entry.file_size for entry in files)
+    if binaries:
+        shown = _shown_paths(binaries)
+        issues.append(
+            (
+                "error",
+                _tri(
+                    f"the Market rejects binary files in the package: {shown}",
+                    f"Market 拒绝插件包中的二进制文件：{shown}",
+                    f"Market はパッケージ内のバイナリファイルを拒否します: {shown}",
+                ),
+            )
+        )
+    if oversized:
+        shown = _shown_paths(oversized)
+        issues.append(
+            (
+                "error",
+                _tri(
+                    f"the Market rejects package files over 2 MiB: {shown}",
+                    f"Market 拒绝插件包中超过 2 MiB 的文件：{shown}",
+                    f"Market はパッケージ内の 2 MiB を超えるファイルを拒否します: {shown}",
+                ),
+            )
+        )
+    if len(entries) > _MARKET_MAX_ARCHIVE_ENTRIES:
+        issues.append(
+            (
+                "error",
+                _tri(
+                    f"the Market rejects a package with more than {_MARKET_MAX_ARCHIVE_ENTRIES} entries, got {len(entries)}",
+                    f"Market 拒绝条目超过 {_MARKET_MAX_ARCHIVE_ENTRIES} 个的插件包，当前为 {len(entries)}",
+                    f"Market はエントリが {_MARKET_MAX_ARCHIVE_ENTRIES} を超えるパッケージを拒否します。現在: {len(entries)}",
+                ),
+            )
+        )
+    if expanded > _MARKET_MAX_EXPANDED_BYTES:
+        mib = f"{expanded / (1024 * 1024):.1f} MiB"
+        issues.append(
+            (
+                "error",
+                _tri(
+                    f"the Market rejects a package that unpacks to over 128 MiB; this one unpacks to {mib}",
+                    f"Market 拒绝解压后超过 128 MiB 的插件包；当前为 {mib}",
+                    f"Market は展開後 128 MiB を超えるパッケージを拒否します。現在: {mib}",
+                ),
+            )
+        )
+    return issues
+
+
+def _shown_paths(paths: list[str]) -> str:
+    shown = ", ".join(paths[:_DIRTY_PATHS_SHOWN])
+    if len(paths) > _DIRTY_PATHS_SHOWN:
+        shown += f" (+{len(paths) - _DIRTY_PATHS_SHOWN})"
+    return shown
+
+
+def _run_tests(plugin_dir: Path, *, plugin_id: str, defaults: CliDefaults, skip_tests: bool) -> str:
     tests_dir = plugin_dir / "tests"
     if skip_tests:
         return "skipped"
     if not tests_dir.is_dir():
         return "not-found"
+    command = [sys.executable, "-m", "pytest"]
+    env: dict[str, str] | None = None
+    pytest_ini = defaults.repo_root / "pytest.ini"
+    if pytest_ini.is_file():
+        # CI runs the tests from plugin/plugins/<id> of a N.E.K.O checkout, where
+        # pytest picks up that checkout's pytest.ini; use the same configuration.
+        command += ["-c", str(pytest_ini), "--rootdir", str(defaults.repo_root)]
+    if (defaults.plugin_root / "plugins" / plugin_id).resolve() != plugin_dir.resolve():
+        # Out of tree: import plugin.plugins.<id> from here instead of a mount.
+        command += ["-p", "plugin.neko_plugin_cli.plugin_import_alias"]
+        env = {
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join(
+                filter(None, [str(defaults.repo_root), os.environ.get("PYTHONPATH")])
+            ),
+            PLUGIN_ID_ENV: plugin_id,
+            PLUGIN_SOURCE_ENV: str(plugin_dir),
+        }
     completed = subprocess.run(
-        [sys.executable, "-m", "pytest", str(tests_dir)],
+        [*command, str(tests_dir)],
         cwd=plugin_dir,
+        env=env,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -266,16 +562,6 @@ def _run_tests(plugin_dir: Path, *, skip_tests: bool) -> str:
             print(output, file=sys.stderr)
         raise RuntimeError(f"tests failed with exit code {completed.returncode}")
     return "passed"
-
-
-def _run_git(command: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", *command],
-        cwd=cwd,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
 
 
 def _sha256_file(path: Path) -> str:
@@ -318,8 +604,8 @@ def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> st
             ".gitignore",
         }:
             return f"neko-plugin setup-repo {label} --github-actions"
-    if message.startswith("market repository name must be "):
-        return "set origin to a GitHub repository named n.e.k.o_plugin_<plugin_id>"
+    if message.startswith("recommended market repository name is "):
+        return "the Market accepts any public GitHub repository name; n.e.k.o_plugin_<plugin_id> is the convention"
     if message.startswith("release tag ") and "does not match plugin.toml version" in message:
         return "update plugin.toml [plugin].version or push a matching tag such as v0.1.0"
     if message == "[plugin.sdk] is missing":
@@ -341,8 +627,12 @@ def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> st
         return f"cd {plugin_dir} && git init"
     if message == "git remote 'origin' is not configured":
         return "git remote add origin <repo-url>"
-    if message == "git working tree has uncommitted changes":
-        return "commit or stash changes before publishing"
+    if message.startswith(_WORKTREE_NOT_COMMITTED):
+        return _tri(
+            "commit these files or add them to .gitignore; CI checks the pushed commit, not the working tree",
+            "提交这些文件或将其加入 .gitignore；CI 检查的是已推送的提交，而不是工作区",
+            "これらのファイルをコミットするか .gitignore に追加してください。CI は作業ツリーではなくプッシュ済みのコミットを検査します",
+        )
     if message == "git executable not found":
         return "install git, then rerun neko-plugin check"
     return ""

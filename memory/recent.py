@@ -206,12 +206,12 @@ async def _await_recent_mutation_to_completion(func, *args):
 async def review_context_token_count(messages: list) -> int:
     """Return a stable token-size metric without blocking the event loop."""
     rows = []
-    for message in messages:
+    for index, message in enumerate(messages):
         role = getattr(message, 'type', '') or ''
         content = _review_message_content(message)
         if isinstance(message, dict):
             role = message.get('type', message.get('role', role)) or ''
-        rows.append(f"{role}: {content}")
+        rows.append(f"[source_index={index}] {role}: {content}")
     return await acount_tokens('\n\n'.join(rows))
 
 
@@ -358,6 +358,86 @@ def _compute_review_capacity(snapshot: list, current: list) -> tuple[int, int | 
     """
     slots = _compute_review_slots(snapshot, current)
     return (len(slots), slots[-1] if slots else None)
+
+
+# A source_index the review model returned but that is not an int (null included).
+_MALFORMED_REVIEW_SOURCE = object()
+
+
+def _resolve_review_sources(snapshot, corrected_messages, source_indexes=None, *, strict=True):
+    """Resolve edits to snapshot rows, never to their destination slots.
+
+    ``strict`` rejects any malformed or invalid explicit index. Otherwise such a
+    position stays unknown: it is never inferred and never borrows another row's source.
+
+    Text copied verbatim from a snapshot row proves that row, so an index naming a
+    different row is invalid too: accepting it would swap the two rows' sync identities.
+    Rewrites are unaffected unless their new text equals a row no output kept verbatim.
+    Elimination obeys the same rule, so an omitted index cannot reach that swap either.
+    """
+    if source_indexes is not None and len(source_indexes) != len(corrected_messages):
+        if strict:
+            raise ValueError('invalid_review_sources')
+        source_indexes = None
+    sources = [None] * len(corrected_messages) if source_indexes is None else list(source_indexes)
+    unknown = set()
+    used = set()
+    for position, source in enumerate(sources):
+        if source is None:
+            continue
+        if (type(source) is not int or not 0 <= source < len(snapshot) or source in used
+                or snapshot[source].type != corrected_messages[position].type):
+            if strict:
+                raise ValueError('invalid_review_sources')
+            sources[position] = None
+            unknown.add(position)
+            continue
+        used.add(source)
+    contents = [_review_message_content(original) for original in snapshot]
+    # An omitted index keeps a row only if no explicit index took it; invalid positions keep nothing.
+    kept_verbatim = {index for position, message in enumerate(corrected_messages) if position not in unknown
+                     for index, original in enumerate(snapshot)
+                     if (sources[position] == index or (sources[position] is None and index not in used))
+                     and original.type == message.type
+                     and contents[index] == _review_message_content(message)}
+
+    def names_another_row(message, source):
+        content = _review_message_content(message)
+        return contents[source] != content and any(
+            index not in kept_verbatim and original.type == message.type and contents[index] == content
+            for index, original in enumerate(snapshot))
+
+    for position, source in enumerate(sources):
+        if source is None:
+            continue
+        if names_another_row(corrected_messages[position], source):
+            if strict:
+                raise ValueError('invalid_review_sources')
+            sources[position] = None
+            unknown.add(position)
+            used.discard(source)
+    # Legacy responses can omit indices. Only unique matches prove an identity.
+    for position, message in enumerate(corrected_messages):
+        if sources[position] is not None or position in unknown:
+            continue
+        matches = [index for index, original in enumerate(snapshot) if index not in used
+                   and original.type == message.type
+                   and _review_message_content(original) == _review_message_content(message)]
+        if len(matches) == 1:
+            sources[position] = matches[0]
+            used.add(matches[0])
+    for position, message in enumerate(corrected_messages):
+        if sources[position] is not None or position in unknown:
+            continue
+        matches = [index for index, original in enumerate(snapshot)
+                   if index not in used and original.type == message.type]
+        # Unknown positions still compete for the remaining rows; they are only never assigned one.
+        unresolved = sum(source is None and corrected.type == message.type
+                         for source, corrected in zip(sources, corrected_messages, strict=True))
+        if len(matches) == unresolved == 1 and not names_another_row(message, matches[0]):
+            sources[position] = matches[0]
+            used.add(matches[0])
+    return sources
 
 
 # Setup logger
@@ -985,11 +1065,15 @@ class CompressedRecentHistoryManager:
         return self._cached_disk_history(lanlan_name)
 
     def _read_history_locked(
-        self, file_path, lanlan_name, expected_generation=None,
+        self, file_path, lanlan_name, expected_generation=None, lock_timeout=None,
     ) -> list:
-        """Read one character's history under the file lock. Run me in a worker thread."""
+        """Read one character's history under the file lock. Run me in a worker thread.
+
+        ``lock_timeout`` raises ``recent_file.RecentFileLockTimeout`` instead of
+        waiting longer for the lock.
+        """
         with recent_file.recent_file_access(
-            file_path, expected_generation=expected_generation,
+            file_path, expected_generation=expected_generation, timeout=lock_timeout,
         ) as file_path:
             status, history = self._load_history_unlocked(file_path, lanlan_name)
             pending = recent_file.get_recent_pending_unlocked(file_path)
@@ -1734,7 +1818,14 @@ class CompressedRecentHistoryManager:
             admission_generation,
         )
 
-    async def update_history(self, new_messages, lanlan_name, detailed=False, compress=True, on_compress_done=None):
+    async def update_history(
+        self, new_messages, lanlan_name, detailed=False, compress=True, on_compress_done=None,
+        preempted=None,
+    ):
+        """``preempted``: optional future; once it resolves, a summary in progress is abandoned
+        like a failed one (the messages are already persisted and ``on_compress_done`` hands
+        the snapshot to background compression). Callers holding the settle lock pass it so a
+        cold-start /new_dialog does not wait for the summary LLM (#3601)."""
         # Ordinary writes carry no visit-diary idempotency key (only append_keyed stamps it server-side); strip caller-supplied keys.
         recent_file.strip_idempotency_metadata(new_messages)
         file_path, admission_generation = self._capture_recent_operation_admission(
@@ -1823,10 +1914,11 @@ class CompressedRecentHistoryManager:
                     return
                 # Compression LLM runs **outside lock**: seconds to tens of seconds inside critical section would
                 # also block /cache.
-                compressed_result = await self.compress_history(
+                compressed_result = await self._compress_unless_preempted(
                     compression_input,
                     lanlan_name,
                     detailed,
+                    preempted,
                 )
                 if compressed_result is None:
                     logger.warning(
@@ -2236,6 +2328,29 @@ class CompressedRecentHistoryManager:
         ).format(summary=summary)
         return SystemMessage(content=memo_text), summary
 
+    async def _compress_unless_preempted(self, messages, lanlan_name, detailed, preempted):
+        """Run compress_history, returning None if ``preempted`` resolves first."""
+        if preempted is None:
+            return await self.compress_history(messages, lanlan_name, detailed)
+        if preempted.done():
+            logger.info(f"[RecentHistory] {lanlan_name} 有新会话在等待，本轮摘要转后台")
+            return None
+        compress_task = asyncio.ensure_future(
+            self.compress_history(messages, lanlan_name, detailed)
+        )
+        try:
+            await asyncio.wait({compress_task, preempted}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            # Cancellation of this caller (or a preemption) must not leave the LLM call running.
+            if not compress_task.done():
+                compress_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await compress_task
+        if compress_task.cancelled():
+            logger.info(f"[RecentHistory] {lanlan_name} 有新会话在等待，本轮摘要中断并转后台")
+            return None
+        return compress_task.result()
+
     async def _notify_compress_done(
         self, callback, lanlan_name, snapshot, ok, detailed, admission_generation,
     ):
@@ -2536,38 +2651,62 @@ class CompressedRecentHistoryManager:
         except recent_file.RecentFileDeletedError:
             return []
 
-    async def aget_recent_history(self, lanlan_name, *, include_admission=False):
+    async def aget_recent_history(
+        self, lanlan_name, *, include_admission=False, lock_timeout=None,
+    ):
         file_path, admission_generation = self._capture_recent_operation_admission(
             lanlan_name,
         )
-        try:
-            _, _, _, _, _, _, _, _, recent_log = await self._config_manager.aget_character_data()
-            self.log_file_path = recent_log
-        except Exception as e:
-            logger.error(f"获取角色配置失败: {e}")
+        deadline = None if lock_timeout is None else time.monotonic() + lock_timeout
+
+        def _read_before_deadline():
+            # Measured when the worker actually starts, so a read that queued or waited on
+            # the config first does not get a fresh full lock budget and outlive the caller.
+            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+            return self._read_history_locked(
+                file_path, lanlan_name, admission_generation, remaining,
+            )
 
         try:
-            history = await asyncio.to_thread(
-                self._read_history_locked,
-                file_path,
-                lanlan_name,
-                admission_generation,
-            )
+            # With lock_timeout, one deadline covers everything that can queue on the default
+            # executor (the config read and the locked read), not only the lock wait itself.
+            async with asyncio.timeout(lock_timeout):
+                try:
+                    _, _, _, _, _, _, _, _, recent_log = await self._config_manager.aget_character_data()
+                    self.log_file_path = recent_log
+                except Exception as e:
+                    logger.error(f"获取角色配置失败: {e}")
+
+                history = await asyncio.to_thread(_read_before_deadline)
         except recent_file.RecentFileDeletedError:
             history = []
+        except recent_file.RecentFileLockTimeout:
+            raise
+        except TimeoutError as e:
+            from utils.stall_report import report_stall
+            report_stall(
+                f"读取 {lanlan_name} 的近期历史 {lock_timeout}s 内未完成（线程池排队或等锁），放弃等待",
+                loop=asyncio.get_running_loop(),
+            )
+            raise recent_file.RecentFileLockTimeout(
+                f"recent history read exceeded {lock_timeout}s: {file_path}"
+            ) from e
         if include_admission:
             return history, admission_generation
         return history
 
     def _commit_review_locked(
         self, file_path, lanlan_name, snapshot, corrected_messages,
-        expected_generation=None,
+        expected_generation=None, source_indexes=None,
     ) -> tuple[str, list[dict] | None, str]:
         """Locate the review window, splice the corrected messages in and persist.
 
         One critical section, run in a worker thread: the current history is
         re-read inside the lock so that batches persisted while the review LLM
         was running are not overwritten.
+
+        Source indices refer to the original review snapshot. Identity metadata
+        follows those sources, independently of the final splice positions.
 
         Returns ``(status, new_fingerprint, detail)`` where status is
         ``'patched'`` / ``'white'`` / ``'failed'`` and detail is a log fragment.
@@ -2599,13 +2738,52 @@ class CompressedRecentHistoryManager:
                 # persist nor update fingerprint, preventing anchor drift outside reviewed range.
                 return ('white', None, 'review 输出为空')
 
-            # Replace only matched ordinary-message slots; retain interleaved theater capsules/new concurrent messages in place.
-            # Shorter corrected keeps legacy behavior: delete earlier slots and write model output into latest slots.
+            sync_keys = ('recent_memory_id', 'recent_memory_time', 'chat_original_source', 'memory_message_id')
+            # Only synced projection rows demand a proven source. chat_original_source is on every
+            # typed message, so it is carried when proven but never blocks the review.
+            projection_keys = ('recent_memory_id', 'recent_memory_time')
+            has_sync_identity = any(any(key in message_metadata(current[slot]) for key in projection_keys)
+                                    for slot in review_slots)
+            try:
+                # Unsynced windows keep a bad index as an unknown source instead of failing.
+                sources = _resolve_review_sources(snapshot, corrected_messages, source_indexes,
+                                                  strict=has_sync_identity)
+            except ValueError:
+                logger.warning(f"[RecentReview] {lanlan_name}: 模型返回的来源编号无效，同步消息无法对应，放弃本次审阅")
+                return ('failed', None, 'invalid_review_sources')
+            if has_sync_identity and any(source is None for source in sources):
+                logger.warning(
+                    f"[RecentReview] {lanlan_name}: {sum(source is None for source in sources)} 条改写消息"
+                    f"认不出来源，同步消息无法对应，放弃本次审阅"
+                )
+                return ('failed', None, 'ambiguous_review_sources')
+            first_source = len(snapshot) - capacity
+            retained = []
+            for replacement, source_index in zip(corrected_messages, sources, strict=True):
+                if source_index is not None:
+                    # Concurrent compression can already have removed part of this snapshot.
+                    if source_index < first_source:
+                        continue
+                    source = message_metadata(current[review_slots[source_index - first_source]])
+                    previous = message_metadata(snapshot[source_index])
+                    if any(key in previous and previous[key] != source.get(key) for key in sync_keys):
+                        return ('failed', None, 'review_source_changed')
+                    sync_metadata = {key: source[key] for key in sync_keys if key in source}
+                    if sync_metadata:
+                        replacement = _copy_message_metadata(
+                            replacement, {**message_metadata(replacement), **sync_metadata},
+                        )
+                retained.append(replacement)
+            take_count = min(capacity, len(retained))
+            if take_count == 0:
+                return ('white', None, 'review sources no longer present')
+
+            # Keep the existing splice layout, but carry each retained message's own provenance.
             review_slot_set = set(review_slots)
             replacement_slots = review_slots[-take_count:]
             replacements = dict(zip(
                 replacement_slots,
-                corrected_messages[-take_count:],
+                retained[-take_count:],
                 strict=True,
             ))
             new_history = []
@@ -2631,12 +2809,7 @@ class CompressedRecentHistoryManager:
             )
             self._cache_history_view(file_path, lanlan_name, new_history)
 
-            # ── Issue #3 fix: compute new fingerprint from patched new_history ──
-            # Patched range in new_history is [patched_start, patched_end]:
-            #   patched_start = cutoff_idx - capacity + 1
-            #   patched_end   = patched_start + take_count - 1
-            # New fingerprint = K messages ending at patched_end. If patched_end
-            # has fewer than K-1 predecessors, take all available from index 0.
+            # Anchor the persisted replacements, excluding interleaved theater capsules.
             reviewed_prefix = [
                 message
                 for message in new_history[:patched_end + 1]
@@ -2727,7 +2900,7 @@ class CompressedRecentHistoryManager:
         name_mapping['ai'] = lanlan_name
 
         history_text = ""
-        for msg in snapshot:
+        for index, msg in enumerate(snapshot):
             if hasattr(msg, 'type') and msg.type in name_mapping:
                 role = name_mapping[msg.type]
             else:
@@ -2735,7 +2908,7 @@ class CompressedRecentHistoryManager:
 
             content = _review_message_content(msg)
 
-            history_text += f"{role}: {content}\n\n"
+            history_text += f"[source_index={index}] {role}: {content}\n\n"
 
         # Check cancellation.
         if cancel_event and cancel_event.is_set():
@@ -2832,6 +3005,7 @@ class CompressedRecentHistoryManager:
                 # prompt building / fingerprint content[:50] slicing receives nonstring
                 # data and crashes.
                 corrected_messages = []
+                source_indexes = []
                 for msg_data in review_result['corrected_dialogue']:
                     if not isinstance(msg_data, dict):
                         continue
@@ -2861,7 +3035,8 @@ class CompressedRecentHistoryManager:
                         # memos into uncompressed dialogue and polluting downstream.
                         if snapshot and isinstance(snapshot[0], SystemMessage):
                             corrected_messages.append(SystemMessage(content=content))
-                        # else: silently drop, restoring legacy behavior.
+                        else:
+                            continue
                     elif role in ['user', 'human', name_mapping['human']]:
                         corrected_messages.append(HumanMessage(content=content))
                     elif role in ['ai', 'assistant', name_mapping['ai']]:
@@ -2869,6 +3044,12 @@ class CompressedRecentHistoryManager:
                     else:
                         # Default to user message.
                         corrected_messages.append(HumanMessage(content=content))
+                    source_index = msg_data.get('source_index')
+                    # Keep "omitted" (None) apart from "malformed": a synced window rejects the
+                    # latter, while an unsynced one treats it as an unknown source.
+                    if 'source_index' in msg_data and type(source_index) is not int:
+                        source_index = _MALFORMED_REVIEW_SOURCE
+                    source_indexes.append(source_index)
 
                 # Normalize SystemMessage position: if snapshot head is memo,
                 # corrected_messages must begin with exactly one SystemMessage.
@@ -2888,17 +3069,20 @@ class CompressedRecentHistoryManager:
                     and snapshot
                     and isinstance(snapshot[0], SystemMessage)
                 ):
-                    sys_msgs = [m for m in corrected_messages if isinstance(m, SystemMessage)]
-                    others = [m for m in corrected_messages if not isinstance(m, SystemMessage)]
+                    pairs = list(zip(corrected_messages, source_indexes, strict=True))
+                    sys_msgs = [pair for pair in pairs if isinstance(pair[0], SystemMessage)]
+                    others = [pair for pair in pairs if not isinstance(pair[0], SystemMessage)]
                     if not others:
                         # Model returns only system without dialogue ≡ delete all dialogue,
                         # equivalent to empty list, requiring wasted review. Reset empty for take_count==0
                         # gate below; otherwise normalization inserts one SystemMessage,
                         # making length 1 bypass gate and erasing all dialogue except memo.
                         corrected_messages = []
+                        source_indexes = []
                     else:
-                        head = sys_msgs[0] if sys_msgs else snapshot[0]
-                        corrected_messages = [head] + others
+                        head = sys_msgs[0] if sys_msgs else (snapshot[0], 0)
+                        corrected_messages = [message for message, _ in [head, *others]]
+                        source_indexes = [source for _, source in [head, *others]]
 
                 # ── Phase C: snapshot-based capacity for tail-aligned replacement ──
                 # Read current → locate → splice → persist must share **one** critical section; previously
@@ -2913,6 +3097,7 @@ class CompressedRecentHistoryManager:
                             snapshot,
                             corrected_messages,
                             admission_generation,
+                            source_indexes,
                         )
                     )
                 except recent_file.RecentFileDeletedError:

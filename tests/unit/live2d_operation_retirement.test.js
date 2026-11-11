@@ -259,13 +259,13 @@ test('unscoped motion admission respects a real coordinator lock while a Stage e
     assert.deepEqual(await permissionDuringAwait(), { started: false, bypass: false });
 });
 
-test('restoring the old async global bypass reproduces the unscoped SDK admission', async () => {
+test('transient expression exclusion also blocks motion when the old async global bypass is restored', async () => {
     const result = await permissionDuringAwait(source => {
         const scoped = 'const result = callback();\n                restore();\n                return Promise.resolve(result);';
         assert.ok(source.includes(scoped));
         return source.replace(scoped, 'return Promise.resolve(callback()).finally(restore);');
     });
-    assert.deepEqual(result, { started: true, bypass: true });
+    assert.deepEqual(result, { started: false, bypass: true });
 });
 
 test('model removal cancels a pending real native load before destroying its manager', async () => {

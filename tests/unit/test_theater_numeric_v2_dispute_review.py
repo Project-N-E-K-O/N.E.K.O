@@ -552,7 +552,7 @@ async def test_dispute_model_options_are_local_and_evidence_identical(monkeypatc
 
     monkeypatch.setattr(evaluator, '_model_config', config)
     monkeypatch.setattr(evaluator, 'create_chat_llm_async', factory)
-    monkeypatch.setattr(evaluator, 'focus_extra_body', lambda _: {'enable_thinking': True})
+    monkeypatch.setattr(evaluator, 'focus_extra_body', lambda *_: {'enable_thinking': True})
     engine = _engine()
     session = engine.create_session(session_id='params', catgirl_binding=_binding(), opening_performance=_opening())
     worker = evaluator.NumericV2MetricEvaluator(object())
@@ -569,7 +569,7 @@ async def test_dispute_model_options_are_local_and_evidence_identical(monkeypatc
     assert factories[1]['timeout'] > factories[0]['timeout']
     assert evidence[0] == evidence[1] == evidence[2]
     # Models without thinking support fail explicitly instead of silently repeating the same quick request.
-    monkeypatch.setattr(evaluator, 'focus_extra_body', lambda _: None)
+    monkeypatch.setattr(evaluator, 'focus_extra_body', lambda *_: None)
     with pytest.raises(evaluator.NumericV2EvaluatorUnavailableError):
         await worker.validate_transition_offer(**kwargs, dispute_review=True)
     assert len(factories) == 3
@@ -596,7 +596,7 @@ async def test_dispute_real_timeout_becomes_evaluator_error(monkeypatch):
 
     monkeypatch.setattr(evaluator, '_model_config', config)
     monkeypatch.setattr(evaluator, 'create_chat_llm_async', factory)
-    monkeypatch.setattr(evaluator, 'focus_extra_body', lambda _: {'enable_thinking': True})
+    monkeypatch.setattr(evaluator, 'focus_extra_body', lambda *_: {'enable_thinking': True})
     monkeypatch.setattr(evaluator, 'NUMERIC_V2_DISPUTE_JUDGE_TIMEOUT_SECONDS', 0.001)
     engine = _engine()
     session = engine.create_session(session_id='timeout', catgirl_binding=_binding(), opening_performance=_opening())

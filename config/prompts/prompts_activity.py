@@ -44,6 +44,10 @@ Flat ``{lang_code: str}`` maps (resolved via ``_loc(MAP, lang)``):
   memory-context labels for old reflection follow-up topics. Consumed by
   ``main_logic/topic/hooks.py:build_topic_hook_prompt``.
 
+* ``TOPIC_COMMITMENT_CUE_INTROS`` / ``TOPIC_COMMITMENT_CUE_LABELS`` — the
+  cue for a promise of the character's that comes due soon, rendered ahead
+  of the old topics by the same helper.
+
 * ``OS_DEGRADED_MARKER`` — short bracketed text appended to the
   state-section header when the backend can't read the user's OS
   signals. Consumed by
@@ -96,6 +100,33 @@ TOPIC_MEMORY_CUE_LABELS: dict[str, str] = {
     "es": "Pista de memoria antigua",
     "pt": "Pista de memória antiga",
     "ru": "Давняя подсказка памяти",
+}
+
+# A promise of the character's that comes due soon (from the pinned section).
+# Unlike the old topics above it is worth leading with, so the intro says so;
+# the line still leaves Phase 2 free to pass.
+TOPIC_COMMITMENT_CUE_INTROS: dict[str, str] = {
+    "zh": "答应过的事：下面这件事是你答应过的，快到期了，这次搭话可以优先从它说起（兑现它，或者自然地提一句）。",
+    "zh-CN": "答应过的事：下面这件事是你答应过的，快到期了，这次搭话可以优先从它说起（兑现它，或者自然地提一句）。",
+    "zh-TW": "答應過的事：下面這件事是你答應過的，快到期了，這次搭話可以優先從它說起（兌現它，或者自然地提一句）。",
+    "en": "A promise coming due: you promised this and it is due soon; this time it is a good place to start (follow through, or mention it naturally).",
+    "ja": "約束したこと：次のことはあなたが約束したもので、もうすぐ期限です。今回の話しかけはこれから始めるとよいでしょう（果たすか、自然に触れる）。",
+    "ko": "약속한 일: 아래 일은 약속한 것이고 곧 기한입니다. 이번에는 이것부터 꺼내면 좋습니다(약속을 지키거나 자연스럽게 언급하기).",
+    "es": "Una promesa que vence: prometiste esto y vence pronto; esta vez es un buen punto de partida (cúmplela o menciónala con naturalidad).",
+    "pt": "Uma promessa vencendo: você prometeu isto e vence em breve; desta vez é um bom ponto de partida (cumpra ou mencione com naturalidade).",
+    "ru": "Обещание, срок которого подходит: это было обещано, и срок скоро; на этот раз с него хорошо начать (выполнить или естественно упомянуть).",
+}
+
+TOPIC_COMMITMENT_CUE_LABELS: dict[str, str] = {
+    "zh": "答应过的事（期限 {due}）",
+    "zh-CN": "答应过的事（期限 {due}）",
+    "zh-TW": "答應過的事（期限 {due}）",
+    "en": "Promise (due {due})",
+    "ja": "約束（期限 {due}）",
+    "ko": "약속 (기한 {due})",
+    "es": "Promesa (vence el {due})",
+    "pt": "Promessa (vence em {due})",
+    "ru": "Обещание (срок {due})",
 }
 
 

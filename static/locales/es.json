@@ -24,7 +24,7 @@
             "storageChanged": "El directorio de datos del servidor cambió. Vuelve a abrir el editor de avatar antes de guardar."
         }
     },
-    "chatSync": {"setupNeedsSave":"Revisa la sincronización de {{name}} y vuelve a guardar el personaje.","title":"Sincronizar chats","close":"Cerrar","pending":"Envíos registrados pendientes: {{originals}}; eliminaciones: {{deletions}}.","working":"Procesando…","loginRequired":"Inicia sesión en tu cuenta de la comunidad e inténtalo de nuevo.","unknownTime":"Hora original desconocida","userLabel":"Tú","profileConflict":"Elige la versión del personaje","profileRenamePending":"Confirmar cambio de nombre","profileLocal":"Versión local","profileRemote":"Versión en la nube","profileUseLocal":"Subir esta versión local","profileUseRemote":"Usar esta versión de la nube","profileRenameConfirm":"¿Cambiar {{oldName}} a {{newName}} y usar el perfil completo de la nube?","profileChanged":"El perfil cambió o la sincronización no está disponible. Se conservan ambas versiones; vuelve a revisarlas.","profileUploadConfirm":"¿Subir el perfil guardado de {{name}}?","profileUnsupported":"Este perfil contiene campos aún no compatibles. Se conserva el guardado local.","profileSaveFailed":"No se pudo sincronizar el perfil. Se conservan el guardado local y ambas versiones.","profileName":"Nombre","profileNickname":"Apodo","profileSetting":"Descripción original","profileStyle":"Estilo de habla","cloudImport":"Crear personaje desde la nube","cloudEmpty":"No hay personajes en la nube.","cloudProfileEmpty":"Este personaje aún no tiene un perfil publicado.","cloudCreate":"Crear este personaje en este dispositivo","cloudExisting":"{{name}} ya existe aquí. Se conserva su configuración de sincronización.","cloudCreated":"Se creó y vinculó {{name}}.","cloudNameConflict":"Ya existe un personaje con este nombre. Renómbralo primero o cancela la importación.","profileNeedsBinding":"Activa la sincronización en el editor de personajes y guarda para vincular este personaje.","writerRecoveryRequired":"La sincronización está pausada mientras se verifica esta instalación. El chat local sigue disponible.","recoverWriter":"Verificar y recuperar sincronización","recoveryChecked":"Verificación completada. Activa el interruptor de sincronización en el editor de personajes y guarda para continuar sincronizando el personaje y sus chats anteriores.","recoveryCloudCopiesKept":"Borrados anteriores en este dispositivo que ya no pueden llegar a la nube: {{count}}. Si hay copias de esos mensajes en la nube, se conservan.","moreOptions":"Más ajustes","newRoleSync":"Perfil del personaje y memoria reciente","newSyncFailed":"Personaje guardado localmente. La sincronización aún no está lista. Inténtalo más tarde.","syncChoiceSaved":"Personaje guardado. Sincronización actualizada.","recoverWriterHelp":"Acerca de verificar y recuperar la sincronización","recoverWriterTooltip":"Úsalo si una copia restaurada, datos copiados o una escritura interrumpida dejan registros de sincronización sin verificar. Comprueba la cuenta, el personaje y los registros de la nube para evitar envíos duplicados o recuperar chats borrados. No se necesita en el uso normal.","recoveryNotRequired":"Ahora no es necesario verificar.","errorDetail":"{{message}} Código de error: {{code}}.","errorAccountMismatch":"La identidad actual en la nube no coincide con el propietario guardado del personaje. Comprueba tu cuenta de la comunidad. Si siempre fue la misma, hay que investigar y reparar el vínculo anterior; repetir el intento no lo resuelve. Los chats locales se conservan.","errorWriterRecovery":"Los registros de sincronización anteriores necesitan verificación. Abre Más ajustes y pulsa Verificar y recuperar sincronización. Después, guarda de nuevo el personaje con la sincronización activada.","errorSessionChanged":"La sesión cambió durante la operación. Confirma tu cuenta de la comunidad y vuelve a intentarlo.","errorSessionUnavailable":"No se pudo verificar temporalmente la sesión guardada. Comprueba la conexión y reintenta. Si persiste, inicia sesión de nuevo desde la página de cuenta.","errorNetwork":"No se pudo conectar con el servicio o la solicitud agotó el tiempo. Comprueba la conexión y reintenta. Se conservan los chats locales y las tareas pendientes.","errorRetryLater":"El servicio está limitando solicitudes o esperando antes de reintentar. Inténtalo más tarde; pulsar repetidamente no reduce la espera.","errorServiceRejected":"El servicio rechazó la solicitud. Inténtalo más tarde. Si persiste, comunica este código para revisar el servicio.","errorBindingChanged":"El personaje o su vínculo cambió. Reabre el editor, comprueba el personaje y el interruptor de sincronización, y guarda.","errorProfileChanged":"El perfil guardado cambió. Reabre el editor, revisa el perfil y guarda otra vez los ajustes de sincronización.","errorUnknown":"No se pudo completar la sincronización. Comprueba la conexión, reabre Más ajustes y reintenta. Si persiste, comunica los pasos que fallaron. Se conservan los chats locales y las tareas pendientes."},
+    "chatSync": {"setupNeedsSave":"Revisa la sincronización de {{name}} y vuelve a guardar el personaje.","title":"Sincronizar chats","close":"Cerrar","pending":"Envíos registrados pendientes: {{originals}}; eliminaciones: {{deletions}}.","working":"Procesando…","loginRequired":"Inicia sesión en tu cuenta de la comunidad e inténtalo de nuevo.","unknownTime":"Hora original desconocida","userLabel":"Tú","profileConflict":"Elige la versión del personaje","profileRenamePending":"Confirmar cambio de nombre","profileLocal":"Versión local","profileRemote":"Versión en la nube","profileUseLocal":"Subir esta versión local","profileUseRemote":"Usar esta versión de la nube","profileRenameConfirm":"¿Cambiar {{oldName}} a {{newName}} y usar el perfil completo de la nube?","profileChanged":"El perfil cambió o la sincronización no está disponible. Se conservan ambas versiones; vuelve a revisarlas.","profileUploadConfirm":"¿Subir el perfil guardado de {{name}}?","profileUnsupported":"Este perfil contiene campos aún no compatibles. Se conserva el guardado local.","profileSaveFailed":"No se pudo sincronizar el perfil. Se conservan el guardado local y ambas versiones.","profileName":"Nombre","profileNickname":"Apodo","profileSetting":"Descripción original","profileStyle":"Estilo de habla","cloudImport":"Crear personaje desde la nube","cloudEmpty":"No hay personajes en la nube.","cloudProfileEmpty":"Este personaje aún no tiene un perfil publicado.","cloudCreate":"Crear este personaje en este dispositivo","cloudExisting":"{{name}} ya existe aquí. Se conserva su configuración de sincronización.","cloudCreated":"Se creó y vinculó {{name}}.","cloudNameConflict":"Ya existe un personaje con este nombre. Renómbralo primero o cancela la importación.","profileNeedsBinding":"Activa la sincronización en el editor de personajes y guarda para vincular este personaje.","writerRecoveryRequired":"La sincronización está pausada mientras se verifica esta instalación. El chat local sigue disponible.","recoverWriter":"Verificar y recuperar sincronización","recoveryChecked":"Verificación completada. Activa el interruptor de sincronización en el editor de personajes y guarda para continuar sincronizando el personaje y sus chats anteriores.","recoveryCloudCopiesKept":"Borrados anteriores en este dispositivo que ya no pueden llegar a la nube: {{count}}. Si hay copias de esos mensajes en la nube, se conservan.","moreOptions":"Más ajustes","newRoleSync":"Perfil del personaje y memoria reciente","newSyncFailed":"Personaje guardado localmente. La sincronización aún no está lista. Inténtalo más tarde.","syncChoiceSaved":"Personaje guardado. Sincronización actualizada.","recoverWriterHelp":"Acerca de verificar y recuperar la sincronización","recoverWriterTooltip":"Úsalo si una copia restaurada, datos copiados o una escritura interrumpida dejan registros de sincronización sin verificar. Comprueba la cuenta, el personaje y los registros de la nube para evitar envíos duplicados o recuperar chats borrados. No se necesita en el uso normal.","recoveryNotRequired":"Ahora no es necesario verificar.","errorDetail":"{{message}} Código de error: {{code}}.","errorAccountMismatch":"La identidad actual en la nube no coincide con el propietario guardado del personaje. Comprueba tu cuenta de la comunidad. Si siempre fue la misma, hay que investigar y reparar el vínculo anterior; repetir el intento no lo resuelve. Los chats locales se conservan.","errorWriterRecovery":"Los registros de sincronización anteriores necesitan verificación. Abre Más ajustes y pulsa Verificar y recuperar sincronización. Después, guarda de nuevo el personaje con la sincronización activada.","errorSessionChanged":"La sesión cambió durante la operación. Confirma tu cuenta de la comunidad y vuelve a intentarlo.","errorSessionUnavailable":"No se pudo verificar temporalmente la sesión guardada. Comprueba la conexión y reintenta. Si persiste, inicia sesión de nuevo desde la página de cuenta.","errorRecentWriteUnconfirmed":"La sincronización de la memoria reciente de este personaje se ha detenido: no se pudo confirmar que la última escritura se completara. El chat y la memoria local no se ven afectados.","errorRecentFileUnreadable":"El archivo de memoria reciente de este personaje está dañado y no se puede leer, por lo que la sincronización de la memoria reciente está en pausa. Se reanudará automáticamente cuando el archivo se pueda leer de nuevo.","errorNetwork":"No se pudo conectar con el servicio o la solicitud agotó el tiempo. Comprueba la conexión y reintenta. Se conservan los chats locales y las tareas pendientes.","errorRetryLater":"El servicio está limitando solicitudes o esperando antes de reintentar. Inténtalo más tarde; pulsar repetidamente no reduce la espera.","errorServiceRejected":"El servicio rechazó la solicitud. Inténtalo más tarde. Si persiste, comunica este código para revisar el servicio.","errorBindingChanged":"El personaje o su vínculo cambió. Reabre el editor, comprueba el personaje y el interruptor de sincronización, y guarda.","errorProfileChanged":"El perfil guardado cambió. Reabre el editor, revisa el perfil y guarda otra vez los ajustes de sincronización.","errorUnknown":"No se pudo completar la sincronización. Comprueba la conexión, reabre Más ajustes y reintenta. Si persiste, comunica los pasos que fallaron. Se conservan los chats locales y las tareas pendientes.","errorLongTermCapacity":"Esta instantánea de memoria a largo plazo supera las 20.000 entradas y no se ha sincronizado. Se conserva toda la memoria local. Se volverá a intentar tras una nueva actualización de la memoria.","errorLongTermEvidenceCapacity":"Los registros de correcciones o confirmaciones de la memoria a largo plazo superan los 20.000 y esta instantánea no se ha sincronizado. Se conserva toda la memoria local. La sincronización se reanudará cuando el dispositivo que organiza la memoria elimine los registros más antiguos y su instantánea llegue aquí.","noticeLongTermEvidenceTrimmed":"La memoria a largo plazo tenía demasiados registros de correcciones o confirmaciones, por lo que los más antiguos se eliminaron automáticamente. No es necesario hacer nada. Este aviso se muestra durante 7 días.","errorLongTermPending":"La memoria a largo plazo está en espera: hay una instantánea de la nube pendiente. Se conservan la memoria local y las pruebas de la nube. Las cargas esperan mientras continúan los reintentos existentes.","errorArchiveSubject":"La sincronización de memoria a largo plazo está pausada: un archivo de perfil antiguo carece de un sujeto verificable. Se conservan los registros locales. Restaura una copia con los datos del sujeto o los eventos originales y vuelve a intentarlo."},
     "instanceAccess": {"title":"Conectar a NEKO","description":"Introduce la clave de acceso proporcionada por el propietario del servidor. Este dispositivo recordará la conexión durante 30 días.","key":"Clave de acceso a la instancia","connect":"Conectar","failed":"Acceso denegado. Revisa la clave e inténtalo de nuevo.","httpsRequired":"Usa HTTPS o un túnel HTTPS de confianza para conectar de forma segura.","insecureWarning":"Esta conexión no está cifrada (HTTP). Cualquiera en la misma ruta de red podría ver la clave y la sesión. Usa HTTPS cuando puedas."},
     "common": {
         "load": "Cargar",
@@ -1142,7 +1142,10 @@
         "compactExportHistory": "Historial",
         "compactHistoryToggleOpen": "Mostrar historial",
         "compactHistoryToggleClose": "Ocultar historial",
-    "compactHistoryExport": "Exportar historial de conversación",
+        "clearScreen": "Limpiar pantalla",
+        "clearScreenDone": "Pantalla limpia",
+        "clearScreenHint": "Oculta los mensajes existentes en esta pantalla. Se conservan el historial y la memoria.",
+        "compactHistoryExport": "Exportar historial de conversación",
         "compactExportControlsCollapse": "Ocultar controles de selección",
         "compactExportControlsExpand": "Mostrar controles de selección",
         "exportAction": "Exportar",
@@ -1190,7 +1193,10 @@
         "exportSelectAll": "Seleccionar todo",
         "exportSelectNone": "Claro",
         "exportSelectInvert": "Invertir",
-        "exportSelectionCount": "{{selected}} / {{total}} seleccionado"
+        "exportSelectionCount": "{{selected}} / {{total}} seleccionado",
+        "imageUnavailable": "Imagen no disponible.",
+        "openImage": "Abrir imagen",
+        "closeImage": "Cerrar"
     },
     "voiceControl": {
         "startVoice": "Iniciar voz",
@@ -1416,6 +1422,7 @@
             "openrouter": "OpenRouter (agregador de modelos)",
             "orcarouter": "OrcaRouter (pasarela de Claude)",
             "requesty": "Requesty (enrutador de modelos)",
+            "opper": "Opper (pasarela de IA en la UE)",
             "vllm_omni": "vLLM-Omni (TTS)",
             "gptsovits": "GPT-SoVITS (autoalojado)"
         },
@@ -1492,6 +1499,7 @@
             "openrouter": "OpenRouter (agregador de modelos)",
             "orcarouter": "OrcaRouter (pasarela de Claude)",
             "requesty": "Requesty (enrutador de modelos)",
+            "opper": "Opper (pasarela de IA en la UE)",
             "vllm_omni": "vLLM-Omni (TTS)"
         },
         "freeVersionNoApiKey": "La versión gratuita no requiere clave API",
@@ -2279,6 +2287,51 @@
         "repetitionInsightsExportEmpty": "No hay candidatos para exportar.",
         "repetitionInsightsExported": "Candidatos exportados. Las respuestas futuras no cambiaron.",
         "repetitionInsightsResetEffects": "Borrar estadísticas",
+        "habitualTitle": "Supresión de muletillas",
+        "habitualDescription": "Las expresiones que ha repetido en varias conversaciones se le señalan al inicio de cada charla para que las diga de otra forma. Puedes permitir cualquiera o suprimir una que el modelo dejó pasar.",
+        "habitualRecompute": "Recalcular ahora",
+        "habitualRecomputing": "Recalculando; puede tardar uno o dos minutos…",
+        "habitualLoading": "Cargando muletillas…",
+        "habitualLoadFailed": "No se pudieron cargar las muletillas. Inténtalo en un momento.",
+        "habitualNoCharacter": "Elige primero un personaje.",
+        "habitualNotComputed": "Aún no se ha calculado. Se calcula solo cuando la memoria está inactiva, o usa «Recalcular ahora».",
+        "habitualEmpty": "Por ahora no se han encontrado muletillas.",
+        "habitualStatusActive": "La próxima charla empezará pidiéndole que reformule {{count}} expresión(es).",
+        "habitualStatusNone": "La próxima charla empezará sin recordatorio de muletillas.",
+        "habitualStatusSwitchOff": "«Expresión natural» está desactivada, así que no se inyecta nada.",
+        "habitualStatusStale": "La lista lleva más de {{days}} días sin actualizarse, así que no se inyecta.",
+        "habitualStatusLanguage": "La lista se extrajo en otro idioma distinto del actual, así que no se inyecta.",
+        "habitualStatusReviewOff": "«Modo de memoria reforzada» está desactivado: los candidatos nuevos no los revisa el modelo y se suprimen solo por las reglas.",
+        "habitualStatusReviewFailed": "La última revisión del modelo no tuvo éxito; los candidatos sin evaluar se suprimen por las reglas por ahora.",
+        "habitualComputedAt": "Último cálculo: {{time}} · Próximo previsto: {{next}}",
+        "habitualWindow": "Según las últimas {{replies}} respuestas en {{sessions}} conversaciones ({{from}} a {{to}})",
+        "habitualLogicSummary": "Cómo funciona la supresión",
+        "habitualLogicCandidates": "Una expresión solo es candidata si aparece en al menos {{sessions}} conversaciones distintas; las respuestas separadas más de {{gap}} minutos cuentan como una conversación nueva.",
+        "habitualLogicExclusions": "Nunca son candidatas: lo escrito en su ficha, los nombres y apodos de ambos, lo que ella misma pone entre comillas y las expresiones hechas solo de palabras gramaticales comunes.",
+        "habitualLogicReview": "El modelo juzga si cada candidata es de verdad una muletilla, y solo se suprimen las que considera muletillas; las que aún no ha juzgado se suprimen por las reglas.",
+        "habitualLogicLimits": "Se suprimen como máximo {{max}} expresiones a la vez y el recordatorio completo no pasa de {{tokens}} tokens. La lista se recalcula cada {{hours}} horas aproximadamente cuando hay inactividad, las expresiones que deja de usar se liberan solas y una lista de más de {{days}} días no se inyecta.",
+        "habitualLogicOverrides": "Lo que permites o suprimes tiene prioridad sobre el modelo y se aplica desde la próxima charla. Permitir una expresión también permite las que la contienen.",
+        "habitualStats": "{{sessions}} conversaciones · {{days}} días · {{count}} veces · última {{last}}",
+        "habitualStateHabit": "Suprimida · el modelo la juzgó muletilla",
+        "habitualStateUnreviewed": "Suprimida · aún sin revisar",
+        "habitualStateForced": "Suprimida · por ti",
+        "habitualStateKept": "No suprimida · el modelo: {{verdict}}",
+        "habitualStateAllowed": "Permitida",
+        "habitualStateOverCap": "No suprimida · supera el límite de {{max}}",
+        "habitualStateOverBudget": "Suprimida · supera el límite de longitud, no entra en la próxima charla",
+        "habitualVerdictNormal": "una expresión corriente",
+        "habitualVerdictTopic": "un tema",
+        "habitualVerdictName": "un nombre o título",
+        "habitualVerdictCard": "parte de su ficha",
+        "habitualReason": "Motivo del modelo: {{reason}}",
+        "habitualAllow": "Permitir",
+        "habitualSuppress": "Suprimir",
+        "habitualClear": "Deshacer mi elección",
+        "habitualAllowedTitle": "Expresiones permitidas (ni estas ni las que las contienen se suprimen)",
+        "habitualRestore": "Dejar de permitir",
+        "habitualSaveFailed": "No se pudo guardar. Inténtalo en un momento.",
+        "habitualRecomputeFailed": "No se pudo recalcular. Inténtalo en un momento.",
+        "habitualRecomputeBusy": "Ya se está recalculando; espera un momento.",
         "repetitionInsightsSearch": "Buscar residuos finales",
         "repetitionInsightsSearchPlaceholder": "Buscar expresión o ID de regla",
         "repetitionInsightsCoverageFilter": "Cobertura de reglas",
@@ -5696,6 +5749,7 @@
             "ssl_error": "Error al verificar el certificado SSL",
             "ws_error": "Error de conexión WebSocket",
             "missing_params": "Faltan parámetros obligatorios",
+            "output_limit": "El límite de salida de la solicitud de prueba es insuficiente",
             "unknown": "Error desconocido",
             "backend_unavailable": "Servicio backend no disponible",
             "invalid_response": "Formato de respuesta no válido"
@@ -5828,7 +5882,7 @@
             "drawCalls": "Draw calls"
         }
     },
-     "badminton": {
+    "badminton": {
          "title": "Desafío de bádminton",
          "exit": "Salir",
          "loading": {
@@ -6323,7 +6377,7 @@
         "sdkUnavailable": "No se pudo cargar el minijuego. Cierra esta página e inténtalo de nuevo.",
         "runtimeStartFailed": "No se pudo iniciar la partida. Inténtalo de nuevo en un momento."
     },
-   "soccer": {
+    "soccer": {
         "settings": {
             "button": "Ajustes",
             "title": "Ajustes del juego",
@@ -6457,7 +6511,7 @@
             "hint": "Cuando está desactivado, las entradas del jugador, las respuestas directas de NEKO, las reacciones a eventos, el resumen del partido y las conversaciones posteriores no se guardan ni se consultan en la memoria."
         }
     },
-  "watchTogether": {
+    "watchTogether": {
         "automatic": "Ver automáticamente",
         "stopWatching": "Dejar de ver",
         "resizeAvatar": "Cambiar tamaño del personaje",
@@ -6895,9 +6949,27 @@
         }
     },
     "visit": {
+        "catScene": {
+            "title": "Visita gatuna",
+            "active": "De visita",
+            "ending": "Saliendo de la visita…",
+            "reconnecting": "Reconectando…",
+            "wrapUp": "Preparándose para volver",
+            "myCat": "Mi gato",
+            "peerCat": "Gato de la otra persona",
+            "returnModel": "Volver al modelo",
+            "controls": "Acciones de mi gato",
+            "greet": "Saludar",
+            "play": "Jugar",
+            "rest": "Descansar",
+            "exitConfirm": "¿Salir de la visita gatuna?",
+            "actionUnavailable": "Las acciones del gato no están disponibles temporalmente",
+            "actionFailed": "No se pudo transmitir la acción. Inténtalo de nuevo"
+        },
         "directInvite": {
             "decline": "Rechazar",
             "accept": "Aceptar",
+            "acceptCat": "Aceptar visita gatuna",
             "expired": "Esta invitación ya caducó",
             "responseFailed": "No se pudo enviar el rechazo. Inténtalo de nuevo",
             "unavailable": "Ahora mismo no puede salir. Inténtalo de nuevo"
@@ -6942,11 +7014,14 @@
             "desktopRequired": "Envía las invitaciones directas desde la app de escritorio de Neko",
             "preparingRoom": "Preparando una sala para {{name}}…",
             "roomMissing": "No se pudo obtener la sala de visita directa",
+            "modeMismatch": "No se pudo crear la visita. Inténtalo de nuevo",
             "sendFailed": "No se pudo enviar la invitación. Inténtalo más tarde",
             "invited": "Se envió la invitación de visita a {{name}}",
             "cancelFailed": "Ahora no se puede cancelar la invitación. Inténtalo más tarde",
             "inviteLater": "Invitar luego",
             "invite": "Invitar",
+            "modelVisit": "Forma de modelo",
+            "catVisit": "Forma de gato",
             "justNow": "justo ahora",
             "lastSeen": "Última conexión: {{time}}",
             "offline": "Desconectado",
@@ -7083,7 +7158,8 @@
         },
         "error": {
             "disabled": "\"Permitir visitas\" está desactivado. Actívalo primero en Ajustes",
-            "generic": "No se pudo completar. Inténtalo más tarde",
+            "generic": "La operación falló. Inténtalo de nuevo",
+            "otherVisitActive": "Ya hay otra visita. Finalízala primero",
             "unreachable": "No se puede conectar con el servicio local",
             "voiceSession": "Termina la llamada de voz antes de la visita",
             "alreadyVisiting": "Ya está de visita",
@@ -7267,5 +7343,12 @@
         "informationExcluded": "Este canal de comentarios no envía historiales completos de chat, grabaciones de audio ni capturas de pantalla.",
         "informationNote": "«Entendido» solo cierra esta explicación. No cambia los ajustes de envío.",
         "informationClose": "Entendido"
+    },
+    "cloudModel": {
+        "conflict": "El modelo cambió en ambos dispositivos. Elige una versión.",
+        "useCloud": "Usar modelo de la nube",
+        "keepLocal": "Conservar selección local",
+        "failed": "No se pudo cargar el modelo. Se conserva la selección anterior.",
+        "retry": "Reintentar"
     }
 }

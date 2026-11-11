@@ -24,6 +24,8 @@ from the asyncio thread (local TCP latency is very low).
 
 import asyncio
 import concurrent.futures
+import contextvars
+import json
 import os
 import threading
 import time
@@ -943,6 +945,77 @@ def spawn_bounded_frame_copy(coro, inflight: set, *, label: str, spawn=None):
     return task
 
 
+conversation_reply_observation = contextvars.ContextVar("conversation_reply_observation", default=None)
+conversation_reply_origin = contextvars.ContextVar("conversation_reply_origin", default=None)
+
+CONVERSATION_FACT_OBSERVED_EVENT = "conversation_fact_observed"
+# Observation work is dropped under load, never queued without a bound.
+_conversation_fact_tasks: set[asyncio.Task] = set()
+_CONVERSATION_FACT_MAX_TASKS = 128
+_CONVERSATION_FACT_MAX_TEXT = 65536
+# Match ConversationService's serialized UTF-8 payload budget.
+_CONVERSATION_FACT_MAX_BYTES = 64 * 1024
+
+
+async def publish_conversation_fact_observed_best_effort(
+    lanlan_name: str, *, fact: str, payload: dict,
+) -> bool:
+    """Publish a detached observation using the existing session channel."""
+    try:
+        event = {
+            "event_type": CONVERSATION_FACT_OBSERVED_EVENT,
+            "event_id": uuid.uuid4().hex,
+            "lanlan_name": lanlan_name,
+            "fact": fact,
+            "payload": dict(payload),
+            "ts": time.time(),
+        }
+        return await publish_session_event_threadsafe(event)
+    except Exception:
+        logger.debug("[EventBus] conversation fact not published", exc_info=True)
+        return False
+
+
+def schedule_conversation_fact_observed_best_effort(
+    lanlan_name: str, *, fact: str, payload: dict,
+) -> bool:
+    """Schedule a small fact without awaiting or accumulating unbounded tasks."""
+    if len(_conversation_fact_tasks) >= _CONVERSATION_FACT_MAX_TASKS:
+        return False
+    text = payload.get("text")
+    if isinstance(text, str) and fact in ("reply.started", "reply.closed", "reply.updated"):
+        try:
+            oversized = len(text) > _CONVERSATION_FACT_MAX_TEXT or len(
+                json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            ) > _CONVERSATION_FACT_MAX_BYTES
+        except (TypeError, ValueError, UnicodeError):
+            return False
+        if oversized:
+            payload = {**payload, "text": None}
+            if fact in ("reply.closed", "reply.updated"):
+                payload["text_incomplete"] = True
+    # This channel is for small facts; in particular do not queue huge text.
+    if any(isinstance(value, str) and len(value) > _CONVERSATION_FACT_MAX_TEXT
+           for value in payload.values()):
+        return False
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    coroutine = publish_conversation_fact_observed_best_effort(
+        lanlan_name, fact=fact, payload=dict(payload),
+    )
+    try:
+        task = loop.create_task(coroutine)
+    except Exception:
+        coroutine.close()
+        logger.debug("[EventBus] could not schedule conversation fact", exc_info=True)
+        return False
+    _conversation_fact_tasks.add(task)
+    task.add_done_callback(_conversation_fact_tasks.discard)
+    return True
+
+
 CONVERSATION_TURN_OBSERVED_EVENT = "conversation_turn_observed"
 
 
@@ -956,6 +1029,7 @@ async def publish_conversation_turn_observed_best_effort(
     message_count: int = 0,
     metadata: Optional[Dict[str, Any]] = None,
     ts: Optional[float] = None,
+    event_id: Optional[str] = None,
 ) -> bool:
     """Copy one message of an already-handled turn onto the plugin bus.
 
@@ -1004,13 +1078,16 @@ async def publish_conversation_turn_observed_best_effort(
 
     Best effort in the same strong sense as the frame publisher: ``True`` means
     "handed to the socket", never "a plugin will see it".
+
+    ``event_id`` may be supplied when the same observation is also delivered
+    locally, so consumers can deduplicate the two paths.
     """
     text = str(content or "")
     if not text.strip():
         return False
     event: Dict[str, Any] = {
         "event_type": CONVERSATION_TURN_OBSERVED_EVENT,
-        "event_id": uuid.uuid4().hex,
+        "event_id": event_id or uuid.uuid4().hex,
         "lanlan_name": lanlan_name,
         "source": str(source or "unknown"),
         "conversation_id": str(conversation_id or ""),

@@ -45,6 +45,8 @@ _BUILTIN_SERVICE_URL = "https://sync.nekotech.cn"
 _MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 _LOCAL_CA_ENV = "NEKO_CHAT_SYNC_LOCAL_CA_FILE"
 _RECENT_FALLBACK_SECONDS = 30
+# How long the sync panel says that the oldest evidence records were dropped.
+_EVIDENCE_TRIM_NOTICE_MS = 7 * 24 * 60 * 60 * 1000
 
 
 class AutomaticRoleInactive(Exception):
@@ -250,7 +252,12 @@ class DesktopSyncState:
     def new_role_errors(self):
         with closing(self._connect()) as conn:
             return {row[0]: code for row in conn.execute("SELECT character_uid,request FROM sync_new_roles")
-                    if (code := (request := json.loads(row[1])).get("error") or request.get("lastError"))}
+                    if (code := json.loads(row[1]).get("error"))}
+
+    def new_role_diagnostics(self):
+        with closing(self._connect()) as conn:
+            return {row[0]: code for row in conn.execute("SELECT character_uid,request FROM sync_new_roles")
+                    if not (request := json.loads(row[1])).get("error") and (code := request.get("lastError"))}
 
     def record_new_role_error(self, uid, request_id, code):
         """Keep a retryable fixed diagnostic without changing its admission deadline."""
@@ -377,12 +384,16 @@ class DesktopChatSyncRuntime:
             # the first raw producer creates a source object for this role.
             ChatOriginalSource(directory / "sources.sqlite3")
             self.profiles = DesktopProfileSync(self, directory / "profiles.sqlite3")
+            from services.chat_sync.model_sync import DesktopModelSync
+            self.models = DesktopModelSync(self, directory / "profiles.sqlite3")
             from services.chat_sync.recent import RecentMemorySync
             self.recent_memory = (RecentMemorySync(directory / "state.sqlite3", recent_memory_adapter)
                                   if recent_memory_adapter is not None else None)
             from services.chat_sync.long_term import LongTermMemorySync
             self.long_term_memory = (LongTermMemorySync(directory / 'state.sqlite3', long_term_memory_adapter)
                                      if long_term_memory_adapter is not None else None)
+            if self.recent_memory is not None and long_term_memory_adapter is not None:
+                self.recent_memory.received_directory = long_term_memory_adapter.received_directory
         self.recent_character_name = recent_character_name
         self._recent_lock = asyncio.Lock()
         self._long_term_lock = asyncio.Lock()
@@ -450,6 +461,7 @@ class DesktopChatSyncRuntime:
                     conn.execute("UPDATE sync_settings SET service_url=?", (self._fixed_service_url,))
         with self._commit_lock:
             self.writer.recover(stage)
+        self.models.cleanup_cache(force=True)
 
     async def recover_writer_role(self, character_uid, local_name):
         """Verify current cloud fences before reusing any copied history candidate."""
@@ -630,6 +642,39 @@ class DesktopChatSyncRuntime:
                 task = asyncio.create_task(self._automatic_profiles(bindings, presence))
                 self._flights["profile"] = task
                 self._track(task)
+        previous = self._flights.get("model")
+        if self.models.adapter is not None and (previous is None or previous.done()):
+            task = asyncio.create_task(self._automatic_models(bindings, presence))
+            self._flights["model"] = task
+            self._track(task)
+
+    async def _automatic_models(self, bindings, presence):
+        current_uid = await self._current_character_uid()
+        for binding in bindings:
+            if not binding["enabled"] or not binding["binding_id"] or binding["character_uid"] != current_uid:
+                continue
+            uid = binding["character_uid"]
+            domain = ChatDomain(binding["owner_id"], uid).key()
+            if not await asyncio.to_thread(self.scheduler.claim, domain, "model", binding["generation"], presence):
+                continue
+            try:
+                await self.models.step(uid, automatic_only=True)
+                await asyncio.to_thread(self.scheduler.success, domain, "model")
+            except AutomaticRoleInactive:
+                continue
+            except Exception as exc:
+                # Model packages also fail outside the adapter vocabulary (BadZipFile,
+                # DecompressionBombError, KeyError). Left uncaught they skip the retry
+                # gate and repeat on every poll; failure() stores only a fixed code.
+                if not isinstance(exc, (OSError, ValueError, sqlite3.Error)):
+                    # Only the class name: exception text may hold paths or signed URLs.
+                    print(f"[chat-sync] model_step_unavailable {type(exc).__name__}")
+                if getattr(exc, "status_code", None) == 404:
+                    await asyncio.to_thread(self.scheduler.success, domain, "model")
+                else:
+                    await asyncio.to_thread(self.scheduler.failure, domain, "model", binding["generation"], presence, exc)
+        await asyncio.to_thread(self.models.cleanup_cache)
+
 
     @asynccontextmanager
     async def _connect_notifications(self, service_url):
@@ -639,7 +684,7 @@ class DesktopChatSyncRuntime:
         context = await asyncio.to_thread(_load_local_ca_context, self._local_ca_file) if self._local_ca_file else ssl.create_default_context()
         async with connect("wss" + service_url[5:] + "/v1/chat-sync/notifications", ssl=context,
                            proxy=None, open_timeout=3, close_timeout=1, max_size=4096,
-                           ping_interval=2, ping_timeout=2) as socket:
+                           ping_interval=10, ping_timeout=5) as socket:
             yield socket
 
     async def _stop_notifications(self):
@@ -687,6 +732,10 @@ class DesktopChatSyncRuntime:
                                 ChatDomain(binding["owner_id"], binding["character_uid"]).key(), channel,
                                 verified_login=(binding["generation"], presence) if login_verified else None,
                                 fingerprint=presence)
+        if channel == "profile" and self.models.adapter is not None:
+            await asyncio.to_thread(self._commit_bound, binding, self.scheduler.request_check,
+                                    ChatDomain(binding["owner_id"], binding["character_uid"]).key(), "model",
+                                    fingerprint=presence)
         if channel == 'pull' and self.long_term_memory is not None:
             await asyncio.to_thread(self._commit_bound, binding, self.scheduler.request_check,
                                     ChatDomain(binding['owner_id'], binding['character_uid']).key(), 'long_term',
@@ -764,12 +813,12 @@ class DesktopChatSyncRuntime:
                 self._notification_blocked_key = key
             self._notification_failures += 1
             retry = min(60_000, 5_000 * 2 ** min(self._notification_failures - 1, 4))
-            # Only transport loss gets a short reconnect deadline. Rejected
+            # Only transport loss gets the thirty-second reconnect cap. Rejected
             # grants and invalid protocol responses retain their existing gates.
             transport = isinstance(exc, OSError) or (isinstance(exc, ConnectionClosed)
                          and ((exc.rcvd is None and (exc.sent is None or exc.sent.code in {1000, 1001, 1011}))
                               or (exc.rcvd is not None and exc.rcvd.code in {1000, 1001})))
-            self._notification_retry_at = self.scheduler.clock() + (min(retry, 3000) if transport else retry)
+            self._notification_retry_at = self.scheduler.clock() + (min(retry, 30_000) if transport else retry)
             # A dropped hint channel asks for a normal fenced check. It cannot
             # bypass HTTP errors, and exceptions contain no logged token/body.
             if not self._closing:
@@ -879,7 +928,7 @@ class DesktopChatSyncRuntime:
             for filename, tables in (
                 ("originals.sqlite3", ("chat_pending", "chat_batches", "chat_originals", "chat_downloaded",
                                       "chat_tombstones", "chat_deletions", "chat_origin_identities")),
-                ("profiles.sqlite3", ("profile_state", "profile_versions", "profile_outbox", "profile_imports")),
+                ("profiles.sqlite3", ("profile_state", "profile_versions", "profile_outbox", "profile_imports", "model_state")),
                 ("scheduler.sqlite3", ("scheduler_tasks",)),
             ):
                 with closing(store_connection(directory / filename)) as conn, conn:
@@ -892,8 +941,14 @@ class DesktopChatSyncRuntime:
                         if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
                             conn.execute(f"DELETE FROM {table} WHERE uid=?", (uid,))
             with closing(self.state._connect()) as conn, conn:
+                if self.recent_memory is not None:
+                    for table in ('recent_memory_state', 'recent_memory_preferences', 'recent_memory_apply'):
+                        conn.execute(f"DELETE FROM {table} WHERE domain=?", (domain,))
                 for table in ("sync_new_roles", "sync_choices", "sync_bindings"):
                     conn.execute(f"DELETE FROM {table} WHERE character_uid=?", (uid,))
+            if self.long_term_memory is not None:
+                self.long_term_memory.adapter.forget(uid)
+        self.models.cleanup_cache(force=True)
 
     async def _automatic_channel(self, channel: str, presence: str) -> None:
         """Sync only the selected opted-in role."""
@@ -1002,7 +1057,7 @@ class DesktopChatSyncRuntime:
             raise ValueError("chat_sync_retry_later")
         self._check_local_ca_origin(settings["service_url"])
         client = await self._http_client()
-        headers = {"Authorization": f"Bearer {token}"}
+        headers = {"Authorization": f"Bearer {token}", "X-Neko-Cloud-Retention": "1"}
         if body is not None:
             headers["Content-Type"] = "application/json"
         if binding_id is not None:
@@ -1019,7 +1074,7 @@ class DesktopChatSyncRuntime:
                 self.trace.emit("http_headers", status=response.status_code)
                 if response.status_code >= 300:
                     error = ChatSyncServiceError(response.status_code, _retry_after_ms(response.headers.get("Retry-After")))
-                    if response.status_code == 410 or (response.status_code == 409 and path.endswith("/profile")):
+                    if response.status_code == 410 or (response.status_code == 409 and path.endswith(("/profile", "/model-binding"))):
                         # Bound and discard error bodies; an unrelated 409 must
                         # never authorize replacing a retained profile version.
                         detail = bytearray()
@@ -1032,6 +1087,7 @@ class DesktopChatSyncRuntime:
                             parsed = json.loads(detail)
                             error.profile_conflict = response.status_code == 409 and parsed == {"detail": "profile_revision_conflict"}
                             error.character_deleted = response.status_code == 410 and parsed == {"detail": "character_deleted"}
+                            error.media_resource_missing = response.status_code == 409 and parsed == {"detail": "media_resource_not_ready"}
                         except (ValueError, UnicodeError, RecursionError):
                             pass
                     if response.status_code == 429:
@@ -1082,6 +1138,8 @@ class DesktopChatSyncRuntime:
             binding["lastSyncError"] = await asyncio.to_thread(
                 self.scheduler.last_error, ChatDomain(binding["owner_id"], binding["character_uid"]).key(),
             )
+            recent_name = await self._recent_diagnostic_name(binding)
+            binding["localMemoryDiagnostics"] = await asyncio.to_thread(self._local_memory_diagnostics, binding, recent_name)
             profile = await asyncio.to_thread(self.profiles.store.status, ChatDomain(binding["owner_id"], binding["character_uid"]).key())
             # Local UI polling sees only revision flags; full retained candidates
             # are returned by the explicit per-character profile controls.
@@ -1090,8 +1148,39 @@ class DesktopChatSyncRuntime:
             }
         return {"serviceUrl": settings["service_url"], "deviceId": settings["device_id"], "bindings": bindings,
                 "syncSetupErrors": await asyncio.to_thread(self.state.new_role_errors),
+                "syncSetupDiagnostics": await asyncio.to_thread(self.state.new_role_diagnostics),
                 "syncPendingChoices": await asyncio.to_thread(self.state.pending_choices, await asyncio.to_thread(self.writer.epoch)),
                 "syncChoices": await asyncio.to_thread(self.state.choices), "writerRecoveryRequired": False}
+
+    async def _recent_diagnostic_name(self, binding):
+        """A role that cannot be resolved simply has no recent-file diagnostic."""
+        if not binding['enabled'] or self.recent_memory is None or self.recent_character_name is None:
+            return None
+        try:
+            return await self.recent_character_name(binding['character_uid'])
+        except (ValueError, OSError):
+            return None
+
+    def _local_memory_diagnostics(self, binding, recent_name=None):
+        """Observe retained local staging without retrying or altering evidence."""
+        if not binding['enabled']:
+            return []
+        domain = ChatDomain(binding['owner_id'], binding['character_uid']).key()
+        diagnostics = self.scheduler.local_memory_diagnostics(domain)
+        # Checked live rather than through scheduler.failure, whose block would outlast a repair.
+        if recent_name is not None and self.recent_memory.adapter.unreadable(recent_name):
+            diagnostics.append('recent_memory_file_unreadable')
+        try:
+            if self.long_term_memory is not None and self.long_term_memory.adapter.incoming_path(binding['character_uid']).is_file():
+                diagnostics.append('long_term_memory_incoming_pending')
+        except OSError:
+            pass
+        if self.long_term_memory is not None:
+            # A notice, not a failure: this device dropped its oldest evidence records.
+            trimmed = self.long_term_memory.adapter.evidence_trimmed_at(binding['character_uid'])
+            if trimmed is not None and 0 <= self.scheduler.clock() - trimmed < _EVIDENCE_TRIM_NOTICE_MS:
+                diagnostics.append('long_term_memory_evidence_trimmed')
+        return diagnostics
 
     def _quarantined_status(self):
         """Expose local setup hints without treating copied consent as authority."""
@@ -1522,8 +1611,7 @@ class DesktopChatSyncRuntime:
             grant = {**binding, 'service_url': settings['service_url']}
             domain = ChatDomain(binding['owner_id'], uid)
             local = await asyncio.to_thread(self.long_term_memory.adapter.read_local, grant, epoch)
-            state = await asyncio.to_thread(self.long_term_memory.state, domain.key())
-            dirty = bool(local and not local['operationId'].startswith('download:') and local['operationId'] != state['acknowledged'])
+            dirty = bool(local and local['pending'])
             can_apply = lambda: self.profiles.adapter is None or not self.profiles.adapter.busy(name)
             if can_apply():
                 applied = await self.long_term_memory.adapter.flush(uid)
@@ -1738,6 +1826,8 @@ async def get_desktop_chat_sync_runtime(config_manager=None) -> DesktopChatSyncR
             # Attach only the storage-selected production manager. Synthetic
             # runtimes explicitly inject their own isolated raw profile adapter.
             runtime.profiles.adapter = DesktopProfileAdapter(config_manager)
+            from services.chat_sync.model_sync import DesktopModelAdapter
+            runtime.models.adapter = DesktopModelAdapter(config_manager)
         return runtime
 
 
@@ -1760,6 +1850,13 @@ async def close_desktop_chat_sync_runtimes() -> None:
     _runtimes.clear()
     for runtime in runtimes:
         await runtime.close()
+
+
+def wake_desktop_chat_sync_scheduler(config_manager) -> None:
+    """A local character switch wakes an existing host without starting sync or doing I/O."""
+    runtime = _runtimes.get(Path(config_manager.app_docs_dir) / 'chat_sync')
+    if runtime is not None:
+        runtime.wake_scheduler()
 
 
 async def start_desktop_chat_sync_scheduler(config_manager=None) -> None:

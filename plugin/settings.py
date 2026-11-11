@@ -3,6 +3,7 @@ import math
 import os
 import warnings
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -244,6 +245,44 @@ LIFECYCLE_QUEUE_MAX = _get_int_env("NEKO_LIFECYCLE_QUEUE_MAX", 1000)
 # Bounds plugin-to-main message queues, preventing unlimited accumulation.
 MESSAGE_QUEUE_MAX = _get_int_env("NEKO_MESSAGE_QUEUE_MAX", 1000)
 EXPORT_INLINE_BINARY_MAX_BYTES = _get_int_env("NEKO_EXPORT_INLINE_BINARY_MAX_BYTES", 256 * 1024)
+
+
+@dataclass(frozen=True)
+class PluginRpcQuotas:
+    """Per-plugin shares of the host control router, so one plugin cannot starve others."""
+
+    # Requests one plugin connection may have admitted but not yet started,
+    # including requests whose BUSY reply is still being delivered.
+    max_queued_per_plugin: int
+    # Handlers one plugin connection may have running at once.
+    max_in_flight_per_plugin: int
+    # PLUGIN_TO_PLUGIN calls that may wait on one target plugin at once, from
+    # all callers together; a hung target holds at most this many slots. One
+    # caller may use at most half of it (at least 1), whatever value is set.
+    max_in_flight_per_target_plugin: int
+
+
+def _get_positive_int_env(name: str, default: int) -> int:
+    value = _get_int_env(name, default)
+    return value if value > 0 else default
+
+
+# Read when the plugin router starts, so a restart picks up changed values.
+# Env: NEKO_PLUGIN_RPC_MAX_QUEUED_PER_PLUGIN, default=64
+# Env: NEKO_PLUGIN_RPC_MAX_IN_FLIGHT_PER_PLUGIN, default=32
+# Env: NEKO_PLUGIN_RPC_MAX_IN_FLIGHT_PER_TARGET_PLUGIN, default=32
+def get_plugin_rpc_quotas() -> PluginRpcQuotas:
+    return PluginRpcQuotas(
+        max_queued_per_plugin=_get_positive_int_env(
+            "NEKO_PLUGIN_RPC_MAX_QUEUED_PER_PLUGIN", 64
+        ),
+        max_in_flight_per_plugin=_get_positive_int_env(
+            "NEKO_PLUGIN_RPC_MAX_IN_FLIGHT_PER_PLUGIN", 32
+        ),
+        max_in_flight_per_target_plugin=_get_positive_int_env(
+            "NEKO_PLUGIN_RPC_MAX_IN_FLIGHT_PER_TARGET_PLUGIN", 32
+        ),
+    )
 
 RUN_TOKEN_SECRET = os.getenv("NEKO_RUN_TOKEN_SECRET", "dev-insecure-run-token-secret")
 RUN_TOKEN_TTL_SECONDS = _get_int_env("NEKO_RUN_TOKEN_TTL_SECONDS", 3600)
@@ -889,7 +928,9 @@ __all__ = [
     "EVENT_QUEUE_MAX",
     "LIFECYCLE_QUEUE_MAX",
     "MESSAGE_QUEUE_MAX",
-    
+    "PluginRpcQuotas",
+    "get_plugin_rpc_quotas",
+
     # Timeout configuration.
     "PLUGIN_EXECUTION_TIMEOUT",
     "PLUGIN_TRIGGER_TIMEOUT",

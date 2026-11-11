@@ -73,7 +73,7 @@ async def test_review_capacity_applies_before_fast_and_dispute_calls(monkeypatch
 
     monkeypatch.setattr(evaluator, '_model_config', config)
     monkeypatch.setattr(evaluator, 'create_chat_llm_async', factory)
-    monkeypatch.setattr(evaluator, 'focus_extra_body', lambda _: {'enable_thinking': True})
+    monkeypatch.setattr(evaluator, 'focus_extra_body', lambda *_: {'enable_thinking': True})
     engine, session, outcome, candidate = _fixture(repetitions)
     if review_kind != 'formal':
         candidate = {'performance': candidate['segments'][0]['performance'], 'suggested_inputs': []}

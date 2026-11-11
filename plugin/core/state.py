@@ -5,6 +5,7 @@ Manage global runtime state for the plugin system.
 """
 import asyncio
 import itertools
+import math
 import threading
 import time
 import uuid
@@ -35,6 +36,8 @@ from contextlib import contextmanager
 from plugin.core.message_plane_transport import format_rpc_error
 
 MAX_DELETED_BUS_IDS = 20000
+MAX_CONVERSATION_SUBSCRIPTIONS = 4096
+MAX_PLUGIN_CONVERSATION_SUBSCRIPTIONS = 128
 
 # Default lock timeout in seconds.
 DEFAULT_LOCK_TIMEOUT = 10.0
@@ -232,6 +235,7 @@ class GlobalState:
         self._lifecycle_queue: Optional[asyncio.Queue] = None
         self._plugin_comm_queue: Optional[asyncio.Queue] = None
         self._plugin_comm_lock = threading.Lock()
+        self.plugin_control_ingress = None
 
         # Per-plugin downlink senders for routing plugin-to-plugin responses
         self._plugin_downlink_senders: Dict[str, Any] = {}
@@ -250,6 +254,7 @@ class GlobalState:
 
         self._bus_rev_lock = threading.Lock()
         self._bus_rev: Dict[str, int] = {
+            "conversations": 0,
             "messages": 0,
             "events": 0,
             "lifecycle": 0,
@@ -261,6 +266,7 @@ class GlobalState:
 
         self._bus_subscriptions_lock = threading.Lock()
         self._bus_subscriptions: Dict[str, Dict[str, Dict[str, Any]]] = {
+            "conversations": {},
             "messages": {},
             "events": {},
             "lifecycle": {},
@@ -661,6 +667,9 @@ class GlobalState:
 
     def clear_inherited_plugin_references(self) -> None:
         """Drop parent-only references without acquiring inherited locks after fork."""
+        self.plugin_control_ingress = None
+        self._plugin_comm_queue = None
+        self._plugin_comm_lock = threading.Lock()
         self.plugin_hosts.clear()
         self._plugin_downlink_senders.clear()
         self._plugin_downlink_senders_lock = threading.Lock()
@@ -686,6 +695,14 @@ class GlobalState:
             return
         with self._plugin_downlink_senders_lock:
             self._plugin_downlink_senders.pop(pid, None)
+        # The process can no longer own observation registrations. Do not keep
+        # stale v2 subscriptions through freeze/reload or dispatch them to a new
+        # process later started with the same plugin id.
+        with self._bus_subscriptions_lock:
+            subscriptions = self._bus_subscriptions.get("conversations", {})
+            for sid, info in list(subscriptions.items()):
+                if info.get("from_plugin") == pid:
+                    subscriptions.pop(sid, None)
 
 
     def append_message_record(self, record: Dict[str, Any]) -> None:
@@ -1279,14 +1296,25 @@ class GlobalState:
             raise ValueError("sub_id is required")
         payload = dict(info) if isinstance(info, dict) else {}
         with self._bus_subscriptions_lock:
+            if b == "conversations" and sid not in self._bus_subscriptions[b]:
+                subscriptions = self._bus_subscriptions[b]
+                owner = payload.get("from_plugin")
+                if len(subscriptions) >= MAX_CONVERSATION_SUBSCRIPTIONS or sum(
+                    item.get("from_plugin") == owner for item in subscriptions.values()
+                ) >= MAX_PLUGIN_CONVERSATION_SUBSCRIPTIONS:
+                    raise OverflowError("Conversation subscription capacity exhausted")
             self._bus_subscriptions[b][sid] = payload
 
-    def remove_bus_subscription(self, bus: str, sub_id: str) -> bool:
+    def remove_bus_subscription(self, bus: str, sub_id: str, *, from_plugin: str | None = None) -> bool:
         b = str(bus).strip()
         sid = str(sub_id).strip()
         if b not in self._bus_subscriptions or not sid:
             return False
         with self._bus_subscriptions_lock:
+            if from_plugin is not None:
+                info = self._bus_subscriptions[b].get(sid)
+                if info is None or info.get("from_plugin") != from_plugin:
+                    return False
             return self._bus_subscriptions[b].pop(sid, None) is not None
 
     def get_bus_subscriptions(self, bus: str) -> Dict[str, Dict[str, Any]]:
@@ -1354,6 +1382,7 @@ class GlobalState:
     def close_plugin_resources(self) -> None:
         """Drop run-owned routing references after the router has stopped."""
         self._plugin_comm_queue = None
+        self.plugin_control_ingress = None
         with self._plugin_downlink_senders_lock:
             self._plugin_downlink_senders.clear()
 
@@ -1405,20 +1434,35 @@ class GlobalState:
 
         now = time.time()
         payload: Dict[str, Any] = dict(event) if isinstance(event, dict) else {"event": event}
-        payload.setdefault("_ts", float(now))
+        try:
+            occurred_at = float(payload.get("_ts", now))
+        except (TypeError, ValueError, OverflowError):
+            return
+        if not math.isfinite(occurred_at):
+            return
+        # A relay must retain event age, never renew it on arrival or replay.
+        payload["_ts"] = occurred_at
 
         with self._user_context_lock:
+            ttl = self._user_context_ttl_seconds
+            if ttl > 0 and payload["_ts"] < now - ttl:
+                return
             dq = self._user_context_store.get(bucket_id)
             if dq is None:
                 dq = deque(maxlen=self._user_context_default_maxlen)
                 self._user_context_store[bucket_id] = dq
-            dq.append(payload)
-
-            ttl = self._user_context_ttl_seconds
-            if ttl > 0 and dq:
-                cutoff = now - ttl
-                while dq and float((dq[0] or {}).get("_ts", 0.0)) < cutoff:
-                    dq.popleft()
+            event_id = payload.get("event_id")
+            if isinstance(event_id, str) and event_id and any(
+                item.get("event_id") == event_id for item in dq
+            ):
+                return
+            # Cross-thread/local and forwarded arrivals can be out of order.
+            # Keep the newest record last, as the SDK's limit query promises.
+            items = [item for item in dq if ttl <= 0 or item["_ts"] >= now - ttl]
+            items.append(payload)
+            items.sort(key=lambda item: item["_ts"])
+            dq.clear()
+            dq.extend(items)
 
     def get_user_context(self, bucket_id: str, limit: int = 20) -> List[Dict[str, Any]]:
         if not isinstance(bucket_id, str) or not bucket_id:

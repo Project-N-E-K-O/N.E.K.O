@@ -61,6 +61,7 @@ class TestKeybookSaveLoad:
         'assistApiKeyMimoTokenPlan': 'ASSIST_API_KEY_MIMO_TOKEN_PLAN',
         'assistApiKeyGrok': 'ASSIST_API_KEY_GROK',
         'assistApiKeyRequesty': 'ASSIST_API_KEY_REQUESTY',
+        'assistApiKeyOpper': 'ASSIST_API_KEY_OPPER',
     }
 
     @pytest.mark.unit
@@ -106,6 +107,7 @@ class TestKeybookSaveLoad:
                        'ASSIST_API_KEY_CLAUDE', 'ASSIST_API_KEY_OPENROUTER',
                        'ASSIST_API_KEY_ORCAROUTER',
                        'ASSIST_API_KEY_REQUESTY',
+                       'ASSIST_API_KEY_OPPER',
                        'ASSIST_API_KEY_QWEN_INTL',
                        'ASSIST_API_KEY_MINIMAX', 'ASSIST_API_KEY_MINIMAX_INTL',
                        'ASSIST_API_KEY_MIMO']:
@@ -123,6 +125,19 @@ class TestKeybookSaveLoad:
         })
         cfg = config_manager.get_core_config()
         assert cfg['ASSIST_API_KEY_QWEN_INTL'] == 'sk-core-master'
+
+    @pytest.mark.unit
+    def test_opper_never_fallbacks_when_selected(self, config_manager):
+        """Opper is assist-only and needs its own key: selected with an empty key, it must not fall back to CORE_API_KEY."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core-master',
+            'coreApi': 'qwen',
+            'assistApi': 'opper',
+            'assistApiKeyOpper': '',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['ASSIST_API_KEY_OPPER'] == ''
+        assert cfg['OPENROUTER_API_KEY'] == ''
 
     @pytest.mark.unit
     def test_free_core_does_not_fill_paid_assist_when_key_empty(self, config_manager):
@@ -208,7 +223,8 @@ class TestKeybookSaveLoad:
         cfg = config_manager.get_core_config()
         assert cfg['OPENROUTER_URL'] == token_plan_url
         assert cfg['OPENROUTER_API_KEY'] == 'tp-mimo-token-plan'
-        assert cfg['AUDIO_API_KEY'] == 'tp-mimo-token-plan'
+        # MiMo is assist-only: its key never stands in for the CosyVoice audio key.
+        assert cfg['AUDIO_API_KEY'] == 'sk-core-master'
         assert cfg['ASSIST_API_KEY_MIMO'] == 'sk-regular-mimo'
         assert cfg['ASSIST_API_KEY_MIMO_TOKEN_PLAN'] == 'tp-mimo-token-plan'
 
@@ -279,7 +295,7 @@ class TestRequestyResolution:
             'correction': 'google/gemini-2.5-flash',
             'emotion': 'google/gemini-2.5-flash-lite',
             'vision': 'google/gemini-2.5-flash',
-            'agent': 'google/gemini-3-flash-preview',
+            'agent': 'google/gemini-3.8-flash',
         }.items():
             resolved = config_manager.get_model_api_config(task)
             assert resolved['api_key'] == requesty_key, task
@@ -330,6 +346,183 @@ class TestRequestyResolution:
         })
         assert 'cosyvoice-existing' in config_manager.get_voices_for_current_api(for_listing=True)
         assert config_manager.get_core_config()['AUDIO_API_KEY'] == 'sk-dashscope-core'
+
+
+class TestOpperResolution:
+    @pytest.mark.unit
+    @pytest.mark.parametrize('core_provider', ['qwen', 'openai', 'free'])
+    @pytest.mark.parametrize('opper_key', ['', 'sk-opper-dedicated'])
+    def test_selected_provider_credentials_and_models(
+        self, config_manager, core_provider, opper_key,
+    ):
+        """Resolve each Opper task without borrowing another provider's key."""
+        core_key = 'free-access' if core_provider == 'free' else 'sk-other-core'
+        _write_core_config(config_manager, {
+            'coreApi': core_provider,
+            'coreApiKey': core_key,
+            'assistApi': 'opper',
+            'assistApiKeyOpper': opper_key,
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['CORE_API_KEY'] == core_key
+        assert cfg['CORE_API_TYPE'] == core_provider
+        assert cfg['ASSIST_API_KEY_OPPER'] == opper_key
+        assert cfg['OPENROUTER_API_KEY'] == opper_key
+        assert cfg['AUDIO_API_KEY'] == (
+            core_key if core_provider != 'free' else ''
+        )
+        assert cfg['AGENT_MODEL_API_KEY'] == opper_key
+        for task in ('conversation', 'summary', 'correction', 'emotion', 'vision', 'agent'):
+            resolved = config_manager.get_model_api_config(task)
+            assert resolved['api_key'] == opper_key, task
+            assert resolved['base_url'] == 'https://api.opper.ai/v3/compat', task
+            assert resolved['model'] == 'gpt-5.4-mini', task
+            assert resolved['provider_type'] == 'openai_compatible', task
+
+    @pytest.mark.unit
+    def test_missing_key_does_not_use_legacy_assist_defaults(self, config_manager, monkeypatch):
+        """Clear legacy router defaults while retaining the independent audio key."""
+        import config
+
+        monkeypatch.setattr(config, 'DEFAULT_AUDIO_API_KEY', 'sk-legacy-audio')
+        monkeypatch.setattr(config, 'DEFAULT_OPENROUTER_API_KEY', 'sk-legacy-router')
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'coreApiKey': 'sk-other-core',
+            'assistApi': 'opper',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['AUDIO_API_KEY'] == 'sk-legacy-audio'
+        assert cfg['OPENROUTER_API_KEY'] == ''
+        assert config_manager.get_model_api_config('conversation')['api_key'] == ''
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('opper_key', ['', 'sk-opper-dedicated'])
+    def test_opper_key_preserves_cosyvoice_voice_storage(self, config_manager, opper_key):
+        """An Opper text key must not change voice buckets across assist switches."""
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'coreApiKey': 'sk-dashscope-core',
+            'assistApi': 'opper',
+            'assistApiKeyOpper': opper_key,
+        })
+        config_manager.save_voice_for_current_api('cosyvoice-existing', {
+            'name': 'Existing cloned voice',
+            'provider': 'cosyvoice',
+        })
+        stored = config_manager.load_voice_storage()
+        assert 'cosyvoice-existing' in stored['sk-dashscope-core']
+        assert 'cosyvoice-existing' in config_manager.get_voices_for_current_api(for_listing=True)
+        assert config_manager.get_model_api_config('conversation')['api_key'] == opper_key
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'coreApiKey': 'sk-dashscope-core',
+            'assistApi': 'qwen',
+            'assistApiKeyOpper': opper_key,
+        })
+        assert 'cosyvoice-existing' in config_manager.get_voices_for_current_api(for_listing=True)
+        assert config_manager.get_core_config()['AUDIO_API_KEY'] == 'sk-dashscope-core'
+
+
+
+def _load_provider_catalog() -> dict:
+    path = os.path.join(os.path.dirname(__file__), '../../config/api_providers.json')
+    with open(path, encoding='utf-8') as f:
+        return json.load(f)
+
+
+_PROVIDER_CATALOG = _load_provider_catalog()
+# Selectable assist providers that can never be coreApi; vllm_omni is TTS-only.
+_ASSIST_ONLY_PROVIDERS = sorted(
+    set(_PROVIDER_CATALOG['assist_api_providers'])
+    - set(_PROVIDER_CATALOG['core_api_providers'])
+    - {'vllm_omni'}
+)
+
+
+class TestAssistOnlyKeyIsolation:
+    """coreApiKey always belongs to another vendor when the assist provider is assist-only."""
+
+    @pytest.mark.unit
+    def test_catalog_has_assist_only_providers(self):
+        assert {'deepseek', 'orcarouter', 'requesty', 'opper'} <= set(_ASSIST_ONLY_PROVIDERS)
+        assert not {'qwen', 'openai', 'free'} & set(_ASSIST_ONLY_PROVIDERS)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('provider', _ASSIST_ONLY_PROVIDERS)
+    @pytest.mark.parametrize('core_provider', ['qwen', 'openai'])
+    @pytest.mark.parametrize('dedicated_key', ['', 'sk-assist-dedicated'])
+    def test_key_never_borrows_core_or_replaces_audio(
+        self, config_manager, provider, core_provider, dedicated_key,
+    ):
+        config_field = _PROVIDER_CATALOG['api_key_registry'][provider]['config_field']
+        runtime_field = _PROVIDER_CATALOG['assist_api_key_fields'][provider]
+        _write_core_config(config_manager, {
+            'coreApi': core_provider,
+            'coreApiKey': 'sk-other-core',
+            'assistApi': provider,
+            config_field: dedicated_key,
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg[runtime_field] == dedicated_key
+        assert cfg['OPENROUTER_API_KEY'] == dedicated_key
+        assert cfg['AGENT_MODEL_API_KEY'] == dedicated_key
+        assert cfg['AUDIO_API_KEY'] == 'sk-other-core'
+        assert config_manager.get_model_api_config('conversation')['api_key'] == dedicated_key
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('provider', _ASSIST_ONLY_PROVIDERS)
+    def test_key_preserves_cosyvoice_voice_storage(self, config_manager, provider):
+        config_field = _PROVIDER_CATALOG['api_key_registry'][provider]['config_field']
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'coreApiKey': 'sk-dashscope-core',
+            'assistApi': 'qwen',
+            config_field: 'sk-assist-dedicated',
+        })
+        config_manager.save_voice_for_current_api('cosyvoice-existing', {
+            'name': 'Existing cloned voice',
+            'provider': 'cosyvoice',
+        })
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'coreApiKey': 'sk-dashscope-core',
+            'assistApi': provider,
+            config_field: 'sk-assist-dedicated',
+        })
+        assert config_manager.get_core_config()['AUDIO_API_KEY'] == 'sk-dashscope-core'
+        assert 'cosyvoice-existing' in config_manager.get_voices_for_current_api(for_listing=True)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('provider', _ASSIST_ONLY_PROVIDERS)
+    def test_registered_voice_lands_in_listed_bucket(self, config_manager, provider):
+        """POST /voices must save into the bucket that listing and validation read."""
+        config_field = _PROVIDER_CATALOG['api_key_registry'][provider]['config_field']
+        _write_core_config(config_manager, {
+            'coreApi': 'openai',
+            'coreApiKey': 'sk-openai-core',
+            'assistApi': provider,
+            config_field: 'sk-assist-dedicated',
+        })
+        config_manager.save_voice_for_current_api('cosyvoice-registered', {
+            'name': 'Registered voice',
+            'provider': 'cosyvoice',
+        })
+        assert 'cosyvoice-registered' in config_manager.get_voices_for_current_api()
+        assert config_manager.delete_voice_for_current_api('cosyvoice-registered')
+
+    @pytest.mark.unit
+    def test_core_capable_assist_still_falls_back(self, config_manager):
+        """The same vendor on both sides keeps sharing the single core key."""
+        _write_core_config(config_manager, {
+            'coreApi': 'openai',
+            'coreApiKey': 'sk-openai-core',
+            'assistApi': 'openai',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['ASSIST_API_KEY_OPENAI'] == 'sk-openai-core'
+        assert cfg['OPENROUTER_API_KEY'] == 'sk-openai-core'
+        assert cfg['AUDIO_API_KEY'] == 'sk-openai-core'
 
 
 # ---------------------------------------------------------------------------
@@ -886,6 +1079,7 @@ class TestProviderExclusion:
             'openrouter',
             'orcarouter',
             'requesty',
+            'opper',
             'elevenlabs',
             'qwen_intl',
             'minimax_intl',

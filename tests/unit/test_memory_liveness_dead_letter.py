@@ -34,6 +34,73 @@ import pytest
 # ─────────────────────────────────────────────────────────────────────
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('reason', ['retired_correction_time_unavailable', 'retired_assertion_source_time_unavailable'])
+@pytest.mark.parametrize('recover', [False, True])
+async def test_path_a_evidence_failure_retries_then_advances_without_repeating_old_window(monkeypatch, reason, recover):
+    import asyncio
+    from app.memory_server import signal_extraction as signals
+    from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+    from memory.long_term_sync import FactEvidenceUnavailable
+
+    now = datetime(2026, 11, 5, 12)
+    cursor = now - timedelta(minutes=1)
+    row_time = now - timedelta(seconds=1)
+    name = 'evidence_retry'
+    state = {'turns_since': 1, 'last_check_ts': cursor.isoformat()}
+    monkeypatch.setattr(signals, '_signal_check_state', {name: state})
+    class Clock(datetime):
+        @classmethod
+        def now(cls):
+            return now
+    monkeypatch.setattr(signals, 'datetime', Clock)
+    rows = [(row_time, 'session', json.dumps({'type': 'human', 'data': {'content': 'Synthetic claim'}}))]
+    async def read_rows(_name, start, end, **kwargs):
+        return rows if start < row_time <= end else []
+    extract = AsyncMock(side_effect=(
+        [FactEvidenceUnavailable(reason)] * 2 + [([], [], [])] if recover
+        else FactEvidenceUnavailable(reason)))
+    facts = MagicMock(aextract_facts_and_detect_signals=extract)
+    monkeypatch.setattr(signals.runtime, 'fact_store', facts)
+    monkeypatch.setattr(signals.runtime, 'time_manager', MagicMock(
+        aretrieve_original_by_timeframe=AsyncMock(side_effect=read_rows)))
+    monkeypatch.setattr(signals.runtime, 'reflection_engine', MagicMock(aauto_promote_stale=AsyncMock()))
+    monkeypatch.setattr(signals.runtime, '_config_manager', MagicMock(
+        aload_characters=AsyncMock(return_value={'猫娘': {name: {}}})))
+    monkeypatch.setattr(signals.gates, '_ais_powerful_memory_enabled', AsyncMock(return_value=True))
+    monkeypatch.setattr(signals, '_signal_check_should_run', lambda *args: True)
+    async def run_in_locale(character, callback):
+        return await callback(character)
+    monkeypatch.setattr(signals, '_run_signal_check_with_character_locale', run_in_locale)
+    warnings = MagicMock()
+    monkeypatch.setattr(signals.logger, 'warning', warnings)
+    calls_at_progress = []
+    attempts = 3 if recover else MEMORY_LIVENESS_MAX_ATTEMPTS
+    started = False
+    async def next_tick(_delay):
+        nonlocal started
+        if not started:
+            started = True
+            return
+        calls_at_progress.append(extract.await_count)
+        tick = len(calls_at_progress)
+        if tick < attempts:
+            assert state['last_check_ts'] == cursor.isoformat()
+            assert list(state['a_extract_failures'].values()) == [tick]
+        else:
+            assert state['last_check_ts'] == now.isoformat()
+            assert state['a_extract_failures'] == {}
+        if tick == attempts + 1:
+            raise asyncio.CancelledError
+    monkeypatch.setattr(signals.asyncio, 'sleep', next_tick)
+    with pytest.raises(asyncio.CancelledError):
+        await signals._periodic_signal_extraction_loop()
+    assert extract.await_count == attempts
+    assert calls_at_progress[-1] == attempts
+    assert any('dead-letter' in str(call) for call in warnings.call_args_list) == (not recover)
+    facts.amark_signal_processed.assert_not_called()
+
+
 @pytest.mark.unit
 def test_path_a_bump_failure_under_threshold_returns_false():
     """N-1 failures return False, retaining the caller's keep-cursor-and-retry path."""
@@ -171,10 +238,12 @@ def test_path_b_bump_failure_at_threshold_forces_cursor():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_run_path_b_persisted_none_triggers_dead_letter_at_threshold():
+@pytest.mark.parametrize('failure', [None, 'retired_correction_time_unavailable', 'retired_assertion_source_time_unavailable'])
+async def test_run_path_b_terminal_failure_triggers_dead_letter_at_threshold(failure):
     """End-to-end: _run_path_b forces last_b_check_ts on the Nth persisted=None result."""
     from app import memory_server
     from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+    from memory.long_term_sync import FactEvidenceUnavailable
 
     last_a_msg_ts = datetime(2026, 5, 18, 12, 0, 0)
     last_b = last_a_msg_ts - timedelta(minutes=10)
@@ -195,15 +264,22 @@ async def test_run_path_b_persisted_none_triggers_dead_letter_at_threshold():
     ]
 
     fake_time_manager = MagicMock()
-    fake_time_manager.aretrieve_original_by_timeframe = AsyncMock(return_value=rows)
+    async def read_rows(_name, start, end, **kwargs):
+        return [row for row in rows if start <= row[0] <= end]
+    fake_time_manager.aretrieve_original_by_timeframe = AsyncMock(side_effect=read_rows)
     fake_fact_store = MagicMock()
     fake_fact_store.aload_facts = AsyncMock(return_value=[])
     fake_fact_store.aextract_facts_with_known_pool = AsyncMock(return_value=None)
+    if failure:
+        fake_fact_store.aextract_facts_with_known_pool.side_effect = FactEvidenceUnavailable(failure)
 
     with patch.object(memory_server.runtime, 'time_manager', fake_time_manager), \
          patch.object(memory_server.runtime, 'fact_store', fake_fact_store):
         for i in range(MEMORY_LIVENESS_MAX_ATTEMPTS):
             await memory_server._run_path_b('neko_test_b_e2e', state)
+            if i < MEMORY_LIVENESS_MAX_ATTEMPTS - 1:
+                assert state['last_b_check_ts'] == last_b
+        await memory_server._run_path_b('neko_test_b_e2e', state)
 
     # Nth failure: force last_b_check_ts to last_fetched_ts, the last row timestamp.
     expected_force_to = base + timedelta(seconds=10)
@@ -213,6 +289,7 @@ async def test_run_path_b_persisted_none_triggers_dead_letter_at_threshold():
     )
     # Reset counter.
     assert state.get('b_extract_failures', {}) == {}
+    assert fake_fact_store.aextract_facts_with_known_pool.await_count == MEMORY_LIVENESS_MAX_ATTEMPTS
 
 
 # ─────────────────────────────────────────────────────────────────────

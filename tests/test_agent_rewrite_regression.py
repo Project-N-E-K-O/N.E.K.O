@@ -4574,22 +4574,22 @@ def test_cross_server_session_end_uses_settle_for_zero_remaining():
     """session end must call /settle when everything was already /cache-synced."""
     source = Path("main_logic/cross_server.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
-    assignments = {}
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
-            continue
-        for target in node.targets:
-            if isinstance(target, ast.Name) and target.id in {"_settle_endpoint", "_settle_payload"}:
-                assignments[target.id] = ast.dump(node.value, include_attributes=False)
+    settle = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_settle_session_end"
+    )
+    assignments = [
+        ast.dump(node.value, include_attributes=False)
+        for node in ast.walk(settle)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "endpoint" for t in node.targets)
+    ]
 
-    assert assignments["_settle_endpoint"] == ast.dump(
-        ast.parse('"process" if remaining else "settle"', mode="eval").body,
+    # The payload already includes turn-end messages /cache did not accept (memory_carry).
+    assert ast.dump(
+        ast.parse('"process" if payload else "settle"', mode="eval").body,
         include_attributes=False,
-    )
-    assert assignments["_settle_payload"] == ast.dump(
-        ast.parse("remaining if remaining else []", mode="eval").body,
-        include_attributes=False,
-    )
+    ) in assignments
 
 
 def test_cross_server_memory_cache_failure_paths_are_selective():

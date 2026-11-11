@@ -3609,16 +3609,10 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor.is-th
   pointer-events: none;
 }
 
-/* 选择层打开时弱化普通历史消息，但串门结束与日记确认等系统提示必须保持可读。
-   不能直接给 scroll 容器降透明度，否则系统提示再清晰的底色也会被整层压暗。 */
-.compact-export-history-anchor.under-choice-prompt .compact-export-history-message:not(.is-system) {
+/* 选择层覆盖历史区时统一弱化所有消息，包括串门结束与日记确认等系统提示。 */
+.compact-export-history-anchor.under-choice-prompt .compact-export-history-message {
   opacity: 0.32;
   filter: blur(1.5px);
-}
-
-.compact-export-history-anchor.under-choice-prompt .compact-export-history-message.is-system {
-  opacity: 1;
-  filter: none;
 }
 
 .compact-export-history-anchor.under-choice-prompt .compact-export-history-bubble,
@@ -3931,6 +3925,11 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor.is-th
 .compact-export-history-resize-bar:hover::after,
 .compact-export-history-resize-bar.is-active::after {
   opacity: 0.55;
+}
+
+/* 遮挡时调整条已禁用，连同悬停抓手一起隐藏；保留占位以免历史消息跳动。 */
+.compact-export-history-anchor.under-choice-prompt .compact-export-history-resize-bar {
+  visibility: hidden;
 }
 
 .compact-export-history-check {
@@ -10675,3 +10674,166 @@ body.avatar-tool-editor-page .avatar-tool-workspace-settings {
 .music-recommendation-icon .recommendation-neko-artwork,
 .proactive-recommendation-bubble .neko-recommendation-icon .recommendation-neko-artwork { width: 20px; height: 20px; }
 .mini-game-invite-icon .recommendation-neko-artwork { width: 28px; height: 28px; }
+
+/* Quiet edge tools: keep history geometry intact and share the cyan toolbar ink. */
+.compact-export-history-anchor:has(.chat-clear-screen-tools) {
+  --compact-export-history-shadow-gutter-right: 56px;
+}
+
+.chat-clear-screen-tools {
+  position: absolute;
+  right: 24px;
+  bottom: 0;
+  z-index: 3;
+  display: flex;
+  pointer-events: none;
+}
+
+.chat-clear-screen-tools.is-selecting {
+  bottom: calc(var(--compact-export-controls-expanded-block-size) + 8px);
+}
+
+.chat-clear-screen-button {
+  --clear-ink: #2bbce9;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  padding: 6px;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--clear-ink);
+  cursor: pointer;
+  pointer-events: auto;
+  touch-action: manipulation;
+  -webkit-app-region: no-drag;
+  transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease, opacity 160ms ease;
+}
+
+.chat-clear-screen-art {
+  width: 20px;
+  height: 20px;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.chat-clear-screen-brush {
+  transform-origin: 12px 12px;
+  transition: transform 180ms ease, opacity 140ms ease;
+}
+
+.chat-clear-screen-sparkles {
+  opacity: .65;
+  transition: opacity 180ms ease;
+}
+
+.chat-clear-screen-check {
+  opacity: 0;
+  stroke-dasharray: 18;
+  stroke-dashoffset: 18;
+  transition: opacity 140ms ease, stroke-dashoffset 240ms ease;
+}
+
+.chat-clear-screen-button:hover:not(:disabled),
+.chat-clear-screen-button:focus-visible {
+  background: rgba(255, 255, 255, calc(.9 * var(--neko-chat-opacity-factor, 1)));
+  border-color: rgba(87, 199, 232, .24);
+  box-shadow: 0 2px 10px rgba(55, 151, 189, .12), inset 0 1px 0 rgba(255, 255, 255, .8);
+}
+
+.chat-clear-screen-button:hover:not(:disabled) .chat-clear-screen-brush {
+  transform: rotate(-10deg) translateY(-1px);
+}
+
+.chat-clear-screen-button:hover:not(:disabled) .chat-clear-screen-sparkles {
+  opacity: 1;
+}
+
+.chat-clear-screen-button:focus-visible {
+  outline: 2px solid rgba(43, 188, 233, .6);
+  outline-offset: 3px;
+}
+
+.chat-clear-screen-button:active:not(:disabled) .chat-clear-screen-art {
+  transform: scale(.9);
+}
+
+.chat-clear-screen-button:disabled {
+  opacity: .28;
+  cursor: default;
+}
+
+.chat-clear-screen-button[data-cleared="true"] {
+  opacity: 1;
+  background: rgba(79, 204, 235, .1);
+}
+
+.chat-clear-screen-button[data-cleared="true"] .chat-clear-screen-brush,
+.chat-clear-screen-button[data-cleared="true"] .chat-clear-screen-sparkles {
+  opacity: 0;
+}
+
+.chat-clear-screen-button[data-cleared="true"] .chat-clear-screen-check {
+  opacity: 1;
+  stroke-dashoffset: 0;
+}
+
+.chat-clear-screen-announcement {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.full-chat-clear-screen-tools {
+  top: 8px;
+  right: 14px;
+  bottom: auto;
+  z-index: 2;
+}
+
+[data-theme="dark"] .chat-clear-screen-button {
+  --clear-ink: #73d9f5;
+}
+
+[data-theme="dark"] .chat-clear-screen-button:hover:not(:disabled),
+[data-theme="dark"] .chat-clear-screen-button:focus-visible {
+  background: rgba(39, 58, 74, calc(.94 * var(--neko-chat-opacity-factor, 1)));
+  border-color: rgba(115, 217, 245, .2);
+  box-shadow: 0 3px 12px rgba(0, 0, 0, .14);
+}
+
+@media (pointer: coarse) {
+  .chat-clear-screen-button {
+    width: 44px;
+    height: 44px;
+  }
+
+  .compact-export-history-anchor:has(.chat-clear-screen-tools) {
+    --compact-export-history-shadow-gutter-right: 68px;
+  }
+
+  .full-chat-clear-screen-tools {
+    top: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-clear-screen-button,
+  .chat-clear-screen-brush,
+  .chat-clear-screen-sparkles,
+  .chat-clear-screen-check {
+    transition: none;
+  }
+
+  .chat-clear-screen-button:hover:not(:disabled) .chat-clear-screen-brush,
+  .chat-clear-screen-button:active:not(:disabled) .chat-clear-screen-art {
+    transform: none;
+  }
+}

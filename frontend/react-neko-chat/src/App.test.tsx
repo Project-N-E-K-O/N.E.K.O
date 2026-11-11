@@ -2182,6 +2182,20 @@ describe('App', () => {
     expect(anchor).not.toHaveClass('controls-collapsed');
   });
 
+  it('select all after clear selects only newly visible messages', async () => {
+    localStorage.setItem('neko.reactChatWindow.compactExportHistoryOpen', 'true');
+    const old = parseChatMessage({id:'hidden-export',role:'assistant',author:'Neko',time:'',blocks:[{type:'text',text:'Hidden'}]});
+    const fresh = parseChatMessage({id:'new-export',role:'assistant',author:'Neko',time:'',blocks:[{type:'text',text:'Visible'}]});
+    const {container, rerender} = render(<App messages={[old]} />);
+    fireEvent.click(screen.getByRole('button', {name:'Clear screen'}));
+    rerender(<App messages={[old,fresh]} />);
+    await clickCompactExportTool();
+    fireEvent.click(screen.getByRole('button', {name:'Select All'}));
+    expect(container.querySelector('.compact-export-history-count')).toHaveTextContent('1/1');
+    expect(container.querySelectorAll('.compact-export-history-message.is-selected')).toHaveLength(1);
+    expect(container.querySelector('.compact-export-history-message.is-selected')).toHaveTextContent('Visible');
+  });
+
   it('selects compact history bubbles and reuses the same selection in inline preview', async () => {
     const assistantMessage = parseChatMessage({
       id: 'assistant-history-select',

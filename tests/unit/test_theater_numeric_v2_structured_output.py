@@ -248,7 +248,7 @@ async def test_review_attaches_schema_without_touching_evaluator_model_parameter
         return Client()
     monkeypatch.setattr(evaluator, '_model_config', config)
     monkeypatch.setattr(evaluator, 'create_chat_llm_async', factory)
-    monkeypatch.setattr(evaluator, 'focus_extra_body', lambda _: {'enable_thinking': True, 'thinking_budget': 512})
+    monkeypatch.setattr(evaluator, 'focus_extra_body', lambda *_: {'enable_thinking': True, 'thinking_budget': 512})
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = engine.create_session(session_id='schema', catgirl_binding={'catgirl_name': '猫娘'}, opening_performance={'performance': '你好。'})
     result = await evaluator.NumericV2MetricEvaluator(object()).validate_transition_offer(engine=engine, session=session, message='继续。', actor_performance={'performance': '我等你。', 'suggested_inputs': []}, dispute_review=dispute)

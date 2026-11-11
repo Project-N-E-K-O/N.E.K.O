@@ -534,3 +534,40 @@ It demonstrates:
 - toast and confirm dialog
 - plugin-local i18n
 - hosted TSX tests
+
+## Request focus mode or fullscreen
+
+Static UI and Hosted TSX share host confirmation for the visible panel; guides/docs are excluded.
+`focus` hides sidebar/page controls, and `fullscreen` fills the screen. The iframe stays mounted.
+
+```tsx
+const result = await props.api.display.requestMode("fullscreen") // or "focus"
+const state = await props.api.display.getState()
+const unsubscribe = props.api.display.onStateChange(state => { /* update UI */ })
+// Call unsubscribe in effect cleanup.
+await props.api.display.exit()
+```
+
+Static pages use the same API through `NekoPluginDisplay`:
+
+```html
+<script src="/plugin-ui-sdk/display.js"></script>
+<button id="expand">Expand panel</button>
+<script>
+document.getElementById("expand").onclick = () => NekoPluginDisplay.requestMode("focus")
+</script>
+```
+
+`getState()` returns `{ mode, supportedModes }`; mode is `normal`, `focus`, or `fullscreen`.
+Requests return `{ status, state, reason? }`. Status is `applied`, `declined`, `unsupported`,
+`cancelled`, `busy`, or `failed`. Repeating the current mode succeeds without another prompt.
+A static page opened without a parent host returns `unsupported`.
+
+- Host consent is required. Its confirmation click calls the Fullscreen API directly; no Python action is needed.
+- Confirmation has no ordinary action timeout; confirmation, dismissal, or document teardown finishes it.
+- Another fullscreen owner or an unfinished native transition returns `busy`; native failure returns `failed` without a mode fallback.
+- Exit restores the layout from before the session; an explicit host focus exit keeps the chosen normal layout.
+- The client waits for the host load handshake before sending requests; reconnecting refreshes state listeners, including cached-document restores.
+- Panel changes, navigation, and document replacement end the old session. Clients register/dispose on `pageshow` / `pagehide`; stale replies are ignored, and disposed `getState()` queries reject with `AbortError`.
+
+Desktop fullscreen requires matching Electron host support. Native window resize/maximize APIs are not exposed.

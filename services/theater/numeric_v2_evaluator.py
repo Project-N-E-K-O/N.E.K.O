@@ -4897,7 +4897,7 @@ class NumericV2MetricEvaluator:
             )
         config = await _model_config(self.config_manager)
         # Override registered thinking parameters for this call only, without changing ordinary chat/later quick-review settings.
-        extra_body = focus_extra_body(str(config["model"])) if dispute_review else None
+        extra_body = focus_extra_body(str(config["model"]), str(config["base_url"])) if dispute_review else None
         if dispute_review and extra_body is None:
             raise NumericV2EvaluatorUnavailableError("numeric_v2_dispute_review_unavailable")
         default_timeout = NUMERIC_V2_DISPUTE_JUDGE_TIMEOUT_SECONDS if dispute_review else NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS

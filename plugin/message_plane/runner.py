@@ -7,6 +7,7 @@ import socket
 import threading
 import time
 from dataclasses import dataclass
+from typing import Any, Callable
 
 from plugin.logging_config import logger
 
@@ -164,8 +165,15 @@ def _rpc_health_check(endpoint: str, *, timeout_s: float = 1.0) -> bool:
 
 
 class PythonMessagePlaneRunner(MessagePlaneRunner):
-    def __init__(self, *, endpoints: MessagePlaneEndpoints, auth_token: str) -> None:
+    def __init__(
+        self,
+        *,
+        endpoints: MessagePlaneEndpoints,
+        auth_token: str,
+        on_record_accepted: Callable[[dict[str, Any]], None] | None = None,
+    ) -> None:
         self._endpoints = endpoints
+        self._on_record_accepted = on_record_accepted
         # Injected rather than read from a global: the plane must only accept
         # writes from the process that started it.
         self._auth_token = str(auth_token or "").strip()
@@ -177,6 +185,34 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
         self._rpc = None
         self._ingest = None
         self._pub = None
+        self._stores = None
+
+    def get_conversation_message(self, message_id: str) -> dict[str, Any] | None:
+        stores = self._stores
+        if stores is None:
+            return None
+        store = stores.get("conversations")
+        return store.conversation_message(message_id) if store is not None else None
+
+    def update_conversation_message(self, message_id: str, fields: dict[str, Any]) -> dict[str, Any] | None:
+        from plugin.sdk.shared.contracts.conversations import message_from_event
+
+        stores = self._stores
+        if stores is None:
+            return None
+        store = stores.get("conversations")
+        if store is None:
+            return None
+        event = store.patch_conversation(message_id, fields)
+        if event is None:
+            return None
+        message = message_from_event(event)
+        if self._on_record_accepted is not None:
+            try:
+                self._on_record_accepted(event)
+            except Exception:
+                logger.exception("message plane record observer failed")
+        return message
 
     def _cleanup_embedded(
         self,
@@ -226,6 +262,7 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
         self._rpc = None
         self._ingest = None
         self._pub = None
+        self._stores = None
         self._thread = None
         self._ingest_thread = None
 
@@ -261,6 +298,7 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
                 stores=stores,
                 pub_server=pub_srv,
                 auth_token=self._auth_token,
+                on_record_accepted=self._on_record_accepted,
             )
             rpc_srv = MessagePlaneRpcServer(endpoint=str(self._endpoints.rpc), pub_server=pub_srv, stores=stores)
 
@@ -282,6 +320,7 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
             self._thread = t
             self._ingest_thread = ingest_thread
             self._rpc = rpc_srv
+            self._stores = stores
             self._ingest = ingest_srv
             self._pub = pub_srv
             logger.info("message_plane embedded started")
@@ -322,6 +361,7 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
         self._rpc = None
         self._ingest = None
         self._pub = None
+        self._stores = None
         self._thread = None
         self._ingest_thread = None
 
@@ -403,7 +443,11 @@ def _resolve_endpoint_with_fallback(endpoint: str, used_ports: set[tuple[str, in
     return endpoint
 
 
-def build_message_plane_runner(*, auth_token: str) -> MessagePlaneRunner:
+def build_message_plane_runner(
+    *,
+    auth_token: str,
+    on_record_accepted: Callable[[dict[str, Any]], None] | None = None,
+) -> MessagePlaneRunner:
     from plugin.settings import (
         MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT,
         MESSAGE_PLANE_ZMQ_PUB_ENDPOINT,
@@ -429,4 +473,8 @@ def build_message_plane_runner(*, auth_token: str) -> MessagePlaneRunner:
         ingest=ingest_ep,
     )
 
-    return PythonMessagePlaneRunner(endpoints=endpoints, auth_token=auth_token)
+    return PythonMessagePlaneRunner(
+        endpoints=endpoints,
+        auth_token=auth_token,
+        on_record_accepted=on_record_accepted,
+    )

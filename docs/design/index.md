@@ -23,6 +23,7 @@ These documents preserve design intent and implementation context. They are grou
 - [Compact chat mode](./compact-chat-mode-design)
 - [Memory event journal](./memory-event-log-rfc)
 - [User-driven memory evidence](./memory-evidence-rfc)
+- [Learned-memory sync across devices, schema 3](./long-term-memory-sync-v3)
 - [Plugin control requests and entry execution](./plugin-control-rpc)
 - [PNGTuber lightweight avatar](./pngtuber-lightweight-avatar-plan)
 - [Translation subtitle panel](./translation-subtitle-panel-design)
@@ -32,6 +33,7 @@ These documents preserve design intent and implementation context. They are grou
 
 ## N.E.K.O 小剧场与剧本工坊
 
+- [小剧场体验目标与设计约束](./neko-theater-optimization-plan)：当前产品目标、职责与事实权限、运行交付与工坊发布边界、验证方法及维护责任。
 - [小剧场架构](./neko-theater-architecture)：当前唯一的实现合同——模块与权限、Story Package／Session／Ledger／记忆归档数据合同、回合流水线、复核与确定性检查、生命周期事务、胶囊展示合同与当前固定模块配置。
 - [小剧场设计决策记录](./neko-theater-decisions)：关键取舍、被否决方案及已知风险与未验证范围。
 
@@ -43,6 +45,7 @@ These documents preserve design intent and implementation context. They are grou
 - [Floating avatar panel functions](./avatar-floating-panel-functions)
 - [Post-tutorial low-disruption chat branches](./avatar-floating-post-theater-chat-branches)
 - [CAT1 Playground Drop](./cat1-playground-drop-design)
+- [Cat-form visits: maintained product design](./cat-form-visits) — Chinese-only. The long-term baseline for the friend entry, visible flow, dual-cat ownership, host-authoritative shared world, exit behavior and regression acceptance.
 - [Focus / True-Name mode](./focus-truename-mode)
 - [Memory-browser particle dissolve](./memory-browser-particle-dissolve)
 - [Yui guide-system cursor hiding](./yui-guide-system-cursor-hiding)

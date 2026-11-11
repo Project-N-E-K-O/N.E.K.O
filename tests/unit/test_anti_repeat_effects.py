@@ -234,6 +234,21 @@ def test_unattributed_decision_keeps_aggregate_without_text(tmp_path):
     assert result["patterns"] == []
 
 
+def test_topic_and_phrase_hints_are_counted_separately(tmp_path):
+    """Two session-start hints, two counters: neither may absorb the other."""
+    store = _store(tmp_path)
+    store.record_soft_hint("Neko", now=1_700_000_000.0)
+    store.record_phrase_hint("Neko", now=1_700_000_000.0)
+    store.record_phrase_hint("Neko", now=1_700_000_000.0)
+
+    totals = store.query_effects("Neko", 7, now=1_700_000_000.0)["totals"]
+    assert totals["soft_hint_injected"] == 1
+    assert totals["phrase_hint_injected"] == 2
+
+    reloaded = _store(tmp_path).query_effects("Neko", 7, now=1_700_000_000.0)["totals"]
+    assert reloaded["phrase_hint_injected"] == 2, "the counter must survive a reload"
+
+
 def test_query_missing_store_does_not_create_character_directory(tmp_path):
     store = _store(tmp_path)
     result = store.query_effects("Missing", 30, now=1_700_000_000.0)

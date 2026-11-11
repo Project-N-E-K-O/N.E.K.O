@@ -156,7 +156,7 @@ async def test_formal_and_dispute_output_room_stays_independent_of_ordinary_floo
     async def factory(*args, **kwargs): options.append(kwargs); return Client()
     monkeypatch.setattr(ev, '_model_config', config)
     monkeypatch.setattr(ev, 'create_chat_llm_async', factory)
-    monkeypatch.setattr(ev, 'focus_extra_body', lambda _: {'enable_thinking': True})
+    monkeypatch.setattr(ev, 'focus_extra_body', lambda *_: {'enable_thinking': True})
     case = initiation_case(); engine = case['engine']; session = case['session']
     outcome = engine.resolve_turn(session, TurnRequestV2('go', 0, '好。'), (), transition_intent='accept')
     evaluator = ev.NumericV2MetricEvaluator(object())

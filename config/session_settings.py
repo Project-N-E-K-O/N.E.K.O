@@ -184,6 +184,71 @@ ANTI_REPEAT_VERBATIM_GUARD_SOURCE_TAGS = frozenset({"MEME"})
   dropping only if the rewrite remains verbatim.
 - Nonfresh material uses full dialogue checks like other channels; this exemption is inactive."""
 
+# ── Habitual-phrase avoid list (cross-session catchphrases) ───
+HABITUAL_PHRASE_SOURCE_REPLY_LIMIT = 200
+"""Latest assistant replies read from time_indexed.db per recompute.
+- Purpose: memory/habitual_phrases.py mines this window for phrases she keeps reusing.
+- Rationale: twice the review panel's 100, so a light user's window still spans
+  several days and a heavy user's spans several sittings; mining stays well inside the
+  miner's occurrence budget at typical reply lengths."""
+
+HABITUAL_PHRASE_MIN_SESSIONS = 4
+"""Minimum distinct sessions a phrase must appear in to count as a habit.
+- Purpose: the cross-session criterion; a burst of repetition inside one session
+  never qualifies however dense it is.
+- Rationale: measured on local history, 3 let through what recurs for a few days and
+  then stops: a topic being discussed, a stream viewer's name, a plugin's thank-you
+  line. 4 drops those at the cost of noticing a real habit one session later."""
+
+HABITUAL_PHRASE_SESSION_GAP_SECONDS = 1800.0
+"""Silence between two replies that starts a new session for the criterion above.
+- Purpose: time_indexed.db rows carry one id per memory write batch, not per sitting,
+  so sessions are rebuilt from reply timestamps.
+- Rationale: 30 minutes separates sittings without splitting one ongoing chat; a new day
+  is always a new session once the gap is crossed."""
+
+HABITUAL_PHRASE_MAX_ITEMS = 8
+"""Most phrases suppressed at once per character, in rank order (sessions, days, occurrences).
+- Purpose: caps the session-start prompt list.
+- Rationale: a short list the model can actually honour; more turns into noise."""
+
+HABITUAL_PHRASE_CANDIDATE_POOL = 16
+"""Ranked candidates the rules hand on to the review; the suppressed list is drawn from them.
+- Purpose: room for the review to turn some down and still fill HABITUAL_PHRASE_MAX_ITEMS,
+  and the list the memory browser shows with each one's verdict.
+- Rationale: twice the suppressed cap; the review then judges at most this many new phrases
+  per recompute, in one call."""
+
+HABITUAL_PHRASE_REVIEW_INPUT_MAX_TOKENS = 1600
+"""Token budget for the candidate block of the review prompt (phrases plus quoted excerpts).
+- Purpose: whole candidates past the budget are left unjudged until the next recompute.
+- Rationale: 16 candidates with two short excerpts each fit with room to spare."""
+
+HABITUAL_PHRASE_REVIEW_CARD_MAX_TOKENS = 400
+"""Token budget for the character card shown to the review, which judges against it."""
+
+HABITUAL_PHRASE_REVIEW_MAX_AGE_SECONDS = 30 * 86400.0
+"""How long a review verdict is reused before the phrase is judged again.
+- Purpose: verdicts are cached per phrase, so a daily recompute only asks about new ones.
+- Rationale: a month lets a phrase whose use has changed be seen afresh without paying for
+  the same judgement every day."""
+
+HABITUAL_PHRASE_PROMPT_MAX_TOKENS = 160
+"""Token budget for the whole rendered avoid-list block (header, items and closing line).
+- Purpose: lowest-ranked phrases are dropped until the block fits.
+- Rationale: 8 short phrases plus the localized header fit with room to spare."""
+
+HABITUAL_PHRASE_REFRESH_INTERVAL_SECONDS = 86400.0
+"""Recompute the list for a character at most this often, and only while memory is idle.
+- Purpose: the background job's cadence; session start only reads the stored file.
+- Rationale: daily matches how fast a verbal habit forms or fades."""
+
+HABITUAL_PHRASE_MAX_AGE_SECONDS = 7 * 86400.0
+"""A stored list older than this is ignored at session start.
+- Purpose: entries are never permanent. A recompute rewrites the whole list, so a phrase
+  she stopped using drops out; this bound covers recomputes that keep failing.
+- Rationale: a week of missed daily refreshes means the list no longer describes her."""
+
 AVATAR_INTERACTION_DEDUPE_MAX_ITEMS = 32
 """_recent_avatar_interaction_ids deque maxlen.
 - Purpose: deduplicate processed avatar interaction IDs.

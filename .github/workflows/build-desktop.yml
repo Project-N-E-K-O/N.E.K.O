@@ -115,6 +115,24 @@ jobs:
             DATE=$(date +%Y%m%d)
             VERSION="${DATE}-${COMMIT_SHORT}"
           fi
+          # Tag / manual versions end up in package.json, and electron-builder
+          # only accepts semver (X.Y.Z[-pre][+build]). Reject anything else here
+          # so a typo like "0.9.1.0" fails in seconds, not after the 2h backend build.
+          if [[ "$GITHUB_REF" == refs/tags/v* || -n "$INPUT_VERSION" ]]; then
+            # semver.org grammar: no leading zeros in numeric parts, no empty identifiers.
+            NUM='(0|[1-9][0-9]*)'
+            PRE_ID='(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
+            BUILD_ID='[0-9A-Za-z-]+'
+            SEMVER_RE="^${NUM}\.${NUM}\.${NUM}(-${PRE_ID}(\.${PRE_ID})*)?(\+${BUILD_ID}(\.${BUILD_ID})*)?$"
+            # Validate the exact value written to the output (only a leading "v" is
+            # dropped), so newlines or shell syntax can never reach later steps.
+            VERSION="${VERSION#v}"
+            if [[ ! "$VERSION" =~ $SEMVER_RE ]]; then
+              # %q keeps a hostile value from injecting workflow commands via newlines.
+              echo "::error::Version $(printf '%q' "$VERSION") is not semver (expected X.Y.Z or X.Y.Z-pre, e.g. 0.9.1 / 1.0.0-beta.1)"
+              exit 1
+            fi
+          fi
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           echo "Resolved version: $VERSION"
 

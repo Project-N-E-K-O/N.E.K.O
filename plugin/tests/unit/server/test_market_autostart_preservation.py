@@ -20,11 +20,11 @@ from plugin import settings
 from plugin.neko_plugin_cli.public import build_plugin
 from plugin.server.application.plugin_cli import service as cli_service
 from plugin.server.application.install_source.models import LockEntry
-from plugin.server.application.plugins import development
 from plugin.server.application.plugins.installation_transactions import replace
 from plugin.server.infrastructure import autostart_approvals, runtime_overrides
 from plugin.server.routes import market_bridge
 from plugin.server.domain.errors import ServerDomainError
+from plugin.server.infrastructure import authoring_project_store
 
 pytestmark = pytest.mark.plugin_unit
 
@@ -82,7 +82,8 @@ def market_install_environment(
     monkeypatch.setattr(autostart_approvals, "_cache", set(pending_store))
     monkeypatch.setattr(autostart_approvals, "_load_failed", False)
     monkeypatch.setattr(autostart_approvals, "_save_locked", save_pending)
-    monkeypatch.setattr(development, "list_registration_records_sync", lambda: [])
+    # Keep the real user workbench out of discovery and install planning.
+    monkeypatch.setattr(authoring_project_store, "list_records", lambda: [])
 
     entry = LockEntry(
         root_id="user", channel="market", directory_name=PLUGIN_ID, plugin_id=PLUGIN_ID,

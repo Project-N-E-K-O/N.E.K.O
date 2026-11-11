@@ -330,7 +330,7 @@ async def test_real_acceptance_review_call_supplies_original_invitation_and_pars
     async def factory(*args, **kwargs): return Client()
     monkeypatch.setattr(ev, '_model_config', config)
     monkeypatch.setattr(ev, 'create_chat_llm_async', factory)
-    monkeypatch.setattr(ev, 'focus_extra_body', lambda _: {'enable_thinking': True})
+    monkeypatch.setattr(ev, 'focus_extra_body', lambda *_: {'enable_thinking': True})
     review = await ev.NumericV2MetricEvaluator(object()).validate_transition_offer(engine=engine, session=session,
         message='好，走吧。', actor_performance=candidate, transition_outcome=outcome, dispute_review=disputed)
     assert review.acceptance_authorized is False and review.body_violations == ('player_action',)

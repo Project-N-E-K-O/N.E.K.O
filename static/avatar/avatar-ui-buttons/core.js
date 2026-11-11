@@ -248,6 +248,7 @@ function _removeFloatingButtonsElement(el) {
         const returnButton = el.querySelector('.neko-idle-return-btn');
         if (returnButton) {
             _cancelNekoIdleCat1EatAction(returnButton, { restoreArt: false });
+            _cancelNekoIdleCat1VisualAction(returnButton, { restoreArt: false, reason: 'container-removed' });
             _cancelNekoIdleCat1StretchAction(returnButton, { restoreArt: false });
             _cancelNekoIdleCat1PlayAction(returnButton, { restoreArt: false });
             _finishNekoIdleReturnDragAction(returnButton, { restoreArt: false });
@@ -385,6 +386,8 @@ const _NEKO_CAT_MIND_ACTION_IDS = Object.freeze({
     CAT1_EAT_SNACK: 'cat1_eat_snack',
     CAT1_SMALL_MOVE: 'cat1_small_move',
     CAT1_PLAY_YARN: 'cat1_play_yarn',
+    CAT1_IDLE_RANDOM: 'cat1_idle_random',
+    CAT1_INACTIVE_SAD: 'cat1_inactive_sad',
     CAT2_NAP_FEEDBACK: 'cat2_nap_feedback',
     CAT3_SLEEP_FEEDBACK: 'cat3_sleep_feedback'
 });
@@ -499,6 +502,12 @@ function _getNekoCatAppearanceUrls(slot) {
     const result = _NEKO_CAT_RESOURCE_REGISTRY && _NEKO_CAT_RESOURCE_REGISTRY.getAppearance(slot, { random: false });
     return result && result.available ? result.urls : [];
 }
+function _getNekoCatAppearanceDurationMs(assetUrl) {
+    if (!_NEKO_CAT_RESOURCE_REGISTRY ||
+        typeof _NEKO_CAT_RESOURCE_REGISTRY.getAppearanceDurationMs !== 'function') return 0;
+    const durationMs = Number(_NEKO_CAT_RESOURCE_REGISTRY.getAppearanceDurationMs(assetUrl));
+    return Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 0;
+}
 function _getNekoCatVoiceUrls(slot) {
     const result = _NEKO_CAT_RESOURCE_REGISTRY && _NEKO_CAT_RESOURCE_REGISTRY.getVoice(slot, { random: false });
     return result && result.available ? result.urls : [];
@@ -612,7 +621,11 @@ let _nekoIdleCat1PlaygroundViewportTopPx = null;
 let _nekoIdleCat1PlaygroundViewportLeftPx = null;
 let _nekoIdleCat1PlaygroundViewportRightPx = null;
 let _nekoIdleCat1PlaygroundViewportBottomRefreshSeq = 0;
-const _NEKO_IDLE_CAT1_EAT_ASSET_URL = _getNekoCatAppearanceUrl('action.cat1.eat', { random: false });
+const _NEKO_IDLE_CAT1_EAT_ASSET_SLOTS = Object.freeze([
+    'action.cat1.eat',
+    'action.cat1.eat_2',
+    'action.cat1.eat_3'
+]);
 const _NEKO_IDLE_CAT1_EAT_SOUND_VOLUME = 0.12;
 const _NEKO_IDLE_CAT1_EAT_SOUND_FALLBACK_MS = 5000;
 const _NEKO_IDLE_CAT1_PLAY_ASSET_URL = _getNekoCatAppearanceUrl('action.cat1.play_yarn', { random: false });

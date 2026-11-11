@@ -3,4 +3,5 @@
 from utils.long_term_memory_protocol import (  # noqa: F401
     mutation,
     head,
+    receipt,
 )

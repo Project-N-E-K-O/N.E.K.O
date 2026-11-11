@@ -35,7 +35,7 @@ const ASSIST_PROVIDERS = {
         summary_model: 'deepseek/deepseek-v4-flash',
         correction_model: 'deepseek/deepseek-v4-flash',
         emotion_model: 'qwen/qwen3.5-9b',
-        agent_model: 'google/gemini-3-flash-preview',
+        agent_model: 'google/gemini-3.8-flash',
     },
     qwen: {
         conversation_model: 'qwen3.8-flash',

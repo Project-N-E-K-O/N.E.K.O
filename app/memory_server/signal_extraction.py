@@ -45,6 +45,7 @@ from memory.event_log import (
     EVIDENCE_SOURCE_USER_KEYWORD_REBUT,
 )
 from memory.facts import FactExtractionFailed
+from memory.long_term_sync import FactEvidenceUnavailable
 
 from . import gates, runtime
 from ._shared import logger
@@ -165,7 +166,7 @@ def _stage1_path_a_bump_failure(
     *,
     processed_turns: int | None = None,
 ) -> bool:
-    """Liveness fallback for Path A Stage-1 LLM terminal failures.
+    """Liveness fallback for Path A extraction or unavailable evidence.
 
     Bumps the failure counter for the (cursor_key) current window; when it reaches
     ``MEMORY_LIVENESS_MAX_ATTEMPTS``, force-pushes the cursor to now (counts as
@@ -203,7 +204,7 @@ def _stage1_path_a_bump_failure(
 def _stage1_path_b_bump_failure(
     name: str, state: dict, cursor_key: str, force_to: datetime,
 ) -> bool:
-    """Liveness fallback for Path B Stage-1 LLM terminal failures (the dual of path A's).
+    """Liveness fallback for Path B extraction or unavailable evidence.
 
     Bumps the failure counter for the (cursor_key) current B window; when it
     reaches ``MEMORY_LIVENESS_MAX_ATTEMPTS``, force-pushes
@@ -329,6 +330,63 @@ async def _adispatch_evidence_signals(
                 f"[Signal] {lanlan_name}: aapply_signal 失败 ({target_type}/{target_id}): {e}"
             )
     return all_ok
+
+
+async def _unread_messages(name: str, passage: str, messages: list) -> list:
+    """Drop messages a pass on any device already read; an unreadable record skips nothing."""
+    from memory.extraction_progress import unprocessed
+    try:
+        done = set((await runtime.fact_store.aextraction_progress(name))[passage])
+    except Exception as e:
+        logger.debug(f"[SignalLoop] {name}: 读取提取进度失败，本窗口不跳过: {e}")
+        return messages
+    return unprocessed(messages, done) if done else messages
+
+
+def _organizes(name: str) -> bool:
+    from memory import organizer
+    return organizer.allowed(name)
+
+
+async def _judge_pending(name: str) -> None:
+    """Judge facts still waiting, without needing a conversation on this device.
+
+    A device that does not organize the character extracts facts and leaves
+    them unjudged; they reach the organizer in a snapshot and are judged here.
+    """
+    if not _organizes(name):
+        return
+    try:
+        signals, batch_fact_ids = await runtime.fact_store.adetect_pending_signals(
+            name,
+            reflection_engine=runtime.reflection_engine,
+            persona_manager=runtime.persona_manager,
+        )
+        if not batch_fact_ids:
+            return
+        if signals and not await _adispatch_evidence_signals(
+            name, signals, source=EVIDENCE_SOURCE_USER_FACT,
+        ):
+            # Left unjudged: the same batch is retried on the next tick.
+            return
+        await runtime.fact_store.amark_signal_processed(name, batch_fact_ids)
+        # The scores and the judged marks leave in one snapshot.
+        _publish_extraction(name)
+        try:
+            await runtime.reflection_engine.aauto_promote_stale(name)
+        except Exception as e:
+            logger.debug(f"[SignalLoop] {name}: auto_promote_stale 失败: {e}")
+    except Exception as e:
+        logger.debug(f"[SignalLoop] {name}: 独立判分本轮跳过: {e}")
+
+
+def _publish_extraction(name: str) -> None:
+    """Queue a snapshot after extraction; failures here never fail the extraction."""
+    try:
+        from .long_term_sync import queue_capture_after_extraction
+        queue_capture_after_extraction(name)
+    except Exception as e:
+        logger.debug(f"[SignalLoop] {name}: 提取后排队发布失败: {e}")
 
 
 async def _run_path_b(name: str, state: dict) -> None:
@@ -503,7 +561,12 @@ async def _run_path_b(name: str, state: dict) -> None:
         return
 
     from utils.llm_client import convert_to_messages
-    messages = convert_to_messages(message_dicts)
+    messages = await _unread_messages(name, 'b', convert_to_messages(message_dicts))
+    if not messages:
+        # Another device already read this whole window; nothing is sent to the model.
+        state['last_b_check_ts'] = last_fetched_ts
+        state['b_extract_failures'] = {}
+        return
 
     # Known-fact pool: use facts written by path A during / after this B window as do-not-repeat hints.
     # Apply only ``created_at >= last_b``, with no upper bound (CodeRabbit on PR #1408):
@@ -557,11 +620,15 @@ async def _run_path_b(name: str, state: dict) -> None:
     known_pool.sort(key=lambda f: -safe_importance(f))
     known_pool = known_pool[:MAX_KNOWN_POOL_FACTS]
 
-    persisted = await runtime.fact_store.aextract_facts_with_known_pool(
-        name, messages, known_pool,
-    )
+    try:
+        persisted = await runtime.fact_store.aextract_facts_with_known_pool(
+            name, messages, known_pool,
+            conversation_at=last_fetched_ts,
+        )
+    except FactEvidenceUnavailable:
+        persisted = None
     if persisted is None:
-        # Stage-1 LLM terminal failure (retries exhausted): retain cursor and retry the window on
+        # Terminal extraction failure or unavailable evidence: retain cursor and retry the window on
         # B's next trigger (fact dedup hashes prevent duplicate writes). Distinguishing None from [] is crucial:
         # treating failure as successful zero extraction would permanently skip the window (CodeRabbit / Codex
         # P1 round-2 on PR #1408）。
@@ -579,6 +646,7 @@ async def _run_path_b(name: str, state: dict) -> None:
                 f"{last_fetched_ts.isoformat(timespec='seconds')})"
             )
         return
+    _publish_extraction(name)
     if persisted:
         logger.info(
             f"[PathB] {name}: AI-aware Stage-1 抽出 {len(persisted)} 条新 fact "
@@ -660,6 +728,9 @@ async def _periodic_signal_extraction_loop():
             only advances on the fully successful path."""
             try:
                 if not _signal_check_should_run(name, now):
+                    # No conversation here to extract from; facts another device
+                    # extracted may still be waiting for this device to judge them.
+                    await _judge_pending(name)
                     return
                 processed_turns = processed_turns_by_name.get(name, 0)
                 # Window start: prefer the last successful check timestamp (cursor semantics), avoiding
@@ -673,6 +744,7 @@ async def _periodic_signal_extraction_loop():
                     _signal_check_mark_done(
                         name, now, processed_turns=processed_turns,
                     )
+                    await _judge_pending(name)
                     return
                 user_msgs_text = _extract_user_messages_from_rows(rows)
                 if not user_msgs_text:
@@ -688,28 +760,39 @@ async def _periodic_signal_extraction_loop():
                     _signal_check_mark_done(
                         name, now, processed_turns=processed_turns,
                     )
+                    await _judge_pending(name)
                     return
 
                 # Build BaseMessage-like structures for extract_facts.
                 from utils.llm_client import convert_to_messages
-                message_dicts = [
-                    {'type': 'human', 'data': {'content': m}}
-                    for m in user_msgs_text
-                ]
+                message_dicts = [row for row in _extract_role_tagged_messages_from_rows(rows) if row['type'] == 'human']
                 # convert_to_messages accepts only lists, no JSON decoding (contract since PR #547).
                 # The previous json.dumps hit isinstance(data, list)==False and returned [] directly,
                 # giving messages=[] and an empty _format_conversation output. The Stage-1 prompt
                 # then had no text between ======以下为对话====== and ======以上为对话======, so the LLM correctly
                 # returned [], silently skipping all fact extraction and subsequent Stage-2 evidence work.
-                messages = convert_to_messages(message_dicts)
+                messages = await _unread_messages(name, 'a', convert_to_messages(message_dicts))
+                if not messages:
+                    # Another device already read every message here: advance like a
+                    # window without user speech, without a model call.
+                    _signal_check_mark_done(
+                        name, now, processed_turns=processed_turns,
+                    )
+                    await _judge_pending(name)
+                    return
 
                 try:
                     persisted, signals, batch_fact_ids = await runtime.fact_store.aextract_facts_and_detect_signals(
                         name, messages,
                         reflection_engine=runtime.reflection_engine,
                         persona_manager=runtime.persona_manager,
+                        # The window may be a retry of an old one; pinned
+                        # entries are dated by its latest message.
+                        conversation_at=_coerce_db_ts(rows[-1][0]),
+                        # Extraction is every device's job; judging is the organizer's.
+                        judge=_organizes(name),
                     )
-                except FactExtractionFailed as e:
+                except (FactExtractionFailed, FactEvidenceUnavailable) as e:
                     # Stage-1 terminal failure — cursor NOT advanced, next
                     # cycle retries the same message window (§3.4.3)。
                     # Liveness fallback: repeated failures for one window reaching MEMORY_LIVENESS
@@ -738,6 +821,10 @@ async def _periodic_signal_extraction_loop():
                             f"[SignalLoop] {name}: Stage-1 失败保留 cursor 重试: {e}"
                         )
                     return
+
+                # The facts and the progress over this window are saved; other devices
+                # learn of both from the next snapshot instead of reading the window again.
+                _publish_extraction(name)
 
                 # Dispatch before mark_done: any intermediate aapply failure keeps
                 # cursor unchanged so next Stage-1 retries the same window; Stage-1
