@@ -71,3 +71,5 @@ def test_same_content_ignores_only_the_completion_time():
     assert not same_content(_document(), _document(progress={'a': ['a' * 32], 'b': []}))
     older = {'schemaVersion': 2, 'completedAt': 1, 'entries': [], 'evidence': {'retirements': [], 'confirmations': []}}
     assert same_content(older, _document())
+    rows = [{'kind': kind, 'subject': 'master', 'id': 'x', 'text': 'text', 'metadata': {}} for kind in ('persona', 'reflection')]
+    assert same_content(_document(entries=rows), _document(entries=rows[::-1]))

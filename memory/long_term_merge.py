@@ -52,11 +52,6 @@ def _key(row):
     return row['kind'], row['subject'], row['id']
 
 
-def _rank(row):
-    status = STATUS_RANK.get(row['metadata'].get('status'), STATUS_RANK['active'])
-    return max(status, STATUS_RANK['archived']) if row['metadata'].get('archived') else status
-
-
 def _corrections(row):
     return sum(1 for item in row['metadata'].get('versionHistory') or [] if item.get('reason') == 'correction')
 
@@ -110,24 +105,32 @@ def _merge_field(name, base_local, local, base_remote, remote, local_wins, has_b
 
 def _merge_entry(base_local, local, base_remote, remote):
     """Both sides hold the entry and at least one field differs on each."""
-    local_wins = _rank(local) > _rank(remote)
     has_base = base_local is not None or base_remote is not None
     old_local = {**(base_local['metadata'] if base_local else {}), **({'text': base_local['text']} if base_local else {})}
     old_remote = {**(base_remote['metadata'] if base_remote else {}), **({'text': base_remote['text']} if base_remote else {})}
     mine, theirs = {**local['metadata'], 'text': local['text']}, {**remote['metadata'], 'text': remote['text']}
-    merged = {}
-    for name in dict.fromkeys([*theirs, *mine]):
+
+    def resolve(name, local_wins):
         ours, yours = mine.get(name, _ABSENT), theirs.get(name, _ABSENT)
         before_ours, before_yours = old_local.get(name, _ABSENT), old_remote.get(name, _ABSENT)
         if has_base and ours == before_ours:
-            value = yours
-        elif has_base and yours == before_yours:
-            value = ours
-        elif ours == yours and (name not in COUNTERS or not has_base):
+            return yours
+        if has_base and yours == before_yours:
+            return ours
+        if ours == yours and (name not in COUNTERS or not has_base):
             # Two equal counters reached from one base are still two separate increments.
-            value = yours
-        else:
-            value = _merge_field(name, before_ours, ours, before_yours, yours, local_wins, has_base)
+            return yours
+        return _merge_field(name, before_ours, ours, before_yours, yours, local_wins, has_base)
+
+    # The lifecycle stage is settled first; a wording both sides rewrote then
+    # follows the side that reached that stage, or the published side when both did.
+    stage = {name: resolve(name, False) for name in ('status', 'archived')}
+    reached = stage
+    local_wins = (all(mine.get(name, _ABSENT) == reached[name] for name in reached)
+                  and any(theirs.get(name, _ABSENT) != reached[name] for name in reached))
+    merged = {}
+    for name in dict.fromkeys([*theirs, *mine]):
+        value = stage[name] if name in stage else resolve(name, local_wins)
         if value is not _ABSENT:
             merged[name] = deepcopy(value)
     text = merged.pop('text')
@@ -215,6 +218,7 @@ def merge_documents(base, local, remote, completed_at):
     another lineage was never read by the remote writer, so it proves nothing
     about deletions and is ignored.
     """
+    narrow = remote['schemaVersion'] == 1
     remote = upgraded(remote)
     if base is not None and (base['document'].get('lineage', 0) != remote.get('lineage', 0)):
         base = None
@@ -228,7 +232,11 @@ def merge_documents(base, local, remote, completed_at):
     for key in mine.keys() | theirs.keys() | before_local.keys() | before_remote.keys():
         ours, yours = mine.get(key), theirs.get(key)
         old_ours, old_yours = before_local.get(key), before_remote.get(key)
-        if ours == old_ours or ours == yours:
+        if (narrow and yours is None and ours is not None and key[0] == 'reflection'
+                and ours['metadata'].get('status') not in ('confirmed', 'promoted')):
+            # Schema 1 never carried these, so their absence is not a deletion.
+            chosen = ours
+        elif ours == old_ours or ours == yours:
             chosen = yours
         elif yours == old_yours:
             chosen = ours
@@ -271,5 +279,7 @@ def merge_documents(base, local, remote, completed_at):
 def same_content(left, right):
     """Whether two documents differ only in when they were completed."""
     def body(document):
-        return {name: value for name, value in upgraded(document).items() if name != 'completedAt'}
+        current = upgraded(document)
+        return {**{name: value for name, value in current.items() if name not in ('completedAt', 'entries')},
+                'entries': sorted(current['entries'], key=_key)}
     return body(left) == body(right)

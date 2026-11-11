@@ -14,6 +14,8 @@ from uuid import uuid4
 
 from memory.long_term_sync import DesktopLongTermAdapter, JOURNAL, LongTermMemoryRecoveryRequired, advance_view_generation, managed_path, view_files, export_document, import_document, read_views
 from memory.long_term_sync import LongTermArchiveSubjectUnavailable, LongTermMemoryCapacityExceeded, RetirementSubjectConflict, retirement_evidence, validate_retirement_subjects
+from memory.long_term_merge import merge_documents, same_content, upgraded
+from utils.long_term_memory_protocol import MAX_ENTRIES
 from memory.recent import _await_recent_mutation_to_completion as _complete_file_commit
 from services.chat_sync.long_term_protocol import head
 from services.chat_sync.long_term_events import changed
@@ -31,6 +33,7 @@ _EVENT = 'memory.long_term_replaced'
 _capture_tasks = {}
 _capture_requests = {}
 _capture_intents = {}
+_unpublished_after_apply = set()
 
 
 @contextmanager
@@ -171,8 +174,7 @@ def _retry_archive_diagnostic_cleanup(name, path, cleanup):
                 if _uid(name) != uid or _binding(uid) != binding or writer.epoch() != epoch:
                     path.unlink(missing_ok=True)
                     return
-                local = adapter.read_local(binding, epoch)
-                if not local or local['operationId'] != operation:
+                if f'download:{adapter.base_revision(binding, epoch)}' != operation:
                     path.unlink(missing_ok=True)
                     return
                 if adapter.incoming_path(uid).exists():
@@ -251,10 +253,14 @@ def _capture(name, force, expected_uid=None, require_consumed=False):
         adapter = DesktopLongTermAdapter(runtime._config_manager)
         if require_consumed and adapter.incoming_path(uid).is_file():
             raise ValueError('long_term_memory_incoming_pending')
-        previous = adapter.read_local(binding, epoch)
-        completed = max(time.time_ns() // 1_000_000, (previous['document']['completedAt'] if previous else 0) + 1)
+        local = adapter.read_local(binding, epoch) or {'base': None, 'pending': None, 'unseenRevision': False}
+        base, pending = local['base'], local['pending']
+        newest = max([part['document']['completedAt'] for part in (base, pending) if part and part['document']] or [0])
+        completed = max(time.time_ns() // 1_000_000, newest + 1)
         try:
             with runtime.fact_store._get_lock(name):
+                if local['unseenRevision']:
+                    _raise_lineage(name)
                 views = _read_native_views(name)
             document = export_document(views, completed, source_evidence=_snapshot_source_evidence(name, views))
         except (LongTermMemoryCapacityExceeded, LongTermArchiveSubjectUnavailable) as error:
@@ -263,21 +269,53 @@ def _capture(name, force, expected_uid=None, require_consumed=False):
             _record_capture_diagnostic(writer.directory, binding, str(error))
             raise
         _record_capture_diagnostic(writer.directory, binding, None)
-        if not force and ((not previous and not document['entries'] and not document['evidence']['retirements'] and not document['evidence']['confirmations'])
-                          or (previous and previous['nativeEntries'] == document['entries'] and (previous['document'].get('evidence') or {'retirements': [], 'confirmations': []}) == document['evidence'])):
-            return False
+        revision = base['revision'] if base else 0
         # The name-to-UID mapping and current grant are still protected at publication.
         if _uid(name) != uid or _binding(uid) != binding:
             return None if expected_uid is not None else False
         try:
-            atomic_write_json(adapter.local_path(binding), {
-                'ownerId': binding['owner_id'], 'characterSyncId': uid, 'serviceUrl': binding['service_url'],
-                'epoch': list(epoch), 'operationId': uuid4().hex, 'document': document, 'nativeEntries': document['entries'],
-            }, ensure_ascii=False)
+            if not force and not _unpublished(document, base):
+                if pending is not None:
+                    # The device returned to what the server holds; nothing waits for upload.
+                    adapter.write_local(binding, epoch, base=base, pending=None)
+                return False
+            if (not force and pending is not None and pending['baseRevision'] == revision
+                    and same_content(pending['document'], document)):
+                # The frozen operation keeps retrying with identical bytes.
+                return False
+            adapter.write_local(binding, epoch, base=base,
+                                pending={'operationId': uuid4().hex, 'baseRevision': revision, 'document': document})
         except OSError as error:
             raise ValueError('long_term_memory_save_failed') from error
     changed()
     return True
+
+
+def _unpublished(document, base):
+    """Whether this device holds anything the confirmed base does not."""
+    published = upgraded(base['document']) if base and base['document'] is not None else None
+    if published is None:
+        return bool(document['entries'] or document['evidence']['retirements'] or document['evidence']['confirmations']
+                    or document['progress']['a'] or document['progress']['b']
+                    or any(field in document for field in ('organizer', 'maintenance', 'lineage')))
+    if document['entries'] != base['nativeEntries']:
+        return True
+    return any(document.get(field) != published.get(field)
+               for field in ('evidence', 'progress', 'organizer', 'maintenance', 'lineage'))
+
+
+def _raise_lineage(name):
+    """Record that the next upload replaces a revision this device could not read."""
+    path = Path(runtime._config_manager.memory_dir) / name / 'long_term_portable.json'
+    try:
+        state = json.loads(path.read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        state = {}
+    if not isinstance(state, dict):
+        state = {}
+    assert_cloudsave_writable(runtime._config_manager, operation='sync', target=f'memory/{name}/long_term_portable.json')
+    state['lineage'] = int(state.get('lineage') or 0) + 1
+    atomic_write_json(path, state, ensure_ascii=False, indent=2)
 
 
 def queue_capture(name, *, force=False):
@@ -395,8 +433,10 @@ def _write_snapshot_locked(name, payload, *, check_only=False):
         if _uid(name) != uid or _binding(uid) != binding:
             return False
         adapter = DesktopLongTermAdapter(runtime._config_manager)
-        local = adapter.read_local(binding, epoch)
-        if local and local['document']['completedAt'] > remote['completedAt']:
+        local = adapter.read_local(binding, epoch) or {'base': None, 'pending': None, 'unseenRevision': False}
+        base = local['base']
+        applied = bool(base and base['revision'] == remote['revision'] and base['document'] == remote['document'])
+        if base and base['revision'] >= remote['revision'] and not applied:
             return False
         if check_only:
             validate_retirement_subjects(retirement_evidence(Path(runtime._config_manager.memory_dir) / name),
@@ -405,7 +445,7 @@ def _write_snapshot_locked(name, payload, *, check_only=False):
                 _read_native_views(name)
             return True
         operation = f'download:{remote["revision"]}'
-        if local and local['operationId'] == operation and local['document'] == remote['document']:
+        if applied:
             # A crash can occur after the file receipt and before the derived
             # index commits. Repair from current views without replacing them.
             with runtime.fact_store._get_lock(name):
@@ -416,12 +456,24 @@ def _write_snapshot_locked(name, payload, *, check_only=False):
         with runtime.fact_store._get_lock(name):
             existing = _read_native_views(name)
             source_evidence = _snapshot_source_evidence(name, existing, remote['document'])
-            views = import_document(remote['document'], existing, baseline=local['nativeEntries'] if local else [], source_evidence=source_evidence)
-            # Retained local edits have not been published. Keep them outside the
-            # receipt baseline so a later completed organization still captures them;
-            # so are retirements the remote does not carry as superseded yet.
+            # What this device holds, the base both sides started from and the
+            # published document become one document; an upload the server never
+            # accepted is part of what this device holds, never of the base.
+            current = export_document(existing, remote['completedAt'], source_evidence=source_evidence)
+            merged = merge_documents(base if base and base['document'] is not None else None,
+                                     current, remote['document'], remote['completedAt'])
+            if len(merged['entries']) > MAX_ENTRIES:
+                raise LongTermMemoryCapacityExceeded()
+            if not same_content(merged, remote['document']):
+                _unpublished_after_apply.add(name)
+            views = import_document(merged, existing, merged=True, source_evidence=source_evidence)
+            # The base keeps the published entries as this device would export them,
+            # so whatever the merge kept from this device still differs from it and
+            # the next capture uploads it; so do retirements the remote does not
+            # carry as superseded yet.
             native_entries = export_document(import_document(
-                remote['document'], existing, keep_unpublished_retirements=False,
+                remote['document'], existing, merged=True, source_evidence=source_evidence,
+                keep_unpublished_retirements=False,
             ), remote['completedAt'], source_evidence=source_evidence)['entries']
             files = view_files(views)
             before = {relative: (directory / relative).read_text(encoding='utf-8')
@@ -435,11 +487,8 @@ def _write_snapshot_locked(name, payload, *, check_only=False):
                 advance_view_generation(directory)
                 for relative, value in files.items():
                     atomic_write_json(directory / relative, value, ensure_ascii=False, indent=2)
-                atomic_write_json(adapter.local_path(binding), {
-                    'ownerId': binding['owner_id'], 'characterSyncId': uid, 'serviceUrl': binding['service_url'],
-                    'epoch': list(epoch), 'operationId': operation, 'document': remote['document'],
-                    'nativeEntries': native_entries,
-                }, ensure_ascii=False)
+                adapter.write_local(binding, epoch, pending=None, base={
+                    'revision': remote['revision'], 'document': remote['document'], 'nativeEntries': native_entries})
                 _replace_fact_index(name, views)
                 runtime.fact_store._facts.pop(name, None)
                 runtime.persona_manager._personas.pop(name, None)
@@ -535,8 +584,7 @@ async def consume(uid):
             writer = _authority()
             if writer is not None:
                 with writer.locked():
-                    local = adapter.read_local(payload['binding'], tuple(payload['epoch']))
-                    if local and local['document']['completedAt'] > payload['head']['completedAt']:
+                    if adapter.base_revision(payload['binding'], tuple(payload['epoch'])) > payload['head']['revision']:
                         if path.is_file() and json.loads(path.read_text(encoding='utf-8')) == payload:
                             path.unlink()
                         return False
@@ -566,7 +614,16 @@ async def consume(uid):
                         path.unlink()
                         _retry_archive_diagnostic_cleanup(name, journal, closed['archiveDiagnosticCleanup'])
             return applied[0]
-        return await _complete_file_commit(commit)
+        applied = await _complete_file_commit(commit)
+    if applied and name in _unpublished_after_apply:
+        _unpublished_after_apply.discard(name)
+        _publish_merge(name)
+    return applied
+
+
+def _publish_merge(name):
+    """Whatever a merge kept from this device is not on the server yet."""
+    queue_capture(name)
 
 
 async def recover_pending_snapshot(name):
