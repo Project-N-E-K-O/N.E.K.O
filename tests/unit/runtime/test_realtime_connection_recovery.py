@@ -469,6 +469,28 @@ async def test_connect_uses_two_second_close_handshake_timeout():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("model", "max_tokens"), [
+    ("qwen-omni-turbo-realtime", 2048),
+    ("qwen3.5-omni-flash-realtime", 4096),
+])
+async def test_qwen_manual_connection_uses_model_output_limit(model, max_tokens):
+    client = OmniRealtimeClient(
+        base_url="wss://example.test/realtime", api_key="test", model=model,
+        turn_detection_mode=TurnDetectionMode.MANUAL, api_type="qwen",
+    )
+    ws = AsyncMock()
+    with patch("websockets.connect", new_callable=AsyncMock, return_value=ws):
+        await client.connect(instructions="hi", native_audio=True)
+    try:
+        events = [json.loads(call.args[0]) for call in ws.send.await_args_list]
+        session = next(event["session"] for event in events if event["type"] == "session.update")
+        assert session["turn_detection"] is None
+        assert session["max_tokens"] == max_tokens
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
 async def test_peer_disconnect_marker_is_not_shown_twice_before_recovery():
     manager = _make_manager()
 

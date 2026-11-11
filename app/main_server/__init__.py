@@ -1516,15 +1516,6 @@ async def on_shutdown():
         # Skip subsequent async steps only on total-budget exhaustion, then reraise the first cancellation.
         shutdown_cancellation: asyncio.CancelledError | None = None
         cancellation_budget = _ShutdownCancellationBudget()
-        from services.chat_audio_history import audio_retirement_recovery
-
-        shutdown_cancellation = await _run_shutdown_step(
-            audio_retirement_recovery.stop,
-            what="chat audio retirement shutdown",
-            deadline_monotonic=time.monotonic() + 4.0,
-            pending_cancellation=shutdown_cancellation,
-            cancellation_budget=cancellation_budget,
-        )
         # Finalize visits first: seal uploads before finalized state, without leave, within VISIT_SHUTDOWN_BUDGET_S;
         # expiry cannot block later hooks, and unfinished work remains for startup backfill.
         try:
@@ -1554,6 +1545,15 @@ async def on_shutdown():
             )
         except Exception as e:
             logger.debug(f"voice identity cleanup failed: {e}")
+        from services.chat_audio_history import audio_retirement_recovery
+
+        shutdown_cancellation = await _run_shutdown_step(
+            audio_retirement_recovery.stop,
+            what="chat audio retirement shutdown",
+            deadline_monotonic=time.monotonic() + 4.0,
+            pending_cancellation=shutdown_cancellation,
+            cancellation_budget=cancellation_budget,
+        )
         shutdown_cancellation = await _run_shutdown_step(
             drain_sync_connector_memory,
             what="关闭前保存聊天记忆",

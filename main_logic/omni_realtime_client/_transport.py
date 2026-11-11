@@ -730,7 +730,7 @@ class _TransportMixin:
             # rejected session.update. See Aliyun client-events documentation's
             # tools-and-enable_search incompatibility section.
             if is_manual:
-                qwen_session["max_tokens"] = 4096
+                qwen_session["max_tokens"] = 2048 if self._model_lower.startswith("qwen-omni-turbo-realtime") else 4096
             if self.has_tools():
                 qwen_session["tools"] = self._tools_for_qwen()
                 qwen_session["enable_search"] = False
