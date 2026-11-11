@@ -4485,7 +4485,10 @@ class FactStore:
                 event_when_raw = normalize_event_when(fact.get('event_when'))
                 # A candidate that waited for retired-assertion review keeps the time it was extracted.
                 from memory.retirement_review_queue import ANCHOR as _review_anchor
-                anchor = fact.get(_review_anchor) if isinstance(fact.get(_review_anchor), str) else created_at_iso
+                # Only an explicit relative time uses it; without one the start falls back to
+                # created_at as for any fact, so it is not mistaken for an event window.
+                anchor = (fact.get(_review_anchor) if event_when_raw and isinstance(fact.get(_review_anchor), str)
+                          else created_at_iso)
                 event_start_at, event_end_at = compute_event_timestamps(
                     event_when_raw,
                     anchor,

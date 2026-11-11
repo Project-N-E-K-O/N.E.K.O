@@ -825,3 +825,9 @@ def test_two_bounded_events_on_one_day_are_not_nominated():
     assert legacy_dedup.nominate({'a': morning, 'b': evening}) == []
     overlapping = {**evening, 'event_start_at': '2026-06-12T08:10:00', 'event_end_at': '2026-06-12T08:40:00'}
     assert legacy_dedup.nominate({'a': morning, 'b': overlapping})
+
+
+def test_an_older_fact_without_a_source_counts_as_the_users_words():
+    rows = {'ai': {**_fact('ai', 'X', created='2026-06-01T00:00:00'), 'source': 'ai_disclosure'},
+            'old': {key: value for key, value in _fact('old', 'X', created='2026-06-02T00:00:00').items() if key != 'source'}}
+    assert legacy_dedup.losers([{'candidate': 'old', 'existing': 'ai'}], {'old|ai': 'merge'}, rows) == {'ai': 'old'}

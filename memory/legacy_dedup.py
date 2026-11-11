@@ -201,7 +201,9 @@ def losers(pairs, decisions, rows=None):
         sources = pair.get('sources') or {}
 
         def source_of(fact_id):
-            return sources[fact_id] if fact_id in sources else (rows.get(fact_id) or {}).get('source')
+            # An older fact without a source counts as the user's own words, as FactStore reads it.
+            value = sources[fact_id] if fact_id in sources else (rows.get(fact_id) or {}).get('source')
+            return value or 'user_observation'
         action = decisions.get(pair_key(pair))
         if action == 'merge':
             loser, survivor = pair['candidate'], pair['existing']
