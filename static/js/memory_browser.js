@@ -3195,16 +3195,17 @@
         }
 
         document.addEventListener('keydown', function (event) {
-            const storageModal = document.getElementById('storage-location-modal');
-            const storageModalOpen = storageModal && !storageModal.hidden;
-            if (!storageModalOpen && !activeMemoryAuxiliaryPanel) return;
-            if (event.key === 'Escape' && !storageModalOpen) {
+            if (event.key !== 'Tab' && event.key !== 'Escape') return;
+            const storageDialog = document.querySelector('#storage-location-overlay:not([hidden])')
+                || document.querySelector('#storage-location-modal:not([hidden])');
+            if (!storageDialog && !activeMemoryAuxiliaryPanel) return;
+            if (event.key === 'Escape' && !storageDialog) {
                 event.preventDefault();
                 closeMemoryAuxiliaryPanel(true, true);
                 return;
             }
             if (event.key !== 'Tab') return;
-            const panel = storageModalOpen ? storageModal : getMemoryAuxiliaryPanel(activeMemoryAuxiliaryPanel);
+            const panel = storageDialog || getMemoryAuxiliaryPanel(activeMemoryAuxiliaryPanel);
             const focusable = getMemoryPanelFocusableElements(panel);
             if (!focusable.length) {
                 event.preventDefault();
@@ -3690,7 +3691,7 @@
         (input || document.getElementById('storage-location-modal-close'))?.focus({ preventScroll: true });
     }
 
-    function closeStorageLocationManager() {
+    function closeStorageLocationManager(restoreFocus = true) {
         const modal = document.getElementById('storage-location-modal');
         if (modal) {
             modal.hidden = true;
@@ -3700,7 +3701,7 @@
         if (input) {
             input.disabled = false;
         }
-        restoreMemoryAuxiliaryPanelFocus(storageLocationModalOpener, true);
+        if (restoreFocus) restoreMemoryAuxiliaryPanelFocus(storageLocationModalOpener, true);
         storageLocationModalOpener = null;
     }
 
@@ -3717,7 +3718,7 @@
         document.getElementById('storage-location-open-btn')?.addEventListener('click', openCurrentStorageRoot);
         const manageButton = document.getElementById('storage-location-manage-btn');
         manageButton?.addEventListener('click', () => openStorageLocationManager(manageButton));
-        document.getElementById('storage-location-modal-close')?.addEventListener('click', closeStorageLocationManager);
+        document.getElementById('storage-location-modal-close')?.addEventListener('click', () => closeStorageLocationManager());
         const modal = document.getElementById('storage-location-modal');
         modal?.addEventListener('click', function (event) {
             if (event.target === modal) closeStorageLocationManager();
@@ -4000,7 +4001,6 @@
                 }
             } catch (_) {}
         }
-        document.body.classList.remove('storage-location-memory-modal-open');
         await showStandaloneStorageMaintenanceOverlay(payload);
     }
 
@@ -4043,6 +4043,11 @@
                 && typeof window.appStorageLocation.enterExternalMaintenanceMode === 'function'
             ) {
                 window.appStorageLocation.enterExternalMaintenanceMode(payload || {});
+                const overlay = document.querySelector('#storage-location-overlay:not([hidden])');
+                if (overlay) {
+                    closeStorageLocationManager(false);
+                    overlay.querySelector('.storage-location-close')?.focus({ preventScroll: true });
+                }
             }
         } catch (e) {
             console.warn('[MemoryBrowser] standalone storage maintenance overlay failed:', e);

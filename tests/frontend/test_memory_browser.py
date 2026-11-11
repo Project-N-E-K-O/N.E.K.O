@@ -6044,7 +6044,15 @@ def test_memory_browser_storage_restart_standalone_reuses_storage_maintenance_ov
             mock_page.locator("#storage-location-restart-btn").click()
 
     expect(mock_page.get_by_role("heading", name="正在优化存储布局...")).to_be_visible(timeout=10_000)
-    expect(mock_page.locator("#storage-location-overlay")).to_be_visible(timeout=10_000)
+    overlay = mock_page.locator("#storage-location-overlay")
+    expect(overlay).to_be_visible(timeout=10_000)
+    expect(mock_page.locator("#storage-location-modal")).to_be_hidden()
+    maintenance_close = overlay.locator(".storage-location-close")
+    expect(maintenance_close).to_be_focused()
+    mock_page.keyboard.press("Tab")
+    expect(maintenance_close).to_be_focused()
+    mock_page.keyboard.press("Shift+Tab")
+    expect(maintenance_close).to_be_focused()
     expect(mock_page.locator('[role="progressbar"]')).to_be_visible(timeout=10_000)
     assert mock_page.evaluate("typeof window.__nekoStorageLocationStartupBarrier") == "undefined"
     assert mock_page.evaluate("window.location.pathname") == "/memory_browser"
