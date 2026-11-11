@@ -21,6 +21,8 @@
     var activeAnimationCleanup = null; // 当前进行中动画的清理函数
     I.pendingChatSurfaceMode = null;
     var pendingMinimizedSurfaceCommit = null;
+    // A user request queued first must never grant Playground chat-restore ownership.
+    var playgroundEntryMinimizeRejected = false;
     var COMPACT_EXPAND_WIPE_MS = 300;
     var COMPACT_EXPAND_TRANSITION_BUFFER_MS = 40;
 
@@ -1441,6 +1443,13 @@
 
     I._handleIdleCat1PlaygroundYarnRequest = function _handleIdleCat1PlaygroundYarnRequest(event) {
         if (I.getCurrentChatSurfaceMode() === 'minimized') return;
+        if (I.isMinimizeTransitioning && I.pendingChatSurfaceMode
+            && I.pendingChatSurfaceMode.mode === 'minimized'
+            && I.pendingChatSurfaceMode.playgroundEntry !== true) {
+            playgroundEntryMinimizeRejected = true;
+            return;
+        }
+        playgroundEntryMinimizeRejected = false;
         I.setChatSurfaceMode('minimized');
         if (I.isMinimizeTransitioning && I.pendingChatSurfaceMode
             && I.pendingChatSurfaceMode.mode === 'minimized') {
@@ -1494,6 +1503,9 @@
             }
         }
         if (detail.active === true) return;
+        if (playgroundEntryMinimizeRejected) {
+            return;
+        }
         if (detail.restoreChatOnExit !== true) return;
         var restoreMode = I.getNextChatSurfaceMode('minimized');
         if (I.isMinimizeTransitioning) {

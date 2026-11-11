@@ -222,6 +222,54 @@ test('Playground cancellation replaces its own queued minimize, not a later user
   assert.equal(harness.parts.pendingChatSurfaceMode, userMinimize);
 });
 
+test('user minimize queued before Playground entry keeps ownership after the transition', () => {
+  for (const cancelBeforeCommit of [true, false]) {
+    const harness = createHarness();
+    const userMinimize = { mode: 'minimized', transitionOptions: {} };
+    const requestedModes = [];
+    Object.assign(harness.parts, {
+      getCurrentChatSurfaceMode: () => 'full',
+      getNextChatSurfaceMode: () => 'full',
+      isMinimizeTransitioning: true,
+      pendingChatSurfaceMode: userMinimize,
+      setChatSurfaceMode(mode) { requestedModes.push(mode); },
+    });
+    harness.parts._handleIdleCat1PlaygroundYarnRequest({});
+    assert.equal(harness.parts.pendingChatSurfaceMode, userMinimize);
+    assert.equal(userMinimize.playgroundEntry, undefined);
+    assert.deepEqual(requestedModes, []);
+
+    if (cancelBeforeCommit) {
+      harness.parts._handleIdleCat1PlaygroundState({
+        detail: { active: false, reason: 'entry-cancel', restoreChatOnExit: true },
+      });
+      assert.equal(harness.parts.pendingChatSurfaceMode, userMinimize);
+    } else {
+      harness.parts.pendingChatSurfaceMode = null;
+      harness.parts.isMinimizeTransitioning = false;
+      harness.parts.getCurrentChatSurfaceMode = () => 'minimized';
+      harness.parts.getShell = () => null;
+      harness.parts.applyMinimizedBallSkin = () => {};
+      harness.parts._handleIdleCat1PlaygroundState({
+        detail: { active: false, reason: 'cat-click', restoreChatOnExit: true },
+      });
+      harness.parts._handleIdleCat1PlaygroundState({
+        detail: { active: false, reason: 'cat-click', restoreChatOnExit: true },
+      });
+      assert.deepEqual(requestedModes, []);
+
+      harness.parts.getCurrentChatSurfaceMode = () => 'full';
+      harness.parts._handleIdleCat1PlaygroundYarnRequest({});
+      assert.deepEqual(requestedModes, ['minimized']);
+      harness.parts.getCurrentChatSurfaceMode = () => 'minimized';
+      harness.parts._handleIdleCat1PlaygroundState({
+        detail: { active: false, reason: 'cat-click', restoreChatOnExit: true },
+      });
+      assert.deepEqual(requestedModes, ['minimized', 'full']);
+    }
+  }
+});
+
 test('cat return preserves an independently minimized chat surface', () => {
   const harness = createHarness();
   const restored = [];
