@@ -8,6 +8,7 @@ output kept to its tail with the full text on disk.
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 import sys
 import time
@@ -271,6 +272,91 @@ async def test_abort_on_an_idle_session_stops_its_background_jobs_for_good(tmp_p
         await session.close()
 
 
+async def test_abort_during_process_creation_stops_the_new_background_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = _write(tmp_path, "linger.py", "import time\ntime.sleep(120)\n")
+    llm = ScriptedLLM(
+        [
+            [call(SHELL, {"description": "Serve", "command": _python(script), "run_in_background": True}), finish("tool_calls")],
+            [say("unreachable"), finish()],
+        ]
+    )
+    session, events = await open_session(make_spec(tmp_path), llm, _host())
+    created: list[procs.ShellProcess] = []
+    real_spawn = procs.spawn
+
+    async def spawn_then_abort(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        process = await real_spawn(*args, **kwargs)
+        created.append(process)
+        # The abort lands while the process is being created: it finds no job
+        # to stop, because this one is not registered yet.
+        assert session.abort() is True
+        return process
+
+    monkeypatch.setattr(procs, "spawn", spawn_then_abort)
+    try:
+        session.prompt("start the server")
+        ended = await events.wait_ended(timeout=60)
+        assert ended["reason"] == "aborted"
+        assert len(created) == 1
+        process = created[0]
+        await asyncio.wait_for(process.wait(), 30)
+        assert process.kill_requested
+        assert await _wait_gone(process.pid)
+        assert session.jobs.visible() == [] and not session.busy
+        await asyncio.sleep(0.5)
+        # Nothing wakes the stopped session afterwards.
+        assert len(llm.requests) == 1 and len(events.of("ended")) == 1
+    finally:
+        for process in created:
+            process.kill()
+        await session.close()
+
+
+async def test_a_cancelled_spawn_does_not_leave_a_process_behind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = _write(tmp_path, "linger.py", "import time\ntime.sleep(120)\n")
+    created: list[procs.ShellProcess] = []
+    real_blocking = procs._spawn_blocking
+
+    def slow_spawn(*args):  # noqa: ANN002, ANN202
+        time.sleep(0.5)  # the awaiting call is cancelled during this
+        process = real_blocking(*args)
+        created.append(process)
+        return process
+
+    monkeypatch.setattr(procs, "_spawn_blocking", slow_spawn)
+    task = asyncio.ensure_future(
+        procs.spawn(
+            shell.shell_argv(SHELL, _python(script)),
+            cwd=str(tmp_path),
+            env=dict(os.environ),
+            stdout=procs.OutputBuffer(1000, lambda: None),
+            stderr=procs.OutputBuffer(1000, lambda: None),
+        )
+    )
+    await asyncio.sleep(0.1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    try:
+        for _ in range(100):
+            if created:
+                break
+            await asyncio.sleep(0.1)
+        assert len(created) == 1
+        process = created[0]
+        # Nobody owns the process any more, so it is killed once it exists.
+        await asyncio.wait_for(process.wait(), 30)
+        assert process.kill_requested
+        assert await _wait_gone(process.pid)
+    finally:
+        for process in created:
+            process.kill()
+
+
 async def test_background_job_completion_is_reported_to_the_session(tmp_path: Path) -> None:
     script = _write(tmp_path, "brief.py", "import time\ntime.sleep(1.5)\nprint('all built')\n")
     llm = ScriptedLLM(
@@ -391,6 +477,39 @@ async def test_long_output_keeps_its_tail_and_the_full_text_is_saved(tmp_path: P
         await events.wait_ended()
     finally:
         await session.close()
+
+
+async def test_output_saved_before_a_restart_survives_the_next_long_command(tmp_path: Path) -> None:
+    script = _write(
+        tmp_path,
+        "loud.py",
+        "import sys\n"
+        "for number in range(20000):\n"
+        "    print(f'{sys.argv[1]} {number:05d} ' + 'x' * 20)\n",
+    )
+    prefix = "[output truncated; full output: "
+
+    async def run_once(tag: str) -> Path:
+        session, events, result, _llm = await _run_tool_call(
+            tmp_path, {"description": "Print a lot", "command": _python(script, tag)}
+        )
+        try:
+            marker = [line for line in result["text"].splitlines() if line.startswith(prefix)]
+            assert len(marker) == 1
+            await events.wait_ended()
+            return Path(marker[0][len(prefix):-1])
+        finally:
+            await session.close()
+
+    first = await run_once("first")
+    before = first.read_bytes()
+    assert b"first 00000" in before
+    # The same session directory again: this session resumes the transcript
+    # that still points at the file saved above.
+    second = await run_once("second")
+    assert second != first
+    assert first.read_bytes() == before
+    assert b"second 00000" in second.read_bytes()
 
 
 async def test_invalid_command_arguments_are_rejected_with_the_stable_messages(tmp_path: Path) -> None:

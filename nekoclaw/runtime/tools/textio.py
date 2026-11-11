@@ -186,8 +186,12 @@ def write_bytes_atomic(path: Path, data: bytes, *, display: str) -> None:
     """Replace ``path`` with ``data`` through a temporary file in the same directory.
 
     Missing parent directories are created. An existing file keeps its
-    permission bits.
+    permission bits. A symbolic link is written through: the file it points to
+    is replaced and the link itself stays, matching how the file was read.
     """
+    if path.is_symlink():
+        # os.replace would swap the link itself for a regular file.
+        path = Path(os.path.realpath(path))
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:

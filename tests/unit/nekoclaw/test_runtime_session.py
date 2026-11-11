@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from nekoclaw.runtime.host import HostCallbacks
-from nekoclaw.runtime.session import TRANSCRIPT_FILE, SessionError
+from nekoclaw.runtime.session import TRANSCRIPT_FILE, SessionError, TranscriptStorage
 from tests.unit.nekoclaw.fakes import (
     ScriptedLLM,
     allow_all,
@@ -240,6 +240,64 @@ async def test_a_session_continues_from_its_transcript(tmp_path: Path) -> None:
         assert contents[-1] == "What was the code word?"
     finally:
         await session.close()
+
+
+async def test_a_transcript_cut_off_mid_entry_can_still_be_resumed(tmp_path: Path) -> None:
+    spec = make_spec(tmp_path)
+    first = ScriptedLLM([[say("Noted: the code word is heron."), finish()]])
+    session, events = await open_session(spec, first)
+    session.prompt("Remember the code word heron.")
+    await events.wait_ended()
+    await session.close()
+
+    transcript = Path(spec.session_dir) / TRANSCRIPT_FILE
+    intact = transcript.read_bytes()
+    assert intact.endswith(b"\n")
+    # The process died while it was appending the next entry.
+    transcript.write_bytes(intact + b'{"type":"message","id":"torn","message":{"role":"us')
+
+    second = ScriptedLLM([[say("heron"), finish()]])
+    session, events = await open_session(spec, second)
+    try:
+        assert events.of("started")[0]["resumed"] is True
+        session.prompt("What was the code word?")
+        await events.wait_ended()
+        contents = [message["content"] for message in second.requests[0]]
+        assert "Remember the code word heron." in contents
+        assert "Noted: the code word is heron." in contents
+    finally:
+        await session.close()
+    # The fragment is gone, nothing saved before it was touched, and what was
+    # appended afterwards is whole lines again.
+    after = transcript.read_bytes()
+    assert after.startswith(intact) and len(after) > len(intact)
+    lines = after.split(b"\n")
+    assert lines[-1] == b""
+    assert all(isinstance(json.loads(line), dict) for line in lines[:-1])
+
+
+def test_only_an_incomplete_last_line_is_dropped(tmp_path: Path) -> None:
+    path = tmp_path / "transcript.jsonl"
+    storage = TranscriptStorage(path)
+    assert storage.drop_torn_tail() is False  # no file yet
+
+    path.write_bytes(b"")
+    assert storage.drop_torn_tail() is False
+    path.write_bytes(b'{"a": 1}\n{"b": 2}\n')
+    assert storage.drop_torn_tail() is False
+
+    # A whole entry that only lacks its newline is kept.
+    path.write_bytes(b'{"a": 1}\n{"b": 2}')
+    assert storage.drop_torn_tail() is True
+    assert path.read_bytes() == b'{"a": 1}\n{"b": 2}\n'
+
+    # A fragment is removed, also when it is cut inside a character.
+    path.write_bytes(b'{"a": 1}\n{"b": "' + "猫".encode("utf-8")[:2])
+    assert storage.drop_torn_tail() is True
+    assert path.read_bytes() == b'{"a": 1}\n'
+    path.write_bytes(b'{"only": ')
+    assert storage.drop_torn_tail() is True
+    assert path.read_bytes() == b""
 
 
 async def test_start_fails_cleanly_for_a_missing_workdir(tmp_path: Path) -> None:

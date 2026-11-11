@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sys
 from collections.abc import AsyncIterator, Callable
 from datetime import datetime
@@ -134,6 +135,54 @@ def _drive(coroutine: Any) -> Any:
     raise RuntimeError("the storage coroutine suspended unexpectedly")
 
 
+class TranscriptStorage(JsonlSessionStorage):
+    """The ported storage plus recovery from an append that was cut short."""
+
+    def drop_torn_tail(self) -> bool:
+        """Remove an incomplete last line; return whether the file was changed.
+
+        Every entry is appended as one line that ends in a newline. A file that
+        does not end in one was being written when its process died (or the
+        write failed half way). Left alone, the fragment makes the transcript
+        unreadable for good, and the next entry would be glued onto it. The
+        fragment is an entry that was never completely written, so nothing
+        that was saved is lost. A last line that is complete JSON only lacks
+        its newline and is kept.
+        """
+        with self._locked(exclusive=True):
+            try:
+                with self.path.open("rb+") as file:
+                    size = file.seek(0, os.SEEK_END)
+                    if size == 0:
+                        return False
+                    file.seek(size - 1)
+                    if file.read(1) == b"\n":
+                        return False
+                    file.seek(0)
+                    data = file.read()
+                    start = data.rfind(b"\n") + 1
+                    try:
+                        complete = isinstance(json.loads(data[start:].decode("utf-8")), dict)
+                    except ValueError:
+                        complete = False
+                    if complete:
+                        file.seek(0, os.SEEK_END)
+                        file.write(b"\n")
+                    else:
+                        file.truncate(start)
+                        logger.warning(
+                            "dropped an incomplete last entry (%d bytes) from %s",
+                            size - start,
+                            self.path,
+                        )
+                    file.flush()
+                    os.fsync(file.fileno())
+            except FileNotFoundError:
+                return False
+            self._parsed = None
+            return True
+
+
 class SessionRecorder:
     """Appends entries to the JSONL transcript in order, off the event loop.
 
@@ -143,13 +192,33 @@ class SessionRecorder:
     """
 
     def __init__(self, path: Path) -> None:
-        self._storage = JsonlSessionStorage(path)
+        self._storage = TranscriptStorage(path)
         self._queue: asyncio.Queue[SessionEntry] = asyncio.Queue()
         self._writer: asyncio.Task[None] | None = None
+        # Set when the file may end in a fragment: before the first read, and
+        # after an append that failed.
+        self._check_tail = True
         self.last_id: str | None = None
 
+    def _read_blocking(self) -> list[SessionEntry]:
+        if self._check_tail:
+            self._storage.drop_torn_tail()
+            self._check_tail = False
+        return _drive(self._storage.read_all())
+
+    def _append_blocking(self, entry: SessionEntry) -> None:
+        if self._check_tail:
+            self._storage.drop_torn_tail()
+            self._check_tail = False
+        try:
+            _drive(self._storage.append(entry))
+        except BaseException:
+            # The write may have stopped half way; look before the next one.
+            self._check_tail = True
+            raise
+
     async def read_all(self) -> list[SessionEntry]:
-        return await asyncio.to_thread(lambda: _drive(self._storage.read_all()))
+        return await asyncio.to_thread(self._read_blocking)
 
     def link(self, entry: SessionEntry) -> SessionEntry:
         """Chain ``entry`` behind the previous one and queue it for writing."""
@@ -164,7 +233,7 @@ class SessionRecorder:
         while True:
             entry = await self._queue.get()
             try:
-                await asyncio.to_thread(lambda item=entry: _drive(self._storage.append(item)))
+                await asyncio.to_thread(self._append_blocking, entry)
             except Exception:  # noqa: BLE001 - a failed write must not stop the session
                 logger.exception("could not append to the session transcript")
             finally:

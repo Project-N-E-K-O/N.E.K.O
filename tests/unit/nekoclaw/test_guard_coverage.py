@@ -36,10 +36,16 @@ def test_nekoclaw_is_registered_in_every_directory_list() -> None:
     layering = _load("check_module_layering")
     assert layering.PACKAGE_TO_LAYER["nekoclaw"] == layering.PACKAGE_TO_LAYER["brain"]
     forbidden = {package for prefix, package, _why in layering.FORBIDDEN_EDGES if prefix == "nekoclaw/runtime/"}
-    assert forbidden == {
-        "knowledge", "memory", "main_logic", "services", "main_routers", "theater_workshop",
-        "plugin", "brain",
+    # Everything registered at or below the runtime's own layer, except the two
+    # packages it is allowed to use.
+    own_layer = layering.PACKAGE_TO_LAYER["nekoclaw"]
+    reachable = {
+        package
+        for package, layer in layering.PACKAGE_TO_LAYER.items()
+        if layer <= own_layer and package != "nekoclaw"
     }
+    assert forbidden == reachable - {"config", "utils"}
+    assert "steamworks" in forbidden and "brain" in forbidden
 
 
 @pytest.mark.parametrize(

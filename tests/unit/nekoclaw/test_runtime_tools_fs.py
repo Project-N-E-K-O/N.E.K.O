@@ -230,6 +230,28 @@ def test_write_creates_then_updates_and_keeps_the_existing_format(tmp_path: Path
         write_file(tmp_path, "x")
 
 
+def test_write_and_edit_go_through_a_symbolic_link(tmp_path: Path) -> None:
+    real = tmp_path / "real" / "settings.txt"
+    real.parent.mkdir()
+    real.write_bytes(b"mode = old\r\n")
+    link = tmp_path / "settings.txt"
+    try:
+        link.symlink_to(real)
+    except OSError:
+        pytest.skip("symbolic links cannot be created here")
+
+    edit_file(link, "old", "new", replace_all=False)
+    assert link.is_symlink()
+    assert real.read_bytes() == b"mode = new\r\n"
+
+    write_file(link, "mode = newer\n")
+    assert link.is_symlink()
+    assert real.read_bytes() == b"mode = newer\r\n"
+    # No temporary file is left next to the link or next to its target.
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["real", "settings.txt"]
+    assert [path.name for path in real.parent.iterdir()] == ["settings.txt"]
+
+
 def test_newline_detection_follows_the_majority() -> None:
     assert textio.detect_newline("a\r\nb\r\nc\n") == "\r\n"
     assert textio.detect_newline("a\nb\nc\r\n") == "\n"

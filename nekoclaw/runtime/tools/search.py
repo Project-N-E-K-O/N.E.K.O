@@ -24,21 +24,29 @@ the caps, the file selection rules and the error wording of dsh
 * ``grep`` skips hidden files, ignored files and binary files, like ripgrep's
   defaults. Ignore rules come from ``git ls-files`` when the search root is in
   a git work tree and git is installed; otherwise only the hidden-file rule
-  applies. The pattern is a Python ``re`` expression matched line by line.
+  applies. The pattern uses Python ``re`` syntax and is matched line by line.
+
+Patterns come from the model, so matching must not be able to stall the
+process. The standard ``re`` module keeps the interpreter lock for the whole
+match, and a pattern that backtracks without end would freeze every session
+sharing the event loop. Both tools therefore match with the ``regex`` package:
+it releases the lock while matching text and stops a match at a time limit.
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
-import re
 import shutil
+import stat
 import subprocess
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+import regex
 
 from nekoclaw.runtime.loop.tools import AgentTool
 from nekoclaw.runtime.tools.base import (
@@ -55,6 +63,11 @@ GLOB_MAX_RESULTS = 100
 GREP_MAX_MATCHES = 250
 GREP_MAX_LINE_BYTES = 2000
 SEARCH_TIMEOUT_SECONDS = 30.0
+# Longest a single match (one line, or one path against a glob) may take.
+MATCH_TIMEOUT_SECONDS = 2.0
+# Only this much of one line is held in memory and matched.
+GREP_LINE_MAX_BYTES = 1024 * 1024
+_BUDGET_CHECK_LINES = 1024
 # Stands in for dsh's cap on raw ripgrep output: a search that produces more
 # than this is refused instead of being held in memory.
 SEARCH_RAW_OUTPUT_MAX_BYTES = 20_000_000
@@ -121,7 +134,7 @@ def _translate(pattern: str) -> str:
         elif char == "[":
             translated = _translate_class(pattern, index)
             if translated is None:
-                out.append(re.escape(char))
+                out.append(regex.escape(char))
                 index += 1
             else:
                 out.append(translated[0])
@@ -138,16 +151,16 @@ def _translate(pattern: str) -> str:
             out.append("|")
             index += 1
         elif char == "\\" and index + 1 < length:
-            out.append(re.escape(pattern[index + 1]))
+            out.append(regex.escape(pattern[index + 1]))
             index += 2
         else:
-            out.append(re.escape(char))
+            out.append(regex.escape(char))
             index += 1
     out.append(")" * depth)
     return "".join(out)
 
 
-def compile_glob(pattern: str, *, case_insensitive: bool) -> re.Pattern[str]:
+def compile_glob(pattern: str, *, case_insensitive: bool) -> regex.Pattern[str]:
     """Compile a glob for matching ``/``-separated paths relative to a root.
 
     A pattern without ``/`` matches the file name at any depth. One with ``/``
@@ -157,10 +170,10 @@ def compile_glob(pattern: str, *, case_insensitive: bool) -> re.Pattern[str]:
     anchored = "/" in normalized.strip("/") or normalized.startswith("/")
     body = _translate(normalized.lstrip("/"))
     prefix = "" if anchored else "(?:.*/)?"
-    flags = re.IGNORECASE if case_insensitive else 0
+    flags = regex.IGNORECASE if case_insensitive else 0
     try:
-        return re.compile(f"{prefix}{body}", flags)
-    except re.error as exc:
+        return regex.compile(f"{prefix}{body}", flags)
+    except regex.error as exc:
         raise ToolError(f"invalid glob pattern {pattern!r}: {exc}") from exc
 
 
@@ -180,12 +193,87 @@ class _Budget:
         if self.stop.is_set() or time.monotonic() > self.deadline:
             raise _Stopped
 
+    def match_timeout(self) -> float:
+        """Return how long the next single match may run."""
+        return max(0.001, min(MATCH_TIMEOUT_SECONDS, self.deadline - time.monotonic()))
+
+
+def _slow_pattern(kind: str, budget: _Budget) -> ToolError:
+    """Build the error for a match that hit its time limit."""
+    # When the whole search ran out of time, say that instead.
+    budget.check()
+    return ToolError(
+        f"{kind} pattern is too slow: a single match took longer than "
+        f"{MATCH_TIMEOUT_SECONDS:g}s; simplify the pattern"
+    )
+
+
+def _glob_matches(matcher: regex.Pattern[str], relative: str, budget: _Budget) -> bool:
+    try:
+        return matcher.fullmatch(relative, timeout=budget.match_timeout()) is not None
+    except TimeoutError as exc:
+        raise _slow_pattern("glob", budget) from exc
+
+
+def _is_link_stat(info: os.stat_result) -> bool:
+    """Return whether an ``lstat`` result describes a symbolic link or a junction."""
+    if stat.S_ISLNK(info.st_mode):
+        return True
+    # Windows: a junction is a directory with a mount-point reparse tag. Other
+    # reparse points (cloud placeholders, deduplicated files) are ordinary files.
+    tag = getattr(info, "st_reparse_tag", 0)
+    return tag != 0 and tag in (
+        getattr(stat, "IO_REPARSE_TAG_SYMLINK", -1),
+        getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", -1),
+    )
+
+
+def _is_link(path: str) -> bool:
+    try:
+        return _is_link_stat(os.lstat(path))
+    except OSError:
+        return False
+
+
+def _entry_is_link(entry: os.DirEntry[str]) -> bool:
+    if entry.is_symlink():
+        return True
+    # Only Windows has junctions, and there the entry already holds the
+    # attributes, so asking costs no system call.
+    return os.name == "nt" and _is_link_stat(entry.stat(follow_symlinks=False))
+
+
+class _LinkFilter:
+    """Tells whether a path below a root is reached through a link.
+
+    A directory search never reads through symbolic links or junctions, like
+    ripgrep by default. The call was classified by the directory it names, and
+    a link inside that directory can point anywhere.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self._root = str(root)
+        self._directories: dict[str, bool] = {"": False}
+
+    def _directory_is_linked(self, relative: str) -> bool:
+        known = self._directories.get(relative)
+        if known is None:
+            parent = relative.rpartition("/")[0]
+            known = self._directory_is_linked(parent) or _is_link(os.path.join(self._root, relative))
+            self._directories[relative] = known
+        return known
+
+    def reached_through_link(self, relative: str) -> bool:
+        directory = relative.rpartition("/")[0]
+        return self._directory_is_linked(directory) or _is_link(os.path.join(self._root, relative))
+
 
 def _walk_files(root: Path, budget: _Budget, *, skip_hidden: bool) -> list[tuple[str, os.DirEntry[str]]]:
     """Return ``(relative posix path, entry)`` for every regular file below ``root``.
 
-    Symbolic links are not followed. Version-control metadata is always
-    skipped; names starting with a dot are skipped when ``skip_hidden`` is set.
+    Symbolic links and junctions are not followed. Version-control metadata is
+    always skipped; names starting with a dot are skipped when ``skip_hidden``
+    is set.
     """
     found: list[tuple[str, os.DirEntry[str]]] = []
     pending: list[tuple[Path, str]] = [(root, "")]
@@ -201,6 +289,8 @@ def _walk_files(root: Path, budget: _Budget, *, skip_hidden: bool) -> list[tuple
             if skip_hidden and name.startswith("."):
                 continue
             try:
+                if _entry_is_link(entry):
+                    continue
                 if entry.is_dir(follow_symlinks=False):
                     if name in VCS_DIRECTORIES:
                         continue
@@ -263,7 +353,7 @@ def glob_files(root: Path, pattern: str, budget: _Budget, *, case_insensitive: b
     matcher = compile_glob(pattern, case_insensitive=case_insensitive)
     matched: list[tuple[int, str, Path]] = []
     for relative, entry in _walk_files(root, budget, skip_hidden=False):
-        if matcher.fullmatch(relative) is None:
+        if not _glob_matches(matcher, relative, budget):
             continue
         try:
             modified = entry.stat(follow_symlinks=False).st_mtime_ns
@@ -328,36 +418,80 @@ def preview_line(line: str, max_bytes: int = GREP_MAX_LINE_BYTES) -> str:
     return f"{kept} (line truncated)"
 
 
-def _search_file(path: Path, shown: str, regex: re.Pattern[str], out: list[GrepMatch]) -> int:
-    """Append the matches of one file to ``out``; return the bytes of text added."""
-    try:
-        raw = path.read_bytes()
-    except OSError:
-        return 0
-    if _NUL in raw[:BINARY_SAMPLE_BYTES]:
-        return 0
-    try:
-        text = raw.decode("utf-8")
-        valid = True
-    except UnicodeDecodeError:
-        text = raw.decode("utf-8", errors="replace")
-        valid = False
+def _search_file(
+    path: Path,
+    shown: str,
+    expression: regex.Pattern[str],
+    out: list[GrepMatch],
+    budget: _Budget,
+) -> int:
+    """Append the matches of one file to ``out``; return the bytes of text added.
+
+    The file is read one line at a time, so its size does not decide how much
+    memory the search takes, and the search budget is checked as it goes. Of a
+    line longer than ``GREP_LINE_MAX_BYTES`` only that much is matched.
+    """
     added = 0
-    for number, line in enumerate(text.split("\n"), start=1):
-        if line.endswith("\r"):
-            line = line[:-1]
-        if regex.search(line) is None:
-            continue
-        if not valid and "�" in line:
-            line = "(line is not valid UTF-8)"
-        out.append(GrepMatch(shown, number, line))
-        added += len(line)
+    try:
+        with open(path, "rb") as handle:
+            if _NUL in handle.read(BINARY_SAMPLE_BYTES):
+                return 0
+            handle.seek(0)
+            number = 0
+            while True:
+                raw = handle.readline(GREP_LINE_MAX_BYTES + 1)
+                if not raw:
+                    break
+                number += 1
+                if number % _BUDGET_CHECK_LINES == 0:
+                    budget.check()
+                cut = len(raw) > GREP_LINE_MAX_BYTES and not raw.endswith(b"\n")
+                if cut:
+                    raw = raw[:GREP_LINE_MAX_BYTES]
+                    # Skip the rest of the line without holding it in memory.
+                    while True:
+                        budget.check()
+                        rest = handle.readline(GREP_LINE_MAX_BYTES)
+                        if not rest or rest.endswith(b"\n"):
+                            break
+                if raw.endswith(b"\n"):
+                    raw = raw[:-1]
+                if raw.endswith(b"\r"):
+                    raw = raw[:-1]
+                valid = True
+                try:
+                    # A cut may fall inside a character; that is not bad encoding.
+                    line = raw.decode("utf-8", errors="ignore" if cut else "strict")
+                except UnicodeDecodeError:
+                    line = raw.decode("utf-8", errors="replace")
+                    valid = False
+                try:
+                    found = expression.search(line, timeout=budget.match_timeout())
+                except TimeoutError as exc:
+                    raise _slow_pattern("grep", budget) from exc
+                if found is None:
+                    continue
+                if not valid:
+                    line = "(line is not valid UTF-8)"
+                out.append(GrepMatch(shown, number, line))
+                added += len(line)
+                if added > SEARCH_RAW_OUTPUT_MAX_BYTES:
+                    raise _too_much_output()
+    except OSError:
+        # Unreadable, or it went away while being read: what was found stays.
+        pass
     return added
+
+
+def _too_much_output() -> ToolError:
+    return ToolError(
+        "grep produced more output than can be processed; narrow pattern, path, or include"
+    )
 
 
 def grep_files(
     target: Path,
-    regex: re.Pattern[str],
+    expression: regex.Pattern[str],
     include: str | None,
     workdir: Path,
     budget: _Budget,
@@ -367,29 +501,33 @@ def grep_files(
     """Search ``target`` (a file or a directory) and return every match."""
     matches: list[GrepMatch] = []
     if target.is_file():
-        _search_file(target, display_path(target, workdir), regex, matches)
+        _search_file(target, display_path(target, workdir), expression, matches, budget)
         return matches
 
     include_matcher = (
         compile_glob(include, case_insensitive=case_insensitive_globs) if include else None
     )
     listed = _git_listed_files(target)
+    links: _LinkFilter | None = None
     if listed is None:
         relatives = [relative for relative, _entry in _walk_files(target, budget, skip_hidden=True)]
     else:
         relatives = [relative for relative in listed if not _is_hidden(relative)]
+        # git lists a link as a file and looks through junctions; the walk
+        # above has already left both out.
+        links = _LinkFilter(target)
     relatives.sort()
     total = 0
     for relative in relatives:
         budget.check()
-        if include_matcher is not None and include_matcher.fullmatch(relative) is None:
+        if include_matcher is not None and not _glob_matches(include_matcher, relative, budget):
+            continue
+        if links is not None and links.reached_through_link(relative):
             continue
         path = target / relative
-        total += _search_file(path, display_path(path, workdir), regex, matches)
+        total += _search_file(path, display_path(path, workdir), expression, matches, budget)
         if total > SEARCH_RAW_OUTPUT_MAX_BYTES:
-            raise ToolError(
-                "grep produced more output than can be processed; narrow pattern, path, or include"
-            )
+            raise _too_much_output()
     return matches
 
 
@@ -483,15 +621,15 @@ def build_search_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> 
         if not target.exists():
             raise ToolError(f'cannot search "{target}": not found')
         try:
-            regex = re.compile(pattern)
-        except re.error as exc:
+            expression = regex.compile(pattern)
+        except regex.error as exc:
             raise ToolError(f"invalid regular expression: {exc}") from exc
         matches = await _run_search(
             call,
             "grep",
             grep_files,
             target,
-            regex,
+            expression,
             str(include) if include is not None else None,
             ctx.workdir,
             case_insensitive_globs=case_insensitive,

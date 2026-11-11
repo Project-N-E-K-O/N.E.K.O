@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import http.server
 import io
 import ipaddress
 import os
-import re
+import shutil
+import subprocess
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
+import regex
 
 from nekoclaw.runtime.permissions import (
     CATEGORIES,
@@ -19,7 +25,7 @@ from nekoclaw.runtime.permissions import (
     default_permission_decision,
 )
 from nekoclaw.runtime.tools import image, search, web
-from nekoclaw.runtime.tools.base import SpillStore, ToolError
+from nekoclaw.runtime.tools.base import SpillStore, ToolCallInfo, ToolError
 from nekoclaw.runtime.tools.todo import TodoState
 
 
@@ -109,7 +115,7 @@ def test_glob_output_is_capped_and_points_at_the_full_list(tmp_path: Path) -> No
 def test_grep_groups_matches_and_skips_hidden_and_binary_files(tmp_path: Path) -> None:
     _tree(tmp_path)
     matches = search.grep_files(
-        tmp_path, re.compile(r"VALUE"), None, tmp_path, _budget(), case_insensitive_globs=False
+        tmp_path, regex.compile(r"VALUE"), None, tmp_path, _budget(), case_insensitive_globs=False
     )
     by_file: dict[str, list[int]] = {}
     for match in matches:
@@ -123,13 +129,13 @@ def test_grep_groups_matches_and_skips_hidden_and_binary_files(tmp_path: Path) -
 def test_grep_include_filters_files_and_single_file_targets_work(tmp_path: Path) -> None:
     _tree(tmp_path)
     only_py = search.grep_files(
-        tmp_path, re.compile("VALUE"), "*.py", tmp_path, _budget(), case_insensitive_globs=False
+        tmp_path, regex.compile("VALUE"), "*.py", tmp_path, _budget(), case_insensitive_globs=False
     )
     assert {m.path.replace(os.sep, "/") for m in only_py} == {"src/app.py", "src/pkg/util.py"}
     # An explicitly named file is searched even though it is hidden.
     hidden = search.grep_files(
         tmp_path / ".hidden" / "secret.py",
-        re.compile("VALUE"),
+        regex.compile("VALUE"),
         None,
         tmp_path,
         _budget(),
@@ -149,7 +155,7 @@ def test_grep_respects_gitignore_inside_a_git_work_tree(tmp_path: Path) -> None:
     (tmp_path / ".gitignore").write_text("src/pkg/\n", encoding="utf-8")
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, capture_output=True)
     matches = search.grep_files(
-        tmp_path, re.compile("VALUE"), None, tmp_path, _budget(), case_insensitive_globs=False
+        tmp_path, regex.compile("VALUE"), None, tmp_path, _budget(), case_insensitive_globs=False
     )
     assert {m.path.replace(os.sep, "/") for m in matches} == {"src/app.py"}
 
@@ -181,6 +187,162 @@ def test_search_stops_when_its_budget_is_spent(tmp_path: Path) -> None:
     spent = search._Budget(threading.Event(), time.monotonic() - 1)
     with pytest.raises(search._Stopped):
         search.glob_files(tmp_path, "*", spent, case_insensitive=False)
+
+
+async def test_a_runaway_grep_pattern_is_stopped_and_the_event_loop_keeps_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Backtracking on this line takes the matcher far longer than the limit
+    # set below (and would take seconds with the standard `re` module too).
+    (tmp_path / "trap.txt").write_text("a" * 38 + "!\n", encoding="utf-8")
+    monkeypatch.setattr(search, "MATCH_TIMEOUT_SECONDS", 0.5)
+    call = ToolCallInfo(id="c1", name="grep", signal=None, on_update=None)
+
+    ticks = 0
+    searching = True
+
+    async def ticker() -> None:
+        nonlocal ticks
+        while searching:
+            await asyncio.sleep(0.02)
+            ticks += 1
+
+    watcher = asyncio.ensure_future(ticker())
+    started = time.monotonic()
+    try:
+        with pytest.raises(ToolError, match="grep pattern is too slow: a single match took longer than 0.5s"):
+            await search._run_search(
+                call,
+                "grep",
+                search.grep_files,
+                tmp_path,
+                regex.compile(r"(a|aa)+$"),
+                None,
+                tmp_path,
+                case_insensitive_globs=False,
+            )
+    finally:
+        elapsed = time.monotonic() - started
+        searching = False
+        await watcher
+    assert elapsed < 5
+    # Other coroutines kept running during the match: the interpreter lock was
+    # not held for its whole duration.
+    assert ticks >= 5
+
+
+def test_a_match_that_outlives_the_whole_search_reports_the_search_timeout() -> None:
+    class Stalling:
+        def fullmatch(self, text: str, timeout: float) -> None:
+            del text, timeout
+            raise TimeoutError
+
+    live = _budget()
+    with pytest.raises(ToolError, match="glob pattern is too slow"):
+        search._glob_matches(Stalling(), "a/b.py", live)  # type: ignore[arg-type]
+    spent = search._Budget(threading.Event(), time.monotonic() - 1)
+    with pytest.raises(search._Stopped):
+        search._glob_matches(Stalling(), "a/b.py", spent)  # type: ignore[arg-type]
+    assert 0 < live.match_timeout() <= search.MATCH_TIMEOUT_SECONDS
+
+
+@pytest.mark.parametrize("inside_git", [False, True])
+def test_a_directory_search_does_not_read_through_links(tmp_path: Path, inside_git: bool) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("VALUE outside\n", encoding="utf-8")
+    root = tmp_path / "root"
+    (root / "plain").mkdir(parents=True)
+    (root / "plain" / "inside.txt").write_text("VALUE inside\n", encoding="utf-8")
+    try:
+        (root / "file_link.txt").symlink_to(outside / "secret.txt")
+        (root / "dir_link").symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("symbolic links cannot be created here")
+    if os.name == "nt":
+        import _winapi
+
+        _winapi.CreateJunction(str(outside), str(root / "junction"))
+    if inside_git:
+        if shutil.which("git") is None:
+            pytest.skip("git is not installed")
+        subprocess.run(["git", "init", "-q", str(root)], check=True, capture_output=True)
+
+    # The search was approved for `root`; the links lead out of it.
+    matches = search.grep_files(
+        root, regex.compile("VALUE"), None, root, _budget(), case_insensitive_globs=False
+    )
+    assert [match.path.replace(os.sep, "/") for match in matches] == ["plain/inside.txt"]
+    listed = search.glob_files(root, "*.txt", _budget(), case_insensitive=False)
+    assert [path.relative_to(root).as_posix() for path in listed] == ["plain/inside.txt"]
+
+
+def test_grep_reads_line_by_line_and_matches_only_the_start_of_a_huge_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(search, "GREP_LINE_MAX_BYTES", 64)
+    e_acute = chr(0xE9)
+    path = tmp_path / "mixed.txt"
+    path.write_bytes(
+        b"first needle\r\n"
+        + b"x" * 200 + b" needle past the cut\n"
+        + b"needle " + (e_acute * 40).encode("utf-8") + b"\n"
+        + b"needle \xff\xfe bad bytes\n"
+        + b"last needle"
+    )
+    matches = search.grep_files(
+        path, regex.compile("needle"), None, tmp_path, _budget(), case_insensitive_globs=False
+    )
+    assert [(match.line_number, match.line) for match in matches] == [
+        (1, "first needle"),
+        # Line 2 only matches beyond the first 64 bytes, which are all that is looked at.
+        # Line 3 is cut inside a two-byte character; the half character is dropped.
+        (3, "needle " + e_acute * 28),
+        (4, "(line is not valid UTF-8)"),
+        (5, "last needle"),
+    ]
+    # No phantom empty line after a final newline.
+    path.write_bytes(b"one\n\n")
+    blank = search.grep_files(
+        path, regex.compile("^$"), None, tmp_path, _budget(), case_insensitive_globs=False
+    )
+    assert [match.line_number for match in blank] == [2]
+
+
+def test_the_budget_and_the_output_cap_apply_inside_one_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "long.txt"
+    path.write_text("needle\n" * 5000, encoding="utf-8")
+    spent = search._Budget(threading.Event(), time.monotonic() - 1)
+    with pytest.raises(search._Stopped):
+        search.grep_files(
+            path, regex.compile("needle"), None, tmp_path, spent, case_insensitive_globs=False
+        )
+    monkeypatch.setattr(search, "SEARCH_RAW_OUTPUT_MAX_BYTES", 600)
+    with pytest.raises(ToolError, match="more output than can be processed"):
+        search.grep_files(
+            path, regex.compile("needle"), None, tmp_path, _budget(), case_insensitive_globs=False
+        )
+
+
+def test_spill_files_are_never_reused_after_a_restart(tmp_path: Path) -> None:
+    first = SpillStore(tmp_path / "out")
+    old = first.save("bash-stdout", "first run")
+    reserved = first.reserve("bash-stdout", ".log")
+    assert old is not None and old.name == "0001-bash-stdout.txt"
+    assert reserved is not None and reserved.name == "0002-bash-stdout.log"
+    reserved.write_bytes(b"kept")
+
+    # A resumed session builds a new store over the same directory, and its
+    # transcript still points at the files above.
+    second = SpillStore(tmp_path / "out")
+    new = second.save("bash-stdout", "second run")
+    again = second.reserve("bash-stdout", ".log")
+    assert new is not None and new.name == "0003-bash-stdout.txt"
+    assert again is not None and again.name == "0004-bash-stdout.log"
+    assert old.read_text(encoding="utf-8") == "first run"
+    assert reserved.read_bytes() == b"kept"
 
 
 # ---------------------------------------------------------------------------
@@ -270,6 +432,96 @@ async def test_a_public_name_resolves_to_the_checked_address(monkeypatch) -> Non
 
     monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", fake_getaddrinfo)
     assert await web.resolve_public("one.example.com", 443) == "1.1.1.1"
+
+
+def _proxy_env(monkeypatch: pytest.MonkeyPatch, **values: str) -> None:
+    for name in ("http_proxy", "https_proxy", "all_proxy", "no_proxy"):
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.upper(), raising=False)
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+
+
+@contextlib.contextmanager
+def _local_http():  # noqa: ANN202
+    """A local server that records (request target, Host header) and answers with text."""
+    seen: list[tuple[str, str]] = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - the name the base class dispatches to
+            seen.append((self.path, self.headers.get("Host", "")))
+            body = b"plain body"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args: object) -> None:
+            del args
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server.server_address[1], seen
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(5)
+
+
+def test_proxy_selection_honours_exclusions_that_name_a_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    _proxy_env(
+        monkeypatch,
+        http_proxy="http://127.0.0.1:3128",
+        no_proxy="example.com:8080,.internal.example.org",
+    )
+    assert web.select_proxy(urlsplit("http://example.com/x")) == "http://127.0.0.1:3128"
+    assert web.select_proxy(urlsplit("http://example.com:8080/x")) is None
+    assert web.select_proxy(urlsplit("http://api.internal.example.org/x")) is None
+    # Nothing is configured for https.
+    assert web.select_proxy(urlsplit("https://example.com/x")) is None
+
+
+async def test_a_direct_request_is_checked_and_pinned_whatever_the_environment_says(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _local_http() as (port, seen):
+        # The exclusion names the port. Judged by host name alone this request
+        # would count as proxied and skip the address check, while an HTTP
+        # client reading the same environment would send it directly.
+        _proxy_env(
+            monkeypatch,
+            http_proxy="http://127.0.0.1:9",
+            no_proxy=f"fetch-target.example.com:{port}",
+        )
+        resolved: list[tuple[str, int]] = []
+
+        async def checked_address(host: str, target_port: int) -> str:
+            resolved.append((host, target_port))
+            return "127.0.0.1"
+
+        monkeypatch.setattr(web, "resolve_public", checked_address)
+        page = await web.fetch_page(f"http://fetch-target.example.com:{port}/page")
+        assert (page.status, page.content) == (200, "plain body")
+        assert resolved == [("fetch-target.example.com", port)]
+        # It went to the checked address, with the name kept in the Host header.
+        assert seen == [("/page", f"fetch-target.example.com:{port}")]
+
+
+async def test_a_proxied_request_goes_through_the_selected_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
+    with _local_http() as (port, seen):
+        _proxy_env(monkeypatch, http_proxy=f"http://127.0.0.1:{port}")
+
+        async def no_resolution(host: str, target_port: int) -> str:
+            raise AssertionError(f"{host}:{target_port} is resolved by the proxy, not here")
+
+        monkeypatch.setattr(web, "resolve_public", no_resolution)
+        page = await web.fetch_page("http://proxied-target.example.com/page")
+        assert page.content == "plain body"
+        # The stand-in proxy received the request in the form sent to proxies.
+        assert seen == [("http://proxied-target.example.com/page", "proxied-target.example.com")]
 
 
 def test_fetch_output_labels_the_content_as_untrusted() -> None:
@@ -395,6 +647,29 @@ def test_image_errors(tmp_path: Path) -> None:
     broken.write_bytes(_png((10, 10))[:40])
     with pytest.raises(ToolError, match="may be truncated or corrupt"):
         image.load_image(broken)
+
+
+def test_an_oversized_image_is_refused_before_its_pixels_are_decoded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import struct
+    import zlib
+
+    from PIL import ImageFile
+
+    # A small file whose header claims 9000 x 9000 pixels.
+    data = bytearray(_png((10, 10)))
+    data[16:24] = struct.pack(">II", 9000, 9000)
+    data[29:33] = struct.pack(">I", zlib.crc32(bytes(data[12:29])))
+    path = tmp_path / "huge.png"
+    path.write_bytes(bytes(data))
+
+    def no_decoding(self: object) -> None:
+        raise AssertionError("the pixels were decoded")
+
+    monkeypatch.setattr(ImageFile.ImageFile, "load", no_decoding)
+    with pytest.raises(ToolError, match="exceeds the 64000000-pixel decoded-size limit"):
+        image.load_image(path)
 
 
 # ---------------------------------------------------------------------------

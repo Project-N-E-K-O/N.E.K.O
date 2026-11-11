@@ -76,7 +76,8 @@ class RuntimeCore:
         self._emit = emit
         self._open_session: SessionOpener = open_session or FamiliarSession.open
         self._sessions: dict[str, FamiliarSession] = {}
-        self._starting: set[str] = set()
+        # Sessions being created; each future is done once the attempt is over.
+        self._starting: dict[str, asyncio.Future[None]] = {}
         self._closing: set[str] = set()
         self.last_command_at = time.monotonic()
 
@@ -113,7 +114,15 @@ class RuntimeCore:
         self.last_command_at = time.monotonic()
         if isinstance(command, protocol.StartCommand):
             await self.start(command.spec)
-        elif isinstance(command, protocol.PromptCommand):
+            return
+        # A driver may send the next command right after ``start`` without
+        # waiting for ``started``. Creating a session takes a while, so such a
+        # command waits for it here instead of failing with "unknown session".
+        # Waiting commands resume in the order they arrived.
+        opening = self._starting.get(getattr(command, "session_id", ""))
+        if opening is not None:
+            await opening
+        if isinstance(command, protocol.PromptCommand):
             self.prompt(command.session_id, command.text)
         elif isinstance(command, protocol.SteerCommand):
             self.steer(command.session_id, command.text)
@@ -131,19 +140,22 @@ class RuntimeCore:
         if session_id in self._sessions or session_id in self._starting:
             self._reject(session_id, "start", f'session "{session_id}" already exists')
             return
-        self._starting.add(session_id)
+        opening: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self._starting[session_id] = opening
         try:
             session = await self._open_session(spec, self._host, self._emit)
         except SessionError as exc:
             self._reject(session_id, "start", str(exc))
-            return
         except Exception as exc:  # noqa: BLE001 - reported to the host, never raised into the pump
             logger.exception("could not start session %s", session_id)
             self._reject(session_id, "start", f"{type(exc).__name__}: {exc}")
-            return
+        else:
+            self._sessions[session_id] = session
         finally:
-            self._starting.discard(session_id)
-        self._sessions[session_id] = session
+            # The session is registered (or the attempt has failed) before the
+            # commands that waited for it run.
+            del self._starting[session_id]
+            opening.set_result(None)
 
     def _text_command(self, session_id: str, command: str, text: str) -> None:
         session = self._session(session_id, command)

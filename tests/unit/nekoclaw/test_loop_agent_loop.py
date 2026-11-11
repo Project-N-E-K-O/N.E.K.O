@@ -36,11 +36,12 @@ from nekoclaw.runtime.loop import (
     ToolResultMessage,
     UserMessage,
 )
-from nekoclaw.runtime.loop.loop import run_agent_loop
 from nekoclaw.runtime.loop.provider_events import ThinkingDeltaEvent
 from nekoclaw.runtime.loop.types import JSONValue
 from nekoclaw.runtime.loop.provider import CancellationToken
 from tests.unit.nekoclaw.loop_event_helpers import FakeProvider
+
+run_agent_loop = loop_module.run_agent_loop
 
 
 async def _collect(stream: AsyncIterator[AgentEvent]) -> list[AgentEvent]:

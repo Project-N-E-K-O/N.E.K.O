@@ -224,17 +224,25 @@ def build_shell_tool(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> li
         except OSError as exc:
             raise ToolError(f"{kind} could not be started: {exc}") from exc
 
-        if background:
-            job = registry.start(kind, command, process, foreground=False)
-            return f"started background job {job.id}"
-
-        job = registry.start(kind, command, process, foreground=True)
-        progress = _ProgressFeed(job, call)
-        outcome = await registry.wait(job, timeout_ms / 1000, call, on_tick=progress.tick)
-        if outcome == "aborted":
+        async def stop_aborted(job: Job) -> None:
+            job.notice_suppressed = True
             registry.kill(job, "tool call aborted")
             await registry.wait(job, KILL_SETTLE_SECONDS, _detached(call))
             registry.remove(job)
+
+        job = registry.start(kind, command, process, foreground=not background)
+        if call.cancelled():
+            # The run was aborted while the process was being created. The abort
+            # stopped the jobs it could see; this one did not exist yet.
+            await stop_aborted(job)
+            raise ToolAborted
+        if background:
+            return f"started background job {job.id}"
+
+        progress = _ProgressFeed(job, call)
+        outcome = await registry.wait(job, timeout_ms / 1000, call, on_tick=progress.tick)
+        if outcome == "aborted":
+            await stop_aborted(job)
             raise ToolAborted
         if outcome == "timeout":
             # The command keeps running as the job it already was.

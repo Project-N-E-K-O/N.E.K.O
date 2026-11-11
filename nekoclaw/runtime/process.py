@@ -28,8 +28,15 @@ come up (see ``nekoclaw.runtime.protocol``).
 * When every session has been idle for ``idle_exit_seconds`` the child closes
   its sessions and exits, which returns all of its memory. The next ``start``
   spawns a new child; a session resumes from its transcript.
+* The child does not leave on its own. It asks with ``runtime_idle``, stating
+  how many messages it has read, and keeps serving. The parent answers with a
+  ``shutdown`` only if that is every message it has sent, and from then on
+  sends this child nothing more: a ``start`` waits for the child to be gone and
+  goes to a new one, any other command is rejected with an ``error`` event. So
+  no command is ever written to a child that has stopped reading.
 * If the child dies, every session it had gets an ``ended`` event with reason
-  ``error``.
+  ``error``, and every ``start`` it had not answered yet gets an ``error``
+  event.
 
 Importing this module starts nothing.
 """
@@ -189,6 +196,8 @@ async def _serve(connection: Any, options: dict[str, Any]) -> None:
     idle_exit = float(options.get("idle_exit_seconds") or DEFAULT_IDLE_EXIT_SECONDS)
     tasks: set[asyncio.Task[None]] = set()
     idle_since: float | None = time.monotonic()
+    # Messages read from the parent, valid or not; see RuntimeIdleEvent.
+    received = 0
     reason = "shutdown"
     detail: str | None = None
     writer.send(protocol.dump(protocol.RuntimeReadyEvent(pid=os.getpid())))
@@ -202,12 +211,16 @@ async def _serve(connection: Any, options: dict[str, Any]) -> None:
                 elif idle_since is None:
                     idle_since = time.monotonic()
                 elif time.monotonic() - idle_since >= idle_exit:
-                    reason = "idle"
-                    break
+                    # Ask instead of leaving: a command may already be on its
+                    # way, and a process that stopped reading would lose it.
+                    # Ask again later if the parent does not agree.
+                    writer.send(protocol.dump(protocol.RuntimeIdleEvent(received=received)))
+                    idle_since = time.monotonic()
                 continue
             if data is None:
                 reason = "parent_gone"
                 break
+            received += 1
             idle_since = None
             try:
                 command = protocol.parse_command(json.loads(data))
@@ -217,6 +230,7 @@ async def _serve(connection: Any, options: dict[str, Any]) -> None:
             if isinstance(command, protocol.HostResponseCommand):
                 bridge.resolve(command)
             elif isinstance(command, protocol.ShutdownCommand):
+                reason = command.reason
                 break
             else:
                 # Starting or closing a session takes a while; the pump keeps reading.
@@ -271,7 +285,13 @@ class SubprocessRuntime:
         self._writer: _PipeWriter | None = None
         self._ready: asyncio.Future[int] | None = None
         self._exit_announced = False
+        # Messages written to the current child; see RuntimeIdleEvent.
+        self._sent = 0
+        # The current child was told to exit: nothing more may be sent to it.
+        self._retiring = False
         self._sessions: set[str] = set()
+        # Session id -> start commands the child has not answered yet.
+        self._pending_starts: dict[str, int] = {}
         self._host_tasks: dict[str, asyncio.Task[None]] = {}
 
     # -- process --------------------------------------------------------------
@@ -313,8 +333,28 @@ class SubprocessRuntime:
         child_end.close()
         return process, parent_end
 
+    async def _wait_until_gone(self) -> None:
+        """Wait for a child that was told to exit.
+
+        Its sessions are closed and their transcripts written by then, so a
+        session started next can resume from them.
+        """
+        process = self._process
+        deadline = time.monotonic() + SHUTDOWN_TIMEOUT_SECONDS
+        while self._connection is not None and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
+        if self._connection is not None:
+            if process is not None and process.is_alive():
+                logger.warning("the runtime process did not exit; terminating it")
+                process.terminate()
+            self._on_disconnect()
+        if process is not None:
+            await asyncio.to_thread(process.join, 5.0)
+
     async def _ensure_process(self) -> None:
         async with self._lock:
+            if self._retiring:
+                await self._wait_until_gone()
             if self._process is not None and self._process.is_alive() and self._writer is not None:
                 return
             if self._connection is not None:
@@ -327,6 +367,8 @@ class SubprocessRuntime:
             self._writer = _PipeWriter(connection, "nekoclaw-runtime-commands")
             self._ready = loop.create_future()
             self._exit_announced = False
+            self._retiring = False
+            self._sent = 0
             threading.Thread(
                 target=_read_pipe,
                 args=(connection, loop, lambda data, owner=connection: self._on_pipe(owner, data)),
@@ -355,6 +397,9 @@ class SubprocessRuntime:
         if kind == "host_request":
             self._on_host_request(message)
             return
+        if kind == "runtime_idle":
+            self._on_idle_request(message)
+            return
         if kind == "runtime_ready":
             if self._ready is not None and not self._ready.done():
                 self._ready.set_result(int(message.get("pid") or 0))
@@ -362,9 +407,31 @@ class SubprocessRuntime:
             self._exit_announced = True
         elif kind == "started":
             self._sessions.add(str(message.get("session_id")))
+            self._start_answered(str(message.get("session_id")))
+        elif kind == "error" and message.get("command") == "start":
+            self._start_answered(str(message.get("session_id")))
         elif kind == "ended" and message.get("reason") == "closed":
             self._sessions.discard(str(message.get("session_id")))
         self._deliver(message)
+
+    def _start_answered(self, session_id: str) -> None:
+        left = self._pending_starts.get(session_id, 0) - 1
+        if left > 0:
+            self._pending_starts[session_id] = left
+        else:
+            self._pending_starts.pop(session_id, None)
+
+    def _on_idle_request(self, message: dict[str, Any]) -> None:
+        """Let an idle child exit, unless a message it has not read is on its way."""
+        if self._retiring or message.get("received") != self._sent:
+            # Declined: the child reads what is in the pipe and stays.
+            return
+        self._retire(protocol.ShutdownCommand(reason="idle"))
+
+    def _retire(self, command: protocol.ShutdownCommand) -> None:
+        """Tell the child to exit. Nothing is sent to it after this."""
+        self._send(command)
+        self._retiring = True
 
     def _deliver(self, message: dict[str, Any]) -> None:
         try:
@@ -387,6 +454,7 @@ class SubprocessRuntime:
         self._host_tasks.clear()
         if self._ready is not None and not self._ready.done():
             self._ready.set_exception(RuntimeError("the runtime process exited while starting"))
+        self._retiring = False
         orphans, self._sessions = sorted(self._sessions), set()
         for session_id in orphans:
             self._deliver(
@@ -395,6 +463,17 @@ class SubprocessRuntime:
                         session_id=session_id,
                         reason="error",
                         error="the runtime process exited",
+                    )
+                )
+            )
+        unanswered, self._pending_starts = sorted(self._pending_starts), {}
+        for session_id in unanswered:
+            self._deliver(
+                protocol.dump(
+                    protocol.ErrorEvent(
+                        session_id=session_id,
+                        command="start",
+                        message="the runtime process exited before the session started",
                     )
                 )
             )
@@ -443,19 +522,27 @@ class SubprocessRuntime:
         if writer is None:
             return False
         writer.send(protocol.dump(command))
+        self._sent += 1
         return True
 
-    def _send_or_reject(self, session_id: str, command: Any) -> None:
-        if not self._send(command):
-            self._deliver(
-                protocol.dump(
-                    protocol.ErrorEvent(
-                        session_id=session_id,
-                        command=command.type,
-                        message="the runtime process is not running; start the session again",
-                    )
+    def _send_or_reject(self, session_id: str, command: Any) -> bool:
+        # A child that was told to exit is closing its sessions and no longer
+        # reads commands, so it counts as gone already.
+        if not self._retiring and self._send(command):
+            return True
+        self._deliver(
+            protocol.dump(
+                protocol.ErrorEvent(
+                    session_id=session_id,
+                    command=command.type,
+                    message=(
+                        "the runtime process is not running or is shutting down; "
+                        "start the session again"
+                    ),
                 )
             )
+        )
+        return False
 
     async def start(self, spec: protocol.FamiliarSpec) -> None:
         try:
@@ -472,7 +559,8 @@ class SubprocessRuntime:
                 )
             )
             return
-        self._send_or_reject(spec.session_id, protocol.StartCommand(spec=spec))
+        if self._send_or_reject(spec.session_id, protocol.StartCommand(spec=spec)):
+            self._pending_starts[spec.session_id] = self._pending_starts.get(spec.session_id, 0) + 1
 
     async def prompt(self, session_id: str, text: str) -> None:
         self._send_or_reject(session_id, protocol.PromptCommand(session_id=session_id, text=text))
@@ -491,18 +579,24 @@ class SubprocessRuntime:
 
     async def shutdown(self) -> None:
         """Ask the child to close its sessions and exit; kill it if it does not."""
-        process = self._process
-        if process is None:
-            return
-        self._send(protocol.ShutdownCommand())
-        await asyncio.to_thread(process.join, SHUTDOWN_TIMEOUT_SECONDS)
-        if process.is_alive():
-            logger.warning("the runtime process did not exit; terminating it")
-            process.terminate()
-            await asyncio.to_thread(process.join, 5.0)
-        self._process = None
-        # Let the reader thread report the closed pipe before returning.
-        for _attempt in range(50):
-            if self._connection is None:
-                break
-            await asyncio.sleep(0.02)
+        # Under the lock a ``start`` arriving meanwhile waits and then gets a
+        # new child, instead of being written to the one that is leaving.
+        async with self._lock:
+            process = self._process
+            if process is None:
+                return
+            if not self._retiring:
+                self._retire(protocol.ShutdownCommand())
+            await asyncio.to_thread(process.join, SHUTDOWN_TIMEOUT_SECONDS)
+            if process.is_alive():
+                logger.warning("the runtime process did not exit; terminating it")
+                process.terminate()
+                await asyncio.to_thread(process.join, 5.0)
+            self._process = None
+            # Let the reader thread report the closed pipe before returning.
+            for _attempt in range(50):
+                if self._connection is None:
+                    break
+                await asyncio.sleep(0.02)
+            if self._connection is not None:
+                self._on_disconnect()

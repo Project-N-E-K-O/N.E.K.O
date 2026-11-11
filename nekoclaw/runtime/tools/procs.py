@@ -204,8 +204,9 @@ class _WindowsJob:
 
     def __init__(self) -> None:
         import ctypes
-        from ctypes import wintypes
+        import ctypes.wintypes
 
+        wintypes = ctypes.wintypes
         self._ctypes = ctypes
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
@@ -454,6 +455,23 @@ async def spawn(
     stdout: OutputBuffer,
     stderr: OutputBuffer,
 ) -> ShellProcess:
-    """Start ``argv`` with no stdin and both output streams collected."""
+    """Start ``argv`` with no stdin and both output streams collected.
+
+    Cancelling this call does not stop the worker thread, which may still
+    create the process. Such a process is killed as soon as it exists, because
+    the caller that would have owned it is gone.
+    """
     loop = asyncio.get_running_loop()
-    return await asyncio.to_thread(_spawn_blocking, argv, cwd, env, stdout, stderr, loop)
+    starting = loop.run_in_executor(None, _spawn_blocking, argv, cwd, env, stdout, stderr, loop)
+    try:
+        return await asyncio.shield(starting)
+    except asyncio.CancelledError:
+        starting.add_done_callback(_kill_unowned)
+        raise
+
+
+def _kill_unowned(starting: asyncio.Future[ShellProcess]) -> None:
+    """Kill a process whose creation finished after its caller was cancelled."""
+    if starting.cancelled() or starting.exception() is not None:
+        return
+    starting.result().kill()

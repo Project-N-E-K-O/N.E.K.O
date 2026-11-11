@@ -83,12 +83,30 @@ class SpillStore:
 
     Files live in a directory the session owns. Saving is best effort: a
     failure returns ``None`` and the caller keeps what it has.
+
+    File names start with a number that keeps growing across restarts of the
+    session: the transcript of a resumed session still points at the files
+    written before, so none of them may be reused.
     """
 
     def __init__(self, directory: Path) -> None:
         self.directory = directory
         self._lock = threading.Lock()
-        self._counter = 0
+        # None until the directory has been looked at.
+        self._counter: int | None = None
+
+    def _highest_number(self) -> int:
+        """Return the largest number already used by a file in the directory."""
+        highest = 0
+        try:
+            names = os.listdir(self.directory)
+        except OSError:
+            return highest
+        for name in names:
+            digits = name.partition("-")[0]
+            if digits.isdecimal():
+                highest = max(highest, int(digits))
+        return highest
 
     def reserve(self, hint: str, suffix: str = ".txt") -> Path | None:
         """Return a fresh path below the spill directory without writing it."""
@@ -98,6 +116,8 @@ class SpillStore:
         except OSError:
             return None
         with self._lock:
+            if self._counter is None:
+                self._counter = self._highest_number()
             self._counter += 1
             number = self._counter
         return self.directory / f"{number:04d}-{safe}{suffix}"

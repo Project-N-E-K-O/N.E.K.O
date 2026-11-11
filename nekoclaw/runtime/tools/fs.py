@@ -135,8 +135,9 @@ def write_file(path: Path, content: str) -> str:
     if path.is_dir():
         raise ToolError(f'cannot write "{display}": not a regular file')
     existed = path.exists()
-    fmt = textio.UTF8_LF
-    data: bytes
+    # A new file, or one that is not readable as text (binary, unknown
+    # encoding, too large), gets plain UTF-8 exactly as the model wrote it.
+    data = content.encode("utf-8", errors="replace")
     if existed:
         try:
             previous = textio.read_bytes(
@@ -144,18 +145,10 @@ def write_file(path: Path, content: str) -> str:
             )
             _old_text, fmt = textio.decode_text(previous, verb="write", display=display)
         except ToolError:
-            # Not readable as text (binary, unknown encoding, too large): the
-            # write replaces it with plain UTF-8, exactly as the model wrote it.
-            fmt = textio.UTF8_LF
-            existed_as_text = False
+            pass
         else:
-            existed_as_text = True
-        if existed_as_text:
+            # An existing text file keeps its encoding and line endings.
             data = textio.encode_text(content, fmt, display=display)
-        else:
-            data = content.encode("utf-8", errors="replace")
-    else:
-        data = content.encode("utf-8", errors="replace")
     textio.write_bytes_atomic(path, data, display=display)
     outcome = "Updated file" if existed else "Created file"
     return f"<path>{display}</path>\n<type>file</type>\n<content>\n{outcome}\n</content>"

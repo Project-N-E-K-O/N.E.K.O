@@ -176,6 +176,7 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
     *(
         ("nekoclaw/runtime/", package, "the familiar runtime uses only config and utils")
         for package in (
+            "steamworks",
             "knowledge",
             "memory",
             "main_logic",

@@ -268,7 +268,7 @@ def pages(monkeypatch: pytest.MonkeyPatch):  # noqa: ANN201
     # is pointed at the local server so the rest of the path can run.
     monkeypatch.setattr(web, "check_host_name", lambda host: None)
     monkeypatch.setattr(web, "resolve_public", resolve)
-    monkeypatch.setattr(web, "uses_proxy", lambda scheme, host: False)
+    monkeypatch.setattr(web, "select_proxy", lambda parts: None)
     try:
         yield f"http://pages.example:{port}"
     finally:

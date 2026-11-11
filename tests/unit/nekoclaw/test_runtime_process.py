@@ -7,6 +7,7 @@ The child process uses the real model layer against a local http endpoint
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -193,6 +194,183 @@ async def test_abort_reaches_the_child_and_a_dead_child_fails_its_sessions(tmp_p
             assert exit_event["reason"] == "error"
         finally:
             await runtime.shutdown()
+
+
+async def test_commands_sent_right_after_start_wait_for_the_session(tmp_path: Path, local_only: None) -> None:
+    def respond(body: dict) -> list[dict]:
+        del body
+        return [sse_text("hello there"), sse_finish()]
+
+    events = Recorder()
+    runtime = SubprocessRuntime(events, idle_exit_seconds=300)
+    with FakeOpenAIServer(respond) as server:
+        try:
+            # No waiting for `started` in between, exactly as with the in-process runtime.
+            await runtime.start(_spec(tmp_path, "eager", server.base_url))
+            await runtime.prompt("eager", "say hello")
+            outcome = await events.wait_for(lambda e: e["type"] in ("ended", "error"), timeout=90)
+            assert (outcome["type"], outcome.get("text")) == ("ended", "hello there")
+            assert events.of("error") == []
+        finally:
+            await runtime.shutdown()
+
+
+async def test_a_start_that_meets_an_idle_exit_goes_to_a_new_child(tmp_path: Path, local_only: None) -> None:
+    def respond(body: dict) -> list[dict]:
+        del body
+        return [sse_text("done"), sse_finish()]
+
+    events = Recorder()
+    runtime = SubprocessRuntime(events, idle_exit_seconds=1.0)
+    with FakeOpenAIServer(respond) as server:
+        late = _spec(tmp_path, "late", server.base_url)
+        retire = runtime._retire
+        racing: list[asyncio.Future[None]] = []
+
+        def retire_and_start(command: Any) -> None:
+            retire(command)
+            # The host starts a session at the very moment the idle child was
+            # told that it may exit.
+            if command.reason == "idle" and not racing:
+                racing.append(asyncio.ensure_future(runtime.start(late)))
+
+        runtime._retire = retire_and_start  # type: ignore[method-assign]
+        try:
+            await runtime.start(_spec(tmp_path, "early", server.base_url))
+            answer = await events.wait_for(
+                lambda e: e["type"] in ("started", "error") and e.get("session_id") == "late", timeout=120
+            )
+            assert answer["type"] == "started"
+            # The first child left in an orderly way and a second one took the session.
+            pids = [event["pid"] for event in events.of("runtime_ready")]
+            assert len(pids) == 2 and pids[0] != pids[1]
+            assert [event["reason"] for event in events.of("runtime_exit")] == ["idle"]
+            assert [e["session_id"] for e in events.of("ended") if e["reason"] == "closed"] == ["early"]
+            assert events.of("runtime_idle") == []  # the request to exit stays inside the shell
+            await runtime.prompt("late", "go")
+            ended = await events.wait_ended("late", timeout=90)
+            assert ended["text"] == "done"
+            assert events.of("error") == []
+        finally:
+            await runtime.shutdown()
+
+
+class _FakePipe:
+    """Stands in for the pipe and its writer thread; records what would be sent."""
+
+    def __init__(self) -> None:
+        self.sent: list[dict[str, Any]] = []
+
+    def send(self, message: dict[str, Any]) -> None:
+        self.sent.append(message)
+
+    def stop(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+    def is_alive(self) -> bool:
+        return True
+
+
+def _wired(events: Recorder) -> tuple[SubprocessRuntime, _FakePipe, Any]:
+    """A runtime that believes it has a running child, without starting one."""
+    runtime = SubprocessRuntime(events)
+    pipe = _FakePipe()
+    runtime._writer = pipe  # type: ignore[assignment]
+    runtime._connection = pipe
+    runtime._process = pipe
+
+    def feed(message: dict[str, Any] | None) -> None:
+        data = None if message is None else json.dumps(message).encode("utf-8")
+        runtime._on_pipe(pipe, data)
+
+    return runtime, pipe, feed
+
+
+async def test_an_idle_child_may_exit_only_when_nothing_is_on_its_way() -> None:
+    events = Recorder()
+    runtime, pipe, feed = _wired(events)
+
+    await runtime.prompt("s1", "hi")
+    # The child asks to exit before it has read that prompt: declined.
+    feed({"type": "runtime_idle", "received": 0})
+    assert [message["type"] for message in pipe.sent] == ["prompt"]
+    # It asks again having read everything: granted.
+    feed({"type": "runtime_idle", "received": 1})
+    assert pipe.sent[-1] == {"type": "shutdown", "reason": "idle"}
+
+    # From here on nothing is written to this child; the command is rejected.
+    await runtime.prompt("s1", "again")
+    assert len(pipe.sent) == 2
+    rejected = events.of("error")
+    assert len(rejected) == 1 and rejected[0]["command"] == "prompt"
+    assert "shutting down" in rejected[0]["message"]
+    # A repeated request changes nothing, and none of this reaches the host.
+    feed({"type": "runtime_idle", "received": 1})
+    assert len(pipe.sent) == 2 and events.of("runtime_idle") == []
+
+
+async def test_a_start_the_child_never_answered_is_reported_when_it_dies(tmp_path: Path) -> None:
+    events = Recorder()
+    runtime, pipe, feed = _wired(events)
+
+    await runtime.start(make_spec(tmp_path, "answered"))
+    await runtime.start(make_spec(tmp_path, "refused"))
+    await runtime.start(make_spec(tmp_path, "pending"))
+    assert [message["type"] for message in pipe.sent] == ["start", "start", "start"]
+    feed({"type": "started", "session_id": "answered", "seq": 1})
+    feed({"type": "error", "session_id": "refused", "seq": 1, "command": "start", "message": "no"})
+    mark = len(events.events)
+    feed(None)  # the pipe closed: the child is gone
+
+    after = events.events[mark:]
+    assert [(e["type"], e.get("session_id"), e.get("command")) for e in after] == [
+        ("ended", "answered", None),
+        ("error", "pending", "start"),
+        ("runtime_exit", None, None),
+    ]
+    assert after[1]["message"] == "the runtime process exited before the session started"
+    for event in events.events:
+        parse_event(event)
+
+
+async def test_commands_for_a_session_that_is_still_starting_wait_for_it(tmp_path: Path) -> None:
+    llm = ScriptedLLM([[say("one"), finish()], [say("two"), finish()]])
+    opener = _scripted_opener({"s1": llm})
+
+    async def slow_open(spec, host, emit):  # noqa: ANN001, ANN202
+        await asyncio.sleep(0.2)
+        if spec.session_id == "broken":
+            raise RuntimeError("no such model")
+        return await opener(spec, host, emit)
+
+    events = Recorder()
+    runtime = InProcessRuntime(events, open_session=slow_open)
+    try:
+        # All three are under way before the session exists.
+        await asyncio.gather(
+            runtime.start(make_spec(tmp_path)),
+            runtime.prompt("s1", "first"),
+            runtime.follow_up("s1", "second"),
+        )
+        ended = await events.wait_ended("s1")
+        assert ended["text"] == "two"
+        assert [request[-1]["content"] for request in llm.requests] == ["first", "second"]
+        assert events.of("error") == []
+
+        # When the start fails, the command that waited is rejected after it.
+        await asyncio.gather(
+            runtime.start(make_spec(tmp_path, "broken")), runtime.prompt("broken", "anyone?")
+        )
+        errors = [(e["command"], e["message"]) for e in events.of("error", "broken")]
+        assert errors == [
+            ("start", "RuntimeError: no such model"),
+            ("prompt", 'unknown session "broken"'),
+        ]
+    finally:
+        await runtime.shutdown()
 
 
 # ---------------------------------------------------------------------------

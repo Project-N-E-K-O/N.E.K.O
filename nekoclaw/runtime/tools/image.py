@@ -100,25 +100,30 @@ def load_image(path: Path) -> LoadedImage:
             "bytes use a different image format; rename the file to match its actual format if "
             f"it is {_SUPPORTED}, or convert it to one of those formats"
         )
+    undecodable = (
+        f'cannot read "{display}": the bytes do not decode as a supported {_SUPPORTED} '
+        "image; the file may be truncated or corrupt"
+    )
+    failures = (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError)
     try:
+        # Reads the header only.
         image = Image.open(io.BytesIO(raw))
-        image.load()
-    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
-        raise ToolError(
-            f'cannot read "{display}": the bytes do not decode as a supported {_SUPPORTED} '
-            "image; the file may be truncated or corrupt"
-        ) from exc
+    except failures as exc:
+        raise ToolError(undecodable) from exc
     if _PIL_FORMATS.get(image.format or "") != declared:
-        raise ToolError(
-            f'cannot read "{display}": the bytes do not decode as a supported {_SUPPORTED} '
-            "image; the file may be truncated or corrupt"
-        )
+        raise ToolError(undecodable)
+    # The header states the size, so an oversized picture is refused before any
+    # of its pixels are decoded: a small file can expand to gigabytes.
     width, height = image.size
     if width * height > MAX_SOURCE_PIXELS:
         raise ToolError(
             f'cannot read "{display}": the image exceeds the {MAX_SOURCE_PIXELS}-pixel '
             "decoded-size limit; downscale the image and read the smaller copy"
         )
+    try:
+        image.load()
+    except failures as exc:
+        raise ToolError(undecodable) from exc
 
     if width * height <= NORMALIZED_MAX_PIXELS and len(raw) <= NORMALIZED_MAX_BYTES:
         return LoadedImage(declared, width, height, raw, None)

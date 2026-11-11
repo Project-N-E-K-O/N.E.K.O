@@ -163,15 +163,28 @@ async def resolve_public(host: str, port: int) -> str:
     return addresses[0]
 
 
-def uses_proxy(scheme: str, host: str) -> bool:
-    """Return whether a request to ``host`` would go through a configured proxy."""
+def select_proxy(parts: SplitResult) -> str | None:
+    """Return the proxy a request to ``parts`` goes through, or ``None`` for a direct one.
+
+    This one answer decides both how the request is sent and whether the
+    target's address is resolved and checked here. The HTTP client is never
+    left to read the proxy settings itself: if it could route differently, a
+    request believed to be proxied could go out directly and unchecked.
+    """
+    host = parts.hostname or ""
+    port = parts.port or (443 if parts.scheme == "https" else 80)
     try:
         proxies = urllib.request.getproxies()
-        if not (proxies.get(scheme) or proxies.get("all")):
-            return False
-        return not urllib.request.proxy_bypass(host)
+        proxy = proxies.get(parts.scheme) or proxies.get("all")
+        if not proxy:
+            return None
+        # Exclusion lists name hosts with or without a port; the port is passed
+        # along so that both spellings are recognised.
+        if urllib.request.proxy_bypass(f"{host}:{port}"):
+            return None
     except Exception:  # noqa: BLE001 - platform proxy lookup must not fail the fetch
-        return False
+        return None
+    return proxy if "://" in proxy else f"http://{proxy}"
 
 
 def same_origin(a: SplitResult, b: SplitResult) -> bool:
@@ -306,14 +319,25 @@ async def fetch_page(raw_url: str) -> FetchedPage:
 
     current = parse_fetch_url(raw_url)
     check_host_name(current.hostname or "")
-    proxied = uses_proxy(current.scheme, current.hostname or "")
+    # Redirects are followed within one origin only, so this holds for all of them.
+    proxy = select_proxy(current)
+    proxied = proxy is not None
     timeout = httpx.Timeout(FETCH_TIMEOUT_SECONDS)
-    async with httpx.AsyncClient(
-        timeout=timeout,
-        follow_redirects=False,
-        trust_env=proxied,
-        headers=ensure_user_agent(None),
-    ) as client:
+    try:
+        client = httpx.AsyncClient(
+            timeout=timeout,
+            follow_redirects=False,
+            # Routing was decided above and is passed in explicitly.
+            trust_env=False,
+            proxy=proxy,
+            # Behind a proxy the certificate settings of the environment still
+            # apply, as they did when the client read the environment itself.
+            verify=httpx.create_ssl_context(trust_env=True) if proxied else True,
+            headers=ensure_user_agent(None),
+        )
+    except (ImportError, ValueError) as exc:
+        raise ToolError(f"the configured proxy cannot be used: {exc}") from exc
+    async with client:
         redirects = 0
         while True:
             try:

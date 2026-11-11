@@ -42,10 +42,11 @@ per-session ``seq`` that increases by one:
   ``aborted``, ``error``), or the session is gone (``closed``).
 * ``error``       - a command was rejected.
 
-The subprocess shell adds three messages of its own: ``host_request`` (the
-runtime asks the host to run a callback; answered by a ``host_response``
-command), and the process-level ``runtime_ready`` and ``runtime_exit``, which
-carry no ``session_id``.
+The subprocess shell adds messages of its own: ``host_request`` (the runtime
+asks the host to run a callback; answered by a ``host_response`` command), and
+the process-level ``runtime_ready``, ``runtime_idle`` and ``runtime_exit``,
+which carry no ``session_id``. ``runtime_idle`` is the process asking to exit;
+the shell answers it itself and does not pass it on.
 """
 
 from __future__ import annotations
@@ -189,6 +190,8 @@ class ShutdownCommand(_Strict):
     """Close every session and exit the runtime process (subprocess shell only)."""
 
     type: Literal["shutdown"] = "shutdown"
+    # Reported back in ``runtime_exit``. ``idle`` answers a ``runtime_idle``.
+    reason: Literal["shutdown", "idle"] = "shutdown"
 
 
 Command = Annotated[
@@ -312,6 +315,19 @@ class RuntimeReadyEvent(_Strict):
     pid: int
 
 
+class RuntimeIdleEvent(_Strict):
+    """The runtime process has been idle long enough and asks to exit.
+
+    Subprocess shell only, and never passed on to the event sink. ``received``
+    is the number of messages the process has read. The parent lets it exit
+    only when that equals the number it has sent, so no command can be on its
+    way to a process that is about to stop reading.
+    """
+
+    type: Literal["runtime_idle"] = "runtime_idle"
+    received: int
+
+
 class RuntimeExitEvent(_Strict):
     type: Literal["runtime_exit"] = "runtime_exit"
     reason: Literal["idle", "shutdown", "parent_gone", "error"]
@@ -343,6 +359,7 @@ RuntimeEvent = Annotated[
         ErrorEvent,
         HostRequestEvent,
         RuntimeReadyEvent,
+        RuntimeIdleEvent,
         RuntimeExitEvent,
     ],
     Field(discriminator="type"),

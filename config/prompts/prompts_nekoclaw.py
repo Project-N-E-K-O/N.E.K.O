@@ -242,17 +242,23 @@ SUMMARY_CLOSE_TAG = "</compacted-summary>"
 # Delivered as the final user message after the conversation being condensed.
 COMPACTION_INSTRUCTION = "\n".join(
     [
-        "You are now acting as a compaction engine for this AI coding assistant. Condense the "
-        "conversation ABOVE into a structured checkpoint that lets another model resume the work "
-        "with no loss of essential context.",
+        (
+            "You are now acting as a compaction engine for this AI coding assistant. Condense the "
+            "conversation ABOVE into a structured checkpoint that lets another model resume the "
+            "work with no loss of essential context."
+        ),
         "",
-        "Output EXACTLY the Markdown structure below: keep every section, in order. Use terse "
-        'bullets, not prose paragraphs. Write "(none)" for an empty section — never drop a '
-        "section.",
+        (
+            "Output EXACTLY the Markdown structure below: keep every section, in order. Use terse "
+            'bullets, not prose paragraphs. Write "(none)" for an empty section — never drop a '
+            "section."
+        ),
         "",
         "## Primary Request and Intent",
-        "- [the user's original and evolving goals; quote verbatim where the exact wording "
-        "matters]",
+        (
+            "- [the user's original and evolving goals; quote verbatim where the exact wording "
+            "matters]"
+        ),
         "",
         "## Key Technical Concepts",
         "- [technologies, frameworks, patterns, and conventions in play]",
@@ -273,12 +279,16 @@ COMPACTION_INSTRUCTION = "\n".join(
         '- [the single next action, directly in line with the most recent request, or "(none)"]',
         "",
         "## Critical Context",
-        "- [decisions and their rationale, constraints, user preferences, open questions, data "
-        "needed to continue]",
+        (
+            "- [decisions and their rationale, constraints, user preferences, open questions, data "
+            "needed to continue]"
+        ),
         "",
         "Rules:",
-        "- Write concise English engineering prose. Preserve exact file paths, commands, error "
-        "strings, identifiers, numeric values, function signatures, and syntax fragments.",
+        (
+            "- Write concise English engineering prose. Preserve exact file paths, commands, error "
+            "strings, identifiers, numeric values, function signatures, and syntax fragments."
+        ),
         "- Capture user feedback and explicit instructions faithfully, especially corrections.",
         "- Do NOT mention this summarization request or that the context was compacted.",
         "- Output only the checkpoint text: do not call any tool or take any other action.",
