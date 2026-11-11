@@ -514,3 +514,30 @@ async def test_trimming_waits_for_maintenance_to_end_and_the_snapshot_with_it(ow
     monkeypatch.setattr(owner.native, 'assert_cloudsave_writable', writable)
     assert owner.native._capture('Neko', False)
     assert stored() == ['r-2'] and type(owner.adapter.evidence_trimmed_at(UID)) is int
+
+
+@pytest.mark.asyncio
+async def test_a_device_taking_the_role_over_trims_what_the_silent_organizer_never_will(owner, monkeypatch):  # noqa: F811
+    from memory.long_term_sync import LongTermEvidenceCapacityExceeded
+    write, stored = _evidence_limits(owner, monkeypatch)
+    _synced(owner)
+    server = PublishingServer()
+    assert owner.native._capture('Neko', True)
+    await server.exchange(owner)
+    phone = {'deviceId': PHONE, 'renewedAt': 7, 'rank': organizer.RANK_PHONE}
+    server.publish({**server.document, 'completedAt': server.document['completedAt'] + 10, 'organizer': phone})
+    await server.exchange(owner)
+    assert await owner.native.consume(UID)
+    write(4)
+    with pytest.raises(LongTermEvidenceCapacityExceeded):
+        owner.native._capture('Neko', False)
+    assert len(stored()) == 4
+    # The phone never publishes again. Once this device stages its own claim, the claim
+    # could not go out either without trimming, so the trimming is its to do.
+    assert owner.native._tend_organizer_state('Neko', organizer.RANK_DESKTOP) is True
+    assert owner.native._capture('Neko', False)
+    assert stored() == ['r-3'] and type(owner.adapter.evidence_trimmed_at(UID)) is int
+    await server.exchange(owner)
+    assert server.document['organizer']['deviceId'] != PHONE
+    assert [row['id'] for row in server.document['evidence']['retirements']] == ['r-3']
+    assert owner.native.organizes('Neko')

@@ -390,9 +390,6 @@ def _prune_evidence(name, base):
     published again, so the oldest records go then too, unless another
     device holds the role and will trim.
     """
-    organizer_here = organizes(name)
-    if not organizer_here and _organized_elsewhere(name):
-        return False
     path = Path(runtime._config_manager.memory_dir) / name / 'long_term_portable.json'
     try:
         state = json.loads(path.read_text(encoding='utf-8'))
@@ -402,7 +399,11 @@ def _prune_evidence(name, base):
     if not isinstance(evidence, dict):
         return False
     published = (base['document'].get('evidence') or None) if base and base['document'] else None
-    if not (organizer_here if evidence == published else _evidence_over_limit(evidence)):
+    if evidence == published:
+        allowed = organizes(name)
+    else:
+        allowed = _evidence_over_limit(evidence) and not _left_to_the_organizer(name, state)
+    if not allowed:
         return False
     pruned = prune_evidence(evidence)
     if pruned is evidence:
@@ -548,8 +549,12 @@ def organizes(name):
     return holder is not None and holder['deviceId'] == device
 
 
-def _organized_elsewhere(name):
-    """Whether the last confirmed snapshot names another device as the organizer."""
+def _left_to_the_organizer(name, state):
+    """Whether another device holds the role and this one is not taking it over.
+
+    A claim staged here, for a holder that fell silent or ranks lower, has to
+    be published like anything else, so it counts as this device's turn.
+    """
     try:
         published = _published_organizer(name)
     except Exception:
@@ -557,7 +562,9 @@ def _organized_elsewhere(name):
     if published is None:
         return False
     _, device, holder = published
-    return holder is not None and holder['deviceId'] != device
+    staged = state.get('organizer')
+    taking_over = isinstance(staged, dict) and staged.get('deviceId') == device
+    return holder is not None and holder['deviceId'] != device and not taking_over
 
 
 async def _organizer_rank():
