@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
+from memory.long_term_merge import merge_documents
 from memory.long_term_sync import DesktopLongTermAdapter, FILES, export_document, import_document, read_views
 from memory.event_log import EventLog, Reconciler
 from services.chat_sync.long_term import LongTermMemorySync
@@ -21,6 +22,33 @@ from services.chat_sync.writer import store_connection
 from utils.file_utils import atomic_write_json
 from tests.chat_sync_writer_fixture import isolated_chat_sync_writer  # noqa: F401
 from tests.unit.test_chat_sync_runtime import setup_runtime, DOMAIN, OWNER, UID
+
+
+def merged_import(incoming, existing, *, baseline=..., **options):
+    """Merge a published document with this device's views and write the result, as the memory owner does.
+
+    baseline is the entry list both sides started from, or None for a device
+    without a confirmed base. Left out, the device changed nothing since its base.
+    """
+    current = export_document(existing, incoming['completedAt'])
+    if baseline is ...:
+        baseline = current['entries']
+    base = None if baseline is None else {'document': {**current, 'entries': baseline}, 'nativeEntries': baseline}
+    merged = merge_documents(base, current, incoming, incoming['completedAt'])
+    return import_document(merged, existing, merged=True, **options)
+
+
+def as_older_document(value):
+    """The same snapshot as a schema 2 writer would have published it."""
+    newer = ('signalJudged', 'userConfirmCount', 'countedFactIds', 'factSourceCounts')
+    return {'schemaVersion': 2, 'completedAt': value['completedAt'], 'evidence': deepcopy(value['evidence']),
+            'entries': [{**row, 'metadata': {key: item for key, item in row['metadata'].items()
+                                             if key not in newer and not (item is None and key in ('eventWhen', 'temporalScope'))}}
+                        for row in deepcopy(value['entries'])]}
+
+
+def local_state(owner):
+    return owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())
 
 
 def learned(completed=2000, text='learned preference'):
@@ -300,6 +328,10 @@ async def owner(tmp_path, monkeypatch):
     monkeypatch.setattr(native, '_authority', lambda: runtime.writer)
     monkeypatch.setattr(native, '_session_guard', runtime.session_commit_guard, raising=False)
     monkeypatch.setattr(native, 'assert_cloudsave_writable', lambda *args, **kwargs: None)
+    # Tests drive capture themselves; what a merge leaves to publish is recorded instead of queued.
+    republished = []
+    monkeypatch.setattr(native, '_publish_merge', republished.append)
+    monkeypatch.setattr(native, '_unpublished_after_apply', set())
     native.register_replay(replay)
     directory = config.memory_dir / 'Neko'
     directory.mkdir(parents=True)
@@ -311,18 +343,26 @@ async def owner(tmp_path, monkeypatch):
     try:
         yield SimpleNamespace(native=native, runtime=runtime, config=config, binding=binding,
                               adapter=runtime.long_term_memory.adapter, directory=directory, raw=raw, replay=replay, session=session,
-                              characters=characters)
+                              characters=characters, republished=republished)
     finally:
         await native.close()
         await runtime.close()
 
 
-async def stage(owner, completed=2000, revision=1):
+async def stage(owner, completed=2000, revision=1, leftover=False):
+    """Stage a published revision; leftover writes an inbox the base already reached, as a crash leaves one."""
     remote = {'ownerId': OWNER, 'characterSyncId': UID, 'revision': revision,
               'completedAt': completed, 'document': learned(completed)}
-    local = owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())
-    assert owner.adapter.stage_remote(owner.binding, remote, owner.runtime.writer.epoch(), local['operationId'] if local else None,
-                                      session_fingerprint=(await owner.runtime._session())[1])
+    epoch = owner.runtime.writer.epoch()
+    fingerprint = (await owner.runtime._session())[1]
+    if leftover:
+        assert not owner.adapter.stage_remote(owner.binding, remote, epoch, owner.adapter.base_revision(owner.binding, epoch),
+                                              session_fingerprint=fingerprint)
+        atomic_write_json(owner.adapter.incoming_path(UID), {
+            'binding': owner.binding, 'epoch': list(epoch), 'head': remote, 'sessionFingerprint': fingerprint})
+        return
+    assert owner.adapter.stage_remote(owner.binding, remote, epoch, owner.adapter.base_revision(owner.binding, epoch),
+                                      session_fingerprint=fingerprint)
 
 
 @pytest.mark.asyncio
@@ -335,7 +375,7 @@ async def test_owner_uses_the_same_original_chronology_for_capture_and_apply(own
     atomic_write_json(owner.directory / FILES['facts'], [{'id': 'fact', 'entity': 'master', 'text': 'Prefers tea',
                                                         'source': 'user_observation', 'source_message_ids': ids}])
     assert owner.native._capture('Neko', True)
-    local = owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())
+    local = local_state(owner)['pending']
     assert local['document']['entries'][0]['metadata']['sourceMessageIds'] == ids[2:] + ['newest']
     assert owner.native._capture('Neko', False) is False
     remote = {'ownerId': OWNER, 'characterSyncId': UID, 'revision': 1,
@@ -356,10 +396,10 @@ async def test_native_owner_captures_only_after_completion_and_applies_without_a
     assert state['persona']['master']['facts'][0]['text'] == 'learned preference'
     assert owner.raw.read_bytes() == raw
     assert not owner.adapter.incoming_path(UID).exists()
-    assert owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())['operationId'] == 'download:1'
+    assert local_state(owner)['base']['revision'] == 1
     assert owner.native._capture('Neko', False) is False
     assert owner.native._capture('Neko', True) is True
-    current = owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())
+    current = local_state(owner)['pending']
     assert current['document']['completedAt'] > 2000
     assert owner.native._capture('Neko', False) is False
     assert owner.raw.read_bytes() == raw
@@ -375,7 +415,7 @@ async def test_native_owner_uses_default_service_for_capture_and_download(owner,
         connection.execute('UPDATE sync_settings SET service_url=?', (stored_service,))
     assert owner.runtime.state.settings()['service_url'] == owner.binding['service_url']
     assert owner.native._capture('Neko', True)
-    local = owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())
+    local = local_state(owner)['pending']
     assert local is not None
     await stage(owner, completed=local['document']['completedAt'] + 1)
     assert await owner.native.consume(UID)
@@ -504,7 +544,7 @@ async def test_conflicting_retirement_inbox_never_blocks_later_local_events(owne
     incoming = learned()
     incoming.update(schemaVersion=2, evidence={'retirements': [{**retired, 'subject': 'neko'}], 'confirmations': []})
     remote = {'ownerId': OWNER, 'characterSyncId': UID, 'revision': 1, 'completedAt': 2000, 'document': incoming}
-    assert owner.adapter.stage_remote(owner.binding, remote, owner.runtime.writer.epoch(), None,
+    assert owner.adapter.stage_remote(owner.binding, remote, owner.runtime.writer.epoch(), 0,
                                       session_fingerprint=(await owner.runtime._session())[1])
     before = {filename: (owner.directory / filename).read_bytes() for filename in FILES.values()}
     assert not await owner.native.consume(UID)
@@ -530,7 +570,7 @@ async def test_waiting_inbox_status_coexists_with_errors_without_mutating_or_acc
     incoming = learned()
     incoming.update(schemaVersion=2, evidence={'retirements': [{**retired, 'subject': 'neko'}], 'confirmations': []})
     remote = {'ownerId': OWNER, 'characterSyncId': UID, 'revision': 1, 'completedAt': 2000, 'document': incoming}
-    assert owner.adapter.stage_remote(owner.binding, remote, owner.runtime.writer.epoch(), None,
+    assert owner.adapter.stage_remote(owner.binding, remote, owner.runtime.writer.epoch(), 0,
                                       session_fingerprint=(await owner.runtime._session())[1])
     assert not await owner.native.consume(UID)
     inbox = owner.adapter.incoming_path(UID)
@@ -546,7 +586,7 @@ async def test_waiting_inbox_status_coexists_with_errors_without_mutating_or_acc
     assert before == {path: path.read_bytes() for path in before}
     assert not (owner.directory / 'events.ndjson').exists()
     remote.update(revision=2, document={**incoming, 'evidence': {'retirements': [retired], 'confirmations': []}})
-    assert owner.adapter.stage_remote(owner.binding, remote, owner.runtime.writer.epoch(), None,
+    assert owner.adapter.stage_remote(owner.binding, remote, owner.runtime.writer.epoch(), 0,
                                       session_fingerprint=(await owner.runtime._session())[1])
     assert await owner.native.consume(UID)
     assert 'long_term_memory_incoming_pending' not in (await owner.runtime.status())['bindings'][0]['localMemoryDiagnostics']
@@ -597,13 +637,11 @@ async def test_native_failed_multi_file_save_rolls_back_and_journal_replays_exac
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('change', ['newer-local', 'paused-binding', 'changed-epoch'])
-async def test_pending_remote_never_overwrites_a_newer_completion_or_revoked_grant(owner, change):
+@pytest.mark.parametrize('change', ['paused-binding', 'changed-epoch'])
+async def test_pending_remote_never_overwrites_a_revoked_grant(owner, change):
     await stage(owner)
     before = (owner.directory / 'persona.json').read_bytes()
-    if change == 'newer-local':
-        assert owner.native._capture('Neko', True)
-    elif change == 'paused-binding':
+    if change == 'paused-binding':
         owner.runtime.state.pause(UID)
     else:
         payload = json.loads(owner.adapter.incoming_path(UID).read_text())
@@ -614,9 +652,34 @@ async def test_pending_remote_never_overwrites_a_newer_completion_or_revoked_gra
 
 
 @pytest.mark.asyncio
-async def test_obsolete_inbox_is_removed_without_appending_replacement_events(owner):
-    await stage(owner)
+async def test_snapshot_waiting_for_upload_is_merged_with_a_newer_revision_instead_of_blocking_it(owner):
+    """A local snapshot the server never accepted is this device's edit, not a newer revision."""
+    fact = {'id': 'local-only', 'entity': 'master', 'text': 'picked here, never uploaded', 'source': 'user_observation'}
+    atomic_write_json(owner.directory / 'facts.json', [fact])
     assert owner.native._capture('Neko', True)
+    refused = local_state(owner)['pending']
+    assert 'local-only' in {row['id'] for row in refused['document']['entries']}
+    # Another device published first, with a completion time after this capture.
+    await stage(owner, completed=refused['document']['completedAt'] + 1000)
+    assert await owner.native.consume(UID)
+    views = read_views(owner.directory)
+    assert {row['id'] for row in views['facts']} == {'local-only', 'f1'}
+    assert views['persona']['master']['facts'][0]['text'] == 'learned preference'
+    state = local_state(owner)
+    assert state['base']['revision'] == 1 and state['pending'] is None
+    assert 'local-only' not in {row['id'] for row in state['base']['nativeEntries']}
+    assert owner.native._capture('Neko', False)
+    upload = local_state(owner)['pending']
+    assert upload['baseRevision'] == 1
+    assert {row['id'] for row in upload['document']['entries']} == {'local-only', 'f1', 'p1', 'r1'}
+    assert upload['document']['evidence']['retirements'] == []
+
+
+@pytest.mark.asyncio
+async def test_obsolete_inbox_is_removed_without_appending_replacement_events(owner):
+    await stage(owner, revision=2)
+    assert await owner.native.consume(UID)
+    await stage(owner, revision=1, leftover=True)
     before = {filename: (owner.directory / filename).read_bytes() for filename in FILES.values()}
     events = owner.directory / 'events.ndjson'
     original_events = events.read_bytes() if events.exists() else b''
@@ -675,7 +738,7 @@ async def test_replay_skips_a_reference_whose_inbox_was_replaced(owner, monkeypa
     await owner.replay.areconcile('Neko')
     assert before == {filename: (owner.directory / filename).read_bytes() for filename in FILES.values()}
     assert await owner.native.consume(UID)
-    assert owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())['operationId'] == 'download:2'
+    assert local_state(owner)['base']['revision'] == 2
 
 
 @pytest.mark.asyncio
@@ -704,7 +767,7 @@ async def test_unreadable_inbox_is_skipped_without_stalling_replay_and_applies_l
     assert owner.native.runtime.event_log.read_sentinel('Neko') == event_id
     blocked[0] = False
     assert await owner.native.consume(UID)
-    assert owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())['operationId'] == 'download:1'
+    assert local_state(owner)['base']['revision'] == 1
 
 
 @pytest.mark.asyncio
@@ -720,7 +783,7 @@ async def test_replay_still_applies_an_event_that_carries_the_whole_snapshot(own
     owner.adapter.incoming_path(UID).unlink()
     assert await owner.replay.areconcile('Neko') == 1
     assert read_views(owner.directory)['persona']['master']['facts'][0]['text'] == 'learned preference'
-    assert owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())['operationId'] == 'download:1'
+    assert local_state(owner)['base']['revision'] == 1
 
 
 @pytest.mark.asyncio
@@ -750,8 +813,8 @@ async def test_remote_replacement_preserves_unpublished_native_entries_until_cap
     atomic_write_json(owner.directory / 'facts.json', [fact])
     atomic_write_json(owner.directory / 'persona.json', {'master': {'facts': [persona]}})
     atomic_write_json(owner.directory / 'reflections.json', [reflection])
-    baseline = owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())
-    completed = (baseline['document']['completedAt'] if baseline else 2000) + 1
+    baseline = local_state(owner)
+    completed = (baseline['pending']['document']['completedAt'] if baseline else 2000) + 1
     for revision in (1, 2):
         await stage(owner, completed=completed + revision, revision=revision)
         assert await owner.native.consume(UID)
@@ -759,10 +822,9 @@ async def test_remote_replacement_preserves_unpublished_native_entries_until_cap
         assert fact in views['facts']
         assert persona in views['persona']['master']['facts']
         assert reflection in views['reflections']
-        local = owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())
-        assert 'unpublished' not in {row['id'] for row in local['nativeEntries']}
+        assert 'unpublished' not in {row['id'] for row in local_state(owner)['base']['nativeEntries']}
     assert owner.native._capture('Neko', False)
-    captured = owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())
+    captured = local_state(owner)['pending']
     assert 'unpublished' in {row['id'] for row in captured['document']['entries']}
     assert not owner.native._capture('Neko', False)
 
@@ -779,9 +841,15 @@ async def test_remote_replacement_preserves_local_edits_and_deletions_against_pu
     await stage(owner, completed=3000, revision=2)
     assert await owner.native.consume(UID)
     result = read_views(owner.directory)
-    assert result['persona']['master']['facts'] == current['persona']['master']['facts']
+    # The remote only refreshed the row; the wording edited here and the deletion both hold.
+    assert [row['text'] for row in result['persona']['master']['facts']] == ['locally edited preference']
     assert result['facts'] == []
+    assert owner.republished == ['Neko']
     assert owner.native._capture('Neko', False)
+    upload = local_state(owner)['pending']
+    assert upload['baseRevision'] == 2
+    assert {row['id']: row['text'] for row in upload['document']['entries']} == {
+        'p1': 'locally edited preference', 'r1': 'confirmed impression'}
 
 
 @pytest.mark.asyncio
@@ -800,10 +868,10 @@ async def test_unpublished_local_retirement_is_still_published_after_a_remote_re
     assert await owner.native.consume(UID)
 
     assert 'permanent_suppression' in read_views(owner.directory)['persona']['master']['facts'][0]
-    receipt = owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())
+    receipt = local_state(owner)['base']
     assert {r['id']: r['metadata'] for r in receipt['nativeEntries']}['p1'].get('status') != 'superseded'
     assert owner.native._capture('Neko', False)
-    captured = owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())
+    captured = local_state(owner)['pending']
     assert {r['id']: r['metadata'] for r in captured['document']['entries']}['p1']['status'] == 'superseded'
     assert not owner.native._capture('Neko', False)
 
@@ -877,7 +945,7 @@ async def test_frozen_operation_retries_identical_bytes_after_receipt_loss(owner
 @pytest.mark.asyncio
 async def test_runtime_uses_bound_long_term_lane_and_keeps_raw_chat_endpoints_idle(owner, monkeypatch):
     assert owner.native._capture('Neko', True)
-    local = owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())
+    local = local_state(owner)['pending']
     requests = []
     async def request(value):
         if value.url.path.endswith('/long-term-memory'):
@@ -885,7 +953,7 @@ async def test_runtime_uses_bound_long_term_lane_and_keeps_raw_chat_endpoints_id
             assert value.headers['X-Neko-Chat-Binding'] == owner.binding['binding_id']
             if value.method == 'PUT':
                 body = json.loads(value.content)
-                assert body == {'operationId': local['operationId'], 'document': local['document']}
+                assert body == {'operationId': local['operationId'], 'baseRevision': 0, 'document': local['document']}
                 return httpx.Response(200, json={'ownerId': OWNER, 'characterSyncId': UID,
                     'operationId': body['operationId'], 'accepted': True, 'revision': 1})
             return httpx.Response(200, json={'ownerId': OWNER, 'characterSyncId': UID, 'revision': 1,
@@ -908,7 +976,9 @@ async def test_runtime_uses_bound_long_term_lane_and_keeps_raw_chat_endpoints_id
     owner.runtime.test_clock[0] += PULL_INTERVAL_MS
     await owner.runtime._channel_pass(UID, 'long_term', presence=presence)
     assert [request.method for request in requests] == ['PUT', 'GET', 'GET']
-    assert owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())['operationId'] == local['operationId']
+    # The accepted upload is now the base the next merge starts from, and nothing waits for upload.
+    assert local_state(owner) == {'pending': None, 'unseenRevision': False, 'sent': [], 'republish': False, 'base': {
+        'revision': 1, 'document': local['document'], 'nativeEntries': local['document']['entries']}}
 
 
 @pytest.mark.asyncio
@@ -929,7 +999,7 @@ async def test_pending_capture_finishes_before_incoming_replacement(owner):
 @pytest.mark.parametrize('unpublished', [False, True])
 async def test_queued_capture_incorporates_downloaded_snapshot_before_publishing(owner, unpublished):
     owner.native._capture('Neko', True)
-    previous = owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())
+    previous = local_state(owner)['pending']
     if unpublished:
         atomic_write_json(owner.directory / FILES['facts'], [
             {'id': 'local-only', 'text': 'new local independent fact', 'entity': 'master', 'importance': 7}])
@@ -939,7 +1009,7 @@ async def test_queued_capture_incorporates_downloaded_snapshot_before_publishing
     owner.native.queue_capture('Neko', force=True)
     await asyncio.wait_for(asyncio.shield(owner.native._capture_tasks['Neko']), 3)
 
-    published = owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())['document']
+    published = local_state(owner)['pending']['document']
     assert {entry['id'] for entry in published['entries']} == {'p1', 'f1', 'r1'} | ({'local-only'} if unpublished else set())
     assert not owner.adapter.incoming_path(UID).exists()
     assert owner.raw.read_bytes() == raw
@@ -959,7 +1029,7 @@ async def test_snapshot_arriving_between_consume_and_capture_is_not_overwritten(
     monkeypatch.setattr(owner.native, 'consume', consume_then_download)
     owner.native.queue_capture('Neko', force=True)
     await asyncio.wait_for(asyncio.shield(owner.native._capture_tasks['Neko']), 3)
-    published = owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())['document']
+    published = local_state(owner)['pending']['document']
     assert {entry['id'] for entry in published['entries']} == {'p1', 'f1', 'r1'}
     assert not owner.adapter.incoming_path(UID).exists()
 
@@ -979,7 +1049,7 @@ async def test_capture_waits_for_review_without_superseding_downloaded_facts(own
         blocker.cancel()
         await asyncio.gather(blocker, return_exceptions=True)
         await asyncio.wait_for(asyncio.shield(owner.native._capture_tasks['Neko']), 3)
-        published = owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())['document']
+        published = local_state(owner)['pending']['document']
         assert {entry['id'] for entry in published['entries']} == {'p1', 'f1', 'r1'}
     finally:
         blocker.cancel()
@@ -1230,11 +1300,12 @@ async def test_snapshot_replaces_only_fact_search_index_and_replay_repairs_faile
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('accepted,newer', [(True, False), (True, True), (False, False)])
-async def test_upload_receipt_skips_own_head_but_pulls_a_rejected_or_newer_remote(owner, accepted, newer):
+@pytest.mark.parametrize('outcome', ['accepted', 'newer', 'conflict', 'refused'])
+async def test_upload_receipt_skips_own_head_but_pulls_after_a_conflict_or_a_newer_remote(owner, outcome):
     from services.chat_sync.ledger import ChatDomain
+    accepted, newer = outcome in ('accepted', 'newer'), outcome == 'newer'
     assert owner.native._capture('Neko', True)
-    local = owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())
+    local = local_state(owner)['pending']
     calls = []
     revision = 2 if newer else 1
     remote = {'ownerId': OWNER, 'characterSyncId': UID, 'revision': revision,
@@ -1243,17 +1314,37 @@ async def test_upload_receipt_skips_own_head_but_pulls_a_rejected_or_newer_remot
     async def request(method, path, body):
         calls.append((method, path))
         if method == 'PUT':
+            assert json.loads(body)['baseRevision'] == 0
             return {'ownerId': OWNER, 'characterSyncId': UID, 'operationId': local['operationId'],
-                    'revision': 1, 'accepted': accepted}
+                    'revision': 1, 'accepted': accepted, **({'conflict': True} if outcome == 'conflict' else {})}
         return {key: value for key, value in remote.items() if key != 'document'} if '?' in path else remote
     async def commit(fn, *args):
         return fn(*args)
     domain = ChatDomain(OWNER, UID)
-    result = await owner.runtime.long_term_memory.sync(domain, owner.binding, owner.runtime.writer.epoch(),
-        request, commit, can_apply=lambda: True, session_fingerprint=(await owner.runtime._session())[1])
+    arguments = (domain, owner.binding, owner.runtime.writer.epoch(), request, commit)
+    fingerprint = (await owner.runtime._session())[1]
+    if outcome == 'refused':
+        # Neither accepted nor a conflict: the snapshot is not recorded as uploaded and is retried afresh.
+        # An OSError: the scheduler backs off and retries instead of blocking the binding.
+        with pytest.raises(OSError, match='^long_term_memory_upload_refused$'):
+            await owner.runtime.long_term_memory.sync(*arguments, can_apply=lambda: True, session_fingerprint=fingerprint)
+        retried = local_state(owner)
+        assert retried['base'] is None and retried['pending']['operationId'] != local['operationId']
+        assert retried['pending']['document']['completedAt'] > local['document']['completedAt']
+        assert retried['pending']['document']['entries'] == local['document']['entries']
+        assert len(calls) == 1
+        return
+    result = await owner.runtime.long_term_memory.sync(*arguments, can_apply=lambda: True, session_fingerprint=fingerprint)
     assert result['changed'] is (newer or not accepted)
     assert len(calls) == (3 if newer or not accepted else 2)
-    assert owner.runtime.long_term_memory.state(domain.key()) == {'acknowledged': local['operationId'], 'revision': revision}
+    state = local_state(owner)
+    if accepted:
+        assert state['pending'] is None and state['base'] == {
+            'revision': 1, 'document': local['document'], 'nativeEntries': local['document']['entries']}
+    else:
+        # A refused upload is never a base: the published revision waits to be merged with it.
+        assert state['base'] is None and state['pending'] == local
+    assert owner.adapter.incoming_path(UID).exists() is (newer or not accepted)
 
 
 @pytest.mark.asyncio
@@ -1349,7 +1440,6 @@ async def test_new_session_redownloads_a_staged_revision_before_applying_it(owne
     await stage(owner)
     sync = owner.runtime.long_term_memory
     domain = ChatDomain(OWNER, UID)
-    sync.applied(domain.key(), 1)
     owner.session['logged_in'] = False
     assert not await owner.native.consume(UID)
     assert owner.adapter.incoming_path(UID).exists()
@@ -1414,20 +1504,23 @@ def test_pending_dormant_history_survives_snapshot_without_receipt_baseline(kind
     if remote_change == 'changed': incoming['entries'][0]['text'] = 'remote historical assertion'
     if remote_change == 'absent': incoming['entries'] = []
 
-    received = import_document(incoming, existing, baseline=[])
-    assert received['sync']['dormantEntries'] == [row]
+    # Equal standing keeps the published wording; a row the remote lacks is still kept.
+    kept = incoming['entries'][0] if remote_change == 'changed' else row
+    received = merged_import(incoming, existing, baseline=None)
+    assert received['sync']['dormantEntries'] == [kept]
     assert existing == before
     assert received['facts'] == received['archive'] == received['reflections'] == []
-    assert export_document(received, 4000)['entries'] == [row]
-    repeated = import_document(incoming, received, baseline=[])
-    assert repeated['sync']['dormantEntries'] == [row]
-    assert export_document(repeated, 5000)['entries'] == [row]
+    assert export_document(received, 4000)['entries'] == [kept]
+    repeated = merged_import(incoming, received, baseline=None)
+    assert repeated['sync']['dormantEntries'] == [kept]
+    assert export_document(repeated, 5000)['entries'] == [kept]
 
 
 @pytest.mark.parametrize('baseline_mode,expected_texts', [
-    ('none', ['remote revision', 'remote revision', 'remote revision', 'remote revision']),
-    ('empty', ['unpublished local history', 'local history', 'local history', 'local history']),
-    ('previous', ['unpublished local history', 'remote revision', 'remote revision', 'remote revision']),
+    ('unchanged', ['remote revision', 'remote revision', 'remote revision', 'remote revision']),
+    ('no-base', ['unpublished local history', 'local history', 'local history', 'local history']),
+    # The remote revived the row; a wording both sides rewrote follows the side that did.
+    ('previous', ['remote revision', 'remote revision', 'remote revision', 'remote revision']),
 ])
 def test_pending_dormant_history_respects_baseline_and_full_entry_identity(baseline_mode, expected_texts):
     identities = [('reflection', 'master', 'shared'), ('reflection', 'neko', 'shared'),
@@ -1443,15 +1536,15 @@ def test_pending_dormant_history_respects_baseline_and_full_entry_identity(basel
     for row in incoming['entries']:
         row['text'] = 'remote revision'
         row['metadata']['status'] = 'active' if row['kind'] == 'persona' else 'confirmed'
-    baseline = {'none': None, 'empty': [], 'previous': previous}[baseline_mode]
+    baseline = {'unchanged': ..., 'no-base': None, 'previous': previous}[baseline_mode]
 
-    received = import_document(incoming, existing, baseline=baseline)
+    received = merged_import(incoming, existing, baseline=baseline)
     exported = export_document(received, 4000)['entries']
     by_key = {(row['kind'], row['subject'], row['id']): row['text'] for row in exported}
     assert len(exported) == 4
     assert [by_key[key] for key in identities] == expected_texts
     dormant = received['sync']['dormantEntries']
-    assert len(dormant) == {'none': 0, 'empty': 4, 'previous': 1}[baseline_mode]
+    assert len(dormant) == {'unchanged': 0, 'no-base': 4, 'previous': 0}[baseline_mode]
     assert all(row['metadata']['status'] == 'denied' for row in dormant)
 
 
@@ -1465,8 +1558,8 @@ def test_pending_dormant_fact_keeps_retirement_assertion_after_reexport(tmp_path
     existing = import_document(seed, {'persona': {}, 'facts': [], 'archive': [], 'reflections': []})
     incoming = {'schemaVersion': 2, 'completedAt': 3000, 'entries': [],
                 'evidence': {'retirements': [], 'confirmations': []}}
-    received = import_document(incoming, existing, baseline=[])
-    received = import_document(export_document(received, 4000), received, baseline=[])
+    received = merged_import(incoming, existing, baseline=None)
+    received = merged_import(export_document(received, 4000), received, baseline=None)
     atomic_write_json(tmp_path / FILES['sync'], received['sync'])
     retirements = retirement_evidence(tmp_path)
     assert retirements == [{'id': 'retired', 'subject': 'master', 'text': 'retired assertion',
@@ -1585,7 +1678,7 @@ async def test_unexpired_inbox_is_reauthenticated_before_capture(owner):
     await owner.runtime.long_term_memory.sync(ChatDomain(OWNER, UID), owner.binding, owner.runtime.writer.epoch(), request, commit,
         can_apply=lambda: True, session_fingerprint=(await owner.runtime._session())[1])
     await asyncio.wait_for(asyncio.shield(task), 3)
-    published = owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())['document']
+    published = local_state(owner)['pending']['document']
     assert {row['id'] for row in published['entries']} == {'p1', 'f1', 'r1'}
     assert not list(owner.adapter.directory.glob('*.expired-*.json'))
 
@@ -1685,7 +1778,7 @@ async def test_capture_ignores_non_object_fact_and_archive_rows(owner):
         {'id': 'fact', 'entity': 'master', 'text': 'Prefers tea', 'source_message_ids': ids}])
     atomic_write_json(owner.directory / FILES['archive'], [None, ['legacy row']])
     assert owner.native._capture('Neko', True)
-    local = owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())
+    local = local_state(owner)['pending']
     assert local['document']['entries'][0]['id'] == 'fact'
     assert len(local['document']['entries'][0]['metadata']['sourceMessageIds']) == 200
 
@@ -1774,10 +1867,14 @@ def test_archived_memory_replacement_retains_local_coverage_audit(kind, active_d
             existing['reflections'] = [active]
         incoming = export_document(existing, 3000)
     before = deepcopy(existing)
-    result = import_document(incoming, existing, baseline=incoming['entries'])
+    result = merged_import(incoming, existing, baseline=incoming['entries'])
     restored = [row for rows in result[field].values() for row in rows]
     assert len(restored) == 1
-    assert restored[0]['covered_fact_ids'] == (['active-audit'] if active_duplicate else ['archive-audit'])
+    # A snapshot that changes nothing leaves every row, and its audit, exactly as it was.
+    assert restored[0]['covered_fact_ids'] == ['archive-audit']
+    assert result[field] == existing[field]
+    if active_duplicate:
+        assert (result['persona']['master']['facts'] if kind == 'persona' else result['reflections']) == [active]
     assert 'covered_fact_ids' not in json.dumps(export_document(result, 3000))
     assert existing == before
 
@@ -1819,17 +1916,26 @@ def test_import_keeps_local_accounting_outside_the_protocol():
     assert kept['counted_fact_ids'] == ['f1']
     assert kept['user_confirm_count'] == 2
     assert kept['source_facts_oldest_at'] == '2026-10-01T00:00:00'
-    # None of it reaches the wire.
+    # Device-only records stay off the wire; the accounting a receiver needs travels under protocol names.
     wire = json.dumps(export_document(result, 3000))
     for field in ('fact_source_counts', 'counted_fact_ids', 'user_confirm_count', 'extraction_path', 'source_facts_oldest_at'):
         assert field not in wire
+    sent = next(row for row in export_document(result, 3000)['entries'] if row['kind'] == 'reflection')['metadata']
+    assert (sent['userConfirmCount'], sent['countedFactIds'], sent['factSourceCounts']) == (2, ['f1'], {'user': 0, 'ai': 1})
 
-    # A peer's rewrite may rest on other facts: the accounting no longer holds,
-    # while an explicit confirmation still belongs to the row.
+    # A peer's rewrite rests on other facts and says so: its accounting replaces this
+    # device's, and the evidence age recorded here no longer applies.
     rewritten = deepcopy(incoming)
     row = next(row for row in rewritten['entries'] if row['kind'] == 'reflection')
     row['text'] = 'rewritten impression'
-    row['metadata']['sourceFactIds'] = ['f1', 'f2']
+    row['metadata'].update(sourceFactIds=['f1', 'f2'], countedFactIds=['f1', 'f2'], factSourceCounts={'user': 1, 'ai': 1})
+    moved = import_document(rewritten, existing)['reflections'][0]
+    assert moved['counted_fact_ids'] == ['f1', 'f2'] and moved['fact_source_counts'] == {'user': 1, 'ai': 1}
+    assert 'source_facts_oldest_at' not in moved and moved['user_confirm_count'] == 2
+
+    # An older writer's rewrite carries no accounting: the old one no longer holds,
+    # while an explicit confirmation still belongs to the row.
+    rewritten = as_older_document(rewritten)
     moved = import_document(rewritten, existing)['reflections'][0]
     for field in ('fact_source_counts', 'counted_fact_ids', 'source_facts_oldest_at'):
         assert field not in moved
@@ -1878,14 +1984,14 @@ def test_first_import_counts_a_retained_local_upgrade_as_the_users_fact():
     incoming['entries'].append({'kind': 'reflection', 'subject': 'neko', 'id': 'r1', 'text': 'new line',
                                 'metadata': {'createdAt': 1000, 'status': 'pending', 'sourceFactIds': ['f1']}})
     existing = {**views, 'facts': [{**fact, 'source': 'user_observation'}]}
-    result = import_document(incoming, existing, baseline=baseline['entries'])
+    result = merged_import(incoming, existing, baseline=baseline['entries'])
     assert result['facts'][0]['source'] == 'user_observation'
     assert result['reflections'][0]['fact_source_counts'] == {'user': 1, 'ai': 0}
     assert not awaits_user_signal(result['reflections'][0])
 
     # An interrupted archive write can leave an older copy; the active row is the one that holds.
     interrupted = {**existing, 'archive': [fact]}
-    result = import_document(incoming, interrupted, baseline=baseline['entries'])
+    result = merged_import(incoming, interrupted, baseline=baseline['entries'])
     assert result['reflections'][0]['fact_source_counts'] == {'user': 1, 'ai': 0}
 
 
@@ -1897,8 +2003,16 @@ def test_a_line_confirmed_by_the_sender_is_not_held_back_by_local_counts():
     existing = {'persona': {}, 'facts': [fact], 'archive': [], 'reflections': [local]}
     incoming = export_document(existing, 3000)
     assert awaits_user_signal(import_document(incoming, existing)['reflections'][0])
-    next(row for row in incoming['entries'] if row['kind'] == 'reflection')['metadata']['status'] = 'confirmed'
-    row = import_document(incoming, existing)['reflections'][0]
+    # The sender's user confirmed it: the confirmation travels, so the line is not held back here.
+    confirmed = deepcopy(incoming)
+    next(row for row in confirmed['entries'] if row['kind'] == 'reflection')['metadata'].update(status='confirmed', userConfirmCount=1)
+    row = import_document(confirmed, existing)['reflections'][0]
+    assert row['user_confirm_count'] == 1 and not awaits_user_signal(row)
+    assert row['source_facts_oldest_at'] == '2026-10-01T00:00:00'
+    # An older writer cannot say why it confirmed the line; stale local counts must not hold it.
+    older = as_older_document(incoming)
+    next(row for row in older['entries'] if row['kind'] == 'reflection')['metadata']['status'] = 'confirmed'
+    row = import_document(older, existing)['reflections'][0]
     assert not awaits_user_signal(row)
     assert row['source_facts_oldest_at'] == '2026-10-01T00:00:00'
 
@@ -2225,7 +2339,7 @@ async def test_archive_notice_cleanup_failure_retries_durably_without_reapplying
     monkeypatch.setattr(owner.runtime.scheduler, 'clear_archive_subject_error', denied)
     assert await owner.native.consume(UID)
     assert not owner.adapter.incoming_path(UID).exists()
-    assert owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())['operationId'] == 'download:1'
+    assert local_state(owner)['base']['revision'] == 1
     journal = owner.directory / JOURNAL
     assert json.loads(journal.read_text(encoding='utf-8'))['phase'] == 'closed'
     assert read_views(owner.directory)['facts'][0]['id'] == 'f1'
@@ -2321,7 +2435,7 @@ async def test_repeated_snapshot_restores_cleanup_marker_before_removing_inbox(o
 
     await stage(owner)
     assert await owner.native.consume(UID)
-    await stage(owner)
+    await stage(owner, leftover=True)
     inbox = owner.adapter.incoming_path(UID)
     journal = owner.directory / JOURNAL
     assert not journal.exists()
@@ -2631,7 +2745,7 @@ async def test_real_native_reflection_archive_is_present_in_sync_snapshot(tmp_pa
     views = read_views(tmp_path/'小天')
     physical = [row for rows in views['reflectionArchives'].values() for row in rows]
     exported = export_document(views, 3000)['entries']
-    received = import_document({'schemaVersion':2, 'completedAt':4000, 'entries':[], 'evidence':{'retirements':[],'confirmations':[]}}, views, baseline=[])
+    received = merged_import({'schemaVersion':2, 'completedAt':4000, 'entries':[], 'evidence':{'retirements':[],'confirmations':[]}}, views, baseline=None)
     retained = [row['id'] for rows in received['reflectionArchives'].values() for row in rows]
     print(json.dumps({'probe':'real_archive', 'physical_statuses':[r['status'] for r in physical], 'exported_ids':[r['id'] for r in exported], 'native_ids_after_unrelated_snapshot':retained}))
     assert any(row['id'] == 'native-archive' for row in exported)
@@ -2750,3 +2864,573 @@ def test_snapshot_keeps_matching_local_diary_import_identity():
     assert 'external_import' not in foreign
     snapshot['entries'][0]['text'] = 'Changed assertion'
     assert 'external_import' not in import_document(snapshot, native)['facts'][0]
+
+
+class PublishingServer:
+    """The server contract for learned memory: a write lands only on the revision it names."""
+
+    def __init__(self, *, compare_completion_time=False):
+        self.revision, self.document, self.compare_completion_time = 0, None, compare_completion_time
+        self.calls = []
+
+    def publish(self, document):
+        """Another device's accepted write."""
+        self.revision, self.document = self.revision + 1, deepcopy(document)
+
+    async def request(self, method, path, body):
+        self.calls.append(method if '?' not in path else 'HEAD')
+        if method == 'PUT':
+            value = json.loads(body)
+            stale = ((self.document is not None and value['document']['completedAt'] <= self.document['completedAt'])
+                     if self.compare_completion_time or 'baseRevision' not in value else value['baseRevision'] != self.revision)
+            if stale:
+                return {'ownerId': OWNER, 'characterSyncId': UID, 'operationId': value['operationId'],
+                        'revision': self.revision, 'accepted': False,
+                        **({'conflict': True} if 'baseRevision' in value and not self.compare_completion_time else {})}
+            self.publish(value['document'])
+            return {'ownerId': OWNER, 'characterSyncId': UID, 'operationId': value['operationId'],
+                    'revision': self.revision, 'accepted': True}
+        head = {'ownerId': OWNER, 'characterSyncId': UID, 'revision': self.revision,
+                'completedAt': self.document['completedAt'] if self.document else None}
+        return head if '?' in path else {**head, 'document': deepcopy(self.document)}
+
+    async def exchange(self, owner):
+        from services.chat_sync.ledger import ChatDomain
+        async def commit(fn, *args):
+            return fn(*args)
+        return await owner.runtime.long_term_memory.sync(
+            ChatDomain(OWNER, UID), owner.binding, owner.runtime.writer.epoch(), self.request, commit,
+            can_apply=lambda: True, session_fingerprint=(await owner.runtime._session())[1])
+
+
+def native_fact(identity, text, **fields):
+    return {'id': identity, 'entity': 'master', 'text': text, 'source': 'user_observation', 'importance': 5, **fields}
+
+
+def published_facts(server):
+    return {row['id'] for row in server.document['entries'] if row['kind'] == 'fact'}
+
+
+@pytest.mark.asyncio
+async def test_a_later_snapshot_from_a_device_that_never_saw_a_fact_does_not_remove_it(owner):
+    """Device A published shared + here. This device never pulled it and uploads shared alone, later."""
+    server = PublishingServer()
+    server.publish(export_document({'persona': {}, 'archive': [], 'reflections': [], 'facts': [
+        native_fact('shared', 'known to both devices'), native_fact('here', 'picked and published by the other device')]}, 1000))
+    atomic_write_json(owner.directory / 'facts.json', [native_fact('shared', 'known to both devices')])
+    assert owner.native._capture('Neko', True)
+    assert local_state(owner)['pending']['document']['completedAt'] > 1000
+
+    assert (await server.exchange(owner))['changed']
+    assert server.revision == 1 and published_facts(server) == {'shared', 'here'}
+    assert await owner.native.consume(UID)
+    assert {row['id'] for row in read_views(owner.directory)['facts']} == {'shared', 'here'}
+    # Nothing this device holds is missing from the server, so there is nothing to upload.
+    assert owner.republished == [] and not owner.native._capture('Neko', False)
+    await server.exchange(owner)
+    assert server.revision == 1 and published_facts(server) == {'shared', 'here'}
+    assert server.calls == ['PUT', 'HEAD', 'GET', 'HEAD']
+
+
+@pytest.mark.asyncio
+async def test_both_devices_keep_what_each_added_from_one_base(owner):
+    server = PublishingServer()
+    atomic_write_json(owner.directory / 'facts.json', [native_fact('shared', 'known to both devices')])
+    assert owner.native._capture('Neko', True)
+    await server.exchange(owner)
+    assert server.revision == 1 and local_state(owner)['base']['revision'] == 1
+    # Both start from revision 1: the other device adds one fact and publishes first.
+    other = deepcopy(server.document)
+    other['completedAt'] += 10
+    other['entries'].append({**other['entries'][0], 'id': 'there', 'text': 'added by the other device'})
+    server.publish(other)
+    atomic_write_json(owner.directory / 'facts.json', [native_fact('shared', 'known to both devices'),
+                                                      native_fact('here', 'added by this device')])
+    assert owner.native._capture('Neko', False)
+    assert (await server.exchange(owner))['changed'] and server.revision == 2
+    assert await owner.native.consume(UID)
+    assert {row['id'] for row in read_views(owner.directory)['facts']} == {'shared', 'here', 'there'}
+    assert owner.republished == ['Neko'] and owner.native._capture('Neko', False)
+    assert local_state(owner)['pending']['baseRevision'] == 2
+    await server.exchange(owner)
+    assert server.revision == 3 and published_facts(server) == {'shared', 'here', 'there'}
+    assert server.document['evidence']['retirements'] == []
+    assert local_state(owner)['pending'] is None and not owner.native._capture('Neko', False)
+
+
+@pytest.mark.asyncio
+async def test_unchanged_rows_keep_every_native_field_when_a_revision_is_applied(owner):
+    """Fields the protocol does not carry survive a snapshot that leaves their row alone."""
+    from config import MEMORY_SCHEMA_VERSION_CURRENT
+    untouched = native_fact('untouched', 'likes green tea', schema_version=MEMORY_SCHEMA_VERSION_CURRENT, signal_processed=False,
+                            embedding=[0.1, 0.2], embedding_text_sha256='a' * 64, embedding_model_id='model',
+                            hash='keep-this-hash', tags=['local'], created_at='2026-11-01T00:00:00')
+    edited = native_fact('edited', 'has a cat', schema_version=MEMORY_SCHEMA_VERSION_CURRENT, signal_processed=False,
+                         embedding=[0.3], embedding_text_sha256='b' * 64, embedding_model_id='model',
+                         created_at='2026-11-01T00:00:00')
+    reflection = {'id': 'ref', 'entity': 'master', 'text': 'enjoys calm routines', 'status': 'confirmed',
+                  'confirmed_at': '2026-11-02T00:00:00', 'created_at': '2026-11-01T00:00:00',
+                  'schema_version': MEMORY_SCHEMA_VERSION_CURRENT, 'temporal_scope': 'pattern',
+                  'source_fact_ids': ['untouched'], 'recheck_attempts': 2}
+    atomic_write_json(owner.directory / 'facts.json', [untouched, edited])
+    atomic_write_json(owner.directory / 'reflections.json', [reflection])
+    server = PublishingServer()
+    assert owner.native._capture('Neko', True)
+    await server.exchange(owner)
+    before = read_views(owner.directory)
+    assert before['facts'] == [untouched, edited] and before['reflections'] == [reflection]
+
+    other = deepcopy(server.document)
+    other['completedAt'] += 10
+    next(row for row in other['entries'] if row['id'] == 'edited')['metadata'].update(importance=9, signalJudged=True)
+    server.publish(other)
+    assert (await server.exchange(owner))['changed'] and await owner.native.consume(UID)
+    after = read_views(owner.directory)
+    assert next(row for row in after['facts'] if row['id'] == 'untouched') == untouched
+    assert after['reflections'] == [reflection]
+    rebuilt = next(row for row in after['facts'] if row['id'] == 'edited')
+    # The rewritten row follows the published judgement and keeps what its unchanged wording still supports.
+    assert rebuilt['importance'] == 9 and rebuilt['signal_processed'] is True
+    assert rebuilt['schema_version'] == MEMORY_SCHEMA_VERSION_CURRENT
+    assert (rebuilt['embedding'], rebuilt['embedding_text_sha256']) == ([0.3], 'b' * 64)
+    assert owner.republished == [] and not owner.native._capture('Neko', False)
+
+
+def test_a_judged_and_examined_fact_round_trips_without_another_model_pass():
+    from config import MEMORY_SCHEMA_VERSION_CURRENT
+    views = {'persona': {}, 'archive': [], 'reflections': [], 'facts': [
+        native_fact('waiting', 'not judged yet', schema_version=MEMORY_SCHEMA_VERSION_CURRENT, signal_processed=False),
+        native_fact('legacy', 'never examined for event time', signal_processed=True),
+        native_fact('old', 'written before the judging marker')]}
+    exported = {row['id']: row['metadata'] for row in export_document(views, 2000)['entries']}
+    assert exported['waiting']['signalJudged'] is False and exported['waiting']['eventWhen'] is None
+    assert exported['legacy']['signalJudged'] is True and 'eventWhen' not in exported['legacy']
+    assert exported['old']['signalJudged'] is True
+    received = import_document(export_document(views, 2000), {'persona': {}, 'facts': [], 'archive': [], 'reflections': []})
+    facts = {row['id']: row for row in received['facts']}
+    assert facts['waiting']['signal_processed'] is False and facts['waiting']['schema_version'] == MEMORY_SCHEMA_VERSION_CURRENT
+    assert facts['legacy']['signal_processed'] is True and 'schema_version' not in facts['legacy']
+    older = {'schemaVersion': 2, 'completedAt': 2000, 'evidence': {'retirements': [], 'confirmations': []}, 'entries': [
+        {'kind': 'fact', 'subject': 'master', 'id': 'f', 'text': 'from an older writer', 'metadata': {}}]}
+    assert import_document(older, {'persona': {}, 'facts': [], 'archive': [], 'reflections': []})['facts'][0]['signal_processed'] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('operation,revision', [('download:3', 3), ('0123456789abcdef0123456789abcdef', 0)])
+async def test_state_written_before_base_revisions_is_read_without_trusting_an_unconfirmed_upload(owner, operation, revision):
+    epoch = owner.runtime.writer.epoch()
+    legacy = {'schemaVersion': 2, 'completedAt': 1500, 'evidence': {'retirements': [], 'confirmations': []}, 'entries': [
+        {'kind': 'fact', 'subject': 'master', 'id': 'old', 'text': 'held before the upgrade', 'metadata': {'importance': 5}}]}
+    atomic_write_json(owner.adapter.local_path(owner.binding), {
+        'ownerId': OWNER, 'characterSyncId': UID, 'serviceUrl': owner.binding['service_url'], 'epoch': list(epoch),
+        'operationId': operation, 'document': legacy, 'nativeEntries': legacy['entries']})
+    state = local_state(owner)
+    assert state['pending'] is None and owner.adapter.base_revision(owner.binding, epoch) == revision
+    assert (state['base'] is None) is (revision == 0)
+
+
+@pytest.mark.asyncio
+async def test_a_device_without_a_base_joins_with_the_server_and_does_not_revive_retired_facts(owner):
+    """After the upgrade an old upload proves nothing: both sides are kept, except what the server retired."""
+    epoch = owner.runtime.writer.epoch()
+    atomic_write_json(owner.directory / 'facts.json', [native_fact('mine', 'only on this device'),
+                                                      native_fact('gone', 'deleted on the other device')])
+    legacy = {'schemaVersion': 2, 'completedAt': 1500, 'evidence': {'retirements': [], 'confirmations': []}, 'entries': [
+        {'kind': 'fact', 'subject': 'master', 'id': identity, 'text': text, 'metadata': {'importance': 5}}
+        for identity, text in (('gone', 'deleted on the other device'), ('mine', 'only on this device'))]}
+    atomic_write_json(owner.adapter.local_path(owner.binding), {
+        'ownerId': OWNER, 'characterSyncId': UID, 'serviceUrl': owner.binding['service_url'], 'epoch': list(epoch),
+        'operationId': 'f' * 32, 'document': legacy, 'nativeEntries': legacy['entries']})
+    server = PublishingServer()
+    remote = export_document({'persona': {}, 'archive': [], 'reflections': [],
+                              'facts': [native_fact('theirs', 'only on the other device')],
+                              'sync': {'evidence': {'confirmations': [], 'retirements': [
+                                  {'id': 'gone', 'subject': 'master', 'sourceMessageIds': ['source-1']}]}}}, 2000)
+    for _ in range(5):
+        server.publish(remote)
+    assert owner.native._capture('Neko', False)
+    assert (await server.exchange(owner))['changed'] and server.revision == 5
+    assert await owner.native.consume(UID)
+    assert {row['id'] for row in read_views(owner.directory)['facts']} == {'mine', 'theirs'}
+    assert owner.native._capture('Neko', False)
+    await server.exchange(owner)
+    assert server.revision == 6 and published_facts(server) == {'mine', 'theirs'}
+    assert [row['id'] for row in server.document['evidence']['retirements']] == ['gone']
+
+
+@pytest.mark.asyncio
+async def test_an_expired_revision_is_followed_and_the_next_upload_says_it_was_never_read(owner):
+    from services.chat_sync.ledger import ChatDomain
+    atomic_write_json(owner.directory / 'facts.json', [native_fact('mine', 'only on this device')])
+    assert owner.native._capture('Neko', True)
+    stale = local_state(owner)['pending']
+    puts = []
+    async def request(method, path, body):
+        if method == 'PUT':
+            puts.append(json.loads(body))
+            return {'ownerId': OWNER, 'characterSyncId': UID, 'operationId': puts[-1]['operationId'],
+                    'revision': 7, 'accepted': False, 'conflict': True}
+        return {'ownerId': OWNER, 'characterSyncId': UID, 'revision': 7, 'completedAt': 1000, 'expired': True}
+    async def commit(fn, *args):
+        return fn(*args)
+    arguments = (ChatDomain(OWNER, UID), owner.binding, owner.runtime.writer.epoch(), request, commit)
+    fingerprint = (await owner.runtime._session())[1]
+    await owner.runtime.long_term_memory.sync(*arguments, can_apply=lambda: True, session_fingerprint=fingerprint)
+    state = local_state(owner)
+    assert state == {'base': {'revision': 7, 'document': None, 'nativeEntries': []}, 'pending': None,
+                     'unseenRevision': True, 'sent': [], 'republish': True}
+    assert owner.native._capture('Neko', False)
+    upload = local_state(owner)
+    assert upload['unseenRevision'] is False and upload['pending']['baseRevision'] == 7
+    assert upload['pending']['document']['lineage'] == 1
+    assert [row['id'] for row in upload['pending']['document']['entries']] == ['mine']
+    assert upload['pending']['operationId'] != stale['operationId']
+    # The mark is part of this device's memory now, so later snapshots keep it.
+    assert not owner.native._capture('Neko', False)
+    assert json.loads((owner.directory / FILES['sync']).read_text(encoding='utf-8'))['lineage'] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_server_that_restarted_its_revisions_is_treated_as_having_no_shared_base(owner):
+    server = PublishingServer()
+    atomic_write_json(owner.directory / 'facts.json', [native_fact('mine', 'only on this device')])
+    assert owner.native._capture('Neko', True)
+    await server.exchange(owner)
+    assert local_state(owner)['base']['revision'] == 1
+    server.revision, server.document = 0, None
+    await server.exchange(owner)
+    assert local_state(owner) == {'base': None, 'pending': None, 'unseenRevision': False, 'sent': [], 'republish': True}
+    assert owner.native._capture('Neko', False)
+    await server.exchange(owner)
+    assert server.revision == 1 and published_facts(server) == {'mine'}
+
+
+@pytest.mark.asyncio
+async def test_repeated_conflicts_back_off_instead_of_spinning(owner):
+    from services.chat_sync.long_term import MAX_CONSECUTIVE_CONFLICTS
+    atomic_write_json(owner.directory / 'facts.json', [native_fact('mine', 'only on this device')])
+    assert owner.native._capture('Neko', True)
+    pending = local_state(owner)['pending']
+    server = PublishingServer()
+    server.publish(export_document({'persona': {}, 'archive': [], 'reflections': [], 'facts': []}, 1000))
+    for attempt in range(MAX_CONSECUTIVE_CONFLICTS):
+        result = await server.exchange(owner)
+        assert result['changed'] and local_state(owner)['pending'] == pending
+    # The published revision is downloaded once and then left for the memory owner.
+    assert server.calls.count('GET') == 1
+    with pytest.raises(OSError, match='^long_term_memory_conflict_unresolved$'):
+        await server.exchange(owner)
+    assert local_state(owner)['pending'] == pending and local_state(owner)['base'] is None
+
+
+@pytest.mark.asyncio
+async def test_confirmed_base_is_not_read_under_another_installation_epoch(owner):
+    """A copied or recovered installation starts without a base instead of trusting the old one."""
+    atomic_write_json(owner.directory / 'facts.json', [native_fact('mine', 'only on this device')])
+    server = PublishingServer()
+    assert owner.native._capture('Neko', True)
+    await server.exchange(owner)
+    epoch = owner.runtime.writer.epoch()
+    assert owner.adapter.base_revision(owner.binding, epoch) == 1
+    assert owner.adapter.read_local(owner.binding, (epoch[0], 'f' * 32)) is None
+    assert owner.adapter.base_revision(owner.binding, (epoch[0], 'f' * 32)) == 0
+
+
+def test_confirmations_and_counted_facts_travel_with_a_reflection():
+    """The receiver keeps the "backed by the user" gate instead of losing it with the counts."""
+    empty = {'persona': {}, 'facts': [], 'archive': [], 'reflections': []}
+    reflection = {'id': 'ref', 'entity': 'neko', 'text': 'says she likes rain', 'status': 'pending',
+                  'source_fact_ids': ['said', 'batchmate'], 'counted_fact_ids': ['said'],
+                  'fact_source_counts': {'user': 0, 'ai': 1}, 'user_confirm_count': 2}
+    views = {**empty, 'reflections': [reflection], 'facts': [
+        {'id': 'said', 'entity': 'neko', 'text': 'she said she likes rain', 'source': 'ai_disclosure'},
+        {'id': 'batchmate', 'entity': 'master', 'text': 'user was there', 'source': 'user_observation'}]}
+    exported = export_document(views, 2000)
+    metadata = next(row for row in exported['entries'] if row['id'] == 'ref')['metadata']
+    assert (metadata['userConfirmCount'], metadata['countedFactIds'], metadata['factSourceCounts']) == (2, ['said'], {'user': 0, 'ai': 1})
+
+    received = import_document(exported, empty)['reflections'][0]
+    assert received['user_confirm_count'] == 2 and received['counted_fact_ids'] == ['said']
+    # Only the counted fact is counted, not the whole absorbed batch.
+    assert received['fact_source_counts'] == {'user': 0, 'ai': 1}
+
+    # The counted fact is not in the snapshot: the sender's counts stand in for it.
+    without = {**exported, 'entries': [row for row in exported['entries'] if row['id'] != 'said']}
+    assert import_document(without, empty)['reflections'][0]['fact_source_counts'] == {'user': 0, 'ai': 1}
+
+    # The fact became the user's own words since: counted as it stands now.
+    upgraded = deepcopy(exported)
+    next(row for row in upgraded['entries'] if row['id'] == 'said')['metadata']['source'] = 'user_observation'
+    assert import_document(upgraded, empty)['reflections'][0]['fact_source_counts'] == {'user': 1, 'ai': 0}
+
+    # A withdrawn fact no longer backs anything.
+    withdrawn = deepcopy(exported)
+    next(row for row in withdrawn['entries'] if row['id'] == 'said')['metadata'].update(status='retracted', voidedAt=1500)
+    assert import_document(withdrawn, empty)['reflections'][0]['fact_source_counts'] == {'user': 0, 'ai': 0}
+
+
+def test_an_older_snapshot_keeps_the_local_confirmation_count():
+    empty = {'persona': {}, 'facts': [], 'archive': [], 'reflections': []}
+    older = {'schemaVersion': 2, 'completedAt': 2000, 'evidence': {'retirements': [], 'confirmations': []}, 'entries': [
+        {'kind': 'reflection', 'subject': 'master', 'id': 'ref', 'text': 'reworded there', 'metadata': {'status': 'confirmed'}}]}
+    existing = {**empty, 'reflections': [{'id': 'ref', 'entity': 'master', 'text': 'worded here', 'status': 'confirmed',
+                                          'user_confirm_count': 3}]}
+    assert import_document(older, existing)['reflections'][0]['user_confirm_count'] == 3
+
+
+
+def _confirmed_reflection(confirmations):
+    return {'id': 'ref', 'entity': 'master', 'text': 'enjoys calm routines', 'status': 'confirmed',
+            'confirmed_at': '2026-11-02T00:00:00', 'created_at': '2026-11-01T00:00:00', 'source_fact_ids': [],
+            'user_confirm_count': confirmations}
+
+
+def _published_confirmations(server):
+    return next(row for row in server.document['entries'] if row['id'] == 'ref')['metadata']['userConfirmCount']
+
+
+@pytest.mark.asyncio
+async def test_a_capture_landing_during_an_upload_does_not_count_the_uploaded_change_twice(owner):
+    """Snapshot A is on its way when a capture replaces it with B; the server then accepts A."""
+    server = PublishingServer()
+    atomic_write_json(owner.directory / 'reflections.json', [_confirmed_reflection(0)])
+    assert owner.native._capture('Neko', True)
+    await server.exchange(owner)
+    atomic_write_json(owner.directory / 'reflections.json', [_confirmed_reflection(1)])
+    assert owner.native._capture('Neko', False)
+    first = local_state(owner)['pending']
+    plain = server.request
+
+    async def during_upload(method, path, body):
+        if method == 'PUT' and json.loads(body)['operationId'] == first['operationId']:
+            atomic_write_json(owner.directory / 'reflections.json', [_confirmed_reflection(2)])
+            assert owner.native._capture('Neko', False)
+        return await plain(method, path, body)
+    server.request = during_upload
+    await server.exchange(owner)
+    state = local_state(owner)
+    # What the server took is the base; the newer snapshot rests on it and waits its turn.
+    assert state['base']['revision'] == 2 and state['base']['document'] == first['document']
+    assert state['pending']['baseRevision'] == 2 and state['pending']['operationId'] != first['operationId']
+    assert not owner.adapter.incoming_path(UID).exists()
+    await server.exchange(owner)
+    assert server.revision == 3 and _published_confirmations(server) == 2
+    assert local_state(owner)['pending'] is None and not owner.native._capture('Neko', False)
+
+
+@pytest.mark.asyncio
+async def test_an_upload_whose_reply_was_lost_comes_back_as_this_devices_own_revision(owner):
+    """The server took snapshot A, the reply never arrived, and a capture replaced A before the retry."""
+    server = PublishingServer()
+    atomic_write_json(owner.directory / 'reflections.json', [_confirmed_reflection(0)])
+    assert owner.native._capture('Neko', True)
+    await server.exchange(owner)
+    atomic_write_json(owner.directory / 'reflections.json', [_confirmed_reflection(1)])
+    assert owner.native._capture('Neko', False)
+    plain = server.request
+    lost = [True]
+
+    async def lose_reply(method, path, body):
+        answer = await plain(method, path, body)
+        if method == 'PUT' and lost[0]:
+            lost[0] = False
+            raise OSError('reply lost')
+        return answer
+    server.request = lose_reply
+    with pytest.raises(OSError):
+        await server.exchange(owner)
+    assert server.revision == 2 and local_state(owner)['base']['revision'] == 1
+    atomic_write_json(owner.directory / 'reflections.json', [_confirmed_reflection(2)])
+    assert owner.native._capture('Neko', False)
+    # The retry is refused, and the revision fetched instead is the lost upload itself.
+    assert (await server.exchange(owner))['changed'] and server.revision == 2
+    before = (owner.directory / 'reflections.json').read_bytes()
+    assert await owner.native.consume(UID)
+    assert (owner.directory / 'reflections.json').read_bytes() == before
+    assert local_state(owner)['base']['revision'] == 2 and owner.republished == ['Neko']
+    assert owner.native._capture('Neko', False)
+    await server.exchange(owner)
+    assert server.revision == 3 and _published_confirmations(server) == 2
+
+
+def test_an_untouched_reflection_still_follows_its_facts_when_they_change():
+    """The snapshot only upgrades a fact to the user's own words; the line resting on it is no longer held back."""
+    from memory.evidence import awaits_user_signal
+    fact = {'id': 'f1', 'text': 'likes rain', 'entity': 'neko', 'source': 'ai_disclosure', 'hash': 'x', 'created_at': '2026-10-01T00:00:00'}
+    reflection = {'id': 'r1', 'text': 'line', 'entity': 'neko', 'status': 'pending', 'source_fact_ids': ['f1'],
+                  'fact_source_counts': {'user': 0, 'ai': 1}, 'counted_fact_ids': ['f1'], 'recheck_attempts': 1}
+    existing = {'persona': {}, 'facts': [fact], 'archive': [], 'reflections': [reflection]}
+    incoming = export_document(existing, 3000)
+    next(row for row in incoming['entries'] if row['id'] == 'f1')['metadata']['source'] = 'user_observation'
+    kept = merged_import(incoming, existing)['reflections'][0]
+    assert kept['fact_source_counts'] == {'user': 1, 'ai': 0} and not awaits_user_signal(kept)
+    # Everything else about the untouched row is still exactly as it was.
+    assert {**kept, 'fact_source_counts': reflection['fact_source_counts']} == reflection
+    unchanged = merged_import(export_document(existing, 3000), existing)['reflections'][0]
+    assert unchanged == reflection
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('code', ['long_term_memory_upload_refused', 'long_term_memory_conflict_unresolved',
+                                  'long_term_memory_upload_unsupported'])
+async def test_an_upload_that_cannot_land_backs_off_instead_of_blocking_the_binding(owner, code):
+    from services.chat_sync.long_term import LongTermMemoryRetryLater
+    generation, session = owner.binding['generation'], 'session'
+    assert owner.runtime.scheduler.claim(DOMAIN.key(), 'long_term', generation, session)
+    owner.runtime.scheduler.failure(DOMAIN.key(), 'long_term', generation, session, LongTermMemoryRetryLater(code))
+    with closing(store_connection(owner.runtime.scheduler.path)) as connection:
+        blocked, retry, error = connection.execute(
+            "SELECT blocked_generation,retry_at,last_error FROM scheduler_tasks WHERE domain=? AND channel='long_term'",
+            (DOMAIN.key(),)).fetchone()
+    assert blocked is None and retry > 0
+
+
+@pytest.mark.asyncio
+async def test_a_server_without_conditional_writes_still_serves_pulls_and_keeps_the_upload_waiting(owner):
+    from services.chat_sync.long_term import LongTermMemoryRetryLater
+    from services.chat_sync.runtime import ChatSyncServiceError
+    server = PublishingServer()
+    server.publish(export_document({'persona': {}, 'archive': [], 'reflections': [], 'facts': [
+        native_fact('theirs', 'only on the other device')]}, 1000))
+    atomic_write_json(owner.directory / 'facts.json', [native_fact('mine', 'only on this device')])
+    assert owner.native._capture('Neko', True)
+    waiting = local_state(owner)['pending']
+    plain = server.request
+
+    async def older_server(method, path, body):
+        if method == 'PUT':
+            server.calls.append('PUT')
+            raise ChatSyncServiceError(400)
+        return await plain(method, path, body)
+    server.request = older_server
+    with pytest.raises(LongTermMemoryRetryLater, match='^long_term_memory_upload_unsupported$'):
+        await server.exchange(owner)
+    # The refusal is not recorded as an upload, and what the server holds was still fetched.
+    assert local_state(owner)['pending'] == waiting and local_state(owner)['base'] is None
+    assert server.calls == ['PUT', 'HEAD', 'GET'] and owner.adapter.incoming_path(UID).exists()
+    with pytest.raises(ChatSyncServiceError):
+        async def broken(method, path, body):
+            raise ChatSyncServiceError(403)
+        server.request = broken
+        await server.exchange(owner)
+
+
+@pytest.mark.asyncio
+async def test_holding_the_newest_snapshot_is_recorded_only_when_nothing_newer_is_published(owner):
+    server = PublishingServer()
+    atomic_write_json(owner.directory / 'facts.json', [native_fact('mine', 'only on this device')])
+    assert owner.adapter.checked_at(UID) is None
+    assert owner.native._capture('Neko', True)
+    await server.exchange(owner)
+    first = owner.adapter.checked_at(UID)
+    assert type(first) is int and first > 0
+    owner.adapter.mark_checked(UID, 5)
+    other = deepcopy(server.document)
+    other['completedAt'] += 10
+    other['progress'] = {'a': ['c' * 32], 'b': []}
+    server.publish(other)
+    # A newer revision exists and the role is busy, so it is not even fetched: the earlier
+    # check no longer vouches for the progress this device holds.
+    from services.chat_sync.ledger import ChatDomain
+    async def commit(fn, *args):
+        return fn(*args)
+    busy = await owner.runtime.long_term_memory.sync(
+        ChatDomain(OWNER, UID), owner.binding, owner.runtime.writer.epoch(), server.request, commit,
+        can_apply=lambda: False, session_fingerprint=(await owner.runtime._session())[1])
+    assert busy == {'changed': False, 'hasMore': True} and owner.adapter.checked_at(UID) is None
+    assert not owner.adapter.incoming_path(UID).exists()
+    # Downloaded but not applied yet: still nothing vouches for it.
+    assert (await server.exchange(owner))['changed'] and owner.adapter.checked_at(UID) is None
+    assert await owner.native.consume(UID)
+    await server.exchange(owner)
+    assert owner.adapter.checked_at(UID) > 5
+
+
+@pytest.mark.asyncio
+async def test_retiring_a_role_removes_every_copy_this_adapter_keeps(owner):
+    directory = owner.adapter.directory
+    directory.mkdir(parents=True, exist_ok=True)
+    other = 'b' * 32
+    kept = [directory / f'{other}-0123456789abcdef.json', directory / f'{other}.expired-{"0" * 32}.json',
+            directory / f'{other}.organizer.json', directory / f'{other}.checked.json']
+    dropped = [directory / f'{UID}-0123456789abcdef.json', directory / f'{UID}.expired-{"0" * 32}.json',
+               directory / f'{UID}.organizer.json', directory / f'{UID}.checked.json', owner.adapter.incoming_path(UID)]
+    for path in kept + dropped:
+        path.write_text('{}', encoding='utf-8')
+    from memory import received_messages
+    received_messages.keep_arrivals(owner.adapter.received_directory(UID), [
+        {'id': 'c' * 32, 'role': 'user', 'text': 'said elsewhere', 'originalTime': None}], 1000)
+    owner.adapter.forget(UID)
+    assert [path.exists() for path in kept] == [True] * 4 and [path.exists() for path in dropped] == [False] * 5
+    assert not owner.adapter.received_directory(UID).exists()
+
+
+
+@pytest.mark.asyncio
+async def test_a_merge_that_still_owes_an_upload_survives_a_process_exit(owner, monkeypatch):
+    """The process exits after the merged views are saved and before their capture is queued."""
+    server = PublishingServer()
+    atomic_write_json(owner.directory / 'facts.json', [native_fact('shared', 'known to both devices')])
+    assert owner.native._capture('Neko', True)
+    await server.exchange(owner)
+    other = deepcopy(server.document)
+    other['completedAt'] += 10
+    other['entries'].append({**other['entries'][0], 'id': 'there', 'text': 'added by the other device'})
+    server.publish(other)
+    atomic_write_json(owner.directory / 'facts.json', [native_fact('shared', 'known to both devices'),
+                                                      native_fact('here', 'added by this device')])
+    assert (await server.exchange(owner))['changed']
+    payload = json.loads(owner.adapter.incoming_path(UID).read_text(encoding='utf-8'))
+    # Applied directly: nothing after the saved merge runs, as when the process dies there.
+    assert owner.native._write_snapshot('Neko', payload)
+    owner.native._unpublished_after_apply.clear()
+    assert owner.republished == [] and local_state(owner)['republish'] is True
+    queued = []
+    monkeypatch.setattr(owner.native, 'queue_capture', queued.append)
+    assert await owner.native.resume_owed_capture('Neko') is True and queued == ['Neko']
+    assert owner.native._capture('Neko', False)
+    state = local_state(owner)
+    assert state['republish'] is False and state['pending']['baseRevision'] == 2
+    assert {row['id'] for row in state['pending']['document']['entries']} == {'shared', 'here', 'there'}
+    assert await owner.native.resume_owed_capture('Neko') is False
+
+
+@pytest.mark.asyncio
+async def test_a_merge_that_changed_nothing_here_owes_no_upload(owner):
+    server = PublishingServer()
+    server.publish(export_document({'persona': {}, 'archive': [], 'reflections': [], 'facts': [
+        native_fact('theirs', 'only on the other device')]}, 1000))
+    await server.exchange(owner)
+    assert await owner.native.consume(UID)
+    assert local_state(owner)['republish'] is False and await owner.native.resume_owed_capture('Neko') is False
+
+
+
+@pytest.mark.asyncio
+async def test_a_capture_owed_after_extraction_survives_a_restart(owner, monkeypatch):
+    """Facts and progress were saved, and the process stopped before the delayed capture ran."""
+    spawned = []
+
+    def spawn(coroutine):
+        coroutine.close()
+        spawned.append(coroutine)
+        return asyncio.get_running_loop().create_future()
+    monkeypatch.setattr(owner.native.runtime, '_spawn_background_task', spawn, raising=False)
+    monkeypatch.setattr(owner.native, '_track_character_post_turn_task', lambda name, task: task)
+    monkeypatch.setattr(owner.native, '_extraction_captures', {})
+    atomic_write_json(owner.directory / 'facts.json', [native_fact('mine', 'extracted just now')])
+    assert await owner.native.resume_owed_capture('Neko') is False
+    owner.native.queue_capture_after_extraction('Neko')
+    assert len(spawned) == 1 and owner.adapter.owed_path(UID).exists()
+    # After a restart nothing in memory remembers the delayed capture; the mark does.
+    monkeypatch.setattr(owner.native, '_extraction_captures', {})
+    queued = []
+    monkeypatch.setattr(owner.native, 'queue_capture', queued.append)
+    assert await owner.native.resume_owed_capture('Neko') is True and queued == ['Neko']
+    assert owner.native._capture('Neko', False)
+    assert not owner.adapter.owed_path(UID).exists()
+    assert await owner.native.resume_owed_capture('Neko') is False
+    # A capture that finds nothing to upload settles the mark as well.
+    owner.adapter.owed_path(UID).touch()
+    assert not owner.native._capture('Neko', False) and not owner.adapter.owed_path(UID).exists()

@@ -13,7 +13,8 @@ from uuid import uuid4
 
 from memory.evidence import count_fact_sources
 from memory.introspection import PERMANENT_SUPPRESSION_KEY, is_permanently_suppressed
-from utils.long_term_memory_protocol import MAX_ENTRIES, document, head
+from memory.long_term_merge import empty_evidence, merge_retirement
+from utils.long_term_memory_protocol import MAX_ENTRIES, SCHEMA_VERSION, document, head
 from utils.recent_memory_protocol import canonical
 
 
@@ -291,6 +292,10 @@ def export_document(views, completed_at, *, source_evidence=None):
         for original, portable in [('event_when_raw', 'eventWhen'), ('status', 'status'), ('relation_type', 'relationType'),
                                   ('temporal_scope', 'temporalScope')]:
             if native.get(original) is not None: metadata[portable] = deepcopy(native[original])
+        if kind != 'persona' and _schema_current(native):
+            # An explicit null tells the receiver this row was already examined for
+            # event time, so it does not ask a model to examine it again.
+            metadata.setdefault('temporalScope' if kind == 'reflection' else 'eventWhen', None)
         if native.get('version_history') is not None:
             history = []
             for item in native['version_history'][-5:]:
@@ -319,7 +324,9 @@ def export_document(views, completed_at, *, source_evidence=None):
                 if all(value is not None for value in times): metadata['sourceCreatedAt'] = max(times)
                 else: metadata.pop('sourceCreatedAt', None)
             if native.get('source') in ('user_observation', 'ai_disclosure', 'chat'): metadata['source'] = native['source']
-            metadata.update(importance=native.get('importance', 5), absorbed=bool(native.get('absorbed')), archived=archived)
+            # Rows written before the marker existed were never queued for judging.
+            metadata.update(importance=native.get('importance', 5), absorbed=bool(native.get('absorbed')), archived=archived,
+                            signalJudged=bool(native.get('signal_processed', True)))
             if native.get('arbitration_archived_at'):
                 metadata.update(status='superseded' if native.get('superseded_by') else 'retracted',
                                 archivedAt=timestamp(native['arbitration_archived_at']))
@@ -339,6 +346,19 @@ def export_document(views, completed_at, *, source_evidence=None):
                 metadata['evidenceReviewedAt'] = timestamp(native['confirmed_at'])
             if native.get('promoted_at'):
                 metadata['promotedAt'] = timestamp(native['promoted_at'])
+        if kind in ('persona', 'reflection'):
+            # What a receiver needs to keep the "backed by the user" gate: explicit
+            # confirmations, which facts were counted, and the counts themselves for
+            # when those facts are not in the snapshot.
+            confirms = native.get('user_confirm_count')
+            if type(confirms) is int and confirms >= 0:
+                metadata['userConfirmCount'] = confirms
+            counted = native.get('counted_fact_ids')
+            if isinstance(counted, list):
+                metadata['countedFactIds'] = [fid for fid in dict.fromkeys(counted) if isinstance(fid, str) and fid.strip()][:200]
+            counts = native.get('fact_source_counts')
+            if isinstance(counts, dict) and all(type(counts.get(key)) is int and counts[key] >= 0 for key in ('user', 'ai')):
+                metadata['factSourceCounts'] = {'user': counts['user'], 'ai': counts['ai']}
         if kind in ('persona', 'reflection') and is_permanently_suppressed(native):
             # Retired by introspection on this device: peers drop it instead
             # of injecting it, and this device keeps its own row (see import).
@@ -379,8 +399,19 @@ def export_document(views, completed_at, *, source_evidence=None):
         rows.setdefault((entry['kind'], entry['subject'], entry['id']), deepcopy(entry))
     if len(rows) > MAX_ENTRIES:
         raise LongTermMemoryCapacityExceeded()
-    return document({'schemaVersion': 2, 'completedAt': completed_at, 'entries': [rows[key] for key in sorted(rows)],
-                     'evidence': deepcopy(state.get('evidence') or {'retirements': [], 'confirmations': []})})
+    progress = state.get('progress') or {}
+    exported = {'schemaVersion': SCHEMA_VERSION, 'completedAt': completed_at, 'entries': [rows[key] for key in sorted(rows)],
+                'evidence': deepcopy(state.get('evidence') or empty_evidence()),
+                'progress': {name: list(progress.get(name) or []) for name in ('a', 'b')}}
+    for field in ('organizer', 'maintenance', 'lineage'):
+        if state.get(field):
+            exported[field] = deepcopy(state[field])
+    return document(exported)
+
+
+def _schema_current(native):
+    from config import MEMORY_SCHEMA_VERSION_CURRENT
+    return (native.get('schema_version') or 1) >= MEMORY_SCHEMA_VERSION_CURRENT
 
 
 def validate_retirement_subjects(previous, incoming):
@@ -392,33 +423,36 @@ def validate_retirement_subjects(previous, incoming):
         subjects[row['id']] = row['subject']
 
 
-def import_document(incoming, existing, *, baseline=None, source_evidence=None, keep_unpublished_retirements=True):
+def import_document(incoming, existing, *, merged=False, source_evidence=None, keep_unpublished_retirements=True):
+    """Write a portable document into native views.
+
+    merged says the document already contains what this device holds (the
+    result of a three-way merge): rows it leaves exactly as this device exports
+    them are kept untouched, and its evidence replaces the local evidence
+    instead of being joined with it.
+    """
     incoming = document(incoming)
-    validate_retirement_subjects(existing.get('sync', {}).get('evidence', {}).get('retirements', []),
+    previous_state = existing.get('sync') or {}
+    validate_retirement_subjects(previous_state.get('evidence', {}).get('retirements', []),
                                  incoming.get('evidence', {}).get('retirements', []))
     result = deepcopy(existing)
-    result['sync'] = {'evidence': deepcopy(incoming.get('evidence') or existing.get('sync', {}).get('evidence') or {'retirements': [], 'confirmations': []}), 'dormantEntries': []}
-    for field, key in [('retirements', 'id'), ('confirmations', 'fingerprint')]:
-        retained = {row[key]: deepcopy(row) for row in existing.get('sync', {}).get('evidence', {}).get(field, [])}
-        for incoming_row in result['sync']['evidence'][field]:
-            row = deepcopy(incoming_row)
-            previous = retained.get(row[key])
-            if field == 'retirements' and previous:
-                old_proof = bool(previous.get('retiredBySourceMessageIds') or previous.get('retiredThroughAtFromCorrection'))
-                new_proof = bool(row.get('retiredBySourceMessageIds') or row.get('retiredThroughAtFromCorrection'))
-                times = [item['retiredThroughAt'] for item, proof in [(previous, old_proof), (row, new_proof)]
-                         if 'retiredThroughAt' in item and (proof or not (old_proof or new_proof))]
-                row = {**previous, **row, 'sourceMessageIds': list(dict.fromkeys(previous['sourceMessageIds'] + row['sourceMessageIds']))}
-                corrections = list(dict.fromkeys(previous.get('retiredBySourceMessageIds', []) + row.get('retiredBySourceMessageIds', [])))
-                if corrections: row['retiredBySourceMessageIds'] = corrections
-                if times:
-                    row['retiredThroughAt'] = max(times)
-                    if old_proof or new_proof: row['retiredThroughAtFromCorrection'] = True
-                else:
-                    row.pop('retiredThroughAt', None)
-                    row.pop('retiredThroughAtFromCorrection', None)
-            retained[row[key]] = row
-        result['sync']['evidence'][field] = list(retained.values())
+    result['sync'] = {'evidence': deepcopy(incoming.get('evidence') or previous_state.get('evidence') or empty_evidence()), 'dormantEntries': []}
+    current_schema = incoming['schemaVersion'] == SCHEMA_VERSION
+    for field in ('progress', 'organizer', 'maintenance', 'lineage'):
+        # Older documents know nothing of these, so they cannot clear them.
+        value = incoming.get(field) if current_schema else previous_state.get(field)
+        if value:
+            result['sync'][field] = deepcopy(value)
+    if not merged:
+        for field, key in [('retirements', 'id'), ('confirmations', 'fingerprint')]:
+            retained = {row[key]: deepcopy(row) for row in previous_state.get('evidence', {}).get(field, [])}
+            for incoming_row in result['sync']['evidence'][field]:
+                row = deepcopy(incoming_row)
+                previous = retained.get(row[key])
+                if field == 'retirements' and previous:
+                    row = merge_retirement(previous, row)
+                retained[row[key]] = row
+            result['sync']['evidence'][field] = list(retained.values())
     local_persona = {(row.get('entity_key'), _entry_id(row.get('entity_key'), row)): row
                      for rows in existing.get('personaArchives', {}).values() for row in rows
                      if isinstance(row, dict) and private(row) and row.get('source') != 'character_card'}
@@ -433,12 +467,14 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None, 
     local_reflections.update({(row.get('entity'), _entry_id(row.get('entity'), row)): row
                              for row in existing['reflections'] if isinstance(row, dict) and private(row)})
     pending = set()
-    if baseline is not None:
-        previous = {(row['kind'], row['subject'], row['id']): row for row in baseline}
+    if merged:
+        # A row the document leaves as this device already exports it stays as it is:
+        # rebuilding it would drop what the protocol does not carry.
         current = {(row['kind'], row['subject'], row['id']): row
                    for row in export_document(existing, incoming['completedAt'], source_evidence=source_evidence)['entries']}
-        pending = {key for key in previous.keys() | current.keys() if previous.get(key) != current.get(key)}
-    result['sync']['dormantEntries'] = [deepcopy(row) for row in existing.get('sync', {}).get('dormantEntries', [])
+        pending = {(row['kind'], row['subject'], row['id']) for row in incoming['entries']
+                   if current.get((row['kind'], row['subject'], row['id'])) == row}
+    result['sync']['dormantEntries'] = [deepcopy(row) for row in previous_state.get('dormantEntries', [])
                                       if (row['kind'], row['subject'], row['id']) in pending]
 
     def retained(kind, subject, value):
@@ -487,7 +523,9 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None, 
                  and (not isinstance(row.get('id'), str)
                       or (row.get('entity'), row.get('id')) not in incoming_reflections)))]
     incoming_fact_sources = {row['id']: _incoming_fact_source(row) for row in incoming['entries'] if row['kind'] == 'fact'}
-    # Local edits still pending stay after this import, so their source is the one that holds.
+    withdrawn_facts = {row['id'] for row in incoming['entries']
+                       if row['kind'] == 'fact' and row['metadata'].get('status') == 'retracted'}
+    # Rows kept untouched stay after this import, so their source is the one that holds.
     incoming_fact_sources.update({row['id']: row.get('source') for row in result['archive'] + result['facts']
                                   if isinstance(row, dict) and row.get('id') and private(row)})
     for row in incoming['entries']:
@@ -500,6 +538,10 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None, 
             result['sync']['dormantEntries'].append(deepcopy(row))
             continue
         native = {'_sync_metadata': deepcopy(meta), 'id': row['id'], 'text': row['text'], 'source_sync_id': meta.get('sourceSyncId') or f'snapshot:{row["id"]}'[:200]}
+        if ('temporalScope' if kind == 'reflection' else 'eventWhen') in meta and kind != 'persona':
+            # The sender already examined this row for event time.
+            from config import MEMORY_SCHEMA_VERSION_CURRENT
+            native['schema_version'] = MEMORY_SCHEMA_VERSION_CURRENT
         for original, portable in [('created_at', 'createdAt'), ('updated_at', 'updatedAt'),
                                    ('rein_last_signal_at', 'reinLastSignalAt'), ('disp_last_signal_at', 'dispLastSignalAt')]:
             if meta.get(portable) is not None:
@@ -529,6 +571,7 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None, 
                 for field in ('covered_fact_ids', 'fact_source_counts'):
                     if field in previous:
                         native[field] = deepcopy(previous[field])
+            _carried_fact_accounting(native, meta, incoming_fact_sources, withdrawn_facts, previous)
             if 'protected' in previous:
                 native.setdefault('protected', previous['protected'])
             # The protocol omits receiver-only state and external-import ledgers.
@@ -548,9 +591,18 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None, 
                 result['persona'][subject]['facts'].append(native)
         elif kind == 'fact':
             native.update(entity=subject, source=_incoming_fact_source(row),
-                          importance=meta.get('importance', 5), absorbed=bool(meta.get('absorbed')), signal_processed=True,
+                          importance=meta.get('importance', 5), absorbed=bool(meta.get('absorbed')),
+                          # Only a schema 3 writer can say a fact still waits for judging.
+                          signal_processed=bool(meta.get('signalJudged', True)),
                           hash=hashlib.sha256(row['text'].encode()).hexdigest()[:16])
             previous = local_facts.get((subject, row['id']), {})
+            if previous.get('text') == native['text']:
+                # Derived from the wording alone, so still valid for the same wording.
+                for field in ('embedding', 'embedding_text_sha256', 'embedding_model_id', 'tags'):
+                    if field in previous:
+                        native[field] = deepcopy(previous[field])
+                if 'schema_version' in previous:
+                    native.setdefault('schema_version', previous['schema_version'])
             if previous.get('text') == native['text'] and previous.get('extraction_path'):
                 native['extraction_path'] = previous['extraction_path']
             if previous.get('text') == native['text'] and previous.get('external_import'):
@@ -573,6 +625,8 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None, 
             previous = local_reflections.get((subject, row['id']), {})
             if previous.get('text') == native['text'] and 'covered_fact_ids' in previous:
                 native['covered_fact_ids'] = deepcopy(previous['covered_fact_ids'])
+            if previous.get('text') == native['text'] and 'schema_version' in previous:
+                native.setdefault('schema_version', previous['schema_version'])
             native.update(entity=subject, source_fact_ids=list(meta.get('sourceFactIds') or []),
                           status=meta.get('status', 'promoted' if meta.get('promotedAt') else 'confirmed'))
             if native['status'] in ('confirmed', 'promoted') and not native.get('confirmed_at'):
@@ -604,16 +658,49 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None, 
                 native['fact_source_counts'] = count_fact_sources(
                     [{'source': incoming_fact_sources[fid]} for fid in native['source_fact_ids']])
                 native['counted_fact_ids'] = sorted(native['source_fact_ids'])
-            # Explicit confirmations are not in the protocol either; like the
-            # reinforce count they belong to the row, whatever its current wording.
-            if 'user_confirm_count' in previous:
-                native['user_confirm_count'] = previous['user_confirm_count']
+            _carried_fact_accounting(native, meta, incoming_fact_sources, withdrawn_facts, previous)
             if formally_archived:
                 _append_archive(result, 'reflectionArchives', native, incoming['completedAt'])
             else:
                 result['reflections'].append(native)
+    # A row left untouched may still rest on facts this document changed: one upgraded
+    # to the user's own words, or withdrawn. Its counts follow the facts as they now stand.
+    kept = [*result['reflections'], *(row for subject in SUBJECTS for row in result['persona'].get(subject, {}).get('facts', []))]
+    for row in kept:
+        if not isinstance(row, dict) or not private(row) or not isinstance(row.get('fact_source_counts'), dict):
+            continue
+        counted = row.get('counted_fact_ids')
+        if isinstance(counted, list) and counted and all(fid in incoming_fact_sources for fid in counted):
+            row['fact_source_counts'] = count_fact_sources(
+                [{'source': incoming_fact_sources[fid]} for fid in counted if fid not in withdrawn_facts])
     return result
 
+
+
+def _carried_fact_accounting(native, meta, fact_sources, withdrawn, previous):
+    """Apply the sender's record of confirmations and counted facts to a rebuilt row.
+
+    With every counted fact in the snapshot the counts are worked out here, so
+    a fact withdrawn or upgraded to the user's own words since then counts as
+    it stands now. Otherwise the sender's counts are used: a row without
+    counts would pass the gate ungated.
+    """
+    if 'userConfirmCount' in meta:
+        native['user_confirm_count'] = meta['userConfirmCount']
+    elif 'user_confirm_count' in previous:
+        # An older writer does not carry it; the count belongs to the row whatever its wording.
+        native['user_confirm_count'] = previous['user_confirm_count']
+    counted, carried = meta.get('countedFactIds'), meta.get('factSourceCounts')
+    if counted is None and carried is None:
+        return
+    ids = list(counted) if counted is not None else list(native.get('source_fact_ids') or [])
+    if counted is not None:
+        native['counted_fact_ids'] = ids
+    if ids and all(fid in fact_sources for fid in ids):
+        native['fact_source_counts'] = count_fact_sources(
+            [{'source': fact_sources[fid]} for fid in ids if fid not in withdrawn])
+    elif carried is not None:
+        native['fact_source_counts'] = dict(carried)
 
 
 def _incoming_fact_source(row):
@@ -698,7 +785,8 @@ def trusted_message_source(message, fallback_timestamp=None):
     source_proof = original.get('chat_original_source')
     source_proof = source_proof if isinstance(source_proof, dict) else {}
     if not identity:
-        raw_id = original.get('recent_memory_id') or source_proof.get('recordId') or source_proof.get('messageId')
+        raw_id = (original.get('recent_memory_id') or source_proof.get('recordId') or source_proof.get('messageId')
+                  or original.get('memory_message_id'))
         if isinstance(raw_id, str) and re.fullmatch(r'[0-9a-f]{32}', raw_id):
             identity = f'sync:{raw_id}'
         raw_time = original.get('recent_memory_time', source_proof.get('originalTime'))
@@ -890,6 +978,30 @@ def fact_source_evidence(retirements, fact, entity, source_messages, *, source='
             return None
     return {'source_message_ids': ids, **({'source_created_at': iso(latest)} if latest is not None else {})}
 
+# How many replaced snapshots are remembered: enough for one upload in flight plus
+# a capture or two landing during it.
+SENT_SNAPSHOTS_KEPT = 3
+
+
+def _current_state(value):
+    """Read a state file written before uploads carried a base revision.
+
+    A downloaded snapshot was the document the server held, so it is a sound
+    base. Anything else was an upload from this device, recorded as acknowledged
+    whether or not the server took it: it proves nothing, so the device starts
+    without a base and merges as a union with whatever the server holds.
+    """
+    if 'operationId' not in value:
+        return value
+    operation = value['operationId']
+    base = None
+    if isinstance(operation, str) and re.fullmatch(r'download:[0-9]{1,16}', operation):
+        base = {'revision': int(operation[9:]), 'document': value['document'],
+                'nativeEntries': value.get('nativeEntries', value['document']['entries'])}
+    return {**{key: value.get(key) for key in ('ownerId', 'characterSyncId', 'serviceUrl', 'epoch')},
+            'base': base, 'pending': None, 'unseenRevision': False}
+
+
 def domain_filename(owner, uid, service_url):
     return f'{uid}-{hashlib.sha256(canonical([owner, service_url])).hexdigest()[:16]}'
 
@@ -908,6 +1020,34 @@ class DesktopLongTermAdapter:
     def incoming_path(self, uid):
         return self.directory / f'{uid}.incoming.json'
 
+    def _checked_path(self, uid):
+        return self.directory / f'{uid}.checked.json'
+
+    def owed_path(self, uid):
+        """Present while saved memory changes still wait for a snapshot to be captured."""
+        return self.directory / f'{uid}.capture-owed'
+
+    def mark_checked(self, uid, at):
+        """Record that this device held the newest published snapshot at this moment of its own clock."""
+        from utils.file_utils import atomic_write_json
+        self.directory.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(self._checked_path(uid), {'at': int(at)})
+
+    def clear_checked(self, uid):
+        """A newer revision is known to exist, so the last check no longer vouches for anything."""
+        self._checked_path(uid).unlink(missing_ok=True)
+
+    def checked_at(self, uid):
+        try:
+            at = json.loads(self._checked_path(uid).read_text(encoding='utf-8')).get('at')
+        except (OSError, ValueError, AttributeError):
+            return None
+        return at if type(at) is int else None
+
+    def received_directory(self, uid):
+        """Where lines another device said wait for this device to extract facts from them."""
+        return self.directory.parent / 'received' / uid
+
     def expire_incoming(self, binding, epoch, expired, *, require_epoch):
         """Retain obsolete inbox bytes outside the live slot after an authorized expiry."""
         from uuid import uuid4
@@ -925,6 +1065,12 @@ class DesktopLongTermAdapter:
         path.rename(path.with_name(f'{binding["character_uid"]}.expired-{uuid4().hex}.json'))
 
     def read_local(self, binding, epoch):
+        """Return the confirmed base and the snapshot waiting for upload, or None without local state.
+
+        base is what the server confirmed: an accepted upload from this device
+        or a remote revision it applied. pending is never a base, because an
+        upload the server has not accepted proves nothing about other devices.
+        """
         path = self.local_path(binding)
         try:
             stat = path.stat()
@@ -933,26 +1079,121 @@ class DesktopLongTermAdapter:
         stamp = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
         cached = self._cache.get(path)
         if cached is None or cached[0] != stamp:
-            value = json.loads(path.read_text(encoding='utf-8'))
-            document(value['document'])
+            value = _current_state(json.loads(path.read_text(encoding='utf-8')))
+            for part in (value['base'], value['pending']):
+                if part is not None and part['document'] is not None:
+                    document(part['document'])
             self._cache[path] = (stamp, value)
         value = self._cache[path][1]
         if (value.get('epoch') != list(epoch) or value.get('ownerId') != binding['owner_id']
                 or value.get('characterSyncId') != binding['character_uid'] or value.get('serviceUrl') != binding['service_url']):
             return None
-        return {'operationId': value['operationId'], 'document': value['document'],
-                'nativeEntries': value.get('nativeEntries', value['document']['entries'])}
+        return {'base': value['base'], 'pending': value['pending'], 'unseenRevision': bool(value.get('unseenRevision')),
+                'sent': list(value.get('sent') or []), 'republish': bool(value.get('republish'))}
 
-    def stage_remote(self, binding, remote, epoch, expected_operation, session_fingerprint):
+    def write_local(self, binding, epoch, *, base, pending, unseen_revision=False, sent=(), republish=False):
+        """sent keeps snapshots a newer capture replaced while their upload may still be in flight.
+
+        republish says this device holds content the base lacks and no snapshot
+        of it waits yet. It is stored with the base, so a process that exits
+        before capturing still captures after it starts again.
+        """
         from utils.file_utils import atomic_write_json
-        current = self.read_local(binding, epoch)
-        if ((current['operationId'] if current else None) != expected_operation
-                or (current and current['document']['completedAt'] > remote['document']['completedAt'])):
+        atomic_write_json(self.local_path(binding), {
+            'ownerId': binding['owner_id'], 'characterSyncId': binding['character_uid'], 'serviceUrl': binding['service_url'],
+            'epoch': list(epoch), 'base': base, 'pending': pending, 'unseenRevision': bool(unseen_revision),
+            'sent': list(sent)[:SENT_SNAPSHOTS_KEPT], 'republish': bool(republish),
+        }, ensure_ascii=False)
+
+    def base_revision(self, binding, epoch):
+        local = self.read_local(binding, epoch)
+        return local['base']['revision'] if local and local['base'] else 0
+
+    def acknowledge(self, binding, epoch, operation, revision):
+        """The accepted upload becomes the base every later merge starts from."""
+        local = self.read_local(binding, epoch)
+        if not local:
+            return False
+        if local['pending'] and local['pending']['operationId'] == operation:
+            uploaded, waiting = local['pending']['document'], None
+        else:
+            # A capture replaced the snapshot while this upload was in flight. What the
+            # server took is still the base; the newer snapshot now rests on it, so only
+            # what it adds counts as unpublished and nothing is counted twice.
+            uploaded = next((item['document'] for item in local['sent'] if item['operationId'] == operation), None)
+            if uploaded is None:
+                return False
+            waiting = {**local['pending'], 'baseRevision': revision} if local['pending'] else None
+        self.write_local(binding, epoch, pending=waiting,
+                         base={'revision': revision, 'document': uploaded, 'nativeEntries': uploaded['entries']})
+        return True
+
+    def refresh_pending(self, binding, epoch, operation, now):
+        """Give a refused upload a new completion time; one refused as expired would otherwise stay expired."""
+        local = self.read_local(binding, epoch)
+        if not local or not local['pending'] or local['pending']['operationId'] != operation:
+            return False
+        renewed = {**local['pending']['document'], 'completedAt': max(now, local['pending']['document']['completedAt'] + 1)}
+        self.write_local(binding, epoch, base=local['base'], unseen_revision=local['unseenRevision'], sent=local['sent'],
+                         republish=local['republish'],
+                         pending={**local['pending'], 'operationId': uuid4().hex, 'document': renewed})
+        return True
+
+    def adopt_revision(self, binding, epoch, revision):
+        """Follow a revision whose body is gone, or a server that restarted its numbering.
+
+        An expired body cannot be read, so the base keeps its content under the
+        new number and the next upload declares that it never saw that revision.
+        A number below the base means the server lost its history: every local
+        entry then counts as new.
+        """
+        local = self.read_local(binding, epoch) or {'base': None, 'pending': None, 'unseenRevision': False, 'sent': [], 'republish': False}
+        current = local['base']['revision'] if local['base'] else 0
+        if revision == current:
+            return False
+        if revision < current:
+            base, unseen = None, False
+        else:
+            base = {**(local['base'] or {'document': None, 'nativeEntries': []}), 'revision': revision}
+            unseen = True
+        # A snapshot captured against the old number would only be refused again;
+        # what it held has to be captured anew against the adopted one.
+        self.write_local(binding, epoch, base=base, pending=None, unseen_revision=unseen, republish=True)
+        return True
+
+    def stage_remote(self, binding, remote, epoch, expected_revision, session_fingerprint):
+        """Stage a newer revision for the memory owner; the base it merges onto must not have moved."""
+        from utils.file_utils import atomic_write_json
+        if self.base_revision(binding, epoch) != expected_revision or remote['revision'] <= expected_revision:
             return False
         atomic_write_json(self.incoming_path(binding['character_uid']), {
             'binding': binding, 'epoch': list(epoch), 'head': remote, 'sessionFingerprint': session_fingerprint,
         }, ensure_ascii=False)
         return True
+
+    def staged_revision(self, binding, epoch):
+        """The revision already waiting in the inbox for this grant, if any."""
+        try:
+            pending = json.loads(self.incoming_path(binding['character_uid']).read_text(encoding='utf-8'))
+        except (FileNotFoundError, ValueError):
+            return None
+        if pending.get('binding') != binding or pending.get('epoch') != list(epoch):
+            return None
+        revision = (pending.get('head') or {}).get('revision')
+        return revision if type(revision) is int else None
+
+    def forget(self, uid):
+        """Drop the confirmed base and inbox of a role whose cloud copy was retired."""
+        for path in [self.incoming_path(uid), self.directory / f'{uid}.organizer.json', self._checked_path(uid),
+                     self.owed_path(uid),
+                     *self.directory.glob(f'{uid}-*.json'), *self.directory.glob(f'{uid}.expired-*.json')]:
+            path.unlink(missing_ok=True)
+            self._cache.pop(path, None)
+        received = self.received_directory(uid)
+        if received.is_dir():
+            for path in received.iterdir():
+                path.unlink(missing_ok=True)
+            received.rmdir()
 
     def needs_reauthentication(self, binding, epoch, session_fingerprint):
         try:

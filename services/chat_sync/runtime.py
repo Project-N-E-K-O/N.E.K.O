@@ -390,6 +390,8 @@ class DesktopChatSyncRuntime:
             from services.chat_sync.long_term import LongTermMemorySync
             self.long_term_memory = (LongTermMemorySync(directory / 'state.sqlite3', long_term_memory_adapter)
                                      if long_term_memory_adapter is not None else None)
+            if self.recent_memory is not None and long_term_memory_adapter is not None:
+                self.recent_memory.received_directory = long_term_memory_adapter.received_directory
         self.recent_character_name = recent_character_name
         self._recent_lock = asyncio.Lock()
         self._long_term_lock = asyncio.Lock()
@@ -940,10 +942,10 @@ class DesktopChatSyncRuntime:
                 if self.recent_memory is not None:
                     for table in ('recent_memory_state', 'recent_memory_preferences', 'recent_memory_apply'):
                         conn.execute(f"DELETE FROM {table} WHERE domain=?", (domain,))
-                if self.long_term_memory is not None:
-                    conn.execute("DELETE FROM long_term_memory_state WHERE domain=?", (domain,))
                 for table in ("sync_new_roles", "sync_choices", "sync_bindings"):
                     conn.execute(f"DELETE FROM {table} WHERE character_uid=?", (uid,))
+            if self.long_term_memory is not None:
+                self.long_term_memory.adapter.forget(uid)
         self.models.cleanup_cache(force=True)
 
     async def _automatic_channel(self, channel: str, presence: str) -> None:
@@ -1602,8 +1604,7 @@ class DesktopChatSyncRuntime:
             grant = {**binding, 'service_url': settings['service_url']}
             domain = ChatDomain(binding['owner_id'], uid)
             local = await asyncio.to_thread(self.long_term_memory.adapter.read_local, grant, epoch)
-            state = await asyncio.to_thread(self.long_term_memory.state, domain.key())
-            dirty = bool(local and not local['operationId'].startswith('download:') and local['operationId'] != state['acknowledged'])
+            dirty = bool(local and local['pending'])
             can_apply = lambda: self.profiles.adapter is None or not self.profiles.adapter.busy(name)
             if can_apply():
                 applied = await self.long_term_memory.adapter.flush(uid)

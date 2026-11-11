@@ -110,6 +110,12 @@ class PromotionMixin:
         return count — they're a separate signal kept in
         `last_promote_attempt_at` / `promote_attempt_count` per reflection.
         """
+        from memory import organizer
+        if not organizer.allowed(lanlan_name):
+            # Another device organizes this character; its promotions arrive by snapshot.
+            # Group and member partitions never sync, so they keep their lifecycle here.
+            await self.aauto_promote_time_driven(lanlan_name, scoped_only=True)
+            return 0
         async with self._get_alock(lanlan_name):
             transitions = await self._aauto_promote_stale_locked(lanlan_name)
         # Promote pass runs OUTSIDE the per-character lock because each
@@ -321,6 +327,11 @@ class PromotionMixin:
         descriptors are excluded in both modes (fail-closed, never written to
         any persona).
         """
+        from memory import organizer
+        # Private reflections belong to the organizing device. This is a separate
+        # question from scoped_only: on a weak-memory device that mode must stay
+        # as the caller gave it, or scoped reflections would start entering persona.
+        private_here = organizer.allowed(lanlan_name)
         from config import (
             WEAK_MEMORY_AUTO_CONFIRM_DAYS,
             WEAK_MEMORY_AUTO_PROMOTE_DAYS,
@@ -342,7 +353,7 @@ class PromotionMixin:
                 if r.get('status') != 'pending':
                     continue
                 subj = subject_from_entry(r)
-                if scoped_only and subj is None:
+                if (scoped_only or not private_here) and subj is None:
                     continue
                 if subj is None and not is_legacy_private_entry(r):
                     # Corrupt partial subjects fail closed in both modes,
@@ -385,7 +396,7 @@ class PromotionMixin:
                     # copy the retired text into persona unflagged.
                     continue
                 promote_subject = subject_from_entry(r)
-                if scoped_only and promote_subject is None:
+                if (scoped_only or not private_here) and promote_subject is None:
                     continue
                 if promote_subject is None and not is_legacy_private_entry(r):
                     # Like Pass 1, corrupt descriptors cannot enter any persona through zero-cost promotion.
@@ -635,6 +646,9 @@ class PromotionMixin:
         - already outside the main reflections.json (archive shards aren't
           loaded by load_reflections)
         """
+        from memory import organizer
+        if not organizer.allowed(lanlan_name):
+            return False
         from config import (
             MEMORY_SCHEMA_VERSION_CURRENT as _SCHEMA_V,
             MEMORY_RECHECK_MAX_ATTEMPTS as _MAX_ATTEMPTS,

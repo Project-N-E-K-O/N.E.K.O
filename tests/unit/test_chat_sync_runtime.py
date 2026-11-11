@@ -2243,16 +2243,23 @@ async def test_retired_role_purges_all_memory_sync_states_without_touching_other
         await runtime.configure('https://sync.test')
         await runtime.enable(UID, 'Neko')
         domain = DOMAIN.key()
-        tables = ('recent_memory_state', 'recent_memory_preferences', 'recent_memory_apply', 'long_term_memory_state')
+        tables = ('recent_memory_state', 'recent_memory_preferences', 'recent_memory_apply')
+        adapter = runtime.long_term_memory.adapter
+        adapter.directory.mkdir(parents=True, exist_ok=True)
+        kept = [adapter.directory / f'{OTHER_UID}-0123456789abcdef.json', adapter.incoming_path(OTHER_UID)]
+        dropped = [adapter.directory / f'{UID}-0123456789abcdef.json', adapter.incoming_path(UID)]
+        for path in kept + dropped:
+            path.write_text('{}', encoding='utf-8')
         with closing(runtime.state._connect()) as conn, conn:
             for key in (domain, 'other-domain'):
                 conn.execute('INSERT INTO recent_memory_state VALUES(?,?,NULL,1)', (key, '["private chat"]'))
                 conn.execute('INSERT INTO recent_memory_preferences VALUES(?,?,NULL)', (key, '[]'))
                 conn.execute('INSERT INTO recent_memory_apply VALUES(?,?,?,1)', (key, 'receipt', '[]'))
-                conn.execute('INSERT INTO long_term_memory_state VALUES(?,?,1)', (key, 'operation'))
         runtime._purge_retired_character(runtime.state.binding(UID), await runtime.session_presence_provider(), runtime.writer.epoch())
         with closing(runtime.state._connect()) as conn:
             for table in tables:
                 assert [row[0] for row in conn.execute(f'SELECT domain FROM {table}')] == ['other-domain']
+        # The confirmed long-term base and inbox of the retired role go with it; other roles keep theirs.
+        assert [path.exists() for path in kept + dropped] == [True, True, False, False]
     finally:
         await runtime.close()

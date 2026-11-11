@@ -1025,6 +1025,9 @@ class FactDedupResolver:
                 except (TypeError, ValueError):
                     return None
 
+            if item.get('detector') == 'shared_source':
+                # Not a similarity score: the two were extracted from the same chat lines.
+                return "extracted_from_same_messages"
             overlap = _num(item.get('text_overlap'))
             if overlap is not None:
                 return f"text_overlap={overlap:.3f}"

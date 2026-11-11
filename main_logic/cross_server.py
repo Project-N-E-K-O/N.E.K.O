@@ -328,6 +328,16 @@ def _latest_user_message_has_source(messages: list[dict], source: str) -> bool:
     return False
 
 
+# A spoken line has no chat-original proof. This identity is written once, so the
+# recent-memory file and the time index still know the message by one name.
+MEMORY_MESSAGE_ID_KEY = 'memory_message_id'
+
+
+def _new_memory_message_id() -> str:
+    from uuid import uuid4
+    return uuid4().hex
+
+
 def _append_user_input_cache_to_history(chat_history: list, text: object, sources: set[str], proof=None) -> bool:
     user_text = str(text or "")
     if not user_text:
@@ -342,6 +352,8 @@ def _append_user_input_cache_to_history(chat_history: list, text: object, source
             item["source"] = normalized_sources[0]
     if proof:
         item.setdefault("metadata", {})["chat_original_source"] = dict(proof)
+    else:
+        item.setdefault("metadata", {})[MEMORY_MESSAGE_ID_KEY] = _new_memory_message_id()
     chat_history.append(item)
     sources.clear()
     return True
@@ -350,8 +362,8 @@ def _append_user_input_cache_to_history(chat_history: list, text: object, source
 def _assistant_history_message(text, proof):
     """Preserve producer identity in the original archive, outside model context."""
     item = {'role': 'assistant', 'content': [{'type': 'text', 'text': text}]}
-    if proof:
-        item['metadata'] = {'chat_original_source': dict(proof)}
+    item['metadata'] = ({'chat_original_source': dict(proof)} if proof
+                        else {MEMORY_MESSAGE_ID_KEY: _new_memory_message_id()})
     return item
 
 
