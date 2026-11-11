@@ -5188,7 +5188,10 @@ async def test_sync_workshop_character_cards_persists_character_origin_metadata(
 @pytest.mark.unit
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("card_payload", "expected_model_field", "expected_model_ref", "expected_display_name", "local_override"),
+    (
+        "card_payload", "expected_model_field", "expected_model_ref", "expected_display_name",
+        "local_override", "republished_model_ref",
+    ),
     (
         (
             {
@@ -5200,6 +5203,7 @@ async def test_sync_workshop_character_cards_persists_character_origin_metadata(
             "vrm",
             "/workshop/3671939765/BlueCat.vrm",
             "BlueCat",
+            None,
             None,
         ),
         (
@@ -5213,6 +5217,7 @@ async def test_sync_workshop_character_cards_persists_character_origin_metadata(
             "/workshop/3671939765/miku/Miku.pmx",
             "Miku",
             "/user_mmd/Custom.pmx",
+            None,
         ),
         (
             {
@@ -5224,6 +5229,7 @@ async def test_sync_workshop_character_cards_persists_character_origin_metadata(
             "/workshop/3671939765/123/Avatar.pmx",
             "Avatar",
             None,
+            "123/Avatar.pmx",
         ),
     ),
 )
@@ -5233,6 +5239,7 @@ async def test_sync_workshop_character_cards_persists_live3d_workshop_origin_met
     expected_model_ref,
     expected_display_name,
     local_override,
+    republished_model_ref,
 ):
     from main_routers.workshop_router.meta import _build_subscriber_workshop_model_ref
     from utils.config_manager import get_reserved, set_reserved
@@ -5266,7 +5273,8 @@ async def test_sync_workshop_character_cards_persists_live3d_workshop_origin_met
             packaged_file = installed_folder / expected_model_ref.removeprefix("/workshop/3671939765/")
             packaged_file.parent.mkdir(parents=True, exist_ok=True)
             packaged_file.touch()
-            (installed_folder / "角色卡.chara.json").write_text(
+            card_file = installed_folder / "角色卡.chara.json"
+            card_file.write_text(
                 json.dumps(card_payload, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
@@ -5310,6 +5318,16 @@ async def test_sync_workshop_character_cards_persists_live3d_workshop_origin_met
                     set_reserved(payload, "avatar", "asset_source", "local_imported")
                     set_reserved(payload, "avatar", "asset_source_id", "")
                 await cm.asave_characters(current_characters)
+
+                if republished_model_ref:
+                    updated_card = {**card_payload, expected_model_field: republished_model_ref}
+                    card_file.write_text(json.dumps(updated_card, ensure_ascii=False), encoding="utf-8")
+                    original_file = installed_folder / old_model_ref.removeprefix("/workshop/3671939765/")
+                    original_file.touch()
+                    with patch.object(cm, "asave_characters", wraps=cm.asave_characters) as save:
+                        await workshop_router_module.sync_workshop_character_cards()
+                        save.assert_not_awaited()
+                    original_file.unlink()
 
                 with patch.object(cm, "asave_characters", wraps=cm.asave_characters) as save:
                     repaired = await workshop_router_module.sync_workshop_character_cards()
