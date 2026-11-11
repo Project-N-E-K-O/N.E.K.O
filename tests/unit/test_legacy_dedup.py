@@ -19,7 +19,7 @@ def _cold(directory):
 
 def _rewrite_cold(directory, change):
     from memory import cold_store
-    cold_store.rewrite(str(directory), change)
+    cold_store.rewrite_rows(str(directory), change)
 
 NAME = '小天'
 SOURCE = 'sync:' + 'a' * 32

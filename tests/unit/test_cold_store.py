@@ -59,7 +59,7 @@ def test_append_is_idempotent_by_identity_and_status_follows_writes(tmp_path):
     assert [row["id"] for row in cold_store.status(str(tmp_path))] == ["f1", "f2", "f3"]
     assert all("text" not in row for row in cold_store.status(str(tmp_path)))
     # The cache follows a rewrite of the same shard.
-    cold_store.rewrite(str(tmp_path), lambda row: None if row["id"] == "f2" else row)
+    cold_store.rewrite_rows(str(tmp_path), lambda row: None if row["id"] == "f2" else row)
     assert [row["id"] for row in cold_store.status(str(tmp_path), ids=["f2", "f3"])] == ["f3"]
 
 

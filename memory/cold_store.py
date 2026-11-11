@@ -270,7 +270,7 @@ async def aappend(
     return await asyncio.to_thread(append, directory, rows, identity=identity, now=now)
 
 
-def rewrite(directory: str, change: Callable[[dict], dict | None], *, kind: str = "fact") -> list[dict]:
+def rewrite_rows(directory: str, change: Callable[[dict], dict | None], *, kind: str = "fact") -> list[dict]:
     """Rewrite cold rows in place; ``change`` returns the new row, the same row, or None to drop it.
 
     Every shard is read before any is written, so an unreadable shard fails
@@ -300,8 +300,8 @@ def rewrite(directory: str, change: Callable[[dict], dict | None], *, kind: str 
     return touched
 
 
-async def arewrite(directory: str, change: Callable[[dict], dict | None], *, kind: str = "fact") -> list[dict]:
-    return await asyncio.to_thread(rewrite, directory, change, kind=kind)
+async def arewrite_rows(directory: str, change: Callable[[dict], dict | None], *, kind: str = "fact") -> list[dict]:
+    return await asyncio.to_thread(rewrite_rows, directory, change, kind=kind)
 
 
 # Fields a private restored copy leaves behind: the demotion itself, and what
@@ -356,7 +356,7 @@ def restore(
         return []
     activate(revived)
     if leaving:
-        rewrite(directory, lambda row: None if select(row) and group(row) else row)
+        rewrite_rows(directory, lambda row: None if select(row) and group(row) else row)
     return revived
 
 
@@ -370,7 +370,7 @@ async def arestore(
 
 def forget(directory: str, select: Callable[[dict], bool]) -> list[dict]:
     """Erase matching cold fact rows for good. Raises before any write when a shard is unreadable."""
-    return rewrite(directory, lambda row: None if select(row) else row)
+    return rewrite_rows(directory, lambda row: None if select(row) else row)
 
 
 async def aforget(directory: str, select: Callable[[dict], bool]) -> list[dict]:

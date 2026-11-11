@@ -856,7 +856,7 @@ async def test_subject_restore_never_resurrects_an_arbitration_loser(tmp_path):
     assert "subject_archived_at" not in rows[0]
 
     from memory import cold_store
-    cold_store.rewrite(
+    cold_store.rewrite_rows(
         fs._character_dir("小天"),
         lambda row: {**row, "subject_archived_at": NOW.isoformat()},
     )

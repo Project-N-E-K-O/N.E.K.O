@@ -1581,7 +1581,7 @@ class FactStore:
                             # cold copies back so the whole arbitration retries,
                             # instead of a cold loser next to a stale survivor.
                             try:
-                                cold_store.rewrite(
+                                cold_store.rewrite_rows(
                                     self._character_dir(name),
                                     lambda row: None if (
                                         row.get('arbitration_archived_at') == now_iso
@@ -2009,7 +2009,7 @@ class FactStore:
                         return copy if _attach([copy]) else row
 
                     try:
-                        cold_store.rewrite(self._character_dir(name), _attach_cold)
+                        cold_store.rewrite_rows(self._character_dir(name), _attach_cold)
                     except cold_store.ColdStoreUnreadable as exc:
                         raise RuntimeError(
                             f"cold facts unreadable during trust persist: {exc}"
@@ -2144,7 +2144,7 @@ class FactStore:
                         return copy if _restore([copy]) else row
 
                     try:
-                        if cold_store.rewrite(self._character_dir(name), _restore_cold):
+                        if cold_store.rewrite_rows(self._character_dir(name), _restore_cold):
                             changed = True
                     except cold_store.ColdStoreUnreadable as exc:
                         raise RuntimeError(
@@ -2594,7 +2594,7 @@ class FactStore:
                     lambda f: _is_subject_marked_row(f) and not f.get('arbitration_archived_at'),
                     activate=_activate, restored_at=restored_at_iso,
                 )
-                arbitration_rows = cold_store.rewrite(directory, _unmark_arbitration_row)
+                arbitration_rows = cold_store.rewrite_rows(directory, _unmark_arbitration_row)
             except cold_store.ColdStoreUnreadable as e:
                 logger.warning(f"[FactStore] {name}: 读取冷存失败，中止 subject 恢复: {e}")
                 return None
