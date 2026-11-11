@@ -46,7 +46,7 @@ def _isolate_github_actions_env(monkeypatch: pytest.MonkeyPatch) -> None:
     falls back to the environment reports a tag/version mismatch against the
     fixture plugin. Tests that exercise those variables set them explicitly.
     """
-    for name in ("GITHUB_REPOSITORY", "GITHUB_REF_NAME", "GITHUB_REF"):
+    for name in ("GITHUB_REPOSITORY", "GITHUB_REF_NAME", "GITHUB_REF", "NEKO_PLUGIN_MARKET_SECURITY_CHECKS"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -626,7 +626,9 @@ def _market_check(repo: Path, tmp_path: Path) -> int:
 def test_market_release_check_rejects_committed_files_the_market_scan_rejects(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("NEKO_PLUGIN_MARKET_SECURITY_CHECKS", "1")
     repo = tmp_path / "repo"
     remote = "https://github.com/alice/n.e.k.o_plugin_limits_demo.git"
     assert neko_plugin_cli.main(["init", "limits_demo", "--output", str(repo), "--remote", remote]) == 0
@@ -643,6 +645,64 @@ def test_market_release_check_rejects_committed_files_the_market_scan_rejects(
     assert "the Market rejects binary files in the repository: native/helper.DLL" in error
     assert "the Market rejects files over 2 MiB: data.txt /" in error
     assert "cover.png" not in error
+
+
+@pytest.mark.parametrize("market_release", [False, True])
+def test_release_check_defaults_to_legacy_with_security_scan_opt_in(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    market_release: bool,
+) -> None:
+    repo = tmp_path / "repo"
+    remote = "https://github.com/alice/n.e.k.o_plugin_native_demo.git"
+    assert neko_plugin_cli.main(["init", "native_demo", "--output", str(repo), "--remote", remote]) == 0
+    _commit_all(repo)
+    command = [
+        "check", str(repo), "--release", "--skip-tests", "--target-dir", str(tmp_path / "target"),
+        *(["--market-release"] if market_release else []),
+    ]
+
+    with monkeypatch.context() as scan_env:
+        scan_env.setenv("NEKO_PLUGIN_MARKET_SECURITY_CHECKS", "1")
+        assert neko_plugin_cli.main(command) == 0
+        mode = "source-security" if market_release else "package-security"
+        assert f"market_check_mode={mode}" in capsys.readouterr().out
+
+    (repo / "native").mkdir()
+    (repo / "native" / "helper.dll").write_bytes(b"MZ" + os.urandom(4096))
+    # Avoid the package reader's independent compression-ratio limit.
+    (repo / "data.txt").write_text(os.urandom(1024 * 1024 + 1).hex(), encoding="utf-8")
+    _commit_all(repo)
+
+    assert neko_plugin_cli.main(command) == 0
+    assert "market_check_mode=legacy" in capsys.readouterr().out
+    with zipfile.ZipFile(tmp_path / "target" / "native_demo.neko-plugin") as archive:
+        assert any(name.endswith("native/helper.dll") for name in archive.namelist())
+
+    monkeypatch.setenv("NEKO_PLUGIN_MARKET_SECURITY_CHECKS", "1")
+    assert neko_plugin_cli.main(command) == 1
+    error = capsys.readouterr().err
+    location = "repository" if market_release else "package"
+    assert f"binary files in the {location}" in error
+
+
+def test_market_release_reports_package_scan_when_source_listing_fails(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    remote = "https://github.com/alice/n.e.k.o_plugin_native_demo.git"
+    assert neko_plugin_cli.main(["init", "native_demo", "--output", str(repo), "--remote", remote]) == 0
+    _commit_all(repo)
+    monkeypatch.setenv("NEKO_PLUGIN_MARKET_SECURITY_CHECKS", "1")
+    monkeypatch.setattr(release_cmd, "committed_file_sizes", lambda _root: None)
+
+    assert _market_check(repo, tmp_path) == 0
+    output = capsys.readouterr().out
+    assert "market_check_mode=package-security" in output
+    assert "[WARNING] git ls-tree failed; Market source archive limits were not checked" in output
 
 
 def test_market_release_check_rejects_a_version_the_market_cannot_store(
