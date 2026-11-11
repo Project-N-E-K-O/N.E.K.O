@@ -148,6 +148,9 @@ app.whenReady().then(async () => {
       host.getCurrentChatSurfaceMode=()=>${JSON.stringify(mode)};
       host.getCurrentCompactChatState=()=> 'default';host.getRevealedChoicePrompt=()=>null;
       const props=host.buildRenderProps();props.messages=[];
+      window.compactMinimizeRequests=0;
+      props.onCompactMinimizeRequest=()=>{window.compactMinimizeRequests++;};
+      window.audioSmokeProps=props;
       window.NekoChatWindow.mountChatWindow(document.getElementById('root'),props);
     })()`);
     await waitFor(win, "document.querySelector('.audio-message-mic')");
@@ -161,9 +164,22 @@ app.whenReady().then(async () => {
     await capture(win);
     trace(mode + ' recorded');
     assert.equal(received.length, before, 'active recording stays local');
+    if (mode === 'compact') {
+      await win.webContents.executeJavaScript("document.querySelector('.compact-chat-minimize-ball').click()");
+      assert.equal(await win.webContents.executeJavaScript("compactMinimizeRequests"), 0);
+      await waitFor(win, "document.querySelector('.audio-message-stop')");
+    }
     await win.webContents.executeJavaScript("document.querySelector('.audio-message-cancel').click()", true);
     await waitFor(win, "document.querySelector('.audio-message-mic')");
     assert.equal(received.length, before, 'cancelled recording stays local');
+    if (mode === 'compact') {
+      await win.webContents.executeJavaScript("document.querySelector('.compact-chat-minimize-ball').click()");
+      await waitFor(win, "compactMinimizeRequests === 1 && !document.querySelector('.audio-message-mic')");
+      await win.webContents.executeJavaScript(`void window.NekoChatWindow.mountChatWindow(document.getElementById('root'), {
+        ...audioSmokeProps, compactChatState: 'input', compactMinimizeCancelSeq: 1,
+      })`);
+      await waitFor(win, `document.querySelector('.compact-chat-surface-frame[data-compact-chat-state="input"] .audio-message-mic')`);
+    }
     await capture(win);
     await win.webContents.executeJavaScript("const button=document.querySelector('.audio-message-stop');button.click();button.click();", true);
     await waitFor(win, "document.querySelector('.audio-message-mic')");

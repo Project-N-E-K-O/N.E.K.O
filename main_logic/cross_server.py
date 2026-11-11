@@ -51,7 +51,7 @@ from utils.language_utils import is_supported_language_code
 from utils.llm_tool_leak_filter import strip_tool_call_leaks
 from utils.logger_config import get_module_logger
 from main_logic.agent_event_bus import publish_turn_check_reliably
-from services.chat_sync.source import LATE_TEXT_GRACE_SECONDS, AssistantOriginalBuffer
+from services.chat_sync.source import LATE_TEXT_GRACE_SECONDS, AssistantOriginalBuffer, save_original
 
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
@@ -733,6 +733,7 @@ _AUDIO_MEMORY_TRANSCRIPT_GRACE_SECONDS = 1.5
 class _AudioMemoryTurn:
     request_id: str
     context_version: int
+    original: dict | None = None
     transcript: dict | None = None
     transcript_final: bool = False
     reply_events: list[tuple[dict, bool]] = field(default_factory=list)
@@ -742,7 +743,7 @@ class _AudioMemoryTurn:
     def ordered_events(self):
         ownership = {"audio_message_input": True, "_audio_context_version": self.context_version}
         if self.transcript is not None:
-            yield {"type": "user", "data": self.transcript, **ownership}, False
+            yield {"type": "user", "data": self.transcript, "_audio_original": self.original, **ownership}, False
         for message, forwarded in self.reply_events:
             yield {**message, **ownership}, forwarded
 
@@ -796,7 +797,9 @@ async def _order_audio_memory_events(message_queue, sync_slot):
             if pending is not None:
                 for event in pending.ordered_events():
                     yield event
-            pending = _AudioMemoryTurn(message["request_id"], message.get("context_version", context_version))
+            pending = _AudioMemoryTurn(
+                message["request_id"], message.get("context_version", context_version), message.get("original"),
+            )
             await _try_send_json(sync_slot, {"type": "user_activity"})
             continue
         if kind == "audio_message_memory_transcript":
@@ -1175,6 +1178,7 @@ async def run_sync_connector(
     pending_user_images: list = []
     # Messages are handed to the serial memory lane once; only the lane owns retries.
     memory_write_index = 0
+    buffered_context_version = getattr(message_queue, "recent_context_version", 0)
     memory_lock = getattr(message_queue, "deferred_memory_lock", None)
     avatar_interaction_memory_cache: dict[str, dict[str, int | str]] = {}
     memory_cache_health_state = {
@@ -1395,6 +1399,25 @@ async def run_sync_connector(
         memory_write_unconfirmed = False
         await _complete_session_end_memory_barrier(message, lanlan_name)
 
+    def _discard_local_memory_buffers():
+        nonlocal turn_checked_history_len, memory_write_index, user_input_cache, user_input_proof
+        nonlocal text_output_cache, text_output_request_id, text_output_proof
+        nonlocal current_turn, had_user_input_this_turn, current_turn_start_index, pending_user_images
+        chat_history.clear()
+        turn_checked_history_len = 0
+        memory_write_index = 0
+        user_input_cache = ''
+        user_input_proof = None
+        user_input_sources.clear()
+        text_output_cache = ''
+        text_output_request_id = None
+        text_output_proof = None
+        original_output.discard()
+        current_turn = 'user'
+        had_user_input_this_turn = False
+        current_turn_start_index = 0
+        pending_user_images = []
+
     memory_lane_task = asyncio.create_task(
         _run_memory_lane(),
         name=f"MemoryLane-{lanlan_name}",
@@ -1404,6 +1427,9 @@ async def run_sync_connector(
         async for message, monitor_forwarded in _order_audio_memory_events(message_queue, sync_slot):
             if message is not None:
                 context_version = getattr(message_queue, "recent_context_version", 0)
+                if context_version != buffered_context_version:
+                    _discard_local_memory_buffers()
+                    buffered_context_version = context_version
                 if isinstance(message, dict) and message.get("_audio_context_version", context_version) != context_version:
                     continue
                 shutdown_memory_done = message.get("_shutdown_memory_done") if isinstance(message, dict) else None
@@ -1470,6 +1496,24 @@ async def run_sync_connector(
                         data = message["data"].get("data")
                         input_type = message["data"].get("input_type")
                         if input_type == "transcript": # Handle only audio for now; images still need recording later.
+                            proof = message["data"].get("chat_original_source")
+                            audio_original = message.get("_audio_original")
+                            if data and audio_original is not None:
+                                try:
+                                    saved = await save_original(
+                                        lanlan_name, "user", data, record_id=audio_original["recordId"],
+                                        original_time=audio_original["originalTime"],
+                                        character_uid=audio_original["character_uid"],
+                                    )
+                                except Exception:
+                                    print("[chat-sync] original_save_failed")
+                                else:
+                                    if saved:
+                                        proof = {
+                                            "recordId": saved, "originalTime": audio_original["originalTime"], "origin": "chat",
+                                        }
+                                if context_version != getattr(message_queue, "recent_context_version", 0):
+                                    continue
                             for source_value in _iter_source_values(message["data"].get("source")):
                                 user_input_sources.add(source_value)
                             transcript_metadata = message["data"].get("metadata")
@@ -1479,7 +1523,7 @@ async def run_sync_connector(
                                 for source_value in _iter_source_values(transcript_metadata.get("sources")):
                                     user_input_sources.add(source_value)
                             if user_input_cache == '':
-                                user_input_proof = message['data'].get('chat_original_source')
+                                user_input_proof = proof
                                 if not message.get("audio_message_input"):
                                     await _try_send_json(sync_slot, {'type': 'user_activity'})
                             user_input_cache += data
@@ -1901,18 +1945,7 @@ async def run_sync_connector(
                         # callback and leak into a later session.  Normal session
                         # ends already clear these fields in their success path;
                         # repeating the reset here makes the barrier fail closed.
-                        chat_history.clear()
-                        turn_checked_history_len = 0
-                        memory_write_index = 0
-                        user_input_cache = ''
-                        user_input_sources.clear()
-                        text_output_cache = ''
-                        text_output_request_id = None
-                        text_output_proof = None
-                        current_turn = 'user'
-                        had_user_input_this_turn = False
-                        current_turn_start_index = 0
-                        pending_user_images = []
+                        _discard_local_memory_buffers()
                         # Behind the settlement on the memory lane, so the callback still follows
                         # the terminal memory-server write without the loop waiting for it.
                         _enqueue_memory_write(functools.partial(

@@ -517,15 +517,25 @@ class _GeminiMixin:
             if r.call_id:
                 kw["id"] = r.call_id
             function_responses.append(types.FunctionResponse(**kw))
-        if owner is not None:
-            audio_message = getattr(self, "_gemini_audio_message", None)
-            if audio_message is not None and not audio_message.outcome.done():
+        audio_message = getattr(self, "_gemini_audio_message", None) if owner is not None else None
+        if audio_message is not None:
+            call_ids = {result.call_id for result in results}
+            if audio_message.outcome.done() or audio_message.pending_tool_ids.isdisjoint(call_ids):
+                audio_message = None
+            else:
                 # A continuation can arrive before the SDK send returns.
-                audio_message.pending_tool_ids.difference_update(r.call_id for r in results)
+                audio_message.pending_tool_ids.difference_update(call_ids)
         try:
             await session.send_tool_response(function_responses=function_responses)
         except Exception as e:
             logger.error("Gemini send_tool_response failed: %s", e)
+            if (
+                audio_message is not None
+                and self._gemini_audio_message is audio_message
+                and self._tool_task_owner_is_current(owner)
+                and not audio_message.outcome.done()
+            ):
+                audio_message.outcome.set_result(False)
 
     async def _close_gemini(self) -> None:
         """Close Gemini Live API session.

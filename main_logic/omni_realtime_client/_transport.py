@@ -4082,6 +4082,14 @@ class _TransportMixin:
         self._connection_generation += 1
         self._clear_input_route_identities()
         self._advance_tool_scope()
+        # Detach the old recording from the new receive loop. Its already
+        # scheduled transcript writes still hold the original recording object.
+        self._audio_message_transcript = None
+        self._audio_message_manual_confirmed = False
+        retired_audio_message = getattr(self, "_gemini_audio_message", None)
+        self._gemini_audio_message = None
+        if retired_audio_message is not None and not retired_audio_message.outcome.done():
+            retired_audio_message.outcome.set_result(False)
         # A pending proactive outcome belongs to the connection that created
         # it. Left in place it makes the REPLACEMENT reject its own proactive
         # work as "another Gemini proactive inject is pending" until the 60s

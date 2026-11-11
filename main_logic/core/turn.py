@@ -2759,7 +2759,10 @@ class TurnMixin:
         if not is_voice_source and self._active_text_request_id:
             user_message["request_id"] = self._active_text_request_id
         raw_source = chat_input_source if chat_input_source is not None else source_value
-        original_id = (uuid4().hex if record_transcript_text and is_chat_input_source(raw_source)
+        # A submitted recording's transcript is saved when its draft or final
+        # version is selected for the turn, after the transcription grace.
+        original_id = (uuid4().hex if audio_message_request_id is None
+                       and record_transcript_text and is_chat_input_source(raw_source)
                        and getattr(self, '_config_manager', None) is not None else None)
         if original_id:
             user_message["chat_original_source"] = {"recordId": original_id,
