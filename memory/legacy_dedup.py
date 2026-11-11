@@ -101,8 +101,10 @@ def fingerprint(row):
     """What the model was shown of a fact; a decision holds only while it is unchanged."""
     import hashlib
     # The source counts too: a shared-source pair whose sources changed was judged on evidence that is gone.
+    # Its event window too: a later recheck moving it may make it a separate event.
     return hashlib.sha256(json.dumps([row.get('entity') or 'master', row.get('text'), row.get('source'),
-                                      sorted(str(item) for item in row.get('source_message_ids') or ())],
+                                      sorted(str(item) for item in row.get('source_message_ids') or ()),
+                                      row.get('event_start_at'), row.get('event_end_at')],
                                      ensure_ascii=False).encode()).hexdigest()[:16]
 
 
@@ -186,13 +188,12 @@ def _distinct_days(first, second):
     def days(row):
         return {datetime.fromtimestamp(at / 1000).date() for at in
                 (instant(row.get(key)) for key in ('event_start_at', 'event_end_at')) if at is not None}
-    if days(first) != days(second):
-        return True
+    # Two whole windows decide by overlap, even across midnight; only otherwise the day.
     bounds = [(instant(row.get('event_start_at')), instant(row.get('event_end_at'))) for row in (first, second)]
     if all(start is not None and end is not None for start, end in bounds):
         (first_start, first_end), (second_start, second_end) = bounds
         return first_end < second_start or second_end < first_start
-    return False
+    return days(first) != days(second)
 
 
 def pair_key(pair):

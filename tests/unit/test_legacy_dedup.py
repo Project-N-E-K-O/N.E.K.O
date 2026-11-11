@@ -841,3 +841,17 @@ def test_event_ranges_in_different_offsets_are_compared_as_instants():
     east = {**_fact('b', walk, created='2026-06-12T21:05:00'), 'event_start_at': '2026-06-12T16:30:00+08:00',
             'event_end_at': '2026-06-12T17:30:00+08:00'}
     assert legacy_dedup.nominate({'a': utc, 'b': east})
+
+
+def test_overlapping_windows_across_midnight_are_one_event():
+    walk = '博士出门散步了一圈'
+    late = {**_fact('a', walk, created='2026-06-13T09:00:00'), 'event_start_at': '2026-06-12T23:30:00',
+            'event_end_at': '2026-06-13T00:30:00'}
+    night = {**_fact('b', walk, created='2026-06-13T09:05:00'), 'event_start_at': '2026-06-13T00:00:00',
+             'event_end_at': '2026-06-13T01:00:00'}
+    assert legacy_dedup.nominate({'a': late, 'b': night})
+
+
+def test_a_moved_event_window_changes_the_fingerprint():
+    row = {**_fact('a', '博士散步', created='2026-06-12T21:00:00'), 'event_start_at': '2026-06-12T08:00:00'}
+    assert legacy_dedup.fingerprint(row) != legacy_dedup.fingerprint({**row, 'event_start_at': '2026-06-11T08:00:00'})
