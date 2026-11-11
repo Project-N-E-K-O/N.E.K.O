@@ -205,6 +205,8 @@ class FamiliarManager:
         # What a commission taken up again is told: an addition to a blocked or
         # failed one, or the answer to one whose waiting session was closed.
         self._resume: dict[str, str] = {}
+        # Commissions whose familiar is being started again right now.
+        self._taking_up: set[str] = set()
         # Being queued to be taken up again, while that status is written.
         self._requeueing: set[str] = set()
         self._candidates: dict[str, tuple[str, ...]] = {}
@@ -476,10 +478,18 @@ class FamiliarManager:
         be handled while the command is on its way.
         """
         session.sent += 1
+        # A steer to an idle session starts a new run. An answer arriving
+        # meanwhile must then wait for that run to end (``held_answer``)
+        # rather than be sent as a prompt the busy session refuses.
+        woke = command == "steer" and session.run_ended
+        if woke:
+            session.run_ended = False
         try:
             await getattr(runtime, command)(session.commission_id, text)
         except BaseException:
             session.sent -= 1
+            if woke:
+                session.run_ended = True
             raise
 
     def _discard(self, commission_id: str) -> None:
@@ -844,11 +854,20 @@ class FamiliarManager:
         """
         if self._closed:
             return False
+        if commission_id in self._taking_up:
+            # An earlier sentence is taking it up again right now: this one
+            # goes along with that start rather than queueing a second one,
+            # which the finished commission would then refuse.
+            self._notes.setdefault(commission_id, []).append(text)
+            return True
         if commission_id not in self._sessions and self._take_place(commission_id):
             # As in ``submit``: a task of its own that shutting down waits for,
             # so a caller cancelled meanwhile does not leave a half set-up
             # session behind a commission that says it is working.
-            return await asyncio.shield(self._spawn(self._launch(commission_id, prompt=text)))
+            self._taking_up.add(commission_id)
+            launch = self._spawn(self._launch(commission_id, prompt=text))
+            launch.add_done_callback(lambda _done: self._taking_up.discard(commission_id))
+            return await asyncio.shield(launch)
         # Its old session is still on its way out, or no place is free: it is
         # queued. That runs as a task shutting down waits for, so a shutdown
         # while the status is written still finds the commission afterwards.

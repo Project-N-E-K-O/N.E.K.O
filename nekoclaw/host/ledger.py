@@ -329,8 +329,9 @@ class Ledger:
 
         Nobody is working on those commissions any more. A blocked one stays
         blocked, and a deferred plugin result that may still arrive keeps its
-        commission open until its deadline. All of it is one transaction, so
-        no status changes without its event.
+        commission open until its deadline. Questions of the failed ones that
+        were never sent are dropped. All of it is one transaction, so no
+        status changes without its event.
         """
         now = self._clock()
         conn.execute("BEGIN IMMEDIATE")
@@ -343,6 +344,12 @@ class Ledger:
             ).fetchall()
             for row in rows:
                 self._transition(conn, row["id"], "failed", "the host process ended before this finished", {})
+                # A question it asked and that never went out can no longer be
+                # answered; it must not reach her now.
+                conn.execute(
+                    "DELETE FROM outbox WHERE commission_id = ? AND kind = 'question' AND sent_at IS NULL",
+                    (row["id"],),
+                )
         except BaseException:
             conn.execute("ROLLBACK")
             raise

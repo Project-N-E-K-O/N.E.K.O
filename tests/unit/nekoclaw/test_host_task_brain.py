@@ -1022,7 +1022,9 @@ async def test_run_is_cancelled_when_its_caller_is_cancelled_while_waiting(serve
 
     await wait_until(lambda: server.cancelled == [("weather", run.run_id)], what="the run being cancelled")
     assert calling.cancelled()
-    assert host.runner.active_runs("c1") == []
+    # The cancel goes out in the background; the run is forgotten once the
+    # plugin server's answer to it is back.
+    await wait_until(lambda: host.runner.active_runs("c1") == [], what="the run being forgotten")
 
 
 async def test_run_is_cancelled_when_its_caller_is_cancelled_while_the_request_is_under_way(server, hosts, tmp_path):
@@ -1092,7 +1094,7 @@ async def test_run_is_cancelled_when_its_caller_is_cancelled_right_after_it_was_
     await asyncio.gather(calling, return_exceptions=True)
 
     await wait_until(lambda: server.cancelled == [("weather", run.run_id)], what="the run being cancelled")
-    assert host.runner.active_runs("c1") == []
+    await wait_until(lambda: host.runner.active_runs("c1") == [], what="the run being forgotten")
 
 
 async def test_a_failing_run_listener_does_not_cost_the_result(server, hosts, tmp_path):

@@ -638,6 +638,28 @@ async def test_taking_up_again_outlives_a_caller_cancelled_meanwhile(hosts, tmp_
     await wait_status(host, commission.id, "done", timeout=5)
 
 
+async def test_a_second_sentence_while_taking_up_again_goes_along_with_that_start(hosts, tmp_path):
+    entered, release, model = _slow_model()
+    llm = ScriptedLLM([[say("photos sorted"), finish()]])
+    host = _host(hosts, tmp_path, lambda spec: llm, familiar_model=model)
+    commission = await _filed(host, "sort the photos")
+    await host.ledger.transition(commission.id, "working", reason="test")
+    await host.ledger.transition(commission.id, "blocked", reason="test")
+
+    first = asyncio.ensure_future(host.familiars.tell(commission.id, "the drive is E: now"))
+    await asyncio.wait_for(entered.wait(), 5)
+    # Still blocked while its session is set up; a second sentence arrives.
+    assert await host.familiars.tell(commission.id, "and skip the screenshots") is True
+    assert host.familiars.queued == []
+    release.set()
+    assert await first is True
+
+    await wait_status(host, commission.id, "done", timeout=5)
+    sent = " | ".join(str(message.get("content")) for message in llm.requests[0])
+    assert "the drive is E: now" in sent
+    assert "and skip the screenshots" in sent
+
+
 async def test_an_answer_told_after_the_idle_session_was_closed_waits_for_a_place(hosts, tmp_path):
     release, wait = _gate()
     scripts = {
@@ -1042,6 +1064,36 @@ async def test_addition_for_a_queued_commission_goes_along_when_it_starts(hosts,
 # ---------------------------------------------------------------------------
 # Familiars started by familiars
 # ---------------------------------------------------------------------------
+
+
+async def test_an_answer_while_a_child_result_keeps_the_parent_busy_waits_for_that_run(hosts, tmp_path):
+    child_release, child_wait = _gate()
+    parent_release, parent_wait = _gate()
+    parent = ScriptedLLM(
+        [
+            [call("subagent", {"description": "count the photos", "prompt": "Count the photos."}), finish("tool_calls")],
+            _report("waiting", "Sort them by month or by place?"),
+            # Woken by the child's result while it waits for the answer.
+            [parent_wait, say("noted: 120 photos"), finish()],
+            _report("ready", "sorted 120 photos by month"),
+        ]
+    )
+    child = ScriptedLLM([[child_wait, say("120 photos"), finish()]])
+    host = _host(hosts, tmp_path, lambda spec: parent if spec.top_level else child)
+
+    receipt = await _dispatch(host, "sort the photos")
+    await wait_status(host, receipt.commission_id, "waiting_user")
+    await wait_until(lambda: _ended(host, receipt.commission_id), what="the asking run ending")
+    child_release.set()
+    await wait_until(lambda: len(parent.requests) == 3, what="the child's result waking the parent")
+
+    # The user answers while that run is still going.
+    assert await host.answer(receipt.commission_id, "by month") is True
+    parent_release.set()
+
+    done = await wait_status(host, receipt.commission_id, "done")
+    assert done.result_summary == "sorted 120 photos by month"
+    assert {"role": "user", "content": "by month"} in parent.requests[3]
 
 
 async def test_sub_familiar_runs_under_its_parent_and_reports_back_to_it(hosts, tmp_path):

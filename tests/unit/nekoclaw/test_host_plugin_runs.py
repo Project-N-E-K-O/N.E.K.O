@@ -229,7 +229,7 @@ async def test_closing_just_after_a_late_answer_came_back_still_sends_its_cancel
     (request,) = runner._cancel_tasks
 
     faults.answer_may_return.set()
-    await back
+    _ = await back
     # The request has finished, and what is to run once it has not run yet.
     assert request.done()
     await runner.aclose()

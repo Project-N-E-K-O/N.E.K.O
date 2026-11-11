@@ -110,6 +110,32 @@ async def test_reconcile_writes_status_and_event_together(tmp_path, monkeypatch)
     assert events.count("status") == 2
 
 
+async def test_a_question_left_unsent_before_a_restart_is_not_asked_any_more(tmp_path):
+    path = tmp_path / "ledger.db"
+    clock = Clock()
+    first = Ledger(path, clock=clock)
+    asking = await _file(first)
+    await first.transition(asking.id, "working")
+    await first.transition(asking.id, "waiting_user")
+    await first.outbox_add(asking.id, "question", {"question": {"kind": "report", "question": "Which folder?"}})
+    other = await _file(first, title="notes", dispatch_text="back up the notes")
+    await first.outbox_add(other.id, "task_result", {"summary": "done"})
+    await first.close()
+
+    second = Ledger(path, clock=clock)
+    try:
+        await second.open()
+        failed = await second.get(asking.id)
+        pending = [(item.commission_id, item.kind) for item in await second.outbox_pending()]
+    finally:
+        await second.close()
+
+    # Its commission failed with the old process, so the question cannot be
+    # answered; other reports still go out.
+    assert failed.status == "failed"
+    assert pending == [(other.id, "task_result")]
+
+
 # ---------------------------------------------------------------------------
 # Ledger: a status change and its report are stored together
 # ---------------------------------------------------------------------------
