@@ -146,6 +146,65 @@ def test_poll_retries_a_conflict_that_was_blocked_by_a_late_upload_prompt():
     """)
 
 
+@pytest.mark.parametrize('changed_field', ['local_hash', 'head_revision'])
+def test_poll_backs_off_unreadable_conflict_and_retries_when_its_version_changes(changed_field):
+    run_script(r"""
+        (async()=>{
+            const other='b'.repeat(32), warnings=[];
+            Date.now=()=>1000;
+            const broken={conflict:true,local_hash:candidate.local_hash,head_revision:2};
+            window.showMessage=message=>warnings.push(message);
+            window.nekoChatSync={describeError:error=>error};
+            response=path=>{
+                if(path.endsWith('/status'))return{characters:[{characterSyncId:uid,binding:{profile:broken}},
+                    {displayName:'Later',characterSyncId:other,syncSetupError:'setup-failed',syncSetupDiagnostic:'needs-recovery',
+                        binding:{profile:{conflict:true,local_hash:candidate.local_hash,head_revision:2}}}]};
+                if(path.includes(uid))throw new Error('chat_sync_writer_recovery_required');
+                return candidate;
+            };
+            const localCalls=()=>calls.filter(call=>call.path.includes(uid)&&call.path.endsWith('/profile/local'));
+            await window.nekoCharacterProfileSync.poll();
+            assert.equal(localCalls().length,1);assert.equal(body.children.length,0);
+            await window.nekoCharacterProfileSync.poll();
+            assert.equal(localCalls().length,1);
+            assert.deepEqual(warnings,['chatSync.setupNeedsSave\nsetup-failed','needs-recovery']);
+            assert.equal(body.children[0]?.id,'character-profile-sync-dialog');assert(body.children[0].open);
+            assert(calls.some(call=>call.path.includes(other)&&call.path.endsWith('/profile/local')));
+            await choice(body.children[0],'close').events.click();
+            await window.nekoCharacterProfileSync.poll();assert.equal(localCalls().length,1);
+            broken[CHANGED_FIELD]=CHANGED_FIELD==='local_hash'?'e'.repeat(64):3;
+            await window.nekoCharacterProfileSync.poll();assert.equal(localCalls().length,2);
+            await window.nekoCharacterProfileSync.poll();assert.equal(localCalls().length,2);
+            assert.equal(warnings.length,2);
+        })().catch(e=>{console.error(e);process.exitCode=1;});
+    """.replace('CHANGED_FIELD', json.dumps(changed_field)))
+
+
+def test_poll_retries_recovered_conflict_after_backoff_without_a_version_change():
+    run_script(r"""
+        (async()=>{
+            let now=1000, unavailable=true;
+            Date.now=()=>now;
+            response=path=>{
+                if(path.endsWith('/status'))return{characters:[{characterSyncId:uid,binding:{profile:{
+                    conflict:true,local_hash:candidate.local_hash,head_revision:2}}}]};
+                if(unavailable)throw new Error('Temporary read failure');
+                return candidate;
+            };
+            const localCalls=()=>calls.filter(call=>call.path.endsWith('/profile/local'));
+            await window.nekoCharacterProfileSync.poll();assert.equal(localCalls().length,1);
+            unavailable=false;now+=59999;
+            await window.nekoCharacterProfileSync.poll();assert.equal(localCalls().length,1);
+            now+=1;
+            await window.nekoCharacterProfileSync.poll();assert.equal(localCalls().length,2);
+            assert.equal(body.children[0]?.id,'character-profile-sync-dialog');assert(body.children[0].open);
+            await choice(body.children[0],'close').events.click();now+=60000;
+            await window.nekoCharacterProfileSync.poll();assert.equal(localCalls().length,2);
+            assert.equal(body.children.length,0);
+        })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
 def test_prompt_without_translation_loader_does_not_block_future_dialogs():
     run_script(r"""
         (async()=>{
