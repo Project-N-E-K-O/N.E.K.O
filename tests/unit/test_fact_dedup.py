@@ -2410,3 +2410,35 @@ async def test_unscored_existing_fact_cannot_invent_a_trust_override(tmp_path):
     with patch("utils.llm_client.create_chat_llm", return_value=model):
         assert await resolver.aresolve("Neko") == 1
     assert [fact["id"] for fact in await fs.aload_facts("Neko")] == ["c1"]
+
+
+# ── the arbitration prompt lets a stated correction replace the old claim ──
+
+_NEWER_RECORD = {
+    "zh": "candidate 是较新的记录",
+    "zh-TW": "candidate 是較新的紀錄",
+    "en": "The candidate is the newer record",
+    "ja": "candidate は新しい方の記録",
+    "ko": "candidate는 더 새로운 기록",
+    "ru": "candidate — более новая запись",
+    "es": "candidate es el registro más reciente",
+    "pt": "candidate é o registro mais recente",
+}
+
+
+@pytest.mark.parametrize("lang", sorted(_NEWER_RECORD))
+def test_dedup_prompt_lets_a_stated_correction_replace_the_old_claim(lang):
+    """Measured on a real model (PR #3686): without this rule a correction such as
+    "no longer drinks coffee (used to)" was mostly judged keep_both against the
+    old "likes coffee", so both stayed in memory."""
+    from config.prompts.prompts_memory import FACT_DEDUP_PROMPT
+
+    prompt = FACT_DEDUP_PROMPT[lang]
+    notes = prompt.split("======以上为候选事实对======", 1)[1]
+    rule = next(line for line in notes.splitlines() if _NEWER_RECORD[lang] in line)
+    # The rule names the action, and it comes before the advice to keep both when unsure.
+    assert "replace" in rule and "existing" in rule
+    assert notes.index(rule) < notes.rindex("keep_both")
+    assert prompt.count("{PAIRS}") == 1 and prompt.count("{COUNT}") == 1
+    # Opposite statements without such a note are still two things.
+    assert sum("keep_both" in line for line in notes.splitlines()) >= 2
