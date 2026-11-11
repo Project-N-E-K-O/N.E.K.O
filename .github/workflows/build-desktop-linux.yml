@@ -184,7 +184,13 @@ jobs:
       # --- Platform-specific system dependencies ---
       - name: Install Linux system dependencies
         run: |
-          sudo apt-get update
+          # The hosted image's Azure mirror repeatedly failed DNS resolution.
+          # Keep Ubuntu's signed mirror mechanism, using the official archives.
+          if [ "$(uname -m)" = x86_64 ] && [ -f /etc/apt/apt-mirrors.txt ]; then
+            printf '%s\n' https://archive.ubuntu.com/ubuntu/ https://security.ubuntu.com/ubuntu/ \
+              | sudo tee /etc/apt/apt-mirrors.txt
+          fi
+          sudo apt-get update --error-on=any
           sudo apt-get install -y --no-install-recommends \
             build-essential \
             pkg-config \
@@ -594,7 +600,13 @@ jobs:
 
       - name: Install Linux build dependencies
         run: |
-          sudo apt-get update
+          # The hosted image's Azure mirror repeatedly failed DNS resolution.
+          # Keep Ubuntu's signed mirror mechanism, using the official archives.
+          if [ "$(uname -m)" = x86_64 ] && [ -f /etc/apt/apt-mirrors.txt ]; then
+            printf '%s\n' https://archive.ubuntu.com/ubuntu/ https://security.ubuntu.com/ubuntu/ \
+              | sudo tee /etc/apt/apt-mirrors.txt
+          fi
+          sudo apt-get update --error-on=any
           sudo apt-get install -y --no-install-recommends \
             dpkg \
             fakeroot
