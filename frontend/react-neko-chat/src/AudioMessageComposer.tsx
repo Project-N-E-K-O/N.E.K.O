@@ -152,15 +152,16 @@ export default function AudioMessageComposer({ target, disabled, send, onBusyCha
 
   const displayedSeconds = preview ? Math.ceil(seconds) : Math.floor(seconds);
   const duration = `0:${String(displayedSeconds).padStart(2, '0')}`;
+  const recordLabel = i18n('chat.audioMessageRecord', 'Record a voice message');
+  const stopLabel = i18n('chat.audioMessageStop', 'Stop and send');
   const playbackLabel = playing ? i18n('common.pause', 'Pause') : i18n('chat.audioMessagePreview', 'Preview recording');
   return <div className={`audio-message-composer${phase === 'idle' ? '' : ' is-open'}`} data-compact-no-drag="true"
     data-compact-hit-region="true" data-compact-geometry-item="audio-message"
     onPointerDown={event => event.stopPropagation()}>
     {phase === 'idle' ? <button type="button" className="composer-tool-btn audio-message-mic"
-      aria-label={i18n('chat.audioMessageRecord', 'Record a voice message')}
-      title={i18n('chat.audioMessageRecord', 'Record a voice message')}
+      aria-label={recordLabel} title={recordLabel}
       disabled={disabled} onClick={() => { void start(); }}>
-      <img src="/static/icons/mic_icon_off.png" alt="" aria-hidden="true" />
+      <span className="audio-message-mic-disc" aria-hidden="true"><span className="audio-message-mic-glyph" /></span>
     </button> : <div className="audio-message-strip" data-recording={phase === 'recording' || undefined}>
       {phase === 'recording' ? (
         <span className="audio-message-clock">
@@ -182,9 +183,10 @@ export default function AudioMessageComposer({ target, disabled, send, onBusyCha
       {phase === 'sending' ? <span role="status">{i18n('chat.audioMessageSending', 'Sending…')}</span> : null}
       {phase !== 'sending' ? <button type="button" className="audio-message-cancel" onClick={cancel}
         aria-label={i18n('chat.audioMessageCancel', 'Discard recording')}>{i18n('common.cancel', 'Cancel')}</button> : null}
-      {phase === 'recording' ? <button type="button" className="audio-message-stop" onClick={() => { void stop(true); }}>
+      {phase === 'recording' ? <button type="button" className="audio-message-stop"
+        aria-label={stopLabel} title={stopLabel} onClick={() => { void stop(true); }}>
         <span className="audio-message-stop-disc" aria-hidden="true" />
-        <span>{i18n('chat.audioMessageStop', 'Stop and send')}</span>
+        <span className="audio-message-stop-label">{stopLabel}</span>
       </button> : null}
       {phase === 'preview' ? <button type="button" className="audio-message-send"
         aria-label={i18n('chat.audioMessageSend', 'Send recording')} onClick={() => { void submit(); }}>
