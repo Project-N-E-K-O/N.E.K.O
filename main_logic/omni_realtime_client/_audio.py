@@ -31,13 +31,14 @@ from ._shared import (
 )
 
 
-_GEMINI_TRANSCRIPT_GRACE_SECONDS = 0.75
+_AUDIO_TRANSCRIPT_GRACE_SECONDS = 0.75
 _AUDIO_TRANSCRIPT_RETRY_DELAYS = (0.1, 0.2)
 
 
 @dataclass(slots=True, kw_only=True)
 class _AudioMessageTranscript:
     on_transcript: Callable[..., Awaitable[bool | None]] | None
+    transcript_ready: asyncio.Event = field(default_factory=asyncio.Event)
     transcript_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     transcript_retry: asyncio.Task[bool] | None = None
     transcript: str = ""
@@ -87,7 +88,6 @@ class _AudioMessageTranscript:
 @dataclass(slots=True)
 class _GeminiAudioMessage(_AudioMessageTranscript):
     outcome: asyncio.Future[bool]
-    transcript_ready: asyncio.Event = field(default_factory=asyncio.Event)
     publish_partial: bool = False
     pending_tool_ids: set[str] = field(default_factory=set)
     used_tools: bool = False
@@ -195,7 +195,7 @@ class _AudioMixin:
                 if on_transcript is not None and not audio_message.transcript_ready.is_set():
                     try:
                         await asyncio.wait_for(
-                            audio_message.transcript_ready.wait(), timeout=_GEMINI_TRANSCRIPT_GRACE_SECONDS,
+                            audio_message.transcript_ready.wait(), timeout=_AUDIO_TRANSCRIPT_GRACE_SECONDS,
                         )
                     except TimeoutError:
                         if is_current():
@@ -287,6 +287,14 @@ class _AudioMixin:
                 # A continuation can itself enqueue another batch.
                 for batch in tool_batches:
                     await asyncio.shield(batch)
+            if on_transcript is not None and is_current() and not transcript.transcript_ready.is_set():
+                # Input transcription can arrive after the final response or
+                # tool continuation. Keep its receiver alive briefly before
+                # a completed receipt lets the UI start another turn.
+                try:
+                    await asyncio.wait_for(transcript.transcript_ready.wait(), timeout=_AUDIO_TRANSCRIPT_GRACE_SECONDS)
+                except TimeoutError:
+                    pass
             if transcript.transcript_retry is not None and not await asyncio.shield(transcript.transcript_retry):
                 raise ConnectionError("audio transcript could not be stored")
         except BaseException:
