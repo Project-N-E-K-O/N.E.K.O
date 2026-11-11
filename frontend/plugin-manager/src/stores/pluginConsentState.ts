@@ -32,19 +32,37 @@ interface PendingRequest extends ConsentRequest {
 export const usePluginConsentState = defineStore('pluginConsent', () => {
   const details = ref<Record<string, PluginConsent>>({})
   const summaries = ref<Record<string, PluginConsentSummary & { version: string }>>({})
-  const versions = new Map<string, number>()
+  // Metadata and consent reads share the order in which their requests started.
+  const detailRequests = new Map<string, number>()
+  const snapshotTickets = new Map<string, number>()
   const mutations = new Map<string, Promise<PluginConsent>>()
-  async function request(id: string, operation: () => Promise<PluginConsent>) {
-    const version = (versions.get(id) ?? 0) + 1
-    versions.set(id, version)
+  let sequence = 0
+
+  function nextRequestTicket() {
+    return ++sequence
+  }
+
+  async function request(
+    id: string,
+    operation: () => Promise<PluginConsent>,
+    mutation = false,
+  ): Promise<PluginConsent> {
+    const ticket = nextRequestTicket()
+    detailRequests.set(id, ticket)
     const result = await operation()
-    if (versions.get(id) === version) details.value[id] = result
+    if (detailRequests.get(id) === ticket) {
+      if (!mutation && ticket < (snapshotTickets.get(id) ?? 0)) {
+        return details.value[id] ?? load(id)
+      }
+      snapshotTickets.set(id, mutation ? nextRequestTicket() : ticket)
+      details.value[id] = result
+    }
     return details.value[id] ?? result
   }
   function mutate(id: string, operation: () => Promise<PluginConsent>) {
     const previous = mutations.get(id)
     const pending = (previous ? previous.catch(() => undefined) : Promise.resolve()).then(() =>
-      request(id, operation)
+      request(id, operation, true)
     )
     mutations.set(id, pending)
     const clear = () => {
@@ -53,11 +71,13 @@ export const usePluginConsentState = defineStore('pluginConsent', () => {
     void pending.then(clear, clear)
     return pending
   }
-  function load(id: string) {
+  function load(id: string): Promise<PluginConsent> {
     return mutations.get(id) ?? request(id, () => getPluginConsent(id))
   }
   function forget(id: string) {
-    versions.set(id, (versions.get(id) ?? 0) + 1)
+    const ticket = nextRequestTicket()
+    detailRequests.set(id, ticket)
+    snapshotTickets.set(id, ticket)
     delete details.value[id]
     delete summaries.value[id]
   }
@@ -69,34 +89,41 @@ export const usePluginConsentState = defineStore('pluginConsent', () => {
       version?: string
       consent?: PluginConsentSummary | null
     }>,
+    ticket = nextRequestTicket(),
   ) {
     const next = { ...summaries.value }
     for (const plugin of plugins) {
-      if (!plugin.consent) continue
-      const detail = details.value[plugin.id]
-      if (
-        plugin.consent.state === 'analyzing' &&
-        detail &&
-        detail.version === (plugin.version ?? '') &&
-        detail.state !== 'analyzing'
-      ) {
-        delete details.value[plugin.id]
-      }
-      next[plugin.id] = {
+      if (!plugin.consent || ticket < (snapshotTickets.get(plugin.id) ?? 0)) continue
+      const summary = {
         state: plugin.consent.state,
         decision: plugin.consent.decision ?? null,
         upgraded: plugin.consent.upgraded,
         version: plugin.version ?? '',
       }
+      snapshotTickets.set(plugin.id, ticket)
+      const detail = details.value[plugin.id]
+      if (
+        detail &&
+        (detail.version !== summary.version ||
+          detail.state !== summary.state ||
+          detail.decision !== summary.decision ||
+          detail.upgraded !== summary.upgraded)
+      ) {
+        delete details.value[plugin.id]
+        if (activeRequest.value?.plugins.some(({ id }) => id === plugin.id)) {
+          void load(plugin.id).catch(() => undefined)
+        }
+      }
+      next[plugin.id] = summary
     }
     summaries.value = next
   }
 
-  /** Details win when their version matches the plugin version; else summary. */
+  /** Accepted summaries invalidate older details when their projections differ. */
   function stateOf(id: string): PluginConsentSummary | null {
     const detail = details.value[id]
     const summary = summaries.value[id]
-    if (detail && (!summary || detail.version === summary.version)) {
+    if (detail) {
       return {
         state: detail.state,
         decision: detail.decision,
@@ -107,14 +134,13 @@ export const usePluginConsentState = defineStore('pluginConsent', () => {
   }
 
   // Single poller: consumers register interest in a plugin and the store
-  // refreshes it every 2s while its state is "analyzing" and the document is
-  // visible.
+  // refreshes missing details and pending analysis while the document is visible.
   const watchers = new Map<string, number>()
   let pollTimer: ReturnType<typeof setInterval> | undefined
   function pollTick() {
     if (document.hidden) return
     for (const id of watchers.keys()) {
-      if ((stateOf(id)?.state ?? 'analyzing') === 'analyzing') {
+      if (!details.value[id] || stateOf(id)?.state === 'analyzing') {
         void load(id).catch(() => undefined)
       }
     }
@@ -197,6 +223,7 @@ export const usePluginConsentState = defineStore('pluginConsent', () => {
     activeRequest,
     forget,
     load,
+    nextRequestTicket,
     seedSummaries,
     stateOf,
     watchPlugin,

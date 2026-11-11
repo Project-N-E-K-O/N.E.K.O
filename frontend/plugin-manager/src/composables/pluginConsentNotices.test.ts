@@ -171,6 +171,26 @@ describe('usePluginConsentNotices', () => {
     expect(notify.ElNotification).toHaveBeenCalledOnce()
   })
 
+  it('refreshes notices when a running plugin goes directly from clear to confirm', async () => {
+    const consentState = usePluginConsentState()
+    usePluginStore().pluginSummaries = [
+      { id: 'a', name: 'A', description: '', version: '1', status: 'running' },
+    ]
+    consentState.seedSummaries([
+      { id: 'a', version: '1', consent: { state: 'clear', decision: 'approved', upgraded: false } },
+    ])
+    mount()
+    await flush()
+    expect(notify.ElNotification).not.toHaveBeenCalled()
+
+    api.getPluginConsentNotices.mockResolvedValue([notice('a')])
+    consentState.seedSummaries([
+      { id: 'a', version: '1', consent: { state: 'confirm', decision: 'approved', upgraded: true } },
+    ])
+    await flush()
+    expect(notify.ElNotification).toHaveBeenCalledOnce()
+  })
+
   it('unwatches plugins when the page is left', async () => {
     const consentState = usePluginConsentState()
     const unwatchSpy = vi.spyOn(consentState, 'unwatchPlugin')

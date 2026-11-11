@@ -123,6 +123,58 @@ it('seedSummaries feeds stateOf and matching-version details win', async () => {
   expect(store.stateOf('demo')?.state).toBe('analyzing')
 })
 
+it('a new same-version summary fences a pending detail read and triggers a fresh read', async () => {
+  let finishOld!: (value: PluginConsent) => void
+  const old = response('approved', 'completed')
+  const current: PluginConsent = { ...old, state: 'confirm', unconfirmed: ['messages.push'] }
+  vi.mocked(getPluginConsent)
+    .mockReturnValueOnce(new Promise((resolve) => { finishOld = resolve }))
+    .mockResolvedValueOnce(current)
+  const store = usePluginConsentState()
+  store.details.demo = old
+  const previous = store.load('demo')
+  store.seedSummaries([
+    { id: 'demo', version: '1', consent: current },
+  ])
+  expect(store.stateOf('demo')?.state).toBe('confirm')
+  expect(store.details.demo).toBeUndefined()
+
+  finishOld(old)
+  await expect(previous).resolves.toEqual(current)
+  expect(store.details.demo).toEqual(current)
+  expect(getPluginConsent).toHaveBeenCalledTimes(2)
+})
+
+it('reloads details invalidated by a summary while a confirmation is open', async () => {
+  const store = usePluginConsentState()
+  store.details.demo = response(null, 'completed')
+  const current: PluginConsent = {
+    ...response('approved', 'completed'),
+    state: 'confirm',
+    unconfirmed: ['messages.push'],
+  }
+  vi.mocked(getPluginConsent).mockResolvedValue(current)
+  const pending = store.requestConfirmation([{ id: 'demo', name: 'Demo' }])
+
+  store.seedSummaries([{ id: 'demo', version: '1', consent: current }])
+  await vi.waitFor(() => expect(store.details.demo).toEqual(current))
+  store.resolveConfirmation(false)
+  await expect(pending).resolves.toBe(false)
+})
+
+it('ignores a summary requested before a newer detail', async () => {
+  const store = usePluginConsentState()
+  const ticket = store.nextRequestTicket()
+  const current = response('approved', 'completed')
+  vi.mocked(getPluginConsent).mockResolvedValue(current)
+  await store.load('demo')
+  store.seedSummaries([
+    { id: 'demo', version: '1', consent: { state: 'confirm', decision: null, upgraded: true } },
+  ], ticket)
+  expect(store.stateOf('demo')?.state).toBe('clear')
+  expect(store.details.demo).toEqual(current)
+})
+
 it('requestConfirmation dedupes identical sets and resolves on approve', async () => {
   const store = usePluginConsentState()
   const plugins = [{ id: 'demo', name: 'Demo' }]

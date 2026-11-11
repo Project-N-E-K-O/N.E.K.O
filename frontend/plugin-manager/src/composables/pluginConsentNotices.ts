@@ -71,15 +71,16 @@ export function usePluginConsentNotices() {
     }
   }
 
-  // Running plugins still being analyzed are followed via the consent store;
-  // when one turns "confirm" the notice list is refetched.
-  const analyzingIds = computed(() =>
+  const runningConsent = computed(() =>
     pluginStore.pluginSummariesWithStatus
-      .filter(
-        (plugin) =>
-          plugin.status === 'running' && consentState.stateOf(plugin.id)?.state === 'analyzing',
-      )
-      .map((plugin) => plugin.id),
+      .filter((plugin) => plugin.status === 'running')
+      .map((plugin) => ({ id: plugin.id, state: consentState.stateOf(plugin.id)?.state })),
+  )
+  const analyzingIds = computed(() =>
+    runningConsent.value.filter((plugin) => plugin.state === 'analyzing').map(({ id }) => id),
+  )
+  const confirmingIds = computed(() =>
+    runningConsent.value.filter((plugin) => plugin.state === 'confirm').map(({ id }) => id),
   )
   watch(
     analyzingIds,
@@ -89,9 +90,6 @@ export function usePluginConsentNotices() {
         if (!next.has(id)) {
           watchedIds.delete(id)
           consentState.unwatchPlugin(id)
-          // The transition happened here, while the id is still tracked:
-          // a watched plugin that just turned "confirm" may need a notice.
-          if (consentState.stateOf(id)?.state === 'confirm') void refresh()
         }
       }
       for (const id of ids) {
@@ -103,6 +101,14 @@ export function usePluginConsentNotices() {
     },
     { immediate: true },
   )
+
+  watch(confirmingIds, (ids, previous) => {
+    if (localeLoadState.pending !== null) return
+    const previousIds = new Set(previous)
+    if (ids.length !== previousIds.size || ids.some((id) => !previousIds.has(id))) {
+      void refresh()
+    }
+  })
 
   onMounted(() => {
     // The notice title is baked into the notification: wait for the user's
