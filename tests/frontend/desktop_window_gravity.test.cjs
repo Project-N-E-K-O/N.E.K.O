@@ -2487,12 +2487,26 @@ test('only grounded yarn bodies use the stronger horizontal damping', () => {
   const start = source.indexOf('function _stepNekoIdleCat1PlaygroundPhysics(');
   vm.runInContext(source.slice(start, source.indexOf('\n}', start) + 2), r.context);
 
-  r.context._stepNekoIdleCat1PlaygroundPhysics(r.button, 1000 + (1000 / 60));
+  const state = r.button.__nekoIdleCat1PlaygroundDropState;
+  let sampleAt = 1000;
+  const stepGroundedYarn = (frameMs) => {
+    Object.assign(yarn, { x: 500, y: 850, vx: 100, vy: 0, grounded: true });
+    state.frame = 0;
+    state.lastTickAt = sampleAt;
+    sampleAt += frameMs;
+    r.context._stepNekoIdleCat1PlaygroundPhysics(r.button, sampleAt);
+    return yarn.vx;
+  };
 
-  assert.ok(Math.abs(yarn.vx - 90) < 0.0001, 'grounded yarn gets the stronger damping');
+  assert.ok(Math.abs(stepGroundedYarn(1000 / 60) - 90) < 0.0001,
+    'one 60Hz step keeps 0.90 of grounded yarn speed');
   assert.ok(Math.abs(cat.vx - 98.8) < 0.0001, 'cat keeps the existing ground damping');
   assert.ok(Math.abs(question.vx - 98.8) < 0.0001, 'question block keeps the existing ground damping');
   assert.ok(Math.abs(airborneYarn.vx - 99.2) < 0.0001, 'airborne yarn keeps the existing air damping');
+  assert.ok(Math.abs(stepGroundedYarn(1000 / 30) - (100 * Math.pow(0.90, 2))) < 0.0001,
+    'one 30Hz step matches two 60Hz damping intervals');
+  assert.ok(Math.abs(stepGroundedYarn(1000 / 120) - (100 * Math.pow(0.90, 0.5))) < 0.0001,
+    'one 120Hz step matches half a 60Hz damping interval');
 });
 
 test('the production playground loop delegates the contained cat and still simulates other bodies', () => {
