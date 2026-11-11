@@ -1354,6 +1354,10 @@
         var previousMode = I.getCurrentChatSurfaceMode();
         var nextMinimized = normalized === 'minimized';
         var previousMinimized = previousMode === 'minimized';
+        if (nextMinimized && !previousMinimized
+                && I.getShell()?.querySelector('.audio-message-composer[data-audio-message-active="true"]')) {
+            return previousMode;
+        }
         if (previousMode === normalized) {
             if (I.isMinimizeTransitioning) {
                 I.pendingChatSurfaceMode = null;

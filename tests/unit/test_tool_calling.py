@@ -4504,17 +4504,20 @@ async def test_realtime_qwen_tool_result_carries_call_id():
 
 
 @pytest.mark.asyncio
-async def test_realtime_apply_tools_to_session_glm_includes_turn_detection():
-    """GLM documentation requires turn_detection whenever tools are updated under ServerVAD,
-    or the server may reset turn_detection to its default."""
+@pytest.mark.parametrize("manual", [False, True])
+async def test_realtime_apply_tools_to_session_glm_includes_turn_detection(manual):
+    """Updating tools must preserve the mode negotiated at connection time."""
+    from main_logic.omni_realtime_client import TurnDetectionMode
+
     client, sent = _make_rt_client("glm")
+    client.turn_detection_mode = TurnDetectionMode.MANUAL if manual else TurnDetectionMode.SERVER_VAD
     await client.apply_tools_to_session()
     # update_session is actually send_event({type:"session.update", session:...}).
     assert len(sent) == 1
     assert sent[0]["type"] == "session.update"
     sess = sent[0]["session"]
     assert "tools" in sess
-    assert sess.get("turn_detection") == {"type": "server_vad"}, (
+    assert sess["turn_detection"] == (None if manual else {"type": "server_vad"}), (
         "GLM 必须同时传 turn_detection"
     )
     assert sess.get("beta_fields") == {

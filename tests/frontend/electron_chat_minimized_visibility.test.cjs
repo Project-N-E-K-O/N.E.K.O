@@ -312,6 +312,28 @@ test('returning from Playground reapplies the ordinary Web ball viewport clamp',
   assert.equal(harness.parts.idleCatPlaygroundYarnSkinActive, false);
 });
 
+test('host mode changes preserve an active voice message', () => {
+  const { parts } = createHarness({ collapsed: false });
+  let audioActive = true;
+  parts.getShell = () => ({
+    querySelector(selector) {
+      assert.equal(selector, '.audio-message-composer[data-audio-message-active="true"]');
+      return audioActive ? {} : null;
+    },
+  });
+  parts.coerceChatSurfaceModeForHost = mode => mode;
+  parts.getCurrentChatSurfaceMode = () => 'compact';
+  parts.isMinimizeTransitioning = true;
+  parts.pendingChatSurfaceMode = null;
+
+  assert.equal(parts.setChatSurfaceMode('minimized'), 'compact');
+  assert.equal(parts.pendingChatSurfaceMode, null);
+
+  audioActive = false;
+  assert.equal(parts.setChatSurfaceMode('minimized'), 'compact');
+  assert.equal(parts.pendingChatSurfaceMode.mode, 'minimized');
+});
+
 test('a visible collapsed Electron chat publishes its minimized yarn target', async () => {
   const harness = createHarness();
   harness.parts.ensureElectronChatMinimizedStateBridge();

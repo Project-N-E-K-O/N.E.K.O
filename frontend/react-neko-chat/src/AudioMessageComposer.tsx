@@ -162,6 +162,7 @@ export default function AudioMessageComposer({ target, disabled, send, onBusyCha
   const stopLabel = i18n('chat.audioMessageStop', 'Stop and send');
   const playbackLabel = playing ? i18n('common.pause', 'Pause') : i18n('chat.audioMessagePreview', 'Preview recording');
   return <div className={`audio-message-composer${phase === 'idle' ? '' : ' is-open'}`} data-compact-no-drag="true"
+    data-audio-message-active={phase !== 'idle' && phase !== 'failed' ? 'true' : undefined}
     data-compact-hit-region="true" data-compact-geometry-item="audio-message"
     onPointerDown={event => event.stopPropagation()}>
     {phase === 'idle' ? <button type="button" className="composer-tool-btn audio-message-mic"
