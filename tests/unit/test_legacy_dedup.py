@@ -865,3 +865,12 @@ def test_event_ranges_that_only_look_close_across_offsets_stay_apart():
     east = {**_fact('b', walk, created='2026-06-12T21:05:00'), 'event_start_at': '2026-06-12T08:30:00+08:00',
             'event_end_at': '2026-06-12T09:30:00+08:00'}
     assert legacy_dedup.nominate({'a': utc, 'b': east}) == []
+
+
+def test_an_import_rewriting_the_same_event_time_is_no_change():
+    row = {**_fact('a', '博士散步', created='2026-06-12T21:00:00'), 'event_start_at': '2026-06-12T08:00:00.123456+00:00'}
+    from memory.long_term_sync import iso, timestamp
+    # What an import writes back: the same instant as local time, to the millisecond.
+    imported = {**row, 'event_start_at': iso(timestamp(row['event_start_at']))}
+    assert imported['event_start_at'] != row['event_start_at']
+    assert legacy_dedup.fingerprint(imported) == legacy_dedup.fingerprint(row)

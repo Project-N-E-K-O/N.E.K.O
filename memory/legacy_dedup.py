@@ -101,10 +101,19 @@ def fingerprint(row):
     """What the model was shown of a fact; a decision holds only while it is unchanged."""
     import hashlib
     # The source counts too: a shared-source pair whose sources changed was judged on evidence that is gone.
-    # Its event window too: a later recheck moving it may make it a separate event.
+    # Its event window too, as instants: a later recheck moving it may make it a
+    # separate event, while an import that only rewrites the same time is no change.
+    def instant(value):
+        if not value:
+            return None
+        try:
+            from memory.long_term_sync import timestamp
+            return timestamp(value)
+        except (TypeError, ValueError, OverflowError, OSError, ImportError):
+            return str(value)
     return hashlib.sha256(json.dumps([row.get('entity') or 'master', row.get('text'), row.get('source'),
                                       sorted(str(item) for item in row.get('source_message_ids') or ()),
-                                      row.get('event_start_at'), row.get('event_end_at')],
+                                      instant(row.get('event_start_at')), instant(row.get('event_end_at'))],
                                      ensure_ascii=False).encode()).hexdigest()[:16]
 
 
