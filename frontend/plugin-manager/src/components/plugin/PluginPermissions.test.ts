@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, getActivePinia, setActivePinia } from 'pinia'
 import { createApp, defineComponent, h, nextTick } from 'vue'
+import { ElMessage } from 'element-plus'
 import PluginPermissions from './PluginPermissions.vue'
 import { usePluginConsentState } from '@/stores/pluginConsentState'
 import type { PluginConsent } from '@/api/pluginConsent'
@@ -154,6 +155,37 @@ describe('PluginPermissions', () => {
       })
       expect(pluginStore.start).toHaveBeenCalledWith('demo')
     })
+  })
+
+  it.each([
+    { saved: false, message: 'pluginConsent.saveFailed' },
+    { saved: true, message: 'messages.startFailed' },
+  ])('reports the failure at the approve-and-start step that failed (saved=$saved)', async ({
+    saved,
+    message,
+  }) => {
+    const toast = vi.spyOn(ElMessage, 'error').mockImplementation(() => ({ close: () => {} }))
+    pluginStore.plugin = { id: 'demo', status: 'stopped' }
+    seed()
+    if (saved) {
+      const approved = record({ decision: 'approved', unconfirmed: [], state: 'clear' })
+      api.approvePluginConsent.mockImplementation(async () => {
+        api.getPluginConsent.mockResolvedValue(approved)
+        return approved
+      })
+      pluginStore.start.mockRejectedValueOnce(new Error('start failed'))
+    } else {
+      api.approvePluginConsent.mockRejectedValue(new Error('save failed'))
+    }
+    try {
+      const root = mount()
+      await flush()
+      buttons(root, 'pluginConsent.approveAndStart')[0].click()
+      await vi.waitFor(() => expect(toast).toHaveBeenCalledWith(message))
+      expect(pluginStore.start).toHaveBeenCalledTimes(saved ? 1 : 0)
+    } finally {
+      toast.mockRestore()
+    }
   })
 
   it('denied shows the denied banner with approve and withdraw actions', async () => {

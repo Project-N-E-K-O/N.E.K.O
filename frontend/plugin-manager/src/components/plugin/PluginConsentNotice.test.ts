@@ -2,7 +2,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, getActivePinia, setActivePinia } from 'pinia'
 import { createApp, defineComponent, h, nextTick } from 'vue'
+import { AxiosError } from 'axios'
 import PluginConsentNotice from './PluginConsentNotice.vue'
+import { usePluginConsentState } from '@/stores/pluginConsentState'
+import { readErrorCode } from '@/utils/request'
 import type { PluginConsentNotice as Notice } from '@/api/pluginConsent'
 
 const api = vi.hoisted(() => ({
@@ -36,10 +39,10 @@ function notice(id: string, extras: Partial<Notice> = {}): Notice {
     ...extras,
   }
 }
-function mount(notices: Notice[], onDone: () => void) {
+function mount(notices: Notice[], onDone: () => void, onStale?: () => void) {
   const root = document.createElement('div')
   document.body.append(root)
-  const app = createApp(PluginConsentNotice, { notices, onDone })
+  const app = createApp(PluginConsentNotice, { notices, onDone, onStale })
   app.use(getActivePinia() ?? createPinia())
   app.component(
     'el-button',
@@ -65,6 +68,7 @@ const buttons = (root: HTMLElement, label: string) =>
 beforeEach(() => {
   setActivePinia(createPinia())
   for (const mock of Object.values(api)) mock.mockReset()
+  vi.mocked(readErrorCode).mockReset()
   pluginStore.fetchPluginStatus.mockClear()
   pluginStore.refreshLoadedPluginData.mockClear()
 })
@@ -95,6 +99,20 @@ describe('running-plugin consent notice', () => {
     expect(pluginStore.refreshLoadedPluginData).toHaveBeenCalled()
     expect(done).toBe(true)
     expect(root.querySelectorAll('li')).toHaveLength(0)
+  })
+
+  it('loads the latest state before refreshing a stale approval notice', async () => {
+    vi.mocked(readErrorCode).mockReturnValue('PLUGIN_CONSENT_CHANGED')
+    api.approvePluginConsent.mockRejectedValue(new AxiosError('stale approval'))
+    api.getPluginConsent.mockResolvedValue({ state: 'analyzing' })
+    const onStale = vi.fn(() => {
+      expect(usePluginConsentState().details.demo?.state).toBe('analyzing')
+    })
+    const root = mount([notice('demo')], () => {}, onStale)
+
+    buttons(root, 'pluginConsent.approve')[0].click()
+    await vi.waitFor(() => expect(onStale).toHaveBeenCalledOnce())
+    expect(api.getPluginConsent).toHaveBeenCalledWith('demo')
   })
 
   it('approve records the decision and keeps other rows open', async () => {

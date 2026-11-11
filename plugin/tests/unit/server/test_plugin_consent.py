@@ -908,6 +908,57 @@ async def test_delete_consent_revokes_the_record(monkeypatch, store, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_stale_notice_approval_schedules_a_new_report(tmp_path, reports, monkeypatch):
+    from plugin.core.state import state
+    from plugin.server.routes import plugin_consent as routes
+
+    manifest(tmp_path)
+    source = tmp_path / "main.py"
+    source.write_text("self.ctx.push_message()", encoding="utf-8")
+    reports.save(
+        "demo",
+        {
+            **analyze_capabilities(tmp_path),
+            "_analyzer_version": analysis.ANALYZER_VERSION,
+            "_source": analysis.source_revision(tmp_path, "1"),
+            "_source_root": str(tmp_path),
+            "version": "1",
+        },
+    )
+    meta = {"config_path": str(tmp_path / "plugin.toml"), "version": "1"}
+    monkeypatch.setitem(state.plugins, "demo", meta)
+    monkeypatch.setitem(state.plugin_hosts, "demo", object())
+    runner = analysis.CapabilityAnalysisService(reports)
+    monkeypatch.setattr(analysis, "analysis_service", runner)
+    release = threading.Event()
+    runner._worker().submit(release.wait)
+    app = FastAPI()
+    app.include_router(routes.router)
+    app.dependency_overrides[routes.require_plugin_mutation_access] = lambda: None
+    try:
+        async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+            notice = (await client.get("/plugin-consent/notices")).json()[0]
+            assert notice["unconfirmed"] == ["messages.push"]
+            source.write_text("self.ctx.bus.memory.get('a')", encoding="utf-8")
+            response = await client.post(
+                "/plugin-consent/plugins/demo",
+                json={"approved": True, "snapshot": notice},
+            )
+            assert response.status_code == 409
+            assert service.consent_store.read("demo") == {}
+            assert (await client.get("/plugin-consent/notices")).json() == []
+            with runner._lock:
+                job = runner._jobs["demo"][1]
+            release.set()
+            await asyncio.wrap_future(job)
+            updated = (await client.get("/plugin-consent/notices")).json()[0]
+            assert updated["unconfirmed"] == ["memory.read"]
+    finally:
+        release.set()
+        await runner.close()
+
+
+@pytest.mark.asyncio
 async def test_notices_list_only_running_plugins_still_needing_confirmation(
     monkeypatch, store, tmp_path
 ):

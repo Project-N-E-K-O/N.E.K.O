@@ -103,8 +103,8 @@ def consent_notices() -> list[dict]:
 async def approve_plugin(
     plugin_id: str, *, version: str, unconfirmed: list[str], analysis_status: str
 ) -> dict:
-    # Revalidate and persist under the same operation boundary as uninstall.
-    details = await asyncio.to_thread(consent_details, plugin_id)
+    # Revalidate under the operation lock and queue analysis if the report is stale.
+    details = await asyncio.to_thread(consent_details, plugin_id, schedule_missing=True)
     if (
         analysis_status in ANALYZING_STATUSES
         or details["version"] != version

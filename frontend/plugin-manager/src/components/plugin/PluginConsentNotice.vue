@@ -73,7 +73,11 @@ async function decide(plugin: PluginConsentNotice, approved: boolean) {
     await refreshPlugins()
     if (!pending.value.length) emit('done')
   } catch (error) {
-    if (isConsentChanged(error)) emit('stale')
+    if (isConsentChanged(error)) {
+      // Loading the current state lets the list follow a pending scan.
+      await consentState.load(plugin.plugin_id).catch(() => undefined)
+      emit('stale')
+    }
     ElMessage.error(t('pluginConsent.saveFailed'))
   } finally {
     busy.value = null

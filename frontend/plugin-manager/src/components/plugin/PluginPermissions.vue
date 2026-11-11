@@ -161,13 +161,15 @@ async function approve() {
   const details = record.value
   if (!details) return
   busy.value = 'approve'
+  let saved = false
   try {
     await consentState.approve(props.pluginId, consentSnapshot(details))
+    saved = true
     if (!running.value && (await startGate.startWithConsent(props.pluginId))) {
       ElMessage.success(t('messages.pluginStarted'))
     }
   } catch {
-    ElMessage.error(t('messages.startFailed'))
+    ElMessage.error(t(saved ? 'messages.startFailed' : 'pluginConsent.saveFailed'))
   } finally {
     busy.value = null
     refreshReport()
