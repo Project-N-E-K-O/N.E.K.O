@@ -1046,9 +1046,10 @@ def test_the_arbitration_prompt_never_claims_a_detector():
 
 
 @pytest.mark.asyncio
-async def test_restoring_an_arbitration_loser_needs_no_index_work(tmp_path):
-    """Archived rows — losers included — are all in the index, so a restore
-    has nothing to schedule.
+async def test_restoring_a_cold_loser_indexes_only_the_new_copy(tmp_path):
+    """Losers stay in the index under their old ids, so a restore only indexes
+    the copy it adds (cold restores use a new id) and never re-indexes or
+    invalidates the old one.
 
     The alternative (exclude losers, then re-index or invalidate on restore)
     was tried and reverted: every step of that compensation swallows its own
@@ -1084,8 +1085,12 @@ async def test_restoring_an_arbitration_loser_needs_no_index_work(tmp_path):
             "arbitration_archived_at": "2026-07-01T00:00:00",
         }], fh)
 
-    assert await store.arestore_arbitrated_fact("小天", 1) is True
-    assert touched == []
+    # The legacy loser moves to cold storage at the archive window first.
+    store.load_facts("小天")
+    with store._get_lock("小天"):
+        assert store._migrate_cold_rows_locked("小天") == 1
+    [back] = await store.arestore_cold_facts("小天", lambda row: row["id"] == 1)
+    assert touched == [("index", ("小天", back["id"], "旧的整数 id 行"))]
 
 
 def test_the_backfill_keeps_arbitration_losers_indexed(tmp_path):

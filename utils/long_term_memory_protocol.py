@@ -21,6 +21,10 @@ _ID_LIST_FIELDS = frozenset(("sourceMessageIds", "sourceFactIds", "sourceReflect
 _TEXT_FIELDS = frozenset(("sourceSyncId", "supersededById", "absorbedInto", "relationType", "temporalScope", "subZeroLastIncrementDate", "synthesisBatchId"))
 _STATUS = frozenset(("active", "pending", "confirmed", "promoted", "promote_blocked", "denied", "superseded", "retracted", "merged", "archived"))
 _REVIEW = frozenset(("supported", "unsupported", "missing_sources"))
+COLD_MAX = 20_000
+_COLD_STATUS = {"fact": frozenset(("superseded", "retracted")),
+                "reflection": frozenset(("archived",)), "persona": frozenset(("archived",))}
+_COLD_FIELDS = frozenset(("kind", "subject", "id", "status", "archivedAt"))
 
 
 def _text(value, limit):
@@ -39,6 +43,41 @@ def _identifier(value, limit):
 def _number(value):
     if type(value) not in (int, float) or not math.isfinite(value) or abs(value) > MAX_INTEGER:
         raise ValueError('invalid_long_term_memory')
+
+
+def _timestamp(value):
+    """Millisecond times must also convert to a calendar date, as clients parse them."""
+    _number(value)
+    try:
+        datetime(1970, 1, 1) + timedelta(milliseconds=value)
+    except OverflowError:
+        raise ValueError("invalid_long_term_memory") from None
+
+
+def _cold(value, active):
+    """Cold-stored rows travel as identities and states only; their text stays on the device.
+
+    Same shape the sync service checks: no row both cold and an entry, no
+    repeated row, at most COLD_MAX rows.
+    """
+    if not isinstance(value, list) or len(value) > COLD_MAX:
+        raise ValueError("invalid_long_term_memory")
+    seen = set()
+    for row in value:
+        if (not isinstance(row, dict) or not isinstance(row.get("kind"), str) or row["kind"] not in KINDS
+                or not isinstance(row.get("status"), str) or row["status"] not in _COLD_STATUS[row["kind"]]):
+            raise ValueError("invalid_long_term_memory")
+        superseded = row["kind"] == "fact" and row["status"] == "superseded"
+        if (set(row) != _COLD_FIELDS | ({"supersededById"} if superseded and "supersededById" in row else set())
+                or not isinstance(row["subject"], str) or row["subject"] not in SUBJECTS):
+            raise ValueError("invalid_long_term_memory")
+        identity = (row["kind"], row["subject"], _identifier(row["id"], 200))
+        if identity in seen or identity in active:
+            raise ValueError("invalid_long_term_memory")
+        seen.add(identity)
+        _timestamp(row["archivedAt"])
+        if "supersededById" in row:
+            _text(row["supersededById"], 200)
 
 
 def _event_when(value):
@@ -134,7 +173,7 @@ def _top_level(value):
     version = value.get("schemaVersion")
     if version == 3:
         required = {"schemaVersion", "completedAt", "entries", "evidence", "progress"}
-        return required <= set(value) <= required | {"organizer", "maintenance", "lineage"}
+        return required <= set(value) <= required | {"organizer", "maintenance", "lineage", "cold"}
     return set(value) == ({"schemaVersion", "completedAt", "entries", "evidence"} if version == 2
                           else {"schemaVersion", "completedAt", "entries"})
 
@@ -230,6 +269,8 @@ def document(value):
         # holding that revision do not mistake the missing entries for deletions.
         if 'lineage' in value and (type(value['lineage']) is not int or not 1 <= value['lineage'] <= MAX_INTEGER):
             raise ValueError('invalid_long_term_memory')
+        if 'cold' in value:
+            _cold(value['cold'], seen)
     return deepcopy(value)
 
 

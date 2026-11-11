@@ -161,6 +161,7 @@ class PersistenceMixin:
                     with open(path, encoding='utf-8') as f:
                         data = json.load(f)
                 if isinstance(data, dict):
+                    self._drop_cold_copies(name, data)
                     migrated = self._migrate_v1_entity_keys(data)
                     if self._is_persona_empty(data):
                         self._migrate_from_settings(name, data)
@@ -183,6 +184,17 @@ class PersistenceMixin:
         self._personas[name] = persona
         self.save_persona(name, persona)
         return persona
+
+    def _drop_cold_copies(self, name: str, persona: dict) -> None:
+        """Drop private persona entries also held in the archive shards (cold storage wins)."""
+        from memory import cold_store
+        directory = os.path.join(self._config_manager.memory_dir, name)
+        for subject, section in persona.items():
+            if not isinstance(section, dict) or not isinstance(section.get('facts'), list):
+                continue
+            section['facts'] = cold_store.without_cold_copies(
+                directory, 'persona', section['facts'], lambda _row, subject=subject: subject,
+            )
 
     async def aensure_persona(self, name: str) -> dict:
         """Thread-safe wrapper. The two branches that `asave_persona()` to disk —
@@ -246,6 +258,7 @@ class PersistenceMixin:
                 if isinstance(data, dict):
                     if strict_read:
                         self._validate_private_persona_sections(data)
+                    await asyncio.to_thread(self._drop_cold_copies, name, data)
                     migrated = self._migrate_v1_entity_keys(data)
                     if self._is_persona_empty(data):
                         await self._async_migrate_from_settings(name, data)

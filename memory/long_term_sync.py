@@ -11,9 +11,10 @@ from pathlib import Path
 import sys
 from uuid import uuid4
 
+from memory import cold_store
 from memory.evidence import count_fact_sources
 from memory.introspection import PERMANENT_SUPPRESSION_KEY, is_permanently_suppressed
-from memory.long_term_merge import empty_evidence, merge_retirement
+from memory.long_term_merge import COLD_MAX, coldened, empty_evidence, merge_retirement
 from utils.long_term_memory_protocol import MAX_ENTRIES, SCHEMA_VERSION, document, head
 from utils.recent_memory_protocol import canonical
 
@@ -21,7 +22,10 @@ from utils.recent_memory_protocol import canonical
 SUBJECTS = ('master', 'neko', 'relationship')
 FILES = {'persona': 'persona.json', 'facts': 'facts.json', 'archive': 'facts_archive.json', 'reflections': 'reflections.json', 'sync': 'long_term_portable.json'}
 JOURNAL = '.long_term_apply.json'
-ARCHIVES = {'personaArchives': 'persona_archive', 'reflectionArchives': 'reflection_archive'}
+# Views holding cold rows an import moves into cold storage, each as new shards
+# (relative path -> rows). A cold row's text never enters a snapshot: the views
+# read from disk carry only stubs of what is already cold (``coldStubs``).
+COLD_VIEWS = {'factCold': 'fact', 'reflectionArchives': 'reflection', 'personaArchives': 'persona'}
 
 
 class LongTermMemoryRecoveryRequired(RuntimeError):
@@ -43,11 +47,8 @@ class LongTermEvidenceCapacityExceeded(LongTermMemoryCapacityExceeded):
         ValueError.__init__(self, 'long_term_memory_evidence_capacity_exceeded')
 
 
-class LongTermArchiveSubjectUnavailable(ValueError):
-    """A legacy archive has no unambiguous subject evidence left locally."""
-
-    def __init__(self):
-        super().__init__('long_term_archive_subject_unavailable')
+# A legacy persona archive row has no unambiguous subject evidence left locally.
+LongTermArchiveSubjectUnavailable = cold_store.ColdArchiveSubjectUnavailable
 
 
 class RetirementSubjectConflict(ValueError):
@@ -101,13 +102,12 @@ def consistent_view_read(path):
 
 
 def managed_path(relative):
-    return relative in FILES.values() or relative == 'reflections_archive.json' or bool(
-        re.fullmatch(r'(?:persona_archive|reflection_archive)/[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9a-f]{8}\.json', relative))
+    return relative in FILES.values() or relative == 'reflections_archive.json' or cold_store.is_managed_relative(relative)
 
 
 def view_files(views):
     return {**{filename: views[key] for key, filename in FILES.items()},
-            **{relative: rows for key in ARCHIVES for relative, rows in views.get(key, {}).items()}}
+            **{relative: rows for key in COLD_VIEWS for relative, rows in views.get(key, {}).items()}}
 
 
 EVIDENCE_FIELDS = {'reinforcement': 'reinforcement', 'disputation': 'disputation', 'importance': 'importance',
@@ -195,65 +195,76 @@ def read_views(directory, *, recovering=False, repair_archive=None):
         if not isinstance(value, dict if key in ('persona', 'sync') else list):
             raise ValueError('invalid_long_term_memory')
         result[key] = value
-    from memory.archive_shards import _list_shard_files
-    for key, folder in ARCHIVES.items():
+    try:
+        result['coldStubs'] = cold_store.sync_stubs(directory, repair=repair_archive)
+        # Names only, so a new shard an import writes never lands on an existing file.
+        result['coldShardNames'] = cold_store.shard_relatives(directory)
+    except cold_store.ColdStoreUnreadable as error:
+        raise ValueError('invalid_long_term_archive') from error
+    for key in COLD_VIEWS:
         result[key] = {}
-        paths = [f'{folder}/{filename}' for filename, _, _ in _list_shard_files(str(Path(directory) / folder))]
-        if key == 'reflectionArchives' and (Path(directory) / 'reflections_archive.json').exists():
-            paths.append('reflections_archive.json')
-        for relative in paths:
-            rows = json.loads((Path(directory) / relative).read_text(encoding='utf-8'))
-            if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
-                raise ValueError('invalid_long_term_archive')
-            result[key][relative] = rows
-    # Older persona shards omit their subject; the durable archive event owns it.
-    unresolved = {(relative.rsplit('/', 1)[-1], row.get('id')) for relative, rows in result['personaArchives'].items()
-                  for row in rows if private(row) and not row.get('entity_key')}
-    subjects = {}
-    if unresolved:
-        copies = Counter((relative.rsplit('/', 1)[-1], row.get('id')) for relative, rows in result['personaArchives'].items()
-                         for row in rows if private(row))
-        try:
-            with (Path(directory) / 'events.ndjson').open(encoding='utf-8') as events:
-                for line in events:
-                    try:
-                        event = json.loads(line)
-                    except ValueError:
-                        continue
-                    if not isinstance(event, dict) or not isinstance(event.get('payload'), dict):
-                        continue
-                    payload = event.get('payload') or {}
-                    if not isinstance(payload.get('archive_shard_path'), str) or not isinstance(payload.get('entry_id'), str):
-                        continue
-                    identity = (payload.get('archive_shard_path'), payload.get('entry_id'))
-                    if identity in unresolved and event.get('type') == 'persona.fact_added' and payload.get('entity_key') in SUBJECTS:
-                        snapshot = payload.get('entry_snapshot')
-                        stamp = payload.get('archived_at') or (snapshot.get('archived_at') if isinstance(snapshot, dict) else None)
-                        if stamp is not None and not isinstance(stamp, str):
-                            continue
-                        subjects.setdefault(identity, set()).add((stamp, payload['entity_key']))
-        except FileNotFoundError:
-            pass
-        unavailable = False
-        for relative, rows in result['personaArchives'].items():
-            repaired = False
-            for row in rows:
-                if private(row) and not row.get('entity_key'):
-                    identity = (relative.rsplit('/', 1)[-1], row.get('id'))
-                    candidates = subjects.get(identity, ())
-                    matched = {subject for stamp, subject in candidates if stamp and stamp == row.get('archived_at')}
-                    if not matched and copies[identity] == 1 and all(not stamp for stamp, _ in candidates):
-                        matched = {subject for _, subject in candidates}
-                    if len(matched) != 1:
-                        unavailable = True
-                    else:
-                        row['entity_key'] = matched.pop()
-                        repaired = True
-            if repaired and repair_archive is not None:
-                repair_archive(relative, rows)
-        if unavailable:
-            raise LongTermArchiveSubjectUnavailable()
     return result
+
+
+def _cold_key(kind, subject, row):
+    return kind, subject, row.get('id') or row.get('legacy_id') or _entry_id(subject, row)
+
+
+def _portable_id(value):
+    return isinstance(value, str) and bool(value.strip()) and len(value) <= 200 and value == value.strip()
+
+
+def _cold_listing(kind, row):
+    """The cold-list item for a cold row (a stub or a whole demoted row), or None when it is not shared."""
+    subject = row.get('entity_key' if kind == 'persona' else 'entity')
+    if not private(row) or subject not in SUBJECTS or (kind == 'persona' and row.get('source') == 'character_card'):
+        return None
+    key = _cold_key(kind, subject, row)
+    if not _portable_id(key[2]):
+        return None
+
+    def instant(*fields):
+        for field in fields:
+            try:
+                value = timestamp(row.get(field))
+            except (TypeError, ValueError, OverflowError, OSError):
+                continue
+            if value and iso(value) is not None:
+                return value
+        return 0
+    if kind == 'fact':
+        if not row.get('arbitration_archived_at'):
+            return None
+        item = {'kind': kind, 'subject': subject, 'id': key[2],
+                'status': 'superseded' if row.get('superseded_by') else 'retracted',
+                'archivedAt': instant('arbitration_archived_at', 'updated_at', 'created_at')}
+        if row.get('superseded_by') and _portable_id(str(row['superseded_by'])):
+            item['supersededById'] = str(row['superseded_by'])
+        return item
+    return {'kind': kind, 'subject': subject, 'id': key[2], 'status': 'archived',
+            'archivedAt': instant('archived_at', 'updated_at', 'created_at')}
+
+
+def local_cold_items(views):
+    """Cold-list items for every cold row this device holds, including demoted rows not yet moved."""
+    stubs = views.get('coldStubs') or {}
+    items = [_cold_listing(kind, row) for kind in ('fact', 'reflection', 'persona') for row in stubs.get(kind, [])]
+    from memory.facts import _is_cold_row
+    items += [_cold_listing('fact', row) for row in views.get('archive', []) if isinstance(row, dict) and _is_cold_row(row)]
+    return [item for item in items if item is not None]
+
+
+def _cold_list(views, state):
+    """The ``cold`` list to publish: the shared list, then what went cold here since."""
+    def key(item):
+        return item['kind'], item['subject'], item['id']
+    listed = [deepcopy(item) for item in state.get('cold') or []]
+    known = {key(item) for item in listed} | {tuple(item) for item in state.get('coldPruned') or []}
+    for item in local_cold_items(views):
+        if key(item) not in known:
+            known.add(key(item))
+            listed.append(item)
+    return listed[-COLD_MAX:]
 
 
 def export_document(views, completed_at, *, source_evidence=None):
@@ -261,7 +272,9 @@ def export_document(views, completed_at, *, source_evidence=None):
            and row.get('_near_dup_pending') for row in views.get('facts', [])):
         raise ValueError('long_term_memory_arbitration_pending')
     rows = {}
-    arbitrated_facts = {}
+    state = views.get('sync') or {}
+    cold = _cold_list(views, state)
+    cold_keys = {(item['kind'], item['subject'], item['id']) for item in cold}
 
     def add(kind, subject, value, *, archived=False):
         if not private(value) or subject not in SUBJECTS:
@@ -374,22 +387,13 @@ def export_document(views, completed_at, *, source_evidence=None):
             if isinstance(marker, dict) and marker.get('merged_into'):
                 metadata['supersededById'] = str(marker['merged_into'])[:200]
         identity = (kind, subject, key)
-        if kind == 'fact':
-            if archived and native.get('arbitration_archived_at'):
-                arbitrated_facts[identity] = native.get('arbitration_restored_at')
-            elif not archived and identity in arbitrated_facts:
-                # Two-file commits can leave both copies. An explicit restore changes
-                # the native restore marker even when the wall clock moves backwards.
-                restored = native.get('arbitration_restored_at')
-                if not restored or restored == arbitrated_facts[identity]:
-                    return
-        if identity not in rows or not archived or (kind == 'fact' and native.get('arbitration_archived_at')):
+        if identity in cold_keys or (kind == 'fact' and _is_cold_row(native)):
+            # A cold row travels as its cold-list item only, whatever copy is left elsewhere.
+            return
+        if identity not in rows or not archived:
             rows[identity] = {'kind': kind, 'subject': subject, 'id': key, 'text': text, 'metadata': metadata}
 
-    for key, kind, subject_key in [('personaArchives', 'persona', 'entity_key'), ('reflectionArchives', 'reflection', 'entity')]:
-        for values in views.get(key, {}).values():
-            for value in values:
-                add(kind, value.get(subject_key), value, archived=True)
+    from memory.facts import _is_cold_row
     for subject in SUBJECTS:
         section = views['persona'].get(subject) or {}
         for value in section.get('facts', []):
@@ -401,9 +405,9 @@ def export_document(views, completed_at, *, source_evidence=None):
     for value in views['reflections']:
         if isinstance(value, dict):
             add('reflection', value.get('entity'), value)
-    state = views.get('sync') or {}
     for entry in state.get('dormantEntries', []):
-        rows.setdefault((entry['kind'], entry['subject'], entry['id']), deepcopy(entry))
+        if (entry['kind'], entry['subject'], entry['id']) not in cold_keys:
+            rows.setdefault((entry['kind'], entry['subject'], entry['id']), deepcopy(entry))
     if len(rows) > MAX_ENTRIES:
         raise LongTermMemoryCapacityExceeded()
     progress = state.get('progress') or {}
@@ -413,6 +417,8 @@ def export_document(views, completed_at, *, source_evidence=None):
     for field in ('organizer', 'maintenance', 'lineage'):
         if state.get(field):
             exported[field] = deepcopy(state[field])
+    if cold:
+        exported['cold'] = cold
     return document(exported)
 
 
@@ -438,7 +444,7 @@ def import_document(incoming, existing, *, merged=False, source_evidence=None, k
     them are kept untouched, and its evidence replaces the local evidence
     instead of being joined with it.
     """
-    incoming = document(incoming)
+    incoming = coldened(document(incoming))
     previous_state = existing.get('sync') or {}
     validate_retirement_subjects(previous_state.get('evidence', {}).get('retirements', []),
                                  incoming.get('evidence', {}).get('retirements', []))
@@ -450,6 +456,22 @@ def import_document(incoming, existing, *, merged=False, source_evidence=None, k
         value = incoming.get(field) if current_schema else previous_state.get(field)
         if value:
             result['sync'][field] = deepcopy(value)
+    cold = _incoming_cold(incoming, previous_state, current_schema)
+    cold_keys = {(item['kind'], item['subject'], item['id']) for item in cold}
+    if cold:
+        result['sync']['cold'] = cold
+    held_cold = {(item['kind'], item['subject'], item['id']) for item in local_cold_items(existing)}
+    # A listed row this device holds and the list has since dropped was pruned by
+    # the organizer: it must not be listed again from here.
+    pruned = ({tuple(item) for item in previous_state.get('coldPruned') or []}
+              | {(item['kind'], item['subject'], item['id']) for item in previous_state.get('cold') or []}) & held_cold
+    pruned -= cold_keys
+    if pruned:
+        result['sync']['coldPruned'] = [list(item) for item in sorted(pruned)]
+    for key in COLD_VIEWS:
+        result[key] = {}
+    moved_fact_sources = _move_listed_rows_to_cold(result, cold, held_cold, incoming['completedAt'],
+                                                   existing.get('coldShardNames', ()))
     if not merged:
         for field, key in [('retirements', 'id'), ('confirmations', 'fingerprint')]:
             retained = {row[key]: deepcopy(row) for row in previous_state.get('evidence', {}).get(field, [])}
@@ -460,19 +482,13 @@ def import_document(incoming, existing, *, merged=False, source_evidence=None, k
                     row = merge_retirement(previous, row)
                 retained[row[key]] = row
             result['sync']['evidence'][field] = list(retained.values())
-    local_persona = {(row.get('entity_key'), _entry_id(row.get('entity_key'), row)): row
-                     for rows in existing.get('personaArchives', {}).values() for row in rows
-                     if isinstance(row, dict) and private(row) and row.get('source') != 'character_card'}
-    local_persona.update({(subject, _entry_id(subject, row)): row for subject in SUBJECTS
+    local_persona = {(subject, _entry_id(subject, row)): row for subject in SUBJECTS
                      for row in existing['persona'].get(subject, {}).get('facts', [])
-                     if isinstance(row, dict) and private(row) and row.get('source') != 'character_card'})
+                     if isinstance(row, dict) and private(row) and row.get('source') != 'character_card'}
     local_facts = {(row.get('entity'), _entry_id(row.get('entity'), row)): row
                    for row in existing['archive'] + existing['facts'] if isinstance(row, dict) and private(row)}
     local_reflections = {(row.get('entity'), _entry_id(row.get('entity'), row)): row
-                         for rows in existing.get('reflectionArchives', {}).values() for row in rows
-                         if isinstance(row, dict) and private(row)}
-    local_reflections.update({(row.get('entity'), _entry_id(row.get('entity'), row)): row
-                             for row in existing['reflections'] if isinstance(row, dict) and private(row)})
+                         for row in existing['reflections'] if isinstance(row, dict) and private(row)}
     pending = set()
     if merged:
         # A row the document leaves as this device already exports it stays as it is:
@@ -517,11 +533,6 @@ def import_document(incoming, existing, *, merged=False, source_evidence=None, k
         result[field] = [row for row in result[field] if isinstance(row, dict)
                          and (not private(row) or row.get('entity') not in SUBJECTS
                               or retained('fact', row.get('entity'), row))]
-    for key, kind, subject_key in [('personaArchives', 'persona', 'entity_key'), ('reflectionArchives', 'reflection', 'entity')]:
-        result[key] = {relative: [row for row in rows if not private(row) or row.get(subject_key) not in SUBJECTS
-                      or row.get('source') == 'character_card' or retained(kind, row.get(subject_key), row)
-                      or retired(kind, row.get(subject_key), row)]
-                      for relative, rows in result.get(key, {}).items()}
     incoming_reflections = {(row['subject'], row['id']) for row in incoming['entries'] if row['kind'] == 'reflection'}
     result['reflections'] = [row for row in result['reflections'] if isinstance(row, dict)
         and (not private(row) or row.get('entity') not in SUBJECTS or retained('reflection', row.get('entity'), row)
@@ -530,8 +541,15 @@ def import_document(incoming, existing, *, merged=False, source_evidence=None, k
                  and (not isinstance(row.get('id'), str)
                       or (row.get('entity'), row.get('id')) not in incoming_reflections)))]
     incoming_fact_sources = {row['id']: _incoming_fact_source(row) for row in incoming['entries'] if row['kind'] == 'fact'}
-    withdrawn_facts = {row['id'] for row in incoming['entries']
-                       if row['kind'] == 'fact' and row['metadata'].get('status') == 'retracted'}
+    withdrawn_facts = ({row['id'] for row in incoming['entries']
+                        if row['kind'] == 'fact' and row['metadata'].get('status') == 'retracted'}
+                       | {item['id'] for item in cold if item['kind'] == 'fact' and item['status'] == 'retracted'})
+    # A cold fact still counts by its status; its source is known when this device holds it.
+    incoming_fact_sources.update(moved_fact_sources)
+    incoming_fact_sources.update({row['id']: row.get('source')
+                                  for row in (existing.get('coldStubs') or {}).get('fact', [])
+                                  if row.get('id') and private(row)
+                                  and ('fact', row.get('entity'), row['id']) in cold_keys})
     # Rows kept untouched stay after this import, so their source is the one that holds.
     incoming_fact_sources.update({row['id']: row.get('source') for row in result['archive'] + result['facts']
                                   if isinstance(row, dict) and row.get('id') and private(row)})
@@ -539,9 +557,8 @@ def import_document(incoming, existing, *, merged=False, source_evidence=None, k
         kind, subject, meta = row['kind'], row['subject'], row['metadata']
         if (kind, subject, row['id']) in pending or (kind, subject, row['id']) in locally_retired:
             continue
-        formally_archived = kind != 'fact' and (meta.get('archivedAt') is not None or meta.get('archived'))
-        arbitrated = kind == 'fact' and meta.get('archived') and meta.get('archivedAt') is not None and meta.get('status') in ('retracted', 'superseded')
-        if not formally_archived and not arbitrated and (meta.get('voidedAt') is not None or meta.get('status') in ('denied', 'retracted', 'superseded', 'merged')):
+        # Whole demoted rows were turned into cold-list items on the way in.
+        if meta.get('voidedAt') is not None or meta.get('status') in ('denied', 'retracted', 'superseded', 'merged'):
             result['sync']['dormantEntries'].append(deepcopy(row))
             continue
         native = {'_sync_metadata': deepcopy(meta), 'id': row['id'], 'text': row['text'], 'source_sync_id': meta.get('sourceSyncId') or f'snapshot:{row["id"]}'[:200]}
@@ -591,11 +608,7 @@ def import_document(incoming, existing, *, merged=False, source_evidence=None, k
                 for field in ('source', 'source_id', 'external_import'):
                     if field in previous:
                         native[field] = deepcopy(previous[field])
-            if formally_archived:
-                native['entity_key'] = subject
-                _append_archive(result, 'personaArchives', native, incoming['completedAt'])
-            else:
-                result['persona'][subject]['facts'].append(native)
+            result['persona'][subject]['facts'].append(native)
         elif kind == 'fact':
             native.update(entity=subject, source=_incoming_fact_source(row),
                           importance=meta.get('importance', 5), absorbed=bool(meta.get('absorbed')),
@@ -621,10 +634,6 @@ def import_document(incoming, existing, *, merged=False, source_evidence=None, k
                 proof = merge_fact_source_evidence(previous, native)
                 native.pop('source_created_at', None)
                 native.update(proof)
-            if arbitrated:
-                native.update(arbitration_archived_at=iso(meta['archivedAt']), arbitration_reason='dedup_arbitration')
-                if meta.get('supersededById'):
-                    native['superseded_by'] = meta['supersededById']
             if meta.get('eventAt') is not None:
                 native['event_start_at'] = iso(meta['eventAt'])
             result['archive' if meta.get('archived') else 'facts'].append(native)
@@ -666,10 +675,7 @@ def import_document(incoming, existing, *, merged=False, source_evidence=None, k
                     [{'source': incoming_fact_sources[fid]} for fid in native['source_fact_ids']])
                 native['counted_fact_ids'] = sorted(native['source_fact_ids'])
             _carried_fact_accounting(native, meta, incoming_fact_sources, withdrawn_facts, previous)
-            if formally_archived:
-                _append_archive(result, 'reflectionArchives', native, incoming['completedAt'])
-            else:
-                result['reflections'].append(native)
+            result['reflections'].append(native)
     # A row left untouched may still rest on facts this document changed: one upgraded
     # to the user's own words, or withdrawn. Its counts follow the facts as they now stand.
     kept = [*result['reflections'], *(row for subject in SUBJECTS for row in result['persona'].get(subject, {}).get('facts', []))]
@@ -714,21 +720,83 @@ def _incoming_fact_source(row):
     return row['metadata'].get('source', 'ai_disclosure' if row['subject'] == 'neko' else 'user_observation')
 
 
-def _append_archive(views, key, entry, completed):
+def _incoming_cold(incoming, previous_state, current_schema):
+    """The cold list after this import. An older document knows nothing of it, so it only adds."""
+    if current_schema:
+        return deepcopy(incoming.get('cold') or [])
+    listed = deepcopy(previous_state.get('cold') or [])
+    known = {(item['kind'], item['subject'], item['id']) for item in listed}
+    for item in incoming.get('cold') or []:
+        if (item['kind'], item['subject'], item['id']) not in known:
+            listed.append(deepcopy(item))
+    return listed[-COLD_MAX:]
+
+
+def _move_listed_rows_to_cold(views, cold, held_cold, completed, taken):
+    """Move this device's copies of listed rows into cold storage; returns the moved facts' sources.
+
+    A copy already cold here only leaves the active views. The rest go to new
+    cold shards, stamped as the list says: a fact as an arbitration loser
+    (``superseded_by`` when the list names a survivor), a reflection or
+    persona entry as archived.
+    """
+    listed = {(item['kind'], item['subject'], item['id']): item for item in cold}
+    if not listed:
+        return {}
+    sources = {}
+
+    def take(kind, subject, row):
+        if not isinstance(row, dict) or not private(row) or subject not in SUBJECTS:
+            return False
+        key = (kind, subject, _entry_id(subject, row))
+        item = listed.get(key)
+        if item is None:
+            return False
+        if kind == 'fact':
+            sources[key[2]] = row.get('source')
+        if key in held_cold:
+            return True
+        copy = deepcopy(row)
+        archived_at = iso(item['archivedAt']) or iso(completed)
+        if kind == 'fact':
+            if not copy.get('arbitration_archived_at'):
+                copy.update(arbitration_archived_at=archived_at, arbitration_reason='dedup_arbitration')
+            if item.get('supersededById'):
+                copy['superseded_by'] = item['supersededById']
+            _append_cold(views, 'factCold', copy, completed, taken)
+        else:
+            if kind == 'persona':
+                copy['entity_key'] = subject
+            copy.setdefault('archived_at', archived_at)
+            _append_cold(views, 'personaArchives' if kind == 'persona' else 'reflectionArchives', copy, completed, taken)
+        return True
+
+    for field in ('facts', 'archive'):
+        views[field] = [row for row in views[field] if not take('fact', row.get('entity') if isinstance(row, dict) else None, row)]
+    views['reflections'] = [row for row in views['reflections']
+                            if not take('reflection', row.get('entity') if isinstance(row, dict) else None, row)]
+    for subject in SUBJECTS:
+        section = views['persona'].get(subject)
+        if isinstance(section, dict) and isinstance(section.get('facts'), list):
+            section['facts'] = [row for row in section['facts'] if not take('persona', subject, row)]
+    return sources
+
+
+def _append_cold(views, key, entry, completed, taken):
+    """Put a row into a new cold shard of the views; existing shard files are never rewritten here."""
     from config import ARCHIVE_FILE_MAX_ENTRIES
-    from memory.archive_shards import shard_filename_for
-    archived_at = entry.get('archived_at') or iso(completed)
-    entry['archived_at'] = archived_at
-    date = datetime.fromisoformat(archived_at)
-    folder = ARCHIVES[key]
+    kind = COLD_VIEWS[key]
+    stamp = entry.get('archived_at') or entry.get('arbitration_archived_at') or iso(completed)
+    try:
+        date = datetime.fromisoformat(stamp)
+    except (TypeError, ValueError):
+        date = datetime.fromisoformat(iso(completed))
     shards = views.setdefault(key, {})
-    relative = next((path for path, rows in shards.items()
-                     if path.startswith(f'{folder}/{date:%Y-%m-%d}_') and len(rows) < ARCHIVE_FILE_MAX_ENTRIES), None)
+    relative = next((path for path, rows in shards.items() if len(rows) < ARCHIVE_FILE_MAX_ENTRIES), None)
     if relative is None:
-        relative = f'{folder}/{shard_filename_for(date)}'
-        while relative in shards:
-            relative = f'{folder}/{shard_filename_for(date)}'
-    entry['archive_shard_path'] = relative.rsplit('/', 1)[-1]
+        relative = cold_store.new_shard_relative(kind, date, [*taken, *shards])
+    if kind != 'fact':
+        entry['archive_shard_path'] = relative.rsplit('/', 1)[-1]
     shards.setdefault(relative, []).append(entry)
 
 
