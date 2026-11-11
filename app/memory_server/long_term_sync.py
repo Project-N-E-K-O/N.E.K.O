@@ -23,7 +23,7 @@ from services.chat_sync.long_term_events import changed
 from services.chat_sync.writer import ChatSyncWriter, registered_writer, store_connection
 from utils.config_manager.reserved_schema import get_character_uid
 from utils.file_utils import atomic_write_json, atomic_write_text
-from utils.cloudsave_runtime import assert_cloudsave_writable
+from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 
 from . import runtime
 from ._shared import logger, validate_lanlan_name
@@ -327,12 +327,17 @@ def _renewed_with(name, document, base, device, now):
         return document
     path = Path(runtime._config_manager.memory_dir) / name / 'long_term_portable.json'
     with runtime.fact_store._get_lock(name):
-        state = json.loads(path.read_text(encoding='utf-8'))
-        if state.get('organizer') != held:
+        try:
+            state = json.loads(path.read_text(encoding='utf-8'))
+            if not isinstance(state, dict) or state.get('organizer') != held:
+                return document
+            renewed = {**held, 'renewedAt': max(now, held['renewedAt'] + 1)}
+            assert_cloudsave_writable(runtime._config_manager, operation='sync', target=f'memory/{name}/long_term_portable.json')
+            atomic_write_json(path, {**state, 'organizer': renewed}, ensure_ascii=False, indent=2)
+        except (OSError, ValueError, MaintenanceModeError):
+            # Renewing here is a courtesy; the snapshot goes out as it is and the
+            # hourly renewal still runs.
             return document
-        renewed = {**held, 'renewedAt': max(now, held['renewedAt'] + 1)}
-        assert_cloudsave_writable(runtime._config_manager, operation='sync', target=f'memory/{name}/long_term_portable.json')
-        atomic_write_json(path, {**state, 'organizer': renewed}, ensure_ascii=False, indent=2)
     return {**document, 'organizer': renewed}
 
 

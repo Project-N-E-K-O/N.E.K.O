@@ -446,3 +446,25 @@ async def test_evidence_too_long_to_publish_is_reported_where_another_device_org
     write(3)
     assert owner.native._capture('Neko', False)
     assert (await owner.runtime.status())['bindings'][0]['localMemoryDiagnostics'] == []
+
+
+@pytest.mark.asyncio
+async def test_a_snapshot_still_goes_out_when_the_renewal_cannot_be_saved(owner, monkeypatch):  # noqa: F811
+    from utils.cloudsave_runtime import MaintenanceModeError
+    _synced(owner)
+    server = PublishingServer()
+    assert owner.native._tend_organizer_state('Neko', organizer.RANK_DESKTOP) is True
+    assert owner.native._capture('Neko', False)
+    await server.exchange(owner)
+    claimed = server.document['organizer']
+
+    def maintenance(*args, **kwargs):
+        raise MaintenanceModeError('synthetic')
+    monkeypatch.setattr(owner.native, 'assert_cloudsave_writable', maintenance)
+    atomic_write_json(owner.directory / 'facts.json', [native_fact('mine', 'only on this device'),
+                                                      native_fact('more', 'learned a moment later')])
+    # Renewing along the way is a courtesy: the new fact is published with the claim as it was.
+    assert owner.native._capture('Neko', False)
+    await server.exchange(owner)
+    assert server.document['organizer'] == claimed
+    assert {row['id'] for row in server.document['entries']} == {'mine', 'more'}
