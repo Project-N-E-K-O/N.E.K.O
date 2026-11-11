@@ -1988,11 +1988,404 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
 }
 
 /* ===== 底部工具栏 ===== */
+.audio-message-composer {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex-shrink: 0;
+  position: relative;
+  font-size: 12px;
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+}
+
+.audio-message-composer.is-open {
+  flex-wrap: wrap;
+}
+
+.audio-message-strip {
+  display: flex;
+  flex: 1 1 100%;
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 40px;
+  padding: 4px 5px 4px 12px;
+  border: 1px solid rgba(58, 114, 170, 0.16);
+  border-radius: 14px;
+  background: rgba(116, 174, 231, 0.12);
+  color: #274b6c;
+}
+
+.audio-message-strip button {
+  min-height: 30px;
+  border: 0;
+  border-radius: 9px;
+  padding: 5px 9px;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.audio-message-strip button:hover:not(:disabled) {
+  background: rgba(54, 111, 167, 0.11);
+}
+
+.audio-message-strip button:focus-visible {
+  outline: 2px solid #308abd;
+  outline-offset: 2px;
+}
+
+.audio-message-clock,
+.audio-message-composer .audio-message-play {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+.audio-message-recording-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: #d13c56;
+  box-shadow: 0 0 0 3px rgba(209, 60, 86, 0.14);
+}
+
+.audio-message-clock {
+  gap: 9px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.audio-message-play-icon {
+  width: 0;
+  height: 0;
+  border-block: 5px solid transparent;
+  border-inline-start: 8px solid currentColor;
+}
+
+[data-playing="true"] > .audio-message-play-icon {
+  box-sizing: border-box;
+  width: 8px;
+  height: 10px;
+  border: 0;
+  border-inline: 2px solid currentColor;
+}
+
+.message-audio-block {
+  min-width: 0;
+  max-width: 100%;
+  font-size: 0.875rem;
+  line-height: 1.35;
+}
+
+.message-bubble-user:has(> .message-audio-block:only-child),
+.compact-export-history-message.is-user .compact-export-history-bubble:has(.message-audio-block:only-child) {
+  padding: 4px 7px;
+}
+
+.message-audio-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.message-audio-block button {
+  border: 0;
+  border-radius: 8px;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.message-audio-block button:hover:not(:disabled),
+.message-audio-more[aria-expanded="true"] {
+  background: rgba(38, 88, 159, 0.09);
+}
+
+.message-audio-block button:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 1px;
+}
+
+.message-audio-block button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.message-audio-block .message-audio-play {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 7px 0 3px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.message-audio-play-disc {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  flex: none;
+  border-radius: 50%;
+  background: rgba(41, 95, 166, 0.12);
+  color: #24518a;
+}
+
+.message-audio-play-disc:not([data-playing="true"]) .audio-message-play-icon {
+  margin-inline-start: 2px;
+  border-block-width: 4px;
+  border-inline-start-width: 6px;
+}
+
+[data-theme="dark"] .message-audio-play-disc {
+  background: rgba(178, 209, 255, 0.15);
+  color: #d8e9ff;
+}
+
+.message-audio-more {
+  display: grid;
+  place-items: center;
+  min-width: 26px;
+  min-height: 32px;
+  margin-inline-start: auto;
+}
+
+.message-audio-more span {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.message-audio-menu {
+  display: grid;
+  margin-top: 3px;
+  padding-top: 3px;
+  border-top: 1px solid rgba(75, 107, 157, 0.2);
+}
+
+.message-audio-menu button,
+.message-audio-block > button {
+  padding: 5px 7px;
+  text-align: start;
+}
+
+.message-audio-status {
+  display: block;
+  margin: 2px 7px 4px;
+  font-size: 0.78rem;
+}
+
+.message-audio-transcript {
+  margin: 4px 6px 5px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(75, 107, 157, 0.2);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.audio-message-cancel {
+  margin-inline-start: auto;
+}
+
+.audio-message-composer .audio-message-send {
+  color: #fff;
+  background: #286ca5;
+  font-weight: 600;
+}
+
+.audio-message-strip .audio-message-send:hover:not(:disabled) {
+  background: #205b90;
+}
+
+[data-theme="dark"] .audio-message-strip {
+  border-color: rgba(135, 181, 225, 0.2);
+  background: rgba(99, 157, 214, 0.15);
+  color: #d8ebf7;
+}
+
+.audio-message-strip[data-recording="true"] {
+  display: grid;
+  grid-template-areas: "stop stop" "clock cancel";
+  grid-template-columns: auto auto;
+  justify-content: center;
+  gap: 2px 10px;
+  padding: 12px 14px 8px;
+  border-color: #344157;
+  border-radius: 15px;
+  background: #242d3d;
+  color: #e9f3ff;
+}
+
+.audio-message-strip[data-recording="true"] .audio-message-clock {
+  grid-area: clock;
+  justify-self: end;
+  color: #b6c5d8;
+}
+
+.audio-message-strip[data-recording="true"] .audio-message-recording-dot {
+  background: #f0798d;
+  box-shadow: 0 0 0 3px rgba(240, 121, 141, 0.15);
+}
+
+.audio-message-strip[data-recording="true"] .audio-message-cancel {
+  grid-area: cancel;
+  justify-self: start;
+  margin: 0;
+  color: #9dd7ff;
+}
+
+.audio-message-strip[data-recording="true"] .audio-message-stop {
+  grid-area: stop;
+  justify-self: center;
+  display: grid;
+  justify-items: center;
+  align-items: center;
+  gap: 7px;
+  padding: 0 4px;
+  font-weight: 600;
+  text-align: center;
+  white-space: normal;
+}
+
+.audio-message-stop-disc {
+  display: grid;
+  place-items: center;
+  width: 47px;
+  height: 47px;
+  flex: none;
+  border-radius: 50%;
+  background: #168cdb;
+  box-shadow: 0 0 0 3px rgba(66, 172, 249, 0.18);
+}
+
+.audio-message-stop-disc::after {
+  width: 13px;
+  height: 13px;
+  border-radius: 3px;
+  background: #fff;
+  content: "";
+}
+
+.audio-message-strip[data-recording="true"] button:hover:not(:disabled) {
+  background: transparent;
+  color: #fff;
+}
+
+.audio-message-stop:hover .audio-message-stop-disc {
+  background: #1d9deb;
+}
+
+.audio-message-strip[data-recording="true"] button:focus-visible {
+  outline-color: #9dd7ff;
+}
+
+.compact-chat-surface-frame .audio-message-strip[data-recording="true"] {
+  grid-template-areas: "clock stop cancel";
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  min-height: 38px;
+  padding: 3px 8px;
+}
+
+.compact-chat-surface-frame .audio-message-strip[data-recording="true"] .audio-message-clock {
+  justify-self: start;
+}
+
+.compact-chat-surface-frame .audio-message-strip[data-recording="true"] .audio-message-stop {
+  display: inline-flex;
+}
+
+.compact-chat-surface-frame .audio-message-strip[data-recording="true"] .audio-message-stop-disc {
+  width: 25px;
+  height: 25px;
+  box-shadow: 0 0 0 2px rgba(66, 172, 249, 0.18);
+}
+
+.compact-chat-surface-frame .audio-message-strip[data-recording="true"] .audio-message-stop-disc::after {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.compact-chat-surface-frame .audio-message-strip[data-recording="true"] .audio-message-cancel {
+  justify-self: end;
+  padding-inline: 4px;
+}
+
+.composer-input-shell:has(.audio-message-strip[data-recording="true"]) {
+  min-height: 0;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+.composer-input-shell:has(.audio-message-strip[data-recording="true"]) > .composer-input,
+.composer-bottom-bar:has(.audio-message-strip[data-recording="true"]) > .composer-bottom-tools {
+  display: none;
+}
+
+.composer-bottom-bar:has(.audio-message-strip[data-recording="true"]) {
+  padding: 0;
+}
+
+.composer-send-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  margin-inline-start: auto;
+}
+
+.composer-send-actions > .audio-message-composer {
+  flex-shrink: 1;
+}
+
+.audio-message-error {
+  max-width: 230px;
+  font-size: 11px;
+  line-height: 1.3;
+  color: #b52d51;
+}
+
+.compact-chat-surface-frame[data-audio-message-active="true"] > .composer-input,
+.compact-chat-surface-frame[data-audio-message-active="true"] > .compact-input-tool-toggle {
+  display: none;
+}
+
+.compact-chat-surface-frame[data-audio-message-active="true"] > .audio-message-composer {
+  flex: 1;
+}
+
 .composer-bottom-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 6px 0 10px;
+}
+
+.composer-bottom-bar:has(.audio-message-composer.is-open, .audio-message-error) {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+.composer-send-actions:has(.audio-message-composer.is-open) {
+  order: -1;
+  flex: 1 0 100%;
+}
+
+.composer-send-actions > .audio-message-composer.is-open {
+  flex: 1;
 }
 
 .composer-bottom-tools {

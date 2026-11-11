@@ -14,6 +14,14 @@
 # limitations under the License.
 
 import contextlib
+import base64
+import soxr
+from dataclasses import dataclass, field
+from typing import Awaitable, Callable
+
+from utils.asyncio_retirement import await_retirement
+
+from ._shared import TurnDetectionMode
 
 from ._shared import (
     asyncio,
@@ -23,8 +31,266 @@ from ._shared import (
 )
 
 
+_GEMINI_TRANSCRIPT_GRACE_SECONDS = 0.75
+_AUDIO_TRANSCRIPT_RETRY_DELAYS = (0.1, 0.2)
+
+
+@dataclass(slots=True, kw_only=True)
+class _AudioMessageTranscript:
+    on_transcript: Callable[..., Awaitable[bool | None]] | None
+    transcript_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    transcript_retry: asyncio.Task[None] | None = None
+    transcript: str = ""
+    published: str = ""
+    published_final: bool = False
+    finalized: bool = False
+
+    async def publish(self) -> None:
+        # Keep the first write and retry registration together if the
+        # receiver is cancelled while handling an already captured transcript.
+        await await_retirement(self._publish_and_schedule_retry())
+
+    async def _publish_and_schedule_retry(self) -> None:
+        if await self._write_transcript() is False and (
+            self.transcript_retry is None or self.transcript_retry.done()
+        ):
+            self.transcript_retry = asyncio.create_task(self._retry_transcript())
+
+    async def _write_transcript(self) -> bool | None:
+        async with self.transcript_lock:
+            # This callback owns the receipt captured at submission. A session
+            # handoff fences live delivery, while that receipt may still need
+            # the transcript that was already received.
+            if self.on_transcript is None or not self.transcript.strip():
+                return None
+            transcript, final = self.transcript, self.finalized
+            if transcript == self.published and final == self.published_final:
+                return True
+            written = await self.on_transcript(transcript, final=final)
+            if written is True:
+                self.published = transcript
+                self.published_final = final
+            return written
+
+    async def _retry_transcript(self) -> None:
+        try:
+            for delay in _AUDIO_TRANSCRIPT_RETRY_DELAYS:
+                await asyncio.sleep(delay)
+                if await self._write_transcript() is not False:
+                    return
+            logger.warning("Audio message transcript could not be stored after retry")
+        except Exception:
+            logger.exception("Audio message transcript retry failed")
+
+
+@dataclass(slots=True)
+class _GeminiAudioMessage(_AudioMessageTranscript):
+    outcome: asyncio.Future[bool]
+    transcript_ready: asyncio.Event = field(default_factory=asyncio.Event)
+    explicit_progress: bool = False
+    publish_partial: bool = False
+    pending_tool_ids: set[str] = field(default_factory=set)
+    used_tools: bool = False
+    reply_after_tools: bool = False
+
+    async def append(self, transcription) -> None:
+        if self.finalized:
+            return
+        self.transcript += transcription.text or ""
+        finished = getattr(transcription, "finished", None)
+        if finished is False:
+            self.explicit_progress = True
+        elif finished is True:
+            self.finalized = True
+        if self.finalized or (self.publish_partial and not self.explicit_progress):
+            await self.publish()
+        if self.finalized:
+            self.transcript_ready.set()
+
 
 class _AudioMixin:
+    def _observe_audio_message_event(self, event: dict) -> None:
+        if event.get("type") == "session.updated":
+            session = event.get("session")
+            session = session if isinstance(session, dict) else {}
+            audio = session.get("audio")
+            audio = audio if isinstance(audio, dict) else {}
+            audio_input = audio.get("input")
+            audio_input = audio_input if isinstance(audio_input, dict) else {}
+            confirmed = (
+                "turn_detection" in session and session["turn_detection"] is None
+            ) or ("turn_detection" in audio_input and audio_input["turn_detection"] is None)
+            # DashScope's full session snapshot omits the null turn_detection
+            # field after accepting manual mode. Do not accept an empty ACK
+            # or one that explicitly reports an active detector.
+            if (
+                self.turn_detection_mode == TurnDetectionMode.MANUAL
+                and self._api_type == "qwen"
+                and "qwen" in self._model_lower
+                and session.get("id")
+                and session.get("input_audio_format") == "pcm16"
+                and "turn_detection" not in session
+                and "turn_detection" not in audio_input
+            ):
+                confirmed = True
+            self._audio_message_manual_confirmed = confirmed
+            waiter = getattr(self, "_audio_message_manual_ack", None)
+            if waiter is not None and not waiter.done():
+                waiter.set_result(confirmed)
+        pending = getattr(self, "_audio_message_commit", None)
+        if pending is None or pending.done():
+            return
+        if event.get("type") == "input_audio_buffer.committed":
+            self._audio_message_input_item = event.get("item_id")
+            self._audio_message_input_committed = True
+            pending.set_result(None)
+        elif event.get("type") == "error":
+            pending.set_exception(ConnectionError("audio message rejected by provider"))
+
+    async def submit_audio_message(
+        self, pcm: bytes, request_id: str, *, is_current: Callable[[], bool],
+        on_accepted=None, on_transcript=None,
+    ) -> None:
+        """Submit a complete 16kHz recording with one explicit response request.
+
+        The caller owns a fresh MANUAL session and retires it on any uncertain
+        failure. Full recordings bypass microphone VAD, silence clearing and
+        the two-second live-input queue.
+        """
+        if self.turn_detection_mode != TurnDetectionMode.MANUAL or not is_current():
+            raise RuntimeError("audio messages require an owned manual session")
+        transcript = _AudioMessageTranscript(on_transcript=on_transcript) if on_transcript is not None else None
+        self._audio_message_transcript = transcript
+        self._audio_message_input_item = None
+        self._audio_message_input_committed = False
+        self._audio_message_early_transcripts = {}
+        self.note_user_turn_started()
+        if self._is_gemini:
+            from ._gemini_support import types
+
+            if types is None:
+                raise RuntimeError("Gemini Live SDK is unavailable")
+            session = self._gemini_session
+            audio_message = _GeminiAudioMessage(
+                asyncio.get_running_loop().create_future(), on_transcript=on_transcript,
+            )
+            self._gemini_audio_message = audio_message
+            try:
+                if not is_current() or session is None:
+                    raise ConnectionError("audio session superseded")
+                await session.send_realtime_input(activity_start=types.ActivityStart())
+                if not is_current():
+                    raise ConnectionError("audio session superseded")
+                await session.send_realtime_input(
+                    audio={"data": pcm, "mime_type": "audio/pcm;rate=16000"}
+                )
+                if not is_current():
+                    raise ConnectionError("audio session superseded")
+                await session.send_realtime_input(activity_end=types.ActivityEnd())
+                if not await asyncio.wait_for(audio_message.outcome, timeout=60):
+                    raise ConnectionError("Gemini audio message response interrupted")
+                if on_accepted is not None:
+                    await on_accepted()
+                if on_transcript is not None and not audio_message.transcript_ready.is_set():
+                    try:
+                        await asyncio.wait_for(
+                            audio_message.transcript_ready.wait(), timeout=_GEMINI_TRANSCRIPT_GRACE_SECONDS,
+                        )
+                    except TimeoutError:
+                        if is_current() and not audio_message.explicit_progress:
+                            # Older peers may never send a final flag. Keep the
+                            # same recording open for later transcript revisions.
+                            audio_message.publish_partial = True
+                            await audio_message.publish()
+                if audio_message.transcript_retry is not None:
+                    await asyncio.shield(audio_message.transcript_retry)
+            except BaseException:
+                if getattr(self, "_gemini_audio_message", None) is audio_message:
+                    self._gemini_audio_message = None
+                if not audio_message.outcome.done():
+                    audio_message.outcome.cancel()
+                raise
+            return
+
+        if not getattr(self, "_audio_message_manual_confirmed", False):
+            waiter = asyncio.get_running_loop().create_future()
+            self._audio_message_manual_ack = waiter
+            try:
+                if not await asyncio.wait_for(waiter, timeout=5):
+                    raise ConnectionError("provider did not confirm manual audio turns")
+            finally:
+                self._audio_message_manual_ack = None
+
+        def encode_recording() -> tuple[dict, ...]:
+            audio = pcm
+            if self._uplink_sample_rate != 16_000:
+                samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32)
+                samples = soxr.resample(samples, 16_000, self._uplink_sample_rate)
+                audio = samples.clip(-32768, 32767).astype("<i2").tobytes()
+            # One second per append stays below the WebSocket frame cap even
+            # at 24 kHz. All chunks share one commit and one response request.
+            chunk_size = self._uplink_sample_rate * 2
+            return tuple(
+                {"type": "input_audio_buffer.append",
+                 "audio": base64.b64encode(audio[offset:offset + chunk_size]).decode("ascii")}
+                for offset in range(0, len(audio), chunk_size)
+            )
+
+        append_events = await asyncio.to_thread(encode_recording)
+        if not is_current():
+            raise ConnectionError("audio session superseded")
+        committed = asyncio.get_running_loop().create_future()
+        self._audio_message_commit = committed
+        arbiter = self._ensure_response_arbiter()
+
+        async def send(event):
+            if not is_current():
+                raise ConnectionError("audio session superseded")
+            if not await self.send_event(event):
+                raise ConnectionError("audio message transport unavailable")
+            if event["type"] == "input_audio_buffer.commit":
+                await asyncio.wait_for(asyncio.shield(committed), timeout=5)
+                if on_accepted is not None:
+                    await on_accepted()
+                item_id = self._audio_message_input_item
+                early = self._audio_message_early_transcripts.pop(item_id, None)
+                self._audio_message_early_transcripts.clear()
+                if early is not None:
+                    await self._deliver_input_transcript(early, item_id=item_id)
+
+        ticket = None
+        response_event = {"type": "response.create", "event_id": "event_audio_" + request_id[-36:]}
+        # Qwen applies the output limit in session.update. Its response.create
+        # has no per-response token override.
+        if "qwen" not in self._model_lower:
+            response_event["response"] = {"max_output_tokens": 4096}
+        try:
+            ticket = await arbiter.enqueue(
+                source="audio_message",
+                events_before_response=(
+                    *append_events,
+                    {"type": "input_audio_buffer.commit"},
+                ),
+                response_event=response_event,
+                event_sender=send,
+                admission_check=is_current,
+                response_done_timeout=60,
+            )
+            await asyncio.wait_for(asyncio.shield(ticket.done), timeout=70)
+            if transcript is not None and transcript.transcript_retry is not None:
+                await asyncio.shield(transcript.transcript_retry)
+        except BaseException:
+            if ticket is not None:
+                await arbiter.cancel_ticket(ticket)
+            raise
+        finally:
+            if self._audio_message_commit is committed:
+                self._audio_message_commit = None
+            if not committed.done():
+                committed.cancel()
+            elif not committed.cancelled():
+                committed.exception()
+
     def _clear_uplink_resampler(self) -> None:
         """Drop the uplink resampler's pending FIR tail (soxr holds ~21ms of
         algorithmic delay at 16k→24k HQ).

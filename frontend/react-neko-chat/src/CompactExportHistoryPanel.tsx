@@ -127,6 +127,7 @@ export function isCompactExportMessageSelectable(message: ChatMessage) {
   // exported, so they must not count toward selectable/selected totals either —
   // otherwise the header count diverges from what's visible/selectable.
   return !!message.id && message.status !== 'sending' && !isTopicHintMessage(message)
+    && !message.blocks.some(block => block.type === 'audio_message')
     && hasVisibleMessageContent(message);
 }
 
