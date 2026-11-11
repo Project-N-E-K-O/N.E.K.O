@@ -117,7 +117,7 @@ export default function AudioMessageComposer({ target, disabled, send, onBusyCha
   }
 
   async function submit() {
-    if (submitted.current || !pcm.current) return;
+    if (disabled || submitted.current || !pcm.current) return;
     if (!messageId.current) messageId.current = `${Date.now()}-${crypto.randomUUID()}`;
     submitted.current = true;
     if (audio.current && !audio.current.paused) audio.current.pause();
@@ -195,7 +195,7 @@ export default function AudioMessageComposer({ target, disabled, send, onBusyCha
         <span className="audio-message-stop-disc" aria-hidden="true" />
         <span className="audio-message-stop-label">{stopLabel}</span>
       </button> : null}
-      {phase === 'preview' ? <button type="button" className="audio-message-send"
+      {phase === 'preview' ? <button type="button" className="audio-message-send" disabled={disabled}
         aria-label={i18n('chat.audioMessageSend', 'Send recording')} onClick={() => { void submit(); }}>
         {i18n('chat.send', 'Send')}
       </button> : null}

@@ -2684,6 +2684,22 @@ class TurnMixin:
             )
             return False
 
+        user_message = {"input_type": "transcript", "data": record_transcript_text}
+        source_value = str(source or "").strip()
+        if source_value:
+            user_message["source"] = source_value
+        if isinstance(metadata, dict) and metadata:
+            user_message["metadata"] = metadata
+        if not is_voice_source and self._active_text_request_id:
+            user_message["request_id"] = self._active_text_request_id
+        if is_submitted_recording:
+            # Queue the accepted transcript before voice hooks can yield to session shutdown.
+            user_message["request_id"] = audio_message_request_id
+            self.sync_message_queue.put({
+                "type": "audio_message_memory_transcript", "request_id": audio_message_request_id,
+                "final": audio_message_transcript_final, "data": user_message,
+            })
+
         if is_voice_source and not voice_rms_recorded:
             # Transcript arrival means VAD detected sound within the window; mark voice RMS active
             # even for empty transcripts from false VAD/transcription failures,
@@ -2749,15 +2765,6 @@ class TurnMixin:
             if record_transcript_text:
                 self._session_turn_count += 1
 
-        # Push to synchronization queue.
-        user_message = {"input_type": "transcript", "data": record_transcript_text}
-        source_value = str(source or "").strip()
-        if source_value:
-            user_message["source"] = source_value
-        if isinstance(metadata, dict) and metadata:
-            user_message["metadata"] = metadata
-        if not is_voice_source and self._active_text_request_id:
-            user_message["request_id"] = self._active_text_request_id
         raw_source = chat_input_source if chat_input_source is not None else source_value
         # A submitted recording's transcript is saved when its draft or final
         # version is selected for the turn, after the transcription grace.
@@ -2767,14 +2774,8 @@ class TurnMixin:
         if original_id:
             user_message["chat_original_source"] = {"recordId": original_id,
                 "originalTime": str(int(_transcript_arrival_ts * 1000)), "origin": "chat"}
-        if audio_message_request_id is None:
+        if not is_submitted_recording:
             self.sync_message_queue.put({"type": "user", "data": user_message})
-        else:
-            user_message["request_id"] = audio_message_request_id
-            self.sync_message_queue.put({
-                "type": "audio_message_memory_transcript", "request_id": audio_message_request_id,
-                "final": audio_message_transcript_final, "data": user_message,
-            })
         # Preserve the existing queue order before any source database await.
         # Save accepted raw text independently, even if the reply later fails.
         if original_id and getattr(self, '_config_manager', None) is not None:

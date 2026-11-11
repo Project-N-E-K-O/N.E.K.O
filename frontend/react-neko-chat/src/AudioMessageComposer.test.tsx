@@ -89,16 +89,27 @@ describe('recording draft submission', () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
-  it('reuses the same recording ID when the server refused it before submission', async () => {
-    const rejected = new Error('busy');
+  it.each(['busy', 'storage'])('keeps the same recording ID and disables retries while blocked after %s', async reason => {
+    const rejected = new Error(reason);
     rejected.name = 'AudioMessageRejected';
+    let rejectSend!: (error: Error) => void;
     const send = vi.fn<(_payload: AudioMessagePayload) => Promise<unknown>>()
-      .mockRejectedValueOnce(rejected).mockResolvedValueOnce({});
-    render(<AudioMessageComposer target="YUI" disabled={false} send={send} onBusyChange={() => {}} />);
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectSend = reject; }))
+      .mockResolvedValueOnce({});
+    const props = { target: 'YUI', send, onBusyChange: () => {} };
+    const view = render(<AudioMessageComposer {...props} disabled={false} />);
     fireEvent.click(screen.getByRole('button', { name: 'Record a voice message' }));
     fireEvent.click(await screen.findByRole('button', { name: /Stop/ }));
-    await screen.findByRole('alert');
-    fireEvent.click(screen.getByRole('button', { name: 'Send recording' }));
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    view.rerender(<AudioMessageComposer {...props} disabled />);
+    await act(async () => { rejectSend(rejected); });
+    const retry = screen.getByRole('button', { name: 'Send recording' });
+    expect(retry).toBeDisabled();
+    fireEvent.click(retry);
+    expect(send).toHaveBeenCalledTimes(1);
+    view.rerender(<AudioMessageComposer {...props} disabled={false} />);
+    expect(retry).toBeEnabled();
+    fireEvent.click(retry);
     await screen.findByRole('button', { name: 'Record a voice message' });
     expect(send).toHaveBeenCalledTimes(2);
     expect(send.mock.calls[0][0].requestId).toBe(send.mock.calls[1][0].requestId);

@@ -92,6 +92,7 @@ from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from .rows import _has_human_messages
 from memory.recent import (
     RecentHistoryWriteBlocked,
+    RecentHistoryWriteNotStarted,
     TheaterEpisodeRetracted,
     _positive_metadata_int,
     is_retracted_theater_episode,
@@ -1233,7 +1234,7 @@ async def api_restore_legacy_dedup(request: Request, lanlan_name: str):
     return {"ok": True, "restored": restored, "restored_as_new_ids": True}
 
 
-def _recent_history_write_rejection(exc: RecentHistoryWriteBlocked) -> dict:
+def _recent_history_write_rejection(exc: RecentHistoryWriteBlocked | RecentHistoryWriteNotStarted) -> dict:
     return {"status": "error", "message": str(exc), "write_started": False}
 
 
@@ -1297,7 +1298,7 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
                 async with runtime._get_settle_lock(lanlan_name):
                     try:
                         persisted = await runtime.recent_history_manager.update_history([], lanlan_name, compress=False)
-                    except RecentHistoryWriteBlocked as exc:
+                    except (RecentHistoryWriteBlocked, RecentHistoryWriteNotStarted) as exc:
                         return _recent_history_write_rejection(exc)
                 if persisted is not True:
                     return {"status": "error", "message": "pending recent history not persisted"}
@@ -1342,6 +1343,7 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
             logger.info(f"[MemoryServer] cache: {lanlan_name} +{len(input_history)} 条消息")
             uid = str(uuid4())
             retracted_request = False
+            recent_persisted = None
             theater_index_events = {}
             async with runtime._get_settle_lock(lanlan_name):
                 if theater_episode_batch:
@@ -1374,12 +1376,12 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
                         )
                 else:
                     try:
-                        await runtime.recent_history_manager.update_history(
+                        recent_persisted = await runtime.recent_history_manager.update_history(
                             input_history,
                             lanlan_name,
                             compress=False,
                         )
-                    except RecentHistoryWriteBlocked as exc:
+                    except (RecentHistoryWriteBlocked, RecentHistoryWriteNotStarted) as exc:
                         return _recent_history_write_rejection(exc)
                 if retracted_request:
                     pass
@@ -1423,7 +1425,10 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
                 render_language=request.render_language,
                 locale_admission_order=locale_admission_order,
             )
-            return {"status": "cached", "count": len(input_history)}
+            result = {"status": "cached", "count": len(input_history)}
+            if recent_persisted is False:
+                result["recent_persisted"] = False
+            return result
         except Exception as e:
             logger.error(f"[MemoryServer] cache 失败: {e}", exc_info=True)
             return {"status": "error", "message": str(e)}
@@ -1966,7 +1971,7 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
                         on_compress_done=review._on_compress_done,
                         preempted=preempted,
                     )
-            except RecentHistoryWriteBlocked as exc:
+            except (RecentHistoryWriteBlocked, RecentHistoryWriteNotStarted) as exc:
                 return _recent_history_write_rejection(exc)
             await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
 
@@ -2033,7 +2038,7 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
                             on_compress_done=review._on_compress_done,
                             preempted=preempted,
                         )
-                except RecentHistoryWriteBlocked as exc:
+                except (RecentHistoryWriteBlocked, RecentHistoryWriteNotStarted) as exc:
                     return _recent_history_write_rejection(exc)
                 await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
 
