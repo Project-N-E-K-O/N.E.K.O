@@ -330,9 +330,9 @@ async def fetch_page(raw_url: str) -> FetchedPage:
             # Routing was decided above and is passed in explicitly.
             trust_env=False,
             proxy=proxy,
-            # Behind a proxy the certificate settings of the environment still
-            # apply, as they did when the client read the environment itself.
-            verify=httpx.create_ssl_context(trust_env=True) if proxied else True,
+            # The certificate settings of the environment (SSL_CERT_FILE and
+            # the like) apply on either route.
+            verify=httpx.create_ssl_context(trust_env=True),
             headers=ensure_user_agent(None),
         )
     except (ImportError, ValueError) as exc:

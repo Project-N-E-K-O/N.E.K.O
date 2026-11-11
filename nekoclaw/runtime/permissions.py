@@ -79,6 +79,9 @@ class PermissionRequest:
     workdir: str
     path: str | None = None
     command: str | None = None
+    # Directory a command runs in: the session's working directory unless
+    # the call names another one. None for tools that run no command.
+    cwd: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -86,6 +89,7 @@ class PermissionRequest:
             "category": self.category,
             "path": self.path,
             "command": self.command,
+            "cwd": self.cwd,
             "workdir": self.workdir,
         }
 
@@ -112,7 +116,20 @@ def classify(tool: str, arguments: Mapping[str, Any], workdir: Path) -> Permissi
     """Classify one tool call into a permission category."""
     base = str(workdir)
     if tool in _COMMAND_TOOLS:
-        return PermissionRequest(tool, "run_command", base, command=str(arguments.get("command", "")))
+        # The approver must see where the command really runs.
+        override = arguments.get("workdir")
+        cwd = (
+            resolve_path(workdir, override)
+            if isinstance(override, str) and override.strip()
+            else workdir
+        )
+        return PermissionRequest(
+            tool,
+            "run_command",
+            base,
+            command=str(arguments.get("command", "")),
+            cwd=str(cwd),
+        )
     writes = tool in _WRITE_TOOLS
     if writes or tool in _READ_TOOLS:
         key = _WRITE_TOOLS[tool] if writes else _READ_TOOLS[tool]

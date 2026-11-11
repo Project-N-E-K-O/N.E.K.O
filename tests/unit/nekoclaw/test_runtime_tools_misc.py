@@ -325,6 +325,24 @@ def test_the_budget_and_the_output_cap_apply_inside_one_file(
             path, regex.compile("needle"), None, tmp_path, _budget(), case_insensitive_globs=False
         )
 
+    # Matches without any text count too: thousands of empty lines must not
+    # pile up unnoticed.
+    blank = tmp_path / "blank.txt"
+    blank.write_bytes(b"\n" * 5000)
+
+    def grep_blank_lines() -> list[search.GrepMatch]:
+        return search.grep_files(
+            blank, regex.compile("^$"), None, tmp_path, _budget(), case_insensitive_globs=False
+        )
+
+    with pytest.raises(ToolError, match="more output than can be processed"):
+        grep_blank_lines()
+    monkeypatch.setattr(search, "SEARCH_RAW_OUTPUT_MAX_BYTES", 20_000_000)
+    assert len(grep_blank_lines()) == 5000
+    monkeypatch.setattr(search, "SEARCH_MAX_MATCHES", 1000)
+    with pytest.raises(ToolError, match="more output than can be processed"):
+        grep_blank_lines()
+
 
 def test_spill_files_are_never_reused_after_a_restart(tmp_path: Path) -> None:
     first = SpillStore(tmp_path / "out")
@@ -503,7 +521,19 @@ async def test_a_direct_request_is_checked_and_pinned_whatever_the_environment_s
             return "127.0.0.1"
 
         monkeypatch.setattr(web, "resolve_public", checked_address)
+        import httpx
+
+        build_context = httpx.create_ssl_context
+        context_options: list[dict] = []
+
+        def recording_context(**options):  # noqa: ANN003, ANN202
+            context_options.append(options)
+            return build_context(**options)
+
+        monkeypatch.setattr(httpx, "create_ssl_context", recording_context)
         page = await web.fetch_page(f"http://fetch-target.example.com:{port}/page")
+        # A direct request honours the environment's certificate settings too.
+        assert context_options == [{"trust_env": True}]
         assert (page.status, page.content) == (200, "plain body")
         assert resolved == [("fetch-target.example.com", port)]
         # It went to the checked address, with the name kept in the Host header.
@@ -725,6 +755,15 @@ def test_default_decisions_match_the_design_table(tmp_path: Path) -> None:
         assert request.category in CATEGORIES
     command = classify("pwsh", {"command": "Remove-Item x"}, workdir)
     assert command.command == "Remove-Item x" and command.path is None
+    # The approver is told where a command runs, also when the call picks
+    # another directory than the session's.
+    assert command.cwd == str(workdir)
+    other = tmp_path / "other-project"
+    elsewhere = classify("bash", {"command": "rm -rf ./build", "workdir": str(other)}, workdir)
+    assert elsewhere.cwd == str(other) and elsewhere.to_json()["cwd"] == str(other)
+    assert elsewhere.to_json()["workdir"] == str(workdir)
+    assert classify("bash", {"command": "ls", "workdir": "sub"}, workdir).cwd == str(workdir / "sub")
+    assert classify("read", {"file_path": "a.txt"}, workdir).cwd is None
     assert classify("read", {"file_path": "a.txt"}, workdir).path == str(workdir / "a.txt")
 
 

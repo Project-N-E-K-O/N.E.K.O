@@ -230,6 +230,15 @@ def test_write_creates_then_updates_and_keeps_the_existing_format(tmp_path: Path
         write_file(tmp_path, "x")
 
 
+def test_old_string_with_a_final_newline_matches_a_last_line_without_one(tmp_path: Path) -> None:
+    path = tmp_path / "last.txt"
+    path.write_bytes(b"keep\nfoo")
+    # The lines are equal; only the newline at the very end of the file is missing.
+    result = edit_file(path, "foo\n", "bar\n", replace_all=False)
+    assert result == f"The file {path} has been updated successfully."
+    assert path.read_bytes() == b"keep\nbar\n"
+
+
 def test_write_and_edit_go_through_a_symbolic_link(tmp_path: Path) -> None:
     real = tmp_path / "real" / "settings.txt"
     real.parent.mkdir()

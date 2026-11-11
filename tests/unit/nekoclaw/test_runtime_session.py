@@ -8,8 +8,16 @@ from pathlib import Path
 
 import pytest
 
+from nekoclaw.runtime import session as session_module
 from nekoclaw.runtime.host import HostCallbacks
-from nekoclaw.runtime.session import TRANSCRIPT_FILE, SessionError, TranscriptStorage
+from nekoclaw.runtime.loop.session import CustomEntry, SessionState
+from nekoclaw.runtime.loop.session.jsonl import entry_to_json_line
+from nekoclaw.runtime.session import (
+    TRANSCRIPT_FILE,
+    SessionError,
+    SessionRecorder,
+    TranscriptStorage,
+)
 from tests.unit.nekoclaw.fakes import (
     ScriptedLLM,
     allow_all,
@@ -300,6 +308,102 @@ def test_only_an_incomplete_last_line_is_dropped(tmp_path: Path) -> None:
     assert path.read_bytes() == b""
 
 
+async def test_a_failed_transcript_write_is_retried_and_leaves_no_dangling_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(session_module, "APPEND_RETRY_DELAYS", (0.01, 0.01))
+    path = tmp_path / "transcript.jsonl"
+    recorder = SessionRecorder(path)
+    assert await recorder.read_all() == []
+    append = recorder._storage.append
+    # What goes wrong at each attempt to write an entry, in order.
+    plan = {
+        "b-cut-short": ["half written"],
+        "c-not-synced": ["written, then failed"],
+        "e-never": ["nothing written"] * 9,
+    }
+    attempts: list[str] = []
+
+    async def flaky(entry: CustomEntry) -> None:
+        label = entry.data["label"]
+        attempts.append(label)
+        trouble = plan[label].pop(0) if plan.get(label) else None
+        if trouble == "nothing written":
+            raise OSError("disk full")
+        if trouble == "half written":
+            line = entry_to_json_line(entry).encode("utf-8")
+            with path.open("ab") as file:
+                file.write(line[: len(line) // 2])
+            raise OSError("disk full")
+        await append(entry)
+        if trouble == "written, then failed":
+            raise OSError("could not sync")
+
+    monkeypatch.setattr(recorder._storage, "append", flaky)
+    for label in ("a", "b-cut-short", "c-not-synced", "d", "e-never", "f", "g"):
+        recorder.link(CustomEntry(namespace="test", data={"label": label}))
+    await recorder.close()
+
+    saved = await SessionRecorder(path).read_all()
+    labels = [entry.data["label"] for entry in saved]
+    # The half-written entry was cleaned up and written again in its place. The
+    # one that reached the file before its write failed is there once, not twice.
+    assert labels == ["a", "b-cut-short", "c-not-synced", "d", "f", "g"]
+    assert attempts[:5] == ["a", "b-cut-short", "b-cut-short", "c-not-synced", "d"]
+    # The entry that never could be written was given up after three attempts.
+    assert attempts.count("e-never") == 3
+    by_label = {entry.data["label"]: entry for entry in saved}
+    # Its successor hangs off the last entry that did reach the disk.
+    assert by_label["f"].parent_id == by_label["d"].id
+    assert by_label["g"].parent_id == by_label["f"].id
+    # So no parent is missing, no id is there twice, and the transcript loads.
+    SessionState.from_entries(saved)
+
+
+async def test_an_abort_right_after_prompt_stops_the_run_before_it_starts(tmp_path: Path) -> None:
+    llm = ScriptedLLM([[say("second answer"), finish()]])
+    session, events = await open_session(make_spec(tmp_path), llm)
+    try:
+        session.prompt("do something")
+        # Same step of the event loop: the run's task has not run yet.
+        assert session.abort() is True
+        ended = await events.wait_ended()
+        assert ended["reason"] == "aborted"
+        assert llm.requests == []
+
+        # The session is usable afterwards.
+        mark = len(events.events)
+        session.prompt("again")
+        again = await events.wait_ended(start=mark)
+        assert (again["reason"], again["text"]) == ("completed", "second answer")
+    finally:
+        await session.close()
+
+
+async def test_a_relative_session_dir_still_gives_the_model_paths_it_can_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    spec = make_spec(tmp_path).model_copy(update={"session_dir": "sessions/relative"})
+    for number in range(130):
+        (Path(spec.workdir) / f"f{number:03d}.txt").write_text("x", encoding="utf-8")
+    llm = ScriptedLLM(
+        [[call("glob", {"pattern": "*.txt"}), finish("tool_calls")], [say("listed"), finish()]]
+    )
+    session, events = await open_session(spec, llm)
+    try:
+        session.prompt("list the files")
+        await events.wait_ended()
+        text = events.of("tool_end")[0]["text"]
+        saved = Path(text.split("Full sorted result stored at: ", 1)[1].split(". Use read", 1)[0])
+        # The path is absolute, so `read` finds the file although it resolves
+        # relative paths against the working directory.
+        assert saved.is_absolute() and saved.is_file()
+        assert saved.parent == Path.cwd() / "sessions" / "relative" / "outputs"
+    finally:
+        await session.close()
+
+
 async def test_start_fails_cleanly_for_a_missing_workdir(tmp_path: Path) -> None:
     spec = make_spec(tmp_path).model_copy(update={"workdir": str(tmp_path / "missing")})
     with pytest.raises(SessionError, match="is not a directory"):
@@ -389,6 +493,7 @@ async def test_host_decides_permissions_when_it_offers_to(tmp_path: Path) -> Non
                 "category": "outside_write",
                 "path": str(outside),
                 "command": None,
+                "cwd": None,
                 "workdir": spec.workdir,
                 "default": "ask",
             }

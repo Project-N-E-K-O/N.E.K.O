@@ -69,8 +69,12 @@ MATCH_TIMEOUT_SECONDS = 2.0
 GREP_LINE_MAX_BYTES = 1024 * 1024
 _BUDGET_CHECK_LINES = 1024
 # Stands in for dsh's cap on raw ripgrep output: a search that produces more
-# than this is refused instead of being held in memory.
+# than this is refused instead of being held in memory. Each match counts
+# with its text plus a fixed amount for its label, and the number of matches
+# is capped as well, so matching empty lines cannot grow without bound.
 SEARCH_RAW_OUTPUT_MAX_BYTES = 20_000_000
+SEARCH_MAX_MATCHES = 50_000
+_MATCH_LABEL_BYTES = 16
 VCS_DIRECTORIES = frozenset({".git", ".svn", ".hg", ".bzr", ".jj", ".sl"})
 _GIT_TIMEOUT_SECONDS = 20.0
 _NUL = bytes(1)
@@ -474,8 +478,8 @@ def _search_file(
                 if not valid:
                     line = "(line is not valid UTF-8)"
                 out.append(GrepMatch(shown, number, line))
-                added += len(line)
-                if added > SEARCH_RAW_OUTPUT_MAX_BYTES:
+                added += len(line) + _MATCH_LABEL_BYTES
+                if added > SEARCH_RAW_OUTPUT_MAX_BYTES or len(out) > SEARCH_MAX_MATCHES:
                     raise _too_much_output()
     except OSError:
         # Unreadable, or it went away while being read: what was found stays.

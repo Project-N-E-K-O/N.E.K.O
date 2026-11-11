@@ -373,6 +373,57 @@ async def test_commands_for_a_session_that_is_still_starting_wait_for_it(tmp_pat
         await runtime.shutdown()
 
 
+async def test_a_start_waits_for_the_same_session_to_finish_closing(tmp_path: Path) -> None:
+    scripts = [ScriptedLLM([[say("old"), finish()]]), ScriptedLLM([[say("new"), finish()]])]
+
+    async def open_session(spec, host, emit):  # noqa: ANN001, ANN202
+        llm = scripts.pop(0)
+
+        async def factory() -> ScriptedLLM:
+            return llm
+
+        session = await FamiliarSession.open(
+            spec, host, emit, model=LLMClientProvider(spec.model, client_factory=factory)
+        )
+        close = session.close
+
+        async def slow_close() -> None:
+            await asyncio.sleep(0.3)
+            await close()
+
+        session.close = slow_close  # type: ignore[method-assign]
+        return session
+
+    events = Recorder()
+    runtime = InProcessRuntime(events, open_session=open_session)
+    try:
+        await runtime.start(make_spec(tmp_path))
+        await runtime.prompt("s1", "one")
+        await events.wait_ended("s1")
+        mark = len(events.events)
+        # Close it, start it again and use it, without waiting in between.
+        await asyncio.gather(
+            runtime.close("s1"), runtime.start(make_spec(tmp_path)), runtime.prompt("s1", "two")
+        )
+        ended = await events.wait_for(
+            lambda e: e["type"] == "ended" and e["reason"] == "completed", start=mark
+        )
+        assert ended["text"] == "new"
+        after = [
+            (event["type"], event.get("reason"), event.get("resumed"))
+            for event in events.events[mark:]
+            if event["type"] in ("started", "ended", "error")
+        ]
+        # The old session was gone, and its transcript complete, before the new one opened.
+        assert after == [
+            ("ended", "closed", None),
+            ("started", None, True),
+            ("ended", "completed", None),
+        ]
+    finally:
+        await runtime.shutdown()
+
+
 async def test_a_cancelled_waiting_command_does_not_cancel_the_others(tmp_path: Path) -> None:
     llm = ScriptedLLM([[say("one"), finish()]])
     opener = _scripted_opener({"s1": llm})

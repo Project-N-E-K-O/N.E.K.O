@@ -115,6 +115,9 @@ ABORT_GRACE_SECONDS = 15.0
 CLOSE_GRACE_SECONDS = 5.0
 # Within one long run the runtime context is repeated after this much time.
 RUNTIME_CONTEXT_INTERVAL_SECONDS = 1800.0
+# Pauses before the second and third attempt at appending one transcript entry.
+APPEND_RETRY_DELAYS: tuple[float, ...] = (0.2, 1.0)
+_TAIL_STEP_BYTES = 65536
 MAX_OUTPUT_CUT_OFF_NUDGES = 2
 _INPUT_POLL_SECONDS = 0.1
 
@@ -182,6 +185,35 @@ class TranscriptStorage(JsonlSessionStorage):
             self._parsed = None
             return True
 
+    def last_entry_id(self) -> str | None:
+        """Return the id of the entry on the last line, or ``None`` if there is none."""
+        with self._locked(exclusive=False):
+            try:
+                with self.path.open("rb") as file:
+                    position = file.seek(0, os.SEEK_END)
+                    tail = b""
+                    # Read backwards until the start of the last line is in hand.
+                    while position > 0:
+                        step = min(_TAIL_STEP_BYTES, position)
+                        position -= step
+                        file.seek(position)
+                        tail = file.read(step) + tail
+                        body = tail.rstrip(b"\n")
+                        cut = body.rfind(b"\n")
+                        if cut != -1:
+                            tail = body[cut + 1:]
+                            break
+                    else:
+                        tail = tail.rstrip(b"\n")
+            except FileNotFoundError:
+                return None
+        try:
+            payload = json.loads(tail.decode("utf-8"))
+        except ValueError:
+            return None
+        entry_id = payload.get("id") if isinstance(payload, dict) else None
+        return entry_id if isinstance(entry_id, str) else None
+
 
 class SessionRecorder:
     """Appends entries to the JSONL transcript in order, off the event loop.
@@ -198,6 +230,10 @@ class SessionRecorder:
         # Set when the file may end in a fragment: before the first read, and
         # after an append that failed.
         self._check_tail = True
+        # Entries that never reached the disk: id -> the parent they had.
+        self._lost: dict[str, str | None] = {}
+        # True after an entry was given up on, until a write succeeds again.
+        self._failing = False
         self.last_id: str | None = None
 
     def _read_blocking(self) -> list[SessionEntry]:
@@ -206,10 +242,22 @@ class SessionRecorder:
             self._check_tail = False
         return _drive(self._storage.read_all())
 
+    def _is_saved_blocking(self, entry: SessionEntry) -> bool:
+        """Settle what a failed write left behind; say whether ``entry`` is in the file.
+
+        A fragment at the end is removed. The entry counts as saved when it is
+        the last complete line: its write reached the file whole and only a
+        later step (syncing it to disk) failed.
+        """
+        self._storage.drop_torn_tail()
+        self._check_tail = False
+        return self._storage.last_entry_id() == entry.id
+
     def _append_blocking(self, entry: SessionEntry) -> None:
-        if self._check_tail:
-            self._storage.drop_torn_tail()
-            self._check_tail = False
+        # After a failed write the entry may be in the file already; writing
+        # it a second time would give the transcript two entries with one id.
+        if self._check_tail and self._is_saved_blocking(entry):
+            return
         try:
             _drive(self._storage.append(entry))
         except BaseException:
@@ -233,11 +281,45 @@ class SessionRecorder:
         while True:
             entry = await self._queue.get()
             try:
-                await asyncio.to_thread(self._append_blocking, entry)
-            except Exception:  # noqa: BLE001 - a failed write must not stop the session
-                logger.exception("could not append to the session transcript")
+                await self._append(entry)
             finally:
                 self._queue.task_done()
+
+    async def _append(self, entry: SessionEntry) -> None:
+        """Write one entry, trying again after a failure before giving it up.
+
+        A failed write must not stop the session, and it must not break the
+        saved chain either: every entry names its parent, and a transcript in
+        which a parent is missing cannot be loaded again. So an entry whose
+        parent was given up on is attached to the nearest ancestor that did
+        reach the disk.
+        """
+        while entry.parent_id in self._lost:
+            entry.parent_id = self._lost[entry.parent_id]
+        # While writes keep failing, later entries get one attempt each, so a
+        # full disk does not hold up the session (or its closing) for long.
+        delays = () if self._failing else APPEND_RETRY_DELAYS
+        for delay in (*delays, None):
+            try:
+                await asyncio.to_thread(self._append_blocking, entry)
+            except Exception:  # noqa: BLE001 - a failed write must not stop the session
+                if delay is None:
+                    logger.exception(
+                        "could not append to the session transcript; the entry is dropped"
+                    )
+                    try:
+                        saved = await asyncio.to_thread(self._is_saved_blocking, entry)
+                    except Exception:  # noqa: BLE001 - the file cannot even be inspected
+                        saved = False
+                    if not saved:
+                        self._lost[entry.id] = entry.parent_id
+                    self._failing = True
+                    return
+                logger.warning("appending to the session transcript failed; trying again", exc_info=True)
+                await asyncio.sleep(delay)
+            else:
+                self._failing = False
+                return
 
     async def flush(self) -> None:
         await self._queue.join()
@@ -342,8 +424,11 @@ class FamiliarSession(SessionInbox):
 
     async def _open(self) -> None:
         spec = self.spec
-        workdir = Path(spec.workdir)
-        session_dir = Path(spec.session_dir)
+        # Absolute from here on. The model is told where saved output lies and
+        # hands such paths back to the tools, which resolve relative paths
+        # against the working directory, not against this process's own.
+        workdir = Path(os.path.abspath(spec.workdir))
+        session_dir = Path(os.path.abspath(spec.session_dir))
         if not await asyncio.to_thread(workdir.is_dir):
             raise SessionError(f'workdir "{spec.workdir}" is not a directory')
         try:
@@ -871,8 +956,16 @@ class FamiliarSession(SessionInbox):
         error: str | None = None
         self._last_assistant = None
         try:
-            stream = self.harness.prompt_message(message)
-            while True:
+            stream: AsyncIterator[AgentEvent] | None
+            if self._abort_requested:
+                # abort() came before this task first ran. The harness had no
+                # cancellation token yet, so there was nothing to cancel: the
+                # run must not start at all.
+                reason = "aborted"
+                stream = None
+            else:
+                stream = self.harness.prompt_message(message)
+            while stream is not None:
                 self._human_in_run = False
                 self._goal_round = goal_round
                 # Stated before the text that starts this stretch of work, so that
@@ -890,6 +983,11 @@ class FamiliarSession(SessionInbox):
                     error = last.error_message
                     break
                 await self._recorder.flush()
+                if self._abort_requested:
+                    # Aborted during the flush, between two stretches of work:
+                    # again there was no token to cancel.
+                    reason = "aborted"
+                    break
                 if self.harness.has_queued_messages():
                     # A notice arrived while the run was ending: keep going.
                     stream = self.harness.continue_()

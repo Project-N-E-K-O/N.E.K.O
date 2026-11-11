@@ -78,7 +78,8 @@ class RuntimeCore:
         self._sessions: dict[str, FamiliarSession] = {}
         # Sessions being created; each future is done once the attempt is over.
         self._starting: dict[str, asyncio.Future[None]] = {}
-        self._closing: set[str] = set()
+        # Sessions being closed; each future is done once the session is gone.
+        self._closing: dict[str, asyncio.Future[None]] = {}
         self.last_command_at = time.monotonic()
 
     # -- state ----------------------------------------------------------------
@@ -145,6 +146,12 @@ class RuntimeCore:
         opening: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self._starting[session_id] = opening
         try:
+            # A session of the same id may still be closing. It has to finish
+            # writing its transcript before the new one reads it, and its
+            # ``closed`` event has to precede the new ``started``.
+            closing = self._closing.get(session_id)
+            if closing is not None:
+                await asyncio.shield(closing)
             session = await self._open_session(spec, self._host, self._emit)
         except SessionError as exc:
             self._reject(session_id, "start", str(exc))
@@ -187,13 +194,15 @@ class RuntimeCore:
         if session is None:
             self._reject(session_id, "close", f'unknown session "{session_id}"')
             return
-        self._closing.add(session_id)
+        closed: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self._closing[session_id] = closed
         try:
             await session.close()
         except Exception:  # noqa: BLE001 - a failing close still removes the session
             logger.exception("closing session %s failed", session_id)
         finally:
-            self._closing.discard(session_id)
+            del self._closing[session_id]
+            closed.set_result(None)
 
     async def shutdown(self) -> None:
         """Close every session."""

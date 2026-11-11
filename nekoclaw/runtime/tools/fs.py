@@ -230,7 +230,10 @@ def apply_edit(
         if ends_with_newline and last < len(lines) - 1:
             end += 1
         result = result[:begin] + new + result[end:]
-    return EditOutcome(result, len(starts), level)
+    # Lines that are equal as they stand only miss the literal search when
+    # old_string ends in a newline and the file's last line does not. That is
+    # still an exact match and is reported as one.
+    return EditOutcome(result, len(starts), None if level == "exact" else level)
 
 
 def format_edit_output(display: str, *, replace_all: bool, relaxed_level: str | None) -> str:

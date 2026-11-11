@@ -35,10 +35,13 @@ Callbacks, their payload and their result:
     Asked before a built-in tool acts. Payload::
 
         {"tool": str, "category": str, "path": str | None, "command": str | None,
-         "workdir": str, "default": "allow" | "ask"}
+         "cwd": str | None, "workdir": str, "default": "allow" | "ask"}
 
     ``category`` is one of ``nekoclaw.runtime.permissions.CATEGORIES`` and
     ``default`` is what ``default_permission_decision`` returns for the request.
+    ``workdir`` is the session's working directory. ``cwd`` is set for commands
+    only: the directory the command runs in, which differs from ``workdir``
+    when the call asks for another one.
     Result: ``{"allow": bool, "reason": str | None}``. Without this callback
     the default decision applies and ``ask`` is refused, since nobody can be
     asked.
