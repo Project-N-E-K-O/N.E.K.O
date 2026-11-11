@@ -48,7 +48,9 @@ def test_build_subscriber_workshop_model_ref_without_item_id_returns_ref_unchang
     ("model_type", "card_path", "packaged_path"),
     [
         ("vrm", "/user_vrm/Avatar.vrm", "Avatar.vrm"),
+        ("vrm", "/user_vrm/Nested/Avatar.vrm", "Avatar.vrm"),
         ("vrm", "/static/vrm/Avatar.vrm", "Avatar.vrm"),
+        ("vrm", "/static/vrm/Nested/Avatar.vrm", "Avatar.vrm"),
         ("mmd", "/user_mmd/Avatar/Models/Avatar.pmx", "Avatar/Models/Avatar.pmx"),
         ("mmd", "/static/mmd/Models/Avatar.pmd", "Models/Avatar.pmd"),
         ("mmd", "/workshop/123/Avatar.pmx", "123/Avatar.pmx"),
@@ -95,6 +97,8 @@ async def test_prepare_workshop_upload_writes_the_packaged_model_path(
     source_file = tmp_path / source_path.lstrip("/")
     source_file.parent.mkdir(parents=True)
     source_file.write_bytes(b"model")
+    if model_type == "vrm" and source_file.parent.name == "Nested":
+        (source_file.parent.parent / source_file.name).write_bytes(b"different model")
     texture = source_file.with_name("texture.png")
     texture.write_bytes(b"texture")
     config = SimpleNamespace(

@@ -274,8 +274,6 @@ async def prepare_workshop_upload(request: Request):
                             source_root = Path(item['installedFolder'])
                             break
 
-            if model_type == 'vrm' and not model_name.startswith('/workshop/'):
-                relative_parts = relative_parts[-1:]
             source_file = source_root.joinpath(*relative_parts) if source_root and relative_parts else None
             if source_file is None or not source_file.is_file():
                 await asyncio.to_thread(shutil.rmtree, temp_item_dir, ignore_errors=True)
