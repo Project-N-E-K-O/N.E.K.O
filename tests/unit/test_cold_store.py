@@ -304,3 +304,67 @@ def test_prune_cold_trims_to_the_newest_and_leaves_short_lists_alone():
     short = items[:COLD_PRUNE_ABOVE]
     assert prune_cold(short) is short
     assert prune_cold(items) == items[-COLD_PRUNE_TO:]
+
+
+# ── review round 1 ─────────────────────────────────────────────────────
+
+
+def test_stub_drops_earlier_wordings_carried_in_sync_metadata():
+    row = _fact("p1", "now", _sync_metadata={"versionHistory": [{"text": "earlier wording"}], "sourceSyncId": "x"})
+    stub = cold_store.stub(row)
+    assert "earlier wording" not in json.dumps(stub, ensure_ascii=False)
+    assert stub["_sync_metadata"] == {"sourceSyncId": "x"}
+    assert row["_sync_metadata"]["versionHistory"]  # the stored row is untouched
+
+
+@pytest.mark.asyncio
+async def test_a_legacy_archived_persona_row_without_subject_still_wins(tmp_path):
+    from memory.archive_shards import append_to_shard_sync
+    _, fs, pm, *_ = _install(tmp_path)
+    directory = fs._character_dir(NAME)
+    entry = {"id": "pe", "text": "archived trait", "source": "reflection"}
+    atomic_write_json(os.path.join(directory, "persona.json"),
+                      {"relationship": {"facts": [entry, {"id": "live", "text": "live trait"}]}})
+    append_to_shard_sync(cold_store.cold_dir(directory, "persona"), [dict(entry)])  # no entity_key
+    persona = await pm.aensure_persona(NAME)
+    assert [row["id"] for row in persona["relationship"]["facts"]] == ["live"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("listed,withdrawn", [("retracted", True), ("superseded", False)])
+async def test_source_counting_reads_cold_facts_as_the_shared_list_states_them(tmp_path, listed, withdrawn):
+    from memory.evidence import is_withdrawn_fact
+    _, fs, *_ = _install(tmp_path)
+    directory = fs._character_dir(NAME)
+    held = "retracted" if listed == "superseded" else "superseded"
+    cold_store.append(directory, [_fact("c1", "cold", arbitration_archived_at="2026-07-01T00:00:00",
+                                       **({"superseded_by": "keep"} if held == "superseded" else {}))])
+    item = {"kind": "fact", "subject": "master", "id": "c1", "status": listed, "archivedAt": 1,
+            **({"supersededById": "keep"} if listed == "superseded" else {})}
+    atomic_write_json(os.path.join(directory, "long_term_portable.json"), {"cold": [item]})
+    [row] = [row for row in await fs.aload_facts_full(NAME, include_cold_stubs=True) if row["id"] == "c1"]
+    assert is_withdrawn_fact(row) is withdrawn
+    # The shard itself keeps what this device wrote.
+    assert bool(cold_store.read_full(directory)[0].get("superseded_by")) is (held == "superseded")
+
+
+def test_a_retried_group_restore_adds_each_row_once(tmp_path, monkeypatch):
+    _, fs, *_ = _install(tmp_path)
+    directory = fs._character_dir(NAME)
+    row = _fact("g1", "quiet group", subject_archived_at="2026-07-01T00:00:00", **GROUP.as_entry_fields())
+    cold_store.append(directory, [row])
+    fs.load_facts(NAME)
+    real = cold_store.rewrite_rows
+    calls = []
+
+    def flaky(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError("cold shard busy")
+        return real(*args, **kwargs)
+    monkeypatch.setattr(cold_store, "rewrite_rows", flaky)
+    with pytest.raises(OSError):
+        fs._restore_subject_facts(NAME, GROUP, "2026-08-01T00:00:00")
+    fs._restore_subject_facts(NAME, GROUP, "2026-08-01T00:00:00")
+    assert [fact["id"] for fact in fs._facts[NAME]] == ["g1"]
+    assert [fact["id"] for fact in json.load(open(fs._facts_path(NAME), encoding="utf-8"))] == ["g1"]

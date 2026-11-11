@@ -206,6 +206,35 @@ def read_views(directory, *, recovering=False, repair_archive=None):
     return result
 
 
+_shared_cold_cache = {}
+
+
+def shared_cold_facts(directory):
+    """The fact items of the shared ``cold`` list this device last merged, by (subject, id).
+
+    Read from the local sync state and cached on its size and mtime. Empty
+    when the character is not synced or the state cannot be read.
+    """
+    path = Path(directory) / FILES['sync']
+    try:
+        stat = path.stat()
+    except OSError:
+        return {}
+    stamp = (stat.st_size, stat.st_mtime_ns)
+    cached = _shared_cold_cache.get(str(path))
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+    try:
+        state = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}
+    items = state.get('cold') if isinstance(state, dict) else None
+    result = {(item.get('subject'), item.get('id')): item for item in items or []
+              if isinstance(item, dict) and item.get('kind') == 'fact'}
+    _shared_cold_cache[str(path)] = (stamp, result)
+    return result
+
+
 def _cold_key(kind, subject, row):
     return kind, subject, row.get('id') or row.get('legacy_id') or _entry_id(subject, row)
 

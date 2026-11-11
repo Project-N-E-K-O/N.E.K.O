@@ -597,6 +597,46 @@ class FactStore:
         """Stubs of this character's cold facts (no text); raises ``ColdStoreUnreadable``."""
         return cold_store.status(self._character_dir(name))
 
+    def _shared_cold_fact_stubs(self, name: str) -> list[dict]:
+        """Cold fact stubs as the shared sync list states them.
+
+        Another device may have retracted a fact this device holds as
+        superseded (or the reverse); the merged ``cold`` list then says which
+        holds. Source counting reads the stub, so the list's status is laid
+        over it; the shard itself is never rewritten by a sync.
+        """
+        from memory.long_term_sync import shared_cold_facts
+        stubs = self._cold_fact_stubs(name)
+        shared = shared_cold_facts(self._character_dir(name))
+        if not shared:
+            return stubs
+        for row in stubs:
+            item = shared.get((row.get('entity'), row.get('id')))
+            if item is None or row.get('scope') or row.get('subject_kind'):
+                continue
+            if item['status'] == 'retracted':
+                row.pop('superseded_by', None)
+            elif item.get('supersededById'):
+                row['superseded_by'] = item['supersededById']
+        return stubs
+
+    def _activate_restored_rows(self, name: str, facts: list, rows: list[dict]) -> None:
+        """Durably add revived cold rows to the active pool, skipping any already there.
+
+        A retry after cold storage failed to let go of a group row finds its
+        copy already active (same scoped identity); appending it again would
+        leave two rows with one id.
+        """
+        held = {
+            identity for identity in map(_fact_scoped_identity, facts)
+            if identity is not None
+        }
+        fresh = [row for row in rows if _fact_scoped_identity(row) not in held]
+        atomic_write_json(
+            self._facts_path(name), facts + fresh, indent=2, ensure_ascii=False,
+        )
+        facts.extend(fresh)
+
     def _cold_identities(self, name: str) -> set:
         return {
             identity for identity in (
@@ -674,7 +714,10 @@ class FactStore:
         archive_path = self._facts_archive_path(name)
         cold_stubs: list[dict] = []
         try:
-            cold_stubs = self._cold_fact_stubs(name)
+            cold_stubs = (
+                self._shared_cold_fact_stubs(name) if include_cold_stubs
+                else self._cold_fact_stubs(name)
+            )
         except cold_store.ColdStoreUnreadable as e:
             # Best-effort like the archive read below: the cold rows are left out.
             logger.warning(f"[FactStore] {name}: 读取冷存失败，不含冷存: {e}")
@@ -777,7 +820,7 @@ class FactStore:
         cold_stubs: list[dict] = []
         if include_cold_stubs:
             try:
-                cold_stubs = self._cold_fact_stubs(name)
+                cold_stubs = self._shared_cold_fact_stubs(name)
             except cold_store.ColdStoreUnreadable as e:
                 raise RuntimeError(f"cold facts of {name!r} unreadable: {e}") from e
         cold_identities = {
@@ -2214,11 +2257,7 @@ class FactStore:
                     }
 
                     def _activate(rows: list[dict]) -> None:
-                        atomic_write_json(
-                            self._facts_path(name), facts + rows, indent=2,
-                            ensure_ascii=False,
-                        )
-                        facts.extend(rows)
+                        self._activate_restored_rows(name, facts, rows)
 
                     restored = cold_store.restore(
                         self._character_dir(name),
@@ -2575,10 +2614,7 @@ class FactStore:
             facts = self._facts.get(name, [])
 
             def _activate(rows: list[dict]) -> None:
-                atomic_write_json(
-                    self._facts_path(name), facts + rows, indent=2, ensure_ascii=False,
-                )
-                facts.extend(rows)
+                self._activate_restored_rows(name, facts, rows)
 
             def _unmark_arbitration_row(f: dict) -> dict:
                 if not (_is_subject_marked_row(f) and f.get('arbitration_archived_at')):

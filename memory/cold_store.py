@@ -114,6 +114,10 @@ def legacy_entry_id(subject: object, text: object) -> str:
 def stub(row: dict, *, subject_field: str = "entity") -> dict:
     """The row without its wording. ``legacy_id`` stands in for a missing id."""
     result = {key: value for key, value in row.items() if key not in _TEXT_FIELDS}
+    carried = result.get("_sync_metadata")
+    if isinstance(carried, dict) and "versionHistory" in carried:
+        # An imported row keeps the sender's metadata, earlier wordings included.
+        result["_sync_metadata"] = {key: value for key, value in carried.items() if key != "versionHistory"}
     result["text_sha256"] = text_sha256(row.get("text"))
     if not row.get("id"):
         result["legacy_id"] = legacy_entry_id(row.get(subject_field), row.get("text"))
@@ -209,8 +213,12 @@ def without_cold_copies(directory: str, kind: str, rows: list, subject_of: Calla
         return rows
     if not cold:
         return rows
+    # An older persona archive row may not name its subject; it then stands for
+    # that id under any subject rather than for none.
+    any_subject = {row_id for subject, row_id in cold if subject is None}
     return [row for row in rows
-            if not (isinstance(row, dict) and _private(row) and (subject_of(row), row.get("id")) in cold)]
+            if not (isinstance(row, dict) and _private(row)
+                    and ((subject_of(row), row.get("id")) in cold or row.get("id") in any_subject))]
 
 
 async def astatus(directory: str, *, kind: str = "fact", ids: Iterable[object] | None = None) -> list[dict]:
