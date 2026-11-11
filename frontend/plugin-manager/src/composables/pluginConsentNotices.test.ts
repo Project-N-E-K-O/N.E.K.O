@@ -121,6 +121,44 @@ describe('usePluginConsentNotices', () => {
     expect(api.getPluginConsentNotices).toHaveBeenCalledTimes(1)
   })
 
+  it('retries a notice refresh skipped during a language switch after mount', async () => {
+    runningAnalyzing('a')
+    mount()
+    await flush()
+    expect(api.getPluginConsentNotices).toHaveBeenCalledTimes(1)
+
+    localeLoadState.pending = 'ja'
+    api.getPluginConsentNotices.mockResolvedValue([notice('a')])
+    runningAnalyzing('a', 'confirm')
+    await flush()
+    expect(api.getPluginConsentNotices).toHaveBeenCalledTimes(1)
+    expect(notify.ElNotification).not.toHaveBeenCalled()
+
+    localeLoadState.pending = null
+    await flush()
+    expect(api.getPluginConsentNotices).toHaveBeenCalledTimes(2)
+    expect(notify.ElNotification).toHaveBeenCalledOnce()
+  })
+
+  it('waits to display an in-flight notice when a language switch starts', async () => {
+    let finish!: (notices: PluginConsentNotice[]) => void
+    api.getPluginConsentNotices.mockReturnValueOnce(
+      new Promise((resolve) => { finish = resolve }),
+    )
+    mount()
+    await flush()
+    localeLoadState.pending = 'ja'
+    finish([notice('a')])
+    await flush()
+    expect(notify.ElNotification).not.toHaveBeenCalled()
+
+    api.getPluginConsentNotices.mockResolvedValue([notice('a')])
+    localeLoadState.pending = null
+    await flush()
+    expect(api.getPluginConsentNotices).toHaveBeenCalledTimes(2)
+    expect(notify.ElNotification).toHaveBeenCalledOnce()
+  })
+
   it('watches a running analyzing plugin and opens once it becomes confirm', async () => {
     const consentState = usePluginConsentState()
     const watchSpy = vi.spyOn(consentState, 'watchPlugin')

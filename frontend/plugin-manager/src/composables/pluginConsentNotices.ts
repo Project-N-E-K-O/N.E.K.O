@@ -25,6 +25,7 @@ export function usePluginConsentNotices() {
   const watchedIds = new Set<string>()
   let stopped = false
   let refreshSequence = 0
+  let refreshDeferred = false
 
   function close() {
     handle?.close()
@@ -55,12 +56,23 @@ export function usePluginConsentNotices() {
 
   async function refresh() {
     const sequence = ++refreshSequence
+    if (stopped) return
+    // The notification title is translated when it opens.
+    if (localeLoadState.pending !== null) {
+      refreshDeferred = true
+      return
+    }
+    refreshDeferred = false
     try {
       const fetched = await getPluginConsentNotices()
       if (stopped || sequence !== refreshSequence) return
       if (fetched.some((notice) => !handledIds.has(notice.plugin_id))) {
         await import('element-plus/theme-chalk/el-notification.css')
         if (stopped || sequence !== refreshSequence) return
+      }
+      if (localeLoadState.pending !== null) {
+        refreshDeferred = true
+        return
       }
       const notices = fetched.filter((notice) => !handledIds.has(notice.plugin_id))
       const snapshot = JSON.stringify(notices)
@@ -103,30 +115,19 @@ export function usePluginConsentNotices() {
   )
 
   watch(confirmingIds, (ids, previous) => {
-    if (localeLoadState.pending !== null) return
     const previousIds = new Set(previous)
     if (ids.length !== previousIds.size || ids.some((id) => !previousIds.has(id))) {
       void refresh()
     }
   })
 
-  onMounted(() => {
-    // The notice title is baked into the notification: wait for the user's
-    // locale before composing it.
-    if (localeLoadState.pending === null) {
-      void refresh()
-      return
-    }
-    const stop = watch(
-      () => localeLoadState.pending,
-      (pending) => {
-        if (pending === null) {
-          stop()
-          void refresh()
-        }
-      },
-    )
-  })
+  watch(
+    () => localeLoadState.pending,
+    (pending) => {
+      if (pending === null && refreshDeferred) void refresh()
+    },
+  )
+  onMounted(() => void refresh())
   onUnmounted(() => {
     stopped = true
     for (const id of watchedIds) consentState.unwatchPlugin(id)
