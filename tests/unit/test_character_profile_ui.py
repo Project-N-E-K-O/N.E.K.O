@@ -90,6 +90,111 @@ def test_approved_save_pins_saved_hash_and_cloud_revision_only():
     """)
 
 
+def test_concurrent_saves_wait_for_individual_consent_without_dropping_the_second_save():
+    run_script(r"""
+        (async()=>{
+            const other='b'.repeat(32);
+            response=path=>path.endsWith('/status')?{characters:[{displayName:'First',characterSyncId:uid,binding:{}},
+                {displayName:'Second',characterSyncId:other,binding:{}}]}:{...candidate,head:null,renameRequired:false,apply_pending:false};
+            const first=window.nekoCharacterProfileSync.afterSave('First');
+            const second=window.nekoCharacterProfileSync.afterSave('Second');
+            await answerPrompt(false);
+            assert(!calls.some(call=>call.path.endsWith('/profile/approve')));
+            await answerPrompt(true);await Promise.all([first,second]);
+            const approved=calls.filter(call=>call.path.endsWith('/profile/approve'));
+            assert.equal(approved.length,1);assert.equal(approved[0].path,'/api/chat-sync/characters/'+other+'/profile/approve');
+            assert.deepEqual(JSON.parse(approved[0].init.body),{localHash:candidate.local_hash,revision:2});
+        })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
+def test_concurrent_error_notice_is_shown_after_the_existing_confirmation():
+    run_script(r"""
+        (async()=>{
+            response=path=>path.endsWith('/status')?{characters:[{displayName:'Synthetic',characterSyncId:uid,binding:{}}]}:
+                {...candidate,head:null,renameRequired:false,apply_pending:false};
+            const save=window.nekoCharacterProfileSync.afterSave('Synthetic');
+            await new Promise(resolve=>setImmediate(resolve));
+            const failed=window.nekoCharacterProfileSync.afterSave('Unavailable');
+            response=()=>{throw new Error('Offline');};
+            await answerPrompt(false);await save;
+            await new Promise(resolve=>setImmediate(resolve));
+            const notice=body.children[0];assert(notice.open);
+            assert(flatten(notice).some(node=>node.textContent==='chatSync.profileSaveFailed'));
+            await button(notice,'chatSync.close').events.click();await failed;
+        })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
+def test_poll_retries_a_conflict_that_was_blocked_by_a_late_upload_prompt():
+    run_script(r"""
+        (async()=>{
+            const other='b'.repeat(32);let release;
+            response=path=>{
+                if(path.endsWith('/status'))return{characters:[{displayName:'Conflict',characterSyncId:uid,binding:{profile:{
+                    conflict:true,local_hash:candidate.local_hash,head_revision:2}}},{displayName:'Saving',characterSyncId:other,binding:{}}]};
+                if(path.includes(uid))return new Promise(resolve=>{release=resolve;});
+                return {...candidate,head:null,renameRequired:false,apply_pending:false};
+            };
+            const polling=window.nekoCharacterProfileSync.poll();await new Promise(resolve=>setImmediate(resolve));
+            const saving=window.nekoCharacterProfileSync.afterSave('Saving');await new Promise(resolve=>setImmediate(resolve));
+            release(candidate);await polling;
+            await answerPrompt(false);await saving;
+            const retry=window.nekoCharacterProfileSync.poll();await new Promise(resolve=>setImmediate(resolve));release(candidate);await retry;
+            assert.equal(body.children[0]?.id,'character-profile-sync-dialog');assert(body.children[0].open);
+        })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
+def test_prompt_without_translation_loader_does_not_block_future_dialogs():
+    run_script(r"""
+        (async()=>{
+            delete window.t;
+            response=path=>path.endsWith('/status')?{characters:[{displayName:'Synthetic',characterSyncId:uid,binding:{}}]}:
+                {...candidate,head:null,renameRequired:false,apply_pending:false};
+            const save=window.nekoCharacterProfileSync.afterSave('Synthetic');await new Promise(resolve=>setImmediate(resolve));
+            const panel=body.children[0];assert(panel?.open);await button(panel,'cancel').events.click();await save;
+            await window.nekoCharacterProfileSync.review(uid,candidate);assert(body.children[0]?.open);
+        })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
+@pytest.mark.parametrize('theme,hover', [('light', False), ('light', True), ('dark', False), ('dark', True)])
+def test_primary_sync_buttons_have_readable_text_across_the_gradient(theme, hover):
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.set_content(f'<html data-theme="{theme}"><body><dialog id="chat-sync-dialog" open>'
+                             '<button class="chat-sync-button">Cloud model</button><button class="chat-sync-recover">Recover</button></dialog>'
+                             '<dialog id="character-profile-sync-dialog" open><button class="chat-sync-button">Import</button><p class="chat-sync-status" role="status"></p></dialog>'
+                             '<dialog id="character-profile-sync-prompt" open><button class="chat-sync-button">Confirm</button></dialog></body></html>')
+            page.add_style_tag(path=str(ROOT / 'static/css/chat_sync.css'))
+            assert page.get_by_role('status').evaluate('node=>getComputedStyle(node).display') != 'none'
+            for button in page.locator('button').all():
+                if hover:
+                    # Disjoint native dialog fixtures overlap by default; position only this test's host.
+                    button.locator('..').evaluate("node=>{node.style.position='relative';node.style.margin='20px';}")
+                    button.hover()
+                minimum = button.evaluate("""node=>{
+                    const style=getComputedStyle(node), rgb=value=>value.match(/[\\d.]+/g).slice(0,3).map(Number);
+                    const text=rgb(style.color), stops=style.backgroundImage.match(/rgba?\\([^)]+\\)/g).map(rgb);
+                    const luminance=values=>values.map(value=>value/255).map(value=>value<=0.04045?value/12.92:((value+0.055)/1.055)**2.4)
+                        .reduce((sum,value,index)=>sum+value*[0.2126,0.7152,0.0722][index],0);
+                    const foreground=luminance(text), ratios=[];
+                    for(let i=0;i<=20;i++){
+                        const background=luminance(stops[0].map((value,index)=>value+(stops[1][index]-value)*i/20));
+                        ratios.push((Math.max(foreground,background)+0.05)/(Math.min(foreground,background)+0.05));
+                    }
+                    return Math.min(...ratios);
+                }""")
+                assert minimum >= 4.5
+        finally:
+            browser.close()
+
+
 def test_preview_is_readable_inert_persona_and_remote_rename_needs_confirmation():
     run_script(r"""
         (async()=>{
@@ -228,7 +333,6 @@ def test_review_refreshes_cards_only_after_remote_apply_without_replacing_draft(
             page.add_style_tag(path=str(ROOT / "static/css/chat_sync.css"))
             page.evaluate("""success => {
                 window.t = key => key;
-                window.confirm = () => true;
                 window.refreshCount = 0;
                 window.loadCharacterCards = async () => {
                     window.refreshCount++;

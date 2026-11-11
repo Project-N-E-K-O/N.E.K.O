@@ -37,9 +37,9 @@
     min-width: 0;
     min-height: 46px;
     padding: 12px 18px;
-    border: 1px solid #20afe6;
+    border: 1px solid #0877bd;
     border-radius: 14px;
-    background: linear-gradient(135deg, #45cef1, #17a7ed);
+    background: linear-gradient(135deg, #137ca6, #0877bd);
     color: #fff;
     box-shadow: 0 4px 12px rgba(38, 178, 231, 0.2);
     font-size: 15px;
@@ -47,10 +47,10 @@
     line-height: 1.5;
     overflow-wrap: anywhere;
 }
-:is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-recover:hover:enabled { background: linear-gradient(135deg, #2bc4ed, #0797df); }
+:is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-recover:hover:enabled { background: linear-gradient(135deg, #0b7099, #066cac); }
 :is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-recover:disabled { opacity: 0.45; cursor: default; box-shadow: none; }
 :is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-status { margin: 16px 0 0; color: #648499; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; white-space: pre-line; }
-:is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-status:empty { display: none; }
+:is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-status:empty { margin: 0; }
 #character-profile-sync-dialog {
     width: min(760px, calc(100vw - 32px));
     max-height: calc(100dvh - 32px);
@@ -89,16 +89,16 @@
     min-height: 42px;
     max-width: 100%;
     padding: 10px 18px;
-    border: 1px solid #20afe6;
+    border: 1px solid #0877bd;
     border-radius: 14px;
-    background: linear-gradient(135deg, #45cef1, #17a7ed);
+    background: linear-gradient(135deg, #137ca6, #0877bd);
     color: #fff;
     font-size: 14px;
     font-weight: 700;
     line-height: 1.5;
     overflow-wrap: anywhere;
 }
-:is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-button:hover:enabled { background: linear-gradient(135deg, #2bc4ed, #0797df); }
+:is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-button:hover:enabled { background: linear-gradient(135deg, #0b7099, #066cac); }
 :is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-secondary { background: #edf8fe; border-color: #b6dfee; color: #39768f; }
 :is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-secondary:hover:enabled { background: #dff3fc; }
 :is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-button:disabled { opacity: 0.45; cursor: default; }

@@ -2,6 +2,7 @@
 (function () {
     'use strict';
     var dialog = null, promptDialog = null, timer = null, polling = false, reviewed = new Set();
+    var promptQueue = Promise.resolve();
     function text(key, values) { return window.t ? window.t('chatSync.' + key, values || {}) : key; }
     async function api(path, body) {
         // The browser can choose an observed hash/revision, never an owner or token.
@@ -43,26 +44,32 @@
         return panel;
     }
     function promptProfile(message, confirmation) {
+        // Every save and notice keeps its own consent result while another prompt is open.
+        var pending = promptQueue.then(function () { return showProfilePrompt(message, confirmation); });
+        promptQueue = pending.catch(function () {});
+        return pending;
+    }
+    function showProfilePrompt(message, confirmation) {
         // Native top-layer dialogs also keep rename confirmation above its profile preview.
-        if (promptDialog) return Promise.resolve(false);
         var panel = createPanel('title', 'character-profile-sync-prompt'), accepted = false;
-        promptDialog = panel;
         var body = document.createElement('p'); body.className = 'chat-sync-status'; body.textContent = message;
         panel.appendChild(body);
         var actions = document.createElement('div'); actions.className = 'chat-sync-actions'; panel.appendChild(actions);
         var cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'chat-sync-button chat-sync-secondary';
-        cancel.textContent = confirmation ? window.t('common.cancel') : text('close');
+        cancel.textContent = confirmation ? (window.t ? window.t('common.cancel') : 'cancel') : text('close');
         cancel.addEventListener('click', function () { panel.close(); }); actions.appendChild(cancel);
         if (confirmation) {
             var confirm = document.createElement('button'); confirm.type = 'button'; confirm.className = 'chat-sync-button';
-            confirm.textContent = window.t('common.confirm');
+            confirm.textContent = window.t ? window.t('common.confirm') : 'confirm';
             confirm.addEventListener('click', function () { accepted = true; panel.close(); }); actions.appendChild(confirm);
         }
         return new Promise(function (resolve) {
             panel.addEventListener('close', function () {
                 panel.remove(); if (promptDialog === panel) promptDialog = null; resolve(accepted);
             });
-            document.body.appendChild(panel); panel.showModal();
+            promptDialog = panel;
+            try { document.body.appendChild(panel); panel.showModal(); }
+            catch (error) { panel.remove(); if (promptDialog === panel) promptDialog = null; throw error; }
         });
     }
     function openDialog(titleKey) {
@@ -76,7 +83,7 @@
     async function review(uid, state) {
         // Raw versions are text nodes. Neither candidate is overwritten by opening
         // or dismissing this dialog, including a pending remote profile rename.
-        if (dialog || promptDialog || !state.head) return;
+        if (dialog || promptDialog || !state.head) return false;
         var panel = openDialog(state.renameRequired ? 'profileRenamePending' : 'profileConflict'), resolving = false;
         var versions = document.createElement('div'); versions.className = 'chat-sync-versions'; panel.appendChild(versions);
         [['profileLocal', state.local], ['profileRemote', state.head]].forEach(function (candidate) {
@@ -114,6 +121,7 @@
             });
             actions.appendChild(button);
         });
+        return true;
     }
     async function cloudImport() {
         // Import is an explicit user action. Listing or previewing alone never
@@ -253,8 +261,7 @@
                 if (!profile) continue;
                 var key = role.characterSyncId + ':' + profile.local_hash + ':' + profile.head_revision;
                 if ((profile.conflict || (profile.renameRequired && profile.apply_pending)) && !reviewed.has(key)) {
-                    reviewed.add(key);
-                    await review(role.characterSyncId, await api('/characters/' + role.characterSyncId + '/profile/local', {}));
+                    if (await review(role.characterSyncId, await api('/characters/' + role.characterSyncId + '/profile/local', {}))) reviewed.add(key);
                     break;
                 }
             }
