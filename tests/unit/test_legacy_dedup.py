@@ -600,7 +600,7 @@ async def test_an_aged_fold_waits_when_its_survivor_changed_under_the_lock(memor
     from app.memory_server import legacy_dedup as runner
     fingerprints = {'dup': 'stale', 'old': 'stale'}
     await runner._archive_folded(NAME, {'dup': 'old'}, {**fingerprints, 'dup': legacy_dedup.fingerprint(
-        _fact('dup', '博士是一名主播，会日常直播', created='2026-06-12T22:00:00', absorbed=True))})
+        _fact('dup', '博士是一名主播，会日常直播', created='2026-06-12T22:00:00', absorbed=True))}, '2026-11-11T10:00:00.000')
     archive = {row['id']: row for row in json.loads((directory / 'facts_archive.json').read_text(encoding='utf-8'))}
     assert 'arbitration_archived_at' not in archive['dup']
 
@@ -696,3 +696,27 @@ async def test_a_rerun_knows_its_own_archive_after_an_import_rewrote_the_reason(
     assert marker['archived'] == {'dup': 'old'}
     [reflection] = [row for row in json.loads((directory / 'reflections.json').read_text(encoding='utf-8')) if row['id'] == 'r1']
     assert reflection['source_fact_ids'] == ['old', 'yes']
+
+
+@pytest.mark.asyncio
+async def test_an_everyday_dedup_archive_after_an_interrupted_plan_is_not_claimed(memory, monkeypatch):
+    """The plan is written before archiving; only an archive carrying the run's own time is taken as the run's."""
+    from app.memory_server import legacy_dedup as runner
+    directory, facts = memory
+    await _seed(directory, facts)
+    model = _Model([{'博士是一名主播', '博士是一名主播，会日常直播'}])
+    real = runner._archive_folded
+
+    async def crash(*args, **kwargs):
+        raise RuntimeError('process exits after writing the plan')
+    monkeypatch.setattr(runner, '_archive_folded', crash)
+    with pytest.raises(RuntimeError):
+        await _run(model)
+    assert 'dup' in legacy_dedup.read_marker(directory)['archiving']
+    # Meanwhile everyday dedup folds the same fact into the same survivor, at its own time.
+    await facts.aarchive_arbitrated_facts(NAME, {'dup': {'reason': 'fact_dedup_merge', 'superseded_by': 'old'}})
+    monkeypatch.setattr(runner, '_archive_folded', real)
+    marker = await _run(model)
+    assert marker['archived'] == {}
+    from app.memory_server.legacy_dedup import restore
+    assert await restore(NAME) == 0

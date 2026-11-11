@@ -98,7 +98,26 @@ def fingerprint(row):
                                      ensure_ascii=False).encode()).hexdigest()[:16]
 
 
-def still_valid(folded, pairs, rows, archive, ours=()):
+def owned(row, ours, stamps):
+    """Whether an archived row was archived by this cleanup.
+
+    Its own reason says so until a snapshot import rewrites it; the archive time,
+    which this cleanup chooses before archiving and an import keeps, says so after.
+    """
+    if not isinstance(row, dict) or not row.get('arbitration_archived_at'):
+        return False
+    if row.get('arbitration_reason') == ARCHIVE_REASON:
+        return True
+    if row.get('id') not in ours:
+        return False
+    from memory.long_term_sync import timestamp
+    try:
+        return timestamp(row['arbitration_archived_at']) in {timestamp(stamp) for stamp in stamps}
+    except (TypeError, ValueError, OverflowError, OSError):
+        return False
+
+
+def still_valid(folded, pairs, rows, archive, ours=(), stamps=()):
     """The folds whose two facts are still what the model judged.
 
     A fold already applied (its fact archived by the cleanup, pointing at the
@@ -110,12 +129,9 @@ def still_valid(folded, pairs, rows, archive, ours=()):
         seen.update(pair.get('fingerprints') or {})
     # Only this cleanup's own archiving counts as done by it; everyday dedup may have
     # folded the same fact meanwhile, and that is not this run's to record or restore.
-    # ``ours`` lists what this run recorded before archiving: a snapshot import may
-    # since have rewritten the reason on those rows.
+    # ``ours`` and ``stamps`` are what this run recorded before archiving (see ``owned``).
     ours = set(ours)
-    applied = {row.get('id'): row.get('superseded_by') for row in archive
-               if isinstance(row, dict) and row.get('arbitration_archived_at')
-               and (row.get('arbitration_reason') == ARCHIVE_REASON or row.get('id') in ours)}
+    applied = {row.get('id'): row.get('superseded_by') for row in archive if owned(row, ours, stamps)}
 
     final = survivors(folded)
 

@@ -153,7 +153,7 @@ async def _arbitrate(name, batch, rows):
     return {legacy_dedup.pair_key(pair): actions[index] for index, pair in enumerate(batch)}
 
 
-async def _archive_folded(name, folded, fingerprints):
+async def _archive_folded(name, folded, fingerprints, stamp):
     """Archive every folded fact, live or already archived by age. Repeating it changes nothing.
 
     A fact changed since the model saw it is left alone; the archive transaction
@@ -185,7 +185,8 @@ async def _archive_folded(name, folded, fingerprints):
         await store.aarchive_arbitrated_facts(name, live_specs,
                                               survivor_updates=survivors, expected_survivors=survivors,
                                               expected_losers={loser: live[loser] for loser in live_specs},
-                                              archive_check=survivors_in_archive_unchanged if archived_survivors else None)
+                                              archive_check=survivors_in_archive_unchanged if archived_survivors else None,
+                                              archived_at=stamp)
     remaining = {loser: survivor for loser, survivor in folded.items() if loser not in live}
     if not remaining:
         return
@@ -198,7 +199,7 @@ async def _archive_folded(name, folded, fingerprints):
                 archive = _read_archive(name)
                 # Under the fact lock: the survivors as they stand now, live or archived.
                 current = {row.get('id'): row for row in [*archive, *store._facts.get(name, [])] if isinstance(row, dict)}
-                now = datetime.now().isoformat()
+                now = stamp
                 changed = False
                 for row in archive:
                     survivor = remaining.get(row.get('id')) if isinstance(row, dict) else None
@@ -307,25 +308,28 @@ async def run(name, *, still_idle=lambda: True):
     archive_now = await asyncio.to_thread(_read_archive, name)
     current = legacy_dedup.candidates(await runtime.fact_store.aload_facts(name), archive_now)
     ours = set(marker.get('archiving') or {})
+    stamps = list(marker.get('stamps') or ())
     folded = legacy_dedup.still_valid(legacy_dedup.losers(marker['pairs'], marker['decisions']),
-                                      marker['pairs'], current, archive_now, ours)
+                                      marker['pairs'], current, archive_now, ours, stamps)
     mapping = legacy_dedup.survivors(folded)
     fingerprints = {}
     for pair in marker['pairs']:
         fingerprints.update(pair.get('fingerprints') or {})
     # Written down before archiving: once archived, a snapshot import may rewrite the
     # rows' reason, and this record is how a rerun still knows them as its own.
-    marker = {**marker, 'archiving': {**(marker.get('archiving') or {}), **mapping}}
+    # The archive time is chosen here and recorded with the plan: a row this run
+    # archives carries it, an everyday dedup archive of the same fact does not.
+    stamp = datetime.now().isoformat(timespec='milliseconds')
+    marker = {**marker, 'archiving': {**(marker.get('archiving') or {}), **mapping}, 'stamps': [*stamps, stamp]}
     await asyncio.to_thread(_save_marker, directory, marker)
-    ours = set(marker['archiving'])
+    ours, stamps = set(marker['archiving']), marker['stamps']
     # Each folded fact points straight at the one that finally stands for it.
-    await _archive_folded(name, mapping, fingerprints)
+    await _archive_folded(name, mapping, fingerprints, stamp)
     archive = {row.get('id'): row for row in await asyncio.to_thread(_read_archive, name) if isinstance(row, dict)}
     # Only what the archive now records as folded is repointed and reported: a fact
     # that changed in the last moment was skipped and stays as it is.
     mapping = {loser: survivor for loser, survivor in mapping.items()
-               if archive.get(loser, {}).get('arbitration_archived_at') and archive[loser].get('superseded_by') == survivor
-               and (archive[loser].get('arbitration_reason') == legacy_dedup.ARCHIVE_REASON or loser in ours)}
+               if archive.get(loser, {}).get('superseded_by') == survivor and legacy_dedup.owned(archive[loser], ours, stamps)}
     reflections_changed, persona_changed = await _repoint(name, mapping) if mapping else (0, 0)
     live = {row.get('id'): row for row in await runtime.fact_store.aload_facts(name) if isinstance(row, dict)}
     # A survivor stands for what it replaced: absorbed then, absorbed now.
