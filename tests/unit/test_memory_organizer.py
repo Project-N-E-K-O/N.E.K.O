@@ -541,3 +541,24 @@ async def test_a_device_taking_the_role_over_trims_what_the_silent_organizer_nev
     assert server.document['organizer']['deviceId'] != PHONE
     assert [row['id'] for row in server.document['evidence']['retirements']] == ['r-3']
     assert owner.native.organizes('Neko')
+
+
+@pytest.mark.asyncio
+async def test_unpublished_evidence_is_not_trimmed_while_the_organizer_cannot_be_read(owner, monkeypatch):  # noqa: F811
+    from memory.long_term_sync import LongTermEvidenceCapacityExceeded
+    write, stored = _evidence_limits(owner, monkeypatch)
+    _synced(owner)
+    write(4)
+    reads = []
+
+    def unreadable(name):
+        reads.append(name)
+        raise OSError('synthetic')
+    monkeypatch.setattr(owner.native, '_published_organizer', unreadable)
+    # Not knowing who organizes is no licence to drop records nobody else has. The lists
+    # are reported as too long instead, and the sync store is not marked as broken.
+    with pytest.raises(LongTermEvidenceCapacityExceeded):
+        owner.native._capture('Neko', True)
+    assert reads == ['Neko'] and len(stored()) == 4
+    assert owner.adapter.evidence_trimmed_at(UID) is None and local_state(owner) is None
+    assert owner.runtime.writer.check()['quarantined'] is False

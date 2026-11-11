@@ -554,11 +554,16 @@ def _left_to_the_organizer(name, state):
 
     A claim staged here, for a holder that fell silent or ranks lower, has to
     be published like anything else, so it counts as this device's turn.
+    Sync state that cannot be read counts as left to the organizer: the
+    trimming this decides drops unpublished records, so not knowing who
+    organizes must not allow it. The capture then reports the lists as too
+    long. The error is not passed on, because an OSError leaving the writer
+    lock would mark the whole sync store as needing recovery.
     """
     try:
         published = _published_organizer(name)
     except Exception:
-        return False
+        return True
     if published is None:
         return False
     _, device, holder = published
