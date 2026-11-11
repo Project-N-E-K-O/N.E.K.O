@@ -59,8 +59,9 @@ skipped. Set `NEKO_PLUGIN_MARKET_SECURITY_CHECKS=1` to enable package scanning
 `check -r --market-release`, `publish <plugin>`, and `publish github <plugin>`
 also scan committed files when a plugin repository is found (`source-security`).
 `publish market <github-release-url>` only notifies Market and performs no local
-scanning. Release checks also validate the package, run tests, and verify the
-payload hash in all modes.
+scanning. Release checks validate the package and verify its payload hash in
+all modes. They run plugin tests when the plugin has a `tests/` directory and
+tests have not been skipped with `--skip-tests`.
 
 To install a built package, open the N.E.K.O Plugin Center and use **Import**.
 The compatibility `neko-plugin install` command intentionally refuses to write
