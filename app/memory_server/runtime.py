@@ -1118,6 +1118,7 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
         evidence_loops,
         habitual_phrase_loop,
         outbox_infra,
+        received_extraction,
         refine_loops,
         routes,
         signal_extraction,
@@ -1318,6 +1319,7 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             _spawn_background_task(evidence_loops._periodic_idle_maintenance_loop())
             if EVIDENCE_SIGNAL_CHECK_ENABLED:
                 _spawn_background_task(signal_extraction._periodic_signal_extraction_loop())
+            _spawn_background_task(received_extraction._periodic_received_extraction_loop())
             _spawn_background_task(evidence_loops._periodic_archive_sweep_loop())
             # events.ndjson applied-history pruning; first round 300 s after startup.
             _spawn_background_task(evidence_loops._periodic_event_log_compact_loop())

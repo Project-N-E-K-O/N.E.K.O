@@ -33,6 +33,9 @@ _EVENT = 'memory.long_term_replaced'
 _capture_tasks = {}
 _capture_requests = {}
 _capture_intents = {}
+_extraction_captures = {}
+# Several extraction windows in a row publish one snapshot, not one each.
+EXTRACTION_CAPTURE_DELAY_SECONDS = 60
 _unpublished_after_apply = set()
 
 
@@ -371,6 +374,21 @@ def queue_capture(name, *, force=False):
     task.add_done_callback(finished)
 
 
+def queue_capture_after_extraction(name):
+    """Publish what extraction just saved, once the burst of windows settles."""
+    if name in _extraction_captures or _uid(name) is None:
+        return
+
+    async def run():
+        try:
+            await asyncio.sleep(EXTRACTION_CAPTURE_DELAY_SECONDS)
+        finally:
+            _extraction_captures.pop(name, None)
+        queue_capture(name)
+
+    _extraction_captures[name] = _track_character_post_turn_task(name, runtime._spawn_background_task(run()))
+
+
 def resume_captures(characters):
     """Requeue canceled publication by UID after rename or rollback reload."""
     names = {uid: name for name, profile in (characters.get('猫娘') or {}).items()
@@ -664,9 +682,10 @@ async def consume_for_name(name):
 
 
 async def close():
-    tasks = list(_capture_tasks.values())
+    tasks = [*_capture_tasks.values(), *_extraction_captures.values()]
     for task in tasks:
         task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
     _capture_requests.clear()
     _capture_intents.clear()
+    _extraction_captures.clear()

@@ -736,7 +736,8 @@ def trusted_message_source(message, fallback_timestamp=None):
     source_proof = original.get('chat_original_source')
     source_proof = source_proof if isinstance(source_proof, dict) else {}
     if not identity:
-        raw_id = original.get('recent_memory_id') or source_proof.get('recordId') or source_proof.get('messageId')
+        raw_id = (original.get('recent_memory_id') or source_proof.get('recordId') or source_proof.get('messageId')
+                  or original.get('memory_message_id'))
         if isinstance(raw_id, str) and re.fullmatch(r'[0-9a-f]{32}', raw_id):
             identity = f'sync:{raw_id}'
         raw_time = original.get('recent_memory_time', source_proof.get('originalTime'))
@@ -965,6 +966,10 @@ class DesktopLongTermAdapter:
     def incoming_path(self, uid):
         return self.directory / f'{uid}.incoming.json'
 
+    def received_directory(self, uid):
+        """Where lines another device said wait for this device to extract facts from them."""
+        return self.directory.parent / 'received' / uid
+
     def expire_incoming(self, binding, epoch, expired, *, require_epoch):
         """Retain obsolete inbox bytes outside the live slot after an authorized expiry."""
         from uuid import uuid4
@@ -1085,6 +1090,11 @@ class DesktopLongTermAdapter:
         for path in [self.incoming_path(uid), *self.directory.glob(f'{uid}-*.json')]:
             path.unlink(missing_ok=True)
             self._cache.pop(path, None)
+        received = self.received_directory(uid)
+        if received.is_dir():
+            for path in received.iterdir():
+                path.unlink(missing_ok=True)
+            received.rmdir()
 
     def needs_reauthentication(self, binding, epoch, session_fingerprint):
         try:

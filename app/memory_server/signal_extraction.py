@@ -332,6 +332,26 @@ async def _adispatch_evidence_signals(
     return all_ok
 
 
+async def _unread_messages(name: str, passage: str, messages: list) -> list:
+    """Drop messages a pass on any device already read; an unreadable record skips nothing."""
+    from memory.extraction_progress import unprocessed
+    try:
+        done = set((await runtime.fact_store.aextraction_progress(name))[passage])
+    except Exception as e:
+        logger.debug(f"[SignalLoop] {name}: 读取提取进度失败，本窗口不跳过: {e}")
+        return messages
+    return unprocessed(messages, done) if done else messages
+
+
+def _publish_extraction(name: str) -> None:
+    """Queue a snapshot after extraction; failures here never fail the extraction."""
+    try:
+        from .long_term_sync import queue_capture_after_extraction
+        queue_capture_after_extraction(name)
+    except Exception as e:
+        logger.debug(f"[SignalLoop] {name}: 提取后排队发布失败: {e}")
+
+
 async def _run_path_b(name: str, state: dict) -> None:
     """Path B: AI-aware Stage-1 only (does not enter the Stage-2 evidence loop).
 
@@ -504,7 +524,12 @@ async def _run_path_b(name: str, state: dict) -> None:
         return
 
     from utils.llm_client import convert_to_messages
-    messages = convert_to_messages(message_dicts)
+    messages = await _unread_messages(name, 'b', convert_to_messages(message_dicts))
+    if not messages:
+        # Another device already read this whole window; nothing is sent to the model.
+        state['last_b_check_ts'] = last_fetched_ts
+        state['b_extract_failures'] = {}
+        return
 
     # Known-fact pool: use facts written by path A during / after this B window as do-not-repeat hints.
     # Apply only ``created_at >= last_b``, with no upper bound (CodeRabbit on PR #1408):
@@ -584,6 +609,7 @@ async def _run_path_b(name: str, state: dict) -> None:
                 f"{last_fetched_ts.isoformat(timespec='seconds')})"
             )
         return
+    _publish_extraction(name)
     if persisted:
         logger.info(
             f"[PathB] {name}: AI-aware Stage-1 抽出 {len(persisted)} 条新 fact "
@@ -703,7 +729,14 @@ async def _periodic_signal_extraction_loop():
                 # giving messages=[] and an empty _format_conversation output. The Stage-1 prompt
                 # then had no text between ======以下为对话====== and ======以上为对话======, so the LLM correctly
                 # returned [], silently skipping all fact extraction and subsequent Stage-2 evidence work.
-                messages = convert_to_messages(message_dicts)
+                messages = await _unread_messages(name, 'a', convert_to_messages(message_dicts))
+                if not messages:
+                    # Another device already read every message here: advance like a
+                    # window without user speech, without a model call.
+                    _signal_check_mark_done(
+                        name, now, processed_turns=processed_turns,
+                    )
+                    return
 
                 try:
                     persisted, signals, batch_fact_ids = await runtime.fact_store.aextract_facts_and_detect_signals(
@@ -743,6 +776,10 @@ async def _periodic_signal_extraction_loop():
                             f"[SignalLoop] {name}: Stage-1 失败保留 cursor 重试: {e}"
                         )
                     return
+
+                # The facts and the progress over this window are saved; other devices
+                # learn of both from the next snapshot instead of reading the window again.
+                _publish_extraction(name)
 
                 # Dispatch before mark_done: any intermediate aapply failure keeps
                 # cursor unchanged so next Stage-1 retries the same window; Stage-1

@@ -390,6 +390,8 @@ class DesktopChatSyncRuntime:
             from services.chat_sync.long_term import LongTermMemorySync
             self.long_term_memory = (LongTermMemorySync(directory / 'state.sqlite3', long_term_memory_adapter)
                                      if long_term_memory_adapter is not None else None)
+            if self.recent_memory is not None and long_term_memory_adapter is not None:
+                self.recent_memory.received_directory = long_term_memory_adapter.received_directory
         self.recent_character_name = recent_character_name
         self._recent_lock = asyncio.Lock()
         self._long_term_lock = asyncio.Lock()

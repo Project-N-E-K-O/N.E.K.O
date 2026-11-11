@@ -3625,6 +3625,7 @@ class FactStore:
         source_messages: list | None = None,
         source_accepted: list[dict] | None = None,
         extraction_path: str | None = None,
+        progress_pass: str | None = None,
     ) -> list[dict]:
         # Collect near-duplicate pairs under lock, submit only afterward: submission needs
         # FactDedupResolver's per-character lock, while aresolve reverses the order,
@@ -3709,6 +3710,10 @@ class FactStore:
                         if extraction_path is not None else {}
                     ),
                 )
+                if progress_pass is not None and memory_subject is None:
+                    # Same lock as the facts above: a snapshot never carries this
+                    # progress without the facts extracted from those messages.
+                    await self._arecord_extraction_progress_locked(lanlan_name, progress_pass, source_messages)
         finally:
             if near_dup_pairs:
                 # Only committed pairs reach this basket. Release persist before
@@ -3716,6 +3721,32 @@ class FactStore:
                 from utils.asyncio_retirement import await_retirement
                 await await_retirement(self._aenqueue_near_dup_pairs(lanlan_name, near_dup_pairs, durable=True))
         return created
+
+    async def aextraction_progress(self, lanlan_name: str) -> dict:
+        """Message identities each extraction pass has already read, on any device."""
+        from memory import extraction_progress
+        directory = os.path.join(self._config_manager.memory_dir, lanlan_name)
+        return await asyncio.to_thread(extraction_progress.read, directory)
+
+    async def arecord_extraction_progress(self, lanlan_name: str, passage: str, messages: list | None) -> None:
+        """Record a pass over messages that produced no fact to persist."""
+        async with self._get_persist_alock(lanlan_name):
+            await self._arecord_extraction_progress_locked(lanlan_name, passage, messages)
+
+    async def _arecord_extraction_progress_locked(self, lanlan_name: str, passage: str, messages: list | None) -> None:
+        from memory import extraction_progress
+        processed = extraction_progress.identities(messages)
+        if not processed:
+            return
+        directory = os.path.join(self._config_manager.memory_dir, lanlan_name)
+
+        def save():
+            from utils.cloudsave_runtime import cloudsave_writable_transaction
+            target = Path(directory) / extraction_progress.STATE_FILE
+            with cloudsave_writable_transaction(self._config_manager, operation='save', target=target):
+                extraction_progress.record(directory, passage, processed)
+        from memory.recent import _await_recent_mutation_to_completion
+        await _await_recent_mutation_to_completion(save)
 
     async def apersist_scoped_facts(
         self,
@@ -5159,6 +5190,7 @@ class FactStore:
         source_accepted: list[dict] = []
         persisted_this_round = await self._apersist_new_facts(
             lanlan_name, extracted, source_messages=messages, source_accepted=source_accepted,
+            progress_pass='a',
         )
         # The pre-dedup result, not the persisted rows: a fact that dedup folded into
         # an existing one still has to renew its pinned entry. Candidates rejected by
@@ -5337,6 +5369,8 @@ class FactStore:
                     f"(fail_closed caller)"
                 )
         if not extracted:
+            if memory_subject is None:
+                await self.arecord_extraction_progress(lanlan_name, 'a', messages)
             return []
         source_accepted: list[dict] = []
         created = await self._apersist_new_facts(
@@ -5346,6 +5380,7 @@ class FactStore:
             reconciled_facts=reconciled_facts,
             source_messages=messages,
             source_accepted=source_accepted,
+            progress_pass='a',
         )
         if memory_subject is None:
             # Private chat only: the pinned section renders into the private
@@ -6037,12 +6072,15 @@ class FactStore:
             # A run that found nothing new is data too: how often path B
             # adds nothing. Failures (None, above) stay unlogged here.
             self._log_path_b_labels(lanlan_name, [], [])
+            if coerce_subject(subject) is None:
+                await self.arecord_extraction_progress(lanlan_name, 'b', messages)
             return []
         source_accepted: list[dict] = []
         persisted = await self._apersist_new_facts(
             lanlan_name, extracted, default_source='ai_disclosure', subject=subject, source_messages=messages,
             source_accepted=source_accepted,
             extraction_path=EXTRACTION_PATH_B,
+            progress_pass='b',
         )
         self._log_path_b_labels(lanlan_name, extracted, persisted)
         if coerce_subject(subject) is None:
