@@ -80,10 +80,6 @@ def _report(status: str, **fields) -> dict:
     }
 
 
-def _unavailable() -> dict:
-    return _report("unavailable")
-
-
 class CapabilityAnalysisService:
     def __init__(self, store=report_store):
         self.store = store
@@ -252,11 +248,11 @@ class CapabilityAnalysisService:
         self, plugin_id: str, root: Path, version: str, *, verify_revision: bool = True
     ) -> dict:
         with self._lock:
-            if not verify_revision:
-                job = self._jobs.get(plugin_id)
-                if job is not None and job[2:] == (root, version):
-                    # List consumers follow pending work through the details poller.
-                    return _report("queued")
+            job = self._jobs.get(plugin_id)
+            analysis_scope = {"analysis_id": job[0]} if job and job[2:] == (root, version) else {}
+            if not verify_revision and analysis_scope:
+                # List consumers follow pending work through the details poller.
+                return _report("queued")
             cached = self._reports.get(plugin_id)
             report = copy.deepcopy(cached)
         if report is None:
@@ -267,18 +263,22 @@ class CapabilityAnalysisService:
             and report.get("version") == version
         ):
             status = report.get("status")
-            if status in ("queued", "running") or not verify_revision:
+            if status in ("queued", "running"):
+                return {**report, **analysis_scope}
+            if not verify_revision:
                 return report
             try:
                 fresh = is_fresh(report, source_revision(root, version))
             except OSError:
                 fresh = False
             if fresh:
+                if status == "unavailable":
+                    report.update(analysis_scope)
                 return report
             with self._lock:
                 if self._reports.get(plugin_id) is cached:
                     self._reports.pop(plugin_id, None)
-        return _unavailable()
+        return _report("unavailable", **analysis_scope)
 
     def shutdown(self) -> None:
         with self._lock:

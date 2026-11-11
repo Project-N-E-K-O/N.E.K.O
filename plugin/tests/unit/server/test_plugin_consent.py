@@ -447,6 +447,49 @@ async def test_background_scan_never_blocks_decisions_and_deduplicates(
 
 
 @pytest.mark.asyncio
+async def test_pending_analysis_id_follows_the_current_job(tmp_path, reports, monkeypatch):
+    manifest(tmp_path)
+    (tmp_path / "main.py").write_text("self.ctx.push_message()")
+    queued, running, release = threading.Event(), threading.Event(), threading.Event()
+    original = analysis.analyze_capabilities
+
+    def scan(*args, **kwargs):
+        running.set()
+        release.wait()
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(analysis, "analyze_capabilities", scan)
+    runner = analysis.CapabilityAnalysisService(reports)
+    runner._worker().submit(queued.wait)
+    try:
+        runner.ensure_analyzed("demo", tmp_path, "1")
+        initial = runner.report("demo", tmp_path, "1")["analysis_id"]
+        runner.ensure_analyzed("demo", tmp_path, "1")
+        assert runner.report("demo", tmp_path, "1")["analysis_id"] == initial
+
+        runner.reanalyze("demo", tmp_path, "1")
+        replacement = runner.report("demo", tmp_path, "1")
+        assert replacement["status"] == "queued"
+        assert replacement["analysis_id"] != initial
+        with runner._lock:
+            job = runner._jobs["demo"][1]
+        queued.set()
+        assert await asyncio.to_thread(running.wait, 2)
+        current = runner.report("demo", tmp_path, "1")
+        assert current["status"] == "running"
+        assert current["analysis_id"] == replacement["analysis_id"]
+        release.set()
+        await asyncio.wrap_future(job)
+        final = runner.report("demo", tmp_path, "1")
+        assert final["status"] == "completed"
+        assert "analysis_id" not in final
+    finally:
+        queued.set()
+        release.set()
+        await runner.close()
+
+
+@pytest.mark.asyncio
 async def test_revision_checks_stay_in_the_worker_until_a_detail_requires_one(
     tmp_path, reports, monkeypatch
 ):

@@ -7,11 +7,6 @@ import {
 } from '@/stores/pluginConsentState'
 import { usePluginStore } from '@/stores/plugin'
 
-// A click while capability analysis is still running is remembered for
-// 30 seconds: a second click on the same plugin starts it directly.
-const analysisBypass = new Map<string, number>()
-const ANALYSIS_BYPASS_MS = 30_000
-
 /**
  * Manual-start consent gate. Programmatic/internal starts and reloads call
  * the plugin store directly; every user-initiated start goes through here.
@@ -32,29 +27,18 @@ export function usePluginStartGate() {
     const confirm: ConsentRequestPlugin[] = []
     pluginIds.forEach((id, index) => {
       const result = loaded[index]
-      if (result?.status === 'rejected' && result.reason instanceof PluginConsentInvalidated) {
-        analysisBypass.delete(id)
-        return
-      }
-      const plugin = pluginStore.getPluginById(id)
-      // A failed consent read must never block a start: this is a
-      // notification, not a security boundary.
-      const state = result?.status === 'fulfilled' ? result.value.state : 'clear'
-      if (state === 'clear') {
+      if (result?.status === 'rejected' && result.reason instanceof PluginConsentInvalidated) return
+      const consent = result?.status === 'fulfilled' ? result.value : null
+      if (!consent || consent.state === 'clear') {
         allowed.push(id)
         return
       }
-      if (state === 'analyzing') {
-        const bypass = analysisBypass.get(id)
-        if (bypass !== undefined && Date.now() - bypass < ANALYSIS_BYPASS_MS) {
-          analysisBypass.delete(id)
-          allowed.push(id)
-        } else {
-          analysisBypass.set(id, Date.now())
-          pending.push(id)
-        }
+      if (consent.state === 'analyzing') {
+        if (consentState.allowStartDuringAnalysis(consent)) allowed.push(id)
+        else pending.push(id)
         return
       }
+      const plugin = pluginStore.getPluginById(id)
       confirm.push({ id, name: plugin?.name || id, version: plugin?.version })
     })
     if (pending.length) {

@@ -56,6 +56,12 @@ function consent(state: PluginConsent['state'], extras: Partial<PluginConsent> =
   }
 }
 
+function analyzing(analysisId?: string, status: 'queued' | 'running' = 'queued') {
+  return consent('analyzing', {
+    analysis: { status, analysis_id: analysisId, capabilities: [], evidence: [], warnings: [] },
+  })
+}
+
 function fixture(consentState: PluginConsent['state'] | null) {
   const store = usePluginStore()
   store.pluginSummaries = [
@@ -148,9 +154,9 @@ describe('manual start consent gate', () => {
 
   it('first click on an analyzing plugin warns and does not start; a second within 30s starts', async () => {
     vi.useFakeTimers()
-    vi.mocked(getPluginConsent).mockResolvedValue(consent('analyzing', {
-      analysis: { status: 'queued', capabilities: [], evidence: [], warnings: [] },
-    }))
+    vi.mocked(getPluginConsent)
+      .mockResolvedValueOnce(analyzing('first', 'queued'))
+      .mockResolvedValueOnce(analyzing('first', 'running'))
     fixture('analyzing')
     const gate = usePluginStartGate()
     await expect(gate.startWithConsent('demo')).resolves.toBe(false)
@@ -159,6 +165,43 @@ describe('manual start consent gate', () => {
 
     await expect(gate.startWithConsent('demo')).resolves.toBe(true)
     expect(startPlugin).toHaveBeenCalledOnce()
+  })
+
+  it('warns again for a replacement scan even while the plugin remains analyzing', async () => {
+    fixture('analyzing')
+    vi.mocked(getPluginConsent)
+      .mockResolvedValueOnce(analyzing('first'))
+      .mockResolvedValue(analyzing('replacement'))
+    const gate = usePluginStartGate()
+    await expect(gate.startWithConsent('demo')).resolves.toBe(false)
+    await expect(gate.startWithConsent('demo')).resolves.toBe(false)
+    expect(ElMessage.warning).toHaveBeenCalledTimes(2)
+    expect(startPlugin).not.toHaveBeenCalled()
+    await expect(gate.startWithConsent('demo')).resolves.toBe(true)
+  })
+
+  it('clears the bypass when a summary says analysis finished', async () => {
+    fixture('analyzing')
+    vi.mocked(getPluginConsent).mockResolvedValue(analyzing())
+    const gate = usePluginStartGate()
+    await expect(gate.startWithConsent('demo')).resolves.toBe(false)
+    usePluginConsentState().seedSummaries([
+      { id: 'demo', version: '1', consent: consent('clear') },
+    ])
+    await expect(gate.startWithConsent('demo')).resolves.toBe(false)
+    expect(ElMessage.warning).toHaveBeenCalledTimes(2)
+    expect(startPlugin).not.toHaveBeenCalled()
+  })
+
+  it('clears the bypass when the same plugin is reinstalled between clicks', async () => {
+    fixture('analyzing')
+    vi.mocked(getPluginConsent).mockResolvedValue(analyzing())
+    const gate = usePluginStartGate()
+    await expect(gate.startWithConsent('demo')).resolves.toBe(false)
+    usePluginConsentState().forget('demo')
+    await expect(gate.startWithConsent('demo')).resolves.toBe(false)
+    expect(ElMessage.warning).toHaveBeenCalledTimes(2)
+    expect(startPlugin).not.toHaveBeenCalled()
   })
 
   it('warns again once the 30 second bypass expires', async () => {

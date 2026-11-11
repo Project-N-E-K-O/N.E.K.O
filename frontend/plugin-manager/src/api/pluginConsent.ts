@@ -12,6 +12,7 @@ export interface CapabilityEvidence {
 }
 export interface CapabilityAnalysis {
   status: AnalysisStatus
+  analysis_id?: string
   version?: string
   analyzed_at?: string
   capabilities: string[]

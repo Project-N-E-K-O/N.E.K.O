@@ -23,6 +23,8 @@ export interface ConsentRequest {
 }
 type VersionedConsentSummary = PluginConsentSummary & { version: string }
 
+const ANALYSIS_BYPASS_MS = 30_000
+
 function matchesSummary(detail: PluginConsent, summary: VersionedConsentSummary | undefined) {
   return (
     summary &&
@@ -47,6 +49,7 @@ export const usePluginConsentState = defineStore('pluginConsent', () => {
   const details = ref<Record<string, PluginConsent>>({})
   const summaries = ref<Record<string, VersionedConsentSummary>>({})
   // Metadata and consent reads share the order in which their requests started.
+  const analysisBypasses = new Map<string, { version: string; analysisId?: string; warnedAt: number }>()
   const forgottenAt = new Map<string, number>()
   const snapshotTickets = new Map<string, number>()
   const reads = new Map<string, Promise<PluginConsent>>()
@@ -61,6 +64,29 @@ export const usePluginConsentState = defineStore('pluginConsent', () => {
     if (ticket < (forgottenAt.get(id) ?? 0)) {
       throw new PluginConsentInvalidated('Plugin was removed during a consent request')
     }
+  }
+
+  function updateAnalysisBypass(id: string, snapshot: VersionedConsentSummary) {
+    const previous = analysisBypasses.get(id)
+    if (previous && (snapshot.state !== 'analyzing' || previous.version !== snapshot.version)) {
+      analysisBypasses.delete(id)
+    }
+  }
+
+  function allowStartDuringAnalysis(consent: PluginConsent): boolean {
+    const { plugin_id: id, version, analysis } = consent
+    const previous = analysisBypasses.get(id)
+    const now = Date.now()
+    if (
+      previous?.version === version &&
+      previous.analysisId === analysis.analysis_id &&
+      now - previous.warnedAt < ANALYSIS_BYPASS_MS
+    ) {
+      analysisBypasses.delete(id)
+      return true
+    }
+    analysisBypasses.set(id, { version, analysisId: analysis.analysis_id, warnedAt: now })
+    return false
   }
 
   async function request(
@@ -85,6 +111,7 @@ export const usePluginConsentState = defineStore('pluginConsent', () => {
         (mutation && matchesSummary(result, summaries.value[id]))
       ) {
         snapshotTickets.set(id, mutation ? nextRequestTicket() : responseTicket)
+        updateAnalysisBypass(id, result)
         details.value[id] = result
         return result
       }
@@ -126,6 +153,7 @@ export const usePluginConsentState = defineStore('pluginConsent', () => {
     const ticket = nextRequestTicket()
     forgottenAt.set(id, ticket)
     snapshotTickets.set(id, ticket)
+    analysisBypasses.delete(id)
     reads.delete(id)
     mutations.delete(id)
     delete details.value[id]
@@ -151,6 +179,7 @@ export const usePluginConsentState = defineStore('pluginConsent', () => {
         version: plugin.version ?? '',
       }
       snapshotTickets.set(plugin.id, ticket)
+      updateAnalysisBypass(plugin.id, summary)
       const detail = details.value[plugin.id]
       if (detail && !matchesSummary(detail, summary)) {
         delete details.value[plugin.id]
@@ -265,6 +294,7 @@ export const usePluginConsentState = defineStore('pluginConsent', () => {
     details,
     summaries,
     activeRequest,
+    allowStartDuringAnalysis,
     forget,
     load,
     nextRequestTicket,
