@@ -242,13 +242,15 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "right: 97 / 512" in source
     assert "bottom: 15 / 512" in source
     assert "const _NEKO_IDLE_CAT1_PLAYGROUND_YARN_VISIBLE_INSET_RATIOS = Object.freeze({" in source
+    assert "left: 62 / 512" in source
+    assert "top: 62 / 512" in source
+    assert "right: 62 / 512" in source
+    assert "bottom: 62 / 512" in source
+    assert "const _NEKO_IDLE_CAT1_PLAYGROUND_YARN_BODY_COLLISION_INSET_RATIOS = Object.freeze({" in source
     assert "left: 20 / 512" in source
-    assert "top: 20 / 512" in source
-    assert "right: 20 / 512" in source
-    assert "bottom: 20 / 512" in source
     assert "function _normalizeNekoIdleCat1PlaygroundBodyMass(mass)" in source
     assert "function _normalizeNekoIdleCat1PlaygroundVisibleInsetRatios(ratios)" in source
-    assert "function _getNekoIdleCat1PlaygroundBodyVisibleInsetsPx(body)" in source
+    assert "function _getNekoIdleCat1PlaygroundBodyVisibleInsetsPx(body, insetRatios = null)" in source
     assert "function _getNekoIdleCat1PlaygroundBodyCollisionRect(body)" in source
     assert "function _getNekoIdleCat1PlaygroundViewportBottomPx()" in source
     assert "function _refreshNekoIdleCat1PlaygroundViewportBottom()" in source
@@ -318,6 +320,9 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "rotationBehaviors: { steppedRest: { stepRad: Math.PI / 2, offsetRad: 0 } }" in register_block
     assert "visibleInsetRatios: _NEKO_IDLE_CAT1_PLAYGROUND_CAT_VISIBLE_INSET_RATIOS" in register_block
     assert yarn_attach_block.count("visibleInsetRatios: _NEKO_IDLE_CAT1_PLAYGROUND_YARN_VISIBLE_INSET_RATIOS") == 2
+    assert yarn_attach_block.count(
+        "bodyCollisionInsetRatios: _NEKO_IDLE_CAT1_PLAYGROUND_YARN_BODY_COLLISION_INSET_RATIOS"
+    ) == 2
     assert "visibleInsetRatios: _NEKO_IDLE_CAT1_PLAYGROUND_QUESTION_BLOCK_VISIBLE_INSET_RATIOS" in register_block
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_DESKTOP_CHAT_BODY_MASS" not in source
     assert "const visual = _createNekoIdleCat1PlaygroundDesktopYarnMirror(target.rect);" in yarn_attach_block
@@ -352,7 +357,7 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     reclamp_block = _source_slice_between(
         source,
         "function _reclampNekoIdleCat1PlaygroundBodyAfterBoundsChange(body)",
-        "function _resolveNekoIdleCat1PlaygroundBodyCollisionPair(state, first, second)",
+        "function _resolveNekoIdleCat1PlaygroundBodyCollisionPair(state, first, second, contacts = null)",
         "cat1 playground resize reclamp",
     )
     assert "const wasGrounded = !!body.grounded;" in reclamp_block
@@ -396,7 +401,7 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
         "cat1 playground physics tick",
     )
     assert "function _resolveNekoIdleCat1PlaygroundBodyCollisions(state)" in source
-    assert "function _resolveNekoIdleCat1PlaygroundBodyCollisionPair(state, first, second)" in source
+    assert "function _resolveNekoIdleCat1PlaygroundBodyCollisionPair(state, first, second, contacts = null)" in source
     assert "_resolveNekoIdleCat1PlaygroundBodyCollisions(state)" in physics_block
     assert "body.vy += state.gravityPxPerSecond2 * dt;" in physics_block
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_FLOOR_RESTITUTION" in physics_block
@@ -427,7 +432,7 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "_dispatchNekoIdleDesktopChatPairMoveBounds" in source
     collision_block = _source_slice_between(
         source,
-        "function _resolveNekoIdleCat1PlaygroundBodyCollisionPair(state, first, second)",
+        "function _resolveNekoIdleCat1PlaygroundBodyCollisionPair(state, first, second, contacts = null)",
         "function _stepNekoIdleCat1PlaygroundPhysics(button, now)",
         "cat1 playground generic body collision",
     )
@@ -436,7 +441,8 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "Array.from(state.bodies.values())" in collision_block
     assert "for (let i = 0; i < bodies.length; i += 1)" in collision_block
     assert "for (let j = i + 1; j < bodies.length; j += 1)" in collision_block
-    assert "_resolveNekoIdleCat1PlaygroundBodyCollisionPair(state, bodies[i], bodies[j])" in collision_block
+    assert "state, bodies[i], bodies[j], contacts" in collision_block
+    assert "state.bodyCollisionContacts = contacts;" in collision_block
     assert "const mass = _normalizeNekoIdleCat1PlaygroundBodyMass(options.mass);" in source
     assert "mass: mass" in source
     assert "inverseMass: 1 / mass" in source

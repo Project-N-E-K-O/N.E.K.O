@@ -165,6 +165,37 @@ test('Playground skin state changes only the minimized icon selected by the chat
   assert.equal(icon.src, '/normal.png');
 });
 
+test('cat-only Playground state keeps the ordinary minimized-ball skin', () => {
+  const harness = createHarness();
+  Object.assign(harness.parts, {
+    getCurrentChatSurfaceMode: () => 'full',
+    idleCatPlaygroundYarnSkinActive: true,
+  });
+  harness.parts._handleIdleCat1PlaygroundState({
+    detail: { active: true, yarnEnabled: false },
+  });
+  assert.equal(harness.parts.idleCatPlaygroundYarnSkinActive, false);
+  harness.parts._handleIdleCat1PlaygroundState({
+    detail: { active: true, yarnEnabled: true },
+  });
+  assert.equal(harness.parts.idleCatPlaygroundYarnSkinActive, true);
+});
+
+test('Playground exit queues entry-owned chat restore through an in-flight collapse', () => {
+  const harness = createHarness();
+  Object.assign(harness.parts, {
+    getCurrentChatSurfaceMode: () => 'full',
+    getNextChatSurfaceMode: () => 'full',
+    isMinimizeTransitioning: true,
+    pendingChatSurfaceMode: null,
+  });
+  harness.parts._handleIdleCat1PlaygroundState({
+    detail: { active: false, reason: 'entry-cancel', restoreChatOnExit: true },
+  });
+  assert.equal(harness.parts.pendingChatSurfaceMode.mode, 'full');
+  assert.deepEqual(Object.keys(harness.parts.pendingChatSurfaceMode.transitionOptions), []);
+});
+
 test('a visible collapsed Electron chat publishes its minimized yarn target', async () => {
   const harness = createHarness();
   harness.parts.ensureElectronChatMinimizedStateBridge();

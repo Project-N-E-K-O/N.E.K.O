@@ -69,6 +69,7 @@ for (const bodyId of ['yarn', 'desktop-yarn']) {
       const state = r.button.__nekoIdleCat1PlaygroundDropState = {
         active: true, released: false, container: r.container, phase: 'ballistic',
         bodies: new Map([['cat', cat], [bodyId, body]]), pointerBodyId: '',
+        restoreChatOnExit: true,
         pendingYarnActivationId: 'request-1', pendingYarnActivationGeneration: 1,
         pendingYarnActivationTimer: r.window.setTimeout(() => {}),
       };
@@ -107,6 +108,8 @@ for (const bodyId of ['yarn', 'desktop-yarn']) {
       }
       assert.equal(r.button.getAttribute('data-neko-idle-tier'), 'cat1');
       assert.equal(state.pendingYarnActivationTimer, 0);
+      assert.equal(state.restoreChatOnExit, false,
+        'a confirmed restore consumes the entry-created minimization ownership');
       assert.equal(r.context._handleNekoIdleCat1PlaygroundPointerUp(r.button, { pointerId: 17 }), false);
       assert.equal(dragEvents.length, expectedDragEvents, 'later pointerup must not duplicate drag end');
     });
@@ -209,6 +212,7 @@ test('one Playground session recreates yarn across cycles and ignores a late pri
     _NEKO_IDLE_CAT1_PLAYGROUND_YARN_BODY_MASS: 1,
     _NEKO_IDLE_CAT1_PLAYGROUND_YARN_GROUND_DAMPING_AT_60HZ: 0.9,
     _NEKO_IDLE_CAT1_PLAYGROUND_YARN_VISIBLE_INSET_RATIOS: {},
+    _NEKO_IDLE_CAT1_PLAYGROUND_YARN_BODY_COLLISION_INSET_RATIOS: {},
   });
   const target = { mode: 'dom', shell: {}, rect: { left: 10, top: 20, width: 50, height: 50 } };
 
@@ -252,14 +256,38 @@ test('yarn lifecycle rejects stale surface facts and preserves bodies during tem
     detail: { available: true, minimized: true, lifecycleSequence: 2, timestamp: 200 },
   });
   r.context._handleNekoIdleCat1PlaygroundChatMinimizedState({
-    detail: { available: true, minimized: false, lifecycleSequence: 1, timestamp: 100 },
+    detail: { available: true, minimized: false, lifecycleSequence: 1, timestamp: 300 },
+  });
+  r.context._handleNekoIdleCat1PlaygroundChatMinimizedState({
+    detail: { available: true, minimized: true, lifecycleSequence: 3, timestamp: 250 },
   });
   r.context._handleNekoIdleCat1PlaygroundChatMinimizedState({
     detail: { available: false, minimized: false, reason: 'hide-all', lifecycleSequence: 3, timestamp: 300 },
   });
-  assert.deepEqual(syncs, [true]);
-  assert.equal(state.yarnSurfaceLifecycleSequence, 2,
+  assert.deepEqual(syncs, [true, false],
+    'a renderer reload may restart its sequence when its timestamp is newer');
+  assert.equal(state.yarnSurfaceLifecycleSequence, 1,
     'temporary hiding does not consume the next real surface sequence');
+  assert.equal(state.yarnSurfaceUpdatedAt, 300,
+    'a rejected older timestamp cannot partially advance the sequence watermark');
+});
+
+test('yarn target sync uses elapsed time instead of a refresh-rate-dependent frame budget', () => {
+  const r = runtime();
+  installPlaygroundSetting(r);
+  const state = r.button.__nekoIdleCat1PlaygroundDropState = {
+    active: true, released: false, yarnEnabled: true, yarnSyncToken: 0,
+    yarnSyncFrame: 0, yarnSyncTimer: 0, bodies: new Map(),
+  };
+  r.context._NEKO_IDLE_CAT1_PLAYGROUND_YARN_TARGET_WAIT_MS = 900;
+  r.context._getNekoIdleCat1PairMoveChatTarget = () => null;
+  assert.equal(r.context._scheduleNekoIdleCat1PlaygroundYarnSync(r.button, true), true);
+  for (let index = 0; index < 100; index += 1) r.frame(1000 / 240);
+  assert.equal(r.resources().frames, 1,
+    '100 frames at 240Hz are still inside the 900ms target wait window');
+  for (let index = 0; index < 120; index += 1) r.frame(1000 / 240);
+  assert.equal(r.resources().frames, 0);
+  assert.equal(state.bodies.size, 0);
 });
 
 function runtime(options = {}) {
@@ -348,6 +376,9 @@ function runtime(options = {}) {
     _isAnyNekoIdleCat1IndependentActionActive: () => !!gate.action || !!window.NekoDesktopWindowInteractions?.isActive(),
     _isNekoIdleCat1PositionPresentationBusy: () => !!gate.journey,
     _isNekoIdleCat1PlaygroundEntryOrDropActive: () => !!gate.playground,
+    _setNekoIdleCat1PlaygroundBodyPosition: () => {},
+    _stepNekoIdleCat1PlaygroundCircularRollingPosition: () => false,
+    _renderNekoIdleCat1PlaygroundCollisionDeformations: () => false,
   });
   // Use the real return guard: it also covers the drag click-suppression flag.
   // Stubbing it as a transition-only flag hides physics/drag handoff regressions.
@@ -987,6 +1018,7 @@ test('cat visits keep local Playground gravity but register only the local cat b
     '_NEKO_IDLE_CAT1_PLAYGROUND_YARN_BODY_MASS', '_NEKO_IDLE_CAT1_PLAYGROUND_YARN_VISIBLE_INSET_RATIOS',
     '_NEKO_IDLE_CAT1_PLAYGROUND_YARN_GROUND_DAMPING_AT_60HZ',
   ].forEach((name) => { if (!(name in r.context)) r.context[name] = 1; });
+  r.context._NEKO_IDLE_CAT1_PLAYGROUND_YARN_BODY_COLLISION_INSET_RATIOS = {};
   r.context._getNekoIdleCat1PlaygroundDropState = () => dropState;
   r.context._getNekoIdleReturnContainerFromButton = () => r.container;
   const bodyOptions = new Map();
@@ -1028,6 +1060,8 @@ test('cat visit entry removes solo objects without resetting the running cat', (
     targetElement: desktopYarn.element, targetScreenRect: {}, entryQuestionBlockElement: question.element,
   };
   let stopped = 0, rebound = 0, restarted = 0;
+  const lifecycle = [];
+  r.window.addEventListener('neko:idle-cat1-playground-state', event => lifecycle.push(event.detail));
   r.context._stopNekoIdleCat1PlaygroundPhysics = () => { stopped++; };
   r.context._clearNekoIdleCat1PlaygroundPointerListeners = () => {};
   r.context._installNekoIdleCat1PlaygroundPointerListeners = () => { rebound++; };
@@ -1046,6 +1080,9 @@ test('cat visit entry removes solo objects without resetting the running cat', (
   assert.equal(state.targetScreenRect, null);
   assert.equal(state.entryQuestionBlockElement, null);
   assert.deepEqual({ stopped, rebound, restarted }, { stopped: 1, rebound: 1, restarted: 1 });
+  assert.equal(lifecycle.at(-1).active, true);
+  assert.equal(lifecycle.at(-1).yarnEnabled, false,
+    'switching an existing session to Visit mode republishes the yarn-disabled state');
 });
 
 test('cat visit entry cancels a pending solo target and starts cat-only immediately', () => {
@@ -2656,6 +2693,31 @@ test('circular rolling follows horizontal distance without leaking into stepped-
   assert.equal(question.rotation, 0.7, 'the circle strategy does not mutate stepped-rest components');
 });
 
+test('yarn visible geometry drives floor contact and rolling without changing its body AABB', () => {
+  const r = runtime({ web: true });
+  installPlaygroundSetting(r);
+  r.context._getNekoIdleCat1PlaygroundViewportBottomPx = () => 900;
+  r.context._getNekoIdleCat1PlaygroundViewportTopPx = () => 0;
+  r.context._getNekoIdleCat1PlaygroundViewportLeftPx = () => 0;
+  r.context._getNekoIdleCat1PlaygroundViewportRightPx = () => 1200;
+  const body = {
+    id: 'yarn', x: 100, y: 0, width: 512, height: 512,
+    visibleInsetRatios: { left: 62 / 512, top: 62 / 512, right: 62 / 512, bottom: 62 / 512 },
+    bodyCollisionInsetRatios: { left: 20 / 512, top: 20 / 512, right: 20 / 512, bottom: 20 / 512 },
+    rotationBehaviors: { circularRolling: { radiusScale: 1 } },
+  };
+  const collisionRect = r.context._getNekoIdleCat1PlaygroundBodyCollisionRect(body);
+  assert.deepEqual({
+    left: collisionRect.left, top: collisionRect.top,
+    right: collisionRect.right, bottom: collisionRect.bottom,
+  }, { left: 120, top: 20, right: 592, bottom: 492 });
+  assert.equal(r.context._getNekoIdleCat1PlaygroundCircularRollingRadius(body), 194);
+  r.context._updateNekoIdleCat1PlaygroundBodyBounds(body);
+  assert.equal(body.floorY, 450);
+  assert.equal(body.floorY + body.height - 62, 900,
+    'the painted circle, not its transparent canvas, meets the floor');
+});
+
 test('Playground deformation profiles are opt-in, immutable, and rendered per body', () => {
   const r = runtime({ web: true });
   const source = fs.readFileSync(path.join(avatar, 'idle-playground.js'), 'utf8');
@@ -2740,6 +2802,44 @@ test('a body collision offers deformation to both bodies without an id gate', ()
   assert.ok(impacts.every(impact => impact.delta > 0));
 });
 
+test('a sustained body contact reports one impact until the bodies separate', () => {
+  const r = runtime({ web: true });
+  const source = fs.readFileSync(path.join(avatar, 'idle-playground.js'), 'utf8');
+  const start = source.indexOf('function _resolveNekoIdleCat1PlaygroundBodyCollisionPair(');
+  const end = source.indexOf('function _getNekoIdleCat1PlaygroundThrowAngularVelocity(', start);
+  const impacts = [];
+  Object.assign(r.context, {
+    _getNekoIdleCat1PlaygroundBodyCollisionRect: body => ({
+      left: body.x, top: body.y, right: body.x + body.width, bottom: body.y + body.height,
+      width: body.width, height: body.height,
+    }),
+    _normalizeNekoIdleCat1PlaygroundBodyMass: mass => mass,
+    _NEKO_IDLE_CAT1_PLAYGROUND_BODY_RESTITUTION: 0.48,
+    _NEKO_IDLE_CAT1_PLAYGROUND_BODY_PUSH_VELOCITY_PX_PER_SEC: 220,
+    _beginNekoIdleCat1PlaygroundCollisionDeformation: (_button, body) => impacts.push(body.id),
+    _clampNekoIdleCat1PlaygroundBodyToBounds() {},
+    _setNekoIdleCat1PlaygroundBodyPosition() {},
+  });
+  vm.runInContext(source.slice(start, end), r.context);
+  const lower = { id: 'lower', x: 0, y: 8, width: 10, height: 10,
+    vx: 0, vy: 0, mass: 2, inverseMass: 0.5, dragging: false };
+  const upper = { id: 'upper', x: 0, y: 0, width: 10, height: 10,
+    vx: 0, vy: 44, mass: 0.65, inverseMass: 1 / 0.65, dragging: false };
+  const state = { button: r.button, lastTickAt: 1000,
+    bodies: new Map([['lower', lower], ['upper', upper]]), bodyCollisionContacts: new Set() };
+  assert.equal(r.context._resolveNekoIdleCat1PlaygroundBodyCollisions(state), true);
+  assert.deepEqual(impacts, ['lower', 'upper']);
+  Object.assign(lower, { x: 0, y: 8, vy: 0 });
+  Object.assign(upper, { x: 0, y: 0, vy: 44 });
+  assert.equal(r.context._resolveNekoIdleCat1PlaygroundBodyCollisions(state), true);
+  assert.deepEqual(impacts, ['lower', 'upper'], 'support impulses do not restart deformation every frame');
+  upper.y = -20;
+  assert.equal(r.context._resolveNekoIdleCat1PlaygroundBodyCollisions(state), false);
+  upper.y = 0;
+  assert.equal(r.context._resolveNekoIdleCat1PlaygroundBodyCollisions(state), true);
+  assert.deepEqual(impacts, ['lower', 'upper', 'lower', 'upper']);
+});
+
 test('Playground yarn visual owns rotation and deformation while the positioning host stays inert', () => {
   const r = runtime({ web: true });
   const source = fs.readFileSync(path.join(avatar, 'idle-playground.js'), 'utf8');
@@ -2795,6 +2895,7 @@ test('Playground yarn visual owns rotation and deformation while the positioning
     _NEKO_IDLE_CAT1_PLAYGROUND_YARN_BODY_MASS: 1,
     _NEKO_IDLE_CAT1_PLAYGROUND_YARN_GROUND_DAMPING_AT_60HZ: 0.9,
     _NEKO_IDLE_CAT1_PLAYGROUND_YARN_VISIBLE_INSET_RATIOS: {},
+    _NEKO_IDLE_CAT1_PLAYGROUND_YARN_BODY_COLLISION_INSET_RATIOS: {},
   });
   assert.equal(r.context._attachNekoIdleCat1PlaygroundYarnBody(r.button, {
     mode: 'dom', shell, rect: { left: 0, top: 0, width: 51, height: 51 },

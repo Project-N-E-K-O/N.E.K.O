@@ -592,6 +592,12 @@ const _NEKO_IDLE_CAT1_PLAYGROUND_CAT_VISIBLE_INSET_RATIOS = Object.freeze({
     bottom: 15 / 512
 });
 const _NEKO_IDLE_CAT1_PLAYGROUND_YARN_VISIBLE_INSET_RATIOS = Object.freeze({
+    left: 62 / 512,
+    top: 62 / 512,
+    right: 62 / 512,
+    bottom: 62 / 512
+});
+const _NEKO_IDLE_CAT1_PLAYGROUND_YARN_BODY_COLLISION_INSET_RATIOS = Object.freeze({
     left: 20 / 512,
     top: 20 / 512,
     right: 20 / 512,

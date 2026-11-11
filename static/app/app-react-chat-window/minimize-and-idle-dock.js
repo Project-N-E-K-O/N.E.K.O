@@ -1479,17 +1479,23 @@
 
     I._handleIdleCat1PlaygroundState = function _handleIdleCat1PlaygroundState(event) {
         var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
-        I.idleCatPlaygroundYarnSkinActive = detail.active === true;
+        I.idleCatPlaygroundYarnSkinActive = detail.active === true && detail.yarnEnabled === true;
         if (I.getCurrentChatSurfaceMode() === 'minimized') {
             I.applyMinimizedBallSkin(ensureMinimizedBallIcon());
         }
-        if (detail.active === true || I.getCurrentChatSurfaceMode() !== 'minimized') return;
+        if (detail.active === true) return;
         if (detail.reason !== 'cat-click' && detail.restoreChatOnExit !== true) return;
-        setTimeout(function () {
-            if (I.getCurrentChatSurfaceMode() === 'minimized' && !I.isMinimizeTransitioning) {
-                I.toggleMinimized();
-            }
-        }, 0);
+        var restoreMode = I.getNextChatSurfaceMode('minimized');
+        if (I.isMinimizeTransitioning) {
+            I.pendingChatSurfaceMode = {
+                mode: restoreMode,
+                transitionOptions: {}
+            };
+            return;
+        }
+        if (I.getCurrentChatSurfaceMode() === 'minimized') {
+            I.setChatSurfaceMode(restoreMode);
+        }
     }
 
     I.cycleChatSurfaceMode = function cycleChatSurfaceMode() {
