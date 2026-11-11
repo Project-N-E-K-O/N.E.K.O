@@ -491,6 +491,9 @@ async def test_cut_results_are_saved_whole_and_cut_again_after_a_reopen(tmp_path
             [m.model_dump(exclude={"timestamp"}) for m in session.harness.messages], ensure_ascii=False
         )
 
+    def results_of(messages) -> dict[str, str]:  # noqa: ANN001
+        return {m.tool_call_id: m.text for m in messages if isinstance(m, ToolResultMessage)}
+
     llm = ScriptedLLM()
     session, events = await open_session(spec, llm)
     try:
@@ -505,26 +508,33 @@ async def test_cut_results_are_saved_whole_and_cut_again_after_a_reopen(tmp_path
             mark = len(events.events)
             session.prompt(f"Read notes{index}.txt.")
             await events.wait_ended(start=mark)
-        assert [event["is_error"] for event in events.of("tool_end")] == [False] * 8
+        ends = events.of("tool_end")
+        assert [event["is_error"] for event in ends] == [False] * 8
+        # What the model was given for each call, before anything was cut.
+        given = {event["tool_call_id"]: event["text"] for event in ends}
+        assert sorted(given) == [f"r{index}" for index in range(8)]
         # Older results were cut to make room; that was enough, no summary.
         live = conversation(session)
         assert marker in live
         assert texts.SUMMARY_OPEN_TAG not in live
+        assert results_of(session.harness.messages) != given
     finally:
         await session.close()
 
     # Cutting is a view of the conversation, not a change to the record: the
-    # transcript keeps every result whole.
+    # transcript keeps every result whole, word for word.
     saved = (Path(spec.session_dir) / TRANSCRIPT_FILE).read_text(encoding="utf-8")
     assert marker not in saved
     assert "compaction" not in [json.loads(line)["type"] for line in saved.splitlines()]
+    entries = await SessionRecorder(Path(spec.session_dir) / TRANSCRIPT_FILE).read_all()
+    assert results_of(SessionState.from_entries(entries).messages) == given
 
     # So a reopened session starts from the whole results, above the threshold,
     # and cuts them again before its first request goes out.
     reopened_llm = ScriptedLLM([[say("Back."), finish()]])
     session, events = await open_session(spec, reopened_llm)
     try:
-        assert marker not in conversation(session)
+        assert results_of(session.harness.messages) == given
         assert await session.context.measure(session.harness.messages) > threshold
         session.prompt("Go on.")
         await events.wait_ended()
