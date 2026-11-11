@@ -38,6 +38,10 @@ logger = logging.getLogger(__name__)
 
 SessionOpener = Callable[[protocol.FamiliarSpec, HostBridge, EventSink], Awaitable[FamiliarSession]]
 
+# How long the in-process runtime's shutdown waits for sessions that are being
+# created or closed, and for the closes it starts itself.
+SHUTDOWN_WAIT_SECONDS = 15.0
+
 
 class FamiliarRuntime(Protocol):
     """Driver-facing interface of a runtime, in-process or in a subprocess.
@@ -87,8 +91,14 @@ class RuntimeCore:
         self._starting: dict[str, asyncio.Future[None]] = {}
         # Sessions being closed; each future is done once the session is gone.
         self._closing: dict[str, asyncio.Future[None]] = {}
-        # True while ``shutdown`` is at work: no new session is accepted.
-        self._shutting_down = False
+        # Calls of ``shutdown`` at work right now. While there is one, no new
+        # session and no new work is accepted. A count, not a flag: a second
+        # call that returns first must not reopen the door for the first.
+        self._shutdowns = 0
+        # Sessions whose creation outlasted a shutdown; closed on arrival.
+        self._abandoned: set[str] = set()
+        # Keeps the tasks that close sessions alive until they are done.
+        self._close_tasks: set[asyncio.Future[None]] = set()
         self.last_command_at = time.monotonic()
 
     # -- state ----------------------------------------------------------------
@@ -149,7 +159,7 @@ class RuntimeCore:
 
     async def start(self, spec: protocol.FamiliarSpec) -> None:
         session_id = spec.session_id
-        if self._shutting_down:
+        if self._shutdowns:
             # It would be created behind the back of the shutdown and stay open.
             self._reject(session_id, "start", "the runtime is shutting down")
             return
@@ -172,15 +182,24 @@ class RuntimeCore:
             logger.exception("could not start session %s", session_id)
             self._reject(session_id, "start", f"{type(exc).__name__}: {exc}")
         else:
-            self._sessions[session_id] = session
+            if session_id in self._abandoned:
+                # A shutdown stopped waiting for this session. It must not
+                # stay open behind it, so it is closed the moment it exists.
+                try:
+                    await session.close()
+                except Exception:  # noqa: BLE001 - nothing more can be done for it
+                    logger.exception("closing late session %s failed", session_id)
+            else:
+                self._sessions[session_id] = session
         finally:
             # The session is registered (or the attempt has failed) before the
             # commands that waited for it run.
+            self._abandoned.discard(session_id)
             del self._starting[session_id]
             opening.set_result(None)
 
     def _text_command(self, session_id: str, command: str, text: str) -> None:
-        if self._shutting_down:
+        if self._shutdowns:
             # New work would begin behind the back of the shutdown.
             self._reject(session_id, command, "the runtime is shutting down")
             return
@@ -211,17 +230,34 @@ class RuntimeCore:
         if session is None:
             self._reject(session_id, "close", f'unknown session "{session_id}"')
             return
+        await asyncio.shield(self._begin_close(session_id, session))
+
+    def _begin_close(self, session_id: str, session: FamiliarSession) -> asyncio.Future[None]:
+        """Start closing a session that has left the table.
+
+        The close runs as a task of its own and stays registered until the
+        session is gone, whatever becomes of the caller. A new session of the
+        same id waits for it either way, so it never reads a transcript the
+        old one is still writing.
+        """
         closed: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self._closing[session_id] = closed
-        try:
-            await session.close()
-        except Exception:  # noqa: BLE001 - a failing close still removes the session
-            logger.exception("closing session %s failed", session_id)
-        finally:
-            del self._closing[session_id]
-            closed.set_result(None)
 
-    async def shutdown(self) -> None:
+        async def run() -> None:
+            try:
+                await session.close()
+            except Exception:  # noqa: BLE001 - a failing close still removes the session
+                logger.exception("closing session %s failed", session_id)
+            finally:
+                del self._closing[session_id]
+                closed.set_result(None)
+
+        task = asyncio.ensure_future(run())
+        self._close_tasks.add(task)
+        task.add_done_callback(self._close_tasks.discard)
+        return closed
+
+    async def shutdown(self, timeout: float | None = None) -> None:
         """Close every session, including those still being created or closed.
 
         The sessions in the table start closing at once, which stops their
@@ -231,26 +267,37 @@ class RuntimeCore:
         finishes its own cleanup. New sessions and new work are rejected
         meanwhile. Afterwards the core accepts sessions again.
 
-        A caller that stops waiting (a process that has to exit within a time
-        limit) therefore leaves no session behind that was never told to stop.
+        ``timeout`` bounds the waiting, in seconds; ``None`` waits as long as
+        it takes. When it runs out, or when the caller is cancelled, the
+        closes already begun carry on by themselves and stay registered, and
+        (after a timeout) a session still being created is closed the moment
+        it exists. Either way no session is left that was never told to stop.
         """
-        self._shutting_down = True
-        closes: set[asyncio.Future[None]] = set()
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
+        self._shutdowns += 1
         try:
             while True:
-                sessions = list(self._sessions.values())
+                for session_id, session in list(self._sessions.items()):
+                    self._begin_close(session_id, session)
                 self._sessions.clear()
-                closes.update(asyncio.ensure_future(session.close()) for session in sessions)
                 under_way = [*self._starting.values(), *self._closing.values()]
                 if not under_way:
+                    break
+                remaining = None if deadline is None else max(0.0, deadline - loop.time())
+                if remaining == 0.0:
+                    self._abandoned.update(self._starting)
+                    logger.warning(
+                        "shutdown stopped waiting for %d session(s) still being created or closed",
+                        len(under_way),
+                    )
                     break
                 # Not awaited directly: giving up this wait must not cancel a
                 # future other callers share. A start that finishes puts its
                 # session in the table, hence the loop.
-                await asyncio.wait(under_way, return_when=asyncio.FIRST_COMPLETED)
-            await asyncio.gather(*closes, return_exceptions=True)
+                await asyncio.wait(under_way, timeout=remaining, return_when=asyncio.FIRST_COMPLETED)
         finally:
-            self._shutting_down = False
+            self._shutdowns -= 1
 
 
 class InProcessRuntime:
@@ -288,4 +335,6 @@ class InProcessRuntime:
         await self._core.handle(protocol.CloseCommand(session_id=session_id))
 
     async def shutdown(self) -> None:
-        await self._core.shutdown()
+        # Bounded: a session whose creation hangs must not hold up the host's
+        # own shutdown for good.
+        await self._core.shutdown(timeout=SHUTDOWN_WAIT_SECONDS)

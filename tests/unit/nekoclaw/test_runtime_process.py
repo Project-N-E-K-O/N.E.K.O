@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -287,6 +288,8 @@ class _FakePipe:
 
     def __init__(self) -> None:
         self.sent: list[dict[str, Any]] = []
+        # Set once the pretended child has exited.
+        self.exited = threading.Event()
 
     def send(self, message: dict[str, Any]) -> None:
         self.sent.append(message)
@@ -298,7 +301,13 @@ class _FakePipe:
         pass
 
     def is_alive(self) -> bool:
-        return True
+        return not self.exited.is_set()
+
+    def join(self, timeout: float | None = None) -> None:
+        self.exited.wait(timeout)
+
+    def terminate(self) -> None:
+        self.exited.set()
 
 
 def _wired(events: Recorder) -> tuple[SubprocessRuntime, _FakePipe, Any]:
@@ -447,6 +456,186 @@ async def test_shutdown_closes_existing_sessions_without_waiting_for_a_slow_star
     assert core.session_ids == ["slow"]
     await core.shutdown()
     assert order == ["close ready", "close slow"]
+
+
+async def test_a_bounded_shutdown_returns_and_a_late_session_is_closed_on_arrival(tmp_path: Path) -> None:
+    order: list[str] = []
+    gate = asyncio.Event()
+
+    class Stub:
+        busy = False
+
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        async def close(self) -> None:
+            order.append(f"close {self.name}")
+
+    async def open_session(spec, host, emit):  # noqa: ANN001, ANN202
+        del host, emit
+        if spec.session_id == "stuck":
+            await gate.wait()
+        return Stub(spec.session_id)
+
+    core = RuntimeCore(NoHost(), lambda event: None, open_session=open_session)
+    await core.start(make_spec(tmp_path, "ready"))
+    stuck = asyncio.ensure_future(core.start(make_spec(tmp_path, "stuck")))
+    await asyncio.sleep(0)
+
+    # Creating "stuck" hangs. A shutdown with a time limit returns all the same.
+    await asyncio.wait_for(core.shutdown(timeout=0.2), 5)
+    assert order == ["close ready"]
+    assert core.session_ids == []
+
+    # When that session finally exists it is closed at once instead of being
+    # left open behind the shutdown.
+    gate.set()
+    await stuck
+    assert order == ["close ready", "close stuck"]
+    assert core.session_ids == [] and core.idle
+    # A later session of the same name is unaffected.
+    await core.start(make_spec(tmp_path, "stuck"))
+    assert core.session_ids == ["stuck"]
+    await core.shutdown()
+
+
+class _SlowToClose:
+    """Stands in for a session whose closing takes a moment."""
+
+    busy = False
+
+    def __init__(self, name: str, order: list[str]) -> None:
+        self.name = name
+        self._order = order
+
+    async def close(self) -> None:
+        self._order.append(f"closing {self.name}")
+        await asyncio.sleep(0.3)
+        self._order.append(f"closed {self.name}")
+
+
+def _slow_closing_core(order: list[str], emitted: list[dict[str, Any]]) -> RuntimeCore:
+    async def open_session(spec, host, emit):  # noqa: ANN001, ANN202
+        del host, emit
+        order.append(f"opened {spec.session_id}")
+        return _SlowToClose(spec.session_id, order)
+
+    return RuntimeCore(NoHost(), emitted.append, open_session=open_session)
+
+
+async def test_a_cancelled_close_still_closes_the_session(tmp_path: Path) -> None:
+    order: list[str] = []
+    core = _slow_closing_core(order, [])
+    await core.start(make_spec(tmp_path))
+    closing = asyncio.ensure_future(core.close("s1"))
+    await asyncio.sleep(0.05)
+    # Whoever asked for the close stops waiting for it.
+    closing.cancel()
+    await asyncio.gather(closing, return_exceptions=True)
+    assert order == ["opened s1", "closing s1"]
+    # The close goes on regardless, and a new session of the same id waits for it.
+    await core.start(make_spec(tmp_path))
+    assert order == ["opened s1", "closing s1", "closed s1", "opened s1"]
+    await core.shutdown()
+
+
+async def test_a_second_shutdown_does_not_reopen_the_door_for_the_first(tmp_path: Path) -> None:
+    order: list[str] = []
+    emitted: list[dict[str, Any]] = []
+    core = _slow_closing_core(order, emitted)
+    await core.start(make_spec(tmp_path, "old"))
+    first = asyncio.ensure_future(core.shutdown())
+    await asyncio.sleep(0.05)
+    # A second call with a short limit comes back early ...
+    await core.shutdown(timeout=0.01)
+    assert not first.done()
+    # ... while the first is still at work, so sessions are still refused.
+    await core.start(make_spec(tmp_path, "new"))
+    assert [(e["session_id"], e["message"]) for e in emitted if e["type"] == "error"] == [
+        ("new", "the runtime is shutting down")
+    ]
+    # A further call without a limit waits for the close the first one began.
+    await core.shutdown()
+    assert order == ["opened old", "closing old", "closed old"]
+    await first
+    # With every call over, sessions are accepted again.
+    await core.start(make_spec(tmp_path, "new"))
+    assert core.session_ids == ["new"]
+    await core.shutdown()
+
+
+async def test_a_start_during_an_explicit_shutdown_is_refused_by_the_subprocess_runtime(
+    tmp_path: Path,
+) -> None:
+    events = Recorder()
+    runtime, pipe, feed = _wired(events)
+    stopping = asyncio.ensure_future(runtime.shutdown())
+    try:
+        await asyncio.sleep(0.05)
+        assert [message["type"] for message in pipe.sent] == ["shutdown"]
+        # The child is still on its way out. A session asked for now is refused,
+        # as in the in-process runtime: nothing is written to the leaving child
+        # and the request does not sit waiting to start another one.
+        await asyncio.wait_for(runtime.start(make_spec(tmp_path, "late")), 2)
+        refused = [(e["session_id"], e["command"], e["message"]) for e in events.of("error")]
+        assert refused == [("late", "start", "the runtime is shutting down")]
+        assert len(pipe.sent) == 1
+    finally:
+        pipe.exited.set()  # the child has exited
+        feed(None)  # and its pipe has closed
+        await stopping
+    assert runtime.pid is None
+
+
+@pytest.mark.parametrize("give_up", ["cancel", "timeout"])
+async def test_a_session_is_not_reopened_while_an_abandoned_shutdown_still_closes_it(
+    tmp_path: Path, give_up: str
+) -> None:
+    order: list[str] = []
+    gate = asyncio.Event()
+
+    class Stub:
+        busy = False
+
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        async def close(self) -> None:
+            order.append(f"closing {self.name}")
+            await asyncio.sleep(0.3)
+            order.append(f"closed {self.name}")
+
+    async def open_session(spec, host, emit):  # noqa: ANN001, ANN202
+        del host, emit
+        if spec.session_id == "stuck":
+            await gate.wait()
+        order.append(f"opened {spec.session_id}")
+        return Stub(spec.session_id)
+
+    core = RuntimeCore(NoHost(), lambda event: None, open_session=open_session)
+    await core.start(make_spec(tmp_path, "ready"))
+    stuck = asyncio.ensure_future(core.start(make_spec(tmp_path, "stuck")))
+    await asyncio.sleep(0)
+
+    # The caller of the shutdown stops waiting while "ready" is still closing.
+    if give_up == "cancel":
+        stopping = asyncio.ensure_future(core.shutdown())
+        await asyncio.sleep(0.05)
+        stopping.cancel()
+        await asyncio.gather(stopping, return_exceptions=True)
+    else:
+        await core.shutdown(timeout=0.05)
+    assert order == ["opened ready", "closing ready"]
+
+    # Started again right away, the session opens only once the old one has
+    # finished closing: it would otherwise read a transcript still being written.
+    await core.start(make_spec(tmp_path, "ready"))
+    assert order == ["opened ready", "closing ready", "closed ready", "opened ready"]
+
+    gate.set()
+    await stuck
+    await core.shutdown()
+    assert core.session_ids == [] and core.idle
 
 
 async def test_shutdown_waits_for_sessions_on_their_way_in_and_out(tmp_path: Path) -> None:

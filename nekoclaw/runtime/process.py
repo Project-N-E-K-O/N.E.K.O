@@ -251,9 +251,7 @@ async def _serve(connection: Any, options: dict[str, Any]) -> None:
         # parent would see the session fail instead of close. The core waits
         # for sessions on their way in or out and then closes every session.
         try:
-            await asyncio.wait_for(core.shutdown(), _SESSIONS_CLOSE_SECONDS)
-        except asyncio.TimeoutError:
-            logger.warning("closing the sessions took too long; exiting anyway")
+            await core.shutdown(timeout=_SESSIONS_CLOSE_SECONDS)
         except Exception:  # noqa: BLE001 - the process is exiting either way
             logger.exception("closing the sessions failed")
         for task in list(tasks):
@@ -302,6 +300,8 @@ class SubprocessRuntime:
         self._sent = 0
         # The current child was told to exit: nothing more may be sent to it.
         self._retiring = False
+        # Calls of ``shutdown`` at work right now; see RuntimeCore.
+        self._shutdowns = 0
         self._sessions: set[str] = set()
         # Session id -> start commands the child has not answered yet.
         self._pending_starts: dict[str, int] = {}
@@ -558,6 +558,20 @@ class SubprocessRuntime:
         return False
 
     async def start(self, spec: protocol.FamiliarSpec) -> None:
+        if self._shutdowns:
+            # As in the in-process runtime: a session asked for while the
+            # runtime is being shut down is refused. (An idle child that is
+            # leaving is another matter; there the start waits for the next.)
+            self._deliver(
+                protocol.dump(
+                    protocol.ErrorEvent(
+                        session_id=spec.session_id,
+                        command="start",
+                        message="the runtime is shutting down",
+                    )
+                )
+            )
+            return
         try:
             await self._ensure_process()
         except Exception as exc:  # noqa: BLE001 - reported as a rejected command
@@ -591,26 +605,34 @@ class SubprocessRuntime:
         self._send_or_reject(session_id, protocol.CloseCommand(session_id=session_id))
 
     async def shutdown(self) -> None:
-        """Ask the child to close its sessions and exit; kill it if it does not."""
-        # Under the lock a ``start`` arriving meanwhile waits and then gets a
-        # new child, instead of being written to the one that is leaving.
-        async with self._lock:
-            process = self._process
-            if process is None:
-                return
-            if not self._retiring:
-                self._retire(protocol.ShutdownCommand())
-            await asyncio.to_thread(process.join, SHUTDOWN_TIMEOUT_SECONDS)
-            if process.is_alive():
-                logger.warning("the runtime process did not exit; terminating it")
-                process.terminate()
-                await asyncio.to_thread(process.join, 5.0)
-            self._process = None
-            # Let the reader thread report the closed pipe before returning.
-            for _attempt in range(50):
-                if self._connection is None:
-                    break
-                await asyncio.sleep(0.02)
-            if self._connection is not None:
-                self._on_disconnect()
-            self._retiring = False
+        """Ask the child to close its sessions and exit; kill it if it does not.
+
+        A ``start`` that arrives while this is at work is refused. Afterwards
+        the runtime can be used again; the next ``start`` brings up a new child.
+        """
+        self._shutdowns += 1
+        try:
+            # The lock keeps this apart from a ``start`` that is already
+            # bringing a child up.
+            async with self._lock:
+                process = self._process
+                if process is None:
+                    return
+                if not self._retiring:
+                    self._retire(protocol.ShutdownCommand())
+                await asyncio.to_thread(process.join, SHUTDOWN_TIMEOUT_SECONDS)
+                if process.is_alive():
+                    logger.warning("the runtime process did not exit; terminating it")
+                    process.terminate()
+                    await asyncio.to_thread(process.join, 5.0)
+                self._process = None
+                # Let the reader thread report the closed pipe before returning.
+                for _attempt in range(50):
+                    if self._connection is None:
+                        break
+                    await asyncio.sleep(0.02)
+                if self._connection is not None:
+                    self._on_disconnect()
+                self._retiring = False
+        finally:
+            self._shutdowns -= 1
