@@ -383,6 +383,8 @@ class FamiliarSession(SessionInbox):
         self._platform = platform if platform is not None else sys.platform
         self._clock = clock if clock is not None else (lambda: datetime.now().astimezone())
         self._seq = 0
+        # Texts taken through prompt, steer and follow_up; see EndedEvent.inputs.
+        self._inputs = 0
         self._closing = False
         self._abort_requested = False
         self._run_task: asyncio.Task[None] | None = None
@@ -895,11 +897,13 @@ class FamiliarSession(SessionInbox):
             raise SessionError("the session is closed")
         if self.running:
             raise SessionError("a run is in progress; use steer or follow_up to add to it")
+        self._inputs += 1
         self._begin_run(UserMessage(content=text))
 
     def steer(self, text: str) -> None:
         if self._closing:
             raise SessionError("the session is closed")
+        self._inputs += 1
         if self.running:
             self.harness.steer_message(UserMessage(content=text))
         else:
@@ -908,6 +912,7 @@ class FamiliarSession(SessionInbox):
     def follow_up(self, text: str) -> None:
         if self._closing:
             raise SessionError("the session is closed")
+        self._inputs += 1
         if self.running:
             self.harness.follow_up_message(UserMessage(content=text))
         else:
@@ -1057,5 +1062,6 @@ class FamiliarSession(SessionInbox):
                 stop_reason=last.stop_reason if last is not None else None,
                 text=last.text if last is not None else "",
                 error=error,
+                inputs=self._inputs,
             )
         )

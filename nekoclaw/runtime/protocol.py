@@ -39,7 +39,10 @@ per-session ``seq`` that increases by one:
 * ``report``      - a structured report made through the ``report`` tool.
 * ``usage``       - token usage of one model request and the context size.
 * ``ended``       - a run finished and the session is idle (``completed``,
-  ``aborted``, ``error``), or the session is gone (``closed``).
+  ``aborted``, ``error``), or the session is gone (``closed``). A finished
+  run states ``inputs``: how many texts (``prompt``, ``steer``,
+  ``follow_up``) the session had taken by then. A driver that has sent more
+  knows that a later run is under way.
 * ``error``       - a command was rejected.
 
 The subprocess shell adds messages of its own: ``host_request`` (the runtime
@@ -302,6 +305,8 @@ class EndedEvent(_SessionEvent):
     # Text of the last model response of the run.
     text: str = ""
     error: str | None = None
+    # Texts the session had taken when the run finished; None for ``closed``.
+    inputs: int | None = None
 
 
 class ErrorEvent(_SessionEvent):

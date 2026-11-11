@@ -44,6 +44,8 @@ class Faults:
         self.polls = 0
         # Hold back the answer to POST /runs until this is set.
         self.answer_may_return: asyncio.Event | None = None
+        # Called just before the answer to POST /runs is handed back.
+        self.on_runs_answer: Any = None
 
 
 def _runner(server: FakePluginServer, faults: Faults) -> PluginRunner:
@@ -67,6 +69,8 @@ def _runner(server: FakePluginServer, faults: Faults) -> PluginRunner:
             response = await self._client.post(url, **kwargs)
             if url.endswith("/runs") and faults.answer_may_return is not None:
                 await faults.answer_may_return.wait()
+            if url.endswith("/runs") and faults.on_runs_answer is not None:
+                faults.on_runs_answer()
             return response
 
         async def get(self, url: str, **kwargs: Any) -> Any:
@@ -205,6 +209,31 @@ async def test_closing_waits_for_the_cancel_of_a_run_created_while_closing(serve
     await asyncio.wait_for(closing, 5)
 
     # Closed means the cancel of the run the late answer named has been sent.
+    assert server.cancelled == [("weather", run.run_id)]
+
+
+async def test_closing_just_after_a_late_answer_came_back_still_sends_its_cancel(server):
+    started = _slow_weather(server)
+    faults = Faults()
+    faults.answer_may_return = asyncio.Event()
+    back: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    faults.on_runs_answer = lambda: back.set_result(None)
+    runner = _runner(server, faults)
+    calling = asyncio.ensure_future(
+        runner.run_entry(commission_id="c1", plugin_id="weather", entry_id="today", args={})
+    )
+    await asyncio.wait_for(started.wait(), 5)
+    (run,) = server.runs()
+    calling.cancel()
+    await asyncio.gather(calling, return_exceptions=True)
+    (request,) = runner._cancel_tasks
+
+    faults.answer_may_return.set()
+    await back
+    # The request has finished, and what is to run once it has not run yet.
+    assert request.done()
+    await runner.aclose()
+
     assert server.cancelled == [("weather", run.run_id)]
 
 

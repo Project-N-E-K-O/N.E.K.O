@@ -36,7 +36,6 @@ expectations.
 from __future__ import annotations
 
 import asyncio
-import functools
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -436,6 +435,9 @@ class PluginRunner:
         # Cancel requests on their way, by run id; a second caller waits for the same one.
         self._cancel_pending: dict[str, asyncio.Future[bool]] = {}
         self._cancel_tasks: set[asyncio.Future[Any]] = set()
+        # Run requests whose caller went away, by the commission they were
+        # for, until the run they created has been handed to a cancel.
+        self._abandoned: dict[asyncio.Future[Any], str] = {}
 
     @property
     def base_url(self) -> str:
@@ -527,6 +529,10 @@ class PluginRunner:
         after its caller went away adds the cancel of the run it created.
         """
         while True:
+            # A request that has come back hands its run to a cancel only
+            # once its done callbacks run, which may not have happened yet.
+            for request in [request for request in self._abandoned if request.done()]:
+                self._cancel_abandoned_run(request)
             pending = [task for task in self._cancel_tasks if not task.done()]
             if not pending:
                 return
@@ -654,7 +660,8 @@ class PluginRunner:
         try:
             created, problem = await asyncio.shield(request)
         except asyncio.CancelledError:
-            request.add_done_callback(functools.partial(self._cancel_abandoned_run, commission_id))
+            self._abandoned[request] = commission_id
+            request.add_done_callback(self._cancel_abandoned_run)
             raise
         if problem is not None:
             return failed(*problem)
@@ -744,12 +751,17 @@ class PluginRunner:
             logger.warning("/runs request failed for %s: %s", target, type(exc).__name__)
             return None, (str(exc) or type(exc).__name__, "run_failed")
 
-    def _cancel_abandoned_run(self, commission_id: str, request: "asyncio.Future[Any]") -> None:
+    def _cancel_abandoned_run(self, request: "asyncio.Future[Any]") -> None:
         """Cancel the run a request created after its caller had gone away.
 
         The run is known to the commission until the plugin server accepts the
         cancel, so stopping the commission asks again if this request fails.
+        Runs once per request, from its done callback or from ``aclose``,
+        whichever comes first.
         """
+        commission_id = self._abandoned.pop(request, None)
+        if commission_id is None:
+            return
         if request.cancelled() or request.exception() is not None:
             return
         created, _problem = request.result()

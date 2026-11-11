@@ -240,7 +240,8 @@ def test_the_transition_table_is_the_intended_one():
     assert ALLOWED_TRANSITIONS == {
         "queued": {"working", "failed", "cancelled"},
         "working": {"waiting_user", "done", "blocked", "failed", "cancelled"},
-        "waiting_user": {"working", "failed", "cancelled"},
+        # Queued when its closed session's answer finds no free place.
+        "waiting_user": {"working", "queued", "failed", "cancelled"},
         # Taken up again, at once or queued when no familiar place is free.
         "blocked": {"working", "queued", "failed", "cancelled"},
         "failed": {"working", "queued"},

@@ -362,9 +362,9 @@ async def test_a_cancelled_set_mode_finishes_its_write_before_the_next_one(tmp_p
     second = asyncio.ensure_future(store.set_mode("run_command", "deny"))
     await asyncio.sleep(0.05)
     release.set()
-    await second
+    _ = await second
     with pytest.raises(asyncio.CancelledError):
-        await first
+        _ = await first
     # Both writes are on disk; the later setting must be the one kept.
     await asyncio.to_thread(written.wait, 5.0)
 
@@ -440,7 +440,7 @@ async def test_a_cancelled_shutdown_still_finishes_and_a_retry_waits_for_it(tmp_
     await asyncio.wait_for(entered.wait(), 3.0)
     first.cancel()
     with pytest.raises(asyncio.CancelledError):
-        await first
+        _ = await first
     assert host.closed is False
 
     retry = asyncio.ensure_future(host.shutdown())
@@ -499,7 +499,7 @@ async def test_a_host_whose_shutdown_finished_in_the_background_is_replaced(moun
     await asyncio.wait_for(entered.wait(), 3.0)
     closing.cancel()
     with pytest.raises(asyncio.CancelledError):
-        await closing
+        _ = await closing
     assert mount.get_host() is host
     release.set()
     await _wait_for(lambda: host.closed)
@@ -561,3 +561,25 @@ def test_ordinary_names_stay_below_the_host_directory(tmp_path):
         session = paths.session_dir(commission_id, project)
         assert session.name == commission_id
         assert Path(tmp_path) in session.parents
+
+
+async def test_reports_left_unsent_before_a_restart_go_out_on_first_use(tmp_path):
+    from tests.unit.nekoclaw.host_fakes import FakeDecisionLLM
+
+    before = make_host(tmp_path, decision_llm=FakeDecisionLLM())
+    await before.ledger.outbox_add(None, "task_result", {"summary": "sorted the photos"})
+    await before.shutdown()
+
+    sent: list[dict[str, Any]] = []
+
+    async def send(item: Any) -> bool:
+        sent.append(item.payload)
+        return True
+
+    # Restarted with the sender given at construction, which does no work.
+    after = make_host(tmp_path, decision_llm=FakeDecisionLLM(), send_report=send)
+    try:
+        await after.query("what is going on", lanlan_name="Lan")
+        await _wait_for(lambda: sent == [{"summary": "sorted the photos"}])
+    finally:
+        await after.shutdown()

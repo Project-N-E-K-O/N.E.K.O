@@ -24,7 +24,8 @@ Whoever embeds the host supplies what it cannot know by itself, all optional:
 * ``enabled`` / ``plugins_enabled`` / ``familiars_enabled`` - the switches;
 * ``change_token`` - changes whenever the plugin list may have changed;
 * ``send_report`` - delivers an outbox row to the main server. Without it
-  reports are stored and wait.
+  reports are stored and wait. Reports an earlier run left unsent go out
+  from the first call that does work.
 
 ``mount.py`` does this for the agent process.
 """
@@ -145,30 +146,50 @@ class NekoClawHost:
         )
         # Set when shutting down starts; the task finishes when it is done.
         self._shut_down = False
+        # Set by the first call that does work; see ``_first_use``.
+        self._used = False
         self._shutdown_task: asyncio.Future[None] | None = None
+
+    def _first_use(self) -> None:
+        """Start sending reports left unsent by an earlier run of the host.
+
+        Building the host does no work, so a sender given to the constructor
+        is only started here, by the first call that does work. Reports
+        written later start it themselves.
+        """
+        if self._used or self._shut_down:
+            return
+        self._used = True
+        self.outbox.kick()
 
     # -- what the main dialogue uses --------------------------------------
 
     async def dispatch(self, text: str, **kwargs: Any) -> Receipt:
         """Hand a sentence to the task brain; see ``TaskBrain.dispatch``."""
+        self._first_use()
         return await self.brain.dispatch(text, **kwargs)
 
     async def query(self, text: str, **kwargs: Any) -> QueryAnswer:
         """Ask the task brain; see ``TaskBrain.query``."""
+        self._first_use()
         return await self.brain.query(text, **kwargs)
 
     # -- what the commission board uses -----------------------------------
 
     async def abort(self, commission_id: str, *, reason: str = "stopped") -> Commission | None:
+        self._first_use()
         return await self.brain.abort(commission_id, reason=reason)
 
     async def tell(self, commission_id: str, text: str) -> bool:
+        self._first_use()
         return await self.brain.tell(commission_id, text)
 
     async def answer(self, commission_id: str, text: str, *, choice: str | None = None) -> bool:
+        self._first_use()
         return await self.brain.answer(commission_id, text, choice=choice)
 
     async def complete_deferred(self, commission_id: str) -> bool:
+        self._first_use()
         return await self.brain.complete_deferred(commission_id)
 
     # -- upkeep -----------------------------------------------------------

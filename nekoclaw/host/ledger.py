@@ -69,7 +69,9 @@ ENDED_STATUSES: frozenset[str] = frozenset({"done", "failed", "cancelled", "bloc
 ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     "queued": frozenset({"working", "failed", "cancelled"}),
     "working": frozenset({"waiting_user", "done", "blocked", "failed", "cancelled"}),
-    "waiting_user": frozenset({"working", "failed", "cancelled"}),
+    # Queued when its session was closed while it waited and the answer
+    # finds no free place.
+    "waiting_user": frozenset({"working", "queued", "failed", "cancelled"}),
     # Blocked and failed commissions can be taken up again: the familiar's
     # transcript is on disk.
     # Queued again when no familiar place is free to take them up at once.

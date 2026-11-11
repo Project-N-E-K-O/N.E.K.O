@@ -126,6 +126,11 @@ class _Session:
     run_ended: bool = False
     held_answer: str | None = None
     closing: bool = False
+    # Texts sent to the session (prompt and steer). A finished run that had
+    # taken fewer is followed by a run that takes the rest; until that one
+    # ends, the earlier one's end is held here and decides nothing.
+    sent: int = 0
+    held_end: dict[str, Any] | None = None
 
 
 def default_runtime_factory(on_event: Callable[[dict[str, Any]], None], host: Any) -> Any:
@@ -197,8 +202,11 @@ class FamiliarManager:
         self._queue: deque[str] = deque()
         # Text passed on to a commission that has not started yet.
         self._notes: dict[str, list[str]] = {}
-        # What a blocked or failed commission is told when it is taken up again.
+        # What a commission taken up again is told: an addition to a blocked or
+        # failed one, or the answer to one whose waiting session was closed.
         self._resume: dict[str, str] = {}
+        # Being queued to be taken up again, while that status is written.
+        self._requeueing: set[str] = set()
         self._candidates: dict[str, tuple[str, ...]] = {}
         self._starting: set[asyncio.Task[Any]] = set()
         self._events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -378,7 +386,7 @@ class FamiliarManager:
             return False
         try:
             commission = await self._ledger.get(commission_id)
-            if commission is None or commission.status not in ("queued", "blocked", "failed"):
+            if commission is None or commission.status not in ("queued", "blocked", "failed", "waiting_user"):
                 self._discard(commission_id)
                 return False
             config = await self._model_config()
@@ -443,10 +451,10 @@ class FamiliarManager:
                 session.closing = True
                 await runtime.close(commission.id)
                 return False
-            await runtime.prompt(commission.id, text)
+            await self._send_text(runtime, session, "prompt", text)
             # What was passed on while the session was being set up.
             for note in self._notes.pop(commission.id, []):
-                await runtime.steer(commission.id, note)
+                await self._send_text(runtime, session, "steer", note)
             return True
         except asyncio.CancelledError:
             self._discard(commission_id)
@@ -459,6 +467,20 @@ class FamiliarManager:
             self._discard(commission_id)
             await self._fail(commission_id, f"the familiar could not be started: {exc}")
             return False
+
+    @staticmethod
+    async def _send_text(runtime: Any, session: _Session, command: str, text: str) -> None:
+        """Send ``prompt`` or ``steer`` text to a session, counting it.
+
+        Counted before it is sent: the end of a run that has not taken it may
+        be handled while the command is on its way.
+        """
+        session.sent += 1
+        try:
+            await getattr(runtime, command)(session.commission_id, text)
+        except BaseException:
+            session.sent -= 1
+            raise
 
     def _discard(self, commission_id: str) -> None:
         self._sessions.pop(commission_id, None)
@@ -473,7 +495,7 @@ class FamiliarManager:
         as a task of its own, which shutting down waits for: waiting here for
         it to come up would hold up every other event meanwhile.
         """
-        if commission_id in self._queue:
+        if commission_id in self._queue or commission_id in self._requeueing:
             # Queued to be taken up again: what was said meanwhile goes along
             # with it, and so do its candidate plugins.
             self._sessions.pop(commission_id, None)
@@ -625,6 +647,15 @@ class FamiliarManager:
         if commission is None:
             return
         if reason == "completed":
+            inputs = event.get("inputs")
+            if isinstance(inputs, int) and inputs < session.sent:
+                # Text sent after this run had finished (a result from a
+                # familiar it started, or something the user said) started
+                # another run. That run's end decides; this one's is kept in
+                # case the text is refused and no such run comes.
+                session.held_end = event
+                return
+            session.held_end = None
             if commission.status == "waiting_user" and session.awaiting_prompt:
                 # It asked for an answer and stopped; the session stays for the answer.
                 session.run_ended = True
@@ -657,6 +688,17 @@ class FamiliarManager:
         command = event.get("command")
         message = str(event.get("message") or "the runtime rejected the command")
         commission_id = session.commission_id
+        if command in ("prompt", "steer", "follow_up") and session.sent > 0:
+            # Refused, so the session never took it.
+            session.sent -= 1
+        if command == "steer":
+            held = session.held_end
+            if held is not None and isinstance(held.get("inputs"), int) and held["inputs"] >= session.sent:
+                # The run the refused text was to start never came: the
+                # earlier run's end stands after all.
+                session.held_end = None
+                await self._on_ended(session, held)
+            return
         if command == "start":
             await self._fail(commission_id, f"the familiar could not be started: {message}")
             await self._release(commission_id)
@@ -728,7 +770,8 @@ class FamiliarManager:
         from utils.tokenize import truncate_to_tokens
 
         parent_id = str(commission.parent_id)
-        if parent_id not in self._sessions or self._runtime is None:
+        parent = self._sessions.get(parent_id)
+        if parent is None or self._runtime is None:
             return
         message = texts.FAMILIAR_CHILD_RESULT_TEMPLATE.format(
             name=commission.name or commission.id,
@@ -738,7 +781,7 @@ class FamiliarManager:
         # Before the parent's next model request, so a parent that waits for
         # its familiars sees the result as soon as it looks; an idle parent is
         # started by it.
-        await self._runtime.steer(parent_id, message)
+        await self._send_text(self._runtime, parent, "steer", message)
 
     # -- driving ----------------------------------------------------------
 
@@ -772,29 +815,13 @@ class FamiliarManager:
         session = self._sessions.get(commission_id)
         if session is not None and self._runtime is not None and session.awaiting_prompt:
             return await self.answer(commission_id, text)
+        if session is None and commission.status == "waiting_user":
+            # Its session was closed while it waited (an idle runtime exits).
+            return await self.answer(commission_id, text)
         if commission.status in ("blocked", "failed"):
             # Take it up again where its transcript ends.
             await self._ledger.append_event(commission_id, "told", {"text": text, "resumed": True})
-            if self._closed:
-                return False
-            if session is not None or not self._take_place(commission_id):
-                # Its old session is still on its way out, or no place is
-                # free: it is taken up again as soon as that has changed.
-                # Until then it is queued, which a stop can still end.
-                moved = await self._ledger.transition(
-                    commission_id, "queued", reason="taken up again; waiting for a place"
-                )
-                if not moved.applied:
-                    return False
-                self._resume[commission_id] = text
-                if commission_id not in self._queue:
-                    self._queue.append(commission_id)
-                # A place may have come free while the status was written; the
-                # queue was empty then, so nothing took it. Move it on now.
-                if not self._closed and len(self._sessions) < self.limit:
-                    self._spawn(self._start_next())
-                return True
-            return await self._launch(commission_id, prompt=text)
+            return await self._take_up_again(commission_id, text)
         if commission.status == "queued":
             # Not started yet: it goes along with the work when it starts.
             self._notes.setdefault(commission_id, []).append(text)
@@ -804,15 +831,56 @@ class FamiliarManager:
             if session.closing or commission.status not in ("working", "waiting_user"):
                 return False
             await self._ledger.append_event(commission_id, "told", {"text": text})
-            await self._runtime.steer(commission_id, text)
+            await self._send_text(self._runtime, session, "steer", text)
             return True
         return False
+
+    async def _take_up_again(self, commission_id: str, text: str) -> bool:
+        """Start a commission's familiar again where its transcript ends, ``text`` its next work.
+
+        Its old session is gone or on its way out. Without a free place it is
+        queued, which a stop can still end. Returns whether it was started or
+        queued.
+        """
+        if self._closed:
+            return False
+        if commission_id not in self._sessions and self._take_place(commission_id):
+            return await self._launch(commission_id, prompt=text)
+        # Its old session is still on its way out, or no place is free: it is
+        # queued. That runs as a task shutting down waits for, so a shutdown
+        # while the status is written still finds the commission afterwards.
+        return await asyncio.shield(self._spawn(self._requeue(commission_id, text)))
+
+    async def _requeue(self, commission_id: str, text: str) -> bool:
+        # Marked while the status is written: the old session's end meanwhile
+        # then keeps the candidate plugins and notes for the retry.
+        self._requeueing.add(commission_id)
+        try:
+            moved = await self._ledger.transition(commission_id, "queued", reason="taken up again; waiting for a place")
+        finally:
+            self._requeueing.discard(commission_id)
+        if moved.applied and self._closed:
+            # Shutting down emptied the queue while the status was written.
+            await self._ledger.transition(commission_id, "failed", reason=_SHUT_DOWN_REASON)
+        if not moved.applied or self._closed:
+            if commission_id not in self._sessions:
+                self._candidates.pop(commission_id, None)
+                self._notes.pop(commission_id, None)
+            return False
+        self._resume[commission_id] = text
+        if commission_id not in self._queue:
+            self._queue.append(commission_id)
+        # A place may have come free while the status was written; the queue
+        # was empty then, so nothing took it. Move it on now.
+        if len(self._sessions) < self.limit:
+            self._spawn(self._start_next())
+        return True
 
     async def answer(self, commission_id: str, text: str, choice: str | None = None) -> bool:
         """Give the user's answer to a commission that waits for it."""
         session = self._sessions.get(commission_id)
         if session is None:
-            return False
+            return await self._answer_closed(commission_id, text)
         if session.question is not None and not session.question.done():
             session.question.set_result({"text": text, "choice": choice})
             return True
@@ -825,6 +893,26 @@ class FamiliarManager:
             return await self._deliver_answer(session, text)
         return False
 
+    async def _answer_closed(self, commission_id: str, text: str) -> bool:
+        """Answer a ``waiting`` report whose session was closed meanwhile.
+
+        A runtime with nothing to do exits after a while and closes its idle
+        sessions, those waiting for an answer included. The answer then takes
+        the commission up again where its transcript ends.
+        """
+        if self._closed:
+            return False
+        commission = await self._ledger.get(commission_id)
+        if commission is None or commission.route != "familiar" or commission.status != "waiting_user":
+            return False
+        question = commission.question() or {}
+        # A question asked through a tool call is answered to the session that
+        # waits for it; only the question of a report can be answered this way.
+        if question.get("kind") != "report":
+            return False
+        await self._ledger.append_event(commission_id, "answered", {"text": text, "resumed": True})
+        return await self._take_up_again(commission_id, text)
+
     async def _deliver_answer(self, session: _Session, text: str) -> bool:
         """Give an idle session the answer to its ``waiting`` report as its next work."""
         commission_id = session.commission_id
@@ -834,7 +922,7 @@ class FamiliarManager:
         session.awaiting_prompt = False
         session.held_answer = None
         await self._ledger.append_event(commission_id, "answered", {"text": text})
-        await self._runtime.prompt(commission_id, text)
+        await self._send_text(self._runtime, session, "prompt", text)
         return True
 
     async def _ask(self, commission_id: str, question: dict[str, Any]) -> dict[str, Any]:

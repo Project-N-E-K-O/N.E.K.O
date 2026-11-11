@@ -373,7 +373,7 @@ async def test_a_place_freed_by_a_stop_during_preparation_goes_to_the_queue(host
     await host.ledger.transition(first.id, "cancelled", reason="stopped by the user")
     await host.familiars.abort(first.id)
     release.set()
-    await handing
+    _ = await handing
 
     await wait_status(host, second.id, "done", timeout=5)
     assert (await host.ledger.get(first.id)).status == "cancelled"
@@ -583,6 +583,67 @@ async def test_waiting_report_keeps_the_session_for_the_answer(hosts, tmp_path):
     assert answered.kind == "answered"
     await wait_status(host, receipt.commission_id, "done")
     assert {"role": "user", "content": "answer: the photos are in D:/Camera"} in llm.requests[1]
+
+
+async def _waiting_and_closed(host: Any, text: str) -> str:
+    """Dispatch, wait for the ``waiting`` report, then close the idle session as an idle runtime does."""
+    receipt = await _dispatch(host, text)
+    await wait_status(host, receipt.commission_id, "waiting_user")
+    await wait_until(lambda: _ended(host, receipt.commission_id), what="the asking run ending")
+    await host.familiars._runtime.close(receipt.commission_id)
+    await host.familiars.settle()
+    assert receipt.commission_id not in host.familiars.running
+    assert (await host.ledger.get(receipt.commission_id)).status == "waiting_user"
+    return receipt.commission_id
+
+
+async def test_an_answer_after_the_idle_session_was_closed_takes_it_up_again(hosts, tmp_path):
+    llm = ScriptedLLM(
+        [
+            _report("waiting", "Which folder holds the photos?"),
+            _report("ready", "sorted D:/Camera"),
+        ]
+    )
+    host = _host(hosts, tmp_path, llm)
+    commission_id = await _waiting_and_closed(host, "sort the photos")
+
+    assert await host.answer(commission_id, "the photos are in D:/Camera") is True
+
+    done = await wait_status(host, commission_id, "done")
+    assert done.result_summary == "sorted D:/Camera"
+    # Taken up where its transcript ends: the report that asked is still there.
+    assert "Which folder holds the photos?" in json.dumps(llm.requests[1], ensure_ascii=False)
+    assert {"role": "user", "content": "the photos are in D:/Camera"} in llm.requests[1]
+    (_first, again) = await _events(host, commission_id, "started")
+    assert again.payload["resumed"] is True
+
+
+async def test_an_answer_told_after_the_idle_session_was_closed_waits_for_a_place(hosts, tmp_path):
+    release, wait = _gate()
+    scripts = {
+        "sort the photos": ScriptedLLM(
+            [_report("waiting", "Which folder holds the photos?"), _report("ready", "sorted D:/Camera")]
+        ),
+        "back up the notes": ScriptedLLM([[wait, say("notes backed up"), finish()]]),
+    }
+
+    def pick(spec: Any) -> ScriptedLLM:
+        return next(llm for text, llm in scripts.items() if text in (spec.instructions or ""))
+
+    host = _host(hosts, tmp_path, pick, max_familiars=1)
+    commission_id = await _waiting_and_closed(host, "sort the photos")
+    other = await _filed(host, "back up the notes")
+    assert await host.familiars.submit(other) is True
+    await wait_status(host, other.id, "working")
+
+    assert await host.familiars.tell(commission_id, "the photos are in D:/Camera") is True
+    assert (await host.ledger.get(commission_id)).status == "queued"
+    assert host.familiars.queued == [commission_id]
+
+    release.set()
+    done = await wait_status(host, commission_id, "done")
+    assert done.result_summary == "sorted D:/Camera"
+    assert {"role": "user", "content": "the photos are in D:/Camera"} in scripts["sort the photos"].requests[1]
 
 
 async def test_answer_arriving_before_the_asking_run_has_ended_is_not_lost(hosts, tmp_path):
@@ -1171,6 +1232,41 @@ async def test_parent_does_not_wait_for_a_child_that_reported_blocked(hosts, tmp
     assert (sub.status, sub.status_reason) == ("cancelled", "its parent finished")
 
 
+async def test_a_parent_woken_by_a_result_is_not_ended_by_its_earlier_run(hosts, tmp_path):
+    release, wait = _gate()
+    parent = ScriptedLLM(
+        [
+            [call("subagent", {"description": "count the files", "prompt": "Count the files."}), finish("tool_calls")],
+            [wait, say("Counting has started."), finish()],
+            _report("ready", "there are 3 files"),
+        ]
+    )
+    child = ScriptedLLM([[say("3 files"), finish()]])
+    host = _host(hosts, tmp_path, lambda spec: parent if spec.top_level else child)
+    handle = host.familiars._handle
+
+    async def parent_ends_meanwhile(event: dict[str, Any]) -> None:
+        if event.get("type") == "ended" and event.get("reason") == "completed":
+            commission = await host.ledger.get(str(event.get("session_id")))
+            if commission is not None and commission.parent_id is not None:
+                # The child's result is handled only once the parent's run
+                # has ended too, so that run's "ended" waits behind it.
+                lead = host.familiars._runtime.core._sessions[commission.parent_id]
+                release.set()
+                await wait_until(lambda: not lead.running, what="the parent's run ending")
+        await handle(event)
+
+    host.familiars._handle = parent_ends_meanwhile
+
+    receipt = await _dispatch(host, "tell me how many files are in the folder")
+
+    done = await wait_status(host, receipt.commission_id, "done")
+    # The result is that of the run the child's result started.
+    assert done.result_summary == "there are 3 files"
+    assert len(parent.requests) == 3
+    assert any("[sub-familiar agent-1 finished: completed]" in str(message.get("content")) for message in parent.requests[2])
+
+
 async def _blocked_with_closing_session(host: Any, text: str) -> Any:
     """A blocked commission whose old session is still on its way out."""
     from nekoclaw.host.familiars import _Session
@@ -1198,10 +1294,46 @@ async def test_a_retry_whose_old_session_closes_meanwhile_still_starts(hosts, tm
         return await real_transition(commission_id, status, **kwargs)
 
     monkeypatch.setattr(host.ledger, "transition", closing_meanwhile)
+    host.familiars._candidates[commission.id] = ("weather",)
+    start = host.familiars._start
+    candidates_at_start: list[Any] = []
+
+    async def recording_start(commission_id: str, **kwargs: Any) -> bool:
+        candidates_at_start.append(host.familiars._candidates.get(commission_id))
+        return await start(commission_id, **kwargs)
+
+    monkeypatch.setattr(host.familiars, "_start", recording_start)
 
     assert await host.familiars.tell(commission.id, "the drive is E: now") is True
 
     await wait_status(host, commission.id, "done", timeout=5)
+    assert host.familiars.queued == []
+    # Its candidate plugins went along with the retry.
+    assert candidates_at_start == [("weather",)]
+
+
+async def test_a_retry_queued_while_shutting_down_is_failed_not_left_queued(hosts, tmp_path, monkeypatch):
+    llm = ScriptedLLM([[say("photos sorted"), finish()]])
+    host = _host(hosts, tmp_path, lambda spec: llm)
+    commission = await _blocked_with_closing_session(host, "sort the photos")
+    real_transition = host.ledger.transition
+    shutting: list[Any] = []
+
+    async def shut_down_meanwhile(commission_id: str, status: str, **kwargs: Any) -> Any:
+        if status == "queued" and not shutting:
+            # Shutting down starts while the status is written and empties
+            # the queue before the retry is in it.
+            shutting.append(asyncio.ensure_future(host.familiars.shutdown()))
+            await wait_until(lambda: host.familiars._closed, what="shutting down starting")
+        return await real_transition(commission_id, status, **kwargs)
+
+    monkeypatch.setattr(host.ledger, "transition", shut_down_meanwhile)
+
+    assert await host.familiars.tell(commission.id, "the drive is E: now") is False
+
+    await asyncio.wait_for(shutting[0], 5)
+    after = await host.ledger.get(commission.id)
+    assert (after.status, after.status_reason) == ("failed", "the host was shut down")
     assert host.familiars.queued == []
 
 
