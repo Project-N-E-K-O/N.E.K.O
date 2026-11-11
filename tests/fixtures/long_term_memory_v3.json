@@ -1,0 +1,3013 @@
+{
+  "valid": {
+    "schemaVersion": 3,
+    "completedAt": 2000,
+    "entries": [
+      {
+        "kind": "fact",
+        "subject": "master",
+        "id": "f1",
+        "text": "synthetic fact",
+        "metadata": {
+          "source": "user_observation",
+          "sourceCreatedAt": 0,
+          "sourceMessageIds": [
+            "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "signalJudged": false
+        }
+      },
+      {
+        "kind": "reflection",
+        "subject": "relationship",
+        "id": "ref_1",
+        "text": "synthetic reflection",
+        "metadata": {
+          "status": "confirmed",
+          "sourceFactIds": [
+            "f1",
+            "f0"
+          ],
+          "countedFactIds": [
+            "f1"
+          ],
+          "factSourceCounts": {
+            "user": 1,
+            "ai": 0
+          },
+          "userConfirmCount": 2
+        }
+      },
+      {
+        "kind": "persona",
+        "subject": "neko",
+        "id": "p1",
+        "text": "synthetic persona",
+        "metadata": {
+          "countedFactIds": [],
+          "factSourceCounts": {
+            "user": 0,
+            "ai": 0
+          },
+          "userConfirmCount": 0
+        }
+      }
+    ],
+    "evidence": {
+      "retirements": [
+        {
+          "id": "old",
+          "subject": "master",
+          "text": "old fact",
+          "sourceMessageIds": [
+            "source-1"
+          ],
+          "retiredThroughAt": 1000
+        }
+      ],
+      "confirmations": [
+        {
+          "fingerprint": "1:2:3",
+          "factId": "f1"
+        }
+      ]
+    },
+    "progress": {
+      "a": [
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      ],
+      "b": [
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      ]
+    },
+    "organizer": {
+      "deviceId": "dddddddddddddddddddddddddddddddd",
+      "renewedAt": 1900,
+      "rank": 4
+    },
+    "maintenance": {
+      "legacyDedup": 1
+    },
+    "lineage": 2
+  },
+  "validVariants": [
+    {
+      "schemaVersion": 3,
+      "completedAt": 2000,
+      "entries": [],
+      "evidence": {
+        "retirements": [],
+        "confirmations": []
+      },
+      "progress": {
+        "a": [],
+        "b": []
+      }
+    },
+    {
+      "schemaVersion": 3,
+      "completedAt": 2000,
+      "entries": [
+        {
+          "kind": "fact",
+          "subject": "master",
+          "id": "f1",
+          "text": "synthetic fact",
+          "metadata": {
+            "source": "user_observation",
+            "sourceCreatedAt": 0,
+            "sourceMessageIds": [
+              "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "signalJudged": false
+          }
+        },
+        {
+          "kind": "reflection",
+          "subject": "relationship",
+          "id": "ref_1",
+          "text": "synthetic reflection",
+          "metadata": {
+            "status": "confirmed",
+            "sourceFactIds": [
+              "f1",
+              "f0"
+            ],
+            "countedFactIds": [
+              "f1"
+            ],
+            "factSourceCounts": {
+              "user": 1,
+              "ai": 0
+            },
+            "userConfirmCount": 2
+          }
+        },
+        {
+          "kind": "persona",
+          "subject": "neko",
+          "id": "p1",
+          "text": "synthetic persona",
+          "metadata": {
+            "countedFactIds": [],
+            "factSourceCounts": {
+              "user": 0,
+              "ai": 0
+            },
+            "userConfirmCount": 0
+          }
+        }
+      ],
+      "evidence": {
+        "retirements": [
+          {
+            "id": "old",
+            "subject": "master",
+            "text": "old fact",
+            "sourceMessageIds": [
+              "source-1"
+            ],
+            "retiredThroughAt": 1000
+          }
+        ],
+        "confirmations": [
+          {
+            "fingerprint": "1:2:3",
+            "factId": "f1"
+          }
+        ]
+      },
+      "progress": {
+        "a": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ],
+        "b": [
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ]
+      },
+      "organizer": {
+        "deviceId": "dddddddddddddddddddddddddddddddd",
+        "renewedAt": 1,
+        "rank": 1
+      },
+      "maintenance": {},
+      "lineage": 2
+    }
+  ],
+  "invalid": [
+    {
+      "schemaVersion": 3,
+      "completedAt": 2000,
+      "entries": [
+        {
+          "kind": "fact",
+          "subject": "master",
+          "id": "f1",
+          "text": "synthetic fact",
+          "metadata": {
+            "source": "user_observation",
+            "sourceCreatedAt": 0,
+            "sourceMessageIds": [
+              "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "signalJudged": false
+          }
+        },
+        {
+          "kind": "reflection",
+          "subject": "relationship",
+          "id": "ref_1",
+          "text": "synthetic reflection",
+          "metadata": {
+            "status": "confirmed",
+            "sourceFactIds": [
+              "f1",
+              "f0"
+            ],
+            "countedFactIds": [
+              "f1"
+            ],
+            "factSourceCounts": {
+              "user": 1,
+              "ai": 0
+            },
+            "userConfirmCount": 2
+          }
+        },
+        {
+          "kind": "persona",
+          "subject": "neko",
+          "id": "p1",
+          "text": "synthetic persona",
+          "metadata": {
+            "countedFactIds": [],
+            "factSourceCounts": {
+              "user": 0,
+              "ai": 0
+            },
+            "userConfirmCount": 0
+          }
+        }
+      ],
+      "evidence": {
+        "retirements": [
+          {
+            "id": "old",
+            "subject": "master",
+            "text": "old fact",
+            "sourceMessageIds": [
+              "source-1"
+            ],
+            "retiredThroughAt": 1000
+          }
+        ],
+        "confirmations": [
+          {
+            "fingerprint": "1:2:3",
+            "factId": "f1"
+          }
+        ]
+      },
+      "organizer": {
+        "deviceId": "dddddddddddddddddddddddddddddddd",
+        "renewedAt": 1900,
+        "rank": 4
+      },
+      "maintenance": {
+        "legacyDedup": 1
+      },
+      "lineage": 2
+    },
+    {
+      "schemaVersion": 3,
+      "completedAt": 2000,
+      "entries": [
+        {
+          "kind": "fact",
+          "subject": "master",
+          "id": "f1",
+          "text": "synthetic fact",
+          "metadata": {
+            "source": "user_observation",
+            "sourceCreatedAt": 0,
+            "sourceMessageIds": [
+              "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "signalJudged": false
+          }
+        },
+        {
+          "kind": "reflection",
+          "subject": "relationship",
+          "id": "ref_1",
+          "text": "synthetic reflection",
+          "metadata": {
+            "status": "confirmed",
+            "sourceFactIds": [
+              "f1",
+              "f0"
+            ],
+            "countedFactIds": [
+              "f1"
+            ],
+            "factSourceCounts": {
+              "user": 1,
+              "ai": 0
+            },
+            "userConfirmCount": 2
+          }
+        },
+        {
+          "kind": "persona",
+          "subject": "neko",
+          "id": "p1",
+          "text": "synthetic persona",
+          "metadata": {
+            "countedFactIds": [],
+            "factSourceCounts": {
+              "user": 0,
+              "ai": 0
+            },
+            "userConfirmCount": 0
+          }
+        }
+      ],
+      "progress": {
+        "a": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ],
+        "b": [
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ]
+      },
+      "organizer": {
+        "deviceId": "dddddddddddddddddddddddddddddddd",
+        "renewedAt": 1900,
+        "rank": 4
+      },
+      "maintenance": {
+        "legacyDedup": 1
+      },
+      "lineage": 2
+    },
+    {
+      "schemaVersion": 3,
+      "completedAt": 2000,
+      "entries": [
+        {
+          "kind": "fact",
+          "subject": "master",
+          "id": "f1",
+          "text": "synthetic fact",
+          "metadata": {
+            "source": "user_observation",
+            "sourceCreatedAt": 0,
+            "sourceMessageIds": [
+              "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "signalJudged": false
+          }
+        },
+        {
+          "kind": "reflection",
+          "subject": "relationship",
+          "id": "ref_1",
+          "text": "synthetic reflection",
+          "metadata": {
+            "status": "confirmed",
+            "sourceFactIds": [
+              "f1",
+              "f0"
+            ],
+            "countedFactIds": [
+              "f1"
+            ],
+            "factSourceCounts": {
+              "user": 1,
+              "ai": 0
+            },
+            "userConfirmCount": 2
+          }
+        },
+        {
+          "kind": "persona",
+          "subject": "neko",
+          "id": "p1",
+          "text": "synthetic persona",
+          "metadata": {
+            "countedFactIds": [],
+            "factSourceCounts": {
+              "user": 0,
+              "ai": 0
+            },
+            "userConfirmCount": 0
+          }
+        }
+      ],
+      "evidence": {
+        "retirements": [
+          {
+            "id": "old",
+            "subject": "master",
+            "text": "old fact",
+            "sourceMessageIds": [
+              "source-1"
+            ],
+            "retiredThroughAt": 1000
+          }
+        ],
+        "confirmations": [
+          {
+            "fingerprint": "1:2:3",
+            "factId": "f1"
+          }
+        ]
+      },
+      "progress": {
+        "a": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ],
+        "b": [
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ]
+      },
+      "organizer": {
+        "deviceId": "dddddddddddddddddddddddddddddddd",
+        "renewedAt": 1900,
+        "rank": 4
+      },
+      "maintenance": {
+        "legacyDedup": 1
+      },
+      "lineage": 2,
+      "extra": 1
+    },
+    {
+      "schemaVersion": 3,
+      "completedAt": 2000,
+      "entries": [
+        {
+          "kind": "fact",
+          "subject": "master",
+          "id": "f1",
+          "text": "synthetic fact",
+          "metadata": {
+            "source": "user_observation",
+            "sourceCreatedAt": 0,
+            "sourceMessageIds": [
+              "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "signalJudged": false
+          }
+        },
+        {
+          "kind": "reflection",
+          "subject": "relationship",
+          "id": "ref_1",
+          "text": "synthetic reflection",
+          "metadata": {
+            "status": "confirmed",
+            "sourceFactIds": [
+              "f1",
+              "f0"
+            ],
+            "countedFactIds": [
+              "f1"
+            ],
+            "factSourceCounts": {
+              "user": 1,
+              "ai": 0
+            },
+            "userConfirmCount": 2
+          }
+        },
+        {
+          "kind": "persona",
+          "subject": "neko",
+          "id": "p1",
+          "text": "synthetic persona",
+          "metadata": {
+            "countedFactIds": [],
+            "factSourceCounts": {
+              "user": 0,
+              "ai": 0
+            },
+            "userConfirmCount": 0
+          }
+        }
+      ],
+      "evidence": {
+        "retirements": [
+          {
+            "id": "old",
+            "subject": "master",
+            "text": "old fact",
+            "sourceMessageIds": [
+              "source-1"
+            ],
+            "retiredThroughAt": 1000
+          }
+        ],
+        "confirmations": [
+          {
+            "fingerprint": "1:2:3",
+            "factId": "f1"
+          }
+        ]
+      },
+      "progress": {
+        "a": []
+      },
+      "organizer": {
+        "deviceId": "dddddddddddddddddddddddddddddddd",
+        "renewedAt": 1900,
+        "rank": 4
+      },
+      "maintenance": {
+        "legacyDedup": 1
+      },
+      "lineage": 2
+    },
+    {
+      "schemaVersion": 3,
+      "completedAt": 2000,
+      "entries": [
+        {
+          "kind": "fact",
+          "subject": "master",
+          "id": "f1",
+          "text": "synthetic fact",
+          "metadata": {
+            "source": "user_observation",
+            "sourceCreatedAt": 0,
+            "sourceMessageIds": [
+              "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "signalJudged": false
+          }
+        },
+        {
+          "kind": "reflection",
+          "subject": "relationship",
+          "id": "ref_1",
+          "text": "synthetic reflection",
+          "metadata": {
+            "status": "confirmed",
+            "sourceFactIds": [
+              "f1",
+              "f0"
+            ],
+            "countedFactIds": [
+              "f1"
+            ],
+            "factSourceCounts": {
+              "user": 1,
+              "ai": 0
+            },
+            "userConfirmCount": 2
+          }
+        },
+        {
+          "kind": "persona",
+          "subject": "neko",
+          "id": "p1",
+          "text": "synthetic persona",
+          "metadata": {
+            "countedFactIds": [],
+            "factSourceCounts": {
+              "user": 0,
+              "ai": 0
+            },
+            "userConfirmCount": 0
+          }
+        }
+      ],
+      "evidence": {
+        "retirements": [
+          {
+            "id": "old",
+            "subject": "master",
+            "text": "old fact",
+            "sourceMessageIds": [
+              "source-1"
+            ],
+            "retiredThroughAt": 1000
+          }
+        ],
+        "confirmations": [
+          {
+            "fingerprint": "1:2:3",
+            "factId": "f1"
+          }
+        ]
+      },
+      "progress": {
+        "a": [],
+        "b": [],
+        "c": []
+      },
+      "organizer": {
+        "deviceId": "dddddddddddddddddddddddddddddddd",
+        "renewedAt": 1900,
+        "rank": 4
+      },
+      "maintenance": {
+        "legacyDedup": 1
+      },
+      "lineage": 2
+    },
+    {
+      "schemaVersion": 3,
+      "completedAt": 2000,
+      "entries": [
+        {
+          "kind": "fact",
+          "subject": "master",
+          "id": "f1",
+          "text": "synthetic fact",
+          "metadata": {
+            "source": "user_observation",
+            "sourceCreatedAt": 0,
+            "sourceMessageIds": [
+              "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "signalJudged": false
+          }
+        },
+        {
+          "kind": "reflection",
+          "subject": "relationship",
+          "id": "ref_1",
+          "text": "synthetic reflection",
+          "metadata": {
+            "status": "confirmed",
+            "sourceFactIds": [
+              "f1",
+              "f0"
+            ],
+            "countedFactIds": [
+              "f1"
+            ],
+            "factSourceCounts": {
+              "user": 1,
+              "ai": 0
+            },
+            "userConfirmCount": 2
+          }
+        },
+        {
+          "kind": "persona",
+          "subject": "neko",
+          "id": "p1",
+          "text": "synthetic persona",
+          "metadata": {
+            "countedFactIds": [],
+            "factSourceCounts": {
+              "user": 0,
+              "ai": 0
+            },
+            "userConfirmCount": 0
+          }
+        }
+      ],
+      "evidence": {
+        "retirements": [
+          {
+            "id": "old",
+            "subject": "master",
+            "text": "old fact",
+            "sourceMessageIds": [
+              "source-1"
+            ],
+            "retiredThroughAt": 1000
+          }
+        ],
+        "confirmations": [
+          {
+            "fingerprint": "1:2:3",
+            "factId": "f1"
+          }
+        ]
+      },
+      "progress": {
+        "a": null,
+        "b": []
+      },
+      "organizer": {
+        "deviceId": "dddddddddddddddddddddddddddddddd",
+        "renewedAt": 1900,
+        "rank": 4
+      },
+      "maintenance": {
+        "legacyDedup": 1
+      },
+      "lineage": 2
+    },
+    {
+      "schemaVersion": 3,
+      "completedAt": 2000,
+      "entries": [
+        {
+          "kind": "fact",
+          "subject": "master",
+          "id": "f1",
+          "text": "synthetic fact",
+          "metadata": {
+            "source": "user_observation",
+            "sourceCreatedAt": 0,
+            "sourceMessageIds": [
+              "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "signalJudged": false
+          }
+        },
+        {
+          "kind": "reflection",
+          "subject": "relationship",
+          "id": "ref_1",
+          "text": "synthetic reflection",
+          "metadata": {
+            "status": "confirmed",
+            "sourceFactIds": [
+              "f1",
+              "f0"
+            ],
+            "countedFactIds": [
+              "f1"
+            ],
+            "factSourceCounts": {
+              "user": 1,
+              "ai": 0
+            },
+            "userConfirmCount": 2
+          }
+        },
+        {
+          "kind": "persona",
+          "subject": "neko",
+          "id": "p1",
+          "text": "synthetic persona",
+          "metadata": {
+            "countedFactIds": [],
+            "factSourceCounts": {
+              "user": 0,
+              "ai": 0
+            },
+            "userConfirmCount": 0
+          }
+        }
+      ],
+      "evidence": {
+        "retirements": [
+          {
+            "id": "old",
+            "subject": "master",
+            "text": "old fact",
+            "sourceMessageIds": [
+              "source-1"
+            ],
+            "retiredThroughAt": 1000
+          }
+        ],
+        "confirmations": [
+          {
+            "fingerprint": "1:2:3",
+            "factId": "f1"
+          }
+        ]
+      },
+      "progress": {
+        "a": [
+          "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        ],
+        "b": []
+      },
+      "organizer": {
+        "deviceId": "dddddddddddddddddddddddddddddddd",
+        "renewedAt": 1900,
+        "rank": 4
+      },
+      "maintenance": {
+        "legacyDedup": 1
+      },
+      "lineage": 2
+    },
+    {
+      "schemaVersion": 3,
+      "completedAt": 2000,
+      "entries": [
+        {
+          "kind": "fact",
+          "subject": "master",
+          "id": "f1",
+          "text": "synthetic fact",
+          "metadata": {
+            "source": "user_observation",
+            "sourceCreatedAt": 0,
+            "sourceMessageIds": [
+              "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "signalJudged": false
+          }
+        },
+        {
+          "kind": "reflection",
+          "subject": "relationship",
+          "id": "ref_1",
+          "text": "synthetic reflection",
+          "metadata": {
+            "status": "confirmed",
+            "sourceFactIds": [
+              "f1",
+              "f0"
+            ],
+            "countedFactIds": [
+              "f1"
+            ],
+            "factSourceCounts": {
+              "user": 1,
+              "ai": 0
+            },
+            "userConfirmCount": 2
+          }
+        },
+        {
+          "kind": "persona",
+          "subject": "neko",
+          "id": "p1",
+          "text": "synthetic persona",
+          "metadata": {
+            "countedFactIds": [],
+            "factSourceCounts": {
+              "user": 0,
+              "ai": 0
+            },
+            "userConfirmCount": 0
+          }
+        }
+      ],
+      "evidence": {
+        "retirements": [
+          {
+            "id": "old",
+            "subject": "master",
+            "text": "old fact",
+            "sourceMessageIds": [
+              "source-1"
+            ],
+            "retiredThroughAt": 1000
+          }
+        ],
+        "confirmations": [
+          {
+            "fingerprint": "1:2:3",
+            "factId": "f1"
+          }
+        ]
+      },
+      "progress": {
+        "a": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ],
+        "b": []
+      },
+      "organizer": {
+        "deviceId": "dddddddddddddddddddddddddddddddd",
+        "renewedAt": 1900,
+        "rank": 4
+      },
+      "maintenance": {
+        "legacyDedup": 1
+      },
+      "lineage": 2
+    },
+    {
+      "schemaVersion": 3,
+      "completedAt": 2000,
+      "entries": [
+        {
+          "kind": "fact",
+          "subject": "master",
+          "id": "f1",
+          "text": "synthetic fact",
+          "metadata": {
+            "source": "user_observation",
+            "sourceCreatedAt": 0,
+            "sourceMessageIds": [
+              "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "signalJudged": false
+          }
+        },
+        {
+          "kind": "reflection",
+          "subject": "relationship",
+          "id": "ref_1",
+          "text": "synthetic reflection",
+          "metadata": {
+            "status": "confirmed",
+            "sourceFactIds": [
+              "f1",
+              "f0"
+            ],
+            "countedFactIds": [
+              "f1"
+            ],
+            "factSourceCounts": {
+              "user": 1,
+              "ai": 0
+            },
+            "userConfirmCount": 2
+          }
+        },
+        {
+          "kind": "persona",
+          "subject": "neko",
+          "id": "p1",
+          "text": "synthetic persona",
+          "metadata": {
+            "countedFactIds": [],
+            "factSourceCounts": {
+              "user": 0,
+              "ai": 0
+            },
+            "userConfirmCount": 0
+          }
+        }
+      ],
+      "evidence": {
+        "retirements": [
+          {
+            "id": "old",
+            "subject": "master",
+            "text": "old fact",
+            "sourceMessageIds": [
+              "source-1"
+            ],
+            "retiredThroughAt": 1000
+          }
+        ],
+        "confirmations": [
+          {
+            "fingerprint": "1:2:3",
+            "factId": "f1"
+          }
+        ]
+      },
+      "progress": {
+        "a": [
+          "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ],
+        "b": []
+      },
+      "organizer": {
+        "deviceId": "dddddddddddddddddddddddddddddddd",
+        "renewedAt": 1900,
+        "rank": 4
+      },
+      "maintenance": {
+        "legacyDedup": 1
+      },
+      "lineage": 2
+    },
+    {
+      "schemaVersion": 3,
+      "completedAt": 2000,
+      "entries": [
+        {
+          "kind": "fact",
+          "subject": "master",
+          "id": "f1",
+          "text": "synthetic fact",
+          "metadata": {
+            "source": "user_observation",
+            "sourceCreatedAt": 0,
+            "sourceMessageIds": [
+              "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "signalJudged": false
+          }
+        },
+        {
+          "kind": "reflection",
+          "subject": "relationship",
+          "id": "ref_1",
+          "text": "synthetic reflection",
+          "metadata": {
+            "status": "confirmed",
+            "sourceFactIds": [
+              "f1",
+              "f0"
+            ],
+            "countedFactIds": [
+              "f1"
+            ],
+            "factSourceCounts": {
+              "user": 1,
+              "ai": 0
+            },
+            "userConfirmCount": 2
+          }
+        },
+        {
+          "kind": "persona",
+          "subject": "neko",
+          "id": "p1",
+          "text": "synthetic persona",
+          "metadata": {
+            "countedFactIds": [],
+            "factSourceCounts": {
+              "user": 0,
+              "ai": 0
+            },
+            "userConfirmCount": 0
+          }
+        }
+      ],
+      "evidence": {
+        "retirements": [
+          {
+            "id": "old",
+            "subject": "master",
+            "text": "old fact",
+            "sourceMessageIds": [
+              "source-1"
+            ],
+            "retiredThroughAt": 1000
+          }
+        ],
+        "confirmations": [
+          {
+            "fingerprint": "1:2:3",
+            "factId": "f1"
+          }
+        ]
+      },
+      "progress": {
+        "a": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ],
+        "b": []
+      },
+      "organizer": {
+        "deviceId": "dddddddddddddddddddddddddddddddd",
+        "renewedAt": 1900,
+        "rank": 4
+      },
+      "maintenance": {
+        "legacyDedup": 1
+      },
+      "lineage": 2
+    },
+    {
+      "schemaVersion": 3,
+      "completedAt": 2000,
+      "entries": [
+        {
+          "kind": "fact",
+          "subject": "master",
+          "id": "f1",
+          "text": "synthetic fact",
+          "metadata": {
+            "source": "user_observation",
+            "sourceCreatedAt": 0,
+            "sourceMessageIds": [
+              "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "signalJudged": false
+          }
+        },
+        {
+          "kind": "reflection",
+          "subject": "relationship",
+          "id": "ref_1",
+          "text": "synthetic reflection",
+          "metadata": {
+            "status": "confirmed",
+            "sourceFactIds": [
+              "f1",
+              "f0"
+            ],
+            "countedFactIds": [
+              "f1"
+            ],
+            "factSourceCounts": {
+              "user": 1,
+              "ai": 0
+            },
+            "userConfirmCount": 2
+          }
+        },
+        {
+          "kind": "persona",
+          "subject": "neko",
+          "id": "p1",
+          "text": "synthetic persona",
+          "metadata": {
+            "countedFactIds": [],
+            "factSourceCounts": {
+              "user": 0,
+              "ai": 0
+            },
+            "userConfirmCount": 0
+          }
+        }
+      ],
+      "evidence": {
+        "retirements": [
+          {
+            "id": "old",
+            "subject": "master",
+            "text": "old fact",
+            "sourceMessageIds": [
+              "source-1"
+            ],
+            "retiredThroughAt": 1000
+          }
+        ],
+        "confirmations": [
+          {
+            "fingerprint": "1:2:3",
+            "factId": "f1"
+          }
+        ]
+      },
+      "progress": {
+        "a": [
+          1
+        ],
+        "b": []
+      },
+      "organizer": {
+        "deviceId": "dddddddddddddddddddddddddddddddd",
+        "renewedAt": 1900,
+        "rank": 4
+      },
+      "maintenance": {
+        "legacyDedup": 1
+      },
+      "lineage": 2
+    },
+    {
+      "schemaVersion": 3,
+      "completedAt": 2000,
+      "entries": [
+        {
+          "kind": "fact",
+          "subject": "master",
+          "id": "f1",
+          "text": "synthetic fact",
+          "metadata": {
+            "source": "user_observation",
+            "sourceCreatedAt": 0,
+            "sourceMessageIds": [
+              "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "signalJudged": false
+          }
+        },
+        {
+          "kind": "reflection",
+          "subject": "relationship",
+          "id": "ref_1",
+          "text": "synthetic reflection",
+          "metadata": {
+            "status": "confirmed",
+            "sourceFactIds": [
+              "f1",
+              "f0"
+            ],
+            "countedFactIds": [
+              "f1"
+            ],
+            "factSourceCounts": {
+              "user": 1,
+              "ai": 0
+            },
+            "userConfirmCount": 2
+          }
+        },
+        {
+          "kind": "persona",
+          "subject": "neko",
+          "id": "p1",
+          "text": "synthetic persona",
+          "metadata": {
+            "countedFactIds": [],
+            "factSourceCounts": {
+              "user": 0,
+              "ai": 0
+            },
+            "userConfirmCount": 0
+          }
+        }
+      ],
+      "evidence": {
+        "retirements": [
+          {
+            "id": "old",
+            "subject": "master",
+            "text": "old fact",
+            "sourceMessageIds": [
+              "source-1"
+            ],
+            "retiredThroughAt": 1000
+          }
+        ],
+        "confirmations": [
+          {
+            "fingerprint": "1:2:3",
+            "factId": "f1"
+          }
+        ]
+      },
+      "progress": {
+        "a": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ],
+        "b": [
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ]
+      },
+      "organizer": null,
+      "maintenance": {
+        "legacyDedup": 1
+      },
+      "lineage": 2
+    },
+    {
+      "schemaVersion": 3,
+      "completedAt": 2000,
+      "entries": [
+        {
+          "kind": "fact",
+          "subject": "master",
+          "id": "f1",
+          "text": "synthetic fact",
+          "metadata": {
+            "source": "user_observation",
+            "sourceCreatedAt": 0,
+            "sourceMessageIds": [
+              "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "signalJudged": false
+          }
+        },
+        {
+          "kind": "reflection",
+          "subject": "relationship",
+          "id": "ref_1",
+          "text": "synthetic reflection",
+          "metadata": {
+            "status": "confirmed",
+            "sourceFactIds": [
+              "f1",
+              "f0"
+            ],
+            "countedFactIds": [
+              "f1"
+            ],
+            "factSourceCounts": {
+              "user": 1,
+              "ai": 0
+            },
+            "userConfirmCount": 2
+          }
+        },
+        {
+          "kind": "persona",
+          "subject": "neko",
+          "id": "p1",
+          "text": "synthetic persona",
+          "metadata": {
+            "countedFactIds": [],
+            "factSourceCounts": {
+              "user": 0,
+              "ai": 0
+            },
+            "userConfirmCount": 0
+          }
+        }
+      ],
+      "evidence": {
+        "retirements": [
+          {
+            "id": "old",
+            "subject": "master",
+            "text": "old fact",
+            "sourceMessageIds": [
+              "source-1"
+            ],
+            "retiredThroughAt": 1000
+          }
+        ],
+        "confirmations": [
+          {
+            "fingerprint": "1:2:3",
+            "factId": "f1"
+          }
+        ]
+      },
+      "progress": {
+        "a": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ],
+        "b": [
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ]
+      },
+      "organizer": {
+        "deviceId": "dddddddddddddddddddddddddddddddd",
+        "renewedAt": 1900
+      },
+      "maintenance": {
+        "legacyDedup": 1
+      },
+      "lineage": 2
+    },
+    {
+      "schemaVersion": 3,
+      "completedAt": 2000,
+      "entries": [
+        {
+          "kind": "fact",
+          "subject": "master",
+          "id": "f1",
+          "text": "synthetic fact",
+          "metadata": {
+            "source": "user_observation",
+            "sourceCreatedAt": 0,
+            "sourceMessageIds": [
+              "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "signalJudged": false
+          }
+        },
+        {
+          "kind": "reflection",
+          "subject": "relationship",
+          "id": "ref_1",
+          "text": "synthetic reflection",
+          "metadata": {
+            "status": "confirmed",
+            "sourceFactIds": [
+              "f1",
+              "f0"
+            ],
+            "countedFactIds": [
+              "f1"
+            ],
+            "factSourceCounts": {
+              "user": 1,
+              "ai": 0
+            },
+            "userConfirmCount": 2
+          }
+        },
+        {
+          "kind": "persona",
+          "subject": "neko",
+          "id": "p1",
+          "text": "synthetic persona",
+          "metadata": {
+            "countedFactIds": [],
+            "factSourceCounts": {
+              "user": 0,
+              "ai": 0
+            },
+            "userConfirmCount": 0
+          }
+        }
+      ],
+      "evidence": {
+        "retirements": [
+          {
+            "id": "old",
+            "subject": "master",
+            "text": "old fact",
+            "sourceMessageIds": [
+              "source-1"
+            ],
+            "retiredThroughAt": 1000
+          }
+        ],
+        "confirmations": [
+          {
+            "fingerprint": "1:2:3",
+            "factId": "f1"
+          }
+        ]
+      },
+      "progress": {
+        "a": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ],
+        "b": [
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ]
+      },
+      "organizer": {
+        "deviceId": "dddddddddddddddddddddddddddddddd",
+        "renewedAt": 1900,
+        "rank": 4,
+        "seenAt": 1
+      },
+      "maintenance": {
+        "legacyDedup": 1
+      },
+      "lineage": 2
+    },
+    {
+      "schemaVersion": 3,
+      "completedAt": 2000,
+      "entries": [
+        {
+          "kind": "fact",
+          "subject": "master",
+          "id": "f1",
+          "text": "synthetic fact",
+          "metadata": {
+            "source": "user_observation",
+            "sourceCreatedAt": 0,
+            "sourceMessageIds": [
+              "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "signalJudged": false
+          }
+        },
+        {
+          "kind": "reflection",
+          "subject": "relationship",
+          "id": "ref_1",
+          "text": "synthetic reflection",
+          "metadata": {
+            "status": "confirmed",
+            "sourceFactIds": [
+              "f1",
+              "f0"
+            ],
+            "countedFactIds": [
+              "f1"
+            ],
+            "factSourceCounts": {
+              "user": 1,
+              "ai": 0
+            },
+            "userConfirmCount": 2
+          }
+        },
+        {
+          "kind": "persona",
+          "subject": "neko",
+          "id": "p1",
+          "text": "synthetic persona",
+          "metadata": {
+            "countedFactIds": [],
+            "factSourceCounts": {
+              "user": 0,
+              "ai": 0
+            },
+            "userConfirmCount": 0
+          }
+        }
+      ],
+      "evidence": {
+        "retirements": [
+          {
+            "id": "old",
+            "subject": "master",
+            "text": "old fact",
+            "sourceMessageIds": [
+              "source-1"
+            ],
+            "retiredThroughAt": 1000
+          }
+        ],
+        "confirmations": [
+          {
+            "fingerprint": "1:2:3",
+            "factId": "f1"
+          }
+        ]
+      },
+      "progress": {
+        "a": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ],
+        "b": [
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ]
+      },
+      "organizer": {
+        "deviceId": "dddddddddddddddddddddddddddddddd",
+        "renewedAt": 1900,
+        "rank": 0
+      },
+      "maintenance": {
+        "legacyDedup": 1
+      },
+      "lineage": 2
+    },
+    {
+      "schemaVersion": 3,
+      "completedAt": 2000,
+      "entries": [
+        {
+          "kind": "fact",
+          "subject": "master",
+          "id": "f1",
+          "text": "synthetic fact",
+          "metadata": {
+            "source": "user_observation",
+            "sourceCreatedAt": 0,
+            "sourceMessageIds": [
+              "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "signalJudged": false
+          }
+        },
+        {
+          "kind": "reflection",
+          "subject": "relationship",
+          "id": "ref_1",
+          "text": "synthetic reflection",
+          "metadata": {
+            "status": "confirmed",
+            "sourceFactIds": [
+              "f1",
+              "f0"
+            ],
+            "countedFactIds": [
+              "f1"
+            ],
+            "factSourceCounts": {
+              "user": 1,
+              "ai": 0
+            },
+            "userConfirmCount": 2
+          }
+        },
+        {
+          "kind": "persona",
+          "subject": "neko",
+          "id": "p1",
+          "text": "synthetic persona",
+          "metadata": {
+            "countedFactIds": [],
+            "factSourceCounts": {
+              "user": 0,
+              "ai": 0
+            },
+            "userConfirmCount": 0
+          }
+        }
+      ],
+      "evidence": {
+        "retirements": [
+          {
+            "id": "old",
+            "subject": "master",
+            "text": "old fact",
+            "sourceMessageIds": [
+              "source-1"
+            ],
+            "retiredThroughAt": 1000
+          }
+        ],
+        "confirmations": [
+          {
+            "fingerprint": "1:2:3",
+            "factId": "f1"
+          }
+        ]
+      },
+      "progress": {
+        "a": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ],
+        "b": [
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ]
+      },
+      "organizer": {
+        "deviceId": "dddddddddddddddddddddddddddddddd",
+        "renewedAt": 1900,
+        "rank": 5
+      },
+      "maintenance": {
+        "legacyDedup": 1
+      },
+      "lineage": 2
+    },
+    {
+      "schemaVersion": 3,
+      "completedAt": 2000,
+      "entries": [
+        {
+          "kind": "fact",
+          "subject": "master",
+          "id": "f1",
+          "text": "synthetic fact",
+          "metadata": {
+            "source": "user_observation",
+            "sourceCreatedAt": 0,
+            "sourceMessageIds": [
+              "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "signalJudged": false
+          }
+        },
+        {
+          "kind": "reflection",
+          "subject": "relationship",
+          "id": "ref_1",
+          "text": "synthetic reflection",
+          "metadata": {
+            "status": "confirmed",
+            "sourceFactIds": [
+              "f1",
+              "f0"
+            ],
+            "countedFactIds": [
+              "f1"
+            ],
+            "factSourceCounts": {
+              "user": 1,
+              "ai": 0
+            },
+            "userConfirmCount": 2
+          }
+        },
+        {
+          "kind": "persona",
+          "subject": "neko",
+          "id": "p1",
+          "text": "synthetic persona",
+          "metadata": {
+            "countedFactIds": [],
+            "factSourceCounts": {
+              "user": 0,
+              "ai": 0
+            },
+            "userConfirmCount": 0
+          }
+        }
+      ],
+      "evidence": {
+        "retirements": [
+          {
+            "id": "old",
+            "subject": "master",
+            "text": "old fact",
+            "sourceMessageIds": [
+              "source-1"
+            ],
+            "retiredThroughAt": 1000
+          }
+        ],
+        "confirmations": [
+          {
+            "fingerprint": "1:2:3",
+            "factId": "f1"
+          }
+        ]
+      },
+      "progress": {
+        "a": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ],
+        "b": [
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ]
+      },
+      "organizer": {
+        "deviceId": "dddddddddddddddddddddddddddddddd",
+        "renewedAt": 1900,
+        "rank": true
+      },
+      "maintenance": {
+        "legacyDedup": 1
+      },
+      "lineage": 2
+    },
+    {
+      "schemaVersion": 3,
+      "completedAt": 2000,
+      "entries": [
+        {
+          "kind": "fact",
+          "subject": "master",
+          "id": "f1",
+          "text": "synthetic fact",
+          "metadata": {
+            "source": "user_observation",
+            "sourceCreatedAt": 0,
+            "sourceMessageIds": [
+              "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "signalJudged": false
+          }
+        },
+        {
+          "kind": "reflection",
+          "subject": "relationship",
+          "id": "ref_1",
+          "text": "synthetic reflection",
+          "metadata": {
+            "status": "confirmed",
+            "sourceFactIds": [
+              "f1",
+              "f0"
+            ],
+            "countedFactIds": [
+              "f1"
+            ],
+            "factSourceCounts": {
+              "user": 1,
+              "ai": 0
+            },
+            "userConfirmCount": 2
+          }
+        },
+        {
+          "kind": "persona",
+          "subject": "neko",
+          "id": "p1",
+          "text": "synthetic persona",
+          "metadata": {
+            "countedFactIds": [],
+            "factSourceCounts": {
+              "user": 0,
+              "ai": 0
+            },
+            "userConfirmCount": 0
+          }
+        }
+      ],
+      "evidence": {
+        "retirements": [
+          {
+            "id": "old",
+            "subject": "master",
+            "text": "old fact",
+            "sourceMessageIds": [
+              "source-1"
+            ],
+            "retiredThroughAt": 1000
+          }
+        ],
+        "confirmations": [
+          {
+            "fingerprint": "1:2:3",
+            "factId": "f1"
+          }
+        ]
+      },
+      "progress": {
+        "a": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ],
+        "b": [
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ]
+      },
+      "organizer": {
+        "deviceId": "dddddddddddddddddddddddddddddddd",
+        "renewedAt": 1900,
+        "rank": 1.0
+      },
+      "maintenance": {
+        "legacyDedup": 1
+      },
+      "lineage": 2
+    },
+    {
+      "schemaVersion": 3,
+      "completedAt": 2000,
+      "entries": [
+        {
+          "kind": "fact",
+          "subject": "master",
+          "id": "f1",
+          "text": "synthetic fact",
+          "metadata": {
+            "source": "user_observation",
+            "sourceCreatedAt": 0,
+            "sourceMessageIds": [
+              "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "signalJudged": false
+          }
+        },
+        {
+          "kind": "reflection",
+          "subject": "relationship",
+          "id": "ref_1",
+          "text": "synthetic reflection",
+          "metadata": {
+            "status": "confirmed",
+            "sourceFactIds": [
+              "f1",
+              "f0"
+            ],
+            "countedFactIds": [
+              "f1"
+            ],
+            "factSourceCounts": {
+              "user": 1,
+              "ai": 0
+            },
+            "userConfirmCount": 2
+          }
+        },
+        {
+          "kind": "persona",
+          "subject": "neko",
+          "id": "p1",
+          "text": "synthetic persona",
+          "metadata": {
+            "countedFactIds": [],
+            "factSourceCounts": {
+              "user": 0,
+              "ai": 0
+            },
+            "userConfirmCount": 0
+          }
+        }
+      ],
+      "evidence": {
+        "retirements": [
+          {
+            "id": "old",
+            "subject": "master",
+            "text": "old fact",
+            "sourceMessageIds": [
+              "source-1"
+            ],
+            "retiredThroughAt": 1000
+          }
+        ],
+        "confirmations": [
+          {
+            "fingerprint": "1:2:3",
+            "factId": "f1"
+          }
+        ]
+      },
+      "progress": {
+        "a": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ],
+        "b": [
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ]
+      },
+      "organizer": {
+        "deviceId": "device",
+        "renewedAt": 1900,
+        "rank": 4
+      },
+      "maintenance": {
+        "legacyDedup": 1
+      },
+      "lineage": 2
+    },
+    {
+      "schemaVersion": 3,
+      "completedAt": 2000,
+      "entries": [
+        {
+          "kind": "fact",
+          "subject": "master",
+          "id": "f1",
+          "text": "synthetic fact",
+          "metadata": {
+            "source": "user_observation",
+            "sourceCreatedAt": 0,
+            "sourceMessageIds": [
+              "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "signalJudged": false
+          }
+        },
+        {
+          "kind": "reflection",
+          "subject": "relationship",
+          "id": "ref_1",
+          "text": "synthetic reflection",
+          "metadata": {
+            "status": "confirmed",
+            "sourceFactIds": [
+              "f1",
+              "f0"
+            ],
+            "countedFactIds": [
+              "f1"
+            ],
+            "factSourceCounts": {
+              "user": 1,
+              "ai": 0
+            },
+            "userConfirmCount": 2
+          }
+        },
+        {
+          "kind": "persona",
+          "subject": "neko",
+          "id": "p1",
+          "text": "synthetic persona",
+          "metadata": {
+            "countedFactIds": [],
+            "factSourceCounts": {
+              "user": 0,
+              "ai": 0
+            },
+            "userConfirmCount": 0
+          }
+        }
+      ],
+      "evidence": {
+        "retirements": [
+          {
+            "id": "old",
+            "subject": "master",
+            "text": "old fact",
+            "sourceMessageIds": [
+              "source-1"
+            ],
+            "retiredThroughAt": 1000
+          }
+        ],
+        "confirmations": [
+          {
+            "fingerprint": "1:2:3",
+            "factId": "f1"
+          }
+        ]
+      },
+      "progress": {
+        "a": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ],
+        "b": [
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ]
+      },
+      "organizer": {
+        "deviceId": "dddddddddddddddddddddddddddddddd",
+        "renewedAt": 0,
+        "rank": 4
+      },
+      "maintenance": {
+        "legacyDedup": 1
+      },
+      "lineage": 2
+    },
+    {
+      "schemaVersion": 3,
+      "completedAt": 2000,
+      "entries": [
+        {
+          "kind": "fact",
+          "subject": "master",
+          "id": "f1",
+          "text": "synthetic fact",
+          "metadata": {
+            "source": "user_observation",
+            "sourceCreatedAt": 0,
+            "sourceMessageIds": [
+              "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "signalJudged": false
+          }
+        },
+        {
+          "kind": "reflection",
+          "subject": "relationship",
+          "id": "ref_1",
+          "text": "synthetic reflection",
+          "metadata": {
+            "status": "confirmed",
+            "sourceFactIds": [
+              "f1",
+              "f0"
+            ],
+            "countedFactIds": [
+              "f1"
+            ],
+            "factSourceCounts": {
+              "user": 1,
+              "ai": 0
+            },
+            "userConfirmCount": 2
+          }
+        },
+        {
+          "kind": "persona",
+          "subject": "neko",
+          "id": "p1",
+          "text": "synthetic persona",
+          "metadata": {
+            "countedFactIds": [],
+            "factSourceCounts": {
+              "user": 0,
+              "ai": 0
+            },
+            "userConfirmCount": 0
+          }
+        }
+      ],
+      "evidence": {
+        "retirements": [
+          {
+            "id": "old",
+            "subject": "master",
+            "text": "old fact",
+            "sourceMessageIds": [
+              "source-1"
+            ],
+            "retiredThroughAt": 1000
+          }
+        ],
+        "confirmations": [
+          {
+            "fingerprint": "1:2:3",
+            "factId": "f1"
+          }
+        ]
+      },
+      "progress": {
+        "a": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ],
+        "b": [
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ]
+      },
+      "organizer": {
+        "deviceId": "dddddddddddddddddddddddddddddddd",
+        "renewedAt": 1900.5,
+        "rank": 4
+      },
+      "maintenance": {
+        "legacyDedup": 1
+      },
+      "lineage": 2
+    },
+    {
+      "schemaVersion": 3,
+      "completedAt": 2000,
+      "entries": [
+        {
+          "kind": "fact",
+          "subject": "master",
+          "id": "f1",
+          "text": "synthetic fact",
+          "metadata": {
+            "source": "user_observation",
+            "sourceCreatedAt": 0,
+            "sourceMessageIds": [
+              "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "signalJudged": false
+          }
+        },
+        {
+          "kind": "reflection",
+          "subject": "relationship",
+          "id": "ref_1",
+          "text": "synthetic reflection",
+          "metadata": {
+            "status": "confirmed",
+            "sourceFactIds": [
+              "f1",
+              "f0"
+            ],
+            "countedFactIds": [
+              "f1"
+            ],
+            "factSourceCounts": {
+              "user": 1,
+              "ai": 0
+            },
+            "userConfirmCount": 2
+          }
+        },
+        {
+          "kind": "persona",
+          "subject": "neko",
+          "id": "p1",
+          "text": "synthetic persona",
+          "metadata": {
+            "countedFactIds": [],
+            "factSourceCounts": {
+              "user": 0,
+              "ai": 0
+            },
+            "userConfirmCount": 0
+          }
+        }
+      ],
+      "evidence": {
+        "retirements": [
+          {
+            "id": "old",
+            "subject": "master",
+            "text": "old fact",
+            "sourceMessageIds": [
+              "source-1"
+            ],
+            "retiredThroughAt": 1000
+          }
+        ],
+        "confirmations": [
+          {
+            "fingerprint": "1:2:3",
+            "factId": "f1"
+          }
+        ]
+      },
+      "progress": {
+        "a": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ],
+        "b": [
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ]
+      },
+      "organizer": {
+        "deviceId": "dddddddddddddddddddddddddddddddd",
+        "renewedAt": 1900,
+        "rank": 4
+      },
+      "maintenance": {
+        "legacyDedup": 1
+      },
+      "lineage": 0
+    },
+    {
+      "schemaVersion": 3,
+      "completedAt": 2000,
+      "entries": [
+        {
+          "kind": "fact",
+          "subject": "master",
+          "id": "f1",
+          "text": "synthetic fact",
+          "metadata": {
+            "source": "user_observation",
+            "sourceCreatedAt": 0,
+            "sourceMessageIds": [
+              "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "signalJudged": false
+          }
+        },
+        {
+          "kind": "reflection",
+          "subject": "relationship",
+          "id": "ref_1",
+          "text": "synthetic reflection",
+          "metadata": {
+            "status": "confirmed",
+            "sourceFactIds": [
+              "f1",
+              "f0"
+            ],
+            "countedFactIds": [
+              "f1"
+            ],
+            "factSourceCounts": {
+              "user": 1,
+              "ai": 0
+            },
+            "userConfirmCount": 2
+          }
+        },
+        {
+          "kind": "persona",
+          "subject": "neko",
+          "id": "p1",
+          "text": "synthetic persona",
+          "metadata": {
+            "countedFactIds": [],
+            "factSourceCounts": {
+              "user": 0,
+              "ai": 0
+            },
+            "userConfirmCount": 0
+          }
+        }
+      ],
+      "evidence": {
+        "retirements": [
+          {
+            "id": "old",
+            "subject": "master",
+            "text": "old fact",
+            "sourceMessageIds": [
+              "source-1"
+            ],
+            "retiredThroughAt": 1000
+          }
+        ],
+        "confirmations": [
+          {
+            "fingerprint": "1:2:3",
+            "factId": "f1"
+          }
+        ]
+      },
+      "progress": {
+        "a": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ],
+        "b": [
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ]
+      },
+      "organizer": {
+        "deviceId": "dddddddddddddddddddddddddddddddd",
+        "renewedAt": 1900,
+        "rank": 4
+      },
+      "maintenance": {
+        "legacyDedup": 1
+      },
+      "lineage": true
+    },
+    {
+      "schemaVersion": 3,
+      "completedAt": 2000,
+      "entries": [
+        {
+          "kind": "fact",
+          "subject": "master",
+          "id": "f1",
+          "text": "synthetic fact",
+          "metadata": {
+            "source": "user_observation",
+            "sourceCreatedAt": 0,
+            "sourceMessageIds": [
+              "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "signalJudged": false
+          }
+        },
+        {
+          "kind": "reflection",
+          "subject": "relationship",
+          "id": "ref_1",
+          "text": "synthetic reflection",
+          "metadata": {
+            "status": "confirmed",
+            "sourceFactIds": [
+              "f1",
+              "f0"
+            ],
+            "countedFactIds": [
+              "f1"
+            ],
+            "factSourceCounts": {
+              "user": 1,
+              "ai": 0
+            },
+            "userConfirmCount": 2
+          }
+        },
+        {
+          "kind": "persona",
+          "subject": "neko",
+          "id": "p1",
+          "text": "synthetic persona",
+          "metadata": {
+            "countedFactIds": [],
+            "factSourceCounts": {
+              "user": 0,
+              "ai": 0
+            },
+            "userConfirmCount": 0
+          }
+        }
+      ],
+      "evidence": {
+        "retirements": [
+          {
+            "id": "old",
+            "subject": "master",
+            "text": "old fact",
+            "sourceMessageIds": [
+              "source-1"
+            ],
+            "retiredThroughAt": 1000
+          }
+        ],
+        "confirmations": [
+          {
+            "fingerprint": "1:2:3",
+            "factId": "f1"
+          }
+        ]
+      },
+      "progress": {
+        "a": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ],
+        "b": [
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ]
+      },
+      "organizer": {
+        "deviceId": "dddddddddddddddddddddddddddddddd",
+        "renewedAt": 1900,
+        "rank": 4
+      },
+      "maintenance": {
+        "legacyDedup": 1
+      },
+      "lineage": 1.0
+    },
+    {
+      "schemaVersion": 3,
+      "completedAt": 2000,
+      "entries": [
+        {
+          "kind": "fact",
+          "subject": "master",
+          "id": "f1",
+          "text": "synthetic fact",
+          "metadata": {
+            "source": "user_observation",
+            "sourceCreatedAt": 0,
+            "sourceMessageIds": [
+              "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "signalJudged": false
+          }
+        },
+        {
+          "kind": "reflection",
+          "subject": "relationship",
+          "id": "ref_1",
+          "text": "synthetic reflection",
+          "metadata": {
+            "status": "confirmed",
+            "sourceFactIds": [
+              "f1",
+              "f0"
+            ],
+            "countedFactIds": [
+              "f1"
+            ],
+            "factSourceCounts": {
+              "user": 1,
+              "ai": 0
+            },
+            "userConfirmCount": 2
+          }
+        },
+        {
+          "kind": "persona",
+          "subject": "neko",
+          "id": "p1",
+          "text": "synthetic persona",
+          "metadata": {
+            "countedFactIds": [],
+            "factSourceCounts": {
+              "user": 0,
+              "ai": 0
+            },
+            "userConfirmCount": 0
+          }
+        }
+      ],
+      "evidence": {
+        "retirements": [
+          {
+            "id": "old",
+            "subject": "master",
+            "text": "old fact",
+            "sourceMessageIds": [
+              "source-1"
+            ],
+            "retiredThroughAt": 1000
+          }
+        ],
+        "confirmations": [
+          {
+            "fingerprint": "1:2:3",
+            "factId": "f1"
+          }
+        ]
+      },
+      "progress": {
+        "a": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ],
+        "b": [
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ]
+      },
+      "organizer": {
+        "deviceId": "dddddddddddddddddddddddddddddddd",
+        "renewedAt": 1900,
+        "rank": 4
+      },
+      "maintenance": {
+        "legacyDedup": 1
+      },
+      "lineage": null
+    },
+    {
+      "schemaVersion": 3,
+      "completedAt": 2000,
+      "entries": [
+        {
+          "kind": "fact",
+          "subject": "master",
+          "id": "f1",
+          "text": "synthetic fact",
+          "metadata": {
+            "source": "user_observation",
+            "sourceCreatedAt": 0,
+            "sourceMessageIds": [
+              "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "signalJudged": false
+          }
+        },
+        {
+          "kind": "reflection",
+          "subject": "relationship",
+          "id": "ref_1",
+          "text": "synthetic reflection",
+          "metadata": {
+            "status": "confirmed",
+            "sourceFactIds": [
+              "f1",
+              "f0"
+            ],
+            "countedFactIds": [
+              "f1"
+            ],
+            "factSourceCounts": {
+              "user": 1,
+              "ai": 0
+            },
+            "userConfirmCount": 2
+          }
+        },
+        {
+          "kind": "persona",
+          "subject": "neko",
+          "id": "p1",
+          "text": "synthetic persona",
+          "metadata": {
+            "countedFactIds": [],
+            "factSourceCounts": {
+              "user": 0,
+              "ai": 0
+            },
+            "userConfirmCount": 0
+          }
+        }
+      ],
+      "evidence": {
+        "retirements": [
+          {
+            "id": "old",
+            "subject": "master",
+            "text": "old fact",
+            "sourceMessageIds": [
+              "source-1"
+            ],
+            "retiredThroughAt": 1000
+          }
+        ],
+        "confirmations": [
+          {
+            "fingerprint": "1:2:3",
+            "factId": "f1"
+          }
+        ]
+      },
+      "progress": {
+        "a": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ],
+        "b": [
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ]
+      },
+      "organizer": {
+        "deviceId": "dddddddddddddddddddddddddddddddd",
+        "renewedAt": 1900,
+        "rank": 4
+      },
+      "maintenance": [],
+      "lineage": 2
+    },
+    {
+      "schemaVersion": 3,
+      "completedAt": 2000,
+      "entries": [
+        {
+          "kind": "fact",
+          "subject": "master",
+          "id": "f1",
+          "text": "synthetic fact",
+          "metadata": {
+            "source": "user_observation",
+            "sourceCreatedAt": 0,
+            "sourceMessageIds": [
+              "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "signalJudged": false
+          }
+        },
+        {
+          "kind": "reflection",
+          "subject": "relationship",
+          "id": "ref_1",
+          "text": "synthetic reflection",
+          "metadata": {
+            "status": "confirmed",
+            "sourceFactIds": [
+              "f1",
+              "f0"
+            ],
+            "countedFactIds": [
+              "f1"
+            ],
+            "factSourceCounts": {
+              "user": 1,
+              "ai": 0
+            },
+            "userConfirmCount": 2
+          }
+        },
+        {
+          "kind": "persona",
+          "subject": "neko",
+          "id": "p1",
+          "text": "synthetic persona",
+          "metadata": {
+            "countedFactIds": [],
+            "factSourceCounts": {
+              "user": 0,
+              "ai": 0
+            },
+            "userConfirmCount": 0
+          }
+        }
+      ],
+      "evidence": {
+        "retirements": [
+          {
+            "id": "old",
+            "subject": "master",
+            "text": "old fact",
+            "sourceMessageIds": [
+              "source-1"
+            ],
+            "retiredThroughAt": 1000
+          }
+        ],
+        "confirmations": [
+          {
+            "fingerprint": "1:2:3",
+            "factId": "f1"
+          }
+        ]
+      },
+      "progress": {
+        "a": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ],
+        "b": [
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ]
+      },
+      "organizer": {
+        "deviceId": "dddddddddddddddddddddddddddddddd",
+        "renewedAt": 1900,
+        "rank": 4
+      },
+      "maintenance": {
+        "legacyDedup": 0
+      },
+      "lineage": 2
+    },
+    {
+      "schemaVersion": 3,
+      "completedAt": 2000,
+      "entries": [
+        {
+          "kind": "fact",
+          "subject": "master",
+          "id": "f1",
+          "text": "synthetic fact",
+          "metadata": {
+            "source": "user_observation",
+            "sourceCreatedAt": 0,
+            "sourceMessageIds": [
+              "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "signalJudged": false
+          }
+        },
+        {
+          "kind": "reflection",
+          "subject": "relationship",
+          "id": "ref_1",
+          "text": "synthetic reflection",
+          "metadata": {
+            "status": "confirmed",
+            "sourceFactIds": [
+              "f1",
+              "f0"
+            ],
+            "countedFactIds": [
+              "f1"
+            ],
+            "factSourceCounts": {
+              "user": 1,
+              "ai": 0
+            },
+            "userConfirmCount": 2
+          }
+        },
+        {
+          "kind": "persona",
+          "subject": "neko",
+          "id": "p1",
+          "text": "synthetic persona",
+          "metadata": {
+            "countedFactIds": [],
+            "factSourceCounts": {
+              "user": 0,
+              "ai": 0
+            },
+            "userConfirmCount": 0
+          }
+        }
+      ],
+      "evidence": {
+        "retirements": [
+          {
+            "id": "old",
+            "subject": "master",
+            "text": "old fact",
+            "sourceMessageIds": [
+              "source-1"
+            ],
+            "retiredThroughAt": 1000
+          }
+        ],
+        "confirmations": [
+          {
+            "fingerprint": "1:2:3",
+            "factId": "f1"
+          }
+        ]
+      },
+      "progress": {
+        "a": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ],
+        "b": [
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ]
+      },
+      "organizer": {
+        "deviceId": "dddddddddddddddddddddddddddddddd",
+        "renewedAt": 1900,
+        "rank": 4
+      },
+      "maintenance": {
+        "legacyDedup": 1001
+      },
+      "lineage": 2
+    },
+    {
+      "schemaVersion": 3,
+      "completedAt": 2000,
+      "entries": [
+        {
+          "kind": "fact",
+          "subject": "master",
+          "id": "f1",
+          "text": "synthetic fact",
+          "metadata": {
+            "source": "user_observation",
+            "sourceCreatedAt": 0,
+            "sourceMessageIds": [
+              "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "signalJudged": false
+          }
+        },
+        {
+          "kind": "reflection",
+          "subject": "relationship",
+          "id": "ref_1",
+          "text": "synthetic reflection",
+          "metadata": {
+            "status": "confirmed",
+            "sourceFactIds": [
+              "f1",
+              "f0"
+            ],
+            "countedFactIds": [
+              "f1"
+            ],
+            "factSourceCounts": {
+              "user": 1,
+              "ai": 0
+            },
+            "userConfirmCount": 2
+          }
+        },
+        {
+          "kind": "persona",
+          "subject": "neko",
+          "id": "p1",
+          "text": "synthetic persona",
+          "metadata": {
+            "countedFactIds": [],
+            "factSourceCounts": {
+              "user": 0,
+              "ai": 0
+            },
+            "userConfirmCount": 0
+          }
+        }
+      ],
+      "evidence": {
+        "retirements": [
+          {
+            "id": "old",
+            "subject": "master",
+            "text": "old fact",
+            "sourceMessageIds": [
+              "source-1"
+            ],
+            "retiredThroughAt": 1000
+          }
+        ],
+        "confirmations": [
+          {
+            "fingerprint": "1:2:3",
+            "factId": "f1"
+          }
+        ]
+      },
+      "progress": {
+        "a": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ],
+        "b": [
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ]
+      },
+      "organizer": {
+        "deviceId": "dddddddddddddddddddddddddddddddd",
+        "renewedAt": 1900,
+        "rank": 4
+      },
+      "maintenance": {
+        "legacyDedup": true
+      },
+      "lineage": 2
+    },
+    {
+      "schemaVersion": 3,
+      "completedAt": 2000,
+      "entries": [
+        {
+          "kind": "fact",
+          "subject": "master",
+          "id": "f1",
+          "text": "synthetic fact",
+          "metadata": {
+            "source": "user_observation",
+            "sourceCreatedAt": 0,
+            "sourceMessageIds": [
+              "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            "signalJudged": false
+          }
+        },
+        {
+          "kind": "reflection",
+          "subject": "relationship",
+          "id": "ref_1",
+          "text": "synthetic reflection",
+          "metadata": {
+            "status": "confirmed",
+            "sourceFactIds": [
+              "f1",
+              "f0"
+            ],
+            "countedFactIds": [
+              "f1"
+            ],
+            "factSourceCounts": {
+              "user": 1,
+              "ai": 0
+            },
+            "userConfirmCount": 2
+          }
+        },
+        {
+          "kind": "persona",
+          "subject": "neko",
+          "id": "p1",
+          "text": "synthetic persona",
+          "metadata": {
+            "countedFactIds": [],
+            "factSourceCounts": {
+              "user": 0,
+              "ai": 0
+            },
+            "userConfirmCount": 0
+          }
+        }
+      ],
+      "evidence": {
+        "retirements": [
+          {
+            "id": "old",
+            "subject": "master",
+            "text": "old fact",
+            "sourceMessageIds": [
+              "source-1"
+            ],
+            "retiredThroughAt": 1000
+          }
+        ],
+        "confirmations": [
+          {
+            "fingerprint": "1:2:3",
+            "factId": "f1"
+          }
+        ]
+      },
+      "progress": {
+        "a": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ],
+        "b": [
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ]
+      },
+      "organizer": {
+        "deviceId": "dddddddddddddddddddddddddddddddd",
+        "renewedAt": 1900,
+        "rank": 4
+      },
+      "maintenance": {
+        "legacy-dedup": 1
+      },
+      "lineage": 2
+    },
+    {
+      "schemaVersion": 2,
+      "completedAt": 2000,
+      "entries": [],
+      "evidence": {
+        "retirements": [],
+        "confirmations": []
+      },
+      "progress": {
+        "a": [],
+        "b": []
+      }
+    },
+    {
+      "schemaVersion": 2,
+      "completedAt": 2000,
+      "entries": [],
+      "evidence": {
+        "retirements": [],
+        "confirmations": []
+      },
+      "organizer": {
+        "deviceId": "dddddddddddddddddddddddddddddddd",
+        "renewedAt": 1900,
+        "rank": 4
+      }
+    },
+    {
+      "schemaVersion": 4,
+      "completedAt": 2000,
+      "entries": [],
+      "evidence": {
+        "retirements": [],
+        "confirmations": []
+      },
+      "progress": {
+        "a": [],
+        "b": []
+      }
+    }
+  ],
+  "invalidMetadata": [
+    {
+      "signalJudged": "true"
+    },
+    {
+      "signalJudged": 1
+    },
+    {
+      "userConfirmCount": -1
+    },
+    {
+      "userConfirmCount": 1.5
+    },
+    {
+      "userConfirmCount": true
+    },
+    {
+      "countedFactIds": "f1"
+    },
+    {
+      "countedFactIds": [
+        ""
+      ]
+    },
+    {
+      "factSourceCounts": {
+        "user": 1
+      }
+    },
+    {
+      "factSourceCounts": {
+        "user": 1,
+        "ai": 0,
+        "other": 0
+      }
+    },
+    {
+      "factSourceCounts": {
+        "user": -1,
+        "ai": 0
+      }
+    },
+    {
+      "factSourceCounts": {
+        "user": 0.5,
+        "ai": 0
+      }
+    },
+    {
+      "factSourceCounts": [
+        1,
+        0
+      ]
+    }
+  ],
+  "schemaThreeOnlyMetadata": [
+    {
+      "signalJudged": true
+    },
+    {
+      "userConfirmCount": 2
+    },
+    {
+      "countedFactIds": [
+        "f1"
+      ]
+    },
+    {
+      "factSourceCounts": {
+        "user": 1,
+        "ai": 0
+      }
+    }
+  ]
+}
