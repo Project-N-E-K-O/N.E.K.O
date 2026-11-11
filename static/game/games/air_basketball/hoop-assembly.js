@@ -152,7 +152,7 @@ export class HoopAssembly {
     this.netPull = { pitch:0, roll:0 };
     this.boardImage = new Image();
     this.rimImage = new Image();
-    for (const [image, file] of [[this.boardImage, 'neko-backboard.png'], [this.rimImage, 'neko-rim.png']]) {
+    for (const [image, file] of [[this.boardImage, 'neko-backboard.webp'], [this.rimImage, 'neko-rim.webp']]) {
       image.decoding = 'async';
       image.src = new URL(`./assets/${file}${assetVersion}`, import.meta.url).href;
     }

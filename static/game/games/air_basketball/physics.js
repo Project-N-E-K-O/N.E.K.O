@@ -39,7 +39,7 @@ export class ShotLane {
     this.backgroundImage.src = versionedAsset('./assets/neko-arcade-lane-v2.webp');
     this.sharedBackgroundImage = new Image();
     this.sharedBackgroundImage.decoding = 'async';
-    this.sharedBackgroundImage.src = versionedAsset('./assets/neko-stage-four-court.png');
+    this.sharedBackgroundImage.src = versionedAsset('./assets/neko-stage-four-court.webp');
     this.ballImage = new Image();
     this.ballImage.decoding = 'async';
     this.ballImage.src = versionedAsset('./assets/neko-basketball.png');

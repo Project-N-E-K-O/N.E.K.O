@@ -317,7 +317,7 @@ function firstCageImpact(flight, seconds, geometry, allowOuterExit) {
 function loadLayer(name, x, y) {
   const image = new Image();
   image.decoding = 'async';
-  image.src = new URL(`./assets/neko-stage-four-${name}.png${assetVersion}`, import.meta.url).href;
+  image.src = new URL(`./assets/neko-stage-four-${name}.webp${assetVersion}`, import.meta.url).href;
   return { image, x, y };
 }
 
