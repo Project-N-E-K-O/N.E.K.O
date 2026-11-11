@@ -908,9 +908,17 @@ export default function ChatWindowRoot(props: ChatWindowProps) {
       /> : null;
   const messages = useMemo(() => {
     if (!audioHistory.length) return props.messages;
-    return [...(props.messages ?? []), ...audioHistory].sort(
-      (a, b) => (a.sortKey ?? a.createdAt ?? 0) - (b.sortKey ?? b.createdAt ?? 0),
-    );
+    // The host's sortKey is an ordering sequence, not a wall-clock value.
+    const audio = [...audioHistory].sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0));
+    const merged: ChatMessage[] = [];
+    let index = 0;
+    for (const message of props.messages ?? []) {
+      while (index < audio.length && (audio[index].createdAt ?? 0) <= (message.createdAt ?? 0)) {
+        merged.push(audio[index++]);
+      }
+      merged.push(message);
+    }
+    return merged.concat(audio.slice(index));
   }, [audioHistory, props.messages]);
   const surfaceProps = { ...props, composerDisabled: !!props.composerDisabled || audioActive,
     audioMessageControl, audioMessageActive: audioActive, messages,
@@ -920,7 +928,7 @@ export default function ChatWindowRoot(props: ChatWindowProps) {
     props.chatSurfaceMode === 'full',
   );
   return (
-    <ChatScreenVisibilityProvider messages={props.messages || defaultMessages}>
+    <ChatScreenVisibilityProvider messages={messages || defaultMessages}>
       {props.chatSurfaceMode === 'full'
         ? <FullChatSurface {...surfaceProps} />
         : <CompactChatApp {...surfaceProps} />}

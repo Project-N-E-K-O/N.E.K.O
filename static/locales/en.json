@@ -777,6 +777,7 @@
         "audioMessageSending": "Sending…",
         "audioMessageCancel": "Discard recording",
         "audioMessageMicrophoneError": "Microphone unavailable. Check its permission and try again.",
+        "exportAudioOmitted": "Voice messages and their transcripts are not included. You can view them in chat history.",
         "audioMessageSendError": "Delivery could not be confirmed. Check the conversation before recording again.",
         "audioMessageBusy": "The conversation is busy. Try sending the recording again when it is ready.",
         "miniGameInviteTitle": "Game invitation",

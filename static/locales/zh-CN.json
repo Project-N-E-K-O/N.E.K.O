@@ -777,6 +777,7 @@
         "audioMessageSending": "发送中…",
         "audioMessageCancel": "取消录音",
         "audioMessageMicrophoneError": "无法使用麦克风，请检查权限后重试。",
+        "exportAudioOmitted": "导出不包含语音消息和转写，可在聊天记录中查看。",
         "audioMessageSendError": "未能确认发送结果，请先查看对话，再决定是否重新录制。",
         "audioMessageBusy": "对话正在处理上一条消息，稍后可以重新发送这段录音。",
         "miniGameInviteTitle": "小游戏邀请",

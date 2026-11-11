@@ -2637,8 +2637,12 @@ class TurnMixin:
         # delivered_at and falsely count as responses on the next tick (Codex P2).
         _transcript_arrival_ts = time.time()
         self.last_user_activity_time = _transcript_arrival_ts
+        # A submitted recording has already been routed to its own turn.
+        # Live microphone takeover and echo filtering only apply to live input.
+        is_submitted_recording = audio_message_request_id is not None
         if (
             is_voice_source
+            and not is_submitted_recording
             and transcript_text
             and self._takeover_input_dispatcher is not None
         ):
@@ -2670,6 +2674,7 @@ class TurnMixin:
 
         if (
             is_voice_source
+            and not is_submitted_recording
             and transcript_text
             and self._should_suppress_dirty_voice_transcript(transcript_text)
         ):

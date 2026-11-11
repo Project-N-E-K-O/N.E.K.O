@@ -57,9 +57,12 @@ export default function AudioMessageBlockView({ block, interactive }: Props) {
       const result = await fetch(all ? chatAudioUrl(block.character) : url, { method: 'DELETE' });
       if (!result.ok) throw new Error('Could not delete recording');
       if (audio.current && !audio.current.paused) audio.current.pause();
-      window.dispatchEvent(new Event('chat-audio-local-change'));
+      window.dispatchEvent(new CustomEvent('chat-audio-local-change', {
+        detail: { character: block.character, requestId: all ? undefined : block.requestId },
+      }));
     } catch {
       setError(i18n('chat.audioHistoryDeleteError', 'Could not delete the recording.'));
+    } finally {
       setDeleting(false);
     }
   }

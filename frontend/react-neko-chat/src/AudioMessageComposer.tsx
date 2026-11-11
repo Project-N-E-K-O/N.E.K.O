@@ -40,7 +40,12 @@ export default function AudioMessageComposer({ target, disabled, send, onBusyCha
   };
   useEffect(() => {
     cancel();
-    return () => { dispose(); onBusyChange(false); };
+    window.addEventListener('react-chat-window:closed', cancel);
+    return () => {
+      window.removeEventListener('react-chat-window:closed', cancel);
+      dispose();
+      onBusyChange(false);
+    };
   }, [target]);
   useEffect(() => {
     if (disabled && phase !== 'idle' && phase !== 'sending') cancel();
@@ -48,6 +53,7 @@ export default function AudioMessageComposer({ target, disabled, send, onBusyCha
 
   function cancel() {
     dispose();
+    messageId.current = '';
     submitted.current = false;
     setPhase('idle');
     setPreview('');
@@ -89,7 +95,6 @@ export default function AudioMessageComposer({ target, disabled, send, onBusyCha
     }
     const own = ++generation.current;
     try {
-      messageId.current = `${Date.now()}-${crypto.randomUUID()}`;
       setError('');
       setSeconds(0);
       setPhase('starting');
@@ -113,6 +118,7 @@ export default function AudioMessageComposer({ target, disabled, send, onBusyCha
 
   async function submit() {
     if (submitted.current || !pcm.current) return;
+    if (!messageId.current) messageId.current = `${Date.now()}-${crypto.randomUUID()}`;
     submitted.current = true;
     if (audio.current && !audio.current.paused) audio.current.pause();
     const own = generation.current;

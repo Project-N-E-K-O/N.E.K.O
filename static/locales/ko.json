@@ -777,6 +777,7 @@
         "audioMessageSending": "보내는 중…",
         "audioMessageCancel": "녹음 취소",
         "audioMessageMicrophoneError": "마이크를 사용할 수 없습니다. 권한을 확인하고 다시 시도하세요.",
+        "exportAudioOmitted": "음성 메시지와 전사 내용은 내보내기에 포함되지 않습니다. 채팅 기록에서 확인할 수 있습니다.",
         "audioMessageSendError": "전송 결과를 확인하지 못했습니다. 다시 녹음하기 전에 대화를 확인하세요.",
         "audioMessageBusy": "대화가 이전 메시지를 처리 중입니다. 완료되면 녹음을 다시 보낼 수 있습니다.",
         "miniGameInviteTitle": "미니게임 초대",

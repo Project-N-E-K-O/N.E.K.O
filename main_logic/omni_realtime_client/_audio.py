@@ -39,7 +39,7 @@ _AUDIO_TRANSCRIPT_RETRY_DELAYS = (0.1, 0.2)
 class _AudioMessageTranscript:
     on_transcript: Callable[..., Awaitable[bool | None]] | None
     transcript_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    transcript_retry: asyncio.Task[None] | None = None
+    transcript_retry: asyncio.Task[bool] | None = None
     transcript: str = ""
     published: str = ""
     published_final: bool = False
@@ -72,22 +72,22 @@ class _AudioMessageTranscript:
                 self.published_final = final
             return written
 
-    async def _retry_transcript(self) -> None:
+    async def _retry_transcript(self) -> bool:
         try:
             for delay in _AUDIO_TRANSCRIPT_RETRY_DELAYS:
                 await asyncio.sleep(delay)
                 if await self._write_transcript() is not False:
-                    return
+                    return True
             logger.warning("Audio message transcript could not be stored after retry")
         except Exception:
             logger.exception("Audio message transcript retry failed")
+        return False
 
 
 @dataclass(slots=True)
 class _GeminiAudioMessage(_AudioMessageTranscript):
     outcome: asyncio.Future[bool]
     transcript_ready: asyncio.Event = field(default_factory=asyncio.Event)
-    explicit_progress: bool = False
     publish_partial: bool = False
     pending_tool_ids: set[str] = field(default_factory=set)
     used_tools: bool = False
@@ -98,11 +98,9 @@ class _GeminiAudioMessage(_AudioMessageTranscript):
             return
         self.transcript += transcription.text or ""
         finished = getattr(transcription, "finished", None)
-        if finished is False:
-            self.explicit_progress = True
-        elif finished is True:
+        if finished is True:
             self.finalized = True
-        if self.finalized or (self.publish_partial and not self.explicit_progress):
+        if self.finalized or self.publish_partial:
             await self.publish()
         if self.finalized:
             self.transcript_ready.set()
@@ -145,7 +143,10 @@ class _AudioMixin:
             self._audio_message_input_committed = True
             pending.set_result(None)
         elif event.get("type") == "error":
-            pending.set_exception(ConnectionError("audio message rejected by provider"))
+            error = event.get("error")
+            commit_id = getattr(self, "_audio_message_commit_event_id", None)
+            if commit_id and isinstance(error, dict) and error.get("event_id") == commit_id:
+                pending.set_exception(ConnectionError("audio message rejected by provider"))
 
     async def submit_audio_message(
         self, pcm: bytes, request_id: str, *, is_current: Callable[[], bool],
@@ -159,7 +160,7 @@ class _AudioMixin:
         """
         if self.turn_detection_mode != TurnDetectionMode.MANUAL or not is_current():
             raise RuntimeError("audio messages require an owned manual session")
-        transcript = _AudioMessageTranscript(on_transcript=on_transcript) if on_transcript is not None else None
+        transcript = _AudioMessageTranscript(on_transcript=on_transcript)
         self._audio_message_transcript = transcript
         self._audio_message_input_item = None
         self._audio_message_input_committed = False
@@ -197,13 +198,12 @@ class _AudioMixin:
                             audio_message.transcript_ready.wait(), timeout=_GEMINI_TRANSCRIPT_GRACE_SECONDS,
                         )
                     except TimeoutError:
-                        if is_current() and not audio_message.explicit_progress:
-                            # Older peers may never send a final flag. Keep the
-                            # same recording open for later transcript revisions.
+                        if is_current():
+                            # Keep captured text even when the final marker is late.
                             audio_message.publish_partial = True
                             await audio_message.publish()
-                if audio_message.transcript_retry is not None:
-                    await asyncio.shield(audio_message.transcript_retry)
+                if audio_message.transcript_retry is not None and not await asyncio.shield(audio_message.transcript_retry):
+                    raise ConnectionError("audio transcript could not be stored")
             except BaseException:
                 if getattr(self, "_gemini_audio_message", None) is audio_message:
                     self._gemini_audio_message = None
@@ -241,6 +241,11 @@ class _AudioMixin:
             raise ConnectionError("audio session superseded")
         committed = asyncio.get_running_loop().create_future()
         self._audio_message_commit = committed
+        commit_id = "event_audio_commit_" + request_id[-36:]
+        self._audio_message_commit_event_id = commit_id
+        tool_batches: list[asyncio.Task] = []
+        self._audio_message_tool_batches = tool_batches
+        self._audio_message_tool_responses = set()
         arbiter = self._ensure_response_arbiter()
 
         async def send(event):
@@ -269,16 +274,21 @@ class _AudioMixin:
                 source="audio_message",
                 events_before_response=(
                     *append_events,
-                    {"type": "input_audio_buffer.commit"},
+                    {"type": "input_audio_buffer.commit", "event_id": commit_id},
                 ),
                 response_event=response_event,
                 event_sender=send,
                 admission_check=is_current,
                 response_done_timeout=60,
             )
-            await asyncio.wait_for(asyncio.shield(ticket.done), timeout=70)
-            if transcript is not None and transcript.transcript_retry is not None:
-                await asyncio.shield(transcript.transcript_retry)
+            async with asyncio.timeout(70):
+                await asyncio.shield(ticket.done)
+                # Each audio-owned batch waits for its continuation terminal.
+                # A continuation can itself enqueue another batch.
+                for batch in tool_batches:
+                    await asyncio.shield(batch)
+            if transcript.transcript_retry is not None and not await asyncio.shield(transcript.transcript_retry):
+                raise ConnectionError("audio transcript could not be stored")
         except BaseException:
             if ticket is not None:
                 await arbiter.cancel_ticket(ticket)
@@ -286,6 +296,9 @@ class _AudioMixin:
         finally:
             if self._audio_message_commit is committed:
                 self._audio_message_commit = None
+                self._audio_message_commit_event_id = None
+                self._audio_message_tool_batches = None
+                self._audio_message_tool_responses = None
             if not committed.done():
                 committed.cancel()
             elif not committed.cancelled():

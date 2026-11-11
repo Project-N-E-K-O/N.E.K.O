@@ -1829,7 +1829,9 @@ class CompressedRecentHistoryManager:
         """``preempted``: optional future; once it resolves, a summary in progress is abandoned
         like a failed one (the messages are already persisted and ``on_compress_done`` hands
         the snapshot to background compression). Callers holding the settle lock pass it so a
-        cold-start /new_dialog does not wait for the summary LLM (#3601)."""
+        cold-start /new_dialog does not wait for the summary LLM (#3601).
+        With ``compress=False``, return whether the recent history reached disk.
+        """
         # Ordinary writes carry no visit-diary idempotency key (only append_keyed stamps it server-side); strip caller-supplied keys.
         recent_file.strip_idempotency_metadata(new_messages)
         file_path, admission_generation = self._capture_recent_operation_admission(
@@ -1872,7 +1874,9 @@ class CompressedRecentHistoryManager:
                 # Like pre-refactor, first persistence failure skips compression (previously exception skipped
                 # the whole section). Batch is in _pending; next update_history writes it together
                 # with disk contents.
-                return
+                return False if not compress else None
+            if not compress:
+                return True
 
             # Preserve theater capsules unchanged through compression; exclude from trigger count and retained-tail count,
             # or many capsules keep compressed history above threshold, re-compressing and summarizing memo every settle.
@@ -1971,6 +1975,7 @@ class CompressedRecentHistoryManager:
             raise
         except Exception as e:
             logger.error(f"[RecentHistory] 更新历史记录时出错: {e}", exc_info=True)
+            return False if not compress else None
 
 
     # ── Past-block update metadata (prevent days-old events repeatedly resurfacing in summary;

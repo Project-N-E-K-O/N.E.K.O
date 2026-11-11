@@ -999,7 +999,8 @@ class _GeminiMixin:
                 if (
                     follows_tool_results
                     and (
-                        getattr(getattr(server_content, "output_transcription", None), "text", None)
+                        getattr(server_content, "generation_complete", False)
+                        or getattr(getattr(server_content, "output_transcription", None), "text", None)
                         or any(
                             not getattr(part, "thought", False)
                             and (getattr(part, "inline_data", None) or getattr(part, "text", None))
