@@ -4701,8 +4701,14 @@ function CompactChatApp({
     clearCompactInputToolFanCloseTimer();
   }, [clearCompactInputToolFanCloseTimer]);
 
+  const audioMessageActiveRef = useRef(audioMessageActive);
+  useLayoutEffect(() => {
+    audioMessageActiveRef.current = audioMessageActive;
+  }, [audioMessageActive]);
+
   const collapseCompactInputIfEmpty = useCallback((options?: { ignoreFocusedShell?: boolean; ignoreToolFan?: boolean }) => {
-    if (audioMessageActive) return;
+    // A blur can queue this callback before the microphone click starts recording.
+    if (audioMessageActiveRef.current) return;
     if (!isCompactSurface) return;
     if (effectiveCompactChatState !== 'input') return;
     if (!options?.ignoreToolFan && compactInputToolFanOpen) return;
@@ -4726,7 +4732,6 @@ function CompactChatApp({
     }
     requestCompactChatState('default');
   }, [
-    audioMessageActive,
     compactInputToolFanOpen,
     composerAttachments.length,
     effectiveCompactChatState,

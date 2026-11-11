@@ -2004,6 +2004,53 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
   flex-wrap: wrap;
 }
 
+.audio-message-mic-disc {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #087abb;
+  color: #fff;
+}
+
+.audio-message-mic:hover:not(:disabled) .audio-message-mic-disc {
+  background: #09669f;
+}
+
+.audio-message-mic-glyph {
+  position: relative;
+  width: 14px;
+  height: 16px;
+  background: linear-gradient(currentColor, currentColor) center bottom / 2px 4px no-repeat;
+}
+
+.audio-message-mic-glyph::before,
+.audio-message-mic-glyph::after {
+  position: absolute;
+  left: 50%;
+  box-sizing: border-box;
+  transform: translateX(-50%);
+  content: "";
+}
+
+.audio-message-mic-glyph::before {
+  top: 0;
+  width: 6px;
+  height: 10px;
+  border-radius: 4px;
+  background: currentColor;
+}
+
+.audio-message-mic-glyph::after {
+  top: 6px;
+  width: 12px;
+  height: 7px;
+  border: 1.5px solid currentColor;
+  border-top: 0;
+  border-radius: 0 0 7px 7px;
+}
+
 .audio-message-strip {
   display: flex;
   flex: 1 1 100%;
@@ -2291,9 +2338,10 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
 
 .compact-chat-surface-frame .audio-message-strip[data-recording="true"] {
   grid-template-areas: "clock stop cancel";
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-columns: minmax(max-content, 1fr) minmax(0, max-content) minmax(max-content, 1fr);
+  column-gap: 6px;
   min-height: 38px;
-  padding: 3px 8px;
+  padding: 3px 6px;
 }
 
 .compact-chat-surface-frame .audio-message-strip[data-recording="true"] .audio-message-clock {
@@ -2302,6 +2350,20 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
 
 .compact-chat-surface-frame .audio-message-strip[data-recording="true"] .audio-message-stop {
   display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.compact-chat-surface-frame .audio-message-stop-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@container compact-audio-message (max-width: 200px) {
+  .audio-message-stop-label {
+    display: none;
+  }
 }
 
 .compact-chat-surface-frame .audio-message-strip[data-recording="true"] .audio-message-stop-disc {
@@ -2358,6 +2420,11 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
   color: #b52d51;
 }
 
+.compact-chat-surface-frame[data-compact-chat-state="input"][data-audio-message-active="true"] {
+  padding-inline: 8px;
+}
+
+.compact-chat-surface-frame[data-audio-message-active="true"] > .compact-chat-minimize-ball,
 .compact-chat-surface-frame[data-audio-message-active="true"] > .composer-input,
 .compact-chat-surface-frame[data-audio-message-active="true"] > .compact-input-tool-toggle {
   display: none;
@@ -2365,6 +2432,7 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
 
 .compact-chat-surface-frame[data-audio-message-active="true"] > .audio-message-composer {
   flex: 1;
+  container: compact-audio-message / inline-size;
 }
 
 .composer-bottom-bar {
