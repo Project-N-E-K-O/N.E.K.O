@@ -79,11 +79,11 @@ Cat Mind 不写 DOM、不直接播放素材、不直接操作窗口，也不保�
 
 ### 4.3 renderer adapter 与既有 runner
 
-动作 adapter 读取当前 renderer 事实，判断动作是否真的可执行，并把 action request 翻译成既有 runner 调用。runner 仍拥有 GIF、音频、DOM class、目标跟随、取消、恢复和结束时机。
+动作 adapter 读取当前 renderer 事实，判断动作是否真的可执行，并把 action request 翻译成既有 runner 调用。runner 仍拥有动画素材、音频、DOM class、目标跟随、取消、恢复和结束时机。
 
 avatar 侧另有只读 observation adapter：它只汇总已有的毛线拖拽阶段、坐标和猫/毛线矩形，生成完整手势事实；不写 journey 状态、不选动作，也不启动 runner。输入适配和动作执行因此仍是两个方向明确、职责分离的边界。
 
-只有 runner 真实进入 `started` 后，Cat Mind 才写 cooldown 并重置共享节奏分。provider dry-run 必须只读；provider 拒绝、adapter 接受后启动失败或终态先于 started 都不得写 cooldown、不得伪造完成反馈或经历。未确认的 request 最多占用 `5s`，已经 accepted 但没有 started 的 request 最多占用 `12s`，超时只释放调度租约并记录协议失败，避免 selector 永久卡住。音频动作只有 `audio.play()` 成功后才能报告 started，不能在仅创建 `Audio` 时提前开始冷却。所有已接入动作统一使用连续恢复曲线；普通状态使用原节奏底部，只有 active action 被下一次真实拖拽中断时临时加深连续恢复底部，避免没有完成反馈的高需求在随后每次拖拽后连播。cooldown 不从实际动作分数中扣除，只产生 `0–1` 的独立排序位。有多个合法候选时，更久没执行的动作优先；只有一个动作达到资格时，新鲜 cooldown 也不会阻止它执行。没有额外的连续重复 gate、负分或 idle 禁止结果。
+只有 runner 真实进入 `started` 后，Cat Mind 才写 cooldown 并重置共享节奏分。provider dry-run 必须只读；provider 拒绝、adapter 接受后启动失败或终态先于 started 都不得写 cooldown、不得伪造完成反馈或经历。未确认的 request 最多占用 `5s`，已经 accepted 但没有 started 的 request 最多占用 `12s`，超时只释放调度租约并记录协议失败，避免 selector 永久卡住。音频动作只有 `audio.play()` 成功后才能报告 started，不能在仅创建 `Audio` 时提前开始冷却。六个五维评分动作统一使用连续恢复曲线；普通状态使用原节奏底部，只有 active action 被下一次真实拖拽中断时临时加深连续恢复底部，避免没有完成反馈的高需求在随后每次拖拽后连播。它们的 cooldown 不从实际动作分数中扣除，只产生 `0–1` 的独立排序位。有多个合法候选时，更久没执行的动作优先；只有一个动作达到资格时，新鲜 cooldown 也不会阻止它执行。CAT1 空闲视觉随机组是明确例外，使用 5 分钟硬 cooldown 和 30 秒 tick 上的固定概率，不进入五维评分排序。
 
 动作进行中到达的用户 observation 不会丢失，也不会在旧回调内同步连播。Cat Mind 会把同类触发合并为一次 deferred reevaluation，在 runner 终态和表现恢复后异步重新计分。明确毛线意图暂时被 provider 拒绝时，后续既有 walk/stretch 完成可以作为“条件已变化”的唤醒事实；它们仍不是主动候选，也不直接指定玩球。
 
@@ -201,18 +201,20 @@ CAT1 本地文字另有固定 `5%` 的哈气回复彩蛋。它不是 observation
 | CAT1 | `cat1_eat_snack` | 吃零食 | eat runner 可用 |
 | CAT1 | `cat1_small_move` | 最小化聊天球可用时成对移动；展开/compact 时只移动猫 | journey settled、对应 surface 可用、有空间 |
 | CAT1 | `cat1_play_yarn` | 玩毛线球 | 已在聊天球附近、毛线球可隐藏/恢复 |
+| CAT1 | `cat1_idle_random` | 六个独立视觉 profile 的统一随机入口 | CAT1 自主 tick、5 分钟硬 cooldown、六份资源均可用 |
+| CAT1 | `cat1_inactive_sad` | 持续无交互后的伤心表现 | CAT1、标准 inactivity 达 13 分钟、本轮未 started |
 | CAT2 | `cat2_nap_feedback` | 小憩声音/气泡反馈 | 睡眠反馈 runner 可用 |
 | CAT3 | `cat3_sleep_feedback` | 熟睡声音/气泡反馈 | 睡眠反馈 runner 可用 |
 
-以下不是主动候选：drag、hover、return、tier demotion、walk-to-chat、compact top edge、mirror、chat idle-dock、屏幕边缘探头、四个桌面窗口互动，以及原 journey 到达聊天球后的局部尾动作。
+以下不是主动候选：drag、hover、return、tier demotion、除 `happy / touch / mouse / laugh / love1 / wagging` 统一随机组和 `sad` 时序入口外的 8.3.1 至 8.3.3 CAT1 视觉-only 独立动作、walk-to-chat、compact top edge、mirror、chat idle-dock、屏幕边缘探头、四个桌面窗口互动，以及原 journey 到达聊天球后的局部尾动作。六个随机成员不各自注册候选，只由单一 `cat1_idle_random` 动作占用一次调度机会；`sad` 也不以 `cat1_sad` presentation capability 入池，只由 `cat1_inactive_sad` 调度。
 
 Cat Mind 不主动 walk-to-chat。玩毛线要求已经 settled near-chat；小移动不借此接近聊天球，但会沿用既有两种 runner 形态：最小化聊天球 near-chat 时移动猫与球，聊天窗已展开或 compact surface 可用时只移动猫。没有对应 surface 或表现条件不满足时，provider 拒绝动作。
 
 ## 八、现有表现功能
 
-### 8.1 基础 GIF、hover 与思考气泡
+### 8.1 基础动画、hover 与思考气泡
 
-每个 tier 有默认、hover/click 和拖拽素材。hover 离开后等待当前 GIF 一轮播完再恢复，tier 或动作切换会清理旧 token 和 timer。
+每个 tier 有默认、hover/click 和拖拽素材。hover 离开后等待当前动画一轮播完再恢复，tier 或动作切换会清理旧 token 和 timer。
 
 思考气泡由音频真实开始后临时显示。CAT1 使用普通内容气泡；CAT2 有 `1/3`、CAT3 有 `2/3` 概率改用睡眠 ZZZ。普通气泡显示 `5s`；ZZZ 跟随本次实际音频剩余时长，无法取得时使用 `8s` fallback。活动气泡有独立点击命中，点击播放 `540ms` pop 并产生 observation，同一次点击在 `800ms` 内去重，不触发 return、拖拽或吃东西。气泡在拖拽 pending/进行、tier 切换、walk、stretch、play、eat、hover 暂停等冲突阶段隐藏。
 
@@ -234,9 +236,49 @@ CAT1 与聊天球距离达到当前代码的进入阈值 `180px` 后，既有 jo
 
 这些距离同时受 GIF 透明边、目标矩形和视觉停止点影响。修改前必须重新以当前代码、静态测试和真实桌面画面共同确认，不能只改文档数值。
 
+### 8.3.1 CAT1 独立开心动作
+
+CAT1 注册一个视觉-only 的独立开心 runner：`window.NekoCatIdlePresentation.requestCat1Happy()`。它使用 `action.cat1.happy`，播放素材的一整轮约 `4.04s` 后恢复原 art 和暂停前的 journey；进入和正常结束都直接换源，不走通用 `820ms` 模糊/缩放过渡，避免重启 GIF 或破坏首尾姿态衔接。它不绑定声音；显式 API 本身不进入 Cat Mind selector、五维反馈、cooldown 或 return episode，但它是 8.3.3 所述 `cat1_idle_random` 的六个表现成员之一。它与吃、玩、伸懒腰、桌面表现和 Playground 共用 independent-action 互斥及 return、真实拖拽、tier/形态退出、容器移除清理。
+
+### 8.3.2 CAT1 独立接触与 cosplay 动作
+
+CAT1 另注册两个视觉-only 独立 runner：`window.NekoCatIdlePresentation.requestCat1Touch()` 使用 `action.cat1.touch`，表现猫主动伸爪接触；`window.NekoCatIdlePresentation.requestCat1Cosplay1()` 使用 `action.cat1.cosplay_1`，表现第一套 cosplay。两者分别完整播放素材一轮约 `6.04s` 和 `4.04s`，随后恢复原 art 和暂停前的 journey。素材自身虽然声明无限循环，但 runner 以核验出的单轮时长主动结束；首尾都回到 CAT1 基准坐姿，因此进入和正常结束直接换源，不走通用 `820ms` 过渡。`touch` 同时由 8.3.3 的统一随机入口调度，`cosplay1` 仍只保留显式 presentation API。
+
+这两个模块都保留显式 presentation API；`touch` 的正式自动入口是 8.3.3 所述统一随机组，`cosplay 1` 只额外保留临时右键验收入口，两者都不绑定键盘或本地文字。它们与开心动作共享视觉动作占用和统一清理机制，但各自保留独立资源槽位、能力名、公开 API 和终态原因；同一时间只能运行一个，并继续服从 CAT1、可见性、拖拽、return、tier/形态切换、桌面表现、其他独立动作与 Playground 的门禁。调用被拒绝或动作取消都不冒充完成，也不生成 observation、五维反馈、cooldown、严格 action result 或 return episode。
+
+### 8.3.3 CAT1 其余视觉-only 独立动作
+
+`action` 目录中其余 13 份素材各自注册为独立 CAT1 profile。表中时长是动画单轮时长；素材自身声明无限循环，runner 到时主动恢复原 art 和暂停前的 journey。CAT1 动作素材使用保持原画布、原 Alpha 和原显示时间轴的 Q90 animated WebP；runner 从注册表读取已核验时长，不把 WebP 误交给 GIF 二进制解析器。
+
+| 表现 | 资源 | slot | capability | presentation API | 单轮 | layout |
+|---|---|---|---|---|---:|---|
+| 变换 | `cat-idle-cat1-change.webp` | `action.cat1.change` | `cat1_change` | `requestCat1Change()` | `6.04s` | `normal` |
+| cosplay 2 | `cat-idle-cat1-cos-2.webp` | `action.cat1.cosplay_2` | `cat1_cosplay_2` | `requestCat1Cosplay2()` | `6.04s` | `normal` |
+| 进食变体 2 | `cat-idle-cat1-eat-2.webp` | `action.cat1.eat_2` | `cat1_eat_2` | `requestCat1Eat2()` | `5.04s` | `normal` |
+| 进食变体 3 | `cat-idle-cat1-eat-3.webp` | `action.cat1.eat_3` | `cat1_eat_3` | `requestCat1Eat3()` | `4.04s` | `normal` |
+| 大笑 | `cat-idle-cat1-laugh.webp` | `action.cat1.laugh` | `cat1_laugh` | `requestCat1Laugh()` | `4.04s` | `normal` |
+| 舞狮 | `cat-idle-cat1-lion_dance.webp` | `action.cat1.lion_dance` | `cat1_lion_dance` | `requestCat1LionDance()` | `4.04s` | `tall-bottom` |
+| 爱心 1 | `cat-idle-cat1-love-1.webp` | `action.cat1.love_1` | `cat1_love_1` | `requestCat1Love1()` | `4.04s` | `normal` |
+| mouse | `cat-idle-cat1-mouse.webp` | `action.cat1.mouse` | `cat1_mouse` | `requestCat1Mouse()` | `5.04s` | `wide-centered` |
+| 挥手 | `cat-idle-cat1-wave.webp` | `action.cat1.wave` | `cat1_wave` | `requestCat1Wave()` | `4.04s` | `normal` |
+| 伤心 | `cat-idle-cat1-sad.webp` | `action.cat1.sad` | `cat1_sad` | `requestCat1Sad()` | `4.04s` | `normal` |
+| 害怕 | `cat-idle-cat1-scared.webp` | `action.cat1.scared` | `cat1_scared` | `requestCat1Scared()` | `4.04s` | `normal` |
+| 抚摸 | `cat-idle-cat1-stroke.webp` | `action.cat1.stroke` | `cat1_stroke` | `requestCat1Stroke()` | `7.98s` | `normal` |
+| 摇尾 | `cat-idle-cat1-wagging.webp` | `action.cat1.wagging` | `cat1_wagging` | `requestCat1Wagging()` | `4.04s` | `normal` |
+
+这些 profile 保留各自的显式 API；直接调用仍是无声音、无五维、无 cooldown 的视觉-only 表现。`eat 2`、`eat 3` 的素材另作为正式自主吃零食的两个表现变体，但其独立 API 不冒充一次业务 eat。当前 CAT1 右键人工验收入口已移除 `scared`，改为每次独立加权随机：`stroke` 为 `50%`，cosplay 1、change、cosplay 2、lion dance、wave 各为 `10%`；不保留顺序、完成下标或上一次抽取结果。气泡、呼吸球和非右键不触发该入口。其余文件名中的 `play` 等字样只描述素材，不复用自主动作的声音、五维、cooldown 和 episode。静态素材核验表明它们的首尾都回到 CAT1 基准坐姿，因此进入和正常结束均直接换源。
+
+CAT2/CAT3 的猫本体右键使用独立人工入口：不参与 CAT1 加权随机，而是固定触发原第 6 项 `scared`，并把自动视觉 tier 的推进基准正式重放到 CAT1 的累计 `10m`。旧睡眠 art 通过已有 `820ms` 双图层 tier transition 直接渐变到 scared；渐变完成并从首帧重新载入后，才开始计算 scared 的完整 `4.04s` 单轮，结束后利用对齐尾帧直接恢复 CAT1 idle。后续仍按标准在 CAT1 停留 `5m` 再进入 CAT2，不会在下一 tick 被旧的全局空闲时长立即推回 CAT2/CAT3。气泡或呼吸球上的右键不触发此入口。
+
+正式随机入口只注册一个 `cat1_idle_random` 动作，不把六个 profile 分别变成候选。每个没有合并用户输入的 CAT1 30 秒自主 tick，在全局硬门通过后先检查 5 分钟硬 cooldown 和六份素材能力；可用时以 `20%` 概率争夺本轮唯一动作槽。命中后不再运行本轮原有评分候选，未命中才交给原 Cat Mind 评分，因此它会真实参与调度而不是等待所有旧动作失败。统一入口随后在 `happy / touch / mouse / laugh / love1 / wagging` 中各以 `1/6` 选一次并锁定到终态；单个成员在一个合格 tick 的无条件概率约为 `3.33%`。硬 cooldown 只从严格 `started` 开始，期间不做 provider 检查、不消耗随机数；done/cancelled/interrupted 不修改五维、短时意图或 return episode。
+
+伤心另注册为 `cat1_inactive_sad`，不进入上述六项随机池。自动 CAT1 沿用自动离开控制器的全局 inactivity 起点，所以全局无交互第 10 分钟进入 CAT1 后，在第 13 分钟的首个 30 秒 tick 即可获得资格；它先于随机动作检查且不消耗随机数。只有固定 `sad` runner 回报 `started` 才锁定本轮一次，provider reject、仅 accepted 或启动失败都可在后续 tick 重试。CAT1 期间的标准全局用户活动只重置 Sad 自己的 13 分钟计时和一次性标记，不重置 CAT1→CAT2→CAT3 的 15/18 分钟视觉时钟；既有猫交互 observation 同样重置。再次持续 13 分钟且届时仍在 CAT1 时才可再次触发。该动作无 cooldown、无五维反馈、无短时意图、无 return episode。
+
+`mouse` 是 `896×512` 画布：主猫放入 `175%` 宽图盒后直接复用 return button 既有的 flex 水平居中，不能再叠加 `left:-37.5%`；只有非 flex 的 compact mirror 显式使用该偏移。`lion_dance` 是 `512×704` 画布：主猫使用 `137.5%` 高图盒和 `align-self:flex-end` 底对齐，compact mirror 才使用 `top:-37.5%`。两种 layout 都是为了让首尾猫体与普通 CAT1 位置一致，不能退化为普通 `100% object-fit:contain`。`stroke` 在安装前用同一固定平移对齐了默认 CAT1 的首尾可见形象，无需运行时特殊 layout；其余 11 份素材同样使用标准 `512×512 / normal` 布局。
+
 ### 8.4 自主小移动、吃零食与玩球
 
-小移动复用同一个既有 runner：最小化聊天球处于 settled near-chat 时让猫与聊天球一起短距离移动；聊天窗已展开或 compact surface 可用而没有最小化目标时，只让猫在可用空间内小幅移动。两种形态都不接管 walk-to-chat。小移动和既有 walk 在真实终态上报路径、持续时间与稳定 `activityId`，由 Cat Mind 一次性结算物理负荷。吃和玩球复用既有 GIF/音频 runner，动作互斥，并在结束、取消、拖拽、tier change 和 return 时恢复临时 DOM/窗口状态。
+小移动复用同一个既有 runner：最小化聊天球处于 settled near-chat 时让猫与聊天球一起短距离移动；聊天窗已展开或 compact surface 可用而没有最小化目标时，只让猫在可用空间内小幅移动。两种形态都不接管 walk-to-chat。小移动和既有 walk 在真实终态上报路径、持续时间与稳定 `activityId`，由 Cat Mind 一次性结算物理负荷。吃零食沿用原 runner 的声音、五维、cooldown 与恢复语义，但每次成功启动只随机一次，在原 eat、eat 2、eat 3 三份素材间各以 `1/3` 概率选定并固定到结束；所选动画的实际单轮时长与声音都结束后才完成动作。玩球继续复用既有动画/音频 runner。两者动作互斥，并在结束、取消、拖拽、tier change 和 return 时恢复临时 DOM/窗口状态。
 
 玩球开始时可临时隐藏网页或桌面最小化毛线球，结束后只撤销本动作的临时隐藏，不改变聊天窗原本 minimized/compact/bounds 状态。
 
@@ -341,7 +383,7 @@ Windows 仅在 Playground 玩法活动期间，让猫形态的四种模型统一
 
 - return、真实拖拽、tier/形态变化、playground、容器移除和页面卸载都必须幂等释放各自动作拥有的 RAF、timer、门节点、裁切、旋转和素材接管；新 owner 接管时不能用旧动作的恢复坐标覆盖它。
 - 上沿的左右 facing、探头的左/右/下固定构图、门式的入口边/出口边是三组不同方向语义。修一组时要分别跑完整方向矩阵，不能增加一个全局镜像规则修单边。
-- 猫 GIF 有透明边。容器矩形、素材画布和肉眼可见猫体不是同一边界；不能仅凭容器与窗口相交就断言画面重叠，也不能为通过几何测试静默改变已经验收的视觉落点。涉及安全站位或门式拒绝原因时，必须结合当前素材可见边界和 Electron 实画复核。
+- 猫动画有透明边。容器矩形、素材画布和肉眼可见猫体不是同一边界；不能仅凭容器与窗口相交就断言画面重叠，也不能为通过几何测试静默改变已经验收的视觉落点。涉及安全站位或门式拒绝原因时，必须结合当前素材可见边界和 Electron 实画复核。
 - 上沿、探头、门式与其他 CAT1 独立表现共用 independent-action hard gate 和清理入口。重力作为共享物理约束与动作并行，不进入该互斥判断。它们都不是 Cat Mind 主动动作，不注册五维反馈、Cat Mind cooldown、短时意图或 return episode，也不得把外部窗口事件转换成对话框/毛线球启动信号。
 
 ### 8.7 问号入口与 playground
@@ -358,12 +400,16 @@ playground 是独立表现模式，不是 selector 候选，不写动作 cooldow
 
 | 用途 | 当前资源 |
 |---|---|
-| CAT1/2/3 默认 | `cat-idle-cat1.gif` / `cat-idle-cat2.gif` / `cat-idle-cat3.gif` |
-| CAT1/2/3 hover | `cat-idle-cat1-click.gif` / `cat-idle-cat2-click.gif` / `cat-idle-cat3-click.gif` |
-| 拖拽与快速甩动 | `cat-idle-cat-move-1.gif` 至 `cat-idle-cat-move-5.gif` |
+| CAT1/2/3 默认 | `cat-idle-cat1.webp` / `cat-idle-cat2.webp` / `cat-idle-cat3.webp` |
+| CAT1/2/3 hover | `cat-idle-cat1-click.webp` / `cat-idle-cat2-click.webp` / `cat-idle-cat3-click.webp` |
+| 拖拽与快速甩动 | `cat-idle-cat-move-1.webp` 至 `cat-idle-cat-move-5.webp` |
 | journey 走路/hover | `cat-idle-cat4-1.gif` / `cat-idle-cat4-3.gif` |
 | CAT1 独立伸懒腰 | `cat-idle-cat4-2.gif` |
-| 玩毛线/吃零食 | `cat-idle-cat-play-1.gif` / `cat-idle-cat1-eat.gif` |
+| CAT1 独立开心 | `cat-idle-cat1-happy.webp` |
+| CAT1 独立主动接触 | `cat-idle-cat1-touch.webp` |
+| CAT1 独立 cosplay 1 | `cat-idle-cat1-cos-1.webp` |
+| CAT1 其余视觉-only 独立动作 | `cat-idle-cat1-change.webp`、`cat-idle-cat1-cos-2.webp`、`cat-idle-cat1-eat-2.webp`、`cat-idle-cat1-eat-3.webp`、`cat-idle-cat1-laugh.webp`、`cat-idle-cat1-lion_dance.webp`、`cat-idle-cat1-love-1.webp`、`cat-idle-cat1-mouse.webp`、`cat-idle-cat1-wave.webp`、`cat-idle-cat1-sad.webp`、`cat-idle-cat1-scared.webp`、`cat-idle-cat1-wagging.webp` |
+| 玩毛线/吃零食 | `cat-idle-cat-play-1.webp` / `cat-idle-cat1-eat.webp`、`cat-idle-cat1-eat-2.webp`、`cat-idle-cat1-eat-3.webp` |
 | 气泡 | `cloud-thought-bubble.gif` / `cloud-thought-bubble-pop.gif` / `sleeping-zzz.gif` 与独立内容 PNG |
 | 双向模型切换遮罩 | `cat_model_change.gif` |
 
@@ -373,16 +419,16 @@ playground 是独立表现模式，不是 selector 候选，不写动作 cooldow
 
 NEKO-PC 设置页“启动与形态”最后一项为“猫形象”，当前只允许 `开发猫` 和 `YUI` 两个值。配置键为 `catResourceGroup`，值为 `dev_neko` 或 `yui_neko`，默认值为 `dev_neko`。桌面壳在 Pet preload 阶段同步注入当前组别，运行中切换通过同一 IPC 通道通知页面并只重载一次；这是低频设置变更，重载后 Cat Mind 按冷启动建立，不承诺保留上一页的运行态。正式资源注册表用同一个组别读取 appearance 和 voice，不能把图片与声音跨组拼接。
 
-两个组的注册槽位保持相同：CAT1/2/3 默认、click、drag、movement、eat、play-yarn 和 playground 都沿用同一套 slot 名。当前开源仓库只保留 `yui_neko` 的逻辑槽位和 manifest，资源路径暂回退到 `dev_neko`，不携带尚未定稿的 YUI 二进制或未登记的 `move-6`。正式 YUI 资源可在授权和分发方式确定后通过独立资源包接入。
+两个组的注册槽位保持相同：CAT1/2/3 默认、click、drag、movement、eat、play-yarn、playground，以及 8.3.1 至 8.3.3 的全部视觉-only 独立动作都沿用同一套 slot 名。当前开源仓库只保留 `yui_neko` 的逻辑槽位和 manifest，资源路径暂回退到 `dev_neko`，不携带尚未定稿的 YUI 二进制或未登记的 `move-6`。正式 YUI 资源可在授权和分发方式确定后通过独立资源包接入。
 
 截至本次接入的资源审计如下：
 
-| 组别 | 已注册外观 GIF | 外观占用 | 声音 MP3 | 声音占用 |
+| 组别 | 已注册外观动画 | 外观占用 | 声音 MP3 | 声音占用 |
 |---|---:|---:|---:|---:|
-| `dev_neko` | 16 | 48.36 MiB | 11 | 1.46 MiB |
-| `yui_neko` | 16 个逻辑槽位，当前回退到 `dev_neko` | 0（本仓库不携带正式 YUI 二进制） | 逻辑槽位沿用 `dev_neko` | 0（本仓库不携带正式 YUI 二进制） |
+| `dev_neko` | 32（3 GIF + 29 animated WebP） | 110.15 MiB | 11 | 1.46 MiB |
+| `yui_neko` | 32 个逻辑资源，当前回退到 `dev_neko` | 0（本仓库不携带正式 YUI 二进制） | 逻辑槽位沿用 `dev_neko` | 0（本仓库不携带正式 YUI 二进制） |
 
-正式 YUI 资源的文件大小、声音独立性、画布宽高比和透明边，需在资源包确定后重新审计。页面统一用 `object-fit: contain` 放入固定猫容器，因此不会发生非等比拉伸，但透明边不同会改变肉眼可见猫体在容器中的占比。定位、毛线接触和窗口互动相关的判断必须继续以画布相对坐标和实机画面共同复核，不能把文件像素尺寸直接当成可见猫体尺寸。
+正式 YUI 资源的文件大小、声音独立性、画布宽高比和透明边，需在资源包确定后重新审计。标准资源用 `object-fit: contain` 放入固定猫容器；`mouse` 和 `lion_dance` 例外，分别使用 `wide-centered` 与 `tall-bottom` 图盒校正，但仍保持素材自身等比缩放。主猫是 flex 容器，不能把 compact mirror 的显式 `left/top` 偏移原样重复到主猫。透明边和图盒布局都会改变肉眼可见猫体的位置。定位、毛线接触和窗口互动相关的判断必须继续以真实 DOM、画布相对坐标和实机画面共同复核，不能把文件像素尺寸或静态 alpha bbox 单独当成最终证据。
 
 ## 九、动作生命周期
 

@@ -978,6 +978,7 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
             element.hidden = true;
             element.removeAttribute('data-active');
             element.removeAttribute('data-neko-cat1-wide-art');
+            element.removeAttribute('data-neko-cat1-art-layout');
             element.style.removeProperty('left');
             element.style.removeProperty('top');
             element.style.removeProperty('width');
@@ -1090,6 +1091,15 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
                 element.setAttribute('data-neko-cat1-wide-art', 'true');
             } else {
                 element.removeAttribute('data-neko-cat1-wide-art');
+            }
+            var artLayout = detail &&
+                (detail.artLayout === 'wide-centered' || detail.artLayout === 'tall-bottom')
+                ? detail.artLayout
+                : '';
+            if (artLayout) {
+                element.setAttribute('data-neko-cat1-art-layout', artLayout);
+            } else {
+                element.removeAttribute('data-neko-cat1-art-layout');
             }
             image.style.transform = detail && detail.facingRight ? 'scaleX(-1)' : 'scaleX(1)';
         }

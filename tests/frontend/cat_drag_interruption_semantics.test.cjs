@@ -34,6 +34,7 @@ test('drag pending preserves active runners and real drag motion interrupts all 
     _NEKO_IDLE_TIER_NONE: 'none',
     _getNekoIdleReturnButtonFromContainer: () => button,
     _cancelNekoIdleCat1EatAction: (_button, options) => cancellations.push({ action: 'eat', options }),
+    _cancelNekoIdleCat1VisualAction: (_button, options) => cancellations.push({ action: 'visual', options }),
     _cancelNekoIdleCat1StretchAction: (_button, options) => cancellations.push({ action: 'stretch', options }),
     _cancelNekoIdleCat1PlayAction: (_button, options) => cancellations.push({ action: 'play', options }),
     _logNekoIdleReturnDragDebug: () => {},
@@ -60,7 +61,7 @@ test('drag pending preserves active runners and real drag motion interrupts all 
   assert.deepEqual(pendingStates, [true]);
 
   context._startNekoIdleReturnDragActionForContainer(container);
-  assert.deepEqual(cancellations.map((item) => item.action), ['eat', 'stretch', 'play']);
+  assert.deepEqual(cancellations.map((item) => item.action), ['eat', 'visual', 'stretch', 'play']);
   for (const item of cancellations) {
     assert.equal(item.options.restoreArt, false);
     assert.equal(item.options.reason, 'return-ball-drag-active');
@@ -177,6 +178,7 @@ test('independent stretch runner and hiss entry keep hard gates and one owned li
   let edgePeekActive = true;
   let scheduled = null;
   let journeySyncs = 0;
+  const visualCalls = [];
   let hissCapabilityAvailable = false;
   const runtimeGate = {
     validCatRuntime: true,
@@ -195,6 +197,13 @@ test('independent stretch runner and hiss entry keep hard gates and one owned li
   const hissSounds = [];
   const soundStops = [];
   const terminals = [];
+  const visualProfiles = Object.freeze({
+    happy: Object.freeze({ key: 'happy', capability: 'cat1_happy', requestName: 'requestCat1Happy' }),
+    touch: Object.freeze({ key: 'touch', capability: 'cat1_touch', requestName: 'requestCat1Touch' }),
+    cosplay1: Object.freeze({
+      key: 'cosplay1', capability: 'cat1_cosplay_1', requestName: 'requestCat1Cosplay1',
+    }),
+  });
   const buttonClasses = new Map();
   const containerClasses = new Map();
   const makeClassList = (store) => ({
@@ -224,6 +233,8 @@ test('independent stretch runner and hiss entry keep hard gates and one owned li
     _NEKO_IDLE_CAT1_CHAT_HISS_SOUND_VOLUME: 0.12,
     _getNekoCatVoiceUrl: () => 'hiss.mp3',
     _getNekoCatAppearanceUrl: () => 'stretch.gif',
+    _NEKO_IDLE_CAT1_VISUAL_ACTION_PROFILES: visualProfiles,
+    _getNekoIdleCat1VisualActionProfile: (actionKey) => visualProfiles[actionKey] || null,
     _isNekoCatActionResourceAvailable: () => hissCapabilityAvailable,
     _isNekoIdleCat1PlaygroundEntryOrDropActive: () => false,
     _normalizeNekoIdleReturnTier: (tier) => tier,
@@ -241,6 +252,7 @@ test('independent stretch runner and hiss entry keep hard gates and one owned li
     _syncNekoIdleCat1QuestionMarkKeyboardAvailabilityForButton: () => {},
     _isNekoIdleReturnDragActionActive: () => false,
     _getNekoIdleReturnCurrentArtUrl: () => 'idle.gif',
+    _shouldResumeNekoIdleJourneyAfterActionTakeover: () => false,
     _setNekoIdleReturnArtSource: (_art, src, tier, options) => artSources.push({ src, tier, options }),
     _resumeNekoIdleCat1Journey: () => {},
     _scheduleNekoIdleCat1JourneySync: () => { journeySyncs += 1; },
@@ -254,11 +266,18 @@ test('independent stretch runner and hiss entry keep hard gates and one owned li
       ...runtimeGate,
       edgePeekActive,
     }),
-    _getNekoIdleGifDurationMs: () => Promise.resolve(900),
+    _getNekoIdleAnimationDurationMs: () => Promise.resolve(900),
     _playNekoIdleSound: (state, src, volume) => {
       hissSounds.push({ state, src, volume });
       return {};
     },
+    _playNekoIdleCat1VisualAction: (_button, actionKey) => {
+      visualCalls.push(actionKey);
+      return true;
+    },
+    _playNekoIdleCat1HappyAction: (_button, options) => context._playNekoIdleCat1VisualAction(_button, 'happy', options),
+    _playNekoIdleCat1TouchAction: (_button, options) => context._playNekoIdleCat1VisualAction(_button, 'touch', options),
+    _playNekoIdleCat1Cosplay1Action: (_button, options) => context._playNekoIdleCat1VisualAction(_button, 'cosplay1', options),
     _stopNekoIdleSoundAudio: (state) => soundStops.push(state),
     _forEachNekoIdleReturnButton: () => {},
     setTimeout(callback, delay) {
@@ -275,6 +294,7 @@ test('independent stretch runner and hiss entry keep hard gates and one owned li
   ), context);
 
   assert.equal(typeof context.window.NekoCatIdlePresentation.requestCat1HissStretch, 'function');
+  assert.equal(typeof context.window.NekoCatIdlePresentation.requestCat1Happy, 'function');
   assert.equal(context.window.NekoCatIdlePresentation.requestCat1HissStretch(), false);
   assert.equal(context._playNekoIdleCat1StretchAction(button), false);
   assert.equal(artSources.length, 0);
@@ -299,6 +319,10 @@ test('independent stretch runner and hiss entry keep hard gates and one owned li
   assert.equal(context.window.NekoCatIdlePresentation.requestCat1HissStretch(), false);
   button.__nekoIdleCat1Journey.pairMoveFrame = 0;
   assert.equal(hissSounds.length, 0);
+  assert.equal(context.window.NekoCatIdlePresentation.requestCat1Happy(), true);
+  assert.equal(context.window.NekoCatIdlePresentation.requestCat1Touch(), true);
+  assert.equal(context.window.NekoCatIdlePresentation.requestCat1Cosplay1(), true);
+  assert.deepEqual(visualCalls, ['happy', 'touch', 'cosplay1']);
 
   assert.equal(context._playNekoIdleCat1StretchAction(button, {
     onTerminal: (result, detail) => terminals.push({ result, detail }),

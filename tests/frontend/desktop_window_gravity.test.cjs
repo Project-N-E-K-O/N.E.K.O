@@ -397,8 +397,13 @@ test('cat art and facing changes keep the painted edges against the same window 
   r.art.src = registry.getAppearance('playground.cat1.air', { random: false }).url;
   r.sample(); r.settle();
   const floor = 750;
+  const manifest = JSON.parse(fs.readFileSync(path.join(
+    root,
+    'static/assets/cat-resources/appearance/dev_neko/manifest.json',
+  ), 'utf8'));
+  const actionSlots = Object.keys(manifest.slots).filter((slot) => slot.startsWith('action.cat1.'));
   for (const slot of ['playground.cat1.air', 'idle.cat1', 'idle.cat2', 'idle.cat3',
-    'movement.cat1.walking', 'action.cat1.eat', 'action.cat1.play_yarn']) {
+    'movement.cat1.walking', ...actionSlots]) {
     r.art.src = registry.getAppearance(slot, { random: false }).url;
     for (const mirrored of [false, true]) {
       r.button.classList.toggle('is-cat1-facing-right', mirrored);
