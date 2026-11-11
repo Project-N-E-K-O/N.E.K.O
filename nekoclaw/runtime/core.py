@@ -228,7 +228,14 @@ class RuntimeCore:
     async def close(self, session_id: str) -> None:
         session = self._sessions.pop(session_id, None)
         if session is None:
-            self._reject(session_id, "close", f'unknown session "{session_id}"')
+            closing = self._closing.get(session_id)
+            if closing is None:
+                self._reject(session_id, "close", f'unknown session "{session_id}"')
+            else:
+                # Already on its way out, through an earlier close or a
+                # shutdown. The caller gets what it asked for: it waits for the
+                # same close instead of being told the session is unknown.
+                await asyncio.shield(closing)
             return
         await asyncio.shield(self._begin_close(session_id, session))
 

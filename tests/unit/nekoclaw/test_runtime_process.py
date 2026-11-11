@@ -539,6 +539,37 @@ async def test_a_cancelled_close_still_closes_the_session(tmp_path: Path) -> Non
     await core.shutdown()
 
 
+async def test_closing_a_session_that_is_already_closing_waits_for_the_same_close(tmp_path: Path) -> None:
+    order: list[str] = []
+    emitted: list[dict[str, Any]] = []
+    core = _slow_closing_core(order, emitted)
+
+    def errors() -> list[tuple[str, str]]:
+        return [(e["command"], e["message"]) for e in emitted if e["type"] == "error"]
+
+    # Asked for twice: the second call is not an error, it waits for the first.
+    await core.start(make_spec(tmp_path))
+    first = asyncio.ensure_future(core.close("s1"))
+    await asyncio.sleep(0.05)
+    await core.close("s1")
+    assert order == ["opened s1", "closing s1", "closed s1"]
+    await first
+    assert errors() == []
+
+    # The same while a shutdown is closing it.
+    await core.start(make_spec(tmp_path))
+    stopping = asyncio.ensure_future(core.shutdown())
+    await asyncio.sleep(0.05)
+    await core.close("s1")
+    assert order[-1] == "closed s1" and order.count("closing s1") == 2
+    await stopping
+    assert errors() == []
+
+    # Once it is gone, closing it again is the error it always was.
+    await core.close("s1")
+    assert errors() == [("close", 'unknown session "s1"')]
+
+
 async def test_a_second_shutdown_does_not_reopen_the_door_for_the_first(tmp_path: Path) -> None:
     order: list[str] = []
     emitted: list[dict[str, Any]] = []
