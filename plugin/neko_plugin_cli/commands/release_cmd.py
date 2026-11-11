@@ -118,11 +118,13 @@ def handle_release_check(args: argparse.Namespace) -> int:
         issues.extend(_diagnose_market_plugin_id(source.plugin_id))
         # CI builds the pushed commit, not the working tree.
         issues.extend(_diagnose_repository(plugin_dir, defaults=defaults, release=True))
+        repository_root = None
         if getattr(args, "market_release", False):
+            repository_root = _repository_root(plugin_dir, defaults)
             issues.extend(
                 _diagnose_market_release(
                     plugin_dir,
-                    repository_root=_repository_root(plugin_dir, defaults),
+                    repository_root=repository_root,
                     plugin_id=source.plugin_id,
                     version=source.version,
                     github_repository=getattr(args, "_release_repository", None),
@@ -149,20 +151,20 @@ def handle_release_check(args: argparse.Namespace) -> int:
         if inspect_result.payload_hash_verified is not True:
             print("[FAIL] package payload hash verification failed", file=sys.stderr)
             return 1
-        package_issues = (
-            _diagnose_market_package(build_result.package_path)
-            if _market_security_checks_enabled() else []
-        )
-        if package_issues:
-            print(f"[FAIL] {source.plugin_id}: {command_label} built a package the Market rejects", file=sys.stderr)
-            _print_issues(package_issues)
-            return 1
+        market_check_mode = "legacy"
+        if _market_security_checks_enabled():
+            package_issues = _diagnose_market_package(build_result.package_path)
+            if package_issues:
+                print(f"[FAIL] {source.plugin_id}: {command_label} built a package the Market rejects", file=sys.stderr)
+                _print_issues(package_issues)
+                return 1
+            market_check_mode = "source-security" if repository_root is not None else "package-security"
     except Exception as exc:
         print(f"[FAIL] {command_label}: {exc}", file=sys.stderr)
         return 1
 
     print(f"[OK] {source.plugin_id}: {command_label} passed")
-    print(f"  market_check_mode={'source-security' if _market_security_checks_enabled() else 'legacy'}")
+    print(f"  market_check_mode={market_check_mode}")
     print(f"  version={source.version}")
     print(f"  package={build_result.package_path}")
     print(f"  package_sha256={_sha256_file(build_result.package_path)}")

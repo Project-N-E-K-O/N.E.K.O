@@ -657,15 +657,23 @@ def test_release_check_defaults_to_legacy_with_security_scan_opt_in(
     repo = tmp_path / "repo"
     remote = "https://github.com/alice/n.e.k.o_plugin_native_demo.git"
     assert neko_plugin_cli.main(["init", "native_demo", "--output", str(repo), "--remote", remote]) == 0
-    (repo / "native").mkdir()
-    (repo / "native" / "helper.dll").write_bytes(b"MZ" + os.urandom(4096))
-    # Avoid the package reader's independent compression-ratio limit.
-    (repo / "data.txt").write_text(os.urandom(1024 * 1024 + 1).hex(), encoding="utf-8")
     _commit_all(repo)
     command = [
         "check", str(repo), "--release", "--skip-tests", "--target-dir", str(tmp_path / "target"),
         *(["--market-release"] if market_release else []),
     ]
+
+    with monkeypatch.context() as scan_env:
+        scan_env.setenv("NEKO_PLUGIN_MARKET_SECURITY_CHECKS", "1")
+        assert neko_plugin_cli.main(command) == 0
+        mode = "source-security" if market_release else "package-security"
+        assert f"market_check_mode={mode}" in capsys.readouterr().out
+
+    (repo / "native").mkdir()
+    (repo / "native" / "helper.dll").write_bytes(b"MZ" + os.urandom(4096))
+    # Avoid the package reader's independent compression-ratio limit.
+    (repo / "data.txt").write_text(os.urandom(1024 * 1024 + 1).hex(), encoding="utf-8")
+    _commit_all(repo)
 
     assert neko_plugin_cli.main(command) == 0
     assert "market_check_mode=legacy" in capsys.readouterr().out
