@@ -11,6 +11,7 @@ import asyncio
 import os
 import shutil
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -536,6 +537,73 @@ async def test_invalid_command_arguments_are_rejected_with_the_stable_messages(t
         assert texts[3].startswith("Error: invalid workdir: ") and texts[3].endswith("is not a directory")
     finally:
         await session.close()
+
+
+def test_the_work_is_done_on_the_spot_when_no_thread_can_be_started() -> None:
+    done: list[str] = []
+
+    class NoThreads(threading.Thread):
+        def start(self) -> None:
+            raise RuntimeError("can't start new thread")
+
+    procs._start_thread_or(NoThreads(target=lambda: done.append("thread")), lambda: done.append("here"))
+    assert done == ["here"]
+    # With a thread to be had, the work goes to the thread and nothing is done twice.
+    worker = threading.Thread(target=lambda: done.append("thread"))
+    procs._start_thread_or(worker, lambda: done.append("unexpected"))
+    worker.join(5)
+    assert done == ["here", "thread"]
+
+
+@pytest.mark.skipif(not WINDOWS, reason="the taskkill fallback exists on Windows only")
+async def test_the_tree_is_killed_even_when_no_thread_can_be_started(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    child = _write(tmp_path, "child.py", "import time\ntime.sleep(120)\n")
+    parent = _write(
+        tmp_path,
+        "parent.py",
+        "import os, subprocess, sys, time\n"
+        "grandchild = subprocess.Popen([sys.executable, sys.argv[1]])\n"
+        "print(f'pids {os.getpid()} {grandchild.pid}', flush=True)\n"
+        "time.sleep(120)\n",
+    )
+    process = await procs.spawn(
+        shell.shell_argv(SHELL, _python(parent, str(child))),
+        cwd=str(tmp_path),
+        env=dict(os.environ),
+        stdout=procs.OutputBuffer(1000, lambda: None),
+        stderr=procs.OutputBuffer(1000, lambda: None),
+    )
+    job = process._job
+    try:
+        for _ in range(300):
+            if "pids" in process.stdout.read_from(0)[0]:
+                break
+            await asyncio.sleep(0.1)
+        python_pid, grandchild_pid = (
+            int(part) for part in process.stdout.read_from(0)[0].split()[1:3]
+        )
+        # As if the job object could not be used and no thread were left for
+        # the fallback either.
+        process._job = None
+        start = threading.Thread.start
+
+        def no_thread_for_taskkill(self: threading.Thread) -> None:
+            if self.name == "nekoclaw-taskkill":
+                raise RuntimeError("can't start new thread")
+            start(self)
+
+        monkeypatch.setattr(threading.Thread, "start", no_thread_for_taskkill)
+        assert process.kill() is True
+        await asyncio.wait_for(process.wait(), 30)
+        assert await _wait_gone(python_pid)
+        assert await _wait_gone(grandchild_pid)
+    finally:
+        process._job = job
+        if job is not None:
+            job.terminate()
+            job.close()
 
 
 def test_output_buffer_keeps_a_tail_and_spills_everything(tmp_path: Path) -> None:

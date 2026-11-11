@@ -260,8 +260,11 @@ class _WindowsJob:
                 self._handle = None
 
 
-def _taskkill_tree(pid: int) -> None:
-    """Fallback tree termination for a process that is in no job of ours."""
+def _taskkill_tree(pid: int) -> bool:
+    """Fallback tree termination for a process that is in no job of ours.
+
+    Returns False when ``taskkill`` could not be run at all.
+    """
     try:
         subprocess.run(
             ["taskkill", "/PID", str(pid), "/T", "/F"],
@@ -273,7 +276,20 @@ def _taskkill_tree(pid: int) -> None:
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
-        pass
+        return False
+    return True
+
+
+def _start_thread_or(thread: threading.Thread, otherwise: Callable[[], object]) -> None:
+    """Start ``thread``; when no thread can be started, do its work with ``otherwise``.
+
+    Starting a thread fails when the process is out of them. A kill must not
+    be lost to that, so the caller names what to do on the spot instead.
+    """
+    try:
+        thread.start()
+    except RuntimeError:
+        otherwise()
 
 
 # ---------------------------------------------------------------------------
@@ -388,15 +404,26 @@ class ShellProcess:
             self._kill_requested = True
         if sys.platform == "win32":
             if self._job is None or not self._job.terminate():
-                threading.Thread(
+                worker = threading.Thread(
                     target=_taskkill_tree, args=(self.pid,), name="nekoclaw-taskkill", daemon=True
-                ).start()
+                )
+                # Without a thread the tree is killed from here. That blocks
+                # for a moment, which beats leaving the tree running.
+                _start_thread_or(worker, self._taskkill_here)
             return True
         self._signal_group(signal.SIGTERM)
         escalate = threading.Timer(KILL_GRACE_SECONDS, self._signal_group, args=(signal.SIGKILL,))
         escalate.daemon = True
-        escalate.start()
+        # Without a thread there is nothing to escalate later, and a group
+        # that ignores SIGTERM must not be left running: kill it now.
+        _start_thread_or(escalate, lambda: self._signal_group(signal.SIGKILL))
         return True
+
+    def _taskkill_here(self) -> None:
+        if not _taskkill_tree(self.pid):
+            # Nothing was sent. Let a later call try again.
+            with self._kill_lock:
+                self._kill_requested = False
 
     def _signal_group(self, signum: int) -> None:
         if self.returncode is not None and signum != signal.SIGKILL:
