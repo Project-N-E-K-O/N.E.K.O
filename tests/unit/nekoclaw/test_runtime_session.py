@@ -360,6 +360,44 @@ async def test_a_failed_transcript_write_is_retried_and_leaves_no_dangling_paren
     SessionState.from_entries(saved)
 
 
+async def test_failing_to_look_at_the_file_does_not_lead_to_a_second_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(session_module, "APPEND_RETRY_DELAYS", (0.01, 0.01))
+    path = tmp_path / "transcript.jsonl"
+    recorder = SessionRecorder(path)
+    assert await recorder.read_all() == []
+    append = recorder._storage.append
+    last_entry_id = recorder._storage.last_entry_id
+    troubles = {"sync": 1, "look": 1}
+
+    async def synced_late(entry: CustomEntry) -> None:
+        await append(entry)
+        if troubles["sync"]:
+            troubles["sync"] -= 1
+            raise OSError("could not sync")
+
+    def unreadable_once() -> str | None:
+        if troubles["look"]:
+            troubles["look"] -= 1
+            raise OSError("temporary read error")
+        return last_entry_id()
+
+    monkeypatch.setattr(recorder._storage, "append", synced_late)
+    monkeypatch.setattr(recorder._storage, "last_entry_id", unreadable_once)
+    recorder.link(CustomEntry(namespace="test", data={"label": "only"}))
+    recorder.link(CustomEntry(namespace="test", data={"label": "next"}))
+    await recorder.close()
+
+    saved = await SessionRecorder(path).read_all()
+    # The first attempt put the entry in the file and then failed. The second
+    # could not look at the file. The third looked, found the entry there and
+    # did not write it again.
+    assert troubles == {"sync": 0, "look": 0}
+    assert [entry.data["label"] for entry in saved] == ["only", "next"]
+    SessionState.from_entries(saved)
+
+
 async def test_an_abort_right_after_prompt_stops_the_run_before_it_starts(tmp_path: Path) -> None:
     llm = ScriptedLLM([[say("second answer"), finish()]])
     session, events = await open_session(make_spec(tmp_path), llm)

@@ -250,8 +250,11 @@ class SessionRecorder:
         later step (syncing it to disk) failed.
         """
         self._storage.drop_torn_tail()
+        saved = self._storage.last_entry_id() == entry.id
+        # Cleared only now: had either step failed, the next attempt must look
+        # again instead of writing the entry a second time unseen.
         self._check_tail = False
-        return self._storage.last_entry_id() == entry.id
+        return saved
 
     def _append_blocking(self, entry: SessionEntry) -> None:
         # After a failed write the entry may be in the file already; writing

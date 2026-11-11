@@ -475,10 +475,13 @@ def _search_file(
                     raise _slow_pattern("grep", budget) from exc
                 if found is None:
                     continue
+                # The budget is in bytes: the line as read, not its character count.
+                size = len(raw)
                 if not valid:
                     line = "(line is not valid UTF-8)"
+                    size = len(line)
                 out.append(GrepMatch(shown, number, line))
-                added += len(line) + _MATCH_LABEL_BYTES
+                added += size + _MATCH_LABEL_BYTES
                 if added > SEARCH_RAW_OUTPUT_MAX_BYTES or len(out) > SEARCH_MAX_MATCHES:
                     raise _too_much_output()
     except OSError:

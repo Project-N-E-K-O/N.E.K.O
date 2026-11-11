@@ -343,6 +343,16 @@ def test_the_budget_and_the_output_cap_apply_inside_one_file(
     with pytest.raises(ToolError, match="more output than can be processed"):
         grep_blank_lines()
 
+    # The budget counts bytes, not characters. Fifteen lines of ten three-byte
+    # characters plus " needle": 495 by characters, 795 by bytes, limit 600.
+    wide = tmp_path / "wide.txt"
+    wide.write_text((chr(0x732B) * 10 + " needle\n") * 15, encoding="utf-8")
+    monkeypatch.setattr(search, "SEARCH_RAW_OUTPUT_MAX_BYTES", 600)
+    with pytest.raises(ToolError, match="more output than can be processed"):
+        search.grep_files(
+            wide, regex.compile("needle"), None, tmp_path, _budget(), case_insensitive_globs=False
+        )
+
 
 def test_spill_files_are_never_reused_after_a_restart(tmp_path: Path) -> None:
     first = SpillStore(tmp_path / "out")
