@@ -69,6 +69,24 @@ async def test_lines_arriving_from_another_device_are_copied_aside_once(devices,
     assert not (tmp_path / 'phone' / 'received').exists()
 
 
+@pytest.mark.asyncio
+async def test_arrivals_are_copied_aside_before_the_projection_is_applied(devices, tmp_path):  # noqa: F811
+    """Once applied the lines look local, so a crash in between must not lose them for extraction."""
+    server = Server()
+    phone = devices('phone', [row('human', 'said on the phone', recent_memory_id=A)])
+    desktop = devices('desktop', [])
+    desktop[0].received_directory = lambda uid: tmp_path / 'received' / uid
+    await phone[0].sync(DOMAIN, 'Role', server.request, commit)
+    # The projection cannot be applied this time; the arrival is kept all the same.
+    result = await desktop[0].sync(DOMAIN, 'Role', server.request, commit, can_apply=False)
+    assert result['hasMore']
+    waiting = received_messages.batches(tmp_path / 'received' / UID)
+    assert [[entry['id'] for entry in batch['entries']] for batch in waiting] == [[A]]
+    # Offered again on the next sync, it is neither kept twice nor lost.
+    await desktop[0].sync(DOMAIN, 'Role', server.request, commit)
+    assert [[entry['id'] for entry in batch['entries']] for batch in received_messages.batches(tmp_path / 'received' / UID)] == [[A]]
+
+
 @pytest.fixture
 def extractor(tmp_path, monkeypatch):
     from app.memory_server import received_extraction

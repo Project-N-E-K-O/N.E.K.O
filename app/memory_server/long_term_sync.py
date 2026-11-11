@@ -284,15 +284,19 @@ def _capture(name, force, expected_uid=None, require_consumed=False):
                     # The dropped snapshot may still be in flight, so it stays recognizable.
                     adapter.write_local(binding, epoch, base=base, pending=None,
                                         sent=[pending, *local['sent']] if pending else local['sent'])
+                adapter.owed_path(uid).unlink(missing_ok=True)
                 return False
             if (not force and pending is not None and pending['baseRevision'] == revision
                     and same_content(pending['document'], document)):
                 # The frozen operation keeps retrying with identical bytes.
+                adapter.owed_path(uid).unlink(missing_ok=True)
                 return False
             # The replaced snapshot may be on its way to the server right now; it is kept
             # so that its acceptance, or its return as the next revision, is recognized.
             adapter.write_local(binding, epoch, base=base, sent=[pending, *local['sent']] if pending else local['sent'],
                                 pending={'operationId': uuid4().hex, 'baseRevision': revision, 'document': document})
+            # Everything saved so far is in a snapshot (or needs none), so nothing is owed.
+            adapter.owed_path(uid).unlink(missing_ok=True)
         except OSError as error:
             raise ValueError('long_term_memory_save_failed') from error
     changed()
@@ -405,7 +409,19 @@ def queue_capture(name, *, force=False):
 
 def queue_capture_after_extraction(name):
     """Publish what extraction just saved, once the burst of windows settles."""
-    if name in _extraction_captures or _uid(name) is None:
+    uid = _uid(name)
+    if uid is None:
+        return
+    try:
+        # The facts and progress are on disk but their snapshot is a minute away. The
+        # mark outlives a shutdown in that minute, so the capture is made after restart
+        # instead of leaving other devices to extract the same messages again.
+        owed = DesktopLongTermAdapter(runtime._config_manager).owed_path(uid)
+        owed.parent.mkdir(parents=True, exist_ok=True)
+        owed.touch()
+    except OSError:
+        logger.debug(f'[LongTermSync] {name}: capture mark not saved')
+    if name in _extraction_captures:
         return
 
     async def run():
@@ -542,7 +558,10 @@ def _capture_owed(name):
     binding = _binding(uid) if writer is not None and uid is not None else None
     if binding is None:
         return False
-    local = DesktopLongTermAdapter(runtime._config_manager).read_local(binding, writer.epoch())
+    adapter = DesktopLongTermAdapter(runtime._config_manager)
+    if adapter.owed_path(uid).exists():
+        return True
+    local = adapter.read_local(binding, writer.epoch())
     return bool(local and local['republish'])
 
 

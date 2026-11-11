@@ -141,13 +141,15 @@ class RecentMemorySync:
             response = await request('GET', path, None)
         remote = snapshot(response, domain.owner_id, domain.character_uid)
         private = [(index, row) for index, row in enumerate(local['entries']) if row['id'] in state['excluded']]
-        applied = await commit(self.apply, key, name, remote, local["fingerprint"], private, state['excluded'], can_apply)
-        if applied and self.received_directory is not None:
-            # The projection keeps only the last few lines, so what just arrived from
-            # another device is copied aside for fact extraction on this one.
+        if self.received_directory is not None:
+            # The projection keeps only the last few lines, so what arrives from another
+            # device is copied aside for fact extraction on this one. It is copied before
+            # the projection is applied: once applied, these lines look like ones this
+            # device always had, so a crash in between would lose them for extraction.
             known = {row['id'] for row in local['entries']} | set(state['excluded'])
             arrived = [row for row in remote['entries'] if row['id'] not in known]
             if arrived:
                 await commit(self._keep_received, domain.character_uid, arrived)
+        applied = await commit(self.apply, key, name, remote, local["fingerprint"], private, state['excluded'], can_apply)
         return {"uploaded": uploaded, "deletions": removed, "pullPages": 1, "hasMore": not applied,
                 "changed": bool(applied and projected != preserve_expired([row for row in remote['entries'] if row['id'] not in state['excluded']], projected, set(remote.get('expiredIds', []))))}

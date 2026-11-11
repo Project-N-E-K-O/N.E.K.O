@@ -3394,3 +3394,33 @@ async def test_a_merge_that_changed_nothing_here_owes_no_upload(owner):
     await server.exchange(owner)
     assert await owner.native.consume(UID)
     assert local_state(owner)['republish'] is False and await owner.native.resume_owed_capture('Neko') is False
+
+
+
+@pytest.mark.asyncio
+async def test_a_capture_owed_after_extraction_survives_a_restart(owner, monkeypatch):
+    """Facts and progress were saved, and the process stopped before the delayed capture ran."""
+    spawned = []
+
+    def spawn(coroutine):
+        coroutine.close()
+        spawned.append(coroutine)
+        return asyncio.get_running_loop().create_future()
+    monkeypatch.setattr(owner.native.runtime, '_spawn_background_task', spawn, raising=False)
+    monkeypatch.setattr(owner.native, '_track_character_post_turn_task', lambda name, task: task)
+    monkeypatch.setattr(owner.native, '_extraction_captures', {})
+    atomic_write_json(owner.directory / 'facts.json', [native_fact('mine', 'extracted just now')])
+    assert await owner.native.resume_owed_capture('Neko') is False
+    owner.native.queue_capture_after_extraction('Neko')
+    assert len(spawned) == 1 and owner.adapter.owed_path(UID).exists()
+    # After a restart nothing in memory remembers the delayed capture; the mark does.
+    monkeypatch.setattr(owner.native, '_extraction_captures', {})
+    queued = []
+    monkeypatch.setattr(owner.native, 'queue_capture', queued.append)
+    assert await owner.native.resume_owed_capture('Neko') is True and queued == ['Neko']
+    assert owner.native._capture('Neko', False)
+    assert not owner.adapter.owed_path(UID).exists()
+    assert await owner.native.resume_owed_capture('Neko') is False
+    # A capture that finds nothing to upload settles the mark as well.
+    owner.adapter.owed_path(UID).touch()
+    assert not owner.native._capture('Neko', False) and not owner.adapter.owed_path(UID).exists()

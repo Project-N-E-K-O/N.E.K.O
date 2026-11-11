@@ -1023,6 +1023,10 @@ class DesktopLongTermAdapter:
     def _checked_path(self, uid):
         return self.directory / f'{uid}.checked.json'
 
+    def owed_path(self, uid):
+        """Present while saved memory changes still wait for a snapshot to be captured."""
+        return self.directory / f'{uid}.capture-owed'
+
     def mark_checked(self, uid, at):
         """Record that this device held the newest published snapshot at this moment of its own clock."""
         from utils.file_utils import atomic_write_json
@@ -1177,6 +1181,7 @@ class DesktopLongTermAdapter:
     def forget(self, uid):
         """Drop the confirmed base and inbox of a role whose cloud copy was retired."""
         for path in [self.incoming_path(uid), self.directory / f'{uid}.organizer.json', self._checked_path(uid),
+                     self.owed_path(uid),
                      *self.directory.glob(f'{uid}-*.json'), *self.directory.glob(f'{uid}.expired-*.json')]:
             path.unlink(missing_ok=True)
             self._cache.pop(path, None)

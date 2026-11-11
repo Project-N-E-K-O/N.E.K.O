@@ -20,9 +20,13 @@ def keep_arrivals(directory, entries, received_at):
     from utils.file_utils import atomic_write_json
     rows = [{'id': row['id'], 'role': row['role'], 'text': row['text'], 'originalTime': row.get('originalTime')}
             for row in entries if row.get('role') in ('user', 'assistant') and isinstance(row.get('text'), str) and row['text'].strip()]
+    directory = Path(directory)
+    # A projection that could not be applied yet is offered again on the next
+    # sync; lines already waiting here are not kept a second time.
+    waiting = {entry['id'] for batch in batches(directory) for entry in batch['entries']}
+    rows = [row for row in rows if row['id'] not in waiting]
     if not rows:
         return False
-    directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     atomic_write_json(directory / f'{int(received_at):015d}-{uuid4().hex[:12]}.json',
                       {'receivedAt': int(received_at), 'entries': rows}, ensure_ascii=False)
