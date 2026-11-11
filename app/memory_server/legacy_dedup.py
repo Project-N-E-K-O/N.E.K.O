@@ -164,7 +164,7 @@ async def _archive_folded(name, folded, fingerprints):
     def survivor_unchanged(survivor):
         return survivor not in live or legacy_dedup.fingerprint(live[survivor]) == fingerprints.get(survivor)
 
-    live_specs = {loser: {'reason': 'legacy_dedup', 'superseded_by': survivor}
+    live_specs = {loser: {'reason': legacy_dedup.ARCHIVE_REASON, 'superseded_by': survivor}
                   for loser, survivor in folded.items()
                   if loser in live and legacy_dedup.fingerprint(live[loser]) == fingerprints.get(loser)
                   and survivor_unchanged(survivor)}
@@ -196,7 +196,7 @@ async def _archive_folded(name, folded, fingerprints):
                             and legacy_dedup.fingerprint(row) == fingerprints.get(row['id'])
                             and survivor in current and legacy_dedup.fingerprint(current[survivor]) == fingerprints.get(survivor)):
                         # Archived by age, never arbitrated: it now also says what replaced it.
-                        row.update(arbitration_archived_at=now, arbitration_reason='legacy_dedup',
+                        row.update(arbitration_archived_at=now, arbitration_reason=legacy_dedup.ARCHIVE_REASON,
                                    superseded_by=remaining[row['id']])
                         changed = True
                 if changed:
@@ -300,7 +300,8 @@ async def run(name, *, still_idle=lambda: True):
     # Only what the archive now records as folded is repointed and reported: a fact
     # that changed in the last moment was skipped and stays as it is.
     mapping = {loser: survivor for loser, survivor in mapping.items()
-               if archive.get(loser, {}).get('arbitration_archived_at') and archive[loser].get('superseded_by') == survivor}
+               if archive.get(loser, {}).get('arbitration_archived_at') and archive[loser].get('superseded_by') == survivor
+               and archive[loser].get('arbitration_reason') == legacy_dedup.ARCHIVE_REASON}
     reflections_changed, persona_changed = await _repoint(name, mapping) if mapping else (0, 0)
     live = {row.get('id'): row for row in await runtime.fact_store.aload_facts(name) if isinstance(row, dict)}
     # A survivor stands for what it replaced: absorbed then, absorbed now.

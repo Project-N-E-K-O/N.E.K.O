@@ -27,6 +27,8 @@ MAINTENANCE_KEY = 'legacyDedup'
 # the model turn the extra pairs down.
 NOMINATE_COSINE = 0.80
 MARKER = 'legacy_dedup.json'
+# arbitration_reason on what this cleanup archives.
+ARCHIVE_REASON = 'legacy_dedup'
 BACKUP_DIR = 'backups'
 BACKUP_PREFIX = 'legacy-dedup-'
 # Fact id lists that say which facts a reflection or persona entry rests on.
@@ -106,8 +108,10 @@ def still_valid(folded, pairs, rows, archive):
     seen = {}
     for pair in pairs:
         seen.update(pair.get('fingerprints') or {})
+    # Only this cleanup's own archiving counts as done by it; everyday dedup may have
+    # folded the same fact meanwhile, and that is not this run's to record or restore.
     applied = {row.get('id'): row.get('superseded_by') for row in archive
-               if isinstance(row, dict) and row.get('arbitration_archived_at')}
+               if isinstance(row, dict) and row.get('arbitration_archived_at') and row.get('arbitration_reason') == ARCHIVE_REASON}
 
     final = survivors(folded)
 
@@ -124,7 +128,9 @@ def still_valid(folded, pairs, rows, archive):
         # restorable) whatever its survivor has become since.
         return rows.get(loser) is None and loser in folded and applied.get(loser) in (folded[loser], final.get(loser))
 
-    return {loser: survivor for loser, survivor in folded.items()
+    # An executed fold keeps the target the archive recorded, not one recomputed from
+    # a chain that has since lost a link.
+    return {loser: (applied[loser] if executed(loser) else survivor) for loser, survivor in folded.items()
             if executed(loser) or (unchanged(loser) and unchanged(survivor))}
 
 

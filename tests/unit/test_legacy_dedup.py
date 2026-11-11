@@ -603,3 +603,23 @@ async def test_an_aged_fold_waits_when_its_survivor_changed_under_the_lock(memor
         _fact('dup', '博士是一名主播，会日常直播', created='2026-06-12T22:00:00', absorbed=True))})
     archive = {row['id']: row for row in json.loads((directory / 'facts_archive.json').read_text(encoding='utf-8'))}
     assert 'arbitration_archived_at' not in archive['dup']
+
+
+def test_a_fold_everyday_dedup_made_is_not_taken_for_this_run():
+    pair = {'candidate': 'b', 'existing': 'a', 'fingerprints': {'b': 'x', 'a': legacy_dedup.fingerprint({'text': 'A'})}}
+    rows = {'a': {'id': 'a', 'text': 'A'}}
+    # b was folded into a by everyday dedup, not by this cleanup.
+    archive = [{'id': 'b', 'arbitration_archived_at': 't', 'superseded_by': 'a', 'arbitration_reason': 'fact_dedup_merge'}]
+    assert legacy_dedup.still_valid({'b': 'a'}, [pair], rows, archive) == {}
+    archive[0]['arbitration_reason'] = legacy_dedup.ARCHIVE_REASON
+    assert legacy_dedup.still_valid({'b': 'a'}, [pair], rows, archive) == {'b': 'a'}
+
+
+def test_an_executed_fold_keeps_the_target_the_archive_recorded():
+    # b → a → c was decided; b was archived pointing at c, then a changed before the run finished.
+    pairs = [{'candidate': 'b', 'existing': 'a', 'fingerprints': {'b': 'fb', 'a': 'fa'}},
+             {'candidate': 'a', 'existing': 'c', 'fingerprints': {'a': 'fa', 'c': legacy_dedup.fingerprint({'text': 'C'})}}]
+    rows = {'a': {'id': 'a', 'text': 'A changed'}, 'c': {'id': 'c', 'text': 'C'}}
+    archive = [{'id': 'b', 'arbitration_archived_at': 't', 'superseded_by': 'c', 'arbitration_reason': legacy_dedup.ARCHIVE_REASON}]
+    valid = legacy_dedup.still_valid({'b': 'a', 'a': 'c'}, pairs, rows, archive)
+    assert valid == {'b': 'c'} and legacy_dedup.survivors(valid) == {'b': 'c'}
