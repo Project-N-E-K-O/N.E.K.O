@@ -291,6 +291,7 @@ def _capture(name, force, expected_uid=None, require_consumed=False):
                 # The frozen operation keeps retrying with identical bytes.
                 adapter.owed_path(uid).unlink(missing_ok=True)
                 return False
+            document = _renewed_with(name, document, base, _device_id(writer), completed)
             # The replaced snapshot may be on its way to the server right now; it is kept
             # so that its acceptance, or its return as the next revision, is recognized.
             adapter.write_local(binding, epoch, base=base, sent=[pending, *local['sent']] if pending else local['sent'],
@@ -301,6 +302,27 @@ def _capture(name, force, expected_uid=None, require_consumed=False):
             raise ValueError('long_term_memory_save_failed') from error
     changed()
     return True
+
+
+def _renewed_with(name, document, base, device, now):
+    """Let a snapshot the holder publishes anyway renew its claim.
+
+    Other devices then see the holder alive without a publish made only for
+    that, and the hourly renewal is left for a holder with nothing else to say.
+    """
+    held = base['document'].get('organizer') if base and base['document'] else None
+    if not held or held['deviceId'] != device or document.get('organizer') != held:
+        # Not the confirmed holder, or a claim, rank change or release is already staged.
+        return document
+    path = Path(runtime._config_manager.memory_dir) / name / 'long_term_portable.json'
+    with runtime.fact_store._get_lock(name):
+        state = json.loads(path.read_text(encoding='utf-8'))
+        if state.get('organizer') != held:
+            return document
+        renewed = {**held, 'renewedAt': max(now, held['renewedAt'] + 1)}
+        assert_cloudsave_writable(runtime._config_manager, operation='sync', target=f'memory/{name}/long_term_portable.json')
+        atomic_write_json(path, {**state, 'organizer': renewed}, ensure_ascii=False, indent=2)
+    return {**document, 'organizer': renewed}
 
 
 def _unpublished(document, base):

@@ -92,16 +92,30 @@ def extractor(tmp_path, monkeypatch):
     from app.memory_server import received_extraction
     directory = tmp_path / 'received' / UID
     state = SimpleNamespace(now=10_000_000, checked=None, progress={'a': [], 'b': []}, extracted=[], captures=[],
-                            directory=directory, module=received_extraction)
+                            both=[], pools=[], known=[], directory=directory, module=received_extraction)
 
     async def extract_facts(messages, name, *, fail_closed):
         assert fail_closed
         state.extracted.append([message.content for message in messages])
         if isinstance(state.failure, Exception):
             raise state.failure
+        # As the real store does: what a pass read is recorded with what it saved.
+        state.progress = {**state.progress, 'a': state.progress['a'] + extraction_progress.identities(messages)}
         return []
-    state.failure = None
-    store = SimpleNamespace(aextraction_progress=AsyncMock(side_effect=lambda name: state.progress), extract_facts=extract_facts)
+
+    async def extract_with_known_pool(name, messages, known_pool, *, conversation_at):
+        state.both.append([(message.type, message.content) for message in messages])
+        state.pools.append(([fact['id'] for fact in known_pool], conversation_at))
+        if state.both_failure is not None:
+            if isinstance(state.both_failure, Exception):
+                raise state.both_failure
+            return None
+        state.progress = {**state.progress, 'b': state.progress['b'] + extraction_progress.identities(messages)}
+        return []
+    state.failure = state.both_failure = None
+    store = SimpleNamespace(aextraction_progress=AsyncMock(side_effect=lambda name: state.progress), extract_facts=extract_facts,
+                            aextract_facts_with_known_pool=extract_with_known_pool,
+                            aload_facts=AsyncMock(side_effect=lambda name: state.known))
     monkeypatch.setattr(received_extraction.runtime, 'fact_store', store)
     monkeypatch.setattr(received_extraction.runtime, '_config_manager', SimpleNamespace(app_docs_dir=tmp_path))
     monkeypatch.setattr(received_extraction, 'DesktopLongTermAdapter',
@@ -124,8 +138,10 @@ async def test_the_device_that_said_a_line_keeps_the_first_turn(extractor):
     assert extractor.extracted == [] and len(received_messages.batches(extractor.directory)) == 1
     extractor.now += 1
     assert await extractor.module.extract_received('Neko', UID) == 1
-    # Only what the user said goes through the user pass; the batch is then done.
-    assert extractor.extracted == [['I moved to Kyoto']] and extractor.captures == ['Neko']
+    # Only what the user said goes through the user pass. Her reply came after the last
+    # thing the user said, so the both-sides pass leaves it out too; the batch is then done.
+    assert extractor.extracted == [['I moved to Kyoto']] and extractor.both == [[('human', 'I moved to Kyoto')]]
+    assert extractor.captures == ['Neko']
     assert received_messages.batches(extractor.directory) == []
 
 
@@ -151,16 +167,16 @@ async def test_lines_the_other_device_already_read_are_not_sent_to_the_model(ext
     received_messages.keep_arrivals(extractor.directory, [line(A, 'I moved to Kyoto'), line(B, 'I have a cat')], extractor.now)
     extractor.now += delay
     extractor.checked = extractor.now
-    extractor.progress = {'a': [A], 'b': []}
+    extractor.progress = {'a': [A], 'b': [A]}
     assert await extractor.module.extract_received('Neko', UID) == 1
-    assert extractor.extracted == [['I have a cat']]
+    assert extractor.extracted == [['I have a cat']] and extractor.both == [[('human', 'I have a cat')]]
     received_messages.keep_arrivals(extractor.directory, [line(C, 'I like tea')], extractor.now)
     extractor.now += delay
     extractor.checked = extractor.now
-    extractor.progress = {'a': [A, B, C], 'b': []}
+    extractor.progress = {'a': [A, B, C], 'b': [A, B, C]}
     assert await extractor.module.extract_received('Neko', UID) == 0
     # Fully read elsewhere: no model call, nothing to publish, and the batch is still cleared.
-    assert extractor.extracted == [['I have a cat']] and extractor.captures == ['Neko']
+    assert extractor.extracted == [['I have a cat']] and len(extractor.both) == 1 and extractor.captures == ['Neko']
     assert received_messages.batches(extractor.directory) == []
 
 
@@ -235,3 +251,83 @@ def test_the_newest_snapshot_mark_is_refused_while_a_downloaded_revision_waits(t
     adapter.incoming_path(UID).unlink()
     monkeypatch.setattr(long_term_sync, '_binding', lambda uid: None)
     assert received_extraction._snapshot_checked_at(UID) is None
+
+
+@pytest.mark.asyncio
+async def test_what_she_said_between_two_user_lines_is_read_by_the_both_sides_pass(extractor):
+    from datetime import datetime
+    delay = FIFTEEN_MINUTES
+    said = 1_700_000_000_000
+    received_messages.keep_arrivals(extractor.directory, [
+        line('1' * 32, 'opening remark nobody answered', 'assistant', str(said - 1000)),
+        line(A, 'I moved to Kyoto', original_time=str(said)),
+        line(B, 'I once lived in Nara myself', 'assistant', str(said + 1000)),
+        line(C, 'really?', original_time=str(said + 2000)),
+        line('2' * 32, 'closing remark nobody answered', 'assistant', str(said + 3000))], extractor.now)
+    before, after = datetime.fromtimestamp((said - 1000) / 1000), datetime.fromtimestamp((said + 3000) / 1000)
+    extractor.known = [
+        {'id': 'older', 'created_at': datetime.fromtimestamp(said / 1000 - 3600).isoformat(), 'importance': 9},
+        {'id': 'low', 'created_at': before.isoformat(), 'importance': 2},
+        {'id': 'high', 'created_at': after.isoformat(), 'importance': 8},
+        {'id': 'group', 'created_at': after.isoformat(), 'importance': 9, 'scope': 'group:g1', 'subject_kind': 'group_chat',
+         'subject_id': 'g1'}]
+    extractor.now += delay
+    extractor.checked = extractor.now
+    # Three lines went to the model: two through both passes, her middle one through the second only.
+    assert await extractor.module.extract_received('Neko', UID) == 3
+    assert extractor.extracted == [['I moved to Kyoto', 'really?']]
+    assert extractor.both == [[('human', 'I moved to Kyoto'), ('ai', 'I once lived in Nara myself'), ('human', 'really?')]]
+    # Known facts: private ones written since the first of these lines was said, most important
+    # first; the conversation is dated by its last line, not by when it arrived here.
+    assert extractor.pools == [(['high', 'low'], after)]
+    assert received_messages.batches(extractor.directory) == [] and extractor.captures == ['Neko']
+
+
+@pytest.mark.asyncio
+async def test_a_both_sides_pass_another_device_already_ran_is_not_run_again(extractor):
+    delay = FIFTEEN_MINUTES
+    received_messages.keep_arrivals(extractor.directory, [
+        line(A, 'I moved to Kyoto'), line(B, 'noted', 'assistant'), line(C, 'yes')], extractor.now)
+    extractor.now += delay
+    extractor.checked = extractor.now
+    extractor.progress = {'a': [A, C], 'b': [A, B, C]}
+    assert await extractor.module.extract_received('Neko', UID) == 0
+    assert extractor.extracted == [] and extractor.both == [] and extractor.captures == []
+    assert received_messages.batches(extractor.directory) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('unavailable', [False, True])
+async def test_a_failing_both_sides_pass_keeps_the_batch_without_repeating_the_user_pass(extractor, unavailable):
+    from memory.long_term_sync import FactEvidenceUnavailable
+    delay = FIFTEEN_MINUTES
+    received_messages.keep_arrivals(extractor.directory, [line(A, 'I moved to Kyoto')], extractor.now)
+    extractor.now += delay
+    extractor.checked = extractor.now
+    extractor.both_failure = FactEvidenceUnavailable('synthetic') if unavailable else 'the model call failed'
+    assert await extractor.module.extract_received('Neko', UID) == 0
+    # What the user pass saved is published; the batch waits for the other pass.
+    assert extractor.captures == ['Neko'] and len(received_messages.batches(extractor.directory)) == 1
+    for attempt in range(extractor.module.MAX_FAILURES - 2):
+        assert await extractor.module.extract_received('Neko', UID) == 0
+    assert len(extractor.extracted) == 1 and len(extractor.both) == extractor.module.MAX_FAILURES - 1
+    assert len(received_messages.batches(extractor.directory)) == 1
+    # Given up after the same number of tries as the user pass, so later arrivals are not blocked.
+    await extractor.module.extract_received('Neko', UID)
+    assert received_messages.batches(extractor.directory) == [] and extractor.captures == ['Neko']
+    received_messages.keep_arrivals(extractor.directory, [line(B, 'I have a cat')], extractor.now)
+    extractor.now += delay
+    extractor.checked = extractor.now
+    extractor.both_failure = None
+    assert await extractor.module.extract_received('Neko', UID) == 1
+    assert extractor.both[-1] == [('human', 'I have a cat')] and received_messages.batches(extractor.directory) == []
+
+
+def test_a_line_without_a_usable_time_counts_as_said_when_it_arrived():
+    from datetime import datetime
+    from app.memory_server.received_extraction import _said_between
+    arrived = 1_700_000_500_000
+    assert _said_between([line(A, 'x', original_time=None), line(B, 'y', original_time='not a time')], arrived) == (
+        datetime.fromtimestamp(arrived / 1000),) * 2
+    assert _said_between([line(A, 'x', original_time='1700000000000'), line(B, 'y', original_time=None)], arrived) == (
+        datetime.fromtimestamp(1_700_000_000), datetime.fromtimestamp(arrived / 1000))

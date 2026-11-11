@@ -332,3 +332,36 @@ async def test_a_private_review_this_device_may_not_run_does_not_hide_her_other_
     gate[name] = True
     await refine_loops._run_introspection_tick()
     assert runs.private.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_a_snapshot_the_holder_publishes_anyway_renews_its_claim(owner, monkeypatch):  # noqa: F811
+    _synced(owner)
+    server = PublishingServer()
+    assert owner.native._tend_organizer_state('Neko', organizer.RANK_DESKTOP) is True
+    assert owner.native._capture('Neko', False)
+    await server.exchange(owner)
+    claimed = server.document['organizer']
+    # Nothing new to say: no snapshot is made just to renew before the hour is up.
+    assert not owner.native._capture('Neko', False)
+    atomic_write_json(owner.directory / 'facts.json', [native_fact('mine', 'only on this device'),
+                                                      native_fact('more', 'learned a moment later')])
+    assert owner.native._capture('Neko', False)
+    await server.exchange(owner)
+    renewed = server.document['organizer']
+    assert renewed['deviceId'] == claimed['deviceId'] and renewed['rank'] == claimed['rank']
+    assert renewed['renewedAt'] > claimed['renewedAt']
+    # The renewal is part of this device's memory, so the next capture has nothing left to upload.
+    assert json.loads((owner.directory / 'long_term_portable.json').read_text(encoding='utf-8'))['organizer'] == renewed
+    assert not owner.native._capture('Neko', False)
+    # A device that does not hold the role publishes the holder's claim untouched.
+    phone = {'deviceId': PHONE, 'renewedAt': 7, 'rank': organizer.RANK_PHONE_EVIDENCE}
+    server.publish({**server.document, 'completedAt': server.document['completedAt'] + 10, 'organizer': phone})
+    await server.exchange(owner)
+    assert await owner.native.consume(UID)
+    atomic_write_json(owner.directory / 'facts.json', [native_fact('mine', 'only on this device'),
+                                                      native_fact('more', 'learned a moment later'),
+                                                      native_fact('third', 'and one more')])
+    assert owner.native._capture('Neko', False)
+    await server.exchange(owner)
+    assert server.document['organizer'] == phone

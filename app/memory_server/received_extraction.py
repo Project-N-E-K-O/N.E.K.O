@@ -7,16 +7,18 @@ conversation still gets its facts extracted.
 """
 
 import asyncio
+from datetime import datetime
 import time
 
 from memory import received_messages
-from memory.extraction_progress import unprocessed
+from memory.extraction_progress import identities, unprocessed
 from memory.facts import FactExtractionFailed
-from memory.long_term_sync import DesktopLongTermAdapter, FactEvidenceUnavailable
+from memory.long_term_sync import DesktopLongTermAdapter, FactEvidenceUnavailable, original_source_time
 from utils.llm_client import convert_to_messages
 
 from . import runtime
 from ._shared import logger
+from .rows import _trim_to_user_msg_bracket
 
 # How long the device that said a message keeps the first turn, by this device's clock.
 RECEIVED_EXTRACTION_DELAY_MS = 15 * 60 * 1000
@@ -46,8 +48,44 @@ def _snapshot_checked_at(uid):
     return adapter.checked_at(uid)
 
 
+def _said_between(entries, received_at):
+    """When the first and last of these lines were said, as naive local time.
+
+    A line without a usable time counts as said when it arrived here.
+    """
+    times = []
+    for row in entries:
+        at = original_source_time(row.get('originalTime'))
+        times.append(at if type(at) in (int, float) else received_at)
+    try:
+        return datetime.fromtimestamp(min(times) / 1000), datetime.fromtimestamp(max(times) / 1000)
+    except (ValueError, OverflowError, OSError):
+        at = datetime.fromtimestamp(received_at / 1000)
+        return at, at
+
+
+async def _read_both_sides(name, entries, received_at):
+    """The pass that also reads what the character said. Returns the messages it read; raises when it could not."""
+    from .signal_extraction import _known_fact_pool
+
+    # Same rule as on the device that held the conversation: her lines count only
+    # between two things the user said.
+    bracket = _trim_to_user_msg_bracket(received_messages.message_dicts(entries))
+    done = set((await runtime.fact_store.aextraction_progress(name))['b'])
+    unread = unprocessed(convert_to_messages(bracket), done)
+    if not unread:
+        return []
+    first, last = _said_between(entries, received_at)
+    # Facts the user pass just wrote, here or on the other device, are named as known.
+    persisted = await runtime.fact_store.aextract_facts_with_known_pool(
+        name, unread, await _known_fact_pool(name, first), conversation_at=last)
+    if persisted is None:
+        raise FactExtractionFailed(f'both-sides pass failed for {name!r}')
+    return unread
+
+
 async def extract_received(name, uid):
-    """Run the user pass over arrivals that are due. Returns how many messages were sent to the model."""
+    """Run both extraction passes over arrivals that are due. Returns how many messages were sent to the model."""
     adapter = DesktopLongTermAdapter(runtime._config_manager)
     directory = adapter.received_directory(uid)
     pending = await asyncio.to_thread(received_messages.batches, directory)
@@ -78,26 +116,34 @@ async def extract_received(name, uid):
     done = set((await runtime.fact_store.aextraction_progress(name))['a'])
     unread = [message for message in unprocessed(messages, done) if message.type == 'human']
     paths = [batch['path'] for batch in due]
-    if unread:
-        try:
+    # The oldest batch stays the same until it is given up; a newer arrival
+    # joining the round must not restart the count.
+    key = (name, paths[0].name)
+    read, failure = set(), None
+    try:
+        if unread:
             # Stage-1 only: judging belongs to the organizer, which finds these facts unjudged.
             await runtime.fact_store.extract_facts(unread, name, fail_closed=True)
-        except (FactExtractionFailed, FactEvidenceUnavailable) as error:
-            # The oldest batch stays the same until it is given up; a newer arrival
-            # joining the round must not restart the count.
-            key = (name, paths[0].name)
-            _failures[key] = _failures.get(key, 0) + 1
-            if _failures[key] < MAX_FAILURES:
-                logger.warning(f"[ReceivedExtraction] {name}: 提取失败，保留待下轮重试: {error}")
-                return 0
-            # A window that keeps failing must not block later arrivals forever.
-            logger.warning(f"[ReceivedExtraction] {name}: 连续 {MAX_FAILURES} 次失败，放弃这批收到的消息")
-            _failures.pop(key, None)
-        else:
-            from .long_term_sync import queue_capture_after_extraction
-            queue_capture_after_extraction(name)
+            read |= set(identities(unread))
+        # Each pass records its own progress, so a retry after this one fails
+        # does not send the user pass's lines to the model again.
+        read |= set(identities(await _read_both_sides(name, entries, due[0]['receivedAt'])))
+    except (FactExtractionFailed, FactEvidenceUnavailable) as error:
+        failure = error
+    if read:
+        # What one pass saved is published even when the other failed.
+        from .long_term_sync import queue_capture_after_extraction
+        queue_capture_after_extraction(name)
+    if failure is not None:
+        _failures[key] = _failures.get(key, 0) + 1
+        if _failures[key] < MAX_FAILURES:
+            logger.warning(f"[ReceivedExtraction] {name}: 提取失败，保留待下轮重试: {failure}")
+            return 0
+        # A window that keeps failing must not block later arrivals forever.
+        logger.warning(f"[ReceivedExtraction] {name}: 连续 {MAX_FAILURES} 次失败，放弃这批收到的消息")
+    _failures.pop(key, None)
     await asyncio.to_thread(received_messages.discard, paths)
-    return len(unread)
+    return len(read)
 
 
 async def _periodic_received_extraction_loop():

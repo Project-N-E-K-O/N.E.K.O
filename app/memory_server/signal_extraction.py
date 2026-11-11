@@ -389,6 +389,66 @@ def _publish_extraction(name: str) -> None:
         logger.debug(f"[SignalLoop] {name}: 提取后排队发布失败: {e}")
 
 
+async def _known_fact_pool(name: str, since: datetime) -> list[dict]:
+    """Private facts written at or after ``since``, most important first.
+
+    What a both-sides extraction is told not to repeat. ``since`` is naive
+    local time, like ``created_at`` on the facts.
+    """
+    # Known-fact pool: use facts written by path A during / after the window read as do-not-repeat hints.
+    # Apply only ``created_at >= since``, with no upper bound (CodeRabbit on PR #1408):
+    # A's idle/polling delay means facts for the just-scanned B window commonly have created_at
+    # slightly later than last_a_msg_ts. An upper bound would exclude the newest entire
+    # A batch, making known_pool ineffective for content A just extracted, and B more
+    # likely to duplicate it. Including some later A facts is safe: known_pool
+    # only guides the LLM; extra entries may suppress a few new facts at worst, while Stage-1
+    # dedup hashes remain a safeguard. Take MAX_KNOWN_POOL_FACTS ordered by descending importance.
+    try:
+        all_facts = await runtime.fact_store.aload_facts(name)
+    except Exception as e:
+        logger.debug(f"[PathB] {name}: aload_facts 失败，known pool 留空: {e}")
+        all_facts = []
+
+    # Use safe_importance: legacy / manually edited facts.json can contain
+    # dirty importance values like "high", None, or lists. Raw int(...) would raise
+    # ValueError on every B trigger, permanently disabling path B for that
+    # character (Codex P2, round 1 on PR #1408).
+    from memory.facts import safe_importance
+    from memory.scopes import is_legacy_private_entry
+
+    known_pool: list[dict] = []
+    for f in all_facts:
+        if not isinstance(f, dict):
+            continue
+        # Path B extracts AI-aware facts for private chats; the known pool must contain only legacy
+        # private-chat facts. Scoped group/member facts would render group content in the private Stage-1
+        # prompt (cross-boundary leakage), and busy groups could fill top-N slots, suppressing
+        # private-chat fact extraction.
+        if not is_legacy_private_entry(f):
+            continue
+        created_at_raw = f.get('created_at') or ''
+        try:
+            # Parse full ISO timestamps including microseconds: created_at is written with datetime.now().isoformat().
+            # Truncating to [:19] loses microseconds and incorrectly excludes facts whose
+            # created_at == since + 0.x seconds from the >= since window (CodeRabbit on PR #1408).
+            created_at = datetime.fromisoformat(created_at_raw)
+        except (ValueError, TypeError):
+            continue
+        # Defensive handling: _apersist_new_facts writes naive datetime.now().isoformat(),
+        # but import/migration paths may write timezone-aware values
+        # (e.g. "...+00:00"). Comparing to a naive ``since`` raises TypeError, causing
+        # _run_path_b to fail forever for that character (Codex P1, round 7
+        # on PR #1408). Treat aware values as naive for comparison: in most cases
+        # they represent the same wall-clock time; timezone differences must not disable fact extraction.
+        if created_at.tzinfo is not None:
+            created_at = created_at.replace(tzinfo=None)
+        if created_at >= since:
+            known_pool.append(f)
+    known_pool.sort(key=lambda f: -safe_importance(f))
+    known_pool = known_pool[:MAX_KNOWN_POOL_FACTS]
+    return known_pool
+
+
 async def _run_path_b(name: str, state: dict) -> None:
     """Path B: AI-aware Stage-1 only (does not enter the Stage-2 evidence loop).
 
@@ -568,57 +628,7 @@ async def _run_path_b(name: str, state: dict) -> None:
         state['b_extract_failures'] = {}
         return
 
-    # Known-fact pool: use facts written by path A during / after this B window as do-not-repeat hints.
-    # Apply only ``created_at >= last_b``, with no upper bound (CodeRabbit on PR #1408):
-    # A's idle/polling delay means facts for the just-scanned B window commonly have created_at
-    # slightly later than last_a_msg_ts. An upper bound would exclude the newest entire
-    # A batch, making known_pool ineffective for content A just extracted, and B more
-    # likely to duplicate it. Including some later A facts is safe: known_pool
-    # only guides the LLM; extra entries may suppress a few new facts at worst, while Stage-1
-    # dedup hashes remain a safeguard. Take MAX_KNOWN_POOL_FACTS ordered by descending importance.
-    try:
-        all_facts = await runtime.fact_store.aload_facts(name)
-    except Exception as e:
-        logger.debug(f"[PathB] {name}: aload_facts 失败，known pool 留空: {e}")
-        all_facts = []
-
-    # Use safe_importance: legacy / manually edited facts.json can contain
-    # dirty importance values like "high", None, or lists. Raw int(...) would raise
-    # ValueError on every B trigger, permanently disabling path B for that
-    # character (Codex P2, round 1 on PR #1408).
-    from memory.facts import safe_importance
-    from memory.scopes import is_legacy_private_entry
-
-    known_pool: list[dict] = []
-    for f in all_facts:
-        if not isinstance(f, dict):
-            continue
-        # Path B extracts AI-aware facts for private chats; the known pool must contain only legacy
-        # private-chat facts. Scoped group/member facts would render group content in the private Stage-1
-        # prompt (cross-boundary leakage), and busy groups could fill top-N slots, suppressing
-        # private-chat fact extraction.
-        if not is_legacy_private_entry(f):
-            continue
-        created_at_raw = f.get('created_at') or ''
-        try:
-            # Parse full ISO timestamps including microseconds: created_at is written with datetime.now().isoformat().
-            # Truncating to [:19] loses microseconds and incorrectly excludes facts whose
-            # created_at == last_b + 0.x seconds from the >= last_b window (CodeRabbit on PR #1408).
-            created_at = datetime.fromisoformat(created_at_raw)
-        except (ValueError, TypeError):
-            continue
-        # Defensive handling: _apersist_new_facts writes naive datetime.now().isoformat(),
-        # but import/migration paths may write timezone-aware values
-        # (e.g. "...+00:00"). Comparing to naive last_b raises TypeError, causing
-        # _run_path_b to fail forever for that character (Codex P1, round 7
-        # on PR #1408). Treat aware values as naive for comparison: in most cases
-        # they represent the same wall-clock time; timezone differences must not disable fact extraction.
-        if created_at.tzinfo is not None:
-            created_at = created_at.replace(tzinfo=None)
-        if created_at >= last_b:
-            known_pool.append(f)
-    known_pool.sort(key=lambda f: -safe_importance(f))
-    known_pool = known_pool[:MAX_KNOWN_POOL_FACTS]
+    known_pool = await _known_fact_pool(name, last_b)
 
     try:
         persisted = await runtime.fact_store.aextract_facts_with_known_pool(
