@@ -96,7 +96,56 @@ class AnalyzerCaller:
         }
 
 
-CALLERS: dict[str, Any] = {AnalyzerCaller.name: AnalyzerCaller}
+class NekoclawCaller:
+    """The new path: ``nekoclaw.host.plugin_runs.PluginRunner.run_entry``."""
+
+    name = "nekoclaw"
+
+    def __init__(self, server: FakePluginServer, monkeypatch: Any) -> None:
+        from nekoclaw.host.plugin_runs import PluginCatalog, PluginRunner
+
+        del monkeypatch
+        catalog = PluginCatalog(client_factory=server.client)
+        self._runner = PluginRunner(catalog, client_factory=server.client)
+
+    async def call(
+        self,
+        plugin_id: str,
+        entry_id: str | None,
+        args: dict[str, Any] | None = None,
+        *,
+        lanlan_name: str | None = "Lan",
+        conversation_id: str | None = "conv-1",
+        latest_user_request: str = "",
+        on_progress: Any = None,
+        task_id: str = "task-1",
+    ) -> dict[str, Any]:
+        outcome = await self._runner.run_entry(
+            commission_id=task_id,
+            plugin_id=plugin_id,
+            entry_id=entry_id,
+            args=args,
+            lanlan_name=lanlan_name,
+            conversation_id=conversation_id,
+            latest_user_request=latest_user_request,
+            on_progress=on_progress,
+        )
+        return {
+            "success": outcome.success,
+            "error": outcome.error,
+            "entry_id": outcome.entry_id,
+            "run_id": outcome.run_id,
+            "run_token": outcome.run_token,
+            "expires_at": outcome.expires_at,
+            "run_status": outcome.status,
+            "run_data": outcome.data,
+            "run_error": outcome.run_error,
+            "meta": outcome.meta,
+            "message": outcome.message,
+        }
+
+
+CALLERS: dict[str, Any] = {AnalyzerCaller.name: AnalyzerCaller, NekoclawCaller.name: NekoclawCaller}
 
 
 @pytest.fixture

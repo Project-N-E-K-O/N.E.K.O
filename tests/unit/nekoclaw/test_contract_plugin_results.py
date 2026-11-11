@@ -42,8 +42,12 @@ def server(monkeypatch: Any) -> FakePluginServer:
 
 
 @pytest.fixture(params=sorted(DIRECT_ROUTE_IMPLS))
-def route(request: Any, server: FakePluginServer, monkeypatch: Any) -> Any:
-    return DIRECT_ROUTE_IMPLS[request.param](server, monkeypatch)
+async def route(request: Any, server: FakePluginServer, monkeypatch: Any, tmp_path: Any) -> Any:
+    impl = DIRECT_ROUTE_IMPLS[request.param](server, monkeypatch, tmp_path)
+    yield impl
+    close = getattr(impl, "close", None)
+    if close is not None:
+        await close()
 
 
 def _returns(envelope: dict[str, Any]) -> Any:
@@ -173,10 +177,6 @@ def test_result_contract_of_an_unknown_entry_uses_the_result_alone(route, server
 # The whole route
 # ---------------------------------------------------------------------------
 
-pytest_asyncio = pytest.mark.asyncio
-
-
-@pytest_asyncio
 async def test_success_reports_the_reply_proactively(route, server):
     server.add_plugin(_memo(), add=_returns(finish({"reply": "memo saved"})))
 
@@ -199,7 +199,6 @@ async def test_success_reports_the_reply_proactively(route, server):
     ]
 
 
-@pytest_asyncio
 async def test_llm_result_fields_pick_what_is_reported(route, server):
     server.add_plugin(
         _memo(llm_result_fields=["summary"]),
@@ -211,7 +210,6 @@ async def test_llm_result_fields_pick_what_is_reported(route, server):
     assert run.reports[0]["summary"] == "2 memos"
 
 
-@pytest_asyncio
 async def test_several_llm_result_fields_are_listed_by_name(route, server):
     server.add_plugin(
         _memo(llm_result_fields=["count", "next", "missing"]),
@@ -223,7 +221,6 @@ async def test_several_llm_result_fields_are_listed_by_name(route, server):
     assert run.reports[0]["summary"] == "count: 2, next: milk"
 
 
-@pytest_asyncio
 async def test_run_message_stands_in_when_there_is_nothing_to_extract(route, server):
     # The text used is the run's own message, which a finished run defaults to
     # "done"; the ``message`` of the finish envelope is not read here.
@@ -234,7 +231,6 @@ async def test_run_message_stands_in_when_there_is_nothing_to_extract(route, ser
     assert run.reports[0]["summary"] == "done"
 
 
-@pytest_asyncio
 async def test_last_progress_message_stands_in_when_the_plugin_reported_one(route, server):
     async def add(args: dict[str, Any]) -> dict[str, Any]:
         server.report_progress("memo", args["_ctx"]["run_id"], message="indexed 3 memos")
@@ -247,7 +243,6 @@ async def test_last_progress_message_stands_in_when_the_plugin_reported_one(rout
     assert run.reports[0]["summary"] == "indexed 3 memos"
 
 
-@pytest_asyncio
 async def test_passive_delivery_is_passed_on(route, server):
     server.add_plugin(_memo(), add=_returns(finish({"reply": "noted"}, delivery="passive")))
 
@@ -257,7 +252,6 @@ async def test_passive_delivery_is_passed_on(route, server):
     assert [report["delivery_mode"] for report in run.reports] == ["passive"]
 
 
-@pytest_asyncio
 async def test_silent_delivery_reports_nothing(route, server):
     server.add_plugin(_memo(), add=_returns(finish({"reply": "noted"}, delivery="silent")))
 
@@ -267,7 +261,6 @@ async def test_silent_delivery_reports_nothing(route, server):
     assert run.reports == []
 
 
-@pytest_asyncio
 async def test_old_reply_false_also_reports_nothing(route, server):
     server.add_plugin(_memo(), add=_returns(finish({"reply": "noted"}, reply=False)))
 
@@ -276,7 +269,6 @@ async def test_old_reply_false_also_reports_nothing(route, server):
     assert run.reports == []
 
 
-@pytest_asyncio
 async def test_event_result_keeps_its_kind_and_expiry(route, server):
     server.add_plugin(
         _memo(metadata={"result_kind": "event"}),
@@ -297,7 +289,6 @@ async def test_event_result_keeps_its_kind_and_expiry(route, server):
         {"status": "confirm_required", "reply": "confirm first"},
     ],
 )
-@pytest_asyncio
 async def test_confirmation_or_clarification_ends_blocked(route, server, data):
     server.add_plugin(
         _memo(metadata={"result_kind": "event", "expires_in_s": 30}),
@@ -315,7 +306,6 @@ async def test_confirmation_or_clarification_ends_blocked(route, server, data):
     assert (report["result_kind"], report["expires_in_s"]) == ("task_result", None)
 
 
-@pytest_asyncio
 async def test_error_status_in_the_data_ends_failed(route, server):
     server.add_plugin(_memo(), add=_returns(finish({"status": "error", "reply": "disk full"})))
 
@@ -326,7 +316,6 @@ async def test_error_status_in_the_data_ends_failed(route, server):
     assert (report["status"], report["success"], report["summary"]) == ("failed", False, "disk full")
 
 
-@pytest_asyncio
 async def test_deferred_result_stays_open_and_reports_nothing(route, server):
     server.add_plugin(
         _memo(),
@@ -339,7 +328,6 @@ async def test_deferred_result_stays_open_and_reports_nothing(route, server):
     assert run.reports == []
 
 
-@pytest_asyncio
 async def test_failed_run_reports_the_error(route, server):
     server.add_plugin(_memo(), add=_returns(failure("storage offline")))
 
@@ -354,7 +342,6 @@ async def test_failed_run_reports_the_error(route, server):
     assert report["delivery_mode"] == "proactive"
 
 
-@pytest_asyncio
 async def test_call_carries_the_users_words_in_ctx(route, server):
     server.add_plugin(_memo(), add=_returns(finish({"reply": "ok"})))
 

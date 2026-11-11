@@ -112,6 +112,15 @@ class RuntimeLimits(_Strict):
     goal_max_rounds: int = Field(default=100, ge=1)
 
 
+class GatewaySpec(_Strict):
+    """Where a session reaches the host's capability gateway (an MCP service)."""
+
+    # Endpoint on the loopback address, e.g. "http://127.0.0.1:50123/mcp".
+    url: str = Field(min_length=1)
+    # Issued by the host for this one session; sent as a bearer token.
+    token: str = Field(min_length=1, repr=False)
+
+
 class FamiliarSpec(_Strict):
     """Everything needed to create one familiar session."""
 
@@ -136,6 +145,9 @@ class FamiliarSpec(_Strict):
     disabled_tools: list[str] = Field(default_factory=list)
     # Tool name -> how many of its most recent image results stay in context.
     image_retention: dict[str, int] = Field(default_factory=dict)
+    # The host's capability gateway. Its tools are offered next to the
+    # built-in ones; without it the session has the built-in tools only.
+    gateway: GatewaySpec | None = None
 
 
 # ---------------------------------------------------------------------------

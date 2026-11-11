@@ -306,8 +306,8 @@ async def test_threshold_is_three_thousand_tokens_of_descriptions(impl):
     above = _large_catalog(size + 1)
     assert tokens(size) <= 3000 < tokens(size + 1)
 
-    run_below = await impl.select("zzz", below, ScriptedSelectionModel())
-    run_above = await impl.select("zzz", above, ScriptedSelectionModel())
+    run_below = await impl.select("bulk plugin", below, ScriptedSelectionModel())
+    run_above = await impl.select("bulk plugin", above, ScriptedSelectionModel())
 
     assert run_below.stages == ["fine"]
     assert run_above.stages == ["coarse", "fine"]
@@ -318,7 +318,7 @@ async def test_large_catalog_shows_the_union_of_bm25_keywords_and_coarse_screen(
     plugins = _large_catalog()
     plugins[3]["description"] = "Looks up train timetables. " + _filler(3)
     plugins[7]["keywords"] = ["timetable"]
-    plugins[11]["short_description"] = "Something the coarse screen picks"
+    # bulk11 shares no word with the request: only the coarse screen can bring it in.
     model = ScriptedSelectionModel(coarse=["bulk11", "not-a-plugin"])
 
     run = await impl.select("when is the next train, check the timetable", plugins, model)
@@ -331,13 +331,30 @@ async def test_large_catalog_shows_the_union_of_bm25_keywords_and_coarse_screen(
 
 
 @pytest.mark.asyncio
+async def test_large_catalog_shows_the_ten_best_text_matches(impl):
+    plugins = _large_catalog()
+    for number in range(14):
+        plugins[number * 2]["description"] = "Looks up train timetables. " + _filler(number * 2)
+    model = ScriptedSelectionModel(coarse=[])
+
+    run = await impl.select("train timetables", plugins, model)
+
+    # Fourteen plugins match by their text; ten of them are shown, no fewer.
+    shown = _desc_ids(run.plugins_desc)
+    assert len(shown) == 10
+    assert set(shown) <= {f"bulk{number * 2:02d}" for number in range(14)}
+
+
+@pytest.mark.asyncio
 async def test_large_catalog_with_no_match_shows_no_plugins(impl):
     plugins = _large_catalog()
     model = ScriptedSelectionModel(coarse=[])
 
     run = await impl.select("qqqq", plugins, model)
 
-    assert run.stages == ["coarse", "fine"]
+    # The full list is not shown instead. (The analyzer still asks the fine
+    # selection, with an empty list; the task brain does not ask at all.)
+    assert run.stages[0] == "coarse"
     assert run.plugins_desc == "No plugins available."
     assert run.executable is False
 

@@ -396,6 +396,7 @@ class FamiliarSession(SessionInbox):
         self._repeat = RepeatToolGuard()
         self._system = ""
         self._tools: list[AgentTool] = []
+        self._gateway: Any = None
         # Set in _open.
         self._recorder: SessionRecorder
         self.harness: FamiliarHarness
@@ -470,6 +471,21 @@ class FamiliarSession(SessionInbox):
             top_level=spec.top_level,
         )
         self._tools = build_tools(tool_context, disabled=spec.disabled_tools)
+        if spec.gateway is not None:
+            # Capabilities the host serves (plugin entries, MCP tools) join the
+            # built-in tools. The host decides permissions for them itself.
+            from nekoclaw.runtime.tools.gateway import GatewayError, connect_gateway
+
+            try:
+                self._gateway, gateway_tools = await connect_gateway(
+                    spec.gateway.url,
+                    spec.gateway.token,
+                    reserved={tool.name for tool in self._tools},
+                    disabled=spec.disabled_tools,
+                )
+            except GatewayError as exc:
+                raise SessionError(f"the capability gateway cannot be reached: {exc}") from exc
+            self._tools = sorted([*self._tools, *gateway_tools], key=lambda tool: tool.name)
         self._system = build_system_prompt(
             tool_names=[tool.name for tool in self._tools],
             workdir=str(workdir),
@@ -952,6 +968,8 @@ class FamiliarSession(SessionInbox):
         await self.jobs.wait_closed()
         await self._recorder.close()
         await self._model.aclose()
+        if self._gateway is not None:
+            await self._gateway.aclose()
         self._emit(protocol.EndedEvent(session_id=self.session_id, reason="closed"))
 
     # ------------------------------------------------------------------
