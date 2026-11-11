@@ -513,3 +513,23 @@ async def test_only_what_was_actually_archived_is_repointed_and_reported(memory,
     assert marker['archived'] == {}
     [reflection] = json.loads((directory / 'reflections.json').read_text(encoding='utf-8'))
     assert reflection['source_fact_ids'] == ['dup', 'yes']
+
+
+@pytest.mark.asyncio
+async def test_a_publish_is_asked_for_again_until_the_server_confirms_the_mark(memory, monkeypatch):
+    """A lost owed mark (cleared by a capture already running, or never written) heals on the next idle round."""
+    import app.memory_server.long_term_sync as lts
+    directory, facts = memory
+    await _seed(directory, facts)
+    await _run(_Model([]))
+    owed = []
+    monkeypatch.setattr(lts, 'queue_capture_after_extraction', lambda name: owed.append(name))
+    confirmed = {}
+    monkeypatch.setattr(lts, 'confirmed_maintenance', lambda name: confirmed)
+    assert await _run(_Model([])) is None and owed == [NAME]
+    assert await _run(_Model([])) is None and owed == [NAME, NAME]
+    confirmed[legacy_dedup.MAINTENANCE_KEY] = legacy_dedup.VERSION
+    assert await _run(_Model([])) is None and owed == [NAME, NAME]
+    # A character that does not sync has nothing to confirm.
+    monkeypatch.setattr(lts, 'confirmed_maintenance', lambda name: None)
+    assert await _run(_Model([])) is None and owed == [NAME, NAME]

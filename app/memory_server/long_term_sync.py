@@ -536,6 +536,21 @@ def _published_organizer(name):
     return uid, device, (base['document'].get('organizer') if base and base['document'] else None)
 
 
+def confirmed_maintenance(name):
+    """The ``maintenance`` map of the last snapshot the server confirmed, or None for a character that does not sync."""
+    writer, uid = _authority(), _uid(name)
+    if writer is None or uid is None:
+        return None
+    binding = _binding(uid)
+    if binding is None:
+        return None
+    local = DesktopLongTermAdapter(runtime._config_manager).read_local(binding, writer.epoch())
+    base = local['base'] if local else None
+    document = base['document'] if base and base['document'] else {}
+    maintenance = document.get('maintenance')
+    return dict(maintenance) if isinstance(maintenance, dict) else {}
+
+
 def organizes(name):
     """Whether this device runs organizer-only work for a character.
 
