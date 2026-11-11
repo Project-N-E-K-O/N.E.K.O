@@ -57,6 +57,9 @@ def record(directory, passage, processed):
         state = json.loads(path.read_text(encoding='utf-8'))
     except FileNotFoundError:
         state = {}
+    if state == []:
+        # An empty list is how a character without sync state has been stored.
+        state = {}
     if not isinstance(state, dict):
         raise ValueError('invalid_long_term_memory')
     progress = state.get('progress') if isinstance(state.get('progress'), dict) else {}

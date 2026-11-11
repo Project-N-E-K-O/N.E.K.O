@@ -5136,7 +5136,7 @@ class FactStore:
     async def aextract_facts_and_detect_signals(
         self, lanlan_name: str, messages: list,
         reflection_engine=None, persona_manager=None,
-        *, conversation_at: datetime | None = None,
+        *, conversation_at: datetime | None = None, judge: bool = True,
     ) -> tuple[list[dict], list[dict], list[str]]:
         """Two-stage extraction (RFC §3.4.2) with drain semantics.
 
@@ -5199,6 +5199,26 @@ class FactStore:
             lanlan_name, source_accepted, conversation_at=conversation_at,
         )
 
+        if not judge:
+            # Judging belongs to the device that organizes this character. The facts
+            # stay unjudged, travel in the snapshot that way, and are judged there.
+            return persisted_this_round, [], []
+        signals, batch_fact_ids = await self.adetect_pending_signals(
+            lanlan_name, reflection_engine=reflection_engine, persona_manager=persona_manager,
+        )
+        return persisted_this_round, signals, batch_fact_ids
+
+    async def adetect_pending_signals(
+        self, lanlan_name: str, reflection_engine=None, persona_manager=None,
+    ) -> tuple[list[dict], list[str]]:
+        """Stage-2 alone: judge facts still waiting, wherever they were extracted.
+
+        Returns ``(signals, batch_fact_ids)`` with the contract of
+        ``aextract_facts_and_detect_signals``: mark the batch processed only
+        after every signal was applied. Facts another device extracted arrive
+        unjudged in a snapshot, so the organizing device calls this without
+        needing a conversation of its own.
+        """
         # Drain all signal_processed=False facts (historical tail + current additions).
         # Old facts lacking this field default True, avoiding months of historical facts
         # reentering Stage-2 after upgrade.
@@ -5240,7 +5260,7 @@ class FactStore:
             if stray_ids:
                 await self.amark_signal_processed(lanlan_name, stray_ids)
         if not unprocessed:
-            return persisted_this_round, [], []
+            return [], []
 
         # Sort importance DESC + creation time ASC; take first N as this batch.
         # Leave excess signal_processed=False for next idle tick.
@@ -5268,21 +5288,21 @@ class FactStore:
                 f"[FactStore] {lanlan_name}: _aload_signal_targets 失败，"
                 f"跳过本轮 Stage-2（batch 保持未处理下轮重试）: {e}"
             )
-            return persisted_this_round, [], []
+            return [], []
         if not existing_observations:
             # Cold start: no confirmed reflection/persona observation targets yet.
             # Leave unmarked and retry next round (same semantics as before scope).
-            return persisted_this_round, [], []
+            return [], []
 
         signals = await self._allm_detect_signals(
             lanlan_name, batch, existing_observations,
         )
         if signals is None:
             # Stage-2 LLM failure: return no IDs; caller leaves unmarked and retries same batch next round.
-            return persisted_this_round, [], []
+            return [], []
 
         # Caller still marks only after every returned signal dispatch succeeds.
-        return persisted_this_round, signals, [
+        return signals, [
             fact['id'] for fact in batch if fact.get('id')
         ]
 
@@ -6515,6 +6535,9 @@ class FactStore:
         Returns: True when one fact was processed successfully; False when no
         candidate was found or processing failed.
         """
+        from memory import organizer
+        if not organizer.allowed(name):
+            return False
         from config.prompts.prompts_memory import MEMORY_RECHECK_FACT_PROMPT
         from memory.temporal import (
             normalize_event_when as _norm_when,

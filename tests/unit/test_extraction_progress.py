@@ -44,6 +44,8 @@ def test_each_identity_source_gives_the_name_other_devices_know_the_message_by()
 
 def test_record_keeps_order_skips_known_and_drops_the_oldest_first(tmp_path):
     assert extraction_progress.read(tmp_path) == {'a': [], 'b': []}
+    (tmp_path / extraction_progress.STATE_FILE).write_text('[]', encoding='utf-8')
+    assert extraction_progress.read(tmp_path) == {'a': [], 'b': []}
     assert extraction_progress.record(tmp_path, 'a', [A, B, A])
     assert not extraction_progress.record(tmp_path, 'a', [B])
     assert extraction_progress.record(tmp_path, 'b', [C])

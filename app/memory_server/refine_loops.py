@@ -69,6 +69,9 @@ _reflection_refine_subject_cursor: dict[
 async def _run_persona_refine_for_character(character: str) -> None:
     """Single-character persona refine pass. Embedding unavailable / all
     cluster_hash skipped / not enough candidates → the whole pass is a no-op."""
+    from memory import organizer
+    if not organizer.allowed(character):
+        return
     from config import (
         MEMORY_LIVENESS_MAX_ATTEMPTS,
         MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
@@ -190,6 +193,9 @@ async def _run_reflection_refine_for_character(
     """Single-character reflection refine pass. The cluster may mix in absorbed
     facts of the same entity as a read-only information source (facts cannot be
     split/discarded/modified; the apply layer enforces this as a backstop)."""
+    from memory import organizer
+    if not organizer.allowed(character, subject):
+        return 0
     from config import (
         MEMORY_LIVENESS_MAX_ATTEMPTS,
         MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
@@ -678,6 +684,10 @@ async def _run_introspection_for_character(character: str) -> None:
     A run cancelled midway (the process exiting, a character release) records
     nothing, so it starts over at the next idle moment.
     """
+    from memory import organizer
+    if not organizer.allowed(character):
+        # Nothing is recorded, so the review runs here once this device organizes.
+        return
     from memory.introspection import FAILURE_TRANSIENT, arun_introspection
 
     from .long_term_sync import queue_capture

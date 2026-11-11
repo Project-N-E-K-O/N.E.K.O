@@ -1320,6 +1320,11 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             if EVIDENCE_SIGNAL_CHECK_ENABLED:
                 _spawn_background_task(signal_extraction._periodic_signal_extraction_loop())
             _spawn_background_task(received_extraction._periodic_received_extraction_loop())
+            from memory import organizer
+            from . import long_term_sync
+            # Organizer-only engine work asks this before it runs.
+            organizer.set_gate(long_term_sync.organizes)
+            _spawn_background_task(long_term_sync._periodic_organizer_loop())
             _spawn_background_task(evidence_loops._periodic_archive_sweep_loop())
             # events.ndjson applied-history pruning; first round 300 s after startup.
             _spawn_background_task(evidence_loops._periodic_event_log_compact_loop())

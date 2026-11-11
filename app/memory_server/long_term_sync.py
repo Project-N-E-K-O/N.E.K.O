@@ -389,6 +389,144 @@ def queue_capture_after_extraction(name):
     _extraction_captures[name] = _track_character_post_turn_task(name, runtime._spawn_background_task(run()))
 
 
+def _now_ms():
+    return time.time_ns() // 1_000_000
+
+
+def _device_id(writer):
+    with closing(store_connection(writer.directory / 'state.sqlite3')) as conn:
+        row = conn.execute('SELECT device_id FROM sync_settings WHERE singleton=1').fetchone()
+    return row[0] if row else None
+
+
+def _published_organizer(name):
+    """(uid, device, the claim in the last confirmed snapshot), or None for a character that does not sync."""
+    writer, uid = _authority(), _uid(name)
+    if writer is None or uid is None:
+        return None
+    binding = _binding(uid)
+    device = _device_id(writer) if binding is not None else None
+    if binding is None or not device:
+        return None
+    local = DesktopLongTermAdapter(runtime._config_manager).read_local(binding, writer.epoch())
+    base = local['base'] if local else None
+    return uid, device, (base['document'].get('organizer') if base and base['document'] else None)
+
+
+def organizes(name):
+    """Whether this device runs organizer-only work for a character.
+
+    A character that does not sync, or whose sync state cannot be read, is
+    organized here as it always was: stalled memory is worse than a duplicate
+    the next merge folds together.
+    """
+    try:
+        published = _published_organizer(name)
+    except Exception:
+        return True
+    if published is None:
+        return True
+    _, device, holder = published
+    return holder is not None and holder['deviceId'] == device
+
+
+async def _organizer_rank():
+    from memory import organizer
+    from . import gates
+
+    try:
+        model = await runtime._config_manager.aget_model_api_config('summary')
+    except Exception:
+        return None
+    if not isinstance(model, dict) or not model.get('model') or not model.get('base_url'):
+        return organizer.RANK_UNABLE
+    return organizer.RANK_DESKTOP_EVIDENCE if await gates._ais_powerful_memory_enabled() else organizer.RANK_DESKTOP
+
+
+def _tend_organizer_state(name, rank):
+    """Decide what to publish about the role and stage it in the sync state. Returns whether a capture is due."""
+    from memory import organizer
+
+    published = _published_organizer(name)
+    if published is None:
+        return False
+    uid, device, holder = published
+    now = _now_ms()
+    seen_path = DesktopLongTermAdapter(runtime._config_manager).directory / f'{uid}.organizer.json'
+    try:
+        seen = json.loads(seen_path.read_text(encoding='utf-8'))
+    except (FileNotFoundError, ValueError):
+        seen = None
+    observed = organizer.observe(holder, seen if isinstance(seen, dict) else None, now)
+    if observed != seen:
+        if observed is None:
+            seen_path.unlink(missing_ok=True)
+        else:
+            atomic_write_json(seen_path, observed, ensure_ascii=False)
+    action = organizer.decide(holder, device, rank, observed, now)
+    if action == organizer.NONE:
+        return False
+    path = Path(runtime._config_manager.memory_dir) / name / 'long_term_portable.json'
+    try:
+        state = json.loads(path.read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        state = {}
+    if state == []:
+        state = {}
+    if not isinstance(state, dict):
+        raise ValueError('invalid_long_term_memory')
+    staged = state.get('organizer')
+    if action == organizer.RELEASE:
+        if staged is None:
+            return True
+        state.pop('organizer')
+    else:
+        mine = isinstance(staged, dict) and staged.get('deviceId') == device and staged.get('rank') == rank
+        if mine and (action == organizer.CLAIM or staged != holder):
+            # Already staged and waiting for the server; a new value each tick
+            # would only make every snapshot differ.
+            return True
+        state['organizer'] = organizer.claim(device, rank, now)
+    assert_cloudsave_writable(runtime._config_manager, operation='sync', target=f'memory/{name}/long_term_portable.json')
+    atomic_write_json(path, state, ensure_ascii=False, indent=2)
+    return True
+
+
+async def tend_organizer(name):
+    """Claim, renew or release the organizer role for one character when its rules say so."""
+    rank = await _organizer_rank()
+    if rank is None or not await asyncio.to_thread(_publishable, _uid(name)):
+        return False
+    async with _views_locked(name):
+        def step():
+            with runtime.fact_store._get_lock(name):
+                return _tend_organizer_state(name, rank)
+        due = await _complete_file_commit(step)
+    if due:
+        queue_capture(name)
+    return due
+
+
+ORGANIZER_CHECK_INTERVAL_SECONDS = 5 * 60
+_ORGANIZER_INITIAL_DELAY_SECONDS = 120
+
+
+async def _periodic_organizer_loop():
+    await asyncio.sleep(_ORGANIZER_INITIAL_DELAY_SECONDS)
+    while True:
+        try:
+            if getattr(runtime._config_manager, 'app_docs_dir', None):
+                characters = (await runtime._config_manager.aload_characters()).get('猫娘', {})
+                for name in list(characters):
+                    try:
+                        await tend_organizer(validate_lanlan_name(name))
+                    except Exception as error:
+                        logger.debug(f'[LongTermSync] {name}: organizer check skipped: {error}')
+        except Exception as error:
+            logger.debug(f'[LongTermSync] organizer check skipped: {error}')
+        await asyncio.sleep(ORGANIZER_CHECK_INTERVAL_SECONDS)
+
+
 def resume_captures(characters):
     """Requeue canceled publication by UID after rename or rollback reload."""
     names = {uid: name for name, profile in (characters.get('猫娘') or {}).items()

@@ -1087,7 +1087,7 @@ class DesktopLongTermAdapter:
 
     def forget(self, uid):
         """Drop the confirmed base and inbox of a role whose cloud copy was retired."""
-        for path in [self.incoming_path(uid), *self.directory.glob(f'{uid}-*.json')]:
+        for path in [self.incoming_path(uid), self.directory / f'{uid}.organizer.json', *self.directory.glob(f'{uid}-*.json')]:
             path.unlink(missing_ok=True)
             self._cache.pop(path, None)
         received = self.received_directory(uid)
