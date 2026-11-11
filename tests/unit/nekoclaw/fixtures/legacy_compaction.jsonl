@@ -1,0 +1,5 @@
+{"type":"message","id":"root","parent_id":null,"timestamp":1,"message":{"role":"user","content":"replace root","timestamp":1}}
+{"type":"message","id":"middle","parent_id":"root","timestamp":2,"message":{"role":"assistant","content":[{"type":"text","text":"keep middle"}],"api":"","provider":"","model":"","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0,"total":0.0}},"stopReason":"stop","timestamp":2}}
+{"type":"message","id":"tail","parent_id":"middle","timestamp":3,"message":{"role":"user","content":"replace tail","timestamp":3}}
+{"type":"compaction","id":"compact","parent_id":"tail","timestamp":4,"summary":"legacy summary","replaces_entry_ids":["root","tail"],"first_kept_entry_id":"tail"}
+{"type":"message","id":"after","parent_id":"compact","timestamp":5,"message":{"role":"assistant","content":[{"type":"text","text":"after compaction"}],"api":"","provider":"","model":"","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0,"total":0.0}},"stopReason":"stop","timestamp":5}}

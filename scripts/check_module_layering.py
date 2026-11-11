@@ -27,7 +27,7 @@ stays acyclic). The hierarchy:
     L2  knowledge, memory, main_logic, services
     L3  main_routers, theater_workshop
     L4  plugin                                ← high-level extension surface
-    L5  brain                                 ← top-of-stack agent orchestration
+    L5  brain, nekoclaw                       ← top-of-stack agent orchestration
     L6  app, local_server, launcher.py, launcher_core  ← entrypoints
 
 Violations are split into two categories, both forbidden:
@@ -112,7 +112,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # ``services`` holds Main-side domain services (chat sync, theater runtime)
 # used by main_logic, main_routers and app. ``theater_workshop`` is the
 # author-side theater host (not shipped) built on services. ``launcher_core``
-# is launcher.py's bootstrap and imports app directly.
+# is launcher.py's bootstrap and imports app directly. ``nekoclaw`` is the
+# base that runs familiars and will take over from ``brain``; it sits beside
+# it at the top of the stack.
 
 LAYERS: List[Tuple[int, Set[str]]] = [
     (0, {"config", "steamworks"}),
@@ -120,7 +122,7 @@ LAYERS: List[Tuple[int, Set[str]]] = [
     (2, {"knowledge", "memory", "main_logic", "services"}),
     (3, {"main_routers", "theater_workshop"}),
     (4, {"plugin"}),
-    (5, {"brain"}),
+    (5, {"brain", "nekoclaw"}),
     (6, {"app", "local_server", "launcher", "launcher_core"}),
 ]
 
@@ -167,6 +169,23 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
     ("plugin/", "knowledge", "the plugin server goes through Main's proxy"),
     ("knowledge/", "memory", "knowledge never reads or writes memory data"),
     ("services/", "main_logic", "main_logic depends on services; services never imports it back"),
+    # The built-in familiar runtime is a harness without memory that runs in a
+    # child process of its own. Its layer would allow far more; these rows keep
+    # it to config and utils, so the child stays small and never touches
+    # another subsystem's data.
+    *(
+        ("nekoclaw/runtime/", package, "the familiar runtime uses only config and utils")
+        for package in (
+            "knowledge",
+            "memory",
+            "main_logic",
+            "services",
+            "main_routers",
+            "theater_workshop",
+            "plugin",
+            "brain",
+        )
+    ),
 ]
 
 
