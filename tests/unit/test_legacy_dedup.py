@@ -525,8 +525,16 @@ async def test_a_publish_is_asked_for_again_until_the_server_confirms_the_mark(m
     owed = []
     monkeypatch.setattr(lts, 'queue_capture_after_extraction', lambda name: owed.append(name))
     confirmed = {}
-    monkeypatch.setattr(lts, 'confirmed_maintenance', lambda name: confirmed)
+    import threading
+    threads = []
+
+    def read_confirmed(name):
+        threads.append(threading.current_thread())
+        return confirmed
+    monkeypatch.setattr(lts, 'confirmed_maintenance', read_confirmed)
     assert await _run(_Model([])) is None and owed == [NAME]
+    # It takes a file lock and reads SQLite: never on the event loop's thread.
+    assert threads and threads[0] is not threading.main_thread()
     assert await _run(_Model([])) is None and owed == [NAME, NAME]
     confirmed[legacy_dedup.MAINTENANCE_KEY] = legacy_dedup.VERSION
     assert await _run(_Model([])) is None and owed == [NAME, NAME]

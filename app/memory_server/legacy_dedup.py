@@ -96,7 +96,7 @@ async def _publish_marker(name):
     return True
 
 
-def _owe_until_confirmed(name, directory):
+async def _owe_until_confirmed(name, directory):
     """Owe a capture on every idle round until the server's snapshot carries this device's run.
 
     The owed mark can be lost (a capture already running clears it before the run
@@ -108,7 +108,8 @@ def _owe_until_confirmed(name, directory):
     if not local:
         return
     try:
-        confirmed = long_term_sync.confirmed_maintenance(name)
+        # A file lock, SQLite and the whole snapshot: never on the event loop.
+        confirmed = await asyncio.to_thread(long_term_sync.confirmed_maintenance, name)
     except Exception:  # noqa: BLE001 - the next idle round asks again
         return
     if confirmed is not None and int(confirmed.get(legacy_dedup.MAINTENANCE_KEY) or 0) < local:
@@ -224,7 +225,7 @@ async def run(name, *, still_idle=lambda: True):
     directory = _directory(name)
     if max(legacy_dedup.local_version(directory), legacy_dedup.published_version(directory)) >= legacy_dedup.VERSION:
         await _publish_marker(name)
-        _owe_until_confirmed(name, directory)
+        await _owe_until_confirmed(name, directory)
         return None
     if not organizer.allowed(name):
         return None
