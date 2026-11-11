@@ -196,6 +196,74 @@ test('Playground exit queues entry-owned chat restore through an in-flight colla
   assert.deepEqual(Object.keys(harness.parts.pendingChatSurfaceMode.transitionOptions), []);
 });
 
+test('Playground cancellation replaces its own queued minimize, not a later user request', () => {
+  const harness = createHarness();
+  Object.assign(harness.parts, {
+    getCurrentChatSurfaceMode: () => 'full',
+    getNextChatSurfaceMode: () => 'full',
+    isMinimizeTransitioning: true,
+    pendingChatSurfaceMode: null,
+    setChatSurfaceMode(mode) {
+      this.pendingChatSurfaceMode = { mode, transitionOptions: {} };
+    },
+  });
+  harness.parts._handleIdleCat1PlaygroundYarnRequest({});
+  assert.equal(harness.parts.pendingChatSurfaceMode.playgroundEntry, true);
+  harness.parts._handleIdleCat1PlaygroundState({
+    detail: { active: false, reason: 'entry-cancel', restoreChatOnExit: true },
+  });
+  assert.equal(harness.parts.pendingChatSurfaceMode.mode, 'full');
+
+  const userMinimize = { mode: 'minimized', transitionOptions: {} };
+  harness.parts.pendingChatSurfaceMode = userMinimize;
+  harness.parts._handleIdleCat1PlaygroundState({
+    detail: { active: false, reason: 'entry-cancel', restoreChatOnExit: true },
+  });
+  assert.equal(harness.parts.pendingChatSurfaceMode, userMinimize);
+});
+
+test('cat return preserves an independently minimized chat surface', () => {
+  const harness = createHarness();
+  const restored = [];
+  Object.assign(harness.parts, {
+    getCurrentChatSurfaceMode: () => 'minimized',
+    getNextChatSurfaceMode: () => 'compact',
+    getShell: () => null,
+    applyMinimizedBallSkin() {},
+    setChatSurfaceMode(mode) { restored.push(mode); },
+  });
+  harness.parts._handleIdleCat1PlaygroundState({
+    detail: { active: false, reason: 'cat-click', restoreChatOnExit: false },
+  });
+  assert.deepEqual(restored, []);
+  harness.parts._handleIdleCat1PlaygroundState({
+    detail: { active: false, reason: 'cat-click', restoreChatOnExit: true },
+  });
+  assert.deepEqual(restored, ['compact']);
+});
+
+test('returning from Playground reapplies the ordinary Web ball viewport clamp', () => {
+  const harness = createHarness();
+  const positions = [];
+  const shell = {
+    querySelector: () => ({}),
+    getBoundingClientRect: () => ({ left: -6, top: 680, width: 51, height: 51 }),
+  };
+  Object.assign(harness.parts, {
+    idleCatPlaygroundYarnSkinActive: true,
+    getCurrentChatSurfaceMode: () => 'minimized',
+    isElectronChatWindow: () => false,
+    getShell: () => shell,
+    applyMinimizedBallSkin() {},
+    applyPosition(left, top) { positions.push([left, top]); },
+  });
+  harness.parts._handleIdleCat1PlaygroundState({
+    detail: { active: false, reason: 'question-block-click', restoreChatOnExit: false },
+  });
+  assert.deepEqual(positions, [[-6, 680]]);
+  assert.equal(harness.parts.idleCatPlaygroundYarnSkinActive, false);
+});
+
 test('a visible collapsed Electron chat publishes its minimized yarn target', async () => {
   const harness = createHarness();
   harness.parts.ensureElectronChatMinimizedStateBridge();

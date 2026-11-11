@@ -748,7 +748,7 @@ def test_cat1_playground_entry_minimizes_chat_to_yarn_before_drop():
     assert "function _requestNekoIdleCat1PlaygroundYarnTarget(detail)" in source
     assert "function _startNekoIdleCat1PlaygroundDropAfterYarnTargetReady(button, detail)" in source
     assert "function _isNekoIdleCat1PlaygroundEntryPending(button)" in source
-    assert "function _cancelNekoIdleCat1PlaygroundPendingEntry(button)" in source
+    assert "function _cancelNekoIdleCat1PlaygroundPendingEntry(button, options = {})" in source
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_YARN_TARGET_WAIT_MS" in source
 
     entry_block = _source_slice_between(
@@ -783,7 +783,7 @@ def test_cat1_playground_entry_minimizes_chat_to_yarn_before_drop():
     request_block = _source_slice_between(
         source,
         "function _requestNekoIdleCat1PlaygroundYarnTarget(detail)",
-        "function _cancelNekoIdleCat1PlaygroundPendingEntry(button)",
+        "function _cancelNekoIdleCat1PlaygroundPendingEntry(button, options = {})",
         "cat1 playground yarn target request",
     )
     assert "_getNekoIdleCat1PairMoveChatTarget()" in request_block
@@ -854,7 +854,7 @@ def test_cat1_playground_entry_minimizes_chat_to_yarn_before_drop():
     assert "getCurrentChatSurfaceMode() === 'minimized'" in app_block
     assert "window.__NEKO_DESKTOP_RUNTIME__ && detail.via === 'broadcast-channel'" in app_block
     assert "neko:idle-cat1-playground-yarn-activation-ack" in app_block
-    assert "detail.reason !== 'cat-click'" in app_block
+    assert "detail.restoreChatOnExit !== true" in app_block
     assert "detail.restoreChatOnExit !== true" in app_block
     assert "cat1-playground-entry" not in app_block
 

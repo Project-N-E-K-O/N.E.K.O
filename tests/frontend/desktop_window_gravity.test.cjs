@@ -272,6 +272,45 @@ test('yarn lifecycle rejects stale surface facts and preserves bodies during tem
     'a rejected older timestamp cannot partially advance the sequence watermark');
 });
 
+test('ordinary Visit chat expansion consumes entry restore ownership after minimization', () => {
+  const r = runtime();
+  installPlaygroundSetting(r);
+  const state = r.button.__nekoIdleCat1PlaygroundDropState = {
+    active: true, released: false, yarnEnabled: false, restoreChatOnExit: true,
+    entryChatMinimizedObserved: false, yarnSurfaceLifecycleSequence: 0,
+    yarnSurfaceUpdatedAt: 0,
+  };
+  r.context._scheduleNekoIdleCat1PlaygroundYarnSync = () => false;
+  const report = (minimized, timestamp) => {
+    r.context._handleNekoIdleCat1PlaygroundChatMinimizedState({
+      detail: { available: true, minimized, timestamp },
+    });
+  };
+  report(false, 100);
+  assert.equal(state.restoreChatOnExit, true, 'a pre-collapse fact does not consume ownership');
+  report(true, 200);
+  assert.equal(state.entryChatMinimizedObserved, true);
+  report(false, 300);
+  assert.equal(state.restoreChatOnExit, false, 'ordinary expansion needs no yarn ACK');
+  report(true, 400);
+  assert.equal(state.restoreChatOnExit, false, 'later manual minimization stays user-owned');
+});
+
+test('Web chat surface expansion consumes Visit entry restore ownership', () => {
+  const r = runtime({ web: true });
+  installPlaygroundSetting(r);
+  const state = r.button.__nekoIdleCat1PlaygroundDropState = {
+    active: true, released: false, yarnEnabled: false, restoreChatOnExit: true,
+    entryChatMinimizedObserved: true, yarnSurfaceLifecycleSequence: 0,
+    yarnSurfaceUpdatedAt: 0,
+  };
+  r.context._scheduleNekoIdleCat1PlaygroundYarnSync = () => false;
+  r.context._handleNekoIdleCat1PlaygroundChatSurfaceModeChange({
+    detail: { mode: 'compact', timestamp: 300 },
+  });
+  assert.equal(state.restoreChatOnExit, false);
+});
+
 test('yarn target sync uses elapsed time instead of a refresh-rate-dependent frame budget', () => {
   const r = runtime();
   installPlaygroundSetting(r);
@@ -1090,6 +1129,8 @@ test('cat visit entry cancels a pending solo target and starts cat-only immediat
   const { api, startAfterYarnTargetReady } = installPlaygroundSetting(r);
   const detail = { source: 'solo-playground', trigger: 'question-mark-entry' };
   const starts = [];
+  const lifecycle = [];
+  r.window.addEventListener('neko:idle-cat1-playground-state', event => lifecycle.push(event.detail));
   r.context._getNekoIdleCat1PairMoveChatTarget = () => null;
   r.context._requestNekoIdleCat1PlaygroundYarnTarget = () => true;
   r.context._clearNekoIdleCat1QuestionMark = () => {};
@@ -1110,6 +1151,8 @@ test('cat visit entry cancels a pending solo target and starts cat-only immediat
   assert.equal(starts[0].button, r.button);
   assert.deepEqual({ ...starts[0].entryDetail }, { ...detail, restoreChatOnExit: true });
   assert.equal(starts[0].options.catOnly, true);
+  assert.equal(lifecycle.some(event => event.active === false && event.restoreChatOnExit === true), false,
+    'transferring pending entry to Visit must not roll back its chat minimization');
 });
 
 test('the real Playground starter forwards catOnly to body registration', () => {

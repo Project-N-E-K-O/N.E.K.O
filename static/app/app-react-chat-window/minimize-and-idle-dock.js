@@ -1442,6 +1442,10 @@
     I._handleIdleCat1PlaygroundYarnRequest = function _handleIdleCat1PlaygroundYarnRequest(event) {
         if (I.getCurrentChatSurfaceMode() === 'minimized') return;
         I.setChatSurfaceMode('minimized');
+        if (I.isMinimizeTransitioning && I.pendingChatSurfaceMode
+            && I.pendingChatSurfaceMode.mode === 'minimized') {
+            I.pendingChatSurfaceMode.playgroundEntry = true;
+        }
     }
 
     I._handleIdleCat1PlaygroundYarnActivate = function _handleIdleCat1PlaygroundYarnActivate(event) {
@@ -1479,14 +1483,21 @@
 
     I._handleIdleCat1PlaygroundState = function _handleIdleCat1PlaygroundState(event) {
         var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+        var wasYarnSkinActive = I.idleCatPlaygroundYarnSkinActive;
         I.idleCatPlaygroundYarnSkinActive = detail.active === true && detail.yarnEnabled === true;
         if (I.getCurrentChatSurfaceMode() === 'minimized') {
             I.applyMinimizedBallSkin(ensureMinimizedBallIcon());
+            if (wasYarnSkinActive && !I.idleCatPlaygroundYarnSkinActive && !I.isElectronChatWindow()) {
+                var shell = I.getShell();
+                var rect = shell && shell.getBoundingClientRect();
+                if (rect && rect.width > 0 && rect.height > 0) I.applyPosition(rect.left, rect.top);
+            }
         }
         if (detail.active === true) return;
-        if (detail.reason !== 'cat-click' && detail.restoreChatOnExit !== true) return;
+        if (detail.restoreChatOnExit !== true) return;
         var restoreMode = I.getNextChatSurfaceMode('minimized');
         if (I.isMinimizeTransitioning) {
+            if (I.pendingChatSurfaceMode && I.pendingChatSurfaceMode.playgroundEntry !== true) return;
             I.pendingChatSurfaceMode = {
                 mode: restoreMode,
                 transitionOptions: {}
