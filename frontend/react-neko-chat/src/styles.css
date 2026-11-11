@@ -2420,11 +2420,8 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
   color: #b52d51;
 }
 
-.compact-chat-surface-frame[data-compact-chat-state="input"][data-audio-message-active="true"] {
-  padding-inline: 8px;
-}
-
 .compact-chat-surface-frame[data-audio-message-active="true"] > .compact-chat-minimize-ball,
+.compact-chat-surface-frame[data-audio-message-active="true"] > .compact-chat-capsule-button,
 .compact-chat-surface-frame[data-audio-message-active="true"] > .composer-input,
 .compact-chat-surface-frame[data-audio-message-active="true"] > .compact-input-tool-toggle {
   display: none;
@@ -3677,7 +3674,7 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 }
 
 .compact-chat-surface-frame[data-compact-tool-toggle-visible="true"]:not([data-compact-chat-state="input"]) {
-  padding-right: 62px;
+  padding-right: var(--compact-input-tool-gutter, 62px);
   padding-left: var(--compact-chat-minimize-ball-slot);
 }
 
@@ -10026,13 +10023,17 @@ body.avatar-tool-editor-page .avatar-tool-workspace-settings {
      避免上面的 padding 简写把字幕文字挤到按钮下方喵 */
   .compact-chat-surface-frame[data-compact-tool-toggle-visible="true"][data-compact-chat-state="default"],
   .compact-chat-surface-frame[data-compact-tool-toggle-visible="true"][data-compact-chat-state="options"] {
-    padding-right: 62px;
+    padding-right: var(--compact-input-tool-gutter, 62px);
   }
 
   .compact-chat-surface-frame[data-compact-chat-state="input"] {
-    padding: 5px 62px 5px var(--compact-chat-minimize-ball-slot);
+    padding: 5px var(--compact-input-tool-gutter, 62px) 5px var(--compact-chat-minimize-ball-slot);
   }
 
+}
+
+.compact-chat-surface-frame[data-compact-chat-state][data-audio-message-active="true"] {
+  padding-inline: 8px;
 }
 
 /* ===================================================================

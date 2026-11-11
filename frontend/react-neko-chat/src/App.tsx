@@ -6383,11 +6383,10 @@ function CompactChatApp({
                       <span className="compact-chat-refraction-violet" />
                       <span className="compact-chat-refraction-blue" />
                     </div>
+                    {/* 点按毛绒球折叠，拖动毛绒球移动紧凑窗。 */}
+                    {compactMinimizeButton}
                     {effectiveCompactChatState === 'input' ? (
                       <>
-                        {/* 输入态左侧毛绒球：点按折叠为 minimized，按住拖动整个输入框（见 compactMinimizeButton 定义）。
-                            按住把手不会让 textarea 失焦收起输入态——宿主 mousedown 会 preventDefault。 */}
-                        {compactMinimizeButton}
                         <textarea
                           className="composer-input"
                           ref={compactInputRef}
@@ -6573,12 +6572,9 @@ function CompactChatApp({
                             scheduleCompactInputCollapse();
                           }}
                         />
-                        {audioMessageControl}
-                        {compactInputToolToggleButton}
                       </>
                     ) : (
                       <>
-                        {compactMinimizeButton}
                         <button
                           className="compact-chat-capsule-button"
                           type="button"
@@ -6607,9 +6603,10 @@ function CompactChatApp({
                               onAction={onMessageAction} />
                           ) : null}
                         </button>
-                        {compactInputToolToggleButton}
                       </>
                     )}
+                    {!composerHidden && audioMessageControl}
+                    {compactInputToolToggleButton}
                   </div>
                   {composerAttachmentPreviewNode}
                   {compactInputToolFanNode}
