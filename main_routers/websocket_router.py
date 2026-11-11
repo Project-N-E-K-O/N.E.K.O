@@ -1386,6 +1386,24 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
 
                         await _visit_display.refuse_orphan_line(websocket, message.get("request_id"))
                         continue
+                # Only ordinary, selected text is observed here. Keep the original
+                # request_id and message publication semantics untouched.
+                if input_type == "text" and isinstance(message.get("data"), str) and message["data"].strip():
+                    try:
+                        from main_logic.agent_event_bus import schedule_conversation_fact_observed_best_effort
+                        from services.chat_sync.source import is_chat_input_source
+
+                        if is_chat_input_source(message.get("source")):
+                            input_id = uuid.uuid4().hex
+                            message = {**message, "_conversation_input_id": input_id}
+                            schedule_conversation_fact_observed_best_effort(
+                                lanlan_name, fact="input.submitted", payload={
+                                    "input_id": input_id, "text": message["data"],
+                                    "input_source": "text",
+                                },
+                            )
+                    except Exception:
+                        logger.debug("Conversation input observation failed", exc_info=True)
                 # [DIAG] Missing STT after character switches: verify frontend audio arrival.
                 # _input_type_dbg = message.get("input_type")
                 # _data = message.get("data")
@@ -1686,6 +1704,30 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     turn_id=message.get("turnId") or message.get("turn_id") or "",
                     source=message.get("source") or "audio_playback",
                 )
+                try:
+                    from main_logic.agent_event_bus import schedule_conversation_fact_observed_best_effort
+
+                    def optional_id(value):
+                        return value if isinstance(value, str) and value.strip() else None
+
+                    stop_reason = message.get("stopReason")
+                    if stop_reason not in ("completed", "interrupted", "canceled", "error", "fallback", "unknown"):
+                        stop_reason = "unknown"
+                    schedule_conversation_fact_observed_best_effort(
+                        lanlan_name,
+                        fact="playback.started" if action == "voice_play_start" else "playback.stopped",
+                        payload={
+                            "character": lanlan_name,
+                            "reply_id": optional_id(message.get("replyId")),
+                            "presentation_id": optional_id(message.get("presentationId")),
+                            "presenter_id": optional_id(message.get("presenterId")),
+                            "turn_id": optional_id(message.get("turnId") or message.get("turn_id")),
+                            "state": "playing" if action == "voice_play_start" else "stopped",
+                            "stop_reason": None if action == "voice_play_start" else stop_reason,
+                        },
+                    )
+                except Exception:
+                    logger.debug("[plugin-bus] playback observation not published", exc_info=True)
 
             elif action == "visit_bind":
                 from main_routers.visit_router import display_socket as _visit_display

@@ -2,18 +2,39 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 import runpy
 import subprocess
+import zipfile
 
 import pytest
 
 from plugin.neko_plugin_cli import cli as neko_plugin_cli
-from plugin.neko_plugin_cli.commands import init_cmd
+from plugin.neko_plugin_cli.commands import init_cmd, release_cmd
 from plugin.neko_plugin_cli.paths import CliDefaults
 
 
 pytestmark = pytest.mark.plugin_unit
+
+
+def test_creation_rollback_preserves_a_replacement_directory(tmp_path):
+    from plugin.neko_plugin_cli.core.project import create_project
+    from plugin.neko_plugin_cli.templates.generator import PluginSpec
+
+    target = tmp_path / "replacement_demo"
+    original = tmp_path / "original"
+
+    def replace_then_fail(*args, **kwargs):
+        assert target.resolve().parent == tmp_path.resolve()
+        target.rename(original)
+        target.mkdir()
+        (target / "user.txt").write_text("keep", encoding="utf-8")
+        raise RuntimeError("git failed after replacement")
+
+    with pytest.raises(RuntimeError):
+        create_project(PluginSpec("replacement_demo"), target, repo_root=None, git_runner=replace_then_fail)
+    assert (target / "user.txt").read_text(encoding="utf-8") == "keep"
 
 
 @pytest.fixture(autouse=True)
@@ -25,7 +46,7 @@ def _isolate_github_actions_env(monkeypatch: pytest.MonkeyPatch) -> None:
     falls back to the environment reports a tag/version mismatch against the
     fixture plugin. Tests that exercise those variables set them explicitly.
     """
-    for name in ("GITHUB_REPOSITORY", "GITHUB_REF_NAME", "GITHUB_REF"):
+    for name in ("GITHUB_REPOSITORY", "GITHUB_REF_NAME", "GITHUB_REF", "NEKO_PLUGIN_MARKET_SECURITY_CHECKS"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -39,6 +60,12 @@ def _git(repo: Path, *args: str) -> str:
         stderr=subprocess.PIPE,
     )
     return completed.stdout.strip()
+
+
+def _commit_all(repo: Path) -> None:
+    """Commit the scaffold: check --release rejects files CI would not check out."""
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "user.name=Init Test", "-c", "user.email=init@example.com", "commit", "-qm", "scaffold")
 
 
 def _source_tree_defaults(tmp_path: Path) -> CliDefaults:
@@ -267,8 +294,9 @@ def test_init_does_not_delete_directory_created_during_mkdir_race(
     assert sentinel.read_text(encoding="utf-8") == "do not delete\n"
 
 
-def test_init_accepts_only_matching_github_remote(
+def test_init_accepts_any_github_remote_and_warns_about_an_unconventional_name(
     tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     repo = tmp_path / "repo"
     remote = "git@github.com:alice/n.e.k.o_plugin_remote_demo.git"
@@ -287,22 +315,28 @@ def test_init_accepts_only_matching_github_remote(
         == 0
     )
     assert _git(repo, "remote", "get-url", "origin") == remote
+    assert "[WARNING]" not in capsys.readouterr().out
 
-    bad_repo = tmp_path / "bad-repo"
+    # The Market does not require the n.e.k.o_plugin_<id> name.
+    other_repo = tmp_path / "other-repo"
+    other_remote = "https://github.com/alice/other-name.git"
     assert (
         neko_plugin_cli.main(
             [
                 "init",
                 "remote_demo",
                 "--output",
-                str(bad_repo),
+                str(other_repo),
                 "--remote",
-                "https://github.com/alice/wrong-name.git",
+                other_remote,
             ]
         )
-        == 1
+        == 0
     )
-    assert not bad_repo.exists()
+    assert _git(other_repo, "remote", "get-url", "origin") == other_remote
+    output = capsys.readouterr().out
+    assert "[WARNING] the recommended repository name is n.e.k.o_plugin_remote_demo" in output
+    assert "other-name" in output
 
 
 def test_init_and_market_check_accept_github_ssh_over_https_remote(
@@ -331,6 +365,7 @@ def test_init_and_market_check_accept_github_ssh_over_https_remote(
         == 0
     )
     assert _git(repo, "remote", "get-url", "origin") == remote
+    _commit_all(repo)
     assert (
         neko_plugin_cli.main(
             [
@@ -396,6 +431,7 @@ def test_market_release_check_uses_origin_instead_of_local_directory_name(
         )
         == 0
     )
+    _commit_all(repo)
 
     exit_code = neko_plugin_cli.main(
         [
@@ -499,6 +535,7 @@ def test_init_and_market_check_accept_case_equivalent_github_remote(
         == 0
     )
     assert _git(repo, "remote", "get-url", "origin") == remote
+    _commit_all(repo)
     assert (
         neko_plugin_cli.main(
             [
@@ -569,3 +606,206 @@ def test_setup_repo_does_not_expose_custom_workflow_source_flags(
 
     assert exc_info.value.code == 2
     assert removed_flag in capsys.readouterr().err
+
+
+
+def _market_check(repo: Path, tmp_path: Path) -> int:
+    return neko_plugin_cli.main(
+        [
+            "check",
+            "--release",
+            "--market-release",
+            "--skip-tests",
+            "--target-dir",
+            str(tmp_path / "target"),
+            str(repo),
+        ]
+    )
+
+
+def test_market_release_check_rejects_committed_files_the_market_scan_rejects(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NEKO_PLUGIN_MARKET_SECURITY_CHECKS", "1")
+    repo = tmp_path / "repo"
+    remote = "https://github.com/alice/n.e.k.o_plugin_limits_demo.git"
+    assert neko_plugin_cli.main(["init", "limits_demo", "--output", str(repo), "--remote", remote]) == 0
+    (repo / "native").mkdir()
+    (repo / "native" / "helper.DLL").write_bytes(b"MZ")
+    (repo / "data.txt").write_text("0" * (2 * 1024 * 1024 + 1), encoding="utf-8")
+    # The scan streams media files, so the per-file limit does not apply to them.
+    (repo / "cover.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * (3 * 1024 * 1024))
+    _commit_all(repo)
+
+    assert _market_check(repo, tmp_path) == 1
+
+    error = capsys.readouterr().err
+    assert "the Market rejects binary files in the repository: native/helper.DLL" in error
+    assert "the Market rejects files over 2 MiB: data.txt /" in error
+    assert "cover.png" not in error
+
+
+@pytest.mark.parametrize("market_release", [False, True])
+def test_release_check_defaults_to_legacy_with_security_scan_opt_in(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    market_release: bool,
+) -> None:
+    repo = tmp_path / "repo"
+    remote = "https://github.com/alice/n.e.k.o_plugin_native_demo.git"
+    assert neko_plugin_cli.main(["init", "native_demo", "--output", str(repo), "--remote", remote]) == 0
+    _commit_all(repo)
+    command = [
+        "check", str(repo), "--release", "--skip-tests", "--target-dir", str(tmp_path / "target"),
+        *(["--market-release"] if market_release else []),
+    ]
+
+    with monkeypatch.context() as scan_env:
+        scan_env.setenv("NEKO_PLUGIN_MARKET_SECURITY_CHECKS", "1")
+        assert neko_plugin_cli.main(command) == 0
+        mode = "source-security" if market_release else "package-security"
+        assert f"market_check_mode={mode}" in capsys.readouterr().out
+
+    (repo / "native").mkdir()
+    (repo / "native" / "helper.dll").write_bytes(b"MZ" + os.urandom(4096))
+    # Avoid the package reader's independent compression-ratio limit.
+    (repo / "data.txt").write_text(os.urandom(1024 * 1024 + 1).hex(), encoding="utf-8")
+    _commit_all(repo)
+
+    assert neko_plugin_cli.main(command) == 0
+    assert "market_check_mode=legacy" in capsys.readouterr().out
+    with zipfile.ZipFile(tmp_path / "target" / "native_demo.neko-plugin") as archive:
+        assert any(name.endswith("native/helper.dll") for name in archive.namelist())
+
+    monkeypatch.setenv("NEKO_PLUGIN_MARKET_SECURITY_CHECKS", "1")
+    assert neko_plugin_cli.main(command) == 1
+    error = capsys.readouterr().err
+    location = "repository" if market_release else "package"
+    assert f"binary files in the {location}" in error
+
+
+def test_market_release_reports_package_scan_when_source_listing_fails(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    remote = "https://github.com/alice/n.e.k.o_plugin_native_demo.git"
+    assert neko_plugin_cli.main(["init", "native_demo", "--output", str(repo), "--remote", remote]) == 0
+    _commit_all(repo)
+    monkeypatch.setenv("NEKO_PLUGIN_MARKET_SECURITY_CHECKS", "1")
+    monkeypatch.setattr(release_cmd, "committed_file_sizes", lambda _root: None)
+
+    assert _market_check(repo, tmp_path) == 0
+    output = capsys.readouterr().out
+    assert "market_check_mode=package-security" in output
+    assert "[WARNING] git ls-tree failed; Market source archive limits were not checked" in output
+
+
+def test_market_release_check_rejects_a_version_the_market_cannot_store(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo = tmp_path / "repo"
+    remote = "https://github.com/alice/n.e.k.o_plugin_version_demo.git"
+    assert neko_plugin_cli.main(["init", "version_demo", "--output", str(repo), "--remote", remote]) == 0
+    plugin_toml = repo / "plugin.toml"
+    long_version = "1.0.0-" + "a" * 45
+    plugin_toml.write_text(
+        plugin_toml.read_text(encoding="utf-8").replace('version = "0.1.0"', f'version = "{long_version}"'),
+        encoding="utf-8",
+    )
+    _commit_all(repo)
+
+    assert _market_check(repo, tmp_path) == 1
+
+    assert "Market version must be at most 50 characters, got 51" in capsys.readouterr().err
+
+
+def test_market_plugin_id_is_limited_to_100_characters() -> None:
+    assert release_cmd._diagnose_market_plugin_id("a" * 100) == []
+    [(severity, message)] = release_cmd._diagnose_market_plugin_id("a" * 101)
+    assert severity == "error"
+    assert "at most 100 characters, got 101" in message
+
+
+@pytest.mark.parametrize(
+    ("files", "expected"),
+    [
+        # 4999 files plus the archive's top-level directory: 5000 entries.
+        ([(f"f{index}.py", 1) for index in range(4999)], None),
+        ([(f"f{index}.py", 1) for index in range(5000)], "more than 5000 files and directories, got 5001"),
+        # Each file is in its own directory, so the directories count too.
+        ([(f"d{index}/f.py", 1) for index in range(2500)], "got 5001"),
+        ([(f"cover{index}.png", 2 * 1024 * 1024) for index in range(17)], None),
+        ([(f"cover{index}.png", 2 * 1024 * 1024) for index in range(65)], "committed files total 130.0 MiB"),
+        ([(f"cover{index}.png", 2 * 1024 * 1024) for index in range(16)], None),
+    ],
+)
+def test_market_source_archive_limits_follow_the_market_scan(
+    files: list[tuple[str, int]],
+    expected: str | None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(release_cmd, "committed_file_sizes", lambda _root: files)
+
+    issues = release_cmd._diagnose_market_source_archive(tmp_path)
+
+    if expected is None:
+        assert issues == []
+    else:
+        [(severity, message)] = issues
+        assert severity == "error"
+        assert expected in message
+
+
+
+def _write_package(path: Path, members: dict[str, bytes]) -> Path:
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, data in members.items():
+            archive.writestr(name, data)
+    return path
+
+
+@pytest.mark.parametrize(
+    ("members", "expected"),
+    [
+        ({"manifest.toml": b"id = 'demo'", "payload/plugins/demo/__init__.py": b"x = 1\n"}, None),
+        # A binary by suffix, and one renamed to look like text.
+        ({"payload/plugins/demo/native.pyd": b"\0"}, "binary files in the package: payload/plugins/demo/native.pyd"),
+        ({"payload/plugins/demo/data.txt": b"MZ\x90\x00"}, "binary files in the package: payload/plugins/demo/data.txt"),
+        ({"payload/plugins/demo/big.json": b" " * (2 * 1024 * 1024 + 1)}, "package files over 2 MiB"),
+        # Media is streamed by the scan, so its size alone is not rejected.
+        ({"payload/plugins/demo/cover.png": b"\x89PNG\r\n\x1a\n" + b"\0" * (3 * 1024 * 1024)}, None),
+        ({f"payload/plugins/demo/f{index}.py": b"" for index in range(5001)}, "more than 5000 entries, got 5001"),
+    ],
+)
+def test_market_package_limits_follow_the_market_scan(
+    members: dict[str, bytes], expected: str | None, tmp_path: Path
+) -> None:
+    package = _write_package(tmp_path / "demo.neko-plugin", members)
+
+    issues = release_cmd._diagnose_market_package(package)
+
+    if expected is None:
+        assert issues == []
+    else:
+        [(severity, message)] = issues
+        assert severity == "error"
+        assert expected in message
+
+
+def test_market_package_over_32_mib_is_rejected(tmp_path: Path) -> None:
+    # Stored random-looking bytes keep the archive itself over the limit.
+    package = tmp_path / "demo.neko-plugin"
+    with zipfile.ZipFile(package, "w", compression=zipfile.ZIP_STORED) as archive:
+        for index in range(17):
+            archive.writestr(f"payload/plugins/demo/cover{index}.png", b"\x89PNG\r\n\x1a\n" + os.urandom(2 * 1024 * 1024))
+
+    messages = [message for _, message in release_cmd._diagnose_market_package(package)]
+
+    assert any("package over 32 MiB" in message for message in messages)

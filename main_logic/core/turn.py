@@ -34,10 +34,12 @@ from utils.llm_client import AIMessage
 from utils.game_route_state import get_active_game_route_generation_identity
 from utils.external_route_registry import is_route_slot_taken
 from main_logic.session_state import SessionEvent, TurnOwner
-from services.chat_sync.source import is_chat_input_source, mark_tool_turn, mark_turn_origin, save_original
+from services.chat_sync.source import is_chat_input_source, mark_turn_origin, save_original
 from main_logic.agent_event_bus import (
     dispatch_user_utterance,
+    conversation_reply_observation,
     publish_conversation_turn_observed_best_effort,
+    schedule_conversation_fact_observed_best_effort,
 )
 from config import SESSION_ARCHIVE_TRIGGER_TOKENS, SESSION_TURN_THRESHOLD
 from uuid import uuid4
@@ -45,6 +47,7 @@ import numpy as np
 from ._shared import (
     _REQUEST_ID_UNSET,
     _ReplyTurn,
+    _reply_observation_owner,
     _taken_over_reply_turn,
     _MAGIC_COMMAND_IMAGE_DROP_REQUEST_MAX,
     _VOICE_ECHO_LOOKBACK_SECONDS,
@@ -383,18 +386,6 @@ class TurnMixin:
 
     async def handle_new_message(self):
         """Handle new model output: clear the TTS queue and notify the frontend"""
-        voice_session = getattr(self, 'session', None)
-        agent_owner = getattr(voice_session, '_gemini_proactive_outcome_owner', None)
-        # The outcome owner tracks both Agent and ordinary proactive injections. Transfer the explicit
-        # origin, not the mere presence of an outcome callback, when Gemini opens its next host reply.
-        injected_origin = getattr(self, '_chat_original_turns', {}).get(str(self.current_speech_id or ''), {}).get('origin')
-        if (injected_origin not in ('agent', 'proactive')
-            and callable(getattr(voice_session, "get_conversation_turn_type", None))
-            and voice_session.get_conversation_turn_type() == "proactive_reply"):
-            # Ordinary voice nudges have no text-path finish callback. Reuse
-            # the client's fixed inject-owner proof before the first output;
-            # an explicit Agent callback remains local under its own origin.
-            injected_origin = 'proactive'
         if self._takeover_active:
             logger.info("[%s] session takeover active: suppressing ordinary realtime new-message handling", self.lanlan_name)
             return
@@ -422,15 +413,6 @@ class TurnMixin:
         async with self.lock:
             self.current_speech_id = str(uuid4())
             new_sid = self.current_speech_id
-            if (injected_origin in ('agent', 'proactive') and isinstance(agent_owner, tuple) and len(agent_owner) == 5
-                and agent_owner[0] == getattr(voice_session, '_connection_generation', None)
-                and agent_owner[1] is getattr(voice_session, '_gemini_session', None)
-                and agent_owner[4] == getattr(voice_session, '_tool_scope_generation', None)
-                and voice_session is getattr(self, "session", None)
-                and agent_owner is getattr(voice_session, "_gemini_proactive_outcome_owner", None)):
-                # Keep ordinary proactive speech syncable, while Agent stays local.
-                # A real user's changed provider generation or tool scope cannot inherit either origin.
-                mark_turn_origin(self, new_sid, injected_origin)
             # Synchronously set _preempted under self.lock, making new sid+preempt atomically visible
             # to prepare_proactive_delivery rechecking is_proactive_preempted under the same lock;
             # otherwise proactive work can overwrite user sid between unlock and fire().
@@ -582,6 +564,7 @@ class TurnMixin:
                 remember_voice_echo=not self.use_tts,
                 expected_speech_id=expected_sid,
                 on_published=on_published,
+                **({"reply_owner": _reply_observation_owner.get()} if _reply_observation_owner.get() is not None else {}),
             )
             # ``None`` means the guarded send lost ownership at its internal
             # queue-write boundary.  Do not leak the same stale chunk into TTS.
@@ -667,6 +650,8 @@ class TurnMixin:
         self._current_ai_turn_started_at = 0.0
         self._current_ai_turn_type = None
         self._current_ai_turn_client_owned = False
+        self._current_ai_turn_reply_owner = None
+        self._current_ai_turn_observation = None
 
     def _flush_ai_turn_text_to_tracker(self, *, turn_type: str | None = None) -> None:
         """Flush the per-turn AI text buffer into conversation turn sinks.
@@ -696,12 +681,16 @@ class TurnMixin:
         turn_id = getattr(self, "_current_ai_turn_id", "")
         started_at = float(getattr(self, "_current_ai_turn_started_at", 0.0) or 0.0)
         client_owned = getattr(self, "_current_ai_turn_client_owned", False)
+        reply_owner = getattr(self, "_current_ai_turn_reply_owner", None)
+        observation = getattr(self, "_current_ai_turn_observation", None)
         self._note_ai_turn(text=ai_text or None)
         self._reset_ai_turn_buffer()
         self._discarded_turn_open = False
         self._publish_ai_message_to_plugin_bus(
             ai_text, turn_type, turn_id=turn_id, started_at=started_at,
             client_owned=client_owned,
+            **({"reply_owner": reply_owner} if reply_owner is not None else {}),
+            **({"observation": observation} if observation is not None else {}),
         )
 
     def _publish_ai_message_to_plugin_bus(
@@ -712,6 +701,8 @@ class TurnMixin:
         turn_id: str = "",
         started_at: float = 0.0,
         client_owned: bool = False,
+        reply_owner: _ReplyTurn | None = None,
+        observation: dict | None = None,
     ) -> None:
         """Publish one finished AI turn to the plugin conversation bus.
 
@@ -732,7 +723,13 @@ class TurnMixin:
         # a different task, whose context no longer carries the proactive sid.
         if client_owned:
             return
+        if observation is not None and observation.get("allow_text_continuations") and observation.get("_message_enqueued"):
+            # Late Gemini chunks correct the retained message via reply.updated.
+            return
         try:
+            # The existing scheduler requires a running loop. Check before
+            # constructing a coroutine so synchronous teardown cannot leak it.
+            asyncio.get_running_loop()
             finished_at = time.time()
             spoken_at = float(started_at or 0.0) or finished_at
             resolved_turn_id = str(turn_id or "")
@@ -743,9 +740,18 @@ class TurnMixin:
                 conversation_id=resolved_turn_id,
                 source="main_logic.core",
                 message_count=1,
-                metadata={"role": "cat", "ts": spoken_at, "ts_end": finished_at},
+                metadata={
+                    "role": "cat", "ts": spoken_at, "ts_end": finished_at,
+                    **({"reply_id": reply_owner.observation_id,
+                        "input_id": reply_owner.observation_input_id,
+                        "origin": reply_owner.observation_origin} if reply_owner else {}),
+                    **({"reply_id": observation["reply_id"], "origin": observation["origin"]}
+                       if observation is not None and observation.get("lifecycle") in ("external_voice", "realtime", "proactive_direct") else {}),
+                },
                 ts=spoken_at,
             ))
+            if observation is not None and observation.get("allow_text_continuations"):
+                observation["_message_enqueued"] = True
         except Exception:
             logger.debug("[plugin-bus] ai message not published", exc_info=True)
 
@@ -1030,6 +1036,9 @@ class TurnMixin:
         counts as said. Returns the turn end it queued, or None.
         """
         owner = _taken_over_reply_turn(kind)
+        self._close_reply_observation(owner, "interrupted")
+        if owner is None:
+            self._close_external_reply_observation(getattr(self, "_current_ai_turn_observation", None), "interrupted")
         kind = str(kind) if isinstance(kind, str) else "response"
         said = bool(self._current_ai_turn_text) or getattr(
             self, "_discarded_turn_open", False
@@ -1152,7 +1161,7 @@ class TurnMixin:
         cross_server ends the assistant turn without an analyze request.
         ``_send_turn_end_to_frontend`` sends its WebSocket copy."""
         turn_end_msg: dict = {'type': 'system', 'data': 'turn end agent_callback'}
-        # Agent origin remains tied to this speech identity rather than shared flags.
+        # The source identity stays tied to this speech ID rather than shared flags.
         proof = getattr(self, '_chat_original_turns', {}).get(str(self.current_speech_id or ''))
         if proof:
             turn_end_msg['chat_original_id'] = proof['recordId']
@@ -1200,6 +1209,12 @@ class TurnMixin:
         instead (see ``_queue_turn_end``), and its ``turn_ended`` is set once
         the turn end is queued, so the completion that follows a final
         discard does not end the turn again."""
+        if reply_turn is not None:
+            self._close_reply_observation(reply_turn, reply_turn.observation_close_reason)
+        else:
+            observation = getattr(self, "_current_ai_turn_observation", None)
+            reason = observation.get("close_reason", "unknown") if observation else "unknown"
+            self._close_external_reply_observation(observation, reason)
         turn_end_msg = self._queue_turn_end(active_request_id, reply_turn=reply_turn)
         # Activity tracker flush after normal/truncation-recovery AI endings. Text supports
         # unfinished_thread question heuristics opening five-minute follow-up windows;
@@ -1277,6 +1292,56 @@ class TurnMixin:
                         del pending[index]
                         break
         self._prune_request_staged_images()
+
+    def _publish_reply_observation(
+        self, reply_turn: _ReplyTurn, fact: str, *, text: str | None = None,
+        close_reason: str | None = None,
+        turn_id: str | None = None,
+    ) -> None:
+        if fact == "reply.closed":
+            if reply_turn.observation_closed:
+                return
+            reply_turn.observation_closed = True
+        payload = {
+            "reply_id": reply_turn.observation_id,
+            "input_id": reply_turn.observation_input_id,
+            "turn_id": turn_id,
+            "character": self.lanlan_name,
+            "text": text,
+            "origin": reply_turn.observation_origin,
+            "audio_expected": reply_turn.observation_audio_expected,
+            "text_state": "closed" if fact == "reply.closed" else "started",
+            "close_reason": close_reason,
+            "occurred_at": time.time(),
+        }
+        schedule_conversation_fact_observed_best_effort(self.lanlan_name, fact=fact, payload=payload)
+
+    def _close_reply_observation(self, reply_turn: _ReplyTurn | None, reason: str) -> None:
+        if reply_turn is None or reply_turn.observation_closed:
+            return
+        owner = getattr(self, "_current_ai_turn_reply_owner", None)
+        text = self._current_ai_turn_text if owner is reply_turn else None
+        self._publish_reply_observation(
+            reply_turn, "reply.closed", text=text, close_reason=reason,
+            turn_id=reply_turn.observation_turn_id,
+        )
+
+    def _close_external_reply_observation(self, observation: dict | None, reason: str) -> None:
+        if not observation or observation.get("lifecycle") not in ("external_voice", "realtime", "proactive_direct") or observation.get("closed"):
+            return
+        observation["closed"] = True
+        text = self._current_ai_turn_text if getattr(self, "_current_ai_turn_observation", None) is observation else None
+        schedule_conversation_fact_observed_best_effort(
+            self.lanlan_name,
+            fact="reply.closed",
+            payload={
+                "reply_id": observation["reply_id"], "input_id": None,
+                "turn_id": observation.get("turn_id"),
+                "character": self.lanlan_name, "text": text or None,
+                "origin": observation["origin"], "audio_expected": observation.get("audio_expected"),
+                "text_state": "closed", "close_reason": reason, "occurred_at": time.time(),
+            },
+        )
 
     def _begin_reply_turn(
         self,
@@ -1574,6 +1639,17 @@ class TurnMixin:
             )
 
         logger.warning(f"[{self.lanlan_name}] 响应异常已丢弃 (reason={reason}, attempt={attempt}/{max_attempts}, will_retry={will_retry})")
+        # A truncation recovery turns this back into "completed" once its body
+        # is published (``_mark_recovery_published``); cut before that, the
+        # user saw nothing and the reply stays discarded.
+        external_observation = None
+        if not will_retry:
+            if reply_turn is not None:
+                reply_turn.observation_close_reason = "discarded"
+            observation = conversation_reply_observation.get()
+            if isinstance(observation, dict) and observation.get("lifecycle") in ("external_voice", "realtime", "proactive_direct"):
+                observation["close_reason"] = "discarded"
+                external_observation = observation
 
         # Detect final RESPONSE_TOO_LONG discard /RESPONSE_LENGTH_TRUNCATED recovery.
         _is_too_long_final = False
@@ -1717,6 +1793,13 @@ class TurnMixin:
                     reply_turn.reply_tail.completed = True
                     if getattr(reply_turn.reply_tail, "hooks", ()):
                         reply_turn.reply_tail.text = _truncated_text
+                # The truncated text is what the user got, so observers see
+                # this reply close as completed, not discarded.
+                if _truncated_text is not None:
+                    if reply_turn is not None:
+                        reply_turn.observation_close_reason = "completed"
+                    if external_observation is not None:
+                        external_observation["close_reason"] = "completed"
 
             try:
                 if _truncated_text is not None:
@@ -1757,6 +1840,11 @@ class TurnMixin:
                     # Match send_lanlan_response text handling by stripping emotion tags.
                     if not self._current_ai_turn_text:
                         self._current_ai_turn_started_at = time.time()
+                        self._current_ai_turn_reply_owner = reply_turn
+                        observation = conversation_reply_observation.get()
+                        self._current_ai_turn_observation = (
+                            observation if isinstance(observation, dict) and observation.get("lifecycle") in ("external_voice", "realtime", "proactive_direct") else None
+                        )
                         self._current_ai_turn_client_owned = (
                             _proactive_expected_sid.get() is not None
                             and isinstance(getattr(self, "session", None), OmniOfflineClient)
@@ -1792,6 +1880,7 @@ class TurnMixin:
                         request_id=active_request_id,
                         track_ai_turn=False,
                         on_published=_mark_recovery_published,
+                        reply_owner=reply_turn,
                         publish_if=may_clear_shared_output,
                     ),
                 ]
@@ -1835,6 +1924,9 @@ class TurnMixin:
                     self._active_text_request_id = None
 
         if not will_retry and not _is_too_long_final and _truncated_text is None:
+            self._close_reply_observation(reply_turn, "discarded")
+            if reply_turn is None:
+                self._close_external_reply_observation(conversation_reply_observation.get(), "discarded")
             # Compare-and-clear only while shared fields match this snapshot.
             if self._active_text_request_id == active_request_id:
                 self._active_text_request_id = None
@@ -1912,7 +2004,8 @@ class TurnMixin:
             await self.send_audio_done(self.current_speech_id)
 
     def _publish_user_utterance_to_plugin_bus(
-        self, text: Optional[str], *, is_voice_source: bool, ts: float | None = None
+        self, text: Optional[str], *, is_voice_source: bool, ts: float | None = None,
+        input_id: str | None = None,
     ) -> None:
         """Publish one verbatim user utterance to the plugin bus's user-context bucket.
 
@@ -1934,10 +2027,12 @@ class TurnMixin:
         cleaned = text.strip()
         if not cleaned:
             return
+        published_at = time.time() if ts is None else ts
+        event_id = uuid4().hex
         # Plugin conversations bus: original user wording, paired with _publish_ai_message_to_plugin_bus;
         # voice timestamps reflect transcription arrival, not guaranteed actual cross-character speech order.
         try:
-            published_at = time.time() if ts is None else ts
+            asyncio.get_running_loop()
             # Speech ids remain diagnostic context; each record is one message.
             user_turn_id = str(getattr(self, "current_speech_id", "") or "")
             self._fire_task(publish_conversation_turn_observed_best_effort(
@@ -1951,13 +2046,17 @@ class TurnMixin:
                     "role": "master",
                     "is_voice": bool(is_voice_source),
                     "ts": published_at,
+                    **({"input_id": input_id} if input_id else {}),
                 },
                 ts=published_at,
+                event_id=event_id,
             ))
         except Exception:
             logger.debug("[plugin-bus] user message not published", exc_info=True)
         event = {
             "type": "user_message",
+            "event_id": event_id,
+            "_ts": published_at,
             "content": cleaned,
             "lanlan": self.lanlan_name,
             "is_voice": bool(is_voice_source),
@@ -2661,17 +2760,7 @@ class TurnMixin:
                 )
             except Exception:
                 print('[chat-sync] original_save_failed')
-        # The frontend matches its optimistic bubble using the frozen request ID.
-        if original_id and not is_voice_source and self.websocket:
-            try:
-                await self.websocket.send_json({
-                    'type': 'chat_original_identity', 'role': 'user',
-                    'request_id': chat_request_id or user_message.get('request_id'),
-                    'message_id': original_id,
-                })
-            except Exception:
-                pass
-        
+
         # Only voice-mode OmniRealtimeClient sends user transcription to frontend;
         # text frontends display locally, so backend echoes would duplicate it.
         # [DIAG] Blank chat after character switching: record trigger/session type/WS state.
@@ -2691,9 +2780,6 @@ class TurnMixin:
                         "type": "user_transcript",
                         "text": transcript.strip()
                     }
-                    # ASR identities are also generated by the backend, never the UI.
-                    if original_id:
-                        message['chat_original_id'] = original_id
                     if source_game_route_identity is not None:
                         game_type, session_id, route_instance_id = source_game_route_identity
                         message["game_type"] = game_type
@@ -2808,6 +2894,7 @@ class TurnMixin:
         expected_speech_id: str | None = None,
         expected_user_engagement_time: Any = Ellipsis,
         on_published: Callable[[float], None] | None = None,
+        reply_owner: _ReplyTurn | None = None,
         publish_if: Callable[[], bool] | None = None,
     ):
         """Qwen output transcription callback: usable for frontend display/cache/sync.
@@ -2868,44 +2955,8 @@ class TurnMixin:
             "request_id": effective_request_id,
         }
         # Source proof is server-created and immutable for this particular reply.
-        voice_session = getattr(self, "session", None)
-        gemini_source = getattr(voice_session, "_gemini_tool_response_source", None)
-        explicit_origin = getattr(self, "_chat_original_turns", {}).get(str(effective_turn_id or ""), {}).get("origin")
-        if (getattr(voice_session, "_is_gemini", False) is True
-            and isinstance(gemini_source, tuple) and len(gemini_source) == 2
-            and explicit_origin not in ("agent", "tool")
-            and (explicit_origin != "proactive" or (
-                getattr(gemini_source[0], "proactive_outcome_owner", None) is not None
-                and gemini_source[0].proactive_outcome_owner
-                is getattr(voice_session, "_gemini_proactive_outcome_owner", None)
-            ))
-            and voice_session._tool_task_owner_is_current(gemini_source[0])):
-            # Only actual Gemini tool dispatch/result continuation may label
-            # this response local. A still-current cancellation scope alone
-            # does not prove that a later SERVER_VAD voice reply used a tool.
-            # A proactive reply can itself invoke tools, but requires that
-            # dispatch's frozen injection owner, not a preceding tool token.
-            # A fixed tool origin already carries this evidence on all chunks.
-            mark_tool_turn(self, effective_turn_id)
-        tool_owner = getattr(self, "_chat_original_tool_owner", None)
-        if tool_owner is not None:
-            session, scope, marked_speech_id = tool_owner
-            explicit_origin = getattr(self, "_chat_original_turns", {}).get(str(effective_turn_id or ""), {}).get("origin")
-            if effective_turn_id != marked_speech_id and explicit_origin in ("proactive", "agent"):
-                # A later explicit injection is independent, even when it intentionally keeps the
-                # provider tool scope. In particular, ordinary proactive speech must not inherit tools.
-                self._chat_original_tool_owner = None
-            elif session is getattr(self, "session", None) and session._tool_task_owner_is_current(scope):
-                if effective_turn_id != marked_speech_id:
-                    # Provider continuations may rotate speech IDs inside one user tool scope.
-                    # Mark each fixed reply once, retaining pre-tool prefixes and never tainting a new user turn.
-                    mark_tool_turn(self, effective_turn_id)
-                    self._chat_original_tool_owner = (session, scope, effective_turn_id)
-            else:
-                self._chat_original_tool_owner = None
         proof = mark_turn_origin(self, effective_turn_id, 'chat')
         message['chat_original_source'] = proof
-        message['chat_original_id'] = proof['recordId']
         if metadata:
             message["metadata"] = metadata
 
@@ -2935,6 +2986,11 @@ class TurnMixin:
             if not self._current_ai_turn_text:
                 # Record speech-onset time at turn start for plugin-bus timestamps on flush.
                 self._current_ai_turn_started_at = time.time()
+                self._current_ai_turn_reply_owner = reply_owner
+                observation = conversation_reply_observation.get()
+                self._current_ai_turn_observation = (
+                    observation if isinstance(observation, dict) and observation.get("lifecycle") in ("external_voice", "realtime", "proactive_direct") else None
+                )
                 self._current_ai_turn_client_owned = (
                     _proactive_expected_sid.get() is not None
                     and isinstance(getattr(self, "session", None), OmniOfflineClient)
@@ -2947,12 +3003,55 @@ class TurnMixin:
                         if getattr(getattr(self, "state", None), "owner", None) is TurnOwner.PROACTIVE
                         else "assistant_message"
                     )
+            current_observation = conversation_reply_observation.get()
+            buffered_observation = getattr(self, "_current_ai_turn_observation", None)
+            if buffered_observation is not None and current_observation is not buffered_observation:
+                self._current_ai_turn_observation = None
             self._current_ai_turn_text += text_clean
             self._current_ai_turn_id = str(effective_turn_id or '')
             if remember_voice_echo:
                 self._remember_recent_ai_voice_echo(text_clean)
         published_at = time.time()
         self.sync_message_queue.put({"type": "json", "data": message})
+        if reply_owner is not None and text_clean.strip():
+            reply_owner.observation_turn_id = str(effective_turn_id) if effective_turn_id else None
+            if not reply_owner.observation_started:
+                reply_owner.observation_started = True
+                self._publish_reply_observation(
+                    reply_owner, "reply.started", text=text_clean,
+                    turn_id=reply_owner.observation_turn_id,
+                )
+        observation = conversation_reply_observation.get()
+        if reply_owner is None and observation is not None and text_clean.strip() and not observation.get("closed"):
+            observation["turn_id"] = str(effective_turn_id) if effective_turn_id else None
+        if reply_owner is None and observation is not None and isinstance(observation.get("_text_snapshot"), str):
+            schedule_conversation_fact_observed_best_effort(
+                self.lanlan_name,
+                fact="reply.updated",
+                payload={
+                    "reply_id": observation["reply_id"], "character": self.lanlan_name,
+                    "text": self.emotion_pattern.sub('', observation["_text_snapshot"]).strip(),
+                    "occurred_at": published_at,
+                },
+            )
+        if reply_owner is None and observation is not None and text_clean.strip() and not observation["started"]:
+            observation["started"] = True
+            schedule_conversation_fact_observed_best_effort(
+                self.lanlan_name,
+                fact="reply.started",
+                payload={
+                    "reply_id": observation["reply_id"],
+                    "input_id": None,
+                    "turn_id": observation.get("turn_id"),
+                    "character": self.lanlan_name,
+                    "text": text_clean,
+                    "origin": observation["origin"],
+                    "audio_expected": observation.get("audio_expected"),
+                    "text_state": "started",
+                    "close_reason": None,
+                    "occurred_at": published_at,
+                },
+            )
         logger.debug(
             "[voice-chain] stage=model_text_publish turn_id=%s request_id=%s first=%s text_len=%d",
             effective_turn_id,

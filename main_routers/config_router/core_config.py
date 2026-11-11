@@ -48,6 +48,7 @@ CORE_CONFIG_ASSIST_API_KEY_FIELDS = (
     'assistApiKeyClaude', 'assistApiKeyKimiCode', 'assistApiKeyOpenrouter',
     'assistApiKeyOrcarouter',
     'assistApiKeyRequesty',
+    'assistApiKeyOpper',
     'assistApiKeyAtlascloud',
 )
 
@@ -228,7 +229,12 @@ async def get_core_config_api():
         except Exception:
             logger.warning('Unable to probe local ASR availability', exc_info=True)
             _local_asr_available = False
-        _fallback_providers = {_core_api_provider, _assist_api_provider}
+        # Assist-only providers never borrow coreApiKey, matching get_core_config().
+        from utils.config_manager import get_core_api_profiles
+        _core_capable_providers = set(await asyncio.to_thread(get_core_api_profiles))
+        _fallback_providers = (
+            {_core_api_provider, _assist_api_provider} & _core_capable_providers
+        )
         _doubao_tts_shared_key = ''
         if str(core_cfg.get('ttsModelProvider') or '').strip() == 'doubao_tts':
             _doubao_tts_shared_key = core_cfg.get('ttsModelApiKey', '')
@@ -275,6 +281,7 @@ async def get_core_config_api():
             "assistApiKeyOpenrouter": core_cfg.get('assistApiKeyOpenrouter', '') or _fb('openrouter'),
             "assistApiKeyOrcarouter": core_cfg.get('assistApiKeyOrcarouter', '') or _fb('orcarouter'),
             "assistApiKeyRequesty": core_cfg.get('assistApiKeyRequesty', ''),
+            "assistApiKeyOpper": core_cfg.get('assistApiKeyOpper', ''),
             "assistApiKeyAtlascloud": core_cfg.get('assistApiKeyAtlascloud', ''),
             "mcpToken": core_cfg.get('mcpToken', ''),
             "openclawUrl": core_cfg.get('openclawUrl'),

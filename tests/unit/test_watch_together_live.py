@@ -235,6 +235,21 @@ async def test_intermission_runs_without_held_cues(scene):
 
 
 @pytest.mark.asyncio
+async def test_only_spoken_live_lines_are_counted(scene, monkeypatch):
+    from utils import instrument
+    counted = []
+    monkeypatch.setattr(instrument, 'counter', lambda name, value=1, **dims: counted.append((name, dims)))
+    await router.live(_request(action='interject', position=10, gap=20))
+    spoken = scene.speak.return_value
+    scene.speak.return_value = []
+    await router.live(_request(action='intermission'))
+    assert counted == []
+    scene.speak.return_value = spoken
+    await router.live(_request(action='intermission'))
+    assert counted == [('watch_together_live_spoken', {'action': 'intermission'})]
+
+
+@pytest.mark.asyncio
 async def test_generation_failure_and_route_end_release_cues(scene):
     failed = _cue('failed')
     scene.inbox.accept(failed)

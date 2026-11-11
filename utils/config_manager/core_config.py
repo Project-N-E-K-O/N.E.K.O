@@ -1090,7 +1090,10 @@ class CoreConfigMixin:
         _assist_api_provider = core_cfg.get('assistApi')
         if not _assist_api_provider:
             _assist_api_provider = 'free' if _core_api_provider == 'free' else 'qwen'
-        _fallback_providers = {_core_api_provider, _assist_api_provider}
+        # An assist-only provider (absent from core_api_providers) can never be coreApi, so
+        # coreApiKey always belongs to another vendor; it must not be sent to that provider.
+        _core_capable_providers = set(get_core_api_profiles())
+        _fallback_providers = {_core_api_provider, _assist_api_provider} & _core_capable_providers
         _core_key_fallback = config['CORE_API_KEY'] if config['CORE_API_KEY'] != 'free-access' else ''
 
         def _fb(provider: str) -> str:
@@ -1121,8 +1124,10 @@ class CoreConfigMixin:
         config['ASSIST_API_KEY_CLAUDE'] = core_cfg.get('assistApiKeyClaude', '') or _fb('claude')
         config['ASSIST_API_KEY_OPENROUTER'] = core_cfg.get('assistApiKeyOpenrouter', '') or _fb('openrouter')
         config['ASSIST_API_KEY_ORCAROUTER'] = core_cfg.get('assistApiKeyOrcarouter', '') or _fb('orcarouter')
-        # Requesty and Atlas Cloud are assist-only; a realtime core key cannot authenticate them.
+        # Requesty, Opper and Atlas Cloud are assist-only; a realtime core key cannot
+        # authenticate their gateways and must not be sent to them.
         config['ASSIST_API_KEY_REQUESTY'] = core_cfg.get('assistApiKeyRequesty', '')
+        config['ASSIST_API_KEY_OPPER'] = core_cfg.get('assistApiKeyOpper', '')
         config['ASSIST_API_KEY_ATLASCLOUD'] = core_cfg.get('assistApiKeyAtlascloud', '')
 
         if core_cfg.get('mcpToken'):
@@ -1257,19 +1262,21 @@ class CoreConfigMixin:
             if use_mimo_token_plan
             else assist_api_key_fields.get(assist_api_value)
         )
-        is_dedicated_key_assist = assist_api_value in ('requesty', 'atlascloud')
+        is_assist_only = assist_api_value not in _core_capable_providers
         derived_key = ''
         if key_field:
             derived_key = config.get(key_field, '')
-            if derived_key and not is_dedicated_key_assist:
+            # AUDIO_API_KEY authenticates CosyVoice and names its voice bucket; an
+            # assist-only provider's text key is neither, so it must not replace it.
+            if derived_key and not is_assist_only:
                 config['AUDIO_API_KEY'] = derived_key
 
         # AUDIO_API_KEY also backs CosyVoice and saved voice buckets; preserve
         # its legacy fallback independently of the text router credential.
         if not config['AUDIO_API_KEY']:
             config['AUDIO_API_KEY'] = _core_key_fallback
-        if derived_key or is_dedicated_key_assist:
-            # A dedicated-key gateway's missing key must stay empty for text/Agent.
+        if derived_key or is_assist_only:
+            # An assist-only provider's missing key must stay empty for text/Agent.
             config['OPENROUTER_API_KEY'] = derived_key
         elif not config['OPENROUTER_API_KEY']:
             config['OPENROUTER_API_KEY'] = _core_key_fallback

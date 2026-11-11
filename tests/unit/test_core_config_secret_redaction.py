@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 
@@ -16,6 +17,7 @@ _ASSIST_API_KEY_FIELDS = (
     'assistApiKeyClaude', 'assistApiKeyKimiCode', 'assistApiKeyOpenrouter',
     'assistApiKeyOrcarouter',
     'assistApiKeyRequesty',
+    'assistApiKeyOpper',
     'assistApiKeyAtlascloud',
 )
 
@@ -181,6 +183,62 @@ def test_requesty_readback_uses_only_its_dedicated_key(
     )
     assert 'sk-other-core' not in json.dumps(response)
     assert 'sk-requesty-dedicated' not in json.dumps(response)
+
+
+def _assist_only_key_fields() -> list[tuple[str, str]]:
+    path = Path(__file__).resolve().parents[2] / 'config' / 'api_providers.json'
+    catalog = json.loads(path.read_text(encoding='utf-8'))
+    providers = (
+        set(catalog['assist_api_providers'])
+        - set(catalog['core_api_providers'])
+        - {'vllm_omni'}
+    )
+    registry = catalog['api_key_registry']
+    return [(p, registry[p]['config_field']) for p in sorted(providers)]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(('provider', 'config_field'), _assist_only_key_fields())
+def test_assist_only_readback_never_shows_core_key(
+    config_manager, core_config_router, provider, config_field,
+):
+    """An assist-only provider's empty key must read back empty, not as coreApiKey."""
+    _write_core_config(config_manager, {
+        'coreApi': 'qwen',
+        'coreApiKey': 'sk-other-core',
+        'assistApi': provider,
+    })
+    response = asyncio.run(core_config_router.get_core_config_api())
+    assert response['success'] is True
+    assert response[config_field] == ''
+    assert response['assist_api_key_display'] == ''
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('core_provider', ['qwen', 'openai', 'free'])
+@pytest.mark.parametrize('opper_key', ['', 'sk-opper-dedicated'])
+def test_opper_readback_uses_only_its_dedicated_key(
+    config_manager, core_config_router, core_provider, opper_key,
+):
+    """An unrelated core credential must not appear as a configured Opper key."""
+    core_key = 'free-access' if core_provider == 'free' else 'sk-other-core'
+    _write_core_config(config_manager, {
+        'coreApi': core_provider,
+        'coreApiKey': core_key,
+        'assistApi': 'opper',
+        'assistApiKeyOpper': opper_key,
+    })
+    response = asyncio.run(core_config_router.get_core_config_api())
+    assert response['success'] is True
+    assert response['assistApi'] == 'opper'
+    assert response['assistApiKeyOpper'] == (
+        core_config_router.CORE_CONFIG_SECRET_SENTINEL if opper_key else ''
+    )
+    assert response['assist_api_key_display'] == (
+        core_config_router.mask_core_config_secret_for_display(opper_key)
+    )
+    assert 'sk-other-core' not in json.dumps(response)
+    assert 'sk-opper-dedicated' not in json.dumps(response)
 
 
 @pytest.mark.unit

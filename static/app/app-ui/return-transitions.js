@@ -347,7 +347,7 @@
         if (!src) return '';
         try {
             const url = new URL(src, window.location.href);
-            if (!/\/static\/assets\/cat-resources\/appearance\/.+\.gif$/i.test(url.pathname)) {
+            if (!/\/static\/assets\/cat-resources\/appearance\/.+\.(?:gif|webp)$/i.test(url.pathname)) {
                 return src;
             }
             url.searchParams.set('reveal', String(playbackToken || Date.now()));
@@ -1052,6 +1052,12 @@
     function clearReturnButtonBallOnlyVisualState(container) {
         const button = getReturnButtonElement(container);
         if (!button || !button.classList) return;
+        const visualActionClassNames = [
+            'is-cat1-visual-action',
+            'is-cat1-happy',
+            'is-cat1-touching',
+            'is-cat1-cosplay-1'
+        ];
         [
             'is-tier-transitioning',
             'is-thought-bubble-active',
@@ -1059,6 +1065,7 @@
             'is-thought-bubble-popping',
             'is-cat1-facing-right',
             'is-cat1-walking',
+            ...visualActionClassNames,
             'is-cat1-stretching',
             'is-cat1-playing',
             'is-cat1-eating',
@@ -1066,6 +1073,11 @@
             'is-drag-action',
             'is-drag-action-pending'
         ].forEach((className) => button.classList.remove(className));
+        if (container && container.classList) {
+            visualActionClassNames.forEach((className) => container.classList.remove(className));
+        }
+        button.removeAttribute('data-neko-cat1-visual-action');
+        button.removeAttribute('data-neko-cat1-visual-layout');
         if (typeof I.clearNekoIdleCat1EdgePeek === 'function') {
             I.clearNekoIdleCat1EdgePeek(container);
         }

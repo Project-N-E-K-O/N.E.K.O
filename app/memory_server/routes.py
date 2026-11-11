@@ -51,6 +51,7 @@ from config.prompts.prompts_memory import (
     _normalize_memory_prompt_lang,
 )
 from utils.frontend_utils import get_timestamp
+from utils.recent_file import RecentFileLockTimeout
 from utils.llm_tool_leak_filter import (
     strip_tool_call_leaks,
     strip_tool_call_leaks_from_parts,
@@ -77,6 +78,7 @@ from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writa
 from memory.external_markdown_import import MAX_ENTRIES, MAX_ENTRY_CHARS
 from memory.outbox import OP_PERSIST_PROMPT_LOCALE
 from memory.persona.fusion import ExternalMemoryImportTooLargeError
+from memory.pinned_facts import due_date as pinned_due_date
 from utils.natural_expression_candidates import (
     CandidateMinerError,
     SourceMessage,
@@ -84,7 +86,7 @@ from utils.natural_expression_candidates import (
     normalize_language,
 )
 
-from . import gates, locale_state, outbox_infra, post_turn, review, runtime
+from . import gates, habitual_phrase_loop, locale_state, outbox_infra, post_turn, review, runtime
 from ._shared import logger, validate_lanlan_name
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from .rows import _has_human_messages
@@ -1135,31 +1137,80 @@ async def _safe_auto_promote(lanlan_name: str) -> None:
         logger.debug(f"[ReflectAPI] {lanlan_name}: 后台 auto_promote 失败: {e}")
 
 
+async def _due_commitment_topic(lanlan_name: str) -> dict | None:
+    """The open promise proactive chat may lead with, ``{id, text, due}``; None if none.
+
+    At most one: due soon and not offered lately (see
+    PinnedFactStore.get_due_commitment). Like the pinned section itself it
+    is private-chat content, and proactive chat speaks in the private chat.
+    """
+    store = runtime.pinned_fact_store
+    if store is None:
+        return None
+    try:
+        entry = await store.aget_due_commitment(lanlan_name)
+    except Exception as e:
+        logger.debug(f"[ReflectAPI] {lanlan_name}: 承诺读取失败: {type(e).__name__}")
+        return None
+    if entry is None:
+        return None
+    return {"id": entry["id"], "text": entry["text"], "due": pinned_due_date(entry)}
+
+
+async def _record_surfaced_commitments(lanlan_name: str, pinned_ids: list[str]) -> bool:
+    """Start the offer cooldown of the promises proactive chat was given; True once written."""
+    store = runtime.pinned_fact_store
+    if store is None or not pinned_ids:
+        return False
+    try:
+        written = await store.amark_surfaced(lanlan_name, pinned_ids)
+    except Exception as e:
+        logger.debug(f"[ReflectAPI] {lanlan_name}: 承诺 surfaced 记录失败: {type(e).__name__}")
+        return False
+    return bool(written)
+
+
 @app.get("/followup_topics/{lanlan_name}")
 async def api_followup_topics(lanlan_name: str):
-    """Get follow-up topic candidates (does not mark them surfaced; the caller must call /record_surfaced afterwards)."""
+    """Get follow-up topic candidates (does not mark them surfaced; the caller must call /record_surfaced afterwards).
+
+    ``commitment`` is the open promise due soonest, offered ahead of the
+    reflection topics; its id comes back through /record_surfaced like theirs.
+    """
     lanlan_name = validate_lanlan_name(lanlan_name)
     try:
         topics = await runtime.reflection_engine.aget_followup_topics(lanlan_name)
     except Exception as e:
         logger.debug(f"[ReflectAPI] {lanlan_name}: get_followup_topics 失败: {e}")
         topics = []
-    return {"topics": topics}
+    return {"topics": topics, "commitment": await _due_commitment_topic(lanlan_name)}
 
 
 @app.post("/record_surfaced/{lanlan_name}")
 async def api_record_surfaced(request: Request, lanlan_name: str):
-    """Record which reflections this proactive chat mentioned, refreshing the cooldown."""
+    """Record which reflections this proactive chat mentioned, refreshing the cooldown.
+
+    ``commitment_ids`` (the promise from /followup_topics, when it was
+    offered) start that promise's own offer cooldown in the pinned section;
+    ``commitments_recorded`` tells the caller whether that write landed, so
+    a failed one is retried with the delivery record.
+    """
     lanlan_name = validate_lanlan_name(lanlan_name)
     body = await request.json()
+    result: dict[str, object] = {"ok": True}
+    commitment_ids = body.get("commitment_ids") or []
+    if commitment_ids:
+        result["commitments_recorded"] = isinstance(commitment_ids, list) and await _record_surfaced_commitments(
+            lanlan_name, commitment_ids,
+        )
     reflection_ids = body.get("reflection_ids", [])
     if not reflection_ids:
-        return {"ok": True}
+        return result
     try:
         await runtime.reflection_engine.arecord_surfaced(lanlan_name, reflection_ids)
     except Exception as e:
         logger.debug(f"[ReflectAPI] {lanlan_name}: record_surfaced 失败: {e}")
-    return {"ok": True}
+    return result
 
 
 @app.post("/cache/{lanlan_name}")
@@ -1861,11 +1912,15 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
             if _has_human_messages(input_history):
                 await gates._aclear_review_clean(lanlan_name)
             logger.info(f"[MemoryServer] 收到 {lanlan_name} 的对话历史处理请求，消息数: {len(input_history)}")
-            await runtime.recent_history_manager.update_history(
-                input_history,
-                lanlan_name,
-                on_compress_done=review._on_compress_done,
-            )
+            # Not under the settle lock, but a starting session waits for this request to come
+            # back (its memory writes are flushed first), so its summary is preemptible too.
+            with runtime._summary_preemption(lanlan_name) as preempted:
+                await runtime.recent_history_manager.update_history(
+                    input_history,
+                    lanlan_name,
+                    on_compress_done=review._on_compress_done,
+                    preempted=preempted,
+                )
             await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
 
             # Asynchronous fact extraction (nonblocking response, silently skip failures).
@@ -1920,13 +1975,16 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
                 await gates._aclear_review_clean(lanlan_name)
             logger.info(f"[MemoryServer] renew: 收到 {lanlan_name} 的对话历史处理请求，消息数: {len(input_history)}")
             # Lock first-turn summary, blocking /new_dialog until summary and timestamp persist.
+            # A cold-start /new_dialog preempts the summary instead (see runtime._preempting_summaries).
             async with runtime._get_settle_lock(lanlan_name):
-                await runtime.recent_history_manager.update_history(
-                    input_history,
-                    lanlan_name,
-                    detailed=True,
-                    on_compress_done=review._on_compress_done,
-                )
+                with runtime._summary_preemption(lanlan_name) as preempted:
+                    await runtime.recent_history_manager.update_history(
+                        input_history,
+                        lanlan_name,
+                        detailed=True,
+                        on_compress_done=review._on_compress_done,
+                        preempted=preempted,
+                    )
                 await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
 
             # Run the following outside lock, without blocking /new_dialog.
@@ -1977,12 +2035,14 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
             async with runtime._get_settle_lock(lanlan_name):
                 if input_history:
                     await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
-                await runtime.recent_history_manager.update_history(
-                    [],
-                    lanlan_name,
-                    detailed=True,
-                    on_compress_done=review._on_compress_done,
-                )
+                with runtime._summary_preemption(lanlan_name) as preempted:
+                    await runtime.recent_history_manager.update_history(
+                        [],
+                        lanlan_name,
+                        detailed=True,
+                        on_compress_done=review._on_compress_done,
+                        preempted=preempted,
+                    )
 
             if input_history or is_supported_language_code(request.language):
                 await post_turn._spawn_outbox_post_turn_signals(
@@ -2073,10 +2133,38 @@ def _without_tool_call_leaks(history) -> list:
     return cleaned
 
 
+# Below the game pregame caller's 5s HTTP timeout.
+_RECENT_HISTORY_LOCK_TIMEOUT_SECONDS = 4.0
+
+
 @app.get("/get_recent_history/{lanlan_name}")
 async def get_recent_history(lanlan_name: str, language: str | None = None):
     lanlan_name = validate_lanlan_name(lanlan_name)
     _lang = _normalize_memory_prompt_lang(_activate_request_language(language))
+    # The only caller (game pregame) gives up after 5s and falls back to empty history.
+    # One deadline covers every step that can queue on the default executor or the recent
+    # lock, and the worker thread's own lock wait ends at it too instead of outliving the 503.
+    deadline = time.monotonic() + _RECENT_HISTORY_LOCK_TIMEOUT_SECONDS
+    try:
+        async with asyncio.timeout(_RECENT_HISTORY_LOCK_TIMEOUT_SECONDS):
+            return await _render_recent_history(lanlan_name, _lang, deadline)
+    except RecentFileLockTimeout:
+        # Already reported by the lock or the manager; one stuck wait counts once.
+        return JSONResponse(
+            {"status": "error", "message": "recent history is busy"}, status_code=503,
+        )
+    except TimeoutError:
+        from utils.stall_report import report_stall
+        report_stall(
+            f"/get_recent_history {lanlan_name} {_RECENT_HISTORY_LOCK_TIMEOUT_SECONDS}s 内未完成，返回 503",
+            loop=asyncio.get_running_loop(),
+        )
+        return JSONResponse(
+            {"status": "error", "message": "recent history is busy"}, status_code=503,
+        )
+
+
+async def _render_recent_history(lanlan_name: str, _lang: str, deadline: float):
     # Check whether character exists in configuration.
     try:
         character_data = await runtime._config_manager.aload_characters()
@@ -2088,9 +2176,10 @@ async def get_recent_history(lanlan_name: str, language: str | None = None):
         logger.error(f"检查角色配置失败: {e}")
         return _loc(NO_RECENT_HISTORY, _lang)
 
-    history = _screen_guarded_recent_history(
-        await runtime.recent_history_manager.aget_recent_history(lanlan_name)
+    raw_history = await runtime.recent_history_manager.aget_recent_history(
+        lanlan_name, lock_timeout=max(0.0, deadline - time.monotonic()),
     )
+    history = _screen_guarded_recent_history(raw_history)
     master_name, _, _, _, name_mapping, _, _, _, _ = await runtime._config_manager.aget_character_data()
     name_mapping['ai'] = lanlan_name
     result = _loc(RECENT_HISTORY_INTRO, _lang).format(name=lanlan_name)
@@ -3009,6 +3098,9 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
                 "speaker_provenance": speaker_provenance,
                 "speaker_label": speaker_label,
                 "messages": input_history,
+                "label_own_words": FactStore.group_history_has_own_words(
+                    input_history, subject,
+                ),
                 "trust_state": trust_state,
             }],
         )
@@ -3063,6 +3155,9 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
             speaker_label=speaker_label,
             speaker_provenance=speaker_provenance,
             reconciled_facts=reconciled_facts,
+            label_own_words=FactStore.group_history_has_own_words(
+                input_history, subject,
+            ),
         )
     except FactExtractionFailed as exc:
         raise HTTPException(
@@ -4152,6 +4247,7 @@ async def _generate_keyed_facts(
             context["messages"],
             treat_malformed_as_failure=True,
             speaker_label=context.get("speaker_label"),
+            label_own_words=bool(context.get("label_own_words")),
         )
         if extracted is None:
             raise failure
@@ -6054,30 +6150,16 @@ async def _get_scoped_context(lanlan_name: str, req: ScopedContextRequest):
     # holds. Authorization uses the flattened expansion, while rendering gets
     # the participant groups so budget, heading and id stay one-per-person.
     groups, subjects = _fold_request_subjects(req.subjects)
-    # Suppression expiry only occurs in aupdate_suppressions, previously called only by
-    # legacy /get_settings and /new_dialog. Group-only deployments never reach
-    # them, making scoped reflections permanently invisible after their first suppression.
-    try:
-        await runtime.reflection_engine.aupdate_suppressions(lanlan_name)
-    except Exception as exc:
-        logger.warning(f"[scoped] 刷新 reflection suppression 失败: {exc}")
-    pending_reflections = await runtime.reflection_engine.aget_pending_reflections(
-        lanlan_name,
-        subjects=subjects,
-        include_legacy_private=False,
-    )
-    confirmed_reflections = await runtime.reflection_engine.aget_confirmed_reflections(
-        lanlan_name,
-        subjects=subjects,
-        include_legacy_private=False,
-    )
-    rendered = await runtime.persona_manager.arender_persona_markdown(
-        lanlan_name,
-        pending_reflections,
-        confirmed_reflections,
-        subjects=subjects,
-        include_legacy_private=False,
-        participant_groups=groups,
+    # The render the weekly scoped review reads too (one definition, so the
+    # two cannot drift). It refreshes suppressions first: their expiry only
+    # happens there, and group-only deployments never reach /new_dialog, so
+    # without it a scoped reflection stays invisible after its first
+    # suppression.
+    from memory.introspection import arender_scoped_injected_memory
+
+    rendered = await arender_scoped_injected_memory(
+        runtime.persona_manager, runtime.reflection_engine, lanlan_name,
+        subjects, participant_groups=groups,
     )
     return PlainTextResponse(rendered)
 
@@ -6190,6 +6272,15 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest, *, 
         )
     subject = req.subject.to_domain()
     _validate_target_epochs(req, subject)
+    # A pending snapshot journal restores its before-image when recovered, which
+    # would bring back whatever this erase removes. Settle it first or refuse;
+    # the erase checks again once it holds the lock snapshot commits take.
+    from memory.long_term_sync import LongTermMemoryRecoveryRequired, require_consistent_views
+    from .long_term_sync import recover_pending_snapshot
+    try:
+        await recover_pending_snapshot(lanlan_name)
+    except LongTermMemoryRecoveryRequired as error:
+        raise HTTPException(status_code=503, detail="long_term_memory_recovery_required") from error
     from memory import trust_store as _trust_store
     if not _trust_store.trust_snapshot().loaded:
         # FAIL CLOSED. With the pool unreadable the fan-out set is unknown, and
@@ -6316,6 +6407,10 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest, *, 
     # arguments ("delete canonical last") are not enough.
     await runtime._reload_lock.acquire()
     try:
+        await asyncio.to_thread(
+            require_consistent_views,
+            os.path.join(runtime._config_manager.memory_dir, lanlan_name),
+        )
         for target in erase_targets:
             lock = runtime.fact_store._get_subject_forget_transaction_lock(
                 lanlan_name, target,
@@ -6416,6 +6511,8 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest, *, 
             )
     except _ForgetAlreadyErased:
         raise
+    except LongTermMemoryRecoveryRequired as exc:
+        raise HTTPException(status_code=503, detail="long_term_memory_recovery_required") from exc
     except Exception as exc:
         logger.error(f"[scoped_forget] {lanlan_name}: 删除失败: {exc}")
         raise HTTPException(
@@ -7646,6 +7743,31 @@ async def get_settings(lanlan_name: str):
     )
 
 
+@app.get("/internal/memory/{lanlan_name}/persona")
+async def get_private_persona_snapshot(lanlan_name: str):
+    """Return the native retained private persona projection."""
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    manager = runtime.persona_manager
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Memory components are not ready")
+    from memory.long_term_sync import LongTermMemoryRecoveryRequired
+    try:
+        return await manager.aget_private_persona_snapshot(lanlan_name)
+    except LongTermMemoryRecoveryRequired as exc:
+        raise HTTPException(status_code=503, detail="long_term_memory_recovery_required") from exc
+    except OverflowError as exc:
+        raise HTTPException(status_code=413, detail={
+            "code": "MEMORY_RESPONSE_TOO_LARGE",
+            "message": "Persona snapshot exceeds internal limit",
+        }) from exc
+    except (ValueError, TypeError, UnicodeError) as exc:
+        raise HTTPException(status_code=500, detail={
+            "code": "MEMORY_PROTOCOL_ERROR", "message": "Malformed persona data",
+        }) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail="Persona storage unavailable") from exc
+
+
 @app.get("/get_persona/{lanlan_name}")
 async def get_persona(lanlan_name: str):
     """Return the full persona JSON (for the UI / memory_browser)."""
@@ -7811,15 +7933,41 @@ async def set_prompt_locale_preference(
     }
 
 
+# How long POST /preempt_summary keeps preempting summaries that start after it; the
+# cold-start /new_dialog that follows closes the window sooner.
+PREEMPT_SUMMARY_WINDOW_S = 10.0
+
+
+@app.post("/preempt_summary/{lanlan_name}")
+async def preempt_summary(lanlan_name: str):
+    """Abandon ``lanlan_name``'s summary LLM calls to background compression (#3601).
+
+    The main server calls this before a cold start: it then waits for its own queued memory
+    writes, which may be stuck behind a summary, and only then sends
+    ``/new_dialog?preempt_summary=true``.
+    """
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    runtime._open_summary_preemption_window(lanlan_name, PREEMPT_SUMMARY_WINDOW_S)
+    return {"status": "ok"}
+
+
 @app.get("/new_dialog/{lanlan_name}")
 async def new_dialog(
     lanlan_name: str,
     language: str | None = None,
     render_language: str | None = None,
+    preempt_summary: bool = False,
 ):
+    """``preempt_summary``: the caller is starting a conversation and waits for this response
+    (#3601), so a summary LLM call holding the settle lock is abandoned to background
+    compression instead of being waited for. Hot-swap preparation leaves it off: the old
+    session is still serving, and the new one should start from the finished summary."""
     request_language = language if is_supported_language_code(language) else render_language
     with language_context(_activate_request_language(request_language)):
-        return await _new_dialog(lanlan_name, language, render_language)
+        if not preempt_summary:
+            return await _new_dialog(lanlan_name, language, render_language)
+        with runtime._preempting_summaries(validate_lanlan_name(lanlan_name)):
+            return await _new_dialog(lanlan_name, language, render_language)
 
 
 async def _write_new_dialog_locale(
@@ -7932,6 +8080,24 @@ outbox_infra.register_outbox_handler(
 )
 
 
+async def _arender_behavior_notes(name: str, lang: str) -> str:
+    """The behavior-note block, under the user's "natural expression" switch.
+
+    A read of one small file; nothing is computed on the session-start path, and
+    a failure costs only this block.
+    """
+    from memory.behavior_notes import get_behavior_note_store
+    from utils.slop_filter import is_slop_filter_enabled
+
+    try:
+        if not await asyncio.to_thread(is_slop_filter_enabled):
+            return ""
+        return await get_behavior_note_store().aprompt_block(name, lang)
+    except Exception as e:
+        logger.warning(f"[BehaviorNotes] {name}: 提醒注入跳过: {type(e).__name__}")
+        return ""
+
+
 async def _new_dialog(
     lanlan_name: str,
     language: str | None = None,
@@ -7960,6 +8126,9 @@ async def _new_dialog(
         return PlainTextResponse("")
 
     if not has_explicit_language:
+        # This session speaks its request (UI) language; the habitual-phrase
+        # miner follows it. Noted in memory only, never persisted.
+        habitual_phrase_loop.note_session_render_language(lanlan_name, render_language)
         try:
             durable_language = await asyncio.to_thread(
                 locale_state.get_character_prompt_locale,
@@ -8063,7 +8232,7 @@ async def _new_dialog(
     # without racing these reads. Phase C makes review a background task concurrent with /process;
     # /new_dialog no longer cancels running reviews (old cancellation was Phase A
     # residue, making reviews almost never finish in active sessions).
-    async with runtime._get_settle_lock(lanlan_name):
+    async with runtime._hold_settle_lock_reporting_stalls(lanlan_name, "/new_dialog"):
         # Regex removes all bracket types and contents (including [], (), {}, <>, 【】, （）, etc.).
         brackets_pattern = re.compile(r'(\[.*?\]|\(.*?\)|（.*?）|【.*?】|\{.*?\}|<.*?>)')
         master_name, _, _, _, name_mapping, _, _, _, _ = await runtime._config_manager.aget_character_data()
@@ -8075,19 +8244,21 @@ async def _new_dialog(
         # is read after entry, so reenter context before nested renderers that may read
         # global language; explicit _lang still serves table-driven strings in this function.
         with language_context(_activate_request_language(language)):
-            # Inject pending + confirmed reflections into context too (labeled sections).
-            try:
-                await runtime.reflection_engine.aupdate_suppressions(lanlan_name)
-            except Exception as e:
-                logger.debug(f"[MemoryServer] reflection suppress 刷新失败: {e}")
-            pending_reflections = await runtime.reflection_engine.aget_pending_reflections(lanlan_name)
-            confirmed_reflections = await runtime.reflection_engine.aget_confirmed_reflections(lanlan_name)
+            # Pinned important facts (their own section, ahead of the persona
+            # sections; private chat only, no scoped renderer reads them) and
+            # persona + pending/confirmed reflections (labeled sections).
+            # Shared with weekly introspection, which must review exactly
+            # this block. Read on every call, so a session start or a hot-swap
+            # prompt rebuild picks up entries admitted since the previous one.
+            from memory.introspection import arender_injected_memory
             result = _loc(PERSONA_HEADER, _lang).format(name=lanlan_name)
-            persona_md = await runtime.persona_manager.arender_persona_markdown(
-                lanlan_name, pending_reflections, confirmed_reflections,
+            injected = await arender_injected_memory(
+                runtime.persona_manager, runtime.reflection_engine, lanlan_name,
+                pinned_fact_store=runtime.pinned_fact_store, lang=_lang,
             )
-        if persona_md:
-            result += persona_md
+        result += injected.pinned_prefix
+        if injected.persona:
+            result += injected.persona
         else:
             # Compatibility fallback: old settings (natural-language format).
             # get_settings uses open() + json.load(); offload to avoid blocking (cold fallback, but multi-file IO when triggered).
@@ -8153,6 +8324,14 @@ async def _new_dialog(
                 result += _loc(CHAT_HOLIDAY_CONTEXT, _lang).format(holiday=holiday_name)
         except Exception as e:
             logger.debug(f"Holiday context injection skipped: {e}")
+
+        # Reminders from the weekly behavior review. In this text rather than the
+        # session prompt so that every way she starts talking reads them: a session
+        # start, a hot swap and voice as well as proactive chat. Last, after the
+        # conversation: measured on real reopenings, the same note placed before
+        # the history barely changed anything, since the history right after it
+        # shows her doing the very thing and she follows that instead.
+        result += await _arender_behavior_notes(lanlan_name, _lang)
 
         return PlainTextResponse(result)
 

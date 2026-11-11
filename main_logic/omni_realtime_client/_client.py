@@ -23,7 +23,6 @@ from ._shared import (
     OMNI_RECENT_RESPONSES_MAX,
     OnToolCallCallback,
     Optional,
-    ToolCall,
     ToolDefinition,
     TurnDetectionMode,
     VisualDeliveryMode,
@@ -110,8 +109,8 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         on_audio_done: Optional[Callable[[], Awaitable[None]]] = None,
         on_new_message: Optional[Callable[[], Awaitable[None]]] = None,
         on_sid_rotate: Optional[Callable[[], Awaitable[None]]] = None,
-        on_input_transcript: Optional[Callable[[str], Awaitable[None]]] = None,
-        on_input_transcript_with_route: Optional[Callable[..., Awaitable[None]]] = None,
+        on_input_transcript: Optional[Callable[[str], Awaitable[bool | None]]] = None,
+        on_input_transcript_with_route: Optional[Callable[..., Awaitable[bool | None]]] = None,
         get_input_route_identity: Optional[Callable[[], "tuple[str, str, str] | None"]] = None,
         on_output_transcript: Optional[Callable[[str, bool], Awaitable[None]]] = None,
         on_connection_error: Optional[Callable[[str], Awaitable[None]]] = None,
@@ -266,6 +265,13 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # here (``handle_new_message`` off a text input or independent ASR), so
         # on those the epoch is unchanged and only the speech id moves. #2612.
         self._current_turn_host_id: str | None = None
+        self._cancelled_voice_successor_sid: str | None = None
+        self._cancelled_voice_successor_has_input = False
+        self._cancelled_voice_response_id: str | None = None
+        self._cancelled_voice_early_output: tuple[str, int] | None = None
+        self._cancelled_voice_started_item_id: str | None = None
+        self._recent_response_terminal_ids: list[str] = []
+        self._recovered_voice_response = False
         self._realtime_protocol_capabilities = (
             resolve_realtime_protocol_capabilities(
                 _effective_api_type,
@@ -536,10 +542,6 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # the wire-format snapshots are rebuilt from it on each connect/
         # update_session so callers can mutate the list at any time.
         self.on_tool_call: Optional[OnToolCallCallback] = on_tool_call
-        # Internal, synchronous provenance observer. Acceptance is recorded
-        # before execution is scheduled, even when the provider terminal wins
-        # the event loop race against the actual tool task.
-        self.on_tool_call_accepted: Optional[Callable[[ToolCall], None]] = None
         self._tool_definitions: List[ToolDefinition] = list(tool_definitions or [])
         # Provider behaviour matrix:
         #   gpt   → flat schema, response.done has output[].type=function_call

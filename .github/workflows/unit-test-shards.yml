@@ -213,11 +213,12 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Install locked Playwright and its Chromium
+      - name: Install Playwright and its Chromium
+        # 版本跟着 package-lock 里的 @playwright/test 走，不写死：npm ci 与
+        # npx --no-install 读的是同一份 node_modules，不会对不上。
         working-directory: frontend/plugin-manager
         run: |
           npm ci --no-audit --no-fund
-          node -e "require('node:assert/strict').equal(require('playwright/package.json').version, '1.63.0')"
           npx --no-install playwright install --with-deps chromium
 
       - name: Run actual remote voice manager page

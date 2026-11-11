@@ -23,6 +23,7 @@ These documents preserve design intent and implementation context. They are grou
 - [Compact chat mode](./compact-chat-mode-design)
 - [Memory event journal](./memory-event-log-rfc)
 - [User-driven memory evidence](./memory-evidence-rfc)
+- [Learned-memory sync across devices, schema 3](./long-term-memory-sync-v3)
 - [Plugin control requests and entry execution](./plugin-control-rpc)
 - [PNGTuber lightweight avatar](./pngtuber-lightweight-avatar-plan)
 - [Translation subtitle panel](./translation-subtitle-panel-design)
@@ -43,6 +44,7 @@ These documents preserve design intent and implementation context. They are grou
 - [Floating avatar panel functions](./avatar-floating-panel-functions)
 - [Post-tutorial low-disruption chat branches](./avatar-floating-post-theater-chat-branches)
 - [CAT1 Playground Drop](./cat1-playground-drop-design)
+- [Cat-form visits: maintained product design](./cat-form-visits) — Chinese-only. The long-term baseline for the friend entry, visible flow, dual-cat ownership, host-authoritative shared world, exit behavior and regression acceptance.
 - [Focus / True-Name mode](./focus-truename-mode)
 - [Memory-browser particle dissolve](./memory-browser-particle-dissolve)
 - [Yui guide-system cursor hiding](./yui-guide-system-cursor-hiding)
@@ -59,5 +61,6 @@ These documents preserve design intent and implementation context. They are grou
 - [Neko visiting infrastructure (v3, all decisions approved)](./visit-infrastructure)
 - [Neko visiting: Servers contract](./visit-servers-contract) — Chinese-only. Current contract for the closed-source Servers endpoints; generated from §4.7 of the design record and pinned to it by a unit test.
 - [Neko visiting: field tests T1–T15](./visit-field-tests) — Chinese-only. Result table and `chrome://webrtc-internals` acceptance fields for the design record's field-test list.
+- [NekoClaw rewrite](./nekoclaw-rewrite) — Chinese-only. Replaces the agent module: a resident task brain that routes what the main dialogue dispatches (plugins first, familiar sessions for multi-step work), a built-in Python runtime with optional dsh, one capability gateway, and a per-project work memory.
 
 New records should state whether they are a current contract, implemented record, proposal, historical snapshot, or deprecated document near the beginning.

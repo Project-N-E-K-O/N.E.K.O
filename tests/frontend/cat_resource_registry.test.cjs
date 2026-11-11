@@ -9,6 +9,18 @@ const REGISTRY_PATH = path.join(
   PROJECT_ROOT,
   'static/avatar/avatar-ui-buttons/cat-resource-registry.js',
 );
+const IDLE_DRAG_PATH = path.join(
+  PROJECT_ROOT,
+  'static/avatar/avatar-ui-buttons/idle-drag-and-subactions.js',
+);
+const APPEARANCE_DIR = path.join(
+  PROJECT_ROOT,
+  'static/assets/cat-resources/appearance/dev_neko',
+);
+const ACTION_DIR = path.join(
+  APPEARANCE_DIR,
+  'action',
+);
 const RESOURCE_GROUPS = ['dev_neko', 'yui_neko'];
 const REGISTRY_TEMPLATES = [
   'templates/index.html',
@@ -22,12 +34,85 @@ const REGISTRY_TEMPLATES = [
   'templates/soccer_demo.html',
 ];
 
+const VISUAL_ACTION_ASSETS = Object.freeze([
+  { actionId: 'cat1_happy', slot: 'action.cat1.happy', file: 'cat-idle-cat1-happy.webp', durationMs: 4040, bounds: [512, 512, 83, 48, 406, 493], metadata: {} },
+  { actionId: 'cat1_touch', slot: 'action.cat1.touch', file: 'cat-idle-cat1-touch.webp', durationMs: 6040, bounds: [512, 512, 59, 0, 437, 510], metadata: {} },
+  { actionId: 'cat1_cosplay_1', slot: 'action.cat1.cosplay_1', file: 'cat-idle-cat1-cos-1.webp', durationMs: 4040, bounds: [512, 512, 2, 3, 495, 510], metadata: {} },
+  { actionId: 'cat1_change', slot: 'action.cat1.change', file: 'cat-idle-cat1-change.webp', durationMs: 6040, bounds: [512, 512, 33, 24, 501, 512], metadata: {} },
+  { actionId: 'cat1_cosplay_2', slot: 'action.cat1.cosplay_2', file: 'cat-idle-cat1-cos-2.webp', durationMs: 6040, bounds: [512, 512, 83, 41, 408, 498], metadata: {} },
+  { actionId: 'cat1_eat_2', slot: 'action.cat1.eat_2', file: 'cat-idle-cat1-eat-2.webp', durationMs: 5040, bounds: [512, 512, 27, 1, 401, 512], metadata: {} },
+  { actionId: 'cat1_eat_3', slot: 'action.cat1.eat_3', file: 'cat-idle-cat1-eat-3.webp', durationMs: 4040, bounds: [512, 512, 53, 46, 463, 493], metadata: {} },
+  { actionId: 'cat1_laugh', slot: 'action.cat1.laugh', file: 'cat-idle-cat1-laugh.webp', durationMs: 4040, bounds: [512, 512, 89, 46, 408, 501], metadata: {} },
+  { actionId: 'cat1_lion_dance', slot: 'action.cat1.lion_dance', file: 'cat-idle-cat1-lion_dance.webp', durationMs: 4040, bounds: [512, 704, 76, 4, 436, 687], metadata: { artLayout: 'tall-bottom' } },
+  { actionId: 'cat1_love_1', slot: 'action.cat1.love_1', file: 'cat-idle-cat1-love-1.webp', durationMs: 4040, bounds: [512, 512, 53, 49, 396, 496], metadata: {} },
+  { actionId: 'cat1_mouse', slot: 'action.cat1.mouse', file: 'cat-idle-cat1-mouse.webp', durationMs: 5040, bounds: [896, 512, 6, 42, 851, 508], metadata: { wideArt: true, artLayout: 'wide-centered' } },
+  { actionId: 'cat1_wave', slot: 'action.cat1.wave', file: 'cat-idle-cat1-wave.webp', durationMs: 4040, bounds: [512, 512, 80, 48, 399, 510], metadata: {} },
+  { actionId: 'cat1_sad', slot: 'action.cat1.sad', file: 'cat-idle-cat1-sad.webp', durationMs: 4040, bounds: [512, 512, 86, 54, 434, 493], metadata: {} },
+  { actionId: 'cat1_scared', slot: 'action.cat1.scared', file: 'cat-idle-cat1-scared.webp', durationMs: 4040, bounds: [512, 512, 27, 1, 434, 512], metadata: {} },
+  { actionId: 'cat1_stroke', slot: 'action.cat1.stroke', file: 'cat-idle-cat1-stroke.webp', durationMs: 7980, bounds: [512, 512, 86, 14, 435, 492], metadata: {} },
+  { actionId: 'cat1_wagging', slot: 'action.cat1.wagging', file: 'cat-idle-cat1-wagging.webp', durationMs: 4040, bounds: [512, 512, 0, 44, 400, 512], metadata: {} },
+]);
+
 function loadRegistry(source = fs.readFileSync(REGISTRY_PATH, 'utf8'), overrides = {}, group = 'dev_neko') {
   const window = { __nekoCatResourceGroup: group };
   vm.runInNewContext(source, { window, ...overrides }, {
     filename: REGISTRY_PATH,
   });
   return window.NekoCatResourceRegistry;
+}
+
+function loadGifDurationParser() {
+  const source = fs.readFileSync(IDLE_DRAG_PATH, 'utf8');
+  const start = source.indexOf('function _readUint16LittleEndian(');
+  const end = source.indexOf('function _patchGifDelayRate(', start);
+  assert.ok(start >= 0 && end > start, 'GIF duration parser slice');
+  const context = vm.createContext({ Math, Number, Uint8Array });
+  vm.runInContext(`${source.slice(start, end)}\nthis.parseGifDurationMs = _parseGifDurationMs;`, context);
+  return context.parseGifDurationMs;
+}
+
+function parseAnimatedWebpDurationMs(buffer) {
+  assert.equal(buffer.subarray(0, 4).toString('ascii'), 'RIFF');
+  assert.equal(buffer.subarray(8, 12).toString('ascii'), 'WEBP');
+  let offset = 12;
+  let durationMs = 0;
+  let frameCount = 0;
+  while (offset + 8 <= buffer.length) {
+    const tag = buffer.subarray(offset, offset + 4).toString('ascii');
+    const size = buffer.readUInt32LE(offset + 4);
+    const payload = offset + 8;
+    if (tag === 'ANMF') {
+      durationMs += buffer.readUIntLE(payload + 12, 3);
+      frameCount += 1;
+    }
+    offset = payload + size + (size & 1);
+  }
+  assert.ok(frameCount > 0, 'animated WebP must contain ANMF frames');
+  return durationMs;
+}
+
+function expectedInsets(bounds, layout = 'normal') {
+  const [width, height, left, top, right, bottom] = bounds;
+  const boxWidth = layout === 'wide-centered' ? 1.75 : 1;
+  const boxHeight = layout === 'tall-bottom' ? 1.375 : 1;
+  const scale = Math.min(boxWidth / width, boxHeight / height);
+  const x = (1 - width * scale) / 2;
+  const y = layout === 'tall-bottom' ? 1 - height * scale : (1 - height * scale) / 2;
+  return {
+    left: x + left * scale,
+    top: y + top * scale,
+    right: 1 - (x + right * scale),
+    bottom: 1 - (y + bottom * scale),
+  };
+}
+
+function textFilesUnder(directory) {
+  const extensions = new Set(['.css', '.html', '.js', '.json', '.md']);
+  return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const target = path.join(directory, entry.name);
+    if (entry.isDirectory()) return textFilesUnder(target);
+    return entry.isFile() && extensions.has(path.extname(entry.name)) ? [target] : [];
+  });
 }
 
 // Slot ids the registry source declares for one group block, so extra registry
@@ -102,15 +187,56 @@ test('static cat manifests and registry stay slot-compatible', () => {
     'cat1_eat_snack',
     'cat1_small_move',
     'cat1_play_yarn',
+    'cat1_idle_random',
+    'cat1_inactive_sad',
     'cat2_nap_feedback',
     'cat3_sleep_feedback',
     'cat1_hiss_stretch',
+    ...VISUAL_ACTION_ASSETS.map((entry) => entry.actionId),
   ]) {
     assert.equal(registry.getActionCapabilities(actionId).available, true, actionId);
   }
   const unknownAction = registry.getActionCapabilities('missing-action');
   assert.equal(unknownAction.available, false);
   assert.equal(unknownAction.reason, 'unknown_action');
+});
+
+test('every animation in the CAT1 action directory is registered exactly once', () => {
+  const actionFiles = fs.readdirSync(ACTION_DIR)
+    .filter((name) => name.endsWith('.gif') || name.endsWith('.webp'))
+    .sort();
+  const manifest = JSON.parse(fs.readFileSync(path.join(
+    PROJECT_ROOT,
+    'static/assets/cat-resources/appearance/dev_neko/manifest.json',
+  ), 'utf8'));
+  const registeredActionFiles = Object.values(manifest.slots)
+    .flatMap((entry) => entry.resources)
+    .map((resource) => resource.path)
+    .filter((resourcePath) => resourcePath.includes('/appearance/dev_neko/action/'))
+    .map((resourcePath) => path.basename(resourcePath))
+    .sort();
+
+  assert.equal(actionFiles.length, 18, 'audited action directory size');
+  assert.deepEqual(registeredActionFiles, actionFiles, 'no action asset may remain outside the manifest');
+  assert.equal(new Set(registeredActionFiles).size, registeredActionFiles.length,
+    'one action file must not be assigned to multiple slots');
+  assert.equal(fs.existsSync(path.join(ACTION_DIR, 'cat-idle-cat1-cos1.gif')), false,
+    'retired cosplay filename is removed');
+  assert.equal(fs.existsSync(path.join(ACTION_DIR, 'cat-idle-cat1-cos-1.webp')), true,
+    'renamed cosplay filename exists');
+  assert.equal(
+    manifest.slots['action.cat1.cosplay_1'].resources[0].path.endsWith('/cat-idle-cat1-cos-1.webp'),
+    true,
+  );
+  for (const root of [path.join(PROJECT_ROOT, 'static'), path.join(PROJECT_ROOT, 'docs/design')]) {
+    for (const filename of textFilesUnder(root)) {
+      assert.doesNotMatch(
+        fs.readFileSync(filename, 'utf8'),
+        /cat-idle-cat1-cos1\.gif/,
+        `${path.relative(PROJECT_ROOT, filename)} has no retired cosplay filename`,
+      );
+    }
+  }
 });
 
 test('preload resource group takes precedence over stale session storage', () => {
@@ -145,6 +271,49 @@ test('both resource groups provide stable mirrored collision bounds for every ap
   }
 });
 
+test('every visual-only action keeps its audited one-cycle duration, layout and visible hull', () => {
+  const registry = loadRegistry();
+  const parseGifDurationMs = loadGifDurationParser();
+  for (const entry of VISUAL_ACTION_ASSETS) {
+    const resource = registry.getAppearance(entry.slot, { random: false });
+    assert.equal(resource.available, true, entry.slot);
+    assert.deepEqual({ ...resource.metadata }, entry.metadata, `${entry.slot} layout metadata`);
+    assert.equal(registry.getAppearanceDurationMs(resource.url), entry.durationMs,
+      `${entry.slot} registered one-cycle duration`);
+    if (entry.file.endsWith('.gif')) {
+      const bytes = new Uint8Array(fs.readFileSync(path.join(ACTION_DIR, entry.file)));
+      assert.equal(parseGifDurationMs(bytes), entry.durationMs, `${entry.slot} GIF duration`);
+    }
+
+    const layout = entry.metadata.artLayout || 'normal';
+    const normal = expectedInsets(entry.bounds, layout);
+    assert.deepEqual({ ...registry.getAppearanceVisibleInsets(resource.url) }, normal,
+      `${entry.slot} audited visible hull`);
+    assert.deepEqual({ ...registry.getAppearanceVisibleInsets(resource.url, { facingRight: true }) }, {
+      ...normal,
+      left: normal.right,
+      right: normal.left,
+    }, `${entry.slot} mirrored visible hull`);
+  }
+});
+
+test('every animated WebP appearance has its exact one-cycle duration registered', () => {
+  const registry = loadRegistry();
+  const files = fs.readdirSync(APPEARANCE_DIR, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.webp'))
+    .map((entry) => path.join(entry.parentPath, entry.name));
+  assert.equal(files.length, 29);
+  for (const filename of files) {
+    const relative = path.relative(APPEARANCE_DIR, filename).split(path.sep).join('/');
+    const url = `/static/assets/cat-resources/appearance/dev_neko/${relative}`;
+    assert.equal(
+      registry.getAppearanceDurationMs(url),
+      parseAnimatedWebpDurationMs(fs.readFileSync(filename)),
+      `${relative} registered duration`,
+    );
+  }
+});
+
 test('compact mirror messages carry wide-art metadata from the active registry', () => {
   const coreSource = fs.readFileSync(
     path.join(PROJECT_ROOT, 'static/avatar/avatar-ui-buttons/core.js'),
@@ -159,9 +328,12 @@ test('compact mirror messages carry wide-art metadata from the active registry',
     'utf8',
   );
   assert.match(coreSource, /function _isNekoCatAppearanceWideArtUrl\(slot, assetUrl\)/);
-  assert.match(dragSource, /const assetUrl = options\.assetUrl \|\| _getNekoIdleReturnAssetUrl\(_NEKO_IDLE_TIER_CAT1\)/);
-  assert.match(dragSource, /wideArt:\s*_isNekoCatAppearanceWideArtUrl\('action\.cat1\.play_yarn', assetUrl\)/);
+  assert.match(dragSource, /const assetUrl = options\.assetUrl \|\| currentArtUrl \|\| _getNekoIdleReturnAssetUrl\(_NEKO_IDLE_TIER_CAT1\)/);
+  assert.match(dragSource, /const artLayout = requestedArtLayout === 'wide-centered' \|\| requestedArtLayout === 'tall-bottom'/);
+  assert.match(dragSource, /artLayout,/);
+  assert.match(dragSource, /wideArt:\s*artLayout === 'wide-centered' \|\|/);
   assert.match(mirrorSource, /detail && detail\.wideArt === true/);
+  assert.match(mirrorSource, /data-neko-cat1-art-layout/);
 });
 
 function createCompactMirrorProducer(registry, idleUrl) {
@@ -224,8 +396,8 @@ function createCompactMirrorProducer(registry, idleUrl) {
 }
 
 test('compact mirror producer marks only the actual wide-art asset', () => {
-  const playYarnUrl = '/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat-play-1.gif';
-  const idleUrl = '/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat1.gif';
+  const playYarnUrl = '/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat-play-1.webp';
+  const idleUrl = '/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat1.webp';
   const producer = createCompactMirrorProducer({
     getAppearance(slot) {
       if (slot === 'action.cat1.play_yarn') {
@@ -240,12 +412,30 @@ test('compact mirror producer marks only the actual wide-art asset', () => {
     assetUrl: playYarnUrl,
   }), true);
   assert.equal(producer.events.at(-1).wideArt, true);
+  assert.equal(producer.events.at(-1).artLayout, '');
+
+  assert.equal(producer.producer(null, producer.makeContainer(), true, {
+    surfaceRect: { left: 0, top: 0, width: 100, height: 100 },
+    assetUrl: '/cat-idle-cat1-mouse.webp',
+    artLayout: 'wide-centered',
+  }), true);
+  assert.equal(producer.events.at(-1).wideArt, true);
+  assert.equal(producer.events.at(-1).artLayout, 'wide-centered');
+
+  assert.equal(producer.producer(null, producer.makeContainer(), true, {
+    surfaceRect: { left: 0, top: 0, width: 100, height: 100 },
+    assetUrl: '/cat-idle-cat1-lion_dance.webp',
+    artLayout: 'tall-bottom',
+  }), true);
+  assert.equal(producer.events.at(-1).wideArt, false);
+  assert.equal(producer.events.at(-1).artLayout, 'tall-bottom');
 
   assert.equal(producer.producer(null, producer.makeContainer(), true, {
     surfaceRect: { left: 0, top: 0, width: 100, height: 100 },
     assetUrl: idleUrl,
   }), true);
   assert.equal(producer.events.at(-1).wideArt, false);
+  assert.equal(producer.events.at(-1).artLayout, '');
 });
 
 
@@ -253,13 +443,31 @@ test('every registered action exposes the design dependency matrix', () => {
   const registry = loadRegistry();
   const expected = {
     cat1_social_ping: { appearance: [], voice: ['cat1.ambient'] },
-    cat1_eat_snack: { appearance: ['action.cat1.eat'], voice: ['cat1.eat'] },
+    cat1_eat_snack: {
+      appearance: ['action.cat1.eat', 'action.cat1.eat_2', 'action.cat1.eat_3'],
+      voice: ['cat1.eat'],
+    },
     cat1_small_move: { appearance: ['movement.cat1.walking'], voice: [] },
     cat1_play_yarn: { appearance: ['action.cat1.play_yarn'], voice: ['cat1.play_yarn'] },
+    cat1_idle_random: {
+      appearance: [
+        'action.cat1.happy',
+        'action.cat1.touch',
+        'action.cat1.mouse',
+        'action.cat1.laugh',
+        'action.cat1.love_1',
+        'action.cat1.wagging',
+      ],
+      voice: [],
+    },
+    cat1_inactive_sad: { appearance: ['action.cat1.sad'], voice: [] },
     cat2_nap_feedback: { appearance: ['idle.cat2'], voice: ['cat2.sleep'] },
     cat3_sleep_feedback: { appearance: ['idle.cat3'], voice: ['cat3.sleep'] },
     cat1_hiss_stretch: { appearance: ['movement.cat1.stretch'], voice: ['cat1.hiss'] },
   };
+  for (const entry of VISUAL_ACTION_ASSETS) {
+    expected[entry.actionId] = { appearance: [entry.slot], voice: [] };
+  }
 
   for (const [actionId, dependencies] of Object.entries(expected)) {
     const capability = registry.getActionCapabilities(actionId);
@@ -322,11 +530,21 @@ test('missing action resources are rejected with a stable dependency reason', ()
   const cases = [
     ['cat1_social_ping', 'cat1.ambient', 'voice_unavailable'],
     ['cat1_eat_snack', 'action.cat1.eat', 'appearance_unavailable'],
+    ['cat1_eat_snack', 'action.cat1.eat_2', 'appearance_unavailable'],
+    ['cat1_eat_snack', 'action.cat1.eat_3', 'appearance_unavailable'],
     ['cat1_small_move', 'movement.cat1.walking', 'appearance_unavailable'],
     ['cat1_play_yarn', 'action.cat1.play_yarn', 'appearance_unavailable'],
+    ['cat1_idle_random', 'action.cat1.happy', 'appearance_unavailable'],
+    ['cat1_idle_random', 'action.cat1.touch', 'appearance_unavailable'],
+    ['cat1_idle_random', 'action.cat1.mouse', 'appearance_unavailable'],
+    ['cat1_idle_random', 'action.cat1.laugh', 'appearance_unavailable'],
+    ['cat1_idle_random', 'action.cat1.love_1', 'appearance_unavailable'],
+    ['cat1_idle_random', 'action.cat1.wagging', 'appearance_unavailable'],
+    ['cat1_inactive_sad', 'action.cat1.sad', 'appearance_unavailable'],
     ['cat2_nap_feedback', 'idle.cat2', 'appearance_unavailable'],
     ['cat3_sleep_feedback', 'cat3.sleep', 'voice_unavailable'],
     ['cat1_hiss_stretch', 'cat1.hiss', 'voice_unavailable'],
+    ...VISUAL_ACTION_ASSETS.map((entry) => [entry.actionId, entry.slot, 'appearance_unavailable']),
   ];
 
   for (const [actionId, missingSlot, reason] of cases) {
@@ -386,7 +604,7 @@ test('missing optional hover art preserves the cat and does not pause or cancel 
   assert.equal(effects, 0);
 });
 
-test('return transition restarts canonical cat GIFs and preserves their version', () => {
+test('return transition restarts canonical cat animations and preserves their version', () => {
   const source = fs.readFileSync(path.join(PROJECT_ROOT,
     'static/app/app-ui/return-transitions.js'), 'utf8');
   const start = source.indexOf('function buildNekoModelCatRevealPlaybackUrl(');

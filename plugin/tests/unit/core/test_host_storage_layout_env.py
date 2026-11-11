@@ -73,6 +73,7 @@ def test_plugin_host_uses_default_process_context_without_shared_response_proxie
     monkeypatch.setattr(host_module, "HostTransport", _FakeTransport)
     monkeypatch.setattr(host_module, "PluginCommunicationResourceManager", lambda **_kwargs: _FakeCommManager())
     monkeypatch.setattr(host_module.multiprocessing, "Manager", lambda: accessed_response_proxies.append("manager"))
+    monkeypatch.setattr(host_module.multiprocessing, "get_start_method", lambda: "spawn")
     monkeypatch.setattr(host_module.multiprocessing, "get_context", _reject_explicit_context)
     monkeypatch.setattr(host_module.multiprocessing, "Event", lambda: default_event)
     monkeypatch.setattr(host_module.multiprocessing, "Process", lambda **_kwargs: default_process)

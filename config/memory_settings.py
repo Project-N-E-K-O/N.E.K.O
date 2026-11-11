@@ -38,12 +38,36 @@ EVIDENCE_ARCHIVE_THRESHOLD = -2.0    # score ≤ -2 → archive_candidate
 WEAK_MEMORY_AUTO_CONFIRM_DAYS = 7   # pending → confirmed, measured from created_at.
 WEAK_MEMORY_AUTO_PROMOTE_DAYS = 7   # confirmed → promoted, measured from confirmed_at.
 
+# Scoped (group / member / cross-group person) reflections into scoped persona.
+# They get no feedback, so only being seen again lets one in: on at least this
+# many distinct days, by the record dates of the facts behind it that are not
+# the character's own words, and at least this many days after the first of
+# them. Strong memory only: with it off nothing cleans up after a promotion
+# (correction queue, scoped refine, introspection), so none happens.
+SCOPED_PROMOTION_MIN_OBSERVED_DAYS = 4
+SCOPED_PROMOTION_MIN_AGE_DAYS = 30
+# Reinforcement a scoped reflection gains each time others' words are seen to
+# restate it again (synthesis judges a batch covered by it, or scoped refine
+# merges it with another such line); the decay clock restarts too. Equal to the
+# highest synthesis head start (importance 10, memory.evidence), so a line just
+# seen again ranks above every fresh one and keeps its place in the per-subject
+# render budget. Capped by EVIDENCE_REINFORCEMENT_CAP like every reinforcement.
+SCOPED_REOBSERVED_REINFORCEMENT = 0.8
+# How many observation days a scoped reflection keeps (the first one and the
+# latest ones); the promotion gate needs the count and the first day only.
+SCOPED_OBSERVED_DAYS_MAX = 64
+
 # §3.5.3 Archival (sub_zero_days counts + shard-size cap).
 EVIDENCE_ARCHIVE_DAYS = 14           # Archive after this many accumulated sub_zero days.
 ARCHIVE_FILE_MAX_ENTRIES = 500       # Maximum entries per archive shard.
 
 # §3.1.5 Ignored penalty.
 IGNORED_REINFORCEMENT_DELTA = -0.2   # check_feedback ignored → reinforcement += delta
+# check_feedback engaged: the user went on with the observation's topic, or let
+# it stand, without saying yes. Some weight, but not an explicit user signal
+# (memory.evidence.awaits_user_signal does not count it): chatting on cannot
+# confirm a reflection that rests only on the AI's own words.
+USER_ENGAGED_DELTA = 0.3
 
 # §3.1.8 Delta weights by signal source (v1.2.1 direct vs indirect).
 # Direct signals (explicit surfaced-reflection responses / negative-keyword hits) weight1.0;
@@ -61,6 +85,13 @@ USER_KEYWORD_REBUT_DELTA = 1.0       # Keywords + LLM target validation (direct 
 # Default first2 signals0.5 each; from third,0.5 +0.5 bonus=1.0.
 USER_FACT_REINFORCE_COMBO_THRESHOLD = 2   # Active when count > threshold.
 USER_FACT_REINFORCE_COMBO_BONUS = 0.5     # Extra weight per signal above threshold.
+
+# Upper bound on reinforcement, applied both when it is read and when it is
+# written, so stored values above it count as the cap at once. Uncapped, combo
+# reinforcement reached 160, and a user rebuttal (USER_REBUT_DELTA) could no
+# longer move the entry. Above EVIDENCE_PROMOTED_THRESHOLD so promotion keeps
+# its room; protected entries still score inf.
+EVIDENCE_REINFORCEMENT_CAP = 3.0
 
 # §3.4.3 Background signal-extraction triggers.
 EVIDENCE_SIGNAL_CHECK_ENABLED = True             # Independent switch.
@@ -113,6 +144,12 @@ MAX_KNOWN_POOL_FACTS = 30
 # signal loop (40s), with negligible IO/CPU impact.
 EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS = 3600
 
+# Event-journal compaction loop interval (memory/event_log.py
+# compact_applied_history). Each round costs one stat plus one line read per
+# character until a journal is due (>= 512 KiB or first line >= 30 days old),
+# so a slow cadence is plenty; journals grow a few KB per day.
+EVENT_LOG_COMPACT_INTERVAL_SECONDS = 6 * 3600
+
 # §3.6 render budget (placeholder for PR-3).
 # Private/base legacy mode (empty subjects) uses two global pools; scoped rendering
 # (groups, nonempty subjects) gives each subject its own pools, backed by
@@ -121,6 +158,115 @@ EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS = 3600
 PERSONA_RENDER_MAX_TOKENS = 2000         # Non-protected persona budget (per subject).
 REFLECTION_RENDER_MAX_TOKENS = 2000      # Reflection rendering budget (pending + confirmed, per subject).
 PERSONA_RENDER_ENCODING = "o200k_base"   # tiktoken encoding
+
+# ── Pinned important facts (memory/pinned_facts.py) ─────────────────────
+# Facts the extraction model flags as important skip the evidence pipeline and
+# sit in a small resident section of the private-chat long-term memory until
+# they expire. The original fact still goes through the ordinary pipeline;
+# expiry only takes it out of the resident section.
+PINNED_FACT_TTL_TIERS_DAYS = (3, 14, 90, 365)
+"""The only lifetimes a pinned fact can have, in days, counted from when it was
+said. The tier is a hard ceiling: an entry leaves the section when it runs out,
+and neither a model decision nor a date can keep it longer (a renewal starts a
+new lifetime from the later mention).
+- 3: things happening right now (a cold, working late tonight).
+- 14: near-term plans (an exam next week, a business trip).
+- 90: a phase of life (a new job, studying for an exam, recovering from an injury).
+- 365: long-lived but changeable (an allergy, a birthday, how the user wants to be called).
+- A dated event takes the smallest tier that still covers the end of the event;
+  memory/pinned_facts.py:snap_ttl_days rounds any other value up the same way.
+  An entry with a known end (``event_when.end``) leaves PINNED_FACT_DUE_GRACE_DAYS
+  after it, so an exam is not carried for the rest of its tier."""
+
+PINNED_FACT_DUE_GRACE_DAYS = 1
+"""How long a dated entry stays after its event ends: ``expire_at`` is
+``min(tier ceiling, event end + this)``. One day covers an end given at day
+granularity whose time of day is unknown."""
+
+PINNED_FACT_DEFAULT_TTL_DAYS = 14
+"""Tier used when the model sets ``pin`` but gives no usable ``pin_ttl_days``.
+The second-shortest tier: too short only drops the entry early (the fact itself
+stays in the ordinary pipeline), too long keeps a stale entry in every prompt."""
+
+PINNED_FACT_MAX_ACTIVE = 20
+"""Cap on live entries. The whole section goes to the resolve model on every
+admission, and past the cap the entry closest to expiry is evicted."""
+
+PINNED_FACT_HISTORY_MAX = 60
+"""Replaced / removed / expired / evicted entries kept in the file for diagnosis.
+Never rendered; oldest records go first."""
+
+PINNED_FACT_TEXT_MAX_TOKENS = 60
+"""Per-entry text cap, applied when an entry is written."""
+
+PINNED_FACT_RENDER_MAX_TOKENS = 600
+"""Token budget of the rendered section (header included). Over budget, the
+least recently updated entries are left out of that render."""
+
+PINNED_FACT_MAX_CANDIDATES_PER_ROUND = 8
+"""Pinned candidates taken from one extraction round; bounds the resolve prompt
+together with PINNED_FACT_MAX_ACTIVE and PINNED_FACT_TEXT_MAX_TOKENS."""
+
+PINNED_FACT_RESOLVE_ATTEMPTS = 3
+"""Resolve rounds per admission. A round's targeted decision is not applied
+when another admission changed that entry after the snapshot the model saw;
+those candidates are decided again on fresh state. The last round still
+checks, but degrades such a decision instead of applying it (remove is
+dropped, replace / renew become add), so an older view never undoes a
+newer change."""
+
+PINNED_FACT_RESOLVE_MODEL_TIER = "correction"
+"""Model tier of the add / replace / renew / remove decision, the same tier and
+thinking mode as persona correction resolution. The same call may also retire
+entries that are over (fulfilled, no longer valid, or past their date)."""
+
+PINNED_FACT_REVIEW_INTERVAL_HOURS = 24
+"""The idle-time check that retires finished entries runs at most this often per
+character, and only when the section is not empty and no model has looked at
+the whole section (an admission resolve or an earlier check) within it."""
+
+PINNED_FACT_REVIEW_MODEL_TIER = "summary"
+"""Model tier of the idle-time check, called without thinking: it only answers
+retire or keep per entry, quoting the conversation as evidence."""
+
+PINNED_FACT_REVIEW_LOOKBACK_DAYS = 7
+"""How far back the idle-time check reads the conversation: from the oldest
+live entry's noted time, but never further back than this."""
+
+PINNED_FACT_REVIEW_CONVERSATION_MAX_TOKENS = 2000
+"""Token budget of the conversation in the idle-time check; over it, the
+oldest messages are left out."""
+
+PINNED_FACT_REVIEW_MESSAGE_MAX_TOKENS = 150
+"""Per-message cap in the idle-time check, so one long message cannot take the
+whole conversation budget."""
+
+PINNED_FACT_RETIRE_REASON_MAX_TOKENS = 40
+"""Cap on the reason a model gives for retiring an entry, kept in the history
+for diagnosis and never rendered."""
+
+PINNED_COMMITMENT_DUE_SOON_DAYS = 2
+"""An open commitment due within this many days (or already due, while it is
+still in the section) is offered to proactive chat as its first cue."""
+
+PINNED_COMMITMENT_SURFACE_COOLDOWN_HOURS = 12
+"""After proactive chat was offered a commitment, the same one is not offered
+again for this long, so she does not bring up one promise in every round."""
+
+PINNED_MENTION_COOLDOWN_HOURS = 24
+"""Once a reply of the character's brings up a pinned entry, it renders under
+"recently mentioned" (remembered, not to be raised on her own initiative) for
+this long, and a commitment in that cooldown is not offered to proactive chat.
+A mention while the cooldown still runs extends it; one after it ran out
+doubles the next cooldown, so a matter raised every so often is raised ever
+more rarely."""
+
+PINNED_MENTION_COOLDOWN_MAX_HOURS = 168
+"""Cap on the doubling mention cooldown (a week)."""
+
+PINNED_COMMITMENT_DUE_LEAD_HOURS = 12
+"""A dated commitment's mention cooldown ends at the latest this long before
+it is due, so having mentioned a promise never keeps it from being kept."""
 
 # ── Overall cap for scoped (group) L10 core memory ──────────────────────────
 # Per-subject budgets stop competition but not total growth: rendering five
@@ -554,6 +700,16 @@ REFLECTION_SYNTHESIS_FACTS_MAX = 20
   loop currently has no count limit, making this the only protection.
 - Rationale: 30 entries × average 50 tokens = 1500 tokens, sufficient for synthesis."""
 
+REFLECTION_SYNTHESIS_MAX_PER_BATCH = 3
+"""Most reflections one synthesis call may write.
+- Purpose: a batch of up to REFLECTION_SYNTHESIS_FACTS_MAX facts often spans
+  unrelated topics; with one reflection per call the other topics were
+  absorbed along with it and never synthesized. REFLECTION_PROMPT asks for at
+  most this many, one per topic, and extra objects in the answer are dropped.
+- Rationale: 3 covers the topics a 20-fact batch usually spans while keeping
+  the output (each line ≤ REFLECTION_TEXT_MAX_TOKENS) and the pending pool's
+  growth bounded."""
+
 MEMORY_REFLECTION_SYNTHESIS_INTERVAL_SECONDS = 180
 """Polling interval in seconds for ``_periodic_reflection_synthesis_loop``.
 - Purpose: periodically call ``reflection_engine.synthesize_reflections`` per character.
@@ -597,6 +753,36 @@ REFLECTION_RELATED_TOTAL_CAP = 20
   candidates; without duplicates, cap at 20 to prevent prompt growth.
 - Prompt cost: 20 ×~50 tok ≈1000 anchor tokens +20 ×~50 tok ≈1000
   source tokens =2k maximum, easily handled by summary-tier models."""
+
+REFLECTION_EXISTING_IMPRESSIONS_TOP_K = 5
+"""Existing impressions shown to reflection synthesis for duplicate checking.
+- Upstream: synthesize_reflections ranks active reflections (pending /
+  confirmed / promoted) and non-protected persona entries of the same subject
+  by max cosine against the fact batch, then keeps this many.
+- Purpose: the LLM may answer skip with one of these ids when the batch adds
+  nothing beyond it; the facts are then absorbed without a new reflection.
+- Vectors unavailable: no candidates, no block, prompt unchanged."""
+
+REFLECTION_EXISTING_IMPRESSIONS_MAX_TOKENS = 800
+"""Token budget for the whole existing-impressions block (whole lines only).
+- Each line is also capped at ``REFLECTION_TEXT_MAX_TOKENS`` first, so
+  5 × 150 tokens plus ids fit."""
+
+REFLECTION_RETIRED_RESTATEMENT_MIN_COSINE = 0.92
+"""Cosine at which a newly synthesized reflection counts as restating an
+entry weekly introspection permanently suppressed (same subject); such a
+reflection is stored already suppressed instead of reaching the prompt for a
+week. Near-paraphrase level on purpose: a merely related, more concrete line
+must pass. Without vectors only an identical text matches.
+- Why not reuse the existing-impressions check: retired entries are kept out of
+  that pool, or a fresh fact batch could be swallowed into a hollow line."""
+
+REFLECTION_COVERED_FACT_IDS_MAX = 100
+"""Newest fact ids kept in an entry's ``covered_fact_ids`` audit list.
+- Written when synthesis skips a batch as already covered by that reflection
+  or persona entry. Audit only: no evidence is added, so restated relationship
+  lines cannot climb the render ranking this way.
+- Cap keeps frequently restated entries from bloating persona.json."""
 
 # ---- Memory: temporal scope (memory/temporal.py) ─────────────────────
 # Reflection temporal decay uses four temporal_scope values (pattern / state / episode / past).
@@ -898,6 +1084,118 @@ MEMORY_REFINE_CRON_INTERVAL_SECONDS = 1800
 - Every 30 minutes; engine cluster_hash checks skip recently reviewed clusters
   at zero cost, so frequent polls do not waste LLM tokens.
 - Both cron loops share the interval, staggering starts through _INITIAL_DELAY_*."""
+
+# ---- Memory: weekly introspection ----
+# Reads the persona + reflection block exactly as /new_dialog injects it and
+# lets the correction-tier model (thinking on) suppress / rewrite / merge the
+# entries that are contradictory, redundant, hollow or stale. Gated on
+# powerful_memory like refine; runs only while the system is idle.
+
+MEMORY_INTROSPECTION_INTERVAL_SECONDS = 7 * 24 * 3600
+"""Seconds between two completed introspection runs of one character.
+A character with no recorded run is reviewed at its first idle moment, so
+existing users are covered right after the upgrade."""
+
+MEMORY_INTROSPECTION_RETRY_BACKOFF_SECONDS = (30 * 60, 2 * 3600, 6 * 3600)
+"""Waits before retrying a run that failed transiently (dropped connection,
+5xx, rate limit, a write that failed). One more transient failure after the
+last step ends the attempt until the next weekly cycle. A run that timed out,
+ran out of output or returned unparseable output is not retried at all: the
+same input would most likely fail the same way, and next week's input differs.
+A run cut short by the process exiting records nothing and reruns at the first
+idle moment after restart."""
+
+MEMORY_INTROSPECTION_OUTPUT_CAPS = (32768, 16384, 8192, 4096)
+"""Output allowance (thinking + JSON answer) for the introspection call, walked
+down while the endpoint rejects a cap as above the model's limit. Headroom, not
+a target: the call still ends at MEMORY_LLM_HARD_TIMEOUT_SECONDS (110 s, bound
+by the upstream proxy), so the real reply is far shorter. Larger than the shared
+MEMORY_THINKING_OUTPUT_MAX_TOKENS because this prompt carries the whole
+injected memory block and up to 15 actions to write."""
+
+MEMORY_INTROSPECTION_MAX_ROUNDS = 3
+"""Review → apply → re-render rounds per run. Each round re-renders because
+entries leaving the budget let others move up into it; a round with no
+applied action ends the run early."""
+
+MEMORY_INTROSPECTION_MAX_ACTIONS_PER_ROUND = 15
+"""Accepted suppress / rewrite / merge actions per round; the rest are
+rejected and counted as over_cap."""
+
+MEMORY_INTROSPECTION_INPUT_MAX_TOKENS = 16000
+"""Backstop cap on the annotated memory block in the prompt. The render is
+already bounded (persona and reflection pools of 2000 tokens each plus count
+caps on character-card and do-not-mention lines); this only bites when a
+very large character card outgrows that sum."""
+
+# ---- Memory: weekly behavior review (memory/behavior_notes.py) ----
+# After a character's weekly introspection, one correction-tier call looks for what
+# keeps recurring in her replies, against her card and the user's own words, and
+# leaves a few short notes ("less of X; try Y") at the end of the next /new_dialog.
+# Evidence is counted by code from the lines the model cites, never taken from its word.
+
+MEMORY_BEHAVIOR_REVIEW_WINDOW_SECONDS = 30 * 24 * 3600
+"""How far back the conversation sample reaches. Older feedback no longer counts,
+which is also why a note cannot be renewed forever on one old complaint."""
+
+MEMORY_BEHAVIOR_REVIEW_ROW_LIMIT = 4000
+"""Newest rows read from time_indexed.db per review, whatever the window holds."""
+
+MEMORY_BEHAVIOR_REVIEW_MIN_SESSIONS = 3
+"""Fewer sittings than this in the window: no model call, the run counts as done."""
+
+MEMORY_BEHAVIOR_REVIEW_MIN_REPLIES = 15
+"""Fewer replies than this in the window: no model call, the run counts as done."""
+
+MEMORY_BEHAVIOR_REVIEW_SAMPLE_MAX_TOKENS = 8000
+"""Token budget for the numbered conversation sample. Lines are chosen until it
+is spent and never cut afterwards, so every number in the prompt is a whole line."""
+
+MEMORY_BEHAVIOR_REVIEW_LINE_MAX_TOKENS = 120
+"""Each sample line is clipped to this, so one wall of text cannot take the sample."""
+
+MEMORY_BEHAVIOR_REVIEW_CARD_MAX_TOKENS = 1200
+"""Token budget for the character card, the only baseline the review compares to."""
+
+MEMORY_BEHAVIOR_REVIEW_SIGNALS_MAX_TOKENS = 300
+"""Token budget for impressions the user confirmed or denied (reference only)."""
+
+MEMORY_BEHAVIOR_REVIEW_RETIRED_SHOWN = 6
+"""Recently retired notes shown read-only, so a note does not flip back and forth."""
+
+MEMORY_BEHAVIOR_NOTE_RETIRED_KEEP_SECONDS = 30 * 24 * 3600
+"""How long a retired note stays on file for the read-only list above."""
+
+MEMORY_BEHAVIOR_NOTE_TTL_SECONDS = 21 * 24 * 3600
+"""A note lasts three weekly cycles from its last renewal, then lapses by itself."""
+
+MEMORY_BEHAVIOR_NOTE_MAX_PER_KIND = {"style": 3, "drift": 2}
+"""Live notes per kind, kept ones included; an add past this is rejected."""
+
+MEMORY_BEHAVIOR_NOTE_AVOID_MAX_TOKENS = 60
+"""Longer "avoid" text is rejected, not cut: a clipped note can change its meaning."""
+
+MEMORY_BEHAVIOR_NOTE_DIRECTION_MAX_TOKENS = 60
+"""Longer "direction" text is rejected, not cut, for the same reason."""
+
+MEMORY_BEHAVIOR_NOTE_CORRECTED_MIN_SESSIONS = 2
+"""Sittings in the sample since a note's last renewal before it may be retired as
+corrected. Fewer than this cannot show that the pattern has really stopped."""
+
+MEMORY_BEHAVIOR_NOTES_PROMPT_MAX_TOKENS = 400
+"""Token budget for the whole injected block; whole notes drop until it fits."""
+
+MEMORY_BEHAVIOR_NOTE_EVIDENCE_GATES = {
+    "complaint": {"user": (3, 2, 2), "reply": (3, 2, 1)},
+    "request": {"user": (1, 1, 1), "reply": (3, 3, 1)},
+    "drift": {"user": (0, 0, 0), "reply": (4, 3, 2)},
+}
+"""Least cited evidence per note basis, as (messages, sittings, calendar days).
+- complaint: the user grumbled about a pattern more than once; a passing remark
+  never qualifies.
+- request: the user stated one standing request. Once is enough, so the replies
+  must show the pattern more widely instead.
+- drift: replies only, checked against the card, so it asks for the most replies."""
 
 # ---- Memory: scoped subject eviction (group memory series 5/7, track one) ----
 # Scoped group/member entries receive no evidence signals (facts persist with

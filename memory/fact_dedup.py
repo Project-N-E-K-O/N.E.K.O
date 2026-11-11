@@ -104,6 +104,17 @@ def _created_at_instant(value: object) -> datetime | None:
         return None
 
 
+def _recorded_before(first: dict, second: dict) -> bool:
+    """Whether ``first`` was recorded strictly before ``second``.
+
+    Unknown or equal times decide nothing: the pair then keeps the roles it
+    was queued with.
+    """
+    one = _created_at_instant(first.get('created_at'))
+    other = _created_at_instant(second.get('created_at'))
+    return one is not None and other is not None and one < other
+
+
 def _event_window_instant(value: object) -> datetime | None:
     """Parse one event boundary without dropping extreme aware values."""
     try:
@@ -398,7 +409,7 @@ class FactDedupResolver:
         return True
 
     async def aenqueue_candidates(
-        self, name: str, pairs: list[dict],
+        self, name: str, pairs: list[dict], *, on_persisted=None,
     ) -> int:
         """Append candidate (candidate_id, existing_id, …) pairs to
         the queue. Returns count actually appended (de-duped against
@@ -434,7 +445,7 @@ class FactDedupResolver:
                 for p in pairs
             )
             live_facts_by_id: dict[object, list[dict]] = {}
-            if has_scoped_pairs:
+            if has_scoped_pairs or on_persisted is not None:
                 live_facts = await self._fact_store.aload_facts(name)
                 for row in live_facts:
                     if isinstance(row, dict) and row.get('id') is not None:
@@ -471,6 +482,7 @@ class FactDedupResolver:
                 )
                 if (
                     key in existing_keys
+                    or (on_persisted is not None and (pair_rows[0] or {}).get('_near_dup_pending', {}).get('existing_id') != p.get('existing_id'))
                     or key[0] is None
                     or key[1] is None
                     or self._fact_store._subject_forget_fields_are_active(
@@ -520,7 +532,8 @@ class FactDedupResolver:
                 existing_keys.add(key)
                 appended += 1
             if scrubbed and not appended:
-                await self._asave_pending(name, existing)
+                if not await self._asave_pending(name, existing):
+                    return 0
             if appended:
                 if not await self._asave_pending(name, existing):
                     # Maintenance-mode skip: the queue file was NOT
@@ -535,6 +548,9 @@ class FactDedupResolver:
                     "[FactDedup] %s: 入队 %d 对候选（队列总长 %d）",
                     name, appended, len(existing),
                 )
+            if on_persisted is not None:
+                # Keep resolution behind the durable handoff acknowledgement. Lock order is resolver -> facts.
+                await on_persisted()
         return appended
 
     async def aforget_subject(self, name: str, subject) -> dict:
@@ -851,7 +867,11 @@ class FactDedupResolver:
         about to remove and removing them, which would lose new pairs
         that landed mid-call.
         """
+        if not await self._fact_store.aretry_pending_near_dups(name):
+            return 0
         async with self._get_alock(name):
+            if any(isinstance(row, dict) and row.get('_near_dup_pending') for row in await self._fact_store.aload_facts(name)):
+                return 0
             return await self._aresolve_locked(
                 name,
                 prompt_locale_resolver=prompt_locale_resolver,
@@ -922,6 +942,11 @@ class FactDedupResolver:
         # items: failure paths persist batch items with resolve_attempts,
         # and attached text would undo ids-only persistence.
         batch_texts: list[tuple[str, str]] = []
+        # The prompt calls its candidate the newer record. A queued candidate is
+        # usually the newer one, but not always: a fact synced from another device,
+        # or embedded late, is queued against rows written after it. Such a pair is
+        # shown, and then applied, with its two records exchanged.
+        shown_reversed: set[int] = set()
         stale_keys: set[tuple] = set()
         batch_domain: tuple | None = None
         for it in pending:
@@ -950,10 +975,12 @@ class FactDedupResolver:
                 batch_domain = domain
             elif domain != batch_domain:
                 continue
+            texts = (cand_row.get('text', '') or '', exist_row.get('text', '') or '')
+            if _recorded_before(cand_row, exist_row):
+                shown_reversed.add(len(batch))
+                texts = texts[::-1]
             batch.append(it)
-            batch_texts.append(
-                (cand_row.get('text', '') or '', exist_row.get('text', '') or '')
-            )
+            batch_texts.append(texts)
             if len(batch) >= FACT_DEDUP_BATCH_LIMIT:
                 break
         if stale_keys:
@@ -1016,6 +1043,9 @@ class FactDedupResolver:
                 except (TypeError, ValueError):
                     return None
 
+            if item.get('detector') == 'shared_source':
+                # Not a similarity score: the two were extracted from the same chat lines.
+                return "extracted_from_same_messages"
             overlap = _num(item.get('text_overlap'))
             if overlap is not None:
                 return f"text_overlap={overlap:.3f}"
@@ -1082,7 +1112,7 @@ class FactDedupResolver:
             return 0
 
         applied, processed_keys = await self._aapply_decisions(
-            name, batch, results,
+            name, batch, results, shown_reversed=shown_reversed,
         )
 
         # CodeRabbit: LLM lists whose decisions consume no pairs, all actions rejected
@@ -1195,6 +1225,7 @@ class FactDedupResolver:
 
     async def _aapply_decisions(
         self, name: str, batch: list[dict], results: list[dict],
+        *, shown_reversed: frozenset[int] | set[int] = frozenset(),
     ) -> tuple[int, set[tuple]]:
         """Translate LLM decisions into facts.json mutations.
 
@@ -1303,6 +1334,13 @@ class FactDedupResolver:
             exist_id = item.get('existing_id')
             cand = _find_queued_fact(rows_by_id, item, 'candidate')
             existing = _find_queued_fact(rows_by_id, item, 'existing')
+            if idx in shown_reversed:
+                # The model judged this pair with the two records exchanged (the
+                # newer one as its candidate). The rows are exchanged here too, so
+                # merge and replace keep their full meaning, provenance and
+                # importance included, instead of one being renamed into the other.
+                cand_id, exist_id = exist_id, cand_id
+                cand, existing = existing, cand
             if cand is None or existing is None:
                 # One side disappeared between enqueue and resolve —
                 # not an error, just stale; consume the queue entry

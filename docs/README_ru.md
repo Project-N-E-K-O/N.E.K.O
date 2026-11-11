@@ -14,7 +14,7 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/LICENSE)
 [![Commit](https://img.shields.io/github/last-commit/Project-N-E-K-O/N.E.K.O?color=green)](https://github.com/Project-N-E-K-O/N.E.K.O/commits)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/5kgHfepNJr)
-[![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/)
+[![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/?utm_source=project-neko.online&utm_medium=referral&utm_campaign=docs_readme&utm_content=badge_ru)
 
 [![Docs](https://img.shields.io/badge/📖_Developer_Docs-project--neko.online-40C5F1?style=for-the-badge)](https://project-neko.online)
 [![Website](https://img.shields.io/badge/🐾_Website-project--neko.cn-F5A3C7?style=for-the-badge)](https://project-neko.cn)
@@ -23,7 +23,7 @@
 
 </div>
 
-Этот README предназначен для разработчиков. Если вы хотите просто пользоваться N.E.K.O., скачайте его бесплатно в [Steam](https://store.steampowered.com/app/4099310/__NEKO/) или зайдите на [project-neko.cn](https://project-neko.cn).
+Этот README предназначен для разработчиков. Если вы хотите просто пользоваться N.E.K.O., скачайте его бесплатно в [Steam](https://store.steampowered.com/app/4099310/__NEKO/?utm_source=project-neko.online&utm_medium=referral&utm_campaign=docs_readme&utm_content=intro_ru) или зайдите на [project-neko.cn](https://project-neko.cn).
 
 Документация для разработчиков доступна на английском, китайском и японском языках; русской версии сайта пока нет, поэтому ссылки ниже ведут на английские страницы.
 

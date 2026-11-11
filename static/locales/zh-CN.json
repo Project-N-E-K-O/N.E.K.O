@@ -24,7 +24,7 @@
             "storageChanged": "后端数据目录已切换，请重新打开头像编辑器后再保存。"
         }
     },
-    "chatSync": {"oversizedLocalOnly":"超过单条同步上限、只保存在本机 {{count}} 条。","setupNeedsSave":"“{{name}}”的同步设置需要处理，请检查角色后重新保存。","title":"聊天同步","serviceUrl":"同步服务 HTTPS 地址","saveService":"保存地址","enable":"角色资料与近期记忆","pause":"暂停本机同步","syncNow":"立即同步","clearKnown":"清空已知聊天","close":"关闭","notConfigured":"请先设置同步服务地址。","notBound":"此角色尚未关联聊天同步。","enabled":"本机已开启。","paused":"本机已暂停，云端聊天保留。","pending":"已登记待上传 {{originals}} 条；待发送删除 {{deletions}} 项。","working":"正在处理…","more":"仍有历史待下载，再次同步可继续。","passFinished":"本轮已完成，其他设备仍可能有待同步聊天。","loginRequired":"请登录社区账号后重试。","failed":"同步尚未完成，本地聊天和待办均已保留。","deleteOriginal":"双端删除","deleteConfirm":"确定在双端删除这条聊天原文？","clearConfirm":"确定在双端清空此角色当前已知的全部聊天原文？另一端随后新增的聊天不在本次范围内。 仅保存在本机的回复也会在本机清空。","unknownTime":"原发生时间未知","userLabel":"你","unfinishedChat":"请等待当前回复结束后再删除聊天。","profileConflict":"请选择要使用的人设版本","profileRenamePending":"确认角色改名","profileLocal":"本机版本","profileRemote":"云端版本","profileUseLocal":"上传本机版本","profileUseRemote":"使用云端版本","profileRenameConfirm":"将“{{oldName}}”改名为“{{newName}}”，并使用完整云端人设？","profileChanged":"人设已变化或同步暂不可用。两份版本均保留，请重新查看。","profileInitialUpload":"是否上传“{{name}}”当前的人设？","profileUploadConfirm":"是否上传“{{name}}”刚保存的人设？","profileUnsupported":"人设中有暂不支持同步的字段，本机保存已保留。","profileSaveFailed":"人设同步未完成，本机保存与两份版本均保留。","profileReview":"查看角色人设","profileName":"名称","profileNickname":"昵称","profileSetting":"原始设定","profileStyle":"说话风格","cloudImport":"从云端新建角色","cloudEmpty":"云端暂无角色。","cloudProfileEmpty":"这个云端角色尚未发布人设。","cloudCreate":"在本机新建这个角色","cloudExisting":"本机已有“{{name}}”，保留其当前同步状态。","cloudCreated":"已新建并绑定“{{name}}”。","cloudNameConflict":"本机已有同名角色，请先为本机角色改名，或取消导入。","profileNeedsBinding":"请在角色编辑页开启同步开关并保存，以关联此角色。","previewHistory":"预览以前的聊天","historyPreview":"历史聊天补传预览","historyLocalRole":"本地角色：{{name}}","historyCloudRole":"目标云角色：{{name}}","historyCount":"本次近期记忆：{{count}} 项","historyUnverifiedCount":"另有 {{count}} 条旧记录无法核验来源，继续保留在本机。","historyHint":"仅同步记忆浏览中展示的聊天与先前对话的备忘录。移出近期记忆会同步到另一端，两端原始存档均保留。","historyEmpty":"当前没有可同步的近期聊天或备忘录。","historyApprove":"确认补传这些聊天","historyCancel":"取消","historyQueued":"已批准后台同步这些近期记忆。","historyChanged":"角色、账号或同步状态已变化，请重新预览后再确认。","historyAwaitingRegistration":"已批准的历史原文中，仍有 {{count}} 条等待本地登记。","historyUnverifiedUnknown":"尚未扫描旧记录；无法核验来源的内容继续保留在本机。","writerRecoveryRequired":"本机同步需要核验，旧任务已暂停，本地聊天仍可继续。","recoverWriter":"核验并恢复同步","recoveryChecked":"核验完成。请在角色编辑页开启同步开关并保存，继续同步角色与历史聊天。","recoveryDeleteConfirm":"是否在双端继续删除这 {{count}} 条待发送记录？本地角色：{{localName}}；目标云角色：{{cloudName}}。取消后仍在本机隐藏。","includeHistory":"近期聊天与备忘录","initialHistoryFailed":"已有聊天同步暂未完成。角色绑定已保留，请在角色编辑页重新保存同步设置以重试。","moreOptions":"更多设置","enableHint":"{{name}} — 角色资料与近期记忆","newRoleSync":"角色资料与近期记忆","newSyncPending":"角色已保存在本机，将在登录并联网后自动同步。","newSyncFailed":"角色已保存在本机，同步设置尚未完成。请稍后重试。","syncChoiceSaved":"角色已保存，同步设置已更新。","recoverWriterHelp":"了解核验与恢复同步","recoverWriterTooltip":"恢复备份、复制同步数据或写入中断，导致旧同步状态无法确认时，核对账号、角色绑定与云端记录，避免重复上传或恢复已删除的聊天。正常使用无需操作；双端删除会另行确认。","recoveryNotRequired":"当前无需核验。","errorDetail":"{{message}} 错误代码：{{code}}。","errorAccountMismatch":"当前云端身份与此角色保存的归属不一致。请核对社区账号；若一直是同一账号，需要核查并修复旧绑定，重复重试无法解决。本地聊天已保留。","errorWriterRecovery":"旧同步状态尚未核验。请打开“更多设置”，点击“核验并恢复同步”；成功后重新保存已开启同步的角色。","errorSessionChanged":"操作期间登录状态发生变化。请确认当前社区账号后重试。","errorSessionUnavailable":"暂时无法核验已保存的登录状态。请检查网络后重试；若仍失败，请在账号页面重新登录。","errorNetwork":"无法连接同步服务或请求超时。请检查网络后重试；本地聊天和待办已保留。","errorRetryLater":"同步服务正在限流或等待重试。请稍后重试，连续点击不会缩短等待时间。","errorServiceRejected":"同步服务拒绝了请求。请稍后重试；若持续失败，请反馈此错误代码以核查服务状态。","errorBindingChanged":"角色或同步绑定已变化。请重新打开角色编辑页，确认角色和同步开关后保存。","errorProfileChanged":"保存后的角色设定已变化。请重新打开角色编辑页，确认设定后再次保存同步设置。","errorUnknown":"无法完成同步。请检查网络并重新打开“更多设置”重试；若仍失败，请反馈失败的操作步骤。本地聊天和待办已保留。"},
+    "chatSync": {"setupNeedsSave":"“{{name}}”的同步设置需要处理，请检查角色后重新保存。","title":"聊天同步","close":"关闭","pending":"已登记待上传 {{originals}} 条；待发送删除 {{deletions}} 项。","working":"正在处理…","loginRequired":"请登录社区账号后重试。","unknownTime":"原发生时间未知","userLabel":"你","profileConflict":"请选择要使用的人设版本","profileRenamePending":"确认角色改名","profileLocal":"本机版本","profileRemote":"云端版本","profileUseLocal":"上传本机版本","profileUseRemote":"使用云端版本","profileRenameConfirm":"将“{{oldName}}”改名为“{{newName}}”，并使用完整云端人设？","profileChanged":"人设已变化或同步暂不可用。两份版本均保留，请重新查看。","profileUploadConfirm":"是否上传“{{name}}”刚保存的人设？","profileUnsupported":"人设中有暂不支持同步的字段，本机保存已保留。","profileSaveFailed":"人设同步未完成，本机保存与两份版本均保留。","profileName":"名称","profileNickname":"昵称","profileSetting":"原始设定","profileStyle":"说话风格","cloudImport":"从云端新建角色","cloudEmpty":"云端暂无角色。","cloudProfileEmpty":"这个云端角色尚未发布人设。","cloudCreate":"在本机新建这个角色","cloudExisting":"本机已有“{{name}}”，保留其当前同步状态。","cloudCreated":"已新建并绑定“{{name}}”。","cloudNameConflict":"本机已有同名角色，请先为本机角色改名，或取消导入。","profileNeedsBinding":"请在角色编辑页开启同步开关并保存，以关联此角色。","writerRecoveryRequired":"本机同步需要核验，旧任务已暂停，本地聊天仍可继续。","recoverWriter":"核验并恢复同步","recoveryChecked":"核验完成。请在角色编辑页开启同步开关并保存，继续同步角色与历史聊天。","recoveryCloudCopiesKept":"有 {{count}} 条之前在本机删除的记录无法再同步删除到云端；云端如有这些记录，会继续保留。","moreOptions":"更多设置","newRoleSync":"角色资料与近期记忆","newSyncFailed":"角色已保存在本机，同步设置尚未完成。请稍后重试。","syncChoiceSaved":"角色已保存，同步设置已更新。","recoverWriterHelp":"了解核验与恢复同步","recoverWriterTooltip":"恢复备份、复制同步数据或写入中断，导致旧同步状态无法确认时，核对账号、角色绑定与云端记录，避免重复上传或恢复已删除的聊天。正常使用无需操作。","recoveryNotRequired":"当前无需核验。","errorDetail":"{{message}} 错误代码：{{code}}。","errorAccountMismatch":"当前云端身份与此角色保存的归属不一致。请核对社区账号；若一直是同一账号，需要核查并修复旧绑定，重复重试无法解决。本地聊天已保留。","errorWriterRecovery":"旧同步状态尚未核验。请打开“更多设置”，点击“核验并恢复同步”；成功后重新保存已开启同步的角色。","errorSessionChanged":"操作期间登录状态发生变化。请确认当前社区账号后重试。","errorSessionUnavailable":"暂时无法核验已保存的登录状态。请检查网络后重试；若仍失败，请在账号页面重新登录。","errorRecentWriteUnconfirmed":"这个角色的近期记忆同步已停止：无法确认上一次写入是否完整。聊天和本地记忆不受影响。","errorRecentFileUnreadable":"这个角色的近期记忆文件已损坏，无法读取，近期记忆同步已暂停。文件恢复可读后会自动继续。","errorNetwork":"无法连接同步服务或请求超时。请检查网络后重试；本地聊天和待办已保留。","errorRetryLater":"同步服务正在限流或等待重试。请稍后重试，连续点击不会缩短等待时间。","errorServiceRejected":"同步服务拒绝了请求。请稍后重试；若持续失败，请反馈此错误代码以核查服务状态。","errorBindingChanged":"角色或同步绑定已变化。请重新打开角色编辑页，确认角色和同步开关后保存。","errorProfileChanged":"保存后的角色设定已变化。请重新打开角色编辑页，确认设定后再次保存同步设置。","errorUnknown":"无法完成同步。请检查网络并重新打开“更多设置”重试；若仍失败，请反馈失败的操作步骤。本地聊天和待办已保留。","errorLongTermCapacity":"本次长期记忆快照超过 20,000 条，未进行同步。本地记忆完整保留，将在后续记忆更新后再试。","errorLongTermEvidenceCapacity":"长期记忆的纠正记录或确认记录超过 20,000 条，本次未进行同步。本地记忆完整保留；负责整理记忆的设备清理最早的记录并同步过来后，会自动恢复。","noticeLongTermEvidenceTrimmed":"长期记忆的纠正记录或确认记录过多，已自动删除最早的一部分。无需操作，本提示保留 7 天。","errorLongTermPending":"长期记忆等待处理：尚有云端快照未能应用。本地记忆和云端证据均保留，本地上传暂缓，将按现有规则重试。","errorArchiveSubject":"长期记忆同步已暂停：旧画像归档缺少可核验的主体信息。本地记录均保留，请从含主体信息或原始事件的备份恢复后重试。"},
     "instanceAccess": {"title":"连接 NEKO 实例","description":"输入服务器所有者提供的实例访问凭证，此设备将记住连接 30 天。","key":"实例访问凭证","connect":"连接","failed":"连接未获授权，请检查凭证后重试。","httpsRequired":"请使用 HTTPS 或可信的 HTTPS 隧道安全连接。","insecureWarning":"当前连接未加密（HTTP），同一网络路径上的人可能看到访问凭证和会话。条件允许时请使用 HTTPS。"},
     "common": {
         "load": "加载",
@@ -1142,7 +1142,10 @@
         "compactExportHistory": "历史对话",
         "compactHistoryToggleOpen": "展开历史对话",
         "compactHistoryToggleClose": "收起历史对话",
-    "compactHistoryExport": "导出历史对话",
+        "clearScreen": "清屏",
+        "clearScreenDone": "已清屏",
+        "clearScreenHint": "仅隐藏当前已有消息，保留聊天记录和记忆。",
+        "compactHistoryExport": "导出历史对话",
         "compactExportControlsCollapse": "隐藏选择栏",
         "compactExportControlsExpand": "显示选择栏",
         "exportAction": "导出",
@@ -1190,7 +1193,10 @@
         "exportSelectAll": "全选",
         "exportSelectNone": "取消",
         "exportSelectInvert": "反选",
-        "exportSelectionCount": "已选 {{selected}} / 共 {{total}}"
+        "exportSelectionCount": "已选 {{selected}} / 共 {{total}}",
+        "imageUnavailable": "图片暂时无法打开。",
+        "openImage": "查看图片",
+        "closeImage": "关闭"
     },
     "voiceControl": {
         "startVoice": "开始语音",
@@ -1416,6 +1422,7 @@
             "openrouter": "OpenRouter（模型聚合，国内无法使用）",
             "orcarouter": "OrcaRouter（Claude 网关，国内无法使用）",
             "requesty": "Requesty（模型路由，国内无法使用）",
+            "opper": "Opper（欧洲 AI 网关，国内无法使用）",
             "atlascloud": "Atlas Cloud（模型聚合，国内版不支持）",
             "vllm_omni": "vLLM-Omni（TTS）",
             "gptsovits": "GPT-SoVITS（自部署）"
@@ -1493,6 +1500,7 @@
             "openrouter": "OpenRouter",
             "orcarouter": "OrcaRouter",
             "requesty": "Requesty",
+            "opper": "Opper",
             "atlascloud": "Atlas Cloud",
             "vllm_omni": "vLLM-Omni（TTS）"
         },
@@ -2281,6 +2289,51 @@
         "repetitionInsightsExportEmpty": "没有需要导出的说法。",
         "repetitionInsightsExported": "待检查项已导出，角色以后的回复没有改变。",
         "repetitionInsightsResetEffects": "清空统计",
+        "habitualTitle": "口癖压制",
+        "habitualDescription": "她在好几次聊天里反复用到的说法，会在每次聊天开头提醒她换个说法表达。你可以逐条放行，或强制压制模型没压制的说法。",
+        "habitualRecompute": "立即重新计算",
+        "habitualRecomputing": "正在重新计算，可能需要一两分钟…",
+        "habitualLoading": "正在读取口癖压制状态…",
+        "habitualLoadFailed": "口癖压制状态读取失败，请稍后再试。",
+        "habitualNoCharacter": "请先选择角色。",
+        "habitualNotComputed": "还没有计算过。记忆服务空闲时会自动计算，也可以点「立即重新计算」。",
+        "habitualEmpty": "暂时没有发现需要压制的口癖。",
+        "habitualStatusActive": "下一次聊天开头，会提醒她换个方式说这 {{count}} 条说法。",
+        "habitualStatusNone": "下一次聊天开头不会注入任何口癖提醒。",
+        "habitualStatusSwitchOff": "「自然表达」开关已关闭，目前不会注入。",
+        "habitualStatusStale": "列表已超过 {{days}} 天没有更新，目前不会注入。",
+        "habitualStatusLanguage": "列表是按另一种语言统计的，和当前语言不一致，目前不会注入。",
+        "habitualStatusReviewOff": "「强力记忆模式」已关闭：新候选不会交给模型复核，只按规则压制。",
+        "habitualStatusReviewFailed": "上次模型复核没有成功，没判断过的候选暂时按规则压制。",
+        "habitualComputedAt": "上次计算：{{time}}　预计下次：{{next}}",
+        "habitualWindow": "统计范围：最近 {{replies}} 条回复，{{sessions}} 次聊天（{{from}} 至 {{to}}）",
+        "habitualLogicSummary": "压制规则说明",
+        "habitualLogicCandidates": "同一个说法要在至少 {{sessions}} 次不同的聊天里出现，才算候选；两条回复相隔超过 {{gap}} 分钟就算新的一次聊天。",
+        "habitualLogicExclusions": "角色卡里写着的说法、双方的名字和昵称、她自己用引号提到的内容，以及全由常用虚词组成的说法，都不会成为候选。",
+        "habitualLogicReview": "候选会交给模型判断是不是真的口癖，只有判为口癖的才会压制；模型还没判断过的候选按规则压制。",
+        "habitualLogicLimits": "每次最多压制 {{max}} 条，整段提醒不超过 {{tokens}} 个 token。大约每 {{hours}} 小时在空闲时重新计算一次，不再出现的说法会自动解除；超过 {{days}} 天没更新的列表不会注入。",
+        "habitualLogicOverrides": "你的放行和强制压制优先于模型的判断，下一次聊天就生效。放行一条说法后，包含它的说法也不会再被压制。",
+        "habitualStats": "{{sessions}} 次聊天 · {{days}} 天 · 共 {{count}} 次 · 最近一次 {{last}}",
+        "habitualStateHabit": "压制中 · 模型判为口癖",
+        "habitualStateUnreviewed": "压制中 · 尚未经模型复核",
+        "habitualStateForced": "压制中 · 你强制压制",
+        "habitualStateKept": "未压制 · 模型判为{{verdict}}",
+        "habitualStateAllowed": "已放行",
+        "habitualStateOverCap": "未压制 · 超出 {{max}} 条上限",
+        "habitualStateOverBudget": "压制中 · 超出提示长度，下次聊天不会带上",
+        "habitualVerdictNormal": "普通说法",
+        "habitualVerdictTopic": "话题内容",
+        "habitualVerdictName": "名字或标题",
+        "habitualVerdictCard": "角色设定",
+        "habitualReason": "模型理由：{{reason}}",
+        "habitualAllow": "放行",
+        "habitualSuppress": "强制压制",
+        "habitualClear": "撤销我的设置",
+        "habitualAllowedTitle": "已放行的说法（它们和包含它们的说法都不会被压制）",
+        "habitualRestore": "恢复压制",
+        "habitualSaveFailed": "保存失败，请稍后再试。",
+        "habitualRecomputeFailed": "重新计算失败，请稍后再试。",
+        "habitualRecomputeBusy": "已经在计算中了，请稍候。",
         "repetitionInsightsSearch": "搜索",
         "repetitionInsightsSearchPlaceholder": "搜索说法或规则编号",
         "repetitionInsightsCoverageFilter": "规则",
@@ -3936,7 +3989,7 @@
             "proactiveVisionChat": "屏幕分享",
             "proactiveVisionChatTooltip": "需开启主动搭话且关闭隐私模式",
             "proactiveNewsChat": "新闻网站",
-            "proactiveNewsChatTooltip": "中国地区使用微博热议、贴吧和小黑盒内容搭话；其他地区使用 Twitter 热门话题",
+            "proactiveNewsChatTooltip": "中国地区使用微博热议、贴吧和小黑盒内容搭话；其他地区使用 Twitter 热门话题、Google 热搜和 Steam 热销新作",
             "proactiveCommunityChat": "喵宇宙",
             "proactiveCommunityChatTooltip": "使用喵宇宙发现页的公开卡牌进行搭话",
             "proactiveVideoChat": "视频网站",
@@ -3987,6 +4040,7 @@
             "localTracking": "局部跟踪",
             "lockedHoverFade": "锁定悬停淡化",
             "forgeDropEffects": "掉券动画与音效",
+            "modelClickShake": "点击颤动反馈",
             "hideCommunityEntry": "隐藏喵宇宙入口",
             "textGuardMaxLength": "回复长度上限",
             "unlimited": "无限制",
@@ -5657,6 +5711,7 @@
             "ssl_error": "SSL 证书验证失败",
             "ws_error": "WebSocket 连接失败",
             "missing_params": "缺少必要参数",
+            "output_limit": "测试请求的输出额度不足",
             "unknown": "未知错误",
             "backend_unavailable": "后端服务不可用",
             "invalid_response": "响应格式错误"
@@ -5789,7 +5844,7 @@
             "drawCalls": "Draw Calls"
         }
     },
-     "badminton": {
+    "badminton": {
          "title": "羽毛球挑战 - Badminton",
          "exit": "退出",
          "loading": {
@@ -6213,6 +6268,8 @@
     },
     "airBasketball": {
         "title": "空气投篮",
+        "ballSupply": "可投 {ready}/{total} · 回收 {returning}",
+        "pause": "暂停", "resume": "继续", "paused": "已暂停",
         "timeLeft": "剩余",
         "seconds": "秒",
         "you": "你",
@@ -6226,13 +6283,15 @@
         "power": "力度",
         "angle": "角度",
         "fever": "爆发",
-        "gestureHint": "按住篮球拖动蓄力；向右斜投可以闯入对方球场",
+        "gestureHint": "按住篮球拖动蓄力，朝中间的共享篮筐投篮；也可砸球或拍打猫娘干扰",
+        "shotFirstHint": "按住球，往上拖，再松手。",
+        "shotFocusLow": "等上方的体力条回一点，就能再投。",
         "playerControl": "由你控制",
         "aiControl": "自动控制",
         "nekoHit": "呀！",
-        "intro": "双方共享同一套专注与计分规则；投篮和捣乱都要把握节奏。",
+        "intro": "双方共享同一套体力与计分规则；投篮和捣乱都要把握节奏。 双方使用固定位置、固定大小的共享篮筐。",
         "ruleAim": "角度力度",
-        "ruleStage": "四段篮筐",
+        "ruleStage": "固定篮筐",
         "ruleFever": "连续爆发",
         "start": "开始比赛",
         "again": "再来一局",
@@ -6243,7 +6302,7 @@
         "feverOn": "爆发！+1",
         "win": "你赢了！",
         "draw": "平局！",
-        "interference": "专注",
+        "interference": "体力",
         "interfereHint": "拖动篮球、篮筐，或拍打猫娘干扰她",
         "soundOff": "关闭音效",
         "soundOn": "开启音效",
@@ -6257,7 +6316,7 @@
         "timedModeHint": "60 秒冲分，时间到自动结算",
         "endlessMode": "自由胡闹",
         "endlessModeHint": "不限时间，想停时随时结算",
-        "endlessIntro": "不限时间地投篮、撞球和互相捣乱；想停时随时结算比分。",
+        "endlessIntro": "不限时间地投篮、撞球和互相捣乱；想停时随时结算比分。 双方使用固定位置、固定大小的共享篮筐。",
         "stopMatch": "结束本局",
         "elapsed": "已玩",
         "opponentReady": "{name} 准备中",
@@ -6276,15 +6335,15 @@
         "voiceMouseSteal": ["鼠标借我玩一下！", "抓到了，现在归我。"],
         "voiceWin": ["这局是我赢啦。", "承让，下局继续。"],
         "voiceLose": ["好吧，这局算你厉害。", "你赢了，下局我会认真一点。"],
-        "arenaLabel": "双人投篮赛场",
-        "playerArcadeLabel": "玩家投篮机",
-        "opponentArcadeLabel": "对手投篮机",
+        "arenaLabel": "共享篮筐投篮赛场",
+        "playerArcadeLabel": "共享球场玩家侧",
+        "opponentArcadeLabel": "共享球场猫娘侧",
         "avatarLabel": "可以拖动或拍打干扰的当前角色",
         "avatarUnavailable": "角色资源暂不可用",
         "sdkUnavailable": "小游戏组件加载失败，请关闭页面后重试。",
         "runtimeStartFailed": "比赛没能启动，请稍后再试一次。"
     },
-   "soccer": {
+    "soccer": {
         "settings": {
             "button": "设置",
             "title": "游戏设置",
@@ -6418,7 +6477,7 @@
             "hint": "关闭后，玩家输入、NEKO直接回应、事件回应、赛后摘要和后续续接都不会进入或引用记忆。"
         }
     },
-  "watchTogether": {
+    "watchTogether": {
         "automatic": "自动陪看",
         "stopWatching": "停止陪看",
         "resizeAvatar": "调整猫娘大小",
@@ -6856,9 +6915,27 @@
         }
     },
     "visit": {
+        "catScene": {
+            "title": "猫猫串门",
+            "active": "正在串门",
+            "ending": "正在退出串门…",
+            "reconnecting": "正在重新连接…",
+            "wrapUp": "准备回家",
+            "myCat": "我的猫",
+            "peerCat": "对方的猫",
+            "returnModel": "返回模型",
+            "controls": "我的猫动作",
+            "greet": "打招呼",
+            "play": "玩耍",
+            "rest": "休息",
+            "exitConfirm": "是否退出猫猫串门",
+            "actionUnavailable": "猫猫动作暂时不可用",
+            "actionFailed": "动作传输失败，请重试"
+        },
         "directInvite": {
             "decline": "拒绝",
             "accept": "接受",
+            "acceptCat": "接受猫猫串门",
             "expired": "这次邀请已经失效了",
             "responseFailed": "拒绝结果没有发出去，请再试一次",
             "unavailable": "现在还出不了门，可以再试一次"
@@ -6881,6 +6958,7 @@
             "loginRequired": "请先在 N.E.K.O 设置里登录喵宇宙",
             "mutualRequired": "你们已不再互相关注，无法发送邀请",
             "targetOffline": "对方当前离线，暂时不能邀请",
+            "invitationCapacity": "当前邀请较多，请稍后再试",
             "communityUnavailable": "暂时连不上喵宇宙，稍后再试一次",
             "declined": "{{name}}这次不能来串门",
             "otherParty": "对方",
@@ -6902,11 +6980,14 @@
             "desktopRequired": "请在桌面版 Neko 中发送定向邀请",
             "preparingRoom": "正在为 {{name}} 准备房间…",
             "roomMissing": "没有拿到定向串门房间",
+            "modeMismatch": "串门创建失败，请重试",
             "sendFailed": "邀请没有发出去，请稍后重试",
             "invited": "已向 {{name}} 发出串门邀请",
             "cancelFailed": "邀请暂时无法取消，请稍后重试",
             "inviteLater": "稍后再邀",
             "invite": "邀请来玩",
+            "modelVisit": "模型串门",
+            "catVisit": "猫形态",
             "justNow": "刚刚",
             "lastSeen": "上次在线 {{time}}",
             "offline": "离线",
@@ -7043,7 +7124,8 @@
         },
         "error": {
             "disabled": "「允许串门」还没有打开，请先在设置里打开",
-            "generic": "没能完成，请稍后再试",
+            "generic": "操作失败，请重试",
+            "otherVisitActive": "已有其他串门，请先结束",
             "unreachable": "连不上本机服务",
             "voiceSession": "先结束语音通话再串门",
             "alreadyVisiting": "她已经在串门了",
@@ -7227,5 +7309,12 @@
         "informationExcluded": "此反馈通道不上传完整聊天记录、录音文件或屏幕截图。",
         "informationNote": "“我知道了”仅关闭说明，不改变上传设置。",
         "informationClose": "我知道了"
+    },
+    "cloudModel": {
+        "conflict": "两端都修改了模型，请选择保留哪个版本。",
+        "useCloud": "采用云端模型",
+        "keepLocal": "保留本机选择",
+        "failed": "模型未能加载，已保留原来的选择。",
+        "retry": "重试"
     }
 }

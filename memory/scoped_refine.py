@@ -61,6 +61,7 @@ from datetime import datetime
 from typing import Awaitable, Callable
 
 from config import (
+    EVIDENCE_REINFORCEMENT_CAP,
     LLM_OUTPUT_GUARD_MAX_TOKENS,
     PERSONA_VERSION_HISTORY_MAX,
     SCOPED_REFINE_CLUSTER_SIZE_MAX,
@@ -69,6 +70,14 @@ from config import (
     SCOPED_REFINE_MIN_ENTRIES,
     SCOPED_REFINE_REVISIT_AFTER_DAYS,
     SCOPED_REFINE_TOPK_PER_ENTRY,
+    SCOPED_REOBSERVED_REINFORCEMENT,
+)
+from memory.evidence import (
+    counted_fact_ids,
+    has_others_backing,
+    merge_fact_source_counts,
+    merge_observed_days,
+    observed_days,
 )
 
 
@@ -102,6 +111,7 @@ except ImportError:
     )
     _warn_once(__name__)
 from memory._reflection.schema import normalize_reflection, refine_reflection_id
+from memory.introspection import is_permanently_suppressed
 from memory.scopes import MemorySubject, entry_matches_subject, subject_from_entry
 from memory.temporal import explicit_event_window, to_naive_local
 from utils.language_utils import language_context
@@ -328,7 +338,12 @@ def gather_scoped_refine_buckets(
             return
         # Exclude suppressed entries: rendering deliberately routes them to 'do not mention proactively'; merged
         # results are ordinarily visible, so merging suppressed content would remove suppression.
-        if entry.get('protected') or entry.get('suppress') or not entry.get('id'):
+        if (
+            entry.get('protected')
+            or entry.get('suppress')
+            or is_permanently_suppressed(entry)
+            or not entry.get('id')
+        ):
             return
         subject = subject_from_entry(entry)
         if subject is None:
@@ -776,6 +791,7 @@ def _valid_merge_source_ids(
             or sid in consumed
             or by_id[sid].get('protected')
             or by_id[sid].get('suppress')
+            or is_permanently_suppressed(by_id[sid])
             or by_id[sid].get('text') != cluster_text_by_id.get(sid)
         ):
             return []
@@ -1191,15 +1207,43 @@ async def apply_scoped_reflection_merge(
             })
             # Confirmed rendering requires evidence_score > 0: inherit the highest source
             # reinforcement with floor 0.1, matching scoped synthesis's minimum positive seed.
-            max_rein = max(
-                (
-                    _finite_counter_value(s.get('reinforcement'))
-                    for s in semantic_sources
+            max_rein = min(
+                max(
+                    (
+                        _finite_counter_value(s.get('reinforcement'))
+                        for s in semantic_sources
+                    ),
+                    default=0.0,
                 ),
-                default=0.0,
+                EVIDENCE_REINFORCEMENT_CAP,
             )
-            merged['reinforcement'] = max(max_rein, 0.1)
+            # Two lines each backed by others' words are one thing seen
+            # twice: like a restatement in synthesis, the merge counts as
+            # being seen again and lifts it to the front of the subject's
+            # render budget. Lines resting only on the character's own words
+            # add nothing.
+            if sum(1 for s in semantic_sources if has_others_backing(s)) >= 2:
+                merged['reinforcement'] = min(
+                    max_rein + SCOPED_REOBSERVED_REINFORCEMENT,
+                    EVIDENCE_REINFORCEMENT_CAP,
+                )
+            else:
+                merged['reinforcement'] = max(max_rein, 0.1)
             merged['rein_last_signal_at'] = now_iso
+            # The accounting follows the content (semantic_sources, like
+            # source_fact_ids): how many facts are others' words and on
+            # which days the line was seen, or the merge would reset the
+            # promotion gate (memory.evidence.scoped_promotion_ready) or
+            # wave a line resting on the character's own words through.
+            counts = merge_fact_source_counts(semantic_sources)
+            if counts is not None:
+                merged['fact_source_counts'] = counts
+                merged['counted_fact_ids'] = sorted(
+                    set().union(*(counted_fact_ids(s) for s in semantic_sources))
+                )
+            merged['observed_days'] = merge_observed_days(
+                *(observed_days(s) for s in semantic_sources)
+            )
             from memory.speaker_trust import provenance_of_entries
             merged.update(provenance_of_entries(provenance_sources))
             # Subject stamp: unstamped reflections fail closed on scoped read paths.

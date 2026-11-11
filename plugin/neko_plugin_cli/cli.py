@@ -18,6 +18,7 @@ Shell completion (requires ``shtab``)::
 from __future__ import annotations
 
 import argparse
+import io
 import sys
 import textwrap
 from pathlib import Path
@@ -33,6 +34,8 @@ if __package__ in {None, ""}:  # pragma: no cover - exercised by script invocati
         init_cmd,
         build_cmd,
         install_cmd,
+        lint_cmd,
+        precheck_cmd,
         publish_cmd,
     )
     from plugin.neko_plugin_cli.paths import resolve_default_paths  # noqa: E402
@@ -44,12 +47,18 @@ else:
         init_cmd,
         build_cmd,
         install_cmd,
+        lint_cmd,
+        precheck_cmd,
         publish_cmd,
     )
     from .paths import resolve_default_paths
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Console entry points and piped editor tasks need the same multilingual output.
+    for stream, original in ((sys.stdout, sys.__stdout__), (sys.stderr, sys.__stderr__)):
+        if stream is original and isinstance(stream, io.TextIOWrapper):
+            stream.reconfigure(encoding="utf-8", errors=stream.errors)
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -96,6 +105,8 @@ def build_parser() -> argparse.ArgumentParser:
     init_cmd.register(subparsers, defaults=defaults)
     check_cmd.register(subparsers, defaults=defaults)
     deps_cmd.register(subparsers, defaults=defaults)
+    lint_cmd.register(subparsers, defaults=defaults)
+    precheck_cmd.register(subparsers, defaults=defaults)
     build_cmd.register(subparsers, defaults=defaults)
     install_cmd.register(subparsers, defaults=defaults)
     analyze_cmd.register(subparsers, defaults=defaults)

@@ -1464,10 +1464,8 @@ async def _handle_agent_event(event: dict):
                     delivered = False
                     if detail_text and hasattr(mgr, "send_lanlan_response"):
                         try:
-                            from services.chat_sync.source import mark_turn_origin
                             await mgr.rotate_speech_id_for_response_done()
                             direct_reply_sid = mgr.current_speech_id
-                            mark_turn_origin(mgr, direct_reply_sid, 'agent')
                             delivered = bool(
                                 await mgr.send_lanlan_response(detail_text, True, turn_id=direct_reply_sid,
                                                               expected_speech_id=direct_reply_sid)
@@ -2186,9 +2184,11 @@ async def switch_current_catgirl_fast():
     voice_id / thread state is completely unchanged. So this **only refreshes
     globals** and does no per-k work at all.
 
-    Wall clock: one aget_character_data (~a few ms) and that's everything.
+    Refresh globals and signal an existing sync host; network work remains outside this call.
     """
     await _refresh_character_globals()
+    from services.chat_sync.runtime import wake_desktop_chat_sync_scheduler
+    wake_desktop_chat_sync_scheduler(_config_manager)
     logger.info(f"[fast-switch] 已刷新 globals，当前猫娘: {her_name}")
 
 

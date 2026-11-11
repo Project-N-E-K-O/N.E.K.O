@@ -77,10 +77,13 @@ _INITIAL_DELAY_SIGNAL = 60           # First Signal extraction, formerly 40 s.
 _INITIAL_DELAY_REBUTTAL = 100        # First Rebuttal, formerly 300 s.
 _INITIAL_DELAY_AUTO_PROMOTE = 150    # First Auto-promote, formerly 300 s, staggered 50 s from rebuttal.
 _INITIAL_DELAY_ARCHIVE = 250         # First archive sweep, advanced greatly from 3600 s for short-session users.
+_INITIAL_DELAY_EVENT_LOG_COMPACT = 300  # First events.ndjson compaction: after the ARCHIVE 250 sweep, before PERSONA_REFINE 400; never on the startup path.
 _INITIAL_DELAY_PERSONA_REFINE = 400  # First PERSONA_REFINE, staggered 100 s from reflection refinement.
 _INITIAL_DELAY_REFLECTION_REFINE = 500  # First REFLECTION_REFINE.
 _INITIAL_DELAY_SCOPED_REFINE = 600   # First SCOPED_REFINE, lightweight group-memory refinement extending the staggered schedule.
 _INITIAL_DELAY_REFLECTION_SYNTHESIS = 200  # First REFLECTION_SYNTHESIS, avoiding AUTO_PROMOTE 150 / ARCHIVE 250 while allowing SignalLoop 60 s and one or two actual fact extractions.
+_INITIAL_DELAY_INTROSPECTION = 300   # First weekly-introspection poll: after startup work settles, before the correction-tier refine crons at 400 / 500.
+_INITIAL_DELAY_HABITUAL_PHRASES = 700  # First habitual-phrase check, after SCOPED_REFINE 600; local mining only, no LLM.
 
 # -- Persistent maintenance state retains review_clean across restarts --
 _maint_state: dict[str, dict] = {}   # {character_name: {"review_clean": bool, "last_review_ts": str}}.

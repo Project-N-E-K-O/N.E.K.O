@@ -97,7 +97,11 @@ Failure returns `{"status":"error","message":"..."}`.
 
 ### `GET /new_dialog/{lanlan_name}`
 
-Returns `text/plain` context for a new model session. For a valid character it renders the persona, active pending and confirmed reflections, dynamic inner-thought context, recent history, chat-gap hints, and holiday context. It waits for any in-progress `/renew` or `/settle` operation for the same character. An unknown character returns an empty string.
+Returns `text/plain` context for a new model session. For a valid character it renders the persona, active pending and confirmed reflections, dynamic inner-thought context, recent history, chat-gap hints, and holiday context. It waits for any in-progress `/renew` or `/settle` operation for the same character. With `preempt_summary=true` (used when starting a session or handing off to an Offline VLM, where the conversation waits for this response) it instead abandons that character's running summary LLM calls to background compression. An unknown character returns an empty string.
+
+### `POST /preempt_summary/{lanlan_name}`
+
+Abandons the character's summary LLM calls (`/renew`, `/settle`, `/process`) to background compression, now and for the next 10 seconds or until a `preempt_summary=true` `/new_dialog` finishes. The main server calls it before a cold start so its own queued memory writes, which may sit behind a summary, can reach the memory server before `/new_dialog` reads the recent history. This is best effort: the main server waits at most 1.5 seconds for those writes and then requests `/new_dialog` anyway, so writes still queued at that point land after the read. Returns `{"status":"ok"}`.
 
 This endpoint does not perform semantic fact recall. Semantic or temporal recall is requested separately through `/query_memory` by the model's `recall_memory` tool.
 
@@ -194,18 +198,20 @@ Requests reflection synthesis and schedules the applicable automatic promotion p
 Returns proactive-chat topic candidates without marking them as shown:
 
 ```json
-{ "topics": [] }
+{ "topics": [], "commitment": null }
 ```
 
-The caller must submit the reflection IDs actually used to `/record_surfaced`.
+`commitment` is the character's open promise from the pinned section that falls due soonest within two days, as `{"id": "pin_...", "text": "...", "due": "YYYY-MM-DD"}`, or `null`. Undated promises, promises offered in the last 12 hours, and promises she has mentioned recently are not returned.
+
+The caller must submit the reflection IDs actually used, and the promise ID once a model has been given it, to `/record_surfaced`.
 
 ### `POST /record_surfaced/{lanlan_name}`
 
 ```json
-{ "reflection_ids": ["reflection_..."] }
+{ "reflection_ids": ["reflection_..."], "commitment_ids": ["pin_..."] }
 ```
 
-Records proactive-chat surfacing and refreshes cooldowns. An empty or missing list is a no-op. The stable response is `{"ok":true}`; persistence failures are logged and do not fail the caller.
+Records proactive-chat surfacing and refreshes cooldowns. An empty or missing list is a no-op. The response is `{"ok":true}`; when `commitment_ids` is not empty it also carries `commitments_recorded`, which is `true` only once the pinned section has written the offer, so the caller knows whether to submit the promise again. Other persistence failures are logged and do not fail the caller.
 
 ### `POST /cancel_correction/{lanlan_name}`
 
@@ -251,6 +257,10 @@ Returns read-only transition counts from the character's event log:
 ```
 
 Invalid datetimes or `since > until` return `400`.
+
+Counts cover only events that are still in the journal. Already-applied
+history is pruned in the background (by default the last 7 days are kept,
+at most 256 KiB), so a window reaching further back undercounts.
 
 ## Storage backend
 

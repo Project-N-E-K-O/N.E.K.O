@@ -1,26 +1,17 @@
 # Create your first plugin with the N.E.K.O Plugin CLI
 
-## Develop with an installed N.E.K.O application
+## Develop with an installed N.E.K.O application in the plugin workbench
 
-For an existing valid plugin source folder, you do not need to clone the main repository or run a source checkout of the backend:
+You do not need to clone the main repository or run a source checkout of the backend; plugin source can live in any folder on the machine:
 
-Development-directory APIs are available only to the local desktop application and loopback web pages. Remote LAN pages and reverse-proxy access are not supported yet.
+1. Open **Plugin studio** in the plugin manager sidebar. Choose **New plugin** to generate a standard project, or **Add existing project** to select a folder containing `plugin.toml`. In a browser, the folder is chosen on the **backend machine**.
+2. Registered projects appear in the plugin list and plugin details like the source plugins under `plugin/plugins/`, but they never start automatically. Start, stop and reload them from the plugin pages.
+3. Edit in your own editor and click **Reload**. With hot reload enabled, a running project reloads after its source changes; source that cannot load keeps the running instance.
+4. Select the project in the plugin CLI build view to produce a `.neko-plugin` package. A stopped plugin can also be packaged.
 
-Development archives are stored separately and downloaded through the local development page. They do not appear in the ordinary package list. Removing a registration or disabling developer mode preserves the local-only download restriction. Downloaded files can be installed through the normal import flow.
+The project folder name must match the plugin ID and the entry package name, and the plugin ID must not be used by an installed plugin or another project. Existing dependency declarations and `vendor/` rules apply; dependencies are not installed automatically.
 
-1. Open the plugin manager, select **Developer mode** below **Server logs** in the sidebar, and enable its switch.
-2. Choose **Load unpacked plugin** and select the folder containing `plugin.toml`. In a browser, enter an absolute folder path on the **backend machine**; uploading a browser-local folder does not provide in-place development.
-3. Validate the name, ID, version, entry point and path, then load. Failed startup keeps the registration and error so you can fix the source and retry.
-4. Edit in your own editor and click **Reload**. Entry code and plugin submodules are read again. Restart the plugin after changing dependencies too.
-5. Click **Build package** and download the `.neko-plugin` file. Import it into another clean N.E.K.O installation to verify distribution. A stopped plugin can also be packaged.
-
-The folder name must match the entry package name, and the plugin ID must not conflict with another source. Existing dependency declarations and `vendor/` rules apply; dependencies are not installed automatically. Use **Change folder** after moving source. Changing the plugin ID requires removing the old association and registering again.
-
-Disabling developer mode stops development plugins and retains their associations. Start them manually after restarting the application. **Remove association** stops the plugin and keeps its source and runtime data. A failed stop does not count as successful removal.
-
-Do not edit source during a build: detected changes require a retry. Existing packaging exclusions apply and do not guarantee removal of every secret. Successful packaging is separate from functional testing and market review.
-
-Before packaging, the source folder name must also match the plugin ID: the existing package format installs into that directory. If they differ, rename the folder, update its entry/imports, and rebind it before retrying. Packaging does not rewrite your source.
+**Remove from workbench** stops a running plugin and removes it from the plugin list; the source and runtime data are kept. Workbench projects cannot be uninstalled through the plugin page's **Delete**.
 
 The CLI tutorial below covers source-based scaffolding, checks and release automation.
 
@@ -287,7 +278,7 @@ Reload stops the current plugin and starts it again from the saved source. Daily
 
 ### Automatic hot reload
 
-Set `NEKO_PLUGIN_HOT_RELOAD=true` before starting N.E.K.O. and the plugin server watches every plugin source directory (built-in roots, installed roots, and development-mode registrations). When a `*.py` or `plugin.toml` file stops changing for the debounce window, the running plugin is reloaded automatically — no button click needed:
+Set `NEKO_PLUGIN_HOT_RELOAD=true` before starting N.E.K.O. and the plugin server watches every plugin source directory (built-in roots, installed roots, and workbench project folders). When a `*.py` or `plugin.toml` file stops changing for the debounce window, the running plugin is reloaded automatically — no button click needed:
 
 ```bash
 # PowerShell

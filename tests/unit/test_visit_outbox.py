@@ -90,6 +90,29 @@ def delta(ln: str, txt: str, *, first: bool = False, lp: int = 1) -> dict:
     return msg
 
 
+def cat_motion(sample_seq: int, *, x_q16: int = 1000) -> dict:
+    return {
+        "t": "cat_motion", "motion_id": 1, "sample_seq": sample_seq,
+        "x_q16": x_q16, "y_q16": 2000, "mode": "walk", "facing": "right",
+        "tier": "cat1", "slot": "movement.cat1.walking",
+    }
+
+
+def cat_world_pointer(intent_id: int, *, x_q16: int = 1000) -> dict:
+    return {"t": "cat_world_pointer", "intent_id": intent_id,
+            "x_q16": x_q16, "y_q16": 2000}
+
+
+def cat_world_frame(world_seq: int, *, x_q16: int = 1000) -> dict:
+    return {
+        "t": "cat_world_frame", "world_seq": world_seq, "yarn_active": True,
+        "yarn_x_q16": x_q16, "yarn_y_q16": 2000,
+        "yarn_vx_q12": 1, "yarn_vy_q12": -1, "yarn_holder": "guest",
+        "question_active": False, "question_x_q16": 3000,
+        "question_y_q16": 4000, "collision_seq": 0,
+    }
+
+
 def ticks(start: float, end: float):
     """Virtual times ``start, start + 50 ms, ...`` up to and including ``end``."""
     for k in range(round(start * STEP), round(end * STEP) + 1):
@@ -680,6 +703,9 @@ def test_backpressure_pauses_lossy_but_not_text(tmp_path):
     tx.set_backpressure(True)
     assert tx.send(delta("h:1", "a", first=True), now=0.0) == 0
     assert tx.send({"t": "typing", "lp": 1, "sp": "c"}, now=0.0) == 0
+    assert tx.send(cat_motion(1), now=0.0) == 0
+    assert tx.send(cat_world_pointer(1), now=0.0) == 0
+    assert tx.send(cat_world_frame(1), now=0.0) == 0
     assert tx.send(text(2), now=0.0) == 1
     assert [f.t for f in tx.due(0.0)] == ["text"]
     tx.set_backpressure(False)
@@ -695,6 +721,32 @@ def test_coalesced_control_messages_keep_only_the_latest(tmp_path):
     tx.send({"t": "ack", "seq": 4}, now=0.1)
     tx.resume(0.2, PAUSE_PEER_ABSENT)
     assert [f.payload for f in tx.due(0.2)] == [{"t": "ack", "v": 1, "seq": 4}]
+
+
+def test_cat_motion_coalesces_latest_and_refreshes_backlog_age(tmp_path):
+    tx = make_outbox(tmp_path, peer_present=False)
+    tx.send(cat_motion(1, x_q16=1000), now=0.0)
+    tx.send(cat_motion(2, x_q16=2000), now=9.5)
+    tx.resume(10.5, PAUSE_PEER_ABSENT)
+    frames = tx.due(10.5)
+    assert len(frames) == 1 and frames[0].t == "cat_motion"
+    assert frames[0].payload["sample_seq"] == 2
+    assert frames[0].payload["x_q16"] == 2000
+
+
+@pytest.mark.parametrize("factory,key", [
+    (cat_world_pointer, "intent_id"),
+    (cat_world_frame, "world_seq"),
+])
+def test_cat_world_lossy_messages_coalesce_latest(tmp_path, factory, key):
+    tx = make_outbox(tmp_path, peer_present=False)
+    tx.send(factory(1, x_q16=1000), now=0.0)
+    tx.send(factory(2, x_q16=2000), now=0.1)
+    tx.resume(0.2, PAUSE_PEER_ABSENT)
+    frames = tx.due(0.2)
+    assert len(frames) == 1
+    assert frames[0].payload[key] == 2
+    assert frames[0].payload["x_q16" if key == "intent_id" else "yarn_x_q16"] == 2000
 
 
 def test_pending_bytes_and_try_reserve(tmp_path):

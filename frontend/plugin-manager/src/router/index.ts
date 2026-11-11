@@ -96,12 +96,10 @@ const routes: RouteRecordRaw[] = [
         }
       },
       {
-        path: 'development',
-        name: 'Development',
-        component: () => import('@/views/Development.vue'),
-        meta: {
-          titleKey: 'development.title'
-        }
+        path: 'workbench',
+        name: 'PluginAuthoring',
+        component: () => import('@/views/PluginAuthoring.vue'),
+        meta: { titleKey: 'authoring.title' },
       },
       {
         path: ':pathMatch(.*)*',

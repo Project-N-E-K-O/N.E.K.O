@@ -150,9 +150,10 @@ class PersistenceMixin:
         archive event so an idle character never carries an empty dir.
         """
         from memory import ensure_character_dir
+        from memory.archive_shards import REFLECTION_ARCHIVE_DIRNAME
         return os.path.join(
             ensure_character_dir(self._config_manager.memory_dir, name),
-            'reflection_archive',
+            REFLECTION_ARCHIVE_DIRNAME,
         )
 
     def _reflections_legacy_archive_path(self, name: str) -> str:
@@ -302,22 +303,28 @@ class PersistenceMixin:
         return items
 
     def load_reflections(self, name: str, include_archived: bool = False) -> list[dict]:
+        from memory.long_term_sync import require_consistent_views, consistent_view_read
+        require_consistent_views(os.path.join(self._config_manager.memory_dir, name))
         path = self._reflections_path(name)
         if os.path.exists(path):
             try:
-                with open(path, encoding='utf-8') as f:
-                    data = json.load(f)
+                with consistent_view_read(path):
+                    with open(path, encoding='utf-8') as f:
+                        data = json.load(f)
                 return self._filter_reflections(data, include_archived, path)
             except (json.JSONDecodeError, OSError) as e:
                 logger.warning(f"[Reflection] 加载失败: {e}")
         return []
 
     async def aload_reflections(self, name: str, include_archived: bool = False) -> list[dict]:
+        from memory.long_term_sync import require_consistent_views, consistent_view_read
+        require_consistent_views(os.path.join(self._config_manager.memory_dir, name))
         path = self._reflections_path(name)
         if not await asyncio.to_thread(os.path.exists, path):
             return []
         try:
-            data = await read_json_async(path)
+            with consistent_view_read(path):
+                data = await read_json_async(path)
         except (json.JSONDecodeError, OSError) as e:
             logger.warning(f"[Reflection] 加载失败: {e}")
             return []

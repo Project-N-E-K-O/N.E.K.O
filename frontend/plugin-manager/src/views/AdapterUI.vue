@@ -1,5 +1,5 @@
 <template>
-  <div class="adapter-ui">
+  <div class="adapter-ui" :class="{ 'adapter-ui--focused': displayFocused }">
     <!-- Loading 状态 -->
     <div v-if="loading" class="loading-container">
       <el-icon class="is-loading" :size="32"><Loading /></el-icon>
@@ -37,6 +37,7 @@
           ref="surfaceFrameRef"
           :plugin-id="adapterId"
           :surface="primaryPanelSurface"
+          active
           @open-logs="openLogsTab"
           @message="onSurfaceMessage"
         />
@@ -67,11 +68,16 @@ import {
 } from '@/views/pluginDetailHostedPanelRefresh'
 import type { PluginUiSurface } from '@/types/api'
 import { PANEL_HOST_MIN_HEIGHT } from '@/utils/constants'
+import { providePluginDisplayPage } from '@/composables/usePluginDisplay'
+import { useWorkspaceFocusOwner } from '@/composables/useWorkspaceFocus'
 
 const route = useRoute()
 const router = useRouter()
 const pluginStore = usePluginStore()
 const { t, locale } = useI18n()
+const displayFocused = ref(false)
+providePluginDisplayPage(displayFocused, () => adapter.value?.name || adapterId.value)
+useWorkspaceFocusOwner(displayFocused)
 
 const loading = ref(false)
 const loadError = ref<string | null>(null)
@@ -175,6 +181,8 @@ watch(locale, () => {
 </script>
 
 <style scoped>
+.adapter-ui--focused :deep(.el-card__header) { display: none; }
+.adapter-ui--focused :deep(.el-card__body) { padding: 0; }
 .adapter-ui {
   padding: 0;
   /* 插件 UI frame 用 height:100% 填满容器：这里提供确定高度（理由见 utils/constants.ts） */

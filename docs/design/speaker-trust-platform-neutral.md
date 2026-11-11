@@ -809,7 +809,7 @@ def speaker_account_id(sender_id: object) -> str:
 
 **不需要**：任何存储、任何账本、任何幂等环、任何写者锁、任何事务锁、任何事件应用逻辑、任何回传处理、任何迁移。
 
-**现实提醒**：今天没有任何现成插件能真的零成本接入 —— `bilibili_danmaku` / 独立插件 `neko_live` 根本没走 scoped memory；独立的 `bilibili_integration` 最接近（权限词表与 QQ 同构、uid 强制纯数字）但今天只在 admin 私信时写记忆；`wechat_integration` 把任意 `from_user_id` 无条件写进主人主记忆且无权限模型。「接入成本接近零」指的是 **trust 这一层**，不包括「先给那个平台补上 scoped memory 和权限模型」。
+**现实提醒**：今天没有任何现成插件能真的零成本接入 —— `bilibili_danmaku` / 独立插件 `neko_live` 根本没走 scoped memory；独立的 `bilibili_integration` 最接近（权限词表与 QQ 同构、uid 强制纯数字）但今天只在 admin 私信时写记忆。「接入成本接近零」指的是 **trust 这一层**，不包括「先给那个平台补上 scoped memory 和权限模型」。
 
 ---
 

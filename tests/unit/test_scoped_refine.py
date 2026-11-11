@@ -1368,9 +1368,17 @@ async def test_scoped_merge_ignores_overflowing_evidence_counters(
 
     assert applied == 1
     merged = next(entry for entry in current if entry.get("merged_from_ids"))
-    assert merged["reinforcement"] == pytest.approx(0.2)
     if store == STORE_PERSONA:
+        assert merged["reinforcement"] == pytest.approx(0.2)
         assert merged["disputation"] == pytest.approx(0.3)
+    else:
+        # Two lines backed by others' words: the merge counts as being seen
+        # again (+SCOPED_REOBSERVED_REINFORCEMENT) on top of the finite 0.2;
+        # the overflowing counter still counts as nothing.
+        from config import SCOPED_REOBSERVED_REINFORCEMENT
+        assert merged["reinforcement"] == pytest.approx(
+            0.2 + SCOPED_REOBSERVED_REINFORCEMENT,
+        )
 
 
 @pytest.mark.asyncio
