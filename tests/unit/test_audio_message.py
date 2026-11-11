@@ -401,17 +401,23 @@ def test_expired_id_stays_rejected_after_receipt_eviction():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("outcome", ["completed", "rejected", "locked-transcript", "tool-continuation"])
+@pytest.mark.parametrize(
+    "outcome",
+    ["completed", "rejected", "locked-transcript", "tool-continuation", "late-transcript", "missing-transcript"],
+)
 async def test_real_arbiter_waits_for_audio_commit_before_exactly_one_response(
     outcome, isolated_history, monkeypatch,
 ):
     reject = outcome == "rejected"
     locked_transcript = outcome == "locked-transcript"
     uses_tool = outcome == "tool-continuation"
+    late_transcript = outcome == "late-transcript"
+    use_manager = locked_transcript or uses_tool or late_transcript or outcome == "missing-transcript"
     from main_logic.tool_calling import ToolResult
 
     tool_started, release_tool, continuation_sent = asyncio.Event(), asyncio.Event(), asyncio.Event()
-    turn_done = AsyncMock()
+    response_ended = asyncio.Event()
+    turn_done = AsyncMock(side_effect=response_ended.set)
 
     async def tool(call):
         tool_started.set()
@@ -472,7 +478,7 @@ async def test_real_arbiter_waits_for_audio_commit_before_exactly_one_response(
     receiver = asyncio.create_task(client.handle_messages())
     peer.feed({"type": "session.updated", "session": {"id": "session-one", "input_audio_format": "pcm16"}})
     pcm = b"\x01\x00" * 128000
-    if locked_transcript or uses_tool:
+    if use_manager:
         manager = Manager()
         manager.client = client
         manager.handle_input_transcript = AsyncMock(return_value=True)
@@ -528,16 +534,33 @@ async def test_real_arbiter_waits_for_audio_commit_before_exactly_one_response(
             finally:
                 writer.close()
             peer.finish_reply()
+        if late_transcript:
+            await asyncio.wait_for(response_ended.wait(), 2)
+            peer.feed({
+                "type": "conversation.item.input_audio_transcription.completed",
+                "item_id": "another-item", "transcript": "Not this recording.",
+            })
+            await asyncio.wait_for(transcript_received.wait(), 2)
+            done, _ = await asyncio.wait({task}, timeout=0.15)
+            assert not done, "a completed reply must not confirm delivery before the transcript grace ends"
+            peer.feed({
+                "type": "conversation.item.input_audio_transcription.completed",
+                "item_id": "audio-one", "transcript": "Check tomorrow's schedule.",
+            })
         if reject:
             with pytest.raises(Exception):
                 await asyncio.wait_for(task, 3)
         else:
             await asyncio.wait_for(task, 3)
-        if locked_transcript or uses_tool:
+        if use_manager:
             assert socket.send_json.await_args.args[0]["state"] == "completed"
+        if locked_transcript or uses_tool or late_transcript:
             assert isolated_history.receipt(payload["request_id"])["transcript"] == "Check tomorrow's schedule."
             assert client._audio_message_transcript.published_final
             manager.handle_input_transcript.assert_awaited_once()
+        if outcome == "missing-transcript":
+            assert isolated_history.receipt(payload["request_id"])["transcript"] == ""
+            manager.handle_input_transcript.assert_not_awaited()
         if locked_transcript:
             client.ws = Peer()
             client._on_connection_attached()

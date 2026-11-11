@@ -546,6 +546,7 @@ class _TransportMixin:
             audio_transcript.transcript = transcript
             audio_transcript.finalized = True
             await audio_transcript.publish()
+            audio_transcript.transcript_ready.set()
             return
         routed_callback = getattr(self, "on_input_transcript_with_route", None)
         if callable(routed_callback):
