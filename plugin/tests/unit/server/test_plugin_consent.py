@@ -479,6 +479,52 @@ async def test_revision_checks_stay_in_the_worker_until_a_detail_requires_one(
 
 
 @pytest.mark.asyncio
+async def test_running_plugin_summary_exposes_a_queued_same_version_scan(
+    tmp_path, reports, monkeypatch
+):
+    from plugin.core.state import state
+
+    root = tmp_path / "demo"
+    manifest(root)
+    source = root / "main.py"
+    source.write_text("pass")
+    meta = {"config_path": str(root / "plugin.toml"), "version": "1"}
+    reports.save(
+        "demo",
+        {
+            **analyze_capabilities(root),
+            "_analyzer_version": analysis.ANALYZER_VERSION,
+            "_source": analysis.source_revision(root, "1"),
+            "_source_root": str(root),
+            "version": "1",
+        },
+    )
+    monkeypatch.setitem(state.plugins, "demo", meta)
+    monkeypatch.setitem(state.plugin_hosts, "demo", object())
+    runner = analysis.CapabilityAnalysisService(reports)
+    monkeypatch.setattr(analysis, "analysis_service", runner)
+    release = threading.Event()
+    runner._worker().submit(release.wait)
+    try:
+        assert service.consent_summary("demo", meta)["state"] == "clear"
+        runner.ensure_analyzed("demo", root, "1")
+        assert runner.report("demo", root, "1")["status"] == "completed"
+        source.write_text("self.ctx.push_message()")
+        assert service.consent_summary("demo", meta)["state"] == "analyzing"
+        assert service.consent_notices() == []
+        assert runner.report("demo", root, "1")["status"] == "unavailable"
+        with runner._lock:
+            job = runner._jobs["demo"][1]
+        release.set()
+        await asyncio.wrap_future(job)
+        assert service.consent_summary("demo", meta)["state"] == "confirm"
+        assert [notice["unconfirmed"] for notice in service.consent_notices()] == [["messages.push"]]
+    finally:
+        release.set()
+        await runner.close()
+
+
+@pytest.mark.asyncio
 async def test_analysis_replaces_legacy_reports_and_reuses_current_reports(
     tmp_path, reports, monkeypatch
 ):

@@ -252,6 +252,11 @@ class CapabilityAnalysisService:
         self, plugin_id: str, root: Path, version: str, *, verify_revision: bool = True
     ) -> dict:
         with self._lock:
+            if not verify_revision:
+                job = self._jobs.get(plugin_id)
+                if job is not None and job[2:] == (root, version):
+                    # List consumers follow pending work through the details poller.
+                    return _report("queued")
             cached = self._reports.get(plugin_id)
             report = copy.deepcopy(cached)
         if report is None:

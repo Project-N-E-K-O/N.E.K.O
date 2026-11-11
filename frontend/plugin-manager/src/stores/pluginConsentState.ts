@@ -73,6 +73,15 @@ export const usePluginConsentState = defineStore('pluginConsent', () => {
     const next = { ...summaries.value }
     for (const plugin of plugins) {
       if (!plugin.consent) continue
+      const detail = details.value[plugin.id]
+      if (
+        plugin.consent.state === 'analyzing' &&
+        detail &&
+        detail.version === (plugin.version ?? '') &&
+        detail.state !== 'analyzing'
+      ) {
+        delete details.value[plugin.id]
+      }
       next[plugin.id] = {
         state: plugin.consent.state,
         decision: plugin.consent.decision ?? null,

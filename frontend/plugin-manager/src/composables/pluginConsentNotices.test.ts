@@ -6,7 +6,7 @@ import { usePluginConsentNotices } from './pluginConsentNotices'
 import { localeLoadState } from '@/i18n'
 import { usePluginConsentState } from '@/stores/pluginConsentState'
 import { usePluginStore } from '@/stores/plugin'
-import type { PluginConsentNotice } from '@/api/pluginConsent'
+import type { PluginConsent, PluginConsentNotice } from '@/api/pluginConsent'
 
 const api = vi.hoisted(() => ({
   getPluginConsentNotices: vi.fn(),
@@ -137,6 +137,38 @@ describe('usePluginConsentNotices', () => {
     await flush()
     expect(api.getPluginConsentNotices).toHaveBeenCalledTimes(2)
     expect(notify.ElNotification).toHaveBeenCalledTimes(1)
+  })
+
+  it('follows a queued same-version scan even when the previous detail was clear', async () => {
+    const consentState = usePluginConsentState()
+    const cached: PluginConsent = {
+      plugin_id: 'a',
+      version: '1',
+      decision: 'approved',
+      decided_at: null,
+      approved_capabilities: [],
+      unconfirmed: [],
+      state: 'clear',
+      upgraded: false,
+      analysis: { status: 'completed', capabilities: [], evidence: [], warnings: [] },
+    }
+    consentState.details.a = cached
+    runningAnalyzing('a')
+    const watchSpy = vi.spyOn(consentState, 'watchPlugin')
+    mount()
+    await flush()
+    expect(watchSpy).toHaveBeenCalledWith('a')
+    expect(notify.ElNotification).not.toHaveBeenCalled()
+
+    api.getPluginConsent.mockResolvedValue({
+      ...cached,
+      state: 'confirm',
+      unconfirmed: ['memory.read'],
+    })
+    api.getPluginConsentNotices.mockResolvedValue([notice('a')])
+    await consentState.load('a')
+    await flush()
+    expect(notify.ElNotification).toHaveBeenCalledOnce()
   })
 
   it('unwatches plugins when the page is left', async () => {
