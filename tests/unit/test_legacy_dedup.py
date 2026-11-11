@@ -814,3 +814,14 @@ async def test_keeping_the_users_words_survives_an_interrupted_run(memory, monke
     assert marker['archived'] == {'ai': 'user'}
     [reflection] = json.loads((directory / 'reflections.json').read_text(encoding='utf-8'))
     assert reflection['source_fact_ids'] == ['user']
+
+
+def test_two_bounded_events_on_one_day_are_not_nominated():
+    walk = '博士出门散步了一圈'
+    morning = {**_fact('a', walk, created='2026-06-12T21:00:00'), 'event_start_at': '2026-06-12T08:00:00',
+               'event_end_at': '2026-06-12T08:30:00'}
+    evening = {**_fact('b', walk, created='2026-06-12T21:05:00'), 'event_start_at': '2026-06-12T19:00:00',
+               'event_end_at': '2026-06-12T19:30:00'}
+    assert legacy_dedup.nominate({'a': morning, 'b': evening}) == []
+    overlapping = {**evening, 'event_start_at': '2026-06-12T08:10:00', 'event_end_at': '2026-06-12T08:40:00'}
+    assert legacy_dedup.nominate({'a': morning, 'b': overlapping})

@@ -163,7 +163,9 @@ def still_valid(folded, pairs, rows, archive, ours=(), stamps=()):
 
 
 def _distinct_days(first, second):
-    """Explicit event windows on different calendar days; a few minutes apart is one event."""
+    """Two separate events: explicit windows on different days, or both fully bounded
+    and not overlapping. Start times a few minutes apart (one remark extracted twice)
+    are one event."""
     try:
         from memory.fact_dedup import _has_distinct_event_windows
     except ImportError:
@@ -173,7 +175,13 @@ def _distinct_days(first, second):
 
     def days(row):
         return {str(row.get(key))[:10] for key in ('event_start_at', 'event_end_at') if row.get(key)}
-    return days(first) != days(second)
+    if days(first) != days(second):
+        return True
+    bounds = [(str(row.get('event_start_at') or ''), str(row.get('event_end_at') or '')) for row in (first, second)]
+    if all(start and end for start, end in bounds):
+        (first_start, first_end), (second_start, second_end) = bounds
+        return first_end < second_start or second_end < first_start
+    return False
 
 
 def pair_key(pair):
