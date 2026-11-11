@@ -487,3 +487,30 @@ async def test_a_snapshot_still_goes_out_when_the_renewal_cannot_be_saved(owner,
     await server.exchange(owner)
     assert server.document['organizer'] == claimed
     assert {row['id'] for row in server.document['entries']} == {'mine', 'more'}
+
+
+@pytest.mark.asyncio
+async def test_trimming_waits_for_maintenance_to_end_and_the_snapshot_with_it(owner, monkeypatch):  # noqa: F811
+    """Unlike the renewal, trimming is a write the snapshot depends on: both are put off together."""
+    from utils.cloudsave_runtime import MaintenanceModeError
+    write, stored = _evidence_limits(owner, monkeypatch)
+    _synced(owner)
+    server = PublishingServer()
+    assert owner.native._tend_organizer_state('Neko', organizer.RANK_DESKTOP) is True
+    write(3)
+    assert owner.native._capture('Neko', True)
+    await server.exchange(owner)
+    assert owner.native.organizes('Neko') and stored() == ['r-0', 'r-1', 'r-2']
+    writable = owner.native.assert_cloudsave_writable
+
+    def maintenance(*args, **kwargs):
+        raise MaintenanceModeError('synthetic')
+    monkeypatch.setattr(owner.native, 'assert_cloudsave_writable', maintenance)
+    # The capture loop treats this like any failed capture and tries again later.
+    with pytest.raises(MaintenanceModeError):
+        owner.native._capture('Neko', False)
+    assert stored() == ['r-0', 'r-1', 'r-2'] and local_state(owner)['pending'] is None
+    assert owner.adapter.evidence_trimmed_at(UID) is None
+    monkeypatch.setattr(owner.native, 'assert_cloudsave_writable', writable)
+    assert owner.native._capture('Neko', False)
+    assert stored() == ['r-2'] and type(owner.adapter.evidence_trimmed_at(UID)) is int
