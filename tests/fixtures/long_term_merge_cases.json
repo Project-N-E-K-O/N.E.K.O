@@ -2557,6 +2557,125 @@
    }
   },
   {
+   "name": "a larger day count on this device is kept over a smaller published one",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [
+      {
+       "kind": "reflection",
+       "subject": "relationship",
+       "id": "r1",
+       "text": "enjoys quiet evenings",
+       "metadata": {
+        "status": "confirmed",
+        "subZeroDays": 1,
+        "subZeroLastIncrementDate": "2026-11-08"
+       }
+      }
+     ],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "confirmed",
+       "subZeroDays": 1,
+       "subZeroLastIncrementDate": "2026-11-08"
+      }
+     }
+    ]
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "confirmed",
+       "subZeroDays": 3,
+       "subZeroLastIncrementDate": "2026-11-11"
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "confirmed",
+       "subZeroDays": 2,
+       "subZeroLastIncrementDate": "2026-11-09"
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "confirmed",
+       "subZeroDays": 3,
+       "subZeroLastIncrementDate": "2026-11-11"
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
    "name": "last-signal times keep the later one",
    "base": {
     "document": {

@@ -189,6 +189,12 @@ case('days counted on different dates keep the larger count and later date',
      document([reflection('r1', status='confirmed', subZeroDays=3, subZeroLastIncrementDate='2026-11-11')]),
      expected([reflection('r1', status='confirmed', subZeroDays=3, subZeroLastIncrementDate='2026-11-11')]))
 
+case('a larger day count on this device is kept over a smaller published one',
+     based([reflection('r1', status='confirmed', subZeroDays=1, subZeroLastIncrementDate='2026-11-08')]),
+     document([reflection('r1', status='confirmed', subZeroDays=3, subZeroLastIncrementDate='2026-11-11')]),
+     document([reflection('r1', status='confirmed', subZeroDays=2, subZeroLastIncrementDate='2026-11-09')]),
+     expected([reflection('r1', status='confirmed', subZeroDays=3, subZeroLastIncrementDate='2026-11-11')]))
+
 case('last-signal times keep the later one',
      based([reflection('r1', status='confirmed', reinLastSignalAt=100, updatedAt=100)]),
      document([reflection('r1', status='confirmed', reinLastSignalAt=300, updatedAt=300)]),

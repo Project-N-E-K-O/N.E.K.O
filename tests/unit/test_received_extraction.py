@@ -11,6 +11,8 @@ from tests.unit.test_recent_memory_sync import DOMAIN, Server, commit, devices, 
 from utils.llm_client import convert_to_messages
 
 UID = 'a' * 32
+# Written out, not read from the module: the wait itself is what these tests pin down.
+FIFTEEN_MINUTES = 15 * 60 * 1000
 A, B, C = 'a' * 32, 'b' * 32, 'c' * 32
 
 
@@ -96,7 +98,7 @@ def extractor(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_the_device_that_said_a_line_keeps_the_first_turn(extractor):
-    delay = extractor.module.RECEIVED_EXTRACTION_DELAY_MS
+    delay = FIFTEEN_MINUTES
     received_messages.keep_arrivals(extractor.directory, [line(A, 'I moved to Kyoto'), line(B, 'noted', 'assistant')], extractor.now)
     extractor.checked = extractor.now + 1
     extractor.now += delay - 1
@@ -111,7 +113,7 @@ async def test_the_device_that_said_a_line_keeps_the_first_turn(extractor):
 
 @pytest.mark.asyncio
 async def test_nothing_is_extracted_until_a_snapshot_check_has_succeeded_since_the_arrival(extractor):
-    delay = extractor.module.RECEIVED_EXTRACTION_DELAY_MS
+    delay = FIFTEEN_MINUTES
     received_messages.keep_arrivals(extractor.directory, [line(A, 'I moved to Kyoto')], extractor.now)
     arrived = extractor.now
     extractor.now += delay
@@ -125,7 +127,7 @@ async def test_nothing_is_extracted_until_a_snapshot_check_has_succeeded_since_t
 
 @pytest.mark.asyncio
 async def test_lines_the_other_device_already_read_are_not_sent_to_the_model(extractor):
-    delay = extractor.module.RECEIVED_EXTRACTION_DELAY_MS
+    delay = FIFTEEN_MINUTES
     received_messages.keep_arrivals(extractor.directory, [line(A, 'I moved to Kyoto'), line(B, 'I have a cat')], extractor.now)
     extractor.checked = extractor.now
     extractor.now += delay
@@ -144,7 +146,7 @@ async def test_lines_the_other_device_already_read_are_not_sent_to_the_model(ext
 
 @pytest.mark.asyncio
 async def test_a_clock_moved_backwards_only_delays_extraction(extractor):
-    delay = extractor.module.RECEIVED_EXTRACTION_DELAY_MS
+    delay = FIFTEEN_MINUTES
     received_messages.keep_arrivals(extractor.directory, [line(A, 'I moved to Kyoto')], extractor.now)
     extractor.checked = extractor.now
     extractor.now -= 10 * delay
@@ -155,7 +157,7 @@ async def test_a_clock_moved_backwards_only_delays_extraction(extractor):
 @pytest.mark.asyncio
 async def test_a_failing_batch_is_retried_and_finally_given_up_without_blocking_later_ones(extractor):
     from memory.facts import FactExtractionFailed
-    delay = extractor.module.RECEIVED_EXTRACTION_DELAY_MS
+    delay = FIFTEEN_MINUTES
     received_messages.keep_arrivals(extractor.directory, [line(A, 'I moved to Kyoto')], extractor.now)
     extractor.checked = extractor.now
     extractor.now += delay
