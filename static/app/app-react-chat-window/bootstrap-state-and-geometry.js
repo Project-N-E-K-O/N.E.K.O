@@ -76,6 +76,7 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
     I.EVENT_PREFIX = 'react-chat-window:';
     I.CHAT_MINIMIZED_BALL_ICON_SRC = '/static/assets/neko-idle/chat-minimized-yarn-ball-116.png';
     I.CHAT_MINIMIZED_BALL_ICON_SRCSET = '/static/assets/neko-idle/chat-minimized-yarn-ball-116.png 1x, /static/assets/neko-idle/chat-minimized-yarn-ball-232.png 2x';
+    I.CHAT_MINIMIZED_BALL_PLAYGROUND_ICON_SRC = '/static/assets/neko-idle/chat-minimized-yarn-ball-playground.png';
     // Frozen legacy `full` keeps its era's minimized orb — the glowing "breathing
     // light" ball (old icon + box-shadow pulse from full-chat-minimize.css) —
     // instead of the active compact yarn ball. Strictly gated on the restorable
@@ -88,6 +89,7 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
     I.suppressDragReleaseClick = false;
     I.resizeState = null;
     I.minimized = false;
+    I.idleCatPlaygroundYarnSkinActive = false;
     I.savedShellSize = null;
     I.savedShellPosition = null; // {left, top} before minimize – used to fly back on expand
     I.HOME_IDLE_DOCK_GAP = -12;

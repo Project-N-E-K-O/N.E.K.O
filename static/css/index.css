@@ -1014,7 +1014,8 @@ body.neko-game-active [id$="-lock-icon"] {
     --neko-idle-return-facing-transform: scaleX(1);
 }
 
-.neko-idle-return-btn.is-neko-collision-deforming > .neko-idle-return-art {
+.neko-idle-return-btn.is-neko-collision-deforming > .neko-idle-return-art,
+.neko-playground-collision-deformation-target.is-neko-collision-deforming {
     translate:
         var(--neko-collision-shift-x, 0%)
         var(--neko-collision-shift-y, 0%);
