@@ -1213,6 +1213,20 @@ async def api_record_surfaced(request: Request, lanlan_name: str):
     return result
 
 
+@app.post("/internal/memory/{lanlan_name}/legacy_dedup/restore")
+async def api_restore_legacy_dedup(lanlan_name: str):
+    """Bring back the facts the one-time duplicate cleanup folded away.
+
+    They come back under new ids, so a peer that still holds the archived rows
+    cannot fold them away again; the folded rows stay archived. A device that
+    syncs should look at the result after its next sync.
+    """
+    from . import legacy_dedup
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    restored = await legacy_dedup.restore(lanlan_name)
+    return {"ok": True, "restored": restored, "restored_as_new_ids": True}
+
+
 @app.post("/cache/{lanlan_name}")
 async def cache_conversation(request: HistoryRequest, lanlan_name: str):
     """The "lightweight persistence" endpoint at every turn end: writes recent.json +
