@@ -606,6 +606,52 @@ async def test_the_tree_is_killed_even_when_no_thread_can_be_started(
             job.close()
 
 
+@pytest.mark.skipif(not WINDOWS, reason="the taskkill fallback exists on Windows only")
+async def test_a_kill_that_could_not_be_sent_can_be_tried_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = _write(tmp_path, "linger.py", "import time\ntime.sleep(120)\n")
+    process = await procs.spawn(
+        shell.shell_argv(SHELL, _python(script)),
+        cwd=str(tmp_path),
+        env=dict(os.environ),
+        stdout=procs.OutputBuffer(1000, lambda: None),
+        stderr=procs.OutputBuffer(1000, lambda: None),
+    )
+    job = process._job
+    attempts: list[int] = []
+
+    def taskkill_cannot_run(pid: int) -> bool:
+        attempts.append(pid)
+        return False
+
+    try:
+        # As if the job object could not be used and taskkill could not be run.
+        process._job = None
+        monkeypatch.setattr(procs, "_taskkill_tree", taskkill_cannot_run)
+        assert process.kill() is True
+        for _ in range(100):
+            if attempts and not process.kill_requested:
+                break
+            await asyncio.sleep(0.05)
+        assert attempts == [process.pid]
+        # Nothing was sent, so the process is not marked as being killed and a
+        # later call tries again instead of answering "already done".
+        assert process.kill_requested is False
+        assert process.kill() is True
+        for _ in range(100):
+            if len(attempts) == 2:
+                break
+            await asyncio.sleep(0.05)
+        assert attempts == [process.pid, process.pid]
+    finally:
+        process._job = job
+        if job is not None:
+            job.terminate()
+            job.close()
+    await asyncio.wait_for(process.wait(), 30)
+
+
 def test_output_buffer_keeps_a_tail_and_spills_everything(tmp_path: Path) -> None:
     target = tmp_path / "spill.log"
     buffer = procs.OutputBuffer(10, lambda: target)

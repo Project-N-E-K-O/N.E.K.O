@@ -404,11 +404,13 @@ class ShellProcess:
             self._kill_requested = True
         if sys.platform == "win32":
             if self._job is None or not self._job.terminate():
+                # The same routine on a thread or, without a thread, right here
+                # (that blocks for a moment, which beats leaving the tree
+                # running). Either way a taskkill that could not run leaves
+                # the process open to another attempt.
                 worker = threading.Thread(
-                    target=_taskkill_tree, args=(self.pid,), name="nekoclaw-taskkill", daemon=True
+                    target=self._taskkill_here, name="nekoclaw-taskkill", daemon=True
                 )
-                # Without a thread the tree is killed from here. That blocks
-                # for a moment, which beats leaving the tree running.
                 _start_thread_or(worker, self._taskkill_here)
             return True
         self._signal_group(signal.SIGTERM)
