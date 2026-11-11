@@ -94,6 +94,7 @@ jobs:
   # ──────────────────────────────────────────────
   # Step 1: Build Python backend with Nuitka (Linux only)
   # ──────────────────────────────────────────────
+  # Match the pinned Linux x64 build image in build-desktop.yml (backend and Electron).
   build-python:
     if: github.repository == 'Project-N-E-K-O/N.E.K.O'
     needs: version
@@ -101,7 +102,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             platform: linux
             artifact_name: python-backend-linux
             output_binary: projectneko_server
@@ -528,7 +529,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             platform: linux
             python_artifact: python-backend-linux
             electron_args: '--linux'
