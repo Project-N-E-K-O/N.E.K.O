@@ -11,6 +11,20 @@ Third-party components retain their respective copyrights and licenses.
 For the bundled three-mmd components and their embedded babylon-mmd portions,
 see static/libs/THIRD_PARTY_NOTICES.md and static/libs/licenses/.
 
+nekoclaw/runtime/loop/ is ported from the tau_agent package of huggingface/tau
+(https://github.com/huggingface/tau, commit 0d256d5), Copyright (c) 2026
+Alejandro AO, MIT License; see nekoclaw/runtime/loop/LICENSE.
+
+config/prompts/prompts_nekoclaw.py and config/prompts/prompts_nekoclaw_tools.py
+contain model-facing text taken from DeepSeek Harness
+(https://github.com/deepseek-ai/deepseek-harness, commit fcc0ad46), Copyright
+(c) 2026 DeepSeek, MIT License; the license text is reproduced in both files.
+
+nekoclaw/runtime/tools/seek.py reimplements the matching algorithm of
+codex-rs/apply-patch/src/seek_sequence.rs from OpenAI Codex
+(https://github.com/openai/codex, commit 87b7bdb), Copyright 2025 OpenAI,
+Apache License 2.0.
+
 ------------------------------------------------------------
 
 我们种下了人与猫娘幸福共生的种子，我们的征途是星辰大海。
