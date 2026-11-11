@@ -247,3 +247,23 @@ async def test_a_failed_extraction_does_not_mark_a_waiting_message_read(tmp_path
     h._allm_extract_facts = AsyncMock(return_value=None)
     await h.extract_facts(messages, '小天')
     assert 'c' * 32 not in extraction_progress.read(directory)['a']
+
+
+@pytest.mark.asyncio
+async def test_a_waiting_candidate_keeps_the_time_it_was_extracted_for_relative_event_times(tmp_path):
+    from memory.retirement_review_queue import ANCHOR, FILE
+    directory = tmp_path / '小天'
+    _retirements(directory, 25, ['sync:' + letter * 32 for letter in 'abc'])
+    h = _harness(tmp_path, [])
+    h._allm_call_with_retries = _reviewer([])
+    facts = [{'entity': 'master', 'text': f'新事实 {i}', 'source_indices': [i + 1],
+              'event_when': {'start': {'offset': -1, 'unit': 'day'}}} for i in range(3)]
+    await h._apersist_new_facts('小天', facts, source_messages=[_trusted_sync_message(letter, 1000) for letter in 'abc'],
+                                progress_pass='a')
+    # Pretend it waited: extracted on 2026-11-01, saved days later.
+    state = json.loads((directory / FILE).read_text(encoding='utf-8'))
+    state['entries'][0]['candidate'][ANCHOR] = '2026-11-01T12:00:00'
+    (directory / FILE).write_text(json.dumps(state, ensure_ascii=False), encoding='utf-8')
+    [row] = await h._apersist_new_facts('小天', [], source_messages=[], progress_pass='a')
+    assert row['event_start_at'].startswith('2026-10-31')
+    assert not any(key.startswith('_retirement_review') for key in row)

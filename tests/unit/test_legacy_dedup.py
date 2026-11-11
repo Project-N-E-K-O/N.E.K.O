@@ -741,3 +741,36 @@ async def test_the_archive_time_written_by_the_cleanup_carries_its_offset(memory
     await _run(_Model([{'博士是一名主播', '博士是一名主播，会日常直播'}]))
     [row] = [row for row in json.loads((directory / 'facts_archive.json').read_text(encoding='utf-8')) if row['id'] == 'dup']
     assert datetime.fromisoformat(row['arbitration_archived_at']).tzinfo is not None
+
+
+def test_the_same_activity_on_different_dates_is_not_nominated():
+    gym = '博士今天去健身房练了腿'
+    first = {**_fact('a', gym, created='2026-06-12T21:00:00'), 'event_start_at': '2026-06-10T00:00:00'}
+    second = {**_fact('b', gym, created='2026-06-12T21:05:00'), 'event_start_at': '2026-06-11T00:00:00'}
+    assert legacy_dedup.nominate({'a': first, 'b': second}) == []
+
+
+def test_the_users_words_stay_when_folded_with_the_characters_account():
+    rows = {'ai': {**_fact('ai', 'X', created='2026-06-01T00:00:00'), 'source': 'ai_disclosure'},
+            'user': {**_fact('user', 'X', created='2026-06-02T00:00:00'), 'source': 'user_observation'}}
+    pairs = [{'candidate': 'user', 'existing': 'ai'}]
+    # merge would keep the older (the character's account): the user's words stay instead.
+    assert legacy_dedup.losers(pairs, {'user|ai': 'merge'}, rows) == {'ai': 'user'}
+    assert legacy_dedup.losers(pairs, {'user|ai': 'replace'}, rows) == {'ai': 'user'}
+
+
+@pytest.mark.asyncio
+async def test_restored_facts_are_indexed_under_their_new_ids(memory):
+    from app.memory_server import legacy_dedup as runner
+    directory, facts = memory
+    await _seed(directory, facts)
+    await _run(_Model([{'博士是一名主播', '博士是一名主播，会日常直播'}]))
+    indexed = []
+
+    class Index:
+        async def aindex_fact(self, name, fact_id, content):
+            indexed.append((fact_id, content))
+    facts._time_indexed = Index()
+    assert await runner.restore(NAME) == 1
+    [back] = [row for row in facts._facts[NAME] if row.get('restored_from') == 'dup']
+    assert indexed == [(back['id'], back['text'])]

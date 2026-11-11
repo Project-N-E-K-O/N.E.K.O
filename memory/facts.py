@@ -3668,8 +3668,8 @@ class FactStore:
         # The held-back proof and queue id are this device's own records. A model
         # output carrying the same keys must not pass for one: drop them first.
         from memory.long_term_sync import STORED_PROOF
-        from memory.retirement_review_queue import QUEUE_ID, RETRY_LATER
-        internal = (STORED_PROOF, QUEUE_ID, RETRY_LATER)
+        from memory.retirement_review_queue import ANCHOR, QUEUE_ID, RETRY_LATER
+        internal = (STORED_PROOF, QUEUE_ID, RETRY_LATER, ANCHOR)
         extracted = [{key: value for key, value in candidate.items() if key not in internal}
                      if isinstance(candidate, dict) and any(key in candidate for key in internal) else candidate
                      for candidate in extracted]
@@ -3808,7 +3808,7 @@ class FactStore:
                                          source=candidate.get('source', 'user_observation'))
             if proof:
                 added.append({**{name: value for name, value in candidate.items() if name != 'source_indices'},
-                              STORED_PROOF: proof})
+                              STORED_PROOF: proof, retirement_review_queue.ANCHOR: datetime.now().isoformat()})
         if not brought_ids and not added:
             return set(), []
         directory = os.path.join(self._config_manager.memory_dir, lanlan_name)
@@ -4483,9 +4483,12 @@ class FactStore:
                 # guarantees event_start_at. end_at is optional (facts mostly describe immediate
                 # observations without explicit end).
                 event_when_raw = normalize_event_when(fact.get('event_when'))
+                # A candidate that waited for retired-assertion review keeps the time it was extracted.
+                from memory.retirement_review_queue import ANCHOR as _review_anchor
+                anchor = fact.get(_review_anchor) if isinstance(fact.get(_review_anchor), str) else created_at_iso
                 event_start_at, event_end_at = compute_event_timestamps(
                     event_when_raw,
-                    created_at_iso,
+                    anchor,
                     fallback_start=True,
                     fallback_end=False,
                 )

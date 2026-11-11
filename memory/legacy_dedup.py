@@ -71,6 +71,10 @@ def nominate(rows, *, decode=None):
         for second in rows[index + 1:]:
             if first['id'] == second['id'] or (first.get('entity') or 'master') != (second.get('entity') or 'master'):
                 continue
+            # The same activity on different dates (daily imports keep these apart on
+            # purpose) is two events; the model would only see the identical words.
+            if _distinct_windows(first, second):
+                continue
             evidence = None
             if set(first.get('source_message_ids') or ()) & set(second.get('source_message_ids') or ()):
                 evidence = 'extracted_from_same_messages'
@@ -154,12 +158,26 @@ def still_valid(folded, pairs, rows, archive, ours=(), stamps=()):
             if executed(loser) or (unchanged(loser) and unchanged(survivor))}
 
 
+def _distinct_windows(first, second):
+    try:
+        from memory.fact_dedup import _has_distinct_event_windows
+    except ImportError:
+        return False
+    return _has_distinct_event_windows(first, second)
+
+
 def pair_key(pair):
     return f"{pair['candidate']}|{pair['existing']}"
 
 
-def losers(pairs, decisions):
-    """Which fact each merge or replace folds away, and into which; the earlier decision wins a conflict."""
+def losers(pairs, decisions, rows=None):
+    """Which fact each merge or replace folds away, and into which; the earlier decision wins a conflict.
+
+    When one side is the user's own words and the other only the character's
+    account, the user's stays: folding it away would leave its dependents
+    backed by the character alone.
+    """
+    rows = rows or {}
     result = {}
     for pair in pairs:
         action = decisions.get(pair_key(pair))
@@ -169,6 +187,9 @@ def losers(pairs, decisions):
             loser, survivor = pair['existing'], pair['candidate']
         else:
             continue
+        if ((rows.get(loser) or {}).get('source') == 'user_observation'
+                and (rows.get(survivor) or {}).get('source') == 'ai_disclosure'):
+            loser, survivor = survivor, loser
         if loser in result or survivor in result:
             continue
         result[loser] = survivor

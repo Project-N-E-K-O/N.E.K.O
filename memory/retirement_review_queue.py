@@ -20,6 +20,9 @@ FILE = 'retired_assertion_review_queue.json'
 QUEUE_ID = '_retirement_review_queue_id'
 # Set on a brought-back candidate that was reviewed and has to wait again.
 RETRY_LATER = '_retirement_review_retry_later'
+# When the candidate was first extracted: its relative event time ("yesterday")
+# resolves against this, not against the day it finally gets saved.
+ANCHOR = '_retirement_review_anchor'
 logger = logging.getLogger(__name__)
 
 

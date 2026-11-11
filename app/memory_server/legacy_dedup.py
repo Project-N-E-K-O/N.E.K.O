@@ -309,7 +309,7 @@ async def run(name, *, still_idle=lambda: True):
     current = legacy_dedup.candidates(await runtime.fact_store.aload_facts(name), archive_now)
     ours = set(marker.get('archiving') or {})
     stamps = list(marker.get('stamps') or ())
-    folded = legacy_dedup.still_valid(legacy_dedup.losers(marker['pairs'], marker['decisions']),
+    folded = legacy_dedup.still_valid(legacy_dedup.losers(marker['pairs'], marker['decisions'], current),
                                       marker['pairs'], current, archive_now, ours, stamps)
     mapping = legacy_dedup.survivors(folded)
     fingerprints = {}
@@ -390,6 +390,12 @@ async def restore(name):
         if added:
             facts.extend(added)
             await store.asave_facts(name)
+            # Under their new ids, so near-duplicate checks see them again.
+            for row in added if store._time_indexed is not None else ():
+                try:
+                    await store._time_indexed.aindex_fact(name, row['id'], row.get('text', ''))
+                except Exception as error:  # noqa: BLE001 - the backfill repairs a missing row
+                    logger.warning(f"[LegacyDedup] {name}: 恢复的事实写入检索索引失败: {type(error).__name__}")
             marker = {**marker, 'restored': sorted(set(marker.get('restored') or ()) | {row['restored_from'] for row in added})}
             await asyncio.to_thread(_save_marker, directory, marker)
     if added:
