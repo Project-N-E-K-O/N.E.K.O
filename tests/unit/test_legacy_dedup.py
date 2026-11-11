@@ -732,3 +732,12 @@ def test_ownership_compares_instants_not_wall_clock_text():
     assert legacy_dedup.owned(row, {'b'}, [planned])
     assert legacy_dedup.owned(shifted, {'b'}, [planned])
     assert not legacy_dedup.owned({**row, 'arbitration_archived_at': '2026-11-11T10:00:01'}, {'b'}, [planned])
+
+
+@pytest.mark.asyncio
+async def test_the_archive_time_written_by_the_cleanup_carries_its_offset(memory):
+    directory, facts = memory
+    await _seed(directory, facts)
+    await _run(_Model([{'博士是一名主播', '博士是一名主播，会日常直播'}]))
+    [row] = [row for row in json.loads((directory / 'facts_archive.json').read_text(encoding='utf-8')) if row['id'] == 'dup']
+    assert datetime.fromisoformat(row['arbitration_archived_at']).tzinfo is not None
