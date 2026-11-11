@@ -180,9 +180,15 @@ def test_a_candidate_that_waits_again_goes_behind_the_others(tmp_path):
     proof = lambda letter: {STORED_PROOF: {'source_message_ids': ['sync:' + letter * 32]}}
     queue.commit(tmp_path, key, set(), [], [{'text': 'stuck', **proof('a')}, {'text': 'next', **proof('b')}], STORED_PROOF)
     stuck, following = queue.candidates(queue.read(tmp_path), key)
-    # The first one came back and could not finish; the second was not reached.
-    queue.commit(tmp_path, key, {stuck[queue.QUEUE_ID]}, [stuck], [], STORED_PROOF)
+    # Both came back. The second was not reached: it keeps its place.
+    queue.commit(tmp_path, key, {stuck[queue.QUEUE_ID], following[queue.QUEUE_ID]}, [stuck, following], [], STORED_PROOF)
+    assert [row['text'] for row in queue.candidates(queue.read(tmp_path), key)] == ['stuck', 'next']
+    # The first was reviewed and has to wait again: it goes behind.
+    stuck, following = queue.candidates(queue.read(tmp_path), key)
+    queue.commit(tmp_path, key, {stuck[queue.QUEUE_ID], following[queue.QUEUE_ID]},
+                 [{**stuck, queue.RETRY_LATER: True}, following], [], STORED_PROOF)
     assert [row['text'] for row in queue.candidates(queue.read(tmp_path), key)] == ['next', 'stuck']
+    assert all(queue.RETRY_LATER not in row for row in queue.candidates(queue.read(tmp_path), key))
 
 
 @pytest.mark.asyncio
@@ -202,3 +208,27 @@ async def test_a_drained_candidate_reaches_the_pinned_section_on_an_empty_extrac
     h._allm_extract_facts = AsyncMock(return_value=[])
     await h.extract_facts([_trusted_sync_message('d', 3000)], '小天')
     assert admitted == ['新事实 2']
+
+
+@pytest.mark.asyncio
+async def test_a_candidate_that_waits_again_lets_the_next_one_be_reviewed(tmp_path):
+    """Through the real call: the stuck one used the budget, the next one was not reached."""
+    directory = tmp_path / '小天'
+    _retirements(directory, 35, ['sync:' + letter * 32 for letter in 'abcd'])
+    h = _harness(tmp_path, [])
+    h._allm_call_with_retries = _reviewer([])
+    facts = [{'entity': 'master', 'text': f'新事实 {i}', 'source_indices': [i + 1]} for i in range(4)]
+    await h._apersist_new_facts('小天', facts, source_messages=[_trusted_sync_message(letter, 1000) for letter in 'abcd'],
+                                progress_pass='a')
+    assert [row['candidate']['text'] for row in _queue(directory)] == ['新事实 1', '新事实 2', '新事实 3']
+    # A correction retires exactly what 新事实 1 says, and its time is not known yet.
+    state = json.loads((directory / 'long_term_portable.json').read_text(encoding='utf-8'))
+    state['evidence']['retirements'].append({'id': 'corrected', 'subject': 'master', 'text': '新事实 1',
+                                             'sourceMessageIds': ['sync:' + 'f' * 32],
+                                             'retiredBySourceMessageIds': ['sync:' + 'e' * 32]})
+    (directory / 'long_term_portable.json').write_text(json.dumps(state), encoding='utf-8')
+    h._time_indexed.aget_original_source_evidence = AsyncMock(return_value={})
+    await h._apersist_new_facts('小天', [], source_messages=[], progress_pass='a')
+    assert [row['candidate']['text'] for row in _queue(directory)] == ['新事实 2', '新事实 3', '新事实 1']
+    await h._apersist_new_facts('小天', [], source_messages=[], progress_pass='a')
+    assert '新事实 2' in [row['text'] for row in h._mem]

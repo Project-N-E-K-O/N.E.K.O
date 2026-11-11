@@ -900,7 +900,10 @@ def retirement_review_pairs(retirements, extracted, messages, *, default_source,
             pairs.append((fact, row))
             known = known and cutoff is not None
         if pairs:
-            candidates.append(((STORED_PROOF not in fact, not known, order), pairs))
+            # Brought-back candidates keep the queue's order (one that waited again is
+            # already at its end); "known cutoffs first" only orders new candidates.
+            stored = STORED_PROOF in fact
+            candidates.append(((not stored, False if stored else not known, order), pairs))
     return candidates
 
 

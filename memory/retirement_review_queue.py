@@ -18,6 +18,8 @@ from utils.file_utils import atomic_write_json
 
 FILE = 'retired_assertion_review_queue.json'
 QUEUE_ID = '_retirement_review_queue_id'
+# Set on a brought-back candidate that was reviewed and has to wait again.
+RETRY_LATER = '_retirement_review_retry_later'
 logger = logging.getLogger(__name__)
 
 
@@ -46,7 +48,8 @@ def read(directory):
 
 def candidates(entries, queue_key):
     """Copies of the waiting candidates for this kind of extraction, oldest first."""
-    return [{**json.loads(json.dumps(row['candidate'])), QUEUE_ID: row['id']}
+    return [{**{key: value for key, value in json.loads(json.dumps(row['candidate'])).items() if key != RETRY_LATER},
+             QUEUE_ID: row['id']}
             for row in entries if row['key'] == queue_key]
 
 
@@ -66,10 +69,12 @@ def commit(directory, queue_key, brought_ids, held_back, added, proof_key):
     still = {candidate.get(QUEUE_ID) for candidate in held_back if candidate.get(QUEUE_ID)}
     settled = [row for row in entries if row['id'] in brought_ids and row['id'] not in still]
     gone = {row['id'] for row in settled}
-    # One that came back and waits again goes behind the rest, so a candidate that
+    # One that was reviewed and waits again goes behind the rest, so a candidate that
     # cannot finish yet (a correction time still unknown) never holds the others back.
-    requeued = [row for row in entries if row['id'] in brought_ids and row['id'] in still]
-    kept = [row for row in entries if row['id'] not in brought_ids] + requeued
+    # One the budget did not reach this round keeps its place.
+    retry = {candidate.get(QUEUE_ID) for candidate in held_back if candidate.get(QUEUE_ID) and candidate.get(RETRY_LATER)}
+    kept = ([row for row in entries if row['id'] not in gone and row['id'] not in retry]
+            + [row for row in entries if row['id'] in retry])
     kept += [{'id': uuid4().hex, 'key': list(queue_key), 'candidate': candidate} for candidate in added]
     if [row['id'] for row in kept] != [row['id'] for row in entries]:
         if not readable and path.exists():

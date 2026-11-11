@@ -458,3 +458,58 @@ async def test_the_restore_route_refuses_a_browser(memory):
     request = MagicMock()
     request.headers = {}
     assert (await api_restore_legacy_dedup(request, NAME))['restored'] == 0
+
+
+def test_a_fingerprint_changes_with_the_source():
+    row = _fact('a', '猫娘喜欢晒太阳', created='2026-06-13T01:00:00', sources=[SOURCE])
+    assert legacy_dedup.fingerprint(row) != legacy_dedup.fingerprint({**row, 'source_message_ids': ['sync:' + 'b' * 32]})
+    assert legacy_dedup.fingerprint(row) != legacy_dedup.fingerprint({**row, 'source': 'ai_disclosure'})
+
+
+async def _chain(directory, facts):
+    from datetime import datetime, timedelta
+    day = lambda hours: (datetime.now() - timedelta(days=1) + timedelta(hours=hours)).isoformat()
+    facts._facts[NAME] = [_fact('b', '博士是一名主播，会日常直播', created=day(2)),
+                          _fact('a', '博士是一名主播，会直播', created=day(1)),
+                          _fact('c', '博士是一名主播', created=day(0))]
+    await facts.asave_facts(NAME)
+    (directory / 'reflections.json').write_text(json.dumps([
+        {'id': 'r1', 'text': '博士以直播为业', 'entity': 'master', 'status': 'confirmed', 'source_fact_ids': ['b'],
+         'created_at': day(3)}], ensure_ascii=False), encoding='utf-8')
+    import app.memory_server.legacy_dedup as module
+    module._decode = _vectors({'c': [1.0, 0.0], 'a': [0.95, 0.3122], 'b': [0.9, 0.4359]})
+    return _Model([{'博士是一名主播，会日常直播', '博士是一名主播，会直播'}, {'博士是一名主播，会直播', '博士是一名主播'}])
+
+
+@pytest.mark.asyncio
+async def test_a_run_cut_short_after_archiving_a_chain_still_finishes_it(memory, monkeypatch):
+    from app.memory_server import legacy_dedup as runner
+    directory, facts = memory
+    model = await _chain(directory, facts)
+    real = runner._repoint
+
+    async def crash(*args, **kwargs):
+        raise RuntimeError('process exits')
+    monkeypatch.setattr(runner, '_repoint', crash)
+    with pytest.raises(RuntimeError):
+        await _run(model)
+    monkeypatch.setattr(runner, '_repoint', real)
+    marker = await _run(model)
+    assert marker['archived'] == {'b': 'c', 'a': 'c'}
+    [reflection] = json.loads((directory / 'reflections.json').read_text(encoding='utf-8'))
+    assert reflection['source_fact_ids'] == ['c']
+
+
+@pytest.mark.asyncio
+async def test_only_what_was_actually_archived_is_repointed_and_reported(memory, monkeypatch):
+    from app.memory_server import legacy_dedup as runner
+    directory, facts = memory
+    await _seed(directory, facts)
+
+    async def skipped(*args, **kwargs):
+        return None   # every fold found its fact changed at the last moment
+    monkeypatch.setattr(runner, '_archive_folded', skipped)
+    marker = await _run(_Model([{'博士是一名主播', '博士是一名主播，会日常直播'}]))
+    assert marker['archived'] == {}
+    [reflection] = json.loads((directory / 'reflections.json').read_text(encoding='utf-8'))
+    assert reflection['source_fact_ids'] == ['dup', 'yes']

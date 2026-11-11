@@ -90,7 +90,10 @@ def nominate(rows, *, decode=None):
 def fingerprint(row):
     """What the model was shown of a fact; a decision holds only while it is unchanged."""
     import hashlib
-    return hashlib.sha256(json.dumps([row.get('entity') or 'master', row.get('text')], ensure_ascii=False).encode()).hexdigest()[:16]
+    # The source counts too: a shared-source pair whose sources changed was judged on evidence that is gone.
+    return hashlib.sha256(json.dumps([row.get('entity') or 'master', row.get('text'), row.get('source'),
+                                      sorted(str(item) for item in row.get('source_message_ids') or ())],
+                                     ensure_ascii=False).encode()).hexdigest()[:16]
 
 
 def still_valid(folded, pairs, rows, archive):
@@ -106,12 +109,15 @@ def still_valid(folded, pairs, rows, archive):
     applied = {row.get('id'): row.get('superseded_by') for row in archive
                if isinstance(row, dict) and row.get('arbitration_archived_at')}
 
+    final = survivors(folded)
+
     def unchanged(fact_id):
         row = rows.get(fact_id)
         if row is not None:
             return fingerprint(row) == seen.get(fact_id)
-        # Gone from the live set only because this cleanup already folded it.
-        return fact_id in folded and applied.get(fact_id) == folded[fact_id]
+        # Gone from the live set only because this cleanup already folded it: the
+        # archive names the survivor it was folded into, or the final one of a chain.
+        return fact_id in folded and applied.get(fact_id) in (folded[fact_id], final.get(fact_id))
 
     return {loser: survivor for loser, survivor in folded.items() if unchanged(loser) and unchanged(survivor)}
 

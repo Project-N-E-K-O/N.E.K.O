@@ -258,8 +258,12 @@ async def run(name, *, still_idle=lambda: True):
         fingerprints.update(pair.get('fingerprints') or {})
     # Each folded fact points straight at the one that finally stands for it.
     await _archive_folded(name, mapping, fingerprints)
-    reflections_changed, persona_changed = await _repoint(name, mapping) if mapping else (0, 0)
     archive = {row.get('id'): row for row in await asyncio.to_thread(_read_archive, name) if isinstance(row, dict)}
+    # Only what the archive now records as folded is repointed and reported: a fact
+    # that changed in the last moment was skipped and stays as it is.
+    mapping = {loser: survivor for loser, survivor in mapping.items()
+               if archive.get(loser, {}).get('arbitration_archived_at') and archive[loser].get('superseded_by') == survivor}
+    reflections_changed, persona_changed = await _repoint(name, mapping) if mapping else (0, 0)
     live = {row.get('id'): row for row in await runtime.fact_store.aload_facts(name) if isinstance(row, dict)}
     # A survivor stands for what it replaced: absorbed then, absorbed now.
     absorbed = sorted({survivor for loser, survivor in mapping.items()

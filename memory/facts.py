@@ -3657,9 +3657,10 @@ class FactStore:
         # The held-back proof and queue id are this device's own records. A model
         # output carrying the same keys must not pass for one: drop them first.
         from memory.long_term_sync import STORED_PROOF
-        from memory.retirement_review_queue import QUEUE_ID
-        extracted = [{key: value for key, value in candidate.items() if key not in (STORED_PROOF, QUEUE_ID)}
-                     if isinstance(candidate, dict) and (STORED_PROOF in candidate or QUEUE_ID in candidate) else candidate
+        from memory.retirement_review_queue import QUEUE_ID, RETRY_LATER
+        internal = (STORED_PROOF, QUEUE_ID, RETRY_LATER)
+        extracted = [{key: value for key, value in candidate.items() if key not in internal}
+                     if isinstance(candidate, dict) and any(key in candidate for key in internal) else candidate
                      for candidate in extracted]
         # Candidates an earlier extraction held back come first, so the queue drains.
         review_queue = None
@@ -3916,6 +3917,7 @@ class FactStore:
         memory_subject = coerce_subject(subject)
 
         from memory.long_term_sync import retirement_evidence, fact_source_evidence, FactEvidenceUnavailable, STORED_PROOF
+        from memory.retirement_review_queue import RETRY_LATER
         expected, retirements, matches = retirement_review
         if memory_subject is None:
             directory = os.path.join(self._config_manager.memory_dir, lanlan_name)
@@ -3957,6 +3959,8 @@ class FactStore:
                     # A candidate brought back from the queue waits again instead of
                     # failing the window it happened to join.
                     held_back_out.append(candidate)
+                    # Reviewed and still waiting: it goes behind those not reached yet.
+                    candidate[RETRY_LATER] = True
                     continue
                 if proof is not None:
                     accepted.append(candidate)
