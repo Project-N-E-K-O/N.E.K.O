@@ -218,7 +218,9 @@ def test_avatar_drop_payload_sends_full_prompt_but_records_memory_summary_only()
     assert send_text_internal.index(normalize_extra_images) < send_text_internal.index(
         "var optimisticImageUrls"
     )
-    assert "input_type: 'avatar_drop_image',\n                                request_id: requestId" in source
+    image_message = send_text_internal.split("var extraMessage = {", 1)[1].split("};", 1)[0]
+    assert "input_type: 'avatar_drop_image'" in image_message
+    assert "request_id: requestId" in image_message
     assert "var messageSource = typeof options.source === 'string' ? options.source.trim() : '';" in source
     assert "extraMessage.source = messageSource" in source
     assert "textMessage.source = messageSource" in source

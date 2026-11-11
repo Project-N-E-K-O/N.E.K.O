@@ -38,6 +38,25 @@ EVIDENCE_ARCHIVE_THRESHOLD = -2.0    # score ≤ -2 → archive_candidate
 WEAK_MEMORY_AUTO_CONFIRM_DAYS = 7   # pending → confirmed, measured from created_at.
 WEAK_MEMORY_AUTO_PROMOTE_DAYS = 7   # confirmed → promoted, measured from confirmed_at.
 
+# Scoped (group / member / cross-group person) reflections into scoped persona.
+# They get no feedback, so only being seen again lets one in: on at least this
+# many distinct days, by the record dates of the facts behind it that are not
+# the character's own words, and at least this many days after the first of
+# them. Strong memory only: with it off nothing cleans up after a promotion
+# (correction queue, scoped refine, introspection), so none happens.
+SCOPED_PROMOTION_MIN_OBSERVED_DAYS = 4
+SCOPED_PROMOTION_MIN_AGE_DAYS = 30
+# Reinforcement a scoped reflection gains each time others' words are seen to
+# restate it again (synthesis judges a batch covered by it, or scoped refine
+# merges it with another such line); the decay clock restarts too. Equal to the
+# highest synthesis head start (importance 10, memory.evidence), so a line just
+# seen again ranks above every fresh one and keeps its place in the per-subject
+# render budget. Capped by EVIDENCE_REINFORCEMENT_CAP like every reinforcement.
+SCOPED_REOBSERVED_REINFORCEMENT = 0.8
+# How many observation days a scoped reflection keeps (the first one and the
+# latest ones); the promotion gate needs the count and the first day only.
+SCOPED_OBSERVED_DAYS_MAX = 64
+
 # §3.5.3 Archival (sub_zero_days counts + shard-size cap).
 EVIDENCE_ARCHIVE_DAYS = 14           # Archive after this many accumulated sub_zero days.
 ARCHIVE_FILE_MAX_ENTRIES = 500       # Maximum entries per archive shard.
@@ -1108,6 +1127,75 @@ MEMORY_INTROSPECTION_INPUT_MAX_TOKENS = 16000
 already bounded (persona and reflection pools of 2000 tokens each plus count
 caps on character-card and do-not-mention lines); this only bites when a
 very large character card outgrows that sum."""
+
+# ---- Memory: weekly behavior review (memory/behavior_notes.py) ----
+# After a character's weekly introspection, one correction-tier call looks for what
+# keeps recurring in her replies, against her card and the user's own words, and
+# leaves a few short notes ("less of X; try Y") at the end of the next /new_dialog.
+# Evidence is counted by code from the lines the model cites, never taken from its word.
+
+MEMORY_BEHAVIOR_REVIEW_WINDOW_SECONDS = 30 * 24 * 3600
+"""How far back the conversation sample reaches. Older feedback no longer counts,
+which is also why a note cannot be renewed forever on one old complaint."""
+
+MEMORY_BEHAVIOR_REVIEW_ROW_LIMIT = 4000
+"""Newest rows read from time_indexed.db per review, whatever the window holds."""
+
+MEMORY_BEHAVIOR_REVIEW_MIN_SESSIONS = 3
+"""Fewer sittings than this in the window: no model call, the run counts as done."""
+
+MEMORY_BEHAVIOR_REVIEW_MIN_REPLIES = 15
+"""Fewer replies than this in the window: no model call, the run counts as done."""
+
+MEMORY_BEHAVIOR_REVIEW_SAMPLE_MAX_TOKENS = 8000
+"""Token budget for the numbered conversation sample. Lines are chosen until it
+is spent and never cut afterwards, so every number in the prompt is a whole line."""
+
+MEMORY_BEHAVIOR_REVIEW_LINE_MAX_TOKENS = 120
+"""Each sample line is clipped to this, so one wall of text cannot take the sample."""
+
+MEMORY_BEHAVIOR_REVIEW_CARD_MAX_TOKENS = 1200
+"""Token budget for the character card, the only baseline the review compares to."""
+
+MEMORY_BEHAVIOR_REVIEW_SIGNALS_MAX_TOKENS = 300
+"""Token budget for impressions the user confirmed or denied (reference only)."""
+
+MEMORY_BEHAVIOR_REVIEW_RETIRED_SHOWN = 6
+"""Recently retired notes shown read-only, so a note does not flip back and forth."""
+
+MEMORY_BEHAVIOR_NOTE_RETIRED_KEEP_SECONDS = 30 * 24 * 3600
+"""How long a retired note stays on file for the read-only list above."""
+
+MEMORY_BEHAVIOR_NOTE_TTL_SECONDS = 21 * 24 * 3600
+"""A note lasts three weekly cycles from its last renewal, then lapses by itself."""
+
+MEMORY_BEHAVIOR_NOTE_MAX_PER_KIND = {"style": 3, "drift": 2}
+"""Live notes per kind, kept ones included; an add past this is rejected."""
+
+MEMORY_BEHAVIOR_NOTE_AVOID_MAX_TOKENS = 60
+"""Longer "avoid" text is rejected, not cut: a clipped note can change its meaning."""
+
+MEMORY_BEHAVIOR_NOTE_DIRECTION_MAX_TOKENS = 60
+"""Longer "direction" text is rejected, not cut, for the same reason."""
+
+MEMORY_BEHAVIOR_NOTE_CORRECTED_MIN_SESSIONS = 2
+"""Sittings in the sample since a note's last renewal before it may be retired as
+corrected. Fewer than this cannot show that the pattern has really stopped."""
+
+MEMORY_BEHAVIOR_NOTES_PROMPT_MAX_TOKENS = 400
+"""Token budget for the whole injected block; whole notes drop until it fits."""
+
+MEMORY_BEHAVIOR_NOTE_EVIDENCE_GATES = {
+    "complaint": {"user": (3, 2, 2), "reply": (3, 2, 1)},
+    "request": {"user": (1, 1, 1), "reply": (3, 3, 1)},
+    "drift": {"user": (0, 0, 0), "reply": (4, 3, 2)},
+}
+"""Least cited evidence per note basis, as (messages, sittings, calendar days).
+- complaint: the user grumbled about a pattern more than once; a passing remark
+  never qualifies.
+- request: the user stated one standing request. Once is enough, so the replies
+  must show the pattern more widely instead.
+- drift: replies only, checked against the card, so it asks for the most replies."""
 
 # ---- Memory: scoped subject eviction (group memory series 5/7, track one) ----
 # Scoped group/member entries receive no evidence signals (facts persist with

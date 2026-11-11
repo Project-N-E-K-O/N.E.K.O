@@ -5,7 +5,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime
 
-from memory.evidence import counted_fact_ids, merge_fact_source_counts
+from memory.evidence import (
+    counted_fact_ids,
+    merge_fact_source_counts,
+    merge_observed_days,
+    observed_days,
+)
 
 
 def _carry_user_backing(target: dict, srcs: list[dict], extra_facts=()) -> dict:
@@ -31,6 +36,12 @@ def _carry_user_backing(target: dict, srcs: list[dict], extra_facts=()) -> dict:
         target[key] = max(
             (int(src.get(key, 0) or 0) for src in srcs),
             default=0,
+        )
+    # Scoped lines: the days they were seen in others' words (the promotion
+    # gate, memory.evidence.scoped_promotion_ready) survive a merge or split.
+    if any(src.get("subject_kind") or "observed_days" in src for src in srcs):
+        target["observed_days"] = merge_observed_days(
+            *(observed_days(src) for src in srcs)
         )
     return target
 

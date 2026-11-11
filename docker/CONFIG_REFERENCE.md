@@ -178,7 +178,7 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 | glm | glm-5v-turbo | https://open.bigmodel.cn/api/paas/v4 |
 | step | step-5-preview | https://api.stepfun.com/v1 |
 | silicon | Qwen/Qwen3.5-122B-A10B | https://api.siliconflow.cn/v1 |
-| gemini | gemini-3.5-flash | https://generativelanguage.googleapis.com/v1beta/openai/ |
+| gemini | gemini-3.8-flash | https://generativelanguage.googleapis.com/v1beta/openai/ |
 | kimi | kimi-k2.6 | https://api.moonshot.cn/v1 |
 | kimi_code | kimi-for-coding | https://api.kimi.com/coding |
 | deepseek | deepseek-flash | https://api.deepseek.com/v1 |
@@ -188,9 +188,9 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 | mimo | mimo-v2.5 | https://api.xiaomimimo.com/v1 |
 | claude | claude-sonnet-5-5 | https://api.anthropic.com/v1 |
 | grok | grok-4.3 | https://api.x.ai/v1 |
-| openrouter | google/gemini-3-flash-preview | https://openrouter.ai/api/v1 |
+| openrouter | google/gemini-3.8-flash | https://openrouter.ai/api/v1 |
 | orcarouter | anthropic/claude-sonnet-5.5 | https://api.orcarouter.ai/v1 |
-| requesty | google/gemini-3-flash-preview | https://router.requesty.ai/v1 |
+| requesty | google/gemini-3.8-flash | https://router.requesty.ai/v1 |
 | opper | gpt-5.4-mini | https://api.opper.ai/v3/compat |
 
 #### 自定义 Agent 模型

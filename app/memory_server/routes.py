@@ -3098,6 +3098,9 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
                 "speaker_provenance": speaker_provenance,
                 "speaker_label": speaker_label,
                 "messages": input_history,
+                "label_own_words": FactStore.group_history_has_own_words(
+                    input_history, subject,
+                ),
                 "trust_state": trust_state,
             }],
         )
@@ -3152,6 +3155,9 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
             speaker_label=speaker_label,
             speaker_provenance=speaker_provenance,
             reconciled_facts=reconciled_facts,
+            label_own_words=FactStore.group_history_has_own_words(
+                input_history, subject,
+            ),
         )
     except FactExtractionFailed as exc:
         raise HTTPException(
@@ -4241,6 +4247,7 @@ async def _generate_keyed_facts(
             context["messages"],
             treat_malformed_as_failure=True,
             speaker_label=context.get("speaker_label"),
+            label_own_words=bool(context.get("label_own_words")),
         )
         if extracted is None:
             raise failure
@@ -6143,30 +6150,16 @@ async def _get_scoped_context(lanlan_name: str, req: ScopedContextRequest):
     # holds. Authorization uses the flattened expansion, while rendering gets
     # the participant groups so budget, heading and id stay one-per-person.
     groups, subjects = _fold_request_subjects(req.subjects)
-    # Suppression expiry only occurs in aupdate_suppressions, previously called only by
-    # legacy /get_settings and /new_dialog. Group-only deployments never reach
-    # them, making scoped reflections permanently invisible after their first suppression.
-    try:
-        await runtime.reflection_engine.aupdate_suppressions(lanlan_name)
-    except Exception as exc:
-        logger.warning(f"[scoped] 刷新 reflection suppression 失败: {exc}")
-    pending_reflections = await runtime.reflection_engine.aget_pending_reflections(
-        lanlan_name,
-        subjects=subjects,
-        include_legacy_private=False,
-    )
-    confirmed_reflections = await runtime.reflection_engine.aget_confirmed_reflections(
-        lanlan_name,
-        subjects=subjects,
-        include_legacy_private=False,
-    )
-    rendered = await runtime.persona_manager.arender_persona_markdown(
-        lanlan_name,
-        pending_reflections,
-        confirmed_reflections,
-        subjects=subjects,
-        include_legacy_private=False,
-        participant_groups=groups,
+    # The render the weekly scoped review reads too (one definition, so the
+    # two cannot drift). It refreshes suppressions first: their expiry only
+    # happens there, and group-only deployments never reach /new_dialog, so
+    # without it a scoped reflection stays invisible after its first
+    # suppression.
+    from memory.introspection import arender_scoped_injected_memory
+
+    rendered = await arender_scoped_injected_memory(
+        runtime.persona_manager, runtime.reflection_engine, lanlan_name,
+        subjects, participant_groups=groups,
     )
     return PlainTextResponse(rendered)
 
@@ -6279,6 +6272,15 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest, *, 
         )
     subject = req.subject.to_domain()
     _validate_target_epochs(req, subject)
+    # A pending snapshot journal restores its before-image when recovered, which
+    # would bring back whatever this erase removes. Settle it first or refuse;
+    # the erase checks again once it holds the lock snapshot commits take.
+    from memory.long_term_sync import LongTermMemoryRecoveryRequired, require_consistent_views
+    from .long_term_sync import recover_pending_snapshot
+    try:
+        await recover_pending_snapshot(lanlan_name)
+    except LongTermMemoryRecoveryRequired as error:
+        raise HTTPException(status_code=503, detail="long_term_memory_recovery_required") from error
     from memory import trust_store as _trust_store
     if not _trust_store.trust_snapshot().loaded:
         # FAIL CLOSED. With the pool unreadable the fan-out set is unknown, and
@@ -6405,6 +6407,10 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest, *, 
     # arguments ("delete canonical last") are not enough.
     await runtime._reload_lock.acquire()
     try:
+        await asyncio.to_thread(
+            require_consistent_views,
+            os.path.join(runtime._config_manager.memory_dir, lanlan_name),
+        )
         for target in erase_targets:
             lock = runtime.fact_store._get_subject_forget_transaction_lock(
                 lanlan_name, target,
@@ -6505,6 +6511,8 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest, *, 
             )
     except _ForgetAlreadyErased:
         raise
+    except LongTermMemoryRecoveryRequired as exc:
+        raise HTTPException(status_code=503, detail="long_term_memory_recovery_required") from exc
     except Exception as exc:
         logger.error(f"[scoped_forget] {lanlan_name}: 删除失败: {exc}")
         raise HTTPException(
@@ -7735,6 +7743,31 @@ async def get_settings(lanlan_name: str):
     )
 
 
+@app.get("/internal/memory/{lanlan_name}/persona")
+async def get_private_persona_snapshot(lanlan_name: str):
+    """Return the native retained private persona projection."""
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    manager = runtime.persona_manager
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Memory components are not ready")
+    from memory.long_term_sync import LongTermMemoryRecoveryRequired
+    try:
+        return await manager.aget_private_persona_snapshot(lanlan_name)
+    except LongTermMemoryRecoveryRequired as exc:
+        raise HTTPException(status_code=503, detail="long_term_memory_recovery_required") from exc
+    except OverflowError as exc:
+        raise HTTPException(status_code=413, detail={
+            "code": "MEMORY_RESPONSE_TOO_LARGE",
+            "message": "Persona snapshot exceeds internal limit",
+        }) from exc
+    except (ValueError, TypeError, UnicodeError) as exc:
+        raise HTTPException(status_code=500, detail={
+            "code": "MEMORY_PROTOCOL_ERROR", "message": "Malformed persona data",
+        }) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail="Persona storage unavailable") from exc
+
+
 @app.get("/get_persona/{lanlan_name}")
 async def get_persona(lanlan_name: str):
     """Return the full persona JSON (for the UI / memory_browser)."""
@@ -8047,6 +8080,24 @@ outbox_infra.register_outbox_handler(
 )
 
 
+async def _arender_behavior_notes(name: str, lang: str) -> str:
+    """The behavior-note block, under the user's "natural expression" switch.
+
+    A read of one small file; nothing is computed on the session-start path, and
+    a failure costs only this block.
+    """
+    from memory.behavior_notes import get_behavior_note_store
+    from utils.slop_filter import is_slop_filter_enabled
+
+    try:
+        if not await asyncio.to_thread(is_slop_filter_enabled):
+            return ""
+        return await get_behavior_note_store().aprompt_block(name, lang)
+    except Exception as e:
+        logger.warning(f"[BehaviorNotes] {name}: 提醒注入跳过: {type(e).__name__}")
+        return ""
+
+
 async def _new_dialog(
     lanlan_name: str,
     language: str | None = None,
@@ -8273,6 +8324,14 @@ async def _new_dialog(
                 result += _loc(CHAT_HOLIDAY_CONTEXT, _lang).format(holiday=holiday_name)
         except Exception as e:
             logger.debug(f"Holiday context injection skipped: {e}")
+
+        # Reminders from the weekly behavior review. In this text rather than the
+        # session prompt so that every way she starts talking reads them: a session
+        # start, a hot swap and voice as well as proactive chat. Last, after the
+        # conversation: measured on real reopenings, the same note placed before
+        # the history barely changed anything, since the history right after it
+        # shows her doing the very thing and she follows that instead.
+        result += await _arender_behavior_notes(lanlan_name, _lang)
 
         return PlainTextResponse(result)
 

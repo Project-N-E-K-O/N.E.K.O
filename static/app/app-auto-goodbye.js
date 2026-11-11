@@ -915,6 +915,7 @@
 
         window.addEventListener('live2d-goodbye-click', (event) => {
             const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+            const isVisitCatEntry = detail.visitCatEntry === true;
             if (detail.startupDefaultForm !== 'cat' && state.startupDefaultCatRequested) {
                 // A manual goodbye is a newer user choice; never let a delayed startup retry override it.
                 cancelStartupDefaultCatRequest(true);
@@ -938,14 +939,21 @@
             } else {
                 const isStartupDefaultCat = detail.startupDefaultForm === 'cat';
                 state.autoGoodbyeTriggered = false;
-                state.lastReason = isStartupDefaultCat ? 'startup-default-cat' : 'manual-goodbye';
+                state.lastReason = isVisitCatEntry
+                    ? 'cat-visit-entry'
+                    : (isStartupDefaultCat ? 'startup-default-cat' : 'manual-goodbye');
                 clearDragTierMemory();
                 setVisualTier(TIER_CAT1, {
-                    source: isStartupDefaultCat ? 'startup-default-form' : 'manual-goodbye',
+                    source: isVisitCatEntry
+                        ? 'cat-visit-entry'
+                        : (isStartupDefaultCat ? 'startup-default-form' : 'manual-goodbye'),
                     reason: state.lastReason,
                 });
             }
-            syncGoodbyeSilentState(true, state.lastReason);
+            // Cat visits reuse the model-to-cat visual transition, but the visit
+            // already owns the socket. Emitting goodbye_state:true here would
+            // mean "leave the visit" and immediately finalize the room.
+            if (!isVisitCatEntry) syncGoodbyeSilentState(true, state.lastReason);
         });
 
         const isGreetingReturnSource = (source) => source === 'live2d-return-click'

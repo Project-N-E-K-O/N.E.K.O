@@ -278,7 +278,13 @@ async def _synthesize_free_voice_preview(voice_id: str, preview_line: str, previ
 
 async def _synthesize_gemini_native_voice_preview(voice_id: str, preview_line: str, audio_api_key: str) -> bytes:
     """Generate a preview WAV using Gemini native TTS."""
-    from utils.tts.providers.gemini import GEMINI_TTS_MODEL, normalize_gemini_tts_voice
+    from utils.tts.providers.gemini import (
+        GEMINI_TTS_MODEL,
+        GEMINI_TTS_SAMPLE_RATE,
+        build_gemini_tts_payload,
+        extract_gemini_tts_pcm,
+        normalize_gemini_tts_voice,
+    )
 
     normalized_voice_id, recognized = normalize_gemini_tts_voice(voice_id)
     if not recognized:
@@ -288,30 +294,16 @@ async def _synthesize_gemini_native_voice_preview(voice_id: str, preview_line: s
         "https://generativelanguage.googleapis.com/v1beta/"
         f"models/{GEMINI_TTS_MODEL}:generateContent?key={audio_api_key}"
     )
-    payload = {
-        "contents": [{"parts": [{"text": f"Say the text with a proper tone, don't omit or add any words:\n\"{preview_line}\""}]}],
-        "generationConfig": {
-            "response_modalities": ["AUDIO"],
-            "speechConfig": {
-                "voiceConfig": {
-                    "prebuiltVoiceConfig": {"voiceName": normalized_voice_id}
-                }
-            },
-        },
-    }
+    payload = build_gemini_tts_payload(preview_line, normalized_voice_id)
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(14, connect=10)) as client:
         response = await client.post(url, json=payload)
         response.raise_for_status()
         data = response.json()
 
-    candidates = data.get("candidates", [])
-    if candidates:
-        parts = candidates[0].get("content", {}).get("parts", [])
-        if parts:
-            audio_b64 = parts[0].get("inlineData", {}).get("data")
-            if audio_b64:
-                return _build_wav_payload([base64.b64decode(audio_b64)], 1, 2, 24000)
+    pcm = extract_gemini_tts_pcm(data)
+    if pcm:
+        return _build_wav_payload([pcm], 1, 2, GEMINI_TTS_SAMPLE_RATE)
     raise RuntimeError("Gemini TTS 未返回音频")
 
 

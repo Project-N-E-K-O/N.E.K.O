@@ -1546,6 +1546,9 @@
 
         // 拖拽结束检测：轮询 screenX/screenY，位置稳定后触发边界检查
         (function() {
+            // 只有桌面端接管了完整窗的全部边界入口，才停用页面回弹。
+            if (W.managesFullChatWorkArea === true
+                && document.body.matches('.neko-electron-runtime[data-chat-host-kind="full"]')) return;
             var lastX = window.screenX, lastY = window.screenY;
             var wasMoving = false;
             var stableFrames = 0;

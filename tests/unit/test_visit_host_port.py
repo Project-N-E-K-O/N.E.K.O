@@ -37,6 +37,23 @@ def _host(session: _Session) -> ManagerHost:
     return ManagerHost("Host", SimpleNamespace(session=session))
 
 
+def test_cat_admission_only_ignores_goodbye_silence():
+    mgr = SimpleNamespace(
+        _is_voice_session_active_or_starting=lambda: False,
+        is_goodbye_silent=lambda: True,
+        is_hot_swap_imminent=False,
+        _starting_session_count=0,
+    )
+    host = ManagerHost("Host", mgr)
+    assert host.precondition_failure() == "goodbye_silent"
+    assert host.precondition_failure(allow_goodbye_silent=True) is None
+
+    mgr.is_hot_swap_imminent = True
+    assert host.precondition_failure(allow_goodbye_silent=True) == "busy"
+    mgr._is_voice_session_active_or_starting = lambda: True
+    assert host.precondition_failure(allow_goodbye_silent=True) == "voice_session_active"
+
+
 async def test_main_turn_interruption_has_one_deadline_for_both_stages(monkeypatch):
     monkeypatch.setattr(host_port, "_TURN_IDLE_POLL_S", 0.02)
     # Interruption itself consumes most of the deadline while the turn never ends: total duration remains bounded by timeout, not interruption plus another full timeout

@@ -67,7 +67,7 @@ class VisitHost(Protocol):
     def is_current(self) -> bool:
         """False once the character's manager was replaced (``manager_replaced``)."""
 
-    def precondition_failure(self) -> Optional[str]:
+    def precondition_failure(self, *, allow_goodbye_silent: bool = False) -> Optional[str]:
         """Why a visit cannot start now (``voice_session_active`` / ``goodbye_silent`` / ``busy``), or None."""
 
     async def interrupt_main_turn(self, timeout: float) -> bool:
@@ -182,14 +182,16 @@ class ManagerHost:
         except Exception:  # noqa: BLE001 - Treat unreadable state as replaced: fail closed.
             return False
 
-    def precondition_failure(self) -> Optional[str]:
+    def precondition_failure(self, *, allow_goodbye_silent: bool = False) -> Optional[str]:
         mgr = self._mgr
         try:
             if mgr._is_voice_session_active_or_starting():
                 return "voice_session_active"
         except Exception:  # noqa: BLE001
             return "busy"
-        if getattr(mgr, "is_goodbye_silent", None) and mgr.is_goodbye_silent():
+        if (not allow_goodbye_silent
+                and getattr(mgr, "is_goodbye_silent", None)
+                and mgr.is_goodbye_silent()):
             return "goodbye_silent"
         if getattr(mgr, "is_hot_swap_imminent", False) or getattr(mgr, "_starting_session_count", 0) > 0:
             return "busy"

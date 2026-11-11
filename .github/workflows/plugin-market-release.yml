@@ -25,10 +25,18 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   release:
+    permissions:
+      contents: read
+    # Only values fixed before any plugin-controlled code runs may leave this job.
+    outputs:
+      artifact-id: ${{ steps.build-output.outputs.artifact-id }}
+      plugin-directory: ${{ steps.mount.outputs.plugin-directory }}
+      package-name: ${{ steps.mount.outputs.package-name }}
+      neko-commit: ${{ steps.neko.outputs.commit }}
     runs-on: ubuntu-latest
     env:
       PLUGIN_ID: ${{ inputs.plugin-id }}
@@ -45,6 +53,10 @@ jobs:
             echo "Invalid plugin id: $PLUGIN_ID" >&2
             exit 1
           fi
+          if [[ "$NEKO_REPOSITORY" != "Project-N-E-K-O/N.E.K.O" ]]; then
+            echo "Market releases require the official N.E.K.O builder" >&2
+            exit 1
+          fi
           if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then
             echo "Market release requires a tag ref, got ${GITHUB_REF_TYPE}: ${GITHUB_REF_NAME}" >&2
             exit 1
@@ -54,18 +66,22 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: plugin-repo
+          persist-credentials: false
 
       - name: Checkout N.E.K.O
+        id: neko
         uses: actions/checkout@v4
         with:
           repository: ${{ env.NEKO_REPOSITORY }}
           ref: ${{ env.NEKO_REF }}
           path: neko
+          persist-credentials: false
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
 
       - name: Mount plugin into N.E.K.O tree
+        id: mount
         run: |
           uv run --no-project python - <<'PY'
           import os
@@ -146,6 +162,8 @@ jobs:
                   inherit_tooling(shared, destination / name)
           with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as output:
               output.write(f"MARKET_PLUGIN_DIRECTORY={directory}\nMARKET_PACKAGE_NAME={package_name}\n")
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+              output.write(f"plugin-directory={directory}\npackage-name={package_name}\n")
           PY
 
       - name: Ruff check
@@ -165,21 +183,15 @@ jobs:
           mkdir -p plugin/neko_plugin_cli/target
           uv run python -m plugin.neko_plugin_cli.cli check -r "${PLUGIN_ID}" | tee "plugin/neko_plugin_cli/target/${PLUGIN_ID}.market-release-check.txt"
 
-      - name: Write Market evidence
+      - name: Name release package
         working-directory: neko
         run: |
-          export NEKO_COMMIT="$(git rev-parse HEAD)"
           uv run --no-project python - <<'PY'
-          import hashlib
-          import json
           import os
           from pathlib import Path
-          import tomllib
-          import zipfile
 
-          plugin_id = os.environ["PLUGIN_ID"]
           target = Path("plugin/neko_plugin_cli/target").resolve(strict=True)
-          original = target / f"{plugin_id}.neko-plugin"
+          original = target / f"{os.environ['PLUGIN_ID']}.neko-plugin"
           package = target / os.environ["MARKET_PACKAGE_NAME"]
           if original.is_symlink() or package.is_symlink() or package.parent != target:
               raise SystemExit("Unsafe package path")
@@ -187,23 +199,89 @@ jobs:
               if package.exists():
                   raise SystemExit("Selected package-name already exists")
               original.rename(package)
+          PY
+
+      - name: Upload build output for isolated evidence
+        id: build-output
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: market-build-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          path: |
+            neko/plugin/neko_plugin_cli/target/${{ steps.mount.outputs.package-name }}
+            neko/plugin/neko_plugin_cli/target/${{ inputs.plugin-id }}.market-release-check.txt
+
+  evidence:
+    timeout-minutes: 30
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.signing-input.outputs.artifact-id }}
+    env:
+      PLUGIN_ID: ${{ inputs.plugin-id }}
+      MARKET_MODE: release
+      MARKET_PLUGIN_DIRECTORY: ${{ needs.release.outputs.plugin-directory }}
+      MARKET_PACKAGE_NAME: ${{ needs.release.outputs.package-name }}
+      NEKO_REPOSITORY: ${{ inputs.neko-repository }}
+      NEKO_REF: ${{ inputs.neko-ref }}
+      NEKO_COMMIT: ${{ needs.release.outputs.neko-commit }}
+    steps:
+      # Evidence is written by workflow-owned code only: no checkout, install,
+      # or execution of plugin-controlled code can touch it before signing.
+      - name: Download exact build output
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.release.outputs.artifact-id }}
+          path: build-output
+          merge-multiple: true
+
+      - name: Write Market evidence
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import tomllib
+          import zipfile
+
+          plugin_id = os.environ["PLUGIN_ID"]
+          target = Path("build-output").resolve(strict=True)
+          package = target / os.environ["MARKET_PACKAGE_NAME"]
+          expected = {package.name, f"{plugin_id}.market-release-check.txt"}
+          entries = list(target.iterdir())
+          if (package.parent != target or {entry.name for entry in entries} != expected
+                  or any(entry.is_symlink() or not entry.is_file() for entry in entries)):
+              raise SystemExit("Build output must contain exactly the selected package and its check output")
+          data = package.read_bytes()
+          report = (target / f"{plugin_id}.market-release-check.txt").read_text(encoding="utf-8")
+          checked = re.findall(r"^\s*package_sha256=([0-9a-f]{64})\s*$", report, re.MULTILINE)
+          if (checked != [hashlib.sha256(data).hexdigest()] or f"[OK] {plugin_id}:" not in report
+                  or re.search(r"^\s*payload_hash_verified=True\s*$", report, re.MULTILINE) is None):
+              raise SystemExit("Package does not match the one that passed the release check")
+          if re.fullmatch(r"[0-9a-f]{40}", os.environ["NEKO_COMMIT"]) is None:
+              raise SystemExit("N.E.K.O builder commit is missing")
+          if os.environ.get("GITHUB_REF_TYPE") != "tag":
+              raise SystemExit("Market release requires a tag ref")
+          tag = os.environ["GITHUB_REF_NAME"]
+          tag_version = tag[1:] if tag.startswith(("v", "V")) else tag
           payload_hash = None
           with zipfile.ZipFile(package) as archive:
               if archive.namelist().count("manifest.toml") != 1:
                   raise SystemExit("Package must contain exactly one manifest.toml")
               manifest = tomllib.loads(archive.read("manifest.toml").decode("utf-8"))
-              source = tomllib.loads(Path(f"plugin/plugins/{plugin_id}/plugin.toml").read_text(encoding="utf-8"))["plugin"]
-              if manifest.get("id") != plugin_id or manifest.get("package_type") != "plugin" or manifest.get("version") != source["version"]:
-                  raise SystemExit("Actual package identity/version does not match the selected plugin")
-              tag = os.environ.get("GITHUB_REF_NAME", "")
-              tag_version = tag[1:] if tag.startswith(("v", "V")) else tag
-              if os.environ.get("GITHUB_REF_TYPE") == "tag" and tag_version != manifest["version"]:
-                  raise SystemExit("Actual package version does not match release tag")
+              # The build job matched plugin.toml to the tag before running plugin code.
+              if manifest.get("id") != plugin_id or manifest.get("package_type") != "plugin" or manifest.get("version") != tag_version:
+                  raise SystemExit("Actual package identity/version does not match the selected plugin and release tag")
               metadata = tomllib.loads(archive.read("metadata.toml").decode("utf-8"))
               payload_hash = metadata.get("payload", {}).get("hash")
               if not isinstance(payload_hash, str) or len(payload_hash) != 64:
                   raise SystemExit("Package payload hash is missing")
-          data = package.read_bytes()
+          if re.findall(r"^\s*payload_hash=(\S+)\s*$", report, re.MULTILINE) != [payload_hash]:
+              raise SystemExit("Package does not match the one that passed the release check")
           evidence = {
               "schema_version": 1,
               "mode": os.environ["MARKET_MODE"],
@@ -224,23 +302,52 @@ jobs:
           }
           if os.environ["MARKET_MODE"] == "release":
               evidence.update(ref_type=os.environ["GITHUB_REF_TYPE"], ref_name=os.environ["GITHUB_REF_NAME"], version=manifest["version"])
-          Path("plugin/neko_plugin_cli/target/market-evidence.json").write_text(
-              json.dumps(evidence, sort_keys=True) + "\n", encoding="utf-8",
-          )
+          (target / "market-evidence.json").write_text(json.dumps(evidence, sort_keys=True) + "\n", encoding="utf-8")
           PY
 
-      - name: Upload Market evidence
-        uses: actions/upload-artifact@v4
+      - name: Upload signing input
+        id: signing-input
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: ${{ env.PLUGIN_ID }}-market-evidence
-          path: neko/plugin/neko_plugin_cli/target/market-evidence.json
+          name: market-signing-input-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          path: build-output/
+
+  attest:
+    timeout-minutes: 30
+    needs: evidence
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      # No checkout, install, or execution of plugin-controlled code in this job.
+      - name: Download exact signing input
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.evidence.outputs.artifact-id }}
+          path: signed-output
+          merge-multiple: true
+
+      - name: Attest package and exact Market evidence bytes
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
+        with:
+          subject-path: |
+            signed-output/*.neko-plugin
+            signed-output/market-evidence.json
+
+      - name: Upload Market evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ inputs.plugin-id }}-market-evidence
+          overwrite: true
+          path: signed-output/market-evidence.json
+          if-no-files-found: error
 
       - name: Create GitHub Release
-        if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
           fail_on_unmatched_files: true
-          files: |
-            neko/plugin/neko_plugin_cli/target/${{ env.MARKET_PACKAGE_NAME }}
-            neko/plugin/neko_plugin_cli/target/${{ env.PLUGIN_ID }}.market-release-check.txt
-            neko/plugin/neko_plugin_cli/target/market-evidence.json
+          files: signed-output/*

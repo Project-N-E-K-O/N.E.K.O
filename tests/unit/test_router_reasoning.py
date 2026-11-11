@@ -67,8 +67,10 @@ def test_opper_effort_table_matches_measurements_and_floor():
     table = P.OPPER_REASONING_EFFORT
     assert table['gemini-2.5-flash'] == ('low', 'low')
     assert table['gemini/gemini-2.5-flash'] == ('minimal', 'low')
-    assert table['gemini-3.8-flash'] == table['gemini/gemini-3.8-flash'] == ('low', 'low')
-    for upstream in ('gemini-3-flash-preview', 'gemini-3.1-flash-lite', 'gemini-3.5-flash', 'gemini-3.6-flash'):
+    for upstream in ('gemini-3.7-flash', 'gemini-3.8-flash'):
+        assert table[upstream] == table['gemini/' + upstream] == ('low', 'low')
+    for upstream in ('gemini-3-flash-preview', 'gemini-3.1-flash-lite', 'gemini-3.5-flash',
+                     'gemini-3.5-flash-lite', 'gemini-3.6-flash'):
         assert table[upstream] == table['gemini/' + upstream] == ('minimal', 'low')
     for model, efforts in table.items():
         assert P.resolve_router_model(model, OPPER) in P.MODELS_EXTRA_BODY_MAP
