@@ -1057,6 +1057,35 @@ async def test_sub_familiars_count_towards_the_limit(hosts, tmp_path):
     assert any("do this part yourself" in str(message.get("content")) for message in parent.requests[1])
 
 
+async def test_no_sub_familiar_starts_for_a_parent_stopped_meanwhile(hosts, tmp_path, monkeypatch):
+    parent = ScriptedLLM(
+        [
+            [call("subagent", {"description": "part one", "prompt": "Do part one."}), finish("tool_calls")],
+            _report("ready", "done"),
+        ]
+    )
+    child = ScriptedLLM([[say("part one done"), finish()]])
+    host = _host(hosts, tmp_path, lambda spec: parent if spec.top_level else child)
+    real_workdir = host.familiars._child_workdir
+
+    async def stopped_meanwhile(parent_commission: Any, cwd: Any) -> Any:
+        # The parent is stopped while the child is being prepared, before
+        # the child is filed: a stop sets the status first and then finds no
+        # child to stop. (The rest of the stop waits for this very call.)
+        await host.ledger.transition(parent_commission.id, "cancelled", reason="stopped by the user")
+        return await real_workdir(parent_commission, cwd)
+
+    monkeypatch.setattr(host.familiars, "_child_workdir", stopped_meanwhile)
+    receipt = await _dispatch(host, "do the work in two parts")
+    await wait_until(lambda: _children(host, receipt.commission_id), what="the sub-familiar being filed")
+    await host.brain.settle()
+    await host.familiars.settle()
+
+    (sub,) = await host.ledger.select(parent_id=receipt.commission_id)
+    assert (sub.status, sub.status_reason) == ("cancelled", "its parent was stopped")
+    assert child.requests == []
+
+
 async def _children(host: Any, commission_id: str) -> bool:
     return bool(await host.ledger.select(parent_id=commission_id))
 

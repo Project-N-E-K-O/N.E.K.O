@@ -1009,6 +1009,13 @@ class FamiliarManager:
             conversation_id=parent.conversation_id,
             lang=parent.lang,
         )
+        # A stop of the parent sets its status before it looks for children,
+        # so a child filed after that look is caught here, and one filed
+        # before it is stopped by the stop itself.
+        current = await self._ledger.get(parent.id)
+        if current is None or current.status not in ("working", "waiting_user"):
+            await self._ledger.transition(child.id, "cancelled", reason="its parent was stopped")
+            raise RuntimeError("the commission was stopped; no familiar is started")
         await self._ledger.append_event(parent.id, "subagent_started", {"name": name, "commission_id": child.id})
         # It starts now or not at all (see ``_NO_PLACE_REASON``); the parent
         # is told so and can do that part itself. Its result comes back to the
