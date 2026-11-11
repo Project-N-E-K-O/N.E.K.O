@@ -171,7 +171,9 @@ def _build_subscriber_workshop_model_ref(item_id: str | int, raw_model_ref: str)
     return f"/workshop/{normalized_item_id}/{'/'.join(relative_parts)}"
 
 
-def _resolve_workshop_model_ref(installed_folder: str, model_ref: str, model_type: str) -> str:
+def _resolve_workshop_model_ref(
+    installed_folder: str, model_ref: str, model_type: str, *, card_model_ref: str = "",
+) -> str:
     """Recover paths written by older 3D exporters when the referenced file is missing."""
     if not model_ref.startswith("/workshop/"):
         return model_ref
@@ -189,6 +191,11 @@ def _resolve_workshop_model_ref(installed_folder: str, model_ref: str, model_typ
         packaged_parts = parts[1:]
     else:
         packaged_parts = parts[-2:]
+        if len(parts) == 1 and card_model_ref.startswith("/workshop/"):
+            # Republishing a root-level MMD copied the entire original item directory.
+            source_id, _, source_path = card_model_ref.removeprefix("/workshop/").partition("/")
+            if source_id.isascii() and source_id.isdecimal() and source_path == parts[0]:
+                packaged_parts = [source_id, parts[0]]
     if packaged_parts == parts:
         return model_ref
 

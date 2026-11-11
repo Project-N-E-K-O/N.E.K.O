@@ -78,7 +78,9 @@ def _find_casefold_conflict_name(existing_names, candidate_name: str) -> str | N
     return None
 
 
-def _repair_workshop_model_binding(character, item_id, installed_folder, model_type, model_ref) -> bool:
+def _repair_workshop_model_binding(
+    character, item_id, installed_folder, model_type, model_ref, *, card_model_ref,
+) -> bool:
     if (
         get_reserved(character, "character_origin", "source") != "steam_workshop"
         or get_reserved(character, "character_origin", "source_id") != str(item_id)
@@ -92,7 +94,10 @@ def _repair_workshop_model_binding(character, item_id, installed_folder, model_t
         or not old_ref.startswith(f"/workshop/{item_id}/")
     ):
         return False
-    if _resolve_workshop_model_ref(installed_folder, old_ref, model_type) != model_ref:
+    repaired_ref = _resolve_workshop_model_ref(
+        installed_folder, old_ref, model_type, card_model_ref=card_model_ref,
+    )
+    if repaired_ref != model_ref:
         return False
 
     set_reserved(character, "character_origin", "model_ref", model_ref)
@@ -382,10 +387,12 @@ async def sync_workshop_character_cards(
                             
                             model_binding = _derive_workshop_model_binding(chara_data)
                             binding_model_type = model_binding['binding_model_type']
+                            card_model_ref = model_binding['model_ref']
                             subscriber_model_ref = _resolve_workshop_model_ref(
                                 installed_folder,
-                                _build_subscriber_workshop_model_ref(item_id, model_binding['model_ref']),
+                                _build_subscriber_workshop_model_ref(item_id, card_model_ref),
                                 binding_model_type,
+                                card_model_ref=card_model_ref,
                             )
 
                             # Existing cards are eligible for asset-path repairs and missing covers.
@@ -416,7 +423,8 @@ async def sync_workshop_character_cards(
                                         and old_model_ref != subscriber_model_ref
                                     ):
                                         pending_model_repairs.append((
-                                            chara_name, item_id, installed_folder, binding_model_type, subscriber_model_ref,
+                                            chara_name, item_id, installed_folder, binding_model_type,
+                                            subscriber_model_ref, card_model_ref,
                                         ))
                                     try:
                                         blocked_result = _abort_if_write_fence_active(
@@ -659,9 +667,10 @@ async def sync_workshop_character_cards(
                     skipped_count += skipped_due_to_race_count
 
                 repaired_count = 0
-                for name, item_id, installed_folder, model_type, model_ref in pending_model_repairs:
+                for name, item_id, installed_folder, model_type, model_ref, card_model_ref in pending_model_repairs:
                     if _repair_workshop_model_binding(
                         latest_catgirls.get(name), item_id, installed_folder, model_type, model_ref,
+                        card_model_ref=card_model_ref,
                     ):
                         repaired_count += 1
                 if actually_added_names and not latest_characters.get('当前猫娘'):

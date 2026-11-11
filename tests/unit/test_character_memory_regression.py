@@ -5214,6 +5214,17 @@ async def test_sync_workshop_character_cards_persists_character_origin_metadata(
             "Miku",
             "/user_mmd/Custom.pmx",
         ),
+        (
+            {
+                "档案名": "工坊重新发布MMD角色",
+                "model_type": "live3d",
+                "mmd": "/workshop/123/Avatar.pmx",
+            },
+            "mmd",
+            "/workshop/3671939765/123/Avatar.pmx",
+            "Avatar",
+            None,
+        ),
     ),
 )
 async def test_sync_workshop_character_cards_persists_live3d_workshop_origin_metadata(
@@ -5223,6 +5234,7 @@ async def test_sync_workshop_character_cards_persists_live3d_workshop_origin_met
     expected_display_name,
     local_override,
 ):
+    from main_routers.workshop_router.meta import _build_subscriber_workshop_model_ref
     from utils.config_manager import get_reserved, set_reserved
 
     with TemporaryDirectory() as td:
@@ -5289,7 +5301,9 @@ async def test_sync_workshop_character_cards_persists_live3d_workshop_origin_met
                 assert get_reserved(payload, "character_origin", "display_name") == expected_display_name
                 assert get_reserved(payload, "character_origin", "model_ref") == expected_model_ref
 
-                old_model_ref = f"/workshop/3671939765{card_payload[expected_model_field]}"
+                old_model_ref = _build_subscriber_workshop_model_ref(
+                    "3671939765", card_payload[expected_model_field],
+                )
                 set_reserved(payload, "character_origin", "model_ref", old_model_ref)
                 set_reserved(payload, "avatar", expected_model_field, "model_path", local_override or old_model_ref)
                 if local_override:

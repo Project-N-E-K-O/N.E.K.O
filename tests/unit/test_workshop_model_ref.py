@@ -51,23 +51,27 @@ def test_build_subscriber_workshop_model_ref_without_item_id_returns_ref_unchang
         ("vrm", "/static/vrm/Avatar.vrm", "Avatar.vrm"),
         ("mmd", "/user_mmd/Avatar/Models/Avatar.pmx", "Avatar/Models/Avatar.pmx"),
         ("mmd", "/static/mmd/Models/Avatar.pmd", "Models/Avatar.pmd"),
+        ("mmd", "/workshop/123/Avatar.pmx", "123/Avatar.pmx"),
     ],
 )
 def test_workshop_model_ref_uses_packaged_file_only_when_original_is_missing(
     tmp_path, model_type, card_path, packaged_path,
 ):
     model_ref = _build_subscriber_workshop_model_ref("999", card_path)
-    assert _resolve_workshop_model_ref(str(tmp_path), model_ref, model_type) == model_ref
+    def resolve():
+        return _resolve_workshop_model_ref(str(tmp_path), model_ref, model_type, card_model_ref=card_path)
+
+    assert resolve() == model_ref
 
     packaged_file = tmp_path / packaged_path
     packaged_file.parent.mkdir(parents=True, exist_ok=True)
     packaged_file.touch()
-    assert _resolve_workshop_model_ref(str(tmp_path), model_ref, model_type) == f"/workshop/999/{packaged_path}"
+    assert resolve() == f"/workshop/999/{packaged_path}"
 
-    original_file = tmp_path / card_path.lstrip("/")
+    original_file = tmp_path / model_ref.removeprefix("/workshop/999/")
     original_file.parent.mkdir(parents=True, exist_ok=True)
     original_file.touch()
-    assert _resolve_workshop_model_ref(str(tmp_path), model_ref, model_type) == model_ref
+    assert resolve() == model_ref
 
 
 @pytest.mark.unit
@@ -82,6 +86,7 @@ def test_workshop_model_ref_uses_packaged_file_only_when_original_is_missing(
         ("mmd", "/user_mmd/Avatar/Models/Avatar.pmx", "Avatar/Models/Avatar.pmx"),
         ("mmd", "/static/mmd/collection/Avatar/Avatar.pmd", "Avatar/Avatar.pmd"),
         ("mmd", "/workshop/999/collection/Avatar/Avatar.pmx", "Avatar/Avatar.pmx"),
+        ("mmd", "/workshop/999/Avatar.pmx", "999/Avatar.pmx"),
     ],
 )
 async def test_prepare_workshop_upload_writes_the_packaged_model_path(
