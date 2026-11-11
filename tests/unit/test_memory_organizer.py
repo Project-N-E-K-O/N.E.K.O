@@ -289,12 +289,25 @@ async def test_only_the_organizer_trims_evidence_and_only_what_the_server_alread
     assert owner.native._capture('Neko', False)
     await server.exchange(owner)
     assert owner.native.organizes('Neko') and len(server.document['evidence']['retirements']) == 4
+    # Nothing was dropped so far, so the sync panel has nothing to say.
+    assert owner.adapter.evidence_trimmed_at(UID) is None
+    assert (await owner.runtime.status())['bindings'][0]['localMemoryDiagnostics'] == []
     # Now the organizer, with everything published: the oldest records go.
     assert owner.native._capture('Neko', False)
     assert [row['id'] for row in stored()] == ['fresh']
     await server.exchange(owner)
     assert [row['id'] for row in server.document['evidence']['retirements']] == ['fresh']
     assert not owner.native._capture('Neko', False)
+    # The panel says so for a week, by this device's clock, and then stops.
+    trimmed = owner.adapter.evidence_trimmed_at(UID)
+    assert type(trimmed) is int
+    week = 7 * 24 * 60 * 60 * 1000
+    for at, shown in ((trimmed, True), (trimmed + week - 1, True), (trimmed + week, False), (trimmed - 1, False)):
+        monkeypatch.setattr(owner.runtime.scheduler, 'clock', lambda at=at: at)
+        notices = (await owner.runtime.status())['bindings'][0]['localMemoryDiagnostics']
+        assert notices == (['long_term_memory_evidence_trimmed'] if shown else [])
+    owner.adapter.forget(UID)
+    assert owner.adapter.evidence_trimmed_at(UID) is None
 
 
 
@@ -332,3 +345,288 @@ async def test_a_private_review_this_device_may_not_run_does_not_hide_her_other_
     gate[name] = True
     await refine_loops._run_introspection_tick()
     assert runs.private.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_a_snapshot_the_holder_publishes_anyway_renews_its_claim(owner, monkeypatch):  # noqa: F811
+    _synced(owner)
+    server = PublishingServer()
+    assert owner.native._tend_organizer_state('Neko', organizer.RANK_DESKTOP) is True
+    assert owner.native._capture('Neko', False)
+    await server.exchange(owner)
+    claimed = server.document['organizer']
+    # Nothing new to say: no snapshot is made just to renew before the hour is up.
+    assert not owner.native._capture('Neko', False)
+    atomic_write_json(owner.directory / 'facts.json', [native_fact('mine', 'only on this device'),
+                                                      native_fact('more', 'learned a moment later')])
+    assert owner.native._capture('Neko', False)
+    await server.exchange(owner)
+    renewed = server.document['organizer']
+    assert renewed['deviceId'] == claimed['deviceId'] and renewed['rank'] == claimed['rank']
+    assert renewed['renewedAt'] > claimed['renewedAt']
+    # The renewal is part of this device's memory, so the next capture has nothing left to upload.
+    assert json.loads((owner.directory / 'long_term_portable.json').read_text(encoding='utf-8'))['organizer'] == renewed
+    assert not owner.native._capture('Neko', False)
+    # A device that does not hold the role publishes the holder's claim untouched.
+    phone = {'deviceId': PHONE, 'renewedAt': 7, 'rank': organizer.RANK_PHONE_EVIDENCE}
+    server.publish({**server.document, 'completedAt': server.document['completedAt'] + 10, 'organizer': phone})
+    await server.exchange(owner)
+    assert await owner.native.consume(UID)
+    atomic_write_json(owner.directory / 'facts.json', [native_fact('mine', 'only on this device'),
+                                                      native_fact('more', 'learned a moment later'),
+                                                      native_fact('third', 'and one more')])
+    assert owner.native._capture('Neko', False)
+    await server.exchange(owner)
+    assert server.document['organizer'] == phone
+
+
+def _evidence_limits(owner_fixture, monkeypatch):
+    """Shrink the limits: trimming starts above 2 records and a snapshot may carry 3."""
+    from memory import long_term_merge
+    monkeypatch.setattr(long_term_merge, 'EVIDENCE_PRUNE_ABOVE', 2)
+    monkeypatch.setattr(long_term_merge, 'EVIDENCE_PRUNE_TO', 1)
+    monkeypatch.setattr(owner_fixture.native, 'EVIDENCE_MAX', 3)
+    state_path = owner_fixture.directory / 'long_term_portable.json'
+
+    def write(count, first=0):
+        state = json.loads(state_path.read_text(encoding='utf-8')) if state_path.exists() else {}
+        # The fixture character starts with an empty list in this file.
+        atomic_write_json(state_path, {**(state if isinstance(state, dict) else {}), 'evidence': {'confirmations': [], 'retirements': [
+            {'id': f'r-{index}', 'subject': 'master', 'sourceMessageIds': [f'source-{index}']}
+            for index in range(first, first + count)]}})
+
+    def stored():
+        return [row['id'] for row in json.loads(state_path.read_text(encoding='utf-8'))['evidence']['retirements']]
+    return write, stored
+
+
+@pytest.mark.asyncio
+async def test_evidence_too_long_to_publish_is_trimmed_even_unpublished_when_nobody_else_will(owner, monkeypatch):  # noqa: F811
+    write, stored = _evidence_limits(owner, monkeypatch)
+    _synced(owner)
+    server = PublishingServer()
+    # Never published and nobody holds the role: without trimming, no snapshot could
+    # ever be made, not even the one that claims the role.
+    write(4)
+    assert owner.native._capture('Neko', True)
+    assert stored() == ['r-3'] and type(owner.adapter.evidence_trimmed_at(UID)) is int
+    await server.exchange(owner)
+    assert [row['id'] for row in server.document['evidence']['retirements']] == ['r-3']
+    # Below that size, records the server has not seen are left alone as before.
+    write(3, first=3)
+    assert owner.native._capture('Neko', False)
+    assert stored() == ['r-3', 'r-4', 'r-5']
+
+
+@pytest.mark.asyncio
+async def test_evidence_too_long_to_publish_is_reported_where_another_device_organizes(owner, monkeypatch):  # noqa: F811
+    """With the real limits: the protocol itself refuses such a document, so nothing here is shrunk for the test."""
+    from memory.long_term_merge import EVIDENCE_MAX
+    from memory.long_term_sync import LongTermEvidenceCapacityExceeded, LongTermMemoryCapacityExceeded
+    state_path = owner.directory / 'long_term_portable.json'
+
+    def write(count):
+        state = json.loads(state_path.read_text(encoding='utf-8'))
+        atomic_write_json(state_path, {**state, 'evidence': {'confirmations': [], 'retirements': [
+            {'id': f'r-{index}', 'subject': 'master', 'sourceMessageIds': [f'source-{index}']} for index in range(count)]}})
+
+    def stored():
+        return [row['id'] for row in json.loads(state_path.read_text(encoding='utf-8'))['evidence']['retirements']]
+    _synced(owner)
+    server = PublishingServer()
+    assert owner.native._capture('Neko', True)
+    await server.exchange(owner)
+    phone = {'deviceId': PHONE, 'renewedAt': 7, 'rank': organizer.RANK_PHONE_EVIDENCE}
+    server.publish({**server.document, 'completedAt': server.document['completedAt'] + 10, 'organizer': phone})
+    await server.exchange(owner)
+    assert await owner.native.consume(UID)
+    waiting = local_state(owner)['pending']
+    write(EVIDENCE_MAX + 1)
+    # The phone trims; this device only says why it cannot publish, and writes no
+    # upload the server could only refuse.
+    with pytest.raises(LongTermEvidenceCapacityExceeded) as raised:
+        owner.native._capture('Neko', False)
+    assert isinstance(raised.value, LongTermMemoryCapacityExceeded)
+    assert str(raised.value) == 'long_term_memory_evidence_capacity_exceeded'
+    assert len(stored()) == EVIDENCE_MAX + 1 and owner.adapter.evidence_trimmed_at(UID) is None
+    assert local_state(owner)['pending'] == waiting
+    binding, = (await owner.runtime.status())['bindings']
+    assert binding['localMemoryDiagnostics'] == ['long_term_memory_evidence_capacity_exceeded'] and binding['lastSyncError'] is None
+    # The next snapshot the phone publishes is merged in although what this device
+    # holds could not be exported as it stands; the newest records are the ones kept.
+    server.publish({**server.document, 'completedAt': server.document['completedAt'] + 10,
+                    'organizer': {**phone, 'renewedAt': 8}})
+    await server.exchange(owner)
+    assert await owner.native.consume(UID)
+    kept = stored()
+    assert len(kept) == EVIDENCE_MAX and kept[0] == 'r-1' and kept[-1] == f'r-{EVIDENCE_MAX}'
+    # A record this device held, and never published, is gone: the panel says so.
+    trimmed = owner.adapter.evidence_trimmed_at(UID)
+    assert type(trimmed) is int
+    monkeypatch.setattr(owner.runtime.scheduler, 'clock', lambda: trimmed)
+    # It fits again, so it is published and the reason goes away; the notice stays its week.
+    assert owner.native._capture('Neko', False)
+    assert (await owner.runtime.status())['bindings'][0]['localMemoryDiagnostics'] == ['long_term_memory_evidence_trimmed']
+    await server.exchange(owner)
+    assert len(server.document['evidence']['retirements']) == EVIDENCE_MAX
+
+
+@pytest.mark.asyncio
+async def test_a_snapshot_still_goes_out_when_the_renewal_cannot_be_saved(owner, monkeypatch):  # noqa: F811
+    from utils.cloudsave_runtime import MaintenanceModeError
+    _synced(owner)
+    server = PublishingServer()
+    assert owner.native._tend_organizer_state('Neko', organizer.RANK_DESKTOP) is True
+    assert owner.native._capture('Neko', False)
+    await server.exchange(owner)
+    claimed = server.document['organizer']
+
+    def maintenance(*args, **kwargs):
+        raise MaintenanceModeError('synthetic')
+    monkeypatch.setattr(owner.native, 'assert_cloudsave_writable', maintenance)
+    atomic_write_json(owner.directory / 'facts.json', [native_fact('mine', 'only on this device'),
+                                                      native_fact('more', 'learned a moment later')])
+    # Renewing along the way is a courtesy: the new fact is published with the claim as it was.
+    assert owner.native._capture('Neko', False)
+    await server.exchange(owner)
+    assert server.document['organizer'] == claimed
+    assert {row['id'] for row in server.document['entries']} == {'mine', 'more'}
+
+
+@pytest.mark.asyncio
+async def test_trimming_waits_for_maintenance_to_end_and_the_snapshot_with_it(owner, monkeypatch):  # noqa: F811
+    """Unlike the renewal, trimming is a write the snapshot depends on: both are put off together."""
+    from utils.cloudsave_runtime import MaintenanceModeError
+    write, stored = _evidence_limits(owner, monkeypatch)
+    _synced(owner)
+    server = PublishingServer()
+    assert owner.native._tend_organizer_state('Neko', organizer.RANK_DESKTOP) is True
+    write(3)
+    assert owner.native._capture('Neko', True)
+    await server.exchange(owner)
+    assert owner.native.organizes('Neko') and stored() == ['r-0', 'r-1', 'r-2']
+    writable = owner.native.assert_cloudsave_writable
+
+    def maintenance(*args, **kwargs):
+        raise MaintenanceModeError('synthetic')
+    monkeypatch.setattr(owner.native, 'assert_cloudsave_writable', maintenance)
+    # The capture loop treats this like any failed capture and tries again later.
+    with pytest.raises(MaintenanceModeError):
+        owner.native._capture('Neko', False)
+    assert stored() == ['r-0', 'r-1', 'r-2'] and local_state(owner)['pending'] is None
+    assert owner.adapter.evidence_trimmed_at(UID) is None
+    monkeypatch.setattr(owner.native, 'assert_cloudsave_writable', writable)
+    assert owner.native._capture('Neko', False)
+    assert stored() == ['r-2'] and type(owner.adapter.evidence_trimmed_at(UID)) is int
+
+
+@pytest.mark.asyncio
+async def test_a_device_taking_the_role_over_trims_what_the_silent_organizer_never_will(owner, monkeypatch):  # noqa: F811
+    from memory.long_term_sync import LongTermEvidenceCapacityExceeded
+    write, stored = _evidence_limits(owner, monkeypatch)
+    _synced(owner)
+    server = PublishingServer()
+    assert owner.native._capture('Neko', True)
+    await server.exchange(owner)
+    phone = {'deviceId': PHONE, 'renewedAt': 7, 'rank': organizer.RANK_PHONE}
+    server.publish({**server.document, 'completedAt': server.document['completedAt'] + 10, 'organizer': phone})
+    await server.exchange(owner)
+    assert await owner.native.consume(UID)
+    write(4)
+    with pytest.raises(LongTermEvidenceCapacityExceeded):
+        owner.native._capture('Neko', False)
+    assert len(stored()) == 4
+    # The phone never publishes again. Once this device stages its own claim, the claim
+    # could not go out either without trimming, so the trimming is its to do.
+    assert owner.native._tend_organizer_state('Neko', organizer.RANK_DESKTOP) is True
+    assert owner.native._capture('Neko', False)
+    assert stored() == ['r-3'] and type(owner.adapter.evidence_trimmed_at(UID)) is int
+    await server.exchange(owner)
+    assert server.document['organizer']['deviceId'] != PHONE
+    assert [row['id'] for row in server.document['evidence']['retirements']] == ['r-3']
+    assert owner.native.organizes('Neko')
+
+
+@pytest.mark.asyncio
+async def test_unpublished_evidence_is_not_trimmed_while_the_organizer_cannot_be_read(owner, monkeypatch):  # noqa: F811
+    from memory.long_term_sync import LongTermEvidenceCapacityExceeded
+    write, stored = _evidence_limits(owner, monkeypatch)
+    _synced(owner)
+    write(4)
+    reads = []
+
+    def unreadable(name):
+        reads.append(name)
+        raise OSError('synthetic')
+    monkeypatch.setattr(owner.native, '_published_organizer', unreadable)
+    # Not knowing who organizes is no licence to drop records nobody else has. The lists
+    # are reported as too long instead, and the sync store is not marked as broken.
+    with pytest.raises(LongTermEvidenceCapacityExceeded):
+        owner.native._capture('Neko', True)
+    assert reads == ['Neko'] and len(stored()) == 4
+    assert owner.adapter.evidence_trimmed_at(UID) is None and local_state(owner) is None
+    assert owner.runtime.writer.check()['quarantined'] is False
+
+
+@pytest.mark.asyncio
+async def test_a_claim_already_at_the_largest_time_is_published_as_it_is(owner):  # noqa: F811
+    from utils.long_term_memory_protocol import MAX_INTEGER, document
+    _synced(owner)
+    server = PublishingServer()
+    assert owner.native._tend_organizer_state('Neko', organizer.RANK_DESKTOP) is True
+    assert owner.native._capture('Neko', False)
+    await server.exchange(owner)
+    largest = {**server.document['organizer'], 'renewedAt': MAX_INTEGER}
+    server.publish({**server.document, 'completedAt': server.document['completedAt'] + 10, 'organizer': largest})
+    await server.exchange(owner)
+    assert await owner.native.consume(UID)
+    assert local_state(owner)['base']['document']['organizer'] == largest and owner.native.organizes('Neko')
+    atomic_write_json(owner.directory / 'facts.json', [native_fact('mine', 'only on this device'),
+                                                      native_fact('more', 'learned a moment later')])
+    # One more than that would be refused by the protocol, and with it every later snapshot.
+    assert owner.native._capture('Neko', False)
+    waiting = local_state(owner)['pending']['document']
+    assert waiting['organizer'] == largest and document(waiting)
+    await server.exchange(owner)
+    assert {row['id'] for row in server.document['entries']} == {'mine', 'more'}
+
+
+@pytest.mark.asyncio
+async def test_a_merge_that_has_to_drop_this_devices_oldest_evidence_says_so(owner, monkeypatch):  # noqa: F811
+    from memory import long_term_merge
+    write, stored = _evidence_limits(owner, monkeypatch)
+    monkeypatch.setattr(long_term_merge, 'EVIDENCE_MAX', 3)
+    _synced(owner)
+    server = PublishingServer()
+    write(2)
+    assert owner.native._capture('Neko', True)
+    await server.exchange(owner)
+    theirs = {'id': 'theirs', 'subject': 'master', 'sourceMessageIds': ['source-theirs']}
+    published = server.document['evidence']
+    server.publish({**server.document, 'completedAt': server.document['completedAt'] + 10,
+                    'evidence': {**published, 'retirements': [*published['retirements'], theirs]}})
+    # Each side added one record to the two both started from. Neither list is too long
+    # on its own, so nothing is cut before the merge; together they are four.
+    write(3)
+    await server.exchange(owner)
+    assert owner.adapter.evidence_trimmed_at(UID) is None
+    assert await owner.native.consume(UID)
+    assert stored() == ['r-1', 'theirs', 'r-2']
+    assert type(owner.adapter.evidence_trimmed_at(UID)) is int
+
+
+@pytest.mark.asyncio
+async def test_a_merge_that_drops_nothing_this_device_held_leaves_no_notice(owner, monkeypatch):  # noqa: F811
+    write, stored = _evidence_limits(owner, monkeypatch)
+    _synced(owner)
+    server = PublishingServer()
+    write(2)
+    assert owner.native._capture('Neko', True)
+    await server.exchange(owner)
+    published = server.document['evidence']
+    # The other device withdrew a record: a deletion the merge carries out, not a cut.
+    server.publish({**server.document, 'completedAt': server.document['completedAt'] + 10,
+                    'evidence': {**published, 'retirements': published['retirements'][1:]}})
+    await server.exchange(owner)
+    assert await owner.native.consume(UID)
+    assert stored() == ['r-1'] and owner.adapter.evidence_trimmed_at(UID) is None

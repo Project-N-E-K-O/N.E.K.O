@@ -104,6 +104,17 @@ def _created_at_instant(value: object) -> datetime | None:
         return None
 
 
+def _recorded_before(first: dict, second: dict) -> bool:
+    """Whether ``first`` was recorded strictly before ``second``.
+
+    Unknown or equal times decide nothing: the pair then keeps the roles it
+    was queued with.
+    """
+    one = _created_at_instant(first.get('created_at'))
+    other = _created_at_instant(second.get('created_at'))
+    return one is not None and other is not None and one < other
+
+
 def _event_window_instant(value: object) -> datetime | None:
     """Parse one event boundary without dropping extreme aware values."""
     try:
@@ -931,6 +942,11 @@ class FactDedupResolver:
         # items: failure paths persist batch items with resolve_attempts,
         # and attached text would undo ids-only persistence.
         batch_texts: list[tuple[str, str]] = []
+        # The prompt calls its candidate the newer record. A queued candidate is
+        # usually the newer one, but not always: a fact synced from another device,
+        # or embedded late, is queued against rows written after it. Such a pair is
+        # shown, and then applied, with its two records exchanged.
+        shown_reversed: set[int] = set()
         stale_keys: set[tuple] = set()
         batch_domain: tuple | None = None
         for it in pending:
@@ -959,10 +975,12 @@ class FactDedupResolver:
                 batch_domain = domain
             elif domain != batch_domain:
                 continue
+            texts = (cand_row.get('text', '') or '', exist_row.get('text', '') or '')
+            if _recorded_before(cand_row, exist_row):
+                shown_reversed.add(len(batch))
+                texts = texts[::-1]
             batch.append(it)
-            batch_texts.append(
-                (cand_row.get('text', '') or '', exist_row.get('text', '') or '')
-            )
+            batch_texts.append(texts)
             if len(batch) >= FACT_DEDUP_BATCH_LIMIT:
                 break
         if stale_keys:
@@ -1094,7 +1112,7 @@ class FactDedupResolver:
             return 0
 
         applied, processed_keys = await self._aapply_decisions(
-            name, batch, results,
+            name, batch, results, shown_reversed=shown_reversed,
         )
 
         # CodeRabbit: LLM lists whose decisions consume no pairs, all actions rejected
@@ -1207,6 +1225,7 @@ class FactDedupResolver:
 
     async def _aapply_decisions(
         self, name: str, batch: list[dict], results: list[dict],
+        *, shown_reversed: frozenset[int] | set[int] = frozenset(),
     ) -> tuple[int, set[tuple]]:
         """Translate LLM decisions into facts.json mutations.
 
@@ -1315,6 +1334,13 @@ class FactDedupResolver:
             exist_id = item.get('existing_id')
             cand = _find_queued_fact(rows_by_id, item, 'candidate')
             existing = _find_queued_fact(rows_by_id, item, 'existing')
+            if idx in shown_reversed:
+                # The model judged this pair with the two records exchanged (the
+                # newer one as its candidate). The rows are exchanged here too, so
+                # merge and replace keep their full meaning, provenance and
+                # importance included, instead of one being renamed into the other.
+                cand_id, exist_id = exist_id, cand_id
+                cand, existing = existing, cand
             if cand is None or existing is None:
                 # One side disappeared between enqueue and resolve —
                 # not an error, just stale; consume the queue entry

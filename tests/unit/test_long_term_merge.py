@@ -104,3 +104,33 @@ def test_evidence_is_trimmed_oldest_first_long_before_the_protocol_limit():
     wide = prune_evidence({'retirements': [{'id': 'r', 'subject': 'master', 'sourceMessageIds': sources}], 'confirmations': []})
     assert wide['retirements'][0]['sourceMessageIds'] == sources[5:]
     assert document(_document(evidence=pruned)) and document(_document(evidence=wide))
+
+
+def test_fitting_merged_evidence_reports_only_records_this_device_held(monkeypatch):
+    from memory import long_term_merge
+
+    def retirement(identity):
+        return {'id': identity, 'subject': 'master', 'sourceMessageIds': [f'source-{identity}']}
+
+    def held(*identities):
+        return _document(evidence={'retirements': [retirement(identity) for identity in identities], 'confirmations': []})
+    monkeypatch.setattr(long_term_merge, 'EVIDENCE_MAX', 3)
+    base = {'document': held('a', 'b'), 'nativeEntries': []}
+    # Each side adds one record to the two both started from: four do not fit, the oldest goes.
+    report = {}
+    merged = merge_documents(base, held('a', 'b', 'mine'), held('a', 'b', 'theirs'), 9000, report=report)
+    assert [row['id'] for row in merged['evidence']['retirements']] == ['b', 'theirs', 'mine']
+    assert report == {'localEvidenceDropped': True}
+    # The lists fit: nothing is cut, whatever the three-way merge itself removed.
+    report = {}
+    merged = merge_documents(base, held('a', 'b', 'mine'), held('b'), 9000, report=report)
+    assert [row['id'] for row in merged['evidence']['retirements']] == ['b', 'mine']
+    assert report == {'localEvidenceDropped': False}
+    # A cut that takes only records this device never held is not this device's loss.
+    report = {}
+    merged = merge_documents(None, held('mine'), held('x', 'y', 'z'), 9000, report=report)
+    assert [row['id'] for row in merged['evidence']['retirements']] == ['y', 'z', 'mine']
+    assert report == {'localEvidenceDropped': False}
+    # Without a report the merge is what it always was.
+    assert merge_documents(base, held('a', 'b', 'mine'), held('a', 'b', 'theirs'), 9000) == merge_documents(
+        base, held('a', 'b', 'mine'), held('a', 'b', 'theirs'), 9000, report={})

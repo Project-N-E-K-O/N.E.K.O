@@ -14,15 +14,16 @@ from uuid import uuid4
 
 from memory.long_term_sync import DesktopLongTermAdapter, JOURNAL, LongTermMemoryRecoveryRequired, advance_view_generation, managed_path, view_files, export_document, import_document, read_views
 from memory.long_term_sync import LongTermArchiveSubjectUnavailable, LongTermMemoryCapacityExceeded, RetirementSubjectConflict, retirement_evidence, validate_retirement_subjects
-from memory.long_term_merge import merge_documents, prune_evidence, same_content, upgraded
-from utils.long_term_memory_protocol import MAX_ENTRIES
+from memory.long_term_sync import LongTermEvidenceCapacityExceeded
+from memory.long_term_merge import EVIDENCE_MAX, merge_documents, prune_evidence, same_content, upgraded
+from utils.long_term_memory_protocol import MAX_ENTRIES, MAX_INTEGER
 from memory.recent import _await_recent_mutation_to_completion as _complete_file_commit
 from services.chat_sync.long_term_protocol import head
 from services.chat_sync.long_term_events import changed
 from services.chat_sync.writer import ChatSyncWriter, registered_writer, store_connection
 from utils.config_manager.reserved_schema import get_character_uid
 from utils.file_utils import atomic_write_json, atomic_write_text
-from utils.cloudsave_runtime import assert_cloudsave_writable
+from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 
 from . import runtime
 from ._shared import logger, validate_lanlan_name
@@ -264,8 +265,18 @@ def _capture(name, force, expected_uid=None, require_consumed=False):
             with runtime.fact_store._get_lock(name):
                 if local['unseenRevision']:
                     _raise_lineage(name)
-                _prune_evidence(name, base)
+                if _prune_evidence(name, base):
+                    try:
+                        # Shown in the sync panel for a while: old records are gone for good.
+                        adapter.mark_evidence_trimmed(uid, _now_ms())
+                    except OSError:
+                        logger.debug(f'[LongTermSync] {name}: evidence trim notice not saved')
                 views = _read_native_views(name)
+            if _evidence_over_limit(_saved_evidence(views)):
+                # A device that does not organize never trims. Its lists shrink when the
+                # organizer's next snapshot is merged in; until then the reason is shown.
+                # Checked before the export, which refuses such lists as an invalid document.
+                raise LongTermEvidenceCapacityExceeded()
             document = export_document(views, completed, source_evidence=_snapshot_source_evidence(name, views))
         except (LongTermMemoryCapacityExceeded, LongTermArchiveSubjectUnavailable) as error:
             if _uid(name) != uid or _binding(uid) != binding:
@@ -291,6 +302,7 @@ def _capture(name, force, expected_uid=None, require_consumed=False):
                 # The frozen operation keeps retrying with identical bytes.
                 adapter.owed_path(uid).unlink(missing_ok=True)
                 return False
+            document = _renewed_with(name, document, base, _device_id(writer), completed)
             # The replaced snapshot may be on its way to the server right now; it is kept
             # so that its acceptance, or its return as the next revision, is recognized.
             adapter.write_local(binding, epoch, base=base, sent=[pending, *local['sent']] if pending else local['sent'],
@@ -301,6 +313,36 @@ def _capture(name, force, expected_uid=None, require_consumed=False):
             raise ValueError('long_term_memory_save_failed') from error
     changed()
     return True
+
+
+def _renewed_with(name, document, base, device, now):
+    """Let a snapshot the holder publishes anyway renew its claim.
+
+    Other devices then see the holder alive without a publish made only for
+    that, and the hourly renewal is left for a holder with nothing else to say.
+    """
+    held = base['document'].get('organizer') if base and base['document'] else None
+    if not held or held['deviceId'] != device or document.get('organizer') != held:
+        # Not the confirmed holder, or a claim, rank change or release is already staged.
+        return document
+    path = Path(runtime._config_manager.memory_dir) / name / 'long_term_portable.json'
+    with runtime.fact_store._get_lock(name):
+        try:
+            state = json.loads(path.read_text(encoding='utf-8'))
+            if not isinstance(state, dict) or state.get('organizer') != held:
+                return document
+            renewed = {**held, 'renewedAt': max(now, held['renewedAt'] + 1)}
+            if renewed['renewedAt'] > MAX_INTEGER:
+                # The published claim already sits at the largest time a snapshot may
+                # carry; a later one would make every snapshot from here invalid.
+                return document
+            assert_cloudsave_writable(runtime._config_manager, operation='sync', target=f'memory/{name}/long_term_portable.json')
+            atomic_write_json(path, {**state, 'organizer': renewed}, ensure_ascii=False, indent=2)
+        except (OSError, ValueError, MaintenanceModeError):
+            # Renewing here is a courtesy; the snapshot goes out as it is and the
+            # hourly renewal still runs.
+            return document
+    return {**document, 'organizer': renewed}
 
 
 def _unpublished(document, base):
@@ -316,28 +358,64 @@ def _unpublished(document, base):
                for field in ('evidence', 'progress', 'organizer', 'maintenance', 'lineage'))
 
 
-def _prune_evidence(name, base):
-    """Keep the evidence lists far from the size at which a snapshot is refused.
+def _evidence_over_limit(evidence):
+    """Whether a snapshot carrying these evidence lists would be refused."""
+    return any(len(evidence.get(field) or ()) > EVIDENCE_MAX for field in ('retirements', 'confirmations'))
 
-    Only the organizer trims, and only what the server already holds, so two
-    devices never trim differently and nothing unpublished is dropped.
+
+def _saved_evidence(views):
+    state = views.get('sync')
+    evidence = state.get('evidence') if isinstance(state, dict) else None
+    return evidence if isinstance(evidence, dict) else {}
+
+
+def _mergeable(views):
+    """The views with evidence lists short enough to be exported for a merge.
+
+    Lists too long to publish cannot be exported either, so without this a
+    published snapshot could never be merged in and the device would stay
+    stuck. The newest records are kept, which is what the merge keeps of an
+    over-long result anyway.
     """
-    if not organizes(name) or not base or not base['document']:
-        return
+    evidence = _saved_evidence(views)
+    if not _evidence_over_limit(evidence):
+        return views
+    fitting = {field: rows[-EVIDENCE_MAX:] if isinstance(rows, list) else rows for field, rows in evidence.items()}
+    return {**views, 'sync': {**views['sync'], 'evidence': fitting}}
+
+
+def _prune_evidence(name, base):
+    """Keep the evidence lists far from the size at which a snapshot is refused. Returns whether it trimmed.
+
+    Only the organizer trims, so two devices never trim differently, and it
+    trims what the server already holds, so nothing unpublished is dropped.
+    The one exception is lists already too long to publish at all, for
+    example after a long time offline: left alone they could never be
+    published again, so the oldest records go then too, unless another
+    device holds the role and will trim.
+    """
     path = Path(runtime._config_manager.memory_dir) / name / 'long_term_portable.json'
     try:
         state = json.loads(path.read_text(encoding='utf-8'))
     except FileNotFoundError:
-        return
+        return False
     evidence = state.get('evidence') if isinstance(state, dict) else None
-    if not isinstance(evidence, dict) or evidence != (base['document'].get('evidence') or None):
-        return
+    if not isinstance(evidence, dict):
+        return False
+    published = (base['document'].get('evidence') or None) if base and base['document'] else None
+    if evidence == published:
+        allowed = organizes(name)
+    else:
+        allowed = _evidence_over_limit(evidence) and not _left_to_the_organizer(name, state)
+    if not allowed:
+        return False
     pruned = prune_evidence(evidence)
     if pruned is evidence:
-        return
+        return False
     logger.warning(f'[LongTermSync] {name}: evidence records trimmed to stay below the snapshot limit')
     assert_cloudsave_writable(runtime._config_manager, operation='sync', target=f'memory/{name}/long_term_portable.json')
     atomic_write_json(path, {**state, 'evidence': pruned}, ensure_ascii=False, indent=2)
+    return True
 
 
 def _raise_lineage(name):
@@ -473,6 +551,29 @@ def organizes(name):
         return True
     _, device, holder = published
     return holder is not None and holder['deviceId'] == device
+
+
+def _left_to_the_organizer(name, state):
+    """Whether another device holds the role and this one is not taking it over.
+
+    A claim staged here, for a holder that fell silent or ranks lower, has to
+    be published like anything else, so it counts as this device's turn.
+    Sync state that cannot be read counts as left to the organizer: the
+    trimming this decides drops unpublished records, so not knowing who
+    organizes must not allow it. The capture then reports the lists as too
+    long. The error is not passed on, because an OSError leaving the writer
+    lock would mark the whole sync store as needing recovery.
+    """
+    try:
+        published = _published_organizer(name)
+    except Exception:
+        return True
+    if published is None:
+        return False
+    _, device, holder = published
+    staged = state.get('organizer')
+    taking_over = isinstance(staged, dict) and staged.get('deviceId') == device
+    return holder is not None and holder['deviceId'] != device and not taking_over
 
 
 async def _organizer_rank():
@@ -688,14 +789,16 @@ def _write_snapshot_locked(name, payload, *, check_only=False):
         directory = Path(runtime._config_manager.memory_dir) / name
         assert_cloudsave_writable(runtime._config_manager, operation='sync', target=f'memory/{name}')
         with runtime.fact_store._get_lock(name):
-            existing = _read_native_views(name)
+            held = _read_native_views(name)
+            existing = _mergeable(held)
             source_evidence = _snapshot_source_evidence(name, existing, remote['document'])
             # What this device holds, the base both sides started from and the
             # published document become one document; an upload the server never
             # accepted is part of what this device holds, never of the base.
             current = export_document(existing, remote['completedAt'], source_evidence=source_evidence)
+            report = {}
             merged = merge_documents(base if base and base['document'] is not None else None,
-                                     current, remote['document'], remote['completedAt'])
+                                     current, remote['document'], remote['completedAt'], report=report)
             if len(merged['entries']) > MAX_ENTRIES:
                 raise LongTermMemoryCapacityExceeded()
             unpublished = not same_content(merged, remote['document'])
@@ -742,6 +845,15 @@ def _write_snapshot_locked(name, payload, *, check_only=False):
             finally:
                 runtime.fact_store._facts.pop(name, None)
                 runtime.persona_manager._personas.pop(name, None)
+        if existing is not held or report['localEvidenceDropped']:
+            try:
+                # The oldest records this device held are gone, some perhaps never
+                # published: cut before the merge because they could not be exported,
+                # or by the merge because the joined lists were too long. The sync
+                # panel says so, as it does after the organizer trims.
+                adapter.mark_evidence_trimmed(uid, _now_ms())
+            except OSError:
+                logger.debug(f'[LongTermSync] {name}: evidence trim notice not saved')
         return True
 
 

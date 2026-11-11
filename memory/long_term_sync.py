@@ -36,6 +36,13 @@ class LongTermMemoryCapacityExceeded(ValueError):
         super().__init__('long_term_memory_capacity_exceeded')
 
 
+class LongTermEvidenceCapacityExceeded(LongTermMemoryCapacityExceeded):
+    """The retirement or confirmation records alone are more than a snapshot may carry."""
+
+    def __init__(self):
+        ValueError.__init__(self, 'long_term_memory_evidence_capacity_exceeded')
+
+
 class LongTermArchiveSubjectUnavailable(ValueError):
     """A legacy archive has no unambiguous subject evidence left locally."""
 
@@ -1027,6 +1034,22 @@ class DesktopLongTermAdapter:
         """Present while saved memory changes still wait for a snapshot to be captured."""
         return self.directory / f'{uid}.capture-owed'
 
+    def _evidence_trimmed_path(self, uid):
+        return self.directory / f'{uid}.evidence-trimmed.json'
+
+    def mark_evidence_trimmed(self, uid, at):
+        """Record that this device dropped its oldest evidence records at this moment of its own clock."""
+        from utils.file_utils import atomic_write_json
+        self.directory.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(self._evidence_trimmed_path(uid), {'at': int(at)})
+
+    def evidence_trimmed_at(self, uid):
+        try:
+            at = json.loads(self._evidence_trimmed_path(uid).read_text(encoding='utf-8')).get('at')
+        except (OSError, ValueError, AttributeError):
+            return None
+        return at if type(at) is int else None
+
     def mark_checked(self, uid, at):
         """Record that this device held the newest published snapshot at this moment of its own clock."""
         from utils.file_utils import atomic_write_json
@@ -1185,7 +1208,7 @@ class DesktopLongTermAdapter:
     def forget(self, uid):
         """Drop the confirmed base and inbox of a role whose cloud copy was retired."""
         for path in [self.incoming_path(uid), self.directory / f'{uid}.organizer.json', self._checked_path(uid),
-                     self.owed_path(uid),
+                     self.owed_path(uid), self._evidence_trimmed_path(uid),
                      *self.directory.glob(f'{uid}-*.json'), *self.directory.glob(f'{uid}.expired-*.json')]:
             path.unlink(missing_ok=True)
             self._cache.pop(path, None)
