@@ -1423,6 +1423,7 @@
             "orcarouter": "OrcaRouter (pasarela de Claude)",
             "requesty": "Requesty (enrutador de modelos)",
             "opper": "Opper (pasarela de IA en la UE)",
+            "atlascloud": "Atlas Cloud (agregador de modelos)",
             "vllm_omni": "vLLM-Omni (TTS)",
             "gptsovits": "GPT-SoVITS (autoalojado)"
         },
@@ -1500,6 +1501,7 @@
             "orcarouter": "OrcaRouter (pasarela de Claude)",
             "requesty": "Requesty (enrutador de modelos)",
             "opper": "Opper (pasarela de IA en la UE)",
+            "atlascloud": "Atlas Cloud (agregador de modelos)",
             "vllm_omni": "vLLM-Omni (TTS)"
         },
         "freeVersionNoApiKey": "La versión gratuita no requiere clave API",

@@ -1423,6 +1423,7 @@
             "orcarouter": "OrcaRouter（Claude ゲートウェイ）",
             "requesty": "Requesty（モデルルーター）",
             "opper": "Opper（EU の AI ゲートウェイ）",
+            "atlascloud": "Atlas Cloud（モデルアグリゲーター）",
             "vllm_omni": "vLLM-Omni（TTS）",
             "gptsovits": "GPT-SoVITS（セルフホスト）"
         },
@@ -1500,6 +1501,7 @@
             "orcarouter": "OrcaRouter",
             "requesty": "Requesty",
             "opper": "Opper",
+            "atlascloud": "Atlas Cloud",
             "vllm_omni": "vLLM-Omni（TTS）"
         },
         "freeVersionNoApiKey": "無料版はAPIキー不要です",

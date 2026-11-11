@@ -1,4 +1,4 @@
-"""Router reasoning dialects (Opper, OrcaRouter, Requesty floors) at the OpenAI SDK wire boundary."""
+"""Router reasoning dialects (Opper, OrcaRouter, Atlas Cloud, Requesty floors) at the OpenAI SDK wire boundary."""
 
 import json
 
@@ -15,6 +15,7 @@ OPPER = 'https://api.opper.ai/v3/compat'
 ORCAROUTER = 'https://api.orcarouter.ai/v1'
 OPENROUTER = 'https://openrouter.ai/api/v1'
 REQUESTY = 'https://router.requesty.ai/v1'
+ATLASCLOUD = 'https://api.atlascloud.ai/v1'
 
 
 def _wire_bodies(model, endpoint, override_sets):
@@ -329,3 +330,103 @@ def test_focus_overrides_follow_router_host():
     assert OmniOfflineClient._focus_stream_overrides(
         True, 'gemini/gemini-2.5-flash', base_max_tokens=500,
     ) == {'extra_body': None}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('model', sorted(P.ATLASCLOUD_REASONING_EFFORT))
+def test_atlascloud_gemini_regular_and_focus_wire_payloads(model):
+    """Atlas ignores reasoning:{...} on Gemini 2.5, so its Gemini ids get the table's top-level effort."""
+    regular, focus = P.ATLASCLOUD_REASONING_EFFORT[model]
+    bodies, instance_extra = _wire_bodies(model, ATLASCLOUD, (
+        {}, {'extra_body': focus_extra_body(model, ATLASCLOUD)},
+        {'extra_body': None}, {'reasoning_effort': 'high'},
+    ))
+    assert bodies[0]['reasoning_effort'] == regular
+    assert bodies[1]['reasoning_effort'] == focus
+    assert 'reasoning_effort' not in bodies[2]
+    assert bodies[3]['reasoning_effort'] == 'high'
+    assert all('reasoning' not in body for body in bodies)
+    assert instance_extra == P.MODELS_EXTRA_BODY_MAP[model]
+
+
+@pytest.mark.unit
+def test_atlascloud_effort_table_matches_measurements_and_floor():
+    """Pin the measured choices: 2.5-flash-lite thinks at minimal so it sends none, 3.8 sits on low."""
+    table = P.ATLASCLOUD_REASONING_EFFORT
+    assert table['google/gemini-2.5-flash-lite'] == ('none', 'low')
+    assert table['google/gemini-2.5-flash'] == ('minimal', 'low')
+    assert table['google/gemini-3.8-flash'] == ('low', 'low')
+    for model in ('google/gemini-3-flash-preview', 'google/gemini-3.1-flash-lite', 'google/gemini-3.5-flash'):
+        assert table[model] == ('minimal', 'low')
+    for model, efforts in table.items():
+        assert model in P.MODELS_EXTRA_BODY_MAP
+        for effort in efforts:
+            assert P.clamp_reasoning_effort(model, effort) == effort
+    assert P.ROUTER_REASONING['api.atlascloud.ai'].efforts is table
+
+
+@pytest.mark.unit
+def test_atlascloud_deepseek_keeps_the_reasoning_object():
+    """Atlas turns DeepSeek thinking off only via reasoning:{effort:none}; a top-level effort is ignored."""
+    model = 'deepseek-ai/deepseek-v4-flash'
+    assert P.MODELS_EXTRA_BODY_MAP[model] is P.EXTRA_BODY_OPENROUTER
+    focus = focus_extra_body(model, ATLASCLOUD)
+    bodies, instance_extra = _wire_bodies(model, ATLASCLOUD, ({}, {'extra_body': focus}))
+    assert instance_extra == {'reasoning': {'effort': 'none'}}
+    assert bodies[0]['reasoning'] == {'effort': 'none'}
+    assert bodies[1]['reasoning'] == {'effort': 'low'}
+    for body in bodies:
+        assert 'reasoning_effort' not in body
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('model, native', [
+    ('anthropic/claude-haiku-5.5-ccmax', 'claude-haiku-5-5'),
+    ('anthropic/claude-sonnet-5.5-ccmax', 'claude-sonnet-5-5'),
+    ('anthropic/claude-sonnet-5', 'claude-sonnet-5'),
+    ('anthropic/claude-sonnet-5-aws', 'claude-sonnet-5'),
+    ('anthropic/claude-haiku-4.5-20251001', 'claude-haiku-4-5-20251001'),
+    ('anthropic/claude-sonnet-4.6', 'claude-sonnet-4-6'),
+])
+def test_atlascloud_claude_sends_native_thinking_block(model, native):
+    """Atlas passes the native thinking block to Claude 5.x and rejects reasoning_effort low on 5.5."""
+    assert P.resolve_router_model(model, ATLASCLOUD) == native
+    expected = P.MODELS_EXTRA_BODY_MAP[native]
+    bodies, instance_extra = _wire_bodies(model, ATLASCLOUD, (
+        {}, {'extra_body': focus_extra_body(model, ATLASCLOUD)},
+    ))
+    assert instance_extra == expected
+    for body in bodies:
+        assert body['thinking'] == expected['thinking']
+        assert 'reasoning_effort' not in body and 'reasoning' not in body
+
+
+@pytest.mark.unit
+def test_atlascloud_default_models_are_registered():
+    """Every Atlas Cloud profile default reaches a registered body on the Atlas host."""
+    from config.api_profiles import DEFAULT_ASSIST_API_PROFILES
+
+    profile = DEFAULT_ASSIST_API_PROFILES['atlascloud']
+    models = {v for k, v in profile.items() if k.endswith('_MODEL')}
+    assert models
+    for model in models:
+        assert P.get_extra_body(model, profile['OPENROUTER_URL']), model
+        assert focus_extra_body(model, profile['OPENROUTER_URL']), model
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('endpoint', [
+    OPENROUTER, REQUESTY, 'https://api.atlascloud.ai.example.test/v1', 'https://example.test/api.atlascloud.ai/v1',
+])
+def test_atlascloud_rules_stay_on_the_atlas_host(endpoint):
+    """Look-alike hosts keep the OpenRouter body and never map Atlas's Claude suffix ids."""
+    assert P.resolve_router_model('anthropic/claude-haiku-5.5-ccmax', endpoint) == 'anthropic/claude-haiku-5.5-ccmax'
+    if endpoint == REQUESTY:
+        return
+    client = create_chat_llm('google/gemini-2.5-flash-lite', endpoint, 'test-key')
+    try:
+        params = client._params([{'role': 'user', 'content': 'Synthetic test'}])
+        assert params['extra_body'] == {'reasoning': {'effort': 'none'}}
+        assert 'reasoning_effort' not in params
+    finally:
+        client.close()
