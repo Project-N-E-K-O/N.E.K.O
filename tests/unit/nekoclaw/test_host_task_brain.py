@@ -686,6 +686,29 @@ async def test_deferred_result_whose_callback_never_comes_fails(server, hosts, t
     assert len(await outbox(host, "task_result")) == 1
 
 
+@pytest.mark.parametrize("delivery", ["passive", "silent"])
+async def test_a_deferred_timeout_is_reported_the_way_the_plugin_asked(server, hosts, tmp_path, delivery):
+    async def add(args: dict[str, Any]) -> dict[str, Any]:
+        return finish({"deferred": True, "reply": "later"}, delivery=delivery)
+
+    server.add_plugin(plugin("memo", "Memos 提醒", [entry("add", "Add a reminder")]), add=add)
+    host = _host(hosts, tmp_path, server, FakeDecisionLLM(fine=[pick_plugin("memo", "add")]))
+    receipt = await _dispatch(host, "五点提醒我开会")
+    await wait_until(
+        lambda: _deferred(host, receipt.commission_id), what="the commission being marked deferred"
+    )
+
+    await host.ledger.update(receipt.commission_id, deferred_until=host.ledger._clock() - 1)
+    assert await host.brain.expire_deferred() == 1
+
+    reports = await outbox(host, "task_result")
+    if delivery == "silent":
+        assert reports == []
+    else:
+        (report,) = reports
+        assert report.payload["delivery_mode"] == "passive"
+
+
 async def _deferred(host: Any, commission_id: str) -> bool:
     commission = await host.ledger.get(commission_id)
     return commission is not None and commission.deferred_until is not None

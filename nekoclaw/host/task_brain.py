@@ -508,7 +508,11 @@ class TaskBrain:
             # The plugin finishes this later and calls back; until then the
             # commission stays open and nothing is reported.
             deadline = self._ledger._clock() + DEFERRED_COMMISSION_SECONDS
-            await self._ledger.update(commission.id, deferred_until=deadline)
+            # Keep how the plugin wants it reported, so a timeout reported
+            # later is as quiet as the result would have been.
+            await self._ledger.update(
+                commission.id, deferred_until=deadline, delivery=commission.delivery or delivery
+            )
             reminder_id = outcome.data.get("reminder_id")
             await self._ledger.append_event(commission.id, "deferred", {"reminder_id": reminder_id})
             self._arm_deferred(commission.id, DEFERRED_COMMISSION_SECONDS)
