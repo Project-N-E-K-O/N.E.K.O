@@ -796,8 +796,9 @@ def _write_snapshot_locked(name, payload, *, check_only=False):
             # published document become one document; an upload the server never
             # accepted is part of what this device holds, never of the base.
             current = export_document(existing, remote['completedAt'], source_evidence=source_evidence)
+            report = {}
             merged = merge_documents(base if base and base['document'] is not None else None,
-                                     current, remote['document'], remote['completedAt'])
+                                     current, remote['document'], remote['completedAt'], report=report)
             if len(merged['entries']) > MAX_ENTRIES:
                 raise LongTermMemoryCapacityExceeded()
             unpublished = not same_content(merged, remote['document'])
@@ -844,10 +845,12 @@ def _write_snapshot_locked(name, payload, *, check_only=False):
             finally:
                 runtime.fact_store._facts.pop(name, None)
                 runtime.persona_manager._personas.pop(name, None)
-        if existing is not held:
+        if existing is not held or report['localEvidenceDropped']:
             try:
                 # The oldest records this device held are gone, some perhaps never
-                # published: the sync panel says so, as it does after the organizer trims.
+                # published: cut before the merge because they could not be exported,
+                # or by the merge because the joined lists were too long. The sync
+                # panel says so, as it does after the organizer trims.
                 adapter.mark_evidence_trimmed(uid, _now_ms())
             except OSError:
                 logger.debug(f'[LongTermSync] {name}: evidence trim notice not saved')

@@ -589,3 +589,44 @@ async def test_a_claim_already_at_the_largest_time_is_published_as_it_is(owner):
     assert waiting['organizer'] == largest and document(waiting)
     await server.exchange(owner)
     assert {row['id'] for row in server.document['entries']} == {'mine', 'more'}
+
+
+@pytest.mark.asyncio
+async def test_a_merge_that_has_to_drop_this_devices_oldest_evidence_says_so(owner, monkeypatch):  # noqa: F811
+    from memory import long_term_merge
+    write, stored = _evidence_limits(owner, monkeypatch)
+    monkeypatch.setattr(long_term_merge, 'EVIDENCE_MAX', 3)
+    _synced(owner)
+    server = PublishingServer()
+    write(2)
+    assert owner.native._capture('Neko', True)
+    await server.exchange(owner)
+    theirs = {'id': 'theirs', 'subject': 'master', 'sourceMessageIds': ['source-theirs']}
+    published = server.document['evidence']
+    server.publish({**server.document, 'completedAt': server.document['completedAt'] + 10,
+                    'evidence': {**published, 'retirements': [*published['retirements'], theirs]}})
+    # Each side added one record to the two both started from. Neither list is too long
+    # on its own, so nothing is cut before the merge; together they are four.
+    write(3)
+    await server.exchange(owner)
+    assert owner.adapter.evidence_trimmed_at(UID) is None
+    assert await owner.native.consume(UID)
+    assert stored() == ['r-1', 'theirs', 'r-2']
+    assert type(owner.adapter.evidence_trimmed_at(UID)) is int
+
+
+@pytest.mark.asyncio
+async def test_a_merge_that_drops_nothing_this_device_held_leaves_no_notice(owner, monkeypatch):  # noqa: F811
+    write, stored = _evidence_limits(owner, monkeypatch)
+    _synced(owner)
+    server = PublishingServer()
+    write(2)
+    assert owner.native._capture('Neko', True)
+    await server.exchange(owner)
+    published = server.document['evidence']
+    # The other device withdrew a record: a deletion the merge carries out, not a cut.
+    server.publish({**server.document, 'completedAt': server.document['completedAt'] + 10,
+                    'evidence': {**published, 'retirements': published['retirements'][1:]}})
+    await server.exchange(owner)
+    assert await owner.native.consume(UID)
+    assert stored() == ['r-1'] and owner.adapter.evidence_trimmed_at(UID) is None

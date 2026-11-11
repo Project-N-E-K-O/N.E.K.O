@@ -213,13 +213,38 @@ def merge_organizer(base, local, remote):
     return deepcopy(remote)
 
 
-def merge_documents(base, local, remote, completed_at):
+def merge_evidence(old, local, remote):
+    """The merged evidence lists, and whether fitting them dropped a record this device held.
+
+    Two lists that each fit the protocol can join into one that does not; the
+    oldest records go, or the merged snapshot could never be applied or
+    uploaded. A record removed by the three-way merge itself is not counted.
+    """
+    merged = {
+        'retirements': _merge_records(old['retirements'], local['retirements'], remote['retirements'], 'id', merge_retirement),
+        'confirmations': _merge_records(old['confirmations'], local['confirmations'], remote['confirmations'], 'fingerprint',
+                                        lambda ours, yours: deepcopy(yours)),
+    }
+    dropped_here = False
+    for field, key in (('retirements', 'id'), ('confirmations', 'fingerprint')):
+        rows = merged[field]
+        if len(rows) > EVIDENCE_MAX:
+            held = {row[key] for row in local[field]}
+            dropped_here = dropped_here or any(row[key] in held for row in rows[:-EVIDENCE_MAX])
+            merged[field] = rows[-EVIDENCE_MAX:]
+    return merged, dropped_here
+
+
+def merge_documents(base, local, remote, completed_at, *, report=None):
     """Merge this device's document with a newer published one.
 
     base is None, or {'document': the published document both started from,
     'nativeEntries': those entries as this device exports them}. A base on
     another lineage was never read by the remote writer, so it proves nothing
     about deletions and is ignored.
+
+    report, when given, receives ``localEvidenceDropped``: whether fitting the
+    evidence lists dropped a record this device held.
     """
     narrow = remote['schemaVersion'] == 1
     remote = upgraded(remote)
@@ -255,18 +280,13 @@ def merge_documents(base, local, remote, completed_at):
         if chosen is not None:
             entries[key] = deepcopy(chosen)
     old = published or {'evidence': empty_evidence(), 'progress': {'a': [], 'b': []}}
+    evidence, dropped_here = merge_evidence(old['evidence'], local['evidence'], remote['evidence'])
+    if report is not None:
+        report['localEvidenceDropped'] = dropped_here
     result = {
         'schemaVersion': SCHEMA_VERSION, 'completedAt': completed_at,
         'entries': [entries[key] for key in sorted(entries)],
-        # Two lists that each fit the protocol can join into one that does not; the
-        # oldest records go, or the merged snapshot could never be applied or uploaded.
-        'evidence': {
-            'retirements': _merge_records(old['evidence']['retirements'], local['evidence']['retirements'],
-                                          remote['evidence']['retirements'], 'id', merge_retirement)[-EVIDENCE_MAX:],
-            'confirmations': _merge_records(old['evidence']['confirmations'], local['evidence']['confirmations'],
-                                            remote['evidence']['confirmations'], 'fingerprint',
-                                            lambda ours, yours: deepcopy(yours))[-EVIDENCE_MAX:],
-        },
+        'evidence': evidence,
         'progress': merge_progress(old['progress'], local['progress'], remote['progress']),
     }
     organizer = merge_organizer(old.get('organizer'), local.get('organizer'), remote.get('organizer'))
