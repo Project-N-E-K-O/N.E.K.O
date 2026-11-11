@@ -47,19 +47,26 @@ class FamiliarRuntime(Protocol):
     ``error`` event rather than an exception.
     """
 
-    async def start(self, spec: protocol.FamiliarSpec) -> None: ...
+    async def start(self, spec: protocol.FamiliarSpec) -> None:
+        """Create a session, continuing its transcript if one exists."""
 
-    async def prompt(self, session_id: str, text: str) -> None: ...
+    async def prompt(self, session_id: str, text: str) -> None:
+        """Hand the session work; rejected while a run is in progress."""
 
-    async def steer(self, session_id: str, text: str) -> None: ...
+    async def steer(self, session_id: str, text: str) -> None:
+        """Deliver text before the next model request of the current run."""
 
-    async def follow_up(self, session_id: str, text: str) -> None: ...
+    async def follow_up(self, session_id: str, text: str) -> None:
+        """Deliver text once the current run has nothing left to do."""
 
-    async def abort(self, session_id: str) -> None: ...
+    async def abort(self, session_id: str) -> None:
+        """Stop the current run and the session's background jobs."""
 
-    async def close(self, session_id: str) -> None: ...
+    async def close(self, session_id: str) -> None:
+        """Stop the session and forget it."""
 
-    async def shutdown(self) -> None: ...
+    async def shutdown(self) -> None:
+        """Close every session; a subprocess runtime also ends its process."""
 
 
 class RuntimeCore:

@@ -125,11 +125,9 @@ class HostBridge(Protocol):
     @property
     def capabilities(self) -> frozenset[str]:
         """Return the names from ``HOST_CALLS`` this host can serve."""
-        ...
 
     async def call(self, session_id: str, name: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Run one callback and return its result (an empty dict for ``None``)."""
-        ...
 
 
 @dataclass(slots=True)
