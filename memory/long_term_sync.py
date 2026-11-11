@@ -346,6 +346,19 @@ def export_document(views, completed_at, *, source_evidence=None):
                 metadata['evidenceReviewedAt'] = timestamp(native['confirmed_at'])
             if native.get('promoted_at'):
                 metadata['promotedAt'] = timestamp(native['promoted_at'])
+        if kind in ('persona', 'reflection'):
+            # What a receiver needs to keep the "backed by the user" gate: explicit
+            # confirmations, which facts were counted, and the counts themselves for
+            # when those facts are not in the snapshot.
+            confirms = native.get('user_confirm_count')
+            if type(confirms) is int and confirms >= 0:
+                metadata['userConfirmCount'] = confirms
+            counted = native.get('counted_fact_ids')
+            if isinstance(counted, list):
+                metadata['countedFactIds'] = [fid for fid in dict.fromkeys(counted) if isinstance(fid, str) and fid.strip()][:200]
+            counts = native.get('fact_source_counts')
+            if isinstance(counts, dict) and all(type(counts.get(key)) is int and counts[key] >= 0 for key in ('user', 'ai')):
+                metadata['factSourceCounts'] = {'user': counts['user'], 'ai': counts['ai']}
         if kind in ('persona', 'reflection') and is_permanently_suppressed(native):
             # Retired by introspection on this device: peers drop it instead
             # of injecting it, and this device keeps its own row (see import).
@@ -510,6 +523,8 @@ def import_document(incoming, existing, *, merged=False, source_evidence=None, k
                  and (not isinstance(row.get('id'), str)
                       or (row.get('entity'), row.get('id')) not in incoming_reflections)))]
     incoming_fact_sources = {row['id']: _incoming_fact_source(row) for row in incoming['entries'] if row['kind'] == 'fact'}
+    withdrawn_facts = {row['id'] for row in incoming['entries']
+                       if row['kind'] == 'fact' and row['metadata'].get('status') == 'retracted'}
     # Rows kept untouched stay after this import, so their source is the one that holds.
     incoming_fact_sources.update({row['id']: row.get('source') for row in result['archive'] + result['facts']
                                   if isinstance(row, dict) and row.get('id') and private(row)})
@@ -556,6 +571,7 @@ def import_document(incoming, existing, *, merged=False, source_evidence=None, k
                 for field in ('covered_fact_ids', 'fact_source_counts'):
                     if field in previous:
                         native[field] = deepcopy(previous[field])
+            _carried_fact_accounting(native, meta, incoming_fact_sources, withdrawn_facts, previous)
             if 'protected' in previous:
                 native.setdefault('protected', previous['protected'])
             # The protocol omits receiver-only state and external-import ledgers.
@@ -642,16 +658,39 @@ def import_document(incoming, existing, *, merged=False, source_evidence=None, k
                 native['fact_source_counts'] = count_fact_sources(
                     [{'source': incoming_fact_sources[fid]} for fid in native['source_fact_ids']])
                 native['counted_fact_ids'] = sorted(native['source_fact_ids'])
-            # Explicit confirmations are not in the protocol either; like the
-            # reinforce count they belong to the row, whatever its current wording.
-            if 'user_confirm_count' in previous:
-                native['user_confirm_count'] = previous['user_confirm_count']
+            _carried_fact_accounting(native, meta, incoming_fact_sources, withdrawn_facts, previous)
             if formally_archived:
                 _append_archive(result, 'reflectionArchives', native, incoming['completedAt'])
             else:
                 result['reflections'].append(native)
     return result
 
+
+
+def _carried_fact_accounting(native, meta, fact_sources, withdrawn, previous):
+    """Apply the sender's record of confirmations and counted facts to a rebuilt row.
+
+    With every counted fact in the snapshot the counts are worked out here, so
+    a fact withdrawn or upgraded to the user's own words since then counts as
+    it stands now. Otherwise the sender's counts are used: a row without
+    counts would pass the gate ungated.
+    """
+    if 'userConfirmCount' in meta:
+        native['user_confirm_count'] = meta['userConfirmCount']
+    elif 'user_confirm_count' in previous:
+        # An older writer does not carry it; the count belongs to the row whatever its wording.
+        native['user_confirm_count'] = previous['user_confirm_count']
+    counted, carried = meta.get('countedFactIds'), meta.get('factSourceCounts')
+    if counted is None and carried is None:
+        return
+    ids = list(counted) if counted is not None else list(native.get('source_fact_ids') or [])
+    if counted is not None:
+        native['counted_fact_ids'] = ids
+    if ids and all(fid in fact_sources for fid in ids):
+        native['fact_source_counts'] = count_fact_sources(
+            [{'source': fact_sources[fid]} for fid in ids if fid not in withdrawn])
+    elif carried is not None:
+        native['fact_source_counts'] = dict(carried)
 
 
 def _incoming_fact_source(row):

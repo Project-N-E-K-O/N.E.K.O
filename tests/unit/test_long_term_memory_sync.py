@@ -38,6 +38,15 @@ def merged_import(incoming, existing, *, baseline=..., **options):
     return import_document(merged, existing, merged=True, **options)
 
 
+def as_older_document(value):
+    """The same snapshot as a schema 2 writer would have published it."""
+    newer = ('signalJudged', 'userConfirmCount', 'countedFactIds', 'factSourceCounts')
+    return {'schemaVersion': 2, 'completedAt': value['completedAt'], 'evidence': deepcopy(value['evidence']),
+            'entries': [{**row, 'metadata': {key: item for key, item in row['metadata'].items()
+                                             if key not in newer and not (item is None and key in ('eventWhen', 'temporalScope'))}}
+                        for row in deepcopy(value['entries'])]}
+
+
 def local_state(owner):
     return owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())
 
@@ -1906,17 +1915,26 @@ def test_import_keeps_local_accounting_outside_the_protocol():
     assert kept['counted_fact_ids'] == ['f1']
     assert kept['user_confirm_count'] == 2
     assert kept['source_facts_oldest_at'] == '2026-10-01T00:00:00'
-    # None of it reaches the wire.
+    # Device-only records stay off the wire; the accounting a receiver needs travels under protocol names.
     wire = json.dumps(export_document(result, 3000))
     for field in ('fact_source_counts', 'counted_fact_ids', 'user_confirm_count', 'extraction_path', 'source_facts_oldest_at'):
         assert field not in wire
+    sent = next(row for row in export_document(result, 3000)['entries'] if row['kind'] == 'reflection')['metadata']
+    assert (sent['userConfirmCount'], sent['countedFactIds'], sent['factSourceCounts']) == (2, ['f1'], {'user': 0, 'ai': 1})
 
-    # A peer's rewrite may rest on other facts: the accounting no longer holds,
-    # while an explicit confirmation still belongs to the row.
+    # A peer's rewrite rests on other facts and says so: its accounting replaces this
+    # device's, and the evidence age recorded here no longer applies.
     rewritten = deepcopy(incoming)
     row = next(row for row in rewritten['entries'] if row['kind'] == 'reflection')
     row['text'] = 'rewritten impression'
-    row['metadata']['sourceFactIds'] = ['f1', 'f2']
+    row['metadata'].update(sourceFactIds=['f1', 'f2'], countedFactIds=['f1', 'f2'], factSourceCounts={'user': 1, 'ai': 1})
+    moved = import_document(rewritten, existing)['reflections'][0]
+    assert moved['counted_fact_ids'] == ['f1', 'f2'] and moved['fact_source_counts'] == {'user': 1, 'ai': 1}
+    assert 'source_facts_oldest_at' not in moved and moved['user_confirm_count'] == 2
+
+    # An older writer's rewrite carries no accounting: the old one no longer holds,
+    # while an explicit confirmation still belongs to the row.
+    rewritten = as_older_document(rewritten)
     moved = import_document(rewritten, existing)['reflections'][0]
     for field in ('fact_source_counts', 'counted_fact_ids', 'source_facts_oldest_at'):
         assert field not in moved
@@ -1984,8 +2002,16 @@ def test_a_line_confirmed_by_the_sender_is_not_held_back_by_local_counts():
     existing = {'persona': {}, 'facts': [fact], 'archive': [], 'reflections': [local]}
     incoming = export_document(existing, 3000)
     assert awaits_user_signal(import_document(incoming, existing)['reflections'][0])
-    next(row for row in incoming['entries'] if row['kind'] == 'reflection')['metadata']['status'] = 'confirmed'
-    row = import_document(incoming, existing)['reflections'][0]
+    # The sender's user confirmed it: the confirmation travels, so the line is not held back here.
+    confirmed = deepcopy(incoming)
+    next(row for row in confirmed['entries'] if row['kind'] == 'reflection')['metadata'].update(status='confirmed', userConfirmCount=1)
+    row = import_document(confirmed, existing)['reflections'][0]
+    assert row['user_confirm_count'] == 1 and not awaits_user_signal(row)
+    assert row['source_facts_oldest_at'] == '2026-10-01T00:00:00'
+    # An older writer cannot say why it confirmed the line; stale local counts must not hold it.
+    older = as_older_document(incoming)
+    next(row for row in older['entries'] if row['kind'] == 'reflection')['metadata']['status'] = 'confirmed'
+    row = import_document(older, existing)['reflections'][0]
     assert not awaits_user_signal(row)
     assert row['source_facts_oldest_at'] == '2026-10-01T00:00:00'
 
@@ -3106,3 +3132,45 @@ async def test_confirmed_base_is_not_read_under_another_installation_epoch(owner
     assert owner.adapter.base_revision(owner.binding, epoch) == 1
     assert owner.adapter.read_local(owner.binding, (epoch[0], 'f' * 32)) is None
     assert owner.adapter.base_revision(owner.binding, (epoch[0], 'f' * 32)) == 0
+
+
+def test_confirmations_and_counted_facts_travel_with_a_reflection():
+    """The receiver keeps the "backed by the user" gate instead of losing it with the counts."""
+    empty = {'persona': {}, 'facts': [], 'archive': [], 'reflections': []}
+    reflection = {'id': 'ref', 'entity': 'neko', 'text': 'says she likes rain', 'status': 'pending',
+                  'source_fact_ids': ['said', 'batchmate'], 'counted_fact_ids': ['said'],
+                  'fact_source_counts': {'user': 0, 'ai': 1}, 'user_confirm_count': 2}
+    views = {**empty, 'reflections': [reflection], 'facts': [
+        {'id': 'said', 'entity': 'neko', 'text': 'she said she likes rain', 'source': 'ai_disclosure'},
+        {'id': 'batchmate', 'entity': 'master', 'text': 'user was there', 'source': 'user_observation'}]}
+    exported = export_document(views, 2000)
+    metadata = next(row for row in exported['entries'] if row['id'] == 'ref')['metadata']
+    assert (metadata['userConfirmCount'], metadata['countedFactIds'], metadata['factSourceCounts']) == (2, ['said'], {'user': 0, 'ai': 1})
+
+    received = import_document(exported, empty)['reflections'][0]
+    assert received['user_confirm_count'] == 2 and received['counted_fact_ids'] == ['said']
+    # Only the counted fact is counted, not the whole absorbed batch.
+    assert received['fact_source_counts'] == {'user': 0, 'ai': 1}
+
+    # The counted fact is not in the snapshot: the sender's counts stand in for it.
+    without = {**exported, 'entries': [row for row in exported['entries'] if row['id'] != 'said']}
+    assert import_document(without, empty)['reflections'][0]['fact_source_counts'] == {'user': 0, 'ai': 1}
+
+    # The fact became the user's own words since: counted as it stands now.
+    upgraded = deepcopy(exported)
+    next(row for row in upgraded['entries'] if row['id'] == 'said')['metadata']['source'] = 'user_observation'
+    assert import_document(upgraded, empty)['reflections'][0]['fact_source_counts'] == {'user': 1, 'ai': 0}
+
+    # A withdrawn fact no longer backs anything.
+    withdrawn = deepcopy(exported)
+    next(row for row in withdrawn['entries'] if row['id'] == 'said')['metadata'].update(status='retracted', voidedAt=1500)
+    assert import_document(withdrawn, empty)['reflections'][0]['fact_source_counts'] == {'user': 0, 'ai': 0}
+
+
+def test_an_older_snapshot_keeps_the_local_confirmation_count():
+    empty = {'persona': {}, 'facts': [], 'archive': [], 'reflections': []}
+    older = {'schemaVersion': 2, 'completedAt': 2000, 'evidence': {'retirements': [], 'confirmations': []}, 'entries': [
+        {'kind': 'reflection', 'subject': 'master', 'id': 'ref', 'text': 'reworded there', 'metadata': {'status': 'confirmed'}}]}
+    existing = {**empty, 'reflections': [{'id': 'ref', 'entity': 'master', 'text': 'worded here', 'status': 'confirmed',
+                                          'user_confirm_count': 3}]}
+    assert import_document(older, existing)['reflections'][0]['user_confirm_count'] == 3
