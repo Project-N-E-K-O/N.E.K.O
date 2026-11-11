@@ -66,8 +66,15 @@ async function refreshPlugins() {
 async function decide(plugin: PluginConsentNotice, approved: boolean) {
   busy.value = plugin.plugin_id
   try {
-    if (approved) await consentState.approve(plugin.plugin_id, plugin)
-    else await consentState.reject(plugin.plugin_id)
+    if (approved) {
+      const updated = await consentState.approve(plugin.plugin_id, plugin)
+      if (updated.state !== 'clear') {
+        emit('stale')
+        return
+      }
+    } else {
+      await consentState.reject(plugin.plugin_id)
+    }
     handled.value = new Set([...handled.value, plugin.plugin_id])
     emit('handled', plugin.plugin_id)
     await refreshPlugins()

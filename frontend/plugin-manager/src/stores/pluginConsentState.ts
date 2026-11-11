@@ -19,6 +19,18 @@ export interface ConsentRequestPlugin {
 export interface ConsentRequest {
   plugins: ConsentRequestPlugin[]
 }
+type VersionedConsentSummary = PluginConsentSummary & { version: string }
+
+function matchesSummary(detail: PluginConsent, summary: VersionedConsentSummary | undefined) {
+  return (
+    summary &&
+    detail.version === summary.version &&
+    detail.state === summary.state &&
+    detail.decision === summary.decision &&
+    detail.upgraded === summary.upgraded
+  )
+}
+
 interface PendingRequest extends ConsentRequest {
   key: string
   promise: Promise<boolean>
@@ -31,10 +43,11 @@ interface PendingRequest extends ConsentRequest {
  */
 export const usePluginConsentState = defineStore('pluginConsent', () => {
   const details = ref<Record<string, PluginConsent>>({})
-  const summaries = ref<Record<string, PluginConsentSummary & { version: string }>>({})
+  const summaries = ref<Record<string, VersionedConsentSummary>>({})
   // Metadata and consent reads share the order in which their requests started.
-  const detailRequests = new Map<string, number>()
+  const forgottenAt = new Map<string, number>()
   const snapshotTickets = new Map<string, number>()
+  const reads = new Map<string, Promise<PluginConsent>>()
   const mutations = new Map<string, Promise<PluginConsent>>()
   let sequence = 0
 
@@ -48,16 +61,28 @@ export const usePluginConsentState = defineStore('pluginConsent', () => {
     mutation = false,
   ): Promise<PluginConsent> {
     const ticket = nextRequestTicket()
-    detailRequests.set(id, ticket)
-    const result = await operation()
-    if (detailRequests.get(id) === ticket) {
-      if (!mutation && ticket < (snapshotTickets.get(id) ?? 0)) {
-        return details.value[id] ?? load(id)
+    let responseTicket = ticket
+    let result = await operation()
+    for (;;) {
+      if (ticket < (forgottenAt.get(id) ?? 0)) return details.value[id] ?? result
+      const pendingMutation = mutations.get(id)
+      if (!mutation && pendingMutation) return pendingMutation
+      if (
+        responseTicket >= (snapshotTickets.get(id) ?? 0) ||
+        (mutation && matchesSummary(result, summaries.value[id]))
+      ) {
+        snapshotTickets.set(id, mutation ? nextRequestTicket() : responseTicket)
+        details.value[id] = result
+        return result
       }
-      snapshotTickets.set(id, mutation ? nextRequestTicket() : ticket)
-      details.value[id] = result
+      const detail = details.value[id]
+      if (!mutation && detail) return detail
+
+      // Keep all readers waiting for the current snapshot, including when a
+      // mutation has committed and its response conflicts with a newer summary.
+      responseTicket = nextRequestTicket()
+      result = await getPluginConsent(id)
     }
-    return details.value[id] ?? result
   }
   function mutate(id: string, operation: () => Promise<PluginConsent>) {
     const previous = mutations.get(id)
@@ -72,12 +97,21 @@ export const usePluginConsentState = defineStore('pluginConsent', () => {
     return pending
   }
   function load(id: string): Promise<PluginConsent> {
-    return mutations.get(id) ?? request(id, () => getPluginConsent(id))
+    const inFlight = mutations.get(id) ?? reads.get(id)
+    if (inFlight) return inFlight
+    const pending = request(id, () => getPluginConsent(id))
+    reads.set(id, pending)
+    const clear = () => {
+      if (reads.get(id) === pending) reads.delete(id)
+    }
+    void pending.then(clear, clear)
+    return pending
   }
   function forget(id: string) {
     const ticket = nextRequestTicket()
-    detailRequests.set(id, ticket)
+    forgottenAt.set(id, ticket)
     snapshotTickets.set(id, ticket)
+    reads.delete(id)
     delete details.value[id]
     delete summaries.value[id]
   }
@@ -102,13 +136,7 @@ export const usePluginConsentState = defineStore('pluginConsent', () => {
       }
       snapshotTickets.set(plugin.id, ticket)
       const detail = details.value[plugin.id]
-      if (
-        detail &&
-        (detail.version !== summary.version ||
-          detail.state !== summary.state ||
-          detail.decision !== summary.decision ||
-          detail.upgraded !== summary.upgraded)
-      ) {
+      if (detail && !matchesSummary(detail, summary)) {
         delete details.value[plugin.id]
         if (activeRequest.value?.plugins.some(({ id }) => id === plugin.id)) {
           void load(plugin.id).catch(() => undefined)
@@ -140,7 +168,7 @@ export const usePluginConsentState = defineStore('pluginConsent', () => {
   function pollTick() {
     if (document.hidden) return
     for (const id of watchers.keys()) {
-      if (!details.value[id] || stateOf(id)?.state === 'analyzing') {
+      if (!reads.has(id) && (!details.value[id] || stateOf(id)?.state === 'analyzing')) {
         void load(id).catch(() => undefined)
       }
     }

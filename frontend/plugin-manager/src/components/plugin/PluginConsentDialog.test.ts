@@ -166,6 +166,25 @@ describe('plugin consent dialog', () => {
     expect(api.approvePluginConsent).not.toHaveBeenCalled()
   })
 
+  it('keeps the dialog open when a saved approval leaves new capabilities to confirm', async () => {
+    const store = usePluginConsentState()
+    store.details.demo = record('demo')
+    api.approvePluginConsent.mockResolvedValue(record('demo', {
+      decision: 'approved',
+      unconfirmed: ['messages.push'],
+    }))
+    const request = store.requestConfirmation([{ id: 'demo', name: 'Demo' }])
+    const root = mount()
+    await flush()
+    agree(root).click()
+    await flush()
+
+    expect(root.textContent).toContain('pluginConsent.capabilities.messages_push.title')
+    expect(store.activeRequest?.plugins).toHaveLength(1)
+    store.resolveConfirmation(false)
+    await expect(request).resolves.toBe(false)
+  })
+
   it('keeps the dialog open when consent cannot be saved', async () => {
     api.approvePluginConsent.mockRejectedValue(new Error('disk full'))
     const store = usePluginConsentState()

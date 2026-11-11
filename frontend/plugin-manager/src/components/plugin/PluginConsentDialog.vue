@@ -79,7 +79,15 @@ async function approve() {
     for (const { id, detail } of approvals) {
       if (!detail) throw new Error('Plugin consent details are missing')
       try {
-        await consentState.approve(id, consentSnapshot(detail))
+        const updated = await consentState.approve(id, consentSnapshot(detail))
+        if (updated.state === 'confirm') {
+          saveError.value = true
+          return
+        }
+        if (updated.state === 'analyzing') {
+          consentState.resolveConfirmation(false)
+          return
+        }
       } catch (error) {
         if (isConsentChanged(error)) {
           await consentState.load(id)

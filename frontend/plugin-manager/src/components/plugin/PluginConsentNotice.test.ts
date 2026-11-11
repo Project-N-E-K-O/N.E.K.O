@@ -115,8 +115,20 @@ describe('running-plugin consent notice', () => {
     expect(api.getPluginConsent).toHaveBeenCalledWith('demo')
   })
 
+  it('refreshes the notice when approval leaves new capabilities to confirm', async () => {
+    api.approvePluginConsent.mockResolvedValue({ state: 'confirm' })
+    const onDone = vi.fn()
+    const onStale = vi.fn()
+    const root = mount([notice('demo')], onDone, onStale)
+
+    buttons(root, 'pluginConsent.approve')[0].click()
+    await vi.waitFor(() => expect(onStale).toHaveBeenCalledOnce())
+    expect(onDone).not.toHaveBeenCalled()
+    expect(root.querySelectorAll('li')).toHaveLength(1)
+  })
+
   it('approve records the decision and keeps other rows open', async () => {
-    api.approvePluginConsent.mockResolvedValue({})
+    api.approvePluginConsent.mockResolvedValue({ state: 'clear' })
     let done = false
     const root = mount([notice('one'), notice('two')], () => {
       done = true

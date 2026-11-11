@@ -138,11 +138,87 @@ it('a new same-version summary fences a pending detail read and triggers a fresh
   ])
   expect(store.stateOf('demo')?.state).toBe('confirm')
   expect(store.details.demo).toBeUndefined()
+  const concurrent = store.load('demo')
+  expect(getPluginConsent).toHaveBeenCalledTimes(1)
 
   finishOld(old)
   await expect(previous).resolves.toEqual(current)
+  await expect(concurrent).resolves.toEqual(current)
   expect(store.details.demo).toEqual(current)
   expect(getPluginConsent).toHaveBeenCalledTimes(2)
+})
+
+it('rechecks a saved approval when a newer summary still requires confirmation', async () => {
+  let finishApproval!: (value: PluginConsent) => void
+  const old = response('approved', 'completed')
+  const current: PluginConsent = { ...old, state: 'confirm', unconfirmed: ['messages.push'] }
+  vi.mocked(approvePluginConsent).mockReturnValue(
+    new Promise((resolve) => { finishApproval = resolve }),
+  )
+  vi.mocked(getPluginConsent).mockResolvedValue(current)
+  const store = usePluginConsentState()
+  store.details.demo = response(null, 'completed')
+  const confirmation = store.requestConfirmation([{ id: 'demo', name: 'Demo' }])
+  const approval = store.approve('demo', {
+    version: '1',
+    unconfirmed: ['memory.read'],
+    analysis_status: 'completed',
+  })
+  await vi.waitFor(() => expect(approvePluginConsent).toHaveBeenCalledOnce())
+  store.seedSummaries([{ id: 'demo', version: '1', consent: current }])
+  const read = store.load('demo')
+
+  finishApproval(old)
+  await expect(approval).resolves.toEqual(current)
+  await expect(read).resolves.toEqual(current)
+  expect(store.stateOf('demo')?.state).toBe('confirm')
+  expect(store.activeRequest?.plugins).toHaveLength(1)
+  expect(getPluginConsent).toHaveBeenCalledOnce()
+  store.resolveConfirmation(false)
+  await expect(confirmation).resolves.toBe(false)
+})
+
+it('rechecks an old GET that finishes after a saved decision and a newer summary', async () => {
+  let finishOld!: (value: PluginConsent) => void
+  const old = response('approved', 'completed')
+  const current: PluginConsent = { ...old, state: 'confirm', unconfirmed: ['messages.push'] }
+  vi.mocked(getPluginConsent)
+    .mockReturnValueOnce(new Promise((resolve) => { finishOld = resolve }))
+    .mockResolvedValueOnce(current)
+  vi.mocked(approvePluginConsent).mockResolvedValue(old)
+  const store = usePluginConsentState()
+  const reading = store.load('demo')
+  await store.approve('demo', {
+    version: '1',
+    unconfirmed: ['memory.read'],
+    analysis_status: 'completed',
+  })
+  store.seedSummaries([{ id: 'demo', version: '1', consent: current }])
+
+  finishOld(old)
+  await expect(reading).resolves.toEqual(current)
+  expect(store.stateOf('demo')?.state).toBe('confirm')
+})
+
+it('lets a slow detail read finish across several poll ticks', async () => {
+  vi.useFakeTimers()
+  const store = usePluginConsentState()
+  let finish!: (value: PluginConsent) => void
+  vi.mocked(getPluginConsent).mockReturnValue(
+    new Promise((resolve) => { finish = resolve }),
+  )
+  store.watchPlugin('demo')
+  try {
+    await vi.advanceTimersByTimeAsync(6100)
+    expect(getPluginConsent).toHaveBeenCalledOnce()
+    finish(response(null, 'completed'))
+    await vi.advanceTimersByTimeAsync(2100)
+    expect(store.stateOf('demo')?.state).toBe('confirm')
+    expect(getPluginConsent).toHaveBeenCalledOnce()
+  } finally {
+    store.unwatchPlugin('demo')
+    vi.useRealTimers()
+  }
 })
 
 it('reloads details invalidated by a summary while a confirmation is open', async () => {
