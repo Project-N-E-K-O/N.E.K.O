@@ -977,7 +977,7 @@ async def test_runtime_uses_bound_long_term_lane_and_keeps_raw_chat_endpoints_id
     await owner.runtime._channel_pass(UID, 'long_term', presence=presence)
     assert [request.method for request in requests] == ['PUT', 'GET', 'GET']
     # The accepted upload is now the base the next merge starts from, and nothing waits for upload.
-    assert local_state(owner) == {'pending': None, 'unseenRevision': False, 'sent': [], 'base': {
+    assert local_state(owner) == {'pending': None, 'unseenRevision': False, 'sent': [], 'republish': False, 'base': {
         'revision': 1, 'document': local['document'], 'nativeEntries': local['document']['entries']}}
 
 
@@ -3078,7 +3078,7 @@ async def test_an_expired_revision_is_followed_and_the_next_upload_says_it_was_n
     await owner.runtime.long_term_memory.sync(*arguments, can_apply=lambda: True, session_fingerprint=fingerprint)
     state = local_state(owner)
     assert state == {'base': {'revision': 7, 'document': None, 'nativeEntries': []}, 'pending': None,
-                     'unseenRevision': True, 'sent': []}
+                     'unseenRevision': True, 'sent': [], 'republish': True}
     assert owner.native._capture('Neko', False)
     upload = local_state(owner)
     assert upload['unseenRevision'] is False and upload['pending']['baseRevision'] == 7
@@ -3099,7 +3099,7 @@ async def test_a_server_that_restarted_its_revisions_is_treated_as_having_no_sha
     assert local_state(owner)['base']['revision'] == 1
     server.revision, server.document = 0, None
     await server.exchange(owner)
-    assert local_state(owner) == {'base': None, 'pending': None, 'unseenRevision': False, 'sent': []}
+    assert local_state(owner) == {'base': None, 'pending': None, 'unseenRevision': False, 'sent': [], 'republish': True}
     assert owner.native._capture('Neko', False)
     await server.exchange(owner)
     assert server.revision == 1 and published_facts(server) == {'mine'}
@@ -3354,3 +3354,43 @@ async def test_retiring_a_role_removes_every_copy_this_adapter_keeps(owner):
     owner.adapter.forget(UID)
     assert [path.exists() for path in kept] == [True] * 4 and [path.exists() for path in dropped] == [False] * 5
     assert not owner.adapter.received_directory(UID).exists()
+
+
+
+@pytest.mark.asyncio
+async def test_a_merge_that_still_owes_an_upload_survives_a_process_exit(owner, monkeypatch):
+    """The process exits after the merged views are saved and before their capture is queued."""
+    server = PublishingServer()
+    atomic_write_json(owner.directory / 'facts.json', [native_fact('shared', 'known to both devices')])
+    assert owner.native._capture('Neko', True)
+    await server.exchange(owner)
+    other = deepcopy(server.document)
+    other['completedAt'] += 10
+    other['entries'].append({**other['entries'][0], 'id': 'there', 'text': 'added by the other device'})
+    server.publish(other)
+    atomic_write_json(owner.directory / 'facts.json', [native_fact('shared', 'known to both devices'),
+                                                      native_fact('here', 'added by this device')])
+    assert (await server.exchange(owner))['changed']
+    payload = json.loads(owner.adapter.incoming_path(UID).read_text(encoding='utf-8'))
+    # Applied directly: nothing after the saved merge runs, as when the process dies there.
+    assert owner.native._write_snapshot('Neko', payload)
+    owner.native._unpublished_after_apply.clear()
+    assert owner.republished == [] and local_state(owner)['republish'] is True
+    queued = []
+    monkeypatch.setattr(owner.native, 'queue_capture', queued.append)
+    assert await owner.native.resume_owed_capture('Neko') is True and queued == ['Neko']
+    assert owner.native._capture('Neko', False)
+    state = local_state(owner)
+    assert state['republish'] is False and state['pending']['baseRevision'] == 2
+    assert {row['id'] for row in state['pending']['document']['entries']} == {'shared', 'here', 'there'}
+    assert await owner.native.resume_owed_capture('Neko') is False
+
+
+@pytest.mark.asyncio
+async def test_a_merge_that_changed_nothing_here_owes_no_upload(owner):
+    server = PublishingServer()
+    server.publish(export_document({'persona': {}, 'archive': [], 'reflections': [], 'facts': [
+        native_fact('theirs', 'only on the other device')]}, 1000))
+    await server.exchange(owner)
+    assert await owner.native.consume(UID)
+    assert local_state(owner)['republish'] is False and await owner.native.resume_owed_capture('Neko') is False

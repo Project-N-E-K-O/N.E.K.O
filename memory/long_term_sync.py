@@ -1081,15 +1081,20 @@ class DesktopLongTermAdapter:
                 or value.get('characterSyncId') != binding['character_uid'] or value.get('serviceUrl') != binding['service_url']):
             return None
         return {'base': value['base'], 'pending': value['pending'], 'unseenRevision': bool(value.get('unseenRevision')),
-                'sent': list(value.get('sent') or [])}
+                'sent': list(value.get('sent') or []), 'republish': bool(value.get('republish'))}
 
-    def write_local(self, binding, epoch, *, base, pending, unseen_revision=False, sent=()):
-        """sent keeps snapshots a newer capture replaced while their upload may still be in flight."""
+    def write_local(self, binding, epoch, *, base, pending, unseen_revision=False, sent=(), republish=False):
+        """sent keeps snapshots a newer capture replaced while their upload may still be in flight.
+
+        republish says this device holds content the base lacks and no snapshot
+        of it waits yet. It is stored with the base, so a process that exits
+        before capturing still captures after it starts again.
+        """
         from utils.file_utils import atomic_write_json
         atomic_write_json(self.local_path(binding), {
             'ownerId': binding['owner_id'], 'characterSyncId': binding['character_uid'], 'serviceUrl': binding['service_url'],
             'epoch': list(epoch), 'base': base, 'pending': pending, 'unseenRevision': bool(unseen_revision),
-            'sent': list(sent)[:SENT_SNAPSHOTS_KEPT],
+            'sent': list(sent)[:SENT_SNAPSHOTS_KEPT], 'republish': bool(republish),
         }, ensure_ascii=False)
 
     def base_revision(self, binding, epoch):
@@ -1122,6 +1127,7 @@ class DesktopLongTermAdapter:
             return False
         renewed = {**local['pending']['document'], 'completedAt': max(now, local['pending']['document']['completedAt'] + 1)}
         self.write_local(binding, epoch, base=local['base'], unseen_revision=local['unseenRevision'], sent=local['sent'],
+                         republish=local['republish'],
                          pending={**local['pending'], 'operationId': uuid4().hex, 'document': renewed})
         return True
 
@@ -1133,7 +1139,7 @@ class DesktopLongTermAdapter:
         A number below the base means the server lost its history: every local
         entry then counts as new.
         """
-        local = self.read_local(binding, epoch) or {'base': None, 'pending': None, 'unseenRevision': False, 'sent': []}
+        local = self.read_local(binding, epoch) or {'base': None, 'pending': None, 'unseenRevision': False, 'sent': [], 'republish': False}
         current = local['base']['revision'] if local['base'] else 0
         if revision == current:
             return False
@@ -1142,8 +1148,9 @@ class DesktopLongTermAdapter:
         else:
             base = {**(local['base'] or {'document': None, 'nativeEntries': []}), 'revision': revision}
             unseen = True
-        # A snapshot captured against the old number would only be refused again.
-        self.write_local(binding, epoch, base=base, pending=None, unseen_revision=unseen)
+        # A snapshot captured against the old number would only be refused again;
+        # what it held has to be captured anew against the adopted one.
+        self.write_local(binding, epoch, base=base, pending=None, unseen_revision=unseen, republish=True)
         return True
 
     def stage_remote(self, binding, remote, epoch, expected_revision, session_fingerprint):

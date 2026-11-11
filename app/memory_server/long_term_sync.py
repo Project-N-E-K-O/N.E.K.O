@@ -256,7 +256,7 @@ def _capture(name, force, expected_uid=None, require_consumed=False):
         adapter = DesktopLongTermAdapter(runtime._config_manager)
         if require_consumed and adapter.incoming_path(uid).is_file():
             raise ValueError('long_term_memory_incoming_pending')
-        local = adapter.read_local(binding, epoch) or {'base': None, 'pending': None, 'unseenRevision': False, 'sent': []}
+        local = adapter.read_local(binding, epoch) or {'base': None, 'pending': None, 'unseenRevision': False, 'sent': [], 'republish': False}
         base, pending = local['base'], local['pending']
         newest = max([part['document']['completedAt'] for part in (base, pending) if part and part['document']] or [0])
         completed = max(time.time_ns() // 1_000_000, newest + 1)
@@ -279,10 +279,11 @@ def _capture(name, force, expected_uid=None, require_consumed=False):
             return None if expected_uid is not None else False
         try:
             if not force and not _unpublished(document, base):
-                if pending is not None:
+                if pending is not None or local['republish']:
                     # The device returned to what the server holds; nothing waits for upload.
                     # The dropped snapshot may still be in flight, so it stays recognizable.
-                    adapter.write_local(binding, epoch, base=base, pending=None, sent=[pending, *local['sent']])
+                    adapter.write_local(binding, epoch, base=base, pending=None,
+                                        sent=[pending, *local['sent']] if pending else local['sent'])
                 return False
             if (not force and pending is not None and pending['baseRevision'] == revision
                     and same_content(pending['document'], document)):
@@ -535,6 +536,24 @@ async def tend_organizer(name):
     return due
 
 
+def _capture_owed(name):
+    """Whether an applied merge or an adopted revision left content here that no snapshot carries yet."""
+    writer, uid = _authority(), _uid(name)
+    binding = _binding(uid) if writer is not None and uid is not None else None
+    if binding is None:
+        return False
+    local = DesktopLongTermAdapter(runtime._config_manager).read_local(binding, writer.epoch())
+    return bool(local and local['republish'])
+
+
+async def resume_owed_capture(name):
+    """Queue the capture a merge still owes, for example after the process exited before queueing it."""
+    owed = await asyncio.to_thread(_capture_owed, name)
+    if owed:
+        queue_capture(name)
+    return owed
+
+
 ORGANIZER_CHECK_INTERVAL_SECONDS = 5 * 60
 _ORGANIZER_INITIAL_DELAY_SECONDS = 120
 
@@ -547,6 +566,7 @@ async def _periodic_organizer_loop():
                 characters = (await runtime._config_manager.aload_characters()).get('猫娘', {})
                 for name in list(characters):
                     try:
+                        await resume_owed_capture(validate_lanlan_name(name))
                         await tend_organizer(validate_lanlan_name(name))
                     except Exception as error:
                         logger.debug(f'[LongTermSync] {name}: organizer check skipped: {error}')
@@ -617,7 +637,7 @@ def _write_snapshot_locked(name, payload, *, check_only=False):
         if _uid(name) != uid or _binding(uid) != binding:
             return False
         adapter = DesktopLongTermAdapter(runtime._config_manager)
-        local = adapter.read_local(binding, epoch) or {'base': None, 'pending': None, 'unseenRevision': False, 'sent': []}
+        local = adapter.read_local(binding, epoch) or {'base': None, 'pending': None, 'unseenRevision': False, 'sent': [], 'republish': False}
         base = local['base']
         applied = bool(base and base['revision'] == remote['revision'] and base['document'] == remote['document'])
         if base and base['revision'] >= remote['revision'] and not applied:
@@ -642,7 +662,7 @@ def _write_snapshot_locked(name, payload, *, check_only=False):
             # accepted (a lost reply, or a capture that replaced it mid-upload). It is
             # already in the native views, so it becomes the base as it stands: merging
             # it in again would add its increments a second time.
-            adapter.write_local(binding, epoch, pending=None, base={
+            adapter.write_local(binding, epoch, pending=None, republish=True, base={
                 'revision': remote['revision'], 'document': remote['document'], 'nativeEntries': own['document']['entries']})
             _unpublished_after_apply.add(name)
             return True
@@ -659,7 +679,8 @@ def _write_snapshot_locked(name, payload, *, check_only=False):
                                      current, remote['document'], remote['completedAt'])
             if len(merged['entries']) > MAX_ENTRIES:
                 raise LongTermMemoryCapacityExceeded()
-            if not same_content(merged, remote['document']):
+            unpublished = not same_content(merged, remote['document'])
+            if unpublished:
                 _unpublished_after_apply.add(name)
             views = import_document(merged, existing, merged=True, source_evidence=source_evidence)
             # The base keeps the published entries as this device would export them,
@@ -682,7 +703,9 @@ def _write_snapshot_locked(name, payload, *, check_only=False):
                 advance_view_generation(directory)
                 for relative, value in files.items():
                     atomic_write_json(directory / relative, value, ensure_ascii=False, indent=2)
-                adapter.write_local(binding, epoch, pending=None, base={
+                # The mark is saved with the new base: if the process exits before the
+                # capture below is queued, the periodic check still finds it.
+                adapter.write_local(binding, epoch, pending=None, republish=unpublished, base={
                     'revision': remote['revision'], 'document': remote['document'], 'nativeEntries': native_entries})
                 _replace_fact_index(name, views)
                 runtime.fact_store._facts.pop(name, None)
