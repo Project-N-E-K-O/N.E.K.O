@@ -621,10 +621,10 @@ CAPABILITY_QUESTION_PATTERNS = (
 
 # What a stated task preference is about, read without a model: the decision
 # model returns the preference as a sentence only. Kinds are tried in the
-# order ask_first, report, default, capability, each against every language
+# order ask_first, report, capability, default, each against every language
 # (a preference may be worded in another language than the commission); a
-# sentence matching none is "other". Reporting, ask-first and default entries
-# are given to every task, the others only to tasks sharing words with them.
+# sentence matching none is "other". Reporting and ask-first entries are
+# given to every task, the others only to tasks sharing words with them.
 PREFERENCE_KIND_PATTERNS = {
     'zh': {
         "ask_first": r"先问|问过我|问一下我|问我一下|征求|先确认|确认一下|先跟我说|经过我同意",
