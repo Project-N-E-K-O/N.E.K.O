@@ -272,12 +272,12 @@ def _capture(name, force, expected_uid=None, require_consumed=False):
                     except OSError:
                         logger.debug(f'[LongTermSync] {name}: evidence trim notice not saved')
                 views = _read_native_views(name)
-            document = export_document(views, completed, source_evidence=_snapshot_source_evidence(name, views))
-            if _evidence_over_limit(document['evidence']):
+            if _evidence_over_limit(_saved_evidence(views)):
                 # A device that does not organize never trims. Its lists shrink when the
-                # organizer's next snapshot is merged in; until then the reason is shown
-                # instead of an upload the server could only refuse.
+                # organizer's next snapshot is merged in; until then the reason is shown.
+                # Checked before the export, which refuses such lists as an invalid document.
                 raise LongTermEvidenceCapacityExceeded()
+            document = export_document(views, completed, source_evidence=_snapshot_source_evidence(name, views))
         except (LongTermMemoryCapacityExceeded, LongTermArchiveSubjectUnavailable) as error:
             if _uid(name) != uid or _binding(uid) != binding:
                 return None if expected_uid is not None else False
@@ -357,6 +357,27 @@ def _unpublished(document, base):
 def _evidence_over_limit(evidence):
     """Whether a snapshot carrying these evidence lists would be refused."""
     return any(len(evidence.get(field) or ()) > EVIDENCE_MAX for field in ('retirements', 'confirmations'))
+
+
+def _saved_evidence(views):
+    state = views.get('sync')
+    evidence = state.get('evidence') if isinstance(state, dict) else None
+    return evidence if isinstance(evidence, dict) else {}
+
+
+def _mergeable(views):
+    """The views with evidence lists short enough to be exported for a merge.
+
+    Lists too long to publish cannot be exported either, so without this a
+    published snapshot could never be merged in and the device would stay
+    stuck. The newest records are kept, which is what the merge keeps of an
+    over-long result anyway.
+    """
+    evidence = _saved_evidence(views)
+    if not _evidence_over_limit(evidence):
+        return views
+    fitting = {field: rows[-EVIDENCE_MAX:] if isinstance(rows, list) else rows for field, rows in evidence.items()}
+    return {**views, 'sync': {**views['sync'], 'evidence': fitting}}
 
 
 def _prune_evidence(name, base):
@@ -752,7 +773,7 @@ def _write_snapshot_locked(name, payload, *, check_only=False):
         directory = Path(runtime._config_manager.memory_dir) / name
         assert_cloudsave_writable(runtime._config_manager, operation='sync', target=f'memory/{name}')
         with runtime.fact_store._get_lock(name):
-            existing = _read_native_views(name)
+            existing = _mergeable(_read_native_views(name))
             source_evidence = _snapshot_source_evidence(name, existing, remote['document'])
             # What this device holds, the base both sides started from and the
             # published document become one document; an upload the server never

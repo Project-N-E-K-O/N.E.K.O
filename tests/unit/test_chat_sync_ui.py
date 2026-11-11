@@ -420,7 +420,10 @@ def test_sync_settings_explains_memory_diagnostics_alongside_transport_errors_wi
         assert(shown.includes('chatSync.errorLongTermCapacity'));
         assert(shown.includes('chatSync.errorLongTermEvidenceCapacity'));
         assert(shown.includes('long_term_memory_evidence_capacity_exceeded'));
-        assert(shown.includes('chatSync.noticeLongTermEvidenceTrimmed'));
+        // A notice is shown as its own text: not as an error, and without its code.
+        assert(shown.includes('chatSync.noticeLongTermEvidenceTrimmed{}'));
+        assert(!shown.includes('long_term_memory_evidence_trimmed'));
+        assert.equal(shown.split('chatSync.errorDetail').length,TRANSPORT?5:4);
         assert(shown.includes('long_term_memory_capacity_exceeded'));
         assert(shown.includes('chatSync.errorLongTermPending'));
         assert.equal(shown.split('chatSync.errorLongTermCapacity').length,2);

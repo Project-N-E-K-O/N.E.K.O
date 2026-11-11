@@ -419,9 +419,19 @@ async def test_evidence_too_long_to_publish_is_trimmed_even_unpublished_when_nob
 
 
 @pytest.mark.asyncio
-async def test_evidence_too_long_to_publish_is_reported_where_another_device_organizes(owner, monkeypatch):  # noqa: F811
+async def test_evidence_too_long_to_publish_is_reported_where_another_device_organizes(owner):  # noqa: F811
+    """With the real limits: the protocol itself refuses such a document, so nothing here is shrunk for the test."""
+    from memory.long_term_merge import EVIDENCE_MAX
     from memory.long_term_sync import LongTermEvidenceCapacityExceeded, LongTermMemoryCapacityExceeded
-    write, stored = _evidence_limits(owner, monkeypatch)
+    state_path = owner.directory / 'long_term_portable.json'
+
+    def write(count):
+        state = json.loads(state_path.read_text(encoding='utf-8'))
+        atomic_write_json(state_path, {**state, 'evidence': {'confirmations': [], 'retirements': [
+            {'id': f'r-{index}', 'subject': 'master', 'sourceMessageIds': [f'source-{index}']} for index in range(count)]}})
+
+    def stored():
+        return [row['id'] for row in json.loads(state_path.read_text(encoding='utf-8'))['evidence']['retirements']]
     _synced(owner)
     server = PublishingServer()
     assert owner.native._capture('Neko', True)
@@ -431,21 +441,30 @@ async def test_evidence_too_long_to_publish_is_reported_where_another_device_org
     await server.exchange(owner)
     assert await owner.native.consume(UID)
     waiting = local_state(owner)['pending']
-    write(4)
+    write(EVIDENCE_MAX + 1)
     # The phone trims; this device only says why it cannot publish, and writes no
     # upload the server could only refuse.
     with pytest.raises(LongTermEvidenceCapacityExceeded) as raised:
         owner.native._capture('Neko', False)
     assert isinstance(raised.value, LongTermMemoryCapacityExceeded)
     assert str(raised.value) == 'long_term_memory_evidence_capacity_exceeded'
-    assert stored() == ['r-0', 'r-1', 'r-2', 'r-3'] and owner.adapter.evidence_trimmed_at(UID) is None
+    assert len(stored()) == EVIDENCE_MAX + 1 and owner.adapter.evidence_trimmed_at(UID) is None
     assert local_state(owner)['pending'] == waiting
     binding, = (await owner.runtime.status())['bindings']
     assert binding['localMemoryDiagnostics'] == ['long_term_memory_evidence_capacity_exceeded'] and binding['lastSyncError'] is None
-    # At the limit exactly it fits again, and the reason goes away with the next snapshot.
-    write(3)
+    # The next snapshot the phone publishes is merged in although what this device
+    # holds could not be exported as it stands; the newest records are the ones kept.
+    server.publish({**server.document, 'completedAt': server.document['completedAt'] + 10,
+                    'organizer': {**phone, 'renewedAt': 8}})
+    await server.exchange(owner)
+    assert await owner.native.consume(UID)
+    kept = stored()
+    assert len(kept) == EVIDENCE_MAX and kept[0] == 'r-1' and kept[-1] == f'r-{EVIDENCE_MAX}'
+    # It fits again, so it is published and the reason goes away.
     assert owner.native._capture('Neko', False)
     assert (await owner.runtime.status())['bindings'][0]['localMemoryDiagnostics'] == []
+    await server.exchange(owner)
+    assert len(server.document['evidence']['retirements']) == EVIDENCE_MAX
 
 
 @pytest.mark.asyncio
