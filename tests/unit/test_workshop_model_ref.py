@@ -48,9 +48,7 @@ def test_build_subscriber_workshop_model_ref_without_item_id_returns_ref_unchang
     ("model_type", "card_path", "packaged_path"),
     [
         ("vrm", "/user_vrm/Avatar.vrm", "Avatar.vrm"),
-        ("vrm", "/user_vrm/Nested/Avatar.vrm", "Avatar.vrm"),
         ("vrm", "/static/vrm/Avatar.vrm", "Avatar.vrm"),
-        ("vrm", "/static/vrm/Nested/Avatar.vrm", "Avatar.vrm"),
         ("mmd", "/user_mmd/Avatar/Models/Avatar.pmx", "Avatar/Models/Avatar.pmx"),
         ("mmd", "/static/mmd/Models/Avatar.pmd", "Models/Avatar.pmd"),
         ("mmd", "/workshop/123/Avatar.pmx", "123/Avatar.pmx"),
@@ -82,7 +80,9 @@ def test_workshop_model_ref_uses_packaged_file_only_when_original_is_missing(
     ("model_type", "source_path", "packaged_path"),
     [
         ("vrm", "/user_vrm/Avatar.vrm", "Avatar.vrm"),
+        ("vrm", "/user_vrm/Nested/Avatar.vrm", "Avatar.vrm"),
         ("vrm", "/static/vrm/Avatar.vrm", "Avatar.vrm"),
+        ("vrm", "/static/vrm/Nested/Avatar.vrm", "Avatar.vrm"),
         ("vrm", "/workshop/999/models/Avatar.vrm", "Avatar.vrm"),
         ("mmd", "/user_mmd/Avatar.pmx", "Avatar.pmx"),
         ("mmd", "/user_mmd/Avatar/Models/Avatar.pmx", "Avatar/Models/Avatar.pmx"),
