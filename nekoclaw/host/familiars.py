@@ -658,7 +658,12 @@ class FamiliarManager:
         commission_id = session.commission_id
         reason = event.get("reason")
         if reason == "closed":
+            # An answer kept for a run that never came is not lost with the
+            # session: it takes the commission up again from its transcript.
+            kept, session.held_answer = session.held_answer, None
             await self._release(commission_id)
+            if kept is not None and not self._closed:
+                self._spawn(self._answer_closed(commission_id, kept))
             return
         commission = await self._ledger.get(commission_id)
         if commission is None:
@@ -715,6 +720,14 @@ class FamiliarManager:
                 # earlier run's end stands after all.
                 session.held_end = None
                 await self._on_ended(session, held)
+            elif held is None and session.awaiting_prompt and not session.run_ended:
+                # The steer that was to wake a session waiting for an answer
+                # was refused, so no run started: it is idle again, and an
+                # answer kept for the end of that run is handed over now.
+                session.run_ended = True
+                if session.held_answer is not None:
+                    answer, session.held_answer = session.held_answer, None
+                    await self._deliver_answer(session, answer)
             return
         if command == "start":
             await self._fail(commission_id, f"the familiar could not be started: {message}")
@@ -861,10 +874,10 @@ class FamiliarManager:
         """
         if self._closed:
             return False
-        if commission_id in self._taking_up:
-            # An earlier sentence is taking it up again right now: this one
-            # goes along with that start rather than queueing a second one,
-            # which the finished commission would then refuse.
+        if commission_id in self._taking_up or commission_id in self._requeueing:
+            # An earlier sentence is taking it up again or queueing it right
+            # now: this one goes along with that rather than starting or
+            # queueing a second time, which would then be refused.
             self._notes.setdefault(commission_id, []).append(text)
             return True
         if commission_id not in self._sessions and self._take_place(commission_id):
@@ -878,11 +891,15 @@ class FamiliarManager:
         # Its old session is still on its way out, or no place is free: it is
         # queued. That runs as a task shutting down waits for, so a shutdown
         # while the status is written still finds the commission afterwards.
+        # Marked at once, before anything is awaited, so a sentence arriving
+        # meanwhile joins this one.
+        self._requeueing.add(commission_id)
         return await asyncio.shield(self._spawn(self._requeue(commission_id, text)))
 
     async def _requeue(self, commission_id: str, text: str) -> bool:
-        # Marked while the status is written: the old session's end meanwhile
-        # then keeps the candidate plugins and notes for the retry.
+        # Marked (by the caller) while the status is written: the old
+        # session's end meanwhile then keeps the candidate plugins and notes
+        # for the retry.
         self._requeueing.add(commission_id)
         try:
             moved = await self._ledger.transition(commission_id, "queued", reason="taken up again; waiting for a place")

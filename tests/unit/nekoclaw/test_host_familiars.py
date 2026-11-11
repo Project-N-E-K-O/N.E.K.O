@@ -599,6 +599,85 @@ async def _waiting_and_closed(host: Any, text: str) -> str:
     return receipt.commission_id
 
 
+async def test_an_answer_kept_for_a_wake_up_that_never_ran_survives_the_session_closing(hosts, tmp_path):
+    llm = ScriptedLLM(
+        [
+            _report("waiting", "Which folder holds the photos?"),
+            _report("ready", "sorted D:/Camera"),
+        ]
+    )
+    host = _host(hosts, tmp_path, llm)
+    receipt = await _dispatch(host, "sort the photos")
+    await wait_status(host, receipt.commission_id, "waiting_user")
+    await wait_until(lambda: _ended(host, receipt.commission_id), what="the asking run ending")
+    session = host.familiars._sessions[receipt.commission_id]
+    # A child's result was steered to wake it, so the answer is kept for the
+    # end of that run; the runtime is exiting and the run never comes.
+    session.run_ended = False
+    assert await host.answer(receipt.commission_id, "the photos are in D:/Camera") is True
+    assert session.held_answer == "the photos are in D:/Camera"
+
+    await host.familiars._runtime.close(receipt.commission_id)
+
+    done = await wait_status(host, receipt.commission_id, "done")
+    assert done.result_summary == "sorted D:/Camera"
+    assert {"role": "user", "content": "the photos are in D:/Camera"} in llm.requests[1]
+
+
+async def test_a_refused_wake_up_hands_over_the_kept_answer(hosts, tmp_path):
+    llm = ScriptedLLM(
+        [
+            _report("waiting", "Which folder holds the photos?"),
+            _report("ready", "sorted D:/Camera"),
+        ]
+    )
+    host = _host(hosts, tmp_path, llm)
+    receipt = await _dispatch(host, "sort the photos")
+    await wait_status(host, receipt.commission_id, "waiting_user")
+    await wait_until(lambda: _ended(host, receipt.commission_id), what="the asking run ending")
+    session = host.familiars._sessions[receipt.commission_id]
+    session.run_ended = False
+    session.sent += 1
+    assert await host.answer(receipt.commission_id, "the photos are in D:/Camera") is True
+
+    # The runtime refuses the steer that was to wake it: no run starts.
+    await host.familiars._on_error(session, {"type": "error", "command": "steer", "message": "refused"})
+
+    done = await wait_status(host, receipt.commission_id, "done")
+    assert done.result_summary == "sorted D:/Camera"
+
+
+async def test_two_sentences_at_once_for_a_commission_with_no_place_are_queued_together(hosts, tmp_path):
+    release, wait = _gate()
+    scripts = {
+        "sort the photos": ScriptedLLM([[wait, say("photos sorted"), finish()]]),
+        "back up the notes": ScriptedLLM([[say("notes backed up"), finish()]]),
+    }
+
+    def pick(spec: Any) -> ScriptedLLM:
+        return next(llm for text, llm in scripts.items() if text in (spec.instructions or ""))
+
+    host = _host(hosts, tmp_path, pick, max_familiars=1)
+    first = await _dispatch(host, "sort the photos")
+    await wait_status(host, first.commission_id, "working")
+    second = await _filed(host, "back up the notes")
+    await host.ledger.transition(second.id, "working", reason="test")
+    await host.ledger.transition(second.id, "blocked", reason="test")
+
+    told = await asyncio.gather(
+        host.familiars.tell(second.id, "put it on drive E:"),
+        host.familiars.tell(second.id, "and skip the drafts"),
+    )
+
+    assert told == [True, True]
+    assert host.familiars.queued == [second.id]
+    release.set()
+    await wait_status(host, second.id, "done")
+    sent = " | ".join(str(message.get("content")) for message in scripts["back up the notes"].requests[0])
+    assert "put it on drive E:" in sent
+    assert "and skip the drafts" in sent
+
+
 async def test_an_answer_after_the_idle_session_was_closed_takes_it_up_again(hosts, tmp_path):
     llm = ScriptedLLM(
         [
@@ -1211,12 +1290,20 @@ async def test_no_sub_familiar_starts_for_a_parent_stopped_meanwhile(hosts, tmp_
     monkeypatch.setattr(host.familiars, "_child_workdir", stopped_meanwhile)
     receipt = await _dispatch(host, "do the work in two parts")
     await wait_until(lambda: _children(host, receipt.commission_id), what="the sub-familiar being filed")
+    # The callback that filed it goes on to check the parent; it is not one of
+    # the events ``settle`` waits for.
+    await wait_until(lambda: _child_status(host, receipt.commission_id, "cancelled"), what="the sub-familiar being stopped")
     await host.brain.settle()
     await host.familiars.settle()
 
     (sub,) = await host.ledger.select(parent_id=receipt.commission_id)
     assert (sub.status, sub.status_reason) == ("cancelled", "its parent was stopped")
     assert child.requests == []
+
+
+async def _child_status(host: Any, commission_id: str, status: str) -> bool:
+    children = await host.ledger.select(parent_id=commission_id)
+    return bool(children) and children[0].status == status
 
 
 async def _children(host: Any, commission_id: str) -> bool:
