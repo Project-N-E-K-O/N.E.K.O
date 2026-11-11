@@ -83,6 +83,38 @@ async def test_threshold_is_two(preferences):
     assert PREFERENCE_INFERRED_THRESHOLD == 2
 
 
+async def _stop(preferences: Any, title: str, target: str) -> Any:
+    from nekoclaw.host.preferences import describe_stop, stop_tendency_prefix
+
+    return await preferences.observe(
+        describe_stop(title, target),
+        kind="capability",
+        lanlan_name="Lan",
+        same_tendency_prefix=stop_tendency_prefix(target),
+    )
+
+
+async def test_stops_of_unrelated_entries_are_not_one_tendency(preferences):
+    # The template words alone make these two sentences look alike.
+    first = await _stop(preferences, "play jazz", "music.play")
+    second = await _stop(preferences, "lock door", "home.lock")
+
+    assert first.id != second.id
+    assert not first.active and not second.active
+    assert all(not item.active for item in await preferences.list())
+
+
+async def test_two_stops_of_the_same_entry_are_one_tendency(preferences):
+    first = await _stop(preferences, "play jazz", "music.play")
+    second = await _stop(preferences, "play some rock", "music.play")
+    # A longer entry name starting the same way is another entry.
+    other = await _stop(preferences, "play jazz", "music.player")
+
+    assert second.id == first.id
+    assert (second.observations, second.active) == (2, True)
+    assert other.id != first.id and not other.active
+
+
 async def test_stating_what_was_inferred_makes_it_stated_and_active(preferences):
     inferred = await preferences.observe("Use the lifekit plugin for nearby restaurant searches")
 

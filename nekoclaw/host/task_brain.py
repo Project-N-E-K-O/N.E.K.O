@@ -71,7 +71,7 @@ from nekoclaw.host.plugin_runs import (
     resolve_delivery_mode,
     resolve_result_contract,
 )
-from nekoclaw.host.preferences import PreferenceStore, describe_stop, preference_kind
+from nekoclaw.host.preferences import PreferenceStore, describe_stop, preference_kind, stop_tendency_prefix
 from nekoclaw.host.reports import CHANNEL_PLUGIN, Reporter
 from nekoclaw.host.selection import find_entry, similarity
 
@@ -249,6 +249,10 @@ class TaskBrain:
         answerable = [item for item in under_way if item.parent_id is not None and item.status == "waiting_user"]
         # Plugin entries forbidden in the permission settings are not offered
         # to the decision model at all, so none is called directly either.
+        # Only "deny" counts here, on purpose: a direct call is one she
+        # dispatched and the model chose, called without asking as the
+        # analyzer does today. The asking modes apply where the design puts
+        # the questions: a familiar's tool calls and the capability gateway.
         plugins_forbidden = await self._permission_store.mode("plugin_entry") == "deny"
         return DecisionRequest(
             dispatch_text=text,
@@ -682,6 +686,7 @@ class TaskBrain:
                 kind="capability",
                 lanlan_name=commission.lanlan_name,
                 source_commission=commission.id,
+                same_tendency_prefix=stop_tendency_prefix(target),
             )
         return moved.commission
 

@@ -226,6 +226,7 @@ class PreferenceStore:
         kind: str = "other",
         lanlan_name: str | None = None,
         source_commission: str | None = None,
+        same_tendency_prefix: str | None = None,
     ) -> Preference | None:
         """Record one observation of an inferred tendency.
 
@@ -233,6 +234,11 @@ class PreferenceStore:
         tendency is observed again the entry takes effect; it stays marked as
         inferred. An observation that matches a stated entry, or one set by
         hand on the console, changes nothing.
+
+        ``same_tendency_prefix`` is for sentences built from a fixed template
+        (see ``describe_stop``): the template's words would make unrelated
+        observations look alike, so only entries starting with this prefix
+        are the same tendency, whatever the rest says.
         """
         cleaned = _clean(text)
         if not cleaned:
@@ -245,9 +251,19 @@ class PreferenceStore:
         def work(conn: sqlite3.Connection) -> Preference:
             best: Preference | None = None
             best_score = 0.0
+            prefix = _clean(same_tendency_prefix) if same_tendency_prefix else ""
             for existing in self._all(conn):
-                score = similarity(existing.text, cleaned)
-                if score >= PREFERENCE_SAME_TENDENCY_SIMILARITY and score > best_score:
+                if prefix:
+                    if not existing.text.startswith(prefix):
+                        continue
+                    # Same template and the same subject: the rest only tells
+                    # the occasions apart.
+                    score = 1.0 + similarity(existing.text, cleaned)
+                else:
+                    score = similarity(existing.text, cleaned)
+                    if score < PREFERENCE_SAME_TENDENCY_SIMILARITY:
+                        continue
+                if score > best_score:
                     best, best_score = existing, score
             if best is None:
                 return self._insert(
@@ -355,7 +371,15 @@ class PreferenceStore:
 
 def describe_stop(title: str, target: str) -> str:
     """Return the inferred-tendency sentence for a commission that was stopped."""
-    return f"The user stopped a task done with {target}: {title}"
+    return f"{stop_tendency_prefix(target)} {title}"
+
+
+def stop_tendency_prefix(target: str) -> str:
+    """Return the part of ``describe_stop`` shared by every stop of ``target``.
+
+    Stops count as the same tendency only when they stopped the same target.
+    """
+    return f"The user stopped a task done with {target}:"
 
 
 def feedback_text(payload: dict[str, Any]) -> str:
