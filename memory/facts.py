@@ -5497,7 +5497,11 @@ class FactStore:
                 if isinstance(extracted, list):
                     # Nothing new still drains candidates an earlier extraction held
                     # back, and records progress the way a non-empty one does.
-                    await self._apersist_new_facts(lanlan_name, [], source_messages=messages, progress_pass='a')
+                    drained: list[dict] = []
+                    await self._apersist_new_facts(lanlan_name, [], source_messages=messages, progress_pass='a',
+                                                   source_accepted=drained)
+                    # Brought-back candidates join the pinned section as they would have.
+                    await self._aadmit_pinned_candidates(lanlan_name, drained, conversation_at=conversation_at)
                 else:
                     await self.arecord_extraction_progress(lanlan_name, 'a', messages)
             return []
@@ -6203,8 +6207,11 @@ class FactStore:
             self._log_path_b_labels(lanlan_name, [], [])
             if coerce_subject(subject) is None:
                 # Same as a non-empty run: held-back candidates drain, progress is recorded.
+                drained: list[dict] = []
                 await self._apersist_new_facts(lanlan_name, [], default_source='ai_disclosure', source_messages=messages,
-                                               extraction_path=EXTRACTION_PATH_B, progress_pass='b')
+                                               extraction_path=EXTRACTION_PATH_B, progress_pass='b', source_accepted=drained)
+                await self._aadmit_pinned_candidates(lanlan_name, drained, default_source='ai_disclosure',
+                                                     conversation_at=conversation_at)
             return []
         source_accepted: list[dict] = []
         persisted = await self._apersist_new_facts(

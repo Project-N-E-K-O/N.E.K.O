@@ -47,7 +47,9 @@ def candidates(active, archive):
     ones only when age moved them there after a reflection absorbed them."""
     from memory.scopes import is_legacy_private_entry
     rows = {}
-    for row in [*archive, *active]:
+    # An archived fact counts only when absorption put it there; one archived for
+    # another reason (capacity, an import) is not the cleanup's to fold.
+    for row in [*(row for row in archive if isinstance(row, dict) and row.get('absorbed')), *active]:
         if (isinstance(row, dict) and isinstance(row.get('id'), str) and row['id'] and isinstance(row.get('text'), str)
                 and not row.get('arbitration_archived_at') and is_legacy_private_entry(row)):
             rows[row['id']] = row

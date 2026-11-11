@@ -171,3 +171,34 @@ async def test_an_extraction_that_finds_nothing_still_drains_the_queue(tmp_path)
     assert await h.extract_facts([_trusted_sync_message('d', 3000)], '小天') == []
     assert _queue(directory) == [] and [row['text'] for row in h._mem][-1] == '新事实 2'
     assert {'c' * 32, 'd' * 32} <= set(extraction_progress.read(directory)['a'])
+
+
+def test_a_candidate_that_waits_again_goes_behind_the_others(tmp_path):
+    from memory import retirement_review_queue as queue
+    from memory.long_term_sync import STORED_PROOF
+    key = queue.key('user_observation', None, 'a')
+    proof = lambda letter: {STORED_PROOF: {'source_message_ids': ['sync:' + letter * 32]}}
+    queue.commit(tmp_path, key, set(), [], [{'text': 'stuck', **proof('a')}, {'text': 'next', **proof('b')}], STORED_PROOF)
+    stuck, following = queue.candidates(queue.read(tmp_path), key)
+    # The first one came back and could not finish; the second was not reached.
+    queue.commit(tmp_path, key, {stuck[queue.QUEUE_ID]}, [stuck], [], STORED_PROOF)
+    assert [row['text'] for row in queue.candidates(queue.read(tmp_path), key)] == ['next', 'stuck']
+
+
+@pytest.mark.asyncio
+async def test_a_drained_candidate_reaches_the_pinned_section_on_an_empty_extraction(tmp_path):
+    directory = tmp_path / '小天'
+    _retirements(directory, 25, ['sync:' + letter * 32 for letter in 'abc'])
+    h = _harness(tmp_path, [])
+    h._allm_call_with_retries = _reviewer([])
+    facts = [{'entity': 'master', 'text': f'新事实 {i}', 'source_indices': [i + 1]} for i in range(3)]
+    await h._apersist_new_facts('小天', facts, source_messages=[_trusted_sync_message(letter, 1000) for letter in 'abc'],
+                                progress_pass='a')
+    admitted = []
+
+    async def admit(name, candidates, **kwargs):
+        admitted.extend(candidate['text'] for candidate in candidates)
+    h._aadmit_pinned_candidates = admit
+    h._allm_extract_facts = AsyncMock(return_value=[])
+    await h.extract_facts([_trusted_sync_message('d', 3000)], '小天')
+    assert admitted == ['新事实 2']

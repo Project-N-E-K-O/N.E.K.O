@@ -66,9 +66,12 @@ def commit(directory, queue_key, brought_ids, held_back, added, proof_key):
     still = {candidate.get(QUEUE_ID) for candidate in held_back if candidate.get(QUEUE_ID)}
     settled = [row for row in entries if row['id'] in brought_ids and row['id'] not in still]
     gone = {row['id'] for row in settled}
-    kept = [row for row in entries if row['id'] not in gone]
+    # One that came back and waits again goes behind the rest, so a candidate that
+    # cannot finish yet (a correction time still unknown) never holds the others back.
+    requeued = [row for row in entries if row['id'] in brought_ids and row['id'] in still]
+    kept = [row for row in entries if row['id'] not in brought_ids] + requeued
     kept += [{'id': uuid4().hex, 'key': list(queue_key), 'candidate': candidate} for candidate in added]
-    if gone or added:
+    if [row['id'] for row in kept] != [row['id'] for row in entries]:
         if not readable and path.exists():
             # Never overwrite what could not be read; keep it for a person to look at.
             shutil.copyfile(path, path.with_name(path.name + '.unreadable'))

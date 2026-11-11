@@ -1214,7 +1214,7 @@ async def api_record_surfaced(request: Request, lanlan_name: str):
 
 
 @app.post("/internal/memory/{lanlan_name}/legacy_dedup/restore")
-async def api_restore_legacy_dedup(lanlan_name: str):
+async def api_restore_legacy_dedup(request: Request, lanlan_name: str):
     """Bring back the facts the one-time duplicate cleanup folded away.
 
     They come back under new ids, so a peer that still holds the archived rows
@@ -1222,6 +1222,10 @@ async def api_restore_legacy_dedup(lanlan_name: str):
     syncs should look at the result after its next sync.
     """
     from . import legacy_dedup
+    # Loopback skips credentials, so a page in a browser could post here; only
+    # the app's own services may (same rule as the knowledge routes).
+    if any(header in request.headers for header in ("origin", "referer", "sec-fetch-site")):
+        raise HTTPException(status_code=403, detail={"ok": False, "reason": "untrusted_origin"})
     lanlan_name = validate_lanlan_name(lanlan_name)
     restored = await legacy_dedup.restore(lanlan_name)
     return {"ok": True, "restored": restored, "restored_as_new_ids": True}

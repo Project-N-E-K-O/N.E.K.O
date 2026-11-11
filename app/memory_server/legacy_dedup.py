@@ -86,11 +86,13 @@ async def _publish_marker(name):
             atomic_write_json(state_path, state, ensure_ascii=False, indent=2)
 
     from memory.recent import _await_recent_mutation_to_completion
+    from .long_term_sync import queue_capture_after_extraction
+    # The capture is owed before the mark lands: a process that exits in between
+    # still publishes it after restart, while the mark alone would look done here.
+    queue_capture_after_extraction(name)
     # Same lock as facts and extraction progress, which share this file.
     async with runtime.fact_store._get_persist_alock(name):
         await _await_recent_mutation_to_completion(save)
-    from .long_term_sync import queue_capture_after_extraction
-    queue_capture_after_extraction(name)
     return True
 
 
@@ -100,8 +102,11 @@ async def _arbitrate(name, batch, rows):
     from config.prompts.prompts_memory import get_fact_dedup_prompt
     from memory.fact_dedup import _detect_fact_dedup_prompt_language
     from utils.language_utils import get_global_language_full
-    lines = '\n'.join(f"[{index}] candidate: {rows[pair['candidate']]['text']} | existing: {rows[pair['existing']]['text']}"
-                      f" | {pair['evidence']}" for index, pair in enumerate(batch))
+    # Quoted, as the retired-assertion review does: a fact with a line break or a
+    # " | existing:" of its own cannot shift where one pair ends.
+    lines = '\n'.join(f"[{index}] candidate: {json.dumps(rows[pair['candidate']]['text'], ensure_ascii=False)}"
+                      f" | existing: {json.dumps(rows[pair['existing']]['text'], ensure_ascii=False)} | {pair['evidence']}"
+                      for index, pair in enumerate(batch))
     language = _detect_fact_dedup_prompt_language(lines, ui_language=get_global_language_full())
     prompt = get_fact_dedup_prompt(language).replace('{PAIRS}', lines).replace('{COUNT}', str(len(batch)))
     from utils.tokenize import acount_tokens
@@ -251,7 +256,8 @@ async def run(name, *, still_idle=lambda: True):
     fingerprints = {}
     for pair in marker['pairs']:
         fingerprints.update(pair.get('fingerprints') or {})
-    await _archive_folded(name, folded, fingerprints)
+    # Each folded fact points straight at the one that finally stands for it.
+    await _archive_folded(name, mapping, fingerprints)
     reflections_changed, persona_changed = await _repoint(name, mapping) if mapping else (0, 0)
     archive = {row.get('id'): row for row in await asyncio.to_thread(_read_archive, name) if isinstance(row, dict)}
     live = {row.get('id'): row for row in await runtime.fact_store.aload_facts(name) if isinstance(row, dict)}
@@ -286,15 +292,19 @@ async def restore(name):
     async with store._get_persist_alock(name):
         archive = await asyncio.to_thread(_read_archive, name)
         facts = await store.aload_facts(name)
-        restored_from = {row.get('restored_from') for row in facts if isinstance(row, dict)}
+        # A copy restored earlier may itself have aged into the archive since.
+        restored_from = {row.get('restored_from') for row in [*facts, *archive] if isinstance(row, dict)}
         now = datetime.now()
         added = []
         for row in archive:
             if (not isinstance(row, dict) or row.get('id') not in marker['archived']
                     or row['id'] in restored_from or not row.get('arbitration_archived_at')):
                 continue
+            # The sync state of the archived row (superseded, when it came in a
+            # snapshot) would make the copy travel as folded away again.
             copy = {key: value for key, value in row.items()
-                    if key not in ('arbitration_archived_at', 'arbitration_reason', 'superseded_by', 'merged_from_ids')}
+                    if key not in ('arbitration_archived_at', 'arbitration_reason', 'superseded_by', 'merged_from_ids',
+                                   '_sync_metadata', 'source_sync_id', 'archived_at', 'arbitration_restored_at')}
             digest = hashlib.sha256(f"{row['id']}|{now.isoformat()}".encode()).hexdigest()[:8]
             copy.update(id=f"fact_{now.strftime('%Y%m%d%H%M%S')}_{digest}", restored_from=row['id'],
                         created_at=now.isoformat())
@@ -302,4 +312,7 @@ async def restore(name):
         if added:
             facts.extend(added)
             await store.asave_facts(name)
+    if added:
+        from .long_term_sync import queue_capture_after_extraction
+        queue_capture_after_extraction(name)
     return len(added)
