@@ -112,6 +112,7 @@
                 function modelButton(key, action) {
                     var button = document.createElement('button');
                     button.type = 'button';
+                    button.className = 'chat-sync-button' + (action === 'local' ? ' chat-sync-secondary' : '');
                     button.textContent = window.t('cloudModel.' + key);
                     button.addEventListener('click', async function () {
                         if (!dialog.open || activeUid !== modelUid || characterName() !== modelName) return;
@@ -223,6 +224,7 @@
         statusNode.setAttribute('role', 'status');
         dialog.appendChild(statusNode);
         var modelPanel = document.createElement('div');
+        modelPanel.className = 'chat-sync-model';
         modelPanel.dataset.syncModel = '';
         dialog.appendChild(modelPanel);
         dialog.addEventListener('close', function () { settingsCharacterName = null; });

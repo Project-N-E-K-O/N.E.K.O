@@ -1,7 +1,8 @@
 /* Static profile consent and retained conflicts; OAuth remains in the backend. */
 (function () {
     'use strict';
-    var dialog = null, timer = null, polling = false, reviewed = new Set();
+    var dialog = null, promptDialog = null, timer = null, polling = false, reviewed = new Set();
+    var promptQueue = Promise.resolve();
     function text(key, values) { return window.t ? window.t('chatSync.' + key, values || {}) : key; }
     async function api(path, body) {
         // The browser can choose an observed hash/revision, never an owner or token.
@@ -26,15 +27,55 @@
             profile.persona.fields.forEach(function (field) { lines.push(field.key + ': ' + field.value); });
         }
         var node = document.createElement('pre'); node.textContent = lines.join('\n\n');
-        node.style.maxHeight = '30vh'; node.style.overflow = 'auto'; node.style.whiteSpace = 'pre-wrap';
+        node.className = 'chat-sync-profile-preview';
         parent.appendChild(node);
+    }
+    function createPanel(titleKey, id) {
+        var panel = document.createElement('dialog'); panel.id = id;
+        panel.setAttribute('aria-labelledby', id + '-title');
+        var header = document.createElement('div'); header.className = 'chat-sync-dialog-header';
+        var icon = document.createElement('img'); icon.src = '/static/icons/set_on.png'; icon.alt = '';
+        var title = document.createElement('h2'); title.id = id + '-title'; title.textContent = text(titleKey);
+        var close = document.createElement('button'); close.type = 'button'; close.className = 'chat-sync-close';
+        close.setAttribute('aria-label', text('close'));
+        var closeIcon = document.createElement('img'); closeIcon.src = '/static/icons/close_button.png'; closeIcon.alt = '';
+        close.appendChild(closeIcon); close.addEventListener('click', function () { panel.close(); });
+        header.appendChild(icon); header.appendChild(title); header.appendChild(close); panel.appendChild(header);
+        return panel;
+    }
+    function promptProfile(message, confirmation) {
+        // Every save and notice keeps its own consent result while another prompt is open.
+        var pending = promptQueue.then(function () { return showProfilePrompt(message, confirmation); });
+        promptQueue = pending.catch(function () {});
+        return pending;
+    }
+    function showProfilePrompt(message, confirmation) {
+        // Native top-layer dialogs also keep rename confirmation above its profile preview.
+        var panel = createPanel('title', 'character-profile-sync-prompt'), accepted = false;
+        var body = document.createElement('p'); body.className = 'chat-sync-status'; body.textContent = message;
+        panel.appendChild(body);
+        var actions = document.createElement('div'); actions.className = 'chat-sync-actions'; panel.appendChild(actions);
+        var cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'chat-sync-button chat-sync-secondary';
+        cancel.textContent = confirmation ? (window.t ? window.t('common.cancel') : 'cancel') : text('close');
+        cancel.addEventListener('click', function () { panel.close(); }); actions.appendChild(cancel);
+        if (confirmation) {
+            var confirm = document.createElement('button'); confirm.type = 'button'; confirm.className = 'chat-sync-button';
+            confirm.textContent = window.t ? window.t('common.confirm') : 'confirm';
+            confirm.addEventListener('click', function () { accepted = true; panel.close(); }); actions.appendChild(confirm);
+        }
+        return new Promise(function (resolve) {
+            panel.addEventListener('close', function () {
+                panel.remove(); if (promptDialog === panel) promptDialog = null; resolve(accepted);
+            });
+            promptDialog = panel;
+            try { document.body.appendChild(panel); panel.showModal(); }
+            catch (error) { panel.remove(); if (promptDialog === panel) promptDialog = null; throw error; }
+        });
     }
     function openDialog(titleKey) {
         // One profile dialog owns its listeners and is removed on normal close.
-        dialog = document.createElement('dialog'); var owned = dialog; owned.setAttribute('aria-label', text(titleKey));
+        dialog = createPanel(titleKey, 'character-profile-sync-dialog'); var owned = dialog;
         // A dedicated selector opts this modal into the transparent chat page's pointer input.
-        owned.id = 'character-profile-sync-dialog';
-        var title = document.createElement('h2'); title.textContent = text(titleKey); dialog.appendChild(title);
         owned.addEventListener('close', function () { owned.remove(); if (dialog === owned) dialog = null; });
         document.body.appendChild(dialog); dialog.showModal();
         return dialog;
@@ -42,25 +83,31 @@
     async function review(uid, state) {
         // Raw versions are text nodes. Neither candidate is overwritten by opening
         // or dismissing this dialog, including a pending remote profile rename.
-        if (dialog || !state.head) return;
+        if (dialog || promptDialog || !state.head) return false;
         var panel = openDialog(state.renameRequired ? 'profileRenamePending' : 'profileConflict'), resolving = false;
+        var versions = document.createElement('div'); versions.className = 'chat-sync-versions'; panel.appendChild(versions);
         [['profileLocal', state.local], ['profileRemote', state.head]].forEach(function (candidate) {
+            var section = document.createElement('section'); section.className = 'chat-sync-version';
             var label = document.createElement('h3');
             label.textContent = text(candidate[0]);
-            panel.appendChild(label); preview(panel, candidate[1]);
+            section.appendChild(label); preview(section, candidate[1]); versions.appendChild(section);
         });
-        var status = document.createElement('p'); status.setAttribute('role', 'status'); panel.appendChild(status);
+        var status = document.createElement('p'); status.className = 'chat-sync-status'; status.setAttribute('role', 'status'); panel.appendChild(status);
+        var actions = document.createElement('div'); actions.className = 'chat-sync-actions'; panel.appendChild(actions);
         ['local', 'remote', 'close'].forEach(function (choice) {
             var button = document.createElement('button'); button.type = 'button'; button.dataset.profileChoice = choice;
+            button.className = 'chat-sync-button' + (choice === 'remote' ? '' : ' chat-sync-secondary');
             button.textContent = text(choice === 'local' ? 'profileUseLocal' : choice === 'remote' ? 'profileUseRemote' : 'close');
             button.addEventListener('click', async function () {
                 if (choice === 'close') { panel.close(); return; }
                 if (resolving) return;
-                if (choice === 'remote' && state.renameRequired && !window.confirm(text('profileRenameConfirm', {
-                    oldName: state.local.name, newName: state.head.name
-                }))) return;
-                button.disabled = true; resolving = true;
+                resolving = true;
                 try {
+                    if (choice === 'remote' && state.renameRequired && !await promptProfile(text('profileRenameConfirm', {
+                        oldName: state.local.name, newName: state.head.name
+                    }), true)) return;
+                    if (dialog !== panel) return;
+                    button.disabled = true;
                     await api('/characters/' + uid + '/profile/resolve', {choice: choice, localHash: state.local_hash,
                         revision: state.head_revision, confirmRename: choice === 'remote' && state.renameRequired});
                     panel.close();
@@ -72,22 +119,28 @@
                     status.textContent = text('profileChanged'); reviewed.clear();
                 } finally { button.disabled = false; resolving = false; }
             });
-            panel.appendChild(button);
+            actions.appendChild(button);
         });
+        return true;
     }
     async function cloudImport() {
         // Import is an explicit user action. Listing or previewing alone never
         // binds, enables or creates a local character.
-        if (dialog) return;
+        if (dialog || promptDialog) return;
         var panel = openDialog('cloudImport'), state = document.createElement('p');
+        state.className = 'chat-sync-status'; state.textContent = text('working');
         state.setAttribute('role', 'status'); panel.appendChild(state);
+        var rolesList = document.createElement('div'); rolesList.className = 'chat-sync-role-list'; panel.appendChild(rolesList);
+        var actions = document.createElement('div'); actions.className = 'chat-sync-actions'; panel.appendChild(actions);
         var close = document.createElement('button'); close.textContent = text('close'); close.type = 'button';
-        close.addEventListener('click', function () { panel.close(); }); panel.appendChild(close);
+        close.className = 'chat-sync-button chat-sync-secondary';
+        close.addEventListener('click', function () { panel.close(); }); actions.appendChild(close);
         try {
             var roles = await api('/cloud/characters');
-            if (!roles.characters.length) state.textContent = text('cloudEmpty');
+            state.textContent = roles.characters.length ? '' : text('cloudEmpty');
             roles.characters.forEach(function (role) {
                 var choose = document.createElement('button'); choose.type = 'button'; choose.textContent = role.displayName;
+                choose.className = 'chat-sync-button chat-sync-secondary';
                 choose.addEventListener('click', async function () {
                     choose.disabled = true;
                     try {
@@ -95,10 +148,11 @@
                         // A closed dialog cannot issue a late import request.
                         if (dialog !== panel) return;
                         var old = panel.querySelector('[data-profile-preview]'); if (old) old.remove();
-                        var section = document.createElement('section'); section.dataset.profilePreview = 'true'; panel.appendChild(section);
+                        var section = document.createElement('section'); section.dataset.profilePreview = 'true'; panel.insertBefore(section, actions);
                         if (!head.profile) { section.textContent = text('cloudProfileEmpty'); return; }
                         preview(section, head.profile);
                         var create = document.createElement('button'); create.type = 'button'; create.textContent = text('cloudCreate');
+                        create.className = 'chat-sync-button';
                         create.addEventListener('click', async function () {
                             create.disabled = true;
                             try {
@@ -117,7 +171,7 @@
                     } catch (_) { state.textContent = text('profileSaveFailed'); }
                     finally { choose.disabled = false; }
                 });
-                panel.insertBefore(choose, close);
+                rolesList.appendChild(choose);
             });
         } catch (_) { state.textContent = text('profileSaveFailed'); }
     }
@@ -160,8 +214,8 @@
             if (!role || !role.binding) {
                 // Saving an unbound role still asks about upload, but consent
                 // cannot silently enable sync or invent an account/role binding.
-                if (window.confirm(text('profileUploadConfirm', {name: name}))) {
-                    window.alert(text('profileNeedsBinding'));
+                if (await promptProfile(text('profileUploadConfirm', {name: name}), true)) {
+                    await promptProfile(text('profileNeedsBinding'), false);
                 }
                 return;
             }
@@ -169,18 +223,18 @@
             if (candidate.conflict || (candidate.renameRequired && candidate.apply_pending)) {
                 await review(role.characterSyncId, candidate); return;
             }
-            if (!candidate.dirty || !window.confirm(text('profileUploadConfirm', {name: name}))) return;
+            if (!candidate.dirty || !await promptProfile(text('profileUploadConfirm', {name: name}), true)) return;
             await api('/characters/' + role.characterSyncId + '/profile/approve', {
                 localHash: candidate.local_hash, revision: candidate.head_revision});
         } catch (error) {
             // Optional sync failures cannot turn a completed local save into failure.
-            window.alert(text(error.message === 'character_profile_unsupported_value' ? 'profileUnsupported' : 'profileSaveFailed'));
+            await promptProfile(text(error.message === 'character_profile_unsupported_value' ? 'profileUnsupported' : 'profileSaveFailed'), false);
         }
     }
     async function poll() {
         // Cheap local observations surface conflicts for all opted-in roles;
         // the backend owns authenticated cloud polling at the normal cadence.
-        if (polling || dialog || document.visibilityState === 'hidden') return;
+        if (polling || dialog || promptDialog || document.visibilityState === 'hidden') return;
         polling = true;
         try {
             var state = await api('/status');
@@ -207,8 +261,7 @@
                 if (!profile) continue;
                 var key = role.characterSyncId + ':' + profile.local_hash + ':' + profile.head_revision;
                 if ((profile.conflict || (profile.renameRequired && profile.apply_pending)) && !reviewed.has(key)) {
-                    reviewed.add(key);
-                    await review(role.characterSyncId, await api('/characters/' + role.characterSyncId + '/profile/local', {}));
+                    if (await review(role.characterSyncId, await api('/characters/' + role.characterSyncId + '/profile/local', {}))) reviewed.add(key);
                     break;
                 }
             }
