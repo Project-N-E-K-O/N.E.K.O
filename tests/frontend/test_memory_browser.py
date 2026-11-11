@@ -508,12 +508,14 @@ def test_storage_location_link_opens_dialog_and_reuses_memory_page(
     modal = mock_page.locator("#storage-location-modal")
     expect(settings).to_be_visible()
     expect(modal).to_be_visible()
+    expect(mock_page.locator("#storage-target-root-input")).to_be_focused()
     expect(mock_page.locator("#storage-modal-current-root")).to_have_text(
         str(seed_memory_file.parents[2])
     )
     expect(mock_page).to_have_url(url)
     mock_page.locator("#storage-location-modal-close").click()
     expect(modal).to_be_hidden()
+    expect(mock_page.locator("#storage-location-manage-btn")).to_be_focused()
     settings.locator("[data-memory-panel-close]").click()
 
     draft = mock_page.locator("#memory-chat-edit .memo-textarea").first
@@ -522,6 +524,43 @@ def test_storage_location_link_opens_dialog_and_reuses_memory_page(
     expect(settings).to_be_visible()
     expect(modal).to_be_visible()
     expect(draft).to_have_value("unsaved memory draft")
+    expect(mock_page).to_have_url(url)
+
+
+@pytest.mark.frontend
+def test_storage_location_link_waits_for_memory_import(
+    mock_page: Page, running_server: str, seed_memory_file: Path
+):
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    url = f"{running_server}/memory_browser"
+    storage_link = f"{url}#change-storage-location"
+    pending_previews = []
+    mock_page.route("**/api/memory/external_import/preview", lambda route: pending_previews.append(route))
+    mock_page.goto(url)
+    _open_auxiliary_panel(mock_page, "import")
+    mock_page.locator("#external-memory-files").set_input_files(
+        {"name": "MEMORY.md", "mimeType": "text/markdown", "buffer": b"# imported memory"}
+    )
+    with mock_page.expect_request("**/api/memory/external_import/preview"):
+        mock_page.locator("#external-memory-import-btn").click()
+    mock_page.evaluate(
+        """async url => {
+            const changed = new Promise(resolve =>
+                window.addEventListener('hashchange', resolve, { once: true }));
+            window.location.replace(url);
+            await changed;
+        }""",
+        storage_link,
+    )
+
+    modal = mock_page.locator("#storage-location-modal")
+    expect(mock_page.locator("#memory-import-panel")).to_be_visible()
+    expect(modal).to_be_hidden()
+    expect(mock_page).to_have_url(storage_link)
+
+    pending_previews[0].fulfill(status=500, json={"success": False, "error": "Test import ended"})
+    expect(mock_page.locator("#memory-settings-panel")).to_be_visible()
+    expect(modal).to_be_visible()
     expect(mock_page).to_have_url(url)
 
 

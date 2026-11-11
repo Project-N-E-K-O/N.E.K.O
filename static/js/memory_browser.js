@@ -64,6 +64,7 @@
     };
     let storagePreflightState = null;
     let storagePreflightBusy = false;
+    let storageLocationModalOpener = null;
     const STORAGE_APP_FOLDER_NAME = 'N.E.K.O';
     const MEMORY_ROLE_COMPACT_MEDIA_QUERY = window.__memoryRoleCompactMediaQuery;
     const memoryRoleCompactMediaQuery = window.matchMedia
@@ -3660,7 +3661,7 @@
         renderStorageRestartButton();
     }
 
-    function openStorageLocationManager() {
+    function openStorageLocationManager(opener) {
         const state = storageLocationState || {};
         const bootstrap = state.bootstrap || {};
         const blockingReason = String(state.blockingReason || '').trim();
@@ -3671,7 +3672,7 @@
         }
 
         const modal = document.getElementById('storage-location-modal');
-        if (!modal) return;
+        if (!modal || !modal.hidden) return;
         setElementText('storage-modal-current-root', displayPath(bootstrap.current_root));
 
         const input = document.getElementById('storage-target-root-input');
@@ -3683,8 +3684,10 @@
         setStoragePreflightBusy(false);
         setStoragePreflightResult('', '');
         renderStorageRestartButton();
+        storageLocationModalOpener = opener;
         modal.hidden = false;
         document.body.classList.add('storage-location-memory-modal-open');
+        (input || document.getElementById('storage-location-modal-close'))?.focus({ preventScroll: true });
     }
 
     function closeStorageLocationManager() {
@@ -3697,21 +3700,22 @@
         if (input) {
             input.disabled = false;
         }
+        restoreMemoryAuxiliaryPanelFocus(storageLocationModalOpener, true);
+        storageLocationModalOpener = null;
     }
 
     function openStorageLocationFromHash() {
         if (window.location.hash !== '#change-storage-location') return;
-        window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search);
         if (activeMemoryAuxiliaryPanel !== 'settings') openMemoryAuxiliaryPanel('settings');
-        const modal = document.getElementById('storage-location-modal');
-        if (activeMemoryAuxiliaryPanel === 'settings' && modal && modal.hidden) {
-            openStorageLocationManager();
-        }
+        if (activeMemoryAuxiliaryPanel !== 'settings') return;
+        window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search);
+        openStorageLocationManager(document.getElementById('storage-location-manage-btn'));
     }
 
     function initStorageLocationControls() {
         document.getElementById('storage-location-open-btn')?.addEventListener('click', openCurrentStorageRoot);
-        document.getElementById('storage-location-manage-btn')?.addEventListener('click', openStorageLocationManager);
+        const manageButton = document.getElementById('storage-location-manage-btn');
+        manageButton?.addEventListener('click', () => openStorageLocationManager(manageButton));
         document.getElementById('storage-location-modal-close')?.addEventListener('click', closeStorageLocationManager);
         const modal = document.getElementById('storage-location-modal');
         modal?.addEventListener('click', function (event) {
@@ -4988,6 +4992,7 @@
                 if (formatSelect) formatSelect.disabled = false;
                 updateExternalImportButton();
                 syncRepetitionInsightsControls();
+                openStorageLocationFromHash();
             }
         }
     }
