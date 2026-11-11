@@ -26,6 +26,7 @@
         <div class="plugin-statuses">
           <StatusIndicator :status="plugin.status || 'stopped'" />
           <PluginAutoStartBadge v-if="plugin.autoStart === true" />
+          <el-tag v-if="plugin.consent?.state === 'confirm'" size="small" type="info">{{ t('pluginConsent.pending') }}</el-tag>
         </div>
       </header>
 

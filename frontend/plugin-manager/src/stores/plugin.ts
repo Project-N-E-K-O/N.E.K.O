@@ -1,3 +1,4 @@
+import { usePluginConsentState } from '@/stores/pluginConsentState'
 /**
  * 插件状态管理
  */
@@ -141,6 +142,8 @@ export const usePluginStore = defineStore('plugin', () => {
       ? runtime : status
   }
 
+  const consentState = usePluginConsentState()
+
   function withDisplayState<P extends PluginListSummary>(plugin: P) {
     return {
       ...plugin,
@@ -190,6 +193,7 @@ export const usePluginStore = defineStore('plugin', () => {
         // Live plugins still use the original read ticket below.
         prunePluginCaches(new Set(nextSummaries.map(plugin => plugin.id)), ++statusReadSequence)
         nextSummaries.forEach(plugin => recordMetadataStatus(plugin, statusTicket))
+        consentState.seedSummaries(nextSummaries)
         pluginSummaries.value = reconcilePluginSnapshot(pluginSummaries.value, nextSummaries)
         pluginSummarySnapshotLoaded.value = true
         pluginSummaryFetchedAt.value = Date.now()
@@ -231,6 +235,7 @@ export const usePluginStore = defineStore('plugin', () => {
         if (!stillCurrent()) return
         recordMetadataStatus(detail, statusTicket)
         const saved = confirmedAutoStart.get(pluginId)
+        consentState.seedSummaries([detail])
         pluginDetails.value = { ...pluginDetails.value, [pluginId]: saved && saved.seq > savesBefore
           ? withConfirmedAutoStart(detail, saved.value) : detail }
       } catch (error: any) {
@@ -244,6 +249,7 @@ export const usePluginStore = defineStore('plugin', () => {
         if (detail) {
           recordMetadataStatus(detail, statusTicket)
           const saved = confirmedAutoStart.get(pluginId)
+          consentState.seedSummaries([detail])
           pluginDetails.value = { ...pluginDetails.value, [pluginId]: saved && saved.seq > savesBefore
             ? withConfirmedAutoStart(detail, saved.value) : detail }
         } else if (pluginId in pluginDetails.value) {

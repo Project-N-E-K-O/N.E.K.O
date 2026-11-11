@@ -20,6 +20,7 @@ from plugin.server.application.install_source import (
 )
 from plugin.server.application.install_source.models import LockEntry
 from plugin.server.application.install_source.scanner import PluginDirectoryScanner
+from plugin.server.application.plugins.consent_service import forget_plugin
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
 from plugin.server.application.plugins.registry_service import PluginRegistryService
 from plugin.server.domain.errors import ServerDomainError
@@ -1015,6 +1016,10 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
     # Stopped plugins do not pass through stop_plugin; revoke recovery permission after commit so restored
     # same-ID built-ins or reinstalls cannot inherit it. Keep it on rollback, which restores the original source exactly.
     revoke_hot_reload_recovery(plugin_id)
+    try:
+        await asyncio.to_thread(forget_plugin, plugin_id)
+    except Exception as exc:
+        logger.warning("Could not clear uninstalled plugin consent: plugin_id={}, error={}", plugin_id, type(exc).__name__)
     runtime_restart: RuntimeRestart = "not_needed"
     runtime_restart_error: dict[str, str] | None = None
     if was_running and restored_builtin:

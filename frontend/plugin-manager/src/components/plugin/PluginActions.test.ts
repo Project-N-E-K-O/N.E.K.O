@@ -31,6 +31,16 @@ vi.mock('@element-plus/icons-vue', () => ({
   VideoPlay: {},
 }))
 vi.mock('@/utils/openExternal', () => ({ openExternalUrl: vi.fn() }))
+vi.mock('@/composables/usePluginStartGate', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/composables/usePluginStartGate')>()),
+  usePluginStartGate: () => ({
+    startWithConsent: async (id: string) => {
+      await usePluginStore().start(id)
+      return true
+    },
+    prepareBatchStart: vi.fn(async (ids: string[]) => ({ allowed: ids, dialogShown: false })),
+  }),
+}))
 
 const elementPlusMocks = vi.hoisted(() => ({
   ElMessage: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() },

@@ -1,0 +1,305 @@
+"""Post-commit, advisory capability analysis scheduling and reports."""
+
+from __future__ import annotations
+
+import asyncio
+import copy
+import threading
+import tomllib
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+from pathlib import Path
+
+from plugin.core.capability_analysis import ANALYZER_VERSION, analyze_capabilities
+from plugin.core.state import state
+from plugin.logging_config import get_logger
+from plugin.server.domain.consent_policy import ANALYZING_STATUSES
+from plugin.server.domain.errors import ServerDomainError
+from plugin.server.infrastructure.capability_reports import report_store
+
+logger = get_logger("server.plugins.capability_analysis")
+
+
+def plugin_source(plugin_id: str) -> tuple[Path, str]:
+    with state.acquire_plugins_read_lock():
+        meta = state.plugins.get(plugin_id)
+        path = meta.get("config_path") if isinstance(meta, dict) else None
+        version = str(meta.get("version") or "") if isinstance(meta, dict) else ""
+    if not path:
+        raise ServerDomainError("PLUGIN_NOT_FOUND", "Plugin not found", 404)
+    return Path(path).parent, version
+
+
+def source_revision(root: Path, version: str) -> dict:
+    stat = (root / "plugin.toml").stat()
+    return {
+        "root": str(root),
+        "version": version,
+        "mtime_ns": stat.st_mtime_ns,
+        "size": stat.st_size,
+    }
+
+
+def is_fresh(report: dict | None, revision: dict | None) -> bool:
+    return bool(
+        report
+        and revision
+        and report.get("_analyzer_version") == ANALYZER_VERSION
+        and report.get("_source") == revision
+    )
+
+
+def _report(status: str, **fields) -> dict:
+    return {
+        "status": status,
+        "capabilities": [],
+        "evidence": [],
+        "warnings": [],
+        **fields,
+    }
+
+
+def _unavailable() -> dict:
+    return _report("unavailable")
+
+
+class CapabilityAnalysisService:
+    def __init__(self, store=report_store):
+        self.store = store
+        self._lock = threading.RLock()
+        self._publication_lock = threading.Lock()
+        self._executor: ThreadPoolExecutor | None = None
+        self._jobs: dict[str, tuple[str, object]] = {}
+        self._reports: dict[str, dict] = {}
+        self._stop = threading.Event()
+        self._closing = False
+
+    def _worker(self) -> ThreadPoolExecutor:
+        if self._executor is None:
+            self._stop = threading.Event()
+            self._executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="plugin-capabilities"
+            )
+        return self._executor
+
+    def _submit(
+        self, plugin_id: str, root: Path, version: str, *, force: bool
+    ) -> None:
+        token = uuid.uuid4().hex
+        with self._lock:
+            if self._closing or self._stop.is_set():
+                return
+            previous = self._jobs.get(plugin_id)
+            if previous:
+                previous[1].cancel()
+            self._reports[plugin_id] = _report(
+                "queued", version=version, _source_root=str(root)
+            )
+            # The token, not the future, supersedes this job: a later enqueue
+            # replaces the entry and _current() stops this run from publishing.
+            future = self._worker().submit(
+                self._run, plugin_id, root, version, token, force
+            )
+            self._jobs[plugin_id] = (token, future)
+
+    def installed(self, root: Path) -> None:
+        with self._lock:
+            if self._closing:
+                return
+            self._worker().submit(self._installed, root)
+
+    def _installed(self, root: Path) -> None:
+        try:
+            with (root / "plugin.toml").open("rb") as source:
+                plugin = tomllib.load(source)["plugin"]
+        except Exception as exc:
+            logger.warning(
+                "Could not analyze installed plugin: error={}",
+                type(exc).__name__,
+            )
+            return
+        self.ensure_analyzed(
+            str(plugin["id"]), root, str(plugin.get("version", ""))
+        )
+
+    def ensure_analyzed(self, plugin_id: str, root: Path, version: str) -> None:
+        """Enqueue a scan only when no fresh report or in-flight job covers the
+        current source revision."""
+        report = self.report(plugin_id, root, version)
+        status = report.get("status")
+        if status in ("queued", "running") or status != "unavailable":
+            return
+        self._submit(plugin_id, root, version, force=False)
+
+    def reanalyze(self, plugin_id: str, root: Path, version: str) -> None:
+        self._submit(plugin_id, root, version, force=True)
+
+    def _current(self, plugin_id, token):
+        return (
+            self._jobs.get(plugin_id, (None,))[0] == token and not self._stop.is_set()
+        )
+
+    def _read_cached_report(self, plugin_id: str) -> dict | None:
+        report = self.store.read(plugin_id)
+        if report and report.get("_analyzer_version") == ANALYZER_VERSION:
+            return report
+        return None
+
+    def _run(self, plugin_id, root, version, token, force):
+        with self._lock:
+            if not self._current(plugin_id, token):
+                return
+        revision = None
+        try:
+            revision = source_revision(root, version)
+            saved = self._read_cached_report(plugin_id)
+            if not force and is_fresh(saved, revision):
+                report = saved
+            else:
+                with self._lock:
+                    if not self._current(plugin_id, token):
+                        return
+                    self._reports[plugin_id]["status"] = "running"
+                report = analyze_capabilities(root, stop=self._stop)
+                report.update(
+                    version=version,
+                    analyzed_at=datetime.now(timezone.utc).isoformat(),
+                    _source=revision,
+                    _source_root=str(root),
+                )
+            if source_revision(root, version) != revision:
+                with self._lock:
+                    if self._current(plugin_id, token):
+                        self._reports.pop(plugin_id, None)
+                return
+            self._publish(plugin_id, token, report)
+        except Exception as exc:
+            logger.warning(
+                "Plugin capability analysis failed: plugin_id={}, error={}",
+                plugin_id,
+                type(exc).__name__,
+            )
+            report = _report(
+                "failed",
+                _source=revision,
+                version=version,
+                _source_root=str(root),
+                warnings=[{"code": "analysis_failed"}],
+                analyzed_at=datetime.now(timezone.utc).isoformat(),
+            )
+            try:
+                self._publish(plugin_id, token, report)
+            except Exception:
+                with self._lock:
+                    if self._current(plugin_id, token):
+                        self._reports[plugin_id] = report
+        finally:
+            with self._lock:
+                if self._jobs.get(plugin_id, (None,))[0] == token:
+                    self._jobs.pop(plugin_id, None)
+
+    def _publish(self, plugin_id, token, report):
+        # Serializes report publication with deletion, never with enqueue or
+        # the independent authorization store used during startup.
+        with self._publication_lock:
+            with self._lock:
+                if not self._current(plugin_id, token):
+                    return
+            report["_analyzer_version"] = ANALYZER_VERSION
+            self.store.save(plugin_id, report)
+            with self._lock:
+                if self._current(plugin_id, token):
+                    self._reports[plugin_id] = report
+
+    def report(self, plugin_id: str, root: Path, version: str) -> dict:
+        with self._lock:
+            cached = self._reports.get(plugin_id)
+            report = copy.deepcopy(cached)
+        if report is None:
+            report = self._read_cached_report(plugin_id)
+        if (
+            report
+            and report.get("_source_root") == str(root)
+            and report.get("version") == version
+        ):
+            status = report.get("status")
+            if status in ANALYZING_STATUSES:
+                return report
+            try:
+                fresh = is_fresh(report, source_revision(root, version))
+            except OSError:
+                fresh = False
+            if fresh:
+                return report
+            with self._lock:
+                if self._reports.get(plugin_id) is cached:
+                    self._reports.pop(plugin_id, None)
+        return _unavailable()
+
+    def shutdown(self) -> None:
+        with self._lock:
+            self._closing = True
+            executor, self._executor = self._executor, None
+            self._stop.set()
+        if executor:
+            executor.shutdown(wait=True, cancel_futures=True)
+        with self._lock:
+            self._jobs.clear()
+            self._reports.clear()
+            self._closing = False
+
+    async def close(self) -> None:
+        await asyncio.to_thread(self.shutdown)
+
+    def forget(self, plugin_id: str) -> None:
+        with self._publication_lock:
+            with self._lock:
+                job = self._jobs.pop(plugin_id, None)
+                if job:
+                    job[1].cancel()
+                self._reports.pop(plugin_id, None)
+            self.store.delete(plugin_id)
+
+
+analysis_service = CapabilityAnalysisService()
+
+
+def notify_install_committed(result: dict) -> dict:
+    """Called explicitly by the owner of a successfully committed install."""
+    unpacked = result.get("unpack", result.get("install", result))
+    for installed in unpacked.get("installed_plugins", []):
+        try:
+            analysis_service.installed(Path(installed["target_dir"]))
+        except Exception as exc:
+            logger.warning(
+                "Capability job enqueue failed: error={}", type(exc).__name__
+            )
+    return result
+
+
+def schedule_analysis(plugin_id: str, *, force: bool = False) -> None:
+    try:
+        root, version = plugin_source(plugin_id)
+        if force:
+            analysis_service.reanalyze(plugin_id, root, version)
+        else:
+            analysis_service.ensure_analyzed(plugin_id, root, version)
+    except Exception as exc:
+        logger.warning(
+            "Could not schedule capability analysis: plugin_id={}, error={}",
+            plugin_id,
+            type(exc).__name__,
+        )
+
+
+def schedule_analysis_many(plugin_ids) -> None:
+    for plugin_id in plugin_ids:
+        schedule_analysis(plugin_id)
+
+
+def read_report(plugin_id: str, root: Path, version: str) -> dict:
+    try:
+        return analysis_service.report(plugin_id, root, version)
+    except (OSError, ValueError):
+        return _report("failed", warnings=[{"code": "analysis_failed"}])

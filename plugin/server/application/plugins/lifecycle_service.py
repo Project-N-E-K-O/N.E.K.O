@@ -42,6 +42,7 @@ from plugin.logging_config import get_logger
 from plugin.server.domain import IO_RUNTIME_ERRORS, RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.domain.normalization import is_valid_plugin_id
+from plugin.server.application.plugins.consent_service import denied_plugin_ids
 from plugin.server.application.plugins.operation_lock import (
     bounded_operation_wait,
     _HeldPluginOperationLock,
@@ -1667,6 +1668,29 @@ class PluginLifecycleService:
             if plugin_id and str(plugin_id) not in independent_set
         ))
 
+        # Plugins the user explicitly denied are skipped by autostart; every
+        # other consent state starts normally. A consent store read failure
+        # must not block autostart.
+        skipped_denied: list[str] = []
+        try:
+            denied = await asyncio.to_thread(
+                denied_plugin_ids, (*independent, *ordered)
+            )
+        except Exception as error:
+            denied = set()
+            logger.warning(
+                "could not read plugin consent decisions; autostart continues: err_type={}",
+                type(error).__name__,
+            )
+        if denied:
+            skipped_denied = sorted(denied)
+            independent = [pid for pid in independent if pid not in denied]
+            ordered = [pid for pid in ordered if pid not in denied]
+            logger.info(
+                "autostart skips plugins with denied consent: plugin_ids={}",
+                skipped_denied,
+            )
+
         if limit <= 1 or len(independent) <= 1:
             for plugin_id in independent:
                 await _start_one(plugin_id)
@@ -1720,7 +1744,7 @@ class PluginLifecycleService:
             len(failed),
             limit,
         )
-        return {"started": started, "failed": failed}
+        return {"started": started, "failed": failed, **({"skipped_denied": skipped_denied} if skipped_denied else {})}
 
     @serialized_plugin_operation
     async def stop_plugin(
