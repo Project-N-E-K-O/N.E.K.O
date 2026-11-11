@@ -184,10 +184,10 @@ jobs:
       # --- Platform-specific system dependencies ---
       - name: Install Linux system dependencies
         run: |
-          # The hosted image's Azure mirror repeatedly failed DNS resolution.
-          # Keep Ubuntu's signed mirror mechanism, using the official archives.
+          # The hosted image could not resolve the Canonical archive hosts.
+          # Keep Ubuntu's signed mirror mechanism, with a kernel.org mirror fallback.
           if [ "$(uname -m)" = x86_64 ] && [ -f /etc/apt/apt-mirrors.txt ]; then
-            printf '%s\n' https://archive.ubuntu.com/ubuntu/ https://security.ubuntu.com/ubuntu/ \
+            printf '%s\n' https://mirrors.kernel.org/ubuntu/ https://archive.ubuntu.com/ubuntu/ https://security.ubuntu.com/ubuntu/ \
               | sudo tee /etc/apt/apt-mirrors.txt
           fi
           sudo apt-get update --error-on=any
@@ -600,10 +600,10 @@ jobs:
 
       - name: Install Linux build dependencies
         run: |
-          # The hosted image's Azure mirror repeatedly failed DNS resolution.
-          # Keep Ubuntu's signed mirror mechanism, using the official archives.
+          # The hosted image could not resolve the Canonical archive hosts.
+          # Keep Ubuntu's signed mirror mechanism, with a kernel.org mirror fallback.
           if [ "$(uname -m)" = x86_64 ] && [ -f /etc/apt/apt-mirrors.txt ]; then
-            printf '%s\n' https://archive.ubuntu.com/ubuntu/ https://security.ubuntu.com/ubuntu/ \
+            printf '%s\n' https://mirrors.kernel.org/ubuntu/ https://archive.ubuntu.com/ubuntu/ https://security.ubuntu.com/ubuntu/ \
               | sudo tee /etc/apt/apt-mirrors.txt
           fi
           sudo apt-get update --error-on=any
