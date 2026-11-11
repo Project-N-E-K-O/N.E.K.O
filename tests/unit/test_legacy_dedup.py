@@ -389,7 +389,7 @@ async def test_a_chain_of_folds_archives_each_fact_against_the_final_survivor(me
                           _fact('a', '博士是一名主播，会直播', created=day(1)),
                           _fact('c', '博士是一名主播', created=day(0))]
     await facts.asave_facts(NAME)
-    import app.memory_server.legacy_dedup as module
+    from app.memory_server import legacy_dedup as module
     module._decode = _vectors({'c': [1.0, 0.0], 'a': [0.95, 0.3122], 'b': [0.9, 0.4359]})
     model = _Model([{'博士是一名主播，会日常直播', '博士是一名主播，会直播'}, {'博士是一名主播，会直播', '博士是一名主播'}])
     marker = await _run(model)
@@ -429,7 +429,7 @@ async def test_a_restore_travels_as_a_live_fact_and_happens_once(memory):
             row['_sync_metadata'] = {'status': 'superseded', 'archivedAt': 1, 'supersededById': 'old'}
     (directory / 'facts_archive.json').write_text(json.dumps(archive, ensure_ascii=False), encoding='utf-8')
     owed = []
-    import app.memory_server.long_term_sync as lts
+    from app.memory_server import long_term_sync as lts
     lts.queue_capture_after_extraction = lambda name: owed.append(name)
     assert await runner.restore(NAME) == 1 and owed == [NAME]
     [back] = [row for row in facts._facts[NAME] if row.get('restored_from') == 'dup']
@@ -476,7 +476,7 @@ async def _chain(directory, facts):
     (directory / 'reflections.json').write_text(json.dumps([
         {'id': 'r1', 'text': '博士以直播为业', 'entity': 'master', 'status': 'confirmed', 'source_fact_ids': ['b'],
          'created_at': day(3)}], ensure_ascii=False), encoding='utf-8')
-    import app.memory_server.legacy_dedup as module
+    from app.memory_server import legacy_dedup as module
     module._decode = _vectors({'c': [1.0, 0.0], 'a': [0.95, 0.3122], 'b': [0.9, 0.4359]})
     return _Model([{'博士是一名主播，会日常直播', '博士是一名主播，会直播'}, {'博士是一名主播，会直播', '博士是一名主播'}])
 
@@ -518,7 +518,7 @@ async def test_only_what_was_actually_archived_is_repointed_and_reported(memory,
 @pytest.mark.asyncio
 async def test_a_publish_is_asked_for_again_until_the_server_confirms_the_mark(memory, monkeypatch):
     """A lost owed mark (cleared by a capture already running, or never written) heals on the next idle round."""
-    import app.memory_server.long_term_sync as lts
+    from app.memory_server import long_term_sync as lts
     directory, facts = memory
     await _seed(directory, facts)
     await _run(_Model([]))
