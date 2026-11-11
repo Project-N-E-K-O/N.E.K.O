@@ -564,3 +564,42 @@ async def test_an_archived_fold_stays_on_record_even_if_its_survivor_changed_bef
     marker = await _run(model)
     assert marker['archived'] == {'dup': 'old'}
     assert await runner.restore(NAME) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_survivor_rewritten_just_before_archiving_stops_the_fold(memory, monkeypatch):
+    """The window between the last check and the archive lock: the transaction checks the survivor too."""
+    directory, facts = memory
+    await _seed(directory, facts)
+    real = facts.aarchive_arbitrated_facts
+
+    async def rewrite_then_archive(name, specs, **kwargs):
+        row = next(row for row in facts._facts[NAME] if row['id'] == 'old')
+        row['text'] = '博士不再直播了'
+        await facts.asave_facts(NAME)
+        return await real(name, specs, **kwargs)
+    monkeypatch.setattr(facts, 'aarchive_arbitrated_facts', rewrite_then_archive)
+    model = _Model([{'博士是一名主播', '博士是一名主播，会日常直播'}])
+    with pytest.raises(RuntimeError):
+        await _run(model)
+    assert 'dup' in {row['id'] for row in json.loads((directory / 'facts.json').read_text(encoding='utf-8'))}
+    monkeypatch.setattr(facts, 'aarchive_arbitrated_facts', real)
+    marker = await _run(model)
+    assert marker['archived'] == {}
+
+
+@pytest.mark.asyncio
+async def test_an_aged_fold_waits_when_its_survivor_changed_under_the_lock(memory):
+    directory, facts = memory
+    facts._facts[NAME] = [_fact('live', '博士喜欢吃辣', created='2026-06-12T23:00:00')]
+    await facts.asave_facts(NAME)
+    (directory / 'facts_archive.json').write_text(json.dumps([
+        _fact('old', '博士是一名主播', created='2026-06-12T21:00:00', absorbed=True),
+        _fact('dup', '博士是一名主播，会日常直播', created='2026-06-12T22:00:00', absorbed=True),
+    ], ensure_ascii=False), encoding='utf-8')
+    from app.memory_server import legacy_dedup as runner
+    fingerprints = {'dup': 'stale', 'old': 'stale'}
+    await runner._archive_folded(NAME, {'dup': 'old'}, {**fingerprints, 'dup': legacy_dedup.fingerprint(
+        _fact('dup', '博士是一名主播，会日常直播', created='2026-06-12T22:00:00', absorbed=True))})
+    archive = {row['id']: row for row in json.loads((directory / 'facts_archive.json').read_text(encoding='utf-8'))}
+    assert 'arbitration_archived_at' not in archive['dup']

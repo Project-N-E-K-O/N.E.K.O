@@ -161,11 +161,20 @@ async def _archive_folded(name, folded, fingerprints):
     """
     store = runtime.fact_store
     live = {row.get('id'): dict(row) for row in await store.aload_facts(name) if isinstance(row, dict)}
+    def survivor_unchanged(survivor):
+        return survivor not in live or legacy_dedup.fingerprint(live[survivor]) == fingerprints.get(survivor)
+
     live_specs = {loser: {'reason': 'legacy_dedup', 'superseded_by': survivor}
                   for loser, survivor in folded.items()
-                  if loser in live and legacy_dedup.fingerprint(live[loser]) == fingerprints.get(loser)}
+                  if loser in live and legacy_dedup.fingerprint(live[loser]) == fingerprints.get(loser)
+                  and survivor_unchanged(survivor)}
     if live_specs:
+        # Both sides are checked inside the archive transaction: a survivor rewritten
+        # after this read makes it refuse the whole fold, which the next round redoes.
+        survivors = {spec['superseded_by']: live[spec['superseded_by']] for spec in live_specs.values()
+                     if spec['superseded_by'] in live and spec['superseded_by'] not in live_specs}
         await store.aarchive_arbitrated_facts(name, live_specs,
+                                              survivor_updates=survivors, expected_survivors=survivors,
                                               expected_losers={loser: live[loser] for loser in live_specs})
     remaining = {loser: survivor for loser, survivor in folded.items() if loser not in live}
     if not remaining:
@@ -177,11 +186,15 @@ async def _archive_folded(name, folded, fingerprints):
         with store._get_lock(name):
             with cloudsave_writable_transaction(runtime._config_manager, operation='archive', target=archive_path):
                 archive = _read_archive(name)
+                # Under the fact lock: the survivors as they stand now, live or archived.
+                current = {row.get('id'): row for row in [*archive, *store._facts.get(name, [])] if isinstance(row, dict)}
                 now = datetime.now().isoformat()
                 changed = False
                 for row in archive:
-                    if (isinstance(row, dict) and row.get('id') in remaining and not row.get('arbitration_archived_at')
-                            and legacy_dedup.fingerprint(row) == fingerprints.get(row['id'])):
+                    survivor = remaining.get(row.get('id')) if isinstance(row, dict) else None
+                    if (survivor is not None and not row.get('arbitration_archived_at')
+                            and legacy_dedup.fingerprint(row) == fingerprints.get(row['id'])
+                            and survivor in current and legacy_dedup.fingerprint(current[survivor]) == fingerprints.get(survivor)):
                         # Archived by age, never arbitrated: it now also says what replaced it.
                         row.update(arbitration_archived_at=now, arbitration_reason='legacy_dedup',
                                    superseded_by=remaining[row['id']])
