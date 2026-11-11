@@ -2426,6 +2426,19 @@ _NEWER_RECORD = {
 }
 
 
+# Opposite statements with no correction note stay two things.
+_OPPOSITES_WITHOUT_A_NOTE = {
+    "zh": "没有上面那种说明时按两件不同的事处理",
+    "zh-TW": "沒有上面那種說明時按兩件不同的事處理",
+    "en": "with no such note are treated as distinct",
+    "ja": "上のような注記がなければ別の事柄として扱う",
+    "ko": "위와 같은 설명이 없으면 서로 다른 것으로 처리",
+    "ru": "без такой пометки считаются разными",
+    "es": "sin una nota así se tratan como cosas distintas",
+    "pt": "sem uma nota assim são tratados como coisas distintas",
+}
+
+
 @pytest.mark.parametrize("lang", sorted(_NEWER_RECORD))
 def test_dedup_prompt_lets_a_stated_correction_replace_the_old_claim(lang):
     """Measured on a real model (PR #3686): without this rule a correction such as
@@ -2440,8 +2453,12 @@ def test_dedup_prompt_lets_a_stated_correction_replace_the_old_claim(lang):
     assert "replace" in rule and "existing" in rule
     assert notes.index(rule) < notes.rindex("keep_both")
     assert prompt.count("{PAIRS}") == 1 and prompt.count("{COUNT}") == 1
-    # Opposite statements without such a note are still two things.
-    assert sum("keep_both" in line for line in notes.splitlines()) >= 2
+    # Opposite statements without such a note are still two things: said in so many
+    # words, after the rule above, on a line of its own.
+    opposites = next(line for line in notes.splitlines() if _OPPOSITES_WITHOUT_A_NOTE[lang] in line)
+    assert opposites != rule and notes.index(rule) < notes.index(opposites)
+    # And the advice to keep both when unsure is still there, after both.
+    assert notes.index(opposites) < notes.index("keep_both", notes.index(opposites))
 
 
 # ── the record shown as "candidate" is the newer one ─────────────────
