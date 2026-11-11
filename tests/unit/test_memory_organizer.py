@@ -419,7 +419,7 @@ async def test_evidence_too_long_to_publish_is_trimmed_even_unpublished_when_nob
 
 
 @pytest.mark.asyncio
-async def test_evidence_too_long_to_publish_is_reported_where_another_device_organizes(owner):  # noqa: F811
+async def test_evidence_too_long_to_publish_is_reported_where_another_device_organizes(owner, monkeypatch):  # noqa: F811
     """With the real limits: the protocol itself refuses such a document, so nothing here is shrunk for the test."""
     from memory.long_term_merge import EVIDENCE_MAX
     from memory.long_term_sync import LongTermEvidenceCapacityExceeded, LongTermMemoryCapacityExceeded
@@ -460,9 +460,13 @@ async def test_evidence_too_long_to_publish_is_reported_where_another_device_org
     assert await owner.native.consume(UID)
     kept = stored()
     assert len(kept) == EVIDENCE_MAX and kept[0] == 'r-1' and kept[-1] == f'r-{EVIDENCE_MAX}'
-    # It fits again, so it is published and the reason goes away.
+    # A record this device held, and never published, is gone: the panel says so.
+    trimmed = owner.adapter.evidence_trimmed_at(UID)
+    assert type(trimmed) is int
+    monkeypatch.setattr(owner.runtime.scheduler, 'clock', lambda: trimmed)
+    # It fits again, so it is published and the reason goes away; the notice stays its week.
     assert owner.native._capture('Neko', False)
-    assert (await owner.runtime.status())['bindings'][0]['localMemoryDiagnostics'] == []
+    assert (await owner.runtime.status())['bindings'][0]['localMemoryDiagnostics'] == ['long_term_memory_evidence_trimmed']
     await server.exchange(owner)
     assert len(server.document['evidence']['retirements']) == EVIDENCE_MAX
 

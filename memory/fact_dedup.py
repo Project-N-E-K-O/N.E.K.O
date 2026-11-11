@@ -115,29 +115,6 @@ def _recorded_before(first: dict, second: dict) -> bool:
     return one is not None and other is not None and one < other
 
 
-def _as_queued(results: list, shown_reversed: set[int]) -> list:
-    """Translate decisions on pairs shown newest-first back to the queued roles.
-
-    For a pair shown with its two records exchanged, keeping the shown
-    candidate (``replace``) keeps the queued existing row (``merge``), and
-    the other way round. Anything else is passed through untouched.
-    """
-    exchanged = {'merge': 'replace', 'replace': 'merge'}
-    translated = []
-    for decision in results:
-        if isinstance(decision, dict):
-            try:
-                index = int(decision.get('index', -1))
-            except (TypeError, ValueError):
-                index = -1
-            action = decision.get('action')
-            action = action.strip().lower() if isinstance(action, str) else None
-            if index in shown_reversed and action in exchanged:
-                decision = {**decision, 'action': exchanged[action]}
-        translated.append(decision)
-    return translated
-
-
 def _event_window_instant(value: object) -> datetime | None:
     """Parse one event boundary without dropping extreme aware values."""
     try:
@@ -968,7 +945,7 @@ class FactDedupResolver:
         # The prompt calls its candidate the newer record. A queued candidate is
         # usually the newer one, but not always: a fact synced from another device,
         # or embedded late, is queued against rows written after it. Such a pair is
-        # shown with its two records exchanged and the decision translated back.
+        # shown, and then applied, with its two records exchanged.
         shown_reversed: set[int] = set()
         stale_keys: set[tuple] = set()
         batch_domain: tuple | None = None
@@ -1135,7 +1112,7 @@ class FactDedupResolver:
             return 0
 
         applied, processed_keys = await self._aapply_decisions(
-            name, batch, _as_queued(results, shown_reversed),
+            name, batch, results, shown_reversed=shown_reversed,
         )
 
         # CodeRabbit: LLM lists whose decisions consume no pairs, all actions rejected
@@ -1248,6 +1225,7 @@ class FactDedupResolver:
 
     async def _aapply_decisions(
         self, name: str, batch: list[dict], results: list[dict],
+        *, shown_reversed: frozenset[int] | set[int] = frozenset(),
     ) -> tuple[int, set[tuple]]:
         """Translate LLM decisions into facts.json mutations.
 
@@ -1356,6 +1334,13 @@ class FactDedupResolver:
             exist_id = item.get('existing_id')
             cand = _find_queued_fact(rows_by_id, item, 'candidate')
             existing = _find_queued_fact(rows_by_id, item, 'existing')
+            if idx in shown_reversed:
+                # The model judged this pair with the two records exchanged (the
+                # newer one as its candidate). The rows are exchanged here too, so
+                # merge and replace keep their full meaning, provenance and
+                # importance included, instead of one being renamed into the other.
+                cand_id, exist_id = exist_id, cand_id
+                cand, existing = existing, cand
             if cand is None or existing is None:
                 # One side disappeared between enqueue and resolve —
                 # not an error, just stale; consume the queue entry

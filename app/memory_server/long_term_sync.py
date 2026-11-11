@@ -785,7 +785,8 @@ def _write_snapshot_locked(name, payload, *, check_only=False):
         directory = Path(runtime._config_manager.memory_dir) / name
         assert_cloudsave_writable(runtime._config_manager, operation='sync', target=f'memory/{name}')
         with runtime.fact_store._get_lock(name):
-            existing = _mergeable(_read_native_views(name))
+            held = _read_native_views(name)
+            existing = _mergeable(held)
             source_evidence = _snapshot_source_evidence(name, existing, remote['document'])
             # What this device holds, the base both sides started from and the
             # published document become one document; an upload the server never
@@ -839,6 +840,13 @@ def _write_snapshot_locked(name, payload, *, check_only=False):
             finally:
                 runtime.fact_store._facts.pop(name, None)
                 runtime.persona_manager._personas.pop(name, None)
+        if existing is not held:
+            try:
+                # The oldest records this device held are gone, some perhaps never
+                # published: the sync panel says so, as it does after the organizer trims.
+                adapter.mark_evidence_trimmed(uid, _now_ms())
+            except OSError:
+                logger.debug(f'[LongTermSync] {name}: evidence trim notice not saved')
         return True
 
 

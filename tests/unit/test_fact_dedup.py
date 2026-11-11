@@ -2464,6 +2464,7 @@ async def _queue_late_arrival(tmp_path, *, candidate_created_at):
     fs, resolver = _install_resolver(str(tmp_path))
     stale = _fact("c1", "主人喜欢喝咖啡", embedding=[1.0, 0.0], importance=4)
     stale["created_at"] = candidate_created_at
+    stale["speaker_id"] = "qq:1001"
     correction = _fact("e1", "主人现在不喝咖啡了（以前喜欢喝）", embedding=[0.99, 0.05], importance=6)
     correction["created_at"] = "2026-04-25T10:00:00"
     await _seed_facts(fs, "小天", [stale, correction])
@@ -2476,8 +2477,8 @@ async def _queue_late_arrival(tmp_path, *, candidate_created_at):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("answer, survivor, reason", [
     # Keeping what the model saw as the candidate keeps the newer row, which was queued as existing.
-    ("replace", "e1", "fact_dedup_merge"),
-    ("merge", "c1", "fact_dedup_replace"),
+    ("replace", "e1", "fact_dedup_replace"),
+    ("merge", "c1", "fact_dedup_merge"),
     ("keep_both", None, None),
 ])
 async def test_aresolve_shows_the_newer_record_as_the_candidate(tmp_path, answer, survivor, reason):
@@ -2497,6 +2498,15 @@ async def test_aresolve_shows_the_newer_record_as_the_candidate(tmp_path, answer
     archived = json.loads((tmp_path / "小天" / "facts_archive.json").read_text(encoding="utf-8"))
     row = next(fact for fact in archived if fact["id"] == loser)
     assert row["superseded_by"] == survivor and row["arbitration_reason"] == reason
+    kept = next(fact for fact in await fs.aload_facts("小天") if fact["id"] == survivor)
+    assert loser in kept["merged_from_ids"]
+    if answer == "replace":
+        # A correction replaces: the rejected claim does not corroborate it. Its speaker
+        # is not folded into the survivor, and the importance is the larger one, not +1.
+        assert kept["importance"] == 6 and "speaker_provenance_mixed" not in kept and "speaker_id" not in kept
+    else:
+        # A duplicate merges into the older row, as a merge always did.
+        assert kept["importance"] == 5 and kept["speaker_provenance_mixed"] is True
 
 
 @pytest.mark.asyncio
@@ -2509,16 +2519,3 @@ async def test_aresolve_keeps_the_queued_roles_unless_the_candidate_is_known_to_
         assert await resolver.aresolve("小天") == 1
     assert "[0] candidate: 主人喜欢喝咖啡 | existing: 主人现在不喝咖啡了（以前喜欢喝） |" in prompts[0]
     assert {fact["id"] for fact in await fs.aload_facts("小天")} == {"c1"}
-
-
-def test_decisions_on_exchanged_pairs_are_translated_and_others_left_alone():
-    from memory.fact_dedup import _as_queued
-
-    results = [
-        {"index": 0, "action": "replace"}, {"index": "1", "action": " MERGE "}, {"index": 2, "action": "replace"},
-        {"index": 1, "action": "keep_both"}, {"index": 0, "action": "explode"}, "garbage", {"index": "x", "action": "merge"},
-    ]
-    assert _as_queued(results, {0, 1}) == [
-        {"index": 0, "action": "merge"}, {"index": "1", "action": "replace"}, {"index": 2, "action": "replace"},
-        {"index": 1, "action": "keep_both"}, {"index": 0, "action": "explode"}, "garbage", {"index": "x", "action": "merge"},
-    ]
