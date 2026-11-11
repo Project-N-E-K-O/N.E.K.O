@@ -566,3 +566,26 @@ async def test_unpublished_evidence_is_not_trimmed_while_the_organizer_cannot_be
     assert reads == ['Neko'] and len(stored()) == 4
     assert owner.adapter.evidence_trimmed_at(UID) is None and local_state(owner) is None
     assert owner.runtime.writer.check()['quarantined'] is False
+
+
+@pytest.mark.asyncio
+async def test_a_claim_already_at_the_largest_time_is_published_as_it_is(owner):  # noqa: F811
+    from utils.long_term_memory_protocol import MAX_INTEGER, document
+    _synced(owner)
+    server = PublishingServer()
+    assert owner.native._tend_organizer_state('Neko', organizer.RANK_DESKTOP) is True
+    assert owner.native._capture('Neko', False)
+    await server.exchange(owner)
+    largest = {**server.document['organizer'], 'renewedAt': MAX_INTEGER}
+    server.publish({**server.document, 'completedAt': server.document['completedAt'] + 10, 'organizer': largest})
+    await server.exchange(owner)
+    assert await owner.native.consume(UID)
+    assert local_state(owner)['base']['document']['organizer'] == largest and owner.native.organizes('Neko')
+    atomic_write_json(owner.directory / 'facts.json', [native_fact('mine', 'only on this device'),
+                                                      native_fact('more', 'learned a moment later')])
+    # One more than that would be refused by the protocol, and with it every later snapshot.
+    assert owner.native._capture('Neko', False)
+    waiting = local_state(owner)['pending']['document']
+    assert waiting['organizer'] == largest and document(waiting)
+    await server.exchange(owner)
+    assert {row['id'] for row in server.document['entries']} == {'mine', 'more'}

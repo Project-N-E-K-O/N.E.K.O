@@ -16,7 +16,7 @@ from memory.long_term_sync import DesktopLongTermAdapter, JOURNAL, LongTermMemor
 from memory.long_term_sync import LongTermArchiveSubjectUnavailable, LongTermMemoryCapacityExceeded, RetirementSubjectConflict, retirement_evidence, validate_retirement_subjects
 from memory.long_term_sync import LongTermEvidenceCapacityExceeded
 from memory.long_term_merge import EVIDENCE_MAX, merge_documents, prune_evidence, same_content, upgraded
-from utils.long_term_memory_protocol import MAX_ENTRIES
+from utils.long_term_memory_protocol import MAX_ENTRIES, MAX_INTEGER
 from memory.recent import _await_recent_mutation_to_completion as _complete_file_commit
 from services.chat_sync.long_term_protocol import head
 from services.chat_sync.long_term_events import changed
@@ -332,6 +332,10 @@ def _renewed_with(name, document, base, device, now):
             if not isinstance(state, dict) or state.get('organizer') != held:
                 return document
             renewed = {**held, 'renewedAt': max(now, held['renewedAt'] + 1)}
+            if renewed['renewedAt'] > MAX_INTEGER:
+                # The published claim already sits at the largest time a snapshot may
+                # carry; a later one would make every snapshot from here invalid.
+                return document
             assert_cloudsave_writable(runtime._config_manager, operation='sync', target=f'memory/{name}/long_term_portable.json')
             atomic_write_json(path, {**state, 'organizer': renewed}, ensure_ascii=False, indent=2)
         except (OSError, ValueError, MaintenanceModeError):
