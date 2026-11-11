@@ -1,5 +1,5 @@
 /* Shared by the character editor and the transparent chat host. */
-#chat-sync-dialog {
+:is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) {
     box-sizing: border-box;
     width: min(440px, calc(100vw - 32px));
     max-width: none;
@@ -13,25 +13,26 @@
     pointer-events: auto;
     overflow: visible;
 }
-#chat-sync-dialog::backdrop { background: rgba(30, 73, 96, 0.24); }
-#chat-sync-dialog button { font-family: inherit; pointer-events: auto; cursor: pointer; }
-#chat-sync-dialog .chat-sync-dialog-header { display: flex; align-items: center; gap: 10px; margin-bottom: 24px; }
-#chat-sync-dialog .chat-sync-dialog-header > img { width: 26px; height: 26px; object-fit: contain; }
-#chat-sync-dialog h2 { flex: 1; margin: 0; color: #219fcf; font-size: 20px; font-weight: 700; }
-#chat-sync-dialog .chat-sync-close {
+:is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt)::backdrop { background: rgba(30, 73, 96, 0.24); }
+:is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) button { font-family: inherit; pointer-events: auto; cursor: pointer; }
+:is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-dialog-header { display: flex; align-items: center; gap: 10px; margin-bottom: 24px; }
+:is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-dialog-header > img { width: 26px; height: 26px; flex-shrink: 0; object-fit: contain; }
+:is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) h2 { flex: 1; margin: 0; color: #219fcf; font-size: 20px; font-weight: 700; }
+:is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-close {
     display: grid;
     place-items: center;
     width: 30px;
     height: 30px;
+    flex-shrink: 0;
     padding: 6px;
     border: 0;
     border-radius: 50%;
     background: #e8f6fc;
 }
-#chat-sync-dialog .chat-sync-close img { width: 16px; height: 16px; object-fit: contain; filter: brightness(0); opacity: 0.55; }
-#chat-sync-dialog .chat-sync-close:hover { background: #d5effb; }
-#chat-sync-dialog .chat-sync-recovery-row { display: flex; align-items: center; gap: 12px; }
-#chat-sync-dialog .chat-sync-recover {
+:is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-close img { width: 16px; height: 16px; object-fit: contain; filter: brightness(0); opacity: 0.55; }
+:is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-close:hover { background: #d5effb; }
+:is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-recovery-row { display: flex; align-items: center; gap: 12px; }
+:is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-recover {
     flex: 1;
     min-width: 0;
     min-height: 46px;
@@ -46,11 +47,69 @@
     line-height: 1.5;
     overflow-wrap: anywhere;
 }
-#chat-sync-dialog .chat-sync-recover:hover:enabled { background: linear-gradient(135deg, #2bc4ed, #0797df); }
-#chat-sync-dialog .chat-sync-recover:disabled { opacity: 0.45; cursor: default; box-shadow: none; }
-#chat-sync-dialog .chat-sync-status { margin: 16px 0 0; color: #648499; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; white-space: pre-line; }
-#chat-sync-dialog .chat-sync-help { position: relative; display: inline-flex; flex: 0 0 auto; }
-#chat-sync-dialog .chat-sync-help-button {
+:is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-recover:hover:enabled { background: linear-gradient(135deg, #2bc4ed, #0797df); }
+:is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-recover:disabled { opacity: 0.45; cursor: default; box-shadow: none; }
+:is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-status { margin: 16px 0 0; color: #648499; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; white-space: pre-line; }
+:is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-status:empty { display: none; }
+#character-profile-sync-dialog {
+    width: min(760px, calc(100vw - 32px));
+    max-height: calc(100dvh - 32px);
+    overflow: auto;
+}
+#character-profile-sync-prompt { max-height: calc(100dvh - 32px); overflow: auto; }
+#character-profile-sync-dialog .chat-sync-versions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+#character-profile-sync-dialog .chat-sync-version { min-width: 0; }
+#character-profile-sync-dialog h3 { margin: 0 0 10px; color: #39768f; font-size: 14px; }
+#character-profile-sync-dialog .chat-sync-profile-preview {
+    max-height: 30vh;
+    margin: 0 0 16px;
+    padding: 16px;
+    overflow: auto;
+    border: 1px solid #c9e8f6;
+    border-radius: 14px;
+    background: #f2faff;
+    color: #39768f;
+    font: inherit;
+    font-size: 14px;
+    line-height: 1.8;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+#character-profile-sync-dialog .chat-sync-role-list { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+#character-profile-sync-dialog .chat-sync-role-list:empty { display: none; }
+#character-profile-sync-dialog [data-profile-preview] { margin-top: 20px; }
+:is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 24px;
+}
+:is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-button {
+    min-height: 42px;
+    max-width: 100%;
+    padding: 10px 18px;
+    border: 1px solid #20afe6;
+    border-radius: 14px;
+    background: linear-gradient(135deg, #45cef1, #17a7ed);
+    color: #fff;
+    font-size: 14px;
+    font-weight: 700;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+:is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-button:hover:enabled { background: linear-gradient(135deg, #2bc4ed, #0797df); }
+:is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-secondary { background: #edf8fe; border-color: #b6dfee; color: #39768f; }
+:is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-secondary:hover:enabled { background: #dff3fc; }
+:is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-button:disabled { opacity: 0.45; cursor: default; }
+#chat-sync-dialog .chat-sync-model { display: flex; flex-wrap: wrap; gap: 10px; }
+#chat-sync-dialog .chat-sync-model p { flex-basis: 100%; margin: 20px 0 0; color: #648499; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+    #character-profile-sync-dialog .chat-sync-versions { grid-template-columns: minmax(0, 1fr); }
+    #character-profile-sync-dialog .chat-sync-actions .chat-sync-button { flex: 1 1 100%; }
+}
+:is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-help { position: relative; display: inline-flex; flex: 0 0 auto; }
+:is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-help-button {
     width: 25px;
     height: 25px;
     padding: 0;
@@ -61,8 +120,8 @@
     font: 700 14px/1 Arial, sans-serif;
     cursor: help;
 }
-#chat-sync-dialog .chat-sync-help-button:hover { background: #dff6ff; }
-#chat-sync-dialog button:focus-visible { outline: 2px solid #087fae; outline-offset: 3px; }
+:is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-help-button:hover { background: #dff6ff; }
+:is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) button:focus-visible { outline: 2px solid #087fae; outline-offset: 3px; }
 #chat-sync-recovery-tooltip {
     position: absolute;
     z-index: 1;
@@ -82,14 +141,19 @@
     visibility: hidden;
     pointer-events: none;
 }
-#chat-sync-dialog .chat-sync-help:hover #chat-sync-recovery-tooltip,
-#chat-sync-dialog .chat-sync-help:focus-within #chat-sync-recovery-tooltip { visibility: visible; }
-[data-theme="dark"] #chat-sync-dialog { background: linear-gradient(145deg, #243b4c, #1d303f); border-color: #3b687d; color: #d5eaf5; }
-[data-theme="dark"] #chat-sync-dialog h2 { color: #91dcf6; }
-[data-theme="dark"] #chat-sync-dialog .chat-sync-status { color: #abc4d0; }
-[data-theme="dark"] #chat-sync-dialog .chat-sync-close { background: #355063; }
-[data-theme="dark"] #chat-sync-dialog .chat-sync-close img { filter: brightness(0) invert(1); opacity: 0.85; }
-[data-theme="dark"] #chat-sync-dialog .chat-sync-close:hover { background: #42637a; }
-[data-theme="dark"] #chat-sync-dialog .chat-sync-help-button { background: #2b4a5c; color: #a3e7ff; border-color: #68bedc; }
+:is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-help:hover #chat-sync-recovery-tooltip,
+:is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-help:focus-within #chat-sync-recovery-tooltip { visibility: visible; }
+[data-theme="dark"] :is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) { background: linear-gradient(145deg, #243b4c, #1d303f); border-color: #3b687d; color: #d5eaf5; }
+[data-theme="dark"] :is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) h2 { color: #91dcf6; }
+[data-theme="dark"] :is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-status { color: #abc4d0; }
+[data-theme="dark"] #character-profile-sync-dialog h3 { color: #b9dce9; }
+[data-theme="dark"] #character-profile-sync-dialog .chat-sync-profile-preview { background: #1b303f; border-color: #3b687d; color: #d5eaf5; }
+[data-theme="dark"] :is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-secondary { background: #2b4a5c; border-color: #48778c; color: #d5eaf5; }
+[data-theme="dark"] :is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-secondary:hover:enabled { background: #355b70; }
+[data-theme="dark"] #chat-sync-dialog .chat-sync-model p { color: #abc4d0; }
+[data-theme="dark"] :is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-close { background: #355063; }
+[data-theme="dark"] :is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-close img { filter: brightness(0) invert(1); opacity: 0.85; }
+[data-theme="dark"] :is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-close:hover { background: #42637a; }
+[data-theme="dark"] :is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) .chat-sync-help-button { background: #2b4a5c; color: #a3e7ff; border-color: #68bedc; }
 [data-theme="dark"] #chat-sync-recovery-tooltip { background: #243e4e; color: #d5eaf5; border-color: #48778c; }
-[data-theme="dark"] #chat-sync-dialog button:focus-visible { outline-color: #8edcff; }
+[data-theme="dark"] :is(#chat-sync-dialog, #character-profile-sync-dialog, #character-profile-sync-prompt) button:focus-visible { outline-color: #8edcff; }

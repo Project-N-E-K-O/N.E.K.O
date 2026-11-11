@@ -40,6 +40,11 @@ def run_script(assertions):
         function flatten(node){return [node,...node.children.flatMap(flatten)];}
         function choice(panel,name){return flatten(panel).find(node=>node.dataset.profileChoice===name);}
         function button(panel,label){return flatten(panel).find(node=>node.tag==='button'&&node.textContent===label);}
+        async function answerPrompt(accepted) {
+            await new Promise(resolve=>setImmediate(resolve));
+            const panel=body.children.find(node=>node.id==='character-profile-sync-prompt');assert(panel?.open);
+            await button(panel,accepted?'common.confirm':'common.cancel').events.click();
+        }
         vm.runInThisContext(fs.readFileSync(process.argv[1],'utf8'));
     """
     script = (bootstrap + assertions).replace('process.argv[1]', json.dumps(str(SCRIPT)))
@@ -50,10 +55,10 @@ def run_script(assertions):
 def test_declined_save_records_divergence_without_queueing_upload():
     run_script(r"""
         (async()=>{
-            window.confirm=()=>false;
             response=(path)=>path.endsWith('/status')?{characters:[{displayName:'Synthetic',characterSyncId:uid,binding:{}}]}:
                 {...candidate,head:null,conflict:false,renameRequired:false};
-            await window.nekoCharacterProfileSync.afterSave('Synthetic');
+            const pending=window.nekoCharacterProfileSync.afterSave('Synthetic');
+            await answerPrompt(false);await pending;
             assert.deepEqual(calls.map(x=>x.path),['/api/chat-sync/status','/api/chat-sync/characters/'+uid+'/profile/local']);
             assert.equal(alerts.length,0);
         })().catch(e=>{console.error(e);process.exitCode=1;});
@@ -63,10 +68,11 @@ def test_declined_save_records_divergence_without_queueing_upload():
 def test_unbound_save_asks_and_explains_manual_binding_without_enabling():
     run_script(r"""
         (async()=>{
-            let asked=0;window.confirm=()=>{asked++;return true;};
             response=()=>({characters:[{displayName:'Synthetic',characterSyncId:uid,binding:null}]});
-            await window.nekoCharacterProfileSync.afterSave('Synthetic');
-            assert.equal(asked,1);assert.deepEqual(alerts,['chatSync.profileNeedsBinding']);
+            const pending=window.nekoCharacterProfileSync.afterSave('Synthetic');await answerPrompt(true);
+            await new Promise(resolve=>setImmediate(resolve));
+            const notice=body.children[0];assert(flatten(notice).some(node=>node.textContent==='chatSync.profileNeedsBinding'));
+            await button(notice,'chatSync.close').events.click();await pending;assert.deepEqual(alerts,[]);
             assert.equal(calls.length,1);assert.equal(calls[0].path,'/api/chat-sync/status');
         })().catch(e=>{console.error(e);process.exitCode=1;});
     """)
@@ -77,7 +83,7 @@ def test_approved_save_pins_saved_hash_and_cloud_revision_only():
         (async()=>{
             response=(path)=>path.endsWith('/status')?{characters:[{displayName:'Synthetic',characterSyncId:uid,binding:{}}]}:
                 {...candidate,head:null,conflict:false,renameRequired:false};
-            await window.nekoCharacterProfileSync.afterSave('Synthetic');
+            const pending=window.nekoCharacterProfileSync.afterSave('Synthetic');await answerPrompt(true);await pending;
             assert.equal(calls.length,3);
             assert.deepEqual(JSON.parse(calls[2].init.body),{localHash:candidate.local_hash,revision:2});
         })().catch(e=>{console.error(e);process.exitCode=1;});
@@ -91,13 +97,88 @@ def test_preview_is_readable_inert_persona_and_remote_rename_needs_confirmation(
             const shown=flatten(panel).map(x=>x.textContent).join('\n');
             for(const value of ['NICKNAME','RAW SETTING','FIELD VALUE','SPEAKING STYLE'])assert(shown.includes(value));
             for(const value of ['schemaVersion','internal_id','local_hash','operationId'])assert(!shown.includes(value));
-            assert.equal(calls.length,0);window.confirm=()=>false;
-            await choice(panel,'remote').events.click();assert.equal(calls.length,0);assert(panel.open);
-            window.confirm=()=>true;response=()=>({});await choice(panel,'remote').events.click();
+            assert.equal(calls.length,0);
+            const declined=choice(panel,'remote').events.click();await answerPrompt(false);await declined;
+            assert.equal(calls.length,0);assert(panel.open);
+            response=()=>({});const accepted=choice(panel,'remote').events.click();await answerPrompt(true);await accepted;
             assert.deepEqual(JSON.parse(calls[0].init.body),{choice:'remote',localHash:candidate.local_hash,revision:2,confirmRename:true});
             assert(!panel.open);
         })().catch(e=>{console.error(e);process.exitCode=1;});
     """)
+
+
+def test_dismissed_async_rename_cannot_resolve_a_replaced_profile_dialog():
+    run_script(r"""
+        (async()=>{
+            await window.nekoCharacterProfileSync.review(uid,candidate);const first=body.children[0];
+            const pending=choice(first,'remote').events.click();first.close();
+            await answerPrompt(true);await pending;assert.deepEqual(calls,[]);
+            await window.nekoCharacterProfileSync.review(uid,candidate);assert(body.children[0].open);
+        })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
+@pytest.mark.parametrize('theme,language,width,entry', [
+    ('light', 'zh-CN', 1280, 'character_card_manager'),
+    ('dark', 'ru', 375, 'character_card_manager'),
+    ('light', 'en', 375, 'index'),
+    ('dark', 'zh-TW', 1280, 'index'),
+])
+def test_sync_prompts_share_the_served_skin_and_keep_keyboard_and_consent(theme, language, width, entry):
+    """Real served components stay readable/clickable on the transparent host and card page."""
+    from playwright.sync_api import sync_playwright
+
+    labels = json.loads((ROOT / 'static/locales' / (language + '.json')).read_text(encoding='utf-8'))
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page(viewport={'width': width, 'height': 700})
+            page.route('**/*', lambda route: route.abort())
+            page.set_content(f'<html data-theme="{theme}"><body></body></html>')
+            for stylesheet in (entry, 'dark-mode', 'chat_sync'):
+                page.add_style_tag(path=str(ROOT / 'static/css' / (stylesheet + '.css')))
+            page.evaluate("""labels=>{
+                window.t=key=>key.split('.').reduce((value,part)=>value?.[part],labels)||key;
+                window.setInterval=()=>1;
+                window.writes=[];
+                window.fetch=async(path,init)=>{
+                    if(init?.method==='POST')window.writes.push({path,body:JSON.parse(init.body)});
+                    return {ok:!path.endsWith('/cloud/characters'),json:async()=>({detail:'chat_sync_unavailable'})};
+                };
+            }""", labels)
+            page.add_script_tag(path=str(SCRIPT))
+            page.evaluate('window.nekoCharacterProfileSync.cloudImport()')
+            modal = page.locator('#character-profile-sync-dialog')
+            assert modal.get_by_role('status').inner_text() == labels['chatSync']['profileSaveFailed']
+            assert modal.evaluate('(node)=>getComputedStyle(node).borderRadius') == '22px'
+            bounds = modal.bounding_box()
+            assert bounds['x'] >= 0 and bounds['x'] + bounds['width'] <= width
+            assert bounds['y'] >= 0 and bounds['y'] + bounds['height'] <= 700
+            modal.locator('.chat-sync-actions button').click()
+            modal.wait_for(state='detached')
+            page.evaluate("""()=>{
+                const local={name:'Local',nickname:'',systemPrompt:'x'.repeat(3000),fields:[],persona:null};
+                return window.nekoCharacterProfileSync.review('a'.repeat(32),{local,head:{...local,name:'Remote'},
+                    local_hash:'b'.repeat(64),head_revision:2,conflict:true,renameRequired:true});
+            }""")
+            modal.locator('[data-profile-choice="remote"]').click()
+            prompt = page.locator('#character-profile-sync-prompt')
+            assert prompt.is_visible()
+            assert page.evaluate('window.writes') == []
+            prompt.press('Escape')
+            prompt.wait_for(state='detached')
+            assert modal.is_visible()
+            assert page.evaluate('document.activeElement.dataset.profileChoice') == 'remote'
+            assert page.evaluate('window.writes') == []
+            modal.locator('[data-profile-choice="remote"]').click()
+            prompt.get_by_role('button', name=labels['common']['confirm'], exact=True).click()
+            page.wait_for_function('window.writes.length===1')
+            assert page.evaluate('window.writes[0].body') == {
+                'choice': 'remote', 'localHash': 'b' * 64, 'revision': 2, 'confirmRename': True,
+            }
+            assert page.locator('dialog[open]').count() == 0
+        finally:
+            browser.close()
 
 
 def test_late_resolve_receipt_never_closes_a_new_dialog():
@@ -144,6 +225,7 @@ def test_review_refreshes_cards_only_after_remote_apply_without_replacing_draft(
             page.set_content('<div id="chara-cards-container"><span class="card-name">Synthetic</span></div>'
                              '<div class="catgirl-panel-overlay"><textarea id="draft">Unsaved synthetic draft</textarea></div>')
             page.add_style_tag(path=str(ROOT / "static/css/index.css"))
+            page.add_style_tag(path=str(ROOT / "static/css/chat_sync.css"))
             page.evaluate("""success => {
                 window.t = key => key;
                 window.confirm = () => true;
@@ -161,6 +243,8 @@ def test_review_refreshes_cards_only_after_remote_apply_without_replacing_draft(
                     local_hash: 'b'.repeat(64), head_revision: 2, conflict: true, renameRequired: true});
             }""")
             page.locator(f'[data-profile-choice="{choice}"]').click()
+            if choice == "remote":
+                page.locator('#character-profile-sync-prompt').get_by_role('button', name='common.confirm', exact=True).click()
             if success:
                 page.wait_for_function("!document.querySelector('dialog[open]')")
             else:
