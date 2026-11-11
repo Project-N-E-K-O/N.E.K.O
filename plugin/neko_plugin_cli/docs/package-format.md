@@ -57,7 +57,8 @@ paused source/package security scan (including binary and scan-size limits) is
 skipped. Set `NEKO_PLUGIN_MARKET_SECURITY_CHECKS=1` to enable package scanning
 (`package-security`) in `check -r` and `precheck`. The release checks in
 `check -r --market-release`, `publish <plugin>`, and `publish github <plugin>`
-also scan committed files when a plugin repository is found (`source-security`).
+also scan committed files when Git can list them in the plugin repository
+(`source-security`).
 `publish market <github-release-url>` only notifies Market and performs no local
 scanning. Release checks validate the package and verify its payload hash in
 all modes. They run plugin tests when the plugin has a `tests/` directory and

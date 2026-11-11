@@ -118,7 +118,8 @@ def handle_release_check(args: argparse.Namespace) -> int:
         issues.extend(_diagnose_market_plugin_id(source.plugin_id))
         # CI builds the pushed commit, not the working tree.
         issues.extend(_diagnose_repository(plugin_dir, defaults=defaults, release=True))
-        repository_root = None
+        market_security_checks = _market_security_checks_enabled()
+        source_scanned = False
         if getattr(args, "market_release", False):
             repository_root = _repository_root(plugin_dir, defaults)
             issues.extend(
@@ -131,6 +132,13 @@ def handle_release_check(args: argparse.Namespace) -> int:
                     ref_name=getattr(args, "_release_ref_name", None),
                 )
             )
+            if market_security_checks and repository_root is not None:
+                source_issues = _diagnose_market_source_archive(repository_root)
+                if source_issues is None:
+                    issues.append(("warning", "git ls-tree failed; Market source archive limits were not checked"))
+                else:
+                    issues.extend(source_issues)
+                    source_scanned = True
         errors = [issue for issue in issues if issue[0] == "error"]
         if errors:
             print(f"[FAIL] {source.plugin_id}: {command_label} blocked by validation errors", file=sys.stderr)
@@ -152,13 +160,13 @@ def handle_release_check(args: argparse.Namespace) -> int:
             print("[FAIL] package payload hash verification failed", file=sys.stderr)
             return 1
         market_check_mode = "legacy"
-        if _market_security_checks_enabled():
+        if market_security_checks:
             package_issues = _diagnose_market_package(build_result.package_path)
             if package_issues:
                 print(f"[FAIL] {source.plugin_id}: {command_label} built a package the Market rejects", file=sys.stderr)
                 _print_issues(package_issues)
                 return 1
-            market_check_mode = "source-security" if repository_root is not None else "package-security"
+            market_check_mode = "source-security" if source_scanned else "package-security"
     except Exception as exc:
         print(f"[FAIL] {command_label}: {exc}", file=sys.stderr)
         return 1
@@ -347,17 +355,14 @@ def _diagnose_market_release(
     if not release_workflow.is_file():
         issues.append(("error", ".github/workflows/release.yml is missing"))
 
-    if repository_root is not None and _market_security_checks_enabled():
-        issues.extend(_diagnose_market_source_archive(repository_root))
-
     return issues
 
 
-def _diagnose_market_source_archive(repository_root: Path) -> list[Issue]:
-    """The Market's scan limits for the source archive of the HEAD commit."""
+def _diagnose_market_source_archive(repository_root: Path) -> list[Issue] | None:
+    """Check the Market source limits, or return None if git cannot list the files."""
     files = committed_file_sizes(repository_root)
     if files is None:
-        return [("warning", "git ls-tree failed; Market source archive limits were not checked")]
+        return None
 
     issues: list[Issue] = []
     binaries = [path for path, _ in files if PurePosixPath(path).suffix.lower() in _MARKET_BINARY_SUFFIXES]
