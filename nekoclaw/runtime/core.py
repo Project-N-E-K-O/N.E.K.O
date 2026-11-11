@@ -87,6 +87,8 @@ class RuntimeCore:
         self._starting: dict[str, asyncio.Future[None]] = {}
         # Sessions being closed; each future is done once the session is gone.
         self._closing: dict[str, asyncio.Future[None]] = {}
+        # True while ``shutdown`` is at work: no new session is accepted.
+        self._shutting_down = False
         self.last_command_at = time.monotonic()
 
     # -- state ----------------------------------------------------------------
@@ -147,6 +149,10 @@ class RuntimeCore:
 
     async def start(self, spec: protocol.FamiliarSpec) -> None:
         session_id = spec.session_id
+        if self._shutting_down:
+            # It would be created behind the back of the shutdown and stay open.
+            self._reject(session_id, "start", "the runtime is shutting down")
+            return
         if session_id in self._sessions or session_id in self._starting:
             self._reject(session_id, "start", f'session "{session_id}" already exists')
             return
@@ -212,10 +218,24 @@ class RuntimeCore:
             closed.set_result(None)
 
     async def shutdown(self) -> None:
-        """Close every session."""
-        sessions = list(self._sessions.values())
-        self._sessions.clear()
-        await asyncio.gather(*(session.close() for session in sessions), return_exceptions=True)
+        """Close every session, including those still being created or closed.
+
+        A session on its way in is not in the table yet and one on its way out
+        has already left it, so both are waited for first: the former is then
+        closed with the rest, the latter finishes its own cleanup. Starts that
+        arrive meanwhile are rejected. Afterwards the core accepts sessions
+        again.
+        """
+        self._shutting_down = True
+        try:
+            while self._starting or self._closing:
+                under_way = [*self._starting.values(), *self._closing.values()]
+                await asyncio.gather(*(asyncio.shield(future) for future in under_way))
+            sessions = list(self._sessions.values())
+            self._sessions.clear()
+            await asyncio.gather(*(session.close() for session in sessions), return_exceptions=True)
+        finally:
+            self._shutting_down = False
 
 
 class InProcessRuntime:

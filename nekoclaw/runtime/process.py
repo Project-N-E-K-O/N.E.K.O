@@ -65,6 +65,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_IDLE_EXIT_SECONDS = 300.0
 READY_TIMEOUT_SECONDS = 60.0
 SHUTDOWN_TIMEOUT_SECONDS = 15.0
+# How long the child itself waits for its sessions to close before it exits;
+# shorter than the parent's wait above, so the exit is still announced.
+_SESSIONS_CLOSE_SECONDS = 10.0
 _IDLE_POLL_SECONDS = 0.25
 _STOP = object()
 
@@ -242,10 +245,20 @@ async def _serve(connection: Any, options: dict[str, Any]) -> None:
         reason = "error"
         detail = f"{type(exc).__name__}: {exc}"
     finally:
+        # Commands still under way are not cut short. A session in the middle
+        # of closing has already left the core's table, so cancelling that
+        # close would leave nobody to finish writing its transcript, and the
+        # parent would see the session fail instead of close. The core waits
+        # for sessions on their way in or out and then closes every session.
+        try:
+            await asyncio.wait_for(core.shutdown(), _SESSIONS_CLOSE_SECONDS)
+        except asyncio.TimeoutError:
+            logger.warning("closing the sessions took too long; exiting anyway")
+        except Exception:  # noqa: BLE001 - the process is exiting either way
+            logger.exception("closing the sessions failed")
         for task in list(tasks):
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        await core.shutdown()
         writer.send(protocol.dump(protocol.RuntimeExitEvent(reason=reason, detail=detail)))  # type: ignore[arg-type]
         await asyncio.to_thread(writer.close)
 

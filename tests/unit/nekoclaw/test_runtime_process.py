@@ -196,6 +196,33 @@ async def test_abort_reaches_the_child_and_a_dead_child_fails_its_sessions(tmp_p
             await runtime.shutdown()
 
 
+async def test_a_shutdown_lets_a_close_that_is_under_way_finish(tmp_path: Path, local_only: None) -> None:
+    def respond(body: dict) -> list[dict]:
+        del body
+        return [sse_text("starting"), sse_sleep(120), sse_text("never"), sse_finish()]
+
+    events = Recorder()
+    runtime = SubprocessRuntime(events, idle_exit_seconds=300)
+    with FakeOpenAIServer(respond) as server:
+        try:
+            await runtime.start(_spec(tmp_path, "one", server.base_url))
+            await runtime.prompt("one", "long task")
+            await events.wait_for(lambda e: e["type"] == "text", timeout=90)
+            mark = len(events.events)
+            # Closing a session in the middle of a run takes a moment, and the
+            # shutdown arrives while the child is at it.
+            await runtime.close("one")
+            await asyncio.sleep(0.05)
+        finally:
+            await runtime.shutdown()
+    ended = [(event["reason"], event.get("error")) for event in events.events[mark:] if event["type"] == "ended"]
+    # The session was closed properly; it was not left half closed and then
+    # reported as lost with the process.
+    assert ended[-1] == ("closed", None)
+    assert all(reason != "error" for reason, _error in ended)
+    assert events.of("runtime_exit")[-1]["reason"] == "shutdown"
+
+
 async def test_commands_sent_right_after_start_wait_for_the_session(tmp_path: Path, local_only: None) -> None:
     def respond(body: dict) -> list[dict]:
         del body
@@ -371,6 +398,56 @@ async def test_commands_for_a_session_that_is_still_starting_wait_for_it(tmp_pat
         ]
     finally:
         await runtime.shutdown()
+
+
+async def test_shutdown_waits_for_sessions_on_their_way_in_and_out(tmp_path: Path) -> None:
+    names = ("leaving", "entering", "again")
+    opener = _scripted_opener({name: ScriptedLLM([[say("unused"), finish()]]) for name in names})
+    gate = asyncio.Event()
+
+    async def open_session(spec, host, emit):  # noqa: ANN001, ANN202
+        if spec.session_id == "entering":
+            await gate.wait()
+        session = await opener(spec, host, emit)
+        if spec.session_id == "leaving":
+            close = session.close
+
+            async def slow_close() -> None:
+                await asyncio.sleep(0.3)
+                await close()
+
+            session.close = slow_close  # type: ignore[method-assign]
+        return session
+
+    events = Recorder()
+    runtime = InProcessRuntime(events, open_session=open_session)
+    await runtime.start(make_spec(tmp_path, "leaving"))
+    leaving = asyncio.ensure_future(runtime.close("leaving"))  # takes a while
+    entering = asyncio.ensure_future(runtime.start(make_spec(tmp_path, "entering")))  # held at the gate
+    await asyncio.sleep(0.05)
+    stopping = asyncio.ensure_future(runtime.shutdown())
+    await asyncio.sleep(0.05)
+    # Neither session is in the table right now, yet the shutdown does not
+    # return as if there were nothing to do.
+    assert not stopping.done()
+    # A start that arrives meanwhile is refused: nobody would close that session.
+    await runtime.start(make_spec(tmp_path, "late"))
+    assert [(e["session_id"], e["message"]) for e in events.of("error")] == [
+        ("late", "the runtime is shutting down")
+    ]
+    gate.set()
+    await asyncio.gather(stopping, leaving, entering)
+    # On return both are gone: the one that was closing has finished, the one
+    # that was being created exists and has been closed.
+    closed = sorted(e["session_id"] for e in events.of("ended") if e["reason"] == "closed")
+    assert closed == ["entering", "leaving"]
+    assert runtime.core.session_ids == [] and runtime.core.idle
+
+    # The runtime takes sessions again afterwards.
+    await runtime.start(make_spec(tmp_path, "again"))
+    assert runtime.core.session_ids == ["again"]
+    await runtime.shutdown()
+    assert runtime.core.session_ids == []
 
 
 async def test_a_start_waits_for_the_same_session_to_finish_closing(tmp_path: Path) -> None:
