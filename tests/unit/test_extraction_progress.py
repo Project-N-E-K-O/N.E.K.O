@@ -1,6 +1,5 @@
 """Extraction progress: a message one pass already read is not read again on any device."""
 
-import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace

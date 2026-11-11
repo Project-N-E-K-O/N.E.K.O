@@ -1106,6 +1106,7 @@ async def _run_introspection_tick() -> None:
     """Start at most one due review, and only while idle: a character's
     private block, or else her behavior review, or else one of her scoped
     subjects."""
+    from memory import organizer
     if not gates._is_idle():
         return
     if not await gates._ais_powerful_memory_enabled():
@@ -1120,7 +1121,9 @@ async def _run_introspection_tick() -> None:
     for name in catgirl_names:
         scoped_subject = None
         behavior_review = False
-        if not _introspection_due(name, now):
+        # The private block is the organizer's; on any other device it stays due
+        # forever and must not keep the behavior review and group subjects waiting.
+        if not _introspection_due(name, now) or not organizer.allowed(name):
             behavior_review = (
                 _behavior_review_due(name, now) and await _abehavior_review_enabled()
             )

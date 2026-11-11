@@ -11,6 +11,11 @@ from services.chat_sync.writer import registered_writer
 MAX_CONSECUTIVE_CONFLICTS = 5
 
 
+class LongTermMemoryRetryLater(OSError):
+    """The upload cannot land right now. An OSError, so the scheduler backs off and tries
+    again instead of blocking the binding until it is enabled anew."""
+
+
 class LongTermMemorySync:
     def __init__(self, path, adapter):
         self.path, self.adapter = path, adapter
@@ -21,12 +26,22 @@ class LongTermMemorySync:
         local = await commit(self.adapter.read_local, binding, epoch)
         pending = local['pending'] if local else None
         path = f'/v1/chat-sync/characters/{domain.character_uid}/long-term-memory'
+        unsupported = False
         if pending:
             # The server writes only onto the revision this snapshot was merged with.
             body = canonical(mutation({'operationId': pending['operationId'], 'baseRevision': pending['baseRevision'],
                                        'document': pending['document']}))
-            answer = receipt(await request('PUT', path, body), domain.owner_id, domain.character_uid, pending['operationId'])
-            if answer['accepted']:
+            try:
+                answer = receipt(await request('PUT', path, body), domain.owner_id, domain.character_uid, pending['operationId'])
+            except ValueError as error:
+                if getattr(error, 'status_code', None) != 400:
+                    raise
+                # A server that does not know conditional writes yet. Nothing is recorded
+                # as uploaded; what it holds is still fetched below, then the lane backs off.
+                answer, unsupported = None, True
+            if answer is None:
+                pass
+            elif answer['accepted']:
                 self._conflicts.pop(key, None)
                 await commit(self.adapter.acknowledge, binding, epoch, pending['operationId'], answer['revision'])
             elif answer.get('conflict'):
@@ -35,17 +50,26 @@ class LongTermMemorySync:
                 self._conflicts[key] = self._conflicts.get(key, 0) + 1
                 if self._conflicts[key] > MAX_CONSECUTIVE_CONFLICTS:
                     self._conflicts.pop(key, None)
-                    raise ValueError('long_term_memory_conflict_unresolved')
+                    raise LongTermMemoryRetryLater('long_term_memory_conflict_unresolved')
             else:
                 await commit(self.adapter.refresh_pending, binding, epoch, pending['operationId'],
                              time.time_ns() // 1_000_000)
-                raise ValueError('long_term_memory_upload_refused')
+                raise LongTermMemoryRetryLater('long_term_memory_upload_refused')
+        result = await self._pull(domain, binding, epoch, request, commit, can_apply, session_fingerprint, path)
+        if unsupported:
+            raise LongTermMemoryRetryLater('long_term_memory_upload_unsupported')
+        return result
+
+    async def _pull(self, domain, binding, epoch, request, commit, can_apply, session_fingerprint, path):
         revision = await commit(self.adapter.base_revision, binding, epoch)
         metadata = head(await request('GET', path + '?metadataOnly=true', None), domain.owner_id, domain.character_uid)
         if metadata.get('expired') or metadata['revision'] < revision:
             return await self._follow(binding, epoch, metadata, commit)
         pending_auth = await commit(self.adapter.needs_reauthentication, binding, epoch, session_fingerprint)
         if not metadata['revision'] or (metadata['revision'] <= revision and not pending_auth):
+            # Nothing newer is published: only now does this device know every
+            # progress entry other devices have shared.
+            await commit(self.adapter.mark_checked, domain.character_uid, time.time_ns() // 1_000_000)
             return {'changed': False, 'hasMore': False}
         if not can_apply():
             return {'changed': False, 'hasMore': True}

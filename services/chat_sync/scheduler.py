@@ -141,13 +141,6 @@ class ChatSyncScheduler:
             conn.execute("UPDATE scheduler_tasks SET retry_at=0,failures=0,blocked_generation=NULL,"
                          "blocked_session=NULL,last_error=NULL WHERE domain=? AND channel=?", (domain, channel))
 
-    def succeeded_at(self, domain, channel):
-        """When the latest attempt on a channel began, if it ended in success; else None."""
-        with closing(self._connect()) as conn:
-            row = conn.execute("SELECT last_attempt FROM scheduler_tasks WHERE domain=? AND channel=? "
-                               "AND retry_at=0 AND failures=0 AND last_error IS NULL", (domain, channel)).fetchone()
-        return row[0] if row else None
-
     def record_long_term_capture_error(self, domain, generation, code):
         """Expose fixed local publication diagnostics without gating transport."""
         channel = 'long_term_capture'

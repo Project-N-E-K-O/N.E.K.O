@@ -328,10 +328,10 @@ class PromotionMixin:
         any persona).
         """
         from memory import organizer
-        if not organizer.allowed(lanlan_name):
-            # Private reflections belong to the organizing device; group and member
-            # partitions never sync, so they keep their lifecycle here.
-            scoped_only = True
+        # Private reflections belong to the organizing device. This is a separate
+        # question from scoped_only: on a weak-memory device that mode must stay
+        # as the caller gave it, or scoped reflections would start entering persona.
+        private_here = organizer.allowed(lanlan_name)
         from config import (
             WEAK_MEMORY_AUTO_CONFIRM_DAYS,
             WEAK_MEMORY_AUTO_PROMOTE_DAYS,
@@ -353,7 +353,7 @@ class PromotionMixin:
                 if r.get('status') != 'pending':
                     continue
                 subj = subject_from_entry(r)
-                if scoped_only and subj is None:
+                if (scoped_only or not private_here) and subj is None:
                     continue
                 if subj is None and not is_legacy_private_entry(r):
                     # Corrupt partial subjects fail closed in both modes,
@@ -396,7 +396,7 @@ class PromotionMixin:
                     # copy the retired text into persona unflagged.
                     continue
                 promote_subject = subject_from_entry(r)
-                if scoped_only and promote_subject is None:
+                if (scoped_only or not private_here) and promote_subject is None:
                     continue
                 if promote_subject is None and not is_legacy_private_entry(r):
                     # Like Pass 1, corrupt descriptors cannot enter any persona through zero-cost promotion.

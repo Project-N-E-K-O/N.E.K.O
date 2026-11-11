@@ -1020,6 +1020,22 @@ class DesktopLongTermAdapter:
     def incoming_path(self, uid):
         return self.directory / f'{uid}.incoming.json'
 
+    def _checked_path(self, uid):
+        return self.directory / f'{uid}.checked.json'
+
+    def mark_checked(self, uid, at):
+        """Record that this device held the newest published snapshot at this moment of its own clock."""
+        from utils.file_utils import atomic_write_json
+        self.directory.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(self._checked_path(uid), {'at': int(at)})
+
+    def checked_at(self, uid):
+        try:
+            at = json.loads(self._checked_path(uid).read_text(encoding='utf-8')).get('at')
+        except (OSError, ValueError, AttributeError):
+            return None
+        return at if type(at) is int else None
+
     def received_directory(self, uid):
         """Where lines another device said wait for this device to extract facts from them."""
         return self.directory.parent / 'received' / uid
@@ -1153,7 +1169,8 @@ class DesktopLongTermAdapter:
 
     def forget(self, uid):
         """Drop the confirmed base and inbox of a role whose cloud copy was retired."""
-        for path in [self.incoming_path(uid), self.directory / f'{uid}.organizer.json', *self.directory.glob(f'{uid}-*.json')]:
+        for path in [self.incoming_path(uid), self.directory / f'{uid}.organizer.json', self._checked_path(uid),
+                     *self.directory.glob(f'{uid}-*.json'), *self.directory.glob(f'{uid}.expired-*.json')]:
             path.unlink(missing_ok=True)
             self._cache.pop(path, None)
         received = self.received_directory(uid)

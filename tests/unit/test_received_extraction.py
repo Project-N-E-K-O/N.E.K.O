@@ -189,23 +189,31 @@ async def test_a_failing_batch_is_retried_and_finally_given_up_without_blocking_
     extractor.failure = FactExtractionFailed('synthetic')
     for attempt in range(extractor.module.MAX_FAILURES - 1):
         assert await extractor.module.extract_received('Neko', UID) == 0
-        assert len(received_messages.batches(extractor.directory)) == 1
+        # Another line arrives and falls due while the first batch keeps failing:
+        # the count still belongs to the oldest batch and is not started over.
+        received_messages.keep_arrivals(extractor.directory, [line(f'{attempt:032x}', f'later line {attempt}')],
+                                        extractor.now - delay + 1)
+        extractor.now += 10
+        extractor.checked = extractor.now
+        assert len(received_messages.batches(extractor.directory)) == attempt + 2
     await extractor.module.extract_received('Neko', UID)
     assert received_messages.batches(extractor.directory) == [] and extractor.captures == []
 
 
-def test_a_snapshot_check_counts_only_once_it_has_succeeded(tmp_path):
-    from services.chat_sync.scheduler import ChatSyncScheduler
-    clock = [1_000_000]
-    scheduler = ChatSyncScheduler(tmp_path / 'scheduler.sqlite3', clock=lambda: clock[0])
-    assert scheduler.succeeded_at('domain', 'long_term') is None
-    assert scheduler.claim('domain', 'long_term', 1, 'session')
-    # In flight: a reply that may still carry newer progress has not been stored yet.
-    assert scheduler.succeeded_at('domain', 'long_term') is None
-    scheduler.success('domain', 'long_term')
-    assert scheduler.succeeded_at('domain', 'long_term') == 1_000_000
-    assert scheduler.succeeded_at('domain', 'pull') is None
-    clock[0] += 10_000_000
-    assert scheduler.claim('domain', 'long_term', 1, 'session')
-    scheduler.failure('domain', 'long_term', 1, 'session', OSError('offline'))
-    assert scheduler.succeeded_at('domain', 'long_term') is None
+
+def test_the_newest_snapshot_mark_is_refused_while_a_downloaded_revision_waits(tmp_path, monkeypatch):
+    from app.memory_server import long_term_sync, received_extraction
+    from memory.long_term_sync import DesktopLongTermAdapter
+    config = SimpleNamespace(app_docs_dir=tmp_path)
+    adapter = DesktopLongTermAdapter(config)
+    monkeypatch.setattr(received_extraction.runtime, '_config_manager', config)
+    monkeypatch.setattr(long_term_sync, '_authority', lambda: object())
+    monkeypatch.setattr(long_term_sync, '_binding', lambda uid: {'owner_id': 'owner'})
+    assert received_extraction._snapshot_checked_at(UID) is None
+    adapter.mark_checked(UID, 7000)
+    assert received_extraction._snapshot_checked_at(UID) == 7000
+    adapter.incoming_path(UID).write_text('{}', encoding='utf-8')
+    assert received_extraction._snapshot_checked_at(UID) is None
+    adapter.incoming_path(UID).unlink()
+    monkeypatch.setattr(long_term_sync, '_binding', lambda uid: None)
+    assert received_extraction._snapshot_checked_at(UID) is None

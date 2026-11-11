@@ -1325,7 +1325,8 @@ async def test_upload_receipt_skips_own_head_but_pulls_after_a_conflict_or_a_new
     fingerprint = (await owner.runtime._session())[1]
     if outcome == 'refused':
         # Neither accepted nor a conflict: the snapshot is not recorded as uploaded and is retried afresh.
-        with pytest.raises(ValueError, match='^long_term_memory_upload_refused$'):
+        # An OSError: the scheduler backs off and retries instead of blocking the binding.
+        with pytest.raises(OSError, match='^long_term_memory_upload_refused$'):
             await owner.runtime.long_term_memory.sync(*arguments, can_apply=lambda: True, session_fingerprint=fingerprint)
         retried = local_state(owner)
         assert retried['base'] is None and retried['pending']['operationId'] != local['operationId']
@@ -3117,7 +3118,7 @@ async def test_repeated_conflicts_back_off_instead_of_spinning(owner):
         assert result['changed'] and local_state(owner)['pending'] == pending
     # The published revision is downloaded once and then left for the memory owner.
     assert server.calls.count('GET') == 1
-    with pytest.raises(ValueError, match='^long_term_memory_conflict_unresolved$'):
+    with pytest.raises(OSError, match='^long_term_memory_conflict_unresolved$'):
         await server.exchange(owner)
     assert local_state(owner)['pending'] == pending and local_state(owner)['base'] is None
 
@@ -3267,3 +3268,89 @@ def test_an_untouched_reflection_still_follows_its_facts_when_they_change():
     assert {**kept, 'fact_source_counts': reflection['fact_source_counts']} == reflection
     unchanged = merged_import(export_document(existing, 3000), existing)['reflections'][0]
     assert unchanged == reflection
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('code', ['long_term_memory_upload_refused', 'long_term_memory_conflict_unresolved',
+                                  'long_term_memory_upload_unsupported'])
+async def test_an_upload_that_cannot_land_backs_off_instead_of_blocking_the_binding(owner, code):
+    from services.chat_sync.long_term import LongTermMemoryRetryLater
+    generation, session = owner.binding['generation'], 'session'
+    assert owner.runtime.scheduler.claim(DOMAIN.key(), 'long_term', generation, session)
+    owner.runtime.scheduler.failure(DOMAIN.key(), 'long_term', generation, session, LongTermMemoryRetryLater(code))
+    with closing(store_connection(owner.runtime.scheduler.path)) as connection:
+        blocked, retry, error = connection.execute(
+            "SELECT blocked_generation,retry_at,last_error FROM scheduler_tasks WHERE domain=? AND channel='long_term'",
+            (DOMAIN.key(),)).fetchone()
+    assert blocked is None and retry > 0
+
+
+@pytest.mark.asyncio
+async def test_a_server_without_conditional_writes_still_serves_pulls_and_keeps_the_upload_waiting(owner):
+    from services.chat_sync.long_term import LongTermMemoryRetryLater
+    from services.chat_sync.runtime import ChatSyncServiceError
+    server = PublishingServer()
+    server.publish(export_document({'persona': {}, 'archive': [], 'reflections': [], 'facts': [
+        native_fact('theirs', 'only on the other device')]}, 1000))
+    atomic_write_json(owner.directory / 'facts.json', [native_fact('mine', 'only on this device')])
+    assert owner.native._capture('Neko', True)
+    waiting = local_state(owner)['pending']
+    plain = server.request
+
+    async def older_server(method, path, body):
+        if method == 'PUT':
+            server.calls.append('PUT')
+            raise ChatSyncServiceError(400)
+        return await plain(method, path, body)
+    server.request = older_server
+    with pytest.raises(LongTermMemoryRetryLater, match='^long_term_memory_upload_unsupported$'):
+        await server.exchange(owner)
+    # The refusal is not recorded as an upload, and what the server holds was still fetched.
+    assert local_state(owner)['pending'] == waiting and local_state(owner)['base'] is None
+    assert server.calls == ['PUT', 'HEAD', 'GET'] and owner.adapter.incoming_path(UID).exists()
+    with pytest.raises(ChatSyncServiceError):
+        async def broken(method, path, body):
+            raise ChatSyncServiceError(403)
+        server.request = broken
+        await server.exchange(owner)
+
+
+@pytest.mark.asyncio
+async def test_holding_the_newest_snapshot_is_recorded_only_when_nothing_newer_is_published(owner):
+    server = PublishingServer()
+    atomic_write_json(owner.directory / 'facts.json', [native_fact('mine', 'only on this device')])
+    assert owner.adapter.checked_at(UID) is None
+    assert owner.native._capture('Neko', True)
+    await server.exchange(owner)
+    first = owner.adapter.checked_at(UID)
+    assert type(first) is int and first > 0
+    owner.adapter.mark_checked(UID, 5)
+    other = deepcopy(server.document)
+    other['completedAt'] += 10
+    other['progress'] = {'a': ['c' * 32], 'b': []}
+    server.publish(other)
+    # A newer revision is downloaded but not applied yet: this device may be missing progress.
+    assert (await server.exchange(owner))['changed'] and owner.adapter.checked_at(UID) == 5
+    assert await owner.native.consume(UID)
+    await server.exchange(owner)
+    assert owner.adapter.checked_at(UID) > 5
+
+
+@pytest.mark.asyncio
+async def test_retiring_a_role_removes_every_copy_this_adapter_keeps(owner):
+    directory = owner.adapter.directory
+    directory.mkdir(parents=True, exist_ok=True)
+    other = 'b' * 32
+    kept = [directory / f'{other}-0123456789abcdef.json', directory / f'{other}.expired-{"0" * 32}.json',
+            directory / f'{other}.organizer.json', directory / f'{other}.checked.json']
+    dropped = [directory / f'{UID}-0123456789abcdef.json', directory / f'{UID}.expired-{"0" * 32}.json',
+               directory / f'{UID}.organizer.json', directory / f'{UID}.checked.json', owner.adapter.incoming_path(UID)]
+    for path in kept + dropped:
+        path.write_text('{}', encoding='utf-8')
+    from memory import received_messages
+    received_messages.keep_arrivals(owner.adapter.received_directory(UID), [
+        {'id': 'c' * 32, 'role': 'user', 'text': 'said elsewhere', 'originalTime': None}], 1000)
+    owner.adapter.forget(UID)
+    assert [path.exists() for path in kept] == [True] * 4 and [path.exists() for path in dropped] == [False] * 5
+    assert not owner.adapter.received_directory(UID).exists()

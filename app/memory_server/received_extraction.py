@@ -33,18 +33,17 @@ def _now_ms():
 
 
 def _snapshot_checked_at(uid):
-    """When the learned-memory lane last finished a successful check, or None while one is owed."""
-    from services.chat_sync.ledger import ChatDomain
-    from .long_term_sync import _authority, _binding, _capture_scheduler
+    """When this device last knew it held the newest published snapshot, or None while it may not."""
+    from .long_term_sync import _authority, _binding
 
     writer = _authority()
-    binding = _binding(uid) if writer is not None else None
-    if binding is None:
+    if writer is None or _binding(uid) is None:
         return None
-    if DesktopLongTermAdapter(runtime._config_manager).incoming_path(uid).is_file():
+    adapter = DesktopLongTermAdapter(runtime._config_manager)
+    if adapter.incoming_path(uid).is_file():
         # A downloaded snapshot not applied yet may mark these messages as read.
         return None
-    return _capture_scheduler(writer.directory).succeeded_at(ChatDomain(binding['owner_id'], uid).key(), 'long_term')
+    return adapter.checked_at(uid)
 
 
 async def extract_received(name, uid):
@@ -84,7 +83,9 @@ async def extract_received(name, uid):
             # Stage-1 only: judging belongs to the organizer, which finds these facts unjudged.
             await runtime.fact_store.extract_facts(unread, name, fail_closed=True)
         except (FactExtractionFailed, FactEvidenceUnavailable) as error:
-            key = (name, paths[-1].name)
+            # The oldest batch stays the same until it is given up; a newer arrival
+            # joining the round must not restart the count.
+            key = (name, paths[0].name)
             _failures[key] = _failures.get(key, 0) + 1
             if _failures[key] < MAX_FAILURES:
                 logger.warning(f"[ReceivedExtraction] {name}: 提取失败，保留待下轮重试: {error}")

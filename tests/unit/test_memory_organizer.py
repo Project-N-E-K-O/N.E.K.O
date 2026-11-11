@@ -9,7 +9,7 @@ from memory import organizer
 from memory.organizer import CLAIM, NONE, RELEASE, RENEW, RENEW_INTERVAL_MS, TAKEOVER_AFTER_MS
 from tests.unit.test_evidence_promote_merge import _install
 from tests.unit.test_long_term_memory_sync import (  # noqa: F401
-    OWNER, UID, PublishingServer, isolated_chat_sync_writer, local_state, native_fact, owner,
+    UID, PublishingServer, isolated_chat_sync_writer, local_state, native_fact, owner,
 )
 from utils.file_utils import atomic_write_json
 
@@ -295,3 +295,40 @@ async def test_only_the_organizer_trims_evidence_and_only_what_the_server_alread
     await server.exchange(owner)
     assert [row['id'] for row in server.document['evidence']['retirements']] == ['fresh']
     assert not owner.native._capture('Neko', False)
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('organizes', [False, True])
+async def test_weak_memory_never_promotes_group_reflections_whoever_organizes(tmp_path, gate, organizes):
+    """Not organizing must not switch the weak-memory caller into the mode that writes group persona."""
+    from datetime import datetime, timedelta
+    _, _, persona, engine, _ = _install(str(tmp_path))
+    gate[NAME] = organizes
+    old = (datetime.now() - timedelta(days=400)).isoformat()
+    scoped = {'id': 'ref_group', 'entity': 'group_chat', 'text': '群里常聊游戏', 'status': 'confirmed', 'created_at': old,
+              'confirmed_at': old, 'source_fact_ids': [], 'subject_kind': 'group_chat', 'subject_id': 'g1', 'scope': 'group:g1',
+              'observed_days': [(datetime.now() - timedelta(days=offset)).date().isoformat() for offset in (400, 300, 200, 100)]}
+    private = {'id': 'ref_private', 'entity': 'master', 'text': '主人喜欢安静的晚上', 'status': 'pending',
+               'created_at': old, 'source_fact_ids': []}
+    await engine.asave_reflections(NAME, [dict(scoped), dict(private)])
+    await engine.aauto_promote_time_driven(NAME)
+    rows = {row['id']: row for row in await engine.aload_reflections(NAME)}
+    assert rows['ref_group']['status'] == 'confirmed'
+    assert (rows['ref_private']['status'] == 'pending') is (not organizes)
+
+
+@pytest.mark.asyncio
+async def test_a_private_review_this_device_may_not_run_does_not_hide_her_other_reviews(monkeypatch, gate):
+    from tests.unit import test_behavior_notes as behavior
+    from app.memory_server import refine_loops
+    monkeypatch.setattr(refine_loops, '_introspection_due', lambda name, now: True)
+    monkeypatch.setattr(refine_loops, '_behavior_review_due', lambda name, now: True)
+    monkeypatch.setattr(refine_loops, '_abehavior_review_enabled', AsyncMock(return_value=True))
+    runs = behavior._tick_runtime(monkeypatch)
+    name = next(iter(refine_loops.runtime._config_manager.aload_characters.return_value['猫娘']))
+    await refine_loops._run_introspection_tick()
+    assert runs.behavior.await_count == 1 and runs.private.await_count == 0
+    gate[name] = True
+    await refine_loops._run_introspection_tick()
+    assert runs.private.await_count == 1
