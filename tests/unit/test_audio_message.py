@@ -783,7 +783,7 @@ async def test_gemini_audio_receipt_waits_for_reply_after_tools(monkeypatch, con
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "boundary", [
-        "session-retirement", "provider-final", "shutdown", "queued-session-end",
+        "session-retirement", "provider-final", "shutdown", "shutdown-during-transcript-callback", "queued-session-end",
         "failed-before-send", "storage-startup-rejected", "publication-guard", "lost-cache-response",
         "lost-session-end-response", "no-final", "no-transcript", "flush-failed", "clear-during-monitor",
     ],
@@ -799,6 +799,7 @@ async def test_gemini_audio_memory_uses_the_latest_transcript_before_its_reply(
     from utils.token_tracker import TokenTracker
 
     bounded = boundary in {"no-final", "no-transcript"}
+    shutdown_during_callback = boundary == "shutdown-during-transcript-callback"
     monkeypatch.setattr("main_logic.omni_realtime_client._gemini_support.types", types)
     monkeypatch.setattr(TokenTracker, "get_instance", lambda: SimpleNamespace(record=Mock()))
     analyze = AsyncMock(return_value=True)
@@ -873,6 +874,14 @@ async def test_gemini_audio_memory_uses_the_latest_transcript_before_its_reply(
     memory._should_suppress_dirty_voice_transcript = Mock(return_value=True)
     memory.sync_message_queue = manager.sync_message_queue = queue
     manager.handle_input_transcript = memory.handle_input_transcript
+    callback_entered, release_callback = asyncio.Event(), asyncio.Event()
+
+    async def wait_for_shutdown():
+        callback_entered.set()
+        await release_callback.wait()
+
+    if shutdown_during_callback:
+        memory._inject_pending_user_directives = wait_for_shutdown
 
     async def text_delta(text, first):
         await TurnMixin.send_lanlan_response(memory, text, first)
@@ -894,7 +903,7 @@ async def test_gemini_audio_memory_uses_the_latest_transcript_before_its_reply(
 
     async def send(**fields):
         if "activity_end" in fields:
-            if boundary != "no-transcript":
+            if boundary != "no-transcript" and not shutdown_during_callback:
                 await receive(input_transcription=types.Transcription(
                     text="Please check tomorrow." if bounded else "Please ",
                 ))
@@ -907,6 +916,7 @@ async def test_gemini_audio_memory_uses_the_latest_transcript_before_its_reply(
     connector = asyncio.create_task(cross_server.run_sync_connector(
         queue, "Lan", config={"monitor": False, "bullet": False},
     ))
+    transcript_task = None
     try:
         payload = message()
         socket = SimpleNamespace(send_json=AsyncMock())
@@ -917,7 +927,7 @@ async def test_gemini_audio_memory_uses_the_latest_transcript_before_its_reply(
         assert writes == []
         save_original.assert_not_awaited()
 
-        if not bounded:
+        if not bounded and not shutdown_during_callback:
             await receive(input_transcription=types.Transcription(
                 text="check tomorrow.", finished=True if boundary in {"provider-final", "clear-during-monitor"} else None,
             ))
@@ -930,14 +940,19 @@ async def test_gemini_audio_memory_uses_the_latest_transcript_before_its_reply(
             assert writes == []
             analyze.assert_not_awaited()
             return
-        if boundary != "no-transcript":
+        if boundary != "no-transcript" and not shutdown_during_callback:
             assert isolated_history.receipt(payload["request_id"])["transcript"] == "Please check tomorrow."
         if boundary == "session-retirement":
             queue.put({"type": "system", "data": "session end"})
         if not bounded and boundary not in {"session-retirement", "provider-final"}:
             queue.put({"type": "json", "data": {"type": "block_monitor"}})
             await asyncio.wait_for(monitor_blocked.wait(), 2)
-            if boundary != "shutdown":
+            if shutdown_during_callback:
+                transcript_task = asyncio.create_task(receive(input_transcription=types.Transcription(
+                    text="Please check tomorrow.", finished=True,
+                )))
+                await asyncio.wait_for(callback_entered.wait(), 2)
+            if boundary != "shutdown" and not shutdown_during_callback:
                 queue.put({"type": "system", "data": "session end"})
             role = SimpleNamespace(sync_task=connector, sync_message_queue=queue)
             monkeypatch.setattr(character_runtime, "role_state", {"Lan": role})
@@ -952,6 +967,11 @@ async def test_gemini_audio_memory_uses_the_latest_transcript_before_its_reply(
             character_runtime.cleanup(log=False)
             assert not await character_runtime.join_sync_connector_tasks(2)
             assert connector.cancelled()
+            if transcript_task is not None:
+                assert not transcript_task.done()
+                release_callback.set()
+                await asyncio.wait_for(transcript_task, 2)
+                assert isolated_history.receipt(payload["request_id"])["transcript"] == "Please check tomorrow."
         await asyncio.wait_for(cached.wait(), 2)
         assert len(writes) == 1
         if boundary == "no-transcript":
@@ -973,8 +993,11 @@ async def test_gemini_audio_memory_uses_the_latest_transcript_before_its_reply(
             assert save_original.await_count == int(boundary != "no-transcript")
     finally:
         release_monitor.set()
+        release_callback.set()
         connector.cancel()
         await asyncio.gather(connector, return_exceptions=True)
+        if transcript_task is not None:
+            await asyncio.gather(transcript_task, return_exceptions=True)
 
 
 @pytest.mark.asyncio

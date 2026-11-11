@@ -48,6 +48,7 @@ def _build_history_request_payload(messages: list[dict]) -> str:
     [
         ("startup-rejection", None),
         ("cloudsave-before-write", None),
+        ("recent-lock-failure", None),
         ("cloudsave-after-recent", None),
         ("unconfirmed-write", None),
         ("cloudsave-before-write", "session end"),
@@ -64,12 +65,14 @@ async def test_connector_retries_only_a_confirmed_pre_write_rejection(monkeypatc
     from main_logic import cross_server
     from main_routers.characters_router import crud
     from memory.recent import CompressedRecentHistoryManager
+    from utils import recent_file
     from utils.cloudsave_runtime import ROOT_MODE_BOOTSTRAP_IMPORTING, ROOT_MODE_NORMAL, assert_cloudsave_writable
 
     startup_rejected = failure == "startup-rejection"
     cloudsave_before = failure == "cloudsave-before-write"
     cloudsave_after = failure == "cloudsave-after-recent"
-    rejected_before_write = startup_rejected or cloudsave_before
+    lock_failure = failure == "recent-lock-failure"
+    rejected_before_write = startup_rejected or cloudsave_before or lock_failure
     root_mode = ROOT_MODE_BOOTSTRAP_IMPORTING if cloudsave_before else ROOT_MODE_NORMAL
     language = "en"
     recent_path = tmp_path / "Neko" / "recent.json"
@@ -113,6 +116,15 @@ async def test_connector_retries_only_a_confirmed_pre_write_rejection(monkeypatc
     responses = asyncio.Queue()
     first_request = True
     retry_started, release_retry, clear_waiting = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    if lock_failure:
+        original_acquire = recent_file._RecentFileLock.acquire
+
+        def acquire(lock, *args, **kwargs):
+            if first_request:
+                raise PermissionError("temporary failure opening the recent history lock file")
+            return original_acquire(lock, *args, **kwargs)
+
+        monkeypatch.setattr(recent_file._RecentFileLock, "acquire", acquire)
 
     async def post(url, **kwargs):
         nonlocal first_request
@@ -158,16 +170,19 @@ async def test_connector_retries_only_a_confirmed_pre_write_rejection(monkeypatc
         try:
             send_turn(1)
             _, _, response = await asyncio.wait_for(responses.get(), 3)
-            if cloudsave_before or cloudsave_after:
+            if cloudsave_before or cloudsave_after or lock_failure:
                 assert response.status_code == 200
                 error = response.json()
                 assert error["status"] == "error"
-                assert (error.get("write_started") is False) is cloudsave_before
+                assert (error.get("write_started") is False) is (cloudsave_before or lock_failure)
             else:
                 assert response.status_code == 409
             if startup_rejected:
                 assert response.json()["error_code"] == "storage_startup_blocked"
             assert recent_path.exists() == (not rejected_before_write)
+            if lock_failure:
+                assert recent._pending_batches("Neko") == []
+                post_turn._spawn_outbox_post_turn_signals.assert_not_awaited()
 
             if boundary == "direct clear during retry":
                 language = "ja"
@@ -296,7 +311,9 @@ async def test_shutdown_flush_writes_pending_recent_history_without_replaying_th
 
     with monkeypatch.context() as failed:
         failed.setattr(recent_file, "write_recent_payload_unlocked", fail_write)
-        assert (await routes.cache_conversation(batch, "Neko"))["status"] == "cached"
+        assert await routes.cache_conversation(batch, "Neko") == {
+            "status": "cached", "count": 1, "recent_persisted": False,
+        }
         assert (await routes.cache_conversation(flush, "Neko"))["status"] == "error"
         assert not recent_path.exists()
 
