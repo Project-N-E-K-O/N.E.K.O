@@ -1,7 +1,7 @@
 /* Static profile consent and retained conflicts; OAuth remains in the backend. */
 (function () {
     'use strict';
-    var dialog = null, promptDialog = null, timer = null, polling = false, reviewed = new Set();
+    var dialog = null, promptDialog = null, timer = null, polling = false, reviewed = new Set(), failedUntil = new Map();
     var promptQueue = Promise.resolve();
     function text(key, values) { return window.t ? window.t('chatSync.' + key, values || {}) : key; }
     async function api(path, body) {
@@ -260,11 +260,15 @@
                 var profile = role.binding && role.binding.profile;
                 if (!profile) continue;
                 var key = role.characterSyncId + ':' + profile.local_hash + ':' + profile.head_revision;
-                if ((profile.conflict || (profile.renameRequired && profile.apply_pending)) && !reviewed.has(key)) {
-                    var opened = true;
-                    try { opened = await review(role.characterSyncId, await api('/characters/' + role.characterSyncId + '/profile/local', {})); }
-                    catch (_) { /* Skip unreadable candidates until their hash/revision changes. */ }
-                    if (opened) reviewed.add(key);
+                if ((profile.conflict || (profile.renameRequired && profile.apply_pending)) && !reviewed.has(key)
+                    && (failedUntil.get(key) || 0) <= Date.now()) {
+                    try {
+                        if (await review(role.characterSyncId, await api('/characters/' + role.characterSyncId + '/profile/local', {}))) reviewed.add(key);
+                        failedUntil.delete(key);
+                    } catch (_) {
+                        // Let later roles through without hiding a conflict after a transient read failure.
+                        failedUntil.set(key, Date.now() + 60000);
+                    }
                     break;
                 }
             }
