@@ -60,6 +60,6 @@ These documents preserve design intent and implementation context. They are grou
 - [Neko visiting infrastructure (v3, all decisions approved)](./visit-infrastructure)
 - [Neko visiting: Servers contract](./visit-servers-contract) — Chinese-only. Current contract for the closed-source Servers endpoints; generated from §4.7 of the design record and pinned to it by a unit test.
 - [Neko visiting: field tests T1–T15](./visit-field-tests) — Chinese-only. Result table and `chrome://webrtc-internals` acceptance fields for the design record's field-test list.
-- [NekoClaw rewrite](./nekoclaw-rewrite) — Chinese-only. Replaces the agent module: commissions dispatched by the main dialogue, a built-in Python runtime with optional dsh, one capability gateway, and a per-project work memory.
+- [NekoClaw rewrite](./nekoclaw-rewrite) — Chinese-only. Replaces the agent module: a resident task brain that routes what the main dialogue dispatches (plugins first, familiar sessions for multi-step work), a built-in Python runtime with optional dsh, one capability gateway, and a per-project work memory.
 
 New records should state whether they are a current contract, implemented record, proposal, historical snapshot, or deprecated document near the beginning.
