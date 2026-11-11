@@ -855,3 +855,13 @@ def test_overlapping_windows_across_midnight_are_one_event():
 def test_a_moved_event_window_changes_the_fingerprint():
     row = {**_fact('a', '博士散步', created='2026-06-12T21:00:00'), 'event_start_at': '2026-06-12T08:00:00'}
     assert legacy_dedup.fingerprint(row) != legacy_dedup.fingerprint({**row, 'event_start_at': '2026-06-11T08:00:00'})
+
+
+def test_event_ranges_that_only_look_close_across_offsets_stay_apart():
+    walk = '博士出门散步了一圈'
+    # 08:00–09:00 UTC and 08:30–09:30 at UTC+8 (00:30–01:30 UTC): close as text, apart in time.
+    utc = {**_fact('a', walk, created='2026-06-12T21:00:00'), 'event_start_at': '2026-06-12T08:00:00+00:00',
+           'event_end_at': '2026-06-12T09:00:00+00:00'}
+    east = {**_fact('b', walk, created='2026-06-12T21:05:00'), 'event_start_at': '2026-06-12T08:30:00+08:00',
+            'event_end_at': '2026-06-12T09:30:00+08:00'}
+    assert legacy_dedup.nominate({'a': utc, 'b': east}) == []
