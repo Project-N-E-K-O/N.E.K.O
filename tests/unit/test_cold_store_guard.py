@@ -143,3 +143,38 @@ def test_cloud_save_manifest_leaves_cold_storage_out():
         top = str(name).replace("\\", "/").split("/", 1)[0]
         assert top not in cold_store.COLD_DIRNAMES.values(), name
         assert not top.startswith(cold_store.FACT_COLD_DIRNAME), name
+
+
+def test_a_real_cloud_save_export_leaves_cold_storage_behind(tmp_path):
+    """The manifest check above, end to end: export a character holding cold shards."""
+    import json as _json
+
+    from memory import cold_store
+    from memory.archive_shards import append_to_shard_sync
+    from tests.unit.test_cloudsave_runtime import _make_config_manager, _write_runtime_state
+    from utils.cloudsave_runtime import export_local_cloudsave_snapshot
+
+    cm = _make_config_manager(tmp_path)
+    _write_runtime_state(cm)
+    character_dir = Path(cm.memory_dir) / "小满"
+    cold_store.append(str(character_dir), [{"id": "c1", "text": "ZQXCOLDFACTTEXT", "entity": "master",
+                                            "arbitration_archived_at": "2026-07-01T00:00:00"}])
+    append_to_shard_sync(cold_store.cold_dir(str(character_dir), "reflection"),
+                         [{"id": "r1", "text": "ZQXCOLDREFLTEXT", "entity": "master", "status": "denied"}])
+    append_to_shard_sync(cold_store.cold_dir(str(character_dir), "persona"),
+                         [{"id": "p1", "text": "ZQXCOLDPERSONATEXT", "entity_key": "master"}])
+
+    export_local_cloudsave_snapshot(cm)
+
+    exported = [path for path in Path(cm.cloudsave_dir).rglob("*") if path.is_file()]
+    # Ordinary memory goes out...
+    assert any(path.name == "facts.json" and "小满" in path.parts for path in exported)
+    # ...cold storage stays on this disk, by name and by content.
+    for path in exported:
+        assert not set(path.parts) & set(cold_store.COLD_DIRNAMES.values()), path
+        if path.suffix == ".json":
+            text = path.read_text(encoding="utf-8", errors="replace")
+            for token in ("ZQXCOLDFACTTEXT", "ZQXCOLDREFLTEXT", "ZQXCOLDPERSONATEXT"):
+                assert token not in text, path
+    manifest = _json.loads(Path(cm.cloudsave_manifest_path).read_text(encoding="utf-8"))
+    assert not any(name in _json.dumps(manifest, ensure_ascii=False) for name in cold_store.COLD_DIRNAMES.values())
