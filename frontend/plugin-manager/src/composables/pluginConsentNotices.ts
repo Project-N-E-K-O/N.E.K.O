@@ -86,13 +86,17 @@ export function usePluginConsentNotices() {
   const runningConsent = computed(() =>
     pluginStore.pluginSummariesWithStatus
       .filter((plugin) => plugin.status === 'running')
-      .map((plugin) => ({ id: plugin.id, state: consentState.stateOf(plugin.id)?.state })),
+      .map(({ id }) => ({
+        id,
+        state: consentState.stateOf(id)?.state,
+        pending: consentState.isAnalysisPending(id),
+      })),
   )
   const analyzingIds = computed(() =>
-    runningConsent.value.filter((plugin) => plugin.state === 'analyzing').map(({ id }) => id),
+    runningConsent.value.filter((plugin) => plugin.pending).map(({ id }) => id),
   )
   const confirmingIds = computed(() =>
-    runningConsent.value.filter((plugin) => plugin.state === 'confirm').map(({ id }) => id),
+    runningConsent.value.filter((plugin) => !plugin.pending && plugin.state === 'confirm').map(({ id }) => id),
   )
   watch(
     analyzingIds,

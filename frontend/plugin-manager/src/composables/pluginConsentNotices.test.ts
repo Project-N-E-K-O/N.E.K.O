@@ -209,6 +209,38 @@ describe('usePluginConsentNotices', () => {
     expect(notify.ElNotification).toHaveBeenCalledOnce()
   })
 
+  it('refreshes after a cached confirmation report finishes its queued revision check', async () => {
+    const consentState = usePluginConsentState()
+    const completed: PluginConsent = {
+      plugin_id: 'a',
+      version: '1',
+      decision: null,
+      decided_at: null,
+      approved_capabilities: [],
+      unconfirmed: ['memory.read'],
+      state: 'confirm',
+      upgraded: false,
+      analysis: { status: 'completed', capabilities: ['memory.read'], evidence: [], warnings: [] },
+    }
+    runningAnalyzing('a')
+    consentState.details.a = {
+      ...completed,
+      analysis: { ...completed.analysis, analysis_id: 'pending-check' },
+    }
+    const watchSpy = vi.spyOn(consentState, 'watchPlugin')
+    mount()
+    await flush()
+    expect(watchSpy).toHaveBeenCalledWith('a')
+    expect(notify.ElNotification).not.toHaveBeenCalled()
+
+    api.getPluginConsent.mockResolvedValue(completed)
+    api.getPluginConsentNotices.mockResolvedValue([notice('a')])
+    await consentState.load('a')
+    await flush()
+    expect(consentState.stateOf('a')?.state).toBe('confirm')
+    expect(notify.ElNotification).toHaveBeenCalledOnce()
+  })
+
   it('refreshes notices when a running plugin goes directly from clear to confirm', async () => {
     const consentState = usePluginConsentState()
     usePluginStore().pluginSummaries = [

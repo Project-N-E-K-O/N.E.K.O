@@ -107,6 +107,28 @@ it('the shared poller only refetches watched plugins that are still analyzing', 
   }
 })
 
+it('polls a completed report while its revision check is pending', async () => {
+  vi.useFakeTimers()
+  const store = usePluginConsentState()
+  const completed = response(null, 'completed')
+  store.details.demo = {
+    ...completed,
+    analysis: { ...completed.analysis, analysis_id: 'pending-check' },
+  }
+  vi.mocked(getPluginConsent).mockResolvedValue(completed)
+  store.watchPlugin('demo')
+  try {
+    expect(store.stateOf('demo')?.state).toBe('confirm')
+    expect(store.isAnalysisPending('demo')).toBe(true)
+    await vi.advanceTimersByTimeAsync(4100)
+    expect(getPluginConsent).toHaveBeenCalledOnce()
+    expect(store.isAnalysisPending('demo')).toBe(false)
+  } finally {
+    store.unwatchPlugin('demo')
+    vi.useRealTimers()
+  }
+})
+
 it('seedSummaries feeds stateOf and matching-version details win', async () => {
   vi.mocked(getPluginConsent).mockResolvedValue(response(null, 'completed'))
   const store = usePluginConsentState()

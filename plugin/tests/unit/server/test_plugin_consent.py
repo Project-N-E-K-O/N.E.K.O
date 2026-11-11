@@ -551,16 +551,21 @@ async def test_running_plugin_summary_exposes_a_queued_same_version_scan(
     try:
         assert service.consent_summary("demo", meta)["state"] == "clear"
         runner.ensure_analyzed("demo", root, "1")
-        assert runner.report("demo", root, "1")["status"] == "completed"
+        current = service.consent_details("demo")["analysis"]
+        assert current["status"] == "completed"
+        assert current["analysis_id"]
         source.write_text("self.ctx.push_message()")
         assert service.consent_summary("demo", meta)["state"] == "analyzing"
         assert service.consent_notices() == []
-        assert runner.report("demo", root, "1")["status"] == "unavailable"
+        stale = runner.report("demo", root, "1")
+        assert stale["status"] == "unavailable"
+        assert stale["analysis_id"] == current["analysis_id"]
         with runner._lock:
             job = runner._jobs["demo"][1]
         release.set()
         await asyncio.wrap_future(job)
         assert service.consent_summary("demo", meta)["state"] == "confirm"
+        assert "analysis_id" not in service.consent_details("demo")["analysis"]
         assert [notice["unconfirmed"] for notice in service.consent_notices()] == [["messages.push"]]
     finally:
         release.set()

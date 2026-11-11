@@ -206,6 +206,10 @@ export const usePluginConsentState = defineStore('pluginConsent', () => {
     return summary ?? null
   }
 
+  function isAnalysisPending(id: string): boolean {
+    return Boolean(details.value[id]?.analysis?.analysis_id) || stateOf(id)?.state === 'analyzing'
+  }
+
   // Single poller: consumers register interest in a plugin and the store
   // refreshes missing details and pending analysis while the document is visible.
   const watchers = new Map<string, number>()
@@ -213,7 +217,7 @@ export const usePluginConsentState = defineStore('pluginConsent', () => {
   function pollTick() {
     if (document.hidden) return
     for (const id of watchers.keys()) {
-      if (!reads.has(id) && (!details.value[id] || stateOf(id)?.state === 'analyzing')) {
+      if (!reads.has(id) && (!details.value[id] || isAnalysisPending(id))) {
         void load(id).catch(() => undefined)
       }
     }
@@ -295,6 +299,7 @@ export const usePluginConsentState = defineStore('pluginConsent', () => {
     summaries,
     activeRequest,
     allowStartDuringAnalysis,
+    isAnalysisPending,
     forget,
     load,
     nextRequestTicket,

@@ -272,9 +272,8 @@ class CapabilityAnalysisService:
             except OSError:
                 fresh = False
             if fresh:
-                if status == "unavailable":
-                    report.update(analysis_scope)
-                return report
+                # A queued revision check can coexist with a valid cached report.
+                return {**report, **analysis_scope}
             with self._lock:
                 if self._reports.get(plugin_id) is cached:
                     self._reports.pop(plugin_id, None)
