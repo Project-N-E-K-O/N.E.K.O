@@ -893,6 +893,7 @@ test('cat visits keep local Playground gravity but register only the local cat b
   [
     '_NEKO_IDLE_CAT1_PLAYGROUND_CAT_BODY_MASS', '_NEKO_IDLE_CAT1_PLAYGROUND_CAT_VISIBLE_INSET_RATIOS',
     '_NEKO_IDLE_CAT1_PLAYGROUND_YARN_BODY_MASS', '_NEKO_IDLE_CAT1_PLAYGROUND_YARN_VISIBLE_INSET_RATIOS',
+    '_NEKO_IDLE_CAT1_PLAYGROUND_YARN_GROUND_DAMPING_AT_60HZ',
   ].forEach((name) => { if (!(name in r.context)) r.context[name] = 1; });
   r.context._getNekoIdleCat1PlaygroundDropState = () => dropState;
   r.context._getNekoIdleReturnContainerFromButton = () => r.container;
@@ -2443,6 +2444,55 @@ test('a desktop landing bounces, and a soft or reduced-motion landing settles', 
   const reduced = land({ vy: 400, reduceMotion: true });
   assert.equal(reduced.vy, 0);
   assert.equal(reduced.grounded, true);
+});
+
+test('only grounded yarn bodies use the stronger horizontal damping', () => {
+  const r = runtime({ web: true });
+  const makeBody = (id, x, grounded, customDamping = null) => ({
+    id, x, y: grounded ? 850 : 400, vx: 100, vy: 0, grounded,
+    width: 50, height: 50, floorY: 850, ceilingY: 0, wallLeft: 0, wallRight: 1150,
+    groundHorizontalDampingAt60Hz: customDamping,
+  });
+  const cat = makeBody('cat', 100, true);
+  const question = makeBody('question-block', 300, true);
+  const yarn = makeBody('yarn', 500, true, 0.90);
+  const airborneYarn = makeBody('desktop-yarn', 700, false, 0.90);
+  r.button.__nekoIdleCat1PlaygroundDropState = {
+    active: true, released: false, token: 1, phase: 'settled',
+    bodies: new Map([
+      ['cat', cat], ['question-block', question], ['yarn', yarn], ['desktop-yarn', airborneYarn],
+    ]),
+    gravityPxPerSecond2: 0, maxDeltaMs: 50, lastTickAt: 1000, frame: 0,
+  };
+  Object.assign(r.context, {
+    _updateNekoIdleCat1PlaygroundBodyBounds: () => {},
+    _shouldNekoIdleCat1PlaygroundBodySettleRotation: () => false,
+    _stepNekoIdleCat1PlaygroundBodyRotation: () => false,
+    _stepNekoIdleCat1PlaygroundBodyRestRotation: () => false,
+    _isNekoIdleCat1PlaygroundBodyRotating: () => false,
+    _isNekoIdleCat1PlaygroundBodySettlingRotation: () => false,
+    _isNekoIdleCat1PlaygroundBodyRestRotationPending: () => false,
+    _resolveNekoIdleCat1PlaygroundBodyCollisions: () => false,
+    _setNekoIdleCat1PlaygroundBodyPosition: () => {},
+    _beginNekoIdleCat1PlaygroundCollisionDeformation: () => false,
+    _getNekoIdleReturnAssetUrl: () => 'idle.gif',
+    _NEKO_IDLE_CAT1_PLAYGROUND_HORIZONTAL_DAMPING: 0.992,
+    _NEKO_IDLE_CAT1_PLAYGROUND_GROUND_DAMPING: 0.988,
+    _NEKO_IDLE_CAT1_PLAYGROUND_WALL_RESTITUTION: 0.42,
+    _NEKO_IDLE_CAT1_PLAYGROUND_FLOOR_RESTITUTION: 0.52,
+    _NEKO_IDLE_CAT1_PLAYGROUND_FLOOR_REST_SPEED_PX_PER_SEC: 38,
+    _NEKO_IDLE_CAT1_PLAYGROUND_GROUND_STOP_VELOCITY_PX_PER_SEC: 3,
+  });
+  const source = fs.readFileSync(path.join(avatar, 'idle-playground.js'), 'utf8');
+  const start = source.indexOf('function _stepNekoIdleCat1PlaygroundPhysics(');
+  vm.runInContext(source.slice(start, source.indexOf('\n}', start) + 2), r.context);
+
+  r.context._stepNekoIdleCat1PlaygroundPhysics(r.button, 1000 + (1000 / 60));
+
+  assert.ok(Math.abs(yarn.vx - 90) < 0.0001, 'grounded yarn gets the stronger damping');
+  assert.ok(Math.abs(cat.vx - 98.8) < 0.0001, 'cat keeps the existing ground damping');
+  assert.ok(Math.abs(question.vx - 98.8) < 0.0001, 'question block keeps the existing ground damping');
+  assert.ok(Math.abs(airborneYarn.vx - 99.2) < 0.0001, 'airborne yarn keeps the existing air damping');
 });
 
 test('the production playground loop delegates the contained cat and still simulates other bodies', () => {

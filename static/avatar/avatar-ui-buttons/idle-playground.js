@@ -812,6 +812,9 @@ function _createNekoIdleCat1PlaygroundPhysicsBody(id, element, options = {}) {
         angularVelocity: Number(options.angularVelocity) || 0,
         angularDamping: Number(options.angularDamping) || _NEKO_IDLE_CAT1_PLAYGROUND_DEFAULT_ANGULAR_DAMPING,
         angularGroundDamping: Number(options.angularGroundDamping) || _NEKO_IDLE_CAT1_PLAYGROUND_DEFAULT_GROUND_ANGULAR_DAMPING,
+        groundHorizontalDampingAt60Hz: Number.isFinite(Number(options.groundHorizontalDampingAt60Hz))
+            ? Math.max(0, Math.min(1, Number(options.groundHorizontalDampingAt60Hz)))
+            : null,
         settleRotationWhenGrounded: !!options.settleRotationWhenGrounded,
         restRotationStepRad: Math.max(0, Number(options.restRotationStepRad) || 0),
         restRotationOffsetRad: Number(options.restRotationOffsetRad) || 0,
@@ -961,6 +964,7 @@ function _registerNekoIdleCat1PlaygroundPhysicsBodies(button, options = {}) {
             id: 'yarn',
             rect: target.rect,
             mass: _NEKO_IDLE_CAT1_PLAYGROUND_YARN_BODY_MASS,
+            groundHorizontalDampingAt60Hz: _NEKO_IDLE_CAT1_PLAYGROUND_YARN_GROUND_DAMPING_AT_60HZ,
             visibleInsetRatios: _NEKO_IDLE_CAT1_PLAYGROUND_YARN_VISIBLE_INSET_RATIOS
         });
         if (body) {
@@ -975,6 +979,7 @@ function _registerNekoIdleCat1PlaygroundPhysicsBodies(button, options = {}) {
             rect: target.rect,
             desktop: true,
             mass: _NEKO_IDLE_CAT1_PLAYGROUND_YARN_BODY_MASS,
+            groundHorizontalDampingAt60Hz: _NEKO_IDLE_CAT1_PLAYGROUND_YARN_GROUND_DAMPING_AT_60HZ,
             visibleInsetRatios: _NEKO_IDLE_CAT1_PLAYGROUND_YARN_VISIBLE_INSET_RATIOS
         });
         if (body) {
@@ -1429,8 +1434,14 @@ function _stepNekoIdleCat1PlaygroundPhysics(button, now) {
                 body.vy += state.gravityPxPerSecond2 * dt;
                 body.x += body.vx * dt;
                 body.y += body.vy * dt;
+                const customGroundDamping = body.grounded &&
+                    Number.isFinite(body.groundHorizontalDampingAt60Hz)
+                    ? Math.pow(body.groundHorizontalDampingAt60Hz, Math.max(0, dt * 60))
+                    : null;
                 body.vx *= body.grounded
-                    ? _NEKO_IDLE_CAT1_PLAYGROUND_GROUND_DAMPING
+                    ? (customGroundDamping === null
+                        ? _NEKO_IDLE_CAT1_PLAYGROUND_GROUND_DAMPING
+                        : customGroundDamping)
                     : _NEKO_IDLE_CAT1_PLAYGROUND_HORIZONTAL_DAMPING;
 
                 if (body.x <= body.wallLeft) {

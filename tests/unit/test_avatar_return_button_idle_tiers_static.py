@@ -220,6 +220,7 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_AIR_ASSET_URL = _getNekoCatAppearanceUrl('playground.cat1.air', { random: false })" in source
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_YARN_ASSET_URL = '/static/assets/neko-idle/chat-minimized-yarn-ball.png'" in source
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_GROUND_DAMPING = 0.988" in source
+    assert "_NEKO_IDLE_CAT1_PLAYGROUND_YARN_GROUND_DAMPING_AT_60HZ = 0.90" in source
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_GROUND_STOP_VELOCITY_PX_PER_SEC = 3" in source
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_CAT_BODY_MASS = 2" in source
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_YARN_BODY_MASS = 0.65" in source
@@ -286,6 +287,9 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "id: 'question-block'" in register_block
     assert "mass: _NEKO_IDLE_CAT1_PLAYGROUND_CAT_BODY_MASS" in register_block
     assert register_block.count("mass: _NEKO_IDLE_CAT1_PLAYGROUND_YARN_BODY_MASS") == 2
+    assert register_block.count(
+        "groundHorizontalDampingAt60Hz: _NEKO_IDLE_CAT1_PLAYGROUND_YARN_GROUND_DAMPING_AT_60HZ"
+    ) == 2
     assert "mass: _NEKO_IDLE_CAT1_PLAYGROUND_QUESTION_BLOCK_BODY_MASS" in register_block
     assert register_block.count("rotationEnabled: true") == 1
     assert "angularDamping: _NEKO_IDLE_CAT1_PLAYGROUND_DEFAULT_ANGULAR_DAMPING" in register_block
@@ -376,6 +380,8 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_FLOOR_RESTITUTION" in physics_block
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_FLOOR_REST_SPEED_PX_PER_SEC" in physics_block
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_GROUND_DAMPING" in physics_block
+    assert "Number.isFinite(body.groundHorizontalDampingAt60Hz)" in physics_block
+    assert "Math.pow(body.groundHorizontalDampingAt60Hz, Math.max(0, dt * 60))" in physics_block
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_GROUND_STOP_VELOCITY_PX_PER_SEC" in physics_block
     assert "body.vx = 0;" in physics_block
     assert "body.y = body.floorY;" in physics_block
