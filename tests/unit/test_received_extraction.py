@@ -207,7 +207,7 @@ def test_the_newest_snapshot_mark_is_refused_while_a_downloaded_revision_waits(t
     config = SimpleNamespace(app_docs_dir=tmp_path)
     adapter = DesktopLongTermAdapter(config)
     monkeypatch.setattr(received_extraction.runtime, '_config_manager', config)
-    monkeypatch.setattr(long_term_sync, '_authority', lambda: object())
+    monkeypatch.setattr(long_term_sync, '_authority', object)
     monkeypatch.setattr(long_term_sync, '_binding', lambda uid: {'owner_id': 'owner'})
     assert received_extraction._snapshot_checked_at(UID) is None
     adapter.mark_checked(UID, 7000)
