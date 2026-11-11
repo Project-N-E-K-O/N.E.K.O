@@ -831,3 +831,13 @@ def test_an_older_fact_without_a_source_counts_as_the_users_words():
     rows = {'ai': {**_fact('ai', 'X', created='2026-06-01T00:00:00'), 'source': 'ai_disclosure'},
             'old': {key: value for key, value in _fact('old', 'X', created='2026-06-02T00:00:00').items() if key != 'source'}}
     assert legacy_dedup.losers([{'candidate': 'old', 'existing': 'ai'}], {'old|ai': 'merge'}, rows) == {'ai': 'old'}
+
+
+def test_event_ranges_in_different_offsets_are_compared_as_instants():
+    walk = '博士出门散步了一圈'
+    utc = {**_fact('a', walk, created='2026-06-12T21:00:00'), 'event_start_at': '2026-06-12T08:00:00+00:00',
+           'event_end_at': '2026-06-12T09:00:00+00:00'}
+    # The same hour written at UTC+8: it overlaps, so the pair is still nominated.
+    east = {**_fact('b', walk, created='2026-06-12T21:05:00'), 'event_start_at': '2026-06-12T16:30:00+08:00',
+            'event_end_at': '2026-06-12T17:30:00+08:00'}
+    assert legacy_dedup.nominate({'a': utc, 'b': east})

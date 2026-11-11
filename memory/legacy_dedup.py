@@ -173,12 +173,23 @@ def _distinct_days(first, second):
     if not _has_distinct_event_windows(first, second):
         return False
 
+    from datetime import datetime
+    from memory.long_term_sync import timestamp
+
+    def instant(value):
+        # Compared as instants: two records may carry different UTC offsets.
+        try:
+            return timestamp(value) if value else None
+        except (TypeError, ValueError, OverflowError, OSError):
+            return None
+
     def days(row):
-        return {str(row.get(key))[:10] for key in ('event_start_at', 'event_end_at') if row.get(key)}
+        return {datetime.fromtimestamp(at / 1000).date() for at in
+                (instant(row.get(key)) for key in ('event_start_at', 'event_end_at')) if at is not None}
     if days(first) != days(second):
         return True
-    bounds = [(str(row.get('event_start_at') or ''), str(row.get('event_end_at') or '')) for row in (first, second)]
-    if all(start and end for start, end in bounds):
+    bounds = [(instant(row.get('event_start_at')), instant(row.get('event_end_at'))) for row in (first, second)]
+    if all(start is not None and end is not None for start, end in bounds):
         (first_start, first_end), (second_start, second_end) = bounds
         return first_end < second_start or second_end < first_start
     return False
