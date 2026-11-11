@@ -56,9 +56,11 @@ Release checks temporarily default to the Market's legacy review mode: the
 paused source/package security scan (including binary and scan-size limits) is
 skipped. Set `NEKO_PLUGIN_MARKET_SECURITY_CHECKS=1` to enable package scanning
 (`package-security`) in `check -r` and `precheck`. The release checks in
-`check -r --market-release` and `publish` also scan committed files when a plugin
-repository is found (`source-security`). Package validation, tests, and payload
-hash verification run in all modes.
+`check -r --market-release`, `publish <plugin>`, and `publish github <plugin>`
+also scan committed files when a plugin repository is found (`source-security`).
+`publish market <github-release-url>` only notifies Market and performs no local
+scanning. Release checks also validate the package, run tests, and verify the
+payload hash in all modes.
 
 To install a built package, open the N.E.K.O Plugin Center and use **Import**.
 The compatibility `neko-plugin install` command intentionally refuses to write
