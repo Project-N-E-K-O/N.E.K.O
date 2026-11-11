@@ -78,14 +78,16 @@ def _find_casefold_conflict_name(existing_names, candidate_name: str) -> str | N
     return None
 
 
-def _repair_workshop_model_binding(
+async def _repairable_workshop_model_ref(
     character, item_id, installed_folder, model_type, model_ref, *, card_model_ref,
-) -> bool:
+) -> str | None:
+    item_id = str(item_id).strip()
     if (
-        get_reserved(character, "character_origin", "source") != "steam_workshop"
-        or get_reserved(character, "character_origin", "source_id") != str(item_id)
+        not item_id
+        or str(get_reserved(character, "character_origin", "source") or "").strip() != "steam_workshop"
+        or str(get_reserved(character, "character_origin", "source_id") or "").strip() != item_id
     ):
-        return False
+        return None
 
     old_ref = get_reserved(character, "character_origin", "model_ref")
     if (
@@ -93,18 +95,28 @@ def _repair_workshop_model_binding(
         or old_ref == model_ref
         or not old_ref.startswith(f"/workshop/{item_id}/")
     ):
-        return False
-    repaired_ref = _resolve_workshop_model_ref(
+        return None
+    repaired_ref = await asyncio.to_thread(
+        _resolve_workshop_model_ref,
         installed_folder, old_ref, model_type, card_model_ref=card_model_ref,
         expected_model_ref=model_ref,
     )
-    if repaired_ref != model_ref:
+    return old_ref if repaired_ref == model_ref else None
+
+
+async def _repair_workshop_model_binding(
+    character, item_id, installed_folder, model_type, model_ref, *, card_model_ref,
+) -> bool:
+    old_ref = await _repairable_workshop_model_ref(
+        character, item_id, installed_folder, model_type, model_ref, card_model_ref=card_model_ref,
+    )
+    if old_ref is None:
         return False
 
     set_reserved(character, "character_origin", "model_ref", model_ref)
     if (
-        get_reserved(character, "avatar", "asset_source") == "steam_workshop"
-        and get_reserved(character, "avatar", "asset_source_id") == str(item_id)
+        str(get_reserved(character, "avatar", "asset_source") or "").strip() == "steam_workshop"
+        and str(get_reserved(character, "avatar", "asset_source_id") or "").strip() == str(item_id).strip()
         and get_reserved(character, "avatar", model_type, "model_path") == old_ref
     ):
         set_reserved(character, "avatar", model_type, "model_path", model_ref)
@@ -386,42 +398,47 @@ async def sync_workshop_character_cards(
                                 chara_file_stem,
                             )
                             
+                            if chara_name in pending_added_catgirls:
+                                skipped_count += 1
+                                logger.info(
+                                    "sync_workshop_character_cards: 跳过重复待添加角色 '%s'（物品 %s）",
+                                    chara_name,
+                                    item_id,
+                                )
+                                continue
+
+                            existing_character = chara_name in characters['猫娘']
+                            existing_data = characters['猫娘'].get(chara_name) or {}
+                            existing_matches_item = _is_matching_workshop_character(existing_data, item_id)
                             model_binding = _derive_workshop_model_binding(chara_data)
                             binding_model_type = model_binding['binding_model_type']
                             card_model_ref = model_binding['model_ref']
-                            subscriber_model_ref = _resolve_workshop_model_ref(
-                                installed_folder,
-                                _build_subscriber_workshop_model_ref(item_id, card_model_ref),
-                                binding_model_type,
-                                card_model_ref=card_model_ref,
-                            )
+                            subscriber_model_ref = _build_subscriber_workshop_model_ref(item_id, card_model_ref)
+                            if (
+                                binding_model_type in ('vrm', 'mmd')
+                                and (not existing_character or existing_matches_item)
+                            ):
+                                subscriber_model_ref = await asyncio.to_thread(
+                                    _resolve_workshop_model_ref,
+                                    installed_folder, subscriber_model_ref, binding_model_type,
+                                    card_model_ref=card_model_ref,
+                                )
 
                             # Existing cards are eligible for asset-path repairs and missing covers.
-                            if chara_name in characters['猫娘']:
-                                if chara_name in pending_added_catgirls:
-                                    # Duplicate same-named cards within one scan remain pending merge; do not fill covers as if the character already existed;
-                                    # final import decisions require the latest characters.json immediately before saving.
-                                    skipped_count += 1
-                                    logger.info(
-                                        "sync_workshop_character_cards: 跳过重复待添加角色 '%s'（物品 %s）",
-                                        chara_name,
-                                        item_id,
-                                    )
-                                    continue
+                            if existing_character:
                                 _append_unique(existing_character_names, chara_name)
-                                existing_data = characters['猫娘'].get(chara_name) or {}
-                                existing_matches_item = _is_matching_workshop_character(existing_data, item_id)
                                 if existing_matches_item and restore_deleted and chara_name in pending_restore_tombstone_names:
                                     confirmed_recoverable_existing_names[chara_name] = (
                                         pending_restore_tombstone_names[chara_name]
                                     )
                                 if existing_matches_item:
-                                    old_model_ref = get_reserved(existing_data, 'character_origin', 'model_ref')
                                     if (
                                         binding_model_type in ('vrm', 'mmd')
                                         and subscriber_model_ref
-                                        and old_model_ref
-                                        and old_model_ref != subscriber_model_ref
+                                        and await _repairable_workshop_model_ref(
+                                            existing_data, item_id, installed_folder, binding_model_type,
+                                            subscriber_model_ref, card_model_ref=card_model_ref,
+                                        )
                                     ):
                                         pending_model_repairs.append((
                                             chara_name, item_id, installed_folder, binding_model_type,
@@ -577,14 +594,9 @@ async def sync_workshop_character_cards(
                     error_count += 1
             
             # 4. Save and reload character configuration
+            actually_added_names = []
+            saved_characters = False
             if pending_added_catgirls or pending_model_repairs:
-                blocked_result = _abort_if_write_fence_active(
-                    "sync_workshop_character_cards: 保存前检测到维护态写围栏，跳过本轮同步并等待后续重试"
-                )
-                if blocked_result is not None:
-                    return blocked_result
-
-                actually_added_names = []
                 # Startup Workshop synchronization is a background task; scans can be slow while users modify cards
                 # or finish initial personality selection. Merge additions and repairs into the latest configuration.
                 latest_characters = await config_mgr.aload_characters()
@@ -669,7 +681,7 @@ async def sync_workshop_character_cards(
 
                 repaired_count = 0
                 for name, item_id, installed_folder, model_type, model_ref, card_model_ref in pending_model_repairs:
-                    if _repair_workshop_model_binding(
+                    if await _repair_workshop_model_binding(
                         latest_catgirls.get(name), item_id, installed_folder, model_type, model_ref,
                         card_model_ref=card_model_ref,
                     ):
@@ -678,6 +690,11 @@ async def sync_workshop_character_cards(
                     latest_characters['当前猫娘'] = next(iter(latest_catgirls), '')
 
                 if actually_added_names or repaired_count:
+                    blocked_result = _abort_if_write_fence_active(
+                        "sync_workshop_character_cards: 保存前检测到维护态写围栏，跳过本轮同步并等待后续重试"
+                    )
+                    if blocked_result is not None:
+                        return blocked_result
                     try:
                         if actually_added_names:
                             publish_cancelled = await asave_characters_with_recent_activation(
@@ -691,6 +708,7 @@ async def sync_workshop_character_cards(
                         logger.info("sync_workshop_character_cards: 保存时进入维护态写围栏，跳过本轮同步并等待后续重试")
                         return _write_fence_blocked_result()
 
+                    saved_characters = True
                     logger.info(f"sync_workshop_character_cards: 已保存，新增 {added_count} 个角色卡，修复 {repaired_count} 个模型路径，回填 {backfilled_face_count} 个封面")
 
                     for added_name in actually_added_names:
@@ -778,6 +796,7 @@ async def sync_workshop_character_cards(
                                 face_meta_err,
                             )
 
+            if saved_characters:
                 blocked_result = await _clear_restored_existing_tombstones()
                 if blocked_result is not None:
                     tombstone_cleanup_deferred = True

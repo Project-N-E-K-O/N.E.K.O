@@ -5354,9 +5354,17 @@ async def test_sync_workshop_character_cards_persists_live3d_workshop_origin_met
                     original_file = installed_folder / old_model_ref.removeprefix("/workshop/3671939765/")
                     original_file.parent.mkdir(parents=True, exist_ok=True)
                     original_file.touch()
-                    with patch.object(cm, "asave_characters", wraps=cm.asave_characters) as save:
+                    reload_characters = AsyncMock()
+                    with (
+                        patch.object(cm, "aload_characters", wraps=cm.aload_characters) as load,
+                        patch.object(cm, "asave_characters", wraps=cm.asave_characters) as save,
+                        patch.object(workshop_router_module, "get_initialize_character_data", return_value=reload_characters),
+                    ):
                         await workshop_router_module.sync_workshop_character_cards()
+                        await workshop_router_module.sync_workshop_character_cards()
+                        assert load.await_count == 2
                         save.assert_not_awaited()
+                        reload_characters.assert_not_awaited()
                     original_file.unlink()
 
                 with patch.object(cm, "asave_characters", wraps=cm.asave_characters) as save:

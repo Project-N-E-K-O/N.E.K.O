@@ -204,7 +204,7 @@ async def prepare_workshop_upload(request: Request):
         chara_file_name = data.get('fileName', 'character.chara.json')
         character_card_name = data.get('character_card_name')  # Added: character-card name.
         
-        if not chara_data or not model_name:
+        if not isinstance(chara_data, dict) or not chara_data or not model_name:
             return JSONResponse({
                 "success": False,
                 "error": "缺少必要参数"
@@ -275,7 +275,7 @@ async def prepare_workshop_upload(request: Request):
                             break
 
             source_file = source_root.joinpath(*relative_parts) if source_root and relative_parts else None
-            if source_file is None or not source_file.is_file():
+            if source_file is None or not await asyncio.to_thread(source_file.is_file):
                 await asyncio.to_thread(shutil.rmtree, temp_item_dir, ignore_errors=True)
                 return JSONResponse({
                     "success": False,

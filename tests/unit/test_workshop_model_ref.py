@@ -130,3 +130,20 @@ async def test_prepare_workshop_upload_writes_the_packaged_model_path(
     assert (package / card[model_type]).read_bytes() == b"model"
     if model_type == "mmd" and "/" in packaged_path:
         assert (package / packaged_path).with_name(texture.name).read_bytes() == b"texture"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_prepare_workshop_upload_rejects_non_object_character_data(monkeypatch):
+    get_workshop_path = AsyncMock()
+    monkeypatch.setattr(publish, "get_workshop_path_async", get_workshop_path)
+    request = SimpleNamespace(json=AsyncMock(return_value={
+        "charaData": ["invalid card"],
+        "modelType": "vrm",
+        "modelName": "/user_vrm/Avatar.vrm",
+    }))
+
+    response = await publish.prepare_workshop_upload(request)
+
+    assert response.status_code == 400
+    get_workshop_path.assert_not_awaited()
