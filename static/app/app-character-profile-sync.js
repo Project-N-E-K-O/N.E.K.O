@@ -261,7 +261,10 @@
                 if (!profile) continue;
                 var key = role.characterSyncId + ':' + profile.local_hash + ':' + profile.head_revision;
                 if ((profile.conflict || (profile.renameRequired && profile.apply_pending)) && !reviewed.has(key)) {
-                    if (await review(role.characterSyncId, await api('/characters/' + role.characterSyncId + '/profile/local', {}))) reviewed.add(key);
+                    var opened = true;
+                    try { opened = await review(role.characterSyncId, await api('/characters/' + role.characterSyncId + '/profile/local', {})); }
+                    catch (_) { /* Skip unreadable candidates until their hash/revision changes. */ }
+                    if (opened) reviewed.add(key);
                     break;
                 }
             }
