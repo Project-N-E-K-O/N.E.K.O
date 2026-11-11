@@ -516,6 +516,13 @@ class ContextManager:
         summary as soon as that summary has replaced the older messages, with
         no await in between: what comes next (measuring, a second summary) can
         be cancelled, and by then the conversation already rests on the summary.
+
+        Only summaries are persisted. Cutting old tool results and dropping old
+        images change the conversation in memory and nothing else: the saved
+        transcript keeps every result whole, and a cut row keeps its entry id,
+        so the ids a summary refers to stay valid. A session opened from the
+        transcript therefore starts from the whole results; it is fitted again
+        before its first request, like before every request.
         """
         rows = transcript.rows()
         trimmed = retain_recent_images(rows, self.image_retention)

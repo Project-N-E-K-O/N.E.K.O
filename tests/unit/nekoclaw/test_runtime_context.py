@@ -480,6 +480,61 @@ async def test_an_applied_summary_is_saved_when_the_next_one_is_aborted(tmp_path
     assert replayed == memory_view
 
 
+async def test_cut_results_are_saved_whole_and_cut_again_after_a_reopen(tmp_path: Path) -> None:
+    spec = make_spec(tmp_path, model=_small_model())
+    workdir = Path(spec.workdir)
+    # Looked for in JSON text, where the blank lines around it are escaped.
+    marker = texts.PRUNED_MIDDLE_MARKER.strip()
+
+    def conversation(session) -> str:  # noqa: ANN001
+        return json.dumps(
+            [m.model_dump(exclude={"timestamp"}) for m in session.harness.messages], ensure_ascii=False
+        )
+
+    llm = ScriptedLLM()
+    session, events = await open_session(spec, llm)
+    try:
+        threshold = session.context.policy.threshold
+        for index in range(8):
+            target = workdir / f"notes{index}.txt"
+            target.write_text(
+                "\n".join(_words(15, f"n{index}l{line}x") for line in range(60)), encoding="utf-8"
+            )
+            llm.add(call("read", {"file_path": str(target)}, f"r{index}"), finish("tool_calls"))
+            llm.add(say(f"Read file {index}."), finish())
+            mark = len(events.events)
+            session.prompt(f"Read notes{index}.txt.")
+            await events.wait_ended(start=mark)
+        assert [event["is_error"] for event in events.of("tool_end")] == [False] * 8
+        # Older results were cut to make room; that was enough, no summary.
+        live = conversation(session)
+        assert marker in live
+        assert texts.SUMMARY_OPEN_TAG not in live
+    finally:
+        await session.close()
+
+    # Cutting is a view of the conversation, not a change to the record: the
+    # transcript keeps every result whole.
+    saved = (Path(spec.session_dir) / TRANSCRIPT_FILE).read_text(encoding="utf-8")
+    assert marker not in saved
+    assert "compaction" not in [json.loads(line)["type"] for line in saved.splitlines()]
+
+    # So a reopened session starts from the whole results, above the threshold,
+    # and cuts them again before its first request goes out.
+    reopened_llm = ScriptedLLM([[say("Back."), finish()]])
+    session, events = await open_session(spec, reopened_llm)
+    try:
+        assert marker not in conversation(session)
+        assert await session.context.measure(session.harness.messages) > threshold
+        session.prompt("Go on.")
+        await events.wait_ended()
+        assert len(reopened_llm.requests) == 1  # no summary request was needed here either
+        assert marker in json.dumps(reopened_llm.requests[0], ensure_ascii=False)
+        assert await session.context.measure(session.harness.messages) <= threshold
+    finally:
+        await session.close()
+
+
 async def test_a_second_overflow_ends_the_run_with_an_error(tmp_path: Path) -> None:
     spec = make_spec(tmp_path, model=_small_model())
     llm = ScriptedLLM()
