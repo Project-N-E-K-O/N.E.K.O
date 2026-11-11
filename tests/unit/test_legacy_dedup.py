@@ -260,6 +260,38 @@ async def test_restore_brings_folded_facts_back_under_new_ids(memory):
 
 
 @pytest.mark.asyncio
+async def test_restore_leaves_a_group_fact_that_reuses_the_folded_id(memory):
+    from app.memory_server import legacy_dedup as runner
+    from memory import cold_store
+    from memory.scopes import MemorySubject
+    directory, facts = memory
+    await _seed(directory, facts)
+    await _run(_Model([{'博士是一名主播', '博士是一名主播，会日常直播'}]))
+    group = {'id': 'dup', 'text': 'a group line', 'entity': 'master',
+             'arbitration_archived_at': '2026-07-01T00:00:00', 'arbitration_reason': 'dedup',
+             **MemorySubject.group_chat('qq', '1').as_entry_fields()}
+    cold_store.append(str(directory), [group])
+    assert await runner.restore(NAME) == 1
+    assert ('dup', group['scope']) in {(row['id'], row.get('scope')) for row in cold_store.read_full(str(directory))}
+
+
+@pytest.mark.asyncio
+async def test_restore_reaches_folds_still_waiting_in_the_archive(memory):
+    """A cleanup that ran before cold storage left its folds in facts_archive.json."""
+    from app.memory_server import legacy_dedup as runner
+    from memory import cold_store
+    directory, facts = memory
+    await _seed(directory, facts)
+    await _run(_Model([{'博士是一名主播', '博士是一名主播，会日常直播'}]))
+    # Put the fold back where an older run left it.
+    [folded] = cold_store.read_full(str(directory))
+    cold_store.forget(str(directory), lambda row: True)
+    (directory / 'facts_archive.json').write_text(json.dumps([folded], ensure_ascii=False), encoding='utf-8')
+    assert await runner.restore(NAME) == 1
+    assert [row['id'] for row in cold_store.read_full(str(directory))] == ['dup']
+
+
+@pytest.mark.asyncio
 async def test_backup_copies_the_live_database_consistently(tmp_path):
     import sqlite3
     directory = tmp_path / NAME

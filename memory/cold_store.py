@@ -71,7 +71,6 @@ COLD_DIRNAMES = {
     "reflection": REFLECTION_ARCHIVE_DIRNAME,
     "persona": PERSONA_ARCHIVE_DIRNAME,
 }
-_KIND_BY_DIRNAME = {dirname: kind for kind, dirname in COLD_DIRNAMES.items()}
 
 # Fields a stub never carries: the wording and everything derived from it.
 _TEXT_FIELDS = frozenset((
@@ -192,21 +191,36 @@ def status(directory: str, *, kind: str = "fact", ids: Iterable[object] | None =
     return result
 
 
+def _matchable(value: object) -> bool:
+    """Whether a value can key a lookup; a malformed row's list id cannot, and is skipped."""
+    return value is None or (isinstance(value, (str, int)) and not isinstance(value, bool))
+
+
 def private_keys(directory: str, kind: str) -> set[tuple[object, object]]:
     """(subject, id) of the private-chat cold rows of one kind; raises ``ColdStoreUnreadable``."""
     field = _subject_field(kind)
     return {(item.get(field), item.get("id")) for item in status(directory, kind=kind)
-            if _private(item) and item.get("id")}
+            if _private(item) and item.get("id") and _matchable(item.get("id")) and _matchable(item.get(field))}
 
 
-def without_cold_copies(directory: str, kind: str, rows: list, subject_of: Callable[[dict], object]) -> list:
-    """``rows`` minus the private-chat rows that are also cold: a cold copy wins over any other.
+def without_cold_copies(
+    directory: str, kind: str, rows: list, subject_of: Callable[[dict], object], *,
+    identity: Callable[[dict], object] | None = None,
+) -> list:
+    """``rows`` minus the rows that are also cold: a cold copy wins over any other.
 
     Such a pair comes from a cloud save restoring an older file after the row
-    went cold here. Group rows are left alone: a subject restore brings them
-    back under their own ids. An unreadable cold store filters nothing.
+    went cold here, or from a demotion cut short. With ``identity`` (facts:
+    the full scoped identity) every row is compared, group rows included,
+    since a group fact leaves cold storage when it is restored. Without it
+    only private-chat rows are compared by (subject, id): group reflections
+    and persona entries come back under their own ids while their archived
+    copy stays. An unreadable cold store filters nothing.
     """
     try:
+        if identity is not None:
+            held = {key for key in map(identity, status(directory, kind=kind)) if key is not None}
+            return [row for row in rows if not (isinstance(row, dict) and identity(row) in held)] if held else rows
         cold = private_keys(directory, kind)
     except ColdStoreUnreadable as exc:
         logger.warning(f"[ColdStore] 冷存读取失败，暂不按冷存过滤: {exc}")
@@ -458,6 +472,7 @@ def _resolve_persona_subjects(directory, repair):
                         continue
                     subjects.setdefault(key, set()).add((archived_at, payload["entity_key"]))
     except FileNotFoundError:
+        # No journal: only rows matched by an earlier repair or unambiguous copies resolve.
         pass
     unavailable = False
     for filename, rows in shards.items():

@@ -15,6 +15,7 @@ output.
 """
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -27,7 +28,40 @@ _DIRECTORY_NAMES = re.compile(
     r"(?![A-Za-z0-9_])"
 )
 # The calls that hand out full cold rows, text included.
-_FULL_READS = re.compile(r"\bcold_store\s*\.\s*a?(?:read_full|restore)\b")
+_FULL_READ_NAMES = frozenset(("read_full", "aread_full", "restore", "arestore"))
+_COLD_MODULE = "memory.cold_store"
+
+
+def _reads_full_cold_rows(text: str) -> bool:
+    """Whether the source reaches a full-row reader, however cold_store was imported.
+
+    Catches ``cold_store.read_full(...)``, a module alias
+    (``from memory import cold_store as cs``; ``import memory.cold_store as cs``),
+    the dotted path, and importing the functions themselves
+    (``from memory.cold_store import read_full``).
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return False
+    aliases = {"cold_store"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if module == _COLD_MODULE and any(item.name in _FULL_READ_NAMES or item.name == "*" for item in node.names):
+                return True
+            if module == "memory":
+                aliases |= {item.asname or item.name for item in node.names if item.name == "cold_store"}
+        elif isinstance(node, ast.Import):
+            aliases |= {item.asname for item in node.names if item.name == _COLD_MODULE and item.asname}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr in _FULL_READ_NAMES:
+            base = node.value
+            if isinstance(base, ast.Name) and base.id in aliases:
+                return True
+            if ast.unparse(base) == _COLD_MODULE:
+                return True
+    return False
 
 # Who may name a cold directory, and why.
 DIRECTORY_ALLOWED = {
@@ -66,7 +100,7 @@ def test_only_listed_files_name_cold_directories():
 
 
 def test_only_listed_files_read_full_cold_rows():
-    found = {relative for relative, text in _python_sources() if _FULL_READS.search(text)}
+    found = {relative for relative, text in _python_sources() if _reads_full_cold_rows(text)}
     assert found - set(FULL_READ_ALLOWED) == set(), (
         "full cold rows are for restore, export to a file and privacy erasure only"
     )
@@ -76,10 +110,29 @@ def test_the_guards_see_what_they_guard():
     """The patterns still match the real code, so the two checks above cannot pass vacuously."""
     sources = dict(_python_sources())
     assert _DIRECTORY_NAMES.search(sources["memory/cold_store.py"])
-    assert _FULL_READS.search(sources["memory/facts.py"])
+    assert _reads_full_cold_rows(sources["memory/facts.py"])
     assert not _DIRECTORY_NAMES.search("make_reflection_archive_handler(engine)")
     assert _DIRECTORY_NAMES.search("os.path.join(base, 'fact_cold')")
-    assert _FULL_READS.search("rows = await cold_store.aread_full(path)")
+
+
+def test_the_full_read_guard_sees_every_way_of_importing_it():
+    for source in (
+        "from memory import cold_store\nrows = cold_store.read_full(path)",
+        "rows = await cold_store.aread_full(path)",
+        "from memory.cold_store import read_full\nrows = read_full(path)",
+        "from memory.cold_store import arestore as bring_back",
+        "from memory.cold_store import *",
+        "from memory import cold_store as cs\nrows = cs.read_full(path)",
+        "import memory.cold_store as cs\ncs.restore(path, select, activate=add)",
+        "import memory.cold_store\nmemory.cold_store.read_full(path)",
+    ):
+        assert _reads_full_cold_rows(source), source
+    for source in (
+        "from memory import cold_store\nrows = cold_store.status(path)",
+        "from memory.cold_store import status, append",
+        "engine.restore(name)",
+    ):
+        assert not _reads_full_cold_rows(source), source
 
 
 def test_cloud_save_manifest_leaves_cold_storage_out():

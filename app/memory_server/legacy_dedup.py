@@ -375,9 +375,11 @@ async def restore(name):
         return 0
     # The marker remembers every restore too, in case a copy lost its restored_from.
     done = set(marker.get('restored') or ())
+    from memory.scopes import is_legacy_private_entry
+    # Private-chat facts only, as nominated: a group fact may reuse the same id.
     added = await runtime.fact_store.arestore_cold_facts(
         name, lambda row: (row.get('id') in marker['archived'] and row['id'] not in done
-                           and bool(row.get('arbitration_archived_at'))))
+                           and bool(row.get('arbitration_archived_at')) and is_legacy_private_entry(row)))
     if added:
         marker = {**marker, 'restored': sorted(done | {row['restored_from'] for row in added})}
         await asyncio.to_thread(_save_marker, directory, marker)

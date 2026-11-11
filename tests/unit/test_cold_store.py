@@ -375,3 +375,132 @@ def test_a_retried_group_restore_adds_each_row_once(tmp_path, monkeypatch):
     fs._restore_subject_facts(NAME, GROUP, "2026-08-01T00:00:00")
     assert [fact["id"] for fact in fs._facts[NAME]] == ["g1"]
     assert [fact["id"] for fact in _read_json(fs._facts_path(NAME))] == ["g1"]
+
+
+# ── review round 2 ─────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_archived_id_does_not_break_loading(tmp_path):
+    from memory.archive_shards import append_to_shard_sync
+    _, fs, pm, *_ = _install(tmp_path)
+    directory = fs._character_dir(NAME)
+    atomic_write_json(os.path.join(directory, "persona.json"), {"master": {"facts": [{"id": "live", "text": "x"}]}})
+    append_to_shard_sync(cold_store.cold_dir(directory, "persona"),
+                         [{"id": ["bad"], "text": "broken", "entity_key": "master"}])
+    persona = await pm.aensure_persona(NAME)
+    assert [row["id"] for row in persona["master"]["facts"]] == ["live"]
+
+
+def test_raw_file_readers_drop_a_stale_group_copy_of_a_cold_fact(tmp_path):
+    from pathlib import Path
+    from main_logic.card_forge_facts import _without_cold_copies
+    row = _fact("g1", "quiet group", **GROUP.as_entry_fields())
+    cold_store.append(str(tmp_path), [{**row, "subject_archived_at": "2026-07-01T00:00:00"}])
+    other_scope = _fact("g1", "same id elsewhere", **MemorySubject.group_chat("qq", "999").as_entry_fields())
+    kept = _without_cold_copies([dict(row), other_scope], Path(tmp_path) / "facts.json")
+    assert kept == [other_scope]
+
+
+@pytest.mark.asyncio
+async def test_restore_indexes_inside_the_persistence_lock(tmp_path):
+    _, fs, *_ = _install(tmp_path)
+    cold_store.append(fs._character_dir(NAME), [_fact("p1", "folded", arbitration_archived_at="2026-07-01T00:00:00")])
+    held = []
+
+    class _Index:
+        async def aindex_fact(self, name, fact_id, text):
+            held.append(fs._get_persist_alock(name).locked())
+
+    fs._time_indexed = _Index()
+    restored = await fs.arestore_cold_facts(NAME, lambda row: True)
+    assert len(restored) == 1 and held == [True]
+
+
+@pytest.mark.asyncio
+async def test_subject_archive_keeps_the_live_copy_of_a_row_left_in_both_places(tmp_path):
+    from datetime import timedelta
+    _, fs, *_ = _install(tmp_path)
+    old = _fact("g1", "quiet group", **GROUP.as_entry_fields())
+    old["created_at"] = "2026-01-01T00:00:00"
+    atomic_write_json(fs._facts_archive_path(NAME), [dict(old, absorbed=True)])
+    fs._facts[NAME] = [dict(old, absorbed=True, source_message_ids=["newer"])]
+    await fs.asave_facts(NAME)
+    now = datetime(2026, 7, 1)
+    archived = fs._archive_subject_facts(NAME, GROUP, now.isoformat(), now - timedelta(days=90))
+    assert archived == 2
+    [row] = cold_store.read_full(fs._character_dir(NAME))
+    assert row["source_message_ids"] == ["newer"]
+
+
+def test_a_failed_subject_archive_write_drops_the_cached_facts(tmp_path, monkeypatch):
+    from datetime import timedelta
+    from memory import facts as facts_module
+    _, fs, *_ = _install(tmp_path)
+    row = _fact("g1", "quiet group", **GROUP.as_entry_fields())
+    row["created_at"] = "2026-01-01T00:00:00"
+    fs._facts[NAME] = [row]
+    fs.save_facts(NAME)
+    real = facts_module.atomic_write_json
+
+    def fail_active(path, *args, **kwargs):
+        if str(path).endswith("facts.json"):
+            raise OSError("disk gone")
+        return real(path, *args, **kwargs)
+    monkeypatch.setattr(facts_module, "atomic_write_json", fail_active)
+    now = datetime(2026, 7, 1)
+    with pytest.raises(OSError):
+        fs._archive_subject_facts(NAME, GROUP, now.isoformat(), now - timedelta(days=90))
+    assert NAME not in fs._facts
+    monkeypatch.setattr(facts_module, "atomic_write_json", real)
+    assert fs.load_facts(NAME) == []  # the cold copy wins on reload
+
+
+def test_export_never_lists_a_stale_copy_of_a_trimmed_cold_row():
+    from memory.long_term_sync import export_document
+    from tests.unit.test_long_term_memory_sync import cold_views
+    trimmed = _fact("c1", "cold, trimmed from the list", arbitration_archived_at="2026-07-01T00:00:00")
+    stale = {key: value for key, value in trimmed.items() if key != "arbitration_archived_at"}
+    views = cold_views({"persona": {}, "facts": [stale], "archive": [], "reflections": [],
+                        "sync": {"coldPruned": [["fact", "master", "c1"]]}}, fact=[trimmed])
+    exported = export_document(views, 2000)
+    assert exported["entries"] == [] and "cold" not in exported
+
+
+def test_a_listed_fact_held_only_in_the_old_archive_moves_to_a_shard_with_its_text():
+    from memory.long_term_sync import import_document
+    legacy = _fact("c1", "only copy of this wording", arbitration_archived_at="2026-07-01T00:00:00", superseded_by="k")
+    existing = {"persona": {}, "facts": [], "archive": [legacy], "reflections": [], "coldStubs": {}}
+    item = {"kind": "fact", "subject": "master", "id": "c1", "status": "superseded", "archivedAt": 1, "supersededById": "k"}
+    result = import_document(_document(cold=[item]), existing)
+    assert result["archive"] == []
+    [(relative, [moved])] = result["factCold"].items()
+    assert relative.startswith("fact_cold/") and moved["text"] == "only copy of this wording"
+
+
+def test_a_fact_id_two_subjects_share_keeps_the_carried_counts():
+    from memory.long_term_sync import import_document
+    reflection = {"kind": "reflection", "subject": "master", "id": "r1", "text": "rests on f1",
+                  "metadata": {"status": "pending", "sourceFactIds": ["f1"], "countedFactIds": ["f1"],
+                               "factSourceCounts": {"user": 1, "ai": 0}}}
+    fact = {"kind": "fact", "subject": "master", "id": "f1", "text": "user said it",
+            "metadata": {"source": "user_observation", "signalJudged": True}}
+    withdrawn = {"kind": "fact", "subject": "neko", "id": "f1", "status": "retracted", "archivedAt": 1}
+    result = import_document(_document([fact, reflection], cold=[withdrawn]),
+                             {"persona": {}, "facts": [], "archive": [], "reflections": []})
+    [row] = result["reflections"]
+    assert row["fact_source_counts"] == {"user": 1, "ai": 0}
+
+
+@pytest.mark.asyncio
+async def test_persona_cold_filter_runs_after_the_layout_migration(tmp_path):
+    from memory.archive_shards import append_to_shard_sync
+    _, fs, pm, *_ = _install(tmp_path)
+    directory = fs._character_dir(NAME)
+    entry = {"id": "pe", "text": "archived trait", "source": "reflection"}
+    # A v1 file still names the user section "user"; the archive names it "master".
+    atomic_write_json(os.path.join(directory, "persona.json"),
+                      {"user": {"facts": [entry, {"id": "live", "text": "live trait"}]}})
+    append_to_shard_sync(cold_store.cold_dir(directory, "persona"), [{**entry, "entity_key": "master"}])
+    persona = await pm.aensure_persona(NAME)
+    assert [row["id"] for row in persona["master"]["facts"]] == ["live"]

@@ -283,6 +283,13 @@ def local_cold_items(views):
     return [item for item in items if item is not None]
 
 
+def _stored_cold_keys(views):
+    """Keys of the rows already in cold shards here (not the demoted rows still waiting in the archive)."""
+    stubs = views.get('coldStubs') or {}
+    items = (_cold_listing(kind, row) for kind in ('fact', 'reflection', 'persona') for row in stubs.get(kind, []))
+    return {(item['kind'], item['subject'], item['id']) for item in items if item is not None}
+
+
 def _cold_list(views, state):
     """The ``cold`` list to publish: the shared list, then what went cold here since."""
     def key(item):
@@ -303,7 +310,11 @@ def export_document(views, completed_at, *, source_evidence=None):
     rows = {}
     state = views.get('sync') or {}
     cold = _cold_list(views, state)
-    cold_keys = {(item['kind'], item['subject'], item['id']) for item in cold}
+    # Never an entry: anything listed, anything cold here (a list trim does not
+    # make it shareable again), and anything trimmed while still cold here.
+    cold_keys = ({(item['kind'], item['subject'], item['id']) for item in cold}
+                 | {(item['kind'], item['subject'], item['id']) for item in local_cold_items(views)}
+                 | {tuple(item) for item in state.get('coldPruned') or []})
 
     def add(kind, subject, value, *, archived=False):
         if not private(value) or subject not in SUBJECTS:
@@ -499,7 +510,9 @@ def import_document(incoming, existing, *, merged=False, source_evidence=None, k
         result['sync']['coldPruned'] = [list(item) for item in sorted(pruned)]
     for key in COLD_VIEWS:
         result[key] = {}
-    moved_fact_sources = _move_listed_rows_to_cold(result, cold, held_cold, incoming['completedAt'],
+    # Only a row already in a cold shard may simply leave the views; a demoted row
+    # still in facts_archive.json is the only copy of its text and moves to a shard.
+    moved_fact_sources = _move_listed_rows_to_cold(result, cold, _stored_cold_keys(existing), incoming['completedAt'],
                                                    existing.get('coldShardNames', ()))
     if not merged:
         for field, key in [('retirements', 'id'), ('confirmations', 'fingerprint')]:
@@ -582,6 +595,21 @@ def import_document(incoming, existing, *, merged=False, source_evidence=None, k
     # Rows kept untouched stay after this import, so their source is the one that holds.
     incoming_fact_sources.update({row['id']: row.get('source') for row in result['archive'] + result['facts']
                                   if isinstance(row, dict) and row.get('id') and private(row)})
+    # Counted facts are named by id alone; an id two subjects share cannot say which
+    # one a reflection rests on, so such a reflection keeps the counts it came with.
+    fact_subjects = {}
+    for row in incoming['entries']:
+        if row['kind'] == 'fact':
+            fact_subjects.setdefault(row['id'], set()).add(row['subject'])
+    for item in cold:
+        if item['kind'] == 'fact':
+            fact_subjects.setdefault(item['id'], set()).add(item['subject'])
+    for row in result['archive'] + result['facts']:
+        if isinstance(row, dict) and isinstance(row.get('id'), str) and private(row):
+            fact_subjects.setdefault(row['id'], set()).add(row.get('entity'))
+    for fact_id, subjects in fact_subjects.items():
+        if len(subjects) > 1:
+            incoming_fact_sources.pop(fact_id, None)
     for row in incoming['entries']:
         kind, subject, meta = row['kind'], row['subject'], row['metadata']
         if (kind, subject, row['id']) in pending or (kind, subject, row['id']) in locally_retired:

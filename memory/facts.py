@@ -2240,6 +2240,9 @@ class FactStore:
                         operation='restore',
                         target=f'memory/{name}/facts.json',
                     )
+                    # Rows demoted before cold storage existed are restorable too.
+                    if self._migrate_cold_rows_locked(name) is None:
+                        raise RuntimeError('cold facts could not be prepared for restore')
                     facts = self._facts.get(name, [])
                     # A copy restored earlier may itself have aged into the
                     # archive or gone cold since; it still counts as restored.
@@ -2280,15 +2283,26 @@ class FactStore:
 
                 await asyncio.to_thread(_invalidate)
                 raise
-        if restored and self._time_indexed is not None:
-            for row in restored:
+            if restored and self._time_indexed is not None:
+                # Indexed under the same lock as the write: a subject forget queued
+                # behind this restore must find the rows indexed, or its strict index
+                # delete would run first and this write would put the words back.
+                index_task = asyncio.create_task(self._aindex_restored_rows(name, restored))
                 try:
-                    await self._time_indexed.aindex_fact(name, row['id'], row.get('text', ''))
-                except Exception as error:  # noqa: BLE001 - the index backfill repairs a missing row
-                    logger.warning(
-                        f"[FactStore] {name}: 恢复的事实写入检索索引失败: {type(error).__name__}"
-                    )
+                    await asyncio.shield(index_task)
+                except asyncio.CancelledError:
+                    await asyncio.wait({index_task})
+                    raise
         return restored
+
+    async def _aindex_restored_rows(self, name: str, rows: list[dict]) -> None:
+        for row in rows:
+            try:
+                await self._time_indexed.aindex_fact(name, row['id'], row.get('text', ''))
+            except Exception as error:  # noqa: BLE001 - the index backfill repairs a missing row
+                logger.warning(
+                    f"[FactStore] {name}: 恢复的事实写入检索索引失败: {type(error).__name__}"
+                )
 
     def _migrate_cold_rows_locked(self, name: str) -> int | None:
         """Move demoted rows still in facts_archive.json into cold storage. Caller holds the fact lock.
@@ -2521,7 +2535,9 @@ class FactStore:
             if not to_archive and not stamped_in_archive:
                 return 0
             stamped = []
-            for f in [*from_archive, *to_archive]:
+            # An interrupted absorbed-archive commit can leave one row in both
+            # places; the live copy is the newer one and is the one kept.
+            for f in _merge_archive_entries(from_archive, to_archive):
                 copy = dict(f)
                 copy['subject_archived_at'] = archived_at_iso
                 stamped.append(copy)
@@ -2532,19 +2548,24 @@ class FactStore:
             except cold_store.ColdStoreUnreadable as e:
                 logger.warning(f"[FactStore] {name}: 读取冷存失败，中止本轮 subject 归档: {e}")
                 return None
-            if from_archive:
-                leaving = {id(f) for f in from_archive}
-                atomic_write_json(
-                    archive_path,
-                    [f for f in existing_archive if id(f) not in leaving],
-                    indent=2, ensure_ascii=False,
-                )
-            if to_archive:
-                active = [f for f in facts if id(f) not in {id(x) for x in to_archive}]
-                atomic_write_json(self._facts_path(name), active, indent=2, ensure_ascii=False)
-                # Remove cache rows in place by identity (retain concurrent appends for next save).
-                archived_identities = {id(f) for f in to_archive}
-                facts[:] = [f for f in facts if id(f) not in archived_identities]
+            try:
+                if from_archive:
+                    leaving = {id(f) for f in from_archive}
+                    atomic_write_json(
+                        archive_path,
+                        [f for f in existing_archive if id(f) not in leaving],
+                        indent=2, ensure_ascii=False,
+                    )
+                if to_archive:
+                    active = [f for f in facts if id(f) not in {id(x) for x in to_archive}]
+                    atomic_write_json(self._facts_path(name), active, indent=2, ensure_ascii=False)
+                    # Remove cache rows in place by identity (retain concurrent appends for next save).
+                    archived_identities = {id(f) for f in to_archive}
+                    facts[:] = [f for f in facts if id(f) not in archived_identities]
+            except Exception:
+                # The rows are cold already; the next load filters the stale copies.
+                self._facts.pop(name, None)
+                raise
             # Privacy: log domain identifiers/counts only, never original text.
             logger.info(
                 f"[FactStore] {name}: subject 归档 [scoped {subject.kind}"
@@ -4515,12 +4536,19 @@ class FactStore:
                                 path = self._facts_archive_path(lanlan_name)
                                 if os.path.exists(path):
                                     try:
+                                        cold = self._cold_identities(lanlan_name)
+                                    except cold_store.ColdStoreUnreadable:
+                                        cold = set()
+                                    try:
                                         with open(path, encoding='utf-8') as fh:
                                             data = json.load(fh)
                                         if isinstance(data, list):
+                                            # A copy also held cold is cold: it never
+                                            # blocks a new statement of the same fact.
                                             return {
                                                 r.get('id'): r for r in data
                                                 if isinstance(r, dict)
+                                                and _fact_scoped_identity(r) not in cold
                                             }
                                     except (
                                         json.JSONDecodeError,

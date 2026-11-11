@@ -72,8 +72,8 @@ def _hash(text: str) -> str:
 
 
 def _vec(row: dict) -> dict:
-    from memory.embeddings import stamp_embedding_fields
-    stamp_embedding_fields(
+    import memory.embeddings as emb
+    emb.stamp_embedding_fields(
         row, np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float32), row["text"], MODEL_ID,
     )
     return row
@@ -331,10 +331,10 @@ async def test_recall_by_time_never_returns_cold_text(canary):
 
 async def test_passive_retrieval_pools_exclude_cold(canary):
     import memory.embeddings as emb
-    from memory.turn_context import _aload_pools
+    import memory.turn_context as mtc
 
     with patch.object(emb, "get_embedding_service", MagicMock(return_value=_NoVectors())):
-        bm25_pool, embedding_pool = await _aload_pools(
+        bm25_pool, embedding_pool = await mtc._aload_pools(
             NAME, canary.fs, canary.re, canary.pm, None,
         )
     for pool in (bm25_pool, embedding_pool):
@@ -499,6 +499,26 @@ async def test_fts_guard_does_not_block_a_new_fact_matching_cold_text(canary):
         default_source="user_observation", semantic_dedup=True,
     )
     assert blocked == []
+
+
+async def test_fts_guard_ignores_an_unmarked_archive_copy_of_a_cold_row(canary):
+    """A cloud save can bring back an older facts_archive.json holding a cold row
+    without its marker; that copy is cold too and must not block a restatement."""
+    from memory import cold_store
+    from utils.file_utils import atomic_write_json
+
+    fs = canary.fs
+    [cold] = [row for row in cold_store.read_full(canary.char_dir) if row["id"] == "f_cold"]
+    stale = {key: value for key, value in cold.items()
+             if key not in ("arbitration_archived_at", "arbitration_reason", "superseded_by")}
+    archive = json.loads(Path(fs._facts_archive_path(NAME)).read_text(encoding="utf-8"))
+    atomic_write_json(fs._facts_archive_path(NAME), archive + [stale], indent=2, ensure_ascii=False)
+    fs._time_indexed = _FakeIndex([("f_cold", 1.0)])
+    created = await fs._apersist_new_facts(
+        NAME, [{"text": TEXT_COLD, "importance": 7, "entity": "master"}],
+        default_source="user_observation", semantic_dedup=True,
+    )
+    assert len(created) == 1 and created[0]["id"] != "f_cold"
 
 
 # ── 8. near-dup pairing ────────────────────────────────────────────────

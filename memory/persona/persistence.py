@@ -161,11 +161,13 @@ class PersistenceMixin:
                     with open(path, encoding='utf-8') as f:
                         data = json.load(f)
                 if isinstance(data, dict):
-                    self._drop_cold_copies(name, data)
                     migrated = self._migrate_v1_entity_keys(data)
                     if self._is_persona_empty(data):
                         self._migrate_from_settings(name, data)
                         migrated = True
+                    # After the layout is current and settings are folded in, so
+                    # every section is where the archived copies say it is.
+                    self._drop_cold_copies(name, data)
                     # Synchronize character card.
                     if self._sync_character_card(name, data):
                         migrated = True
@@ -258,11 +260,12 @@ class PersistenceMixin:
                 if isinstance(data, dict):
                     if strict_read:
                         self._validate_private_persona_sections(data)
-                    await asyncio.to_thread(self._drop_cold_copies, name, data)
                     migrated = self._migrate_v1_entity_keys(data)
                     if self._is_persona_empty(data):
                         await self._async_migrate_from_settings(name, data)
                         migrated = True
+                    # Same order as the sync loader: after layout and settings migration.
+                    await asyncio.to_thread(self._drop_cold_copies, name, data)
                     if await self._async_sync_character_card(name, data):
                         migrated = True
                     if migrated:
