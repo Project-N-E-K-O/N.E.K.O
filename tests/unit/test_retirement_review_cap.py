@@ -232,3 +232,18 @@ async def test_a_candidate_that_waits_again_lets_the_next_one_be_reviewed(tmp_pa
     assert [row['candidate']['text'] for row in _queue(directory)] == ['新事实 2', '新事实 3', '新事实 1']
     await h._apersist_new_facts('小天', [], source_messages=[], progress_pass='a')
     assert '新事实 2' in [row['text'] for row in h._mem]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_extraction_does_not_mark_a_waiting_message_read(tmp_path):
+    directory = tmp_path / '小天'
+    _retirements(directory, 25, ['sync:' + letter * 32 for letter in 'abc'])
+    h = _harness(tmp_path, [])
+    h._allm_call_with_retries = _reviewer([])
+    facts = [{'entity': 'master', 'text': f'新事实 {i}', 'source_indices': [i + 1]} for i in range(3)]
+    messages = [_trusted_sync_message(letter, 1000) for letter in 'abc']
+    await h._apersist_new_facts('小天', facts, source_messages=messages, progress_pass='a')
+    # The model fails for a later pass over the same messages (a non-fail-closed caller).
+    h._allm_extract_facts = AsyncMock(return_value=None)
+    await h.extract_facts(messages, '小天')
+    assert 'c' * 32 not in extraction_progress.read(directory)['a']

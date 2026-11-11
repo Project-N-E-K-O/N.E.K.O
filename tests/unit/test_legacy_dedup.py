@@ -541,3 +541,26 @@ async def test_a_publish_is_asked_for_again_until_the_server_confirms_the_mark(m
     # A character that does not sync has nothing to confirm.
     monkeypatch.setattr(lts, 'confirmed_maintenance', lambda name: None)
     assert await _run(_Model([])) is None and owed == [NAME, NAME]
+
+
+@pytest.mark.asyncio
+async def test_an_archived_fold_stays_on_record_even_if_its_survivor_changed_before_the_rerun(memory, monkeypatch):
+    from app.memory_server import legacy_dedup as runner
+    directory, facts = memory
+    await _seed(directory, facts)
+    model = _Model([{'博士是一名主播', '博士是一名主播，会日常直播'}])
+    real = runner._repoint
+
+    async def crash(*args, **kwargs):
+        raise RuntimeError('process exits')
+    monkeypatch.setattr(runner, '_repoint', crash)
+    with pytest.raises(RuntimeError):
+        await _run(model)
+    # Before the rerun, sync rewrites the fact that stayed.
+    row = next(row for row in facts._facts[NAME] if row['id'] == 'old')
+    row['text'] = '博士是一名游戏主播'
+    await facts.asave_facts(NAME)
+    monkeypatch.setattr(runner, '_repoint', real)
+    marker = await _run(model)
+    assert marker['archived'] == {'dup': 'old'}
+    assert await runner.restore(NAME) == 1

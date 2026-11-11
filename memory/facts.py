@@ -3813,6 +3813,15 @@ class FactStore:
     async def _arecord_extraction_progress_locked(self, lanlan_name: str, passage: str, messages: list | None,
                                                   *, identities: list | None = None) -> None:
         from memory import extraction_progress
+        if identities is None and messages:
+            # Whatever path records it, a message whose fact still waits for review is not read yet.
+            from memory import retirement_review_queue
+            from memory.long_term_sync import STORED_PROOF, trusted_message_source
+            waiting = await asyncio.to_thread(
+                retirement_review_queue.waiting_identities,
+                os.path.join(self._config_manager.memory_dir, lanlan_name), STORED_PROOF)
+            if waiting:
+                messages = [message for message in messages if trusted_message_source(message)[0] not in waiting]
         processed = extraction_progress.identities(messages) if identities is None else identities
         if not processed:
             return

@@ -119,7 +119,13 @@ def still_valid(folded, pairs, rows, archive):
         # archive names the survivor it was folded into, or the final one of a chain.
         return fact_id in folded and applied.get(fact_id) in (folded[fact_id], final.get(fact_id))
 
-    return {loser: survivor for loser, survivor in folded.items() if unchanged(loser) and unchanged(survivor)}
+    def executed(loser):
+        # Already archived by this cleanup: it happened, so it stays on record (and
+        # restorable) whatever its survivor has become since.
+        return rows.get(loser) is None and loser in folded and applied.get(loser) in (folded[loser], final.get(loser))
+
+    return {loser: survivor for loser, survivor in folded.items()
+            if executed(loser) or (unchanged(loser) and unchanged(survivor))}
 
 
 def pair_key(pair):

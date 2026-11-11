@@ -46,6 +46,12 @@ def read(directory):
     return _load(Path(directory) / FILE)[0]
 
 
+def waiting_identities(directory, proof_key):
+    """Message identities a waiting candidate still rests on; such a message is not read yet."""
+    return {identity for row in read(directory)
+            for identity in (row['candidate'].get(proof_key) or {}).get('source_message_ids', [])}
+
+
 def candidates(entries, queue_key):
     """Copies of the waiting candidates for this kind of extraction, oldest first."""
     return [{**{key: value for key, value in json.loads(json.dumps(row['candidate'])).items() if key != RETRY_LATER},

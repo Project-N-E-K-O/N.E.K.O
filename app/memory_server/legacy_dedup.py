@@ -68,7 +68,8 @@ async def _publish_marker(name):
     """Carry this device's completed run into the snapshot, so no other device repeats it."""
     directory = _directory(name)
     state_path = directory / 'long_term_portable.json'
-    if legacy_dedup.local_version(directory) <= legacy_dedup.published_version(directory) or not state_path.exists():
+    if await asyncio.to_thread(
+            lambda: legacy_dedup.local_version(directory) <= legacy_dedup.published_version(directory) or not state_path.exists()):
         return False
 
     def save():
@@ -104,7 +105,7 @@ async def _owe_until_confirmed(name, directory):
     shows the mark makes either case heal on its own.
     """
     from . import long_term_sync
-    local = legacy_dedup.local_version(directory)
+    local = await asyncio.to_thread(legacy_dedup.local_version, directory)
     if not local:
         return
     try:
@@ -223,7 +224,10 @@ async def run(name, *, still_idle=lambda: True):
     run waits for a later idle round.
     """
     directory = _directory(name)
-    if max(legacy_dedup.local_version(directory), legacy_dedup.published_version(directory)) >= legacy_dedup.VERSION:
+    # The sync state can run to megabytes: read it off the event loop.
+    done = await asyncio.to_thread(
+        lambda: max(legacy_dedup.local_version(directory), legacy_dedup.published_version(directory)))
+    if done >= legacy_dedup.VERSION:
         await _publish_marker(name)
         await _owe_until_confirmed(name, directory)
         return None
