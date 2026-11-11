@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from typing import Any
 
 import pytest
@@ -132,9 +133,78 @@ async def test_console_can_edit_switch_off_and_remove(preferences):
     assert switched.active
     edited = await preferences.edit(entry.id, text="Never email results; put them in the notes folder", kind="report")
     assert (edited.origin, edited.kind) == ("console", "report")
-    assert await preferences.remove(entry.id) is True
-    assert await preferences.remove(entry.id) is False
+    removed = await preferences.remove(entry.id)
+    removed_again = await preferences.remove(entry.id)
+    assert (removed, removed_again) == (True, False)
     assert await preferences.get(entry.id) is None
+
+
+async def test_an_inferred_preference_switched_off_by_hand_stays_off(preferences):
+    await preferences.observe("The user stopped a task done with weather.today: 查上海天气", kind="capability")
+    entry = await preferences.observe("The user stopped a task done with weather.today: 查北京天气", kind="capability")
+    assert entry.active
+
+    await preferences.set_active(entry.id, False)
+    again = await preferences.observe("The user stopped a task done with weather.today: 查广州天气", kind="capability")
+
+    assert again.id == entry.id
+    assert not again.active
+    assert await preferences.render("weather today 天气") == ""
+    # Saying it in so many words still switches it on.
+    stated = await preferences.state(entry.text)
+    assert (stated.id, stated.active) == (entry.id, True)
+
+
+@pytest.mark.parametrize(
+    "text, kind",
+    [
+        ("结果一律用列表汇报", "report"),
+        ("結果一律用清單匯報", "report"),
+        ("Report results as bullet points", "report"),
+        ("結果は箇条書きで報告して", "report"),
+        ("결과는 목록으로 보고해 줘", "report"),
+        ("Присылай результаты списком", "report"),
+        ("Dame los resultados en una lista", "report"),
+        ("Mande os resultados em uma lista", "report"),
+        ("花钱之前先问我", "ask_first"),
+        ("花錢之前先問我", "ask_first"),
+        ("Ask me before spending money", "ask_first"),
+        ("お金を使う前に先に確認して", "ask_first"),
+        ("돈 쓰기 전에 먼저 물어봐", "ask_first"),
+        ("Сначала спроси меня, прежде чем тратить деньги", "ask_first"),
+        ("Pregúntame antes de gastar dinero", "ask_first"),
+        ("Pergunte antes de gastar dinheiro", "ask_first"),
+        ("找餐厅用 lifekit 插件", "capability"),
+        ("找餐廳用 lifekit 外掛", "capability"),
+        ("Use the lifekit plugin for restaurants", "capability"),
+        ("レストラン探しは lifekit プラグインで", "capability"),
+        ("식당은 lifekit 플러그인으로 찾아", "capability"),
+        ("Для ресторанов используй плагин lifekit", "capability"),
+        ("Usa el plugin lifekit para restaurantes", "capability"),
+        ("Use o plugin lifekit para restaurantes", "capability"),
+        ("查天气默认查上海", "default"),
+        ("查天氣預設查台北", "default"),
+        ("Weather lookups are for Shanghai by default", "default"),
+        ("天気はデフォルトで東京", "default"),
+        ("날씨는 기본으로 서울", "default"),
+        ("Погоду по умолчанию смотри для Москвы", "default"),
+        ("El tiempo por defecto de Madrid", "default"),
+        ("O tempo por padrão de Lisboa", "default"),
+        ("周末不要安排", "other"),
+    ],
+)
+def test_a_stated_preference_is_filed_under_its_kind(text, kind):
+    from nekoclaw.host.preferences import preference_kind
+
+    assert preference_kind(text) == kind
+
+
+def test_the_kind_words_cover_every_language():
+    from config.prompts.prompts_nekoclaw_brain import PREFERENCE_KIND_PATTERNS
+
+    assert set(PREFERENCE_KIND_PATTERNS) == {"zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"}
+    for patterns in PREFERENCE_KIND_PATTERNS.values():
+        assert set(patterns) == {"ask_first", "report", "capability", "default"}
 
 
 # ---------------------------------------------------------------------------
@@ -257,10 +327,21 @@ async def test_unknown_mode_is_rejected(store):
         await store.set_mode("run_command", "sometimes")
 
 
-@pytest.mark.parametrize("content", ["{not json", "[]", json.dumps({"categories": {"run_command": "bogus"}})])
-async def test_a_damaged_file_falls_back_to_the_defaults(tmp_path, content):
+@pytest.mark.parametrize("content", ["{not json", "[]"])
+async def test_a_damaged_file_denies_everything(tmp_path, content):
     path = tmp_path / "permissions.json"
     path.write_text(content, encoding="utf-8")
+
+    store = PermissionStore(path)
+
+    # The user's settings are unknown, so nothing falls back to a default that allows.
+    assert await store.mode("run_command") == "deny"
+    assert await store.mode("plugin_entry") == "deny"
+
+
+async def test_an_unknown_mode_in_the_file_falls_back_to_the_default(tmp_path):
+    path = tmp_path / "permissions.json"
+    path.write_text(json.dumps({"categories": {"run_command": "bogus"}}), encoding="utf-8")
 
     store = PermissionStore(path)
 
@@ -398,7 +479,7 @@ async def test_a_preference_cannot_open_a_permission(store, preferences):
 
     assert decision.allow is False
     assert len(asker.asked) == 1
-    import nekoclaw.host.permissions as module
+    module = sys.modules[PermissionGate.__module__]
 
     assert "preferences" not in module.__dict__
     assert "PreferenceStore" not in module.__dict__

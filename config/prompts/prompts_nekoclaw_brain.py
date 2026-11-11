@@ -23,6 +23,7 @@
   as tool results.
 * Cue patterns: how a dispatched sentence is recognised, without a model, as
   a stop request, an answer or an addition to something already under way.
+* Preference kinds: which kind a stated task preference is, without a model.
 """
 
 # =====================================================================
@@ -542,6 +543,26 @@ VAGUE_REFERENCE_PATTERNS = (
     r"\b(?:eso|esto|aquello|todo|por\s+favor|ya|ahora|isso|isto|aquilo|tudo|agora)\b",
 )
 
+# Words too common to say which commission a stop request means: days, times
+# of day, "help me". "Cancel tomorrow's alarm" shares "tomorrow" with a
+# weather lookup for tomorrow and is still not about it. Only the matching of
+# a stop request against the commissions leaves them out; a sentence made of
+# nothing else still counts as naming something.
+GENERIC_WORD_PATTERNS = (
+    # Chinese, Simplified and Traditional.
+    r"今天|明天|后天|後天|昨天|今晚|明早|明晚|早上|上午|中午|下午|晚上|现在|現在|一会儿|一會兒|待会|待會|等会|等會|马上|馬上|帮我|幫我|给我|給我|一下",
+    # English.
+    r"\b(?:today|tomorrow|tonight|yesterday|morning|afternoon|evening|night|now|later|soon|again|me|my|for|to|of|a|an|on|at|in)\b|['’]s\b",
+    # Japanese.
+    r"今日|明日|あした|あす|明後日|昨日|今夜|今晩|今朝|あとで|後で|すぐ",
+    # Korean.
+    r"오늘|내일|모레|어제|아침|점심|저녁|지금|나중에|이따가|바로",
+    # Russian.
+    r"\b(?:сегодня|завтра|послезавтра|вчера|утром|днём|днем|вечером|ночью|сейчас|потом|позже|мне|меня|мой|мою)\b",
+    # Spanish and Portuguese.
+    r"\b(?:hoy|mañana|ayer|noche|tarde|ahora|luego|después|hoje|amanhã|ontem|noite|agora|depois|logo|me|mi|meu|minha|de|do|da|la|el|los|las|o|os|as|a|para)\b",
+)
+
 SUPPLEMENT_CUE_PATTERNS = (
     r"补充|補充|另外|还有|還有|顺便|順便|再加|加上|改成|换成|換成|改为|改為|记得|記得|对了|對了",
     r"\b(?:also|additionally|in\s+addition|by\s+the\s+way|instead|change\s+it\s+to|make\s+sure|one\s+more\s+thing|and\s+add)\b",
@@ -597,6 +618,63 @@ CAPABILITY_QUESTION_PATTERNS = (
     r"можешь|можно\s+ли|умеешь|способн|возможно\s+ли",
     r"\b(?:puedes|se\s+puede|es\s+posible|eres\s+capaz|consegue|d[aá]\s+para|[eé]\s+poss[ií]vel|pode\s+fazer)\b",
 )
+
+# What a stated task preference is about, read without a model: the decision
+# model returns the preference as a sentence only. Kinds are tried in the
+# order ask_first, report, capability, default, each against every language
+# (a preference may be worded in another language than the commission); a
+# sentence matching none is "other". Reporting and ask-first entries are
+# given to every task, the others only to tasks sharing words with them.
+PREFERENCE_KIND_PATTERNS = {
+    'zh': {
+        "ask_first": r"先问|问过我|问一下我|问我一下|征求|先确认|确认一下|先跟我说|经过我同意",
+        "report": r"汇报|报告|告诉我|通知我|说一声|跟我说|结果|列表|列出|摘要|总结|主动说|主动提",
+        "capability": r"插件|工具|别用|不要用|改用|换用|优先用|用.{0,12}(?:来|去)(?:查|搜|找|做|办)",
+        "default": r"默认|一律|通常|一般都|每次都|总是|以后.{0,10}都",
+    },
+    'zh-TW': {
+        "ask_first": r"先問|問過我|問一下我|問我一下|徵求|先確認|確認一下|先跟我說|經過我同意",
+        "report": r"匯報|報告|告訴我|通知我|說一聲|跟我說|結果|清單|列表|列出|摘要|總結|主動說|主動提",
+        "capability": r"外掛|插件|工具|別用|不要用|改用|換用|優先用|用.{0,12}(?:來|去)(?:查|搜|找|做|辦)",
+        "default": r"預設|默認|一律|通常|一般都|每次都|總是|以後.{0,10}都",
+    },
+    'en': {
+        "ask_first": r"\bask\b.{0,30}\b(?:first|before)\b|\b(?:check|confirm)\s+with\s+me\b|\bwithout\s+asking\b|\b(?:approval|permission|consent)\b",
+        "report": r"\b(?:report\w*|tell\s+me|let\s+me\s+know|notify|results?|summar\w*|bullet\s*points?|lists?)\b",
+        "capability": r"\b(?:plugins?|tools?|apps?|don'?t\s+use|never\s+use|instead\s+of)\b",
+        "default": r"\b(?:by\s+default|defaults?|always|usually|unless\s+(?:I|told))\b",
+    },
+    'ja': {
+        "ask_first": r"先に(?:聞|確認)|確認してから|聞いてから|前に.{0,6}(?:確認|聞)|許可を(?:取|得|もら)",
+        "report": r"報告|知らせ|教えて|結果|まとめ|要約|箇条書き|リスト|一覧",
+        "capability": r"プラグイン|ツール|アプリ|を使って|は使わ",
+        "default": r"デフォルト|既定|いつも|基本的に|毎回|普段",
+    },
+    'ko': {
+        "ask_first": r"먼저\s?(?:물어|확인|허락)|물어보고|확인하고|허락(?:을|받)",
+        "report": r"보고|알려|결과|요약|목록|정리해서",
+        "capability": r"플러그인|도구|앱으로|(?:을|를)\s?(?:써|사용)|쓰지\s?마|사용하지\s?마",
+        "default": r"기본|항상|매번|보통",
+    },
+    'ru': {
+        "ask_first": r"(?:сначала|прежде|заранее)\s+(?:спро|уточн|соглас|спрашива)|спрашивай|без\s+спроса|разрешени",
+        "report": r"отч[её]т|сообща|сообщи|результат|итог|кратко|списк|спис[оа]к",
+        "capability": r"плагин|инструмент|приложени|используй",
+        "default": r"по\s+умолчанию|всегда|обычно|каждый\s+раз",
+    },
+    'es': {
+        "ask_first": r"\bpreg[uú]nta\w*\b.{0,30}\b(?:antes|primero)\b|\bconsult\w*\b.{0,30}\b(?:antes|primero)\b|\bsin\s+preguntar\b|\bmi\s+(?:permiso|aprobaci[oó]n)\b",
+        "report": r"\b(?:inf[oó]rm\w*|av[ií]s\w*|resultados?|resumen\w*|res[uú]menes|listas?)\b",
+        "capability": r"\b(?:plugins?|complementos?|herramientas?|aplicaci[oó]n|no\s+uses|usa|utiliza)\b",
+        "default": r"\b(?:por\s+defecto|predeterminad\w*|siempre|normalmente)\b",
+    },
+    'pt': {
+        "ask_first": r"\bpergunt\w*\b.{0,30}\b(?:antes|primeiro)\b|\bconsult\w*\b.{0,30}\b(?:antes|primeiro)\b|\bsem\s+perguntar\b|\bminha\s+(?:permiss[aã]o|aprova[cç][aã]o)\b",
+        "report": r"\b(?:relat\w*|avis\w*|resultados?|resum\w*|listas?)\b",
+        "capability": r"\b(?:plugins?|ferramentas?|aplicativos?|n[aã]o\s+use|use|usa|utilize)\b",
+        "default": r"\b(?:por\s+padr[aã]o|padr[aã]o|sempre|normalmente)\b",
+    },
+}
 
 # =====================================================================
 # ======= Familiar brief =======

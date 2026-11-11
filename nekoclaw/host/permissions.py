@@ -24,6 +24,12 @@ has one of four modes:
 
 ``DEFAULT_MODES`` gives the mode of a category the file does not mention. Each
 MCP server is a category of its own (``mcp_server`` plus the server's name).
+The defaults apply only while there is no file. A file that exists but cannot
+be read or parsed makes every category ``deny`` until it is repaired: the
+user's own settings are unknown then, and ``deny`` is the one mode every
+caller honours (the task brain's direct plugin calls check for ``deny`` only).
+The file is read again on each use until it can be read, and nothing is
+written over it meanwhile.
 
 ``PermissionGate.check`` is the single decision and is called from the two
 places the design names: the runtime's ``decide_permission`` callback for the
@@ -71,6 +77,12 @@ DENIED_BY_USER = "permission denied: the user declined"
 DENIED_NO_ANSWER = "permission denied: the request for approval could not be answered"
 
 _FILE_VERSION = 1
+# The mode of every category while an existing file cannot be read.
+_UNREADABLE_MODE = "deny"
+
+
+class PermissionFileError(RuntimeError):
+    """The permissions file exists but cannot be read, so it is not written over."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,31 +134,46 @@ class PermissionStore:
         self._categories: dict[str, str] = {}
         self._mcp_servers: dict[str, str] = {}
         self._loaded = False
+        # True while an existing file cannot be read.
+        self._unreadable = False
+        # Grows with every change, so a decision can tell that the settings
+        # it was based on changed meanwhile.
+        self._version = 0
         self._lock = asyncio.Lock()
 
     def _path(self) -> Path:
         source = self._path_source
         return Path(source() if callable(source) else source)
 
-    def _read(self) -> tuple[dict[str, str], dict[str, str]]:
+    def _read(self) -> tuple[dict[str, str], dict[str, str]] | None:
+        """Return the stored settings; ``({}, {})`` without a file, None if it cannot be read."""
         path = self._path()
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return {}, {}
         except (OSError, ValueError) as exc:
-            # An unreadable file must not open anything: fall back to the defaults.
-            logger.warning("permissions file %s cannot be read (%s); using the defaults", path, type(exc).__name__)
-            return {}, {}
-        if not isinstance(raw, dict):
-            return {}, {}
+            if not self._unreadable:
+                logger.warning(
+                    "permissions file %s cannot be read (%s); everything is denied until it is repaired",
+                    path,
+                    type(exc).__name__,
+                )
+            return None
+        sections = (raw.get("categories"), raw.get("mcp_servers")) if isinstance(raw, dict) else None
+        if sections is None or any(section is not None and not isinstance(section, dict) for section in sections):
+            if not self._unreadable:
+                logger.warning(
+                    "permissions file %s has an unknown layout; everything is denied until it is repaired", path
+                )
+            return None
 
         def modes(section: Any) -> dict[str, str]:
             if not isinstance(section, dict):
                 return {}
             return {str(name): mode for name, mode in section.items() if mode in MODES}
 
-        return modes(raw.get("categories")), modes(raw.get("mcp_servers"))
+        return modes(sections[0]), modes(sections[1])
 
     def _write(self, categories: dict[str, str], mcp_servers: dict[str, str]) -> None:
         from utils.file_utils import atomic_write_json
@@ -163,12 +190,31 @@ class PermissionStore:
             return
         async with self._lock:
             if not self._loaded:
-                self._categories, self._mcp_servers = await asyncio.to_thread(self._read)
+                stored = await asyncio.to_thread(self._read)
+                if stored is None:
+                    # Read again next time; the user may repair the file.
+                    self._unreadable = True
+                    return
+                self._categories, self._mcp_servers = stored
+                self._unreadable = False
                 self._loaded = True
+                self._version += 1
+
+    @property
+    def version(self) -> int:
+        """A number that changes whenever the settings change."""
+        return self._version
+
+    @property
+    def unreadable(self) -> bool:
+        """True while an existing permissions file cannot be read."""
+        return self._unreadable
 
     async def mode(self, category: str, key: str | None = None) -> str:
         """Return the mode of a category; an unknown category is asked about every time."""
         await self._ensure_loaded()
+        if self._unreadable:
+            return _UNREADABLE_MODE
         name, slot = _slot(category, key)
         if name == MCP_SERVER_CATEGORY:
             specific = self._mcp_servers.get(slot or "*")
@@ -177,24 +223,45 @@ class PermissionStore:
             return self._categories.get(name, DEFAULT_MODES[name])
         return self._categories.get(name, DEFAULT_MODES.get(name, "always_ask"))
 
-    async def set_mode(self, category: str, mode: str, key: str | None = None) -> None:
-        """Set the mode of a category and write the file."""
+    async def set_mode(
+        self, category: str, mode: str, key: str | None = None, *, expected_version: int | None = None
+    ) -> bool:
+        """Set the mode of a category and write the file.
+
+        With ``expected_version``, nothing is changed and False is returned
+        when the settings changed since that version was read. Raises
+        ``PermissionFileError`` while an existing file cannot be read, so the
+        user's settings in it are not lost.
+        """
+        from utils.asyncio_executor import to_thread_through_cancellation
+
         if mode not in MODES:
             raise ValueError(f"unknown permission mode {mode!r}")
         await self._ensure_loaded()
         name, slot = _slot(category, key)
         async with self._lock:
+            if not self._loaded:
+                raise PermissionFileError("the permissions file cannot be read; repair or remove it first")
+            if expected_version is not None and expected_version != self._version:
+                return False
             if name == MCP_SERVER_CATEGORY and key is not None:
                 self._mcp_servers[slot or "*"] = mode
             else:
                 self._categories[name] = mode
-            await asyncio.to_thread(self._write, dict(self._categories), dict(self._mcp_servers))
+            self._version += 1
+            # A cancelled caller still waits for the write, so the lock is not
+            # released while an older setting can land on disk after a newer one.
+            await to_thread_through_cancellation(self._write, dict(self._categories), dict(self._mcp_servers))
+        return True
 
     async def snapshot(self) -> dict[str, Any]:
         """Return every category with its current mode, for the console."""
         await self._ensure_loaded()
+        if self._unreadable:
+            categories = {name: _UNREADABLE_MODE for name in DEFAULT_MODES}
+            return {"categories": categories, "mcp_servers": {}, "unreadable": True}
         categories = {name: self._categories.get(name, default) for name, default in DEFAULT_MODES.items()}
-        return {"categories": categories, "mcp_servers": dict(self._mcp_servers)}
+        return {"categories": categories, "mcp_servers": dict(self._mcp_servers), "unreadable": False}
 
 
 class PermissionGate:
@@ -217,6 +284,8 @@ class PermissionGate:
     ) -> PermissionDecision:
         """Return whether the commission may do this, asking the user if the mode says so."""
         mode = await self._store.mode(category, key)
+        # Read together with the mode, with nothing awaited in between.
+        version = self._store.version
         if mode == "allow":
             return PermissionDecision(True)
         if mode == "deny":
@@ -232,9 +301,21 @@ class PermissionGate:
         except Exception as exc:  # noqa: BLE001 - no answer is a refusal
             logger.warning("asking for permission failed: %s", type(exc).__name__)
             return PermissionDecision(False, DENIED_NO_ANSWER)
+        if choice not in ("once", "always"):
+            return PermissionDecision(False, DENIED_BY_USER)
+        if self._store.version != version:
+            return await self._decide_again(category, key)
         if choice == "always" and "always" in options:
-            await self._store.set_mode(category, "allow", key)
-            return PermissionDecision(True)
-        if choice in ("once", "always"):
-            return PermissionDecision(True)
-        return PermissionDecision(False, DENIED_BY_USER)
+            if not await self._store.set_mode(category, "allow", key, expected_version=version):
+                return await self._decide_again(category, key)
+        return PermissionDecision(True)
+
+    async def _decide_again(self, category: str, key: str | None) -> PermissionDecision:
+        """Decide a request the user approved after the settings changed under the question.
+
+        The new settings win: ``deny`` refuses, and the approval covers this one
+        request only, so it never turns the category into ``allow``.
+        """
+        if await self._store.mode(category, key) == "deny":
+            return PermissionDecision(False, DENIED_BY_SETTINGS)
+        return PermissionDecision(True)

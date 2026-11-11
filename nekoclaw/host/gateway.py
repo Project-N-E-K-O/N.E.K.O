@@ -229,14 +229,20 @@ class CapabilityGateway:
             task = asyncio.ensure_future(server.serve())
             loop = asyncio.get_running_loop()
             deadline = loop.time() + _START_TIMEOUT_SECONDS
-            while not server.started:
-                if task.done():
-                    error = task.exception()
-                    raise RuntimeError(f"the gateway could not start: {error}")
-                if loop.time() > deadline:
-                    server.should_exit = True
-                    raise RuntimeError("the gateway did not start in time")
-                await asyncio.sleep(0.01)
+            try:
+                while not server.started:
+                    if task.done():
+                        error = task.exception()
+                        raise RuntimeError(f"the gateway could not start: {error}")
+                    if loop.time() > deadline:
+                        raise RuntimeError("the gateway did not start in time")
+                    await asyncio.sleep(0.01)
+            except BaseException:
+                # Not registered yet, so ``stop`` could never reach it: a
+                # listener that did not start, or whose start was given up
+                # on, is closed here.
+                await _close_listener(server, task)
+                raise
             sockets = [sock for listener in server.servers for sock in listener.sockets]
             self._port = int(sockets[0].getsockname()[1])
             self._server = server
@@ -250,16 +256,7 @@ class CapabilityGateway:
         server, self._server = self._server, None
         task, self._serve_task = self._serve_task, None
         self._port = None
-        if server is not None:
-            server.should_exit = True
-        if task is not None:
-            try:
-                await asyncio.wait_for(task, 5.0)
-            except asyncio.TimeoutError:
-                task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
-            except Exception:  # noqa: BLE001 - a failing listener is gone either way
-                logger.debug("gateway listener ended with an error", exc_info=True)
+        await _close_listener(server, task)
 
     # -- HTTP -------------------------------------------------------------
 
@@ -308,6 +305,11 @@ class CapabilityGateway:
             payload = json.loads(b"".join(chunks).decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
             await respond(400, {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}})
+            return
+        # The token may have been revoked or replaced while the body arrived;
+        # such a request is not yet among the calls ``revoke`` stops.
+        if self._grants.get(grant.token) is not grant:
+            await respond(401, {"error": "unknown or missing token"}, {"www-authenticate": "Bearer"})
             return
 
         work = asyncio.ensure_future(self.handle(grant, payload))
@@ -493,6 +495,9 @@ class CapabilityGateway:
                 {"run_id": run_id, "plugin_id": capability.plugin_id, "entry_id": capability.entry_id, "via": "gateway"},
             )
 
+        # The entry's result contract as it stands for this call: the plugin
+        # list may no longer show the entry once the run is over.
+        _plugin, entry = find_entry(await self._registry.plugins(), str(capability.plugin_id), capability.entry_id)
         outcome = await self._runner.run_entry(
             commission_id=commission.id,
             plugin_id=capability.plugin_id,
@@ -503,7 +508,6 @@ class CapabilityGateway:
             latest_user_request=commission.user_text,
             on_run_created=run_created,
         )
-        _plugin, entry = find_entry(await self._registry.plugins(), str(capability.plugin_id), capability.entry_id)
         text = describe_result(entry, outcome, lang=commission.lang)
         terminal = plugin_terminal_status(outcome.success, outcome.data)
         await self._ledger.append_event(
@@ -513,9 +517,10 @@ class CapabilityGateway:
         )
         if terminal == "failed":
             return _text(truncate_to_tokens(text or str(outcome.error or "failed"), GATEWAY_RESULT_MAX_TOKENS), error=True)
-        if llm_result_fields(entry) is None and outcome.data is not None:
+        if entry is not None and llm_result_fields(entry) is None and outcome.data is not None:
             # The entry does not say which fields a model should read; a
             # familiar gets the data itself so it can go on working with it.
+            # Without the entry nothing says the data may be shown.
             text = f"{text}\n{json.dumps(outcome.data, ensure_ascii=False, default=str)}"
         if terminal == "blocked":
             text = (
@@ -525,6 +530,25 @@ class CapabilityGateway:
         elif isinstance(outcome.data, dict) and outcome.data.get("deferred") is True:
             text = "[Accepted; the plugin completes this later on its own.]\n" + text
         return _text(truncate_to_tokens(text, GATEWAY_RESULT_MAX_TOKENS))
+
+
+async def _close_listener(server: Any, task: "asyncio.Task[Any] | None") -> None:
+    """Ask a listener to stop and wait for it, cancelling it if it takes too long."""
+    if server is not None:
+        server.should_exit = True
+    if task is None:
+        return
+    try:
+        await asyncio.wait_for(task, 5.0)
+    except asyncio.TimeoutError:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    except asyncio.CancelledError:
+        if not task.done():
+            # The one waiting here was cancelled, not the listener.
+            raise
+    except Exception:  # noqa: BLE001 - a failing listener is gone either way
+        logger.debug("gateway listener ended with an error", exc_info=True)
 
 
 def _origin_host(origin: str) -> str:

@@ -217,7 +217,6 @@ def keyword_hits(text: str, plugins: Sequence[dict[str, Any]]) -> list[str]:
 
 _CJK_RANGES = "一-鿿㐀-䶿豈-﫿"
 _TOKEN_RE = re.compile(rf"[{_CJK_RANGES}]|[a-zA-Z0-9_]+", re.UNICODE)
-_CJK_CHAR_RE = re.compile(rf"[{_CJK_RANGES}]")
 
 
 def tokenize(text: str) -> list[str]:
@@ -326,11 +325,24 @@ def stage1_filter(
 # ---------------------------------------------------------------------------
 
 
+# Scripts written without spaces between words, or whose words carry endings
+# (Hangul particles): compared as overlapping two-character pieces. CJK
+# ideographs, Hiragana, Katakana (with the half-width forms) and Hangul.
+_PAIRED_RANGES = _CJK_RANGES + "぀-ゟ゠-ヿㇰ-ㇿｦ-ﾟ가-힯ᄀ-ᇿ"
+# Separate from ``_TOKEN_RE`` on purpose: plugin selection keeps its own
+# tokenizer unchanged, while this one also reads Cyrillic, accented Latin and
+# the scripts above.
+_COMPARE_TOKEN_RE = re.compile(rf"[{_PAIRED_RANGES}]|(?:(?![{_PAIRED_RANGES}])\w)+")
+_PAIRED_CHAR_RE = re.compile(rf"[{_PAIRED_RANGES}]")
+
+
 def token_set(text: str) -> frozenset[str]:
     """Return the tokens used to compare two sentences.
 
-    Latin words as they are, CJK text as overlapping two-character pieces.
-    Single CJK characters are too common to tell two short requests apart.
+    Words of any alphabet as they are (lower-cased); CJK, kana and Hangul text
+    as overlapping two-character pieces within each unbroken run. Single
+    characters of these scripts are too common to tell two short requests
+    apart.
     """
     tokens: set[str] = set()
     run: list[str] = []
@@ -342,12 +354,18 @@ def token_set(text: str) -> frozenset[str]:
             tokens.add(first + second)
         run.clear()
 
-    for token in _TOKEN_RE.findall(text):
-        if _CJK_CHAR_RE.fullmatch(token):
+    end = -1
+    for match in _COMPARE_TOKEN_RE.finditer(text):
+        token = match.group(0)
+        if _PAIRED_CHAR_RE.fullmatch(token):
+            if match.start() != end:
+                # A space or punctuation in between ends the run.
+                flush()
             run.append(token)
         else:
             flush()
             tokens.add(token.lower())
+        end = match.end()
     flush()
     return frozenset(tokens)
 

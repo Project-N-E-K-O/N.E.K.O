@@ -47,12 +47,18 @@ logger = logging.getLogger(__name__)
 # Returns True when the main server took the report.
 SendReport = Callable[[OutboxItem], Awaitable[bool]]
 
+# Far beyond any sensible maximum wait, and still a finite float.
+_MAX_EXPONENT = 60
+
 
 def retry_delay(attempts: int) -> float:
     """Return how long to wait after the given number of failed attempts."""
     from config.nekoclaw_settings import OUTBOX_RETRY_BASE_SECONDS, OUTBOX_RETRY_MAX_SECONDS
 
-    return min(OUTBOX_RETRY_BASE_SECONDS * (2 ** max(attempts - 1, 0)), OUTBOX_RETRY_MAX_SECONDS)
+    # The exponent is capped before multiplying: 2 ** 1024 no longer fits in a
+    # float, and a report can fail that often over a few days.
+    exponent = min(max(attempts - 1, 0), _MAX_EXPONENT)
+    return min(OUTBOX_RETRY_BASE_SECONDS * (2**exponent), OUTBOX_RETRY_MAX_SECONDS)
 
 
 class OutboxSender:
@@ -111,27 +117,34 @@ class OutboxSender:
         return delivered
 
     async def _run(self) -> None:
+        failures = 0
         while not self._closed and self._send is not None:
             self._wake.clear()
             try:
                 await self.flush()
-                waiting = await self._ledger.outbox_pending()
+                # Over every unsent row, not only one batch of them.
+                due = await self._ledger.outbox_next_due()
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 - the loop must survive a bad round
-                logger.exception("outbox round failed")
-                waiting = []
-            if not waiting:
-                if self._wake.is_set():
-                    # A row arrived while this round was reading.
-                    continue
-                # Nothing left; the next kick starts the loop again.
-                return
-            due = min(item.next_attempt_at for item in waiting)
-            pause = max(0.05, due - self._clock())
+                # The rows could not be read or updated; that says nothing about
+                # whether any are left, so try again after a growing pause.
+                failures += 1
+                logger.exception("outbox round failed (%d in a row)", failures)
+                pause = retry_delay(failures)
+            else:
+                failures = 0
+                if due is None:
+                    if self._wake.is_set():
+                        # A row arrived while this round was reading.
+                        continue
+                    # Nothing left; the next kick starts the loop again.
+                    return
+                pause = max(0.05, due - self._clock())
             try:
                 await asyncio.wait_for(self._wake.wait(), pause)
             except asyncio.TimeoutError:
+                # The pause ran out without a kick; the next round looks again.
                 pass
 
     async def close(self) -> None:

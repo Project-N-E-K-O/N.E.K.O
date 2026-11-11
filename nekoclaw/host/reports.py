@@ -27,13 +27,18 @@ result reported here has the same ``status``, ``delivery_mode``,
 
 Commissions started by another familiar report to that familiar, not to her,
 so nothing is written for them here.
+
+How a commission ended is best stored together with the status change that
+ends it: build the row with ``task_result_report`` and pass it to
+``Reporter.transition``. Both are then written in one transaction, and the row
+is not written at all when the change is refused.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from nekoclaw.host.ledger import Commission, Ledger
+from nekoclaw.host.ledger import Commission, Ledger, Transition
 from nekoclaw.host.outbox import OutboxSender
 
 KIND_TASK_RESULT = "task_result"
@@ -58,7 +63,7 @@ class Reporter:
             self._sender.kick()
         return item_id
 
-    async def task_result(
+    def task_result_report(
         self,
         commission: Commission,
         *,
@@ -73,8 +78,12 @@ class Reporter:
         delivery_mode: str = "proactive",
         result_kind: str = "task_result",
         expires_in_s: float | None = None,
-    ) -> int | None:
-        """Report how a commission ended. Nothing is stored for a silent one."""
+    ) -> tuple[str, dict[str, Any]] | None:
+        """Build the ``(kind, payload)`` row that reports how a commission ended.
+
+        Stores nothing. Returns None for a silent commission and for one
+        started by another familiar, which are not reported to her.
+        """
         if commission.parent_id is not None or delivery_mode == "silent":
             return None
         from config import TASK_ERROR_MAX_TOKENS, TASK_LARGE_DETAIL_MAX_TOKENS, TASK_SUMMARY_MAX_TOKENS
@@ -99,7 +108,70 @@ class Reporter:
             "expires_in_s": expires_in_s,
             "title": commission.title,
         }
-        return await self._add(commission, KIND_TASK_RESULT, payload)
+        return KIND_TASK_RESULT, payload
+
+    async def task_result(
+        self,
+        commission: Commission,
+        *,
+        channel: str,
+        success: bool,
+        summary: str,
+        status: str,
+        detail: str = "",
+        error_message: str = "",
+        source_kind: str = "",
+        source_name: str = "",
+        delivery_mode: str = "proactive",
+        result_kind: str = "task_result",
+        expires_in_s: float | None = None,
+    ) -> int | None:
+        """Report how a commission ended. Nothing is stored for a silent one.
+
+        This stores the row in a transaction of its own; to store it with the
+        status change, use ``task_result_report`` and ``transition``.
+        """
+        report = self.task_result_report(
+            commission,
+            channel=channel,
+            success=success,
+            summary=summary,
+            status=status,
+            detail=detail,
+            error_message=error_message,
+            source_kind=source_kind,
+            source_name=source_name,
+            delivery_mode=delivery_mode,
+            result_kind=result_kind,
+            expires_in_s=expires_in_s,
+        )
+        if report is None:
+            return None
+        kind, payload = report
+        return await self._add(commission, kind, payload)
+
+    async def transition(
+        self,
+        commission_id: str,
+        status: str,
+        *,
+        reason: str = "",
+        report: tuple[str, dict[str, Any]] | None = None,
+        **values: Any,
+    ) -> Transition:
+        """Change a commission's status and store ``report`` in the same transaction.
+
+        Same as ``Ledger.transition`` otherwise. ``report`` is what
+        ``task_result_report`` built, or None to report nothing. When the
+        change is refused nothing is stored, and the sender is nudged only
+        when a row was stored.
+        """
+        moved = await self._ledger.transition(
+            commission_id, status, reason=reason, outbox=[report] if report is not None else (), **values
+        )
+        if moved.outbox_ids and self._sender is not None:
+            self._sender.kick()
+        return moved
 
     async def question(self, commission: Commission, question: dict[str, Any]) -> int | None:
         """Report that a commission waits for the user to answer or approve."""

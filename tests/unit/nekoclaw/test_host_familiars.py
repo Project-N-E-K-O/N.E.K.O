@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -312,6 +313,93 @@ async def test_a_queued_commission_can_be_stopped_before_it_starts(hosts, tmp_pa
     assert started == [first.commission_id]
 
 
+async def _filed(host: Any, text: str, **values: Any) -> Any:
+    values.setdefault("route", "familiar")
+    commission, _created = await host.ledger.create(
+        lanlan_name="Lan", title=text, dispatch_text=text, source="dispatch", **values
+    )
+    return commission
+
+
+def _slow_model() -> tuple[asyncio.Event, asyncio.Event, Any]:
+    """A model configuration whose first read waits until released."""
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    reads: list[int] = []
+
+    async def model() -> dict[str, Any]:
+        reads.append(1)
+        if len(reads) == 1:
+            entered.set()
+            await release.wait()
+        return await fake_model()
+
+    return entered, release, model
+
+
+async def test_commissions_handed_over_at_once_do_not_overrun_the_limit(hosts, tmp_path):
+    release, wait = _gate()
+    started: list[str] = []
+
+    def pick(spec: Any) -> ScriptedLLM:
+        started.append(spec.session_id)
+        return ScriptedLLM([[wait, say("done"), finish()]])
+
+    host = _host(hosts, tmp_path, pick, max_familiars=1)
+    first = await _filed(host, "sort the photos")
+    second = await _filed(host, "back up the notes")
+
+    await asyncio.gather(host.familiars.submit(first), host.familiars.submit(second))
+
+    assert host.familiars.running == [first.id]
+    assert host.familiars.queued == [second.id]
+    assert (await host.ledger.get(second.id)).status == "queued"
+    release.set()
+    await wait_status(host, second.id, "done")
+    assert started == [first.id, second.id]
+
+
+async def test_a_place_freed_by_a_stop_during_preparation_goes_to_the_queue(hosts, tmp_path):
+    entered, release, model = _slow_model()
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([[say("done"), finish()]]), familiar_model=model, max_familiars=1)
+    first = await _filed(host, "sort the photos")
+    second = await _filed(host, "back up the notes")
+    handing = asyncio.ensure_future(host.familiars.submit(first))
+    await asyncio.wait_for(entered.wait(), 5)
+    await host.familiars.submit(second)
+    assert host.familiars.queued == [second.id]
+
+    # Stopped while its session is still being prepared.
+    await host.ledger.transition(first.id, "cancelled", reason="stopped by the user")
+    await host.familiars.abort(first.id)
+    release.set()
+    await handing
+
+    await wait_status(host, second.id, "done", timeout=5)
+    assert (await host.ledger.get(first.id)).status == "cancelled"
+
+
+async def test_a_place_freed_by_a_cancelled_start_goes_to_the_queue(hosts, tmp_path):
+    entered, release, model = _slow_model()
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([[say("done"), finish()]]), familiar_model=model, max_familiars=1)
+    first = await _filed(host, "sort the photos")
+    await host.ledger.transition(first.id, "working", reason="test")
+    await host.ledger.transition(first.id, "blocked", reason="test")
+    second = await _filed(host, "back up the notes")
+    telling = asyncio.ensure_future(host.familiars.tell(first.id, "the drive is E: now"))
+    await asyncio.wait_for(entered.wait(), 5)
+    await host.familiars.submit(second)
+    assert host.familiars.queued == [second.id]
+
+    # Whoever passed the sentence on is cancelled while the session is prepared.
+    telling.cancel()
+    await asyncio.gather(telling, return_exceptions=True)
+    release.set()
+
+    await wait_status(host, second.id, "done", timeout=5)
+    assert (await host.ledger.get(first.id)).status == "blocked"
+
+
 # ---------------------------------------------------------------------------
 # Stopping
 # ---------------------------------------------------------------------------
@@ -364,6 +452,76 @@ async def test_shutting_the_host_down_fails_what_was_under_way(tmp_path):
         await again.close()
     # Not "cancelled": nobody stopped it.
     assert (commission.status, commission.status_reason) == ("failed", "the host was shut down")
+
+
+async def test_shutting_familiars_down_fails_what_was_queued(hosts, tmp_path):
+    release, wait = _gate()
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([[wait, say("done"), finish()]]), max_familiars=1)
+    first = await _dispatch(host, "sort the photos")
+    await wait_status(host, first.commission_id, "working")
+    second = await _dispatch(host, "back up the notes")
+    await host.brain.settle()
+    assert host.familiars.queued == [second.commission_id]
+
+    await host.familiars.shutdown()
+    release.set()
+
+    queued = await host.ledger.get(second.commission_id)
+    assert (queued.status, queued.status_reason) == ("failed", "the host was shut down")
+
+
+async def test_nothing_is_started_after_shutting_down(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "done")]))
+    await host.familiars.shutdown()
+    blocked = await _filed(host, "sort the photos")
+    await host.ledger.transition(blocked.id, "working", reason="test")
+    await host.ledger.transition(blocked.id, "blocked", reason="test")
+    fresh = await _filed(host, "back up the notes")
+
+    assert await host.familiars.tell(blocked.id, "try again") is False
+    await host.familiars.submit(fresh)
+
+    assert not host.familiars.runtime_started
+    assert host.familiars.running == [] and host.familiars.queued == []
+    assert (await host.ledger.get(blocked.id)).status == "blocked"
+    after = await host.ledger.get(fresh.id)
+    assert (after.status, after.status_reason) == ("failed", "the host was shut down")
+
+
+async def test_stopping_while_the_session_comes_up_gives_it_no_work(hosts, tmp_path):
+    llm = ScriptedLLM([_report("ready", "sorted anyway")])
+    inner = scripted_runtime(lambda spec: llm)
+    may_start = asyncio.Event()
+    starting = asyncio.Event()
+
+    class SlowStart:
+        """A runtime whose first session waits for its process to come up."""
+
+        def __init__(self, on_event: Any, callbacks: Any) -> None:
+            self.inner = inner(on_event, callbacks)
+
+        async def start(self, spec: Any) -> None:
+            starting.set()
+            await may_start.wait()
+            await self.inner.start(spec)
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self.inner, name)
+
+    host = make_host(tmp_path, None, familiar_model=fake_model, decision_llm=FakeDecisionLLM(), runtime_factory=SlowStart)
+    hosts.append(host)
+    receipt = await _dispatch(host, "sort the photos")
+    await asyncio.wait_for(starting.wait(), 5)
+
+    await host.abort(receipt.commission_id)
+    may_start.set()
+    await wait_until(lambda: not host.familiars._starting, what="the start being over")
+    await wait_until(lambda: host.familiars.running == [], what="the place being freed")
+    await wait_until(lambda: not host.familiars._runtime.inner.core._sessions, what="the session being closed")
+    await host.familiars.settle()
+
+    assert llm.requests == []
+    assert (await host.ledger.get(receipt.commission_id)).status == "cancelled"
 
 
 # ---------------------------------------------------------------------------
@@ -644,6 +802,63 @@ async def test_lesson_sink_can_be_replaced(hosts, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Web search
+# ---------------------------------------------------------------------------
+
+
+class _SearchRunner:
+    """Stands in for the plugin runner and records the entries it is asked to run."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def run_entry(self, **kwargs: Any) -> Any:
+        self.calls.append(kwargs)
+        data = {"results": [{"url": "https://example.com/weather", "title": "Weather"}]}
+        return SimpleNamespace(success=True, data=data, error=None)
+
+
+async def test_web_search_runs_the_search_plugin(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM())
+    runner = _SearchRunner()
+    host.familiars._runner = runner
+    commission = await _filed(host, "look up the weather")
+
+    result = await host.familiars._cb_web_search(commission.id, {"queries": ["weather tomorrow"]})
+
+    assert result == {"results": [{"query": "weather tomorrow", "sources": [{"url": "https://example.com/weather", "title": "Weather"}]}]}
+    assert [(call["plugin_id"], call["entry_id"], call["args"]) for call in runner.calls] == [
+        ("web_search", "search", {"query": "weather tomorrow"})
+    ]
+
+
+@pytest.mark.parametrize("blocked_by", ["switch", "permission"])
+async def test_web_search_obeys_the_plugin_switch_and_permission(hosts, tmp_path, blocked_by):
+    llm = ScriptedLLM(
+        [
+            [call("web_search", {"queries": ["weather tomorrow"]}), finish("tool_calls")],
+            _report("blocked", "cannot search"),
+        ]
+    )
+    extra = {"plugins_enabled": lambda: False} if blocked_by == "switch" else {}
+    host = _host(hosts, tmp_path, llm, **extra)
+    if blocked_by == "permission":
+        await host.permission_store.set_mode("plugin_entry", "deny")
+    runner = _SearchRunner()
+    host.familiars._runner = runner
+
+    receipt = await _dispatch(host, "look up the weather")
+
+    await wait_status(host, receipt.commission_id, "blocked")
+    assert runner.calls == []
+    told = llm.requests[1][-1]["content"]
+    expected = "plugins are switched off" if blocked_by == "switch" else "the permission settings forbid this"
+    assert expected in told
+    (denied,) = await _events(host, receipt.commission_id, "capability_denied")
+    assert denied.payload["capability"] == "plugin:web_search:search"
+
+
+# ---------------------------------------------------------------------------
 # Passing things on, and taking a commission up again
 # ---------------------------------------------------------------------------
 
@@ -789,6 +1004,34 @@ async def test_sub_familiar_runs_under_its_parent_and_reports_back_to_it(hosts, 
     # And a query lists her commission, not its sub-familiar.
     view = await host.query("", lanlan_name="Lan", lang="en")
     assert [item.id for item in view.commissions] == [receipt.commission_id]
+
+
+@pytest.mark.parametrize("where", ["outside", "inside"])
+async def test_sub_familiar_works_inside_its_parents_folder(hosts, tmp_path, where):
+    outside = tmp_path / "elsewhere"
+    cwd = str(outside) if where == "outside" else "part"
+    parent = ScriptedLLM(
+        [
+            [call("subagent", {"description": "count", "prompt": "Count the files.", "cwd": cwd}), finish("tool_calls")],
+            [call("wait_agent", {"timeout_ms": 600_000}, "c2"), finish("tool_calls")],
+            _report("ready", "counted"),
+        ]
+    )
+    child = ScriptedLLM([[say("3 files"), finish()]])
+    host = _host(hosts, tmp_path, lambda spec: parent if spec.top_level else child)
+
+    receipt = await _dispatch(host, "count the files")
+
+    done = await wait_status(host, receipt.commission_id, "done")
+    (sub,) = await host.ledger.select(parent_id=receipt.commission_id)
+    if where == "outside":
+        # Out of bounds: it works where its parent works, so writing elsewhere
+        # is asked about just as it is for the parent.
+        assert Path(sub.workdir) == Path(done.workdir)
+        assert not outside.exists()
+    else:
+        assert Path(sub.workdir) == Path(done.workdir) / "part"
+        assert Path(sub.workdir).is_dir()
 
 
 async def test_sub_familiars_count_towards_the_limit(hosts, tmp_path):

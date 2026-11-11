@@ -222,6 +222,8 @@ class Transition:
     previous: str | None
     # Why it was refused; empty when applied.
     refusal: str = ""
+    # Outbox rows stored together with an accepted move.
+    outbox_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -305,31 +307,43 @@ class Ledger:
             isolation_level=None,
             check_same_thread=False,
         )
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.executescript(_SCHEMA)
-        conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.executescript(_SCHEMA)
+            conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
+            self._reconcile(conn)
+        except BaseException:
+            # Not kept half-opened: the next ``open`` starts over.
+            conn.close()
+            raise
         self.path = path
         self._conn = conn
-        self._reconcile(conn)
 
     def _reconcile(self, conn: sqlite3.Connection) -> None:
         """Fail what a previous host process left unfinished.
 
         Nobody is working on those commissions any more. A blocked one stays
         blocked, and a deferred plugin result that may still arrive keeps its
-        commission open until its deadline.
+        commission open until its deadline. All of it is one transaction, so
+        no status changes without its event.
         """
         now = self._clock()
-        rows = conn.execute(
-            "SELECT id FROM commissions WHERE status IN ('queued','working','waiting_user') "
-            "AND COALESCE(host_instance, '') != ? "
-            "AND NOT (deferred_until IS NOT NULL AND deferred_until > ?)",
-            (self.instance, now),
-        ).fetchall()
-        for row in rows:
-            self._transition(conn, row["id"], "failed", "the host process ended before this finished", {})
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            rows = conn.execute(
+                "SELECT id FROM commissions WHERE status IN ('queued','working','waiting_user') "
+                "AND COALESCE(host_instance, '') != ? "
+                "AND NOT (deferred_until IS NOT NULL AND deferred_until > ?)",
+                (self.instance, now),
+            ).fetchall()
+            for row in rows:
+                self._transition(conn, row["id"], "failed", "the host process ended before this finished", {})
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+        conn.execute("COMMIT")
         if rows:
             logger.info("ledger: %d unfinished commission(s) of an earlier run marked failed", len(rows))
 
@@ -535,15 +549,38 @@ class Ledger:
         updated = _commission(conn.execute("SELECT * FROM commissions WHERE id = ?", (commission_id,)).fetchone())
         return Transition(True, updated, current.status)
 
-    async def transition(self, commission_id: str, status: str, *, reason: str = "", **values: Any) -> Transition:
+    async def transition(
+        self,
+        commission_id: str,
+        status: str,
+        *,
+        reason: str = "",
+        outbox: Iterable[tuple[str, dict[str, Any]]] = (),
+        **values: Any,
+    ) -> Transition:
         """Move a commission to ``status`` if ``ALLOWED_TRANSITIONS`` permits it.
 
         This is the only way a status changes. A refused move changes nothing
         and is recorded as a ``transition_refused`` event; in particular a
         cancelled commission stays cancelled. ``values`` are further columns
         written together with an accepted move.
+
+        ``outbox`` holds ``(kind, payload)`` reports for the main server. They
+        are stored in the same transaction as an accepted move, and not at all
+        when the move is refused, so a commission never ends without the
+        report that says so, nor is a report left for a move that did not
+        happen. Their row ids are in ``Transition.outbox_ids``.
         """
-        return await self.run(lambda conn: self._transition(conn, commission_id, status, reason, values))
+        reports = [(kind, dict(payload)) for kind, payload in outbox]
+
+        def work(conn: sqlite3.Connection) -> Transition:
+            moved = self._transition(conn, commission_id, status, reason, values)
+            if not moved.applied or not reports:
+                return moved
+            ids = tuple(self._outbox_insert(conn, commission_id, kind, payload) for kind, payload in reports)
+            return Transition(moved.applied, moved.commission, moved.previous, moved.refusal, ids)
+
+        return await self.run(work)
 
     async def update(self, commission_id: str, **values: Any) -> Commission | None:
         """Write columns other than the status."""
@@ -606,18 +643,19 @@ class Ledger:
 
     # -- outbox -----------------------------------------------------------
 
+    def _outbox_insert(
+        self, conn: sqlite3.Connection, commission_id: str | None, kind: str, payload: dict[str, Any]
+    ) -> int:
+        now = self._clock()
+        cursor = conn.execute(
+            "INSERT INTO outbox (commission_id, kind, payload, created_at, next_attempt_at) VALUES (?, ?, ?, ?, ?)",
+            (commission_id, kind, _dump(payload), now, now),
+        )
+        return int(cursor.lastrowid or 0)
+
     async def outbox_add(self, commission_id: str | None, kind: str, payload: dict[str, Any]) -> int:
         """Store a report for the main server; it is sent afterwards."""
-
-        def work(conn: sqlite3.Connection) -> int:
-            now = self._clock()
-            cursor = conn.execute(
-                "INSERT INTO outbox (commission_id, kind, payload, created_at, next_attempt_at) VALUES (?, ?, ?, ?, ?)",
-                (commission_id, kind, _dump(payload), now, now),
-            )
-            return int(cursor.lastrowid or 0)
-
-        return await self.run(work)
+        return await self.run(lambda conn: self._outbox_insert(conn, commission_id, kind, payload))
 
     @staticmethod
     def _outbox_item(row: sqlite3.Row) -> OutboxItem:
@@ -645,6 +683,15 @@ class Ledger:
             sql += " ORDER BY id LIMIT ?"
             params.append(limit)
             return [self._outbox_item(row) for row in conn.execute(sql, params).fetchall()]
+
+        return await self.run(work)
+
+    async def outbox_next_due(self) -> float | None:
+        """Return the earliest ``next_attempt_at`` of all unsent reports, or None."""
+
+        def work(conn: sqlite3.Connection) -> float | None:
+            row = conn.execute("SELECT MIN(next_attempt_at) AS due FROM outbox WHERE sent_at IS NULL").fetchone()
+            return None if row is None or row["due"] is None else float(row["due"])
 
         return await self.run(work)
 

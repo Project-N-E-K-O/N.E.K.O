@@ -94,8 +94,13 @@ class DecisionRequest:
     lang: str = "en"
     # The plugins selection may choose from (running, visible).
     plugins: list[dict[str, Any]] = field(default_factory=list)
-    # Her commissions that are under way, newest first.
+    # Her commissions that are under way, newest first. Commissions her
+    # familiars started for themselves are not among them.
     active: list[Commission] = field(default_factory=list)
+    # Commissions started by her familiars that wait for the user. Their
+    # questions reach the user too, so an answer can be about them; a stop,
+    # a repeat or an addition never is.
+    answerable: list[Commission] = field(default_factory=list)
     familiar_available: bool = False
     # Rendered task preferences for the fine selection (already within budget).
     preferences: str = ""
@@ -260,6 +265,7 @@ class _Cues:
             cls._loaded = {
                 "stop": _patterns(texts.STOP_CUE_PATTERNS),
                 "vague": _patterns(texts.VAGUE_REFERENCE_PATTERNS),
+                "generic": _patterns(texts.GENERIC_WORD_PATTERNS),
                 "supplement": _patterns(texts.SUPPLEMENT_CUE_PATTERNS),
                 "answer": _patterns(texts.ANSWER_CUE_PATTERNS),
                 "deny": _patterns(texts.PERMISSION_DENY_PATTERNS),
@@ -347,11 +353,16 @@ def read_stop(text: str, active: list[Commission]) -> Triage | None:
         return None
     # What is left once the stop words and words like "that one" are set aside
     # says which commission is meant, if the sentence says so at all.
-    content = token_set(strip_cues("vague", strip_cues("stop", text)))
+    named = strip_cues("vague", strip_cues("stop", text))
+    content = token_set(named)
     if not active:
         # "Never mind" with nothing under way; a sentence with more in it is a task.
         return None if content else Triage(kind="nothing_active")
-    scored = [(_coverage(content, commission), commission) for commission in active]
+    # Words such as "tomorrow" do not tell one commission from another. A
+    # sentence that names nothing else still names something: it is not about
+    # whatever happens to be under way.
+    distinctive = token_set(strip_cues("generic", named)) if content else frozenset()
+    scored = [(_coverage(distinctive, commission), commission) for commission in active]
     matched = [item for item in scored if item[0] > 0]
     if len(active) == 1:
         if not content or matched:
@@ -407,12 +418,26 @@ def _answer(commission: Commission, choice: str | None) -> Triage:
     return Triage(kind="answer", targets=[commission.id], choice=choice if is_permission else None)
 
 
+def can_be_repeated(commission: Commission) -> bool:
+    """Return whether a new dispatch can be a repeat of this commission.
+
+    Not a commission a familiar started for itself: she never dispatched it.
+    Not a direct plugin call left ``blocked`` either (the plugin asked for a
+    confirmation or a clarification): nothing takes it up again, so the same
+    request dispatched once more is the confirmed one and has to run.
+    """
+    if commission.parent_id is not None:
+        return False
+    return not (commission.status == "blocked" and commission.route == "plugin")
+
+
 def find_duplicate(dispatch_text: str, user_text: str, active: Sequence[Commission]) -> Commission | None:
     """Return the commission under way that this sentence repeats, if any.
 
     A repeat says nearly the same thing (``DUPLICATE_SIMILARITY``); when the
     user's own words are identical a lower bar applies, because then the same
-    request was dispatched twice.
+    request was dispatched twice. Only commissions ``can_be_repeated`` accepts
+    are compared.
     """
     from config.nekoclaw_settings import DUPLICATE_SIMILARITY, DUPLICATE_SIMILARITY_SAME_USER_TEXT
 
@@ -420,6 +445,8 @@ def find_duplicate(dispatch_text: str, user_text: str, active: Sequence[Commissi
     best: Commission | None = None
     best_score = 0.0
     for commission in active:
+        if not can_be_repeated(commission):
+            continue
         score = similarity(dispatch_text, commission.dispatch_text)
         bar = DUPLICATE_SIMILARITY
         if user_text and user_text == commission.user_text.strip():
@@ -462,30 +489,74 @@ def read_repeat_or_addition(request: DecisionRequest) -> Triage | None:
 # Parsing a model's JSON answer
 # ---------------------------------------------------------------------------
 
-_TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
 _EMBEDDED_OBJECT_RE = re.compile(r"\{[^{}]*(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}[^{}]*)*\}")
+_OPENING_FENCE_RE = re.compile(r"\A```[A-Za-z0-9_-]*[ \t]*\r?\n?")
+_CLOSING_FENCE_RE = re.compile(r"\r?\n?[ \t]*```\Z")
 
 
 def _strip_fences(text: str) -> str:
+    """Remove a Markdown fence around the whole answer; fences inside it stay."""
     text = text.strip()
     if text.startswith("```"):
-        text = text.replace("```json", "").replace("```", "").strip()
+        text = _CLOSING_FENCE_RE.sub("", _OPENING_FENCE_RE.sub("", text, count=1), count=1).strip()
     return text
 
 
+def _drop_trailing_commas(text: str) -> str:
+    """Remove commas right before a closing brace or bracket, outside strings."""
+    out: list[str] = []
+    in_string = False
+    escaped = False
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char == ",":
+            ahead = index + 1
+            while ahead < len(text) and text[ahead] in " \t\r\n":
+                ahead += 1
+            if ahead < len(text) and text[ahead] in "}]":
+                index += 1
+                continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
+def _loads(text: str) -> Any:
+    """Parse ``text`` as it is; only when that fails, again without trailing commas."""
+    try:
+        return json.loads(text)
+    except ValueError:
+        return json.loads(_drop_trailing_commas(text))
+
+
 def parse_json_object(raw: str) -> dict[str, Any] | None:
-    """Return the JSON object in a model answer, tolerating fences and trailing commas."""
-    text = _TRAILING_COMMA_RE.sub(r"\1", _strip_fences(raw))
+    """Return the JSON object in a model answer, tolerating fences and trailing commas.
+
+    The answer is parsed as it is first. Only when that fails are trailing
+    commas removed, and never inside a string: what the model wrote into an
+    argument reaches the plugin unchanged.
+    """
+    text = _strip_fences(raw)
     if not text:
         return None
     try:
-        value = json.loads(text)
+        value = _loads(text)
     except ValueError:
         match = _EMBEDDED_OBJECT_RE.search(text)
         if match is None:
             return None
         try:
-            value = json.loads(_TRAILING_COMMA_RE.sub(r"\1", match.group(0)))
+            value = _loads(match.group(0))
         except ValueError:
             return None
     return value if isinstance(value, dict) else None
@@ -516,13 +587,15 @@ class LexicalDecisionModel:
 
     async def triage(self, request: DecisionRequest) -> Triage:
         text = request.dispatch_text
-        for reading in (
-            read_stop(text, request.active),
-            read_answer(text, request.active),
-            read_repeat_or_addition(request),
-        ):
-            if reading is not None:
-                return reading
+        stop = read_stop(text, request.active)
+        if stop is not None:
+            return stop
+        answer = read_answer(text, [*request.active, *request.answerable])
+        if answer is not None:
+            return answer
+        repeat = read_repeat_or_addition(request)
+        if repeat is not None:
+            return repeat
         return await self.probe(request)
 
     async def probe(self, request: DecisionRequest, *, ask_model: bool = True) -> Triage:
@@ -587,8 +660,9 @@ class LexicalDecisionModel:
         from config.nekoclaw_settings import DECISION_LEDGER_ROW_MAX_TOKENS, DECISION_LEDGER_ROWS
         from utils.tokenize import truncate_to_tokens
 
+        # Only rows a "duplicate" answer can point at.
         ranked = sorted(
-            request.active,
+            (commission for commission in request.active if can_be_repeated(commission)),
             key=lambda commission: similarity(request.match_text, commission_text(commission)),
             reverse=True,
         )[:DECISION_LEDGER_ROWS]
@@ -759,8 +833,8 @@ class LexicalDecisionModel:
                     shown_plugin_ids=shown_ids,
                     model_calls=calls,
                 )
-            # It named no line that was shown; not a repeat that can be acted on.
-            route = ""
+            # Otherwise it named no line that was shown: not a repeat that can
+            # be acted on, and the answer is read as below.
 
         if _wants_plugin(decision):
             plugin_id, entry_id = _identifiers(decision)

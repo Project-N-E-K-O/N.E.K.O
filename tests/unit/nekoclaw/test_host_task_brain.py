@@ -112,6 +112,24 @@ async def test_accepted_then_the_plugin_is_called_directly(server, hosts, tmp_pa
     assert report.payload["task_id"] == receipt.commission_id
 
 
+async def test_the_result_is_stored_with_the_status_not_after_it(server, hosts, tmp_path, monkeypatch):
+    # A report stored in a transaction of its own could be lost between the
+    # two writes; the direct route stores it with the status change instead.
+    _weather(server)
+    llm = FakeDecisionLLM(fine=[pick_plugin("weather", "today", {"city": "Shanghai"})])
+    host = _host(hosts, tmp_path, server, llm)
+
+    async def separate_write(*args, **kwargs):
+        raise AssertionError("the report was written apart from the status change")
+
+    monkeypatch.setattr(host.ledger, "outbox_add", separate_write)
+    receipt = await _dispatch(host, "查一下上海的天气")
+
+    await wait_status(host, receipt.commission_id, "done")
+    (report,) = await outbox(host, "task_result")
+    assert report.payload["task_id"] == receipt.commission_id
+
+
 async def test_the_receipt_does_not_wait_for_the_second_round(server, hosts, tmp_path):
     _weather(server)
     llm = FakeDecisionLLM(fine=[pick_plugin("weather", "today")])
@@ -226,9 +244,7 @@ async def test_switched_off_host_takes_nothing(server, hosts, tmp_path):
 
 
 async def test_slow_first_round_answers_received_and_reports_the_conclusion(server, hosts, tmp_path, monkeypatch):
-    import config.nekoclaw_settings as settings
-
-    monkeypatch.setattr(settings, "DISPATCH_FIRST_ROUND_SECONDS", 0.05)
+    monkeypatch.setattr("config.nekoclaw_settings.DISPATCH_FIRST_ROUND_SECONDS", 0.05)
     _weather(server)
     llm = FakeDecisionLLM(coarse=[])
     llm.gate = asyncio.Event()
@@ -244,6 +260,28 @@ async def test_slow_first_round_answers_received_and_reports_the_conclusion(serv
     assert late.payload["receipt"] == "no_capability"
     assert late.payload["text"] == "办不了：没有找到能办这件事的能力"
     assert late.payload["lanlan_name"] == "Lan"
+
+
+async def test_slow_first_round_that_accepts_reports_the_acceptance_and_the_commission(
+    server, hosts, tmp_path, monkeypatch
+):
+    monkeypatch.setattr("config.nekoclaw_settings.DISPATCH_FIRST_ROUND_SECONDS", 0.05)
+    _weather(server)
+    llm = FakeDecisionLLM(coarse=["weather"], fine=[pick_plugin("weather", "today")])
+    llm.gate = asyncio.Event()
+    host = _host(hosts, tmp_path, server, llm)
+
+    receipt = await asyncio.wait_for(_dispatch(host, "zzz qqq"), 2)
+
+    assert receipt.kind == "received"
+    llm.gate.set()
+    await wait_until(lambda: outbox(host, "receipt"), what="the late receipt")
+    (late,) = await outbox(host, "receipt")
+    (commission,) = await host.ledger.select()
+    assert late.payload["receipt"] == "accepted"
+    assert late.payload["task_id"] == commission.id
+    assert late.payload["text"] == "已受理：zzz qqq"
+    await wait_status(host, commission.id, "done")
 
 
 async def test_first_round_budget_is_about_one_second():
@@ -314,6 +352,32 @@ async def test_accepted_but_a_repeat_after_all_is_withdrawn_and_corrected(server
     await wait_status(host, first.commission_id, "done")
 
 
+async def test_a_plugin_that_asked_for_confirmation_runs_again_when_asked_again(server, hosts, tmp_path):
+    answers = [
+        finish({"needs_confirmation": True, "reply": "确认定明早7点的闹钟吗？"}),
+        finish({"reply": "闹钟已定好"}),
+    ]
+
+    async def set_alarm(args: dict[str, Any]) -> dict[str, Any]:
+        return answers.pop(0)
+
+    server.add_plugin(
+        plugin("alarm", "Alarms 闹钟", [entry("set", "Set an alarm")], keywords=["闹钟"]), set=set_alarm
+    )
+    host = _host(hosts, tmp_path, server, FakeDecisionLLM(fine=[pick_plugin("alarm", "set")]))
+    first = await _dispatch(host, "把明早7点的闹钟定上", user_text="明早7点叫我")
+    await wait_status(host, first.commission_id, "blocked")
+
+    # The user confirmed; she dispatches the same request once more.
+    second = await _dispatch(host, "把明早7点的闹钟定上", user_text="明早7点叫我")
+
+    assert second.kind == "accepted"
+    assert second.commission_id != first.commission_id
+    done = await wait_status(host, second.commission_id, "done")
+    assert done.result_summary == "闹钟已定好"
+    assert len(server.calls) == 2
+
+
 async def test_failed_plugin_call_ends_failed_with_a_report(server, hosts, tmp_path):
     async def broken(args: dict[str, Any]) -> dict[str, Any]:
         return failure("station offline")
@@ -348,6 +412,32 @@ async def test_a_stated_preference_is_recorded_and_used_next_time(server, hosts,
     await wait_status(host, second.commission_id, "done")
 
     assert "PREFERENCES:\n- 查天气默认查上海" in llm.last("fine")[1]["content"]
+
+
+async def test_a_stated_reporting_preference_applies_to_unrelated_tasks(server, hosts, tmp_path):
+    _weather(server)
+    server.add_plugin(
+        plugin("lamp", "Controls the desk lamp 台灯", [entry("switch", "Switch")], keywords=["台灯"]),
+        switch=_returns(finish({"reply": "台灯已关"})),
+    )
+    llm = FakeDecisionLLM(
+        fine=[
+            pick_plugin("weather", "today", {"city": "Shanghai"}, preference="结果一律用列表汇报"),
+            pick_plugin("lamp", "switch"),
+        ]
+    )
+    host = _host(hosts, tmp_path, server, llm)
+
+    first = await _dispatch(host, "查一下上海的天气，他说以后结果一律用列表汇报")
+    await wait_status(host, first.commission_id, "done")
+    (entry_,) = await host.preferences.list()
+    assert (entry_.text, entry_.kind) == ("结果一律用列表汇报", "report")
+
+    second = await _dispatch(host, "把台灯关掉")
+    await wait_status(host, second.commission_id, "done")
+
+    # No word in common, and still given: it is about how every task is reported.
+    assert "PREFERENCES:\n- 结果一律用列表汇报" in llm.last("fine")[1]["content"]
 
 
 # ---------------------------------------------------------------------------
@@ -490,6 +580,48 @@ async def test_stop_without_saying_which_lists_the_candidates(server, hosts, tmp
     assert (await host.ledger.get(one.commission_id)).status == "working"
 
 
+async def test_stop_without_saying_which_leaves_sub_familiars_out(server, hosts, tmp_path):
+    host = _host(hosts, tmp_path, server, FakeDecisionLLM())
+    lead, _created = await host.ledger.create(
+        lanlan_name="Lan", title="整理照片", dispatch_text="整理下载文件夹里的照片", user_text="帮我整理照片",
+        source="dispatch",
+    )
+    await host.ledger.transition(lead.id, "working", route="familiar")
+    children = []
+    for number in range(2):
+        child, _created = await host.ledger.create(
+            lanlan_name="Lan", title=f"子任务{number}", dispatch_text=f"按月份分第{number}批照片",
+            user_text="帮我整理照片", source="familiar", parent_id=lead.id,
+        )
+        await host.ledger.transition(child.id, "working", route="familiar")
+        children.append(child)
+
+    receipt = await _dispatch(host, "算了，别弄了")
+
+    # Her familiar started the other two; she only ever dispatched this one.
+    assert (receipt.kind, receipt.commission_id) == ("stopped", lead.id)
+    assert (await host.ledger.get(lead.id)).status == "cancelled"
+
+
+async def test_a_new_dispatch_is_not_taken_for_a_repeat_of_a_sub_familiar(server, hosts, tmp_path):
+    _weather(server)
+    host = _host(hosts, tmp_path, server, FakeDecisionLLM(fine=[pick_plugin("weather", "today")]))
+    lead, _created = await host.ledger.create(
+        lanlan_name="Lan", title="出门准备", dispatch_text="帮他准备出门", user_text="我要出门了", source="dispatch",
+    )
+    await host.ledger.transition(lead.id, "working", route="familiar")
+    child, _created = await host.ledger.create(
+        lanlan_name="Lan", title="天气", dispatch_text="查一下上海的天气然后汇总",
+        user_text="我要出门了", source="familiar", parent_id=lead.id,
+    )
+    await host.ledger.transition(child.id, "working", route="familiar")
+
+    receipt = await _dispatch(host, "查一下上海的天气", user_text="我要出门了")
+
+    assert receipt.kind == "accepted"
+    await wait_status(host, receipt.commission_id, "done")
+
+
 # ---------------------------------------------------------------------------
 # Deferred results
 # ---------------------------------------------------------------------------
@@ -542,6 +674,16 @@ async def test_deferred_result_whose_callback_never_comes_fails(server, hosts, t
 
     failed = await host.ledger.get(receipt.commission_id)
     assert (failed.status, failed.status_reason) == ("failed", "Deferred task timeout (callback not received)")
+    # Reported once, the way a failed plugin call is, and its timer is gone.
+    (report,) = await outbox(host, "task_result")
+    assert (report.payload["status"], report.payload["success"]) == ("failed", False)
+    assert report.payload["task_id"] == receipt.commission_id
+    assert report.payload["channel"] == "user_plugin"
+    assert "callback not received" in report.payload["error_message"]
+    assert report.payload["source_kind"] == "plugin"
+    assert receipt.commission_id not in host.brain._deferred_timers
+    assert await host.brain.expire_deferred() == 0
+    assert len(await outbox(host, "task_result")) == 1
 
 
 async def _deferred(host: Any, commission_id: str) -> bool:

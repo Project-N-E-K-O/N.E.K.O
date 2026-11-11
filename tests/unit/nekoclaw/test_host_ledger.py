@@ -353,7 +353,7 @@ async def test_unfinished_commissions_of_an_earlier_process_fail_on_open(tmp_pat
     path = tmp_path / "ledger.db"
     clock = Clock()
     first = Ledger(path, clock=clock)
-    queued = await _file(first, title="queued")
+    await _file(first, title="queued")
     working = await _file(first, title="working")
     waiting = await _file(first, title="waiting")
     blocked = await _file(first, title="blocked")

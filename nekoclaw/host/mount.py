@@ -32,6 +32,8 @@ from typing import Any
 _lock = threading.Lock()
 _options: dict[str, Any] = {}
 _host: Any = None
+# The host being shut down, until that has finished.
+_closing: Any = None
 # Set when plugins changed before the host existed; nothing to do then, the
 # first read fetches the list anyway.
 _configured = False
@@ -62,12 +64,21 @@ def peek_host() -> Any:
 
 
 def get_host() -> Any:
-    """Return the process's host, building it on the first call."""
-    global _host
+    """Return the process's host, building it on the first call.
+
+    While a host is being shut down, that host is returned: it takes no new
+    work, and a second host must not open the same files meanwhile. A new one
+    is built once the shutdown has finished.
+    """
+    global _host, _closing
     if _host is not None:
         return _host
     with _lock:
         if _host is None:
+            if _closing is not None:
+                if not _closing.closed:
+                    return _closing
+                _closing = None
             from nekoclaw.host.service import NekoClawHost
 
             _host = NekoClawHost(**_options)
@@ -86,18 +97,31 @@ def notify_plugins_changed(*_args: Any, **_kwargs: Any) -> None:
 
 
 async def shutdown_host() -> None:
-    """Shut the host down if it was built. The next ``get_host`` builds a new one."""
-    global _host
+    """Shut the host down if it was built.
+
+    Once that has finished, the next ``get_host`` builds a new one. Calling
+    this again while a shutdown is under way waits for that shutdown.
+    """
+    global _host, _closing
     with _lock:
         host, _host = _host, None
-    if host is not None:
-        await host.shutdown()
+        if host is not None:
+            _closing = host
+        else:
+            host = _closing
+    if host is None:
+        return
+    await host.shutdown()
+    with _lock:
+        if _closing is host:
+            _closing = None
 
 
 def reset_for_tests() -> None:
     """Forget the host and its options without shutting anything down."""
-    global _host, _configured
+    global _host, _closing, _configured
     with _lock:
         _host = None
+        _closing = None
         _options.clear()
         _configured = False

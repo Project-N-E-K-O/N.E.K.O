@@ -304,7 +304,7 @@ async def test_run_cancelled_on_the_plugin_server_ends_as_canceled(server, calle
 
     canceller = asyncio.ensure_future(cancel_from_outside())
     outcome = await caller.call("weather", "today", {"city": "Paris"})
-    await canceller
+    assert await canceller is None
 
     assert outcome["success"] is False
     assert outcome["run_status"] == "canceled"

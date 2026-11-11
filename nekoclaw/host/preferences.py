@@ -36,6 +36,7 @@ is decided, and it neither reads nor writes persona memory.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from dataclasses import dataclass
 from typing import Any
@@ -92,6 +93,30 @@ def _clean(text: str) -> str:
 
 def _kind(kind: str) -> str:
     return kind if kind in KINDS else "other"
+
+
+_KIND_ORDER: tuple[str, ...] = ("ask_first", "report", "capability", "default")
+_kind_patterns: dict[str, list[re.Pattern[str]]] | None = None
+
+
+def preference_kind(text: str) -> str:
+    """Return which kind a stated preference is, from its words alone.
+
+    The word lists are ``PREFERENCE_KIND_PATTERNS`` (eight languages); no
+    model is asked. A sentence none of them recognises is ``other``.
+    """
+    global _kind_patterns
+    if _kind_patterns is None:
+        from config.prompts.prompts_nekoclaw_brain import PREFERENCE_KIND_PATTERNS
+
+        _kind_patterns = {
+            kind: [re.compile(table[kind], re.IGNORECASE) for table in PREFERENCE_KIND_PATTERNS.values()]
+            for kind in _KIND_ORDER
+        }
+    for kind in _KIND_ORDER:
+        if any(pattern.search(text) for pattern in _kind_patterns[kind]):
+            return kind
+    return "other"
 
 
 class PreferenceStore:
@@ -206,7 +231,8 @@ class PreferenceStore:
 
         The first observation is stored but has no effect. When the same
         tendency is observed again the entry takes effect; it stays marked as
-        inferred. An observation that matches a stated entry changes nothing.
+        inferred. An observation that matches a stated entry, or one set by
+        hand on the console, changes nothing.
         """
         cleaned = _clean(text)
         if not cleaned:
@@ -263,11 +289,17 @@ class PreferenceStore:
         return await self._ledger.run(work)
 
     async def set_active(self, preference_id: int, active: bool) -> Preference | None:
-        """Switch an entry on or off from the console."""
+        """Switch an entry on or off from the console.
+
+        An inferred entry then counts as set by hand, so a later observation
+        of the same tendency no longer switches it back; stating it in so
+        many words still does.
+        """
 
         def work(conn: sqlite3.Connection) -> Preference | None:
             conn.execute(
-                "UPDATE preferences SET active = ?, updated_at = ? WHERE id = ?",
+                "UPDATE preferences SET active = ?, updated_at = ?, "
+                "origin = CASE WHEN origin = 'inferred' THEN 'console' ELSE origin END WHERE id = ?",
                 (int(active), self._now(), preference_id),
             )
             row = conn.execute("SELECT * FROM preferences WHERE id = ?", (preference_id,)).fetchone()

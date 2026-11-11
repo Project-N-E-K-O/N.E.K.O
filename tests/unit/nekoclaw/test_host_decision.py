@@ -31,6 +31,7 @@ from nekoclaw.host.decision import (
     DecisionRequest,
     LexicalDecisionModel,
     Triage,
+    find_duplicate,
     is_capability_question,
     parse_json_object,
     parse_permission_choice,
@@ -172,6 +173,37 @@ async def test_stop_words_about_something_else_are_a_task_of_their_own():
     assert llm.calls == []
 
 
+@pytest.mark.parametrize("text", ["取消明天的闹钟", "cancel tomorrow's alarm"])
+async def test_a_stop_sharing_only_a_common_word_is_not_about_that_commission(text):
+    # "Tomorrow" says nothing about which commission is meant.
+    llm = FakeDecisionLLM()
+    active = [commission("c1", "查一下上海明天的天气 check tomorrow's weather")]
+
+    triage = await LexicalDecisionModel(llm).triage(request(text, active=active, familiar_available=True))
+
+    assert triage.kind == "new"
+    assert llm.calls == []
+
+
+async def test_a_stop_naming_only_common_words_among_several_is_not_a_question_back():
+    # It names something, just nothing under way: not "which one do you mean".
+    active = [commission("c1", "查一下上海明天的天气"), commission("c2", "明天整理下载文件夹里的照片")]
+
+    triage = await LexicalDecisionModel(FakeDecisionLLM()).triage(
+        request("取消明天的", active=active, familiar_available=True)
+    )
+
+    assert triage.kind == "new"
+
+
+async def test_a_stop_still_finds_its_commission_next_to_common_words():
+    active = [commission("c1", "查一下上海明天的天气"), commission("c2", "明天整理下载文件夹里的照片")]
+
+    triage = await LexicalDecisionModel(FakeDecisionLLM()).triage(request("明天的照片别整理了", active=active))
+
+    assert (triage.kind, triage.targets) == ("stop", ["c2"])
+
+
 async def test_stop_with_nothing_under_way():
     triage = await LexicalDecisionModel(FakeDecisionLLM()).triage(request("算了", active=[]))
 
@@ -197,6 +229,78 @@ async def test_same_user_words_lower_the_bar_for_a_repeat():
 
     assert same_words.kind == "duplicate"
     assert other_words.kind == "new"
+
+
+async def test_a_plugin_commission_left_blocked_is_not_repeated():
+    # A plugin asked for confirmation; the commission has no way out of
+    # "blocked" but a stop, so the confirmed request must run again.
+    llm = FakeDecisionLLM()
+    blocked = commission(
+        "c1", "把明早7点的闹钟定上", user_text="明早7点叫我", status="blocked", route="plugin", plugin_id="alarm"
+    )
+
+    triage = await LexicalDecisionModel(llm).triage(
+        request("把明早7点的闹钟定上", user_text="明早7点叫我", active=[blocked], familiar_available=True)
+    )
+
+    assert triage.kind == "new"
+    assert find_duplicate("把明早7点的闹钟定上", "明早7点叫我", [blocked]) is None
+
+
+async def test_a_familiar_commission_left_blocked_is_still_a_repeat():
+    blocked = commission("c1", "整理下载文件夹里的照片", status="blocked", route="familiar")
+
+    assert find_duplicate("整理下载文件夹里的照片", "", [blocked]) is blocked
+
+
+async def test_a_sub_familiars_commission_is_not_repeated():
+    child = commission("c2", "整理下载文件夹里的照片", user_text="帮我整理照片", route="familiar", parent_id="c1")
+
+    assert find_duplicate("整理下载文件夹里的照片", "帮我整理照片", [child]) is None
+
+
+async def test_a_sub_familiars_question_can_still_be_answered():
+    question = json.dumps({"kind": "questions", "questions": [{"id": "q1", "question": "照片按月份还是按地点分？"}]})
+    parent = commission("c1", "整理下载文件夹里的照片", route="familiar")
+    child = commission(
+        "c2", "整理照片", route="familiar", parent_id="c1", status="waiting_user", pending_question=question
+    )
+
+    triage = await LexicalDecisionModel(FakeDecisionLLM()).triage(
+        request("回答：按月份分", active=[parent], answerable=[child])
+    )
+
+    assert (triage.kind, triage.targets) == ("answer", ["c2"])
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Поставь будильник на семь утра",
+        "아침 일곱 시에 알람 맞춰 줘",
+        "あしたのアラームをセットして",
+        "アラームをセットしてください",
+        "Pon la alarma mañana a las siete",
+    ],
+)
+async def test_repeats_are_recognised_in_every_script(text):
+    active = [commission("c1", text)]
+
+    triage = await LexicalDecisionModel(FakeDecisionLLM()).triage(request(text, active=active))
+
+    assert (triage.kind, triage.targets) == ("duplicate", ["c1"])
+
+
+@pytest.mark.parametrize(
+    "text, named",
+    [("Отмени будильник", "будильник"), ("알람 취소해", "알람"), ("アラームをキャンセル", "アラーム")],
+)
+async def test_a_stop_naming_one_of_several_works_in_every_script(text, named):
+    active = [commission("c1", f"{named} 7:00"), commission("c2", "整理下载文件夹里的照片")]
+
+    triage = await LexicalDecisionModel(FakeDecisionLLM()).triage(request(text, active=active))
+
+    assert (triage.kind, triage.targets) == ("stop", ["c1"])
 
 
 async def test_a_different_task_is_not_a_repeat():
@@ -599,6 +703,15 @@ async def test_answer_in_the_analyzers_older_shape_is_understood():
         ("[]", None),
         ("", None),
         ("no json here", None),
+        # Commas and fences inside strings are content and stay as they are.
+        ('{"plugin_args":{"text":"a,}b"}}', {"plugin_args": {"text": "a,}b"}}),
+        ('{"text": "a,]b", "n": [1, 2,],}', {"text": "a,]b", "n": [1, 2]}),
+        ('{"text": "say \\",}\\" twice",}', {"text": 'say ",}" twice'}),
+        (
+            '```json\n{"plugin_args": {"text": "```python\\nprint(1)\\n```"}}\n```',
+            {"plugin_args": {"text": "```python\nprint(1)\n```"}},
+        ),
+        ('```\n{"route": "plugin"}\n```', {"route": "plugin"}),
     ],
 )
 def test_parsing_a_model_answer(raw, expected):

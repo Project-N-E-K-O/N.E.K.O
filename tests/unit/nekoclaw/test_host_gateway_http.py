@@ -66,7 +66,7 @@ def _weather(server: FakePluginServer, handler: Any = None) -> None:
                     "today",
                     "Today's weather for a city",
                     input_schema={"type": "object", "properties": {"city": {"type": "string"}}},
-                    llm_result_fields=[],
+                    llm_result_fields=["reply"],
                 )
             ],
         ),

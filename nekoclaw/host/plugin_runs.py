@@ -241,9 +241,13 @@ def resolve_result_contract(entry: dict[str, Any] | None, result: Any) -> tuple[
 
 
 def llm_result_fields(entry: dict[str, Any] | None) -> list[str] | None:
-    """Return the ``llm_result_fields`` an entry declares, or None."""
+    """Return the ``llm_result_fields`` an entry declares, or None when it declares none.
+
+    ``GET /plugins`` lists ``[]`` for an entry that declares no fields (and the
+    SDK turns an empty declaration into none), so an empty list means none.
+    """
     fields = (entry or {}).get("llm_result_fields")
-    return list(fields) if isinstance(fields, list) else None
+    return list(fields) if isinstance(fields, list) and fields else None
 
 
 def describe_result(entry: dict[str, Any] | None, outcome: "RunOutcome", *, lang: str | None = None) -> str:
@@ -421,10 +425,16 @@ class PluginRunner:
         self._poll_interval = poll_interval
         # commission id -> ids of its runs that have not ended yet.
         self._active: dict[str, set[str]] = {}
-        # Runs a cancel was already sent for, so stopping a commission and
-        # dropping its call do not ask the plugin twice. Bounded.
+        # Runs whose polling was given up on before they ended: run id ->
+        # commission id. They stay in ``_active`` until a cancel request for
+        # them is answered, so stopping the commission still reaches them.
+        self._lost: dict[str, str] = {}
+        # Runs the plugin server accepted a cancel for, so stopping a
+        # commission and dropping its call do not ask the plugin twice. Bounded.
         self._cancel_sent: dict[str, None] = {}
-        self._cancel_tasks: set[asyncio.Task[Any]] = set()
+        # Cancel requests on their way, by run id; a second caller waits for the same one.
+        self._cancel_pending: dict[str, asyncio.Future[bool]] = {}
+        self._cancel_tasks: set[asyncio.Future[Any]] = set()
 
     @property
     def base_url(self) -> str:
@@ -442,22 +452,60 @@ class PluginRunner:
     # -- cancel -----------------------------------------------------------
 
     async def cancel_run(self, run_id: str, reason: str = "") -> bool:
-        """Ask the plugin server to cancel one run. Returns whether it answered.
+        """Ask the plugin server to cancel one run. Returns whether it accepted.
 
-        A run is asked once; a second call for the same run does nothing.
+        A run the server accepted a cancel for is not asked again, and a call
+        while a request for the run is on its way waits for that request. A
+        request that failed is sent again by the next call.
         """
         if run_id in self._cancel_sent:
             return True
-        self._cancel_sent[run_id] = None
-        while len(self._cancel_sent) > _CANCEL_MEMORY:
-            del self._cancel_sent[next(iter(self._cancel_sent))]
+        pending = self._cancel_pending.get(run_id)
+        if pending is None:
+            pending = asyncio.ensure_future(self._send_cancel(run_id, reason))
+            self._cancel_pending[run_id] = pending
+            self._cancel_tasks.add(pending)
+
+            def forget(done: "asyncio.Future[bool]", run_id: str = run_id) -> None:
+                self._cancel_tasks.discard(done)
+                if self._cancel_pending.get(run_id) is done:
+                    del self._cancel_pending[run_id]
+
+            pending.add_done_callback(forget)
+        # A caller that goes away does not take the request down with it.
+        return await asyncio.shield(pending)
+
+    async def _send_cancel(self, run_id: str, reason: str) -> bool:
         try:
             async with self._client() as client:
                 response = await client.post(f"{self.base_url}/runs/{run_id}/cancel", json={"reason": reason or None})
-            return response.status_code == 200
-        except Exception as exc:  # noqa: BLE001 - best effort; the run times out on its own otherwise
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - reported; the next call asks again
             logger.warning("cancelling run %s failed: %s", run_id, type(exc).__name__)
             return False
+        if response.status_code != 200:
+            logger.warning("cancelling run %s returned HTTP %s", run_id, response.status_code)
+            if response.status_code in (404, 410):
+                # The run is gone: there is nothing left to stop.
+                commission_id = self._lost.pop(run_id, None)
+                if commission_id is not None:
+                    self._untrack(commission_id, run_id)
+            return False
+        self._cancel_sent[run_id] = None
+        while len(self._cancel_sent) > _CANCEL_MEMORY:
+            del self._cancel_sent[next(iter(self._cancel_sent))]
+        commission_id = self._lost.pop(run_id, None)
+        if commission_id is not None:
+            self._untrack(commission_id, run_id)
+        return True
+
+    def _untrack(self, commission_id: str, run_id: str) -> None:
+        runs = self._active.get(commission_id)
+        if runs is not None:
+            runs.discard(run_id)
+            if not runs:
+                del self._active[commission_id]
 
     async def cancel_commission(self, commission_id: str, reason: str = "") -> int:
         """Cancel every run still going under a commission. Returns how many were asked."""
@@ -472,9 +520,16 @@ class PluginRunner:
         task.add_done_callback(self._cancel_tasks.discard)
 
     async def aclose(self) -> None:
-        """Wait for cancel requests that are still on their way."""
-        if self._cancel_tasks:
-            await asyncio.gather(*self._cancel_tasks, return_exceptions=True)
+        """Wait for cancel requests that are still on their way.
+
+        Also for the ones added while waiting: a run request that comes back
+        after its caller went away adds the cancel of the run it created.
+        """
+        while True:
+            pending = [task for task in self._cancel_tasks if not task.done()]
+            if not pending:
+                return
+            await asyncio.gather(*pending, return_exceptions=True)
 
     # -- invoke -----------------------------------------------------------
 
@@ -543,6 +598,13 @@ class PluginRunner:
                     f"entry_id '{requested_entry}' not found in plugin '{plugin_id}'. Available: {known}",
                     "invalid_entry_id",
                 )
+            else:
+                # Sending the id as it was asked for could reach a hidden
+                # entry of exactly that name.
+                return rejected(
+                    f"entry_id '{requested_entry}' is ambiguous in plugin '{plugin_id}': it matches {matches}",
+                    "invalid_entry_id",
+                )
 
         resolved_entry = str(requested_entry or "run")
         safe_args = dict(plugin_args)
@@ -603,6 +665,7 @@ class PluginRunner:
             return failed("Invalid /runs response (missing run_id/run_token)", "run_invalid_response")
 
         self._active.setdefault(commission_id, set()).add(run_id)
+        lost = False
         try:
             if on_run_created is not None:
                 try:
@@ -620,17 +683,21 @@ class PluginRunner:
             except Exception as exc:  # noqa: BLE001 - reported, never raised
                 logger.warning("waiting for run %s failed: %s", run_id, type(exc).__name__)
                 completion = {"status": "unknown", "success": False, "data": None, "error": str(exc)}
+            lost = bool(completion.pop("lost", False))
         except asyncio.CancelledError:
             # Whoever waited for this run is gone, at whichever point after
             # the run came to exist; the run must not go on.
             self._cancel_in_background(run_id, "caller cancelled")
             raise
         finally:
-            runs = self._active.get(commission_id)
-            if runs is not None:
-                runs.discard(run_id)
-                if not runs:
-                    del self._active[commission_id]
+            if not lost:
+                self._untrack(commission_id, run_id)
+        if lost:
+            # Nobody follows the run any more, and it may still be going: it
+            # is cancelled, and stays known to the commission until the plugin
+            # server accepts that, so stopping the commission asks again.
+            self._lost[run_id] = commission_id
+            self._cancel_in_background(run_id, "polling failed")
 
         success = bool(completion.get("success"))
         return RunOutcome(
@@ -728,10 +795,15 @@ class PluginRunner:
                                     f"Run {run_id} polling failed "
                                     f"({consecutive_errors} consecutive HTTP {response.status_code})"
                                 ),
+                                "lost": True,
                             }
                     else:
+                        parsed = response.json()
+                        if not isinstance(parsed, dict):
+                            raise ValueError("the run record is not an object")
+                        # Only an answer that could be read counts as one.
                         consecutive_errors = 0
-                        record = response.json()
+                        record = parsed
                         last_status = record.get("status")
                         if on_progress is not None and last_status not in RUN_TERMINAL_STATUSES:
                             key = (record.get("progress"), record.get("stage"), record.get("message"), record.get("step"))
@@ -764,6 +836,7 @@ class PluginRunner:
                                 f"Run {run_id} polling failed "
                                 f"({consecutive_errors} consecutive transport errors)"
                             ),
+                            "lost": True,
                         }
                 pause = self._poll_interval if remaining is None else min(self._poll_interval, remaining)
                 await asyncio.sleep(pause)

@@ -29,7 +29,9 @@ What is in it:
 * MCP tools: the tools of the servers the user configured. The existing
   ``mcp_adapter`` plugin holds those connections and lists each tool as an
   entry named ``mcp_<server>_<tool>``; here they count as MCP tools of their
-  server, which is what permissions are asked for;
+  server, which is what permissions are asked for. The adapter's entries that
+  call a tool of whatever server their arguments name (``call_tool``,
+  ``gateway_invoke``) are not served to familiars;
 * built-in capabilities (keyboard and mouse, browser): listed as not yet
   available; they arrive with a later change.
 
@@ -40,7 +42,10 @@ the ``mcp_adapter`` plugin, exactly as the analyzer saw them.
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
 import re
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -48,7 +53,13 @@ from typing import Any
 from nekoclaw.host.plugin_runs import PluginCatalog
 from nekoclaw.host.selection import routable_plugins, visible_entries
 
+logger = logging.getLogger(__name__)
+
 MCP_ADAPTER_PLUGIN_ID = "mcp_adapter"
+# Entries of the adapter that call a tool of any server (or plugin) named in
+# their arguments, so no single server's permission covers them. Every tool of
+# a connected server is served on its own, with that server's permission.
+MCP_ADAPTER_GENERIC_ENTRIES = frozenset({"call_tool", "gateway_invoke"})
 _MCP_ENTRY_PREFIX = "mcp_"
 _MCP_ENTRY_NAME_RE = re.compile(r"^\[(?P<server>.+?)\]\s+(?P<tool>.+)$")
 _TOOL_NAME_UNSAFE_RE = re.compile(r"[^A-Za-z0-9_-]")
@@ -116,18 +127,26 @@ def _safe(part: str) -> str:
     return _TOOL_NAME_UNSAFE_RE.sub("_", part)
 
 
+def _plain_part(part: str) -> bool:
+    """Whether a part can stand in a name as it is without blurring the ``__`` separators."""
+    return bool(part) and "__" not in part and not part.startswith("_") and not part.endswith("_")
+
+
 def gateway_tool_name(prefix: str, first: str, second: str) -> str:
     """Return a tool name of at most ``TOOL_NAME_MAX_LENGTH`` characters.
 
     Characters a tool name may not contain become ``_``. A name that had to be
-    changed or cut ends in a short hash of the original, so two different
-    capabilities never share a name.
+    changed or cut, or whose parts could be split at ``__`` in more than one
+    way (``a__b`` + ``c`` against ``a`` + ``b__c``), ends in a short hash of
+    the parts. ``CapabilityRegistry.callable_by_familiars`` drops any name
+    that still comes out twice.
     """
     raw = f"{prefix}__{first}__{second}"
     name = f"{prefix}__{_safe(first)}__{_safe(second)}"
-    if name == raw and len(name) <= TOOL_NAME_MAX_LENGTH:
+    if name == raw and len(name) <= TOOL_NAME_MAX_LENGTH and _plain_part(first) and _plain_part(second):
         return name
-    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]
+    encoded = json.dumps([prefix, first, second], ensure_ascii=False)
+    digest = hashlib.sha1(encoded.encode("utf-8")).hexdigest()[:8]
     return f"{name[: TOOL_NAME_MAX_LENGTH - 9]}_{digest}"
 
 
@@ -183,6 +202,7 @@ def capabilities_of_plugin(plugin: dict[str, Any]) -> list[Capability]:
                 )
             )
             continue
+        generic = plugin_id == MCP_ADAPTER_PLUGIN_ID and entry_id in MCP_ADAPTER_GENERIC_ENTRIES
         items.append(
             Capability(
                 id=f"plugin:{plugin_id}:{entry_id}",
@@ -193,7 +213,12 @@ def capabilities_of_plugin(plugin: dict[str, Any]) -> list[Capability]:
                 permission="plugin_entry",
                 permission_key=None,
                 one_step=True,
-                available=True,
+                available=not generic,
+                unavailable_reason=(
+                    "calls a tool of any MCP server without that server's permission; each tool is served on its own"
+                    if generic
+                    else ""
+                ),
                 plugin_id=plugin_id,
                 entry_id=entry_id,
                 tool_name=gateway_tool_name("plugin", plugin_id, entry_id),
@@ -265,5 +290,14 @@ class CapabilityRegistry:
         return items
 
     async def callable_by_familiars(self) -> list[Capability]:
-        """Return the capabilities the gateway can serve right now."""
-        return [item for item in await self.list() if item.available and item.tool_name]
+        """Return the capabilities the gateway can serve right now.
+
+        A tool name shared by two capabilities is served for neither: a call
+        by that name could reach the wrong one.
+        """
+        items = [item for item in await self.list() if item.available and item.tool_name]
+        counts = Counter(item.tool_name for item in items)
+        shared = {name for name, count in counts.items() if count > 1}
+        if shared:
+            logger.warning("capabilities left out: their tool names are not unique: %s", sorted(shared))
+        return [item for item in items if item.tool_name not in shared]

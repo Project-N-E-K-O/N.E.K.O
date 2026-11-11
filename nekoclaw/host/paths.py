@@ -33,10 +33,35 @@ callers on the event loop do it in a worker thread.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from pathlib import Path
 
 DEFAULT_PROJECT = "_daily"
+
+# Separators, drive and stream colons, characters Windows forbids in a name,
+# and control characters.
+_UNSAFE_CHARACTERS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+_MAX_SEGMENT_LENGTH = 128
+
+
+def _segment(value: str, what: str) -> str:
+    """Return ``value`` if it is safe as one directory name, else raise ValueError.
+
+    Project names and commission ids end up in paths; one that climbs out of
+    the host's directory, or that Windows would read differently (it drops a
+    trailing dot or space), is refused. Leading dots and spaces are refused too.
+    """
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > _MAX_SEGMENT_LENGTH
+        or value in (".", "..")
+        or value != value.strip(" .")
+        or _UNSAFE_CHARACTERS.search(value)
+    ):
+        raise ValueError(f"{what} {value!r} cannot be used as a directory name")
+    return value
 
 
 def data_root() -> Path:
@@ -65,7 +90,10 @@ class HostPaths:
         return self.root() / "permissions.json"
 
     def session_dir(self, commission_id: str, project: str | None = None) -> Path:
-        return self.root() / "familiar" / "projects" / (project or DEFAULT_PROJECT) / "sessions" / commission_id
+        """Return a commission's session directory; raises ValueError for an unsafe name."""
+        project_name = _segment(project or DEFAULT_PROJECT, "project")
+        session_name = _segment(commission_id, "commission id")
+        return self.root() / "familiar" / "projects" / project_name / "sessions" / session_name
 
     def work_dir(self, commission_id: str, project: str | None = None) -> Path:
         return self.session_dir(commission_id, project) / "work"

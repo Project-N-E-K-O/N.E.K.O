@@ -58,6 +58,7 @@ WEB_SEARCH_PLUGIN_ID = "web_search"
 WEB_SEARCH_ENTRY_ID = "search"
 _WEB_SEARCH_PARALLEL = 3
 _SHUTDOWN_START_WAIT_SECONDS = 5.0
+_SHUT_DOWN_REASON = "the host was shut down"
 _REPORT_TO_STATUS = {"ready": "done", "blocked": "blocked", "failed": "failed"}
 _STATUS_TO_REPORT = {"done": "completed", "blocked": "blocked", "failed": "failed", "cancelled": "cancelled"}
 _REPLY_LANGUAGES = {
@@ -104,8 +105,6 @@ class LedgerLessonSink:
 @dataclass(slots=True)
 class _Session:
     commission_id: str
-    lanlan_name: str
-    parent_id: str | None
     # Text increments and tool output waiting to be written as one event row.
     text: list[str] = field(default_factory=list)
     text_size: int = 0
@@ -195,7 +194,7 @@ class FamiliarManager:
         # What a blocked or failed commission is told when it is taken up again.
         self._resume: dict[str, str] = {}
         self._candidates: dict[str, tuple[str, ...]] = {}
-        self._starting: set[asyncio.Task[bool]] = set()
+        self._starting: set[asyncio.Task[Any]] = set()
         self._events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._pump: asyncio.Task[None] | None = None
         self._closed = False
@@ -291,17 +290,37 @@ class FamiliarManager:
         self._candidates[commission.id] = tuple(str(item) for item in candidate_plugin_ids)
         if commission.route != "familiar":
             await self._ledger.update(commission.id, route="familiar")
-        if len(self._sessions) >= self.limit:
+        if self._closed:
+            self._candidates.pop(commission.id, None)
+            await self._ledger.transition(commission.id, "failed", reason=_SHUT_DOWN_REASON)
+            return
+        if not self._take_place(commission.id):
             self._queue.append(commission.id)
             await self._ledger.append_event(commission.id, "queued", {"ahead": len(self._queue) - 1})
             return
         # Started as a task of its own: whoever handed the commission over may
         # be cancelled (the host shutting down), and a session half set up
         # would then belong to nobody.
-        task = asyncio.ensure_future(self._start(commission.id))
+        await asyncio.shield(self._spawn(self._launch(commission.id)))
+
+    def _spawn(self, work: Awaitable[Any]) -> asyncio.Task[Any]:
+        """Run starting work as a task that shutting down waits for."""
+        task = asyncio.ensure_future(work)
         self._starting.add(task)
         task.add_done_callback(self._starting.discard)
-        await asyncio.shield(task)
+        return task
+
+    def _take_place(self, commission_id: str) -> bool:
+        """Take a place for a commission, or return False when none is free.
+
+        Checking and taking happen with no await in between, so callers that
+        run at the same time cannot together go over the limit. Nothing gets a
+        place once the manager is closed.
+        """
+        if self._closed or commission_id in self._sessions or len(self._sessions) >= self.limit:
+            return False
+        self._sessions[commission_id] = _Session(commission_id)
+        return True
 
     async def _brief(self, commission: Commission, *, with_gateway: bool) -> str:
         from config.nekoclaw_settings import FAMILIAR_BRIEF_MAX_TOKENS
@@ -325,15 +344,28 @@ class FamiliarManager:
             parts.append(texts.FAMILIAR_BRIEF_GATEWAY_NOTE)
         return truncate_to_tokens("\n\n".join(parts), FAMILIAR_BRIEF_MAX_TOKENS)
 
+    async def _launch(self, commission_id: str, *, prompt: str | None = None) -> bool:
+        """Start a commission whose place is taken; a place it leaves unused goes to the queue."""
+        started = await self._start(commission_id, prompt=prompt)
+        if not started:
+            await self._start_next()
+        return started
+
     async def _start(self, commission_id: str, *, prompt: str | None = None) -> bool:
-        """Open the session of a commission and give it its work. Returns whether it started."""
-        commission = await self._ledger.get(commission_id)
-        if commission is None or commission.status not in ("queued", "blocked", "failed"):
+        """Open the session of a commission and give it its work. Returns whether it started.
+
+        The caller has taken the commission's place with ``_take_place``. When
+        this returns False the place is given back, at once or, for a session
+        that has to be closed again, once it is closed.
+        """
+        session = self._sessions.get(commission_id)
+        if session is None:
             return False
-        # Reserve the place before anything is awaited.
-        session = _Session(commission.id, commission.lanlan_name, commission.parent_id)
-        self._sessions[commission.id] = session
         try:
+            commission = await self._ledger.get(commission_id)
+            if commission is None or commission.status not in ("queued", "blocked", "failed"):
+                self._discard(commission_id)
+                return False
             config = await self._model_config()
             if not config or not config.get("model"):
                 raise RuntimeError("no model is configured for familiars")
@@ -389,6 +421,13 @@ class FamiliarManager:
             if notes:
                 text = "\n\n".join([text, *notes])
             await runtime.start(spec)
+            # Starting can take a while (the runtime process coming up). A stop
+            # meanwhile found no session to close; this one must get no work.
+            current = await self._ledger.get(commission.id)
+            if self._sessions.get(commission.id) is not session or current is None or current.status != "working":
+                session.closing = True
+                await runtime.close(commission.id)
+                return False
             await runtime.prompt(commission.id, text)
             # What was passed on while the session was being set up.
             for note in self._notes.pop(commission.id, []):
@@ -396,12 +435,14 @@ class FamiliarManager:
             return True
         except asyncio.CancelledError:
             self._discard(commission_id)
+            if not self._closed:
+                # Whoever started it was cancelled; the queue still gets the place.
+                self._spawn(self._start_next())
             raise
         except Exception as exc:  # noqa: BLE001 - the commission fails with the reason
             logger.warning("starting a familiar for %s failed: %s", commission_id, exc)
             self._discard(commission_id)
             await self._fail(commission_id, f"the familiar could not be started: {exc}")
-            await self._start_next()
             return False
 
     def _discard(self, commission_id: str) -> None:
@@ -417,10 +458,11 @@ class FamiliarManager:
         await self._start_next()
 
     async def _start_next(self) -> None:
-        while self._queue and len(self._sessions) < self.limit:
+        """Give free places to queued commissions, in the order they were queued."""
+        while self._queue and not self._closed and len(self._sessions) < self.limit:
             commission_id = self._queue.popleft()
-            if await self._start(commission_id, prompt=self._resume.pop(commission_id, None)):
-                return
+            if self._take_place(commission_id):
+                await self._start(commission_id, prompt=self._resume.pop(commission_id, None))
 
     # -- events -----------------------------------------------------------
 
@@ -531,11 +573,14 @@ class FamiliarManager:
         if target is None:
             return
         text = f"{summary}\n{details}" if details else summary
-        moved = await self._ledger.transition(
-            commission_id, target, reason=f"the familiar reported {status}", result_summary=self._summary(text)
+        await self._end(
+            commission_id,
+            target,
+            reason=f"the familiar reported {status}",
+            text=text,
+            suggested_delivery=event.get("delivery"),
+            result_summary=self._summary(text),
         )
-        if moved.applied and moved.commission is not None:
-            await self._finished(moved.commission, text, suggested_delivery=event.get("delivery"))
 
     async def _on_ended(self, session: _Session, event: dict[str, Any]) -> None:
         commission_id = session.commission_id
@@ -560,15 +605,11 @@ class FamiliarManager:
                     return
                 # The run ended without a closing report: its last words are the result.
                 text = str(event.get("text") or "")
-                moved = await self._ledger.transition(
-                    commission_id, "done", reason="the run completed", result_summary=self._summary(text)
+                await self._end(
+                    commission_id, "done", reason="the run completed", text=text, result_summary=self._summary(text)
                 )
-                if moved.applied and moved.commission is not None:
-                    await self._finished(moved.commission, text)
         elif reason == "aborted":
-            moved = await self._ledger.transition(commission_id, "cancelled", reason="the run was stopped")
-            if moved.applied and moved.commission is not None:
-                await self._finished(moved.commission, "")
+            await self._end(commission_id, "cancelled", reason="the run was stopped", text="")
         elif reason == "error":
             await self._fail(commission_id, str(event.get("error") or "the run failed"))
         # It is over; what it started must not go on working for nobody.
@@ -598,37 +639,53 @@ class FamiliarManager:
         await self._runtime.close(session.commission_id)
 
     async def _fail(self, commission_id: str, reason: str) -> None:
-        moved = await self._ledger.transition(
-            commission_id, "failed", reason=reason, result_summary=self._summary(reason)
-        )
-        if moved.applied and moved.commission is not None:
-            await self._finished(moved.commission, reason)
+        await self._end(commission_id, "failed", reason=reason, text=reason, result_summary=self._summary(reason))
 
-    async def _finished(self, commission: Commission, text: str, *, suggested_delivery: Any = None) -> None:
-        """Tell whoever commissioned it how it ended: the parent familiar, or her."""
-        status = _STATUS_TO_REPORT.get(commission.status, commission.status)
-        if commission.parent_id is not None:
-            await self._tell_parent(commission, status, text)
-            return
-        if commission.status == "cancelled":
+    async def _end(
+        self,
+        commission_id: str,
+        target: str,
+        *,
+        reason: str,
+        text: str,
+        suggested_delivery: Any = None,
+        **values: Any,
+    ) -> bool:
+        """Move a commission to a final status and tell whoever commissioned it.
+
+        A report to her is stored in the same transaction as the status
+        change, so a crash in between cannot leave a finished commission
+        that is never reported. A parent familiar is told after the change.
+        Returns whether the change was made.
+        """
+        commission = await self._ledger.get(commission_id)
+        if commission is None:
+            return False
+        report = None
+        if commission.parent_id is None and target != "cancelled":
             # Whoever stopped it knows; the task brain reports a stop when one is due.
-            return
-        # The commission's own setting decides; the familiar's wish is the fallback.
-        delivery = commission.delivery or (
-            suggested_delivery if suggested_delivery in ("proactive", "passive", "silent") else "proactive"
-        )
-        await self._reporter.task_result(
-            commission,
-            channel=CHANNEL_FAMILIAR,
-            success=commission.status == "done",
-            summary=text,
-            detail=text,
-            error_message=text if commission.status == "failed" else "",
-            status=status,
-            source_kind="familiar",
-            source_name=commission.title,
-            delivery_mode=delivery,
-        )
+            # The commission's own setting decides; the familiar's wish is the fallback.
+            delivery = commission.delivery or (
+                suggested_delivery if suggested_delivery in ("proactive", "passive", "silent") else "proactive"
+            )
+            report = self._reporter.task_result_report(
+                commission,
+                channel=CHANNEL_FAMILIAR,
+                success=target == "done",
+                summary=text,
+                detail=text,
+                error_message=text if target == "failed" else "",
+                status=_STATUS_TO_REPORT.get(target, target),
+                source_kind="familiar",
+                source_name=commission.title,
+                delivery_mode=delivery,
+            )
+        moved = await self._reporter.transition(commission_id, target, reason=reason, report=report, **values)
+        if not moved.applied or moved.commission is None:
+            return False
+        if moved.commission.parent_id is not None:
+            await self._tell_parent(moved.commission, _STATUS_TO_REPORT.get(target, target), text)
+        return True
 
     async def _tell_parent(self, commission: Commission, status: str, text: str) -> None:
         from config.nekoclaw_settings import FAMILIAR_CHILD_RESULT_MAX_TOKENS
@@ -672,8 +729,10 @@ class FamiliarManager:
 
     async def tell(self, commission_id: str, text: str) -> bool:
         """Pass a sentence on to a commission's familiar. Returns whether it was delivered."""
+        if self._closed:
+            return False
         commission = await self._ledger.get(commission_id)
-        if commission is None or commission.route != "familiar":
+        if commission is None or commission.route != "familiar" or self._closed:
             return False
         session = self._sessions.get(commission_id)
         if session is not None and self._runtime is not None and session.awaiting_prompt:
@@ -681,14 +740,16 @@ class FamiliarManager:
         if commission.status in ("blocked", "failed"):
             # Take it up again where its transcript ends.
             await self._ledger.append_event(commission_id, "told", {"text": text, "resumed": True})
-            if session is not None or len(self._sessions) >= self.limit:
+            if self._closed:
+                return False
+            if session is not None or not self._take_place(commission_id):
                 # Its old session is still on its way out, or no place is
                 # free: it is taken up again as soon as that has changed.
                 self._resume[commission_id] = text
                 if commission_id not in self._queue:
                     self._queue.append(commission_id)
                 return True
-            return await self._start(commission_id, prompt=text)
+            return await self._launch(commission_id, prompt=text)
         if commission.status == "queued":
             # Not started yet: it goes along with the work when it starts.
             self._notes.setdefault(commission_id, []).append(text)
@@ -802,6 +863,25 @@ class FamiliarManager:
         if commission is None:
             raise RuntimeError("unknown commission")
         queries = [str(query) for query in payload.get("queries") or [] if str(query).strip()]
+        # The search is a plugin entry: the plugin switch and the
+        # ``plugin_entry`` permission apply as they do through the gateway.
+        capability = f"plugin:{WEB_SEARCH_PLUGIN_ID}:{WEB_SEARCH_ENTRY_ID}"
+        refusal = None
+        if not self._registry.plugins_enabled():
+            refusal = "web search is not available: plugins are switched off"
+        else:
+            decision = await self._permissions.check(
+                commission.id,
+                "plugin_entry",
+                detail={"tool": "web_search", "capability": capability},
+            )
+            if not decision.allow:
+                refusal = decision.reason or "permission denied"
+        if refusal is not None:
+            await self._ledger.append_event(
+                commission.id, "capability_denied", {"capability": capability, "reason": refusal}
+            )
+            raise RuntimeError(refusal)
         gate = asyncio.Semaphore(_WEB_SEARCH_PARALLEL)
 
         async def one(query: str) -> dict[str, Any]:
@@ -869,6 +949,7 @@ class FamiliarManager:
             while f"agent-{number}" in taken:
                 number += 1
             name = f"agent-{number}"
+        workdir = await self._child_workdir(parent, payload.get("cwd"))
         child, _created = await self._ledger.create(
             lanlan_name=parent.lanlan_name,
             title=str(payload.get("description") or name),
@@ -879,7 +960,7 @@ class FamiliarManager:
             parent_id=parent.id,
             name=name,
             project=parent.project,
-            workdir=str(payload["cwd"]) if payload.get("cwd") else parent.workdir,
+            workdir=workdir,
             conversation_id=parent.conversation_id,
             lang=parent.lang,
         )
@@ -888,6 +969,27 @@ class FamiliarManager:
         # back to the parent as a message.
         await self.submit(child, candidate_plugin_ids=self._candidates.get(parent.id, ()))
         return {"name": name}
+
+    async def _child_workdir(self, parent: Commission, cwd: Any) -> str | None:
+        """Return the working directory of a familiar the parent starts.
+
+        Inside its working directory a familiar writes without being asked, so
+        a child may only work inside its parent's. A directory elsewhere falls
+        back to the parent's own: the child then has to ask before writing
+        there, exactly as the parent has to.
+        """
+        from pathlib import Path
+
+        from nekoclaw.runtime.permissions import is_inside
+
+        if not isinstance(cwd, str) or not cwd.strip():
+            return parent.workdir
+        root = Path(parent.workdir) if parent.workdir else self._paths.work_dir(parent.id, parent.project)
+        wanted = root / cwd
+        if await asyncio.to_thread(is_inside, wanted, root):
+            return str(wanted)
+        logger.info("sub-familiar of %s asked for a folder outside its parent's; using the parent's", parent.id)
+        return str(root)
 
     async def _cb_subagent_list(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         del payload
@@ -923,7 +1025,12 @@ class FamiliarManager:
     async def shutdown(self) -> None:
         """Stop the runtime and every session. Commissions under way end as failed."""
         self._closed = True
+        queued = list(self._queue)
         self._queue.clear()
+        for commission_id in queued:
+            self._resume.pop(commission_id, None)
+            # Refused for one that was stopped meanwhile, and rightly so.
+            await self._ledger.transition(commission_id, "failed", reason=_SHUT_DOWN_REASON)
         if self._starting:
             # Sessions on their way in are let in, so they are closed with the rest.
             _done, pending = await asyncio.wait(list(self._starting), timeout=_SHUTDOWN_START_WAIT_SECONDS)
@@ -933,7 +1040,7 @@ class FamiliarManager:
         # Recorded first: what the closing sessions still say must not turn a
         # commission nobody stopped into a stopped one.
         for commission_id in list(self._sessions):
-            await self._ledger.transition(commission_id, "failed", reason="the host was shut down")
+            await self._ledger.transition(commission_id, "failed", reason=_SHUT_DOWN_REASON)
         runtime, self._runtime = self._runtime, None
         if runtime is not None:
             try:

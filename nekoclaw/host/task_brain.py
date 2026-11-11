@@ -71,7 +71,7 @@ from nekoclaw.host.plugin_runs import (
     resolve_delivery_mode,
     resolve_result_contract,
 )
-from nekoclaw.host.preferences import PreferenceStore, describe_stop
+from nekoclaw.host.preferences import PreferenceStore, describe_stop, preference_kind
 from nekoclaw.host.reports import CHANNEL_PLUGIN, Reporter
 from nekoclaw.host.selection import find_entry, similarity
 
@@ -240,7 +240,13 @@ class TaskBrain:
         return "no_match"
 
     async def _request(self, text: str, user_text: str, lanlan_name: str, lang: str) -> DecisionRequest:
-        active = await self._ledger.select(lanlan_name=lanlan_name, statuses=ACTIVE_STATUSES)
+        under_way = await self._ledger.select(lanlan_name=lanlan_name, statuses=ACTIVE_STATUSES)
+        # Familiars started by familiars are their parents' business (as in
+        # ``query``): she never dispatched them, so a stop, a repeat or an
+        # addition is not about them. Their questions reach the user, though,
+        # so an answer can be.
+        active = [item for item in under_way if item.parent_id is None]
+        answerable = [item for item in under_way if item.parent_id is not None and item.status == "waiting_user"]
         # Plugin entries forbidden in the permission settings are not offered
         # to the decision model at all, so none is called directly either.
         plugins_forbidden = await self._permission_store.mode("plugin_entry") == "deny"
@@ -250,6 +256,7 @@ class TaskBrain:
             lang=lang,
             plugins=[] if plugins_forbidden else await self._registry.plugins(),
             active=active,
+            answerable=answerable,
             familiar_available=await self._familiar_available(),
         )
 
@@ -292,20 +299,20 @@ class TaskBrain:
             return first.result()
 
         # Too slow to wait for. She is told "received" now and the conclusion
-        # when there is one; the second round follows either way.
+        # when there is one, an acceptance included: that is when she learns
+        # the commission's id. The second round follows either way.
         def late(task: asyncio.Task[Receipt]) -> None:
             if task.cancelled() or task.exception() is not None:
                 return
             receipt = task.result()
-            if receipt.kind != "accepted":
-                self._spawn(
-                    self._reporter.receipt(
-                        lanlan_name,
-                        kind=receipt.kind,
-                        text=receipt.text(lang),
-                        commission=receipt.commissions[0] if receipt.commissions else None,
-                    )
+            self._spawn(
+                self._reporter.receipt(
+                    lanlan_name,
+                    kind=receipt.kind,
+                    text=receipt.text(lang),
+                    commission=receipt.commissions[0] if receipt.commissions else None,
                 )
+            )
 
         first.add_done_callback(late)
         return Receipt(kind="received")
@@ -325,7 +332,7 @@ class TaskBrain:
         await self.expire_deferred()
         request = await self._request(text, user_text, lanlan_name, lang)
         triage = await self._decision.triage(request)
-        by_id = {commission.id: commission for commission in request.active}
+        by_id = {commission.id: commission for commission in (*request.active, *request.answerable)}
         targets = [by_id[target] for target in triage.targets if target in by_id]
         calls = triage.model_calls
 
@@ -388,9 +395,14 @@ class TaskBrain:
                 },
             )
             if selection.preference:
-                # Something she stated for good: it applies from now on.
+                # Something she stated for good: it applies from now on. Its
+                # kind is read from its words; reporting and ask-first rules
+                # then reach every task, not only ones sharing words with it.
                 await self._preferences.state(
-                    selection.preference, lanlan_name=commission.lanlan_name, source_commission=commission.id
+                    selection.preference,
+                    kind=preference_kind(selection.preference),
+                    lanlan_name=commission.lanlan_name,
+                    source_commission=commission.id,
                 )
             if selection.route == "plugin":
                 await self._call_plugin(commission, selection, request)
@@ -507,17 +519,8 @@ class TaskBrain:
         completed = terminal == "completed"
         failed_text = (detail or str(outcome.error or "")).strip()
         summary = detail if outcome.success else failed_text
-        moved = await self._ledger.transition(
-            commission.id,
-            _DIRECT_STATUS[terminal],
-            reason=outcome.reason or terminal,
-            result_summary=truncate_to_tokens(summary, FAMILIAR_RESULT_SUMMARY_MAX_TOKENS),
-        )
-        if not moved.applied:
-            # Stopped while the plugin was at work: the stop stands and nothing is reported.
-            return
         if outcome.success:
-            await self._reporter.task_result(
+            report = self._reporter.task_result_report(
                 commission,
                 channel=CHANNEL_PLUGIN,
                 success=completed,
@@ -532,7 +535,7 @@ class TaskBrain:
                 expires_in_s=expires_in_s if completed else None,
             )
         else:
-            await self._reporter.task_result(
+            report = self._reporter.task_result_report(
                 commission,
                 channel=CHANNEL_PLUGIN,
                 success=False,
@@ -544,6 +547,16 @@ class TaskBrain:
                 source_name=source_name,
                 delivery_mode=delivery,
             )
+        # The status and the report are stored together. When the commission
+        # was stopped while the plugin was at work, the stop stands and
+        # nothing is reported.
+        await self._reporter.transition(
+            commission.id,
+            _DIRECT_STATUS[terminal],
+            reason=outcome.reason or terminal,
+            report=report,
+            result_summary=truncate_to_tokens(summary, FAMILIAR_RESULT_SUMMARY_MAX_TOKENS),
+        )
 
     async def _bind_deferred(self, commission: Commission, plugin_id: str, reminder_id: str) -> None:
         """Tell the plugin which commission its deferred work belongs to."""
@@ -565,20 +578,37 @@ class TaskBrain:
         self._deferred_timers[commission_id] = timer
 
     async def expire_deferred(self) -> int:
-        """Fail deferred commissions whose callback never came. Returns how many."""
+        """Fail deferred commissions whose callback never came. Returns how many.
+
+        Each one is reported once, the way a failed plugin call is.
+        """
+        reason = "Deferred task timeout (callback not received)"
         now = self._ledger._clock()
         expired = 0
         for commission in await self._ledger.select(statuses={"working"}):
             if commission.deferred_until is None or commission.deferred_until > now:
                 continue
-            moved = await self._ledger.transition(
-                commission.id,
-                "failed",
-                reason="Deferred task timeout (callback not received)",
-                deferred_until=None,
+            report = self._reporter.task_result_report(
+                commission,
+                channel=CHANNEL_PLUGIN,
+                success=False,
+                summary=reason,
+                detail=reason,
+                error_message=reason,
+                status="failed",
+                source_kind="plugin",
+                source_name=str(commission.plugin_id or commission.title),
+                delivery_mode=commission.delivery or "proactive",
             )
-            if moved.applied:
-                expired += 1
+            moved = await self._reporter.transition(
+                commission.id, "failed", reason=reason, report=report, deferred_until=None
+            )
+            if not moved.applied:
+                continue
+            expired += 1
+            timer = self._deferred_timers.pop(commission.id, None)
+            if timer is not None:
+                timer.cancel()
         return expired
 
     async def complete_deferred(self, commission_id: str) -> bool:
@@ -607,7 +637,24 @@ class TaskBrain:
         commission = await self._ledger.get(commission_id)
         if commission is None:
             return None
-        moved = await self._ledger.transition(commission_id, "cancelled", reason=reason, deferred_until=None)
+        report = None
+        if notify:
+            report = self._reporter.task_result_report(
+                commission,
+                channel=CHANNEL_PLUGIN if commission.route == "plugin" else "familiar",
+                success=False,
+                summary=reason,
+                detail=reason,
+                error_message=reason,
+                status="cancelled",
+                source_kind=commission.route or "",
+                source_name=commission.title,
+                delivery_mode=commission.delivery or "proactive",
+            )
+        # The stop and its report are stored together.
+        moved = await self._reporter.transition(
+            commission_id, "cancelled", reason=reason, report=report, deferred_until=None
+        )
         if not moved.applied:
             return commission
         timer = self._deferred_timers.pop(commission_id, None)
@@ -631,19 +678,6 @@ class TaskBrain:
                 kind="capability",
                 lanlan_name=commission.lanlan_name,
                 source_commission=commission.id,
-            )
-        if notify and moved.commission is not None:
-            await self._reporter.task_result(
-                moved.commission,
-                channel=CHANNEL_PLUGIN if commission.route == "plugin" else "familiar",
-                success=False,
-                summary=reason,
-                detail=reason,
-                error_message=reason,
-                status="cancelled",
-                source_kind=commission.route or "",
-                source_name=commission.title,
-                delivery_mode=commission.delivery or "proactive",
             )
         return moved.commission
 

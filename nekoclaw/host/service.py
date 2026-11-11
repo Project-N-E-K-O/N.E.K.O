@@ -143,7 +143,9 @@ class NekoClawHost:
             familiars=self.familiars,
             enabled=enabled,
         )
+        # Set when shutting down starts; the task finishes when it is done.
         self._shut_down = False
+        self._shutdown_task: asyncio.Future[None] | None = None
 
     # -- what the main dialogue uses --------------------------------------
 
@@ -181,11 +183,23 @@ class NekoClawHost:
     def attach_report_sender(self, send_report: SendReport | None) -> None:
         self.outbox.attach(send_report)
 
+    @property
+    def closed(self) -> bool:
+        """True once ``shutdown`` has finished every step."""
+        return self._shutdown_task is not None and self._shutdown_task.done()
+
     async def shutdown(self) -> None:
-        """Stop familiars, the gateway and background work, and close the ledger."""
-        if self._shut_down:
-            return
-        self._shut_down = True
+        """Stop familiars, the gateway and background work, and close the ledger.
+
+        The steps run in a task of their own. A caller that is cancelled stops
+        waiting, but the steps still finish; calling again waits for them.
+        """
+        if self._shutdown_task is None:
+            self._shut_down = True
+            self._shutdown_task = asyncio.ensure_future(self._shutdown_steps())
+        await asyncio.shield(self._shutdown_task)
+
+    async def _shutdown_steps(self) -> None:
         steps = (
             ("task brain", self.brain.close),
             ("familiars", self.familiars.shutdown),

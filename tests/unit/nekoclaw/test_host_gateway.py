@@ -20,13 +20,14 @@ and a familiar using it.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
 import pytest
 
 from nekoclaw.host.gateway import CALL_TOOL, SEARCH_TOOL
-from tests.unit.nekoclaw.host_fakes import FakeDecisionLLM, make_host
+from tests.unit.nekoclaw.host_fakes import FakeDecisionLLM, make_host, wait_until
 from tests.unit.nekoclaw.plugin_server_fake import (
     FakePluginServer,
     entry,
@@ -298,6 +299,33 @@ async def test_data_is_added_when_the_entry_declares_no_result_fields(host, serv
     assert _text(result) == 'done\n{"items": ["milk", "eggs"]}'
 
 
+async def test_data_is_added_when_the_plugin_list_shows_no_result_fields(host, server):
+    # ``GET /plugins`` lists ``[]`` for an entry that declares none.
+    described = entry("list", "List memos")
+    assert described["llm_result_fields"] == []
+    server.add_plugin(plugin("memo", "Memos", [described]), list=_returns(finish({"items": ["milk", "eggs"]})))
+    grant = _grant(host, await _commission(host))
+
+    result = await _call(host, grant, "plugin__memo__list")
+
+    assert _text(result) == 'done\n{"items": ["milk", "eggs"]}'
+
+
+async def test_result_fields_are_read_before_the_call(host, server):
+    async def listing(args: dict[str, Any]) -> dict[str, Any]:
+        # The plugin is switched off while it runs: the list no longer shows it.
+        server.catalog.clear()
+        host.registry.invalidate()
+        return finish({"summary": "2 memos", "internal": {"token": "secret"}})
+
+    server.add_plugin(plugin("memo", "Memos", [entry("list", "List memos", llm_result_fields=["summary"])]), list=listing)
+    grant = _grant(host, await _commission(host))
+
+    result = await _call(host, grant, "plugin__memo__list")
+
+    assert _text(result) == "2 memos"
+
+
 async def test_failed_run_is_an_error_result(host, server):
     server.add_plugin(plugin("memo", "Memos", [entry("list", "List memos")]), list=_returns(failure("storage offline")))
     grant = _grant(host, await _commission(host))
@@ -310,7 +338,7 @@ async def test_failed_run_is_an_error_result(host, server):
 
 async def test_confirmation_request_is_passed_to_the_familiar_as_such(host, server):
     server.add_plugin(
-        plugin("memo", "Memos", [entry("purge", "Delete all memos", llm_result_fields=[])]),
+        plugin("memo", "Memos", [entry("purge", "Delete all memos", llm_result_fields=["reply"])]),
         purge=_returns(finish({"needs_confirmation": True, "reply": "really delete 3 memos?"})),
     )
     grant = _grant(host, await _commission(host))
@@ -326,7 +354,7 @@ async def test_confirmation_request_is_passed_to_the_familiar_as_such(host, serv
 
 async def test_deferred_result_is_marked(host, server):
     server.add_plugin(
-        plugin("memo", "Memos", [entry("remind", "Remind later", llm_result_fields=[])]),
+        plugin("memo", "Memos", [entry("remind", "Remind later", llm_result_fields=["reply"])]),
         remind=_returns(finish({"deferred": True, "reply": "will remind at five"})),
     )
     grant = _grant(host, await _commission(host))
@@ -490,3 +518,138 @@ async def test_the_adapters_own_entries_stay_plugin_entries(host, server):
 
     assert _text(result).startswith("connected")
     assert asker.asked == []
+
+
+async def test_the_adapters_entries_that_call_any_server_are_not_served(host, server):
+    server.add_plugin(
+        plugin(
+            "mcp_adapter",
+            "MCP Adapter",
+            [
+                entry("mcp_notes_search", "Search the notes", name="[notes] search", llm_result_fields=["summary"]),
+                entry("call_tool", "Call a tool of a configured MCP server", name="Call MCP Tool"),
+                entry("gateway_invoke", "Call an MCP tool through Gateway Core", name="Gateway Invoke"),
+            ],
+        ),
+        call_tool=_returns(finish({"summary": "called"})),
+        gateway_invoke=_returns(finish({"summary": "called"})),
+    )
+    asker = Asker("deny")
+    host.permissions.set_asker(asker)
+    grant = _grant(host, await _commission(host), "mcp_adapter")
+
+    names = [tool["name"] for tool in (await _rpc(host, grant, "tools/list"))["result"]["tools"]]
+    direct = await _call(host, grant, "plugin__mcp_adapter__call_tool", {"server_name": "notes", "tool_name": "search"})
+    through = await _call(host, grant, CALL_TOOL, {"name": "plugin__mcp_adapter__gateway_invoke"})
+    found = _text(await _call(host, grant, SEARCH_TOOL, {"query": "call MCP tool gateway invoke"}))
+
+    # Each server's tools are served on their own, under that server's permission.
+    assert names == ["mcp__notes__search"]
+    assert direct["isError"] and through["isError"]
+    assert "call_tool" not in found and "gateway_invoke" not in found
+    assert server.calls == [] and asker.asked == []
+
+
+async def test_entries_whose_names_differ_only_in_where_the_separator_falls_are_told_apart(host, server):
+    server.add_plugin(plugin("a__b", "First", [entry("c", "First entry")]), c=_returns(finish({"reply": "first"})))
+    server.add_plugin(plugin("a", "Second", [entry("b__c", "Second entry")]), b__c=_returns(finish({"reply": "second"})))
+    grant = _grant(host, await _commission(host), "a__b", "a")
+
+    tools = [tool["name"] for tool in (await _rpc(host, grant, "tools/list"))["result"]["tools"]]
+
+    assert len(tools) == 2 and len(set(tools)) == 2
+    answers = [_text(await _call(host, grant, name)).splitlines()[0] for name in tools]
+    assert sorted(answers) == ["first", "second"]
+    assert sorted((call["plugin_id"], call["entry_id"]) for call in server.calls) == [("a", "b__c"), ("a__b", "c")]
+
+
+def test_tool_names_keep_the_parts_apart():
+    from nekoclaw.host.capabilities import gateway_tool_name
+
+    assert gateway_tool_name("plugin", "a__b", "c") != gateway_tool_name("plugin", "a", "b__c")
+    assert gateway_tool_name("plugin", "a_", "b") != gateway_tool_name("plugin", "a", "_b")
+    assert gateway_tool_name("plugin", "weather", "today") == "plugin__weather__today"
+
+
+async def test_a_name_two_capabilities_share_is_served_for_neither(host, server):
+    server.add_plugin(
+        plugin(
+            "mcp_adapter",
+            "MCP Adapter",
+            [
+                entry("mcp_notes_search", "Search the notes", name="[notes] search", llm_result_fields=["summary"]),
+                entry("mcp_notes_search_2", "Search the notes again", name="[notes] search", llm_result_fields=["summary"]),
+            ],
+        ),
+        mcp_notes_search=_returns(finish({"summary": "first"})),
+        mcp_notes_search_2=_returns(finish({"summary": "second"})),
+    )
+    host.permissions.set_asker(Asker("once"))
+    grant = _grant(host, await _commission(host), "mcp_adapter")
+
+    result = await _call(host, grant, "mcp__notes__search")
+
+    assert result["isError"] and "no capability named" in _text(result)
+    assert server.calls == []
+
+
+# ---------------------------------------------------------------------------
+# The listener's edges, without a socket
+# ---------------------------------------------------------------------------
+
+
+async def test_a_token_replaced_while_the_body_arrives_is_refused(host, server):
+    commission = await _commission(host)
+    token = host.gateway.issue(commission.id)
+    body_may_come = asyncio.Event()
+    received: list[int] = []
+    sent: list[dict[str, Any]] = []
+
+    async def receive() -> dict[str, Any]:
+        received.append(1)
+        if len(received) > 1:
+            await asyncio.Event().wait()
+        await body_may_come.wait()
+        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}).encode()
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    async def send(message: dict[str, Any]) -> None:
+        sent.append(message)
+
+    scope = {"type": "http", "method": "POST", "path": "/mcp", "headers": [(b"authorization", f"Bearer {token}".encode())]}
+    serving = asyncio.ensure_future(host.gateway._asgi(scope, receive, send))
+    await wait_until(lambda: received, what="the body being awaited")
+    host.gateway.issue(commission.id)
+    body_may_come.set()
+    await asyncio.wait_for(serving, 5)
+
+    assert sent[0]["status"] == 401
+
+
+async def test_a_start_given_up_on_closes_its_listener(host, monkeypatch):
+    import uvicorn
+
+    serving: list[Any] = []
+    ended: list[bool] = []
+
+    async def serve(self: Any, sockets: Any = None) -> None:
+        serving.append(self)
+        try:
+            while not self.should_exit:
+                await asyncio.sleep(0.01)
+        finally:
+            ended.append(True)
+
+    monkeypatch.setattr(uvicorn.Server, "serve", serve)
+    starting = asyncio.ensure_future(host.gateway.start())
+    try:
+        await wait_until(lambda: serving, what="the listener being started")
+        starting.cancel()
+        await asyncio.gather(starting, return_exceptions=True)
+
+        assert starting.cancelled()
+        assert ended == [True]
+        assert not host.gateway.started
+    finally:
+        for listener in serving:
+            listener.should_exit = True
