@@ -32,6 +32,7 @@ from .._telemetry import _record_tts_telemetry
 from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Main")
+GPTSOVITS_END_TIMEOUT_SECONDS = 30.0
 
 class CustomTTSVoiceFetchError(Exception):
     """Raised when custom TTS voice list cannot be fetched from provider."""
@@ -330,9 +331,9 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                     if text is None:
                         await ws_conn.send(json.dumps({"cmd": "end"}))
                         try:
-                            complete = await asyncio.wait_for(receiver, timeout=30.0)
+                            complete = await asyncio.wait_for(receiver, timeout=GPTSOVITS_END_TIMEOUT_SECONDS)
                         except asyncio.TimeoutError as exc:
-                            raise RuntimeError("等待尾部音频超时（30秒）") from exc
+                            raise RuntimeError(f"等待尾部音频超时（{GPTSOVITS_END_TIMEOUT_SECONDS:g}秒）") from exc
                         if not complete:
                             raise RuntimeError("会话关闭但未收到 done")
                         break
