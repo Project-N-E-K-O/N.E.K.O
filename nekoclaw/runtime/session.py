@@ -724,9 +724,12 @@ class FamiliarSession(SessionInbox):
                 await self._fit(force=True)
 
     async def _fit(self, *, force: bool) -> None:
-        compactions = await self.context.fit(self.transcript, force=force)
-        for compaction in compactions:
-            self._persist_compaction(compaction)
+        # Each summary is saved the moment it is applied, not after fit()
+        # returns: an abort during a later summary ends fit() with the earlier
+        # one already in the conversation, and later entries refer to its id.
+        await self.context.fit(
+            self.transcript, force=force, on_compaction=self._persist_compaction
+        )
 
     def _persist_compaction(self, compaction: Compaction) -> None:
         self._recorder.link(

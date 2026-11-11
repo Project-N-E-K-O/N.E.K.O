@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+import itertools
 import json
 from pathlib import Path
+
+import pytest
 
 from config.prompts import prompts_nekoclaw as texts
 from nekoclaw.runtime.context import (
@@ -303,6 +307,47 @@ async def test_a_failed_summary_drops_the_span_instead_of_failing_the_run(tmp_pa
     assert messages[0].content == "task"
 
 
+async def test_a_summary_is_reported_before_the_next_one_can_be_aborted(tmp_path: Path) -> None:
+    policy = ContextPolicy(window=8_000, max_output=1_000)
+    requests: list[int] = []
+
+    async def summarize(messages: list, max_tokens: int):  # noqa: ANN202
+        del max_tokens
+        requests.append(len(messages))
+        if len(requests) == 2:
+            raise asyncio.CancelledError  # the user aborts during the second summary
+        return "## Current Work\n- the first summary", None
+
+    summary_ids = itertools.count(1)
+    manager = ContextManager(
+        policy=policy,
+        spill=SpillStore(tmp_path / "outputs"),
+        summarize=summarize,
+        new_entry_id=lambda: f"summary-{next(summary_ids)}",
+    )
+    # The system prompt and tools take most of the window here, so one summary
+    # is not enough and a second, tighter one is asked for.
+    manager.fixed_tokens = 5_600
+    messages = [UserMessage(content="task")]
+    for index in range(1, 13):
+        messages.extend(_call_turn(index, _words(40, f"r{index}x")))
+    transcript = Transcript(messages, _counter())
+    reported: list = []
+
+    with pytest.raises(asyncio.CancelledError):
+        await manager.fit(transcript, on_compaction=reported.append)
+
+    assert len(requests) == 2
+    # The first summary had already replaced the older messages when the
+    # second one was aborted. It was handed over at that moment, so the caller
+    # could save it; fit() itself never got to return anything.
+    assert [compaction.summary_row.entry_id for compaction in reported] == ["summary-1"]
+    live = [row.entry_id for row in transcript.rows()]
+    assert "summary-1" in live
+    assert reported[0].replaced_entry_ids
+    assert set(reported[0].replaced_entry_ids).isdisjoint(live)
+
+
 async def test_size_is_anchored_on_reported_usage_plus_an_estimate(tmp_path: Path) -> None:
     manager = _manager(tmp_path, ContextPolicy(window=128_000, max_output=8_000), [])
     manager.fixed_tokens = 1_000
@@ -376,6 +421,58 @@ async def test_overflow_is_recovered_by_compacting_and_retrying_once(tmp_path: P
         await session.close()
 
     # The transcript replays to the same conversation.
+    lines = (Path(spec.session_dir) / TRANSCRIPT_FILE).read_text(encoding="utf-8").splitlines()
+    assert [json.loads(line)["type"] for line in lines].count("compaction") == 1
+    entries = await SessionRecorder(Path(spec.session_dir) / TRANSCRIPT_FILE).read_all()
+    replayed = [m.model_dump(exclude={"timestamp"}) for m in SessionState.from_entries(entries).messages]
+    assert replayed == memory_view
+
+
+# An aborted request whose stream is left for the garbage collector shows up
+# as an unraisable "async generator ignored GeneratorExit"; make that a failure.
+@pytest.mark.filterwarnings("error::pytest.PytestUnraisableExceptionWarning")
+async def test_an_applied_summary_is_saved_when_the_next_one_is_aborted(tmp_path: Path) -> None:
+    spec = make_spec(tmp_path, model=_small_model())
+    llm = ScriptedLLM()
+    session, events = await open_session(spec, llm)
+    second_summary_asked = asyncio.Event()
+    release = asyncio.Event()
+
+    async def never_answers() -> None:
+        second_summary_asked.set()
+        await release.wait()
+
+    try:
+        await _seed_history(session, events, llm, 8)
+        # As if the system prompt and tools took most of the window: one
+        # summary does not bring the conversation under the threshold.
+        session.context.fixed_tokens = 23_000
+        seeded_requests = len(llm.requests)
+        llm.add(say("## Current Work\n- the first summary"), finish())
+        llm.add(never_answers)
+
+        mark = len(events.events)
+        session.prompt("Carry on.")
+        await asyncio.wait_for(second_summary_asked.wait(), 20)
+        session.abort()
+        ended = await events.wait_ended(start=mark)
+
+        assert ended["reason"] == "aborted"
+        # Two summary requests and nothing else: the reply itself was never asked for.
+        assert len(llm.requests) == seeded_requests + 2
+        for request in llm.requests[seeded_requests:]:
+            assert request[-1] == {"role": "user", "content": texts.COMPACTION_INSTRUCTION}
+        # The aborted request's stream was closed on the way out, not left open
+        # until the garbage collector gets to it.
+        assert llm.closed_streams == len(llm.requests)
+        memory_view = [m.model_dump(exclude={"timestamp"}) for m in session.harness.messages]
+        assert texts.SUMMARY_OPEN_TAG in json.dumps(memory_view, ensure_ascii=False)
+    finally:
+        release.set()
+        await session.close()
+
+    # The first summary is in the conversation the session goes on with, so it
+    # is in the saved transcript too, and loading that gives the same conversation.
     lines = (Path(spec.session_dir) / TRANSCRIPT_FILE).read_text(encoding="utf-8").splitlines()
     assert [json.loads(line)["type"] for line in lines].count("compaction") == 1
     entries = await SessionRecorder(Path(spec.session_dir) / TRANSCRIPT_FILE).read_all()

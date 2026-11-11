@@ -500,12 +500,22 @@ class ContextManager:
 
     # -- layers 2 and 3 -------------------------------------------------------
 
-    async def fit(self, transcript: Transcript, *, force: bool = False) -> list[Compaction]:
+    async def fit(
+        self,
+        transcript: Transcript,
+        *,
+        force: bool = False,
+        on_compaction: Callable[[Compaction], None] | None = None,
+    ) -> list[Compaction]:
         """Bring the conversation under the threshold; rewrites ``transcript`` in place.
 
         ``force`` is the overflow path: prune everything and summarize even if
-        the estimate says the conversation fits. Returns the summaries made,
-        which the caller persists.
+        the estimate says the conversation fits. Returns the summaries made.
+
+        ``on_compaction`` is how the caller persists them. It is called for each
+        summary as soon as that summary has replaced the older messages, with
+        no await in between: what comes next (measuring, a second summary) can
+        be cancelled, and by then the conversation already rests on the summary.
         """
         rows = transcript.rows()
         trimmed = retain_recent_images(rows, self.image_retention)
@@ -535,6 +545,10 @@ class ContextManager:
             transcript.rewrite(compaction.rows)
             self.invalidate()
             done.append(compaction)
+            if on_compaction is not None:
+                # Before the next await: a cancellation from here on must not
+                # leave the conversation ahead of what the caller has saved.
+                on_compaction(compaction)
             if await self.measure(transcript.messages) <= self.policy.threshold:
                 break
         return done

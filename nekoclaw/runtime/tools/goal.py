@@ -186,10 +186,13 @@ class GoalState:
     def edit(self, goal: Goal, objective: str | None, max_rounds: object) -> Goal:
         if objective is None and max_rounds is None:
             raise ToolError("goal edit requires objective and/or max_goal_rounds")
+        # Checked before anything is changed: a rejected edit leaves the goal as
+        # it was, in memory as well as in what was saved.
+        rounds = self._rounds(max_rounds) if max_rounds is not None else None
         if objective is not None:
             goal.objective = objective
-        if max_rounds is not None:
-            goal.max_goal_rounds = self._rounds(max_rounds)
+        if rounds is not None:
+            goal.max_goal_rounds = rounds
         return self._bump(goal)
 
     def pause(self, goal: Goal) -> Goal:

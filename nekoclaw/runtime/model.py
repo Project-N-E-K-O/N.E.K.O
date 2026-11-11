@@ -37,6 +37,7 @@ retried here.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -676,13 +677,16 @@ class LLMClientProvider:
         Raises ``ContextOverflowError`` or ``ModelRequestError`` on failure.
         """
         final: AssistantMessage | None = None
-        async for event in self._stream(
-            self._config.model, system, messages, tools, signal, max_tokens
-        ):
-            if isinstance(event, AssistantDoneEvent):
-                final = event.message
-            elif isinstance(event, AssistantErrorEvent):
-                raise ModelRequestError(event.error.error_message or event.reason)
+        # Closed here rather than whenever the generator is collected: leaving
+        # on a failed or aborted response must end the HTTP stream right away.
+        async with contextlib.aclosing(
+            self._stream(self._config.model, system, messages, tools, signal, max_tokens)
+        ) as events:
+            async for event in events:
+                if isinstance(event, AssistantDoneEvent):
+                    final = event.message
+                elif isinstance(event, AssistantErrorEvent):
+                    raise ModelRequestError(event.error.error_message or event.reason)
         if final is None:
             raise ModelRequestError("the model returned no response")
         return final

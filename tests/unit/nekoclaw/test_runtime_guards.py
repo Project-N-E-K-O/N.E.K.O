@@ -5,9 +5,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from config.prompts import prompts_nekoclaw as texts
 from nekoclaw.runtime.guards import RepeatToolGuard, canonical_arguments
 from nekoclaw.runtime.protocol import GoalSpec, RuntimeLimits
+from nekoclaw.runtime.tools.base import ToolError
 from tests.unit.nekoclaw.fakes import ScriptedLLM, call, finish, make_spec, open_session, say
 
 
@@ -332,3 +335,25 @@ async def test_a_goal_loaded_from_a_transcript_is_disarmed(tmp_path: Path) -> No
         assert len(reopened_llm.requests) == 1  # no round started on its own
     finally:
         await session.close()
+
+
+def test_a_rejected_goal_edit_leaves_the_goal_as_it_was() -> None:
+    from nekoclaw.runtime.tools.goal import GoalState
+
+    saves: list[dict] = []
+    state = GoalState(default_rounds=5, max_rounds=10, on_change=lambda: saves.append(state.to_json()))
+    goal = state.create("Original objective", 4)
+    before = state.to_json()
+
+    # A new objective together with a round limit that is not allowed.
+    with pytest.raises(ToolError, match="max_goal_rounds must be at most 10"):
+        state.edit(goal, "Replacement objective", 11)
+
+    # The limit is checked first: neither field moved, and nothing was saved,
+    # so the goal in memory and the goal on disk still agree.
+    assert state.to_json() == before
+    assert len(saves) == 1
+
+    state.edit(goal, "Replacement objective", 6)
+    assert (goal.objective, goal.max_goal_rounds, goal.revision) == ("Replacement objective", 6, 2)
+    assert saves[-1] == state.to_json()
