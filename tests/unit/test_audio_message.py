@@ -13,7 +13,8 @@ from unittest.mock import AsyncMock, Mock
 import httpx
 import pytest
 
-from main_logic.core.audio_message import AudioMessageMixin, decode_audio_message, MAX_AUDIO_BYTES
+from main_logic.audio_message_payload import MAX_AUDIO_BYTES, decode_audio_message
+from main_logic.core.audio_message import AudioMessageMixin
 from main_logic.omni_realtime_client import OmniRealtimeClient, TurnDetectionMode
 from main_routers import websocket_router
 from services.chat_audio_history import ChatAudioHistory
