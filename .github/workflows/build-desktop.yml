@@ -317,7 +317,7 @@ jobs:
             printf '%s\n' https://mirrors.kernel.org/ubuntu/ https://archive.ubuntu.com/ubuntu/ https://security.ubuntu.com/ubuntu/ \
               | sudo tee /etc/apt/apt-mirrors.txt
           fi
-          sudo apt-get update --error-on=any
+          sudo apt-get update -o Acquire::Retries=3
           sudo apt-get install -y --no-install-recommends \
             build-essential \
             pkg-config \
@@ -1157,7 +1157,7 @@ jobs:
             printf '%s\n' https://mirrors.kernel.org/ubuntu/ https://archive.ubuntu.com/ubuntu/ https://security.ubuntu.com/ubuntu/ \
               | sudo tee /etc/apt/apt-mirrors.txt
           fi
-          sudo apt-get update --error-on=any
+          sudo apt-get update -o Acquire::Retries=3
           sudo apt-get install -y --no-install-recommends \
             dpkg \
             fakeroot
