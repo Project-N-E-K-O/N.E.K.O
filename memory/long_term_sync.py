@@ -1033,6 +1033,10 @@ class DesktopLongTermAdapter:
         self.directory.mkdir(parents=True, exist_ok=True)
         atomic_write_json(self._checked_path(uid), {'at': int(at)})
 
+    def clear_checked(self, uid):
+        """A newer revision is known to exist, so the last check no longer vouches for anything."""
+        self._checked_path(uid).unlink(missing_ok=True)
+
     def checked_at(self, uid):
         try:
             at = json.loads(self._checked_path(uid).read_text(encoding='utf-8')).get('at')

@@ -71,6 +71,9 @@ class LongTermMemorySync:
             # progress entry other devices have shared.
             await commit(self.adapter.mark_checked, domain.character_uid, time.time_ns() // 1_000_000)
             return {'changed': False, 'hasMore': False}
+        # Something newer exists. Until it is fetched and applied, an earlier check must
+        # not let extraction run on progress this device has not read.
+        await commit(self.adapter.clear_checked, domain.character_uid)
         if not can_apply():
             return {'changed': False, 'hasMore': True}
         if not pending_auth and await commit(self.adapter.staged_revision, binding, epoch) == metadata['revision']:

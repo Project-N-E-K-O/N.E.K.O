@@ -3330,8 +3330,18 @@ async def test_holding_the_newest_snapshot_is_recorded_only_when_nothing_newer_i
     other['completedAt'] += 10
     other['progress'] = {'a': ['c' * 32], 'b': []}
     server.publish(other)
-    # A newer revision is downloaded but not applied yet: this device may be missing progress.
-    assert (await server.exchange(owner))['changed'] and owner.adapter.checked_at(UID) == 5
+    # A newer revision exists and the role is busy, so it is not even fetched: the earlier
+    # check no longer vouches for the progress this device holds.
+    from services.chat_sync.ledger import ChatDomain
+    async def commit(fn, *args):
+        return fn(*args)
+    busy = await owner.runtime.long_term_memory.sync(
+        ChatDomain(OWNER, UID), owner.binding, owner.runtime.writer.epoch(), server.request, commit,
+        can_apply=lambda: False, session_fingerprint=(await owner.runtime._session())[1])
+    assert busy == {'changed': False, 'hasMore': True} and owner.adapter.checked_at(UID) is None
+    assert not owner.adapter.incoming_path(UID).exists()
+    # Downloaded but not applied yet: still nothing vouches for it.
+    assert (await server.exchange(owner))['changed'] and owner.adapter.checked_at(UID) is None
     assert await owner.native.consume(UID)
     await server.exchange(owner)
     assert owner.adapter.checked_at(UID) > 5
