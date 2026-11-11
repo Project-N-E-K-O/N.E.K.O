@@ -29,6 +29,11 @@ idle cat1
 - 物理循环使用 session/token 守卫，旧 frame 不得更新已退出的对象。
 - 拖拽期间暂停对应物体的重力；释放后从当前位置继续。
 - 落地后的毛线球与桌面毛线球镜像使用独立的水平阻尼：以 60Hz 为基准每帧保留 `0.90`，并按真实 `dt` 归一化。该参数只缩短毛线球的水平滑行距离，不改变猫、问号方块、空中抛掷、垂直弹跳或物体碰撞。
+- 旋转由通用角度、角速度、抛掷和渲染核心承载，形状行为通过每个 body 独立的 `rotationBehaviors` 组合：圆形毛线球只启用按可见半径和实际水平位移计算的 `circularRolling`，问号方块只启用落地归正到固定角度步长的 `steppedRest`。形状策略不能按 body id 隐式生效，也不能共享可变状态。
+- Playground 使用独立的无尾、正方形透明毛线球素材，并且只旋转图片层；DOM 图标的素材所有权仍在聊天模块，Playground 会话只声明专用皮肤状态，物理模块只持有本轮图片的旋转样式。桌面模式只旋转 renderer 镜像，不向 N.E.K.O-PC 增加第二套旋转或物理逻辑。普通最小化聊天、Visit Cat World 和其他毛线球表现继续使用原素材。
+- 毛线球落地或被水平拖动时按 `Δθ = Δx / r` 滚动；离地后由通用抛掷角速度和角阻尼继续自由旋转。滚动不改变线速度、既有阻尼、质量、弹性或 AABB 碰撞体。
+- 碰撞形变由每个 body 的 `collisionDeformationProfile` 显式启用，默认值为 `null`，未配置的组件绝不形变。`strength` 在 `0..1` 内独立缩放该 body 的形变幅度；配置在创建 body 时复制并冻结，运行状态按各自渲染元素隔离。当前猫显式使用 `strength: 1` 保持既有表现，网页内毛线球和桌面毛线球镜像统一使用 `strength: 0.5`，问号方块默认不启用。
+- 墙面、地面、天花板和 body-body 碰撞都只向通用形变入口报告接触方向与速度变化；入口不能判断组件 id。两个 body 相撞时双方分别收到相反接触方向并按各自 profile 决定是否形变。位置层、形变层和旋转图片层分离，形变不得覆盖毛线球滚动或问号方块归正；退出、移除单个 body 和减少动态效果都只清理对应渲染目标。形变到期清理必须独立于物理 RAF，即使组件在碰撞帧后立即落稳也不能残留缩放样式。
 - click 与 drag 通过移动阈值/状态区分，不能一次手势触发两条退出路径。
 - 毛线球短点击与拖拽分开：短点击只发出恢复聊天框的语义事件并移除毛线球 body；猫 body 继续属于当前 Playground，拖拽/投掷仍走物理释放路径。
 - 猫的手动拖动由 Playground 独占，起点、经过路径、当前窗口边界均不限制拖动；松手时仅以最终位置决定是否将猫交给某个桌面窗口 gravity。窗口内释放后，抛掷受该窗口边界约束；窗口外释放后，后续抛掷不会在飞行途中跨入窗口。场景更新、焦点变化或猫恰好完全落在窗口内都不能自动认领窗口。
@@ -38,7 +43,7 @@ idle cat1
 
 ## 桌面边界
 
-本仓库可以产生 compact layout、playground 镜像和交互 relay。N.E.K.O-PC 如何移动透明窗口、同步 native bounds、处理跨显示器坐标，需要在外部仓库和真实 Electron 环境验证。网页测试通过不等于桌面窗口行为通过。
+本仓库可以产生 compact layout、playground 镜像和交互 relay。N.E.K.O-PC 如何移动透明窗口、同步 native bounds、处理跨显示器坐标，需要在外部仓库和真实 Electron 环境验证。网页测试通过不等于桌面窗口行为通过。桌面 Pet 的 minimized 目标几何只接受 N.E.K.O-PC 经 preload 回送的有效 native/self-ball 状态；页面间 BroadcastChannel 的 Web shell 几何只服务 Web，不得在桌面端形成第二个尺寸与生命周期权威。
 
 跨仓库职责固定为两段：N.E.K.O 只持有 Playground body、拖拽手势和窗口 gravity owner；N.E.K.O-PC 只持有原生窗口枚举、场景快照、Electron 窗口锁和对话框恢复转发。任何一方都不能再创建第二个物理循环、第二个窗口准入 owner 或第二套毛线球恢复路径。
 
@@ -55,12 +60,16 @@ yarn short click
   -> local web event or Electron IPC
   -> compact chat restore
   -> RESTORE_COMPLETE / bounded timeout
-  -> release desktop bridge lock
+  -> dispose this yarn body / clear activation transaction
+  -> keep Playground session and desktop bridge lock
+  -> next minimized fact creates a fresh yarn body
 ```
 
 窗口 scene 的 `pending/busy` 才表示“原生枚举尚未完成”，不能被 renderer 当作空桌面；此时保留松手时的最终位置，等这次枚举给出结果。真实 `unavailable/no-window` 表示当前没有可容纳窗口：释放时的失败请求必须清掉，不能在未来窗口出现时自动重放。手动拖动可跨入、跨出窗口且不发生碰撞或准入；抛掷不在释放后重新寻找窗口。已经在窗口内释放的 body 才按该窗口边界碰撞。
 
-毛线球短点击是一次性事务：同一 `activationId` 的 BroadcastChannel 与 Electron IPC 重复送达只能恢复一次；毛线球 body 只在短点击路径移除，猫 body 仍留在 Playground。Electron 桌面锁在恢复确认后释放，renderer 重载时由有界超时兜底，不能因为转发失败而永久锁住，也不能在尚未恢复时提前放行。
+Playground 会话与毛线球激活事务是两个生命周期。同一 `activationId` 的 BroadcastChannel 与 Electron IPC 重复送达只能恢复一次；确认成功只移除这一代毛线球 body 并清理激活事务，猫、问号方块和 Electron desktop bridge lock 继续属于当前 Playground。聊天再次最小化后，由权威 surface/minimized 状态创建新一代毛线球，旋转、形变和拖拽状态从零开始；上一代迟到的 ACK 不能删除新一代。renderer 重载、转发失败或有界超时只回滚当次激活，不能释放整个会话或让原生球与 Playground 镜像同时可交互。只有点击猫、点击问号方块、tier 变化、来源销毁或页面卸载等最终出口释放会话锁。
+
+进入前已经最小化的聊天在问号方块退出后保持最小化；若最小化由本次 Playground 入口触发，入口取消、创建失败或问号方块退出时恢复进入前 surface。猫点击仍走原模型 return 语义。每个 body 自带可重复调用的 disposer，单独销毁毛线球不得清理猫或问号方块，也不得向会话级数组累积已失效的闭包。
 
 ## 验证
 

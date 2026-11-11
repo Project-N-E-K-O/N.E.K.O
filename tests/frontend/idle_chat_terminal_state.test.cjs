@@ -267,6 +267,38 @@ test('message dedup distinguishes same-millisecond lifecycle updates by sequence
         /message\.timestamp,\s*message\.lifecycleSequence/);
 });
 
+test('desktop runtime ignores the renderer minimized-state broadcast geometry', () => {
+    const dispatchSource = readFunction(INTERPAGE_RELAY_SOURCE, 'dispatchIdleChatMinimizedState');
+    const emitted = [];
+    const window = {
+        __NEKO_DESKTOP_RUNTIME__: { platform: 'darwin' },
+        dispatchEvent(event) { emitted.push(event); return true; },
+    };
+    const context = vm.createContext({ window, CustomEvent: CustomEventLike, Object, Date });
+    vm.runInContext(`${dispatchSource}\nglobalThis.dispatchIdleChatMinimizedState = dispatchIdleChatMinimizedState;`, context);
+
+    assert.equal(context.dispatchIdleChatMinimizedState({
+        source: 'chat-window',
+        minimized: true,
+        screenRect: { left: 10, top: 20, width: 51, height: 51 },
+        timestamp: 1000,
+        lifecycleSequence: 1,
+    }), false);
+    assert.deepEqual(emitted, [], 'native/preload state is the only desktop geometry authority');
+
+    delete window.__NEKO_DESKTOP_RUNTIME__;
+    assert.equal(context.dispatchIdleChatMinimizedState({
+        source: 'chat-window',
+        minimized: true,
+        screenRect: { left: 10, top: 20, width: 51, height: 51 },
+        timestamp: 1001,
+        lifecycleSequence: 2,
+    }), true);
+    assert.equal(emitted.length, 1, 'Web keeps the BroadcastChannel transport');
+    assert.equal(emitted[0].detail.via, 'broadcast-channel');
+    assert.equal(emitted[0].detail.screenRect.width, 51);
+});
+
 test('pagehide cleanup keeps a failed compact terminal retryable until delivery succeeds', () => {
     const source = fs.readFileSync(INTERPAGE_BROADCAST_SOURCE, 'utf8');
     const lifecycleEnd = source.indexOf('    function scheduleYuiGuideChatMessageFlush');

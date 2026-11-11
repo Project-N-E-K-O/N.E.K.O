@@ -139,6 +139,32 @@ async function flushPromises() {
   await Promise.resolve();
 }
 
+test('Playground skin state changes only the minimized icon selected by the chat owner', () => {
+  const harness = createHarness();
+  Object.assign(harness.parts, {
+    CHAT_MINIMIZED_BALL_ICON_SRC: '/normal.png',
+    CHAT_MINIMIZED_BALL_ICON_SRCSET: '/normal.png 1x, /normal@2x.png 2x',
+    CHAT_MINIMIZED_BALL_LEGACY_FULL_ICON_SRC: '/legacy.png',
+    CHAT_MINIMIZED_BALL_PLAYGROUND_ICON_SRC: '/playground.png',
+    lastRestorableChatSurfaceMode: 'compact',
+    coerceChatSurfaceModeForHost: value => value,
+    getShell: () => null,
+    idleCatPlaygroundYarnSkinActive: false,
+  });
+  const icon = {};
+  harness.parts.applyMinimizedBallSkin(icon);
+  assert.deepEqual(icon, {
+    src: '/normal.png',
+    srcset: '/normal.png 1x, /normal@2x.png 2x',
+  });
+  harness.parts.idleCatPlaygroundYarnSkinActive = true;
+  harness.parts.applyMinimizedBallSkin(icon);
+  assert.deepEqual(icon, { src: '/playground.png', srcset: '' });
+  harness.parts.idleCatPlaygroundYarnSkinActive = false;
+  harness.parts.applyMinimizedBallSkin(icon);
+  assert.equal(icon.src, '/normal.png');
+});
+
 test('a visible collapsed Electron chat publishes its minimized yarn target', async () => {
   const harness = createHarness();
   harness.parts.ensureElectronChatMinimizedStateBridge();

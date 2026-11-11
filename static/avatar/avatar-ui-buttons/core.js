@@ -592,10 +592,10 @@ const _NEKO_IDLE_CAT1_PLAYGROUND_CAT_VISIBLE_INSET_RATIOS = Object.freeze({
     bottom: 15 / 512
 });
 const _NEKO_IDLE_CAT1_PLAYGROUND_YARN_VISIBLE_INSET_RATIOS = Object.freeze({
-    left: 35 / 963,
-    top: 36 / 930,
-    right: 36 / 963,
-    bottom: 35 / 930
+    left: 20 / 512,
+    top: 20 / 512,
+    right: 20 / 512,
+    bottom: 20 / 512
 });
 const _NEKO_IDLE_CAT1_PLAYGROUND_QUESTION_BLOCK_VISIBLE_INSET_RATIOS = Object.freeze({
     left: 80 / 960,
@@ -607,7 +607,7 @@ const _NEKO_IDLE_CAT1_PLAYGROUND_GROUND_STOP_VELOCITY_PX_PER_SEC = 3;
 const _NEKO_IDLE_CAT1_PLAYGROUND_POINTER_SAMPLE_LIMIT = 5;
 const _NEKO_IDLE_CAT1_PLAYGROUND_MIN_CLICK_DRAG_PX = 5;
 const _NEKO_IDLE_CAT1_PLAYGROUND_YARN_TARGET_WAIT_MS = 900;
-const _NEKO_IDLE_CAT1_PLAYGROUND_YARN_ASSET_URL = '/static/assets/neko-idle/chat-minimized-yarn-ball.png';
+const _NEKO_IDLE_CAT1_PLAYGROUND_YARN_ASSET_URL = '/static/assets/neko-idle/chat-minimized-yarn-ball-playground.png';
 let _nekoIdleCat1PlaygroundViewportBottomPx = null;
 let _nekoIdleCat1PlaygroundViewportTopPx = null;
 let _nekoIdleCat1PlaygroundViewportLeftPx = null;

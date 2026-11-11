@@ -1186,10 +1186,15 @@
     I.applyMinimizedBallSkin = function applyMinimizedBallSkin(ballIcon) {
         var legacyFull = isLegacyFullMinimizedBall();
         if (ballIcon) {
-            ballIcon.src = legacyFull
-                ? I.CHAT_MINIMIZED_BALL_LEGACY_FULL_ICON_SRC
-                : I.CHAT_MINIMIZED_BALL_ICON_SRC;
-            ballIcon.srcset = legacyFull ? '' : I.CHAT_MINIMIZED_BALL_ICON_SRCSET;
+            if (I.idleCatPlaygroundYarnSkinActive) {
+                ballIcon.src = I.CHAT_MINIMIZED_BALL_PLAYGROUND_ICON_SRC;
+                ballIcon.srcset = '';
+            } else {
+                ballIcon.src = legacyFull
+                    ? I.CHAT_MINIMIZED_BALL_LEGACY_FULL_ICON_SRC
+                    : I.CHAT_MINIMIZED_BALL_ICON_SRC;
+                ballIcon.srcset = legacyFull ? '' : I.CHAT_MINIMIZED_BALL_ICON_SRCSET;
+            }
         }
         var shell = I.getShell();
         if (shell) {
@@ -1207,10 +1212,13 @@
             icon = document.createElement('img');
             icon.className = 'react-chat-minimized-icon';
             var legacyFullIcon = isLegacyFullMinimizedBall();
-            icon.src = legacyFullIcon
-                ? I.CHAT_MINIMIZED_BALL_LEGACY_FULL_ICON_SRC
-                : I.CHAT_MINIMIZED_BALL_ICON_SRC;
-            icon.srcset = legacyFullIcon ? '' : I.CHAT_MINIMIZED_BALL_ICON_SRCSET;
+            icon.src = I.idleCatPlaygroundYarnSkinActive
+                ? I.CHAT_MINIMIZED_BALL_PLAYGROUND_ICON_SRC
+                : (legacyFullIcon
+                    ? I.CHAT_MINIMIZED_BALL_LEGACY_FULL_ICON_SRC
+                    : I.CHAT_MINIMIZED_BALL_ICON_SRC);
+            icon.srcset = I.idleCatPlaygroundYarnSkinActive || legacyFullIcon
+                ? '' : I.CHAT_MINIMIZED_BALL_ICON_SRCSET;
             icon.alt = '';
             icon.draggable = false;
             var handle = I.getHeader();
@@ -1444,14 +1452,44 @@
         // RESTORE_COMPLETE/ACK never closes the native handoff.
         if (window.__NEKO_DESKTOP_RUNTIME__ && detail.via === 'broadcast-channel') return false;
         var activationId = typeof detail.activationId === 'string' ? detail.activationId : '';
-        if (I.getCurrentChatSurfaceMode() !== 'minimized' || I.isMinimizeTransitioning) return false;
+        var acknowledge = function (confirmed) {
+            if (!activationId || window.__NEKO_DESKTOP_RUNTIME__) return;
+            setTimeout(function () {
+                window.dispatchEvent(new CustomEvent('neko:idle-cat1-playground-yarn-activation-ack', {
+                    detail: { activationId: activationId, confirmed: confirmed === true }
+                }));
+            }, 0);
+        };
+        if (I.getCurrentChatSurfaceMode() !== 'minimized' || I.isMinimizeTransitioning) {
+            acknowledge(false);
+            return false;
+        }
         if (activationId && window.__NEKO_IDLE_CAT1_PLAYGROUND_YARN_ACTIVATION_ID === activationId) return false;
         var toggled = I.toggleMinimized();
-        if (toggled !== true) return false;
+        if (toggled !== true) {
+            acknowledge(false);
+            return false;
+        }
         if (activationId) {
             window.__NEKO_IDLE_CAT1_PLAYGROUND_YARN_ACTIVATION_ID = activationId;
         }
+        acknowledge(true);
         return true;
+    }
+
+    I._handleIdleCat1PlaygroundState = function _handleIdleCat1PlaygroundState(event) {
+        var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+        I.idleCatPlaygroundYarnSkinActive = detail.active === true;
+        if (I.getCurrentChatSurfaceMode() === 'minimized') {
+            I.applyMinimizedBallSkin(ensureMinimizedBallIcon());
+        }
+        if (detail.active === true || I.getCurrentChatSurfaceMode() !== 'minimized') return;
+        if (detail.reason !== 'cat-click' && detail.restoreChatOnExit !== true) return;
+        setTimeout(function () {
+            if (I.getCurrentChatSurfaceMode() === 'minimized' && !I.isMinimizeTransitioning) {
+                I.toggleMinimized();
+            }
+        }, 0);
     }
 
     I.cycleChatSurfaceMode = function cycleChatSurfaceMode() {
