@@ -146,12 +146,13 @@ app.whenReady().then(async () => {
       host.state={messages:[],composerAttachments:[],viewProps:{}};
       host.ensureViewProps=()=>({});host.getEffectiveComposerHidden=()=>false;
       host.getCurrentChatSurfaceMode=()=>${JSON.stringify(mode)};
-      host.getCurrentCompactChatState=()=> 'input';host.getRevealedChoicePrompt=()=>null;
+      host.getCurrentCompactChatState=()=> 'default';host.getRevealedChoicePrompt=()=>null;
       const props=host.buildRenderProps();props.messages=[];
       window.NekoChatWindow.mountChatWindow(document.getElementById('root'),props);
     })()`);
     await waitFor(win, "document.querySelector('.audio-message-mic')");
     if (mode === 'compact') {
+      await waitFor(win, `document.querySelector('.compact-chat-surface-frame[data-compact-chat-state="default"] .audio-message-mic')`);
       await win.webContents.executeJavaScript("const historyButton=document.querySelector('.compact-history-visibility-handle');if(historyButton.getAttribute('aria-expanded')==='false')historyButton.click();");
       await waitFor(win, "document.querySelectorAll('.message-audio-block').length === 1");
     }
