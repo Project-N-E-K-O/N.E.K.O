@@ -456,6 +456,10 @@ class TaskBrain:
 
     async def _call_plugin(self, commission: Commission, selection: Selection, request: DecisionRequest) -> None:
         """Call the chosen plugin entry and turn its result into the commission's end."""
+        if await self._permission_store.mode("plugin_entry") == "deny":
+            # Forbidden while the model was choosing: nothing is called.
+            await self._overturn_no_capability(commission, "denied")
+            return
         moved = await self._ledger.transition(
             commission.id,
             "working",
@@ -579,7 +583,16 @@ class TaskBrain:
 
     def _arm_deferred(self, commission_id: str, delay: float) -> None:
         loop = asyncio.get_running_loop()
-        timer = loop.call_later(max(delay, 0.0), lambda: self._spawn(self.expire_deferred()))
+
+        def fire() -> None:
+            # A fired timer is dropped first: when the loop's clock runs a
+            # little ahead of the ledger's, the sweep finds the deadline not
+            # yet passed and sets a new timer for what is left.
+            if self._deferred_timers.get(commission_id) is timer:
+                del self._deferred_timers[commission_id]
+            self._spawn(self.expire_deferred())
+
+        timer = loop.call_later(max(delay, 0.0), fire)
         previous = self._deferred_timers.pop(commission_id, None)
         if previous is not None:
             previous.cancel()
@@ -594,7 +607,13 @@ class TaskBrain:
         now = self._ledger._clock()
         expired = 0
         for commission in await self._ledger.select(statuses={"working"}):
-            if commission.deferred_until is None or commission.deferred_until > now:
+            if commission.deferred_until is None:
+                continue
+            if commission.deferred_until > now:
+                if commission.id not in self._deferred_timers:
+                    # Kept over a restart of the host: its timer went with
+                    # the old process, so it is set again for what is left.
+                    self._arm_deferred(commission.id, commission.deferred_until - now)
                 continue
             report = self._reporter.task_result_report(
                 commission,
@@ -675,7 +694,8 @@ class TaskBrain:
         if self._familiars is not None:
             await self._familiars.abort(commission_id)
         target = (
-            f"{commission.plugin_id}.{commission.entry_id}"
+            # Without an entry id the plugin alone names it, not "<plugin>.None".
+            (f"{commission.plugin_id}.{commission.entry_id}" if commission.entry_id else str(commission.plugin_id))
             if commission.route == "plugin" and commission.plugin_id
             else (commission.route or "")
         )

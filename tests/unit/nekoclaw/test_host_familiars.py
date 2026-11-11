@@ -1035,28 +1035,26 @@ async def test_sub_familiar_works_inside_its_parents_folder(hosts, tmp_path, whe
 
 
 async def test_sub_familiars_count_towards_the_limit(hosts, tmp_path):
-    release, wait = _gate()
     parent = ScriptedLLM(
         [
             [call("subagent", {"description": "part one", "prompt": "Do part one."}), finish("tool_calls")],
-            [call("wait_agent", {"timeout_ms": 600_000}, "c2"), finish("tool_calls")],
-            _report("ready", "both parts done"),
+            _report("ready", "did both parts myself"),
         ]
     )
-    child = ScriptedLLM([[wait, say("part one done"), finish()]])
+    child = ScriptedLLM([[say("part one done"), finish()]])
     host = _host(hosts, tmp_path, lambda spec: parent if spec.top_level else child, max_familiars=1)
 
     receipt = await _dispatch(host, "do the work in two parts")
-    await wait_until(lambda: _children(host, receipt.commission_id), what="the sub-familiar being registered")
+    await wait_status(host, receipt.commission_id, "done")
 
+    # The only place is the parent's. A child queued behind it would wait for
+    # a place its parent keeps while waiting for the child, so it is refused
+    # and the parent is told to do that part itself.
     (sub,) = await host.ledger.select(parent_id=receipt.commission_id)
-    # The only place is the parent's, so the child waits.
-    assert sub.status == "queued"
-    assert host.familiars.queued == [sub.id]
-    await host.abort(receipt.commission_id)
-    release.set()
-    await host.brain.settle()
-    assert (await host.ledger.get(sub.id)).status == "cancelled"
+    assert (sub.status, sub.status_reason) == ("failed", "no familiar place was free")
+    assert host.familiars.queued == []
+    assert child.requests == []
+    assert any("do this part yourself" in str(message.get("content")) for message in parent.requests[1])
 
 
 async def _children(host: Any, commission_id: str) -> bool:
@@ -1119,6 +1117,60 @@ async def test_parent_is_not_done_while_a_familiar_it_started_still_works(hosts,
     assert done.result_summary == "there are 3 files"
     # The familiar's result woke it up again.
     assert any("[sub-familiar agent-1 finished: completed]" in str(message.get("content")) for message in parent.requests[2])
+
+
+async def test_parent_does_not_wait_for_a_child_that_reported_blocked(hosts, tmp_path):
+    parent = ScriptedLLM(
+        [
+            [call("subagent", {"description": "open the vault", "prompt": "Open the vault."}), finish("tool_calls")],
+            [call("wait_agent", {"timeout_ms": 600_000}, "c2"), finish("tool_calls")],
+            # It ends with plain words rather than a closing report.
+            [say("The vault stays shut; everything else is done."), finish()],
+        ]
+    )
+    child = ScriptedLLM([_report("blocked", "the vault needs a key"), [say("waiting"), finish()]])
+    host = _host(hosts, tmp_path, lambda spec: parent if spec.top_level else child)
+
+    receipt = await _dispatch(host, "tidy up and open the vault")
+
+    # The blocked child has reported and produces nothing more, so the parent
+    # is done rather than left working with its place held.
+    done = await wait_status(host, receipt.commission_id, "done")
+    assert done.result_summary == "The vault stays shut; everything else is done."
+    # With its parent finished, the blocked child is closed like any other.
+    (sub,) = await host.ledger.select(parent_id=receipt.commission_id)
+    assert (sub.status, sub.status_reason) == ("cancelled", "its parent finished")
+
+
+async def test_a_retry_waiting_for_a_place_can_be_stopped(hosts, tmp_path):
+    release, wait = _gate()
+    scripts = {
+        "sort the photos": ScriptedLLM([[wait, say("photos sorted"), finish()]]),
+        "back up the notes": ScriptedLLM([[say("notes backed up"), finish()]]),
+    }
+
+    def pick(spec: Any) -> ScriptedLLM:
+        return next(llm for text, llm in scripts.items() if text in (spec.instructions or ""))
+
+    host = _host(hosts, tmp_path, pick, max_familiars=1)
+    first = await _dispatch(host, "sort the photos")
+    await wait_status(host, first.commission_id, "working")
+    second = await _filed(host, "back up the notes")
+    await host.ledger.transition(second.id, "working", reason="test")
+    await host.ledger.transition(second.id, "failed", reason="test")
+
+    # No place is free: the retry waits, and says so.
+    assert await host.familiars.tell(second.id, "try drive E: this time") is True
+    assert (await host.ledger.get(second.id)).status == "queued"
+    assert host.familiars.queued == [second.id]
+
+    stopped = await host.abort(second.id)
+    assert stopped is not None and stopped.status == "cancelled"
+    release.set()
+    await wait_status(host, first.commission_id, "done")
+    await host.brain.settle()
+    assert (await host.ledger.get(second.id)).status == "cancelled"
+    assert scripts["back up the notes"].requests == []
 
 
 async def _ended(host: Any, commission_id: str) -> bool:

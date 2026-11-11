@@ -445,6 +445,52 @@ async def test_a_stated_reporting_preference_applies_to_unrelated_tasks(server, 
 # ---------------------------------------------------------------------------
 
 
+async def test_plugins_forbidden_while_the_model_chooses_are_not_called(server, hosts, tmp_path):
+    _weather(server)
+    llm = FakeDecisionLLM(fine=[pick_plugin("weather", "today")])
+    llm.gate = asyncio.Event()
+    host = _host(hosts, tmp_path, server, llm)
+
+    receipt = await _dispatch(host, "查一下上海的天气")
+    assert receipt.kind == "accepted"
+    await wait_until(lambda: _asked(llm), what="the fine selection being asked")
+    await host.permission_store.set_mode("plugin_entry", "deny")
+    llm.gate.set()
+    await host.brain.settle()
+
+    failed = await host.ledger.get(receipt.commission_id)
+    assert failed.status == "failed"
+    assert server.calls == []
+    (correction,) = await outbox(host, "correction")
+    assert correction.payload["reason"] == "no_capability"
+
+
+async def _asked(llm: FakeDecisionLLM) -> bool:
+    return llm.count("fine") >= 1
+
+
+async def test_deferred_commissions_kept_over_a_restart_still_time_out(server, hosts, tmp_path):
+    async def add(args: dict[str, Any]) -> dict[str, Any]:
+        return finish({"deferred": True, "reply": "later"})
+
+    server.add_plugin(plugin("memo", "Memos 提醒", [entry("add", "Add a reminder")]), add=add)
+    host = _host(hosts, tmp_path, server, FakeDecisionLLM(fine=[pick_plugin("memo", "add")]))
+    receipt = await _dispatch(host, "五点提醒我开会")
+    await wait_until(
+        lambda: _deferred(host, receipt.commission_id), what="the commission being marked deferred"
+    )
+    # A new process: its timers are gone, the deadline is still ahead.
+    for timer in host.brain._deferred_timers.values():
+        timer.cancel()
+    host.brain._deferred_timers.clear()
+    await host.ledger.update(receipt.commission_id, deferred_until=host.ledger._clock() + 0.2)
+
+    # Anything that sweeps finds it and sets its timer again.
+    assert await host.brain.expire_deferred() == 0
+    assert receipt.commission_id in host.brain._deferred_timers
+    await wait_status(host, receipt.commission_id, "failed", timeout=5)
+
+
 async def _slow_weather(server: FakePluginServer) -> asyncio.Event:
     started = asyncio.Event()
 

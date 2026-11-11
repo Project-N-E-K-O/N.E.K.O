@@ -72,8 +72,9 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     "waiting_user": frozenset({"working", "failed", "cancelled"}),
     # Blocked and failed commissions can be taken up again: the familiar's
     # transcript is on disk.
-    "blocked": frozenset({"working", "failed", "cancelled"}),
-    "failed": frozenset({"working"}),
+    # Queued again when no familiar place is free to take them up at once.
+    "blocked": frozenset({"working", "queued", "failed", "cancelled"}),
+    "failed": frozenset({"working", "queued"}),
     "done": frozenset(),
     # Stopped stays stopped.
     "cancelled": frozenset(),

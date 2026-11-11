@@ -241,8 +241,9 @@ def test_the_transition_table_is_the_intended_one():
         "queued": {"working", "failed", "cancelled"},
         "working": {"waiting_user", "done", "blocked", "failed", "cancelled"},
         "waiting_user": {"working", "failed", "cancelled"},
-        "blocked": {"working", "failed", "cancelled"},
-        "failed": {"working"},
+        # Taken up again, at once or queued when no familiar place is free.
+        "blocked": {"working", "queued", "failed", "cancelled"},
+        "failed": {"working", "queued"},
         "done": set(),
         "cancelled": set(),
     }

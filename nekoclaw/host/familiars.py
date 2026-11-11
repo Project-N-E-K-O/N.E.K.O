@@ -59,6 +59,12 @@ WEB_SEARCH_ENTRY_ID = "search"
 _WEB_SEARCH_PARALLEL = 3
 _SHUTDOWN_START_WAIT_SECONDS = 5.0
 _SHUT_DOWN_REASON = "the host was shut down"
+# A familiar started by a familiar does not wait in the queue: its parent
+# keeps its own place while it waits, so with every place held by parents
+# nothing would ever move.
+_NO_PLACE_REASON = "no familiar place was free"
+# Children that can still produce a result their parent should wait for.
+_STILL_WORKING = frozenset({"queued", "working", "waiting_user"})
 _REPORT_TO_STATUS = {"ready": "done", "blocked": "blocked", "failed": "failed"}
 _STATUS_TO_REPORT = {"done": "completed", "blocked": "blocked", "failed": "failed", "cancelled": "cancelled"}
 _REPLY_LANGUAGES = {
@@ -285,23 +291,32 @@ class FamiliarManager:
 
     # -- starting ---------------------------------------------------------
 
-    async def submit(self, commission: Commission, *, candidate_plugin_ids: Any = ()) -> None:
-        """Hand a commission to a familiar: now if a place is free, else when one is."""
+    async def submit(self, commission: Commission, *, candidate_plugin_ids: Any = (), wait: bool = True) -> bool:
+        """Hand a commission to a familiar: now if a place is free, else when one is.
+
+        With ``wait`` False a commission that finds no free place is failed
+        instead of queued. Returns whether it was started or queued.
+        """
         self._candidates[commission.id] = tuple(str(item) for item in candidate_plugin_ids)
         if commission.route != "familiar":
             await self._ledger.update(commission.id, route="familiar")
         if self._closed:
             self._candidates.pop(commission.id, None)
             await self._ledger.transition(commission.id, "failed", reason=_SHUT_DOWN_REASON)
-            return
+            return False
         if not self._take_place(commission.id):
+            if not wait:
+                self._candidates.pop(commission.id, None)
+                await self._ledger.transition(commission.id, "failed", reason=_NO_PLACE_REASON)
+                return False
             self._queue.append(commission.id)
             await self._ledger.append_event(commission.id, "queued", {"ahead": len(self._queue) - 1})
-            return
+            return True
         # Started as a task of its own: whoever handed the commission over may
         # be cancelled (the host shutting down), and a session half set up
         # would then belong to nobody.
         await asyncio.shield(self._spawn(self._launch(commission.id)))
+        return True
 
     def _spawn(self, work: Awaitable[Any]) -> asyncio.Task[Any]:
         """Run starting work as a task that shutting down waits for."""
@@ -599,7 +614,9 @@ class FamiliarManager:
                     await self._deliver_answer(session, session.held_answer)
                 return
             if commission.status == "working":
-                if await self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES):
+                # A blocked child has reported already and its session is
+                # gone; it produces nothing more to wait for.
+                if await self._ledger.select(parent_id=commission_id, statuses=_STILL_WORKING):
                     # Familiars it started are still at work. Their results
                     # arrive as messages and start its next run; it is not done.
                     return
@@ -745,6 +762,12 @@ class FamiliarManager:
             if session is not None or not self._take_place(commission_id):
                 # Its old session is still on its way out, or no place is
                 # free: it is taken up again as soon as that has changed.
+                # Until then it is queued, which a stop can still end.
+                moved = await self._ledger.transition(
+                    commission_id, "queued", reason="taken up again; waiting for a place"
+                )
+                if not moved.applied:
+                    return False
                 self._resume[commission_id] = text
                 if commission_id not in self._queue:
                     self._queue.append(commission_id)
@@ -965,9 +988,11 @@ class FamiliarManager:
             lang=parent.lang,
         )
         await self._ledger.append_event(parent.id, "subagent_started", {"name": name, "commission_id": child.id})
-        # Registered; it starts now or when a place is free. Its result comes
-        # back to the parent as a message.
-        await self.submit(child, candidate_plugin_ids=self._candidates.get(parent.id, ()))
+        # It starts now or not at all (see ``_NO_PLACE_REASON``); the parent
+        # is told so and can do that part itself. Its result comes back to the
+        # parent as a message.
+        if not await self.submit(child, candidate_plugin_ids=self._candidates.get(parent.id, ()), wait=False):
+            raise RuntimeError(f"{_NO_PLACE_REASON}; do this part yourself")
         return {"name": name}
 
     async def _child_workdir(self, parent: Commission, cwd: Any) -> str | None:
