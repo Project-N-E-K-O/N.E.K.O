@@ -72,6 +72,8 @@ function cancel() {
   if (!saving.value) consentState.resolveConfirmation(false)
 }
 async function approve() {
+  const request = consentState.activeRequest
+  if (!request || saving.value) return
   saving.value = true
   saveError.value = false
   const approvals = plugins.value.map(({ id }) => ({ id, detail: consentState.details[id] }))
@@ -80,6 +82,7 @@ async function approve() {
       if (!detail) throw new Error('Plugin consent details are missing')
       try {
         const updated = await consentState.approve(id, consentSnapshot(detail))
+        if (consentState.activeRequest !== request) return
         if (updated.state === 'confirm') {
           saveError.value = true
           return
@@ -89,15 +92,14 @@ async function approve() {
           return
         }
       } catch (error) {
-        if (isConsentChanged(error)) {
-          await consentState.load(id)
-        }
+        if (consentState.activeRequest !== request) return
+        if (isConsentChanged(error)) await consentState.load(id)
         throw error
       }
     }
-    consentState.resolveConfirmation(true)
+    if (consentState.activeRequest === request) consentState.resolveConfirmation(true)
   } catch {
-    saveError.value = true
+    if (consentState.activeRequest === request) saveError.value = true
   } finally {
     saving.value = false
   }

@@ -1,11 +1,12 @@
 // @vitest-environment happy-dom
 import { beforeEach, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
-import { usePluginConsentState } from './pluginConsentState'
+import { PluginConsentInvalidated, usePluginConsentState } from './pluginConsentState'
 import {
   analyzePluginCapabilities,
   approvePluginConsent,
   getPluginConsent,
+  revokePluginConsent,
   type PluginConsent,
 } from '@/api/pluginConsent'
 
@@ -274,6 +275,30 @@ it('the active request auto-resolves when every plugin leaves confirm', async ()
   await store.approve('demo', { version: '1', unconfirmed: [], analysis_status: 'completed' })
   await expect(pending).resolves.toBe(true)
   expect(store.activeRequest).toBeNull()
+})
+
+it('discards an in-flight mutation and skips queued writes when a plugin is forgotten', async () => {
+  let finishApproval!: (value: PluginConsent) => void
+  vi.mocked(approvePluginConsent).mockReturnValue(
+    new Promise((resolve) => { finishApproval = resolve }),
+  )
+  const store = usePluginConsentState()
+  const approval = store.approve('demo', { version: '1', unconfirmed: [], analysis_status: 'completed' })
+  const revocation = store.revoke('demo')
+  const invalidated = Promise.all([
+    expect(approval).rejects.toBeInstanceOf(PluginConsentInvalidated),
+    expect(revocation).rejects.toBeInstanceOf(PluginConsentInvalidated),
+  ])
+  await vi.waitFor(() => expect(approvePluginConsent).toHaveBeenCalledOnce())
+  store.forget('demo')
+  const replacement = { ...response(null, 'completed'), version: '2' }
+  vi.mocked(getPluginConsent).mockResolvedValue(replacement)
+  await expect(store.load('demo')).resolves.toEqual(replacement)
+  finishApproval(response('approved', 'completed'))
+
+  await invalidated
+  expect(revokePluginConsent).not.toHaveBeenCalled()
+  expect(store.details.demo).toEqual(replacement)
 })
 
 it('cancels a pending start when its consent state is forgotten', async () => {

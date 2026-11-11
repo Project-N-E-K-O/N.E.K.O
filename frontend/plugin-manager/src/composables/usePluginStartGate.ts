@@ -1,6 +1,10 @@
 import { ElMessage } from 'element-plus'
 import { i18n } from '@/i18n'
-import { usePluginConsentState, type ConsentRequestPlugin } from '@/stores/pluginConsentState'
+import {
+  PluginConsentInvalidated,
+  usePluginConsentState,
+  type ConsentRequestPlugin,
+} from '@/stores/pluginConsentState'
 import { usePluginStore } from '@/stores/plugin'
 
 // A click while capability analysis is still running is remembered for
@@ -22,17 +26,20 @@ export function usePluginStartGate() {
    * click within 30 seconds bypasses; a failed consent read never blocks.
    */
   async function prepareBatchStart(pluginIds: string[]) {
-    const loaded = await Promise.all(
-      pluginIds.map((id) => consentState.load(id).catch(() => null)),
-    )
+    const loaded = await Promise.allSettled(pluginIds.map((id) => consentState.load(id)))
     const allowed: string[] = []
     const pending: string[] = []
     const confirm: ConsentRequestPlugin[] = []
     pluginIds.forEach((id, index) => {
+      const result = loaded[index]
+      if (result?.status === 'rejected' && result.reason instanceof PluginConsentInvalidated) {
+        analysisBypass.delete(id)
+        return
+      }
       const plugin = pluginStore.getPluginById(id)
       // A failed consent read must never block a start: this is a
       // notification, not a security boundary.
-      const state = loaded[index]?.state ?? 'clear'
+      const state = result?.status === 'fulfilled' ? result.value.state : 'clear'
       if (state === 'clear') {
         allowed.push(id)
         return

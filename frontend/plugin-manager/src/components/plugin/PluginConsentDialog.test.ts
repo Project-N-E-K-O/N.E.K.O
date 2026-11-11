@@ -166,6 +166,34 @@ describe('plugin consent dialog', () => {
     expect(api.approvePluginConsent).not.toHaveBeenCalled()
   })
 
+  it('keeps the next queued confirmation pending when an earlier approval finishes late', async () => {
+    const store = usePluginConsentState()
+    store.details.a = record('a')
+    store.details.b = record('b')
+    let finishApproval!: (value: PluginConsent) => void
+    api.approvePluginConsent.mockReturnValueOnce(
+      new Promise((resolve) => { finishApproval = resolve }),
+    )
+    const first = store.requestConfirmation([{ id: 'a', name: 'A' }])
+    const next = store.requestConfirmation([{ id: 'b', name: 'B' }])
+    const root = mount()
+    await flush()
+    agree(root).click()
+    await vi.waitFor(() => expect(api.approvePluginConsent).toHaveBeenCalledOnce())
+
+    const cleared = record('a', { decision: 'approved', state: 'clear', unconfirmed: [] })
+    store.details.a = cleared
+    await expect(first).resolves.toBe(true)
+    await flush()
+    expect(store.activeRequest?.plugins.map(({ id }) => id)).toEqual(['b'])
+
+    finishApproval(cleared)
+    await flush()
+    expect(store.activeRequest?.plugins.map(({ id }) => id)).toEqual(['b'])
+    store.resolveConfirmation(false)
+    await expect(next).resolves.toBe(false)
+  })
+
   it('keeps the dialog open when a saved approval leaves new capabilities to confirm', async () => {
     const store = usePluginConsentState()
     store.details.demo = record('demo')

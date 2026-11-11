@@ -11,6 +11,8 @@ import {
   type PluginConsentSummary,
 } from '@/api/pluginConsent'
 
+export class PluginConsentInvalidated extends Error {}
+
 export interface ConsentRequestPlugin {
   id: string
   name: string
@@ -55,6 +57,12 @@ export const usePluginConsentState = defineStore('pluginConsent', () => {
     return ++sequence
   }
 
+  function checkPluginLifetime(id: string, ticket: number) {
+    if (ticket < (forgottenAt.get(id) ?? 0)) {
+      throw new PluginConsentInvalidated('Plugin was removed during a consent request')
+    }
+  }
+
   async function request(
     id: string,
     operation: () => Promise<PluginConsent>,
@@ -62,9 +70,14 @@ export const usePluginConsentState = defineStore('pluginConsent', () => {
   ): Promise<PluginConsent> {
     const ticket = nextRequestTicket()
     let responseTicket = ticket
-    let result = await operation()
+    let read = operation
     for (;;) {
-      if (ticket < (forgottenAt.get(id) ?? 0)) return details.value[id] ?? result
+      let result: PluginConsent
+      try {
+        result = await read()
+      } finally {
+        checkPluginLifetime(id, ticket)
+      }
       const pendingMutation = mutations.get(id)
       if (!mutation && pendingMutation) return pendingMutation
       if (
@@ -81,14 +94,16 @@ export const usePluginConsentState = defineStore('pluginConsent', () => {
       // Keep all readers waiting for the current snapshot, including when a
       // mutation has committed and its response conflicts with a newer summary.
       responseTicket = nextRequestTicket()
-      result = await getPluginConsent(id)
+      read = () => getPluginConsent(id)
     }
   }
   function mutate(id: string, operation: () => Promise<PluginConsent>) {
+    const queuedAt = nextRequestTicket()
     const previous = mutations.get(id)
-    const pending = (previous ? previous.catch(() => undefined) : Promise.resolve()).then(() =>
-      request(id, operation, true)
-    )
+    const pending = (previous ? previous.catch(() => undefined) : Promise.resolve()).then(() => {
+      checkPluginLifetime(id, queuedAt)
+      return request(id, operation, true)
+    })
     mutations.set(id, pending)
     const clear = () => {
       if (mutations.get(id) === pending) mutations.delete(id)
@@ -112,6 +127,7 @@ export const usePluginConsentState = defineStore('pluginConsent', () => {
     forgottenAt.set(id, ticket)
     snapshotTickets.set(id, ticket)
     reads.delete(id)
+    mutations.delete(id)
     delete details.value[id]
     delete summaries.value[id]
   }

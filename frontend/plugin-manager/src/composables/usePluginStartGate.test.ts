@@ -119,6 +119,33 @@ describe('manual start consent gate', () => {
     expect(request).not.toHaveBeenCalled()
   })
 
+  it.each([false, true])('cancels a start whose consent read predates a reinstall (rejected=$rejected)', async (rejected) => {
+    const pluginStore = fixture('clear')
+    const consentState = usePluginConsentState()
+    let finishOld!: () => void
+    vi.mocked(getPluginConsent).mockReturnValueOnce(
+      new Promise((resolve, reject) => {
+        finishOld = () => {
+          if (rejected) reject(new Error('old plugin no longer exists'))
+          else resolve(consent('clear'))
+        }
+      }),
+    )
+    const gate = usePluginStartGate()
+    const oldStart = gate.startWithConsent('demo')
+    consentState.forget('demo')
+    pluginStore.pluginSummaries[0] = { ...pluginStore.pluginSummaries[0]!, version: '2' }
+    vi.mocked(getPluginConsent).mockResolvedValue(consent('confirm', { version: '2' }))
+    await consentState.load('demo')
+
+    finishOld()
+    await expect(oldStart).resolves.toBe(false)
+    expect(startPlugin).not.toHaveBeenCalled()
+    const confirmation = mockConfirmation(false)
+    await expect(gate.startWithConsent('demo')).resolves.toBe(false)
+    expect(confirmation).toHaveBeenCalledWith([{ id: 'demo', name: 'Demo', version: '2' }])
+  })
+
   it('first click on an analyzing plugin warns and does not start; a second within 30s starts', async () => {
     vi.useFakeTimers()
     vi.mocked(getPluginConsent).mockResolvedValue(consent('analyzing', {
