@@ -845,7 +845,10 @@ class FamiliarManager:
         if self._closed:
             return False
         if commission_id not in self._sessions and self._take_place(commission_id):
-            return await self._launch(commission_id, prompt=text)
+            # As in ``submit``: a task of its own that shutting down waits for,
+            # so a caller cancelled meanwhile does not leave a half set-up
+            # session behind a commission that says it is working.
+            return await asyncio.shield(self._spawn(self._launch(commission_id, prompt=text)))
         # Its old session is still on its way out, or no place is free: it is
         # queued. That runs as a task shutting down waits for, so a shutdown
         # while the status is written still finds the commission afterwards.

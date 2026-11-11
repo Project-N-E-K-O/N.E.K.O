@@ -386,14 +386,16 @@ async def test_a_place_freed_by_a_cancelled_start_goes_to_the_queue(hosts, tmp_p
     await host.ledger.transition(first.id, "working", reason="test")
     await host.ledger.transition(first.id, "blocked", reason="test")
     second = await _filed(host, "back up the notes")
-    telling = asyncio.ensure_future(host.familiars.tell(first.id, "the drive is E: now"))
+    # A start that is itself cancelled while the session is prepared (callers
+    # run starts as shielded tasks, so this is a shutdown cancelling them).
+    assert host.familiars._take_place(first.id)
+    starting = asyncio.ensure_future(host.familiars._start(first.id, prompt="the drive is E: now"))
     await asyncio.wait_for(entered.wait(), 5)
     await host.familiars.submit(second)
     assert host.familiars.queued == [second.id]
 
-    # Whoever passed the sentence on is cancelled while the session is prepared.
-    telling.cancel()
-    await asyncio.gather(telling, return_exceptions=True)
+    starting.cancel()
+    await asyncio.gather(starting, return_exceptions=True)
     release.set()
 
     await wait_status(host, second.id, "done", timeout=5)
@@ -616,6 +618,24 @@ async def test_an_answer_after_the_idle_session_was_closed_takes_it_up_again(hos
     assert {"role": "user", "content": "the photos are in D:/Camera"} in llm.requests[1]
     (_first, again) = await _events(host, commission_id, "started")
     assert again.payload["resumed"] is True
+
+
+async def test_taking_up_again_outlives_a_caller_cancelled_meanwhile(hosts, tmp_path):
+    entered, release, model = _slow_model()
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([[say("photos sorted"), finish()]]), familiar_model=model)
+    commission = await _filed(host, "sort the photos")
+    await host.ledger.transition(commission.id, "working", reason="test")
+    await host.ledger.transition(commission.id, "blocked", reason="test")
+
+    telling = asyncio.ensure_future(host.familiars.tell(commission.id, "the drive is E: now"))
+    await asyncio.wait_for(entered.wait(), 5)
+    # Whoever passed it on goes away (a dispatch cancelled by a shutdown, say)
+    # while the session is being set up; the start goes on regardless.
+    telling.cancel()
+    await asyncio.gather(telling, return_exceptions=True)
+    release.set()
+
+    await wait_status(host, commission.id, "done", timeout=5)
 
 
 async def test_an_answer_told_after_the_idle_session_was_closed_waits_for_a_place(hosts, tmp_path):
