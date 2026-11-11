@@ -71,13 +71,14 @@ def nominate(rows, *, decode=None):
         for second in rows[index + 1:]:
             if first['id'] == second['id'] or (first.get('entity') or 'master') != (second.get('entity') or 'master'):
                 continue
-            # The same activity on different dates (daily imports keep these apart on
-            # purpose) is two events; the model would only see the identical words.
-            if _distinct_windows(first, second):
-                continue
             evidence = None
             if set(first.get('source_message_ids') or ()) & set(second.get('source_message_ids') or ()):
+                # Same chat lines: always the model's call, whatever times were derived.
                 evidence = 'extracted_from_same_messages'
+            elif _distinct_days(first, second):
+                # The same activity on different days (daily imports keep these apart on
+                # purpose) is two events; the model would only see the identical words.
+                continue
             elif _normalized(first['text']) == _normalized(second['text']):
                 evidence = 'text_overlap=1.000'
             elif (vectors[id(first)] is not None and vectors[id(second)] is not None
@@ -89,7 +90,10 @@ def nominate(rows, *, decode=None):
                 continue
             older, newer = (first, second) if _created(first) <= _created(second) else (second, first)
             pairs.append({'candidate': newer['id'], 'existing': older['id'], 'evidence': evidence,
-                          'fingerprints': {newer['id']: fingerprint(newer), older['id']: fingerprint(older)}})
+                          'fingerprints': {newer['id']: fingerprint(newer), older['id']: fingerprint(older)},
+                          # Which side is the user's own words, as nominated: the fold keeps
+                          # that side even when a rerun no longer sees the other one live.
+                          'sources': {newer['id']: newer.get('source'), older['id']: older.get('source')}})
     return pairs
 
 
@@ -158,12 +162,18 @@ def still_valid(folded, pairs, rows, archive, ours=(), stamps=()):
             if executed(loser) or (unchanged(loser) and unchanged(survivor))}
 
 
-def _distinct_windows(first, second):
+def _distinct_days(first, second):
+    """Explicit event windows on different calendar days; a few minutes apart is one event."""
     try:
         from memory.fact_dedup import _has_distinct_event_windows
     except ImportError:
         return False
-    return _has_distinct_event_windows(first, second)
+    if not _has_distinct_event_windows(first, second):
+        return False
+
+    def days(row):
+        return {str(row.get(key))[:10] for key in ('event_start_at', 'event_end_at') if row.get(key)}
+    return days(first) != days(second)
 
 
 def pair_key(pair):
@@ -180,6 +190,10 @@ def losers(pairs, decisions, rows=None):
     rows = rows or {}
     result = {}
     for pair in pairs:
+        sources = pair.get('sources') or {}
+
+        def source_of(fact_id):
+            return sources[fact_id] if fact_id in sources else (rows.get(fact_id) or {}).get('source')
         action = decisions.get(pair_key(pair))
         if action == 'merge':
             loser, survivor = pair['candidate'], pair['existing']
@@ -187,8 +201,7 @@ def losers(pairs, decisions, rows=None):
             loser, survivor = pair['existing'], pair['candidate']
         else:
             continue
-        if ((rows.get(loser) or {}).get('source') == 'user_observation'
-                and (rows.get(survivor) or {}).get('source') == 'ai_disclosure'):
+        if source_of(loser) == 'user_observation' and source_of(survivor) == 'ai_disclosure':
             loser, survivor = survivor, loser
         if loser in result or survivor in result:
             continue

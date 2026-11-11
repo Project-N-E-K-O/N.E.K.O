@@ -774,3 +774,43 @@ async def test_restored_facts_are_indexed_under_their_new_ids(memory):
     assert await runner.restore(NAME) == 1
     [back] = [row for row in facts._facts[NAME] if row.get('restored_from') == 'dup']
     assert indexed == [(back['id'], back['text'])]
+
+
+def test_the_same_event_extracted_minutes_apart_is_still_nominated():
+    yesterday = '博士昨天去健身房练了腿'
+    first = {**_fact('a', yesterday, created='2026-06-12T21:00:00'), 'event_start_at': '2026-06-11T21:00:00',
+             'event_when_raw': {'start': {'offset': -1, 'unit': 'day'}}}
+    second = {**_fact('b', yesterday, created='2026-06-12T21:01:00'), 'event_start_at': '2026-06-11T21:01:00',
+              'event_when_raw': {'start': {'offset': -1, 'unit': 'day'}}}
+    assert [(p['candidate'], p['existing']) for p in legacy_dedup.nominate({'a': first, 'b': second})] == [('b', 'a')]
+    # Same chat lines go to the model even across days.
+    shared = {**second, 'event_start_at': '2026-06-13T00:00:00', 'source_message_ids': [SOURCE]}
+    assert legacy_dedup.nominate({'a': {**first, 'source_message_ids': [SOURCE]}, 'b': shared})
+
+
+@pytest.mark.asyncio
+async def test_keeping_the_users_words_survives_an_interrupted_run(memory, monkeypatch):
+    from app.memory_server import legacy_dedup as runner
+    from datetime import datetime, timedelta
+    directory, facts = memory
+    day = lambda hours: (datetime.now() - timedelta(days=1) + timedelta(hours=hours)).isoformat()
+    facts._facts[NAME] = [{**_fact('ai', '博士是一名主播', created=day(0)), 'source': 'ai_disclosure'},
+                          _fact('user', '博士是一名主播，会日常直播', created=day(1))]
+    await facts.asave_facts(NAME)
+    (directory / 'reflections.json').write_text(json.dumps([
+        {'id': 'r1', 'text': '博士以直播为业', 'entity': 'master', 'status': 'confirmed', 'source_fact_ids': ['ai'],
+         'created_at': day(2)}], ensure_ascii=False), encoding='utf-8')
+    monkeypatch.setattr(runner, '_decode', _vectors({'ai': [1.0, 0.0], 'user': [0.9, 0.4359]}))
+    model = _Model([{'博士是一名主播', '博士是一名主播，会日常直播'}])
+    real = runner._repoint
+
+    async def crash(*args, **kwargs):
+        raise RuntimeError('process exits')
+    monkeypatch.setattr(runner, '_repoint', crash)
+    with pytest.raises(RuntimeError):
+        await _run(model)
+    monkeypatch.setattr(runner, '_repoint', real)
+    marker = await _run(model)
+    assert marker['archived'] == {'ai': 'user'}
+    [reflection] = json.loads((directory / 'reflections.json').read_text(encoding='utf-8'))
+    assert reflection['source_fact_ids'] == ['user']
