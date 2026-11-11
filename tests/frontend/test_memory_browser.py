@@ -496,6 +496,36 @@ def _install_ready_memory_browser_routes(
 
 
 @pytest.mark.frontend
+def test_storage_location_link_opens_dialog_and_reuses_memory_page(
+    mock_page: Page, running_server: str, seed_memory_file: Path
+):
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    url = f"{running_server}/memory_browser"
+    storage_link = f"{url}#change-storage-location"
+    mock_page.goto(storage_link)
+
+    settings = mock_page.locator("#memory-settings-panel")
+    modal = mock_page.locator("#storage-location-modal")
+    expect(settings).to_be_visible()
+    expect(modal).to_be_visible()
+    expect(mock_page.locator("#storage-modal-current-root")).to_have_text(
+        str(seed_memory_file.parents[2])
+    )
+    expect(mock_page).to_have_url(url)
+    mock_page.locator("#storage-location-modal-close").click()
+    expect(modal).to_be_hidden()
+    settings.locator("[data-memory-panel-close]").click()
+
+    draft = mock_page.locator("#memory-chat-edit .memo-textarea").first
+    draft.fill("unsaved memory draft")
+    mock_page.evaluate("url => window.location.replace(url)", storage_link)
+    expect(settings).to_be_visible()
+    expect(modal).to_be_visible()
+    expect(draft).to_have_value("unsaved memory draft")
+    expect(mock_page).to_have_url(url)
+
+
+@pytest.mark.frontend
 def test_memory_browser_page_load(mock_page: Page, running_server: str, seed_memory_file):
     """Test that the memory browser page loads and displays the file list."""
     mock_page.on("console", lambda msg: print(f"Browser Console: {msg.text}"))

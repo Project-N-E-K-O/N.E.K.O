@@ -3699,6 +3699,33 @@
         }
     }
 
+    function openStorageLocationFromHash() {
+        if (window.location.hash !== '#change-storage-location') return;
+        window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search);
+        if (activeMemoryAuxiliaryPanel !== 'settings') openMemoryAuxiliaryPanel('settings');
+        const modal = document.getElementById('storage-location-modal');
+        if (activeMemoryAuxiliaryPanel === 'settings' && modal && modal.hidden) {
+            openStorageLocationManager();
+        }
+    }
+
+    function initStorageLocationControls() {
+        document.getElementById('storage-location-open-btn')?.addEventListener('click', openCurrentStorageRoot);
+        document.getElementById('storage-location-manage-btn')?.addEventListener('click', openStorageLocationManager);
+        document.getElementById('storage-location-modal-close')?.addEventListener('click', closeStorageLocationManager);
+        const modal = document.getElementById('storage-location-modal');
+        modal?.addEventListener('click', function (event) {
+            if (event.target === modal) closeStorageLocationManager();
+        });
+        document.getElementById('storage-location-pick-btn')?.addEventListener('click', pickStorageTargetDirectory);
+        document.getElementById('storage-target-root-input')?.addEventListener('input', function () {
+            storagePreflightState = null;
+            setStoragePreflightResult('', '');
+            renderStorageRestartButton();
+        });
+        document.getElementById('storage-location-restart-btn')?.addEventListener('click', preflightAndRestartWithStorageLocation);
+    }
+
     async function pickStorageTargetDirectory() {
         const startPath = getStorageDirectoryPickerStartPath();
         setStoragePreflightBusy(true);
@@ -6062,12 +6089,15 @@
         initRepetitionInsights();
         initVisitMemoryPanel();
         initMemoryAuxiliaryPanels();
+        initStorageLocationControls();
         const chatEditor = document.getElementById('memory-chat-edit');
         if (chatEditor) {
             chatEditor.addEventListener('scroll', syncMemoryChatScrollMask, { passive: true });
             window.addEventListener('resize', syncMemoryChatScrollMask);
         }
         const storagePanelState = await initStorageLocationPanel();
+        window.addEventListener('hashchange', openStorageLocationFromHash);
+        openStorageLocationFromHash();
         if (storagePanelState && storagePanelState.limited) {
             renderMemoryBrowserLimitedState(storagePanelState);
         } else {
@@ -6191,53 +6221,6 @@
             externalImport.addEventListener('click', importExternalMemory);
         }
         updateExternalImportButton();
-
-        const openStorageBtn = document.getElementById('storage-location-open-btn');
-        if (openStorageBtn) {
-            openStorageBtn.addEventListener('click', function () {
-                openCurrentStorageRoot();
-            });
-        }
-        const manageStorageBtn = document.getElementById('storage-location-manage-btn');
-        if (manageStorageBtn) {
-            manageStorageBtn.addEventListener('click', function () {
-                openStorageLocationManager();
-            });
-        }
-        const closeStorageModalBtn = document.getElementById('storage-location-modal-close');
-        if (closeStorageModalBtn) {
-            closeStorageModalBtn.addEventListener('click', function () {
-                closeStorageLocationManager();
-            });
-        }
-        const storageModal = document.getElementById('storage-location-modal');
-        if (storageModal) {
-            storageModal.addEventListener('click', function (event) {
-                if (event.target === storageModal) {
-                    closeStorageLocationManager();
-                }
-            });
-        }
-        const pickStorageBtn = document.getElementById('storage-location-pick-btn');
-        if (pickStorageBtn) {
-            pickStorageBtn.addEventListener('click', function () {
-                pickStorageTargetDirectory();
-            });
-        }
-        const storageTargetInput = document.getElementById('storage-target-root-input');
-        if (storageTargetInput) {
-            storageTargetInput.addEventListener('input', function () {
-                storagePreflightState = null;
-                setStoragePreflightResult('', '');
-                renderStorageRestartButton();
-            });
-        }
-        const restartStorageBtn = document.getElementById('storage-location-restart-btn');
-        if (restartStorageBtn) {
-            restartStorageBtn.addEventListener('click', function () {
-                preflightAndRestartWithStorageLocation();
-            });
-        }
 
         // 监听新手引导重置级联选择器变化
         const tutorialSelect = document.getElementById('tutorial-reset-select');
