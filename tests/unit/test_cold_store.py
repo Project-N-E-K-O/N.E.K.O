@@ -504,3 +504,31 @@ async def test_persona_cold_filter_runs_after_the_layout_migration(tmp_path):
     append_to_shard_sync(cold_store.cold_dir(directory, "persona"), [{**entry, "entity_key": "master"}])
     persona = await pm.aensure_persona(NAME)
     assert [row["id"] for row in persona["master"]["facts"]] == ["live"]
+
+
+# ── review round 3 ─────────────────────────────────────────────────────
+
+
+def test_a_listed_fact_left_in_both_files_goes_cold_once_as_the_active_copy():
+    from memory.long_term_sync import import_document
+    active = _fact("f1", "newer wording")
+    archived = _fact("f1", "older wording", absorbed=True)
+    existing = {"persona": {}, "facts": [active], "archive": [archived], "reflections": [], "coldStubs": {}}
+    item = {"kind": "fact", "subject": "master", "id": "f1", "status": "retracted", "archivedAt": 1}
+    result = import_document(_document(cold=[item]), existing)
+    assert result["facts"] == [] and result["archive"] == []
+    moved = [row for rows in result["factCold"].values() for row in rows]
+    assert [row["text"] for row in moved] == ["newer wording"]
+
+
+def test_an_id_two_subjects_share_never_lets_a_character_only_line_count_as_backed():
+    from memory.evidence import awaits_user_signal
+    from memory.long_term_sync import import_document
+    facts = [{"kind": "fact", "subject": subject, "id": "f1", "text": f"{subject} said it",
+              "metadata": {"source": "ai_disclosure", "signalJudged": True}} for subject in ("master", "neko")]
+    reflection = {"kind": "reflection", "subject": "master", "id": "r1", "text": "rests on f1",
+                  "metadata": {"status": "pending", "sourceFactIds": ["f1"]}}
+    result = import_document(_document([*facts, reflection]),
+                             {"persona": {}, "facts": [], "archive": [], "reflections": []})
+    [row] = result["reflections"]
+    assert awaits_user_signal(row)

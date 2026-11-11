@@ -596,20 +596,25 @@ def import_document(incoming, existing, *, merged=False, source_evidence=None, k
     incoming_fact_sources.update({row['id']: row.get('source') for row in result['archive'] + result['facts']
                                   if isinstance(row, dict) and row.get('id') and private(row)})
     # Counted facts are named by id alone; an id two subjects share cannot say which
-    # one a reflection rests on, so such a reflection keeps the counts it came with.
-    fact_subjects = {}
+    # one a reflection rests on. Such a reflection keeps the counts it came with;
+    # without any, the id counts the cautious way: as the character's own words
+    # if any copy is, and as withdrawn if any copy is (see _carried_fact_accounting).
+    fact_subjects, fact_copy_sources = {}, {}
     for row in incoming['entries']:
         if row['kind'] == 'fact':
             fact_subjects.setdefault(row['id'], set()).add(row['subject'])
+            fact_copy_sources.setdefault(row['id'], set()).add(_incoming_fact_source(row))
     for item in cold:
         if item['kind'] == 'fact':
             fact_subjects.setdefault(item['id'], set()).add(item['subject'])
     for row in result['archive'] + result['facts']:
         if isinstance(row, dict) and isinstance(row.get('id'), str) and private(row):
             fact_subjects.setdefault(row['id'], set()).add(row.get('entity'))
-    for fact_id, subjects in fact_subjects.items():
-        if len(subjects) > 1:
-            incoming_fact_sources.pop(fact_id, None)
+            fact_copy_sources.setdefault(row['id'], set()).add(row.get('source'))
+    shared_ids = frozenset(fact_id for fact_id, subjects in fact_subjects.items() if len(subjects) > 1)
+    for fact_id in shared_ids:
+        if 'ai_disclosure' in fact_copy_sources.get(fact_id, ()) or fact_id not in incoming_fact_sources:
+            incoming_fact_sources[fact_id] = 'ai_disclosure'
     for row in incoming['entries']:
         kind, subject, meta = row['kind'], row['subject'], row['metadata']
         if (kind, subject, row['id']) in pending or (kind, subject, row['id']) in locally_retired:
@@ -652,7 +657,7 @@ def import_document(incoming, existing, *, merged=False, source_evidence=None, k
                 for field in ('covered_fact_ids', 'fact_source_counts'):
                     if field in previous:
                         native[field] = deepcopy(previous[field])
-            _carried_fact_accounting(native, meta, incoming_fact_sources, withdrawn_facts, previous)
+            _carried_fact_accounting(native, meta, incoming_fact_sources, withdrawn_facts, previous, shared_ids)
             if 'protected' in previous:
                 native.setdefault('protected', previous['protected'])
             # The protocol omits receiver-only state and external-import ledgers.
@@ -731,7 +736,7 @@ def import_document(incoming, existing, *, merged=False, source_evidence=None, k
                 native['fact_source_counts'] = count_fact_sources(
                     [{'source': incoming_fact_sources[fid]} for fid in native['source_fact_ids']])
                 native['counted_fact_ids'] = sorted(native['source_fact_ids'])
-            _carried_fact_accounting(native, meta, incoming_fact_sources, withdrawn_facts, previous)
+            _carried_fact_accounting(native, meta, incoming_fact_sources, withdrawn_facts, previous, shared_ids)
             result['reflections'].append(native)
     # A row left untouched may still rest on facts this document changed: one upgraded
     # to the user's own words, or withdrawn. Its counts follow the facts as they now stand.
@@ -740,6 +745,9 @@ def import_document(incoming, existing, *, merged=False, source_evidence=None, k
         if not isinstance(row, dict) or not private(row) or not isinstance(row.get('fact_source_counts'), dict):
             continue
         counted = row.get('counted_fact_ids')
+        if isinstance(counted, list) and set(counted) & shared_ids:
+            # Its stored counts say more than an id two subjects share can.
+            continue
         if isinstance(counted, list) and counted and all(fid in incoming_fact_sources for fid in counted):
             row['fact_source_counts'] = count_fact_sources(
                 [{'source': incoming_fact_sources[fid]} for fid in counted if fid not in withdrawn_facts])
@@ -747,7 +755,7 @@ def import_document(incoming, existing, *, merged=False, source_evidence=None, k
 
 
 
-def _carried_fact_accounting(native, meta, fact_sources, withdrawn, previous):
+def _carried_fact_accounting(native, meta, fact_sources, withdrawn, previous, shared_ids=frozenset()):
     """Apply the sender's record of confirmations and counted facts to a rebuilt row.
 
     With every counted fact in the snapshot the counts are worked out here, so
@@ -766,7 +774,10 @@ def _carried_fact_accounting(native, meta, fact_sources, withdrawn, previous):
     ids = list(counted) if counted is not None else list(native.get('source_fact_ids') or [])
     if counted is not None:
         native['counted_fact_ids'] = ids
-    if ids and all(fid in fact_sources for fid in ids):
+    if carried is not None and set(ids) & shared_ids:
+        # An id two subjects share cannot be recounted reliably; the sender's counts hold.
+        native['fact_source_counts'] = dict(carried)
+    elif ids and all(fid in fact_sources for fid in ids):
         native['fact_source_counts'] = count_fact_sources(
             [{'source': fact_sources[fid]} for fid in ids if fid not in withdrawn])
     elif carried is not None:
@@ -801,6 +812,10 @@ def _move_listed_rows_to_cold(views, cold, held_cold, completed, taken):
     if not listed:
         return {}
     sources = {}
+    # An interrupted archive commit can leave one fact in both files. Active rows
+    # are visited first, so the newer copy is the one that goes cold; the other
+    # only leaves the views.
+    moved = set(held_cold)
 
     def take(kind, subject, row):
         if not isinstance(row, dict) or not private(row) or subject not in SUBJECTS:
@@ -810,9 +825,10 @@ def _move_listed_rows_to_cold(views, cold, held_cold, completed, taken):
         if item is None:
             return False
         if kind == 'fact':
-            sources[key[2]] = row.get('source')
-        if key in held_cold:
+            sources.setdefault(key[2], row.get('source'))
+        if key in moved:
             return True
+        moved.add(key)
         copy = deepcopy(row)
         archived_at = iso(item['archivedAt']) or iso(completed)
         if kind == 'fact':
