@@ -32,6 +32,7 @@ from ..shared_state import (
     get_config_manager,
     get_init_one_catgirl,
 )
+from utils.character_memory import character_config_mutation_lock
 from utils.config_manager import (
     get_reserved,
     set_reserved,
@@ -616,32 +617,33 @@ async def update_catgirl_l2d(name: str, request: Request):
                 )
 
             _config_manager = get_config_manager()
-            characters = await _config_manager.aload_characters()
-            catgirls = characters.get('猫娘')
-            if not isinstance(catgirls, dict) or name not in catgirls:
-                return JSONResponse(
-                    content={'success': False, 'error': '猫娘不存在'},
-                    status_code=404,
+            async with character_config_mutation_lock:
+                characters = await _config_manager.aload_characters()
+                catgirls = characters.get('猫娘')
+                if not isinstance(catgirls, dict) or name not in catgirls:
+                    return JSONResponse(
+                        content={'success': False, 'error': '猫娘不存在'},
+                        status_code=404,
+                    )
+
+                catgirl = catgirls[name]
+                current_model_type = _get_persisted_avatar_model_type(catgirl)
+                if current_model_type != 'live2d':
+                    return JSONResponse(content={
+                        'success': True,
+                        'idle_animation_updated': False,
+                        'skipped': 'current_model_is_not_live2d',
+                        'applied_runtime': False,
+                    })
+
+                set_reserved(
+                    catgirl,
+                    'avatar',
+                    'live2d',
+                    'idle_animation',
+                    live2d_idle_animation,
                 )
-
-            catgirl = catgirls[name]
-            current_model_type = _get_persisted_avatar_model_type(catgirl)
-            if current_model_type != 'live2d':
-                return JSONResponse(content={
-                    'success': True,
-                    'idle_animation_updated': False,
-                    'skipped': 'current_model_is_not_live2d',
-                    'applied_runtime': False,
-                })
-
-            set_reserved(
-                catgirl,
-                'avatar',
-                'live2d',
-                'idle_animation',
-                live2d_idle_animation,
-            )
-            await _config_manager.asave_characters(characters)
+                await _config_manager.asave_characters(characters)
 
             if apply_runtime:
                 init_one_catgirl = get_init_one_catgirl()
@@ -833,186 +835,187 @@ async def update_catgirl_l2d(name: str, request: Request):
 
         # Load the current character configuration.
         _config_manager = get_config_manager()
-        characters = await _config_manager.aload_characters()
+        async with character_config_mutation_lock:
+            characters = await _config_manager.aload_characters()
 
-        # Ensure the neko configuration exists.
-        if '猫娘' not in characters:
-            characters['猫娘'] = {}
+            # Ensure the neko configuration exists.
+            if '猫娘' not in characters:
+                characters['猫娘'] = {}
 
-        # Ensure the specified neko's configuration exists.
-        if name not in characters['猫娘']:
-            return JSONResponse(
-                {'success': False, 'error': '猫娘不存在'},
-                status_code=404
-            )
-
-        # When switching model types, preserve the inactive model configurations to avoid losing idle motions / lighting settings after switching back and forth.
-        if model_type_str == 'live3d':
-            set_reserved(characters['猫娘'][name], 'avatar', 'model_type', 'live3d')
-            active_model_binding_path = ""
-
-            if vrm_model:
-                # Live3D + VRM: update the currently active VRM configuration while preserving the MMD configuration for switching back.
-                set_reserved(characters['猫娘'][name], 'avatar', 'live3d_sub_type', 'vrm')
-                set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'model_path', vrm_model)
-                active_model_binding_path = vrm_model
-
-                # Handle VRM animation (reuse the same validation logic).
-                if 'vrm_animation' in data:
-                    if vrm_animation is None or vrm_animation == '':
-                        set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'animation', None)
-                    else:
-                        vrm_animation_str = str(vrm_animation).strip()
-                        if '://' in vrm_animation_str or vrm_animation_str.startswith('data:'):
-                            return JSONResponse(content={'success': False, 'error': 'VRM动画路径不能包含URL方案'}, status_code=400)
-                        if '..' in vrm_animation_str:
-                            return JSONResponse(content={'success': False, 'error': 'VRM动画路径不能包含路径遍历（..）'}, status_code=400)
-                        allowed_animation_prefixes = ['/user_vrm/animation/', '/static/vrm/animation/']
-                        if not any(vrm_animation_str.startswith(prefix) for prefix in allowed_animation_prefixes):
-                            return JSONResponse(content={'success': False, 'error': 'VRM动画路径必须以 /user_vrm/animation/ 或 /static/vrm/animation/ 开头'}, status_code=400)
-                        set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'animation', vrm_animation_str)
-
-                if 'idle_animation' in data:
-                    if idle_animation is None or idle_animation == '' or idle_animation == []:
-                        set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', [])
-                    elif isinstance(idle_animation, str):
-                        idle_list = [idle_animation]
-                    elif isinstance(idle_animation, list):
-                        idle_list = idle_animation
-                    else:
-                        return JSONResponse(content={'success': False, 'error': 'idle_animation must be a string or list of strings'}, status_code=400)
-                    if isinstance(idle_animation, (str, list)) and idle_animation:
-                        allowed_animation_prefixes = ['/user_vrm/animation/', '/static/vrm/animation/']
-                        for item in idle_list:
-                            item_str = str(item).strip()
-                            if '://' in item_str or item_str.startswith('data:'):
-                                return JSONResponse(content={'success': False, 'error': '待机动作路径不能包含URL方案'}, status_code=400)
-                            if '..' in item_str:
-                                return JSONResponse(content={'success': False, 'error': '待机动作路径不能包含路径遍历（..）'}, status_code=400)
-                            if not any(item_str.startswith(prefix) for prefix in allowed_animation_prefixes):
-                                return JSONResponse(content={'success': False, 'error': '待机动作路径必须以 /user_vrm/animation/ 或 /static/vrm/animation/ 开头'}, status_code=400)
-                        set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', [str(x).strip() for x in idle_list])
-
-                logger.debug(f"已保存角色 {name} 的Live3D(VRM)模型 {vrm_model}")
-            elif mmd_model:
-                # Live3D + MMD: update the currently active MMD configuration while preserving the VRM configuration for switching back.
-                set_reserved(characters['猫娘'][name], 'avatar', 'live3d_sub_type', 'mmd')
-                set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'model_path', mmd_model)
-                active_model_binding_path = mmd_model
-
-                # Handle MMD animation.
-                if 'mmd_animation' in data:
-                    if mmd_animation is None or mmd_animation == '':
-                        set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'animation', None)
-                    else:
-                        mmd_animation_str = str(mmd_animation).strip()
-                        if '://' in mmd_animation_str or mmd_animation_str.startswith('data:'):
-                            return JSONResponse(content={'success': False, 'error': 'MMD动画路径不能包含URL方案'}, status_code=400)
-                        if '..' in mmd_animation_str:
-                            return JSONResponse(content={'success': False, 'error': 'MMD动画路径不能包含路径遍历（..）'}, status_code=400)
-                        allowed_mmd_anim_prefixes = ['/user_mmd/animation/', '/static/mmd/animation/']
-                        if not any(mmd_animation_str.startswith(prefix) for prefix in allowed_mmd_anim_prefixes):
-                            return JSONResponse(content={'success': False, 'error': 'MMD动画路径必须以 /user_mmd/animation/ 或 /static/mmd/animation/ 开头'}, status_code=400)
-                        set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'animation', mmd_animation_str)
-
-                if 'mmd_idle_animation' in data:
-                    if mmd_idle_animation is None or mmd_idle_animation == '' or mmd_idle_animation == []:
-                        set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', [])
-                    elif isinstance(mmd_idle_animation, str):
-                        mmd_idle_list = [mmd_idle_animation]
-                    elif isinstance(mmd_idle_animation, list):
-                        mmd_idle_list = mmd_idle_animation
-                    else:
-                        return JSONResponse(content={'success': False, 'error': 'mmd_idle_animation must be a string or list of strings'}, status_code=400)
-                    if isinstance(mmd_idle_animation, (str, list)) and mmd_idle_animation:
-                        allowed_mmd_anim_prefixes = ['/user_mmd/animation/', '/static/mmd/animation/']
-                        for item in mmd_idle_list:
-                            mmd_idle_str = str(item).strip()
-                            if '://' in mmd_idle_str or mmd_idle_str.startswith('data:'):
-                                return JSONResponse(content={'success': False, 'error': 'MMD待机动作路径不能包含URL方案'}, status_code=400)
-                            if '..' in mmd_idle_str:
-                                return JSONResponse(content={'success': False, 'error': 'MMD待机动作路径不能包含路径遍历（..）'}, status_code=400)
-                            if not any(mmd_idle_str.startswith(prefix) for prefix in allowed_mmd_anim_prefixes):
-                                return JSONResponse(content={'success': False, 'error': 'MMD待机动作路径必须以 /user_mmd/animation/ 或 /static/mmd/animation/ 开头'}, status_code=400)
-                        set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', [str(x).strip() for x in mmd_idle_list])
-
-                logger.debug(f"已保存角色 {name} 的Live3D(MMD)模型 {mmd_model}")
-
-            current_asset_source, current_asset_source_id = _derive_model_asset_binding(
-                active_model_binding_path,
-                item_id=str(item_id or ""),
-            )
-            set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', current_asset_source_id)
-            set_reserved(
-                characters['猫娘'][name],
-                'avatar',
-                'asset_source',
-                current_asset_source or 'local_imported',
-            )
-        elif model_type_str == 'pngtuber':
-            set_reserved(characters['猫娘'][name], 'avatar', 'model_type', 'pngtuber')
-            set_reserved(characters['猫娘'][name], 'avatar', 'live3d_sub_type', '')
-            set_reserved(characters['猫娘'][name], 'avatar', 'pngtuber', pngtuber_payload)
-            pngtuber_binding_path = str(
-                idle_image
-                or pngtuber_payload.get('layered_metadata')
-                or ''
-            ).strip()
-            pngtuber_binding_item_id = str(item_id or "").strip()
-            if not pngtuber_binding_path.startswith('/workshop/'):
-                pngtuber_binding_item_id = ''
-            current_asset_source, current_asset_source_id = _derive_model_asset_binding(
-                pngtuber_binding_path,
-                item_id=pngtuber_binding_item_id,
-            )
-            set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', current_asset_source_id)
-            set_reserved(characters['猫娘'][name], 'avatar', 'asset_source', current_asset_source or 'local_imported')
-            logger.debug(f"已保存角色 {name} 的PNGTuber配置")
-        else:
-            # Update Live2D model settings and save item_id as well, if provided.
-            live2d_model_path, resolved_item_id, resolved_asset_source = _resolve_live2d_model_binding(
-                live2d_model,
-                item_id=str(item_id or ""),
-            )
-            set_reserved(
-                characters['猫娘'][name],
-                'avatar',
-                'live2d',
-                'model_path',
-                live2d_model_path,
-            )
-            set_reserved(characters['猫娘'][name], 'avatar', 'model_type', 'live2d')
-
-            if 'live2d_idle_animation' in data:
-                live2d_idle_animation, validation_error = _normalize_live2d_idle_animation(
-                    data.get('live2d_idle_animation')
+            # Ensure the specified neko's configuration exists.
+            if name not in characters['猫娘']:
+                return JSONResponse(
+                    {'success': False, 'error': '猫娘不存在'},
+                    status_code=404
                 )
-                if validation_error:
-                    return JSONResponse(
-                        content={'success': False, 'error': validation_error},
-                        status_code=400,
-                    )
+
+            # When switching model types, preserve the inactive model configurations to avoid losing idle motions / lighting settings after switching back and forth.
+            if model_type_str == 'live3d':
+                set_reserved(characters['猫娘'][name], 'avatar', 'model_type', 'live3d')
+                active_model_binding_path = ""
+
+                if vrm_model:
+                    # Live3D + VRM: update the currently active VRM configuration while preserving the MMD configuration for switching back.
+                    set_reserved(characters['猫娘'][name], 'avatar', 'live3d_sub_type', 'vrm')
+                    set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'model_path', vrm_model)
+                    active_model_binding_path = vrm_model
+
+                    # Handle VRM animation (reuse the same validation logic).
+                    if 'vrm_animation' in data:
+                        if vrm_animation is None or vrm_animation == '':
+                            set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'animation', None)
+                        else:
+                            vrm_animation_str = str(vrm_animation).strip()
+                            if '://' in vrm_animation_str or vrm_animation_str.startswith('data:'):
+                                return JSONResponse(content={'success': False, 'error': 'VRM动画路径不能包含URL方案'}, status_code=400)
+                            if '..' in vrm_animation_str:
+                                return JSONResponse(content={'success': False, 'error': 'VRM动画路径不能包含路径遍历（..）'}, status_code=400)
+                            allowed_animation_prefixes = ['/user_vrm/animation/', '/static/vrm/animation/']
+                            if not any(vrm_animation_str.startswith(prefix) for prefix in allowed_animation_prefixes):
+                                return JSONResponse(content={'success': False, 'error': 'VRM动画路径必须以 /user_vrm/animation/ 或 /static/vrm/animation/ 开头'}, status_code=400)
+                            set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'animation', vrm_animation_str)
+
+                    if 'idle_animation' in data:
+                        if idle_animation is None or idle_animation == '' or idle_animation == []:
+                            set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', [])
+                        elif isinstance(idle_animation, str):
+                            idle_list = [idle_animation]
+                        elif isinstance(idle_animation, list):
+                            idle_list = idle_animation
+                        else:
+                            return JSONResponse(content={'success': False, 'error': 'idle_animation must be a string or list of strings'}, status_code=400)
+                        if isinstance(idle_animation, (str, list)) and idle_animation:
+                            allowed_animation_prefixes = ['/user_vrm/animation/', '/static/vrm/animation/']
+                            for item in idle_list:
+                                item_str = str(item).strip()
+                                if '://' in item_str or item_str.startswith('data:'):
+                                    return JSONResponse(content={'success': False, 'error': '待机动作路径不能包含URL方案'}, status_code=400)
+                                if '..' in item_str:
+                                    return JSONResponse(content={'success': False, 'error': '待机动作路径不能包含路径遍历（..）'}, status_code=400)
+                                if not any(item_str.startswith(prefix) for prefix in allowed_animation_prefixes):
+                                    return JSONResponse(content={'success': False, 'error': '待机动作路径必须以 /user_vrm/animation/ 或 /static/vrm/animation/ 开头'}, status_code=400)
+                            set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', [str(x).strip() for x in idle_list])
+
+                    logger.debug(f"已保存角色 {name} 的Live3D(VRM)模型 {vrm_model}")
+                elif mmd_model:
+                    # Live3D + MMD: update the currently active MMD configuration while preserving the VRM configuration for switching back.
+                    set_reserved(characters['猫娘'][name], 'avatar', 'live3d_sub_type', 'mmd')
+                    set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'model_path', mmd_model)
+                    active_model_binding_path = mmd_model
+
+                    # Handle MMD animation.
+                    if 'mmd_animation' in data:
+                        if mmd_animation is None or mmd_animation == '':
+                            set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'animation', None)
+                        else:
+                            mmd_animation_str = str(mmd_animation).strip()
+                            if '://' in mmd_animation_str or mmd_animation_str.startswith('data:'):
+                                return JSONResponse(content={'success': False, 'error': 'MMD动画路径不能包含URL方案'}, status_code=400)
+                            if '..' in mmd_animation_str:
+                                return JSONResponse(content={'success': False, 'error': 'MMD动画路径不能包含路径遍历（..）'}, status_code=400)
+                            allowed_mmd_anim_prefixes = ['/user_mmd/animation/', '/static/mmd/animation/']
+                            if not any(mmd_animation_str.startswith(prefix) for prefix in allowed_mmd_anim_prefixes):
+                                return JSONResponse(content={'success': False, 'error': 'MMD动画路径必须以 /user_mmd/animation/ 或 /static/mmd/animation/ 开头'}, status_code=400)
+                            set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'animation', mmd_animation_str)
+
+                    if 'mmd_idle_animation' in data:
+                        if mmd_idle_animation is None or mmd_idle_animation == '' or mmd_idle_animation == []:
+                            set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', [])
+                        elif isinstance(mmd_idle_animation, str):
+                            mmd_idle_list = [mmd_idle_animation]
+                        elif isinstance(mmd_idle_animation, list):
+                            mmd_idle_list = mmd_idle_animation
+                        else:
+                            return JSONResponse(content={'success': False, 'error': 'mmd_idle_animation must be a string or list of strings'}, status_code=400)
+                        if isinstance(mmd_idle_animation, (str, list)) and mmd_idle_animation:
+                            allowed_mmd_anim_prefixes = ['/user_mmd/animation/', '/static/mmd/animation/']
+                            for item in mmd_idle_list:
+                                mmd_idle_str = str(item).strip()
+                                if '://' in mmd_idle_str or mmd_idle_str.startswith('data:'):
+                                    return JSONResponse(content={'success': False, 'error': 'MMD待机动作路径不能包含URL方案'}, status_code=400)
+                                if '..' in mmd_idle_str:
+                                    return JSONResponse(content={'success': False, 'error': 'MMD待机动作路径不能包含路径遍历（..）'}, status_code=400)
+                                if not any(mmd_idle_str.startswith(prefix) for prefix in allowed_mmd_anim_prefixes):
+                                    return JSONResponse(content={'success': False, 'error': 'MMD待机动作路径必须以 /user_mmd/animation/ 或 /static/mmd/animation/ 开头'}, status_code=400)
+                            set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', [str(x).strip() for x in mmd_idle_list])
+
+                    logger.debug(f"已保存角色 {name} 的Live3D(MMD)模型 {mmd_model}")
+
+                current_asset_source, current_asset_source_id = _derive_model_asset_binding(
+                    active_model_binding_path,
+                    item_id=str(item_id or ""),
+                )
+                set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', current_asset_source_id)
+                set_reserved(
+                    characters['猫娘'][name],
+                    'avatar',
+                    'asset_source',
+                    current_asset_source or 'local_imported',
+                )
+            elif model_type_str == 'pngtuber':
+                set_reserved(characters['猫娘'][name], 'avatar', 'model_type', 'pngtuber')
+                set_reserved(characters['猫娘'][name], 'avatar', 'live3d_sub_type', '')
+                set_reserved(characters['猫娘'][name], 'avatar', 'pngtuber', pngtuber_payload)
+                pngtuber_binding_path = str(
+                    idle_image
+                    or pngtuber_payload.get('layered_metadata')
+                    or ''
+                ).strip()
+                pngtuber_binding_item_id = str(item_id or "").strip()
+                if not pngtuber_binding_path.startswith('/workshop/'):
+                    pngtuber_binding_item_id = ''
+                current_asset_source, current_asset_source_id = _derive_model_asset_binding(
+                    pngtuber_binding_path,
+                    item_id=pngtuber_binding_item_id,
+                )
+                set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', current_asset_source_id)
+                set_reserved(characters['猫娘'][name], 'avatar', 'asset_source', current_asset_source or 'local_imported')
+                logger.debug(f"已保存角色 {name} 的PNGTuber配置")
+            else:
+                # Update Live2D model settings and save item_id as well, if provided.
+                live2d_model_path, resolved_item_id, resolved_asset_source = _resolve_live2d_model_binding(
+                    live2d_model,
+                    item_id=str(item_id or ""),
+                )
                 set_reserved(
                     characters['猫娘'][name],
                     'avatar',
                     'live2d',
-                    'idle_animation',
-                    live2d_idle_animation,
+                    'model_path',
+                    live2d_model_path,
                 )
-            else:
-                logger.info(f"[Live2D Save] 请求中未包含 live2d_idle_animation 字段, data keys: {list(data.keys())}")
+                set_reserved(characters['猫娘'][name], 'avatar', 'model_type', 'live2d')
 
-            if resolved_item_id:
-                set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', str(resolved_item_id))
-                set_reserved(characters['猫娘'][name], 'avatar', 'asset_source', 'steam_workshop')
-                logger.debug(f"已保存角色 {name} 的模型 {live2d_model} 和item_id {resolved_item_id}")
-            else:
-                set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', '')
-                set_reserved(characters['猫娘'][name], 'avatar', 'asset_source', resolved_asset_source or 'local_imported')
-                logger.debug(f"已保存角色 {name} 的模型 {live2d_model}，asset_source={resolved_asset_source or 'local_imported'}")
+                if 'live2d_idle_animation' in data:
+                    live2d_idle_animation, validation_error = _normalize_live2d_idle_animation(
+                        data.get('live2d_idle_animation')
+                    )
+                    if validation_error:
+                        return JSONResponse(
+                            content={'success': False, 'error': validation_error},
+                            status_code=400,
+                        )
+                    set_reserved(
+                        characters['猫娘'][name],
+                        'avatar',
+                        'live2d',
+                        'idle_animation',
+                        live2d_idle_animation,
+                    )
+                else:
+                    logger.info(f"[Live2D Save] 请求中未包含 live2d_idle_animation 字段, data keys: {list(data.keys())}")
 
-        # Save the configuration.
-        await _config_manager.asave_characters(characters)
+                if resolved_item_id:
+                    set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', str(resolved_item_id))
+                    set_reserved(characters['猫娘'][name], 'avatar', 'asset_source', 'steam_workshop')
+                    logger.debug(f"已保存角色 {name} 的模型 {live2d_model} 和item_id {resolved_item_id}")
+                else:
+                    set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', '')
+                    set_reserved(characters['猫娘'][name], 'avatar', 'asset_source', resolved_asset_source or 'local_imported')
+                    logger.debug(f"已保存角色 {name} 的模型 {live2d_model}，asset_source={resolved_asset_source or 'local_imported'}")
+
+            # Save the configuration.
+            await _config_manager.asave_characters(characters)
         # Telemetry: which avatar type the user actively picks (live2d / vrm / mmd / pngtuber).
         # Complements the startup snapshot, which misses a switch until the next launch.
         try:
