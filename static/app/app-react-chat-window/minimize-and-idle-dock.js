@@ -2177,6 +2177,7 @@
         }
 
         overlay.hidden = true;
+        window.dispatchEvent(new Event('react-chat-window:closed'));
         I.resetCompactChatState();
         document.body.classList.remove('react-chat-window-open');
         I.stopCompactMinimizeBallTracking();

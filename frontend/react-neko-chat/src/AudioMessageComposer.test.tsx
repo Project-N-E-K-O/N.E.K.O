@@ -62,6 +62,22 @@ describe('recording draft submission', () => {
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:recording');
   });
 
+  it('releases the microphone when the host hides the chat and can record on reopen', async () => {
+    const cancel = vi.fn();
+    vi.mocked(recordAudio).mockResolvedValueOnce({ stop: vi.fn(), cancel });
+    const send = vi.fn();
+    render(<AudioMessageComposer target="YUI" disabled={false} send={send} onBusyChange={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Record a voice message' }));
+    await screen.findByRole('button', { name: 'Stop and send' });
+
+    act(() => { window.dispatchEvent(new Event('react-chat-window:closed')); });
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(send).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Record a voice message' }));
+    expect(await screen.findByRole('button', { name: 'Stop and send' })).toBeVisible();
+  });
+
   it('preserves preview after uncertain delivery and provides no resend action', async () => {
     const send = vi.fn(async () => { throw new Error('socket closed after write'); });
     render(<AudioMessageComposer target="YUI" disabled={false} send={send} onBusyChange={() => {}} />);

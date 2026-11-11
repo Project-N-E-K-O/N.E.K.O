@@ -35,6 +35,7 @@ export function useChatAudioHistory(target: string | undefined, author: string) 
     let controller: AbortController;
     let socket: EventTarget | undefined;
     let disposed = false;
+    let clearedAt = -Infinity;
     let available: HistoryAvailability;
     let latest: Promise<HistoryAvailability>;
 
@@ -54,6 +55,7 @@ export function useChatAudioHistory(target: string | undefined, author: string) 
             if (signal.aborted || disposed) return undefined;
             if (response.status !== 403 && response.status !== 404) return undefined;
             setLoaded({ target: character, rows: [], more: false });
+            setPending(entries => entries.filter(entry => entry.target !== character));
             available = false;
             return available;
           }
@@ -64,7 +66,8 @@ export function useChatAudioHistory(target: string | undefined, author: string) 
         }
         if (signal.aborted || disposed) return undefined;
         const ids = new Set(rows.map(row => row.request_id));
-        setLoaded({ target: character, rows, more: before !== null });
+        const visibleRows = rows.filter(row => row.created_at > clearedAt);
+        setLoaded({ target: character, rows: visibleRows, more: before !== null && visibleRows.length === rows.length });
         // Once history has shown a row, only history can display it again.
         setPending(entries => entries.filter(entry => entry.target !== character || !ids.has(entry.row.request_id)));
         available = true;
@@ -99,10 +102,32 @@ export function useChatAudioHistory(target: string | undefined, author: string) 
       void refresh();
     }
 
+    function onLocalChange(event: Event) {
+      const detail = (event as CustomEvent<{ character: string; requestId?: string }>).detail;
+      if (detail && detail.character !== character) return;
+      if (detail) {
+        const keep = (row: AudioRow) => detail.requestId !== undefined && row.request_id !== detail.requestId;
+        setLoaded(value => value?.target === character
+          ? { ...value, rows: value.rows.filter(keep), more: detail.requestId !== undefined && value.more }
+          : value);
+        setPending(entries => entries.filter(entry => entry.target !== character || keep(entry.row)));
+      }
+      void refresh();
+    }
+
+    function onMessagesCleared() {
+      clearedAt = Date.now();
+      pages = 1;
+      controller.abort();
+      setLoaded({ target: character, rows: [], more: false });
+      setPending(entries => entries.filter(entry => entry.target !== character));
+    }
+
     bind((window as Window & { appState?: { socket?: EventTarget } }).appState?.socket);
     window.addEventListener('voice-input-socket-open', onSocketOpen);
-    window.addEventListener('chat-audio-local-change', refresh);
+    window.addEventListener('chat-audio-local-change', onLocalChange);
     window.addEventListener('chat-audio-load-older', onLoadOlder);
+    window.addEventListener('react-chat-window:messages-cleared', onMessagesCleared);
     const session = {
       target: character,
       availability: async () => {
@@ -119,8 +144,9 @@ export function useChatAudioHistory(target: string | undefined, author: string) 
       bind();
       setPending(entries => entries.filter(entry => entry.target !== character));
       window.removeEventListener('voice-input-socket-open', onSocketOpen);
-      window.removeEventListener('chat-audio-local-change', refresh);
+      window.removeEventListener('chat-audio-local-change', onLocalChange);
       window.removeEventListener('chat-audio-load-older', onLoadOlder);
+      window.removeEventListener('react-chat-window:messages-cleared', onMessagesCleared);
       if (active.current === session) active.current = undefined;
     };
   }, [target]);
@@ -150,16 +176,17 @@ export function useChatAudioHistory(target: string | undefined, author: string) 
       const result = await send({ ...payload, saveLocal: true });
       if (active.current === session) {
         setPending(rows => rows.map(entry => matches(entry)
-          ? { ...entry, row: { ...entry.row, state: 'sent' } }
+          ? { ...entry, row: { ...entry.row, state: 'sent', available: true } }
           : entry));
       }
       return result;
-    } finally {
+    } catch (error) {
       if (active.current === session) {
-        void session.refresh().then(() => {
-          if (active.current === session) setPending(rows => rows.filter(entry => !matches(entry)));
-        });
+        setPending(rows => rows.filter(entry => !matches(entry)));
       }
+      throw error;
+    } finally {
+      if (active.current === session) void session.refresh();
     }
   }
 

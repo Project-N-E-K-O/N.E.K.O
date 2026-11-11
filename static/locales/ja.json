@@ -777,6 +777,7 @@
         "audioMessageSending": "送信中…",
         "audioMessageCancel": "録音を破棄",
         "audioMessageMicrophoneError": "マイクを使用できません。権限を確認して再試行してください。",
+        "exportAudioOmitted": "音声メッセージと文字起こしはエクスポートに含まれません。チャット履歴で確認できます。",
         "audioMessageSendError": "送信結果を確認できません。再録音する前に会話を確認してください。",
         "audioMessageBusy": "会話を処理中です。完了したら録音をもう一度送信できます。",
         "miniGameInviteTitle": "ミニゲームのお誘い",

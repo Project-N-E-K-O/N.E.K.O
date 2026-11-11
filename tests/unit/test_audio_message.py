@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import sqlite3
 import time
@@ -38,6 +39,9 @@ class Manager(AudioMessageMixin):
         self._session_generation = 0
         self.client = SimpleNamespace(submit_audio_message=AsyncMock())
         self.request_end_session = Mock()
+        self.reset_session_start_circuit = Mock()
+        self.sync_message_queue = SimpleNamespace(put=Mock())
+        self.handle_input_transcript = AsyncMock(return_value=True)
         self.starts = 0
 
     async def start_session(self, websocket, **kwargs):
@@ -110,9 +114,10 @@ async def test_no_save_delivery_reserves_only_receipt_and_cannot_be_replayed_wit
     request_id = payload["request_id"]
 
     async def submit(pcm, request_id, *, is_current, on_accepted, on_transcript):
-        assert is_current() and on_transcript is None
+        assert is_current()
         assert history.receipt(request_id)["state"] == "sending"
         await on_accepted()
+        await on_transcript("remote recording")
         raise TimeoutError("reply timed out after confirmed delivery")
 
     first.client.submit_audio_message.side_effect = submit
@@ -121,12 +126,41 @@ async def test_no_save_delivery_reserves_only_receipt_and_cannot_be_replayed_wit
     assert history.receipt(request_id)["transcript"] == ""
     assert history.read_audio(request_id) is None
     assert history.page(None, 10)["messages"] == []
+    first.handle_input_transcript.assert_awaited_once_with(
+        "remote recording", source_game_route_identity=None, audio_message_request_id=request_id,
+        audio_message_transcript_final=True,
+    )
     assert [call.args[0]["type"] for call in socket.send_json.await_args_list] == ["audio_message_result"]
 
     await restarted.submit_audio_message(payload, socket, is_current=lambda: True, save_local=True)
     restarted.client.submit_audio_message.assert_not_called()
     assert socket.send_json.call_args.args[0]["state"] == "failed"
     assert history.read_audio(request_id) is None
+
+
+@pytest.mark.asyncio
+async def test_deleting_playback_does_not_discard_the_already_sent_turn(isolated_history):
+    manager, socket = Manager(), SimpleNamespace(send_json=AsyncMock())
+    payload = message()
+    request_id = payload["request_id"]
+
+    async def submit(_pcm, _request_id, *, is_current, on_accepted, on_transcript):
+        assert is_current()
+        await on_accepted()
+        await asyncio.to_thread(isolated_history.delete, request_id)
+        assert await on_transcript("keep this turn in memory") is True
+
+    manager.client.submit_audio_message.side_effect = submit
+    await manager.submit_audio_message(payload, socket, is_current=lambda: True, save_local=True)
+
+    assert socket.send_json.await_args.args[0]["state"] == "completed"
+    assert isolated_history.page(None, 10)["messages"] == []
+    assert isolated_history.read_audio(request_id) is None
+    manager.handle_input_transcript.assert_awaited_once_with(
+        "keep this turn in memory", source_game_route_identity=None, audio_message_request_id=request_id,
+        audio_message_transcript_final=True,
+    )
+    manager.reset_session_start_circuit.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -348,14 +382,26 @@ def test_expired_id_stays_rejected_after_receipt_eviction():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("outcome", ["completed", "rejected", "locked-transcript"])
+@pytest.mark.parametrize("outcome", ["completed", "rejected", "locked-transcript", "tool-continuation"])
 async def test_real_arbiter_waits_for_audio_commit_before_exactly_one_response(
     outcome, isolated_history, monkeypatch,
 ):
     reject = outcome == "rejected"
     locked_transcript = outcome == "locked-transcript"
+    uses_tool = outcome == "tool-continuation"
+    from main_logic.tool_calling import ToolResult
+
+    tool_started, release_tool, continuation_sent = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    turn_done = AsyncMock()
+
+    async def tool(call):
+        tool_started.set()
+        await release_tool.wait()
+        return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
+
     client = OmniRealtimeClient("wss://example.invalid", "test", model="qwen-test", api_type="qwen",
-                                turn_detection_mode=TurnDetectionMode.MANUAL, on_input_transcript=AsyncMock())
+                                turn_detection_mode=TurnDetectionMode.MANUAL, on_input_transcript=AsyncMock(),
+                                on_tool_call=tool, on_response_done=turn_done)
     events = []
     commit_sent = asyncio.Event()
     response_sent = asyncio.Event()
@@ -376,9 +422,18 @@ async def test_real_arbiter_waits_for_audio_commit_before_exactly_one_response(
             if event["type"] == "input_audio_buffer.commit":
                 commit_sent.set()
             if event["type"] == "response.create":
+                if uses_tool and response_sent.is_set():
+                    self.feed({"type": "response.created", "response": {"id": "response-two"}})
+                    continuation_sent.set()
+                    return
                 self.feed({"type": "response.created", "response": {"id": "response-one"}})
                 response_sent.set()
-                if not locked_transcript:
+                if uses_tool:
+                    self.feed({
+                        "type": "response.function_call_arguments.done", "response_id": "response-one",
+                        "name": "lookup", "call_id": "lookup-one", "arguments": "{}",
+                    })
+                elif not locked_transcript:
                     self.finish_reply()
 
         def finish_reply(self):
@@ -398,7 +453,7 @@ async def test_real_arbiter_waits_for_audio_commit_before_exactly_one_response(
     receiver = asyncio.create_task(client.handle_messages())
     peer.feed({"type": "session.updated", "session": {"id": "session-one", "input_audio_format": "pcm16"}})
     pcm = b"\x01\x00" * 128000
-    if locked_transcript:
+    if locked_transcript or uses_tool:
         manager = Manager()
         manager.client = client
         manager.handle_input_transcript = AsyncMock(return_value=True)
@@ -418,9 +473,28 @@ async def test_real_arbiter_waits_for_audio_commit_before_exactly_one_response(
         await asyncio.wait_for(commit_sent.wait(), 2)
         assert [event["type"] for event in events] == ["input_audio_buffer.append"] * 8 + ["input_audio_buffer.commit"]
         if reject:
-            peer.feed({"type": "error", "error": {"message": "rejected"}})
+            peer.feed({"type": "error", "error": {"message": "rejected", "event_id": events[-1]["event_id"]}})
         else:
+            peer.feed({"type": "error", "error": {"message": "unrelated error", "event_id": "other-event"}})
             peer.feed({"type": "input_audio_buffer.committed", "item_id": "audio-one"})
+        if uses_tool:
+            await asyncio.wait_for(tool_started.wait(), 2)
+            peer.feed({
+                "type": "conversation.item.input_audio_transcription.completed",
+                "item_id": "audio-one", "transcript": "Check tomorrow's schedule.",
+            })
+            peer.feed({"type": "response.done", "response": {"id": "response-one", "status": "completed"}})
+            await asyncio.wait_for(transcript_received.wait(), 2)
+            assert not task.done()
+            turn_done.assert_not_awaited()
+            release_tool.set()
+            await asyncio.wait_for(continuation_sent.wait(), 2)
+            assert not task.done()
+            assert [event["item"]["call_id"] for event in events if event["type"] == "conversation.item.create"] == [
+                "lookup-one",
+            ]
+            peer.feed({"type": "response.audio_transcript.delta", "delta": "hello", "response_id": "response-two"})
+            peer.feed({"type": "response.done", "response": {"id": "response-two", "status": "completed"}})
         if locked_transcript:
             await asyncio.wait_for(response_sent.wait(), 2)
             writer = sqlite3.connect(isolated_history.path)
@@ -440,14 +514,17 @@ async def test_real_arbiter_waits_for_audio_commit_before_exactly_one_response(
                 await asyncio.wait_for(task, 3)
         else:
             await asyncio.wait_for(task, 3)
-        if locked_transcript:
+        if locked_transcript or uses_tool:
             assert socket.send_json.await_args.args[0]["state"] == "completed"
             assert isolated_history.receipt(payload["request_id"])["transcript"] == "Check tomorrow's schedule."
             assert client._audio_message_transcript.published_final
             manager.handle_input_transcript.assert_awaited_once()
-        assert sum(event["type"] == "response.create" for event in events) == (0 if reject else 1)
+        if uses_tool:
+            turn_done.assert_awaited_once()
+        assert sum(event["type"] == "response.create" for event in events) == (0 if reject else 2 if uses_tool else 1)
         assert b"".join(base64.b64decode(event["audio"]) for event in events if event["type"] == "input_audio_buffer.append") == pcm
     finally:
+        release_tool.set()
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         await peer.close()
@@ -544,7 +621,7 @@ async def test_gemini_recording_has_one_start_audio_end_sequence(monkeypatch, tr
         accepted.assert_awaited_once()
         return
     if transcript_final == "after_reply_end":
-        transcript.assert_not_awaited()
+        transcript.assert_awaited_once_with("Gemini ", final=False)
         await receive(input_transcription=types.Transcription(text="recording", finished=True))
     if transcript_final != "markerless":
         await receive(input_transcription=types.Transcription(text="Duplicate Gemini transcript", finished=True))
@@ -552,11 +629,16 @@ async def test_gemini_recording_has_one_start_audio_end_sequence(monkeypatch, tr
     assert events[1]["audio"] == {"data": pcm, "mime_type": "audio/pcm;rate=16000"}
     completed.assert_awaited_once()
     accepted.assert_awaited_once()
-    transcript.assert_awaited_once_with("Gemini recording", final=transcript_final != "markerless")
+    if transcript_final == "after_reply_end":
+        assert transcript.await_count == 2
+        transcript.assert_awaited_with("Gemini recording", final=True)
+    else:
+        transcript.assert_awaited_once_with("Gemini recording", final=transcript_final != "markerless")
 
 
 @pytest.mark.asyncio
-async def test_gemini_audio_receipt_waits_for_reply_after_tools(monkeypatch):
+@pytest.mark.parametrize("silent_completion", [False, True])
+async def test_gemini_audio_receipt_waits_for_reply_after_tools(monkeypatch, silent_completion):
     from google.genai import types
     from main_logic.tool_calling import ToolResult
     from tests.unit.test_realtime_tool_ownership import _GeminiSession, _gemini_response, _wait_for_tool_tasks
@@ -607,7 +689,12 @@ async def test_gemini_audio_receipt_waits_for_reply_after_tools(monkeypatch):
         assert len(peer.tool_responses) == 1
         await receive(turn_complete=True)
         assert not task.done()
-        await receive(output_transcription=types.Transcription(text="The result is ready."), turn_complete=True)
+        if silent_completion:
+            await receive(generation_complete=True)
+            assert not task.done()
+            await receive(turn_complete=True)
+        else:
+            await receive(output_transcription=types.Transcription(text="The result is ready."), turn_complete=True)
         await asyncio.wait_for(task, 2)
         accepted.assert_awaited_once()
         completed.assert_awaited_once()
@@ -622,11 +709,12 @@ async def test_gemini_audio_receipt_waits_for_reply_after_tools(monkeypatch):
 @pytest.mark.parametrize(
     "boundary", [
         "session-retirement", "provider-final", "shutdown", "queued-session-end",
-        "failed-before-send", "storage-startup-rejected", "lost-cache-response", "lost-session-end-response",
+        "failed-before-send", "storage-startup-rejected", "publication-guard", "lost-cache-response",
+        "lost-session-end-response", "no-final", "no-transcript", "flush-failed",
     ],
 )
 async def test_gemini_audio_memory_uses_the_latest_transcript_before_its_reply(
-    isolated_history, monkeypatch, caplog, boundary,
+    isolated_history, monkeypatch, boundary,
 ):
     from google.genai import types
     from app.main_server import character_runtime
@@ -635,16 +723,21 @@ async def test_gemini_audio_memory_uses_the_latest_transcript_before_its_reply(
     from tests.unit.test_core_game_route_memory_contract import _make_transcript_manager
     from utils.token_tracker import TokenTracker
 
+    bounded = boundary in {"no-final", "no-transcript"}
     monkeypatch.setattr("main_logic.omni_realtime_client._gemini_support.types", types)
     monkeypatch.setattr(TokenTracker, "get_instance", lambda: SimpleNamespace(record=Mock()))
-    monkeypatch.setattr(cross_server, "_publish_analyze_request_with_fallback", AsyncMock(return_value=True))
+    analyze = AsyncMock(return_value=True)
+    monkeypatch.setattr(cross_server, "_publish_analyze_request_with_fallback", analyze)
 
     monitor_blocked, release_monitor, drain_enqueued = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
     class SyncQueue(character_runtime._SyncMessageQueue):
+        shutdown_result = None
+
         def put(self, item):
             super().put(item)
             if "_shutdown_memory_done" in item:
+                self.shutdown_result = item["_shutdown_memory_done"]
                 drain_enqueued.set()
 
     queue = SyncQueue()
@@ -652,11 +745,18 @@ async def test_gemini_audio_memory_uses_the_latest_transcript_before_its_reply(
     writes = []
     forwarded = []
     cache_attempts = 0
+    flush_attempts = 0
     pre_send_failures = {"failed-before-send": 2, "lost-session-end-response": 1}.get(boundary, 0)
     loses_response = boundary in {"lost-cache-response", "lost-session-end-response"}
 
-    async def post(endpoint, _name, messages, **_kwargs):
-        nonlocal cache_attempts
+    async def post(endpoint, _name, messages, *, flush_pending=False, **_kwargs):
+        nonlocal cache_attempts, flush_attempts
+        if flush_pending:
+            assert endpoint == "cache" and messages == []
+            flush_attempts += 1
+            if boundary == "flush-failed":
+                return False, "pending recent history not persisted", {}
+            return True, "", {}
         if endpoint == "cache":
             cache_attempts += 1
             if cache_attempts <= pre_send_failures:
@@ -665,6 +765,8 @@ async def test_gemini_audio_memory_uses_the_latest_transcript_before_its_reply(
                 return False, "HTTP 409", {
                     "error_code": "storage_startup_blocked", "ok": False, "limited_mode": True,
                 }
+            if boundary == "publication-guard" and cache_attempts <= 2:
+                return False, "HTTP 409", {"status": "cancelled", "message": "character release in progress"}
             writes.append([(item["role"], item["content"][0]["text"]) for item in messages])
             cached.set()
             if loses_response:
@@ -686,6 +788,7 @@ async def test_gemini_audio_memory_uses_the_latest_transcript_before_its_reply(
     manager = Manager()
     memory = _make_transcript_manager()
     memory._broadcast_voice_transcript_observed = AsyncMock()
+    memory._should_suppress_dirty_voice_transcript = Mock(return_value=True)
     memory.sync_message_queue = manager.sync_message_queue = queue
     manager.handle_input_transcript = memory.handle_input_transcript
 
@@ -709,7 +812,10 @@ async def test_gemini_audio_memory_uses_the_latest_transcript_before_its_reply(
 
     async def send(**fields):
         if "activity_end" in fields:
-            await receive(input_transcription=types.Transcription(text="Please "))
+            if boundary != "no-transcript":
+                await receive(input_transcription=types.Transcription(
+                    text="Please check tomorrow." if bounded else "Please ",
+                ))
             await receive(output_transcription=types.Transcription(text="I'll look it up."))
             await receive(turn_complete=True)
 
@@ -728,13 +834,15 @@ async def test_gemini_audio_memory_uses_the_latest_transcript_before_its_reply(
         assert [event["type"] for event in forwarded] == ["user_activity", "gemini_response", "turn end"]
         assert writes == []
 
-        await receive(input_transcription=types.Transcription(
-            text="check tomorrow.", finished=True if boundary == "provider-final" else None,
-        ))
-        assert isolated_history.receipt(payload["request_id"])["transcript"] == "Please check tomorrow."
+        if not bounded:
+            await receive(input_transcription=types.Transcription(
+                text="check tomorrow.", finished=True if boundary == "provider-final" else None,
+            ))
+        if boundary != "no-transcript":
+            assert isolated_history.receipt(payload["request_id"])["transcript"] == "Please check tomorrow."
         if boundary == "session-retirement":
             queue.put({"type": "system", "data": "session end"})
-        if boundary not in {"session-retirement", "provider-final"}:
+        if not bounded and boundary not in {"session-retirement", "provider-final"}:
             queue.put({"type": "json", "data": {"type": "block_monitor"}})
             await asyncio.wait_for(monitor_blocked.wait(), 2)
             if boundary != "shutdown":
@@ -746,20 +854,75 @@ async def test_gemini_audio_memory_uses_the_latest_transcript_before_its_reply(
             release_monitor.set()
             await asyncio.wait_for(drain, 2)
             assert cached.is_set()
-            assert cache_attempts == (3 if boundary == "storage-startup-rejected" else pre_send_failures + 1)
-            assert ("同步连接器关闭前无法确认剩余记忆已保存" in caplog.text) == loses_response
+            assert flush_attempts == 1
+            assert cache_attempts == (3 if boundary in {"storage-startup-rejected", "publication-guard"} else pre_send_failures + 1)
+            assert queue.shutdown_result.result() is (not loses_response and boundary != "flush-failed")
             character_runtime.cleanup(log=False)
             assert not await character_runtime.join_sync_connector_tasks(2)
             assert connector.cancelled()
         await asyncio.wait_for(cached.wait(), 2)
         assert len(writes) == 1
-        assert [role for role, _text in writes[0]] == ["user", "assistant"]
-        assert writes[0][0][1] == "Please check tomorrow."
-        assert writes[0][1][1].endswith("I'll look it up.")
+        if boundary == "no-transcript":
+            assert [role for role, _text in writes[0]] == ["assistant"]
+        else:
+            assert [role for role, _text in writes[0]] == ["user", "assistant"]
+            assert writes[0][0][1] == "Please check tomorrow."
+        assert writes[0][-1][1].endswith("I'll look it up.")
         assert [event["type"] for event in forwarded].count("turn end") == 1
+        if bounded:
+            analyze.assert_awaited_once()
+            await receive(input_transcription=types.Transcription(text=" Late correction.", finished=True))
+            assert isolated_history.receipt(payload["request_id"])["transcript"].endswith("Late correction.")
+            assert len(writes) == 1
     finally:
         connector.cancel()
         await asyncio.gather(connector, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_memory_publication_guard_is_the_only_retryable_cancelled_409(monkeypatch):
+    from main_logic import cross_server
+
+    post = AsyncMock(side_effect=[
+        httpx.Response(409, json={"status": "cancelled", "message": "character release in progress"}),
+        httpx.Response(409, json={"status": "cancelled", "message": "write result unknown"}),
+    ])
+    monkeypatch.setattr(cross_server, "get_internal_http_client", lambda: SimpleNamespace(post=post))
+    for retryable in (True, False):
+        success, _, payload = await cross_server._post_memory_server("cache", "Lan", [], timeout_s=1)
+        assert success is False
+        assert cross_server._memory_write_rejected_before_persistence(payload) is retryable
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("read_before_clear", [False, True])
+async def test_audio_memory_discards_a_recording_queued_before_context_clear(monkeypatch, read_before_clear):
+    from main_logic import cross_server
+
+    forward = AsyncMock()
+    monkeypatch.setattr(cross_server, "_try_send_json", forward)
+    queue = asyncio.Queue()
+    queue.recent_context_version = 0 if read_before_clear else 1
+    old_reply = {"type": "gemini_response", "data": "old reply"}
+    new_input = {"type": "user", "data": {"input_type": "text", "data": "new context"}}
+    queue.put_nowait({"type": "audio_message_memory_start", "request_id": "old", "context_version": 0})
+    queue.put_nowait({
+        "type": "audio_message_memory_transcript", "request_id": "old", "final": True, "data": {"data": "old recording"},
+    })
+    async with contextlib.aclosing(cross_server._order_audio_memory_events(queue, None)) as events:
+        if read_before_clear:
+            barrier = {"type": "json", "data": {"type": "barrier"}}
+            queue.put_nowait(barrier)
+            assert await asyncio.wait_for(anext(events), 1) == (barrier, False)
+            queue.recent_context_version = 1
+        for message in (
+            {"type": "json", "data": old_reply},
+            {"type": "system", "data": "turn end"},
+            new_input,
+        ):
+            queue.put_nowait(message)
+        assert await asyncio.wait_for(anext(events), 1) == (new_input, False)
+    assert [call.args[1]["type"] for call in forward.await_args_list] == ["user_activity", "gemini_response", "turn end"]
 
 
 @pytest.mark.asyncio
@@ -845,12 +1008,11 @@ async def test_gemini_retries_final_transcript_after_sqlite_unlock(isolated_hist
     assert row["state"] == "completed"
     assert row["transcript"] == transcript
     assert client._gemini_audio_message.published_final
-    if disconnects:
-        manager.handle_input_transcript.assert_not_awaited()
-    else:
-        manager.handle_input_transcript.assert_awaited_once_with(
-            transcript, source_game_route_identity=None, audio_message_request_id=payload["request_id"],
-            audio_message_transcript_final=True,
-        )
+    # The transcript arrived while the original turn owned it. Losing the
+    # route while SQLite is busy must not republish it to a replacement turn.
+    manager.handle_input_transcript.assert_awaited_once_with(
+        transcript, source_game_route_identity=None, audio_message_request_id=payload["request_id"],
+        audio_message_transcript_final=True,
+    )
     assert peer.send_realtime_input.await_count == 3
     response_done.assert_awaited_once()

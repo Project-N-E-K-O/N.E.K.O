@@ -726,45 +726,84 @@ async def _try_send_bytes(slot: _WSSlot | None, payload: bytes) -> bool:
         return False
 
 
+_AUDIO_MEMORY_TRANSCRIPT_GRACE_SECONDS = 1.5
+
+
 @dataclass
 class _AudioMemoryTurn:
     request_id: str
+    context_version: int
     transcript: dict | None = None
+    transcript_final: bool = False
     reply_events: list[tuple[dict, bool]] = field(default_factory=list)
     reply_id: str | None = None
-    ended: bool = False
+    deadline: float | None = None
 
     def ordered_events(self):
+        ownership = {"audio_message_input": True, "_audio_context_version": self.context_version}
         if self.transcript is not None:
-            yield {"type": "user", "data": self.transcript, "audio_message_input": True}, False
-        yield from self.reply_events
+            yield {"type": "user", "data": self.transcript, **ownership}, False
+        for message, forwarded in self.reply_events:
+            yield {**message, **ownership}, forwarded
 
 
 async def _order_audio_memory_events(message_queue, sync_slot):
     """Keep one recording's latest transcript before its reply in memory.
 
-    Secondary terminals still receive streamed output immediately. Without a
-    final transcript marker, keep drafts in memory until the session or next
-    turn closes their ownership, so late fragments can replace the draft.
+    Secondary terminals still receive streamed output immediately. After
+    turn end, a missing final transcript cannot hold up memory or analysis.
     """
     pending = None
     while True:
-        message = await message_queue.get()
+        if pending is not None and pending.deadline is not None:
+            try:
+                async with asyncio.timeout_at(pending.deadline):
+                    if asyncio.get_running_loop().time() >= pending.deadline:
+                        raise TimeoutError
+                    message = await message_queue.get()
+            except TimeoutError:
+                if pending.context_version == getattr(message_queue, "recent_context_version", 0):
+                    for event in pending.ordered_events():
+                        yield event
+                pending = None
+                continue
+        else:
+            message = await message_queue.get()
         if not isinstance(message, dict):
             yield message, False
             continue
         kind, data = message.get("type"), message.get("data")
+        context_version = getattr(message_queue, "recent_context_version", 0)
+        if pending is not None and pending.context_version != context_version:
+            # Keep forwarding the old reply to the monitor, but do not let
+            # its buffered transcript or terminal enter the cleared context.
+            if kind == "json" and isinstance(data, dict) and data.get("type") == "gemini_response":
+                await _try_send_json(sync_slot, data)
+                continue
+            if kind == "system" and data == "turn end":
+                await _try_send_json(sync_slot, {"type": "turn end"})
+                pending = None
+                continue
+            if kind in ("user", "audio_message_memory_start") or (
+                kind == "system" and data in ("session end", "hot reset", "turn end agent_callback")
+            ):
+                pending = None
+            elif kind == "audio_message_memory_transcript" or (
+                kind == "system" and data in ("chat original tool", "response_discarded_clear")
+            ):
+                continue
         if kind == "audio_message_memory_start":
             if pending is not None:
                 for event in pending.ordered_events():
                     yield event
-            pending = _AudioMemoryTurn(message["request_id"])
+            pending = _AudioMemoryTurn(message["request_id"], message.get("context_version", context_version))
             await _try_send_json(sync_slot, {"type": "user_activity"})
             continue
         if kind == "audio_message_memory_transcript":
             if pending is not None and pending.request_id == message["request_id"]:
                 pending.transcript = {**(pending.transcript or {}), **data}
-                if message["final"]:
+                pending.transcript_final = message["final"]
+                if pending.transcript_final and pending.deadline is not None:
                     for event in pending.ordered_events():
                         yield event
                     pending = None
@@ -777,10 +816,10 @@ async def _order_audio_memory_events(message_queue, sync_slot):
                     "turn end agent_callback",
                 )
             ) or (
-                pending.ended and kind == "system"
+                pending.deadline is not None and kind == "system"
                 and data in ("turn end", "chat original tool", "response_discarded_clear")
             )
-            if boundary or (reply and pending.ended and (
+            if boundary or (reply and pending.deadline is not None and (
                 data.get("isNewMessage") or data.get("turn_id") != pending.reply_id
             )):
                 for event in pending.ordered_events():
@@ -788,16 +827,21 @@ async def _order_audio_memory_events(message_queue, sync_slot):
                 pending = None
             elif reply:
                 await _try_send_json(sync_slot, data)
-                if pending.ended:
+                if pending.deadline is not None:
                     pending.reply_events.insert(-1, (message, True))
                 else:
                     pending.reply_id = data.get("turn_id")
                     pending.reply_events.append((message, True))
                 continue
-            elif kind == "system" and data == "turn end" and not pending.ended:
+            elif kind == "system" and data == "turn end" and pending.deadline is None:
                 await _try_send_json(sync_slot, {"type": "turn end"})
                 pending.reply_events.append((message, True))
-                pending.ended = True
+                if pending.transcript_final:
+                    for event in pending.ordered_events():
+                        yield event
+                    pending = None
+                else:
+                    pending.deadline = asyncio.get_running_loop().time() + _AUDIO_MEMORY_TRANSCRIPT_GRACE_SECONDS
                 continue
             elif kind == "system" and data in ("chat original tool", "response_discarded_clear"):
                 pending.reply_events.append((message, False))
@@ -813,6 +857,7 @@ async def _post_memory_server(
     timeout_s: float,
     language: str | None = None,
     render_language: str | None = None,
+    flush_pending: bool = False,
 ) -> tuple[bool, str, dict]:
     """Post history payload to memory_server and treat only 2xx+valid JSON as success."""
     encoded_name = quote(lanlan_name, safe="")
@@ -822,6 +867,8 @@ async def _post_memory_server(
     request_payload = {
         "input_history": json.dumps(payload, indent=2, ensure_ascii=False),
     }
+    if flush_pending:
+        request_payload["flush_pending"] = True
     # Only a live explicit frontend/session locale is durable provenance.
     # A renderer locale is a request-local fallback, never a substitute for the
     # durable ``language`` field.  Keep the two wire fields mutually exclusive
@@ -846,7 +893,7 @@ async def _post_memory_server(
             except json.JSONDecodeError:
                 pass
             else:
-                if _memory_storage_startup_rejected(rejection):
+                if _memory_write_rejected_before_persistence(rejection):
                     return False, detail, rejection
         return False, detail, {}
 
@@ -881,8 +928,13 @@ def _memory_storage_startup_rejected(result: object) -> bool:
 def _memory_write_rejected_before_persistence(result: object) -> bool:
     return _memory_storage_startup_rejected(result) or (
         isinstance(result, dict)
-        and result.get("status") == "error"
-        and result.get("write_started") is False
+        and (
+            (result.get("status") == "error" and result.get("write_started") is False)
+            or (
+                result.get("status") == "cancelled"
+                and result.get("message") == "character release in progress"
+            )
+        )
     )
 
 
@@ -1232,7 +1284,7 @@ async def run_sync_connector(
             return old_messages + messages, old_context
         return messages, context
 
-    async def _write_conversation_memory(endpoint, messages, context, *, timeout_s, retired=False):
+    async def _write_conversation_memory(endpoint, messages, context, *, timeout_s, retired=False, flush_pending=False):
         language, render_language, version = context
         # Order queued writes and retries against direct clears. Recheck the
         # generation under the same lock used to clear and invalidate it.
@@ -1245,6 +1297,7 @@ async def run_sync_connector(
                 ok, detail, result = await _post_memory_server(
                     endpoint, lanlan_name, messages, timeout_s=timeout_s,
                     language=language, render_language=render_language,
+                    **({"flush_pending": True} if flush_pending else {}),
                 )
             except Exception as exc:
                 if endpoint == "cache":
@@ -1310,6 +1363,14 @@ async def run_sync_connector(
                 deferred_memory.append((payload, context))
             memory_write_unconfirmed |= outcome == "unconfirmed"
             saved = outcome in ("saved", "obsolete") and not memory_write_unconfirmed
+            if draining and done is not None:
+                # /cache can have acknowledged a batch that only reached its
+                # pending ledger. Flush that ledger without replaying the batch.
+                flushed, flush_detail = await _write_conversation_memory(
+                    "cache", [], context, timeout_s=3.0, flush_pending=True,
+                )
+                saved = saved and flushed in ("saved", "obsolete")
+                detail = detail or flush_detail
 
             if detail:
                 boundary = "热重置" if hot_reset else "session end"
@@ -1343,6 +1404,8 @@ async def run_sync_connector(
         async for message, monitor_forwarded in _order_audio_memory_events(message_queue, sync_slot):
             if message is not None:
                 context_version = getattr(message_queue, "recent_context_version", 0)
+                if isinstance(message, dict) and message.get("_audio_context_version", context_version) != context_version:
+                    continue
                 shutdown_memory_done = message.get("_shutdown_memory_done") if isinstance(message, dict) else None
                 try:
                     if message["type"] == "json":
@@ -1361,7 +1424,7 @@ async def run_sync_connector(
                                 continue
                             original_output.append(message["data"])
                             if current_turn == 'user':  # assistant new message starts
-                                had_user_input_this_turn = bool(user_input_cache)
+                                had_user_input_this_turn = bool(user_input_cache or message.get("audio_message_input"))
                                 if user_input_cache:
                                     _append_user_input_cache_to_history(chat_history, user_input_cache, user_input_sources, user_input_proof)
                                     user_input_cache = ''

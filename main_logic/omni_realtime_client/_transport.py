@@ -3524,6 +3524,10 @@ class _TransportMixin:
                             message_ws,
                             connection_generation=message_generation,
                         )
+                        response_id = _response_id_text(event.get("response_id"))
+                        audio_tool_responses = getattr(self, "_audio_message_tool_responses", None)
+                        if audio_tool_responses is not None:
+                            audio_tool_responses.add(response_id or self._current_response_id)
                         self._start_raw_tool_call(
                             ToolCall(
                                 name=name,
@@ -3543,9 +3547,7 @@ class _TransportMixin:
                             # response identity -- there is then nothing that
                             # can prove two calls are siblings, and each is
                             # answered on its own as before.
-                            response_id=_response_id_text(
-                                event.get("response_id")
-                            ),
+                            response_id=response_id,
                         )
                 elif (
                     event_type
@@ -3595,6 +3597,11 @@ class _TransportMixin:
                     self._record_response_usage(event.get("response"))
                     if finalize_response is False:
                         continue
+                    audio_tool_responses = getattr(self, "_audio_message_tool_responses", None)
+                    audio_response_id = event_response_id or self._current_response_id
+                    audio_continues = audio_tool_responses is not None and audio_response_id in audio_tool_responses
+                    if audio_continues:
+                        audio_tool_responses.discard(audio_response_id)
                     pending_sid = self._cancelled_voice_successor_sid
                     if pending_sid is not None:
                         # A terminal cannot claim a reserved ID. If Core has
@@ -3637,6 +3644,8 @@ class _TransportMixin:
                         return
                     self._close_realtime_conversation_observation(response_status)
                     self._reset_per_turn_output_state()
+                    if audio_continues and response_status in {"", "completed", "success", "succeeded"}:
+                        continue
                     await self._notify_turn_finished(
                         connection_still_ours=receive_owner_is_current,
                         carry_host_turn_forward=response_status
@@ -3752,7 +3761,10 @@ class _TransportMixin:
                     already_scoped = self._raw_transcript_was_already_scoped(
                         event.get("item_id")
                     )
-                    if not self._has_server_vad and not already_scoped:
+                    if (
+                        not self._has_server_vad and not already_scoped
+                        and getattr(self, "_audio_message_transcript", None) is None
+                    ):
                         # Compatibility proxies may omit both server-VAD
                         # boundary events. The completed transcript is then the
                         # first authoritative signal that a new user turn has

@@ -149,6 +149,7 @@ class AudioMessageMixin:
         accepted = False
         reply_completed = False
         transcript_recorded = False
+        memory_transcript = None
         memory_queue = getattr(self, "sync_message_queue", None)
 
         async def update_history(**changes) -> bool | None:
@@ -166,25 +167,25 @@ class AudioMessageMixin:
             await update_history(state="accepted")
 
         async def on_transcript(transcript: str, *, final: bool = True) -> bool | None:
-            nonlocal transcript_recorded
+            nonlocal transcript_recorded, memory_transcript
             text = transcript.strip()
-            updated = await update_history(transcript=text)
-            if updated is None:
-                return False  # The write failed and can be retried.
-            if not updated:
-                return None  # The receipt no longer exists.
-            if not owns_session():
-                return True
-            if not transcript_recorded:
-                transcript_recorded = await self.handle_input_transcript(
-                    transcript, source_game_route_identity=None, audio_message_request_id=request_id,
-                    audio_message_transcript_final=final,
-                )
-            elif memory_queue is not None:
-                memory_queue.put({
-                    "type": "audio_message_memory_transcript", "request_id": request_id, "final": final,
-                    "data": {"input_type": "transcript", "data": text, "request_id": request_id},
-                })
+            if owns_session() and memory_queue is not None and memory_transcript != (text, final):
+                if not transcript_recorded:
+                    transcript_recorded = await self.handle_input_transcript(
+                        transcript, source_game_route_identity=None, audio_message_request_id=request_id,
+                        audio_message_transcript_final=final,
+                    )
+                else:
+                    memory_queue.put({
+                        "type": "audio_message_memory_transcript", "request_id": request_id, "final": final,
+                        "data": {"input_type": "transcript", "data": text, "request_id": request_id},
+                    })
+                if transcript_recorded:
+                    memory_transcript = text, final
+            # The receipt survives deletion for dedupe. Its playback and
+            # transcript availability are independent of the delivered turn.
+            if save_local and await update_history(transcript=text) is None:
+                return False
             return True
 
         try:
@@ -218,6 +219,7 @@ class AudioMessageMixin:
                     raise ConnectionError("superseded")
                 # Retirement may join producers that use the admission lock,
                 # so finish startup before acquiring that lock ourselves.
+                self.reset_session_start_circuit()
                 await self.start_session(
                     websocket, input_mode=AUDIO_MESSAGE_MODE,
                     user_initiated=True, request_id=request_id,
@@ -249,13 +251,14 @@ class AudioMessageMixin:
                             and not is_theater_active(self.lanlan_name)
                         )
 
-                    if save_local and memory_queue is not None:
+                    if memory_queue is not None:
                         memory_queue.put({
                             "type": "audio_message_memory_start", "request_id": request_id,
+                            "context_version": getattr(memory_queue, "recent_context_version", 0),
                         })
                     await target.submit_audio_message(
                         pcm, request_id, is_current=owns_session, on_accepted=on_accepted,
-                        on_transcript=on_transcript if save_local else None,
+                        on_transcript=on_transcript,
                     )
                     if not owns_session():
                         raise ConnectionError("superseded")
@@ -280,5 +283,5 @@ class AudioMessageMixin:
                     state = "unconfirmed"
                 stored = await update_history(state=state)
                 if completing:
-                    record.state, record.code = ("completed", "") if stored else ("failed", "unconfirmed")
+                    record.state, record.code = ("completed", "") if stored is not None else ("failed", "unconfirmed")
             await report(record.state, record.code)

@@ -1341,16 +1341,25 @@
     }
 
     async function sendComposerAudioMessage(payload) {
+        function rejectBeforeSend() {
+            const error = new Error('busy');
+            error.name = 'AudioMessageRejected';
+            return error;
+        }
         const state = window.appState;
         if (!state || payload.target !== window.lanlan_config?.lanlan_name
                 || state.isRecording || state.voiceStartPending) {
-            throw new Error('Audio message target is unavailable');
+            throw rejectBeforeSend();
         }
-        await window.ensureWebSocketOpen();
+        try {
+            await window.ensureWebSocketOpen();
+        } catch (_) {
+            throw rejectBeforeSend();
+        }
         const socket = state.socket;
         if (payload.target !== window.lanlan_config?.lanlan_name || state.isRecording || state.voiceStartPending
                 || !socket || socket.readyState !== WebSocket.OPEN) {
-            throw new Error('Audio message connection changed');
+            throw rejectBeforeSend();
         }
         // Keep the exact socket and message ID. A timeout or disconnect never
         // replays the recording, since the provider may already have it.
@@ -1384,7 +1393,7 @@
             try {
                 socket.send(JSON.stringify({ action: 'audio_message', request_id: payload.requestId,
                     audio: payload.audio, sample_rate_hz: payload.sampleRateHz, save_local: payload.saveLocal === true }));
-            } catch (error) { finish(error); }
+            } catch (_) { finish(rejectBeforeSend()); }
         });
     }
 

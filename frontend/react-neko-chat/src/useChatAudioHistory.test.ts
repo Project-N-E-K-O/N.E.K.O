@@ -14,7 +14,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it('resolves the send before history responds and clears the temporary row if refresh times out', async () => {
+it('keeps a confirmed recording playable when the history refresh times out', async () => {
   vi.useFakeTimers();
   const fetchHistory = vi.fn().mockResolvedValueOnce(historyPage());
   fetchHistory.mockImplementationOnce((_url: string, { signal }: RequestInit) =>
@@ -33,7 +33,8 @@ it('resolves the send before history responds and clears the temporary row if re
   expect(result.current.messages[0]?.status).toBe('sent');
 
   await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
-  expect(result.current.messages).toEqual([]);
+  expect(result.current.messages).toHaveLength(1);
+  expect(result.current.messages[0]?.status).toBe('sent');
 });
 
 it('keeps a deleted history row gone while the original send is still awaiting its receipt', async () => {
@@ -60,6 +61,24 @@ it('keeps a deleted history row gone while the original send is still awaiting i
     await submitted;
   });
   expect(result.current.messages).toEqual([]);
+});
+
+it('does not restore old local recordings after a same-character chat clear', async () => {
+  const newRow = { ...historyRow, request_id: 'new-recording', created_at: Date.now() + 1000 };
+  const fetchHistory = vi.fn()
+    .mockResolvedValueOnce(historyPage([historyRow]))
+    .mockResolvedValueOnce(historyPage([historyRow, newRow]));
+  vi.stubGlobal('fetch', fetchHistory);
+  const { result } = renderHook(() => useChatAudioHistory('YUI', 'You'));
+  await waitFor(() => expect(result.current.messages).toHaveLength(1));
+
+  act(() => { window.dispatchEvent(new Event('react-chat-window:messages-cleared')); });
+  expect(result.current.messages).toEqual([]);
+
+  act(() => { window.dispatchEvent(new Event('voice-input-socket-open')); });
+  await waitFor(() => {
+    expect(result.current.messages.map(row => row.id)).toEqual([`audio-message:${newRow.request_id}`]);
+  });
 });
 
 it('returns a storage error when the first history reads time out and allows the next send', async () => {

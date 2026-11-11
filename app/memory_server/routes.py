@@ -102,6 +102,7 @@ from .runtime import app
 
 class HistoryRequest(BaseModel):
     input_history: str
+    flush_pending: bool = False
     language: str | None = None
     render_language: str | None = None
     # Theater archive request id; /cache accepts it only on a theater episode write.
@@ -1290,6 +1291,17 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
         gates._touch_activity()
         try:
             input_history = convert_to_messages(json.loads(request.input_history))
+            if request.flush_pending:
+                if input_history or request.idempotency_key:
+                    return {"status": "error", "message": "pending flush needs an empty unkeyed batch"}
+                async with runtime._get_settle_lock(lanlan_name):
+                    try:
+                        persisted = await runtime.recent_history_manager.update_history([], lanlan_name, compress=False)
+                    except RecentHistoryWriteBlocked as exc:
+                        return _recent_history_write_rejection(exc)
+                if persisted is not True:
+                    return {"status": "error", "message": "pending recent history not persisted"}
+                return {"status": "cached", "count": 0}
             if not input_history:
                 if _KEYED_CACHE_KEY_RE.fullmatch(str(request.idempotency_key or "").strip()) is not None:
                     # Keyed writes cannot use the empty-batch-is-cached shortcut: callers would treat diary writing as complete.

@@ -263,6 +263,53 @@ async def test_connector_retries_only_a_confirmed_pre_write_rejection(monkeypatc
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_shutdown_flush_writes_pending_recent_history_without_replaying_the_turn(monkeypatch, tmp_path):
+    from app.memory_server import gates, post_turn, routes, runtime
+    from memory.recent import CompressedRecentHistoryManager
+    from utils import recent_file
+    from utils.cloudsave_runtime import ROOT_MODE_NORMAL
+
+    recent_path = tmp_path / "Neko" / "recent.json"
+    character_data = (None, None, None, None, {}, None, None, None, {"Neko": str(recent_path)})
+    config = SimpleNamespace(
+        memory_dir=tmp_path,
+        load_root_state=lambda: {"mode": ROOT_MODE_NORMAL},
+        get_character_data=lambda: character_data,
+        aget_character_data=AsyncMock(return_value=character_data),
+    )
+    monkeypatch.setattr("memory.recent.get_config_manager", lambda: config)
+    monkeypatch.setattr("utils.cloudsave_runtime.fence.is_cloudsave_disabled_due_to_local_state_unavailable", lambda: False)
+    recent = CompressedRecentHistoryManager()
+    time_index, outbox = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(runtime, "recent_history_manager", recent)
+    monkeypatch.setattr(runtime, "time_manager", SimpleNamespace(astore_conversation=time_index))
+    monkeypatch.setattr(gates, "_aclear_review_clean", AsyncMock())
+    monkeypatch.setattr(post_turn, "_spawn_outbox_post_turn_signals", outbox)
+    monkeypatch.setattr(routes, "_resolve_foreground_memory_language", AsyncMock(return_value="en"))
+    batch = routes.HistoryRequest(input_history=_build_history_request_payload([
+        {"role": "human", "content": "pending recording transcript"},
+    ]))
+    flush = routes.HistoryRequest(input_history="[]", flush_pending=True)
+
+    def fail_write(*_args, **_kwargs):
+        raise OSError("temporary recent.json write failure")
+
+    with monkeypatch.context() as failed:
+        failed.setattr(recent_file, "write_recent_payload_unlocked", fail_write)
+        assert (await routes.cache_conversation(batch, "Neko"))["status"] == "cached"
+        assert (await routes.cache_conversation(flush, "Neko"))["status"] == "error"
+        assert not recent_path.exists()
+
+    assert (await routes.cache_conversation(flush, "Neko"))["status"] == "cached"
+    assert (await routes.cache_conversation(flush, "Neko"))["status"] == "cached"
+    assert recent_path.read_text(encoding="utf-8").count("pending recording transcript") == 1
+    assert recent._pending_batches("Neko") == []
+    time_index.assert_awaited_once()
+    outbox.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 @pytest.mark.parametrize("blocked_at_recent", [True, False], ids=["before-write", "after-recent"])
 async def test_process_only_marks_rejection_before_history_write(monkeypatch, blocked_at_recent):
     from app.memory_server import gates, routes, runtime

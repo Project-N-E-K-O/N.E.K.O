@@ -777,6 +777,7 @@
         "audioMessageSending": "Enviando…",
         "audioMessageCancel": "Descartar grabación",
         "audioMessageMicrophoneError": "El micrófono no está disponible. Revisa el permiso y vuelve a intentarlo.",
+        "exportAudioOmitted": "La exportación no incluye mensajes de voz ni transcripciones. Puedes consultarlos en el historial del chat.",
         "audioMessageSendError": "No se pudo confirmar la entrega. Revisa la conversación antes de volver a grabar.",
         "audioMessageBusy": "La conversación está ocupada. Vuelve a enviar la grabación cuando esté lista.",
         "miniGameInviteTitle": "Invitación a minijuego",
