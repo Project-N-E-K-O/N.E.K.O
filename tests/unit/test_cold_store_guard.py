@@ -19,6 +19,8 @@ import ast
 import re
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 
 # Names of the cold directories and of the helpers that resolve them.
@@ -145,14 +147,15 @@ def test_cloud_save_manifest_leaves_cold_storage_out():
         assert not top.startswith(cold_store.FACT_COLD_DIRNAME), name
 
 
-def test_a_real_cloud_save_export_leaves_cold_storage_behind(tmp_path):
+@pytest.mark.parametrize("export", ["full", "single_character"])
+def test_a_real_cloud_save_export_leaves_cold_storage_behind(tmp_path, export):
     """The manifest check above, end to end: export a character holding cold shards."""
     import json as _json
 
     from memory import cold_store
     from memory.archive_shards import append_to_shard_sync
     from tests.unit.test_cloudsave_runtime import _make_config_manager, _write_runtime_state
-    from utils.cloudsave_runtime import export_local_cloudsave_snapshot
+    from utils.cloudsave_runtime import export_cloudsave_character_unit, export_local_cloudsave_snapshot
 
     cm = _make_config_manager(tmp_path)
     _write_runtime_state(cm)
@@ -164,7 +167,10 @@ def test_a_real_cloud_save_export_leaves_cold_storage_behind(tmp_path):
     append_to_shard_sync(cold_store.cold_dir(str(character_dir), "persona"),
                          [{"id": "p1", "text": "ZQXCOLDPERSONATEXT", "entity_key": "master"}])
 
-    export_local_cloudsave_snapshot(cm)
+    if export == "full":
+        export_local_cloudsave_snapshot(cm)
+    else:
+        export_cloudsave_character_unit(cm, "小满")
 
     exported = [path for path in Path(cm.cloudsave_dir).rglob("*") if path.is_file()]
     # Ordinary memory goes out...
