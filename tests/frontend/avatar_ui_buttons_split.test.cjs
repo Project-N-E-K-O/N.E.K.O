@@ -21,6 +21,7 @@ const PART_NAMES = [
     'methods-state-and-cleanup.js',
 ];
 const STANDALONE_PART_NAMES = [
+    'collision-deformation.js',
     'edge-peek-controller.js',
     'idle-desktop-window-edge-peek.js',
     'idle-desktop-window-gravity.js',
@@ -58,6 +59,11 @@ function loadMixin() {
         location: { href: 'http://127.0.0.1/' },
         addEventListener(type, listener) { listeners.set(type, listener); },
         removeEventListener(type) { listeners.delete(type); },
+        dispatchEvent(event) {
+            const listener = listeners.get(event && event.type);
+            if (typeof listener === 'function') listener.call(this, event);
+            return true;
+        },
     };
     const cancelledAnimationFrames = [];
     const context = vm.createContext({
@@ -190,8 +196,26 @@ test('Cat Mind dry-run applies the resource preflight to every registered action
         'cat1_eat_snack',
         'cat1_small_move',
         'cat1_play_yarn',
+        'cat1_idle_random',
+        'cat1_inactive_sad',
         'cat2_nap_feedback',
         'cat3_sleep_feedback',
+        'cat1_happy',
+        'cat1_touch',
+        'cat1_cosplay_1',
+        'cat1_change',
+        'cat1_cosplay_2',
+        'cat1_eat_2',
+        'cat1_eat_3',
+        'cat1_laugh',
+        'cat1_lion_dance',
+        'cat1_love_1',
+        'cat1_mouse',
+        'cat1_wave',
+        'cat1_sad',
+        'cat1_scared',
+        'cat1_stroke',
+        'cat1_wagging',
         'cat1_hiss_stretch',
     ];
     const requests = [];
@@ -208,4 +232,217 @@ test('Cat Mind dry-run applies the resource preflight to every registered action
         assert.equal(decision.reason, 'appearance_unavailable', actionId);
     }
     assert.deepEqual(requests, actionIds);
+});
+
+test('idle-random missing-art diagnostics match the provider rejection', () => {
+    const { window, context } = loadMixin();
+    const container = { style: { display: 'block' }, getAttribute: () => '' };
+    const button = {
+        __nekoIdleCat1Journey: { profile: { idleSubstate: 'idle' }, substate: 'idle', actionSettled: true },
+        querySelector: () => null,
+    };
+    window.NekoCatResourceRegistry = {
+        getActionCapabilities: () => ({ available: true, reason: 'allowed' }),
+    };
+    Object.assign(context, {
+        _findNekoCatMindVisibleButtonForTier: () => button,
+        _getNekoIdleReturnContainerFromButton: () => container,
+        _getActiveNekoIdleReturnTier: () => 'cat1',
+        _isNekoCatMindButtonContainerVisible: () => true,
+        _isAnyNekoCatMindReturnPending: () => false,
+        _isNekoCatMindTransitionActive: () => false,
+        _isNekoIdleCompactSurfaceDragging: () => false,
+        _isAnyNekoIdleCat1IndependentActionActive: () => false,
+        _isNekoCatMindAudioActionActive: () => false,
+        _isNekoIdleCat1EdgePeekActive: () => false,
+        _isNekoIdleReturnDragActionBlocking: () => false,
+        _isAnyNekoIdleReturnDragActionBlocking: () => false,
+    });
+
+    const decision = window.NekoCatMindActionProviders.dryRun('cat1_idle_random');
+    assert.equal(decision.allowed, false);
+    assert.equal(decision.reason, 'missing_art');
+    assert.deepEqual(
+        Array.from(decision.detail.checks)
+            .filter((check) => check.id === 'return_art_ready')
+            .map((check) => ({ id: check.id, passed: check.passed })),
+        [{ id: 'return_art_ready', passed: false }],
+    );
+});
+
+test('visual-only actions stay callable presentations without becoming Cat Mind actions', () => {
+    const { window, context } = loadMixin();
+    const requests = [];
+    const presentationCalls = [];
+    context._requestNekoIdleCat1VisualActionPresentation = (key, options) => {
+        presentationCalls.push([key, options && options.auditId]);
+        return true;
+    };
+    window.NekoCatResourceRegistry = {
+        getActionCapabilities(actionId) {
+            requests.push(actionId);
+            return { available: true, reason: '' };
+        },
+    };
+
+    const visualActions = [
+        ['happy', 'cat1_happy', 'requestCat1Happy'],
+        ['touch', 'cat1_touch', 'requestCat1Touch'],
+        ['cosplay1', 'cat1_cosplay_1', 'requestCat1Cosplay1'],
+        ['change', 'cat1_change', 'requestCat1Change'],
+        ['cosplay2', 'cat1_cosplay_2', 'requestCat1Cosplay2'],
+        ['eat2', 'cat1_eat_2', 'requestCat1Eat2'],
+        ['eat3', 'cat1_eat_3', 'requestCat1Eat3'],
+        ['laugh', 'cat1_laugh', 'requestCat1Laugh'],
+        ['lionDance', 'cat1_lion_dance', 'requestCat1LionDance'],
+        ['love1', 'cat1_love_1', 'requestCat1Love1'],
+        ['mouse', 'cat1_mouse', 'requestCat1Mouse'],
+        ['wave', 'cat1_wave', 'requestCat1Wave'],
+        ['sad', 'cat1_sad', 'requestCat1Sad'],
+        ['scared', 'cat1_scared', 'requestCat1Scared'],
+        ['stroke', 'cat1_stroke', 'requestCat1Stroke'],
+        ['wagging', 'cat1_wagging', 'requestCat1Wagging'],
+    ];
+    for (const [key, actionId, requestName] of visualActions) {
+        assert.equal(typeof window.NekoCatIdlePresentation[requestName], 'function', requestName);
+        assert.equal(window.NekoCatIdlePresentation[requestName]({ auditId: actionId }), true, requestName);
+        const decision = window.NekoCatMindActionProviders.dryRun(actionId);
+        assert.equal(decision.allowed, false, actionId);
+        assert.equal(decision.reason, 'unknown_action', actionId);
+    }
+    assert.deepEqual(presentationCalls, visualActions.map(([key, actionId]) => [key, actionId]));
+    assert.deepEqual(requests, visualActions.map(([, actionId]) => actionId));
+});
+
+test('grouped CAT1 idle random request selects one member and reports one Cat Mind lifecycle', () => {
+    const { window, context, listeners } = loadMixin();
+    const acknowledgements = [];
+    const results = [];
+    let selectedKey = '';
+    let terminal = null;
+    let picks = 0;
+    const state = { profile: { idleSubstate: 'idle' }, substate: 'idle', actionSettled: true };
+    const button = {
+        __nekoIdleCat1Journey: state,
+        querySelector: (selector) => selector === '.neko-idle-return-art' ? {} : null,
+    };
+    Object.assign(context, {
+        CustomEvent: class {
+            constructor(type, init = {}) { this.type = type; this.detail = init.detail || {}; }
+        },
+        _findNekoCatMindVisibleButtonForTier: () => button,
+        _getActiveNekoIdleReturnTier: () => 'cat1',
+        _isNekoCatMindButtonContainerVisible: () => true,
+        _isAnyNekoCatMindReturnPending: () => false,
+        _isNekoCatMindTransitionActive: () => false,
+        _isNekoIdleCompactSurfaceDragging: () => false,
+        _isAnyNekoIdleCat1IndependentActionActive: () => false,
+        _isNekoIdleCat1IndependentActionActive: () => false,
+        _isNekoCatMindAudioActionActive: () => false,
+        _isNekoIdleCat1EdgePeekActive: () => false,
+        _isNekoIdleReturnDragActionBlocking: () => false,
+        _isAnyNekoIdleReturnDragActionBlocking: () => false,
+        _pickNekoIdleCat1RandomVisualActionKey: () => { picks += 1; return 'love1'; },
+        _playNekoIdleCat1VisualAction: (_button, actionKey, options) => {
+            selectedKey = actionKey;
+            terminal = options.onTerminal;
+            return true;
+        },
+    });
+    window.NekoCatResourceRegistry = {
+        getActionCapabilities(actionId) {
+            return { available: actionId === 'cat1_idle_random', reason: '' };
+        },
+    };
+    window.nekoCatMind = {
+        acknowledgeActionRequest(payload) {
+            acknowledgements.push(payload);
+            return true;
+        },
+    };
+    window.addEventListener('neko:cat-mind:action-result', (event) => results.push(event.detail));
+
+    const requestListener = listeners.get('neko:cat-mind:action-request');
+    requestListener({ detail: {
+        source: 'cat_mind',
+        requestId: 'idle-random-request',
+        actionId: 'cat1_idle_random',
+        tier: 'cat1',
+    }});
+
+    assert.equal(picks, 1);
+    assert.equal(selectedKey, 'love1');
+    assert.equal(typeof terminal, 'function');
+    assert.deepEqual(acknowledgements.map(({ actionId, status }) => ({ actionId, status })), [
+        { actionId: 'cat1_idle_random', status: 'accepted' },
+        { actionId: 'cat1_idle_random', status: 'started' },
+    ]);
+    terminal('done', { reason: 'cat1-love-1-action-finished' });
+    terminal('done', { reason: 'duplicate' });
+    assert.equal(results.length, 1);
+    assert.equal(results[0].actionId, 'cat1_idle_random');
+    assert.equal(results[0].source, 'cat_mind');
+    assert.equal(results[0].detail.actionKey, 'love1');
+});
+
+test('inactive sad request runs the fixed sad profile with one Cat Mind lifecycle', () => {
+    const { window, context, listeners } = loadMixin();
+    const acknowledgements = [];
+    const results = [];
+    let selectedKey = '';
+    let terminal = null;
+    const button = { querySelector: () => ({}) };
+    Object.assign(context, {
+        CustomEvent: class {
+            constructor(type, init = {}) { this.type = type; this.detail = init.detail || {}; }
+        },
+        _findNekoCatMindVisibleButtonForTier: () => button,
+        _getActiveNekoIdleReturnTier: () => 'cat1',
+        _isNekoCatMindButtonContainerVisible: () => true,
+        _isNekoCatMindCat1PositionBusy: () => false,
+        _isAnyNekoCatMindReturnPending: () => false,
+        _isNekoCatMindTransitionActive: () => false,
+        _isNekoIdleCompactSurfaceDragging: () => false,
+        _isAnyNekoIdleCat1IndependentActionActive: () => false,
+        _isNekoIdleCat1IndependentActionActive: () => false,
+        _isNekoCatMindAudioActionActive: () => false,
+        _isNekoIdleCat1EdgePeekActive: () => false,
+        _isNekoIdleReturnDragActionBlocking: () => false,
+        _isAnyNekoIdleReturnDragActionBlocking: () => false,
+        _playNekoIdleCat1VisualAction: (_button, actionKey, options) => {
+            selectedKey = actionKey;
+            terminal = options.onTerminal;
+            return true;
+        },
+    });
+    window.NekoCatResourceRegistry = {
+        getActionCapabilities(actionId) {
+            return { available: actionId === 'cat1_inactive_sad', reason: '' };
+        },
+    };
+    window.nekoCatMind = {
+        acknowledgeActionRequest(payload) {
+            acknowledgements.push(payload);
+            return true;
+        },
+    };
+    window.addEventListener('neko:cat-mind:action-result', (event) => results.push(event.detail));
+
+    listeners.get('neko:cat-mind:action-request')({ detail: {
+        source: 'cat_mind',
+        requestId: 'inactive-sad-request',
+        actionId: 'cat1_inactive_sad',
+        tier: 'cat1',
+    }});
+
+    assert.equal(selectedKey, 'sad');
+    assert.equal(typeof terminal, 'function');
+    assert.deepEqual(acknowledgements.map(({ actionId, status }) => ({ actionId, status })), [
+        { actionId: 'cat1_inactive_sad', status: 'accepted' },
+        { actionId: 'cat1_inactive_sad', status: 'started' },
+    ]);
+    terminal('done', { reason: 'cat1-sad-action-finished' });
+    assert.equal(results.length, 1);
+    assert.equal(results[0].actionId, 'cat1_inactive_sad');
+    assert.equal(results[0].detail.actionKey, 'sad');
 });

@@ -1670,6 +1670,183 @@ async def test_oauth_guest_bind_treats_malformed_challenge_as_best_effort(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "adopt_status,adopt_detail,expected_bind",
+    [
+        (200, None, {"bound": True, "error": None}),
+        (409, "legacy_client_rebind_required", {"bound": False, "error": "legacy_client_rebind_required"}),
+        (409, "client_already_bound_to_other_user", {"bound": False, "error": "client_already_bound_to_other_user"}),
+    ],
+)
+async def test_oauth_guest_bind_adopts_proof_for_legacy_client(
+    monkeypatch,
+    adopt_status,
+    adopt_detail,
+    expected_bind,
+):
+    requests: list[httpx.Request] = []
+    proof_stored = False
+
+    def handle(request):
+        nonlocal proof_stored
+        requests.append(request)
+        path = request.url.path
+        if path == "/api/auth/bind-client/challenge":
+            return httpx.Response(200, json={"binding_challenge": "C" * 43})
+        if path == "/api/clients/bind-approval":
+            if proof_stored:
+                return httpx.Response(204)
+            return httpx.Response(403, json={"detail": "legacy_client_rebind_required"})
+        if path == "/api/clients/adopt-proof":
+            if adopt_status < 400:
+                proof_stored = True
+                return httpx.Response(adopt_status, json={"client_id": "local-client"})
+            return httpx.Response(adopt_status, json={"detail": adopt_detail})
+        if path == "/api/auth/bind-client":
+            return httpx.Response(200, json={"client_id": "local-client"})
+        raise AssertionError(f"unexpected {request.method} {request.url}")
+
+    async def unexpected_register(*_args, **_kwargs):
+        raise AssertionError("legacy rows must not trigger a forced re-register")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    try:
+        monkeypatch.setattr(O.httpx, "AsyncClient", lambda **kwargs: client)
+        monkeypatch.setattr(C, "_get_client_credentials", lambda: ("local-client", "P" * 43))
+        monkeypatch.setattr(
+            O.client_registration, "ensure_client_registered", unexpected_register
+        )
+        bind = await O._oauth_guest_bind("https://community.example", "platform-access")
+    finally:
+        await client.aclose()
+
+    assert bind == expected_bind
+    adopt = [r for r in requests if r.url.path == "/api/clients/adopt-proof"]
+    assert len(adopt) == 1
+    assert adopt[0].headers["Authorization"] == "Bearer platform-access"
+    assert json.loads(adopt[0].content) == {"client_id": "local-client", "client_proof": "P" * 43}
+    approvals = [r for r in requests if r.url.path == "/api/clients/bind-approval"]
+    assert len(approvals) == (2 if adopt_status < 400 else 1)
+    assert all(json.loads(r.content)["client_proof"] == "P" * 43 for r in approvals)
+    assert any(r.url.path == "/api/auth/bind-client" for r in requests) is (adopt_status < 400)
+
+
+@pytest.mark.unit
+async def test_oauth_guest_bind_keeps_legacy_code_when_adopt_proof_times_out(monkeypatch):
+    requests: list[httpx.Request] = []
+
+    def handle(request):
+        requests.append(request)
+        path = request.url.path
+        if path == "/api/auth/bind-client/challenge":
+            return httpx.Response(200, json={"binding_challenge": "C" * 43})
+        if path == "/api/clients/bind-approval":
+            return httpx.Response(403, json={"detail": "legacy_client_rebind_required"})
+        if path == "/api/clients/adopt-proof":
+            raise httpx.ReadTimeout("timed out", request=request)
+        raise AssertionError(f"unexpected {request.method} {request.url}")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    try:
+        monkeypatch.setattr(O.httpx, "AsyncClient", lambda **kwargs: client)
+        monkeypatch.setattr(C, "_get_client_credentials", lambda: ("local-client", "P" * 43))
+        bind = await O._oauth_guest_bind("https://community.example", "platform-access")
+    finally:
+        await client.aclose()
+
+    assert bind == {"bound": False, "error": "legacy_client_rebind_required"}
+    assert [r.url.path for r in requests].count("/api/clients/bind-approval") == 1
+    assert not any(r.url.path == "/api/auth/bind-client" for r in requests)
+
+
+@pytest.mark.unit
+async def test_oauth_guest_bind_refuses_plaintext_proof_transport(monkeypatch):
+    class _NoNetwork:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("client_proof must not leave over plaintext HTTP")
+
+    monkeypatch.setattr(O.httpx, "AsyncClient", _NoNetwork)
+    monkeypatch.setattr(C, "_get_client_credentials", lambda: ("local-client", "P" * 43))
+
+    bind = await O._oauth_guest_bind("http://community.example", "platform-access")
+
+    assert bind == {"bound": False, "error": "insecure_transport"}
+
+
+@pytest.mark.unit
+async def test_oauth_guest_bind_does_not_adopt_proof_on_proof_mismatch(monkeypatch):
+    requests: list[httpx.Request] = []
+
+    def handle(request):
+        requests.append(request)
+        path = request.url.path
+        if path == "/api/auth/bind-client/challenge":
+            return httpx.Response(200, json={"binding_challenge": "C" * 43})
+        if path == "/api/clients/bind-approval":
+            return httpx.Response(403, json={"detail": "invalid_client_proof"})
+        raise AssertionError(f"unexpected {request.method} {request.url}")
+
+    async def failed_register(*_args, **_kwargs):
+        return False
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    try:
+        monkeypatch.setattr(O.httpx, "AsyncClient", lambda **kwargs: client)
+        monkeypatch.setattr(C, "_get_client_credentials", lambda: ("local-client", "P" * 43))
+        monkeypatch.setattr(O.client_registration, "ensure_client_registered", failed_register)
+        bind = await O._oauth_guest_bind("https://community.example", "platform-access")
+    finally:
+        await client.aclose()
+
+    assert bind == {"bound": False, "error": "invalid_client_proof"}
+    assert not any(r.url.path == "/api/clients/adopt-proof" for r in requests)
+
+
+@pytest.mark.unit
+async def test_oauth_callback_explains_legacy_client_without_proof(tmp_path, monkeypatch):
+    pending = tmp_path / "community_oauth_pending.json"
+    monkeypatch.setattr(O, "_oauth_pending_path", lambda: pending)
+    monkeypatch.setattr(C, "_auth_path", lambda: tmp_path / "community_auth.json")
+    monkeypatch.setattr(C, "_social_session_path", lambda: tmp_path / "social_session.json")
+    pending.write_text(
+        json.dumps(
+            {
+                "state": "expected-state",
+                "code_verifier": "verifier",
+                "redirect_uri": "http://127.0.0.1:48911/oauth/callback",
+                "client_id": "neko-servers-desktop-dev",
+                "auth_public_url": "https://auth.example",
+                "expires_at": time.time() + 60,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "_social_base_url", lambda: "https://community.example")
+
+    async def fake_exchange(**_kwargs):
+        return {"access_token": "access", "refresh_token": "refresh"}
+
+    async def fake_bootstrap(_social_base, _access_token):
+        return {"user": {"id": USER_ID}}
+
+    async def fake_bind(_social_base, _access_token):
+        return {"bound": False, "error": "legacy_client_rebind_required"}
+
+    monkeypatch.setattr(O, "_exchange_oauth_code", fake_exchange)
+    monkeypatch.setattr(O, "_bootstrap_session", fake_bootstrap)
+    monkeypatch.setattr(O, "_oauth_guest_bind", fake_bind)
+    monkeypatch.setattr(C, "_save_auth_unlocked", lambda _payload: True)
+    monkeypatch.setattr(C, "_save_social_session_unlocked", lambda *_args, **_kwargs: True)
+
+    response = await O._handle_oauth_callback("auth-code", "expected-state")
+
+    assert response.status_code == 200
+    text = response.body.decode("utf-8")
+    assert "云端还没有这台旧设备的证明记录" in text
+    assert "联系管理员" in text
+
+
+@pytest.mark.unit
 def test_legacy_login_returns_410(oauth_app):
     client, _auth, _social, _pending = oauth_app
     response = client.post(

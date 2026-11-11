@@ -90,6 +90,10 @@ if TYPE_CHECKING:
 
 logger = get_module_logger(__name__, "Memory")
 
+# A pair nominated because both facts cite the same chat message, not because
+# their wording overlaps. A real text match is always above zero.
+SHARED_SOURCE_OVERLAP = 0.0
+
 # ``extraction_path`` stamped on facts the AI-aware pass (path B) writes. Path
 # B lets the model label each fact's source itself; the marker lets those
 # labels be audited later against the conversation (who really said it).
@@ -3625,6 +3629,7 @@ class FactStore:
         source_messages: list | None = None,
         source_accepted: list[dict] | None = None,
         extraction_path: str | None = None,
+        progress_pass: str | None = None,
     ) -> list[dict]:
         # Collect near-duplicate pairs under lock, submit only afterward: submission needs
         # FactDedupResolver's per-character lock, while aresolve reverses the order,
@@ -3709,6 +3714,10 @@ class FactStore:
                         if extraction_path is not None else {}
                     ),
                 )
+                if progress_pass is not None and memory_subject is None:
+                    # Same lock as the facts above: a snapshot never carries this
+                    # progress without the facts extracted from those messages.
+                    await self._arecord_extraction_progress_locked(lanlan_name, progress_pass, source_messages)
         finally:
             if near_dup_pairs:
                 # Only committed pairs reach this basket. Release persist before
@@ -3716,6 +3725,32 @@ class FactStore:
                 from utils.asyncio_retirement import await_retirement
                 await await_retirement(self._aenqueue_near_dup_pairs(lanlan_name, near_dup_pairs, durable=True))
         return created
+
+    async def aextraction_progress(self, lanlan_name: str) -> dict:
+        """Message identities each extraction pass has already read, on any device."""
+        from memory import extraction_progress
+        directory = os.path.join(self._config_manager.memory_dir, lanlan_name)
+        return await asyncio.to_thread(extraction_progress.read, directory)
+
+    async def arecord_extraction_progress(self, lanlan_name: str, passage: str, messages: list | None) -> None:
+        """Record a pass over messages that produced no fact to persist."""
+        async with self._get_persist_alock(lanlan_name):
+            await self._arecord_extraction_progress_locked(lanlan_name, passage, messages)
+
+    async def _arecord_extraction_progress_locked(self, lanlan_name: str, passage: str, messages: list | None) -> None:
+        from memory import extraction_progress
+        processed = extraction_progress.identities(messages)
+        if not processed:
+            return
+        directory = os.path.join(self._config_manager.memory_dir, lanlan_name)
+
+        def save():
+            from utils.cloudsave_runtime import cloudsave_writable_transaction
+            target = Path(directory) / extraction_progress.STATE_FILE
+            with cloudsave_writable_transaction(self._config_manager, operation='save', target=target):
+                extraction_progress.record_processed(directory, passage, processed)
+        from memory.recent import _await_recent_mutation_to_completion
+        await _await_recent_mutation_to_completion(save)
 
     async def apersist_scoped_facts(
         self,
@@ -4317,6 +4352,24 @@ class FactStore:
                             )
                         continue
 
+                if arbitration_hit is None and memory_subject is None and self._dedup_resolver is not None:
+                    # The same chat lines can reach extraction twice: on two devices, or
+                    # after their progress entry aged out. Sharing a source proves nothing
+                    # about meaning, so the pair only goes to the arbitration a text
+                    # near-duplicate gets; nothing is folded together without its verdict.
+                    cited = set(source_provenance.get(id(fact), {}).get('source_message_ids') or ())
+                    if cited:
+                        from memory.scopes import is_legacy_private_entry as _private
+                        # One message often yields several facts; those of this batch are
+                        # siblings, not repeats, so only rows from an earlier pass qualify.
+                        siblings = {id(row) for row in new_facts}
+                        arbitration_hit = next((
+                            (row, SHARED_SOURCE_OVERLAP) for row in existing_facts
+                            if isinstance(row, dict) and row.get('id') and not row.get('absorbed')
+                            and id(row) not in siblings
+                            and (row.get('entity') or 'master') == entity and _private(row)
+                            and cited & set(row.get('source_message_ids') or ())), None)
+
                 created_at_iso = datetime.now().isoformat()
                 # Event timing (schema v2): LLM outputs relative offsets + units; system
                 # resolves ISO timestamps anchored at created_at. Facts lack temporal_scope, but event
@@ -4700,7 +4753,7 @@ class FactStore:
                 # and queue cosine enters arbitration prompts unchanged, misrepresenting evidence strength
                 # if substituted. Store text overlap separately; detector identifies its origin.
                 'text_overlap': overlap,
-                'detector': 'fts_near_dup',
+                'detector': 'shared_source' if overlap == SHARED_SOURCE_OVERLAP else 'fts_near_dup',
             })
         if not payload:
             return True
@@ -5105,7 +5158,7 @@ class FactStore:
     async def aextract_facts_and_detect_signals(
         self, lanlan_name: str, messages: list,
         reflection_engine=None, persona_manager=None,
-        *, conversation_at: datetime | None = None,
+        *, conversation_at: datetime | None = None, judge: bool = True,
     ) -> tuple[list[dict], list[dict], list[str]]:
         """Two-stage extraction (RFC §3.4.2) with drain semantics.
 
@@ -5159,6 +5212,7 @@ class FactStore:
         source_accepted: list[dict] = []
         persisted_this_round = await self._apersist_new_facts(
             lanlan_name, extracted, source_messages=messages, source_accepted=source_accepted,
+            progress_pass='a',
         )
         # The pre-dedup result, not the persisted rows: a fact that dedup folded into
         # an existing one still has to renew its pinned entry. Candidates rejected by
@@ -5167,6 +5221,26 @@ class FactStore:
             lanlan_name, source_accepted, conversation_at=conversation_at,
         )
 
+        if not judge:
+            # Judging belongs to the device that organizes this character. The facts
+            # stay unjudged, travel in the snapshot that way, and are judged there.
+            return persisted_this_round, [], []
+        signals, batch_fact_ids = await self.adetect_pending_signals(
+            lanlan_name, reflection_engine=reflection_engine, persona_manager=persona_manager,
+        )
+        return persisted_this_round, signals, batch_fact_ids
+
+    async def adetect_pending_signals(
+        self, lanlan_name: str, reflection_engine=None, persona_manager=None,
+    ) -> tuple[list[dict], list[str]]:
+        """Stage-2 alone: judge facts still waiting, wherever they were extracted.
+
+        Returns ``(signals, batch_fact_ids)`` with the contract of
+        ``aextract_facts_and_detect_signals``: mark the batch processed only
+        after every signal was applied. Facts another device extracted arrive
+        unjudged in a snapshot, so the organizing device calls this without
+        needing a conversation of its own.
+        """
         # Drain all signal_processed=False facts (historical tail + current additions).
         # Old facts lacking this field default True, avoiding months of historical facts
         # reentering Stage-2 after upgrade.
@@ -5208,7 +5282,7 @@ class FactStore:
             if stray_ids:
                 await self.amark_signal_processed(lanlan_name, stray_ids)
         if not unprocessed:
-            return persisted_this_round, [], []
+            return [], []
 
         # Sort importance DESC + creation time ASC; take first N as this batch.
         # Leave excess signal_processed=False for next idle tick.
@@ -5236,21 +5310,21 @@ class FactStore:
                 f"[FactStore] {lanlan_name}: _aload_signal_targets 失败，"
                 f"跳过本轮 Stage-2（batch 保持未处理下轮重试）: {e}"
             )
-            return persisted_this_round, [], []
+            return [], []
         if not existing_observations:
             # Cold start: no confirmed reflection/persona observation targets yet.
             # Leave unmarked and retry next round (same semantics as before scope).
-            return persisted_this_round, [], []
+            return [], []
 
         signals = await self._allm_detect_signals(
             lanlan_name, batch, existing_observations,
         )
         if signals is None:
             # Stage-2 LLM failure: return no IDs; caller leaves unmarked and retries same batch next round.
-            return persisted_this_round, [], []
+            return [], []
 
         # Caller still marks only after every returned signal dispatch succeeds.
-        return persisted_this_round, signals, [
+        return signals, [
             fact['id'] for fact in batch if fact.get('id')
         ]
 
@@ -5337,6 +5411,8 @@ class FactStore:
                     f"(fail_closed caller)"
                 )
         if not extracted:
+            if memory_subject is None:
+                await self.arecord_extraction_progress(lanlan_name, 'a', messages)
             return []
         source_accepted: list[dict] = []
         created = await self._apersist_new_facts(
@@ -5346,6 +5422,7 @@ class FactStore:
             reconciled_facts=reconciled_facts,
             source_messages=messages,
             source_accepted=source_accepted,
+            progress_pass='a',
         )
         if memory_subject is None:
             # Private chat only: the pinned section renders into the private
@@ -6037,12 +6114,15 @@ class FactStore:
             # A run that found nothing new is data too: how often path B
             # adds nothing. Failures (None, above) stay unlogged here.
             self._log_path_b_labels(lanlan_name, [], [])
+            if coerce_subject(subject) is None:
+                await self.arecord_extraction_progress(lanlan_name, 'b', messages)
             return []
         source_accepted: list[dict] = []
         persisted = await self._apersist_new_facts(
             lanlan_name, extracted, default_source='ai_disclosure', subject=subject, source_messages=messages,
             source_accepted=source_accepted,
             extraction_path=EXTRACTION_PATH_B,
+            progress_pass='b',
         )
         self._log_path_b_labels(lanlan_name, extracted, persisted)
         if coerce_subject(subject) is None:
@@ -6477,6 +6557,9 @@ class FactStore:
         Returns: True when one fact was processed successfully; False when no
         candidate was found or processing failed.
         """
+        from memory import organizer
+        if not organizer.allowed(name):
+            return False
         from config.prompts.prompts_memory import MEMORY_RECHECK_FACT_PROMPT
         from memory.temporal import (
             normalize_event_when as _norm_when,

@@ -80,6 +80,10 @@ EXTRA_BODY_GEMINI_THINKING = {"extra_body": {"google": {"thinking_config": {"thi
 EXTRA_BODY_GEMINI_3 = {"extra_body": {"google": {"thinking_config": {"thinking_level": "low", "include_thoughts": False}}}}
 # Gemini 3: keep lowest thinking level (low), exposing thoughts separately without mixing into content.
 EXTRA_BODY_GEMINI_3_THINKING = {"extra_body": {"google": {"thinking_config": {"thinking_level": "low", "include_thoughts": True}}}}
+# Flash-Lite models sit on minimal: gemini-3.5-flash-lite already defaults to it (Google's 3.6 guide)
+# and 3.1-flash-lite accepts it, so low would only add billed thinking tokens.
+# Focused cognition pairs with the same low form as the rest of Gemini 3.
+EXTRA_BODY_GEMINI_3_MINIMAL = {"extra_body": {"google": {"thinking_config": {"thinking_level": "minimal", "include_thoughts": False}}}}
 
 EXTRA_BODY_OPENROUTER = {"reasoning": {"effort": "none"}}
 # OpenRouter: effort none→low (enable thinking at minimum effort).
@@ -212,9 +216,11 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "gemini-2.5-flash": EXTRA_BODY_GEMINI,
     "gemini-2.5-flash-lite": EXTRA_BODY_GEMINI,
     "gemini-3-flash-preview": EXTRA_BODY_GEMINI_3,
-    "gemini-3.1-flash-lite": EXTRA_BODY_GEMINI_3,
+    "gemini-3.1-flash-lite": EXTRA_BODY_GEMINI_3_MINIMAL,
     "gemini-3.5-flash": EXTRA_BODY_GEMINI_3,
+    "gemini-3.5-flash-lite": EXTRA_BODY_GEMINI_3_MINIMAL,
     "gemini-3.6-flash": EXTRA_BODY_GEMINI_3,
+    "gemini-3.7-flash": EXTRA_BODY_GEMINI_3,
     "gemini-3.8-flash": EXTRA_BODY_GEMINI_3,
     # OpenRouter format (provider/model): unified reasoning parameter.
     "google/gemini-2.5-flash": EXTRA_BODY_OPENROUTER_MINIMAL,
@@ -222,7 +228,9 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "google/gemini-3-flash-preview": EXTRA_BODY_OPENROUTER_MINIMAL,
     "google/gemini-3.1-flash-lite": EXTRA_BODY_OPENROUTER_MINIMAL,
     "google/gemini-3.5-flash": EXTRA_BODY_OPENROUTER_MINIMAL,
+    "google/gemini-3.5-flash-lite": EXTRA_BODY_OPENROUTER_MINIMAL,
     "google/gemini-3.6-flash": EXTRA_BODY_OPENROUTER_MINIMAL,
+    "google/gemini-3.7-flash": EXTRA_BODY_OPENROUTER_LOW,
     "google/gemini-3.8-flash": EXTRA_BODY_OPENROUTER_LOW,
     "qwen/qwen3.5-9b": EXTRA_BODY_OPENROUTER,
 }
@@ -264,6 +272,7 @@ _THINKING_ENABLE_FORM: dict[int, dict] = {
     id(EXTRA_BODY_CLAUDE): EXTRA_BODY_CLAUDE_THINKING,
     id(EXTRA_BODY_GEMINI): EXTRA_BODY_GEMINI_THINKING,
     id(EXTRA_BODY_GEMINI_3): EXTRA_BODY_GEMINI_3_THINKING,
+    id(EXTRA_BODY_GEMINI_3_MINIMAL): EXTRA_BODY_GEMINI_3_THINKING,
     id(EXTRA_BODY_OPENROUTER): EXTRA_BODY_OPENROUTER_THINKING,
     id(EXTRA_BODY_OPENROUTER_MINIMAL): EXTRA_BODY_OPENROUTER_THINKING,
 }
@@ -313,8 +322,8 @@ def focus_extra_body(model: str, base_url: str | None = None) -> dict | None:
 # vendor's rule, so every router-bound effort respects it even where a router accepts lower:
 # Claude has no none / minimal; Gemini 3.x cannot turn thinking off (no none) and bottoms out
 # at minimal, except the 3.x Pro models and gemini-3.7-flash / 3.8-flash at low; gemini-2.5-flash
-# and gpt-5-nano at minimal. The Pro models and 3.7-flash are not registered; Opper returns the
-# same 400 for them as for 3.8 (gemini/gemini-3-pro-preview is served by 3.1-pro-preview there).
+# and gpt-5-nano at minimal. The Pro models are not registered; Opper returns the same 400 for
+# them and 3.7-flash as for 3.8 (gemini/gemini-3-pro-preview is served by 3.1-pro-preview there).
 # Gemini 3.x evidence (2026-11-06): Google's Gemini 3.5 Flash guide lists MINIMAL / LOW / MEDIUM /
 # HIGH and the legacy thinking page marks minimal as an error on 3.8 Flash; Opper returns 400
 # "does not support reasoning_effort minimal; use thinking_level (low, medium, high)" for 3.8 and
@@ -402,8 +411,12 @@ OPPER_REASONING_EFFORT: dict[str, tuple[str, str]] = {
     "gemini/gemini-3.1-flash-lite": ("minimal", "low"),
     "gemini-3.5-flash": ("minimal", "low"),
     "gemini/gemini-3.5-flash": ("minimal", "low"),
+    "gemini-3.5-flash-lite": ("minimal", "low"),
+    "gemini/gemini-3.5-flash-lite": ("minimal", "low"),
     "gemini-3.6-flash": ("minimal", "low"),
     "gemini/gemini-3.6-flash": ("minimal", "low"),
+    "gemini-3.7-flash": ("low", "low"),
+    "gemini/gemini-3.7-flash": ("low", "low"),
     "gemini-3.8-flash": ("low", "low"),
     "gemini/gemini-3.8-flash": ("low", "low"),
 }

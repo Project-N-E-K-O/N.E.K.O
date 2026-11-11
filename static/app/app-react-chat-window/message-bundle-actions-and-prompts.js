@@ -282,6 +282,8 @@
     // CSS 的居中（top/left:50% + translate）。绝不退回 restorePosition() 的
     // positionWindowAtLeftMiddle() —— 那会把完整窗口甩到屏幕左中。
     I.restoreFullPosition = function restoreFullPosition() {
+        // Electron 完整窗自引入起就由桌面端按 fullChat 保存和恢复原生尺寸与位置。
+        if (document.body?.matches('.neko-electron-runtime[data-chat-host-kind="full"]')) return;
         if (I.isMobileWidth()) return;
         var shell = I.getShell();
         if (!shell) return;

@@ -74,13 +74,20 @@ class PromotionMixin:
         now = datetime.now()
         transitions = 0
         confirmed_ids: list[str] = []
+        facts = None
 
         for r in reflections:
             if r.get('status') != 'pending':
                 continue
             if evidence_score(r, now) < EVIDENCE_CONFIRMED_THRESHOLD:
                 continue
-            if awaits_user_signal(r):
+            if facts is None:
+                try:
+                    facts = self._facts_by_id(self._fact_store.load_facts_full(lanlan_name))
+                except Exception as e:  # noqa: BLE001
+                    logger.debug(f"[Reflection] {lanlan_name}: 读取事实失败，按已存的来源计数判断: {e}")
+                    facts = {}
+            if awaits_user_signal(r, facts):
                 continue
             r['status'] = 'confirmed'
             r['confirmed_at'] = now.isoformat()
@@ -99,6 +106,39 @@ class PromotionMixin:
                 )
         return transitions
 
+    @staticmethod
+    def _facts_by_id(facts) -> dict:
+        return {
+            f['id']: f for f in facts or ()
+            if isinstance(f, dict) and isinstance(f.get('id'), str)
+        }
+
+    def _facts_as_they_stand(self, lanlan_name: str):
+        """An async getter of every fact by id, archived ones included.
+
+        The promotion gates count a reflection's sources by these, so a fact
+        withdrawn or recognized as the user's own words since the counts were
+        saved is counted as it stands now. Read on first use only: most
+        passes reach no reflection the gate applies to. An unreadable store
+        gives an empty mapping, and the gates use the saved counts.
+        """
+        cache: list[dict] = []
+
+        async def facts() -> dict:
+            if not cache:
+                try:
+                    cache.append(self._facts_by_id(
+                        await self._fact_store.aload_facts_full(lanlan_name)
+                    ))
+                except Exception as e:  # noqa: BLE001
+                    logger.debug(
+                        f"[Reflection] {lanlan_name}: 读取事实失败，按已存的来源计数判断: {e}"
+                    )
+                    cache.append({})
+            return cache[0]
+
+        return facts
+
     async def aauto_promote_stale(self, lanlan_name: str) -> int:
         """P2.a.2: serialized by the character-level asyncio.Lock. Score-driven
         pending → confirmed (§3.9.1) + confirmed → promoted via merge-on-promote
@@ -110,6 +150,12 @@ class PromotionMixin:
         return count — they're a separate signal kept in
         `last_promote_attempt_at` / `promote_attempt_count` per reflection.
         """
+        from memory import organizer
+        if not organizer.allowed(lanlan_name):
+            # Another device organizes this character; its promotions arrive by snapshot.
+            # Group and member partitions never sync, so they keep their lifecycle here.
+            await self.aauto_promote_time_driven(lanlan_name, scoped_only=True)
+            return 0
         async with self._get_alock(lanlan_name):
             transitions = await self._aauto_promote_stale_locked(lanlan_name)
         # Promote pass runs OUTSIDE the per-character lock because each
@@ -150,6 +196,7 @@ class PromotionMixin:
         reflections = await self._aload_reflections_full(lanlan_name)
         now = datetime.now()
         attempts = 0
+        facts = self._facts_as_they_stand(lanlan_name)
         for r in reflections:
             if r.get('status') != 'confirmed':
                 continue
@@ -160,7 +207,7 @@ class PromotionMixin:
                 continue
             if evidence_score(r, now) < EVIDENCE_PROMOTED_THRESHOLD:
                 continue
-            if awaits_user_signal(r):
+            if awaits_user_signal(r, await facts()):
                 # Rests only on the AI's own words and the user never backed
                 # it: score alone does not write it into persona.
                 logger.debug(
@@ -198,6 +245,7 @@ class PromotionMixin:
         now = datetime.now()
         transitions = 0
         confirmed_ids: list[str] = []
+        facts = self._facts_as_they_stand(lanlan_name)
 
         for r in reflections:
             if r.get('status') != 'pending':
@@ -209,7 +257,7 @@ class PromotionMixin:
                 continue
             if evidence_score(r, now) < EVIDENCE_CONFIRMED_THRESHOLD:
                 continue
-            if awaits_user_signal(r):
+            if awaits_user_signal(r, await facts()):
                 # Only the AI's own words behind it and no confirmation from
                 # the user (an "engaged" reply adds score but not backing):
                 # stays pending, still eligible to be brought up.
@@ -239,7 +287,9 @@ class PromotionMixin:
         return transitions
 
     @staticmethod
-    def _time_driven_held_back(lanlan_name: str, reflection: dict, now: datetime) -> bool:
+    def _time_driven_held_back(
+        lanlan_name: str, reflection: dict, now: datetime, facts_by_id=None,
+    ) -> bool:
         """Whether the time-driven path must leave ``reflection`` where it is.
 
         Held back: net evidence below zero (the user turned against it), or
@@ -252,7 +302,7 @@ class PromotionMixin:
                 f"[Reflection] {lanlan_name}/{rid}: 净分为负，不按时间推进"
             )
             return True
-        if awaits_user_signal(reflection):
+        if awaits_user_signal(reflection, facts_by_id):
             logger.debug(
                 f"[Reflection] {lanlan_name}/{rid}: 只有 AI 自述、没有用户信号，"
                 f"不按时间推进"
@@ -321,6 +371,11 @@ class PromotionMixin:
         descriptors are excluded in both modes (fail-closed, never written to
         any persona).
         """
+        from memory import organizer
+        # Private reflections belong to the organizing device. This is a separate
+        # question from scoped_only: on a weak-memory device that mode must stay
+        # as the caller gave it, or scoped reflections would start entering persona.
+        private_here = organizer.allowed(lanlan_name)
         from config import (
             WEAK_MEMORY_AUTO_CONFIRM_DAYS,
             WEAK_MEMORY_AUTO_PROMOTE_DAYS,
@@ -336,13 +391,14 @@ class PromotionMixin:
             confirmed_ids: list[str] = []
             promoted_ids: list[str] = []
             denied_ids: list[str] = []
+            facts = self._facts_as_they_stand(lanlan_name)
 
             # Pass 1: pending → confirmed by created_at age
             for r in reflections:
                 if r.get('status') != 'pending':
                     continue
                 subj = subject_from_entry(r)
-                if scoped_only and subj is None:
+                if (scoped_only or not private_here) and subj is None:
                     continue
                 if subj is None and not is_legacy_private_entry(r):
                     # Corrupt partial subjects fail closed in both modes,
@@ -358,7 +414,7 @@ class PromotionMixin:
                 age_days = (now - created).total_seconds() / 86400
                 if age_days < WEAK_MEMORY_AUTO_CONFIRM_DAYS:
                     continue
-                if self._time_driven_held_back(lanlan_name, r, now):
+                if self._time_driven_held_back(lanlan_name, r, now, await facts()):
                     continue
                 r['status'] = 'confirmed'
                 r['confirmed_at'] = now.isoformat()
@@ -385,7 +441,7 @@ class PromotionMixin:
                     # copy the retired text into persona unflagged.
                     continue
                 promote_subject = subject_from_entry(r)
-                if scoped_only and promote_subject is None:
+                if (scoped_only or not private_here) and promote_subject is None:
                     continue
                 if promote_subject is None and not is_legacy_private_entry(r):
                     # Like Pass 1, corrupt descriptors cannot enter any persona through zero-cost promotion.
@@ -415,7 +471,7 @@ class PromotionMixin:
                     age_days = (now - confirmed_at).total_seconds() / 86400
                     if age_days < WEAK_MEMORY_AUTO_PROMOTE_DAYS:
                         continue
-                if self._time_driven_held_back(lanlan_name, r, now):
+                if self._time_driven_held_back(lanlan_name, r, now, await facts()):
                     continue
 
                 # Direct persona.aadd_fact, simple pre-RFC merge, with three returns:
@@ -635,6 +691,9 @@ class PromotionMixin:
         - already outside the main reflections.json (archive shards aren't
           loaded by load_reflections)
         """
+        from memory import organizer
+        if not organizer.allowed(lanlan_name):
+            return False
         from config import (
             MEMORY_SCHEMA_VERSION_CURRENT as _SCHEMA_V,
             MEMORY_RECHECK_MAX_ATTEMPTS as _MAX_ATTEMPTS,

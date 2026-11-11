@@ -2738,7 +2738,7 @@ class CompressedRecentHistoryManager:
                 # persist nor update fingerprint, preventing anchor drift outside reviewed range.
                 return ('white', None, 'review 输出为空')
 
-            sync_keys = ('recent_memory_id', 'recent_memory_time', 'chat_original_source')
+            sync_keys = ('recent_memory_id', 'recent_memory_time', 'chat_original_source', 'memory_message_id')
             # Only synced projection rows demand a proven source. chat_original_source is on every
             # typed message, so it is carried when proven but never blocks the review.
             projection_keys = ('recent_memory_id', 'recent_memory_time')

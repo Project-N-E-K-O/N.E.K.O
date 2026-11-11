@@ -16,6 +16,9 @@ import time
 PULL_INTERVAL_MS = 120_000
 RETRY_BASE_MS = 5_000
 RETRY_CAP_MS = 30 * 60_000
+# Reasons a learned-memory snapshot could not be made on this device.
+CAPTURE_DIAGNOSTICS = ('long_term_memory_capacity_exceeded', 'long_term_memory_evidence_capacity_exceeded',
+                       'long_term_archive_subject_unavailable')
 
 
 def now_ms() -> int:
@@ -144,7 +147,7 @@ class ChatSyncScheduler:
     def record_long_term_capture_error(self, domain, generation, code):
         """Expose fixed local publication diagnostics without gating transport."""
         channel = 'long_term_capture'
-        if code not in (None, 'long_term_memory_capacity_exceeded', 'long_term_archive_subject_unavailable'):
+        if code is not None and code not in CAPTURE_DIAGNOSTICS:
             raise ValueError('invalid_long_term_diagnostic')
         with closing(self._connect()) as conn, conn:
             row = conn.execute('SELECT last_error,blocked_generation FROM scheduler_tasks WHERE domain=? AND channel=?',
@@ -156,7 +159,7 @@ class ChatSyncScheduler:
                              'VALUES(?,?,?,?,?) ON CONFLICT(domain,channel) DO UPDATE SET '
                              'last_attempt=excluded.last_attempt,blocked_generation=excluded.blocked_generation,last_error=excluded.last_error',
                              (domain, channel, self.clock(), generation, code))
-            elif row and row['last_error'] in ('long_term_memory_capacity_exceeded', 'long_term_archive_subject_unavailable'):
+            elif row and row['last_error'] in CAPTURE_DIAGNOSTICS:
                 conn.execute('DELETE FROM scheduler_tasks WHERE domain=? AND channel=?', (domain, channel))
 
     def clear_archive_subject_error(self, domain, generation):
@@ -220,6 +223,6 @@ class ChatSyncScheduler:
     def local_memory_diagnostics(self, domain) -> list[str]:
         """Keep local capacity notices separate from transport failures."""
         with closing(self._connect()) as conn:
-            row = conn.execute("SELECT last_error FROM scheduler_tasks WHERE domain=? AND channel='long_term_capture' "
-                               "AND last_error IN ('long_term_memory_capacity_exceeded','long_term_archive_subject_unavailable')", (domain,)).fetchone()
-        return [row[0]] if row else []
+            row = conn.execute("SELECT last_error FROM scheduler_tasks WHERE domain=? AND channel='long_term_capture'",
+                               (domain,)).fetchone()
+        return [row[0]] if row and row[0] in CAPTURE_DIAGNOSTICS else []

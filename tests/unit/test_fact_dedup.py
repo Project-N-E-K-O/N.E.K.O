@@ -2410,3 +2410,129 @@ async def test_unscored_existing_fact_cannot_invent_a_trust_override(tmp_path):
     with patch("utils.llm_client.create_chat_llm", return_value=model):
         assert await resolver.aresolve("Neko") == 1
     assert [fact["id"] for fact in await fs.aload_facts("Neko")] == ["c1"]
+
+
+# ── the arbitration prompt lets a stated correction replace the old claim ──
+
+_NEWER_RECORD = {
+    "zh": "candidate 是较新的记录",
+    "zh-TW": "candidate 是較新的紀錄",
+    "en": "The candidate is the newer record",
+    "ja": "candidate は新しい方の記録",
+    "ko": "candidate는 더 새로운 기록",
+    "ru": "candidate — более новая запись",
+    "es": "candidate es el registro más reciente",
+    "pt": "candidate é o registro mais recente",
+}
+
+
+# Opposite statements with no correction note stay two things.
+_OPPOSITES_WITHOUT_A_NOTE = {
+    "zh": "没有上面那种说明时按两件不同的事处理",
+    "zh-TW": "沒有上面那種說明時按兩件不同的事處理",
+    "en": "with no such note are treated as distinct",
+    "ja": "上のような注記がなければ別の事柄として扱う",
+    "ko": "위와 같은 설명이 없으면 서로 다른 것으로 처리",
+    "ru": "без такой пометки считаются разными",
+    "es": "sin una nota así se tratan como cosas distintas",
+    "pt": "sem uma nota assim são tratados como coisas distintas",
+}
+
+
+@pytest.mark.parametrize("lang", sorted(_NEWER_RECORD))
+def test_dedup_prompt_lets_a_stated_correction_replace_the_old_claim(lang):
+    """Measured on a real model (PR #3686): without this rule a correction such as
+    "no longer drinks coffee (used to)" was mostly judged keep_both against the
+    old "likes coffee", so both stayed in memory."""
+    from config.prompts.prompts_memory import FACT_DEDUP_PROMPT
+
+    prompt = FACT_DEDUP_PROMPT[lang]
+    notes = prompt.split("======以上为候选事实对======", 1)[1]
+    rule = next(line for line in notes.splitlines() if _NEWER_RECORD[lang] in line)
+    # The rule names the action, and it comes before the advice to keep both when unsure.
+    assert "replace" in rule and "existing" in rule
+    assert notes.index(rule) < notes.rindex("keep_both")
+    assert prompt.count("{PAIRS}") == 1 and prompt.count("{COUNT}") == 1
+    # Opposite statements without such a note are still two things: said in so many
+    # words, after the rule above, on a line of its own.
+    opposites = next(line for line in notes.splitlines() if _OPPOSITES_WITHOUT_A_NOTE[lang] in line)
+    assert opposites != rule and notes.index(rule) < notes.index(opposites)
+    # And the advice to keep both when unsure is still there, after both.
+    assert notes.index(opposites) < notes.index("keep_both", notes.index(opposites))
+
+
+# ── the record shown as "candidate" is the newer one ─────────────────
+
+
+def _recording_llm(payload, prompts: list):
+    llm = _make_llm_mock(payload)
+    answer = llm.ainvoke
+
+    async def _ainvoke(prompt, *args, **kwargs):
+        prompts.append(prompt)
+        return await answer(prompt, *args, **kwargs)
+
+    llm.ainvoke = _ainvoke
+    return llm
+
+
+async def _queue_late_arrival(tmp_path, *, candidate_created_at):
+    """An old claim reaches the queue as the candidate, against a correction written after it."""
+    fs, resolver = _install_resolver(str(tmp_path))
+    stale = _fact("c1", "主人喜欢喝咖啡", embedding=[1.0, 0.0], importance=4)
+    stale["created_at"] = candidate_created_at
+    stale["speaker_id"] = "qq:1001"
+    correction = _fact("e1", "主人现在不喝咖啡了（以前喜欢喝）", embedding=[0.99, 0.05], importance=6)
+    correction["created_at"] = "2026-04-25T10:00:00"
+    await _seed_facts(fs, "小天", [stale, correction])
+    await resolver.aenqueue_candidates("小天", [{
+        "candidate_id": "c1", "existing_id": "e1", "entity": "master", "cosine": 0.99,
+    }])
+    return fs, resolver
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer, survivor, reason", [
+    # Keeping what the model saw as the candidate keeps the newer row, which was queued as existing.
+    ("replace", "e1", "fact_dedup_replace"),
+    ("merge", "c1", "fact_dedup_merge"),
+    ("keep_both", None, None),
+])
+async def test_aresolve_shows_the_newer_record_as_the_candidate(tmp_path, answer, survivor, reason):
+    fs, resolver = await _queue_late_arrival(tmp_path, candidate_created_at="2026-04-01T10:00:00")
+    prompts: list[str] = []
+    llm = _recording_llm([{"index": 0, "action": answer}], prompts)
+    with patch("utils.llm_client.create_chat_llm", return_value=llm):
+        assert await resolver.aresolve("小天") == 1
+    assert "[0] candidate: 主人现在不喝咖啡了（以前喜欢喝） | existing: 主人喜欢喝咖啡 |" in prompts[0]
+    active = {fact["id"] for fact in await fs.aload_facts("小天")}
+    assert await resolver.aload_pending("小天") == []
+    if survivor is None:
+        assert active == {"c1", "e1"}
+        return
+    assert active == {survivor}
+    loser = ({"c1", "e1"} - {survivor}).pop()
+    archived = json.loads((tmp_path / "小天" / "facts_archive.json").read_text(encoding="utf-8"))
+    row = next(fact for fact in archived if fact["id"] == loser)
+    assert row["superseded_by"] == survivor and row["arbitration_reason"] == reason
+    kept = next(fact for fact in await fs.aload_facts("小天") if fact["id"] == survivor)
+    assert loser in kept["merged_from_ids"]
+    if answer == "replace":
+        # A correction replaces: the rejected claim does not corroborate it. Its speaker
+        # is not folded into the survivor, and the importance is the larger one, not +1.
+        assert kept["importance"] == 6 and "speaker_provenance_mixed" not in kept and "speaker_id" not in kept
+    else:
+        # A duplicate merges into the older row, as a merge always did.
+        assert kept["importance"] == 5 and kept["speaker_provenance_mixed"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("created_at", [None, "not a time", "2026-04-25T10:00:00", "2026-05-01T10:00:00"])
+async def test_aresolve_keeps_the_queued_roles_unless_the_candidate_is_known_to_be_older(tmp_path, created_at):
+    fs, resolver = await _queue_late_arrival(tmp_path, candidate_created_at=created_at)
+    prompts: list[str] = []
+    llm = _recording_llm([{"index": 0, "action": "replace"}], prompts)
+    with patch("utils.llm_client.create_chat_llm", return_value=llm):
+        assert await resolver.aresolve("小天") == 1
+    assert "[0] candidate: 主人喜欢喝咖啡 | existing: 主人现在不喝咖啡了（以前喜欢喝） |" in prompts[0]
+    assert {fact["id"] for fact in await fs.aload_facts("小天")} == {"c1"}
