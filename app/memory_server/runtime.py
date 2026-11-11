@@ -110,6 +110,8 @@ _CHARACTER_SCOPED_WRITE_OPS = frozenset({
     "theater/retract",
     # The memory browser's "recompute now" rewrites habitual_phrases.json.
     "habitual_phrases/recompute",
+    # Restoring what the one-time duplicate cleanup folded away rewrites facts.json.
+    "legacy_dedup/restore",
 })
 _admitted_character_context: ContextVar[frozenset[str]] = ContextVar(
     "admitted_character_context",

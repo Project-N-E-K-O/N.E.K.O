@@ -846,12 +846,23 @@ async def resolve_retirement_cutoffs(retirements, messages, lookup=None):
             roles = ('ai', 'human') if row['subject'] == 'neko' else ('human',)
             times = [at for identity in ids for role, at in known[identity] if role in roles]
             if times:
-                updates[row['id']] = max(times)
+                # Ids are unique per subject only.
+                updates[(row['subject'], row['id'])] = max(times)
     if not updates:
         return retirements
 
-    return [{**row, **({'retiredThroughAt': updates[row['id']], 'retiredThroughAtFromCorrection': True}
-                     if row['id'] in updates else {})} for row in retirements]
+    return [{**row, **({'retiredThroughAt': updates[(row.get('subject'), row['id'])], 'retiredThroughAtFromCorrection': True}
+                     if row.get('retiredThroughAt') is None and (row.get('subject'), row['id']) in updates else {})}
+            for row in retirements]
+
+
+# At most this many candidate/retired-assertion pairs go to the model in one
+# extraction (three arbitration batches). A long evidence list with unknown
+# correction times would otherwise pair every new fact with every record.
+RETIRED_ASSERTION_REVIEW_MAX_PAIRS = 60
+# A candidate held back for a later review keeps the provenance its messages
+# proved, because those messages may be gone by then.
+STORED_PROOF = '_retirement_review_proof'
 
 
 def _assertion_text(text):
@@ -859,8 +870,53 @@ def _assertion_text(text):
     return text.strip()
 
 
-async def verify_retired_assertions(retirements, extracted, messages, request, *, default_source):
-    """Use existing arbitration semantics before writes; never discard a candidate tail."""
+def retirement_review_pairs(retirements, extracted, messages, *, default_source, cites_correction=None):
+    """Each candidate's (candidate, retired assertion) pairs that need the model, with its review order."""
+    now = timestamp(datetime.now().isoformat())
+    candidates = []
+    for order, fact in enumerate(extracted):
+        if not isinstance(fact, dict) or not isinstance(fact.get('text'), str):
+            continue
+        source = fact.get('source', default_source)
+        proof = fact_source_evidence([], fact, fact.get('entity', 'master'), messages, source=source)
+        if proof is None:
+            continue
+        ids = set(proof.get('source_message_ids', []))
+        latest = timestamp(proof['source_created_at']) if proof.get('source_created_at') is not None else None
+        if not ids:
+            continue
+        pairs, known = [], True
+        for row in retirements:
+            if (row.get('subject') != fact.get('entity', 'master') or not isinstance(row.get('text'), str)
+                    or _assertion_text(row['text']) == _assertion_text(fact['text'])):
+                continue
+            if cites_correction is not None and ids & set(row.get('retiredBySourceMessageIds') or []):
+                cites_correction.add((id(fact), row['id']))
+            cutoff = row.get('retiredThroughAt')
+            if (latest is not None and not ids.issubset(row.get('sourceMessageIds', []))
+                    and not (cutoff is not None and cutoff <= now and latest <= cutoff)
+                    and not (cutoff is None and row.get('retiredBySourceMessageIds'))):
+                continue
+            pairs.append((fact, row))
+            known = known and cutoff is not None
+        if pairs:
+            # Brought-back candidates keep the queue's order (one that waited again is
+            # already at its end); "known cutoffs first" only orders new candidates.
+            stored = STORED_PROOF in fact
+            candidates.append(((not stored, False if stored else not known, order), pairs))
+    return candidates
+
+
+async def verify_retired_assertions(retirements, extracted, messages, request, *, default_source,
+                                    deferred=None, limit=RETIRED_ASSERTION_REVIEW_MAX_PAIRS):
+    """Use existing arbitration semantics before writes; never discard a candidate tail.
+
+    With ``deferred`` given, one call reviews about ``limit`` pairs: candidates past
+    that budget are appended to it unreviewed, for the caller to keep and bring back.
+    Candidates already carrying a stored proof (brought back) go first, then the
+    ones whose every pair has a known cutoff. The first candidate is always reviewed
+    whole, so a candidate with more pairs than the budget still gets through.
+    """
     from config import EVIDENCE_EXTRACT_FACTS_MODEL_TIER
     from config.prompts.prompts_memory import get_fact_dedup_prompt
     from memory.fact_dedup import FACT_DEDUP_BATCH_LIMIT, _detect_fact_dedup_prompt_language
@@ -900,30 +956,18 @@ async def verify_retired_assertions(retirements, extracted, messages, request, *
                     continue
                 matched.setdefault(id(fact), set()).add(row['id'])
 
-    now = timestamp(datetime.now().isoformat())
-    for fact in extracted:
-        if not isinstance(fact, dict) or not isinstance(fact.get('text'), str):
+    candidates = retirement_review_pairs(retirements, extracted, messages, default_source=default_source,
+                                         cites_correction=cites_correction)
+    if deferred is not None:
+        candidates.sort(key=lambda item: item[0])
+    spent = 0
+    for _, pairs in candidates:
+        if deferred is not None and spent and spent + len(pairs) > limit:
+            deferred.append(pairs[0][0])
             continue
-        source = fact.get('source', default_source)
-        proof = fact_source_evidence([], fact, fact.get('entity', 'master'), messages, source=source)
-        if proof is None:
-            continue
-        ids = set(proof.get('source_message_ids', []))
-        latest = timestamp(proof['source_created_at']) if proof.get('source_created_at') is not None else None
-        if not ids:
-            continue
-        for row in retirements:
-            if (row.get('subject') != fact.get('entity', 'master') or not isinstance(row.get('text'), str)
-                    or _assertion_text(row['text']) == _assertion_text(fact['text'])):
-                continue
-            if ids & set(row.get('retiredBySourceMessageIds') or []):
-                cites_correction.add((id(fact), row['id']))
-            cutoff = row.get('retiredThroughAt')
-            if (latest is not None and not ids.issubset(row.get('sourceMessageIds', []))
-                    and not (cutoff is not None and cutoff <= now and latest <= cutoff)
-                    and not (cutoff is None and row.get('retiredBySourceMessageIds'))):
-                continue
-            batch.append((fact, row))
+        spent += len(pairs)
+        for pair in pairs:
+            batch.append(pair)
             if len(batch) == FACT_DEDUP_BATCH_LIMIT:
                 await review(batch)
                 batch = []
@@ -941,6 +985,14 @@ def fact_source_evidence(retirements, fact, entity, source_messages, *, source='
     from memory.facts import FactExtractionFailed
     matching = [row for row in retirements if row.get('subject') == entity and isinstance(row.get('text'), str)
                 and (row['id'] in matched_ids or _assertion_text(row['text']) == _assertion_text(fact.get('text', '')))]
+    stored = fact.get(STORED_PROOF)
+    if isinstance(stored, dict):
+        # Proven when the candidate was held back; its messages may be gone now.
+        ids = list(stored.get('source_message_ids') or [])
+        latest = timestamp(stored['source_created_at']) if stored.get('source_created_at') is not None else None
+        if not ids:
+            return None if matching else {}
+        return _retirement_verdict(matching, fact, ids, latest)
     indices = fact.get('source_indices')
     in_range = [index for index in indices if type(index) is int and 1 <= index <= len(source_messages)] if (
         isinstance(indices, list) and source_messages) else []
@@ -965,6 +1017,11 @@ def fact_source_evidence(retirements, fact, entity, source_messages, *, source='
         return {}
     ids = [identity for identity, _ in proofs]
     latest = max(at for _, at in proofs) if all(at is not None for _, at in proofs) else None
+    return _retirement_verdict(matching, fact, ids, latest)
+
+
+def _retirement_verdict(matching, fact, ids, latest):
+    """The provenance to keep, or None when a matching retirement covers these sources."""
     for row in matching:
         # Explicit disjoint event ranges describe independent occurrences.
         from memory.temporal import compute_event_timestamps, normalize_event_when
