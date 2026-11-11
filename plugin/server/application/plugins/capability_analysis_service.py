@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
+import json
 import threading
 import tomllib
 import uuid
@@ -11,9 +13,15 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
-from plugin.core.capability_analysis import ANALYZER_VERSION, analyze_capabilities
+from plugin.core.capability_analysis import (
+    ANALYZER_VERSION,
+    analyze_capabilities,
+    iter_capability_sources,
+    read_capability_sources,
+)
 from plugin.core.state import state
 from plugin.logging_config import get_logger
+from plugin.server.application.plugins.operation_lock import hold_plugin_operation_file_lock
 from plugin.server.domain.consent_policy import ANALYZING_STATUSES
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.capability_reports import report_store
@@ -33,11 +41,16 @@ def plugin_source(plugin_id: str) -> tuple[Path, str]:
 
 def source_revision(root: Path, version: str) -> dict:
     stat = (root / "plugin.toml").stat()
+    sources = []
+    for path in sorted(iter_capability_sources(root)):
+        source_stat = path.stat()
+        sources.append((path.relative_to(root).as_posix(), source_stat.st_mtime_ns, source_stat.st_size))
     return {
         "root": str(root),
         "version": version,
         "mtime_ns": stat.st_mtime_ns,
         "size": stat.st_size,
+        "python": hashlib.sha256(json.dumps(sources).encode()).hexdigest(),
     }
 
 
@@ -75,9 +88,13 @@ class CapabilityAnalysisService:
         self._stop = threading.Event()
         self._closing = False
 
+    def start(self) -> None:
+        with self._lock:
+            if not self._closing:
+                self._stop.clear()
+
     def _worker(self) -> ThreadPoolExecutor:
         if self._executor is None:
-            self._stop = threading.Event()
             self._executor = ThreadPoolExecutor(
                 max_workers=1, thread_name_prefix="plugin-capabilities"
             )
@@ -92,6 +109,9 @@ class CapabilityAnalysisService:
                 return
             previous = self._jobs.get(plugin_id)
             if previous:
+                report = self._reports.get(plugin_id, {})
+                if not force and report.get("_source_root") == str(root) and report.get("version") == version:
+                    return
                 previous[1].cancel()
             self._reports[plugin_id] = _report(
                 "queued", version=version, _source_root=str(root)
@@ -105,15 +125,18 @@ class CapabilityAnalysisService:
 
     def installed(self, root: Path) -> None:
         with self._lock:
-            if self._closing:
+            if self._closing or self._stop.is_set():
                 return
             self._worker().submit(self._installed, root)
 
     def _installed(self, root: Path) -> None:
         try:
-            with (root / "plugin.toml").open("rb") as source:
-                plugin = tomllib.load(source)["plugin"]
+            with hold_plugin_operation_file_lock(self._stop):
+                with (root / "plugin.toml").open("rb") as source:
+                    plugin = tomllib.load(source)["plugin"]
         except Exception as exc:
+            if self._stop.is_set():
+                return
             logger.warning(
                 "Could not analyze installed plugin: error={}",
                 type(exc).__name__,
@@ -127,8 +150,7 @@ class CapabilityAnalysisService:
         """Enqueue a scan only when no fresh report or in-flight job covers the
         current source revision."""
         report = self.report(plugin_id, root, version)
-        status = report.get("status")
-        if status in ("queued", "running") or status != "unavailable":
+        if report["status"] != "unavailable" or report.get("_source"):
             return
         self._submit(plugin_id, root, version, force=False)
 
@@ -153,15 +175,17 @@ class CapabilityAnalysisService:
         revision = None
         try:
             revision = source_revision(root, version)
-            saved = self._read_cached_report(plugin_id)
-            if not force and is_fresh(saved, revision):
+            saved = None if force else self._read_cached_report(plugin_id)
+            if is_fresh(saved, revision):
                 report = saved
             else:
                 with self._lock:
                     if not self._current(plugin_id, token):
                         return
                     self._reports[plugin_id]["status"] = "running"
-                report = analyze_capabilities(root, stop=self._stop)
+                with hold_plugin_operation_file_lock(self._stop):
+                    sources = read_capability_sources(root, stop=self._stop)
+                report = analyze_capabilities(root, stop=self._stop, sources=sources)
                 report.update(
                     version=version,
                     analyzed_at=datetime.now(timezone.utc).isoformat(),
@@ -175,6 +199,8 @@ class CapabilityAnalysisService:
                 return
             self._publish(plugin_id, token, report)
         except Exception as exc:
+            if self._stop.is_set():
+                return
             logger.warning(
                 "Plugin capability analysis failed: plugin_id={}, error={}",
                 plugin_id,

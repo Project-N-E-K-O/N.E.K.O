@@ -255,6 +255,52 @@ async def parameter(client):
     assert not any(row["line"] == 11 for row in result["evidence"])
 
 
+def test_reassignments_do_not_hide_capabilities(tmp_path):
+    (tmp_path / "main.py").write_text("""
+class Plugin:
+    def setup(self, text):
+        self.client = first
+        self.client = second
+        self.client = self.client.next
+        client = first
+        client = second
+        text = text.strip()
+        self.ctx.push_message(text)
+""")
+    report = analyze_capabilities(tmp_path)
+    assert report["status"] == "completed"
+    assert report["capabilities"] == ["messages.push"]
+
+
+def test_analysis_visits_lambda_and_definition_expressions(tmp_path):
+    (tmp_path / "main.py").write_text("""
+class Plugin:
+    def setup(self):
+        callback = lambda: self.ctx.push_message("hi")
+        @self.ctx.reply_tail.register("x")
+        def handler(arg=self.ctx.bus.memory.get("a")):
+            ...
+        class Nested(self.ctx.bus.conversations.get()):
+            ...
+""")
+    report = analyze_capabilities(tmp_path)
+    assert report["status"] == "completed"
+    assert {row["line"] for row in report["evidence"]} == {4, 5, 6, 8}
+
+
+def test_source_revision_changes_with_python_source_without_manifest_changes(tmp_path):
+    manifest(tmp_path)
+    original = analysis.source_revision(tmp_path, "1")
+    file = tmp_path / "main.py"
+    file.write_text("pass", encoding="utf-8")
+    added = analysis.source_revision(tmp_path, "1")
+    assert added != original
+    file.write_text("self.ctx.push_message()", encoding="utf-8")
+    assert analysis.source_revision(tmp_path, "1") != added
+    file.unlink()
+    assert analysis.source_revision(tmp_path, "1") == original
+
+
 def test_decisions_are_durable_and_delete_removes_the_record(store):
     saved = store.decide("demo", "approved", ["memory.read", "conversations.read"], "1")
     assert saved["decision"] == "approved"
@@ -433,6 +479,67 @@ async def test_analysis_replaces_legacy_reports_and_reuses_current_reports(
 
 
 @pytest.mark.asyncio
+async def test_reanalysis_repairs_corrupt_cache_after_service_restart(tmp_path, reports):
+    manifest(tmp_path)
+    (tmp_path / "main.py").write_text("self.ctx.push_message()", encoding="utf-8")
+    reports.save("demo", {"invalid": True})
+    runner = analysis.CapabilityAnalysisService(reports)
+    await runner.close()
+    runner.reanalyze("demo", tmp_path, "1")
+    assert not runner._jobs
+    runner.start()
+    try:
+        runner.reanalyze("demo", tmp_path, "1")
+        with runner._lock:
+            job = runner._jobs.get("demo", (None, None))[1]
+        if job is not None:
+            await asyncio.wrap_future(job)
+        assert reports.read("demo")["capabilities"] == ["messages.push"]
+    finally:
+        await runner.close()
+
+
+@pytest.mark.asyncio
+async def test_source_reads_wait_for_plugin_directory_mutation(monkeypatch, tmp_path, reports):
+    from plugin.server.application.plugins.operation_lock import plugin_operation_lock
+
+    root = tmp_path / "demo"
+    manifest(root)
+    source = root / "main.py"
+    source.write_text("self.ctx.push_message()", encoding="utf-8")
+    pending, reading = threading.Event(), threading.Event()
+    original_lock = analysis.hold_plugin_operation_file_lock
+    original_read = analysis.read_capability_sources
+
+    def wait_for_source_lock(stop):
+        pending.set()
+        return original_lock(stop)
+
+    def read_sources(*args, **kwargs):
+        reading.set()
+        return original_read(*args, **kwargs)
+
+    monkeypatch.setattr(analysis, "hold_plugin_operation_file_lock", wait_for_source_lock)
+    monkeypatch.setattr(analysis, "read_capability_sources", read_sources)
+    runner = analysis.CapabilityAnalysisService(reports)
+    try:
+        async with plugin_operation_lock.hold():
+            runner.reanalyze("demo", root, "1")
+            assert await asyncio.to_thread(pending.wait, 2)
+            assert not reading.is_set()
+            moved = root.rename(tmp_path / "moved")
+            moved.rename(root)
+        with runner._lock:
+            job = runner._jobs.get("demo", (None, None))[1]
+        if job is not None:
+            await asyncio.wrap_future(job)
+        assert reading.is_set()
+        assert reports.read("demo")["capabilities"] == ["messages.push"]
+    finally:
+        await runner.close()
+
+
+@pytest.mark.asyncio
 async def test_stale_scan_cannot_replace_new_install_report(
     monkeypatch, store, reports, tmp_path
 ):
@@ -559,12 +666,35 @@ def _consent_app(monkeypatch, store, report, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_first_details_request_schedules_analysis(monkeypatch, tmp_path):
+    from plugin.core.state import state
+    from plugin.server.routes import plugin_consent as routes
+
+    manifest(tmp_path)
+    (tmp_path / "main.py").write_text("self.ctx.push_message()", encoding="utf-8")
+    monkeypatch.setitem(
+        state.plugins, "demo", {"config_path": str(tmp_path / "plugin.toml"), "version": "1"}
+    )
+    app = FastAPI()
+    app.include_router(routes.router)
+    async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+        response = await client.get("/plugin-consent/plugins/demo")
+        assert response.status_code == 200
+        runner = analysis.analysis_service
+        with runner._lock:
+            job = runner._jobs.get("demo", (None, None))[1]
+        if job is not None:
+            await asyncio.wrap_future(job)
+        assert runner.report("demo", tmp_path, "1")["capabilities"] == ["messages.push"]
+
+
+@pytest.mark.asyncio
 async def test_consent_api_records_approval_as_a_union_of_capabilities(
     monkeypatch, store, tmp_path
 ):
     report = {
         "status": "completed",
-        "capabilities": ["memory.read", "conversations.read"],
+        "capabilities": ["memory.read"],
         "evidence": [],
         "warnings": [],
     }
@@ -576,8 +706,23 @@ async def test_consent_api_records_approval_as_a_union_of_capabilities(
         details = (await client.get("/plugin-consent/plugins/demo")).json()
         assert details["state"] == "confirm"
         assert details["upgraded"] is True
-        assert details["unconfirmed"] == ["conversations.read", "memory.read"]
-        response = await client.post("/plugin-consent/plugins/demo", json={"approved": True})
+        assert details["unconfirmed"] == ["memory.read"]
+        snapshot = {
+            "version": details["version"],
+            "unconfirmed": details["unconfirmed"],
+            "analysis_status": details["analysis"]["status"],
+        }
+        report["capabilities"].append("conversations.read")
+        stale = await client.post(
+            "/plugin-consent/plugins/demo", json={"approved": True, "snapshot": snapshot}
+        )
+        assert stale.status_code == 409
+        assert store.read("demo")["approved_capabilities"] == ["messages.push"]
+        fresh = (await client.get("/plugin-consent/plugins/demo")).json()
+        snapshot["unconfirmed"] = fresh["unconfirmed"]
+        response = await client.post(
+            "/plugin-consent/plugins/demo", json={"approved": True, "snapshot": snapshot}
+        )
         assert response.status_code == 200
         body = response.json()
         assert body["decision"] == "approved"
@@ -728,7 +873,9 @@ async def test_decision_waits_for_uninstall_and_revalidates(monkeypatch, store):
         },
     )
     async with plugin_operation_lock.hold():
-        request = asyncio.create_task(service.approve_plugin("demo"))
+        request = asyncio.create_task(
+            service.approve_plugin("demo", version="1", unconfirmed=[], analysis_status="completed")
+        )
         await asyncio.sleep(0)
         assert not request.done()
         # The real uninstall operation clears consent under this same lock.
@@ -775,7 +922,9 @@ async def test_uninstall_waits_for_a_decision_then_forgets_it(monkeypatch, store
     async def uninstall():
         store.delete("demo")
 
-    approval = asyncio.create_task(service.approve_plugin("demo"))
+    approval = asyncio.create_task(
+        service.approve_plugin("demo", version="1", unconfirmed=[], analysis_status="completed")
+    )
     assert await asyncio.to_thread(entered.wait, 2)
     deletion = asyncio.create_task(uninstall())
     try:
@@ -795,7 +944,7 @@ async def test_forget_plugin_removes_report_and_consent_record(
     reports.save("demo", {"status": "completed"})
     store.decide("demo", "approved", ["memory.read"], "1")
     runner = analysis.CapabilityAnalysisService(reports)
-    monkeypatch.setattr(service, "analysis_service", runner)
+    monkeypatch.setattr(analysis, "analysis_service", runner)
     monkeypatch.setattr(service, "consent_store", store)
     try:
         await asyncio.to_thread(service.forget_plugin, "demo")

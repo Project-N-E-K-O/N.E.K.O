@@ -1020,6 +1020,10 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
         await asyncio.to_thread(forget_plugin, plugin_id)
     except Exception as exc:
         logger.warning("Could not clear uninstalled plugin consent: plugin_id={}, error={}", plugin_id, type(exc).__name__)
+    if restored_builtin:
+        from plugin.server.application.plugins.capability_analysis_service import schedule_analysis
+
+        await asyncio.to_thread(schedule_analysis, plugin_id)
     runtime_restart: RuntimeRestart = "not_needed"
     runtime_restart_error: dict[str, str] | None = None
     if was_running and restored_builtin:

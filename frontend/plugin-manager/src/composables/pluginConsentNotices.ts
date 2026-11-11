@@ -20,18 +20,19 @@ export function usePluginConsentNotices() {
   const pluginStore = usePluginStore()
   const consentState = usePluginConsentState()
   let handle: NotificationHandle | null = null
-  let openIds = ''
+  let openSnapshot = ''
   const handledIds = new Set<string>()
   const watchedIds = new Set<string>()
   let stopped = false
+  let refreshSequence = 0
 
   function close() {
     handle?.close()
     handle = null
-    openIds = ''
+    openSnapshot = ''
   }
 
-  function open(notices: PluginConsentNotice[]) {
+  function open(notices: PluginConsentNotice[], snapshot: string) {
     close()
     handle = ElNotification(
       {
@@ -39,25 +40,32 @@ export function usePluginConsentNotices() {
         message: h(PluginConsentNoticeView, {
           notices,
           onHandled: (pluginId: string) => handledIds.add(pluginId),
-          onDone: () => close(),
+          onDone: () => {
+            if (openSnapshot === snapshot) close()
+          },
+          onStale: () => void refresh(),
         }),
         duration: 0,
         type: 'warning',
       },
       appContext,
     )
-    openIds = notices.map((notice) => notice.plugin_id).join(',')
+    openSnapshot = snapshot
   }
 
   async function refresh() {
+    const sequence = ++refreshSequence
     try {
       const fetched = await getPluginConsentNotices()
-      if (stopped) return
+      if (stopped || sequence !== refreshSequence) return
+      if (fetched.some((notice) => !handledIds.has(notice.plugin_id))) {
+        await import('element-plus/theme-chalk/el-notification.css')
+        if (stopped || sequence !== refreshSequence) return
+      }
       const notices = fetched.filter((notice) => !handledIds.has(notice.plugin_id))
-      const ids = notices.map((notice) => notice.plugin_id).join(',')
-      // Reopen only when the unhandled set changed; an open notification is
-      // left alone so in-flight clicks are not dropped.
-      if (ids && ids !== openIds) open(notices)
+      const snapshot = JSON.stringify(notices)
+      if (!notices.length) close()
+      else if (snapshot !== openSnapshot) open(notices, snapshot)
     } catch (error) {
       console.warn('Failed to load plugin consent notices:', error)
     }

@@ -147,7 +147,11 @@ describe('PluginPermissions', () => {
     })
     button.click()
     await vi.waitFor(() => {
-      expect(api.approvePluginConsent).toHaveBeenCalledWith('demo')
+      expect(api.approvePluginConsent).toHaveBeenCalledWith('demo', {
+        version: '1.0.0',
+        unconfirmed: ['memory.read', 'messages.push'],
+        analysis_status: 'completed',
+      })
       expect(pluginStore.start).toHaveBeenCalledWith('demo')
     })
   })

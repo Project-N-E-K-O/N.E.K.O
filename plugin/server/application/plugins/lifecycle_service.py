@@ -1625,12 +1625,35 @@ class PluginLifecycleService:
         limit = max(1, limit)
         started: list[str] = []
         failed: list[str] = []
+        skipped_denied: list[str] = []
+
+        async def _skip_denied(plugin_id: str) -> bool:
+            try:
+                denied = await asyncio.to_thread(denied_plugin_ids, (plugin_id,))
+            except Exception as error:
+                logger.warning(
+                    "could not read plugin consent decision; autostart continues: err_type={}",
+                    type(error).__name__,
+                )
+                return False
+            if denied:
+                skipped_denied.append(plugin_id)
+            return bool(denied)
+
+        @serialized_plugin_operation
+        async def _start_serial(plugin_id: str) -> bool:
+            if await _skip_denied(plugin_id):
+                return False
+            await self.start_plugin(plugin_id, refresh_registry=refresh_registry)
+            return True
 
         async def _start_one(
             plugin_id: str, *, operation_scope: _HeldPluginOperationLock | None = None
         ) -> None:
             try:
                 if operation_scope is not None:
+                    if await _skip_denied(plugin_id):
+                        return
                     # Drain every active start before releasing the wave lock.
                     # A spawned host must register or finish its cleanup.
                     operation = asyncio.create_task(
@@ -1641,12 +1664,8 @@ class PluginLifecycleService:
                         )
                     )
                     await await_cancellation_safe(operation)
-                else:
-                    # This primitive also cancels an unstarted lock waiter.
-                    # Shielding it again would prevent that cancellation.
-                    await self.start_plugin(
-                        plugin_id, refresh_registry=refresh_registry
-                    )
+                elif not await _start_serial(plugin_id):
+                    return
             except Exception as error:
                 failed.append(plugin_id)
                 logger.error(
@@ -1667,29 +1686,6 @@ class PluginLifecycleService:
             str(plugin_id) for plugin_id in ordered_plugin_ids
             if plugin_id and str(plugin_id) not in independent_set
         ))
-
-        # Plugins the user explicitly denied are skipped by autostart; every
-        # other consent state starts normally. A consent store read failure
-        # must not block autostart.
-        skipped_denied: list[str] = []
-        try:
-            denied = await asyncio.to_thread(
-                denied_plugin_ids, (*independent, *ordered)
-            )
-        except Exception as error:
-            denied = set()
-            logger.warning(
-                "could not read plugin consent decisions; autostart continues: err_type={}",
-                type(error).__name__,
-            )
-        if denied:
-            skipped_denied = sorted(denied)
-            independent = [pid for pid in independent if pid not in denied]
-            ordered = [pid for pid in ordered if pid not in denied]
-            logger.info(
-                "autostart skips plugins with denied consent: plugin_ids={}",
-                skipped_denied,
-            )
 
         if limit <= 1 or len(independent) <= 1:
             for plugin_id in independent:
@@ -1744,7 +1740,7 @@ class PluginLifecycleService:
             len(failed),
             limit,
         )
-        return {"started": started, "failed": failed, **({"skipped_denied": skipped_denied} if skipped_denied else {})}
+        return {"started": started, "failed": failed, **({"skipped_denied": sorted(skipped_denied)} if skipped_denied else {})}
 
     @serialized_plugin_operation
     async def stop_plugin(
@@ -2067,6 +2063,9 @@ class PluginLifecycleService:
                 _hot_reload_failed.add(plugin_id)
             raise
         _hot_reload_failed.discard(plugin_id)
+        from plugin.server.application.plugins.capability_analysis_service import schedule_analysis
+
+        await asyncio.to_thread(schedule_analysis, plugin_id)
         _emit_lifecycle_event(event_type="plugin_reloaded", plugin_id=plugin_id)
         return result
 

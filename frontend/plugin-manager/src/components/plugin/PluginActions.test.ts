@@ -38,7 +38,7 @@ vi.mock('@/composables/usePluginStartGate', async (importOriginal) => ({
       await usePluginStore().start(id)
       return true
     },
-    prepareBatchStart: vi.fn(async (ids: string[]) => ({ allowed: ids, dialogShown: false })),
+    prepareBatchStart: vi.fn(async (ids: string[]) => ({ allowed: ids, confirmed: false })),
   }),
 }))
 

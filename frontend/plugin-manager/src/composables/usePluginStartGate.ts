@@ -18,7 +18,7 @@ export function usePluginStartGate() {
 
   /**
    * Returns the ids that may start now plus whether the confirmation dialog
-   * was shown. Unfinished analysis warns on the first click and a second
+   * was accepted. Unfinished analysis warns on the first click and a second
    * click within 30 seconds bypasses; a failed consent read never blocks.
    */
   async function prepareBatchStart(pluginIds: string[]) {
@@ -54,14 +54,9 @@ export function usePluginStartGate() {
       const names = pending.map((id) => pluginStore.getPluginById(id)?.name || id).join('、')
       ElMessage.warning(i18n.global.t('pluginConsent.analysisPending', { names }))
     }
-    let dialogShown = false
-    if (confirm.length) {
-      dialogShown = true
-      if (await consentState.requestConfirmation(confirm)) {
-        allowed.push(...confirm.map((plugin) => plugin.id))
-      }
-    }
-    return { allowed, dialogShown }
+    const confirmed = confirm.length > 0 && (await consentState.requestConfirmation(confirm))
+    if (confirmed) allowed.push(...confirm.map((plugin) => plugin.id))
+    return { allowed, confirmed }
   }
 
   /** Returns true when the plugin actually started (false on cancel/bypass). */

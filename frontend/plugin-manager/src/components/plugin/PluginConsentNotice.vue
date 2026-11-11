@@ -41,11 +41,12 @@ import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import type { PluginConsentNotice } from '@/api/pluginConsent'
+import { isConsentChanged } from '@/utils/pluginCapabilities'
 import { usePluginConsentState } from '@/stores/pluginConsentState'
 import { usePluginStore } from '@/stores/plugin'
 
 const props = defineProps<{ notices: PluginConsentNotice[] }>()
-const emit = defineEmits<{ done: []; handled: [pluginId: string] }>()
+const emit = defineEmits<{ done: []; handled: [pluginId: string]; stale: [] }>()
 const { t } = useI18n()
 const consentState = usePluginConsentState()
 const pluginStore = usePluginStore()
@@ -65,13 +66,14 @@ async function refreshPlugins() {
 async function decide(plugin: PluginConsentNotice, approved: boolean) {
   busy.value = plugin.plugin_id
   try {
-    if (approved) await consentState.approve(plugin.plugin_id)
+    if (approved) await consentState.approve(plugin.plugin_id, plugin)
     else await consentState.reject(plugin.plugin_id)
     handled.value = new Set([...handled.value, plugin.plugin_id])
     emit('handled', plugin.plugin_id)
     await refreshPlugins()
     if (!pending.value.length) emit('done')
-  } catch {
+  } catch (error) {
+    if (isConsentChanged(error)) emit('stale')
     ElMessage.error(t('pluginConsent.saveFailed'))
   } finally {
     busy.value = null

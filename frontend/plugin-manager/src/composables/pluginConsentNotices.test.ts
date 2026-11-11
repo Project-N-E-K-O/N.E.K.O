@@ -54,6 +54,7 @@ vi.mock('@/components/plugin/PluginConsentNotice.vue', () => ({
 const apps: Array<ReturnType<typeof createApp>> = []
 const flush = async () => {
   for (let n = 0; n < 10; n++) await nextTick()
+  await vi.dynamicImportSettled()
 }
 function mount() {
   const root = document.createElement('div')
@@ -160,6 +161,30 @@ describe('usePluginConsentNotices', () => {
     ])
     await flush()
     expect(notify.ElNotification).toHaveBeenCalledTimes(2)
+  })
+
+  it('discards older responses and closes when the latest response is empty', async () => {
+    let finishFirst!: (notices: PluginConsentNotice[]) => void
+    api.getPluginConsentNotices.mockReturnValueOnce(
+      new Promise((resolve) => { finishFirst = resolve })
+    )
+    runningAnalyzing('w')
+    mount()
+    await flush()
+    api.getPluginConsentNotices.mockResolvedValueOnce([notice('a')])
+    runningAnalyzing('w', 'confirm')
+    await flush()
+    const notification = notify.ElNotification.mock.results[0]?.value
+    expect(notification).toBeDefined()
+    finishFirst([notice('old')])
+    await flush()
+    expect(notify.ElNotification).toHaveBeenCalledTimes(1)
+    expect(notification?.close).not.toHaveBeenCalled()
+    runningAnalyzing('w')
+    await flush()
+    runningAnalyzing('w', 'confirm')
+    await flush()
+    expect(notification?.close).toHaveBeenCalledOnce()
   })
 
   it('fetches again on a new visit', async () => {

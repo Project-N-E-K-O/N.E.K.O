@@ -15,6 +15,7 @@ const api = vi.hoisted(() => ({
   analyzePluginCapabilities: vi.fn(),
 }))
 vi.mock('@/api/pluginConsent', () => api)
+vi.mock('@/utils/request', () => ({ readErrorCode: vi.fn() }))
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
 const apps: Array<ReturnType<typeof createApp>> = []
 const flush = async () => {
@@ -125,7 +126,7 @@ describe('plugin consent dialog', () => {
     expect(agree(root).disabled).toBe(false)
     agree(root).click()
     await request
-    expect(api.approvePluginConsent).toHaveBeenCalledWith('demo')
+    expect(api.approvePluginConsent).toHaveBeenCalledWith('demo', expect.objectContaining({ unconfirmed: ['memory.read'] }))
     expect(store.activeRequest).toBeNull()
   })
 

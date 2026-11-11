@@ -78,7 +78,13 @@ function mockConfirmation(approved: boolean) {
     .spyOn(usePluginConsentState(), 'requestConfirmation')
     .mockImplementation(async (plugins) => {
       if (!approved) return false
-      for (const plugin of plugins) await usePluginConsentState().approve(plugin.id)
+      for (const plugin of plugins) {
+        await usePluginConsentState().approve(plugin.id, {
+          version: '1',
+          unconfirmed: ['memory.read'],
+          analysis_status: 'completed',
+        })
+      }
       return true
     })
 }
@@ -148,7 +154,7 @@ describe('manual start consent gate', () => {
     expect(request).toHaveBeenCalledWith([
       { id: 'demo', name: 'Demo', version: '1' },
     ])
-    expect(approvePluginConsent).toHaveBeenCalledWith('demo')
+    expect(approvePluginConsent).toHaveBeenCalledWith('demo', expect.objectContaining({ unconfirmed: ['memory.read'] }))
     expect(startPlugin).toHaveBeenCalledOnce()
   })
 
@@ -170,10 +176,10 @@ describe('manual start consent gate', () => {
       plugin_id: id,
     }))
     const request = mockConfirmation(true)
-    const { allowed, dialogShown } = await usePluginStartGate().prepareBatchStart([
+    const { allowed, confirmed } = await usePluginStartGate().prepareBatchStart([
       'demo', 'analyzing', 'clear',
     ])
-    expect(dialogShown).toBe(true)
+    expect(confirmed).toBe(true)
     expect(allowed.sort()).toEqual(['clear', 'demo'])
     expect(request).toHaveBeenCalledWith([
       { id: 'demo', name: 'Demo', version: '1' },

@@ -18,6 +18,7 @@ const pluginStore = vi.hoisted(() => ({
   refreshLoadedPluginData: vi.fn().mockResolvedValue(undefined),
 }))
 vi.mock('@/api/pluginConsent', () => api)
+vi.mock('@/utils/request', () => ({ readErrorCode: vi.fn() }))
 vi.mock('@/stores/plugin', () => ({ usePluginStore: () => pluginStore }))
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
 const apps: Array<ReturnType<typeof createApp>> = []
@@ -105,7 +106,7 @@ describe('running-plugin consent notice', () => {
     await flush()
     buttons(root, 'pluginConsent.approve')[0].click()
     await flush()
-    expect(api.approvePluginConsent).toHaveBeenCalledWith('one')
+    expect(api.approvePluginConsent).toHaveBeenCalledWith('one', notice('one'))
     expect(done).toBe(false)
     expect(root.querySelectorAll('li')).toHaveLength(1)
   })

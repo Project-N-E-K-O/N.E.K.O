@@ -113,7 +113,7 @@ def isolated_plugin_consent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     runner = capability_analysis_service.CapabilityAnalysisService(
         CapabilityReportStore(tmp_path / "reports")
     )
-    monkeypatch.setattr(consent_service, "analysis_service", runner)
+    monkeypatch.setattr(capability_analysis_service, "analysis_service", runner)
     yield store
     runner.shutdown()
 

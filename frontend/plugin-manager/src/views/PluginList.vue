@@ -1266,19 +1266,19 @@ const { busy: batchBusy, runBatch } = useBatchActions(getSelectedPlugins, refres
 async function handleBatchStart() {
   const ids = getSelectedPlugins().filter((p) => p.status !== 'running' && p.status !== 'disabled').map((p) => p.id)
   let allowed: string[] = []
-  let consentShown = false
+  let consentConfirmed = false
   if (ids.length) {
     try {
       const prepared = await startGate.prepareBatchStart(ids)
       allowed = prepared.allowed
-      consentShown = prepared.dialogShown
+      consentConfirmed = prepared.confirmed
     } catch {
       ElMessage.error(t('pluginConsent.loadFailed'))
       return
     }
   }
   await runBatch({
-    skipConfirm: consentShown,
+    skipConfirm: consentConfirmed,
     filter: (p) => allowed.includes(p.id),
     action: (p) => pluginStore.start(p.id, { refresh: false }),
     noItemsKey: 'plugins.batchNoStartable',

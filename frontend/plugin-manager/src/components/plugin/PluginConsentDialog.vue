@@ -51,7 +51,7 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { usePluginConsentState } from '@/stores/pluginConsentState'
-import { capabilityMessageKey, INCOMPLETE_STATUSES } from '@/utils/pluginCapabilities'
+import { capabilityMessageKey, consentSnapshot, INCOMPLETE_STATUSES, isConsentChanged } from '@/utils/pluginCapabilities'
 const { t } = useI18n()
 const consentState = usePluginConsentState()
 const saving = ref(false)
@@ -74,8 +74,19 @@ function cancel() {
 async function approve() {
   saving.value = true
   saveError.value = false
+  const approvals = plugins.value.map(({ id }) => ({ id, detail: consentState.details[id] }))
   try {
-    for (const plugin of plugins.value) await consentState.approve(plugin.id)
+    for (const { id, detail } of approvals) {
+      if (!detail) throw new Error('Plugin consent details are missing')
+      try {
+        await consentState.approve(id, consentSnapshot(detail))
+      } catch (error) {
+        if (isConsentChanged(error)) {
+          await consentState.load(id)
+        }
+        throw error
+      }
+    }
     consentState.resolveConfirmation(true)
   } catch {
     saveError.value = true

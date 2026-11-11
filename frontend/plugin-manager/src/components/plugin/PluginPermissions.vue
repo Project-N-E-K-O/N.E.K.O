@@ -64,6 +64,7 @@ import {
 } from '@element-plus/icons-vue'
 import type { Component } from 'vue'
 import { usePluginStore } from '@/stores/plugin'
+import { consentSnapshot } from '@/utils/pluginCapabilities'
 import { usePluginConsentState } from '@/stores/pluginConsentState'
 import { usePluginStartGate } from '@/composables/usePluginStartGate'
 import PluginCapabilityReport from './PluginCapabilityReport.vue'
@@ -157,9 +158,11 @@ function refreshReport() {
   void capabilityReport.value?.refresh()
 }
 async function approve() {
+  const details = record.value
+  if (!details) return
   busy.value = 'approve'
   try {
-    await consentState.approve(props.pluginId)
+    await consentState.approve(props.pluginId, consentSnapshot(details))
     if (!running.value && (await startGate.startWithConsent(props.pluginId))) {
       ElMessage.success(t('messages.pluginStarted'))
     }

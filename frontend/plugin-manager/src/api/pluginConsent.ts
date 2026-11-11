@@ -35,23 +35,32 @@ export interface PluginConsentSummary {
   decision: ConsentDecision | null
   upgraded: boolean
 }
-export interface PluginConsentNotice {
-  plugin_id: string
-  name: string
+export interface ConsentSnapshot {
   version: string
   unconfirmed: string[]
-  upgraded: boolean
   analysis_status: AnalysisStatus
+}
+export interface PluginConsentNotice extends ConsentSnapshot {
+  plugin_id: string
+  name: string
+  upgraded: boolean
 }
 export function getPluginConsent(id: string) {
   return get<PluginConsent>(`/plugin-consent/plugins/${encodeURIComponent(id)}`, {
     suppressErrorMessage: true,
   })
 }
-export function approvePluginConsent(id: string) {
+export function approvePluginConsent(id: string, snapshot: ConsentSnapshot) {
   return post<PluginConsent>(
     `/plugin-consent/plugins/${encodeURIComponent(id)}`,
-    { approved: true },
+    {
+      approved: true,
+      snapshot: {
+        version: snapshot.version,
+        unconfirmed: snapshot.unconfirmed,
+        analysis_status: snapshot.analysis_status,
+      },
+    },
     { suppressErrorMessage: true }
   )
 }

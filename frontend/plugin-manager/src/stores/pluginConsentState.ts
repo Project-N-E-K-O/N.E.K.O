@@ -6,6 +6,7 @@ import {
   getPluginConsent,
   rejectPluginConsent,
   revokePluginConsent,
+  type ConsentSnapshot,
   type PluginConsent,
   type PluginConsentSummary,
 } from '@/api/pluginConsent'
@@ -124,7 +125,7 @@ export const usePluginConsentState = defineStore('pluginConsent', () => {
   }
 
   // Confirmation dialog queue. Requests with the same plugin set dedupe;
-  // the active request auto-resolves when every plugin leaves "confirm".
+  // the active request auto-resolves when every plugin is clear.
   const activeRequest = shallowRef<ConsentRequest | null>(null)
   const requests = new Map<string, PendingRequest>()
   const queue: PendingRequest[] = []
@@ -138,9 +139,10 @@ export const usePluginConsentState = defineStore('pluginConsent', () => {
     stopAutoResolve?.()
     stopAutoResolve = current
       ? watch(
-          () => current!.plugins.every((p) => stateOf(p.id)?.state !== 'confirm'),
-          (resolved) => {
-            if (resolved) resolveConfirmation(true)
+          () => current!.plugins.map((plugin) => stateOf(plugin.id)?.state),
+          (states) => {
+            if (states.some((state) => state === undefined)) resolveConfirmation(false)
+            else if (states.every((state) => state === 'clear')) resolveConfirmation(true)
           },
         )
       : null
@@ -192,7 +194,8 @@ export const usePluginConsentState = defineStore('pluginConsent', () => {
     unwatchPlugin,
     requestConfirmation,
     resolveConfirmation,
-    approve: (id: string) => mutate(id, () => approvePluginConsent(id)),
+    approve: (id: string, snapshot: ConsentSnapshot) =>
+      mutate(id, () => approvePluginConsent(id, snapshot)),
     reject: (id: string) => mutate(id, () => rejectPluginConsent(id)),
     revoke: (id: string) => mutate(id, () => revokePluginConsent(id)),
     analyze: (id: string) => mutate(id, () => analyzePluginCapabilities(id)),

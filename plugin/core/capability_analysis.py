@@ -5,14 +5,16 @@ from __future__ import annotations
 import ast
 import re
 import tokenize
+from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Event
+from collections.abc import Iterator
 
 from plugin.utils.source_paths import iter_plugin_python_files
 
 CAPABILITIES = ("conversations.read", "memory.read", "messages.push")
 # Bump when a change to analysis makes persisted reports stale.
-ANALYZER_VERSION = 2
+ANALYZER_VERSION = 3
 MAX_FILES = 500
 MAX_SOURCE_BYTES = 10 * 1024 * 1024
 MAX_FILE_BYTES = 1024 * 1024
@@ -128,14 +130,30 @@ class _AnalysisWalker:
 
     def scope_nodes(self, body):
         """Walk one lexical scope, leaving nested functions/classes to their own scope."""
-        for node in body:
+        stack = [iter(body)]
+        while stack:
+            node = next(stack[-1], None)
+            if node is None:
+                stack.pop()
+                continue
             self.check()
             yield node
-            if not isinstance(
-                node,
-                (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda),
-            ):
-                yield from self.scope_nodes(ast.iter_child_nodes(node))
+            stack.append(iter(_outer_scope_children(node)))
+
+
+def _outer_scope_children(node):
+    # Definitions evaluate decorators, bases and defaults in the enclosing scope.
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        if not isinstance(node, ast.Lambda):
+            yield from node.decorator_list
+        yield from node.args.defaults
+        yield from (value for value in node.args.kw_defaults if value is not None)
+    elif isinstance(node, ast.ClassDef):
+        yield from node.decorator_list
+        yield from node.bases
+        yield from node.keywords
+    else:
+        yield from ast.iter_child_nodes(node)
 
 
 # A binding's second element marks a resolved origin the analysis must not
@@ -264,53 +282,43 @@ def _build_bindings(declared, inherited, nodes, walker):
     return bindings
 
 
+def _references_binding(value: str, key: str) -> bool:
+    return value == key or value.startswith((key + ".", key + "()"))
+
+
 def _propagate_assignments(assignments, bindings, walker):
-    """Propagate resolved values through assignments until a fixed point."""
-    changed = True
-    while changed:
-        changed = False
-        for key, value in assignments:
+    """Resolve aliases until the final binding of each assignment stops changing."""
+    previous = None
+    while True:
+        resolved_bindings = {}
+        for key, node in assignments:
             walker.check()
-            resolved, external = _resolve(_name(value), bindings)
-            if (
-                resolved
-                and key != resolved
-                and bindings.get(key) != (resolved, external)
-            ):
-                bindings[key] = (resolved, external)
-                changed = True
+            value = _name(node)
+            if not value or _references_binding(value, key):
+                continue
+            resolved, external = _resolve(value, bindings)
+            if external or not _references_binding(resolved, key):
+                binding = resolved, external
+                resolved_bindings[key] = binding
+                bindings[key] = binding
+        if resolved_bindings == previous or not resolved_bindings:
+            return
+        previous = resolved_bindings
 
 
 def _propagate_self_attributes(node, bindings, walker):
-    """self attributes belong to a class instance and can be initialized in
-    __init__/startup, while ordinary method locals never escape the method."""
+    """Collect self assignments from methods without inheriting method locals."""
+    assignments = []
+    for method in node.body:
+        walker.check()
+        if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            nodes = walker.scope_nodes(method.body)
+            _, method_assignments = _collect_declarations(nodes, (), walker)
+            assignments.extend(
+                (key, value) for key, value in method_assignments if key.startswith("self.")
+            )
     class_bindings = dict(bindings)
-    changed = True
-    while changed:
-        changed = False
-        for method in node.body:
-            walker.check()
-            if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                for assignment in walker.scope_nodes(method.body):
-                    if (
-                        isinstance(assignment, (ast.Assign, ast.AnnAssign))
-                        and assignment.value is not None
-                    ):
-                        targets = (
-                            assignment.targets
-                            if isinstance(assignment, ast.Assign)
-                            else [assignment.target]
-                        )
-                        for target in targets:
-                            walker.check()
-                            key = _name(target)
-                            if key.startswith("self."):
-                                resolved = _resolve(
-                                    _name(assignment.value), class_bindings
-                                )
-                                if class_bindings.get(key) != resolved:
-                                    class_bindings[key] = resolved
-                                    changed = True
+    _propagate_assignments(assignments, class_bindings, walker)
     return class_bindings
 
 
@@ -321,7 +329,7 @@ def _emit_references(nodes, bindings, scope, walker):
             yield from scope(
                 node.body, _propagate_self_attributes(node, bindings, walker)
             )
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             args = node.args
             parameters = [
                 arg.arg for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs)
@@ -329,7 +337,8 @@ def _emit_references(nodes, bindings, scope, walker):
             parameters += [
                 arg.arg for arg in (args.vararg, args.kwarg) if arg is not None
             ]
-            yield from scope(node.body, bindings, parameters)
+            body = [node.body] if isinstance(node, ast.Lambda) else node.body
+            yield from scope(body, bindings, parameters)
         elif isinstance(node, (ast.Attribute, ast.Call)):
             getattr_reference = _getattr_reference(node)
             if getattr_reference is not None:
@@ -343,6 +352,10 @@ def _emit_references(nodes, bindings, scope, walker):
                 )
 
 
+def iter_capability_sources(root: Path) -> Iterator[Path]:
+    return (path for path in iter_plugin_python_files(root) if not _is_test_source(path.relative_to(root)))
+
+
 def _is_test_source(relative: Path) -> bool:
     name = relative.name
     return (
@@ -353,34 +366,61 @@ def _is_test_source(relative: Path) -> bool:
     )
 
 
-def analyze_capabilities(root: Path, *, stop: Event | None = None) -> dict:
-    walker = _AnalysisWalker(stop)
-    evidence: list[dict] = []
-    capabilities: set[str] = set()
-    warnings: list[dict] = []
-    count = total = 0
+@dataclass
+class CapabilitySources:
+    files: list[tuple[str, str]] = field(default_factory=list)
+    warnings: list[dict] = field(default_factory=list)
+    size: int = 0
+
+
+def read_capability_sources(root: Path, *, stop: Event | None = None) -> CapabilitySources:
+    """Read a bounded snapshot and close source handles before parsing."""
+    sources = CapabilitySources()
     try:
-        for path in iter_plugin_python_files(root):
-            walker.check()
-            if count >= MAX_FILES or total >= MAX_SOURCE_BYTES:
-                raise _AnalysisBudgetExceeded
-            relative_path = path.relative_to(root)
-            relative = relative_path.as_posix()
-            if _is_test_source(relative_path):
-                continue
+        for index, path in enumerate(iter_capability_sources(root)):
+            if stop is not None and stop.is_set():
+                break
+            if index >= MAX_FILES or sources.size >= MAX_SOURCE_BYTES:
+                sources.warnings.append({"code": "budget_exceeded"})
+                break
+            relative = path.relative_to(root).as_posix()
             try:
                 size = path.stat().st_size
-                if size > MAX_FILE_BYTES or total + size > MAX_SOURCE_BYTES:
-                    warnings.append({"code": "source_too_large", "file": relative})
+                if size > MAX_FILE_BYTES or sources.size + size > MAX_SOURCE_BYTES:
+                    sources.warnings.append({"code": "source_too_large", "file": relative})
                     continue
-                total += size
+                sources.size += size
                 with tokenize.open(path) as stream:
-                    tree = ast.parse(stream.read(), filename=relative)
-                count += 1
+                    source = stream.read(MAX_FILE_BYTES + 1)
+                if len(source) > MAX_FILE_BYTES:
+                    sources.warnings.append({"code": "source_too_large", "file": relative})
+                    continue
+                sources.files.append((relative, source))
             except (OSError, UnicodeError, SyntaxError, LookupError):
+                sources.warnings.append({"code": "source_unreadable", "file": relative})
+    except OSError:
+        sources.warnings.append({"code": "source_unreadable"})
+    return sources
+
+
+def analyze_capabilities(
+    root: Path, *, stop: Event | None = None, sources: CapabilitySources | None = None
+) -> dict:
+    walker = _AnalysisWalker(stop)
+    sources = sources if sources is not None else read_capability_sources(root, stop=stop)
+    evidence: list[dict] = []
+    capabilities: set[str] = set()
+    warnings = list(sources.warnings)
+    count = 0
+    try:
+        for relative, source in sources.files:
+            walker.check()
+            try:
+                tree = ast.parse(source, filename=relative)
+            except (SyntaxError, RecursionError):
                 warnings.append({"code": "source_unreadable", "file": relative})
-                walker.check()
                 continue
+            count += 1
             walker.check()
             seen: set[tuple[str, int]] = set()
             for node, (method, external) in _resolved_references(tree, walker):
@@ -399,10 +439,8 @@ def analyze_capabilities(root: Path, *, stop: Event | None = None) -> dict:
                             }
                         )
             walker.check()
-    except _AnalysisBudgetExceeded:
+    except (_AnalysisBudgetExceeded, RecursionError):
         warnings.append({"code": "budget_exceeded"})
-    except OSError:
-        warnings.append({"code": "source_unreadable"})
     status = "partial" if warnings else "completed" if count else "unavailable"
     return {
         "status": status,
@@ -410,5 +448,5 @@ def analyze_capabilities(root: Path, *, stop: Event | None = None) -> dict:
         "evidence": evidence,
         "warnings": warnings[:50],
         "files_analyzed": count,
-        "source_bytes": total,
+        "source_bytes": sources.size,
     }

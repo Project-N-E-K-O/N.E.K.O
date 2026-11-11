@@ -29,14 +29,21 @@ router = APIRouter(prefix="/plugin-consent", tags=["plugin-consent"])
 logger = get_logger("server.routes.plugin_consent")
 
 
+class ConsentSnapshot(BaseModel):
+    version: str
+    unconfirmed: list[str]
+    analysis_status: str
+
+
 class ConsentDecision(BaseModel):
     approved: bool
+    snapshot: ConsentSnapshot | None = None
 
 
 @router.get("/plugins/{plugin_id}")
 async def get_consent(plugin_id: str):
     try:
-        return await asyncio.to_thread(consent_details, plugin_id)
+        return await asyncio.to_thread(consent_details, plugin_id, schedule_missing=True)
     except ServerDomainError as exc:
         raise_http_from_domain(exc, logger=logger)
 
@@ -49,7 +56,9 @@ async def decide_consent(plugin_id: str, body: ConsentDecision):
     try:
         with bounded_operation_wait(20.0):
             if body.approved:
-                return await approve_plugin(plugin_id)
+                if body.snapshot is None:
+                    raise HTTPException(status_code=422, detail="Approval requires the displayed capabilities")
+                return await approve_plugin(plugin_id, **body.snapshot.model_dump())
             return await deny_plugin(plugin_id)
     except PluginOperationBusy:
         raise HTTPException(

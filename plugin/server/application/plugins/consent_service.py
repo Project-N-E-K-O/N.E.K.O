@@ -7,15 +7,15 @@ from pathlib import Path
 
 from plugin.core.state import state
 from plugin.logging_config import get_logger
+from plugin.server.application.plugins import capability_analysis_service
 from plugin.server.application.plugins.capability_analysis_service import (
-    analysis_service,
     plugin_source,
     read_report,
 )
 from plugin.server.application.plugins.operation_lock import (
     serialized_plugin_operation,
 )
-from plugin.server.domain.consent_policy import derive_consent
+from plugin.server.domain.consent_policy import ANALYZING_STATUSES, derive_consent
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.plugin_consent import consent_store
 
@@ -36,8 +36,11 @@ def _consent_view(plugin_id: str, meta: dict | None = None):
     return record, report, derive_consent(record, report), version
 
 
-def consent_details(plugin_id: str) -> dict:
+def consent_details(plugin_id: str, *, schedule_missing: bool = False) -> dict:
     record, report, view, version = _consent_view(plugin_id)
+    if schedule_missing and report["status"] == "unavailable" and not report.get("_source"):
+        capability_analysis_service.schedule_analysis(plugin_id)
+        record, report, view, version = _consent_view(plugin_id)
     return {
         "plugin_id": plugin_id,
         "version": version,
@@ -95,11 +98,22 @@ def consent_notices() -> list[dict]:
 
 
 @serialized_plugin_operation
-async def approve_plugin(plugin_id: str) -> dict:
+async def approve_plugin(
+    plugin_id: str, *, version: str, unconfirmed: list[str], analysis_status: str
+) -> dict:
     # Revalidate and persist under the same operation boundary as uninstall.
     details = await asyncio.to_thread(consent_details, plugin_id)
+    if (
+        analysis_status in ANALYZING_STATUSES
+        or details["version"] != version
+        or details["analysis"]["status"] != analysis_status
+        or set(details["unconfirmed"]) != set(unconfirmed)
+    ):
+        raise ServerDomainError(
+            "PLUGIN_CONSENT_CHANGED", "Plugin capabilities changed. Review them again.", 409
+        )
     capabilities = set(details["approved_capabilities"])
-    capabilities.update(details["analysis"].get("capabilities") or [])
+    capabilities.update(unconfirmed)
     await asyncio.to_thread(
         consent_store.decide,
         plugin_id,
@@ -111,20 +125,14 @@ async def approve_plugin(plugin_id: str) -> dict:
 
 
 @serialized_plugin_operation
-async def _persist_denial(plugin_id: str) -> dict:
+async def deny_plugin(plugin_id: str) -> dict:
+    from plugin.server.application.plugins.lifecycle_service import (
+        PluginLifecycleService,
+    )
+
     details = await asyncio.to_thread(consent_details, plugin_id)
     await asyncio.to_thread(
         consent_store.decide, plugin_id, "denied", [], details["version"]
-    )
-    return await asyncio.to_thread(consent_details, plugin_id)
-
-
-async def deny_plugin(plugin_id: str) -> dict:
-    """Record the denial under the operation lock, then stop the plugin
-    outside it so the stop does not deadlock on a serialized start/stop."""
-    details = await _persist_denial(plugin_id)
-    from plugin.server.application.plugins.lifecycle_service import (
-        PluginLifecycleService,
     )
 
     try:
@@ -132,7 +140,7 @@ async def deny_plugin(plugin_id: str) -> dict:
     except ServerDomainError as exc:
         if exc.code != "PLUGIN_NOT_RUNNING":
             raise
-    return details
+    return await asyncio.to_thread(consent_details, plugin_id)
 
 
 @serialized_plugin_operation
@@ -158,6 +166,6 @@ def denied_plugin_ids(plugin_ids) -> set[str]:
 
 def forget_plugin(plugin_id: str) -> None:
     try:
-        analysis_service.forget(plugin_id)
+        capability_analysis_service.analysis_service.forget(plugin_id)
     finally:
         consent_store.delete(plugin_id)
