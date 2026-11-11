@@ -874,3 +874,9 @@ def test_an_import_rewriting_the_same_event_time_is_no_change():
     imported = {**row, 'event_start_at': iso(timestamp(row['event_start_at']))}
     assert imported['event_start_at'] != row['event_start_at']
     assert legacy_dedup.fingerprint(imported) == legacy_dedup.fingerprint(row)
+
+
+def test_what_makes_a_window_explicit_is_part_of_the_fingerprint():
+    row = {**_fact('a', '博士散步', created='2026-06-12T21:00:00'), 'event_start_at': '2026-06-12T21:00:00'}
+    assert legacy_dedup.fingerprint(row) != legacy_dedup.fingerprint({**row, 'event_when_raw': {'start': {'offset': -1, 'unit': 'day'}}})
+    assert legacy_dedup.fingerprint(row) != legacy_dedup.fingerprint({**row, 'created_at': '2026-06-13T21:00:00'})

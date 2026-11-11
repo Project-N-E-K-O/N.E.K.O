@@ -113,7 +113,9 @@ def fingerprint(row):
             return str(value)
     return hashlib.sha256(json.dumps([row.get('entity') or 'master', row.get('text'), row.get('source'),
                                       sorted(str(item) for item in row.get('source_message_ids') or ()),
-                                      instant(row.get('event_start_at')), instant(row.get('event_end_at'))],
+                                      instant(row.get('event_start_at')), instant(row.get('event_end_at')),
+                                      # What decides whether that window is explicit (see _has_distinct_event_windows).
+                                      bool(row.get('event_when_raw')), instant(row.get('created_at'))],
                                      ensure_ascii=False).encode()).hexdigest()[:16]
 
 
