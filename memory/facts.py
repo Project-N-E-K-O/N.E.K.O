@@ -3639,7 +3639,10 @@ class FactStore:
         near_dup_pairs: list[tuple[dict, dict, float]] = []
         await self.aretry_pending_near_dups(lanlan_name)
         memory_subject = coerce_subject(subject)
-        from memory.long_term_sync import retirement_evidence, verify_retired_assertions, resolve_retirement_cutoffs
+        from memory.long_term_sync import (
+            RETIRED_ASSERTION_REVIEW_MAX_PAIRS, retirement_evidence, retirement_review_pairs, verify_retired_assertions,
+            resolve_retirement_cutoffs, trusted_message_source,
+        )
         directory = os.path.join(self._config_manager.memory_dir, lanlan_name)
         retirements = await asyncio.to_thread(retirement_evidence, directory) if memory_subject is None else []
         expected_retirements = retirements
@@ -3651,20 +3654,43 @@ class FactStore:
                 'entity': candidate.get('entity') if candidate.get('entity') in ('master', 'neko', 'relationship') else 'master',
                 'source': candidate.get('source') if isinstance(candidate.get('source'), str) and candidate.get('source') in self._SOURCE_VALUES else default_source}
                 if isinstance(candidate, dict) else candidate for candidate in extracted]
+        # Candidates an earlier extraction held back come first, so the queue drains.
+        review_queue = None
+        if memory_subject is None and source_messages is not None:
+            from memory import retirement_review_queue
+            queue_key = retirement_review_queue.key(default_source, extraction_path, progress_pass)
+            review_queue = await asyncio.to_thread(retirement_review_queue.read, directory)
+            brought_back = retirement_review_queue.candidates(review_queue, queue_key)
+            extracted = brought_back + list(extracted)
         matches = {}
+        held_back: list = []
+        lookup = ((lambda ids: self._time_indexed.aget_original_source_evidence(lanlan_name, ids))
+                  if getattr(self._time_indexed, 'aget_original_source_evidence', None) is not None else None)
         if retirements:
+            if review_queue is not None and sum(len(pairs) for _, pairs in retirement_review_pairs(
+                    retirements, extracted, source_messages, default_source=default_source)) > RETIRED_ASSERTION_REVIEW_MAX_PAIRS:
+                # Over budget: known correction times narrow the pairs, since a record
+                # whose time is still unknown pairs with every new fact on its subject.
+                # Only a help here; a batch that fits never waits on this lookup.
+                try:
+                    retirements = await resolve_retirement_cutoffs(retirements, source_messages, lookup=lookup)
+                except Exception as error:  # noqa: BLE001 - the strict resolution below still runs
+                    logger.info(f"[FactStore] {lanlan_name}: 预先解析纠正时间失败，按原样配对: {error}")
             matches = await verify_retired_assertions(retirements, extracted, source_messages,
-                lambda prompt, **kwargs: self._allm_call_with_retries(prompt, lanlan_name, **kwargs), default_source=default_source)
+                lambda prompt, **kwargs: self._allm_call_with_retries(prompt, lanlan_name, **kwargs), default_source=default_source,
+                deferred=held_back if review_queue is not None else None)
+            reviewed = [candidate for candidate in extracted if id(candidate) not in {id(item) for item in held_back}]
             relevant = [row for row in retirements if any(isinstance(candidate, dict)
                 and candidate.get('entity') == row['subject'] and (row['id'] in matches.get(id(candidate), ())
                     or isinstance(candidate.get('text'), str) and candidate['text'].strip() == row.get('text', '').strip())
-                for candidate in extracted)]
-            resolved = await resolve_retirement_cutoffs(
-                relevant, source_messages,
-                lookup=(lambda ids: self._time_indexed.aget_original_source_evidence(lanlan_name, ids))
-                if getattr(self._time_indexed, 'aget_original_source_evidence', None) is not None else None)
+                for candidate in reviewed)]
+            resolved = await resolve_retirement_cutoffs(relevant, source_messages, lookup=lookup)
             repaired = {(row['subject'], row['id']): row for row in resolved}
             retirements = [repaired.get((row['subject'], row['id']), row) for row in retirements]
+        if held_back:
+            logger.info(f"[FactStore] {lanlan_name}: 退役断言审查本轮已达上限，{len(held_back)} 条候选留到下一轮")
+            held = {id(candidate) for candidate in held_back}
+            extracted = [candidate for candidate in extracted if id(candidate) not in held]
         retirement_review = (expected_retirements, retirements, matches)
         try:
             async with self._get_persist_alock(lanlan_name):
@@ -3713,11 +3739,23 @@ class FactStore:
                         {"extraction_path": extraction_path}
                         if extraction_path is not None else {}
                     ),
+                    **({'held_back_out': held_back} if review_queue is not None else {}),
                 )
+                progressed = source_messages
+                if review_queue is not None:
+                    kept, settled = await self._asave_retirement_review_queue_locked(
+                        lanlan_name, queue_key, [candidate[retirement_review_queue.QUEUE_ID] for candidate in brought_back],
+                        held_back, source_messages)
+                    # A message whose fact still waits is not read yet, on any device.
+                    progressed = [message for message in source_messages or []
+                                  if trusted_message_source(message)[0] not in kept]
+                    if progress_pass is not None and settled:
+                        await self._arecord_extraction_progress_locked(
+                            lanlan_name, progress_pass, None, identities=settled)
                 if progress_pass is not None and memory_subject is None:
                     # Same lock as the facts above: a snapshot never carries this
                     # progress without the facts extracted from those messages.
-                    await self._arecord_extraction_progress_locked(lanlan_name, progress_pass, source_messages)
+                    await self._arecord_extraction_progress_locked(lanlan_name, progress_pass, progressed)
         finally:
             if near_dup_pairs:
                 # Only committed pairs reach this basket. Release persist before
@@ -3737,9 +3775,37 @@ class FactStore:
         async with self._get_persist_alock(lanlan_name):
             await self._arecord_extraction_progress_locked(lanlan_name, passage, messages)
 
-    async def _arecord_extraction_progress_locked(self, lanlan_name: str, passage: str, messages: list | None) -> None:
+    async def _asave_retirement_review_queue_locked(self, lanlan_name, queue_key, brought_ids, held_back, source_messages):
+        """Keep candidates still waiting for review; returns (identities waiting, identities now settled)."""
+        from memory import retirement_review_queue
+        from memory.long_term_sync import STORED_PROOF, fact_source_evidence
+        added = []
+        for candidate in held_back:
+            if candidate.get(retirement_review_queue.QUEUE_ID):
+                continue
+            # Proven now, while its messages are at hand. A candidate the source
+            # checks reject would be rejected on its return too.
+            proof = fact_source_evidence([], candidate, candidate.get('entity', 'master'), source_messages,
+                                         source=candidate.get('source', 'user_observation'))
+            if proof:
+                added.append({**{name: value for name, value in candidate.items() if name != 'source_indices'},
+                              STORED_PROOF: proof})
+        if not brought_ids and not added:
+            return set(), []
+        directory = os.path.join(self._config_manager.memory_dir, lanlan_name)
+
+        def save():
+            from utils.cloudsave_runtime import cloudsave_writable_transaction
+            target = Path(directory) / retirement_review_queue.FILE
+            with cloudsave_writable_transaction(self._config_manager, operation='save', target=target):
+                return retirement_review_queue.commit(directory, queue_key, set(brought_ids), held_back, added, STORED_PROOF)
+        from memory.recent import _await_recent_mutation_to_completion
+        return await _await_recent_mutation_to_completion(save)
+
+    async def _arecord_extraction_progress_locked(self, lanlan_name: str, passage: str, messages: list | None,
+                                                  *, identities: list | None = None) -> None:
         from memory import extraction_progress
-        processed = extraction_progress.identities(messages)
+        processed = extraction_progress.identities(messages) if identities is None else identities
         if not processed:
             return
         directory = os.path.join(self._config_manager.memory_dir, lanlan_name)
@@ -3792,6 +3858,7 @@ class FactStore:
         source_messages: list | None = None,
         source_accepted: list[dict] | None = None,
         extraction_path: str | None = None,
+        held_back_out: list | None = None,
     ) -> list[dict]:
         """Dedup (SHA-256 + FTS5) + persist. importance < 5 facts are KEPT
         (RFC §3.1.3)—downstream `get_unabsorbed_facts(min_importance=5)`
@@ -3841,7 +3908,7 @@ class FactStore:
             default_source = self._SOURCE_DEFAULT
         memory_subject = coerce_subject(subject)
 
-        from memory.long_term_sync import retirement_evidence, fact_source_evidence, FactEvidenceUnavailable
+        from memory.long_term_sync import retirement_evidence, fact_source_evidence, FactEvidenceUnavailable, STORED_PROOF
         expected, retirements, matches = retirement_review
         if memory_subject is None:
             directory = os.path.join(self._config_manager.memory_dir, lanlan_name)
@@ -3875,7 +3942,15 @@ class FactStore:
                 if candidate_entity not in ('master', 'neko', 'relationship'):
                     candidate_entity = 'master'
                 candidate_source = candidate.get('source', default_source)
-                proof = fact_source_evidence(retirements, candidate, candidate_entity, source_messages, source=candidate_source, matched_ids=matches.get(id(candidate), ()))
+                try:
+                    proof = fact_source_evidence(retirements, candidate, candidate_entity, source_messages, source=candidate_source, matched_ids=matches.get(id(candidate), ()))
+                except FactEvidenceUnavailable:
+                    if held_back_out is None or STORED_PROOF not in candidate:
+                        raise
+                    # A candidate brought back from the queue waits again instead of
+                    # failing the window it happened to join.
+                    held_back_out.append(candidate)
+                    continue
                 if proof is not None:
                     accepted.append(candidate)
                     source_provenance[id(candidate)] = proof

@@ -1895,6 +1895,22 @@ def test_import_keeps_a_retired_row_that_was_already_archived(kind):
     assert 'permanent_suppression' in result[field]['old.json'][0]
 
 
+def test_merged_import_of_an_unchanged_snapshot_keeps_device_only_fields():
+    """A peer's later revision with nothing new must not rebuild this device's rows:
+    rebuilding drops the vector cache, re-queues judged facts and re-runs the event-time review."""
+    fact = {'id': 'f1', 'text': 'likes green tea', 'entity': 'master', 'source': 'user_observation', 'hash': 'f1',
+            'created_at': '2026-11-01T00:00:00', 'source_message_ids': ['sync:' + 'a' * 32],
+            'schema_version': 2, 'signal_processed': False, 'embedding': 'AAAAAA==',
+            'embedding_text_sha256': 'x', 'embedding_model_id': 'm', 'importance': 5, 'tags': ['tea']}
+    reflection = {'id': 'ref_1', 'text': 'tea person', 'entity': 'master', 'status': 'confirmed', 'source_fact_ids': ['f1'],
+                  'created_at': '2026-11-02T00:00:00', 'confirmed_at': '2026-11-03T00:00:00', 'schema_version': 2,
+                  'last_refine_cluster_hash': 'h'}
+    existing = {'persona': {}, 'facts': [fact], 'archive': [], 'reflections': [reflection]}
+    after = merged_import(export_document(existing, 2000), existing)
+    assert after['facts'] == [fact]
+    assert after['reflections'] == [reflection]
+
+
 def test_import_keeps_local_accounting_outside_the_protocol():
     """Source counts decide whether an AI-only line waits for the user; dropping
     them on import would make every synced line count as backed."""
