@@ -463,6 +463,13 @@ class FamiliarManager:
             if not self._closed:
                 # Whoever started it was cancelled; the queue still gets the place.
                 self._spawn(self._start_next())
+            else:
+                # Shutting down gave up on this start, possibly after it was
+                # recorded as working: with its session gone, the commission
+                # ends here rather than be left working for nobody.
+                await asyncio.shield(
+                    self._ledger.transition(commission_id, "failed", reason=_SHUT_DOWN_REASON)
+                )
             raise
         except Exception as exc:  # noqa: BLE001 - the commission fails with the reason
             logger.warning("starting a familiar for %s failed: %s", commission_id, exc)

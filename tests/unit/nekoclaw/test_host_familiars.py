@@ -1503,6 +1503,39 @@ async def test_a_familiar_being_started_outlives_whoever_handed_it_over(tmp_path
     assert done.result_summary == "sorted"
 
 
+async def test_a_start_shutdown_gives_up_on_leaves_no_commission_working(tmp_path, hosts, monkeypatch):
+    from nekoclaw.host import familiars as familiars_module
+
+    inner = scripted_runtime(lambda spec: ScriptedLLM([_report("ready", "sorted")]))
+    starting = asyncio.Event()
+
+    class NeverStarts:
+        """A runtime whose session never comes up."""
+
+        def __init__(self, on_event: Any, callbacks: Any) -> None:
+            self._runtime = inner(on_event, callbacks)
+
+        async def start(self, spec: Any) -> None:
+            starting.set()
+            await asyncio.Event().wait()
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._runtime, name)
+
+    monkeypatch.setattr(familiars_module, "_SHUTDOWN_START_WAIT_SECONDS", 0.2)
+    host = make_host(tmp_path, None, familiar_model=fake_model, decision_llm=FakeDecisionLLM(), runtime_factory=NeverStarts)
+    hosts.append(host)
+    receipt = await _dispatch(host, "sort the photos")
+    await asyncio.wait_for(starting.wait(), 5)
+    # Recorded as working before the runtime was asked to start the session.
+    assert (await host.ledger.get(receipt.commission_id)).status == "working"
+
+    await host.familiars.shutdown()
+
+    failed = await host.ledger.get(receipt.commission_id)
+    assert (failed.status, failed.status_reason) == ("failed", "the host was shut down")
+
+
 async def test_starting_a_queued_commission_does_not_hold_up_runtime_events(tmp_path, hosts):
     inner = scripted_runtime(lambda spec: ScriptedLLM([_report("ready", "done")]))
     may_start = asyncio.Event()
