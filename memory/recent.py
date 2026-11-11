@@ -572,6 +572,10 @@ class TheaterEpisodeRetracted(RuntimeError):
     """A theater archive write matched a tombstone left by the player's decline."""
 
 
+class RecentHistoryWriteBlocked(MaintenanceModeError):
+    """CloudSave blocked the batch before recent history accepted it."""
+
+
 def _load_theater_retraction_state_unlocked(recent_path) -> tuple[list[dict], list[dict]]:
     """Read (attempt tombstones, story forget tombstones); the caller holds the file lock.
 
@@ -1837,13 +1841,17 @@ class CompressedRecentHistoryManager:
         except Exception as e:
             logger.error(f"获取角色配置失败: {e}")
 
-        # Cloud-save fence remains outside try: MaintenanceModeError still propagates directly to caller.
-        await asyncio.to_thread(
-            assert_cloudsave_writable,
-            self._config_manager,
-            operation="save",
-            target=f"memory/{lanlan_name}/recent.json",
-        )
+        try:
+            await asyncio.to_thread(
+                assert_cloudsave_writable,
+                self._config_manager,
+                operation="save",
+                target=f"memory/{lanlan_name}/recent.json",
+            )
+        except MaintenanceModeError as exc:
+            raise RecentHistoryWriteBlocked(
+                exc.mode, operation=exc.operation, target=exc.target,
+            ) from exc
 
         try:
             # CS-1: read disk + merge pending batches + append + persist in one critical section.

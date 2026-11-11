@@ -20,15 +20,15 @@
         const db = Number(value);
         return Number.isFinite(db) ? Math.min(25, Math.max(-5, db)) : 0;
     }
-    async function open(mediaDevices, deviceId, isCurrent) {
+    async function open(mediaDevices, deviceId, isCurrent, constraints = BASE_CONSTRAINTS) {
         let stream;
         let fallback = false;
         try {
-            stream = await mediaDevices.getUserMedia({ audio: deviceId ? { ...BASE_CONSTRAINTS, deviceId: { exact: deviceId } } : { ...BASE_CONSTRAINTS }, video: false });
+            stream = await mediaDevices.getUserMedia({ audio: deviceId ? { ...constraints, deviceId: { exact: deviceId } } : { ...constraints }, video: false });
         } catch (error) {
             if (!deviceId || !['NotFoundError', 'NotReadableError', 'OverconstrainedError'].includes(error && error.name)) throw error;
             if (!isCurrent()) throw new Error('capture_cancelled');
-            stream = await mediaDevices.getUserMedia({ audio: { ...BASE_CONSTRAINTS }, video: false });
+            stream = await mediaDevices.getUserMedia({ audio: { ...constraints }, video: false });
             fallback = true;
         }
         if (!isCurrent()) { stop(stream); throw new Error('capture_cancelled'); }

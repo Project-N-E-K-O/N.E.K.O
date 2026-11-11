@@ -31,6 +31,7 @@ from contextlib import suppress
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from ..shared_state import ensure_steamworks as get_steamworks, get_config_manager
+from services.chat_audio_history import prepare_character_audio_retirement, retire_character_audio
 from utils.character_memory import character_config_mutation_lock
 from utils.config_manager import get_character_uid, get_reserved
 from utils.asyncio_retirement import await_retirement
@@ -943,12 +944,28 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                         })
                 visit_items.clear()
 
-            if visit_marker_failed:
+            chat_audio_marker_failed = False
+            if not theater_preflight_failed and not visit_marker_failed:
+                for name in pending_del_names:
+                    try:
+                        await prepare_character_audio_retirement(
+                            deleted_avatar_directory.parent, pending_avatar_uids.get(name),
+                        )
+                    except (OSError, ValueError):
+                        cleanup_summary["errors"].append({
+                            "character": name,
+                            "stage": "chat_audio_retire_marker",
+                            "error": "storage",
+                        })
+                        chat_audio_marker_failed = True
+                        break
+
+            if visit_marker_failed or chat_audio_marker_failed:
                 # No commit: abort branch below removes recorded markers as uncommitted deletion.
                 await _discard_uncommitted_purge_intents()
 
             # Batch characters.json write (N deletions → one atomic write).
-            if pending_del_names and not theater_preflight_failed and not visit_marker_failed:
+            if pending_del_names and not theater_preflight_failed and not visit_marker_failed and not chat_audio_marker_failed:
                 try:
                     await config_mgr.asave_characters(characters_mut)
                     cleanup_summary["cleaned_characters"] = list(pending_del_names)
@@ -971,7 +988,7 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
 
             # Any local config cleanup failure (per-name deletion/batch persistence) aborts immediately.
             delete_config_failed = any(
-                err.get("stage") in {"delete_config", "theater_preflight", "visit_retire_marker"}
+                err.get("stage") in {"delete_config", "theater_preflight", "visit_retire_marker", "chat_audio_retire_marker"}
                 for err in cleanup_summary.get("errors") or []
             )
             if local_config_cleanup_failed or delete_config_failed:
@@ -1003,6 +1020,12 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                             "character": name,
                             "stage": "delete_chat_avatar",
                             "error": exc.code,
+                        })
+                    if not await retire_character_audio(deleted_avatar_directory.parent, uid):
+                        cleanup_summary["errors"].append({
+                            "character": name,
+                            "stage": "delete_chat_audio",
+                            "error": "storage",
                         })
                 results = await asyncio.gather(
                     _delete_memory_with_retry(name),

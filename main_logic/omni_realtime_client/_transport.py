@@ -529,6 +529,24 @@ class _TransportMixin:
 
     async def _deliver_input_transcript(self, transcript: str, *, item_id: object = None) -> bool:
         identity = self._take_input_route_identity(item_id)
+        audio_transcript = getattr(self, "_audio_message_transcript", None)
+        if audio_transcript is not None:
+            if not transcript.strip() or audio_transcript.finalized:
+                return
+            if not self._is_gemini:
+                if item_id is not None and not isinstance(item_id, str):
+                    return
+                if not self._audio_message_input_committed:
+                    early = self._audio_message_early_transcripts
+                    if getattr(self, "_audio_message_commit", None) is not None and len(early) < 4:
+                        early[item_id] = transcript
+                    return
+                if item_id != self._audio_message_input_item:
+                    return
+            audio_transcript.transcript = transcript
+            audio_transcript.finalized = True
+            await audio_transcript.publish()
+            return
         routed_callback = getattr(self, "on_input_transcript_with_route", None)
         if callable(routed_callback):
             result = await routed_callback(
@@ -711,6 +729,8 @@ class _TransportMixin:
             # force enable_search=False when custom tools are registered, avoiding
             # rejected session.update. See Aliyun client-events documentation's
             # tools-and-enable_search incompatibility section.
+            if is_manual:
+                qwen_session["max_tokens"] = 4096
             if self.has_tools():
                 qwen_session["tools"] = self._tools_for_qwen()
                 qwen_session["enable_search"] = False
@@ -3232,6 +3252,8 @@ class _TransportMixin:
                 if wire_trace is not None:
                     wire_trace.record_recv(event, generation=message_generation)
                 event_type = event.get("type")
+
+                self._observe_audio_message_event(event)
 
                 # if event_type not in ["response.audio.delta", "response.audio_transcript.delta",  "response.output_audio.delta", "response.output_audio_transcript.delta"]:
                 #     # print(f"Received event: {event}")

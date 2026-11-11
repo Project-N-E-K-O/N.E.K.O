@@ -23,6 +23,8 @@ import AvatarToolItemManager, {
 } from './AvatarToolItemManager';
 import AvatarToolQuickbar from './AvatarToolQuickbar';
 import FullChatSurface from './FullChatSurface';
+import AudioMessageComposer from './AudioMessageComposer';
+import { useChatAudioHistory } from './useChatAudioHistory';
 import NekoTooltipLayer from './NekoTooltipLayer';
 import AvatarToolVisuals from './avatar-tools/presentation';
 import { useAvatarToolRuntime } from './avatar-tools/runtime';
@@ -88,6 +90,8 @@ export {
 };
 
 export type ChatWindowProps = ChatWindowSchemaProps & {
+  audioMessageControl?: import('react').ReactNode;
+  audioMessageActive?: boolean;
   onMessageAction?: (message: ChatMessage, action: MessageAction) => void;
   onComposerImportImage?: () => void;
   onComposerScreenshot?: () => void;
@@ -708,6 +712,8 @@ function getMessageBlockPreviewText(message: ChatMessage): string {
         return [block.text];
       case 'link':
         return [block.title || block.description || block.url];
+      case 'audio_message':
+        return [i18n('chat.audioHistoryMessage', 'Voice message')];
       default:
         return [];
     }
@@ -889,6 +895,26 @@ function getCompactHistoryScrollUnderCompactToolWheel(
  * same shared runtime.
  */
 export default function ChatWindowRoot(props: ChatWindowProps) {
+  const [audioActive, setAudioActive] = useState(false);
+  const audioGuideLocked = useGuideChatButtonLock();
+  const target = !props.catLocalTextOnly && !props.theaterPresentation?.active ? props.audioMessageTarget : undefined;
+  const { messages: audioHistory, submit } = useChatAudioHistory(target, props.userName || 'You');
+  const send = props.onComposerAudioMessage;
+  const audioMessageControl = send && target
+    ? <AudioMessageComposer
+        target={target}
+        disabled={!!props.composerDisabled || !!props.composerHidden || audioGuideLocked}
+        send={payload => submit(payload, send)} onBusyChange={setAudioActive}
+      /> : null;
+  const messages = useMemo(() => {
+    if (!audioHistory.length) return props.messages;
+    return [...(props.messages ?? []), ...audioHistory].sort(
+      (a, b) => (a.sortKey ?? a.createdAt ?? 0) - (b.sortKey ?? b.createdAt ?? 0),
+    );
+  }, [audioHistory, props.messages]);
+  const surfaceProps = { ...props, composerDisabled: !!props.composerDisabled || audioActive,
+    audioMessageControl, audioMessageActive: audioActive, messages,
+  };
   useReplyTailPresentation(
     props.messages || [], false, undefined, false, '', '', true,
     props.chatSurfaceMode === 'full',
@@ -896,14 +922,16 @@ export default function ChatWindowRoot(props: ChatWindowProps) {
   return (
     <ChatScreenVisibilityProvider messages={props.messages || defaultMessages}>
       {props.chatSurfaceMode === 'full'
-        ? <FullChatSurface {...props} />
-        : <CompactChatApp {...props} />}
+        ? <FullChatSurface {...surfaceProps} />
+        : <CompactChatApp {...surfaceProps} />}
       <NekoTooltipLayer />
     </ChatScreenVisibilityProvider>
   );
 }
 
 function CompactChatApp({
+  audioMessageControl,
+  audioMessageActive = false,
   title = i18n('chat.title', 'N.E.K.O Chat'),
   iconSrc = '/static/icons/chat_icon.png',
   messages = defaultMessages,
@@ -4674,6 +4702,7 @@ function CompactChatApp({
   }, [clearCompactInputToolFanCloseTimer]);
 
   const collapseCompactInputIfEmpty = useCallback((options?: { ignoreFocusedShell?: boolean; ignoreToolFan?: boolean }) => {
+    if (audioMessageActive) return;
     if (!isCompactSurface) return;
     if (effectiveCompactChatState !== 'input') return;
     if (!options?.ignoreToolFan && compactInputToolFanOpen) return;
@@ -4697,6 +4726,7 @@ function CompactChatApp({
     }
     requestCompactChatState('default');
   }, [
+    audioMessageActive,
     compactInputToolFanOpen,
     composerAttachments.length,
     effectiveCompactChatState,
@@ -6332,6 +6362,7 @@ function CompactChatApp({
                     data-compact-geometry-item={effectiveCompactChatState === 'input' ? 'input' : 'capsule'}
                     data-compact-geometry-owner="surface"
                     data-compact-drag-surface="true"
+                      data-audio-message-active={audioMessageActive ? 'true' : undefined}
                     data-compact-chat-state={effectiveCompactChatState}
                     data-compact-geometry-part={effectiveCompactChatState === 'input' ? 'inputBody' : 'capsuleBody'}
                     data-compact-geometry-hit-scope={!composerHidden ? 'children' : undefined}
@@ -6352,6 +6383,7 @@ function CompactChatApp({
                         {/* 输入态左侧毛绒球：点按折叠为 minimized，按住拖动整个输入框（见 compactMinimizeButton 定义）。
                             按住把手不会让 textarea 失焦收起输入态——宿主 mousedown 会 preventDefault。 */}
                         {compactMinimizeButton}
+                        {audioMessageControl}
                         <textarea
                           className="composer-input"
                           ref={compactInputRef}

@@ -4,6 +4,7 @@ import ProactiveRecommendationBlock from './ProactiveRecommendationBlock';
 import type { SyntheticEvent } from 'react';
 import SmartTextBlock from './SmartTextBlock';
 import MessageImageBlock from './MessageImageBlock';
+import AudioMessageBlockView from './AudioMessageBlockView';
 import { normalizeExternalUrlHref, openExternalUrl } from './openExternal';
 import {
   type ChatMessage,
@@ -70,6 +71,10 @@ export default function MessageBlockView({
 
   if (block.type === 'image') {
     return <MessageImageBlock key={block.url} block={block} interactive={interactive} />;
+  }
+
+  if (block.type === 'audio_message') {
+    return <AudioMessageBlockView block={block} interactive={interactive} />;
   }
 
   if (block.type === 'link') {

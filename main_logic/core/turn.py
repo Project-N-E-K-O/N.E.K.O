@@ -2557,6 +2557,8 @@ class TurnMixin:
         chat_original_text: str | None = None,
         chat_request_id: str | None = None,
         chat_input_source: str | None = None,
+        audio_message_request_id: str | None = None,
+        audio_message_transcript_final: bool = True,
     ):
         """Sync transcript text into queues/cache and push it to the frontend.
 
@@ -2757,7 +2759,14 @@ class TurnMixin:
         if original_id:
             user_message["chat_original_source"] = {"recordId": original_id,
                 "originalTime": str(int(_transcript_arrival_ts * 1000)), "origin": "chat"}
-        self.sync_message_queue.put({"type": "user", "data": user_message})
+        if audio_message_request_id is None:
+            self.sync_message_queue.put({"type": "user", "data": user_message})
+        else:
+            user_message["request_id"] = audio_message_request_id
+            self.sync_message_queue.put({
+                "type": "audio_message_memory_transcript", "request_id": audio_message_request_id,
+                "final": audio_message_transcript_final, "data": user_message,
+            })
         # Preserve the existing queue order before any source database await.
         # Save accepted raw text independently, even if the reply later fails.
         if original_id and getattr(self, '_config_manager', None) is not None:
@@ -2784,7 +2793,7 @@ class TurnMixin:
             "[%s] voice user_transcript session=%s ws_connected=%s len=%d",
             self.lanlan_name, type(self.session).__name__, _ws_connected_dbg, len(record_transcript_text),
         )
-        if isinstance(self.session, OmniRealtimeClient):
+        if isinstance(self.session, OmniRealtimeClient) and audio_message_request_id is None:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 try:
                     message = {

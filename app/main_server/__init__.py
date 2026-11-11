@@ -489,6 +489,7 @@ from .character_runtime import (  # noqa: F401
     _stop_character_thread,
     catgirl_names,
     cleanup,
+    drain_sync_connector_memory,
     her_name,
     init_one_catgirl,
     initialize_character_data,
@@ -1042,6 +1043,9 @@ async def _cancel_workshop_background_tasks_for_startup_rollback() -> None:
 async def _rollback_partial_main_runtime_startup() -> None:
     global steamworks, _preload_task, _game_cleanup_task, agent_event_bridge
 
+    from services.chat_audio_history import audio_retirement_recovery
+
+    await audio_retirement_recovery.stop()
     await _cancel_task_if_running(_preload_task, name="preload", timeout=1.0)
     _preload_task = None
     await _cancel_task_if_running(_game_cleanup_task, name="game cleanup", timeout=1.0)
@@ -1280,6 +1284,10 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
             except Exception:
                 logger.debug("[GeoIP] 预热失败，留给后续调用重试", exc_info=True)
 
+            from services.chat_audio_history import audio_retirement_recovery
+            from utils.character_memory import character_config_mutation_lock
+
+            audio_retirement_recovery.start(_config_manager, character_config_mutation_lock)
             _runtime_startup_init_completed = True
             _disable_main_storage_limited_mode()
 
@@ -1508,6 +1516,15 @@ async def on_shutdown():
         # Skip subsequent async steps only on total-budget exhaustion, then reraise the first cancellation.
         shutdown_cancellation: asyncio.CancelledError | None = None
         cancellation_budget = _ShutdownCancellationBudget()
+        from services.chat_audio_history import audio_retirement_recovery
+
+        shutdown_cancellation = await _run_shutdown_step(
+            audio_retirement_recovery.stop,
+            what="chat audio retirement shutdown",
+            deadline_monotonic=time.monotonic() + 4.0,
+            pending_cancellation=shutdown_cancellation,
+            cancellation_budget=cancellation_budget,
+        )
         # Finalize visits first: seal uploads before finalized state, without leave, within VISIT_SHUTDOWN_BUDGET_S;
         # expiry cannot block later hooks, and unfinished work remains for startup backfill.
         try:
@@ -1537,6 +1554,13 @@ async def on_shutdown():
             )
         except Exception as e:
             logger.debug(f"voice identity cleanup failed: {e}")
+        shutdown_cancellation = await _run_shutdown_step(
+            drain_sync_connector_memory,
+            what="关闭前保存聊天记忆",
+            deadline_monotonic=time.monotonic() + 4.5,
+            pending_cancellation=shutdown_cancellation,
+            cancellation_budget=cancellation_budget,
+        )
         cleanup()
         # join_sync_connector_threads already gathers joins concurrently.
         shutdown_cancellation = await _run_shutdown_step(

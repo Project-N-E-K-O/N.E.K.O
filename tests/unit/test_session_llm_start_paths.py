@@ -183,6 +183,21 @@ async def test_session_creation_runs_end_to_end(monkeypatch, input_mode):
     assert mgr.session is client, "connect 成功后必须提升为 self.session"
 
 
+@pytest.mark.asyncio
+async def test_audio_message_session_connects_in_manual_mode_with_recent_context(monkeypatch):
+    mgr = _make_manager(monkeypatch, input_mode="audio_message")
+    await LLMSessionManager._start_session_start_llm(
+        mgr,
+        "audio_message",
+        await mgr._config_manager.aget_core_config(),
+        await mgr._config_manager.aget_model_api_config("realtime"),
+        asyncio.create_task(_new_dialog_task("RECENT_CHAT")),
+        0.0,
+    )
+    assert mgr.session.kwargs["turn_detection_mode"] is lifecycle.TurnDetectionMode.MANUAL
+    assert "RECENT_CHAT" in mgr.session.connected_with[0]
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 @pytest.mark.parametrize("input_mode", ["audio", "text"])

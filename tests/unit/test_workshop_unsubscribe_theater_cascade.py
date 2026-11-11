@@ -6,12 +6,14 @@ import asyncio
 import hashlib
 import json
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
+from services.chat_audio_history import ChatAudioHistory
 from services.theater.numeric_v2_archive import NumericV2ArchiveStore, quarantined_file_name
 from services.theater.numeric_v2_runtime import NumericV2Engine, NumericV2Runtime
 from tests.unit.test_character_memory_regression import _DummyRequest, reload_module
@@ -111,6 +113,35 @@ async def _seed_theater(theater: Path, binding: dict):
     archive_store.create_or_get(stored.session)
     archive_store.write_public_archive(title="t", session=stored.session, ending=None)
     return runtime.store._path(stored.session.session_id), archive_store
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_workshop_unsubscribe_removes_only_deleted_characters_audio(tmp_path, monkeypatch):
+    removed_uid, kept_uid = "a" * 32, "b" * 32
+    removed_character = _workshop_character(_binding()["character_id"])
+    removed_character["_reserved"]["character_uid"] = removed_uid
+    config = _Config(tmp_path, {
+        "当前猫娘": "Other",
+        "猫娘": {"Lan": removed_character, "Other": {"_reserved": {"character_uid": kept_uid}}},
+    })
+    removed = ChatAudioHistory(tmp_path, removed_uid)
+    kept = ChatAudioHistory(tmp_path, kept_uid)
+    pcm = b"\x01\x00" * 8000
+    digest = hashlib.sha256(pcm).digest()
+    expires = time.time() + 900
+    for history in (removed, kept):
+        assert history.reserve("old", pcm, digest, expires)
+
+    unsubscribe, _ = _install_unsubscribe(monkeypatch, config, candidate="Lan")
+    result = await unsubscribe._unsubscribe_workshop_item(
+        _DummyRequest({"item_id": str(ITEM_ID)}), asyncio.Event(),
+    )
+
+    assert result["success"] is True, result
+    assert result["cleanup_summary"]["errors"] == []
+    assert removed.read_audio("old") is None
+    assert kept.read_audio("old").endswith(pcm)
 
 
 @pytest.mark.unit

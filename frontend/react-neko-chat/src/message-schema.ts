@@ -233,6 +233,16 @@ const proactiveRecommendationBlockSchema = z.object({
 
 export const messageBlockSchema = z.discriminatedUnion('type', [
   textBlockSchema,
+  z.object({
+    type: z.literal('audio_message'),
+    character: z.string().min(1),
+    requestId: z.string().min(1),
+    durationMs: z.number().int().nonnegative(),
+    transcript: z.string(),
+    state: z.enum(['sending', 'sent', 'unconfirmed']),
+    available: z.boolean(),
+    canLoadOlder: z.boolean().optional(),
+  }),
   imageBlockSchema,
   linkBlockSchema,
   statusBlockSchema,
@@ -283,6 +293,10 @@ export const chatWindowPropsSchema = z.object({
   messages: z.array(chatMessageSchema).optional(),
   userName: z.string().trim().min(1).optional(),
   assistantName: z.string().trim().min(1).optional(),
+  audioMessageTarget: z.string().optional(),
+  onComposerAudioMessage: z.function().args(z.object({
+    requestId: z.string(), target: z.string(), audio: z.string(), sampleRateHz: z.number(), saveLocal: z.boolean().optional(),
+  })).returns(z.promise(z.unknown())).optional(),
   inputPlaceholder: z.string().optional(),
   sendButtonLabel: z.string().optional(),
 

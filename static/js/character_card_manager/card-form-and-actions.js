@@ -2576,12 +2576,9 @@ async function workshopDeleteCatgirl(name, options = {}) {
                 }
                 : { method: 'DELETE' }
         );
+        const data = await resp.json().catch(() => null);
         if (!resp.ok) {
-            let serverMsg = '';
-            try {
-                const data = await resp.json();
-                serverMsg = data?.error || data?.message || '';
-            } catch (_) { /* 响应不是 JSON 就退回到默认文案 */ }
+            const serverMsg = data?.error || data?.message || '';
             const msg = serverMsg || (window.t ? window.t('character.deleteError') : '删除猫娘时发生错误');
             showMessage(msg, 'error', 6000);
             await showAlertDialog(msg, { type: 'error' });
@@ -2593,6 +2590,12 @@ async function workshopDeleteCatgirl(name, options = {}) {
         if (shouldReload) {
             // 重新加载角色卡列表
             await loadCharacterCards();
+        }
+        if (data?.chat_audio_cleanup_failed === true) {
+            const message = window.t
+                ? window.t('character.audioCleanupPending')
+                : '角色已删除，应用会在后台继续清理本机录音。';
+            await showAlertDialog(message, { type: 'warning' });
         }
         return true;
     } catch (error) {
