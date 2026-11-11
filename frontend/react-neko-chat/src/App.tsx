@@ -6388,7 +6388,6 @@ function CompactChatApp({
                         {/* 输入态左侧毛绒球：点按折叠为 minimized，按住拖动整个输入框（见 compactMinimizeButton 定义）。
                             按住把手不会让 textarea 失焦收起输入态——宿主 mousedown 会 preventDefault。 */}
                         {compactMinimizeButton}
-                        {audioMessageControl}
                         <textarea
                           className="composer-input"
                           ref={compactInputRef}
@@ -6574,6 +6573,7 @@ function CompactChatApp({
                             scheduleCompactInputCollapse();
                           }}
                         />
+                        {audioMessageControl}
                         {compactInputToolToggleButton}
                       </>
                     ) : (

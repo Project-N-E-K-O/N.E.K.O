@@ -3511,6 +3511,8 @@ body > .compact-chat-visit-anchor[data-chat-surface-mode="compact"] {
 
 .compact-chat-surface-shell {
   --compact-surface-active-width: var(--compact-surface-resize-width, var(--compact-surface-width, 430px));
+  --compact-input-tool-gutter: 62px;
+  --compact-input-tool-center-inset: 31px;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -3602,7 +3604,7 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 
 .compact-chat-surface-frame[data-compact-chat-state="input"] {
   gap: 0;
-  padding: 5px 62px 5px var(--compact-chat-minimize-ball-slot);
+  padding: 5px var(--compact-input-tool-gutter, 62px) 5px var(--compact-chat-minimize-ball-slot);
 }
 
 /* compact 输入框/胶囊左侧毛绒球（minimize 折叠入口）：点按=折叠为 minimized 毛绒球小窗口，
@@ -5467,7 +5469,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor.is-th
   --compact-tool-fan-focus-y: var(--compact-tool-wheel-hover-radius);
   --compact-tool-wheel-center-x: var(--compact-tool-wheel-hover-radius);
   --compact-tool-wheel-center-y: var(--compact-tool-wheel-hover-radius);
-  --compact-tool-toggle-center-x: calc(100% - 31px);
+  --compact-tool-toggle-center-x: calc(100% - var(--compact-input-tool-center-inset, 31px));
   --compact-tool-toggle-center-y: 31px;
   --compact-tool-button-fill: rgba(255, 255, 255, 0.9);
   --compact-tool-button-hover-fill: rgba(232, 246, 255, 0.96);
@@ -5520,6 +5522,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor.is-th
 }
 
 .compact-input-tool-fan-hit-region {
+  --compact-tool-hit-outline: 0 0, 100% 0, 100% 100%, 0 100%;
   position: absolute;
   left: calc(var(--compact-tool-wheel-center-x) - var(--compact-tool-wheel-hover-radius));
   top: calc(var(--compact-tool-wheel-center-y) - var(--compact-tool-wheel-hover-radius));
@@ -5851,10 +5854,27 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor.is-th
 /* 播放器位于轮盘中心左上方，其控制区会和圆形旋转命中区相交。播放器显示时，
    从命中圆左上挖出固定的控制带，让播放/暂停、音量与静音点击穿透到下层；
    道具按钮保持各自的 pointer-events:auto，不受影响。 */
-.app-shell:has(> #music-player-mount.compact-music-player-mount > .music-player-bar:not([hidden]))
+:where(.app-shell:has(> #music-player-mount.compact-music-player-mount > .music-player-bar:not([hidden])))
   .compact-input-tool-fan[data-compact-input-tool-fan-open="true"]
   .compact-input-tool-fan-hit-region {
-  clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%, 0 var(--compact-tool-wheel-music-control-cutout-height), var(--compact-tool-wheel-music-control-cutout-width) var(--compact-tool-wheel-music-control-cutout-height), var(--compact-tool-wheel-music-control-cutout-width) 0);
+  --compact-tool-hit-outline: 0 0, 100% 0, 100% 100%, 0 100%, 0 var(--compact-tool-wheel-music-control-cutout-height), var(--compact-tool-wheel-music-control-cutout-width) var(--compact-tool-wheel-music-control-cutout-height), var(--compact-tool-wheel-music-control-cutout-width) 0;
+  clip-path: polygon(var(--compact-tool-hit-outline));
+}
+
+/* The mic sits at the end of the input row, just before the tool gutter. */
+.compact-chat-surface-shell:has(> .compact-chat-surface-frame .audio-message-mic:not(:disabled))
+  > .compact-input-tool-fan[data-compact-input-tool-fan-open="true"]
+  > .compact-input-tool-fan-hit-region {
+  --compact-mic-hit-right: calc(var(--compact-tool-wheel-hover-radius) - var(--compact-input-tool-gutter) + var(--compact-input-tool-center-inset));
+  --compact-mic-hit-left: calc(var(--compact-mic-hit-right) - 34px);
+  --compact-mic-hit-top: calc(var(--compact-tool-wheel-hover-radius) - 18px);
+  --compact-mic-hit-bottom: calc(var(--compact-tool-wheel-hover-radius) + 18px);
+  clip-path: polygon(evenodd, var(--compact-tool-hit-outline), 0 0,
+    var(--compact-mic-hit-left) var(--compact-mic-hit-top),
+    var(--compact-mic-hit-right) var(--compact-mic-hit-top),
+    var(--compact-mic-hit-right) var(--compact-mic-hit-bottom),
+    var(--compact-mic-hit-left) var(--compact-mic-hit-bottom),
+    var(--compact-mic-hit-left) var(--compact-mic-hit-top), 0 0);
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-wheel-selection-pointer {
