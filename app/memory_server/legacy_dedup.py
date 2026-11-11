@@ -173,9 +173,19 @@ async def _archive_folded(name, folded, fingerprints):
         # after this read makes it refuse the whole fold, which the next round redoes.
         survivors = {spec['superseded_by']: live[spec['superseded_by']] for spec in live_specs.values()
                      if spec['superseded_by'] in live and spec['superseded_by'] not in live_specs}
+        # A survivor already in the archive (aged) is checked under the same lock,
+        # where an import cannot change it between the check and the commit.
+        archived_survivors = {spec['superseded_by'] for spec in live_specs.values() if spec['superseded_by'] not in live}
+
+        def survivors_in_archive_unchanged(archive_rows, _live_rows):
+            by_id = {row.get('id'): row for row in archive_rows if isinstance(row, dict)}
+            return all(survivor in by_id and not by_id[survivor].get('arbitration_archived_at')
+                       and legacy_dedup.fingerprint(by_id[survivor]) == fingerprints.get(survivor)
+                       for survivor in archived_survivors)
         await store.aarchive_arbitrated_facts(name, live_specs,
                                               survivor_updates=survivors, expected_survivors=survivors,
-                                              expected_losers={loser: live[loser] for loser in live_specs})
+                                              expected_losers={loser: live[loser] for loser in live_specs},
+                                              archive_check=survivors_in_archive_unchanged if archived_survivors else None)
     remaining = {loser: survivor for loser, survivor in folded.items() if loser not in live}
     if not remaining:
         return
@@ -210,14 +220,22 @@ async def _archive_folded(name, folded, fingerprints):
 async def _repoint(name, mapping):
     """Point reflection and persona evidence at the surviving facts."""
     reflections_changed = persona_changed = 0
+    from memory.reflection._shared import REFLECTION_TERMINAL_STATUSES
     engine = runtime.reflection_engine
     async with engine._get_alock(name):
-        reflections = await engine.aload_reflections(name)
+        # Every row of reflections.json, promoted and other finished ones included:
+        # they still travel in the snapshot with their evidence lists.
+        reflections = await engine._aload_reflections_full(name)
+        changed = []
         for row in reflections:
             if isinstance(row, dict) and legacy_dedup.repoint(row, mapping):
-                reflections_changed += 1
-        if reflections_changed:
-            await engine.asave_reflections(name, reflections)
+                changed.append(row)
+        reflections_changed = len(changed)
+        if changed:
+            # The save takes the active set as what survives; a finished row is passed
+            # only when it changed, so archiving of the others goes on as usual.
+            await engine.asave_reflections(name, [row for row in reflections if isinstance(row, dict) and (
+                row.get('status') not in REFLECTION_TERMINAL_STATUSES or any(row is item for item in changed))])
     manager = runtime.persona_manager
     async with manager._get_alock(name):
         persona = await manager._aensure_persona_locked(name)
@@ -288,12 +306,18 @@ async def run(name, *, still_idle=lambda: True):
         return None
     archive_now = await asyncio.to_thread(_read_archive, name)
     current = legacy_dedup.candidates(await runtime.fact_store.aload_facts(name), archive_now)
+    ours = set(marker.get('archiving') or {})
     folded = legacy_dedup.still_valid(legacy_dedup.losers(marker['pairs'], marker['decisions']),
-                                      marker['pairs'], current, archive_now)
+                                      marker['pairs'], current, archive_now, ours)
     mapping = legacy_dedup.survivors(folded)
     fingerprints = {}
     for pair in marker['pairs']:
         fingerprints.update(pair.get('fingerprints') or {})
+    # Written down before archiving: once archived, a snapshot import may rewrite the
+    # rows' reason, and this record is how a rerun still knows them as its own.
+    marker = {**marker, 'archiving': {**(marker.get('archiving') or {}), **mapping}}
+    await asyncio.to_thread(_save_marker, directory, marker)
+    ours = set(marker['archiving'])
     # Each folded fact points straight at the one that finally stands for it.
     await _archive_folded(name, mapping, fingerprints)
     archive = {row.get('id'): row for row in await asyncio.to_thread(_read_archive, name) if isinstance(row, dict)}
@@ -301,7 +325,7 @@ async def run(name, *, still_idle=lambda: True):
     # that changed in the last moment was skipped and stays as it is.
     mapping = {loser: survivor for loser, survivor in mapping.items()
                if archive.get(loser, {}).get('arbitration_archived_at') and archive[loser].get('superseded_by') == survivor
-               and archive[loser].get('arbitration_reason') == legacy_dedup.ARCHIVE_REASON}
+               and (archive[loser].get('arbitration_reason') == legacy_dedup.ARCHIVE_REASON or loser in ours)}
     reflections_changed, persona_changed = await _repoint(name, mapping) if mapping else (0, 0)
     live = {row.get('id'): row for row in await runtime.fact_store.aload_facts(name) if isinstance(row, dict)}
     # A survivor stands for what it replaced: absorbed then, absorbed now.
@@ -335,8 +359,10 @@ async def restore(name):
     async with store._get_persist_alock(name):
         archive = await asyncio.to_thread(_read_archive, name)
         facts = await store.aload_facts(name)
-        # A copy restored earlier may itself have aged into the archive since.
+        # A copy restored earlier may itself have aged into the archive since, or lost
+        # its restored_from in an import; the marker remembers every restore too.
         restored_from = {row.get('restored_from') for row in [*facts, *archive] if isinstance(row, dict)}
+        restored_from |= set(marker.get('restored') or ())
         now = datetime.now()
         added = []
         for row in archive:
@@ -355,6 +381,8 @@ async def restore(name):
         if added:
             facts.extend(added)
             await store.asave_facts(name)
+            marker = {**marker, 'restored': sorted(set(marker.get('restored') or ()) | {row['restored_from'] for row in added})}
+            await asyncio.to_thread(_save_marker, directory, marker)
     if added:
         from .long_term_sync import queue_capture_after_extraction
         queue_capture_after_extraction(name)

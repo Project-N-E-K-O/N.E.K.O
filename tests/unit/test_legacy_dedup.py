@@ -623,3 +623,76 @@ def test_an_executed_fold_keeps_the_target_the_archive_recorded():
     archive = [{'id': 'b', 'arbitration_archived_at': 't', 'superseded_by': 'c', 'arbitration_reason': legacy_dedup.ARCHIVE_REASON}]
     valid = legacy_dedup.still_valid({'b': 'a', 'a': 'c'}, pairs, rows, archive)
     assert valid == {'b': 'c'} and legacy_dedup.survivors(valid) == {'b': 'c'}
+
+
+@pytest.mark.asyncio
+async def test_a_promoted_reflection_is_repointed_too(memory):
+    directory, facts = memory
+    await _seed(directory, facts)
+    rows = json.loads((directory / 'reflections.json').read_text(encoding='utf-8'))
+    rows.append({'id': 'r2', 'text': '博士是主播', 'entity': 'master', 'status': 'promoted',
+                 'source_fact_ids': ['dup'], 'counted_fact_ids': ['dup', 'old'], 'created_at': '2026-06-13T00:00:00'})
+    (directory / 'reflections.json').write_text(json.dumps(rows, ensure_ascii=False), encoding='utf-8')
+    await _run(_Model([{'博士是一名主播', '博士是一名主播，会日常直播'}]))
+    promoted = next(row for row in json.loads((directory / 'reflections.json').read_text(encoding='utf-8')) if row['id'] == 'r2')
+    assert promoted['source_fact_ids'] == ['old'] and promoted['counted_fact_ids'] == ['old']
+
+
+@pytest.mark.asyncio
+async def test_restore_stays_once_even_after_an_import_drops_restored_from(memory):
+    from app.memory_server import legacy_dedup as runner
+    directory, facts = memory
+    await _seed(directory, facts)
+    await _run(_Model([{'博士是一名主播', '博士是一名主播，会日常直播'}]))
+    assert await runner.restore(NAME) == 1
+    for row in facts._facts[NAME]:
+        row.pop('restored_from', None)   # a peer's change rebuilt the row on import
+    await facts.asave_facts(NAME)
+    assert await runner.restore(NAME) == 0
+
+
+@pytest.mark.asyncio
+async def test_an_archived_survivor_changed_under_the_lock_stops_the_fold(memory, monkeypatch):
+    from datetime import datetime, timedelta
+    directory, facts = memory
+    recent = (datetime.now() - timedelta(hours=1)).isoformat()
+    facts._facts[NAME] = [_fact('dup', '博士是一名主播，会日常直播', created=recent)]
+    await facts.asave_facts(NAME)
+    (directory / 'facts_archive.json').write_text(json.dumps([
+        _fact('old', '博士是一名主播', created='2026-06-12T21:00:00', absorbed=True)], ensure_ascii=False), encoding='utf-8')
+    real = facts.aarchive_arbitrated_facts
+
+    async def import_then_archive(name, specs, **kwargs):
+        archive = json.loads((directory / 'facts_archive.json').read_text(encoding='utf-8'))
+        archive[0]['text'] = '博士不再直播了'   # a snapshot import rewrites the archived survivor
+        (directory / 'facts_archive.json').write_text(json.dumps(archive, ensure_ascii=False), encoding='utf-8')
+        return await real(name, specs, **kwargs)
+    monkeypatch.setattr(facts, 'aarchive_arbitrated_facts', import_then_archive)
+    with pytest.raises(RuntimeError):
+        await _run(_Model([{'博士是一名主播', '博士是一名主播，会日常直播'}]))
+    assert [row['id'] for row in json.loads((directory / 'facts.json').read_text(encoding='utf-8'))] == ['dup']
+
+
+@pytest.mark.asyncio
+async def test_a_rerun_knows_its_own_archive_after_an_import_rewrote_the_reason(memory, monkeypatch):
+    from app.memory_server import legacy_dedup as runner
+    directory, facts = memory
+    await _seed(directory, facts)
+    model = _Model([{'博士是一名主播', '博士是一名主播，会日常直播'}])
+    real = runner._repoint
+
+    async def crash(*args, **kwargs):
+        raise RuntimeError('process exits')
+    monkeypatch.setattr(runner, '_repoint', crash)
+    with pytest.raises(RuntimeError):
+        await _run(model)
+    archive = json.loads((directory / 'facts_archive.json').read_text(encoding='utf-8'))
+    for row in archive:
+        if row['id'] == 'dup':
+            row['arbitration_reason'] = 'dedup_arbitration'   # what an import writes
+    (directory / 'facts_archive.json').write_text(json.dumps(archive, ensure_ascii=False), encoding='utf-8')
+    monkeypatch.setattr(runner, '_repoint', real)
+    marker = await _run(model)
+    assert marker['archived'] == {'dup': 'old'}
+    [reflection] = [row for row in json.loads((directory / 'reflections.json').read_text(encoding='utf-8')) if row['id'] == 'r1']
+    assert reflection['source_fact_ids'] == ['old', 'yes']

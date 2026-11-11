@@ -98,7 +98,7 @@ def fingerprint(row):
                                      ensure_ascii=False).encode()).hexdigest()[:16]
 
 
-def still_valid(folded, pairs, rows, archive):
+def still_valid(folded, pairs, rows, archive, ours=()):
     """The folds whose two facts are still what the model judged.
 
     A fold already applied (its fact archived by the cleanup, pointing at the
@@ -110,8 +110,12 @@ def still_valid(folded, pairs, rows, archive):
         seen.update(pair.get('fingerprints') or {})
     # Only this cleanup's own archiving counts as done by it; everyday dedup may have
     # folded the same fact meanwhile, and that is not this run's to record or restore.
+    # ``ours`` lists what this run recorded before archiving: a snapshot import may
+    # since have rewritten the reason on those rows.
+    ours = set(ours)
     applied = {row.get('id'): row.get('superseded_by') for row in archive
-               if isinstance(row, dict) and row.get('arbitration_archived_at') and row.get('arbitration_reason') == ARCHIVE_REASON}
+               if isinstance(row, dict) and row.get('arbitration_archived_at')
+               and (row.get('arbitration_reason') == ARCHIVE_REASON or row.get('id') in ours)}
 
     final = survivors(folded)
 

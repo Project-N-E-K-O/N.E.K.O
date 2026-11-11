@@ -1234,8 +1234,14 @@ class FactStore:
         survivor_updates: dict[tuple[object, str, str, str], dict] | None = None,
         expected_survivors: dict[tuple[object, str, str, str], dict] | None = None,
         expected_losers: dict[tuple[object, str, str, str], dict] | None = None,
+        archive_check: Callable[[list, list], bool] | None = None,
     ) -> int:
-        """Archive trust/dedup losers with an archive-first two-file commit."""
+        """Archive trust/dedup losers with an archive-first two-file commit.
+
+        ``archive_check(archive_rows, live_rows)`` runs under the same lock, after
+        the archive file is read; a False refuses the whole commit (a caller whose
+        decision rests on archived rows checks them where nothing can change them).
+        """
         if not archive_specs:
             return 0
         survivor_updates = survivor_updates or {}
@@ -1365,6 +1371,8 @@ class FactStore:
                                 "facts_archive is not a list during arbitration"
                             )
                         archived = data
+                    if archive_check is not None and not archive_check(archived, facts):
+                        raise RuntimeError("fact arbitration archive check failed")
                     now_iso = datetime.now().isoformat()
                     stamped = []
                     for fact in losers:
