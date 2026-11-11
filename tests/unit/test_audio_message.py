@@ -5,6 +5,7 @@ import base64
 import contextlib
 import json
 import sqlite3
+import threading
 import time
 import uuid
 from types import SimpleNamespace
@@ -403,7 +404,10 @@ def test_expired_id_stays_rejected_after_receipt_eviction():
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "outcome",
-    ["completed", "rejected", "locked-transcript", "tool-continuation", "late-transcript", "missing-transcript"],
+    [
+        "completed", "rejected", "locked-transcript", "tool-continuation", "late-transcript", "missing-transcript",
+        "slow-transcript-recovers", "slow-transcript-exhausts-retries",
+    ],
 )
 async def test_real_arbiter_waits_for_audio_commit_before_exactly_one_response(
     outcome, isolated_history, monkeypatch,
@@ -412,7 +416,9 @@ async def test_real_arbiter_waits_for_audio_commit_before_exactly_one_response(
     locked_transcript = outcome == "locked-transcript"
     uses_tool = outcome == "tool-continuation"
     late_transcript = outcome == "late-transcript"
-    use_manager = locked_transcript or uses_tool or late_transcript or outcome == "missing-transcript"
+    slow_transcript = outcome in {"slow-transcript-recovers", "slow-transcript-exhausts-retries"}
+    exhausts_retries = outcome == "slow-transcript-exhausts-retries"
+    use_manager = locked_transcript or uses_tool or late_transcript or slow_transcript or outcome == "missing-transcript"
     from main_logic.tool_calling import ToolResult
 
     tool_started, release_tool, continuation_sent = asyncio.Event(), asyncio.Event(), asyncio.Event()
@@ -431,6 +437,33 @@ async def test_real_arbiter_waits_for_audio_commit_before_exactly_one_response(
     commit_sent = asyncio.Event()
     response_sent = asyncio.Event()
     transcript_received = asyncio.Event()
+    write_started, grace_expired = asyncio.Event(), asyncio.Event()
+    release_write = threading.Event()
+    write_attempts = 0
+
+    if slow_transcript:
+        loop = asyncio.get_running_loop()
+        update = isolated_history.update
+
+        def update_with_slow_transcript(request_id, **changes):
+            nonlocal write_attempts
+            if "transcript" in changes:
+                write_attempts += 1
+                if write_attempts == 1:
+                    loop.call_soon_threadsafe(write_started.set)
+                    if not release_write.wait(5):
+                        raise AssertionError("test did not release the transcript write")
+                    raise sqlite3.OperationalError("temporary transcript write failure")
+                if exhausts_retries:
+                    raise sqlite3.OperationalError("transcript storage still unavailable")
+            return update(request_id, **changes)
+
+        monkeypatch.setattr(isolated_history, "update", update_with_slow_transcript)
+
+    async def expire_grace_during_write():
+        await write_started.wait()
+        grace_expired.set()
+        raise TimeoutError
 
     class Peer:
         closed = False
@@ -496,6 +529,8 @@ async def test_real_arbiter_waits_for_audio_commit_before_exactly_one_response(
         task = asyncio.create_task(client.submit_audio_message(pcm, str(uuid.uuid4()), is_current=lambda: True))
     try:
         await asyncio.wait_for(commit_sent.wait(), 2)
+        if slow_transcript:
+            monkeypatch.setattr(client._audio_message_transcript.transcript_ready, "wait", expire_grace_during_write)
         assert [event["type"] for event in events] == ["input_audio_buffer.append"] * 8 + ["input_audio_buffer.commit"]
         if reject:
             peer.feed({"type": "error", "error": {"message": "rejected", "event_id": events[-1]["event_id"]}})
@@ -534,6 +569,17 @@ async def test_real_arbiter_waits_for_audio_commit_before_exactly_one_response(
             finally:
                 writer.close()
             peer.finish_reply()
+        if slow_transcript:
+            await asyncio.wait_for(response_ended.wait(), 2)
+            peer.feed({
+                "type": "conversation.item.input_audio_transcription.completed",
+                "item_id": "audio-one", "transcript": "Check tomorrow's schedule.",
+            })
+            await asyncio.wait_for(grace_expired.wait(), 2)
+            done, _ = await asyncio.wait({task}, timeout=0.15)
+            assert not done, "receipt confirmed before the first transcript write could register its retry"
+            assert write_attempts == 1
+            release_write.set()
         if late_transcript:
             await asyncio.wait_for(response_ended.wait(), 2)
             peer.feed({
@@ -553,8 +599,18 @@ async def test_real_arbiter_waits_for_audio_commit_before_exactly_one_response(
         else:
             await asyncio.wait_for(task, 3)
         if use_manager:
-            assert socket.send_json.await_args.args[0]["state"] == "completed"
-        if locked_transcript or uses_tool or late_transcript:
+            receipt = socket.send_json.await_args.args[0]
+            assert receipt["state"] == ("failed" if exhausts_retries else "completed")
+        if slow_transcript:
+            assert write_attempts == (3 if exhausts_retries else 2)
+        if exhausts_retries:
+            assert receipt["code"] == "unconfirmed"
+            stored = isolated_history.receipt(payload["request_id"])
+            assert stored["state"] == "accepted_unconfirmed"
+            assert stored["transcript"] == ""
+            manager.request_end_session.assert_called_once_with(by_server=True)
+            manager.handle_input_transcript.assert_awaited_once()
+        if locked_transcript or uses_tool or late_transcript or (slow_transcript and not exhausts_retries):
             assert isolated_history.receipt(payload["request_id"])["transcript"] == "Check tomorrow's schedule."
             assert client._audio_message_transcript.published_final
             manager.handle_input_transcript.assert_awaited_once()
@@ -571,6 +627,7 @@ async def test_real_arbiter_waits_for_audio_commit_before_exactly_one_response(
         assert sum(event["type"] == "response.create" for event in events) == (0 if reject else 2 if uses_tool else 1)
         assert b"".join(base64.b64decode(event["audio"]) for event in events if event["type"] == "input_audio_buffer.append") == pcm
     finally:
+        release_write.set()
         release_tool.set()
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)

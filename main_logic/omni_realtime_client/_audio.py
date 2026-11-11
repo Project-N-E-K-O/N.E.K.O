@@ -40,6 +40,7 @@ class _AudioMessageTranscript:
     on_transcript: Callable[..., Awaitable[bool | None]] | None
     transcript_ready: asyncio.Event = field(default_factory=asyncio.Event)
     transcript_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    transcript_publications: set[asyncio.Task[None]] = field(default_factory=set, init=False)
     transcript_retry: asyncio.Task[bool] | None = None
     transcript: str = ""
     published: str = ""
@@ -49,7 +50,20 @@ class _AudioMessageTranscript:
     async def publish(self) -> None:
         # Keep the first write and retry registration together if the
         # receiver is cancelled while handling an already captured transcript.
-        await await_retirement(self._publish_and_schedule_retry())
+        publication = asyncio.create_task(self._publish_and_schedule_retry())
+        self.transcript_publications.add(publication)
+        try:
+            await await_retirement(publication)
+        finally:
+            self.transcript_publications.discard(publication)
+
+    async def wait_for_started_publications(self) -> None:
+        # An in-flight first write may register a retry after the grace expires.
+        # Snapshot the work already started without waiting for new transcripts.
+        for publication in tuple(self.transcript_publications):
+            await asyncio.shield(publication)
+        if self.transcript_retry is not None and not await asyncio.shield(self.transcript_retry):
+            raise ConnectionError("audio transcript could not be stored")
 
     async def _publish_and_schedule_retry(self) -> None:
         if await self._write_transcript() is False and (
@@ -198,12 +212,11 @@ class _AudioMixin:
                             audio_message.transcript_ready.wait(), timeout=_AUDIO_TRANSCRIPT_GRACE_SECONDS,
                         )
                     except TimeoutError:
-                        if is_current():
+                        if is_current() and not audio_message.finalized:
                             # Keep captured text even when the final marker is late.
                             audio_message.publish_partial = True
                             await audio_message.publish()
-                if audio_message.transcript_retry is not None and not await asyncio.shield(audio_message.transcript_retry):
-                    raise ConnectionError("audio transcript could not be stored")
+                await audio_message.wait_for_started_publications()
             except BaseException:
                 if getattr(self, "_gemini_audio_message", None) is audio_message:
                     self._gemini_audio_message = None
@@ -295,8 +308,7 @@ class _AudioMixin:
                     await asyncio.wait_for(transcript.transcript_ready.wait(), timeout=_AUDIO_TRANSCRIPT_GRACE_SECONDS)
                 except TimeoutError:
                     pass
-            if transcript.transcript_retry is not None and not await asyncio.shield(transcript.transcript_retry):
-                raise ConnectionError("audio transcript could not be stored")
+            await transcript.wait_for_started_publications()
         except BaseException:
             if ticket is not None:
                 await arbiter.cancel_ticket(ticket)
