@@ -90,6 +90,10 @@ if TYPE_CHECKING:
 
 logger = get_module_logger(__name__, "Memory")
 
+# A pair nominated because both facts cite the same chat message, not because
+# their wording overlaps. A real text match is always above zero.
+SHARED_SOURCE_OVERLAP = 0.0
+
 # ``extraction_path`` stamped on facts the AI-aware pass (path B) writes. Path
 # B lets the model label each fact's source itself; the marker lets those
 # labels be audited later against the conversation (who really said it).
@@ -4348,6 +4352,24 @@ class FactStore:
                             )
                         continue
 
+                if arbitration_hit is None and memory_subject is None and self._dedup_resolver is not None:
+                    # The same chat lines can reach extraction twice: on two devices, or
+                    # after their progress entry aged out. Sharing a source proves nothing
+                    # about meaning, so the pair only goes to the arbitration a text
+                    # near-duplicate gets; nothing is folded together without its verdict.
+                    cited = set(source_provenance.get(id(fact), {}).get('source_message_ids') or ())
+                    if cited:
+                        from memory.scopes import is_legacy_private_entry as _private
+                        # One message often yields several facts; those of this batch are
+                        # siblings, not repeats, so only rows from an earlier pass qualify.
+                        siblings = {id(row) for row in new_facts}
+                        arbitration_hit = next((
+                            (row, SHARED_SOURCE_OVERLAP) for row in existing_facts
+                            if isinstance(row, dict) and row.get('id') and not row.get('absorbed')
+                            and id(row) not in siblings
+                            and (row.get('entity') or 'master') == entity and _private(row)
+                            and cited & set(row.get('source_message_ids') or ())), None)
+
                 created_at_iso = datetime.now().isoformat()
                 # Event timing (schema v2): LLM outputs relative offsets + units; system
                 # resolves ISO timestamps anchored at created_at. Facts lack temporal_scope, but event
@@ -4731,7 +4753,7 @@ class FactStore:
                 # and queue cosine enters arbitration prompts unchanged, misrepresenting evidence strength
                 # if substituted. Store text overlap separately; detector identifies its origin.
                 'text_overlap': overlap,
-                'detector': 'fts_near_dup',
+                'detector': 'shared_source' if overlap == SHARED_SOURCE_OVERLAP else 'fts_near_dup',
             })
         if not payload:
             return True

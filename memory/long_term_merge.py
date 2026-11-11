@@ -283,3 +283,31 @@ def same_content(left, right):
         return {**{name: value for name, value in current.items() if name not in ('completedAt', 'entries')},
                 'entries': sorted(current['entries'], key=_key)}
     return body(left) == body(right)
+
+
+# The protocol refuses a snapshot above 20000 evidence records, which would stop
+# sync for the character. The organizer trims well before that, oldest first.
+EVIDENCE_PRUNE_ABOVE = 16000
+EVIDENCE_PRUNE_TO = 12000
+RETIREMENT_SOURCES_MAX = 2000
+
+
+def prune_evidence(evidence):
+    """Drop the oldest retirement and confirmation records once the lists grow too long.
+
+    Order is the order the published list already has, never a clock. A
+    retirement keeps its newest sources. Returns the same object when nothing
+    needs trimming.
+    """
+    retirements = [
+        {**row, 'sourceMessageIds': row['sourceMessageIds'][-RETIREMENT_SOURCES_MAX:]}
+        if len(row['sourceMessageIds']) > RETIREMENT_SOURCES_MAX else row
+        for row in evidence['retirements']]
+    if len(retirements) > EVIDENCE_PRUNE_ABOVE:
+        retirements = retirements[-EVIDENCE_PRUNE_TO:]
+    confirmations = evidence['confirmations']
+    if len(confirmations) > EVIDENCE_PRUNE_ABOVE:
+        confirmations = confirmations[-EVIDENCE_PRUNE_TO:]
+    if retirements == evidence['retirements'] and confirmations is evidence['confirmations']:
+        return evidence
+    return {'retirements': retirements, 'confirmations': list(confirmations)}

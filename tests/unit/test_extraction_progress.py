@@ -167,3 +167,36 @@ async def test_progress_travels_in_the_snapshot_and_merges_with_what_another_dev
     # An older document knows nothing of progress, so it cannot clear it.
     older = {'schemaVersion': 2, 'completedAt': 4000, 'entries': [], 'evidence': {'retirements': [], 'confirmations': []}}
     assert import_document(older, applied)['sync']['progress'] == {'a': [B, A], 'b': [C]}
+
+
+@pytest.mark.asyncio
+async def test_facts_citing_the_same_message_are_arbitrated_never_merged_on_that_ground_alone(tmp_path):
+    """Two passes over one message (another device, or progress that aged out) may word a fact twice."""
+    from memory.facts import SHARED_SOURCE_OVERLAP
+    fs, _ = _install_factstore(str(tmp_path))
+    fs._dedup_resolver = object()
+    queued = []
+
+    async def enqueue(name, pairs, durable=False):
+        queued.extend((candidate['text'], existing['text'], overlap) for candidate, existing, overlap in pairs)
+        return True
+
+    def extracted(*texts):
+        return [{'text': text, 'importance': 6, 'entity': 'master', 'source_indices': [1]} for text in texts]
+
+    with patch.object(fs, '_aenqueue_near_dup_pairs', new=enqueue):
+        # One message, two facts in one pass: siblings, not repeats.
+        with patch.object(fs, '_allm_extract_facts', new=AsyncMock(return_value=extracted('主人养了一只猫', '主人住在京都'))):
+            await fs.aextract_facts_and_detect_signals(NAME, [message('我养了猫，住在京都', A)], judge=False)
+        assert queued == []
+        # A later pass over the same message words one of them differently.
+        with patch.object(fs, '_allm_extract_facts', new=AsyncMock(return_value=extracted('主人家里有只猫咪'))):
+            await fs.aextract_facts_and_detect_signals(NAME, [message('我养了猫，住在京都', A)], judge=False)
+        assert queued == [('主人家里有只猫咪', '主人养了一只猫', SHARED_SOURCE_OVERLAP)]
+        # A fact from another message is nobody's repeat. (This stand-in queue never
+        # acknowledges, so the one pending pair is offered again; no new pair appears.)
+        with patch.object(fs, '_allm_extract_facts', new=AsyncMock(return_value=extracted('主人喜欢爬山'))):
+            await fs.aextract_facts_and_detect_signals(NAME, [message('周末我常去爬山', B)], judge=False)
+        assert set(queued) == {('主人家里有只猫咪', '主人养了一只猫', SHARED_SOURCE_OVERLAP)}
+    # All of them are still stored: only the arbitration verdict may fold two together.
+    assert {row['text'] for row in await fs.aload_facts(NAME)} == {'主人养了一只猫', '主人住在京都', '主人家里有只猫咪', '主人喜欢爬山'}

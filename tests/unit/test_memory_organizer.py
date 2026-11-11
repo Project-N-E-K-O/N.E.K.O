@@ -262,3 +262,36 @@ async def test_only_one_of_two_simultaneous_claims_survives_the_merge(owner):  #
     assert owner.native.organizes('Neko') is False
     # The loser does not try again while the winner's claim is fresh.
     assert owner.native._tend_organizer_state('Neko', organizer.RANK_DESKTOP) is False
+
+
+@pytest.mark.asyncio
+async def test_only_the_organizer_trims_evidence_and_only_what_the_server_already_holds(owner, monkeypatch):  # noqa: F811
+    from memory import long_term_merge
+    monkeypatch.setattr(long_term_merge, 'EVIDENCE_PRUNE_ABOVE', 2)
+    monkeypatch.setattr(long_term_merge, 'EVIDENCE_PRUNE_TO', 1)
+    state_path = owner.directory / 'long_term_portable.json'
+    retired = [{'id': f'old-{index}', 'subject': 'master', 'sourceMessageIds': [f'source-{index}']} for index in range(3)]
+    atomic_write_json(state_path, {'evidence': {'retirements': retired, 'confirmations': []}})
+    _synced(owner)
+    server = PublishingServer()
+
+    def stored():
+        return json.loads(state_path.read_text(encoding='utf-8'))['evidence']['retirements']
+
+    assert owner.native._capture('Neko', True)
+    await server.exchange(owner)
+    # Published, but this device does not organize: nothing is trimmed.
+    assert not owner.native._capture('Neko', False) and stored() == retired
+    assert owner.native._tend_organizer_state('Neko', organizer.RANK_DESKTOP) is True
+    # A retirement the server has not seen yet keeps everything in place.
+    atomic_write_json(state_path, {**json.loads(state_path.read_text(encoding='utf-8')), 'evidence': {
+        'retirements': [*retired, {'id': 'fresh', 'subject': 'master', 'sourceMessageIds': ['source-new']}], 'confirmations': []}})
+    assert owner.native._capture('Neko', False)
+    await server.exchange(owner)
+    assert owner.native.organizes('Neko') and len(server.document['evidence']['retirements']) == 4
+    # Now the organizer, with everything published: the oldest records go.
+    assert owner.native._capture('Neko', False)
+    assert [row['id'] for row in stored()] == ['fresh']
+    await server.exchange(owner)
+    assert [row['id'] for row in server.document['evidence']['retirements']] == ['fresh']
+    assert not owner.native._capture('Neko', False)

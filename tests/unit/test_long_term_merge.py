@@ -73,3 +73,20 @@ def test_same_content_ignores_only_the_completion_time():
     assert same_content(older, _document())
     rows = [{'kind': kind, 'subject': 'master', 'id': 'x', 'text': 'text', 'metadata': {}} for kind in ('persona', 'reflection')]
     assert same_content(_document(entries=rows), _document(entries=rows[::-1]))
+
+
+def test_evidence_is_trimmed_oldest_first_long_before_the_protocol_limit():
+    from memory.long_term_merge import EVIDENCE_PRUNE_ABOVE, EVIDENCE_PRUNE_TO, RETIREMENT_SOURCES_MAX, prune_evidence
+    small = {'retirements': [{'id': 'r', 'subject': 'master', 'sourceMessageIds': ['s']}], 'confirmations': []}
+    assert prune_evidence(small) is small
+    retirements = [{'id': f'r{index}', 'subject': 'master', 'sourceMessageIds': ['s']} for index in range(EVIDENCE_PRUNE_ABOVE + 1)]
+    confirmations = [{'fingerprint': f'1:{index}:1', 'factId': 'f'} for index in range(EVIDENCE_PRUNE_ABOVE + 1)]
+    pruned = prune_evidence({'retirements': retirements, 'confirmations': confirmations})
+    assert pruned['retirements'] == retirements[-EVIDENCE_PRUNE_TO:]
+    assert pruned['confirmations'] == confirmations[-EVIDENCE_PRUNE_TO:]
+    at_limit = {'retirements': retirements[:EVIDENCE_PRUNE_ABOVE], 'confirmations': []}
+    assert prune_evidence(at_limit) is at_limit
+    sources = [f's{index}' for index in range(RETIREMENT_SOURCES_MAX + 5)]
+    wide = prune_evidence({'retirements': [{'id': 'r', 'subject': 'master', 'sourceMessageIds': sources}], 'confirmations': []})
+    assert wide['retirements'][0]['sourceMessageIds'] == sources[5:]
+    assert document(_document(evidence=pruned)) and document(_document(evidence=wide))

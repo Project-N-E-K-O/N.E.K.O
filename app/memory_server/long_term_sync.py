@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from memory.long_term_sync import DesktopLongTermAdapter, JOURNAL, LongTermMemoryRecoveryRequired, advance_view_generation, managed_path, view_files, export_document, import_document, read_views
 from memory.long_term_sync import LongTermArchiveSubjectUnavailable, LongTermMemoryCapacityExceeded, RetirementSubjectConflict, retirement_evidence, validate_retirement_subjects
-from memory.long_term_merge import merge_documents, same_content, upgraded
+from memory.long_term_merge import merge_documents, prune_evidence, same_content, upgraded
 from utils.long_term_memory_protocol import MAX_ENTRIES
 from memory.recent import _await_recent_mutation_to_completion as _complete_file_commit
 from services.chat_sync.long_term_protocol import head
@@ -264,6 +264,7 @@ def _capture(name, force, expected_uid=None, require_consumed=False):
             with runtime.fact_store._get_lock(name):
                 if local['unseenRevision']:
                     _raise_lineage(name)
+                _prune_evidence(name, base)
                 views = _read_native_views(name)
             document = export_document(views, completed, source_evidence=_snapshot_source_evidence(name, views))
         except (LongTermMemoryCapacityExceeded, LongTermArchiveSubjectUnavailable) as error:
@@ -305,6 +306,30 @@ def _unpublished(document, base):
         return True
     return any(document.get(field) != published.get(field)
                for field in ('evidence', 'progress', 'organizer', 'maintenance', 'lineage'))
+
+
+def _prune_evidence(name, base):
+    """Keep the evidence lists far from the size at which a snapshot is refused.
+
+    Only the organizer trims, and only what the server already holds, so two
+    devices never trim differently and nothing unpublished is dropped.
+    """
+    if not organizes(name) or not base or not base['document']:
+        return
+    path = Path(runtime._config_manager.memory_dir) / name / 'long_term_portable.json'
+    try:
+        state = json.loads(path.read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        return
+    evidence = state.get('evidence') if isinstance(state, dict) else None
+    if not isinstance(evidence, dict) or evidence != (base['document'].get('evidence') or None):
+        return
+    pruned = prune_evidence(evidence)
+    if pruned is evidence:
+        return
+    logger.warning(f'[LongTermSync] {name}: evidence records trimmed to stay below the snapshot limit')
+    assert_cloudsave_writable(runtime._config_manager, operation='sync', target=f'memory/{name}/long_term_portable.json')
+    atomic_write_json(path, {**state, 'evidence': pruned}, ensure_ascii=False, indent=2)
 
 
 def _raise_lineage(name):
