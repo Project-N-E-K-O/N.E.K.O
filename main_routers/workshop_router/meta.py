@@ -25,6 +25,7 @@ import os
 import json
 import asyncio
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import unquote
 from fastapi.responses import JSONResponse
 from ..shared_state import get_config_manager
@@ -168,6 +169,43 @@ def _build_subscriber_workshop_model_ref(item_id: str | int, raw_model_ref: str)
     if not relative_parts:
         return f"/workshop/{normalized_item_id}"
     return f"/workshop/{normalized_item_id}/{'/'.join(relative_parts)}"
+
+
+def _resolve_workshop_model_ref(installed_folder: str, model_ref: str, model_type: str) -> str:
+    """Recover paths written by older 3D exporters when the referenced file is missing."""
+    if not model_ref.startswith("/workshop/"):
+        return model_ref
+    item_id, *parts = model_ref.removeprefix("/workshop/").split("/")
+    suffixes = {"vrm": (".vrm",), "mmd": (".pmx", ".pmd")}
+    if not item_id or not parts or parts != _sanitize_workshop_ref_segments(parts):
+        return model_ref
+    if not parts[-1].lower().endswith(suffixes.get(model_type, ())):
+        return model_ref
+
+    # Older packages placed VRMs at the root, and MMD models alongside their textures.
+    if model_type == "vrm":
+        packaged_parts = parts[-1:]
+    elif parts[0] == "user_mmd":
+        packaged_parts = parts[1:]
+    else:
+        packaged_parts = parts[-2:]
+    if packaged_parts == parts:
+        return model_ref
+
+    try:
+        root = Path(installed_folder).resolve()
+        original = root.joinpath(*parts).resolve()
+        packaged = root.joinpath(*packaged_parts).resolve()
+        if (
+            original.is_relative_to(root)
+            and not original.is_file()
+            and packaged.is_relative_to(root)
+            and packaged.is_file()
+        ):
+            return f"/workshop/{item_id}/{'/'.join(packaged_parts)}"
+    except (OSError, RuntimeError, ValueError):
+        pass
+    return model_ref
 
 
 def _derive_workshop_model_binding(chara_data: dict) -> dict[str, str]:

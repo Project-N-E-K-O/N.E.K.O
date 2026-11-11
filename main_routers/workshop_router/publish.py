@@ -42,6 +42,7 @@ import time
 import asyncio
 import threading
 import platform
+from pathlib import Path
 from urllib.parse import unquote
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -244,127 +245,59 @@ async def prepare_workshop_upload(request: Request):
         
         logger.info(f"创建临时上传目录: {temp_item_dir}")
         
-        # 1. Copy character-card JSON into the temporary directory, using the validated safe filename.
-        chara_file_path = os.path.join(temp_item_dir, safe_chara_name)
-        await atomic_write_json_async(chara_file_path, chara_data, ensure_ascii=False, indent=2)
-        logger.info(f"角色卡已复制到临时目录: {chara_file_path}")
-        
-        # 2. Find and copy model files by model type.
+        # Copy the model first so the exported card can reference the packaged file.
         if model_type in ('vrm', 'mmd'):
-            # VRM/MMD: model_name is a file path such as /user_vrm/model.vrm or /user_mmd/folder/model.pmx.
-            model_copied = False
-            config_mgr = get_config_manager()
-            
-            # Security: prevent path traversal.
-            if '..' in model_name:
+            path_parts = model_name.removeprefix('/').split('/')
+            if '..' in model_name or any(
+                not part or part == '.' or ':' in part or '\\' in part for part in path_parts
+            ):
                 await asyncio.to_thread(shutil.rmtree, temp_item_dir, ignore_errors=True)
                 return JSONResponse({
                     "success": False,
                     "error": "非法模型路径"
                 }, status_code=400)
-            
-            if model_type == 'vrm':
-                # VRM is a single file; resolve its actual path.
-                from pathlib import Path as PathLib
-                vrm_filename = os.path.basename(model_name)
-                
-                if model_name.startswith('/user_vrm/'):
-                    vrm_dir = config_mgr.vrm_dir
-                    source_file = vrm_dir / vrm_filename
-                elif model_name.startswith('/static/vrm/'):
-                    source_file = config_mgr.project_root / "static" / "vrm" / vrm_filename
-                elif model_name.startswith('/workshop/'):
-                    # Workshop VRM: locate the installation directory by item_id.
-                    source_file = None
-                    ws_parts = model_name.lstrip('/').split('/')
-                    if len(ws_parts) >= 3:
-                        ws_item_id = ws_parts[1]
-                        ws_rel_path = '/'.join(ws_parts[2:])
-                        workshop_items_result = await get_subscribed_workshop_items()
-                        if isinstance(workshop_items_result, dict) and workshop_items_result.get('success', False):
-                            for item in workshop_items_result.get('items', []):
-                                if str(item.get('publishedFileId')) == ws_item_id:
-                                    installed_folder = item.get('installedFolder')
-                                    if installed_folder:
-                                        source_file = PathLib(installed_folder) / ws_rel_path
-                                    break
-                else:
-                    source_file = None
-                
-                if source_file and source_file.exists():
-                    vrm_dest = os.path.join(temp_item_dir, vrm_filename)
-                    await asyncio.to_thread(shutil.copy2, str(source_file), vrm_dest)
-                    logger.info(f"VRM模型文件已复制到临时目录: {vrm_dest}")
-                    model_copied = True
-                    
-            elif model_type == 'mmd':
-                # MMD can occupy a subdirectory (PMX, textures, etc.); copy the entire model directory.
-                from pathlib import Path as PathLib
-                
-                # Extract the model directory name, e.g. /user_mmd/folder/model.pmx -> folder.
-                path_parts = model_name.lstrip('/').split('/')
-                
-                if model_name.startswith('/user_mmd/') and len(path_parts) >= 3:
-                    # Subdirectory present: /user_mmd/subfolder/model.pmx.
-                    mmd_dir_name = path_parts[1]  # subfolder
-                    mmd_base = getattr(config_mgr, 'mmd_dir', config_mgr.project_root / "user_mmd")
-                    source_dir = mmd_base / mmd_dir_name
-                    if source_dir.exists() and source_dir.is_dir():
-                        model_dest_dir = os.path.join(temp_item_dir, mmd_dir_name)
-                        await asyncio.to_thread(shutil.copytree, str(source_dir), model_dest_dir, dirs_exist_ok=True)
-                        logger.info(f"MMD模型目录已复制到临时目录: {model_dest_dir}")
-                        model_copied = True
-                elif model_name.startswith('/user_mmd/') and len(path_parts) == 2:
-                    # File directly under user_mmd.
-                    mmd_filename = path_parts[1]
-                    mmd_base = getattr(config_mgr, 'mmd_dir', config_mgr.project_root / "user_mmd")
-                    source_file = mmd_base / mmd_filename
-                    if source_file.exists():
-                        mmd_dest = os.path.join(temp_item_dir, mmd_filename)
-                        await asyncio.to_thread(shutil.copy2, str(source_file), mmd_dest)
-                        logger.info(f"MMD模型文件已复制到临时目录: {mmd_dest}")
-                        model_copied = True
-                elif model_name.startswith('/static/mmd/'):
-                    # MMD under static.
-                    rel_path = model_name[len('/static/mmd/'):]
-                    source_file = config_mgr.project_root / "static" / "mmd" / rel_path
-                    if source_file.exists():
-                        # Copy the directory containing the file.
-                        source_dir = source_file.parent
-                        dest_name = source_dir.name
-                        model_dest_dir = os.path.join(temp_item_dir, dest_name)
-                        await asyncio.to_thread(shutil.copytree, str(source_dir), model_dest_dir, dirs_exist_ok=True)
-                        logger.info(f"MMD模型目录已复制到临时目录: {model_dest_dir}")
-                        model_copied = True
-                elif model_name.startswith('/workshop/'):
-                    # Workshop MMD: find the installation by item_id and copy the directory containing the model.
-                    ws_parts = model_name.lstrip('/').split('/')
-                    if len(ws_parts) >= 3:
-                        ws_item_id = ws_parts[1]
-                        ws_rel_path = '/'.join(ws_parts[2:])
-                        workshop_items_result = await get_subscribed_workshop_items()
-                        if isinstance(workshop_items_result, dict) and workshop_items_result.get('success', False):
-                            for item in workshop_items_result.get('items', []):
-                                if str(item.get('publishedFileId')) == ws_item_id:
-                                    installed_folder = item.get('installedFolder')
-                                    if installed_folder:
-                                        source_file = PathLib(installed_folder) / ws_rel_path
-                                        if source_file.exists():
-                                            # MMD requires its entire model directory, including textures and other resources.
-                                            source_dir = source_file.parent
-                                            dest_name = source_dir.name
-                                            model_dest_dir = os.path.join(temp_item_dir, dest_name)
-                                            await asyncio.to_thread(shutil.copytree, str(source_dir), model_dest_dir, dirs_exist_ok=True)
-                                            logger.info(f"Workshop MMD模型目录已复制到临时目录: {model_dest_dir}")
-                                            model_copied = True
-                                    break
-            
-            if not model_copied:
+
+            config_mgr = get_config_manager()
+            user_model = model_name.startswith(f'/user_{model_type}/')
+            source_root = None
+            relative_parts = path_parts[2:]
+            if user_model:
+                source_root = getattr(config_mgr, f'{model_type}_dir')
+                relative_parts = path_parts[1:]
+            elif model_name.startswith(f'/static/{model_type}/'):
+                source_root = config_mgr.project_root / 'static' / model_type
+            elif model_name.startswith('/workshop/') and relative_parts:
+                workshop_items = await get_subscribed_workshop_items()
+                if isinstance(workshop_items, dict) and workshop_items.get('success'):
+                    for item in workshop_items.get('items', []):
+                        if str(item.get('publishedFileId')) == path_parts[1] and item.get('installedFolder'):
+                            source_root = Path(item['installedFolder'])
+                            break
+
+            if model_type == 'vrm' and not model_name.startswith('/workshop/'):
+                relative_parts = relative_parts[-1:]
+            source_file = source_root.joinpath(*relative_parts) if source_root and relative_parts else None
+            if source_file is None or not source_file.is_file():
                 await asyncio.to_thread(shutil.rmtree, temp_item_dir, ignore_errors=True)
                 return JSONResponse({
                     "success": False,
                     "error": f"模型文件不存在: {model_name}"
                 }, status_code=404)
+
+            package_root = Path(temp_item_dir)
+            if model_type == 'mmd' and (not user_model or len(relative_parts) > 1):
+                # Keep textures relative to the model, including nested user model directories.
+                source_dir = source_root / relative_parts[0] if user_model else source_file.parent
+                dest_dir = package_root / source_dir.name
+                await asyncio.to_thread(shutil.copytree, source_dir, dest_dir, dirs_exist_ok=True)
+                packaged_model = dest_dir / source_file.relative_to(source_dir)
+            else:
+                packaged_model = package_root / source_file.name
+                await asyncio.to_thread(shutil.copy2, source_file, packaged_model)
+            logger.info(f"模型文件已复制到临时目录: {packaged_model}")
+
+            chara_data[model_type] = packaged_model.relative_to(package_root).as_posix()
+            chara_data.pop('mmd' if model_type == 'vrm' else 'vrm', None)
         else:
             # Live2D: use existing behavior.
             model_dir, _ = find_model_directory(model_name)
@@ -381,6 +314,10 @@ async def prepare_workshop_upload(request: Request):
             await asyncio.to_thread(shutil.copytree, model_dir, model_dest_dir, dirs_exist_ok=True)
             logger.info(f"模型文件已复制到临时目录: {model_dest_dir}")
         
+        chara_file_path = os.path.join(temp_item_dir, safe_chara_name)
+        await atomic_write_json_async(chara_file_path, chara_data, ensure_ascii=False, indent=2)
+        logger.info(f"角色卡已复制到临时目录: {chara_file_path}")
+
         # If the character card has cover art, copy it as the workshop preview by default; otherwise retain existing behavior.
         preview_image_path = None
         if character_card_name:
