@@ -495,6 +495,18 @@ def _install_ready_memory_browser_routes(
     page.route("**/api/memory/recent_file/save", handle_save)
 
 
+def _request_storage_location_in_open_page(page: Page, storage_link: str) -> None:
+    page.evaluate(
+        """async url => {
+            const changed = new Promise(resolve =>
+                window.addEventListener('hashchange', resolve, { once: true }));
+            window.location.replace(url);
+            await changed;
+        }""",
+        storage_link,
+    )
+
+
 @pytest.mark.frontend
 def test_storage_location_link_opens_dialog_and_reuses_memory_page(
     mock_page: Page, running_server: str, seed_memory_file: Path
@@ -513,14 +525,21 @@ def test_storage_location_link_opens_dialog_and_reuses_memory_page(
         str(seed_memory_file.parents[2])
     )
     expect(mock_page).to_have_url(url)
-    mock_page.locator("#storage-location-modal-close").click()
+    close_button = mock_page.locator("#storage-location-modal-close")
+    restart_button = mock_page.locator("#storage-location-restart-btn")
+    close_button.focus()
+    mock_page.keyboard.press("Shift+Tab")
+    expect(restart_button).to_be_focused()
+    mock_page.keyboard.press("Tab")
+    expect(close_button).to_be_focused()
+    close_button.click()
     expect(modal).to_be_hidden()
     expect(mock_page.locator("#storage-location-manage-btn")).to_be_focused()
     settings.locator("[data-memory-panel-close]").click()
 
     draft = mock_page.locator("#memory-chat-edit .memo-textarea").first
     draft.fill("unsaved memory draft")
-    mock_page.evaluate("url => window.location.replace(url)", storage_link)
+    _request_storage_location_in_open_page(mock_page, storage_link)
     expect(settings).to_be_visible()
     expect(modal).to_be_visible()
     expect(draft).to_have_value("unsaved memory draft")
@@ -543,15 +562,7 @@ def test_storage_location_link_waits_for_memory_import(
     )
     with mock_page.expect_request("**/api/memory/external_import/preview"):
         mock_page.locator("#external-memory-import-btn").click()
-    mock_page.evaluate(
-        """async url => {
-            const changed = new Promise(resolve =>
-                window.addEventListener('hashchange', resolve, { once: true }));
-            window.location.replace(url);
-            await changed;
-        }""",
-        storage_link,
-    )
+    _request_storage_location_in_open_page(mock_page, storage_link)
 
     modal = mock_page.locator("#storage-location-modal")
     expect(mock_page.locator("#memory-import-panel")).to_be_visible()
@@ -562,6 +573,44 @@ def test_storage_location_link_waits_for_memory_import(
     expect(mock_page.locator("#memory-settings-panel")).to_be_visible()
     expect(modal).to_be_visible()
     expect(mock_page).to_have_url(url)
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("confirm_action", ["cancel", "discard"])
+def test_storage_location_link_waits_for_unsaved_memory_confirmation(
+    mock_page: Page, running_server: str, seed_memory_file: Path, confirm_action: str
+):
+    _install_ready_memory_browser_routes(
+        mock_page,
+        seed_memory_file,
+        recent_files=["recent_测试猫娘.json", "recent_备用猫娘.json"],
+    )
+    url = f"{running_server}/memory_browser"
+    storage_link = f"{url}#change-storage-location"
+    mock_page.goto(url)
+    draft = mock_page.locator("#memory-chat-edit .memo-textarea").first
+    draft.fill("unsaved memory draft")
+    target = mock_page.locator("#memory-file-list .cat-btn", has_text="备用猫娘")
+    target.click()
+
+    confirmation = mock_page.locator("#memory-unsaved-switch-dialog")
+    cancel_button = mock_page.locator("#memory-unsaved-switch-cancel")
+    expect(cancel_button).to_be_focused()
+    _request_storage_location_in_open_page(mock_page, storage_link)
+    modal = mock_page.locator("#storage-location-modal")
+    expect(confirmation).to_be_visible()
+    expect(cancel_button).to_be_focused()
+    expect(modal).to_be_hidden()
+    expect(mock_page).to_have_url(storage_link)
+
+    mock_page.locator(f"#memory-unsaved-switch-{confirm_action}").click()
+    expect(confirmation).to_be_hidden()
+    expect(modal).to_be_visible()
+    expect(mock_page).to_have_url(url)
+    if confirm_action == "cancel":
+        expect(draft).to_have_value("unsaved memory draft")
+    else:
+        expect(target).to_have_attribute("aria-current", "true")
 
 
 @pytest.mark.frontend
@@ -4269,6 +4318,8 @@ def test_memory_browser_unsaved_role_switch_dialog_guards_discard_and_save(
     expect(target).to_have_attribute("aria-current", "false")
     expect(mock_page.locator("#memory-unsaved-switch-cancel")).to_be_focused()
 
+    # Measure the settled position; the entrance animation translates the dialog horizontally.
+    dialog.evaluate("element => Promise.all(element.getAnimations().map(animation => animation.finished))")
     geometry = mock_page.evaluate(
         """
         () => {

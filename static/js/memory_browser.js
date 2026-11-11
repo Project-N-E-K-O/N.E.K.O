@@ -3195,16 +3195,16 @@
         }
 
         document.addEventListener('keydown', function (event) {
-            if (!activeMemoryAuxiliaryPanel) return;
             const storageModal = document.getElementById('storage-location-modal');
-            if (storageModal && !storageModal.hidden) return;
-            if (event.key === 'Escape') {
+            const storageModalOpen = storageModal && !storageModal.hidden;
+            if (!storageModalOpen && !activeMemoryAuxiliaryPanel) return;
+            if (event.key === 'Escape' && !storageModalOpen) {
                 event.preventDefault();
                 closeMemoryAuxiliaryPanel(true, true);
                 return;
             }
             if (event.key !== 'Tab') return;
-            const panel = getMemoryAuxiliaryPanel(activeMemoryAuxiliaryPanel);
+            const panel = storageModalOpen ? storageModal : getMemoryAuxiliaryPanel(activeMemoryAuxiliaryPanel);
             const focusable = getMemoryPanelFocusableElements(panel);
             if (!focusable.length) {
                 event.preventDefault();
@@ -3706,6 +3706,7 @@
 
     function openStorageLocationFromHash() {
         if (window.location.hash !== '#change-storage-location') return;
+        if (pendingMemorySelection || pendingMemoryClose) return;
         if (activeMemoryAuxiliaryPanel !== 'settings') openMemoryAuxiliaryPanel('settings');
         if (activeMemoryAuxiliaryPanel !== 'settings') return;
         window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search);
@@ -5513,6 +5514,22 @@
         selectMemoryFile(filename, li, catName, options);
     }
 
+    function cancelMemoryUnsavedSwitch() {
+        if (memoryUnsavedSwitchBusy) return;
+        closeMemoryUnsavedSwitchDialog(true);
+        openStorageLocationFromHash();
+    }
+
+    function finishMemoryUnsavedSwitch(selection, closeRequested, suppressUnsavedPrompt) {
+        closeMemoryUnsavedSwitchDialog(false);
+        if (closeRequested) {
+            performCloseMemoryBrowser(suppressUnsavedPrompt);
+            return;
+        }
+        selectMemoryFile(selection.filename, findMemoryRoleListItem(selection.filename), selection.catName);
+        openStorageLocationFromHash();
+    }
+
     function initMemoryUnsavedSwitchDialog() {
         const dialog = document.getElementById('memory-unsaved-switch-dialog');
         const cancel = document.getElementById('memory-unsaved-switch-cancel');
@@ -5520,23 +5537,10 @@
         const save = document.getElementById('memory-unsaved-switch-save');
         if (!dialog || !cancel || !discard || !save) return;
 
-        cancel.addEventListener('click', function () {
-            if (!memoryUnsavedSwitchBusy) closeMemoryUnsavedSwitchDialog(true);
-        });
+        cancel.addEventListener('click', cancelMemoryUnsavedSwitch);
         discard.addEventListener('click', function () {
             if (memoryUnsavedSwitchBusy || (!pendingMemorySelection && !pendingMemoryClose)) return;
-            const selection = pendingMemorySelection;
-            const closeRequested = pendingMemoryClose;
-            closeMemoryUnsavedSwitchDialog(false);
-            if (closeRequested) {
-                performCloseMemoryBrowser(true);
-            } else {
-                selectMemoryFile(
-                    selection.filename,
-                    findMemoryRoleListItem(selection.filename),
-                    selection.catName
-                );
-            }
+            finishMemoryUnsavedSwitch(pendingMemorySelection, pendingMemoryClose, true);
         });
         save.addEventListener('click', async function () {
             if (memoryUnsavedSwitchBusy || (!pendingMemorySelection && !pendingMemoryClose)) return;
@@ -5556,23 +5560,14 @@
                 save.focus();
                 return;
             }
-            closeMemoryUnsavedSwitchDialog(false);
-            if (closeRequested) {
-                performCloseMemoryBrowser(false);
-            } else {
-                selectMemoryFile(
-                    selection.filename,
-                    findMemoryRoleListItem(selection.filename),
-                    selection.catName
-                );
-            }
+            finishMemoryUnsavedSwitch(selection, closeRequested, false);
         });
         document.addEventListener('keydown', function (event) {
             if (dialog.hidden) return;
             if (event.key === 'Escape') {
                 event.preventDefault();
                 event.stopImmediatePropagation();
-                if (!memoryUnsavedSwitchBusy) closeMemoryUnsavedSwitchDialog(true);
+                cancelMemoryUnsavedSwitch();
                 return;
             }
             if (event.key !== 'Tab') return;
