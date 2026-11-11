@@ -653,3 +653,36 @@ async def test_a_start_given_up_on_closes_its_listener(host, monkeypatch):
     finally:
         for listener in serving:
             listener.should_exit = True
+
+
+class _Listener:
+    should_exit = False
+
+
+async def test_stop_cancelled_while_waiting_for_the_listener_is_cancelled(host):
+    listener_may_end = asyncio.Event()
+    task = asyncio.ensure_future(listener_may_end.wait())
+    host.gateway._server, host.gateway._serve_task, host.gateway._port = _Listener(), task, 1
+    stopping = asyncio.ensure_future(host.gateway.stop())
+    await asyncio.sleep(0.05)
+    stopping.cancel()
+    await asyncio.gather(stopping, return_exceptions=True)
+
+    # The cancel reaches whoever called stop, and the listener is not left going.
+    assert stopping.cancelled()
+    await wait_until(task.done, what="the listener being closed")
+    assert not host.gateway.started
+
+
+async def test_a_listener_that_ends_cancelled_still_lets_stop_return(host):
+    async def listener() -> None:
+        await asyncio.sleep(0.05)
+        raise asyncio.CancelledError
+
+    task = asyncio.ensure_future(listener())
+    host.gateway._server, host.gateway._serve_task, host.gateway._port = _Listener(), task, 1
+
+    await asyncio.wait_for(host.gateway.stop(), 5)
+
+    assert task.cancelled()
+    assert not host.gateway.started

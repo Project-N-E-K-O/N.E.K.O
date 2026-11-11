@@ -306,7 +306,14 @@ class TaskBrain:
         # when there is one, an acceptance included: that is when she learns
         # the commission's id. The second round follows either way.
         def late(task: asyncio.Task[Receipt]) -> None:
-            if task.cancelled() or task.exception() is not None:
+            if task.cancelled():
+                return
+            error = task.exception()
+            if error is not None:
+                # Nobody awaits this round any more; without this line the
+                # failure would leave no trace. There is no receipt text for
+                # it, so she is told nothing further.
+                logger.error("the first round of a dispatch failed after the early receipt", exc_info=error)
                 return
             receipt = task.result()
             self._spawn(

@@ -46,7 +46,7 @@ from nekoclaw.host.selection import similarity
 
 KINDS: tuple[str, ...] = ("capability", "default", "report", "ask_first", "other")
 # Kinds that concern every task, whatever it is about.
-_GENERAL_KINDS = frozenset({"report", "ask_first"})
+_GENERAL_KINDS = frozenset({"report", "ask_first", "default"})
 ORIGINS: tuple[str, ...] = ("stated", "inferred", "console")
 INFERRED_MARK = "(inferred)"
 _SAME_STATEMENT_SIMILARITY = 0.9
@@ -95,7 +95,9 @@ def _kind(kind: str) -> str:
     return kind if kind in KINDS else "other"
 
 
-_KIND_ORDER: tuple[str, ...] = ("ask_first", "report", "capability", "default")
+# "default" comes before "capability": a sentence such as "always use short
+# sentences" says how every task is done, even though "use" also names a tool.
+_KIND_ORDER: tuple[str, ...] = ("ask_first", "report", "default", "capability")
 _kind_patterns: dict[str, list[re.Pattern[str]]] | None = None
 
 
@@ -334,8 +336,9 @@ class PreferenceStore:
     async def render(self, about: str, *, max_tokens: int | None = None) -> str:
         """Return the entries that bear on ``about``, as lines for a prompt.
 
-        Entries about reporting and about what to ask first always qualify;
-        the others need words in common with ``about``. The most relevant come
+        Entries about reporting, about what to ask first and about how things
+        are done by default always qualify; the others need words in common
+        with ``about``. The most relevant come
         first, and the text never exceeds ``max_tokens``
         (``PREFERENCE_PROMPT_MAX_TOKENS`` by default); an entry that does not
         fit whole is left out.

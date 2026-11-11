@@ -43,6 +43,16 @@ DEFAULT_PROJECT = "_daily"
 # and control characters.
 _UNSAFE_CHARACTERS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 _MAX_SEGMENT_LENGTH = 128
+# Names Windows reads as devices, with or without an extension ("nul.txt").
+# Refused on every platform, so a data root moved between systems stays usable.
+_RESERVED_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"{prefix}{digit}" for prefix in ("COM", "LPT") for digit in "123456789¹²³"}
+)
+
+
+def _reserved(value: str) -> bool:
+    return value.split(".", 1)[0].rstrip(" ").upper() in _RESERVED_NAMES
 
 
 def _segment(value: str, what: str) -> str:
@@ -50,7 +60,8 @@ def _segment(value: str, what: str) -> str:
 
     Project names and commission ids end up in paths; one that climbs out of
     the host's directory, or that Windows would read differently (it drops a
-    trailing dot or space), is refused. Leading dots and spaces are refused too.
+    trailing dot or space, and reads names such as ``CON`` or ``nul.txt`` as
+    devices), is refused. Leading dots and spaces are refused too.
     """
     if (
         not isinstance(value, str)
@@ -59,6 +70,7 @@ def _segment(value: str, what: str) -> str:
         or value in (".", "..")
         or value != value.strip(" .")
         or _UNSAFE_CHARACTERS.search(value)
+        or _reserved(value)
     ):
         raise ValueError(f"{what} {value!r} cannot be used as a directory name")
     return value

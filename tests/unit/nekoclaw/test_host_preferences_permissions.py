@@ -222,6 +222,8 @@ async def test_an_inferred_preference_switched_off_by_hand_stays_off(preferences
         ("Погоду по умолчанию смотри для Москвы", "default"),
         ("El tiempo por defecto de Madrid", "default"),
         ("O tempo por padrão de Lisboa", "default"),
+        ("Siempre usa frases cortas", "default"),
+        ("以后一律用简短的句子回复", "default"),
         ("周末不要安排", "other"),
     ],
 )
@@ -274,22 +276,44 @@ async def test_a_smaller_budget_is_honoured(preferences):
 
 
 async def test_only_relevant_entries_are_injected(preferences):
-    await preferences.state("查天气默认查上海", kind="default")
-    await preferences.state("Save downloaded music to D:/Music", kind="default")
+    await preferences.state("查天气用 weather 插件", kind="capability")
+    await preferences.state("Save downloaded music to D:/Music", kind="other")
 
-    assert await preferences.render("明天天气怎么样") == "- 查天气默认查上海"
+    assert await preferences.render("明天天气怎么样") == "- 查天气用 weather 插件"
     assert await preferences.render("download this music") == "- Save downloaded music to D:/Music"
     assert await preferences.render("zzz qqq") == ""
 
 
-async def test_reporting_and_ask_first_rules_apply_to_every_task(preferences):
+async def test_reporting_ask_first_and_default_rules_apply_to_every_task(preferences):
     await preferences.state("办完后不用主动说，下次聊到再提", kind="report")
     await preferences.state("Ask before spending money", kind="ask_first")
-    await preferences.state("Save downloaded music to D:/Music", kind="default")
+    await preferences.state("Siempre usa frases cortas", kind="default")
+    await preferences.state("Save downloaded music to D:/Music", kind="capability")
 
     rendered = await preferences.render("translate this document")
 
-    assert set(rendered.splitlines()) == {"- 办完后不用主动说，下次聊到再提", "- Ask before spending money"}
+    assert set(rendered.splitlines()) == {
+        "- 办完后不用主动说，下次聊到再提",
+        "- Ask before spending money",
+        "- Siempre usa frases cortas",
+    }
+
+
+@pytest.mark.parametrize(
+    ("text", "about"),
+    [
+        ("Siempre usa frases cortas", "traduce este documento"),
+        ("以后一律用简短的句子回复", "帮我订一张火车票"),
+    ],
+)
+async def test_a_stated_default_reaches_tasks_on_other_topics(preferences, text, about):
+    from nekoclaw.host.preferences import preference_kind
+
+    kind = preference_kind(text)
+    assert kind == "default"
+    await preferences.state(text, kind=kind)
+
+    assert await preferences.render(about) == f"- {text}"
 
 
 async def test_switched_off_entries_are_not_injected(preferences):

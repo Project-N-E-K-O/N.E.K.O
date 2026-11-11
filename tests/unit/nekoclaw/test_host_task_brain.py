@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 import pytest
@@ -282,6 +283,55 @@ async def test_slow_first_round_that_accepts_reports_the_acceptance_and_the_comm
     assert late.payload["task_id"] == commission.id
     assert late.payload["text"] == "已受理：zzz qqq"
     await wait_status(host, commission.id, "done")
+
+
+class _Records(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__(logging.DEBUG)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+async def test_slow_first_round_that_fails_is_logged(server, hosts, tmp_path, monkeypatch):
+    monkeypatch.setattr("config.nekoclaw_settings.DISPATCH_FIRST_ROUND_SECONDS", 0.05)
+    host = _host(hosts, tmp_path, server, FakeDecisionLLM(coarse=[]))
+    gate = asyncio.Event()
+
+    async def first_round(*_args: Any) -> Any:
+        await gate.wait()
+        raise RuntimeError("the ledger is gone")
+
+    monkeypatch.setattr(host.brain, "_first_round", first_round)
+    records = _Records()
+    brain_logger = logging.getLogger("nekoclaw.host.task_brain")
+    brain_logger.addHandler(records)
+    try:
+        receipt = await asyncio.wait_for(_dispatch(host, "zzz qqq"), 2)
+        assert receipt.kind == "received"
+        gate.set()
+        await wait_until(lambda: records.records, what="the failure being logged")
+    finally:
+        brain_logger.removeHandler(records)
+
+    (record,) = records.records
+    assert record.levelno >= logging.ERROR
+    assert record.exc_info is not None and isinstance(record.exc_info[1], RuntimeError)
+    # No receipt text exists for a failure of this kind; nothing is made up.
+    assert await outbox(host, "receipt") == []
+
+
+async def test_fast_first_round_that_fails_raises_to_the_caller(server, hosts, tmp_path, monkeypatch):
+    host = _host(hosts, tmp_path, server, FakeDecisionLLM(coarse=[]))
+
+    async def first_round(*_args: Any) -> Any:
+        raise RuntimeError("the ledger is gone")
+
+    monkeypatch.setattr(host.brain, "_first_round", first_round)
+
+    with pytest.raises(RuntimeError, match="the ledger is gone"):
+        await _dispatch(host, "zzz qqq")
 
 
 async def test_first_round_budget_is_about_one_second():

@@ -539,16 +539,31 @@ async def _close_listener(server: Any, task: "asyncio.Task[Any] | None") -> None
     if task is None:
         return
     try:
-        await asyncio.wait_for(task, 5.0)
-    except asyncio.TimeoutError:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-    except asyncio.CancelledError:
+        # ``asyncio.wait`` never raises what the listener raised, so a cancel
+        # seen here is always one of the caller waiting.
+        await asyncio.wait({task}, timeout=5.0)
         if not task.done():
-            # The one waiting here was cancelled, not the listener.
-            raise
-    except Exception:  # noqa: BLE001 - a failing listener is gone either way
-        logger.debug("gateway listener ended with an error", exc_info=True)
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    except asyncio.CancelledError:
+        # The caller goes away; the listener is closed without it, and kept
+        # referenced until it has ended.
+        task.cancel()
+        _closing_listeners.add(task)
+        task.add_done_callback(_forget_closing_listener)
+        raise
+    if not task.cancelled() and task.exception() is not None:
+        logger.debug("gateway listener ended with an error", exc_info=task.exception())
+
+
+# Listeners whose closing was left to run on its own after the caller went away.
+_closing_listeners: set["asyncio.Task[Any]"] = set()
+
+
+def _forget_closing_listener(task: "asyncio.Task[Any]") -> None:
+    _closing_listeners.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        logger.debug("gateway listener ended with an error", exc_info=task.exception())
 
 
 def _origin_host(origin: str) -> str:

@@ -467,15 +467,33 @@ class FamiliarManager:
             self._gateway.revoke(commission_id)
 
     async def _release(self, commission_id: str) -> None:
-        """Forget a session that is gone and give its place to the next in the queue."""
-        self._discard(commission_id)
-        self._notes.pop(commission_id, None)
-        await self._start_next()
+        """Forget a session that is gone and give its place to the next in the queue.
+
+        Called while a runtime event is handled. The next session is started
+        as a task of its own, which shutting down waits for: waiting here for
+        it to come up would hold up every other event meanwhile.
+        """
+        if commission_id in self._queue:
+            # Queued to be taken up again: what was said meanwhile goes along
+            # with it, and so do its candidate plugins.
+            self._sessions.pop(commission_id, None)
+            if self._gateway is not None:
+                self._gateway.revoke(commission_id)
+        else:
+            self._discard(commission_id)
+            self._notes.pop(commission_id, None)
+        if self._queue and not self._closed:
+            self._spawn(self._start_next())
 
     async def _start_next(self) -> None:
         """Give free places to queued commissions, in the order they were queued."""
-        while self._queue and not self._closed and len(self._sessions) < self.limit:
-            commission_id = self._queue.popleft()
+        while not self._closed and len(self._sessions) < self.limit:
+            # One whose old session is still on its way out keeps its turn;
+            # it is started when that session has gone.
+            commission_id = next((item for item in self._queue if item not in self._sessions), None)
+            if commission_id is None:
+                return
+            self._queue.remove(commission_id)
             if self._take_place(commission_id):
                 await self._start(commission_id, prompt=self._resume.pop(commission_id, None))
 
@@ -771,6 +789,10 @@ class FamiliarManager:
                 self._resume[commission_id] = text
                 if commission_id not in self._queue:
                     self._queue.append(commission_id)
+                # A place may have come free while the status was written; the
+                # queue was empty then, so nothing took it. Move it on now.
+                if not self._closed and len(self._sessions) < self.limit:
+                    self._spawn(self._start_next())
                 return True
             return await self._launch(commission_id, prompt=text)
         if commission.status == "queued":

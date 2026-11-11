@@ -242,3 +242,71 @@ async def test_an_id_matching_several_entries_but_for_case_is_refused(server):
     # The hidden entry of exactly that name was not reached.
     assert called == ["run"]
     assert single.success
+
+
+async def test_a_run_whose_caller_went_away_stays_known_until_its_cancel_is_accepted(server):
+    started = _slow_weather(server)
+    faults = Faults()
+    faults.failing_cancels = 1
+    runner = _runner(server, faults)
+    calling, run_id = await _started_run(server, runner, started)
+
+    calling.cancel()
+    await asyncio.gather(calling, return_exceptions=True)
+    await wait_until(lambda: faults.cancel_requests == 1, what="the first cancel request")
+    await runner.aclose()
+
+    assert server.cancelled == []
+    # The cancel did not go through: stopping the commission must still find the run.
+    assert runner.active_runs("c1") == [run_id]
+
+    asked = await runner.cancel_commission("c1", "stopped")
+
+    assert asked == 1
+    assert server.cancelled == [("weather", run_id)]
+    assert runner.active_runs("c1") == []
+
+
+async def test_a_run_whose_caller_went_away_is_dropped_once_its_cancel_is_accepted(server):
+    started = _slow_weather(server)
+    faults = Faults()
+    runner = _runner(server, faults)
+    calling, run_id = await _started_run(server, runner, started)
+
+    calling.cancel()
+    await asyncio.gather(calling, return_exceptions=True)
+    await runner.aclose()
+
+    assert server.cancelled == [("weather", run_id)]
+    assert runner.active_runs("c1") == []
+    assert await runner.cancel_commission("c1", "stopped") == 0
+    assert faults.cancel_requests == 1
+
+
+async def test_a_run_created_after_its_caller_went_away_stays_known_until_its_cancel_is_accepted(server):
+    started = _slow_weather(server)
+    faults = Faults()
+    faults.answer_may_return = asyncio.Event()
+    faults.failing_cancels = 1
+    runner = _runner(server, faults)
+    calling = asyncio.ensure_future(
+        runner.run_entry(commission_id="c1", plugin_id="weather", entry_id="today", args={})
+    )
+    await asyncio.wait_for(started.wait(), 5)
+    (run,) = server.runs()
+    calling.cancel()
+    await asyncio.gather(calling, return_exceptions=True)
+
+    faults.answer_may_return.set()
+    await wait_until(lambda: faults.cancel_requests == 1, what="the first cancel request")
+    await runner.aclose()
+
+    assert server.cancelled == []
+    # The cancel did not go through: stopping the commission must still find the run.
+    assert runner.active_runs("c1") == [run.run_id]
+
+    asked = await runner.cancel_commission("c1", "stopped")
+
+    assert asked == 1
+    assert server.cancelled == [("weather", run.run_id)]
+    assert runner.active_runs("c1") == []

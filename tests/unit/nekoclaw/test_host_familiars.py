@@ -1142,6 +1142,57 @@ async def test_parent_does_not_wait_for_a_child_that_reported_blocked(hosts, tmp
     assert (sub.status, sub.status_reason) == ("cancelled", "its parent finished")
 
 
+async def _blocked_with_closing_session(host: Any, text: str) -> Any:
+    """A blocked commission whose old session is still on its way out."""
+    from nekoclaw.host.familiars import _Session
+
+    commission = await _filed(host, text)
+    await host.ledger.transition(commission.id, "working", reason="test")
+    await host.ledger.transition(commission.id, "blocked", reason="test")
+    session = _Session(commission.id)
+    session.closing = True
+    host.familiars._sessions[commission.id] = session
+    return commission
+
+
+async def test_a_retry_whose_old_session_closes_meanwhile_still_starts(hosts, tmp_path, monkeypatch):
+    llm = ScriptedLLM([[say("photos sorted"), finish()]])
+    host = _host(hosts, tmp_path, lambda spec: llm)
+    commission = await _blocked_with_closing_session(host, "sort the photos")
+    real_transition = host.ledger.transition
+
+    async def closing_meanwhile(commission_id: str, status: str, **kwargs: Any) -> Any:
+        if status == "queued":
+            # The old session's "closed" arrives while the status is written:
+            # the place comes free while the queue is still empty.
+            await host.familiars._release(commission_id)
+        return await real_transition(commission_id, status, **kwargs)
+
+    monkeypatch.setattr(host.ledger, "transition", closing_meanwhile)
+
+    assert await host.familiars.tell(commission.id, "the drive is E: now") is True
+
+    await wait_status(host, commission.id, "done", timeout=5)
+    assert host.familiars.queued == []
+
+
+async def test_what_is_said_to_a_queued_retry_survives_its_old_session_closing(hosts, tmp_path):
+    llm = ScriptedLLM([[say("photos sorted"), finish()]])
+    host = _host(hosts, tmp_path, lambda spec: llm)
+    commission = await _blocked_with_closing_session(host, "sort the photos")
+
+    assert await host.familiars.tell(commission.id, "the drive is E: now") is True
+    assert (await host.ledger.get(commission.id)).status == "queued"
+    assert await host.familiars.tell(commission.id, "and skip the screenshots") is True
+    # Now the old session is gone and the retry takes its place.
+    await host.familiars._release(commission.id)
+
+    await wait_status(host, commission.id, "done", timeout=5)
+    sent = "\n".join(str(message.get("content")) for message in llm.requests[0])
+    assert "the drive is E: now" in sent
+    assert "and skip the screenshots" in sent
+
+
 async def test_a_retry_waiting_for_a_place_can_be_stopped(hosts, tmp_path):
     release, wait = _gate()
     scripts = {
@@ -1217,3 +1268,54 @@ async def test_a_familiar_being_started_outlives_whoever_handed_it_over(tmp_path
     # The session is neither lost nor left half set up: the work gets done.
     done = await wait_status(host, receipt.commission_id, "done")
     assert done.result_summary == "sorted"
+
+
+async def test_starting_a_queued_commission_does_not_hold_up_runtime_events(tmp_path, hosts):
+    inner = scripted_runtime(lambda spec: ScriptedLLM([_report("ready", "done")]))
+    may_start = asyncio.Event()
+    second_starting = asyncio.Event()
+    starts: list[str] = []
+
+    class SlowSecondStart:
+        """A runtime whose second session takes a while to come up."""
+
+        def __init__(self, on_event: Any, callbacks: Any) -> None:
+            self._runtime = inner(on_event, callbacks)
+
+        async def start(self, spec: Any) -> None:
+            starts.append(spec.session_id)
+            if len(starts) == 2:
+                second_starting.set()
+                await may_start.wait()
+            await self._runtime.start(spec)
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._runtime, name)
+
+    host = make_host(
+        tmp_path,
+        None,
+        familiar_model=fake_model,
+        decision_llm=FakeDecisionLLM(),
+        runtime_factory=SlowSecondStart,
+        max_familiars=1,
+    )
+    hosts.append(host)
+    first = await _filed(host, "sort the photos")
+    second = await _filed(host, "back up the notes")
+    await host.familiars.submit(first)
+    await host.familiars.submit(second)
+    assert host.familiars.queued == [second.id]
+
+    # The first one ends; its place goes to the second, whose session is slow to come up.
+    await asyncio.wait_for(second_starting.wait(), 5)
+
+    # Meanwhile the events that arrived are still handled.
+    await asyncio.wait_for(host.familiars.settle(), 2)
+    assert (await host.ledger.get(first.id)).status == "done"
+    # The start is one that shutting down waits for.
+    assert host.familiars._starting
+
+    may_start.set()
+    done = await wait_status(host, second.id, "done")
+    assert done.result_summary == "done"

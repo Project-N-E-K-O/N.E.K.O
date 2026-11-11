@@ -531,6 +531,17 @@ async def test_a_host_whose_shutdown_finished_in_the_background_is_replaced(moun
         ("abc", "x\\..\\..\\y"),
         ("abc", "trailing."),
         ("abc", "bad\x00name"),
+        ("CON", None),
+        ("abc", "nul"),
+        ("abc", "Aux"),
+        ("abc", "prn"),
+        ("abc", "nul.txt"),
+        ("abc", "COM1"),
+        ("abc", "com9.log"),
+        ("abc", "LPT1"),
+        ("abc", "lpt9.tar.gz"),
+        ("abc", "Con .txt"),
+        ("abc", "COM¹"),
     ],
 )
 def test_unsafe_names_never_become_directories(tmp_path, commission_id, project):
@@ -546,7 +557,7 @@ def test_ordinary_names_stay_below_the_host_directory(tmp_path):
     paths = HostPaths(tmp_path)
     commission_id = "0123456789abcdef0123456789abcdef"
 
-    for project in (None, "_daily", "notes-2026", "猫爪"):
+    for project in (None, "_daily", "notes-2026", "猫爪", "console", "nullable", "COM10", "LPT0", "auxiliary.txt", "my.con"):
         session = paths.session_dir(commission_id, project)
         assert session.name == commission_id
         assert Path(tmp_path) in session.parents

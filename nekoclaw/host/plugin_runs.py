@@ -36,6 +36,7 @@ expectations.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -653,7 +654,7 @@ class PluginRunner:
         try:
             created, problem = await asyncio.shield(request)
         except asyncio.CancelledError:
-            request.add_done_callback(self._cancel_abandoned_run)
+            request.add_done_callback(functools.partial(self._cancel_abandoned_run, commission_id))
             raise
         if problem is not None:
             return failed(*problem)
@@ -686,7 +687,12 @@ class PluginRunner:
             lost = bool(completion.pop("lost", False))
         except asyncio.CancelledError:
             # Whoever waited for this run is gone, at whichever point after
-            # the run came to exist; the run must not go on.
+            # the run came to exist; the run must not go on. Until the plugin
+            # server accepts the cancel the run stays known to the commission,
+            # so stopping the commission asks again if this request fails.
+            if run_id not in self._cancel_sent:
+                self._lost[run_id] = commission_id
+                lost = True
             self._cancel_in_background(run_id, "caller cancelled")
             raise
         finally:
@@ -738,13 +744,20 @@ class PluginRunner:
             logger.warning("/runs request failed for %s: %s", target, type(exc).__name__)
             return None, (str(exc) or type(exc).__name__, "run_failed")
 
-    def _cancel_abandoned_run(self, request: "asyncio.Future[Any]") -> None:
-        """Cancel the run a request created after its caller had gone away."""
+    def _cancel_abandoned_run(self, commission_id: str, request: "asyncio.Future[Any]") -> None:
+        """Cancel the run a request created after its caller had gone away.
+
+        The run is known to the commission until the plugin server accepts the
+        cancel, so stopping the commission asks again if this request fails.
+        """
         if request.cancelled() or request.exception() is not None:
             return
         created, _problem = request.result()
         run_id = created.get("run_id") if isinstance(created, dict) else None
         if isinstance(run_id, str) and run_id:
+            if run_id not in self._cancel_sent:
+                self._active.setdefault(commission_id, set()).add(run_id)
+                self._lost[run_id] = commission_id
             self._cancel_in_background(run_id, "caller cancelled")
 
     async def _await_completion(
