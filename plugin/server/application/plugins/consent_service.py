@@ -22,7 +22,9 @@ from plugin.server.infrastructure.plugin_consent import consent_store
 logger = get_logger("server.plugins.consent")
 
 
-def _consent_view(plugin_id: str, meta: dict | None = None):
+def _consent_view(
+    plugin_id: str, meta: dict | None = None, *, verify_revision: bool = True
+):
     """record + report + derived view; raises ServerDomainError on failure."""
     if meta is not None:
         if not isinstance(meta, dict) or not meta.get("config_path"):
@@ -32,7 +34,7 @@ def _consent_view(plugin_id: str, meta: dict | None = None):
     else:
         root, version = plugin_source(plugin_id)
     record = consent_store.read(plugin_id)
-    report = read_report(plugin_id, root, version)
+    report = read_report(plugin_id, root, version, verify_revision=verify_revision)
     return record, report, derive_consent(record, report), version
 
 
@@ -58,7 +60,7 @@ def consent_details(plugin_id: str, *, schedule_missing: bool = False) -> dict:
 
 def consent_summary(plugin_id: str, meta: dict | None = None) -> dict:
     try:
-        record, _, view, _ = _consent_view(plugin_id, meta)
+        record, _, view, _ = _consent_view(plugin_id, meta, verify_revision=False)
     except ServerDomainError:
         # A store or registry read failure must never force a confirmation.
         return {"state": "analyzing", "decision": None, "upgraded": False}
@@ -79,7 +81,7 @@ def consent_notices() -> list[dict]:
     for plugin_id in sorted(running):
         meta = metas.get(plugin_id)
         try:
-            record, report, view, version = _consent_view(plugin_id, meta)
+            _, report, view, version = _consent_view(plugin_id, meta, verify_revision=False)
         except ServerDomainError:
             continue
         if view.decision == "denied" or view.state != "confirm":

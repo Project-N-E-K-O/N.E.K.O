@@ -301,6 +301,22 @@ def test_source_revision_changes_with_python_source_without_manifest_changes(tmp
     assert analysis.source_revision(tmp_path, "1") == original
 
 
+def test_source_revision_bounds_the_files_it_stats(tmp_path, monkeypatch):
+    manifest(tmp_path)
+    monkeypatch.setattr(analysis, "MAX_FILES", 1)
+    first = tmp_path / "a.py"
+    second = tmp_path / "b.py"
+    second.write_text("pass")
+    first.write_text("pass")
+
+    initial = analysis.source_revision(tmp_path, "1")
+    assert initial["truncated"]
+    second.write_text("self.ctx.push_message()")
+    assert analysis.source_revision(tmp_path, "1") == initial
+    first.write_text("self.ctx.push_message()")
+    assert analysis.source_revision(tmp_path, "1") != initial
+
+
 def test_decisions_are_durable_and_delete_removes_the_record(store):
     saved = store.decide("demo", "approved", ["memory.read", "conversations.read"], "1")
     assert saved["decision"] == "approved"
@@ -427,6 +443,38 @@ async def test_background_scan_never_blocks_decisions_and_deduplicates(
         assert len(calls) == 1
     finally:
         release.set()
+        await runner.close()
+
+
+@pytest.mark.asyncio
+async def test_revision_checks_stay_in_the_worker_until_a_detail_requires_one(
+    tmp_path, reports, monkeypatch
+):
+    root = tmp_path / "demo"
+    manifest(root)
+    (root / "main.py").write_text("self.ctx.push_message()")
+    runner = analysis.CapabilityAnalysisService(reports)
+    revision_calls = []
+    original = analysis.source_revision
+
+    def record_thread(*args, **kwargs):
+        revision_calls.append(threading.get_ident())
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(analysis, "source_revision", record_thread)
+    try:
+        runner.ensure_analyzed("demo", root, "1")
+        with runner._lock:
+            job = runner._jobs.get("demo", (None, None))[1]
+        if job is not None:
+            await asyncio.wrap_future(job)
+        assert revision_calls and threading.get_ident() not in revision_calls
+        call_count = len(revision_calls)
+        assert runner.report("demo", root, "1", verify_revision=False)["status"] == "completed"
+        assert len(revision_calls) == call_count
+        assert runner.report("demo", root, "1")["status"] == "completed"
+        assert revision_calls[-1] == threading.get_ident()
+    finally:
         await runner.close()
 
 
@@ -657,7 +705,7 @@ def _consent_app(monkeypatch, store, report, tmp_path):
     monkeypatch.setattr(
         service,
         "read_report",
-        lambda *_: dict(report),
+        lambda *_, **__: dict(report),
     )
     app = FastAPI()
     app.include_router(routes.router)
@@ -865,7 +913,7 @@ async def test_decision_waits_for_uninstall_and_revalidates(monkeypatch, store):
     monkeypatch.setattr(
         service,
         "read_report",
-        lambda *_: {
+        lambda *_, **__: {
             "status": "completed",
             "capabilities": [],
             "evidence": [],
@@ -902,7 +950,7 @@ async def test_uninstall_waits_for_a_decision_then_forgets_it(monkeypatch, store
     monkeypatch.setattr(
         service,
         "read_report",
-        lambda *_: {
+        lambda *_, **__: {
             "status": "completed",
             "capabilities": [],
             "evidence": [],
@@ -1138,7 +1186,7 @@ async def test_revoke_is_serialized_with_other_plugin_operations(
     monkeypatch.setattr(
         service,
         "read_report",
-        lambda *_: {
+        lambda *_, **__: {
             "status": "completed",
             "capabilities": [],
             "evidence": [],
@@ -1165,7 +1213,7 @@ async def test_deny_stops_a_running_plugin_without_deadlock(
     monkeypatch.setattr(
         service,
         "read_report",
-        lambda *_: {
+        lambda *_, **__: {
             "status": "completed",
             "capabilities": ["memory.read"],
             "evidence": [],

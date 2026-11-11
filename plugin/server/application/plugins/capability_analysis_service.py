@@ -9,12 +9,13 @@ import json
 import threading
 import tomllib
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
 from plugin.core.capability_analysis import (
     ANALYZER_VERSION,
+    MAX_FILES,
     analyze_capabilities,
     iter_capability_sources,
     read_capability_sources,
@@ -22,7 +23,6 @@ from plugin.core.capability_analysis import (
 from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.server.application.plugins.operation_lock import hold_plugin_operation_file_lock
-from plugin.server.domain.consent_policy import ANALYZING_STATUSES
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.capability_reports import report_store
 
@@ -39,10 +39,16 @@ def plugin_source(plugin_id: str) -> tuple[Path, str]:
     return Path(path).parent, version
 
 
-def source_revision(root: Path, version: str) -> dict:
+def source_revision(root: Path, version: str, *, stop: threading.Event | None = None) -> dict:
     stat = (root / "plugin.toml").stat()
     sources = []
-    for path in sorted(iter_capability_sources(root)):
+    truncated = False
+    for index, path in enumerate(iter_capability_sources(root)):
+        if stop is not None and stop.is_set():
+            raise InterruptedError("Capability analysis stopped")
+        if index >= MAX_FILES:
+            truncated = True
+            break
         source_stat = path.stat()
         sources.append((path.relative_to(root).as_posix(), source_stat.st_mtime_ns, source_stat.st_size))
     return {
@@ -51,6 +57,7 @@ def source_revision(root: Path, version: str) -> dict:
         "mtime_ns": stat.st_mtime_ns,
         "size": stat.st_size,
         "python": hashlib.sha256(json.dumps(sources).encode()).hexdigest(),
+        "truncated": truncated,
     }
 
 
@@ -83,7 +90,7 @@ class CapabilityAnalysisService:
         self._lock = threading.RLock()
         self._publication_lock = threading.Lock()
         self._executor: ThreadPoolExecutor | None = None
-        self._jobs: dict[str, tuple[str, object]] = {}
+        self._jobs: dict[str, tuple[str, Future[None], Path, str]] = {}
         self._reports: dict[str, dict] = {}
         self._stop = threading.Event()
         self._closing = False
@@ -109,19 +116,19 @@ class CapabilityAnalysisService:
                 return
             previous = self._jobs.get(plugin_id)
             if previous:
-                report = self._reports.get(plugin_id, {})
-                if not force and report.get("_source_root") == str(root) and report.get("version") == version:
+                if not force and previous[2:] == (root, version):
                     return
                 previous[1].cancel()
-            self._reports[plugin_id] = _report(
-                "queued", version=version, _source_root=str(root)
-            )
+            if force:
+                self._reports[plugin_id] = _report(
+                    "queued", version=version, _source_root=str(root)
+                )
             # The token, not the future, supersedes this job: a later enqueue
             # replaces the entry and _current() stops this run from publishing.
             future = self._worker().submit(
                 self._run, plugin_id, root, version, token, force
             )
-            self._jobs[plugin_id] = (token, future)
+            self._jobs[plugin_id] = (token, future, root, version)
 
     def installed(self, root: Path) -> None:
         with self._lock:
@@ -147,11 +154,7 @@ class CapabilityAnalysisService:
         )
 
     def ensure_analyzed(self, plugin_id: str, root: Path, version: str) -> None:
-        """Enqueue a scan only when no fresh report or in-flight job covers the
-        current source revision."""
-        report = self.report(plugin_id, root, version)
-        if report["status"] != "unavailable" or report.get("_source"):
-            return
+        """Check the source revision in the worker and scan if it changed."""
         self._submit(plugin_id, root, version, force=False)
 
     def reanalyze(self, plugin_id: str, root: Path, version: str) -> None:
@@ -174,28 +177,35 @@ class CapabilityAnalysisService:
                 return
         revision = None
         try:
-            revision = source_revision(root, version)
+            revision = source_revision(root, version, stop=self._stop)
             saved = None if force else self._read_cached_report(plugin_id)
-            if is_fresh(saved, revision):
-                report = saved
-            else:
-                with self._lock:
-                    if not self._current(plugin_id, token):
-                        return
-                    self._reports[plugin_id]["status"] = "running"
-                with hold_plugin_operation_file_lock(self._stop):
-                    sources = read_capability_sources(root, stop=self._stop)
-                report = analyze_capabilities(root, stop=self._stop, sources=sources)
-                report.update(
-                    version=version,
-                    analyzed_at=datetime.now(timezone.utc).isoformat(),
-                    _source=revision,
-                    _source_root=str(root),
-                )
-            if source_revision(root, version) != revision:
+            if saved is not None and is_fresh(saved, revision):
                 with self._lock:
                     if self._current(plugin_id, token):
-                        self._reports.pop(plugin_id, None)
+                        self._reports[plugin_id] = saved
+                return
+
+            with self._lock:
+                if not self._current(plugin_id, token):
+                    return
+                self._reports[plugin_id] = _report(
+                    "running", version=version, _source_root=str(root)
+                )
+            with hold_plugin_operation_file_lock(self._stop):
+                sources = read_capability_sources(root, stop=self._stop)
+            report = analyze_capabilities(root, stop=self._stop, sources=sources)
+            report.update(
+                version=version,
+                analyzed_at=datetime.now(timezone.utc).isoformat(),
+                _source=revision,
+                _source_root=str(root),
+            )
+            if source_revision(root, version, stop=self._stop) != revision:
+                with self._lock:
+                    if self._current(plugin_id, token):
+                        self._reports[plugin_id] = _report(
+                            "unavailable", version=version, _source_root=str(root)
+                        )
                 return
             self._publish(plugin_id, token, report)
         except Exception as exc:
@@ -238,7 +248,9 @@ class CapabilityAnalysisService:
                 if self._current(plugin_id, token):
                     self._reports[plugin_id] = report
 
-    def report(self, plugin_id: str, root: Path, version: str) -> dict:
+    def report(
+        self, plugin_id: str, root: Path, version: str, *, verify_revision: bool = True
+    ) -> dict:
         with self._lock:
             cached = self._reports.get(plugin_id)
             report = copy.deepcopy(cached)
@@ -250,7 +262,7 @@ class CapabilityAnalysisService:
             and report.get("version") == version
         ):
             status = report.get("status")
-            if status in ANALYZING_STATUSES:
+            if status in ("queued", "running") or not verify_revision:
                 return report
             try:
                 fresh = is_fresh(report, source_revision(root, version))
@@ -324,8 +336,10 @@ def schedule_analysis_many(plugin_ids) -> None:
         schedule_analysis(plugin_id)
 
 
-def read_report(plugin_id: str, root: Path, version: str) -> dict:
+def read_report(
+    plugin_id: str, root: Path, version: str, *, verify_revision: bool = True
+) -> dict:
     try:
-        return analysis_service.report(plugin_id, root, version)
+        return analysis_service.report(plugin_id, root, version, verify_revision=verify_revision)
     except (OSError, ValueError):
         return _report("failed", warnings=[{"code": "analysis_failed"}])

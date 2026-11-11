@@ -14,7 +14,7 @@ from plugin.utils.source_paths import iter_plugin_python_files
 
 CAPABILITIES = ("conversations.read", "memory.read", "messages.push")
 # Bump when a change to analysis makes persisted reports stale.
-ANALYZER_VERSION = 3
+ANALYZER_VERSION = 4
 MAX_FILES = 500
 MAX_SOURCE_BYTES = 10 * 1024 * 1024
 MAX_FILE_BYTES = 1024 * 1024
@@ -353,7 +353,10 @@ def _emit_references(nodes, bindings, scope, walker):
 
 
 def iter_capability_sources(root: Path) -> Iterator[Path]:
-    return (path for path in iter_plugin_python_files(root) if not _is_test_source(path.relative_to(root)))
+    return (
+        path for path in iter_plugin_python_files(root, ordered=True)
+        if not _is_test_source(path.relative_to(root))
+    )
 
 
 def _is_test_source(relative: Path) -> bool:
