@@ -600,3 +600,4 @@ class SubprocessRuntime:
                 await asyncio.sleep(0.02)
             if self._connection is not None:
                 self._on_disconnect()
+            self._retiring = False

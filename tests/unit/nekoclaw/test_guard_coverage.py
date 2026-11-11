@@ -9,6 +9,7 @@ package by feeding it a violating file placed under ``nekoclaw/``.
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -18,6 +19,10 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PACKAGE = REPO_ROOT / "nekoclaw"
+# The guards print characters outside ASCII. With its output on a pipe, a child
+# process encodes with the machine's ANSI code page and crashes on them where
+# that page lacks the character, so the encoding is fixed here.
+_GUARD_ENV = {**os.environ, "PYTHONIOENCODING": "utf-8"}
 
 
 def _load(name: str) -> ModuleType:
@@ -71,6 +76,7 @@ def test_the_package_passes_each_guard(script: str) -> None:
     completed = subprocess.run(
         [sys.executable, str(REPO_ROOT / "scripts" / f"{script}.py"), *arguments],
         cwd=REPO_ROOT,
+        env=_GUARD_ENV,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -107,6 +113,7 @@ def test_each_guard_reports_a_violation_placed_in_the_package(script: str, tmp_p
     completed = subprocess.run(
         [sys.executable, str(REPO_ROOT / "scripts" / f"{script}.py"), str(tmp_path / "nekoclaw")],
         cwd=REPO_ROOT,
+        env=_GUARD_ENV,
         capture_output=True,
         text=True,
         encoding="utf-8",

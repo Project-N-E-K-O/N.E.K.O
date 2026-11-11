@@ -373,6 +373,39 @@ async def test_commands_for_a_session_that_is_still_starting_wait_for_it(tmp_pat
         await runtime.shutdown()
 
 
+async def test_a_cancelled_waiting_command_does_not_cancel_the_others(tmp_path: Path) -> None:
+    llm = ScriptedLLM([[say("one"), finish()]])
+    opener = _scripted_opener({"s1": llm})
+    release = asyncio.Event()
+
+    async def gated_open(spec, host, emit):  # noqa: ANN001, ANN202
+        await release.wait()
+        return await opener(spec, host, emit)
+
+    events = Recorder()
+    runtime = InProcessRuntime(events, open_session=gated_open)
+    try:
+        starting = asyncio.ensure_future(runtime.start(make_spec(tmp_path)))
+        impatient = asyncio.ensure_future(runtime.steer("s1", "never mind"))
+        patient = asyncio.ensure_future(runtime.prompt("s1", "first"))
+        await asyncio.sleep(0.05)
+        # One caller gives up while the session is still being created.
+        impatient.cancel()
+        await asyncio.sleep(0)
+        release.set()
+        # The start and the other waiting command are untouched by that.
+        await asyncio.gather(starting, patient)
+        with pytest.raises(asyncio.CancelledError):
+            await impatient
+        ended = await events.wait_ended("s1")
+        assert ended["text"] == "one"
+        assert [request[-1]["content"] for request in llm.requests] == ["first"]
+        assert events.of("error") == []
+    finally:
+        release.set()
+        await runtime.shutdown()
+
+
 # ---------------------------------------------------------------------------
 # The same interface without a child process
 # ---------------------------------------------------------------------------

@@ -118,10 +118,12 @@ class RuntimeCore:
         # A driver may send the next command right after ``start`` without
         # waiting for ``started``. Creating a session takes a while, so such a
         # command waits for it here instead of failing with "unknown session".
-        # Waiting commands resume in the order they arrived.
+        # Waiting commands resume in the order they arrived. The future is
+        # shared by all of them, hence the shield: a caller that is cancelled
+        # while waiting must not cancel it for the others.
         opening = self._starting.get(getattr(command, "session_id", ""))
         if opening is not None:
-            await opening
+            await asyncio.shield(opening)
         if isinstance(command, protocol.PromptCommand):
             self.prompt(command.session_id, command.text)
         elif isinstance(command, protocol.SteerCommand):
